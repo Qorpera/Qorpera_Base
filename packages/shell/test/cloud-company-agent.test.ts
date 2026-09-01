@@ -127,7 +127,7 @@ describe("canonical Company File agent documents", () => {
 			agentId: AGENT,
 			revision: 1,
 			reasoningPolicy: { effort: "low" },
-			grants: { department: null, projects: [], rooms: [], resources: [] },
+			grants: { responsibilities: [], projects: [], rooms: [], resources: [] },
 			startupInstructions: "Introduce yourself privately and begin the assigned job.",
 		});
 	});
@@ -143,7 +143,7 @@ describe("canonical Company File agent documents", () => {
 		});
 		const initial = JSON.parse(editor.file!.text) as Record<string, unknown>;
 		initial.grants = {
-			department: "10000000-0000-4000-8000-000000000010",
+			responsibilities: ["10000000-0000-4000-8000-000000000010"],
 			projects: ["10000000-0000-4000-8000-000000000011"],
 			rooms: ["10000000-0000-4000-8000-000000000012"],
 			resources: [
@@ -210,7 +210,7 @@ describe("canonical Company File agent documents", () => {
 					appearance: { color: "blue", shape: "round", creature: null },
 					modelPolicy: { provider: null, modelId: null },
 					reasoningPolicy: { effort: "low" },
-					grants: { department: null, projects: ["forbidden"], rooms: [], resources: [] },
+					grants: { responsibilities: [], projects: ["forbidden"], rooms: [], resources: [] },
 					startupInstructions: "Start.",
 					employmentStatus: "active",
 					lifecycleState: "setup",

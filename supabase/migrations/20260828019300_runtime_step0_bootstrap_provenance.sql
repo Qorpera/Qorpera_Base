@@ -284,6 +284,16 @@ create table public.qorpera_company_bootstrap_jobs (
 	formation_document text not null check (octet_length(convert_to(formation_document,'utf8')) between 2 and 32768),
 	cofounder_agent_document text not null
 		check (octet_length(convert_to(cofounder_agent_document,'utf8')) between 2 and 32768),
+	-- The Co-Founder holds the company-level responsibilities (contract 14.2).
+	-- Their canonical documents are minted once at enqueue so every attempt
+	-- stages and finalizes the same identities and bytes.
+	cofounder_responsibility_documents jsonb not null default '{}'::jsonb check (
+		jsonb_typeof(cofounder_responsibility_documents) = 'object'
+		and pg_column_size(cofounder_responsibility_documents) <= 262144
+	),
+	cofounder_responsibility_manifest_sha256 jsonb not null default '{}'::jsonb check (
+		jsonb_typeof(cofounder_responsibility_manifest_sha256) = 'object'
+	),
 	hidden_until_ready boolean not null,
 	first_run_required boolean not null,
 	state text not null default 'queued' check (state in ('queued','leased','completed','blocked')),
@@ -376,7 +386,7 @@ returns text language sql stable security definer set search_path = '' as $$
 			'creature',staff.appearance_creature),
 		'modelPolicy',jsonb_build_object('provider',staff.model_provider,'modelId',staff.model_id),
 		'reasoningPolicy',jsonb_build_object('effort','low'),
-		'grants',jsonb_build_object('department',null,'projects','[]'::jsonb,'rooms','[]'::jsonb,'resources','[]'::jsonb),
+		'grants',jsonb_build_object('responsibilities','[]'::jsonb,'projects','[]'::jsonb,'rooms','[]'::jsonb,'resources','[]'::jsonb),
 		'startupInstructions','Begin the durable company-formation workflow at source_inventory. Determine whether the founder is starting fresh or has prior company work, then create only the Company File objects the work needs.',
 		'employmentStatus',staff.employment_status,'lifecycleState',staff.lifecycle_state,'createdAt',staff.created_at
 	)::text
@@ -384,6 +394,69 @@ returns text language sql stable security definer set search_path = '' as $$
 	join public.qorpera_profile_staff staff on staff.profile_id = cofounder.profile_id
 		and staff.staff_agent_id = cofounder.staff_agent_id
 	where cofounder.profile_id = p_profile_id
+$$;
+
+-- The four company-level responsibilities the Co-Founder holds: direction,
+-- the responsibility map, resourcing, and the founder relationship. Each is
+-- a real responsibility with a measure and live sources, accountable to the
+-- Co-Founder with the founding owner as its accountable member; none is a
+-- ceremonial name. Their loops land with Orders 3 and 8 like any other.
+create function public.qorpera_company_bootstrap_responsibility_documents(p_profile_id uuid)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare v_cofounder public.qorpera_company_cofounders%rowtype; v_owner uuid; v_result jsonb := '{}'::jsonb;
+	v_id uuid; v_measure uuid; v_seed record;
+begin
+	select * into strict v_cofounder from public.qorpera_company_cofounders where profile_id = p_profile_id;
+	select user_id into strict v_owner from public.qorpera_profile_members
+	where profile_id = p_profile_id and role = 'owner';
+	for v_seed in select * from (values
+		(1,'direction','Direction',
+			'The ratified company direction stays current against evidence. A material deviation between direction and evidence reaches the founder with a recommended position, not a menu of options.',
+			'weekly','direction-currency','Direction currency',
+			'Whether the ratified direction was reviewed against current evidence within its cadence and no material deviation is left unresolved.',
+			'observe',jsonb_build_object('unresolvedMaterialDeviations',0),
+			jsonb_build_array(jsonb_build_object('path','organization/formation.json','pathMatch','exact'),
+				jsonb_build_object('path','organization/projects','pathMatch','subtree'))),
+		(2,'responsibility-map','Responsibility map',
+			'Everything the company cares about has exactly one accountable owner with fresh measures. New responsibilities are proposed and dead ones retired.',
+			'weekly','owned-outcomes','Owned outcomes',
+			'Active responsibilities whose accountable agent is employed and whose measures were refreshed within their cadence, against responsibilities that lack either.',
+			'observe',jsonb_build_object('responsibilitiesWithoutFreshOwner',0),
+			jsonb_build_array(jsonb_build_object('path','organization/responsibilities','pathMatch','subtree'),
+				jsonb_build_object('path','organization/agents','pathMatch','subtree'))),
+		(3,'resourcing','Resourcing',
+			'The company has the agents, budgets, effort policy, and projects its ratified goals need, and no more.',
+			'weekly','active-capacity','Active capacity',
+			'Employed agents and open projects against the work the ratified goals require.',
+			'observe',jsonb_build_object('idleAgents',0,'unstaffedActiveProjects',0),
+			jsonb_build_array(jsonb_build_object('path','organization/agents','pathMatch','subtree'),
+				jsonb_build_object('path','organization/projects','pathMatch','subtree'))),
+		(4,'founder-relationship','Founder relationship',
+			'The founder receives one coherent synthesis of results, blockers, and genuine decision requests, and every gated decision waits for the founder instead of being assumed.',
+			'daily','founder-decision-queue','Founder decision queue',
+			'Open decisions awaiting the founder and the age of the oldest, read from the formation state and open projects.',
+			'lower_is_better',jsonb_build_object('oldestOpenDecisionDays',2),
+			jsonb_build_array(jsonb_build_object('path','organization/formation.json','pathMatch','exact'),
+				jsonb_build_object('path','organization/projects','pathMatch','subtree')))
+	) seed(ordinal,slug,name,outcome,cadence,measure_key,measure_label,measure_definition,direction,target,sources)
+	order by ordinal loop
+		v_id := extensions.gen_random_uuid(); v_measure := extensions.gen_random_uuid();
+		v_result := v_result || jsonb_build_object('organization/responsibilities/' || v_id::text || '.json',
+			jsonb_build_object('schema','qorpera.responsibility/v1','responsibilityId',v_id,'slug',v_seed.slug,
+				'name',v_seed.name,'outcome',v_seed.outcome,'accountableStaffAgentId',v_cofounder.staff_agent_id,
+				'accountableUserId',v_owner,'attentionCadence',v_seed.cadence,
+				'escalationThreshold',jsonb_build_object('mode','material-deviation'),
+				'escalationTarget',jsonb_build_object('kind','accountable_member','id',null),
+				'effortPolicy',jsonb_build_object('attended','low'),'budgetPolicy','{}'::jsonb,
+				'concurrencyPolicy','{}'::jsonb,'routineIds','[]'::jsonb,'listenerIds','[]'::jsonb,
+				'externalOperationGrants','[]'::jsonb,'resources','[]'::jsonb,'status','active','version',1,
+				'measures',jsonb_build_array(jsonb_build_object('measureId',v_measure,'key',v_seed.measure_key,
+					'label',v_seed.measure_label,'definition',v_seed.measure_definition,'direction',v_seed.direction,
+					'target',v_seed.target,'guardrails','[]'::jsonb,'cadence',v_seed.cadence,'status','active',
+					'sources',v_seed.sources)))::text);
+	end loop;
+	return v_result;
+end
 $$;
 
 create function public.qorpera_enqueue_company_bootstrap(p_profile_id uuid,p_hidden_until_ready boolean)
@@ -398,10 +471,11 @@ begin
 		and audience_user_id = v_owner and status = 'open';
 	insert into public.qorpera_company_bootstrap_jobs(profile_id,environment_id,created_by_user_id,
 		cofounder_staff_agent_id,formation_id,member_session_id,formation_document,cofounder_agent_document,
-		hidden_until_ready,first_run_required)
+		cofounder_responsibility_documents,hidden_until_ready,first_run_required)
 	values (p_profile_id,v_cofounder.environment_id,v_owner,v_cofounder.staff_agent_id,v_cofounder.formation_id,
 		v_session,public.qorpera_company_bootstrap_document(p_profile_id),
-		public.qorpera_company_bootstrap_agent_document(p_profile_id),p_hidden_until_ready,p_hidden_until_ready)
+		public.qorpera_company_bootstrap_agent_document(p_profile_id),
+		public.qorpera_company_bootstrap_responsibility_documents(p_profile_id),p_hidden_until_ready,p_hidden_until_ready)
 	on conflict (profile_id) do update set hidden_until_ready =
 		public.qorpera_company_bootstrap_jobs.hidden_until_ready or excluded.hidden_until_ready
 	returning * into v_job;
@@ -501,6 +575,10 @@ begin
 		cofounder_agent_manifest_sha256 = case when base_snapshot_id is not distinct from v_file.head_snapshot_id
 			and base_tree_sha256 is not distinct from v_snapshot.tree_manifest_sha256
 			and base_tree_bytes is not distinct from v_snapshot.tree_manifest_bytes then cofounder_agent_manifest_sha256 end,
+		cofounder_responsibility_manifest_sha256 = case when base_snapshot_id is not distinct from v_file.head_snapshot_id
+			and base_tree_sha256 is not distinct from v_snapshot.tree_manifest_sha256
+			and base_tree_bytes is not distinct from v_snapshot.tree_manifest_bytes
+			then cofounder_responsibility_manifest_sha256 else '{}'::jsonb end,
 		tree_sha256 = case when base_snapshot_id is not distinct from v_file.head_snapshot_id
 			and base_tree_sha256 is not distinct from v_snapshot.tree_manifest_sha256
 			and base_tree_bytes is not distinct from v_snapshot.tree_manifest_bytes then tree_sha256 end,
@@ -513,22 +591,27 @@ begin
 		'leaseExpiresAt',v_job.lease_expires_at,'createdByUserId',v_job.created_by_user_id,
 		'cofounderStaffAgentId',v_job.cofounder_staff_agent_id,'formationId',v_job.formation_id,
 		'memberSessionId',v_job.member_session_id,'formationDocument',v_job.formation_document,
-		'cofounderAgentDocument',v_job.cofounder_agent_document,'pathGatewayVersion',v_file.path_gateway_version,
+		'cofounderAgentDocument',v_job.cofounder_agent_document,
+		'cofounderResponsibilityDocuments',v_job.cofounder_responsibility_documents,
+		'pathGatewayVersion',v_file.path_gateway_version,
 		'baseSnapshotId',v_job.base_snapshot_id,'baseTreeSha256',v_job.base_tree_sha256,
 		'baseTreeBytes',v_job.base_tree_bytes);
 end
 $$;
 
 create function public.qorpera_stage_company_bootstrap_object(
-	p_job_id uuid,p_worker_id uuid,p_kind text,p_sha256 text,p_bytes bigint,p_confirm boolean
+	p_job_id uuid,p_worker_id uuid,p_kind text,p_sha256 text,p_bytes bigint,p_confirm boolean,
+	p_path text default null
 )
 returns uuid language plpgsql security definer set search_path = '' as $$
 declare v_job public.qorpera_company_bootstrap_jobs%rowtype; v_expected text; v_expected_bytes bigint;
 begin
 	if auth.role() is distinct from 'service_role' or p_kind not in (
-		'formation_content','formation_manifest','cofounder_agent_content','cofounder_agent_manifest','tree'
+		'formation_content','formation_manifest','cofounder_agent_content','cofounder_agent_manifest',
+		'cofounder_responsibility_content','cofounder_responsibility_manifest','tree'
 	)
-		or p_sha256 !~ '^[0-9a-f]{64}$' or p_bytes not between 1 and 8388608 then
+		or p_sha256 !~ '^[0-9a-f]{64}$' or p_bytes not between 1 and 8388608
+		or (p_kind = 'cofounder_responsibility_manifest') <> (p_path is not null) then
 		raise exception 'Company bootstrap object authority is invalid' using errcode = '22023'; end if;
 	select * into strict v_job from public.qorpera_company_bootstrap_jobs where id = p_job_id for update;
 	if v_job.state <> 'leased' or v_job.lease_owner <> p_worker_id or v_job.lease_expires_at <= clock_timestamp() then
@@ -553,6 +636,19 @@ begin
 			update public.qorpera_company_bootstrap_jobs set cofounder_agent_manifest_sha256 = p_sha256 where id = p_job_id;
 		elsif v_job.cofounder_agent_manifest_sha256 <> p_sha256 then
 			raise exception 'Company bootstrap Co-Founder manifest differs' using errcode = '23505'; end if;
+	elsif p_kind = 'cofounder_responsibility_content' then
+		if not exists (select 1 from jsonb_each_text(v_job.cofounder_responsibility_documents) stored
+			where encode(extensions.digest(convert_to(stored.value,'utf8'),'sha256'),'hex') = p_sha256
+				and octet_length(stored.value) = p_bytes) then
+			raise exception 'Company bootstrap responsibility differs' using errcode = '22023'; end if;
+	elsif p_kind = 'cofounder_responsibility_manifest' then
+		if not (v_job.cofounder_responsibility_documents ? p_path) then
+			raise exception 'Company bootstrap responsibility path is unknown' using errcode = '22023'; end if;
+		if v_job.cofounder_responsibility_manifest_sha256 ->> p_path is null then
+			update public.qorpera_company_bootstrap_jobs set cofounder_responsibility_manifest_sha256 =
+				cofounder_responsibility_manifest_sha256 || jsonb_build_object(p_path,p_sha256) where id = p_job_id;
+		elsif v_job.cofounder_responsibility_manifest_sha256 ->> p_path <> p_sha256 then
+			raise exception 'Company bootstrap responsibility manifest differs' using errcode = '23505'; end if;
 	else
 		if v_job.tree_sha256 is null then update public.qorpera_company_bootstrap_jobs set tree_sha256 = p_sha256 where id = p_job_id;
 		elsif v_job.tree_sha256 <> p_sha256 then raise exception 'Company bootstrap tree differs' using errcode = '23505'; end if;
@@ -636,6 +732,10 @@ begin
 			or v_agent_document ->> 'lifecycleState' <> 'setup'
 		)) then
 		raise exception 'Company bootstrap Co-Founder agent document is invalid' using errcode = '22023'; end if;
+	if v_job.first_run_required and exists (
+		select 1 from jsonb_each_text(v_job.cofounder_responsibility_documents) stored
+		where p_organization_documents ->> stored.key is distinct from stored.value) then
+		raise exception 'Company bootstrap responsibility documents differ' using errcode = '22023'; end if;
 	v_formation_document := p_formation_document::jsonb;
 	select * into strict v_formation from public.qorpera_company_formations
 	where id = v_job.formation_id and profile_id = v_job.profile_id and environment_id = v_job.environment_id;
@@ -657,19 +757,20 @@ begin
 	if v_file.path_gateway_version is null and (
 		not (v_entries @> jsonb_build_array(jsonb_build_object('path','organization','kind','directory')))
 		or not (v_entries @> jsonb_build_array(jsonb_build_object('path','organization/agents','kind','directory')))
-		or not (v_entries @> jsonb_build_array(jsonb_build_object('path','organization/departments','kind','directory')))
+		or not (v_entries @> jsonb_build_array(jsonb_build_object('path','organization/responsibilities','kind','directory')))
 		or not (v_entries @> jsonb_build_array(jsonb_build_object('path','organization/projects','kind','directory')))
 	) then
 		raise exception 'Company bootstrap tree layout is invalid' using errcode = '22023'; end if;
 	if v_job.base_snapshot_id is null then
-		if jsonb_array_length(v_entries) <> 6 then
+		if jsonb_array_length(v_entries) <> 6 + (select count(*) from jsonb_object_keys(v_job.cofounder_responsibility_documents)) then
 			raise exception 'Company bootstrap genesis tree is invalid' using errcode = '22023'; end if;
 	elsif exists (select 1 from jsonb_array_elements(v_base_tree.manifest -> 'entries') base
 		where base ->> 'path' not in ('organization/formation.json',v_agent_path)
 			and not exists (select 1 from jsonb_array_elements(v_entries) candidate where candidate = base))
 		or exists (select 1 from jsonb_array_elements(v_entries) candidate
-			where candidate ->> 'path' not in ('organization','organization/agents','organization/departments',
+			where candidate ->> 'path' not in ('organization','organization/agents','organization/responsibilities',
 				'organization/projects','organization/formation.json',v_agent_path)
+			and not (v_job.cofounder_responsibility_documents ? (candidate ->> 'path'))
 			and not exists (select 1 from jsonb_array_elements(v_base_tree.manifest -> 'entries') base where base = candidate)) then
 		raise exception 'Company bootstrap upgrade changed existing Company File state' using errcode = '22023';
 	end if;
@@ -683,8 +784,18 @@ begin
 		or v_agent_entry #>> '{file,fileSha256}' <> v_agent_manifest ->> 'fileSha256'
 		or (v_agent_entry #>> '{file,bytes}')::bigint <> octet_length(v_agent_document_text)) then
 		raise exception 'Company bootstrap Co-Founder agent entry is invalid' using errcode = '22023'; end if;
-	if v_job.base_snapshot_id is null and (v_formation_entry is null or v_agent_entry is null) then
+	if v_job.base_snapshot_id is null and (v_formation_entry is null or v_agent_entry is null
+		or exists (select 1 from jsonb_object_keys(v_job.cofounder_responsibility_documents) required(path)
+			where not exists (select 1 from jsonb_array_elements(v_entries) entry
+				where entry ->> 'path' = required.path and entry ->> 'kind' = 'file'))) then
 		raise exception 'Company bootstrap genesis documents are missing' using errcode = '22023'; end if;
+	if v_job.first_run_required and exists (
+		select 1 from jsonb_object_keys(v_job.cofounder_responsibility_documents) required(path)
+		left join lateral (select value from jsonb_array_elements(v_entries) entry(value)
+			where entry.value ->> 'path' = required.path) entry on true
+		where entry.value #>> '{file,manifestSha256}' is distinct from
+			v_job.cofounder_responsibility_manifest_sha256 ->> required.path) then
+		raise exception 'Company bootstrap responsibility manifest is invalid' using errcode = '22023'; end if;
 	for v_document in select value entry from jsonb_array_elements(v_entries) value
 		where value ->> 'kind' = 'file' and (public.qorpera_organization_path_kind(value ->> 'path') is not null
 			or public.qorpera_company_agent_path_id(value ->> 'path') is not null) loop
@@ -772,7 +883,10 @@ begin
 				'profileId',v_job.profile_id,'environmentId',v_job.environment_id,'snapshotId',v_snapshot,
 				'firstRunInputId',null);
 		end if;
-		if v_formation_entry is null or v_agent_entry is null then
+		if v_formation_entry is null or v_agent_entry is null
+			or exists (select 1 from jsonb_object_keys(v_job.cofounder_responsibility_documents) required(path)
+				where not exists (select 1 from jsonb_array_elements(v_entries) entry
+					where entry ->> 'path' = required.path and entry ->> 'kind' = 'file')) then
 			raise exception 'Company bootstrap upgrade is incomplete' using errcode = '55000'; end if;
 		v_snapshot := v_job.base_snapshot_id;
 		select * into strict v_current_entry from public.qorpera_company_path_entries
@@ -919,7 +1033,7 @@ revoke all on function public.qorpera_reject_runtime_bundle_mutation(),public.qo
 	public.qorpera_pin_company_path_revision_provenance(),public.qorpera_company_bootstrap_document(uuid),
 	public.qorpera_company_bootstrap_agent_document(uuid),
 	public.qorpera_enqueue_company_bootstrap(uuid,boolean),public.qorpera_claim_company_bootstrap(uuid,integer),
-	public.qorpera_stage_company_bootstrap_object(uuid,uuid,text,text,bigint,boolean),
+	public.qorpera_stage_company_bootstrap_object(uuid,uuid,text,text,bigint,boolean,text),
 	public.qorpera_finalize_company_bootstrap(uuid,uuid,text,text,text,text,jsonb)
 	from public,anon,authenticated,service_role;
 do $$
@@ -939,5 +1053,5 @@ begin
 end
 $$;
 grant execute on function public.qorpera_claim_company_bootstrap(uuid,integer),
-	public.qorpera_stage_company_bootstrap_object(uuid,uuid,text,text,bigint,boolean),
+	public.qorpera_stage_company_bootstrap_object(uuid,uuid,text,text,bigint,boolean,text),
 	public.qorpera_finalize_company_bootstrap(uuid,uuid,text,text,text,text,jsonb) to service_role;

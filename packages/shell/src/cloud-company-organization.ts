@@ -7,17 +7,37 @@ export interface HostedOrganizationMembership {
 	staffAgentId: string;
 	role: string;
 	status: "active" | "ended";
-	assignmentKind?: "primary" | "supporting";
 }
 
-export interface HostedOrganizationDepartment {
-	departmentId: string;
+export interface HostedOrganizationMeasureSource {
+	path: string;
+	pathMatch: "exact" | "subtree";
+	sourcePathVersion: string;
+	sourceSnapshotId: string;
+	sourceFileSha256?: string;
+}
+
+export interface HostedOrganizationMeasure {
+	measureId: string;
+	key: string;
+	label: string;
+	status: "active" | "paused" | "retired";
+	sources: HostedOrganizationMeasureSource[];
+}
+
+/**
+ * A responsibility is the owned outcome with exactly one accountable agent
+ * (contract 14.3). It has no lead, officer, or member list.
+ */
+export interface HostedOrganizationResponsibility {
+	responsibilityId: string;
 	slug: string;
 	name: string;
-	status: "proposed" | "forming" | "active" | "degraded" | "paused" | "retired";
-	leadStaffAgentId?: string;
-	defaultRoomId?: string;
-	staff: HostedOrganizationMembership[];
+	status: "proposed" | "active" | "degraded" | "paused" | "retired";
+	accountableStaffAgentId: string;
+	accountableUserId?: string;
+	attentionCadence: string;
+	measures: HostedOrganizationMeasure[];
 	version: number;
 	sourcePath: string;
 	sourcePathVersion: string;
@@ -30,7 +50,7 @@ export interface HostedOrganizationProject {
 	key: string;
 	name: string;
 	status: "proposed" | "active" | "blocked" | "completed" | "cancelled";
-	sponsoringDepartmentId?: string;
+	sponsoringResponsibilityId?: string;
 	leadStaffAgentId: string;
 	roomId?: string;
 	staff: HostedOrganizationMembership[];
@@ -57,7 +77,7 @@ export interface HostedCompanyOrganization {
 			| "research"
 			| "vision_proposal"
 			| "goals_ratified"
-			| "organization_formation"
+			| "responsibility_map"
 			| "operating";
 		status: "active" | "completed" | "paused";
 		revision: number;
@@ -66,13 +86,13 @@ export interface HostedCompanyOrganization {
 		sourceSnapshotId: string;
 		sourceFileSha256: string;
 	};
-	departments: HostedOrganizationDepartment[];
+	responsibilities: HostedOrganizationResponsibility[];
 	projects: HostedOrganizationProject[];
 }
 
 export interface CompanyOrganizationHierarchyNode {
 	id: string;
-	kind: "cofounder" | "department" | "project" | "room" | "agent";
+	kind: "cofounder" | "responsibility" | "project" | "room" | "agent";
 	label: string;
 	status: string;
 	role?: string;
@@ -154,57 +174,87 @@ function source(
 	};
 }
 
-function membership(value: unknown, department: boolean): HostedOrganizationMembership {
-	const input = exact(
-		value,
-		"organization staff membership",
-		department ? ["staff_agent_id", "assignment_kind", "role", "status"] : ["staff_agent_id", "role", "status"],
-	);
+function membership(value: unknown): HostedOrganizationMembership {
+	const input = exact(value, "organization staff membership", ["staff_agent_id", "role", "status"]);
 	return {
 		staffAgentId: uuid(input.staff_agent_id, "organization staff id"),
 		role: text(input.role, "organization staff role", 320),
 		status: status(input.status, ["active", "ended"], "organization staff status"),
-		...(department
-			? {
-					assignmentKind: status(input.assignment_kind, ["primary", "supporting"], "department assignment kind"),
-				}
-			: {}),
 	};
 }
 
-function department(value: unknown): HostedOrganizationDepartment {
-	const input = record(value, "company department");
+function measureSource(value: unknown): HostedOrganizationMeasureSource {
+	const input = exact(value, "responsibility measure source", [
+		"path",
+		"path_match",
+		"source_path_version",
+		"source_snapshot_id",
+		"source_file_sha256",
+	]);
+	const pathMatch = status(input.path_match, ["exact", "subtree"], "responsibility measure source match");
+	const sourceFileSha256 = input.source_file_sha256;
+	if (
+		(pathMatch === "exact") !== (typeof sourceFileSha256 === "string") ||
+		(typeof sourceFileSha256 === "string" && !SHA256.test(sourceFileSha256)) ||
+		(sourceFileSha256 !== null && typeof sourceFileSha256 !== "string")
+	) {
+		throw new Error("Hosted primary returned invalid responsibility measure source hash");
+	}
+	return {
+		path: text(input.path, "responsibility measure source path", 4096),
+		pathMatch,
+		sourcePathVersion: uuid(input.source_path_version, "responsibility measure source version"),
+		sourceSnapshotId: uuid(input.source_snapshot_id, "responsibility measure source snapshot"),
+		...(typeof sourceFileSha256 === "string" ? { sourceFileSha256 } : {}),
+	};
+}
+
+function measure(value: unknown): HostedOrganizationMeasure {
+	const input = record(value, "responsibility measure");
+	const required = ["measure_id", "key", "label", "status", "sources"] as const;
+	if (required.some((key) => !Object.hasOwn(input, key)) || !Array.isArray(input.sources) || !input.sources.length) {
+		throw new Error("Hosted primary returned invalid responsibility measure");
+	}
+	return {
+		measureId: uuid(input.measure_id, "responsibility measure id"),
+		key: text(input.key, "responsibility measure key", 96),
+		label: text(input.label, "responsibility measure label", 256),
+		status: status(input.status, ["active", "paused", "retired"], "responsibility measure status"),
+		sources: input.sources.map(measureSource),
+	};
+}
+
+function responsibility(value: unknown): HostedOrganizationResponsibility {
+	const input = record(value, "company responsibility");
 	const required = [
-		"department_id",
+		"responsibility_id",
 		"slug",
 		"name",
 		"status",
-		"lead_staff_agent_id",
-		"default_room_id",
-		"staff",
+		"accountable_staff_agent_id",
+		"accountable_user_id",
+		"attention_cadence",
+		"measures",
 		"version",
 		"source_path",
 		"source_path_version",
 		"source_snapshot_id",
 		"source_file_sha256",
 	] as const;
-	if (required.some((key) => !Object.hasOwn(input, key)) || !Array.isArray(input.staff)) {
-		throw new Error("Hosted primary returned invalid company department");
+	if (required.some((key) => !Object.hasOwn(input, key)) || !Array.isArray(input.measures) || !input.measures.length) {
+		throw new Error("Hosted primary returned invalid company responsibility");
 	}
 	return {
-		departmentId: uuid(input.department_id, "department id"),
-		slug: text(input.slug, "department slug", 64),
-		name: text(input.name, "department name", 160),
-		status: status(
-			input.status,
-			["proposed", "forming", "active", "degraded", "paused", "retired"],
-			"department status",
-		),
-		leadStaffAgentId: nullableUuid(input.lead_staff_agent_id, "department lead"),
-		defaultRoomId: nullableUuid(input.default_room_id, "department room"),
-		staff: input.staff.map((item) => membership(item, true)),
-		version: integer(input.version, "department version"),
-		...source(input, "department"),
+		responsibilityId: uuid(input.responsibility_id, "responsibility id"),
+		slug: text(input.slug, "responsibility slug", 64),
+		name: text(input.name, "responsibility name", 160),
+		status: status(input.status, ["proposed", "active", "degraded", "paused", "retired"], "responsibility status"),
+		accountableStaffAgentId: uuid(input.accountable_staff_agent_id, "responsibility accountable agent"),
+		accountableUserId: nullableUuid(input.accountable_user_id, "responsibility accountable member"),
+		attentionCadence: text(input.attention_cadence, "responsibility attention cadence", 256),
+		measures: input.measures.map(measure),
+		version: integer(input.version, "responsibility version"),
+		...source(input, "responsibility"),
 	};
 }
 
@@ -215,7 +265,7 @@ function project(value: unknown): HostedOrganizationProject {
 		"key",
 		"name",
 		"status",
-		"sponsoring_department_id",
+		"sponsoring_responsibility_id",
 		"lead_staff_agent_id",
 		"room_id",
 		"staff",
@@ -233,10 +283,10 @@ function project(value: unknown): HostedOrganizationProject {
 		key: text(input.key, "project key", 96),
 		name: text(input.name, "project name", 256),
 		status: status(input.status, ["proposed", "active", "blocked", "completed", "cancelled"], "project status"),
-		sponsoringDepartmentId: nullableUuid(input.sponsoring_department_id, "project department"),
+		sponsoringResponsibilityId: nullableUuid(input.sponsoring_responsibility_id, "project responsibility"),
 		leadStaffAgentId: uuid(input.lead_staff_agent_id, "project lead"),
 		roomId: nullableUuid(input.room_id, "project room"),
-		staff: input.staff.map((item) => membership(item, false)),
+		staff: input.staff.map(membership),
 		version: integer(input.version, "project version"),
 		...source(input, "project"),
 	};
@@ -248,12 +298,12 @@ export function parseHostedCompanyOrganization(value: unknown): HostedCompanyOrg
 		"profile_id",
 		"cofounder",
 		"formation",
-		"departments",
+		"responsibilities",
 		"projects",
 	]);
 	if (
 		input.schema !== "qorpera.company-organization/v1" ||
-		!Array.isArray(input.departments) ||
+		!Array.isArray(input.responsibilities) ||
 		!Array.isArray(input.projects)
 	) {
 		throw new Error("Hosted primary returned invalid company organization");
@@ -282,17 +332,19 @@ export function parseHostedCompanyOrganization(value: unknown): HostedCompanyOrg
 	if (uuid(cofounder.formation_id, "Co-Founder formation id") !== formationId) {
 		throw new Error("Hosted primary returned inconsistent company formation identity");
 	}
-	const departments = input.departments.map(department);
+	const responsibilities = input.responsibilities.map(responsibility);
 	const projects = input.projects.map(project);
-	if (new Set(departments.map((item) => item.departmentId)).size !== departments.length) {
-		throw new Error("Hosted primary returned duplicate company departments");
+	if (new Set(responsibilities.map((item) => item.responsibilityId)).size !== responsibilities.length) {
+		throw new Error("Hosted primary returned duplicate company responsibilities");
 	}
 	if (new Set(projects.map((item) => item.projectId)).size !== projects.length) {
 		throw new Error("Hosted primary returned duplicate company projects");
 	}
-	const departmentIds = new Set(departments.map((item) => item.departmentId));
-	if (projects.some((item) => item.sponsoringDepartmentId && !departmentIds.has(item.sponsoringDepartmentId))) {
-		throw new Error("Hosted primary returned a project outside its department");
+	const responsibilityIds = new Set(responsibilities.map((item) => item.responsibilityId));
+	if (
+		projects.some((item) => item.sponsoringResponsibilityId && !responsibilityIds.has(item.sponsoringResponsibilityId))
+	) {
+		throw new Error("Hosted primary returned a project outside its responsibility");
 	}
 	return {
 		schema: "qorpera.company-organization/v1",
@@ -312,7 +364,7 @@ export function parseHostedCompanyOrganization(value: unknown): HostedCompanyOrg
 					"research",
 					"vision_proposal",
 					"goals_ratified",
-					"organization_formation",
+					"responsibility_map",
 					"operating",
 				],
 				"company formation state",
@@ -321,7 +373,7 @@ export function parseHostedCompanyOrganization(value: unknown): HostedCompanyOrg
 			revision: integer(formation.revision, "company formation revision"),
 			...source(formation, "company formation"),
 		},
-		departments,
+		responsibilities,
 		projects,
 	};
 }
@@ -351,9 +403,8 @@ export function buildCompanyOrganizationHierarchy(
 		throw new Error("Hosted primary returned inconsistent company staff identity");
 	}
 	const requiredStaffIds = new Set<string>([organization.cofounder.staffAgentId]);
-	for (const departmentValue of organization.departments) {
-		if (departmentValue.leadStaffAgentId) requiredStaffIds.add(departmentValue.leadStaffAgentId);
-		for (const membershipValue of departmentValue.staff) requiredStaffIds.add(membershipValue.staffAgentId);
+	for (const responsibilityValue of organization.responsibilities) {
+		requiredStaffIds.add(responsibilityValue.accountableStaffAgentId);
 	}
 	for (const projectValue of organization.projects) {
 		requiredStaffIds.add(projectValue.leadStaffAgentId);
@@ -397,36 +448,35 @@ export function buildCompanyOrganizationHierarchy(
 		canonicalId: organization.cofounder.staffAgentId,
 		children: [],
 	});
-	for (const departmentValue of organization.departments) {
-		const trackPrimaryPlacement = departmentValue.status !== "retired";
+	// Responsibilities and their accountable agents form the dedicated
+	// high-level area (contract 14.5). The Co-Founder stays the company home
+	// and is not re-listed under the company-level responsibilities it holds.
+	for (const responsibilityValue of organization.responsibilities) {
+		const trackPrimaryPlacement = responsibilityValue.status !== "retired";
 		const children = organization.projects
 			.filter(
 				(projectValue) =>
-					projectValue.sponsoringDepartmentId === departmentValue.departmentId && activeProject(projectValue),
+					projectValue.sponsoringResponsibilityId === responsibilityValue.responsibilityId &&
+					activeProject(projectValue),
 			)
 			.map((projectValue) => projectNode(projectValue, trackPrimaryPlacement));
-		if (departmentValue.defaultRoomId) {
-			children.push(roomNode(departmentValue.defaultRoomId, `${departmentValue.name} room`));
-		}
-		for (const membershipValue of departmentValue.staff.filter((item) => item.status === "active")) {
-			if (placed.has(membershipValue.staffAgentId)) continue;
-			const agent = agents.get(membershipValue.staffAgentId);
-			if (!agent) continue;
-			if (trackPrimaryPlacement) placed.add(agent.id);
-			children.push(agentNode(agent, membershipValue.role));
+		const accountable = agents.get(responsibilityValue.accountableStaffAgentId);
+		if (accountable && !placed.has(accountable.id)) {
+			if (trackPrimaryPlacement) placed.add(accountable.id);
+			children.push(agentNode(accountable, "Accountable"));
 		}
 		const node: CompanyOrganizationHierarchyNode = {
-			id: `department:${departmentValue.departmentId}`,
-			kind: "department",
-			label: departmentValue.name,
-			status: departmentValue.status,
-			canonicalId: departmentValue.departmentId,
+			id: `responsibility:${responsibilityValue.responsibilityId}`,
+			kind: "responsibility",
+			label: responsibilityValue.name,
+			status: responsibilityValue.status,
+			canonicalId: responsibilityValue.responsibilityId,
 			children,
 		};
-		(departmentValue.status === "retired" ? inactive : primary).push(node);
+		(responsibilityValue.status === "retired" ? inactive : primary).push(node);
 	}
 	for (const projectValue of organization.projects) {
-		if (projectValue.sponsoringDepartmentId) {
+		if (projectValue.sponsoringResponsibilityId) {
 			if (!activeProject(projectValue)) inactive.push(projectNode(projectValue, false));
 			continue;
 		}

@@ -318,7 +318,7 @@ describe("cloud-owned human Company File edits", () => {
 			appearance: { color: "blue", shape: "round", creature: null },
 			modelPolicy: { provider: null, modelId: null },
 			reasoningPolicy: { effort: "low" },
-			grants: { department: null, projects: [], rooms: [], resources: [] },
+			grants: { responsibilities: [], projects: [], rooms: [], resources: [] },
 			startupInstructions: "Begin the assigned work once.",
 			employmentStatus: "active",
 			lifecycleState: "setup",

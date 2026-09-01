@@ -14,7 +14,7 @@ export interface CloudCompanyAgentDocument {
 	modelPolicy: { provider: string | null; modelId: string | null };
 	reasoningPolicy: { effort: "low" };
 	grants: {
-		department: string | null;
+		responsibilities: string[];
 		projects: string[];
 		rooms: string[];
 		resources: Array<{
@@ -107,13 +107,13 @@ export function parseCloudCompanyAgentDocument(value: unknown): CloudCompanyAgen
 	const appearance = exact(input.appearance, "company agent appearance", ["color", "shape", "creature"]);
 	const model = exact(input.modelPolicy, "company agent model policy", ["provider", "modelId"]);
 	const reasoning = exact(input.reasoningPolicy, "company agent reasoning policy", ["effort"]);
-	const grants = exact(input.grants, "company agent grants", ["department", "projects", "rooms", "resources"]);
+	const grants = exact(input.grants, "company agent grants", ["responsibilities", "projects", "rooms", "resources"]);
 	const provider = optionalText(model.provider, "company agent model provider", 128);
 	const modelId = optionalText(model.modelId, "company agent model id", 256);
 	if ((provider === null) !== (modelId === null) || reasoning.effort !== "low") {
 		throw new Error("Invalid company agent policy");
 	}
-	const department = grants.department === null ? null : uuidText(grants.department, "company agent department grant");
+	const responsibilities = uuidArray(grants.responsibilities, "company agent responsibility grants", 128);
 	const projects = uuidArray(grants.projects, "company agent project grants", 128);
 	const rooms = uuidArray(grants.rooms, "company agent room grants", 128);
 	if (!Array.isArray(grants.resources) || grants.resources.length > 256) {
@@ -156,7 +156,7 @@ export function parseCloudCompanyAgentDocument(value: unknown): CloudCompanyAgen
 		modelPolicy: { provider, modelId },
 		reasoningPolicy: { effort: "low" },
 		grants: {
-			department,
+			responsibilities,
 			projects,
 			rooms,
 			resources,
@@ -173,7 +173,7 @@ export function cloudCompanyAgentDocument(
 	revision: number,
 	startupInstructions: string,
 	grants: CloudCompanyAgentDocument["grants"] = {
-		department: null,
+		responsibilities: [],
 		projects: [],
 		rooms: [],
 		resources: [],
@@ -232,7 +232,7 @@ export async function writeCloudCompanyAgent(options: {
 	let revision = 1;
 	let startupInstructions = options.startupInstructions;
 	let grants: CloudCompanyAgentDocument["grants"] = {
-		department: null,
+		responsibilities: [],
 		projects: [],
 		rooms: [],
 		resources: [],

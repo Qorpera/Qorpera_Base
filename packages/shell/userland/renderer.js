@@ -4391,7 +4391,7 @@ function appendOrganizationNode(container, node, context, depth = 0) {
 		container.appendChild(row);
 		return;
 	}
-	if (node.kind !== "department" && node.kind !== "project") return;
+	if (node.kind !== "responsibility" && node.kind !== "project") return;
 	const row = document.createElement("div");
 	row.className = "staff-nav-row organization-nav-row";
 	row.dataset.organizationKind = node.kind;
@@ -4400,7 +4400,7 @@ function appendOrganizationNode(container, node, context, depth = 0) {
 	const mark = document.createElement("span");
 	mark.className = "staff-create-mark";
 	mark.setAttribute("aria-hidden", "true");
-	mark.textContent = node.kind === "department" ? "D" : "P";
+	mark.textContent = node.kind === "responsibility" ? "R" : "P";
 	const copy = document.createElement("span");
 	copy.className = "staff-nav-copy";
 	const name = document.createElement("strong");

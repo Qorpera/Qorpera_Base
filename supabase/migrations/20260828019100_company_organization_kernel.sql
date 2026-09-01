@@ -1,14 +1,16 @@
 -- Runtime Order 0 organization kernel. These rows are closed enforcement
--- projections for one company Co-Founder, formation, departments, measures,
--- responsibilities, projects, and their staff assignments. The Company File
--- source binding is recorded separately by the dedicated organization adapter.
+-- projections for one company Co-Founder, formation, responsibilities and
+-- their measures and sources, projects, and project teams. There is no
+-- department object: a responsibility is the owned outcome with exactly one
+-- accountable agent (contract section 14.3). The Company File source binding
+-- is recorded separately by the dedicated organization adapter.
 
 create table public.qorpera_company_formations (
 	id uuid primary key default extensions.gen_random_uuid(),
 	profile_id uuid not null unique references public.qorpera_profiles(id) on delete cascade,
 	environment_id uuid not null,
 	state text not null default 'source_inventory' check (state in (
-		'source_inventory','discovery','research','vision_proposal','goals_ratified','organization_formation','operating'
+		'source_inventory','discovery','research','vision_proposal','goals_ratified','responsibility_map','operating'
 	)),
 	status text not null default 'active' check (status in ('active','completed','paused')),
 	revision bigint not null default 1 check (revision > 0),
@@ -48,26 +50,25 @@ create unique index qorpera_profile_staff_one_company_cofounder
 	on public.qorpera_profile_staff(profile_id)
 	where template_id = 'co-founder';
 
-create table public.qorpera_company_departments (
+create table public.qorpera_company_responsibilities (
 	id uuid primary key default extensions.gen_random_uuid(),
 	profile_id uuid not null references public.qorpera_profiles(id) on delete cascade,
 	environment_id uuid not null,
 	slug text not null check (slug ~ '^[a-z0-9][a-z0-9-]{0,63}$'),
 	name text not null check (char_length(btrim(name)) between 1 and 160),
-	charter text not null check (octet_length(convert_to(charter,'utf8')) between 1 and 32768),
-	non_responsibilities text[] not null default '{}'::text[] check (cardinality(non_responsibilities) <= 64),
-	accountable_user_id uuid not null,
-	lead_staff_agent_id uuid,
-	default_room_id uuid,
-	status text not null check (status in ('proposed','forming','active','degraded','paused','retired')),
-	intake_policy jsonb not null default '{}'::jsonb check (jsonb_typeof(intake_policy) = 'object' and pg_column_size(intake_policy) <= 16384),
-	prioritization_policy jsonb not null default '{}'::jsonb check (jsonb_typeof(prioritization_policy) = 'object' and pg_column_size(prioritization_policy) <= 16384),
-	budget_policy jsonb not null default '{}'::jsonb check (jsonb_typeof(budget_policy) = 'object' and pg_column_size(budget_policy) <= 16384),
+	outcome text not null check (octet_length(convert_to(outcome,'utf8')) between 1 and 32768),
+	accountable_staff_agent_id uuid not null,
+	accountable_user_id uuid,
+	attention_cadence text not null check (char_length(btrim(attention_cadence)) between 1 and 256),
+	escalation_threshold jsonb not null default '{}'::jsonb check (
+		jsonb_typeof(escalation_threshold) = 'object' and pg_column_size(escalation_threshold) <= 16384
+	),
+	escalation_target jsonb not null check (
+		jsonb_typeof(escalation_target) = 'object' and pg_column_size(escalation_target) <= 4096
+	),
 	effort_policy jsonb not null default '{}'::jsonb check (jsonb_typeof(effort_policy) = 'object' and pg_column_size(effort_policy) <= 16384),
+	budget_policy jsonb not null default '{}'::jsonb check (jsonb_typeof(budget_policy) = 'object' and pg_column_size(budget_policy) <= 16384),
 	concurrency_policy jsonb not null default '{}'::jsonb check (jsonb_typeof(concurrency_policy) = 'object' and pg_column_size(concurrency_policy) <= 16384),
-	execution_policy jsonb not null default '{}'::jsonb check (jsonb_typeof(execution_policy) = 'object' and pg_column_size(execution_policy) <= 16384),
-	project_creation_policy jsonb not null default '{}'::jsonb check (jsonb_typeof(project_creation_policy) = 'object' and pg_column_size(project_creation_policy) <= 16384),
-	escalation_policy jsonb not null default '{}'::jsonb check (jsonb_typeof(escalation_policy) = 'object' and pg_column_size(escalation_policy) <= 16384),
 	routine_ids uuid[] not null default '{}'::uuid[] check (
 		cardinality(routine_ids) <= 128 and public.qorpera_uuid_array_is_unique(routine_ids)
 	),
@@ -77,6 +78,7 @@ create table public.qorpera_company_departments (
 	external_operation_grants jsonb not null default '[]'::jsonb check (
 		jsonb_typeof(external_operation_grants) = 'array' and pg_column_size(external_operation_grants) <= 32768
 	),
+	status text not null check (status in ('proposed','active','degraded','paused','retired')),
 	version bigint not null default 1 check (version > 0),
 	source_path text not null check (public.qorpera_company_path_valid(source_path)),
 	source_path_version uuid not null,
@@ -87,73 +89,56 @@ create table public.qorpera_company_departments (
 	updated_at timestamptz not null default statement_timestamp(),
 	foreign key (profile_id,environment_id)
 		references public.qorpera_company_files(profile_id,environment_id) on delete cascade,
+	foreign key (profile_id,accountable_staff_agent_id)
+		references public.qorpera_profile_staff(profile_id,staff_agent_id) on delete restrict,
 	foreign key (profile_id,accountable_user_id)
 		references public.qorpera_profile_members(profile_id,user_id) on delete restrict,
-	foreign key (profile_id,lead_staff_agent_id)
-		references public.qorpera_profile_staff(profile_id,staff_agent_id) on delete restrict,
 	unique (profile_id,id),
 	unique (profile_id,slug),
 	unique (environment_id,source_path),
-	check (status <> 'active' or lead_staff_agent_id is not null),
 	check (not (routine_ids && listener_ids))
 );
 
-create table public.qorpera_department_staff_memberships (
-	profile_id uuid not null references public.qorpera_profiles(id) on delete cascade,
-	department_id uuid not null,
-	staff_agent_id uuid not null,
-	assignment_kind text not null check (assignment_kind in ('primary','supporting')),
-	role text not null check (char_length(btrim(role)) between 1 and 320),
-	status text not null default 'active' check (status in ('active','ended')),
-	created_by_user_id uuid not null references auth.users(id) on delete restrict,
-	created_at timestamptz not null default statement_timestamp(),
-	ended_at timestamptz,
-	primary key (department_id,staff_agent_id),
-	foreign key (profile_id,department_id)
-		references public.qorpera_company_departments(profile_id,id) on delete cascade,
-	foreign key (profile_id,staff_agent_id)
-		references public.qorpera_profile_staff(profile_id,staff_agent_id) on delete restrict,
-	check ((status = 'ended') = (ended_at is not null))
-);
-create unique index qorpera_department_staff_one_active_primary
-	on public.qorpera_department_staff_memberships(profile_id,staff_agent_id)
-	where assignment_kind = 'primary' and status = 'active';
-
-create table public.qorpera_department_responsibilities (
+-- A responsibility without a measurable outcome and sources is invalid. The
+-- projector rejects a document with no measure or a measure with no source;
+-- these rows only hold what that projector admitted.
+create table public.qorpera_responsibility_measures (
 	id uuid primary key default extensions.gen_random_uuid(),
 	profile_id uuid not null references public.qorpera_profiles(id) on delete cascade,
-	department_id uuid not null,
-	responsibility_key text not null check (responsibility_key ~ '^[a-z0-9][a-z0-9._-]{0,95}$'),
-	label text not null check (char_length(btrim(label)) between 1 and 256),
-	boundary text not null check (octet_length(convert_to(boundary,'utf8')) between 1 and 16384),
-	status text not null default 'active' check (status in ('active','retired')),
-	foreign key (profile_id,department_id)
-		references public.qorpera_company_departments(profile_id,id) on delete cascade,
-	unique (department_id,responsibility_key)
-);
-
-create table public.qorpera_department_measures (
-	id uuid primary key default extensions.gen_random_uuid(),
-	profile_id uuid not null references public.qorpera_profiles(id) on delete cascade,
-	department_id uuid not null,
+	responsibility_id uuid not null,
 	measure_key text not null check (measure_key ~ '^[a-z0-9][a-z0-9._-]{0,95}$'),
 	label text not null check (char_length(btrim(label)) between 1 and 256),
 	definition text not null check (octet_length(convert_to(definition,'utf8')) between 1 and 16384),
-	source_path text not null check (public.qorpera_company_path_valid(source_path)),
-	source_path_version uuid not null,
-	source_snapshot_id uuid not null references public.qorpera_company_snapshots(id) on delete restrict,
-	source_file_sha256 text not null check (source_file_sha256 ~ '^[0-9a-f]{64}$'),
 	direction text not null check (direction in ('higher_is_better','lower_is_better','target','observe')),
 	target jsonb not null check (pg_column_size(target) <= 8192),
 	guardrails jsonb not null default '[]'::jsonb check (jsonb_typeof(guardrails) = 'array' and pg_column_size(guardrails) <= 16384),
 	cadence text not null check (char_length(btrim(cadence)) between 1 and 256),
-	accountable_staff_agent_id uuid not null,
 	status text not null default 'active' check (status in ('active','paused','retired')),
-	foreign key (profile_id,department_id)
-		references public.qorpera_company_departments(profile_id,id) on delete cascade,
-	foreign key (profile_id,accountable_staff_agent_id)
-		references public.qorpera_profile_staff(profile_id,staff_agent_id) on delete restrict,
-	unique (department_id,measure_key)
+	foreign key (profile_id,responsibility_id)
+		references public.qorpera_company_responsibilities(profile_id,id) on delete cascade,
+	unique (responsibility_id,measure_key)
+);
+
+-- Measure sources are live Company File paths. The document names the path
+-- and whether it watches one object or a subtree; the projection records the
+-- exact entry version, snapshot, and file hash observed when the document
+-- was admitted, so a responsibility view can show exact source versions.
+create table public.qorpera_responsibility_measure_sources (
+	measure_id uuid not null references public.qorpera_responsibility_measures(id) on delete cascade,
+	profile_id uuid not null references public.qorpera_profiles(id) on delete cascade,
+	environment_id uuid not null,
+	source_path text not null check (public.qorpera_company_path_valid(source_path)),
+	source_path_key_sha256 bytea generated always as (
+		extensions.digest(public.qorpera_company_path_key(source_path),'sha256')
+	) stored,
+	path_match text not null check (path_match in ('exact','subtree')),
+	source_path_version uuid not null,
+	source_snapshot_id uuid not null references public.qorpera_company_snapshots(id) on delete restrict,
+	source_file_sha256 text check (source_file_sha256 is null or source_file_sha256 ~ '^[0-9a-f]{64}$'),
+	primary key (measure_id,source_path_key_sha256),
+	foreign key (profile_id,environment_id)
+		references public.qorpera_company_files(profile_id,environment_id) on delete cascade,
+	check ((path_match = 'exact') = (source_file_sha256 is not null))
 );
 
 create table public.qorpera_company_projects (
@@ -164,8 +149,8 @@ create table public.qorpera_company_projects (
 	name text not null check (char_length(btrim(name)) between 1 and 256),
 	objective text not null check (octet_length(convert_to(objective,'utf8')) between 1 and 32768),
 	definition_of_done text not null check (octet_length(convert_to(definition_of_done,'utf8')) between 1 and 32768),
-	scope_kind text not null check (scope_kind in ('company','department')),
-	sponsoring_department_id uuid,
+	scope_kind text not null check (scope_kind in ('company','responsibility')),
+	sponsoring_responsibility_id uuid,
 	lead_staff_agent_id uuid not null,
 	room_id uuid,
 	status text not null check (status in ('proposed','active','blocked','completed','cancelled')),
@@ -186,14 +171,14 @@ create table public.qorpera_company_projects (
 	updated_at timestamptz not null default statement_timestamp(),
 	foreign key (profile_id,environment_id)
 		references public.qorpera_company_files(profile_id,environment_id) on delete cascade,
-	foreign key (profile_id,sponsoring_department_id)
-		references public.qorpera_company_departments(profile_id,id) on delete restrict,
+	foreign key (profile_id,sponsoring_responsibility_id)
+		references public.qorpera_company_responsibilities(profile_id,id) on delete restrict,
 	foreign key (profile_id,lead_staff_agent_id)
 		references public.qorpera_profile_staff(profile_id,staff_agent_id) on delete restrict,
 	unique (profile_id,id),
 	unique (profile_id,project_key),
 	unique (environment_id,source_path),
-	check ((scope_kind = 'department') = (sponsoring_department_id is not null)),
+	check ((scope_kind = 'responsibility') = (sponsoring_responsibility_id is not null)),
 	check ((status in ('completed','cancelled')) = (outcome is not null))
 );
 
@@ -216,15 +201,14 @@ create table public.qorpera_project_staff_memberships (
 
 alter table public.qorpera_company_formations enable row level security;
 alter table public.qorpera_company_cofounders enable row level security;
-alter table public.qorpera_company_departments enable row level security;
-alter table public.qorpera_department_staff_memberships enable row level security;
-alter table public.qorpera_department_responsibilities enable row level security;
-alter table public.qorpera_department_measures enable row level security;
+alter table public.qorpera_company_responsibilities enable row level security;
+alter table public.qorpera_responsibility_measures enable row level security;
+alter table public.qorpera_responsibility_measure_sources enable row level security;
 alter table public.qorpera_company_projects enable row level security;
 alter table public.qorpera_project_staff_memberships enable row level security;
 revoke all on public.qorpera_company_formations,public.qorpera_company_cofounders,
-	public.qorpera_company_departments,public.qorpera_department_staff_memberships,
-	public.qorpera_department_responsibilities,public.qorpera_department_measures,
+	public.qorpera_company_responsibilities,public.qorpera_responsibility_measures,
+	public.qorpera_responsibility_measure_sources,
 	public.qorpera_company_projects,public.qorpera_project_staff_memberships
 	from public,anon,authenticated,service_role;
 
@@ -261,8 +245,8 @@ begin
 		insert into public.qorpera_profile_staff(profile_id,staff_agent_id,display_name,role,charter,template_id,
 			appearance_color,appearance_shape,appearance_creature,employment_status,lifecycle_state,version,
 			created_at,updated_at,updated_by_user_id)
-		values (p_profile_id,v_staff_id,'Co-Founder','Company direction, priority synthesis, and organizational routing',
-			$charter$Own company direction, priority synthesis, and routing across departments. Bring the founder decisions, blockers, and material risks; delegate bounded work through explicit agents, projects, rooms, and workers. Work by changing the Company File. Do not grant authority, approve your own gated changes, or make external commitments without the responsible human.$charter$,
+		values (p_profile_id,v_staff_id,'Co-Founder','Company direction, the responsibility map, resourcing, and the founder relationship',
+			$charter$Hold the company-level responsibilities: direction, the responsibility map, resourcing, and the founder relationship. Bring the founder decisions, blockers, and material risks with a recommended position; delegate bounded work through explicit agents, responsibilities, projects, rooms, and workers. Work by changing the Company File. Do not grant authority, approve your own gated changes, or make external commitments without the responsible human.$charter$,
 			'co-founder','qorpera-blue','round','brain','active','setup',1,
 			statement_timestamp(),statement_timestamp(),p_created_by_user_id);
 	end if;
@@ -317,7 +301,7 @@ begin
 end
 $$;
 
-create function public.qorpera_department_resources_json(p_department_id uuid)
+create function public.qorpera_responsibility_resources_json(p_responsibility_id uuid)
 returns jsonb language sql stable security definer set search_path = '' as $$ select '[]'::jsonb $$;
 create function public.qorpera_project_resources_json(p_project_id uuid)
 returns jsonb language sql stable security definer set search_path = '' as $$ select '[]'::jsonb $$;
@@ -343,49 +327,43 @@ begin
 			'revision',v_formation.revision,'projection_status',v_formation.projection_status,
 			'source_path',v_formation.source_path,'source_path_version',v_formation.source_path_version,
 			'source_snapshot_id',v_formation.source_snapshot_id,'source_file_sha256',v_formation.source_file_sha256) end,
-		'departments',coalesce((select jsonb_agg(jsonb_build_object(
-			'department_id',department.id,'slug',department.slug,'name',department.name,'charter',department.charter,
-			'non_responsibilities',to_jsonb(department.non_responsibilities),
-			'accountable_user_id',department.accountable_user_id,'lead_staff_agent_id',department.lead_staff_agent_id,
-			'default_room_id',department.default_room_id,'status',department.status,'version',department.version,
-			'intake_policy',department.intake_policy,'prioritization_policy',department.prioritization_policy,
-			'budget_policy',department.budget_policy,'effort_policy',department.effort_policy,
-			'concurrency_policy',department.concurrency_policy,'execution_policy',department.execution_policy,
-			'project_creation_policy',department.project_creation_policy,'escalation_policy',department.escalation_policy,
-			'routine_ids',to_jsonb(department.routine_ids),'listener_ids',to_jsonb(department.listener_ids),
-			'external_operation_grants',department.external_operation_grants,
-			'resources',public.qorpera_department_resources_json(department.id),
+		'responsibilities',coalesce((select jsonb_agg(jsonb_build_object(
+			'responsibility_id',responsibility.id,'slug',responsibility.slug,'name',responsibility.name,
+			'outcome',responsibility.outcome,
+			'accountable_staff_agent_id',responsibility.accountable_staff_agent_id,
+			'accountable_user_id',responsibility.accountable_user_id,
+			'attention_cadence',responsibility.attention_cadence,
+			'escalation_threshold',responsibility.escalation_threshold,'escalation_target',responsibility.escalation_target,
+			'effort_policy',responsibility.effort_policy,'budget_policy',responsibility.budget_policy,
+			'concurrency_policy',responsibility.concurrency_policy,
+			'routine_ids',to_jsonb(responsibility.routine_ids),'listener_ids',to_jsonb(responsibility.listener_ids),
+			'external_operation_grants',responsibility.external_operation_grants,
+			'resources',public.qorpera_responsibility_resources_json(responsibility.id),
 			'active_projects',coalesce((select jsonb_agg(jsonb_build_object(
 				'project_id',project.id,'key',project.project_key,'name',project.name,'status',project.status,
 				'lead_staff_agent_id',project.lead_staff_agent_id,'room_id',project.room_id
 			) order by project.created_at,project.id) from public.qorpera_company_projects project
-			where project.sponsoring_department_id = department.id
+			where project.sponsoring_responsibility_id = responsibility.id
 				and project.status in ('proposed','active','blocked')),'[]'::jsonb),
-			'source_path',department.source_path,'source_path_version',department.source_path_version,
-			'source_snapshot_id',department.source_snapshot_id,'source_file_sha256',department.source_file_sha256,
-			'staff',coalesce((select jsonb_agg(jsonb_build_object('staff_agent_id',membership.staff_agent_id,
-				'assignment_kind',membership.assignment_kind,'role',membership.role,'status',membership.status)
-				order by membership.staff_agent_id) from public.qorpera_department_staff_memberships membership
-				where membership.department_id = department.id),'[]'::jsonb),
-			'responsibilities',coalesce((select jsonb_agg(jsonb_build_object('responsibility_id',responsibility.id,
-				'key',responsibility.responsibility_key,'label',responsibility.label,'boundary',responsibility.boundary,
-				'status',responsibility.status) order by responsibility.responsibility_key)
-				from public.qorpera_department_responsibilities responsibility
-				where responsibility.department_id = department.id),'[]'::jsonb),
+			'status',responsibility.status,'version',responsibility.version,
+			'source_path',responsibility.source_path,'source_path_version',responsibility.source_path_version,
+			'source_snapshot_id',responsibility.source_snapshot_id,'source_file_sha256',responsibility.source_file_sha256,
 			'measures',coalesce((select jsonb_agg(jsonb_build_object('measure_id',measure.id,'key',measure.measure_key,
-				'label',measure.label,'definition',measure.definition,'source_path',measure.source_path,
-				'source_path_version',measure.source_path_version,'source_snapshot_id',measure.source_snapshot_id,
-				'source_file_sha256',measure.source_file_sha256,
-				'direction',measure.direction,'target',measure.target,'guardrails',measure.guardrails,
-				'cadence',measure.cadence,'accountable_staff_agent_id',measure.accountable_staff_agent_id,
-				'status',measure.status) order by measure.measure_key)
-				from public.qorpera_department_measures measure where measure.department_id = department.id),'[]'::jsonb)
-		) order by department.slug) from public.qorpera_company_departments department
-		where department.profile_id = p_profile_id),'[]'::jsonb),
+				'label',measure.label,'definition',measure.definition,'direction',measure.direction,
+				'target',measure.target,'guardrails',measure.guardrails,'cadence',measure.cadence,'status',measure.status,
+				'sources',coalesce((select jsonb_agg(jsonb_build_object('path',source.source_path,
+					'path_match',source.path_match,'source_path_version',source.source_path_version,
+					'source_snapshot_id',source.source_snapshot_id,'source_file_sha256',source.source_file_sha256)
+					order by source.source_path) from public.qorpera_responsibility_measure_sources source
+					where source.measure_id = measure.id),'[]'::jsonb)) order by measure.measure_key)
+				from public.qorpera_responsibility_measures measure
+				where measure.responsibility_id = responsibility.id),'[]'::jsonb)
+		) order by responsibility.slug) from public.qorpera_company_responsibilities responsibility
+		where responsibility.profile_id = p_profile_id),'[]'::jsonb),
 		'projects',coalesce((select jsonb_agg(jsonb_build_object(
 			'project_id',project.id,'key',project.project_key,'name',project.name,'objective',project.objective,
 			'definition_of_done',project.definition_of_done,'scope_kind',project.scope_kind,
-			'sponsoring_department_id',project.sponsoring_department_id,'lead_staff_agent_id',project.lead_staff_agent_id,
+			'sponsoring_responsibility_id',project.sponsoring_responsibility_id,'lead_staff_agent_id',project.lead_staff_agent_id,
 			'room_id',project.room_id,'status',project.status,'authorized_source_paths',to_jsonb(project.authorized_source_paths),
 			'authorized_output_paths',to_jsonb(project.authorized_output_paths),'dependencies',project.dependencies,
 			'reasoning_policy',project.reasoning_policy,'worker_policy',project.worker_policy,
@@ -464,7 +442,7 @@ $$;
 
 revoke all on function public.qorpera_seed_company_cofounder(uuid,uuid),
 	public.qorpera_seed_cofounder_member_session(),public.qorpera_company_organization_bootstrap(uuid),
-	public.qorpera_department_resources_json(uuid),public.qorpera_project_resources_json(uuid),
+	public.qorpera_responsibility_resources_json(uuid),public.qorpera_project_resources_json(uuid),
 	public.qorpera_company_organization_json(uuid)
 	from public,anon,authenticated,service_role;
 -- CREATE OR REPLACE preserves the owner of a production function. A database

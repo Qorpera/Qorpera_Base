@@ -38,8 +38,8 @@ describe("company organization renderer projection", () => {
 			formationState: "operating",
 			primary: [
 				{
-					id: "department:product",
-					kind: "department",
+					id: "responsibility:product",
+					kind: "responsibility",
 					label: "Product",
 					status: "active",
 					canonicalId: "10000000-0000-4000-8000-000000000002",
@@ -49,7 +49,7 @@ describe("company organization renderer projection", () => {
 							kind: "agent",
 							label: "Product Lead",
 							status: "active",
-							role: "Lead",
+							role: "Accountable",
 							canonicalId: "10000000-0000-4000-8000-000000000003",
 							children: [],
 						},

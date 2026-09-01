@@ -138,20 +138,16 @@ begin
 	if exists (select 1 from public.qorpera_company_cofounders cofounder
 		where cofounder.profile_id = p_profile_id and cofounder.staff_agent_id = p_staff_agent_id) then
 		raise exception 'the company Co-Founder cannot be permanently deleted' using errcode = '42501'; end if;
-	if exists (select 1 from public.qorpera_company_departments department
-		where department.profile_id = p_profile_id and department.lead_staff_agent_id = p_staff_agent_id
-			and department.status not in ('retired','paused'))
-		or exists (select 1 from public.qorpera_department_measures measure
-			where measure.profile_id = p_profile_id and measure.accountable_staff_agent_id = p_staff_agent_id
-				and measure.status = 'active')
+	if exists (select 1 from public.qorpera_company_responsibilities responsibility
+		where responsibility.profile_id = p_profile_id
+			and responsibility.accountable_staff_agent_id = p_staff_agent_id
+			and responsibility.status <> 'retired')
 		or exists (select 1 from public.qorpera_company_projects project
 			where project.profile_id = p_profile_id and project.lead_staff_agent_id = p_staff_agent_id
 				and project.status not in ('completed','cancelled')) then
 		raise exception 'reassign active organizational responsibilities before deleting this agent' using errcode = '55000';
 	end if;
 
-	update public.qorpera_department_staff_memberships set status = 'ended',ended_at = coalesce(ended_at,v_now)
-	where profile_id = p_profile_id and staff_agent_id = p_staff_agent_id and status = 'active';
 	update public.qorpera_project_staff_memberships set status = 'ended',ended_at = coalesce(ended_at,v_now)
 	where profile_id = p_profile_id and staff_agent_id = p_staff_agent_id and status = 'active';
 	update public.qorpera_cloud_routines routine set status = 'retired',updated_at = v_now

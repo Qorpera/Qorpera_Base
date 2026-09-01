@@ -22,7 +22,7 @@ const companyCreationId = "4a9d13d1-89fe-4896-a39e-67fc33db67d2";
 const staffAgentId = "11111111-1111-4111-8111-111111111111";
 const formationId = "11111111-1111-4111-8111-111111111112";
 const cofounderSessionId = "11111111-1111-4111-8111-111111111113";
-const departmentId = "11111111-1111-4111-8111-111111111114";
+const responsibilityId = "11111111-1111-4111-8111-111111111114";
 const projectId = "11111111-1111-4111-8111-111111111115";
 const roomId = "11111111-1111-4111-8111-111111111116";
 const pathVersionId = "11111111-1111-4111-8111-111111111117";
@@ -158,24 +158,34 @@ function companyOrganizationRecord() {
 			source_snapshot_id: snapshotId,
 			source_file_sha256: treeManifestSha256,
 		},
-		departments: [
+		responsibilities: [
 			{
-				department_id: departmentId,
+				responsibility_id: responsibilityId,
 				slug: "engineering",
 				name: "Engineering",
 				status: "active",
-				lead_staff_agent_id: staffAgentId,
-				default_room_id: roomId,
-				staff: [
+				accountable_staff_agent_id: staffAgentId,
+				accountable_user_id: actorUserId,
+				attention_cadence: "weekly",
+				measures: [
 					{
-						staff_agent_id: staffAgentId,
-						assignment_kind: "primary",
-						role: "Lead",
+						measure_id: "11111111-1111-4111-8111-111111111119",
+						key: "release-cadence",
+						label: "Release cadence",
 						status: "active",
+						sources: [
+							{
+								path: "engineering/releases.json",
+								path_match: "exact",
+								source_path_version: pathVersionId,
+								source_snapshot_id: snapshotId,
+								source_file_sha256: treeManifestSha256,
+							},
+						],
 					},
 				],
 				version: 1,
-				source_path: "organization/departments/engineering.json",
+				source_path: "organization/responsibilities/engineering.json",
 				source_path_version: pathVersionId,
 				source_snapshot_id: snapshotId,
 				source_file_sha256: treeManifestSha256,
@@ -187,7 +197,7 @@ function companyOrganizationRecord() {
 				key: "launch",
 				name: "Launch",
 				status: "active",
-				sponsoring_department_id: departmentId,
+				sponsoring_responsibility_id: responsibilityId,
 				lead_staff_agent_id: staffAgentId,
 				room_id: roomId,
 				staff: [{ staff_agent_id: staffAgentId, role: "Lead", status: "active" }],
@@ -741,8 +751,8 @@ describe("Qorpera hosted primary", () => {
 			profileId,
 			cofounder: { staffAgentId, formationId, memberSessionId: cofounderSessionId },
 			formation: { formationId, state: "source_inventory", status: "active", revision: 1 },
-			departments: [{ departmentId, name: "Engineering", defaultRoomId: roomId }],
-			projects: [{ projectId, name: "Launch", sponsoringDepartmentId: departmentId, roomId }],
+			responsibilities: [{ responsibilityId, name: "Engineering", accountableStaffAgentId: staffAgentId }],
+			projects: [{ projectId, name: "Launch", sponsoringResponsibilityId: responsibilityId, roomId }],
 		});
 		const malformed = new QorperaHostedPrimary(
 			transport({

@@ -57,7 +57,7 @@ import { companyUsageWindowError, readCompanyUsage } from "./usage-summary.ts";
 
 export interface CompanyOrganizationHierarchyNodeView {
 	id: string;
-	kind: "cofounder" | "department" | "project" | "room" | "agent";
+	kind: "cofounder" | "responsibility" | "project" | "room" | "agent";
 	label: string;
 	status: string;
 	role?: string;

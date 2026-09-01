@@ -12,9 +12,9 @@ const SPECIALIST = "10000000-0000-4000-8000-000000000004";
 const ARCHIVED = "10000000-0000-4000-8000-000000000005";
 const FORMATION = "10000000-0000-4000-8000-000000000006";
 const SESSION = "10000000-0000-4000-8000-000000000007";
-const DEPARTMENT = "10000000-0000-4000-8000-000000000008";
+const RESPONSIBILITY = "10000000-0000-4000-8000-000000000008";
 const PROJECT = "10000000-0000-4000-8000-000000000009";
-const DEPARTMENT_ROOM = "10000000-0000-4000-8000-000000000010";
+const MEASURE = "10000000-0000-4000-8000-000000000010";
 const PROJECT_ROOM = "10000000-0000-4000-8000-000000000011";
 const PATH_VERSION = "10000000-0000-4000-8000-000000000012";
 const SNAPSHOT = "10000000-0000-4000-8000-000000000013";
@@ -32,7 +32,7 @@ function rawOrganization(): Record<string, unknown> {
 		},
 		formation: {
 			formation_id: FORMATION,
-			state: "organization_formation",
+			state: "responsibility_map",
 			status: "active",
 			revision: 6,
 			projection_status: "verified",
@@ -41,46 +41,60 @@ function rawOrganization(): Record<string, unknown> {
 			source_snapshot_id: SNAPSHOT,
 			source_file_sha256: HASH,
 		},
-		departments: [
+		responsibilities: [
 			{
-				department_id: DEPARTMENT,
+				responsibility_id: RESPONSIBILITY,
 				slug: "product",
 				name: "Product",
-				charter: "Own product outcomes.",
-				non_responsibilities: ["Sales"],
+				outcome: "Own product outcomes.",
+				accountable_staff_agent_id: LEAD,
 				accountable_user_id: null,
-				lead_staff_agent_id: LEAD,
-				default_room_id: DEPARTMENT_ROOM,
-				status: "active",
-				version: 3,
-				intake_policy: {},
-				prioritization_policy: {},
-				budget_policy: {},
+				attention_cadence: "weekly",
+				escalation_threshold: {},
+				escalation_target: { kind: "cofounder", id: null },
 				effort_policy: {},
+				budget_policy: {},
 				concurrency_policy: {},
-				execution_policy: {},
-				project_creation_policy: {},
-				escalation_policy: {},
 				routine_ids: [],
 				listener_ids: [],
 				external_operation_grants: [],
 				resources: [],
 				active_projects: [],
-				source_path: "organization/departments/product.json",
+				status: "active",
+				version: 3,
+				source_path: "organization/responsibilities/product.json",
 				source_path_version: PATH_VERSION,
 				source_snapshot_id: SNAPSHOT,
 				source_file_sha256: HASH,
-				staff: [
-					{ staff_agent_id: LEAD, assignment_kind: "primary", role: "Lead", status: "active" },
+				measures: [
 					{
-						staff_agent_id: SPECIALIST,
-						assignment_kind: "supporting",
-						role: "Research",
+						measure_id: MEASURE,
+						key: "retention",
+						label: "Retention",
+						definition: "Customers still active after 90 days.",
+						direction: "higher_is_better",
+						target: { percent: 80 },
+						guardrails: [],
+						cadence: "weekly",
 						status: "active",
+						sources: [
+							{
+								path: "product/metrics.json",
+								path_match: "exact",
+								source_path_version: PATH_VERSION,
+								source_snapshot_id: SNAPSHOT,
+								source_file_sha256: HASH,
+							},
+							{
+								path: "product",
+								path_match: "subtree",
+								source_path_version: PATH_VERSION,
+								source_snapshot_id: SNAPSHOT,
+								source_file_sha256: null,
+							},
+						],
 					},
 				],
-				responsibilities: [],
-				measures: [],
 			},
 		],
 		projects: [
@@ -90,8 +104,8 @@ function rawOrganization(): Record<string, unknown> {
 				name: "Launch",
 				objective: "Launch the company.",
 				definition_of_done: "The product is live.",
-				scope_kind: "department",
-				sponsoring_department_id: DEPARTMENT,
+				scope_kind: "responsibility",
+				sponsoring_responsibility_id: RESPONSIBILITY,
 				lead_staff_agent_id: LEAD,
 				room_id: PROJECT_ROOM,
 				status: "active",
@@ -148,14 +162,19 @@ describe("canonical company organization projection", () => {
 		);
 
 		expect(replacement).toEqual(hierarchy);
-		expect(hierarchy.primary.map((node) => node.kind)).toEqual(["cofounder", "department"]);
-		expect(hierarchy.primary[1]?.children.map((node) => node.kind)).toEqual(["project", "room", "agent"]);
+		expect(hierarchy.primary.map((node) => node.kind)).toEqual(["cofounder", "responsibility"]);
+		expect(hierarchy.primary[1]?.children.map((node) => node.kind)).toEqual(["project", "agent"]);
+		expect(hierarchy.primary[1]?.children[1]).toMatchObject({ kind: "agent", canonicalId: LEAD, role: "Accountable" });
 		expect(hierarchy.primary[1]?.children[0]?.children.map((node) => node.kind)).toEqual(["room", "agent"]);
 		expect(hierarchy.primary[1]?.children[0]?.children[1]).toMatchObject({
 			kind: "agent",
 			status: "active",
 			role: "Research",
 		});
+		expect(organization.responsibilities[0]?.measures[0]?.sources.map((source) => source.pathMatch)).toEqual([
+			"exact",
+			"subtree",
+		]);
 		expect(hierarchy.inactive).toMatchObject([{ kind: "agent", canonicalId: ARCHIVED, status: "archived" }]);
 	});
 
@@ -164,11 +183,15 @@ describe("canonical company organization projection", () => {
 		(unverified.formation as Record<string, unknown>).projection_status = "pending";
 		expect(() => parseHostedCompanyOrganization(unverified)).toThrow("unverified company organization");
 
-		const outsideDepartment = rawOrganization();
+		const outsideResponsibility = rawOrganization();
 		(
-			(outsideDepartment.projects as Record<string, unknown>[])[0] as Record<string, unknown>
-		).sponsoring_department_id = SESSION;
-		expect(() => parseHostedCompanyOrganization(outsideDepartment)).toThrow("outside its department");
+			(outsideResponsibility.projects as Record<string, unknown>[])[0] as Record<string, unknown>
+		).sponsoring_responsibility_id = SESSION;
+		expect(() => parseHostedCompanyOrganization(outsideResponsibility)).toThrow("outside its responsibility");
+
+		const ceremonial = rawOrganization();
+		((ceremonial.responsibilities as Record<string, unknown>[])[0] as Record<string, unknown>).measures = [];
+		expect(() => parseHostedCompanyOrganization(ceremonial)).toThrow("invalid company responsibility");
 
 		const duplicate = rawOrganization();
 		duplicate.projects = [
@@ -178,9 +201,10 @@ describe("canonical company organization projection", () => {
 		expect(() => parseHostedCompanyOrganization(duplicate)).toThrow("duplicate company projects");
 
 		const missingProvenance = rawOrganization();
-		((missingProvenance.departments as Record<string, unknown>[])[0] as Record<string, unknown>).source_file_sha256 =
-			"not-a-hash";
-		expect(() => parseHostedCompanyOrganization(missingProvenance)).toThrow("invalid department source hash");
+		(
+			(missingProvenance.responsibilities as Record<string, unknown>[])[0] as Record<string, unknown>
+		).source_file_sha256 = "not-a-hash";
+		expect(() => parseHostedCompanyOrganization(missingProvenance)).toThrow("invalid responsibility source hash");
 
 		const organization = parseHostedCompanyOrganization(rawOrganization());
 		expect(() => buildCompanyOrganizationHierarchy(organization, [staff(COFOUNDER, "Co-Founder")])).toThrow(
@@ -190,7 +214,7 @@ describe("canonical company organization projection", () => {
 
 	it("keeps active staff in the primary hierarchy when their former organization is inactive", () => {
 		const source = rawOrganization();
-		((source.departments as Record<string, unknown>[])[0] as Record<string, unknown>).status = "retired";
+		((source.responsibilities as Record<string, unknown>[])[0] as Record<string, unknown>).status = "retired";
 		((source.projects as Record<string, unknown>[])[0] as Record<string, unknown>).status = "completed";
 		const hierarchy = buildCompanyOrganizationHierarchy(parseHostedCompanyOrganization(source), [
 			staff(COFOUNDER, "Co-Founder"),
@@ -203,6 +227,6 @@ describe("canonical company organization projection", () => {
 			["agent", LEAD],
 			["agent", SPECIALIST],
 		]);
-		expect(hierarchy.inactive.map((node) => node.kind)).toEqual(["department", "project"]);
+		expect(hierarchy.inactive.map((node) => node.kind)).toEqual(["responsibility", "project"]);
 	});
 });

@@ -18,16 +18,16 @@ alter table public.qorpera_company_formations
 	add constraint qorpera_company_formations_source_path
 		check (source_path is null or public.qorpera_company_path_key(source_path) = 'organization/formation.json');
 
-alter table public.qorpera_company_departments
+alter table public.qorpera_company_responsibilities
 	add column source_path_key_sha256 bytea generated always as (
 		extensions.digest(public.qorpera_company_path_key(source_path),'sha256')
 	) stored,
-	add constraint qorpera_company_departments_source_entry foreign key (
+	add constraint qorpera_company_responsibilities_source_entry foreign key (
 		environment_id,source_path_key_sha256,source_path_version
 	) references public.qorpera_company_path_entries(environment_id,path_key_sha256,version)
 		deferrable initially deferred,
-	add constraint qorpera_company_departments_source_path check (
-		public.qorpera_company_path_key(source_path) = 'organization/departments/' || id::text || '.json'
+	add constraint qorpera_company_responsibilities_source_path check (
+		public.qorpera_company_path_key(source_path) = 'organization/responsibilities/' || id::text || '.json'
 	);
 
 alter table public.qorpera_company_projects
@@ -47,8 +47,8 @@ returns text language plpgsql immutable set search_path = '' as $$
 declare v_path text := public.qorpera_company_path_key(p_path);
 begin
 	if v_path = 'organization/formation.json' then return 'formation'; end if;
-	if v_path ~ '^organization/departments/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$' then
-		return 'department'; end if;
+	if v_path ~ '^organization/responsibilities/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$' then
+		return 'responsibility'; end if;
 	if v_path ~ '^organization/projects/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$' then
 		return 'project'; end if;
 	return null;
@@ -59,15 +59,15 @@ alter table public.qorpera_company_path_resources
 	drop constraint qorpera_company_path_resources_scope_check,
 	drop constraint qorpera_company_path_resources_check,
 	add constraint qorpera_company_path_resources_scope_check
-		check (scope in ('company_shared','member_private','department_scoped','project_scoped')),
+		check (scope in ('company_shared','member_private','responsibility_scoped','project_scoped')),
 	add constraint qorpera_company_path_resources_owner_check check (
 		(scope = 'member_private') = (owner_user_id is not null)
 	);
 
-create table public.qorpera_department_path_resources (
+create table public.qorpera_responsibility_path_resources (
 	resource_id uuid primary key references public.qorpera_company_path_resources(id) on delete cascade,
 	profile_id uuid not null references public.qorpera_profiles(id) on delete cascade,
-	department_id uuid not null,
+	responsibility_id uuid not null,
 	member_permissions text[] not null check (
 		member_permissions in (array[]::text[],array['read']::text[],array['read','write']::text[])
 	),
@@ -77,8 +77,8 @@ create table public.qorpera_department_path_resources (
 	source_path_version uuid not null,
 	created_by_user_id uuid not null references auth.users(id) on delete restrict,
 	created_at timestamptz not null default clock_timestamp(),
-	foreign key (profile_id,department_id)
-		references public.qorpera_company_departments(profile_id,id) on delete cascade
+	foreign key (profile_id,responsibility_id)
+		references public.qorpera_company_responsibilities(profile_id,id) on delete cascade
 );
 
 create table public.qorpera_project_path_resources (
@@ -98,26 +98,45 @@ create table public.qorpera_project_path_resources (
 		references public.qorpera_company_projects(profile_id,id) on delete cascade
 );
 
-create table public.qorpera_department_external_operation_grants (
+create table public.qorpera_responsibility_external_operation_grants (
 	id uuid primary key,
 	profile_id uuid not null references public.qorpera_profiles(id) on delete cascade,
-	department_id uuid not null,
+	responsibility_id uuid not null,
 	connector_key text not null check (connector_key ~ '^[a-z][a-z0-9._-]{0,127}$'),
 	operation_key text not null check (operation_key ~ '^[a-z][a-z0-9._-]{0,127}$'),
 	status text not null check (status in ('proposed','active','paused','revoked')),
 	source_path_version uuid not null,
-	foreign key (profile_id,department_id)
-		references public.qorpera_company_departments(profile_id,id) on delete cascade,
-	unique (department_id,connector_key,operation_key)
+	foreign key (profile_id,responsibility_id)
+		references public.qorpera_company_responsibilities(profile_id,id) on delete cascade,
+	unique (responsibility_id,connector_key,operation_key)
 );
 
-alter table public.qorpera_department_path_resources enable row level security;
-alter table public.qorpera_project_path_resources enable row level security;
-alter table public.qorpera_department_external_operation_grants enable row level security;
-revoke all on public.qorpera_department_path_resources,public.qorpera_project_path_resources,
-	public.qorpera_department_external_operation_grants from public,anon,authenticated,service_role;
+-- An agent document may name responsibilities it is granted to work within.
+-- The canonical responsibility object stays the accountability authority:
+-- a grant is standing-scope delegation recorded by a founder or by the
+-- accountable agent, never a second owner. The agent adapter writes these
+-- rows from exact agent-document versions.
+create table public.qorpera_agent_responsibility_grants (
+	profile_id uuid not null references public.qorpera_profiles(id) on delete cascade,
+	staff_agent_id uuid not null,
+	responsibility_id uuid not null,
+	source_path_version uuid not null,
+	primary key (profile_id,staff_agent_id,responsibility_id),
+	foreign key (profile_id,staff_agent_id)
+		references public.qorpera_profile_staff(profile_id,staff_agent_id) on delete cascade,
+	foreign key (profile_id,responsibility_id)
+		references public.qorpera_company_responsibilities(profile_id,id) on delete cascade
+);
 
-create or replace function public.qorpera_department_resources_json(p_department_id uuid)
+alter table public.qorpera_responsibility_path_resources enable row level security;
+alter table public.qorpera_project_path_resources enable row level security;
+alter table public.qorpera_responsibility_external_operation_grants enable row level security;
+alter table public.qorpera_agent_responsibility_grants enable row level security;
+revoke all on public.qorpera_responsibility_path_resources,public.qorpera_project_path_resources,
+	public.qorpera_responsibility_external_operation_grants,public.qorpera_agent_responsibility_grants
+	from public,anon,authenticated,service_role;
+
+create or replace function public.qorpera_responsibility_resources_json(p_responsibility_id uuid)
 returns jsonb language sql stable security definer set search_path = '' as $$
 	select coalesce(jsonb_agg(jsonb_build_object(
 		'resource_id',resource.id,'path',resource.path,'path_match',resource.path_match,
@@ -126,9 +145,9 @@ returns jsonb language sql stable security definer set search_path = '' as $$
 		'staff_permissions',to_jsonb(mapping.staff_permissions),
 		'source_path_version',mapping.source_path_version,'revoked_at',resource.revoked_at
 	) order by resource.path),'[]'::jsonb)
-	from public.qorpera_department_path_resources mapping
+	from public.qorpera_responsibility_path_resources mapping
 	join public.qorpera_company_path_resources resource on resource.id = mapping.resource_id
-	where mapping.department_id = p_department_id
+	where mapping.responsibility_id = p_responsibility_id
 $$;
 
 create or replace function public.qorpera_project_resources_json(p_project_id uuid)
@@ -168,7 +187,7 @@ declare v_profile_id uuid := (p_actor ->> 'companyId')::uuid;
 	v_resource public.qorpera_company_path_resources%rowtype; v_id uuid; v_ids uuid[] := '{}'::uuid[];
 	v_member_permissions text[]; v_staff_permissions text[];
 begin
-	if p_owner_kind not in ('department','project') or jsonb_typeof(p_resources) <> 'array'
+	if p_owner_kind not in ('responsibility','project') or jsonb_typeof(p_resources) <> 'array'
 		or jsonb_array_length(p_resources) > 256 then
 		raise exception 'Organization resource projection is invalid' using errcode = '22023'; end if;
 	v_scope := p_owner_kind || '_scoped';
@@ -200,14 +219,14 @@ begin
 			extensions.gen_random_uuid(),v_user_id)
 		on conflict (id) do update set path = excluded.path,path_match = excluded.path_match,
 			policy = excluded.policy,version = extensions.gen_random_uuid(),revoked_at = null;
-		if p_owner_kind = 'department' then
-			insert into public.qorpera_department_path_resources(resource_id,profile_id,department_id,
+		if p_owner_kind = 'responsibility' then
+			insert into public.qorpera_responsibility_path_resources(resource_id,profile_id,responsibility_id,
 				member_permissions,staff_permissions,source_path_version,created_by_user_id)
 			values (v_id,v_profile_id,p_owner_id,v_member_permissions,v_staff_permissions,p_source_path_version,v_user_id)
 			on conflict (resource_id) do update set member_permissions = excluded.member_permissions,
 				staff_permissions = excluded.staff_permissions,source_path_version = excluded.source_path_version
-			where qorpera_department_path_resources.profile_id = excluded.profile_id
-				and qorpera_department_path_resources.department_id = excluded.department_id;
+			where qorpera_responsibility_path_resources.profile_id = excluded.profile_id
+				and qorpera_responsibility_path_resources.responsibility_id = excluded.responsibility_id;
 		else
 			insert into public.qorpera_project_path_resources(resource_id,profile_id,project_id,
 				member_permissions,staff_permissions,source_path_version,created_by_user_id)
@@ -222,14 +241,14 @@ begin
 	end loop;
 	if cardinality(v_ids) <> (select count(distinct id) from unnest(v_ids) id) then
 		raise exception 'Organization resource identity is duplicated' using errcode = '22023'; end if;
-	if p_owner_kind = 'department' then
+	if p_owner_kind = 'responsibility' then
 		update public.qorpera_company_path_resources resource set revoked_at = coalesce(resource.revoked_at,clock_timestamp()),
 			version = extensions.gen_random_uuid()
-		from public.qorpera_department_path_resources mapping where mapping.resource_id = resource.id
-			and mapping.profile_id = v_profile_id and mapping.department_id = p_owner_id
+		from public.qorpera_responsibility_path_resources mapping where mapping.resource_id = resource.id
+			and mapping.profile_id = v_profile_id and mapping.responsibility_id = p_owner_id
 			and not (mapping.resource_id = any(v_ids));
-		delete from public.qorpera_department_path_resources where profile_id = v_profile_id
-			and department_id = p_owner_id and not (resource_id = any(v_ids));
+		delete from public.qorpera_responsibility_path_resources where profile_id = v_profile_id
+			and responsibility_id = p_owner_id and not (resource_id = any(v_ids));
 	else
 		update public.qorpera_company_path_resources resource set revoked_at = coalesce(resource.revoked_at,clock_timestamp()),
 			version = extensions.gen_random_uuid()
@@ -254,8 +273,9 @@ declare
 	v_environment_id uuid := (p_actor ->> 'environmentId')::uuid;
 	v_user_id uuid := (p_actor ->> 'userId')::uuid; v_item jsonb; v_id uuid;
 	v_role public.qorpera_profile_role;
-	v_department public.qorpera_company_departments%rowtype;
+	v_responsibility public.qorpera_company_responsibilities%rowtype;
 	v_project public.qorpera_company_projects%rowtype;
+	v_source jsonb; v_target jsonb; v_entry public.qorpera_company_path_entries%rowtype;
 begin
 	if v_kind is null then
 		if p_document_text is not null then
@@ -326,65 +346,73 @@ begin
 		return;
 	end if;
 
-	if v_kind = 'department' then
-		if not (v_document ?& array['schema','departmentId','slug','name','charter','nonResponsibilities',
-			'accountableUserId','leadStaffAgentId','defaultRoomId','status','intakePolicy','prioritizationPolicy',
-			'budgetPolicy','effortPolicy','concurrencyPolicy','executionPolicy','projectCreationPolicy',
-			'escalationPolicy','routineIds','listenerIds','externalOperationGrants','resources','version',
-			'staff','responsibilities','measures'])
-			or v_document - array['schema','departmentId','slug','name','charter','nonResponsibilities',
-				'accountableUserId','leadStaffAgentId','defaultRoomId','status','intakePolicy','prioritizationPolicy',
-				'budgetPolicy','effortPolicy','concurrencyPolicy','executionPolicy','projectCreationPolicy',
-				'escalationPolicy','routineIds','listenerIds','externalOperationGrants','resources','version',
-				'staff','responsibilities','measures'] <> '{}'::jsonb
-			or v_document ->> 'schema' <> 'qorpera.department/v1'
-			or jsonb_typeof(v_document -> 'nonResponsibilities') <> 'array'
-			or jsonb_typeof(v_document -> 'staff') <> 'array'
-			or jsonb_typeof(v_document -> 'responsibilities') <> 'array'
-			or jsonb_typeof(v_document -> 'measures') <> 'array'
-			or jsonb_typeof(v_document -> 'intakePolicy') <> 'object'
-			or jsonb_typeof(v_document -> 'prioritizationPolicy') <> 'object'
-			or jsonb_typeof(v_document -> 'budgetPolicy') <> 'object'
+	if v_kind = 'responsibility' then
+		if not (v_document ?& array['schema','responsibilityId','slug','name','outcome','accountableStaffAgentId',
+			'accountableUserId','attentionCadence','escalationThreshold','escalationTarget','effortPolicy','budgetPolicy',
+			'concurrencyPolicy','routineIds','listenerIds','externalOperationGrants','resources','status','version','measures'])
+			or v_document - array['schema','responsibilityId','slug','name','outcome','accountableStaffAgentId',
+				'accountableUserId','attentionCadence','escalationThreshold','escalationTarget','effortPolicy','budgetPolicy',
+				'concurrencyPolicy','routineIds','listenerIds','externalOperationGrants','resources','status','version','measures'] <> '{}'::jsonb
+			or v_document ->> 'schema' <> 'qorpera.responsibility/v1'
+			or jsonb_typeof(v_document -> 'escalationThreshold') <> 'object'
+			or jsonb_typeof(v_document -> 'escalationTarget') <> 'object'
 			or jsonb_typeof(v_document -> 'effortPolicy') <> 'object'
+			or jsonb_typeof(v_document -> 'budgetPolicy') <> 'object'
 			or jsonb_typeof(v_document -> 'concurrencyPolicy') <> 'object'
-			or jsonb_typeof(v_document -> 'executionPolicy') <> 'object'
-			or jsonb_typeof(v_document -> 'projectCreationPolicy') <> 'object'
-			or jsonb_typeof(v_document -> 'escalationPolicy') <> 'object'
 			or jsonb_typeof(v_document -> 'routineIds') <> 'array'
 			or jsonb_typeof(v_document -> 'listenerIds') <> 'array'
 			or jsonb_typeof(v_document -> 'externalOperationGrants') <> 'array'
 			or jsonb_typeof(v_document -> 'resources') <> 'array'
+			or jsonb_typeof(v_document -> 'measures') <> 'array'
 			or (v_document ->> 'version') !~ '^[1-9][0-9]*$'
-			or jsonb_array_length(v_document -> 'nonResponsibilities') > 64
-			or jsonb_array_length(v_document -> 'staff') > 256
-			or jsonb_array_length(v_document -> 'responsibilities') > 256
-			or jsonb_array_length(v_document -> 'measures') > 256
+			or (v_document ->> 'accountableStaffAgentId') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+			or (v_document -> 'accountableUserId' <> 'null'::jsonb and (v_document ->> 'accountableUserId') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
+			or jsonb_array_length(v_document -> 'measures') not between 1 and 256
 			or jsonb_array_length(v_document -> 'routineIds') > 128
 			or jsonb_array_length(v_document -> 'listenerIds') > 128
 			or jsonb_array_length(v_document -> 'externalOperationGrants') > 256
-			or exists (select 1 from jsonb_array_elements(v_document -> 'nonResponsibilities') value
-				where jsonb_typeof(value) <> 'string' or char_length(value #>> '{}') not between 1 and 1024)
 			or exists (select 1 from jsonb_array_elements((v_document -> 'routineIds') || (v_document -> 'listenerIds')) value
-				where jsonb_typeof(value) <> 'string' or value #>> '{}' !~
-					'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$') then
-			raise exception 'Department document is invalid' using errcode = '22023'; end if;
-		v_id := (v_document ->> 'departmentId')::uuid;
-		if public.qorpera_company_path_key(p_plan ->> 'path') <> 'organization/departments/' || v_id::text || '.json' then
-			raise exception 'Department path does not match its identity' using errcode = '22023'; end if;
-		select * into v_department from public.qorpera_company_departments where id = v_id for update;
-		if found and (v_department.profile_id <> v_profile_id or v_department.environment_id <> v_environment_id) then
-			raise exception 'Department identity belongs to another company' using errcode = '42501'; end if;
-		if (found and (v_document ->> 'version')::bigint <> v_department.version + 1)
+				where jsonb_typeof(value) <> 'string' or value #>> '{}' !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$') then
+			raise exception 'Responsibility document is invalid' using errcode = '22023'; end if;
+		v_id := (v_document ->> 'responsibilityId')::uuid;
+		if public.qorpera_company_path_key(p_plan ->> 'path') <> 'organization/responsibilities/' || v_id::text || '.json' then
+			raise exception 'Responsibility path does not match its identity' using errcode = '22023'; end if;
+		select * into v_responsibility from public.qorpera_company_responsibilities where id = v_id for update;
+		if found and (v_responsibility.profile_id <> v_profile_id or v_responsibility.environment_id <> v_environment_id) then
+			raise exception 'Responsibility identity belongs to another company' using errcode = '42501'; end if;
+		if (found and (v_document ->> 'version')::bigint <> v_responsibility.version + 1)
 			or (not found and (v_document ->> 'version')::bigint <> 1) then
-			raise exception 'Department version is not monotonic' using errcode = '22023'; end if;
-		if found and v_document ->> 'status' <> v_department.status and not (case v_department.status
-			when 'proposed' then v_document ->> 'status' in ('forming','retired')
-			when 'forming' then v_document ->> 'status' in ('active','degraded','paused','retired')
+			raise exception 'Responsibility version is not monotonic' using errcode = '22023'; end if;
+		if found and v_document ->> 'status' <> v_responsibility.status and not (case v_responsibility.status
+			when 'proposed' then v_document ->> 'status' in ('active','retired')
 			when 'active' then v_document ->> 'status' in ('degraded','paused','retired')
 			when 'degraded' then v_document ->> 'status' in ('active','paused','retired')
-			when 'paused' then v_document ->> 'status' in ('forming','active','degraded','retired')
+			when 'paused' then v_document ->> 'status' in ('active','degraded','retired')
 			else false end) then
-			raise exception 'Department lifecycle transition is invalid' using errcode = '22023'; end if;
+			raise exception 'Responsibility lifecycle transition is invalid' using errcode = '22023'; end if;
+		-- Exactly one accountable agent, currently employed. An optional
+		-- accountable human member must be a writable current member.
+		if not exists (select 1 from public.qorpera_profile_staff staff
+			where staff.profile_id = v_profile_id and staff.staff_agent_id = (v_document ->> 'accountableStaffAgentId')::uuid
+				and staff.employment_status = 'active' and staff.deleted_at is null) then
+			raise exception 'Responsibility accountable agent is unavailable' using errcode = '42501'; end if;
+		if v_document -> 'accountableUserId' <> 'null'::jsonb and not exists (select 1 from public.qorpera_profile_members member
+			where member.profile_id = v_profile_id and member.user_id = (v_document ->> 'accountableUserId')::uuid
+				and member.role in ('owner','admin','contributor')) then
+			raise exception 'Responsibility accountable member is unavailable' using errcode = '42501'; end if;
+		v_target := v_document -> 'escalationTarget';
+		if not (v_target ?& array['kind','id']) or v_target - array['kind','id'] <> '{}'::jsonb
+			or v_target ->> 'kind' not in ('accountable_member','cofounder','member','staff_agent')
+			or (v_target ->> 'kind' in ('accountable_member','cofounder') and v_target -> 'id' <> 'null'::jsonb)
+			or (v_target ->> 'kind' = 'accountable_member' and v_document -> 'accountableUserId' = 'null'::jsonb)
+			or (v_target ->> 'kind' in ('member','staff_agent') and (v_target ->> 'id') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
+			or (v_target ->> 'kind' = 'member' and not exists (select 1 from public.qorpera_profile_members member
+				where member.profile_id = v_profile_id and member.user_id = (v_target ->> 'id')::uuid
+					and member.role in ('owner','admin','contributor')))
+			or (v_target ->> 'kind' = 'staff_agent' and not exists (select 1 from public.qorpera_profile_staff staff
+				where staff.profile_id = v_profile_id and staff.staff_agent_id = (v_target ->> 'id')::uuid
+					and staff.employment_status = 'active' and staff.deleted_at is null)) then
+			raise exception 'Responsibility escalation target is invalid' using errcode = '22023'; end if;
 		if exists (select 1 from jsonb_array_elements_text(v_document -> 'routineIds') routine(id)
 			left join public.qorpera_cloud_routines stored on stored.id = routine.id::uuid
 			where stored.id is null or stored.profile_id <> v_profile_id)
@@ -393,116 +421,89 @@ begin
 			where stored.id is null or stored.profile_id <> v_profile_id)
 			or exists (select 1 from jsonb_array_elements_text(v_document -> 'routineIds') routine(id)
 				join jsonb_array_elements_text(v_document -> 'listenerIds') listener(id) on listener.id = routine.id) then
-			raise exception 'Department routine binding is invalid' using errcode = '22023'; end if;
-		insert into public.qorpera_company_departments(id,profile_id,environment_id,slug,name,charter,
-			non_responsibilities,accountable_user_id,lead_staff_agent_id,default_room_id,status,
-			intake_policy,prioritization_policy,budget_policy,effort_policy,concurrency_policy,execution_policy,
-			project_creation_policy,escalation_policy,routine_ids,listener_ids,external_operation_grants,
-			version,source_path,source_path_version,
-			source_snapshot_id,source_file_sha256,created_by_user_id)
-		values (v_id,v_profile_id,v_environment_id,v_document ->> 'slug',v_document ->> 'name',v_document ->> 'charter',
-			array(select value #>> '{}' from jsonb_array_elements(v_document -> 'nonResponsibilities') value),
-			(v_document ->> 'accountableUserId')::uuid,nullif(v_document ->> 'leadStaffAgentId','')::uuid,
-			nullif(v_document ->> 'defaultRoomId','')::uuid,v_document ->> 'status',v_document -> 'intakePolicy',
-			v_document -> 'prioritizationPolicy',v_document -> 'budgetPolicy',v_document -> 'effortPolicy',
-			v_document -> 'concurrencyPolicy',v_document -> 'executionPolicy',v_document -> 'projectCreationPolicy',
-			v_document -> 'escalationPolicy',array(select value::uuid from jsonb_array_elements_text(v_document -> 'routineIds') value),
+			raise exception 'Responsibility routine binding is invalid' using errcode = '22023'; end if;
+		insert into public.qorpera_company_responsibilities(id,profile_id,environment_id,slug,name,outcome,
+			accountable_staff_agent_id,accountable_user_id,attention_cadence,escalation_threshold,escalation_target,
+			effort_policy,budget_policy,concurrency_policy,routine_ids,listener_ids,external_operation_grants,status,
+			version,source_path,source_path_version,source_snapshot_id,source_file_sha256,created_by_user_id)
+		values (v_id,v_profile_id,v_environment_id,v_document ->> 'slug',v_document ->> 'name',v_document ->> 'outcome',
+			(v_document ->> 'accountableStaffAgentId')::uuid,nullif(v_document ->> 'accountableUserId','')::uuid,
+			v_document ->> 'attentionCadence',v_document -> 'escalationThreshold',v_document -> 'escalationTarget',
+			v_document -> 'effortPolicy',v_document -> 'budgetPolicy',v_document -> 'concurrencyPolicy',
+			array(select value::uuid from jsonb_array_elements_text(v_document -> 'routineIds') value),
 			array(select value::uuid from jsonb_array_elements_text(v_document -> 'listenerIds') value),
-			v_document -> 'externalOperationGrants',(v_document ->> 'version')::bigint,
+			v_document -> 'externalOperationGrants',v_document ->> 'status',(v_document ->> 'version')::bigint,
 			p_plan ->> 'path',p_path_version,p_snapshot_id,p_plan #>> '{entry,file,fileSha256}',v_user_id)
-		on conflict (id) do update set slug = excluded.slug,name = excluded.name,charter = excluded.charter,
-			non_responsibilities = excluded.non_responsibilities,accountable_user_id = excluded.accountable_user_id,
-			lead_staff_agent_id = excluded.lead_staff_agent_id,default_room_id = excluded.default_room_id,
-			status = excluded.status,intake_policy = excluded.intake_policy,
-			prioritization_policy = excluded.prioritization_policy,budget_policy = excluded.budget_policy,
-			effort_policy = excluded.effort_policy,concurrency_policy = excluded.concurrency_policy,
-			execution_policy = excluded.execution_policy,project_creation_policy = excluded.project_creation_policy,
-			escalation_policy = excluded.escalation_policy,routine_ids = excluded.routine_ids,
+		on conflict (id) do update set slug = excluded.slug,name = excluded.name,outcome = excluded.outcome,
+			accountable_staff_agent_id = excluded.accountable_staff_agent_id,
+			accountable_user_id = excluded.accountable_user_id,attention_cadence = excluded.attention_cadence,
+			escalation_threshold = excluded.escalation_threshold,escalation_target = excluded.escalation_target,
+			effort_policy = excluded.effort_policy,budget_policy = excluded.budget_policy,
+			concurrency_policy = excluded.concurrency_policy,routine_ids = excluded.routine_ids,
 			listener_ids = excluded.listener_ids,external_operation_grants = excluded.external_operation_grants,
-			version = excluded.version,
+			status = excluded.status,version = excluded.version,
 			source_path = excluded.source_path,source_path_version = excluded.source_path_version,
 			source_snapshot_id = excluded.source_snapshot_id,source_file_sha256 = excluded.source_file_sha256,
 			updated_at = clock_timestamp();
-		delete from public.qorpera_department_staff_memberships where department_id = v_id;
-		delete from public.qorpera_department_responsibilities where department_id = v_id;
-		delete from public.qorpera_department_measures where department_id = v_id;
-		for v_item in select value from jsonb_array_elements(v_document -> 'staff') loop
-			if v_item - array['staffAgentId','assignmentKind','role','status'] <> '{}'::jsonb
-				or not (v_item ?& array['staffAgentId','assignmentKind','role','status']) then
-				raise exception 'Department staff assignment is invalid' using errcode = '22023'; end if;
-			insert into public.qorpera_department_staff_memberships(profile_id,department_id,staff_agent_id,
-				assignment_kind,role,status,created_by_user_id,ended_at)
-			values (v_profile_id,v_id,(v_item ->> 'staffAgentId')::uuid,v_item ->> 'assignmentKind',v_item ->> 'role',
-				v_item ->> 'status',v_user_id,case when v_item ->> 'status' = 'ended' then clock_timestamp() end);
-		end loop;
-		for v_item in select value from jsonb_array_elements(v_document -> 'responsibilities') loop
-			if v_item - array['responsibilityId','key','label','boundary','status'] <> '{}'::jsonb
-				or not (v_item ?& array['responsibilityId','key','label','boundary','status']) then
-				raise exception 'Department responsibility is invalid' using errcode = '22023'; end if;
-			insert into public.qorpera_department_responsibilities(id,profile_id,department_id,responsibility_key,label,boundary,status)
-			values ((v_item ->> 'responsibilityId')::uuid,v_profile_id,v_id,v_item ->> 'key',v_item ->> 'label',
-				v_item ->> 'boundary',v_item ->> 'status');
-		end loop;
+		-- Measures and their live sources. Every measure names at least one
+		-- current Company File path; the observed entry version and hash are
+		-- recorded as provenance rather than trusted from the document.
+		delete from public.qorpera_responsibility_measures where responsibility_id = v_id;
 		for v_item in select value from jsonb_array_elements(v_document -> 'measures') loop
-			if v_item - array['measureId','key','label','definition','sourcePath','sourcePathVersion',
-				'sourceSnapshotId','sourceFileSha256','direction','target','guardrails','cadence',
-				'accountableStaffAgentId','status'] <> '{}'::jsonb
-				or not (v_item ?& array['measureId','key','label','definition','sourcePath','sourcePathVersion',
-					'sourceSnapshotId','sourceFileSha256','direction','target','guardrails','cadence',
-					'accountableStaffAgentId','status'])
+			if not (v_item ?& array['measureId','key','label','definition','direction','target','guardrails',
+				'cadence','status','sources'])
+				or v_item - array['measureId','key','label','definition','direction','target','guardrails',
+					'cadence','status','sources'] <> '{}'::jsonb
 				or jsonb_typeof(v_item -> 'guardrails') <> 'array'
-				or not exists (select 1 from public.qorpera_company_path_entries source
-					where source.environment_id = v_environment_id
-						and source.path_key_sha256 = extensions.digest(public.qorpera_company_path_key(
-							v_item ->> 'sourcePath'),'sha256')
-						and source.version = (v_item ->> 'sourcePathVersion')::uuid
-						and source.entry ->> 'kind' = 'file'
-						and source.entry #>> '{file,fileSha256}' = v_item ->> 'sourceFileSha256')
-				or not exists (select 1 from public.qorpera_company_snapshots candidate
-					where candidate.id = p_snapshot_id and candidate.environment_id = v_environment_id
-						and candidate.parent_snapshot_id = (v_item ->> 'sourceSnapshotId')::uuid) then
-				raise exception 'Department measure is invalid' using errcode = '22023'; end if;
-			insert into public.qorpera_department_measures(id,profile_id,department_id,measure_key,label,definition,
-				source_path,source_path_version,source_snapshot_id,source_file_sha256,direction,target,guardrails,
-				cadence,accountable_staff_agent_id,status)
+				or jsonb_typeof(v_item -> 'sources') <> 'array'
+				or jsonb_array_length(v_item -> 'sources') not between 1 and 16 then
+				raise exception 'Responsibility measure is invalid' using errcode = '22023'; end if;
+			insert into public.qorpera_responsibility_measures(id,profile_id,responsibility_id,measure_key,label,definition,
+				direction,target,guardrails,cadence,status)
 			values ((v_item ->> 'measureId')::uuid,v_profile_id,v_id,v_item ->> 'key',v_item ->> 'label',
-				v_item ->> 'definition',v_item ->> 'sourcePath',(v_item ->> 'sourcePathVersion')::uuid,
-				(v_item ->> 'sourceSnapshotId')::uuid,v_item ->> 'sourceFileSha256',v_item ->> 'direction',v_item -> 'target',
-				v_item -> 'guardrails',v_item ->> 'cadence',(v_item ->> 'accountableStaffAgentId')::uuid,
-				v_item ->> 'status');
+				v_item ->> 'definition',v_item ->> 'direction',v_item -> 'target',v_item -> 'guardrails',
+				v_item ->> 'cadence',v_item ->> 'status');
+			for v_source in select value from jsonb_array_elements(v_item -> 'sources') loop
+				if not (v_source ?& array['path','pathMatch']) or v_source - array['path','pathMatch'] <> '{}'::jsonb
+					or v_source ->> 'pathMatch' not in ('exact','subtree')
+					or not public.qorpera_company_path_valid(v_source ->> 'path')
+					or starts_with(public.qorpera_company_path_key(v_source ->> 'path'),'members/') then
+					raise exception 'Responsibility measure source is invalid' using errcode = '22023'; end if;
+				select * into v_entry from public.qorpera_company_path_entries entry
+				where entry.environment_id = v_environment_id and entry.path_key_sha256 =
+					extensions.digest(public.qorpera_company_path_key(v_source ->> 'path'),'sha256');
+				if not found or v_entry.entry is null
+					or (v_source ->> 'pathMatch' = 'exact' and v_entry.entry ->> 'kind' <> 'file')
+					or (v_source ->> 'pathMatch' = 'subtree' and v_entry.entry ->> 'kind' <> 'directory') then
+					raise exception 'Responsibility measure source is unavailable' using errcode = '22023'; end if;
+				insert into public.qorpera_responsibility_measure_sources(measure_id,profile_id,environment_id,
+					source_path,path_match,source_path_version,source_snapshot_id,source_file_sha256)
+				values ((v_item ->> 'measureId')::uuid,v_profile_id,v_environment_id,v_source ->> 'path',
+					v_source ->> 'pathMatch',v_entry.version,p_snapshot_id,
+					case when v_source ->> 'pathMatch' = 'exact' then v_entry.entry #>> '{file,fileSha256}' end);
+			end loop;
 		end loop;
 		perform public.qorpera_project_scoped_path_resources(
-			p_actor,'department',v_id,v_document -> 'resources',p_path_version);
-		delete from public.qorpera_department_external_operation_grants where profile_id = v_profile_id
-			and department_id = v_id;
+			p_actor,'responsibility',v_id,v_document -> 'resources',p_path_version);
+		delete from public.qorpera_responsibility_external_operation_grants where profile_id = v_profile_id
+			and responsibility_id = v_id;
 		for v_item in select value from jsonb_array_elements(v_document -> 'externalOperationGrants') loop
 			if not (v_item ?& array['grantId','connectorKey','operationKey','status'])
 				or v_item - array['grantId','connectorKey','operationKey','status'] <> '{}'::jsonb then
-				raise exception 'Department external operation grant is invalid' using errcode = '22023'; end if;
-			insert into public.qorpera_department_external_operation_grants(id,profile_id,department_id,
+				raise exception 'Responsibility external operation grant is invalid' using errcode = '22023'; end if;
+			insert into public.qorpera_responsibility_external_operation_grants(id,profile_id,responsibility_id,
 				connector_key,operation_key,status,source_path_version)
 			values ((v_item ->> 'grantId')::uuid,v_profile_id,v_id,v_item ->> 'connectorKey',
 				v_item ->> 'operationKey',v_item ->> 'status',p_path_version);
 		end loop;
-		if (select lead_staff_agent_id from public.qorpera_company_departments where id = v_id) is not null
-			and not exists (select 1 from public.qorpera_department_staff_memberships membership
-				where membership.department_id = v_id and membership.staff_agent_id = (
-					select lead_staff_agent_id from public.qorpera_company_departments where id = v_id)
-					and membership.status = 'active') then
-			raise exception 'Department lead must be an active department member' using errcode = '22023'; end if;
-		if exists (select 1 from public.qorpera_department_measures measure
-			where measure.department_id = v_id and not exists (select 1 from public.qorpera_department_staff_memberships membership
-				where membership.department_id = v_id and membership.staff_agent_id = measure.accountable_staff_agent_id
-					and membership.status = 'active')) then
-			raise exception 'Measure owner must be an active department member' using errcode = '22023'; end if;
 		return;
 	end if;
 
 	if not (v_document ?& array['schema','projectId','key','name','objective','definitionOfDone','scopeKind',
-		'sponsoringDepartmentId','leadStaffAgentId','roomId','status','sourceResources','outputResources',
+		'sponsoringResponsibilityId','leadStaffAgentId','roomId','status','sourceResources','outputResources',
 		'dependencies','reasoningPolicy','workerPolicy','executionPolicy','outcome','version','staff'])
 		or v_document - array['schema','projectId','key','name','objective','definitionOfDone','scopeKind',
-			'sponsoringDepartmentId','leadStaffAgentId','roomId','status','sourceResources','outputResources',
+			'sponsoringResponsibilityId','leadStaffAgentId','roomId','status','sourceResources','outputResources',
 			'dependencies','reasoningPolicy','workerPolicy','executionPolicy','outcome','version','staff'] <> '{}'::jsonb
 		or v_document ->> 'schema' <> 'qorpera.company-project/v1'
 		or jsonb_typeof(v_document -> 'sourceResources') <> 'array'
@@ -537,12 +538,12 @@ begin
 		else false end) then
 		raise exception 'Project lifecycle transition is invalid' using errcode = '22023'; end if;
 	insert into public.qorpera_company_projects(id,profile_id,environment_id,project_key,name,objective,definition_of_done,
-		scope_kind,sponsoring_department_id,lead_staff_agent_id,room_id,status,authorized_source_paths,
+		scope_kind,sponsoring_responsibility_id,lead_staff_agent_id,room_id,status,authorized_source_paths,
 		authorized_output_paths,dependencies,reasoning_policy,worker_policy,execution_policy,outcome,version,
 		source_path,source_path_version,source_snapshot_id,
 		source_file_sha256,created_by_user_id)
 	values (v_id,v_profile_id,v_environment_id,v_document ->> 'key',v_document ->> 'name',v_document ->> 'objective',
-		v_document ->> 'definitionOfDone',v_document ->> 'scopeKind',nullif(v_document ->> 'sponsoringDepartmentId','')::uuid,
+		v_document ->> 'definitionOfDone',v_document ->> 'scopeKind',nullif(v_document ->> 'sponsoringResponsibilityId','')::uuid,
 		(v_document ->> 'leadStaffAgentId')::uuid,nullif(v_document ->> 'roomId','')::uuid,v_document ->> 'status',
 		array(select value ->> 'path' from jsonb_array_elements(v_document -> 'sourceResources') value),
 		array(select value ->> 'path' from jsonb_array_elements(v_document -> 'outputResources') value),
@@ -551,7 +552,7 @@ begin
 		p_plan ->> 'path',p_path_version,p_snapshot_id,p_plan #>> '{entry,file,fileSha256}',v_user_id)
 	on conflict (id) do update set project_key = excluded.project_key,name = excluded.name,objective = excluded.objective,
 		definition_of_done = excluded.definition_of_done,scope_kind = excluded.scope_kind,
-		sponsoring_department_id = excluded.sponsoring_department_id,lead_staff_agent_id = excluded.lead_staff_agent_id,
+		sponsoring_responsibility_id = excluded.sponsoring_responsibility_id,lead_staff_agent_id = excluded.lead_staff_agent_id,
 		room_id = excluded.room_id,status = excluded.status,authorized_source_paths = excluded.authorized_source_paths,
 		authorized_output_paths = excluded.authorized_output_paths,dependencies = excluded.dependencies,
 		reasoning_policy = excluded.reasoning_policy,worker_policy = excluded.worker_policy,
@@ -637,14 +638,14 @@ begin
 				where file.environment_id = new.environment_id)
 			and formation.source_file_sha256 = new.entry #>> '{file,fileSha256}') then
 		raise exception 'Company formation projection did not advance with the Company File' using errcode = '23514'; end if;
-	if v_kind = 'department' then
+	if v_kind = 'responsibility' then
 		v_id := substring(split_part(public.qorpera_company_path_key(new.path),'/',3) from 1 for 36)::uuid;
-		if not exists (select 1 from public.qorpera_company_departments department where department.id = v_id
-			and department.environment_id = new.environment_id and department.source_path_version = new.version
-			and department.source_snapshot_id = (select file.head_snapshot_id from public.qorpera_company_files file
+		if not exists (select 1 from public.qorpera_company_responsibilities responsibility where responsibility.id = v_id
+			and responsibility.environment_id = new.environment_id and responsibility.source_path_version = new.version
+			and responsibility.source_snapshot_id = (select file.head_snapshot_id from public.qorpera_company_files file
 				where file.environment_id = new.environment_id)
-			and department.source_file_sha256 = new.entry #>> '{file,fileSha256}') then
-			raise exception 'Department projection did not advance with the Company File' using errcode = '23514'; end if;
+			and responsibility.source_file_sha256 = new.entry #>> '{file,fileSha256}') then
+			raise exception 'Responsibility projection did not advance with the Company File' using errcode = '23514'; end if;
 	end if;
 	if v_kind = 'project' then
 		v_id := substring(split_part(public.qorpera_company_path_key(new.path),'/',3) from 1 for 36)::uuid;
@@ -707,32 +708,34 @@ create or replace function public.qorpera_company_path_principal_allowed(
 	p_kind text,p_id uuid,p_permission text
 )
 returns boolean language plpgsql volatile security definer set search_path = '' as $$
-declare v_role public.qorpera_profile_role; v_department uuid; v_project uuid; v_permissions text[];
+declare v_role public.qorpera_profile_role; v_responsibility uuid; v_project uuid; v_permissions text[];
 begin
 	if p_resource.id is null or p_resource.revoked_at is not null or p_permission not in ('read','write') then return false; end if;
-	if p_resource.scope = 'department_scoped' then
-		select mapping.department_id,case when p_kind = 'member' then mapping.member_permissions
-			else mapping.staff_permissions end into v_department,v_permissions
-		from public.qorpera_department_path_resources mapping
+	if p_resource.scope = 'responsibility_scoped' then
+		select mapping.responsibility_id,case when p_kind = 'member' then mapping.member_permissions
+			else mapping.staff_permissions end into v_responsibility,v_permissions
+		from public.qorpera_responsibility_path_resources mapping
 		where mapping.resource_id = p_resource.id and mapping.profile_id = p_profile_id;
-		if not exists (select 1 from public.qorpera_company_departments department
-			where department.profile_id = p_profile_id and department.id = v_department
-				and department.status not in ('paused','retired')) then return false; end if;
+		if not exists (select 1 from public.qorpera_company_responsibilities responsibility
+			where responsibility.profile_id = p_profile_id and responsibility.id = v_responsibility
+				and responsibility.status not in ('paused','retired')) then return false; end if;
 		if p_kind = 'member' then
 			select role into v_role from public.qorpera_profile_members
 			where profile_id = p_profile_id and user_id = p_id;
 			if v_role is null then return false; end if;
 			return v_role in ('owner','admin') or (p_permission = any(v_permissions) and exists (
-				select 1 from public.qorpera_company_departments department
-				where department.id = v_department and department.accountable_user_id = p_id));
+				select 1 from public.qorpera_company_responsibilities responsibility
+				where responsibility.id = v_responsibility and responsibility.accountable_user_id = p_id));
 		elsif p_kind = 'staff_agent' then
 			if not exists (select 1 from public.qorpera_profile_staff staff
-				join public.qorpera_department_staff_memberships membership on membership.profile_id = staff.profile_id
-					and membership.staff_agent_id = staff.staff_agent_id
 				where staff.profile_id = p_profile_id and staff.staff_agent_id = p_id
-					and staff.employment_status = 'active' and membership.department_id = v_department
-					and membership.status = 'active') then return false; end if;
-			return p_permission = any(v_permissions);
+					and staff.employment_status = 'active' and staff.deleted_at is null) then return false; end if;
+			return p_permission = any(v_permissions) and (
+				exists (select 1 from public.qorpera_company_responsibilities responsibility
+					where responsibility.id = v_responsibility and responsibility.accountable_staff_agent_id = p_id)
+				or exists (select 1 from public.qorpera_agent_responsibility_grants grant_row
+					where grant_row.profile_id = p_profile_id and grant_row.staff_agent_id = p_id
+						and grant_row.responsibility_id = v_responsibility));
 		else return false; end if;
 	end if;
 	if p_resource.scope = 'project_scoped' then
@@ -749,8 +752,9 @@ begin
 			if v_role is null then return false; end if;
 			return v_role in ('owner','admin') or (p_permission = any(v_permissions) and exists (
 				select 1 from public.qorpera_company_projects project
-				join public.qorpera_company_departments department on department.id = project.sponsoring_department_id
-				where project.id = v_project and department.accountable_user_id = p_id));
+				join public.qorpera_company_responsibilities responsibility
+					on responsibility.id = project.sponsoring_responsibility_id
+				where project.id = v_project and responsibility.accountable_user_id = p_id));
 		elsif p_kind = 'staff_agent' then
 			return p_permission = any(v_permissions) and exists (
 				select 1 from public.qorpera_profile_staff staff

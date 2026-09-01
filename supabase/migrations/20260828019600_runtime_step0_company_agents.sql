@@ -56,17 +56,8 @@ create table public.qorpera_agent_first_runs (
 alter table public.qorpera_agent_first_runs enable row level security;
 revoke all on public.qorpera_agent_first_runs from public,anon,authenticated,service_role;
 
-create table public.qorpera_agent_department_grants (
-	profile_id uuid not null references public.qorpera_profiles(id) on delete cascade,
-	staff_agent_id uuid not null,
-	department_id uuid not null,
-	source_path_version uuid not null,
-	primary key (profile_id,staff_agent_id),
-	foreign key (profile_id,staff_agent_id)
-		references public.qorpera_profile_staff(profile_id,staff_agent_id) on delete cascade,
-	foreign key (profile_id,department_id)
-		references public.qorpera_company_departments(profile_id,id) on delete cascade
-);
+-- Responsibility grants live with the organization projection (19200); this
+-- adapter writes them from exact agent-document versions.
 create table public.qorpera_agent_project_grants (
 	profile_id uuid not null references public.qorpera_profiles(id) on delete cascade,
 	staff_agent_id uuid not null,
@@ -101,10 +92,9 @@ alter table public.qorpera_company_path_grants
 create unique index qorpera_company_path_grants_agent_source
 	on public.qorpera_company_path_grants(source_agent_profile_id,source_staff_agent_id,resource_id)
 	where source_agent_profile_id is not null;
-alter table public.qorpera_agent_department_grants enable row level security;
 alter table public.qorpera_agent_project_grants enable row level security;
 alter table public.qorpera_agent_room_grants enable row level security;
-revoke all on public.qorpera_agent_department_grants,public.qorpera_agent_project_grants,
+revoke all on public.qorpera_agent_project_grants,
 	public.qorpera_agent_room_grants from public,anon,authenticated,service_role;
 
 -- Once the canonical bootstrap has completed, authenticated roster RPCs are
@@ -203,20 +193,19 @@ declare
 	v_environment_id uuid := (p_actor ->> 'environmentId')::uuid;
 	v_user_id uuid := (p_actor ->> 'userId')::uuid;
 	v_actor_staff_id uuid := nullif(p_actor ->> 'staffAgentId','')::uuid;
-	v_role public.qorpera_profile_role; v_department_id uuid; v_project_id uuid; v_room_id uuid;
+	v_role public.qorpera_profile_role; v_responsibility_id uuid; v_project_id uuid; v_room_id uuid;
 	v_item jsonb; v_resource public.qorpera_company_path_resources%rowtype; v_permissions text[];
-	v_project_ids uuid[] := '{}'::uuid[]; v_room_ids uuid[] := '{}'::uuid[]; v_resource_ids uuid[] := '{}'::uuid[];
+	v_responsibility_ids uuid[] := '{}'::uuid[]; v_project_ids uuid[] := '{}'::uuid[]; v_room_ids uuid[] := '{}'::uuid[];
+	v_resource_ids uuid[] := '{}'::uuid[];
 begin
 	if jsonb_typeof(p_grants) <> 'object'
-		or not (p_grants ?& array['department','projects','rooms','resources'])
-		or p_grants - array['department','projects','rooms','resources'] <> '{}'::jsonb
-		or (p_grants -> 'department' <> 'null'::jsonb and (
-			jsonb_typeof(p_grants -> 'department') <> 'string'
-			or p_grants ->> 'department' !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
-		))
+		or not (p_grants ?& array['responsibilities','projects','rooms','resources'])
+		or p_grants - array['responsibilities','projects','rooms','resources'] <> '{}'::jsonb
+		or jsonb_typeof(p_grants -> 'responsibilities') <> 'array'
 		or jsonb_typeof(p_grants -> 'projects') <> 'array'
 		or jsonb_typeof(p_grants -> 'rooms') <> 'array'
 		or jsonb_typeof(p_grants -> 'resources') <> 'array'
+		or jsonb_array_length(p_grants -> 'responsibilities') > 128
 		or jsonb_array_length(p_grants -> 'projects') > 128
 		or jsonb_array_length(p_grants -> 'rooms') > 128
 		or jsonb_array_length(p_grants -> 'resources') > 256 then
@@ -229,21 +218,28 @@ begin
 		where staff.profile_id = v_profile_id and staff.staff_agent_id = v_actor_staff_id
 			and staff.employment_status = 'active' and staff.deleted_at is null) then
 		raise exception 'Creating agent is unavailable' using errcode = '42501'; end if;
-	if p_grants -> 'department' <> 'null'::jsonb then
-		v_department_id := (p_grants ->> 'department')::uuid;
-		if not exists (select 1 from public.qorpera_company_departments department
-			where department.profile_id = v_profile_id and department.id = v_department_id
-				and department.status not in ('paused','retired')) then
-			raise exception 'Agent department grant is unavailable' using errcode = '42501'; end if;
+	for v_item in select value from jsonb_array_elements(p_grants -> 'responsibilities') loop
+		if jsonb_typeof(v_item) <> 'string' or v_item #>> '{}' !~
+			'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' then
+			raise exception 'Agent responsibility grant is invalid' using errcode = '22023'; end if;
+		v_responsibility_id := (v_item #>> '{}')::uuid;
+		if v_responsibility_id = any(v_responsibility_ids)
+			or not exists (select 1 from public.qorpera_company_responsibilities responsibility
+				where responsibility.profile_id = v_profile_id and responsibility.id = v_responsibility_id
+					and responsibility.status <> 'retired') then
+			raise exception 'Agent responsibility grant is unavailable' using errcode = '42501'; end if;
+		-- A creating agent may delegate only a responsibility it is
+		-- accountable for or already holds a grant within.
 		if v_actor_staff_id is not null and not (
-			exists (select 1 from public.qorpera_agent_department_grants grant_row
+			exists (select 1 from public.qorpera_company_responsibilities responsibility
+				where responsibility.profile_id = v_profile_id and responsibility.id = v_responsibility_id
+					and responsibility.accountable_staff_agent_id = v_actor_staff_id)
+			or exists (select 1 from public.qorpera_agent_responsibility_grants grant_row
 				where grant_row.profile_id = v_profile_id and grant_row.staff_agent_id = v_actor_staff_id
-					and grant_row.department_id = v_department_id)
-			or exists (select 1 from public.qorpera_department_staff_memberships membership
-				where membership.profile_id = v_profile_id and membership.staff_agent_id = v_actor_staff_id
-					and membership.department_id = v_department_id and membership.status = 'active')
-		) then raise exception 'Creating agent cannot delegate that department' using errcode = '42501'; end if;
-	end if;
+					and grant_row.responsibility_id = v_responsibility_id)
+		) then raise exception 'Creating agent cannot delegate that responsibility' using errcode = '42501'; end if;
+		v_responsibility_ids := array_append(v_responsibility_ids,v_responsibility_id);
+	end loop;
 	for v_item in select value from jsonb_array_elements(p_grants -> 'projects') loop
 		if jsonb_typeof(v_item) <> 'string' or v_item #>> '{}' !~
 			'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' then
@@ -277,10 +273,10 @@ begin
 		v_room_ids := array_append(v_room_ids,v_room_id);
 	end loop;
 	if v_actor_staff_id is null and v_role not in ('owner','admin') and (
-		v_department_id is not null or cardinality(v_project_ids) > 0 or cardinality(v_room_ids) > 0
+		cardinality(v_responsibility_ids) > 0 or cardinality(v_project_ids) > 0 or cardinality(v_room_ids) > 0
 		or jsonb_array_length(p_grants -> 'resources') > 0
 	) then raise exception 'Agent grants require founder authority' using errcode = '42501'; end if;
-	delete from public.qorpera_agent_department_grants
+	delete from public.qorpera_agent_responsibility_grants
 	where profile_id = v_profile_id and staff_agent_id = p_staff_agent_id;
 	delete from public.qorpera_agent_project_grants
 	where profile_id = v_profile_id and staff_agent_id = p_staff_agent_id;
@@ -288,10 +284,8 @@ begin
 	where profile_id = v_profile_id and staff_agent_id = p_staff_agent_id;
 	delete from public.qorpera_company_path_grants
 	where source_agent_profile_id = v_profile_id and source_staff_agent_id = p_staff_agent_id;
-	if v_department_id is not null then
-		insert into public.qorpera_agent_department_grants(profile_id,staff_agent_id,department_id,source_path_version)
-		values (v_profile_id,p_staff_agent_id,v_department_id,p_source_path_version);
-	end if;
+	insert into public.qorpera_agent_responsibility_grants(profile_id,staff_agent_id,responsibility_id,source_path_version)
+	select v_profile_id,p_staff_agent_id,id,p_source_path_version from unnest(v_responsibility_ids) id;
 	insert into public.qorpera_agent_project_grants(profile_id,staff_agent_id,project_id,source_path_version)
 	select v_profile_id,p_staff_agent_id,id,p_source_path_version from unnest(v_project_ids) id;
 	insert into public.qorpera_agent_room_grants(profile_id,staff_agent_id,room_id,source_path_version)
@@ -358,19 +352,15 @@ begin
 	if exists (select 1 from public.qorpera_company_cofounders cofounder
 		where cofounder.profile_id = p_profile_id and cofounder.staff_agent_id = p_staff_agent_id) then
 		raise exception 'the company Co-Founder cannot be permanently deleted' using errcode = '42501'; end if;
-	if exists (select 1 from public.qorpera_company_departments department
-		where department.profile_id = p_profile_id and department.lead_staff_agent_id = p_staff_agent_id
-			and department.status not in ('retired','paused'))
-		or exists (select 1 from public.qorpera_department_measures measure
-			where measure.profile_id = p_profile_id and measure.accountable_staff_agent_id = p_staff_agent_id
-				and measure.status = 'active')
+	if exists (select 1 from public.qorpera_company_responsibilities responsibility
+		where responsibility.profile_id = p_profile_id
+			and responsibility.accountable_staff_agent_id = p_staff_agent_id
+			and responsibility.status <> 'retired')
 		or exists (select 1 from public.qorpera_company_projects project
 			where project.profile_id = p_profile_id and project.lead_staff_agent_id = p_staff_agent_id
 				and project.status not in ('completed','cancelled')) then
 		raise exception 'reassign active organizational responsibilities before deleting this agent' using errcode = '55000';
 	end if;
-	update public.qorpera_department_staff_memberships set status = 'ended',ended_at = coalesce(ended_at,v_now)
-	where profile_id = p_profile_id and staff_agent_id = p_staff_agent_id and status = 'active';
 	update public.qorpera_project_staff_memberships set status = 'ended',ended_at = coalesce(ended_at,v_now)
 	where profile_id = p_profile_id and staff_agent_id = p_staff_agent_id and status = 'active';
 	update public.qorpera_cloud_routines routine set status = 'retired',updated_at = v_now
@@ -384,7 +374,7 @@ begin
 	where profile_id = p_profile_id and staff_agent_id = p_staff_agent_id and status = 'active';
 	delete from public.qorpera_company_path_grants
 	where principal_kind = 'staff_agent' and principal_id = p_staff_agent_id;
-	delete from public.qorpera_agent_department_grants
+	delete from public.qorpera_agent_responsibility_grants
 	where profile_id = p_profile_id and staff_agent_id = p_staff_agent_id;
 	delete from public.qorpera_agent_project_grants
 	where profile_id = p_profile_id and staff_agent_id = p_staff_agent_id;
@@ -630,7 +620,7 @@ exception when invalid_text_representation or datetime_field_overflow or not_nul
 end
 $$;
 
--- Company bootstrap imports formation, department, project and agent documents
+-- Company bootstrap imports formation, responsibility, project and agent documents
 -- from one verified immutable tree. Every recognized document is projected
 -- before the deferred path constraints can expose the new head.
 create function public.qorpera_enable_company_path_gateway_v3(

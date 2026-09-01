@@ -214,7 +214,7 @@ async function seedCanonicalHead(
 	objects: CloudContentAddressedStore,
 ): Promise<void> {
 	const snapshotId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-	await mkdir(join(root, "organization", "departments"), { recursive: true });
+	await mkdir(join(root, "organization", "responsibilities"), { recursive: true });
 	await mkdir(join(root, "organization", "projects"), { recursive: true });
 	await writeFile(
 		join(root, "organization", "formation.json"),
@@ -312,9 +312,9 @@ describe("canonical Company File cache", () => {
 		expect(manifest.entries.map((entry) => entry.path)).toEqual(
 			expect.arrayContaining([
 				"organization",
-				"organization/departments",
 				"organization/formation.json",
 				"organization/projects",
+				"organization/responsibilities",
 			]),
 		);
 		expect(manifest.entries.some((entry) => entry.path === "files/clone-me.txt")).toBe(false);

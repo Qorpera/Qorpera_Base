@@ -35,12 +35,56 @@ function fixture(overrides: Record<string, unknown> = {}, legacyObjects = new Ma
 		appearance: { color: "#0071e3", shape: "round", creature: "pebble" },
 		modelPolicy: { provider: null, modelId: null },
 		reasoningPolicy: { effort: "low" },
-		grants: { department: null, projects: [], rooms: [], resources: [] },
+		grants: { responsibilities: [], projects: [], rooms: [], resources: [] },
 		startupInstructions: "Begin the durable company-formation workflow.",
 		employmentStatus: "active",
 		lifecycleState: "setup",
 		createdAt: "2026-08-29T00:00:00Z",
 	});
+	const responsibilityDocument = (id: string, slug: string): string =>
+		JSON.stringify({
+			schema: "qorpera.responsibility/v1",
+			responsibilityId: id,
+			slug,
+			name: slug,
+			outcome: "A measurable owned outcome.",
+			accountableStaffAgentId: "32000000-0000-4000-8000-000000000008",
+			accountableUserId: "32000000-0000-4000-8000-000000000009",
+			attentionCadence: "weekly",
+			escalationThreshold: {},
+			escalationTarget: { kind: "accountable_member", id: null },
+			effortPolicy: {},
+			budgetPolicy: {},
+			concurrencyPolicy: {},
+			routineIds: [],
+			listenerIds: [],
+			externalOperationGrants: [],
+			resources: [],
+			status: "active",
+			version: 1,
+			measures: [
+				{
+					measureId: "32000000-0000-4000-8000-000000000020",
+					key: "currency",
+					label: "Currency",
+					definition: "Reviewed within cadence.",
+					direction: "observe",
+					target: {},
+					guardrails: [],
+					cadence: "weekly",
+					status: "active",
+					sources: [{ path: "organization/formation.json", pathMatch: "exact" }],
+				},
+			],
+		});
+	const responsibilityPaths = [
+		"organization/responsibilities/32000000-0000-4000-8000-000000000021.json",
+		"organization/responsibilities/32000000-0000-4000-8000-000000000022.json",
+	];
+	const cofounderResponsibilityDocuments = {
+		[responsibilityPaths[0]!]: responsibilityDocument("32000000-0000-4000-8000-000000000021", "direction"),
+		[responsibilityPaths[1]!]: responsibilityDocument("32000000-0000-4000-8000-000000000022", "resourcing"),
+	};
 	const claim = {
 		schema: "qorpera.company-bootstrap-claim/v1",
 		jobId,
@@ -54,6 +98,7 @@ function fixture(overrides: Record<string, unknown> = {}, legacyObjects = new Ma
 		memberSessionId: "32000000-0000-4000-8000-000000000010",
 		formationDocument,
 		cofounderAgentDocument,
+		cofounderResponsibilityDocuments,
 		pathGatewayVersion: null,
 		baseSnapshotId: null,
 		baseTreeSha256: null,
@@ -71,7 +116,7 @@ function fixture(overrides: Record<string, unknown> = {}, legacyObjects = new Ma
 		if (method === "qorpera_stage_company_bootstrap_object") return profileId;
 		if (method === "qorpera_verify_company_path_file") {
 			const manifest = object(JSON.parse(String(args.p_manifest_text)));
-			const content = [formationDocument, cofounderAgentDocument]
+			const content = [formationDocument, cofounderAgentDocument, ...Object.values(cofounderResponsibilityDocuments)]
 				.map((document) => Buffer.from(document))
 				.find((candidate) => createHash("sha256").update(candidate).digest("hex") === manifest.fileSha256);
 			if (content) {
@@ -101,17 +146,19 @@ function fixture(overrides: Record<string, unknown> = {}, legacyObjects = new Ma
 									"organization",
 									"organization/agents",
 									"organization/agents/32000000-0000-4000-8000-000000000008.json",
-									"organization/departments",
 									"organization/formation.json",
 									"organization/projects",
+									"organization/responsibilities",
+									...responsibilityPaths,
 								]
 							: [
 									"organization",
 									"organization/agents",
 									"organization/agents/32000000-0000-4000-8000-000000000008.json",
-									"organization/departments",
 									"organization/formation.json",
 									"organization/projects",
+									"organization/responsibilities",
+									...responsibilityPaths,
 								],
 				);
 			}
@@ -154,6 +201,7 @@ function fixture(overrides: Record<string, unknown> = {}, legacyObjects = new Ma
 	return {
 		formationDocument,
 		cofounderAgentDocument,
+		cofounderResponsibilityDocuments,
 		staged,
 		publisher,
 		provisioner: new CompanyBootstrapProvisioner({
@@ -189,10 +237,27 @@ describe("cloud-owned company bootstrap", () => {
 		const service = fixture();
 		expect(await service.provisioner.provisionOne()).toBe(true);
 		expect(await service.provisioner.provisionOne()).toBe(false);
-		expect(service.staged.size).toBe(5);
+		// formation + agent content and manifests, two responsibility contents
+		// and manifests, and the tree.
+		expect(service.staged.size).toBe(9);
 		expect([...service.staged.values()].some((value) => value.toString() === service.formationDocument)).toBe(true);
 		expect([...service.staged.values()].some((value) => value.toString() === service.cofounderAgentDocument)).toBe(
 			true,
+		);
+		for (const [path, document] of Object.entries(service.cofounderResponsibilityDocuments)) {
+			expect([...service.staged.values()].some((value) => value.toString() === document)).toBe(true);
+			expect(service.publisher).toHaveBeenCalledWith(
+				"qorpera_stage_company_bootstrap_object",
+				expect.objectContaining({ p_kind: "cofounder_responsibility_manifest", p_path: path, p_confirm: true }),
+				expect.any(AbortSignal),
+			);
+		}
+		expect(service.publisher).toHaveBeenCalledWith(
+			"qorpera_finalize_company_bootstrap",
+			expect.objectContaining({
+				p_organization_documents: expect.objectContaining(service.cofounderResponsibilityDocuments),
+			}),
+			expect.any(AbortSignal),
 		);
 		expect(service.publisher).toHaveBeenCalledWith(
 			"qorpera_finalize_company_bootstrap",
@@ -310,6 +375,7 @@ describe("cloud-owned company bootstrap", () => {
 				p_organization_documents: {
 					"organization/agents/32000000-0000-4000-8000-000000000008.json": evolvedAgentDocument,
 					"organization/formation.json": initial.formationDocument,
+					...initial.cofounderResponsibilityDocuments,
 				},
 			}),
 			expect.any(AbortSignal),
