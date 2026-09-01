@@ -66,7 +66,7 @@
     "packages/shell/src/cloud-native-isolation-child.ts": "a5c6b74a1eb29482258895badac94b91b22b5c8f244ee2150753c4b67ec00f5f",
     "packages/shell/src/cloud-native-isolation.ts": "f8aeea7f56fc95b75d642f9ea33bacd80b54a8412a9337550742d870f3485405",
     "packages/shell/src/cloud-native-provider-host.ts": "4f3dc399a346e8b72bb09137a78cc43886bf5a9243cdfccd19eff383927219c0",
-    "packages/shell/src/cloud-native-provider-service-main.ts": "444a4576e811572fd07722ab04aa06bb26b373983d9b663c55606e6d4db58894",
+    "packages/shell/src/cloud-native-provider-service-main.ts": "5c989b882ca9c840b9836a3808249d700a8a4f877b3421280da86e5ad4fa1e13",
     "packages/shell/src/cloud-native-provider-service.ts": "9ff003ede416b687729d409cec6af409996197d51959d63ec49219fff5894b62",
     "packages/shell/src/cloud-native-provider.ts": "54067da68ff25042df3d08ff36143b6526e419b9ccb485acea14a85258963bb3",
     "packages/shell/src/cloud-native-result-fence.ts": "edaca9c75eb9a615d9a3b704da3f51c0e83655596178f6d5302f58a8bbb17e46",

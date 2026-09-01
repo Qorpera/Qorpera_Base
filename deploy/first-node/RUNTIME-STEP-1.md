@@ -763,3 +763,19 @@ Step 3 and are not incorporated here. Shared persistent office desktops,
 workers/todos, memory indexes, connectors, scheduler/listeners and the final
 constitution follow their specified order. No client or raw NAS mount may
 stand in for the governed cloud execution path.
+
+## 2026-09-02: typed usage-limit signal and member notification
+
+The 2026-09-01 contract amendment places the typed usage-limit signal from
+provider adapters and the member notification in Order 1 (section 17,
+section 19 amendment placement). Source implementation and verification are
+recorded in the
+[Steps 0–2 amendment ratification record](RUNTIME-STEPS-0-2-AMENDMENT-RATIFICATION.md):
+migration `20260828019980_provider_usage_signals.sql`, the host's
+`nativeProviderUsageSignal` mapping from safe failure categories, and the
+runtime's recording of the signal against the run's exact sponsor and
+connection version before the job fails. The desktop surface that renders
+member notifications is a client follow-up; the durable record and its
+member-scoped read/acknowledge RPCs are the control-plane deliverable.
+Automatic sponsor handoff remains Order 3. This is source evidence, not a
+signed or deployed acceptance claim.
