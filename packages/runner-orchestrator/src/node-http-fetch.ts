@@ -72,12 +72,13 @@ async function executeRequest(
 				const status = response.statusCode ?? 0;
 				const location = response.headers.location;
 				if (status >= 300 && status < 400 && location) {
-					response.resume();
 					if (redirect === "error") {
+						response.destroy();
 						finish(() => reject(new TypeError("Node HTTP transport rejected a redirect")));
 						return;
 					}
 					if (redirect === "follow") {
+						response.destroy();
 						if (redirects >= MAX_REDIRECTS) {
 							finish(() => reject(new TypeError("Node HTTP transport exceeded its redirect limit")));
 							return;

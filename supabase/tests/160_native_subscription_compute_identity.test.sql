@@ -786,6 +786,196 @@ begin
 end
 $$;
 
+-- Exercise the Step 2 authority/receipt RPCs using this real admitted native run.
+-- Each destructive probe is rolled back inside a subtransaction.
+create function pg_temp.check_native_tools(p_binding jsonb)
+returns void language plpgsql as $$
+declare
+	v_authority jsonb;
+	v_identity jsonb;
+	v_begin jsonb;
+	v_replay jsonb;
+	v_complete jsonb;
+	v_patch jsonb;
+	v_probe text;
+	v_function text;
+	v_role text;
+	v_receipt uuid := '16000000-0000-4000-8000-0000000000b1';
+	v_other_receipt uuid := '16000000-0000-4000-8000-0000000000b2';
+begin
+	foreach v_function in array array[
+		'public.qorpera_describe_native_tool_authority(jsonb)',
+		'public.qorpera_begin_native_tool_operation(jsonb,uuid,text,text,text,boolean)',
+		'public.qorpera_complete_native_tool_operation(jsonb,uuid,text,jsonb,uuid,uuid)'
+	] loop
+		foreach v_role in array array['anon', 'authenticated'] loop
+			if has_function_privilege(v_role, v_function, 'EXECUTE') then
+				raise exception 'client role % can invoke native tool authority: %', v_role, v_function;
+			end if;
+		end loop;
+		if not has_function_privilege('service_role', v_function, 'EXECUTE') then
+			raise exception 'cloud service cannot invoke native tool authority: %', v_function;
+		end if;
+	end loop;
+	foreach v_role in array array['anon', 'authenticated', 'service_role'] loop
+		if has_function_privilege(v_role, 'public.qorpera_native_tool_locked_run(jsonb)', 'EXECUTE') then
+			raise exception 'API role can directly call the private native tool helper';
+		end if;
+	end loop;
+	foreach v_role in array array['anon', 'authenticated', ''] loop
+		begin
+			perform set_config('request.jwt.claims', case when v_role = '' then '{}' else jsonb_build_object('role', v_role)::text end, true);
+			begin
+				perform public.qorpera_describe_native_tool_authority(p_binding);
+				raise exception 'non-service JWT acquired native tool authority';
+			exception when insufficient_privilege then null;
+			end;
+			raise exception using errcode = 'QTP01';
+		exception when sqlstate 'QTP01' then null;
+		end;
+	end loop;
+	v_authority := public.qorpera_describe_native_tool_authority(p_binding);
+	v_identity := v_authority -> 'identity';
+	if v_authority ->> 'schema' <> 'qorpera.native-tool-authority/v1'
+		or (v_authority ->> 'validForMs')::integer not between 1 and 30000
+		or v_identity ->> 'companyId' <> '16000000-0000-4000-8000-000000000010'
+		or v_identity ->> 'environmentId' <> '16000000-0000-4000-8000-000000000020'
+		or v_identity ->> 'staffAgentId' <> '16000000-0000-4000-8000-000000000030'
+		or v_identity ->> 'sessionId' <> '16000000-0000-4000-8000-000000000040'
+		or v_identity ->> 'requesterUserId' <> '16000000-0000-4000-8000-000000000001'
+		or v_identity ->> 'sponsorUserId' <> '16000000-0000-4000-8000-000000000001'
+		or v_identity ->> 'runId' is distinct from p_binding ->> 'runId'
+		or v_identity ->> 'jobId' is distinct from p_binding ->> 'jobId'
+		or v_identity ->> 'runnerId' is distinct from p_binding ->> 'runnerId'
+		or v_identity ->> 'assignmentId' is distinct from p_binding ->> 'assignmentId'
+		or v_identity ->> 'leaseId' is distinct from p_binding ->> 'leaseId'
+		or v_identity ->> 'computeIdentityId' is distinct from p_binding ->> 'computeIdentityId'
+		or v_identity ->> 'model' <> 'gpt-native'
+		or v_authority::text ~* '(token|secret|capsule|credential)' then
+		raise exception 'native tool identity is not the closed cloud projection';
+	end if;
+	for v_patch in select value from jsonb_array_elements('[
+		{"runId":"16000000-0000-4000-8000-000000000010"},
+		{"jobId":"16000000-0000-4000-8000-000000000010"},
+		{"assignmentId":"16000000-0000-4000-8000-000000000010"},
+		{"runnerId":"16000000-0000-4000-8000-000000000010"},
+		{"leaseId":"16000000-0000-4000-8000-000000000010"},
+		{"credentialCapsuleId":"16000000-0000-4000-8000-000000000010"},
+		{"computeIdentityId":"16000000-0000-4000-8000-000000000010"},
+		{"model":"not-the-pinned-model"}
+	]'::jsonb) loop
+		begin
+			perform public.qorpera_describe_native_tool_authority(p_binding || v_patch);
+			raise exception 'native tools accepted another run binding: %', v_patch;
+		exception when insufficient_privilege then null;
+		end;
+	end loop;
+	for v_patch in select value from jsonb_array_elements('[
+		{"companyId":"16000000-0000-4000-8000-000000000010"},
+		{"approved":true}, {"model":null}, {"provider":"anthropic"}, {"nativeHarness":"other"}
+	]'::jsonb) loop
+		begin
+			perform public.qorpera_describe_native_tool_authority(p_binding || v_patch);
+			raise exception 'native tools accepted malformed or forged authority: %', v_patch;
+		exception when invalid_parameter_value then null;
+		end;
+	end loop;
+	begin
+		perform public.qorpera_describe_native_tool_authority(p_binding - 'leaseId');
+		raise exception 'native tools accepted missing lease authority';
+	exception when invalid_parameter_value then null;
+	end;
+	-- Test fresh state independently of native credentials and cached descriptions.
+	foreach v_probe in array array['lease-expired', 'lease-revoked', 'assignment-expired', 'runner-expired', 'staff-inactive'] loop
+		begin
+			-- Fixture setup needs its owner for CHECK functions; the actual RPC
+			-- below still executes as the production service role.
+			reset role;
+			if v_probe = 'lease-expired' then
+				update public.qorpera_native_provider_connection_leases
+				set created_at = statement_timestamp() - interval '2 seconds', expires_at = statement_timestamp() - interval '1 second'
+				where id = (p_binding ->> 'leaseId')::uuid;
+			elsif v_probe = 'lease-revoked' then
+				update public.qorpera_native_provider_connection_leases set status = 'revoked', released_at = statement_timestamp()
+				where id = (p_binding ->> 'leaseId')::uuid;
+			elsif v_probe = 'assignment-expired' then
+				update public.qorpera_runner_assignments set expires_at = statement_timestamp() - interval '1 second'
+				where id = (p_binding ->> 'assignmentId')::uuid;
+			elsif v_probe = 'runner-expired' then
+				update public.qorpera_runners set session_expires_at = statement_timestamp() - interval '1 second'
+				where id = (p_binding ->> 'runnerId')::uuid;
+			else
+				update public.qorpera_profile_staff set employment_status = 'archived'
+				where profile_id = '16000000-0000-4000-8000-000000000010' and staff_agent_id = '16000000-0000-4000-8000-000000000030';
+			end if;
+			set local role service_role;
+			begin
+				perform public.qorpera_describe_native_tool_authority(p_binding);
+				raise exception 'native tools ignored %', v_probe;
+			exception when insufficient_privilege then null;
+			end;
+			raise exception using errcode = 'QTP01';
+		exception when sqlstate 'QTP01' then null;
+		end;
+	end loop;
+	-- Clock time, not statement start, must reject a lease expiring during a wait.
+	begin
+		update public.qorpera_native_provider_connection_leases set expires_at = clock_timestamp() + interval '20 milliseconds'
+		where id = (p_binding ->> 'leaseId')::uuid;
+		perform pg_sleep(0.03);
+		begin
+			perform public.qorpera_begin_native_tool_operation(p_binding, v_receipt, 'expired-at-effect', repeat('a',64), repeat('b',64), false);
+			raise exception 'operation used statement time after authority expired';
+		exception when insufficient_privilege then null;
+		end;
+		raise exception using errcode = 'QTP01';
+	exception when sqlstate 'QTP01' then null;
+	end;
+	v_begin := public.qorpera_begin_native_tool_operation(p_binding, v_receipt, 'step2:exact-operation', repeat('a',64), repeat('b',64), false);
+	if v_begin ->> 'state' <> 'executing' or (v_begin ->> 'receipt_id')::uuid <> v_receipt
+		or v_begin ->> 'run_id' is distinct from p_binding ->> 'runId' then
+		raise exception 'new native tool operation was not admitted durably';
+	end if;
+	v_replay := public.qorpera_begin_native_tool_operation(p_binding, v_other_receipt, 'step2:exact-operation', repeat('a',64), repeat('b',64), false);
+	if v_replay ->> 'state' <> 'executing' or (v_replay ->> 'receipt_id')::uuid <> v_receipt then
+		raise exception 'retry with a different call id created a new operation';
+	end if;
+	begin
+		perform public.qorpera_begin_native_tool_operation(p_binding, v_other_receipt, 'step2:exact-operation', repeat('c',64), repeat('b',64), false);
+		raise exception 'receipt key was reused for changed arguments';
+	exception when unique_violation then null;
+	end;
+	begin
+		perform public.qorpera_begin_native_tool_operation(p_binding, v_other_receipt, 'step2:different-key', repeat('a',64), repeat('b',64), false);
+		raise exception 'changing the logical key bypassed an uncertain operation';
+	exception when object_not_in_prerequisite_state then null;
+	end;
+	v_complete := public.qorpera_complete_native_tool_operation(p_binding, v_receipt, repeat('a',64), '{"synthetic":"completed"}');
+	if v_complete ->> 'state' <> 'completed' or v_complete -> 'result' <> '{"synthetic":"completed"}'::jsonb then
+		raise exception 'native tool completion was not retained';
+	end if;
+	v_replay := public.qorpera_begin_native_tool_operation(p_binding, v_other_receipt, 'step2:exact-operation', repeat('a',64), repeat('b',64), false);
+	if v_replay ->> 'state' <> 'completed' or v_replay -> 'result' <> v_complete -> 'result' then
+		raise exception 'native tool restart cannot replay its recorded completion';
+	end if;
+	begin
+		perform public.qorpera_complete_native_tool_operation(p_binding, v_receipt, repeat('a',64), '{"synthetic":"changed"}');
+		raise exception 'completion replay accepted different content';
+	exception when unique_violation then null;
+	end;
+	begin
+		perform public.qorpera_begin_native_tool_operation(p_binding, v_other_receipt, 'step2:requires-revision', repeat('d',64), repeat('e',64), true);
+		begin
+			perform public.qorpera_complete_native_tool_operation(p_binding, v_other_receipt, repeat('d',64), '{"synthetic":"completed"}');
+			raise exception 'Company operation completed without a durable revision';
+		exception when object_not_in_prerequisite_state then null;
+		end;
+		raise exception using errcode = 'QTP01';
+	exception when sqlstate 'QTP01' then null;
+	end;
+end
+$$;
+
 do $$
 declare
 	v_run_id uuid := (current_setting('qorpera_test.own_turn')::jsonb ->> 'turn_request_id')::uuid;
@@ -878,6 +1068,14 @@ begin
 		(v_native_authority ->> 'compute_identity_id')::uuid,
 		'openai', 'codex-cli'
 	);
+
+	perform pg_temp.check_native_tools(jsonb_build_object(
+		'leaseId', v_native_authority ->> 'lease_id', 'runId', v_run_id, 'jobId', v_job_id,
+		'runnerId', v_runner_id, 'assignmentId', v_assignment ->> 'assignment_id',
+		'credentialCapsuleId', v_native_authority ->> 'credential_capsule_id',
+		'computeIdentityId', v_native_authority ->> 'compute_identity_id',
+		'provider', 'openai', 'nativeHarness', 'codex-cli', 'model', 'gpt-native'
+	));
 
 	for v_private_part in select value from jsonb_array_elements('[
 		{"type":"text","text":"private final answer must not become a message"},
@@ -1094,6 +1292,65 @@ set role service_role;
 select public.qorpera_materialize_session_turn_requests(32);
 
 reset role;
+
+-- A real sponsored turn must retain the requesting friend, not silently
+-- substitute the subscription owner. Roll the probe back before the existing
+-- revocation tests so this does not change their queued-run fixture.
+do $$
+declare
+	v_run_id uuid := (current_setting('qorpera_test.sponsored_turn')::jsonb ->> 'turn_request_id')::uuid;
+	v_claim jsonb;
+	v_runner jsonb;
+	v_assignment jsonb;
+	v_native jsonb;
+	v_binding jsonb;
+	v_identity jsonb;
+	v_runner_id uuid;
+	v_job_id uuid;
+begin
+	begin
+		update public.qorpera_runner_jobs set created_at = created_at - interval '1 hour' where run_id = v_run_id;
+		set local role service_role;
+		v_claim := public.qorpera_claim_runner_job_for_orchestrator('16000000-0000-4000-8000-000000000092', '16000000-0000-4000-8000-0000000000d1', 120);
+		if (v_claim -> 'work' ->> 'run_id')::uuid is distinct from v_run_id then
+			raise exception 'fixture did not claim the friend-sponsored run';
+		end if;
+		v_job_id := (v_claim -> 'work' ->> 'job_id')::uuid;
+		v_runner := public.qorpera_provision_execution_runner(v_run_id, '16000000-0000-4000-8000-0000000000d2', 'process', repeat('4',64));
+		v_runner_id := (v_runner ->> 'runner_id')::uuid;
+		perform public.qorpera_activate_runner(v_runner_id, repeat('4',64), repeat('5',64), 'linux', 'native-tool-authority-test');
+		v_assignment := public.qorpera_assign_runner_job('16000000-0000-4000-8000-000000000092', (v_claim ->> 'claim_id')::uuid,
+			v_runner_id, '16000000-0000-4000-8000-0000000000d3', repeat('6',64), 120);
+		perform public.qorpera_accept_runner_assignment(v_runner_id, repeat('5',64), (v_assignment ->> 'assignment_id')::uuid, v_job_id, repeat('6',64));
+		v_native := public.qorpera_acquire_native_provider_connection_lease(v_run_id, v_runner_id, repeat('5',64),
+			(v_assignment ->> 'assignment_id')::uuid, repeat('6',64), 120);
+		v_binding := jsonb_build_object('runId', v_run_id, 'jobId', v_job_id, 'runnerId', v_runner_id,
+			'assignmentId', v_assignment ->> 'assignment_id', 'leaseId', v_native ->> 'lease_id',
+			'credentialCapsuleId', v_native ->> 'credential_capsule_id', 'computeIdentityId', v_native ->> 'compute_identity_id',
+			'provider', 'openai', 'nativeHarness', 'codex-cli', 'model', 'gpt-native');
+		v_identity := public.qorpera_describe_native_tool_authority(v_binding) -> 'identity';
+		if v_identity ->> 'requesterUserId' <> '16000000-0000-4000-8000-000000000002'
+			or v_identity ->> 'sponsorUserId' <> '16000000-0000-4000-8000-000000000001' then
+			raise exception 'tool identity replaced the requester with its sponsor';
+		end if;
+		reset role;
+		delete from public.qorpera_profile_members where profile_id = '16000000-0000-4000-8000-000000000010'
+			and user_id = '16000000-0000-4000-8000-000000000002';
+		if not exists (select 1 from public.qorpera_provider_connections
+			where id = (v_identity ->> 'providerConnectionId')::uuid and status = 'active') then
+			raise exception 'requester-removal fixture also revoked the sponsor';
+		end if;
+		set local role service_role;
+		begin
+			perform public.qorpera_describe_native_tool_authority(v_binding);
+			raise exception 'departed requester retained authority through another member subscription';
+		exception when insufficient_privilege then null;
+		end;
+		raise exception using errcode = 'QTP01';
+	exception when sqlstate 'QTP01' then null;
+	end;
+end
+$$;
 
 
 select set_config(

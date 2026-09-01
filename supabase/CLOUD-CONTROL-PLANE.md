@@ -98,6 +98,14 @@ run and one native harness. Only the trusted computer-side credential bridge
 may decrypt the capsule for the unmodified provider-native harness; Qorpera
 application and control-plane code must never receive the plaintext.
 
+Runtime Step 2 has one explicitly authorized exception to "unmodified": the
+pinned Codex result-only callback in
+[`../deploy/first-node/native-codex/README.md`](../deploy/first-node/native-codex/README.md).
+It does not change native authentication or credential/transport ownership.
+Its source and executable hashes, fail-closed handshake and acceptance gates
+are required; this exception does not authorize a model gateway to receive
+personal-subscription credentials or traffic.
+
 This is an application security boundary, not a claim of cryptographic
 infrastructure-operator blindness. Until confidential, remotely attested
 compute is deployed and verified, an infrastructure operator with VM

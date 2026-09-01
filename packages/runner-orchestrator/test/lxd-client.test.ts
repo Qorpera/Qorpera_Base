@@ -88,6 +88,34 @@ function createVolumeRequest(): LxdCreateStorageVolumeRequest {
 }
 
 describe("LXD Unix client", () => {
+	it("returns inherited devices and configuration, not only local overrides", async () => {
+		const request = createRequest();
+		const inherited = { type: "disk", path: "/company", source: "/srv/company" };
+		const socket = await unixServer(() => ({
+			body: {
+				type: "sync",
+				metadata: {
+					...request,
+					status: "Running",
+					status_code: 103,
+					expanded_devices: { ...request.devices, inherited },
+					expanded_config: { ...request.config, "raw.qemu": "profile override" },
+				},
+			},
+		}));
+		const actual = await new LxdUnixClient(socket).getInstance("qorpera-runners", request.name);
+		expect(actual?.devices.inherited).toBeUndefined();
+		expect(actual?.expandedDevices.inherited).toEqual(inherited);
+		expect(actual?.expandedConfig["raw.qemu"]).toBe("profile override");
+	});
+
+	it("rejects a response that omits expanded authority", async () => {
+		const request = createRequest();
+		const socket = await unixServer(() => ({
+			body: { type: "sync", metadata: { ...request, status: "Running", status_code: 103 } },
+		}));
+		await expect(new LxdUnixClient(socket).getInstance("qorpera-runners", request.name)).rejects.toThrow("devices");
+	});
 	it("uses the local socket, waits for async operations, and preserves the VM type", async () => {
 		const requests: Array<{ method: string; url: string; body: unknown }> = [];
 		const socket = await unixServer((method, url, body) => {

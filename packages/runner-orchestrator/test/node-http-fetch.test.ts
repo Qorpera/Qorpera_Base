@@ -5,6 +5,7 @@ import { nodeHttpFetch } from "../src/node-http-fetch.ts";
 const servers: Array<ReturnType<typeof createServer>> = [];
 
 afterEach(async () => {
+	for (const server of servers) server.closeAllConnections();
 	await Promise.all(
 		servers
 			.splice(0)
@@ -58,6 +59,30 @@ describe("jitless Node HTTP transport", () => {
 		});
 		await expect(nodeHttpFetch(`${baseUrl}/redirect`, { redirect: "error" })).rejects.toThrow("rejected a redirect");
 	});
+
+	it("closes a refused redirect without draining a stalled body or forwarding credentials", async () => {
+		let resolveClosed = (): void => {};
+		const closed = new Promise<void>((resolve) => {
+			resolveClosed = resolve;
+		});
+		const requests: string[] = [];
+		const baseUrl = await listen((request, response) => {
+			requests.push(request.url ?? "");
+			response.on("close", resolveClosed);
+			response.writeHead(307, { location: "/untrusted" });
+			response.flushHeaders();
+		});
+		await expect(
+			nodeHttpFetch(`${baseUrl}/assignment`, {
+				method: "POST",
+				redirect: "error",
+				headers: { authorization: "Bearer synthetic-test-capability" },
+				body: "synthetic assignment",
+			}),
+		).rejects.toThrow("rejected a redirect");
+		await closed;
+		expect(requests).toEqual(["/assignment"]);
+	}, 2_000);
 
 	it("honors an aborted request signal", async () => {
 		const baseUrl = await listen((_request, response) => {

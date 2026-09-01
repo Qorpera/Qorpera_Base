@@ -1,4 +1,6 @@
+import { executeNativeCompanyRunnerJob } from "./cloud-native-company-runner.ts";
 import { executeNativeCloudRunnerJob, type NativeProviderComputerBridge } from "./cloud-native-provider.ts";
+import { withCloudDeadline } from "./cloud-request.ts";
 import {
 	CloudRunnerBrokerCompanyFilePublisher,
 	CloudRunnerBrokerOutputPublisher,
@@ -100,6 +102,7 @@ export class EphemeralCloudRunnerWorker {
 	readonly #now: () => number;
 	readonly #executeJob: (options: ExecuteCloudRunnerJobOptions) => Promise<CloudRunnerExecutionResult>;
 	readonly #injectedExecuteJob: boolean;
+	#running = false;
 
 	constructor(options: EphemeralCloudRunnerWorkerOptions) {
 		if (
@@ -141,6 +144,19 @@ export class EphemeralCloudRunnerWorker {
 		assignment: CloudRunnerAssignmentAcceptance | undefined,
 		signal: AbortSignal = new AbortController().signal,
 	): Promise<EphemeralCloudRunnerWorkerResult> {
+		if (this.#running) throw new Error("Single-lane worker is already executing");
+		this.#running = true;
+		try {
+			return await this.#runNext(assignment, signal);
+		} finally {
+			this.#running = false;
+		}
+	}
+
+	async #runNext(
+		assignment: CloudRunnerAssignmentAcceptance | undefined,
+		signal: AbortSignal,
+	): Promise<EphemeralCloudRunnerWorkerResult> {
 		if (signal.aborted) throw workerStopped();
 		const retained = this.#options.runner.leasedJobs();
 		if (retained.length > 1) throw new Error("Single-lane ephemeral worker restored multiple active jobs");
@@ -162,11 +178,28 @@ export class EphemeralCloudRunnerWorker {
 						),
 					};
 				} catch (error) {
-					if (cloudRunnerControlRequestStatus(error) !== 409) throw error;
+					if (![401, 403, 409].includes(cloudRunnerControlRequestStatus(error) ?? 0)) throw error;
 					await this.#options.runner.discardJobAuthority(job.jobId);
 					job = undefined;
 				}
 			}
+		}
+		if (job) {
+			const failure = this.#options.runner.stagedFailure(job.jobId);
+			if (failure) {
+				try {
+					const failed = await this.#options.runner.fail(job.jobId, failure.error, failure.retryable);
+					return { status: failed.status === "queued" ? "requeued" : "failed", job: failed };
+				} catch (error) {
+					if (![401, 403, 409].includes(cloudRunnerControlRequestStatus(error) ?? 0)) throw error;
+					await this.#options.runner.discardJobAuthority(job.jobId);
+					job = undefined;
+				}
+			}
+		}
+		if (job && this.#options.runner.executionStarted(job.jobId)) {
+			await this.#options.runner.discardJobAuthority(job.jobId, "interrupted");
+			job = undefined;
 		}
 		if (job) {
 			if (assignment && assignment.jobId !== job.jobId) {
@@ -224,11 +257,32 @@ export class EphemeralCloudRunnerWorker {
 		let maintenanceError: unknown;
 		let renewNativeAuthority: (() => Promise<void>) | undefined;
 		let nativeRenewalInFlight: Promise<void> | undefined;
-		const externalAbort = (): void => executionAbort.abort(workerStopped());
+		const externalAbort = (): void => {
+			executionAbort.abort(workerStopped());
+			maintenanceAbort.abort();
+		};
 		if (signal.aborted) externalAbort();
 		else signal.addEventListener("abort", externalAbort, { once: true });
 		let nextHeartbeat = this.#now() + this.#heartbeatMs;
-		let leaseDeadline = Date.parse(job.leaseExpiresAt ?? "") || this.#now() + 120_000;
+		let leaseDeadline = Date.parse(job.leaseExpiresAt ?? "");
+		if (!Number.isFinite(leaseDeadline)) throw new Error("Runner execution requires a finite lease deadline");
+		let observedTime = this.#now();
+		let leaseTimer: ReturnType<typeof setTimeout> | undefined;
+		const armDeadline = (): void => {
+			if (leaseTimer) clearTimeout(leaseTimer);
+			const now = this.#now();
+			const sessionDeadline = Date.parse(this.#options.runner.snapshot().sessionExpiresAt ?? "");
+			const remaining = now < observedTime ? 0 : Math.min(leaseDeadline, sessionDeadline) - now;
+			observedTime = now;
+			const expire = (): void => {
+				maintenanceError = new Error("Runner execution authority expired; outcome requires reconciliation");
+				executionAbort.abort(maintenanceError);
+				maintenanceAbort.abort();
+			};
+			if (!Number.isFinite(remaining) || remaining <= 0) expire();
+			else leaseTimer = setTimeout(expire, remaining);
+		};
+		armDeadline();
 		const maintenance = (async () => {
 			while (await wait(this.#leaseRenewalMs, maintenanceAbort.signal)) {
 				try {
@@ -240,8 +294,13 @@ export class EphemeralCloudRunnerWorker {
 					 * lease's own expiry treats the lease as lost. */
 					for (;;) {
 						try {
-							const renewed = await this.#options.runner.renew(job.jobId);
+							const renewed = await withCloudDeadline(
+								() => this.#options.runner.renew(job.jobId),
+								Math.max(1, Math.min(30_000, leaseDeadline - this.#now())),
+								maintenanceAbort.signal,
+							);
 							leaseDeadline = Date.parse(renewed.leaseExpiresAt ?? "") || leaseDeadline;
+							armDeadline();
 							break;
 						} catch (renewError) {
 							const status = cloudRunnerControlRequestStatus(renewError);
@@ -253,7 +312,11 @@ export class EphemeralCloudRunnerWorker {
 						}
 					}
 					if (renewNativeAuthority) {
-						const renewal = renewNativeAuthority();
+						const renewal = withCloudDeadline(
+							() => renewNativeAuthority!(),
+							Math.max(1, Math.min(30_000, leaseDeadline - this.#now())),
+							maintenanceAbort.signal,
+						);
 						nativeRenewalInFlight = renewal;
 						try {
 							await renewal;
@@ -262,10 +325,16 @@ export class EphemeralCloudRunnerWorker {
 						}
 					}
 					if (this.#now() >= nextHeartbeat) {
-						await this.#options.runner.heartbeat();
+						await withCloudDeadline(
+							() => this.#options.runner.heartbeat(),
+							Math.max(1, Math.min(30_000, leaseDeadline - this.#now())),
+							maintenanceAbort.signal,
+						);
 						nextHeartbeat = this.#now() + this.#heartbeatMs;
+						armDeadline();
 					}
 				} catch (error) {
+					if (maintenanceAbort.signal.aborted) return;
 					maintenanceError = error;
 					executionAbort.abort(error);
 					return;
@@ -280,6 +349,9 @@ export class EphemeralCloudRunnerWorker {
 			await maintenance;
 		};
 		try {
+			executionAbort.signal.throwIfAborted();
+			await this.#options.runner.markExecutionStarted(job.jobId);
+			executionAbort.signal.throwIfAborted();
 			const broker = this.#options.runner.broker(job, this.#options.brokerTransport, executionAbort.signal);
 			let execution: CloudRunnerExecutionResult;
 			try {
@@ -303,6 +375,14 @@ export class EphemeralCloudRunnerWorker {
 					});
 				} else {
 					const description = await broker.describe();
+					if (
+						description.companyRuntime === "company-path-v1" &&
+						description.sponsor.authenticationMode !== "native_subscription"
+					) {
+						throw new Error(
+							"Governed company execution requires the native cloud runtime; no fallback is permitted",
+						);
+					}
 					if (description.sponsor.authenticationMode === "native_subscription") {
 						if (!this.#options.nativeProviderBridge) {
 							throw new Error("Native subscription execution bridge is not configured");
@@ -312,20 +392,47 @@ export class EphemeralCloudRunnerWorker {
 							await broker.renewNativeAuthority();
 						};
 						try {
-							execution = await executeNativeCloudRunnerJob({
-								...shared,
-								authority,
-								refreshAuthority: () => broker.renewNativeAuthority(),
-								bridge: this.#options.nativeProviderBridge,
-								nativeBroker: broker,
-								...(this.#options.nativeWorkspaceGid !== undefined
-									? { nativeWorkspaceGid: this.#options.nativeWorkspaceGid }
-									: {}),
-							});
+							execution =
+								description.companyRuntime === "company-path-v1"
+									? await executeNativeCompanyRunnerJob({
+											job,
+											authority,
+											bridge: this.#options.nativeProviderBridge,
+											refreshAuthority: () => broker.renewNativeAuthority(),
+											...(this.#options.limits ? { limits: this.#options.limits } : {}),
+											signal: executionAbort.signal,
+										})
+									: await executeNativeCloudRunnerJob({
+											...shared,
+											authority,
+											refreshAuthority: () => broker.renewNativeAuthority(),
+											bridge: this.#options.nativeProviderBridge,
+											nativeBroker: broker,
+											...(this.#options.nativeWorkspaceGid !== undefined
+												? { nativeWorkspaceGid: this.#options.nativeWorkspaceGid }
+												: {}),
+										});
+							// Retain the returned result before best-effort authority release,
+							// whose response can be lost independently of successful work.
+							await this.#options.runner.stageCompletion(
+								job.jobId,
+								execution.result,
+								execution.outputSnapshotId,
+							);
 						} finally {
 							renewNativeAuthority = undefined;
 							await nativeRenewalInFlight?.catch(() => undefined);
-							await broker.releaseNativeAuthority(executionAbort.signal.aborted ? "revoked" : "released");
+							// Governed completion validates the still-live native lease and
+							// releases it atomically with the durable completion receipt.
+							if (
+								description.companyRuntime !== "company-path-v1" ||
+								!this.#options.runner.stagedCompletion(job.jobId)
+							) {
+								await withCloudDeadline(
+									() => broker.releaseNativeAuthority(executionAbort.signal.aborted ? "revoked" : "released"),
+									Math.max(1, Math.min(30_000, leaseDeadline - this.#now())),
+								);
+							}
 						}
 					} else {
 						await this.#options.backend.prepare?.();
@@ -340,21 +447,29 @@ export class EphemeralCloudRunnerWorker {
 				await stopMaintenance();
 				if (maintenanceError) throw maintenanceError;
 				if (signal.aborted) throw workerStopped();
+				if (this.#options.runner.stagedCompletion(job.jobId)) throw error;
 				const failed = await this.#options.runner.fail(
 					job.jobId,
 					safeFailure(error),
-					(this.#options.retryable ?? cloudRunnerJobFailureIsRetryable)(error),
+					// A network error after execution started does not prove no external effects occurred.
+					this.#options.retryable?.(error) ?? false,
 				);
 				return { status: failed.status === "queued" ? "requeued" : "failed", job: failed };
 			}
+			await this.#options.runner.stageCompletion(job.jobId, execution.result, execution.outputSnapshotId);
 			await stopMaintenance();
 			if (maintenanceError) throw maintenanceError;
 			if (signal.aborted) throw workerStopped();
 			return {
 				status: "completed",
-				job: await this.#options.runner.complete(job.jobId, execution.result, execution.outputSnapshotId),
+				job: await withCloudDeadline(
+					() => this.#options.runner.complete(job.jobId, execution.result, execution.outputSnapshotId),
+					Math.max(1, Math.min(30_000, leaseDeadline - this.#now())),
+					executionAbort.signal,
+				),
 			};
 		} finally {
+			if (leaseTimer) clearTimeout(leaseTimer);
 			await stopMaintenance();
 			signal.removeEventListener("abort", externalAbort);
 		}

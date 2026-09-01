@@ -31,12 +31,14 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 				"harness/package-lock.json",
 				"harness/package.json",
 				"install-image-contract.sh",
+				"qorpera-company-runner.service",
 				"qorpera-ephemeral-runner.mjs",
 				"qorpera-ephemeral-runner.service",
 				"qorpera-lxd-native-login-bootstrap.mjs",
 				"qorpera-lxd-native-login-bootstrap.service",
 				"qorpera-lxd-runner-bootstrap.mjs",
 				"qorpera-lxd-runner-bootstrap.service",
+				"qorpera-native-company-host.service",
 				"qorpera-native-provider-host.mjs",
 				"qorpera-native-provider-host.service",
 				"qorpera-sandbox-probe.mjs",
@@ -84,6 +86,23 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 			);
 			assert.match(service, /^UMask=0007$/m, `${serviceName} must preserve group access to shared files`);
 		}
+		for (const name of ["qorpera-native-company-host.service", "qorpera-company-runner.service"]) {
+			const service = await readFile(join(outputRoot, name), "utf-8");
+			assert.match(service, /^UMask=0077$/m);
+			assert.match(service, /^NoNewPrivileges=yes$/m);
+			assert.match(service, /^ProtectControlGroups=yes$/m);
+			assert.match(service, /^InaccessiblePaths=.*\/qorpera\/company-live/m);
+			assert.doesNotMatch(service, /^ReadWritePaths=.*\/qorpera\/company-live/m);
+			assert.doesNotMatch(service, /^SupplementaryGroups=/m);
+			assert.doesNotMatch(service, /safe\.directory/);
+		}
+		const companyHost = await readFile(join(outputRoot, "qorpera-native-company-host.service"), "utf-8");
+		const companyRunner = await readFile(join(outputRoot, "qorpera-company-runner.service"), "utf-8");
+		assert.match(companyHost, /^User=qorpera-native-company$/m);
+		assert.match(companyHost, /^LoadCredential=qorpera-native-object-token:/m);
+		assert.match(companyRunner, /^User=qorpera-company-runner$/m);
+		assert.match(companyRunner, /^AssertPathIsMountPoint=\/var\/lib\/qorpera-runner$/m);
+		assert.doesNotMatch(companyRunner, /LoadCredential=qorpera-(?:supabase-service-key|native-object-token)/);
 
 		const builderPath = join(repositoryRoot, "deploy/first-node/build-lxd-runner-image-candidate.sh");
 		const builder = await readFile(builderPath, "utf-8");
