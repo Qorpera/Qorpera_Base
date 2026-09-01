@@ -231,3 +231,56 @@ Inventoried 2026-09-02 and left untouched; nothing was built on it.
   records and RPCs exist and are tested.
 - Automatic same-principal sponsor handoff (contract 17, acceptance 29) is
   Order 3 and reads the usage signals recorded here.
+
+### 2026-09-02, closing verification for Phase A
+
+All checks ran on this worktree against disposable PostgreSQL 17.6 in Docker;
+no live database, provider, credential, signing, release or production
+operation was performed.
+
+- `npm run check`: formatting, runtime-bundle freshness, pinned dependencies,
+  import and cloud-boundary checks, shrinkwrap, install lock, `tsgo --noEmit`
+  and browser smoke pass. Generated bundle `70128b6938627f302e4b48b789bcd168ea742adbcfb07dd984f586fa6cdcf875`
+  (manifest, compiled constants and source-only `19900` activation committed).
+- `node scripts/test-runtime-observability.mjs`: all 110 migrations, upgrade
+  with admitted history, member-authority OID/owner/ACL preservation, SQL
+  290, 320 (with the usage-signal, notification and concurrency cases), 306,
+  321 and 330 pass.
+- `node scripts/test-runtime-provenance.mjs` and
+  `node scripts/test-company-organization-kernel.mjs`: pass (recorded above).
+- The repository's all-suites driver (`scripts/test-hosted-db.mjs`, run as a
+  copy that skips three suites): 110 migrations and 43 suites pass,
+  including every Orders 0–2 suite (290–330). Suites `100_session_arbiter`,
+  `140_cloud_company_authority` and `280_cloud_session_run_control` fail
+  with the same assertions on the untouched base commit `5a3c72890` (run in a
+  throwaway worktree); they predate this session, were not part of any
+  closeout gate, and are legacy session/run suites superseded by the Step 1–2
+  migrations. They are not fixed here.
+- Focused vitest: shell 111 (organization, agent, hosted primary, company
+  file, native runtime, host, provider service, path control), coding-agent
+  2, object-gateway 50 pass.
+
+Commits on `codex/steps-0-2-fable-handoff`: `9bd09d8f3`, `de3d6cd0f`,
+`f84fc81a9`, `16f23e856`, `b2a579a42`, `f32516863`, `c8764cffe`,
+`c03ae4ef5` (43 files, +2431/−688 against `5a3c72890`). The branch is local
+only and has not been pushed.
+
+**Proven (source and disposable database):** the responsibility model is the
+only organization model; a new company is created with its Co-Founder holding
+four real responsibilities; ceremonial responsibilities and absent sources are
+rejected; responsibility and project ACLs fence paths; typed usage signals
+are recorded against exact sponsor and connection versions and notify the
+connection owner once; the per-connection concurrency policy admits more than
+one run; company spend and token ceilings refuse API-billed admission with
+trip evidence and founder notification; gated decisions already wait durably
+in open proposals.
+
+**Blocked:** nothing in source for Phase A. Phase B has not started; its
+gates are the closeout's remaining closure gates, now against this candidate.
+
+**Needs Jonas:** (1) approve this branch as the clean candidate for Phase B,
+or ask for changes first; (2) decide whether to push the branch to the shared
+remote; (3) approve editing the contract's section 19 checkpoint paragraph
+that still describes departments; (4) decide whether the legacy local
+product-kit `departments/` folders and the desktop "Add department" wizard
+are renamed now or later (see follow-ups above).
