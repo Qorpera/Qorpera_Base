@@ -92,3 +92,15 @@ redirect URLs for the web origins; the Order 0 deployment date on the target
 project and confirmation of the target project; early design of the
 browser-facing screens websocket gateway (Order 4); a decision on the 14
 granted-but-undocumented functions.
+
+**Rebase.** Rebased `web/client-app` onto `codex/steps-0-2-fable-handoff` at
+`ebbd1e734` (six new runtime commits: Order 1 provider usage-limit signals,
+connection concurrency policy, company execution ceilings). No conflicts. The
+client contract file is not on the runtime branch; it travels with this branch
+until the runtime session adopts it. Two new `authenticated` RPCs appeared in
+the migrations (`qorpera_list_member_notifications`,
+`qorpera_company_execution_ceiling_json`); they are not in the contract, so the
+web app does not call them yet (request 8). Typecheck, tests, build, Biome and
+the repo import/pinned-dependency checks pass after the rebase.
+Anonymous probe: neither new RPC is deployed on the target project yet
+(`PGRST202`).

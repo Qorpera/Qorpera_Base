@@ -432,3 +432,14 @@ above.
    protocol, and lifecycle records that distinguish viewer closure from
    computer shutdown (§21 item 27). Request: the design note before Order 4
    implementation so the web client can be built against it.
+8. **Two member RPCs added on `codex/steps-0-2-fable-handoff` today without a
+   contract entry.** After rebasing onto `ebbd1e734`, the grant replay shows
+   `qorpera_list_member_notifications(p_profile_id, p_limit)` and
+   `qorpera_company_execution_ceiling_json(p_profile_id)` (migrations
+   `20260828019980`, `20260828019995`) granted to `authenticated`. Request:
+   add both to §2 with their return shapes; the web client will render member
+   notifications (`provider_usage_limit`, `company_ceiling_tripped`) and the
+   company ceiling state once they are listed, and not before. Note also that
+   this file exists only on `web/client-app` so far — the runtime branch tip
+   has no copy — so the runtime session needs to adopt it (or say where the
+   canonical copy lives) for the "same commit" rule in §8 to hold.
