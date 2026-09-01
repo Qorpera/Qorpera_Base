@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added inactive cloud worker/todo lifecycle components with closed versioned contracts, reserved completion capacity, explicit same-worker blocked-checkpoint continuation, Company File output/proposal persistence tests, guarded admission status, parent-only reporting that excludes coworker sends, private parent-continuation intent, failure-isolated recovery, and fail-closed integration adapters.
+
 ## [0.20.44] - 2026-08-28
 
 ### Fixed

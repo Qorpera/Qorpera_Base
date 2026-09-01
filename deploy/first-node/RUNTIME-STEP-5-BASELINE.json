@@ -1,0 +1,1722 @@
+{
+  "capturedAt": "2026-08-28T16:32:05.319Z",
+  "note": "Read-only start-of-task capture. SHA-256 hashes cover working files, including uncommitted changes. No reference files are edited. Skills loaded: 0.",
+  "references": [
+    {
+      "name": "assigned",
+      "root": "/Users/jonas/.codex/worktrees/078f/Qorpera_Base-step2",
+      "revision": "a0b692947d5c867353591b36172afcc997f0521e",
+      "status": "## HEAD (no branch)",
+      "files": [
+        {
+          "path": "AGENTS.md",
+          "sha256": "9f0b5de90560e82fb50796255853321c69985e446f645d3ad2bd63f57e0c0c80"
+        },
+        {
+          "path": "package-lock.json",
+          "sha256": "e427e75b5413024e487d395c42f0af0f1c45f0195a928879b72e19be14e60ae3"
+        },
+        {
+          "path": "package.json",
+          "sha256": "5a31e1b368b50dd3a549eaf0b0fe0bea5a2d8621460e50a4874b55731bb71e73"
+        },
+        {
+          "path": "packages/coding-agent/src/core/tools/company-tool.ts",
+          "sha256": "9a07244e1eec0a803601fc25f39cefc22957dffff72ff006666569e01328949a"
+        },
+        {
+          "path": "packages/coding-agent/src/core/tools/delegate-to-staff.ts",
+          "sha256": "fe04c2e265f932fc1473535f00de67666c12c08fd50d334e0814b177c49bbcf7"
+        },
+        {
+          "path": "packages/company/CHANGELOG.md",
+          "sha256": "7c8c1a44d65268f57b81f0a0fa780f043d9eb8ced66d76be97c4927982eee526"
+        },
+        {
+          "path": "packages/company/README.md",
+          "sha256": "835204bf9491a27d4d22567ee6f0b7cd1c08ec2eb730a307b7948383e22ed047"
+        },
+        {
+          "path": "packages/company/package.json",
+          "sha256": "b9a69cec8a7fd32f4b990023c7f1422afcd26d69a17f8d916443ae5708707db4"
+        },
+        {
+          "path": "packages/company/src/company-agent-messages.ts",
+          "sha256": "b8c1cb993956c6db4754b18add64e147796f5c67ef4891d37356c43f0916f459"
+        },
+        {
+          "path": "packages/company/src/company-artifacts.ts",
+          "sha256": "6c7d5f5f32cabb0d475588161946319b159436b518c9a4a882429444de35f1e2"
+        },
+        {
+          "path": "packages/company/src/company-connectors.ts",
+          "sha256": "efcae3cadaf2a3fbe8451b23cf00f669aa5498228e2ac53ca1d224f20cffbbb0"
+        },
+        {
+          "path": "packages/company/src/company-lock-heartbeat.ts",
+          "sha256": "f46e3e0dfbefc905ff2f66469d118b4d0d54feadc6966bdafd979de4e321fd0c"
+        },
+        {
+          "path": "packages/company/src/company-rooms.ts",
+          "sha256": "28a06c6d4d702c22f19f95c38750d98295b49f7858b81cf65049d18faf1fdacf"
+        },
+        {
+          "path": "packages/company/src/company-runtime-lock.ts",
+          "sha256": "b29509d0bfbe211241db3cb5452fda4c7aace1daea5bb59a48db7033f6f08b50"
+        },
+        {
+          "path": "packages/company/src/company-staff.ts",
+          "sha256": "b52c13bfd6c05448919278e5b264ad65cff7a5991f2e547170753e6b97e6e0ba"
+        },
+        {
+          "path": "packages/company/src/index.ts",
+          "sha256": "d4175413d3e52c5b11189f4ee556e28eb4a38fe942ee4671e20216ce7849eff3"
+        },
+        {
+          "path": "packages/company/test/company-runtime-lock.test.ts",
+          "sha256": "e0cc9e74cf0393deeeea3161b5e73e577c2e0d86e3b39c858182c3e1fed1b7c8"
+        },
+        {
+          "path": "packages/company/tsconfig.build.json",
+          "sha256": "5d1d8e87055b879ea8525af3d2061952705dac28f2a79450cc86b138828eff3f"
+        },
+        {
+          "path": "packages/contracts/CHANGELOG.md",
+          "sha256": "f01421011481377d9544b3d3b0881ce1047729a1dd786c55c7008e1eb566e1fc"
+        },
+        {
+          "path": "packages/contracts/README.md",
+          "sha256": "3a3cea39a698f46f1aac517824e384cba48d4cc025a95f2d29614a45d85980da"
+        },
+        {
+          "path": "packages/contracts/package.json",
+          "sha256": "c9291b42ca6e7582d6b6272bb92d28b3dead2446d30032a44c994b1fc470d35c"
+        },
+        {
+          "path": "packages/contracts/src/index.ts",
+          "sha256": "33e913f275e6eb3d22ad4331f07a7aec59310e332a1b6a28cc7f94e855ef5ecf"
+        },
+        {
+          "path": "packages/contracts/tsconfig.build.json",
+          "sha256": "5d1d8e87055b879ea8525af3d2061952705dac28f2a79450cc86b138828eff3f"
+        },
+        {
+          "path": "packages/shell/src/cloud-access-refresh.ts",
+          "sha256": "b101b036037d636cc048eeb93ef708a4fd15588d0f5c3550ec874d4655a24d6f"
+        },
+        {
+          "path": "packages/shell/src/cloud-agent-mouth.ts",
+          "sha256": "c1a79015ab66066978eb03717230ffdb8b192b6f87d31397820f02005379d077"
+        },
+        {
+          "path": "packages/shell/src/cloud-company-execution.ts",
+          "sha256": "0789de658c34a0db27e4d9073f6f1e3061365d7fe411dfbe0e97b9eaac587cbe"
+        },
+        {
+          "path": "packages/shell/src/cloud-company-file.ts",
+          "sha256": "195345fb211e7b0669e634a8560ad4a0fc312d4cef3d4e625b4db4894c4d6d74"
+        },
+        {
+          "path": "packages/shell/src/cloud-company-inbox.ts",
+          "sha256": "4d3b6b703335efd1c9bf5e577b349624ec4c14610379dfbda0b71b8e7f4abf66"
+        },
+        {
+          "path": "packages/shell/src/cloud-company-merge.ts",
+          "sha256": "02cbb3f31f5c8f5f43bbe88d66265d29ffa46b97dba94b4d6d378f763c595108"
+        },
+        {
+          "path": "packages/shell/src/cloud-company-projection.ts",
+          "sha256": "ee622141e0ccca29501022b99ef875615358df8ec3b818a69d75b525aa694454"
+        },
+        {
+          "path": "packages/shell/src/cloud-company-proposal-review.ts",
+          "sha256": "394bc050d3c275fb003bc8c308a326e99c395a1050866ab52645bb26bf1e7d05"
+        },
+        {
+          "path": "packages/shell/src/cloud-company-publication.ts",
+          "sha256": "0d221525516892f9d8ba11a225f8ea40c25fc97d41256d2e9c47c8f9887ff955"
+        },
+        {
+          "path": "packages/shell/src/cloud-company-snapshot.ts",
+          "sha256": "68b328fd4afde4afad63140cb5bc001024ad160050adcf42063f034c1d8b89a0"
+        },
+        {
+          "path": "packages/shell/src/cloud-company-substrate.ts",
+          "sha256": "e16e6949de79388492c9eac295fcf998fcf55a4586c9d19cc29069fc789c0384"
+        },
+        {
+          "path": "packages/shell/src/cloud-company-workspace.ts",
+          "sha256": "8e25dbb0c77f80c9fc961165123f6f330142009b0c7b72d54dab45ddfb3484d2"
+        },
+        {
+          "path": "packages/shell/src/cloud-native-provider-host.ts",
+          "sha256": "e538d8b2b7523690e2ef83585a4050659cf88212f0c51982bf29af60dcd27145"
+        },
+        {
+          "path": "packages/shell/src/cloud-native-provider-service-main.ts",
+          "sha256": "3bbe1e7bc50ce8ab45e1f40919d51be0050b9a26f1c9f730ec0432deec62f774"
+        },
+        {
+          "path": "packages/shell/src/cloud-native-provider-service.ts",
+          "sha256": "f270306b24f69e981c658fd5ead745e77c4bf4e95e819eba680062935b22104f"
+        },
+        {
+          "path": "packages/shell/src/cloud-native-provider.ts",
+          "sha256": "8aad33fd67fc382227e06e80e416bd81b71074204229733a282434f4bf7b0b73"
+        },
+        {
+          "path": "packages/shell/src/cloud-native-subscription-control.ts",
+          "sha256": "4c2a3c2e8206bd401f49501205f94e24780738fd13fc70f4c2ebf222994845da"
+        },
+        {
+          "path": "packages/shell/src/cloud-object-reachability.ts",
+          "sha256": "e87fdee7431013147f4f0620581effff2bbc1b24bce47a9a0beec699ecf2bf2b"
+        },
+        {
+          "path": "packages/shell/src/cloud-object-store.ts",
+          "sha256": "fda5c1518d87698c7c595e8120dd2a5f0bb226b84d7da108cb938341ac6fb756"
+        },
+        {
+          "path": "packages/shell/src/cloud-presence.ts",
+          "sha256": "65cde968d5791fe23528935ef21aafb48cf01d9fb863afbc911b24f01b2312c0"
+        },
+        {
+          "path": "packages/shell/src/cloud-prompt-outbox.ts",
+          "sha256": "0119e60afede99da94fdfca81d6db2d3bf08b08ea6e7fb8c4e767b0cfb1bc1ee"
+        },
+        {
+          "path": "packages/shell/src/cloud-realtime-sync.ts",
+          "sha256": "4dfe83500678ce0f445b12df889bca1ac26fe39d1277e8399442375cea33429a"
+        },
+        {
+          "path": "packages/shell/src/cloud-runner-admin.ts",
+          "sha256": "6b40a6cff47272175840e056cc3858bde048de1f61bf34b59359dddcaa07db79"
+        },
+        {
+          "path": "packages/shell/src/cloud-runner-assignment-inbox.ts",
+          "sha256": "f4f0eefea91d98f363ac35b4bba68dd65c792e6ecb49f8a1fc7486244c5d0d35"
+        },
+        {
+          "path": "packages/shell/src/cloud-runner-broker.ts",
+          "sha256": "e250aabd31902e4e54f57b41bba6b49398ba0b74e3d16c449cd819750a6a261b"
+        },
+        {
+          "path": "packages/shell/src/cloud-runner-container-main.ts",
+          "sha256": "dbd53c4c604ed03162b603236a646b984cb1d338eb00467d46fdd3bcfd7cb36b"
+        },
+        {
+          "path": "packages/shell/src/cloud-runner-container.ts",
+          "sha256": "41096e9497b8b72142d238d86610758ad32da318bc13aad4ad8118f6f352c356"
+        },
+        {
+          "path": "packages/shell/src/cloud-runner-control.ts",
+          "sha256": "dd4bc245edd66321f6ec5901b2ab1c2d196886eea907f958d1d500accd2c0933"
+        },
+        {
+          "path": "packages/shell/src/cloud-runner-model-socket.ts",
+          "sha256": "567cf9938fc31eeeb936640572e5342830c0d49ee1cccf43b2a8a9b3bc66f05e"
+        },
+        {
+          "path": "packages/shell/src/cloud-runner-model.ts",
+          "sha256": "81e00810c6b4cc61c0c1c78142593efd225299774707c74c6b6d0e39ed37c01a"
+        },
+        {
+          "path": "packages/shell/src/cloud-runner-podman.ts",
+          "sha256": "036220b7585e84c9ae7cabd409478a2c1a9f5d1cc5f041a4ffa53ba0d29aad67"
+        },
+        {
+          "path": "packages/shell/src/cloud-runner-sandbox.ts",
+          "sha256": "3c662c7afb9a4431c0bf49310c23beb9142c907bc2d0cc4bcb813fd674e459f7"
+        },
+        {
+          "path": "packages/shell/src/cloud-runner-service-main.ts",
+          "sha256": "b8c8a8d4cd2bb0bba08c684fa88fa4fcd044dba03b0381c59c42dbbf8cf2eeb6"
+        },
+        {
+          "path": "packages/shell/src/cloud-runner-service.ts",
+          "sha256": "8841624b7b9d22394a013ecd941eb31bc97ce411c4204b52cdeed15ce66e2c6e"
+        },
+        {
+          "path": "packages/shell/src/cloud-runner-usage.ts",
+          "sha256": "28e3cba0ed8a1e06bfcdc71be980f3578383683d47b2ea08c525161e19fe6885"
+        },
+        {
+          "path": "packages/shell/src/cloud-runner-worker-state.ts",
+          "sha256": "9e015754cb83c3933fe67db28727c05ca418b60429f430cee206d6319f4d2027"
+        },
+        {
+          "path": "packages/shell/src/cloud-runner-worker.ts",
+          "sha256": "ffaf00f8a22312b7cd2ffa3be287d4546ab25a8a1609e0274ed181a8c51dbc20"
+        },
+        {
+          "path": "packages/shell/src/cloud-session-arbiter.ts",
+          "sha256": "af591d6cf7316b67bd377963cf35edccaa93ab7a5164dc54bcdf5bb4d1fb115d"
+        },
+        {
+          "path": "packages/shell/src/cloud-session-run-control.ts",
+          "sha256": "ac4a491ebddecd3776ced720b82ee1969916c10e67990bd966d2d71dc8b63e28"
+        },
+        {
+          "path": "packages/shell/src/cloud-staff-sync.ts",
+          "sha256": "3b7d6c0ca89c8380e08334e5a4e9567fa9b6fe9bf98c5acd5483ed3829bea222"
+        },
+        {
+          "path": "packages/shell/src/cloud-sync-loop.ts",
+          "sha256": "2aa81b91c2314ea90f64a855ac4bf48b9ea5700a6d5a41dd0b3f68a4dcc6a708"
+        },
+        {
+          "path": "packages/shell/src/cloud-trail-sync.ts",
+          "sha256": "2eee7386627393e37915da14a01bb298b075ed74f7c44bed07e01d558f4cefe5"
+        },
+        {
+          "path": "packages/shell/src/cloud-wake-arbiter.ts",
+          "sha256": "8b35c63e6c2ef358f3e9a6c0a014358150044d32b153274937b225e7ae6b8149"
+        },
+        {
+          "path": "packages/shell/src/company-operation-broker.ts",
+          "sha256": "aa53cc7d80e2a35683d1d102f6a5459416468788c00cf62d4749f572ecccb339"
+        },
+        {
+          "path": "packages/shell/src/room-delegation-policy.ts",
+          "sha256": "ea4cdf070bc4c217e1b1320348dbd06915212d25478c7352d8d19872f8ba60ce"
+        },
+        {
+          "path": "packages/shell/src/staff-runtime-state.ts",
+          "sha256": "1ae948449d49cc11bb009fc9fdd2d4cf61f65e7735442273d9bb6dc94aa7e531"
+        },
+        {
+          "path": "packages/shell/test/cloud-access-refresh.test.ts",
+          "sha256": "79bd15bbc168dea854553d6568d68b50f799e8715f5b2524cc3ed4ff0655b2c6"
+        },
+        {
+          "path": "packages/shell/test/cloud-agent-mouth-delivery.test.ts",
+          "sha256": "f1e4150f4c9764096b33aa810afd676bddcdf6385953cf3f65febc9e88004637"
+        },
+        {
+          "path": "packages/shell/test/cloud-agent-mouth.test.ts",
+          "sha256": "56ce3e8e31c3013669c6072ee77dde04c86bd2095b0a87220bcaf1a6091ac615"
+        },
+        {
+          "path": "packages/shell/test/cloud-company-execution.test.ts",
+          "sha256": "deb36ffd6f0b671d600991b0bcc116f36e2c3992c119ba037beef799fe67dfad"
+        },
+        {
+          "path": "packages/shell/test/cloud-company-file-contract.test.ts",
+          "sha256": "8543d5ee30c50a4897f6ccef471b60e6e5acd28c7a5749265f04c8461f4dd4b6"
+        },
+        {
+          "path": "packages/shell/test/cloud-company-file.test.ts",
+          "sha256": "e5ad4dc54abe1ab2fb94d5d3d4b2d75a44dbc6096be4d8610390792dddbf1c06"
+        },
+        {
+          "path": "packages/shell/test/cloud-company-identity.test.ts",
+          "sha256": "c89d320258d45f05921907fc671705f07757ca21d45c01c547f9bc01522777a0"
+        },
+        {
+          "path": "packages/shell/test/cloud-company-inbox.test.ts",
+          "sha256": "649dd50aab358ef0f1df125fcaa9a871ed985294d98f4a59680050ec220de643"
+        },
+        {
+          "path": "packages/shell/test/cloud-company-merge.test.ts",
+          "sha256": "685f3485a7677576b3e1574f1d6cb3f4dd2900c683174058a6aa3424b90f910c"
+        },
+        {
+          "path": "packages/shell/test/cloud-company-projection.test.ts",
+          "sha256": "740eb817e73495164b1a9d21a517dd40d9cc8abe0575a967a624402753fe7d0d"
+        },
+        {
+          "path": "packages/shell/test/cloud-company-publication.test.ts",
+          "sha256": "6362d0eeed47cf109a3c4fa0b8d87570dbb3954ea83d398cd8d99a4ab3e337db"
+        },
+        {
+          "path": "packages/shell/test/cloud-company-snapshot.test.ts",
+          "sha256": "adcf88e824fa5aae91946ae608e389c15c7edfdb0fcfbad634d56366e94fb329"
+        },
+        {
+          "path": "packages/shell/test/cloud-company-substrate.test.ts",
+          "sha256": "33bd8db03dc3de125cb5ec43f43dc0ec528c64386a00c5b79733dd7028045861"
+        },
+        {
+          "path": "packages/shell/test/cloud-native-provider-host.test.ts",
+          "sha256": "aeed740a9b6493b30db94acbc0988917a8ecf31d71a2b44da151bc45adea9414"
+        },
+        {
+          "path": "packages/shell/test/cloud-native-provider-service-main.test.ts",
+          "sha256": "221756cc149a008d4a15dfa39f14d5d8862bdae4667bb9fda6da5d4240672384"
+        },
+        {
+          "path": "packages/shell/test/cloud-native-provider.test.ts",
+          "sha256": "7afbd8ca07ab3291192eb9c3bb047df383047f476ae042e12373eacac6388337"
+        },
+        {
+          "path": "packages/shell/test/cloud-native-subscription-control.test.ts",
+          "sha256": "7d6c1561f87e98c668b797f0866cbaf53d2179844053a572155279ee1588ed6e"
+        },
+        {
+          "path": "packages/shell/test/cloud-object-reachability.test.ts",
+          "sha256": "dec6cbbc2ee1f4eb387dae8eeab21670e8402f821daad66ee8c26799ed5dbdec"
+        },
+        {
+          "path": "packages/shell/test/cloud-object-store.test.ts",
+          "sha256": "2c997bd97dc5716b9f0eb73c74fad734d80973c12a8d6248e14d3bb7cdb70000"
+        },
+        {
+          "path": "packages/shell/test/cloud-presence.test.ts",
+          "sha256": "d5be29ee33e16e3c6ccbd155e4dfb6f2e7923c708eea75596e93e48523a58338"
+        },
+        {
+          "path": "packages/shell/test/cloud-prompt-outbox.test.ts",
+          "sha256": "3b4e80fa6207e8416e9a006321b0e6c74e7bba6ad9dffe7ca2ae958717b720f9"
+        },
+        {
+          "path": "packages/shell/test/cloud-realtime-sync.test.ts",
+          "sha256": "4de80705eabd5ef96733cfa11b7abb69c5e5c6946d74189a79a42a59bfbbac91"
+        },
+        {
+          "path": "packages/shell/test/cloud-review-blockers-migration.test.ts",
+          "sha256": "ca8e4a98aa9b70545d9049310513fd20181a7395dd5ffd2f6bd1df76a5ef7c7e"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-admin.test.ts",
+          "sha256": "c146d5a9e6e4dd44553234696d03376b191f31f4e3338c281c9be08d1a59cb03"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-assignment-inbox.test.ts",
+          "sha256": "8628f8940e1ace43344a5420bbd32372b7e1356fe0761bfaabf05e007fabe607"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-broker.test.ts",
+          "sha256": "4b40f3be7d6b86e5b7f141d62a343ba6c01b2d543fcdfa2558784ddc27a40981"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-container.test.ts",
+          "sha256": "34a75a2705ce35678c0046e1f985b1e766a788f91b5b44f6dc607608b547bce9"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-control.test.ts",
+          "sha256": "0ae98883a25248e749023e3c9f9f5779ecbe25f860e1b4379ab12a3840c29fed"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-lifecycle.test.ts",
+          "sha256": "e9dcf2ad90491532bfd410f2cc27fbaa0e6959826308a6e392f98e7909c187da"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-model-migration.test.ts",
+          "sha256": "b8d0253e501d502a93aa4d18626987547b57e893ec70fd1e84fe30914a31cbfa"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-model-socket.test.ts",
+          "sha256": "78df923c5116f4bf1c7c8df16f35b894ef910ef15ce779fe6fde892e28bfbf7f"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-model.test.ts",
+          "sha256": "075287aec564d1e25a21b45cfd3567039fedf0459045ee84095488817e866629"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-podman-linux.integration.test.ts",
+          "sha256": "f21badfdf98e786691a4e2cb5a0c43d56da75af027f111f03dbb9ee1dc66b349"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-podman.test.ts",
+          "sha256": "35d96d515db9ced0971ca6b8e3228a6e886a8e4143b38744e5377b77438d94f9"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-sandbox.test.ts",
+          "sha256": "d1b5b58102f32e351a2cb25ea1a8c0a9e090b498f55927125458aa6987f9732d"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-service.test.ts",
+          "sha256": "ce316a077bf75240d95ec6a6ebc06f6cc4620780f1ac525aba05bdf26ef73b77"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-usage-migration.test.ts",
+          "sha256": "3bd430585d7bd68eef071545d873d16a2200d5812fcf45d21d09e91289aef0ba"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-usage.test.ts",
+          "sha256": "f058b0182ea11e5990afa616e91bbe4c8b34145aca019c1fc01e641dd97d651c"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-worker-state.test.ts",
+          "sha256": "45163b0f83f5aa54f3babd1ed2e62954bcf03a3dc9368e965cc3980ecac391ea"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-worker.test.ts",
+          "sha256": "3adebd8fd5a301007307774e0a01630007e0250c4c079a9f15f8485cd4d6ed86"
+        },
+        {
+          "path": "packages/shell/test/cloud-session-arbiter.test.ts",
+          "sha256": "45849db52eb76f9f58e18d0433fdc3c37c97316d04bd38d9787b6fcbbcfa3371"
+        },
+        {
+          "path": "packages/shell/test/cloud-session-run-control.test.ts",
+          "sha256": "bf83cc376fe5f17e9343500051545eaf584af9f7aec222e59adbbd4c761b98b7"
+        },
+        {
+          "path": "packages/shell/test/cloud-staff-sync.test.ts",
+          "sha256": "3a0f91aee6b6a7738f57510f9a8746d67387eeda697d03c136da3a71b1ad4bd9"
+        },
+        {
+          "path": "packages/shell/test/cloud-sync-loop.test.ts",
+          "sha256": "34756b999f3c9ddd8dfb1ae1bd9e05ceb1568e167750e0dd359b2b682462f6f7"
+        },
+        {
+          "path": "packages/shell/test/cloud-trail-sync.test.ts",
+          "sha256": "d417e2f087ac4e4cf3027625e8aecd8831bbcd9daeee4b0314f841b368f287e4"
+        },
+        {
+          "path": "packages/shell/test/cloud-wake-arbiter.test.ts",
+          "sha256": "f5c93a672a7f903a2f36d8fe3b29f9c00865cfaeb0a814a67f794f82c5fdc66f"
+        },
+        {
+          "path": "packages/shell/test/company-operation-broker.test.ts",
+          "sha256": "bbf00a83e583650bf151ec7fe7edc1fe4e801cc2a8d1490a51b32ae0a858e6d5"
+        },
+        {
+          "path": "packages/shell/test/fixtures/cloud-mouth-probe.ts",
+          "sha256": "908ab3f126e49b0792c6e47eb1bf4f0a57bfa9bb33888fde8acbbe24e4fe27f6"
+        },
+        {
+          "path": "packages/shell/test/fixtures/run-cloud-mouth-probe.ts",
+          "sha256": "7b4c3b0d787c26e0fa7611ca132117866689d852b2de948decb5eb17c1786539"
+        },
+        {
+          "path": "packages/shell/test/renderer-cloud-run.test.ts",
+          "sha256": "de90616f6863a6981c7b8efa000c6bc882674ba9aabdc3c2a62b3666c5e5f052"
+        },
+        {
+          "path": "packages/shell/test/room-delegation-policy.test.ts",
+          "sha256": "3ffd46e7a8cebf348c8facc739253ae6b4b69365cbc414a2e31c997bc7713bef"
+        },
+        {
+          "path": "packages/shell/test/staff-runtime-state.test.ts",
+          "sha256": "12e55777683b9ab7f5a9010d04306df6180e289718948052b851dfd0d34ef86d"
+        },
+        {
+          "path": "packages/storage/sqlite-node/CHANGELOG.md",
+          "sha256": "af7abc92135ff8bf80188e8b9217b481f03223fd5a8c73c7778df63a4a67717c"
+        },
+        {
+          "path": "packages/storage/sqlite-node/README.md",
+          "sha256": "0c81b815eb61f26feb19d30a856330d955e6192b875ac6749dcae95936539ada"
+        },
+        {
+          "path": "packages/storage/sqlite-node/package.json",
+          "sha256": "04b62c2fc2604ae21d6557889a32e23dacd0c47244afe53ef83eb4890ed1ef48"
+        },
+        {
+          "path": "packages/storage/sqlite-node/src/index.ts",
+          "sha256": "aefdfe893f4b9474f482afdca5c14dbaa470dcfae8ab6c8b590270e424eccc30"
+        },
+        {
+          "path": "packages/storage/sqlite-node/src/sqlite/index.ts",
+          "sha256": "353e74c858fd93e12a28f1532ef42dbcc5bad15febd921039b02f94632f8e6d4"
+        },
+        {
+          "path": "packages/storage/sqlite-node/src/sqlite/migrations.ts",
+          "sha256": "9691a3dd6c17d7da608d07f607865baf2e78ab4c53dbdd18874e7bd5cd8a0bd6"
+        },
+        {
+          "path": "packages/storage/sqlite-node/src/sqlite/repo.ts",
+          "sha256": "1f64431a5aadf2241dd552d1337d5afc4d743aed999b95fb9b6e4853c4a90f41"
+        },
+        {
+          "path": "packages/storage/sqlite-node/src/sqlite/search-backend.ts",
+          "sha256": "55c4f63e9c68474f364ce84172051211dbaccd945ab8ea7d6ef8b51751529008"
+        },
+        {
+          "path": "packages/storage/sqlite-node/src/sqlite/storage/branch-cache.ts",
+          "sha256": "56af12f0eb11ec5e8e731aa511c863e5465ebf6ac17f51dc05bf790a0968d9f6"
+        },
+        {
+          "path": "packages/storage/sqlite-node/src/sqlite/storage/index.ts",
+          "sha256": "b9eaf2152983aaa3af2d968f8f88b22b9e9ab2018463ab82d237295f87c287ab"
+        },
+        {
+          "path": "packages/storage/sqlite-node/src/sqlite/storage/session-entries.ts",
+          "sha256": "f8d9a100f89ce26709d4c6d78d1c8a985cab2c3552be3cd3bebb16e2bbc15f19"
+        },
+        {
+          "path": "packages/storage/sqlite-node/src/sqlite/storage/session-materialized.ts",
+          "sha256": "0e59ad469cb108f1e1cd6053b9f3bf2eed3e6723be970b5a4192e37e38ab0e64"
+        },
+        {
+          "path": "packages/storage/sqlite-node/src/sqlite/storage/session-sequences.ts",
+          "sha256": "24fedc1605825e388f0f7ca77b7e64f889b9775d6b6c8e525f8f6eaac7e42eb2"
+        },
+        {
+          "path": "packages/storage/sqlite-node/src/sqlite/storage/sessions.ts",
+          "sha256": "872b86c58382181ab87dd393f4274790d350e24d1367780e2ade3eec262bff75"
+        },
+        {
+          "path": "packages/storage/sqlite-node/src/sqlite/storage/shared.ts",
+          "sha256": "8f901bf0f766e1ca1a8bf294e97fec6a89247b5e34b1b88e18a3924df077dc1a"
+        },
+        {
+          "path": "packages/storage/sqlite-node/src/sqlite/types.ts",
+          "sha256": "706519fd324c06d3a0e81a2c2abe6ab512a2c4adc3914080f55ae02acf9da11f"
+        },
+        {
+          "path": "packages/storage/sqlite-node/tsconfig.build.json",
+          "sha256": "cb79361b9a66b258caa74e2bd3b3cc4184fbd1892f9e409a0bcd973d260a55aa"
+        },
+        {
+          "path": "scripts/check-cloud-runtime-boundaries.mjs",
+          "sha256": "e93ee7eb035d19ad87930c9d1122be33175c202d37480c0c95a87dedb1ba77d4"
+        },
+        {
+          "path": "scripts/test-hosted-db.mjs",
+          "sha256": "b48d5defc7f327933b8be3475eebf9f934f884a60db24f6f9aebc24837849b28"
+        },
+        {
+          "path": "supabase/CLOUD-CONTROL-PLANE.md",
+          "sha256": "0fb48726de44cb5d5eefe335f3341cb09bae30282587e9deb81f802b41610b81"
+        },
+        {
+          "path": "supabase/COMPANY-FILE.md",
+          "sha256": "9a4070dadf21d6ba90b2b6f69657e87d8359a0e4fe3b48e81af31c00a11f399a"
+        },
+        {
+          "path": "supabase/SESSIONS.md",
+          "sha256": "52c10c029a5b8706031630453bfa1d98bff6d8ed46ea28cebc3adc17fb61008d"
+        },
+        {
+          "path": "supabase/migrations/20260816003000_legacy_session_identity_default.sql",
+          "sha256": "3e4765eed60aa318232867335f24d232c747940925849a6c85b4b045eec742a7"
+        },
+        {
+          "path": "supabase/migrations/20260816011000_company_snapshot_dag.sql",
+          "sha256": "40467484882469e581f6d292f6f5dfa42395f3c50d987dd13e2ed25c65699309"
+        },
+        {
+          "path": "supabase/migrations/20260816012000_company_snapshot_conflict_status.sql",
+          "sha256": "8b5b5582718d56aeaaf604f3286702d596c81623bb8c2196dbe82d2ddecd6355"
+        },
+        {
+          "path": "supabase/migrations/20260816013000_company_snapshot_lookup.sql",
+          "sha256": "cd1ca2573ef7b884bcd73d2cb10d291d5a699c4a3db34acfdefa2c6a2d9c1339"
+        },
+        {
+          "path": "supabase/migrations/20260816014000_company_workspace_writer.sql",
+          "sha256": "11f44848f81031c71a9a7f86c30310143536ac75140ba6544c6df4119dc89c00"
+        },
+        {
+          "path": "supabase/migrations/20260816015000_company_substrate_versions.sql",
+          "sha256": "e86dd7ed36b587a020083732aa5f4d8b463d881966b108087149a1802ea0b2db"
+        },
+        {
+          "path": "supabase/migrations/20260816019000_runner_registration_leases.sql",
+          "sha256": "89e3f0db3f5a78054734c8337bd28d6d0ba73c898f7c2d9a59da6fe5c84cf506"
+        },
+        {
+          "path": "supabase/migrations/20260816019100_runner_claim_revocation_race.sql",
+          "sha256": "7c58348c558125a930a25cbc5444a1c4cde87e538fe705d0b6febf7832e2b390"
+        },
+        {
+          "path": "supabase/migrations/20260817000000_runner_object_broker.sql",
+          "sha256": "d79ae7a5d3bb33fe3699b7a361d9773b9d103995a522bdc13fcfe300dadd530d"
+        },
+        {
+          "path": "supabase/migrations/20260817001000_runner_output_substrates.sql",
+          "sha256": "9e6e8975322ed9cab8714ad6a7850a45e39e7d879ba30890bc7e5b7171ba9149"
+        },
+        {
+          "path": "supabase/migrations/20260817002000_runner_usage_observations.sql",
+          "sha256": "f38717de35d3fbd0b556afc0411459faebfa38fd33464b90c1872bba1a6692a9"
+        },
+        {
+          "path": "supabase/migrations/20260817003000_runner_model_gateway.sql",
+          "sha256": "d12487519ad5a420c13081ed5b01ccb7e3373cabd9897b864cdfb1d4a21db3ea"
+        },
+        {
+          "path": "supabase/migrations/20260817006000_runner_recovery_ambiguity.sql",
+          "sha256": "dbeb7f85fab7a54a3f6592fbd01965f12b1aaf5a9a3c3b398f7ee5f37584b39e"
+        },
+        {
+          "path": "supabase/migrations/20260818007000_session_arbiter.sql",
+          "sha256": "13cc9d1b1c26d5b0b0e155b9b7c3f8229510f2369738383b1a6aff97ff29f343"
+        },
+        {
+          "path": "supabase/migrations/20260819012000_wake_arbitration.sql",
+          "sha256": "fab62984059aabbc62e35b6c34355573b339e197663cabee197053e18f918068"
+        },
+        {
+          "path": "supabase/migrations/20260820001000_cloud_company_authority.sql",
+          "sha256": "a6c72f86ab3314a2b3cee76644f6fd0543f68fb92d249e0a12cd6b4b4d184244"
+        },
+        {
+          "path": "supabase/migrations/20260820002000_runner_orchestrator_contracts.sql",
+          "sha256": "eae618e37237f1642f7eaa9e63da72c8821505951b08922e29c4bf7207d369ee"
+        },
+        {
+          "path": "supabase/migrations/20260821002000_compute_identity_runner_provisioning.sql",
+          "sha256": "0ae871fe3c94799fa1243d540033c1e67b4e27e948ba0bdfe93f569ccc033b37"
+        },
+        {
+          "path": "supabase/migrations/20260821003000_native_provider_runtime_authority.sql",
+          "sha256": "faf8605a5be0b19be754d4b6af4997fe5755f4806d1e624aac262a5ac5157b47"
+        },
+        {
+          "path": "supabase/migrations/20260821004000_runner_orchestrator_control_rotation.sql",
+          "sha256": "32c0939c7420b7018da4190a98a911568bf08c19fc5a0cdd3a33c763fd73c17a"
+        },
+        {
+          "path": "supabase/migrations/20260822002000_legacy_session_import.sql",
+          "sha256": "26b47810a0cb8d78cbcbdcd3e2a4c47d4cb49fddab6970b2ee2d524433ca2dab"
+        },
+        {
+          "path": "supabase/migrations/20260822003000_remove_legacy_session_import.sql",
+          "sha256": "33797dbc0295f37b678d370644777db5460439b5bf3d00785f380cb78b2c8d6e"
+        },
+        {
+          "path": "supabase/migrations/20260824002000_runner_assignment_lease_renewal.sql",
+          "sha256": "a0c9691628b2443a19a18740e8a6f083a0eba617b4f5bc2a97f112d42069b96f"
+        },
+        {
+          "path": "supabase/migrations/20260825211000_runner_lease_incident_window.sql",
+          "sha256": "aabeef9ee92f08b5caa7be242ab2aa98d115a791f5626c17ede2fc56992cde19"
+        },
+        {
+          "path": "supabase/migrations/20260826020000_trail_execution_optional.sql",
+          "sha256": "88dc7f4fb0e1b48f4b354dbed44c3ff2c2509b633868130721a15e9d748774fc"
+        },
+        {
+          "path": "supabase/migrations/20260827005000_cloud_runner_cancellation.sql",
+          "sha256": "60e08dca3a4cfd3868da5a0b5b205f41c6469bd4fc7e14488aa739c250570cc4"
+        },
+        {
+          "path": "supabase/migrations/20260828002000_cloud_session_run_control.sql",
+          "sha256": "dbb75cff3cf29942c3f787880808aa0d797415ea47e226beaec8cbab31a7b248"
+        },
+        {
+          "path": "supabase/tests/020_runner_recovery_ambiguity.test.sql",
+          "sha256": "f29af9e877b7b4c393b30809855788b1006fd186092238a2a9338ab3fd588bbc"
+        },
+        {
+          "path": "supabase/tests/100_session_arbiter.test.sql",
+          "sha256": "51b74673de1915b77c5a96e3911941709052d523bd34ca97e6712108985456f1"
+        },
+        {
+          "path": "supabase/tests/130_wake_arbitration.test.sql",
+          "sha256": "d93e6e2490ca2dda5c6cbeb59b225c8ca2d9d6163384dfaf75f17e05f0342c71"
+        },
+        {
+          "path": "supabase/tests/140_cloud_company_authority.test.sql",
+          "sha256": "e85d68bc494206bc0857e3df5fb3c4649db2f232651216787da64546f26c4750"
+        },
+        {
+          "path": "supabase/tests/150_runner_orchestrator.test.sql",
+          "sha256": "412a5b9c918f01b424afd2451b572165c09436062cbfd7aec422a8e9571388bc"
+        },
+        {
+          "path": "supabase/tests/170_runner_orchestrator_rotation.test.sql",
+          "sha256": "7a67299560a3887e005d82c17a4a3304f5883a4ef8894e3554b3984933bb53e5"
+        },
+        {
+          "path": "supabase/tests/230_no_legacy_session_import.test.sql",
+          "sha256": "06c8cc9c190fb02a1ca229c96aa11f0e58a87e0799005e25463cecea3e548f96"
+        },
+        {
+          "path": "supabase/tests/280_cloud_session_run_control.test.sql",
+          "sha256": "6e2e4de20694d4fcc91083ac9670f4194068384c4730577731c4f01ddb3876ac"
+        },
+        {
+          "path": "tsconfig.base.json",
+          "sha256": "2db314b2e40a37a94e7b1da0af3883b7dd0ef2a8abc4b22138ae1ceb7cc2375f"
+        },
+        {
+          "path": "tsconfig.json",
+          "sha256": "8d1a43bff2f72755c142f716d1c6ed65c29d66ad184058706e1893d461b08e3f"
+        }
+      ]
+    },
+    {
+      "name": "runtime-contract",
+      "root": "/Users/jonas/.codex/worktrees/27d4/Qorpera_Base-step2",
+      "revision": "18181de7f2698c9f44347a7ee141eebead84bc35",
+      "status": "## codex/runtime-step1-cloud-mouth...origin/codex/runtime-step1-cloud-mouth\n M AGENTS.md\n M QORPERA-STAFF-SHELL-SPEC.md\n M README.md\n M deploy/first-node/STEP-3-COMPANY-COMPUTERS.md\n M packages/coding-agent/docs/company.md\n M packages/coding-agent/docs/engine.md\n M packages/contracts/CHANGELOG.md\n M packages/contracts/src/index.ts\n M packages/shell/src/main.ts\n M packages/shell/src/preload.cjs\n D packages/shell/src/staff-deletion.ts\n M packages/shell/src/staff-templates.ts\n M packages/shell/test/staff-conception-e2e.test.ts\n D packages/shell/test/staff-deletion.test.ts\n M packages/shell/test/staff-templates.test.ts\n M packages/shell/test/userland-wiring.test.ts\n M packages/shell/userland/index.html\n M packages/shell/userland/localization.js\n M packages/shell/userland/renderer.js\n M supabase/CLOUD-CONTROL-PLANE.md\n M supabase/COMPANY-FILE.md\n?? QORPERA-RUNTIME-CONTRACT.md\n?? deploy/first-node/RUNTIME-STEP-2-AUDIT.md\n?? supabase/migrations/20260827001000_delete_profile_staff_dependents.sql\n?? supabase/migrations/20260827002000_seed_company_cofounder.sql\n?? supabase/migrations/20260827003000_multiplayer_authority_spine.sql\n?? supabase/tests/185_staff_deletion.test.sql\n?? supabase/tests/186_seed_company_cofounder.test.sql\n?? supabase/tests/187_multiplayer_authority_spine.test.sql\n?? supabase/tests/188_company_file_path_authority.test.sql",
+      "files": [
+        {
+          "path": "AGENTS.md",
+          "sha256": "8857d289cf9cdbff5b01a9fe4e424a6d73bb01dc3123af8b05a4305a13e833ca"
+        },
+        {
+          "path": "QORPERA-RUNTIME-CONTRACT.md",
+          "sha256": "f6c9836df26c313bab133b6d77465749ecb14b023e6b71f44fb850a25d919ede"
+        }
+      ]
+    },
+    {
+      "name": "main-read-only",
+      "root": "/private/tmp/qorpera-step2-resume.rN3rbf/source",
+      "revision": "a20dd1ef0dbdcce31166789053b2d7bb5ab2a929",
+      "status": "## codex/runtime-step2-fenced-cloud",
+      "files": [
+        {
+          "path": "AGENTS.md",
+          "sha256": "9f0b5de90560e82fb50796255853321c69985e446f645d3ad2bd63f57e0c0c80"
+        },
+        {
+          "path": "package-lock.json",
+          "sha256": "e427e75b5413024e487d395c42f0af0f1c45f0195a928879b72e19be14e60ae3"
+        },
+        {
+          "path": "package.json",
+          "sha256": "5a31e1b368b50dd3a549eaf0b0fe0bea5a2d8621460e50a4874b55731bb71e73"
+        },
+        {
+          "path": "packages/coding-agent/src/core/tools/company-tool.ts",
+          "sha256": "9a07244e1eec0a803601fc25f39cefc22957dffff72ff006666569e01328949a"
+        },
+        {
+          "path": "packages/coding-agent/src/core/tools/delegate-to-staff.ts",
+          "sha256": "fe04c2e265f932fc1473535f00de67666c12c08fd50d334e0814b177c49bbcf7"
+        },
+        {
+          "path": "packages/company/CHANGELOG.md",
+          "sha256": "7c8c1a44d65268f57b81f0a0fa780f043d9eb8ced66d76be97c4927982eee526"
+        },
+        {
+          "path": "packages/company/README.md",
+          "sha256": "835204bf9491a27d4d22567ee6f0b7cd1c08ec2eb730a307b7948383e22ed047"
+        },
+        {
+          "path": "packages/company/package.json",
+          "sha256": "b9a69cec8a7fd32f4b990023c7f1422afcd26d69a17f8d916443ae5708707db4"
+        },
+        {
+          "path": "packages/company/src/company-agent-messages.ts",
+          "sha256": "b8c1cb993956c6db4754b18add64e147796f5c67ef4891d37356c43f0916f459"
+        },
+        {
+          "path": "packages/company/src/company-artifacts.ts",
+          "sha256": "6c7d5f5f32cabb0d475588161946319b159436b518c9a4a882429444de35f1e2"
+        },
+        {
+          "path": "packages/company/src/company-connectors.ts",
+          "sha256": "efcae3cadaf2a3fbe8451b23cf00f669aa5498228e2ac53ca1d224f20cffbbb0"
+        },
+        {
+          "path": "packages/company/src/company-lock-heartbeat.ts",
+          "sha256": "f46e3e0dfbefc905ff2f66469d118b4d0d54feadc6966bdafd979de4e321fd0c"
+        },
+        {
+          "path": "packages/company/src/company-rooms.ts",
+          "sha256": "28a06c6d4d702c22f19f95c38750d98295b49f7858b81cf65049d18faf1fdacf"
+        },
+        {
+          "path": "packages/company/src/company-runtime-lock.ts",
+          "sha256": "b29509d0bfbe211241db3cb5452fda4c7aace1daea5bb59a48db7033f6f08b50"
+        },
+        {
+          "path": "packages/company/src/company-staff.ts",
+          "sha256": "b52c13bfd6c05448919278e5b264ad65cff7a5991f2e547170753e6b97e6e0ba"
+        },
+        {
+          "path": "packages/company/src/index.ts",
+          "sha256": "d4175413d3e52c5b11189f4ee556e28eb4a38fe942ee4671e20216ce7849eff3"
+        },
+        {
+          "path": "packages/company/test/company-runtime-lock.test.ts",
+          "sha256": "e0cc9e74cf0393deeeea3161b5e73e577c2e0d86e3b39c858182c3e1fed1b7c8"
+        },
+        {
+          "path": "packages/company/tsconfig.build.json",
+          "sha256": "5d1d8e87055b879ea8525af3d2061952705dac28f2a79450cc86b138828eff3f"
+        },
+        {
+          "path": "packages/contracts/CHANGELOG.md",
+          "sha256": "f01421011481377d9544b3d3b0881ce1047729a1dd786c55c7008e1eb566e1fc"
+        },
+        {
+          "path": "packages/contracts/README.md",
+          "sha256": "3a3cea39a698f46f1aac517824e384cba48d4cc025a95f2d29614a45d85980da"
+        },
+        {
+          "path": "packages/contracts/package.json",
+          "sha256": "c9291b42ca6e7582d6b6272bb92d28b3dead2446d30032a44c994b1fc470d35c"
+        },
+        {
+          "path": "packages/contracts/src/index.ts",
+          "sha256": "33e913f275e6eb3d22ad4331f07a7aec59310e332a1b6a28cc7f94e855ef5ecf"
+        },
+        {
+          "path": "packages/contracts/tsconfig.build.json",
+          "sha256": "5d1d8e87055b879ea8525af3d2061952705dac28f2a79450cc86b138828eff3f"
+        },
+        {
+          "path": "packages/shell/src/cloud-access-refresh.ts",
+          "sha256": "b101b036037d636cc048eeb93ef708a4fd15588d0f5c3550ec874d4655a24d6f"
+        },
+        {
+          "path": "packages/shell/src/cloud-agent-mouth.ts",
+          "sha256": "99e4986804b94d963ce7a326a555198ddb8bbebc2a648b7793cff3515d698d31"
+        },
+        {
+          "path": "packages/shell/src/cloud-codex-tool-session.ts",
+          "sha256": "9ac6a6bfd081660aaf8725ae0dce12d94770e8819bf2041c4240e2cdadf07d00"
+        },
+        {
+          "path": "packages/shell/src/cloud-company-display.ts",
+          "sha256": "f7f2293030fa76cc71bdb70c929cbd3f6a10647ced3f36080a2755f1d4393aca"
+        },
+        {
+          "path": "packages/shell/src/cloud-company-execution.ts",
+          "sha256": "0789de658c34a0db27e4d9073f6f1e3061365d7fe411dfbe0e97b9eaac587cbe"
+        },
+        {
+          "path": "packages/shell/src/cloud-company-file.ts",
+          "sha256": "195345fb211e7b0669e634a8560ad4a0fc312d4cef3d4e625b4db4894c4d6d74"
+        },
+        {
+          "path": "packages/shell/src/cloud-company-inbox.ts",
+          "sha256": "4d3b6b703335efd1c9bf5e577b349624ec4c14610379dfbda0b71b8e7f4abf66"
+        },
+        {
+          "path": "packages/shell/src/cloud-company-merge.ts",
+          "sha256": "02cbb3f31f5c8f5f43bbe88d66265d29ffa46b97dba94b4d6d378f763c595108"
+        },
+        {
+          "path": "packages/shell/src/cloud-company-path-control.ts",
+          "sha256": "6a8fe6184b8857fca4a509c68da627faf5398a8a6773e35574fed6df2638d808"
+        },
+        {
+          "path": "packages/shell/src/cloud-company-path-gateway.ts",
+          "sha256": "0307031c56c7537f62c639effeab5c4adf5bfee52bfd4696802a35ae3cdced27"
+        },
+        {
+          "path": "packages/shell/src/cloud-company-projection.ts",
+          "sha256": "ee622141e0ccca29501022b99ef875615358df8ec3b818a69d75b525aa694454"
+        },
+        {
+          "path": "packages/shell/src/cloud-company-proposal-review.ts",
+          "sha256": "394bc050d3c275fb003bc8c308a326e99c395a1050866ab52645bb26bf1e7d05"
+        },
+        {
+          "path": "packages/shell/src/cloud-company-publication.ts",
+          "sha256": "0d221525516892f9d8ba11a225f8ea40c25fc97d41256d2e9c47c8f9887ff955"
+        },
+        {
+          "path": "packages/shell/src/cloud-company-snapshot.ts",
+          "sha256": "68b328fd4afde4afad63140cb5bc001024ad160050adcf42063f034c1d8b89a0"
+        },
+        {
+          "path": "packages/shell/src/cloud-company-substrate.ts",
+          "sha256": "e16e6949de79388492c9eac295fcf998fcf55a4586c9d19cc29069fc789c0384"
+        },
+        {
+          "path": "packages/shell/src/cloud-company-workspace.ts",
+          "sha256": "8e25dbb0c77f80c9fc961165123f6f330142009b0c7b72d54dab45ddfb3484d2"
+        },
+        {
+          "path": "packages/shell/src/cloud-member-company-editor.ts",
+          "sha256": "99c6d2377f09aa8144dcf85220aef47e3dfbf115e8605ca46cc64932f5d609a6"
+        },
+        {
+          "path": "packages/shell/src/cloud-member-company-file.ts",
+          "sha256": "bdc1a110acba050eb2b8eb19642592b712cf6f6bc662bcb58590439a07941153"
+        },
+        {
+          "path": "packages/shell/src/cloud-native-company-context.ts",
+          "sha256": "9157f4386155ad7d8c58f8f9177afe1ae08c42b8c78ef2b2fda42774a0780330"
+        },
+        {
+          "path": "packages/shell/src/cloud-native-company-objects.ts",
+          "sha256": "3b06e54cde248c4f628a064c57f21a0fe666e30082fc5a25975c1a8183cf41ab"
+        },
+        {
+          "path": "packages/shell/src/cloud-native-company-runner.ts",
+          "sha256": "fde9a2f2dcb66378f59e51114e28ce40434193a1e4c077fd9e870e1ac9cde752"
+        },
+        {
+          "path": "packages/shell/src/cloud-native-company-runtime.ts",
+          "sha256": "7bb56e854380bb17f84887653a9b8399c1c5cc8f16203fcd8dabcf7e43b619ea"
+        },
+        {
+          "path": "packages/shell/src/cloud-native-egress.ts",
+          "sha256": "dfa30fed9496f27f07f047218d3b58d2227df3dc95e31c0b47adb03c20ba552b"
+        },
+        {
+          "path": "packages/shell/src/cloud-native-isolation-child.ts",
+          "sha256": "a5c6b74a1eb29482258895badac94b91b22b5c8f244ee2150753c4b67ec00f5f"
+        },
+        {
+          "path": "packages/shell/src/cloud-native-isolation.ts",
+          "sha256": "f8aeea7f56fc95b75d642f9ea33bacd80b54a8412a9337550742d870f3485405"
+        },
+        {
+          "path": "packages/shell/src/cloud-native-provider-host.ts",
+          "sha256": "269e3bd53b45ddc52d1be6136ce956b978d535bf3a355c0c43ca4e1dd27c6c90"
+        },
+        {
+          "path": "packages/shell/src/cloud-native-provider-service-main.ts",
+          "sha256": "ab88524a0094b6dd3600b27d7914588d7c94524b5799f2e97073fe1c9a0ada91"
+        },
+        {
+          "path": "packages/shell/src/cloud-native-provider-service.ts",
+          "sha256": "a888b89e3abb7f6d399570765110647273df0a88300e3e5c12064b03a779f9a4"
+        },
+        {
+          "path": "packages/shell/src/cloud-native-provider.ts",
+          "sha256": "54067da68ff25042df3d08ff36143b6526e419b9ccb485acea14a85258963bb3"
+        },
+        {
+          "path": "packages/shell/src/cloud-native-result-fence.ts",
+          "sha256": "ba167d1f69939a7ef5a0a26591c3c6bdccfb94eb180abda6ddffdb0cfab521dc"
+        },
+        {
+          "path": "packages/shell/src/cloud-native-run-tool-session.ts",
+          "sha256": "e0c28f67deb4b3fb635f86d1a40089e0c1b259921d2c5cc8b5cd39dd6c3e8302"
+        },
+        {
+          "path": "packages/shell/src/cloud-native-subscription-control.ts",
+          "sha256": "4c2a3c2e8206bd401f49501205f94e24780738fd13fc70f4c2ebf222994845da"
+        },
+        {
+          "path": "packages/shell/src/cloud-native-tool-authority.ts",
+          "sha256": "05a5a7b8f58b4f2808903bd2f01e3c04b806fd06682d4ea1ff6f199158b03185"
+        },
+        {
+          "path": "packages/shell/src/cloud-native-tool-boundary.ts",
+          "sha256": "d2286a2444ea56b2afb782a0ffc3064eeaaf9ea7ef8633510cc0d845da81f5cb"
+        },
+        {
+          "path": "packages/shell/src/cloud-native-tool-operations.ts",
+          "sha256": "a8878a3f5e85433ac8666045c74ab8157efc44e1a119b317437ae93278cbe4ac"
+        },
+        {
+          "path": "packages/shell/src/cloud-object-reachability.ts",
+          "sha256": "e87fdee7431013147f4f0620581effff2bbc1b24bce47a9a0beec699ecf2bf2b"
+        },
+        {
+          "path": "packages/shell/src/cloud-object-store.ts",
+          "sha256": "6824bedfd92983684fcc5899ad32ba8e4935f5056abd91ed5c5392a6bd077e18"
+        },
+        {
+          "path": "packages/shell/src/cloud-presence.ts",
+          "sha256": "65cde968d5791fe23528935ef21aafb48cf01d9fb863afbc911b24f01b2312c0"
+        },
+        {
+          "path": "packages/shell/src/cloud-prompt-outbox.ts",
+          "sha256": "0119e60afede99da94fdfca81d6db2d3bf08b08ea6e7fb8c4e767b0cfb1bc1ee"
+        },
+        {
+          "path": "packages/shell/src/cloud-realtime-sync.ts",
+          "sha256": "4dfe83500678ce0f445b12df889bca1ac26fe39d1277e8399442375cea33429a"
+        },
+        {
+          "path": "packages/shell/src/cloud-request.ts",
+          "sha256": "e8f8c761681dfd7101b2c784016db694a5f37a1d54936ec67704aebf0fd4ebab"
+        },
+        {
+          "path": "packages/shell/src/cloud-runner-admin.ts",
+          "sha256": "6b40a6cff47272175840e056cc3858bde048de1f61bf34b59359dddcaa07db79"
+        },
+        {
+          "path": "packages/shell/src/cloud-runner-assignment-inbox.ts",
+          "sha256": "f4f0eefea91d98f363ac35b4bba68dd65c792e6ecb49f8a1fc7486244c5d0d35"
+        },
+        {
+          "path": "packages/shell/src/cloud-runner-broker.ts",
+          "sha256": "4b4f62df66615aa6cf6ebc9dc9673c00c2a4b5c627abeb031b8e9f521fd6b075"
+        },
+        {
+          "path": "packages/shell/src/cloud-runner-container-main.ts",
+          "sha256": "dbd53c4c604ed03162b603236a646b984cb1d338eb00467d46fdd3bcfd7cb36b"
+        },
+        {
+          "path": "packages/shell/src/cloud-runner-container.ts",
+          "sha256": "41096e9497b8b72142d238d86610758ad32da318bc13aad4ad8118f6f352c356"
+        },
+        {
+          "path": "packages/shell/src/cloud-runner-control.ts",
+          "sha256": "c4de8648523f2853bf0f9cd82671006060767d75ee535799f0b7f7fde5f84ca3"
+        },
+        {
+          "path": "packages/shell/src/cloud-runner-model-socket.ts",
+          "sha256": "567cf9938fc31eeeb936640572e5342830c0d49ee1cccf43b2a8a9b3bc66f05e"
+        },
+        {
+          "path": "packages/shell/src/cloud-runner-model.ts",
+          "sha256": "81e00810c6b4cc61c0c1c78142593efd225299774707c74c6b6d0e39ed37c01a"
+        },
+        {
+          "path": "packages/shell/src/cloud-runner-podman.ts",
+          "sha256": "036220b7585e84c9ae7cabd409478a2c1a9f5d1cc5f041a4ffa53ba0d29aad67"
+        },
+        {
+          "path": "packages/shell/src/cloud-runner-sandbox.ts",
+          "sha256": "53c199a066b0c1f9503558db9d0ea86ff62ec6c1bb745f5d9f619091b254f433"
+        },
+        {
+          "path": "packages/shell/src/cloud-runner-service-main.ts",
+          "sha256": "b8c8a8d4cd2bb0bba08c684fa88fa4fcd044dba03b0381c59c42dbbf8cf2eeb6"
+        },
+        {
+          "path": "packages/shell/src/cloud-runner-service.ts",
+          "sha256": "8841624b7b9d22394a013ecd941eb31bc97ce411c4204b52cdeed15ce66e2c6e"
+        },
+        {
+          "path": "packages/shell/src/cloud-runner-usage.ts",
+          "sha256": "28e3cba0ed8a1e06bfcdc71be980f3578383683d47b2ea08c525161e19fe6885"
+        },
+        {
+          "path": "packages/shell/src/cloud-runner-worker-state.ts",
+          "sha256": "9e015754cb83c3933fe67db28727c05ca418b60429f430cee206d6319f4d2027"
+        },
+        {
+          "path": "packages/shell/src/cloud-runner-worker.ts",
+          "sha256": "60ca21427b744ded766794a66b616cdf8198fcc9e25ec5f2f8c05bf7e311dfe5"
+        },
+        {
+          "path": "packages/shell/src/cloud-session-arbiter.ts",
+          "sha256": "af591d6cf7316b67bd377963cf35edccaa93ab7a5164dc54bcdf5bb4d1fb115d"
+        },
+        {
+          "path": "packages/shell/src/cloud-session-attachments.ts",
+          "sha256": "f635ce279982ef85e843f1c0c4ec64c07b90f93c4b6a6fa9f6d189a51c977293"
+        },
+        {
+          "path": "packages/shell/src/cloud-session-run-control.ts",
+          "sha256": "ac4a491ebddecd3776ced720b82ee1969916c10e67990bd966d2d71dc8b63e28"
+        },
+        {
+          "path": "packages/shell/src/cloud-staff-sync.ts",
+          "sha256": "3b7d6c0ca89c8380e08334e5a4e9567fa9b6fe9bf98c5acd5483ed3829bea222"
+        },
+        {
+          "path": "packages/shell/src/cloud-sync-loop.ts",
+          "sha256": "2aa81b91c2314ea90f64a855ac4bf48b9ea5700a6d5a41dd0b3f68a4dcc6a708"
+        },
+        {
+          "path": "packages/shell/src/cloud-trail-sync.ts",
+          "sha256": "6e93c1412bc65c75dd1514cc5b68bacd7ea83265ea673e96f37210beda7d2928"
+        },
+        {
+          "path": "packages/shell/src/cloud-wake-arbiter.ts",
+          "sha256": "8b35c63e6c2ef358f3e9a6c0a014358150044d32b153274937b225e7ae6b8149"
+        },
+        {
+          "path": "packages/shell/src/company-operation-broker.ts",
+          "sha256": "aa53cc7d80e2a35683d1d102f6a5459416468788c00cf62d4749f572ecccb339"
+        },
+        {
+          "path": "packages/shell/src/room-delegation-policy.ts",
+          "sha256": "ea4cdf070bc4c217e1b1320348dbd06915212d25478c7352d8d19872f8ba60ce"
+        },
+        {
+          "path": "packages/shell/src/staff-runtime-state.ts",
+          "sha256": "1ae948449d49cc11bb009fc9fdd2d4cf61f65e7735442273d9bb6dc94aa7e531"
+        },
+        {
+          "path": "packages/shell/test/cloud-access-refresh.test.ts",
+          "sha256": "79bd15bbc168dea854553d6568d68b50f799e8715f5b2524cc3ed4ff0655b2c6"
+        },
+        {
+          "path": "packages/shell/test/cloud-agent-mouth-delivery.test.ts",
+          "sha256": "f1e4150f4c9764096b33aa810afd676bddcdf6385953cf3f65febc9e88004637"
+        },
+        {
+          "path": "packages/shell/test/cloud-agent-mouth.test.ts",
+          "sha256": "56ce3e8e31c3013669c6072ee77dde04c86bd2095b0a87220bcaf1a6091ac615"
+        },
+        {
+          "path": "packages/shell/test/cloud-codex-tool-session.test.ts",
+          "sha256": "05d4f0046c29f3371884a582cd8b1f7fc995319a4a1493ce414d7ca0364bea5d"
+        },
+        {
+          "path": "packages/shell/test/cloud-company-display.test.ts",
+          "sha256": "21fc69f12ce227adf3672cd3d6d07d3c6a48f848a7a08ca52f92e820345ae2c5"
+        },
+        {
+          "path": "packages/shell/test/cloud-company-execution.test.ts",
+          "sha256": "deb36ffd6f0b671d600991b0bcc116f36e2c3992c119ba037beef799fe67dfad"
+        },
+        {
+          "path": "packages/shell/test/cloud-company-file-contract.test.ts",
+          "sha256": "8543d5ee30c50a4897f6ccef471b60e6e5acd28c7a5749265f04c8461f4dd4b6"
+        },
+        {
+          "path": "packages/shell/test/cloud-company-file.test.ts",
+          "sha256": "e5ad4dc54abe1ab2fb94d5d3d4b2d75a44dbc6096be4d8610390792dddbf1c06"
+        },
+        {
+          "path": "packages/shell/test/cloud-company-identity.test.ts",
+          "sha256": "c89d320258d45f05921907fc671705f07757ca21d45c01c547f9bc01522777a0"
+        },
+        {
+          "path": "packages/shell/test/cloud-company-inbox.test.ts",
+          "sha256": "649dd50aab358ef0f1df125fcaa9a871ed985294d98f4a59680050ec220de643"
+        },
+        {
+          "path": "packages/shell/test/cloud-company-merge.test.ts",
+          "sha256": "685f3485a7677576b3e1574f1d6cb3f4dd2900c683174058a6aa3424b90f910c"
+        },
+        {
+          "path": "packages/shell/test/cloud-company-path-control.test.ts",
+          "sha256": "338fde22071edbcf681b22384f41b98bff06dcbf10f757c11dd294c3da45d608"
+        },
+        {
+          "path": "packages/shell/test/cloud-company-path-gateway.test.ts",
+          "sha256": "9bc23ad2d24f947e4240d538116c9a0b842630e658a37e8e19357815edae8779"
+        },
+        {
+          "path": "packages/shell/test/cloud-company-projection.test.ts",
+          "sha256": "740eb817e73495164b1a9d21a517dd40d9cc8abe0575a967a624402753fe7d0d"
+        },
+        {
+          "path": "packages/shell/test/cloud-company-publication.test.ts",
+          "sha256": "6362d0eeed47cf109a3c4fa0b8d87570dbb3954ea83d398cd8d99a4ab3e337db"
+        },
+        {
+          "path": "packages/shell/test/cloud-company-snapshot.test.ts",
+          "sha256": "adcf88e824fa5aae91946ae608e389c15c7edfdb0fcfbad634d56366e94fb329"
+        },
+        {
+          "path": "packages/shell/test/cloud-company-substrate.test.ts",
+          "sha256": "33bd8db03dc3de125cb5ec43f43dc0ec528c64386a00c5b79733dd7028045861"
+        },
+        {
+          "path": "packages/shell/test/cloud-member-company-editor.test.ts",
+          "sha256": "10ce607b1436605a559340df19d6b537fae664551ed177b51379b279f77df914"
+        },
+        {
+          "path": "packages/shell/test/cloud-member-company-file.test.ts",
+          "sha256": "8013d89db597ae2b0f4c5060edf11c4926550d5d8f559fe4ae0cd4b14ca74b0a"
+        },
+        {
+          "path": "packages/shell/test/cloud-native-company-context.test.ts",
+          "sha256": "a33b385eadf5a5a866854c565656b9a3b5285f8131c318db5a397afd3916e85d"
+        },
+        {
+          "path": "packages/shell/test/cloud-native-company-objects.test.ts",
+          "sha256": "24684e6d6c2385cfbd03b97c71d7f9d1b8b8b616e23219338dd178351928b007"
+        },
+        {
+          "path": "packages/shell/test/cloud-native-company-runner.test.ts",
+          "sha256": "57b5f3c8683b1dc793c7a3fcc75a39b95f6bca257ffab428847b06410afa394e"
+        },
+        {
+          "path": "packages/shell/test/cloud-native-company-runtime.test.ts",
+          "sha256": "03534b4dc53b8f3bbe711dd6cc736efc76dfe2cbe0b58c0cef406d910bbff9f4"
+        },
+        {
+          "path": "packages/shell/test/cloud-native-credential-custody.test.ts",
+          "sha256": "eaf89db0f3dbe8a6fd7bc8f162be83ba213c73d88dda602301797b652870c363"
+        },
+        {
+          "path": "packages/shell/test/cloud-native-egress.test.ts",
+          "sha256": "3fe11f569ae278952770227f76f10c7169f6f1860826a780da50bd4c5a5bf127"
+        },
+        {
+          "path": "packages/shell/test/cloud-native-provider-host.test.ts",
+          "sha256": "b6389bd47f9767be2717e6287091f2ab6a55c318a582fb055c953c6d17ceff29"
+        },
+        {
+          "path": "packages/shell/test/cloud-native-provider-service-main.test.ts",
+          "sha256": "c95ddb68f2e48719de098fbf5ae851c88f8e45ff20137750df470523d836cdf2"
+        },
+        {
+          "path": "packages/shell/test/cloud-native-provider.test.ts",
+          "sha256": "7afbd8ca07ab3291192eb9c3bb047df383047f476ae042e12373eacac6388337"
+        },
+        {
+          "path": "packages/shell/test/cloud-native-result-fence.test.ts",
+          "sha256": "6d2e01411358577beb87cb9914856df1b27f0ee7fc15297dc5e6d377b7f7956d"
+        },
+        {
+          "path": "packages/shell/test/cloud-native-run-tool-session.test.ts",
+          "sha256": "c2c241070f95fb7a36c9dce6dfd293c128c64b2caa0ee41e2ca93e51d7e1c20d"
+        },
+        {
+          "path": "packages/shell/test/cloud-native-subscription-control.test.ts",
+          "sha256": "7d6c1561f87e98c668b797f0866cbaf53d2179844053a572155279ee1588ed6e"
+        },
+        {
+          "path": "packages/shell/test/cloud-native-tool-authority.test.ts",
+          "sha256": "c23a4e0455da7545f5896891e7e1ff22db1b463abe93f94048c0916ec53c2364"
+        },
+        {
+          "path": "packages/shell/test/cloud-native-tool-boundary.test.ts",
+          "sha256": "9b91cad762df853653bdbd26e06376d1974adb71b67847ff90569da41f10abe7"
+        },
+        {
+          "path": "packages/shell/test/cloud-native-tool-control-plane.test.ts",
+          "sha256": "ec8a55c981cbb36ee53fad9634127f446599b9f1cf090044c213322c5e264656"
+        },
+        {
+          "path": "packages/shell/test/cloud-native-tool-operations.test.ts",
+          "sha256": "5f263852df408299474cdd3ea582a9d7b9a1508c68f58c4905c2a1308acd1420"
+        },
+        {
+          "path": "packages/shell/test/cloud-native-transport.test.ts",
+          "sha256": "b848cc0189924df81efe53599cbbc336140d70d41ba3c4e436c8a9101cf9a3bc"
+        },
+        {
+          "path": "packages/shell/test/cloud-object-reachability.test.ts",
+          "sha256": "dec6cbbc2ee1f4eb387dae8eeab21670e8402f821daad66ee8c26799ed5dbdec"
+        },
+        {
+          "path": "packages/shell/test/cloud-object-store.test.ts",
+          "sha256": "2c997bd97dc5716b9f0eb73c74fad734d80973c12a8d6248e14d3bb7cdb70000"
+        },
+        {
+          "path": "packages/shell/test/cloud-outage-worker.test.ts",
+          "sha256": "cfe770fc731f4c826e11966d728272125920b33601ff8595db5a517b50711804"
+        },
+        {
+          "path": "packages/shell/test/cloud-presence.test.ts",
+          "sha256": "d5be29ee33e16e3c6ccbd155e4dfb6f2e7923c708eea75596e93e48523a58338"
+        },
+        {
+          "path": "packages/shell/test/cloud-prompt-outbox.test.ts",
+          "sha256": "3b4e80fa6207e8416e9a006321b0e6c74e7bba6ad9dffe7ca2ae958717b720f9"
+        },
+        {
+          "path": "packages/shell/test/cloud-realtime-sync.test.ts",
+          "sha256": "4de80705eabd5ef96733cfa11b7abb69c5e5c6946d74189a79a42a59bfbbac91"
+        },
+        {
+          "path": "packages/shell/test/cloud-review-blockers-migration.test.ts",
+          "sha256": "ca8e4a98aa9b70545d9049310513fd20181a7395dd5ffd2f6bd1df76a5ef7c7e"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-admin.test.ts",
+          "sha256": "c146d5a9e6e4dd44553234696d03376b191f31f4e3338c281c9be08d1a59cb03"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-assignment-inbox.test.ts",
+          "sha256": "8628f8940e1ace43344a5420bbd32372b7e1356fe0761bfaabf05e007fabe607"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-broker.test.ts",
+          "sha256": "d623e9234d1ba65ff45a532e3ec5946180af6762b5daa2d4dd8c3e337b5d1cad"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-container.test.ts",
+          "sha256": "34a75a2705ce35678c0046e1f985b1e766a788f91b5b44f6dc607608b547bce9"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-control.test.ts",
+          "sha256": "0ae98883a25248e749023e3c9f9f5779ecbe25f860e1b4379ab12a3840c29fed"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-lifecycle.test.ts",
+          "sha256": "e9dcf2ad90491532bfd410f2cc27fbaa0e6959826308a6e392f98e7909c187da"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-model-migration.test.ts",
+          "sha256": "b8d0253e501d502a93aa4d18626987547b57e893ec70fd1e84fe30914a31cbfa"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-model-socket.test.ts",
+          "sha256": "78df923c5116f4bf1c7c8df16f35b894ef910ef15ce779fe6fde892e28bfbf7f"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-model.test.ts",
+          "sha256": "075287aec564d1e25a21b45cfd3567039fedf0459045ee84095488817e866629"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-podman-linux.integration.test.ts",
+          "sha256": "f21badfdf98e786691a4e2cb5a0c43d56da75af027f111f03dbb9ee1dc66b349"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-podman.test.ts",
+          "sha256": "35d96d515db9ced0971ca6b8e3228a6e886a8e4143b38744e5377b77438d94f9"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-sandbox.test.ts",
+          "sha256": "d1b5b58102f32e351a2cb25ea1a8c0a9e090b498f55927125458aa6987f9732d"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-service.test.ts",
+          "sha256": "ce316a077bf75240d95ec6a6ebc06f6cc4620780f1ac525aba05bdf26ef73b77"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-usage-migration.test.ts",
+          "sha256": "3bd430585d7bd68eef071545d873d16a2200d5812fcf45d21d09e91289aef0ba"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-usage.test.ts",
+          "sha256": "f058b0182ea11e5990afa616e91bbe4c8b34145aca019c1fc01e641dd97d651c"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-worker-state.test.ts",
+          "sha256": "45163b0f83f5aa54f3babd1ed2e62954bcf03a3dc9368e965cc3980ecac391ea"
+        },
+        {
+          "path": "packages/shell/test/cloud-runner-worker.test.ts",
+          "sha256": "3adebd8fd5a301007307774e0a01630007e0250c4c079a9f15f8485cd4d6ed86"
+        },
+        {
+          "path": "packages/shell/test/cloud-session-arbiter.test.ts",
+          "sha256": "45849db52eb76f9f58e18d0433fdc3c37c97316d04bd38d9787b6fcbbcfa3371"
+        },
+        {
+          "path": "packages/shell/test/cloud-session-attachments.test.ts",
+          "sha256": "60e1ee1ad1b446cd9924b509d8ca9898a1ebfc8c593bf0e49bd57bfdb739f6ae"
+        },
+        {
+          "path": "packages/shell/test/cloud-session-run-control.test.ts",
+          "sha256": "bf83cc376fe5f17e9343500051545eaf584af9f7aec222e59adbbd4c761b98b7"
+        },
+        {
+          "path": "packages/shell/test/cloud-staff-sync.test.ts",
+          "sha256": "3a0f91aee6b6a7738f57510f9a8746d67387eeda697d03c136da3a71b1ad4bd9"
+        },
+        {
+          "path": "packages/shell/test/cloud-sync-loop.test.ts",
+          "sha256": "34756b999f3c9ddd8dfb1ae1bd9e05ceb1568e167750e0dd359b2b682462f6f7"
+        },
+        {
+          "path": "packages/shell/test/cloud-trail-sync.test.ts",
+          "sha256": "d417e2f087ac4e4cf3027625e8aecd8831bbcd9daeee4b0314f841b368f287e4"
+        },
+        {
+          "path": "packages/shell/test/cloud-wake-arbiter.test.ts",
+          "sha256": "f5c93a672a7f903a2f36d8fe3b29f9c00865cfaeb0a814a67f794f82c5fdc66f"
+        },
+        {
+          "path": "packages/shell/test/company-operation-broker.test.ts",
+          "sha256": "bbf00a83e583650bf151ec7fe7edc1fe4e801cc2a8d1490a51b32ae0a858e6d5"
+        },
+        {
+          "path": "packages/shell/test/fixtures/cloud-mouth-probe.ts",
+          "sha256": "908ab3f126e49b0792c6e47eb1bf4f0a57bfa9bb33888fde8acbbe24e4fe27f6"
+        },
+        {
+          "path": "packages/shell/test/fixtures/run-cloud-mouth-probe.ts",
+          "sha256": "7b4c3b0d787c26e0fa7611ca132117866689d852b2de948decb5eb17c1786539"
+        },
+        {
+          "path": "packages/shell/test/renderer-cloud-run.test.ts",
+          "sha256": "de90616f6863a6981c7b8efa000c6bc882674ba9aabdc3c2a62b3666c5e5f052"
+        },
+        {
+          "path": "packages/shell/test/room-delegation-policy.test.ts",
+          "sha256": "3ffd46e7a8cebf348c8facc739253ae6b4b69365cbc414a2e31c997bc7713bef"
+        },
+        {
+          "path": "packages/shell/test/staff-runtime-state.test.ts",
+          "sha256": "12e55777683b9ab7f5a9010d04306df6180e289718948052b851dfd0d34ef86d"
+        },
+        {
+          "path": "packages/storage/sqlite-node/CHANGELOG.md",
+          "sha256": "af7abc92135ff8bf80188e8b9217b481f03223fd5a8c73c7778df63a4a67717c"
+        },
+        {
+          "path": "packages/storage/sqlite-node/README.md",
+          "sha256": "0c81b815eb61f26feb19d30a856330d955e6192b875ac6749dcae95936539ada"
+        },
+        {
+          "path": "packages/storage/sqlite-node/package.json",
+          "sha256": "04b62c2fc2604ae21d6557889a32e23dacd0c47244afe53ef83eb4890ed1ef48"
+        },
+        {
+          "path": "packages/storage/sqlite-node/src/index.ts",
+          "sha256": "aefdfe893f4b9474f482afdca5c14dbaa470dcfae8ab6c8b590270e424eccc30"
+        },
+        {
+          "path": "packages/storage/sqlite-node/src/sqlite/index.ts",
+          "sha256": "353e74c858fd93e12a28f1532ef42dbcc5bad15febd921039b02f94632f8e6d4"
+        },
+        {
+          "path": "packages/storage/sqlite-node/src/sqlite/migrations.ts",
+          "sha256": "9691a3dd6c17d7da608d07f607865baf2e78ab4c53dbdd18874e7bd5cd8a0bd6"
+        },
+        {
+          "path": "packages/storage/sqlite-node/src/sqlite/repo.ts",
+          "sha256": "1f64431a5aadf2241dd552d1337d5afc4d743aed999b95fb9b6e4853c4a90f41"
+        },
+        {
+          "path": "packages/storage/sqlite-node/src/sqlite/search-backend.ts",
+          "sha256": "55c4f63e9c68474f364ce84172051211dbaccd945ab8ea7d6ef8b51751529008"
+        },
+        {
+          "path": "packages/storage/sqlite-node/src/sqlite/storage/branch-cache.ts",
+          "sha256": "56af12f0eb11ec5e8e731aa511c863e5465ebf6ac17f51dc05bf790a0968d9f6"
+        },
+        {
+          "path": "packages/storage/sqlite-node/src/sqlite/storage/index.ts",
+          "sha256": "b9eaf2152983aaa3af2d968f8f88b22b9e9ab2018463ab82d237295f87c287ab"
+        },
+        {
+          "path": "packages/storage/sqlite-node/src/sqlite/storage/session-entries.ts",
+          "sha256": "f8d9a100f89ce26709d4c6d78d1c8a985cab2c3552be3cd3bebb16e2bbc15f19"
+        },
+        {
+          "path": "packages/storage/sqlite-node/src/sqlite/storage/session-materialized.ts",
+          "sha256": "0e59ad469cb108f1e1cd6053b9f3bf2eed3e6723be970b5a4192e37e38ab0e64"
+        },
+        {
+          "path": "packages/storage/sqlite-node/src/sqlite/storage/session-sequences.ts",
+          "sha256": "24fedc1605825e388f0f7ca77b7e64f889b9775d6b6c8e525f8f6eaac7e42eb2"
+        },
+        {
+          "path": "packages/storage/sqlite-node/src/sqlite/storage/sessions.ts",
+          "sha256": "872b86c58382181ab87dd393f4274790d350e24d1367780e2ade3eec262bff75"
+        },
+        {
+          "path": "packages/storage/sqlite-node/src/sqlite/storage/shared.ts",
+          "sha256": "8f901bf0f766e1ca1a8bf294e97fec6a89247b5e34b1b88e18a3924df077dc1a"
+        },
+        {
+          "path": "packages/storage/sqlite-node/src/sqlite/types.ts",
+          "sha256": "706519fd324c06d3a0e81a2c2abe6ab512a2c4adc3914080f55ae02acf9da11f"
+        },
+        {
+          "path": "packages/storage/sqlite-node/tsconfig.build.json",
+          "sha256": "cb79361b9a66b258caa74e2bd3b3cc4184fbd1892f9e409a0bcd973d260a55aa"
+        },
+        {
+          "path": "scripts/check-cloud-runtime-boundaries.mjs",
+          "sha256": "e93ee7eb035d19ad87930c9d1122be33175c202d37480c0c95a87dedb1ba77d4"
+        },
+        {
+          "path": "scripts/test-hosted-db.mjs",
+          "sha256": "b48d5defc7f327933b8be3475eebf9f934f884a60db24f6f9aebc24837849b28"
+        },
+        {
+          "path": "supabase/CLOUD-CONTROL-PLANE.md",
+          "sha256": "01158b610f5b8d8479605c0e911c709cb3a4b36015018f7acd751de083d7a3cf"
+        },
+        {
+          "path": "supabase/COMPANY-FILE.md",
+          "sha256": "9a4070dadf21d6ba90b2b6f69657e87d8359a0e4fe3b48e81af31c00a11f399a"
+        },
+        {
+          "path": "supabase/SESSIONS.md",
+          "sha256": "52c10c029a5b8706031630453bfa1d98bff6d8ed46ea28cebc3adc17fb61008d"
+        },
+        {
+          "path": "supabase/migrations/20260816003000_legacy_session_identity_default.sql",
+          "sha256": "3e4765eed60aa318232867335f24d232c747940925849a6c85b4b045eec742a7"
+        },
+        {
+          "path": "supabase/migrations/20260816011000_company_snapshot_dag.sql",
+          "sha256": "40467484882469e581f6d292f6f5dfa42395f3c50d987dd13e2ed25c65699309"
+        },
+        {
+          "path": "supabase/migrations/20260816012000_company_snapshot_conflict_status.sql",
+          "sha256": "8b5b5582718d56aeaaf604f3286702d596c81623bb8c2196dbe82d2ddecd6355"
+        },
+        {
+          "path": "supabase/migrations/20260816013000_company_snapshot_lookup.sql",
+          "sha256": "cd1ca2573ef7b884bcd73d2cb10d291d5a699c4a3db34acfdefa2c6a2d9c1339"
+        },
+        {
+          "path": "supabase/migrations/20260816014000_company_workspace_writer.sql",
+          "sha256": "11f44848f81031c71a9a7f86c30310143536ac75140ba6544c6df4119dc89c00"
+        },
+        {
+          "path": "supabase/migrations/20260816015000_company_substrate_versions.sql",
+          "sha256": "e86dd7ed36b587a020083732aa5f4d8b463d881966b108087149a1802ea0b2db"
+        },
+        {
+          "path": "supabase/migrations/20260816019000_runner_registration_leases.sql",
+          "sha256": "89e3f0db3f5a78054734c8337bd28d6d0ba73c898f7c2d9a59da6fe5c84cf506"
+        },
+        {
+          "path": "supabase/migrations/20260816019100_runner_claim_revocation_race.sql",
+          "sha256": "7c58348c558125a930a25cbc5444a1c4cde87e538fe705d0b6febf7832e2b390"
+        },
+        {
+          "path": "supabase/migrations/20260817000000_runner_object_broker.sql",
+          "sha256": "d79ae7a5d3bb33fe3699b7a361d9773b9d103995a522bdc13fcfe300dadd530d"
+        },
+        {
+          "path": "supabase/migrations/20260817001000_runner_output_substrates.sql",
+          "sha256": "9e6e8975322ed9cab8714ad6a7850a45e39e7d879ba30890bc7e5b7171ba9149"
+        },
+        {
+          "path": "supabase/migrations/20260817002000_runner_usage_observations.sql",
+          "sha256": "f38717de35d3fbd0b556afc0411459faebfa38fd33464b90c1872bba1a6692a9"
+        },
+        {
+          "path": "supabase/migrations/20260817003000_runner_model_gateway.sql",
+          "sha256": "d12487519ad5a420c13081ed5b01ccb7e3373cabd9897b864cdfb1d4a21db3ea"
+        },
+        {
+          "path": "supabase/migrations/20260817006000_runner_recovery_ambiguity.sql",
+          "sha256": "dbeb7f85fab7a54a3f6592fbd01965f12b1aaf5a9a3c3b398f7ee5f37584b39e"
+        },
+        {
+          "path": "supabase/migrations/20260818007000_session_arbiter.sql",
+          "sha256": "13cc9d1b1c26d5b0b0e155b9b7c3f8229510f2369738383b1a6aff97ff29f343"
+        },
+        {
+          "path": "supabase/migrations/20260819012000_wake_arbitration.sql",
+          "sha256": "fab62984059aabbc62e35b6c34355573b339e197663cabee197053e18f918068"
+        },
+        {
+          "path": "supabase/migrations/20260820001000_cloud_company_authority.sql",
+          "sha256": "a6c72f86ab3314a2b3cee76644f6fd0543f68fb92d249e0a12cd6b4b4d184244"
+        },
+        {
+          "path": "supabase/migrations/20260820002000_runner_orchestrator_contracts.sql",
+          "sha256": "eae618e37237f1642f7eaa9e63da72c8821505951b08922e29c4bf7207d369ee"
+        },
+        {
+          "path": "supabase/migrations/20260821002000_compute_identity_runner_provisioning.sql",
+          "sha256": "0ae871fe3c94799fa1243d540033c1e67b4e27e948ba0bdfe93f569ccc033b37"
+        },
+        {
+          "path": "supabase/migrations/20260821003000_native_provider_runtime_authority.sql",
+          "sha256": "faf8605a5be0b19be754d4b6af4997fe5755f4806d1e624aac262a5ac5157b47"
+        },
+        {
+          "path": "supabase/migrations/20260821004000_runner_orchestrator_control_rotation.sql",
+          "sha256": "32c0939c7420b7018da4190a98a911568bf08c19fc5a0cdd3a33c763fd73c17a"
+        },
+        {
+          "path": "supabase/migrations/20260822002000_legacy_session_import.sql",
+          "sha256": "26b47810a0cb8d78cbcbdcd3e2a4c47d4cb49fddab6970b2ee2d524433ca2dab"
+        },
+        {
+          "path": "supabase/migrations/20260822003000_remove_legacy_session_import.sql",
+          "sha256": "33797dbc0295f37b678d370644777db5460439b5bf3d00785f380cb78b2c8d6e"
+        },
+        {
+          "path": "supabase/migrations/20260824002000_runner_assignment_lease_renewal.sql",
+          "sha256": "a0c9691628b2443a19a18740e8a6f083a0eba617b4f5bc2a97f112d42069b96f"
+        },
+        {
+          "path": "supabase/migrations/20260825211000_runner_lease_incident_window.sql",
+          "sha256": "aabeef9ee92f08b5caa7be242ab2aa98d115a791f5626c17ede2fc56992cde19"
+        },
+        {
+          "path": "supabase/migrations/20260826020000_trail_execution_optional.sql",
+          "sha256": "88dc7f4fb0e1b48f4b354dbed44c3ff2c2509b633868130721a15e9d748774fc"
+        },
+        {
+          "path": "supabase/migrations/20260827005000_cloud_runner_cancellation.sql",
+          "sha256": "60e08dca3a4cfd3868da5a0b5b205f41c6469bd4fc7e14488aa739c250570cc4"
+        },
+        {
+          "path": "supabase/migrations/20260828002000_cloud_session_run_control.sql",
+          "sha256": "dbb75cff3cf29942c3f787880808aa0d797415ea47e226beaec8cbab31a7b248"
+        },
+        {
+          "path": "supabase/migrations/20260828004000_native_cloud_tool_authority.sql",
+          "sha256": "7add338886ee897b8acad946f549c387c6afb52cfa55dafdc23f6bddfb4e2c82"
+        },
+        {
+          "path": "supabase/migrations/20260828005000_company_file_path_gateway.sql",
+          "sha256": "f312180efc6a5d20df523c86a3c40bba7f1585f533032aee2165727ccbab22bc"
+        },
+        {
+          "path": "supabase/migrations/20260828006000_native_company_context.sql",
+          "sha256": "c7822b21d7b385715200c76cc1a83ba05023cae3cebfd924d299f7b25579721d"
+        },
+        {
+          "path": "supabase/migrations/20260828008000_native_company_object_staging.sql",
+          "sha256": "2b7cde08f366edb6541a7abe2c12eda61e4bfa9af1038986c6b05e472ae6b1f2"
+        },
+        {
+          "path": "supabase/migrations/20260828009000_company_path_runner_completion.sql",
+          "sha256": "a871898a60276e586f5af0286e0210cfb9f0f3b6a0402132bda5cf791ceccf9c"
+        },
+        {
+          "path": "supabase/migrations/20260828010000_native_company_execution_admission.sql",
+          "sha256": "0dffcc0e04a12f48bd3d16512901aed3836e7d38640b430f6f99a56a7ec27de0"
+        },
+        {
+          "path": "supabase/migrations/20260828011000_member_company_path_objects.sql",
+          "sha256": "49a876cec295563b8ba3efab14de5f2e49545cff763031a4ed39982f96b91eac"
+        },
+        {
+          "path": "supabase/migrations/20260828012000_member_company_file_commands.sql",
+          "sha256": "943d51866fadb0f3ae1de730219c18567772c6b9ca43e959f5f2ec5c8fa623e9"
+        },
+        {
+          "path": "supabase/migrations/20260828013000_member_session_attachment_authority.sql",
+          "sha256": "78bea6f4a5f6123460043cd19d803be1a1007e2427516c9f50df5976ce55ef1b"
+        },
+        {
+          "path": "supabase/tests/020_runner_recovery_ambiguity.test.sql",
+          "sha256": "f29af9e877b7b4c393b30809855788b1006fd186092238a2a9338ab3fd588bbc"
+        },
+        {
+          "path": "supabase/tests/100_session_arbiter.test.sql",
+          "sha256": "51b74673de1915b77c5a96e3911941709052d523bd34ca97e6712108985456f1"
+        },
+        {
+          "path": "supabase/tests/130_wake_arbitration.test.sql",
+          "sha256": "d93e6e2490ca2dda5c6cbeb59b225c8ca2d9d6163384dfaf75f17e05f0342c71"
+        },
+        {
+          "path": "supabase/tests/140_cloud_company_authority.test.sql",
+          "sha256": "e85d68bc494206bc0857e3df5fb3c4649db2f232651216787da64546f26c4750"
+        },
+        {
+          "path": "supabase/tests/150_runner_orchestrator.test.sql",
+          "sha256": "412a5b9c918f01b424afd2451b572165c09436062cbfd7aec422a8e9571388bc"
+        },
+        {
+          "path": "supabase/tests/170_runner_orchestrator_rotation.test.sql",
+          "sha256": "7a67299560a3887e005d82c17a4a3304f5883a4ef8894e3554b3984933bb53e5"
+        },
+        {
+          "path": "supabase/tests/230_no_legacy_session_import.test.sql",
+          "sha256": "06c8cc9c190fb02a1ca229c96aa11f0e58a87e0799005e25463cecea3e548f96"
+        },
+        {
+          "path": "supabase/tests/280_cloud_session_run_control.test.sql",
+          "sha256": "6e2e4de20694d4fcc91083ac9670f4194068384c4730577731c4f01ddb3876ac"
+        },
+        {
+          "path": "supabase/tests/290_company_file_path_gateway.test.sql",
+          "sha256": "458973a1466927a8e9277a733b325efc6a9ebd93d3f85ca3336ea377d03c32d1"
+        },
+        {
+          "path": "supabase/tests/295_member_company_file_commands.test.sql",
+          "sha256": "65944636e555c4c536b06786e67e89ed6dfc41917bb0f89feb72803e747e6155"
+        },
+        {
+          "path": "supabase/tests/296_member_session_attachment_authority.test.sql",
+          "sha256": "5b16f01a70467d2e639386b99d8761e62a22ceaddcc7c66da17a8b71b9b34f4c"
+        },
+        {
+          "path": "tsconfig.base.json",
+          "sha256": "2db314b2e40a37a94e7b1da0af3883b7dd0ef2a8abc4b22138ae1ceb7cc2375f"
+        },
+        {
+          "path": "tsconfig.json",
+          "sha256": "8d1a43bff2f72755c142f716d1c6ed65c29d66ad184058706e1893d461b08e3f"
+        }
+      ]
+    },
+    {
+      "name": "step3-read-only",
+      "root": "/Users/jonas/.codex/worktrees/3c4c/Qorpera_Base-step2",
+      "revision": "2823637c0fd6def4cf21d3bc8e21f5f472f9d6b1",
+      "status": "## HEAD (no branch)\n M design-qa.md\n M packages/coding-agent/src/core/app-server.ts\n M packages/coding-agent/src/core/company-connections.ts\n M packages/coding-agent/test/app-server.test.ts\n M packages/coding-agent/test/company-connections.test.ts\n M packages/coding-agent/test/company-rooms.test.ts\n M packages/coding-agent/vitest.config.ts\n M packages/company/src/company-rooms.ts\n M packages/runner-orchestrator/src/orchestrator.ts\n M packages/runner-orchestrator/test/orchestrator.test.ts\n M packages/shell/package.json\n M packages/shell/src/cloud-native-provider-host.ts\n M packages/shell/src/cloud-native-provider.ts\n M packages/shell/src/cloud-native-subscription-control.ts\n M packages/shell/src/cloud-runner-sandbox.ts\n M packages/shell/src/main.ts\n M packages/shell/src/preload.cjs\n M packages/shell/src/wake-scheduler.ts\n M packages/shell/test/cloud-native-provider-host.test.ts\n M packages/shell/test/cloud-native-provider.test.ts\n M packages/shell/test/cloud-native-subscription-control.test.ts\n M packages/shell/test/cloud-runner-sandbox.test.ts\n M packages/shell/test/staff-templates.test.ts\n M packages/shell/test/userland-wiring.test.ts\n M packages/shell/test/wake-scheduler.test.ts\n M packages/shell/userland/base.css\n M packages/shell/userland/character-motion.css\n M packages/shell/userland/index.html\n M packages/shell/userland/rail-resize.css\n M packages/shell/userland/renderer.js\n M packages/shell/userland/staff-creatures/folio.png\n M scripts/pack-shell.mjs\n M supabase/tests/150_runner_orchestrator.test.sql\n?? design-qa-group-room-chrome.md\n?? docs/\n?? outputs/\n?? packages/shell/src/codex-app-server-client.ts\n?? packages/shell/src/staff-voice-profile.ts\n?? packages/shell/src/voice-call-preload.cjs\n?? packages/shell/src/voice-call.ts\n?? packages/shell/test/codex-app-server-client.test.ts\n?? packages/shell/test/routine-editor.test.ts\n?? packages/shell/test/staff-voice-profile.test.ts\n?? packages/shell/test/voice-call.test.ts\n?? packages/shell/userland/group-room-chrome.css\n?? packages/shell/userland/icon-bot.svg\n?? packages/shell/userland/icon-check.svg\n?? packages/shell/userland/icon-chevron-down.svg\n?? packages/shell/userland/icon-clock.svg\n?? packages/shell/userland/icon-mic-off.svg\n?? packages/shell/userland/icon-mic.svg\n?? packages/shell/userland/icon-phone-call.svg\n?? packages/shell/userland/icon-phone-off.svg\n?? packages/shell/userland/icon-plus.svg\n?? packages/shell/userland/icon-x.svg\n?? packages/shell/userland/room-avatar-separators.svg\n?? packages/shell/userland/routine-editor-model.js\n?? packages/shell/userland/routine-editor.css\n?? packages/shell/userland/routine-editor.js\n?? packages/shell/userland/voice-call-thread.css\n?? packages/shell/userland/voice-call-window.css\n?? packages/shell/userland/voice-call.html\n?? packages/shell/userland/voice-call.js\n?? supabase/migrations/20260827001000_weekday_interval_anchors.sql\n?? supabase/migrations/20260827002000_attended_room_delivery.sql",
+      "files": [
+        {
+          "path": ".artifacts/step3-wake-bus/deploy/first-node/RUNTIME-STEP-3-WAKE-BUS.md",
+          "sha256": "0f4edfa279e376c4cacdcf839ebda0f541796fd887da691f73c80aeb8c61023a"
+        },
+        {
+          "path": "AGENTS.md",
+          "sha256": "9f0b5de90560e82fb50796255853321c69985e446f645d3ad2bd63f57e0c0c80"
+        }
+      ]
+    },
+    {
+      "name": "step4-read-only",
+      "root": "/Users/jonas/.codex/worktrees/5ced/Qorpera_Base-step2",
+      "revision": "a0b692947d5c867353591b36172afcc997f0521e",
+      "status": "## HEAD (no branch)\n M packages/shell/CHANGELOG.md\n?? deploy/first-node/RUNTIME-STEP-4-COMPUTERS-SCREENS.md\n?? deploy/lxd-company-computer-guest/\n?? packages/shell/src/cloud-company-computer-contract.ts\n?? packages/shell/src/cloud-company-computer-endpoint.ts\n?? packages/shell/src/cloud-company-computer-guest.ts\n?? packages/shell/src/cloud-company-computer-leases.ts\n?? packages/shell/src/cloud-company-computer-rfb-server.ts\n?? packages/shell/src/cloud-company-computer-rfb.ts\n?? packages/shell/src/cloud-company-computer-screens.ts\n?? packages/shell/src/cloud-company-computer-state.ts\n?? packages/shell/src/cloud-company-computer-tools.ts\n?? packages/shell/src/cloud-company-computer-view.ts\n?? packages/shell/src/cloud-company-computer-viewer-gateway.ts\n?? packages/shell/test/cloud-company-computer-guest.test.ts\n?? packages/shell/test/cloud-company-computer-leases.test.ts\n?? packages/shell/test/cloud-company-computer-rfb-server.test.ts\n?? packages/shell/test/cloud-company-computer-rfb.test.ts\n?? packages/shell/test/cloud-company-computer-screens.test.ts\n?? packages/shell/test/cloud-company-computer-state.test.ts\n?? packages/shell/test/cloud-company-computer-tools.test.ts\n?? packages/shell/test/cloud-company-computer-view.test.ts\n?? packages/shell/test/cloud-company-computer-viewer-ui.test.ts\n?? packages/shell/test/fixtures/company-computer.ts\n?? packages/shell/userland/screen-viewer.js\n?? packages/shell/userland/screens.css\n?? packages/shell/userland/vendor/",
+      "files": [
+        {
+          "path": "AGENTS.md",
+          "sha256": "9f0b5de90560e82fb50796255853321c69985e446f645d3ad2bd63f57e0c0c80"
+        },
+        {
+          "path": "deploy/first-node/RUNTIME-STEP-4-COMPUTERS-SCREENS.md",
+          "sha256": "520c57372f2a66ac89a1695a0acb8034e42cbb260f5ec7f80b1abae70f902da0"
+        }
+      ]
+    }
+  ]
+}
