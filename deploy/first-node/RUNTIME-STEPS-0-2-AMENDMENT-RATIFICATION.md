@@ -329,7 +329,8 @@ longer exists locally).
 Evidence: `~/.codex/worktrees/27d4/Qorpera_Base-step2/.artifacts/runtime-step-separation-20260828/step2/verification/steps02-phase-b-gate1-20260902.fable/`
 (packet, rehearsal proof and cleanup, packages, input checksums, and
 `build-lxd-runner-image-candidate-ebbd1e734.sh`, the node build recipe with
-this candidate's pins).
+this candidate's pins); its `SHA256SUMS` has SHA-256
+`250809c7a96e0f677ee9f133da58f5c581c9f27ff6270eb86d496f4e3785c799`.
 
 **Node findings (read-only, 2026-09-02 23:18 UTC).** `company41-node-01` is
 reachable over Tailscale as `company41-admin`; sudo requires an interactive
