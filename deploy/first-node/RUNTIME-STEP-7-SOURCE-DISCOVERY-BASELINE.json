@@ -1,0 +1,114 @@
+{
+  "schema": "qorpera.runtime-step-7-source-discovery-baseline/v1",
+  "capturedAt": "2026-08-29T14:08:26.799Z",
+  "request": {
+    "path": "/Users/jonas/.codex/attachments/4770930d-b1de-4f0f-8fa6-1d48eb5c1487/pasted-text.txt",
+    "sha256": "fbd5eca8ba7e60510c27ec816216071668f2c46e195641f1feb5e1b6e31d71e3",
+    "bytes": 9828
+  },
+  "assigned": {
+    "path": "/Users/jonas/.codex/worktrees/90f2/Qorpera_Base-step2",
+    "head": "a0b692947d5c867353591b36172afcc997f0521e",
+    "status": "?? deploy/first-node/RUNTIME-STEP-7-BASELINE.json\n?? deploy/first-node/RUNTIME-STEP-7-CLOUD-CONNECTORS.md\n?? deploy/first-node/RUNTIME-STEP-7-FILES.sha256\n?? packages/shell/src/cloud-connector-authorization.ts\n?? packages/shell/src/cloud-connector-catalog.ts\n?? packages/shell/src/cloud-connector-contract.ts\n?? packages/shell/src/cloud-connector-github.ts\n?? packages/shell/src/cloud-connector-http.ts\n?? packages/shell/src/cloud-connector-tools.ts\n?? packages/shell/test/cloud-connector-authorization.test.ts\n?? packages/shell/test/cloud-connector-catalog.test.ts\n?? packages/shell/test/cloud-connector-execution.test.ts\n?? packages/shell/test/fixtures/cloud-connector.ts\n"
+  },
+  "requiredInputs": {
+    "runtimeContract": {
+      "path": "/Users/jonas/.codex/worktrees/27d4/Qorpera_Base-step2/QORPERA-RUNTIME-CONTRACT.md",
+      "head": "18181de7f2698c9f44347a7ee141eebead84bc35",
+      "sha256": "a8a68b8605dc2a8ad01148ad6697e3a58b813b305b7b65286e8054d0895c8245"
+    },
+    "existingStep7Handoff": {
+      "path": "/Users/jonas/.codex/worktrees/90f2/Qorpera_Base-step2/deploy/first-node/RUNTIME-STEP-7-CLOUD-CONNECTORS.md",
+      "sha256": "d6baf3d85830000a2a1fb334245c00d34196d42070221312c1ee38d8e2d888d2"
+    },
+    "currentMainRuntime": {
+      "path": "/private/tmp/qorpera-step2-resume.rN3rbf/source",
+      "head": "3a4b8b5c229d725b8ce6d47b27f0349b521f3839",
+      "files": {
+        "packages/shell/src/cloud-native-tool-authority.ts": "05a5a7b8f58b4f2808903bd2f01e3c04b806fd06682d4ea1ff6f199158b03185",
+        "packages/shell/src/cloud-native-tool-operations.ts": "a27ad337da2520c6cb9ef2445a24fff20f8ec740725b5f10da965ec2408dcd9a",
+        "packages/shell/src/cloud-native-tool-boundary.ts": "d2286a2444ea56b2afb782a0ffc3064eeaaf9ea7ef8633510cc0d845da81f5cb",
+        "packages/shell/src/cloud-native-run-tool-session.ts": "e0c28f67deb4b3fb635f86d1a40089e0c1b259921d2c5cc8b5cd39dd6c3e8302"
+      }
+    },
+    "step4Handoff": {
+      "path": "/Users/jonas/.codex/worktrees/5ced/Qorpera_Base-step2/deploy/first-node/RUNTIME-STEP-4-COMPUTERS-SCREENS.md",
+      "head": "a0b692947d5c867353591b36172afcc997f0521e",
+      "sha256": "db1bb63039384142dd8c113edb74254872da80753602fb05f8b99083ccfb3a17"
+    }
+  },
+  "historicalStep7Files": {
+    "deploy/first-node/RUNTIME-STEP-7-BASELINE.json": {
+      "sha256": "9a201ad9a4515e4b4046c4c417468fc9fa5cdd8a6fedcdaf76546c19847fdf49",
+      "bytes": 17160
+    },
+    "deploy/first-node/RUNTIME-STEP-7-CLOUD-CONNECTORS.md": {
+      "sha256": "d6baf3d85830000a2a1fb334245c00d34196d42070221312c1ee38d8e2d888d2",
+      "bytes": 52895
+    },
+    "deploy/first-node/RUNTIME-STEP-7-FILES.sha256": {
+      "sha256": "df866803d86f0b8b9eec2d92dcb239819bffb9d55846eead1fbd26cb92d4b1c2",
+      "bytes": 1381
+    },
+    "packages/shell/src/cloud-connector-authorization.ts": {
+      "sha256": "acb6cf9409a8f369cb91b22bd15ecebcfd557e2c8e4f1d687531baaedc177442",
+      "bytes": 17868
+    },
+    "packages/shell/src/cloud-connector-catalog.ts": {
+      "sha256": "cfa21b27f494f9e2be3e706a31a19d4e59adc18e6fefb681c82344af9b27e781",
+      "bytes": 9565
+    },
+    "packages/shell/src/cloud-connector-contract.ts": {
+      "sha256": "bcf4d672265a1fa7084eb56247a5c5c752f46f2c23b81e0d2b98a6dced0b52e3",
+      "bytes": 14006
+    },
+    "packages/shell/src/cloud-connector-github.ts": {
+      "sha256": "aa63ebebd649c7c0a5524a314fc7a53ec9f402e716a5bd9831c582a8e922a769",
+      "bytes": 9079
+    },
+    "packages/shell/src/cloud-connector-http.ts": {
+      "sha256": "f00a5ecde917ea8811dbd99135658cd9d85b0a75856fd218e69393c0a2b5965b",
+      "bytes": 10059
+    },
+    "packages/shell/src/cloud-connector-tools.ts": {
+      "sha256": "c64b104dbcd24bbfc5774179a834c36bdd70e05ffb2dabad00c83841259d6854",
+      "bytes": 14947
+    },
+    "packages/shell/test/cloud-connector-authorization.test.ts": {
+      "sha256": "b3c5a3503aa16bcdca824a3fb36fb428e71e4ac1eeb8c71b10e8d659d2849428",
+      "bytes": 17280
+    },
+    "packages/shell/test/cloud-connector-catalog.test.ts": {
+      "sha256": "534f1dc3a5ce8ad039f3dfca8f7efcf935aff30f5f11eee657013bc44b881dca",
+      "bytes": 12568
+    },
+    "packages/shell/test/cloud-connector-execution.test.ts": {
+      "sha256": "dd0e38e34df88879d3eb40bfd41f13767e28943a9c6c41e58508694e50465fa1",
+      "bytes": 56707
+    },
+    "packages/shell/test/fixtures/cloud-connector.ts": {
+      "sha256": "56e0d8748da76c9823fddc9e0cafb76d268d34e5d2c1c10463978d53cfe7b503",
+      "bytes": 13059
+    }
+  },
+  "potentiallyModifiedFiles": [
+    "packages/shell/src/cloud-connector-authorization.ts",
+    "packages/shell/src/cloud-connector-catalog.ts",
+    "packages/shell/src/cloud-connector-contract.ts",
+    "packages/shell/src/cloud-connector-github.ts",
+    "packages/shell/src/cloud-connector-http.ts",
+    "packages/shell/src/cloud-connector-tools.ts",
+    "packages/shell/test/cloud-connector-authorization.test.ts",
+    "packages/shell/test/cloud-connector-catalog.test.ts",
+    "packages/shell/test/cloud-connector-execution.test.ts",
+    "packages/shell/test/fixtures/cloud-connector.ts"
+  ],
+  "absentAtCapture": [
+    "deploy/first-node/RUNTIME-STEP-7-SOURCE-DISCOVERY.md",
+    "deploy/first-node/RUNTIME-STEP-7-SOURCE-DISCOVERY.patch",
+    "deploy/first-node/RUNTIME-STEP-7-SOURCE-DISCOVERY-FILES.sha256",
+    "packages/shell/src/cloud-connector-source.ts",
+    "packages/shell/test/cloud-connector-source-discovery.test.ts"
+  ],
+  "snapshotNote": "Exact temporary pre-edit copies were retained through diff verification and are not runtime or delivery dependencies."
+}
