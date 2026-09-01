@@ -1,0 +1,17 @@
+{
+  "schema": "qorpera.routine-policy/v1",
+  "timeZone": "UTC",
+  "defaultWeekdays": ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"],
+  "expiresAt": null,
+  "quietWindows": [],
+  "quietMode": "skip",
+  "dst": { "gap": "skip", "fold": "earlier" },
+  "catchUp": { "maxAgeSeconds": 86400, "maxOccurrences": 3 },
+  "resume": "future-only",
+  "authFailures": {
+    "threshold": 3,
+    "resetOn": "success",
+    "notifyMemberId": "30000000-0000-4000-8000-000000000001",
+    "notificationSessionId": "30000000-0000-4000-8000-000000000040"
+  }
+}
