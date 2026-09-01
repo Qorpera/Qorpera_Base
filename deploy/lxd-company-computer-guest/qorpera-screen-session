@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 0077
+
+# Computer-specific wrapper adapted from codex/step3-remaining-ops. The
+# authenticated guest supervisor must verify containment before invocation,
+# supply ONLY the environment below, and reap this entire service on recovery.
+# No service/provider credentials, canonical Company File mount, or ambient
+# browser profile is admitted here. Browser launch belongs to the grant broker.
+if [[ $# -ne 4 ]]; then
+	echo "usage: qorpera-screen-session <screen_uuid> <ordinal> <display> <vnc_port>" >&2
+	exit 64
+fi
+screen_id=$1
+ordinal=$2
+display=$3
+rfbport=$4
+if [[ ! ${screen_id} =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ||
+	! ${ordinal} =~ ^([1-9]|[12][0-9]|3[0-2])$ || ${display} != ":${ordinal}" ||
+	! ${rfbport} =~ ^59[0-9]{2}$ ]]; then
+	echo "Invalid screen binding." >&2
+	exit 64
+fi
+if (( rfbport != 5900 + ordinal )); then
+	echo "Invalid screen port." >&2
+	exit 64
+fi
+workbench_root=${QORPERA_WORKBENCH_ROOT:?Required noncanonical workbench}
+desktop_home=${QORPERA_DESKTOP_HOME:?Required desktop home}
+screen_state_root=${QORPERA_SCREEN_STATE_ROOT:?Required desktop state root}
+runtime_root=${QORPERA_SCREEN_RUNTIME_ROOT:?Required supervisor-owned ephemeral runtime root}
+for directory in "${workbench_root}" "${desktop_home}" "${screen_state_root}" "${runtime_root}"; do
+	if [[ ${directory} != /* || ${directory} == / || ! -d ${directory} || -L ${directory} ||
+		$(/usr/bin/realpath -e -- "${directory}") != "${directory}" ||
+		${directory} =~ (^|/)(live|company-live|identity|credentials|\.codex|\.claude)(/|$) ]]; then
+		echo "Unsafe desktop directory." >&2
+		exit 65
+	fi
+done
+screen_state="${screen_state_root}/${screen_id}"
+runtime_dir="${runtime_root}/${screen_id}"
+mkdir -p "${screen_state}" "${screen_state}/config" "${screen_state}/cache" "${screen_state}/data" "${runtime_dir}"
+for directory in "${screen_state}" "${screen_state}/config" "${screen_state}/cache" "${screen_state}/data" "${runtime_dir}"; do
+	if [[ -L ${directory} || $(/usr/bin/realpath -e -- "${directory}") != "${directory}" ]]; then
+		echo "Unsafe desktop state alias." >&2
+		exit 65
+	fi
+done
+wallpaper=${QORPERA_SCREEN_WALLPAPER:?Required agent wallpaper from the verified guest helper}
+if [[ ${wallpaper} != "${screen_state}/wallpaper.png" || ! -s ${wallpaper} || ! -f ${wallpaper} ||
+	-L ${wallpaper} || $(/usr/bin/realpath -e -- "${wallpaper}") != "${wallpaper}" ||
+	! -x /usr/local/bin/qorpera-screen-xfce ]]; then
+	echo "The bound screen wallpaper or desktop helper is unavailable." >&2
+	exit 65
+fi
+cd "${workbench_root}"
+xvnc_pid=""
+session_pid=""
+cleanup() {
+	trap - EXIT TERM INT
+	for child in "${session_pid}" "${xvnc_pid}"; do
+		[[ -n ${child} ]] && kill -TERM -- "-${child}" 2>/dev/null || true
+	done
+	for (( attempt=0; attempt<30; attempt++ )); do
+		alive=false
+		for child in "${session_pid}" "${xvnc_pid}"; do
+			if [[ -n ${child} ]] && kill -0 -- "-${child}" 2>/dev/null; then alive=true; fi
+		done
+		[[ ${alive} == false ]] && break
+		sleep 0.1
+	done
+	for child in "${session_pid}" "${xvnc_pid}"; do
+		if [[ -n ${child} ]]; then
+			kill -KILL -- "-${child}" 2>/dev/null || true
+			wait "${child}" 2>/dev/null || true
+		fi
+	done
+}
+trap cleanup EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
+
+# None is confined behind the authenticated gateway. The containment adapter
+# must deny raw RFB/X11 access from unrelated processes and private sign-in
+# viewers; loopback alone is NOT that boundary. Screens remain shared work.
+/usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 HOME="${desktop_home}" \
+	/usr/bin/setsid /usr/bin/Xvnc "${display}" -localhost -rfbport "${rfbport}" \
+	-SecurityTypes None -geometry 1920x1200 -depth 24 -desktop "Qorpera Screen ${ordinal}" &
+xvnc_pid=$!
+ready=false
+for (( attempt=0; attempt<50; attempt++ )); do
+	if DISPLAY=${display} /usr/bin/xset q >/dev/null 2>&1; then ready=true; break; fi
+	if ! kill -0 "${xvnc_pid}" 2>/dev/null; then exit 1; fi
+	sleep 0.2
+done
+if [[ ${ready} != true ]]; then echo "Display did not become ready." >&2; exit 1; fi
+
+/usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 HOME="${desktop_home}" DISPLAY="${display}" \
+	XDG_RUNTIME_DIR="${runtime_dir}" XDG_CONFIG_HOME="${screen_state}/config" \
+	XDG_CACHE_HOME="${screen_state}/cache" XDG_DATA_HOME="${screen_state}/data" \
+	/usr/bin/setsid /usr/bin/dbus-run-session -- /usr/local/bin/qorpera-screen-xfce "${wallpaper}" &
+session_pid=$!
+ready=false
+for (( attempt=0; attempt<75; attempt++ )); do
+	if ! kill -0 "${xvnc_pid}" 2>/dev/null || ! kill -0 "${session_pid}" 2>/dev/null; then exit 1; fi
+	window_manager=$(DISPLAY=${display} /usr/bin/xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null || true)
+	if [[ ${window_manager} =~ window\ id\ \#\ 0x[1-9a-f][0-9a-f]* ]]; then ready=true; break; fi
+	sleep 0.2
+done
+if [[ ${ready} != true ]]; then echo "Desktop did not become ready." >&2; exit 1; fi
+printf '{"schema":"qorpera.screen-ready/v1","screenId":"%s","ordinal":%s}\n' "${screen_id}" "${ordinal}"
+# Bash 5 on the Linux image; either half ending tears down and reaps both groups.
+wait -n "${xvnc_pid}" "${session_pid}"

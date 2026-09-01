@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added inactive Runtime Step 4 Company Computer components: reusable screen capacity and occupancy fencing, acknowledged member takeover with final-check browser drain, persistent browser and cloud tool adapters, and a watch-first viewer with expiring access and clipboard filtering in both directions. Runtime authorization, containment, storage and deployment integration remain explicit prerequisites.
+- Added a non-executing legacy desktop/profile adoption plan with explicit grant dispositions, plus restored agent wallpapers and XFCE startup settings. Actual state adoption and image activation require separate authorization and integration.
+- Added explicit recovery after confirmed screen-admission refusals and scoped browser tab listing/selection to the inactive computer tools (v2). Uncertain admissions and revoked leases remain fenced.
+
 ## [0.20.44] - 2026-08-28
 
 ### Fixed
