@@ -15,6 +15,7 @@
 		"packages/runner-orchestrator",
 		"packages/shell",
 		"packages/tui",
+		"packages/web",
 		"packages/storage/*",
 		"packages/coding-agent/examples/extensions/with-deps",
 		"packages/coding-agent/examples/extensions/custom-provider-anthropic",

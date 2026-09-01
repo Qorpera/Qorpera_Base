@@ -365,3 +365,70 @@ does locally that the contract forbids.
   client has moved; this file records both and the removal date.
 - Client sessions rebase onto `codex/steps-0-2-fable-handoff` regularly and
   read this file's diff first.
+
+## Requests
+
+Client sessions append dated requests here; the runtime session answers in
+place. Nothing below changes the contract until the runtime session records it
+above.
+
+### 2026-09-02 — from the web client session (`packages/web`, branch `web/client-app`)
+
+1. **Object gateway CORS for browser origins.** `packages/object-gateway`
+   sends no `Access-Control-*` headers, so a browser at the web origin cannot
+   call `/v1/member-company-objects`, `/v1/member-company-file` or
+   `/v1/member-session-attachments` at all — the preflight fails before the
+   gateway's authority checks run. Request: an allow-list of web origins
+   (development `http://127.0.0.1:5180` and `http://localhost:5180`, plus the
+   production web origin), methods `GET, PUT, POST, OPTIONS`, request headers
+   `authorization, content-type, x-qorpera-company-path`, exposed headers
+   `etag, x-qorpera-access-mode`, and a `204` answer to preflight. Until then
+   the web app cannot upload attachments or read gateway-served objects; it
+   says so instead of pretending.
+2. **Approvals.** The only member-callable way to record an
+   `authorization_decision` today is `qorpera_append_account_event(uuid, uuid,
+   text, jsonb, bigint, text, uuid, uuid)`, which is granted to `authenticated`
+   but absent from §2. Request: either list it (with the body shape a decision
+   must carry) or name the typed decision RPC Order 2 introduces; and add a
+   read RPC that lists pending authorization requests per profile, so a client
+   does not have to scan every session's events to build the inbox. The web
+   inbox is read-only until one of these exists.
+3. **Undocumented granted functions.** Replaying every grant/revoke in the
+   migrations in statement order yields the 151 functions in §2 plus these 14
+   granted to `authenticated` and not listed: `qorpera_append_account_event`,
+   `qorpera_authorize_member_company_path_object`,
+   `qorpera_authorize_member_session_attachment`,
+   `qorpera_begin_member_company_path_command`,
+   `qorpera_begin_member_session_attachment_upload`, `qorpera_can_read_session`,
+   `qorpera_cancel_session_run`, `qorpera_claim_session_turn`,
+   `qorpera_consent_identity_recovery`, `qorpera_get_session_run_control`,
+   `qorpera_list_member_recovery_identities`, `qorpera_put_profile_staff`,
+   `qorpera_read_company_path`, `qorpera_set_company_path_resource`. Request:
+   document the ones clients may use (at least `qorpera_read_company_path` with
+   its return shape, for live logical-path browsing) and state which are
+   desktop-transitional or should be revoked.
+4. **Object bytes for browsers.** `qorpera_authorize_profile_object_download`
+   returns only `backend` and `bytes`; the desktop then reads Storage bucket
+   `qorpera-profile-objects` at `{profileId}/{sha256}`. Request: record that
+   path convention in §4 so clients do not infer it from desktop code, and
+   state whether it stays valid for companies served by the path gateway
+   (the RPC refuses those with `42501`).
+5. **Supabase Auth redirect URLs.** Register the web origins above (with a
+   trailing `/`) in the project's redirect allow-list for OAuth PKCE and magic
+   links, and confirm the email template includes the six-digit `{{ .Token }}`
+   so code entry works without a redirect.
+6. **Deployment status of Order 0 on the target project.** On
+   `wovsmjvghnbcbfazdtvr.supabase.co` (the project the desktop is compiled
+   against) these listed functions answer `PGRST202` as of 2026-09-02:
+   `qorpera_company_organization_json`, `qorpera_company_organization_bootstrap`,
+   `qorpera_ensure_member_private_staff_session`,
+   `qorpera_company_uses_path_gateway` (and the undocumented
+   `qorpera_read_company_path`). Request: note in §6 when Order 0 lands there,
+   and confirm this is the project the web app should target rather than the
+   preview `hurfdoempkqpzxggemhc`.
+7. **Screens (Order 4), early.** The web viewer needs a browser-facing,
+   authenticated websocket gateway: member token → short-lived viewer lease,
+   origin allow-list, one socket per screen session, a stated frame/input
+   protocol, and lifecycle records that distinguish viewer closure from
+   computer shutdown (§21 item 27). Request: the design note before Order 4
+   implementation so the web client can be built against it.

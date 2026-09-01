@@ -1,0 +1,100 @@
+/* ---- design tokens (generalize everything against these) -------------------
+ * The whole palette derives from one near-black base: surfaces lift from
+ * --chrome with white mixes, borders and hovers are white alphas, and one
+ * action color drives every "act now" affordance. The staff-first shell uses
+ * a light, paper-like canvas so identities and conversations carry the color.
+ *
+ * Token system (alpha borders, color-mix surface lifts, radius scale, glass
+ * recipe, surface grain) adapted from T3 Code
+ * <https://github.com/pingdotgg/t3code>, MIT License,
+ * Copyright (c) 2026 T3 Tools Inc.
+ */
+@font-face {
+	font-family: "Source Sans 3";
+	font-style: normal;
+	font-weight: 200 900;
+	font-display: swap;
+	src: url("./assets/fonts/source-sans-3-latin-normal.woff2") format("woff2");
+}
+@font-face {
+	font-family: "Source Sans 3";
+	font-style: italic;
+	font-weight: 200 900;
+	font-display: swap;
+	src: url("./assets/fonts/source-sans-3-latin-italic.woff2") format("woff2");
+}
+:root {
+	color-scheme: light;
+
+	/* neutrals — warm navigation chrome framing a white work surface */
+	--chrome: #fafafa;
+	--bg: #ffffff;
+	--pane: var(--bg);
+	--pane-strong: rgba(18, 18, 17, 0.075);
+	--hover: rgba(18, 18, 17, 0.055);
+	--popover: rgba(255, 255, 255, 0.98);
+	--text: #161615;
+	--text-muted: #686866;
+	--text-soft: #92928e;
+	--border: rgba(18, 18, 17, 0.09);
+	--border-strong: rgba(18, 18, 17, 0.17);
+	--sidebar-surface: #eeedeb;
+	--sidebar-vibrancy-tint: rgba(232, 235, 240, 0.32);
+	--sidebar-hover: rgba(118, 118, 128, 0.12);
+	--sidebar-selection: #0a84ff;
+	--sidebar-selection-text: #ffffff;
+
+	/* action color — send, links, focus, slider fill */
+	--primary: #171716;
+	--primary-hover: #30302e;
+	--ring: color-mix(in srgb, var(--primary) 55%, transparent);
+	--blue: #305fbe;                         /* readable small-text variant */
+
+	/* brand accent (Qorpera terracotta) — identity, scope tags, gate chips */
+	--accent: #d76f45;
+	--accent-soft: rgba(215, 111, 69, 0.12);
+
+	/* status */
+	--danger: #f26b5e;
+	--danger-soft: rgba(242, 107, 94, 0.14);
+	--danger-muted: color-mix(in srgb, var(--danger) 65%, #ffffff);
+	--warning: #fbbf24;
+	--warning-soft: rgba(245, 158, 11, 0.15);
+	--ok: #34d399;
+	--ok-soft: rgba(16, 185, 129, 0.14);
+
+	/* controls */
+	--send-idle: rgba(18, 18, 17, 0.1);
+	--send-active: var(--primary);
+	--send-active-hover: var(--primary-hover);
+
+	/* geometry */
+	--radius-sm: 6px;
+	--radius: 10px;
+	--radius-lg: 14px;
+	--radius-xl: 18px;
+	--radius-pill: 999px;
+	--titlebar-height: 48px;
+	--thread-width: 720px;
+	--rail-width: 304px;
+	--agent-operations: #e78542;
+	--agent-research: #7868d7;
+	--agent-inbox: #ef5c78;
+	--agent-finance: #22a578;
+	--agent-product: #3d86df;
+	--agent-customer: #d8a022;
+
+	/* type */
+	--font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", Arial, ui-sans-serif, system-ui, sans-serif;
+	--font-display: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", Arial, ui-sans-serif, system-ui, sans-serif;
+	--font-mono: "Cascadia Mono", "Cascadia Code", Consolas, "SFMono-Regular", Menlo, monospace;
+
+	/* glass — composer, menus, floating pills */
+	--glass-blur: 16px;
+	--glass-saturation: 1.08;
+
+	/* chrome grain — static SVG noise baked into surface backgrounds (cheap:
+	   no overlay element, no per-frame compositing cost) */
+	--surface-grain: none;
+	--surface-grain-size: 256px 256px;
+}

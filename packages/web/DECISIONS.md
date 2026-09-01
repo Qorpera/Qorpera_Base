@@ -1,0 +1,114 @@
+# Web client decisions
+
+Dated, append-only. Each entry records what was decided, why, and what it
+rules out. The client contract (`supabase/CLIENT-CONTRACT.md`) and the runtime
+contract (`QORPERA-RUNTIME-CONTRACT.md` §2, §6, §12.2, §14.5, §16.2, §21) are
+the authorities these decisions serve.
+
+## 2026-09-02 — Fresh web stack; do not port `renderer.js` behind a cloud adapter
+
+**Decision.** `packages/web` is a new, small web app: TypeScript, no UI
+framework, bundled with esbuild (already a repo devDependency), talking to the
+cloud with `@supabase/supabase-js` (same pinned version as the desktop). It
+reuses the desktop's *design* (tokens, fonts, staff creature art, icons, copy)
+and *cloud parsing logic* (ported from `packages/shell/src/cloud-*.ts` and
+`hosted-primary.ts` to browser TypeScript), but not the desktop's view code.
+
+**Why not reuse `packages/shell/userland` with an adapter replacing the IPC
+bridge.** Reading the 12.8k-line `renderer.js` against the contract:
+
+1. Its state does not come from the cloud. The renderer reads a *local backend
+   read model* over HTTP (`authorizedBackendPost` to a per-company backend
+   port, `runtimeStream`) and a *local kernel RPC pipe* (`rpcSend`,
+   `onRpcEvent`, `onRpcLog`) that streams the provider's content. A browser
+   adapter would have to emulate a kernel and a backend to satisfy those call
+   sites — the exact thing runtime contract §2 forbids a client to be.
+2. It renders provider output. `pendingAssistantTextByIndex` and the RPC event
+   handlers paint the provider's streaming assistant text and tool activity.
+   §6 says only send operations are public; a web app must never have that
+   code path at all, not merely leave it unreached.
+3. Its identities are local. `currentSession` is a trail *file path*;
+   companies are folder roots; the hub is a local company registry with
+   `materialize`/`migrate` flows. Cloud identity is session UUID plus
+   client-session UUID, profile UUID plus environment UUID. Every state
+   transition would be rewritten anyway.
+4. Roughly a third of the 90 bridge methods are transitional or desktop-only
+   by design (open local folder, materialize/migrate profile, local execution
+   permission, updater, local connection requests, native execution info).
+   They would become dead or lying UI.
+5. It carries the department model (287 references in `renderer.js`, a wizard
+   in `index.html`, strings in `localization.js`). Departments no longer exist
+   (contract §14.3) and must not be ported.
+6. It orders the sidebar by recency and pinning; §14.5 requires the
+   Co-Founder → responsibilities → active projects/rooms → staff hierarchy
+   rebuilt from canonical state.
+
+**What transfers.** `tokens.css` (palette, radii, type scale, glass recipe —
+MIT-licensed adaptations from T3 Code, attribution kept), the Source Sans 3
+fonts, `staff-creatures/*.png`, the SVG icons, and — later — the Danish
+strings. The strict parsers for profiles, teams, invitations, sessions,
+events, staff, Company File, snapshots, proposals, and the organization
+hierarchy projection are ported one-to-one so the web and desktop accept the
+same wire shapes.
+
+**Why no framework.** The repo has none; the desktop UI is vanilla DOM; the
+app is a thin projection of cloud state with a handful of views. Vanilla
+TypeScript keeps the bundle small, keeps the dependency set to one runtime
+package, and passes `check:pinned-deps` and `min-release-age` without new
+entries.
+
+**Ruled out.** Vite/React/Svelte toolchains (new pinned dependencies for no
+contract benefit); a shared "userland" package between desktop and web (the
+desktop UI is being replaced, not generalized).
+
+## 2026-09-02 — Feature gating by deployed machinery, checked at runtime
+
+**Decision.** Every cloud-backed feature is gated on the RPCs it needs
+*existing on the target project*, detected at runtime: a PostgREST `PGRST202`
+("function not found") marks the feature as *not deployed* and the view renders
+a plain read-only notice instead of the feature. A `Cloud check` page runs the
+probe with the signed-in member's token and lists present / denied / missing
+per RPC.
+
+**Why.** Rule 2 (never render missing machinery, §14.5) and the verification
+result of 2026-09-02: on `wovsmjvghnbcbfazdtvr.supabase.co` the contract's
+`qorpera_company_organization_json`, `qorpera_company_organization_bootstrap`,
+`qorpera_ensure_member_private_staff_session`,
+`qorpera_company_uses_path_gateway` and the undocumented
+`qorpera_read_company_path` are not deployed (Order 0 is "pending live
+production migration" per `deploy/first-node/RUNTIME-STEP-0-ORGANIZATION.md`).
+The contract list is derived from migrations, not the deployed schema, and
+says so; the app must not assume parity.
+
+## 2026-09-02 — Transcript projection rules (what the web app renders)
+
+Per §6 and launch acceptance item 8, from `qorpera_read_session_events`:
+
+- `message` events whose body is `qorpera.runner-transcript-entry/v1` with
+  `entry.message.role = "user"` and a `session_input_id` → a member message,
+  attributed to `actor_user_id`.
+- `message` events with `entry.message.role = "assistant"` **and**
+  `entry.delivery.schema = "qorpera.agent-send/v1"` → an agent message with
+  its `progress`/`final` phase. Any assistant-role text without a send
+  delivery record is *not* rendered; the view shows only a count of hidden
+  non-send entries so members know history exists.
+- `qorpera.shared-trail-entry-part/v1` (legacy desktop multipart entries) are
+  reassembled; user-role entries render as member messages, everything else is
+  hidden and counted.
+- `authorization_request` / `authorization_decision` → typed cards; today
+  read-only (see Requests in the client contract).
+- `session_info`, `run_receipt`, `artifact_receipt` → never rendered.
+- Queued inputs from `qorpera_list_session_inputs` not yet in the transcript
+  render as *pending* member messages; `processing` shows the agent is
+  working; `failed` shows the failure reason.
+
+## 2026-09-02 — Verification method for RPCs
+
+The contract's SQL query needs a database credential this session does not
+have. Verification is therefore: (1) replay every `grant`/`revoke` in the
+migrations in statement order to derive the authenticated surface (matches the
+contract's 151 exactly, plus 14 granted-but-undocumented functions), then
+(2) probe the target project anonymously with each function's exact named
+parameters (`PGRST202` = missing), and (3) the in-app `Cloud check` page
+repeats the probe with the member's token. Recorded as a limitation in the
+session log; the SQL check should still be run by whoever holds a credential.
