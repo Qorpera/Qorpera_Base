@@ -2,7 +2,8 @@
 
 **Status:** Draft v1, generated 2026-09-02 from the migrations, Edge Functions,
 object gateway, and desktop shell at `codex/steps-0-2-fable-handoff`
-(`5a3c72890`). Owned by the runtime implementation session: whenever it changes
+(`16f23e856`, which includes the runtime session's first Order 0
+responsibility commit). Owned by the runtime implementation session: whenever it changes
 a member-callable RPC, Realtime topic, gateway route, or Edge Function it
 updates this file in the same change. Consumed by every client — the desktop
 shell and the web app. No client session edits runtime code; a needed change
