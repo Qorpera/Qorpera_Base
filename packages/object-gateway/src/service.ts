@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, RequestListener, ServerResponse } from "node:http";
 import { boundedObjectOperation, ObjectDependencyError, type ObjectDependencyHealth } from "./dependency.ts";
+import { type MemberCompanyObjectAuthority, serveMemberCompanyObject } from "./member-company-objects.ts";
 import { type NativeCompanyObjectOptions, serveNativeCompanyObject } from "./native-objects.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
 import type { ObjectReadLeases } from "./read-lease.ts";
@@ -21,6 +22,7 @@ export interface ObjectGatewayServiceOptions {
 	revocationToken?: string;
 	replication?: ObjectGatewayReplication;
 	nativeObjects?: NativeCompanyObjectOptions;
+	memberObjects?: MemberCompanyObjectAuthority;
 }
 
 class HttpError extends Error {
@@ -184,6 +186,11 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 					json(response, 200, { status: "revoked" });
 					return;
 				}
+				if (request.url?.startsWith("/v1/member-company-objects/")) {
+					if (!options.memberObjects) throw new HttpError(404, "Not found");
+					await serveMemberCompanyObject(request, response, options.memberObjects, options.store);
+					return;
+				}
 				if (request.url?.startsWith("/v1/native-company-objects/")) {
 					if (!options.nativeObjects || !options.replication) throw new HttpError(404, "Not found");
 					await serveNativeCompanyObject(
@@ -253,6 +260,28 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 					verified(bytes, sha256, authority.bytes);
 					// Do not release bytes after a slow NAS read outlived its permission.
 					if (delegated) await options.readLeases!.authorize(token, profileId, sha256);
+					else {
+						try {
+							const current = verifier
+								? await options.authority.authorizeServiceDownload(profileId, sha256)
+								: await options.authority.authorizeDownload(token, profileId, sha256);
+							if (current.bytes !== authority.bytes) throw new HttpError(503, "Object authority changed");
+							// This also rechecks independent revocations that arrived during I/O.
+							if (!verifier && options.readLeases)
+								await options.readLeases.remember(token, profileId, sha256, current);
+						} catch (error) {
+							if (
+								!verifier &&
+								options.readLeases &&
+								error instanceof ObjectDependencyError &&
+								!error.unavailable
+							)
+								await options.readLeases.rejectToken(token);
+							// A request admitted live cannot silently switch to offline authority
+							// after retrieving bytes. The caller may start a separate bounded read.
+							throw error;
+						}
+					}
 					response.writeHead(200, {
 						"cache-control": "private, no-store",
 						"content-length": String(bytes.byteLength),

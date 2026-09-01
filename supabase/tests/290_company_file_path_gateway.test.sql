@@ -269,6 +269,55 @@ set local role service_role;
 select set_config('qorpera_test.path_result',pg_temp.path_commit(current_setting('qorpera_test.path_note')::jsonb)::text,true);
 reset role;
 
+-- Human content reads bind a current path/version and its verified closure,
+-- not merely a company id and a known immutable object hash. Model usage or
+-- subscription sponsorship is not required for a human to read company data.
+do $$
+declare v_user uuid; v_hash text; v_probe text;
+	v_environment uuid := '29000000-0000-4000-8000-000000000020';
+	v_version uuid := (current_setting('qorpera_test.path_result')::jsonb ->> 'version')::uuid;
+	v_file jsonb := current_setting('qorpera_test.path_note')::jsonb #> '{entry,file}'; v_result jsonb;
+begin
+	if has_function_privilege('anon','public.qorpera_authorize_member_company_path_object(uuid,text,uuid,text)','EXECUTE')
+		or has_function_privilege('service_role','public.qorpera_authorize_member_company_path_object(uuid,text,uuid,text)','EXECUTE') then
+		raise exception 'Member path objects expose a service/anonymous bypass'; end if;
+	foreach v_user in array array['29000000-0000-4000-8000-000000000001'::uuid,'29000000-0000-4000-8000-000000000003'::uuid] loop
+		perform pg_temp.path_claims('authenticated',v_user);
+		set local role authenticated;
+		foreach v_hash in array array[v_file ->> 'manifestSha256',v_file ->> 'fileSha256'] loop
+			v_result := public.qorpera_authorize_member_company_path_object(v_environment,'note.md',v_version,v_hash);
+			if v_result ->> 'schema' <> 'qorpera.member-company-object/v1'
+				or v_result ->> 'companyId' <> '29000000-0000-4000-8000-000000000010'
+				or v_result ->> 'environmentId' <> v_environment::text or v_result ->> 'version' <> v_version::text
+				or v_result ->> 'path' <> 'note.md' or v_result ->> 'sha256' <> v_hash then
+				raise exception 'Member content authority lost its exact path identity'; end if;
+		end loop;
+		foreach v_probe in array array['other-object','other-path','alias','secret','old-version'] loop
+			begin
+				perform public.qorpera_authorize_member_company_path_object(v_environment,
+					case v_probe when 'other-path' then 'other.md' when 'alias' then 'NOTE.md' when 'secret' then 'secrets/credential' else 'note.md' end,
+					case when v_probe = 'old-version' then extensions.gen_random_uuid() else v_version end,
+					case when v_probe = 'other-object' then current_setting('qorpera_test.path_tree') else v_file ->> 'fileSha256' end);
+				raise exception 'Member object route ignored %',v_probe;
+			 exception when insufficient_privilege or serialization_failure then null; end;
+		end loop;
+		reset role;
+	end loop;
+	begin
+		delete from public.qorpera_profile_members where profile_id = '29000000-0000-4000-8000-000000000010'
+			and user_id = '29000000-0000-4000-8000-000000000003';
+		set local role authenticated;
+		begin
+			perform public.qorpera_authorize_member_company_path_object(v_environment,'note.md',v_version,v_file ->> 'fileSha256');
+			raise exception 'Departed member retained content authority';
+		exception when insufficient_privilege then null; end;
+		raise exception using errcode = 'QTH01';
+	exception when sqlstate 'QTH01' then null; end;
+	reset role;
+	perform pg_temp.path_claims('service_role');
+end
+$$;
+
 -- The revision, projection, receipt, restore proof and both live heads must
 -- describe the same effect; no whole-run completion is required for delivery.
 do $$
@@ -403,8 +452,22 @@ do $$
 begin
 	if public.qorpera_read_company_path('29000000-0000-4000-8000-000000000020','note.md') -> 'entry' = 'null'::jsonb then
 		raise exception 'Private owner lost their human access'; end if;
+	perform public.qorpera_authorize_member_company_path_object('29000000-0000-4000-8000-000000000020','note.md',
+		(current_setting('qorpera_test.path_result')::jsonb ->> 'version')::uuid,
+		current_setting('qorpera_test.path_note')::jsonb #>> '{entry,file,fileSha256}');
 end
 $$;
+reset role;
+select pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000002');
+set local role authenticated;
+do $$ begin
+	begin
+		perform public.qorpera_authorize_member_company_path_object('29000000-0000-4000-8000-000000000020','note.md',
+			(current_setting('qorpera_test.path_result')::jsonb ->> 'version')::uuid,
+			current_setting('qorpera_test.path_note')::jsonb #>> '{entry,file,fileSha256}');
+		raise exception 'Coworker read another human''s private file by known hash';
+	exception when insufficient_privilege then null; end;
+end $$;
 reset role;
 select pg_temp.path_claims('service_role');
 set local role service_role;
@@ -552,6 +615,18 @@ end
 $$;
 
 -- Path identity and legacy paths fail closed without deleting old snapshots.
+select pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000001');
+set local role authenticated;
+do $$ begin
+	begin
+		perform public.qorpera_authorize_member_company_path_object('29000000-0000-4000-8000-000000000020','note.md',
+			(current_setting('qorpera_test.path_result')::jsonb ->> 'version')::uuid,
+			current_setting('qorpera_test.path_note')::jsonb #>> '{entry,file,fileSha256}');
+		raise exception 'Delete/recreate revived an old member content capability';
+	exception when serialization_failure then null; end;
+end $$;
+reset role;
+select pg_temp.path_claims('service_role');
 do $$
 declare v_path text; v_binding jsonb := current_setting('qorpera_test.path_binding')::jsonb;
 begin

@@ -1,7 +1,10 @@
 # Runtime Step 2: native boundary and cloud tool authority
 
-Date: 2026-08-28. Status: component implementation and adversarial proof;
+Date: 2026-08-28. Status: source integration and component adversarial proof;
 **native-result blocker resolved; not deployed and not complete Step 2**.
+The subsequent governed Company File, context, guest and recovery work is
+recorded in [RUNTIME-STEP-2-GOVERNED-GUEST.md](RUNTIME-STEP-2-GOVERNED-GUEST.md).
+Historical test counts below describe their checkpoint, not a combined total.
 
 ## Decision and scope
 
@@ -14,19 +17,23 @@ transport are unchanged. There is no credential-reading provider proxy.
 
 Implementation is based on the released Step 1 tree at
 `a0b692947d5c867353591b36172afcc997f0521e`, not the older architecture draft.
-`NativeProviderHost` and its deployed `codex exec` driver are unchanged.
+`NativeProviderHost` now has an explicit `company-path-v1` source integration;
+the deployed legacy `codex exec` driver has not been switched.
 No production services, NAS routes, company mounts, credentials, migrations or
-releases were changed. A dedicated synthetic-data build VM was provisioned on
-the cloud node for Linux compilation and loopback-only acceptance. It had no
-company or credential mount. The outage-resilience side task remains separate.
-The disposable build VM was removed after the artifact was exported and its
-hash reverified. Source, license, artifact and proof remain available.
+releases were changed. The first synthetic-data build VM produced the Linux
+development artifact and was removed after export and hash verification. A
+separate disposable VM produced the release-profile artifact and passed the
+expanded fixture; it was also removed after verified export. Neither VM had
+a company or credential mount.
+Scoped gateway/worker outage-resilience components are now integrated; client
+Auth/object-transport changes and offline read delegation are not enabled.
 
-This remains a pure-cloud design. The future caller is the cloud native host,
+This remains a pure-cloud design. The caller is the cloud native host,
 never the desktop client. The Company File is one live, company-owned cloud
 state, and the Company Computer remains shared. The empty, temporary harness
 working directory in this proof is neither a company checkout nor a copy of
-company state. Real canonical storage is not passed to this adapter.
+company state. Canonical storage is never passed to the harness; the trusted
+cloud host mediates path operations against current cloud authority.
 
 ## Implemented components
 
@@ -50,8 +57,9 @@ company state. Real canonical storage is not passed to this adapter.
   unchanged results retain stable envelopes; changed bodies for an existing
   native call fail closed. Empty model requests also require live authority.
 
-The boundary's callback is now connected to live run authority by the
-experimental cloud entrypoint below. That is not a Company File path grant.
+The boundary's callback is connected to live run authority by the cloud
+entrypoint below. That is not itself a Company File path grant; the governed
+path gateway independently enforces those grants at read and commit time.
 The low-level call-ID cache remains in-process only; durable effect retries
 use the existing cloud operation ledger, not this cache.
 
@@ -114,12 +122,13 @@ Existing control-plane operations retain a bounded 30-second deadline.
 
 The `authorize` callback and the target gateway's atomic permission check are
 still mandatory dependencies. A run receipt is not path permission, human
-consent, or a filesystem/connector transaction. No real file/connector adapter
-has been activated by this slice. Adapters must enforce exact target authority
+consent, or a filesystem/connector transaction. The governed Company File
+adapter is now implemented in source; no production adapter was activated.
+Connector adapters remain separate work. Adapters must enforce exact target authority
 at their commit point and propagate the supplied idempotency key. Private
 operation results never become public sends automatically.
 
-`packages/shell/src/cloud-codex-tool-session.ts` provides an experimental,
+`packages/shell/src/cloud-codex-tool-session.ts` provides an opt-in,
 single-turn app-server adapter for the pinned downstream Codex **0.147.0** binary:
 
 - Private launch directory, explicit environment and an optional fresh,
@@ -142,9 +151,11 @@ single-turn app-server adapter for the pinned downstream Codex **0.147.0** binar
 - Process-group shutdown on completion, failure or cancellation. Ordinary
   assistant text, reasoning, diffs and diagnostics are never a public message.
 
-The adapter does not implement the public mouth itself. Its proof reuses
-`CloudAgentMouth` and its closed send/receipt parsers. The normal cloud host
-must still call `mouth.finish()` and enforce the existing final-send contract.
+The adapter does not implement the public mouth itself. Its proof and the
+governed cloud runtime reuse `CloudAgentMouth` and its closed send/receipt
+parsers. The runtime calls `mouth.finish()` and the database independently
+enforces completion. Optional silent wakes await the admitted Step 3 policy;
+they are not inferred from model or job payload flags.
 
 ## Pinned-binary findings
 
@@ -160,8 +171,10 @@ replay and extra fields, and applies an independent four-second host deadline.
 The native caller has a five-second deadline. Unhandled result kinds and
 multimodal/encrypted tool results fail closed. The callback covers the common
 HTTP, WebSocket and compaction request builder; the actual-binary acceptance
-below exercises HTTP. Full context reconstruction/compaction acceptance is
-still a separate integration gate.
+below exercises HTTP. Additional actual-binary tests cover local, remote-v1
+and remote-v2 compaction, restored runtime laws, untrusted compaction output,
+and revocation during compaction. Full deployed context reconstruction with
+real GPT and the complete guest boundary remains an integration gate.
 
 Do not infer the active tool set from configuration flags alone. With the
 bundled provider-default model (`gpt-5.6-sol` in this package), Codex uses an
@@ -192,7 +205,7 @@ result in either tested model path reaches the provider unfenced.
 
 ## Verification
 
-Current checkpoint: **214 focused Qorpera tests across fourteen files passed**,
+Initial native-fence checkpoint: **214 focused Qorpera tests across fourteen files passed**,
 including the existing Step 1 mouth regressions, stock-binary rejection and
 patched-binary success/failure tests. Two build-script tests and five native
 Rust tests also passed. `npm run check` passed without diagnostics. Native
@@ -207,7 +220,7 @@ initial provider request and no effect. This is cloud-node **component** proof,
 not the deployed run/control-plane path or real-GPT acceptance. The fixture's
 authority and Company File adapters are synthetic.
 
-Disposable PostgreSQL applied all **75 migrations** and passed selected suites
+At that initial checkpoint, disposable PostgreSQL applied all **75 migrations** and passed selected suites
 `160_native_subscription_compute_identity`,
 `165_cloud_agent_public_mouth_privileges` and `280_cloud_session_run_control`.
 The expanded native fixture exercises the new service-only RPCs on real
@@ -235,10 +248,13 @@ Run the same provider-default native proof on Linux without a test runner:
 node packages/shell/test/fixtures/run-official-codex-boundary-probe.ts /absolute/path/to/pinned/codex
 ```
 
-The current Linux artifact is a development-profile x86_64 build, not a release
-image. Its source and patch match the recorded pin. Node 24.19.0 and the Ubuntu
-image were pinned for the disposable build guest. Only public build dependencies
-were downloaded; acceptance itself had no external network. The earlier
+The current Linux x86_64 artifact is a release-profile build with debug sections
+removed by the pinned Rust toolchain's LLVM utility. The input/tool/output hashes
+are recorded, the exported binary passed the same native and compaction checks,
+and the real guest packager accepted it in contract-only mode. It is not a signed
+guest image. Node 24.19.0 and the Ubuntu image were pinned for the disposable
+build guest. Only public build dependencies were downloaded; acceptance itself
+had no external network. The earlier
 Linux ARM64 stock-binary proof demonstrated the original gap and is historical
 negative evidence, not current fence acceptance.
 
@@ -260,28 +276,34 @@ For the current native slice, set `QORPERA_CODEX_FENCE_BINARY` to the exact
 built artifact and also run `test/cloud-native-result-fence.test.ts` and
 `test/patched-codex-boundary.test.ts` with the focused command above. Run
 `node --test scripts/build-native-codex.test.mjs` from the repository root.
-The standalone command now includes both authority-failure checks and fails
+The standalone command now includes both authority-failure checks and six
+compaction checks (each of three compaction paths with and without revocation), and fails
 for a missing or unpatched artifact; it does not silently skip acceptance.
-The [Linux evidence](native-codex/linux-x64-component-proof.json) pins the
-development artifact and fixture bytes. The archived artifact includes the
-upstream license and notice and has been verified after transfer off the VM.
+The [initial Linux evidence](native-codex/linux-x64-component-proof.json) pins the
+development artifact. The [release evidence](native-codex/linux-x64-release-proof.json)
+pins the packageable release and expanded fixtures. Both archives include the
+upstream license and notice and were verified after transfer off their VMs.
 
 ## Remaining gates, in order
 
-1. Integrate the now-implemented run/receipt binding with exact path, audience,
-   destination and approval authorization at the effect boundary. Deploy the
-   new SQL and host code only through the coordinated lane. Retained private
-   data is not renewed authority after an outage.
-2. Add the authorized live Company File gateway and protected-path proposals.
-   The fixture's tiny path allowlist is not the real gateway. Replace canonical
-   mount bypasses only after the gateway and shared workbench are verified.
-3. Verify secret custody, network destinations, process/cgroup isolation,
-   context reconstruction/compaction and durable crash recovery. This proof
-   does not establish these across the complete host or all native subprocesses.
-4. Build the production Linux artifact, integrate it and run controlled
-   real-GPT cloud acceptance with clients closed,
-   revoked authority and multiple human identities before rollout. The current
-   production runtime is not hardened by this unselected adapter.
+1. Connect the implemented member path-content reader to the human UI and finish
+   direct editing and proposal review/application. Descriptors and isolated
+   transport tests cannot replace the human Company File experience by themselves.
+2. Reconcile the existing plain NAS company state with the governed live head,
+   then verify shared-workbench containment before any canonical-mount cutover.
+   Do not introduce a second company or discard existing NAS work.
+3. Verify secret custody, destination egress, process/cgroup isolation and
+   persistent-volume recovery in the complete packaged guest. Synthetic
+   provider and mount-schema checks are not this acceptance.
+4. Verify the accepted release-profile artifact together with a signed guest
+   image, provider configuration and persistent recovery storage. A binary digest
+   and contract-only packaging are not a complete runtime-bundle admission pin.
+5. Integrate the server-owned Step 3 wake policy at send, pre-work and
+   completion boundaries; keep unknown state fail-closed. Room ingress and
+   full runtime-bundle pinning remain explicit cross-step gates.
+6. Run controlled real-GPT cloud acceptance with clients closed, revoked
+   authority, crashes and multiple human identities, then use the coordinated
+   rollout lane. Retained private data never restores expired authority.
 
 ### Historical recheck and authorized resolution
 
@@ -312,7 +334,9 @@ The user subsequently authorized the narrow native patch. The technical
 exception is now recorded in the native-subscription and cloud-control-plane
 contracts, with source/patch/binary pins and no change to credential custody.
 The native-result blocker is resolved by the proofs above. This decision does
-not resolve the remaining Company File, context, recovery or rollout gates.
+not by itself resolve Company File integration, complete guest isolation,
+recovery operations or rollout gates. See the governed-guest record for the
+source implementation completed since the initial native proof.
 
 ## Source references
 

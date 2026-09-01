@@ -14,10 +14,11 @@ operator-pinned executable SHA-256; the marker alone is not artifact trust.
 
 ## Build
 
-Provision Rust 1.95.0 and the upstream platform build prerequisites, then run
-from the Qorpera repository:
+Provision Rust 1.95.0, its `llvm-tools` component and the upstream platform
+build prerequisites, then run from the Qorpera repository:
 
 ```sh
+rustup component add --toolchain 1.95.0 llvm-tools
 node scripts/build-native-codex.mjs --source /absolute/path/to/upstream-clone --out /absolute/path/to/new-build-directory
 ```
 
@@ -26,6 +27,12 @@ checkout and refuses an existing output directory. `--prepare-only` verifies
 and applies the patch without compiling; `--profile dev` produces a component
 test binary, not a release candidate. The default is a release build. The
 artifact includes LICENSE, NOTICE, compiler/target information and a hash.
+Release staging strips debug sections from the copied executable using that
+same Rust toolchain's `llvm-objcopy`; it preserves the compiled input and
+records both input and processing-tool hashes. The upstream release profile
+includes debug symbols, so omitting this step exceeds the guest package bound.
+The package validator requires this processing record and retains its size
+limit; it does not accept an arbitrary host `strip` result.
 Cloud acceptance is explicitly unperformed in the build manifest.
 
 The upstream tag updates workspace package versions without updating the
@@ -69,17 +76,34 @@ hostile nested data, synthetic-secret reads and duplicate public sends. It
 requires all 31 result bodies to be fenced, with 22 execution bypasses denied.
 Separate actual-binary cases revoke or stall authority before the next request.
 The unpatched official binary must be rejected before a model request.
+Local, remote-v1 and remote-v2 compaction each have success and revocation
+cases: earlier tool results remain fenced, runtime laws survive reconstruction,
+forged compaction instructions do not acquire authority, and revocation denies
+the next provider request and effect. These checks are also mandatory in the
+standalone Linux fixture.
 
-The [Linux proof](linux-x64-component-proof.json) records the artifact and
+The [initial Linux proof](linux-x64-component-proof.json) records the artifact and
 fixture hashes from the isolated cloud-node VM, including both authority
 failure cases. The development artifact archive is retained at
 `/tmp/qorpera-codex-fence.sX30In/linux-x64-artifact.tar.gz`; it is not a release
 installer or production image. The build manifest keeps its build-time
 `cloudAcceptance: not_performed`; the separate proof records what was tested.
 
+The [Linux release proof](linux-x64-release-proof.json) records the later
+release-profile binary and all six compaction cases. The stripped binary is
+307,148,960 bytes, SHA-256
+`babeed68a7732f96fa6bcd69ac3a9e4124bcfab5340ce0fbab61363b8b1a148f`.
+Its exported archive was reverified and used by the actual guest packager in
+`--contract-only` mode. The signed runner image was not included or accepted;
+this is not a deployable-image or complete-guest isolation claim. The disposable
+builder was removed after export; retained artifact paths are in the proof.
+
 These are component proofs with a loopback scripted provider, not real GPT or
-production acceptance. The normal native host is not switched by this patch.
-Company File path authorization, shared-workbench containment and deployment
-acceptance remain separate required gates. A new upstream version requires
+production acceptance. Source now includes an explicit `company-path-v1`
+host/provider/guest lane with a cloud-authorized live Company File gateway;
+the deployed legacy lane has not been switched. Packaging accepts only a
+matching release-profile Linux x86_64 artifact, not the development archive.
+See [the governed-guest record](../RUNTIME-STEP-2-GOVERNED-GUEST.md) for human
+file integration, shared-workbench containment and rollout gates. A new upstream version requires
 source review, a new patch/hash, and rerunning these proofs; never auto-upgrade
 the native artifact or infer compatibility from its version string.

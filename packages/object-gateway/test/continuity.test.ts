@@ -360,6 +360,70 @@ describe("cloud object outage continuity", () => {
 		expect((await fixture.get()).status).toBe(403);
 	});
 
+	it.each([false, true])("rechecks live permission after NAS I/O with delegation=%s", async (delegation) => {
+		const fixture = await gateway(delegation);
+		await fixture.seed();
+		const read = fixture.objects.get.bind(fixture.objects);
+		vi.spyOn(fixture.objects, "get").mockImplementationOnce(async (...args) => {
+			const result = await read(...args);
+			fixture.cloud.api = "denied";
+			return result;
+		});
+		const response = await fixture.get();
+		expect(response.status).toBe(403);
+		expect(await response.text()).not.toContain(bytes.toString());
+		fixture.cloud.api = "unavailable";
+		expect((await fixture.get()).status).toBe(delegation ? 403 : 503);
+	});
+
+	it("rechecks independent revocation after live NAS I/O even when the API still allows access", async () => {
+		const fixture = await gateway();
+		await fixture.seed();
+		const read = fixture.objects.get.bind(fixture.objects);
+		vi.spyOn(fixture.objects, "get").mockImplementationOnce(async (...args) => {
+			const result = await read(...args);
+			await fixture.leases.revoke(profileId, subjectId);
+			return result;
+		});
+		const response = await fixture.get();
+		expect(response.status).toBe(403);
+		expect(await response.text()).not.toContain(bytes.toString());
+	});
+
+	it.each(["denied", "unavailable"] as const)(
+		"rechecks verifier permission after I/O when authority becomes %s",
+		async (failure) => {
+			const fixture = await gateway();
+			await fixture.seed();
+			const read = fixture.objects.get.bind(fixture.objects);
+			vi.spyOn(fixture.objects, "get").mockImplementationOnce(async (...args) => {
+				const result = await read(...args);
+				fixture.cloud.api = failure;
+				return result;
+			});
+			const response = await fixture.get(profileId, sha256, "synthetic-verifier");
+			expect(response.status).toBe(failure === "denied" ? 403 : 503);
+			expect(await response.text()).not.toContain(bytes.toString());
+		},
+	);
+
+	it("does not relabel a live read as delegated when authority is lost during I/O", async () => {
+		const fixture = await gateway();
+		await fixture.seed();
+		const read = fixture.objects.get.bind(fixture.objects);
+		vi.spyOn(fixture.objects, "get").mockImplementationOnce(async (...args) => {
+			const result = await read(...args);
+			fixture.cloud.api = "unavailable";
+			return result;
+		});
+		const response = await fixture.get();
+		expect(response.status).toBe(503);
+		expect(await response.text()).not.toContain(bytes.toString());
+		const retried = await fixture.get();
+		expect(retried.status).toBe(200);
+		expect(retried.headers.get("x-qorpera-access-mode")).toBe("bounded-read-lease");
+	});
+
 	it("does not turn a known denial into grace when the error body and cancellation stall", async () => {
 		const fixture = await gateway();
 		await fixture.seed();

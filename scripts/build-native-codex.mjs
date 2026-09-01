@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants, createReadStream } from "node:fs";
-import { chmod, copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -28,6 +28,35 @@ function run(command, args, options = {}) {
 	if (result.error) throw result.error;
 	if (result.status !== 0) throw new Error(`${command} failed (${result.status ?? result.signal})`);
 	return result.stdout?.trim();
+}
+
+async function digestFile(path) {
+	const digest = createHash("sha256");
+	for await (const chunk of createReadStream(path)) digest.update(chunk);
+	return digest.digest("hex");
+}
+
+/** Strip only the staged copy, using LLVM shipped with the pinned Rust
+ * toolchain. Retain the input/tool digests so packaging never substitutes an
+ * arbitrary host strip command or silently changes the Cargo build profile. */
+export async function stripNativeCodexDebug(binary, rustc, target, toolchain, execute = run) {
+	if (!isAbsolute(binary) || !isAbsolute(rustc) || !/^[a-z0-9_-]{8,80}$/.test(target) || !/^\d+\.\d+\.\d+$/.test(toolchain))
+		throw new Error("Invalid native release processing input");
+	const compiler = execute(rustc, ["-vV"], { stdio: "pipe" });
+	if (!compiler?.startsWith(`rustc ${toolchain} `) || !compiler.split("\n").includes(`host: ${target}`))
+		throw new Error("Native release processing requires the pinned compiler");
+	const sysroot = execute(rustc, ["--print", "sysroot"], { stdio: "pipe" });
+	if (!sysroot || !isAbsolute(sysroot)) throw new Error("Pinned Rust sysroot is missing");
+	const tool = join(sysroot, "lib", "rustlib", target, "bin", "llvm-objcopy");
+	for (const path of [binary, tool]) {
+		const entry = await lstat(path);
+		if (!entry.isFile() || entry.isSymbolicLink() || entry.size < 1)
+			throw new Error("Native release processing requires physical files");
+	}
+	const inputSha256 = await digestFile(binary);
+	const toolSha256 = await digestFile(tool);
+	execute(tool, ["--strip-debug", binary]);
+	return { tool: "rust-llvm-objcopy", toolchain, operation: "strip-debug", inputSha256, toolSha256 };
 }
 
 async function main(args) {
@@ -88,12 +117,11 @@ async function main(args) {
 	});
 	const binary = join(options.out, "codex");
 	await copyFile(join(targetRoot, options.profile === "release" ? "release" : "debug", "codex"), binary, constants.COPYFILE_EXCL);
+	const processing = options.profile === "release" ? await stripNativeCodexDebug(binary, rustc, target, contract.rustToolchain) : null;
 	await chmod(binary, 0o555);
-	const digest = createHash("sha256");
-	for await (const chunk of createReadStream(binary)) digest.update(chunk);
 	const artifact = { schema: "qorpera.native-codex-artifact/v1", source: contract,
-		artifact: { file: "codex", bytes: (await stat(binary)).size, sha256: digest.digest("hex"), target,
-			profile: options.profile, compiler }, cloudAcceptance: "not_performed" };
+		artifact: { file: "codex", bytes: (await stat(binary)).size, sha256: await digestFile(binary), target,
+			profile: options.profile, compiler, processing }, cloudAcceptance: "not_performed" };
 	await copyFile(join(source, "LICENSE"), join(options.out, "LICENSE"), constants.COPYFILE_EXCL);
 	await copyFile(join(source, "NOTICE"), join(options.out, "NOTICE"), constants.COPYFILE_EXCL);
 	await writeFile(join(options.out, "artifact.json"), `${JSON.stringify(artifact, null, 2)}\n`, { flag: "wx" });

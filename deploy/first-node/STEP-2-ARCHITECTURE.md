@@ -1,9 +1,16 @@
-# Company41 Step 2 first-node architecture
+# Company41 infrastructure Step 2 architecture (historical)
 
-**Status:** authoritative architecture and completion gate. The deployed v20
-boundary has run one real Codex job but has not completed the functional or
-production-storage gates. See [`STEP-2-HANDOFF.md`](STEP-2-HANDOFF.md) for the
-current checkpoint.
+This document records the earlier first-node infrastructure phase, not Runtime
+Step 2 in the later ten-step implementation order. Its v20 inventory, private
+Company File checkouts, Claude launch requirement, and references to a future
+infrastructure Step 3 are historical. They must not override the pure-cloud,
+single-live-Company-File runtime contract. Repositories remain the exception;
+an agent does not receive its own canonical company checkout.
+
+Current trust-boundary implementation and open rollout gates are recorded in
+[`RUNTIME-STEP-2-GOVERNED-GUEST.md`](RUNTIME-STEP-2-GOVERNED-GUEST.md) and
+[`RUNTIME-STEP-2-NATIVE-BOUNDARY.md`](RUNTIME-STEP-2-NATIVE-BOUNDARY.md).
+[`STEP-2-HANDOFF.md`](STEP-2-HANDOFF.md) preserves the infrastructure checkpoint.
 
 ## Decision
 

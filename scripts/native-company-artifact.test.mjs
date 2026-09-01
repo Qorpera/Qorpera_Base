@@ -18,7 +18,9 @@ async function fixture() {
 	const artifact = {
 		schema: "qorpera.native-codex-artifact/v1", source,
 		artifact: { file: "codex", bytes: binary.length, sha256: createHash("sha256").update(binary).digest("hex"),
-			target: "x86_64-unknown-linux-gnu", profile: "release", compiler: `rustc ${source.rustToolchain} (fixture)\nhost: x86_64-unknown-linux-gnu\n` },
+			target: "x86_64-unknown-linux-gnu", profile: "release", compiler: `rustc ${source.rustToolchain} (fixture)\nhost: x86_64-unknown-linux-gnu\n`,
+			processing: { tool: "rust-llvm-objcopy", toolchain: source.rustToolchain, operation: "strip-debug",
+				inputSha256: "a".repeat(64), toolSha256: "b".repeat(64) } },
 		cloudAcceptance: "not_performed",
 	};
 	await writeFile(join(root, "codex"), binary);
@@ -76,6 +78,10 @@ test("rejects changed source, target, compiler, bytes, symlinks, and missing not
 			(value) => { value.artifact.target = "aarch64-apple-darwin"; },
 			(value) => { value.artifact.compiler = "rustc 1.90.0 (fixture)\nhost: x86_64-unknown-linux-gnu"; },
 			(value) => { value.artifact.sha256 = "f".repeat(64); },
+			(value) => { value.artifact.processing = null; },
+			(value) => { value.artifact.processing.tool = "unversioned-strip"; },
+			(value) => { value.artifact.processing.toolchain = "1.90.0"; },
+			(value) => { value.artifact.processing.operation = "strip-all"; },
 		]) {
 			const bad = structuredClone(artifact);
 			mutate(bad);

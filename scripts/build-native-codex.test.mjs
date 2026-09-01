@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { normalizeNativeCargoLock } from "./build-native-codex.mjs";
+import { normalizeNativeCargoLock, stripNativeCodexDebug } from "./build-native-codex.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const script = join(repository, "scripts/build-native-codex.mjs");
@@ -54,5 +55,36 @@ test("rejects ambiguous build arguments without touching the output", async () =
 		const help = spawnSync(process.execPath, [script, "--help"], { encoding: "utf8" });
 		assert.equal(help.status, 0);
 		assert.match(help.stdout, /--prepare-only/);
+	} finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("uses only the pinned toolchain's debug stripper and records exact inputs", async () => {
+	const root = await mkdtemp(join(tmpdir(), "qorpera-native-strip-test-"));
+	try {
+		const binary = join(root, "codex");
+		const rustc = join(root, "rustc");
+		const target = "x86_64-unknown-linux-gnu";
+		const tool = join(root, "lib", "rustlib", target, "bin", "llvm-objcopy");
+		await mkdir(dirname(tool), { recursive: true });
+		await writeFile(binary, "synthetic native input");
+		await writeFile(tool, "synthetic tool fixture, never executed");
+		const calls = [];
+		const execute = (command, args) => {
+			calls.push([command, args]);
+			if (command === rustc && args[0] === "-vV") return `rustc 1.95.0 (fixture)\nhost: ${target}`;
+			if (command === rustc && args[0] === "--print") return root;
+			assert.equal(command, tool);
+			assert.deepEqual(args, ["--strip-debug", binary]);
+		};
+		const processing = await stripNativeCodexDebug(binary, rustc, target, "1.95.0", execute);
+		assert.deepEqual(processing, {
+			tool: "rust-llvm-objcopy", toolchain: "1.95.0", operation: "strip-debug",
+			inputSha256: createHash("sha256").update(await readFile(binary)).digest("hex"),
+			toolSha256: createHash("sha256").update(await readFile(tool)).digest("hex"),
+		});
+		assert.equal(calls.length, 3);
+		await assert.rejects(stripNativeCodexDebug(binary, rustc, target, "1.90.0", execute), /pinned compiler/);
+		await assert.rejects(stripNativeCodexDebug(binary, rustc, "../untrusted", "1.95.0", execute), /Invalid/);
+		assert.equal(await readFile(binary, "utf8"), "synthetic native input");
 	} finally { await rm(root, { recursive: true, force: true }); }
 });

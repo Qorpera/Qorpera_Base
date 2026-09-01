@@ -40,6 +40,7 @@ const handler = createObjectGatewayHandler({
 	controlToken: required(process.env, "QORPERA_OBJECT_GATEWAY_CONTROL_TOKEN"),
 	verifierToken: required(process.env, "QORPERA_OBJECT_GATEWAY_VERIFIER_TOKEN"),
 	replication,
+	memberObjects: authority,
 	...(process.env.QORPERA_OBJECT_GATEWAY_NATIVE_TOKEN
 		? { nativeObjects: { token: required(process.env, "QORPERA_OBJECT_GATEWAY_NATIVE_TOKEN"), authority } }
 		: {}),

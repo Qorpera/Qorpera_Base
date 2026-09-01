@@ -21,6 +21,7 @@ export async function verifyNativeCompanyArtifact(directory) {
 	}
 	const artifact = JSON.parse(await readFile(join(root, "artifact.json"), "utf-8"));
 	const source = JSON.parse(await readFile(join(repository, "deploy/first-node/native-codex/source.json"), "utf-8"));
+	const processing = artifact.artifact?.processing;
 	if (artifact.schema !== "qorpera.native-codex-artifact/v1" ||
 		JSON.stringify(canonical(artifact.source)) !== JSON.stringify(canonical(source)) ||
 		artifact.artifact?.file !== "codex" || artifact.artifact.target !== "x86_64-unknown-linux-gnu" ||
@@ -29,7 +30,10 @@ export async function verifyNativeCompanyArtifact(directory) {
 		!/^[0-9a-f]{64}$/.test(artifact.artifact.sha256) ||
 		typeof artifact.artifact.compiler !== "string" ||
 		!artifact.artifact.compiler.startsWith(`rustc ${source.rustToolchain} `) ||
-		!/^host: x86_64-unknown-linux-gnu$/m.test(artifact.artifact.compiler)) {
+		!/^host: x86_64-unknown-linux-gnu$/m.test(artifact.artifact.compiler) ||
+		!processing || Object.keys(processing).length !== 5 || processing.tool !== "rust-llvm-objcopy" ||
+		processing.operation !== "strip-debug" || processing.toolchain !== source.rustToolchain ||
+		!/^[0-9a-f]{64}$/.test(processing.inputSha256) || !/^[0-9a-f]{64}$/.test(processing.toolSha256)) {
 		throw new Error("Native company guest requires the pinned Linux x64 release artifact");
 	}
 	for (const name of ["codex", "LICENSE", "NOTICE"]) {

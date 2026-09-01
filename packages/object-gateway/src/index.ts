@@ -1,5 +1,6 @@
 export * from "./dependency.ts";
 export * from "./journal.ts";
+export * from "./member-company-objects.ts";
 export * from "./migration.ts";
 export * from "./native-objects.ts";
 export * from "./object-store.ts";
