@@ -1,0 +1,289 @@
+-- Run only through test-runtime-wake-bus.mjs --integration. The driver supplies
+-- the existing 300 fixture and any post-wake migrations in this checkout.
+-- Kept outside automatic component-test discovery: this checks the integration
+-- contract and must not be mistaken for a passing test of the pinned baseline.
+-- This is real database integration acceptance, not a replacement enforcement
+-- implementation. Missing main-owned seams fail the command. No provider runs.
+
+create function pg_temp.wake_acceptance_routine(p_reporting text)
+returns jsonb language plpgsql as $$
+declare v_routine jsonb; v_wake uuid; v_run uuid; v_binding jsonb;
+begin
+	-- Preserve a real conversation and nonzero transcript start. Removing the
+	-- conversation to make zero-send completion pass would hide the integration gap.
+	perform pg_temp.wake_public_send(current_setting('qorpera_test.wake_binding')::jsonb,'progress');
+	v_routine := pg_temp.wake_routine('30000000-0000-4000-8000-000000000030',
+		jsonb_build_object('id','tick','kind','schedule','intervalMinutes',5) ||
+		case when p_reporting is null then '{}'::jsonb else jsonb_build_object('replyPolicy',p_reporting) end);
+	v_wake := pg_temp.wake_schedule(v_routine,'acceptance-' || coalesce(p_reporting,'omitted'));
+	perform public.qorpera_materialize_wake_execution_runs(1);
+	select run_id into strict v_run from public.qorpera_wake_occurrences where id = v_wake;
+	perform pg_temp.wake_assert((select session_id is not null and transcript_start_sequence > 0
+		from public.qorpera_execution_runs where id = v_run),'Routine retains its conversation and prior transcript');
+	v_binding := pg_temp.wake_start(v_run);
+	perform public.qorpera_read_native_wake(v_binding);
+	-- A durable admission marker, not a real provider invocation.
+	perform public.qorpera_begin_native_company_execution(v_binding,repeat('7',64));
+	perform set_config('qorpera_test.wake_binding',v_binding::text,true);
+	return v_binding;
+end
+$$;
+
+create function pg_temp.wake_acceptance_finish(p_binding jsonb,
+	p_index uuid default '30000000-0000-4000-8000-000000000400',
+	p_substrate uuid default '30000000-0000-4000-8000-000000000401')
+returns jsonb language plpgsql as $$
+declare v_run public.qorpera_execution_runs%rowtype; v_count integer; v_final uuid; v_result jsonb;
+begin
+	select * into strict v_run from public.qorpera_execution_runs where id = (p_binding ->> 'runId')::uuid;
+	select count(*),max(event_id::text) filter(where phase='final') into v_count,v_final
+	from public.qorpera_agent_sends where run_id = v_run.id;
+	v_result := public.qorpera_complete_runner_job_v6((p_binding ->> 'runnerId')::uuid,repeat('2',64),
+		(p_binding ->> 'jobId')::uuid,repeat('3',64),p_index,p_substrate,null,jsonb_build_object(
+			'schema','qorpera.runner-result/v1','runtime','company-path-v1','backend','native-company-runtime',
+			'native_lease_id',p_binding ->> 'leaseId','substrate_version_id',v_run.substrate_version_id,
+			'backend_result',jsonb_build_object('schema','qorpera.native-harness-result/v2','run_id',v_run.id,
+				'message_count',v_count,'final_message_id',v_final,'provider_session_id','wake-fixture-' || v_run.id),
+			'output_count',0,'output_bytes',0,'publication',null,
+			'usage','{"schema":"qorpera.runner-usage/v1","execution_ms":1,"input_bytes":0,"output_bytes":0,"result_bytes":1024,
+				"limits":{"wall_time_ms":60000,"memory_bytes":67108864,"cpu_millis":1000,"max_pids":64,
+				"max_input_bytes":1048576,"max_output_bytes":1048576,"max_result_bytes":65536}}'::jsonb));
+	perform pg_temp.wake_assert((select job.status='completed' and public.qorpera_execution_run_json(run) ->> 'status'='completed'
+		and wake.status='completed'
+		from public.qorpera_runner_jobs job join public.qorpera_execution_runs run on run.job_id=job.id
+		join public.qorpera_wake_occurrences wake on wake.run_id=run.id where run.id=v_run.id),
+		'Completion durably terminalizes the existing job, run and occurrence');
+	perform pg_temp.wake_assert((select count(*)=1 from public.qorpera_execution_run_results
+		where run_id=v_run.id and job_id=v_run.job_id and transcript_end_sequence >= v_run.transcript_start_sequence
+		and (v_count > 0 or transcript_end_sequence=v_run.transcript_start_sequence)),
+		'Completion stores one result without inventing a silent transcript event');
+	perform pg_temp.wake_assert((select status<>'active' and released_at is not null
+		from public.qorpera_native_provider_connection_leases where id=(p_binding ->> 'leaseId')::uuid),
+		'Completion releases native authority');
+	return v_result;
+end
+$$;
+
+create temporary table wake_acceptance_results(name text primary key,passed boolean not null,sqlstate text,error text);
+create function pg_temp.wake_acceptance_case(p_name text,p_sql text)
+returns void language plpgsql as $$
+declare v_passed boolean := false; v_state text; v_error text;
+begin
+	-- Roll back every case, including successes, to the same admitted fixture.
+	-- Record the result outside that subtransaction; do not hide failed gates.
+	begin
+		execute p_sql;
+		raise sqlstate 'QW001';
+	exception when sqlstate 'QW001' then v_passed := true;
+	when others then get stacked diagnostics v_state=returned_sqlstate,v_error=message_text;
+	end;
+	insert into wake_acceptance_results values(p_name,v_passed,v_state,left(v_error,512));
+end
+$$;
+
+select pg_temp.wake_acceptance_case('trusted_context_and_native_start_before_human_ack',$test$
+do $$
+declare v_binding jsonb := current_setting('qorpera_test.wake_binding')::jsonb;
+begin
+	perform pg_temp.wake_assert(public.qorpera_read_native_wake(v_binding) ->> 'kind'='human','Human context before acknowledgement');
+	perform public.qorpera_begin_native_company_execution(v_binding,repeat('7',64));
+end $$;
+$test$);
+
+select pg_temp.wake_acceptance_case('human_mutation_requires_initial_ack',$test$
+do $$ begin
+	perform pg_temp.wake_error($q$select pg_temp.path_commit(pg_temp.path_plan('before-ack','before-ack.md',
+		pg_temp.path_stage_file('before-ack.md','Must not publish before acknowledgement')))$q$,'55000');
+	perform pg_temp.wake_assert(not exists(select 1 from public.qorpera_company_path_revisions),'Denied work leaves no live revision');
+end $$;
+$test$);
+
+select pg_temp.wake_acceptance_case('human_final_send_requires_initial_ack',$test$
+do $$ begin
+	perform pg_temp.wake_error(format('select pg_temp.wake_public_send(%L,''final'')',
+		current_setting('qorpera_test.wake_binding')),'55000');
+	perform pg_temp.wake_assert(not exists(select 1 from public.qorpera_agent_sends),'Denied final leaves no delivery');
+end $$;
+$test$);
+
+select pg_temp.wake_acceptance_case('human_ack_final_completion_and_receipt_replay',$test$
+do $$
+declare v_binding jsonb := current_setting('qorpera_test.wake_binding')::jsonb; v_first jsonb; v_replay jsonb;
+begin
+	perform public.qorpera_begin_native_company_execution(v_binding,repeat('7',64));
+	perform pg_temp.wake_public_send(v_binding,'progress');
+	perform pg_temp.wake_public_send(v_binding,'final');
+	v_first := pg_temp.wake_acceptance_finish(v_binding);
+	v_replay := pg_temp.wake_acceptance_finish(v_binding);
+	perform pg_temp.wake_assert(v_first=v_replay,'Completion replay returns the same durable receipt');
+	perform pg_temp.wake_error(format('select pg_temp.wake_acceptance_finish(%L,%L)',v_binding,extensions.gen_random_uuid()),'23505');
+end $$;
+$test$);
+
+select pg_temp.wake_acceptance_case('optional_routine_zero_send_durable_completion',$test$
+do $$
+declare v_binding jsonb;
+begin
+	v_binding := pg_temp.wake_acceptance_routine('optional');
+	perform pg_temp.wake_acceptance_finish(v_binding);
+	perform pg_temp.wake_assert(not exists(select 1 from public.qorpera_agent_sends
+		where run_id=(v_binding ->> 'runId')::uuid),'Optional routine completed without a send');
+end $$;
+$test$);
+
+select pg_temp.wake_acceptance_case('first_run_ack_final_durable_completion_fixture',$test$
+do $$
+declare v_input uuid; v_run uuid; v_binding jsonb;
+begin
+	-- Native hire/input production remains a gate. This is the same explicit
+	-- canonical claim/reservation fixture used by the component tests.
+	insert into public.qorpera_session_inputs(session_id,client_input_id,kind,author_user_id,body)
+	values('30000000-0000-4000-8000-000000000042',extensions.gen_random_uuid(),'kickoff',
+		'30000000-0000-4000-8000-000000000001','{"schema":"qorpera.staff-kickoff/v1"}') returning id into v_input;
+	v_run := pg_temp.wake_input_run(array[v_input]);
+	v_binding := pg_temp.wake_start(v_run);
+	perform pg_temp.wake_assert(public.qorpera_read_native_wake(v_binding) ->> 'kind'='first-run','Typed kickoff context');
+	perform public.qorpera_begin_native_company_execution(v_binding,repeat('7',64));
+	perform pg_temp.wake_error(format('select pg_temp.wake_acceptance_finish(%L)',v_binding),'55000');
+	perform pg_temp.wake_public_send(v_binding,'progress');
+	perform pg_temp.wake_error(format('select pg_temp.wake_acceptance_finish(%L)',v_binding),'55000');
+	perform pg_temp.wake_public_send(v_binding,'final');
+	perform pg_temp.wake_acceptance_finish(v_binding);
+	perform pg_temp.wake_assert((select completed_at is not null from public.qorpera_session_inputs where id=v_input),
+		'Completion closes the canonical kickoff claim');
+end $$;
+$test$);
+
+select pg_temp.wake_acceptance_case('silent_routine_zero_send_durable_completion',$test$
+do $$
+declare v_binding jsonb;
+begin
+	v_binding := pg_temp.wake_acceptance_routine('silent');
+	perform pg_temp.wake_acceptance_finish(v_binding);
+	perform pg_temp.wake_assert(not exists(select 1 from public.qorpera_agent_sends
+		where run_id=(v_binding ->> 'runId')::uuid),'Silent routine completed without a send');
+end $$;
+$test$);
+
+select pg_temp.wake_acceptance_case('required_routine_zero_send_denied_then_final_completes',$test$
+do $$
+declare v_binding jsonb;
+begin
+	v_binding := pg_temp.wake_acceptance_routine('required');
+	perform pg_temp.wake_error(format('select pg_temp.wake_acceptance_finish(%L)',v_binding),'55000');
+	perform pg_temp.wake_assert((select status='leased' from public.qorpera_runner_jobs where id=(v_binding ->> 'jobId')::uuid)
+		and not exists(select 1 from public.qorpera_execution_run_results where run_id=(v_binding ->> 'runId')::uuid),
+		'Denied completion is atomic and leaves the attempt active');
+	perform pg_temp.wake_public_send(v_binding,'final');
+	perform pg_temp.wake_acceptance_finish(v_binding);
+end $$;
+$test$);
+
+select pg_temp.wake_acceptance_case('omitted_routine_policy_requires_final_durable_completion',$test$
+do $$
+declare v_binding jsonb;
+begin
+	v_binding := pg_temp.wake_acceptance_routine(null);
+	perform pg_temp.wake_assert(public.qorpera_runtime_wake_policy((v_binding ->> 'runId')::uuid) =
+		public.qorpera_wake_policy_value('routine','required'),'Omitted immutable reporting policy cannot authorize silence');
+	perform pg_temp.wake_error(format('select pg_temp.wake_acceptance_finish(%L)',v_binding),'55000');
+	perform pg_temp.wake_public_send(v_binding,'final');
+	perform pg_temp.wake_acceptance_finish(v_binding);
+end $$;
+$test$);
+
+select pg_temp.wake_acceptance_case('optional_progress_only_denied_then_final_completes',$test$
+do $$
+declare v_binding jsonb;
+begin
+	v_binding := pg_temp.wake_acceptance_routine('optional');
+	perform pg_temp.wake_public_send(v_binding,'progress');
+	perform pg_temp.wake_error(format('select pg_temp.wake_acceptance_finish(%L)',v_binding),'55000');
+	perform pg_temp.wake_public_send(v_binding,'final');
+	perform pg_temp.wake_acceptance_finish(v_binding);
+end $$;
+$test$);
+
+select pg_temp.wake_acceptance_case('silent_routine_public_send_admission_denied',$test$
+do $$
+declare v_binding jsonb; v_phase text;
+begin
+	v_binding := pg_temp.wake_acceptance_routine('silent');
+	foreach v_phase in array array['progress','final'] loop
+		perform pg_temp.wake_error(format('select pg_temp.wake_public_send(%L,%L)',v_binding,v_phase),'55000');
+	end loop;
+	perform pg_temp.wake_assert(not exists(select 1 from public.qorpera_agent_sends
+		where run_id=(v_binding ->> 'runId')::uuid),'Silent policy rejects at admission, not only completion');
+end $$;
+$test$);
+
+select pg_temp.wake_acceptance_case('public_send_budget_enforced_at_admission',$test$
+do $$
+declare v_binding jsonb; v_count integer;
+begin
+	v_binding := pg_temp.wake_acceptance_routine('optional');
+	for v_count in 1..64 loop perform pg_temp.wake_public_send(v_binding,'progress','bounded-' || v_count); end loop;
+	perform pg_temp.wake_error(format('select pg_temp.wake_public_send(%L,''final'')',v_binding),'55000');
+	perform pg_temp.wake_assert((select count(*)=64 from public.qorpera_agent_sends
+		where run_id=(v_binding ->> 'runId')::uuid),'Budget denial does not append a 65th event');
+end $$;
+$test$);
+
+select pg_temp.wake_acceptance_case('routine_file_mutation_then_final_and_completion',$test$
+do $$
+declare v_binding jsonb; v_change jsonb; v_result jsonb;
+begin
+	-- Advance the File through an earlier authorized run. The routine then pins
+	-- the new head while its existing conversation still pins the prior head.
+	-- This is a real publication, not a fabricated session/run mismatch.
+	v_binding := current_setting('qorpera_test.wake_binding')::jsonb;
+	perform public.qorpera_begin_native_company_execution(v_binding,repeat('7',64));
+	perform pg_temp.wake_public_send(v_binding,'progress');
+	perform pg_temp.path_commit(pg_temp.path_plan('earlier-work','earlier-work.md',
+		pg_temp.path_stage_file('earlier-work.md','An earlier authorized publication')));
+	v_binding := pg_temp.wake_acceptance_routine('optional');
+	perform pg_temp.wake_assert((select session.company_snapshot_id is not null
+		and session.company_snapshot_id <> run.company_snapshot_id
+		from public.qorpera_execution_runs run join public.qorpera_shared_sessions session on session.id=run.session_id
+		where run.id=(v_binding ->> 'runId')::uuid),'Published File head has advanced beyond the existing conversation pin');
+	v_change := pg_temp.path_commit(pg_temp.path_plan('routine-result','routine-result.md',
+		pg_temp.path_stage_file('routine-result.md','Completed governed work')));
+	perform pg_temp.wake_assert(v_change ->> 'state'='applied','Governed mutation commits before the report');
+	perform pg_temp.wake_public_send(v_binding,'final');
+	v_result := pg_temp.wake_acceptance_finish(v_binding);
+	perform pg_temp.wake_assert(exists(select 1 from public.qorpera_execution_run_results
+		where run_id=(v_binding ->> 'runId')::uuid and output_snapshot_id=(v_change ->> 'snapshotId')::uuid
+		and company_disposition='published'),'Completion references the applied revision');
+end $$;
+$test$);
+
+select pg_temp.wake_acceptance_case('final_delivery_closes_further_company_file_work',$test$
+do $$
+declare v_binding jsonb;
+begin
+	v_binding := pg_temp.wake_acceptance_routine('optional');
+	perform pg_temp.wake_public_send(v_binding,'final');
+	perform pg_temp.wake_error($q$select pg_temp.path_commit(pg_temp.path_plan('after-final','after-final.md',
+		pg_temp.path_stage_file('after-final.md','Must not publish after final')))$q$,'55000');
+end $$;
+$test$);
+
+select pg_temp.wake_acceptance_case('agent_delivery_zero_public_send_durable_completion',$test$
+do $$
+declare v_source jsonb := current_setting('qorpera_test.wake_binding')::jsonb; v_send jsonb; v_run uuid; v_binding jsonb;
+begin
+	perform pg_temp.wake_public_send(v_source,'progress');
+	v_send := public.qorpera_send_coworker_message(v_source,'30000000-0000-4000-8000-000000000031','acceptance-agent','Examine this note.');
+	perform public.qorpera_materialize_wake_execution_runs(1);
+	select run_id into strict v_run from public.qorpera_wake_occurrences where id=(v_send ->> 'occurrenceId')::uuid;
+	v_binding := pg_temp.wake_start(v_run);
+	perform pg_temp.wake_assert(public.qorpera_read_native_wake(v_binding) ->> 'kind'='agent','Fresh coworker admission');
+	perform public.qorpera_begin_native_company_execution(v_binding,repeat('7',64));
+	perform pg_temp.wake_acceptance_finish(v_binding);
+end $$;
+$test$);
+
+select jsonb_build_object('schema','qorpera.wake-integration-acceptance/v1','cases',
+	jsonb_agg(jsonb_build_object('name',name,'passed',passed,'sqlstate',sqlstate,'error',error) order by name))
+from wake_acceptance_results;
+rollback;
