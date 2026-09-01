@@ -220,7 +220,7 @@ export interface CloudRunnerProviderAdapter {
 	): Promise<void>;
 }
 
-export type CloudRunnerOrchestratorResult =
+export type CloudRunnerOrchestratorResult = (
 	| { status: "idle" }
 	| { status: "awaiting_assignment"; claim: CloudRunnerOrchestrationClaim }
 	| {
@@ -228,7 +228,8 @@ export type CloudRunnerOrchestratorResult =
 			claim: CloudRunnerOrchestrationClaim;
 			runner: CloudRunnerInstance;
 			assignment: CloudRunnerAssignment;
-	  };
+	  }
+) & { reconciliationErrors?: readonly unknown[] };
 
 export interface CloudRunnerOrchestratorOptions {
 	orchestratorId: string;
@@ -705,6 +706,10 @@ function parseScheduleTrigger(value: unknown): RoutineScheduleTrigger | undefine
 	const input = value as Record<string, unknown>;
 	if (
 		input.kind !== "schedule" ||
+		(Object.hasOwn(input, "replyPolicy") &&
+			input.replyPolicy !== "optional" &&
+			input.replyPolicy !== "required" &&
+			input.replyPolicy !== "silent") ||
 		typeof input.id !== "string" ||
 		input.id !== input.id.trim() ||
 		input.id.length < 1 ||
@@ -731,6 +736,7 @@ function parseScheduleTrigger(value: unknown): RoutineScheduleTrigger | undefine
 						"windowStart",
 						"windowEnd",
 						"timeZone",
+						"replyPolicy",
 					].includes(key),
 			) ||
 			input.startAt !== undefined ||
@@ -782,7 +788,7 @@ function parseScheduleTrigger(value: unknown): RoutineScheduleTrigger | undefine
 	}
 	if (input.weekdays === undefined && input.localTime === undefined && input.timeZone === undefined) {
 		if (
-			Object.keys(input).some((key) => !["id", "kind", "intervalMinutes", "startAt"].includes(key)) ||
+			Object.keys(input).some((key) => !["id", "kind", "intervalMinutes", "startAt", "replyPolicy"].includes(key)) ||
 			(input.startAt !== undefined &&
 				(typeof input.startAt !== "string" ||
 					!Number.isFinite(Date.parse(input.startAt)) ||
@@ -799,7 +805,10 @@ function parseScheduleTrigger(value: unknown): RoutineScheduleTrigger | undefine
 	}
 	if (
 		Object.keys(input).some(
-			(key) => !["id", "kind", "intervalMinutes", "startAt", "weekdays", "localTime", "timeZone"].includes(key),
+			(key) =>
+				!["id", "kind", "intervalMinutes", "startAt", "weekdays", "localTime", "timeZone", "replyPolicy"].includes(
+					key,
+				),
 		) ||
 		(input.startAt !== undefined &&
 			(typeof input.startAt !== "string" ||
@@ -1080,6 +1089,16 @@ function dueRoutineWakes(
 	});
 }
 
+class RoutineWakeAdmissionErrors extends AggregateError {
+	readonly failures: readonly unknown[];
+
+	constructor(failures: readonly unknown[]) {
+		super(failures, "Routine wake admissions failed");
+		this.name = "RoutineWakeAdmissionErrors";
+		this.failures = Object.freeze([...failures]);
+	}
+}
+
 /** Reconciles due deterministic occurrences from durable per-trigger cursors. */
 export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReconciler {
 	readonly #now: () => Date;
@@ -1099,6 +1118,7 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 	}
 
 	async reconcile(controlPlane: CloudRunnerOrchestratorControlPlane, signal?: AbortSignal): Promise<void> {
+		const failures: unknown[] = [];
 		let afterRoutineId: string | undefined;
 		do {
 			const page = signal
@@ -1119,14 +1139,23 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 								coalesced: occurrence.coalesced,
 							},
 						};
-						if (signal) await controlPlane.enqueueRoutineWake(input, signal);
-						else await controlPlane.enqueueRoutineWake(input);
+						try {
+							if (signal) await controlPlane.enqueueRoutineWake(input, signal);
+							else await controlPlane.enqueueRoutineWake(input);
+						} catch (error) {
+							if (signal?.aborted) throw error;
+							failures.push(error);
+							// Later slots depend on this trigger's successful cursor advance.
+							// Other triggers and heads have independent durable cursors.
+							break;
+						}
 					}
 				}
 			}
 			afterRoutineId = page.hasMore ? page.nextAfterRoutineId : undefined;
 			if (page.hasMore && !afterRoutineId) throw new Error("Routine schedule pagination lost its cursor");
 		} while (afterRoutineId);
+		if (failures.length > 0) throw new RoutineWakeAdmissionErrors(failures);
 	}
 }
 
@@ -1387,14 +1416,20 @@ export class CloudRunnerOrchestrator {
 		this.#createCapability = options.createCapability ?? (() => randomBytes(32).toString("base64url"));
 	}
 
-	async #reconcileControlPlane(signal?: AbortSignal): Promise<void> {
+	async #reconcileControlPlane(signal?: AbortSignal): Promise<readonly unknown[]> {
+		const reconciliationErrors: unknown[] = [];
 		if (this.#controlPlane.renewControl) {
 			if (signal) await this.#controlPlane.renewControl(signal);
 			else await this.#controlPlane.renewControl();
 		}
 		for (const reconciler of this.#occurrenceReconcilers) {
-			if (signal) await reconciler.reconcile(this.#controlPlane, signal);
-			else await reconciler.reconcile(this.#controlPlane);
+			try {
+				if (signal) await reconciler.reconcile(this.#controlPlane, signal);
+				else await reconciler.reconcile(this.#controlPlane);
+			} catch (error) {
+				if (!(error instanceof RoutineWakeAdmissionErrors)) throw error;
+				reconciliationErrors.push(...error.failures);
+			}
 		}
 		if (signal) {
 			await this.#controlPlane.reconcileExpired(this.#orchestratorId, signal);
@@ -1403,6 +1438,7 @@ export class CloudRunnerOrchestrator {
 			await this.#controlPlane.reconcileExpired(this.#orchestratorId);
 			await this.#providerAdapter.reconcile();
 		}
+		return reconciliationErrors;
 	}
 
 	async #claimBatch(
@@ -1603,9 +1639,12 @@ export class CloudRunnerOrchestrator {
 	}
 
 	async runOnce(signal?: AbortSignal): Promise<CloudRunnerOrchestratorResult> {
-		await this.#reconcileControlPlane(signal);
+		const reconciliationErrors = await this.#reconcileControlPlane(signal);
 		const [claim] = await this.#claimBatch(1, signal);
-		return claim ? this.#dispatchClaim(claim, signal) : { status: "idle" };
+		const result: CloudRunnerOrchestratorResult = claim
+			? await this.#dispatchClaim(claim, signal)
+			: { status: "idle" };
+		return reconciliationErrors.length > 0 ? { ...result, reconciliationErrors } : result;
 	}
 
 	async run(signal: AbortSignal, options: CloudRunnerOrchestratorLoopOptions = {}): Promise<void> {
@@ -1621,7 +1660,8 @@ export class CloudRunnerOrchestrator {
 		const inFlightClaimIds = new Set<string>();
 		while (!signal.aborted) {
 			try {
-				await this.#reconcileControlPlane(signal);
+				const reconciliationErrors = await this.#reconcileControlPlane(signal);
+				for (const error of reconciliationErrors) options.onError?.(error);
 				const available = this.#dispatchConcurrency - inFlight.size;
 				if (available > 0) {
 					const claims = await this.#claimBatch(available, signal, inFlightClaimIds);
