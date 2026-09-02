@@ -175,3 +175,13 @@ is set on the project so the build command's own `npm ci --ignore-scripts` is
 the only install. Still owed by the runtime session before OAuth and gateway
 reads work on this origin: contract requests 1 (gateway CORS) and 5 (Auth
 redirect URLs) for `https://app.qorpera.com`.
+
+**Open item: zone bot detection vs. the CSP.** On `app.qorpera.com` the
+console shows one blocked inline script. It is Cloudflare's own JavaScript
+Detections snippet (`__CF$cv$params`), injected zone-wide because the
+`qorpera.com` zone runs Bot fight mode with "JS Detections: On". The app is
+unaffected (all first-party script is external and allowed); the bot
+fingerprint simply fails silently on this host. `pages.dev` shows no such
+error. Options are a zone setting change (turn "JS Detections" off; Bot fight
+mode itself keeps challenging), or living with the console error. Not changed:
+it is a zone-wide security setting and the founder's call.
