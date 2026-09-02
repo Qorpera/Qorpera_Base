@@ -1154,3 +1154,7 @@ node. Next: production gateway guest and orchestrator configuration
 and the controlled policy reopening. Hardening left open on purpose: the
 tailnet policy is still the default allow-all; the production record's
 TCP-only policy is a later step.
+
+Broker evidence re-sealed after the tailnet route:
+`broker-production-repoint-20260902/SHA256SUMS`
+`bc536e6bd24881e3711ced374b9ad963960bed4b07a5f60c0a2931611e1f0550` (30 files).
