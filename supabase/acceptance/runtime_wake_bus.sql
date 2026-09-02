@@ -283,7 +283,112 @@ begin
 end $$;
 $test$);
 
+select pg_temp.wake_acceptance_case('room_post_fans_out_bounded_sends_and_silent_completion',$test$
+do $$
+declare v_binding jsonb := current_setting('qorpera_test.wake_binding')::jsonb; v_base public.qorpera_execution_runs%rowtype;
+	v_room uuid := '30000000-0000-4000-8000-000000000080'; v_path text; v_doc text; v_entry jsonb; v_post jsonb;
+	v_first jsonb; v_second jsonb; v_wake jsonb;
+begin
+	select * into strict v_base from public.qorpera_execution_runs where id = (v_binding ->> 'runId')::uuid;
+	-- Fixture: the room document is projected as the member command path projects
+	-- it after publication (20260828019200); the publication route itself is not
+	-- under test here.
+	v_path := 'organization/rooms/' || v_room::text || '.json';
+	v_doc := jsonb_build_object('schema','qorpera.company-room/v1','roomId',v_room,'key','launch-room','name','Launch room',
+		'purpose','Coordinate the launch.','status','active','projectId',null,'version',1,'members',jsonb_build_array(
+			jsonb_build_object('kind','member','id','30000000-0000-4000-8000-000000000001'),
+			jsonb_build_object('kind','staff_agent','id','30000000-0000-4000-8000-000000000031'),
+			jsonb_build_object('kind','staff_agent','id','30000000-0000-4000-8000-000000000032')))::text;
+	v_entry := pg_temp.path_stage_file(v_path,v_doc);
+	perform public.qorpera_project_organization_document(jsonb_build_object('companyId',v_base.profile_id,
+		'environmentId',v_base.environment_id,'userId',v_base.requested_by_user_id,'audience','human'),
+		jsonb_build_object('path',v_path,'entry',v_entry),v_doc,v_base.company_snapshot_id,extensions.gen_random_uuid());
+	perform pg_temp.wake_assert((select status = 'active' and session_id is not null from public.qorpera_company_rooms where id = v_room),
+		'Room projected with its conversation');
+	perform pg_temp.wake_assert((select count(*) = 3 from public.qorpera_company_room_members where room_id = v_room and status = 'active'),
+		'Room members projected');
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	v_post := public.qorpera_post_company_room_message(v_room,extensions.gen_random_uuid(),
+		jsonb_build_object('schema','qorpera.session-prompt/v1','text','Team, what is the launch status?'),
+		v_base.sponsor_binding_id,v_base.sponsor_version);
+	perform pg_temp.path_claims('service_role');
+	perform pg_temp.wake_assert(jsonb_array_length(v_post -> 'occurrenceIds') = 2,'One room wake per agent member');
+	perform pg_temp.wake_assert(jsonb_array_length(public.qorpera_materialize_wake_execution_runs(4)) = 2,'Both room wakes materialize');
+	perform pg_temp.wake_assert((select count(*) = 1 from public.qorpera_session_events
+		where session_id = (v_post ->> 'sessionId')::uuid and session_input_id = (v_post ->> 'inputId')::uuid),
+		'The post enters the room conversation once');
+	-- First agent: the room policy bounds public sends to three; a fourth is refused at admission.
+	v_first := pg_temp.wake_start(null);
+	v_wake := public.qorpera_read_native_wake(v_first);
+	perform pg_temp.wake_assert(v_wake ->> 'kind' = 'room' and (v_wake #>> '{policy,maxPublicSends}') = '3'
+		and (v_wake #>> '{payload,roomId}') = v_room::text and (v_wake #>> '{audience,sessionId}') = v_post ->> 'sessionId','Room envelope');
+	perform public.qorpera_begin_native_company_execution(v_first,repeat('7',64));
+	perform pg_temp.wake_public_send(v_first,'progress','room-1');
+	perform pg_temp.wake_public_send(v_first,'progress','room-2');
+	perform pg_temp.wake_public_send(v_first,'final','room-3');
+	perform pg_temp.wake_error(format('select pg_temp.wake_public_send(%L,''progress'',''room-4'')',v_first),'55000');
+	perform pg_temp.wake_acceptance_finish(v_first);
+	-- Second agent: silence is a valid room result.
+	v_second := pg_temp.wake_start(null);
+	perform pg_temp.wake_assert((v_second ->> 'runId') <> (v_first ->> 'runId'),'Second room run');
+	perform public.qorpera_read_native_wake(v_second);
+	perform public.qorpera_begin_native_company_execution(v_second,repeat('7',64));
+	perform pg_temp.wake_acceptance_finish(v_second);
+	perform pg_temp.wake_assert(not exists(select 1 from public.qorpera_agent_sends where run_id = (v_second ->> 'runId')::uuid),
+		'Silent room completion');
+end $$;
+$test$);
+
+select pg_temp.wake_acceptance_case('wake_rate_ceiling_and_founder_stop',$test$
+do $$
+declare v_binding jsonb := current_setting('qorpera_test.wake_binding')::jsonb; v_base public.qorpera_execution_runs%rowtype;
+	v_first jsonb; v_second jsonb; v_occurrence public.qorpera_wake_occurrences%rowtype; v_used bigint;
+begin
+	select * into strict v_base from public.qorpera_execution_runs where id = (v_binding ->> 'runId')::uuid;
+	perform public.qorpera_begin_native_company_execution(v_binding,repeat('7',64));
+	perform pg_temp.wake_public_send(v_binding,'progress');
+	-- The founder sets the wake ceiling to one more autonomous wake than this hour already holds.
+	v_used := public.qorpera_company_wakes_last_hour(v_base.profile_id);
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	perform public.qorpera_set_company_execution_ceiling(v_base.profile_id,250000000,100000000,0,v_used + 1);
+	perform pg_temp.path_claims('service_role');
+	v_first := public.qorpera_send_coworker_message(v_binding,'30000000-0000-4000-8000-000000000031','ceiling-1','First delegation.');
+	perform pg_temp.wake_assert(v_first ->> 'status' = 'queued' and (select status = 'queued' from public.qorpera_wake_occurrences
+		where id = (v_first ->> 'occurrenceId')::uuid),'First autonomous wake admitted');
+	v_second := public.qorpera_send_coworker_message(v_binding,'30000000-0000-4000-8000-000000000032','ceiling-2','Second delegation.');
+	select * into strict v_occurrence from public.qorpera_wake_occurrences where id = (v_second ->> 'occurrenceId')::uuid;
+	perform pg_temp.wake_assert(v_occurrence.status = 'cancelled' and v_occurrence.blocked_reason = 'Company wake ceiling tripped',
+		'Second wake stopped at the ceiling without agent cooperation');
+	perform pg_temp.wake_assert(exists(select 1 from public.qorpera_company_ceiling_trips where profile_id = v_base.profile_id
+		and dimension = 'wakes' and run_id = v_occurrence.id),'Ceiling trip recorded');
+	perform pg_temp.wake_assert(exists(select 1 from public.qorpera_member_notifications where profile_id = v_base.profile_id
+		and user_id = '30000000-0000-4000-8000-000000000001' and kind = 'company_ceiling_tripped' and subject ->> 'dimension' = 'wakes'),
+		'Founder notified from the control plane');
+	-- The founder stop: running work is fenced at its next effect, new turns and posts are refused.
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	perform public.qorpera_set_company_execution_pause(v_base.profile_id,true,'Acceptance stop');
+	perform pg_temp.path_claims('service_role');
+	perform pg_temp.wake_error($q$select pg_temp.path_commit(pg_temp.path_plan('paused-work','paused.md',
+		pg_temp.path_stage_file('paused.md','Must not apply while paused')))$q$,'55000');
+	perform pg_temp.wake_error(format('select public.qorpera_send_coworker_message(%L,%L,%L,%L)',v_binding,
+		'30000000-0000-4000-8000-000000000031','ceiling-3','Paused delegation.'),'55000');
+	v_second := public.qorpera_materialize_wake_execution_runs(4);
+	perform pg_temp.wake_assert(v_second = '[]'::jsonb,'Nothing materializes while paused');
+	perform pg_temp.wake_assert((select blocked_reason = 'Company execution is paused' and status = 'queued'
+		from public.qorpera_wake_occurrences where id = (v_first ->> 'occurrenceId')::uuid),'Queued wakes wait while paused');
+	perform pg_temp.wake_assert(exists(select 1 from public.qorpera_member_notifications where profile_id = v_base.profile_id
+		and kind = 'company_execution_paused'),'Founders notified of the stop');
+	-- Resume: work continues.
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	perform public.qorpera_set_company_execution_pause(v_base.profile_id,false,null);
+	perform pg_temp.path_claims('service_role');
+	perform pg_temp.wake_assert((pg_temp.path_commit(pg_temp.path_plan('resumed-work','resumed.md',
+		pg_temp.path_stage_file('resumed.md','Applies after resume'))) ->> 'state') = 'applied','Work resumes after the stop is lifted');
+end $$;
+$test$);
+
 select jsonb_build_object('schema','qorpera.wake-integration-acceptance/v1','cases',
 	jsonb_agg(jsonb_build_object('name',name,'passed',passed,'sqlstate',sqlstate,'error',error) order by name))
 from wake_acceptance_results;
 rollback;
+

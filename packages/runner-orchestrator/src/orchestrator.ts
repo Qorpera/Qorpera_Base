@@ -1365,7 +1365,8 @@ export function validateCloudRunnerWork(work: CloudRunnerWork): void {
 	) {
 		throw new Error("Runner job payload is invalid");
 	}
-	if (work.sourceKind !== "session_turn" && !work.sponsor.allowAutonomous) {
+	// A room delivery is caused by a member post, like a session turn; only autonomous kinds need consent.
+	if (work.sourceKind !== "session_turn" && work.sourceKind !== "room_delivery" && !work.sponsor.allowAutonomous) {
 		throw new Error("Execution sponsor does not permit autonomous work");
 	}
 }

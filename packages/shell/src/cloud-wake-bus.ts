@@ -182,7 +182,6 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 	if (
 		wake.schema !== CLOUD_WAKE_SCHEMA ||
 		policy.kind === null ||
-		policy.kind === "room" ||
 		policy.kind !== wake.kind ||
 		(["runId", "companyId", "environmentId", "staffAgentId", "requesterUserId"] as const).some(
 			(key) => uuid(wake[key]) !== identity[key],
@@ -256,6 +255,22 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			nullableUuid(event.receiptId);
 			nullableUuid(event.proposalId);
 		} else throw new Error("Invalid routine source");
+	} else if (wake.kind === "room") {
+		const post = closed(wake.payload, ["roomId", "inputIds", "recipientStaffId"]);
+		if (
+			source.kind !== "room" ||
+			!Array.isArray(post.inputIds) ||
+			post.inputIds.length !== 1 ||
+			uuid(post.inputIds[0]) !== source.id ||
+			uuid(post.recipientStaffId) !== identity.staffAgentId ||
+			parentRunId !== null ||
+			actorStaffId !== null ||
+			actorUserId === null ||
+			wake.routine !== null ||
+			audience.sessionId === null
+		)
+			throw new Error("Invalid room wake");
+		uuid(post.roomId);
 	} else if (wake.kind === "agent") {
 		const message = closed(wake.payload, ["text", "senderStaffId", "receiptId"]);
 		if (

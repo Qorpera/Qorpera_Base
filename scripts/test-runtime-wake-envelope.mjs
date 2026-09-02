@@ -21,4 +21,4 @@ const human = cases[0];
 assert.throws(() => parseCloudWakeEnvelope({ ...human.envelope, kind: "room", policy: {
 	schema: "qorpera.wake-policy/v1", kind: "room", initial: "optional", final: "optional", silenceAllowed: true, maxPublicSends: 3,
 } }, parseCloudNativeToolAuthority(human.authority, parseCloudNativeToolBinding(human.binding)).identity));
-console.log("SQL-produced human, first-run, schedule, File and agent envelopes pass the actual TypeScript parser; room stays rejected");
+console.log("SQL-produced human, first-run, schedule, File and agent envelopes pass the actual TypeScript parser; a relabeled human envelope stays rejected as a room");

@@ -334,7 +334,7 @@ select pg_temp.path_claims('service_role');
 
 -- END WAKE FIXTURE
 
--- Policies for all five kinds; room is a policy component, not live ingress.
+-- Policies for all five kinds; a room wake without its room, input, member and sponsor identity is refused (20260828022000).
 do $$
 declare v_kind text; v_policy jsonb; v_run uuid := (current_setting('qorpera_test.wake_binding')::jsonb ->> 'runId')::uuid;
 begin
