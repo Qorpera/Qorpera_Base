@@ -254,3 +254,15 @@ filled in except the API key, which only the founder pastes. The code step's
 copy now says the link works only in the requesting browser (PKCE).
 Custom SMTP saved by the founder (Resend, `smtp.resend.com:465`, sender
 `Qorpera <no-reply@mail.qorpera.com>`); "Successfully updated settings".
+
+**"Error sending magic link email" diagnosed.** The Auth log for the failing
+`POST /otp` (02 Sep 04:09:09, referer `https://app.qorpera.com/`, status 500)
+carries `error: 535 "Authentication credentials invalid"` — SMTP authentication,
+not the sender or the template. Resend shows `mail.qorpera.com` verified, so the
+sender address is right; host, port 465 and username `resend` match Resend's
+SMTP contract. The remaining cause is the key value: Resend's API-key list
+displays only a truncated prefix (`re_9dkbWYt5...`), and a value copied from
+that table authenticates as invalid. Fix: a new key created from the Resend
+dialog (its full value is shown once) pasted into the SMTP password field. An
+earlier request at 03:51 had already rendered the new template and verified
+successfully through the built-in mailer, so the rest of the pipeline is proven.
