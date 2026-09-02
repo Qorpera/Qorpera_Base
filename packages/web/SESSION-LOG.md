@@ -219,3 +219,13 @@ hover lift; still under prefers-reduced-motion, paused in hidden tabs, and it
 retires itself when the sign-in leaves the document. The grid floor is gone.
 Verified with a 24-frame strip (hop, landing, blink, gaze visible) and a
 static capture; no console errors.
+
+**Stale bundle in a long-open tab.** A tab opened before the redesigns kept
+serving the first `main.js` from its browser cache even across a
+re-navigation and a reload, while the network already served the new build
+(`cf-cache-status: REVALIDATED`, fresh fetch new). Fix: production bundles are
+now emitted as `build/main-<hash>.js` and `build/app-<hash>.css` with
+`index.html` rewritten to them, and `/build/*` is cached as immutable for a
+year while the HTML stays `max-age=0, must-revalidate`. A deploy therefore
+always changes the file names the HTML points at; no browser can pin an old
+bundle to a new page.

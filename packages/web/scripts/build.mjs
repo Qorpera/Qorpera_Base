@@ -42,7 +42,10 @@ const options = {
 	platform: "browser",
 	target: ["es2022"],
 	outdir: dist,
-	entryNames: "[name]",
+	// Production bundles carry a content hash so a browser can never keep a
+	// stale main.js across deploys; the HTML is rewritten to point at them.
+	entryNames: serve ? "[name]" : "build/[name]-[hash]",
+	metafile: true,
 	sourcemap: true,
 	// Fonts and art are copied into dist/assets above; leave their URLs untouched.
 	external: ["*.woff2", "*.png", "*.svg"],
@@ -61,5 +64,14 @@ if (serve) {
 	writeFileSync(join(dist, ".served"), `${hosts[0]}:${boundPort}\n`);
 	console.log(`Qorpera web client serving on http://127.0.0.1:${boundPort}/`);
 } else {
-	await esbuild.build(options);
+	const result = await esbuild.build(options);
+	const outputs = Object.keys(result.metafile.outputs).map((file) => file.slice(file.indexOf("dist/") + 5));
+	const script = outputs.find((file) => /^build\/main-[A-Z0-9]+\.js$/.test(file));
+	const style = outputs.find((file) => /^build\/app-[A-Z0-9]+\.css$/.test(file));
+	if (!script || !style) throw new Error("Hashed bundle names were not produced");
+	const html = readFileSync(join(dist, "index.html"), "utf8")
+		.replace('href="./app.css"', `href="./${style}"`)
+		.replace('src="./main.js"', `src="./${script}"`);
+	writeFileSync(join(dist, "index.html"), html);
+	console.log(`index.html -> ${script}, ${style}`);
 }

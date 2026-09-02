@@ -13,3 +13,6 @@
 /assets/*
   ! Cache-Control
   Cache-Control: public, max-age=86400
+/build/*
+  ! Cache-Control
+  Cache-Control: public, max-age=31536000, immutable
