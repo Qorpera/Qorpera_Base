@@ -798,3 +798,34 @@ active at 03:17:35) and both `qorpera-company-runner.service` and
 (allow AF_INET and AF_INET6 for that unit, or move the epoch check) before
 the candidate can be released; the proof continues on this guest to see how
 far the run gets.
+
+**Gate 2 closing position for 2026-09-02 (03:25 UTC).** The proof was
+stopped at the job guest because the candidate's runner-bootstrap unit
+cannot reach the network under its own sandbox, and a provider that starts a
+fresh acquisition cannot adopt a guest that was bootstrapped by hand. The
+harness was finished cleanly (its own result: setup passed, cleanup passed,
+harness passed, four turn requests recorded; kept under `joint/harness-r3/`);
+the job guest `qorpera-c89a1772…` is stopped and kept with its journal; the
+provider, transport and orchestrator are stopped on the node; the Azure
+ingress rule and the proof public IP are removed (the VM keeps its re-pointed
+credentials and the new package root, and deallocates itself at 23:00 UTC);
+the branch, the gateway VM and the login guests remain for the follow-up.
+
+**Proven live on the candidate tonight:** responsibility-model genesis
+through the v3 bootstrap worker; native login through the rebuilt provider
+for two identities with the identity backup verified by the recovery
+authority on the re-pointed broker VM; two managed members with private
+sessions, fixtures, grants and cross-member denials; company-owned secret
+capture and grant through the broker; a member's sponsored turn accepted by
+the cloud; the orchestrator and provider chain materializing the turn,
+claiming the job and launching the job guest from the signed image on the
+member's identity volume.
+
+**Blocked:** the native execution, protected effect, review, revocation and
+member-removal steps, the scans and the seal, all behind the bootstrap unit
+defect. **Needs Jonas:** (1) decide the fix for `qorpera-lxd-runner-bootstrap.service`
+(allow AF_INET and AF_INET6 like the login unit, or move the recovery epoch
+check); it changes the guest package and therefore requires a new candidate
+commit, a rebuilt and re-signed image and a repeat of gate 1; (2) the two
+August preview branches and this branch each cost about $10 a month while
+they exist.
