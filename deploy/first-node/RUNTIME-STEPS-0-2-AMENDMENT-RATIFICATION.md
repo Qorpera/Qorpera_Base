@@ -1279,3 +1279,64 @@ expiring 09:21:27Z) and the apply step was then refused (the harness saw the
 delete revision exists. So the protected delete was approved but never
 applied; the target is preserved. Acceptance evidence seal:
 `production-acceptance-company41-20260902/SHA256SUMS` `2d69e2f773d94491d707a1ba523fbbb0c8e00d6ea26685681e071ed2c65ea4f4` (53 files).
+
+### 2026-09-02 — Company41 production canary (Jonas's own account)
+
+Evidence: `production-canary-company41-20260902/` (sealed below).
+
+- **Identity volume.** Jonas's August identity `6cb7e559…` had its master
+  key on the old volume `identity-6cb7e559…` (32 GiB, adapter label `lxd`).
+  The production provider creates `qorpera-identity-<id>` itself and refuses
+  a pre-existing volume whose size or adapter label differs
+  ("identity-volume stage failed", three attempts). The copied volume was
+  relabeled to the provider's expectations (size 1 GiB, adapter
+  `lxd-company41-node-01`, schema unchanged); the provider then accepted it
+  and the login guest ran on the August key (no new key, recovery epoch 0).
+- **Login** `a1ba018e…` through the production provider: device code
+  entered by Jonas, completed 09:25:49Z; connection `2e55091d…`; member
+  sponsor `1ebc119b…`. Native host `qorpera-custody-company41` provisioned
+  from the signed image with Jonas's identity (pins unchanged, identity epoch
+  0, runtime ready 09:26:13Z).
+- **Turn 1** in Jonas's private session `0c8fa9c9…` (run `801f901b…`, job
+  `bb1e8466…`, runner `d79f7511…` version `7c8e69d05-production`, bundle
+  `4711f8d3…`, leased 09:26:33Z, completed 09:26:56Z): the agent's read of
+  `organization/formation.json` was refused by the platform — database log
+  09:26:46Z, SQLSTATE 42501 "Company File path is unavailable" from the grant
+  check. Rule: a staff agent may read a shared path only with an explicit,
+  unexpired grant on that resource; Company41 has one root resource
+  (`3e1a8437…`, company_shared, normal) and no grants at all. The agent
+  reported the read as unconfirmed, tried no other route and finished with
+  the marker; no read observation, receipt or Company File change exists for
+  the run. This is authorization working as designed, not a runtime fault.
+- **Grant** as Jonas (managed sign-in, consented): read-only grant
+  `b5d93272…` for the Company41 agent `52874779…` on the root resource,
+  one-hour expiry (09:42:06Z → 10:42:06Z).
+- **Turn 2** (run `251c4a46…`, job `1717916a…`, runner `3182deee…`, leased
+  09:42:50Z, completed 09:43:06Z, 28.8 s): `company_read` succeeded — read
+  observation `9672717b…` (`organization/formation.json`, 226 bytes,
+  snapshot `0564a4d4…`), confirmation 09:42:56.70Z covering all 226 bytes,
+  result `93fcb151…`; final message "schema qorpera.company-formation/v1,
+  state source_inventory; COMPANY41_CANARY_OK". Company File disposition
+  `unchanged`; head `0564a4d4…` unchanged (last update 08:30:14Z); no
+  revisions or proposals since 09:25Z in any company.
+- **Cleanup:** grant revoked 09:43:35Z; both job guests stopped as idle
+  through the provider from the orchestrator's address; login guest stopped
+  by the provider. Jonas's native host `qorpera-custody-company41` stays
+  running as his Company41 computer, with provider, orchestrator, gateway and
+  broker services in production.
+
+Status: **proven** — the Company41 canary ran on Jonas's real account and
+August identity, on the deployed production runtime, with one confirmed
+read and no change to the Company File. Canary evidence seal:
+`production-canary-company41-20260902/SHA256SUMS` `7aad7bc87b8771a08a162eb32df2eba4fc8efadb821ba002a9469b0d02674be3` (62 files).
+
+Needs Jonas (design, not blocking): a migrated company like Company41 gives
+its agent no path grant, so the agent cannot read anything until the owner
+grants it; new companies from the acceptance created explicit resources and
+grants. Decide whether genesis or migration should seed a default read grant
+for the company's own agent on the shared root.
+
+Follow-ups noted: August identity volumes moved by copy must be relabeled
+(size and adapter label) before the production provider accepts them; the
+first runner row `d79f7511…` stays `active` after its session expired
+(cosmetic, expiry by time).
