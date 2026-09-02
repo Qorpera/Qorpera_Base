@@ -627,3 +627,22 @@ every prior encrypted credential and the August package root retained.
 (founder with the test account). The broker VM still deallocates itself at
 23:00 UTC; the proof route (public IP and NSG rule) must be removed at
 cleanup.
+
+**Isolated provider on the node without a sudo change (01:50–01:58 UTC).**
+The August v48 acceptance had solved the socket problem already: a private
+LXD transport in the admin's home exposes an LXD-API-shaped Unix socket and
+forwards only an exact allowlist of operations through the existing
+`sudo -n lxc` rule, so the provider runs as `company41-admin`. That transport
+was re-pinned to this proof (root `step2-lxd/steps02-gate2-ebbd1e734`,
+project `qorpera-step2-v48`, image `c1b81ab6…`, login guests
+`qorpera-login-<identity>`, identity volumes `step2-identity-<identity>`, the
+three guest commands the provider issues, bootstrap file paths only). The
+rebuilt provider (`767e5d2b…`) runs from that root with the signed
+provenance, the branch keys, the gateway's native-object token, the broker
+CA and the broker runtime token, which reached the node only as ciphertext
+for a node-side transport key generated for this proof. Its API binds to
+127.0.0.1:28081 with a proof-local certificate (the production certificate is
+root-only) and its login gateway to 127.0.0.1:28082; both answer healthy.
+The launcher `run-proof-provider-ebbd1e734.sh start|stop|status|logs` is in
+the proof root and in the gate 2 `runbooks/provider/`. The prepared sudoers
+line is therefore not needed and was not added.
