@@ -132,18 +132,86 @@ export function spinner(label = "Loading"): HTMLElement {
 	);
 }
 
-export function creatureImage(creature: string | undefined, name: string): HTMLElement {
-	const known = ["bloom", "brain", "folio", "halo", "pebble", "ribbon", "wisp"];
-	if (creature && known.includes(creature)) {
-		return h("img", {
-			class: "creature",
-			src: `./assets/staff-creatures/${creature}.png`,
-			alt: "",
-			width: 40,
-			height: 40,
+/* Staff avatars, as the desktop and mobile clients draw them: the creature
+ * silhouette used as a mask filled with the agent's colour, plus two white
+ * capsule eyes at per-creature positions (QorperaMobile CreatureEyeLayout,
+ * which mirrors the desktop's staff-face). Unknown colours fall back to the
+ * art's own teal, as both clients do. */
+const CREATURES = ["bloom", "brain", "folio", "halo", "pebble", "ribbon", "wisp"] as const;
+type Creature = (typeof CREATURES)[number];
+const CREATURE_EYES: Record<Creature, [number, number, number, number, number, number, number]> = {
+	folio: [0.415, 0.46, 0.552, 0.485, 0.05, 0.08, 6],
+	brain: [0.545, 0.36, 0.66, 0.33, 0.05, 0.09, -8],
+	halo: [0.435, 0.51, 0.555, 0.53, 0.035, 0.06, -8],
+	wisp: [0.41, 0.45, 0.61, 0.48, 0.04, 0.08, 10],
+	ribbon: [0.36, 0.39, 0.505, 0.355, 0.04, 0.08, -8],
+	bloom: [0.42, 0.47, 0.555, 0.46, 0.04, 0.08, -8],
+	pebble: [0.395, 0.325, 0.575, 0.305, 0.04, 0.075, -8],
+};
+const COLOR_ALIASES: Record<string, string> = {
+	"qorpera-terracotta": "#ff642e",
+	"qorpera-cobalt": "#1684ff",
+	"qorpera-blue": "#1684ff",
+	"qorpera-amber": "#ffae00",
+	"qorpera-emerald": "#00c878",
+	"qorpera-violet": "#8a4dff",
+	"qorpera-coral": "#ff365e",
+	"qorpera-pink": "#ff2994",
+	"qorpera-indigo": "#5367e8",
+	"qorpera-teal": "#00bfb3",
+	"#cc7d5e": "#ff642e",
+	"#e9606f": "#ff365e",
+	"#d89b35": "#ffae00",
+	"#4caf83": "#00c878",
+	"#36a5a2": "#00bfb3",
+	"#3f88df": "#1684ff",
+	"#8c6dd7": "#8a4dff",
+	"#d955a1": "#ff2994",
+	"#777772": "#5367e8",
+};
+
+export function staffColor(value: string | undefined): string {
+	const normalized = (value ?? "").trim().toLowerCase();
+	const resolved = COLOR_ALIASES[normalized] ?? normalized;
+	return /^#[0-9a-f]{6}$/.test(resolved) ? resolved : "#00bfb3";
+}
+
+function isCreature(value: string | undefined): value is Creature {
+	return (CREATURES as readonly string[]).includes(value ?? "");
+}
+
+function pickCreature(name: string): Creature {
+	let seed = 0;
+	for (const character of name) seed = (seed * 33 + character.charCodeAt(0)) >>> 0;
+	return CREATURES[seed % CREATURES.length] ?? "pebble";
+}
+
+export function creatureImage(creature: string | undefined, name: string, color?: string): HTMLElement {
+	const kind = isCreature(creature) ? creature : pickCreature(name);
+	const [x1, y1, x2, y2, width, height, rotation] = CREATURE_EYES[kind];
+	const eye = (x: number, y: number) =>
+		h("span", {
+			class: "creature-eye",
+			dataset: { x: String(x), y: String(y), w: String(width), h: String(height), r: String(rotation) },
 		});
+	const element = h(
+		"span",
+		{ class: "creature", dataset: { creature: kind }, "aria-hidden": "true" },
+		h("span", { class: "creature-body" }),
+		h("span", { class: "creature-face" }, eye(x1, y1), eye(x2, y2)),
+	);
+	// Geometry is data on the element; the CSSOM sets the properties, so the
+	// strict Content Security Policy (no inline style attributes) holds.
+	element.style.setProperty("--creature-color", staffColor(color));
+	for (const eyeElement of element.querySelectorAll<HTMLElement>(".creature-eye")) {
+		const data = eyeElement.dataset;
+		eyeElement.style.left = `${Number(data.x) * 100}%`;
+		eyeElement.style.top = `${Number(data.y) * 100}%`;
+		eyeElement.style.width = `${Number(data.w) * 100}%`;
+		eyeElement.style.height = `${Number(data.h) * 100}%`;
+		eyeElement.style.transform = `translate(-50%, -50%) rotate(${data.r}deg)`;
 	}
-	return h("span", { class: "avatar", "aria-hidden": "true" }, initials(name));
+	return element;
 }
 
 export function confirmDialog(message: string, confirmLabel: string, danger = false, typed?: string): Promise<boolean> {

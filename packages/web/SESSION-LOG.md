@@ -194,3 +194,14 @@ Google/GitHub provider cards with marks, the "or" divider and the inline email
 form with a black Continue button; the one-time-code step reuses the same form
 with a "Use a different email" link. Verified by headless Chrome screenshots at
 1440×900 and 390×844 with no console errors.
+
+**Sign-in, second pass (founder: the brand field was the old design).** The
+current brand was found in `Qorpera_Website` (`brand/final`, landing tokens)
+and `QorperaMobile` (sign-in structure, avatar rendering); recorded in
+`DECISIONS.md`. The sign-in is now a split page: lockup, "Sign in", provider
+buttons, an "or" divider and the email form on paper at left; the crown hero
+on the grid floor at right, masked by the approved contour with its eye shapes
+layered in ink and flipped to face the form; single column under 900px. The
+top bar shows the approved lockup and the favicon is the final mark. Staff
+avatars render as tinted silhouettes with eyes. Verified with headless Chrome
+at 1440×900 and 390×844 plus an avatar test page; no console errors.

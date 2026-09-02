@@ -156,3 +156,20 @@ live. The GitHub workflow is therefore checks-only. Two follow-ups: set
 second, script-enabled `npm ci` before the build command; and the custom
 domain, which is on hold because `app.qorpera.com` already resolves through a
 CNAME to a Vercel deployment (see SESSION-LOG.md).
+
+## 2026-09-02 — Brand source of truth is `Qorpera_Website`, not the desktop tree
+
+**Decision.** The web client takes its brand from the marketing site's
+repository (`Qorpera/Qorpera_Website`, `landing/public/brand/final` and
+`landing/src/styles.css`): the approved lockup and outlined wordmark (never
+set as text), the material crown icon, the crown hero render with its contour
+mask and eye shapes, paper `#ffffff` / ink `#161615` / line
+`rgba(11,11,11,0.11)` / cobalt `#2d6ff2`, Source Sans 3, 8px buttons, 14px
+cards, and the faint 88px grid floor. The desktop `userland/onboarding.css`
+brand field in this branch is the earlier design and must not be ported.
+
+**Avatars.** The seven staff creatures are current on desktop and mobile, but
+they are drawn as the agent's colour through the silhouette mask plus two
+white capsule eyes at per-creature positions (QorperaMobile
+`CreatureEyeLayout`); the web client now does the same in CSS, with the mobile
+colour alias table.

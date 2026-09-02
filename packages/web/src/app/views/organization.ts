@@ -36,7 +36,11 @@ export function renderOrganization(company: CompanyController, container: HTMLEl
 			h(
 				"div",
 				{ class: "card cofounder-card" },
-				creatureImage(cofounder?.appearance.creature, cofounder?.displayName ?? "Co-Founder"),
+				creatureImage(
+					cofounder?.appearance.creature,
+					cofounder?.displayName ?? "Co-Founder",
+					cofounder?.appearance.color,
+				),
 				h(
 					"div",
 					{ class: "card-body" },
@@ -171,7 +175,7 @@ export function renderOrganization(company: CompanyController, container: HTMLEl
 						h(
 							"a",
 							{ class: "card staff-card", href: `#/c/${profileId}/staff/${agent.id}` },
-							creatureImage(agent.appearance.creature, agent.displayName),
+							creatureImage(agent.appearance.creature, agent.displayName, agent.appearance.color),
 							h(
 								"div",
 								{ class: "card-body" },

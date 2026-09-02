@@ -75,8 +75,19 @@ export class ConversationView {
 		const agent = this.#company.staffById(session?.staffAgentId);
 		const activity = this.#company.activityFor(session?.staffAgentId);
 		const canWrite = company.team?.capabilities.write === true && session?.status !== "closed";
-		this.#renderHeader(session, agent?.displayName, agent?.appearance.creature, activity?.activity);
-		this.#renderMessages(conversation, agent?.displayName ?? session?.title ?? "Agent", agent?.appearance.creature);
+		this.#renderHeader(
+			session,
+			agent?.displayName,
+			agent?.appearance.creature,
+			agent?.appearance.color,
+			activity?.activity,
+		);
+		this.#renderMessages(
+			conversation,
+			agent?.displayName ?? session?.title ?? "Agent",
+			agent?.appearance.creature,
+			agent?.appearance.color,
+		);
 		this.#renderStatus(conversation, activity?.activity, canWrite, session);
 		this.#composer.disabled = !canWrite || conversation.sending;
 		this.#send.disabled = !canWrite || conversation.sending;
@@ -87,6 +98,7 @@ export class ConversationView {
 		session: HostedSession | undefined,
 		agentName: string | undefined,
 		creature: string | undefined,
+		color: string | undefined,
 		activity: string | undefined,
 	): void {
 		const title = agentName ?? session?.title ?? "Conversation";
@@ -104,7 +116,7 @@ export class ConversationView {
 						: null;
 		replace(
 			this.#header,
-			creatureImage(creature, title),
+			creatureImage(creature, title, color),
 			h(
 				"div",
 				{ class: "thread-title" },
@@ -122,7 +134,12 @@ export class ConversationView {
 		);
 	}
 
-	#renderMessages(conversation: ConversationState, agentName: string, creature: string | undefined): void {
+	#renderMessages(
+		conversation: ConversationState,
+		agentName: string,
+		creature: string | undefined,
+		color: string | undefined,
+	): void {
 		const items: TranscriptItem[] = [
 			...conversation.projection.items,
 			...conversation.optimistic.map(
@@ -172,7 +189,7 @@ export class ConversationView {
 								.join(" "),
 						},
 						item.kind === "agent"
-							? creatureImage(creature, agentName)
+							? creatureImage(creature, agentName, color)
 							: h("span", { class: "avatar small" }, author.slice(0, 1).toUpperCase()),
 						h(
 							"div",

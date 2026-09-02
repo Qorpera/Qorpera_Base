@@ -33,7 +33,6 @@ for (const icon of [
 ]) {
 	cpSync(join(userland, icon), join(dist, "assets", icon));
 }
-cpSync(resolve(root, "../shell/assets/qorpera.png"), join(dist, "assets/qorpera.png"));
 
 const version = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
 const options = {

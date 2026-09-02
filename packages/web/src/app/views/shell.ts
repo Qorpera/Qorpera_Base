@@ -44,9 +44,8 @@ export function renderTopbar(
 		container,
 		h(
 			"a",
-			{ class: "brand", href: "#/" },
-			h("img", { src: "./assets/qorpera.png", alt: "" }),
-			h("span", null, "Qorpera"),
+			{ class: "brand", href: "#/", "aria-label": "Qorpera home" },
+			h("img", { src: "./assets/brand/qorpera-lockup-light-800.png", alt: "Qorpera", width: 800, height: 200 }),
 		),
 		switcher,
 		company && realtime && realtime !== "connected"
@@ -101,7 +100,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, r
 					].join(" "),
 					href: `#/c/${profileId}`,
 				},
-				creatureImage(agent?.appearance.creature, node.label),
+				creatureImage(agent?.appearance.creature, node.label, agent?.appearance.color),
 				h("span", { class: "rail-label" }, node.label, h("span", { class: "muted small" }, "Co-Founder · home")),
 				dot,
 			);
@@ -114,7 +113,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, r
 					href: `#/c/${profileId}/staff/${node.canonicalId}`,
 					dataset: { depth: String(depth) },
 				},
-				creatureImage(agent?.appearance.creature, node.label),
+				creatureImage(agent?.appearance.creature, node.label, agent?.appearance.color),
 				h(
 					"span",
 					{ class: "rail-label" },
