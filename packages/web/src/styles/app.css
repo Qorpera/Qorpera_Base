@@ -103,12 +103,15 @@ label > input, label > select { font-weight: 400; }
 .rail-item.active .muted { color: color-mix(in srgb, var(--sidebar-selection-text) 80%, transparent); }
 .rail-item {
 	display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: var(--radius-sm); color: var(--text);
-	margin-left: calc(var(--depth, 0) * 10px);
 }
+/* Hierarchy depth as data attributes: no inline styles, so the CSP stays strict. */
+.rail-item[data-depth="1"], .rail-group[data-depth="1"] { margin-left: 10px; }
+.rail-item[data-depth="2"], .rail-group[data-depth="2"] { margin-left: 20px; }
+.rail-item[data-depth="3"], .rail-group[data-depth="3"] { margin-left: 30px; }
 .rail-label { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; flex: 1; }
 .rail-label > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rail-cofounder { padding: 8px; margin-bottom: 4px; }
-.rail-group { margin-left: calc(var(--depth, 0) * 10px); padding: 4px 0; }
+.rail-group { padding: 4px 0; }
 .rail-group-title { display: flex; flex-direction: column; padding: 4px 8px; font-weight: 600; }
 .rail-group-title .badge { align-self: flex-start; margin-top: 2px; }
 .rail-inactive summary { cursor: pointer; list-style: none; }

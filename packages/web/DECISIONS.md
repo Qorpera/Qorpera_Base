@@ -112,3 +112,33 @@ contract's 151 exactly, plus 14 granted-but-undocumented functions), then
 parameters (`PGRST202` = missing), and (3) the in-app `Cloud check` page
 repeats the probe with the member's token. Recorded as a limitation in the
 session log; the SQL check should still be run by whoever holds a credential.
+
+## 2026-09-02 — Stay in the monorepo; serve from `app.qorpera.com` on Cloudflare Pages
+
+**Decision (founder, 2026-09-02).** The web app stays in `packages/web` of the
+`Qorpera_Base` monorepo and is deployed from it. The production origin is
+`https://app.qorpera.com`.
+
+**Why the monorepo.** The web app's only coupling is the client contract and
+the migrations that define its wire shapes, and both live here; the daily
+rebase and the Requests workflow only work on shared history. It imports no
+workspace package at runtime (supabase-js only) and copies design assets from
+the shell package at build time, so a later split stays cheap. The repository
+is private; a separate public repository becomes the reason to split if the
+client is ever open-sourced on its own.
+
+**Why Cloudflare Pages.** `qorpera.com` is already on Cloudflare DNS and
+`objects.qorpera.com` is proxied there, so the custom domain is a one-step
+setting in the same account. A GitHub Actions workflow
+(`.github/workflows/web-client.yml`) checks, builds and publishes
+`packages/web/dist`; the site is static, hash-routed, and needs no server.
+`packages/web/public/_headers` carries a strict Content Security Policy that
+pins `connect-src` to the production project and the object gateway; the
+Account page's preview-project override therefore works on localhost and on
+Pages preview deployments, not on the production origin. That is intended.
+
+**One-time setup outside the repo.** A Cloudflare Pages project named
+`qorpera-web`, the custom domain `app.qorpera.com` attached to it, and two
+repository secrets: `CLOUDFLARE_API_TOKEN` (Pages: Edit) and
+`CLOUDFLARE_ACCOUNT_ID`. Until those exist the workflow's deploy job is
+skipped and the build job still proves the package.

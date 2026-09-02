@@ -112,7 +112,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, r
 				{
 					class: ["rail-item", isActive(node.canonicalId) ? "active" : ""].join(" "),
 					href: `#/c/${profileId}/staff/${node.canonicalId}`,
-					style: `--depth:${depth}`,
+					dataset: { depth: String(depth) },
 				},
 				creatureImage(agent?.appearance.creature, node.label),
 				h(
@@ -128,7 +128,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, r
 			node.kind === "responsibility" ? "Responsibility" : node.kind === "project" ? "Project" : "Room";
 		return h(
 			"div",
-			{ class: `rail-group rail-${node.kind}`, style: `--depth:${depth}` },
+			{ class: `rail-group rail-${node.kind}`, dataset: { depth: String(depth) } },
 			h(
 				"div",
 				{ class: "rail-group-title" },

@@ -379,8 +379,8 @@ above.
    call `/v1/member-company-objects`, `/v1/member-company-file` or
    `/v1/member-session-attachments` at all — the preflight fails before the
    gateway's authority checks run. Request: an allow-list of web origins
-   (development `http://127.0.0.1:5180` and `http://localhost:5180`, plus the
-   production web origin), methods `GET, PUT, POST, OPTIONS`, request headers
+   (production `https://app.qorpera.com`; development `http://127.0.0.1:5180`
+   and `http://localhost:5180`), methods `GET, PUT, POST, OPTIONS`, request headers
    `authorization, content-type, x-qorpera-company-path`, exposed headers
    `etag, x-qorpera-access-mode`, and a `204` answer to preflight. Until then
    the web app cannot upload attachments or read gateway-served objects; it
@@ -413,10 +413,12 @@ above.
    path convention in §4 so clients do not infer it from desktop code, and
    state whether it stays valid for companies served by the path gateway
    (the RPC refuses those with `42501`).
-5. **Supabase Auth redirect URLs.** Register the web origins above (with a
-   trailing `/`) in the project's redirect allow-list for OAuth PKCE and magic
-   links, and confirm the email template includes the six-digit `{{ .Token }}`
-   so code entry works without a redirect.
+5. **Supabase Auth redirect URLs.** Register `https://app.qorpera.com/`,
+   `http://127.0.0.1:5180/` and `http://localhost:5180/` in the project's
+   redirect allow-list for OAuth PKCE and magic links (decided 2026-09-02:
+   the web app stays in the monorepo and is served from `app.qorpera.com`),
+   and confirm the email template includes the six-digit `{{ .Token }}` so
+   code entry works without a redirect.
 6. **Deployment status of Order 0 on the target project.** On
    `wovsmjvghnbcbfazdtvr.supabase.co` (the project the desktop is compiled
    against) these listed functions answer `PGRST202` as of 2026-09-02:

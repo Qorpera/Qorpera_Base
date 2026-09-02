@@ -104,3 +104,35 @@ web app does not call them yet (request 8). Typecheck, tests, build, Biome and
 the repo import/pinned-dependency checks pass after the rebase.
 Anonymous probe: neither new RPC is deployed on the target project yet
 (`PGRST202`).
+
+## 2026-09-02 — Block 2: home and hosting decided
+
+**Decided (founder).** The web app stays in the monorepo; production origin is
+`https://app.qorpera.com`. Reasoning and the one-time setup are in
+`DECISIONS.md`.
+
+**Built.**
+
+- `.github/workflows/web-client.yml`: on pushes to `master` and
+  `web/client-app` (and on pull requests touching the package) it installs
+  without lifecycle scripts, typechecks, tests, lints and builds
+  `packages/web`; on pushes it publishes `packages/web/dist` to the Cloudflare
+  Pages project `qorpera-web` with a pinned `wrangler`, and skips the publish
+  with a clear message when the two Cloudflare secrets are absent.
+- `packages/web/public/_headers`: strict Content Security Policy pinned to the
+  production project and the object gateway, plus the usual hardening headers.
+  The rail's hierarchy indentation moved from inline styles to data attributes
+  so `style-src 'self'` holds.
+- Contract requests 1 and 5 now name the exact origins
+  (`https://app.qorpera.com`, `http://127.0.0.1:5180`, `http://localhost:5180`).
+
+**What works against the real cloud.** Unchanged from block 1; nothing new
+was exercised under a member token.
+
+**Blocked.** The first real deploy needs the Cloudflare Pages project, the
+custom domain and the two repository secrets, which only the account holder
+can create. Until the gateway CORS and Auth redirect requests are answered
+for `app.qorpera.com`, the deployed site can sign in only through the email
+code path and cannot read gateway-served objects.
+
+**Requested.** No new items; requests 1 and 5 updated with the origin.
