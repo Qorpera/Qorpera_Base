@@ -240,3 +240,15 @@ its column at every width, with the lockup and footnote centered in the
 single-column layout. Moving the stylesheet under `/build/` had broken its
 relative asset URLs (fonts, avatar masks), which fell back to system fonts on
 the deployed site; those URLs are now root-absolute.
+
+**Sign-in email fixed at the source (founder signed in to Supabase; browser
+pane).** The email came from Supabase's default mailer, carried no code, and
+its link landed on the marketing site. Causes and fixes in the project's Auth
+settings: (1) the redirect allow-list held only the desktop's loopback and
+`qorpera://` entries, so an unmatched `emailRedirectTo` fell back to the Site
+URL `https://qorpera.com` — added `https://app.qorpera.com/**` and the two dev
+origins; (2) the "Magic link or OTP" and "Confirm sign up" templates lacked
+`{{ .Token }}` — replaced with Qorpera-branded templates that lead with the
+six-digit code (`packages/web/auth-email/`); (3) custom SMTP via Resend was
+filled in except the API key, which only the founder pastes. The code step's
+copy now says the link works only in the requesting browser (PKCE).

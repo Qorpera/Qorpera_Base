@@ -445,3 +445,13 @@ above.
    this file exists only on `web/client-app` so far — the runtime branch tip
    has no copy — so the runtime session needs to adopt it (or say where the
    canonical copy lives) for the "same commit" rule in §8 to hold.
+9. **Done directly on 2026-09-02, for the record (founder-approved, in the
+   Supabase dashboard):** request 5's redirect URLs are registered
+   (`https://app.qorpera.com/**`, `http://localhost:5180/**`,
+   `http://127.0.0.1:5180/**`; the Site URL stays `https://qorpera.com`).
+   The "Magic link or OTP" and "Confirm sign up" templates now carry the
+   six-digit `{{ .Token }}` with Qorpera copy (sources in
+   `packages/web/auth-email/`), subject "Your Qorpera sign-in code". Custom
+   SMTP through Resend (`smtp.resend.com:465`, sender
+   `Qorpera <no-reply@mail.qorpera.com>`) was prepared; the founder holds the
+   key. The desktop's loopback and `qorpera://` redirect entries are untouched.

@@ -63,7 +63,7 @@ export function renderSignIn(auth: AuthController, container: HTMLElement): void
 			? h(
 					"p",
 					{ class: "auth-hint" },
-					`We sent a code to ${state.pendingEmail}. The link in the same email also signs you in.`,
+					`We sent a code to ${state.pendingEmail}. Enter it here; the link in the same email works only in this browser.`,
 				)
 			: null,
 		h(
