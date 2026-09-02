@@ -781,3 +781,20 @@ bootstrap failed keeps A's identity volume attached, so it was stopped,
 journaled and deleted before the next dispatch. The hand-provisioned native
 host from earlier was stopped and released A's volume; it is no longer part
 of the run path.
+
+**Candidate defect found by the real job path (03:17 UTC).** With the CA
+bundle in place, the fourth run's guest `qorpera-c89a1772…` still failed its
+bootstrap with a bare "fetch failed". The cause is in the candidate's guest
+package, not in the proof tooling: the unit `qorpera-lxd-runner-bootstrap.service`
+carries `RestrictAddressFamilies=AF_UNIX`, so the bootstrap cannot open any
+network socket, while under the company-path runtime it must call the cloud
+for the identity's recovery epoch before it can start the runner. The login
+bootstrap unit, which also calls the cloud, does not carry that restriction
+and worked all night. Run once by hand inside the guest without the sandbox
+(a diagnostic replay of the same script, nothing else changed), the bootstrap
+completed, the runner activated itself in the cloud (runner `a5dcbe32…`,
+active at 03:17:35) and both `qorpera-company-runner.service` and
+`qorpera-native-company-host.service` came up. This must be fixed in source
+(allow AF_INET and AF_INET6 for that unit, or move the epoch check) before
+the candidate can be released; the proof continues on this guest to see how
+far the run gets.
