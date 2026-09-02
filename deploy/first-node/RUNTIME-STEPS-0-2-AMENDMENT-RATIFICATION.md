@@ -997,3 +997,57 @@ window. **Needs Jonas** for each of those.
 Evidence seal for the gate-2 folder after candidate 2: `SHA256SUMS`
 `d4c2b146b9d8ffdc5413904c7cf122c26fa86c34e15c7f4645800395baa4c00f` (358 files;
 the seal from the first gate-2 stop is kept as `SHA256SUMS.gate2-stop`).
+
+## Production rollout executed (founder approval, 2026-09-02 06:47–07:09 UTC)
+
+Jonas: "I approve everything - go ahead" (infrastructure staging, frozen
+production package, migration delta and rollback packet, production window).
+Evidence: `production-rollout-packet-v4-activation-20260902/` (HANDOFF.md,
+sealed).
+
+- **Read-only preflight (06:47Z):** ledger exactly the 92-version baseline,
+  one company, executor `supabase_read_only_user`; work counts all zero except
+  96 pending/active August runner registrations (sessions expired 2026-08-28)
+  and 14 pending August native login sessions (all expired 2026-08-23/24).
+  The packet refuses those rows by design and drains nothing itself.
+- **Physical fence:** no runtime process on the node; the idle production
+  orchestrator guest `company41-orchestrator-01` and tonight's proof gateway
+  stopped; the production registry has been physically detached since
+  2026-08-29. **Disabled installation:** signed image `0fbf44de…` and its
+  envelope `2ab6d9b8…` staged on the node, verifier tool present, activation
+  script not run, provider not running.
+- **CLI:** the packet's pinned binary (`42a9fe8b…`) is Supabase CLI 2.116.0;
+  the release tarball was re-downloaded, checksum-verified and restored at the
+  pinned path. Dollar-quoted blocks pass through it unchanged (probed).
+- **Administrative drain (07:01:56Z, `drain/drain.sql` `f377ac00…`):** one
+  serializable transaction under the packet's executor, ledger and zero-work
+  guards; 96 runners set to `revoked` with the owner (who registered every one
+  of them and approved the drain) as revoker, 96 `runner_revoked` audit rows
+  whose payload names the deployment-administrator execution; 14 expired
+  pending logins set to `expired`. Two earlier attempts were refused before
+  commit (server syntax rejection of a malformed file; the runner check
+  constraint requiring a revoker) and left production unchanged (readbacks
+  kept). After the drain all eight work counts read zero.
+- **Activation successor:** packet copied to a stable root, README counts
+  corrected (36 files, 41 steps, 128 ledger), `contract.mjs` root re-pinned,
+  four release receipts written and their hashes bound, execution window
+  07:03:18–08:53:18Z, `check` passed (execution enabled, gate bindings issued),
+  96/96 packet and transport tests at the pinned commit.
+- **Execution (07:03:21–07:08:58Z), one explicit call per step, one CLI
+  invocation each, every step a durable PASS:** preflight (policy enabled v1,
+  legacy active) → pause (policy disabled v2, pause reason matched) → retire
+  (legacy retired) → stage A 11 files (ledger 103) → attest (server authority
+  digest and teardown matched) → stage B 25 files (ledger 128; `19900`
+  activated bundle `4711f8d3…`; `19990` concurrency 64; `19995` policy
+  version 3) → final readback (interfaces matched, admission still disabled,
+  all work counts zero, all 92 historical versions retained including the 18
+  production-only ones). No reconciliation was needed; no failure artifact
+  exists.
+- Independent read-only confirmation afterwards: ledger 128, bundles v1
+  `184eac72…` and v2 `4711f8d3…`, active `4711f8d3…`, runners all `revoked`.
+
+Status: **proven** — production SQL deployment for candidate 2 complete.
+Admission stays paused (policy disabled). Not done and not claimed: node
+image activation for production, normal v3 bootstrap, identity/key-backup
+recovery agreement, governed registration, the two-member offline production
+acceptance, and the controlled policy reopening. Each is a subsequent gate.
