@@ -97,8 +97,19 @@ export function figureFor(agent: Pick<HostedStaffAgent, "id" | "displayName" | "
 	return FIGURE_IDS[seed % FIGURE_IDS.length] ?? "crown";
 }
 
+/** The eleven creation colours, in the order the workspace's picker shows
+ * them. Empty when the vendored scripts are absent. */
+export function PALETTE(): { name: string; color: string }[] {
+	return globals()?.QORPERA_AVATAR_APPEARANCE.palette ?? [];
+}
+
 function palette(): string[] {
-	return globals()?.QORPERA_AVATAR_APPEARANCE.palette.map((entry) => entry.color) ?? [];
+	return PALETTE().map((entry) => entry.color);
+}
+
+/** A figure's own shade, which bypasses recolouring entirely. */
+export function nativeColorOf(figure: FigureId): string {
+	return nativeColor(figure);
 }
 
 function nativeColor(figure: FigureId): string {
@@ -162,14 +173,14 @@ export interface FigureOptions {
 
 /** One built figure, ready to place. Returns an empty span when the vendored
  * scripts are absent, so a missing asset never takes a view down with it. */
-export function figureElement(figure: FigureId, color: string, options: FigureOptions = {}): HTMLElement {
+export function figureElement(figure: FigureId, color?: string, options: FigureOptions = {}): HTMLElement {
 	const scope = globals();
 	const host = document.createElement("span");
 	host.className = ["figure", options.className].filter(Boolean).join(" ");
 	host.setAttribute("aria-hidden", "true");
 	const trace = scope?.QORPERA_VECTOR_BAKED.figures[figure];
 	if (!scope || !trace) return host;
-	const built = scope.QORPERA_VECTOR_FIGURES.build(figure, trace, { color });
+	const built = scope.QORPERA_VECTOR_FIGURES.build(figure, trace, { color: color ?? nativeColor(figure) });
 	host.append(built);
 	if (!options.still) {
 		sweep();

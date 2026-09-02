@@ -11,6 +11,7 @@ import { ConversationView } from "./app/views/conversation.ts";
 import { FriendsController, renderFriends } from "./app/views/friends.ts";
 import { HubController, renderHub } from "./app/views/hub.ts";
 import { renderInvitations } from "./app/views/invitations.ts";
+import { type MeetState, renderMeet } from "./app/views/meet.ts";
 import { renderOrganization } from "./app/views/organization.ts";
 import { renderRail, renderTopbar, type ShellContext } from "./app/views/shell.ts";
 import { renderSignIn } from "./app/views/signin.ts";
@@ -47,6 +48,7 @@ let cloudCheck: CloudCheckView | undefined;
 let profiles: HostedProfile[] = [];
 let teamFeedback: { message?: string; error?: string } = {};
 let accountState: AccountViewState = {};
+let meetState: MeetState = {};
 let unsubscribeCompany: (() => void) | undefined;
 let resolvingHome = false;
 let homeReason: string | undefined;
@@ -186,9 +188,11 @@ async function draw(): Promise<void> {
 		);
 		return;
 	}
-	rail.hidden = false;
+	// First run is a moment, not a workspace: the rail stays away until the
+	// Co-Founder has a face.
+	rail.hidden = route.section === "meet";
 	renderTopbar(topbar, shellContext(authState.user, route), controller);
-	renderRail(rail, controller, route);
+	if (!rail.hidden) renderRail(rail, controller, route);
 	const state = controller.store.get();
 	if (state.accessLost) {
 		replace(
@@ -207,6 +211,7 @@ async function draw(): Promise<void> {
 		controller.setOpenSession(undefined);
 	}
 	if (route.section !== "approvals") approvals = undefined;
+	if (route.section !== "meet") meetState = {};
 	switch (route.section) {
 		case "home": {
 			if (state.loading && !state.staff.length) {
@@ -278,6 +283,12 @@ async function draw(): Promise<void> {
 			});
 			return;
 		}
+		case "meet":
+			renderMeet(controller, api, main, meetState, (next) => {
+				meetState = next;
+				render();
+			});
+			return;
 		case "organization":
 			renderOrganization(controller, main);
 			return;

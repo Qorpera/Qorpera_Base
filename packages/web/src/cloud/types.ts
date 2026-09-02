@@ -167,6 +167,7 @@ export interface HostedStaffAgent {
 	role: string;
 	charter: string;
 	templateId?: string;
+	departmentId?: string;
 	appearance: { color: string; shape: string; creature?: string };
 	model?: { provider: string; modelId: string };
 	employmentStatus: "active" | "archived";

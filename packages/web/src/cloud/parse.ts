@@ -354,6 +354,8 @@ export function parseStaff(value: unknown): HostedStaffAgent {
 	const modelProvider = optionalString(input.model_provider, "staff model provider", 128);
 	const modelId = optionalString(input.model_id, "staff model id", 256);
 	const templateId = optionalString(input.template_id, "staff template id", 256);
+	// Carried so a write can hand it straight back; the client never reads it.
+	const departmentId = optionalString(input.department_id, "staff department id", 256);
 	return {
 		profileId: uuid(input.profile_id, "staff profile id"),
 		id: uuid(input.staff_agent_id ?? input.id, "staff agent id"),
@@ -361,6 +363,7 @@ export function parseStaff(value: unknown): HostedStaffAgent {
 		role: typeof input.role === "string" && input.role.trim() ? input.role : "Staff",
 		charter: typeof input.charter === "string" ? input.charter : "",
 		...(templateId ? { templateId } : {}),
+		...(departmentId ? { departmentId } : {}),
 		appearance: { color: color ?? "slate", shape: shape ?? "round", ...(creature ? { creature } : {}) },
 		...(modelProvider && modelId ? { model: { provider: modelProvider, modelId } } : {}),
 		employmentStatus: input.employment_status === "archived" ? "archived" : "active",

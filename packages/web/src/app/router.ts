@@ -12,7 +12,8 @@ export type CompanySection =
 	| "snapshot"
 	| "proposal"
 	| "organization"
-	| "team";
+	| "team"
+	| "meet";
 
 export type Route =
 	| { name: "hub" }
@@ -37,7 +38,13 @@ export function parseRoute(hash: string): Route {
 		if ((section === "chat" || section === "staff" || section === "snapshot" || section === "proposal") && id) {
 			return { name: "company", profileId, section, id };
 		}
-		if (section === "approvals" || section === "file" || section === "organization" || section === "team") {
+		if (
+			section === "approvals" ||
+			section === "file" ||
+			section === "organization" ||
+			section === "team" ||
+			section === "meet"
+		) {
 			return { name: "company", profileId, section };
 		}
 		return { name: "company", profileId, section: "home" };

@@ -79,7 +79,7 @@ export class HubController {
 				throw new Error("The cloud could not provision the company's Company File.");
 			this.store.set({ creating: undefined });
 			await this.refresh();
-			navigate({ name: "company", profileId: result.profile.profileId, section: "home" });
+			navigate({ name: "company", profileId: result.profile.profileId, section: "meet" });
 		} catch (error) {
 			this.store.set({ creating: undefined, error: describeError(error) });
 		}

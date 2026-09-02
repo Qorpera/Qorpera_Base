@@ -470,3 +470,45 @@ all five globals are present.
 still no seeded Co-Founder to dress.
 
 **Requested.** Nothing new this block.
+
+**The first-run screen is built in the client (founder: "now build the actual
+first-run screen in the client").** `src/app/views/meet.ts`, on the route
+`#/c/{profileId}/meet`, which creating a company now lands on instead of the
+company home. The route stays reachable afterwards, so it is also where the
+Co-Founder's look is changed.
+
+**Every choice writes real cloud state.** The figure and colour are the staff
+record's `appearance_creature` and `appearance_color`, written through
+`qorpera_put_profile_staff`, which answers on production today. The write hands
+every other field back exactly as it was read and guards on the agent's
+`version`, so two members editing at once get a conflict instead of a silent
+overwrite. `department_id` was not parsed by the client and would have been
+wiped by that write; it is now carried through.
+
+**Nothing is rendered when there is no Co-Founder to dress.** The screen finds
+the agent through the organization kernel when it answers and through the staff
+list's `co-founder` template otherwise, so it works on a cloud that has seeded
+the agent but not the kernel. With neither, it says the company has no
+Co-Founder yet and links into the company, rather than showing a picker that
+writes nowhere.
+
+**The rail is hidden on this route.** The approved composition puts this screen
+beside the V24 rail; the client's rail is still the old, invented one
+(Approvals, Company File, Organization, Team), so showing it here would be
+worse than showing none. Rebuilding the rail is the next piece.
+
+**Verified** against the real view with a stubbed controller: seven figures and
+eleven colours; the seeded appearance (creature `brain`, colour token
+`qorpera-blue`) resolving to the Crown in palette Blue; picking a figure
+bringing its own shade, with no false swatch selection when that shade is
+outside the palette; the save call carrying creature, colour and
+`expected_version` 1; and the no-Co-Founder branch. Biome, typecheck and the 18
+tests pass.
+
+**Works against the real cloud.** The route and screen deploy and load clean.
+The end-to-end path — create a company, land here, save — cannot be exercised
+on the target project, because creating a company there seeds no agent.
+
+**Blocked.** Unchanged: Order 0 is absent from `wovsmjvghnbcbfazdtvr`.
+
+**Requested.** Nothing new this block.
