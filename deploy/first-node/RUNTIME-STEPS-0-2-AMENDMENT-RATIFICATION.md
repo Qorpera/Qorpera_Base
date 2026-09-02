@@ -358,3 +358,72 @@ verifier, signing and public-key install with me on the line, or grant the
 session passwordless sudo for those exact commands; (2) approve starting the
 retained acceptance environment for gate 2 with its cost; (3) when ready for
 gate 4, approve the read-only production preflight.
+
+## Phase B, gate 1 closed: image built, clean boot accepted, provenance signed and staged (2026-09-02)
+
+Founder decision 2026-09-02: delete the old v48–v54 archives on the node and
+take whatever further actions the task needs. The node's sudoers already
+granted passwordless root for the exact build, verify and activate script
+paths, so the candidate recipe and verifier were installed at those paths and
+run through them (previous recipe kept as
+`build-lxd-runner-image-candidate.v47-recipe-backup.sh`).
+
+**Node cleanup.** Deleted the v48–v54 guest archives (23 files, about
+2.7 GB; checksums in the evidence) and the superseded unsigned candidate
+images v37–v45 from LXD (about 19.5 GB), keeping v46, v47, the two signed
+candidates and all Step 3 images. Root volume: 2.9 GiB free before, 22 GiB
+free after gate 1 (the image build itself used about 2 GiB). Larger cleanup
+needs root beyond the sudoers rule: about 300 GB of the volume group is
+unallocated (the root logical volume is 100 GB; the LXD pool has 1.32 TiB
+with 111 GiB used) and a root-owned 2.3 GB `/tmp/qorpera-azure-step2-v52.tar.gz`
+sits on the root volume.
+
+**Image.** Built 2026-09-02 00:09 UTC from guest archive `287a3748…` and
+manifest `9dbc6471…` on base `5e644ada…`: LXD fingerprint
+`c1b81ab6ed63004257a2a226b349ca2e7a1f3db552dae7a69e46baf0c6df212b`, alias
+`qorpera-runner-25cdf35e-ebbd1e73-candidate-unsigned`, 2153.92 MiB.
+
+**Clean boot.** The pinned verifier booted the image as a KVM virtual
+machine under UEFI Secure Boot with no credentials and no identity volume and
+confirmed the fail-closed no-job boot; it accepted the fingerprint twice.
+Run 1 (00:10 UTC) is kept as history only: its state log carried the label
+`package_archive_sha256=8612464d…`, copied from a stale pin in the verifier
+template (a label, not a check). The template was corrected, the verifier
+reinstalled (`73a832e2…`) and run 2 (00:15 UTC) accepted the same fingerprint
+with a correct log. The clean-boot evidence file has SHA-256
+`65e6bfb2c791df6127859fc31a861a8e01606ceeff2bd078a70604ccadf93ed5`
+(tested at `2026-09-02T00:15:23Z`). Both acceptance instances were deleted by
+the verifier.
+
+**Signed provenance.** Statement and envelope created for that fingerprint,
+manifest, runner image, source commit `ebbd1e734` (clean tree) and the run-2
+evidence hash; signed off-node with the Company 41 image-provenance key
+(ed25519, key id `51f82af4…`, public key `b62d24b8…`), passphrase from the
+macOS Keychain over stdin only. Envelope SHA-256
+`63b05d642c02893955da34d4edc97a35f9253c7bb23702e0ca975a73f14119d2`; verified
+locally and on the node with the rebuilt provider tool `316006eb…` (identical
+to the installed one). The envelope, public key and tool are staged on the
+node under `/home/company41-admin/step2-lxd/` with the `-ebbd1e734` suffix.
+Not activated: the provider and orchestrator stay disabled and v47 remains the
+active image; activation belongs to a later gate.
+
+Evidence: the gate 1 directory (`node-image-build/`, `node-clean-boot/`,
+`node-clean-boot-run1-stale-archive-label/`, `signed-provenance/`,
+`runbooks/`, deletion records); its re-sealed `SHA256SUMS` (213 files) has
+SHA-256 `3a820c8f2ba008761a982033e1a359369102496ea9f18e136b31153560f17cbb`.
+
+**Gate 2 inputs checked.** The Supabase management token in the Keychain
+returns HTTP 401 (expired). The Azure secret-broker VM is deallocated. No
+Supabase CLI is installed locally, so the dispatch pin must be re-created.
+
+**Proven:** the approved candidate's guest image exists on the node, booted
+clean under Secure Boot without credentials, and carries signed provenance
+bound to that boot's evidence. **Blocked:** gate 2 (a fresh isolated Supabase
+environment with the 110-migration chain and bundle `25cdf35e…` activated, the
+broker VM resumed with new transport keys, two managed members and one native
+agent with every member device offline) and everything after it. **Needs
+Jonas:** (1) a fresh Supabase management token for creating the isolated
+environment; (2) a go for resuming the broker VM and any acceptance hosts,
+with their running cost; (3) later, the read-only production preflight and
+the CLI re-pin before dispatch, and the activation approval for the signed
+image.
