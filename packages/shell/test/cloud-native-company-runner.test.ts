@@ -100,7 +100,7 @@ it("accepts a silent private completion for a wake run and leaves reply obligati
 	startCompany.mockImplementationOnce(async () => ({
 		result: Promise.resolve({
 			schema: "qorpera.native-harness-result/v2",
-			run_id: job.runId,
+			run_id: wakeJob.runId ?? "",
 			message_count: 0,
 			final_message_id: null,
 			provider_session_id: randomUUID(),
@@ -119,7 +119,7 @@ it("accepts a silent private completion for a wake run and leaves reply obligati
 	startCompany.mockImplementationOnce(async () => ({
 		result: Promise.resolve({
 			schema: "qorpera.native-harness-result/v2",
-			run_id: job.runId,
+			run_id: wakeJob.runId ?? "",
 			message_count: 0,
 			final_message_id: null,
 			provider_session_id: randomUUID(),
