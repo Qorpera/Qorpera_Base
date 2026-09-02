@@ -104,7 +104,7 @@ it("accepts a silent private completion for a wake run and leaves reply obligati
 			message_count: 0,
 			final_message_id: null,
 			provider_session_id: randomUUID(),
-		}),
+		}) as never,
 		terminate: vi.fn(async () => undefined),
 	}));
 	const completed = await executeNativeCompanyRunnerJob({
@@ -123,7 +123,7 @@ it("accepts a silent private completion for a wake run and leaves reply obligati
 			message_count: 0,
 			final_message_id: null,
 			provider_session_id: randomUUID(),
-		}),
+		}) as never,
 		terminate: vi.fn(async () => undefined),
 	}));
 	await expect(
