@@ -843,3 +843,23 @@ through the management API (both HTTP 200). Their proofs stay as the sealed
 August records on the founder's Mac; nothing in this session or the
 production packet referenced the live branches. Only `main` and tonight's
 `steps02-ebbd1e734-20260902` remain on the production project.
+
+## Candidate 2: bootstrap unit fix and rebuild (founder decision, 2026-09-02 03:45 UTC)
+
+Commit `7c8e69d056431867fbf10b41430003dfabe4dda8` on the same branch changes
+one line of the guest contract: `qorpera-lxd-runner-bootstrap.service` now
+allows `AF_UNIX AF_INET AF_INET6`, matching the login bootstrap unit. Because
+the runtime bundle covers the guest unit files, the bundle is regenerated to
+`4711f8d35b62b530021e995c3542fbafbddd3494155cf0d46b158164d4594484`
+(migration `20260828019900` and the generated bundle constant follow), and
+the committed guest-package manifest pin under `native-codex/` is refreshed
+from the rebuilt package. Rebuilt from that tree with the same retained
+inputs as gate 1: guest manifest `878c07de2fa60e0742ce9ae062a4f167281475f4b80604719174ecfbca8fcd5e`,
+guest archive `lxd-runner-guest-7c8e69d05.tar.gz`
+`0efe52a9f22b2a57b38f57ddadb1b66416806d6861f20928448eca49e0fd9fa9`,
+native provider host `883dfa8b…` (it embeds the bundle constant), ephemeral
+runner manifest `1530fdd5…`; provider, broker and orchestrator manifests
+unchanged. Packager and bundle tests pass. Gate 1 is repeated for this
+candidate: node build recipe `build-lxd-runner-image-candidate-7c8e69d05.sh`
+installed at the sudoers build path (previous recipe kept as
+`.ebbd1e734-recipe-backup.sh`), packet v4 to follow.
