@@ -519,3 +519,29 @@ necessity (they are unrelated to Orders 0–2 and were also absent from the
 August preview). The 36 candidate files match the rollout packet's pinned
 hashes byte for byte. The read-only verification before and after is in
 `preview-branch-verify-initial.json` and `preview-branch-verify-migrated.json`.
+
+**Gateway and company on the isolated branch (2026-09-02 01:13–01:21 UTC).**
+Proof id `f3933956-f53e-4ffe-bfdb-0efed53cc1e6`. A fresh gateway VM
+`qorpera-gateway-ebbd1e734` (LXD project default, network `qorpera0`,
+10.41.0.221) was created from the base image with Node 22 from the Ubuntu
+archive, exactly as the guest contract installs it. The object gateway was
+bundled from the candidate source (17 inputs identical to `ebbd1e734`,
+artifact `090dd9a9…`) and installed with the August proof's hardened units
+and initializer, re-pinned to the branch; the branch keys reached the VM only
+as ciphertext for the VM's own transport key. The gateway reports healthy
+against the branch on 127.0.0.1:8090 with its native-only TLS front on
+10.41.0.221:9444 (CA `379bdc91…`). Two fresh-VM differences were fixed on the
+spot: the hardening's inaccessible paths must exist, and the install
+directory must be world-readable for the service user.
+
+The proof owner (a managed Auth user, password only in the macOS Keychain)
+created company `391f4bad-18e9-4e30-a601-8dfbf98531ef` through
+`qorpera_create_cloud_company` (contract version 2). The gateway's bootstrap
+worker claimed and completed the job at 01:20:30 UTC: Company File `ready`,
+path gateway version 1, and the organization JSON lists the Co-Founder's four
+company-level responsibilities `direction`, `founder-relationship`,
+`resourcing` and `responsibility-map`, all active with one measure each. This
+is the first live genesis under the responsibility model (Phase A.1) and the
+first live run of the v3 bootstrap worker on the candidate bundle. Evidence:
+`company-bootstrap.json`, `gateway-installed.json`, `gateway-*-check*.txt`
+in the gate 2 directory.
