@@ -217,24 +217,16 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 .auth-status:empty { display: none; }
 .auth-status.is-error { color: #b3261e; }
 .auth-foot { color: #83868d; font-size: 12.5px; line-height: 1.45; max-width: 400px; }
-.auth-art { position: relative; overflow: clip; display: grid; place-items: center; background: #f7f7f5; border-left: 1px solid var(--auth-line); }
-.auth-floor {
-	position: absolute; inset: -10% -6%; pointer-events: none;
-	background-image: linear-gradient(rgba(11, 11, 11, 0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(11, 11, 11, 0.08) 1px, transparent 1px);
-	background-size: 88px 88px;
-	-webkit-mask-image: radial-gradient(ellipse 88% 54% at 50% 46%, #000 6%, transparent 80%);
-	mask-image: radial-gradient(ellipse 88% 54% at 50% 46%, #000 6%, transparent 80%);
+.auth-art { position: relative; overflow: clip; display: grid; place-items: center; background: #fafaf9; border-left: 1px solid var(--auth-line); }
+/* The crown: a mirrored wrap (it faces the form), a posed body, a ground shadow. */
+.crown-wrap { position: relative; width: min(58%, 460px); aspect-ratio: 1; transform: scaleX(-1); }
+.crown-body { position: absolute; inset: 0; transform-origin: 50% 85%; will-change: transform; }
+.crown-svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.crown-shadow {
+	position: absolute; left: 22%; right: 22%; bottom: 3.5%; height: 7%; border-radius: 50%;
+	background: radial-gradient(ellipse at center, rgba(11, 11, 11, 0.22), rgba(11, 11, 11, 0) 70%);
+	transform-origin: 50% 50%; will-change: transform, opacity;
 }
-/* The hero render ships on white. The approved contour masks it and its eye
- * shapes are layered back in ink, as the landing and the app icon do; the
- * whole figure is flipped to face the form. */
-.auth-crown-wrap { position: relative; width: min(58%, 460px); aspect-ratio: 1; transform: scaleX(-1); }
-.auth-crown {
-	position: absolute; inset: 0; width: 100%; height: 100%;
-	-webkit-mask: url("./assets/brand/crown-hero-contour.svg") center / 100% 100% no-repeat; mask: url("./assets/brand/crown-hero-contour.svg") center / 100% 100% no-repeat;
-	mask-mode: alpha;
-}
-.auth-crown-eyes { position: absolute; inset: 0; width: 100%; height: 100%; }
 @media (max-width: 900px) {
 	.auth { grid-template-columns: 1fr; }
 	.auth-art { display: none; }

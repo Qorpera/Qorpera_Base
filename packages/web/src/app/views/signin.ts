@@ -1,5 +1,6 @@
 import { h, replace } from "../../ui/dom.ts";
 import type { AuthController, OAuthProvider } from "../auth.ts";
+import { mountCrown } from "./crown.ts";
 
 /* Sign-in in the current brand (Qorpera_Website `brand/final`, landing
  * styles.css, QorperaMobile SignInView): paper, ink, the approved lockup (the
@@ -84,6 +85,13 @@ export function renderSignIn(auth: AuthController, container: HTMLElement): void
 		state.error ?? state.message ?? (state.busy ? "One moment…" : ""),
 	);
 	container.className = "auth";
+	// The character persists across re-renders so its motion is never restarted
+	// by a status change; it retires itself once the host leaves the document.
+	let art = container.querySelector<HTMLElement>(".auth-art");
+	if (!art) {
+		art = h("aside", { class: "auth-art", "aria-hidden": "true" });
+		mountCrown(art, { watch: () => container.querySelectorAll("input, button") });
+	}
 	replace(
 		container,
 		h(
@@ -115,30 +123,7 @@ export function renderSignIn(auth: AuthController, container: HTMLElement): void
 				"Same account as the desktop app. Only your own session lives in this browser; agents run in the cloud.",
 			),
 		),
-		h(
-			"aside",
-			{ class: "auth-art", "aria-hidden": "true" },
-			h("div", { class: "auth-floor" }),
-			h(
-				"div",
-				{ class: "auth-crown-wrap" },
-				h("img", {
-					class: "auth-crown",
-					src: "./assets/brand/crown-hero-560.png",
-					alt: "",
-					width: 560,
-					height: 560,
-					decoding: "async",
-				}),
-				h("img", {
-					class: "auth-crown-eyes",
-					src: "./assets/brand/crown-hero-eyes.svg",
-					alt: "",
-					width: 512,
-					height: 512,
-				}),
-			),
-		),
+		art,
 	);
 	if (pending) code.focus();
 }

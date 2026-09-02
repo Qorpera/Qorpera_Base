@@ -205,3 +205,17 @@ layered in ink and flipped to face the form; single column under 900px. The
 top bar shows the approved lockup and the favicon is the final mark. Staff
 avatars render as tinted silhouettes with eyes. Verified with headless Chrome
 at 1440×900 and 390×844 plus an avatar test page; no console errors.
+
+**Crown as a living vector character (founder feedback: more depth, much
+more animation, no grid, see-through eyes).** `views/crown.ts` draws the
+approved V24 contour as inline SVG with a gold gradient, rim shading and a
+soft top highlight, punches the eyes through with a luminance mask so the
+surface shows, and adds a ground shadow. Motion, all CSSOM and SVG attributes
+under the strict CSP: the approved entry spring and "measured nod" loop, a
+periodic hop with anticipation, stretch, landing squash and a squint at
+launch, blinks on their own tempo, the approved screen-gaze sequence blended
+with pointer tracking, a glance at whichever form field takes focus, and a
+hover lift; still under prefers-reduced-motion, paused in hidden tabs, and it
+retires itself when the sign-in leaves the document. The grid floor is gone.
+Verified with a 24-frame strip (hop, landing, blink, gaze visible) and a
+static capture; no console errors.
