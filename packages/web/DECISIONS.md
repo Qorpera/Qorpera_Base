@@ -173,3 +173,39 @@ they are drawn as the agent's colour through the silhouette mask plus two
 white capsule eyes at per-creature positions (QorperaMobile
 `CreatureEyeLayout`); the web client now does the same in CSS, with the mobile
 colour alias table.
+
+## 2026-09-02 — The agent characters are the approved vector figures, and the
+## avatar entry above supersedes itself
+
+**Correction.** The entry above is wrong about the avatars. The seven flat
+creatures it describes (bloom, brain, folio, halo, pebble, ribbon, wisp) are
+the previous roster. The approved agent visual system replaced them with seven
+figures — Planet, Acorn, Flame, Rocket, Crown, Heart, Ghost — and it landed on
+`origin/master` in "adopt the approved agent visual system", which the runtime
+handoff branch this client is based on does not contain. That is why the
+client still ships the old art. Storm and Folio are retired and not
+selectable.
+
+**Decision.** The web client draws agents as the **vector** figures from the
+visual workspace (`Qorpera_Base-step2/.artifacts/qorpera-avatar-assets`, Vector
+design section), not the raster masters: `vector-figures.js` builds one from
+its baked trace, `vector-rig.js` drives it, and both sit on `motion-model.js`,
+`motion-visuals.js` and `avatar-appearance.js`. The rig runs with **part
+motion 0**: the body holds still and the life is in the eyes. No figure ever
+follows the pointer, on any surface. The website vendors the same six scripts
+under `landing/public/avatars`, so the client vendors them too rather than
+reimplementing any of it — every earlier attempt to approximate this by hand
+was wrong.
+
+**Figure and colour are independent settings.** The palette is the eleven
+colours in `avatar-appearance.js`; a figure's native shade bypasses recolouring
+entirely. The selector is seven figures in one row, each in its own shade, then
+the colours in centred rows of six and five.
+
+**Shell.** The company shell follows the approved V24 product preview
+(`Qorpera_Website`, `landing/src/ProductPreview.jsx`, `v24.css`) in the system
+face, not the web client's Source Sans 3, and not the rail this client
+currently renders. The client's present rail — Approvals, Company File,
+Organization, Team — exists in no Qorpera surface and must be replaced.
+
+**The approved first-run screen** is `packages/web/design/cofounder-first-run.html`.

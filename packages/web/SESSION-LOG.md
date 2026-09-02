@@ -390,3 +390,42 @@ header and just show the companies with the + card on the far right).**
 - The selector lost its heading and subtitle. It is a row of company cards with
   the dashed New company tile last, and the cards were tuned so a typical
   window fits four across, putting that tile at the right of the first row.
+
+**First-run design after company creation, approved (founder: "let's go with
+this").** `packages/web/design/cofounder-first-run.html`, with its provenance
+in `packages/web/design/README.md`.
+
+The founder rejected four earlier passes, and each rejection was the same
+mistake on my side: designing from the contract and from this branch instead of
+from what Qorpera actually looks like today.
+
+- **The avatars were the old roster.** The approved agent visual system —
+  Planet, Acorn, Flame, Rocket, Crown, Heart, Ghost, an eleven-colour palette,
+  recolouring in linear light, and a creation burst — is on `origin/master` and
+  not on the runtime handoff branch this client sits on. Corrected in
+  DECISIONS.md.
+- **Then the raster masters were still wrong.** The current work is the
+  **vector** build of those figures, from the visual workspace, driven by the
+  shared rig at part motion 0.
+- **The sidebar was invented.** The client's rail lists Approvals, Company
+  File, Organization and Team. No Qorpera surface has that. The approved shell
+  is the V24 product preview's rail, at the macOS Messages width ratio, search
+  at the top with the add-agent plus beside it, the Co-Founder as a low card
+  with the figure standing on it and rising above its edge, and the company as
+  an owner footer.
+- **The copy was noise.** The screen is a title, the figure, its name, the
+  picker and one blue button.
+
+**Works against the real cloud.** Nothing new; this block produced a design,
+not client code. `qorpera_put_profile_staff` — which carries
+`appearance_creature`, `appearance_color` and `display_name` — answers on
+production, so the choice this screen makes is storable today.
+
+**Blocked.** Building it for real needs the seeded Co-Founder, and Order 0 is
+still absent from `wovsmjvghnbcbfazdtvr` (`qorpera_company_organization_json`,
+`_bootstrap`, and `qorpera_ensure_member_private_staff_session` all answer
+PGRST202). Creating a company there today produces a profile, an environment
+and an empty Company File, and no agent to dress. Contract request 6 already
+asks for this.
+
+**Requested.** Nothing new this block.
