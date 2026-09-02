@@ -164,7 +164,16 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		"parentRunId",
 		"causal",
 	]);
-	const audience = closed(wake.audience, ["kind", "userId", "sessionId"]);
+	// The component-era envelope omits userId for a company audience; a
+	// member-private audience always carries its member.
+	const audienceValue =
+		wake.audience &&
+		typeof wake.audience === "object" &&
+		!Array.isArray(wake.audience) &&
+		!("userId" in wake.audience)
+			? { ...(wake.audience as Record<string, unknown>), userId: null }
+			: wake.audience;
+	const audience = closed(audienceValue, ["kind", "userId", "sessionId"]);
 	const source = closed(wake.source, ["kind", "id", "occurrenceKey"]);
 	const time = closed(wake.time, ["utc", "local", "timeZone"]);
 	const pins = closed(wake.pins, ["companySnapshotId", "staffVersion", "wakeSchema", "runtimeBundleVersion"]);

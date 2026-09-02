@@ -1,4 +1,3 @@
-import type { CloudWakeEnvelope } from "./cloud-wake-bus.ts";
 import { createHash } from "node:crypto";
 import type { JsonValue } from "@qorpera/contracts";
 import { CLOUD_AGENT_SEND_INSTRUCTIONS } from "./cloud-agent-mouth.ts";
@@ -11,6 +10,7 @@ import {
 	parseCloudNativeToolAuthority,
 } from "./cloud-native-tool-authority.ts";
 import type { CloudNativeTool } from "./cloud-native-tool-boundary.ts";
+import type { CloudWakeEnvelope } from "./cloud-wake-bus.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;

@@ -83,7 +83,11 @@ async function fixture(mode = "company-runtime", httpPathControl = false) {
 						silenceAllowed: true,
 						maxPublicSends: 64,
 					},
-					time: { utc: "2026-09-02T08:00:00.000000Z", local: "2026-09-02T10:00:00.000000", timeZone: "Europe/Copenhagen" },
+					time: {
+						utc: "2026-09-02T08:00:00.000000Z",
+						local: "2026-09-02T10:00:00.000000",
+						timeZone: "Europe/Copenhagen",
+					},
 					pins: {
 						companySnapshotId: randomUUID(),
 						staffVersion: wakeIdentity.staffVersion,
@@ -91,7 +95,11 @@ async function fixture(mode = "company-runtime", httpPathControl = false) {
 						runtimeBundleVersion: null,
 					},
 					routine: { id: wakeRoutineId, version: 1, intent: "Check the inbox and file anything new." },
-					payload: { schema: "qorpera.routine-schedule-occurrence/v1", triggerId: "tick", scheduledFor: "2026-09-02T08:00:00Z" },
+					payload: {
+						schema: "qorpera.routine-schedule-occurrence/v1",
+						triggerId: "tick",
+						scheduledFor: "2026-09-02T08:00:00Z",
+					},
 					parentRunId: null,
 					causal: { rootId: randomUUID(), agentIds: [wakeIdentity.staffAgentId] },
 				}
@@ -120,7 +128,11 @@ async function fixture(mode = "company-runtime", httpPathControl = false) {
 						silenceAllowed: false,
 						maxPublicSends: 64,
 					},
-					time: { utc: "2026-09-02T08:00:00.000000Z", local: "2026-09-02T10:00:00.000000", timeZone: "Europe/Copenhagen" },
+					time: {
+						utc: "2026-09-02T08:00:00.000000Z",
+						local: "2026-09-02T10:00:00.000000",
+						timeZone: "Europe/Copenhagen",
+					},
 					pins: {
 						companySnapshotId: randomUUID(),
 						staffVersion: wakeIdentity.staffVersion,
