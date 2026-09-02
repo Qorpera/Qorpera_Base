@@ -698,3 +698,20 @@ August joint-proof driver was re-pinned to this proof (branch, gateway host,
 company, environment, Co-Founder `40496d30…`, owner, sponsor, identity,
 proof-named root and socket; no stale pin remains) and launched as the same
 hardened transient unit on the gateway VM.
+
+**Joint harness ready (02:35 UTC).** Three launch corrections were needed
+and are recorded: the August unit's home-protection option made `/root`
+read-only on this fresh VM even with explicit write paths, so it was dropped
+while the strict system protection and the write-path list were kept; the
+harness's credential validator required 16 characters and this branch's Auth
+issues 12-character refresh tokens, so that one minimum was lowered to 8 for
+refresh tokens only; and the first failed attempt's cleanup had banned the
+proof owner, who was un-banned through the Auth admin API before the retry.
+The harness then passed setup: two managed members A and B created, invited
+by the owner as admins and accepted, distinct private sessions with the
+Co-Founder, ten fixtures published through the member API, grants issued,
+both members reading the shared fixture, and each member denied the other's
+private files. Coverage: managed invite/accept passed, private session
+isolation passed, fixture publication and human readback passed; the native
+parts are marked as requiring the external controller, which is the next
+step. Status in `joint/harness-ready-status.json`.
