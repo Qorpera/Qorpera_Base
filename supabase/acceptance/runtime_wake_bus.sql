@@ -37,7 +37,7 @@ declare v_run public.qorpera_execution_runs%rowtype; v_count integer; v_final uu
 begin
 	select * into strict v_run from public.qorpera_execution_runs where id = (p_binding ->> 'runId')::uuid;
 	select count(*),max(event_id::text) filter(where phase='final') into v_count,v_final
-	from public.qorpera_agent_sends where run_id = v_run.id;
+	from public.qorpera_agent_sends where run_id = v_run.id and assignment_id = (p_binding ->> 'assignmentId')::uuid;
 	v_result := public.qorpera_complete_runner_job_v6((p_binding ->> 'runnerId')::uuid,repeat('2',64),
 		(p_binding ->> 'jobId')::uuid,repeat('3',64),p_index,p_substrate,null,jsonb_build_object(
 			'schema','qorpera.runner-result/v1','runtime','company-path-v1','backend','native-company-runtime',
@@ -384,6 +384,85 @@ begin
 	perform pg_temp.path_claims('service_role');
 	perform pg_temp.wake_assert((pg_temp.path_commit(pg_temp.path_plan('resumed-work','resumed.md',
 		pg_temp.path_stage_file('resumed.md','Applies after resume'))) ->> 'state') = 'applied','Work resumes after the stop is lifted');
+end $$;
+$test$);
+
+select pg_temp.wake_acceptance_case('usage_limit_sponsor_handoff_continues_the_run',$test$
+do $$
+declare v_binding jsonb := current_setting('qorpera_test.wake_binding')::jsonb; v_base public.qorpera_execution_runs%rowtype;
+	v_login jsonb; v_connection jsonb; v_second jsonb; v_job public.qorpera_runner_jobs%rowtype; v_run public.qorpera_execution_runs%rowtype;
+begin
+	select * into strict v_base from public.qorpera_execution_runs where id = (v_binding ->> 'runId')::uuid;
+	-- A second connection of the same member for the same compute identity (the fixture's login route).
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	execute 'set local role authenticated';
+	v_login := public.qorpera_begin_native_provider_login(v_base.profile_id,'30000000-0000-4000-8000-000000000053',
+		'30000000-0000-4000-8000-000000000054',v_base.compute_identity_id,'openai','codex-cli',repeat('c',64),900);
+	execute 'reset role';
+	perform pg_temp.path_claims('service_role');
+	execute 'set local role service_role';
+	v_connection := public.qorpera_complete_native_provider_login((v_login ->> 'login_id')::uuid,repeat('c',64),
+		'30000000-0000-4000-8000-000000000062','object://native-capsules/30000000-0000-4000-8000-000000000062',repeat('d',64),
+		'fixture-openai-account-2','personal-subscription','qorpera-native-provider-consent/v1',
+		'{"monthly_microusd":1000000000,"reservation_microusd":1000,"max_calls_per_run":32,"max_input_tokens_per_run":2000000,"max_output_tokens_per_run":500000,"max_concurrent_runs":32}');
+	execute 'reset role';
+	-- The first attempt acknowledges, then the sponsoring connection hits its usage limit.
+	perform public.qorpera_begin_native_company_execution(v_binding,repeat('7',64));
+	perform pg_temp.wake_public_send(v_binding,'progress');
+	perform public.qorpera_record_provider_usage_signal(v_binding,'usage_limit',clock_timestamp() + interval '2 hours');
+	perform public.qorpera_fail_runner_job((v_binding ->> 'runnerId')::uuid,repeat('2',64),(v_binding ->> 'jobId')::uuid,repeat('3',64),
+		'Native harness failed (provider allowance unavailable)',false);
+	select * into strict v_job from public.qorpera_runner_jobs where id = (v_binding ->> 'jobId')::uuid;
+	select * into strict v_run from public.qorpera_execution_runs where id = v_base.id;
+	perform pg_temp.wake_assert(v_job.status = 'queued' and v_run.sponsor_version = v_base.sponsor_version + 1,
+		'The run continues on a new sponsor version instead of failing');
+	perform pg_temp.wake_assert(exists(select 1 from public.qorpera_execution_sponsor_handoffs handoff
+		where handoff.run_id = v_base.id and handoff.to_connection_id = (v_connection ->> 'connection_id')::uuid
+			and handoff.reason = 'usage_limit' and handoff.actor = 'control_plane'),'Handoff recorded with full provenance');
+	perform pg_temp.wake_assert(exists(select 1 from public.qorpera_execution_run_events where run_id = v_base.id and event_type = 'sponsor_handoff'),
+		'Handoff is a run event');
+	perform pg_temp.wake_assert(exists(select 1 from public.qorpera_member_notifications where profile_id = v_base.profile_id
+		and user_id = '30000000-0000-4000-8000-000000000001' and kind = 'sponsor_handoff'),'Member notified of the handoff');
+	perform pg_temp.wake_assert((select status <> 'active' and released_at is not null from public.qorpera_native_provider_connection_leases
+		where id = (v_binding ->> 'leaseId')::uuid),'Exhausted attempt released its native authority');
+	-- The next attempt runs on the other connection with context rebuilt from the transcript.
+	v_second := pg_temp.wake_start(null);
+	perform pg_temp.wake_assert((v_second ->> 'runId') = v_base.id::text,'Same run, new attempt');
+	perform pg_temp.wake_assert((select provider_connection_id = (v_connection ->> 'connection_id')::uuid
+		from public.qorpera_native_provider_connection_leases where id = (v_second ->> 'leaseId')::uuid),'New attempt leases the other connection');
+	perform pg_temp.wake_assert(public.qorpera_read_native_wake(v_second) ->> 'kind' = 'human','Same wake, same policy');
+	perform public.qorpera_begin_native_company_execution(v_second,repeat('7',64));
+	perform pg_temp.wake_public_send(v_second,'final','handoff-final');
+	perform pg_temp.wake_acceptance_finish(v_second);
+	perform pg_temp.wake_assert(public.qorpera_handoff_run_sponsor(v_base.id,'again') is null,'A completed run has no second handoff');
+end $$;
+$test$);
+
+select pg_temp.wake_acceptance_case('member_consents_to_autonomous_work_on_own_connection',$test$
+do $$
+declare v_base public.qorpera_execution_runs%rowtype; v_connection uuid; v_consent jsonb; v_sponsor jsonb;
+begin
+	select * into strict v_base from public.qorpera_execution_runs where id = (current_setting('qorpera_test.wake_binding')::jsonb ->> 'runId')::uuid;
+	v_connection := (current_setting('qorpera_test.wake_connection')::jsonb ->> 'connection_id')::uuid;
+	-- Another member cannot consent for this connection.
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000002');
+	execute 'set local role authenticated';
+	perform pg_temp.wake_error(format('select public.qorpera_consent_provider_connection_autonomous(%L,%L,true)',v_base.profile_id,v_connection),'42501');
+	execute 'reset role';
+	-- The owner withdraws and grants consent as new immutable versions; a sponsor may reference the consented one.
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	execute 'set local role authenticated';
+	v_consent := public.qorpera_consent_provider_connection_autonomous(v_base.profile_id,v_connection,false);
+	perform pg_temp.wake_assert((v_consent ->> 'changed')::boolean and not (v_consent ->> 'allow_autonomous')::boolean,'Consent withdrawn as a new version');
+	perform pg_temp.wake_error(format('select public.qorpera_create_member_execution_sponsor(%L,%L,%L,%s,true)',v_base.profile_id,
+		extensions.gen_random_uuid(),v_connection,v_consent ->> 'version'),'42501');
+	v_consent := public.qorpera_consent_provider_connection_autonomous(v_base.profile_id,v_connection,true);
+	perform pg_temp.wake_assert((v_consent ->> 'changed')::boolean and (v_consent ->> 'allow_autonomous')::boolean,'Consent granted as a new version');
+	v_sponsor := public.qorpera_create_member_execution_sponsor(v_base.profile_id,extensions.gen_random_uuid(),v_connection,(v_consent ->> 'version')::bigint,true);
+	execute 'reset role';
+	perform pg_temp.path_claims('service_role');
+	perform pg_temp.wake_assert((select allow_autonomous from public.qorpera_execution_sponsor_versions
+		where binding_id = (v_sponsor ->> 'binding_id')::uuid and version = (v_sponsor ->> 'version')::bigint),'Sponsor carries the consent');
 end $$;
 $test$);
 

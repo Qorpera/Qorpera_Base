@@ -1556,6 +1556,19 @@ verified bundle and coordinated deployment requirements. Computer/screen
 lifecycles, capacity, placement and usage extend this boundary in Order 4;
 optional Azure overflow remains deferred as ratified above.
 
+Runtime step 3 (Order 3) now has a source implementation on the runtime
+line: the durable typed wake bus with five admitted kinds and their reply and
+silence policy enforced at send admission, at every governed operation and
+model-requested read, and at completion; authorized Company File event wakes
+with causal fencing; durable coworker delivery; rooms as canonical
+organization objects with group conversations and member-post fan-out; the
+wake-rate ceiling and the founder stop; automatic sponsor handoff on a usage
+limit; member consent for autonomous work; and the default agent read grant
+ratified 2026-09-02. Disposable-database acceptance passes nineteen cases.
+Deployed acceptance with clients closed on the production node remains the
+gate before Order 3 is closed. See
+[Runtime Step 3 wake bus](deploy/first-node/RUNTIME-STEP-3-WAKE-BUS.md).
+
 ## 20. Enforcement matrix
 
 | Requirement | Code owner | Model law |

@@ -13,7 +13,7 @@
     "wakeAndSilence": "ffe7a24fc58b7a33ae2ec65127da96a7887277ea871a6cf71c1469bd3f917ccb",
     "contextComposer": "f7167f97d0eadbcdb1e030238fe50fb7817ced3aedace780ebb0d82b65d6955a",
     "providerBootstrap": "05777f43729517fd2fe151970d99abb8b66f75fa7789b010be2034aad967149c",
-    "authorization": "1373e3785934f9f6ede015a7f80965436af01280ca64f6c4916a29da936b21f6",
+    "authorization": "af63323b6913f8868c82a668a197f662352d81e12731216c64926d8ed0a71dbd",
     "inboundSafety": "28c4df95977e3a000cb9a207ddd0fce8d33d0a40e0ef374d3859ffa1d6a4d77f",
     "outboundSafety": "2736b1bef92deaa64282005ab424474c453f99e13a68e14b05bb28ef3b189add",
     "interactionSurfaces": "ffe7a24fc58b7a33ae2ec65127da96a7887277ea871a6cf71c1469bd3f917ccb",
@@ -223,6 +223,8 @@
     "supabase/migrations/20260828020700_company_agent_default_read_grant.sql": "e7504f83506af053d83d2f8d8de16d9240ae8b8f899eb5d773c02839ad9f2c94",
     "supabase/migrations/20260828021000_runtime_wake_enforcement.sql": "2c26d3f72c2c42786dc5ab6004858aee95c9c677d519592352effcbd926748ab",
     "supabase/migrations/20260828022000_runtime_company_rooms.sql": "09afdb925d1da2e8359399078978a463d841d959457ba2d20e891a0f92117974",
-    "supabase/migrations/20260828023000_runtime_wake_ceiling_founder_stop.sql": "b991404053c7e5e41716984c0ecef12a15a770ef08559ca26399cedef63a921d"
+    "supabase/migrations/20260828023000_runtime_wake_ceiling_founder_stop.sql": "b991404053c7e5e41716984c0ecef12a15a770ef08559ca26399cedef63a921d",
+    "supabase/migrations/20260828024000_runtime_sponsor_handoff.sql": "dd75771a22631bb2e7cffb6ff206a10b505d8266522ac1654314f3147ef7c1d4",
+    "supabase/migrations/20260828025000_runtime_autonomous_consent.sql": "1324cdcbf132b4411d3c7e49a05af90208ffbcd5bafd19e147a2d6e38934c166"
   }
 }

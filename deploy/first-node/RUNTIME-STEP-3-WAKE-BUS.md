@@ -763,12 +763,71 @@ handoff left open.
 - Focused vitest: wake bus, governed runtime, context composer and path
   control, 132 tests.
 
-### Still open for Order 3 (contract 19, 8.1, 7.4, 17)
+### Order 3 scope beyond the handoff — 2026-09-02, same branch
 
-- Room wake: canonical room objects, membership projection, group
-  conversation, fan-out on a member post, bounded room sends.
-- Wake-rate ceiling and the founder stop.
-- Automatic sponsor handoff on a usage limit (acceptance 29).
-- Deployed acceptance on the production node: five live entrypoints, a
-  silent routine, one Company File event wake without a causal loop,
-  member consent for autonomous work on a subscription.
+- **Rooms** `20260828022000_runtime_company_rooms.sql`: a room is a canonical
+  organization object (`organization/rooms/<roomId>.json`,
+  `qorpera.company-room/v1`: key, name, purpose, status, optional project,
+  explicit member list of humans and agents, version) projected into
+  `qorpera_company_rooms` and `qorpera_company_room_members` by the same
+  founder-authorized projection as projects, with the deferred projection
+  assertion extended. Each active room owns one group conversation (a shared
+  session with `execution_scope.roomId`, no single staff agent, company
+  audience). `qorpera_post_company_room_message` lets a human member post:
+  one durable input, one room wake per active agent member, sponsored by the
+  poster's own binding; the post enters the conversation once at
+  materialization; runs carry source kind `room_delivery`, which the
+  orchestrator treats as member-initiated (no autonomous consent). The room
+  policy (optional/optional, three sends, silence allowed) is enforced by the
+  same admission, work and completion seams. Group conversations admit every
+  active agent member (actor, context, run audience, transcript pins).
+  `qorpera_list_company_rooms` serves clients. The envelope parser, the
+  composer's instructions and the fixtures carry the room kind.
+- **Wake-rate ceiling and founder stop**
+  `20260828023000_runtime_wake_ceiling_founder_stop.sql` (contract 7.4):
+  `wakes_per_hour` (default 240) beside spend and tokens; enforced at wake
+  admission for routine, agent and room wakes: a wake beyond the ceiling is
+  admitted only as a cancelled occurrence with its reason, a `wakes` trip is
+  recorded and the founders are notified from the control plane.
+  `qorpera_set_company_execution_pause` is the founder stop: no new
+  autonomous wakes (cancelled with reason), no new turns or posts (refused at
+  request), running work fenced at its next governed effect or read, queued
+  wakes wait; resuming lifts it; founders are notified either way. The
+  ceiling view reports the wake ceiling, the last hour and the pause.
+- **Sponsor handoff** `20260828024000_runtime_sponsor_handoff.sql`
+  (contract 17, acceptance 29): when a run's sponsoring connection reports
+  `usage_limit` and the attempt produced no governed effect, job failure
+  turns into a handoff: a new version of the run's own sponsor binding on
+  the next eligible connection of the same principal (same company,
+  provider and authentication mode; the run's compute identity for native
+  subscriptions; autonomous consent for autonomous runs; no standing usage
+  limit), the exhausted attempt's native authority revoked, the job requeued
+  as a fresh attempt whose context is rebuilt from the transcript, a durable
+  handoff record and run event, and a member notification. The admitted wake
+  follows its run to the new version (the identity guard admits exactly that
+  recorded move); the earlier launch and lease bindings are kept in history;
+  one native start per run and handoff epoch replaces the former
+  one-start-per-run index. Rate limits and outages stay retries or failures.
+- **Autonomous consent** `20260828025000_runtime_autonomous_consent.sql`
+  (contract 16.2): `qorpera_consent_provider_connection_autonomous` lets a
+  connection's owner grant or withdraw consent as a new immutable connection
+  version; sponsors that allow autonomous work reference it. This is the
+  producer the handoff noted as missing for routine admission on a
+  subscription.
+- Verification: the harness with all runtime migrations passes its
+  component, parser, concurrency and recovery checks and **nineteen
+  integration acceptance cases** (the fifteen from the handoff plus room
+  fan-out with bounded sends and silent completion, the ceiling and the
+  stop, the sponsor handoff continuation, and member consent);
+  `npm run check` passes.
+
+### Still open for Order 3
+
+- Deployed acceptance on the production node with clients closed: the five
+  live entrypoints on Jonas's Company41 computer, a silent routine, one
+  Company File event wake without a causal loop, a room post, the ceiling
+  and the stop, and a real usage-limit handoff — after candidate 3 is built,
+  signed and rolled out with founder approval (production SQL, signing,
+  release).
+- Client surfaces for rooms, consent, ceilings and the stop are product UX
+  over these RPCs; Order 3 proves the machinery, not the screens.
