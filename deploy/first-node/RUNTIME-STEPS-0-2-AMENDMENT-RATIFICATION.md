@@ -480,3 +480,11 @@ broker is running. **Blocked:** the isolated environment (token). **Needs
 Jonas:** the fresh Supabase management token; a decision on extending the
 root volume (a one-line root command on the node); a decision on the Step 3
 v1/v2 Company Computer images (11 GiB) and the stopped proof VMs.
+
+**Root volume extended (founder, 2026-09-02 ~00:45 UTC).** Jonas ran the
+root extension and the tarball removal on the node himself through ssh and
+sudo. Verified afterwards: root volume 295 GB with 238 GB free (16% used),
+logical volume 300 GiB, `/tmp/qorpera-azure-step2-v52.tar.gz` gone; the LXD
+pool is unchanged at 102 GiB used of 1.32 TiB. About 100 GiB of the volume
+group remains unallocated for later. The node's image store is no longer a
+constraint on builds.
