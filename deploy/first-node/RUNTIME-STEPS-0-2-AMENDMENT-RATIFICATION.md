@@ -488,3 +488,34 @@ logical volume 300 GiB, `/tmp/qorpera-azure-step2-v52.tar.gz` gone; the LXD
 pool is unchanged at 102 GiB used of 1.32 TiB. About 100 GiB of the volume
 group remains unallocated for later. The node's image store is no longer a
 constraint on builds.
+
+**Isolated environment created (2026-09-02 01:02 UTC).** The Keychain's
+2026-08-23 management token is expired, but the CLI's own login token from
+2026-08-24 (Keychain item "Supabase CLI") is valid and was used; Jonas can
+revoke it and issue a dedicated one at any time. The isolated environment is,
+as in August, a preview branch of the production project: branch
+`steps02-ebbd1e734-20260902` (id `2824a37a-cfa1-4e13-8afe-7eb58b322fc5`,
+ref `cmydwcnarpusaxsplctt`, `with_data: false`, non-persistent), healthy
+about 20 seconds after creation. Two August branches still exist on the
+project (`step2-fences-v48-20260828`, `step2-secret-custody-20260829c`) at
+roughly $10 a month each; not touched.
+
+Supabase creates a branch with the parent's schema and migration ledger as
+of the default branch's registration (2026-08-28 10:30 UTC): 88 records,
+including 16 of the 18 production-only versions. Missing were the two later
+production-only records `20260827045000 mobile_push_dispatch` and
+`20260827046000 mobile_push_dispatch_activation`, whose SQL exists only in
+production (the August read-only reads captured names, not statements), and
+the two shared files `20260828002000` and `20260828003000`. The pinned CLI
+2.115.0 (`supabase.js` `21d25b4b…`) refused `db push` because of the
+remote-only versions and proposed marking them reverted; that was not done,
+on the branch or anywhere else. Instead a small runner (`runbooks/migrate-branch.mjs`
+in the gate 2 evidence) applied the 38 source files `20260828002000` through
+`20260828019995` in version order, one serializable transaction per file
+with the packet's ledger-row form (version, name, statements = the source
+bytes), and recorded each step. Result: 38/38 passed, ledger 88 → 126, all
+16 production-only rows retained, the two mobile-push records absent by
+necessity (they are unrelated to Orders 0–2 and were also absent from the
+August preview). The 36 candidate files match the rollout packet's pinned
+hashes byte for byte. The read-only verification before and after is in
+`preview-branch-verify-initial.json` and `preview-branch-verify-migrated.json`.
