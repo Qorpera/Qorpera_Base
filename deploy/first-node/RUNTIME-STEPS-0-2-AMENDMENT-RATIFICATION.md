@@ -1097,3 +1097,32 @@ fenced. Next gates: production broker route and TLS (recovery agreement),
 production object gateway guest and orchestrator configuration (governed
 registration), then the offline two-member production acceptance and the
 controlled policy reopening.
+
+## Broker re-point to production (founder instruction, 2026-09-02 07:24–07:37 UTC)
+
+Jonas: "go ahead with the broker re-point". Evidence:
+`broker-production-repoint-20260902/` (REPOINT.md, operators, results).
+
+- **Production database:** `qorpera_secret_broker` given LOGIN NOINHERIT with a
+  Keychain-held password; broker authority `c571dd3e…` (`company-kek-2`) and
+  a new recovery authority `4da97b5b…` enrolled for Company41 at
+  `https://10.80.1.4:8443` with the capability hashes and public keys derived
+  on the VM (values never left it).
+- **Broker VM:** production TLS front for the private address (CA
+  `9929b080…`, two years; leaf one year); database credential, recovery
+  config (Company41, new authority id, production project; journal and NAS
+  fields carried over) and production service key rewritten through the VM's
+  transport key, branch files retained; runtime token relayed to the node as
+  ciphertext; destination, broker and recovery services restarted and active.
+- **Node:** production CA installed as the provider's broker CA bundle and the
+  relayed runtime token installed for the service user; provider restarted,
+  active, zero restarts, listeners unchanged.
+- **Route not built:** the node cannot reach `10.80.1.4` yet. The design in
+  the production record is the tailnet (broker VM enrolled, its address
+  advertised, TCP-only policy). That needs a tailnet auth key or enrollment
+  from the tailnet admin. The proof public IP and NSG rule stay removed.
+
+Status: **proven** for the re-point itself; **needs Jonas** for the tailnet
+enrollment of the broker VM. Next after the route: production gateway guest
+and orchestrator configuration (governed registration), then the offline
+two-member production acceptance and the controlled policy reopening.
