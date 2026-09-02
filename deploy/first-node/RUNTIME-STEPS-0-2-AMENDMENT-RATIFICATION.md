@@ -545,3 +545,31 @@ is the first live genesis under the responsibility model (Phase A.1) and the
 first live run of the v3 bootstrap worker on the candidate bundle. Evidence:
 `company-bootstrap.json`, `gateway-installed.json`, `gateway-*-check*.txt`
 in the gate 2 directory.
+
+**Gate 2 checkpoint (2026-09-02 01:45 UTC) and what remains.** Done on the
+branch and the node without founder involvement: isolated branch at the
+candidate schema and bundle, gateway VM serving the branch, company genesis
+under the responsibility model, rebuilt provider, runner and secret-canary
+packages staged (canary manifest `770dac75…`, built from the candidate). The
+rest of gate 2 is the native path and the custody path, in this order:
+
+1. Broker on Azure: re-point the retained broker VM's encrypted database and
+   configuration credentials to the branch (new dedicated broker login on the
+   branch, new proof TLS CA, temporary public IP and a source-restricted
+   ingress rule for the node's egress address), install the rebuilt canary
+   package as a new content-addressed root next to the retained one, and
+   re-point the identity-recovery authority on the same VM. This changes
+   retained infrastructure and needs an explicit go.
+2. Isolated provider on the node: the rebuilt provider needs the LXD socket
+   (root or the `lxd` group), which the session's sudo rule does not grant.
+   Needs either a one-line sudoers rule for a launcher script or the founder
+   running the launcher.
+3. Native login: the provider creates the login guest from the signed image,
+   and a member completes the provider's device login in a browser with the
+   approved test account. Needs the founder at the keyboard for a few minutes.
+4. Native host guest from the signed image with the identity volume, the
+   two-member joint proof with every member device offline, non-exposure
+   scans, cleanup and sealing.
+
+Nothing on the retained broker VM was changed; it stays running until its
+23:00 UTC auto-shutdown. The two August preview branches were not touched.
