@@ -1158,3 +1158,56 @@ TCP-only policy is a later step.
 Broker evidence re-sealed after the tailnet route:
 `broker-production-repoint-20260902/SHA256SUMS`
 `bc536e6bd24881e3711ced374b9ad963960bed4b07a5f60c0a2931611e1f0550` (30 files).
+
+## Production gateway guest, orchestrator and v3 bootstrap (founder instruction, 2026-09-02 07:55–08:33 UTC)
+
+Jonas: "go ahead with the gateway guest and orchestrator". Evidence:
+`gateway-orchestrator-production-20260902/` (sealed).
+
+- **Orchestrator.** A new production orchestrator `1421faf3…` was registered
+  for adapter `lxd-company41-node-01` (control token in the Keychain); the
+  candidate orchestrator package `58adfcae…` replaced the 25 August build in
+  guest `company41-orchestrator-01`, with a root-only environment naming the
+  production project, the node provider at `10.41.0.1:8081` and its token
+  (injected on the node, never staged in the clear); the old registration's
+  control state was set aside. Unit enabled and active; the provider answers
+  200 from the orchestrator's address; production shows the heartbeat under
+  the new registration. The old registration `5f1d6be6…` stays as history.
+- **Gateway guest.** `qorpera-gateway-company41` (project `qorpera-runners`,
+  Ubuntu 26.04 base image, static `10.41.0.3` on `qorpera0`, secure boot,
+  autostart) runs the candidate object gateway `090dd9a9…` under the proof's
+  hardened units adapted to production paths and names, a two-year private
+  CA, loopback service on 8090 and the native-only TLS front on
+  `10.41.0.3:9444`. Production keys reached the guest only as ciphertext for
+  its own transport key; its control, verifier and native-object tokens were
+  generated on the guest; the native-object token reached the node only as
+  ciphertext for the node's transport key. The node's provider now names the
+  gateway origin and trusts a bundle of the gateway and broker CAs (probes to
+  both fronts through that bundle return 404). Units carry an install
+  section and are enabled.
+- **Bootstrap defect and forward correction.** The gateway's worker claimed
+  the queued production bootstrap job but failed each lease. A verbose copy
+  of the gateway (run once, then removed) exposed the cause: the candidate's
+  `qorpera_verify_company_path_file` compares its cached object closure
+  order-sensitively, and 39 cache rows written by the August verifier under
+  the same verifier version hold the same object sets in a different order
+  (36 of them in the current tree). Read-only proof: a rolled-back probe of
+  all 206 head-tree manifests (170 pass, 36 "verification differs") and a
+  set-equality comparison of every differing row. Forward correction
+  `correction/cache-order-correction.sql` (`4963c296…`): one serializable
+  transaction under the deployment executor that re-orders exactly those 39
+  cached arrays into the verifier's canonical order (guards: 80 rows, 39
+  differing, zero set differences; post-state zero unsorted). No schema,
+  ledger, history or content change. Follow-up for a future candidate: the
+  verifier should compare closures as sets.
+- **v3 bootstrap completed** at 08:30:15Z on attempt 6: Company File head
+  moved from `0c0656d6…` (206 files) to `0564a4d4…` (212 files, parent
+  `0c0656d6…`, tree `dadeebd8…`) adding the organization documents; path
+  index set; path gateway version 1; 86 verified objects; job `completed`,
+  output snapshot = head. This is the first canonical write to the production
+  Company File under candidate 2; it is the bootstrap the packet queued.
+
+Status: **proven** — production gateway serving the Company File, orchestrator
+registered and heartbeating, provider reachable from the orchestrator, broker
+reachable from the node. Admission still disabled. Next: the offline
+two-member production acceptance, then the controlled policy reopening.
