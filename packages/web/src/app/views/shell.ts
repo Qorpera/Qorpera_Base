@@ -1,7 +1,8 @@
 import type { User } from "@supabase/supabase-js";
 import type { HierarchyNode } from "../../cloud/organization.ts";
 import type { HostedProfile } from "../../cloud/types.ts";
-import { badge, creatureImage, h, icon, initials, replace } from "../../ui/dom.ts";
+import { agentFigure } from "../../ui/avatar.ts";
+import { badge, h, icon, initials, replace } from "../../ui/dom.ts";
 import { type AuthController, displayName } from "../auth.ts";
 import type { CompanyController } from "../company.ts";
 import { navigate, type Route } from "../router.ts";
@@ -187,7 +188,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, r
 					].join(" "),
 					href: `#/c/${profileId}`,
 				},
-				creatureImage(agent?.appearance.creature, node.label, agent?.appearance.color),
+				agentFigure(agent, node.label, { size: 32 }),
 				h("span", { class: "rail-label" }, node.label, h("span", { class: "muted small" }, "Co-Founder · home")),
 				dot,
 			);
@@ -200,7 +201,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, r
 					href: `#/c/${profileId}/staff/${node.canonicalId}`,
 					dataset: { depth: String(depth) },
 				},
-				creatureImage(agent?.appearance.creature, node.label, agent?.appearance.color),
+				agentFigure(agent, node.label, { size: 32 }),
 				h(
 					"span",
 					{ class: "rail-label" },

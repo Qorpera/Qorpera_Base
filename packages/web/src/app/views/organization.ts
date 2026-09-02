@@ -1,4 +1,5 @@
-import { badge, creatureImage, h, notice, replace, spinner } from "../../ui/dom.ts";
+import { agentFigure } from "../../ui/avatar.ts";
+import { badge, h, notice, replace, spinner } from "../../ui/dom.ts";
 import type { CompanyController } from "../company.ts";
 
 /* Organization view (runtime contract §14.3–§14.5): the Co-Founder, the
@@ -36,11 +37,7 @@ export function renderOrganization(company: CompanyController, container: HTMLEl
 			h(
 				"div",
 				{ class: "card cofounder-card" },
-				creatureImage(
-					cofounder?.appearance.creature,
-					cofounder?.displayName ?? "Co-Founder",
-					cofounder?.appearance.color,
-				),
+				agentFigure(cofounder, "Co-Founder", { size: 44 }),
 				h(
 					"div",
 					{ class: "card-body" },
@@ -175,7 +172,7 @@ export function renderOrganization(company: CompanyController, container: HTMLEl
 						h(
 							"a",
 							{ class: "card staff-card", href: `#/c/${profileId}/staff/${agent.id}` },
-							creatureImage(agent.appearance.creature, agent.displayName, agent.appearance.color),
+							agentFigure(agent, agent.displayName, { size: 32 }),
 							h(
 								"div",
 								{ class: "card-body" },

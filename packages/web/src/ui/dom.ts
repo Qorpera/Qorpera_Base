@@ -1,6 +1,8 @@
 /* Tiny DOM helpers. No framework: views build elements and replace children.
  * Text always goes through textContent, never innerHTML. */
 
+import { figureElement } from "./avatar.ts";
+
 export type Child = Node | string | number | boolean | null | undefined | Child[];
 type Attrs = Record<string, unknown>;
 
@@ -167,113 +169,25 @@ export function spinner(label = "Loading"): HTMLElement {
 	);
 }
 
-/* Staff avatars, as the desktop and mobile clients draw them: the creature
- * silhouette used as a mask filled with the agent's colour, plus two white
- * capsule eyes at per-creature positions (QorperaMobile CreatureEyeLayout,
- * which mirrors the desktop's staff-face). Unknown colours fall back to the
- * art's own teal, as both clients do. */
-const CREATURES = ["bloom", "brain", "folio", "halo", "pebble", "ribbon", "wisp"] as const;
-type Creature = (typeof CREATURES)[number];
-const CREATURE_EYES: Record<Creature, [number, number, number, number, number, number, number]> = {
-	folio: [0.415, 0.46, 0.552, 0.485, 0.05, 0.08, 6],
-	brain: [0.545, 0.36, 0.66, 0.33, 0.05, 0.09, -8],
-	halo: [0.435, 0.51, 0.555, 0.53, 0.035, 0.06, -8],
-	wisp: [0.41, 0.45, 0.61, 0.48, 0.04, 0.08, 10],
-	ribbon: [0.36, 0.39, 0.505, 0.355, 0.04, 0.08, -8],
-	bloom: [0.42, 0.47, 0.555, 0.46, 0.04, 0.08, -8],
-	pebble: [0.395, 0.325, 0.575, 0.305, 0.04, 0.075, -8],
-};
-const COLOR_ALIASES: Record<string, string> = {
-	"qorpera-terracotta": "#ff642e",
-	"qorpera-cobalt": "#1684ff",
-	"qorpera-blue": "#1684ff",
-	"qorpera-amber": "#ffae00",
-	"qorpera-emerald": "#00c878",
-	"qorpera-violet": "#8a4dff",
-	"qorpera-coral": "#ff365e",
-	"qorpera-pink": "#ff2994",
-	"qorpera-indigo": "#5367e8",
-	"qorpera-teal": "#00bfb3",
-	"#cc7d5e": "#ff642e",
-	"#e9606f": "#ff365e",
-	"#d89b35": "#ffae00",
-	"#4caf83": "#00c878",
-	"#36a5a2": "#00bfb3",
-	"#3f88df": "#1684ff",
-	"#8c6dd7": "#8a4dff",
-	"#d955a1": "#ff2994",
-	"#777772": "#5367e8",
-};
-
-export function staffColor(value: string | undefined): string {
-	const normalized = (value ?? "").trim().toLowerCase();
-	const resolved = COLOR_ALIASES[normalized] ?? normalized;
-	return /^#[0-9a-f]{6}$/.test(resolved) ? resolved : "#00bfb3";
-}
-
-function isCreature(value: string | undefined): value is Creature {
-	return (CREATURES as readonly string[]).includes(value ?? "");
-}
-
-function pickCreature(name: string): Creature {
-	let seed = 0;
-	for (const character of name) seed = (seed * 33 + character.charCodeAt(0)) >>> 0;
-	return CREATURES[seed % CREATURES.length] ?? "pebble";
-}
-
-export function creatureImage(creature: string | undefined, name: string, color?: string): HTMLElement {
-	const kind = isCreature(creature) ? creature : pickCreature(name);
-	const [x1, y1, x2, y2, width, height, rotation] = CREATURE_EYES[kind];
-	const eye = (x: number, y: number) =>
-		h("span", {
-			class: "creature-eye",
-			dataset: { x: String(x), y: String(y), w: String(width), h: String(height), r: String(rotation) },
-		});
-	const element = h(
-		"span",
-		{ class: "creature", dataset: { creature: kind }, "aria-hidden": "true" },
-		h("span", { class: "creature-body" }),
-		h("span", { class: "creature-face" }, eye(x1, y1), eye(x2, y2)),
-	);
-	// Geometry is data on the element; the CSSOM sets the properties, so the
-	// strict Content Security Policy (no inline style attributes) holds.
-	element.style.setProperty("--creature-color", staffColor(color));
-	for (const eyeElement of element.querySelectorAll<HTMLElement>(".creature-eye")) {
-		const data = eyeElement.dataset;
-		eyeElement.style.left = `${Number(data.x) * 100}%`;
-		eyeElement.style.top = `${Number(data.y) * 100}%`;
-		eyeElement.style.width = `${Number(data.w) * 100}%`;
-		eyeElement.style.height = `${Number(data.h) * 100}%`;
-		eyeElement.style.transform = `translate(-50%, -50%) rotate(${data.r}deg)`;
-	}
-	return element;
-}
-
 /* The company logo. A company's picture is its logo, and the cloud carries
- * none: the desktop keeps the member's chosen character on the device
- * (CLIENT-CONTRACT.md request 10 asks for a logo field, either a named
- * character or an uploaded image). Until it exists, a company wears a
- * placeholder character derived from its profile id, which survives a rename.
- * The character is drawn the way staff avatars are — silhouette plus eyes — in
- * ink on a paper disc, so a company reads as a character without being
- * mistaken for a member of staff. */
-const COMPANY_CHARACTERS = ["halo", "bloom", "folio", "pebble"] as const;
-export type CompanyCharacter = (typeof COMPANY_CHARACTERS)[number];
-const COMPANY_INK = "#26272b";
+ * none (CLIENT-CONTRACT.md request 10 asks for a logo field, either a named
+ * figure or an uploaded image). Until it exists, a company wears a placeholder
+ * figure derived from its profile id, which survives a rename. The Crown is
+ * left out: it is the Co-Founder's. */
+const COMPANY_FIGURES = ["planet", "acorn", "flame", "rocket", "heart", "ghost"] as const;
+export type CompanyFigure = (typeof COMPANY_FIGURES)[number];
+const COMPANY_INK = "#312f2d";
 
-export function companyCharacter(seed: string): CompanyCharacter {
+export function companyFigure(seed: string): CompanyFigure {
 	let value = 0n;
 	for (const character of seed) value = (value * 33n + BigInt(character.codePointAt(0) ?? 0)) & 0xffffffffffffffffn;
-	return COMPANY_CHARACTERS[Number(value % BigInt(COMPANY_CHARACTERS.length))] ?? "halo";
+	return COMPANY_FIGURES[Number(value % BigInt(COMPANY_FIGURES.length))] ?? "planet";
 }
 
 export function companyLogo(seed: string, className = ""): HTMLElement {
-	const character = companyCharacter(seed);
-	return h(
-		"span",
-		{ class: ["company-logo", className].filter(Boolean).join(" "), "aria-hidden": "true" },
-		creatureImage(character, character, COMPANY_INK),
-	);
+	const logo = figureElement(companyFigure(seed), COMPANY_INK, { still: true });
+	logo.className = ["company-logo", className].filter(Boolean).join(" ");
+	return logo;
 }
 
 export function confirmDialog(message: string, confirmLabel: string, danger = false, typed?: string): Promise<boolean> {

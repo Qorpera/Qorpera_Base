@@ -1,6 +1,7 @@
 import type { TranscriptItem } from "../../cloud/transcript.ts";
-import type { HostedSession, JsonValue } from "../../cloud/types.ts";
-import { badge, button, creatureImage, fmtTime, h, notice, replace, spinner } from "../../ui/dom.ts";
+import type { HostedSession, HostedStaffAgent, JsonValue } from "../../cloud/types.ts";
+import { agentFigure } from "../../ui/avatar.ts";
+import { badge, button, fmtTime, h, notice, replace, spinner } from "../../ui/dom.ts";
 import type { CompanyController, ConversationState } from "../company.ts";
 
 /* One conversation over the canonical transcript. Rendering follows
@@ -75,19 +76,8 @@ export class ConversationView {
 		const agent = this.#company.staffById(session?.staffAgentId);
 		const activity = this.#company.activityFor(session?.staffAgentId);
 		const canWrite = company.team?.capabilities.write === true && session?.status !== "closed";
-		this.#renderHeader(
-			session,
-			agent?.displayName,
-			agent?.appearance.creature,
-			agent?.appearance.color,
-			activity?.activity,
-		);
-		this.#renderMessages(
-			conversation,
-			agent?.displayName ?? session?.title ?? "Agent",
-			agent?.appearance.creature,
-			agent?.appearance.color,
-		);
+		this.#renderHeader(session, agent?.displayName, agent, activity?.activity);
+		this.#renderMessages(conversation, agent?.displayName ?? session?.title ?? "Agent", agent);
 		this.#renderStatus(conversation, activity?.activity, canWrite, session);
 		this.#composer.disabled = !canWrite || conversation.sending;
 		this.#send.disabled = !canWrite || conversation.sending;
@@ -97,8 +87,7 @@ export class ConversationView {
 	#renderHeader(
 		session: HostedSession | undefined,
 		agentName: string | undefined,
-		creature: string | undefined,
-		color: string | undefined,
+		agent: HostedStaffAgent | undefined,
 		activity: string | undefined,
 	): void {
 		const title = agentName ?? session?.title ?? "Conversation";
@@ -116,7 +105,7 @@ export class ConversationView {
 						: null;
 		replace(
 			this.#header,
-			creatureImage(creature, title, color),
+			agentFigure(agent, title, { size: 40 }),
 			h(
 				"div",
 				{ class: "thread-title" },
@@ -134,12 +123,7 @@ export class ConversationView {
 		);
 	}
 
-	#renderMessages(
-		conversation: ConversationState,
-		agentName: string,
-		creature: string | undefined,
-		color: string | undefined,
-	): void {
+	#renderMessages(conversation: ConversationState, agentName: string, agent: HostedStaffAgent | undefined): void {
 		const items: TranscriptItem[] = [
 			...conversation.projection.items,
 			...conversation.optimistic.map(
@@ -189,7 +173,7 @@ export class ConversationView {
 								.join(" "),
 						},
 						item.kind === "agent"
-							? creatureImage(creature, agentName, color)
+							? agentFigure(agent, agentName, { size: 26 })
 							: h("span", { class: "avatar small" }, author.slice(0, 1).toUpperCase()),
 						h(
 							"div",

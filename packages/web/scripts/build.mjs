@@ -17,7 +17,6 @@ mkdirSync(join(dist, "assets"), { recursive: true });
 cpSync(join(root, "public"), dist, { recursive: true });
 // Reused desktop art. The web app never reads these at build time beyond copying.
 cpSync(join(userland, "fonts"), join(dist, "assets/fonts"), { recursive: true });
-cpSync(join(userland, "staff-creatures"), join(dist, "assets/staff-creatures"), { recursive: true });
 for (const icon of [
 	"icon-plus.svg",
 	"icon-check.svg",

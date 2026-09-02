@@ -429,3 +429,44 @@ and an empty Company File, and no agent to dress. Contract request 6 already
 asks for this.
 
 **Requested.** Nothing new this block.
+
+**The approved agent visual system is vendored into the client (founder:
+"vendor the vector avatar system into the client").**
+
+`packages/web/public/assets/avatars/` holds the six scripts copied verbatim
+from the website's `landing/public/avatars`, which vendors them from the visual
+workspace: the motion model, the appearance pipeline, the motion visuals, the
+vector figure builder, the rig and the baked traces. `index.html` loads them as
+classic scripts before the module bundle, so the globals exist by the time a
+view renders. `src/ui/avatar.ts` is the only module that touches them.
+
+The client no longer draws the retired flat creatures anywhere. Agents in the
+rail, the organization page and the conversation, and the company logo, are all
+built figures. The old art is no longer copied into `dist`.
+
+**Saved appearance resolves the way the desktop resolves it** (`renderer.js` on
+master, ported): the stored figure when it is still in the roster, else the
+template's, else one derived from the agent's identity so two clients agree
+without anybody writing; and for colour, the palette token, a palette hex, the
+nearest palette colour for a retired choice, else the figure's own shade.
+Checked against what the cloud actually seeds — creature `brain`, colour token
+`qorpera-blue`, template `co-founder` — which resolves to the Crown in
+`#2047bd`. A retired hex `#3f88df` snaps to the nearest palette blue, and an
+agent with no appearance at all gets a stable figure from its id.
+
+**One bug found and fixed while verifying.** Every figure rendered frozen. The
+rig was being disposed a moment after it mounted: views build their elements
+detached and insert them afterwards, so my sweep of "hosts no longer in the
+document" was disposing rigs that had never been inserted yet. The sweep now
+only retires a figure that has been seen in the document at least once.
+Confirmed by sampling: fourteen distinct eye states across six seconds,
+including a blink, with the body's transform staying `none`.
+
+**Works against the real cloud.** The vendored scripts load on the deployed
+page under the shipped CSP (`script-src 'self'`) with no console errors, and
+all five globals are present.
+
+**Blocked.** Unchanged: Order 0 is absent from the target project, so there is
+still no seeded Co-Founder to dress.
+
+**Requested.** Nothing new this block.

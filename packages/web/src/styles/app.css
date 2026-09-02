@@ -158,21 +158,13 @@ label > input, label > select { font-weight: 400; }
 .rail-group-title { display: flex; flex-direction: column; padding: 4px 8px; font-weight: 600; }
 .rail-group-title .badge { align-self: flex-start; margin-top: 2px; }
 .rail-inactive summary { cursor: pointer; list-style: none; }
-.creature { position: relative; display: inline-block; width: 32px; height: 32px; flex: none; --creature-color: #00bfb3; }
-.creature-body {
-	position: absolute; inset: 0; background: var(--creature-color);
-	-webkit-mask: var(--creature-mask) center / contain no-repeat; mask: var(--creature-mask) center / contain no-repeat;
-}
-.creature[data-creature="bloom"] { --creature-mask: url("/assets/staff-creatures/bloom.png"); }
-.creature[data-creature="brain"] { --creature-mask: url("/assets/staff-creatures/brain.png"); }
-.creature[data-creature="folio"] { --creature-mask: url("/assets/staff-creatures/folio.png"); }
-.creature[data-creature="halo"] { --creature-mask: url("/assets/staff-creatures/halo.png"); }
-.creature[data-creature="pebble"] { --creature-mask: url("/assets/staff-creatures/pebble.png"); }
-.creature[data-creature="ribbon"] { --creature-mask: url("/assets/staff-creatures/ribbon.png"); }
-.creature[data-creature="wisp"] { --creature-mask: url("/assets/staff-creatures/wisp.png"); }
-/* The face layer is 12% larger than the body, as on desktop and mobile. */
-.creature-face { position: absolute; inset: 0; transform: scale(1.12); }
-.creature-eye { position: absolute; background: #fff; border-radius: 999px; }
+/* Agent figures: the approved vector build, driven by the vendored rig at
+ * part motion 0. The host sets the size; the figure fills it. */
+.figure { position: relative; display: inline-block; width: 32px; height: 32px; flex: none; vertical-align: middle; }
+.vf { position: relative; display: block; width: 100%; height: 100%; -webkit-user-select: none; user-select: none; }
+.vf-presence, .vf-form, .vf-body { display: block; width: 100%; height: 100%; transform-origin: 50% 50%; }
+.vf-body svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.vf-typing { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; visibility: hidden; pointer-events: none; }
 .avatar {
 	width: 32px; height: 32px; border-radius: 50%; display: inline-grid; place-items: center; flex: none;
 	background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: 12px;
@@ -269,23 +261,10 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 .company-name { font-size: 20px; font-weight: 720; letter-spacing: -0.032em; line-height: 1.15; }
 .company-meta { color: #83868d; font-size: 12.5px; font-weight: 600; letter-spacing: 0.005em; }
 
-/* The company logo. Until a company carries one, its placeholder is the
- * character in ink on a paper disc. */
-.company-logo {
-	position: relative; width: 132px; height: 132px; flex: none; overflow: hidden; border-radius: 50%;
-	background: linear-gradient(150deg, #f8f7f4, #e7e6e1);
-	box-shadow:
-		0 0 0 1px rgba(20, 25, 35, 0.06), 0 18px 36px rgba(29, 37, 54, 0.13), 0 5px 11px rgba(29, 37, 54, 0.07),
-		inset 0 1px 0 rgba(255, 255, 255, 0.9);
-	transition: box-shadow 240ms ease, transform 240ms ease;
-}
-.company-logo .creature {
-	position: absolute; left: 50%; top: 53%; width: 74%; height: 74%; transform: translate(-50%, -50%);
-}
-.company-logo.person-company {
-	width: 44px; height: 44px;
-	box-shadow: 0 0 0 1px rgba(20, 25, 35, 0.06), 0 5px 12px rgba(29, 37, 54, 0.12);
-}
+/* The company logo. Until a company carries one, its placeholder is a figure
+ * in ink, standing on its own rather than inside a disc. */
+.company-logo { width: 116px; height: 116px; }
+.company-logo.person-company { width: 40px; height: 40px; }
 
 .company-card-new { border-style: dashed; background: transparent; box-shadow: none; justify-content: center; }
 .company-card-new:hover { background: #fbfbfa; box-shadow: none; transform: none; }
@@ -400,7 +379,7 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 .thread { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .thread-header { display: flex; align-items: center; gap: 12px; padding: 12px 24px; border-bottom: 1px solid var(--border); }
 .thread-header h1 { font-size: 17px; }
-.thread-header .creature, .thread-header .avatar { width: 40px; height: 40px; }
+.thread-header .figure, .thread-header .avatar { width: 40px; height: 40px; }
 .messages { flex: 1; overflow: auto; padding: 16px 24px; display: flex; flex-direction: column; gap: 12px; }
 .messages > * { max-width: var(--thread-width); width: 100%; margin: 0 auto; }
 .hidden-note { color: var(--text-soft); font-size: 12px; text-align: center; padding: 4px 0; }
@@ -438,7 +417,7 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 
 /* organization */
 .cofounder-card { margin: 12px 0; }
-.cofounder-card .creature, .cofounder-card .avatar { width: 44px; height: 44px; }
+.cofounder-card .figure, .cofounder-card .avatar { width: 44px; height: 44px; }
 .measures { margin: 6px 0 0 16px; }
 .staff-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
 
