@@ -1055,3 +1055,45 @@ acceptance, and the controlled policy reopening. Each is a subsequent gate.
 Activation evidence seal: `production-rollout-packet-v4-activation-20260902/SHA256SUMS`
 `db33c677aad319bda45fc25cd5a0d97e0eeeecbb46eed9403f75a4c9c3663cdb` (198 files:
 packet, release receipts, 82 step artifacts, drain, handoff).
+
+## Node activation of the signed candidate-2 image (founder instruction, 2026-09-02 07:12–07:21 UTC)
+
+Jonas: "go ahead with the node activation". Evidence:
+`node-activation-7c8e69d05-20260902/` (ACTIVATION.md, scripts, seal
+`806b75f56d3958bc5e4128e8f422ea1d85a99588f8cd9533423021a3070667e1`).
+
+- The 27 August production provider on `company41-node-01` was the legacy
+  `lxd-company-computer` backend with a retired NAS precondition, disabled and
+  inactive. Its package, envelope and configuration are backed up in place.
+- Production guest profiles `qorpera-job-v2` and `qorpera-login-v2` were
+  created in project `qorpera-runners` from the signed-acceptance profiles
+  (no host filesystem mounts, NIC filtering and port isolation).
+- Through the sudoers activation path: the signed envelope `2ab6d9b8…`
+  verified for image `0fbf44de…` and guest manifest `878c07de…`
+  (`LXD_IMAGE_PROVENANCE_VERIFIED`); the candidate provider package
+  `767e5d2b…` and verifier tool installed under `/opt/qorpera/company-provider`;
+  the envelope installed as the company provider's provenance; a root-only
+  62-key configuration written (backend `lxd`, adapter
+  `lxd-company41-node-01`, API on `10.41.0.1:8081` trusting only the
+  orchestrator address, production Supabase project, image and manifest pins,
+  the new profiles, node-generated guest tokens, broker CA bundle); a unit
+  drop-in removed the retired NAS mountpoint precondition; unit enabled.
+- Two startup refusals fixed in place: token files must be owned by the
+  service user (0600), and the native login gateway must bind to loopback.
+- Result: `qorpera-lxd-company-provider.service` enabled/active, zero
+  restarts since 07:19:31Z, listeners `10.41.0.1:8081` and `127.0.0.1:8085`
+  only; the host's own probe is refused (403) by the trusted-source fence.
+  Legacy provider unit still disabled; orchestrator guest still stopped; NAS
+  not mounted; cloud policy still disabled, so no admission is possible.
+- Deliberately pending in the configuration: broker origin
+  `https://10.80.1.4:8443` (private address, current proof CA) until the
+  recovery-agreement gate re-points and re-issues the production broker; object
+  gateway `https://gateway.pending.invalid:9444` until the production gateway
+  guest exists (governed-registration gate). Node id
+  `24f2a7c5-cdc1-4c23-8e99-e445623eacb2`.
+
+Status: **proven** — signed image activated on the node, provider up and
+fenced. Next gates: production broker route and TLS (recovery agreement),
+production object gateway guest and orchestrator configuration (governed
+registration), then the offline two-member production acceptance and the
+controlled policy reopening.
