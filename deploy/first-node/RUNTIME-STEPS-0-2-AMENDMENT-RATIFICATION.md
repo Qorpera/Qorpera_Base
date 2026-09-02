@@ -758,3 +758,26 @@ identity is one per member, so the operator reuses it) completed at
 02:55:25: capsule `18d45dd3…` active, provider connection `0398405a…`
 owned by A, version 1 active. The founder entered three device codes in
 total tonight for the two identities.
+
+**Real control-plane chain instead of an operator-driven admission (02:58–03:14 UTC).**
+Actor A's turn was queued with A's own sponsor binding `182add97…` and
+identity `3c0a7a8f…` (sponsor mode `member_connection`). Nothing on the branch
+materializes queued turns by itself (no scheduler), and the August record
+did it as the deployment administrator through the same functions the
+orchestrator uses. This time the real chain runs: the rebuilt runner
+orchestrator (`lxd-steps02-gate2`, registered on the branch as
+`48392582…`) runs on the node as the admin user beside the provider, drives
+the runner-orchestrator edge function (deployed on the branch, needing only
+its Supabase secrets), claims the job, and asks the provider for a runner;
+the provider creates the job guest `qorpera-<run>` from the signed image with
+A's identity volume, a fresh recovery volume and the filtered NIC, pushes the
+bootstrap material, and starts the guest. Three corrections on the way, all
+in proof tooling, not in the runtime: the transport shim's NIC check sorted
+its key list in place (the first two jobs failed their eight dispatches on
+that); the provider's cloud-secret CA file must bundle the gateway CA with
+the broker CA, since job guests verify the gateway through it (the third
+job's guest bootstrapped and failed on the gateway's TLS); and a guest whose
+bootstrap failed keeps A's identity volume attached, so it was stopped,
+journaled and deleted before the next dispatch. The hand-provisioned native
+host from earlier was stopped and released A's volume; it is no longer part
+of the run path.
