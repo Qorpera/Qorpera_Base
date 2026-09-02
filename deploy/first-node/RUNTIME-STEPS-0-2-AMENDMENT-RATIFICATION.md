@@ -427,3 +427,56 @@ environment; (2) a go for resuming the broker VM and any acceptance hosts,
 with their running cost; (3) later, the read-only production preflight and
 the CLI re-pin before dispatch, and the activation approval for the signed
 image.
+
+## Phase B, gate 2 opened: node storage facts, broker resumed (2026-09-02)
+
+Founder message 2026-09-02: expects at least 1 TB of cleanup on the node,
+asks how much node storage could live in the Company File on the NAS, asks
+for the broker VM to be resumed, and will supply a fresh Supabase token.
+
+**Node storage, measured.** One 1.8 TiB NVMe drive: a 100 GiB root volume,
+a 1.4 TiB LXD ZFS pool, and about 300 GiB left unallocated in the volume
+group. The pool held 111 GiB before this block and 102 GiB after; it is not
+short of space. The root volume was the only tight one, and its main consumer
+is LXD's image store on the root filesystem (23 images, 49.7 GiB before this
+block). There is no 1 TB of removable data; the drive is mostly free space
+already. No network filesystem is mounted on the node.
+
+**Deleted (same class as the founder-approved v37–v45 deletion).** Twelve
+unsigned, superseded runner candidate images: v48–v56 and the three
+superseded commit candidates `dbc645eee`, `48b794a36`, `2e1493aec` (about
+27 GiB; fingerprints and sizes in the gate 2 evidence file
+`node-superseded-image-deletion.txt`). Kept: the signed v46 and v47 images,
+the signed `ce5d96434` and `363e295a` candidates, this candidate `c1b81ab6`,
+the base image, the Ubuntu 24.04 container image, and the four Step 3
+Company Computer images. Root volume: 22 GiB free before, 49 GiB free after
+(48% used). The 57 stopped LXD instances (old runner, build, package,
+acceptance, custody and login VMs) live in the pool, not the root volume;
+some are retained proof VMs, so none were deleted. The remaining root-only
+fixes need real root: extend the root volume into the unallocated 300 GiB,
+and delete the root-owned 2.3 GB `/tmp/qorpera-azure-step2-v52.tar.gz`.
+
+**Broker VM resumed.** `vm-qorpera-s2-secret-01` (Standard_F1as_v7,
+Trusted Launch) went from deallocated to running at about 00:23 UTC; before
+and after views are in the gate 2 evidence (`azure-before-resume.json`,
+`azure-after-resume.json`). Its daily auto-shutdown at 23:00 UTC is enabled,
+so it deallocates itself tonight unless the proof is running. No ingress
+rule, public IP or disk was created.
+
+**Gate 2 toolkit located.** The previous proofs' operator sets are sealed
+under the 27d4 worktree's artifacts (`current-candidate-cloud-proof-20260830.*/operators-current/`
+and the 2026-08-31 joint record). They pin the retired preview
+`tlnzirrtjufnexorsbic`, its synthetic company and the old commit and bundle,
+so they are a reference, not something to replay: the gate 2 driver must be
+re-pinned to a fresh isolated environment, commit `ebbd1e734` and bundle
+`25cdf35e…`. The isolated environment itself needs a valid Supabase
+management token; the Keychain one returns HTTP 401.
+
+Evidence: `steps02-phase-b-gate2-20260902.fable/` next to the gate 1
+directory (not yet sealed; sealed when gate 2 closes).
+
+**Proven:** the node has ample space overall and a healthy root volume; the
+broker is running. **Blocked:** the isolated environment (token). **Needs
+Jonas:** the fresh Supabase management token; a decision on extending the
+root volume (a one-line root command on the node); a decision on the Step 3
+v1/v2 Company Computer images (11 GiB) and the stopped proof VMs.
