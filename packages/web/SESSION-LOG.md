@@ -252,3 +252,5 @@ origins; (2) the "Magic link or OTP" and "Confirm sign up" templates lacked
 six-digit code (`packages/web/auth-email/`); (3) custom SMTP via Resend was
 filled in except the API key, which only the founder pastes. The code step's
 copy now says the link works only in the requesting browser (PKCE).
+Custom SMTP saved by the founder (Resend, `smtp.resend.com:465`, sender
+`Qorpera <no-reply@mail.qorpera.com>`); "Successfully updated settings".
