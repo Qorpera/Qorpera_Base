@@ -993,3 +993,7 @@ device offline, deployed branch runtime) holds for candidate 2. Next gate:
 infrastructure-staging approval, then the frozen production package (packet
 v4), migration delta and rollback packet, then an approved production
 window. **Needs Jonas** for each of those.
+
+Evidence seal for the gate-2 folder after candidate 2: `SHA256SUMS`
+`d4c2b146b9d8ffdc5413904c7cf122c26fa86c34e15c7f4645800395baa4c00f` (358 files;
+the seal from the first gate-2 stop is kept as `SHA256SUMS.gate2-stop`).
