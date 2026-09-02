@@ -573,3 +573,43 @@ rest of gate 2 is the native path and the custody path, in this order:
 
 Nothing on the retained broker VM was changed; it stays running until its
 23:00 UTC auto-shutdown. The two August preview branches were not touched.
+
+**Broker re-point (founder go 2026-09-02, executed 01:25–01:45 UTC).** Every
+change on the retained VM `vm-qorpera-s2-secret-01` went through Azure
+RunCommand as a public operator with an embedded checksum; each operator and
+its result are in the gate 2 `broker/` evidence. Read-only inventory first:
+all four services inactive after the resume, package link on the August root
+`…-manifest-1f39ab0ef73e7852`, fifteen encrypted credentials, database
+credential on the pooler's transaction port for the old preview, recovery
+config bound to the old company and preview.
+
+Branch side: the `qorpera_secret_broker` role got a login (LOGIN, NOINHERIT,
+no elevated attribute, no table grant, exactly three executable functions;
+password only in the macOS Keychain). The retained broker authority
+`c571dd3e…` (key `company-kek-2`) and recovery authority `a575103b…` were
+enrolled for the proof company at origin `https://4.165.129.38:8443` using
+capability hashes and public keys derived on the VM from its own credentials
+(values never left the VM); the branch's registration RPC returns the
+enrolled recovery keys.
+
+VM side: (1) a proof transport key was generated on the VM and the new
+database credential, recovery config (new company and branch, journal and
+NAS fields carried over) and branch service key were delivered as ciphertext
+for it; the three encrypted credentials were rewritten with `systemd-creds`
+and their previous encrypted files retained under
+`/etc/credstore.encrypted/retained-f3933956…/`; the config, control, runtime,
+keyring and canary credentials are unchanged. (2) The rebuilt secret-canary
+package (manifest `770dac75…`, broker `b15a6d1e…`) was installed as a new
+content-addressed root next to the retained August root and the package link
+switched. (3) A per-proof CA and certificate (CA `6908c751…`) front the
+broker and the recovery routes on 8443 through a transient hardened proxy
+unit; destination, broker and proxy are running. (4) Azure: public IP
+`pip-qorpera-s2-secret-proof` = 4.165.129.38 attached to the VM's NIC and one
+NSG rule from the node's egress 2.110.77.200/32 to 10.80.1.4:8443. From the
+node and from the gateway VM, an unauthenticated call with the proof CA gets
+404 as in August, and without the CA the TLS handshake is refused.
+
+Two fresh-VM lessons were recorded: the RunCommand wrapper's umask 077 leaves
+new directories unreadable to service users (fixed with explicit modes), and
+the recovery authority needs its journal directory and the localhost NAS
+export and mount, both retired with the v56 proof.
