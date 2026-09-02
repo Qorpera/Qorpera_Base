@@ -1051,3 +1051,7 @@ Admission stays paused (policy disabled). Not done and not claimed: node
 image activation for production, normal v3 bootstrap, identity/key-backup
 recovery agreement, governed registration, the two-member offline production
 acceptance, and the controlled policy reopening. Each is a subsequent gate.
+
+Activation evidence seal: `production-rollout-packet-v4-activation-20260902/SHA256SUMS`
+`db33c677aad319bda45fc25cd5a0d97e0eeeecbb46eed9403f75a4c9c3663cdb` (198 files:
+packet, release receipts, 82 step artifacts, drain, handoff).
