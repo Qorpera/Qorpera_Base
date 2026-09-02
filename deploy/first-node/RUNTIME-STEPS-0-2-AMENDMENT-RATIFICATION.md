@@ -689,3 +689,12 @@ cloud's recovery authority, wrote the private native-provider environment
 both CAs), and started `qorpera-native-company-host.service`, which is
 active. One detail cost a retry: the relayed runtime token carried a trailing
 newline and the guest requires the bare token.
+
+**Sponsor binding and joint harness (02:24–02:26 UTC).** The owner created
+execution sponsor binding `60f9e649-6965-46ea-8775-47555a4b92f5` (version 1)
+on the login's provider connection `0eb98387…` version 1 (autonomous runs
+not allowed by that version, so the binding was created without them). The
+August joint-proof driver was re-pinned to this proof (branch, gateway host,
+company, environment, Co-Founder `40496d30…`, owner, sponsor, identity,
+proof-named root and socket; no stale pin remains) and launched as the same
+hardened transient unit on the gateway VM.
