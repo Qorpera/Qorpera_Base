@@ -885,9 +885,14 @@ Commits `6222f663e`, `0ba2d10bc` (runtime bundle version 4 `c6b31877…`, activa
 
 - Guest package manifest `ec13e262…` (only `qorpera-ephemeral-runner.mjs` and `qorpera-native-provider-host.mjs`
   changed; provider, orchestrator and broker packages identical to candidate 3). Unsigned image
-  `bfb19e81…` built on the node from `lxd-runner-guest-2f609e404.tar.gz` (`a381a177…`).
-- Production SQL packet v6 (`d1096e61…`): preflight, pause (policy version 7), `20260828030000`, final readback;
-  baseline the 13:07Z read-only inventory (137 ledger versions, bundle version 3 active, head `7e2ef44c…`).
+  `bfb19e81…` built on the node from `lxd-runner-guest-2f609e404.tar.gz` (`a381a177…`) and accepted by the
+  clean-boot verify recipe at 13:21:16Z (evidence `f0684fec…`; the same benign host self-probe timeout as
+  candidate 3).
+- Production SQL packet v6 (`8ec337fc…`, frozen `eb20cee9…`, rehearsed 4/4 in network-isolated PostgreSQL 17
+  against the 13:13Z schema dump `369e5648…`): preflight, pause (policy version 7), `20260828030000`, final
+  readback; baseline the 13:07Z read-only inventory (137 ledger versions, bundle version 3 active, head
+  `7e2ef44c…`). Its final readback expects bundle versions 4 and 3 and no longer requires the secret-broker role
+  to be login-less, which is what made the candidate-3 final readback over-strict.
 - Object gateway bundle `0e84a094…` and its install script staged under `/opt/qorpera-company41-gateway/staging`
   in the gateway guest. The activation script also corrects `QORPERA_EPHEMERAL_RUNNER_VERSION`, which still
   labelled candidate-3 runners `7c8e69d05-production`.
