@@ -831,3 +831,65 @@ handoff left open.
   release).
 - Client surfaces for rooms, consent, ceilings and the stop are product UX
   over these RPCs; Order 3 proves the machinery, not the screens.
+
+## Candidate 3 rollout and deployed acceptance — 2026-09-02
+
+### Rollout (approved by the founder, "YESYES, approved")
+
+- Source `7b9214d0ce7554e6431befced21d141d617f5864`, runtime bundle `a2d4a529…` (version 3). Guest package
+  manifest `ee066697…`, image `f256da2e…` built and verified on `company41-node-01`, signed with the
+  `com.qorpera.company41.lxd-image-provenance` key (envelope `2d4f10d3…`), clean-boot evidence `6fe2d1f3…`.
+- Production SQL packet v5 (`b4414837…`, frozen `7eeb9367…`): preflight, pause (policy version 5), nine
+  migrations `20260828020000` through `20260828029900` (ledger 128 → 137, bundle version 3 active), all
+  mutations durable PASS. The packet's final readback reported `STEP_UNCONFIRMED` only because it expected the
+  secret-broker role not to log in, which production's re-pointed broker legitimately does; an independent
+  read-only verification recorded every other final expectation true, including eight default agent read grants.
+- Node activation: provider on the candidate-3 image and provider package `9e8d313f…`, orchestrator package
+  updated (`25fc38ad…`), the founder's custody host re-provisioned from the candidate-3 host bundle
+  (`c8f23d22…`). Admission reopened (policy version 6).
+- Human entrypoint proven live on the new runtime (run `f751833a…`, occurrence `fdf07ec5…` kind `human`):
+  acknowledgement before work, `company_read` through the default read grant, `company_write` refused because
+  the default grant is read-only (reported by the agent as unconfirmed, head unchanged), final message with the
+  marker, occurrence completed.
+
+### Deployed acceptance with clients closed (Company41, the founder acting through a managed magic link)
+
+Operator: `cloud-c3-acceptance.mjs` in the gateway guest (allow-listed member RPCs and the object gateway's
+member edit route). Evidence: scratchpad `c3/evidence/deployed-acceptance/` (35 files, `SHA256SUMS`).
+
+| Item | Result |
+|---|---|
+| Autonomous consent | Connection `2e55091d…` version 2 (`allow_autonomous` true, capsule carried forward); sponsor binding `0c2c8103…` version 1 autonomous |
+| Silent routine | Routine `0547f21a…` (5-minute schedule, `replyPolicy: silent`) woke at 12:50:03Z, materialized on the founder's custody host, and the job failed after 13 s: "Native harness returned an invalid private completion receipt" (occurrence `709cc782…` now `requires_review`). Cause below. Routine paused afterwards |
+| Company File listener | Routine `aaeb4582…` (listener on `inbox`, subtree, silent) accepted; no file event was raised because the runner gap would have failed its run |
+| Room | The founder's room edit through the member route reached the projection with no document text ("Organization document bytes do not match the Company File mutation"); the `organization/rooms` directory was created first (head `7e2ef44c…`). Cause below. Two approved commands expired unapplied |
+| Agent wake | Not reachable: `qorpera_configure_staff_execution_authority` refuses because staff carry `model_provider = 'openai-codex'` while every connection carries `provider = 'openai'` (and the Co-Founder has no model at all). A data or contract decision for the founder |
+| Wake ceiling | Ceiling set to one wake per hour (version 1); the next routine wake `209f7db4…` was cancelled with "Company wake ceiling tripped" and no run was created |
+| Founder stop | Execution paused; the next wake `9581ef91…` was cancelled with "Company execution is paused"; resumed afterwards; ceiling restored to 240 wakes per hour (version 3) |
+| Usage-limit handoff | Not reproducible live without exhausting a real subscription; the SQL acceptance case remains the proof |
+
+### Two gaps the offline proof could not reach (fixed on this branch)
+
+1. **Guest runner** (`cloud-native-company-runner.ts`): the private completion receipt was required to carry
+   at least one send whenever the run had a session, so a silent wake that correctly sent nothing was refused by
+   the runner before the cloud could judge it. Wake runs (`qorpera.wake-run/v1` job payload) now leave reply
+   obligations to `qorpera_assert_wake_completion`; conversation turns keep the requirement. Unit test added.
+2. **Object gateway** (`member-company-file.ts`): `organization/rooms/<id>.json` was not an organization
+   document, so no `p_document_text` reached the projection. Fixed; `scripts/package-object-gateway.mjs` added so
+   the gateway ships like the other cloud services. Unit test added.
+
+Commits `6222f663e`, `0ba2d10bc` (runtime bundle version 4 `c6b31877…`, activation migration
+`20260828030000`), `3f3829f5a`, `2f609e404`.
+
+### Candidate 3.1 preparation (offline; nothing signed, installed or applied)
+
+- Guest package manifest `ec13e262…` (only `qorpera-ephemeral-runner.mjs` and `qorpera-native-provider-host.mjs`
+  changed; provider, orchestrator and broker packages identical to candidate 3). Unsigned image
+  `bfb19e81…` built on the node from `lxd-runner-guest-2f609e404.tar.gz` (`a381a177…`).
+- Production SQL packet v6 (`d1096e61…`): preflight, pause (policy version 7), `20260828030000`, final readback;
+  baseline the 13:07Z read-only inventory (137 ledger versions, bundle version 3 active, head `7e2ef44c…`).
+- Object gateway bundle `0e84a094…` and its install script staged under `/opt/qorpera-company41-gateway/staging`
+  in the gateway guest. The activation script also corrects `QORPERA_EPHEMERAL_RUNNER_VERSION`, which still
+  labelled candidate-3 runners `7c8e69d05-production`.
+- Still needs the founder's approval: signing, packet v6 dispatch, node activation, gateway update, custody host
+  re-provision (host bundle `d7ed3158…`), then the silent routine, listener, room and ceiling items rerun live.
