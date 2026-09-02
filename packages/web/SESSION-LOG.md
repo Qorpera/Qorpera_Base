@@ -229,3 +229,8 @@ now emitted as `build/main-<hash>.js` and `build/app-<hash>.css` with
 year while the HTML stays `max-age=0, must-revalidate`. A deploy therefore
 always changes the file names the HTML points at; no browser can pin an old
 bundle to a new page.
+
+**Hover reaction removed (founder).** The crown no longer lifts or reacts when
+the pointer is over it; the body stays put while the eyes look around. The
+entry spring, the measured nod, the occasional hop, blinks, gaze and the
+glance at a focused field remain.

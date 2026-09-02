@@ -5,9 +5,10 @@
  * the V24 crown contour, the eye placement measured from the 512px source in
  * the shared 100-unit frame, the "small, measured nod" loop, the entry spring
  * and the screen-gaze sequence with its blink tempo. On top of that the
- * character hops now and then, follows the pointer with its eyes, glances at
- * the form when a field takes focus, and lifts on hover. Eyes are holes: the
- * surface shows through them.
+ * character hops now and then, follows the pointer with its eyes and glances at
+ * the form when a field takes focus. The body never reacts to hover: it stays
+ * put while the eyes look around. Eyes are holes: the surface shows through
+ * them.
  *
  * Everything is drawn with DOM and SVG APIs and animated through the CSSOM and
  * SVG attributes, so the strict Content Security Policy (no inline style
@@ -137,7 +138,7 @@ export function mountCrown(host: HTMLElement, options: CrownOptions = {}): Crown
 	const uid = `crown-${Math.random().toString(36).slice(2, 8)}`;
 	const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
 
-	// Layers: wrap (flip + hover lift) > body (pose) > svg.
+	// Layers: wrap (flip) > body (pose) > svg.
 	const wrap = document.createElement("div");
 	wrap.className = "crown-wrap";
 	const body = document.createElement("div");
@@ -186,13 +187,10 @@ export function mountCrown(host: HTMLElement, options: CrownOptions = {}): Crown
 	let hopAt = startedAt + 2600 + Math.random() * 3000;
 	let nextBlinkAt = startedAt + 1800 + Math.random() * 2500;
 	let blinkStartedAt = -1;
-	let hover = 0;
-	let hoverTarget = 0;
 	let pointer: { x: number; y: number } | null = null;
 	let focused: DOMRect | null = null;
 	let frame = 0;
 	let disposed = false;
-	let lastFrameAt = startedAt;
 
 	const setEyes = (pose: { x: number; y: number; turn: number; open: number; width: number }) => {
 		for (const [index, eye] of EYES.entries()) {
@@ -241,8 +239,6 @@ export function mountCrown(host: HTMLElement, options: CrownOptions = {}): Crown
 			return;
 		}
 		const elapsed = now - startedAt;
-		const delta = Math.min(64, now - lastFrameAt);
-		lastFrameAt = now;
 		if (reduced.matches) {
 			still();
 			return;
@@ -257,9 +253,7 @@ export function mountCrown(host: HTMLElement, options: CrownOptions = {}): Crown
 			if (hopElapsed <= HOP_DURATION) hop = samplePose(HOP, HOP_DURATION, hopElapsed);
 			else hopAt = now + 6000 + Math.random() * 6000;
 		}
-		hover += (hoverTarget - hover) * Math.min(1, delta / 160);
-		const lift: Pose = [0, -2.2 * hover, -1.4 * hover, 1 + 0.04 * hover, 1 + 0.045 * hover];
-		const pose = combine(entry, nod, hop, lift);
+		const pose = combine(entry, nod, hop);
 		body.style.transform = transform(pose);
 		const height = Math.max(0, -pose[1]);
 		shadow.style.transform = `scale(${(1 - height / 40).toFixed(3)})`;
@@ -296,7 +290,7 @@ export function mountCrown(host: HTMLElement, options: CrownOptions = {}): Crown
 		}
 		const hopPhase = now >= hopAt && now - hopAt <= HOP_DURATION ? (now - hopAt) / HOP_DURATION : -1;
 		if (hopPhase >= 0.28 && hopPhase <= 0.42) open *= 0.35;
-		setEyes({ x: look.x, y: look.y, turn: look.turn, open, width: gwidth + hover * 0.06 });
+		setEyes({ x: look.x, y: look.y, turn: look.turn, open, width: gwidth });
 		if (!document.hidden) frame = requestAnimationFrame(tick);
 	};
 
@@ -314,24 +308,13 @@ export function mountCrown(host: HTMLElement, options: CrownOptions = {}): Crown
 		const active = document.activeElement;
 		focused = active && watched.includes(active) ? active.getBoundingClientRect() : null;
 	};
-	const onEnter = () => {
-		hoverTarget = 1;
-	};
-	const onLeave = () => {
-		hoverTarget = 0;
-	};
 	const onVisibility = () => {
-		if (!document.hidden) {
-			lastFrameAt = performance.now();
-			schedule();
-		}
+		if (!document.hidden) schedule();
 	};
 	window.addEventListener("pointermove", onPointerMove, { passive: true });
 	document.documentElement.addEventListener("pointerleave", onPointerLeave);
 	document.addEventListener("focusin", onFocusIn);
 	document.addEventListener("focusout", onFocusIn);
-	host.addEventListener("pointerenter", onEnter);
-	host.addEventListener("pointerleave", onLeave);
 	document.addEventListener("visibilitychange", onVisibility);
 	reduced.addEventListener("change", schedule);
 
@@ -343,8 +326,6 @@ export function mountCrown(host: HTMLElement, options: CrownOptions = {}): Crown
 		document.documentElement.removeEventListener("pointerleave", onPointerLeave);
 		document.removeEventListener("focusin", onFocusIn);
 		document.removeEventListener("focusout", onFocusIn);
-		host.removeEventListener("pointerenter", onEnter);
-		host.removeEventListener("pointerleave", onLeave);
 		document.removeEventListener("visibilitychange", onVisibility);
 		reduced.removeEventListener("change", schedule);
 	}
