@@ -1,8 +1,8 @@
 import type { User } from "@supabase/supabase-js";
 import type { HierarchyNode } from "../../cloud/organization.ts";
 import type { HostedProfile } from "../../cloud/types.ts";
-import { badge, creatureImage, h, replace } from "../../ui/dom.ts";
-import { displayName } from "../auth.ts";
+import { badge, creatureImage, h, initials, replace } from "../../ui/dom.ts";
+import { type AuthController, displayName } from "../auth.ts";
 import type { CompanyController } from "../company.ts";
 import { navigate, type Route } from "../router.ts";
 
@@ -13,6 +13,97 @@ export interface ShellContext {
 	profiles: HostedProfile[];
 	user: User | null;
 	route: Route;
+	auth: AuthController;
+	/** Company invitations waiting for this account, for the menu's count. */
+	invitations: number;
+}
+
+/* The account menu is one long-lived element: the top bar re-renders on every
+ * store change, and rebuilding the menu would close it under the pointer. */
+let accountMenu: HTMLElement | undefined;
+let accountMenuOpen = false;
+let accountTrigger: HTMLButtonElement | undefined;
+let accountPopover: HTMLElement | undefined;
+
+function setAccountMenuOpen(open: boolean): void {
+	accountMenuOpen = open;
+	accountMenu?.classList.toggle("is-open", open);
+	accountTrigger?.setAttribute("aria-expanded", String(open));
+	if (accountPopover) accountPopover.hidden = !open;
+}
+
+function accountMenuElement(context: ShellContext): HTMLElement {
+	if (!accountMenu) {
+		accountTrigger = h("button", {
+			type: "button",
+			class: "account-trigger",
+			"aria-haspopup": "menu",
+			"aria-expanded": "false",
+			onclick: (event: MouseEvent) => {
+				event.stopPropagation();
+				setAccountMenuOpen(!accountMenuOpen);
+				if (accountMenuOpen) accountPopover?.querySelector<HTMLElement>("[role=menuitem]")?.focus();
+			},
+		});
+		accountPopover = h("div", { class: "account-popover", role: "menu", hidden: true });
+		accountMenu = h("div", { class: "account-menu" }, accountTrigger, accountPopover);
+		document.addEventListener("click", (event) => {
+			if (accountMenuOpen && !accountMenu?.contains(event.target as Node)) setAccountMenuOpen(false);
+		});
+		document.addEventListener("keydown", (event: KeyboardEvent) => {
+			if (event.key === "Escape" && accountMenuOpen) {
+				setAccountMenuOpen(false);
+				accountTrigger?.focus();
+			}
+		});
+		window.addEventListener("hashchange", () => setAccountMenuOpen(false));
+	}
+	const name = displayName(context.user);
+	const item = (target: "account" | "friends" | "invitations", label: string, hint: string, count = 0) =>
+		h(
+			"a",
+			{
+				class: ["account-item", context.route.name === target ? "active" : ""].join(" "),
+				role: "menuitem",
+				href: `#/${target}`,
+				onclick: () => setAccountMenuOpen(false),
+			},
+			h("span", { class: "account-item-label" }, label, h("span", { class: "muted small" }, hint)),
+			count > 0 ? h("span", { class: "account-count" }, String(count)) : null,
+		);
+	replace(
+		accountTrigger!,
+		h("span", { class: "account-chip", "aria-hidden": "true" }, initials(name)),
+		h("span", { class: "account-trigger-name" }, name),
+		h("span", { class: "account-chevron", "aria-hidden": "true" }),
+	);
+	replace(
+		accountPopover!,
+		h(
+			"div",
+			{ class: "account-identity" },
+			h("strong", null, name),
+			h("span", { class: "muted small" }, context.user?.email ?? ""),
+		),
+		item("account", "Account and settings", "Plan, storage, feedback"),
+		item("friends", "Friends", "People you can invite to a company"),
+		item("invitations", "Invitations", "Companies waiting for you", context.invitations),
+		h("div", { class: "account-separator", role: "separator" }),
+		h(
+			"button",
+			{
+				type: "button",
+				class: "account-item account-signout",
+				role: "menuitem",
+				onclick: () => {
+					setAccountMenuOpen(false);
+					void context.auth.signOut();
+				},
+			},
+			h("span", { class: "account-item-label" }, "Sign out"),
+		),
+	);
+	return accountMenu;
 }
 
 export function renderTopbar(
@@ -41,8 +132,8 @@ export function renderTopbar(
 	);
 	const realtime = company?.store.get().realtime;
 	// Outside a company the bar is bare: no surface, no divider, no mark. The
-	// hub needs nothing on the left; the account and cloud-check pages get a
-	// way back. Inside a company the switcher leads and the chrome returns.
+	// hub needs nothing on the left; the account pages get a way back. Inside a
+	// company the switcher leads and the chrome returns.
 	container.classList.toggle("topbar-plain", !company);
 	const lead = company
 		? switcher
@@ -60,12 +151,7 @@ export function renderTopbar(
 				)
 			: null,
 		h("span", { class: "spacer" }),
-		h("a", { class: "topbar-link", href: "#/cloud-check", title: "Verify the cloud surface" }, "Cloud check"),
-		h(
-			"a",
-			{ class: "topbar-link account-link", href: "#/account", title: context.user?.email ?? "" },
-			displayName(context.user),
-		),
+		accountMenuElement(context),
 	);
 }
 

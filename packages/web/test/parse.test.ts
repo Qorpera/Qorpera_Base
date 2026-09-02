@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { buildCompanyHierarchy, parseHostedCompanyOrganization } from "../src/cloud/organization.ts";
-import { parseCreatedCompany, parseProfiles, parseSession, parseStaff, parseTeam } from "../src/cloud/parse.ts";
+import {
+	parseCreatedCompany,
+	parseFriends,
+	parseProfiles,
+	parseSession,
+	parseStaff,
+	parseTeam,
+} from "../src/cloud/parse.ts";
 import type { HostedStaffAgent } from "../src/cloud/types.ts";
 
 const P = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -25,6 +32,47 @@ describe("parsers", () => {
 		]);
 		expect(profiles[0]?.profileName).toBe("Company41");
 		expect(profiles[0]?.role).toBe("owner");
+	});
+
+	it("parses the friends list, with the direction the caller sees", () => {
+		const friends = parseFriends([
+			{
+				user_id: U,
+				email: "mia@havnegade.dk",
+				display_name: "Mia Sørensen",
+				status: "pending",
+				direction: "incoming",
+				since: "2026-08-30T09:00:00Z",
+			},
+			{
+				user_id: F,
+				email: "lena@nordlys.no",
+				display_name: "Lena Berg",
+				status: "accepted",
+				direction: "outgoing",
+				since: "2026-07-19T09:00:00Z",
+			},
+		]);
+		expect(friends).toHaveLength(2);
+		expect(friends[0]?.status).toBe("pending");
+		expect(friends[0]?.direction).toBe("incoming");
+		expect(friends[1]?.status).toBe("accepted");
+		expect(friends[1]?.displayName).toBe("Lena Berg");
+	});
+
+	it("rejects a friend without an account identity", () => {
+		expect(() =>
+			parseFriends([
+				{
+					user_id: "not-a-uuid",
+					email: "x@y.z",
+					display_name: "X",
+					status: "accepted",
+					direction: "outgoing",
+					since: "2026-07-19T09:00:00Z",
+				},
+			]),
+		).toThrow();
 	});
 
 	it("rejects a profile with an invalid identity", () => {

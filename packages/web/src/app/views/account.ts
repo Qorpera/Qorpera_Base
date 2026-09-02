@@ -139,6 +139,12 @@ export function renderAccount(
 				h(
 					"p",
 					{ class: "muted small" },
+					h("a", { href: "#/cloud-check" }, "Cloud check"),
+					" reports which member RPCs, Realtime topics and gateway routes this browser can reach.",
+				),
+				h(
+					"p",
+					{ class: "muted small" },
 					`Web client ${WEB_CLIENT_VERSION} (${WEB_CLIENT_MODE}). Point this browser at an isolated preview project instead of production. Only public values: project URL, publishable key, object gateway. Reloads the app.`,
 				),
 				h("label", null, "Project URL", projectInput),

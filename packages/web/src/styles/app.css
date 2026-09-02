@@ -87,7 +87,53 @@ label > input, label > select { font-weight: 400; }
 .company-switcher { max-width: 260px; min-height: 30px; }
 .topbar-link { color: var(--text-muted); padding: 4px 8px; border-radius: var(--radius-sm); }
 .topbar-link:hover { background: var(--hover); text-decoration: none; }
-.account-link { font-weight: 600; color: var(--text); }
+
+/* Account menu: the only thing in the bar outside a company. */
+.account-menu { position: relative; }
+.account-trigger {
+	display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px 0 5px;
+	border: 1px solid transparent; border-radius: 999px; background: transparent;
+	color: var(--text); font-weight: 600; cursor: pointer;
+}
+.account-trigger:hover, .account-menu.is-open .account-trigger { background: var(--hover); }
+.account-chip {
+	width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; flex: none;
+	background: #201f1d; color: #fff; font-size: 10.5px; font-weight: 700; letter-spacing: 0.02em;
+}
+.account-trigger-name { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-chevron {
+	width: 7px; height: 7px; flex: none; opacity: 0.45;
+	border-right: 1.6px solid currentColor; border-bottom: 1.6px solid currentColor;
+	transform: translateY(-2px) rotate(45deg);
+}
+.account-popover {
+	position: absolute; top: calc(100% + 8px); right: 0; z-index: 40; width: 276px;
+	display: flex; flex-direction: column; gap: 2px; padding: 6px;
+	border: 1px solid var(--border); border-radius: 16px; background: var(--bg);
+	box-shadow: 0 22px 48px rgba(11, 11, 11, 0.14), 0 2px 8px rgba(11, 11, 11, 0.06);
+}
+/* An author `display` beats the browser's [hidden] rule, so restore it. */
+.account-popover[hidden] { display: none; }
+.account-identity {
+	display: flex; flex-direction: column; gap: 1px; padding: 10px 12px 12px; margin-bottom: 4px;
+	border-bottom: 1px solid var(--border);
+}
+.account-item {
+	display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%;
+	padding: 8px 12px; border: 0; border-radius: 10px; background: transparent; color: var(--text);
+	font: inherit; font-weight: 600; text-align: left; cursor: pointer;
+}
+.account-item:hover { background: var(--hover); text-decoration: none; }
+.account-item.active { background: var(--sidebar-selection); color: var(--sidebar-selection-text); }
+.account-item.active .muted { color: color-mix(in srgb, var(--sidebar-selection-text) 80%, transparent); }
+.account-item-label { display: flex; flex-direction: column; line-height: 1.3; }
+.account-item-label .muted { font-weight: 400; }
+.account-count {
+	min-width: 20px; height: 20px; padding: 0 6px; border-radius: 999px; display: grid; place-items: center;
+	background: var(--primary); color: #fff; font-size: 11.5px; font-weight: 700;
+}
+.account-separator { height: 1px; margin: 4px 6px; background: var(--border); }
+.account-signout { color: var(--text-muted); }
 
 /* rail */
 .rail {
@@ -210,28 +256,85 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 .invite-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .invite-actions { display: flex; gap: 8px; }
 
-/* The selector */
-.company-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
+/* The selector. Cards carry the company picture at the size the desktop hub
+ * gives it: a character on a dark disc inside a light platter. */
+.company-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(268px, 1fr)); gap: 20px; }
 .company-card {
-	display: flex; flex-direction: column; align-items: flex-start; gap: 10px; min-height: 156px; padding: 20px;
-	border: 1px solid var(--border); border-radius: 14px; background: var(--bg); color: var(--text); text-align: left;
-	font: inherit; cursor: pointer; transition: border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+	display: flex; flex-direction: column; align-items: center; text-align: center; gap: 4px;
+	min-height: 316px; padding: 34px 24px 30px;
+	border: 1px solid rgba(20, 25, 35, 0.09); border-radius: 26px; background: var(--bg); color: var(--text);
+	box-shadow: 0 14px 36px rgba(29, 37, 54, 0.06), 0 2px 6px rgba(29, 37, 54, 0.04);
+	font: inherit; cursor: pointer;
+	transition: border-color 180ms ease, box-shadow 220ms ease, transform 220ms ease;
 }
-.company-card:hover { border-color: var(--border-strong); box-shadow: 0 10px 28px rgba(11, 11, 11, 0.07); transform: translateY(-1px); text-decoration: none; }
-.company-mark { display: block; width: 56px; height: 56px; object-fit: contain; }
-.company-name { font-size: 16px; font-weight: 650; letter-spacing: -0.01em; }
-.company-meta { display: flex; align-items: center; gap: 8px; }
-.company-card-new { border-style: dashed; background: transparent; }
-.company-card-new:hover { background: #fafaf9; box-shadow: none; transform: none; }
+.company-card:hover {
+	border-color: rgba(20, 25, 35, 0.16); box-shadow: 0 24px 56px rgba(29, 37, 54, 0.1), 0 3px 8px rgba(29, 37, 54, 0.05);
+	transform: translateY(-2px); text-decoration: none;
+}
+.company-card .company-avatar { margin: 8px 0 26px; }
+.company-card:hover .company-avatar { transform: translateY(-1px); }
+.company-name { font-size: 22px; font-weight: 720; letter-spacing: -0.032em; line-height: 1.15; }
+.company-meta { color: #83868d; font-size: 12.5px; font-weight: 600; letter-spacing: 0.005em; }
+
+/* The company picture: the character in ink on a paper disc. */
+.company-avatar {
+	position: relative; width: 148px; height: 148px; flex: none; overflow: hidden; border-radius: 50%;
+	background: linear-gradient(150deg, #f8f7f4, #e7e6e1);
+	box-shadow:
+		0 0 0 1px rgba(20, 25, 35, 0.06), 0 18px 36px rgba(29, 37, 54, 0.13), 0 5px 11px rgba(29, 37, 54, 0.07),
+		inset 0 1px 0 rgba(255, 255, 255, 0.9);
+	transition: box-shadow 240ms ease, transform 240ms ease;
+}
+.company-avatar .creature {
+	position: absolute; left: 50%; top: 53%; width: 74%; height: 74%; transform: translate(-50%, -50%);
+}
+.company-avatar.person-company {
+	width: 44px; height: 44px;
+	box-shadow: 0 0 0 1px rgba(20, 25, 35, 0.06), 0 5px 12px rgba(29, 37, 54, 0.12);
+}
+
+.company-card-new { border-style: dashed; background: transparent; box-shadow: none; justify-content: center; }
+.company-card-new:hover { background: #fbfbfa; box-shadow: none; transform: none; }
 .company-new-mark {
-	width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; margin-bottom: 4px;
-	border: 1px solid var(--border-strong); color: var(--text-muted); font-size: 22px; line-height: 1;
+	width: 128px; height: 128px; border-radius: 50%; display: grid; place-items: center; margin: 0 0 26px;
+	border: 1px dashed var(--border-strong); color: var(--text-soft); font-size: 44px; font-weight: 300; line-height: 1;
 }
-.company-card-compose { gap: 8px; cursor: default; }
-.company-card-compose:hover { box-shadow: none; transform: none; border-color: var(--border); }
-.company-card-compose input { width: 100%; height: 40px; font-size: 15px; }
-.company-card-compose .hub-create-submit { height: 36px; padding: 0 16px; font-size: 14px; }
+.company-card-new:hover .company-new-mark { border-color: var(--text-soft); color: var(--text-muted); }
+.company-card-compose { gap: 10px; cursor: default; align-items: stretch; text-align: left; justify-content: center; }
+.company-card-compose:hover { box-shadow: 0 14px 36px rgba(29, 37, 54, 0.06); transform: none; border-color: rgba(20, 25, 35, 0.09); }
+.company-card-compose input { flex: none; width: 100%; height: 44px; font-size: 15px; }
+.company-card-compose .hub-create-submit { height: 38px; padding: 0 18px; font-size: 14px; }
 .company-card-compose .hub-progress { align-items: flex-start; }
+
+/* Account pages: friends and invitations. */
+/* Border-box: 1160 minus the 40px gutters leaves the hub's 1080 column,
+ * so both pages start at the same left edge. */
+.account-page { max-width: 1160px; padding: 30px 40px 64px; }
+.account-page > * { max-width: 680px; }
+.page-lead { margin: 0 0 22px; color: var(--text-muted); font-size: 15px; }
+.person-add { display: flex; gap: 10px; margin: 0 0 26px; }
+.person-add input { flex: 1; height: 42px; padding: 0 14px; border-radius: 12px; font-size: 15px; }
+.person-section { margin: 0 0 26px; }
+.person-section h2 {
+	margin: 0 0 10px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+	color: var(--text-soft);
+}
+.person-list { display: flex; flex-direction: column; gap: 8px; }
+.person-row {
+	display: flex; align-items: center; gap: 12px; padding: 12px 14px;
+	border: 1px solid var(--border); border-radius: 14px; background: var(--bg);
+}
+.person-chip {
+	width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; flex: none;
+	background: var(--pane-strong); color: var(--text-muted); font-size: 12px; font-weight: 700;
+}
+.person-copy { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.3; }
+.person-copy > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.person-meta { white-space: nowrap; }
+.person-actions { display: flex; gap: 8px; }
+@media (max-width: 560px) {
+	.person-meta { display: none; }
+}
 
 /* sign in — current brand (Qorpera_Website brand/final + landing styles.css):
  * paper and ink, the approved lockup, a faint grid floor, the crown creature. */

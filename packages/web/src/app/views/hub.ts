@@ -1,7 +1,7 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
 import type { HostedIncomingProfileInvitation, HostedProfile } from "../../cloud/types.ts";
-import { badge, button, companyImage, fmtDate, h, notice, replace, spinner } from "../../ui/dom.ts";
+import { button, companyAvatar, fmtDate, h, notice, replace, spinner } from "../../ui/dom.ts";
 import { navigate } from "../router.ts";
 import { Store } from "../state.ts";
 import { mountCrown } from "./crown.ts";
@@ -113,14 +113,9 @@ function companyCard(profile: HostedProfile): HTMLElement {
 	return h(
 		"a",
 		{ class: "company-card", href: `#/c/${profile.profileId}` },
-		companyImage(profile.profileName),
+		companyAvatar(profile.profileId),
 		h("span", { class: "company-name" }, profile.profileName),
-		h(
-			"span",
-			{ class: "company-meta" },
-			badge(profile.role, "neutral"),
-			h("span", { class: "muted small" }, `since ${fmtDate(profile.createdAt)}`),
-		),
+		h("span", { class: "company-meta" }, `${profile.role} · since ${fmtDate(profile.createdAt)}`),
 	);
 }
 

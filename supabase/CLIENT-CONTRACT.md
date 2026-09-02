@@ -455,3 +455,18 @@ above.
    SMTP through Resend (`smtp.resend.com:465`, sender
    `Qorpera <no-reply@mail.qorpera.com>`) was prepared; the founder holds the
    key. The desktop's loopback and `qorpera://` redirect entries are untouched.
+10. **A company's picture is device-local, so no client can agree with another
+    one.** The desktop hub gives every company one of four characters
+    (`renderer.js` `COMPANY_AVATARS`: halo, bloom, folio, pebble) and stores
+    that choice per user under the desktop's own userData
+    (`readCompanyIcon`/`writeCompanyIcon`, IPC `company:set-icon`);
+    `qorpera_create_hosted_profile(p_profile_name, p_environment_name,
+    p_contract_version)` takes no picture and `qorpera_list_hosted_profiles`
+    returns none. So a company that shows Folio on the founder's laptop shows
+    something else on the web, on mobile, and to every colleague. Request: put
+    the picture in cloud profile state — a `company_icon` on the profile row,
+    returned by `qorpera_list_hosted_profiles`, accepted by
+    `qorpera_create_hosted_profile`, and settable through a member RPC bounded
+    by the `manageMembers`/owner capability. Until then the web client derives
+    the character from the profile id (stable across renames) and says so in
+    its own code.

@@ -214,27 +214,29 @@ export function creatureImage(creature: string | undefined, name: string, color?
 	return element;
 }
 
-/* Company artwork, matching the desktop and mobile clients: the same three
- * renders, chosen by the same hash of the company name (QorperaMobile
- * CompanyIdentity.artworkName). BigInt reproduces Swift's 64-bit wraparound,
- * so a company shows the same picture in every client. */
-const COMPANY_ARTWORK = ["company-warm", "company-blue", "company-cloud"] as const;
+/* Company pictures. The desktop hub gives a company one of four characters on
+ * a disc; it keeps that choice on the device, so the cloud has no picture to
+ * read (CLIENT-CONTRACT.md request 10) and the character follows the profile
+ * id, which survives a rename. The character is drawn the way staff avatars
+ * are — silhouette plus eyes — in ink on a paper disc, so a company reads as a
+ * character without being mistaken for a member of staff. */
+const COMPANY_CHARACTERS = ["halo", "bloom", "folio", "pebble"] as const;
+export type CompanyCharacter = (typeof COMPANY_CHARACTERS)[number];
+const COMPANY_INK = "#26272b";
 
-export function companyArtwork(name: string): string {
-	let seed = 0n;
-	for (const character of name) seed = (seed * 33n + BigInt(character.codePointAt(0) ?? 0)) & 0xffffffffffffffffn;
-	return COMPANY_ARTWORK[Number(seed % 3n)] ?? "company-warm";
+export function companyCharacter(seed: string): CompanyCharacter {
+	let value = 0n;
+	for (const character of seed) value = (value * 33n + BigInt(character.codePointAt(0) ?? 0)) & 0xffffffffffffffffn;
+	return COMPANY_CHARACTERS[Number(value % BigInt(COMPANY_CHARACTERS.length))] ?? "halo";
 }
 
-export function companyImage(name: string): HTMLElement {
-	return h("img", {
-		class: "company-mark",
-		src: `./assets/company/${companyArtwork(name)}.png`,
-		alt: "",
-		width: 44,
-		height: 44,
-		decoding: "async",
-	});
+export function companyAvatar(seed: string, className = ""): HTMLElement {
+	const character = companyCharacter(seed);
+	return h(
+		"span",
+		{ class: ["company-avatar", className].filter(Boolean).join(" "), "aria-hidden": "true" },
+		creatureImage(character, character, COMPANY_INK),
+	);
 }
 
 export function confirmDialog(message: string, confirmLabel: string, danger = false, typed?: string): Promise<boolean> {

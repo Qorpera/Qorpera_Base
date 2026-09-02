@@ -1,3 +1,4 @@
+import type { User } from "@supabase/supabase-js";
 import { AuthController } from "./app/auth.ts";
 import { CompanyController } from "./app/company.ts";
 import { currentRoute, navigate, type Route } from "./app/router.ts";
@@ -7,9 +8,11 @@ import { ApprovalsView } from "./app/views/approvals.ts";
 import { CloudCheckView } from "./app/views/cloudcheck.ts";
 import { CompanyFileController, renderCompanyFile } from "./app/views/companyfile.ts";
 import { ConversationView } from "./app/views/conversation.ts";
+import { FriendsController, renderFriends } from "./app/views/friends.ts";
 import { HubController, renderHub } from "./app/views/hub.ts";
+import { renderInvitations } from "./app/views/invitations.ts";
 import { renderOrganization } from "./app/views/organization.ts";
-import { renderRail, renderTopbar } from "./app/views/shell.ts";
+import { renderRail, renderTopbar, type ShellContext } from "./app/views/shell.ts";
 import { renderSignIn } from "./app/views/signin.ts";
 import { renderTeam } from "./app/views/team.ts";
 import { CloudApi } from "./cloud/api.ts";
@@ -29,6 +32,7 @@ const cloud = createCloud(resolveCloudConfig());
 const api = new CloudApi(cloud);
 const auth = new AuthController(cloud);
 const hub = new HubController(api);
+const friends = new FriendsController(api);
 
 const topbar = h("header", { class: "topbar" });
 const rail = h("aside", { class: "rail", "aria-label": "Company navigation" });
@@ -46,6 +50,7 @@ let accountState: AccountViewState = {};
 let unsubscribeCompany: (() => void) | undefined;
 let resolvingHome = false;
 let homeReason: string | undefined;
+let friendsLoaded = false;
 
 const render = debounce(() => void draw(), 10);
 
@@ -54,7 +59,12 @@ hub.store.subscribe(() => {
 	profiles = hub.store.get().profiles;
 	render();
 });
+friends.store.subscribe(() => render());
 window.addEventListener("hashchange", () => render());
+
+function shellContext(user: User | null, route: Route): ShellContext {
+	return { profiles, user, route, auth, invitations: hub.store.get().invitations.length };
+}
 
 function teardownCompany(): void {
 	unsubscribeCompany?.();
@@ -137,7 +147,7 @@ async function draw(): Promise<void> {
 	if (route.name !== "company") {
 		teardownCompany();
 		rail.hidden = true;
-		renderTopbar(topbar, { profiles, user: authState.user, route }, undefined);
+		renderTopbar(topbar, shellContext(authState.user, route), undefined);
 		if (route.name === "hub") {
 			if (hub.store.get().loading && !profiles.length) void hub.refresh();
 			renderHub(hub, main);
@@ -146,6 +156,15 @@ async function draw(): Promise<void> {
 				accountState = next;
 				render();
 			});
+		} else if (route.name === "friends") {
+			if (!friendsLoaded) {
+				friendsLoaded = true;
+				void friends.refresh();
+			}
+			renderFriends(friends, main);
+		} else if (route.name === "invitations") {
+			if (hub.store.get().loading && !hub.store.get().invitations.length) void hub.refresh();
+			renderInvitations(hub, main);
 		} else if (route.name === "cloud-check") {
 			cloudCheck ??= new CloudCheckView(cloud);
 			replace(main, cloudCheck.el);
@@ -155,7 +174,7 @@ async function draw(): Promise<void> {
 	const controller = await ensureCompany(route.profileId);
 	if (!controller) {
 		rail.hidden = true;
-		renderTopbar(topbar, { profiles, user: authState.user, route }, undefined);
+		renderTopbar(topbar, shellContext(authState.user, route), undefined);
 		replace(
 			main,
 			h(
@@ -168,7 +187,7 @@ async function draw(): Promise<void> {
 		return;
 	}
 	rail.hidden = false;
-	renderTopbar(topbar, { profiles, user: authState.user, route }, controller);
+	renderTopbar(topbar, shellContext(authState.user, route), controller);
 	renderRail(rail, controller, route);
 	const state = controller.store.get();
 	if (state.accessLost) {

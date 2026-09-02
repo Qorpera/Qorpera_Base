@@ -27,6 +27,22 @@ export interface HostedProfile {
 	createdAt: string;
 }
 
+export const HOSTED_FRIEND_STATUSES = ["pending", "accepted"] as const;
+export type HostedFriendStatus = (typeof HOSTED_FRIEND_STATUSES)[number];
+
+/* A friendship as `qorpera_list_friends` reports it. Direction is relative to
+ * the caller: `incoming` means the other account asked and this account
+ * answers. Company invitations only reach people you are already friends
+ * with, which is why the account menu carries this list. */
+export interface HostedFriend {
+	userId: string;
+	email: string;
+	displayName: string;
+	status: HostedFriendStatus;
+	direction: "incoming" | "outgoing";
+	since: string;
+}
+
 export interface HostedInvitationDelivery {
 	status: string;
 	attemptCount: number;

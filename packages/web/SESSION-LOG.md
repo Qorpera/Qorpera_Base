@@ -310,3 +310,40 @@ the top-left logo is unnecessary, and revisit both hub screens).**
 Verified with the harness (selector, compose, welcome, invited, and a 390px
 selector) against the production stylesheet; Biome, typecheck and the 13 tests
 pass; no console errors from the app.
+
+**Account menu, friends, invitations, and the company picture (founder: drop
+the Cloud check button; the account name should be a dropdown into
+account/settings, friends, invitations; company icons should use the updated
+styling with bigger cards and the new profile pictures).**
+
+- The top bar's right side is now one control: an initials chip, the account
+  name, and a chevron that opens a menu with Account and settings, Friends,
+  Invitations (with a count when any are waiting), and Sign out. The menu
+  element outlives re-renders, so a store change cannot close it under the
+  pointer; Escape, an outside click and any navigation close it. Cloud check
+  left the bar and is now linked from the account page's advanced section.
+- **Friends** (`#/friends`) is a real page over the four deployed friend RPCs
+  (`qorpera_list_friends`, `_send_friend_request`, `_respond_friend_request`,
+  `_remove_friend`): send a request by email, answer requests made to you,
+  cancel one you sent, and remove a friend. It says why the list matters — a
+  company invitation only reaches an account you are already friends with,
+  which is the rule the desktop enforces.
+- **Invitations** (`#/invitations`) gives the incoming company invitations
+  their own page, reading the same hub state the selector reads.
+- **Company pictures.** The old folder renders are gone. A company now shows
+  one of the desktop's four characters (halo, bloom, folio, pebble) drawn the
+  way staff avatars are drawn — silhouette plus eyes — in ink on a paper disc,
+  so it reads as a character without being mistaken for a member of staff. The
+  desktop keeps the member's chosen character on the device, so the cloud has
+  no picture to read; the web derives it from the profile id, which survives a
+  rename, and request 10 asks for the picture to become cloud state.
+- Cards grew to match: a 148px picture, a 22px name, the role and join date in
+  a quiet line, and the "New company" tile as a dashed circle at the same
+  size, opening into the compose form in place.
+
+Two bugs found and fixed while verifying: the popover's `display: flex` beat
+the browser's `[hidden]` rule, so the menu rendered open on load; and the
+compose field inherited `flex: 1` from the horizontal create row, so it grew
+to fill the card. Verified with the harness (selector, compose, welcome,
+invited, friends, invitations, menu open, and a 390px selector); Biome,
+typecheck and the 17 tests pass.

@@ -9,6 +9,7 @@ import type {
 	HostedCompanyProposalReview,
 	HostedCompanySnapshot,
 	HostedCompanyWorkspace,
+	HostedFriend,
 	HostedIncomingProfileInvitation,
 	HostedProfile,
 	HostedProfileInvitation,
@@ -191,6 +192,23 @@ export function parseIncomingInvitations(value: unknown): HostedIncomingProfileI
 			environmentName: nonEmptyString(input.environment_name, "invitation environment name", 512),
 		};
 	});
+}
+
+function parseFriend(value: unknown): HostedFriend {
+	const input = record(value, "friend");
+	const status = input.status === "accepted" ? "accepted" : "pending";
+	return {
+		userId: uuid(input.user_id, "friend user id"),
+		email: nonEmptyString(input.email, "friend email", 320),
+		displayName: nonEmptyString(input.display_name, "friend display name", 256),
+		status,
+		direction: input.direction === "outgoing" ? "outgoing" : "incoming",
+		since: timestamp(input.since, "friend time"),
+	};
+}
+
+export function parseFriends(value: unknown): HostedFriend[] {
+	return array(value, "friend list").map(parseFriend);
 }
 
 function parseMember(value: unknown): HostedProfileMember {

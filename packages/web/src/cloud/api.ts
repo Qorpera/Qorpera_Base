@@ -12,6 +12,7 @@ import {
 	parseCompanyWorkspaces,
 	parseCreatedCompany,
 	parseEvents,
+	parseFriends,
 	parseIncomingInvitations,
 	parseInvitation,
 	parsePendingSessionInputs,
@@ -35,6 +36,7 @@ import type {
 	HostedCompanyProposalStatus,
 	HostedCompanySnapshot,
 	HostedCompanyWorkspace,
+	HostedFriend,
 	HostedIncomingProfileInvitation,
 	HostedProfile,
 	HostedProfileInvitation,
@@ -91,6 +93,29 @@ export class CloudApi {
 		await this.cloud.rpc("qorpera_decline_profile_invitation", {
 			p_invitation_id: requiredUuid(invitationId, "Invitation id"),
 		});
+	}
+
+	// Friends. Company invitations only reach accounts you are already friends
+	// with, so this list is the account's address book (CLIENT-CONTRACT.md §2,
+	// "Members, presence, friends, feedback").
+
+	listFriends(): Promise<HostedFriend[]> {
+		return this.cloud.rpc("qorpera_list_friends").then(parseFriends);
+	}
+
+	async sendFriendRequest(email: string): Promise<void> {
+		await this.cloud.rpc("qorpera_send_friend_request", { p_email: email.trim().toLowerCase() });
+	}
+
+	async respondFriendRequest(userId: string, accept: boolean): Promise<void> {
+		await this.cloud.rpc("qorpera_respond_friend_request", {
+			p_user_id: requiredUuid(userId, "Account id"),
+			p_accept: accept,
+		});
+	}
+
+	async removeFriend(userId: string): Promise<void> {
+		await this.cloud.rpc("qorpera_remove_friend", { p_user_id: requiredUuid(userId, "Account id") });
 	}
 
 	getTeam(profileId: string): Promise<HostedProfileTeam> {
