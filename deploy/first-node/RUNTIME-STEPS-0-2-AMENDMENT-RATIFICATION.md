@@ -863,3 +863,32 @@ unchanged. Packager and bundle tests pass. Gate 1 is repeated for this
 candidate: node build recipe `build-lxd-runner-image-candidate-7c8e69d05.sh`
 installed at the sudoers build path (previous recipe kept as
 `.ebbd1e734-recipe-backup.sh`), packet v4 to follow.
+
+## Candidate 2: gate 1 closed again (2026-09-02 03:52–03:58 UTC)
+
+- Build on `company41-node-01` from the pinned recipe: image
+  `0fbf44de61e64bf0b722fe035d0f0b8a9b3ff1a9760a03a454174506ee931943`,
+  alias `qorpera-runner-4711f8d3-7c8e69d0-candidate-unsigned`, source commit
+  and archive/manifest/native-host pins verified by the recipe.
+- Clean-boot acceptance: `LXD_RUNNER_IMAGE_CANDIDATE_ACCEPTED_UNSIGNED`
+  (UEFI secure boot, no-job boot fails closed). Evidence pin
+  `a694611f1236a69c51fb87a798b9001c0bb67d7456920329b3cea772416e7b16`,
+  tested at 2026-09-02T03:52:03Z.
+- Signed provenance for that exact fingerprint (same off-node key ceremony
+  as candidate 1), envelope `2ab6d9b85353cbe4f122464a9ce8dd9a818d73ba2ad0f2311c1f7c9ec64adf96`,
+  staged on the node as `lxd-image-provenance-7c8e69d05.*` and verified
+  there. **Not activated.** The provider stays disabled.
+- Production SQL packet v4: packet `b1a1854f953d184e218662737c76024986ea0c47cf875b14434e0dfe3df26e93`,
+  frozen manifest `2b8ab3d97e3d9a2d330d99fda0fcd76a8f8c4fc9183768676e45449787a86903`,
+  96/96 tests, offline wrapper rehearsal 41/41 steps (ledger 128, policy
+  version 3, concurrency 64). Dispatch disabled; read-only preflight still
+  mandatory before any production use. Packet built and frozen with the
+  worktree detached at `7c8e69d05` (the builder requires HEAD to equal the
+  pinned commit; later commits on the branch are record-only).
+- Evidence: `steps02-phase-b-gate1b-20260902.fable/`, seal `SHA256SUMS`
+  `47a7c920c713a46e67066c9ae37cccbcacce5cac9d31700cb6de838242108079`.
+- Candidate 1 (`ebbd1e734`, image `c1b81ab6…`) is superseded; its image and
+  staged envelope stay on the node for the record only.
+
+Status: **proven** for gate 1 of candidate 2. Next: activate bundle
+`4711f8d3…` on the branch and repeat the gate-2 job-guest launch.
