@@ -119,13 +119,13 @@ label > input, label > select { font-weight: 400; }
 	position: absolute; inset: 0; background: var(--creature-color);
 	-webkit-mask: var(--creature-mask) center / contain no-repeat; mask: var(--creature-mask) center / contain no-repeat;
 }
-.creature[data-creature="bloom"] { --creature-mask: url("./assets/staff-creatures/bloom.png"); }
-.creature[data-creature="brain"] { --creature-mask: url("./assets/staff-creatures/brain.png"); }
-.creature[data-creature="folio"] { --creature-mask: url("./assets/staff-creatures/folio.png"); }
-.creature[data-creature="halo"] { --creature-mask: url("./assets/staff-creatures/halo.png"); }
-.creature[data-creature="pebble"] { --creature-mask: url("./assets/staff-creatures/pebble.png"); }
-.creature[data-creature="ribbon"] { --creature-mask: url("./assets/staff-creatures/ribbon.png"); }
-.creature[data-creature="wisp"] { --creature-mask: url("./assets/staff-creatures/wisp.png"); }
+.creature[data-creature="bloom"] { --creature-mask: url("/assets/staff-creatures/bloom.png"); }
+.creature[data-creature="brain"] { --creature-mask: url("/assets/staff-creatures/brain.png"); }
+.creature[data-creature="folio"] { --creature-mask: url("/assets/staff-creatures/folio.png"); }
+.creature[data-creature="halo"] { --creature-mask: url("/assets/staff-creatures/halo.png"); }
+.creature[data-creature="pebble"] { --creature-mask: url("/assets/staff-creatures/pebble.png"); }
+.creature[data-creature="ribbon"] { --creature-mask: url("/assets/staff-creatures/ribbon.png"); }
+.creature[data-creature="wisp"] { --creature-mask: url("/assets/staff-creatures/wisp.png"); }
 /* The face layer is 12% larger than the body, as on desktop and mobile. */
 .creature-face { position: absolute; inset: 0; transform: scale(1.12); }
 .creature-eye { position: absolute; background: #fff; border-radius: 999px; }
@@ -181,7 +181,7 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 }
 .auth-panel { display: flex; flex-direction: column; min-height: 100%; padding: 26px clamp(24px, 6vw, 80px) 24px; }
 .auth-brand img { display: block; height: 34px; width: auto; }
-.auth-body { width: 100%; max-width: 400px; margin: auto 0; padding: 56px 0 40px; }
+.auth-body { width: 100%; max-width: 400px; margin: auto; padding: 56px 0 40px; }
 .auth-body h1 { margin: 0 0 10px; font-size: clamp(30px, 3vw, 36px); font-weight: 600; line-height: 1.06; letter-spacing: -0.026em; }
 .auth-lead { margin: 0 0 30px; color: #5a616e; font-size: 16px; line-height: 1.5; letter-spacing: -0.005em; }
 .auth-providers { display: grid; gap: 10px; }
@@ -216,7 +216,7 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 .auth-status { min-height: 0; margin: 14px 0 0; color: #5a616e; font-size: 13px; line-height: 1.45; }
 .auth-status:empty { display: none; }
 .auth-status.is-error { color: #b3261e; }
-.auth-foot { color: #83868d; font-size: 12.5px; line-height: 1.45; max-width: 400px; }
+.auth-foot { color: #83868d; font-size: 12.5px; line-height: 1.45; max-width: 400px; margin: 0 auto; text-align: center; }
 .auth-art { position: relative; overflow: clip; display: grid; place-items: center; background: #fafaf9; border-left: 1px solid var(--auth-line); }
 /* The crown: a mirrored wrap (it faces the form), a posed body, a ground shadow. */
 .crown-wrap { position: relative; width: min(58%, 460px); aspect-ratio: 1; transform: scaleX(-1); }
@@ -231,7 +231,8 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 	.auth { grid-template-columns: 1fr; }
 	.auth-art { display: none; }
 	.auth-panel { padding: 22px 24px 20px; }
-	.auth-body { margin: 0; padding: 40px 0 28px; }
+	.auth-brand { display: flex; justify-content: center; }
+	.auth-body { padding: 40px 0 28px; }
 }
 
 /* thread */

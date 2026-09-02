@@ -234,3 +234,9 @@ bundle to a new page.
 the pointer is over it; the body stays put while the eyes look around. The
 entry spring, the measured nod, the occasional hop, blinks, gaze and the
 glance at a focused field remain.
+
+**Centered sign-in; stylesheet asset URLs.** The sign-in block is centered in
+its column at every width, with the lockup and footnote centered in the
+single-column layout. Moving the stylesheet under `/build/` had broken its
+relative asset URLs (fonts, avatar masks), which fell back to system fonts on
+the deployed site; those URLs are now root-absolute.
