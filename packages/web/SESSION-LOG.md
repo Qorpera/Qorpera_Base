@@ -266,3 +266,24 @@ that table authenticates as invalid. Fix: a new key created from the Resend
 dialog (its full value is shown once) pasted into the SMTP password field. An
 earlier request at 03:51 had already rendered the new template and verified
 successfully through the built-in mailer, so the rest of the pipeline is proven.
+
+**Hub design (founder: the no-companies page needs work).** It was an unstyled
+full-bleed notice with the create form crammed into the header, flush against
+the window edge because `section.hub` had no layout rules at all. Rebuilt:
+
+- The hub is now a centred, padded column (max 1040px) inside the main pane.
+- **Welcome state** (signed in, no companies): the crown character, "Start your
+  first company", one line explaining that Qorpera seeds the Company File and
+  the Co-Founder, a prominent name field with a black Create company button,
+  and a note about invitations. Vertically centred.
+- **Invited variant**: the same stage leads with "You have been invited", the
+  invitation cards with Accept/Decline, an "or" divider, then the create form.
+- **Populated state**: header plus a company grid, both properly inset.
+- Company cards now use the shared company artwork instead of a letter tile,
+  chosen by the same name hash the mobile client uses (BigInt reproduces
+  Swift's 64-bit wraparound), so a company looks the same in every client.
+- `mountCrown` gained a `mirrored` option and is sized by its host, so the
+  character is reusable outside the sign-in; the hub mounts it unmirrored.
+
+Verified with a throwaway harness that renders the hub's three states against
+the real stylesheet inside the app's frame; no console errors.

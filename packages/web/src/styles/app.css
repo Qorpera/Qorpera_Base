@@ -162,14 +162,57 @@ details.advanced { margin-top: 24px; }
 details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 
 /* hub */
-.hub-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.hub { flex: 1; min-height: 0; overflow: auto; display: flex; justify-content: center; padding: 28px 32px 56px; }
+.hub-inner { width: 100%; max-width: 1040px; display: flex; flex-direction: column; }
+.hub-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 4px; }
+.hub-section { margin-top: 24px; }
+
+/* The welcome state: the first thing a member with no companies sees. */
+.hub-welcome { flex: 1; align-items: center; justify-content: center; text-align: center; padding-bottom: 24px; }
+.hub-art { display: grid; place-items: center; width: 100%; }
+.hub-welcome .crown-stage { width: clamp(150px, 19vw, 210px); }
+.hub-welcome h1 { margin: 14px 0 10px; font-size: clamp(26px, 3vw, 34px); font-weight: 600; letter-spacing: -0.025em; }
+.hub-lead { max-width: 430px; margin: 0 0 28px; color: #5a616e; font-size: 16px; line-height: 1.5; }
+.hub-note { margin: 22px 0 0; color: #83868d; font-size: 12.5px; line-height: 1.45; max-width: 400px; }
+.hub-welcome .notice { width: min(430px, 100%); text-align: left; }
+.hub-or { display: flex; align-items: center; gap: 14px; width: min(430px, 100%); margin: 22px 0; color: #83868d; font-size: 11px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; }
+.hub-or::before, .hub-or::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+
+.hub-create { display: flex; gap: 10px; width: min(430px, 100%); }
+.hub-create input {
+	flex: 1; min-width: 0; height: 46px; padding: 0 14px; border: 1px solid var(--border-strong);
+	border-radius: 8px; background: #fff; font-size: 15px;
+	transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.hub-create input::placeholder { color: #9a9ea6; }
+.hub-create input:focus-visible { outline: none; border-color: #2d6ff2; box-shadow: 0 0 0 3px rgba(45, 111, 242, 0.18); }
+.hub-create-submit {
+	height: 46px; padding: 0 20px; border: 0; border-radius: 8px; background: var(--primary); color: #fff;
+	font-size: 15px; font-weight: 600; letter-spacing: -0.005em; cursor: pointer; white-space: nowrap;
+	transition: background-color 160ms ease;
+}
+.hub-create-submit:hover:not(:disabled) { background: var(--primary-hover); }
+.hub-create-submit:disabled { opacity: 0.5; cursor: default; }
+.hub-create-inline { width: auto; }
+.hub-create-inline input { width: 200px; height: 38px; }
+.hub-create-inline .hub-create-submit { height: 38px; font-size: 14px; }
+
+.invite-list { display: flex; flex-direction: column; gap: 10px; width: min(560px, 100%); margin: 0 auto; text-align: left; }
+.invite-card {
+	display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+	padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg);
+}
+.invite-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.invite-actions { display: flex; gap: 8px; }
+
 .company-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin-top: 16px; }
 .company-card {
-	display: flex; flex-direction: column; gap: 6px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-lg);
-	background: var(--bg); color: var(--text);
+	display: flex; flex-direction: column; gap: 6px; padding: 16px; border: 1px solid var(--border);
+	border-radius: var(--radius-lg); background: var(--bg); color: var(--text);
+	transition: border-color 140ms ease, box-shadow 140ms ease;
 }
-.company-card:hover { border-color: var(--border-strong); text-decoration: none; background: var(--chrome); }
-.company-mark { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; background: var(--accent); color: #fff; font-weight: 700; }
+.company-card:hover { border-color: var(--border-strong); text-decoration: none; box-shadow: 0 6px 18px rgba(11, 11, 11, 0.06); }
+.company-mark { display: block; width: 44px; height: 44px; object-fit: contain; }
 .company-name { font-weight: 650; font-size: 15px; }
 
 /* sign in — current brand (Qorpera_Website brand/final + landing styles.css):
@@ -218,8 +261,11 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 .auth-status.is-error { color: #b3261e; }
 .auth-foot { color: #83868d; font-size: 12.5px; line-height: 1.45; max-width: 400px; margin: 0 auto; text-align: center; }
 .auth-art { position: relative; overflow: clip; display: grid; place-items: center; background: #fafaf9; border-left: 1px solid var(--auth-line); }
+.auth-art .crown-stage { width: min(58%, 460px); }
 /* The crown: a mirrored wrap (it faces the form), a posed body, a ground shadow. */
-.crown-wrap { position: relative; width: min(58%, 460px); aspect-ratio: 1; transform: scaleX(-1); }
+.crown-stage { position: relative; width: 100%; }
+.crown-wrap { position: relative; width: 100%; aspect-ratio: 1; }
+.crown-wrap.is-mirrored { transform: scaleX(-1); }
 .crown-body { position: absolute; inset: 0; transform-origin: 50% 85%; will-change: transform; }
 .crown-svg { display: block; width: 100%; height: 100%; overflow: visible; }
 .crown-shadow {

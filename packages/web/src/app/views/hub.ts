@@ -1,9 +1,10 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
 import type { HostedIncomingProfileInvitation, HostedProfile } from "../../cloud/types.ts";
-import { badge, button, fmtDate, h, notice, replace, spinner } from "../../ui/dom.ts";
+import { badge, button, companyImage, fmtDate, h, notice, replace, spinner } from "../../ui/dom.ts";
 import { navigate } from "../router.ts";
 import { Store } from "../state.ts";
+import { mountCrown } from "./crown.ts";
 
 /* The company hub: every cloud company the member belongs to, pending
  * invitations, and creation of a new company (qorpera_create_cloud_company).
@@ -83,89 +84,140 @@ export class HubController {
 	}
 }
 
+function invitationCard(hub: HubController, invitation: HostedIncomingProfileInvitation, busy: boolean): HTMLElement {
+	return h(
+		"div",
+		{ class: "invite-card" },
+		h(
+			"div",
+			{ class: "invite-copy" },
+			h("strong", null, invitation.profileName),
+			h(
+				"span",
+				{ class: "muted small" },
+				`Invited as ${invitation.role} · expires ${fmtDate(invitation.expiresAt)}`,
+			),
+		),
+		h(
+			"div",
+			{ class: "invite-actions" },
+			button("Decline", () => void hub.respondInvitation(invitation, false), { disabled: busy }),
+			button("Accept", () => void hub.respondInvitation(invitation, true), { primary: true, disabled: busy }),
+		),
+	);
+}
+
 export function renderHub(hub: HubController, container: HTMLElement): void {
 	const state = hub.store.get();
+	const busy = Boolean(state.creating);
+	// The welcome state is the first thing a new member sees: no companies, and
+	// nothing still loading that could turn into one.
+	const welcome = !state.loading && state.profiles.length === 0;
+	const invited = state.invitations.length > 0;
 	const nameInput = h("input", {
 		type: "text",
 		placeholder: "Company name",
 		maxlength: 120,
 		required: true,
-		disabled: Boolean(state.creating),
+		disabled: busy,
+		"aria-label": "Company name",
 	});
-	const createForm = h(
-		"form",
-		{
-			class: "row",
-			onsubmit: (event: Event) => {
-				event.preventDefault();
-				void hub.createCompany(nameInput.value);
+	const createForm = (className: string, label: string) =>
+		h(
+			"form",
+			{
+				class: className,
+				onsubmit: (event: Event) => {
+					event.preventDefault();
+					void hub.createCompany(nameInput.value);
+				},
 			},
-		},
-		nameInput,
-		h("button", { type: "submit", class: "btn btn-primary", disabled: Boolean(state.creating) }, "New company"),
+			nameInput,
+			h("button", { type: "submit", class: "hub-create-submit", disabled: busy }, label),
+		);
+	const notices = [
+		state.error ? notice("danger", state.error) : null,
+		busy
+			? notice("accent", `Creating “${state.creating?.name}”. The cloud is seeding its Company File and Co-Founder.`)
+			: null,
+	];
+	const invitations = state.invitations.map((invitation) =>
+		invitationCard(hub, invitation, state.busyInvitation === invitation.id),
 	);
+
+	if (welcome) {
+		// The character persists across re-renders so its motion is never
+		// restarted by a status change.
+		let art = container.querySelector<HTMLElement>(".hub-art");
+		if (!art) {
+			art = h("div", { class: "hub-art", "aria-hidden": "true" });
+			const stage = h("div", { class: "crown-stage" });
+			art.append(stage);
+			mountCrown(stage, { watch: () => container.querySelectorAll("input"), mirrored: false });
+		}
+		replace(
+			container,
+			h(
+				"section",
+				{ class: "hub" },
+				h(
+					"div",
+					{ class: "hub-inner hub-welcome" },
+					art,
+					h("h1", null, invited ? "You have been invited" : "Start your first company"),
+					h(
+						"p",
+						{ class: "hub-lead" },
+						invited
+							? "Join a company you have been invited to, or start one of your own."
+							: "Name it, and Qorpera creates its Company File and a Co-Founder who begins work straight away.",
+					),
+					invited ? h("div", { class: "invite-list" }, ...invitations) : null,
+					invited ? h("div", { class: "hub-or", "aria-hidden": "true" }, h("span", null, "or")) : null,
+					createForm("hub-create", "Create company"),
+					...notices,
+					invited
+						? null
+						: h("p", { class: "hub-note" }, "Invited to a company? It appears here the moment someone adds you."),
+				),
+			),
+		);
+		return;
+	}
+
 	replace(
 		container,
 		h(
 			"section",
 			{ class: "hub" },
-			h("header", { class: "hub-header" }, h("h1", null, "Companies"), createForm),
-			state.error ? notice("danger", state.error) : null,
-			state.creating
-				? notice(
-						"accent",
-						`Creating “${state.creating.name}”… (${state.creating.state}). The cloud seeds the Company File and the Co-Founder.`,
-					)
-				: null,
-			state.invitations.length
-				? h(
-						"div",
-						{ class: "card-list" },
-						h("h2", null, "Invitations"),
-						...state.invitations.map((invitation) =>
-							h(
-								"div",
-								{ class: "card invitation" },
-								h(
-									"div",
-									{ class: "card-body" },
-									h("strong", null, invitation.profileName),
-									h(
-										"div",
-										{ class: "muted" },
-										`Invited as ${invitation.role} · expires ${fmtDate(invitation.expiresAt)}`,
-									),
-								),
-								h(
-									"div",
-									{ class: "card-actions" },
-									button("Decline", () => void hub.respondInvitation(invitation, false), {
-										disabled: state.busyInvitation === invitation.id,
-									}),
-									button("Accept", () => void hub.respondInvitation(invitation, true), {
-										primary: true,
-										disabled: state.busyInvitation === invitation.id,
-									}),
-								),
-							),
-						),
-					)
-				: null,
-			state.loading
-				? spinner("Loading companies")
-				: state.profiles.length
+			h(
+				"div",
+				{ class: "hub-inner" },
+				h(
+					"header",
+					{ class: "hub-header" },
+					h("h1", null, "Companies"),
+					createForm("hub-create hub-create-inline", "New company"),
+				),
+				...notices,
+				invited
 					? h(
+							"div",
+							{ class: "hub-section" },
+							h("h2", null, "Invitations"),
+							h("div", { class: "invite-list" }, ...invitations),
+						)
+					: null,
+				state.loading
+					? spinner("Loading companies")
+					: h(
 							"div",
 							{ class: "company-grid" },
 							...state.profiles.map((profile) =>
 								h(
 									"a",
 									{ class: "company-card", href: `#/c/${profile.profileId}` },
-									h(
-										"span",
-										{ class: "company-mark", "aria-hidden": "true" },
-										profile.profileName.slice(0, 1).toUpperCase(),
-									),
+									companyImage(profile.profileName),
 									h("span", { class: "company-name" }, profile.profileName),
 									h(
 										"span",
@@ -175,11 +227,8 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 									),
 								),
 							),
-						)
-					: notice(
-							"neutral",
-							"You are not a member of any cloud company yet. Create one, or accept an invitation.",
 						),
+			),
 		),
 	);
 }

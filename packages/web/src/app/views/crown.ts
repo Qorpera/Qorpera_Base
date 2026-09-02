@@ -132,6 +132,8 @@ export interface CrownHandle {
 export interface CrownOptions {
 	/** Elements whose focus makes the crown glance toward them. */
 	watch?: () => Iterable<Element>;
+	/** Mirrored so it faces a form on its left. Default true. */
+	mirrored?: boolean;
 }
 
 export function mountCrown(host: HTMLElement, options: CrownOptions = {}): CrownHandle {
@@ -139,8 +141,9 @@ export function mountCrown(host: HTMLElement, options: CrownOptions = {}): Crown
 	const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
 
 	// Layers: wrap (flip) > body (pose) > svg.
+	const mirrored = options.mirrored !== false;
 	const wrap = document.createElement("div");
-	wrap.className = "crown-wrap";
+	wrap.className = mirrored ? "crown-wrap is-mirrored" : "crown-wrap";
 	const body = document.createElement("div");
 	body.className = "crown-body";
 	const shadow = document.createElement("div");
@@ -216,8 +219,8 @@ export function mountCrown(host: HTMLElement, options: CrownOptions = {}): Crown
 	const gazeToward = (targetX: number, targetY: number): { x: number; y: number; turn: number } => {
 		const box = wrap.getBoundingClientRect();
 		if (!box.width) return { x: 0, y: 0, turn: 0 };
-		// The wrap is mirrored, so screen-left is the character's right.
-		const dx = -(targetX - (box.left + box.width / 2)) / box.width;
+		// When mirrored, screen-left is the character's right.
+		const dx = ((mirrored ? -1 : 1) * (targetX - (box.left + box.width / 2))) / box.width;
 		const dy = (targetY - (box.top + box.height * 0.55)) / box.height;
 		const reach = Math.min(1, Math.hypot(dx, dy));
 		const angle = Math.atan2(dy, dx);
