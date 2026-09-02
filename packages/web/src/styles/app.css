@@ -35,7 +35,6 @@ label > input, label > select { font-weight: 400; }
 .fineprint { color: var(--text-soft); font-size: 12px; }
 
 .app { height: 100%; }
-.centered { min-height: 100%; display: grid; place-items: center; padding: 24px; }
 .frame { display: flex; flex-direction: column; height: 100%; }
 .body { display: flex; flex: 1; min-height: 0; }
 
@@ -159,11 +158,63 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 .company-mark { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; background: var(--accent); color: #fff; font-weight: 700; }
 .company-name { font-weight: 650; font-size: 15px; }
 
-/* sign in */
-.signin { width: min(420px, 100%); display: flex; flex-direction: column; gap: 12px; padding: 32px; border: 1px solid var(--border); border-radius: var(--radius-xl); background: var(--bg); }
-.brand-mark { width: 48px; height: 48px; border-radius: 12px; }
-.signin-form { display: flex; flex-direction: column; gap: 12px; }
-.oauth-row { display: flex; gap: 8px; flex-wrap: wrap; }
+/* sign in — the public brand field shared with the desktop's account and
+ * onboarding screens (onboarding.css): gradient field, white card, provider
+ * cards, divider, inline email form. */
+.brand-field {
+	--onboarding-gradient:
+		radial-gradient(ellipse 44% 65% at 5% 48%, rgba(207, 255, 45, 0.96) 0%, rgba(207, 255, 45, 0.58) 36%, rgba(207, 255, 45, 0) 75%),
+		radial-gradient(ellipse 45% 54% at 44% 108%, rgba(42, 115, 244, 0.94) 0%, rgba(42, 115, 244, 0.63) 48%, rgba(42, 115, 244, 0) 82%),
+		radial-gradient(ellipse 36% 54% at 76% 101%, rgba(255, 53, 90, 0.78) 0%, rgba(255, 53, 90, 0.45) 45%, rgba(255, 53, 90, 0) 82%),
+		radial-gradient(ellipse 42% 66% at 101% 50%, rgba(117, 234, 201, 0.91) 0%, rgba(117, 234, 201, 0.55) 43%, rgba(117, 234, 201, 0) 78%),
+		#f8f8f7;
+	min-height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px;
+	padding: clamp(28px, 5vh, 56px) 24px; background: var(--onboarding-gradient); background-attachment: fixed;
+}
+.welcome-card {
+	width: min(520px, 100%); text-align: center;
+	padding: clamp(32px, 5vh, 48px) clamp(28px, 4vw, 46px) 32px;
+	border: 1px solid rgba(20, 25, 35, 0.1); border-radius: 24px; background: rgba(255, 255, 255, 0.96);
+	box-shadow: 0 30px 90px rgba(29, 37, 54, 0.17), 0 4px 18px rgba(29, 37, 54, 0.08);
+	font-family: "Source Sans 3", var(--font-sans);
+}
+.welcome-brand { display: block; width: 64px; height: 64px; margin: 0 auto 20px; border-radius: 18px; transform: rotate(5deg); }
+.welcome-card h1 { margin: 0; font-size: clamp(38px, 5vw, 48px); font-weight: 760; line-height: 1; letter-spacing: -0.045em; }
+.welcome-card > p { max-width: 400px; margin: 12px auto 28px; color: #72757c; font-size: 15px; line-height: 1.45; }
+.provider-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; width: 100%; }
+.provider-option {
+	display: grid; grid-template-columns: 28px auto; justify-content: center; align-items: center; gap: 12px;
+	min-height: 58px; padding: 9px 14px; border: 1px solid #d9dadd; border-radius: 12px; background: #fff; color: #111;
+	cursor: pointer; transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.provider-option:hover:not(:disabled), .provider-option:focus-visible { border-color: #8f9299; box-shadow: 0 8px 22px rgba(29, 37, 54, 0.08); }
+.provider-option:disabled { opacity: 0.55; cursor: default; }
+.provider-mark { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 9px; background: #fff; }
+.provider-mark img { width: 21px; height: 21px; }
+.provider-option-copy strong { font-size: 15px; font-weight: 650; }
+.account-divider { display: flex; align-items: center; gap: 12px; width: 100%; margin: 20px 0 15px; color: #9a9ca2; font-size: 12px; }
+.account-divider::before, .account-divider::after { flex: 1; height: 1px; background: #e1e2e4; content: ""; }
+.account-email-form { display: grid; gap: 8px; width: 100%; margin: 0; text-align: left; }
+.account-email-form label { color: #686b72; font-size: 12px; font-weight: 620; }
+.account-email-form > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
+.account-email-form input, .account-email-form button { min-height: 48px; border-radius: 10px; }
+.account-email-form input { min-width: 0; padding: 0 14px; border: 1px solid #d5d6d9; background: #fff; color: var(--text); font-size: 14px; }
+.account-email-form input:focus-visible { outline: none; border-color: #171716; box-shadow: 0 0 0 3px rgba(23, 23, 22, 0.12); }
+.account-email-form button[type="submit"] {
+	padding: 0 21px; border: 1px solid #171716; border-radius: 10px; background: #171716; color: #fff; font-size: 13px; font-weight: 650; cursor: pointer;
+}
+.account-email-form button[type="submit"]:hover:not(:disabled) { background: #30302e; }
+.account-email-form button[type="submit"]:disabled { opacity: 0.55; cursor: default; }
+.account-link { justify-self: start; padding: 0; border: 0; background: none; color: #686b72; font-size: 12.5px; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.account-link:hover { color: var(--text); }
+.welcome-status { margin-top: 14px; color: var(--text-muted); font-size: 12.5px; line-height: 1.4; }
+.welcome-status:empty { display: none; }
+.welcome-status.is-error { color: #b33a2f; }
+.brand-field-note { max-width: 440px; margin: 0; color: rgba(22, 22, 21, 0.62); font-size: 12px; line-height: 1.45; text-align: center; }
+@media (max-width: 480px) {
+	.provider-grid { grid-template-columns: 1fr; }
+	.account-email-form > div { grid-template-columns: 1fr; }
+}
 
 /* thread */
 .thread { display: flex; flex-direction: column; height: 100%; min-height: 0; }

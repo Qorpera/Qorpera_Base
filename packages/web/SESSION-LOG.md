@@ -185,3 +185,12 @@ fingerprint simply fails silently on this host. `pages.dev` shows no such
 error. Options are a zone setting change (turn "JS Detections" off; Bot fight
 mode itself keeps challenging), or living with the console error. Not changed:
 it is a zone-wide security setting and the founder's call.
+
+**Sign-in redesign (founder feedback: the first card was generic).** The web
+sign-in now uses the desktop's public brand field from
+`packages/shell/userland/onboarding.css`: the same radial gradient, white
+24px card with the deep shadow, the creature mark, the 760-weight wordmark,
+Google/GitHub provider cards with marks, the "or" divider and the inline email
+form with a black Continue button; the one-time-code step reuses the same form
+with a "Use a different email" link. Verified by headless Chrome screenshots at
+1440×900 and 390×844 with no console errors.

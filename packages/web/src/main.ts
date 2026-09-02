@@ -127,7 +127,7 @@ async function draw(): Promise<void> {
 	}
 	if (!authState.session) {
 		teardownCompany();
-		const container = h("div", { class: "centered" });
+		const container = h("div", { class: "brand-field" });
 		replace(root!, container);
 		renderSignIn(auth, container);
 		return;
