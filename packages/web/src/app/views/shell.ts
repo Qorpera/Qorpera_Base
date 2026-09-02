@@ -1,11 +1,10 @@
 import type { User } from "@supabase/supabase-js";
-import type { HierarchyNode } from "../../cloud/organization.ts";
-import type { HostedProfile } from "../../cloud/types.ts";
+import type { HostedProfile, HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
-import { badge, h, icon, initials, replace } from "../../ui/dom.ts";
+import { badge, companyLogo, h, icon, initials, replace } from "../../ui/dom.ts";
 import { type AuthController, displayName } from "../auth.ts";
 import type { CompanyController } from "../company.ts";
-import { navigate, type Route } from "../router.ts";
+import type { CompanySection, Route } from "../router.ts";
 
 /* The company shell: top bar with company switcher and account, a rail that
  * renders the §14.5 hierarchy from canonical state, and the main pane. */
@@ -109,35 +108,15 @@ export function renderTopbar(
 	context: ShellContext,
 	company: CompanyController | undefined,
 ): void {
-	const switcher = h(
-		"select",
-		{
-			class: "company-switcher",
-			"aria-label": "Switch company",
-			onchange: () => {
-				if (switcher.value === "__hub") navigate({ name: "hub" });
-				else navigate({ name: "company", profileId: switcher.value, section: "home" });
-			},
-		},
-		h("option", { value: "__hub", selected: !company }, "All companies"),
-		...context.profiles.map((profile) =>
-			h(
-				"option",
-				{ value: profile.profileId, selected: profile.profileId === company?.profile.profileId },
-				profile.profileName,
-			),
-		),
-	);
 	const realtime = company?.store.get().realtime;
 	// Outside a company the bar is bare: no surface, no divider, no mark. The
 	// hub needs nothing on the left; the account pages get a way back. Inside a
 	// company the switcher leads and the chrome returns.
 	container.classList.toggle("topbar-plain", !company);
-	const lead = company
-		? switcher
-		: context.route.name === "hub"
-			? null
-			: h("a", { class: "topbar-home", href: "#/" }, "← Companies");
+	// Inside a company the rail's own switcher names it; outside, the account
+	// pages get a way back.
+	const lead =
+		company || context.route.name === "hub" ? null : h("a", { class: "topbar-home", href: "#/" }, "← Companies");
 	replace(
 		container,
 		lead,
@@ -153,6 +132,45 @@ export function renderTopbar(
 	);
 }
 
+/* The company rail, as Qorpera Base draws it (V24 product preview): a search
+ * field, the Co-Founder as a low card with its figure standing on it, the rest
+ * of the staff as rows, and the company's own menu at the foot. The pages that
+ * are not agents — approvals, the Company File, the organization, the team —
+ * live in that menu, which is where the desktop keeps a company's own things.
+ *
+ * There is no add-agent button: hiring an agent is machinery this client does
+ * not have yet, and a button that writes nowhere is worse than none. */
+
+/* The field outlives re-renders so typing never loses the caret. */
+let railSearch: HTMLInputElement | undefined;
+let railQuery = "";
+
+function searchField(onInput: () => void): HTMLInputElement {
+	if (!railSearch) {
+		railSearch = h("input", {
+			type: "search",
+			placeholder: "Search",
+			autocomplete: "off",
+			spellcheck: "false",
+			"aria-label": "Search agents",
+			oninput: () => {
+				railQuery = (railSearch?.value ?? "").trim().toLowerCase();
+				onInput();
+			},
+		});
+	}
+	return railSearch;
+}
+
+let switcherOpen = false;
+
+function statusLine(company: CompanyController, agent: HostedStaffAgent | undefined): string {
+	const activity = company.activityFor(agent?.id);
+	if (activity?.activity === "needs_attention") return "Needs you";
+	if (activity?.activity === "working") return "Working";
+	return agent?.role ?? "";
+}
+
 export function renderRail(container: HTMLElement, company: CompanyController, route: Route): void {
 	const state = company.store.get();
 	const profileId = company.profile.profileId;
@@ -162,165 +180,182 @@ export function renderRail(container: HTMLElement, company: CompanyController, r
 	const isActive = (staffId: string) =>
 		activeStaffId === staffId || (activeSessionId !== undefined && sessionOf(staffId)?.sessionId === activeSessionId);
 	const cofounderSessionId = state.organization?.cofounder.memberSessionId;
+	const section = route.name === "company" ? route.section : undefined;
+	const redraw = () => renderRail(container, company, route);
+	const search = searchField(redraw);
+	const matches = (text: string) => !railQuery || text.toLowerCase().includes(railQuery);
 
-	const nodeEl = (node: HierarchyNode, depth: number): HTMLElement => {
-		const agent = company.staffById(node.canonicalId);
-		const activity = company.activityFor(
-			node.kind === "agent" || node.kind === "cofounder" ? node.canonicalId : undefined,
-		);
-		const dot =
-			activity?.activity === "working"
-				? h("span", { class: "dot dot-ok", title: "Working" })
-				: activity?.activity === "needs_attention"
-					? h("span", { class: "dot dot-warn", title: "Needs attention" })
-					: null;
-		if (node.kind === "cofounder") {
-			return h(
-				"a",
-				{
-					class: [
-						"rail-item",
-						"rail-cofounder",
-						(route.name === "company" && route.section === "home") ||
-						(cofounderSessionId && activeSessionId === cofounderSessionId)
-							? "active"
-							: "",
-					].join(" "),
-					href: `#/c/${profileId}`,
-				},
-				agentFigure(agent, node.label, { size: 32 }),
-				h("span", { class: "rail-label" }, node.label, h("span", { class: "muted small" }, "Co-Founder · home")),
-				dot,
-			);
-		}
-		if (node.kind === "agent") {
-			return h(
-				"a",
-				{
-					class: ["rail-item", isActive(node.canonicalId) ? "active" : ""].join(" "),
-					href: `#/c/${profileId}/staff/${node.canonicalId}`,
-					dataset: { depth: String(depth) },
-				},
-				agentFigure(agent, node.label, { size: 32 }),
-				h(
-					"span",
-					{ class: "rail-label" },
-					node.label,
-					h("span", { class: "muted small" }, node.role ?? agent?.role ?? ""),
-				),
-				dot,
-			);
-		}
-		const kindLabel =
-			node.kind === "responsibility" ? "Responsibility" : node.kind === "project" ? "Project" : "Room";
-		return h(
-			"div",
-			{ class: `rail-group rail-${node.kind}`, dataset: { depth: String(depth) } },
-			h(
-				"div",
-				{ class: "rail-group-title" },
-				h("span", { class: "muted small" }, kindLabel),
-				h("span", null, node.label),
-				node.status !== "active" ? badge(node.status, "neutral") : null,
-			),
-			...node.children.map((child) => nodeEl(child, depth + 1)),
-		);
-	};
+	const active = state.staff.filter((agent) => agent.employmentStatus === "active");
+	const cofounder =
+		(state.organization ? company.staffById(state.organization.cofounder.staffAgentId) : undefined) ??
+		active.find((agent) => agent.templateId === "co-founder");
 
-	const hierarchyAgentIds = new Set<string>();
-	const collect = (nodes: HierarchyNode[]) => {
-		for (const node of nodes) {
-			if (node.kind === "agent" || node.kind === "cofounder") hierarchyAgentIds.add(node.canonicalId);
-			collect(node.children);
-		}
-	};
-	collect(state.hierarchy.primary);
-	collect(state.hierarchy.inactive);
-	const otherSessions = state.sessions.filter(
-		(session) =>
-			session.status === "open" &&
-			(!session.staffAgentId ||
-				!hierarchyAgentIds.has(session.staffAgentId) ||
-				(session.executionScope && ("roomId" in session.executionScope || "group" in session.executionScope))),
-	);
+	const cofounderCard =
+		cofounder && matches(`${cofounder.displayName} ${cofounder.role}`)
+			? h(
+					"a",
+					{
+						class: [
+							"cofounder-pin",
+							section === "home" ||
+							(cofounderSessionId && activeSessionId === cofounderSessionId) ||
+							isActive(cofounder.id)
+								? "active"
+								: "",
+						].join(" "),
+						href: `#/c/${profileId}`,
+					},
+					h(
+						"span",
+						{ class: "cofounder-stand" },
+						agentFigure(cofounder, cofounder.displayName, { size: 64 }),
+						company.activityFor(cofounder.id)?.activity === "working"
+							? h("span", { class: "presence", title: "Working" })
+							: null,
+					),
+					h("strong", null, cofounder.displayName),
+					h("small", null, statusLine(company, cofounder)),
+				)
+			: null;
 
-	const navLink = (section: "approvals" | "file" | "organization" | "team", label: string) =>
+	const staffRow = (agent: HostedStaffAgent) =>
 		h(
 			"a",
 			{
-				class: [
-					"rail-nav",
-					route.name === "company" &&
-					(route.section === section ||
-						(section === "file" && (route.section === "snapshot" || route.section === "proposal")))
-						? "active"
-						: "",
-				].join(" "),
-				href: `#/c/${profileId}/${section}`,
+				class: ["rail-row", isActive(agent.id) ? "active" : ""].join(" "),
+				href: `#/c/${profileId}/staff/${agent.id}`,
+			},
+			agentFigure(agent, agent.displayName, { size: 36 }),
+			h(
+				"span",
+				{ class: "rail-row-copy" },
+				h("strong", null, agent.displayName),
+				h("small", null, statusLine(company, agent)),
+			),
+		);
+
+	const staffRows = active
+		.filter((agent) => agent.id !== cofounder?.id)
+		.filter((agent) => matches(`${agent.displayName} ${agent.role}`))
+		.map(staffRow);
+
+	// Conversations that are not one agent's own thread: rooms and group work.
+	const otherSessions = state.sessions.filter(
+		(session) =>
+			session.status === "open" &&
+			matches(session.title) &&
+			(!session.staffAgentId ||
+				!active.some((agent) => agent.id === session.staffAgentId) ||
+				(session.executionScope && ("roomId" in session.executionScope || "group" in session.executionScope))),
+	);
+	const sessionRows = otherSessions.map((session) =>
+		h(
+			"a",
+			{
+				class: ["rail-row", activeSessionId === session.sessionId ? "active" : ""].join(" "),
+				href: `#/c/${profileId}/chat/${session.sessionId}`,
+			},
+			h("span", { class: "avatar small" }, session.title.slice(0, 1).toUpperCase()),
+			h(
+				"span",
+				{ class: "rail-row-copy" },
+				h("strong", null, session.title),
+				h(
+					"small",
+					null,
+					session.audience.kind === "member_private"
+						? "private"
+						: session.executionScope && "roomId" in session.executionScope
+							? "room"
+							: "company",
+				),
+			),
+		),
+	);
+
+	const menuItem = (target: CompanySection, label: string) =>
+		h(
+			"a",
+			{
+				class: ["switcher-item", section === target ? "active" : ""].join(" "),
+				role: "menuitem",
+				href: `#/c/${profileId}/${target}`,
+				onclick: () => {
+					switcherOpen = false;
+				},
 			},
 			label,
 		);
+	const switcher = h(
+		"div",
+		{ class: ["rail-switcher", switcherOpen ? "is-open" : ""].join(" ") },
+		h(
+			"button",
+			{
+				type: "button",
+				class: "switcher-trigger",
+				"aria-haspopup": "menu",
+				"aria-expanded": String(switcherOpen),
+				onclick: () => {
+					switcherOpen = !switcherOpen;
+					redraw();
+				},
+			},
+			companyLogo(profileId, "switcher-mark"),
+			h(
+				"span",
+				{ class: "switcher-copy" },
+				h("strong", null, company.profile.profileName),
+				state.team ? h("small", null, state.team.role) : null,
+			),
+		),
+		h(
+			"div",
+			{ class: "switcher-menu", role: "menu", hidden: !switcherOpen },
+			menuItem("approvals", "Approvals"),
+			menuItem("file", "Company File"),
+			menuItem("organization", "Organization"),
+			menuItem("team", "Team"),
+			h("div", { class: "switcher-separator", role: "separator" }),
+			h(
+				"a",
+				{
+					class: "switcher-item",
+					role: "menuitem",
+					href: "#/",
+					onclick: () => {
+						switcherOpen = false;
+					},
+				},
+				"All companies",
+			),
+		),
+	);
 
+	const empty =
+		!state.loading && !cofounderCard && !staffRows.length && !sessionRows.length
+			? h("p", { class: "rail-empty" }, railQuery ? "No agent by that name." : "No agents yet.")
+			: null;
+
+	// Replacing the rail detaches the field, and a detached element loses
+	// focus, so the caret is put back exactly where the typist left it.
+	const typing = document.activeElement === search;
+	const caret: [number, number] = [search.selectionStart ?? 0, search.selectionEnd ?? 0];
 	replace(
 		container,
+		h("div", { class: "rail-top" }, h("label", { class: "rail-search" }, search)),
 		h(
 			"div",
-			{ class: "rail-company" },
-			h("strong", null, company.profile.profileName),
-			state.team ? badge(state.team.role, "neutral") : null,
+			{ class: "rail-scroll" },
+			cofounderCard,
+			state.loading && !state.staff.length ? h("p", { class: "rail-empty" }, "Loading…") : null,
+			staffRows.length || sessionRows.length ? h("div", { class: "rail-list" }, ...staffRows, ...sessionRows) : null,
+			empty,
 		),
-		h(
-			"nav",
-			{ class: "rail-section", "aria-label": "Company" },
-			navLink("approvals", "Approvals"),
-			navLink("file", "Company File"),
-			navLink("organization", "Organization"),
-			navLink("team", "Team"),
-		),
-		h(
-			"div",
-			{ class: "rail-section" },
-			h("div", { class: "rail-heading" }, "Attention"),
-			...state.hierarchy.primary.map((node) => nodeEl(node, 0)),
-		),
-		otherSessions.length
-			? h(
-					"div",
-					{ class: "rail-section" },
-					h("div", { class: "rail-heading" }, "Other conversations"),
-					...otherSessions.map((session) =>
-						h(
-							"a",
-							{
-								class: ["rail-item", activeSessionId === session.sessionId ? "active" : ""].join(" "),
-								href: `#/c/${profileId}/chat/${session.sessionId}`,
-							},
-							h("span", { class: "avatar small" }, session.title.slice(0, 1).toUpperCase()),
-							h(
-								"span",
-								{ class: "rail-label" },
-								session.title,
-								h(
-									"span",
-									{ class: "muted small" },
-									session.audience.kind === "member_private"
-										? "private"
-										: session.executionScope && "roomId" in session.executionScope
-											? "room"
-											: "company",
-								),
-							),
-						),
-					),
-				)
-			: null,
-		state.hierarchy.inactive.length
-			? h(
-					"details",
-					{ class: "rail-section rail-inactive" },
-					h("summary", { class: "rail-heading" }, `Inactive (${state.hierarchy.inactive.length})`),
-					...state.hierarchy.inactive.map((node) => nodeEl(node, 0)),
-				)
-			: null,
+		switcher,
 	);
+	if (typing) {
+		search.focus();
+		search.setSelectionRange(caret[0], caret[1]);
+	}
 }

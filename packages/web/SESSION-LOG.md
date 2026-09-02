@@ -512,3 +512,45 @@ on the target project, because creating a company there seeds no agent.
 **Blocked.** Unchanged: Order 0 is absent from `wovsmjvghnbcbfazdtvr`.
 
 **Requested.** Nothing new this block.
+
+**The rail is rebuilt (founder: "now rebuild the rail").** `renderRail` in
+`src/app/views/shell.ts` now draws what Qorpera Base draws: a search field, the
+Co-Founder as a low card with its figure standing on it above the card's edge,
+the rest of the staff as rows with a status line, and the company's own menu at
+the foot. Width is the macOS Messages ratio, clamped to 240–520px so a wide
+window does not hand a third of itself to a list of agents.
+
+**The invented navigation is gone.** Approvals, Company File, Organization and
+Team were rail entries that exist in no Qorpera surface. They now live in the
+company menu at the foot of the rail, which is where the desktop keeps a
+company's own things, so none of those pages became unreachable. The top bar
+inside a company drops its duplicate company select; the rail's own switcher
+names the company now.
+
+**Status lines are real state**, from `qorpera_list_staff_execution_activity`:
+"Needs you", "Working", else the agent's role. Search filters staff and
+conversations by name and role, as the desktop's rail search does.
+
+**No add-agent button.** The approved design has one, but hiring an agent is
+machinery this client does not have, and a button that writes nowhere is worse
+than none.
+
+**Three bugs found while verifying, all fixed.** The search field lost focus
+after the first keystroke, so filtering only ever saw one character — the same
+detach-on-replace bug as the friends field, fixed the same way. The company
+logo in the switcher rendered at 116px because `.company-logo` is defined later
+in the stylesheet than `.switcher-mark` and won on equal specificity. And the
+field's input sat centred and half-width because the global `label` rule stacks
+its children in a column, which this row-shaped label never overrode.
+
+**Verified** against the real rail with a stubbed company: width 481px at a
+1440px window, the Co-Founder card, three staff rows, a "Working" status driven
+by activity state, the menu's five entries, and typing "copy" narrowing to one
+row with the caret held.
+
+**Works against the real cloud.** Deploys and loads clean.
+
+**Blocked.** Unchanged: Order 0 is absent, so a real company still has no
+agents for the rail to list.
+
+**Requested.** Nothing new this block.

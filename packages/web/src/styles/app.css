@@ -132,32 +132,100 @@ label > input, label > select { font-weight: 400; }
 .account-signout { color: var(--text-muted); }
 
 /* rail */
+/* The company rail, as Qorpera Base draws it (V24 product preview). Its width
+ * is the macOS Messages ratio, clamped so a wide window does not hand a third
+ * of itself to a list of agents. */
 .rail {
-	width: var(--rail-width); flex: none; overflow: auto; padding: 12px 10px 24px;
-	background: var(--sidebar-surface); border-right: 1px solid var(--border);
+	--rail: #eae8e7; --rail-line: #d8d6d2; --rail-hover: #dedcd8;
+	--rail-search: #d9d7d7; --rail-search-ink: #85857f;
+	--rail-selection: #0e84ff; --rail-small: #71716b; --rail-status: #00c887;
+	display: flex; flex-direction: column; min-height: 0;
+	width: clamp(240px, 33.4%, 520px); flex: none;
+	padding: 12px 11px 11px; background: var(--rail); border-right: 1px solid var(--rail-line);
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
 }
 .rail[hidden] { display: none; }
-.rail-company { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 8px 12px; }
-.rail-section { display: flex; flex-direction: column; gap: 2px; margin-bottom: 14px; }
-.rail-heading { font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-soft); padding: 6px 8px 4px; }
-.rail-nav { display: block; padding: 6px 10px; border-radius: var(--radius-sm); color: var(--text); font-weight: 500; }
-.rail-nav:hover, .rail-item:hover { background: var(--sidebar-hover); text-decoration: none; }
-.rail-nav.active, .rail-item.active { background: var(--sidebar-selection); color: var(--sidebar-selection-text); }
-.rail-item.active .muted { color: color-mix(in srgb, var(--sidebar-selection-text) 80%, transparent); }
-.rail-item {
-	display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: var(--radius-sm); color: var(--text);
+.rail-top { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.rail-search {
+	display: flex; flex-direction: row; align-items: center; gap: 6px; height: 28px; flex: 1; min-width: 0;
+	padding: 0 8px 0 26px;
+	border-radius: 6px; background: var(--rail-search) no-repeat 8px 50%; color: var(--rail-search-ink);
+	box-shadow: inset 0 0 0 0.5px rgba(18, 18, 17, 0.08);
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2385857f' stroke-width='1.8'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m20 20-4-4'/%3E%3C/svg%3E");
+	background-size: 14px 14px;
 }
-/* Hierarchy depth as data attributes: no inline styles, so the CSP stays strict. */
-.rail-item[data-depth="1"], .rail-group[data-depth="1"] { margin-left: 10px; }
-.rail-item[data-depth="2"], .rail-group[data-depth="2"] { margin-left: 20px; }
-.rail-item[data-depth="3"], .rail-group[data-depth="3"] { margin-left: 30px; }
-.rail-label { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; flex: 1; }
-.rail-label > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.rail-cofounder { padding: 8px; margin-bottom: 4px; }
-.rail-group { padding: 4px 0; }
-.rail-group-title { display: flex; flex-direction: column; padding: 4px 8px; font-weight: 600; }
-.rail-group-title .badge { align-self: flex-start; margin-top: 2px; }
-.rail-inactive summary { cursor: pointer; list-style: none; }
+.rail-search input {
+	flex: 1; width: 100%; min-width: 0; height: 100%; min-height: 0; padding: 0; border: 0; border-radius: 0;
+	background: transparent; font: inherit; font-size: 13px; font-weight: 400; color: var(--text); outline: 0;
+}
+.rail-search input::placeholder { color: #777772; }
+.rail-scroll { flex: 1; min-height: 0; overflow-y: auto; padding-top: 2px; }
+.rail-empty { padding: 14px 8px; color: var(--rail-small); font-size: 12.5px; }
+
+/* The Co-Founder: a low card with its figure standing on it, rising above the
+ * top edge, with a contact shadow at its feet. */
+.cofounder-pin {
+	position: relative; display: flex; flex-direction: column; align-items: center; gap: 1px;
+	margin: 26px 0 6px; padding: 50px 6px 9px; border-radius: 12px;
+	background: transparent; color: var(--text); text-align: center;
+}
+.cofounder-pin:hover { background: var(--rail-hover); text-decoration: none; }
+.cofounder-pin.active, .cofounder-pin.active:hover { background: var(--rail-selection); color: #fff; }
+.cofounder-pin strong { position: relative; z-index: 2; font-size: 12px; font-weight: 650; line-height: 1.2; }
+.cofounder-pin small { font-size: 10.5px; color: var(--rail-small); }
+.cofounder-pin.active small { color: #fff; }
+.cofounder-stand { position: absolute; left: 50%; top: -20px; width: 64px; height: 64px; transform: translateX(-50%); }
+.cofounder-stand::before {
+	content: ""; position: absolute; left: 14%; right: 14%; bottom: 1px; height: 10px; border-radius: 50%;
+	background: rgba(0, 30, 80, 0.3); filter: blur(5px);
+}
+.cofounder-stand .figure { position: relative; z-index: 1; width: 64px; height: 64px; filter: drop-shadow(0 4px 4px rgba(0, 0, 0, 0.16)); }
+.cofounder-stand .presence {
+	position: absolute; z-index: 2; right: 2px; bottom: 4px; width: 12px; height: 12px; border-radius: 50%;
+	background: var(--rail-status); border: 2px solid var(--rail);
+}
+.cofounder-pin.active .cofounder-stand .presence { border-color: var(--rail-selection); }
+
+.rail-list { display: grid; gap: 1px; }
+.rail-row {
+	display: grid; grid-template-columns: 36px minmax(0, 1fr); align-items: center; gap: 8px;
+	min-height: 54px; padding: 5px 8px; border-radius: 9px; color: var(--text);
+}
+.rail-row:hover { background: var(--rail-hover); text-decoration: none; }
+.rail-row.active, .rail-row.active:hover { background: var(--rail-selection); color: #fff; }
+.rail-row .figure { width: 36px; height: 36px; }
+.rail-row-copy { display: grid; gap: 1px; min-width: 0; }
+.rail-row-copy strong { font-size: 13.5px; font-weight: 600; line-height: 1.18; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-row-copy small { font-size: 11px; line-height: 15px; color: #6e6c6b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-row.active .rail-row-copy small { color: rgba(255, 255, 255, 0.85); }
+
+/* The company's own menu, where the pages that are not agents live. */
+.rail-switcher { position: relative; flex: 0 0 auto; padding-top: 5px; }
+.switcher-trigger {
+	display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: center; gap: 9px; width: 100%;
+	min-height: 40px; padding: 6px 8px; border: 0; border-radius: 8px; background: transparent;
+	color: var(--text); text-align: left; font: inherit; cursor: pointer;
+}
+.switcher-trigger:hover, .rail-switcher.is-open .switcher-trigger { background: var(--rail-hover); }
+.switcher-trigger .company-logo.switcher-mark { width: 28px; height: 28px; }
+.switcher-copy { display: grid; gap: 1px; min-width: 0; }
+.switcher-copy strong { font-size: 12.5px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.switcher-copy small { color: var(--rail-small); font-size: 10px; }
+.switcher-menu {
+	position: absolute; z-index: 40; bottom: calc(100% + 4px); left: 0; right: 0;
+	display: flex; flex-direction: column; gap: 1px; padding: 6px;
+	border: 1px solid var(--border); border-radius: 12px; background: var(--bg);
+	box-shadow: 0 18px 40px rgba(11, 11, 11, 0.16), 0 2px 8px rgba(11, 11, 11, 0.06);
+}
+/* An author `display` beats the browser's [hidden] rule, so restore it. */
+.switcher-menu[hidden] { display: none; }
+.switcher-item {
+	padding: 8px 10px; border-radius: 8px; color: var(--text); font-size: 13px; font-weight: 550;
+}
+.switcher-item:hover { background: var(--hover); text-decoration: none; }
+.switcher-item.active { background: var(--pane-strong); }
+.switcher-separator { height: 1px; margin: 4px 6px; background: var(--border); }
+
 /* Agent figures: the approved vector build, driven by the vendored rig at
  * part motion 0. The host sets the size; the figure fills it. */
 .figure { position: relative; display: inline-block; width: 32px; height: 32px; flex: none; vertical-align: middle; }
