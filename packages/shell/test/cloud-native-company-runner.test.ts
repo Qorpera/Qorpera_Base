@@ -90,6 +90,53 @@ it("executes with only cloud identity and produces a private receipt, never a tr
 	expect(f.terminate).not.toHaveBeenCalled();
 });
 
+it("accepts a silent private completion for a wake run and leaves reply obligations to the cloud", async () => {
+	const { options, startCompany } = fixture();
+	const { authority, job, bridge } = options;
+	const wakeJob: CloudRunnerJob = {
+		...job,
+		payload: { schema: "qorpera.wake-run/v1", occurrenceId: randomUUID() },
+	};
+	startCompany.mockImplementationOnce(async () => ({
+		result: Promise.resolve({
+			schema: "qorpera.native-harness-result/v2",
+			run_id: job.runId,
+			message_count: 0,
+			final_message_id: null,
+			provider_session_id: randomUUID(),
+		}),
+		terminate: vi.fn(async () => undefined),
+	}));
+	const completed = await executeNativeCompanyRunnerJob({
+		job: wakeJob,
+		authority,
+		refreshAuthority: async () => authority,
+		bridge,
+		signal: new AbortController().signal,
+	});
+	expect((completed.result as { backend_result: { message_count: number } }).backend_result.message_count).toBe(0);
+	// A conversation turn that is not a wake run still requires the final send.
+	startCompany.mockImplementationOnce(async () => ({
+		result: Promise.resolve({
+			schema: "qorpera.native-harness-result/v2",
+			run_id: job.runId,
+			message_count: 0,
+			final_message_id: null,
+			provider_session_id: randomUUID(),
+		}),
+		terminate: vi.fn(async () => undefined),
+	}));
+	await expect(
+		executeNativeCompanyRunnerJob({
+			job,
+			authority,
+			refreshAuthority: async () => authority,
+			bridge,
+			signal: new AbortController().signal,
+		}),
+	).rejects.toThrow("invalid private completion receipt");
+});
+
 it("does not downgrade when the bridge has no governed execution endpoint", async () => {
 	const f = fixture();
 	await expect(

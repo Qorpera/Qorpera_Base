@@ -11,6 +11,17 @@ import {
 } from "./cloud-runner-sandbox.ts";
 import { serializeCloudRunnerExecutionUsage } from "./cloud-runner-usage.ts";
 
+/** True when the job was materialized from a wake occurrence (qorpera.wake-run/v1). */
+export function isWakeRunJob(job: Pick<CloudRunnerJob, "payload">): boolean {
+	const payload = job.payload;
+	return (
+		payload !== null &&
+		typeof payload === "object" &&
+		!Array.isArray(payload) &&
+		(payload as { schema?: unknown }).schema === "qorpera.wake-run/v1"
+	);
+}
+
 /** Executes over cloud-composed context and path effects, never a runner-owned
  * Company File tree. Completion/session binding happen atomically in the cloud.
  */
@@ -74,10 +85,13 @@ export async function executeNativeCompanyRunnerJob(options: {
 	});
 	let completed = false;
 	try {
+		// Wake runs (runtime Step 3) carry their reply obligations in the cloud wake
+		// policy; qorpera_assert_wake_completion enforces them at completion. A
+		// silent or forbidden final send is a valid private completion there.
 		const receipt = parseNativeHarnessResult(
 			await Promise.race([processHandle.result, cancelled]),
 			authority.runId,
-			job.sessionId !== undefined,
+			job.sessionId !== undefined && !isWakeRunJob(job),
 		);
 		stopped.throwIfAborted();
 		if (receipt.provider_session_id === null) throw new Error("Native company session identity is missing");

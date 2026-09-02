@@ -340,6 +340,36 @@ describe("cloud-owned human Company File edits", () => {
 		);
 	});
 
+	it("passes exact canonical room bytes to the same atomic projection transaction", async () => {
+		const service = await fixture();
+		const roomId = "29500000-0000-4000-8000-000000000080";
+		const document = JSON.stringify({
+			schema: "qorpera.company-room/v1",
+			roomId,
+			key: "acceptance",
+			name: "Acceptance room",
+			purpose: "Bounded room conversation.",
+			status: "active",
+			projectId: null,
+			members: [{ kind: "staff_agent", id: "29500000-0000-4000-8000-000000000070" }],
+			version: 1,
+		});
+		expect(
+			(
+				await service.request("edits", {
+					...edit,
+					path: `organization/rooms/${roomId}.json`,
+					text: document,
+				})
+			).status,
+		).toBe(200);
+		expect(service.publisher).toHaveBeenCalledWith(
+			"qorpera_apply_member_company_path_command_v3",
+			expect.objectContaining({ p_document_text: document }),
+			expect.anything(),
+		);
+	});
+
 	it("recovers a lost acknowledgement without staging or applying a second effect", async () => {
 		const service = await fixture();
 		service.state.loseApply = true;
