@@ -123,6 +123,41 @@ export function button(
 	);
 }
 
+/* Small stroked icons, the desktop's set (Lucide, ISC). Drawn inline so they
+ * inherit the row's colour; an <img> could not. */
+const ICON_PATHS: Record<string, string[]> = {
+	settings: [
+		"M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z",
+		"M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z",
+	],
+	friends: [
+		"M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2",
+		"M13 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z",
+		"M22 21v-2a4 4 0 0 0-3-3.87",
+		"M16 3.13a4 4 0 0 1 0 7.75",
+	],
+	invitations: ["M22 6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V6Z", "m22 7-10 6L2 7"],
+	signout: ["m16 17 5-5-5-5", "M21 12H9", "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"],
+};
+
+export function icon(name: keyof typeof ICON_PATHS | string): SVGSVGElement {
+	const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+	svg.setAttribute("viewBox", "0 0 24 24");
+	svg.setAttribute("fill", "none");
+	svg.setAttribute("stroke", "currentColor");
+	svg.setAttribute("stroke-width", "1.8");
+	svg.setAttribute("stroke-linecap", "round");
+	svg.setAttribute("stroke-linejoin", "round");
+	svg.setAttribute("aria-hidden", "true");
+	svg.setAttribute("class", "icon");
+	for (const d of ICON_PATHS[name] ?? []) {
+		const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+		path.setAttribute("d", d);
+		svg.append(path);
+	}
+	return svg;
+}
+
 export function spinner(label = "Loading"): HTMLElement {
 	return h(
 		"div",
@@ -214,12 +249,14 @@ export function creatureImage(creature: string | undefined, name: string, color?
 	return element;
 }
 
-/* Company pictures. The desktop hub gives a company one of four characters on
- * a disc; it keeps that choice on the device, so the cloud has no picture to
- * read (CLIENT-CONTRACT.md request 10) and the character follows the profile
- * id, which survives a rename. The character is drawn the way staff avatars
- * are — silhouette plus eyes — in ink on a paper disc, so a company reads as a
- * character without being mistaken for a member of staff. */
+/* The company logo. A company's picture is its logo, and the cloud carries
+ * none: the desktop keeps the member's chosen character on the device
+ * (CLIENT-CONTRACT.md request 10 asks for a logo field, either a named
+ * character or an uploaded image). Until it exists, a company wears a
+ * placeholder character derived from its profile id, which survives a rename.
+ * The character is drawn the way staff avatars are — silhouette plus eyes — in
+ * ink on a paper disc, so a company reads as a character without being
+ * mistaken for a member of staff. */
 const COMPANY_CHARACTERS = ["halo", "bloom", "folio", "pebble"] as const;
 export type CompanyCharacter = (typeof COMPANY_CHARACTERS)[number];
 const COMPANY_INK = "#26272b";
@@ -230,11 +267,11 @@ export function companyCharacter(seed: string): CompanyCharacter {
 	return COMPANY_CHARACTERS[Number(value % BigInt(COMPANY_CHARACTERS.length))] ?? "halo";
 }
 
-export function companyAvatar(seed: string, className = ""): HTMLElement {
+export function companyLogo(seed: string, className = ""): HTMLElement {
 	const character = companyCharacter(seed);
 	return h(
 		"span",
-		{ class: ["company-avatar", className].filter(Boolean).join(" "), "aria-hidden": "true" },
+		{ class: ["company-logo", className].filter(Boolean).join(" "), "aria-hidden": "true" },
 		creatureImage(character, character, COMPANY_INK),
 	);
 }

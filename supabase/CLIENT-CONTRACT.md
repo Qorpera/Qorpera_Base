@@ -455,18 +455,35 @@ above.
    SMTP through Resend (`smtp.resend.com:465`, sender
    `Qorpera <no-reply@mail.qorpera.com>`) was prepared; the founder holds the
    key. The desktop's loopback and `qorpera://` redirect entries are untouched.
-10. **A company's picture is device-local, so no client can agree with another
-    one.** The desktop hub gives every company one of four characters
-    (`renderer.js` `COMPANY_AVATARS`: halo, bloom, folio, pebble) and stores
-    that choice per user under the desktop's own userData
-    (`readCompanyIcon`/`writeCompanyIcon`, IPC `company:set-icon`);
+10. **A company's logo should be cloud state.** Every client shows a company
+    picture, and today none of them can agree on it. The desktop hub gives a
+    company one of four characters (`renderer.js` `COMPANY_AVATARS`: halo,
+    bloom, folio, pebble) and stores that choice per user under the desktop's
+    own userData (`readCompanyIcon`/`writeCompanyIcon`, IPC `company:set-icon`);
     `qorpera_create_hosted_profile(p_profile_name, p_environment_name,
     p_contract_version)` takes no picture and `qorpera_list_hosted_profiles`
     returns none. So a company that shows Folio on the founder's laptop shows
-    something else on the web, on mobile, and to every colleague. Request: put
-    the picture in cloud profile state — a `company_icon` on the profile row,
-    returned by `qorpera_list_hosted_profiles`, accepted by
-    `qorpera_create_hosted_profile`, and settable through a member RPC bounded
-    by the `manageMembers`/owner capability. Until then the web client derives
-    the character from the profile id (stable across renames) and says so in
-    its own code.
+    something else on the web, on mobile, and to every colleague.
+
+    Treat this as the company's **logo**, not decoration: the placeholder
+    character is what a company wears until someone gives it the real thing.
+    Request, in two parts:
+
+    - **State.** A logo on the profile row, returned by
+      `qorpera_list_hosted_profiles` (and by the invitation list, so an
+      invitation can show the company it comes from), accepted by
+      `qorpera_create_hosted_profile`, and set through a member RPC bounded by
+      the profile's `manageMembers`/owner capability. Two forms in one field:
+      one of the named characters, or an uploaded image.
+    - **The uploaded image.** A logo a member supplies is an object like any
+      other — `qorpera_authorize_profile_object_upload(p_profile_id, p_sha256,
+      p_bytes)` into `qorpera-profile-objects/{profileId}/{sha256}` already
+      exists — so the logo field only needs to carry the sha256 and media type,
+      and the read path has to serve it to every member of the profile (the
+      gateway route, plus the CORS answer in request 1). Bounds worth stating:
+      accepted media types, a maximum size, and whether a square render is
+      expected.
+
+    Until this lands the web client derives the placeholder character from the
+    profile id (stable across renames) and says so in its own code; it offers
+    no logo picker, because there is nowhere to put the answer.

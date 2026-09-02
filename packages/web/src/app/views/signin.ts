@@ -92,7 +92,7 @@ export function renderSignIn(auth: AuthController, container: HTMLElement): void
 		art = h("aside", { class: "auth-art", "aria-hidden": "true" });
 		const stage = h("div", { class: "crown-stage" });
 		art.append(stage);
-		mountCrown(stage, { watch: () => container.querySelectorAll("input, button") });
+		mountCrown(stage);
 	}
 	replace(
 		container,

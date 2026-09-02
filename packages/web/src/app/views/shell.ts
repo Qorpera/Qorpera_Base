@@ -1,7 +1,7 @@
 import type { User } from "@supabase/supabase-js";
 import type { HierarchyNode } from "../../cloud/organization.ts";
 import type { HostedProfile } from "../../cloud/types.ts";
-import { badge, creatureImage, h, initials, replace } from "../../ui/dom.ts";
+import { badge, creatureImage, h, icon, initials, replace } from "../../ui/dom.ts";
 import { type AuthController, displayName } from "../auth.ts";
 import type { CompanyController } from "../company.ts";
 import { navigate, type Route } from "../router.ts";
@@ -59,8 +59,7 @@ function accountMenuElement(context: ShellContext): HTMLElement {
 		window.addEventListener("hashchange", () => setAccountMenuOpen(false));
 	}
 	const name = displayName(context.user);
-	const email = context.user?.email ?? "";
-	const item = (target: "account" | "friends" | "invitations", label: string, hint: string, count = 0) =>
+	const item = (target: "account" | "friends" | "invitations", iconName: string, label: string, count = 0) =>
 		h(
 			"a",
 			{
@@ -69,7 +68,8 @@ function accountMenuElement(context: ShellContext): HTMLElement {
 				href: `#/${target}`,
 				onclick: () => setAccountMenuOpen(false),
 			},
-			h("span", { class: "account-item-label" }, label, h("span", { class: "muted small" }, hint)),
+			icon(iconName),
+			h("span", { class: "account-item-label" }, label),
 			count > 0 ? h("span", { class: "account-count" }, String(count)) : null,
 		);
 	replace(
@@ -80,16 +80,10 @@ function accountMenuElement(context: ShellContext): HTMLElement {
 	);
 	replace(
 		accountPopover!,
-		h(
-			"div",
-			{ class: "account-identity" },
-			h("strong", null, name),
-			// An account with no name shows its address as the name already.
-			email && email !== name ? h("span", { class: "muted small" }, email) : null,
-		),
-		item("account", "Account and settings", "Plan, storage, feedback"),
-		item("friends", "Friends", "People you can invite to a company"),
-		item("invitations", "Invitations", "Companies waiting for you", context.invitations),
+		h("div", { class: "account-identity" }, h("strong", null, name)),
+		item("account", "settings", "Account and settings"),
+		item("friends", "friends", "Friends"),
+		item("invitations", "invitations", "Invitations", context.invitations),
 		h("div", { class: "account-separator", role: "separator" }),
 		h(
 			"button",
@@ -102,6 +96,7 @@ function accountMenuElement(context: ShellContext): HTMLElement {
 					void context.auth.signOut();
 				},
 			},
+			icon("signout"),
 			h("span", { class: "account-item-label" }, "Sign out"),
 		),
 	);

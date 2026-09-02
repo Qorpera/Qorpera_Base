@@ -107,29 +107,26 @@ label > input, label > select { font-weight: 400; }
 	transform: translateY(-2px) rotate(45deg);
 }
 .account-popover {
-	position: absolute; top: calc(100% + 8px); right: 0; z-index: 40; width: 276px;
-	display: flex; flex-direction: column; gap: 2px; padding: 6px;
-	border: 1px solid var(--border); border-radius: 16px; background: var(--bg);
+	position: absolute; top: calc(100% + 8px); right: 0; z-index: 40; width: 232px;
+	display: flex; flex-direction: column; gap: 1px; padding: 6px;
+	border: 1px solid var(--border); border-radius: 14px; background: var(--bg);
 	box-shadow: 0 22px 48px rgba(11, 11, 11, 0.14), 0 2px 8px rgba(11, 11, 11, 0.06);
 }
 /* An author `display` beats the browser's [hidden] rule, so restore it. */
 .account-popover[hidden] { display: none; }
-.account-identity {
-	display: flex; flex-direction: column; gap: 1px; padding: 10px 12px 12px; margin-bottom: 4px;
-	border-bottom: 1px solid var(--border);
-}
+.account-identity { padding: 9px 12px 10px; margin-bottom: 4px; border-bottom: 1px solid var(--border); }
 .account-item {
-	display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%;
-	padding: 8px 12px; border: 0; border-radius: 10px; background: transparent; color: var(--text);
-	font: inherit; font-weight: 600; text-align: left; cursor: pointer;
+	display: flex; align-items: center; gap: 10px; width: 100%;
+	padding: 8px 12px; border: 0; border-radius: 9px; background: transparent; color: var(--text);
+	font: inherit; font-weight: 550; text-align: left; cursor: pointer;
 }
 .account-item:hover { background: var(--hover); text-decoration: none; }
 .account-item.active { background: var(--pane-strong); }
-.account-item-label { display: flex; flex-direction: column; line-height: 1.3; }
-.account-item-label .muted { font-weight: 400; }
+.account-item .icon { width: 16px; height: 16px; flex: none; color: var(--text-soft); }
+.account-item-label { flex: 1; min-width: 0; }
 .account-count {
-	min-width: 20px; height: 20px; padding: 0 6px; border-radius: 999px; display: grid; place-items: center;
-	background: var(--primary); color: #fff; font-size: 11.5px; font-weight: 700;
+	min-width: 19px; height: 19px; padding: 0 6px; border-radius: 999px; display: grid; place-items: center;
+	background: var(--primary); color: #fff; font-size: 11px; font-weight: 700;
 }
 .account-separator { height: 1px; margin: 4px 6px; background: var(--border); }
 .account-signout { color: var(--text-muted); }
@@ -270,13 +267,14 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 	border-color: rgba(20, 25, 35, 0.16); box-shadow: 0 24px 56px rgba(29, 37, 54, 0.1), 0 3px 8px rgba(29, 37, 54, 0.05);
 	transform: translateY(-2px); text-decoration: none;
 }
-.company-card .company-avatar { margin: 8px 0 26px; }
-.company-card:hover .company-avatar { transform: translateY(-1px); }
+.company-card .company-logo { margin: 8px 0 26px; }
+.company-card:hover .company-logo { transform: translateY(-1px); }
 .company-name { font-size: 22px; font-weight: 720; letter-spacing: -0.032em; line-height: 1.15; }
 .company-meta { color: #83868d; font-size: 12.5px; font-weight: 600; letter-spacing: 0.005em; }
 
-/* The company picture: the character in ink on a paper disc. */
-.company-avatar {
+/* The company logo. Until a company carries one, its placeholder is the
+ * character in ink on a paper disc. */
+.company-logo {
 	position: relative; width: 148px; height: 148px; flex: none; overflow: hidden; border-radius: 50%;
 	background: linear-gradient(150deg, #f8f7f4, #e7e6e1);
 	box-shadow:
@@ -284,10 +282,10 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 		inset 0 1px 0 rgba(255, 255, 255, 0.9);
 	transition: box-shadow 240ms ease, transform 240ms ease;
 }
-.company-avatar .creature {
+.company-logo .creature {
 	position: absolute; left: 50%; top: 53%; width: 74%; height: 74%; transform: translate(-50%, -50%);
 }
-.company-avatar.person-company {
+.company-logo.person-company {
 	width: 44px; height: 44px;
 	box-shadow: 0 0 0 1px rgba(20, 25, 35, 0.06), 0 5px 12px rgba(29, 37, 54, 0.12);
 }
@@ -306,10 +304,8 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 .company-card-compose .hub-progress { align-items: flex-start; }
 
 /* Account pages: friends and invitations. */
-/* Border-box: 1160 minus the 40px gutters leaves the hub's 1080 column,
- * so both pages start at the same left edge. */
-.account-page { max-width: 1160px; padding: 30px 40px 64px; }
-.account-page > * { max-width: 680px; }
+/* Friends and Invitations are narrow reading columns, centred in the pane. */
+.account-page { max-width: 720px; padding: 34px 32px 64px; }
 .page-lead { margin: 0 0 22px; color: var(--text-muted); font-size: 15px; }
 .person-add { display: flex; gap: 10px; margin: 0 0 26px; }
 .person-add input { flex: 1; height: 42px; padding: 0 14px; border-radius: 12px; font-size: 15px; }

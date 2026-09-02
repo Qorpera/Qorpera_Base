@@ -1,4 +1,4 @@
-import { button, companyAvatar, fmtDate, h, notice, replace, spinner } from "../../ui/dom.ts";
+import { button, companyLogo, fmtDate, h, notice, replace, spinner } from "../../ui/dom.ts";
 import type { HubController } from "./hub.ts";
 
 /* Invitations: every company waiting for this account. The same cloud state
@@ -25,7 +25,7 @@ export function renderInvitations(hub: HubController, container: HTMLElement): v
 								h(
 									"div",
 									{ class: "person-row" },
-									companyAvatar(invitation.profileId, "person-company"),
+									companyLogo(invitation.profileId, "person-company"),
 									h(
 										"div",
 										{ class: "person-copy" },

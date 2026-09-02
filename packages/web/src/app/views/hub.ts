@@ -1,7 +1,7 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
 import type { HostedIncomingProfileInvitation, HostedProfile } from "../../cloud/types.ts";
-import { button, companyAvatar, fmtDate, h, notice, replace, spinner } from "../../ui/dom.ts";
+import { button, companyLogo, fmtDate, h, notice, replace, spinner } from "../../ui/dom.ts";
 import { navigate } from "../router.ts";
 import { Store } from "../state.ts";
 import { mountCrown } from "./crown.ts";
@@ -113,7 +113,7 @@ function companyCard(profile: HostedProfile): HTMLElement {
 	return h(
 		"a",
 		{ class: "company-card", href: `#/c/${profile.profileId}` },
-		companyAvatar(profile.profileId),
+		companyLogo(profile.profileId),
 		h("span", { class: "company-name" }, profile.profileName),
 		h("span", { class: "company-meta" }, `${profile.role} · since ${fmtDate(profile.createdAt)}`),
 	);
@@ -159,7 +159,7 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 			art = h("div", { class: "hub-art", "aria-hidden": "true" });
 			const stage = h("div", { class: "crown-stage" });
 			art.append(stage);
-			mountCrown(stage, { watch: () => container.querySelectorAll("input"), mirrored: false });
+			mountCrown(stage, { mirrored: false });
 		}
 		replace(
 			container,

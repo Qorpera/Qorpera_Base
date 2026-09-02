@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { companyCharacter } from "../src/ui/dom.ts";
 
-/* The picture is derived, not stored, so it has to be stable for a given
- * profile id and spread over the four characters. */
+/* The placeholder logo is derived, not stored, so it has to be stable for a
+ * given profile id and spread over the four characters. */
 
-describe("company picture", () => {
+describe("company logo", () => {
 	it("is stable for the same profile id", () => {
 		const id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 		expect(companyCharacter(id)).toBe(companyCharacter(id));

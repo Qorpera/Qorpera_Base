@@ -347,3 +347,29 @@ compose field inherited `flex: 1` from the horizontal create row, so it grew
 to fill the card. Verified with the harness (selector, compose, welcome,
 invited, friends, invitations, menu open, and a 390px selector); Biome,
 typecheck and the 17 tests pass.
+
+**Menu, pages and crown, second pass (founder: simpler dropdown with icons and
+no subtitles; centre the Friends and Invitations pages; the crown should be
+static with only its eyes moving, and not at the pointer; company pictures are
+logos and belong in the cloud).**
+
+- The account menu is now a name, three rows and Sign out, each with the
+  desktop's Lucide icon (settings, users, mail, log-out) drawn inline so it
+  takes the row's colour. No subtitles, narrower popover, no repeated address.
+- Friends and Invitations sit in a centred reading column.
+- **The crown is static.** The nod loop, the entry spring, the hops and the
+  shadow's reaction are gone, and so is every pointer and focus listener: the
+  body carries no transform at all. What remains is the approved screen-gaze
+  sequence and the blink tempo, so the character looks around a screen on its
+  own and never at the cursor. Checked by sampling the live element: the body's
+  computed transform stays `none` and its box never moves across ten seconds,
+  the eye rects take eight distinct states, and moving the pointer to the
+  opposite corner changes nothing. `crown.ts` lost a third of its length and
+  its `watch` option.
+- The company picture is named for what it is, a **logo**. Contract request 10
+  is rewritten to ask for a logo field on the profile — either one of the named
+  characters or an uploaded image, the image travelling through the profile
+  object upload that already exists — returned by the profile and invitation
+  lists and set under the `manageMembers` capability. Until then the character
+  is a placeholder derived from the profile id, and the client offers no
+  picker, because there is nowhere to put the answer.

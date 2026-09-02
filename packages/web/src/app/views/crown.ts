@@ -1,17 +1,16 @@
-/* The Co-Founder crown as a living vector character.
+/* The Co-Founder crown as a vector character.
  *
- * Geometry and rhythm come from the approved motion model on qorpera.com
- * (Qorpera_Website landing/public/avatars/motion-model.js, motion-visuals.js):
- * the V24 crown contour, the eye placement measured from the 512px source in
- * the shared 100-unit frame, the "small, measured nod" loop, the entry spring
- * and the screen-gaze sequence with its blink tempo. On top of that the
- * character hops now and then, follows the pointer with its eyes and glances at
- * the form when a field takes focus. The body never reacts to hover: it stays
- * put while the eyes look around. Eyes are holes: the surface shows through
- * them.
+ * The crown itself never moves: the body is static, and only the eyes are
+ * alive. They follow the approved screen-gaze sequence from the motion model
+ * on qorpera.com (Qorpera_Website landing/public/avatars/motion-model.js) —
+ * the character looking around a screen on its own tempo — and blink between
+ * glances. Nothing tracks the pointer, and nothing reacts to hover or focus.
+ * Geometry is the approved V24 contour with the eye placement measured from
+ * the 512px source in the shared 100-unit frame. Eyes are holes: the surface
+ * behind the crown shows through them.
  *
- * Everything is drawn with DOM and SVG APIs and animated through the CSSOM and
- * SVG attributes, so the strict Content Security Policy (no inline style
+ * Everything is drawn with DOM and SVG APIs and animated through SVG
+ * attributes, so the strict Content Security Policy (no inline style
  * attributes, no inline scripts) holds. */
 
 const SVG = "http://www.w3.org/2000/svg";
@@ -25,43 +24,6 @@ const EYES = [
 	{ x: 56.74, y: 55.25, width: 5.96, height: 14.79, rotation: -10.81 },
 	{ x: 69.44, y: 53.79, width: 5.92, height: 14.59, rotation: -10.85 },
 ] as const;
-
-type Pose = [number, number, number, number, number]; // x%, y%, rotation, scaleX, scaleY
-type Keyframe = [number, ...Pose]; // time (ms or 0..1 offset), pose
-const NEUTRAL: Pose = [0, 0, 0, 1, 1];
-
-// Approved crown loop: "A small, measured nod." (4400 ms, origin 50% 85%).
-const NOD: Keyframe[] = [
-	[0, 0, 0, 0, 1, 1],
-	[0.2, 0.3, 0.6, 1.7, 1.012, 0.985],
-	[0.4, 0, -0.8, -0.8, 0.995, 1.009],
-	[0.6, 0, 0, 0.25, 1, 1],
-	[1, 0, 0, 0, 1, 1],
-];
-const NOD_DURATION = 4400;
-
-// Approved entry spring (640 ms).
-const ENTRY: Keyframe[] = [
-	[0, 0, 0, 0, 1, 1],
-	[0.18, 0, 1.2, -0.7, 1.075, 0.9],
-	[0.46, 0, -4.5, 1.4, 0.958, 1.065],
-	[0.76, 0, 0.4, -0.4, 1.019, 0.985],
-	[1, 0, 0, 0, 1, 1],
-];
-const ENTRY_DURATION = 640;
-
-// A hop: anticipation, launch with stretch, hang, landing squash, settle.
-const HOP: Keyframe[] = [
-	[0, 0, 0, 0, 1, 1],
-	[0.16, 0, 2.6, 0.6, 1.09, 0.88],
-	[0.34, 0, -13, -1.6, 0.93, 1.1],
-	[0.5, 0, -15.5, -0.4, 0.98, 1.03],
-	[0.66, 0, -6, 1.2, 1.01, 0.99],
-	[0.76, 0, 0.8, 0.4, 1.12, 0.86],
-	[0.88, 0, -1.2, -0.2, 0.97, 1.03],
-	[1, 0, 0, 0, 1, 1],
-];
-const HOP_DURATION = 900;
 
 // Approved screen-gaze sequence (x, y, turn, open, width) for the large crown.
 const SCREEN_GAZE: [number, number, number, number, number, number][] = [
@@ -100,22 +62,6 @@ function sample(points: readonly (readonly number[])[], time: number): number[] 
 	return last.slice(1);
 }
 
-function samplePose(frames: readonly Keyframe[], duration: number, elapsed: number): Pose {
-	const [x = 0, y = 0, rotation = 0, sx = 1, sy = 1] = sample(frames, Math.min(1, Math.max(0, elapsed / duration)));
-	return [x, y, rotation, sx, sy];
-}
-
-function combine(...poses: Pose[]): Pose {
-	return poses.reduce<Pose>(
-		(sum, [x, y, r, sx, sy]) => [sum[0] + x, sum[1] + y, sum[2] + r, sum[3] * sx, sum[4] * sy],
-		[0, 0, 0, 1, 1],
-	);
-}
-
-function transform([x, y, rotation, sx, sy]: Pose): string {
-	return `translate(${x.toFixed(3)}%, ${y.toFixed(3)}%) rotate(${rotation.toFixed(3)}deg) scale(${sx.toFixed(4)}, ${sy.toFixed(4)})`;
-}
-
 function svg<K extends keyof SVGElementTagNameMap>(
 	tag: K,
 	attributes: Record<string, string | number>,
@@ -130,8 +76,6 @@ export interface CrownHandle {
 }
 
 export interface CrownOptions {
-	/** Elements whose focus makes the crown glance toward them. */
-	watch?: () => Iterable<Element>;
 	/** Mirrored so it faces a form on its left. Default true. */
 	mirrored?: boolean;
 }
@@ -185,13 +129,10 @@ export function mountCrown(host: HTMLElement, options: CrownOptions = {}): Crown
 	wrap.append(shadow, body);
 	host.replaceChildren(wrap);
 
-	// Animation state.
+	// Animation state. The body has none: only the eyes move.
 	const startedAt = performance.now();
-	let hopAt = startedAt + 2600 + Math.random() * 3000;
 	let nextBlinkAt = startedAt + 1800 + Math.random() * 2500;
 	let blinkStartedAt = -1;
-	let pointer: { x: number; y: number } | null = null;
-	let focused: DOMRect | null = null;
 	let frame = 0;
 	let disposed = false;
 
@@ -216,23 +157,8 @@ export function mountCrown(host: HTMLElement, options: CrownOptions = {}): Crown
 		}
 	};
 
-	const gazeToward = (targetX: number, targetY: number): { x: number; y: number; turn: number } => {
-		const box = wrap.getBoundingClientRect();
-		if (!box.width) return { x: 0, y: 0, turn: 0 };
-		// When mirrored, screen-left is the character's right.
-		const dx = ((mirrored ? -1 : 1) * (targetX - (box.left + box.width / 2))) / box.width;
-		const dy = (targetY - (box.top + box.height * 0.55)) / box.height;
-		const reach = Math.min(1, Math.hypot(dx, dy));
-		const angle = Math.atan2(dy, dx);
-		return { x: Math.cos(angle) * reach * 7, y: Math.sin(angle) * reach * 6, turn: Math.cos(angle) * reach * 0.25 };
-	};
-
-	const still = () => {
-		body.style.transform = transform(NEUTRAL);
-		shadow.style.transform = "scale(1)";
-		shadow.style.opacity = "0.5";
-		setEyes({ x: 1.8, y: 8.8, turn: 0.1, open: 0.94, width: 1 });
-	};
+	// The resting pose, used before the first frame and under reduced motion.
+	const still = () => setEyes({ x: 1.8, y: 8.8, turn: 0.1, open: 0.94, width: 1 });
 
 	const tick = (now: number) => {
 		frame = 0;
@@ -246,33 +172,9 @@ export function mountCrown(host: HTMLElement, options: CrownOptions = {}): Crown
 			still();
 			return;
 		}
-		// Body: entry spring, then the nod loop, plus an occasional hop.
-		const entry = elapsed < ENTRY_DURATION ? samplePose(ENTRY, ENTRY_DURATION, elapsed) : NEUTRAL;
-		const loopTime = Math.max(0, elapsed - ENTRY_DURATION) % NOD_DURATION;
-		const nod = elapsed < ENTRY_DURATION ? NEUTRAL : samplePose(NOD, NOD_DURATION, loopTime);
-		let hop: Pose = NEUTRAL;
-		if (now >= hopAt) {
-			const hopElapsed = now - hopAt;
-			if (hopElapsed <= HOP_DURATION) hop = samplePose(HOP, HOP_DURATION, hopElapsed);
-			else hopAt = now + 6000 + Math.random() * 6000;
-		}
-		const pose = combine(entry, nod, hop);
-		body.style.transform = transform(pose);
-		const height = Math.max(0, -pose[1]);
-		shadow.style.transform = `scale(${(1 - height / 40).toFixed(3)})`;
-		shadow.style.opacity = (0.5 - height / 60).toFixed(3);
-
-		// Eyes: approved gaze sequence, blended toward the pointer or a focused
-		// field, blinking on their own tempo; a hop closes them at the launch.
+		// Eyes: the approved gaze sequence, blinking on its own tempo. Nothing
+		// here reads the pointer, and the crown itself never moves.
 		const [gx = 0, gy = 0, gturn = 0, gopen = 1, gwidth = 1] = sample(SCREEN_GAZE, elapsed % GAZE_PERIOD);
-		let look = { x: gx, y: gy, turn: gturn };
-		if (focused) {
-			const toward = gazeToward(focused.left + focused.width / 2, focused.top + focused.height / 2);
-			look = { x: toward.x, y: toward.y, turn: toward.turn };
-		} else if (pointer) {
-			const toward = gazeToward(pointer.x, pointer.y);
-			look = { x: gx * 0.3 + toward.x, y: gy * 0.3 + toward.y, turn: gturn * 0.3 + toward.turn };
-		}
 		let open = gopen;
 		if (blinkStartedAt < 0 && now >= nextBlinkAt) blinkStartedAt = now;
 		if (blinkStartedAt >= 0) {
@@ -291,33 +193,16 @@ export function mountCrown(host: HTMLElement, options: CrownOptions = {}): Crown
 				nextBlinkAt = now + 2600 + Math.random() * 3600;
 			}
 		}
-		const hopPhase = now >= hopAt && now - hopAt <= HOP_DURATION ? (now - hopAt) / HOP_DURATION : -1;
-		if (hopPhase >= 0.28 && hopPhase <= 0.42) open *= 0.35;
-		setEyes({ x: look.x, y: look.y, turn: look.turn, open, width: gwidth });
+		setEyes({ x: gx, y: gy, turn: gturn, open, width: gwidth });
 		if (!document.hidden) frame = requestAnimationFrame(tick);
 	};
 
 	const schedule = () => {
 		if (!frame && !disposed) frame = requestAnimationFrame(tick);
 	};
-	const onPointerMove = (event: PointerEvent) => {
-		pointer = { x: event.clientX, y: event.clientY };
-	};
-	const onPointerLeave = () => {
-		pointer = null;
-	};
-	const onFocusIn = () => {
-		const watched = options.watch ? [...options.watch()] : [];
-		const active = document.activeElement;
-		focused = active && watched.includes(active) ? active.getBoundingClientRect() : null;
-	};
 	const onVisibility = () => {
 		if (!document.hidden) schedule();
 	};
-	window.addEventListener("pointermove", onPointerMove, { passive: true });
-	document.documentElement.addEventListener("pointerleave", onPointerLeave);
-	document.addEventListener("focusin", onFocusIn);
-	document.addEventListener("focusout", onFocusIn);
 	document.addEventListener("visibilitychange", onVisibility);
 	reduced.addEventListener("change", schedule);
 
@@ -325,10 +210,6 @@ export function mountCrown(host: HTMLElement, options: CrownOptions = {}): Crown
 		if (disposed) return;
 		disposed = true;
 		if (frame) cancelAnimationFrame(frame);
-		window.removeEventListener("pointermove", onPointerMove);
-		document.documentElement.removeEventListener("pointerleave", onPointerLeave);
-		document.removeEventListener("focusin", onFocusIn);
-		document.removeEventListener("focusout", onFocusIn);
 		document.removeEventListener("visibilitychange", onVisibility);
 		reduced.removeEventListener("change", schedule);
 	}
