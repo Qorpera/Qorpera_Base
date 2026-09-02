@@ -1131,3 +1131,26 @@ Broker re-point evidence seal: `broker-production-repoint-20260902/SHA256SUMS`
 `2deadf422b4b7c4e4cb2843e70979e9c5a7f4bcb0a250825b697c3b5b7ac2e2b` (17 files).
 The front's probe statuses (404/503/404 for empty probes) equal tonight's
 proven branch run.
+
+## Broker route over the tailnet (2026-09-02 07:40–07:46 UTC)
+
+Jonas: "i dont know what that is - you do it". No tailnet admin action turned
+out to be necessary: the broker VM was already enrolled as
+`vm-qorpera-s2-secret-01` (`100.65.132.47`, tag `company41-infra`) and the
+node already routed to it. The canonical production origin became
+`https://100.65.132.47:8443`: TLS front re-issued for tailnet, private and
+loopback addresses (CA `c020ee14…`); production broker authority origin
+updated; recovery authority rotated under the table's own rules (old row
+`4da97b5b…` revoked, new row `0a155e52…` active, same keys and capability);
+the VM's recovery config rotated to the new id; the node's provider now
+names the tailnet origin with the new CA and, probing the front with that CA
+over the tailnet, receives 404 (trusted TLS, working route). The private
+address stays unreachable from the node; the proof public route stays
+removed. Evidence in `broker-production-repoint-20260902/` (re-sealed).
+
+Status: **proven** — broker re-pointed to production and reachable from the
+node. Next: production gateway guest and orchestrator configuration
+(governed registration), then the offline two-member production acceptance
+and the controlled policy reopening. Hardening left open on purpose: the
+tailnet policy is still the default allow-all; the production record's
+TCP-only policy is a later step.
