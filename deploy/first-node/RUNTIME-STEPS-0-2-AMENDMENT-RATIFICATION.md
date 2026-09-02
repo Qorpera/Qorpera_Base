@@ -715,3 +715,18 @@ private files. Coverage: managed invite/accept passed, private session
 isolation passed, fixture publication and human readback passed; the native
 parts are marked as requiring the external controller, which is the next
 step. Status in `joint/harness-ready-status.json`.
+
+**Custody chain for the protected effect (02:36–02:43 UTC).** The canary
+connector operation `step2_canary/record_marker` (tool
+`step2_canary_record_marker`, destination `https://127.0.0.1:9443` on the
+broker VM, adapter `68005807…`) was registered on the branch. Actor A, the
+managed admin created by the harness, obtained an independent session
+through an admin-generated magic link (no email, no harness token) and began
+a company-owned secret capture `proof_f3933956` for that connector; the
+capture ticket, encrypted to the broker VM's transport key, was completed on
+the VM by the August completion operator re-pinned to this proof (one August
+pin dropped: it required the recovery authority to be inactive, and here it
+runs by design). Secret `715a6ea9…` version 1 is active in the broker's
+custody with the VM's encrypted credentials and destination ledger unchanged.
+Two more branch-specific corrections: the operator's refresh-token minimum
+was lowered to 8 like the harness's.
