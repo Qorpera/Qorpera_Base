@@ -373,3 +373,18 @@ logos and belong in the cloud).**
   lists and set under the `manageMembers` capability. Until then the character
   is a placeholder derived from the profile id, and the client offers no
   picker, because there is nowhere to put the answer.
+
+**One box, and a selector that is only companies (founder: put the sections and
+the invite search field in one shared box; drop the "Companies / Open a company"
+header and just show the companies with the + card on the far right).**
+
+- Friends is now a single bordered box: the field on top, then Requests for
+  you, Sent and Friends as groups inside it, divided by hairlines instead of
+  each row carrying its own card. Invitations uses the same box.
+- The field does both jobs, as the desktop's invite popup does. It filters the
+  list as you type, and when it holds an address that is not already a friend
+  the Send request button lights up and sends it. The input element outlives
+  re-renders, so typing never loses the caret.
+- The selector lost its heading and subtitle. It is a row of company cards with
+  the dashed New company tile last, and the cards were tuned so a typical
+  window fits four across, putting that tile at the right of the first row.

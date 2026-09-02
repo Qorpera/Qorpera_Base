@@ -20,7 +20,7 @@ export function renderInvitations(hub: HubController, container: HTMLElement): v
 				: state.invitations.length
 					? h(
 							"div",
-							{ class: "person-list" },
+							{ class: "panel" },
 							...state.invitations.map((invitation) =>
 								h(
 									"div",
@@ -51,9 +51,13 @@ export function renderInvitations(hub: HubController, container: HTMLElement): v
 							),
 						)
 					: h(
-							"p",
-							{ class: "muted" },
-							"Nothing waiting. An invitation appears here the moment someone adds you to their company.",
+							"div",
+							{ class: "panel" },
+							h(
+								"p",
+								{ class: "panel-empty muted" },
+								"Nothing waiting. An invitation appears here the moment someone adds you to their company.",
+							),
 						),
 		),
 	);

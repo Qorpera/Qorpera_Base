@@ -234,12 +234,6 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 			h(
 				"div",
 				{ class: "hub-inner" },
-				h(
-					"header",
-					{ class: "hub-header" },
-					h("h1", null, "Companies"),
-					h("p", null, state.loading ? "Loading your companies…" : "Open a company, or start a new one."),
-				),
 				state.error ? notice("danger", state.error) : null,
 				invited
 					? h(
