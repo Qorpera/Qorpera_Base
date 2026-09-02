@@ -835,3 +835,11 @@ the gate 1 directory (broker operators and results, provider and joint
 runbooks, harness results, job-guest journals, Azure before/after views);
 its `SHA256SUMS` (316 files) has SHA-256
 `ad9e3b3ea74f14eb3a18ac89fa4533b64c23db66d32f56afc1fca172f4f6dfaa`.
+
+**August preview branches deleted (founder decision, 2026-09-02 03:40 UTC).**
+`step2-fences-v48-20260828` (`hurfdoempkqpzxggemhc`) and
+`step2-secret-custody-20260829c` (`tlnzirrtjufnexorsbic`) were deleted
+through the management API (both HTTP 200). Their proofs stay as the sealed
+August records on the founder's Mac; nothing in this session or the
+production packet referenced the live branches. Only `main` and tonight's
+`steps02-ebbd1e734-20260902` remain on the production project.
