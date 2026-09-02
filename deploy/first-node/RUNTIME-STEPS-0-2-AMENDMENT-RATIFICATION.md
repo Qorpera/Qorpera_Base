@@ -1126,3 +1126,8 @@ Status: **proven** for the re-point itself; **needs Jonas** for the tailnet
 enrollment of the broker VM. Next after the route: production gateway guest
 and orchestrator configuration (governed registration), then the offline
 two-member production acceptance and the controlled policy reopening.
+
+Broker re-point evidence seal: `broker-production-repoint-20260902/SHA256SUMS`
+`2deadf422b4b7c4e4cb2843e70979e9c5a7f4bcb0a250825b697c3b5b7ac2e2b` (17 files).
+The front's probe statuses (404/503/404 for empty probes) equal tonight's
+proven branch run.
