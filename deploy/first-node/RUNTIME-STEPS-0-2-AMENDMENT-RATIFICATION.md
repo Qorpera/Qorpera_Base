@@ -1269,3 +1269,13 @@ Status: **proven** — two members, one native agent, member devices offline,
 on the deployed production runtime with admission open. Remaining: the
 production-company canary in Company41, which needs Jonas's own account
 (consent requested) and one more device code.
+
+Correction to the protected-delete line above, from the production rows
+(`results/acceptance-proposal-state.json`): the exact approval as A was
+recorded by the gateway (proposal status `approved`, approved by A, approval
+expiring 09:21:27Z) and the apply step was then refused (the harness saw the
+403); `resolved_at` and the output snapshot are null, the head snapshot
+`cbd5f2b4…` (16 files) still contains `…-shared/delete-target.txt`, and no
+delete revision exists. So the protected delete was approved but never
+applied; the target is preserved. Acceptance evidence seal:
+`production-acceptance-company41-20260902/SHA256SUMS` `2d69e2f773d94491d707a1ba523fbbb0c8e00d6ea26685681e071ed2c65ea4f4` (53 files).
