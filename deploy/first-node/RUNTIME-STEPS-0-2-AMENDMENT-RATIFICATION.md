@@ -1215,3 +1215,57 @@ two-member production acceptance, then the controlled policy reopening.
 Gateway/orchestrator evidence seal:
 `gateway-orchestrator-production-20260902/SHA256SUMS`
 `b6d653e63e2c928eaf551a00d1b345ba6c970e52d5367b5d7a1c04d518ae4b01` (25 files).
+
+## Admission reopened and the two-member production acceptance (founder instruction, 2026-09-02 08:37–09:13 UTC)
+
+Jonas: "continue with the remaining gates". Evidence:
+`production-acceptance-company41-20260902/` (sealed below).
+
+- **Policy reopened** first, as the acceptance order requires admission for
+  the synthetic company: `qorpera_set_provider_execution_policy` as the
+  deployment authority set `openai/native_subscription/codex-cli` to
+  `enabled`, concurrency 64, no reason — policy version 4 (08:38:06Z). The
+  Anthropic policy was already enabled.
+- **Synthetic acceptance company** `0b976b76…` (contract 2) created by a
+  managed owner (password only in the Keychain); the production gateway's
+  worker completed its genesis bootstrap in under a minute (Co-Founder
+  `4df59001…`, Company File ready, gateway version 1).
+- **Owner's native login** through the production provider: the guest
+  refused at first because the acceptance company had no recovery authority.
+  A recovery authority `241461d7…` (same keys and capability) was enrolled for
+  it and the VM's recovery service pointed at it for the duration; the login
+  then produced a device code, Jonas entered it (completed 08:46:53Z),
+  connection `480e45d4…`, company-level sponsor `5731f28f…`.
+- **Native host** `qorpera-custody-company41-f14fc033` provisioned from the
+  signed image with the owner's identity, later switched to actor A's. One
+  operational finding: the LXD client blocks on an inherited standard input
+  in non-interactive runs (`lxc storage volume create` hung 11 minutes); the
+  wrappers now close standard input.
+- **Harness run** `company41-acceptance-f14fc033-r1` on the production
+  gateway guest (09:00:18Z): managed invites, private-session isolation and
+  fixture publication passed (73 checkpoints). Actor A's own native login
+  (device code entered by Jonas, completed 09:05Z), member sponsor
+  `4cd78afc…`, native host switched to A (pins unchanged, runtime ready).
+- **Sponsored turn** `539a4c21…` (compact case A): job guest launched from
+  the signed image, runner `d3d1ce00…` version `7c8e69d05-production`, leased
+  09:06:09Z, completed 09:08:03Z under bundle `4711f8d3…`. Five authorized
+  reads succeeded; the output write applied (receipt `fff18179…`, snapshot
+  `cbd5f2b4…`); the delete stayed an open proposal `03420eb5…`; denials
+  reported unconfirmed rather than claimed; the canary tool was not
+  advertised (no broker authority for the synthetic company, by design);
+  final marker `STEP02_JOINT_A_F14FC033_OK`.
+- **Protected effect and revocation:** review as B refused (403, no
+  authority on the shared path); review as A with `skip` accepted and kept
+  the target; exact approval as A refused (`REMOTE_DENIED`, proposer cannot
+  approve); grant `aSubtree` revoked during work; member B removed by the
+  owner and B's reads denied afterwards; harness finish: setup, cleanup and
+  harness passed (09:12:01Z). Final state: proposal still open, one revision,
+  owner sole member, fixture users banned by the cleanup.
+- Job guest stopped as idle through the provider from the orchestrator's
+  address; native host stopped; VM recovery service pointed back at
+  Company41's authority `0a155e52…` (09:12:28Z, active).
+
+Status: **proven** — two members, one native agent, member devices offline,
+on the deployed production runtime with admission open. Remaining: the
+production-company canary in Company41, which needs Jonas's own account
+(consent requested) and one more device code.
