@@ -892,3 +892,35 @@ installed at the sudoers build path (previous recipe kept as
 
 Status: **proven** for gate 1 of candidate 2. Next: activate bundle
 `4711f8d3…` on the branch and repeat the gate-2 job-guest launch.
+
+## Candidate 2: gate 2 rerun preparation (2026-09-02 04:00–04:12 UTC)
+
+- **Branch.** The candidate-1 bundle row (version 2, `25cdf35e…`) is immutable
+  by trigger and referenced by the gate-2 run and launch records, so the
+  candidate-2 bundle from `20260828019900` was inserted on the preview branch
+  as version 3 with the identical manifest and hash and activated exactly as
+  19900 does (branch-only numbering; production receives version 2 through
+  packet v4). Active bundle on the branch:
+  `4711f8d35b62b530021e995c3542fbafbddd3494155cf0d46b158164d4594484`
+  (04:01:21Z). Runner code checks only the hash, never the version number.
+- **Broker route.** The proof public IP removed at the gate-2 stop was
+  re-created (`pip-qorpera-s2-secret-proof`, now `20.240.93.225`) with the same
+  single NSG rule from the node's egress to `10.80.1.4:8443`. Because the proof
+  CA key had been destroyed after signing and the leaf named only the old
+  address, a new proof CA and leaf were issued on the broker VM
+  (`reissue-tls.mjs`, same TLS front unit, CA `011e9e19…`, valid 3 days) and
+  the new CA replaced the old one in the node proof root, the provider CA
+  bundle (`860b2470…`), the gateway guest and the native-host bootstrap.
+- **Node proof root** re-pinned in place with backups under
+  `backup-candidate1/`: image `0fbf44de…`, guest manifest `878c07de…`,
+  provenance envelope `2ab6d9b8…`, transport shim fingerprint, native-host
+  recipe (`qorpera-custody-7c8e69d05`, host pin `883dfa8b…`, identity id in
+  the provisioning input), provider state reset. Two credential source files
+  carried a trailing newline that the guest rejects; stripped.
+- **Harness run 4** (`step02-joint-f3933956-r4`, new actors A `a00eaf76…` and
+  B `e556cc31…`, same company `391f4bad…`) is up: isolation, fixtures and
+  denials passed again, 70 checkpoints, waiting on the control socket.
+- Run 3's actor A (`a512a7ac…`) keeps their own identity `3c0a7a8f…`, sponsor
+  binding `182add97…` and private session; the new turn is requested as that
+  actor outside the harness, after their stale queued job `59854d51…`
+  (candidate-1 bundle) is cancelled through the product RPC.
