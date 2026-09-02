@@ -924,3 +924,37 @@ Status: **proven** for gate 1 of candidate 2. Next: activate bundle
   binding `182add97…` and private session; the new turn is requested as that
   actor outside the harness, after their stale queued job `59854d51…`
   (candidate-1 bundle) is cancelled through the product RPC.
+
+## Candidate 2: job guest launched and run executed (2026-09-02 04:13–04:15 UTC)
+
+- Native host `qorpera-custody-7c8e69d05` provisioned from image `0fbf44de…`
+  with actor A's identity `3c0a7a8f…` (`native-host-provisioned-c2.json`:
+  signed pins unchanged, key matches the current authority, epoch 0,
+  runtime ready). Three provisioning attempts failed first on proof-root
+  bookkeeping, not on the runtime: a stale guest-hostname and path pin in the
+  guest-side operator, the identity id missing from its input, and a trailing
+  newline in a credential source file.
+- Run 3's stale job `59854d51…` (candidate-1 bundle) cancelled by its
+  requester through `qorpera_cancel_runner_job`; a fresh turn requested as
+  actor A in their own session with their own sponsor binding
+  (`joint-a-request-result-c2.json`, turn request `30634d55…`, queued).
+- Orchestrator started 04:14:15Z: run `30634d55…` materialised under the
+  active bundle `4711f8d3…`, runner `884fe5e3…` registered, job guest
+  `qorpera-30634d55…` launched from the signed image, **bootstrap unit
+  finished (`LXD_RUNNER_BOOTSTRAP_READY`)**, runner activated 04:14:33Z,
+  job `7e56b2e5…` leased 04:14:34Z and **completed** 04:14:53Z
+  (`qorpera.runner-result/v1`, backend `native-company-runtime`, native
+  binary `2f2c26cf…`, execution 17.5 s, provider session present, two
+  assistant messages, Company File unchanged). `run-watch-c2.json`,
+  `branch-result-c2.raw.txt`, `job-guest-30634d55/`.
+- The agent stopped before fixture operations: the 2.7 KB request is admitted
+  as a 1 KB excerpt and the model's continuation read was refused as
+  `INVALID_ARGUMENTS`. This repeats the 31 August acceptance, where the same
+  long case-A prompt failed first and a compact input with explicit paging
+  instructions was admitted afterwards; the runtime chain itself is proven.
+- Harness run 4 finished cleanly (setup, cleanup and harness passed;
+  `harness-r4/`).
+
+Status: **proven** — the candidate-2 image boots, reaches the cloud, activates
+and executes a sponsored member turn end to end on the deployed branch. Next:
+the compact case-A input for the fixture operations.
