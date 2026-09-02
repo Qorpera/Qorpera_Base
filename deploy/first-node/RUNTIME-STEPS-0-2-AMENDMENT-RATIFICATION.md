@@ -301,7 +301,10 @@ closure; signing and packaging reference this exact commit.
 **Rebuilt packages (macOS, unsigned, from that tree).** Guest package
 manifest `9dbc6471d370025aa96eb1e6405732d0a3b4ec08f32212b272dd959747b52187`,
 guest archive `lxd-runner-guest-ebbd1e734.tar.gz`
-`8612464dbf7359e1c74900ffc39a0f890c7f5459c5b763d80d0b4115ac51ad0c`; LXD
+`287a3748555e25c6aad751d9d5cc5c1e5fa1c3b6ab675da7d109b6b0c44790d1`
+(repacked 2026-09-02 with the package contents at the archive root and no
+macOS metadata; an earlier archive `8612464d…` had the wrong layout and was
+rejected by the node recipe before any build); LXD
 provider manifest `6977f3c1dea9d6f76f3cb68eb7180ead5bc37cf3cdb78943e2192354471ab465`;
 Runner Orchestrator manifest `fbf8952dbfed5f4b541163d7f7a0001b0455dec5154249a7c072c45b30edb022`
 (unchanged from the production pin); cloud secret broker manifest
@@ -338,6 +341,11 @@ password, so the LXD socket, the image build and the clean-boot verifier
 cannot be driven from this session. The root filesystem had 2.9 GiB free
 (97% used); an image build needs more. Provider and orchestrator services
 are disabled and inactive.
+
+Note for dispatch: the packet's source check requires the runtime worktree
+to be at commit `ebbd1e734` with a clean tree; later record commits on the
+branch mean that commit must be checked out (detached) before
+`controller.mjs check` or any dispatch.
 
 **Proven:** the candidate's packages and the production SQL delta are
 reproducible from the pushed commit and rehearse cleanly against the captured
