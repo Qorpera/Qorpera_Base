@@ -1211,3 +1211,7 @@ Status: **proven** — production gateway serving the Company File, orchestrator
 registered and heartbeating, provider reachable from the orchestrator, broker
 reachable from the node. Admission still disabled. Next: the offline
 two-member production acceptance, then the controlled policy reopening.
+
+Gateway/orchestrator evidence seal:
+`gateway-orchestrator-production-20260902/SHA256SUMS`
+`b6d653e63e2c928eaf551a00d1b345ba6c970e52d5367b5d7a1c04d518ae4b01` (25 files).
