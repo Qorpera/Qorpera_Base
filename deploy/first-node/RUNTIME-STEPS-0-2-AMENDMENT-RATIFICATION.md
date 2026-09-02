@@ -746,3 +746,15 @@ A's identity, begin A's login and bind A's sponsor. The first harness was
 finished cleanly (its own result: setup passed, cleanup passed, harness
 passed, stop reason finish; kept as attempt 2); its cleanup bans the fixture
 owner, so the owner was un-banned again before the restart.
+
+**Actor A's own native login (02:47–02:55 UTC).** With the harness restarted
+under fixture prefix `step02-joint-f3933956-r3` (A `a512a7ac…`, B
+`c5e43a9a…`, deadline 03:31 UTC), actor A created their member compute
+identity `3c0a7a8f…` and began a login through the magic-link operator; the
+provider launched A's login guest from the signed image. The first attempt
+failed at the guest's completion stage with a plain error seconds after the
+founder's confirmation; a second login on the same identity (the member
+identity is one per member, so the operator reuses it) completed at
+02:55:25: capsule `18d45dd3…` active, provider connection `0398405a…`
+owned by A, version 1 active. The founder entered three device codes in
+total tonight for the two identities.
