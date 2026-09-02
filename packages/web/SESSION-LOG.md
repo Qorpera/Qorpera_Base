@@ -136,3 +136,31 @@ for `app.qorpera.com`, the deployed site can sign in only through the email
 code path and cannot read gateway-served objects.
 
 **Requested.** No new items; requests 1 and 5 updated with the origin.
+
+## 2026-09-02 — Block 3: first deployment
+
+**Done (browser pane, founder signed in to Cloudflare and approved the GitHub
+App).** Pushed `web/client-app` to origin. Created the Cloudflare Pages project
+`qorpera-web` from `Qorpera/Qorpera_Base` with production branch
+`web/client-app`, root `/`, the monorepo build command, output
+`packages/web/dist`, `NODE_VERSION=22`. First build passed (24 files, 2 header
+rules) and the site is live at `https://qorpera-web.pages.dev`: sign-in screen
+renders, no console errors, and the response carries the strict
+Content-Security-Policy, HSTS, `X-Frame-Options: DENY` and no-referrer headers.
+
+**Stopped before activating the custom domain.** Cloudflare's confirmation
+step showed an existing record: `app` CNAME `d20621a2248eb69c.vercel-dns-017.com`.
+Activating would replace a live Vercel-hosted site at `app.qorpera.com`; that
+is the founder's call, so nothing was changed in DNS.
+
+**Fixed.** Cloudflare joins `_headers` values from parent and child paths, so
+`/assets/*` had two `Cache-Control` values; the child rule now unsets the
+parent's first. The GitHub workflow no longer publishes (Pages does), it only
+checks and builds.
+
+**What works against the real cloud.** The deployed site reaches the target
+project's Auth endpoint for the email code flow; nothing was exercised under a
+member token yet.
+
+**Blocked.** Custom domain (decision above). Gateway CORS and Auth redirect
+URLs for the final origin (requests 1 and 5).

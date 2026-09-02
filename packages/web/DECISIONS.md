@@ -142,3 +142,17 @@ Pages preview deployments, not on the production origin. That is intended.
 repository secrets: `CLOUDFLARE_API_TOKEN` (Pages: Edit) and
 `CLOUDFLARE_ACCOUNT_ID`. Until those exist the workflow's deploy job is
 skipped and the build job still proves the package.
+
+**Amendment, same day, after setup.** The Pages project was created through
+Cloudflare's Git integration rather than a wrangler publish from GitHub
+Actions: no API token has to be created or pasted anywhere, and every push to
+the production branch (`web/client-app` for now) builds and publishes on
+Cloudflare. Settings: root `/`, build command
+`npm ci --ignore-scripts --no-audit --no-fund && npm run build --workspace packages/web`,
+output `packages/web/dist`, `NODE_VERSION=22`. The first build succeeded and
+serves `https://qorpera-web.pages.dev` with the `_headers` policy verified
+live. The GitHub workflow is therefore checks-only. Two follow-ups: set
+`SKIP_DEPENDENCY_INSTALL=true` on the project so Cloudflare does not run a
+second, script-enabled `npm ci` before the build command; and the custom
+domain, which is on hold because `app.qorpera.com` already resolves through a
+CNAME to a Vercel deployment (see SESSION-LOG.md).
