@@ -31,6 +31,7 @@ import {
 	cloudRuntimeErrorCategory,
 } from "./cloud-runtime-observability.ts";
 import { type CloudSecretOperationClient, cloudSecretTools, describeCloudSecretTools } from "./cloud-secret-tools.ts";
+import { type CloudWakeControl, cloudCoworkerMessageTool, parseCloudWakeEnvelope } from "./cloud-wake-bus.ts";
 
 type NativeCompanyControl = CloudNativeToolAuthorityReader &
 	CloudNativeToolOperationControlPlane &
@@ -115,10 +116,22 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				binding,
 			);
 			assertCloudRuntimeBundle(context.identity, this.#sha256);
+			// Every activation enters through the wake bus (contract 8): the admitted
+			// occurrence's typed envelope and kernel-owned reply policy, never a job flag.
+			const wake = parseCloudWakeEnvelope(
+				await cloudToolRequest(
+					(requestSignal) => this.#paths.call("qorpera_read_native_wake", { p_binding: binding }, requestSignal),
+					signal,
+				),
+				context.identity,
+			);
+			const wakeControl: CloudWakeControl = {
+				call: (method, argumentsValue, requestSignal) => this.#paths.call(method, argumentsValue, requestSignal),
+			};
 			const connectorDescriptors = this.#secretBroker
 				? await describeCloudSecretTools(this.#paths, binding, signal)
 				: [];
-			const prompt = composeCloudNativeCompanyPrompt(context);
+			const prompt = composeCloudNativeCompanyPrompt(context, wake);
 			composition.finish("succeeded", { outputBytes: Buffer.byteLength(prompt) });
 			const contextSha256 = createHash("sha256").update(prompt).digest("hex");
 			const gateway = new CloudCompanyPathGateway({
@@ -243,7 +256,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 											broker: this.#secretBroker,
 										})
 									: []),
-								...(identity.sessionId ? [send] : []),
+								cloudCoworkerMessageTool(binding, identity, wakeControl),
+								...(identity.sessionId && wake.policy.final !== "forbidden" ? [send] : []),
 							],
 							assertContext: (requestSignal) => gateway.assertReadableContext(requestSignal),
 							recordContextView: (frame, outputs, requestSignal) =>
@@ -253,7 +267,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				});
 				return {
 					providerSessionId: result.providerSessionId,
-					delivery: await mouth.finish(context.identity.sessionId !== null),
+					delivery: await mouth.finish(wake.policy.final === "required"),
 				};
 			} finally {
 				await mouth.close();

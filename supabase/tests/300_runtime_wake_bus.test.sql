@@ -758,10 +758,12 @@ begin
 	perform public.qorpera_read_native_wake(v_bob);
 	perform pg_temp.wake_assert(exists(select 1 from public.qorpera_company_run_read_paths where run_id = v_bob_run and path = 'note.md'),'Recipient inherits durable read constraints');
 	select * into strict v_resource from public.qorpera_company_path_resources where environment_id = '30000000-0000-4000-8000-000000000020' and path = '';
-	select id into strict v_grant from public.qorpera_company_path_grants where resource_id = v_resource.id
-		and principal_id = '30000000-0000-4000-8000-000000000031' and revoked_at is null;
+	-- Every active grant of the recipient on the root, including the default agent read grant (20260828020700).
 	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
-	perform public.qorpera_revoke_company_path(v_resource.id,v_resource.version,v_grant);
+	for v_grant in select id from public.qorpera_company_path_grants where resource_id = v_resource.id
+		and principal_id = '30000000-0000-4000-8000-000000000031' and revoked_at is null loop
+		perform public.qorpera_revoke_company_path(v_resource.id,v_resource.version,v_grant);
+	end loop;
 	perform pg_temp.path_claims('service_role');
 	perform pg_temp.wake_error(format('select public.qorpera_read_native_wake(%L)',v_bob),'42501');
 	perform pg_temp.wake_error(format('select public.qorpera_send_coworker_message(%L,%L,%L,%L)',v_binding,
@@ -834,10 +836,12 @@ begin
 			pg_temp.path_stage_file('bounded-' || v_count || '.md','Bounded event')));
 	end loop;
 	select * into strict v_resource from public.qorpera_company_path_resources where environment_id = '30000000-0000-4000-8000-000000000020' and path = '';
-	select id into strict v_grant from public.qorpera_company_path_grants where resource_id = v_resource.id
-		and principal_id = '30000000-0000-4000-8000-000000000031' and revoked_at is null;
+	-- Every active grant of the recipient on the root, including the default agent read grant (20260828020700).
 	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
-	perform public.qorpera_revoke_company_path(v_resource.id,v_resource.version,v_grant);
+	for v_grant in select id from public.qorpera_company_path_grants where resource_id = v_resource.id
+		and principal_id = '30000000-0000-4000-8000-000000000031' and revoked_at is null loop
+		perform public.qorpera_revoke_company_path(v_resource.id,v_resource.version,v_grant);
+	end loop;
 	perform pg_temp.path_claims('service_role');
 	v_result := public.qorpera_drain_company_file_wakes(2);
 	perform pg_temp.wake_assert(v_result = '{"schema":"qorpera.file-wake-drain/v1","scanned":2,"examined":2,"admitted":0}'::jsonb,'Denied history is bounded before candidate examination');
@@ -858,10 +862,12 @@ begin
 	perform pg_temp.path_commit(pg_temp.path_plan('revoke-after-match','note.md',pg_temp.path_stage_file('note.md','Event')));
 	perform public.qorpera_drain_company_file_wakes(1);
 	select * into strict v_resource from public.qorpera_company_path_resources where environment_id = '30000000-0000-4000-8000-000000000020' and path = '';
-	select id into strict v_grant from public.qorpera_company_path_grants where resource_id = v_resource.id
-		and principal_id = '30000000-0000-4000-8000-000000000031' and revoked_at is null;
+	-- Every active grant of the recipient on the root, including the default agent read grant (20260828020700).
 	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
-	perform public.qorpera_revoke_company_path(v_resource.id,v_resource.version,v_grant);
+	for v_grant in select id from public.qorpera_company_path_grants where resource_id = v_resource.id
+		and principal_id = '30000000-0000-4000-8000-000000000031' and revoked_at is null loop
+		perform public.qorpera_revoke_company_path(v_resource.id,v_resource.version,v_grant);
+	end loop;
 	perform pg_temp.path_claims('service_role');
 	perform pg_temp.wake_assert(public.qorpera_materialize_wake_execution_runs(1) = '[]'::jsonb,'File permission rechecked at materialization');
 	perform pg_temp.wake_assert((select status = 'cancelled' and run_id is null from public.qorpera_wake_occurrences

@@ -50,7 +50,13 @@ export type CloudCompanyPathRpc =
 	| "qorpera_prepare_company_path_mutation"
 	| "qorpera_commit_company_path_mutation"
 	| "qorpera_prepare_company_path_approval"
-	| "qorpera_apply_company_path_approval";
+	| "qorpera_apply_company_path_approval"
+	// Wake bus (runtime Step 3): authorized envelope, coworker delivery and policy guards.
+	| "qorpera_read_native_wake"
+	| "qorpera_send_coworker_message"
+	| "qorpera_runtime_wake_policy"
+	| "qorpera_assert_wake_work_allowed"
+	| "qorpera_assert_wake_completion";
 
 /** Service-only transport. Never exposed as an arbitrary RPC tool. */
 export interface CloudCompanyPathControl {

@@ -113,7 +113,7 @@ export interface CloudWakeEnvelope {
 	readonly requesterUserId: string;
 	readonly actorStaffId: string | null;
 	readonly actorUserId: string | null;
-	readonly audience: Readonly<{ kind: "company"; sessionId: string | null }>;
+	readonly audience: Readonly<{ kind: "company" | "member_private"; userId: string | null; sessionId: string | null }>;
 	readonly source: Readonly<{
 		kind: "input" | "schedule" | "company-file" | "coworker";
 		id: string;
@@ -164,7 +164,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		"parentRunId",
 		"causal",
 	]);
-	const audience = closed(wake.audience, ["kind", "sessionId"]);
+	const audience = closed(wake.audience, ["kind", "userId", "sessionId"]);
 	const source = closed(wake.source, ["kind", "id", "occurrenceKey"]);
 	const time = closed(wake.time, ["utc", "local", "timeZone"]);
 	const pins = closed(wake.pins, ["companySnapshotId", "staffVersion", "wakeSchema", "runtimeBundleVersion"]);
@@ -178,7 +178,8 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		(["runId", "companyId", "environmentId", "staffAgentId", "requesterUserId"] as const).some(
 			(key) => uuid(wake[key]) !== identity[key],
 		) ||
-		audience.kind !== "company" ||
+		audience.kind !== identity.audienceKind ||
+		nullableUuid(audience.userId) !== identity.audienceUserId ||
 		nullableUuid(audience.sessionId) !== identity.sessionId ||
 		pins.staffVersion !== identity.staffVersion ||
 		pins.wakeSchema !== CLOUD_WAKE_SCHEMA ||

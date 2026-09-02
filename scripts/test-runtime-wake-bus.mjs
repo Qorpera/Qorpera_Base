@@ -364,10 +364,12 @@ do $$
 declare v_resource public.qorpera_company_path_resources%rowtype; v_grant uuid;
 begin
  select * into strict v_resource from public.qorpera_company_path_resources where environment_id='${environment}' and path='';
- select id into strict v_grant from public.qorpera_company_path_grants
-  where resource_id=v_resource.id and principal_id='${bob}' and revoked_at is null;
+ -- Every active grant of the recipient on the root, including the default agent read grant (20260828020700).
  perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
- perform public.qorpera_revoke_company_path(v_resource.id,v_resource.version,v_grant);
+ for v_grant in select id from public.qorpera_company_path_grants
+  where resource_id=v_resource.id and principal_id='${bob}' and revoked_at is null loop
+  perform public.qorpera_revoke_company_path(v_resource.id,v_resource.version,v_grant);
+ end loop;
  perform pg_temp.path_claims('service_role');
 end $$;
 `;

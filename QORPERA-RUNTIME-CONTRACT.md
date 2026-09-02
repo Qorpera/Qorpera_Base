@@ -854,6 +854,14 @@ Authorized agents may create coworkers with startup instructions through the
 same cloud operation. The creating agent cannot grant authority it does not
 possess.
 
+Ratified 2026-09-02: a staff agent reads the company's shared Company File by
+default. Creation, reactivation, genesis, and migration of a company give each
+active agent a read grant on the shared root of every environment, recorded as
+an ordinary revocable grant attributed to the company owner and carried forward
+across root resource versions until an owner revokes it. Writes, protected
+paths, private scopes, and responsibility- or project-scoped resources keep
+their own rules; the default never widens them.
+
 Agent templates MUST NOT create dedicated prebuilt artifacts. Artifacts are
 ordinary Company File objects created when useful. Permanent deletion of an
 agent applies one authorized Company File deletion operation and matching

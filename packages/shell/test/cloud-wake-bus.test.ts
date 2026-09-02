@@ -42,7 +42,11 @@ function fixture() {
 		requesterUserId: authority.identity.requesterUserId,
 		actorStaffId: null,
 		actorUserId: authority.identity.requesterUserId,
-		audience: { kind: "company", sessionId: authority.identity.sessionId },
+		audience: {
+			kind: authority.identity.audienceKind,
+			userId: authority.identity.audienceUserId,
+			sessionId: authority.identity.sessionId,
+		},
 		source: { kind: "input", id: input, occurrenceKey: `input:${input}` },
 		policy: policies[0].policy,
 		time: { utc: "2026-08-28T08:00:00.000000Z", local: "2026-08-28T10:00:00.000000", timeZone: "Europe/Copenhagen" },
@@ -82,6 +86,10 @@ async function coworkerFixture() {
 	const makeTools = ((identity: CloudNativeToolIdentity) => ({
 		tools: [cloudCoworkerMessageTool(binding, identity, { call })],
 		assertContext: (signal: AbortSignal) => run.assertActive(signal),
+		// Context views are host-fenced elsewhere; this focused test never releases one.
+		recordContextView: async () => {
+			throw new Error("recordContextView is not exercised by the wake-bus tool test");
+		},
 	})) satisfies Parameters<typeof runCloudNativeRunToolSession>[0]["tools"];
 	const createBoundary = () => {
 		const adapters = makeTools(run.identity);

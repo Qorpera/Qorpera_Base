@@ -51,6 +51,87 @@ async function fixture(mode = "company-runtime", httpPathControl = false) {
 		f.context = { ...f.context, identity: { ...f.context.identity, sessionId: null } };
 		f.authority = { ...f.authority, identity: { ...f.authority.identity, sessionId: null } };
 	}
+	// The admitted wake for this run: a human turn, or an optional routine when the
+	// run has no conversation (the same identity fields the parser verifies).
+	const wakeIdentity = f.context.identity;
+	const wakeInputId = randomUUID();
+	const wakeRoutineId = randomUUID();
+	const wake =
+		wakeIdentity.sessionId === null
+			? {
+					schema: "qorpera.wake-envelope/v1",
+					id: randomUUID(),
+					runId: wakeIdentity.runId,
+					kind: "routine",
+					companyId: wakeIdentity.companyId,
+					environmentId: wakeIdentity.environmentId,
+					staffAgentId: wakeIdentity.staffAgentId,
+					requesterUserId: wakeIdentity.requesterUserId,
+					actorStaffId: null,
+					actorUserId: null,
+					audience: { kind: wakeIdentity.audienceKind, userId: wakeIdentity.audienceUserId, sessionId: null },
+					source: {
+						kind: "schedule",
+						id: wakeRoutineId,
+						occurrenceKey: `routine:${wakeRoutineId}:v1:tick:2026-09-02T08:00:00Z`,
+					},
+					policy: {
+						schema: "qorpera.wake-policy/v1",
+						kind: "routine",
+						initial: "optional",
+						final: "optional",
+						silenceAllowed: true,
+						maxPublicSends: 64,
+					},
+					time: { utc: "2026-09-02T08:00:00.000000Z", local: "2026-09-02T10:00:00.000000", timeZone: "Europe/Copenhagen" },
+					pins: {
+						companySnapshotId: randomUUID(),
+						staffVersion: wakeIdentity.staffVersion,
+						wakeSchema: "qorpera.wake-envelope/v1",
+						runtimeBundleVersion: null,
+					},
+					routine: { id: wakeRoutineId, version: 1, intent: "Check the inbox and file anything new." },
+					payload: { schema: "qorpera.routine-schedule-occurrence/v1", triggerId: "tick", scheduledFor: "2026-09-02T08:00:00Z" },
+					parentRunId: null,
+					causal: { rootId: randomUUID(), agentIds: [wakeIdentity.staffAgentId] },
+				}
+			: {
+					schema: "qorpera.wake-envelope/v1",
+					id: randomUUID(),
+					runId: wakeIdentity.runId,
+					kind: "human",
+					companyId: wakeIdentity.companyId,
+					environmentId: wakeIdentity.environmentId,
+					staffAgentId: wakeIdentity.staffAgentId,
+					requesterUserId: wakeIdentity.requesterUserId,
+					actorStaffId: null,
+					actorUserId: wakeIdentity.requesterUserId,
+					audience: {
+						kind: wakeIdentity.audienceKind,
+						userId: wakeIdentity.audienceUserId,
+						sessionId: wakeIdentity.sessionId,
+					},
+					source: { kind: "input", id: wakeInputId, occurrenceKey: `input:${wakeInputId}` },
+					policy: {
+						schema: "qorpera.wake-policy/v1",
+						kind: "human",
+						initial: "required",
+						final: "required",
+						silenceAllowed: false,
+						maxPublicSends: 64,
+					},
+					time: { utc: "2026-09-02T08:00:00.000000Z", local: "2026-09-02T10:00:00.000000", timeZone: "Europe/Copenhagen" },
+					pins: {
+						companySnapshotId: randomUUID(),
+						staffVersion: wakeIdentity.staffVersion,
+						wakeSchema: "qorpera.wake-envelope/v1",
+						runtimeBundleVersion: null,
+					},
+					routine: null,
+					payload: { inputIds: [wakeInputId] },
+					parentRunId: null,
+					causal: { rootId: randomUUID(), agentIds: [wakeIdentity.staffAgentId] },
+				};
 	const objects = new Map<string, Uint8Array>();
 	const transport: CloudObjectTransport = {
 		async put(path, bytes) {
@@ -126,6 +207,7 @@ async function fixture(mode = "company-runtime", httpPathControl = false) {
 			};
 		}
 		if (method === "qorpera_describe_company_run_context") return structuredClone(f.context);
+		if (method === "qorpera_read_native_wake") return structuredClone(wake);
 		if (method === "qorpera_list_native_connector_tools") {
 			return mode === "company-secret" ? [structuredClone(connectorDescriptor)] : [];
 		}
