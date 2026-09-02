@@ -898,3 +898,33 @@ Commits `6222f663e`, `0ba2d10bc` (runtime bundle version 4 `c6b31877…`, activa
   labelled candidate-3 runners `7c8e69d05-production`.
 - Still needs the founder's approval: signing, packet v6 dispatch, node activation, gateway update, custody host
   re-provision (host bundle `d7ed3158…`), then the silent routine, listener, room and ceiling items rerun live.
+
+### Candidate 3.1 rollout — 2026-09-02 16:12–16:29Z (founder: "approved")
+
+- Signed image `bfb19e81…` (envelope `2aa45324…`, clean-boot evidence `f0684fec…`), staged and verified on the node.
+- Clients closed at 16:15:58Z (orchestrator guest, provider service and the founder's custody guest stopped; the
+  gateway kept serving); the two finished job guests of the earlier acceptance runs deleted; the two expired
+  job-guest runners revoked by the administrative drain (readback `qorpera.company41-production-drain-readback/v3`,
+  stale runners 0).
+- Packet v6 (`8ec337fc…`, window 16:18–18:08Z, four receipts bound): preflight, pause (policy version 7),
+  `20260828030000`, final readback — all PASS with one CLI invocation each; ledger 137 → 138, bundle version 4
+  `c6b31877…` active, final interfaces matched.
+- Node activated on the candidate-3.1 image (provider package unchanged, runner label now
+  `2f609e404-production`); orchestrator guest restarted (heartbeat 16:24:20Z); the founder's custody host
+  re-provisioned from the new image (`runtimeReady: true`, signed pins unchanged); object gateway bundle
+  `0e84a094…` installed and ready; admission reopened at 16:24:01Z (policy version 8).
+- Live reruns, all as separate runs on the founder's custody host, all completed, no wake after the last one:
+
+| Item | Result |
+|---|---|
+| Silent routine | Wake `9ae0b04c…` at 16:25:00Z, run `960d456b…`, job completed 16:25:35Z with no message appended, occurrence completed |
+| Company File listener | Routine re-targeted to `notes/` (the `inbox/` layer belongs to a dedicated adapter and refuses member edits). Folder creation and one file write raised wakes `20fbd9ac…` and `25621601…`; both completed silently |
+| Room | Room document applied through the updated gateway (head `400f9774…`), group session `15bd6492…` created with the founder and two agents. One founder post produced wakes `4c8e723a…` and `5c1520f7…`, one run per agent, both completed; both agents chose silence as the post allowed, so the room holds exactly the founder's message and no reply loop |
+| Sponsor concurrency | While one run held the sponsor's reservation the other wakes stayed queued with "Execution sponsor authority or quota is unavailable" and materialized on later heartbeats |
+| Agent wake | Still not configurable: the staff provider label mismatch (`openai-codex` vs `openai`) is unchanged and awaits the founder's decision |
+
+- Housekeeping: the provider leaves finished job guests running; five were deleted after the reruns and seventeen
+  stopped ones remain from earlier days. The five-minute silent routine is paused again (version 6); the listener
+  routine stays active on `notes/`.
+- Evidence: scratchpad `c31/evidence/` (71 files, `SHA256SUMS`), including the packet evidence, receipts, drain,
+  reopen, node activation, custody re-provision and gateway install outputs.
