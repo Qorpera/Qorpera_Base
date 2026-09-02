@@ -646,3 +646,17 @@ root-only) and its login gateway to 127.0.0.1:28082; both answer healthy.
 The launcher `run-proof-provider-ebbd1e734.sh start|stop|status|logs` is in
 the proof root and in the gate 2 `runbooks/provider/`. The prepared sudoers
 line is therefore not needed and was not added.
+
+**Native login reached the device step (02:00 UTC).** The login driver set
+the branch's OpenAI native-subscription policy (enabled, uncapped at 64),
+created the proof compute identity `efa73215-6ba6-49c8-862f-9fafc0113916`
+as the owner with the client's capability list, began login
+`cbeec5fd-c523-4414-a9f1-138d1c0ca478` and handed the session to the proof
+provider's login gateway. The provider created identity volume
+`step2-identity-efa73215…`, launched login guest
+`qorpera-login-efa732156ba649c8862f9fafc0113916` from the signed image
+(10.41.0.45), pushed the bootstrap files, waited for the guest, and the
+guest's login provider host returned status `awaiting_member` with the
+OpenAI device URL and a user code. The founder was asked to complete the
+device login with the approved test account before 02:14 UTC; a poller
+watches the gateway for completion.
