@@ -829,3 +829,9 @@ check); it changes the guest package and therefore requires a new candidate
 commit, a rebuilt and re-signed image and a repeat of gate 1; (2) the two
 August preview branches and this branch each cost about $10 a month while
 they exist.
+
+Evidence for gate 2 is in `steps02-phase-b-gate2-20260902.fable/` next to
+the gate 1 directory (broker operators and results, provider and joint
+runbooks, harness results, job-guest journals, Azure before/after views);
+its `SHA256SUMS` (316 files) has SHA-256
+`ad9e3b3ea74f14eb3a18ac89fa4533b64c23db66d32f56afc1fca172f4f6dfaa`.
