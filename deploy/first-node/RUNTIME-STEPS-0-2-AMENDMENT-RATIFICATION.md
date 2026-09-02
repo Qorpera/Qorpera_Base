@@ -674,3 +674,18 @@ through the recovery authority on the broker VM at 02:19:03.412, one provider
 connection created, and the provider stopped the login guest after observing
 completion. This is the first native login of this candidate through the
 rebuilt provider and the re-pointed broker VM.
+
+**Native host guest running (02:21 UTC).** After the provider stopped the
+login guest, the identity volume `step2-identity-efa73215…` (holding the
+master key from the login) was moved to a persistent native host guest
+`qorpera-custody-ebbd1e734` created from the signed image `c1b81ab6…` in
+project `qorpera-step2-v48` (10.41.0.46), together with a fresh recovery
+volume for the runner home. The guest-side provisioning (the August operator
+re-pinned to this candidate: provider host `591af40b…`, fenced Codex
+`2f2c26cf…`, host unit `23ec747b…`) verified both virtiofs mounts and the
+private credentials, confirmed the identity epoch and key against the
+cloud's recovery authority, wrote the private native-provider environment
+(gateway `https://10.41.0.221:9444`, broker `https://4.165.129.38:8443`,
+both CAs), and started `qorpera-native-company-host.service`, which is
+active. One detail cost a retry: the relayed runtime token carried a trailing
+newline and the guest requires the bare token.
