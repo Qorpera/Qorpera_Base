@@ -613,3 +613,17 @@ Two fresh-VM lessons were recorded: the RunCommand wrapper's umask 077 leaves
 new directories unreadable to service users (fixed with explicit modes), and
 the recovery authority needs its journal directory and the localhost NAS
 export and mount, both retired with the v56 proof.
+
+**Recovery authority restored (01:46 UTC).** The journal directory was
+created on the mounted 32 GB journal disk, the retired localhost NFS export
+was re-enabled from its kept v56 definition under a proof-named file in
+`/etc/exports.d/`, and the NAS was mounted at runtime with the retired
+options (no fstab change, so a reboot returns the VM to its retained state).
+`qorpera-identity-recovery.service` is running on 127.0.0.1:18081 and
+reachable through the same 8443 front. **Proven:** the retained broker VM
+now serves the isolated branch for both custody and identity recovery, with
+every prior encrypted credential and the August package root retained.
+**Blocked:** the isolated provider on the node (sudo) and the native login
+(founder with the test account). The broker VM still deallocates itself at
+23:00 UTC; the proof route (public IP and NSG rule) must be removed at
+cleanup.
