@@ -383,8 +383,10 @@ header and just show the companies with the + card on the far right).**
   each row carrying its own card. Invitations uses the same box.
 - The field does both jobs, as the desktop's invite popup does. It filters the
   list as you type, and when it holds an address that is not already a friend
-  the Send request button lights up and sends it. The input element outlives
-  re-renders, so typing never loses the caret.
+  the Send request button lights up and sends it. Replacing the page detaches
+  the field and a detached element loses focus, so the caret is captured and
+  restored around every render; typed "lena", filtered to one row, then Home
+  and a keystroke landed at position 0, so the caret survives exactly.
 - The selector lost its heading and subtitle. It is a row of company cards with
   the dashed New company tile last, and the cards were tuned so a typical
   window fits four across, putting that tile at the right of the first row.

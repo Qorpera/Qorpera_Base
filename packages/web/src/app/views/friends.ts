@@ -184,6 +184,10 @@ export function renderFriends(friends: FriendsController, container: HTMLElement
 						: "Nobody here by that name."
 					: "Nobody yet. Add someone by their Qorpera email address.",
 			);
+	// Replacing the container detaches the field, and a detached element loses
+	// focus, so the caret is put back exactly where the typist left it.
+	const typing = document.activeElement === search;
+	const caret: [number, number] = [search.selectionStart ?? 0, search.selectionEnd ?? 0];
 	replace(
 		container,
 		h(
@@ -220,4 +224,8 @@ export function renderFriends(friends: FriendsController, container: HTMLElement
 			),
 		),
 	);
+	if (typing) {
+		search.focus();
+		search.setSelectionRange(caret[0], caret[1]);
+	}
 }
