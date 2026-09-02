@@ -958,3 +958,38 @@ Status: **proven** for gate 1 of candidate 2. Next: activate bundle
 Status: **proven** — the candidate-2 image boots, reaches the cloud, activates
 and executes a sponsored member turn end to end on the deployed branch. Next:
 the compact case-A input for the fixture operations.
+
+## Candidate 2: gate 2 closed (2026-09-02 04:22–04:27 UTC)
+
+- The first finished guest was stopped as idle through the provider's own
+  stop action (the orchestrator only stops on delivery failure, so a finished
+  acquisition otherwise keeps the identity volume and the next acquisition is
+  refused). Then the compact case-A input (the 31 August template with
+  explicit `read_context` paging, adapted to run 3's fixtures;
+  `joint-a-compact-plan-c2.json`, 2807 bytes) was requested as actor A.
+- Run `cdb2be87…`: second job guest launched from image `0fbf44de…`,
+  bootstrap READY 04:23:08Z, runner `3ec1a252…` activated, job `044db884…`
+  leased 04:23:11Z and completed 04:24:33Z (82 s, backend
+  `native-company-runtime`, Company File disposition **published**).
+- Effects on the branch (`branch-verify-effect-c2.raw.txt`): revision
+  snapshot `50811a6b…` under run `cdb2be87…`, actor A, their sponsor
+  binding and bundle `4711f8d3…`, writing
+  `step02-joint-f3933956-r3-a-private/output.txt` (68 bytes, file hash
+  `4cbf51d4ac9351c90568aedc58e92118c539b07c74673401748cd41bf587c4bc` = the expected effect marker plus newline, receipt
+  `62e51368…`); delete of `…-shared/delete-target.txt` recorded as **open
+  proposal** `7f5c7faa…` (receipt `b1642872…`), not applied.
+- Agent's final message carries `STEP02_JOINT_A_F3933956_OK`: five
+  authorized reads succeeded, the expected-denial reads and the denied write
+  were reported as unconfirmed rather than claimed, and the canary tool was
+  not advertised to A (the managed-secret grant belongs to another member,
+  proven earlier tonight). The first (long) input's failure stays preserved.
+- Closed: proof NSG rule and public IP removed (`close-c2/`; only the egress
+  address remains, broker VM keeps its credentials and deallocates itself at
+  23:00 UTC), node transport/provider/orchestrator stopped, both job guests
+  and the native host guest stopped, actor A's fixture ban restored.
+
+Status: **proven** — gate 2 (two members, one native agent, every member
+device offline, deployed branch runtime) holds for candidate 2. Next gate:
+infrastructure-staging approval, then the frozen production package (packet
+v4), migration delta and rollback packet, then an approved production
+window. **Needs Jonas** for each of those.
