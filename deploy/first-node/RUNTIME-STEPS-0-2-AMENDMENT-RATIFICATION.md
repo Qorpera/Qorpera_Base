@@ -730,3 +730,19 @@ runs by design). Secret `715a6ea9…` version 1 is active in the broker's
 custody with the VM's encrypted credentials and destination ledger unchanged.
 Two more branch-specific corrections: the operator's refresh-token minimum
 was lowered to 8 like the harness's.
+
+**Turn sponsor finding and harness cycle (02:43–02:45 UTC).** Actor A's turn
+request in the August form (`company_connection` sponsor mode) was refused by
+the cloud with "company session turn requires a company connection": the
+login had produced a member-owned provider connection and a member sponsor
+binding, and the current source creates company-level identities and
+connections only through fixtures, never through a member RPC. The August
+proof relied on such a fixture identity. The faithful product path is that a
+member runs the native agent on their own subscription connection, so actor
+A must hold their own login. The harness was extended so a turn may name its
+sponsor mode, binding and compute identity, and a member-side operator was
+written that acts as actor A through an admin-generated magic link to create
+A's identity, begin A's login and bind A's sponsor. The first harness was
+finished cleanly (its own result: setup passed, cleanup passed, harness
+passed, stop reason finish; kept as attempt 2); its cleanup bans the fixture
+owner, so the owner was un-banned again before the restart.
