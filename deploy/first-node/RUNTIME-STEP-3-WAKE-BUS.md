@@ -713,3 +713,62 @@ to make it pass.
   current authorization revocation, real worker restart and reconnect,
   canonical public output and successful silent terminal completion. No such
   deployed acceptance was performed by this track.
+
+## Integration on the runtime line — 2026-09-02
+
+Integrated by the Fable session on branch `fable/runtime-step3-wake-bus`
+(from `codex/steps-0-2-fable-handoff` at `ed3ee9fc4`, the production line
+after the Company41 canary). The v4 component (commit `0a4dd6e51`) was
+cherry-picked unchanged; everything below is the main-owned integration the
+handoff left open.
+
+### What changed
+
+- **Shared enforcement** `20260828021000_runtime_wake_enforcement.sql`
+  (generated from the current function bodies, exact replacements):
+  canonical send admission applies the wake policy (forbidden phases,
+  required acknowledgement before the final report, public-send budget);
+  every governed native operation start and every model-requested Company
+  File read or list calls `qorpera_assert_wake_work_allowed`; governed
+  completion calls `qorpera_assert_wake_completion` and stores a silent
+  completion without inventing a transcript event; the job-terminal trigger
+  consults the policy; the transcript append accepts a wake run whose pinned
+  head follows the conversation's pin through the linear successor chain;
+  the envelope reports the run's real audience (`company` or
+  `member_private` with its member) and a required-report routine may use
+  the open member-private conversation of the member who created it when no
+  company conversation exists.
+- **Founder decision 2026-09-02** `20260828020700_company_agent_default_read_grant.sql`
+  (contract 14.1): staff agents receive a default read grant on the shared
+  root at creation, reactivation, genesis and migration; carried forward
+  across root versions until revoked; existing companies backfilled.
+- **Host**: the governed runtime reads `qorpera_read_native_wake` for every
+  run, composes the typed wake and reply policy into the context, registers
+  `send_coworker_message`, offers `send_message` only when the policy allows
+  public output, and finishes by policy. The path-control allowlists carry
+  the wake RPCs. The envelope parser accepts a missing audience member for
+  the component-era shape.
+- **Bundle**: a new activation migration
+  `20260828029900_runtime_bundle_activation_v3.sql` at the end of the chain;
+  the shipped v2 activation is untouched. Harness fixtures revoke every
+  active grant of the recipient (the default grant is a second row).
+
+### Verification (disposable PostgreSQL 17.6, Docker; Node 24.19.0)
+
+- `node scripts/test-runtime-wake-bus.mjs --integration`: 110 baseline
+  migrations plus the five new ones; component, parser, concurrency and
+  recovery checks pass in both stages; **all fifteen integration acceptance
+  cases pass**, including the eight the handoff reported failing.
+- `npm run check` passes (bundle pinned, lint, types, boundaries).
+- Focused vitest: wake bus, governed runtime, context composer and path
+  control, 132 tests.
+
+### Still open for Order 3 (contract 19, 8.1, 7.4, 17)
+
+- Room wake: canonical room objects, membership projection, group
+  conversation, fan-out on a member post, bounded room sends.
+- Wake-rate ceiling and the founder stop.
+- Automatic sponsor handoff on a usage limit (acceptance 29).
+- Deployed acceptance on the production node: five live entrypoints, a
+  silent routine, one Company File event wake without a causal loop,
+  member consent for autonomous work on a subscription.
