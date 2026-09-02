@@ -164,3 +164,14 @@ member token yet.
 
 **Blocked.** Custom domain (decision above). Gateway CORS and Auth redirect
 URLs for the final origin (requests 1 and 5).
+
+**Domain activated (founder decision: replace the Vercel record).** Cloudflare
+swapped `app` CNAME `d20621a2248eb69c.vercel-dns-017.com` →
+`qorpera-web.pages.dev`. About two minutes later `https://app.qorpera.com/`
+answered `200` with the strict Content-Security-Policy and HSTS headers and the
+Qorpera sign-in page. The second Pages build is live: `/assets/*` now carries a
+single `Cache-Control: public, max-age=86400`. `SKIP_DEPENDENCY_INSTALL=true`
+is set on the project so the build command's own `npm ci --ignore-scripts` is
+the only install. Still owed by the runtime session before OAuth and gateway
+reads work on this origin: contract requests 1 (gateway CORS) and 5 (Auth
+redirect URLs) for `https://app.qorpera.com`.
