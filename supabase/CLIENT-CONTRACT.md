@@ -487,3 +487,31 @@ above.
     Until this lands the web client derives the placeholder character from the
     profile id (stable across renames) and says so in its own code; it offers
     no logo picker, because there is nowhere to put the answer.
+11. **A member cannot set an agent's appearance once a company is bootstrapped.**
+    `qorpera_put_profile_staff` is listed in §2 and granted to `authenticated`,
+    but on a company whose bootstrap job has completed every member write to
+    `qorpera_profile_staff` is refused by the
+    `qorpera_profile_staff_company_file_writer` trigger with 42501 "Company
+    File-backed staff must be changed through its lifecycle operation"
+    (`20260828019600_runtime_step0_company_agents.sql`). Verified on
+    `wovsmjvghnbcbfazdtvr` on 2026-09-02: creating a company seeds the
+    Co-Founder (`brain`, `qorpera-blue`, template `co-founder`, lifecycle
+    `setup`), and setting its figure and colour is refused.
+
+    The stated path — advance the source Company File path in the same
+    transaction — is not reachable from a browser: writing a document's bytes
+    needs the object gateway, and the gateway still sends no `Access-Control-*`
+    headers (request 1), so the preflight fails before any authority check.
+
+    Request, either:
+    - a member-callable RPC that sets an agent's `appearance_creature` and
+      `appearance_color` and advances the projection itself, bounded by the
+      profile's write capability; or
+    - the gateway CORS answer from request 1 plus a worked example of the
+      member path-command sequence for editing one agent document, so a client
+      can do it the long way.
+
+    Until one exists, §2 should note that `qorpera_put_profile_staff` is
+    member-callable only before bootstrap completes; a client reading §2 today
+    would build exactly the screen that this trigger refuses, which is what
+    happened here.

@@ -69,7 +69,11 @@ export function createCloud(config: CloudConfig): Cloud {
 export function describeError(error: unknown): string {
 	if (error instanceof CloudRpcError) {
 		if (error.missing) return `${error.rpc} is not deployed on this cloud yet.`;
-		if (error.denied) return "The cloud refused this operation for your account.";
+		// A refusal usually says exactly what rule was hit, and that sentence is
+		// worth more than a paraphrase of the code.
+		if (error.denied) {
+			return error.message.trim() ? error.message : "The cloud refused this operation for your account.";
+		}
 		return error.message;
 	}
 	if (error instanceof Error) return error.message;

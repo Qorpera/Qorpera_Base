@@ -554,3 +554,42 @@ row with the caret held.
 agents for the rail to list.
 
 **Requested.** Nothing new this block.
+
+**End-to-end test on the real cloud (founder: "create a test company so we can
+see it end to end").** Created `Test Co` through the deployed UI on
+`wovsmjvghnbcbfazdtvr`, profile `de587c1e-3e7d-41da-99eb-4c481e7dc969`. It is
+still there; deleting it is `qorpera_delete_hosted_profile`.
+
+**Two things I had wrong, both corrected by the test.**
+
+1. **Order 0's seeding is deployed after all.** Creating a company seeded a
+   Co-Founder — `qorpera_list_profile_staff` returns display name `Co-Founder`,
+   template `co-founder`, creature `brain`, colour `qorpera-blue`, lifecycle
+   `setup`, version 1 — even though `qorpera_company_organization_json` and
+   `_bootstrap` still answer PGRST202. My earlier "blocked, no Co-Founder to
+   dress" was drawn from those two probes and was wrong about the part that
+   mattered. The client found the agent through the staff list's template, as
+   designed, and the first-run screen rendered it as the Crown in palette blue:
+   the appearance mapping working against real cloud data, not a fixture.
+2. **A member cannot write that appearance.** Saving is refused with 42501
+   "Company File-backed staff must be changed through its lifecycle operation".
+   Once the bootstrap job completes, the
+   `qorpera_profile_staff_company_file_writer` trigger closes
+   `qorpera_profile_staff` to `authenticated` entirely: staff identity is a
+   projection of the Company File and has to advance with its source path. The
+   stated path is not reachable from a browser, because writing document bytes
+   needs the object gateway and the gateway still sends no CORS headers.
+
+So the screen is correct up to the write, and the write has nowhere to go on a
+bootstrapped company. §2 lists `qorpera_put_profile_staff` as member-callable
+with no such qualification, which is exactly why this got built; contract
+request 11 asks for either a member-callable appearance RPC or the gateway CORS
+answer plus a worked path-command example.
+
+**`describeError` no longer swallows a refusal's message.** It reported "The
+cloud refused this operation for your account." while the cloud was saying
+precisely what rule was hit. A 42501 now shows the cloud's own sentence.
+
+**Works against the real cloud.** Company creation, the landing on
+`#/c/{id}/meet`, the Co-Founder resolving from seeded state, the rail, and the
+picker. **Blocked:** saving the choice. **Requested:** contract request 11.

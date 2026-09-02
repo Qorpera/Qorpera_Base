@@ -72,6 +72,12 @@ export function renderMeet(
 		return;
 	}
 
+	// Once Order 0's bootstrap completes, a staff record is a projection of the
+	// Company File and the roster RPC stops accepting member writes
+	// (qorpera_guard_company_file_staff_write). The client cannot change a
+	// Company File path from a browser yet — that needs the object gateway,
+	// which sends no CORS headers — so a refusal is reported in the cloud's own
+	// words rather than retried.
 	const figure = state.figure ?? figureFor(cofounder);
 	const color = state.color ?? colorFor(cofounder, figure);
 	const canWrite = companyState.team?.capabilities.write === true;
