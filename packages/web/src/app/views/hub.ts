@@ -17,6 +17,8 @@ export interface HubState {
 	error?: string;
 	creating?: { name: string; clientCreationId: string; state: string };
 	busyInvitation?: string;
+	/** The "New company" tile is open for typing. */
+	composing?: boolean;
 }
 
 export class HubController {
@@ -107,6 +109,21 @@ function invitationCard(hub: HubController, invitation: HostedIncomingProfileInv
 	);
 }
 
+function companyCard(profile: HostedProfile): HTMLElement {
+	return h(
+		"a",
+		{ class: "company-card", href: `#/c/${profile.profileId}` },
+		companyImage(profile.profileName),
+		h("span", { class: "company-name" }, profile.profileName),
+		h(
+			"span",
+			{ class: "company-meta" },
+			badge(profile.role, "neutral"),
+			h("span", { class: "muted small" }, `since ${fmtDate(profile.createdAt)}`),
+		),
+	);
+}
+
 export function renderHub(hub: HubController, container: HTMLElement): void {
 	const state = hub.store.get();
 	const busy = Boolean(state.creating);
@@ -115,32 +132,26 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 	const welcome = !state.loading && state.profiles.length === 0;
 	const invited = state.invitations.length > 0;
 	const nameInput = h("input", {
+		id: "newCompanyName",
 		type: "text",
 		placeholder: "Company name",
 		maxlength: 120,
 		required: true,
 		disabled: busy,
 		"aria-label": "Company name",
+		autocomplete: "organization",
 	});
-	const createForm = (className: string, label: string) =>
+	const onSubmit = (event: Event) => {
+		event.preventDefault();
+		void hub.createCompany(nameInput.value);
+	};
+	const progress = () =>
 		h(
-			"form",
-			{
-				class: className,
-				onsubmit: (event: Event) => {
-					event.preventDefault();
-					void hub.createCompany(nameInput.value);
-				},
-			},
-			nameInput,
-			h("button", { type: "submit", class: "hub-create-submit", disabled: busy }, label),
+			"div",
+			{ class: "hub-progress" },
+			spinner(`Creating ${state.creating?.name ?? "the company"}`),
+			h("span", { class: "muted small" }, "Seeding its Company File and Co-Founder."),
 		);
-	const notices = [
-		state.error ? notice("danger", state.error) : null,
-		busy
-			? notice("accent", `Creating “${state.creating?.name}”. The cloud is seeding its Company File and Co-Founder.`)
-			: null,
-	];
 	const invitations = state.invitations.map((invitation) =>
 		invitationCard(hub, invitation, state.busyInvitation === invitation.id),
 	);
@@ -170,13 +181,20 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 						{ class: "hub-lead" },
 						invited
 							? "Join a company you have been invited to, or start one of your own."
-							: "Name it, and Qorpera creates its Company File and a Co-Founder who begins work straight away.",
+							: "Give it a name. Qorpera creates its Company File and a Co-Founder who begins work straight away.",
 					),
 					invited ? h("div", { class: "invite-list" }, ...invitations) : null,
 					invited ? h("div", { class: "hub-or", "aria-hidden": "true" }, h("span", null, "or")) : null,
-					createForm("hub-create", "Create company"),
-					...notices,
-					invited
+					busy
+						? progress()
+						: h(
+								"form",
+								{ class: "hub-create", onsubmit: onSubmit },
+								nameInput,
+								h("button", { type: "submit", class: "hub-create-submit" }, "Create company"),
+							),
+					state.error ? notice("danger", state.error) : null,
+					invited || busy
 						? null
 						: h("p", { class: "hub-note" }, "Invited to a company? It appears here the moment someone adds you."),
 				),
@@ -185,6 +203,34 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 		return;
 	}
 
+	// The selector: one card per company, and a tile that opens into the
+	// create form in place, so the page never needs a form in its header.
+	const newTile = busy
+		? h("div", { class: "company-card company-card-compose" }, progress())
+		: state.composing
+			? h(
+					"form",
+					{ class: "company-card company-card-compose", onsubmit: onSubmit },
+					h("label", { class: "muted small", for: "newCompanyName" }, "New company"),
+					nameInput,
+					h(
+						"div",
+						{ class: "row" },
+						h("button", { type: "submit", class: "hub-create-submit" }, "Create"),
+						button("Cancel", () => hub.store.set({ composing: false })),
+					),
+				)
+			: h(
+					"button",
+					{
+						type: "button",
+						class: "company-card company-card-new",
+						onclick: () => hub.store.set({ composing: true }),
+					},
+					h("span", { class: "company-new-mark", "aria-hidden": "true" }, "+"),
+					h("span", { class: "company-name" }, "New company"),
+					h("span", { class: "muted small" }, "Seeds a Company File and a Co-Founder"),
+				);
 	replace(
 		container,
 		h(
@@ -197,9 +243,9 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 					"header",
 					{ class: "hub-header" },
 					h("h1", null, "Companies"),
-					createForm("hub-create hub-create-inline", "New company"),
+					h("p", null, state.loading ? "Loading your companies…" : "Open a company, or start a new one."),
 				),
-				...notices,
+				state.error ? notice("danger", state.error) : null,
 				invited
 					? h(
 							"div",
@@ -210,25 +256,9 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 					: null,
 				state.loading
 					? spinner("Loading companies")
-					: h(
-							"div",
-							{ class: "company-grid" },
-							...state.profiles.map((profile) =>
-								h(
-									"a",
-									{ class: "company-card", href: `#/c/${profile.profileId}` },
-									companyImage(profile.profileName),
-									h("span", { class: "company-name" }, profile.profileName),
-									h(
-										"span",
-										{ class: "muted small" },
-										badge(profile.role, "neutral"),
-										` · since ${fmtDate(profile.createdAt)}`,
-									),
-								),
-							),
-						),
+					: h("div", { class: "company-grid" }, ...state.profiles.map(companyCard), newTile),
 			),
 		),
 	);
+	if (state.composing && !busy) nameInput.focus();
 }

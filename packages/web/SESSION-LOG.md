@@ -287,3 +287,26 @@ the window edge because `section.hub` had no layout rules at all. Rebuilt:
 
 Verified with a throwaway harness that renders the hub's three states against
 the real stylesheet inside the app's frame; no console errors.
+
+**Hub second pass (founder: drop the header's background colour and divider,
+the top-left logo is unnecessary, and revisit both hub screens).**
+
+- Outside a company the top bar is now `topbar-plain`: transparent, no border,
+  no brand mark; only the Cloud check and account links remain at the right.
+  Inside a company the switcher bar is unchanged. On the account and Cloud
+  check pages the bar leads with a "← Companies" link so the way back is one
+  click. The frame now paints the app background itself, so the transparent
+  bar sits on the same white as the main pane instead of a grey band.
+- **Company selector**: "Companies" with a one-line subtitle; the grid gains a
+  dashed "New company" tile (a plus mark and "Seeds a Company File and a
+  Co-Founder"). Clicking it turns that tile into an inline compose form (name
+  field focused, Create / Cancel), and the tile shows a spinner while the RPC
+  runs. Creation no longer lives in the page header.
+- **Start your first company**: larger crown stage and title, the lead cut to
+  one sentence about the Company File and the Co-Founder, a 48px name field
+  and button, and the invitation note as a quiet footer. The invited variant
+  keeps the invitation cards above an "or" divider and the same form.
+
+Verified with the harness (selector, compose, welcome, invited, and a 390px
+selector) against the production stylesheet; Biome, typecheck and the 13 tests
+pass; no console errors from the app.

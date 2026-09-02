@@ -40,14 +40,18 @@ export function renderTopbar(
 		),
 	);
 	const realtime = company?.store.get().realtime;
+	// Outside a company the bar is bare: no surface, no divider, no mark. The
+	// hub needs nothing on the left; the account and cloud-check pages get a
+	// way back. Inside a company the switcher leads and the chrome returns.
+	container.classList.toggle("topbar-plain", !company);
+	const lead = company
+		? switcher
+		: context.route.name === "hub"
+			? null
+			: h("a", { class: "topbar-home", href: "#/" }, "← Companies");
 	replace(
 		container,
-		h(
-			"a",
-			{ class: "brand", href: "#/", "aria-label": "Qorpera home" },
-			h("img", { src: "./assets/brand/qorpera-lockup-light-800.png", alt: "Qorpera", width: 800, height: 200 }),
-		),
-		switcher,
+		lead,
 		company && realtime && realtime !== "connected"
 			? badge(
 					realtime === "connecting" ? "connecting" : "live updates degraded",

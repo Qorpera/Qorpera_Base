@@ -35,7 +35,7 @@ label > input, label > select { font-weight: 400; }
 .fineprint { color: var(--text-soft); font-size: 12px; }
 
 .app { height: 100%; }
-.frame { display: flex; flex-direction: column; height: 100%; }
+.frame { display: flex; flex-direction: column; height: 100%; background: var(--bg); }
 .body { display: flex; flex: 1; min-height: 0; }
 
 /* buttons */
@@ -80,8 +80,10 @@ label > input, label > select { font-weight: 400; }
 	height: var(--titlebar-height); display: flex; align-items: center; gap: 12px; padding: 0 16px;
 	border-bottom: 1px solid var(--border); background: var(--sidebar-surface);
 }
-.brand { display: flex; align-items: center; }
-.brand img { height: 22px; width: auto; display: block; }
+/* Outside a company: no surface, no divider, no mark. */
+.topbar.topbar-plain { background: transparent; border-bottom: 0; padding: 0 28px; }
+.topbar-home { color: var(--text-muted); font-weight: 500; padding: 4px 8px; border-radius: var(--radius-sm); }
+.topbar-home:hover { background: var(--hover); text-decoration: none; color: var(--text); }
 .company-switcher { max-width: 260px; min-height: 30px; }
 .topbar-link { color: var(--text-muted); padding: 4px 8px; border-radius: var(--radius-sm); }
 .topbar-link:hover { background: var(--hover); text-decoration: none; }
@@ -162,42 +164,45 @@ details.advanced { margin-top: 24px; }
 details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 
 /* hub */
-.hub { flex: 1; min-height: 0; overflow: auto; display: flex; justify-content: center; padding: 28px 32px 56px; }
-.hub-inner { width: 100%; max-width: 1040px; display: flex; flex-direction: column; }
-.hub-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 4px; }
-.hub-section { margin-top: 24px; }
+.hub { flex: 1; min-height: 0; overflow: auto; display: flex; justify-content: center; padding: 8px 40px 64px; }
+.hub-inner { width: 100%; max-width: 1080px; display: flex; flex-direction: column; }
+.hub-header { display: flex; flex-direction: column; gap: 4px; margin: 22px 0 24px; }
+.hub-header h1 { margin: 0; font-size: 30px; font-weight: 650; letter-spacing: -0.028em; }
+.hub-header p { margin: 0; color: #5a616e; font-size: 15px; }
+.hub-section { margin: 0 0 28px; }
+.hub-section h2 { margin: 0 0 10px; font-size: 15px; font-weight: 650; color: var(--text-muted); }
 
 /* The welcome state: the first thing a member with no companies sees. */
-.hub-welcome { flex: 1; align-items: center; justify-content: center; text-align: center; padding-bottom: 24px; }
+.hub-welcome { flex: 1; align-items: center; justify-content: center; text-align: center; padding-bottom: 56px; }
 .hub-art { display: grid; place-items: center; width: 100%; }
-.hub-welcome .crown-stage { width: clamp(150px, 19vw, 210px); }
-.hub-welcome h1 { margin: 14px 0 10px; font-size: clamp(26px, 3vw, 34px); font-weight: 600; letter-spacing: -0.025em; }
-.hub-lead { max-width: 430px; margin: 0 0 28px; color: #5a616e; font-size: 16px; line-height: 1.5; }
-.hub-note { margin: 22px 0 0; color: #83868d; font-size: 12.5px; line-height: 1.45; max-width: 400px; }
-.hub-welcome .notice { width: min(430px, 100%); text-align: left; }
-.hub-or { display: flex; align-items: center; gap: 14px; width: min(430px, 100%); margin: 22px 0; color: #83868d; font-size: 11px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; }
+.hub-welcome .crown-stage { width: clamp(160px, 20vw, 224px); }
+.hub-welcome h1 { margin: 18px 0 10px; font-size: clamp(28px, 3.2vw, 38px); font-weight: 600; letter-spacing: -0.03em; }
+.hub-lead { max-width: 460px; margin: 0 0 30px; color: #5a616e; font-size: 17px; line-height: 1.5; }
+.hub-note { margin: 22px 0 0; color: #83868d; font-size: 13px; line-height: 1.45; max-width: 400px; }
+.hub-welcome .notice { width: min(460px, 100%); text-align: left; }
+.hub-or { display: flex; align-items: center; gap: 14px; width: min(460px, 100%); margin: 22px 0; color: #83868d; font-size: 11px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; }
 .hub-or::before, .hub-or::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+.hub-progress { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.hub-progress .spinner { padding: 8px 0 0; color: var(--text); font-weight: 600; }
 
-.hub-create { display: flex; gap: 10px; width: min(430px, 100%); }
-.hub-create input {
-	flex: 1; min-width: 0; height: 46px; padding: 0 14px; border: 1px solid var(--border-strong);
-	border-radius: 8px; background: #fff; font-size: 15px;
+.hub-create { display: flex; gap: 10px; width: min(460px, 100%); }
+.hub-create input, .company-card-compose input {
+	flex: 1; min-width: 0; height: 48px; padding: 0 16px; border: 1px solid var(--border-strong);
+	border-radius: 8px; background: #fff; font-size: 16px;
 	transition: border-color 140ms ease, box-shadow 140ms ease;
 }
-.hub-create input::placeholder { color: #9a9ea6; }
-.hub-create input:focus-visible { outline: none; border-color: #2d6ff2; box-shadow: 0 0 0 3px rgba(45, 111, 242, 0.18); }
+.hub-create input::placeholder, .company-card-compose input::placeholder { color: #9a9ea6; }
+.hub-create input:focus-visible, .company-card-compose input:focus-visible { outline: none; border-color: #2d6ff2; box-shadow: 0 0 0 3px rgba(45, 111, 242, 0.18); }
 .hub-create-submit {
-	height: 46px; padding: 0 20px; border: 0; border-radius: 8px; background: var(--primary); color: #fff;
+	height: 48px; padding: 0 22px; border: 0; border-radius: 8px; background: var(--primary); color: #fff;
 	font-size: 15px; font-weight: 600; letter-spacing: -0.005em; cursor: pointer; white-space: nowrap;
 	transition: background-color 160ms ease;
 }
 .hub-create-submit:hover:not(:disabled) { background: var(--primary-hover); }
 .hub-create-submit:disabled { opacity: 0.5; cursor: default; }
-.hub-create-inline { width: auto; }
-.hub-create-inline input { width: 200px; height: 38px; }
-.hub-create-inline .hub-create-submit { height: 38px; font-size: 14px; }
 
 .invite-list { display: flex; flex-direction: column; gap: 10px; width: min(560px, 100%); margin: 0 auto; text-align: left; }
+.hub-section .invite-list { margin: 0; width: min(640px, 100%); }
 .invite-card {
 	display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
 	padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg);
@@ -205,15 +210,28 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 .invite-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .invite-actions { display: flex; gap: 8px; }
 
-.company-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin-top: 16px; }
+/* The selector */
+.company-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
 .company-card {
-	display: flex; flex-direction: column; gap: 6px; padding: 16px; border: 1px solid var(--border);
-	border-radius: var(--radius-lg); background: var(--bg); color: var(--text);
-	transition: border-color 140ms ease, box-shadow 140ms ease;
+	display: flex; flex-direction: column; align-items: flex-start; gap: 10px; min-height: 156px; padding: 20px;
+	border: 1px solid var(--border); border-radius: 14px; background: var(--bg); color: var(--text); text-align: left;
+	font: inherit; cursor: pointer; transition: border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
 }
-.company-card:hover { border-color: var(--border-strong); text-decoration: none; box-shadow: 0 6px 18px rgba(11, 11, 11, 0.06); }
-.company-mark { display: block; width: 44px; height: 44px; object-fit: contain; }
-.company-name { font-weight: 650; font-size: 15px; }
+.company-card:hover { border-color: var(--border-strong); box-shadow: 0 10px 28px rgba(11, 11, 11, 0.07); transform: translateY(-1px); text-decoration: none; }
+.company-mark { display: block; width: 56px; height: 56px; object-fit: contain; }
+.company-name { font-size: 16px; font-weight: 650; letter-spacing: -0.01em; }
+.company-meta { display: flex; align-items: center; gap: 8px; }
+.company-card-new { border-style: dashed; background: transparent; }
+.company-card-new:hover { background: #fafaf9; box-shadow: none; transform: none; }
+.company-new-mark {
+	width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; margin-bottom: 4px;
+	border: 1px solid var(--border-strong); color: var(--text-muted); font-size: 22px; line-height: 1;
+}
+.company-card-compose { gap: 8px; cursor: default; }
+.company-card-compose:hover { box-shadow: none; transform: none; border-color: var(--border); }
+.company-card-compose input { width: 100%; height: 40px; font-size: 15px; }
+.company-card-compose .hub-create-submit { height: 36px; padding: 0 16px; font-size: 14px; }
+.company-card-compose .hub-progress { align-items: flex-start; }
 
 /* sign in — current brand (Qorpera_Website brand/final + landing styles.css):
  * paper and ink, the approved lockup, a faint grid floor, the crown creature. */
