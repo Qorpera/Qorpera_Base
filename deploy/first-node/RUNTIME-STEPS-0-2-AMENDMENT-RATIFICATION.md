@@ -660,3 +660,17 @@ guest's login provider host returned status `awaiting_member` with the
 OpenAI device URL and a user code. The founder was asked to complete the
 device login with the approved test account before 02:14 UTC; a poller
 watches the gateway for completion.
+
+**Native login completed (02:19:03 UTC).** The first attempt failed at the
+guest's harness-completion stage: the guest host allows ten minutes from
+issuing the device code, and the founder's entry landed as that deadline
+fired at 02:10:04; the poller's re-posts also made the provider re-run the
+guest bootstrap every 20 seconds, which was harmless but noisy. The second
+attempt (login `e836ccec-d2b4-4360-9988-0782d7fd8e7e`, code issued 02:15:41,
+watched read-only on the cloud row instead of re-posting) completed at
+02:19:03: credential capsule `fde29659-bc94-4f08-a71f-ebb41662834b` active
+for compute identity `efa73215…`, identity backup receipt revision 1 verified
+through the recovery authority on the broker VM at 02:19:03.412, one provider
+connection created, and the provider stopped the login guest after observing
+completion. This is the first native login of this candidate through the
+rebuilt provider and the re-pointed broker VM.
