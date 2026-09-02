@@ -59,6 +59,7 @@ function accountMenuElement(context: ShellContext): HTMLElement {
 		window.addEventListener("hashchange", () => setAccountMenuOpen(false));
 	}
 	const name = displayName(context.user);
+	const email = context.user?.email ?? "";
 	const item = (target: "account" | "friends" | "invitations", label: string, hint: string, count = 0) =>
 		h(
 			"a",
@@ -83,7 +84,8 @@ function accountMenuElement(context: ShellContext): HTMLElement {
 			"div",
 			{ class: "account-identity" },
 			h("strong", null, name),
-			h("span", { class: "muted small" }, context.user?.email ?? ""),
+			// An account with no name shows its address as the name already.
+			email && email !== name ? h("span", { class: "muted small" }, email) : null,
 		),
 		item("account", "Account and settings", "Plan, storage, feedback"),
 		item("friends", "Friends", "People you can invite to a company"),
