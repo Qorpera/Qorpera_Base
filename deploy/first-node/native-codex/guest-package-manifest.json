@@ -82,8 +82,8 @@
     },
     {
       "file": "qorpera-company-runner.service",
-      "bytes": 1927,
-      "sha256": "ad9f88e91918a827757304fc53ee37838c7daeb116a834d29dc7c821aa4b334b"
+      "bytes": 2199,
+      "sha256": "fad32c3dea9d211b9822535b93cd93f88e3028992f73006f7efd633d21da1fb8"
     },
     {
       "file": "qorpera-ephemeral-runner.mjs",
@@ -92,8 +92,8 @@
     },
     {
       "file": "qorpera-ephemeral-runner.service",
-      "bytes": 2167,
-      "sha256": "b6ce18e94b9b39df14d2fa9d232ad5d28f4acc96bc3f6045114657e4c38dfe03"
+      "bytes": 2439,
+      "sha256": "4ca462ab1c83b62e316e02e79f6cff97c2831b5a50749f884042813742a9d934"
     },
     {
       "file": "qorpera-identity-recovery-restore.mjs",
@@ -138,7 +138,7 @@
     {
       "file": "qorpera-native-provider-host.mjs",
       "bytes": 319658,
-      "sha256": "d7ed315817f9ceabe1d3d6e61bfd20f9dc468ad02d9360604553920cf880eff3"
+      "sha256": "ac1151e3e3bc284d64e3ce4f37f793a9ecf7f60ac0ca5b526653cb607f7be619"
     },
     {
       "file": "qorpera-native-provider-host.service",
