@@ -113,7 +113,6 @@ class FakeLxd implements LxdClient {
 	filePushes: Array<{ path: string; content: string; mode: number }> = [];
 	execCalls: string[][] = [];
 	deleteCalls: string[] = [];
-	runnerExited = false;
 
 	async getInstance(_project: string, _name: string): Promise<LxdInstanceRecord | undefined> {
 		return this.instance ? structuredClone(this.instance) : undefined;
@@ -179,8 +178,6 @@ class FakeLxd implements LxdClient {
 	async execInstance(_project: string, _name: string, command: readonly string[]): Promise<void> {
 		if (this.instance?.status !== "Running") throw new Error("fake VM agent is unavailable");
 		this.execCalls.push([...command]);
-		if (command[0] === "/bin/sh" && command[2]?.includes("journalctl") && !this.runnerExited)
-			throw new Error("LXD instance command failed");
 	}
 
 	async deleteInstance(_project: string, name: string): Promise<void> {
@@ -448,20 +445,17 @@ describe("LXD cloud runner provider", () => {
 		expect(lxd.deleteCalls).toHaveLength(1);
 	});
 
-	it("retires a one-run guest as soon as its runner unit has exited, and leaves live guests alone", async () => {
+	it("retires a one-run guest once it has powered itself off, and leaves a running guest alone", async () => {
 		const { stateRoot, lxd, guest, fetchImplementation, request, runId, journalPath } = await acquiredFixture();
 		const backend = new LxdCloudRunnerProviderBackend(config(stateRoot), lxd, guest, fetchImplementation);
 		const before = lxd.execCalls.length;
 		await backend.reconcile();
-		expect(lxd.execCalls.slice(before)).toEqual([
-			["/bin/sh", "-c", expect.stringContaining("qorpera-ephemeral-runner.service")],
-		]);
-		expect(lxd.execCalls.at(-1)?.[2]).toContain('grep -q "^Started "');
+		expect(lxd.execCalls).toHaveLength(before);
 		expect(lxd.deleteCalls).toEqual([]);
 		expect(JSON.parse(await readFile(journalPath, "utf-8"))).toMatchObject({ physicalState: "registered" });
-		lxd.runnerExited = true;
+		// The runner unit's ExecStopPost powers the guest off after the run.
+		lxd.instance = { ...lxd.instance!, status: "Stopped", statusCode: 102 };
 		await backend.reconcile();
-		expect(lxd.powerCalls.at(-1)).toBe("stop");
 		expect(lxd.deleteCalls).toEqual([lxd.createCalls[0]?.name]);
 		expect(JSON.parse(await readFile(journalPath, "utf-8"))).toMatchObject({
 			physicalState: "stopped",

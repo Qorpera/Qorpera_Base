@@ -859,37 +859,13 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 
 	/** A job guest serves exactly one run. Once it is done the guest has no further
 	 * purpose: the canonical transcript and the provider session live in the cloud
-	 * and on the identity host, so the guest is powered off and deleted rather than
-	 * left running. Retained custom volumes (identity, recovery) are devices and
-	 * survive the guest. */
+	 * and on the identity host, so the guest is deleted rather than left behind.
+	 * Retained custom volumes (identity, recovery) are devices and survive. */
 	async #retire(current: LxdProviderJournal, status: string, signal?: AbortSignal): Promise<void> {
 		if (status !== "Stopped") {
 			await this.#lxd.setInstancePower(current.lxd.project, current.instanceName, "stop", signal);
 		}
 		await this.#lxd.deleteInstance(current.lxd.project, current.instanceName, signal);
-	}
-
-	/** True once the guest's single-run runner unit has run and exited. A unit
-	 * that has not started yet (the guest registers a moment before its runner
-	 * is up) must not count, and systemd clears a dead unit's runtime
-	 * timestamps, so the proof of a past start is the unit's own "Started" line
-	 * in this boot's journal. Only a clean zero exit of the probe counts;
-	 * transport or agent faults leave the guest alone. */
-	async #runnerExited(current: LxdProviderJournal, signal?: AbortSignal): Promise<boolean> {
-		const unit =
-			current.schema === COMPANY_JOURNAL_SCHEMA
-				? "qorpera-company-runner.service"
-				: "qorpera-ephemeral-runner.service";
-		const probe =
-			`state=$(/usr/bin/systemctl show -p ActiveState --value ${unit}) && ` +
-			'[ "$state" != active ] && [ "$state" != activating ] && [ "$state" != reloading ] && ' +
-			`/usr/bin/journalctl -q -b -u ${unit} -o cat --no-pager | /usr/bin/grep -q "^Started "`;
-		try {
-			await this.#lxd.execInstance(current.lxd.project, current.instanceName, ["/bin/sh", "-c", probe], signal);
-			return true;
-		} catch {
-			return false;
-		}
 	}
 
 	async #ensureReady(
@@ -1304,10 +1280,12 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			return;
 		}
 		if (
-			instance.status === "Running" &&
-			(current.physicalState === "registered" || current.physicalState === "assigned") &&
-			(await this.#runnerExited(current, signal))
+			instance.status === "Stopped" &&
+			(current.physicalState === "registered" || current.physicalState === "assigned")
 		) {
+			// The guest powers itself off once its one-run runner unit has exited
+			// (ExecStopPost in the runner unit); a powered-off registered or
+			// assigned guest is therefore finished, never mid-run.
 			await this.#writeJournal({ ...current, physicalState: "stopping", stopReason: "idle" });
 			await this.#retire(current, instance.status, signal);
 			await this.#writeJournal({ ...current, physicalState: "stopped", stopReason: "idle" });

@@ -22,7 +22,10 @@ LoadCredential=qorpera-runner-activation:/var/lib/qorpera-bootstrap/credentials/
 LoadCredential=qorpera-runner-assignment:/var/lib/qorpera-bootstrap/credentials/qorpera-runner-assignment
 LoadCredential=qorpera-native-bridge:/var/lib/qorpera-bootstrap/credentials/qorpera-native-bridge
 ExecStart=/usr/bin/node /opt/qorpera-runner/qorpera-ephemeral-runner.mjs
-Restart=on-failure
+# A job guest serves exactly one run: once the runner has exited (success or failure) the guest powers itself off and the
+# provider deletes it. The '+' prefix runs the command with full privileges outside this unit's sandbox.
+ExecStopPost=+/usr/bin/systemctl poweroff --no-block
+Restart=no
 RestartSec=5s
 TimeoutStopSec=45s
 KillMode=control-group
