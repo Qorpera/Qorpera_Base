@@ -928,3 +928,67 @@ Commits `6222f663e`, `0ba2d10bc` (runtime bundle version 4 `c6b31877…`, activa
   routine stays active on `notes/`.
 - Evidence: scratchpad `c31/evidence/` (71 files, `SHA256SUMS`), including the packet evidence, receipts, drain,
   reopen, node activation, custody re-provision and gateway install outputs.
+
+## Staff provider label, job-guest teardown and the candidate 3.2 attempt — 2026-09-03
+
+### Staff provider label aligned to `openai` (founder decision: "i'd assume just openai")
+
+The four active staff records carried `model_provider = 'openai-codex'` while every provider connection carries
+`provider = 'openai'`, so `qorpera_configure_staff_execution_authority` refused and no coworker wake could be
+configured. These rows predate the Company File staff lifecycle (no `source_path`), so neither the member RPC
+(guarded once bootstrap has completed) nor the agent-document projection could change them. One reviewed
+serializable transaction by the deployment administrator set the label on Software Developer, Financial Officer,
+Research Lead and Superman; the primary provider-model sync trigger recorded the new mapping. The Co-Founder and
+`that agent` still have no model at all and cannot receive agent wakes.
+
+With the label aligned, the **agent (coworker) entrypoint was proven live**: the Research Lead received execution
+authority on the autonomous sponsor, the Co-Founder was asked through a human turn to send one coworker message,
+and both runs completed. Occurrence `915070ec…` kind `agent`, source `coworker`, sponsor version 1; the sender
+reported a queued receipt and the recipient chose silence. That closes the last unproven Order 3 entrypoint.
+
+### Job-guest teardown (founder decision: "routine work should perhaps just close … set it up how you think it makes the most sense")
+
+Implemented as: a job guest serves exactly one run, so the runner units carry
+`ExecStopPost=+/usr/bin/systemctl poweroff --no-block` with `Restart=no`, and the provider deletes a powered-off
+guest under a registered or assigned journal, deletes on every stop, and removes guests left behind under stopped
+journals. Retained identity and recovery volumes are devices and survive. The conversation itself is never in the
+guest: the canonical transcript is in the cloud and the provider session on the identity host, so nothing is lost
+when the guest closes.
+
+Three earlier provider builds are **rejected and must not be revived**: `c00b263b3`, `7993748a7` and `0363f7674`
+probed the guest's runner unit from the host (`systemctl is-active`, then a unit-journal probe) inside the
+provider mutex. They also mis-read a unit that had not started yet as finished, and two live runs died at the
+native bridge while they were installed. The self-poweroff design replaces host-side probing entirely.
+
+The seventeen stopped job guests from earlier days and the ten expired job-guest runner registrations were
+removed (drain readback `qorpera.company41-production-drain-readback/v4`, stale runners 0).
+
+### Candidate 3.2 rolled out, then rolled back
+
+Source `fd33e05d65b54b4db823c2e05ff579afd7a34962`, runtime bundle v5
+`a881b7604cdd49b1da1b7d8ddf7934c2a37b583d67c122f8746ca93c1d47a962`, activation migration `20260828030100`.
+Signed image `4fec3348…` (envelope `011672da…`, clean-boot evidence `af5e416d…`), provider package `3a7dc4c5…`,
+guest manifest `5d07b087…`. Packet v7 (`b05d6db4…`, frozen `fda7a367…`, rehearsed 4/4) ran all four steps PASS on
+production: ledger 138 → 139, bundle version 5 active, final interfaces matched. The node was activated on the
+candidate-3.2 image and admission was reopened at policy version 10.
+
+The first live run on candidate 3.2 failed, and so did a run after rolling the node back to candidate 3.1. The
+node is therefore back on the **candidate-3.1 runtime** (image `bfb19e81…`, provider `9e8d313f…`, guest manifest
+`ec13e262…`, runner label `2f609e404-production`, envelope `2aa45324…`) and **admission is closed** at policy
+version 11 with the reason recorded in the policy row.
+
+### The blocker: native runs fail in the guest at the harness-execution stage
+
+Since 07:50Z every native run fails within seconds. The cloud records
+`Native provider bridge request failed (422)`; the guest's own native company host records
+`Native provider execution harness-execution stage failed (unknown) [mouth=uninitialized]`, meaning the harness
+died before any message was produced. The host deliberately never logs the underlying error, because it can carry
+credentials.
+
+This is **not** the teardown change: the failure reproduces on two different signed images (`4fec3348…` and
+`bfb19e81…`) and two different provider builds (`3a7dc4c5…` and `9e8d313f…`), and the runtime-bundle mismatch is
+also eliminated because runs failed while image and cloud bundle matched. No provider usage signal and no sponsor
+handoff was recorded. The last successful runs were 07:19:06Z, 07:19:34Z and 07:39:38Z. The leading hypothesis is
+the OpenAI Codex subscription behind connection `2e55091d…`, which sits outside the runtime and needs the founder.
+
+Evidence: scratchpad `c32/evidence/` (76 files, `SHA256SUMS` `4d64ee84…`).
