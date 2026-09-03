@@ -869,24 +869,25 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		await this.#lxd.deleteInstance(current.lxd.project, current.instanceName, signal);
 	}
 
-	/** True once the guest's single-run runner unit has exited. Only a clean
-	 * non-zero `systemctl is-active` result counts; transport or agent faults
-	 * prove nothing and leave the guest alone. */
+	/** True once the guest's single-run runner unit has run and exited. A unit
+	 * that has not started yet (the guest registers before its runner is up)
+	 * has no main-process exit timestamp and is not "exited". Only a clean
+	 * zero exit of the probe counts; transport or agent faults leave the guest
+	 * alone. */
 	async #runnerExited(current: LxdProviderJournal, signal?: AbortSignal): Promise<boolean> {
 		const unit =
 			current.schema === COMPANY_JOURNAL_SCHEMA
 				? "qorpera-company-runner.service"
 				: "qorpera-ephemeral-runner.service";
+		const probe =
+			`state=$(/usr/bin/systemctl show -p ActiveState --value ${unit}) && ` +
+			`exit=$(/usr/bin/systemctl show -p ExecMainExitTimestampMonotonic --value ${unit}) && ` +
+			'[ "$state" != active ] && [ "$state" != activating ] && [ "$state" != reloading ] && [ -n "$exit" ] && [ "$exit" != 0 ]';
 		try {
-			await this.#lxd.execInstance(
-				current.lxd.project,
-				current.instanceName,
-				["/usr/bin/systemctl", "is-active", "--quiet", unit],
-				signal,
-			);
+			await this.#lxd.execInstance(current.lxd.project, current.instanceName, ["/bin/sh", "-c", probe], signal);
+			return true;
+		} catch {
 			return false;
-		} catch (error) {
-			return error instanceof Error && error.message === "LXD instance command failed";
 		}
 	}
 
