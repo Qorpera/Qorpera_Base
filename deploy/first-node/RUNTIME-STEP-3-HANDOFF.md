@@ -96,8 +96,26 @@ failure that used to be retried now powers the guest off instead. Exercise that 
 
 ## Where the artefacts are
 
-Session scratchpad (`/private/tmp/claude-501/-Users-jonas/cfb9d03e-6b15-43a6-8290-bb6d8b45b0ad/scratchpad`)
-holds `c3/`, `c31/` and `c32/`: the packets, receipts, signed envelopes, drains, reopen and close SQL, and the
-evidence folders. **That directory is session-local and may be cleared.** The durable record is this repository:
-the digests in `RUNTIME-STEP-3-WAKE-BUS.md` and in this file identify every artefact, and each one can be rebuilt
-from its pinned commit. The candidate-3.2 signed envelope and provider package are also staged on the node.
+**The session scratchpad has already been cleared.** It held the rollout packets v5 to v7 with their release
+receipts, the three evidence bundles and their checksums, local copies of the signed envelopes, and the query and
+packaging helpers. Do not look for it. What remains, and where:
+
+- **This repository** is the durable record. Every artefact is identified by digest here and in
+  `RUNTIME-STEP-3-WAKE-BUS.md`, and each one can be rebuilt from its pinned commit.
+- **The node `company41-node-01`**, under `/home/company41-admin/step2-lxd`, still holds the guest tarballs, the
+  build and verify recipe for every candidate, the proof directories `steps03-c3-7b9214d0c`,
+  `steps03-c31-2f609e404` and `steps03-c32-*` with their provider packages, the signed provenance envelopes
+  `lxd-image-provenance-2f609e404.json` and `lxd-image-provenance-fd33e05d6.json`, the activation scripts, and the
+  build and verify logs. The active envelope is installed at `/etc/qorpera/lxd-company-image-provenance.json`, and
+  the image acceptance state logs are under `/var/log/qorpera-lxd-runner-image-*.txt`.
+- **Production** holds the effects that matter: the migration ledger, the runtime bundle rows, the runs and wake
+  occurrences, the runner audit receipts from each drain, and the policy row whose reason names why admission is
+  closed.
+- **The rollout packet tooling** (`contract.mjs`, `controller.mjs`, `sql-packet.mjs`, `build-packet.mjs`,
+  `freeze-packet.mjs`, `transport.mjs`) has never lived in this repository, which is why it did not survive.
+  Earlier generations remain under
+  `~/.codex/worktrees/27d4/Qorpera_Base-step2/.artifacts/runtime-step-separation-20260828/step2/verification/`
+  as packets v2 to v4; v5 to v7 were derived from v4. The session transcript at
+  `~/.claude/projects/-Users-jonas/cfb9d03e-6b15-43a6-8290-bb6d8b45b0ad.jsonl` carries the full text of the later
+  packets and their receipts. **Whoever runs the next packet should put this tooling under version control
+  first**, so a cleared scratchpad can never take the release path with it again.
