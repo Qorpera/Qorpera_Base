@@ -870,10 +870,11 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	}
 
 	/** True once the guest's single-run runner unit has run and exited. A unit
-	 * that has not started yet (the guest registers before its runner is up)
-	 * has no main-process exit timestamp and is not "exited". Only a clean
-	 * zero exit of the probe counts; transport or agent faults leave the guest
-	 * alone. */
+	 * that has not started yet (the guest registers a moment before its runner
+	 * is up) must not count, and systemd clears a dead unit's runtime
+	 * timestamps, so the proof of a past start is the unit's own "Started" line
+	 * in this boot's journal. Only a clean zero exit of the probe counts;
+	 * transport or agent faults leave the guest alone. */
 	async #runnerExited(current: LxdProviderJournal, signal?: AbortSignal): Promise<boolean> {
 		const unit =
 			current.schema === COMPANY_JOURNAL_SCHEMA
@@ -881,8 +882,8 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				: "qorpera-ephemeral-runner.service";
 		const probe =
 			`state=$(/usr/bin/systemctl show -p ActiveState --value ${unit}) && ` +
-			`exit=$(/usr/bin/systemctl show -p ExecMainExitTimestampMonotonic --value ${unit}) && ` +
-			'[ "$state" != active ] && [ "$state" != activating ] && [ "$state" != reloading ] && [ -n "$exit" ] && [ "$exit" != 0 ]';
+			'[ "$state" != active ] && [ "$state" != activating ] && [ "$state" != reloading ] && ' +
+			`/usr/bin/journalctl -q -b -u ${unit} -o cat --no-pager | /usr/bin/grep -q "^Started "`;
 		try {
 			await this.#lxd.execInstance(current.lxd.project, current.instanceName, ["/bin/sh", "-c", probe], signal);
 			return true;

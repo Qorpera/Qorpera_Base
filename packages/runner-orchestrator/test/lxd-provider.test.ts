@@ -179,7 +179,7 @@ class FakeLxd implements LxdClient {
 	async execInstance(_project: string, _name: string, command: readonly string[]): Promise<void> {
 		if (this.instance?.status !== "Running") throw new Error("fake VM agent is unavailable");
 		this.execCalls.push([...command]);
-		if (command[0] === "/bin/sh" && command[2]?.includes("ExecMainExitTimestampMonotonic") && !this.runnerExited)
+		if (command[0] === "/bin/sh" && command[2]?.includes("journalctl") && !this.runnerExited)
 			throw new Error("LXD instance command failed");
 	}
 
@@ -456,7 +456,7 @@ describe("LXD cloud runner provider", () => {
 		expect(lxd.execCalls.slice(before)).toEqual([
 			["/bin/sh", "-c", expect.stringContaining("qorpera-ephemeral-runner.service")],
 		]);
-		expect(lxd.execCalls.at(-1)?.[2]).toContain("ExecMainExitTimestampMonotonic");
+		expect(lxd.execCalls.at(-1)?.[2]).toContain('grep -q "^Started "');
 		expect(lxd.deleteCalls).toEqual([]);
 		expect(JSON.parse(await readFile(journalPath, "utf-8"))).toMatchObject({ physicalState: "registered" });
 		lxd.runnerExited = true;
