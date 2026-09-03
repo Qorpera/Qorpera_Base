@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -112,6 +112,8 @@ class FakeLxd implements LxdClient {
 	powerCalls: LxdInstancePowerAction[] = [];
 	filePushes: Array<{ path: string; content: string; mode: number }> = [];
 	execCalls: string[][] = [];
+	deleteCalls: string[] = [];
+	runnerExited = false;
 
 	async getInstance(_project: string, _name: string): Promise<LxdInstanceRecord | undefined> {
 		return this.instance ? structuredClone(this.instance) : undefined;
@@ -177,6 +179,14 @@ class FakeLxd implements LxdClient {
 	async execInstance(_project: string, _name: string, command: readonly string[]): Promise<void> {
 		if (this.instance?.status !== "Running") throw new Error("fake VM agent is unavailable");
 		this.execCalls.push([...command]);
+		if (this.runnerExited && command[1] === "is-active") throw new Error("LXD instance command failed");
+	}
+
+	async deleteInstance(_project: string, name: string): Promise<void> {
+		if (!this.instance || this.instance.name !== name) throw new Error("missing fake instance");
+		if (this.instance.status !== "Stopped") throw new Error("fake guest is still running");
+		this.deleteCalls.push(name);
+		this.instance = undefined;
 	}
 }
 
@@ -296,6 +306,27 @@ function delivery(request: CloudRunnerWork): CloudRunnerAssignmentDelivery {
 	};
 }
 
+async function acquiredFixture() {
+	const directory = await root();
+	const stateRoot = join(directory, "state");
+	const lxd = new FakeLxd();
+	const guest = new FakeGuest();
+	const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+	const fetchImplementation = fetchProvisioner(requests);
+	const request = work();
+	const backend = new LxdCloudRunnerProviderBackend(config(stateRoot), lxd, guest, fetchImplementation);
+	await backend.acquire(runId, request, new AbortController().signal);
+	return {
+		stateRoot,
+		lxd,
+		guest,
+		fetchImplementation,
+		request,
+		runId,
+		journalPath: join(stateRoot, runId, "journal.json"),
+	};
+}
+
 describe("LXD cloud runner provider", () => {
 	it("journals a full VM before creation and safely adopts it after provider restart", async () => {
 		const directory = await root();
@@ -405,10 +436,47 @@ describe("LXD cloud runner provider", () => {
 		});
 		await restarted.stop(runner, "idle");
 		expect(lxd.powerCalls).toEqual(["start", "stop"]);
+		expect(lxd.deleteCalls).toEqual([lxd.createCalls[0]?.name]);
+		expect(await lxd.getInstance("qorpera-runners", lxd.createCalls[0]?.name ?? "")).toBeUndefined();
 		expect(JSON.parse(await readFile(journalPath, "utf-8"))).toMatchObject({
 			physicalState: "stopped",
 			stopReason: "idle",
 		});
+		// The stopped journal with no guest is left alone on later reconciles.
+		await restarted.reconcile();
+		expect(lxd.deleteCalls).toHaveLength(1);
+	});
+
+	it("retires a one-run guest as soon as its runner unit has exited, and leaves live guests alone", async () => {
+		const { stateRoot, lxd, guest, fetchImplementation, request, runId, journalPath } = await acquiredFixture();
+		const backend = new LxdCloudRunnerProviderBackend(config(stateRoot), lxd, guest, fetchImplementation);
+		const before = lxd.execCalls.length;
+		await backend.reconcile();
+		expect(lxd.execCalls.slice(before)).toEqual([
+			["/usr/bin/systemctl", "is-active", "--quiet", "qorpera-ephemeral-runner.service"],
+		]);
+		expect(lxd.deleteCalls).toEqual([]);
+		expect(JSON.parse(await readFile(journalPath, "utf-8"))).toMatchObject({ physicalState: "registered" });
+		lxd.runnerExited = true;
+		await backend.reconcile();
+		expect(lxd.powerCalls.at(-1)).toBe("stop");
+		expect(lxd.deleteCalls).toEqual([lxd.createCalls[0]?.name]);
+		expect(JSON.parse(await readFile(journalPath, "utf-8"))).toMatchObject({
+			physicalState: "stopped",
+			stopReason: "idle",
+		});
+		await expect(backend.acquire(runId, request, new AbortController().signal)).rejects.toThrow("cannot be replayed");
+	});
+
+	it("removes a guest an earlier build left behind under a stopped journal", async () => {
+		const { stateRoot, lxd, guest, fetchImplementation, journalPath } = await acquiredFixture();
+		await lxd.setInstancePower("qorpera-runners", lxd.createCalls[0]?.name ?? "", "stop");
+		const journal = JSON.parse(await readFile(journalPath, "utf-8"));
+		await writeFile(journalPath, JSON.stringify({ ...journal, physicalState: "stopped", stopReason: "idle" }));
+		const backend = new LxdCloudRunnerProviderBackend(config(stateRoot), lxd, guest, fetchImplementation);
+		await backend.reconcile();
+		expect(lxd.deleteCalls).toEqual([lxd.createCalls[0]?.name]);
+		expect(await lxd.getInstance("qorpera-runners", lxd.createCalls[0]?.name ?? "")).toBeUndefined();
 	});
 
 	it("keeps proposal reviews isolated from the live Company File device", async () => {

@@ -852,11 +852,42 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				return;
 			}
 			this.#assertInstanceAuthority(current, instance);
-			if (instance.status !== "Stopped") {
-				await this.#lxd.setInstancePower(current.lxd.project, current.instanceName, "stop", signal);
-			}
+			await this.#retire(current, instance.status, signal);
 			await this.#writeJournal({ ...current, physicalState: "stopped", stopReason: reason });
 		});
+	}
+
+	/** A job guest serves exactly one run. Once it is done the guest has no further
+	 * purpose: the canonical transcript and the provider session live in the cloud
+	 * and on the identity host, so the guest is powered off and deleted rather than
+	 * left running. Retained custom volumes (identity, recovery) are devices and
+	 * survive the guest. */
+	async #retire(current: LxdProviderJournal, status: string, signal?: AbortSignal): Promise<void> {
+		if (status !== "Stopped") {
+			await this.#lxd.setInstancePower(current.lxd.project, current.instanceName, "stop", signal);
+		}
+		await this.#lxd.deleteInstance(current.lxd.project, current.instanceName, signal);
+	}
+
+	/** True once the guest's single-run runner unit has exited. Only a clean
+	 * non-zero `systemctl is-active` result counts; transport or agent faults
+	 * prove nothing and leave the guest alone. */
+	async #runnerExited(current: LxdProviderJournal, signal?: AbortSignal): Promise<boolean> {
+		const unit =
+			current.schema === COMPANY_JOURNAL_SCHEMA
+				? "qorpera-company-runner.service"
+				: "qorpera-ephemeral-runner.service";
+		try {
+			await this.#lxd.execInstance(
+				current.lxd.project,
+				current.instanceName,
+				["/usr/bin/systemctl", "is-active", "--quiet", unit],
+				signal,
+			);
+			return false;
+		} catch (error) {
+			return error instanceof Error && error.message === "LXD instance command failed";
+		}
 	}
 
 	async #ensureReady(
@@ -1261,13 +1292,23 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		this.#assertInstanceAuthority(current, instance);
 		if (current.physicalState === "stopped") {
 			if (instance.status !== "Stopped") throw new Error("Stopped LXD journal names a running guest");
+			// A guest left behind by an earlier provider build is removed on sight.
+			await this.#lxd.deleteInstance(current.lxd.project, current.instanceName, signal);
 			return;
 		}
 		if (current.physicalState === "stopping") {
-			if (instance.status !== "Stopped") {
-				await this.#lxd.setInstancePower(current.lxd.project, current.instanceName, "stop", signal);
-			}
+			await this.#retire(current, instance.status, signal);
 			await this.#writeJournal({ ...current, physicalState: "stopped" });
+			return;
+		}
+		if (
+			instance.status === "Running" &&
+			(current.physicalState === "registered" || current.physicalState === "assigned") &&
+			(await this.#runnerExited(current, signal))
+		) {
+			await this.#writeJournal({ ...current, physicalState: "stopping", stopReason: "idle" });
+			await this.#retire(current, instance.status, signal);
+			await this.#writeJournal({ ...current, physicalState: "stopped", stopReason: "idle" });
 			return;
 		}
 		if (

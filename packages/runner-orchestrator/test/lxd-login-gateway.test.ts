@@ -111,6 +111,10 @@ class FakeLxd implements LxdClient {
 		if (this.instance?.status !== "Running") throw new Error("fake VM agent is unavailable");
 		this.execCalls.push([...command]);
 	}
+
+	async deleteInstance(_project: string, _name: string): Promise<void> {
+		throw new Error("login gateway fake never deletes guests");
+	}
 }
 
 function config(root: string): LxdNativeLoginGatewayConfig {

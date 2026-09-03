@@ -93,6 +93,8 @@ export interface LxdClient {
 		signal?: AbortSignal,
 	): Promise<void>;
 	execInstance(project: string, name: string, command: readonly string[], signal?: AbortSignal): Promise<void>;
+	/** Deletes a stopped guest and its root disk; custom volumes attached as devices stay. */
+	deleteInstance(project: string, name: string, signal?: AbortSignal): Promise<void>;
 }
 
 interface HttpResult {
@@ -340,6 +342,16 @@ export class LxdUnixClient implements LxdClient {
 			signal,
 		);
 		envelopeMetadata(result);
+	}
+
+	async deleteInstance(project: string, name: string, signal?: AbortSignal): Promise<void> {
+		const result = await this.#request(
+			"DELETE",
+			projectPath(`/1.0/instances/${encodeURIComponent(name)}`, project),
+			undefined,
+			signal,
+		);
+		await this.#waitForOperation(result, signal);
 	}
 
 	async execInstance(project: string, name: string, command: readonly string[], signal?: AbortSignal): Promise<void> {
