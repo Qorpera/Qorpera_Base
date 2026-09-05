@@ -32,6 +32,94 @@ const entry = (name: string): CloudCompanyTreeEntry => ({
 });
 
 describe("Company File request ownership", () => {
+	it.each(["success", "failure"])("preserves comment state after %s when an older read completes", async (outcome) => {
+		const { api, files } = setup();
+		await files.openProposal(proposal.proposalId);
+		const reading = deferred<HostedCompanyProposal>();
+		const posting = deferred<Awaited<ReturnType<typeof api.appendProposalComment>>>();
+		vi.mocked(api.getProposal).mockReturnValueOnce(reading.promise);
+		vi.spyOn(api, "appendProposalComment").mockReturnValueOnce(posting.promise);
+		const refresh = files.refresh();
+		await settle();
+		expect(api.getProposal).toHaveBeenCalledTimes(2);
+		const comment = files.comment("Keep this comment");
+		const acknowledged = {
+			commentId: id(90),
+			proposalId: proposal.proposalId,
+			body: "Keep this comment",
+			authorName: "A",
+			createdAt: timestamp,
+		};
+		if (outcome === "success") posting.resolve(acknowledged);
+		else posting.reject(new Error("Response lost"));
+		await comment;
+		reading.resolve(proposal);
+		await refresh;
+		expect(api.listProposalComments).toHaveBeenCalledTimes(1);
+		if (outcome === "success") {
+			expect(files.store.get().proposal?.comments).toEqual([acknowledged]);
+			expect(files.commentDraft(proposal.proposalId)).toBe("");
+		} else {
+			expect(files.store.get().proposal?.error).toBe("Response lost");
+			expect(files.commentDraft(proposal.proposalId)).toBe("Keep this comment");
+		}
+	});
+
+	it("keeps a comment busy when an older proposal read returns before its receipt", async () => {
+		const { api, files } = setup();
+		await files.openProposal(proposal.proposalId);
+		const reading = deferred<HostedCompanyProposal>();
+		const posting = deferred<Awaited<ReturnType<typeof api.appendProposalComment>>>();
+		vi.mocked(api.getProposal).mockReturnValueOnce(reading.promise);
+		const append = vi.spyOn(api, "appendProposalComment").mockReturnValueOnce(posting.promise);
+		const refresh = files.refresh();
+		await settle();
+		const comment = files.comment("One comment");
+		reading.resolve(proposal);
+		await refresh;
+		expect(files.store.get().proposal?.busy).toBe(true);
+		await files.comment("Second comment");
+		expect(append).toHaveBeenCalledTimes(1);
+		const acknowledged = {
+			commentId: id(90),
+			proposalId: proposal.proposalId,
+			body: "One comment",
+			authorName: "A",
+			createdAt: timestamp,
+		};
+		posting.resolve(acknowledged);
+		await comment;
+		expect(files.store.get().proposal?.comments).toEqual([acknowledged]);
+		expect(files.store.get().proposal?.busy).toBe(false);
+	});
+
+	it.each([true, false])("discards a proposal read started before a decision (accept: %s)", async (accept) => {
+		const { api, files } = setup();
+		await files.openProposal(proposal.proposalId);
+		const reading = deferred<HostedCompanyProposal>();
+		const writing = deferred<HostedCompanyProposal>();
+		vi.mocked(api.getProposal).mockReturnValueOnce(reading.promise);
+		const write = vi.spyOn(api, accept ? "acceptProposal" : "rejectProposal").mockReturnValueOnce(writing.promise);
+		const refresh = files.refresh();
+		await settle();
+		const deciding = files.decideProposal(accept);
+		[...document.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')]
+			.find((button) => button.textContent === (accept ? "Accept and publish" : "Reject"))!
+			.click();
+		await settle();
+		expect(write).toHaveBeenCalledTimes(1);
+		reading.resolve(proposal);
+		await refresh;
+		expect(files.store.get().proposal?.busy).toBe(true);
+		expect(api.listProposalComments).toHaveBeenCalledTimes(1);
+		const resolved: HostedCompanyProposal = { ...proposal, status: accept ? "accepted" : "rejected" };
+		vi.mocked(api.getProposal).mockResolvedValue(resolved);
+		writing.resolve(resolved);
+		await deciding;
+		expect(files.store.get().proposal?.proposal.status).toBe(resolved.status);
+		expect(files.store.get().proposal?.busy).toBeFalsy();
+	});
+
 	it("keeps an active confirmation valid across background refreshes", async () => {
 		const { api, files } = setup();
 		await files.openProposal(proposal.proposalId);

@@ -5,8 +5,9 @@ import { CompanyController } from "../src/app/company.ts";
 import { HubController } from "../src/app/views/hub.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
+import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
 import type { HostedAccountEntitlement, HostedProfile, StaffSessionHandle } from "../src/cloud/types.ts";
-import { deferred, fixture, profileA, profileB, session, settle, staff, team, userA, userB } from "./fixtures.ts";
+import { deferred, fixture, id, profileA, profileB, session, settle, staff, team, userA, userB } from "./fixtures.ts";
 
 let dispose: (() => void) | undefined;
 beforeEach(() => {
@@ -37,6 +38,100 @@ function mounted(hash = "#/") {
 }
 
 describe("account and route ownership", () => {
+	it.each([true, false])("waits for organization loading before resolving home (seeded: %s)", async (seeded) => {
+		const home = `#/c/${profileA.profileId}`;
+		const f = mounted(home);
+		const loading = deferred<HostedCompanyOrganization | undefined>();
+		vi.mocked(f.api.getOrganization).mockReturnValue(loading.promise);
+		await draw();
+		expect(f.api.listStaff).toHaveBeenCalled();
+		expect(location.hash).toBe(home);
+		expect(f.root.querySelector("main")?.textContent).toContain("Opening company");
+		loading.resolve(
+			seeded
+				? {
+						schema: "qorpera.company-organization/v1",
+						profileId: profileA.profileId,
+						cofounder: { staffAgentId: staff.id, formationId: id(30), memberSessionId: session.sessionId },
+						formation: {
+							formationId: id(30),
+							state: "operating",
+							status: "active",
+							revision: 1,
+							projectionStatus: "ready",
+							sourcePath: "company/formation.json",
+						},
+						responsibilities: [],
+						projects: [],
+					}
+				: undefined,
+		);
+		await draw();
+		if (seeded) {
+			expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+			expect(f.root.querySelector("textarea")).not.toBeNull();
+		} else {
+			expect(location.hash).toBe(home);
+			expect(f.root.querySelector("main")?.textContent).toContain("This company has no Co-Founder yet");
+		}
+	});
+
+	it("waits for membership before creating the private Co-Founder conversation", async () => {
+		const home = `#/c/${profileA.profileId}`;
+		const f = mounted(home);
+		const loading = deferred<typeof team>();
+		vi.mocked(f.api.getTeam).mockReturnValue(loading.promise);
+		vi.mocked(f.api.getOrganization).mockResolvedValue({
+			schema: "qorpera.company-organization/v1",
+			profileId: profileA.profileId,
+			cofounder: { staffAgentId: staff.id, formationId: id(30) },
+			formation: {
+				formationId: id(30),
+				state: "operating",
+				status: "active",
+				revision: 1,
+				projectionStatus: "ready",
+				sourcePath: "company/formation.json",
+			},
+			responsibilities: [],
+			projects: [],
+		});
+		const create = vi.spyOn(f.api, "ensureMemberPrivateStaffSession").mockResolvedValue({
+			...session,
+			audience: { kind: "member_private", userId: userA.id },
+			created: true,
+		});
+		await draw();
+		expect(create).not.toHaveBeenCalled();
+		expect(f.root.querySelector("main")?.textContent).toContain("Opening company");
+		loading.resolve(team);
+		await draw();
+		expect(create).toHaveBeenCalledExactlyOnceWith(
+			profileA.environmentId,
+			staff.id,
+			userA.id,
+			expect.any(String),
+			"Co-Founder",
+		);
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+	});
+
+	it("waits for membership before resolving a staff route", async () => {
+		const route = `#/c/${profileA.profileId}/staff/${staff.id}`;
+		const f = mounted(route);
+		const loading = deferred<typeof team>();
+		vi.mocked(f.api.getTeam).mockReturnValue(loading.promise);
+		vi.mocked(f.api.listSessions).mockResolvedValue([]);
+		const create = vi.spyOn(f.api, "ensureStaffSession").mockResolvedValue({ ...session, created: true });
+		await draw();
+		expect(location.hash).toBe(route);
+		expect(f.root.querySelector("main")?.textContent).toContain("Opening company");
+		loading.resolve(team);
+		await draw();
+		expect(create).toHaveBeenCalledTimes(1);
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+	});
+
 	it("cancels a private confirmation dialog when the account changes", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/team`);
 		await draw();

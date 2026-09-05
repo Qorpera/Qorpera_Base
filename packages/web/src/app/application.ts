@@ -365,7 +365,8 @@ export function mountApplication(root: HTMLElement, cloud: Cloud, api = new Clou
 		if (route.section !== "meet") meetState = {};
 		switch (route.section) {
 			case "home": {
-				if (state.loading && !state.staff.length) {
+				// Home needs organization, membership and sessions, not just staff.
+				if (state.loading) {
 					replace(main, spinner("Opening company"));
 					return;
 				}
@@ -409,7 +410,7 @@ export function mountApplication(root: HTMLElement, cloud: Cloud, api = new Clou
 				return;
 			}
 			case "staff": {
-				if (state.loading && !state.staff.length) {
+				if (state.loading) {
 					replace(main, spinner("Opening company"));
 					return;
 				}

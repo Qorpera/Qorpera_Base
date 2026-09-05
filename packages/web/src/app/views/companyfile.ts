@@ -288,7 +288,8 @@ export class CompanyFileController {
 			!this.#company.store.get().team?.capabilities.authorize
 		)
 			return;
-		const version = this.#selectionVersion;
+		// A read begun before this decision must not replace its state.
+		const version = ++this.#selectionVersion;
 		this.#confirming = true;
 		const confirmed = await confirmDialog(
 			accept
@@ -327,7 +328,8 @@ export class CompanyFileController {
 			!this.#company.store.get().team?.capabilities.write
 		)
 			return;
-		const version = this.#selectionVersion;
+		// Preserve this operation's receipt, draft and busy state over older reads.
+		const version = ++this.#selectionVersion;
 		this.setCommentDraft(current.proposal.proposalId, body);
 		const retry = this.#commentRetries.get(current.proposal.proposalId);
 		const operation = retry?.body === body.trim() ? retry : { body: body.trim(), id: crypto.randomUUID() };
