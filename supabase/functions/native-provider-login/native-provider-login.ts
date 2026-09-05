@@ -39,6 +39,30 @@ export async function forwardNativeProviderLogin(
 	request: Request,
 	options: NativeProviderLoginProxyOptions,
 ): Promise<Response> {
+	const origin = request.headers.get("origin");
+	if (!origin) return forwardLogin(request, options);
+	const allowed = origin === "https://app.qorpera.com" || origin === "https://qorpera-web.pages.dev" ||
+		/^https:\/\/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.qorpera-web\.pages\.dev$/.test(origin);
+	if (!allowed) return jsonResponse({ error: "Origin not allowed" }, 403);
+	const headers = new Headers({ "access-control-allow-origin": origin, vary: "Origin", "cache-control": "no-store" });
+	if (request.method === "OPTIONS") {
+		if (request.headers.get("access-control-request-method") !== "POST" ||
+			(request.headers.get("access-control-request-headers") ?? "").split(",").filter(Boolean).some(name => !["authorization", "content-type"].includes(name.trim().toLowerCase())))
+			return new Response(null, { status: 403, headers });
+		headers.set("access-control-allow-methods", "POST");
+		headers.set("access-control-allow-headers", "authorization, content-type");
+		headers.set("access-control-max-age", "600");
+		return new Response(null, { status: 204, headers });
+	}
+	const result = await forwardLogin(request, options);
+	for (const [key, value] of headers) result.headers.set(key, value);
+	return result;
+}
+
+async function forwardLogin(
+	request: Request,
+	options: NativeProviderLoginProxyOptions,
+): Promise<Response> {
 	if (request.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
 	let capability: string;
 	let body: Uint8Array;

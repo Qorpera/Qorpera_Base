@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, RequestListener, ServerResponse } from "node:http";
+import { handleMemberBrowserRequest } from "./browser-cors.ts";
 import { boundedObjectOperation, ObjectDependencyError, type ObjectDependencyHealth } from "./dependency.ts";
 import type { MemberCompanyAuthority } from "./member-company-authority.ts";
 import { serveMemberCompanyFile } from "./member-company-file.ts";
@@ -134,6 +135,7 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 		throw new Error("Read delegation requires a distinct revocation credential");
 	}
 	return (request, response) => {
+		if (handleMemberBrowserRequest(request, response)) return;
 		let observation: MemberRequestObservationSpan | undefined;
 		try {
 			if (request.url?.startsWith("/v1/member-company-objects/"))

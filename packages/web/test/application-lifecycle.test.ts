@@ -224,7 +224,7 @@ describe("account and route ownership", () => {
 		});
 		await draw();
 		expect(location.hash).toBe("#/account");
-		expect(root.textContent).toContain("Entitlement");
+		expect(root.textContent).toContain("Plan & billing");
 	});
 
 	it("ignores a late company lookup after navigating away", async () => {
@@ -272,7 +272,7 @@ describe("account and route ownership", () => {
 		f.root.querySelector<HTMLButtonElement>(".mobile-navigation-toggle")!.click();
 		await draw();
 		f.root.querySelector<HTMLButtonElement>(".rail .account-trigger")!.click();
-		const teamLink = '.account-popover a[href$="/team"]';
+		const teamLink = '.account-popover [data-account-action="settings"]';
 		f.root.querySelector<HTMLAnchorElement>(teamLink)!.focus();
 		f.hints.get("qorpera_profile_access_state")!();
 		await draw();
@@ -295,13 +295,16 @@ describe("account and route ownership", () => {
 		await draw();
 		expect(f.root.querySelector(".topbar .account-trigger")).toBeNull();
 		f.root.querySelector<HTMLButtonElement>(".rail .account-trigger")!.click();
-		f.root.querySelector<HTMLAnchorElement>('.account-popover a[href$="/team"]')!.click();
+		expect(f.root.querySelector('.account-popover a[href$="/team"]')).toBeNull();
+		f.root.querySelector<HTMLButtonElement>('[data-account-action="settings"]')!.click();
+		f.root.querySelector<HTMLButtonElement>("#settings-tab-company")!.click();
 		await draw();
-		expect(f.root.querySelector("main")?.textContent).toContain("Delete company");
+		expect(f.root.querySelector(".settings-dialog")?.textContent).toContain("Delete company");
+		f.root.querySelector<HTMLButtonElement>(".settings-close")!.click();
 		f.root.querySelector<HTMLButtonElement>(".rail .account-trigger")!.click();
 		f.root.querySelector<HTMLAnchorElement>('.account-popover a[href="#/friends"]')!.click();
 		await draw();
-		expect(f.api.listFriends).toHaveBeenCalledTimes(1);
+		expect(f.api.listFriends).toHaveBeenCalledTimes(2);
 		expect(f.root.querySelector(".topbar .account-trigger")?.textContent).toContain("Account A");
 		expect(f.root.querySelector(".account-company-name")).toBeNull();
 		location.hash = `#/c/${profileA.profileId}/chat/${session.sessionId}`;
@@ -348,6 +351,7 @@ describe("account and route ownership", () => {
 			user: userA,
 			auth: new AuthController(f.cloud),
 			invitations: 0,
+			openSettings: () => {},
 		};
 		renderRail(rail, a, { ...context, route: { name: "company", profileId: profileA.profileId, section: "file" } });
 		renderRail(rail, b, { ...context, route: { name: "company", profileId: profileB.profileId, section: "file" } });
@@ -355,9 +359,9 @@ describe("account and route ownership", () => {
 		const search = rail.querySelector("input")!;
 		search.value = "Fixture";
 		search.dispatchEvent(new Event("input"));
-		expect(rail.textContent).toContain("Company B");
+		expect(rail.querySelector(".account-trigger")?.textContent).toContain("Account A");
 		expect(rail.textContent).not.toContain("Company A PRIVATE");
-		expect(rail.querySelector('a[href$="/team"]')?.classList.contains("active")).toBe(true);
+		expect(rail.querySelector('a[href$="/team"]')).toBeNull();
 	});
 
 	it("retains creation idempotency across an ambiguous failure and controller restart", async () => {

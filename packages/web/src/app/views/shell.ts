@@ -4,7 +4,7 @@ import { agentFigure } from "../../ui/avatar.ts";
 import { badge, button, h, icon, initials, notice, replace } from "../../ui/dom.ts";
 import { type AuthController, displayName } from "../auth.ts";
 import type { CompanyController } from "../company.ts";
-import type { CompanySection, Route } from "../router.ts";
+import type { Route } from "../router.ts";
 
 /* The company shell: a rail with conversations and the account menu, and the
  * main pane. A compact toolbar keeps the rail accessible on small screens. */
@@ -16,6 +16,7 @@ export interface ShellContext {
 	auth: AuthController;
 	/** Company invitations waiting for this account, for the menu's count. */
 	invitations: number;
+	openSettings: () => void;
 	navigation?: { open: boolean; toggle: () => void };
 }
 
@@ -39,13 +40,13 @@ function preserveAccountFocus(): () => void {
 	const scrollTop = accountPopover?.scrollTop ?? 0;
 	const triggerFocused = focused === accountTrigger;
 	const href = accountMenuOpen && accountPopover?.contains(focused) ? focused?.getAttribute("href") : undefined;
-	const signoutFocused = accountMenuOpen && focused?.classList.contains("account-signout");
+	const action = accountMenuOpen ? focused?.getAttribute("data-account-action") : undefined;
 	return () => {
 		if (accountMenuOpen && accountPopover) accountPopover.scrollTop = scrollTop;
 		if (triggerFocused) accountTrigger?.focus({ preventScroll: true });
-		else if (accountMenuOpen && (href || signoutFocused)) {
+		else if (accountMenuOpen && (href || action)) {
 			const target = [...(accountPopover?.querySelectorAll<HTMLElement>("[role=menuitem]") ?? [])].find((item) =>
-				href ? item.getAttribute("href") === href : item.classList.contains("account-signout"),
+				href ? item.getAttribute("href") === href : item.getAttribute("data-account-action") === action,
 			);
 			target?.focus({ preventScroll: true });
 		}
@@ -83,18 +84,6 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 	}
 	accountMenu.classList.toggle("account-menu-rail", Boolean(company));
 	const name = displayName(context.user);
-	const section = context.route.name === "company" ? context.route.section : undefined;
-	const companyItem = (target: CompanySection, label: string) =>
-		h(
-			"a",
-			{
-				class: ["account-item", section === target ? "active" : ""].join(" "),
-				role: "menuitem",
-				href: `#/c/${company?.profile.profileId}/${target}`,
-				onclick: () => setAccountMenuOpen(false),
-			},
-			label,
-		);
 	const item = (target: "account" | "friends" | "invitations", iconName: string, label: string, count = 0) =>
 		h(
 			"a",
@@ -117,32 +106,30 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 	replace(
 		accountPopover!,
 		h("div", { class: "account-identity" }, h("strong", null, name)),
-		item("account", "settings", "Account and settings"),
+		h(
+			"button",
+			{
+				type: "button",
+				class: "account-item",
+				role: "menuitem",
+				"data-account-action": "settings",
+				onclick: () => {
+					setAccountMenuOpen(false);
+					context.openSettings();
+				},
+			},
+			icon("settings"),
+			h("span", { class: "account-item-label" }, "Account and settings"),
+		),
 		item("friends", "friends", "Friends"),
 		item("invitations", "invitations", "Invitations", context.invitations),
 		h("div", { class: "account-separator", role: "separator" }),
-		company
-			? h(
-					"div",
-					{ role: "group", "aria-label": company.profile.profileName },
-					h("div", { class: "account-company-name" }, company.profile.profileName),
-					companyItem("approvals", "Approvals"),
-					companyItem("file", "Company File"),
-					companyItem("organization", "Organization"),
-					companyItem("team", "Team"),
-					h(
-						"a",
-						{ class: "account-item", role: "menuitem", href: "#/", onclick: () => setAccountMenuOpen(false) },
-						"All companies",
-					),
-					h("div", { class: "account-separator", role: "separator" }),
-				)
-			: null,
 		h(
 			"button",
 			{
 				type: "button",
 				class: "account-item account-signout",
+				"data-account-action": "signout",
 				role: "menuitem",
 				onclick: () => {
 					setAccountMenuOpen(false);
@@ -193,9 +180,8 @@ export function renderTopbar(
 
 /* The company rail, as Qorpera Base draws it (V24 product preview): a search
  * field, the Co-Founder as a low card with its figure standing on it, the rest
- * of the staff as rows, and the account menu at the foot. The pages that
- * are not agents — approvals, the Company File, the organization, the team —
- * live in that menu alongside account settings and company navigation.
+ * of the staff as rows, and the account menu at the foot. Company management
+ * lives in settings.
  *
  * There is no add-agent button: hiring an agent is machinery this client does
  * not have yet, and a button that writes nowhere is worse than none. */

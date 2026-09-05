@@ -17,6 +17,7 @@ import { HubController, renderHub } from "./views/hub.ts";
 import { renderInvitations } from "./views/invitations.ts";
 import { type MeetState, renderMeet } from "./views/meet.ts";
 import { renderOrganization } from "./views/organization.ts";
+import { SettingsView } from "./views/settings.ts";
 import { renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
 import { renderSignIn } from "./views/signin.ts";
 import { renderTeam } from "./views/team.ts";
@@ -41,6 +42,22 @@ export function mountApplication(root: HTMLElement, cloud: Cloud, api = new Clou
 	});
 	const frame = h("div", { class: "frame" }, topbar, h("div", { class: "body" }, backdrop, rail, main));
 	let disposed = false;
+	let settings: SettingsView | undefined;
+	function closeSettings(restoreFocus = true): void {
+		settings?.dispose();
+		settings = undefined;
+		frame.inert = false;
+		if (restoreFocus) frame.querySelector<HTMLElement>(".account-trigger")?.focus();
+	}
+	function openSettings(): void {
+		if (settings || !auth.userId) return;
+		settings = new SettingsView(api, auth, profiles, company?.store.get().accessLost ? undefined : company, () =>
+			closeSettings(),
+		);
+		frame.inert = true;
+		root.append(settings.el);
+		settings.focus();
+	}
 	let routeRevision = 0;
 	let accountRevision = 0;
 	let accountUserId: string | undefined;
@@ -69,11 +86,12 @@ export function mountApplication(root: HTMLElement, cloud: Cloud, api = new Clou
 		main.inert = navigationOpen && window.matchMedia("(max-width: 760px)").matches;
 	}
 	function onEscape(event: KeyboardEvent): void {
-		if (event.key === "Escape" && navigationOpen) {
+		if (event.key === "Escape" && navigationOpen && !settings && !event.defaultPrevented) {
 			setNavigationOpen(false);
 		}
 	}
 	function onRouteChange(): void {
+		closeSettings(false);
 		routeRevision++;
 		resolvingRoute = undefined;
 		routeError = undefined;
@@ -111,6 +129,7 @@ export function mountApplication(root: HTMLElement, cloud: Cloud, api = new Clou
 	auth.store.subscribe(() => {
 		const userId = auth.userId;
 		if (userId !== accountUserId) {
+			closeSettings(false);
 			accountUserId = userId;
 			accountRevision++;
 			routeRevision++;
@@ -147,6 +166,7 @@ export function mountApplication(root: HTMLElement, cloud: Cloud, api = new Clou
 			user,
 			route,
 			auth,
+			openSettings,
 			invitations: hub.store.get().invitations.length,
 			...(route.name === "company" && route.section !== "meet" && company && !company.store.get().accessLost
 				? { navigation: { open: navigationOpen, toggle: () => setNavigationOpen(!navigationOpen) } }
@@ -336,6 +356,7 @@ export function mountApplication(root: HTMLElement, cloud: Cloud, api = new Clou
 		}
 		const state = controller.store.get();
 		if (state.accessLost) {
+			closeSettings(false);
 			companyFile?.dispose();
 			conversation?.dispose();
 			approvals?.dispose();
@@ -467,6 +488,7 @@ export function mountApplication(root: HTMLElement, cloud: Cloud, api = new Clou
 
 	return () => {
 		disposed = true;
+		closeSettings(false);
 		auth.dispose();
 		hub.dispose();
 		friends.dispose();

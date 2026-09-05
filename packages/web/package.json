@@ -12,7 +12,8 @@
 		"clean": "shx rm -rf dist"
 	},
 	"dependencies": {
-		"@supabase/supabase-js": "2.112.3"
+		"@supabase/supabase-js": "2.112.3",
+		"smol-toml": "1.7.1"
 	},
 	"devDependencies": {
 		"esbuild": "0.28.1",

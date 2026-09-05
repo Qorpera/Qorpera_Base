@@ -209,3 +209,38 @@ currently renders. The client's present rail — Approvals, Company File,
 Organization, Team — exists in no Qorpera surface and must be replaced.
 
 **The approved first-run screen** is `packages/web/design/cofounder-first-run.html`.
+
+## 2026-09-05 — Port all four desktop settings tabs into the web client
+
+**Decision (founder).** The sidebar profile popup contains account settings,
+Friends, Invitations and Sign out. Company navigation belongs in settings.
+Adapt the desktop's General, Company, Connections and Policy tabs in PR #110,
+using its modal, gray navigation, account cards, people rows and policy icons.
+Keep the conversation mounted beneath the modal and preserve its draft.
+
+**Cloud behavior.** General reads account entitlement and retains feedback and
+endpoint configuration. Company embeds the member controls and links to the
+existing Company File, Organization and Approvals pages. Connections starts
+member-owned native provider login, enables requested-work sponsorship, and
+revokes accounts; Services lists and revokes existing cloud secret connections.
+Desktop-local connector setup, local-computer controls and unsupported billing
+actions do not become pretend browser actions. Creating new service connections
+still requires the cloud's registered connector and secure capture machinery.
+
+**Policy.** The four Ask/Act/Auto choices live in protected `authority.toml`,
+not browser storage or a second settings table. Browser reads verify scoped
+object hashes and the current path version. Saves preserve unrelated TOML and
+use the human path-command review/apply protocol with exact version, content,
+operation key and plan digest. A successful save is read back from the cloud.
+New native runs read the same file through the governed path gateway before
+composition. Only validated choices, source version/hash and read observation
+references enter context; arbitrary TOML text is not a runtime instruction.
+Missing choices default to Ask. Malformed, stale or unauthorized reads stop
+composition. These choices never expand technical permissions or privacy consent.
+
+**Deployment boundary.** The web UI requires the member-route CORS changes in
+the object gateway and native-provider-login Edge Function. Policy consumption
+also requires a matching native runtime bundle rollout and activation. The Pages
+preview alone cannot verify those backend changes. Local browser checks use a
+fake cloud boundary; adapter and runtime tests exercise the real parsers and
+protocols without live credentials or company mutations.

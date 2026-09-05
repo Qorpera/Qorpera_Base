@@ -1,4 +1,5 @@
 @import "./tokens.css";
+@import "./settings.css";
 
 /* Layout and components for the web client. Values derive from tokens.css
  * (shared with the desktop). Selectors are the contract with the views. */
@@ -525,7 +526,7 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 .staff-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
 
 /* modal */
-.modal-backdrop { position: fixed; inset: 0; background: rgba(18, 18, 17, 0.35); display: grid; place-items: center; z-index: 20; }
+.modal-backdrop { position: fixed; inset: 0; background: rgba(18, 18, 17, 0.35); display: grid; place-items: center; z-index: 500; }
 .modal { width: min(440px, 92vw); background: var(--bg); border-radius: var(--radius-xl); padding: 20px; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25); }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
