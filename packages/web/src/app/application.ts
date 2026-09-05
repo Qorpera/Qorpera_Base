@@ -323,8 +323,9 @@ export function mountApplication(root: HTMLElement, cloud: Cloud, api = new Clou
 		// First run is a moment, not a workspace: the rail stays away until the
 		// Co-Founder has a face.
 		rail.hidden = route.section === "meet" || controller.store.get().accessLost === true;
-		renderTopbar(topbar, shellContext(authState.user, route), controller);
-		if (!rail.hidden) renderRail(rail, controller, route);
+		const context = shellContext(authState.user, route);
+		renderTopbar(topbar, context, rail.hidden ? undefined : controller);
+		if (!rail.hidden) renderRail(rail, controller, context);
 		if (navigationFocus) {
 			const target =
 				navigationFocus === "rail"

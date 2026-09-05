@@ -1,13 +1,13 @@
 import type { User } from "@supabase/supabase-js";
 import type { HostedProfile, HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
-import { badge, button, companyLogo, h, icon, initials, notice, replace } from "../../ui/dom.ts";
+import { badge, button, h, icon, initials, notice, replace } from "../../ui/dom.ts";
 import { type AuthController, displayName } from "../auth.ts";
 import type { CompanyController } from "../company.ts";
 import type { CompanySection, Route } from "../router.ts";
 
-/* The company shell: top bar with company switcher and account, a rail that
- * renders the §14.5 hierarchy from canonical state, and the main pane. */
+/* The company shell: a rail with conversations and the account menu, and the
+ * main pane. A compact toolbar keeps the rail accessible on small screens. */
 
 export interface ShellContext {
 	profiles: HostedProfile[];
@@ -19,12 +19,13 @@ export interface ShellContext {
 	navigation?: { open: boolean; toggle: () => void };
 }
 
-/* The account menu is one long-lived element: the top bar re-renders on every
+/* The account menu is one long-lived element: the shell re-renders on every
  * store change, and rebuilding the menu would close it under the pointer. */
 let accountMenu: HTMLElement | undefined;
 let accountMenuOpen = false;
 let accountTrigger: HTMLButtonElement | undefined;
 let accountPopover: HTMLElement | undefined;
+let accountUserId: string | undefined;
 
 function setAccountMenuOpen(open: boolean): void {
 	accountMenuOpen = open;
@@ -33,7 +34,27 @@ function setAccountMenuOpen(open: boolean): void {
 	if (accountPopover) accountPopover.hidden = !open;
 }
 
-function accountMenuElement(context: ShellContext): HTMLElement {
+function preserveAccountFocus(): () => void {
+	const focused = document.activeElement;
+	const scrollTop = accountPopover?.scrollTop ?? 0;
+	const triggerFocused = focused === accountTrigger;
+	const href = accountMenuOpen && accountPopover?.contains(focused) ? focused?.getAttribute("href") : undefined;
+	const signoutFocused = accountMenuOpen && focused?.classList.contains("account-signout");
+	return () => {
+		if (accountMenuOpen && accountPopover) accountPopover.scrollTop = scrollTop;
+		if (triggerFocused) accountTrigger?.focus({ preventScroll: true });
+		else if (accountMenuOpen && (href || signoutFocused)) {
+			const target = [...(accountPopover?.querySelectorAll<HTMLElement>("[role=menuitem]") ?? [])].find((item) =>
+				href ? item.getAttribute("href") === href : item.classList.contains("account-signout"),
+			);
+			target?.focus({ preventScroll: true });
+		}
+	};
+}
+
+function accountMenuElement(context: ShellContext, company?: CompanyController): HTMLElement {
+	if (accountUserId !== context.user?.id || !accountMenu?.isConnected) setAccountMenuOpen(false);
+	accountUserId = context.user?.id;
 	if (!accountMenu) {
 		accountTrigger = h("button", {
 			type: "button",
@@ -53,13 +74,27 @@ function accountMenuElement(context: ShellContext): HTMLElement {
 		});
 		document.addEventListener("keydown", (event: KeyboardEvent) => {
 			if (event.key === "Escape" && accountMenuOpen) {
+				event.stopPropagation();
 				setAccountMenuOpen(false);
 				accountTrigger?.focus();
 			}
 		});
 		window.addEventListener("hashchange", () => setAccountMenuOpen(false));
 	}
+	accountMenu.classList.toggle("account-menu-rail", Boolean(company));
 	const name = displayName(context.user);
+	const section = context.route.name === "company" ? context.route.section : undefined;
+	const companyItem = (target: CompanySection, label: string) =>
+		h(
+			"a",
+			{
+				class: ["account-item", section === target ? "active" : ""].join(" "),
+				role: "menuitem",
+				href: `#/c/${company?.profile.profileId}/${target}`,
+				onclick: () => setAccountMenuOpen(false),
+			},
+			label,
+		);
 	const item = (target: "account" | "friends" | "invitations", iconName: string, label: string, count = 0) =>
 		h(
 			"a",
@@ -86,6 +121,23 @@ function accountMenuElement(context: ShellContext): HTMLElement {
 		item("friends", "friends", "Friends"),
 		item("invitations", "invitations", "Invitations", context.invitations),
 		h("div", { class: "account-separator", role: "separator" }),
+		company
+			? h(
+					"div",
+					{ role: "group", "aria-label": company.profile.profileName },
+					h("div", { class: "account-company-name" }, company.profile.profileName),
+					companyItem("approvals", "Approvals"),
+					companyItem("file", "Company File"),
+					companyItem("organization", "Organization"),
+					companyItem("team", "Team"),
+					h(
+						"a",
+						{ class: "account-item", role: "menuitem", href: "#/", onclick: () => setAccountMenuOpen(false) },
+						"All companies",
+					),
+					h("div", { class: "account-separator", role: "separator" }),
+				)
+			: null,
 		h(
 			"button",
 			{
@@ -109,13 +161,11 @@ export function renderTopbar(
 	context: ShellContext,
 	company: CompanyController | undefined,
 ): void {
-	const realtime = company?.store.get().realtime;
-	// Outside a company the bar is bare: no surface, no divider, no mark. The
-	// hub needs nothing on the left; the account pages get a way back. Inside a
-	// company the switcher leads and the chrome returns.
+	const restoreFocus = preserveAccountFocus();
+	// Company pages put the account in the rail. Only the mobile navigation
+	// button needs a toolbar; pages without a rail keep the account here.
 	container.classList.toggle("topbar-plain", !company);
-	// Inside a company the rail's own switcher names it; outside, the account
-	// pages get a way back.
+	container.classList.toggle("topbar-company", Boolean(company));
 	const lead =
 		company || context.route.name === "hub" ? null : h("a", { class: "topbar-home", href: "#/" }, "← Companies");
 	replace(
@@ -135,32 +185,23 @@ export function renderTopbar(
 				)
 			: null,
 		lead,
-		company && realtime && realtime !== "connected"
-			? badge(
-					realtime === "connecting" ? "connecting" : "live updates degraded",
-					realtime === "connecting" ? "neutral" : "warn",
-					company.store.get().realtimeError ?? "",
-				)
-			: null,
-		h("span", { class: "spacer" }),
-		accountMenuElement(context),
+		company ? null : h("span", { class: "spacer" }),
+		company ? null : accountMenuElement(context),
 	);
+	if (!company) restoreFocus();
 }
 
 /* The company rail, as Qorpera Base draws it (V24 product preview): a search
  * field, the Co-Founder as a low card with its figure standing on it, the rest
- * of the staff as rows, and the company's own menu at the foot. The pages that
+ * of the staff as rows, and the account menu at the foot. The pages that
  * are not agents — approvals, the Company File, the organization, the team —
- * live in that menu, which is where the desktop keeps a company's own things.
+ * live in that menu alongside account settings and company navigation.
  *
  * There is no add-agent button: hiring an agent is machinery this client does
  * not have yet, and a button that writes nowhere is worse than none. */
 
 /* The field outlives re-renders so typing never loses the caret. */
-const railFields = new WeakMap<
-	CompanyController,
-	{ input: HTMLInputElement; query: string; redraw: () => void; switcherOpen: boolean }
->();
+const railFields = new WeakMap<CompanyController, { input: HTMLInputElement; query: string; redraw: () => void }>();
 
 function searchField(company: CompanyController, onInput: () => void) {
 	let field = railFields.get(company);
@@ -172,7 +213,7 @@ function searchField(company: CompanyController, onInput: () => void) {
 			spellcheck: "false",
 			"aria-label": "Search agents",
 		});
-		field = { input, query: "", redraw: onInput, switcherOpen: false };
+		field = { input, query: "", redraw: onInput };
 		railFields.set(company, field);
 	}
 	const current = field;
@@ -191,7 +232,9 @@ function statusLine(company: CompanyController, agent: HostedStaffAgent | undefi
 	return agent?.role ?? "";
 }
 
-export function renderRail(container: HTMLElement, company: CompanyController, route: Route): void {
+export function renderRail(container: HTMLElement, company: CompanyController, context: ShellContext): void {
+	const restoreFocus = preserveAccountFocus();
+	const route = context.route;
 	const state = company.store.get();
 	const profileId = company.profile.profileId;
 	const activeSessionId = route.name === "company" && route.section === "chat" ? route.id : undefined;
@@ -201,7 +244,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, r
 		activeStaffId === staffId || (activeSessionId !== undefined && sessionOf(staffId)?.sessionId === activeSessionId);
 	const cofounderSessionId = state.organization?.cofounder.memberSessionId;
 	const section = route.name === "company" ? route.section : undefined;
-	const redraw = () => renderRail(container, company, route);
+	const redraw = () => renderRail(container, company, context);
 	const field = searchField(company, redraw);
 	const search = field.input;
 	const railQuery = field.query;
@@ -295,65 +338,6 @@ export function renderRail(container: HTMLElement, company: CompanyController, r
 		),
 	);
 
-	const menuItem = (target: CompanySection, label: string) =>
-		h(
-			"a",
-			{
-				class: ["switcher-item", section === target ? "active" : ""].join(" "),
-				role: "menuitem",
-				href: `#/c/${profileId}/${target}`,
-				onclick: () => {
-					field.switcherOpen = false;
-				},
-			},
-			label,
-		);
-	const switcher = h(
-		"div",
-		{ class: ["rail-switcher", field.switcherOpen ? "is-open" : ""].join(" ") },
-		h(
-			"button",
-			{
-				type: "button",
-				class: "switcher-trigger",
-				"aria-haspopup": "menu",
-				"aria-expanded": String(field.switcherOpen),
-				onclick: () => {
-					field.switcherOpen = !field.switcherOpen;
-					redraw();
-				},
-			},
-			companyLogo(profileId, "switcher-mark"),
-			h(
-				"span",
-				{ class: "switcher-copy" },
-				h("strong", null, company.profile.profileName),
-				state.team ? h("small", null, state.team.role) : null,
-			),
-		),
-		h(
-			"div",
-			{ class: "switcher-menu", role: "menu", hidden: !field.switcherOpen },
-			menuItem("approvals", "Approvals"),
-			menuItem("file", "Company File"),
-			menuItem("organization", "Organization"),
-			menuItem("team", "Team"),
-			h("div", { class: "switcher-separator", role: "separator" }),
-			h(
-				"a",
-				{
-					class: "switcher-item",
-					role: "menuitem",
-					href: "#/",
-					onclick: () => {
-						field.switcherOpen = false;
-					},
-				},
-				"All companies",
-			),
-		),
-	);
-
 	const empty =
 		!state.loading && !cofounderCard && !staffRows.length && !sessionRows.length
 			? h("p", { class: "rail-empty" }, railQuery ? "No agent by that name." : "No agents yet.")
@@ -388,10 +372,26 @@ export function renderRail(container: HTMLElement, company: CompanyController, r
 			staffRows.length || sessionRows.length ? h("div", { class: "rail-list" }, ...staffRows, ...sessionRows) : null,
 			empty,
 		),
-		switcher,
+		h(
+			"div",
+			{ class: "rail-footer" },
+			state.realtime !== "connected"
+				? h(
+						"div",
+						{ class: "rail-connection", role: "status" },
+						badge(
+							state.realtime === "connecting" ? "connecting" : "live updates degraded",
+							state.realtime === "connecting" ? "neutral" : "warn",
+							state.realtimeError ?? "",
+						),
+					)
+				: null,
+			accountMenuElement(context, company),
+		),
 	);
 	if (typing) {
 		search.focus();
 		search.setSelectionRange(caret[0], caret[1]);
 	}
+	restoreFocus();
 }

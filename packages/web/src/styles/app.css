@@ -77,18 +77,19 @@ label > input, label > select { font-weight: 400; }
 
 /* top bar */
 .topbar {
-	height: var(--titlebar-height); display: flex; align-items: center; gap: 12px; padding: 0 16px;
+	height: var(--titlebar-height); flex: none; display: flex; align-items: center; gap: 12px; padding: 0 16px;
 	border-bottom: 1px solid var(--border); background: var(--sidebar-surface);
 }
 /* Outside a company: no surface, no divider, no mark. */
 .topbar.topbar-plain { background: transparent; border-bottom: 0; padding: 0 28px; }
+.topbar.topbar-company { display: none; }
 .topbar-home { color: var(--text-muted); font-weight: 500; padding: 4px 8px; border-radius: var(--radius-sm); }
 .topbar-home:hover { background: var(--hover); text-decoration: none; color: var(--text); }
 .company-switcher { max-width: 260px; min-height: 30px; }
 .topbar-link { color: var(--text-muted); padding: 4px 8px; border-radius: var(--radius-sm); }
 .topbar-link:hover { background: var(--hover); text-decoration: none; }
 
-/* Account menu: the only thing in the bar outside a company. */
+/* Account menu: in the rail inside a company, in the bar elsewhere. */
 .account-menu { position: relative; }
 .account-trigger {
 	display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px 0 5px;
@@ -111,12 +112,14 @@ label > input, label > select { font-weight: 400; }
 	display: flex; flex-direction: column; gap: 1px; padding: 6px;
 	border: 1px solid var(--border); border-radius: 14px; background: var(--bg);
 	box-shadow: 0 22px 48px rgba(11, 11, 11, 0.14), 0 2px 8px rgba(11, 11, 11, 0.06);
+	max-height: calc(100dvh - var(--titlebar-height) - 16px); overflow-y: auto; overscroll-behavior: contain;
 }
 /* An author `display` beats the browser's [hidden] rule, so restore it. */
 .account-popover[hidden] { display: none; }
-.account-identity { padding: 9px 12px 10px; margin-bottom: 4px; border-bottom: 1px solid var(--border); }
+.account-identity { padding: 9px 12px 10px; margin-bottom: 4px; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.account-company-name { padding: 6px 12px; font-size: 12px; font-weight: 600; color: var(--text-muted); overflow-wrap: anywhere; }
 .account-item {
-	display: flex; align-items: center; gap: 10px; width: 100%;
+	display: flex; flex: none; align-items: center; gap: 10px; width: 100%;
 	padding: 8px 12px; border: 0; border-radius: 9px; background: transparent; color: var(--text);
 	font: inherit; font-weight: 550; text-align: left; cursor: pointer;
 }
@@ -128,7 +131,7 @@ label > input, label > select { font-weight: 400; }
 	min-width: 19px; height: 19px; padding: 0 6px; border-radius: 999px; display: grid; place-items: center;
 	background: var(--primary); color: #fff; font-size: 11px; font-weight: 700;
 }
-.account-separator { height: 1px; margin: 4px 6px; background: var(--border); }
+.account-separator { height: 1px; flex: none; margin: 4px 6px; background: var(--border); }
 .account-signout { color: var(--text-muted); }
 
 /* rail */
@@ -199,32 +202,18 @@ label > input, label > select { font-weight: 400; }
 .rail-row-copy small { font-size: 11px; line-height: 15px; color: #6e6c6b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-row.active .rail-row-copy small { color: rgba(255, 255, 255, 0.85); }
 
-/* The company's own menu, where the pages that are not agents live. */
-.rail-switcher { position: relative; flex: 0 0 auto; padding-top: 5px; }
-.switcher-trigger {
-	display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: center; gap: 9px; width: 100%;
-	min-height: 40px; padding: 6px 8px; border: 0; border-radius: 8px; background: transparent;
-	color: var(--text); text-align: left; font: inherit; cursor: pointer;
+/* The profile menu opens upward from the foot of the rail. */
+.rail-footer { flex: none; padding-top: 5px; }
+.rail-connection { padding: 4px 8px; }
+.account-menu-rail .account-trigger { width: 100%; height: 48px; padding: 8px; gap: 10px; border-radius: 8px; text-align: left; }
+.account-menu-rail .account-trigger:hover, .account-menu-rail.is-open .account-trigger { background: var(--rail-hover); }
+.account-menu-rail .account-chip { width: 30px; height: 30px; font-size: 12px; }
+.account-menu-rail .account-trigger-name { flex: 1; min-width: 0; max-width: none; }
+.account-menu-rail .account-chevron { transform: translateY(2px) rotate(225deg); }
+.account-menu-rail .account-popover {
+	top: auto; bottom: calc(100% + 8px); left: 0; right: 0; width: auto;
+	max-height: calc(100dvh - var(--titlebar-height) - 88px);
 }
-.switcher-trigger:hover, .rail-switcher.is-open .switcher-trigger { background: var(--rail-hover); }
-.switcher-trigger .company-logo.switcher-mark { width: 28px; height: 28px; }
-.switcher-copy { display: grid; gap: 1px; min-width: 0; }
-.switcher-copy strong { font-size: 12.5px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.switcher-copy small { color: var(--rail-small); font-size: 10px; }
-.switcher-menu {
-	position: absolute; z-index: 40; bottom: calc(100% + 4px); left: 0; right: 0;
-	display: flex; flex-direction: column; gap: 1px; padding: 6px;
-	border: 1px solid var(--border); border-radius: 12px; background: var(--bg);
-	box-shadow: 0 18px 40px rgba(11, 11, 11, 0.16), 0 2px 8px rgba(11, 11, 11, 0.06);
-}
-/* An author `display` beats the browser's [hidden] rule, so restore it. */
-.switcher-menu[hidden] { display: none; }
-.switcher-item {
-	padding: 8px 10px; border-radius: 8px; color: var(--text); font-size: 13px; font-weight: 550;
-}
-.switcher-item:hover { background: var(--hover); text-decoration: none; }
-.switcher-item.active { background: var(--pane-strong); }
-.switcher-separator { height: 1px; margin: 4px 6px; background: var(--border); }
 
 /* Agent figures: the approved vector build, driven by the vendored rig at
  * part motion 0. The host sets the size; the figure fills it. */
@@ -542,6 +531,7 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 
 .mobile-navigation-toggle, .navigation-backdrop { display: none; }
 @media (max-width: 760px) {
+	.topbar.topbar-company { display: flex; }
 	.mobile-navigation-toggle { display: inline-flex; }
 	.rail { display: none; position: absolute; z-index: 6; height: calc(100% - var(--titlebar-height)); }
 	.frame.navigation-open .rail:not([hidden]) { display: flex; }
