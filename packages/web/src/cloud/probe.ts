@@ -37,7 +37,11 @@ export const RPC_PROBES: RpcProbeEntry[] = [
 	{ name: "qorpera_company_organization_bootstrap", params: ["p_profile_id"], area: "Organization (Order 0)" },
 	{ name: "qorpera_company_organization_json", params: ["p_profile_id"], area: "Organization (Order 0)" },
 	{ name: "qorpera_list_profile_staff", params: ["p_profile_id"], area: "Staff" },
-	{ name: "qorpera_list_shared_sessions", params: ["p_environment_id"], area: "Conversations" },
+	{
+		name: "qorpera_list_shared_sessions_page",
+		params: ["p_environment_id", "p_after_updated_at", "p_after_id", "p_limit"],
+		area: "Conversations",
+	},
 	{
 		name: "qorpera_ensure_staff_session",
 		params: ["p_environment_id", "p_staff_agent_id", "p_client_session_id", "p_title"],
@@ -110,16 +114,21 @@ export const RPC_PROBES: RpcProbeEntry[] = [
 	},
 ];
 
-export type RpcProbeState = "present" | "missing" | "signed-out";
+export type RpcProbeState = "present" | "missing" | "signed-out" | "denied" | "unreachable";
 
 export interface RpcProbeResult extends RpcProbeEntry {
 	state: RpcProbeState;
 	detail: string;
 }
 
-export async function probeRpcs(cloud: Cloud, onResult?: (result: RpcProbeResult) => void): Promise<RpcProbeResult[]> {
+export async function probeRpcs(
+	cloud: Cloud,
+	onResult?: (result: RpcProbeResult) => void,
+	signal?: AbortSignal,
+): Promise<RpcProbeResult[]> {
 	const results: RpcProbeResult[] = [];
 	for (const entry of RPC_PROBES) {
+		if (signal?.aborted) break;
 		const args = Object.fromEntries(entry.params.map((param) => [param, null]));
 		let result: RpcProbeResult;
 		try {
@@ -127,15 +136,21 @@ export async function probeRpcs(cloud: Cloud, onResult?: (result: RpcProbeResult
 			result = { ...entry, state: "present", detail: "callable" };
 		} catch (error) {
 			if (error instanceof CloudRpcError) {
+				const postgresResponse = Boolean(error.code && /^[0-9A-Z]{5}$/.test(error.code));
 				result = error.missing
 					? { ...entry, state: "missing", detail: "PGRST202: not in the deployed schema" }
 					: error.status === 401 && error.code !== "42501"
 						? { ...entry, state: "signed-out", detail: "no member token" }
-						: { ...entry, state: "present", detail: `${error.code ?? "error"}: ${error.message}` };
+						: {
+								...entry,
+								state: postgresResponse ? (error.denied ? "denied" : "present") : "unreachable",
+								detail: `${error.code ?? "error"}: ${error.message}`,
+							};
 			} else {
-				result = { ...entry, state: "present", detail: error instanceof Error ? error.message : String(error) };
+				result = { ...entry, state: "unreachable", detail: error instanceof Error ? error.message : String(error) };
 			}
 		}
+		if (signal?.aborted) break;
 		results.push(result);
 		onResult?.(result);
 	}

@@ -48,7 +48,7 @@ interface Entry {
 	id?: unknown;
 	message?: { role?: unknown; content?: unknown };
 	delivery?: { schema?: unknown; phase?: unknown };
-	execution?: { kind?: unknown; id?: unknown };
+	execution?: { kind?: unknown; id?: unknown; claimantId?: unknown; runnerAssignmentId?: unknown };
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -105,9 +105,22 @@ function messageFromEntry(entry: Entry, event: HostedSessionEvent, legacy: boole
 	}
 	if (entry.message.role === "assistant") {
 		// Only an explicit send operation is public output (§6.1).
-		if (entry.delivery?.schema !== AGENT_SEND_SCHEMA) return undefined;
-		const phase = entry.delivery.phase === "progress" ? "progress" : "final";
-		const runId = event.execution?.kind === "run" ? event.execution.id : undefined;
+		if (
+			legacy ||
+			entry.delivery?.schema !== AGENT_SEND_SCHEMA ||
+			(entry.delivery.phase !== "progress" && entry.delivery.phase !== "final") ||
+			event.sessionInputId ||
+			entry.id !== event.eventId ||
+			event.execution?.kind !== "run" ||
+			entry.execution?.kind !== "run" ||
+			entry.execution.id !== event.execution.id ||
+			entry.execution.claimantId !== event.execution.claimantId ||
+			!event.execution.runnerAssignmentId ||
+			entry.execution.runnerAssignmentId !== event.execution.runnerAssignmentId
+		)
+			return undefined;
+		const phase = entry.delivery.phase;
+		const runId = event.execution.id;
 		return {
 			kind: "agent",
 			id: event.eventId,
@@ -168,12 +181,23 @@ export function projectTranscript(
 				!entryId ||
 				!Number.isSafeInteger(partIndex) ||
 				!Number.isSafeInteger(partCount) ||
+				(partCount as number) < 1 ||
+				(partCount as number) > 128 ||
+				(partIndex as number) < 0 ||
+				(partIndex as number) >= (partCount as number) ||
 				typeof body.payloadBase64 !== "string"
 			) {
 				hiddenCount++;
 				continue;
 			}
 			let pendingEntry = legacyParts.get(entryId);
+			if (
+				pendingEntry &&
+				(pendingEntry.count !== partCount || pendingEntry.event.actorUserId !== event.actorUserId)
+			) {
+				hiddenCount++;
+				continue;
+			}
 			if (!pendingEntry) {
 				pendingEntry = {
 					count: partCount as number,

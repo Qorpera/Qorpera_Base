@@ -1,0 +1,240 @@
+import type { AuthChangeEvent, Session, User } from "@supabase/supabase-js";
+import { vi } from "vitest";
+import { CloudApi } from "../src/cloud/api.ts";
+import type { Cloud } from "../src/cloud/client.ts";
+import type {
+	HostedCompanyFile,
+	HostedCompanyProposal,
+	HostedCompanySnapshot,
+	HostedProfile,
+	HostedProfileTeam,
+	HostedSession,
+	HostedSessionEvent,
+	HostedStaffAgent,
+	PendingSessionInput,
+} from "../src/cloud/types.ts";
+
+export const id = (n: number): string => `11111111-1111-4111-8111-${String(n).padStart(12, "0")}`;
+export const timestamp = "2026-09-05T10:00:00Z";
+export const userA: User = {
+	id: id(1),
+	aud: "authenticated",
+	email: "a@example.invalid",
+	app_metadata: {},
+	user_metadata: { full_name: "Account A" },
+	created_at: timestamp,
+};
+export const userB: User = {
+	...userA,
+	id: id(2),
+	email: "b@example.invalid",
+	user_metadata: { full_name: "Account B" },
+};
+export const profileA: HostedProfile = {
+	profileId: id(3),
+	environmentId: id(4),
+	profileName: "Company A PRIVATE",
+	environmentName: "Main",
+	role: "owner",
+	contractVersion: 1,
+	createdAt: timestamp,
+};
+export const profileB: HostedProfile = {
+	...profileA,
+	profileId: id(5),
+	environmentId: id(6),
+	profileName: "Company B",
+};
+export const team: HostedProfileTeam = {
+	profileId: profileA.profileId,
+	role: "owner",
+	capabilities: { read: true, write: true, authorize: true, manageMembers: true },
+	members: [],
+	invitations: [],
+};
+export const session: HostedSession = {
+	sessionId: id(7),
+	clientSessionId: id(8),
+	profileId: profileA.profileId,
+	environmentId: profileA.environmentId,
+	title: "Fixture conversation",
+	status: "open",
+	audience: { kind: "company" },
+	createdByUserId: userA.id,
+	createdAt: timestamp,
+	updatedAt: timestamp,
+};
+export const staff: HostedStaffAgent = {
+	profileId: profileA.profileId,
+	id: id(9),
+	displayName: "Fixture agent",
+	role: "Designer",
+	charter: "Design",
+	appearance: { color: "#123456", shape: "circle" },
+	employmentStatus: "active",
+	lifecycleState: "active",
+	version: 1,
+	createdAt: timestamp,
+	updatedAt: timestamp,
+	updatedByUserId: userA.id,
+};
+export const snapshot: HostedCompanySnapshot = {
+	snapshotId: id(10),
+	profileId: profileA.profileId,
+	environmentId: profileA.environmentId,
+	workspaceId: id(11),
+	clientSnapshotId: id(12),
+	tree: { manifestSha256: "a".repeat(64), manifestBytes: 20, contractVersion: 1, fileCount: 2, totalBytes: 18 },
+	createdByUserId: userA.id,
+	createdAt: timestamp,
+};
+export const file: HostedCompanyFile = {
+	profileId: profileA.profileId,
+	environmentId: profileA.environmentId,
+	canonicalWorkspaceId: snapshot.workspaceId,
+	state: "ready",
+	logicalBytes: 18,
+	retainedStorageBytes: 0,
+	storageUsedBytes: 18,
+	storageLimitBytes: 100,
+	objectBackends: ["supabase-storage"],
+	createdAt: timestamp,
+	updatedAt: timestamp,
+};
+export const proposal: HostedCompanyProposal = {
+	proposalId: id(13),
+	profileId: profileA.profileId,
+	environmentId: profileA.environmentId,
+	clientProposalId: id(14),
+	baseSnapshotId: id(15),
+	proposalSnapshot: snapshot,
+	execution: { kind: "run", id: id(16), claimantId: id(16) },
+	trailEndSequence: 1,
+	reason: "policy",
+	title: "Fixture proposal",
+	reviewerStaffIds: [],
+	reviewRevision: 1,
+	reviews: [],
+	status: "open",
+	createdByUserId: userA.id,
+	createdByName: "Account A",
+	createdAt: timestamp,
+};
+
+export function event(sequence: number, text = `Message ${sequence}`): HostedSessionEvent {
+	return {
+		sessionId: session.sessionId,
+		eventId: id(1000 + sequence),
+		sequence,
+		actorUserId: userA.id,
+		sessionInputId: id(2000 + sequence),
+		eventType: "message",
+		eventHash: "a".repeat(64),
+		createdAt: timestamp,
+		body: {
+			schema: "qorpera.runner-transcript-entry/v1",
+			entry: { type: "message", id: id(1000 + sequence), message: { role: "user", content: text } },
+		},
+	};
+}
+export function pending(position: number, text = `Input ${position}`): PendingSessionInput {
+	return {
+		inputId: id(2000 + position),
+		position,
+		kind: "user_message",
+		authorUserId: userA.id,
+		authorDisplayName: "Account A",
+		body: { schema: "qorpera.session-prompt/v1", text, images: [] },
+		createdAt: timestamp,
+		status: "queued",
+	};
+}
+export function deferred<T>() {
+	let resolve!: (value: T) => void;
+	let reject!: (error: unknown) => void;
+	const promise = new Promise<T>((yes, no) => {
+		resolve = yes;
+		reject = no;
+	});
+	return { promise, resolve, reject };
+}
+export async function settle(): Promise<void> {
+	for (let i = 0; i < 30; i++) await Promise.resolve();
+}
+
+export function fixture() {
+	let authCallback: ((event: AuthChangeEvent, session: Session | null) => void) | undefined;
+	let currentUser: User | null = userA;
+	const getSession = (): Session | null =>
+		currentUser
+			? {
+					user: currentUser,
+					access_token: "fixture-token",
+					refresh_token: "fixture-refresh",
+					expires_in: 3600,
+					token_type: "bearer",
+				}
+			: null;
+	const hints = new Map<string, () => void>();
+	const unsubscribe = vi.fn();
+	const channel = {
+		on: vi.fn((_kind: string, filter: { table: string }, callback: () => void) => {
+			hints.set(filter.table, callback);
+			return channel;
+		}),
+		subscribe: vi.fn(() => channel),
+	};
+	const cloud = {
+		config: { projectUrl: "https://fixture.invalid", publishableKey: "fixture-publishable" },
+		rpc: vi.fn(async () => {
+			throw new Error("Unexpected RPC");
+		}),
+		supabase: {
+			auth: {
+				getSession: vi.fn(async () => ({ data: { session: getSession() } })),
+				onAuthStateChange: vi.fn((callback: typeof authCallback) => {
+					authCallback = callback;
+					return { data: { subscription: { unsubscribe } } };
+				}),
+			},
+			channel: vi.fn(() => channel),
+			removeChannel: vi.fn(async () => {}),
+		},
+	} as unknown as Cloud;
+	const api = new CloudApi(cloud);
+	vi.spyOn(api, "listProfiles").mockResolvedValue([profileA]);
+	vi.spyOn(api, "listIncomingInvitations").mockResolvedValue([]);
+	vi.spyOn(api, "listFriends").mockResolvedValue([]);
+	vi.spyOn(api, "getAccountEntitlement").mockResolvedValue({
+		planKey: "Account A private plan",
+		billingMode: "fixture",
+		featureSet: "fixture",
+		storageAllocation: "fixture",
+		source: "fixture",
+	});
+	vi.spyOn(api, "getTeam").mockResolvedValue(team);
+	vi.spyOn(api, "listStaff").mockResolvedValue([staff]);
+	vi.spyOn(api, "listSessions").mockResolvedValue([session]);
+	vi.spyOn(api, "getOrganization").mockResolvedValue(undefined);
+	vi.spyOn(api, "listStaffActivity").mockResolvedValue([]);
+	vi.spyOn(api, "readSessionEvents").mockResolvedValue([]);
+	vi.spyOn(api, "listSessionInputs").mockResolvedValue({ items: [], hasMore: false, nextAfterPosition: 0 });
+	vi.spyOn(api, "getCompanyFile").mockResolvedValue(file);
+	vi.spyOn(api, "listWorkspaces").mockResolvedValue([]);
+	vi.spyOn(api, "listSnapshots").mockResolvedValue([snapshot]);
+	vi.spyOn(api, "usesPathGateway").mockResolvedValue(false);
+	vi.spyOn(api, "listProposals").mockResolvedValue({ items: [proposal], hasMore: false });
+	vi.spyOn(api, "getProposal").mockResolvedValue(proposal);
+	vi.spyOn(api, "getSnapshot").mockResolvedValue(snapshot);
+	vi.spyOn(api, "listProposalComments").mockResolvedValue({ items: [], hasMore: false });
+	return {
+		api,
+		cloud,
+		hints,
+		unsubscribe,
+		auth(user: User | null) {
+			currentUser = user;
+			authCallback?.(user ? "SIGNED_IN" : "SIGNED_OUT", getSession());
+		},
+	};
+}

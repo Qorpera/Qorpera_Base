@@ -613,6 +613,16 @@ export function parseCompanyProposalPage(value: unknown): HostedCompanyProposalP
 	};
 }
 
+export function parseSessionPage(value: unknown) {
+	const page = record(value, "session page");
+	return {
+		items: parseSessions(page.items),
+		hasMore: page.has_more === true,
+		nextTime: optionalTimestamp(page.next_updated_at, "session cursor time"),
+		nextId: optionalUuid(page.next_id, "session cursor id"),
+	};
+}
+
 export function parseCompanyProposalComment(value: unknown): HostedCompanyProposalComment {
 	const input = record(value, "company proposal comment");
 	const authorUserId = optionalUuid(input.author_user_id, "comment author id");

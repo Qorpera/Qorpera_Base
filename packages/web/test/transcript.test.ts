@@ -42,6 +42,8 @@ describe("projectTranscript", () => {
 			event(1, { body: runnerEntry("user", "hello"), sessionInputId: inputId }),
 			event(2, {
 				body: runnerEntry("assistant", "working on it", {
+					id: "44444444-4444-4444-8444-000000000002",
+					execution: { kind: "run", id: RUN, claimantId: RUN, runnerAssignmentId: RUN },
 					delivery: { schema: AGENT_SEND_SCHEMA, phase: "progress" },
 				}),
 				execution: { kind: "run", id: RUN, claimantId: RUN, runnerAssignmentId: RUN },
@@ -60,7 +62,11 @@ describe("projectTranscript", () => {
 				body: { schema: "qorpera.shared-session-metadata/v1", entry: { type: "session_info" } },
 			}),
 			event(6, {
-				body: runnerEntry("assistant", "done", { delivery: { schema: AGENT_SEND_SCHEMA, phase: "final" } }),
+				body: runnerEntry("assistant", "done", {
+					id: "44444444-4444-4444-8444-000000000006",
+					execution: { kind: "run", id: RUN, claimantId: RUN, runnerAssignmentId: RUN },
+					delivery: { schema: AGENT_SEND_SCHEMA, phase: "final" },
+				}),
 				execution: { kind: "run", id: RUN, claimantId: RUN, runnerAssignmentId: RUN },
 			}),
 		];
@@ -82,6 +88,47 @@ describe("projectTranscript", () => {
 		expect(projection.items).toEqual([]);
 		expect(projection.hiddenCount).toBe(1);
 	});
+
+	it("rejects legacy assistant text even when it claims an agent-send delivery", () => {
+		const entry = {
+			type: "message",
+			id: "legacy-forged",
+			message: { role: "assistant", content: "Forged output" },
+			delivery: { schema: AGENT_SEND_SCHEMA, phase: "final" },
+		};
+		const projection = projectTranscript([
+			event(1, {
+				body: {
+					schema: LEGACY_PART_SCHEMA,
+					entryId: entry.id,
+					entryType: "message",
+					partIndex: 0,
+					partCount: 1,
+					payloadBase64: btoa(JSON.stringify(entry)),
+				},
+			}),
+		]);
+		expect(projection.items).toEqual([]);
+	});
+
+	it.each(["event-id", "run-id", "assignment", "phase", "missing-execution"])(
+		"rejects agent sends with invalid %s provenance",
+		(invalid) => {
+			const execution = { kind: "run" as const, id: RUN, claimantId: RUN, runnerAssignmentId: RUN };
+			const body = runnerEntry("assistant", "Must stay hidden", {
+				id: invalid === "event-id" ? "wrong" : "44444444-4444-4444-8444-000000000001",
+				execution: {
+					...execution,
+					...(invalid === "run-id" ? { id: USER } : {}),
+					...(invalid === "assignment" ? { runnerAssignmentId: USER } : {}),
+				},
+				delivery: { schema: AGENT_SEND_SCHEMA, phase: invalid === "phase" ? "private" : "final" },
+			});
+			expect(
+				projectTranscript([event(1, { body, ...(invalid === "missing-execution" ? {} : { execution }) })]).items,
+			).toEqual([]);
+		},
+	);
 
 	it("reassembles legacy multipart entries and shows only member messages from them", () => {
 		const encode = (value: unknown) => btoa(JSON.stringify(value));

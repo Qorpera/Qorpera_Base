@@ -20,6 +20,8 @@ export class ConversationView {
 	readonly #composerWrap: HTMLElement;
 	#renderedKey = "";
 	#stickToBottom = true;
+	readonly #unsubscribe: (() => void)[] = [];
+	#disposed = false;
 
 	constructor(company: CompanyController, sessionId: string) {
 		this.#company = company;
@@ -35,7 +37,10 @@ export class ConversationView {
 					this.#submit();
 				}
 			},
-			oninput: () => this.#autosize(),
+			oninput: () => {
+				this.#autosize();
+				company.conversation(sessionId).set({ draft: this.#composer.value });
+			},
 		});
 		this.#send = button("Send", () => this.#submit(), { primary: true });
 		this.#composerWrap = h("footer", { class: "composer" }, this.#composer, this.#send);
@@ -45,7 +50,17 @@ export class ConversationView {
 		});
 		this.el = h("section", { class: "thread" }, this.#header, this.#messages, this.#status, this.#composerWrap);
 		company.setOpenSession(sessionId);
+		this.#unsubscribe.push(
+			company.conversation(sessionId).subscribe(() => this.update()),
+			company.store.subscribe(() => this.update()),
+		);
 		this.update();
+	}
+
+	dispose(): void {
+		this.#disposed = true;
+		for (const unsubscribe of this.#unsubscribe) unsubscribe();
+		this.#company.setOpenSession(undefined);
 	}
 
 	get sessionId(): string {
@@ -64,24 +79,28 @@ export class ConversationView {
 	#submit(): void {
 		const text = this.#composer.value;
 		if (!text.trim() || this.#send.disabled) return;
-		this.#composer.value = "";
-		this.#autosize();
 		void this.#company.sendPrompt(this.#sessionId, text);
+		this.update();
 	}
 
 	update(): void {
+		if (this.#disposed) return;
 		const company = this.#company.store.get();
 		const conversation = this.#company.conversation(this.#sessionId).get();
 		const session = company.sessions.find((item) => item.sessionId === this.#sessionId);
 		const agent = this.#company.staffById(session?.staffAgentId);
 		const activity = this.#company.activityFor(session?.staffAgentId);
-		const canWrite = company.team?.capabilities.write === true && session?.status !== "closed";
+		const canWrite = company.team?.capabilities.write === true && session?.status === "open";
 		this.#renderHeader(session, agent?.displayName, agent, activity?.activity);
 		this.#renderMessages(conversation, agent?.displayName ?? session?.title ?? "Agent", agent);
 		this.#renderStatus(conversation, activity?.activity, canWrite, session);
 		this.#composer.disabled = !canWrite || conversation.sending;
 		this.#send.disabled = !canWrite || conversation.sending;
 		this.#composerWrap.hidden = !canWrite;
+		if (this.#composer.value !== (conversation.draft ?? "")) {
+			this.#composer.value = conversation.draft ?? "";
+			this.#autosize();
+		}
 	}
 
 	#renderHeader(
@@ -139,7 +158,15 @@ export class ConversationView {
 				}),
 			),
 		];
-		const key = `${items.map((item) => `${item.id}:${"pending" in item ? (item.pending ?? "") : ""}`).join("|")}#${conversation.projection.hiddenCount}#${conversation.loading}`;
+		const key = JSON.stringify([
+			items,
+			agentName,
+			agent?.appearance,
+			this.#company.store.get().team?.members,
+			conversation.projection.hiddenCount,
+			conversation.loading,
+			conversation.error,
+		]);
 		if (key === this.#renderedKey) return;
 		this.#renderedKey = key;
 		const nodes: HTMLElement[] = [];

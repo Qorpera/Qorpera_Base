@@ -1,5 +1,6 @@
 import type { Cloud } from "./client.ts";
 import { type HostedCompanyOrganization, parseHostedCompanyOrganization } from "./organization.ts";
+import { collectPages, type PageCursor } from "./pagination.ts";
 import {
 	parseAccountEntitlement,
 	parseCompanyFile,
@@ -18,7 +19,7 @@ import {
 	parsePendingSessionInputs,
 	parseProfiles,
 	parseSessionInputReceipt,
-	parseSessions,
+	parseSessionPage,
 	parseStaff,
 	parseStaffExecutionActivity,
 	parseStaffList,
@@ -239,10 +240,18 @@ export class CloudApi {
 
 	// Conversations
 
-	listSessions(environmentId: string): Promise<HostedSession[]> {
-		return this.cloud
-			.rpc("qorpera_list_shared_sessions", { p_environment_id: requiredUuid(environmentId, "Environment id") })
-			.then(parseSessions);
+	listSessions(environmentId: string, signal?: AbortSignal): Promise<HostedSession[]> {
+		return collectPages((cursor) => {
+			signal?.throwIfAborted();
+			return this.cloud
+				.rpc("qorpera_list_shared_sessions_page", {
+					p_environment_id: requiredUuid(environmentId, "Environment id"),
+					p_after_updated_at: cursor?.time ?? null,
+					p_after_id: cursor?.id ?? null,
+					p_limit: 100,
+				})
+				.then(parseSessionPage);
+		});
 	}
 
 	ensureStaffSession(
@@ -351,13 +360,14 @@ export class CloudApi {
 		environmentId: string,
 		status: HostedCompanyProposalStatus,
 		limit = 50,
+		cursor?: PageCursor,
 	): Promise<HostedCompanyProposalPage> {
 		return this.cloud
 			.rpc("qorpera_list_company_proposals", {
 				p_environment_id: requiredUuid(environmentId, "Environment id"),
 				p_status: status,
-				p_after_created_at: null,
-				p_after_id: null,
+				p_after_created_at: cursor?.time ?? null,
+				p_after_id: cursor?.id ?? null,
 				p_limit: limit,
 			})
 			.then(parseCompanyProposalPage);
@@ -369,12 +379,16 @@ export class CloudApi {
 			.then(parseCompanyProposal);
 	}
 
-	listProposalComments(proposalId: string, limit = 100): Promise<HostedCompanyProposalCommentPage> {
+	listProposalComments(
+		proposalId: string,
+		limit = 100,
+		cursor?: PageCursor,
+	): Promise<HostedCompanyProposalCommentPage> {
 		return this.cloud
 			.rpc("qorpera_list_company_proposal_comments", {
 				p_proposal_id: requiredUuid(proposalId, "Proposal id"),
-				p_after_created_at: null,
-				p_after_id: null,
+				p_after_created_at: cursor?.time ?? null,
+				p_after_id: cursor?.id ?? null,
 				p_limit: limit,
 			})
 			.then(parseCompanyProposalCommentPage);

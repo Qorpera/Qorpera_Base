@@ -24,12 +24,19 @@ export interface FriendsState {
 export class FriendsController {
 	readonly store = new Store<FriendsState>({ loading: true, friends: [] });
 	readonly #api: CloudApi;
+	#disposed = false;
 
 	constructor(api: CloudApi) {
 		this.#api = api;
 	}
 
+	dispose(): void {
+		this.#disposed = true;
+		this.store.dispose();
+	}
+
 	async refresh(): Promise<void> {
+		if (this.#disposed) return;
 		this.store.set({ loading: true, error: undefined });
 		try {
 			this.store.set({ friends: await this.#api.listFriends(), loading: false });
@@ -39,6 +46,7 @@ export class FriendsController {
 	}
 
 	async request(email: string): Promise<void> {
+		if (this.#disposed || this.store.get().sending) return;
 		const address = email.trim().toLowerCase();
 		if (!address) return;
 		this.store.set({ sending: true, error: undefined, message: undefined });
@@ -54,6 +62,7 @@ export class FriendsController {
 	}
 
 	async respond(friend: HostedFriend, accept: boolean): Promise<void> {
+		if (this.#disposed) return;
 		this.store.set({ busy: friend.userId, error: undefined, message: undefined });
 		try {
 			await this.#api.respondFriendRequest(friend.userId, accept);
@@ -66,6 +75,7 @@ export class FriendsController {
 	}
 
 	async remove(friend: HostedFriend): Promise<void> {
+		if (this.#disposed) return;
 		this.store.set({ busy: friend.userId, error: undefined, message: undefined });
 		try {
 			await this.#api.removeFriend(friend.userId);
@@ -105,9 +115,10 @@ function group(title: string, rows: HTMLElement[]): HTMLElement | null {
 /* One field does both jobs, as the desktop's invite popup does: it filters the
  * list, and when it holds an address it sends a friend request. The element
  * outlives re-renders so typing never loses the caret. */
-let searchField: HTMLInputElement | undefined;
+const fields = new WeakMap<FriendsController, HTMLInputElement>();
 
 function field(friends: FriendsController): HTMLInputElement {
+	let searchField = fields.get(friends);
 	if (!searchField) {
 		searchField = h("input", {
 			type: "text",
@@ -117,6 +128,7 @@ function field(friends: FriendsController): HTMLInputElement {
 			"aria-label": "Search friends, or type an email to add someone",
 			oninput: () => friends.store.set({ query: searchField?.value ?? "" }),
 		});
+		fields.set(friends, searchField);
 	}
 	return searchField;
 }
@@ -136,6 +148,7 @@ export function renderFriends(friends: FriendsController, container: HTMLElement
 	const send = () => {
 		if (!invitable) return;
 		void friends.request(query).then(() => {
+			if (friends.store.get().error) return;
 			search.value = "";
 			friends.store.set({ query: "" });
 		});

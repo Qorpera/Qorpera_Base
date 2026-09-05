@@ -5,6 +5,7 @@ export class Store<T extends object> {
 	#value: T;
 	readonly #listeners = new Set<(value: T) => void>();
 	#scheduled = false;
+	#disposed = false;
 
 	constructor(initial: T) {
 		this.#value = initial;
@@ -15,14 +16,21 @@ export class Store<T extends object> {
 	}
 
 	set(patch: Partial<T> | ((current: T) => Partial<T>)): void {
+		if (this.#disposed) return;
 		const next = typeof patch === "function" ? patch(this.#value) : patch;
 		this.#value = { ...this.#value, ...next };
 		this.#notify();
 	}
 
 	subscribe(listener: (value: T) => void): () => void {
+		if (this.#disposed) return () => {};
 		this.#listeners.add(listener);
 		return () => this.#listeners.delete(listener);
+	}
+
+	dispose(): void {
+		this.#disposed = true;
+		this.#listeners.clear();
 	}
 
 	#notify(): void {

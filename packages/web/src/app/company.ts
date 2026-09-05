@@ -30,6 +30,7 @@ export interface CompanyState {
 	team?: HostedProfileTeam;
 	staff: HostedStaffAgent[];
 	sessions: HostedSession[];
+	sessionsError?: string;
 	organization?: HostedCompanyOrganization;
 	organizationState: Deployment;
 	organizationError?: string;
@@ -52,8 +53,20 @@ export interface ConversationState {
 	error?: string;
 	sending: boolean;
 	sendError?: string;
+	draft?: string;
+	retrySend?: { clientInputId: string; text: string };
 	/** Inputs this browser appended that the cloud has not listed back yet. */
-	optimistic: { clientInputId: string; text: string; createdAt: string; authorUserId: string }[];
+	optimistic: { clientInputId: string; inputId?: string; text: string; createdAt: string; authorUserId: string }[];
+}
+
+function reconcileOptimistic(state: Pick<ConversationState, "optimistic" | "pending" | "events">) {
+	return state.optimistic.filter((item) => {
+		const id = item.inputId ?? item.clientInputId;
+		return (
+			!state.pending.some((input) => input.inputId === id) &&
+			!state.events.some((event) => event.sessionInputId === id)
+		);
+	});
 }
 
 const EVENT_PAGE = 500;
@@ -74,6 +87,11 @@ export class CompanyController {
 	#poll: ReturnType<typeof setInterval> | undefined;
 	#openSessionId: string | undefined;
 	#stopped = false;
+	readonly #abort = new AbortController();
+	readonly #versions = { team: 0, staff: 0, sessions: 0, organization: 0, activity: 0 };
+	#polling = false;
+	readonly #invalidations = new Set<(resource: RealtimeResource) => void>();
+	readonly #conversationLoads = new Map<string, { promise: Promise<void>; repeat: boolean }>();
 
 	constructor(api: CloudApi, profile: HostedProfile, userId: string) {
 		this.#api = api;
@@ -98,25 +116,45 @@ export class CompanyController {
 		return this.#userId;
 	}
 
+	get signal(): AbortSignal {
+		return this.#abort.signal;
+	}
+
 	async start(): Promise<void> {
+		if (this.#stopped || this.#realtime) return;
 		this.#realtime = subscribeProfileRealtime(
 			this.#api.cloud,
 			this.profile.profileId,
 			(resource) => this.#onHint(resource),
-			(phase, error) =>
-				this.store.set({ realtime: phase, ...(error ? { realtimeError: error } : { realtimeError: undefined }) }),
+			(phase, error) => {
+				if (!this.#stopped) this.store.set({ realtime: phase, realtimeError: error });
+			},
 		);
 		await this.refreshAll();
-		this.#poll = setInterval(() => void this.#tick(), 30_000);
+		if (!this.#stopped) this.#poll = setInterval(() => void this.#tick(), 30_000);
 	}
 
 	stop(): void {
+		if (this.#stopped) return;
 		this.#stopped = true;
+		this.#abort.abort();
 		this.#realtime?.stop();
 		if (this.#poll) clearInterval(this.#poll);
+		this.#invalidations.clear();
+		// Deliver a final access-loss update before dropping observers.
+		queueMicrotask(() => {
+			this.store.dispose();
+			for (const store of this.conversations.values()) store.dispose();
+		});
+	}
+
+	onInvalidate(listener: (resource: RealtimeResource) => void): () => void {
+		this.#invalidations.add(listener);
+		return () => this.#invalidations.delete(listener);
 	}
 
 	async refreshAll(): Promise<void> {
+		if (this.#stopped) return;
 		this.store.set({ loading: true, error: undefined });
 		await Promise.all([
 			this.refreshTeam(),
@@ -129,36 +167,69 @@ export class CompanyController {
 	}
 
 	async refreshTeam(): Promise<void> {
+		if (this.#stopped) return;
+		const version = ++this.#versions.team;
 		try {
 			const team = await this.#api.getTeam(this.profile.profileId);
+			if (this.#stopped || version !== this.#versions.team) return;
 			this.store.set({ team, accessLost: false });
 		} catch (error) {
-			if (error instanceof CloudRpcError && error.denied) this.store.set({ accessLost: true });
-			else this.store.set({ error: describeError(error) });
+			if (this.#stopped || version !== this.#versions.team) return;
+			if (error instanceof CloudRpcError && error.denied) {
+				this.store.set({
+					accessLost: true,
+					team: undefined,
+					staff: [],
+					sessions: [],
+					organization: undefined,
+					hierarchy: { primary: [], inactive: [] },
+					activity: [],
+				});
+				for (const store of this.conversations.values())
+					store.set({
+						events: [],
+						pending: [],
+						optimistic: [],
+						draft: "",
+						projection: { items: [], hiddenCount: 0, lastSequence: 0 },
+					});
+				this.stop();
+			} else this.store.set({ error: describeError(error) });
 		}
 	}
 
 	async refreshStaff(): Promise<void> {
+		if (this.#stopped) return;
+		const version = ++this.#versions.staff;
 		try {
 			const staff = await this.#api.listStaff(this.profile.profileId);
+			if (this.#stopped || version !== this.#versions.staff) return;
 			this.store.set((state) => ({ staff, hierarchy: buildCompanyHierarchy(state.organization, staff) }));
 		} catch (error) {
+			if (this.#stopped || version !== this.#versions.staff) return;
 			this.store.set({ error: describeError(error) });
 		}
 	}
 
 	async refreshSessions(): Promise<void> {
+		if (this.#stopped) return;
+		const version = ++this.#versions.sessions;
 		try {
-			const sessions = await this.#api.listSessions(this.profile.environmentId);
-			this.store.set({ sessions });
+			const sessions = await this.#api.listSessions(this.profile.environmentId, this.signal);
+			if (this.#stopped || version !== this.#versions.sessions) return;
+			this.store.set({ sessions, sessionsError: undefined });
 		} catch (error) {
-			this.store.set({ error: describeError(error) });
+			if (this.#stopped || version !== this.#versions.sessions) return;
+			this.store.set({ sessionsError: describeError(error) });
 		}
 	}
 
 	async refreshOrganization(): Promise<void> {
+		if (this.#stopped) return;
+		const version = ++this.#versions.organization;
 		try {
 			const organization = await this.#api.getOrganization(this.profile.profileId);
+			if (this.#stopped || version !== this.#versions.organization) return;
 			this.store.set((state) => ({
 				organization,
 				organizationState: organization ? "ready" : "not-seeded",
@@ -166,6 +237,7 @@ export class CompanyController {
 				hierarchy: buildCompanyHierarchy(organization, state.staff),
 			}));
 		} catch (error) {
+			if (this.#stopped || version !== this.#versions.organization) return;
 			if (error instanceof CloudRpcError && error.missing) {
 				this.store.set((state) => ({
 					organizationState: "not-deployed",
@@ -178,8 +250,11 @@ export class CompanyController {
 	}
 
 	async refreshActivity(): Promise<void> {
+		if (this.#stopped) return;
+		const version = ++this.#versions.activity;
 		try {
 			const activity = await this.#api.listStaffActivity(this.profile.environmentId);
+			if (this.#stopped || version !== this.#versions.activity) return;
 			this.store.set({ activity });
 		} catch {
 			/* Activity is an indicator; its absence must not block the company. */
@@ -212,6 +287,7 @@ export class CompanyController {
 
 	/** Adopt-or-create the company-audience conversation for a staff agent. */
 	async openStaffConversation(agent: HostedStaffAgent): Promise<string> {
+		if (this.#stopped) throw new Error("This company is no longer open.");
 		const existing = this.primarySessionFor(agent.id);
 		if (existing) return existing.sessionId;
 		const team = this.store.get().team;
@@ -229,6 +305,7 @@ export class CompanyController {
 
 	/** The member's private Co-Founder conversation (contract §14.2). */
 	async openCofounderConversation(): Promise<{ sessionId?: string; reason?: string }> {
+		if (this.#stopped) return { reason: "This company is no longer open." };
 		const { organization, organizationState, team, sessions } = this.store.get();
 		if (organizationState === "not-deployed") {
 			return {
@@ -268,7 +345,7 @@ export class CompanyController {
 		}
 	}
 
-	conversation(sessionId: string): Store<ConversationState> {
+	conversation(sessionId: string, load = true): Store<ConversationState> {
 		let store = this.conversations.get(sessionId);
 		if (!store) {
 			store = new Store<ConversationState>({
@@ -282,7 +359,7 @@ export class CompanyController {
 				optimistic: [],
 			});
 			this.conversations.set(sessionId, store);
-			void this.loadConversation(sessionId);
+			if (load) void this.loadConversation(sessionId);
 		}
 		return store;
 	}
@@ -291,66 +368,109 @@ export class CompanyController {
 		this.#openSessionId = sessionId;
 	}
 
-	async loadConversation(sessionId: string): Promise<void> {
-		const store = this.conversations.get(sessionId);
-		if (!store) return;
-		try {
-			let after = store.get().projection.lastSequence;
-			const events = [...store.get().events];
-			for (;;) {
-				const page = await this.#api.readSessionEvents(sessionId, after, EVENT_PAGE);
-				for (const event of page)
-					if (!events.some((existing) => existing.sequence === event.sequence)) events.push(event);
-				if (page.length < EVENT_PAGE) break;
-				after = page[page.length - 1]?.sequence ?? after;
-				store.set({ events: [...events], projection: projectTranscript(events, store.get().pending) });
-			}
-			const pending = (await this.#api.listSessionInputs(sessionId, 0, 100)).items;
-			const optimistic = store
-				.get()
-				.optimistic.filter(
-					(item) =>
-						!pending.some((input) => input.inputId === item.clientInputId) &&
-						!events.some((event) => event.sessionInputId === item.clientInputId),
-				);
-			store.set({
-				events,
-				pending,
-				projection: projectTranscript(events, pending),
-				loading: false,
-				complete: true,
-				error: undefined,
-				optimistic,
-			});
-		} catch (error) {
-			store.set({ loading: false, error: describeError(error) });
+	loadConversation(sessionId: string): Promise<void> {
+		if (this.#stopped) return Promise.resolve();
+		const existing = this.#conversationLoads.get(sessionId);
+		if (existing) {
+			existing.repeat = true;
+			return existing.promise;
 		}
+		const request = { repeat: false, promise: Promise.resolve() };
+		this.#conversationLoads.set(sessionId, request);
+		request.promise = this.#loadConversation(sessionId, request).finally(() =>
+			this.#conversationLoads.delete(sessionId),
+		);
+		return request.promise;
 	}
 
-	async sendPrompt(sessionId: string, text: string): Promise<void> {
+	async #loadConversation(sessionId: string, request: { repeat: boolean }): Promise<void> {
+		const store = this.conversations.get(sessionId);
+		if (!store) return;
+		do {
+			request.repeat = false;
+			try {
+				let after = store.get().projection.lastSequence;
+				const events = [...store.get().events];
+				for (;;) {
+					const page = await this.#api.readSessionEvents(sessionId, after, EVENT_PAGE);
+					if (this.#stopped) return;
+					for (const event of page)
+						if (!events.some((existing) => existing.sequence === event.sequence)) events.push(event);
+					if (page.length < EVENT_PAGE) break;
+					const next = page[page.length - 1]?.sequence ?? after;
+					if (next <= after) throw new Error("The transcript cursor did not advance.");
+					after = next;
+					store.set({ events: [...events], projection: projectTranscript(events, store.get().pending) });
+				}
+				const pending: PendingSessionInput[] = [];
+				let position = 0;
+				for (;;) {
+					const page = await this.#api.listSessionInputs(sessionId, position, 100);
+					if (this.#stopped) return;
+					pending.push(...page.items);
+					if (!page.hasMore) break;
+					if (page.nextAfterPosition <= position || !page.items.length)
+						throw new Error("The input cursor did not advance.");
+					position = page.nextAfterPosition;
+				}
+				const optimistic = reconcileOptimistic({ optimistic: store.get().optimistic, pending, events });
+				store.set({
+					events,
+					pending,
+					projection: projectTranscript(events, pending),
+					loading: false,
+					complete: true,
+					error: undefined,
+					optimistic,
+				});
+			} catch (error) {
+				store.set({ loading: false, complete: false, error: describeError(error) });
+				return;
+			}
+		} while (request.repeat && !this.#stopped);
+	}
+
+	async sendPrompt(sessionId: string, text: string): Promise<boolean> {
+		if (this.#stopped) return false;
 		const store = this.conversation(sessionId);
 		const trimmed = text.trim();
-		if (!trimmed) return;
-		const clientInputId = crypto.randomUUID();
+		if (!trimmed || store.get().sending) return false;
+		const retry = store.get().retrySend;
+		const clientInputId = retry?.text === trimmed ? retry.clientInputId : crypto.randomUUID();
 		store.set((state) => ({
 			sending: true,
 			sendError: undefined,
+			draft: text,
 			optimistic: [
 				...state.optimistic,
 				{ clientInputId, text: trimmed, createdAt: new Date().toISOString(), authorUserId: this.#userId },
 			],
 		}));
 		try {
-			await this.#api.appendPrompt(sessionId, clientInputId, trimmed);
-			store.set({ sending: false });
+			const receipt = await this.#api.appendPrompt(sessionId, clientInputId, trimmed);
+			if (this.#stopped) return false;
+			store.set((state) => ({
+				sending: false,
+				retrySend: undefined,
+				draft: state.draft === text ? "" : state.draft,
+				optimistic: reconcileOptimistic({
+					...state,
+					optimistic: state.optimistic.map((item) =>
+						item.clientInputId === clientInputId ? { ...item, inputId: receipt.inputId } : item,
+					),
+				}),
+			}));
 			await this.loadConversation(sessionId);
 			void this.refreshActivity();
+			return true;
 		} catch (error) {
 			store.set((state) => ({
 				sending: false,
 				sendError: describeError(error),
+				retrySend: { clientInputId, text: trimmed },
 				optimistic: state.optimistic.filter((item) => item.clientInputId !== clientInputId),
 			}));
+			return false;
 		}
 	}
 
@@ -361,6 +481,7 @@ export class CompanyController {
 
 	#onHint(resource: RealtimeResource): void {
 		if (this.#stopped) return;
+		for (const listener of this.#invalidations) listener(resource);
 		if (resource === "sessions") {
 			void this.refreshSessions();
 			this.#refreshOpenConversation();
@@ -373,11 +494,26 @@ export class CompanyController {
 	}
 
 	async #tick(): Promise<void> {
-		if (this.#stopped) return;
-		// Polling is the recovery path when Realtime is degraded; a light
-		// heartbeat otherwise keeps activity and the open transcript honest.
-		if (this.store.get().realtime !== "connected") await this.refreshSessions();
-		if (this.#openSessionId) await this.loadConversation(this.#openSessionId);
-		await this.refreshActivity();
+		if (this.#stopped || this.#polling) return;
+		this.#polling = true;
+		try {
+			// Polling is the recovery path when Realtime is degraded; a light
+			// heartbeat otherwise keeps activity and the open transcript honest.
+			if (this.store.get().realtime !== "connected") {
+				await this.refreshTeam();
+				await Promise.all([this.refreshSessions(), this.refreshStaff(), this.refreshOrganization()]);
+				if (!this.#stopped)
+					for (const listener of this.#invalidations) {
+						listener("sessions");
+					}
+			}
+			// Proposal comments/rejections do not all touch the Company File head.
+			// Refresh this surface even with a healthy Realtime channel.
+			if (!this.#stopped) for (const listener of this.#invalidations) listener("company-file");
+			if (this.#openSessionId) await this.loadConversation(this.#openSessionId);
+			await this.refreshActivity();
+		} finally {
+			this.#polling = false;
+		}
 	}
 }

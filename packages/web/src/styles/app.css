@@ -540,8 +540,12 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 .modal { width: min(440px, 92vw); background: var(--bg); border-radius: var(--radius-xl); padding: 20px; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25); }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
+.mobile-navigation-toggle, .navigation-backdrop { display: none; }
 @media (max-width: 760px) {
-	.rail { position: absolute; z-index: 5; height: calc(100% - var(--titlebar-height)); }
+	.mobile-navigation-toggle { display: inline-flex; }
+	.rail { display: none; position: absolute; z-index: 6; height: calc(100% - var(--titlebar-height)); }
+	.frame.navigation-open .rail:not([hidden]) { display: flex; }
+	.frame.navigation-open .navigation-backdrop { display: block; position: fixed; inset: var(--titlebar-height) 0 0; z-index: 5; background: rgba(18,18,17,.25); border: 0; }
 	.page { padding: 16px; }
 	.tree-layout { grid-template-columns: 1fr; }
 }

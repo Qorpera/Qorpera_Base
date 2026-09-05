@@ -21,6 +21,8 @@ export type OAuthProvider = "github" | "google";
 export class AuthController {
 	readonly store = new Store<AuthState>({ ready: false, session: null, user: null, busy: false });
 	readonly #cloud: Cloud;
+	#disposed = false;
+	#unsubscribe?: () => void;
 
 	constructor(cloud: Cloud) {
 		this.#cloud = cloud;
@@ -28,16 +30,26 @@ export class AuthController {
 
 	async start(): Promise<void> {
 		const { data } = await this.#cloud.supabase.auth.getSession();
+		if (this.#disposed) return;
 		this.store.set({ ready: true, session: data.session, user: data.session?.user ?? null });
-		this.#cloud.supabase.auth.onAuthStateChange((_event, session) => {
+		const {
+			data: { subscription },
+		} = this.#cloud.supabase.auth.onAuthStateChange((_event, session) => {
 			this.store.set({ session, user: session?.user ?? null, ready: true });
 		});
+		this.#unsubscribe = () => subscription.unsubscribe();
 		// Strip the PKCE code from the address bar once the library has consumed it.
 		if (new URL(location.href).searchParams.has("code")) {
 			const url = new URL(location.href);
 			url.searchParams.delete("code");
 			history.replaceState(null, "", `${url.pathname}${url.search}${url.hash || "#/"}`);
 		}
+	}
+
+	dispose(): void {
+		this.#disposed = true;
+		this.#unsubscribe?.();
+		this.store.dispose();
 	}
 
 	get accessToken(): string | undefined {

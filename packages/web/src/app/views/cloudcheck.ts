@@ -11,26 +11,39 @@ export class CloudCheckView {
 	readonly #cloud: Cloud;
 	#results: RpcProbeResult[] = [];
 	#running = false;
+	#disposed = false;
+	readonly #abort = new AbortController();
 
 	constructor(cloud: Cloud) {
 		this.#cloud = cloud;
 		this.render();
 	}
 
+	dispose(): void {
+		this.#disposed = true;
+		this.#abort.abort();
+	}
+
 	async run(): Promise<void> {
-		if (this.#running) return;
+		if (this.#running || this.#disposed) return;
 		this.#running = true;
 		this.#results = [];
 		this.render();
-		await probeRpcs(this.#cloud, (result) => {
-			this.#results = [...this.#results, result];
-			this.render();
-		});
+		await probeRpcs(
+			this.#cloud,
+			(result) => {
+				if (this.#disposed) return;
+				this.#results = [...this.#results, result];
+				this.render();
+			},
+			this.#abort.signal,
+		);
 		this.#running = false;
 		this.render();
 	}
 
 	render(): void {
+		if (this.#disposed) return;
 		const missing = this.#results.filter((result) => result.state === "missing");
 		const report = this.#results
 			.map((result) => `${result.state.padEnd(10)} ${result.name} (${result.area}) — ${result.detail}`)
@@ -41,7 +54,7 @@ export class CloudCheckView {
 			h(
 				"p",
 				{ class: "muted" },
-				`Target project: ${this.#cloud.config.projectUrl}. Each RPC is called with null arguments under your token; "missing" means PostgREST cannot find it (PGRST202), "present" means it exists and answered or refused as expected.`,
+				`Target project: ${this.#cloud.config.projectUrl}. RPCs are checked with null arguments under your token. Present confirms a response; denied confirms a permission refusal; missing means the signature was not found. Unreachable means its presence could not be established. This check does not verify Realtime or object gateway access.`,
 			),
 			h(
 				"div",

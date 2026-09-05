@@ -2,6 +2,7 @@ import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
 import type { HostedProfileRole } from "../../cloud/types.ts";
 import { badge, button, confirmDialog, fmtDate, h, notice, replace, spinner } from "../../ui/dom.ts";
+import { clearSubmittedDraft, preserveFormDrafts } from "../../ui/forms.ts";
 import type { CompanyController } from "../company.ts";
 import { navigate } from "../router.ts";
 
@@ -21,19 +22,30 @@ export function renderTeam(
 	const state = company.store.get();
 	const team = state.team;
 	const profile = company.profile;
+	const owner = `team:${profile.profileId}:${company.userId}`;
+	const restoreDrafts = preserveFormDrafts(container, owner);
+	const route = location.hash;
+	const current = () => !company.signal.aborted && location.hash === route;
 	const run = async (action: () => Promise<void>, done?: string) => {
+		if (!current()) return;
 		try {
 			await action();
+			if (!current()) return;
 			await company.refreshTeam();
 			setFeedback(done ? { message: done } : {});
 		} catch (error) {
 			setFeedback({ error: describeError(error) });
 		}
 	};
-	const emailInput = h("input", { type: "email", placeholder: "colleague@company.com", required: true });
+	const emailInput = h("input", {
+		type: "email",
+		placeholder: "colleague@company.com",
+		required: true,
+		"data-draft": "invite-email",
+	});
 	const roleSelect = h(
 		"select",
-		null,
+		{ "data-draft": "invite-role" },
 		...ASSIGNABLE_ROLES.map((role) => h("option", { value: role, selected: role === "contributor" }, role)),
 	);
 	const inviteForm = h(
@@ -43,9 +55,10 @@ export function renderTeam(
 			onsubmit: (event: Event) => {
 				event.preventDefault();
 				const role = roleSelect.value as Exclude<HostedProfileRole, "owner">;
+				const email = emailInput.value;
 				void run(async () => {
-					await api.inviteMember(profile.profileId, emailInput.value, role);
-					emailInput.value = "";
+					await api.inviteMember(profile.profileId, email, role);
+					clearSubmittedDraft(container, owner, "invite-email", email);
 				}, "Invitation created. Delivery runs in the cloud.");
 			},
 		},
@@ -143,6 +156,8 @@ export function renderTeam(
 																	`Remove ${member.displayName} from ${profile.profileName}?`,
 																	"Remove",
 																	true,
+																	undefined,
+																	company.signal,
 																)
 															)
 																await run(
@@ -252,11 +267,14 @@ export function renderTeam(
 											`Leave ${profile.profileName}? You lose access until someone invites you again.`,
 											"Leave",
 											true,
+											undefined,
+											company.signal,
 										)
 									) {
 										try {
+											if (!current()) return;
 											await api.leaveProfile(profile.profileId);
-											navigate({ name: "hub" });
+											if (current()) navigate({ name: "hub" });
 										} catch (error) {
 											setFeedback({ error: describeError(error) });
 										}
@@ -274,11 +292,13 @@ export function renderTeam(
 											"Delete company",
 											true,
 											profile.profileName,
+											company.signal,
 										)
 									) {
 										try {
+											if (!current()) return;
 											await api.deleteProfile(profile.profileId);
-											navigate({ name: "hub" });
+											if (current()) navigate({ name: "hub" });
 										} catch (error) {
 											setFeedback({ error: describeError(error) });
 										}
@@ -289,5 +309,6 @@ export function renderTeam(
 			),
 		);
 	}
-	replace(container, h("section", { class: "page team" }, ...children));
+	replace(container, h("section", { class: "page team", "data-form-owner": owner }, ...children));
+	restoreDrafts();
 }

@@ -1,7 +1,7 @@
 import type { TranscriptCard } from "../../cloud/transcript.ts";
 import { projectTranscript } from "../../cloud/transcript.ts";
 import type { HostedSession } from "../../cloud/types.ts";
-import { fmtTime, h, notice, replace, spinner } from "../../ui/dom.ts";
+import { button, fmtTime, h, notice, replace, spinner } from "../../ui/dom.ts";
 import type { CompanyController } from "../company.ts";
 import { renderAuthorizationCard } from "./conversation.ts";
 
@@ -22,28 +22,66 @@ export class ApprovalsView {
 	readonly el = h("section", { class: "page approvals" });
 	readonly #company: CompanyController;
 	#scanning = false;
-	#scanned = new Set<string>();
+	readonly #scanned = new Map<string, string>();
+	readonly #errors = new Map<string, string>();
+	readonly #unsubscribe: (() => void)[];
+	#disposed = false;
+	#scanAgain = false;
+	#hintVersion = 0;
 
 	constructor(company: CompanyController) {
 		this.#company = company;
-		this.update();
+		this.#unsubscribe = [
+			company.store.subscribe(() => {
+				this.update();
+				void this.#scan();
+			}),
+			company.onInvalidate((resource) => {
+				if (resource === "sessions") {
+					this.#hintVersion++;
+					void this.#scan();
+				}
+			}),
+		];
 		void this.#scan();
+		this.update();
+	}
+
+	dispose(): void {
+		this.#disposed = true;
+		for (const unsubscribe of this.#unsubscribe) unsubscribe();
 	}
 
 	async #scan(): Promise<void> {
-		if (this.#scanning) return;
+		if (this.#disposed || this.#company.store.get().loading) return;
+		if (this.#scanning) {
+			this.#scanAgain = true;
+			return;
+		}
 		this.#scanning = true;
+		this.update();
 		try {
-			const sessions = [...this.#company.store.get().sessions].sort((a, b) =>
-				b.updatedAt.localeCompare(a.updatedAt),
-			);
-			for (const session of sessions) {
-				if (this.#scanned.has(session.sessionId)) continue;
-				this.#company.conversation(session.sessionId);
-				await this.#company.loadConversation(session.sessionId);
-				this.#scanned.add(session.sessionId);
-				this.update();
-			}
+			do {
+				this.#scanAgain = false;
+				const hintVersion = this.#hintVersion;
+				const sessions = [...this.#company.store.get().sessions].sort((a, b) =>
+					b.updatedAt.localeCompare(a.updatedAt),
+				);
+				for (const session of sessions) {
+					if (this.#disposed) return;
+					const signature = `${session.updatedAt}:${hintVersion}`;
+					if (this.#scanned.get(session.sessionId) === signature) continue;
+					const conversation = this.#company.conversation(session.sessionId, false);
+					await this.#company.loadConversation(session.sessionId);
+					if (this.#disposed) return;
+					this.#scanned.set(session.sessionId, signature);
+					const state = conversation.get();
+					if (state.error || !state.complete)
+						this.#errors.set(session.sessionId, state.error ?? "Conversation could not be read");
+					else this.#errors.delete(session.sessionId);
+					this.update();
+				}
+			} while (this.#scanAgain && !this.#disposed);
 		} finally {
 			this.#scanning = false;
 			this.update();
@@ -96,7 +134,14 @@ export class ApprovalsView {
 	}
 
 	update(): void {
+		if (this.#disposed) return;
 		const { pending, decided, scannedCount, total } = this.#entries();
+		const loading = this.#scanning || this.#company.store.get().loading;
+		const discoveryError = this.#company.store.get().sessionsError;
+		const errors = this.#company.store.get().sessions.flatMap((session) => {
+			const error = this.#errors.get(session.sessionId);
+			return error ? [`${session.title}: ${error}`] : [];
+		});
 		const renderEntry = (entry: InboxEntry) =>
 			h(
 				"div",
@@ -126,11 +171,32 @@ export class ApprovalsView {
 				"neutral",
 				"Decisions wait in the cloud until an authorized member records one. Recording a decision from the web is not yet in the client contract, so this inbox is read-only; use the desktop for the decision itself for now.",
 			),
-			this.#scanning ? spinner(`Reading conversations (${scannedCount}/${total})`) : null,
+			loading ? spinner(`Reading conversations (${scannedCount}/${total})`) : null,
+			discoveryError
+				? notice(
+						"danger",
+						`Approvals are incomplete. ${discoveryError}`,
+						button("Retry conversation discovery", () => void this.#company.refreshSessions()),
+					)
+				: null,
+			errors.length
+				? notice(
+						"danger",
+						`Approvals are incomplete. ${errors.join("; ")}`,
+						button("Retry unread conversations", () => {
+							for (const id of this.#errors.keys()) this.#scanned.delete(id);
+							void this.#scan();
+						}),
+					)
+				: null,
 			h("h2", null, `Waiting for a decision (${pending.length})`),
 			pending.length
 				? h("div", { class: "card-list" }, ...pending.map(renderEntry))
-				: h("div", { class: "empty" }, this.#scanning ? "" : "Nothing is waiting for you."),
+				: h(
+						"div",
+						{ class: "empty" },
+						loading || errors.length || discoveryError ? "" : "Nothing is waiting for you.",
+					),
 			decided.length ? h("h2", null, `Decided (${decided.length})`) : null,
 			decided.length ? h("div", { class: "card-list" }, ...decided.slice(0, 50).map(renderEntry)) : null,
 		);

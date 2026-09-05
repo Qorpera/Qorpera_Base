@@ -136,30 +136,24 @@ export function colorFor(
 	return [...choices].sort((left, right) => distance(left) - distance(right))[0] ?? nativeColor(figure);
 }
 
-/* Views re-render by replacing their children, so a rig whose host has left
- * the document would keep its observers alive. Every mount sweeps the ones
- * that went with it.
- *
- * A figure is built detached and inserted by its view a moment later, so
- * "not in the document" cannot mean "gone" until it has been seen there
- * once. Without that gate the next mount disposes the rig that is about to
- * be attached, and every figure ends up frozen. */
+/* Views build and insert figures synchronously. Sweep after DOM changes so
+ * removed rigs are disposed even if no later figure is mounted. */
 interface LiveFigure {
 	host: HTMLElement;
 	rig: VectorRig;
-	attached: boolean;
 }
 const live = new Set<LiveFigure>();
+let observer: MutationObserver | undefined;
 
 function sweep(): void {
 	for (const entry of live) {
-		if (entry.host.isConnected) {
-			entry.attached = true;
-			continue;
-		}
-		if (!entry.attached) continue;
+		if (entry.host.isConnected) continue;
 		entry.rig.dispose();
 		live.delete(entry);
+	}
+	if (!live.size) {
+		observer?.disconnect();
+		observer = undefined;
 	}
 }
 
@@ -183,14 +177,20 @@ export function figureElement(figure: FigureId, color?: string, options: FigureO
 	const built = scope.QORPERA_VECTOR_FIGURES.build(figure, trace, { color: color ?? nativeColor(figure) });
 	host.append(built);
 	if (!options.still) {
-		sweep();
 		const rig = scope.QORPERA_VECTOR_RIG.mount(built, {
 			state: "working",
 			size: options.size ?? 36,
 			interactive: false,
 			motion: 0,
 		});
-		live.add({ host, rig, attached: false });
+		live.add({ host, rig });
+		// Views insert their newly built figures synchronously. Sweep after the
+		// DOM commit, never halfway through constructing another view.
+		if (!observer) {
+			observer = new MutationObserver(sweep);
+			observer.observe(document.documentElement, { childList: true, subtree: true });
+		}
+		queueMicrotask(sweep);
 	}
 	return host;
 }

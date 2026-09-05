@@ -75,20 +75,20 @@ export function renderMeet(
 	// Once Order 0's bootstrap completes, a staff record is a projection of the
 	// Company File and the roster RPC stops accepting member writes
 	// (qorpera_guard_company_file_staff_write). The client cannot change a
-	// Company File path from a browser yet — that needs the object gateway,
-	// which sends no CORS headers — so a refusal is reported in the cloud's own
-	// words rather than retried.
+	// Company File path from a browser yet. A refusal is reported without
+	// automatic retries, and opening the company never depends on this write.
 	const figure = state.figure ?? figureFor(cofounder);
 	const color = state.color ?? colorFor(cofounder, figure);
 	const canWrite = companyState.team?.capabilities.write === true;
 	const save = () => {
 		if (!canWrite || state.saving) return;
+		const route = location.hash;
 		setState({ ...state, saving: true, error: undefined });
 		void api
 			.setStaffAppearance(cofounder, figure, color)
 			.then(async () => {
 				await company.refreshStaff();
-				open();
+				if (!company.signal.aborted && location.hash === route && container.isConnected) open();
 			})
 			.catch((error) => setState({ ...state, saving: false, error: describeError(error) }));
 	};
@@ -150,9 +150,12 @@ export function renderMeet(
 					? h(
 							"button",
 							{ type: "button", class: "meet-start", disabled: state.saving === true, onclick: save },
-							state.saving ? "Saving…" : "Add first agent",
+							state.saving ? "Saving…" : "Save appearance and continue",
 						)
 					: h("button", { type: "button", class: "meet-start", onclick: open }, "Open the company"),
+				canWrite
+					? h("p", null, h("a", { href: `#/c/${profileId}` }, "Open the company without changing appearance"))
+					: null,
 			),
 		),
 	);
