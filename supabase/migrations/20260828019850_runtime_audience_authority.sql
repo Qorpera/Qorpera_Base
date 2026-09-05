@@ -14,12 +14,13 @@ revoke all on function public.qorpera_read_session_events(uuid,bigint,integer),
 	public.qorpera_create_shared_session_v3(uuid,uuid,text,text,uuid,jsonb),
 	public.qorpera_cancel_runner_job(uuid),public.qorpera_cancel_session_run(uuid,uuid)
 	from public,anon,authenticated,service_role,qorpera_secret_broker;
+-- v3 is the internal constructor used by revision-validating v4. The audience
+-- wrapper must not reopen direct client access to unvalidated execution pins.
 grant execute on function public.qorpera_read_session_events(uuid,bigint,integer),
 	public.qorpera_list_session_inputs(uuid,bigint,integer),
 	public.qorpera_append_account_event(uuid,uuid,text,jsonb,bigint,text,uuid,uuid),
 	public.qorpera_create_shared_session(uuid,text,text,uuid),
 	public.qorpera_create_shared_session_v2(uuid,uuid,text,text,uuid),
-	public.qorpera_create_shared_session_v3(uuid,uuid,text,text,uuid,jsonb),
 	public.qorpera_cancel_runner_job(uuid),public.qorpera_cancel_session_run(uuid,uuid) to authenticated;
 
 -- Neither a retained run nor its conversation is a live membership grant.

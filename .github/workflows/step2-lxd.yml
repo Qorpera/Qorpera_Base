@@ -28,6 +28,9 @@ on:
       - 'packages/shell/test/lxd-runner-*.test.ts'
       - 'scripts/package-lxd-*.mjs'
       - 'scripts/package-lxd-*.test.mjs'
+      - 'scripts/generate-lxd-guest-source-manifest.mjs'
+      - 'scripts/generate-cloud-runtime-bundle*.mjs'
+      - 'packages/shell/src/cloud-runtime-bundle.generated.ts'
       - 'supabase/functions/company-file-verifier/company-file-verifier.ts'
       - 'supabase/functions/company-file-verifier/company-file-verifier.test.ts'
       - 'supabase/functions/company-file-verifier/object-loader.ts'
@@ -97,6 +100,10 @@ jobs:
           scripts/package-lxd-provider.test.mjs
           scripts/package-lxd-runner-guest.test.mjs
           scripts/package-runner-orchestrator.test.mjs
+          scripts/generate-cloud-runtime-bundle.test.mjs
+
+      - name: Verify current source package manifest
+        run: node scripts/generate-lxd-guest-source-manifest.mjs --check
 
       - name: Test acceptance storage and verifier contracts
         run: >-
