@@ -52,10 +52,11 @@ test("pins every packaged entrypoint and detects code, generated-output and arti
 		assert.equal(initial.sha256, createHash("sha256").update(initial.text).digest("hex"));
 		assert.deepEqual(initial.manifest.modelPolicy, { schema: "qorpera.model-reasoning/v1", effort: "low", overrides: "none" });
 		for (const path of Object.values(CLOUD_RUNTIME_ENTRY_POINTS)) assert.match(initial.manifest.implementation[path], /^[0-9a-f]{64}$/);
-		assert.equal(Object.keys(initial.manifest.implementation).some((path) => path.includes("20260828020000_")), false);
+		assert.match(initial.manifest.implementation["supabase/migrations/20260828020000_runtime_wake_bus.sql"], /^[0-9a-f]{64}$/);
 		assert.equal((await generateCloudRuntimeBundle(true, fixture)).sha256, initial.sha256);
-		await writeFile(join(fixture, "supabase/migrations/20260828020000_runtime_wake_bus.sql"), "-- Isolated synthetic Step 3 handoff.\n");
-		assert.equal((await generateCloudRuntimeBundle(true, fixture)).sha256, initial.sha256);
+		await writeFile(join(fixture, "supabase/migrations/20260828020000_runtime_wake_bus.sql"), "-- Synthetic wake-bus drift.\n");
+		await assert.rejects(generateCloudRuntimeBundle(true, fixture), /Runtime bundle is stale/);
+		await generateCloudRuntimeBundle(false, fixture);
 
 		// This helper runs in another process; it is not a transitive import.
 		const helper = join(fixture, "packages/shell/src/cloud-native-isolation-child.ts");

@@ -106,7 +106,7 @@ export interface CloudWakeEnvelope {
 	readonly schema: typeof CLOUD_WAKE_SCHEMA;
 	readonly id: string;
 	readonly runId: string;
-	readonly kind: Exclude<CloudWakeKind, "room">;
+	readonly kind: CloudWakeKind;
 	readonly companyId: string;
 	readonly environmentId: string;
 	readonly staffAgentId: string;
@@ -115,7 +115,7 @@ export interface CloudWakeEnvelope {
 	readonly actorUserId: string | null;
 	readonly audience: Readonly<{ kind: "company" | "member_private"; userId: string | null; sessionId: string | null }>;
 	readonly source: Readonly<{
-		kind: "input" | "schedule" | "company-file" | "coworker";
+		kind: "input" | "schedule" | "company-file" | "coworker" | "room";
 		id: string;
 		occurrenceKey: string;
 	}>;

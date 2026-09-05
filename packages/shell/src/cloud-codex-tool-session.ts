@@ -6,6 +6,12 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { JsonValue } from "@qorpera/contracts";
+import {
+	type NativeRuntimeFailureStage,
+	type NativeRuntimeUsageSignal,
+	nativeRuntimeUsageSignal,
+	tagNativeRuntimeFailure,
+} from "./cloud-native-failure.ts";
 import { launchIsolatedNativeProcess, type NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import {
 	CLOUD_NATIVE_RESULT_FENCE_SCHEMA,
@@ -18,6 +24,7 @@ import {
 	type CloudNativeToolBoundary,
 } from "./cloud-native-tool-boundary.ts";
 import {
+	CloudRuntimeDiagnosticError,
 	type CloudRuntimeErrorCategory,
 	type CloudRuntimeObservability,
 	type CloudRuntimeObservationSpan,
@@ -190,6 +197,7 @@ class CodexBoundaryRpc {
 	#turnObservation?: CloudRuntimeObservationSpan;
 	#failureCategory: CloudRuntimeErrorCategory = "unknown";
 	#providerErrorCategory?: CloudRuntimeErrorCategory;
+	#providerUsageSignal: NativeRuntimeUsageSignal | null = null;
 	readonly #pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
 	readonly #requestIds = new Set<string>();
 	readonly #decoder = new StringDecoder("utf8");
@@ -257,6 +265,12 @@ class CodexBoundaryRpc {
 	}
 	get fencedRequests(): number {
 		return this.#modelRequests.size;
+	}
+	get failureCategory(): CloudRuntimeErrorCategory {
+		return this.#failureCategory;
+	}
+	get usageSignal(): NativeRuntimeUsageSignal | null {
+		return this.#providerUsageSignal;
 	}
 	assertCompleted(): void {
 		if (this.#failure) throw this.#failure;
@@ -365,7 +379,7 @@ class CodexBoundaryRpc {
 
 	fail(message: string, category: CloudRuntimeErrorCategory = "unknown"): void {
 		if (this.#failure || this.#closed) return;
-		this.#failure = new Error(message);
+		this.#failure = new CloudRuntimeDiagnosticError(category, message);
 		this.#failureCategory = category;
 		this.#boundary.close();
 		for (const pending of this.#pending.values()) pending.reject(this.#failure);
@@ -428,7 +442,7 @@ class CodexBoundaryRpc {
 	}
 
 	#observeDiagnostic(method: string, value: unknown): void {
-		if (!this.#turnObservation || this.#finished || !this.#threadId || !this.#turnId) return;
+		if (this.#finished || !this.#threadId || !this.#turnId) return;
 		try {
 			const params = object(value);
 			if (params.threadId !== this.#threadId || params.turnId !== this.#turnId) return;
@@ -436,9 +450,13 @@ class CodexBoundaryRpc {
 				if (typeof params.willRetry !== "boolean") return;
 				const category = nativeErrorCategory(object(params.error).codexErrorInfo);
 				// A retry hint is not an HTTP attempt or a terminal turn outcome.
-				if (category && !params.willRetry) this.#providerErrorCategory = category;
+				if (category && !params.willRetry) {
+					this.#providerErrorCategory = category;
+					this.#providerUsageSignal = nativeRuntimeUsageSignal(object(params.error).codexErrorInfo);
+				}
 				return;
 			}
+			if (!this.#turnObservation) return;
 			const usage = object(params.tokenUsage);
 			if (
 				Object.keys(usage).sort().join() !== "last,modelContextWindow,total" ||
@@ -481,7 +499,7 @@ class CodexBoundaryRpc {
 			this.#pending.delete(message.id);
 			if (message.error !== undefined) {
 				this.#failureCategory = "provider_failed";
-				pending.reject(new Error("Native boundary request rejected"));
+				pending.reject(new CloudRuntimeDiagnosticError("provider_failed", "Native boundary request rejected"));
 			} else if (Object.hasOwn(message, "result")) pending.resolve(message.result);
 			else throw new Error("Missing native response");
 			return;
@@ -563,6 +581,12 @@ class CodexBoundaryRpc {
 					turn.error && typeof turn.error === "object" && !Array.isArray(turn.error)
 						? (turn.error as Record<string, unknown>)
 						: undefined;
+				this.#providerUsageSignal =
+					turn.status === "interrupted"
+						? null
+						: error?.codexErrorInfo === undefined
+							? this.#providerUsageSignal
+							: nativeRuntimeUsageSignal(error.codexErrorInfo);
 				this.fail(
 					"Native boundary turn did not complete",
 					turn.status === "interrupted"
@@ -652,6 +676,7 @@ export async function runCloudCodexToolSession(options: {
 	let rpc: CodexBoundaryRpc | undefined;
 	let fence: Awaited<ReturnType<typeof startCloudNativeResultFence>> | undefined;
 	let fenceFailed = false;
+	let stage: NativeRuntimeFailureStage = "codex-artifact";
 	const abort = (): void => {
 		rpc?.fail("Native boundary execution stopped");
 	};
@@ -665,6 +690,7 @@ export async function runCloudCodexToolSession(options: {
 		const hash = createHash("sha256");
 		for await (const chunk of createReadStream(command, { signal })) hash.update(chunk);
 		if (hash.digest("hex") !== options.binarySha256) throw new Error("Native boundary artifact mismatch");
+		stage = "codex-identity";
 		if (options.identityRoot && !isAbsolute(options.identityRoot))
 			throw new Error("Invalid native identity directory");
 		const codexHome = join(options.identityRoot ?? root, "codex");
@@ -682,6 +708,7 @@ export async function runCloudCodexToolSession(options: {
 			),
 		);
 		signal.throwIfAborted();
+		stage = "codex-result-fence";
 		fence = await startCloudNativeResultFence({
 			root,
 			boundary: options.boundary,
@@ -707,6 +734,7 @@ export async function runCloudCodexToolSession(options: {
 			"stdio://",
 			...CLOUD_CODEX_BOUNDARY_CONFIG.flatMap((config) => ["-c", config]),
 		];
+		stage = "codex-process-start";
 		if (options.isolation) {
 			isolated = await launchIsolatedNativeProcess({
 				configuration: options.isolation,
@@ -738,6 +766,7 @@ export async function runCloudCodexToolSession(options: {
 		if (fenceFailed) rpc.fail("Native result boundary unavailable", "authority_unavailable");
 		signal.addEventListener("abort", abort, { once: true });
 		if (signal.aborted) abort();
+		stage = "codex-initialize";
 		const initialized = object(
 			await rpc.request("initialize", {
 				clientInfo: { name: CLIENT_NAME, version: "1" },
@@ -753,7 +782,9 @@ export async function runCloudCodexToolSession(options: {
 		if (!initialized.userAgent.endsWith(` ${CLOUD_NATIVE_RESULT_FENCE_SCHEMA} ${DIRECT_TOOLS_CAPABILITY}`))
 			throw new Error("Native boundary requires governed direct tools");
 		rpc.initialized();
+		stage = "codex-configuration";
 		verifyConfiguration(await rpc.request("config/read", { includeLayers: false, cwd: workspace }), effort);
+		stage = "codex-skills";
 		const skills = object(await rpc.request("skills/list", { cwds: [workspace], forceReload: true }));
 		if (!Array.isArray(skills.data) || skills.data.length !== 1)
 			throw new Error("Native skill catalog could not be verified");
@@ -765,8 +796,10 @@ export async function runCloudCodexToolSession(options: {
 			catalog.errors.length !== 0
 		)
 			throw new Error("Native boundary requires an empty provider skill catalog");
+		stage = "execution-admission";
 		await options.beforeModelStart?.(signal);
 		signal.throwIfAborted();
+		stage = "codex-thread-start";
 		rpc.startThread();
 		const started = object(
 			await rpc.request("thread/start", {
@@ -786,6 +819,7 @@ export async function runCloudCodexToolSession(options: {
 		);
 		const threadId = identifier(object(started.thread).id);
 		rpc.bindThread(threadId);
+		stage = "codex-turn-start";
 		rpc.startTurn();
 		rpc.observeTurnStart(Buffer.byteLength(options.prompt));
 		const turnRequest = rpc.request("turn/start", {
@@ -798,6 +832,7 @@ export async function runCloudCodexToolSession(options: {
 		});
 		const turnStarted = object(await turnRequest);
 		rpc.confirmTurn(object(turnStarted.turn).id);
+		stage = "codex-turn-completion";
 		await rpc.completed;
 		rpc.assertCompleted();
 		signal.throwIfAborted();
@@ -810,8 +845,18 @@ export async function runCloudCodexToolSession(options: {
 		};
 	} catch (error) {
 		rpc?.finishObservations(false, signal);
-		if (signal.aborted) throw new Error("Native boundary execution stopped");
-		throw error;
+		if (signal.aborted)
+			throw tagNativeRuntimeFailure(
+				new Error("Native boundary execution stopped"),
+				stage,
+				cloudRuntimeErrorCategory(error, signal),
+			);
+		throw tagNativeRuntimeFailure(
+			error,
+			stage,
+			rpc && rpc.failureCategory !== "unknown" ? rpc.failureCategory : cloudRuntimeErrorCategory(error),
+			rpc?.usageSignal ?? null,
+		);
 	} finally {
 		signal.removeEventListener("abort", abort);
 		rpc?.close();

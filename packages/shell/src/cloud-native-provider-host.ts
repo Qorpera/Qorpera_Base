@@ -13,6 +13,7 @@ import {
 	type CloudAgentSendInput,
 	type CloudAgentSendReceipt,
 } from "./cloud-agent-mouth.ts";
+import { nativeRuntimeFailureMetadata } from "./cloud-native-failure.ts";
 import { launchIsolatedNativeProcess, type NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 
 const CAPSULE_SCHEMA = "qorpera.native-credential-capsule/v1";
@@ -487,7 +488,10 @@ function harnessExecutionFailureCategory(error: unknown): string {
 
 function safeHarnessExecutionFailure(error: unknown, mouthState: CloudAgentMouth["diagnosticState"]): Error {
 	let message: string;
-	if (
+	const metadata = nativeRuntimeFailureMetadata(error);
+	if (metadata) {
+		message = `Native provider execution failed (stage=${metadata.stage}, category=${metadata.category})`;
+	} else if (
 		error instanceof Error &&
 		(/^Provider harness exited with [A-Za-z0-9_-]{1,32}(?: \((?:authentication|model|provider allowance|provider capacity|provider context|provider network|provider policy|local sandbox|provider request|provider authorization|provider tool schema|harness configuration|harness internal|public message transport) unavailable\))?$/.test(
 			error.message,
@@ -593,6 +597,8 @@ export type NativeProviderUsageSignal = "usage_limit" | "rate_limited" | "provid
  * failure is not a usage signal.
  */
 export function nativeProviderUsageSignal(error: unknown): NativeProviderUsageSignal | undefined {
+	const metadata = nativeRuntimeFailureMetadata(error);
+	if (metadata) return metadata.usageSignal ?? undefined;
 	let current: unknown = error;
 	for (let depth = 0; depth < 8 && current instanceof Error; depth += 1) {
 		const match = /\((provider allowance|provider capacity|provider network) unavailable\)/.exec(current.message);

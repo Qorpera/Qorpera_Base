@@ -156,7 +156,7 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 			"utf-8",
 		);
 		const candidateEncoded = await readFile(
-			join(repositoryRoot, "deploy/first-node/native-codex/guest-package-manifest.json"),
+			join(repositoryRoot, "deploy/first-node/native-codex/v56-guest-package-manifest.json"),
 			"utf-8",
 		);
 		const candidate = JSON.parse(candidateEncoded);
@@ -195,9 +195,15 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 		assert.ok(acceptance.includes(`EXPECTED_NATIVE_PROVIDER_HOST_SHA256="${candidate.artifacts.find((item) => item.file === "qorpera-native-provider-host.mjs").sha256}"`));
 		assert.ok(acceptance.includes(`EXPECTED_NATIVE_COMPANY_SERVICE_SHA256="${candidate.artifacts.find((item) => item.file === "qorpera-native-company-host.service").sha256}"`));
 		assert.ok(acceptance.includes(`EXPECTED_RUNNER_BOOTSTRAP_SHA256="${candidate.artifacts.find((item) => item.file === "qorpera-lxd-runner-bootstrap.mjs").sha256}"`));
+		// These recipes are the frozen v56 release, whose original manifest is
+		// retained by its archive hash. Current runtime bytes have their own pin.
+		const currentCandidate = JSON.parse(await readFile(
+			join(repositoryRoot, "deploy/first-node/native-codex/guest-package-manifest.json"), "utf-8",
+		));
+		assert.deepEqual(currentCandidate.nativeCompany, candidate.nativeCompany);
 		if (process.platform === "linux" && process.arch === "x64") {
-			const { nativeCompany: _nativeCompany, ...withoutNative } = candidate;
-			withoutNative.artifacts = candidate.artifacts.filter((item) => !item.file.startsWith("native-company/"));
+			const { nativeCompany: _nativeCompany, ...withoutNative } = currentCandidate;
+			withoutNative.artifacts = currentCandidate.artifacts.filter((item) => !item.file.startsWith("native-company/"));
 			assert.deepEqual(
 				withoutNative,
 				manifest,

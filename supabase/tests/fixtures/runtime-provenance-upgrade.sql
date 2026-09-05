@@ -1,5 +1,5 @@
 -- The driver clones the pre-19700 database and admits a real native v1 run
--- before applying 19700--19900. No producer or authority helper is substituted.
+-- before applying the remaining migration chain. No producer or authority helper is substituted.
 begin;
 set local "request.jwt.claims" = '{"role":"service_role"}';
 do $$
@@ -18,7 +18,9 @@ begin
 		raise exception 'Upgrade invented the effort of historical work'; end if;
 	if not exists(select 1 from public.qorpera_runtime_bundles where id = v_run.runtime_bundle_id and version = 1)
 		or not exists(select 1 from public.qorpera_active_runtime_bundle active
-			join public.qorpera_runtime_bundles bundle on bundle.id = active.runtime_bundle_id where bundle.version = 2) then
+			join public.qorpera_runtime_bundles bundle on bundle.id = active.runtime_bundle_id
+				and bundle.sha256 = active.runtime_bundle_sha256
+			where bundle.sha256 = current_setting('qorpera_test.expected_runtime_bundle') and bundle.version > 1) then
 		raise exception 'Upgrade lost the old bundle or failed to activate the new one'; end if;
 	set local role service_role;
 	begin

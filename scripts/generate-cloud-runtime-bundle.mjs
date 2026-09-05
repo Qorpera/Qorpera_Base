@@ -7,9 +7,9 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/shell/src/cloud-runtime-
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/shell/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260828030100_runtime_bundle_activation_v5.sql";
-const activationVersion = 5;
-const previousActivationVersion = 2;
+const activation = "supabase/migrations/20260905000300_runtime_bundle_activation_v6.sql";
+const activationVersion = 6;
+const previousActivationVersion = 5;
 const manifestPath = "deploy/first-node/native-codex/runtime-bundle-manifest.json";
 const sha = (text) => createHash("sha256").update(text).digest("hex");
 
@@ -78,8 +78,6 @@ export async function cloudRuntimeBundle(root = repository) {
 	for (const path of Object.values(CLOUD_RUNTIME_ENTRY_POINTS)) await include(path);
 	for (const name of ["cloud-secret-broker-service-main.ts", "cloud-runtime-policy.ts"]) await include(`packages/shell/src/${name}`);
 	for (const name of (await readdir(join(root, "supabase/migrations"))).filter((name) => name.endsWith(".sql")).sort()) {
-		// Step 3 has a separate reviewed handoff. It is not part of this runtime.
-		if (name.startsWith("20260828020000_")) continue;
 		await include(`supabase/migrations/${name}`);
 	}
 	for (const name of (await readdir(join(root, "deploy/lxd-runner-guest"))).filter((name) => /\.(service|sh|json)$/.test(name)).sort()) {
@@ -115,8 +113,8 @@ export async function cloudRuntimeBundle(root = repository) {
 		components: {
 			kernel: component(shell(["cloud-native-company-runtime", "cloud-native-run-tool-session"])),
 			constitution: component(shell(["cloud-native-company-context", "cloud-agent-mouth", "cloud-native-tool-boundary"])),
-			toolCatalog: component(shell(["cloud-company-path-gateway", "cloud-secret-tools", "cloud-native-company-runtime"])),
-			wakeAndSilence: component(shell(["cloud-native-company-runtime", "cloud-agent-mouth"])),
+			toolCatalog: component(shell(["cloud-company-path-gateway", "cloud-secret-tools", "cloud-native-company-runtime", "cloud-wake-bus", "cloud-responsibility-tools"])),
+			wakeAndSilence: component(shell(["cloud-native-company-runtime", "cloud-agent-mouth", "cloud-wake-bus", "cloud-responsibility-tools"])),
 			contextComposer: component(shell(["cloud-native-company-context", "cloud-company-path-gateway"])),
 			providerBootstrap: component(shell(["cloud-codex-tool-session", "cloud-native-provider-host", "lxd-runner-bootstrap-main"])),
 			authorization: component([...files.keys()].filter((path) => path.startsWith("supabase/migrations/"))),

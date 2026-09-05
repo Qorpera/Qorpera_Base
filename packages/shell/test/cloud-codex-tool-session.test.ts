@@ -5,7 +5,9 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { CLOUD_CODEX_BOUNDARY_CONFIG, runCloudCodexToolSession } from "../src/cloud-codex-tool-session.ts";
+import { nativeRuntimeFailureMetadata } from "../src/cloud-native-failure.ts";
 import * as nativeIsolation from "../src/cloud-native-isolation.ts";
+import { nativeProviderUsageSignal } from "../src/cloud-native-provider-host.ts";
 import { type CloudNativeTool, CloudNativeToolBoundary } from "../src/cloud-native-tool-boundary.ts";
 import { CloudRuntimeObservability, type CloudRuntimeObservation } from "../src/cloud-runtime-observability.ts";
 
@@ -166,6 +168,31 @@ it("does not return success while a tool call is pending", async () => {
 
 it("keeps native failures private", async () => {
 	await expect(run("failed-turn").result).rejects.toThrow("Native boundary turn did not complete");
+});
+
+it.each([
+	["terminal-error-notice", "usage_limit"],
+	["terminal-rate-error", "rate_limited"],
+	["terminal-http-error", "provider_outage"],
+	["terminal-context-error", undefined],
+	["diagnostic-binding", undefined],
+	["unknown-error-notice", undefined],
+])("retains a typed usage signal without an optional observer: %s", async (mode, signal) => {
+	const error = await run(mode).result.catch((failure: unknown) => failure);
+	expect(error).toBeInstanceOf(Error);
+	expect(nativeProviderUsageSignal(error)).toBe(signal);
+	expect(nativeRuntimeFailureMetadata(error)).toMatchObject({ usageSignal: signal ?? null });
+	expect(JSON.stringify(nativeRuntimeFailureMetadata(error))).not.toMatch(/PRIVATE_|thread_fixture|turn_fixture/);
+});
+
+it.each([
+	["missing-direct-tools", "codex-initialize"],
+	["unsafe-config", "codex-configuration"],
+	["extra-skills", "codex-skills"],
+	["turn-request-rejected", "codex-turn-start"],
+])("retains the failing native startup phase without provider text: %s", async (mode, stage) => {
+	const error = await run(mode).result.catch((failure: unknown) => failure);
+	expect(nativeRuntimeFailureMetadata(error)).toMatchObject({ stage, usageSignal: null });
 });
 
 it("rejects native approval callbacks instead of forwarding them as a human approval", async () => {

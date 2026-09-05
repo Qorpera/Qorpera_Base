@@ -7,6 +7,7 @@ import {
 	composeCloudNativeCompanyPrompt,
 	parseCloudNativeCompanyContext,
 } from "./cloud-native-company-context.ts";
+import { type NativeRuntimeFailureStage, tagNativeRuntimeFailure } from "./cloud-native-failure.ts";
 import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import {
 	type NativeCloudExecutionDriver,
@@ -24,6 +25,7 @@ import {
 import { type CloudNativeTool, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperationControlPlane } from "./cloud-native-tool-operations.ts";
 import type { CloudContentAddressedStore } from "./cloud-object-store.ts";
+import { cloudResponsibilityTools } from "./cloud-responsibility-tools.ts";
 import { assertCloudRuntimeBundle } from "./cloud-runtime-bundle.ts";
 import {
 	assertCloudRuntimeObservationReceipt,
@@ -106,6 +108,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			},
 		});
 		const composition = observability.start("company_context");
+		let stage: NativeRuntimeFailureStage = "company-context";
 		try {
 			const context = parseCloudNativeCompanyContext(
 				await cloudToolRequest(
@@ -115,9 +118,11 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				),
 				binding,
 			);
+			stage = "bundle-compatibility";
 			assertCloudRuntimeBundle(context.identity, this.#sha256);
 			// Every activation enters through the wake bus (contract 8): the admitted
 			// occurrence's typed envelope and kernel-owned reply policy, never a job flag.
+			stage = "wake-envelope";
 			const wake = parseCloudWakeEnvelope(
 				await cloudToolRequest(
 					(requestSignal) => this.#paths.call("qorpera_read_native_wake", { p_binding: binding }, requestSignal),
@@ -128,9 +133,11 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			const wakeControl: CloudWakeControl = {
 				call: (method, argumentsValue, requestSignal) => this.#paths.call(method, argumentsValue, requestSignal),
 			};
+			stage = "connector-tools";
 			const connectorDescriptors = this.#secretBroker
 				? await describeCloudSecretTools(this.#paths, binding, signal)
 				: [];
+			stage = "prompt-composition";
 			const prompt = composeCloudNativeCompanyPrompt(context, wake);
 			composition.finish("succeeded", { outputBytes: Buffer.byteLength(prompt) });
 			const contextSha256 = createHash("sha256").update(prompt).digest("hex");
@@ -185,6 +192,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				},
 			};
 			try {
+				stage = "native-tools";
 				const result = await runCloudNativeRunToolSession({
 					observability,
 					binding,
@@ -257,6 +265,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 										})
 									: []),
 								cloudCoworkerMessageTool(binding, identity, wakeControl),
+								...cloudResponsibilityTools(binding, identity, this.#paths),
 								...(identity.sessionId && wake.policy.final !== "forbidden" ? [send] : []),
 							],
 							assertContext: (requestSignal) => gateway.assertReadableContext(requestSignal),
@@ -265,6 +274,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						};
 					},
 				});
+				stage = "public-completion";
 				return {
 					providerSessionId: result.providerSessionId,
 					delivery: await mouth.finish(wake.policy.final === "required"),
@@ -275,7 +285,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		} catch (error) {
 			composition.finish("failed", { errorCategory: cloudRuntimeErrorCategory(error, signal) });
 			await this.#recordUsageSignal(binding, error);
-			throw error;
+			throw tagNativeRuntimeFailure(error, stage, cloudRuntimeErrorCategory(error, signal));
 		} finally {
 			await observability.close();
 		}

@@ -74,7 +74,40 @@ try {
 	const privateSetup = nativeSetup.replace(privateMarker, () => `
 		update public.qorpera_shared_sessions set audience_kind='member_private',audience_user_id='29000000-0000-4000-8000-000000000001'
 		where id='29000000-0000-4000-8000-000000000040';
-		${privateMarker}`);
+			${privateMarker}`);
+	const grantMarker = "-- No default employee access, even for an owner-sponsored native turn.";
+	assert.equal(fixture.split(grantMarker).length, 2, "Grant denial setup marker must be unique");
+	// Step 3 creates ordinary, revocable default read grants. Revoke this
+	// fixture agent's default before exercising the existing no-grant cases.
+	// Historical pre-upgrade admission above retains its original setup.
+	const currentGrantSetup = `
+		update public.qorpera_company_path_grants grant_row set revoked_at=clock_timestamp()
+		from public.qorpera_company_path_resources resource
+		where grant_row.resource_id=resource.id and resource.environment_id='29000000-0000-4000-8000-000000000020'
+			and grant_row.principal_kind='staff_agent' and grant_row.principal_id='29000000-0000-4000-8000-000000000030'
+			and grant_row.origin='default_agent_read' and grant_row.revoked_at is null;
+		${grantMarker}`;
+	const acknowledge = `
+		create function pg_temp.path_ack(p_binding jsonb) returns jsonb language sql as $$
+			select public.qorpera_send_native_agent_message((p_binding->>'leaseId')::uuid,(p_binding->>'runId')::uuid,
+				(p_binding->>'jobId')::uuid,(p_binding->>'runnerId')::uuid,(p_binding->>'assignmentId')::uuid,
+				(p_binding->>'credentialCapsuleId')::uuid,(p_binding->>'computeIdentityId')::uuid,
+				'openai','codex-cli','provenance-ack','Checking the authorized company state.','progress')
+		$$;
+		set local role service_role;
+		select pg_temp.path_ack(current_setting('qorpera_test.path_binding')::jsonb);
+		reset role;
+	`;
+	let currentFixture = fixture.replace(grantMarker, () => currentGrantSetup)
+		.replace(admissionMarker, () => `${acknowledge}\n${admissionMarker}`);
+	const completionCount = "v_result := jsonb_set(v_result,'{backend_result,message_count}','1');";
+	const sendCount = "(select count(*) from public.qorpera_agent_sends where run_id = (v_binding ->> 'runId')::uuid) <> 1";
+	const nextTurnSend = "perform pg_temp.path_begin(v_binding);\n\tv_send := public.qorpera_send_native_agent_message";
+	for (const marker of [completionCount, sendCount, nextTurnSend]) assert.equal(currentFixture.split(marker).length, 2);
+	currentFixture = currentFixture.replace(completionCount, completionCount.replace("'1'", "'2'"))
+		.replace(sendCount, sendCount.replace("<> 1", "<> 2"))
+		.replace(nextTurnSend, "perform pg_temp.path_begin(v_binding);\n\tperform pg_temp.path_ack(v_binding);\n\tv_send := public.qorpera_send_native_agent_message");
+	const currentPrivateSetup = privateSetup.replace(grantMarker, () => currentGrantSetup) + acknowledge;
 	let upgradeReady = false;
 	let authorityReady = false;
 	for (const migration of migrations) {
@@ -147,7 +180,9 @@ try {
 		}
 	}
 	assert.equal(sql("select runtime_bundle_sha256 from public.qorpera_active_runtime_bundle;").trim(), bundle.sha256);
-	assert.deepEqual(JSON.parse(sql("select manifest from public.qorpera_runtime_bundles where version=2;").trim()), bundle.manifest);
+	assert.deepEqual(JSON.parse(sql(`select bundle.manifest from public.qorpera_runtime_bundles bundle
+		join public.qorpera_active_runtime_bundle active on active.runtime_bundle_id=bundle.id
+			and active.runtime_bundle_sha256=bundle.sha256;`).trim()), bundle.manifest);
 	console.log(`PASS: ${migrations.length} migrations, source/SQL manifest parity, split-owner retention grants`);
 	assert.equal(authorityReady, true);
 	assert.equal(docker(authorityPsql, `select grant_row.status='revoked' and secret.status='active'
@@ -191,20 +226,21 @@ try {
 	}
 	console.log("PASS: concurrent grant/capture issuance and member downgrade serialize without surviving authority");
 	assert.equal(upgradeReady, true);
-	docker(upgradePsql, readFileSync(join(root, "supabase/tests/fixtures/runtime-provenance-upgrade.sql"), "utf8"));
+	docker(upgradePsql, `select set_config('qorpera_test.expected_runtime_bundle',${literal(bundle.sha256)},false);\n${
+		readFileSync(join(root, "supabase/tests/fixtures/runtime-provenance-upgrade.sql"), "utf8")}`);
 	console.log("PASS: historical private v1 run/input preservation, unknown effort retained, incompatible execution denied, member removal");
 	for (const file of ["305_cloud_secret_custody.test.sql", "306_governed_company_computer_privileges.test.sql",
 		"307_cloud_secret_member_authority.test.sql", "310_company_organization_kernel.test.sql", "315_runtime_step0_staff_lifecycle.test.sql"]) {
 		sql(readFileSync(join(root, "supabase/tests", file), "utf8"));
 		console.log(`PASS: ${file}`);
 	}
-	sql(`${privateSetup}\n${readFileSync(join(root, "supabase/tests/fixtures/runtime-audience-cases.sql"), "utf8")}`);
+	sql(`${currentPrivateSetup}\n${readFileSync(join(root, "supabase/tests/fixtures/runtime-audience-cases.sql"), "utf8")}`);
 	console.log("PASS: private native reads, explicit publication consent, private draft visibility, membership removal and preserved history");
 	const marker = "-- Human content reads bind a current path/version";
 	assert.equal(fixture.split(marker).length, 2, "Real path fixture integration marker must be unique");
 	const cases = readFileSync(join(root, "supabase/tests/fixtures/runtime-provenance-cases.sql"), "utf8");
 	assert.match(fixture, /rollback;\s*$/i);
-	sql(fixture.replace(marker, () => `${cases}\n${marker}`).replace(/rollback;\s*$/i, `
+	sql(currentFixture.replace(marker, () => `${cases}\n${marker}`).replace(/rollback;\s*$/i, `
 		create table public.qorpera_test_provenance_binding as select current_setting('qorpera_test.path_binding')::jsonb as binding;
 		commit;`));
 	console.log("PASS: real admission, incompatible-bundle/binary/effort rejection, exact reads, CAS, privacy, context views and completion");
