@@ -111,6 +111,16 @@ try {
 	let upgradeReady = false;
 	let authorityReady = false;
 	for (const migration of migrations) {
+		if (migration.startsWith("20260905000400_")) {
+			sql("create role runtime_timezone_validator_owner nologin;");
+			const owners = `grant usage on schema public to runtime_timezone_validator_owner;
+				grant execute on all functions in schema public to runtime_timezone_validator_owner;
+				alter function public.qorpera_cloud_routine_trigger_valid(jsonb) owner to runtime_timezone_validator_owner;
+				alter function public.qorpera_cloud_routine_trigger_before_wake_bus(jsonb) owner to runtime_timezone_validator_owner;`;
+			sql(owners);
+			docker(upgradePsql, owners);
+			docker(authorityPsql, owners);
+		}
 		if (migration.startsWith("20260828018200_")) {
 			docker(["exec", container, "createdb", "-U", "postgres", "-T", "qorpera_test", "qorpera_upgrade_authority"]);
 			const authorityFixture = readFileSync(join(root, "supabase/tests/307_cloud_secret_member_authority.test.sql"), "utf8");
@@ -230,7 +240,8 @@ try {
 		readFileSync(join(root, "supabase/tests/fixtures/runtime-provenance-upgrade.sql"), "utf8")}`);
 	console.log("PASS: historical private v1 run/input preservation, unknown effort retained, incompatible execution denied, member removal");
 	for (const file of ["305_cloud_secret_custody.test.sql", "306_governed_company_computer_privileges.test.sql",
-		"307_cloud_secret_member_authority.test.sql", "310_company_organization_kernel.test.sql", "315_runtime_step0_staff_lifecycle.test.sql"]) {
+		"307_cloud_secret_member_authority.test.sql", "310_company_organization_kernel.test.sql", "315_runtime_step0_staff_lifecycle.test.sql",
+		"325_runtime_time_zone_catalog.test.sql"]) {
 		sql(readFileSync(join(root, "supabase/tests", file), "utf8"));
 		console.log(`PASS: ${file}`);
 	}

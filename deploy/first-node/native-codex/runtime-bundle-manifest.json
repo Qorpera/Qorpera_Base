@@ -13,7 +13,7 @@
     "wakeAndSilence": "aa697f24f43a537d8ff6bd03fbc924305b8da441d308a0d8b34daade354afa89",
     "contextComposer": "764ba384ee445d3f0ba4a7d67eee4a9c00afa3db1d528e240494d5e1b41d1c42",
     "providerBootstrap": "dd70ca30c25a67126778e6ec0d9e340baf2c99dbd2780fd7a4f2ee45b2bad18f",
-    "authorization": "e83dce2b3378926969d423241c6e66391a9534174f7edae694e3d62e8aeac5db",
+    "authorization": "9797235303d9a05c69be8a4fac4b4e65237335c956a0074f161a715ce773c84d",
     "inboundSafety": "28c4df95977e3a000cb9a207ddd0fce8d33d0a40e0ef374d3859ffa1d6a4d77f",
     "outboundSafety": "8bfffa5948808b3ea8a457433828c51dff9db903b6a092f31d5427b7a439dd1c",
     "interactionSurfaces": "a2b523e8e693e1a99a82c12e37d1206419d53b0a25b8986656b748ee7503364b",
@@ -107,7 +107,7 @@
     "packages/shell/src/lxd-runner-bootstrap-main.ts": "94fb6c6d97ef2deae6284f88a3e33f46705a5dd0da426328364a98f9ad63fc6c",
     "packages/shell/src/lxd-runner-bootstrap.ts": "2f263313bdce64266a8c3f647a9e543abc0852f203b180fa2c2ecb255f0359f0",
     "packages/shell/src/systemd-credential.ts": "1d3eb8038a369c58418cbd8248aecf457662cbb3430cc84847235c2222a82478",
-    "scripts/generate-cloud-runtime-bundle.mjs": "201522cf7ccb322545141c8fb9020cfc81bfaee509455d6be4b1460a84bbc938",
+    "scripts/generate-cloud-runtime-bundle.mjs": "2ea748212362b1bab55542448fd59d279e6579a480aea0b31ee21884d305e67e",
     "scripts/native-company-artifact.mjs": "e394bc799104f188769de07cd3be14e6c732a1a672113ea45d349a29d8e0ca63",
     "scripts/package-ephemeral-runner.mjs": "13fba93c7761b15b2a2b5d9476ae4329f0d25d28a66fe19c5cbf45c2ebb6ab37",
     "scripts/package-lxd-runner-guest.mjs": "7423dd928cce10413e8adb27caf171730acdbbabfdcff21f044f8687f51a0f9f",
@@ -234,6 +234,8 @@
     "supabase/migrations/20260828030100_runtime_bundle_activation_v5.sql": "8631505d0cf88ff5fb084e446eddce48fc100ab165f80478e8bb5ced65f16ce8",
     "supabase/migrations/20260905000100_company_file_verification_closure_set.sql": "13e45bfff8f80817b811e60ea87c60654e4e0f6f682a6291e03949e95feb2553",
     "supabase/migrations/20260905000200_responsibility_escalation_routing.sql": "0ad93806fa4305c77ca6b6ff48699d049daae453b4c91d485f76f22daba5c256",
-    "supabase/migrations/20260905000250_native_session_input_compute.sql": "858ed9a6eec350505bff7cabf6606075d4aff1f4edf491b1a59b46ec1b3eb0ef"
+    "supabase/migrations/20260905000250_native_session_input_compute.sql": "858ed9a6eec350505bff7cabf6606075d4aff1f4edf491b1a59b46ec1b3eb0ef",
+    "supabase/migrations/20260905000300_runtime_bundle_activation_v6.sql": "466de7a5aea894c023950b54449a2486f2b6f5e29a7a01492c0b0013af85db93",
+    "supabase/migrations/20260905000400_runtime_time_zone_catalog.sql": "008494d7674e93f63a528cfc0fcb208f02adab43589f4831b83fcd699c735bde"
   }
 }
