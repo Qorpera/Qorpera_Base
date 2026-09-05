@@ -9,9 +9,12 @@ import {
 } from "../../cloud/config.ts";
 import type { HostedAccountEntitlement } from "../../cloud/types.ts";
 import { badge, button, fmtBytes, h, notice, replace } from "../../ui/dom.ts";
+import { clearSubmittedDraft, preserveFormDrafts } from "../../ui/forms.ts";
 import { type AuthController, displayName } from "../auth.ts";
 
 export interface AccountViewState {
+	loading?: boolean;
+	loaded?: boolean;
 	entitlement?: HostedAccountEntitlement;
 	error?: string;
 	message?: string;
@@ -25,41 +28,44 @@ export function renderAccount(
 	setState: (next: AccountViewState) => void,
 ): void {
 	const user = auth.store.get().user;
-	if (!state.entitlement && !state.error) {
-		void api
-			.getAccountEntitlement()
-			.then((entitlement) => setState({ ...state, entitlement }))
-			.catch((error) => setState({ ...state, error: describeError(error) }));
-	}
+	const owner = `account:${user?.id}`;
+	const restoreDrafts = preserveFormDrafts(container, owner);
 	const override = readCloudConfigOverride();
 	const projectInput = h("input", {
 		type: "url",
 		placeholder: DEFAULT_CLOUD_CONFIG.projectUrl,
 		value: override?.projectUrl ?? "",
+		"data-draft": "project-url",
 	});
 	const keyInput = h("input", {
 		type: "text",
 		placeholder: "sb_publishable_…",
 		value: override?.publishableKey ?? "",
+		"data-draft": "project-key",
 	});
 	const gatewayInput = h("input", {
 		type: "url",
 		placeholder: DEFAULT_CLOUD_CONFIG.objectGatewayUrl,
 		value: override?.objectGatewayUrl ?? "",
+		"data-draft": "gateway-url",
 	});
 	const feedbackCategory = h(
 		"select",
-		null,
+		{ "data-draft": "feedback-category" },
 		...["bug", "bad-result", "good-result", "feature-request", "performance", "other"].map((category) =>
 			h("option", { value: category }, category),
 		),
 	);
-	const feedbackDetails = h("textarea", { rows: 3, placeholder: "What happened, what you expected." });
+	const feedbackDetails = h("textarea", {
+		rows: 3,
+		placeholder: "What happened, what you expected.",
+		"data-draft": "feedback-details",
+	});
 	replace(
 		container,
 		h(
 			"section",
-			{ class: "page account" },
+			{ class: "page account", "data-form-owner": owner },
 			h("h1", null, "Account"),
 			state.error ? notice("danger", state.error) : null,
 			state.message ? notice("ok", state.message) : null,
@@ -111,7 +117,7 @@ export function renderAccount(
 							),
 						),
 					)
-				: h("div", { class: "muted" }, "Loading…"),
+				: h("div", { class: "muted" }, state.loaded ? "Entitlement unavailable." : "Loading…"),
 			h("h2", null, "Feedback"),
 			h(
 				"form",
@@ -119,13 +125,14 @@ export function renderAccount(
 					class: "stack",
 					onsubmit: (event: Event) => {
 						event.preventDefault();
+						const submitted = feedbackDetails.value;
 						void api
 							.submitFeedback(crypto.randomUUID(), feedbackCategory.value, feedbackDetails.value.trim())
 							.then(() => {
-								feedbackDetails.value = "";
-								setState({ ...state, message: "Thanks. Your feedback reached the cloud.", error: undefined });
+								clearSubmittedDraft(container, owner, "feedback-details", submitted);
+								setState({ message: "Your feedback reached the cloud.", error: undefined });
 							})
-							.catch((error) => setState({ ...state, error: describeError(error) }));
+							.catch((error) => setState({ error: describeError(error) }));
 					},
 				},
 				h("div", { class: "row" }, feedbackCategory),
@@ -140,7 +147,7 @@ export function renderAccount(
 					"p",
 					{ class: "muted small" },
 					h("a", { href: "#/cloud-check" }, "Cloud check"),
-					" reports which member RPCs, Realtime topics and gateway routes this browser can reach.",
+					" checks member RPC signatures. It does not verify Realtime or object gateway access.",
 				),
 				h(
 					"p",
@@ -171,4 +178,5 @@ export function renderAccount(
 			),
 		),
 	);
+	restoreDrafts();
 }

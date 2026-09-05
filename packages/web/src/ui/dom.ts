@@ -190,12 +190,44 @@ export function companyLogo(seed: string, className = ""): HTMLElement {
 	return logo;
 }
 
-export function confirmDialog(message: string, confirmLabel: string, danger = false, typed?: string): Promise<boolean> {
+export function confirmDialog(
+	message: string,
+	confirmLabel: string,
+	danger = false,
+	typed?: string,
+	signal?: AbortSignal,
+): Promise<boolean> {
+	if (signal?.aborted) return Promise.resolve(false);
 	return new Promise((resolve) => {
 		let input: HTMLInputElement | undefined;
+		let closed = false;
+		const previousFocus = document.activeElement;
 		const close = (result: boolean) => {
+			if (closed) return;
+			closed = true;
 			dialog.remove();
+			signal?.removeEventListener("abort", cancel);
+			window.removeEventListener("hashchange", cancel);
+			document.removeEventListener("keydown", onKey);
+			if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
 			resolve(result);
+		};
+		const cancel = () => close(false);
+		const onKey = (event: KeyboardEvent) => {
+			if (event.key === "Escape") {
+				event.preventDefault();
+				cancel();
+			}
+			if (event.key !== "Tab") return;
+			const fields = [...dialog.querySelectorAll<HTMLElement>("button:not(:disabled), input")];
+			const next = event.shiftKey ? fields[fields.length - 1] : fields[0];
+			if (
+				!dialog.contains(document.activeElement) ||
+				document.activeElement === (event.shiftKey ? fields[0] : fields[fields.length - 1])
+			) {
+				event.preventDefault();
+				next?.focus();
+			}
 		};
 		const confirm = button(confirmLabel, () => close(true), { primary: !danger, danger, disabled: Boolean(typed) });
 		if (typed) {
@@ -224,6 +256,9 @@ export function confirmDialog(message: string, confirmLabel: string, danger = fa
 			),
 		);
 		document.body.appendChild(dialog);
+		signal?.addEventListener("abort", cancel, { once: true });
+		window.addEventListener("hashchange", cancel);
+		document.addEventListener("keydown", onKey);
 		(input ?? confirm).focus();
 	});
 }

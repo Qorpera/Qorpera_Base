@@ -1,7 +1,7 @@
 import type { User } from "@supabase/supabase-js";
 import type { HostedProfile, HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
-import { badge, companyLogo, h, icon, initials, replace } from "../../ui/dom.ts";
+import { badge, button, companyLogo, h, icon, initials, notice, replace } from "../../ui/dom.ts";
 import { type AuthController, displayName } from "../auth.ts";
 import type { CompanyController } from "../company.ts";
 import type { CompanySection, Route } from "../router.ts";
@@ -16,6 +16,7 @@ export interface ShellContext {
 	auth: AuthController;
 	/** Company invitations waiting for this account, for the menu's count. */
 	invitations: number;
+	navigation?: { open: boolean; toggle: () => void };
 }
 
 /* The account menu is one long-lived element: the top bar re-renders on every
@@ -119,6 +120,20 @@ export function renderTopbar(
 		company || context.route.name === "hub" ? null : h("a", { class: "topbar-home", href: "#/" }, "← Companies");
 	replace(
 		container,
+		context.navigation
+			? h(
+					"button",
+					{
+						type: "button",
+						class: "btn mobile-navigation-toggle",
+						"aria-label": "Company navigation",
+						"aria-controls": "company-navigation",
+						"aria-expanded": String(context.navigation.open),
+						onclick: context.navigation.toggle,
+					},
+					context.navigation.open ? "Close menu" : "Menu",
+				)
+			: null,
 		lead,
 		company && realtime && realtime !== "connected"
 			? badge(
@@ -142,27 +157,32 @@ export function renderTopbar(
  * not have yet, and a button that writes nowhere is worse than none. */
 
 /* The field outlives re-renders so typing never loses the caret. */
-let railSearch: HTMLInputElement | undefined;
-let railQuery = "";
+const railFields = new WeakMap<
+	CompanyController,
+	{ input: HTMLInputElement; query: string; redraw: () => void; switcherOpen: boolean }
+>();
 
-function searchField(onInput: () => void): HTMLInputElement {
-	if (!railSearch) {
-		railSearch = h("input", {
+function searchField(company: CompanyController, onInput: () => void) {
+	let field = railFields.get(company);
+	if (!field) {
+		const input = h("input", {
 			type: "search",
 			placeholder: "Search",
 			autocomplete: "off",
 			spellcheck: "false",
 			"aria-label": "Search agents",
-			oninput: () => {
-				railQuery = (railSearch?.value ?? "").trim().toLowerCase();
-				onInput();
-			},
 		});
+		field = { input, query: "", redraw: onInput, switcherOpen: false };
+		railFields.set(company, field);
 	}
-	return railSearch;
+	const current = field;
+	current.redraw = onInput;
+	current.input.oninput = () => {
+		current.query = current.input.value.trim().toLowerCase();
+		current.redraw();
+	};
+	return current;
 }
-
-let switcherOpen = false;
 
 function statusLine(company: CompanyController, agent: HostedStaffAgent | undefined): string {
 	const activity = company.activityFor(agent?.id);
@@ -182,7 +202,9 @@ export function renderRail(container: HTMLElement, company: CompanyController, r
 	const cofounderSessionId = state.organization?.cofounder.memberSessionId;
 	const section = route.name === "company" ? route.section : undefined;
 	const redraw = () => renderRail(container, company, route);
-	const search = searchField(redraw);
+	const field = searchField(company, redraw);
+	const search = field.input;
+	const railQuery = field.query;
 	const matches = (text: string) => !railQuery || text.toLowerCase().includes(railQuery);
 
 	const active = state.staff.filter((agent) => agent.employmentStatus === "active");
@@ -281,23 +303,23 @@ export function renderRail(container: HTMLElement, company: CompanyController, r
 				role: "menuitem",
 				href: `#/c/${profileId}/${target}`,
 				onclick: () => {
-					switcherOpen = false;
+					field.switcherOpen = false;
 				},
 			},
 			label,
 		);
 	const switcher = h(
 		"div",
-		{ class: ["rail-switcher", switcherOpen ? "is-open" : ""].join(" ") },
+		{ class: ["rail-switcher", field.switcherOpen ? "is-open" : ""].join(" ") },
 		h(
 			"button",
 			{
 				type: "button",
 				class: "switcher-trigger",
 				"aria-haspopup": "menu",
-				"aria-expanded": String(switcherOpen),
+				"aria-expanded": String(field.switcherOpen),
 				onclick: () => {
-					switcherOpen = !switcherOpen;
+					field.switcherOpen = !field.switcherOpen;
 					redraw();
 				},
 			},
@@ -311,7 +333,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, r
 		),
 		h(
 			"div",
-			{ class: "switcher-menu", role: "menu", hidden: !switcherOpen },
+			{ class: "switcher-menu", role: "menu", hidden: !field.switcherOpen },
 			menuItem("approvals", "Approvals"),
 			menuItem("file", "Company File"),
 			menuItem("organization", "Organization"),
@@ -324,7 +346,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, r
 					role: "menuitem",
 					href: "#/",
 					onclick: () => {
-						switcherOpen = false;
+						field.switcherOpen = false;
 					},
 				},
 				"All companies",
@@ -347,6 +369,20 @@ export function renderRail(container: HTMLElement, company: CompanyController, r
 		h(
 			"div",
 			{ class: "rail-scroll" },
+			state.sessionsError
+				? notice(
+						"danger",
+						state.sessionsError,
+						button("Retry conversations", () => void company.refreshSessions(), { small: true }),
+					)
+				: null,
+			state.error
+				? notice(
+						"danger",
+						state.error,
+						button("Retry company", () => void company.refreshAll(), { small: true }),
+					)
+				: null,
 			cofounderCard,
 			state.loading && !state.staff.length ? h("p", { class: "rail-empty" }, "Loading…") : null,
 			staffRows.length || sessionRows.length ? h("div", { class: "rail-list" }, ...staffRows, ...sessionRows) : null,

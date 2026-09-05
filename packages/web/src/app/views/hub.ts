@@ -1,7 +1,9 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
+import { UUID_PATTERN } from "../../cloud/parse.ts";
 import type { HostedIncomingProfileInvitation, HostedProfile } from "../../cloud/types.ts";
 import { button, companyLogo, fmtDate, h, notice, replace, spinner } from "../../ui/dom.ts";
+import { preserveFormDrafts } from "../../ui/forms.ts";
 import { navigate } from "../router.ts";
 import { Store } from "../state.ts";
 import { mountCrown } from "./crown.ts";
@@ -16,6 +18,7 @@ export interface HubState {
 	invitations: HostedIncomingProfileInvitation[];
 	error?: string;
 	creating?: { name: string; clientCreationId: string; state: string };
+	creationRetry?: { name: string; clientCreationId: string };
 	busyInvitation?: string;
 	/** The "New company" tile is open for typing. */
 	composing?: boolean;
@@ -24,12 +27,50 @@ export interface HubState {
 export class HubController {
 	readonly store = new Store<HubState>({ loading: true, profiles: [], invitations: [] });
 	readonly #api: CloudApi;
+	readonly #creationKey?: string;
+	#disposed = false;
+	#refresh: Promise<void> | undefined;
+	#creation: { name: string; clientCreationId: string } | undefined;
 
-	constructor(api: CloudApi) {
+	constructor(api: CloudApi, userId?: string) {
 		this.#api = api;
+		this.#creationKey = userId ? `qorpera-web-creation/v1/${api.cloud.config.projectUrl}/${userId}` : undefined;
+		try {
+			const saved: unknown = JSON.parse(
+				this.#creationKey ? (sessionStorage.getItem(this.#creationKey) ?? "null") : "null",
+			);
+			if (
+				saved &&
+				typeof saved === "object" &&
+				"name" in saved &&
+				"clientCreationId" in saved &&
+				typeof saved.name === "string" &&
+				saved.name.trim() &&
+				typeof saved.clientCreationId === "string" &&
+				UUID_PATTERN.test(saved.clientCreationId)
+			) {
+				this.#creation = { name: saved.name, clientCreationId: saved.clientCreationId };
+				this.store.set({ creationRetry: this.#creation });
+			}
+		} catch {
+			/* A blocked storage API must not block the company hub. */
+		}
 	}
 
-	async refresh(): Promise<void> {
+	dispose(): void {
+		this.#disposed = true;
+		this.store.dispose();
+	}
+
+	refresh(): Promise<void> {
+		if (this.#disposed) return Promise.resolve();
+		this.#refresh ??= this.#load().finally(() => {
+			this.#refresh = undefined;
+		});
+		return this.#refresh;
+	}
+
+	async #load(): Promise<void> {
 		this.store.set({ loading: true, error: undefined });
 		try {
 			const [profiles, invitations] = await Promise.all([
@@ -43,12 +84,15 @@ export class HubController {
 	}
 
 	async respondInvitation(invitation: HostedIncomingProfileInvitation, accept: boolean): Promise<void> {
+		if (this.#disposed || this.store.get().busyInvitation) return;
+		const route = location.hash;
 		this.store.set({ busyInvitation: invitation.id, error: undefined });
 		try {
 			if (accept) await this.#api.acceptInvitation(invitation.id);
 			else await this.#api.declineInvitation(invitation.id);
 			await this.refresh();
-			if (accept) navigate({ name: "company", profileId: invitation.profileId, section: "home" });
+			if (accept && !this.#disposed && location.hash === route)
+				navigate({ name: "company", profileId: invitation.profileId, section: "home" });
 		} catch (error) {
 			this.store.set({ error: describeError(error) });
 		} finally {
@@ -57,12 +101,25 @@ export class HubController {
 	}
 
 	async createCompany(name: string): Promise<void> {
+		if (this.#disposed || this.store.get().creating) return;
 		const trimmed = name.trim();
 		if (!trimmed) return;
-		const clientCreationId = crypto.randomUUID();
+		if (this.#creation && this.#creation.name !== trimmed) {
+			this.store.set({ error: "Resume the pending company creation before starting another." });
+			return;
+		}
+		const route = location.hash;
+		const clientCreationId = this.#creation?.clientCreationId ?? crypto.randomUUID();
+		this.#creation = { name: trimmed, clientCreationId };
+		try {
+			if (this.#creationKey) sessionStorage.setItem(this.#creationKey, JSON.stringify(this.#creation));
+		} catch {
+			/* Keep the in-memory operation when storage is unavailable. */
+		}
 		this.store.set({ creating: { name: trimmed, clientCreationId, state: "requested" }, error: undefined });
 		try {
 			let result = await this.#api.createCompany(clientCreationId, trimmed);
+			if (this.#disposed) return;
 			const started = Date.now();
 			// Clouds with the Order 0 bootstrap ledger report queued/leased until
 			// the Company File and Co-Founder are seeded; re-calling with the same
@@ -73,15 +130,26 @@ export class HubController {
 			) {
 				this.store.set({ creating: { name: trimmed, clientCreationId, state: result.bootstrapState } });
 				await new Promise((resolve) => setTimeout(resolve, 2000));
+				if (this.#disposed) return;
 				result = await this.#api.createCompany(clientCreationId, trimmed);
+				if (this.#disposed) return;
 			}
 			if (result.bootstrapState === "blocked")
 				throw new Error("The cloud could not provision the company's Company File.");
-			this.store.set({ creating: undefined });
+			if (result.bootstrapState === "queued" || result.bootstrapState === "leased")
+				throw new Error("The company is still being created. Resume to check its progress.");
+			this.#creation = undefined;
+			try {
+				if (this.#creationKey) sessionStorage.removeItem(this.#creationKey);
+			} catch {
+				/* The admitted company is also recoverable from the cloud list. */
+			}
+			this.store.set({ creating: undefined, creationRetry: undefined });
 			await this.refresh();
-			navigate({ name: "company", profileId: result.profile.profileId, section: "meet" });
+			if (!this.#disposed && location.hash === route)
+				navigate({ name: "company", profileId: result.profile.profileId, section: "meet" });
 		} catch (error) {
-			this.store.set({ creating: undefined, error: describeError(error) });
+			this.store.set({ creating: undefined, creationRetry: this.#creation, error: describeError(error) });
 		}
 	}
 }
@@ -120,6 +188,7 @@ function companyCard(profile: HostedProfile): HTMLElement {
 }
 
 export function renderHub(hub: HubController, container: HTMLElement): void {
+	const restoreDrafts = preserveFormDrafts(container, "hub");
 	const state = hub.store.get();
 	const busy = Boolean(state.creating);
 	// The welcome state is the first thing a new member sees: no companies, and
@@ -128,6 +197,7 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 	const invited = state.invitations.length > 0;
 	const nameInput = h("input", {
 		id: "newCompanyName",
+		"data-draft": "company-name",
 		type: "text",
 		placeholder: "Company name",
 		maxlength: 120,
@@ -165,7 +235,7 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 			container,
 			h(
 				"section",
-				{ class: "hub" },
+				{ class: "hub", "data-form-owner": "hub" },
 				h(
 					"div",
 					{ class: "hub-inner hub-welcome" },
@@ -189,12 +259,19 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 								h("button", { type: "submit", class: "hub-create-submit" }, "Create company"),
 							),
 					state.error ? notice("danger", state.error) : null,
+					state.creationRetry && !busy
+						? button(
+								`Resume creating ${state.creationRetry.name}`,
+								() => void hub.createCompany(state.creationRetry!.name),
+							)
+						: null,
 					invited || busy
 						? null
 						: h("p", { class: "hub-note" }, "Invited to a company? It appears here the moment someone adds you."),
 				),
 			),
 		);
+		restoreDrafts();
 		return;
 	}
 
@@ -230,11 +307,17 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 		container,
 		h(
 			"section",
-			{ class: "hub" },
+			{ class: "hub", "data-form-owner": "hub" },
 			h(
 				"div",
 				{ class: "hub-inner" },
 				state.error ? notice("danger", state.error) : null,
+				state.creationRetry && !busy
+					? button(
+							`Resume creating ${state.creationRetry.name}`,
+							() => void hub.createCompany(state.creationRetry!.name),
+						)
+					: null,
 				invited
 					? h(
 							"div",
@@ -250,4 +333,5 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 		),
 	);
 	if (state.composing && !busy) nameInput.focus();
+	restoreDrafts();
 }
