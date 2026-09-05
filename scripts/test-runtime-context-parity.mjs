@@ -39,6 +39,8 @@ try {
 	const component = readFileSync(join(root, "supabase/tests/300_runtime_wake_bus.test.sql"), "utf8");
 	assert.equal(component.split("-- END WAKE FIXTURE").length, 2);
 	const fixture = component.split("-- END WAKE FIXTURE")[0];
+	docker(psql, `${fixture}\n${readFileSync(join(root, "supabase/tests/fixtures/runtime-terminal-claim-cases.sql"), "utf8")}\nrollback;`);
+	console.log("PASS: expired claim assignment, renewal and replay reject terminally without admitting work");
 	docker(psql, `${fixture}\n${readFileSync(join(root, "supabase/tests/fixtures/runtime-file-closure-cases.sql"), "utf8")}\nrollback;`);
 	console.log("PASS: closure order reverified; changed membership, byte lengths and manifest metadata rejected");
 	const nativeIdentityMarker = "select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');\nset local role authenticated;\nselect set_config('qorpera_test.wake_identity'";
