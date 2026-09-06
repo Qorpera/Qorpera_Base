@@ -16,17 +16,24 @@ import { FriendsController, renderFriends } from "./views/friends.ts";
 import { HubController, renderHub } from "./views/hub.ts";
 import { renderInvitations } from "./views/invitations.ts";
 import { type MeetState, renderMeet } from "./views/meet.ts";
+import { NewConversationView } from "./views/new-conversation.ts";
 import { renderOrganization } from "./views/organization.ts";
 import { SettingsView } from "./views/settings.ts";
 import { renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
 import { renderSignIn } from "./views/signin.ts";
 import { renderTeam } from "./views/team.ts";
+import type { WorkspaceActions } from "./workspace-actions.ts";
 
 /* Entry point. One cloud client, one auth controller, one company controller
  * at a time. The route decides the view; every view renders from cloud state
  * and re-renders on store changes. */
 
-export function mountApplication(root: HTMLElement, cloud: Cloud, api = new CloudApi(cloud)): () => void {
+export function mountApplication(
+	root: HTMLElement,
+	cloud: Cloud,
+	api = new CloudApi(cloud),
+	workspaceActions: WorkspaceActions = {},
+): () => void {
 	const auth = new AuthController(cloud);
 	let hub = new HubController(api);
 	let friends = new FriendsController(api);
@@ -104,6 +111,7 @@ export function mountApplication(root: HTMLElement, cloud: Cloud, api = new Clou
 	let company: CompanyController | undefined;
 	let companyFile: CompanyFileController | undefined;
 	let conversation: ConversationView | undefined;
+	let newConversation: NewConversationView | undefined;
 	let approvals: ApprovalsView | undefined;
 	let cloudCheck: CloudCheckView | undefined;
 	let profiles: HostedProfile[] = [];
@@ -178,6 +186,7 @@ export function mountApplication(root: HTMLElement, cloud: Cloud, api = new Clou
 		unsubscribeCompany?.();
 		unsubscribeFile?.();
 		conversation?.dispose();
+		newConversation?.dispose();
 		approvals?.dispose();
 		companyFile?.dispose();
 		company?.stop();
@@ -185,6 +194,7 @@ export function mountApplication(root: HTMLElement, cloud: Cloud, api = new Clou
 		company = undefined;
 		companyFile = undefined;
 		conversation = undefined;
+		newConversation = undefined;
 		approvals = undefined;
 		homeReason = undefined;
 		teamFeedback = {};
@@ -359,6 +369,7 @@ export function mountApplication(root: HTMLElement, cloud: Cloud, api = new Clou
 			closeSettings(false);
 			companyFile?.dispose();
 			conversation?.dispose();
+			newConversation?.dispose();
 			approvals?.dispose();
 			navigationOpen = false;
 			navigationFocus = undefined;
@@ -380,12 +391,26 @@ export function mountApplication(root: HTMLElement, cloud: Cloud, api = new Clou
 			conversation = undefined;
 			controller.setOpenSession(undefined);
 		}
+		if (route.section !== "new") {
+			newConversation?.dispose();
+			newConversation = undefined;
+		}
 		if (route.section !== "approvals") {
 			approvals?.dispose();
 			approvals = undefined;
 		}
 		if (route.section !== "meet") meetState = {};
 		switch (route.section) {
+			case "new": {
+				if (!newConversation) {
+					newConversation = new NewConversationView(controller, workspaceActions, () =>
+						navigate({ name: "company", profileId: controller.profile.profileId, section: "home" }),
+					);
+					replace(main, newConversation.el);
+					newConversation.focus();
+				}
+				return;
+			}
 			case "home": {
 				// Home needs organization, membership and sessions, not just staff.
 				if (state.loading) {
@@ -425,7 +450,7 @@ export function mountApplication(root: HTMLElement, cloud: Cloud, api = new Clou
 			case "chat": {
 				if (!conversation || conversation.sessionId !== route.id) {
 					conversation?.dispose();
-					conversation = new ConversationView(controller, route.id ?? "");
+					conversation = new ConversationView(controller, route.id ?? "", workspaceActions);
 					replace(main, conversation.el);
 					conversation.focus();
 				} else conversation.update();

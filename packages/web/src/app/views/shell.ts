@@ -2,6 +2,7 @@ import type { User } from "@supabase/supabase-js";
 import type { HostedProfile, HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { badge, button, h, icon, initials, notice, replace } from "../../ui/dom.ts";
+import { matchesKey } from "../../ui/keys.ts";
 import { type AuthController, displayName } from "../auth.ts";
 import type { CompanyController } from "../company.ts";
 import type { Route } from "../router.ts";
@@ -69,6 +70,22 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 			},
 		});
 		accountPopover = h("div", { class: "account-popover", role: "menu", hidden: true });
+		accountPopover.addEventListener("keydown", (event) => {
+			const items = [...accountPopover!.querySelectorAll<HTMLElement>("[role=menuitem]")];
+			const index = items.indexOf(document.activeElement as HTMLElement);
+			const offset = matchesKey(event, "next") ? 1 : matchesKey(event, "previous") ? -1 : 0;
+			const next = matchesKey(event, "first")
+				? 0
+				: matchesKey(event, "last")
+					? items.length - 1
+					: offset
+						? (index + offset + items.length) % items.length
+						: -1;
+			if (next >= 0) {
+				event.preventDefault();
+				items[next]?.focus();
+			}
+		});
 		accountMenu = h("div", { class: "account-menu" }, accountTrigger, accountPopover);
 		document.addEventListener("click", (event) => {
 			if (accountMenuOpen && !accountMenu?.contains(event.target as Node)) setAccountMenuOpen(false);
@@ -181,10 +198,8 @@ export function renderTopbar(
 /* The company rail, as Qorpera Base draws it (V24 product preview): a search
  * field, the Co-Founder as a low card with its figure standing on it, the rest
  * of the staff as rows, and the account menu at the foot. Company management
- * lives in settings.
- *
- * There is no add-agent button: hiring an agent is machinery this client does
- * not have yet, and a button that writes nowhere is worse than none. */
+ * lives in settings. The new-conversation screen can open existing agents;
+ * new hires stay unavailable until a cloud creation port is supplied. */
 
 /* The field outlives re-renders so typing never loses the caret. */
 const railFields = new WeakMap<CompanyController, { input: HTMLInputElement; query: string; redraw: () => void }>();
@@ -255,6 +270,12 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 								: "",
 						].join(" "),
 						href: `#/c/${profileId}`,
+						"aria-current":
+							section === "home" ||
+							(cofounderSessionId && activeSessionId === cofounderSessionId) ||
+							isActive(cofounder.id)
+								? "page"
+								: undefined,
 					},
 					h(
 						"span",
@@ -275,6 +296,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			{
 				class: ["rail-row", isActive(agent.id) ? "active" : ""].join(" "),
 				href: `#/c/${profileId}/staff/${agent.id}`,
+				"aria-current": isActive(agent.id) ? "page" : undefined,
 			},
 			agentFigure(agent, agent.displayName, { size: 36 }),
 			h(
@@ -305,6 +327,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			{
 				class: ["rail-row", activeSessionId === session.sessionId ? "active" : ""].join(" "),
 				href: `#/c/${profileId}/chat/${session.sessionId}`,
+				"aria-current": activeSessionId === session.sessionId ? "page" : undefined,
 			},
 			h("span", { class: "avatar small" }, session.title.slice(0, 1).toUpperCase()),
 			h(
@@ -335,6 +358,21 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	const caret: [number, number] = [search.selectionStart ?? 0, search.selectionEnd ?? 0];
 	replace(
 		container,
+		h(
+			"div",
+			{ class: "rail-toolbar" },
+			h(
+				"a",
+				{
+					class: "rail-add icon-button",
+					href: `#/c/${profileId}/new`,
+					"aria-label": "New conversation or agent",
+					title: "New conversation or agent",
+					"aria-current": section === "new" ? "page" : undefined,
+				},
+				icon("plus"),
+			),
+		),
 		h("div", { class: "rail-top" }, h("label", { class: "rail-search" }, search)),
 		h(
 			"div",

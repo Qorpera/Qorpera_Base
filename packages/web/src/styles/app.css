@@ -1,5 +1,6 @@
 @import "./tokens.css";
 @import "./settings.css";
+@import "./conversation.css";
 
 /* Layout and components for the web client. Values derive from tokens.css
  * (shared with the desktop). Selectors are the contract with the views. */
@@ -36,7 +37,7 @@ label > input, label > select { font-weight: 400; }
 .fineprint { color: var(--text-soft); font-size: 12px; }
 
 .app { height: 100%; }
-.frame { display: flex; flex-direction: column; height: 100%; background: var(--bg); }
+.frame { display: flex; flex-direction: column; height: 100%; background: var(--bg); font-family: var(--font-sans); }
 .body { display: flex; flex: 1; min-height: 0; }
 
 /* buttons */
@@ -136,19 +137,20 @@ label > input, label > select { font-weight: 400; }
 .account-signout { color: var(--text-muted); }
 
 /* rail */
-/* The company rail, as Qorpera Base draws it (V24 product preview). Its width
- * is the macOS Messages ratio, clamped so a wide window does not hand a third
- * of itself to a list of agents. */
+/* The V24 company rail with the desktop's compact default width. */
 .rail {
-	--rail: #eae8e7; --rail-line: #d8d6d2; --rail-hover: #dedcd8;
-	--rail-search: #d9d7d7; --rail-search-ink: #85857f;
-	--rail-selection: #0e84ff; --rail-small: #71716b; --rail-status: #00c887;
+	--rail: var(--sidebar-surface); --rail-line: var(--sidebar-divider); --rail-hover: #dedad7;
+	--rail-search: var(--sidebar-search); --rail-search-ink: #85857f;
+	--rail-selection: var(--sidebar-selection); --rail-small: #71716b; --rail-status: #00c887;
 	display: flex; flex-direction: column; min-height: 0;
-	width: clamp(240px, 33.4%, 520px); flex: none;
-	padding: 12px 11px 11px; background: var(--rail); border-right: 1px solid var(--rail-line);
+	width: clamp(240px, 28vw, 304px); flex: none;
+	padding: 0 11px 11px; background: var(--rail); border-right: 1px solid var(--rail-line);
 	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
 }
 .rail[hidden] { display: none; }
+.rail-toolbar { height: var(--titlebar-height); flex: none; display: flex; align-items: center; justify-content: flex-end; }
+.rail-add { color: #6e6a67; }
+.rail-add:hover { text-decoration: none; background: var(--rail-hover); }
 .rail-top { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
 .rail-search {
 	display: flex; flex-direction: row; align-items: center; gap: 6px; height: 28px; flex: 1; min-width: 0;
@@ -162,6 +164,7 @@ label > input, label > select { font-weight: 400; }
 	flex: 1; width: 100%; min-width: 0; height: 100%; min-height: 0; padding: 0; border: 0; border-radius: 0;
 	background: transparent; font: inherit; font-size: 13px; font-weight: 400; color: var(--text); outline: 0;
 }
+.rail-search:focus-within { outline: 2px solid var(--ring); outline-offset: 2px; }
 .rail-search input::placeholder { color: #777772; }
 .rail-scroll { flex: 1; min-height: 0; overflow-y: auto; padding-top: 2px; }
 .rail-empty { padding: 14px 8px; color: var(--rail-small); font-size: 12.5px; }
@@ -478,35 +481,6 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 	.auth-brand { display: flex; justify-content: center; }
 	.auth-body { padding: 40px 0 28px; }
 }
-
-/* thread */
-.thread { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.thread-header { display: flex; align-items: center; gap: 12px; padding: 12px 24px; border-bottom: 1px solid var(--border); }
-.thread-header h1 { font-size: 17px; }
-.thread-header .figure, .thread-header .avatar { width: 40px; height: 40px; }
-.messages { flex: 1; overflow: auto; padding: 16px 24px; display: flex; flex-direction: column; gap: 12px; }
-.messages > * { max-width: var(--thread-width); width: 100%; margin: 0 auto; }
-.hidden-note { color: var(--text-soft); font-size: 12px; text-align: center; padding: 4px 0; }
-.message { display: flex; gap: 10px; align-items: flex-start; }
-.message.mine { flex-direction: row-reverse; }
-.bubble { min-width: 0; max-width: 85%; padding: 8px 12px; border-radius: var(--radius-lg); background: var(--pane-strong); }
-.from-agent .bubble { background: var(--bg); border: 1px solid var(--border); }
-.mine .bubble { background: var(--accent-soft); }
-.pending-queued .bubble { opacity: 0.7; }
-.pending-failed .bubble { border: 1px solid color-mix(in srgb, var(--danger) 50%, transparent); }
-.meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; font-size: 12px; color: var(--text-muted); }
-.meta .author { font-weight: 650; color: var(--text); }
-.text { white-space: pre-wrap; word-break: break-word; }
-.thread-status { padding: 0 24px; max-width: calc(var(--thread-width) + 48px); width: 100%; margin: 0 auto; }
-.thread-status .notice { margin: 8px 0; }
-.typing { color: var(--text-muted); font-size: 12.5px; padding: 4px 0 8px; }
-.composer {
-	display: flex; gap: 8px; align-items: flex-end; padding: 12px 24px 16px; max-width: calc(var(--thread-width) + 48px); width: 100%; margin: 0 auto;
-}
-.composer[hidden] { display: none; }
-.composer-input { flex: 1; resize: none; min-height: 40px; max-height: 200px; padding: 9px 12px; border-radius: var(--radius-lg); }
-.auth-card { flex-direction: column; align-items: stretch; gap: 6px; }
-.inbox-entry { display: flex; flex-direction: column; gap: 4px; }
 
 /* company file */
 .tree-layout { display: grid; grid-template-columns: minmax(240px, 1fr) 2fr; gap: 16px; margin-top: 12px; }

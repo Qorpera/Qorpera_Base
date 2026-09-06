@@ -54,6 +54,8 @@ export interface ConversationState {
 	sending: boolean;
 	sendError?: string;
 	draft?: string;
+	/** Local selected bytes; never part of the text-only append protocol. */
+	attachments?: File[];
 	retrySend?: { clientInputId: string; text: string };
 	/** Inputs this browser appended that the cloud has not listed back yet. */
 	optimistic: { clientInputId: string; inputId?: string; text: string; createdAt: string; authorUserId: string }[];
@@ -191,6 +193,7 @@ export class CompanyController {
 						pending: [],
 						optimistic: [],
 						draft: "",
+						attachments: [],
 						projection: { items: [], hiddenCount: 0, lastSequence: 0 },
 					});
 				this.stop();

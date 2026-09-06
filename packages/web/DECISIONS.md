@@ -244,3 +244,38 @@ also requires a matching native runtime bundle rollout and activation. The Pages
 preview alone cannot verify those backend changes. Local browser checks use a
 fake cloud boundary; adapter and runtime tests exercise the real parsers and
 protocols without live credentials or company mutations.
+
+## 2026-09-06 — Restore desktop conversation surfaces before runtime integration
+
+**Decision (founder).** Port the approved desktop interactions in a first UI
+pass: compact agent header and details, figure/name/title/description drafts,
+integrated composer, local attachment previews, new-conversation and agent
+setup screens, and the computer panel. The shell uses the system face and
+the supplied Messages reference colors: header `#FBF7F4`, sidebar `#E8E4E1`,
+search `#DBD8D6`, selection `#007AFF`. The header is 48px with a 32px figure;
+scope badges do not belong in it. Approved vector figures remain unchanged.
+
+**Boundary.** Production supplies no agent-creation or metadata-write adapter
+to these new forms. They allow draft preparation and explicitly disable
+unavailable saves. Selected files stay in the current company's in-memory
+conversation draft; previews use revocable object URLs, never uploads.
+Attachments block text submission until removed, so no bytes are silently
+dropped. Existing text submission still uses the established append protocol.
+The computer panel reports unavailable access and has no run, wake, screen,
+routine-creation or provider-control connection. Injectable UI action ports
+exist for isolated tests and later reviewed integration only.
+
+**Messages.** Explicitly delivered agent messages render GFM using the existing
+repository-pinned `marked` lexer and DOM nodes. Raw HTML stays text; links are
+limited to HTTP(S) and mailto; remote images become links and do not load
+automatically. Transcript admission rules are unchanged. The diagnostic count
+of hidden runtime entries is removed from the conversation UI, superseding
+that display choice in the 2026-09-02 entry.
+
+**Verification.** Tests cover permission changes, unavailable write paths,
+late async completions, IME/newline behavior, file validation, preview cleanup,
+conversation-scoped drafts and inert Markdown content. Browser fixtures cover
+desktop/mobile geometry, focus, native dialogs and the unchanged text-send
+path without using a live company. Declaring the already-pinned Markdown
+dependency updates the root lockfile and its generated bundle provenance;
+this does not activate or deploy a runtime bundle.

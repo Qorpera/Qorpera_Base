@@ -1,8 +1,14 @@
 import type { TranscriptItem } from "../../cloud/transcript.ts";
 import type { HostedSession, HostedStaffAgent, JsonValue } from "../../cloud/types.ts";
+import { AttachmentTray } from "../../ui/attachments.ts";
 import { agentFigure } from "../../ui/avatar.ts";
-import { badge, button, fmtTime, h, notice, replace, spinner } from "../../ui/dom.ts";
+import { badge, fmtTime, h, icon, notice, replace, spinner } from "../../ui/dom.ts";
+import { matchesKey } from "../../ui/keys.ts";
+import { markdown } from "../../ui/markdown.ts";
 import type { CompanyController, ConversationState } from "../company.ts";
+import type { WorkspaceActions } from "../workspace-actions.ts";
+import { AgentDetails } from "./agent-details.ts";
+import { ComputerPanel } from "./computer.ts";
 
 /* One conversation over the canonical transcript. Rendering follows
  * DECISIONS.md "Transcript projection rules": member inputs and agent sends
@@ -18,21 +24,36 @@ export class ConversationView {
 	readonly #composer: HTMLTextAreaElement;
 	readonly #send: HTMLButtonElement;
 	readonly #composerWrap: HTMLElement;
+	readonly #composerShell: HTMLElement;
+	readonly #attachments: AttachmentTray;
+	readonly #more: HTMLButtonElement;
+	readonly #menu: HTMLElement;
+	readonly #attach: HTMLButtonElement;
+	readonly #identity: HTMLButtonElement;
+	readonly #computer: HTMLButtonElement;
+	readonly #body: HTMLElement;
+	readonly #conversationPane: HTMLElement;
+	readonly #lifetime = new AbortController();
+	readonly #actions: WorkspaceActions;
+	#details: AgentDetails | undefined;
+	#panel: ComputerPanel | undefined;
+	#headerKey = "";
 	#renderedKey = "";
 	#stickToBottom = true;
 	readonly #unsubscribe: (() => void)[] = [];
 	#disposed = false;
 
-	constructor(company: CompanyController, sessionId: string) {
+	constructor(company: CompanyController, sessionId: string, actions: WorkspaceActions = {}) {
 		this.#company = company;
 		this.#sessionId = sessionId;
+		this.#actions = actions;
 		this.#composer = h("textarea", {
 			class: "composer-input",
 			rows: 1,
 			placeholder: "Message…",
 			"aria-label": "Message",
 			onkeydown: (event: KeyboardEvent) => {
-				if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+				if (matchesKey(event, "accept") && !event.shiftKey) {
 					event.preventDefault();
 					this.#submit();
 				}
@@ -42,13 +63,140 @@ export class ConversationView {
 				company.conversation(sessionId).set({ draft: this.#composer.value });
 			},
 		});
-		this.#send = button("Send", () => this.#submit(), { primary: true });
-		this.#composerWrap = h("footer", { class: "composer" }, this.#composer, this.#send);
+		this.#send = h(
+			"button",
+			{
+				type: "button",
+				class: "composer-send",
+				"aria-label": "Send message",
+				title: "Send message",
+				onclick: () => this.#submit(),
+			},
+			icon("send"),
+		);
+		this.#attachments = new AttachmentTray(company.conversation(sessionId).get().attachments ?? [], (files) => {
+			const hadFiles = Boolean(company.conversation(sessionId).get().attachments?.length);
+			company.conversation(sessionId).set({ attachments: files });
+			this.#autosize();
+			this.update();
+			if (hadFiles && !files.length && !this.#composer.disabled) this.#composer.focus();
+		});
+		const fileInput = h("input", { type: "file", multiple: true, hidden: true, "aria-label": "Attach files" });
+		fileInput.onchange = () => {
+			if (!this.#composer.disabled) this.#attachments.add([...(fileInput.files ?? [])]);
+			fileInput.value = "";
+		};
+		this.#more = h(
+			"button",
+			{
+				type: "button",
+				class: "composer-more icon-button",
+				title: "Chat settings and more",
+				"aria-label": "Chat settings and more",
+				"aria-haspopup": "menu",
+				"aria-expanded": "false",
+				onclick: () => this.#setMenu(this.#menu.hidden),
+			},
+			icon("more"),
+		);
+		this.#attach = h(
+			"button",
+			{
+				type: "button",
+				role: "menuitem",
+				onclick: () => {
+					this.#setMenu(false);
+					fileInput.click();
+				},
+			},
+			icon("attach"),
+			"Attach files",
+		);
+		this.#menu = h(
+			"div",
+			{ class: "composer-menu", role: "menu", hidden: true, "aria-label": "Chat settings and more" },
+			this.#attach,
+		);
+		this.#menu.addEventListener("keydown", (event) => {
+			if (matchesKey(event, "dismiss")) {
+				event.preventDefault();
+				event.stopPropagation();
+				this.#setMenu(false);
+			}
+		});
+		this.#composerShell = h(
+			"div",
+			{ class: "composer-shell" },
+			this.#attachments.el,
+			this.#composer,
+			this.#more,
+			this.#send,
+			fileInput,
+			this.#menu,
+		);
+		this.#composerShell.addEventListener("paste", (event) => {
+			if (this.#composer.disabled) return;
+			const files = [...(event.clipboardData?.files ?? [])];
+			if (files.length) {
+				event.preventDefault();
+				this.#attachments.add(files);
+			}
+		});
+		this.#composerShell.addEventListener("dragover", (event) => {
+			if (!this.#composer.disabled && event.dataTransfer?.types.includes("Files")) {
+				event.preventDefault();
+				this.#composerShell.classList.add("is-dragging");
+			}
+		});
+		this.#composerShell.addEventListener("dragleave", () => this.#composerShell.classList.remove("is-dragging"));
+		this.#composerShell.addEventListener("drop", (event) => {
+			event.preventDefault();
+			this.#composerShell.classList.remove("is-dragging");
+			if (!this.#composer.disabled) this.#attachments.add([...(event.dataTransfer?.files ?? [])]);
+		});
+		this.#composerWrap = h("footer", { class: "composer" }, this.#composerShell, this.#attachments.status);
+		this.#identity = h("button", {
+			type: "button",
+			class: "thread-identity",
+			"aria-label": "Open agent details",
+			"aria-haspopup": "dialog",
+			"aria-expanded": "false",
+			onclick: () => this.#openDetails(),
+		});
+		this.#computer = h(
+			"button",
+			{
+				type: "button",
+				class: "icon-button thread-computer",
+				title: "Open agent computer",
+				"aria-label": "Open agent computer",
+				"aria-expanded": "false",
+				onclick: () => this.#toggleComputer(),
+			},
+			icon("computer"),
+		);
+		this.#header.append(this.#identity, this.#computer);
 		this.#messages.addEventListener("scroll", () => {
 			const { scrollTop, scrollHeight, clientHeight } = this.#messages;
 			this.#stickToBottom = scrollHeight - scrollTop - clientHeight < 48;
 		});
-		this.el = h("section", { class: "thread" }, this.#header, this.#messages, this.#status, this.#composerWrap);
+		this.#conversationPane = h(
+			"div",
+			{ class: "thread-conversation" },
+			this.#messages,
+			this.#status,
+			this.#composerWrap,
+		);
+		this.#body = h("div", { class: "thread-body" }, this.#conversationPane);
+		this.el = h("section", { class: "thread" }, this.#header, this.#body);
+		window.addEventListener("resize", () => this.#syncPanelLayout(), { signal: this.#lifetime.signal });
+		document.addEventListener(
+			"click",
+			(event) => {
+				if (!this.#menu.hidden && !this.#composerShell.contains(event.target as Node)) this.#setMenu(false, false);
+			},
+			{ signal: this.#lifetime.signal },
+		);
 		company.setOpenSession(sessionId);
 		this.#unsubscribe.push(
 			company.conversation(sessionId).subscribe(() => this.update()),
@@ -58,7 +206,12 @@ export class ConversationView {
 	}
 
 	dispose(): void {
+		if (this.#disposed) return;
 		this.#disposed = true;
+		this.#lifetime.abort();
+		this.#details?.dispose();
+		this.#panel?.dispose();
+		this.#attachments.dispose();
 		for (const unsubscribe of this.#unsubscribe) unsubscribe();
 		this.#company.setOpenSession(undefined);
 	}
@@ -74,6 +227,57 @@ export class ConversationView {
 	#autosize(): void {
 		this.#composer.style.height = "auto";
 		this.#composer.style.height = `${Math.min(this.#composer.scrollHeight, 200)}px`;
+		this.#composerShell?.classList.toggle(
+			"is-expanded",
+			this.#composer.scrollHeight > 42 || this.#attachments.count > 0,
+		);
+	}
+
+	#setMenu(open: boolean, restoreFocus = true): void {
+		this.#menu.hidden = !open;
+		this.#more.setAttribute("aria-expanded", String(open));
+		if (open) this.#attach.focus();
+		else if (restoreFocus) this.#more.focus();
+	}
+
+	#openDetails(): void {
+		const state = this.#company.store.get();
+		const agent = this.#company.staffById(
+			state.sessions.find((session) => session.sessionId === this.#sessionId)?.staffAgentId,
+		);
+		if (!agent || this.#details) return;
+		this.#identity.setAttribute("aria-expanded", "true");
+		this.#details = new AgentDetails(this.#company, agent, this.#actions, () => {
+			this.#details = undefined;
+			this.#identity.setAttribute("aria-expanded", "false");
+		});
+	}
+
+	#toggleComputer(): void {
+		if (this.#panel) {
+			this.#panel.dispose();
+			this.#panel = undefined;
+			this.#syncPanelLayout();
+			this.#computer.setAttribute("aria-expanded", "false");
+			this.#computer.focus();
+			return;
+		}
+		const state = this.#company.store.get();
+		const agent = this.#company.staffById(
+			state.sessions.find((session) => session.sessionId === this.#sessionId)?.staffAgentId,
+		);
+		if (!agent) return;
+		this.#panel = new ComputerPanel(agent, () => this.#toggleComputer());
+		this.#body.append(this.#panel.el);
+		this.#panel.focus();
+		this.#syncPanelLayout();
+		this.#computer.setAttribute("aria-expanded", "true");
+	}
+
+	#syncPanelLayout(): void {
+		const covered = Boolean(this.#panel) && window.innerWidth <= 1040;
+		if (covered && this.#conversationPane.contains(document.activeElement)) this.#panel?.focus();
+		this.#conversationPane.inert = covered;
 	}
 
 	#submit(): void {
@@ -91,11 +295,15 @@ export class ConversationView {
 		const agent = this.#company.staffById(session?.staffAgentId);
 		const activity = this.#company.activityFor(session?.staffAgentId);
 		const canWrite = company.team?.capabilities.write === true && session?.status === "open";
-		this.#renderHeader(session, agent?.displayName, agent, activity?.activity);
+		this.#renderHeader(session, agent);
 		this.#renderMessages(conversation, agent?.displayName ?? session?.title ?? "Agent", agent);
 		this.#renderStatus(conversation, activity?.activity, canWrite, session);
 		this.#composer.disabled = !canWrite || conversation.sending;
-		this.#send.disabled = !canWrite || conversation.sending;
+		this.#send.disabled =
+			!canWrite || conversation.sending || !conversation.draft?.trim() || this.#attachments.count > 0;
+		this.#attach.disabled = this.#composer.disabled;
+		this.#more.disabled = this.#composer.disabled;
+		if (this.#composer.disabled && !this.#menu.hidden) this.#setMenu(false, false);
 		this.#composerWrap.hidden = !canWrite;
 		if (this.#composer.value !== (conversation.draft ?? "")) {
 			this.#composer.value = conversation.draft ?? "";
@@ -103,43 +311,24 @@ export class ConversationView {
 		}
 	}
 
-	#renderHeader(
-		session: HostedSession | undefined,
-		agentName: string | undefined,
-		agent: HostedStaffAgent | undefined,
-		activity: string | undefined,
-	): void {
-		const title = agentName ?? session?.title ?? "Conversation";
-		const audience =
-			session?.audience.kind === "member_private"
-				? badge("Private", "accent", "Only you and this agent see this conversation")
-				: badge("Company", "neutral", "Every member of the company shares this conversation");
-		const state =
-			activity === "working"
-				? badge("Working", "ok")
-				: activity === "needs_attention"
-					? badge("Needs attention", "warn")
-					: session?.status === "closed"
-						? badge("Archived", "neutral")
-						: null;
-		replace(
-			this.#header,
-			agentFigure(agent, title, { size: 40 }),
-			h(
-				"div",
-				{ class: "thread-title" },
-				h("h1", null, title),
-				h(
-					"div",
-					{ class: "muted small" },
-					session?.title && session.title !== title ? session.title : "",
-					" ",
-					audience,
-					" ",
-					state,
-				),
-			),
-		);
+	#renderHeader(session: HostedSession | undefined, agent: HostedStaffAgent | undefined): void {
+		const title = agent?.displayName ?? session?.title ?? "Conversation";
+		const key = JSON.stringify([title, agent?.id, agent?.appearance]);
+		this.#identity.disabled = !agent;
+		this.#computer.hidden = !agent;
+		this.#identity.title = title;
+		if (key === this.#headerKey) return;
+		this.#headerKey = key;
+		if (this.#panel) {
+			const focused = this.#panel.el.contains(document.activeElement);
+			this.#panel.dispose();
+			this.#panel = agent ? new ComputerPanel(agent, () => this.#toggleComputer()) : undefined;
+			if (this.#panel) this.#body.append(this.#panel.el);
+			if (focused) this.#panel ? this.#panel.focus() : this.#composer.focus();
+			this.#computer.setAttribute("aria-expanded", String(Boolean(this.#panel)));
+			this.#syncPanelLayout();
+		}
+		replace(this.#identity, agentFigure(agent, title, { size: 32 }), h("h1", null, title), icon("chevron"));
 	}
 
 	#renderMessages(conversation: ConversationState, agentName: string, agent: HostedStaffAgent | undefined): void {
@@ -170,18 +359,6 @@ export class ConversationView {
 		if (key === this.#renderedKey) return;
 		this.#renderedKey = key;
 		const nodes: HTMLElement[] = [];
-		if (conversation.projection.hiddenCount > 0) {
-			nodes.push(
-				h(
-					"div",
-					{
-						class: "hidden-note",
-						title: "Provider output, receipts and orchestration events are private runtime data (runtime contract §6).",
-					},
-					`${conversation.projection.hiddenCount} transcript ${conversation.projection.hiddenCount === 1 ? "entry" : "entries"} not shown: only member inputs and agent send operations are public.`,
-				),
-			);
-		}
 		for (const item of items) {
 			if (item.kind === "member" || item.kind === "agent") {
 				const mine = item.kind === "member" && item.authorUserId === this.#company.userId;
@@ -219,12 +396,15 @@ export class ConversationView {
 								item.pending === "failed" ? badge("failed", "danger", item.failureReason ?? "") : null,
 								h("time", { datetime: item.createdAt }, fmtTime(item.createdAt)),
 							),
-							h("div", { class: "text" }, item.text || (item.attachmentCount ? "" : "(empty)")),
+							item.kind === "agent"
+								? markdown(item.text)
+								: h("div", { class: "text" }, item.text || (item.attachmentCount ? "" : "(empty)")),
 							item.attachmentCount
 								? h(
 										"div",
 										{ class: "muted small" },
-										`${item.attachmentCount} attachment${item.attachmentCount === 1 ? "" : "s"}`,
+										icon("file"),
+										`${item.attachmentCount} attachment${item.attachmentCount === 1 ? "" : "s"} · preview unavailable`,
 									)
 								: null,
 							item.pending === "failed" && item.failureReason
@@ -261,7 +441,8 @@ export class ConversationView {
 		const children: (HTMLElement | null)[] = [];
 		if (conversation.error) children.push(notice("danger", conversation.error));
 		if (conversation.sendError) children.push(notice("danger", conversation.sendError));
-		if (activity === "working") children.push(h("div", { class: "typing" }, "The agent is working on the cloud…"));
+		if (activity === "working") children.push(h("div", { class: "typing", role: "status" }, "Working…"));
+		if (activity === "needs_attention") children.push(notice("neutral", "This agent needs your attention."));
 		if (!canWrite && session?.status === "closed") children.push(notice("neutral", "This conversation is archived."));
 		else if (!canWrite)
 			children.push(notice("neutral", "You can read this conversation. Contributors and above can write."));

@@ -35,7 +35,7 @@
     "deploy/lxd-runner-guest/qorpera-native-login-provider-host.service": "0f5e9ca1118ca9f678e6f26f061dd3c3d17710f8360a58b14c7055edc4ea9275",
     "deploy/lxd-runner-guest/qorpera-native-provider-host.service": "1b15b9537e0d7d5eec01d5dd99f0df1415e6459422415eebec43c7f048b1bd6f",
     "deploy/lxd-runner-guest/runner-image-contract.json": "fb0bc315f357ba16220f729ca2810a2ae8ba9299bf9765daed02a52a9f3c8f38",
-    "package-lock.json": "195fe409b142b19e8e4ece700153070a95934b70f37abb97c065e32472fa80f1",
+    "package-lock.json": "2f14a49a2fd9b7f9d87dea5aac0c3d0633be24eacaf0be825a7455e50475586c",
     "packages/company/package.json": "b9a69cec8a7fd32f4b990023c7f1422afcd26d69a17f8d916443ae5708707db4",
     "packages/company/src/company-agent-messages.ts": "b8c1cb993956c6db4754b18add64e147796f5c67ef4891d37356c43f0916f459",
     "packages/company/src/company-artifacts.ts": "6c7d5f5f32cabb0d475588161946319b159436b518c9a4a882429444de35f1e2",

@@ -49,11 +49,12 @@ describe("conversation lifecycle regressions", () => {
 		const input = view.el.querySelector("textarea")!;
 		input.value = "Important unsent draft";
 		input.dispatchEvent(new Event("input"));
-		view.el.querySelector<HTMLButtonElement>(".composer button")!.click();
+		await settle();
+		view.el.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.click();
 		await settle();
 		expect(view.el.textContent).toContain("Fixture write failed");
 		expect(input.value).toBe("Important unsent draft");
-		expect(view.el.querySelector<HTMLButtonElement>(".composer button")!.disabled).toBe(false);
+		expect(view.el.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.disabled).toBe(false);
 		await controller.sendPrompt(session.sessionId, input.value);
 		expect(append.mock.calls[0]?.[1]).toBe(append.mock.calls[1]?.[1]);
 	});

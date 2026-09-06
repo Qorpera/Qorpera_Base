@@ -13,6 +13,7 @@
 	},
 	"dependencies": {
 		"@supabase/supabase-js": "2.112.3",
+		"marked": "18.0.5",
 		"smol-toml": "1.7.1"
 	},
 	"devDependencies": {
