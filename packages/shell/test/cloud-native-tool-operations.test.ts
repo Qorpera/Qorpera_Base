@@ -208,7 +208,7 @@ it.each([
 	expect(f.perform).toHaveBeenCalledTimes(1);
 });
 
-it("keeps completed intent stable when the runner assignment and native lease change", async () => {
+it("replays completed intent across a fresh assignment and same-principal sponsor handoff", async () => {
 	const f = await fixture();
 	await f.execute();
 	f.run.close();
@@ -220,6 +220,9 @@ it("keeps completed intent stable when the runner assignment and native lease ch
 			runnerId: binding.runnerId,
 			assignmentId: binding.assignmentId,
 			leaseId: binding.leaseId,
+			sponsorVersion: f.authority.identity.sponsorVersion + 1,
+			providerConnectionId: randomUUID(),
+			providerConnectionVersion: f.authority.identity.providerConnectionVersion + 1,
 		},
 	};
 	const run = await CloudNativeToolRun.open(
@@ -233,6 +236,13 @@ it("keeps completed intent stable when the runner assignment and native lease ch
 	expect(f.control.beginToolOperation.mock.calls[1][1].inputSha256).toBe(
 		f.control.beginToolOperation.mock.calls[0][1].inputSha256,
 	);
+	await expect(
+		f.execute(
+			{ operation: { ...f.operation, arguments: { text: "Different work" } } },
+			new CloudNativeToolOperations(run, f.control),
+		),
+	).rejects.toThrow("outcome unconfirmed");
+	expect(f.perform).toHaveBeenCalledTimes(1);
 });
 
 it.each(["executing", "ambiguous", "cancelled"] as const)("does not rerun a retained %s operation", async (state) => {

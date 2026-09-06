@@ -10,7 +10,7 @@ import { type CloudToolContent, cloudToolJsonText } from "./cloud-native-tool-bo
 import type { BeginCloudRunnerOperationInput, CompleteCloudRunnerOperationInput } from "./cloud-runner-broker.ts";
 import { type CloudRuntimeObservationSpan, cloudRuntimeErrorCategory } from "./cloud-runtime-observability.ts";
 
-const OPERATION_SCHEMA = "qorpera.cloud-tool-operation/v1";
+const OPERATION_SCHEMA = "qorpera.cloud-tool-operation/v2";
 const RESULT_SCHEMA = "qorpera.cloud-tool-operation-result/v1";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -121,9 +121,20 @@ export class CloudNativeToolOperations {
 		)
 			throw new Error("Invalid cloud tool operation");
 		freeze(operation as unknown as JsonValue);
-		// Assignment/runner/native lease change on recovery, not the logical work or its principals.
+		// A handoff changes execution funding and attempt identity, not the
+		// logical work. Live authority still validates all fields on every call.
 		const principals = Object.fromEntries(
-			Object.entries(this.#run.identity).filter(([key]) => !["assignmentId", "runnerId", "leaseId"].includes(key)),
+			Object.entries(this.#run.identity).filter(
+				([key]) =>
+					![
+						"assignmentId",
+						"runnerId",
+						"leaseId",
+						"sponsorVersion",
+						"providerConnectionId",
+						"providerConnectionVersion",
+					].includes(key),
+			),
 		);
 		const digest = createHash("sha256")
 			.update(cloudToolJsonText({ schema: OPERATION_SCHEMA, principals, operation }))

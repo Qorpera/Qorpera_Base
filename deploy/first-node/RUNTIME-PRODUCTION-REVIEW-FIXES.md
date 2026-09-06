@@ -1,0 +1,15 @@
+# Runtime Steps 0–3 production review corrections
+
+The production review identified three reproducible gaps after v11 acceptance. The earlier acceptance did not exercise these cases. The corrections below require the matching v12 guest and forward migrations; source verification alone does not close production acceptance.
+
+| Finding | Correction | Regression evidence |
+| --- | --- | --- |
+| P1: withdrawing autonomous consent leaves older sponsor pins usable | Admission, reservations, provider execution and effect authority consult the immutable consent-version history under the connection lock. A withdrawal invalidates older pins permanently. Renewed consent requires a fresh sponsor pin. Explicit human requests retain their separate authority. | Queued-wake cancellation; active-run effect denial; reservation replay denial; withdrawal/reconsent; three real concurrent transaction schedules, including repeatable read. |
+| P1: acquiring an existing lease revives released/revoked authority and bypasses capacity | Replay requires an active, unexpired lease. A recorded handoff may rebind to a different connection only with a fresh runner and assignment, preserving prior lease history and checking capacity under the connection lock. | Released, revoked and expired lease denial; one-slot competing acquisition; existing handoff selection/rebind capacity regressions. |
+| P2: any completed operation prevents sponsor continuation | Confirmed receipts survive the attempt boundary; unresolved receipts and unreceipted outputs remain fenced. The next attempt receives an admitted, hash-pinned continuation source containing prior receipts and sends. Logical operation hashes omit attempt/funding versions while retaining the run, principal, audience and exact plan. | A completed file write and coworker delivery both replay once across a fresh sponsor, retain original receipt provenance, and allow unfinished work to complete. Executing/ambiguous effects remain blocked. SQL context parses through the production TypeScript composer. |
+
+Run `node scripts/test-runtime-production-review.mjs --report /absolute/new-report.json` for the complete disposable verification: all migrations, the 25 existing wake integration cases, 10 review regressions, continuation context parity and three concurrency schedules. It accepts no production database or provider credentials and removes its database and volume afterward. Controlled quota signals in this verifier are synthetic and do not constitute live provider acceptance.
+
+The existing operation/result bounds remain in force. Continuation sources page through `read_context`; they preserve provenance and data, and do not supply new human authorization. A proposed change remains proposed. The active bundle must be drained before this deployment because old in-flight attempts must not mix old operation hashes or context shapes with v12.
+
+Production rollout and live readback are pending at this source checkpoint. Historical v11 runs, signed artifacts and evidence remain unchanged.

@@ -219,3 +219,40 @@ it("fences context errors and never turns their diagnostic text into instruction
 	});
 	boundary.close();
 });
+
+it("projects and pages prior completed work only for this admitted run", async () => {
+	const f = nativeCompanyContextFixture();
+	const text = JSON.stringify({
+		receipts: [{ logicalOperationKey: "write:done", result: "x".repeat(4500) }],
+		priorSends: [],
+	});
+	const source = f.source("continuation", f.binding.runId, text);
+	f.context.continuation = {
+		...source,
+		content: { ...source.content, text: text.slice(0, 4096), nextOffset: 4096, truncated: true },
+	};
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	expect(JSON.parse(composeCloudNativeCompanyPrompt(context)).continuation.kind).toBe("completed_work");
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain("Never repeat a completed effect under a new key");
+	const page = { ...source, content: { ...source.content, text: text.slice(4096), offset: 4096, truncated: true } };
+	const call = vi.fn<CloudCompanyPathControl["call"]>(async () => page);
+	const tool = cloudCompanyContextTool(context, f.binding, { call });
+	const args = tool.parseArguments({
+		sourceKind: "continuation",
+		id: source.id,
+		sha256: source.content.sha256,
+		offset: 4096,
+		limit: 1024,
+	});
+	await expect(
+		tool.execute(args, {
+			companyId: context.identity.companyId,
+			runId: f.binding.runId,
+			callId: "continuation-page",
+			argumentSha256: "a".repeat(64),
+			signal: new AbortController().signal,
+		}),
+	).resolves.toEqual({ kind: "text", value: JSON.stringify(page) });
+	f.context.continuation.id = randomUUID();
+	expect(() => parseCloudNativeCompanyContext(f.context, f.binding)).toThrow();
+});

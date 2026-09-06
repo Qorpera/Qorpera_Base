@@ -21,7 +21,9 @@ export function nativeCompanyContextFixture() {
 					? "historical_data"
 					: sourceKind === "job"
 						? "wake_data"
-						: "job_specification",
+						: sourceKind === "continuation"
+							? "completed_work"
+							: "job_specification",
 		sourceKind,
 		id,
 		actorKind:
@@ -29,7 +31,7 @@ export function nativeCompanyContextFixture() {
 				? "human"
 				: sourceKind === "history"
 					? "company_service"
-					: sourceKind === "job"
+					: sourceKind === "job" || sourceKind === "continuation"
 						? "control_plane"
 						: "company_service",
 		authorUserId: sourceKind === "input" ? identity.requesterUserId : null,
@@ -66,6 +68,7 @@ export function nativeCompanyContextFixture() {
 		coworkersTruncated: false,
 		job: source("job", identity.runId, '{"schema":"qorpera.session-turn-run/v1"}'),
 		jobSpecification: source("job_spec", identity.staffAgentId, "Own the company onboarding."),
+		continuation: null,
 	};
 	return { ...fixture, context, source };
 }

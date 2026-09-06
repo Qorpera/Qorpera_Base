@@ -8,17 +8,17 @@
   "nativeBinarySha256": "2f2c26cfdfacebbcce848fb50cfaaa4e8d0aa3c6ec3c1009123ecf766c8335f7",
   "components": {
     "kernel": "6dccd8e532fb4f3b996348aeab6dc26b10d07ae70d0ded9c58d7d4a21f7329fb",
-    "constitution": "8a44baa6c869bb0ac972e8d9cf43c5873f7fe19215f315a884dddbc145f20c7b",
+    "constitution": "d7727eac5fd37c5c6d231fd7ac130f52b1e8cccd6cb2a54519a9554e35b6a1ec",
     "toolCatalog": "f265324b3dc2fad9e40ada32e2ca74755746c02b7e79e5cc3e1a95258f146b54",
     "wakeAndSilence": "aa697f24f43a537d8ff6bd03fbc924305b8da441d308a0d8b34daade354afa89",
-    "contextComposer": "764ba384ee445d3f0ba4a7d67eee4a9c00afa3db1d528e240494d5e1b41d1c42",
+    "contextComposer": "b5ec45614833901709c5c91c1f98aa77ce5e0551e5199881772dfbb23d10ebf4",
     "providerBootstrap": "dd70ca30c25a67126778e6ec0d9e340baf2c99dbd2780fd7a4f2ee45b2bad18f",
-    "authorization": "236e038afe0ffb677745616c928bfb53521580eb15b7d64c00c4f904db4fcae6",
+    "authorization": "48571e43ea93c827c3a6aafdc8d0a0195d9420fb899d71582e34c109bb608b7d",
     "inboundSafety": "28c4df95977e3a000cb9a207ddd0fce8d33d0a40e0ef374d3859ffa1d6a4d77f",
-    "outboundSafety": "8bfffa5948808b3ea8a457433828c51dff9db903b6a092f31d5427b7a439dd1c",
+    "outboundSafety": "56a06b2c4b8f3f1dd36f5c86caaf5a691332cab167ffed74316f0b166cafa148",
     "interactionSurfaces": "a2b523e8e693e1a99a82c12e37d1206419d53b0a25b8986656b748ee7503364b",
     "workerLifecycle": "5864ba84e67fb62f992f40c87493f66332501ac81bfc8cf30df9af8688358f4f",
-    "memoryAndSkills": "2bc3e8ba587d8f0c32acf56f1bb13d5b34d50bdc69fe5a141f358c7fc2e8251a"
+    "memoryAndSkills": "41135af35f19ddf7efa56fef6730b35047bcc4e1e723c251351a4d5c17d0de21"
   },
   "implementation": {
     "deploy/ephemeral-runner/image/run-job": "e479e861b75ffe1d25090c7e7914c6f59b6d77819619e9b882c2c993e2dcfe4e",
@@ -58,7 +58,7 @@
     "packages/shell/src/cloud-identity-recovery-restore-main.ts": "4045d36563419775bf32d3f6fa3a7a1af7eecfc82d0977bc6eaa93f178f224ff",
     "packages/shell/src/cloud-identity-recovery-store.ts": "62d82f270c4c4fc9c06d6baa6b4fde171a269abf34d3d8654335063bd99c2c41",
     "packages/shell/src/cloud-identity-recovery.ts": "eb0959abe815a25321fbaee8e0b09780f628781c0d4df96da2aa9efdcaacff81",
-    "packages/shell/src/cloud-native-company-context.ts": "22e3a08b00e90e55d10b97a5303a9abd352a51f844ae6c243fd01daaac00eebc",
+    "packages/shell/src/cloud-native-company-context.ts": "9e6e472935b864bece02d91d9318f016feb1ca0d4c843a1c2bae00a4f9057c7d",
     "packages/shell/src/cloud-native-company-objects.ts": "3b06e54cde248c4f628a064c57f21a0fe666e30082fc5a25975c1a8183cf41ab",
     "packages/shell/src/cloud-native-company-runner.ts": "cd3079b8e083826ed86e6f19f4b05008882b3c81821c4367dc64fa9cc50614ea",
     "packages/shell/src/cloud-native-company-runtime.ts": "9c6a732a5bee496ba42714a1de5dd11cd97eaa53838e35599699bbde7269cbea",
@@ -75,7 +75,7 @@
     "packages/shell/src/cloud-native-subscription-control.ts": "4c2a3c2e8206bd401f49501205f94e24780738fd13fc70f4c2ebf222994845da",
     "packages/shell/src/cloud-native-tool-authority.ts": "87951da3e3c37fd40c2e1d5daafb25dd33d4262845fe7f6bd3d12895ff945c55",
     "packages/shell/src/cloud-native-tool-boundary.ts": "64261d46ae1c6d446b28ff1defb5587d6869917218a4a73e341932fcba750341",
-    "packages/shell/src/cloud-native-tool-operations.ts": "a687beb264c78db0d191ac2efab477c828341325f598c8edd280e8a19363845e",
+    "packages/shell/src/cloud-native-tool-operations.ts": "dc723a50c800766bcc6d0d7caab66a9fa85a340df0a525e787003adf896d9dc2",
     "packages/shell/src/cloud-object-store.ts": "6824bedfd92983684fcc5899ad32ba8e4935f5056abd91ed5c5392a6bd077e18",
     "packages/shell/src/cloud-request.ts": "be95cc11728483eac4bc82e2b1c536d66451a6f8cf502e163d698a5bf37986f1",
     "packages/shell/src/cloud-responsibility-tools.ts": "93b29193b6526d7ac11c177aba97c3ed952d48878105408850597151daac5887",
@@ -107,7 +107,7 @@
     "packages/shell/src/lxd-runner-bootstrap-main.ts": "94fb6c6d97ef2deae6284f88a3e33f46705a5dd0da426328364a98f9ad63fc6c",
     "packages/shell/src/lxd-runner-bootstrap.ts": "2f263313bdce64266a8c3f647a9e543abc0852f203b180fa2c2ecb255f0359f0",
     "packages/shell/src/systemd-credential.ts": "1d3eb8038a369c58418cbd8248aecf457662cbb3430cc84847235c2222a82478",
-    "scripts/generate-cloud-runtime-bundle.mjs": "bf085b0769976ac4d9e788e9d14ac0fd55161fdaa383e2dcb476e2b67af849f4",
+    "scripts/generate-cloud-runtime-bundle.mjs": "9e40403d3e5538c21b2f9edde7d1cf03687c8321b92fc399adaa15224fdee2e6",
     "scripts/native-company-artifact.mjs": "e394bc799104f188769de07cd3be14e6c732a1a672113ea45d349a29d8e0ca63",
     "scripts/package-ephemeral-runner.mjs": "13fba93c7761b15b2a2b5d9476ae4329f0d25d28a66fe19c5cbf45c2ebb6ab37",
     "scripts/package-lxd-runner-guest.mjs": "7423dd928cce10413e8adb27caf171730acdbbabfdcff21f044f8687f51a0f9f",
@@ -244,6 +244,10 @@
     "supabase/migrations/20260906000200_runtime_bundle_activation_v9.sql": "72fecd725b02426fa47856f641d957660b6fa87284efb041d8a06c60cf0b410f",
     "supabase/migrations/20260906000300_runtime_sponsor_handoff_capacity.sql": "b60123dd0e8b4f632b56dc8e30a9532338050d93ede1dea7a406e9de4b70c524",
     "supabase/migrations/20260906000400_runtime_bundle_activation_v10.sql": "ae7946b32c22e2f06317822b49ddf674cac41fb8471a8d506cb3b9f68743274d",
-    "supabase/migrations/20260906000500_runtime_handoff_launch_provenance.sql": "870a3eb3d6c784b7ec0e0e63be158b2b490a144ac93b52d4a6f8b8713afa49ce"
+    "supabase/migrations/20260906000500_runtime_handoff_launch_provenance.sql": "870a3eb3d6c784b7ec0e0e63be158b2b490a144ac93b52d4a6f8b8713afa49ce",
+    "supabase/migrations/20260906000600_runtime_bundle_activation_v11.sql": "80da51259dccdc5e0bd8f14040a70246ddd81d59929676ceab18f0706f184743",
+    "supabase/migrations/20260906000700_runtime_autonomous_withdrawal_fence.sql": "096833418286b4914289759994ac6e9ede8b2745a9237b12dd777eaab218f0de",
+    "supabase/migrations/20260906000800_runtime_native_lease_lifecycle.sql": "d58e5cdbbd192567a1c9151ceb84adb6734d458541a897a5039c95ca4b62f5c1",
+    "supabase/migrations/20260906000900_runtime_confirmed_work_continuation.sql": "670d9958820111a5543bbe40e19dc173b7c2df0964ddd39c658c46ad71b81fa0"
   }
 }
