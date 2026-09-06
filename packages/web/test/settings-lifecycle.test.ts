@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { RealtimeClient } from "@supabase/supabase-js";
+import { REALTIME_SUBSCRIBE_STATES, RealtimeClient } from "@supabase/supabase-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
 import { AuthController } from "../src/app/auth.ts";
@@ -7,7 +7,7 @@ import { CompanyController } from "../src/app/company.ts";
 import { SettingsView } from "../src/app/views/settings.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type { HostedAccountEntitlement } from "../src/cloud/types.ts";
-import { deferred, fixture, profileA, profileB, session, settle, userA, userB } from "./fixtures.ts";
+import { deferred, fixture, profileA, profileB, session, settle, team, userA, userB } from "./fixtures.ts";
 
 let dispose: (() => void) | undefined;
 beforeEach(() => {
@@ -39,6 +39,20 @@ function click(root: Element, selector: string) {
 function open(root: Element) {
 	click(root, ".account-trigger");
 	click(root, '[data-account-action="settings"]');
+}
+
+function confirmCompanyRemoval(root: Element, deleting: boolean, profile = profileA) {
+	root.querySelector<HTMLDetailsElement>(".company-danger")!.open = true;
+	click(root, ".company-danger button");
+	const dialog = document.querySelector('[role="alertdialog"]')!;
+	if (deleting) {
+		const input = dialog.querySelector("input")!;
+		input.value = profile.profileName;
+		input.dispatchEvent(new Event("input"));
+	}
+	[...dialog.querySelectorAll("button")]
+		.find((button) => button.textContent === (deleting ? "Delete company" : "Leave"))!
+		.click();
 }
 
 function realtimeFixture() {
@@ -91,7 +105,14 @@ describe("settings session lifecycle", () => {
 			auth = new AuthController(f.cloud);
 		await auth.start();
 		const company = new CompanyController(f.api, profileA, userA.id);
-		const view = new SettingsView(f.api, auth, [profileA], company, () => {});
+		const view = new SettingsView(
+			f.api,
+			auth,
+			[profileA],
+			company,
+			() => {},
+			() => {},
+		);
 		document.body.append(view.el);
 		dispose = () => {
 			view.dispose();
@@ -243,6 +264,218 @@ describe("settings session lifecycle", () => {
 		expect(f.root.querySelector(".settings-overlay")).toBeNull();
 		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(false);
 		expect(f.root.querySelector("main")?.textContent).toContain("Your access to this company was revoked");
+	});
+	it("shows an initial team failure and recovers on retry with healthy Realtime", async () => {
+		history.replaceState(null, "", "/#/");
+		const fixtureState = fixture();
+		vi.mocked(fixtureState.api.getTeam).mockRejectedValue(new Error("Team temporarily unavailable"));
+		const f = await setup(fixtureState);
+		open(f.root);
+		click(f.root, "#settings-tab-policy");
+		const spending = f.root.querySelector<HTMLSelectElement>('select[aria-label="Spending"]')!;
+		spending.value = "auto";
+		spending.dispatchEvent(new Event("change"));
+		click(f.root, "#settings-tab-company");
+		const channel = vi.mocked(f.cloud.supabase.channel).mock.results[0]!.value;
+		vi.mocked(channel.subscribe).mock.calls[0]![0]!(REALTIME_SUBSCRIBE_STATES.SUBSCRIBED);
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(f.api.getTeam).toHaveBeenCalledTimes(1);
+		expect(f.root.querySelector(".settings-team")!.textContent).toContain("Team temporarily unavailable");
+		expect(f.root.querySelector(".settings-team")!.textContent).not.toContain("Loading team");
+		[...f.root.querySelectorAll("button")].find((button) => button.textContent === "Retry company")!.click();
+		await draw();
+		expect(f.api.getTeam).toHaveBeenCalledTimes(2);
+		expect(f.root.querySelector(".settings-team")!.textContent).toContain("Team temporarily unavailable");
+		vi.mocked(f.api.getTeam).mockResolvedValue(team);
+		[...f.root.querySelectorAll("button")].find((button) => button.textContent === "Retry company")!.click();
+		await draw();
+		expect(f.root.querySelector(".settings-team")!.textContent).not.toContain("Team temporarily unavailable");
+		expect(f.root.querySelector(".company-danger")).not.toBeNull();
+		click(f.root, "#settings-tab-policy");
+		expect(f.root.querySelector('select[aria-label="Spending"]')).toBe(spending);
+		expect(spending.value).toBe("auto");
+		expect(f.cloud.rpc).not.toHaveBeenCalled();
+	});
+	it.each(["delete", "leave"])("closes settings and refreshes the hub after %s", async (action) => {
+		history.replaceState(null, "", "/#/");
+		const fixtureState = fixture();
+		vi.mocked(fixtureState.api.getTeam).mockResolvedValue({
+			...team,
+			role: action === "delete" ? "owner" : "contributor",
+		});
+		const removal = vi
+			.spyOn(fixtureState.api, action === "delete" ? "deleteProfile" : "leaveProfile")
+			.mockImplementation(async () => {
+				vi.mocked(fixtureState.api.listProfiles).mockResolvedValue([]);
+			});
+		const f = await setup(fixtureState);
+		open(f.root);
+		click(f.root, "#settings-tab-company");
+		await draw();
+		confirmCompanyRemoval(f.root, action === "delete");
+		await draw();
+		expect(removal).toHaveBeenCalledExactlyOnceWith(profileA.profileId);
+		expect(location.hash).toBe("#/");
+		expect(f.root.querySelector(".settings-overlay")).toBeNull();
+		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(false);
+		expect(f.root.querySelector(".company-card[href]")).toBeNull();
+		expect(f.api.listProfiles).toHaveBeenCalledTimes(2);
+		expect(f.cloud.supabase.removeChannel).toHaveBeenCalledTimes(1);
+		expect(f.cloud.rpc).not.toHaveBeenCalled();
+	});
+	it("keeps a different company's conversation and draft when settings deletes a company", async () => {
+		const f = await setup(realtimeFixture());
+		vi.spyOn(f.api, "deleteProfile").mockImplementation(async () => {
+			vi.mocked(f.api.listProfiles).mockResolvedValue([profileA]);
+		});
+		const composer = f.root.querySelector<HTMLTextAreaElement>("textarea")!;
+		composer.value = "Keep this conversation";
+		composer.dispatchEvent(new Event("input"));
+		open(f.root);
+		const picker = f.root.querySelector<HTMLSelectElement>(".settings-company-picker")!;
+		picker.value = profileB.profileId;
+		picker.dispatchEvent(new Event("change"));
+		click(f.root, "#settings-tab-company");
+		await draw();
+		confirmCompanyRemoval(f.root, true, profileB);
+		await draw();
+		expect(f.api.deleteProfile).toHaveBeenCalledExactlyOnceWith(profileB.profileId);
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		expect(f.root.querySelector(".settings-overlay")).toBeNull();
+		expect(f.root.querySelector("textarea")).toBe(composer);
+		expect(composer.value).toBe("Keep this conversation");
+		expect(f.cloud.supabase.removeChannel).toHaveBeenCalledTimes(1);
+		expect(f.cloud.rpc).not.toHaveBeenCalled();
+	});
+	it("keeps settings and company membership after a failed deletion", async () => {
+		history.replaceState(null, "", "/#/");
+		const f = await setup();
+		vi.spyOn(f.api, "deleteProfile").mockRejectedValue(new Error("Deletion unavailable"));
+		open(f.root);
+		click(f.root, "#settings-tab-company");
+		await draw();
+		confirmCompanyRemoval(f.root, true);
+		await draw();
+		expect(f.root.querySelector(".settings-team")!.textContent).toContain("Deletion unavailable");
+		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(true);
+		expect(f.root.querySelector(".company-card[href]")!.textContent).toContain(profileA.profileName);
+		expect(f.api.listProfiles).toHaveBeenCalledTimes(1);
+	});
+	it("refreshes the hub even when revocation arrives before the deletion response", async () => {
+		history.replaceState(null, "", "/#/");
+		const f = await setup(),
+			pending = deferred<void>();
+		vi.spyOn(f.api, "deleteProfile").mockReturnValue(pending.promise);
+		open(f.root);
+		click(f.root, "#settings-tab-company");
+		await draw();
+		confirmCompanyRemoval(f.root, true);
+		await draw();
+		vi.mocked(f.api.getTeam).mockRejectedValue(
+			new CloudRpcError("getTeam", { code: "42501", message: "Access revoked" }),
+		);
+		f.hints.get("qorpera_profile_access_state")!();
+		await draw();
+		expect(f.root.querySelector(".settings-overlay")).toBeNull();
+		vi.mocked(f.api.listProfiles).mockResolvedValue([]);
+		pending.resolve();
+		await draw();
+		expect(f.api.listProfiles).toHaveBeenCalledTimes(2);
+		expect(f.root.querySelector(".company-card[href]")).toBeNull();
+		expect(f.cloud.rpc).not.toHaveBeenCalled();
+	});
+	it("ignores a deletion response from a previous account", async () => {
+		history.replaceState(null, "", "/#/");
+		const f = await setup(),
+			pending = deferred<void>();
+		vi.spyOn(f.api, "deleteProfile").mockReturnValue(pending.promise);
+		open(f.root);
+		click(f.root, "#settings-tab-company");
+		await draw();
+		confirmCompanyRemoval(f.root, true);
+		await draw();
+		vi.mocked(f.api.listProfiles).mockResolvedValue([profileB]);
+		f.auth(userB);
+		await draw();
+		open(f.root);
+		click(f.root, "#settings-tab-company");
+		await draw();
+		const settings = f.root.querySelector(".settings-overlay");
+		const reads = vi.mocked(f.api.listProfiles).mock.calls.length;
+		pending.resolve();
+		await draw();
+		expect(f.root.querySelector(".settings-overlay")).toBe(settings);
+		expect(settings!.textContent).toContain(profileB.profileName);
+		expect(f.api.listProfiles).toHaveBeenCalledTimes(reads);
+		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(true);
+	});
+	it("keeps a newer settings session open when an old deletion completes", async () => {
+		history.replaceState(null, "", "/#/");
+		const f = await setup(),
+			pending = deferred<void>();
+		vi.spyOn(f.api, "deleteProfile").mockReturnValue(pending.promise);
+		open(f.root);
+		click(f.root, "#settings-tab-company");
+		await draw();
+		confirmCompanyRemoval(f.root, true);
+		await draw();
+		click(f.root, ".settings-close");
+		open(f.root);
+		const settings = f.root.querySelector(".settings-overlay");
+		vi.mocked(f.api.listProfiles).mockResolvedValue([]);
+		pending.resolve();
+		await draw();
+		expect(f.root.querySelector(".settings-overlay")).toBe(settings);
+		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(true);
+		click(f.root, "#settings-tab-company");
+		expect(settings!.textContent).toContain("Choose a company");
+		expect(f.api.listProfiles).toHaveBeenCalledTimes(2);
+	});
+	it("returns the standalone Team page to an updated hub after leaving", async () => {
+		history.replaceState(null, "", `/#/c/${profileA.profileId}/team`);
+		const fixtureState = fixture();
+		vi.mocked(fixtureState.api.getTeam).mockResolvedValue({ ...team, role: "contributor" });
+		vi.spyOn(fixtureState.api, "leaveProfile").mockImplementation(async () => {
+			vi.mocked(fixtureState.api.listProfiles).mockResolvedValue([]);
+		});
+		const f = await setup(fixtureState);
+		confirmCompanyRemoval(f.root, false);
+		await draw();
+		expect(location.hash).toBe("#/");
+		expect(f.root.querySelector(".team")).toBeNull();
+		expect(f.root.querySelector(".company-card[href]")).toBeNull();
+		expect(f.api.listProfiles).toHaveBeenCalledTimes(2);
+		expect(f.cloud.supabase.removeChannel).toHaveBeenCalledTimes(1);
+		expect(f.cloud.rpc).not.toHaveBeenCalled();
+	});
+	it("does not restore a removed company from an older company-list request", async () => {
+		history.replaceState(null, "", "/#/");
+		const fixtureState = fixture(),
+			pending = deferred<(typeof profileA)[]>();
+		vi.mocked(fixtureState.api.listProfiles).mockResolvedValue([profileA, profileB]);
+		vi.spyOn(fixtureState.api, "deleteProfile").mockResolvedValue(undefined);
+		const f = await setup(fixtureState);
+		vi.mocked(f.api.listProfiles).mockReturnValueOnce(pending.promise).mockResolvedValue([]);
+		open(f.root);
+		const picker = f.root.querySelector<HTMLSelectElement>(".settings-company-picker")!;
+		picker.value = profileA.profileId;
+		picker.dispatchEvent(new Event("change"));
+		click(f.root, "#settings-tab-company");
+		await draw();
+		confirmCompanyRemoval(f.root, true);
+		await draw();
+		open(f.root);
+		click(f.root, "#settings-tab-company");
+		await draw();
+		confirmCompanyRemoval(f.root, true, profileB);
+		await draw();
+		pending.resolve([profileB]);
+		await draw();
+		expect(f.api.deleteProfile).toHaveBeenCalledTimes(2);
+		expect(f.root.querySelector(".company-card[href]")).toBeNull();
+		expect(f.api.listProfiles).toHaveBeenCalledTimes(3);
+		expect(f.root.querySelector(".settings-overlay")).toBeNull();
+		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 	it.each(["policy", "connections"])(
 		"keeps the focused %s control through an unrelated company refresh",

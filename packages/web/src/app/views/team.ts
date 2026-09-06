@@ -4,7 +4,6 @@ import type { HostedFriend, HostedProfileRole } from "../../cloud/types.ts";
 import { button, confirmDialog, h, initials, notice, replace, spinner } from "../../ui/dom.ts";
 import { preserveFormDrafts } from "../../ui/forms.ts";
 import type { CompanyController } from "../company.ts";
-import { navigate } from "../router.ts";
 
 const ROLES: Exclude<HostedProfileRole, "owner">[] = ["viewer", "contributor", "admin"];
 
@@ -14,7 +13,12 @@ export function renderTeam(
 	container: HTMLElement,
 	feedback: { message?: string; error?: string },
 	setFeedback: (next: { message?: string; error?: string }) => void,
-	options: { friends?: HostedFriend[]; signal?: AbortSignal; embedded?: boolean } = {},
+	options: {
+		friends?: HostedFriend[];
+		signal?: AbortSignal;
+		embedded?: boolean;
+		onCompanyRemoved: (profileId: string) => void;
+	},
 ): void {
 	const state = company.store.get();
 	const team = state.team;
@@ -44,12 +48,24 @@ export function renderTeam(
 		options.embedded ? null : h("h1", null, "Team"),
 		feedback.error ? notice("danger", feedback.error) : null,
 		feedback.message ? notice("ok", feedback.message) : null,
+		state.error && !state.accessLost
+			? notice(
+					"danger",
+					state.error,
+					button(
+						"Retry company",
+						() => {
+							if (current() && !company.store.get().loading) void company.refreshAll();
+						},
+						{ disabled: state.loading },
+					),
+				)
+			: null,
 	);
-	if (!team)
-		content.append(
-			state.accessLost ? notice("danger", "Your access to this company was revoked.") : spinner("Loading team"),
-		);
-	else {
+	if (!team) {
+		if (state.accessLost) content.append(notice("danger", "Your access to this company was revoked."));
+		else if (!state.error) content.append(spinner("Loading team"));
+	} else {
 		const people = h("div", { class: "company-people", "aria-label": "Company members" });
 		for (const member of team.members) {
 			const editable =
@@ -250,7 +266,8 @@ export function renderTeam(
 							try {
 								if (deleting) await api.deleteProfile(profile.profileId);
 								else await api.leaveProfile(profile.profileId);
-								if (current()) navigate({ name: "hub" });
+								// Membership revocation may stop this company before the RPC returns.
+								options.onCompanyRemoved(profile.profileId);
 							} catch (error) {
 								if (current()) setFeedback({ error: describeError(error) });
 							}

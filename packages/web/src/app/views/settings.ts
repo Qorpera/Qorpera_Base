@@ -28,6 +28,7 @@ export class SettingsView {
 	readonly #api: CloudApi;
 	readonly #auth: AuthController;
 	readonly #close: () => void;
+	readonly #companyRemoved: (profileId: string) => void;
 	readonly #lifetime = new AbortController();
 	readonly #content = h("div", { class: "settings-content", id: "settings-content", role: "tabpanel", tabindex: "0" });
 	readonly #panels = new Map<Tab, HTMLElement>();
@@ -53,10 +54,12 @@ export class SettingsView {
 		profiles: HostedProfile[],
 		company: CompanyController | undefined,
 		close: () => void,
+		companyRemoved: (profileId: string) => void,
 	) {
 		this.#api = api;
 		this.#auth = auth;
 		this.#close = close;
+		this.#companyRemoved = companyRemoved;
 		this.#borrowedCompany = company;
 		const search = h("input", { type: "search", placeholder: "Search settings", "aria-label": "Search settings" });
 		const empty = h("p", { class: "muted small", hidden: true }, "No settings found.");
@@ -366,7 +369,15 @@ export class SettingsView {
 				this.#feedback = next;
 				this.#drawCompany();
 			},
-			{ friends: this.#friends, signal: this.#companyLifetime.signal, embedded: true },
+			{
+				friends: this.#friends,
+				signal: this.#companyLifetime.signal,
+				embedded: true,
+				onCompanyRemoved: (profileId) => {
+					if (!this.#lifetime.signal.aborted && this.#company === company) this.#close();
+					this.#companyRemoved(profileId);
+				},
+			},
 		);
 	}
 }

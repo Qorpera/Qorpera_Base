@@ -58,8 +58,13 @@ export function mountApplication(
 	}
 	function openSettings(): void {
 		if (settings || !auth.userId) return;
-		settings = new SettingsView(api, auth, profiles, company?.store.get().accessLost ? undefined : company, () =>
-			closeSettings(),
+		settings = new SettingsView(
+			api,
+			auth,
+			profiles,
+			company?.store.get().accessLost ? undefined : company,
+			() => closeSettings(),
+			companyRemovedHandler(),
 		);
 		frame.inert = true;
 		root.append(settings.el);
@@ -200,6 +205,20 @@ export function mountApplication(
 		homeReason = undefined;
 		teamFeedback = {};
 		meetState = {};
+	}
+
+	function companyRemovedHandler(): (profileId: string) => void {
+		const currentHub = hub;
+		return (profileId) => {
+			if (disposed || hub !== currentHub) return;
+			void currentHub.companyRemoved(profileId);
+			const route = currentRoute();
+			if (route.name === "company" && route.profileId === profileId) {
+				closeSettings(false);
+				teardownCompany();
+				navigate({ name: "hub" });
+			}
+		};
 	}
 
 	async function ensureCompany(profileId: string): Promise<CompanyController | undefined> {
@@ -499,11 +518,18 @@ export function mountApplication(
 				renderOrganization(controller, main);
 				return;
 			case "team":
-				renderTeam(api, controller, main, teamFeedback, (next) => {
-					if (!current() || company !== controller) return;
-					teamFeedback = next;
-					render();
-				});
+				renderTeam(
+					api,
+					controller,
+					main,
+					teamFeedback,
+					(next) => {
+						if (!current() || company !== controller) return;
+						teamFeedback = next;
+						render();
+					},
+					{ onCompanyRemoved: companyRemovedHandler() },
+				);
 				return;
 		}
 	}

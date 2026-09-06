@@ -30,6 +30,7 @@ export class HubController {
 	readonly #creationKey?: string;
 	#disposed = false;
 	#refresh: Promise<void> | undefined;
+	#membershipRevision = 0;
 	#creation: { name: string; clientCreationId: string } | undefined;
 
 	constructor(api: CloudApi, userId?: string) {
@@ -70,16 +71,28 @@ export class HubController {
 		return this.#refresh;
 	}
 
+	async companyRemoved(profileId: string): Promise<void> {
+		if (this.#disposed) return;
+		this.#membershipRevision++;
+		this.store.set(({ profiles }) => ({
+			profiles: profiles.filter((profile) => profile.profileId !== profileId),
+		}));
+		// Finish an older request before starting the authoritative post-removal read.
+		await this.#refresh;
+		await this.refresh();
+	}
+
 	async #load(): Promise<void> {
 		this.store.set({ loading: true, error: undefined });
+		const revision = this.#membershipRevision;
 		try {
 			const [profiles, invitations] = await Promise.all([
 				this.#api.listProfiles(),
 				this.#api.listIncomingInvitations(),
 			]);
-			this.store.set({ profiles, invitations, loading: false });
+			if (revision === this.#membershipRevision) this.store.set({ profiles, invitations, loading: false });
 		} catch (error) {
-			this.store.set({ loading: false, error: describeError(error) });
+			if (revision === this.#membershipRevision) this.store.set({ loading: false, error: describeError(error) });
 		}
 	}
 
