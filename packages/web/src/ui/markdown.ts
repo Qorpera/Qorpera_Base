@@ -31,7 +31,7 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0): Node[] {
 			case "def":
 				return [];
 			case "heading":
-				return [h(token.depth <= 2 ? "h2" : "h3", null, children())];
+				return [h(token.depth <= 2 ? "h2" : "h3", { "data-heading-level": token.depth }, children())];
 			case "paragraph":
 				return [h("p", null, children())];
 			case "blockquote":
@@ -126,5 +126,33 @@ export function markdown(source: string): HTMLElement {
 		);
 	} catch {
 		return h("div", { class: "text" }, source);
+	}
+}
+
+/** Match the desktop's paragraph bubbles without splitting structured blocks.
+ * Lex the whole send once so reference links can resolve across bubbles. This
+ * is display grouping only: all admitted text stays in its canonical message. */
+export function markdownBubbles(source: string): HTMLElement[] {
+	try {
+		const tokens = Lexer.lex(source, { gfm: true, breaks: true }) as MarkedToken[];
+		const groups: MarkedToken[][] = [];
+		let boundary = false;
+		for (const token of tokens) {
+			if (token.type === "space" || token.type === "def") {
+				boundary = true;
+				continue;
+			}
+			const previous = groups.at(-1);
+			const followsIntroduction =
+				(token.type === "list" || token.type === "table") && /[:：]\s*$/.test(previous?.at(-1)?.raw ?? "");
+			if (!previous || (boundary && !followsIntroduction)) groups.push([token]);
+			else previous.push(token);
+			boundary = /\n[\t ]*\n[\t ]*$/.test(token.raw);
+		}
+		return groups.length
+			? groups.map((group) => h("div", { class: "message-prose" }, renderTokens(group)))
+			: [markdown(source)];
+	} catch {
+		return [h("div", { class: "text" }, source)];
 	}
 }

@@ -4,7 +4,7 @@ import { AttachmentTray } from "../../ui/attachments.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { badge, fmtTime, h, icon, notice, replace, spinner } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
-import { markdown } from "../../ui/markdown.ts";
+import { markdownBubbles } from "../../ui/markdown.ts";
 import type { CompanyController, ConversationState } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
@@ -301,7 +301,7 @@ export class ConversationView {
 		const activity = this.#company.activityFor(session?.staffAgentId);
 		const canWrite = company.team?.capabilities.write === true && session?.status === "open";
 		this.#renderHeader(session, agent);
-		this.#renderMessages(conversation, agent?.displayName ?? session?.title ?? "Agent", agent);
+		this.#renderMessages(conversation, agent?.displayName ?? session?.title ?? "Agent");
 		this.#renderStatus(conversation, activity?.activity, canWrite, session);
 		this.#composer.disabled = !canWrite || conversation.sending;
 		this.#send.disabled =
@@ -336,7 +336,7 @@ export class ConversationView {
 		replace(this.#identity, agentFigure(agent, title, { size: 32 }), h("h1", null, title), icon("chevron"));
 	}
 
-	#renderMessages(conversation: ConversationState, agentName: string, agent: HostedStaffAgent | undefined): void {
+	#renderMessages(conversation: ConversationState, agentName: string): void {
 		const items: TranscriptItem[] = [
 			...conversation.projection.items,
 			...conversation.optimistic.map(
@@ -355,7 +355,6 @@ export class ConversationView {
 		const key = JSON.stringify([
 			items,
 			agentName,
-			agent?.appearance,
 			this.#company.store.get().team?.members,
 			conversation.projection.hiddenCount,
 			conversation.loading,
@@ -368,6 +367,10 @@ export class ConversationView {
 			if (item.kind === "member" || item.kind === "agent") {
 				const mine = item.kind === "member" && item.authorUserId === this.#company.userId;
 				const author = item.kind === "agent" ? agentName : this.#company.memberName(item.authorUserId);
+				const bodies =
+					item.kind === "agent"
+						? markdownBubbles(item.text)
+						: [h("div", { class: "text" }, item.text || (item.attachmentCount ? "" : "(empty)"))];
 				nodes.push(
 					h(
 						"article",
@@ -376,46 +379,45 @@ export class ConversationView {
 								"message",
 								item.kind === "agent" ? "from-agent" : "from-member",
 								mine && "mine",
+								item.phase === "progress" && "message-progress",
 								item.pending && `pending-${item.pending}`,
 							]
 								.filter(Boolean)
 								.join(" "),
+							"aria-label": `${author} · ${fmtTime(item.createdAt)}`,
+							title: `${author} · ${fmtTime(item.createdAt)}`,
+							dataset: { messageId: item.id },
 						},
-						item.kind === "agent"
-							? agentFigure(agent, agentName, { size: 26 })
-							: h("span", { class: "avatar small" }, author.slice(0, 1).toUpperCase()),
-						h(
-							"div",
-							{ class: "bubble" },
+						item.kind === "member" && !mine ? h("div", { class: "message-author" }, author) : null,
+						...bodies.map((body, index) =>
 							h(
 								"div",
-								{ class: "meta" },
-								h("span", { class: "author" }, author),
-								item.phase === "progress"
-									? badge("progress", "neutral", "A progress message; the agent's turn is not finished")
+								{ class: "bubble" },
+								body,
+								index === bodies.length - 1 && item.attachmentCount
+									? h(
+											"div",
+											{ class: "muted small" },
+											icon("file"),
+											`${item.attachmentCount} attachment${item.attachmentCount === 1 ? "" : "s"} · preview unavailable`,
+										)
 									: null,
-								item.pending === "queued"
-									? badge("queued", "neutral", "Waiting for the agent to pick this up")
-									: null,
-								item.pending === "processing" ? badge("processing", "ok") : null,
-								item.pending === "failed" ? badge("failed", "danger", item.failureReason ?? "") : null,
-								h("time", { datetime: item.createdAt }, fmtTime(item.createdAt)),
 							),
-							item.kind === "agent"
-								? markdown(item.text)
-								: h("div", { class: "text" }, item.text || (item.attachmentCount ? "" : "(empty)")),
-							item.attachmentCount
-								? h(
-										"div",
-										{ class: "muted small" },
-										icon("file"),
-										`${item.attachmentCount} attachment${item.attachmentCount === 1 ? "" : "s"} · preview unavailable`,
-									)
-								: null,
-							item.pending === "failed" && item.failureReason
-								? h("div", { class: "muted small" }, item.failureReason)
-								: null,
 						),
+						item.phase === "progress"
+							? h("div", { class: "message-caption", title: "The agent's turn is not finished" }, "Progress")
+							: null,
+						item.pending
+							? h(
+									"div",
+									{ class: "message-caption" },
+									item.pending === "failed"
+										? `Failed${item.failureReason ? ` · ${item.failureReason}` : ""}`
+										: item.pending === "processing"
+											? "Processing"
+											: "Queued",
+								)
+							: null,
 					),
 				);
 			} else if (item.kind === "authorization_request" || item.kind === "authorization_decision") {

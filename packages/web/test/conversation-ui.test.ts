@@ -6,9 +6,11 @@ import { parseRoute } from "../src/app/router.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import { NewConversationView } from "../src/app/views/new-conversation.ts";
 import type { WorkspaceActions } from "../src/app/workspace-actions.ts";
+import type { TranscriptMessage } from "../src/cloud/transcript.ts";
 import { AttachmentTray } from "../src/ui/attachments.ts";
-import { markdown } from "../src/ui/markdown.ts";
-import { deferred, fixture, id, profileA, session, settle, staff, team, userA } from "./fixtures.ts";
+import { fmtTime } from "../src/ui/dom.ts";
+import { markdown, markdownBubbles } from "../src/ui/markdown.ts";
+import { deferred, fixture, id, profileA, session, settle, staff, team, timestamp, userA, userB } from "./fixtures.ts";
 
 let dispose: (() => void) | undefined;
 beforeEach(() => {
@@ -67,6 +69,69 @@ function attach(root: ParentNode, files: File[]): void {
 }
 
 describe("conversation UI boundaries", () => {
+	it("groups agent bubbles within one message while retaining authors, timestamps and delivery state", () => {
+		const f = setup();
+		f.company.store.set({
+			team: {
+				...team,
+				members: [
+					{ userId: userB.id, email: userB.email!, displayName: "Anna", role: "contributor", joinedAt: timestamp },
+				],
+			},
+		});
+		const agent: TranscriptMessage = {
+			kind: "agent",
+			id: id(80),
+			sequence: 1,
+			text: "First paragraph.\n\nSecond paragraph.",
+			attachmentCount: 1,
+			phase: "progress",
+			createdAt: timestamp,
+		};
+		const member: TranscriptMessage = {
+			kind: "member",
+			id: id(81),
+			sequence: 2,
+			text: "**Literal** member text\n\nAnother paragraph.",
+			attachmentCount: 0,
+			authorUserId: userB.id,
+			createdAt: timestamp,
+		};
+		const mine: TranscriptMessage = {
+			...member,
+			id: id(82),
+			sequence: 3,
+			authorUserId: userA.id,
+			pending: "failed",
+			failureReason: "Please retry",
+		};
+		const items = [agent, member, mine];
+		f.company.conversation(session.sessionId).set({ projection: { items, hiddenCount: 1, lastSequence: 3 } });
+		f.view.update();
+		const messages = f.view.el.querySelectorAll<HTMLElement>(".message");
+		expect(messages).toHaveLength(3);
+		expect(messages[0]?.dataset.messageId).toBe(agent.id);
+		expect(messages[0]?.querySelectorAll(".bubble")).toHaveLength(2);
+		expect(messages[0]?.getAttribute("aria-label")).toContain(staff.displayName);
+		expect(messages[0]?.title).toContain(fmtTime(timestamp));
+		expect(messages[0]?.querySelector(".message-caption")?.textContent).toBe("Progress");
+		expect(messages[0]?.querySelectorAll(".small")).toHaveLength(1);
+		expect(messages[0]?.querySelector(".small")?.textContent).toContain("1 attachment");
+		expect(messages[1]?.querySelector(".message-author")?.textContent).toBe("Anna");
+		expect(messages[1]?.querySelectorAll(".bubble")).toHaveLength(1);
+		expect(messages[1]?.querySelector(".text")?.textContent).toBe(member.text);
+		expect(messages[2]?.querySelector(".message-caption")?.textContent).toBe("Failed · Please retry");
+		expect(f.view.el.querySelector(".message .avatar, .message .figure, .message .meta")).toBeNull();
+		expect(f.company.conversation(session.sessionId).get().projection.items).toBe(items);
+		for (const pending of ["queued", "processing"] as const) {
+			f.company.conversation(session.sessionId).set({
+				projection: { items: [{ ...mine, pending }], hiddenCount: 0, lastSequence: 3 },
+			});
+			f.view.update();
+			expect(f.view.el.querySelector(".message-caption")?.textContent?.toLowerCase()).toBe(pending);
+		}
+		expect(f.cloud.rpc).not.toHaveBeenCalled();
+	});
 	it("closes attachment previews and clears private drafts when the account signs out", async () => {
 		const f = fixture(),
 			root = document.createElement("div");
@@ -205,6 +270,41 @@ describe("local attachment validation", () => {
 });
 
 describe("safe formatted messages", () => {
+	it("splits paragraphs while keeping blank lines inside lists, quotes and code intact", () => {
+		const bubbles = markdownBubbles(
+			"First.\n\nSecond.\n\n- one\n\n  continuation\n\n- two\n\n```ts\nconst x = 1;\n\nconst y = 2;\n```\n\n> Quote\n>\n> Another paragraph\n\nLast.",
+		);
+		expect(bubbles).toHaveLength(6);
+		expect(bubbles[0]?.textContent).toBe("First.");
+		expect(bubbles[1]?.textContent).toBe("Second.");
+		expect(bubbles[2]?.querySelectorAll("li")).toHaveLength(2);
+		expect(bubbles[2]?.textContent).toContain("continuation");
+		expect(bubbles[3]?.querySelector("pre code")?.textContent).toBe("const x = 1;\n\nconst y = 2;");
+		expect(bubbles[4]?.querySelectorAll("blockquote p")).toHaveLength(2);
+		expect(bubbles[5]?.textContent).toBe("Last.");
+	});
+	it("keeps introductions with lists and tables and resolves references across bubbles", () => {
+		const bubbles = markdownBubbles(
+			"See [brief][plan].\n\nTasks:\n\n- one\n- two\n\nStatus:\n\n| Item | State |\n| --- | --- |\n| Brief | Ready |\n\n[plan]: https://example.invalid/brief",
+		);
+		expect(bubbles).toHaveLength(3);
+		expect(bubbles[0]?.querySelector("a")?.href).toBe("https://example.invalid/brief");
+		expect(bubbles[1]?.querySelector("p")?.textContent).toBe("Tasks:");
+		expect(bubbles[1]?.querySelectorAll("li")).toHaveLength(2);
+		expect(bubbles[2]?.querySelector("p")?.textContent).toBe("Status:");
+		expect(bubbles[2]?.querySelectorAll("td")).toHaveLength(2);
+	});
+	it("preserves public progress and file summaries and keeps unsafe markup inert after grouping", () => {
+		const bubbles = markdownBubbles(
+			"Working on that now.\n\nFiles changed:\n\n- brief.md\n\n<img src=x onerror=alert(1)>\n\n[Unsafe](javascript:alert%281%29)\n\n![Track](https://example.invalid/image.png)",
+		);
+		expect(bubbles.map((bubble) => bubble.textContent).join("\n")).toContain("Working on that now.");
+		expect(bubbles.map((bubble) => bubble.textContent).join("\n")).toContain("brief.md");
+		for (const bubble of bubbles) expect(bubble.querySelector("img, script, iframe")).toBeNull();
+		expect(bubbles.flatMap((bubble) => [...bubble.querySelectorAll("a")]).map((link) => link.protocol)).toEqual([
+			"https:",
+		]);
+	});
 	it("decodes text entities without activating encoded markup or destinations", () => {
 		const rendered = markdown("A &amp; B &copy; &lt;img src=x&gt; `&amp;` [Unsafe](jav&#x61;script:alert%281%29)");
 		expect(rendered.textContent).toBe("A & B © <img src=x> &amp; Unsafe");
