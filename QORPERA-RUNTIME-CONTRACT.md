@@ -13,6 +13,9 @@ superseded by the responsibility model, 2026-09-01; see section 14)
 
 **Azure backup/overflow deferred to post-build:** 2026-08-31
 
+**Wording correction ratified:** 2026-09-06 — section 5 and the section 19
+checkpoint no longer describe departments; no rule changes
+
 **Founder amendments ratified:** 2026-09-01 — responsibilities replace
 departments; live-document concurrency; Company Computer scale-out; usage
 limits and sponsor routing; failure-model chapter (implementation deferred);
@@ -71,6 +74,12 @@ whose implementation is deferred to partner testing (section 23); Company
 File implementation caps are defects (5.5); gated decisions queue until an
 authorized member is online (16.2); kernel ceilings and a founder stop (7.4);
 and the Co-Founder holds the company-level responsibilities (14.2).
+
+On 2026-09-06 the founder ratified a wording correction: the department
+references that survived the 2026-09-01 amendment in section 5 and in the
+section 19 implementation checkpoint now use the responsibility model's terms.
+The historical markers above and the rule in 14.1 that there is no department
+object are unchanged; no rule changes.
 
 ## 2. Product thesis
 
@@ -263,7 +272,7 @@ authorization.
 
 The Company File is the company's source of durable semantic truth. It stores
 the organization humans and agents reason about: staff and hire specifications,
-company vision and goals, department charters and measures, project state,
+company vision and goals, responsibility outcomes and measures, project state,
 decisions, playbooks and skills, routine intent, todos, working material,
 artifacts, and governed memory. Enforcement tables may materialize identities,
 schedules, indexes, dashboards, and leases, but they MUST remain transactionally
@@ -1466,31 +1475,32 @@ and agent principals; exact and subtree scopes; private ownership;
 target-bound grants; action provenance; effect-time revalidation; protected
 proposals; and the governed immutable path-mutation gateway. The organization
 extension adds one enforced company Co-Founder, resumable formation state,
-departments, responsibilities, measures, projects, staff assignments,
-department-scoped resources, canonical agent documents, bounded grant
-delegation, governed agent lifecycle, per-member private Co-Founder sessions,
-and exact Company File version bindings. Initial Company File creation seeds
-the canonical organization directories, a reference-only formation document,
-and the canonical Co-Founder agent document, then binds one silent kickoff to
-that exact agent path version. Recovering an already governed company advances
-at most one missing path per durable snapshot and preserves evolved canonical
-bytes. Service cutover projects every supplied organization document from its
-exact UTF-8 bytes in the same transaction and rejects missing, extra, stale, or
-projection-blind state. Department, project, and room grant references do not
-create membership; the corresponding canonical organization object remains
-the membership authority.
+responsibilities and their measures, projects, staff assignments,
+responsibility- and project-scoped resources, canonical agent documents,
+bounded grant delegation, governed agent lifecycle, per-member private
+Co-Founder sessions, and exact Company File version bindings. Initial Company
+File creation seeds the canonical organization directories, a reference-only
+formation document, and the canonical Co-Founder agent document, then binds
+one silent kickoff to that exact agent path version. Recovering an already
+governed company advances at most one missing path per durable snapshot and
+preserves evolved canonical bytes. Service cutover projects every supplied
+organization document from its exact UTF-8 bytes in the same transaction and
+rejects missing, extra, stale, or projection-blind state. Responsibility,
+project, and room grant references do not create membership; the corresponding
+canonical organization object remains the membership authority.
 
 The Order 0 source, disposable-database proofs, and replacement-client
 hierarchy reconstruction are therefore implemented. The hierarchy is rebuilt
-from closed cloud projections and keeps Co-Founder, department, project, room,
-active staff, and inactive organization semantics distinct; local recency is
-not authority. Production migration/cutover and live offline multi-member
-acceptance remain deployment gates. File-change wake delivery, room fan-out,
-formation workers, dashboards, connectors, routines, and behavioral overlays
-remain in their ratified later orders; they must not be confused with an
-absent live NAS mount or moved into a desktop-owned runtime. See
-[Runtime Step 0 organization implementation](deploy/first-node/RUNTIME-STEP-0-ORGANIZATION.md)
-for the exact source boundary and proof status.
+from closed cloud projections and keeps Co-Founder, responsibility, project,
+room, active staff, and inactive organization semantics distinct; local
+recency is not authority. Production migration/cutover and live offline
+multi-member acceptance remain deployment gates. File-change wake delivery,
+room fan-out, formation workers, dashboards, connectors, routines, and
+behavioral overlays remain in their ratified later orders; they must not be
+confused with an absent live NAS mount or moved into a desktop-owned runtime.
+See [Runtime Step 0 organization
+implementation](deploy/first-node/RUNTIME-STEP-0-ORGANIZATION.md) for the
+exact source boundary and proof status.
 
 Runtime step 1 now has an implemented cloud-native mouth: a run-bound MCP send
 tool, atomic canonical transcript writes, durable idempotency receipts, and

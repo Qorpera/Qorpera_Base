@@ -1340,3 +1340,34 @@ Follow-ups noted: August identity volumes moved by copy must be relabeled
 (size and adapter label) before the production provider accepts them; the
 first runner row `d79f7511…` stays `active` after its session expired
 (cosmetic, expiry by time).
+
+## 2026-09-06: wording correction ratified — remaining department references
+
+Founder statement, verbatim, in the Claude Code session after reviewing the
+exact diff: **"ratified, apply it and commit but don't push"**.
+
+The 2026-09-01 amendment replaced the department model with responsibilities,
+but five sentences kept the old words. They are corrected in place in
+`QORPERA-RUNTIME-CONTRACT.md`; no rule changes:
+
+| Where | Before | After |
+|---|---|---|
+| Section 5 | department charters and measures | responsibility outcomes and measures |
+| Section 19 checkpoint | departments, responsibilities, measures, projects, staff assignments, department-scoped resources | responsibilities and their measures, projects, staff assignments, responsibility- and project-scoped resources |
+| Section 19 checkpoint | Department, project, and room grant references do not create membership | Responsibility, project, and room grant references do not create membership |
+| Section 19 checkpoint | keeps Co-Founder, department, project, room, active staff … distinct | keeps Co-Founder, responsibility, project, room, active staff … distinct |
+
+The header gains a dated marker and section 1 gains one amendment-log
+sentence. The five remaining "department" lines are deliberate and unchanged:
+the header marker that records the superseded department form, the
+2026-09-01 amendment summary and log, and the 14.1 rule that there is no
+department object. `QORPERA-RUNTIME-CONTRACT-ADDENDUM.md` in the Step3 repo
+is the decision record of the replacement itself and is not edited.
+
+The corrected wording is also factually current: the Order 0 source was
+rewritten in place on 2026-09-02 (work block 1 above), and agent documents
+carry responsibility, project, room and resource grants.
+
+Committed on `fable/runtime-step3-wake-bus`, not pushed at the founder's
+instruction. The copy of the contract on `codex/steps-0-2-fable-handoff`
+lags this one and still needs mirroring once a canonical copy is named.
