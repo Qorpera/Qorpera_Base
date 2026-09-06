@@ -114,8 +114,8 @@ class FakeLxd implements LxdClient {
 	execCalls: string[][] = [];
 	deleteCalls: string[] = [];
 
-	async getInstance(_project: string, _name: string): Promise<LxdInstanceRecord | undefined> {
-		return this.instance ? structuredClone(this.instance) : undefined;
+	async getInstance(_project: string, name: string): Promise<LxdInstanceRecord | undefined> {
+		return this.instance?.name === name ? structuredClone(this.instance) : undefined;
 	}
 
 	async getInstanceState(): Promise<LxdInstanceStateRecord> {
@@ -464,6 +464,132 @@ describe("LXD cloud runner provider", () => {
 		});
 		await expect(backend.acquire(runId, request, new AbortController().signal)).rejects.toThrow("cannot be replayed");
 	});
+
+	it("continues a sponsor handoff in a fresh attempt while preserving the retired guest and recovery history", async () => {
+		const stateRoot = join(await root(), "state");
+		const settings = governedConfig(stateRoot);
+		const lxd = new FakeLxd();
+		const guest = new FakeGuest();
+		const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+		const provision = fetchProvisioner(requests);
+		const nextRunnerId = "20000000-0000-4000-8000-000000000099";
+		const fetcher: typeof fetch = async (input, init) => {
+			const response = await provision(input, init);
+			const value = (await response.json()) as Record<string, unknown>;
+			return Response.json({
+				...value,
+				runner_id: requests.at(-1)?.body.p_client_runner_id === runId ? runnerId : nextRunnerId,
+			});
+		};
+		const backend = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetcher);
+		const first = await backend.acquire(runId, work(), new AbortController().signal);
+		await backend.deliver(first, delivery(work()));
+		await backend.stop(first, "idle");
+		const firstJournalPath = join(stateRoot, runId, "journal.json");
+		// Retained pre-change records have no separate attempt or run metadata.
+		const firstJournal = JSON.parse(await readFile(firstJournalPath, "utf-8"));
+		delete firstJournal.runId;
+		delete firstJournal.attempt;
+		await writeFile(firstJournalPath, JSON.stringify(firstJournal));
+		const history = await readFile(firstJournalPath, "utf-8");
+		const oldRecovery = structuredClone(lxd.volumes.get(`native-recovery-${runId}`));
+		const resumedWork = {
+			...work(),
+			attempt: 2,
+			sponsor: {
+				...work().sponsor,
+				version: 2,
+				providerConnectionId: "20000000-0000-4000-8000-000000000098",
+			},
+		};
+		const second = await backend.acquire(runId, resumedWork, new AbortController().signal);
+		expect(second.runnerId).toBe(nextRunnerId);
+		expect(lxd.createCalls).toHaveLength(2);
+		expect(lxd.createCalls[1]?.name).not.toBe(lxd.createCalls[0]?.name);
+		const acquisitionId = String(requests[1]?.body.p_client_runner_id);
+		expect(acquisitionId).toMatch(/^[0-9a-f-]{36}$/);
+		expect(acquisitionId).not.toBe(runId);
+		expect(requests[1]?.body.p_run_id).toBe(runId);
+		expect(lxd.createVolumeCalls).toHaveLength(3);
+		expect(lxd.volumes.get(`native-recovery-${runId}`)).toEqual(oldRecovery);
+		expect(lxd.volumes.get(`native-recovery-${acquisitionId}`)?.config).toMatchObject({
+			"user.qorpera.run_id": runId,
+			"user.qorpera.runner_id": nextRunnerId,
+		});
+		expect(await readFile(join(stateRoot, acquisitionId, "credentials/qorpera-runner-activation"), "utf-8")).not.toBe(
+			await readFile(join(stateRoot, runId, "credentials/qorpera-runner-activation"), "utf-8"),
+		);
+		const bootstrap = lxd.filePushes.filter((file) => file.path.endsWith("/bootstrap.json")).at(-1);
+		expect(JSON.parse(bootstrap?.content ?? "null").company_runtime).toMatchObject({
+			run_id: runId,
+			runner_id: nextRunnerId,
+		});
+		const restarted = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetcher);
+		await restarted.reconcile();
+		expect(await restarted.acquire(runId, resumedWork, new AbortController().signal)).toEqual(second);
+		expect(lxd.createCalls).toHaveLength(2);
+		expect(requests).toHaveLength(2);
+		const secondDelivery = delivery(resumedWork);
+		secondDelivery.assignment.runnerId = nextRunnerId;
+		secondDelivery.assignment.assignmentId = "20000000-0000-4000-8000-000000000097";
+		await restarted.deliver(second, secondDelivery);
+		expect(guest.deliveries.at(-1)?.work).toEqual(resumedWork);
+		await expect(
+			restarted.acquire(runId, { ...resumedWork, payload: { changed: true } }, new AbortController().signal),
+		).rejects.toThrow("immutable work request");
+		await expect(restarted.acquire(runId, work(), new AbortController().signal)).rejects.toThrow(
+			"cannot be replayed",
+		);
+		await restarted.stop(second, "idle");
+		await restarted.reconcile();
+		expect(lxd.deleteCalls).toHaveLength(2);
+		expect(lxd.instance).toBeUndefined();
+		expect(await readFile(firstJournalPath, "utf-8")).toBe(history);
+		expect(lxd.volumes.get(`native-recovery-${runId}`)).toEqual(oldRecovery);
+	});
+
+	it("does not provision a later attempt while its preceding guest is still running", async () => {
+		const stateRoot = join(await root(), "state");
+		const lxd = new FakeLxd();
+		const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+		const backend = new LxdCloudRunnerProviderBackend(
+			governedConfig(stateRoot),
+			lxd,
+			new FakeGuest(),
+			fetchProvisioner(requests),
+		);
+		await backend.acquire(runId, work(), new AbortController().signal);
+		await expect(backend.acquire(runId, { ...work(), attempt: 2 }, new AbortController().signal)).rejects.toThrow(
+			"prior run attempt",
+		);
+		expect(requests).toHaveLength(1);
+		expect(lxd.createCalls).toHaveLength(1);
+		expect(lxd.powerCalls).toEqual(["start"]);
+	});
+
+	it.each(["run", "attempt", "missing-attempt"])(
+		"rejects altered %s authority in a governed attempt journal",
+		async (field) => {
+			const stateRoot = join(await root(), "state");
+			const lxd = new FakeLxd();
+			const backend = new LxdCloudRunnerProviderBackend(
+				governedConfig(stateRoot),
+				lxd,
+				new FakeGuest(),
+				fetchProvisioner([]),
+			);
+			await backend.acquire(runId, work(), new AbortController().signal);
+			const path = join(stateRoot, runId, "journal.json");
+			const journal = JSON.parse(await readFile(path, "utf-8"));
+			if (field === "run") journal.runId = "20000000-0000-4000-8000-000000000098";
+			else if (field === "attempt") journal.attempt = 2;
+			else delete journal.attempt;
+			await writeFile(path, JSON.stringify(journal));
+			await expect(backend.reconcile()).rejects.toThrow("journal run attempt is invalid");
+			expect(lxd.createCalls).toHaveLength(1);
+			expect(lxd.powerCalls).toEqual(["start"]);
+		},
+	);
 
 	it("retires a guest that exits during startup without restarting its runner", async () => {
 		const stateRoot = join(await root(), "state");

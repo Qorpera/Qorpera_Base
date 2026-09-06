@@ -101,6 +101,9 @@ export interface LxdGuestTransport {
 interface LxdProviderJournal {
 	schema: typeof JOURNAL_SCHEMA | typeof COMPANY_JOURNAL_SCHEMA;
 	acquisitionId: string;
+	/** Absent only in retained journals created before attempt separation. */
+	runId?: string;
+	attempt?: number;
 	workSha256: string;
 	jobType: string;
 	instanceName: string;
@@ -145,7 +148,7 @@ interface ProviderCredentials {
 }
 
 interface LxdGuestBootstrapAuthority {
-	acquisitionId: string;
+	runId: string;
 	profileId?: string;
 	runner: CloudRunnerInstance;
 	computeIdentityId: string;
@@ -213,6 +216,16 @@ function workSha256(work: CloudRunnerWork): string {
 	 * with them — or every second attempt is refused as foreign work. */
 	const { attempt: _attempt, ...immutable } = work as CloudRunnerWork & { attempt?: unknown };
 	return sha256(JSON.stringify(canonical(immutable)));
+}
+
+function runAttemptAcquisitionId(runId: string, attempt: number): string {
+	// The first attempt retains its original key and historical journals. A
+	// control-plane continuation gets a new physical guest, never a replay of
+	// the prior attempt's credentials, activation or retained recovery volume.
+	if (attempt === 1) return runId;
+	const digest = sha256(`qorpera.lxd-run-attempt/v1:${runId}:${attempt}`);
+	const variant = ((Number.parseInt(digest[16] ?? "0", 16) & 0x3) | 0x8).toString(16);
+	return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-8${digest.slice(13, 16)}-${variant}${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
 }
 
 function token(): string {
@@ -372,6 +385,19 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 	) {
 		throw new Error("LXD provider journal is invalid");
 	}
+	if (
+		(input.runId === undefined) !== (input.attempt === undefined) ||
+		(input.runId !== undefined &&
+			(input.schema !== COMPANY_JOURNAL_SCHEMA ||
+				typeof input.runId !== "string" ||
+				!UUID_PATTERN.test(input.runId) ||
+				!Number.isSafeInteger(input.attempt) ||
+				(input.attempt as number) < 1 ||
+				(input.attempt as number) > 1_000_000 ||
+				runAttemptAcquisitionId(input.runId, input.attempt as number) !== input.acquisitionId))
+	) {
+		throw new Error("LXD provider journal run attempt is invalid");
+	}
 	let companyRuntime: LxdProviderJournal["lxd"]["companyRuntime"];
 	if (input.schema === COMPANY_JOURNAL_SCHEMA) {
 		const company = record(lxd.companyRuntime, "Governed runtime journal");
@@ -402,6 +428,7 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 	return {
 		schema: input.schema,
 		acquisitionId: input.acquisitionId,
+		...(typeof input.runId === "string" ? { runId: input.runId, attempt: input.attempt as number } : {}),
 		workSha256: input.workSha256,
 		jobType: input.jobType,
 		instanceName: input.instanceName,
@@ -702,7 +729,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		});
 	}
 
-	async acquire(acquisitionId: string, work: CloudRunnerWork, signal: AbortSignal): Promise<CloudRunnerInstance> {
+	async acquire(runId: string, work: CloudRunnerWork, signal: AbortSignal): Promise<CloudRunnerInstance> {
 		return this.#exclusive(async () => {
 			ensureStep2Work(work, this.#config.nativeCompanyRuntime !== undefined);
 			if (
@@ -713,10 +740,31 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			) {
 				throw new Error("Governed native runtime requires the pinned Codex subscription harness");
 			}
-			if (acquisitionId !== work.runId) throw new Error("Provider acquisition must use the immutable run id");
+			if (runId !== work.runId) throw new Error("Provider acquisition must use the immutable run id");
+			const acquisitionId = this.#config.nativeCompanyRuntime
+				? runAttemptAcquisitionId(work.runId, work.attempt)
+				: runId;
 			const digest = workSha256(work);
-			const credentials = await this.#credentials(acquisitionId);
 			let current = await this.#readJournal(acquisitionId);
+			if (!current && this.#config.nativeCompanyRuntime && work.attempt > 1) {
+				await mkdir(this.#config.stateRoot, { recursive: true, mode: 0o700 });
+				for (const entry of await readdir(this.#config.stateRoot, { withFileTypes: true })) {
+					if (!entry.isDirectory() || !UUID_PATTERN.test(entry.name) || entry.name === acquisitionId) continue;
+					const prior = await this.#readJournal(entry.name);
+					if (!prior || (prior.runId ?? prior.acquisitionId) !== work.runId) continue;
+					if ((prior.attempt ?? 1) >= work.attempt) throw new Error("LXD provider refuses an older run attempt");
+					await this.#reconcileJournal(prior, signal);
+					const retired = await this.#readJournal(entry.name);
+					if (
+						!retired ||
+						!["stopped", "lost"].includes(retired.physicalState) ||
+						(await this.#lxd.getInstance(prior.lxd.project, prior.instanceName, signal))
+					) {
+						throw new Error("LXD prior run attempt has not retired its guest");
+					}
+				}
+			}
+			const credentials = await this.#credentials(acquisitionId);
 			if (current) {
 				if (current.workSha256 !== digest) {
 					console.error(
@@ -752,7 +800,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			);
 			const bootstrapFiles = this.#bootstrapFiles(
 				{
-					acquisitionId,
+					runId: work.runId,
 					profileId: work.profileId,
 					runner,
 					computeIdentityId: work.computeIdentityId,
@@ -767,6 +815,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			current = {
 				schema: this.#config.nativeCompanyRuntime ? COMPANY_JOURNAL_SCHEMA : JOURNAL_SCHEMA,
 				acquisitionId,
+				...(this.#config.nativeCompanyRuntime ? { runId: work.runId, attempt: work.attempt } : {}),
 				workSha256: digest,
 				jobType: work.jobType,
 				instanceName: this.#instanceName(acquisitionId),
@@ -808,7 +857,11 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		signal?: AbortSignal,
 	): Promise<void> {
 		await this.#exclusive(async () => {
-			const current = await this.#readJournal(delivery.work.runId);
+			validateCloudRunnerWork(delivery.work);
+			const acquisitionId = this.#config.nativeCompanyRuntime
+				? runAttemptAcquisitionId(delivery.work.runId, delivery.work.attempt)
+				: delivery.work.runId;
+			const current = await this.#readJournal(acquisitionId);
 			if (
 				!current ||
 				current.runner.runnerId !== runner.runnerId ||
@@ -1058,7 +1111,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			throw new Error("Journaled LXD guest is missing Compute Identity authority");
 		}
 		return {
-			acquisitionId: journal.acquisitionId,
+			runId: journal.runId ?? journal.acquisitionId,
 			...(journal.lxd.companyRuntime ? { profileId: journal.lxd.companyRuntime.profileId } : {}),
 			runner: journal.runner,
 			computeIdentityId: journal.runner.computeIdentityId,
@@ -1122,7 +1175,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 					? {
 							company_runtime: {
 								mode: "company-path-v1",
-								run_id: authority.acquisitionId,
+								run_id: authority.runId,
 								profile_id: authority.profileId,
 								runner_id: authority.runner.runnerId,
 								codex_path: runtime.codexPath,
@@ -1392,7 +1445,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		const expected = {
 			size: company.recoveryVolumeSize,
 			"user.qorpera.schema": RECOVERY_VOLUME_SCHEMA,
-			"user.qorpera.run_id": journal.acquisitionId,
+			"user.qorpera.run_id": journal.runId ?? journal.acquisitionId,
 			"user.qorpera.profile_id": company.profileId,
 			"user.qorpera.runner_id": journal.runner.runnerId,
 			...(journal.runner.logicalComputerId

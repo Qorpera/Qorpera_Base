@@ -24,5 +24,6 @@
 
 ### Fixed
 
+- Provisioned a separate governed guest, credentials and recovery volume for each execution attempt so sponsor handoff can continue the same run after its first guest is retired. Preserved earlier journals and rejected continuation while a prior guest remains live.
 - Kept the live Company File mount optional for copy-mode guests and excluded it from isolated proposal-review VMs.
 - Refused redirected guest credential delivery and provisioning requests, validated exact HTTPS control-plane origins, and closed unused response bodies, including stalled redirect responses.
