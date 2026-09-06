@@ -8,7 +8,7 @@ import {
 	writeCloudConfigOverride,
 } from "../../cloud/config.ts";
 import type { HostedAccountEntitlement } from "../../cloud/types.ts";
-import { badge, button, fmtBytes, h, notice, replace } from "../../ui/dom.ts";
+import { button, fmtBytes, h, notice, replace } from "../../ui/dom.ts";
 import { clearSubmittedDraft, preserveFormDrafts } from "../../ui/forms.ts";
 import { type AuthController, displayName } from "../auth.ts";
 
@@ -51,7 +51,7 @@ export function renderAccount(
 	});
 	const feedbackCategory = h(
 		"select",
-		{ "data-draft": "feedback-category" },
+		{ "data-draft": "feedback-category", "aria-label": "Feedback category" },
 		...["bug", "bad-result", "good-result", "feature-request", "performance", "other"].map((category) =>
 			h("option", { value: category }, category),
 		),
@@ -60,64 +60,77 @@ export function renderAccount(
 		rows: 3,
 		placeholder: "What happened, what you expected.",
 		"data-draft": "feedback-details",
+		"aria-label": "Feedback details",
 	});
 	replace(
 		container,
 		h(
 			"section",
 			{ class: "page account", "data-form-owner": owner },
-			h("h1", null, "Account"),
+			h("h1", null, "General"),
 			state.error ? notice("danger", state.error) : null,
 			state.message ? notice("ok", state.message) : null,
 			h(
-				"div",
-				{ class: "card" },
+				"section",
+				{ class: "settings-group" },
+				h("h2", null, "Account"),
 				h(
 					"div",
-					{ class: "card-body" },
-					h("strong", null, displayName(user)),
-					h("div", { class: "muted" }, user?.email ?? ""),
-					h("div", { class: "muted small" }, `Signed in with ${user?.app_metadata?.provider ?? "email"}`),
-				),
-				button("Sign out", () => void auth.signOut()),
-			),
-			h("h2", null, "Entitlement"),
-			state.entitlement
-				? h(
+					{ class: "settings-card" },
+					h(
 						"div",
-						{ class: "summary-grid" },
-						h(
-							"div",
-							{ class: "summary" },
-							h("div", { class: "muted small" }, "Plan"),
-							h("div", null, badge(state.entitlement.planKey, "accent")),
-						),
-						h(
-							"div",
-							{ class: "summary" },
-							h("div", { class: "muted small" }, "Billing"),
-							h("div", null, state.entitlement.billingMode),
-						),
-						h(
-							"div",
-							{ class: "summary" },
-							h("div", { class: "muted small" }, "Features"),
-							h("div", null, state.entitlement.featureSet),
-						),
-						h(
-							"div",
-							{ class: "summary" },
-							h("div", { class: "muted small" }, "Storage"),
-							h(
-								"div",
-								null,
-								state.entitlement.storageAllocationBytes
-									? fmtBytes(state.entitlement.storageAllocationBytes)
-									: state.entitlement.storageAllocation,
-							),
-						),
-					)
-				: h("div", { class: "muted" }, state.loaded ? "Entitlement unavailable." : "Loading…"),
+						{ class: "settings-copy" },
+						h("strong", null, user?.email || displayName(user)),
+						h("small", null, `Signed in with ${user?.app_metadata?.provider ?? "email"}`),
+					),
+					button("Sign out", () => void auth.signOut()),
+				),
+			),
+			h(
+				"section",
+				{ class: "settings-group" },
+				h("h2", null, "Plan & billing"),
+				h(
+					"div",
+					{ class: "settings-card settings-plan" },
+					h(
+						"div",
+						{ class: "settings-copy" },
+						h("small", { class: "settings-eyebrow" }, "Current plan"),
+						h("strong", null, state.entitlement?.planKey ?? (state.loaded ? "Plan unavailable" : "Loading…")),
+						state.entitlement
+							? h(
+									"small",
+									null,
+									state.entitlement.billingMode,
+									" · ",
+									state.entitlement.featureSet,
+									" · ",
+									state.entitlement.storageAllocationBytes !== undefined
+										? fmtBytes(state.entitlement.storageAllocationBytes)
+										: state.entitlement.storageAllocation,
+									" storage",
+								)
+							: null,
+					),
+				),
+			),
+			h(
+				"section",
+				{ class: "settings-group" },
+				h("h2", null, "Companies"),
+				h(
+					"a",
+					{ class: "settings-card settings-link", href: "#/" },
+					h(
+						"span",
+						{ class: "settings-copy" },
+						h("strong", null, "All companies"),
+						h("small", null, "Open or create a company"),
+					),
+					h("span", { "aria-hidden": "true" }, "›"),
+				),
+			),
 			h("h2", null, "Feedback"),
 			h(
 				"form",

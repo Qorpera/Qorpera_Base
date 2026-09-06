@@ -38,16 +38,20 @@
 	--text-soft: #92928e;
 	--border: rgba(18, 18, 17, 0.09);
 	--border-strong: rgba(18, 18, 17, 0.17);
-	--sidebar-surface: #eeedeb;
+	/* Messages reference, sampled in sRGB from the approved comparison. */
+	--header-surface: #fbf7f4;
+	--sidebar-surface: #e8e4e1;
+	--sidebar-search: #dbd8d6;
+	--sidebar-divider: #d8d4d1;
 	--sidebar-vibrancy-tint: rgba(232, 235, 240, 0.32);
 	--sidebar-hover: rgba(118, 118, 128, 0.12);
-	--sidebar-selection: #0a84ff;
+	--sidebar-selection: #007aff;
 	--sidebar-selection-text: #ffffff;
 
 	/* action color — send, links, focus, slider fill */
 	--primary: #171716;
 	--primary-hover: #30302e;
-	--ring: color-mix(in srgb, var(--primary) 55%, transparent);
+	--ring: color-mix(in srgb, var(--sidebar-selection) 65%, transparent);
 	--blue: #305fbe;                         /* readable small-text variant */
 
 	/* brand accent (Qorpera terracotta) — identity, scope tags, gate chips */

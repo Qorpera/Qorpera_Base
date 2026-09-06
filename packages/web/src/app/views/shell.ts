@@ -1,13 +1,14 @@
 import type { User } from "@supabase/supabase-js";
 import type { HostedProfile, HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
-import { badge, button, companyLogo, h, icon, initials, notice, replace } from "../../ui/dom.ts";
+import { badge, button, h, icon, initials, notice, replace } from "../../ui/dom.ts";
+import { matchesKey } from "../../ui/keys.ts";
 import { type AuthController, displayName } from "../auth.ts";
 import type { CompanyController } from "../company.ts";
-import type { CompanySection, Route } from "../router.ts";
+import type { Route } from "../router.ts";
 
-/* The company shell: top bar with company switcher and account, a rail that
- * renders the §14.5 hierarchy from canonical state, and the main pane. */
+/* The company shell: a rail with conversations and the account menu, and the
+ * main pane. A compact toolbar keeps the rail accessible on small screens. */
 
 export interface ShellContext {
 	profiles: HostedProfile[];
@@ -16,15 +17,17 @@ export interface ShellContext {
 	auth: AuthController;
 	/** Company invitations waiting for this account, for the menu's count. */
 	invitations: number;
+	openSettings: () => void;
 	navigation?: { open: boolean; toggle: () => void };
 }
 
-/* The account menu is one long-lived element: the top bar re-renders on every
+/* The account menu is one long-lived element: the shell re-renders on every
  * store change, and rebuilding the menu would close it under the pointer. */
 let accountMenu: HTMLElement | undefined;
 let accountMenuOpen = false;
 let accountTrigger: HTMLButtonElement | undefined;
 let accountPopover: HTMLElement | undefined;
+let accountUserId: string | undefined;
 
 function setAccountMenuOpen(open: boolean): void {
 	accountMenuOpen = open;
@@ -33,7 +36,27 @@ function setAccountMenuOpen(open: boolean): void {
 	if (accountPopover) accountPopover.hidden = !open;
 }
 
-function accountMenuElement(context: ShellContext): HTMLElement {
+function preserveAccountFocus(): () => void {
+	const focused = document.activeElement;
+	const scrollTop = accountPopover?.scrollTop ?? 0;
+	const triggerFocused = focused === accountTrigger;
+	const href = accountMenuOpen && accountPopover?.contains(focused) ? focused?.getAttribute("href") : undefined;
+	const action = accountMenuOpen ? focused?.getAttribute("data-account-action") : undefined;
+	return () => {
+		if (accountMenuOpen && accountPopover) accountPopover.scrollTop = scrollTop;
+		if (triggerFocused) accountTrigger?.focus({ preventScroll: true });
+		else if (accountMenuOpen && (href || action)) {
+			const target = [...(accountPopover?.querySelectorAll<HTMLElement>("[role=menuitem]") ?? [])].find((item) =>
+				href ? item.getAttribute("href") === href : item.getAttribute("data-account-action") === action,
+			);
+			target?.focus({ preventScroll: true });
+		}
+	};
+}
+
+function accountMenuElement(context: ShellContext, company?: CompanyController): HTMLElement {
+	if (accountUserId !== context.user?.id || !accountMenu?.isConnected) setAccountMenuOpen(false);
+	accountUserId = context.user?.id;
 	if (!accountMenu) {
 		accountTrigger = h("button", {
 			type: "button",
@@ -47,18 +70,36 @@ function accountMenuElement(context: ShellContext): HTMLElement {
 			},
 		});
 		accountPopover = h("div", { class: "account-popover", role: "menu", hidden: true });
+		accountPopover.addEventListener("keydown", (event) => {
+			const items = [...accountPopover!.querySelectorAll<HTMLElement>("[role=menuitem]")];
+			const index = items.indexOf(document.activeElement as HTMLElement);
+			const offset = matchesKey(event, "next") ? 1 : matchesKey(event, "previous") ? -1 : 0;
+			const next = matchesKey(event, "first")
+				? 0
+				: matchesKey(event, "last")
+					? items.length - 1
+					: offset
+						? (index + offset + items.length) % items.length
+						: -1;
+			if (next >= 0) {
+				event.preventDefault();
+				items[next]?.focus();
+			}
+		});
 		accountMenu = h("div", { class: "account-menu" }, accountTrigger, accountPopover);
 		document.addEventListener("click", (event) => {
 			if (accountMenuOpen && !accountMenu?.contains(event.target as Node)) setAccountMenuOpen(false);
 		});
 		document.addEventListener("keydown", (event: KeyboardEvent) => {
 			if (event.key === "Escape" && accountMenuOpen) {
+				event.stopPropagation();
 				setAccountMenuOpen(false);
 				accountTrigger?.focus();
 			}
 		});
 		window.addEventListener("hashchange", () => setAccountMenuOpen(false));
 	}
+	accountMenu.classList.toggle("account-menu-rail", Boolean(company));
 	const name = displayName(context.user);
 	const item = (target: "account" | "friends" | "invitations", iconName: string, label: string, count = 0) =>
 		h(
@@ -82,7 +123,21 @@ function accountMenuElement(context: ShellContext): HTMLElement {
 	replace(
 		accountPopover!,
 		h("div", { class: "account-identity" }, h("strong", null, name)),
-		item("account", "settings", "Account and settings"),
+		h(
+			"button",
+			{
+				type: "button",
+				class: "account-item",
+				role: "menuitem",
+				"data-account-action": "settings",
+				onclick: () => {
+					setAccountMenuOpen(false);
+					context.openSettings();
+				},
+			},
+			icon("settings"),
+			h("span", { class: "account-item-label" }, "Account and settings"),
+		),
 		item("friends", "friends", "Friends"),
 		item("invitations", "invitations", "Invitations", context.invitations),
 		h("div", { class: "account-separator", role: "separator" }),
@@ -91,6 +146,7 @@ function accountMenuElement(context: ShellContext): HTMLElement {
 			{
 				type: "button",
 				class: "account-item account-signout",
+				"data-account-action": "signout",
 				role: "menuitem",
 				onclick: () => {
 					setAccountMenuOpen(false);
@@ -109,13 +165,11 @@ export function renderTopbar(
 	context: ShellContext,
 	company: CompanyController | undefined,
 ): void {
-	const realtime = company?.store.get().realtime;
-	// Outside a company the bar is bare: no surface, no divider, no mark. The
-	// hub needs nothing on the left; the account pages get a way back. Inside a
-	// company the switcher leads and the chrome returns.
+	const restoreFocus = preserveAccountFocus();
+	// Company pages put the account in the rail. Only the mobile navigation
+	// button needs a toolbar; pages without a rail keep the account here.
 	container.classList.toggle("topbar-plain", !company);
-	// Inside a company the rail's own switcher names it; outside, the account
-	// pages get a way back.
+	container.classList.toggle("topbar-company", Boolean(company));
 	const lead =
 		company || context.route.name === "hub" ? null : h("a", { class: "topbar-home", href: "#/" }, "← Companies");
 	replace(
@@ -135,32 +189,20 @@ export function renderTopbar(
 				)
 			: null,
 		lead,
-		company && realtime && realtime !== "connected"
-			? badge(
-					realtime === "connecting" ? "connecting" : "live updates degraded",
-					realtime === "connecting" ? "neutral" : "warn",
-					company.store.get().realtimeError ?? "",
-				)
-			: null,
-		h("span", { class: "spacer" }),
-		accountMenuElement(context),
+		company ? null : h("span", { class: "spacer" }),
+		company ? null : accountMenuElement(context),
 	);
+	if (!company) restoreFocus();
 }
 
 /* The company rail, as Qorpera Base draws it (V24 product preview): a search
  * field, the Co-Founder as a low card with its figure standing on it, the rest
- * of the staff as rows, and the company's own menu at the foot. The pages that
- * are not agents — approvals, the Company File, the organization, the team —
- * live in that menu, which is where the desktop keeps a company's own things.
- *
- * There is no add-agent button: hiring an agent is machinery this client does
- * not have yet, and a button that writes nowhere is worse than none. */
+ * of the staff as rows, and the account menu at the foot. Company management
+ * lives in settings. The new-conversation screen can open existing agents;
+ * new hires stay unavailable until a cloud creation port is supplied. */
 
 /* The field outlives re-renders so typing never loses the caret. */
-const railFields = new WeakMap<
-	CompanyController,
-	{ input: HTMLInputElement; query: string; redraw: () => void; switcherOpen: boolean }
->();
+const railFields = new WeakMap<CompanyController, { input: HTMLInputElement; query: string; redraw: () => void }>();
 
 function searchField(company: CompanyController, onInput: () => void) {
 	let field = railFields.get(company);
@@ -172,7 +214,7 @@ function searchField(company: CompanyController, onInput: () => void) {
 			spellcheck: "false",
 			"aria-label": "Search agents",
 		});
-		field = { input, query: "", redraw: onInput, switcherOpen: false };
+		field = { input, query: "", redraw: onInput };
 		railFields.set(company, field);
 	}
 	const current = field;
@@ -191,7 +233,9 @@ function statusLine(company: CompanyController, agent: HostedStaffAgent | undefi
 	return agent?.role ?? "";
 }
 
-export function renderRail(container: HTMLElement, company: CompanyController, route: Route): void {
+export function renderRail(container: HTMLElement, company: CompanyController, context: ShellContext): void {
+	const restoreFocus = preserveAccountFocus();
+	const route = context.route;
 	const state = company.store.get();
 	const profileId = company.profile.profileId;
 	const activeSessionId = route.name === "company" && route.section === "chat" ? route.id : undefined;
@@ -201,7 +245,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, r
 		activeStaffId === staffId || (activeSessionId !== undefined && sessionOf(staffId)?.sessionId === activeSessionId);
 	const cofounderSessionId = state.organization?.cofounder.memberSessionId;
 	const section = route.name === "company" ? route.section : undefined;
-	const redraw = () => renderRail(container, company, route);
+	const redraw = () => renderRail(container, company, context);
 	const field = searchField(company, redraw);
 	const search = field.input;
 	const railQuery = field.query;
@@ -226,6 +270,12 @@ export function renderRail(container: HTMLElement, company: CompanyController, r
 								: "",
 						].join(" "),
 						href: `#/c/${profileId}`,
+						"aria-current":
+							section === "home" ||
+							(cofounderSessionId && activeSessionId === cofounderSessionId) ||
+							isActive(cofounder.id)
+								? "page"
+								: undefined,
 					},
 					h(
 						"span",
@@ -246,6 +296,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, r
 			{
 				class: ["rail-row", isActive(agent.id) ? "active" : ""].join(" "),
 				href: `#/c/${profileId}/staff/${agent.id}`,
+				"aria-current": isActive(agent.id) ? "page" : undefined,
 			},
 			agentFigure(agent, agent.displayName, { size: 36 }),
 			h(
@@ -276,6 +327,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, r
 			{
 				class: ["rail-row", activeSessionId === session.sessionId ? "active" : ""].join(" "),
 				href: `#/c/${profileId}/chat/${session.sessionId}`,
+				"aria-current": activeSessionId === session.sessionId ? "page" : undefined,
 			},
 			h("span", { class: "avatar small" }, session.title.slice(0, 1).toUpperCase()),
 			h(
@@ -295,65 +347,6 @@ export function renderRail(container: HTMLElement, company: CompanyController, r
 		),
 	);
 
-	const menuItem = (target: CompanySection, label: string) =>
-		h(
-			"a",
-			{
-				class: ["switcher-item", section === target ? "active" : ""].join(" "),
-				role: "menuitem",
-				href: `#/c/${profileId}/${target}`,
-				onclick: () => {
-					field.switcherOpen = false;
-				},
-			},
-			label,
-		);
-	const switcher = h(
-		"div",
-		{ class: ["rail-switcher", field.switcherOpen ? "is-open" : ""].join(" ") },
-		h(
-			"button",
-			{
-				type: "button",
-				class: "switcher-trigger",
-				"aria-haspopup": "menu",
-				"aria-expanded": String(field.switcherOpen),
-				onclick: () => {
-					field.switcherOpen = !field.switcherOpen;
-					redraw();
-				},
-			},
-			companyLogo(profileId, "switcher-mark"),
-			h(
-				"span",
-				{ class: "switcher-copy" },
-				h("strong", null, company.profile.profileName),
-				state.team ? h("small", null, state.team.role) : null,
-			),
-		),
-		h(
-			"div",
-			{ class: "switcher-menu", role: "menu", hidden: !field.switcherOpen },
-			menuItem("approvals", "Approvals"),
-			menuItem("file", "Company File"),
-			menuItem("organization", "Organization"),
-			menuItem("team", "Team"),
-			h("div", { class: "switcher-separator", role: "separator" }),
-			h(
-				"a",
-				{
-					class: "switcher-item",
-					role: "menuitem",
-					href: "#/",
-					onclick: () => {
-						field.switcherOpen = false;
-					},
-				},
-				"All companies",
-			),
-		),
-	);
-
 	const empty =
 		!state.loading && !cofounderCard && !staffRows.length && !sessionRows.length
 			? h("p", { class: "rail-empty" }, railQuery ? "No agent by that name." : "No agents yet.")
@@ -365,6 +358,21 @@ export function renderRail(container: HTMLElement, company: CompanyController, r
 	const caret: [number, number] = [search.selectionStart ?? 0, search.selectionEnd ?? 0];
 	replace(
 		container,
+		h(
+			"div",
+			{ class: "rail-toolbar" },
+			h(
+				"a",
+				{
+					class: "rail-add icon-button",
+					href: `#/c/${profileId}/new`,
+					"aria-label": "New conversation or agent",
+					title: "New conversation or agent",
+					"aria-current": section === "new" ? "page" : undefined,
+				},
+				icon("plus"),
+			),
+		),
 		h("div", { class: "rail-top" }, h("label", { class: "rail-search" }, search)),
 		h(
 			"div",
@@ -388,10 +396,26 @@ export function renderRail(container: HTMLElement, company: CompanyController, r
 			staffRows.length || sessionRows.length ? h("div", { class: "rail-list" }, ...staffRows, ...sessionRows) : null,
 			empty,
 		),
-		switcher,
+		h(
+			"div",
+			{ class: "rail-footer" },
+			state.realtime !== "connected"
+				? h(
+						"div",
+						{ class: "rail-connection", role: "status" },
+						badge(
+							state.realtime === "connecting" ? "connecting" : "live updates degraded",
+							state.realtime === "connecting" ? "neutral" : "warn",
+							state.realtimeError ?? "",
+						),
+					)
+				: null,
+			accountMenuElement(context, company),
+		),
 	);
 	if (typing) {
 		search.focus();
 		search.setSelectionRange(caret[0], caret[1]);
 	}
+	restoreFocus();
 }

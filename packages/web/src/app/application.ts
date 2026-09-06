@@ -16,16 +16,24 @@ import { FriendsController, renderFriends } from "./views/friends.ts";
 import { HubController, renderHub } from "./views/hub.ts";
 import { renderInvitations } from "./views/invitations.ts";
 import { type MeetState, renderMeet } from "./views/meet.ts";
+import { NewConversationView } from "./views/new-conversation.ts";
 import { renderOrganization } from "./views/organization.ts";
+import { SettingsView } from "./views/settings.ts";
 import { renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
 import { renderSignIn } from "./views/signin.ts";
 import { renderTeam } from "./views/team.ts";
+import type { WorkspaceActions } from "./workspace-actions.ts";
 
 /* Entry point. One cloud client, one auth controller, one company controller
  * at a time. The route decides the view; every view renders from cloud state
  * and re-renders on store changes. */
 
-export function mountApplication(root: HTMLElement, cloud: Cloud, api = new CloudApi(cloud)): () => void {
+export function mountApplication(
+	root: HTMLElement,
+	cloud: Cloud,
+	api = new CloudApi(cloud),
+	workspaceActions: WorkspaceActions = {},
+): () => void {
 	const auth = new AuthController(cloud);
 	let hub = new HubController(api);
 	let friends = new FriendsController(api);
@@ -41,6 +49,27 @@ export function mountApplication(root: HTMLElement, cloud: Cloud, api = new Clou
 	});
 	const frame = h("div", { class: "frame" }, topbar, h("div", { class: "body" }, backdrop, rail, main));
 	let disposed = false;
+	let settings: SettingsView | undefined;
+	function closeSettings(restoreFocus = true): void {
+		settings?.dispose();
+		settings = undefined;
+		frame.inert = false;
+		if (restoreFocus) frame.querySelector<HTMLElement>(".account-trigger")?.focus();
+	}
+	function openSettings(): void {
+		if (settings || !auth.userId) return;
+		settings = new SettingsView(
+			api,
+			auth,
+			profiles,
+			company?.store.get().accessLost ? undefined : company,
+			() => closeSettings(),
+			companyRemovedHandler(),
+		);
+		frame.inert = true;
+		root.append(settings.el);
+		settings.focus();
+	}
 	let routeRevision = 0;
 	let accountRevision = 0;
 	let accountUserId: string | undefined;
@@ -69,11 +98,12 @@ export function mountApplication(root: HTMLElement, cloud: Cloud, api = new Clou
 		main.inert = navigationOpen && window.matchMedia("(max-width: 760px)").matches;
 	}
 	function onEscape(event: KeyboardEvent): void {
-		if (event.key === "Escape" && navigationOpen) {
+		if (event.key === "Escape" && navigationOpen && !settings && !event.defaultPrevented) {
 			setNavigationOpen(false);
 		}
 	}
 	function onRouteChange(): void {
+		closeSettings(false);
 		routeRevision++;
 		resolvingRoute = undefined;
 		routeError = undefined;
@@ -86,6 +116,7 @@ export function mountApplication(root: HTMLElement, cloud: Cloud, api = new Clou
 	let company: CompanyController | undefined;
 	let companyFile: CompanyFileController | undefined;
 	let conversation: ConversationView | undefined;
+	let newConversation: NewConversationView | undefined;
 	let approvals: ApprovalsView | undefined;
 	let cloudCheck: CloudCheckView | undefined;
 	let profiles: HostedProfile[] = [];
@@ -103,6 +134,7 @@ export function mountApplication(root: HTMLElement, cloud: Cloud, api = new Clou
 		hub.store.subscribe(() => {
 			if (hub !== currentHub) return;
 			profiles = currentHub.store.get().profiles;
+			settings?.updateProfiles(profiles);
 			render();
 		});
 		friends.store.subscribe(() => render());
@@ -111,6 +143,7 @@ export function mountApplication(root: HTMLElement, cloud: Cloud, api = new Clou
 	auth.store.subscribe(() => {
 		const userId = auth.userId;
 		if (userId !== accountUserId) {
+			closeSettings(false);
 			accountUserId = userId;
 			accountRevision++;
 			routeRevision++;
@@ -147,6 +180,7 @@ export function mountApplication(root: HTMLElement, cloud: Cloud, api = new Clou
 			user,
 			route,
 			auth,
+			openSettings,
 			invitations: hub.store.get().invitations.length,
 			...(route.name === "company" && route.section !== "meet" && company && !company.store.get().accessLost
 				? { navigation: { open: navigationOpen, toggle: () => setNavigationOpen(!navigationOpen) } }
@@ -158,6 +192,7 @@ export function mountApplication(root: HTMLElement, cloud: Cloud, api = new Clou
 		unsubscribeCompany?.();
 		unsubscribeFile?.();
 		conversation?.dispose();
+		newConversation?.dispose();
 		approvals?.dispose();
 		companyFile?.dispose();
 		company?.stop();
@@ -165,10 +200,25 @@ export function mountApplication(root: HTMLElement, cloud: Cloud, api = new Clou
 		company = undefined;
 		companyFile = undefined;
 		conversation = undefined;
+		newConversation = undefined;
 		approvals = undefined;
 		homeReason = undefined;
 		teamFeedback = {};
 		meetState = {};
+	}
+
+	function companyRemovedHandler(): (profileId: string) => void {
+		const currentHub = hub;
+		return (profileId) => {
+			if (disposed || hub !== currentHub) return;
+			void currentHub.companyRemoved(profileId);
+			const route = currentRoute();
+			if (route.name === "company" && route.profileId === profileId) {
+				closeSettings(false);
+				teardownCompany();
+				navigate({ name: "hub" });
+			}
+		};
 	}
 
 	async function ensureCompany(profileId: string): Promise<CompanyController | undefined> {
@@ -323,8 +373,9 @@ export function mountApplication(root: HTMLElement, cloud: Cloud, api = new Clou
 		// First run is a moment, not a workspace: the rail stays away until the
 		// Co-Founder has a face.
 		rail.hidden = route.section === "meet" || controller.store.get().accessLost === true;
-		renderTopbar(topbar, shellContext(authState.user, route), controller);
-		if (!rail.hidden) renderRail(rail, controller, route);
+		const context = shellContext(authState.user, route);
+		renderTopbar(topbar, context, rail.hidden ? undefined : controller);
+		if (!rail.hidden) renderRail(rail, controller, context);
 		if (navigationFocus) {
 			const target =
 				navigationFocus === "rail"
@@ -335,8 +386,10 @@ export function mountApplication(root: HTMLElement, cloud: Cloud, api = new Clou
 		}
 		const state = controller.store.get();
 		if (state.accessLost) {
+			closeSettings(false);
 			companyFile?.dispose();
 			conversation?.dispose();
+			newConversation?.dispose();
 			approvals?.dispose();
 			navigationOpen = false;
 			navigationFocus = undefined;
@@ -358,12 +411,26 @@ export function mountApplication(root: HTMLElement, cloud: Cloud, api = new Clou
 			conversation = undefined;
 			controller.setOpenSession(undefined);
 		}
+		if (route.section !== "new") {
+			newConversation?.dispose();
+			newConversation = undefined;
+		}
 		if (route.section !== "approvals") {
 			approvals?.dispose();
 			approvals = undefined;
 		}
 		if (route.section !== "meet") meetState = {};
 		switch (route.section) {
+			case "new": {
+				if (!newConversation) {
+					newConversation = new NewConversationView(controller, workspaceActions, () =>
+						navigate({ name: "company", profileId: controller.profile.profileId, section: "home" }),
+					);
+					replace(main, newConversation.el);
+					newConversation.focus();
+				}
+				return;
+			}
 			case "home": {
 				// Home needs organization, membership and sessions, not just staff.
 				if (state.loading) {
@@ -403,7 +470,7 @@ export function mountApplication(root: HTMLElement, cloud: Cloud, api = new Clou
 			case "chat": {
 				if (!conversation || conversation.sessionId !== route.id) {
 					conversation?.dispose();
-					conversation = new ConversationView(controller, route.id ?? "");
+					conversation = new ConversationView(controller, route.id ?? "", workspaceActions);
 					replace(main, conversation.el);
 					conversation.focus();
 				} else conversation.update();
@@ -451,11 +518,18 @@ export function mountApplication(root: HTMLElement, cloud: Cloud, api = new Clou
 				renderOrganization(controller, main);
 				return;
 			case "team":
-				renderTeam(api, controller, main, teamFeedback, (next) => {
-					if (!current() || company !== controller) return;
-					teamFeedback = next;
-					render();
-				});
+				renderTeam(
+					api,
+					controller,
+					main,
+					teamFeedback,
+					(next) => {
+						if (!current() || company !== controller) return;
+						teamFeedback = next;
+						render();
+					},
+					{ onCompanyRemoved: companyRemovedHandler() },
+				);
 				return;
 		}
 	}
@@ -466,6 +540,7 @@ export function mountApplication(root: HTMLElement, cloud: Cloud, api = new Clou
 
 	return () => {
 		disposed = true;
+		closeSettings(false);
 		auth.dispose();
 		hub.dispose();
 		friends.dispose();

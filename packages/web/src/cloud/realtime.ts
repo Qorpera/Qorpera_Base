@@ -25,7 +25,9 @@ export function subscribeProfileRealtime(
 	onChange: (resource: RealtimeResource) => void,
 	onHealth: (phase: RealtimePhase, error?: string) => void,
 ): RealtimeSubscription {
-	let channel: RealtimeChannel = cloud.supabase.channel(`qorpera-profile-${profileId}`);
+	// Supabase reuses channels by topic, including ones still unsubscribing.
+	// Each subscription owns its channel so stopping it cannot close another.
+	let channel: RealtimeChannel = cloud.supabase.channel(`qorpera-profile-${profileId}-${crypto.randomUUID()}`);
 	for (const { resource, table } of FILTERS) {
 		channel = channel.on(
 			"postgres_changes",

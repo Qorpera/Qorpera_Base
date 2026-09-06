@@ -209,3 +209,98 @@ currently renders. The client's present rail — Approvals, Company File,
 Organization, Team — exists in no Qorpera surface and must be replaced.
 
 **The approved first-run screen** is `packages/web/design/cofounder-first-run.html`.
+
+## 2026-09-05 — Port all four desktop settings tabs into the web client
+
+**Decision (founder).** The sidebar profile popup contains account settings,
+Friends, Invitations and Sign out. Company navigation belongs in settings.
+Adapt the desktop's General, Company, Connections and Policy tabs in PR #110,
+using its modal, gray navigation, account cards, people rows and policy icons.
+Keep the conversation mounted beneath the modal and preserve its draft.
+
+**Cloud behavior.** General reads account entitlement and retains feedback and
+endpoint configuration. Company embeds the member controls and links to the
+existing Company File, Organization and Approvals pages. Connections starts
+member-owned native provider login, enables requested-work sponsorship, and
+revokes accounts; Services lists and revokes existing cloud secret connections.
+Desktop-local connector setup, local-computer controls and unsupported billing
+actions do not become pretend browser actions. Creating new service connections
+still requires the cloud's registered connector and secure capture machinery.
+
+**Policy.** The four Ask/Act/Auto choices live in protected `authority.toml`,
+not browser storage or a second settings table. Browser reads verify scoped
+object hashes and the current path version. Saves preserve unrelated TOML and
+use the human path-command review/apply protocol with exact version, content,
+operation key and plan digest. A successful save is read back from the cloud.
+New native runs read the same file through the governed path gateway before
+composition. Only validated choices, source version/hash and read observation
+references enter context; arbitrary TOML text is not a runtime instruction.
+Missing choices default to Ask. Malformed, stale or unauthorized reads stop
+composition. These choices never expand technical permissions or privacy consent.
+
+**Deployment boundary.** The web UI requires the member-route CORS changes in
+the object gateway and native-provider-login Edge Function. Policy consumption
+also requires a matching native runtime bundle rollout and activation. The Pages
+preview alone cannot verify those backend changes. Local browser checks use a
+fake cloud boundary; adapter and runtime tests exercise the real parsers and
+protocols without live credentials or company mutations.
+
+## 2026-09-06 — Restore desktop conversation surfaces before runtime integration
+
+**Decision (founder).** Port the approved desktop interactions in a first UI
+pass: compact agent header and details, figure/name/title/description drafts,
+integrated composer, local attachment previews, new-conversation and agent
+setup screens, and the computer panel. The shell uses the system face and
+the supplied Messages reference colors: header `#FBF7F4`, sidebar `#E8E4E1`,
+search `#DBD8D6`, selection `#007AFF`. The header is 48px with a 32px figure;
+scope badges do not belong in it. Approved vector figures remain unchanged.
+
+**Boundary.** Production supplies no agent-creation or metadata-write adapter
+to these new forms. They allow draft preparation and explicitly disable
+unavailable saves. Selected files stay in the current company's in-memory
+conversation draft; previews use revocable object URLs, never uploads.
+Attachments block text submission until removed, so no bytes are silently
+dropped. Existing text submission still uses the established append protocol.
+The computer panel reports unavailable access and has no run, wake, screen,
+routine-creation or provider-control connection. Injectable UI action ports
+exist for isolated tests and later reviewed integration only.
+
+**Messages.** Explicitly delivered agent messages render GFM using the existing
+repository-pinned `marked` lexer and DOM nodes. Raw HTML stays text; links are
+limited to HTTP(S) and mailto; remote images become links and do not load
+automatically. Transcript admission rules are unchanged. The diagnostic count
+of hidden runtime entries is removed from the conversation UI, superseding
+that display choice in the 2026-09-02 entry.
+
+**Verification.** Tests cover permission changes, unavailable write paths,
+late async completions, IME/newline behavior, file validation, preview cleanup,
+conversation-scoped drafts and inert Markdown content. Browser fixtures cover
+desktop/mobile geometry, focus, native dialogs and the unchanged text-send
+path without using a live company. Declaring the already-pinned Markdown
+dependency updates the root lockfile and its generated bundle provenance;
+this does not activate or deploy a runtime bundle.
+
+## 2026-09-06 — Keep this work within the web client shell
+
+**Correction (founder).** Porting all four settings tabs authorizes their UI,
+not integration with the runtime being built separately. This supersedes the
+Connections, Policy and deployment behavior above, and the earlier decision
+to retain live text submission from the composer.
+
+**Boundary.** Connections displays unavailable account/service controls with
+no provider login, sponsorship, revocation, service API calls or polling.
+Policy offers local Ask/Act/Auto previews, explicitly labeled as unsaved and
+not the active company policy. Changing company or closing settings discards
+those choices. The composer retains local text and attachment drafts; message
+submission, agent creation and metadata saves have no production action
+adapter. Computer controls remain unavailable. Fixture adapters may exercise
+UI flows without live credentials or runtime calls.
+
+**Scope.** Existing cloud account and company management and read projections
+remain available. Runtime policy consumption, object-gateway CORS, provider
+login CORS and runtime packaging changes have been removed from this PR.
+The previously deployed login CORS wrapper was rolled back. No runtime,
+tunnel or NAS deployment is required to publish this shell. The repository's
+generated bundle checksum files still reflect the web dependency lockfile;
+they are source provenance only and must not be deployed or applied as part
+of this work.

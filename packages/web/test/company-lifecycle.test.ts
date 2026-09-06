@@ -40,7 +40,10 @@ describe("conversation lifecycle regressions", () => {
 		vi.mocked(api.readSessionEvents).mockReturnValueOnce(read.promise);
 		const append = vi.spyOn(api, "appendPrompt").mockRejectedValue(new Error("Fixture write failed"));
 		controller.store.set({ loading: false, team, sessions: [session] });
-		const view = new ConversationView(controller, session.sessionId);
+		// Only this fixture connects the composer to the mocked append protocol.
+		const view = new ConversationView(controller, session.sessionId, {
+			sendMessage: (id, text) => controller.sendPrompt(id, text),
+		});
 		cleanup.push(() => view.dispose());
 		document.body.append(view.el);
 		read.resolve([event(1, "New public message")]);
@@ -49,11 +52,12 @@ describe("conversation lifecycle regressions", () => {
 		const input = view.el.querySelector("textarea")!;
 		input.value = "Important unsent draft";
 		input.dispatchEvent(new Event("input"));
-		view.el.querySelector<HTMLButtonElement>(".composer button")!.click();
+		await settle();
+		view.el.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.click();
 		await settle();
 		expect(view.el.textContent).toContain("Fixture write failed");
 		expect(input.value).toBe("Important unsent draft");
-		expect(view.el.querySelector<HTMLButtonElement>(".composer button")!.disabled).toBe(false);
+		expect(view.el.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.disabled).toBe(false);
 		await controller.sendPrompt(session.sessionId, input.value);
 		expect(append.mock.calls[0]?.[1]).toBe(append.mock.calls[1]?.[1]);
 	});

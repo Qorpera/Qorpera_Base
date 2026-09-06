@@ -13,6 +13,7 @@ export type CompanySection =
 	| "proposal"
 	| "organization"
 	| "team"
+	| "new"
 	| "meet";
 
 export type Route =
@@ -43,6 +44,7 @@ export function parseRoute(hash: string): Route {
 			section === "file" ||
 			section === "organization" ||
 			section === "team" ||
+			section === "new" ||
 			section === "meet"
 		) {
 			return { name: "company", profileId, section };

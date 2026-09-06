@@ -12,7 +12,8 @@
 		"clean": "shx rm -rf dist"
 	},
 	"dependencies": {
-		"@supabase/supabase-js": "2.112.3"
+		"@supabase/supabase-js": "2.112.3",
+		"marked": "18.0.5"
 	},
 	"devDependencies": {
 		"esbuild": "0.28.1",

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
+import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
 import { HubController } from "../src/app/views/hub.ts";
 import { renderRail } from "../src/app/views/shell.ts";
@@ -223,7 +224,7 @@ describe("account and route ownership", () => {
 		});
 		await draw();
 		expect(location.hash).toBe("#/account");
-		expect(root.textContent).toContain("Entitlement");
+		expect(root.textContent).toContain("Plan & billing");
 	});
 
 	it("ignores a late company lookup after navigating away", async () => {
@@ -265,6 +266,58 @@ describe("account and route ownership", () => {
 		expect(f.root.querySelector("textarea")).toBe(composer);
 	});
 
+	it("keeps profile-menu focus through refreshes and closes it before the mobile drawer", async () => {
+		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		await draw();
+		f.root.querySelector<HTMLButtonElement>(".mobile-navigation-toggle")!.click();
+		await draw();
+		f.root.querySelector<HTMLButtonElement>(".rail .account-trigger")!.click();
+		const teamLink = '.account-popover [data-account-action="settings"]';
+		f.root.querySelector<HTMLAnchorElement>(teamLink)!.focus();
+		f.hints.get("qorpera_profile_access_state")!();
+		await draw();
+		expect(f.root.querySelector<HTMLElement>(".account-popover")!.hidden).toBe(false);
+		expect(document.activeElement).toBe(f.root.querySelector(teamLink));
+		document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		await draw();
+		expect(f.root.querySelector<HTMLElement>(".account-popover")!.hidden).toBe(true);
+		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(true);
+		expect(document.activeElement).toBe(f.root.querySelector(".rail .account-trigger"));
+		document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		await draw();
+		expect(f.root.querySelector("main")?.inert).toBe(false);
+		expect(document.activeElement).toBe(f.root.querySelector(".mobile-navigation-toggle"));
+	});
+
+	it("keeps company navigation and sign out available when the profile moves between rail and account pages", async () => {
+		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		const signOut = vi.spyOn(AuthController.prototype, "signOut").mockImplementation(async () => f.auth(null));
+		await draw();
+		expect(f.root.querySelector(".topbar .account-trigger")).toBeNull();
+		f.root.querySelector<HTMLButtonElement>(".rail .account-trigger")!.click();
+		expect(f.root.querySelector('.account-popover a[href$="/team"]')).toBeNull();
+		f.root.querySelector<HTMLButtonElement>('[data-account-action="settings"]')!.click();
+		f.root.querySelector<HTMLButtonElement>("#settings-tab-company")!.click();
+		await draw();
+		expect(f.root.querySelector(".settings-dialog")?.textContent).toContain("Delete company");
+		f.root.querySelector<HTMLButtonElement>(".settings-close")!.click();
+		f.root.querySelector<HTMLButtonElement>(".rail .account-trigger")!.click();
+		f.root.querySelector<HTMLAnchorElement>('.account-popover a[href="#/friends"]')!.click();
+		await draw();
+		expect(f.api.listFriends).toHaveBeenCalledTimes(2);
+		expect(f.root.querySelector(".topbar .account-trigger")?.textContent).toContain("Account A");
+		expect(f.root.querySelector(".account-company-name")).toBeNull();
+		location.hash = `#/c/${profileA.profileId}/chat/${session.sessionId}`;
+		await draw();
+		expect(f.root.querySelectorAll(".account-trigger")).toHaveLength(1);
+		f.root.querySelector<HTMLButtonElement>(".rail .account-trigger")!.click();
+		f.root.querySelector<HTMLButtonElement>(".account-signout")!.click();
+		await draw();
+		expect(signOut).toHaveBeenCalledTimes(1);
+		expect(f.root.querySelector(".account-trigger")).toBeNull();
+		expect(f.root.textContent).not.toContain(profileA.profileName);
+	});
+
 	it("restores access to the page when membership is revoked with the mobile drawer open", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 		await draw();
@@ -279,6 +332,8 @@ describe("account and route ownership", () => {
 		expect(f.root.querySelector("main")?.textContent).toContain("Your access to this company was revoked");
 		expect(f.root.querySelector("main")?.inert).toBe(false);
 		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(false);
+		expect(f.root.querySelector(".topbar .account-trigger")).not.toBeNull();
+		expect(f.root.querySelector(".account-company-name")).toBeNull();
 	});
 
 	it("keeps rail searches bound to the current company and current route", () => {
@@ -291,15 +346,22 @@ describe("account and route ownership", () => {
 		};
 		for (const controller of [a, b]) controller.store.set({ team, sessions: [session], loading: false });
 		const rail = document.createElement("aside");
-		renderRail(rail, a, { name: "company", profileId: profileA.profileId, section: "file" });
-		renderRail(rail, b, { name: "company", profileId: profileB.profileId, section: "file" });
-		renderRail(rail, b, { name: "company", profileId: profileB.profileId, section: "team" });
+		const context = {
+			profiles: [profileA, profileB],
+			user: userA,
+			auth: new AuthController(f.cloud),
+			invitations: 0,
+			openSettings: () => {},
+		};
+		renderRail(rail, a, { ...context, route: { name: "company", profileId: profileA.profileId, section: "file" } });
+		renderRail(rail, b, { ...context, route: { name: "company", profileId: profileB.profileId, section: "file" } });
+		renderRail(rail, b, { ...context, route: { name: "company", profileId: profileB.profileId, section: "team" } });
 		const search = rail.querySelector("input")!;
 		search.value = "Fixture";
 		search.dispatchEvent(new Event("input"));
-		expect(rail.textContent).toContain("Company B");
+		expect(rail.querySelector(".account-trigger")?.textContent).toContain("Account A");
 		expect(rail.textContent).not.toContain("Company A PRIVATE");
-		expect(rail.querySelector('a[href$="/team"]')?.classList.contains("active")).toBe(true);
+		expect(rail.querySelector('a[href$="/team"]')).toBeNull();
 	});
 
 	it("retains creation idempotency across an ambiguous failure and controller restart", async () => {
