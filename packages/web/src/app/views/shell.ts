@@ -198,10 +198,9 @@ export function renderTopbar(
 	if (!company) restoreFocus();
 }
 
-/* The company rail, as Qorpera Base draws it (V24 product preview): a search
- * field, the Co-Founder as a low card with its figure standing on it, the rest
- * of the staff as rows, and the account menu at the foot. Company management
- * lives in settings. The new-conversation screen can open existing agents;
+/* The company rail follows the app: a search field, a compact pinned
+ * Co-Founder tile, the rest of the staff as rows, and the account menu at the
+ * foot. Company management lives in settings. The new-conversation screen can open existing agents;
  * new hires stay unavailable until a cloud creation port is supplied. */
 
 /* The field outlives re-renders so typing never loses the caret. */
@@ -281,16 +280,14 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 								? "page"
 								: undefined,
 					},
-					h(
-						"span",
-						{ class: "cofounder-stand" },
-						agentFigure(cofounder, cofounder.displayName, { size: 64 }),
-						company.activityFor(cofounder.id)?.activity === "working"
-							? h("span", { class: "presence", title: "Working" })
-							: null,
-					),
+					agentFigure(cofounder, cofounder.displayName, {
+						size: 64,
+						selected:
+							section === "home" ||
+							(Boolean(cofounderSessionId) && activeSessionId === cofounderSessionId) ||
+							isActive(cofounder.id),
+					}),
 					h("strong", null, cofounder.displayName),
-					h("small", null, statusLine(company, cofounder)),
 				)
 			: null;
 
@@ -303,7 +300,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 				title: `${agent.displayName} · ${agent.role}`,
 				"aria-current": isActive(agent.id) ? "page" : undefined,
 			},
-			agentFigure(agent, agent.displayName, { size: 50 }),
+			agentFigure(agent, agent.displayName, { size: 50, selected: isActive(agent.id) }),
 			h(
 				"span",
 				{ class: "rail-row-copy" },
@@ -354,19 +351,8 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	);
 
 	const empty =
-		!state.loading &&
-		!cofounderCard &&
-		!staffRows.length &&
-		!sessionRows.length &&
-		!state.organization?.responsibilities.some((item) => item.status !== "retired" && matches(item.name)) &&
-		!state.organization?.projects.some(
-			(item) => item.status !== "completed" && item.status !== "cancelled" && matches(item.name),
-		)
-			? h(
-					"p",
-					{ class: "rail-empty" },
-					railQuery ? "No matching conversations or responsibilities." : "No agents yet.",
-				)
+		!state.loading && !cofounderCard && !staffRows.length && !sessionRows.length
+			? h("p", { class: "rail-empty" }, railQuery ? "No matching conversations." : "No agents yet.")
 			: null;
 
 	// Replacing the rail detaches the field, and a detached element loses
@@ -431,50 +417,8 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 						button("Retry company", () => void company.refreshAll(), { small: true }),
 					)
 				: null,
-			cofounderCard,
-			state.organization
-				? h(
-						"div",
-						{ class: "rail-organization" },
-						...state.organization.responsibilities
-							.filter((item) => item.status !== "retired" && matches(item.name))
-							.map((item) =>
-								h(
-									"a",
-									{
-										class: "rail-object",
-										href: `#/c/${profileId}/responsibility/${item.responsibilityId}`,
-										title: item.name,
-										"aria-current":
-											section === "responsibility" &&
-											route.name === "company" &&
-											route.id === item.responsibilityId
-												? "page"
-												: undefined,
-									},
-									icon("map"),
-									h("span", null, item.name),
-								),
-							),
-						...state.organization.projects
-							.filter((item) => item.status !== "completed" && item.status !== "cancelled" && matches(item.name))
-							.map((item) =>
-								h(
-									"a",
-									{
-										class: "rail-object",
-										href: `#/c/${profileId}/project/${item.projectId}`,
-										title: item.name,
-										"aria-current":
-											section === "project" && route.name === "company" && route.id === item.projectId
-												? "page"
-												: undefined,
-									},
-									icon("file"),
-									h("span", null, item.name),
-								),
-							),
-					)
+			cofounderCard
+				? h("div", { class: "rail-pinned", role: "group", "aria-label": "Pinned agents" }, cofounderCard)
 				: null,
 			state.loading && !state.staff.length ? h("p", { class: "rail-empty" }, "Loading…") : null,
 			staffRows.length || sessionRows.length ? h("div", { class: "rail-list" }, ...staffRows, ...sessionRows) : null,

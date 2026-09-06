@@ -1,0 +1,120 @@
+[
+  {
+    "file": "planet.webp",
+    "sourceSha256": "1158927776090bf5d4291b83ad0e66557097407819a6d19f71019e42f5d74578",
+    "sha256": "40ea022e985f685ec83b59e923fb2c412385a368d38411fbc2ff86ef7107a25d",
+    "sourceBytes": 125538,
+    "bytes": 90350,
+    "visibleChannelDifferences": 0
+  },
+  {
+    "file": "planet-face.webp",
+    "sourceSha256": "b88960a113bc0d40ade94f1e43456614618d5b3afe8b8d8a72f6a4162fce61b6",
+    "sha256": "4eb1fdef9c0d4058db544e69e84e79f743b174e455c9ff39b22e922e854e0d36",
+    "sourceBytes": 1228024,
+    "bytes": 898136,
+    "visibleChannelDifferences": 0
+  },
+  {
+    "file": "acorn.webp",
+    "sourceSha256": "8194242f9d3aa41e7805e0941f0924961c3f946f5216849007591f19ba36a9cc",
+    "sha256": "2650c8bf2118b14e06622c8eb9b991b0c02032c5fcdf62549a42c1fd08170d65",
+    "sourceBytes": 125562,
+    "bytes": 89670,
+    "visibleChannelDifferences": 0
+  },
+  {
+    "file": "acorn-face.webp",
+    "sourceSha256": "5c614d04b953bb26ee86e4d1b27b77dd33fe02ed519470629865b58868a2fa25",
+    "sha256": "bdc89f16e87d9c513bb5f74e3a20a1b788540270958893ba04ddb19436ca9f14",
+    "sourceBytes": 1215099,
+    "bytes": 164528,
+    "visibleChannelDifferences": 0,
+    "preparation": "Resampled to 512 × 512 by Chromium Canvas 2D, matching avatar-appearance.prepare for this face plate; then lossless WebP."
+  },
+  {
+    "file": "flame.webp",
+    "sourceSha256": "af83ee1cc390d27b1f4d74cbd69b2aba3b1e54cd23e2edfd9d80931100b76d49",
+    "sha256": "08c27401dda611214ec96610fe3aecdeec4e65779ee1f8f5e4f8663a73e3d31f",
+    "sourceBytes": 105171,
+    "bytes": 74776,
+    "visibleChannelDifferences": 0
+  },
+  {
+    "file": "flame-face.webp",
+    "sourceSha256": "072ce7f04880e1a96eefccb96e854d7b146b5bd7ec768b16aefb371dbc1ab5ae",
+    "sha256": "2bf730aaee13c663f69596bcd0d25dbb9edd8820b87195177ef36688237413e0",
+    "sourceBytes": 1048672,
+    "bytes": 131972,
+    "visibleChannelDifferences": 0,
+    "preparation": "Resampled to 512 × 512 by Chromium Canvas 2D, matching avatar-appearance.prepare for this face plate; then lossless WebP."
+  },
+  {
+    "file": "rocket.webp",
+    "sourceSha256": "d7bd206d09435e1e7144c00b8a24311821d9134be9d57bf52f8ffa47a8c236b0",
+    "sha256": "be0703bade3dc2a64b8960b0c7f3774e6b223ca29bc5b23a5932396935b4f123",
+    "sourceBytes": 111923,
+    "bytes": 80458,
+    "visibleChannelDifferences": 0
+  },
+  {
+    "file": "rocket-face.webp",
+    "sourceSha256": "ed9d3e5ee703e308dcefac130f451788414ef55085b0a9e40f7f16b2b58987fb",
+    "sha256": "9ae7947cfd06f8631767c364a9c2b0cf23583d7691b13e73635de1d6d7afdb97",
+    "sourceBytes": 1064349,
+    "bytes": 131926,
+    "visibleChannelDifferences": 0,
+    "preparation": "Resampled to 512 × 512 by Chromium Canvas 2D, matching avatar-appearance.prepare for this face plate; then lossless WebP."
+  },
+  {
+    "file": "crown.webp",
+    "sourceSha256": "bb413162895a1cd4f8e8e90af130259e3c2b56725f25f4b2320905667b5d9d81",
+    "sha256": "eac067a09112e4cfe57a6dbd3a82258f5902c3d8e69f4347a8653aabae71891a",
+    "sourceBytes": 119267,
+    "bytes": 88310,
+    "visibleChannelDifferences": 0
+  },
+  {
+    "file": "crown-face.webp",
+    "sourceSha256": "f43cd3e681d16ae1cac59d56e9fa726f93e939679f32480fc136c6b687f710cf",
+    "sha256": "e53564b0cb9ca7b9a0fac645853a088f1fdcbf14852fbca61378f386c2608d60",
+    "sourceBytes": 1337115,
+    "bytes": 179796,
+    "visibleChannelDifferences": 0,
+    "preparation": "Resampled to 512 × 512 by Chromium Canvas 2D, matching avatar-appearance.prepare for this face plate; then lossless WebP."
+  },
+  {
+    "file": "heart.webp",
+    "sourceSha256": "97a132925665309e51791e93932bc7e93da35981a66a49594a96d895c9606903",
+    "sha256": "2f622d9148d2903ceb6c49c158c1ec9e1c118b10d0f6149b22b6a18077fb64c6",
+    "sourceBytes": 139515,
+    "bytes": 99424,
+    "visibleChannelDifferences": 0
+  },
+  {
+    "file": "heart-face.webp",
+    "sourceSha256": "de10a532f68d1ca11e19d1ea8f04379033de12b13a7fb70ff94e1c2009cc9645",
+    "sha256": "4f5e6d19cb84124d4a35b46774d27458311d36782221e1ceb92e63514bc6ddb7",
+    "sourceBytes": 1208987,
+    "bytes": 164976,
+    "visibleChannelDifferences": 0,
+    "preparation": "Resampled to 512 × 512 by Chromium Canvas 2D, matching avatar-appearance.prepare for this face plate; then lossless WebP."
+  },
+  {
+    "file": "ghost.webp",
+    "sourceSha256": "ed940a6b6944ae5725dbbdfcc40e6946aea2201b18d331617c8d6fd93528c541",
+    "sha256": "4322d82a611917a153ecd130fcc26bbda989549c8b0c46e96f6b4d1b31b52d1c",
+    "sourceBytes": 170213,
+    "bytes": 117234,
+    "visibleChannelDifferences": 0
+  },
+  {
+    "file": "ghost-face.webp",
+    "sourceSha256": "c669017f470342663f7e068b9fa1eba552f28b0ded768d398dcac925cb467c44",
+    "sha256": "dc922d20d656918c32b5e26366adbc9ece506a8f342947569bc697ad9604f699",
+    "sourceBytes": 940047,
+    "bytes": 108542,
+    "visibleChannelDifferences": 0,
+    "preparation": "Resampled to 512 × 512 by Chromium Canvas 2D, matching avatar-appearance.prepare for this face plate; then lossless WebP."
+  }
+]

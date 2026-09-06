@@ -177,29 +177,13 @@ label > input, label > select { font-weight: 400; }
 .rail-scroll { flex: 1; min-height: 0; overflow-y: auto; padding-top: 2px; }
 .rail-empty { padding: 14px 8px; color: var(--rail-small); font-size: 12.5px; }
 
-/* The Co-Founder: a low card with its figure standing on it, rising above the
- * top edge, with a contact shadow at its feet. */
-.cofounder-pin {
-	position: relative; display: flex; flex-direction: column; align-items: center; gap: 1px;
-	margin: 26px 0 6px; padding: 50px 6px 9px; border-radius: 12px;
-	background: transparent; color: var(--text); text-align: center;
-}
+/* Match the app's compact pinned-agent tiles. */
+.rail-pinned { display: grid; grid-template-columns: repeat(auto-fit, 80px); justify-content: center; gap: 7px 8px; padding: 15px 2px 12px; }
+.cofounder-pin { display: grid; grid-template-columns: 1fr; grid-template-rows: 64px minmax(14px, auto); place-items: center; gap: 4px; width: 80px; min-height: 92px; padding: 5px 4px 4px; border-radius: 10px; color: var(--text); text-align: center; }
 .cofounder-pin:hover { background: var(--rail-hover); text-decoration: none; }
 .cofounder-pin.active, .cofounder-pin.active:hover { background: var(--rail-selection); color: #fff; }
-.cofounder-pin strong { position: relative; z-index: 2; font-size: 12px; font-weight: 650; line-height: 1.2; }
-.cofounder-pin small { font-size: 10.5px; color: var(--rail-small); }
-.cofounder-pin.active small { color: #fff; }
-.cofounder-stand { position: absolute; left: 50%; top: -20px; width: 64px; height: 64px; transform: translateX(-50%); }
-.cofounder-stand::before {
-	content: ""; position: absolute; left: 14%; right: 14%; bottom: 1px; height: 10px; border-radius: 50%;
-	background: rgba(0, 30, 80, 0.3); filter: blur(5px);
-}
-.cofounder-stand .figure { position: relative; z-index: 1; width: 64px; height: 64px; filter: drop-shadow(0 4px 4px rgba(0, 0, 0, 0.16)); }
-.cofounder-stand .presence {
-	position: absolute; z-index: 2; right: 2px; bottom: 4px; width: 12px; height: 12px; border-radius: 50%;
-	background: var(--rail-status); border: 2px solid var(--rail);
-}
-.cofounder-pin.active .cofounder-stand .presence { border-color: var(--rail-selection); }
+.cofounder-pin .figure { width: 64px; height: 64px; }
+.cofounder-pin strong { display: block; width: 100%; min-width: 0; overflow: hidden; font-size: 11px; font-weight: 500; line-height: 14px; text-overflow: ellipsis; white-space: nowrap; }
 
 .rail-list { display: grid; gap: 1px; }
 .rail-row {
@@ -209,27 +193,19 @@ label > input, label > select { font-weight: 400; }
 .rail-row:hover { background: var(--rail-hover); text-decoration: none; }
 .rail-row.active, .rail-row.active:hover { background: var(--rail-selection); color: #fff; }
 .rail-row .figure { width: 50px; height: 50px; }
-.rail-row-copy { display: grid; gap: 1px; min-width: 0; }
+.rail-row-copy { display: grid; gap: 1px; min-width: 0; align-self: start; margin-top: 4px; }
 .rail-row-copy strong { font-size: 13px; font-weight: 600; line-height: 1.18; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-row-copy small { font-size: 11px; line-height: 15px; color: #6e6c6b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-row.active .rail-row-copy small { color: rgba(255, 255, 255, 0.85); }
-.rail-organization { display: grid; gap: 2px; margin: 12px 0; }
-.rail-organization:empty { display: none; }
-.rail-object { display: flex; align-items: center; gap: 10px; padding: 8px 12px; color: var(--text); font-size: 12px; border-radius: 6px; }
-.rail-object span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rail-object .icon { width: 16px; height: 16px; color: var(--text-muted); }
-.rail-object:hover { background: var(--rail-hover); text-decoration: none; }
-.rail-object[aria-current=page] { background: var(--rail-selection); color: #fff; }
-.rail-object[aria-current=page] .icon { color: inherit; }
 @media (min-width: 761px) {
 	.rail-compact .rail { padding-inline: 7px; }
 	.rail-compact .rail-toolbar { flex-wrap: wrap; height: 76px; justify-content: center; }
 	.rail-compact .rail-layout-toggle { margin: 0; }
-	.rail-compact .rail-top, .rail-compact .cofounder-pin > strong, .rail-compact .cofounder-pin > small, .rail-compact .rail-row-copy, .rail-compact .rail-object span, .rail-compact .account-trigger-name, .rail-compact .account-chevron, .rail-compact .rail-connection { display: none; }
-	.rail-compact .cofounder-pin { height: 72px; margin: 10px 0; padding: 0; }
-	.rail-compact .cofounder-stand { top: 3px; }
+	.rail-compact .rail-top, .rail-compact .cofounder-pin > strong, .rail-compact .rail-row-copy, .rail-compact .account-trigger-name, .rail-compact .account-chevron, .rail-compact .rail-connection { display: none; }
+	.rail-compact .rail-pinned { grid-template-columns: 1fr; justify-items: center; gap: 4px; padding: 0; }
+	.rail-compact .cofounder-pin { grid-template-rows: 1fr; width: 62px; height: 60px; min-height: 60px; padding: 9px; }
+	.rail-compact .cofounder-pin .figure { width: 42px; height: 42px; }
 	.rail-compact .rail-row { grid-template-columns: 1fr; padding: 5px; justify-items: center; }
-	.rail-compact .rail-object { justify-content: center; padding: 12px; }
 	.rail-compact .account-trigger { justify-content: center; }
 	.rail-compact .account-popover { position: fixed; left: 8px; right: auto; bottom: 66px; width: 260px; z-index: 50; }
 }
@@ -247,13 +223,13 @@ label > input, label > select { font-weight: 400; }
 	max-height: calc(100dvh - var(--titlebar-height) - 88px);
 }
 
-/* Agent figures: the approved vector build, driven by the vendored rig at
- * part motion 0. The host sets the size; the figure fills it. */
-.figure { position: relative; display: inline-block; width: 32px; height: 32px; flex: none; vertical-align: middle; }
-.vf { position: relative; display: block; width: 100%; height: 100%; -webkit-user-select: none; user-select: none; }
-.vf-presence, .vf-form, .vf-body { display: block; width: 100%; height: 100%; transform-origin: 50% 50%; }
-.vf-body svg { display: block; width: 100%; height: 100%; overflow: visible; }
-.vf-typing { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; visibility: hidden; pointer-events: none; }
+/* Original artwork, composited with the Assets Room's 2D motion. */
+.figure { position: relative; display: inline-block; width: var(--figure-size, 32px); height: var(--figure-size, 32px); flex: none; vertical-align: middle; }
+.figure-canvas, .figure-fallback { position: absolute; inset: -6%; display: block; width: 112%; height: 112%; max-width: none; object-fit: contain; pointer-events: none; user-select: none; }
+.figure-canvas[hidden], .figure-fallback[hidden] { display: none; }
+.figure[data-selected=true] .figure-fallback { filter: brightness(0) invert(1); }
+@media (forced-colors: active) { .cofounder-pin.active, .rail-row.active { outline: 2px solid Highlight; } }
+
 .avatar {
 	width: 32px; height: 32px; border-radius: 50%; display: inline-grid; place-items: center; flex: none;
 	background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: 12px;

@@ -6,6 +6,7 @@ import { ApprovalsView } from "../src/app/views/approvals.ts";
 import { NewConversationView } from "../src/app/views/new-conversation.ts";
 import { renderOrganization } from "../src/app/views/organization.ts";
 import { SettingsView } from "../src/app/views/settings.ts";
+import { renderRail } from "../src/app/views/shell.ts";
 import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
 import { projectTranscript, type TranscriptMessage } from "../src/cloud/transcript.ts";
 import { renderAuthorizationCard } from "../src/ui/authorization-card.ts";
@@ -341,6 +342,23 @@ it("renders recorded responsibility targets and room links without inventing mis
 		],
 	};
 	f.company.store.set({ organization, organizationState: "ready" });
+	const rail = h("nav");
+	document.body.append(rail);
+	const auth = new AuthController(f.cloud);
+	cleanup.push(() => auth.dispose());
+	renderRail(rail, f.company, {
+		profiles: [profileA],
+		user: userA,
+		route: { name: "company", profileId: profileA.profileId, section: "home" },
+		auth,
+		invitations: 0,
+		openSettings: () => {},
+	});
+	expect(rail.querySelector('a[href*="/responsibility/"], a[href*="/project/"]')).toBeNull();
+	const search = rail.querySelector<HTMLInputElement>('input[type="search"]')!;
+	search.value = "Product quality";
+	search.dispatchEvent(new Event("input"));
+	expect(rail.textContent).toContain("No matching conversations.");
 	const root = h("div");
 	renderOrganization(f.company, root, { kind: "responsibility", id: id(31) });
 	expect(root.textContent).toContain("Under 5");
