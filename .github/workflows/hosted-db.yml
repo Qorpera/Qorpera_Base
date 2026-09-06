@@ -9,8 +9,6 @@ on:
       - 'supabase/tests/**'
       - 'scripts/test-hosted-db.mjs'
       - 'scripts/test-hosted-db.test.mjs'
-      - 'scripts/test-runtime-provenance.mjs'
-      - 'scripts/generate-cloud-runtime-bundle*.mjs'
 
 permissions:
   contents: read
@@ -42,6 +40,3 @@ jobs:
 
       - name: Apply all migrations and run SQL regression tests
         run: npm run test:hosted-db
-
-      - name: Verify runtime upgrade and private audience contracts
-        run: node scripts/test-runtime-provenance.mjs

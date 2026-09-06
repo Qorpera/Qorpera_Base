@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { CLOUD_AGENT_SEND_INSTRUCTIONS, CloudAgentMouth, parseCloudAgentSendInput } from "./cloud-agent-mouth.ts";
 import { type CloudCompanyPathControl, CloudCompanyPathGateway } from "./cloud-company-path-gateway.ts";
-import { readCloudCompanyPolicy } from "./cloud-company-policy.ts";
 import {
 	CLOUD_COMPANY_RUNTIME_INSTRUCTIONS,
 	cloudCompanyContextTool,
@@ -119,16 +118,15 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			const connectorDescriptors = this.#secretBroker
 				? await describeCloudSecretTools(this.#paths, binding, signal)
 				: [];
+			const prompt = composeCloudNativeCompanyPrompt(context);
+			composition.finish("succeeded", { outputBytes: Buffer.byteLength(prompt) });
+			const contextSha256 = createHash("sha256").update(prompt).digest("hex");
 			const gateway = new CloudCompanyPathGateway({
 				binding,
 				identity: context.identity,
 				control: this.#paths,
 				store: this.#store(context.identity.companyId, binding, signal),
 			});
-			const policy = await readCloudCompanyPolicy(gateway, signal);
-			const prompt = composeCloudNativeCompanyPrompt(context, policy);
-			composition.finish("succeeded", { outputBytes: Buffer.byteLength(prompt) });
-			const contextSha256 = createHash("sha256").update(prompt).digest("hex");
 			const mouth = new CloudAgentMouth(
 				binding.runId,
 				async (input) => {

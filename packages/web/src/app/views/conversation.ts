@@ -12,7 +12,7 @@ import { ComputerPanel } from "./computer.ts";
 
 /* One conversation over the canonical transcript. Rendering follows
  * DECISIONS.md "Transcript projection rules": member inputs and agent sends
- * only. The composer is the single write path (qorpera_append_session_input). */
+ * only. Composer drafts remain local until a message adapter is supplied. */
 
 export class ConversationView {
 	readonly el: HTMLElement;
@@ -287,8 +287,8 @@ export class ConversationView {
 
 	#submit(): void {
 		const text = this.#composer.value;
-		if (!text.trim() || this.#send.disabled) return;
-		void this.#company.sendPrompt(this.#sessionId, text);
+		if (!text.trim() || this.#send.disabled || !this.#actions.sendMessage) return;
+		void this.#actions.sendMessage(this.#sessionId, text, this.#lifetime.signal);
 		this.update();
 	}
 
@@ -305,7 +305,12 @@ export class ConversationView {
 		this.#renderStatus(conversation, activity?.activity, canWrite, session);
 		this.#composer.disabled = !canWrite || conversation.sending;
 		this.#send.disabled =
-			!canWrite || conversation.sending || !conversation.draft?.trim() || this.#attachments.count > 0;
+			!this.#actions.sendMessage ||
+			!canWrite ||
+			conversation.sending ||
+			!conversation.draft?.trim() ||
+			this.#attachments.count > 0;
+		this.#send.title = this.#actions.sendMessage ? "Send message" : "Sending messages is not available yet";
 		this.#attach.disabled = this.#composer.disabled;
 		this.#more.disabled = this.#composer.disabled;
 		if (this.#composer.disabled && !this.#menu.hidden) this.#setMenu(false, false);
@@ -448,6 +453,14 @@ export class ConversationView {
 		const children: (HTMLElement | null)[] = [];
 		if (conversation.error) children.push(notice("danger", conversation.error));
 		if (conversation.sendError) children.push(notice("danger", conversation.sendError));
+		if (canWrite && !this.#actions.sendMessage)
+			children.push(
+				h(
+					"p",
+					{ class: "surface-status", role: "status" },
+					"Sending messages is not available yet. Your draft stays here.",
+				),
+			);
 		if (activity === "working") children.push(h("div", { class: "typing", role: "status" }, "Working…"));
 		if (activity === "needs_attention") children.push(notice("neutral", "This agent needs your attention."));
 		if (!canWrite && session?.status === "closed") children.push(notice("neutral", "This conversation is archived."));

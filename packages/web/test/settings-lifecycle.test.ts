@@ -3,7 +3,6 @@ import { RealtimeClient } from "@supabase/supabase-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
-import { PolicyApi } from "../src/cloud/policy-api.ts";
 import type { HostedAccountEntitlement } from "../src/cloud/types.ts";
 import { deferred, fixture, profileA, profileB, session, settle, userB } from "./fixtures.ts";
 
@@ -190,16 +189,6 @@ describe("settings session lifecycle", () => {
 	it.each(["policy", "connections"])(
 		"keeps the focused %s control through an unrelated company refresh",
 		async (tab) => {
-			vi.spyOn(PolicyApi.prototype, "read").mockResolvedValue({
-				source: "",
-				version: null,
-				policy: {
-					spending: "ask",
-					external_communication: "ask",
-					hard_to_reverse_changes: "ask",
-					information_sharing: "ask",
-				},
-			});
 			const f = await setup();
 			open(f.root);
 			click(f.root, `#settings-tab-${tab}`);
@@ -207,7 +196,7 @@ describe("settings session lifecycle", () => {
 			const control =
 				tab === "policy"
 					? f.root.querySelector<HTMLSelectElement>('select[aria-label="Spending"]')!
-					: [...f.root.querySelectorAll("button")].find((button) => button.textContent === "Refresh connections")!;
+					: f.root.querySelector<HTMLElement>("#settings-content")!;
 			control.focus();
 			f.hints.get("qorpera_profile_access_state")!();
 			await draw();
@@ -215,4 +204,33 @@ describe("settings session lifecycle", () => {
 			expect(document.activeElement).toBe(control);
 		},
 	);
+	it("keeps policy previews local to the selected company and never starts settings runtime calls", async () => {
+		const f = await setup(realtimeFixture());
+		const fetch = vi.fn();
+		vi.stubGlobal("fetch", fetch);
+		open(f.root);
+		click(f.root, "#settings-tab-policy");
+		const spending = f.root.querySelector<HTMLSelectElement>('select[aria-label="Spending"]')!;
+		spending.value = "auto";
+		spending.dispatchEvent(new Event("change"));
+		click(f.root, "#settings-tab-connections");
+		for (const button of f.root.querySelectorAll<HTMLButtonElement>("#settings-content button")) {
+			expect(button.disabled).toBe(true);
+			button.click();
+		}
+		await vi.advanceTimersByTimeAsync(60_000);
+		click(f.root, "#settings-tab-policy");
+		expect(f.root.querySelector<HTMLSelectElement>('select[aria-label="Spending"]')!.value).toBe("auto");
+		const picker = f.root.querySelector<HTMLSelectElement>('[aria-label="Company for settings"]')!;
+		picker.value = profileB.profileId;
+		picker.dispatchEvent(new Event("change"));
+		await draw();
+		expect(f.root.querySelector<HTMLSelectElement>('select[aria-label="Spending"]')!.value).toBe("ask");
+		click(f.root, ".settings-close");
+		open(f.root);
+		click(f.root, "#settings-tab-policy");
+		expect(f.root.querySelector<HTMLSelectElement>('select[aria-label="Spending"]')!.value).toBe("ask");
+		expect(f.cloud.rpc).not.toHaveBeenCalled();
+		expect(fetch).not.toHaveBeenCalled();
+	});
 });

@@ -40,7 +40,10 @@ describe("conversation lifecycle regressions", () => {
 		vi.mocked(api.readSessionEvents).mockReturnValueOnce(read.promise);
 		const append = vi.spyOn(api, "appendPrompt").mockRejectedValue(new Error("Fixture write failed"));
 		controller.store.set({ loading: false, team, sessions: [session] });
-		const view = new ConversationView(controller, session.sessionId);
+		// Only this fixture connects the composer to the mocked append protocol.
+		const view = new ConversationView(controller, session.sessionId, {
+			sendMessage: (id, text) => controller.sendPrompt(id, text),
+		});
 		cleanup.push(() => view.dispose());
 		document.body.append(view.el);
 		read.resolve([event(1, "New public message")]);

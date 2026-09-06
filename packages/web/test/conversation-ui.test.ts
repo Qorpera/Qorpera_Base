@@ -193,9 +193,9 @@ describe("conversation UI boundaries", () => {
 		expect(document.querySelector("dialog")).toBeNull();
 		expect(f.api.listStaff).not.toHaveBeenCalled();
 	});
-	it("blocks text send while files are selected and sends through the existing path after removal", () => {
-		const f = setup(),
-			send = vi.spyOn(f.company, "sendPrompt").mockResolvedValue(true);
+	it("blocks text send while files are selected and exercises only an injected fixture after removal", () => {
+		const sendMessage = vi.fn().mockResolvedValue(true);
+		const f = setup({ sendMessage });
 		input(f.view.el, "Message", "Keep this draft");
 		attach(f.view.el, [new File(["local"], "brief.png", { type: "image/png" })]);
 		expect(f.company.conversation(session.sessionId).get().attachments).toHaveLength(1);
@@ -209,9 +209,32 @@ describe("conversation UI boundaries", () => {
 		const field = f.view.el.querySelector("textarea")!;
 		field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", isComposing: true, bubbles: true }));
 		field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true }));
-		expect(send).not.toHaveBeenCalled();
+		expect(sendMessage).not.toHaveBeenCalled();
 		field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-		expect(send).toHaveBeenCalledExactlyOnceWith(session.sessionId, "Keep this draft");
+		expect(sendMessage).toHaveBeenCalledExactlyOnceWith(
+			session.sessionId,
+			"Keep this draft",
+			expect.any(AbortSignal),
+		);
+		expect(f.cloud.rpc).not.toHaveBeenCalled();
+	});
+	it("keeps production composer drafts local and cannot queue agent work by click or Enter", async () => {
+		const f = fixture(),
+			root = document.createElement("div");
+		vi.spyOn(f.api, "appendPrompt");
+		document.body.append(root);
+		dispose = mountApplication(root, f.cloud, f.api);
+		await settle();
+		await vi.advanceTimersByTimeAsync(60);
+		input(root, "Message", "Keep this local");
+		const send = button(root, "Send message");
+		expect(send.disabled).toBe(true);
+		send.click();
+		root.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+		await settle();
+		expect(root.querySelector("textarea")!.value).toBe("Keep this local");
+		expect(root.textContent).toContain("Sending messages is not available yet");
+		expect(f.api.appendPrompt).not.toHaveBeenCalled();
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 	it("keeps attachment drafts scoped to their conversation and releases previews on disposal", () => {

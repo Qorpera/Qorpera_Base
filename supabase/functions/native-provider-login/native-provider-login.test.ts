@@ -5,18 +5,6 @@ import { forwardNativeProviderLogin } from "./native-provider-login.ts";
 const capability = "a".repeat(43);
 
 describe("native provider login proxy", () => {
-	it("permits only Qorpera browser preflights and preserves capability checks", async () => {
-		const options = { upstreamUrl: "https://native-compute.example/", fetchImplementation: async () => { throw new Error("must not forward"); } };
-		for (const origin of ["https://app.qorpera.com", "https://41fe840d.qorpera-web.pages.dev", "https://evil.pages.dev"]) {
-			const allowed = origin !== "https://evil.pages.dev";
-			const response = await forwardNativeProviderLogin(new Request("https://project.example/login", { method: "OPTIONS", headers: { origin, "access-control-request-method": "POST", "access-control-request-headers": "authorization,content-type" } }), options);
-			assert.equal(response.status, allowed ? 204 : 403);
-			assert.equal(response.headers.get("access-control-allow-origin"), allowed ? origin : null);
-		}
-		const actual = await forwardNativeProviderLogin(new Request("https://project.example/login", { method: "POST", headers: { origin: "https://app.qorpera.com" }, body: "{}" }), options);
-		assert.equal(actual.status, 400);
-		assert.equal(actual.headers.get("access-control-allow-origin"), "https://app.qorpera.com");
-	});
 	it("forwards only the opaque login envelope and its one-time capability", async () => {
 		let forwardedBody = "";
 		const response = await forwardNativeProviderLogin(

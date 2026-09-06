@@ -6,7 +6,6 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { generateCloudRuntimeBundle } from "./generate-cloud-runtime-bundle.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -196,15 +195,15 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 		assert.ok(acceptance.includes(`EXPECTED_NATIVE_PROVIDER_HOST_SHA256="${candidate.artifacts.find((item) => item.file === "qorpera-native-provider-host.mjs").sha256}"`));
 		assert.ok(acceptance.includes(`EXPECTED_NATIVE_COMPANY_SERVICE_SHA256="${candidate.artifacts.find((item) => item.file === "qorpera-native-company-host.service").sha256}"`));
 		assert.ok(acceptance.includes(`EXPECTED_RUNNER_BOOTSTRAP_SHA256="${candidate.artifacts.find((item) => item.file === "qorpera-lxd-runner-bootstrap.mjs").sha256}"`));
-		// The sealed v56 candidate above belongs to its exact archive/image, not
-		// every later checkout. Pin all current artifacts separately, on every OS.
-		const sourcePackage = JSON.parse(await readFile(
-			join(repositoryRoot, "deploy/first-node/native-codex/source-guest-package-manifest.json"), "utf8",
-		));
-		assert.equal(sourcePackage.schema, "qorpera.lxd-guest-source/v1");
-		assert.equal(sourcePackage.runtimeBundleSha256, (await generateCloudRuntimeBundle(true)).sha256);
-		assert.deepEqual(sourcePackage.package, manifest,
-			"source guest manifest must include every current artifact; regenerate it after runtime changes");
+		if (process.platform === "linux" && process.arch === "x64") {
+			const { nativeCompany: _nativeCompany, ...withoutNative } = candidate;
+			withoutNative.artifacts = candidate.artifacts.filter((item) => !item.file.startsWith("native-company/"));
+			assert.deepEqual(
+				withoutNative,
+				manifest,
+				"governed candidate must include every current Linux x64 runtime artifact without stale or omitted bundles",
+			);
+		}
 		assert.ok(builder.includes('LXD_BUILDER_PROJECT="default"'));
 		assert.ok(builder.includes('PACKAGE_ARCHIVE="/home/company41-admin/step2-lxd/lxd-runner-guest-v56-secret-proof.tar.gz"'));
 		assert.ok(builder.includes("--no-same-owner"));

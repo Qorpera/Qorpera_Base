@@ -384,9 +384,7 @@ begin
 	if auth.uid() is null or not found or not public.qorpera_can_read_session(p_session_id) then
 		raise exception 'cloud conversation is unavailable' using errcode = '42501'; end if;
 	select jsonb_build_object('run_id',run.id,'status',job.status,
-		'can_cancel',public.qorpera_can_write_session(v_session.id) and (
-			job.created_by_user_id = auth.uid() or public.qorpera_can_authorize_profile(v_session.profile_id)
-		)) into v_run
+		'can_cancel',public.qorpera_can_write_session(v_session.id) and job.created_by_user_id = auth.uid()) into v_run
 	from public.qorpera_execution_runs run join public.qorpera_runner_jobs job on job.id = run.job_id and job.run_id = run.id
 	where run.session_id = v_session.id and job.session_id = v_session.id and run.profile_id = v_session.profile_id
 		and job.profile_id = v_session.profile_id and run.environment_id = v_session.environment_id

@@ -279,3 +279,28 @@ desktop/mobile geometry, focus, native dialogs and the unchanged text-send
 path without using a live company. Declaring the already-pinned Markdown
 dependency updates the root lockfile and its generated bundle provenance;
 this does not activate or deploy a runtime bundle.
+
+## 2026-09-06 — Keep this work within the web client shell
+
+**Correction (founder).** Porting all four settings tabs authorizes their UI,
+not integration with the runtime being built separately. This supersedes the
+Connections, Policy and deployment behavior above, and the earlier decision
+to retain live text submission from the composer.
+
+**Boundary.** Connections displays unavailable account/service controls with
+no provider login, sponsorship, revocation, service API calls or polling.
+Policy offers local Ask/Act/Auto previews, explicitly labeled as unsaved and
+not the active company policy. Changing company or closing settings discards
+those choices. The composer retains local text and attachment drafts; message
+submission, agent creation and metadata saves have no production action
+adapter. Computer controls remain unavailable. Fixture adapters may exercise
+UI flows without live credentials or runtime calls.
+
+**Scope.** Existing cloud account and company management and read projections
+remain available. Runtime policy consumption, object-gateway CORS, provider
+login CORS and runtime packaging changes have been removed from this PR.
+The previously deployed login CORS wrapper was rolled back. No runtime,
+tunnel or NAS deployment is required to publish this shell. The repository's
+generated bundle checksum files still reflect the web dependency lockfile;
+they are source provenance only and must not be deployed or applied as part
+of this work.

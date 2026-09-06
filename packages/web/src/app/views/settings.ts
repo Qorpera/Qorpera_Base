@@ -218,10 +218,10 @@ export class SettingsView {
 		else if (tab === "company") this.#drawCompany();
 		else if (this.#company) {
 			if (tab === "connections") {
-				this.#connections ??= new ConnectionsView(this.#api.cloud, this.#company, this.#companyLifetime.signal);
+				this.#connections ??= new ConnectionsView();
 				this.#panels.set(tab, this.#connections.el);
 			} else {
-				this.#policy ??= new PolicyView(this.#api.cloud, this.#company, this.#companyLifetime.signal);
+				this.#policy ??= new PolicyView();
 				this.#panels.set(tab, this.#policy.el);
 			}
 		}

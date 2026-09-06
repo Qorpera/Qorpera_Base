@@ -2,7 +2,6 @@ import { createHash, randomUUID } from "node:crypto";
 import type { JsonValue } from "@qorpera/contracts";
 import { expect, it, vi } from "vitest";
 import type { CloudCompanyPathControl } from "../src/cloud-company-path-gateway.ts";
-import type { CloudCompanyPolicy } from "../src/cloud-company-policy.ts";
 import {
 	CLOUD_COMPANY_RUNTIME_INSTRUCTIONS,
 	cloudCompanyContextTool,
@@ -11,19 +10,6 @@ import {
 } from "../src/cloud-native-company-context.ts";
 import { CloudNativeToolBoundary } from "../src/cloud-native-tool-boundary.ts";
 import { nativeCompanyContextFixture } from "./fixtures/native-company-context-fixture.ts";
-
-const policy: CloudCompanyPolicy = {
-	path: "authority.toml",
-	version: null,
-	sourceSha256: null,
-	readObservationIds: [randomUUID()],
-	choices: {
-		spending: "ask",
-		external_communication: "act",
-		hard_to_reverse_changes: "ask",
-		information_sharing: "ask",
-	},
-};
 
 it("derives the agent, requester and company from closed cloud context, not a supplied role string", () => {
 	const f = nativeCompanyContextFixture();
@@ -57,8 +43,7 @@ it("labels a private first-run as control-plane data, not a human request", () =
 		actorKind: "control_plane",
 	};
 	const context = parseCloudNativeCompanyContext(f.context, f.binding);
-	const prompt = JSON.parse(composeCloudNativeCompanyPrompt(context, policy));
-	expect(prompt.companyPolicy).toEqual(policy);
+	const prompt = JSON.parse(composeCloudNativeCompanyPrompt(context));
 	expect(prompt.identity.audience).toEqual({
 		kind: "member_private",
 		userId: f.context.identity.requesterUserId,
@@ -72,7 +57,7 @@ it("keeps hostile names, job specifications and history in a single escaped data
 	f.context.company.name = hostile;
 	f.context.jobSpecification = f.source("job_spec", f.context.agent.id, hostile);
 	f.context.history[0] = f.source("history", f.context.history[0].id, hostile);
-	const prompt = composeCloudNativeCompanyPrompt(parseCloudNativeCompanyContext(f.context, f.binding), policy);
+	const prompt = composeCloudNativeCompanyPrompt(parseCloudNativeCompanyContext(f.context, f.binding));
 	expect(prompt).not.toContain("<system>");
 	expect(prompt).not.toContain("\u202e");
 	expect(JSON.parse(prompt).history[0].content.text).toBe(hostile);
@@ -86,7 +71,7 @@ it("keeps hostile names, job specifications and history in a single escaped data
 		expect(prompt).not.toContain(value);
 	expect(JSON.parse(prompt).delivery.requireFinalSend).toBe(true);
 	f.context.identity = { ...f.context.identity, sessionId: null };
-	expect(JSON.parse(composeCloudNativeCompanyPrompt(f.context, policy)).delivery.requireFinalSend).toBe(false);
+	expect(JSON.parse(composeCloudNativeCompanyPrompt(f.context)).delivery.requireFinalSend).toBe(false);
 });
 
 it.each([

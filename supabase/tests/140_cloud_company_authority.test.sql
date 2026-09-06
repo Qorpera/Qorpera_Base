@@ -1,6 +1,4 @@
 -- Canonical Company File creation, revision CAS, quota, and session pinning.
--- Keep the bootstrap job and quota fixtures out of later global queue tests.
-begin;
 
 insert into auth.users (id, email, raw_user_meta_data)
 values (
@@ -694,5 +692,3 @@ $$;
 
 reset role;
 select set_config('request.jwt.claims', '', false);
-
-rollback;
