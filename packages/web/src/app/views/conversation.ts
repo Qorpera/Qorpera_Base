@@ -221,16 +221,20 @@ export class ConversationView {
 	}
 
 	focus(): void {
+		this.#autosize();
 		this.#composer.focus();
 	}
 
 	#autosize(): void {
+		// Start with compact geometry: collapsing after measuring an expanded
+		// field changes its padding and can clip a two-line draft.
+		this.#composerShell.classList.toggle("is-expanded", this.#attachments.count > 0);
 		this.#composer.style.height = "auto";
-		this.#composer.style.height = `${Math.min(this.#composer.scrollHeight, 200)}px`;
-		this.#composerShell?.classList.toggle(
+		this.#composerShell.classList.toggle(
 			"is-expanded",
 			this.#composer.scrollHeight > 42 || this.#attachments.count > 0,
 		);
+		this.#composer.style.height = `${Math.min(this.#composer.scrollHeight, 200)}px`;
 	}
 
 	#setMenu(open: boolean, restoreFocus = true): void {
@@ -278,6 +282,7 @@ export class ConversationView {
 		const covered = Boolean(this.#panel) && window.innerWidth <= 1040;
 		if (covered && this.#conversationPane.contains(document.activeElement)) this.#panel?.focus();
 		this.#conversationPane.inert = covered;
+		this.#autosize();
 	}
 
 	#submit(): void {
