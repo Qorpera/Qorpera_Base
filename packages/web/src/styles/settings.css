@@ -31,9 +31,9 @@
 .company-people { display: grid; gap: 5px; }
 .company-person { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; gap: 12px; align-items: center; min-height: 53px; padding: 4px 0; }
 .person-avatar { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; background: #d8d4e3; color: #585166; font-size: 12px; }
-.person-actions { display: flex; align-items: center; gap: 6px; opacity: 0; }
+.company-person .person-actions { display: flex; align-items: center; gap: 6px; opacity: 0; }
 .company-person:hover .person-actions, .company-person:focus-within .person-actions { opacity: 1; }
-.person-actions select { min-height: 30px; max-width: 115px; padding: 3px; border: 0; background: transparent; font-size: 11px; }
+.company-person .person-actions select { min-height: 30px; max-width: 115px; padding: 3px; border: 0; background: transparent; font-size: 11px; }
 .company-invite { margin-top: 12px; }
 .company-invite summary { display: flex; gap: 12px; align-items: center; cursor: pointer; list-style: none; }
 .invite-plus { background: transparent; border: 1px dashed #bcbcb8; color: #777; font-size: 20px; }
@@ -58,7 +58,7 @@
 .policy-help { margin: 24px 12px; font-size: 11.5px; color: #73736f; line-height: 1.6; }
 .settings-dialog :focus-visible { outline: 2px solid #5b84c4; outline-offset: 2px; }
 .settings-dialog [hidden] { display: none; }
-@media (hover: none) { .person-actions { opacity: 1; } }
+@media (hover: none) { .company-person .person-actions { opacity: 1; } }
 @media (max-width: 720px) {
  .settings-overlay { padding: 12px; }
  .settings-dialog { width: 100%; height: 100%; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
@@ -69,9 +69,9 @@
  .settings-company-label { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
  .settings-company-picker { margin-top: 0; }
  .settings-content { padding: 24px 20px; }
- .person-actions { opacity: 1; flex-wrap: wrap; justify-content: end; }
+ .company-person .person-actions { opacity: 1; flex-wrap: wrap; justify-content: end; }
  .company-person { grid-template-columns: 28px minmax(0, 1fr); gap: 8px; }
- .person-actions { grid-column: 2; justify-content: start; }
+ .company-person .person-actions { grid-column: 2; justify-content: start; }
  .connection-card { grid-template-columns: 26px minmax(0, 1fr); }
  .connection-card > .btn { grid-column: 2; justify-self: start; }
  .connection-account { flex-wrap: wrap; }

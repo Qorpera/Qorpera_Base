@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
+import { RealtimeClient } from "@supabase/supabase-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import { PolicyApi } from "../src/cloud/policy-api.ts";
 import type { HostedAccountEntitlement } from "../src/cloud/types.ts";
-import { deferred, fixture, profileA, session, settle, userB } from "./fixtures.ts";
+import { deferred, fixture, profileA, profileB, session, settle, userB } from "./fixtures.ts";
 
 let dispose: (() => void) | undefined;
 beforeEach(() => {
@@ -23,9 +24,8 @@ async function draw() {
 	await settle();
 	await vi.advanceTimersByTimeAsync(60);
 }
-async function setup() {
-	const f = fixture(),
-		root = document.createElement("div");
+async function setup(f = fixture()) {
+	const root = document.createElement("div");
 	document.body.append(root);
 	dispose = mountApplication(root, f.cloud, f.api);
 	await draw();
@@ -39,7 +39,58 @@ function open(root: Element) {
 	click(root, '[data-account-action="settings"]');
 }
 
+function realtimeFixture() {
+	const f = fixture();
+	const realtime = new RealtimeClient("wss://fixture.invalid/realtime/v1", { params: { apikey: "fixture" } });
+	vi.mocked(f.api.listProfiles).mockResolvedValue([profileA, profileB]);
+	vi.mocked(f.cloud.supabase.channel).mockImplementation((topic) => {
+		// Exercise the installed SDK's topic reuse without opening a socket.
+		const channel = realtime.channel(topic);
+		vi.spyOn(channel, "subscribe").mockReturnValue(channel);
+		return channel;
+	});
+	// The fixture deliberately leaves removed channels registered, as the SDK
+	// does while an asynchronous unsubscribe is waiting for its response.
+	return f;
+}
+
 describe("settings session lifecycle", () => {
+	it("borrows the open company again without removing its conversation subscription", async () => {
+		const f = await setup(realtimeFixture());
+		const composer = f.root.querySelector("textarea");
+		const originalChannel = vi.mocked(f.cloud.supabase.channel).mock.results[0]!.value;
+		open(f.root);
+		const picker = f.root.querySelector<HTMLSelectElement>('[aria-label="Company for settings"]')!;
+		picker.value = profileB.profileId;
+		picker.dispatchEvent(new Event("change"));
+		await draw();
+		picker.value = profileA.profileId;
+		picker.dispatchEvent(new Event("change"));
+		await draw();
+		click(f.root, ".settings-close");
+		expect(f.cloud.supabase.channel).toHaveBeenCalledTimes(2);
+		expect(f.cloud.supabase.removeChannel).toHaveBeenCalledTimes(1);
+		expect(f.cloud.supabase.removeChannel).not.toHaveBeenCalledWith(originalChannel);
+		expect(f.root.querySelector("textarea")).toBe(composer);
+	});
+	it("does not reuse a company subscription that is still closing during a quick switch back", async () => {
+		const f = await setup(realtimeFixture());
+		open(f.root);
+		const picker = f.root.querySelector<HTMLSelectElement>('[aria-label="Company for settings"]')!;
+		for (const profile of [profileB, profileA, profileB]) {
+			picker.value = profile.profileId;
+			picker.dispatchEvent(new Event("change"));
+			await draw();
+		}
+		const channels = vi.mocked(f.cloud.supabase.channel).mock.results.map((result) => result.value);
+		expect(channels).toHaveLength(3);
+		expect(channels[2]).not.toBe(channels[1]);
+		expect(f.cloud.supabase.removeChannel).toHaveBeenCalledExactlyOnceWith(channels[1]);
+		click(f.root, ".settings-close");
+		expect(f.cloud.supabase.removeChannel).toHaveBeenCalledTimes(2);
+		expect(f.cloud.supabase.removeChannel).toHaveBeenLastCalledWith(channels[2]);
+		expect(f.cloud.supabase.removeChannel).not.toHaveBeenCalledWith(channels[0]);
+	});
 	it("opens all four tabs over the same conversation and restores the profile button", async () => {
 		const f = await setup(),
 			composer = f.root.querySelector<HTMLTextAreaElement>("textarea")!;

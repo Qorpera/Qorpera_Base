@@ -130,7 +130,10 @@ export class SettingsView {
 		companyPicker.value = company?.profile.profileId ?? (profiles.length === 1 ? profiles[0]!.profileId : "");
 		companyPicker.onchange = () => {
 			const profile = profiles.find((item) => item.profileId === companyPicker.value);
-			this.#setCompany(profile ? new CompanyController(api, profile, auth.userId!) : undefined, Boolean(profile));
+			if (profile?.profileId === this.#company?.profile.profileId) return;
+			if (company && profile?.profileId === company.profile.profileId) this.#setCompany(company, false);
+			else
+				this.#setCompany(profile ? new CompanyController(api, profile, auth.userId!) : undefined, Boolean(profile));
 		};
 		if (profiles.length > 1 || !company)
 			nav.append(h("label", { class: "settings-company-label" }, "Company", companyPicker));

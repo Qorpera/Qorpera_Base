@@ -92,6 +92,7 @@ export class PolicyView {
 		if (this.#lifetime.signal.aborted) return;
 		const canAuthorize = this.#company.store.get().team?.capabilities.authorize === true;
 		const pending = this.#command;
+		const resumable = pending?.state === "ready" || pending?.state === "approved";
 		const changed =
 			this.#draft &&
 			this.#document &&
@@ -147,27 +148,31 @@ export class PolicyView {
 						"neutral",
 						pending.state === "review_required"
 							? "Review the selected policy changes before applying them."
-							: "The cloud is processing this policy change.",
-						pending.state === "review_required" && canAuthorize
+							: resumable
+								? "This policy change has not been applied. Retry applying the saved change."
+								: "The policy change was applied. Check status to reload the saved policy.",
+						(pending.state === "review_required" || resumable) && canAuthorize
 							? h(
 									"div",
 									{ class: "row" },
 									button(
-										"Apply policy",
+										resumable ? "Retry apply" : "Apply policy",
 										() =>
 											void this.#run(async () =>
 												this.#acceptResult(await this.#api.review(pending, "approve")),
 											),
 										{ disabled: this.#busy },
 									),
-									button(
-										"Reject change",
-										() =>
-											void this.#run(async () =>
-												this.#acceptResult(await this.#api.review(pending, "reject")),
-											),
-										{ disabled: this.#busy },
-									),
+									pending.state === "review_required"
+										? button(
+												"Reject change",
+												() =>
+													void this.#run(async () =>
+														this.#acceptResult(await this.#api.review(pending, "reject")),
+													),
+												{ disabled: this.#busy },
+											)
+										: null,
 								)
 							: null,
 						button(
