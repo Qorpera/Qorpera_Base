@@ -353,13 +353,25 @@ it("renders recorded responsibility targets and room links without inventing mis
 		auth,
 		invitations: 0,
 		openSettings: () => {},
+		openFeedback: () => {},
 	});
 	expect(rail.querySelector('a[href*="/responsibility/"], a[href*="/project/"]')).toBeNull();
+	expect(rail.querySelector('.rail-cofounder .cofounder-home[aria-current="page"]')?.textContent).toContain(
+		staff.displayName,
+	);
+	expect(rail.querySelector('[aria-label="Pinned agents"], [data-toggle-rail]')).toBeNull();
+	expect(rail.querySelector('.rail-toolbar input[type="search"]')).not.toBeNull();
+	expect(rail.querySelector('.rail-toolbar a[href$="/new"]')).not.toBeNull();
 	const search = rail.querySelector<HTMLInputElement>('input[type="search"]')!;
 	search.value = "Product quality";
 	search.dispatchEvent(new Event("input"));
 	expect(rail.textContent).toContain("No matching conversations.");
 	const root = h("div");
+	renderOrganization(f.company, root);
+	const card = root.querySelector(".responsibility-node")!;
+	expect(card.textContent).toBe("Product quality");
+	expect(card.querySelector(".figure, p, .badge")).toBeNull();
+	expect(card.getAttribute("href")).toBe(`#/c/${profileA.profileId}/responsibility/${id(31)}`);
 	renderOrganization(f.company, root, { kind: "responsibility", id: id(31) });
 	expect(root.textContent).toContain("Under 5");
 	expect(root.textContent).toContain("quality/report.md");

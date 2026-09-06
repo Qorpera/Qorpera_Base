@@ -28,9 +28,6 @@
 .settings-preference-row { display: flex; flex-direction: row; align-items: center; justify-content: space-between; gap: 16px; min-height: 46px; padding: 5px 12px; font-size: 12.5px; font-weight: 500; }
 .settings-preference-row > select { border: 0; background: transparent; font-size: 12.5px; max-width: 45%; }
 .settings-help { color: #797975; font-size: 11.5px; margin: 4px 12px; }
-.settings-feedback { margin: 24px 0; font-size: 12px; }
-.settings-feedback > summary { color: var(--text-muted); font-weight: 500; }
-.settings-feedback form { margin-top: 12px; }
 .settings-staff-group { border-top: 1px solid var(--border); padding-top: 18px; }
 .settings-content .settings-staff-group h2 { font-size: 10px; text-transform: uppercase; letter-spacing: .09em; margin-bottom: 12px; }
 .settings-file-card { min-height: 92px; grid-template-columns: 38px minmax(0, 1fr) 18px; gap: 16px; }

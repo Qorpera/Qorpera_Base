@@ -22,7 +22,6 @@ export interface FigureArtwork {
 export interface MotionOptions {
 	activity?: Activity;
 	still?: boolean;
-	selected?: boolean;
 	/** A local identity keeps the opening blink from restarting on view refresh. */
 	identity?: string;
 }
@@ -31,10 +30,7 @@ export interface FigureMotion {
 }
 
 const prepared = new Map<string, Promise<void>>();
-const surfaces = new Map<
-	string,
-	{ body: HTMLCanvasElement; selectedBody: HTMLCanvasElement; source: CanvasImageSource }
->();
+const surfaces = new Map<string, { body: HTMLCanvasElement; source: CanvasImageSource }>();
 const clocks = new Map<string, { elapsed: number; users: number }>();
 const live = new Set<LiveMotion>();
 let frame = 0;
@@ -53,7 +49,6 @@ interface LiveMotion {
 	color: string;
 	activity: Activity;
 	still: boolean;
-	selected: boolean;
 	clock: { elapsed: number; users: number };
 	visible: boolean;
 	ready: boolean;
@@ -129,14 +124,7 @@ async function prepare(entry: LiveMotion): Promise<void> {
 		pc.globalCompositeOperation = "destination-in";
 		pc.drawImage(source, 0, 0, 512, 512);
 		ctx.drawImage(patch, 0, 0);
-		const selectedBody = document.createElement("canvas");
-		selectedBody.width = selectedBody.height = 512;
-		const selectedContext = selectedBody.getContext("2d")!;
-		selectedContext.drawImage(body, 0, 0);
-		selectedContext.globalCompositeOperation = "source-in";
-		selectedContext.fillStyle = "#fff";
-		selectedContext.fillRect(0, 0, 512, 512);
-		surfaces.set(key, { body, selectedBody, source });
+		surfaces.set(key, { body, source });
 	}
 }
 
@@ -177,7 +165,7 @@ function strokes(ctx: CanvasRenderingContext2D, paths: MotionPose["strokes"], fr
 // silhouette; recorded eyes keep one fixed transform across the entire face.
 let eyesCanvas: HTMLCanvasElement | undefined;
 function paint(entry: LiveMotion): void {
-	const { canvas, artwork, activity, selected } = entry;
+	const { canvas, artwork, activity } = entry;
 	const reduced = Boolean(media?.matches) || entry.still;
 	const duration = timelines[activity].end - timelines[activity].start;
 	const elapsed = reduced ? (activity === "Working" ? 1 : duration) : entry.clock.elapsed;
@@ -230,22 +218,17 @@ function paint(entry: LiveMotion): void {
 		ec.setTransform(1, 0, 0, 1, 0, 0);
 		ec.globalCompositeOperation = "destination-in";
 		ec.drawImage(asset.source, 0, 0, 512, 512);
-		if (selected) {
-			ec.globalCompositeOperation = "source-in";
-			ec.fillStyle = "#007aff";
-			ec.fillRect(0, 0, 512, 512);
-		}
 		ctx.save();
 		ctx.translate(50 + p.x, 50 + p.y);
 		ctx.rotate((p.turn * Math.PI) / 180);
 		ctx.scale(p.scaleX * p.body, p.scaleY * p.body);
 		ctx.translate(-50, -50);
-		ctx.drawImage(selected ? asset.selectedBody : asset.body, 0, 0, 100, 100);
+		ctx.drawImage(asset.body, 0, 0, 100, 100);
 		ctx.globalAlpha = p.eyes;
 		ctx.drawImage(eyesCanvas, 0, 0, 100, 100);
 		ctx.restore();
 	}
-	ctx.fillStyle = selected ? "#fff" : entry.color;
+	ctx.fillStyle = entry.color;
 	if (p.stemWidth > 0.001) {
 		const half = p.stemWidth / 2,
 			top = p.stemTop,
@@ -327,7 +310,6 @@ export function mountFigureMotion(
 	fallback.src = new URL(`${id}.webp`, base()).href;
 	host.append(fallback, canvas);
 	host.dataset.activity = options.activity ?? "Idle";
-	host.dataset.selected = String(Boolean(options.selected));
 	const activity = options.activity ?? "Idle";
 	const clockKey = `${options.identity ?? id + color}:${activity}`;
 	const clock = clocks.get(clockKey) ?? { elapsed: 0, users: 0 };
@@ -343,7 +325,6 @@ export function mountFigureMotion(
 		activity,
 		clock,
 		still: Boolean(options.still),
-		selected: Boolean(options.selected),
 		visible: false,
 		ready: false,
 		painted: "",

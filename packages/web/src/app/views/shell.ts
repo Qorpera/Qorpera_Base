@@ -19,6 +19,7 @@ export interface ShellContext {
 	/** Company invitations waiting for this account, for the menu's count. */
 	invitations: number;
 	openSettings: () => void;
+	openFeedback: () => void;
 	navigation?: { open: boolean; toggle: () => void };
 }
 
@@ -143,6 +144,21 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 		),
 		item("friends", "friends", "Friends"),
 		item("invitations", "invitations", "Invitations", context.invitations),
+		h(
+			"button",
+			{
+				type: "button",
+				class: "account-item",
+				role: "menuitem",
+				"data-account-action": "feedback",
+				onclick: () => {
+					setAccountMenuOpen(false);
+					context.openFeedback();
+				},
+			},
+			icon("feedback"),
+			h("span", { class: "account-item-label" }, uiText("Feedback")),
+		),
 		h("div", { class: "account-separator", role: "separator" }),
 		h(
 			"button",
@@ -198,8 +214,8 @@ export function renderTopbar(
 	if (!company) restoreFocus();
 }
 
-/* The company rail follows the app: a search field, a compact pinned
- * Co-Founder tile, the rest of the staff as rows, and the account menu at the
+/* The Co-Founder has its own full-width tier above other agents, never a
+ * pinned-agent tile. Search and creation share the toolbar, with the account menu at the
  * foot. Company management lives in settings. The new-conversation screen can open existing agents;
  * new hires stay unavailable until a cloud creation port is supplied. */
 
@@ -264,7 +280,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 					"a",
 					{
 						class: [
-							"cofounder-pin",
+							"cofounder-home",
 							section === "home" ||
 							(cofounderSessionId && activeSessionId === cofounderSessionId) ||
 							isActive(cofounder.id)
@@ -280,14 +296,9 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 								? "page"
 								: undefined,
 					},
-					agentFigure(cofounder, cofounder.displayName, {
-						size: 64,
-						selected:
-							section === "home" ||
-							(Boolean(cofounderSessionId) && activeSessionId === cofounderSessionId) ||
-							isActive(cofounder.id),
-					}),
+					h("span", { class: "cofounder-stand" }, agentFigure(cofounder, cofounder.displayName, { size: 64 })),
 					h("strong", null, cofounder.displayName),
+					h("small", null, statusLine(company, cofounder)),
 				)
 			: null;
 
@@ -300,7 +311,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 				title: `${agent.displayName} · ${agent.role}`,
 				"aria-current": isActive(agent.id) ? "page" : undefined,
 			},
-			agentFigure(agent, agent.displayName, { size: 50, selected: isActive(agent.id) }),
+			agentFigure(agent, agent.displayName, { size: 48 }),
 			h(
 				"span",
 				{ class: "rail-row-copy" },
@@ -364,17 +375,6 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		h(
 			"div",
 			{ class: "rail-toolbar" },
-			h(
-				"button",
-				{
-					type: "button",
-					class: "icon-button rail-layout-toggle",
-					"data-toggle-rail": "true",
-					"aria-label": "Toggle compact navigation",
-					title: "Toggle compact navigation",
-				},
-				icon("navigation"),
-			),
 			context.navigation
 				? h(
 						"button",
@@ -387,6 +387,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 						icon("close"),
 					)
 				: null,
+			h("label", { class: "rail-search" }, search),
 			h(
 				"a",
 				{
@@ -399,7 +400,6 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 				icon("plus"),
 			),
 		),
-		h("div", { class: "rail-top" }, h("label", { class: "rail-search" }, search)),
 		h(
 			"div",
 			{ class: "rail-scroll" },
@@ -418,7 +418,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 					)
 				: null,
 			cofounderCard
-				? h("div", { class: "rail-pinned", role: "group", "aria-label": "Pinned agents" }, cofounderCard)
+				? h("div", { class: "rail-cofounder", role: "group", "aria-label": "Co-Founder" }, cofounderCard)
 				: null,
 			state.loading && !state.staff.length ? h("p", { class: "rail-empty" }, "Loading…") : null,
 			staffRows.length || sessionRows.length ? h("div", { class: "rail-list" }, ...staffRows, ...sessionRows) : null,
