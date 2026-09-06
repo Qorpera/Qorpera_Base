@@ -40,8 +40,29 @@ operations remained pending. The client now normalizes that stopped-null case to
 an empty network map while preserving the stopped status. A Unix-socket regression
 covers the actual response through both client parsing and readiness transport;
 malformed network maps in other cases still fail validation. The first live
-cleanup observation timed out and remains failed evidence pending a repeat with
-the corrected parser.
+cleanup observation timed out and remains failed evidence.
+
+The corrected provider was deployed at 14:54 UTC with execution paused and no
+active jobs, leases, or job guests. All 48 historical journal hashes were
+preserved, and the v8 signed guest and configuration were unchanged. Execution
+was then resumed through the founder operation.
+
+The repeated admitted startup fault passed at 14:56 UTC. Run
+`5a5c500f-e35e-491c-969f-d53605b1d69f` had its verified runner killed 70 ms after
+startup, while the provider journal was `bootstrapping` with no assignment. The
+guest powered off and the provider deleted it 8.348 seconds after the kill,
+1.442 seconds after observed poweroff. No restart was observed. Both identity and
+recovery volumes remained. The test controller did not stop or delete the VM or
+change signed guest files. The cloud job failed with eight released dispatch
+claims, zero execution attempts, assignments, results, or operation receipts, and
+no active native lease.
+
+A subsequent ordinary run, `1c11465c-e796-43bf-889d-b6d24092689c`, completed with
+one attempt, assignment, and result, zero dispatch failures or operation receipts,
+and a released lease. Its guest was absent and journal stopped with reason
+`idle`; both retained volumes remained. The canonical activation helper was
+restored and hash verified after each operation. These are completed startup
+component proofs; the full Steps 0–3 acceptance remains open.
 
 Deployment must pause Company41 execution, confirm no active jobs, leases, or job
 guests, and verify existing terminal journal hashes before replacing the host
