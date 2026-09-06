@@ -15,7 +15,7 @@ const TABS = [
 	{
 		id: "general",
 		label: "General",
-		keywords: "account plan billing feedback companies appearance theme language region",
+		keywords: "account plan billing companies appearance theme language region",
 	},
 	{ id: "company", label: "Company", keywords: "people team members invitations staff file organization approvals" },
 	{
@@ -275,7 +275,7 @@ export class SettingsView {
 			panel = h("div");
 			this.#panels.set("general", panel);
 		}
-		renderAccount(this.#auth, this.#api, panel, this.#account, (next) => {
+		renderAccount(this.#auth, panel, this.#account, (next) => {
 			if (this.#lifetime.signal.aborted) return;
 			this.#account = { ...this.#account, ...next };
 			this.#general();

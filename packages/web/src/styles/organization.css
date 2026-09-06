@@ -20,11 +20,9 @@
 .responsibility-node:hover, .project-node:hover { text-decoration: none; background: #fafaf8; border-color: #cfcfca; }
 .responsibility-node-head { display: flex; align-items: start; gap: 12px; justify-content: space-between; }
 .responsibility-node-head strong { font-size: 13px; }
+.responsibility-node > strong { font-size: 13px; }
 .responsibility-node-head .badge { font-size: 10px; flex: none; }
-.responsibility-node p, .project-node p { font-size: 12px; line-height: 1.55; color: var(--text-muted); margin: 8px 0 12px; }
-.responsibility-owner { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 11px; margin-top: 12px; }
-.responsibility-owner > .icon { margin-left: auto; width: 12px; height: 12px; }
-.responsibility-owner > .figure { width: 28px; height: 28px; }
+.project-node p { font-size: 12px; line-height: 1.55; color: var(--text-muted); margin: 8px 0 12px; }
 .organization-projects { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(250px, 100%), 1fr)); gap: 12px; }
 .organization-person { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 12px; color: inherit; border-radius: 12px; background: #f6f6f4; }
 .organization-person:hover { text-decoration: none; background: #eeeeeb; }

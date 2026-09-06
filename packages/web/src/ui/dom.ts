@@ -143,6 +143,7 @@ const ICON_PATHS: Record<string, string[]> = {
 	image: ["M3 3h18v18H3Z", "m3 16 5-5 4 4 3-3 6 6", "M15 7h.01"],
 	bell: ["M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"],
 	plus: ["M12 5v14M5 12h14"],
+	feedback: ["M21 15a4 4 0 0 1-4 4H7l-4 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"],
 	close: ["m6 6 12 12M6 18 18 6"],
 	chevron: ["m9 5 7 7-7 7"],
 	back: ["m14 5-7 7 7 7M7 12h14"],

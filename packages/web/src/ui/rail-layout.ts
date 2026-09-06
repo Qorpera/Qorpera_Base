@@ -5,9 +5,7 @@ import { matchesKey } from "./keys.ts";
 export class RailLayout {
 	readonly el: HTMLElement;
 	readonly #frame: HTMLElement;
-	readonly #lifetime = new AbortController();
 	#width = 304;
-	#expanded = 304;
 	#dragging = false;
 	constructor(frame: HTMLElement) {
 		this.#frame = frame;
@@ -17,7 +15,6 @@ export class RailLayout {
 		} catch {
 			/* Browser storage is optional. */
 		}
-		if (this.#width > 80) this.#expanded = this.#width;
 		this.el = h("div", {
 			class: "rail-resizer",
 			role: "separator",
@@ -61,19 +58,10 @@ export class RailLayout {
 				this.#set(width === 80 ? 80 : Math.max(240, Math.min(380, width)));
 			}
 		});
-		frame.addEventListener(
-			"click",
-			(event) => {
-				if (event.target instanceof Element && event.target.closest("[data-toggle-rail]"))
-					this.#set(this.#width === 80 ? this.#expanded : 80);
-			},
-			{ signal: this.#lifetime.signal },
-		);
 		this.#set(this.#width, false);
 	}
 	#set(width: number, persist = true): void {
 		this.#width = Math.round(width);
-		if (width > 80) this.#expanded = this.#width;
 		this.#frame.style.setProperty("--rail-width", `${this.#width}px`);
 		this.#frame.classList.toggle("rail-compact", width === 80);
 		this.el.setAttribute("aria-valuenow", String(this.#width));
@@ -88,7 +76,6 @@ export class RailLayout {
 		window.dispatchEvent(new Event("qorpera-rail-resize"));
 	}
 	dispose(): void {
-		this.#lifetime.abort();
 		this.el.remove();
 		this.#frame.classList.remove("rail-resizing");
 	}

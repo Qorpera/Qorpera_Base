@@ -38,14 +38,14 @@
 	--text-soft: #92928e;
 	--border: rgba(18, 18, 17, 0.09);
 	--border-strong: rgba(18, 18, 17, 0.17);
-	/* Messages reference, sampled in sRGB from the approved comparison. */
+	/* Messages header and the Assets Room's sRGB sidebar reference. */
 	--header-surface: #fbf7f4;
-	--sidebar-surface: #e8e4e1;
-	--sidebar-search: #dbd8d6;
-	--sidebar-divider: #d8d4d1;
+	--sidebar-surface: #e9e7e6;
+	--sidebar-search: #d9d7d7;
+	--sidebar-divider: #d6d3d3;
 	--sidebar-vibrancy-tint: rgba(232, 235, 240, 0.32);
-	--sidebar-hover: rgba(118, 118, 128, 0.12);
-	--sidebar-selection: #007aff;
+	--sidebar-hover: #dfdddc;
+	--sidebar-selection: #0e84ff;
 	--sidebar-selection-text: #ffffff;
 
 	/* action color — send, links, focus, slider fill */

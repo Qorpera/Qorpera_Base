@@ -146,8 +146,6 @@ export interface FigureOptions {
 	/** A settled pose with no animation. */
 	still?: boolean;
 	activity?: Activity;
-	/** The app's white silhouette and blue eyes for selected sidebar cards. */
-	selected?: boolean;
 	identity?: string;
 	className?: string;
 }

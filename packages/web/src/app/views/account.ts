@@ -1,5 +1,3 @@
-import type { CloudApi } from "../../cloud/api.ts";
-import { describeError } from "../../cloud/client.ts";
 import {
 	DEFAULT_CLOUD_CONFIG,
 	readCloudConfigOverride,
@@ -9,7 +7,7 @@ import {
 } from "../../cloud/config.ts";
 import type { HostedAccountEntitlement } from "../../cloud/types.ts";
 import { button, fmtBytes, h, notice, replace } from "../../ui/dom.ts";
-import { clearSubmittedDraft, preserveFormDrafts } from "../../ui/forms.ts";
+import { preserveFormDrafts } from "../../ui/forms.ts";
 import { languagePreference, setLanguagePreference, uiText } from "../../ui/preferences.ts";
 import { type AuthController, displayName } from "../auth.ts";
 
@@ -23,7 +21,6 @@ export interface AccountViewState {
 
 export function renderAccount(
 	auth: AuthController,
-	api: CloudApi,
 	container: HTMLElement,
 	state: AccountViewState,
 	setState: (next: AccountViewState) => void,
@@ -31,7 +28,6 @@ export function renderAccount(
 	const user = auth.store.get().user;
 	const owner = `account:${user?.id}`;
 	const restoreDrafts = preserveFormDrafts(container, owner);
-	const feedbackOpen = container.querySelector<HTMLDetailsElement>(".settings-feedback")?.open ?? false;
 	const override = readCloudConfigOverride();
 	const projectInput = h("input", {
 		type: "url",
@@ -50,19 +46,6 @@ export function renderAccount(
 		placeholder: DEFAULT_CLOUD_CONFIG.objectGatewayUrl,
 		value: override?.objectGatewayUrl ?? "",
 		"data-draft": "gateway-url",
-	});
-	const feedbackCategory = h(
-		"select",
-		{ "data-draft": "feedback-category", "aria-label": "Feedback category" },
-		...["bug", "bad-result", "good-result", "feature-request", "performance", "other"].map((category) =>
-			h("option", { value: category }, category),
-		),
-	);
-	const feedbackDetails = h("textarea", {
-		rows: 3,
-		placeholder: "What happened, what you expected.",
-		"data-draft": "feedback-details",
-		"aria-label": "Feedback details",
 	});
 	const language = h(
 		"select",
@@ -174,31 +157,6 @@ export function renderAccount(
 						h("small", null, uiText("Open or create a company")),
 					),
 					h("span", { "aria-hidden": "true" }, "›"),
-				),
-			),
-			h(
-				"details",
-				{ class: "settings-feedback", open: feedbackOpen },
-				h("summary", null, uiText("Share feedback")),
-				h(
-					"form",
-					{
-						class: "stack",
-						onsubmit: (event: Event) => {
-							event.preventDefault();
-							const submitted = feedbackDetails.value;
-							void api
-								.submitFeedback(crypto.randomUUID(), feedbackCategory.value, feedbackDetails.value.trim())
-								.then(() => {
-									clearSubmittedDraft(container, owner, "feedback-details", submitted);
-									setState({ message: "Your feedback reached the cloud.", error: undefined });
-								})
-								.catch((error) => setState({ error: describeError(error) }));
-						},
-					},
-					h("div", { class: "row" }, feedbackCategory),
-					feedbackDetails,
-					h("div", { class: "row" }, h("button", { type: "submit", class: "btn" }, uiText("Send feedback"))),
 				),
 			),
 			h(

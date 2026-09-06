@@ -14,6 +14,7 @@ import { ApprovalsView } from "./views/approvals.ts";
 import { CloudCheckView } from "./views/cloudcheck.ts";
 import { CompanyFileController, renderCompanyFile } from "./views/companyfile.ts";
 import { ConversationView } from "./views/conversation.ts";
+import { FeedbackView } from "./views/feedback.ts";
 import { FriendsController, renderFriends } from "./views/friends.ts";
 import { HubController, renderHub } from "./views/hub.ts";
 import { renderInvitations } from "./views/invitations.ts";
@@ -56,6 +57,19 @@ export function mountApplication(
 	window.addEventListener("languagechange", applyLanguage);
 	let disposed = false;
 	let settings: SettingsView | undefined;
+	let feedback: FeedbackView | undefined;
+	function closeFeedback(restoreFocus = true): void {
+		if (!feedback) return;
+		feedback.dispose();
+		feedback = undefined;
+		if (restoreFocus) frame.querySelector<HTMLElement>(".account-trigger")?.focus();
+	}
+	function openFeedback(): void {
+		if (feedback || settings || !auth.userId) return;
+		feedback = new FeedbackView(api, () => closeFeedback());
+		root.append(feedback.el);
+		feedback.open();
+	}
 	function closeSettings(restoreFocus = true): void {
 		settings?.dispose();
 		settings = undefined;
@@ -63,7 +77,7 @@ export function mountApplication(
 		if (restoreFocus) frame.querySelector<HTMLElement>(".account-trigger")?.focus();
 	}
 	function openSettings(): void {
-		if (settings || !auth.userId) return;
+		if (settings || feedback || !auth.userId) return;
 		settings = new SettingsView(
 			api,
 			auth,
@@ -104,12 +118,13 @@ export function mountApplication(
 		main.inert = navigationOpen && window.matchMedia("(max-width: 760px)").matches;
 	}
 	function onEscape(event: KeyboardEvent): void {
-		if (event.key === "Escape" && navigationOpen && !settings && !event.defaultPrevented) {
+		if (event.key === "Escape" && navigationOpen && !settings && !feedback && !event.defaultPrevented) {
 			setNavigationOpen(false);
 		}
 	}
 	function onRouteChange(): void {
 		closeSettings(false);
+		closeFeedback(false);
 		routeRevision++;
 		resolvingRoute = undefined;
 		routeError = undefined;
@@ -150,6 +165,7 @@ export function mountApplication(
 		const userId = auth.userId;
 		if (userId !== accountUserId) {
 			closeSettings(false);
+			closeFeedback(false);
 			accountUserId = userId;
 			accountRevision++;
 			routeRevision++;
@@ -187,6 +203,7 @@ export function mountApplication(
 			route,
 			auth,
 			openSettings,
+			openFeedback,
 			invitations: hub.store.get().invitations.length,
 			...(route.name === "company" && route.section !== "meet" && company && !company.store.get().accessLost
 				? { navigation: { open: navigationOpen, toggle: () => setNavigationOpen(!navigationOpen) } }
@@ -345,7 +362,7 @@ export function mountApplication(
 							render();
 						});
 				}
-				renderAccount(auth, api, main, accountState, (next) => {
+				renderAccount(auth, main, accountState, (next) => {
 					if (disposed || accountRevision !== revision) return;
 					accountState = { ...accountState, ...next };
 					render();
@@ -567,6 +584,7 @@ export function mountApplication(
 		railLayout.dispose();
 		window.removeEventListener("languagechange", applyLanguage);
 		closeSettings(false);
+		closeFeedback(false);
 		auth.dispose();
 		hub.dispose();
 		friends.dispose();

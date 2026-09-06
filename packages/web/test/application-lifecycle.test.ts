@@ -352,6 +352,7 @@ describe("account and route ownership", () => {
 			auth: new AuthController(f.cloud),
 			invitations: 0,
 			openSettings: () => {},
+			openFeedback: () => {},
 		};
 		renderRail(rail, a, { ...context, route: { name: "company", profileId: profileA.profileId, section: "file" } });
 		renderRail(rail, b, { ...context, route: { name: "company", profileId: profileB.profileId, section: "file" } });
