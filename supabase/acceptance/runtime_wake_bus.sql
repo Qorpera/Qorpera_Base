@@ -387,10 +387,26 @@ begin
 end $$;
 $test$);
 
+-- Exercise the same v2 launch-provenance entrypoint as the signed native host.
+-- The older v1 admission marker never inserts or replaces a launch row.
+create function pg_temp.handoff_begin(p_binding jsonb,p_context_sha text)
+returns jsonb language plpgsql as $$
+declare v_identity jsonb := public.qorpera_describe_native_tool_authority(p_binding) -> 'identity';
+	v_binary text;
+begin
+	select manifest ->> 'nativeBinarySha256' into strict v_binary from public.qorpera_runtime_bundles
+	where id = (v_identity ->> 'runtimeBundleId')::uuid;
+	return public.qorpera_begin_native_company_execution_v2(p_binding,v_binary,
+		v_identity ->> 'runtimeBundleSha256',v_identity ->> 'reasoningPolicySha256',
+		'{"type":"namespace","name":"qorpera","description":"Synthetic handoff fixture","tools":[{"type":"function","name":"read_document","description":"Read synthetic data","inputSchema":{"type":"object","additionalProperties":false}}]}',
+		p_context_sha,10);
+end $$;
+
 select pg_temp.wake_acceptance_case('usage_limit_sponsor_handoff_continues_the_run',$test$
 do $$
 declare v_binding jsonb := current_setting('qorpera_test.wake_binding')::jsonb; v_base public.qorpera_execution_runs%rowtype;
 	v_login jsonb; v_connection jsonb; v_second jsonb; v_job public.qorpera_runner_jobs%rowtype; v_run public.qorpera_execution_runs%rowtype;
+	v_launch public.qorpera_native_execution_launches%rowtype;
 begin
 	select * into strict v_base from public.qorpera_execution_runs where id = (v_binding ->> 'runId')::uuid;
 	-- A second connection of the same member for the same compute identity (the fixture's login route).
@@ -407,7 +423,11 @@ begin
 		'{"monthly_microusd":1000000000,"reservation_microusd":1000,"max_calls_per_run":32,"max_input_tokens_per_run":2000000,"max_output_tokens_per_run":500000,"max_concurrent_runs":32}');
 	execute 'reset role';
 	-- The first attempt acknowledges, then the sponsoring connection hits its usage limit.
-	perform public.qorpera_begin_native_company_execution(v_binding,repeat('7',64));
+	perform pg_temp.handoff_begin(v_binding,repeat('c',64));
+	select * into strict v_launch from public.qorpera_native_execution_launches where run_id=v_base.id;
+	perform pg_temp.wake_error(format('update public.qorpera_native_execution_launches set context_sha256=%L where run_id=%L',
+		repeat('d',64),v_base.id),'42501');
+	perform pg_temp.wake_error(format('delete from public.qorpera_native_execution_launches where run_id=%L',v_base.id),'42501');
 	perform pg_temp.wake_public_send(v_binding,'progress');
 	perform public.qorpera_record_provider_usage_signal(v_binding,'usage_limit',clock_timestamp() + interval '2 hours');
 	perform public.qorpera_fail_runner_job((v_binding ->> 'runnerId')::uuid,repeat('2',64),(v_binding ->> 'jobId')::uuid,repeat('3',64),
@@ -431,7 +451,22 @@ begin
 	perform pg_temp.wake_assert((select provider_connection_id = (v_connection ->> 'connection_id')::uuid
 		from public.qorpera_native_provider_connection_leases where id = (v_second ->> 'leaseId')::uuid),'New attempt leases the other connection');
 	perform pg_temp.wake_assert(public.qorpera_read_native_wake(v_second) ->> 'kind' = 'human','Same wake, same policy');
-	perform public.qorpera_begin_native_company_execution(v_second,repeat('7',64));
+	-- A handoff alone cannot authorize an unarchived or unbound launch rewrite.
+	perform pg_temp.wake_error(format('update public.qorpera_native_execution_launches set context_sha256=%L where run_id=%L',
+		repeat('d',64),v_base.id),'42501');
+	perform pg_temp.handoff_begin(v_second,repeat('d',64));
+	perform pg_temp.wake_assert((select count(*)=1 from public.qorpera_native_execution_launch_history
+		where run_id=v_base.id and runtime_bundle_id=v_launch.runtime_bundle_id
+		and runtime_bundle_sha256=v_launch.runtime_bundle_sha256 and binary_sha256=v_launch.binary_sha256
+		and reasoning_effort=v_launch.reasoning_effort and reasoning_policy_sha256=v_launch.reasoning_policy_sha256
+		and tool_catalog_sha256=v_launch.tool_catalog_sha256 and context_sha256=v_launch.context_sha256
+		and context_bytes=v_launch.context_bytes and launched_at=v_launch.created_at),'Exact prior launch remains in history');
+	perform pg_temp.wake_assert((select context_sha256=repeat('d',64) from public.qorpera_native_execution_launches
+		where run_id=v_base.id),'Continuation records its fresh context');
+	perform pg_temp.wake_error(format('select pg_temp.handoff_begin(%L,%L)',v_second,repeat('e',64)),'55000');
+	perform pg_temp.wake_error(format('update public.qorpera_native_execution_launches set context_sha256=%L where run_id=%L',
+		repeat('e',64),v_base.id),'42501');
+	perform pg_temp.wake_error(format('delete from public.qorpera_native_execution_launches where run_id=%L',v_base.id),'42501');
 	perform pg_temp.wake_public_send(v_second,'final','handoff-final');
 	perform pg_temp.wake_acceptance_finish(v_second);
 	perform pg_temp.wake_assert(public.qorpera_handoff_run_sponsor(v_base.id,'again') is null,'A completed run has no second handoff');
