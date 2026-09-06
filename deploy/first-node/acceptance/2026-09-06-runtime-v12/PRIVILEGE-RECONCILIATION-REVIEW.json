@@ -1,0 +1,273 @@
+{
+  "schema": "qorpera.runtime-privilege-reconciliation-review/v1",
+  "issuedAt": "2026-09-06T20:18:17.557Z",
+  "sourceCommit": "53e8fd0efc0c639cf96802e72fafacdf50ebe8d6",
+  "changedFunctions": 7,
+  "verifiedFunctions": 16,
+  "corePath": "/Users/jonas/work/Qorpera_Base-step3/deploy/first-node/runtime-v12-privilege-reconciliation.sql",
+  "coreSha256": "93d5962ed69650fa2c8315e542526aa373c15838a70a858751d7994295631435",
+  "sqlSha256": "db89552270fdec8a3e7d5d5df84e0dd55149af8805958b5b27bcf85db291544b",
+  "previousReadback": "outputs/runtime-custody-3c0bf3bce/production-review-v12-function-pins-1788725853140.json",
+  "localReadback": "outputs/runtime-production-review-v12-local-pins-03.json",
+  "rows": [
+    {
+      "signature": "qorpera_acquire_native_provider_connection_lease(uuid,uuid,text,uuid,text,integer)",
+      "sha256": "4e5f733ac0149e9ac7b874c7dc0cd09d0c865e92b41360eb180c77d077e88f3c",
+      "before": {
+        "anon": true,
+        "authenticated": true,
+        "service_role": true,
+        "qorpera_secret_broker": false
+      },
+      "after": {
+        "anon": false,
+        "authenticated": false,
+        "service_role": true,
+        "qorpera_secret_broker": false
+      }
+    },
+    {
+      "signature": "qorpera_company_context_source(qorpera_execution_runs,text,uuid)",
+      "sha256": "d1df3dffaa601708cf3af62abac4885ebeee1847184fa518758ccb8670867bad",
+      "before": {
+        "anon": false,
+        "authenticated": false,
+        "service_role": false,
+        "qorpera_secret_broker": false
+      },
+      "after": {
+        "anon": false,
+        "authenticated": false,
+        "service_role": false,
+        "qorpera_secret_broker": false
+      }
+    },
+    {
+      "signature": "qorpera_company_path_plan_digest(jsonb,jsonb)",
+      "sha256": "e5330658b9aab9770e26399f98287156e6fad9756f585008cf837960e95b6419",
+      "before": {
+        "anon": false,
+        "authenticated": false,
+        "service_role": false,
+        "qorpera_secret_broker": false
+      },
+      "after": {
+        "anon": false,
+        "authenticated": false,
+        "service_role": false,
+        "qorpera_secret_broker": false
+      }
+    },
+    {
+      "signature": "qorpera_consent_provider_connection_autonomous(uuid,uuid,boolean)",
+      "sha256": "ad8b3b4c89bf5e0037bd1f0c8506db018f7f8f8bae013327e5fe9c7e1f33113a",
+      "before": {
+        "anon": false,
+        "authenticated": true,
+        "service_role": true,
+        "qorpera_secret_broker": false
+      },
+      "after": {
+        "anon": false,
+        "authenticated": true,
+        "service_role": false,
+        "qorpera_secret_broker": false
+      }
+    },
+    {
+      "signature": "qorpera_create_member_execution_sponsor(uuid,uuid,uuid,bigint,boolean)",
+      "sha256": "c8b90a2771990473202c60fd9cc7f1cea1e6367af06fa3b056a266ce1a9d3d15",
+      "before": {
+        "anon": true,
+        "authenticated": true,
+        "service_role": true,
+        "qorpera_secret_broker": false
+      },
+      "after": {
+        "anon": false,
+        "authenticated": true,
+        "service_role": false,
+        "qorpera_secret_broker": false
+      }
+    },
+    {
+      "signature": "qorpera_describe_company_run_context(jsonb)",
+      "sha256": "4b7214fea024cd8a69296de0ee6175802dc2c90894035a38711488e0111fe339",
+      "before": {
+        "anon": false,
+        "authenticated": false,
+        "service_role": true,
+        "qorpera_secret_broker": false
+      },
+      "after": {
+        "anon": false,
+        "authenticated": false,
+        "service_role": true,
+        "qorpera_secret_broker": false
+      }
+    },
+    {
+      "signature": "qorpera_execution_sponsor_available(qorpera_execution_runs)",
+      "sha256": "5dee5dc5fad12a04b53d3e4dfebec7afdb2bd506824700534f159ed9e8bc45ea",
+      "before": {
+        "anon": true,
+        "authenticated": true,
+        "service_role": true,
+        "qorpera_secret_broker": false
+      },
+      "after": {
+        "anon": false,
+        "authenticated": false,
+        "service_role": false,
+        "qorpera_secret_broker": false
+      }
+    },
+    {
+      "signature": "qorpera_handoff_run_sponsor(uuid,text)",
+      "sha256": "dd99a2492d548cafe8e3eaa1f65f6953591058a4713a482c1458eea23191fba4",
+      "before": {
+        "anon": false,
+        "authenticated": false,
+        "service_role": true,
+        "qorpera_secret_broker": false
+      },
+      "after": {
+        "anon": false,
+        "authenticated": false,
+        "service_role": true,
+        "qorpera_secret_broker": false
+      }
+    },
+    {
+      "signature": "qorpera_materialize_wake_execution_runs(integer)",
+      "sha256": "fbfad063da7c51424aea3af33b0ef299c08c490f130e04342248e066a7f9be90",
+      "before": {
+        "anon": false,
+        "authenticated": false,
+        "service_role": true,
+        "qorpera_secret_broker": false
+      },
+      "after": {
+        "anon": false,
+        "authenticated": false,
+        "service_role": true,
+        "qorpera_secret_broker": false
+      }
+    },
+    {
+      "signature": "qorpera_provider_autonomous_authority(uuid,bigint)",
+      "sha256": "121f70a624f99aa9558e74e4460ca1b60e217772c041bcf94794428ec42928d0",
+      "before": {
+        "anon": false,
+        "authenticated": false,
+        "service_role": false,
+        "qorpera_secret_broker": false
+      },
+      "after": {
+        "anon": false,
+        "authenticated": false,
+        "service_role": false,
+        "qorpera_secret_broker": false
+      }
+    },
+    {
+      "signature": "qorpera_read_company_run_context(jsonb,text,uuid,text,integer,integer)",
+      "sha256": "b5524ce7dcbb5c5d073408910ba233d0a1723189927d335f09d68ef74bc9d446",
+      "before": {
+        "anon": false,
+        "authenticated": false,
+        "service_role": true,
+        "qorpera_secret_broker": false
+      },
+      "after": {
+        "anon": false,
+        "authenticated": false,
+        "service_role": true,
+        "qorpera_secret_broker": false
+      }
+    },
+    {
+      "signature": "qorpera_release_native_provider_connection_lease(uuid,uuid,text,uuid,text,text)",
+      "sha256": "82186e65ae0078e93613ff23be92a9aee5c928452ddfa522cf60de364075ce96",
+      "before": {
+        "anon": true,
+        "authenticated": true,
+        "service_role": true,
+        "qorpera_secret_broker": false
+      },
+      "after": {
+        "anon": false,
+        "authenticated": false,
+        "service_role": true,
+        "qorpera_secret_broker": false
+      }
+    },
+    {
+      "signature": "qorpera_reserve_execution_sponsor_authority(uuid)",
+      "sha256": "fdafae3c4e19fcc23c8e18e4cef578a0eadee6a61ec53d1ebe67cb20a2a04135",
+      "before": {
+        "anon": true,
+        "authenticated": true,
+        "service_role": true,
+        "qorpera_secret_broker": false
+      },
+      "after": {
+        "anon": false,
+        "authenticated": false,
+        "service_role": false,
+        "qorpera_secret_broker": false
+      }
+    },
+    {
+      "signature": "qorpera_run_autonomous_authority(qorpera_execution_runs)",
+      "sha256": "de84726326cc7cdc37c174fa20d22231e5f6cd9f348ffd3e3a2b9f10853df990",
+      "before": {
+        "anon": false,
+        "authenticated": false,
+        "service_role": false,
+        "qorpera_secret_broker": false
+      },
+      "after": {
+        "anon": false,
+        "authenticated": false,
+        "service_role": false,
+        "qorpera_secret_broker": false
+      }
+    },
+    {
+      "signature": "qorpera_run_continuation(qorpera_execution_runs)",
+      "sha256": "ae9aa4ab3186f9af235095ca502eac1e81dfb2c9911c58545e0a8f85dde1b034",
+      "before": {
+        "anon": false,
+        "authenticated": false,
+        "service_role": false,
+        "qorpera_secret_broker": false
+      },
+      "after": {
+        "anon": false,
+        "authenticated": false,
+        "service_role": false,
+        "qorpera_secret_broker": false
+      }
+    },
+    {
+      "signature": "qorpera_runner_broker_locked_job(uuid,text,uuid,text)",
+      "sha256": "dd565b29460564ee6c40ab5a24d1c9c7796b5e0d39aadc95f21699623a8dca68",
+      "before": {
+        "anon": true,
+        "authenticated": true,
+        "service_role": true,
+        "qorpera_secret_broker": false
+      },
+      "after": {
+        "anon": false,
+        "authenticated": false,
+        "service_role": false,
+        "qorpera_secret_broker": false
+      }
+    }
+  ],
+  "authorizationSha256": "6d9e7a91644cbb9a5d0222613b9131cf997382432cfef2176a347583be12897b",
+  "admissionReopened": false,
+  "automaticReplayAllowed": false
+}

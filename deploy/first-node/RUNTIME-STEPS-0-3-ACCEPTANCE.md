@@ -1,20 +1,57 @@
 # Runtime Steps 0–3 acceptance ledger — 2026-09-06
 
-**Steps 0–3 acceptance is complete for the Company41 contract scope below.**
-The signed v11 runtime completed an actual usage-limit sponsor handoff on
-2026-09-06 at 19:07 UTC. The same run continued on the fallback account, read
-the Company File, published progress and final messages, and recorded one
-durable result. Both leases were released and both job guests removed.
-The [v11 evidence manifest](acceptance/2026-09-06-runtime-v11/MANIFEST.json)
-binds 35 witnesses and the unchanged earlier checkpoints. The limitations in
-those witnesses remain part of this acceptance.
+**The three Steps 0–3 production review findings are closed on signed v12.**
+Current runtime source is `53e8fd0efc0c639cf96802e72fafacdf50ebe8d6`;
+bundle v12 is `229ceb4522bbaad4a6dcf38d69b9cb6e1b93f394ddd405be6f250e90941da6e7`.
+The [v12 evidence manifest](acceptance/2026-09-06-runtime-v12/MANIFEST.json)
+binds 35 witnesses for the corrections, rollout, live checks and retained failed
+canaries. The [corrections report](RUNTIME-PRODUCTION-REVIEW-FIXES.md) describes
+the consent, lease lifecycle and receipt-aware continuation fixes.
+
+Live run `dca1a05e-6de1-44bc-bc72-23437d8ad68a` completed at 20:34 UTC after
+an actual usage limit and sponsor handoff. The replacement attempt read the
+202-byte canonical continuation with its exact hash, read the evidence file
+once, published two progress messages and one final, and recorded one durable
+result. Both leases were released; the first guest was removed before the
+second was created, and both are now removed. One dispatch failure recovered
+automatically. The company default sponsor was unchanged.
+
+Actual owner consent withdrawal and re-consent denied the old connection
+version both times; a fresh version 4 sponsor was accepted. Consent is restored.
+Completed effects before quota, including a file write and coworker delivery
+without duplication, are proved by isolated SQL regressions. The real provider
+limit occurred before any effect. Three earlier v12 canaries failed acceptance;
+two failed during startup without an established root cause. Their evidence is
+retained. This closes the reviewed defects and does not certify general
+availability, disaster recovery or product launch readiness.
 
 The [September 5 ledger](RUNTIME-STEPS-0-3-ACCEPTANCE-2026-09-05.md) remains a
 historical checkpoint. Its pending deployment and paused-admission statements
 no longer describe production. The founder subsequently authorized production
 changes, signing, credential diagnostics, and reopening admission.
 
-## Deployed state
+## Current deployed state
+
+Signed image: `6dd05d71f82db5cfaa5440389fb2b21753fea6d5efb3cbfa142e0b53f7f86f91`.
+Guest manifest: `bf249d12e0f91fd9a6f1128da95de650dd55406a50e7ab3191981308d27d58d5`.
+The provider remains at source `bf08dd923d61ba8432d86559a71cf473ac72f9b9` and
+artifact `15f8cdb8812bde6192bc7d6dd40463dec76ccbf58fb08a439d2d1390375a3ad0`.
+Final readback at 20:34 UTC confirms 157 migration records, policy 25 enabled,
+founder pause cleared, the normal version 5 ceiling and no active jobs,
+assignments, leases, escalations or job guests. Signature, artifact hashes,
+provider/orchestrator health and source restrictions pass.
+
+All 16 relevant function definitions, owners and execution privileges match
+the isolated source database. Seven pre-existing excess grants were restored
+to the checked-in privileges in one separately guarded and rehearsed repair;
+no function body or migration record changed in that operation. The original
+v11 journals and historical evidence remain unchanged.
+
+## Historical v11 checkpoint
+
+The following v11 state was accepted at 19:07 UTC before the production review
+found additional gaps. It is preserved for provenance and is superseded by
+the v12 correction evidence above.
 
 Runtime source: `759e44f36d54e4660159c7c8a378499cdb4e593f`.
 Active bundle v11:
@@ -101,7 +138,7 @@ The [v10 evidence manifest](acceptance/2026-09-06-runtime-v10/MANIFEST.json) bin
 [v9 evidence manifest](acceptance/2026-09-06-runtime-v9/MANIFEST.json), whose 24
 summaries retain the earlier acceptance coverage. Referenced raw witnesses remain
 in the recorded workspace. Earlier proofs retain their actual bundle versions
-and timestamps. Table filenames refer to the v9 directory unless labeled v10 or v11.
+and timestamps. Table filenames refer to the v9 directory unless labeled v10, v11 or v12.
 
 ## Acceptance coverage
 
@@ -110,7 +147,8 @@ and timestamps. Table filenames refer to the v9 directory unless labeled v10 or 
 | Step 0: live Company File and authority | Two real managed members and one native agent exercised private, exact and subtree ACLs; disjoint writes, stale CAS, reviewed publication, source-grant revocation and attribution passed. The temporary member was removed, logged out and banned; grants were revoked and history retained. `TWO-MEMBER-ONE-AGENT-PATH-PROOF.json`. |
 | Step 0: organization substrate | Versioned organization, responsibility, project, measure, lifecycle and scope SQL passed migration tests. Actual reviewed member commands created and retired responsibility definitions; an actual hire produced the native first-run. Formation research, workers and later projections retain their contract placement in Orders 5–10. |
 | Step 1: model loop and mouth | Native human execution, grounded reads, explicit no-change completion, live mutations and canonical send publication passed. Room execution preserves silence and bounded sends. Missing optional telemetry is identified in each proof; exact native output hashes establish the stated boundary outcomes. |
-| Steps 1 and 3: usage-limit notification and handoff | **Passed live on v11.** A real native-adapter usage limit caused a control-plane handoff and founder notification; the same run completed on the other account from fresh canonical context. The existing usage-limit notification was deduplicated. Two nonoverlapping attempts, zero dispatch failures, one file read, progress/final sends, one durable result and complete lease/guest cleanup. V11: `NATIVE-V11-HANDOFF-PROOF.json`, `ACTUAL-ATTEMPT-ISOLATION.json`. |
+| Steps 1 and 3: usage-limit notification and handoff | **Passed live on v12.** An actual native usage limit caused handoff and a founder notification. The same run read the exact canonical continuation and one Company File, published progress/final sends and one durable result, with complete lease/guest cleanup. Two nonoverlapping attempts; one recovered dispatch failure. Completed write/coworker replay across the sponsor boundary is separately proved in isolated SQL. V12: `NATIVE-CONTINUATION-PROOF.json`, `REGRESSION-RESULTS.json`, `ACTUAL-ATTEMPT-ISOLATION.json`. |
+| Steps 1–3: review authority corrections | Withdrawal fences queued and admitted autonomous authority, including three concurrent transaction schedules. Released/revoked/expired leases cannot revive through replay or overbook capacity. Actual owner withdrawal/re-consent rejects the old pin and accepts a fresh one. V12: `CONSENT-PROOF.json`, `REGRESSION-RESULTS.json`, `FINAL-FUNCTION-PINS.json`. |
 | Steps 1 and 3: handoff capacity | Isolated regressions prove full-candidate skipping, capacity consumed after selection, rejection before lease/history mutation, retry after release, exact replay, unavailable fallback and inactive authorization. Separate rate-limit/outage cases do not hand off. Production readback confirms both checks and unchanged function owners/ACLs. V10: `HANDOFF-CAPACITY-RED-GREEN-PROOF.json`, `HANDOFF-CAPACITY-PRODUCTION-PROOF.json`. |
 | Step 2: input and effect fences | Injected Company File instructions were ignored; unauthorized, stale and revoked effects were denied. Canary capture/use, rotation, reflection withholding, grant/member/secret revocation, restart and encrypted recovery passed. The secret-wide test proves an in-flight fence; it does not claim the denied call began after revocation. |
 | Step 2: nonexposure | Post-v10 scans cover 158 public runtime tables, gateway and orchestrator state, node state and selected release logs, and all 411 Company41 Storage objects. Broker persistent roots and journals retain their historical v9 scan. No connector-credential or unclassified match was found within the declared scopes. Thirteen node matches are classified protected platform credentials. Scope, patterns, hash-based reuse and exclusions: v10 `NONEXPOSURE-V10-SCOPE-MATRIX.json`. |
@@ -121,7 +159,16 @@ and timestamps. Table filenames refer to the v9 directory unless labeled v10 or 
 
 ## Validation and scope
 
-The deployed source passed full repository checks, the 135-migration
+The current v12 source passed full repository checks, 139 focused TypeScript
+tests, 35 SQL cases over 139 migrations, three real consent concurrency
+schedules and actual SQL context through the production TypeScript parser.
+The clean Linux x64 package reproduced all 27 files. The signed image passed
+clean boot and isolation checks. The frozen rollout passed 61 tests and all
+seven PostgreSQL wrapper steps; all 157 production migration records remain.
+The ACL repair separately passed exact privileges, denied API access and
+replay rejection checks. Final deployment parity covers 16 functions.
+
+The preceding v11 source passed full repository checks, the 135-migration
 context/provenance driver including concurrent responsibility coalescing and
 terminal-release checks, all 25 wake integration cases including handoff through
 the actual v2 native-launch entrypoint, three bundle-generator tests, guest packaging, and
@@ -137,11 +184,14 @@ checks before activation, followed by the successful actual native handoff.
 Earlier restart, authority, secret-custody and wake proofs retain their actual
 versions and timestamps; they were not all rerun on v11.
 
-There is no remaining live gate for the stated Steps 0–3 acceptance. Separate
-negative rate-limit, outage, full-capacity and unavailable-fallback cases pass.
-No production usage signal was fabricated and no quota was deliberately exhausted.
+The v11 statement that no Steps 0–3 gates remained was too broad: its canary
+did not cover the three subsequent review findings. Those findings are now
+closed with the v12 evidence and limits above. Separate negative rate-limit,
+outage, full-capacity and unavailable-fallback cases pass. No production usage
+signal was fabricated and no quota was deliberately exhausted. The retained
+startup failures are not claimed to have an established cause or fix.
 
-The NAS is reachable at `SynologyNAS.local` / `192.168.0.90`; the previously
+The NAS was reachable at the earlier checkpoint at `SynologyNAS.local` / `192.168.0.90`; the previously
 recorded `.91` address was stale. The physical NAS mount was not changed. The
 separate loopback recovery mount was repaired as described above; neither the
 missing mount nor the model failure is attributed to the Synology power outage.

@@ -1,0 +1,129 @@
+{
+  "schema": "qorpera.runtime-production-review-closure/v1",
+  "recordedAt": "2026-09-06T20:36:38.251Z",
+  "passed": true,
+  "runtimeSourceCommit": "53e8fd0efc0c639cf96802e72fafacdf50ebe8d6",
+  "runtimeBundleSha256": "229ceb4522bbaad4a6dcf38d69b9cb6e1b93f394ddd405be6f250e90941da6e7",
+  "reviewedFindings": [
+    {
+      "priority": "P1",
+      "finding": "Autonomous consent withdrawal",
+      "status": "closed",
+      "proof": "Isolated queued/active/reservation and three concurrency regressions; actual owner withdrawal/reconsent denies old version 2 and accepts fresh version 4."
+    },
+    {
+      "priority": "P1",
+      "finding": "Native lease resurrection and overbooking",
+      "status": "closed",
+      "proof": "Released, revoked and expired replay denied; capacity races covered; actual sponsor handoff preserves old lease and releases both attempts."
+    },
+    {
+      "priority": "P2",
+      "finding": "Continuation after completed work",
+      "status": "closed",
+      "proof": "Completed Company File write and coworker delivery replay exactly once across the sponsor boundary in isolated SQL. Actual provider handoff rebuilt and read canonical continuation, then read Company File and completed."
+    }
+  ],
+  "remainingReviewFindings": [],
+  "deploymentVerified": true,
+  "sourceChecks": {
+    "sourceCheck": "passed",
+    "provenanceMigrationReplay": 139,
+    "wakeContextParity": "passed",
+    "productionReviewRedGreen": "passed",
+    "sqlIntegrationCases": 35,
+    "consentConcurrencySchedules": 3,
+    "focusedTypeScriptTests": 139,
+    "bundleGeneratorTests": 3,
+    "packageTest": "passed",
+    "linuxPackageProof": "outputs/runtime-linux-x64-package-proof-53e8fd0ef.json"
+  },
+  "sqlCases": 35,
+  "concurrentSchedules": 3,
+  "functionsMatched": 16,
+  "priorAclDifferencesReconciled": 7,
+  "finalState": {
+    "bundle": {
+      "sha256": "229ceb4522bbaad4a6dcf38d69b9cb6e1b93f394ddd405be6f250e90941da6e7",
+      "version": 12
+    },
+    "ledger": {
+      "count": 157,
+      "latest": "20260906001000"
+    },
+    "paused": false,
+    "policy": {
+      "status": "enabled",
+      "version": 25
+    },
+    "ceiling": {
+      "spend": 50000000,
+      "wakes": 240,
+      "tokens": 50000000,
+      "version": 5
+    },
+    "handoffs": 7,
+    "activeJobs": 0,
+    "observedAt": "2026-09-06T20:34:57.08097+00:00",
+    "activeLeases": 0,
+    "usageSignals": 7,
+    "currentSponsor": {
+      "status": "active",
+      "connectionId": "2e55091d-1fbf-45e7-9a25-2fe9944d775c",
+      "connectionVersion": 2
+    },
+    "openEscalations": 0,
+    "stopGrantRevoked": true,
+    "activeAssignments": 0,
+    "probeSponsorStatus": "revoked",
+    "stopResourceRevoked": true,
+    "oldRetryBackendPresent": false,
+    "temporaryResponsibilitiesRetired": 3
+  },
+  "liveRunId": "dca1a05e-6de1-44bc-bc72-23437d8ad68a",
+  "limits": [
+    "A completed effect before quota is proved with synthetic signals only in isolated PostgreSQL. The actual production provider limit happened before any governed effect; no production signal was fabricated and quota was not deliberately exhausted.",
+    "Three v12 canaries failed acceptance and remain preserved. Two startup failures have no established root cause. The successful fourth canary completed on unchanged artifacts after one recovered dispatch failure; this closes the reviewed behavior checks, not general availability certification.",
+    "The context-read span is named unknown_tool in current telemetry; its successful status, ordering, reported arguments and independently verified continuation hash support the correlated read. Native-result-fence delivery telemetry remains unconfirmed.",
+    "Historical Steps 0–3 proofs retain their original versions, timestamps and nonexposure scan scopes; they were not all rerun on v12.",
+    "The configured identity recovery replica is Azure loopback NFS, not an independently proved physical Synology replica. Orders 4–10, production connector breadth, disaster recovery and general launch readiness are outside this review closure."
+  ],
+  "witnesses": [
+    {
+      "path": "outputs/runtime-source-53e8fd0ef.json",
+      "sha256": "ab2f27de6f00aaa4869300d47bf9ef772c29d4e16e8ae0fba7cf3a5790912d57"
+    },
+    {
+      "path": "work/prod-review-runtime-02.json",
+      "sha256": "d6ee540411915178cebfa6bd90b1cf233d1e7c48f2257e5d5b8634e5f152a0d0"
+    },
+    {
+      "path": "work/production-review-fixes-04.json",
+      "sha256": "438977007b7f251a6c5263a203bdb39e25ded4ddc29e3bdb1ea9a934de2f1cd8"
+    },
+    {
+      "path": "outputs/runtime-production-review-v12-function-parity.json",
+      "sha256": "1659e50e7db23f16dd7679ecd8f8789b79b51cf66f84bc23d0aff20fb367943c"
+    },
+    {
+      "path": "outputs/runtime-custody-3c0bf3bce/production-review-v12-function-pins-1788726926887.json",
+      "sha256": "d6bb3daf1b82d2c98a650290d62985faa705250826149ac32f3cf20a13cee77e"
+    },
+    {
+      "path": "outputs/runtime-live-53e8fd0ef/CONSENT-PROOF.json",
+      "sha256": "9f53cf18b26d489a78c2122dd198ed15e81fd9a4389aa222e0a74e63858e3fc8"
+    },
+    {
+      "path": "outputs/runtime-live-53e8fd0ef/NATIVE-CONTINUATION-PROOF.json",
+      "sha256": "d9819c5f1323ea5144e8fac691c2db92d234637f3f2ffb75cc5e09d6aee8a1f2"
+    },
+    {
+      "path": "outputs/runtime-live-53e8fd0ef/RETAINED-FAILED-CANARIES.json",
+      "sha256": "207c9f4817ce10a203c85c3aa331e8a1e32b14cb73f00f33ec2b45359d7fa872"
+    },
+    {
+      "path": "outputs/runtime-custody-3c0bf3bce/runtime-v12-final-state-1788726897192.json",
+      "sha256": "8ac2171d98f8e81b46d90c5a6083a0832a2f8215ee1551590c8099e6ae5acefa"
+    }
+  ]
+}

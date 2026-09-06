@@ -1,6 +1,6 @@
 # Runtime Steps 0–3 production review corrections
 
-The production review identified three reproducible gaps after v11 acceptance. The earlier acceptance did not exercise these cases. The corrections below require the matching v12 guest and forward migrations; source verification alone does not close production acceptance.
+All three production review findings are corrected and verified on the signed v12 runtime. Source commit `53e8fd0efc0c639cf96802e72fafacdf50ebe8d6`, four forward migrations and the matching guest are deployed. The [v12 evidence manifest](acceptance/2026-09-06-runtime-v12/MANIFEST.json) binds 35 witnesses and the unchanged historical v11 checkpoint.
 
 | Finding | Correction | Regression evidence |
 | --- | --- | --- |
@@ -10,6 +10,10 @@ The production review identified three reproducible gaps after v11 acceptance. T
 
 Run `node scripts/test-runtime-production-review.mjs --report /absolute/new-report.json` for the complete disposable verification: all migrations, the 25 existing wake integration cases, 10 review regressions, continuation context parity and three concurrency schedules. It accepts no production database or provider credentials and removes its database and volume afterward. Controlled quota signals in this verifier are synthetic and do not constitute live provider acceptance.
 
-The existing operation/result bounds remain in force. Continuation sources page through `read_context`; they preserve provenance and data, and do not supply new human authorization. A proposed change remains proposed. The active bundle must be drained before this deployment because old in-flight attempts must not mix old operation hashes or context shapes with v12.
+The existing operation/result bounds remain in force. Continuation sources page through `read_context`; they preserve provenance and data, and do not supply new human authorization. A proposed change remains proposed. The old bundle was drained before deployment so in-flight attempts did not mix old operation hashes or context shapes with v12.
 
-Production rollout and live readback are pending at this source checkpoint. Historical v11 runs, signed artifacts and evidence remain unchanged.
+Full repository checks, 139 focused TypeScript tests, all 35 SQL cases over 139 migrations, three real concurrency schedules, SQL-to-TypeScript context parity, package reproduction, 61 rollout tests and all seven guarded wrapper steps passed. Final production readback matches all 16 relevant function definitions, owners and privileges. Seven pre-existing excess grants were reconciled to the checked-in permissions by a separately rehearsed, guarded transaction; function bodies and migration history were unchanged by that repair.
+
+Actual owner RPCs withdrew Gmail autonomous consent, proved that the old version remained unusable after re-consent, and accepted a fresh version 4 pin. Consent was restored. Live run `dca1a05e-6de1-44bc-bc72-23437d8ad68a` then encountered a real native usage limit, handed off to the working Qorpera account, read the exact canonical continuation hash, read the evidence file once and produced one durable final result. Both leases were released and both nonoverlapping guests removed. Admission is enabled at policy 25 with no founder pause or active work.
+
+Completed effects before quota are proved by the isolated SQL regression, including one file write and one coworker delivery retained across the attempt boundary. The live provider limit occurred before any effect. No production signal was fabricated or quota deliberately exhausted. The first three v12 canaries failed acceptance and remain recorded; two startup failures have no established root cause. The fourth completed on unchanged artifacts after one automatically recovered dispatch failure. These results close the three reviewed defects; they do not certify general availability, disaster recovery or product launch readiness. See [the closure and limits](acceptance/2026-09-06-runtime-v12/REVIEW-CLOSURE.json).

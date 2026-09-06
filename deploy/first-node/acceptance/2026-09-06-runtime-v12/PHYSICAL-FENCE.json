@@ -1,0 +1,18 @@
+{
+  "schema": "qorpera.runtime-node-physical-fence/v1",
+  "observedAt": "2026-09-06T20:15:11.748398+00:00",
+  "companyId": "88227549-9724-43c2-8966-9fafb3e855d6",
+  "sourceCommit": "53e8fd0efc0c639cf96802e72fafacdf50ebe8d6",
+  "imageFingerprint": "6dd05d71f82db5cfaa5440389fb2b21753fea6d5efb3cbfa142e0b53f7f86f91",
+  "companyProvider": "inactive",
+  "legacyProvider": "inactive",
+  "orchestrator": "STOPPED",
+  "jobGuests": 0,
+  "currentArtifactSha256": {
+    "/etc/qorpera/lxd-company-image-provenance.json": "09e25dd357ed1eab6eb899a58a30a5b87ca3a77abc023c2198c29a78285f042b",
+    "/opt/qorpera/company-provider/qorpera-lxd-provider.mjs": "15f8cdb8812bde6192bc7d6dd40463dec76ccbf58fb08a439d2d1390375a3ad0"
+  },
+  "signatureOrDatabaseAcceptanceClaimed": false,
+  "remoteLogSha256": "588b8cc1342fccdc3a02ca2586738ec3810af8290a4d1ee28cc7e70407d85043",
+  "canonicalHelperRestored": true
+}
