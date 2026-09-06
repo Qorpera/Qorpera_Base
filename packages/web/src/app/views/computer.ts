@@ -30,7 +30,7 @@ export class ComputerPanel {
 					h(
 						"div",
 						{ class: "computer-preview-screen" },
-						agentFigure(agent, agent.displayName, { size: 64 }),
+						agentFigure(agent, agent.displayName, { size: 38 }),
 						h("span", null, "Computer unavailable"),
 					),
 					h("strong", null, agent.displayName),
@@ -39,10 +39,24 @@ export class ComputerPanel {
 				h(
 					"section",
 					{ class: "computer-routines" },
-					h("h2", null, "Routines"),
+					h(
+						"header",
+						null,
+						h("h2", null, "Routines"),
+						h(
+							"button",
+							{
+								type: "button",
+								class: "icon-button",
+								disabled: true,
+								"aria-label": "Create routine",
+								title: "Create routine",
+							},
+							icon("plus"),
+						),
+					),
 					h("p", { class: "muted" }, "Recurring work, on a schedule or when something happens."),
 					h("div", { class: "routine-empty" }, icon("clock"), h("p", null, "Routines will appear here.")),
-					h("button", { type: "button", class: "btn", disabled: true }, "Create routine"),
 				),
 			),
 		);

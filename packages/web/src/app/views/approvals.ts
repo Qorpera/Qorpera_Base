@@ -1,9 +1,9 @@
 import type { TranscriptCard } from "../../cloud/transcript.ts";
 import { projectTranscript } from "../../cloud/transcript.ts";
-import type { HostedSession } from "../../cloud/types.ts";
+import type { HostedSession, JsonValue } from "../../cloud/types.ts";
+import { authorizationRequestId, renderAuthorizationCard } from "../../ui/authorization-card.ts";
 import { button, fmtTime, h, notice, replace, spinner } from "../../ui/dom.ts";
 import type { CompanyController } from "../company.ts";
-import { renderAuthorizationCard } from "./conversation.ts";
 
 /* Approvals inbox (runtime contract §16.2): gated decisions wait durably in
  * the control plane. Today the canonical events are `authorization_request`
@@ -16,6 +16,7 @@ interface InboxEntry {
 	session: HostedSession;
 	card: TranscriptCard;
 	decided: boolean;
+	resolution?: JsonValue;
 }
 
 export class ApprovalsView {
@@ -100,20 +101,10 @@ export class ApprovalsView {
 					item.kind === "authorization_request" || item.kind === "authorization_decision",
 			);
 			const decisions = cards.filter((card) => card.kind === "authorization_decision");
-			const referenced = new Set<string>();
+			const referenced = new Map<string, JsonValue>();
 			for (const decision of decisions) {
-				const body =
-					decision.body && typeof decision.body === "object" && !Array.isArray(decision.body) ? decision.body : {};
-				for (const key of [
-					"requestEventId",
-					"request_event_id",
-					"requestId",
-					"request_id",
-					"authorizationRequestId",
-				]) {
-					const value = (body as Record<string, unknown>)[key];
-					if (typeof value === "string") referenced.add(value.toLowerCase());
-				}
+				const requestId = authorizationRequestId(decision.body);
+				if (requestId) referenced.set(requestId, decision.body);
 			}
 			for (const card of cards) {
 				if (card.kind === "authorization_decision") {
@@ -121,7 +112,12 @@ export class ApprovalsView {
 					continue;
 				}
 				const isDecided = referenced.has(card.id.toLowerCase());
-				(isDecided ? decided : pending).push({ session, card, decided: isDecided });
+				(isDecided ? decided : pending).push({
+					session,
+					card,
+					decided: isDecided,
+					resolution: referenced.get(card.id.toLowerCase()),
+				});
 			}
 		}
 		const byTime = (a: InboxEntry, b: InboxEntry) => b.card.createdAt.localeCompare(a.card.createdAt);
@@ -151,6 +147,7 @@ export class ApprovalsView {
 					entry.card.body,
 					entry.card.createdAt,
 					this.#company.memberName(entry.card.actorUserId),
+					entry.resolution,
 				),
 				h(
 					"div",

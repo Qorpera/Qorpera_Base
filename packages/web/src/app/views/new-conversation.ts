@@ -13,15 +13,39 @@ export class NewConversationView {
 	readonly #lifetime = new AbortController();
 	readonly #unsubscribe: () => void;
 	readonly #results = h("div", { class: "recipient-results" });
+	readonly #chips = h("div", { class: "recipient-chips", "aria-label": "Selected recipients" });
+	readonly #selected = new Set<string>();
+	readonly #open = h("button", { type: "button", class: "btn btn-primary" }, "Open");
+	readonly #selectionStatus = h("p", { class: "surface-status", role: "status" });
+	readonly #navigation: HTMLButtonElement;
 	#query = "";
 	#editing = false;
 	#pending = false;
 	#syncControls: () => void = () => {};
 	#draft: AgentDraft = { displayName: "", role: "", charter: "", figure: "rocket", color: nativeColorOf("rocket") };
-	constructor(company: CompanyController, actions: WorkspaceActions, close: () => void) {
+	constructor(
+		company: CompanyController,
+		actions: WorkspaceActions,
+		close: () => void,
+		toggleNavigation?: () => void,
+	) {
 		this.#company = company;
 		this.#actions = actions;
 		this.#close = close;
+		this.#navigation = h(
+			"button",
+			{
+				type: "button",
+				class: "mobile-navigation-toggle icon-button",
+				"aria-label": "Company navigation",
+				"aria-controls": "company-navigation",
+				"aria-expanded": "false",
+				hidden: !toggleNavigation,
+				onclick: toggleNavigation,
+			},
+			icon("navigation"),
+		);
+		this.#open.onclick = () => this.#openSelection();
 		this.#unsubscribe = company.store.subscribe(() => {
 			if (!this.#editing) this.#drawResults();
 			else this.#syncControls();
@@ -36,6 +60,9 @@ export class NewConversationView {
 	focus(): void {
 		this.el.querySelector<HTMLInputElement>("input")?.focus();
 	}
+	setNavigationOpen(open: boolean): void {
+		this.#navigation.setAttribute("aria-expanded", String(open));
+	}
 	#picker(): void {
 		this.#editing = false;
 		const search = h("input", {
@@ -49,11 +76,27 @@ export class NewConversationView {
 				this.#drawResults();
 			},
 		});
+		const create = button(
+			[
+				icon("plus"),
+				h(
+					"span",
+					null,
+					h("strong", null, "New agent"),
+					h("small", null, "Give someone a name and a responsibility"),
+				),
+			],
+			() => this.#configure(),
+			{ disabled: !this.#company.store.get().team?.capabilities.write },
+		);
+		create.classList.add("new-agent-card");
+		create.setAttribute("aria-label", "New agent");
 		replace(
 			this.el,
 			h(
 				"header",
 				{ class: "new-conversation-header" },
+				this.#navigation,
 				h("label", null, "To:", search),
 				h(
 					"button",
@@ -61,74 +104,115 @@ export class NewConversationView {
 					icon("close"),
 				),
 			),
+			this.#chips,
 			h(
 				"div",
 				{ class: "new-conversation-body" },
 				h("h1", null, "New conversation"),
-				h("p", { class: "muted" }, "Pick an agent to talk to, or create someone new."),
-				button(
-					[
-						icon("plus"),
-						h(
-							"span",
-							null,
-							h("strong", null, "New agent"),
-							h("small", null, "Choose a name, figure and responsibility"),
-						),
-					],
-					() => this.#configure(),
-					{ disabled: !this.#company.store.get().team?.capabilities.write },
-				),
+				h("p", { class: "muted" }, "Select one agent for a direct conversation, or several for a group chat."),
 				this.#results,
+				create,
 			),
+			h("footer", { class: "recipient-footer" }, this.#selectionStatus, button("Cancel", this.#close), this.#open),
 		);
-		this.el.querySelector(".new-conversation-body > button")?.classList.add("new-agent-card");
 		this.#drawResults();
 	}
 	#drawResults(): void {
-		const focusedAgent = this.#results.contains(document.activeElement)
-			? document.activeElement?.getAttribute("data-agent-id")
-			: undefined;
+		const focused = document.activeElement?.getAttribute("data-agent-id");
+		const active = this.#company.store.get().staff.filter((agent) => agent.employmentStatus === "active");
+		for (const id of this.#selected) if (!active.some((agent) => agent.id === id)) this.#selected.delete(id);
 		const create = this.el.querySelector<HTMLButtonElement>(".new-agent-card");
 		if (create) create.disabled = !this.#company.store.get().team?.capabilities.write;
-		const agents = this.#company.store
-			.get()
-			.staff.filter(
-				(agent) =>
-					agent.employmentStatus === "active" &&
-					`${agent.displayName} ${agent.role}`.toLowerCase().includes(this.#query.trim().toLowerCase()),
-			);
+		const agents = active.filter((agent) =>
+			`${agent.displayName} ${agent.role}`.toLowerCase().includes(this.#query.trim().toLowerCase()),
+		);
 		replace(
 			this.#results,
-			h("h2", null, "Your agents"),
-			...agents.map((agent) =>
-				h(
-					"a",
-					{
-						class: "recipient-row",
-						"data-agent-id": agent.id,
-						href:
-							agent.templateId === "co-founder" ||
-							agent.id === this.#company.store.get().organization?.cofounder.staffAgentId
-								? `#/c/${this.#company.profile.profileId}`
-								: `#/c/${this.#company.profile.profileId}/staff/${agent.id}`,
-					},
-					agentFigure(agent, agent.displayName, { size: 42 }),
-					h("span", null, h("strong", null, agent.displayName), h("small", null, agent.role)),
-					icon("chevron"),
+			h("h2", null, this.#query ? "Matching agents" : "Suggested agents"),
+			h(
+				"div",
+				{ class: "recipient-grid" },
+				...agents.map((agent) =>
+					h(
+						"button",
+						{
+							type: "button",
+							class: "recipient-card",
+							"data-agent-id": agent.id,
+							"aria-pressed": String(this.#selected.has(agent.id)),
+							onclick: () => {
+								if (this.#selected.has(agent.id)) this.#selected.delete(agent.id);
+								else this.#selected.add(agent.id);
+								this.#drawResults();
+							},
+						},
+						agentFigure(agent, agent.displayName, { size: 48 }),
+						h("span", null, h("strong", null, agent.displayName), h("small", null, agent.role)),
+						this.#selected.has(agent.id) ? icon("check") : null,
+					),
 				),
 			),
 			agents.length
 				? null
 				: h("p", { class: "empty" }, this.#query ? "No matching agents." : "No agents available."),
 		);
-		if (focusedAgent) {
-			const recipient = [...this.#results.querySelectorAll<HTMLAnchorElement>(".recipient-row")].find(
-				(link) => link.dataset.agentId === focusedAgent,
-			);
-			if (recipient) recipient.focus({ preventScroll: true });
+		const chipFocus = document.activeElement?.getAttribute("data-remove-recipient");
+		replace(
+			this.#chips,
+			...active
+				.filter((agent) => this.#selected.has(agent.id))
+				.map((agent) =>
+					h(
+						"button",
+						{
+							type: "button",
+							class: "recipient-chip",
+							"aria-label": `Remove ${agent.displayName}`,
+							"data-remove-recipient": agent.id,
+							onclick: () => {
+								this.#selected.delete(agent.id);
+								this.#drawResults();
+								this.focus();
+							},
+						},
+						agentFigure(agent, agent.displayName, { size: 22 }),
+						agent.displayName,
+						icon("close"),
+					),
+				),
+		);
+		this.#chips.hidden = !this.#selected.size;
+		this.#open.disabled = this.#selected.size !== 1;
+		this.#selectionStatus.textContent =
+			this.#selected.size > 1
+				? "Group conversations are not available yet. Your selection stays here."
+				: this.#selected.size === 1
+					? "Open a conversation with this agent."
+					: "Choose a recipient.";
+		if (focused || chipFocus) {
+			const target = focused
+				? [...this.#results.querySelectorAll<HTMLButtonElement>("[data-agent-id]")].find(
+						(button) => button.dataset.agentId === focused,
+					)
+				: [...this.#chips.querySelectorAll<HTMLButtonElement>("button")].find(
+						(button) => button.dataset.removeRecipient === chipFocus,
+					);
+			if (target) target.focus({ preventScroll: true });
 			else this.focus();
 		}
+	}
+	#openSelection(): void {
+		if (this.#selected.size !== 1) return;
+		const agent = this.#company.staffById([...this.#selected][0]);
+		if (!agent || agent.employmentStatus !== "active") return;
+		const cofounder =
+			agent.templateId === "co-founder" ||
+			agent.id === this.#company.store.get().organization?.cofounder.staffAgentId;
+		navigate(
+			cofounder
+				? { name: "company", profileId: this.#company.profile.profileId, section: "home" }
+				: { name: "company", profileId: this.#company.profile.profileId, section: "staff", id: agent.id },
+		);
 	}
 	#configure(): void {
 		if (!this.#company.store.get().team?.capabilities.write) return;
@@ -255,7 +339,7 @@ export class NewConversationView {
 		};
 		replace(
 			this.el,
-			h("header", { class: "new-conversation-header" }, back),
+			h("header", { class: "new-conversation-header" }, this.#navigation, back),
 			h("div", { class: "new-conversation-body" }, form),
 		);
 		name.focus();

@@ -18,11 +18,19 @@ export interface TranscriptMessage {
 	authorUserId?: string;
 	text: string;
 	attachmentCount: number;
+	attachments?: TranscriptAttachment[];
 	phase?: "progress" | "final";
 	runId?: string;
 	createdAt: string;
 	pending?: "queued" | "processing" | "failed";
 	failureReason?: string;
+}
+
+export interface TranscriptAttachment {
+	kind: "image" | "file";
+	name: string;
+	mediaType?: string;
+	bytes?: number;
 }
 
 export interface TranscriptCard {
@@ -55,16 +63,36 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 	return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 }
 
-function contentText(content: unknown): { text: string; attachments: number } {
-	if (typeof content === "string") return { text: content, attachments: 0 };
-	if (!Array.isArray(content)) return { text: "", attachments: 0 };
+function attachmentMetadata(item: Record<string, unknown>): TranscriptAttachment {
+	const name = typeof item.name === "string" ? item.name : typeof item.filename === "string" ? item.filename : "";
+	const mediaType =
+		typeof item.mimeType === "string"
+			? item.mimeType
+			: typeof item.mediaType === "string"
+				? item.mediaType
+				: undefined;
+	const kind = item.type === "file" ? "file" : "image";
+	return {
+		kind,
+		name: name.trim().slice(0, 256) || (kind === "image" ? "Image attachment" : "File attachment"),
+		...(mediaType ? { mediaType: mediaType.slice(0, 128) } : {}),
+		...(typeof item.bytes === "number" && Number.isSafeInteger(item.bytes) && item.bytes >= 0
+			? { bytes: item.bytes }
+			: {}),
+	};
+}
+
+function contentText(content: unknown): { text: string; attachments: TranscriptAttachment[] } {
+	if (typeof content === "string") return { text: content, attachments: [] };
+	if (!Array.isArray(content)) return { text: "", attachments: [] };
 	const parts: string[] = [];
-	let attachments = 0;
+	const attachments: TranscriptAttachment[] = [];
 	for (const part of content) {
 		const item = asRecord(part);
 		if (!item) continue;
 		if (item.type === "text" && typeof item.text === "string") parts.push(item.text);
-		else if (item.type === "image" || item.type === "image_url" || item.type === "file") attachments++;
+		else if (item.type === "image" || item.type === "image_url" || item.type === "file")
+			attachments.push(attachmentMetadata(item));
 	}
 	return { text: parts.join("\n"), attachments };
 }
@@ -99,7 +127,8 @@ function messageFromEntry(entry: Entry, event: HostedSessionEvent, legacy: boole
 			sequence: event.sequence,
 			authorUserId: event.actorUserId,
 			text,
-			attachmentCount: attachments,
+			attachmentCount: attachments.length,
+			...(attachments.length ? { attachments } : {}),
 			createdAt: event.createdAt,
 		};
 	}
@@ -126,7 +155,8 @@ function messageFromEntry(entry: Entry, event: HostedSessionEvent, legacy: boole
 			id: event.eventId,
 			sequence: event.sequence,
 			text,
-			attachmentCount: attachments,
+			attachmentCount: attachments.length,
+			...(attachments.length ? { attachments } : {}),
 			phase,
 			...(runId ? { runId } : {}),
 			createdAt: event.createdAt,
@@ -224,14 +254,16 @@ export function projectTranscript(
 		if (body?.schema === "qorpera.staff-intro-retry/v1") continue;
 		const text =
 			typeof body?.displayText === "string" ? body.displayText : typeof body?.text === "string" ? body.text : "";
-		const attachments = Array.isArray(body?.images) ? body.images.length : 0;
+		const images = Array.isArray(body?.images) ? body.images : [];
+		const attachments = images.map((image) => attachmentMetadata({ ...asRecord(image), type: "image" }));
 		items.push({
 			kind: "member",
 			id: input.inputId,
 			sequence: Number.MAX_SAFE_INTEGER,
 			authorUserId: input.authorUserId,
 			text,
-			attachmentCount: attachments,
+			attachmentCount: attachments.length,
+			...(attachments.length ? { attachments } : {}),
 			createdAt: input.createdAt,
 			pending: input.status,
 			...(input.failureReason ? { failureReason: input.failureReason } : {}),

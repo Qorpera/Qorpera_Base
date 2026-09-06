@@ -3,6 +3,7 @@ import type { HostedProfile, HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { badge, button, h, icon, initials, notice, replace } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
+import { uiText } from "../../ui/preferences.ts";
 import { type AuthController, displayName } from "../auth.ts";
 import type { CompanyController } from "../company.ts";
 import type { Route } from "../router.ts";
@@ -101,6 +102,8 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 	}
 	accountMenu.classList.toggle("account-menu-rail", Boolean(company));
 	const name = displayName(context.user);
+	accountTrigger!.setAttribute("aria-label", `Profile: ${name}`);
+	accountTrigger!.title = name;
 	const item = (target: "account" | "friends" | "invitations", iconName: string, label: string, count = 0) =>
 		h(
 			"a",
@@ -111,7 +114,7 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 				onclick: () => setAccountMenuOpen(false),
 			},
 			icon(iconName),
-			h("span", { class: "account-item-label" }, label),
+			h("span", { class: "account-item-label" }, uiText(label)),
 			count > 0 ? h("span", { class: "account-count" }, String(count)) : null,
 		);
 	replace(
@@ -136,7 +139,7 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 				},
 			},
 			icon("settings"),
-			h("span", { class: "account-item-label" }, "Account and settings"),
+			h("span", { class: "account-item-label" }, uiText("Account and settings")),
 		),
 		item("friends", "friends", "Friends"),
 		item("invitations", "invitations", "Invitations", context.invitations),
@@ -154,7 +157,7 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 				},
 			},
 			icon("signout"),
-			h("span", { class: "account-item-label" }, "Sign out"),
+			h("span", { class: "account-item-label" }, uiText("Sign out")),
 		),
 	);
 	return accountMenu;
@@ -179,13 +182,13 @@ export function renderTopbar(
 					"button",
 					{
 						type: "button",
-						class: "btn mobile-navigation-toggle",
+						class: "icon-button mobile-navigation-toggle",
 						"aria-label": "Company navigation",
 						"aria-controls": "company-navigation",
 						"aria-expanded": String(context.navigation.open),
 						onclick: context.navigation.toggle,
 					},
-					context.navigation.open ? "Close menu" : "Menu",
+					icon("navigation"),
 				)
 			: null,
 		lead,
@@ -270,6 +273,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 								: "",
 						].join(" "),
 						href: `#/c/${profileId}`,
+						title: cofounder.displayName,
 						"aria-current":
 							section === "home" ||
 							(cofounderSessionId && activeSessionId === cofounderSessionId) ||
@@ -296,9 +300,10 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			{
 				class: ["rail-row", isActive(agent.id) ? "active" : ""].join(" "),
 				href: `#/c/${profileId}/staff/${agent.id}`,
+				title: `${agent.displayName} · ${agent.role}`,
 				"aria-current": isActive(agent.id) ? "page" : undefined,
 			},
-			agentFigure(agent, agent.displayName, { size: 36 }),
+			agentFigure(agent, agent.displayName, { size: 50 }),
 			h(
 				"span",
 				{ class: "rail-row-copy" },
@@ -327,6 +332,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			{
 				class: ["rail-row", activeSessionId === session.sessionId ? "active" : ""].join(" "),
 				href: `#/c/${profileId}/chat/${session.sessionId}`,
+				title: session.title,
 				"aria-current": activeSessionId === session.sessionId ? "page" : undefined,
 			},
 			h("span", { class: "avatar small" }, session.title.slice(0, 1).toUpperCase()),
@@ -348,8 +354,19 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	);
 
 	const empty =
-		!state.loading && !cofounderCard && !staffRows.length && !sessionRows.length
-			? h("p", { class: "rail-empty" }, railQuery ? "No agent by that name." : "No agents yet.")
+		!state.loading &&
+		!cofounderCard &&
+		!staffRows.length &&
+		!sessionRows.length &&
+		!state.organization?.responsibilities.some((item) => item.status !== "retired" && matches(item.name)) &&
+		!state.organization?.projects.some(
+			(item) => item.status !== "completed" && item.status !== "cancelled" && matches(item.name),
+		)
+			? h(
+					"p",
+					{ class: "rail-empty" },
+					railQuery ? "No matching conversations or responsibilities." : "No agents yet.",
+				)
 			: null;
 
 	// Replacing the rail detaches the field, and a detached element loses
@@ -361,6 +378,29 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		h(
 			"div",
 			{ class: "rail-toolbar" },
+			h(
+				"button",
+				{
+					type: "button",
+					class: "icon-button rail-layout-toggle",
+					"data-toggle-rail": "true",
+					"aria-label": "Toggle compact navigation",
+					title: "Toggle compact navigation",
+				},
+				icon("navigation"),
+			),
+			context.navigation
+				? h(
+						"button",
+						{
+							type: "button",
+							class: "icon-button rail-mobile-close",
+							"aria-label": "Close company navigation",
+							onclick: context.navigation.toggle,
+						},
+						icon("close"),
+					)
+				: null,
 			h(
 				"a",
 				{
@@ -392,6 +432,50 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 					)
 				: null,
 			cofounderCard,
+			state.organization
+				? h(
+						"div",
+						{ class: "rail-organization" },
+						...state.organization.responsibilities
+							.filter((item) => item.status !== "retired" && matches(item.name))
+							.map((item) =>
+								h(
+									"a",
+									{
+										class: "rail-object",
+										href: `#/c/${profileId}/responsibility/${item.responsibilityId}`,
+										title: item.name,
+										"aria-current":
+											section === "responsibility" &&
+											route.name === "company" &&
+											route.id === item.responsibilityId
+												? "page"
+												: undefined,
+									},
+									icon("map"),
+									h("span", null, item.name),
+								),
+							),
+						...state.organization.projects
+							.filter((item) => item.status !== "completed" && item.status !== "cancelled" && matches(item.name))
+							.map((item) =>
+								h(
+									"a",
+									{
+										class: "rail-object",
+										href: `#/c/${profileId}/project/${item.projectId}`,
+										title: item.name,
+										"aria-current":
+											section === "project" && route.name === "company" && route.id === item.projectId
+												? "page"
+												: undefined,
+									},
+									icon("file"),
+									h("span", null, item.name),
+								),
+							),
+					)
+				: null,
 			state.loading && !state.staff.length ? h("p", { class: "rail-empty" }, "Loading…") : null,
 			staffRows.length || sessionRows.length ? h("div", { class: "rail-list" }, ...staffRows, ...sessionRows) : null,
 			empty,

@@ -23,6 +23,7 @@ beforeEach(() => {
 		this.open = true;
 		this.querySelector<HTMLButtonElement>("button")?.focus();
 	};
+	HTMLDialogElement.prototype.show = HTMLDialogElement.prototype.showModal;
 	HTMLDialogElement.prototype.close = function () {
 		this.open = false;
 	};
@@ -115,8 +116,8 @@ describe("conversation UI boundaries", () => {
 		expect(messages[0]?.getAttribute("aria-label")).toContain(staff.displayName);
 		expect(messages[0]?.title).toContain(fmtTime(timestamp));
 		expect(messages[0]?.querySelector(".message-caption")?.textContent).toBe("Progress");
-		expect(messages[0]?.querySelectorAll(".small")).toHaveLength(1);
-		expect(messages[0]?.querySelector(".small")?.textContent).toContain("1 attachment");
+		expect(messages[0]?.querySelectorAll(".received-file")).toHaveLength(1);
+		expect(messages[0]?.querySelector(".received-file")?.textContent).toContain("Preview unavailable");
 		expect(messages[1]?.querySelector(".message-author")?.textContent).toBe("Anna");
 		expect(messages[1]?.querySelectorAll(".bubble")).toHaveLength(1);
 		expect(messages[1]?.querySelector(".text")?.textContent).toBe(member.text);
@@ -370,11 +371,11 @@ describe("new conversation and agent setup", () => {
 	it("keeps keyboard focus on the recipient across activity refreshes and recovers when it disappears", async () => {
 		const f = setupNew();
 		await settle();
-		f.view.el.querySelector<HTMLAnchorElement>(".recipient-row")!.focus();
+		f.view.el.querySelector<HTMLAnchorElement>(".recipient-card")!.focus();
 		f.company.store.set({ activity: [] });
 		await settle();
-		expect(document.activeElement).toBe(f.view.el.querySelector(".recipient-row"));
-		expect(document.activeElement?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/staff/${staff.id}`);
+		expect(document.activeElement).toBe(f.view.el.querySelector(".recipient-card"));
+		expect(document.activeElement?.getAttribute("data-agent-id")).toBe(staff.id);
 		f.company.store.set({ staff: [] });
 		await settle();
 		const search = f.view.el.querySelector<HTMLInputElement>('[aria-label="Search conversation recipients"]')!;
@@ -395,15 +396,15 @@ describe("new conversation and agent setup", () => {
 			profileId: profileA.profileId,
 			section: "new",
 		});
-		expect(button(f.view.el, "New agentChoose a name, figure and responsibility").disabled).toBe(true);
+		expect(button(f.view.el, "New agent").disabled).toBe(true);
 		f.company.store.set({ team });
 		input(f.view.el, "Search conversation recipients", "missing");
-		expect(f.view.el.querySelectorAll(".recipient-row")).toHaveLength(0);
-		button(f.view.el, "New agentChoose a name, figure and responsibility").click();
+		expect(f.view.el.querySelectorAll(".recipient-card")).toHaveLength(0);
+		button(f.view.el, "New agent").click();
 		input(f.view.el, "Agent name", "Draft agent");
 		expect(button(f.view.el, "Create agent").disabled).toBe(true);
 		button(f.view.el, "Back").click();
-		button(f.view.el, "New agentChoose a name, figure and responsibility").click();
+		button(f.view.el, "New agent").click();
 		expect(f.view.el.querySelector<HTMLInputElement>('[aria-label="Agent name"]')?.value).toBe("Draft agent");
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
@@ -413,7 +414,7 @@ describe("new conversation and agent setup", () => {
 		const f = setupNew({ createAgent });
 		f.company.store.set({ team });
 		await settle();
-		button(f.view.el, "New agentChoose a name, figure and responsibility").click();
+		button(f.view.el, "New agent").click();
 		input(f.view.el, "Agent name", "New agent");
 		input(f.view.el, "Agent title", "Research");
 		for (let index = 0; index < 2; index++)

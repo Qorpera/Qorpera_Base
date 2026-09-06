@@ -1,14 +1,18 @@
-import type { TranscriptItem } from "../../cloud/transcript.ts";
-import type { HostedSession, HostedStaffAgent, JsonValue } from "../../cloud/types.ts";
+import type { TranscriptCard, TranscriptItem } from "../../cloud/transcript.ts";
+import type { HostedSession, HostedStaffAgent } from "../../cloud/types.ts";
 import { AttachmentTray } from "../../ui/attachments.ts";
+import { authorizationRequestId, renderAuthorizationCard } from "../../ui/authorization-card.ts";
 import { agentFigure } from "../../ui/avatar.ts";
-import { badge, fmtTime, h, icon, notice, replace, spinner } from "../../ui/dom.ts";
+import { fmtTime, h, icon, notice, replace, spinner } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
+import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import type { CompanyController, ConversationState } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
 import { ComputerPanel } from "./computer.ts";
+
+export { renderAuthorizationCard } from "../../ui/authorization-card.ts";
 
 /* One conversation over the canonical transcript. Rendering follows
  * DECISIONS.md "Transcript projection rules": member inputs and agent sends
@@ -31,6 +35,7 @@ export class ConversationView {
 	readonly #attach: HTMLButtonElement;
 	readonly #identity: HTMLButtonElement;
 	readonly #computer: HTMLButtonElement;
+	readonly #navigation: HTMLButtonElement;
 	readonly #body: HTMLElement;
 	readonly #conversationPane: HTMLElement;
 	readonly #lifetime = new AbortController();
@@ -42,8 +47,14 @@ export class ConversationView {
 	#stickToBottom = true;
 	readonly #unsubscribe: (() => void)[] = [];
 	#disposed = false;
+	#receivedAttachments: ReceivedAttachments[] = [];
 
-	constructor(company: CompanyController, sessionId: string, actions: WorkspaceActions = {}) {
+	constructor(
+		company: CompanyController,
+		sessionId: string,
+		actions: WorkspaceActions = {},
+		toggleNavigation?: () => void,
+	) {
 		this.#company = company;
 		this.#sessionId = sessionId;
 		this.#actions = actions;
@@ -175,7 +186,20 @@ export class ConversationView {
 			},
 			icon("computer"),
 		);
-		this.#header.append(this.#identity, this.#computer);
+		this.#navigation = h(
+			"button",
+			{
+				type: "button",
+				class: "mobile-navigation-toggle icon-button",
+				"aria-label": "Company navigation",
+				"aria-controls": "company-navigation",
+				"aria-expanded": "false",
+				hidden: !toggleNavigation,
+				onclick: toggleNavigation,
+			},
+			icon("navigation"),
+		);
+		this.#header.append(this.#navigation, this.#identity, this.#computer);
 		this.#messages.addEventListener("scroll", () => {
 			const { scrollTop, scrollHeight, clientHeight } = this.#messages;
 			this.#stickToBottom = scrollHeight - scrollTop - clientHeight < 48;
@@ -183,13 +207,15 @@ export class ConversationView {
 		this.#conversationPane = h(
 			"div",
 			{ class: "thread-conversation" },
+			this.#header,
 			this.#messages,
 			this.#status,
 			this.#composerWrap,
 		);
 		this.#body = h("div", { class: "thread-body" }, this.#conversationPane);
-		this.el = h("section", { class: "thread" }, this.#header, this.#body);
+		this.el = h("section", { class: "thread" }, this.#body);
 		window.addEventListener("resize", () => this.#syncPanelLayout(), { signal: this.#lifetime.signal });
+		window.addEventListener("qorpera-rail-resize", () => this.#autosize(), { signal: this.#lifetime.signal });
 		document.addEventListener(
 			"click",
 			(event) => {
@@ -212,6 +238,7 @@ export class ConversationView {
 		this.#details?.dispose();
 		this.#panel?.dispose();
 		this.#attachments.dispose();
+		for (const attachments of this.#receivedAttachments) attachments.dispose();
 		for (const unsubscribe of this.#unsubscribe) unsubscribe();
 		this.#company.setOpenSession(undefined);
 	}
@@ -224,6 +251,9 @@ export class ConversationView {
 		this.#autosize();
 		this.#composer.focus();
 	}
+	setNavigationOpen(open: boolean): void {
+		this.#navigation.setAttribute("aria-expanded", String(open));
+	}
 
 	#autosize(): void {
 		// Start with compact geometry: collapsing after measuring an expanded
@@ -234,7 +264,10 @@ export class ConversationView {
 			"is-expanded",
 			this.#composer.scrollHeight > 42 || this.#attachments.count > 0,
 		);
-		this.#composer.style.height = `${Math.min(this.#composer.scrollHeight, 200)}px`;
+		this.#composer.style.height = `${Math.min(this.#composer.scrollHeight, 112)}px`;
+		this.#composer.style.overflowY = this.#composer.scrollHeight > 112 ? "auto" : "hidden";
+		const expanded = this.#composerShell.classList.contains("is-expanded");
+		this.#composerShell.style.height = `${this.#composer.getBoundingClientRect().height + (expanded ? 44 : 2) + this.#attachments.el.getBoundingClientRect().height}px`;
 	}
 
 	#setMenu(open: boolean, restoreFocus = true): void {
@@ -249,12 +282,22 @@ export class ConversationView {
 		const agent = this.#company.staffById(
 			state.sessions.find((session) => session.sessionId === this.#sessionId)?.staffAgentId,
 		);
-		if (!agent || this.#details) return;
+		if (this.#details) {
+			this.#details.dialog.close();
+			return;
+		}
+		if (!agent) return;
 		this.#identity.setAttribute("aria-expanded", "true");
-		this.#details = new AgentDetails(this.#company, agent, this.#actions, () => {
-			this.#details = undefined;
-			this.#identity.setAttribute("aria-expanded", "false");
-		});
+		this.#details = new AgentDetails(
+			this.#company,
+			agent,
+			this.#actions,
+			() => {
+				this.#details = undefined;
+				this.#identity.setAttribute("aria-expanded", "false");
+			},
+			this.#identity,
+		);
 	}
 
 	#toggleComputer(): void {
@@ -367,15 +410,29 @@ export class ConversationView {
 		]);
 		if (key === this.#renderedKey) return;
 		this.#renderedKey = key;
+		for (const attachments of this.#receivedAttachments) attachments.dispose();
+		this.#receivedAttachments = [];
+		const decisions = new Map<string, TranscriptCard>();
+		for (const item of items)
+			if (item.kind === "authorization_decision") {
+				const request = authorizationRequestId(item.body);
+				if (request) decisions.set(request, item);
+			}
 		const nodes: HTMLElement[] = [];
 		for (const item of items) {
 			if (item.kind === "member" || item.kind === "agent") {
 				const mine = item.kind === "member" && item.authorUserId === this.#company.userId;
 				const author = item.kind === "agent" ? agentName : this.#company.memberName(item.authorUserId);
+				const attachments = item.attachmentCount
+					? new ReceivedAttachments(item, this.#actions.previewAttachment)
+					: undefined;
+				if (attachments) this.#receivedAttachments.push(attachments);
 				const bodies =
 					item.kind === "agent"
 						? markdownBubbles(item.text)
-						: [h("div", { class: "text" }, item.text || (item.attachmentCount ? "" : "(empty)"))];
+						: item.text || !item.attachmentCount
+							? [h("div", { class: "text" }, item.text || "(empty)")]
+							: [];
 				nodes.push(
 					h(
 						"article",
@@ -394,21 +451,8 @@ export class ConversationView {
 							dataset: { messageId: item.id },
 						},
 						item.kind === "member" && !mine ? h("div", { class: "message-author" }, author) : null,
-						...bodies.map((body, index) =>
-							h(
-								"div",
-								{ class: "bubble" },
-								body,
-								index === bodies.length - 1 && item.attachmentCount
-									? h(
-											"div",
-											{ class: "muted small" },
-											icon("file"),
-											`${item.attachmentCount} attachment${item.attachmentCount === 1 ? "" : "s"} · preview unavailable`,
-										)
-									: null,
-							),
-						),
+						...bodies.map((body) => h("div", { class: "bubble" }, body)),
+						attachments?.el,
 						item.phase === "progress"
 							? h("div", { class: "message-caption", title: "The agent's turn is not finished" }, "Progress")
 							: null,
@@ -432,6 +476,7 @@ export class ConversationView {
 						item.body,
 						item.createdAt,
 						this.#company.memberName(item.actorUserId),
+						item.kind === "authorization_request" ? decisions.get(item.id.toLowerCase())?.body : undefined,
 					),
 				);
 			}
@@ -468,39 +513,4 @@ export class ConversationView {
 			children.push(notice("neutral", "You can read this conversation. Contributors and above can write."));
 		replace(this.#status, ...children);
 	}
-}
-
-function describeValue(value: JsonValue): string {
-	if (value === null) return "—";
-	if (typeof value === "object") return JSON.stringify(value);
-	return String(value);
-}
-
-export function renderAuthorizationCard(
-	kind: "authorization_request" | "authorization_decision",
-	body: JsonValue,
-	createdAt: string,
-	actor: string,
-): HTMLElement {
-	const fields = body && typeof body === "object" && !Array.isArray(body) ? Object.entries(body) : [];
-	return h(
-		"article",
-		{ class: `card auth-card ${kind}` },
-		h(
-			"div",
-			{ class: "meta" },
-			badge(
-				kind === "authorization_request" ? "Approval requested" : "Decision",
-				kind === "authorization_request" ? "warn" : "ok",
-			),
-			h("span", { class: "muted small" }, `${actor} · ${fmtTime(createdAt)}`),
-		),
-		fields.length
-			? h(
-					"dl",
-					{ class: "kv" },
-					...fields.flatMap(([key, value]) => [h("dt", null, key), h("dd", null, describeValue(value))]),
-				)
-			: h("div", { class: "muted" }, "No details."),
-	);
 }

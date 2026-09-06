@@ -1,6 +1,7 @@
 @import "./tokens.css";
 @import "./settings.css";
 @import "./conversation.css";
+@import "./organization.css";
 
 /* Layout and components for the web client. Values derive from tokens.css
  * (shared with the desktop). Selectors are the contract with the views. */
@@ -38,7 +39,7 @@ label > input, label > select { font-weight: 400; }
 
 .app { height: 100%; }
 .frame { display: flex; flex-direction: column; height: 100%; background: var(--bg); font-family: var(--font-sans); }
-.body { display: flex; flex: 1; min-height: 0; }
+.body { position: relative; display: flex; flex: 1; min-height: 0; }
 
 /* buttons */
 .btn {
@@ -54,6 +55,7 @@ label > input, label > select { font-weight: 400; }
 .btn-danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
 .btn-danger:hover:not(:disabled) { background: var(--danger-soft); }
 .btn-small { min-height: 26px; padding: 0 8px; font-size: 12.5px; }
+.btn[hidden] { display: none; }
 
 /* badges, notices */
 .badge {
@@ -143,13 +145,19 @@ label > input, label > select { font-weight: 400; }
 	--rail-search: var(--sidebar-search); --rail-search-ink: #85857f;
 	--rail-selection: var(--sidebar-selection); --rail-small: #71716b; --rail-status: #00c887;
 	display: flex; flex-direction: column; min-height: 0;
-	width: clamp(240px, 28vw, 304px); flex: none;
+	width: var(--rail-width); flex: none;
 	padding: 0 11px 11px; background: var(--rail); border-right: 1px solid var(--rail-line);
 	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
 }
 .rail[hidden] { display: none; }
 .rail-toolbar { height: var(--titlebar-height); flex: none; display: flex; align-items: center; justify-content: flex-end; }
 .rail-add { color: #6e6a67; }
+.rail-layout-toggle { margin-right: auto; }
+.rail-mobile-close { display: none; }
+.rail-resizer { position: absolute; z-index: 8; left: calc(var(--rail-width) - 4px); top: 0; bottom: 0; width: 8px; cursor: col-resize; touch-action: none; }
+.rail-resizer:hover, .rail-resizer:focus-visible { background: rgb(0 122 255 / 12%); outline: none; }
+.rail[hidden] + .rail-resizer { display: none; }
+.rail-resizing { cursor: col-resize; user-select: none; }
 .rail-add:hover { text-decoration: none; background: var(--rail-hover); }
 .rail-top { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
 .rail-search {
@@ -195,16 +203,36 @@ label > input, label > select { font-weight: 400; }
 
 .rail-list { display: grid; gap: 1px; }
 .rail-row {
-	display: grid; grid-template-columns: 36px minmax(0, 1fr); align-items: center; gap: 8px;
-	min-height: 54px; padding: 5px 8px; border-radius: 9px; color: var(--text);
+	display: grid; grid-template-columns: 50px minmax(0, 1fr); align-items: center; gap: 6px;
+	min-height: 64px; padding: 5px 10px 5px 14px; border-radius: 6px; color: var(--text);
 }
 .rail-row:hover { background: var(--rail-hover); text-decoration: none; }
 .rail-row.active, .rail-row.active:hover { background: var(--rail-selection); color: #fff; }
-.rail-row .figure { width: 36px; height: 36px; }
+.rail-row .figure { width: 50px; height: 50px; }
 .rail-row-copy { display: grid; gap: 1px; min-width: 0; }
-.rail-row-copy strong { font-size: 13.5px; font-weight: 600; line-height: 1.18; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-row-copy strong { font-size: 13px; font-weight: 600; line-height: 1.18; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-row-copy small { font-size: 11px; line-height: 15px; color: #6e6c6b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-row.active .rail-row-copy small { color: rgba(255, 255, 255, 0.85); }
+.rail-organization { display: grid; gap: 2px; margin: 12px 0; }
+.rail-organization:empty { display: none; }
+.rail-object { display: flex; align-items: center; gap: 10px; padding: 8px 12px; color: var(--text); font-size: 12px; border-radius: 6px; }
+.rail-object span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-object .icon { width: 16px; height: 16px; color: var(--text-muted); }
+.rail-object:hover { background: var(--rail-hover); text-decoration: none; }
+.rail-object[aria-current=page] { background: var(--rail-selection); color: #fff; }
+.rail-object[aria-current=page] .icon { color: inherit; }
+@media (min-width: 761px) {
+	.rail-compact .rail { padding-inline: 7px; }
+	.rail-compact .rail-toolbar { flex-wrap: wrap; height: 76px; justify-content: center; }
+	.rail-compact .rail-layout-toggle { margin: 0; }
+	.rail-compact .rail-top, .rail-compact .cofounder-pin > strong, .rail-compact .cofounder-pin > small, .rail-compact .rail-row-copy, .rail-compact .rail-object span, .rail-compact .account-trigger-name, .rail-compact .account-chevron, .rail-compact .rail-connection { display: none; }
+	.rail-compact .cofounder-pin { height: 72px; margin: 10px 0; padding: 0; }
+	.rail-compact .cofounder-stand { top: 3px; }
+	.rail-compact .rail-row { grid-template-columns: 1fr; padding: 5px; justify-items: center; }
+	.rail-compact .rail-object { justify-content: center; padding: 12px; }
+	.rail-compact .account-trigger { justify-content: center; }
+	.rail-compact .account-popover { position: fixed; left: 8px; right: auto; bottom: 66px; width: 260px; z-index: 50; }
+}
 
 /* The profile menu opens upward from the foot of the rail. */
 .rail-footer { flex: none; padding-top: 5px; }
@@ -507,8 +535,12 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 .mobile-navigation-toggle, .navigation-backdrop { display: none; }
 @media (max-width: 760px) {
 	.topbar.topbar-company { display: flex; }
+	.frame.has-thread .topbar.topbar-company { display: none; }
 	.mobile-navigation-toggle { display: inline-flex; }
-	.rail { display: none; position: absolute; z-index: 6; height: calc(100% - var(--titlebar-height)); }
+	.mobile-navigation-toggle[hidden] { display: none; }
+	.rail { display: none; position: fixed; top: var(--titlebar-height); bottom: 0; left: 0; width: min(304px, calc(100vw - 48px)); z-index: 6; }
+	.rail-resizer, .rail-layout-toggle { display: none; }
+	.rail-mobile-close { display: inline-flex; margin-right: auto; }
 	.frame.navigation-open .rail:not([hidden]) { display: flex; }
 	.frame.navigation-open .navigation-backdrop { display: block; position: fixed; inset: var(--titlebar-height) 0 0; z-index: 5; background: rgba(18,18,17,.25); border: 0; }
 	.page { padding: 16px; }
