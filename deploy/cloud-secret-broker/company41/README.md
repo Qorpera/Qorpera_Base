@@ -17,6 +17,14 @@ Retain the installed certificate across boots. Plaintext key material belongs
 only in root-owned tmpfs during issuance and in systemd's credential directory
 while the service runs.
 
+Keep this VM available while production admission is open. The inherited
+development shutdown schedule at 23:00 UTC was disabled after it deallocated the
+production broker overnight. Check current Azure power state, service health and
+trusted TLS from the execution network immediately before live acceptance;
+yesterday's successful host probe is insufficient. A cold start must preserve
+the encrypted credentials and durable destination ledger without reinstalling
+the service or issuing replacement secrets.
+
 Verify the configuration, exact package hashes, production authority bindings,
 private listener, trusted TLS requests and authentication denials before enabling
 the unit and its backend services at boot. Restart the VM and verify the same
