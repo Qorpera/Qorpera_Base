@@ -1,0 +1,51 @@
+{
+  "schema": "qorpera.runtime-fallback-account-status/v1",
+  "recordedAt": "2026-09-06T18:28:58.600Z",
+  "runtimeSourceCommit": "c7085e8f3aa7429a4b17286d496efa6ebfdc64a1",
+  "runtimeBundleSha256": "7bfd6cd12160a3b5119e7727374e28d854c1004de6640f12c40446b21d67764e",
+  "fullyAccepted": false,
+  "usableFallbackProven": false,
+  "liveHandoffProven": false,
+  "accountEmailsMatchUserProvidedPair": true,
+  "currentPlanClaim": "pro",
+  "newPlanClaim": "free",
+  "newConnectionStatus": "disabled",
+  "normalSponsorUnchanged": true,
+  "encryptedCredentialsRetained": true,
+  "limits": [
+    "Plan claims are observed token metadata, not a billing diagnosis. The user now says the Gmail subscription may be unpaid.",
+    "The new connection failed its one governed model execution with provider_failed; the cause remains unconfirmed.",
+    "Disabling the connection excludes it from selection while preserving its immutable consent and sponsor history.",
+    "An eligible working fallback, actual provider usage-limit notification, and successful same-run handoff remain unproved."
+  ],
+  "previousCheckpoint": {
+    "file": "../2026-09-06-runtime-v10-fallback/MANIFEST.json",
+    "sha256": "aa97c5e070b4c4cf3f58866361370dd38cf69570611cbae5066b4bff9b3ebf70"
+  },
+  "files": [
+    {
+      "file": "EMAIL-CONFIRMATION.json",
+      "source": "outputs/runtime-live-3c0bf3bce/FALLBACK-LOGIN-V10-03-EMAIL-CONFIRMATION.json",
+      "sha256": "e058a59a41c6d071d0a3d12b0c561f4badba90afccbde09f3e66b894ff028b69",
+      "bytes": 2094
+    },
+    {
+      "file": "DISABLE-RESULT.json",
+      "source": "outputs/runtime-live-3c0bf3bce/fallback-v10-disable-unproven-connection.result.json",
+      "sha256": "ac90aad7ab3af4eede69238d1cb9c5b444dcd8492ed600cf04fa8dd7fe70e494",
+      "bytes": 529
+    },
+    {
+      "file": "CONNECTION-READBACK.json",
+      "source": "outputs/runtime-custody-3c0bf3bce/fallback-login-03-state-1788719284765.json",
+      "sha256": "b4e7888b912553fff6d29a908d2d873d7f6fa50b7e58d7562cd14da1810b3e4d",
+      "bytes": 1677
+    },
+    {
+      "file": "RUNTIME-READBACK.json",
+      "source": "outputs/runtime-custody-3c0bf3bce/runtime-v10-final-state-1788719286059.json",
+      "sha256": "ec867bf8fceb2a2727a6fac375eb4a246974ce0bcf3069f9447831fb83b34ef9",
+      "bytes": 849
+    }
+  ]
+}

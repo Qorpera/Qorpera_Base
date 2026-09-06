@@ -1,0 +1,19 @@
+{
+  "schema": "qorpera.member-boundary-operation/v1",
+  "proof": "runtime-v8-member-boundary-01",
+  "passed": true,
+  "observedAt": "2026-09-06T18:27:45.906Z",
+  "stage": "rpc",
+  "result": {
+    "actor": "founder",
+    "userId": "4fa1e977-a64a-4d39-a5c6-91ffd677f507",
+    "name": "qorpera_set_provider_connection_status",
+    "value": {
+      "status": "disabled",
+      "connection_id": "2bd8e0ae-fc58-449a-b680-e58ff4784744"
+    }
+  },
+  "error": null,
+  "privateContentsReturned": false,
+  "automaticReplayAllowed": false
+}

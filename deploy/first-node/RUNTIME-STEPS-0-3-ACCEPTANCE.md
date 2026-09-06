@@ -42,13 +42,17 @@ records a successful member sign-in and encrypted backup, followed by an
 unsuccessful native execution. Connection `2bd8e0ae-fc58-449a-b680-e58ff4784744`
 belongs to a different provider account from the working connection. The new
 issued tokens identify it as Free and use a different email from the working
-Pro account. The founder says this account should have a paid subscription;
-the billing discrepancy and the underlying provider failure remain unresolved.
+Pro account. The subsequent [account status checkpoint](acceptance/2026-09-06-runtime-v10-account-status/MANIFEST.json)
+confirms that both emails match the founder's intended Qorpera/Gmail pair.
+The founder now says the Gmail subscription may be unpaid. Token plan metadata
+does not establish billing state or the underlying provider failure.
 Run `b5035896-8561-4756-8e3e-946386780af8` used its new connection version 2 and
 failed at `model_turn / provider_failed` in one attempt, before any send or
 durable result. Its lease was released and job guest removed. The temporary
 login VM is stopped with its volumes retained. The normal company sponsor is
-unchanged; the new connection's consent and member sponsor binding remain active.
+unchanged. The new connection was disabled through the normal founder lifecycle
+operation after its failed test, excluding it from selection while retaining its
+encrypted credential, consent versions and member sponsor binding history.
 
 That sign-in exposed a missing identity-recovery NFS mount after restart. The
 existing encrypted backup was recovered unchanged, and the existing loopback
@@ -75,7 +79,7 @@ and timestamps. Table filenames refer to the v9 directory unless labeled v10.
 | Step 0: live Company File and authority | Two real managed members and one native agent exercised private, exact and subtree ACLs; disjoint writes, stale CAS, reviewed publication, source-grant revocation and attribution passed. The temporary member was removed, logged out and banned; grants were revoked and history retained. `TWO-MEMBER-ONE-AGENT-PATH-PROOF.json`. |
 | Step 0: organization substrate | Versioned organization, responsibility, project, measure, lifecycle and scope SQL passed migration tests. Actual reviewed member commands created and retired responsibility definitions; an actual hire produced the native first-run. Formation research, workers and later projections retain their contract placement in Orders 5–10. |
 | Step 1: model loop and mouth | Native human execution, grounded reads, explicit no-change completion, live mutations and canonical send publication passed. Room execution preserves silence and bounded sends. Missing optional telemetry is identified in each proof; exact native output hashes establish the stated boundary outcomes. |
-| Steps 1 and 3: usage-limit notification and handoff | **Open.** The current connection executes successfully on v10. A fresh distinct-account login succeeded, but its v10 execution failed at `model_turn / provider_failed`, with no sends, result, usage signal or handoff. Its Free token metadata conflicts with the founder's expected paid subscription; neither billing state nor the provider failure cause is established. The older failed v9 probe and its revoked temporary binding remain historical. See the fallback login checkpoint above. |
+| Steps 1 and 3: usage-limit notification and handoff | **Open.** The current connection executes successfully on v10. A fresh distinct-account login succeeded, but its v10 execution failed at `model_turn / provider_failed`, with no sends, result, usage signal or handoff. Its email matches the intended Gmail account and its tokens report Free; the founder says that subscription may be unpaid. The failed connection is disabled. Neither billing state nor the provider failure cause is established. The older failed v9 probe and its revoked temporary binding remain historical. See the fallback login and account status checkpoints above. |
 | Steps 1 and 3: handoff capacity | Isolated regressions prove full-candidate skipping, capacity consumed after selection, rejection before lease/history mutation, retry after release, exact replay, unavailable fallback and inactive authorization. Separate rate-limit/outage cases do not hand off. Production readback confirms both checks and unchanged function owners/ACLs. V10: `HANDOFF-CAPACITY-RED-GREEN-PROOF.json`, `HANDOFF-CAPACITY-PRODUCTION-PROOF.json`. |
 | Step 2: input and effect fences | Injected Company File instructions were ignored; unauthorized, stale and revoked effects were denied. Canary capture/use, rotation, reflection withholding, grant/member/secret revocation, restart and encrypted recovery passed. The secret-wide test proves an in-flight fence; it does not claim the denied call began after revocation. |
 | Step 2: nonexposure | Post-v10 scans cover 158 public runtime tables, gateway and orchestrator state, node state and selected release logs, and all 411 Company41 Storage objects. Broker persistent roots and journals retain their historical v9 scan. No connector-credential or unclassified match was found within the declared scopes. Thirteen node matches are classified protected platform credentials. Scope, patterns, hash-based reuse and exclusions: v10 `NONEXPOSURE-V10-SCOPE-MATRIX.json`. |
