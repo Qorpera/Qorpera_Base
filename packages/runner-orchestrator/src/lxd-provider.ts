@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { chmod, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { chmod, mkdir, open, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
 import type {
@@ -29,6 +29,7 @@ const RECOVERY_VOLUME_SCHEMA = "qorpera.native-company-recovery-volume/v1";
 export type LxdProviderPhysicalState =
 	| "creating"
 	| "starting"
+	| "bootstrapping"
 	| "registered"
 	| "assigned"
 	| "stopping"
@@ -309,6 +310,7 @@ function physicalState(value: unknown): LxdProviderPhysicalState {
 	if (
 		value !== "creating" &&
 		value !== "starting" &&
+		value !== "bootstrapping" &&
 		value !== "registered" &&
 		value !== "assigned" &&
 		value !== "stopping" &&
@@ -600,8 +602,10 @@ export class HttpLxdGuestTransport implements LxdGuestTransport {
 		const deadline = Date.now() + timeoutMs;
 		while (Date.now() < deadline) {
 			if (signal?.aborted) throw signal.reason;
+			let poweredOff = false;
 			try {
 				const state = await this.#lxd.getInstanceState(project, instanceName, signal);
+				poweredOff = state.status === "Stopped";
 				const address = ipv4(state, networkInterface);
 				if (state.status === "Running" && address) {
 					const response = await this.#fetch(`http://${address}:${port}/healthz`, {
@@ -615,6 +619,7 @@ export class HttpLxdGuestTransport implements LxdGuestTransport {
 				if (signal?.aborted) throw signal.reason;
 				if (!(error instanceof Error)) throw error;
 			}
+			if (poweredOff) throw new Error("LXD guest powered off before activating its private assignment inbox");
 			await new Promise((resolveWait) => setTimeout(resolveWait, 250));
 		}
 		throw new Error("LXD guest did not activate its private assignment inbox");
@@ -720,7 +725,11 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 					throw new Error("LXD provider acquisition id is bound to another immutable work request");
 				}
 				this.#validateCredentialHashes(current, credentials);
-				if (current.physicalState === "stopped" || current.physicalState === "lost") {
+				if (
+					current.physicalState === "stopping" ||
+					current.physicalState === "stopped" ||
+					current.physicalState === "lost"
+				) {
 					throw new Error(`LXD provider acquisition is ${current.physicalState} and cannot be replayed`);
 				}
 				current = await this.#ensureReady(current, credentials, signal);
@@ -868,6 +877,14 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		await this.#lxd.deleteInstance(current.lxd.project, current.instanceName, signal);
 	}
 
+	async #retirePoweredOff(current: LxdProviderJournal, signal?: AbortSignal): Promise<void> {
+		const stopReason =
+			current.physicalState === "registered" || current.physicalState === "assigned" ? "idle" : "delivery_failed";
+		await this.#writeJournal({ ...current, physicalState: "stopping", stopReason });
+		await this.#retire(current, "Stopped", signal);
+		await this.#writeJournal({ ...current, physicalState: "stopped", stopReason });
+	}
+
 	async #ensureReady(
 		current: LxdProviderJournal,
 		credentials: ProviderCredentials,
@@ -879,7 +896,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		await this.#ensureRecoveryVolume(current, signal);
 		let instance = await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal);
 		if (!instance) {
-			if (current.physicalState !== "creating" && current.physicalState !== "starting") {
+			if (current.physicalState !== "creating") {
 				const lost = { ...current, physicalState: "lost" as const };
 				await this.#writeJournal(lost);
 				throw new Error("Journaled LXD guest is missing");
@@ -893,13 +910,49 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			if (!instance) throw new Error("LXD did not persist the created guest");
 		}
 		this.#assertInstanceAuthority(current, instance);
-		if (instance.status !== "Running") {
-			current = { ...current, physicalState: "starting" };
-			await this.#writeJournal(current);
-			await this.#lxd.setInstancePower(current.lxd.project, current.instanceName, "start", signal);
+		if (instance.status === "Stopped" && current.physicalState !== "creating") {
+			await this.#retirePoweredOff(current, signal);
+			throw new Error("LXD provider acquisition has powered off and cannot be replayed");
 		}
-		await this.#installBootstrap(current, credentials, signal);
-		const address = await this.#readyAddress(current, signal);
+		let address: string;
+		try {
+			if (instance.status !== "Running") {
+				if (instance.status !== "Stopped") throw new Error("LXD guest is unavailable for startup");
+				current = { ...current, physicalState: "starting" };
+				await this.#writeJournal(current);
+				await this.#lxd.setInstancePower(current.lxd.project, current.instanceName, "start", signal);
+			}
+			if (current.physicalState === "creating" || current.physicalState === "starting") {
+				await this.#prepareBootstrap(current, credentials, signal);
+				// Record the one-shot activation intent before invoking systemd. After
+				// a provider crash, observe readiness without starting the unit again.
+				current = { ...current, physicalState: "bootstrapping" };
+				await this.#writeJournal(current);
+				await this.#lxd.execInstance(
+					current.lxd.project,
+					current.instanceName,
+					[
+						"/usr/bin/systemctl",
+						"enable",
+						"--now",
+						this.#config.guestBootstrapService ?? "qorpera-lxd-runner-bootstrap.service",
+					],
+					signal,
+				);
+			}
+			address = await this.#readyAddress(current, signal);
+		} catch (error) {
+			if (
+				current.physicalState === "creating" ||
+				current.physicalState === "starting" ||
+				current.physicalState === "bootstrapping"
+			) {
+				// The caller may already have cancelled. Persist cleanup without its
+				// signal so reconciliation cannot revive the failed acquisition.
+				await this.#writeJournal({ ...current, physicalState: "stopping", stopReason: "delivery_failed" });
+			}
+			throw error;
+		}
 		current = {
 			...current,
 			physicalState: current.physicalState === "assigned" ? "assigned" : "registered",
@@ -1153,7 +1206,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		];
 	}
 
-	async #installBootstrap(
+	async #prepareBootstrap(
 		journal: LxdProviderJournal,
 		credentials: ProviderCredentials,
 		signal?: AbortSignal,
@@ -1173,17 +1226,6 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				signal,
 			);
 		}
-		await this.#lxd.execInstance(
-			journal.lxd.project,
-			journal.instanceName,
-			[
-				"/usr/bin/systemctl",
-				"enable",
-				"--now",
-				this.#config.guestBootstrapService ?? "qorpera-lxd-runner-bootstrap.service",
-			],
-			signal,
-		);
 	}
 
 	async #waitForGuestAgent(journal: LxdProviderJournal, signal?: AbortSignal): Promise<void> {
@@ -1279,40 +1321,25 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			await this.#writeJournal({ ...current, physicalState: "stopped" });
 			return;
 		}
-		if (
-			instance.status === "Stopped" &&
-			(current.physicalState === "registered" || current.physicalState === "assigned")
-		) {
-			// The guest powers itself off once its one-run runner unit has exited
-			// (ExecStopPost in the runner unit); a powered-off registered or
-			// assigned guest is therefore finished, never mid-run.
-			await this.#writeJournal({ ...current, physicalState: "stopping", stopReason: "idle" });
-			await this.#retire(current, instance.status, signal);
-			await this.#writeJournal({ ...current, physicalState: "stopped", stopReason: "idle" });
+		if (instance.status === "Stopped" && current.physicalState !== "creating") {
+			// Only a guest with no start intent can be started. A one-run guest
+			// that powered off before registration has still used its one attempt.
+			await this.#retirePoweredOff(current, signal);
 			return;
 		}
 		if (
-			instance.status === "Stopped" &&
-			(current.physicalState === "creating" || current.physicalState === "starting")
+			current.physicalState === "creating" ||
+			current.physicalState === "starting" ||
+			current.physicalState === "bootstrapping"
 		) {
-			await this.#lxd.setInstancePower(current.lxd.project, current.instanceName, "start", signal);
 			const credentials = await this.#credentials(current.acquisitionId);
 			this.#validateCredentialHashes(current, credentials);
-			await this.#installBootstrap(current, credentials, signal);
-			const address = await this.#readyAddress(current, signal);
-			await this.#writeJournal({ ...current, physicalState: "registered", guestAddress: address });
+			await this.#ensureReady(current, credentials, signal);
 			return;
 		}
 		if (instance.status !== "Running") {
 			await this.#writeJournal({ ...current, physicalState: "lost" });
 			return;
-		}
-		if (current.physicalState === "creating" || current.physicalState === "starting") {
-			const credentials = await this.#credentials(current.acquisitionId);
-			this.#validateCredentialHashes(current, credentials);
-			await this.#installBootstrap(current, credentials, signal);
-			const address = await this.#readyAddress(current, signal);
-			await this.#writeJournal({ ...current, physicalState: "registered", guestAddress: address });
 		}
 	}
 
@@ -1498,13 +1525,21 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		const updated: LxdProviderJournal = { ...journal, updatedAt: new Date().toISOString() };
 		const path = this.#journalPath(journal.acquisitionId);
 		const temporary = join(root, `.journal-${process.pid}-${randomUUID()}.tmp`);
-		await writeFile(temporary, `${JSON.stringify(updated, null, 2)}\n`, {
-			encoding: "utf-8",
-			flag: "wx",
-			mode: 0o600,
-		});
+		const file = await open(temporary, "wx", 0o600);
+		try {
+			await file.writeFile(`${JSON.stringify(updated, null, 2)}\n`, "utf-8");
+			await file.sync();
+		} finally {
+			await file.close();
+		}
 		await rename(temporary, path);
 		await chmod(path, 0o600);
+		const directory = await open(root, "r");
+		try {
+			await directory.sync();
+		} finally {
+			await directory.close();
+		}
 	}
 
 	async #findJournalByRunner(runnerId: string): Promise<LxdProviderJournal | undefined> {

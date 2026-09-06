@@ -424,7 +424,8 @@ describe("LXD cloud runner provider", () => {
 		expect(lxd.createCalls).toHaveLength(1);
 		expect(requests).toHaveLength(1);
 		expect(lxd.createVolumeCalls).toHaveLength(1);
-		expect(lxd.filePushes).toHaveLength(14);
+		expect(lxd.filePushes).toHaveLength(7);
+		expect(lxd.execCalls).toHaveLength(2);
 
 		await restarted.deliver(runner, delivery(request));
 		expect(guest.deliveries).toHaveLength(1);
@@ -464,6 +465,40 @@ describe("LXD cloud runner provider", () => {
 		await expect(backend.acquire(runId, request, new AbortController().signal)).rejects.toThrow("cannot be replayed");
 	});
 
+	it("retires a guest that exits during startup without restarting its runner", async () => {
+		const stateRoot = join(await root(), "state");
+		const lxd = new FakeLxd();
+		const guest = new FakeGuest();
+		const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+		const fetchImplementation = fetchProvisioner(requests);
+		const providerConfig = governedConfig(stateRoot);
+		const backend = new LxdCloudRunnerProviderBackend(providerConfig, lxd, guest, fetchImplementation);
+		vi.spyOn(guest, "waitReady").mockImplementationOnce(async () => {
+			if (!lxd.instance) throw new Error("expected starting guest");
+			lxd.instance = { ...lxd.instance, status: "Stopped", statusCode: 102 };
+			throw new Error("runner exited during startup");
+		});
+
+		await expect(backend.acquire(runId, work(), new AbortController().signal)).rejects.toThrow(
+			"runner exited during startup",
+		);
+		const restarted = new LxdCloudRunnerProviderBackend(providerConfig, lxd, guest, fetchImplementation);
+		await restarted.reconcile();
+
+		expect(lxd.powerCalls).toEqual(["start"]);
+		expect(lxd.deleteCalls).toEqual([lxd.createCalls[0]?.name]);
+		expect(lxd.instance).toBeUndefined();
+		expect(lxd.volumes.size).toBe(2);
+		expect(JSON.parse(await readFile(join(stateRoot, runId, "journal.json"), "utf-8"))).toMatchObject({
+			physicalState: "stopped",
+			stopReason: "delivery_failed",
+		});
+		await expect(restarted.acquire(runId, work(), new AbortController().signal)).rejects.toThrow(
+			"cannot be replayed",
+		);
+		expect(requests).toHaveLength(1);
+	});
+
 	it("removes a guest an earlier build left behind under a stopped journal", async () => {
 		const { stateRoot, lxd, guest, fetchImplementation, journalPath } = await acquiredFixture();
 		await lxd.setInstancePower("qorpera-runners", lxd.createCalls[0]?.name ?? "", "stop");
@@ -473,6 +508,147 @@ describe("LXD cloud runner provider", () => {
 		await backend.reconcile();
 		expect(lxd.deleteCalls).toEqual([lxd.createCalls[0]?.name]);
 		expect(await lxd.getInstance("qorpera-runners", lxd.createCalls[0]?.name ?? "")).toBeUndefined();
+	});
+
+	it.each(["starting", "bootstrapping"])("retires a stopped guest after interruption in %s", async (physicalState) => {
+		const { stateRoot, lxd, guest, fetchImplementation, journalPath } = await acquiredFixture();
+		const journal = JSON.parse(await readFile(journalPath, "utf-8"));
+		await writeFile(journalPath, JSON.stringify({ ...journal, physicalState, guestAddress: undefined }));
+		if (!lxd.instance) throw new Error("expected interrupted guest");
+		lxd.instance = { ...lxd.instance, status: "Stopped", statusCode: 102 };
+		const restarted = new LxdCloudRunnerProviderBackend(config(stateRoot), lxd, guest, fetchImplementation);
+
+		await restarted.reconcile();
+
+		expect(lxd.powerCalls).toEqual(["start"]);
+		expect(lxd.deleteCalls).toEqual([lxd.createCalls[0]?.name]);
+		expect(JSON.parse(await readFile(journalPath, "utf-8"))).toMatchObject({
+			physicalState: "stopped",
+			stopReason: "delivery_failed",
+		});
+	});
+
+	it("observes an interrupted bootstrap without invoking the runner unit a second time", async () => {
+		const stateRoot = join(await root(), "state");
+		const journalPath = join(stateRoot, runId, "journal.json");
+		const lxd = new FakeLxd();
+		const guest = new FakeGuest();
+		const fetchImplementation = fetchProvisioner([]);
+		const providerConfig = governedConfig(stateRoot);
+		const backend = new LxdCloudRunnerProviderBackend(providerConfig, lxd, guest, fetchImplementation);
+		let interruptedJournal = "";
+		vi.spyOn(guest, "waitReady").mockImplementationOnce(async () => {
+			interruptedJournal = await readFile(journalPath, "utf-8");
+			throw new Error("simulated provider interruption");
+		});
+		await expect(backend.acquire(runId, work(), new AbortController().signal)).rejects.toThrow(
+			"simulated provider interruption",
+		);
+		expect(JSON.parse(interruptedJournal)).toMatchObject({ physicalState: "bootstrapping" });
+		// Restore the durable snapshot a killed provider would leave before its
+		// rejection handler could persist cleanup. The running guest is unchanged.
+		await writeFile(journalPath, interruptedJournal);
+		const commandsBefore = structuredClone(lxd.execCalls);
+		const restarted = new LxdCloudRunnerProviderBackend(providerConfig, lxd, guest, fetchImplementation);
+
+		await restarted.reconcile();
+
+		expect(lxd.execCalls).toEqual(commandsBefore);
+		expect(lxd.powerCalls).toEqual(["start"]);
+		expect(JSON.parse(await readFile(journalPath, "utf-8"))).toMatchObject({ physicalState: "registered" });
+	});
+
+	it.each(["starting", "bootstrapping"])(
+		"does not recreate a missing guest after its %s intent",
+		async (physicalState) => {
+			const { stateRoot, lxd, guest, fetchImplementation, request, journalPath } = await acquiredFixture();
+			const journal = JSON.parse(await readFile(journalPath, "utf-8"));
+			await writeFile(journalPath, JSON.stringify({ ...journal, physicalState }));
+			lxd.instance = undefined;
+			const restarted = new LxdCloudRunnerProviderBackend(config(stateRoot), lxd, guest, fetchImplementation);
+
+			await expect(restarted.acquire(runId, request, new AbortController().signal)).rejects.toThrow(
+				"Journaled LXD guest is missing",
+			);
+
+			expect(lxd.createCalls).toHaveLength(1);
+			expect(lxd.powerCalls).toEqual(["start"]);
+			expect(JSON.parse(await readFile(journalPath, "utf-8"))).toMatchObject({ physicalState: "lost" });
+		},
+	);
+
+	it("resumes a newly created guest that has no start intent", async () => {
+		const stateRoot = join(await root(), "state");
+		const journalPath = join(stateRoot, runId, "journal.json");
+		const lxd = new FakeLxd();
+		const guest = new FakeGuest();
+		const fetchImplementation = fetchProvisioner([]);
+		const providerConfig = governedConfig(stateRoot);
+		const backend = new LxdCloudRunnerProviderBackend(providerConfig, lxd, guest, fetchImplementation);
+		// A crash after LXD persists creation but before its response reaches the
+		// provider leaves a creating journal and a guest that has never started.
+		const createInstance = lxd.createInstance.bind(lxd);
+		vi.spyOn(lxd, "createInstance").mockImplementationOnce(async (project, request) => {
+			await createInstance(project, request);
+			throw new Error("creation response lost");
+		});
+		await expect(backend.acquire(runId, work(), new AbortController().signal)).rejects.toThrow(
+			"creation response lost",
+		);
+		expect(lxd.powerCalls).toEqual([]);
+		expect(JSON.parse(await readFile(journalPath, "utf-8"))).toMatchObject({ physicalState: "creating" });
+		const restarted = new LxdCloudRunnerProviderBackend(providerConfig, lxd, guest, fetchImplementation);
+
+		await restarted.reconcile();
+
+		expect(lxd.createCalls).toHaveLength(1);
+		expect(lxd.powerCalls).toEqual(["start"]);
+		expect(JSON.parse(await readFile(journalPath, "utf-8"))).toMatchObject({ physicalState: "registered" });
+	});
+
+	it("finishes cancelled startup cleanup after a deletion failure and refuses acquisition replay", async () => {
+		const stateRoot = join(await root(), "state");
+		const journalPath = join(stateRoot, runId, "journal.json");
+		const lxd = new FakeLxd();
+		const guest = new FakeGuest();
+		const fetchImplementation = fetchProvisioner([]);
+		const providerConfig = governedConfig(stateRoot);
+		const backend = new LxdCloudRunnerProviderBackend(providerConfig, lxd, guest, fetchImplementation);
+		const controller = new AbortController();
+		vi.spyOn(guest, "waitReady").mockImplementationOnce(async () => {
+			controller.abort(new Error("acquisition cancelled"));
+			throw controller.signal.reason;
+		});
+		await expect(backend.acquire(runId, work(), controller.signal)).rejects.toThrow("acquisition cancelled");
+		expect(JSON.parse(await readFile(journalPath, "utf-8"))).toMatchObject({ physicalState: "stopping" });
+		vi.spyOn(lxd, "deleteInstance").mockRejectedValueOnce(new Error("deletion response failed"));
+		await expect(backend.reconcile()).rejects.toThrow("deletion response failed");
+		await expect(backend.acquire(runId, work(), new AbortController().signal)).rejects.toThrow("cannot be replayed");
+		const restarted = new LxdCloudRunnerProviderBackend(providerConfig, lxd, guest, fetchImplementation);
+
+		await restarted.reconcile();
+
+		expect(lxd.powerCalls).toEqual(["start", "stop"]);
+		expect(lxd.deleteCalls).toEqual([lxd.createCalls[0]?.name]);
+		expect(lxd.volumes.size).toBe(2);
+		expect(JSON.parse(await readFile(journalPath, "utf-8"))).toMatchObject({
+			physicalState: "stopped",
+			stopReason: "delivery_failed",
+		});
+	});
+
+	it("does not revive a registered guest when acquisition is retried after poweroff", async () => {
+		const { stateRoot, lxd, guest, fetchImplementation, request } = await acquiredFixture();
+		if (!lxd.instance) throw new Error("expected registered guest");
+		lxd.instance = { ...lxd.instance, status: "Stopped", statusCode: 102 };
+		const restarted = new LxdCloudRunnerProviderBackend(config(stateRoot), lxd, guest, fetchImplementation);
+
+		await expect(restarted.acquire(runId, request, new AbortController().signal)).rejects.toThrow(
+			"cannot be replayed",
+		);
+
+		expect(lxd.powerCalls).toEqual(["start"]);
+		expect(lxd.deleteCalls).toEqual([lxd.createCalls[0]?.name]);
 	});
 
 	it("keeps proposal reviews isolated from the live Company File device", async () => {
@@ -855,6 +1031,20 @@ describe("LXD cloud runner provider", () => {
 		expect(() => new LxdCloudRunnerProviderBackend({ ...settings, supabaseUrl }, new FakeLxd())).toThrow(
 			"exact HTTPS control-plane origin",
 		);
+	});
+
+	it("reports a powered-off startup guest without waiting for the readiness deadline", async () => {
+		const lxd = new FakeLxd();
+		const state = vi.spyOn(lxd, "getInstanceState");
+		const fetcher = vi.fn<typeof fetch>();
+		const transport = new HttpLxdGuestTransport(lxd, fetcher);
+
+		await expect(transport.waitReady("qorpera-runners", "guest", "enp5s0", 8082, 300_000)).rejects.toThrow(
+			"powered off before activating",
+		);
+
+		expect(state).toHaveBeenCalledTimes(1);
+		expect(fetcher).not.toHaveBeenCalled();
 	});
 
 	it("pins guest transport destinations, refuses redirects, and cancels unused response bodies", async () => {
