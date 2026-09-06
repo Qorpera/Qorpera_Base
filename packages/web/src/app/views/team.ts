@@ -1,7 +1,7 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
 import type { HostedFriend, HostedProfileRole } from "../../cloud/types.ts";
-import { button, confirmDialog, h, initials, notice, replace, spinner } from "../../ui/dom.ts";
+import { button, confirmDialog, h, notice, personAvatar, replace, spinner } from "../../ui/dom.ts";
 import { preserveFormDrafts } from "../../ui/forms.ts";
 import type { CompanyController } from "../company.ts";
 
@@ -92,7 +92,7 @@ export function renderTeam(
 				h(
 					"div",
 					{ class: "company-person", title: `${member.email} · ${member.role}` },
-					h("span", { class: "person-avatar", "aria-hidden": "true" }, initials(member.displayName)),
+					personAvatar(member.displayName, member.userId),
 					h(
 						"div",
 						{ class: "settings-copy" },
@@ -134,7 +134,7 @@ export function renderTeam(
 				h(
 					"div",
 					{ class: "company-person", title: invitation.delivery?.lastError ?? invitation.role },
-					h("span", { class: "person-avatar", "aria-hidden": "true" }, initials(invitation.email)),
+					personAvatar(invitation.email, invitation.email),
 					h(
 						"div",
 						{ class: "settings-copy" },
@@ -193,20 +193,60 @@ export function renderTeam(
 					!team.members.some((member) => member.userId === friend.userId) &&
 					!team.invitations.some((invitation) => invitation.email.toLowerCase() === friend.email.toLowerCase()),
 			);
-			const invitee = options.friends
-				? h(
-						"select",
-						{ "aria-label": "Friend to invite", required: true, "data-draft": "invite-email" },
-						h("option", { value: "" }, "Choose a friend"),
-						...(choices ?? []).map((friend) => h("option", { value: friend.email }, friend.displayName)),
-					)
-				: h("input", {
-						type: "email",
-						placeholder: "Friend’s email",
-						"aria-label": "Friend’s email",
-						required: true,
-						"data-draft": "invite-email",
-					});
+			const invitee = h("input", {
+				type: "email",
+				placeholder: "Friend’s email",
+				"aria-label": "Friend’s email",
+				required: true,
+				"data-draft": "invite-email",
+			});
+			const search = h("input", {
+				type: "search",
+				placeholder: "Search friends",
+				"aria-label": "Search friends to invite",
+				"data-draft": "invite-search",
+			});
+			const results = h("div", { class: "invite-results", "aria-label": "Friends to invite" });
+			const drawFriends = () => {
+				const query = search.value.trim().toLowerCase();
+				const matching = choices?.filter((friend) =>
+					`${friend.displayName} ${friend.email}`.toLowerCase().includes(query),
+				);
+				replace(
+					results,
+					...(matching ?? []).map((friend) =>
+						h(
+							"button",
+							{
+								type: "button",
+								class: "invite-friend",
+								onclick: () => {
+									invitee.value = friend.email;
+									invitee.focus();
+								},
+							},
+							personAvatar(friend.displayName, friend.userId),
+							h(
+								"span",
+								{ class: "settings-copy" },
+								h("strong", null, friend.displayName),
+								h("small", null, friend.email),
+							),
+						),
+					),
+					!matching?.length
+						? h(
+								"p",
+								{ class: "muted small" },
+								choices
+									? "No matching friends."
+									: "Your friends could not be loaded. Enter an existing friend’s email below.",
+							)
+						: null,
+				);
+			};
+			search.oninput = drawFriends;
+			queueMicrotask(drawFriends);
 			const role = h(
 				"select",
 				{ "aria-label": "Invitation role", "data-draft": "invite-role" },
@@ -214,32 +254,38 @@ export function renderTeam(
 					h("option", { value, selected: value === "contributor" }, value),
 				),
 			);
-			const submit = h("button", { type: "submit", class: "btn", disabled: choices?.length === 0 }, "Invite");
+			const submit = h("button", { type: "submit", class: "btn" }, "Invite");
 			picker.append(
 				h(
-					"form",
-					{
-						class: "row",
-						onsubmit: (event: Event) => {
-							event.preventDefault();
-							if (!invitee.value || submit.disabled) return;
-							submit.disabled = true;
-							void run(
-								() =>
-									api.inviteMember(
-										profile.profileId,
-										invitee.value,
-										role.value as Exclude<HostedProfileRole, "owner">,
-									),
-								"Invitation created.",
-							);
+					"div",
+					{ class: "invite-picker" },
+					search,
+					results,
+					h(
+						"form",
+						{
+							class: "row",
+							onsubmit: (event: Event) => {
+								event.preventDefault();
+								if (!invitee.value || submit.disabled) return;
+								submit.disabled = true;
+								void run(
+									() =>
+										api.inviteMember(
+											profile.profileId,
+											invitee.value,
+											role.value as Exclude<HostedProfileRole, "owner">,
+										),
+									"Invitation created.",
+								);
+							},
 						},
-					},
-					invitee,
-					role,
-					submit,
+						invitee,
+						role,
+						submit,
+					),
+					h("a", { href: "#/friends" }, "Add a friend"),
 				),
-				h("a", { href: "#/friends" }, "Add a friend"),
 			);
 			content.append(picker);
 		}

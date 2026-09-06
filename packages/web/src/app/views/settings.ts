@@ -1,8 +1,9 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
-import type { HostedFriend, HostedProfile } from "../../cloud/types.ts";
+import type { HostedCompanyFile, HostedFriend, HostedProfile } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
-import { h, notice, replace } from "../../ui/dom.ts";
+import { button, fmtBytes, h, icon, notice, replace } from "../../ui/dom.ts";
+import { uiText } from "../../ui/preferences.ts";
 import type { AuthController } from "../auth.ts";
 import { CompanyController } from "../company.ts";
 import { type AccountViewState, renderAccount } from "./account.ts";
@@ -11,7 +12,11 @@ import { PolicyView } from "./settings-policy.ts";
 import { renderTeam } from "./team.ts";
 
 const TABS = [
-	{ id: "general", label: "General", keywords: "account plan billing feedback companies" },
+	{
+		id: "general",
+		label: "General",
+		keywords: "account plan billing feedback companies appearance theme language region",
+	},
 	{ id: "company", label: "Company", keywords: "people team members invitations staff file organization approvals" },
 	{
 		id: "connections",
@@ -47,6 +52,9 @@ export class SettingsView {
 	#policy: PolicyView | undefined;
 	#friends: HostedFriend[] | undefined;
 	#feedback: { message?: string; error?: string } = {};
+	#file: HostedCompanyFile | undefined;
+	#fileLoading = false;
+	#fileError: string | undefined;
 
 	constructor(
 		api: CloudApi,
@@ -75,7 +83,7 @@ export class SettingsView {
 					"aria-controls": "settings-content",
 					onclick: () => this.#select(tab.id),
 				},
-				tab.label,
+				uiText(tab.label),
 			);
 			this.#tabs.set(tab.id, button);
 			tablist.append(button);
@@ -286,6 +294,9 @@ export class SettingsView {
 		this.#company = company;
 		this.#ownsCompany = owned;
 		this.#feedback = {};
+		this.#file = undefined;
+		this.#fileLoading = false;
+		this.#fileError = undefined;
 		for (const tab of ["company", "connections", "policy"] as const) this.#panels.delete(tab);
 		if (company) {
 			this.#unsubscribe = company.store.subscribe(() => {
@@ -303,6 +314,7 @@ export class SettingsView {
 	#drawCompany(): void {
 		if (this.#lifetime.signal.aborted || !this.#company) return;
 		const company = this.#company;
+		if (this.#tab === "company" && !this.#file && !this.#fileLoading && !this.#fileError) void this.#loadFile();
 		let panel = this.#panels.get("company");
 		if (!panel) {
 			panel = h("div");
@@ -317,13 +329,13 @@ export class SettingsView {
 				team,
 				h(
 					"section",
-					{ class: "settings-group" },
-					h("h2", null, "Staff at work"),
+					{ class: "settings-group settings-staff-group" },
+					h("h2", null, uiText("Staff at work")),
 					h("div", { class: "settings-staff" }),
 				),
+				h("div", { class: "settings-file" }),
 				...(
 					[
-						["file", "Company File", "Browse files, snapshots and proposals"],
 						["organization", "Organization", "Responsibilities, projects and staff"],
 						["approvals", "Approvals", "Review requests that need your decision"],
 					] as const
@@ -331,7 +343,7 @@ export class SettingsView {
 					h(
 						"a",
 						{ class: "settings-card settings-link", href: `#/c/${company.profile.profileId}/${path}` },
-						h("span", { class: "settings-copy" }, h("strong", null, title), h("small", null, detail)),
+						h("span", { class: "settings-copy" }, h("strong", null, uiText(title)), h("small", null, detail)),
 						h("span", { "aria-hidden": "true" }, "›"),
 					),
 				),
@@ -350,10 +362,44 @@ export class SettingsView {
 					h(
 						"a",
 						{ href: `#/c/${company.profile.profileId}/staff/${agent.id}`, title: agent.displayName },
-						agentFigure(agent, agent.displayName, { size: 42 }),
+						agentFigure(agent, agent.displayName, { size: 46 }),
 						h("small", null, agent.displayName),
 					),
 				),
+		);
+		const file = this.#file;
+		replace(
+			panel.querySelector(".settings-file")!,
+			h(
+				"a",
+				{ class: "settings-card settings-file-card", href: `#/c/${company.profile.profileId}/file` },
+				icon("file"),
+				h(
+					"div",
+					{ class: "settings-copy" },
+					h("strong", null, uiText("Company File")),
+					h(
+						"small",
+						null,
+						file
+							? `${fmtBytes(file.storageUsedBytes)} used${file.storageLimitBytes > 0 ? ` of ${fmtBytes(file.storageLimitBytes)}` : ""}`
+							: this.#fileError
+								? "Storage information unavailable"
+								: "Loading storage…",
+					),
+					file && file.storageLimitBytes > 0
+						? h("progress", {
+								max: file.storageLimitBytes,
+								value: Math.min(file.storageUsedBytes, file.storageLimitBytes),
+								"aria-label": "Company storage used",
+							})
+						: null,
+				),
+				icon("chevron"),
+			),
+			this.#fileError
+				? button("Retry storage", () => void this.#loadFile(), { small: true, disabled: this.#fileLoading })
+				: null,
 		);
 		if (staffFocus)
 			[...staffList.querySelectorAll("a")]
@@ -379,5 +425,26 @@ export class SettingsView {
 				},
 			},
 		);
+	}
+
+	async #loadFile(): Promise<void> {
+		const company = this.#company;
+		if (!company || this.#fileLoading) return;
+		const signal = this.#companyLifetime.signal;
+		this.#fileLoading = true;
+		try {
+			const file = await this.#api.getCompanyFile(company.profile.environmentId);
+			if (signal.aborted || this.#lifetime.signal.aborted) return;
+			this.#file = file;
+			this.#fileError = undefined;
+		} catch (error) {
+			if (signal.aborted || this.#lifetime.signal.aborted) return;
+			this.#fileError = describeError(error);
+		} finally {
+			if (!signal.aborted && !this.#lifetime.signal.aborted) {
+				this.#fileLoading = false;
+				this.#drawCompany();
+			}
+		}
 	}
 }

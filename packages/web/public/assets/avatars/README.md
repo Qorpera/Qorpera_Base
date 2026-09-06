@@ -1,20 +1,15 @@
-# Vendored: the approved agent visual system
+# Agent artwork and 2D motion
 
-Copied verbatim from `Qorpera/Qorpera_Website`, `landing/public/avatars`, which
-vendors them from the visual workspace
-(`Qorpera_Base-step2/.artifacts/qorpera-avatar-assets`). Do not edit here.
-Re-copy when the workspace bakes a new revision.
+`index.html` loads `motion-model.js` (the seven characters and their measured
+eye geometry), then `avatar-appearance.js` (the eleven-color palette and the
+existing linear-light recoloring pipeline). These came from
+`Qorpera_Website/landing/public/avatars`. `src/ui/avatar.ts` is the only product
+module that touches their globals.
 
-Load order matters; each reads the globals the previous ones set:
+The product now renders the original artwork through `src/ui/figure-motion.ts`
+and the September 5 Assets Room **2D Motion Studio** sources in `status-2d-v1`.
+The older `vector-*` and `motion-visuals.js` files are retained for the archived
+design prototypes; the product no longer loads them.
 
-1. `motion-model.js` — the roster (Planet, Acorn, Flame, Rocket, Crown, Heart,
-   Ghost), their native colours, origins, body rhythms and eye geometry.
-2. `avatar-appearance.js` — the eleven-colour palette and the linear-light
-   recolouring pipeline.
-3. `motion-visuals.js` — eye poses, the writing form, the creation burst.
-4. `vector-figures.js` — builds one figure from its traced silhouette.
-5. `vector-rig.js` — drives a built figure. The body stands still; the life is
-   in the eyes. Nothing follows the pointer.
-6. `vector-baked.js` — the baked traces, so the client never ships the tracer.
-
-`src/ui/avatar.ts` is the only module that touches these globals.
+The renderer defaults to Idle. Its optional activity is a local presentation
+input, with no runtime subscription, command, or activity-state binding.

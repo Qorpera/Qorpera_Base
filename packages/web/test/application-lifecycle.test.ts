@@ -256,20 +256,20 @@ describe("account and route ownership", () => {
 		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 		await draw();
 		const composer = f.root.querySelector("textarea");
-		f.root.querySelector<HTMLButtonElement>(".mobile-navigation-toggle")!.click();
+		f.root.querySelector<HTMLButtonElement>("main .mobile-navigation-toggle")!.click();
 		await draw();
 		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(true);
 		window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
 		await draw();
 		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(false);
-		expect(document.activeElement).toBe(f.root.querySelector(".mobile-navigation-toggle"));
+		expect(document.activeElement).toBe(f.root.querySelector("main .mobile-navigation-toggle"));
 		expect(f.root.querySelector("textarea")).toBe(composer);
 	});
 
 	it("keeps profile-menu focus through refreshes and closes it before the mobile drawer", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 		await draw();
-		f.root.querySelector<HTMLButtonElement>(".mobile-navigation-toggle")!.click();
+		f.root.querySelector<HTMLButtonElement>("main .mobile-navigation-toggle")!.click();
 		await draw();
 		f.root.querySelector<HTMLButtonElement>(".rail .account-trigger")!.click();
 		const teamLink = '.account-popover [data-account-action="settings"]';
@@ -286,7 +286,7 @@ describe("account and route ownership", () => {
 		document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		await draw();
 		expect(f.root.querySelector("main")?.inert).toBe(false);
-		expect(document.activeElement).toBe(f.root.querySelector(".mobile-navigation-toggle"));
+		expect(document.activeElement).toBe(f.root.querySelector("main .mobile-navigation-toggle"));
 	});
 
 	it("keeps company navigation and sign out available when the profile moves between rail and account pages", async () => {
@@ -321,7 +321,7 @@ describe("account and route ownership", () => {
 	it("restores access to the page when membership is revoked with the mobile drawer open", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 		await draw();
-		f.root.querySelector<HTMLButtonElement>(".mobile-navigation-toggle")!.click();
+		f.root.querySelector<HTMLButtonElement>("main .mobile-navigation-toggle")!.click();
 		await draw();
 		expect(f.root.querySelector("main")?.inert).toBe(true);
 		vi.mocked(f.api.getTeam).mockRejectedValue(

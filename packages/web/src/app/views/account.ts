@@ -10,6 +10,7 @@ import {
 import type { HostedAccountEntitlement } from "../../cloud/types.ts";
 import { button, fmtBytes, h, notice, replace } from "../../ui/dom.ts";
 import { clearSubmittedDraft, preserveFormDrafts } from "../../ui/forms.ts";
+import { languagePreference, setLanguagePreference, uiText } from "../../ui/preferences.ts";
 import { type AuthController, displayName } from "../auth.ts";
 
 export interface AccountViewState {
@@ -30,6 +31,7 @@ export function renderAccount(
 	const user = auth.store.get().user;
 	const owner = `account:${user?.id}`;
 	const restoreDrafts = preserveFormDrafts(container, owner);
+	const feedbackOpen = container.querySelector<HTMLDetailsElement>(".settings-feedback")?.open ?? false;
 	const override = readCloudConfigOverride();
 	const projectInput = h("input", {
 		type: "url",
@@ -62,18 +64,46 @@ export function renderAccount(
 		"data-draft": "feedback-details",
 		"aria-label": "Feedback details",
 	});
+	const language = h(
+		"select",
+		{ "aria-label": "Language" },
+		h("option", { value: "system" }, "System default"),
+		h("option", { value: "en" }, "English"),
+		h("option", { value: "da" }, "Dansk"),
+	);
+	language.value = languagePreference();
+	language.onchange = () => {
+		if (!setLanguagePreference(language.value)) {
+			language.value = languagePreference();
+			setState({ error: "Your browser could not save the language preference." });
+		}
+	};
+	const entitlement = state.entitlement;
+	const planName = entitlement
+		? ({ internal: "Complimentary", freemium: "Freemium", pro: "Pro", team: "Team" }[entitlement.planKey] ??
+			entitlement.planKey.replaceAll("_", " "))
+		: state.loaded
+			? "Plan unavailable"
+			: "Loading…";
+	const planDetail = entitlement
+		? entitlement.storageAllocationBytes !== undefined
+			? `${fmtBytes(entitlement.storageAllocationBytes)} company storage included`
+			: entitlement.planKey === "internal"
+				? "No active subscription"
+				: "Storage allocation unavailable"
+		: "";
 	replace(
 		container,
 		h(
 			"section",
 			{ class: "page account", "data-form-owner": owner },
-			h("h1", null, "General"),
+			h("h1", null, uiText("General")),
 			state.error ? notice("danger", state.error) : null,
 			state.message ? notice("ok", state.message) : null,
 			h(
 				"section",
 				{ class: "settings-group" },
-				h("h2", null, "Account"),
+				h("h2", null, uiText("Account")),
 				h(
 					"div",
 					{ class: "settings-card" },
@@ -83,74 +113,93 @@ export function renderAccount(
 						h("strong", null, user?.email || displayName(user)),
 						h("small", null, `Signed in with ${user?.app_metadata?.provider ?? "email"}`),
 					),
-					button("Sign out", () => void auth.signOut()),
+					button(uiText("Sign out"), () => void auth.signOut()),
 				),
 			),
 			h(
 				"section",
 				{ class: "settings-group" },
-				h("h2", null, "Plan & billing"),
+				h("h2", null, uiText("Plan & billing")),
 				h(
 					"div",
 					{ class: "settings-card settings-plan" },
 					h(
 						"div",
 						{ class: "settings-copy" },
-						h("small", { class: "settings-eyebrow" }, "Current plan"),
-						h("strong", null, state.entitlement?.planKey ?? (state.loaded ? "Plan unavailable" : "Loading…")),
-						state.entitlement
-							? h(
-									"small",
-									null,
-									state.entitlement.billingMode,
-									" · ",
-									state.entitlement.featureSet,
-									" · ",
-									state.entitlement.storageAllocationBytes !== undefined
-										? fmtBytes(state.entitlement.storageAllocationBytes)
-										: state.entitlement.storageAllocation,
-									" storage",
-								)
-							: null,
+						h("small", { class: "settings-eyebrow" }, uiText("Current plan")),
+						h("strong", null, planName),
+						planDetail ? h("small", null, planDetail) : null,
 					),
 				),
 			),
 			h(
 				"section",
 				{ class: "settings-group" },
-				h("h2", null, "Companies"),
+				h("h2", null, uiText("Appearance")),
+				h(
+					"label",
+					{ class: "settings-preference-row" },
+					uiText("Theme"),
+					h("select", { "aria-label": "Theme" }, h("option", { value: "light" }, "Light")),
+				),
+			),
+			h(
+				"section",
+				{ class: "settings-group" },
+				h("h2", null, uiText("Language & region")),
+				h(
+					"label",
+					{ class: "settings-preference-row" },
+					h(
+						"span",
+						{ class: "settings-copy" },
+						uiText("Language"),
+						h("small", null, uiText("System default follows your browser’s language.")),
+					),
+					language,
+				),
+				h("p", { class: "settings-help" }, uiText("Some screens are still shown in English.")),
+			),
+			h(
+				"section",
+				{ class: "settings-group" },
+				h("h2", null, uiText("Companies")),
 				h(
 					"a",
 					{ class: "settings-card settings-link", href: "#/" },
 					h(
 						"span",
 						{ class: "settings-copy" },
-						h("strong", null, "All companies"),
-						h("small", null, "Open or create a company"),
+						h("strong", null, uiText("All companies")),
+						h("small", null, uiText("Open or create a company")),
 					),
 					h("span", { "aria-hidden": "true" }, "›"),
 				),
 			),
-			h("h2", null, "Feedback"),
 			h(
-				"form",
-				{
-					class: "stack",
-					onsubmit: (event: Event) => {
-						event.preventDefault();
-						const submitted = feedbackDetails.value;
-						void api
-							.submitFeedback(crypto.randomUUID(), feedbackCategory.value, feedbackDetails.value.trim())
-							.then(() => {
-								clearSubmittedDraft(container, owner, "feedback-details", submitted);
-								setState({ message: "Your feedback reached the cloud.", error: undefined });
-							})
-							.catch((error) => setState({ error: describeError(error) }));
+				"details",
+				{ class: "settings-feedback", open: feedbackOpen },
+				h("summary", null, uiText("Share feedback")),
+				h(
+					"form",
+					{
+						class: "stack",
+						onsubmit: (event: Event) => {
+							event.preventDefault();
+							const submitted = feedbackDetails.value;
+							void api
+								.submitFeedback(crypto.randomUUID(), feedbackCategory.value, feedbackDetails.value.trim())
+								.then(() => {
+									clearSubmittedDraft(container, owner, "feedback-details", submitted);
+									setState({ message: "Your feedback reached the cloud.", error: undefined });
+								})
+								.catch((error) => setState({ error: describeError(error) }));
+						},
 					},
-				},
-				h("div", { class: "row" }, feedbackCategory),
-				feedbackDetails,
-				h("div", { class: "row" }, h("button", { type: "submit", class: "btn" }, "Send feedback")),
+					h("div", { class: "row" }, feedbackCategory),
+					feedbackDetails,
+					h("div", { class: "row" }, h("button", { type: "submit", class: "btn" }, uiText("Send feedback"))),
+				),
 			),
 			h(
 				"details",

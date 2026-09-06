@@ -1,12 +1,12 @@
 import type { HostedStaffAgent } from "../cloud/types.ts";
+import { type Activity, type FigureArtwork, type FigureMotion, mountFigureMotion } from "./figure-motion.ts";
 
 /* Agent figures: the approved visual system, vendored under
  * `public/assets/avatars` and loaded by `index.html` before this bundle. This
  * module is the only place that touches those globals.
  *
- * A figure is built from its baked trace and driven by the shared rig with
- * part motion 0: the body stands still and the life is in its eyes. Nothing
- * follows the pointer, on any surface. */
+ * Original artwork uses the Assets Room's 2D Motion Studio. Activity is a
+ * presentation option only; the shell defaults to Idle. */
 
 interface MotionAvatar {
 	id: string;
@@ -14,34 +14,17 @@ interface MotionAvatar {
 	color: string;
 	origin: string;
 }
-interface VectorRig {
-	update(next: { state?: string; size?: number; motion?: number }): void;
-	dispose(): void;
-}
 interface AvatarGlobals {
-	QORPERA_MOTION_MODEL: { avatars: MotionAvatar[] };
-	QORPERA_AVATAR_APPEARANCE: { palette: { name: string; color: string }[] };
-	QORPERA_VECTOR_FIGURES: {
-		build(id: string, trace: unknown, options: { color?: string }): HTMLElement;
-	};
-	QORPERA_VECTOR_RIG: {
-		mount(
-			host: HTMLElement,
-			options: { state?: string; size?: number; interactive?: boolean; motion?: number },
-		): VectorRig;
-	};
-	QORPERA_VECTOR_BAKED: { figures: Record<string, unknown> };
+	QORPERA_MOTION_MODEL: { avatars: MotionAvatar[]; faces: FigureArtwork["faces"] };
+	QORPERA_AVATAR_APPEARANCE: { palette: { name: string; color: string }[] } & Pick<
+		FigureArtwork,
+		"prepare" | "drawable"
+	>;
 }
 
 function globals(): AvatarGlobals | undefined {
 	const scope = window as unknown as Partial<AvatarGlobals>;
-	if (
-		!scope.QORPERA_MOTION_MODEL ||
-		!scope.QORPERA_AVATAR_APPEARANCE ||
-		!scope.QORPERA_VECTOR_FIGURES ||
-		!scope.QORPERA_VECTOR_RIG ||
-		!scope.QORPERA_VECTOR_BAKED
-	) {
+	if (!scope.QORPERA_MOTION_MODEL || !scope.QORPERA_AVATAR_APPEARANCE) {
 		return undefined;
 	}
 	return scope as AvatarGlobals;
@@ -140,7 +123,7 @@ export function colorFor(
  * removed rigs are disposed even if no later figure is mounted. */
 interface LiveFigure {
 	host: HTMLElement;
-	rig: VectorRig;
+	rig: FigureMotion;
 }
 const live = new Set<LiveFigure>();
 let observer: MutationObserver | undefined;
@@ -158,10 +141,14 @@ function sweep(): void {
 }
 
 export interface FigureOptions {
-	/** Rendered size in pixels; the rig scales its amplitudes by it. */
+	/** Initial rendered size; resizing is tracked from the actual element. */
 	size?: number;
-	/** A still figure: built and coloured, but no rig and so no eye motion. */
+	/** A settled pose with no animation. */
 	still?: boolean;
+	activity?: Activity;
+	/** The app's white silhouette and blue eyes for selected sidebar cards. */
+	selected?: boolean;
+	identity?: string;
 	className?: string;
 }
 
@@ -172,26 +159,27 @@ export function figureElement(figure: FigureId, color?: string, options: FigureO
 	const host = document.createElement("span");
 	host.className = ["figure", options.className].filter(Boolean).join(" ");
 	host.setAttribute("aria-hidden", "true");
-	const trace = scope?.QORPERA_VECTOR_BAKED.figures[figure];
-	if (!scope || !trace) return host;
-	const built = scope.QORPERA_VECTOR_FIGURES.build(figure, trace, { color: color ?? nativeColor(figure) });
-	host.append(built);
-	if (!options.still) {
-		const rig = scope.QORPERA_VECTOR_RIG.mount(built, {
-			state: "working",
-			size: options.size ?? 36,
-			interactive: false,
-			motion: 0,
-		});
-		live.add({ host, rig });
-		// Views insert their newly built figures synchronously. Sweep after the
-		// DOM commit, never halfway through constructing another view.
-		if (!observer) {
-			observer = new MutationObserver(sweep);
-			observer.observe(document.documentElement, { childList: true, subtree: true });
-		}
-		queueMicrotask(sweep);
+	if (options.size) host.style.setProperty("--figure-size", `${options.size}px`);
+	if (!scope) return host;
+	const rig = mountFigureMotion(
+		host,
+		figure,
+		color ?? nativeColor(figure),
+		{
+			faces: scope.QORPERA_MOTION_MODEL.faces,
+			prepare: scope.QORPERA_AVATAR_APPEARANCE.prepare,
+			drawable: scope.QORPERA_AVATAR_APPEARANCE.drawable,
+		},
+		options,
+	);
+	live.add({ host, rig });
+	// Views insert their newly built figures synchronously. Sweep after the
+	// DOM commit, never halfway through constructing another view.
+	if (!observer) {
+		observer = new MutationObserver(sweep);
+		observer.observe(document.documentElement, { childList: true, subtree: true });
 	}
+	queueMicrotask(sweep);
 	return host;
 }
 
@@ -207,5 +195,5 @@ export function agentFigure(
 		appearance: { color: "", shape: "" },
 	};
 	const figure = figureFor(subject);
-	return figureElement(figure, colorFor(subject, figure), options);
+	return figureElement(figure, colorFor(subject, figure), { identity: subject.id || fallbackName, ...options });
 }

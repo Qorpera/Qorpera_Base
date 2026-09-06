@@ -6,6 +6,7 @@ import { ObjectReader } from "../src/cloud/objects.ts";
 import { collectPages } from "../src/cloud/pagination.ts";
 import { probeRpcs } from "../src/cloud/probe.ts";
 import { figureElement } from "../src/ui/avatar.ts";
+import * as figureMotion from "../src/ui/figure-motion.ts";
 import { deferred, fixture, id, profileA, session, settle, timestamp, userA } from "./fixtures.ts";
 
 afterEach(() => {
@@ -126,9 +127,7 @@ describe("cloud boundary regressions", () => {
 		const dispose = vi.fn();
 		vi.stubGlobal("QORPERA_MOTION_MODEL", { avatars: [] });
 		vi.stubGlobal("QORPERA_AVATAR_APPEARANCE", { palette: [] });
-		vi.stubGlobal("QORPERA_VECTOR_BAKED", { figures: { crown: {} } });
-		vi.stubGlobal("QORPERA_VECTOR_FIGURES", { build: () => document.createElement("span") });
-		vi.stubGlobal("QORPERA_VECTOR_RIG", { mount: () => ({ update() {}, dispose }) });
+		vi.spyOn(figureMotion, "mountFigureMotion").mockReturnValue({ dispose });
 		const retained = figureElement("crown");
 		document.body.append(retained);
 		await settle();

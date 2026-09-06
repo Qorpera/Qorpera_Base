@@ -2,6 +2,7 @@
  * Text always goes through textContent, never innerHTML. */
 
 import { figureElement } from "./avatar.ts";
+import { presentationLocale } from "./preferences.ts";
 
 export type Child = Node | string | number | boolean | null | undefined | Child[];
 type Attrs = Record<string, unknown>;
@@ -55,11 +56,11 @@ export function fmtTime(iso: string): string {
 	if (Number.isNaN(date.getTime())) return "";
 	const now = new Date();
 	const sameDay = date.toDateString() === now.toDateString();
-	const time = date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+	const time = date.toLocaleTimeString(presentationLocale(), { hour: "2-digit", minute: "2-digit" });
 	if (sameDay) return time;
 	const sameYear = date.getFullYear() === now.getFullYear();
 	const day = date.toLocaleDateString(
-		undefined,
+		presentationLocale(),
 		sameYear ? { month: "short", day: "numeric" } : { year: "numeric", month: "short", day: "numeric" },
 	);
 	return `${day}, ${time}`;
@@ -69,7 +70,7 @@ export function fmtDate(iso: string): string {
 	const date = new Date(iso);
 	return Number.isNaN(date.getTime())
 		? ""
-		: date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+		: date.toLocaleDateString(presentationLocale(), { year: "numeric", month: "short", day: "numeric" });
 }
 
 export function fmtBytes(bytes: number): string {
@@ -89,6 +90,15 @@ export function initials(name: string): string {
 	const first = parts[0]?.[0] ?? "?";
 	const last = parts.length > 1 ? (parts[parts.length - 1]?.[0] ?? "") : "";
 	return (first + last).toUpperCase();
+}
+
+export function personAvatar(name: string, identity: string): HTMLElement {
+	const colors = ["#778fc6", "#ab829c", "#b18b64", "#789e8d", "#9685b5", "#739eab"];
+	let hash = 0;
+	for (const character of identity) hash = (hash * 31 + (character.codePointAt(0) ?? 0)) >>> 0;
+	const avatar = h("span", { class: "person-avatar", "aria-hidden": "true" }, initials(name));
+	avatar.style.setProperty("--person-color", colors[hash % colors.length]!);
+	return avatar;
 }
 
 export function shortId(id: string): string {
@@ -128,6 +138,10 @@ export function button(
 /* Small stroked icons, the desktop's set (Lucide, ISC). Drawn inline so they
  * inherit the row's colour; an <img> could not. */
 const ICON_PATHS: Record<string, string[]> = {
+	navigation: ["M3 5h18v14H3Z", "M9 5v14"],
+	check: ["m5 12 4 4L19 6"],
+	image: ["M3 3h18v18H3Z", "m3 16 5-5 4 4 3-3 6 6", "M15 7h.01"],
+	bell: ["M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"],
 	plus: ["M12 5v14M5 12h14"],
 	close: ["m6 6 12 12M6 18 18 6"],
 	chevron: ["m9 5 7 7-7 7"],
@@ -213,7 +227,7 @@ export function companyFigure(seed: string): CompanyFigure {
 
 export function companyLogo(seed: string, className = ""): HTMLElement {
 	const logo = figureElement(companyFigure(seed), COMPANY_INK, { still: true });
-	logo.className = ["company-logo", className].filter(Boolean).join(" ");
+	logo.className = [logo.className, "company-logo", className].filter(Boolean).join(" ");
 	return logo;
 }
 

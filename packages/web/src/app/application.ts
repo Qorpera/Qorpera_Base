@@ -3,6 +3,8 @@ import { CloudApi } from "../cloud/api.ts";
 import { type Cloud, describeError } from "../cloud/client.ts";
 import type { HostedProfile } from "../cloud/types.ts";
 import { h, notice, replace, spinner } from "../ui/dom.ts";
+import { applyLanguage } from "../ui/preferences.ts";
+import { RailLayout } from "../ui/rail-layout.ts";
 import { AuthController } from "./auth.ts";
 import { CompanyController } from "./company.ts";
 import { currentRoute, navigate, type Route } from "./router.ts";
@@ -48,6 +50,10 @@ export function mountApplication(
 		onclick: () => setNavigationOpen(false),
 	});
 	const frame = h("div", { class: "frame" }, topbar, h("div", { class: "body" }, backdrop, rail, main));
+	const railLayout = new RailLayout(frame);
+	rail.after(railLayout.el);
+	applyLanguage();
+	window.addEventListener("languagechange", applyLanguage);
 	let disposed = false;
 	let settings: SettingsView | undefined;
 	function closeSettings(restoreFocus = true): void {
@@ -312,6 +318,10 @@ export function mountApplication(
 		}
 		if (!root!.contains(frame)) replace(root!, frame);
 		const route: Route = currentRoute();
+		frame.classList.toggle(
+			"has-thread",
+			route.name === "company" && (route.section === "chat" || route.section === "new"),
+		);
 		if (route.name !== "company") {
 			teardownCompany();
 			rail.hidden = true;
@@ -380,7 +390,8 @@ export function mountApplication(
 			const target =
 				navigationFocus === "rail"
 					? rail.querySelector<HTMLInputElement>("input")
-					: topbar.querySelector<HTMLButtonElement>(".mobile-navigation-toggle");
+					: (frame.querySelector<HTMLButtonElement>(".main .mobile-navigation-toggle:not([hidden])") ??
+						topbar.querySelector<HTMLButtonElement>(".mobile-navigation-toggle"));
 			target?.focus();
 			navigationFocus = undefined;
 		}
@@ -423,12 +434,16 @@ export function mountApplication(
 		switch (route.section) {
 			case "new": {
 				if (!newConversation) {
-					newConversation = new NewConversationView(controller, workspaceActions, () =>
-						navigate({ name: "company", profileId: controller.profile.profileId, section: "home" }),
+					newConversation = new NewConversationView(
+						controller,
+						workspaceActions,
+						() => navigate({ name: "company", profileId: controller.profile.profileId, section: "home" }),
+						() => setNavigationOpen(!navigationOpen),
 					);
 					replace(main, newConversation.el);
 					newConversation.focus();
 				}
+				newConversation.setNavigationOpen(navigationOpen);
 				return;
 			}
 			case "home": {
@@ -470,10 +485,13 @@ export function mountApplication(
 			case "chat": {
 				if (!conversation || conversation.sessionId !== route.id) {
 					conversation?.dispose();
-					conversation = new ConversationView(controller, route.id ?? "", workspaceActions);
+					conversation = new ConversationView(controller, route.id ?? "", workspaceActions, () =>
+						setNavigationOpen(!navigationOpen),
+					);
 					replace(main, conversation.el);
 					conversation.focus();
 				} else conversation.update();
+				conversation.setNavigationOpen(navigationOpen);
 				return;
 			}
 			case "staff": {
@@ -515,7 +533,13 @@ export function mountApplication(
 				});
 				return;
 			case "organization":
-				renderOrganization(controller, main);
+			case "responsibility":
+			case "project":
+				renderOrganization(
+					controller,
+					main,
+					route.section === "organization" ? undefined : { kind: route.section, id: route.id ?? "" },
+				);
 				return;
 			case "team":
 				renderTeam(
@@ -540,6 +564,8 @@ export function mountApplication(
 
 	return () => {
 		disposed = true;
+		railLayout.dispose();
+		window.removeEventListener("languagechange", applyLanguage);
 		closeSettings(false);
 		auth.dispose();
 		hub.dispose();
