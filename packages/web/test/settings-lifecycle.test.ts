@@ -2,9 +2,12 @@
 import { RealtimeClient } from "@supabase/supabase-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
+import { AuthController } from "../src/app/auth.ts";
+import { CompanyController } from "../src/app/company.ts";
+import { SettingsView } from "../src/app/views/settings.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type { HostedAccountEntitlement } from "../src/cloud/types.ts";
-import { deferred, fixture, profileA, profileB, session, settle, userB } from "./fixtures.ts";
+import { deferred, fixture, profileA, profileB, session, settle, userA, userB } from "./fixtures.ts";
 
 let dispose: (() => void) | undefined;
 beforeEach(() => {
@@ -54,6 +57,61 @@ function realtimeFixture() {
 }
 
 describe("settings session lifecycle", () => {
+	it.each([[profileA], [profileA, profileB]])(
+		"updates open settings after the initial company list arrives: %j",
+		async (...profiles) => {
+			history.replaceState(null, "", "/#/");
+			const fixtureState = fixture(),
+				pending = deferred<typeof profiles>();
+			vi.mocked(fixtureState.api.listProfiles).mockReturnValue(pending.promise);
+			const f = await setup(fixtureState);
+			open(f.root);
+			click(f.root, "#settings-tab-company");
+			const picker = f.root.querySelector<HTMLSelectElement>(".settings-company-picker")!;
+			expect(picker.options).toHaveLength(1);
+			pending.resolve(profiles);
+			await draw();
+			expect(f.root.querySelector(".settings-company-picker")).toBe(picker);
+			expect(picker.options).toHaveLength(profiles.length + 1);
+			const selected = profiles.at(-1)!;
+			if (profiles.length > 1) {
+				expect(picker.value).toBe("");
+				picker.value = selected.profileId;
+				picker.dispatchEvent(new Event("change"));
+				await draw();
+			}
+			expect(picker.value).toBe(selected.profileId);
+			expect(f.root.querySelector("#settings-content h1")?.textContent).toBe(selected.profileName);
+			expect(f.root.querySelector(`.settings-dialog a[href='#/c/${selected.profileId}/file']`)).not.toBeNull();
+			expect(f.cloud.rpc).not.toHaveBeenCalled();
+		},
+	);
+	it("preserves the selected company, policy draft and focus when the profile list refreshes", async () => {
+		const f = fixture(),
+			auth = new AuthController(f.cloud);
+		await auth.start();
+		const company = new CompanyController(f.api, profileA, userA.id);
+		const view = new SettingsView(f.api, auth, [profileA], company, () => {});
+		document.body.append(view.el);
+		dispose = () => {
+			view.dispose();
+			company.stop();
+			auth.dispose();
+		};
+		click(view.el, "#settings-tab-policy");
+		const spending = view.el.querySelector<HTMLSelectElement>('select[aria-label="Spending"]')!;
+		spending.value = "auto";
+		spending.dispatchEvent(new Event("change"));
+		spending.focus();
+		view.updateProfiles([{ ...profileA }, profileB]);
+		expect(view.el.querySelector('select[aria-label="Spending"]')).toBe(spending);
+		expect(spending.value).toBe("auto");
+		expect(document.activeElement).toBe(spending);
+		expect(view.el.querySelector<HTMLSelectElement>(".settings-company-picker")!.value).toBe(profileA.profileId);
+		expect(view.el.querySelector<HTMLElement>(".settings-company-label")!.hidden).toBe(false);
+		expect(f.api.getTeam).not.toHaveBeenCalled();
+		expect(company.signal.aborted).toBe(false);
+	});
 	it("borrows the open company again without removing its conversation subscription", async () => {
 		const f = await setup(realtimeFixture());
 		const composer = f.root.querySelector("textarea");

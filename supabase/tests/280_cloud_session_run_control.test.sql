@@ -127,6 +127,18 @@ select pg_temp.assert_true(
 	'active run was masked or leaked extra state'
 );
 
+-- An admin has the same shared-session control as the owner. Roll back only
+-- this promotion/cancellation before checking the contributor's denied path.
+savepoint admin_run_control;
+reset role;
+update public.qorpera_profile_members set role = 'admin'
+where profile_id = '28000000-0000-4000-8000-000000000010' and user_id = '28000000-0000-4000-8000-000000000003';
+set role authenticated;
+select set_config('request.jwt.claims', '{"sub":"28000000-0000-4000-8000-000000000003","role":"authenticated"}', true);
+select pg_temp.assert_true((public.qorpera_get_session_run_control('28000000-0000-4000-8000-000000000055') #>> '{run,can_cancel}')::boolean, 'admin lost shared run control');
+select pg_temp.assert_true(public.qorpera_cancel_session_run('28000000-0000-4000-8000-000000000055', '28000000-0000-4000-8000-000000000082') ->> 'status' = 'cancelled', 'admin control did not match cancellation authority');
+rollback to savepoint admin_run_control;
+
 -- Neither another contributor nor a viewer may stop the sponsoring member's run.
 select set_config('request.jwt.claims', '{"sub":"28000000-0000-4000-8000-000000000003","role":"authenticated"}', true);
 select pg_temp.assert_true((public.qorpera_get_session_run_control('28000000-0000-4000-8000-000000000055') #>> '{run,can_cancel}')::boolean = false, 'coworker can stop another member');

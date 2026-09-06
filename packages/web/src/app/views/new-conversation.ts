@@ -86,6 +86,9 @@ export class NewConversationView {
 		this.#drawResults();
 	}
 	#drawResults(): void {
+		const focusedAgent = this.#results.contains(document.activeElement)
+			? document.activeElement?.getAttribute("data-agent-id")
+			: undefined;
 		const create = this.el.querySelector<HTMLButtonElement>(".new-agent-card");
 		if (create) create.disabled = !this.#company.store.get().team?.capabilities.write;
 		const agents = this.#company.store
@@ -103,6 +106,7 @@ export class NewConversationView {
 					"a",
 					{
 						class: "recipient-row",
+						"data-agent-id": agent.id,
 						href:
 							agent.templateId === "co-founder" ||
 							agent.id === this.#company.store.get().organization?.cofounder.staffAgentId
@@ -118,6 +122,13 @@ export class NewConversationView {
 				? null
 				: h("p", { class: "empty" }, this.#query ? "No matching agents." : "No agents available."),
 		);
+		if (focusedAgent) {
+			const recipient = [...this.#results.querySelectorAll<HTMLAnchorElement>(".recipient-row")].find(
+				(link) => link.dataset.agentId === focusedAgent,
+			);
+			if (recipient) recipient.focus({ preventScroll: true });
+			else this.focus();
+		}
 	}
 	#configure(): void {
 		if (!this.#company.store.get().team?.capabilities.write) return;

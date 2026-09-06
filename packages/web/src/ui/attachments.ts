@@ -109,7 +109,7 @@ export class AttachmentTray {
 		);
 		this.el.hidden = this.#files.length === 0;
 		this.status.textContent = this.#files.length
-			? "Sending attachments is not available yet. Remove them to send your message."
+			? "Attachments stay on this device. Sending attachments is not available yet."
 			: "";
 	}
 }

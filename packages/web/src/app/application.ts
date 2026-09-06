@@ -129,6 +129,7 @@ export function mountApplication(
 		hub.store.subscribe(() => {
 			if (hub !== currentHub) return;
 			profiles = currentHub.store.get().profiles;
+			settings?.updateProfiles(profiles);
 			render();
 		});
 		friends.store.subscribe(() => render());

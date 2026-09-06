@@ -11,7 +11,9 @@ declare v_binding jsonb := current_setting('qorpera_test.path_binding')::jsonb;
 	v_environment uuid := '29000000-0000-4000-8000-000000000020';
 	v_actor jsonb; v_plan jsonb; v_result jsonb; v_head uuid; v_proposal uuid; v_digest text;
 	v_prepared jsonb; v_tree text; v_applied jsonb; v_probe text; v_private jsonb; v_resource jsonb;
+	v_session uuid;
 begin
+	select session_id into strict v_session from public.qorpera_execution_runs where id = (v_binding ->> 'runId')::uuid;
 	perform pg_temp.audience_assert(exists(select 1 from public.qorpera_execution_runs
 		where id = (v_binding ->> 'runId')::uuid and audience_kind = 'member_private'
 		and audience_user_id = '29000000-0000-4000-8000-000000000001'),
@@ -62,6 +64,10 @@ begin
 	update public.qorpera_profile_members set role = 'owner' where user_id = '29000000-0000-4000-8000-000000000002';
 	perform pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000002');
 	set local role authenticated;
+	begin perform public.qorpera_get_session_run_control(v_session);
+		raise exception 'Another owner read private run control'; exception when insufficient_privilege then null; end;
+	begin perform public.qorpera_cancel_session_run(v_session,(v_binding ->> 'runId')::uuid);
+		raise exception 'Another owner stopped private work'; exception when insufficient_privilege then null; end;
 	begin perform public.qorpera_get_company_path_proposal(v_proposal);
 		raise exception 'Another owner read a private draft'; exception when insufficient_privilege then null; end;
 	begin perform public.qorpera_review_company_path_proposal(v_proposal,v_digest,'approve');
@@ -76,6 +82,8 @@ begin
 	update public.qorpera_profile_members set role = 'contributor' where user_id = '29000000-0000-4000-8000-000000000001';
 	perform pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000001');
 	set local role authenticated;
+	perform pg_temp.audience_assert((public.qorpera_get_session_run_control(v_session)
+		#>> '{run,can_cancel}')::boolean,'Private audience owner lost run control');
 	perform pg_temp.audience_assert(public.qorpera_get_company_path_proposal(v_proposal) -> 'plan' = v_plan,
 		'Originator could not inspect their exact draft');
 	perform public.qorpera_authorize_member_company_proposal_object(v_proposal,v_digest,v_plan #>> '{entry,file,fileSha256}');

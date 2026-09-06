@@ -289,9 +289,9 @@ begin
 			v_session, 'a1000000-0000-4000-8000-000000000070',
 			'message', '{"role":"assistant","content":"unbound"}'::jsonb, 0
 		);
-	exception when insufficient_privilege then v_ok := true;
+	exception when invalid_parameter_value then v_ok := true;
 	end;
-	if not v_ok then raise exception 'unbound trail event entered an active turn'; end if;
+	if not v_ok then raise exception 'a message without a closed trail envelope entered the session'; end if;
 	perform public.qorpera_append_account_event(
 		v_session, 'a1000000-0000-4000-8000-000000000071',
 		'message', v_trail_body, 0,
@@ -671,7 +671,7 @@ begin
 			),
 			0
 		);
-	exception when insufficient_privilege then
+	exception when invalid_parameter_value then
 		v_forgery_rejected := true;
 	end;
 	if not v_forgery_rejected then

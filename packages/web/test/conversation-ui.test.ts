@@ -234,6 +234,12 @@ describe("conversation UI boundaries", () => {
 		await settle();
 		expect(root.querySelector("textarea")!.value).toBe("Keep this local");
 		expect(root.textContent).toContain("Sending messages is not available yet");
+		attach(root, [new File(["local"], "brief.txt", { type: "text/plain" })]);
+		expect(root.querySelector(".attachment-status")?.textContent).toContain("Attachments stay on this device");
+		expect(root.textContent).not.toContain("Remove them to send");
+		button(root, "Remove brief.txt").click();
+		expect(send.disabled).toBe(true);
+		expect(root.querySelector("textarea")!.value).toBe("Keep this local");
 		expect(f.api.appendPrompt).not.toHaveBeenCalled();
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
@@ -361,6 +367,27 @@ describe("new conversation and agent setup", () => {
 		};
 		return { ...f, company, view };
 	}
+	it("keeps keyboard focus on the recipient across activity refreshes and recovers when it disappears", async () => {
+		const f = setupNew();
+		await settle();
+		f.view.el.querySelector<HTMLAnchorElement>(".recipient-row")!.focus();
+		f.company.store.set({ activity: [] });
+		await settle();
+		expect(document.activeElement).toBe(f.view.el.querySelector(".recipient-row"));
+		expect(document.activeElement?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/staff/${staff.id}`);
+		f.company.store.set({ staff: [] });
+		await settle();
+		const search = f.view.el.querySelector<HTMLInputElement>('[aria-label="Search conversation recipients"]')!;
+		expect(document.activeElement).toBe(search);
+		search.value = "Fixture";
+		search.dispatchEvent(new Event("input"));
+		search.setSelectionRange(2, 2);
+		f.company.store.set({ staff: [staff] });
+		await settle();
+		expect(document.activeElement).toBe(search);
+		expect(search.selectionStart).toBe(2);
+		expect(f.cloud.rpc).not.toHaveBeenCalled();
+	});
 	it("waits for permission, searches existing agents, and preserves a local setup draft", () => {
 		const f = setupNew();
 		expect(parseRoute(`#/c/${profileA.profileId}/new`)).toEqual({

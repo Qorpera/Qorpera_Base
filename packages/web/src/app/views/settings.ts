@@ -32,6 +32,10 @@ export class SettingsView {
 	readonly #content = h("div", { class: "settings-content", id: "settings-content", role: "tabpanel", tabindex: "0" });
 	readonly #panels = new Map<Tab, HTMLElement>();
 	readonly #tabs = new Map<Tab, HTMLButtonElement>();
+	readonly #borrowedCompany: CompanyController | undefined;
+	readonly #companyPicker = h("select", { class: "settings-company-picker", "aria-label": "Company for settings" });
+	readonly #companyLabel = h("label", { class: "settings-company-label" }, "Company", this.#companyPicker);
+	#profiles: HostedProfile[] = [];
 	#tab: Tab = "general";
 	#account: AccountViewState = { loading: true };
 	#company: CompanyController | undefined;
@@ -53,6 +57,7 @@ export class SettingsView {
 		this.#api = api;
 		this.#auth = auth;
 		this.#close = close;
+		this.#borrowedCompany = company;
 		const search = h("input", { type: "search", placeholder: "Search settings", "aria-label": "Search settings" });
 		const empty = h("p", { class: "muted small", hidden: true }, "No settings found.");
 		const nav = h("nav", { class: "settings-nav", "aria-label": "Settings sections" }, search);
@@ -121,27 +126,10 @@ export class SettingsView {
 			),
 		);
 		document.addEventListener("keydown", this.#onKey, { signal: this.#lifetime.signal });
-		const companyPicker = h(
-			"select",
-			{ class: "settings-company-picker", "aria-label": "Company for settings" },
-			h("option", { value: "" }, "Choose a company"),
-			...profiles.map((profile) => h("option", { value: profile.profileId }, profile.profileName)),
-		);
-		companyPicker.value = company?.profile.profileId ?? (profiles.length === 1 ? profiles[0]!.profileId : "");
-		companyPicker.onchange = () => {
-			const profile = profiles.find((item) => item.profileId === companyPicker.value);
-			if (profile?.profileId === this.#company?.profile.profileId) return;
-			if (company && profile?.profileId === company.profile.profileId) this.#setCompany(company, false);
-			else
-				this.#setCompany(profile ? new CompanyController(api, profile, auth.userId!) : undefined, Boolean(profile));
-		};
-		if (profiles.length > 1 || !company)
-			nav.append(h("label", { class: "settings-company-label" }, "Company", companyPicker));
-		const selected = profiles.find((profile) => profile.profileId === companyPicker.value);
-		this.#setCompany(
-			company ?? (selected ? new CompanyController(api, selected, auth.userId!) : undefined),
-			!company && Boolean(selected),
-		);
+		this.#companyPicker.onchange = () => this.#chooseCompany();
+		nav.append(this.#companyLabel);
+		this.#setCompany(company, false);
+		this.updateProfiles(profiles);
 		void api
 			.getAccountEntitlement()
 			.then((entitlement) => {
@@ -169,6 +157,38 @@ export class SettingsView {
 
 	focus(): void {
 		this.#tabs.get(this.#tab)?.focus();
+	}
+
+	updateProfiles(profiles: HostedProfile[]): void {
+		if (this.#lifetime.signal.aborted || profiles === this.#profiles) return;
+		const selected =
+			profiles.find((profile) => profile.profileId === this.#company?.profile.profileId) ??
+			(!this.#company && this.#profiles.length === 0 && profiles.length === 1 ? profiles[0] : undefined);
+		this.#profiles = profiles;
+		replace(
+			this.#companyPicker,
+			h("option", { value: "" }, "Choose a company"),
+			...profiles.map((profile) => h("option", { value: profile.profileId }, profile.profileName)),
+		);
+		this.#companyPicker.value = selected?.profileId ?? "";
+		this.#companyLabel.hidden = profiles.length <= 1 && Boolean(this.#borrowedCompany) && Boolean(selected);
+		this.#chooseCompany();
+	}
+
+	#chooseCompany(): void {
+		const profile = this.#profiles.find((item) => item.profileId === this.#companyPicker.value);
+		if (profile?.profileId === this.#company?.profile.profileId) return;
+		if (
+			profile &&
+			profile.profileId === this.#borrowedCompany?.profile.profileId &&
+			!this.#borrowedCompany.signal.aborted
+		)
+			this.#setCompany(this.#borrowedCompany, false);
+		else
+			this.#setCompany(
+				profile ? new CompanyController(this.#api, profile, this.#auth.userId!) : undefined,
+				Boolean(profile),
+			);
 	}
 	dispose(): void {
 		this.#lifetime.abort();
