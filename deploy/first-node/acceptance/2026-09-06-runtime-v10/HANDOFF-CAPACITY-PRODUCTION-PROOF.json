@@ -1,0 +1,34 @@
+{
+  "schema": "qorpera.handoff-capacity-production/v1",
+  "passed": true,
+  "recordedAt": "2026-09-06T17:30:03.701Z",
+  "sourceCommit": "c7085e8f3aa7429a4b17286d496efa6ebfdc64a1",
+  "runtimeBundleSha256": "7bfd6cd12160a3b5119e7727374e28d854c1004de6640f12c40446b21d67764e",
+  "migration": "20260906000300",
+  "before": {
+    "path": "outputs/runtime-custody-3c0bf3bce/runtime-v10-functions-1788714938899.json",
+    "sha256": "f7e9ca73bd648620465afb6f1543695f9d9ac131d3e38f51b454b182df328f67"
+  },
+  "after": {
+    "path": "outputs/runtime-custody-3c0bf3bce/runtime-v10-functions-1788715296449.json",
+    "sha256": "50eae156bbaece97f2a5d47e9a4d860b668039d78539bc487bfaa48fdc055d93"
+  },
+  "beforeObservedAt": "2026-09-06T17:15:38.898Z",
+  "afterObservedAt": "2026-09-06T17:21:36.447Z",
+  "functionOwnersAndAclsPreserved": true,
+  "acquisitionCapacityDenialsBefore": 1,
+  "acquisitionCapacityDenialsAfter": 2,
+  "candidateCapacityFilterPresent": true,
+  "candidateActiveAuthorizationRequired": true,
+  "definitions": [
+    {
+      "function": "qorpera_acquire_native_provider_connection_lease(uuid,uuid,text,uuid,text,integer)",
+      "sha256": "cdb78e9549903ae974b4aa48c80df211651ccd6f26ec744e1c9461bdd1fa843f"
+    },
+    {
+      "function": "qorpera_handoff_run_sponsor(uuid,text)",
+      "sha256": "dc5cf1fe3ccc6852cef33a627e70e4456ddf6069d29544b5fa05b56e993bd559"
+    }
+  ],
+  "liveUsageLimitHandoffProven": false
+}

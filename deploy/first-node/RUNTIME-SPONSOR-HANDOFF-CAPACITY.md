@@ -26,9 +26,18 @@ after capacity is released, exact active replay, no available fallback,
 reauthentication-required authorization, and separate rate-limit/outage
 failures without a handoff. Existing successful continuation coverage remains.
 
-The candidate bundle is v10:
+The deployed bundle is v10:
 `7bfd6cd12160a3b5119e7727374e28d854c1004de6640f12c40446b21d67764e`.
-Its activation is a new migration; historical v9 is unchanged. Local database
-tests do not replace the outstanding real provider usage-limit and sponsor
-continuation acceptance gate. See the [acceptance ledger](RUNTIME-STEPS-0-3-ACCEPTANCE.md)
-for deployment status and live proof limits.
+Source commit: `c7085e8f3aa7429a4b17286d496efa6ebfdc64a1`.
+Its activation is a new migration; historical v9 is unchanged. Production
+readback confirms both capacity checks and unchanged function owners and ACLs.
+All 25 wake integration cases, the 133-migration context/provenance driver,
+repository checks and exact Linux package reproduction passed. The signed
+image completed an actual native run with one durable result and complete
+lease/guest cleanup.
+
+The [v10 evidence](acceptance/2026-09-06-runtime-v10/MANIFEST.json) records the
+before/after regressions, deployment and native smoke. Local database tests and
+this ordinary native run do not replace the outstanding real provider
+usage-limit and sponsor continuation acceptance gate. See the
+[acceptance ledger](RUNTIME-STEPS-0-3-ACCEPTANCE.md) for the remaining proof limits.

@@ -1,0 +1,67 @@
+{
+  "schema": "qorpera.runtime-source-commit/v1",
+  "commit": "c7085e8f3aa7429a4b17286d496efa6ebfdc64a1",
+  "parent": "708d8ee6f1e6fe7dda24f9fddd3d4db3474d10ba",
+  "observedAt": "2026-09-06T17:14:10.060Z",
+  "sourceCheckoutClean": true,
+  "releaseCheckout": "/Users/jonas/Documents/Codex/2026-09-05/files-pasted-by-the-user-take/work/release-c7085e8f3",
+  "releaseCheckoutDetached": true,
+  "verifiedSourceFiles": [
+    {
+      "path": "deploy/first-node/RUNTIME-SPONSOR-HANDOFF-CAPACITY.md",
+      "sha256": "be36c144f235ea94fc0e729cda3c4d2dc80c790b12be0a8b5a3a654a14ef7500"
+    },
+    {
+      "path": "deploy/first-node/RUNTIME-STEPS-0-3-ACCEPTANCE.md",
+      "sha256": "e22bdf962190b1a46a97a1db7f3357eadbca968722d07487580c6a47ff9a7361"
+    },
+    {
+      "path": "deploy/first-node/native-codex/guest-package-manifest.json",
+      "sha256": "a41fd03a0a5c97ab4fc72f60865829d18587adf6e0a8593d418221d7f0e149f1"
+    },
+    {
+      "path": "deploy/first-node/native-codex/runtime-bundle-manifest.json",
+      "sha256": "cd73b496223b3b413bbeba9320eb67ce9ed908ca1f3ba799e74a9c68cd3f6a7f"
+    },
+    {
+      "path": "packages/shell/src/cloud-runtime-bundle.generated.ts",
+      "sha256": "a313263b571a529efdd8393bec8936423bfe5ca3099105ca7da962016c7b0790"
+    },
+    {
+      "path": "scripts/generate-cloud-runtime-bundle.mjs",
+      "sha256": "7f780eb8deb710e91a362b1c5847ac438315f886bd84de61bf8fd3c5b8caf0c1"
+    },
+    {
+      "path": "supabase/acceptance/runtime_wake_bus.sql",
+      "sha256": "9ea4e2483d4670083292b5d13404cce7cd4aa5025d11247ad5954cf496f7360b"
+    },
+    {
+      "path": "supabase/migrations/20260906000300_runtime_sponsor_handoff_capacity.sql",
+      "sha256": "b60123dd0e8b4f632b56dc8e30a9532338050d93ede1dea7a406e9de4b70c524"
+    },
+    {
+      "path": "supabase/migrations/20260906000400_runtime_bundle_activation_v10.sql",
+      "sha256": "ae7946b32c22e2f06317822b49ddf674cac41fb8471a8d506cb3b9f68743274d"
+    }
+  ],
+  "runtimeBundleSha256": "7bfd6cd12160a3b5119e7727374e28d854c1004de6640f12c40446b21d67764e",
+  "checks": {
+    "sourceCheck": "passed",
+    "provenanceMigrationReplay": 133,
+    "wakeContextParity": "passed",
+    "handoffCapacityRedGreen": "passed",
+    "handoffRateLimitOutageNegative": "passed",
+    "wakeIntegrationCases": 25,
+    "wakeConcurrencyRestart": "passed",
+    "concurrentCoalescing": "passed",
+    "bundleGeneratorTests": 3,
+    "packageTest": "passed",
+    "linuxPackageProof": "outputs/runtime-linux-x64-package-proof-c7085e8f3.json"
+  },
+  "wakeIntegrationReport": {
+    "path": "work/runtime-v10-wake-integration.json",
+    "sha256": "1ca03eae09087b13d7957f90ab5f89f5e9b2cb7e43240fbb2d006e522abea314"
+  },
+  "authorizationSha256": "6d9e7a91644cbb9a5d0222613b9131cf997382432cfef2176a347583be12897b",
+  "productionWrites": false
+}

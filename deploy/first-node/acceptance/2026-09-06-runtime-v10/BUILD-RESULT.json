@@ -1,0 +1,22 @@
+{
+  "schema": "qorpera.runtime-image-build-result/v1",
+  "passed": true,
+  "observedAt": "2026-09-06T17:18:50.955Z",
+  "sourceCommit": "c7085e8f3aa7429a4b17286d496efa6ebfdc64a1",
+  "runtimeBundleSha256": "7bfd6cd12160a3b5119e7727374e28d854c1004de6640f12c40446b21d67764e",
+  "imageFingerprint": "ab1c1be97bec88f5c3beb66819c3b4a4e6650ad859f16a2c45635d93bed601db",
+  "baseFingerprint": "5e644adaf5d1c43149ea7310ac2a7cad927fa6603343e8fa9070a9200a24b7b8",
+  "imageAlias": "qorpera-runner-7bfd6cd1-c7085e8f3-unsigned",
+  "packageArchiveSha256": "b0afa0006389df08c5ced2f8d2f1060472a5f9b8218fd8702d74a0e7ae7bfb86",
+  "guestManifestSha256": "a41fd03a0a5c97ab4fc72f60865829d18587adf6e0a8593d418221d7f0e149f1",
+  "buildRecipeSha256": "6325661dc7c612b6fa2c766cefb9ef5ae0e9326f6b6ec685cf6068727eb0f414",
+  "buildStateSha256": "447cbb4c16b33a9d35522422e9c89c9cfb21d5c4ddfb9458ab260f780e8f1cfc",
+  "buildLogSha256": "f49388cb1f90ebb177c5583b57135c938aed551ca986d7bdcf26e28d9c386ea9",
+  "builderRemoved": true,
+  "canonicalHelperRestored": true,
+  "provenance": "unsigned-candidate",
+  "cleanBootAcceptanceComplete": false,
+  "nativeAdmissionReopened": false,
+  "productionSql": false,
+  "modelCalls": false
+}

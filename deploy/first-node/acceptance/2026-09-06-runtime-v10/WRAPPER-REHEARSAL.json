@@ -1,0 +1,59 @@
+{
+  "schema": "qorpera.rollout-wrapper-rehearsal/v1",
+  "packetSha256": "653f281f27eeff4a1f9ca857cff5a43a9b05d1414216fbfade88687801505fa5",
+  "passed": true,
+  "databaseKind": "disposable-postgresql",
+  "databaseImage": "public.ecr.aws/supabase/postgres@sha256:28f0e16a019e648089fc1a6d333549a55548f6019c15ae4bd7cd58b989027518",
+  "databaseNetwork": "none",
+  "productionWrites": false,
+  "modelCalls": false,
+  "allMutationStepsRehearsed": true,
+  "replayRejected": true,
+  "cleanupConfirmed": true,
+  "schemaSha256": "aa4c1baf0b3b410361ea18c2107e5e34236ffedbf591c18b97044d95d88e4fc0",
+  "rehearsalToolSha256": "e76b83e9177c4a10f3ba781d1f85e57828e3545ca769323735815e46d2f569c5",
+  "baselineSha256": "b306bb55c3946cfcc7adb60523fc5775c95760205dc0bce72213dcc98a6e502f",
+  "baselineMigrationsReplayed": 57,
+  "steps": [
+    {
+      "step": "preflight",
+      "beforeSha256": null,
+      "afterSha256": "a16364316d19293a310c47d6e66be8a2cd37fffad3449c736c0432a544a65809",
+      "ledgerEntries": 149
+    },
+    {
+      "step": "pause",
+      "beforeSha256": "b07ed430579b65196dbea0dd67634dab67f50b7ea5eef83feb84da0dd2fa8ff5",
+      "afterSha256": "a5ecefdf4ec2a12bf13b8833aeb779c2669ce36da8fba7019ace9f883b0c271b",
+      "ledgerEntries": 149
+    },
+    {
+      "step": "20260906000300",
+      "beforeSha256": "39971c00a9b7622f721234052f81a3ad8b7421bcb21430b95d28dd4f9617a52c",
+      "afterSha256": "975e1b62a553f35ade0ae64dfd2aea72b964772333a08b830a4bd54b69369778",
+      "ledgerEntries": 150
+    },
+    {
+      "step": "20260906000400",
+      "beforeSha256": "76d318703e481df1650371df65d3915a3a5c9655ce56d53caa3dc9db0aac1d7b",
+      "afterSha256": "d18ca191819dc62d32be77b5f99fa92a03f613c771b5a14919180abb67460ac3",
+      "ledgerEntries": 151
+    },
+    {
+      "step": "final-readback",
+      "beforeSha256": null,
+      "afterSha256": "c5e70dea45528ab426461ca9cb420e7b7997a6da51be9d8c92addf73e851d310",
+      "ledgerEntries": 151
+    }
+  ],
+  "sql": {
+    "preflight.sql": "a1032d899e1a57b35310e53a4947e47466dd115d295b871dfe96266a2ef7953f",
+    "pause.sql": "cff1232b943c63fb1efd90215b6b7591b54bcc3f0a11926b15aea3710f8bd85e",
+    "20260906000300.sql": "250cb8828955d70da9fe167dc4c06183b7ee62607b4615af4c3c3c794a8313c4",
+    "20260906000400.sql": "d8803c601aef106eac270b4dcc8940d657b6f6d1e9b8d658ae5d29b9babf148d",
+    "final-readback.sql": "4bd588fbcec70bf982b0cc0803dd9388293647e97d9a35f83089660457dff67f",
+    "reconcile-pause.sql": "e77648f81503ad86ed3d6da85349feaa1382c6164fd3f5e3f290e2f4ea9265a7",
+    "reconcile-20260906000300.sql": "a5f60a9c3a8d8fe32841e03185be69c7134194ba5be226cf10272fef979c2b3c",
+    "reconcile-20260906000400.sql": "7b0b9cd52afdd9805a2350ec5ad9633b63e9804138390c0aa946df73af2a0180"
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "passed": true,
+  "observedAt": "2026-09-06T17:29:34.727Z",
+  "scriptSha256": "986d584aaac18b30df6c3e27ed6ea44b3c660e53a0674a9f3aac9788d3300413",
+  "transportSha256": "923cabd839ca05978eecd75d34545611a32a082d40ecd8981ad83496ca348cb9",
+  "result": {
+    "schema": "qorpera.broker-storage-nonexposure/v1",
+    "passed": true,
+    "startedAt": "2026-09-06T17:28:39.205Z",
+    "finishedAt": "2026-09-06T17:29:22.994Z",
+    "readOnly": true,
+    "bucket": "qorpera-profile-objects",
+    "companyId": "88227549-9724-43c2-8966-9fafb3e855d6",
+    "credentialClasses": 13,
+    "patternCount": 58,
+    "exportedPatternCount": 37,
+    "files": 411,
+    "scannedBytes": 154176192,
+    "inventoryCount": 411,
+    "inventoryBeforeSha256": "986dde25abef43fd8dac965e7c3a5ff0d413fa112ec4ecb19365dfec2af570af",
+    "inventoryAfterSha256": "986dde25abef43fd8dac965e7c3a5ff0d413fa112ec4ecb19365dfec2af570af",
+    "inventoryStable": true,
+    "failures": [],
+    "scope": "Every listed content-addressed object beneath Company41 in Supabase qorpera-profile-objects, including historical objects; SHA-256 integrity verified; exact full-byte pattern search inside the broker",
+    "excludedScopes": [
+      "Other companies and other buckets",
+      "Original NAS storage",
+      "Unknown credentials and split values spanning object boundaries"
+    ],
+    "privateContentsReturned": false,
+    "plaintextCredentialsExported": false,
+    "reportPath": "/var/lib/qorpera-custody-acceptance/company-storage-v10-nonexposure.json",
+    "reportSha256": "f384b071a50bb39ec8ed8456d02cfdc6a4c8802621637a314968e3b8713c525e",
+    "matchCount": 0
+  },
+  "automaticReplayAllowed": false
+}
