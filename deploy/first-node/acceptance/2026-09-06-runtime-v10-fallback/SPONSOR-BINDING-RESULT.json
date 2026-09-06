@@ -1,0 +1,31 @@
+{
+  "schema": "qorpera.live-member-operation-result/v1",
+  "passed": true,
+  "observedAt": "2026-09-06T18:11:18.904Z",
+  "intentPin": {
+    "bytes": 592,
+    "sha256": "7f2d2305d825f33a015442988ca79f9b45ccf5ec1f5fa6f61dc6445f8ebb8b82"
+  },
+  "requestSha256": "1673dec333306d0667e3dccb75dbf2c4f0083e891e22bf4ad440931fd5ed72fe",
+  "operatorSha256": "56f13d8ca24d2140856ead568ab4db016ebaf851f58db8f2544127f52dcc6a88",
+  "response": {
+    "schema": "qorpera.company41-runtime-acceptance/v1",
+    "proof": "runtime-a80f32ec1",
+    "passed": true,
+    "stage": "done",
+    "error": null,
+    "result": {
+      "mode": "rpc",
+      "name": "qorpera_create_member_execution_sponsor",
+      "argsSha256": "e543acd88493ed72aa743dca84f658a2e9547101feb7135adcbc95deeb92ddf9",
+      "membership": {
+        "role": "owner"
+      },
+      "value": {
+        "version": 1,
+        "binding_id": "af1ceda0-72cc-4207-891a-965306ad2327"
+      }
+    }
+  },
+  "automaticReplayAllowed": false
+}

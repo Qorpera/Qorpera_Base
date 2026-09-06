@@ -1,0 +1,51 @@
+{
+  "schema": "qorpera.fallback-login-and-native-check/v1",
+  "passed": false,
+  "recordedAt": "2026-09-06T18:16:47.794Z",
+  "loginCompleted": true,
+  "loginId": "936f6a44-8c9d-45ab-921f-aab0853d8911",
+  "completedAt": "2026-09-06T18:09:32.926547+00:00",
+  "newConnectionId": "2bd8e0ae-fc58-449a-b680-e58ff4784744",
+  "newCapsuleId": "d5fea972-5aec-48c1-9d14-865be5917a0c",
+  "distinctProviderAccount": true,
+  "providerTokenPlanType": "free",
+  "planMetadataDoesNotEstablishFailureCause": true,
+  "backupPreflightPassed": true,
+  "nativeExecutionPassed": false,
+  "runId": "b5035896-8561-4756-8e3e-946386780af8",
+  "runtimeBundleSha256": "7bfd6cd12160a3b5119e7727374e28d854c1004de6640f12c40446b21d67764e",
+  "attempts": 1,
+  "dispatchFailures": 0,
+  "errorCategory": "provider_failed",
+  "canonicalSends": 0,
+  "durableResults": 0,
+  "activeJobs": 0,
+  "activeLeases": 0,
+  "activeAssignments": 0,
+  "jobGuestRemoved": true,
+  "loginGuestStopped": true,
+  "loginGuestDeleted": false,
+  "credentialValuesReturned": false,
+  "providerUsageSignals": 0,
+  "sponsorHandoffs": 0,
+  "liveHandoffProven": false,
+  "currentSponsorConnectionId": "2e55091d-1fbf-45e7-9a25-2fe9944d775c",
+  "inventorySha256": "326a41f4d142fd747a156f953f39d146898588fe1c97cd55717bb8ef634c508a",
+  "witnesses": [
+    {
+      "path": "outputs/runtime-custody-3c0bf3bce/fallback-login-03-state-1788718210821.json",
+      "sha256": "2d183acea61ef9fb566b82dd1b98c9dc5e8c417e5a526b8c107d80bd27b36c2b"
+    },
+    {
+      "path": "outputs/runtime-custody-3c0bf3bce/fallback-native-v10-state-1788718380139.json",
+      "sha256": "df6561e73f184f935dc0ee6f9d6bec3858f28dd09b00e490978902271e087c82"
+    },
+    {
+      "path": "outputs/runtime-custody-3c0bf3bce/runtime-v10-final-state-1788718559086.json",
+      "sha256": "e384568d2f465bd1ff506b2728346ee7776383d11a33fb15cf6409d4655b9940"
+    }
+  ],
+  "planEvidenceSha256": "b612d14cd11c7cd594dbd5e1c2edfcbfbbd53a4e5a419174741cb643f35ee305",
+  "comparisonSha256": "deee1e47293a4960a508e20799f92a1c535b2d2f22a1d76cf8cadf27b7fe5bd7",
+  "limit": "Authentication and distinct-account connection succeeded. Native execution failed before sends with provider_failed; Free plan metadata is observed but the underlying provider reason remains unconfirmed. The usable fallback and real usage-limit handoff gates remain open."
+}

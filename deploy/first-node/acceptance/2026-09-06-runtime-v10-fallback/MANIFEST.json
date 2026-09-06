@@ -1,0 +1,110 @@
+{
+  "schema": "qorpera.runtime-fallback-recovery-checkpoint/v1",
+  "recordedAt": "2026-09-06T18:21:27.971Z",
+  "runtimeSourceCommit": "c7085e8f3aa7429a4b17286d496efa6ebfdc64a1",
+  "runtimeBundleSha256": "7bfd6cd12160a3b5119e7727374e28d854c1004de6640f12c40446b21d67764e",
+  "fullyAccepted": false,
+  "loginCompleted": true,
+  "distinctProviderAccount": true,
+  "usableFallbackProven": false,
+  "liveHandoffProven": false,
+  "sourceWorkspace": "/Users/jonas/Documents/Codex/2026-09-05/files-pasted-by-the-user-take",
+  "files": [
+    {
+      "file": "RECOVERY-MOUNT-RESULT.json",
+      "source": "outputs/runtime-custody-3c0bf3bce/FALLBACK-V10-RECOVERY-MOUNT-FINAL-RESULT.json",
+      "sha256": "4cd10b76f1c31fd762f9c4afa68e4adfc1ba19e06a5e49d500ffbe6484f28384",
+      "bytes": 1660,
+      "passingScope": true
+    },
+    {
+      "file": "BACKUP-PREFLIGHT.json",
+      "source": "outputs/runtime-live-3c0bf3bce/FALLBACK-LOGIN-V10-03-BACKUP-PREFLIGHT.json",
+      "sha256": "616e795e71e89ba9c84a50c86c6a191404816f070b83bdbfe01812a106f46432",
+      "bytes": 389,
+      "passingScope": true
+    },
+    {
+      "file": "ACCOUNT-COMPARISON.json",
+      "source": "outputs/runtime-live-3c0bf3bce/FALLBACK-LOGIN-V10-03-COMPARISON-RESULT.json",
+      "sha256": "deee1e47293a4960a508e20799f92a1c535b2d2f22a1d76cf8cadf27b7fe5bd7",
+      "bytes": 923,
+      "passingScope": true
+    },
+    {
+      "file": "LOGIN-AND-EXECUTION-OUTCOME.json",
+      "source": "outputs/runtime-live-3c0bf3bce/FALLBACK-LOGIN-V10-03-OUTCOME.json",
+      "sha256": "66f280b2d7b3272e3c5028baa748a456460e769cc580e1628a7b33462b45f5de",
+      "bytes": 2328,
+      "passingScope": false
+    },
+    {
+      "file": "PLAN-METADATA.json",
+      "source": "outputs/runtime-live-3c0bf3bce/FALLBACK-LOGIN-V10-03-PLAN-METADATA.json",
+      "sha256": "573bce46a9ef477d1c872e86105ee4ef272bb3c97e18b025f8074fd18441c032",
+      "bytes": 1575,
+      "passingScope": true
+    },
+    {
+      "file": "WORKSPACE-METADATA.json",
+      "source": "outputs/runtime-live-3c0bf3bce/FALLBACK-LOGIN-V10-03-WORKSPACE-METADATA.json",
+      "sha256": "5186fa64b088a55e73a5fa4217425722ae7ed2d32cc3f4f6060e84ee1740fca4",
+      "bytes": 2047,
+      "passingScope": true
+    },
+    {
+      "file": "LOGIN-GUEST-STOP.json",
+      "source": "outputs/runtime-live-3c0bf3bce/FALLBACK-LOGIN-V10-03-STOP-RESULT.json",
+      "sha256": "cc6641e32978a78c407ab964cc071a1f2338bf26250a02a529480f2400c277f7",
+      "bytes": 440,
+      "passingScope": true
+    },
+    {
+      "file": "CONSENT-RESULT.json",
+      "source": "outputs/runtime-live-3c0bf3bce/fallback-v10-autonomous-consent.result.json",
+      "sha256": "89b06c526305cedb528443782b9ebe312326a13c4b037b7e8bac842fc20fe87c",
+      "bytes": 1103,
+      "passingScope": true
+    },
+    {
+      "file": "SPONSOR-BINDING-RESULT.json",
+      "source": "outputs/runtime-live-3c0bf3bce/fallback-v10-sponsor-binding.result.json",
+      "sha256": "3d40e433c48919757800c0d1957c720a2208d0ed49b61ab0ce83f306e42592ae",
+      "bytes": 974,
+      "passingScope": true
+    },
+    {
+      "file": "NATIVE-ADMISSION-RESULT.json",
+      "source": "outputs/runtime-live-3c0bf3bce/fallback-native-v10-01.result.json",
+      "sha256": "fb7e18dc0279ee6478c7f076a64f14d32b57aeae7f8993294412d583e5d8427f",
+      "bytes": 1082,
+      "passingScope": true
+    },
+    {
+      "file": "NATIVE-RUN-READBACK.json",
+      "source": "outputs/runtime-custody-3c0bf3bce/fallback-native-v10-state-1788718380139.json",
+      "sha256": "df6561e73f184f935dc0ee6f9d6bec3858f28dd09b00e490978902271e087c82",
+      "bytes": 4914,
+      "passingScope": null
+    },
+    {
+      "file": "DATABASE-READBACK.json",
+      "source": "outputs/runtime-custody-3c0bf3bce/runtime-v10-final-state-1788718559086.json",
+      "sha256": "e384568d2f465bd1ff506b2728346ee7776383d11a33fb15cf6409d4655b9940",
+      "bytes": 849,
+      "passingScope": null
+    }
+  ],
+  "previousCheckpoint": {
+    "file": "../2026-09-06-runtime-v10/MANIFEST.json",
+    "sha256": "f418847ea356b25a224cdc43ee7255c1d9ef7033470952b5a9f8635a9c372e57",
+    "filesVerifiedUnchanged": true
+  },
+  "limits": [
+    "The new account authenticated successfully but its governed native run failed before sends with provider_failed.",
+    "The new issued tokens identify the account as Free and use a different email from the working Pro connection. The user says the account should be paid; billing state and the provider failure cause remain unconfirmed.",
+    "The repaired replica is the previously configured loopback NFS export on the Azure recovery VM; no physical Synology mount or independent physical NAS recovery is claimed.",
+    "Earlier nonexposure scans remain historical and are not relabeled as post-login scans. No credential values were returned by the new diagnostics.",
+    "A usable fallback, actual provider usage-limit notification, and successful same-run sponsor continuation remain open."
+  ]
+}
