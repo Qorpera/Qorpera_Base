@@ -3,7 +3,10 @@
 The signed v9 runtime is deployed and executing successfully. **Full Steps 0–3
 acceptance remains open:** actual provider usage-limit notification and automatic
 sponsor handoff have not been demonstrated. Local adapter and SQL tests do not
-close that live gate.
+close that live gate. A subsequent isolated handoff audit reproduced two
+capacity defects in v9. The [v10 correction](RUNTIME-SPONSOR-HANDOFF-CAPACITY.md)
+and its regression tests are built locally; deployment and verification remain
+pending. The deployed state and evidence below still describe v9.
 
 The [September 5 ledger](RUNTIME-STEPS-0-3-ACCEPTANCE-2026-09-05.md) remains a
 historical checkpoint. Its pending deployment and paused-admission statements
