@@ -1,0 +1,73 @@
+{
+  "schema": "qorpera.native-custody-use-proof/v1",
+  "passed": true,
+  "observedAt": "2026-09-06T12:54:03.918Z",
+  "runId": "2cf5cb00-0ce1-415e-85a4-d0fd116cd350",
+  "jobId": "c1604df8-3bf8-41a0-b051-4766b26e611c",
+  "runnerId": "f72aa345-83d9-4b06-bf6c-b0b3c7eb64ff",
+  "runtimeBundleSha256": "b60a49ccef8953ba2a4e3b4559d01d2852a8cfdf737123c9bf435171409b5f51",
+  "nativeBinarySha256": "2f2c26cfdfacebbcce848fb50cfaaa4e8d0aa3c6ec3c1009123ecf766c8335f7",
+  "secretId": "2f8af02f-19aa-485e-928d-4bf9e43bf7f7",
+  "secretVersion": 1,
+  "connectorInvocations": 6,
+  "completedReceipts": 5,
+  "destinationEffects": 5,
+  "duplicateInvocationCreatedNoExtraEffect": true,
+  "reflectionResponsesWithheld": 4,
+  "publicProgressMessages": 1,
+  "publicFinalMessages": 1,
+  "completedRunResults": 1,
+  "activeLeases": 0,
+  "guestObservedAndRemoved": true,
+  "observerJournalReadFailures": 1,
+  "observerInventoryReadFailures": 0,
+  "failedFirstLedgerCheckPreserved": true,
+  "firstLedgerCheckCorrections": [
+    "Use the stored downstream digest directly, without hashing it again.",
+    "Use the deployed broker-canary systemd unit name."
+  ],
+  "priorTimedOutOperationConfirmedNotRun": true,
+  "coldStartPreservedCredentialUse": true,
+  "privateContentsReturned": false,
+  "signedGuestModified": false,
+  "fullStepsZeroThroughThreeAcceptance": false,
+  "remainingCustodyGates": [
+    "rotation",
+    "revocation effects",
+    "encrypted recovery",
+    "post-run non-exposure scan"
+  ],
+  "evidence": {
+    "readback": {
+      "path": "outputs/runtime-live-3c0bf3bce/custody-human-04.readback-1788698863986.json",
+      "sha256": "458b3372db97427d52f6b2d8b2d6cb0e98fd1d1a367be3a2f49417adedb3d504"
+    },
+    "observer": {
+      "path": "outputs/runtime-live-3c0bf3bce/custody-human-04.diagnostics.json",
+      "sha256": "bf4b01dc4f769d90013f173b4c22907eb8a6b19868e4c693d7677bfdaf731306"
+    },
+    "ledger": {
+      "path": "outputs/runtime-custody-3c0bf3bce/NATIVE-CUSTODY-FOUR-LEDGER-CORRECTED-RESULT.json",
+      "sha256": "c000c6f5d544c57be3d0b558268000257146d578a8d645626a0d2c820f057751"
+    },
+    "noEffectResolution": {
+      "path": "outputs/runtime-custody-3c0bf3bce/resolve-canary-no-effect.result.json",
+      "sha256": "bf472a5da645e30504e9d6f6563717254523197140a91974bfef79fae521777c"
+    },
+    "coldStart": {
+      "path": "outputs/runtime-custody-3c0bf3bce/DAY2-COLD-START-PROOF-RESULT.json",
+      "sha256": "439ed1803b2002eb6a8578601daf92851468f981f280ddf6ccaefd1a250020fe"
+    },
+    "nightlySchedule": {
+      "path": "outputs/runtime-custody-3c0bf3bce/NIGHTLY-SHUTDOWN-DISABLE-RESULT.json",
+      "sha256": "ac3d8f2dda400b62d9655c1410b4ae91d25126ba268074e0bac1a7db2355e88d"
+    },
+    "sends": {
+      "path": "outputs/runtime-custody-3c0bf3bce/custody-four-send-check-1788699222692.json",
+      "sha256": "96554075df0c0ba4a0006795efebd7f4008d5b9e3204a362162829133e2392af"
+    }
+  },
+  "requestedFinalTextMatched": false,
+  "finalSendBytes": 372,
+  "canonicalSendEventsMatchReceipts": true
+}

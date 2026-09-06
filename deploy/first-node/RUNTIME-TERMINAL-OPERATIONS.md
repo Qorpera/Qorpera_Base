@@ -28,8 +28,15 @@ the same agent's five wake kinds through real SQL producers and the native
 context adapter. The bundle-generator tests and repository checks passed.
 The runtime bundle is `c90ab35c33b6af3a3fecbf0f9d1f06210a94a4769746c54c8a3ad94bbd87fab6`.
 
-Deployment is pending. This requires the v9 bundle and a matching signed guest;
-the v8 activation history must remain intact. An existing backend executing an
-old function body may need separate guarded termination after admission is
-paused and active work has drained. These local results do not establish live
-responsibility routing acceptance.
+The v9 bundle and matching signed guest were deployed on 2026-09-06. The founder
+paused admission and active work drained before guarded termination of the exact
+retrying backend. The production ledger retains all 149 migration records,
+including v8. Independent readback confirms the corrected functions retain
+their owners and ACLs and no longer contain the replaced `40001` denials.
+
+Live v9 responsibility acceptance then passed: two contributions and an exact
+replay produced one Co-Founder wake; the recipient paged both contributions,
+read the correct source version and resolved the queue silently. Member routing
+and self-loop fencing also passed. The three temporary definitions were retired.
+See the [current acceptance ledger](RUNTIME-STEPS-0-3-ACCEPTANCE.md) and its
+bound evidence for the remaining provider handoff gate and exact proof limits.

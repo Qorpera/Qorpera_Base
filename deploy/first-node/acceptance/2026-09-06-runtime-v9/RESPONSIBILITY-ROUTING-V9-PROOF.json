@@ -1,0 +1,177 @@
+{
+  "schema": "qorpera.live-responsibility-routing-proof/v1",
+  "passed": true,
+  "recordedAt": "2026-09-06T16:35:28.702Z",
+  "runtimeBundleSha256": "c90ab35c33b6af3a3fecbf0f9d1f06210a94a4769746c54c8a3ad94bbd87fab6",
+  "runs": [
+    {
+      "id": "5d046f93-e67f-4e82-834c-fabe8523f1ee",
+      "jobId": "5f52935b-a324-4034-922b-7b9484f9bf24",
+      "bundle": "c90ab35c33b6af3a3fecbf0f9d1f06210a94a4769746c54c8a3ad94bbd87fab6",
+      "launch": {
+        "toolsSha256": "df507e6b49b502427d91cb33d8a708ab197a266b51bfa80b2d12c7e43206f91c",
+        "binarySha256": "2f2c26cfdfacebbcce848fb50cfaaa4e8d0aa3c6ec3c1009123ecf766c8335f7",
+        "contextSha256": "fdb78fccabee09a87b975ce7c09a00a1724a2c9d73099853c150a01543bad81e"
+      },
+      "leases": 0,
+      "results": [
+        {
+          "job_id": "5f52935b-a324-4034-922b-7b9484f9bf24",
+          "run_id": "5d046f93-e67f-4e82-834c-fabe8523f1ee",
+          "runner_id": "c6461f68-382b-488e-94df-63c79f69b343",
+          "proposal_id": null,
+          "completed_at": "2026-09-06T16:27:04.674591+00:00",
+          "assignment_id": "72a59469-d5b7-4a96-a54e-d59f76812bb3",
+          "result_sha256": "52018207c679b987c61ad03cab65351e9722f5ac836d338e20f200f9e4983315",
+          "output_snapshot_id": null,
+          "company_disposition": "unchanged",
+          "transcript_end_sequence": 56,
+          "client_artifact_index_id": "11e7596c-5238-5d71-b0cd-850a3a207270",
+          "client_substrate_version_id": "d6299e3b-9356-5213-9970-d1c842232ffa"
+        }
+      ],
+      "staffId": "37e5f62b-177a-4d66-9cb3-a7357fbcd0f9",
+      "attempts": 1,
+      "runnerId": "c6461f68-382b-488e-94df-63c79f69b343",
+      "sourceId": "5d046f93-e67f-4e82-834c-fabe8523f1ee",
+      "jobStatus": "completed",
+      "startedAt": "2026-09-06T16:26:22.60878+00:00",
+      "finishedAt": "2026-09-06T16:27:04.674591+00:00",
+      "sourceKind": "session_turn",
+      "staffVersion": 1,
+      "sponsorBinding": "0c2c8103-0467-4716-b302-8720ec18dfe8",
+      "sponsorVersion": 1,
+      "dispatchFailures": 0
+    },
+    {
+      "id": "4963ea3e-2354-45c1-af1c-6edfe33d47bc",
+      "jobId": "1363b2a6-dfa5-4cc8-b08e-e01640946c64",
+      "bundle": "c90ab35c33b6af3a3fecbf0f9d1f06210a94a4769746c54c8a3ad94bbd87fab6",
+      "launch": {
+        "toolsSha256": "ffbc1762e8dcccbdb2e58b7ab058d2338453d80465a6cd6e11f7ea245e13878d",
+        "binarySha256": "2f2c26cfdfacebbcce848fb50cfaaa4e8d0aa3c6ec3c1009123ecf766c8335f7",
+        "contextSha256": "6db892475710eac0f75c30b93ffa892f4febfcd6cb9696619ac24910e1029d1a"
+      },
+      "leases": 0,
+      "results": [
+        {
+          "job_id": "1363b2a6-dfa5-4cc8-b08e-e01640946c64",
+          "run_id": "4963ea3e-2354-45c1-af1c-6edfe33d47bc",
+          "runner_id": "15f114d1-2ad3-4861-8d6c-404fd17b5b60",
+          "proposal_id": null,
+          "completed_at": "2026-09-06T16:28:02.948215+00:00",
+          "assignment_id": "ac55dbb1-5f5f-43b7-91f6-4f0b5167bafd",
+          "result_sha256": "fce9c2b2315e075052d1c8ba0d64498df3f00385829eeb4b91d684dae0714140",
+          "output_snapshot_id": null,
+          "company_disposition": "unchanged",
+          "transcript_end_sequence": 0,
+          "client_artifact_index_id": "272700a2-c73b-582e-901c-5bd457fd0711",
+          "client_substrate_version_id": "a75f6f1b-faac-5d22-b9df-41fb244500bc"
+        }
+      ],
+      "staffId": "52874779-795f-4cc4-9390-4d2fdc32ee32",
+      "attempts": 1,
+      "runnerId": "15f114d1-2ad3-4861-8d6c-404fd17b5b60",
+      "sourceId": "d56109e6-4b9f-4985-ae6f-6eb9d9065b52",
+      "jobStatus": "completed",
+      "startedAt": "2026-09-06T16:27:24.940614+00:00",
+      "finishedAt": "2026-09-06T16:28:02.948215+00:00",
+      "sourceKind": "wake",
+      "staffVersion": 2,
+      "sponsorBinding": "0c2c8103-0467-4716-b302-8720ec18dfe8",
+      "sponsorVersion": 1,
+      "dispatchFailures": 0
+    },
+    {
+      "id": "203c0412-7532-4e9f-ac0b-8a5d9b607e06",
+      "jobId": "b6f97f7b-d93a-4621-baca-65e300385370",
+      "bundle": "c90ab35c33b6af3a3fecbf0f9d1f06210a94a4769746c54c8a3ad94bbd87fab6",
+      "launch": {
+        "toolsSha256": "df507e6b49b502427d91cb33d8a708ab197a266b51bfa80b2d12c7e43206f91c",
+        "binarySha256": "2f2c26cfdfacebbcce848fb50cfaaa4e8d0aa3c6ec3c1009123ecf766c8335f7",
+        "contextSha256": "1e9e1ac1f27ce6955f86e4d9763152558624f8970c5444fc159c8b81cb67e8cb"
+      },
+      "leases": 0,
+      "results": [
+        {
+          "job_id": "b6f97f7b-d93a-4621-baca-65e300385370",
+          "run_id": "203c0412-7532-4e9f-ac0b-8a5d9b607e06",
+          "runner_id": "4e6f7e4d-516b-44d8-8198-d0fd5097d50b",
+          "proposal_id": null,
+          "completed_at": "2026-09-06T16:31:10.84387+00:00",
+          "assignment_id": "ad54ec92-8ff0-43ef-b850-0899c79ce103",
+          "result_sha256": "c69ecccb404fef0aad734e7d92756670078972261bae46e939dc43940835685c",
+          "output_snapshot_id": null,
+          "company_disposition": "unchanged",
+          "transcript_end_sequence": 59,
+          "client_artifact_index_id": "17bad3ea-4522-5459-84da-876e3e66ec8a",
+          "client_substrate_version_id": "c2023c21-260b-5c0a-91f3-e131df356e9b"
+        }
+      ],
+      "staffId": "37e5f62b-177a-4d66-9cb3-a7357fbcd0f9",
+      "attempts": 1,
+      "runnerId": "4e6f7e4d-516b-44d8-8198-d0fd5097d50b",
+      "sourceId": "203c0412-7532-4e9f-ac0b-8a5d9b607e06",
+      "jobStatus": "completed",
+      "startedAt": "2026-09-06T16:30:24.894807+00:00",
+      "finishedAt": "2026-09-06T16:31:10.84387+00:00",
+      "sourceKind": "session_turn",
+      "staffVersion": 1,
+      "sponsorBinding": "0c2c8103-0467-4716-b302-8720ec18dfe8",
+      "sponsorVersion": 1,
+      "dispatchFailures": 0
+    }
+  ],
+  "cofounder": {
+    "queueId": "fd65aefa-a208-4e1a-b411-871ac240435f",
+    "contributions": 2,
+    "exactReplay": true,
+    "wakes": 1,
+    "sourceRead": {
+      "id": "08aa234b-cb85-428a-9f49-29749f97ef43",
+      "path": "runtime-boundary-v8/responsibility-evidence.txt",
+      "bytes": 140,
+      "runId": "4963ea3e-2354-45c1-af1c-6edfe33d47bc",
+      "version": "861447fb-718d-4329-b41d-69b17f7e5759",
+      "confirmedAt": "2026-09-06T16:27:55.976409+00:00"
+    },
+    "resolvedSilently": true
+  },
+  "member": {
+    "queueId": "4c136abf-1c9a-4f7b-a771-f60e02fef30e",
+    "actualFounderReadAndResolution": true,
+    "agentWakeCount": 0
+  },
+  "self": {
+    "queueId": "be108999-cd17-4d6f-81de-70bb2ef4210c",
+    "causalFence": true,
+    "wakes": 0
+  },
+  "temporaryDefinitionsRetired": 3,
+  "originalActiveDefinitionsPreserved": 4,
+  "openQueues": 0,
+  "historyDeleted": false,
+  "physical": [
+    {
+      "runId": "5d046f93-e67f-4e82-834c-fabe8523f1ee",
+      "observedAndRemoved": true
+    },
+    {
+      "runId": "4963ea3e-2354-45c1-af1c-6edfe33d47bc",
+      "observedAndRemoved": true
+    },
+    {
+      "runId": "203c0412-7532-4e9f-ac0b-8a5d9b607e06",
+      "observedAndRemoved": true
+    }
+  ],
+  "artifacts": {
+    "outputs/runtime-custody-3c0bf3bce/responsibility-routing-state-1788712528368.json": "d92b738b7f1d9bc6f35ec8c2b2a3e4ede73ea427dc2acfdabd071ef346beeaf6",
+    "outputs/runtime-custody-3c0bf3bce/responsibility-live-preflight-1788712489896.json": "3c1f1b65d092912209d35749a04c237398c40fa152d6eccbaebe37b0b9ec77d0",
+    "outputs/runtime-live-3c0bf3bce/RESPONSIBILITY-COALESCING-NATIVE-DIGEST-PROOF.json": "2590f2d6f24297666a7f55006457d55ee92b4fb9639a105cb1b61acfc1d59701",
+    "outputs/runtime-live-3c0bf3bce/RESPONSIBILITY-ROUTING-CLEANUP-RESULT.json": "76bb8051d6cb45ece017f1fe1aaa0b39f983795e7df56c5607c3b7a0bd3b1b1a",
+    "outputs/runtime-live-3c0bf3bce/responsibility-coalescing-v9-01.diagnostics.json": "39ca5d8805e74c894252780e2aaab2cba5b2a097c98eeaa71a8d6838b1deebab",
+    "outputs/runtime-live-3c0bf3bce/responsibility-member-self-v9-01.diagnostics.json": "ccc1dabd3dad045e817929be40c2a4a88aa93a9d5bb0c98b9979471009659d3a"
+  },
+  "fullStepsZeroThroughThreeAcceptance": false
+}

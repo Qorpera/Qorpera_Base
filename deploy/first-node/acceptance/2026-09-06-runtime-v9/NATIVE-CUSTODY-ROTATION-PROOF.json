@@ -1,0 +1,78 @@
+{
+  "schema": "qorpera.native-custody-rotation-proof/v1",
+  "passed": true,
+  "observedAt": "2026-09-06T13:04:27.280Z",
+  "runId": "d43930a3-8685-493a-8f76-2a2e1a0ca39b",
+  "jobId": "9a744806-337b-4648-b26f-88aadca51e4b",
+  "runnerId": "523e3685-4693-48b9-b6cb-7e599e717ac6",
+  "runtimeBundleSha256": "b60a49ccef8953ba2a4e3b4559d01d2852a8cfdf737123c9bf435171409b5f51",
+  "nativeBinarySha256": "2f2c26cfdfacebbcce848fb50cfaaa4e8d0aa3c6ec3c1009123ecf766c8335f7",
+  "secretId": "2f8af02f-19aa-485e-928d-4bf9e43bf7f7",
+  "secretVersion": 2,
+  "previousEnvelopeUnchanged": true,
+  "vendorTokenChanged": true,
+  "oldVendorTokenRejectedWithoutEffect": true,
+  "existingGrantResolvedCurrentVersion": true,
+  "newVersionCaptureAttributedToFounder": true,
+  "connectorInvocations": 6,
+  "completedReceipts": 5,
+  "destinationEffects": 5,
+  "duplicateInvocationCreatedNoExtraEffect": true,
+  "reflectionResponsesWithheld": 4,
+  "completedRunResults": 1,
+  "activeLeases": 0,
+  "guestObservedAndRemoved": true,
+  "temporaryCapturePrivateKeyRemoved": true,
+  "observerJournalReadFailures": 6,
+  "observerInventoryReadFailures": 0,
+  "privateContentsReturned": false,
+  "signedGuestModified": false,
+  "fullStepsZeroThroughThreeAcceptance": false,
+  "remainingCustodyGates": [
+    "grant and secret revocation effects",
+    "encrypted recovery",
+    "post-run non-exposure scan"
+  ],
+  "evidence": {
+    "rotation": {
+      "path": "outputs/runtime-custody-3c0bf3bce/PROVIDER-TOKEN-V2-ROTATION-RESULT.json",
+      "sha256": "c43663dfee53caf5726d53b67ce3e129123e5033ef4e1857be5f621a77e3b764"
+    },
+    "capture": {
+      "path": "outputs/runtime-custody-3c0bf3bce/CAPTURE-V2-COMPLETED-RESULT.json",
+      "sha256": "acbdb7baf45d905ac9b1e29ec107bf32ab50d5645917487df8fda7a4ef8a4155"
+    },
+    "versionReadback": {
+      "path": "outputs/runtime-custody-3c0bf3bce/custody-version-two-readback-1788699568664.json",
+      "sha256": "dc5cd99ce9ea5aa44e35b93f2e4c3ec14ac12dc9fa840d1c64f7ae5a00571839"
+    },
+    "readback": {
+      "path": "outputs/runtime-live-3c0bf3bce/custody-human-05.readback-1788699688463.json",
+      "sha256": "96ce04dd19c48f6d1ce26b9df0360128b6c59abb6e3383085f4e3ff1b4cf5431"
+    },
+    "observer": {
+      "path": "outputs/runtime-live-3c0bf3bce/custody-human-05.diagnostics.json",
+      "sha256": "5246e7fb54017767a9e01fbc9ee75b4149141e8476f1203ff0ee88852f2d27b6"
+    },
+    "ledger": {
+      "path": "outputs/runtime-custody-3c0bf3bce/NATIVE-CUSTODY-FIVE-LEDGER-RESULT.json",
+      "sha256": "aaea141df185b7db6f498c096ce7a85367bd10464f26ccb51ee21f922689a475"
+    },
+    "transportCleanup": {
+      "path": "outputs/runtime-custody-3c0bf3bce/CAPTURE-V2-TRANSPORT-CLEANUP-RESULT.json",
+      "sha256": "12c29366418716dafd51197247845c4113dbdd15ef1e593ecb409a45b83b6e9e"
+    },
+    "pause": {
+      "path": "outputs/runtime-live-3c0bf3bce/founder-pause-custody-rotation.result.json",
+      "sha256": "17955ea7f671357f4185878ecb27d4ff9cdacb8fbfc925f7ef0b06fec8d87734"
+    },
+    "resume": {
+      "path": "outputs/runtime-live-3c0bf3bce/founder-resume-custody-rotation.result.json",
+      "sha256": "69f3550eebd1fb31499dbc92e25edb4cf229b6113de31be5f39441020d17d38a"
+    },
+    "keyringSource": {
+      "path": "outputs/runtime-custody-3c0bf3bce/KEYRING-RECOVERY-SOURCE-RESULT.json",
+      "sha256": "2b9df842e1b9529d290340c51a1e297e74cd8695173ccb106d7d883d10978e82"
+    }
+  }
+}

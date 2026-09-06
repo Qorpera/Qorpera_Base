@@ -1,29 +1,68 @@
-# Runtime Steps 0–3 acceptance ledger — 2026-09-05
+# Runtime Steps 0–3 acceptance ledger — 2026-09-06
 
-Status: local implementation and source proofs pass; signed deployment and live acceptance remain open. This is not release approval or a declaration of production readiness. Canonical scope is `QORPERA-RUNTIME-CONTRACT.md`, including its ratified responsibility-model placement and September amendments. Existing production migrations v1–v5 and historical receipts remain unchanged.
+The signed v9 runtime is deployed and executing successfully. **Full Steps 0–3
+acceptance remains open:** actual provider usage-limit notification and automatic
+sponsor handoff have not been demonstrated. Local adapter and SQL tests do not
+close that live gate.
 
-| Contract gate | Current evidence | Remaining work |
-| --- | --- | --- |
-| 0: live Company File, two-member and agent ACLs, protected proposals, stale/revoked authority, attribution | Full 125-migration provenance driver passes private publication consent, exact reads, CAS, revocation and restart; real file verifier accepts equivalent object order and rejects changed members, lengths and metadata | Reprove the deployed candidate with clients offline |
-| 0: Co-Founder, formation, responsibilities/projects/measures, scopes, projections and staff lifecycle | Organization and lifecycle SQL pass after 125 migrations; responsibility definitions are published through reviewed member commands and projected before routing | Reprove creation/hire through the deployed member path and native first-run |
-| 1: governed model loop, send-only visibility and grounded completion | Focused native suites pass; real PostgreSQL company/private human contexts parse and compose successfully | Resolve the production context-preparation failure and run signed deployed acceptance |
-| 1: typed usage-limit signal and safe diagnostics | Fixed governed Codex quota/rate/outage classification, independent of optional observation; added trusted failure-stage metadata; native tests pass | Prove notification and automatic handoff through the actual adapter and current database |
-| 2: inbound/result fences, outbound authorization, ambiguity handling | Native and database tests cover fenced results, denied effects, exact receipt replay and retained provenance | Reprove deployed canary on the final signed candidate, including rotation/revocation/reflection/restart/recovery |
-| 3: same agent through human, first-run, routine, agent and room kinds | All five production materializers produce real native context for the same staff ID, accepted by production TypeScript parsers, exact bundle check and prompt composer; unavailable custody leaves kickoff unclaimed and repeated materialization does not duplicate it | Record the same-agent deployed proof, including the actual creation/hire producer; input documents and room projection in the local context test remain explicit fixtures |
-| 3: silent routine, authorized file-event delivery, coalescing and causal fencing | All 19 integration cases pass, plus concurrent drain, restart, revocation and authority fencing regressions | Complete signed deployed proof |
-| 3: Co-Founder routing and responsibility escalation | Added addressed staff/member queues with immutable contributions, exact operation receipts, Co-Founder routing, current responsibility/project scope checks, private-context rejection, concurrent coalescing, causal fencing and stale-resolution rejection; real database and native tool tests pass | Prove the deployed agent uses the tools correctly; thresholds are interpreted from the current responsibility definition, not executed as arbitrary code |
-| 3: room fan-out, consent, ceiling, founder stop, sponsor handoff | Database integration passes the current cases | Reprove on final deployed bytes; distinguish real adapter signal from SQL-only handoff tests |
-| Operational: signed image/provider/bundle agreement; guest cleanup; transient start failure | Live readback found bundle v5 active with candidate 3.1 image embedding v4; no job guests, but two expired active runner rows remain | Approved drain, compatible signed image/provider activation, bounded real start-failure/recovery proof and confirmed guest release |
-| Reproducible rollout | Restored disabled packet generator; 7 generator tests pass. Current-candidate fixture passes 61 generated controller/transport tests, all 7 wrapper steps, replay rejection, cleanup and frozen verification; baseline 139 advances to 143 while admission stays disabled | Freeze the actual clean candidate packet against fresh live evidence and bind four fresh approved release receipts; disposable fixture commits and receipts are not release approval |
+The [September 5 ledger](RUNTIME-STEPS-0-3-ACCEPTANCE-2026-09-05.md) remains a
+historical checkpoint. Its pending deployment and paused-admission statements
+no longer describe production. The founder subsequently authorized production
+changes, signing, credential diagnostics, and reopening admission.
 
-Read-only production observations show both September 3 failures ended during `company_context` preparation, before that span succeeded and before a model-turn observation began. Subscription health is unknown; active connection metadata does not establish it. New failure metadata exposes only a closed stage/category/signal vocabulary, without provider diagnostics or credentials.
+## Deployed state
 
-The original session-input materializer predates native compute and failed with `native execution credential does not belong to its compute identity`. The new `20260905000250_native_session_input_compute.sql` supplies the identity from the immutable sponsor/capsule while retaining input claims, sponsor reservation and provenance/recovery checks. This failure was reproduced before the fix and the real materializer now passes; it is a separate defect from the September 3 human-run failure.
+Runtime source: `8424d35c18546cabee8a080a63eb6ab71f5f59f8`.
+Active bundle v9:
+`c90ab35c33b6af3a3fecbf0f9d1f06210a94a4769746c54c8a3ad94bbd87fab6`.
+Image:
+`a6c17ca322a4d7f5e533db0bc46ed7d8082c81afd0da197bdd9bb25426510214`.
+Guest manifest:
+`b02d2d613affd0c6124537bdde58d9c27f22922faca808bf87cd1fe2f63a5948`.
 
-The bundle generator previously omitted migration `20260828020000_runtime_wake_bus.sql`. Bundle v6 includes it and all prior migrations. The four new migrations are closure-set verification (`20260905000100`), responsibility routing (`20260905000200`), native session-input compute (`20260905000250`) and bundle activation (`20260905000300`). The candidate bundle is `d7d83b5c8100b33b7fab473724d006124a166eff585bfa7f0b60a8fa9901750c`.
+Final readback confirms 149 retained migration records, admission enabled at
+policy version 19, founder pause cleared, and the normal 240 wakes/hour ceiling
+restored at version 5. There are no active jobs, assignments, native leases, or
+job guests. The provider and orchestrator are active; the legacy provider is
+inactive. Signature, artifact pins, HTTPS health and source restrictions pass.
 
-The complete local guest package uses the original verified native binary and signed sandbox archive; its manifest is `8fa3e28163667765ae7074fdfe4da9dcd1622357b17501f15d8ff7b65eb96ff3`. It is a package, not a signed LXD image. The frozen v56 recipes still pin their own archive `6a662a6b93c3737d417b08764591c784f69d65b732beb75934f7703ae2fa13d9`; its original manifest was recovered read-only and stored as `native-codex/v56-guest-package-manifest.json` (`94b5dd1675f85955f8059eb25429b4d35800147206b1fa87ce7e5638bcea3d14`). The package test verifies that historical recipe against its manifest and retains the current Linux package equality check separately.
+The [evidence manifest](acceptance/2026-09-06-runtime-v9/MANIFEST.json) binds 24
+bounded summaries and current node/database readbacks. Referenced raw witnesses
+remain in the recorded workspace. Older proofs retain their actual bundle
+versions; they are not presented as new v9 executions. The filenames below
+refer to that evidence directory.
 
-Validation: `npm run check` passes; 189 focused native/context/wake/responsibility tests, 139 runtime/boundary/operation/result-fence tests and 44 LXD provider/provenance tests pass. Bundle and runner packaging tests, all 125-migration provenance/organization/custody tests, the same-agent context and responsibility integration driver, the 19-case wake integration driver and the actual SQL-wrapper rehearsal pass. No paid provider was used in these tests.
+## Acceptance coverage
 
-Production remains paused. Source changes and disposable tests are authorized. Production SQL, signing, release/infrastructure changes, credential-sensitive live probes and reopening admission retain the founder approval gates from `RUNTIME-STEP-3-HANDOFF.md`. No production mutation, model call, image activation or service restart has been performed in this implementation phase.
+| Requirement | Evidence and limits |
+| --- | --- |
+| Step 0: live Company File and authority | Two real managed members and one native agent exercised private, exact and subtree ACLs; disjoint writes, stale CAS, reviewed publication, source-grant revocation and attribution passed. The temporary member was removed, logged out and banned; grants were revoked and history retained. `TWO-MEMBER-ONE-AGENT-PATH-PROOF.json`. |
+| Step 0: organization substrate | Versioned organization, responsibility, project, measure, lifecycle and scope SQL passed migration tests. Actual reviewed member commands created and retired responsibility definitions; an actual hire produced the native first-run. Formation research, workers and later projections retain their contract placement in Orders 5–10. |
+| Step 1: model loop and mouth | Native human execution, grounded reads, explicit no-change completion, live mutations and canonical send publication passed. Room execution preserves silence and bounded sends. Missing optional telemetry is identified in each proof; exact native output hashes establish the stated boundary outcomes. |
+| Steps 1 and 3: usage-limit notification and handoff | **Open.** The current connection executes successfully. Older stored credentials belong to a different account, but its governed probe failed at `codex-turn-completion / provider_failed`, with no sends, result, usage signal or handoff. The underlying cause is unknown. Its temporary sponsor binding is revoked; the current sponsor is unchanged. `SPONSOR-HANDOFF-V9-STATUS.json`. |
+| Step 2: input and effect fences | Injected Company File instructions were ignored; unauthorized, stale and revoked effects were denied. Canary capture/use, rotation, reflection withholding, grant/member/secret revocation, restart and encrypted recovery passed. The secret-wide test proves an in-flight fence; it does not claim the denied call began after revocation. |
+| Step 2: nonexposure | Final scans cover broker persistent roots and journals, 158 public runtime tables, gateway and orchestrator state, node state and selected release logs, and all 411 Company41 Storage objects. No connector-credential or unclassified match was found. Twelve node matches are explicitly classified protected platform credentials. Scope, patterns, hash-based reuse and exclusions: `NONEXPOSURE-V9-SCOPE-MATRIX.json`. |
+| Step 3: five wake kinds and silence | The same RuntimeAcceptance staff identity has actual first-run, human, routine, coworker and room executions. Silent file-triggered routine, exact replay/deduplication, file self-loop fencing, coworker return-loop fencing, room audience publication and send ceilings passed. The final 131-migration context driver also passes all five real SQL producers through the native context adapter. |
+| Step 3: responsibility routing | On v9, two contributions coalesced into one Co-Founder wake; exact replay reused its receipt. The recipient paged both contributions, read the correct source version and resolved silently. Member routing produced no agent wake; self-routing was causally fenced. All three temporary definitions are retired; the original four remain unchanged and no escalation queue is open. `RESPONSIBILITY-ROUTING-V9-PROOF.json`. |
+| Step 3: company controls | A live write committed before founder stop; the next read begun after pause returned unconfirmed in 248 ms and no additional write committed. New admission failed with SQLSTATE `55000` and created no input/request. The wake ceiling cancelled the excess occurrence before recipient execution and notified the founder. Pause and normal ceilings were restored; temporary resource and grant are revoked. The underlying SQL error for the paused read was not captured. `FOUNDER-CONTROLS-V9-PROOF.json`. |
+| Operational recovery | Deliberately killing a real admitted runner during startup caused poweroff and guest deletion without restart; a subsequent admitted run succeeded. The accepted-claim retry loop was contained by guarded backend termination. The v9 correction preserves successful release/replay and denies stale operations without serialization replay. |
+
+## Validation and remaining work
+
+The deployed source passed full repository checks, the 131-migration
+context/provenance driver including concurrent responsibility coalescing and
+terminal-release regressions, three bundle-generator tests, guest packaging,
+and exact Linux x64 reproduction of all 27 package files. The frozen rollout
+packet passed 59 controller/transport tests and all five PostgreSQL wrapper
+steps. Production activation retained all historical migration records.
+
+To close the remaining live gate, obtain a working eligible fallback connection
+through the normal reconnect flow, then observe an actual adapter usage limit,
+member notification, same-run sponsor-version handoff and successful continuation
+from canonical context. Preserve the separate negative rate-limit/outage cases.
+No production usage signal was fabricated and no quota was deliberately exhausted.
+
+The NAS is reachable at `SynologyNAS.local` / `192.168.0.90`; the previously
+recorded `.91` address was stale. No NAS mount was changed. The probe failure is
+not attributed to the NAS. This ledger does not accept Orders 4–10, production
+connector breadth, or deferred Azure overflow.

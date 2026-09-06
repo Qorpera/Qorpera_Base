@@ -1,0 +1,304 @@
+{
+  "schema": "qorpera.live-room-send-budget-proof/v1",
+  "passed": true,
+  "recordedAt": "2026-09-05T17:13:07.105Z",
+  "sourceCommit": "3c0bf3bceaeea2f9f9676c2936761f7e2d9cede7",
+  "runtimeBundleSha256": "b60a49ccef8953ba2a4e3b4559d01d2852a8cfdf737123c9bf435171409b5f51",
+  "runs": [
+    {
+      "wake": {
+        "kind": "room",
+        "status": "completed",
+        "sourceKind": "room"
+      },
+      "jobId": "d3d7cad2-4da1-474a-bfd8-2ea918a2e30f",
+      "model": "gpt-5.6-sol",
+      "runId": "4a1499cc-8310-400a-aae9-7ec3f1b0b9ee",
+      "sends": null,
+      "bundle": "b60a49ccef8953ba2a4e3b4559d01d2852a8cfdf737123c9bf435171409b5f51",
+      "launch": {
+        "bundle": "b60a49ccef8953ba2a4e3b4559d01d2852a8cfdf737123c9bf435171409b5f51",
+        "binarySha256": "2f2c26cfdfacebbcce848fb50cfaaa4e8d0aa3c6ec3c1009123ecf766c8335f7",
+        "contextBytes": 13137,
+        "contextSha256": "8ab7afd4bb037477af4229b8ed752e9bb7dcfded79fcb342d1a49dff51f1bda6",
+        "toolCatalogSha256": "df507e6b49b502427d91cb33d8a708ab197a266b51bfa80b2d12c7e43206f91c"
+      },
+      "runner": {
+        "id": "9bcc8017-2757-4f2a-8607-02a8b1ec5a55",
+        "status": "active",
+        "version": "3c0bf3bce-production",
+        "sessionLive": true
+      },
+      "results": 1,
+      "attempts": 1,
+      "jobStatus": "completed",
+      "observedAt": "2026-09-05T17:08:24.815908+00:00",
+      "activeLeases": 0,
+      "staffAgentId": "73757922-d355-4eba-91aa-edf808a3124e",
+      "terminalObservations": [
+        {
+          "at": "2026-09-05T17:06:50.795+00:00",
+          "status": "succeeded",
+          "operation": "company_context"
+        },
+        {
+          "at": "2026-09-05T17:06:52.879+00:00",
+          "status": "unconfirmed",
+          "operation": "native_result_fence"
+        },
+        {
+          "at": "2026-09-05T17:06:55.042+00:00",
+          "status": "unconfirmed",
+          "operation": "native_result_fence"
+        },
+        {
+          "at": "2026-09-05T17:06:57.366+00:00",
+          "status": "succeeded",
+          "operation": "model_turn"
+        }
+      ]
+    },
+    {
+      "wake": {
+        "kind": "room",
+        "status": "requires_review",
+        "sourceKind": "room"
+      },
+      "jobId": "8523900f-c1e1-4d91-be4f-27e4bc89de4e",
+      "model": "gpt-5.6-sol",
+      "runId": "9c7536cd-33bf-405a-b597-62e8c6d75b1a",
+      "sends": [
+        {
+          "phase": "progress",
+          "eventId": "2a30ba45-ec8b-4242-a52a-3ca3397c38e3",
+          "createdAt": "2026-09-05T17:06:18.100112+00:00",
+          "textSha256": "930526aa0c4524dd87a845dd7c5d7a9eef2a1bb984c0c1f001fe3ac04eda68c2"
+        },
+        {
+          "phase": "progress",
+          "eventId": "3a5c323e-f979-4a56-a951-600d201c6958",
+          "createdAt": "2026-09-05T17:06:21.263271+00:00",
+          "textSha256": "6a234a46a40b34454e4a42ed55340224a755359b13cd47ae313607f23b047a7c"
+        },
+        {
+          "phase": "progress",
+          "eventId": "6a32dd27-f649-493d-97e2-272d73bddb59",
+          "createdAt": "2026-09-05T17:06:23.871912+00:00",
+          "textSha256": "67c6835c4744ed5a8372f860e009616a59e3101adec5fddcb70bb87395b1a38d"
+        }
+      ],
+      "bundle": "b60a49ccef8953ba2a4e3b4559d01d2852a8cfdf737123c9bf435171409b5f51",
+      "launch": {
+        "bundle": "b60a49ccef8953ba2a4e3b4559d01d2852a8cfdf737123c9bf435171409b5f51",
+        "binarySha256": "2f2c26cfdfacebbcce848fb50cfaaa4e8d0aa3c6ec3c1009123ecf766c8335f7",
+        "contextBytes": 8845,
+        "contextSha256": "edca25d85a5ae9e594f03be117436c8b45c66041851df1bd70a3ebf9e730cafa",
+        "toolCatalogSha256": "df507e6b49b502427d91cb33d8a708ab197a266b51bfa80b2d12c7e43206f91c"
+      },
+      "runner": {
+        "id": "d70698a0-f6b0-497a-a755-3352d3378519",
+        "status": "active",
+        "version": "3c0bf3bce-production",
+        "sessionLive": true
+      },
+      "results": 0,
+      "attempts": 1,
+      "jobStatus": "failed",
+      "observedAt": "2026-09-05T17:08:24.802669+00:00",
+      "activeLeases": 0,
+      "staffAgentId": "37e5f62b-177a-4d66-9cb3-a7357fbcd0f9",
+      "terminalObservations": [
+        {
+          "at": "2026-09-05T17:06:04.246+00:00",
+          "status": "succeeded",
+          "operation": "company_context"
+        },
+        {
+          "at": "2026-09-05T17:06:06.289+00:00",
+          "status": "unconfirmed",
+          "operation": "native_result_fence"
+        },
+        {
+          "at": "2026-09-05T17:06:08.511+00:00",
+          "status": "unconfirmed",
+          "operation": "native_result_fence"
+        },
+        {
+          "at": "2026-09-05T17:06:15.306+00:00",
+          "status": "unconfirmed",
+          "operation": "native_result_fence"
+        },
+        {
+          "at": "2026-09-05T17:06:18.89+00:00",
+          "status": "unconfirmed",
+          "operation": "native_result_fence"
+        },
+        {
+          "at": "2026-09-05T17:06:21.862+00:00",
+          "status": "unconfirmed",
+          "operation": "native_result_fence"
+        },
+        {
+          "at": "2026-09-05T17:06:24.565+00:00",
+          "status": "unconfirmed",
+          "operation": "native_result_fence"
+        },
+        {
+          "at": "2026-09-05T17:06:27.551+00:00",
+          "status": "unconfirmed",
+          "operation": "native_result_fence"
+        },
+        {
+          "at": "2026-09-05T17:06:29.116+00:00",
+          "status": "succeeded",
+          "operation": "model_turn"
+        }
+      ]
+    }
+  ],
+  "wakes": [
+    {
+      "id": "dc5cea45-8c43-4a6f-8c57-169901481104",
+      "wake_kind": "room",
+      "source_kind": "room",
+      "source_id": "0e024425-a376-493a-baad-38bf2fedcfd1",
+      "status": "completed",
+      "run_id": "4a1499cc-8310-400a-aae9-7ec3f1b0b9ee",
+      "staff_agent_id": "73757922-d355-4eba-91aa-edf808a3124e",
+      "created_at": "2026-09-05 17:05:40.136634+00",
+      "payload": {
+        "roomId": "56327b7c-edb8-477f-91b5-6a90aa5dc2e5",
+        "inputIds": [
+          "0e024425-a376-493a-baad-38bf2fedcfd1"
+        ],
+        "recipientStaffId": "73757922-d355-4eba-91aa-edf808a3124e"
+      }
+    },
+    {
+      "id": "15707228-d9c6-4ce6-b85c-b9fb9df6f1dc",
+      "wake_kind": "room",
+      "source_kind": "room",
+      "source_id": "0e024425-a376-493a-baad-38bf2fedcfd1",
+      "status": "requires_review",
+      "run_id": "9c7536cd-33bf-405a-b597-62e8c6d75b1a",
+      "staff_agent_id": "37e5f62b-177a-4d66-9cb3-a7357fbcd0f9",
+      "created_at": "2026-09-05 17:05:40.136634+00",
+      "payload": {
+        "roomId": "56327b7c-edb8-477f-91b5-6a90aa5dc2e5",
+        "inputIds": [
+          "0e024425-a376-493a-baad-38bf2fedcfd1"
+        ],
+        "recipientStaffId": "37e5f62b-177a-4d66-9cb3-a7357fbcd0f9"
+      }
+    }
+  ],
+  "sendObservations": [
+    {
+      "run_id": "9c7536cd-33bf-405a-b597-62e8c6d75b1a",
+      "operation": "send_message",
+      "phase": "start",
+      "observed_at": "2026-09-05 17:06:17.927+00",
+      "duration_ms": null,
+      "status": "started",
+      "category": null
+    },
+    {
+      "run_id": "9c7536cd-33bf-405a-b597-62e8c6d75b1a",
+      "operation": "send_message",
+      "phase": "finish",
+      "observed_at": "2026-09-05 17:06:18.295+00",
+      "duration_ms": "368",
+      "status": "succeeded",
+      "category": null
+    },
+    {
+      "run_id": "9c7536cd-33bf-405a-b597-62e8c6d75b1a",
+      "operation": "send_message",
+      "phase": "start",
+      "observed_at": "2026-09-05 17:06:21.085+00",
+      "duration_ms": null,
+      "status": "started",
+      "category": null
+    },
+    {
+      "run_id": "9c7536cd-33bf-405a-b597-62e8c6d75b1a",
+      "operation": "send_message",
+      "phase": "finish",
+      "observed_at": "2026-09-05 17:06:21.296+00",
+      "duration_ms": "211",
+      "status": "succeeded",
+      "category": null
+    },
+    {
+      "run_id": "9c7536cd-33bf-405a-b597-62e8c6d75b1a",
+      "operation": "send_message",
+      "phase": "start",
+      "observed_at": "2026-09-05 17:06:23.702+00",
+      "duration_ms": null,
+      "status": "started",
+      "category": null
+    },
+    {
+      "run_id": "9c7536cd-33bf-405a-b597-62e8c6d75b1a",
+      "operation": "send_message",
+      "phase": "finish",
+      "observed_at": "2026-09-05 17:06:24.01+00",
+      "duration_ms": "309",
+      "status": "succeeded",
+      "category": null
+    },
+    {
+      "run_id": "9c7536cd-33bf-405a-b597-62e8c6d75b1a",
+      "operation": "send_message",
+      "phase": "start",
+      "observed_at": "2026-09-05 17:06:26.754+00",
+      "duration_ms": null,
+      "status": "started",
+      "category": null
+    },
+    {
+      "run_id": "9c7536cd-33bf-405a-b597-62e8c6d75b1a",
+      "operation": "send_message",
+      "phase": "finish",
+      "observed_at": "2026-09-05 17:06:26.992+00",
+      "duration_ms": "238",
+      "status": "unconfirmed",
+      "category": "unknown"
+    }
+  ],
+  "denial": {
+    "context_identifiers": [
+      "qorpera_send_runner_agent_message",
+      "qorpera_send_native_agent_message"
+    ],
+    "count": 1,
+    "first_at": "2026-09-05T17:06:26.942000",
+    "last_at": "2026-09-05T17:06:26.942000",
+    "pid": "1013196",
+    "sql_state": "55000",
+    "knownErrors": [
+      "wake public send budget is exhausted"
+    ],
+    "standardErrors": [],
+    "unrecognizedMessageWithheld": false
+  },
+  "publicSendAttempts": 4,
+  "committedMessages": 3,
+  "fourthDenied": true,
+  "denialDurationMs": 238,
+  "automaticRetryObserved": false,
+  "otherRecipientSilent": true,
+  "agentSendsProducedNoAdditionalWakes": true,
+  "allObservedV8Wakes": 4,
+  "jobGuestsAbsent": true,
+  "negativeCompletion": "The test explicitly requested progress-only sends and no final. The mouth therefore rejected public completion after the model finished. The failed job and requires_review wake remain failed; this receipt accepts only the send limit and no-fanout behavior, not successful job completion.",
+  "artifacts": {
+    "outputs/runtime-live-3c0bf3bce/room-budget-01.request.json": "d070b09669c14dfeb4fa1f4cba1f982042d4e966250537d5ca6620ab49a1ccf6",
+    "outputs/runtime-live-3c0bf3bce/room-budget-01.result.json": "d6dca01f8470b645fd6bdac7acbbabff56805cfe471bb28bcd5b0961b57d35aa",
+    "outputs/runtime-live-3c0bf3bce/room-budget-01.error-summary.json": "6931c7d939607d0f7f7742bf9e4f5f832525865b37aaf4209081d7ee6c82c619",
+    "outputs/runtime-live-3c0bf3bce/ROOM-PUBLICATION-PROOF.json": "f36b1326c89fb1176ecacf4b6e5e65385763d074539972d4b4d55f69dc57e48e",
+    "outputs/runtime-image-3c0bf3bce/SIGNED-RESULT.json": "4f965732e6273ee9a0c03d8a1df74dfdd333de79e14130593a5527b40e4c77d5"
+  },
+  "signedGuestModified": false,
+  "allSteps03Complete": false
+}

@@ -1,0 +1,139 @@
+{
+  "schema": "qorpera.live-silent-file-routine-proof/v2",
+  "passed": true,
+  "recordedAt": "2026-09-05T17:21:33.182Z",
+  "sourceCommit": "3c0bf3bceaeea2f9f9676c2936761f7e2d9cede7",
+  "runtimeBundleSha256": "b60a49ccef8953ba2a4e3b4559d01d2852a8cfdf737123c9bf435171409b5f51",
+  "run": {
+    "wake": {
+      "kind": "routine",
+      "status": "completed",
+      "sourceKind": "company-file"
+    },
+    "jobId": "c68ede0e-d96c-4320-ba15-61660c5ed4e9",
+    "model": "gpt-5.6-sol",
+    "runId": "56256fdc-295e-4dc9-9344-c36365c8fff3",
+    "sends": null,
+    "bundle": "b60a49ccef8953ba2a4e3b4559d01d2852a8cfdf737123c9bf435171409b5f51",
+    "launch": {
+      "bundle": "b60a49ccef8953ba2a4e3b4559d01d2852a8cfdf737123c9bf435171409b5f51",
+      "binarySha256": "2f2c26cfdfacebbcce848fb50cfaaa4e8d0aa3c6ec3c1009123ecf766c8335f7",
+      "contextBytes": 8447,
+      "contextSha256": "598f82c4f43584bc098ad8dfbff6e6d703d49365daa8172034366b74da9c74b1",
+      "toolCatalogSha256": "ffbc1762e8dcccbdb2e58b7ab058d2338453d80465a6cd6e11f7ea245e13878d"
+    },
+    "runner": {
+      "id": "06ea1abe-39f3-454e-adf8-8d6ab57944f6",
+      "status": "active",
+      "version": "3c0bf3bce-production",
+      "sessionLive": true
+    },
+    "results": 1,
+    "attempts": 1,
+    "jobStatus": "completed",
+    "observedAt": "2026-09-05T17:18:28.382809+00:00",
+    "activeLeases": 0,
+    "staffAgentId": "37e5f62b-177a-4d66-9cb3-a7357fbcd0f9",
+    "terminalObservations": [
+      {
+        "at": "2026-09-05T17:16:34.746+00:00",
+        "status": "succeeded",
+        "operation": "company_context"
+      },
+      {
+        "at": "2026-09-05T17:16:36.934+00:00",
+        "status": "unconfirmed",
+        "operation": "native_result_fence"
+      },
+      {
+        "at": "2026-09-05T17:16:38.906+00:00",
+        "status": "unconfirmed",
+        "operation": "native_result_fence"
+      },
+      {
+        "at": "2026-09-05T17:16:41.237+00:00",
+        "status": "succeeded",
+        "operation": "model_turn"
+      }
+    ]
+  },
+  "wakes": [
+    {
+      "id": "d0dad73e-5e2b-4bd3-9c1b-4b5d8ab6b11c",
+      "wake_kind": "routine",
+      "source_kind": "company-file",
+      "source_id": "6d1024f0-208f-43e9-96ac-bf2d212a7c8d",
+      "status": "completed",
+      "run_id": "56256fdc-295e-4dc9-9344-c36365c8fff3",
+      "staff_agent_id": "37e5f62b-177a-4d66-9cb3-a7357fbcd0f9",
+      "created_at": "2026-09-05 17:16:11.386958+00",
+      "payload": {
+        "path": "runtime-acceptance-a80f32ec1/signal.txt",
+        "eventId": "6d1024f0-208f-43e9-96ac-bf2d212a7c8d",
+        "version": "bc5285f5-b079-4f3c-b35b-888cd808be3f",
+        "operation": "upsert",
+        "receiptId": null,
+        "proposalId": null,
+        "previousVersion": "87b8821d-6e22-46ec-b723-367c614af26f"
+      }
+    }
+  ],
+  "fileResult": {
+    "path": "runtime-acceptance-a80f32ec1/signal.txt",
+    "state": "applied",
+    "schema": "qorpera.company-path-result/v1",
+    "version": "bc5285f5-b079-4f3c-b35b-888cd808be3f",
+    "receiptId": null,
+    "proposalId": null,
+    "snapshotId": "6d1024f0-208f-43e9-96ac-bf2d212a7c8d",
+    "operationKey": "runtime-3c0bf3bce-file-signal-01"
+  },
+  "commandId": "6a88dd1d-4799-497a-bdb3-72b7af075858",
+  "confirmedCommandReplayExact": true,
+  "exactFileMutationProducedOneWake": true,
+  "duplicateCommandProducedNoAdditionalWake": true,
+  "nativeLaunchRecorded": true,
+  "noPublicSends": true,
+  "credentialLeasesReleased": true,
+  "guestObserved": {
+    "event": "guest_observed",
+    "at": "2026-09-05T17:16:14.824Z",
+    "guest": "qorpera-56256fdc295e4dc99344c36365c8fff3",
+    "acquisitionId": "56256fdc-295e-4dc9-9344-c36365c8fff3"
+  },
+  "jobGuestRemoved": true,
+  "contextObservations": [
+    {
+      "run_id": "56256fdc-295e-4dc9-9344-c36365c8fff3",
+      "operation": "company_context",
+      "phase": "start",
+      "observed_at": "2026-09-05 17:16:34.028+00",
+      "duration_ms": null,
+      "status": "started",
+      "category": null
+    },
+    {
+      "run_id": "56256fdc-295e-4dc9-9344-c36365c8fff3",
+      "operation": "company_context",
+      "phase": "finish",
+      "observed_at": "2026-09-05 17:16:34.746+00",
+      "duration_ms": "718",
+      "status": "succeeded",
+      "category": null
+    }
+  ],
+  "limitation": "This proves one authorized file event and exact confirmed-command replay. Deliberate self-caused write-loop suppression and distinct-event coalescing are separate cases.",
+  "artifacts": {
+    "outputs/runtime-live-3c0bf3bce/canary-signal-01.request.json": "c57e0f94e43e454ee4530cafe4863a2eb8a69300a3ca6de1a388ed651704ccc2",
+    "outputs/runtime-live-3c0bf3bce/canary-signal-01.result.json": "8fb6267a13d8a5587c2d5287a4a397f1a97474a116225b3e50d3ab3e70a51856",
+    "outputs/runtime-live-3c0bf3bce/canary-signal-01-replay.request.json": "c57e0f94e43e454ee4530cafe4863a2eb8a69300a3ca6de1a388ed651704ccc2",
+    "outputs/runtime-live-3c0bf3bce/canary-signal-01-replay.result.json": "738b63615737ff2ca054bd0e49a75e17c333a94f639cbbc5d7d5c3ee49be7bd5",
+    "outputs/runtime-live-3c0bf3bce/canary-signal-01.diagnostics.json": "b0f21d3be8e7c13af27f7a4ad1d5346decd5d06907d7680f21e911d981461142",
+    "outputs/runtime-live-3c0bf3bce/ADMISSION-RESULT.json": "bf702e5c9a06edec3f21c271932ea279dfc764deab2bd769f2fe3432327b0ddf",
+    "outputs/runtime-image-3c0bf3bce/SIGNED-RESULT.json": "4f965732e6273ee9a0c03d8a1df74dfdd333de79e14130593a5527b40e4c77d5",
+    "outputs/runtime-live-459b50c36/SILENT-ROUTINE-PROOF.json": "8fc830b03e32313d1b8e71e824df687a324840143243b638d57d6f5eecb3aa7f"
+  },
+  "historicalFailuresPreserved": true,
+  "signedGuestModified": false,
+  "allSteps03Complete": false
+}

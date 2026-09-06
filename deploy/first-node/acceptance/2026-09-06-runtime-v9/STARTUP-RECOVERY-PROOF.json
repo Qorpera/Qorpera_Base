@@ -1,0 +1,28 @@
+{
+  "schema": "qorpera.startup-recovery-proof/v1",
+  "passed": true,
+  "recordedAt": "2026-09-06T15:02:50.019Z",
+  "runId": "1c11465c-e796-43bf-889d-b6d24092689c",
+  "jobId": "3b3496ad-b37f-4e0e-b767-10d79bde7b98",
+  "runnerId": "8cb709e9-797e-4b37-b898-db1233c81de0",
+  "providerSha256": "932b15a056aa8e28f0001e59ca6e778cbbc565d1ceb8511d5d9ebd18a76e7a2e",
+  "runtimeBundleSha256": "b60a49ccef8953ba2a4e3b4559d01d2852a8cfdf737123c9bf435171409b5f51",
+  "jobStatus": "completed",
+  "attempts": 1,
+  "results": 1,
+  "assignments": 1,
+  "dispatchFailures": 0,
+  "activeNativeLeases": 0,
+  "operationReceipts": 0,
+  "guestAbsent": true,
+  "journalState": "stopped",
+  "stopReason": "idle",
+  "retainedVolumes": [
+    "qorpera-identity-6cb7e559-40d7-4ee6-848a-2ad2b65c20be",
+    "qorpera-recovery-1c11465c-e796-43bf-889d-b6d24092689c"
+  ],
+  "canonicalHelperRestored": true,
+  "cloudEvidencePath": "outputs/runtime-custody-3c0bf3bce/startup-recovery-sixth-state-1788706728814.json",
+  "cloudEvidenceSha256": "cbfb63b2fc86ee62e7b29242f5fe280bf250c897e89126bcf40dc624d630935e",
+  "fullStepsZeroThroughThreeAcceptance": false
+}

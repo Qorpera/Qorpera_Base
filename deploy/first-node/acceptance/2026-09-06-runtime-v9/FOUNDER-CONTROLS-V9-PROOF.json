@@ -1,0 +1,60 @@
+{
+  "schema": "qorpera.live-founder-controls-proof/v1",
+  "passed": true,
+  "recordedAt": "2026-09-06T16:43:29.881Z",
+  "runtimeBundleSha256": "c90ab35c33b6af3a3fecbf0f9d1f06210a94a4769746c54c8a3ad94bbd87fab6",
+  "founderStop": {
+    "runId": "4485721a-df8a-48d4-bd8a-614b3962309c",
+    "pausedAt": "2026-09-06T16:35:33.08011+00:00",
+    "committedWritesBeforePause": 1,
+    "committedWritesAfterPause": 0,
+    "postPauseReadStart": "2026-09-06T16:35:35.678+00:00",
+    "postPauseReadOutcome": "unconfirmed",
+    "responseDurationMs": 248,
+    "readFailureClassification": "transport_unavailable",
+    "rawDatabaseReadErrorNotCaptured": true,
+    "newAdmissionSqlstate": "55000",
+    "newAdmissionRowsCreated": 0,
+    "founderNotified": true,
+    "completedWithAccuratePublicBlocker": true
+  },
+  "wakeCeiling": {
+    "runId": "7c8bf974-87c7-4843-ac55-37ce9d09765a",
+    "occurrenceId": "863ae183-9d01-40d7-b396-13cb072c7820",
+    "ceiling": 1,
+    "used": 2,
+    "occurrenceCancelled": true,
+    "recipientRunCreated": false,
+    "tripId": "a50f77d7-fa79-487e-8730-e9736008e854",
+    "notificationId": "d753e9b2-a70c-409d-bc0b-2ac7d433c7bf",
+    "receiptMeansDurableRoutingNotRecipientExecution": true
+  },
+  "cleanup": {
+    "paused": false,
+    "wakesPerHour": 240,
+    "ceilingVersion": 5,
+    "temporaryResourceAndGrantRevoked": true,
+    "historyDeleted": false
+  },
+  "physical": [
+    {
+      "runId": "4485721a-df8a-48d4-bd8a-614b3962309c",
+      "guestObservedAndRemoved": true
+    },
+    {
+      "runId": "7c8bf974-87c7-4843-ac55-37ce9d09765a",
+      "guestObservedAndRemoved": true
+    }
+  ],
+  "artifacts": {
+    "outputs/runtime-custody-3c0bf3bce/founder-stop-v9-state-1788712565984.json": "9acb6e7f9d36e781161927fa69f25778f154d60e74197638950ea2023de54b16",
+    "outputs/runtime-custody-3c0bf3bce/ceiling-v9-state-1788712787054.json": "251257f4b46715ea265b15732a46a03b4f25c8023b3a82f642d22af95db502f2",
+    "outputs/runtime-custody-3c0bf3bce/v9-control-cleanup-1788713008954.json": "fc4925d13f220e93fdec9319e73ec8ae1eef3a200ece9516cf8056b98f1ced52",
+    "outputs/runtime-live-3c0bf3bce/founder-stop-v9-admission-denial.failure.json": "f1cbd292d3b230c016c4fc0444319bae7b5a5e2552dbc79c070296b72a9434d8",
+    "outputs/runtime-live-3c0bf3bce/founder-resume-v9-proof.result.json": "b4a712692b7773e2862519b4afd774595189516688458952da84fecbf56a487e",
+    "outputs/runtime-live-3c0bf3bce/stop-v9-grant-retire.result.json": "f27c5acb848101289fa4a96635cb0654648ae902c7b3eb5d432c8a2e71940e93",
+    "outputs/runtime-live-3c0bf3bce/ceiling-v9-restore.result.json": "a812f921be2fb5b26ce3f74cda5c4dafbaee6c9a2f9dd605d616e5209b72d944",
+    "outputs/runtime-live-3c0bf3bce/founder-stop-v9-01.diagnostics.json": "73ae1d148becb93413df75f2ccf229ed21402db794ae5b45e05256ee8033323b"
+  },
+  "fullStepsZeroThroughThreeAcceptance": false
+}

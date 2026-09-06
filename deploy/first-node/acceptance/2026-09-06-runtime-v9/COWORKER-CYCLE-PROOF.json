@@ -1,0 +1,40 @@
+{
+  "schema": "qorpera.live-coworker-cycle-proof/v1",
+  "passed": true,
+  "recordedAt": "2026-09-06T15:11:49.565Z",
+  "runtimeBundleSha256": "b60a49ccef8953ba2a4e3b4559d01d2852a8cfdf737123c9bf435171409b5f51",
+  "senderRunId": "d75a415f-1d46-4c6f-89cb-674f96420d00",
+  "recipientRunId": "35dcaf90-aa0f-4262-95e1-8de43401468f",
+  "senderStaffAgentId": "73757922-d355-4eba-91aa-edf808a3124e",
+  "recipientStaffAgentId": "37e5f62b-177a-4d66-9cb3-a7357fbcd0f9",
+  "actualHumanRequestAccepted": true,
+  "humanProgressBeforeWork": true,
+  "humanFinalSend": true,
+  "oneAddressedCoworkerWake": true,
+  "recipientFinishedSilently": true,
+  "returnMessageCausallyFenced": true,
+  "returnReceiptId": "2aaafd6e-18d3-448d-ae49-370c6ede2598",
+  "returnOccurrenceId": null,
+  "totalRuns": 2,
+  "extraWakeCount": 0,
+  "requesterAndSponsorPreserved": true,
+  "activeLeases": 0,
+  "physical": [
+    {
+      "runId": "d75a415f-1d46-4c6f-89cb-674f96420d00",
+      "guestObservedAt": "2026-09-06T15:09:00.470Z",
+      "guestAbsent": true
+    },
+    {
+      "runId": "35dcaf90-aa0f-4262-95e1-8de43401468f",
+      "guestObservedAt": "2026-09-06T15:09:47.990Z",
+      "guestAbsent": true
+    }
+  ],
+  "artifacts": {
+    "outputs/runtime-custody-3c0bf3bce/coworker-cycle-state-1788707450895.json": "583c41d310bdcb9023877697c5585c8729221469cee4a420b3201ea4c6ddfc73",
+    "outputs/runtime-live-3c0bf3bce/coworker-cycle-01.result.json": "332373f3920cea683685783af766df3e340d7b705965b74dee975354df435d00",
+    "outputs/runtime-live-3c0bf3bce/causal-file-01.diagnostics.json": "09bd67f13a8854c9133a6c5afc28d0551d845d29e213acb6ec21572be904de27"
+  },
+  "fullStepsZeroThroughThreeAcceptance": false
+}

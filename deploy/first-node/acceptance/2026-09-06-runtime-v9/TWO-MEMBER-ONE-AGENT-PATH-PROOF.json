@@ -1,0 +1,88 @@
+{
+  "schema": "qorpera.two-member-one-agent-path-proof/v1",
+  "passed": true,
+  "recordedAt": "2026-09-06T15:40:02.158Z",
+  "runtimeBundleSha256": "b60a49ccef8953ba2a4e3b4559d01d2852a8cfdf737123c9bf435171409b5f51",
+  "founderId": "4fa1e977-a64a-4d39-a5c6-91ffd677f507",
+  "fixtureId": "f6891a3e-0782-4075-92b4-ddc6069c8f4a",
+  "agentId": "52874779-795f-4cc4-9390-4d2fdc32ee32",
+  "actualIndependentMemberAuthentication": true,
+  "noFixtureProviderConnectionCreated": true,
+  "humanPrivateReadWriteIsolation": true,
+  "sharedVisibility": true,
+  "disjointHumanWritesSurvived": true,
+  "staleHumanWriteStatus": 412,
+  "nativeExactAndSubtreeReadWrite": true,
+  "nativeSiblingAndOtherMemberReadNonSuccessCount": 3,
+  "nativeStalePrivateWriteNonSuccess": true,
+  "privateConversationToSharedChangesRequiredProposal": true,
+  "otherMemberPrivateProposalAccessBlocked": true,
+  "skipHadNoEffect": true,
+  "exactHumanApprovalAppliedTwoChanges": true,
+  "staleProposalApprovalStatus": 412,
+  "revokedPrivateSourceApprovalStatus": 403,
+  "revokedPrivateSourcePublished": false,
+  "freshNativeRevokedReadWriteBlocked": true,
+  "independentSubtreeReadStillWorked": true,
+  "exactActorRequesterSponsorApproverAttribution": true,
+  "visibleMessagesAllSendReceipted": true,
+  "unicodeContextPaging": {
+    "successfulPages": 5,
+    "markersRecovered": 2,
+    "digestProof": "NATIVE-BOUNDARY-OUTPUT-DIGEST-PROOF.json"
+  },
+  "guestAbsence": [
+    {
+      "runId": "91d9afc0-3d93-43d8-8796-b15739ce975c",
+      "runnerId": "b62e555a-ab46-41d1-b0df-249d86c5b2d4",
+      "name": "qorpera-91d9afc03d9343d88796b15739ce975c",
+      "absent": true
+    },
+    {
+      "runId": "8703c0a3-29bc-4e58-bed3-150141c46479",
+      "runnerId": "630d3847-aecb-4d7e-9243-2b21752da148",
+      "name": "qorpera-8703c0a329bc4e58bed3150141c46479",
+      "absent": true
+    },
+    {
+      "runId": "a766ef3a-9008-4253-b27a-88c51d82546e",
+      "runnerId": "1ec1b848-9ccd-4a8b-bb14-86108f7b4fef",
+      "name": "qorpera-a766ef3a90084253b27a88c51d82546e",
+      "absent": true
+    },
+    {
+      "runId": "abaa9d6c-ce75-49fa-9c80-66009d960f9b",
+      "runnerId": "780179de-b2e2-4507-8bd0-0a24f7a96f4e",
+      "name": "qorpera-abaa9d6cce7549fa9c8066009d960f9b",
+      "absent": true
+    },
+    {
+      "runId": "4e6d7de1-a07b-487e-96f7-67cda3a6c4e8",
+      "runnerId": "4326e018-30bb-4bd6-9cc8-46ac6fc4ff7b",
+      "name": "qorpera-4e6d7de1a07b487e96f767cda3a6c4e8",
+      "absent": true
+    }
+  ],
+  "leasesReleased": true,
+  "temporaryPathGrantsRevoked": true,
+  "proposalsResolved": true,
+  "fixtureStillActiveForSecretIssuerTest": true,
+  "artifacts": {
+    "outputs/runtime-live-3c0bf3bce/TWO-MEMBER-LIVE-READ-PROOF.json": "3edc1d977656d74d0deb2709129d27554cc8f7ef089cd7b7b9e8d9a9b213fdaa",
+    "outputs/runtime-live-3c0bf3bce/TWO-MEMBER-WRITE-CAS-PROOF.json": "254156996322998b6a6843e32cae126789cbcf979c15522c78f33b3a80c2f9aa",
+    "outputs/runtime-live-3c0bf3bce/MEMBER-PROPOSAL-REVIEW-RESULT.json": "c42230535e9c997f6e2f30fb3740dabb9aeda7d32ccf9041adf3a0deacdb16c1",
+    "outputs/runtime-live-3c0bf3bce/NATIVE-BOUNDARY-OUTPUT-DIGEST-PROOF.json": "674970b76f89bba280ae4e16dc7d5b80581fde5606ba022c3de02aca0d27646e",
+    "outputs/runtime-live-3c0bf3bce/PRIVATE-SOURCE-REVOCATION-ATTEMPT.json": "225dd04a5bea3cac4ad21f7bffe17e86d74b60c5bc8dfb05adf787b9232fa57e",
+    "outputs/runtime-custody-3c0bf3bce/boundary-final-state-1788709159365.json": "1f4ffaf5c19434a3726f2390c91249c4faa34d4234ac646f36ce00e77cc9fa53",
+    "outputs/runtime-custody-3c0bf3bce/boundary-cleanup-state-1788709071658.json": "475da3515ad0667ebf5721c87c4e10abaf3f46d1436c0567656351eb29a19d2c",
+    "outputs/runtime-custody-3c0bf3bce/boundary-revocation-state-1788708770279.json": "8e99433f7afab5cc449d6a36b33c115b4b666d6730968374d6efff8aa96b61b5",
+    "outputs/runtime-custody-3c0bf3bce/boundary-provenance-1788708490381.json": "79d5c47af6bbf400f29f65f035bcc69393d89707f949c16e642d917e7c92ca90"
+  },
+  "limitations": [
+    "The first long-prompt run safely stopped after an invalid paging call; its failed acceptance record remains retained.",
+    "Optional runtime telemetry is incomplete on two runs; exact closed-envelope digests and durable authority records supply the specified evidence.",
+    "Human stale-write test originally expected 409; production correctly returned 412. No mutation was replayed.",
+    "Member-removal and secret-issuer revocation are separate remaining cases."
+  ],
+  "fullStepsZeroThroughThreeAcceptance": false
+}

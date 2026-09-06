@@ -1,0 +1,184 @@
+{
+  "schema": "qorpera.runtime-acceptance-checkpoint/v1",
+  "recordedAt": "2026-09-06T16:57:10.247Z",
+  "runtimeSourceCommit": "8424d35c18546cabee8a080a63eb6ab71f5f59f8",
+  "runtimeBundleSha256": "c90ab35c33b6af3a3fecbf0f9d1f06210a94a4769746c54c8a3ad94bbd87fab6",
+  "fullyAccepted": false,
+  "remainingLiveGate": "Provider usage-limit notification and automatic sponsor handoff",
+  "sourceWorkspace": "/Users/jonas/Documents/Codex/2026-09-05/files-pasted-by-the-user-take",
+  "files": [
+    {
+      "file": "INITIAL-NATIVE-PROOF.json",
+      "source": "outputs/runtime-live-a80f32ec1/INITIAL-NATIVE-PROOF.json",
+      "sha256": "6f3111790504f76eadbc2849d07d9d47c12f6e4f3c1b58824d274c6dfa252542",
+      "bytes": 8714,
+      "passingScope": true
+    },
+    {
+      "file": "TWO-MEMBER-ONE-AGENT-PATH-PROOF.json",
+      "source": "outputs/runtime-live-3c0bf3bce/TWO-MEMBER-ONE-AGENT-PATH-PROOF.json",
+      "sha256": "a1243f358ebff068aada67aff16ab9823f06c00fa4b3135b3705d6f5b170f669",
+      "bytes": 4476,
+      "passingScope": true
+    },
+    {
+      "file": "NATIVE-BOUNDARY-OUTPUT-DIGEST-PROOF.json",
+      "source": "outputs/runtime-live-3c0bf3bce/NATIVE-BOUNDARY-OUTPUT-DIGEST-PROOF.json",
+      "sha256": "674970b76f89bba280ae4e16dc7d5b80581fde5606ba022c3de02aca0d27646e",
+      "bytes": 4717,
+      "passingScope": true
+    },
+    {
+      "file": "CAUSAL-FILE-AND-INPUT-FENCE-PROOF.json",
+      "source": "outputs/runtime-live-3c0bf3bce/CAUSAL-FILE-AND-INPUT-FENCE-PROOF.json",
+      "sha256": "83e0ab91574da593ba98ddddaf7b8ca5db74d572ac50d8dd940194ec0cd034e2",
+      "bytes": 2427,
+      "passingScope": true
+    },
+    {
+      "file": "COWORKER-CYCLE-PROOF.json",
+      "source": "outputs/runtime-live-3c0bf3bce/COWORKER-CYCLE-PROOF.json",
+      "sha256": "99267af99a27d6b438cb51279a3921777d8a5d39daa894aa5eafb7264d6b454a",
+      "bytes": 1668,
+      "passingScope": true
+    },
+    {
+      "file": "SILENT-FILE-ROUTINE-PROOF.json",
+      "source": "outputs/runtime-live-3c0bf3bce/SILENT-FILE-ROUTINE-PROOF.json",
+      "sha256": "d8dd77043849ec101ddc1356ec08f4d78f798d57003fea7eb189bb8d5b100c92",
+      "bytes": 5598,
+      "passingScope": true
+    },
+    {
+      "file": "ROOM-PUBLICATION-PROOF.json",
+      "source": "outputs/runtime-live-3c0bf3bce/ROOM-PUBLICATION-PROOF.json",
+      "sha256": "f36b1326c89fb1176ecacf4b6e5e65385763d074539972d4b4d55f69dc57e48e",
+      "bytes": 12254,
+      "passingScope": true
+    },
+    {
+      "file": "ROOM-SEND-BUDGET-PROOF.json",
+      "source": "outputs/runtime-live-3c0bf3bce/ROOM-SEND-BUDGET-PROOF.json",
+      "sha256": "7a5e9fb3e4fee917dc8ad414ce91e8e9c88882ad8965919b15218eb2675afa0e",
+      "bytes": 10580,
+      "passingScope": true
+    },
+    {
+      "file": "RESPONSIBILITY-ROUTING-V9-PROOF.json",
+      "source": "outputs/runtime-live-3c0bf3bce/RESPONSIBILITY-ROUTING-V9-PROOF.json",
+      "sha256": "745c28196dd2da3274ab92bfd664925914b9cb72d6d171ab8342c5c2c4d45b40",
+      "bytes": 7861,
+      "passingScope": true
+    },
+    {
+      "file": "RESPONSIBILITY-COALESCING-NATIVE-DIGEST-PROOF.json",
+      "source": "outputs/runtime-live-3c0bf3bce/RESPONSIBILITY-COALESCING-NATIVE-DIGEST-PROOF.json",
+      "sha256": "2590f2d6f24297666a7f55006457d55ee92b4fb9639a105cb1b61acfc1d59701",
+      "bytes": 3020,
+      "passingScope": true
+    },
+    {
+      "file": "FOUNDER-CONTROLS-V9-PROOF.json",
+      "source": "outputs/runtime-live-3c0bf3bce/FOUNDER-CONTROLS-V9-PROOF.json",
+      "sha256": "5c7f5b30ae6abfa8ec3908cb1aa374d52c35a0ee50ce74241e073ecb386abbc8",
+      "bytes": 2829,
+      "passingScope": true
+    },
+    {
+      "file": "SPONSOR-HANDOFF-V9-STATUS.json",
+      "source": "outputs/runtime-live-3c0bf3bce/SPONSOR-HANDOFF-V9-STATUS.json",
+      "sha256": "8aa8a8312d0075c3dc9e93f66c49deca76350dac3bb455a40075457774013c8d",
+      "bytes": 2476,
+      "passingScope": false
+    },
+    {
+      "file": "NATIVE-CUSTODY-USE-PROOF.json",
+      "source": "outputs/runtime-custody-3c0bf3bce/NATIVE-CUSTODY-USE-PROOF.json",
+      "sha256": "b22619f36c4bf889f416a104305ce0eadadb4abb38b84a17d6d1aa1d2c42aea5",
+      "bytes": 3003,
+      "passingScope": true
+    },
+    {
+      "file": "NATIVE-CUSTODY-ROTATION-PROOF.json",
+      "source": "outputs/runtime-custody-3c0bf3bce/NATIVE-CUSTODY-ROTATION-PROOF.json",
+      "sha256": "0accd8504f6d1144ab13479e4eeb70cb7edfb6a1769af98f6e6a45ad385fe0b5",
+      "bytes": 3383,
+      "passingScope": true
+    },
+    {
+      "file": "LIVE-GRANT-REVOCATION-PROOF.json",
+      "source": "outputs/runtime-custody-3c0bf3bce/LIVE-GRANT-REVOCATION-PROOF.json",
+      "sha256": "976b6455b1a412e102126a243312d87ce2a32ea0e8fd7d6c43b13a8081d0f91b",
+      "bytes": 3025,
+      "passingScope": true
+    },
+    {
+      "file": "ENCRYPTED-CUSTODY-RECOVERY-PROOF.json",
+      "source": "outputs/runtime-custody-3c0bf3bce/ENCRYPTED-CUSTODY-RECOVERY-PROOF.json",
+      "sha256": "3efce40e19ea46a368e12ed2b2ef198ca68a1caba4e8c1eb0d359575a8179f27",
+      "bytes": 2815,
+      "passingScope": true
+    },
+    {
+      "file": "MEMBER-AND-SECRET-REVOCATION-PROOF.json",
+      "source": "outputs/runtime-custody-3c0bf3bce/MEMBER-AND-SECRET-REVOCATION-PROOF.json",
+      "sha256": "be9ab3f4cdedc3df0db59b0afdfce13754d285875dff93a95eb3cf3aec9c8726",
+      "bytes": 4447,
+      "passingScope": true
+    },
+    {
+      "file": "NONEXPOSURE-V9-SCOPE-MATRIX.json",
+      "source": "outputs/runtime-custody-3c0bf3bce/NONEXPOSURE-V9-SCOPE-MATRIX.json",
+      "sha256": "990ec2ca841ef815362bf4790f8f7c2fd36c196a263153c2e38556232409c2ee",
+      "bytes": 7874,
+      "passingScope": true
+    },
+    {
+      "file": "ADMITTED-STARTUP-CLEANUP-PROOF.json",
+      "source": "outputs/runtime-startup-cleanup-v3/ADMITTED-STARTUP-CLEANUP-PROOF.json",
+      "sha256": "d07539720d3dba90d7c711ed6b5a85dd46c6d49fa634291c0042e3a8e85a25ee",
+      "bytes": 1513,
+      "passingScope": true
+    },
+    {
+      "file": "STARTUP-RECOVERY-PROOF.json",
+      "source": "outputs/runtime-startup-cleanup-v3/STARTUP-RECOVERY-PROOF.json",
+      "sha256": "f49f2245859240a3fddf9d620e72bd96f36ca9b9f4dae5a8b602580229e66bb3",
+      "bytes": 1119,
+      "passingScope": true
+    },
+    {
+      "file": "FINAL-NODE-READBACK.json",
+      "source": "outputs/runtime-image-8424d35c1/FINAL-NODE-READBACK.json",
+      "sha256": "eb832cdf25a3e7c7c107b9889585f2a430a594e11aedb55b8fd16901ecc2e874",
+      "bytes": 1068,
+      "passingScope": true
+    },
+    {
+      "file": "ACCEPTANCE.json",
+      "source": "outputs/runtime-image-8424d35c1/ACCEPTANCE.json",
+      "sha256": "1eb163e976098d485c7ffd87b6433f2912c410dbb53a391da57ae4126a9b7b78",
+      "bytes": 1745,
+      "passingScope": true
+    },
+    {
+      "file": "TERMINAL-RELEASE-CONTAINMENT.json",
+      "source": "outputs/runtime-terminal-release-containment/RESULT.json",
+      "sha256": "d1be78fcf5382fee83867a317906eb5009b551137d2f0c28494935633c6447e0",
+      "bytes": 797,
+      "passingScope": true
+    },
+    {
+      "file": "FINAL-DATABASE-READBACK.json",
+      "source": "outputs/runtime-custody-3c0bf3bce/runtime-v9-final-state-1788713733109.json",
+      "sha256": "5455f5d8fe65eb4b45c2e252601c0c0d0f87ffaaffd29de0ba413a1c8e9be670",
+      "bytes": 848,
+      "passingScope": null
+    }
+  ],
+  "limits": [
+    "This package contains bounded summaries, not every raw witness. Referenced witness files remain in the source workspace and are bound by SHA-256 in the summaries.",
+    "Older native proofs retain their actual bundle versions. They are not relabeled as v9 executions.",
+    "Orders 4–10 and deferred Azure overflow are not accepted by this checkpoint."
+  ]
+}

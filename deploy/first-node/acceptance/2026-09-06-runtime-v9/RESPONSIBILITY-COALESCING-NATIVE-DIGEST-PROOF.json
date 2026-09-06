@@ -1,0 +1,88 @@
+{
+  "schema": "qorpera.native-responsibility-digest-proof/v1",
+  "passed": true,
+  "recordedAt": "2026-09-06T16:31:32.974Z",
+  "method": "Offline reconstruction of exact native host envelopes, matched byte counts and SHA-256 against immutable production context views; no operations submitted.",
+  "sender": "5d046f93-e67f-4e82-834c-fabe8523f1ee",
+  "recipient": "4963ea3e-2354-45c1-af1c-6edfe33d47bc",
+  "queue": "fd65aefa-a208-4e1a-b411-871ac240435f",
+  "results": [
+    {
+      "operationKey": "coalesce-v9-a",
+      "receiptId": "afa988c3-3287-4114-907a-1eb967e55cd4",
+      "matches": [
+        {
+          "callId": "call_EtVSzjJK9UNPgPTBGlBmv3Ns",
+          "sha256": "b4398b9791c0946a5d6a4dc30e4e3a1429c87bb290d9c8b96f1c8cf039b9b30a",
+          "bytes": 2053
+        },
+        {
+          "callId": "call_gezVgQNPvyvEeOChGmdCoNy4",
+          "sha256": "f47d22131b53be3142cf7fb4944391f53a0faaeaa45f2e9e75b51e166056d33c",
+          "bytes": 2053
+        }
+      ]
+    },
+    {
+      "operationKey": "coalesce-v9-b",
+      "receiptId": "678e7120-10f0-4600-be1b-dab3bc8e41b4",
+      "matches": [
+        {
+          "callId": "call_uPt0kA5Y2COXb5Hq8pexYy73",
+          "sha256": "51d51463648fbcf3689dd42be2d24e8dbbda936702647ca3b50e14abef876569",
+          "bytes": 2050
+        }
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "after": null,
+      "nextAfter": "662953ec-4bf0-47e6-aac5-9f7baf2dfeb2",
+      "matches": [
+        {
+          "callId": "call_AsSQSMpT5YDBHkL5dmNEa1aG",
+          "sha256": "caeacf0b6fa1b87a71e1b6b2357401016674099e1c6c545ca66806178c044a21",
+          "bytes": 2415
+        }
+      ]
+    },
+    {
+      "after": "662953ec-4bf0-47e6-aac5-9f7baf2dfeb2",
+      "nextAfter": "a8febd25-6c29-4316-837d-1eacb7099cec",
+      "matches": [
+        {
+          "callId": "call_4O4FIOF6jXcdnUAesT85evho",
+          "sha256": "f42054ed044feb59d81d9e338e3183db3251769e984cf56d9ca7b7312b5cf724",
+          "bytes": 2414
+        }
+      ]
+    },
+    {
+      "after": "a8febd25-6c29-4316-837d-1eacb7099cec",
+      "nextAfter": null,
+      "matches": [
+        {
+          "callId": "call_iDR4rtCgsF9iUUA8dvAGpf2M",
+          "sha256": "6e2b384ceda19a998c0a1c6c756a5fa212848c22f9e6bb089ed9e2c93b96f1f4",
+          "bytes": 1826
+        }
+      ]
+    }
+  ],
+  "resolved": [
+    {
+      "callId": "call_aSwwIkHZuDs7IXS7eK2AWhZ3",
+      "sha256": "f2dac37c2b7dd5c70a0b59ae022551208052da95b07bb0ec73796ca767c02cd6",
+      "bytes": 1974
+    }
+  ],
+  "artifacts": {
+    "outputs/runtime-custody-3c0bf3bce/routing-v9-identities-1788712243995.json": "6ef5d1d8739d81bfc89c768abaafc9844dcd1cd25fdbe3eae564686e18b6dcfe",
+    "outputs/runtime-custody-3c0bf3bce/routing-v9-views-1788712243978.json": "bebc588bb8ab78b51dc3d27f2210ea4c8cc40ff14b2c7f3b1ab0d860e2181feb",
+    "outputs/runtime-custody-3c0bf3bce/responsibility-routing-state-1788712244185.json": "b27de4b44a23c75845fb6c190b8eaf3f203fa5380dac5e788004e801d30da596"
+  },
+  "exactReplayConfirmed": true,
+  "contributionsRead": 2,
+  "endOfPagesConfirmed": true
+}

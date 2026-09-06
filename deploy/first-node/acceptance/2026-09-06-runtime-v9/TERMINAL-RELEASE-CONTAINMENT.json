@@ -1,0 +1,26 @@
+{
+  "passed": true,
+  "observedAt": "2026-09-06T16:17:49.545Z",
+  "intentPin": {
+    "bytes": 1422,
+    "sha256": "3c9b4ce83d3d62f78c18de62f24eeceebeccaf4381a18a4b287528d443aefe91"
+  },
+  "sqlSha256": "78c8a58d89cf4faa00008496f3c3a2f5626c7ba3c7a282507f6dc7f6cb6e64b6",
+  "cliSha256": "42a9fe8b8a266bc0fbde804c08efb75cc0653480e91ba3f20fba1c3c27a7b49a",
+  "cliInvocations": 1,
+  "processGroupAbsent": true,
+  "readback": {
+    "applicationRowsChanged": false,
+    "backends": [
+      {
+        "backendStart": "2026-09-06T14:21:43.693939+00:00",
+        "pid": 1113668,
+        "terminated": true
+      }
+    ],
+    "historicalRowsChanged": false,
+    "observedAt": "2026-09-06T16:17:49.157954+00:00",
+    "schema": "qorpera.stale-assignment-containment/v1"
+  },
+  "automaticReplayAllowed": false
+}
