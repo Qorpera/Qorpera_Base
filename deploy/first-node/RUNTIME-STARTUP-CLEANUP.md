@@ -26,11 +26,22 @@ the bounded readiness failure sends the guest to cleanup. It does not invoke the
 runner a second time. An interrupted initial VM creation remains recoverable.
 
 Local validation on 2026-09-06 reproduced two VM starts in the regression before
-the fix. The provider, provider-service, and orchestrator tests then passed all 86
+the fix. The LXD client, provider, provider-service, and orchestrator tests passed all 96
 cases. Regressions cover startup poweroff, cancellation, provider interruption,
 deletion failure, acquisition replay, missing guests, initial creation recovery,
 and retained volumes. `npm run check` passed. The Linux x64 provider package is
-`5a191a0613e2ab019cc6ea2b379a6b9b37e48d86f48f2244afb469cc3bd331eb`.
+`932b15a056aa8e28f0001e59ca6e778cbbc565d1ceb8511d5d9ebd18a76e7a2e`.
+
+The admitted fault on 2026-09-06 killed the verified runner during bootstrap and
+observed the guest power off. It exposed a second bug: LXD returns `network: null`
+for a stopped VM. The client rejected that legitimate response, so the readiness
+poller treated shutdown as a transient parsing error until its deadline. No LXD
+operations remained pending. The client now normalizes that stopped-null case to
+an empty network map while preserving the stopped status. A Unix-socket regression
+covers the actual response through both client parsing and readiness transport;
+malformed network maps in other cases still fail validation. The first live
+cleanup observation timed out and remains failed evidence pending a repeat with
+the corrected parser.
 
 Deployment must pause Company41 execution, confirm no active jobs, leases, or job
 guests, and verify existing terminal journal hashes before replacing the host

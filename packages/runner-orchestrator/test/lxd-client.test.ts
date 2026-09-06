@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { type LxdCreateInstanceRequest, type LxdCreateStorageVolumeRequest, LxdUnixClient } from "../src/lxd-client.ts";
+import { HttpLxdGuestTransport } from "../src/lxd-provider.ts";
 
 const roots: string[] = [];
 const servers: Server[] = [];
@@ -88,6 +89,36 @@ function createVolumeRequest(): LxdCreateStorageVolumeRequest {
 }
 
 describe("LXD Unix client", () => {
+	it("preserves stopped VM status when LXD returns a null network map", async () => {
+		let requests = 0;
+		const socket = await unixServer(() => {
+			requests++;
+			return { body: { type: "sync", metadata: { status: "Stopped", status_code: 102, network: null } } };
+		});
+		const client = new LxdUnixClient(socket);
+		await expect(client.getInstanceState("qorpera-runners", "guest")).resolves.toEqual({
+			status: "Stopped",
+			statusCode: 102,
+			network: {},
+		});
+		await expect(
+			new HttpLxdGuestTransport(client).waitReady("qorpera-runners", "guest", "enp5s0", 8082, 10_000),
+		).rejects.toThrow("powered off before activating");
+		expect(requests).toBe(2);
+	});
+
+	it.each([
+		{ status: "Running", status_code: 103, network: null },
+		{ status: "Stopped", status_code: 102 },
+		{ status: "Stopped", status_code: 102, network: [] },
+		{ status: "Stopped", status_code: 102, network: 42 },
+	])("rejects malformed network state outside the stopped-null case (%#)", async (metadata) => {
+		const socket = await unixServer(() => ({ body: { type: "sync", metadata } }));
+		await expect(new LxdUnixClient(socket).getInstanceState("qorpera-runners", "guest")).rejects.toThrow(
+			"network state is invalid",
+		);
+	});
+
 	it("returns inherited devices and configuration, not only local overrides", async () => {
 		const request = createRequest();
 		const inherited = { type: "disk", path: "/company", source: "/srv/company" };

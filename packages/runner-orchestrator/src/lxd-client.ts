@@ -159,7 +159,10 @@ function instanceState(value: unknown): LxdInstanceStateRecord {
 	if (typeof input.status !== "string" || typeof input.status_code !== "number") {
 		throw new Error("LXD instance state is invalid");
 	}
-	const networkInput = record(input.network, "LXD instance network state");
+	// A stopped VM has no network map. Preserve its status so readiness can
+	// recognize shutdown instead of treating every poll as a malformed response.
+	const networkInput =
+		input.status === "Stopped" && input.network === null ? {} : record(input.network, "LXD instance network state");
 	const network: Record<string, { addresses: readonly { family: string; address: string; scope: string }[] }> = {};
 	for (const [name, rawInterface] of Object.entries(networkInput)) {
 		const networkInterface = record(rawInterface, "LXD instance network interface");
