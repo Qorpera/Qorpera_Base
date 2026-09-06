@@ -89,7 +89,15 @@ afterEach(() => {
 });
 function show(hosts: HTMLElement[], visible = true): void {
 	intersections(
-		hosts.map((target) => ({ target, isIntersecting: visible }) as IntersectionObserverEntry),
+		hosts.map((target) => ({
+			target,
+			isIntersecting: visible,
+			boundingClientRect: target.getBoundingClientRect(),
+			intersectionRect: target.getBoundingClientRect(),
+			intersectionRatio: visible ? 1 : 0,
+			rootBounds: null,
+			time: now,
+		})),
 		{} as IntersectionObserver,
 	);
 }
