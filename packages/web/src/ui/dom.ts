@@ -96,11 +96,9 @@ export function personAvatar(name: string, identity: string): HTMLElement {
 	const colors = ["#778fc6", "#ab829c", "#b18b64", "#789e8d", "#9685b5", "#739eab"];
 	let hash = 0;
 	for (const character of identity) hash = (hash * 31 + (character.codePointAt(0) ?? 0)) >>> 0;
-	return h(
-		"span",
-		{ class: "person-avatar", style: `--person-color: ${colors[hash % colors.length]}`, "aria-hidden": "true" },
-		initials(name),
-	);
+	const avatar = h("span", { class: "person-avatar", "aria-hidden": "true" }, initials(name));
+	avatar.style.setProperty("--person-color", colors[hash % colors.length]!);
+	return avatar;
 }
 
 export function shortId(id: string): string {
@@ -229,7 +227,7 @@ export function companyFigure(seed: string): CompanyFigure {
 
 export function companyLogo(seed: string, className = ""): HTMLElement {
 	const logo = figureElement(companyFigure(seed), COMPANY_INK, { still: true });
-	logo.className = ["company-logo", className].filter(Boolean).join(" ");
+	logo.className = [logo.className, "company-logo", className].filter(Boolean).join(" ");
 	return logo;
 }
 
