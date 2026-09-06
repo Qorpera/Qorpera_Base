@@ -1,0 +1,33 @@
+{
+  "schema": "qorpera.runtime-disabled-installation/v1",
+  "passed": true,
+  "observedAt": "2026-09-06T19:03:55.578200+00:00",
+  "sourceCommit": "759e44f36d54e4660159c7c8a378499cdb4e593f",
+  "companyId": "88227549-9724-43c2-8966-9fafb3e855d6",
+  "publicConfiguration": {
+    "QORPERA_LXD_IMAGE_FINGERPRINT": "346af793885aa7bf879d8774c2e194f02120911bd951d8b25a93a6b60ae90b8d",
+    "QORPERA_LXD_GUEST_PACKAGE_MANIFEST_SHA256": "44a914f84019e5623fc01714488c5987989f26fef272b457ed999aff2d0cab55",
+    "QORPERA_EPHEMERAL_RUNNER_VERSION": "759e44f36-production",
+    "QORPERA_RUNNER_PROVIDER_STATE_ROOT": "/var/lib/qorpera-company-provider/runs-runtime-759e44f36"
+  },
+  "installedArtifactSha256": {
+    "/etc/qorpera/lxd-company-image-provenance.json": "09e25dd357ed1eab6eb899a58a30a5b87ca3a77abc023c2198c29a78285f042b",
+    "/etc/qorpera/lxd-image-provenance.pub": "b62d24b8335468ef39cd7e16a50beb9d5ddab7343c4e5695273cd0a8d8bb1039",
+    "/opt/qorpera/company-provider/qorpera-lxd-provider.mjs": "15f8cdb8812bde6192bc7d6dd40463dec76ccbf58fb08a439d2d1390375a3ad0",
+    "/opt/qorpera/company-provider/qorpera-lxd-image-provenance.mjs": "316006ebe6d263cb716ebf0fbed0917d170f47e777d25838b5720706f787dcec"
+  },
+  "signatureVerified": true,
+  "otherConfigurationUnchanged": true,
+  "oldJournalHashesUnchanged": true,
+  "historicalJournalsPreserved": 5,
+  "newJournalDirectoryEmpty": true,
+  "companyProvider": "inactive",
+  "legacyProvider": "inactive",
+  "orchestrator": "STOPPED",
+  "jobGuests": 0,
+  "backupStamp": "20260906T190354Z",
+  "databaseMutationPerformed": false,
+  "admissionReopened": false,
+  "remoteLogSha256": "0f43f549c07ef7dfc23d0413b64483f3af75fb9785dfcc8fce591611f73ca078",
+  "canonicalHelperRestored": true
+}

@@ -1,0 +1,61 @@
+{
+  "schema": "qorpera.runtime-source-commit/v1",
+  "commit": "759e44f36d54e4660159c7c8a378499cdb4e593f",
+  "parent": "bf08dd923d61ba8432d86559a71cf473ac72f9b9",
+  "observedAt": "2026-09-06T18:59:58.015Z",
+  "sourceCheckoutClean": true,
+  "releaseCheckout": "/Users/jonas/Documents/Codex/2026-09-05/files-pasted-by-the-user-take/work/release-759e44f36",
+  "releaseCheckoutDetached": true,
+  "verifiedSourceFiles": [
+    {
+      "path": "deploy/first-node/native-codex/guest-package-manifest.json",
+      "sha256": "44a914f84019e5623fc01714488c5987989f26fef272b457ed999aff2d0cab55"
+    },
+    {
+      "path": "deploy/first-node/native-codex/runtime-bundle-manifest.json",
+      "sha256": "973e91813965e275c1aa5971f7600c67c077f7902c135c18c0869878569dd004"
+    },
+    {
+      "path": "packages/shell/src/cloud-runtime-bundle.generated.ts",
+      "sha256": "0e0128c3c4a9603a20b67301b1cdd132ff8e5e5860a1a91d8cc80774494bad3d"
+    },
+    {
+      "path": "scripts/generate-cloud-runtime-bundle.mjs",
+      "sha256": "bf085b0769976ac4d9e788e9d14ac0fd55161fdaa383e2dcb476e2b67af849f4"
+    },
+    {
+      "path": "supabase/acceptance/runtime_wake_bus.sql",
+      "sha256": "e2e585f0afcc2dfea3e723185c9c791ee746e73504922da697c1cff262f427b5"
+    },
+    {
+      "path": "supabase/migrations/20260906000500_runtime_handoff_launch_provenance.sql",
+      "sha256": "870a3eb3d6c784b7ec0e0e63be158b2b490a144ac93b52d4a6f8b8713afa49ce"
+    },
+    {
+      "path": "supabase/migrations/20260906000600_runtime_bundle_activation_v11.sql",
+      "sha256": "80da51259dccdc5e0bd8f14040a70246ddd81d59929676ceab18f0706f184743"
+    }
+  ],
+  "runtimeBundleSha256": "ef0f569327e34673b8cfbd80541864ab116ca688c2eca79beb4bc0f3550e84ad",
+  "checks": {
+    "sourceCheck": "passed",
+    "provenanceMigrationReplay": 135,
+    "wakeContextParity": "passed",
+    "handoffLaunchImmutabilityRedGreen": "passed",
+    "wakeIntegrationCases": 25,
+    "concurrentCoalescing": "passed",
+    "bundleGeneratorTests": 3,
+    "packageTest": "passed",
+    "linuxPackageProof": "outputs/runtime-linux-x64-package-proof-759e44f36.json"
+  },
+  "wakeIntegrationReport": {
+    "path": "work/handoff-launch-green-final.json",
+    "sha256": "7d3fb9c67294c67ac30012edf9329614c9ddde34a1b27e732a20a8b7d1d2775f"
+  },
+  "redRegressionReport": {
+    "path": "work/handoff-launch-red-01.json",
+    "sha256": "49a7b54e97208d7b10f00f7bbf4b151cce6385649ab95118241bfbaeb29d6c84"
+  },
+  "authorizationSha256": "6d9e7a91644cbb9a5d0222613b9131cf997382432cfef2176a347583be12897b",
+  "productionWrites": false
+}

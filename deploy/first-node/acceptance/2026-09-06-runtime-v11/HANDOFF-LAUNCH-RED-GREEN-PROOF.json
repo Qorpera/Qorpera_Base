@@ -1,0 +1,193 @@
+{
+  "schema": "qorpera.handoff-launch-provenance-red-green/v1",
+  "passed": true,
+  "recordedAt": "2026-09-06T19:10:52.749Z",
+  "sourceCommit": "759e44f36d54e4660159c7c8a378499cdb4e593f",
+  "runtimeBundleSha256": "ef0f569327e34673b8cfbd80541864ab116ca688c2eca79beb4bc0f3550e84ad",
+  "red": {
+    "artifact": {
+      "path": "work/handoff-launch-red-01.json",
+      "sha256": "49a7b54e97208d7b10f00f7bbf4b151cce6385649ab95118241bfbaeb29d6c84"
+    },
+    "migrations": 133,
+    "passedCases": 24,
+    "failures": [
+      {
+        "name": "usage_limit_sponsor_handoff_continues_the_run",
+        "error": "Runtime bundles are immutable",
+        "passed": false,
+        "sqlstate": "42501"
+      }
+    ]
+  },
+  "green": {
+    "artifact": {
+      "path": "work/handoff-launch-green-final.json",
+      "sha256": "7d3fb9c67294c67ac30012edf9329614c9ddde34a1b27e732a20a8b7d1d2775f"
+    },
+    "migrations": 135,
+    "cases": [
+      {
+        "name": "agent_delivery_zero_public_send_durable_completion",
+        "error": null,
+        "passed": true,
+        "sqlstate": null
+      },
+      {
+        "name": "final_delivery_closes_further_company_file_work",
+        "error": null,
+        "passed": true,
+        "sqlstate": null
+      },
+      {
+        "name": "first_run_ack_final_durable_completion_fixture",
+        "error": null,
+        "passed": true,
+        "sqlstate": null
+      },
+      {
+        "name": "handoff_rechecks_capacity_before_rebinding_native_lease",
+        "error": null,
+        "passed": true,
+        "sqlstate": null
+      },
+      {
+        "name": "handoff_skips_connection_at_native_capacity",
+        "error": null,
+        "passed": true,
+        "sqlstate": null
+      },
+      {
+        "name": "handoff_skips_connection_requiring_reauthentication",
+        "error": null,
+        "passed": true,
+        "sqlstate": null
+      },
+      {
+        "name": "handoff_with_no_available_capacity_keeps_sponsor",
+        "error": null,
+        "passed": true,
+        "sqlstate": null
+      },
+      {
+        "name": "human_ack_final_completion_and_receipt_replay",
+        "error": null,
+        "passed": true,
+        "sqlstate": null
+      },
+      {
+        "name": "human_final_send_requires_initial_ack",
+        "error": null,
+        "passed": true,
+        "sqlstate": null
+      },
+      {
+        "name": "human_mutation_requires_initial_ack",
+        "error": null,
+        "passed": true,
+        "sqlstate": null
+      },
+      {
+        "name": "member_consents_to_autonomous_work_on_own_connection",
+        "error": null,
+        "passed": true,
+        "sqlstate": null
+      },
+      {
+        "name": "omitted_routine_policy_requires_final_durable_completion",
+        "error": null,
+        "passed": true,
+        "sqlstate": null
+      },
+      {
+        "name": "optional_progress_only_denied_then_final_completes",
+        "error": null,
+        "passed": true,
+        "sqlstate": null
+      },
+      {
+        "name": "optional_routine_zero_send_durable_completion",
+        "error": null,
+        "passed": true,
+        "sqlstate": null
+      },
+      {
+        "name": "provider_outage_does_not_trigger_handoff",
+        "error": null,
+        "passed": true,
+        "sqlstate": null
+      },
+      {
+        "name": "public_send_budget_enforced_at_admission",
+        "error": null,
+        "passed": true,
+        "sqlstate": null
+      },
+      {
+        "name": "rate_limit_does_not_trigger_handoff",
+        "error": null,
+        "passed": true,
+        "sqlstate": null
+      },
+      {
+        "name": "required_routine_zero_send_denied_then_final_completes",
+        "error": null,
+        "passed": true,
+        "sqlstate": null
+      },
+      {
+        "name": "room_post_fans_out_bounded_sends_and_silent_completion",
+        "error": null,
+        "passed": true,
+        "sqlstate": null
+      },
+      {
+        "name": "routine_file_mutation_then_final_and_completion",
+        "error": null,
+        "passed": true,
+        "sqlstate": null
+      },
+      {
+        "name": "silent_routine_public_send_admission_denied",
+        "error": null,
+        "passed": true,
+        "sqlstate": null
+      },
+      {
+        "name": "silent_routine_zero_send_durable_completion",
+        "error": null,
+        "passed": true,
+        "sqlstate": null
+      },
+      {
+        "name": "trusted_context_and_native_start_before_human_ack",
+        "error": null,
+        "passed": true,
+        "sqlstate": null
+      },
+      {
+        "name": "usage_limit_sponsor_handoff_continues_the_run",
+        "error": null,
+        "passed": true,
+        "sqlstate": null
+      },
+      {
+        "name": "wake_rate_ceiling_and_founder_stop",
+        "error": null,
+        "passed": true,
+        "sqlstate": null
+      }
+    ],
+    "cleanupConfirmed": true
+  },
+  "realV2NativeLaunchEntrypointExercised": true,
+  "exactOldLaunchArchived": true,
+  "directUpdateAndDeleteDenied": true,
+  "unarchivedReplacementDenied": true,
+  "duplicateLaunchDenied": true,
+  "providerInvoked": false,
+  "deployedAcceptance": false,
+  "limits": [
+    "Usage signals and credentials are synthetic only in these isolated SQL cases. The separate live proof uses an actual native provider signal."
+  ]
+}

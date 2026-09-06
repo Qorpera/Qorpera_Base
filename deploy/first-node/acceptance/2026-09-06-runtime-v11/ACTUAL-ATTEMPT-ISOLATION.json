@@ -1,0 +1,60 @@
+{
+  "schema": "qorpera.live-handoff-attempt-isolation/v1",
+  "passed": true,
+  "observedAt": "2026-09-06T19:07:52.829977+00:00",
+  "runId": "94541e40-e197-4f85-bddf-441be0a4766b",
+  "attempts": [
+    {
+      "journalSha256": "312254d8fb13832e9a52a1e3c154b2d60afc19774634c461dd81c486733c3037",
+      "acquisitionId": "94541e40-e197-4f85-bddf-441be0a4766b",
+      "runId": "94541e40-e197-4f85-bddf-441be0a4766b",
+      "attempt": 1,
+      "workSha256": "8dca3893c89f25dd1f11a02166107773d047bf84cec88fc7665a2851dc705240",
+      "instanceName": "qorpera-94541e40e1974f85bddf441be0a4766b",
+      "physicalState": "stopped",
+      "createdAt": "2026-09-06T19:06:24.118Z",
+      "updatedAt": "2026-09-06T19:06:52.402Z",
+      "assignmentId": "a909d430-bbba-4427-b67d-c39d759da6e2",
+      "imageFingerprint": "346af793885aa7bf879d8774c2e194f02120911bd951d8b25a93a6b60ae90b8d",
+      "recoveryVolume": "qorpera-recovery-94541e40-e197-4f85-bddf-441be0a4766b",
+      "credentialHashes": {
+        "activationSha256": "11632d9d5e94c9511420b23fc77b8cd8c1057509f342cd2f4f40c7f95c7b0c2a",
+        "assignmentSha256": "f494725ee6a5977fe42d72ad80d688fe0d0ba47e89eaeb3191e1a75adf9c38b0",
+        "nativeBridgeSha256": "39b861997314f5f6c1015fd5c8926a1245ed9a55e73a70b0191f6e81a38a8cd0"
+      }
+    },
+    {
+      "journalSha256": "20514a99d6916685e734b6231d14f7f3edb47bfac7f26959a2437309c361e744",
+      "acquisitionId": "60c10042-fe40-83e3-a3f8-c85bdc700412",
+      "runId": "94541e40-e197-4f85-bddf-441be0a4766b",
+      "attempt": 2,
+      "workSha256": "37ded994bd2d7b189f66a3672c5de6e94e8743177bd5d3a4424aca245c334dd5",
+      "instanceName": "qorpera-60c10042fe4083e3a3f8c85bdc700412",
+      "physicalState": "stopped",
+      "createdAt": "2026-09-06T19:06:52.533Z",
+      "updatedAt": "2026-09-06T19:07:32.647Z",
+      "assignmentId": "6147fd0a-ce92-4ba2-8208-163d500684ba",
+      "imageFingerprint": "346af793885aa7bf879d8774c2e194f02120911bd951d8b25a93a6b60ae90b8d",
+      "recoveryVolume": "qorpera-recovery-60c10042-fe40-83e3-a3f8-c85bdc700412",
+      "credentialHashes": {
+        "activationSha256": "c2d336490fe64aee6ada8e360c7495a1c084b2df5e226db0d4425052bb9d6f37",
+        "assignmentSha256": "18671be8e54ff825cbce3d0814dc2c41c26c6ff018062b5963b18426fbb9b0b9",
+        "nativeBridgeSha256": "a6e9bcfe08480d954ca24b0cb941382e753de6e5439276cf0771463408b43a7b"
+      }
+    }
+  ],
+  "distinctGuestsCredentialsAndRecoveryVolumes": true,
+  "bothGuestsRemoved": true,
+  "jobGuests": 0,
+  "loginGuestStopped": true,
+  "providerSha256": "15f8cdb8812bde6192bc7d6dd40463dec76ccbf58fb08a439d2d1390375a3ad0",
+  "units": {
+    "companyProvider": "active",
+    "orchestrator": "active"
+  },
+  "credentialValuesReturned": false,
+  "mutationsPerformed": false,
+  "remoteLogSha256": "47450d5a11420bd8a9ac37197f9cb8ae4d1302aacde054ce87dcdb8cda0f7f5d",
+  "canonicalHelperRestored": true,
+  "firstGuestRemovedBeforeSecondCreated": true
+}

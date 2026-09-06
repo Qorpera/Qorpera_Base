@@ -1,0 +1,55 @@
+{
+  "schema": "qorpera.handoff-acquisition-diagnostic/v1",
+  "passed": true,
+  "observedAt": "2026-09-06T18:34:57.782501+00:00",
+  "runId": "d3b20e44-5ae7-443a-82c2-e3130cb80d1f",
+  "journalSha256": "793a19268484c84edc4f2b2fc8587acca697a3fe89c47f04e50486dec4dae5c9",
+  "acquisitionId": "d3b20e44-5ae7-443a-82c2-e3130cb80d1f",
+  "workSha256": "ce139cb32599fbb30d95f941b402a0439c51351eb0604d69fb786cfd3c49c881",
+  "physicalState": "stopped",
+  "matchingRefusals": [
+    {
+      "journaledPrefix": "ce139cb32599",
+      "incomingPrefix": "1788860aa3ea",
+      "state": "stopped"
+    },
+    {
+      "journaledPrefix": "ce139cb32599",
+      "incomingPrefix": "1788860aa3ea",
+      "state": "stopped"
+    },
+    {
+      "journaledPrefix": "ce139cb32599",
+      "incomingPrefix": "1788860aa3ea",
+      "state": "stopped"
+    },
+    {
+      "journaledPrefix": "ce139cb32599",
+      "incomingPrefix": "1788860aa3ea",
+      "state": "stopped"
+    },
+    {
+      "journaledPrefix": "ce139cb32599",
+      "incomingPrefix": "1788860aa3ea",
+      "state": "stopped"
+    },
+    {
+      "journaledPrefix": "ce139cb32599",
+      "incomingPrefix": "1788860aa3ea",
+      "state": "stopped"
+    },
+    {
+      "journaledPrefix": "ce139cb32599",
+      "incomingPrefix": "1788860aa3ea",
+      "state": "stopped"
+    },
+    {
+      "journaledPrefix": "ce139cb32599",
+      "incomingPrefix": "1788860aa3ea",
+      "state": "stopped"
+    }
+  ],
+  "credentialValuesReturned": false,
+  "mutationsPerformed": false,
+  "operation": "c7085e8f3-inspect-handoff-acquisition-01"
+}

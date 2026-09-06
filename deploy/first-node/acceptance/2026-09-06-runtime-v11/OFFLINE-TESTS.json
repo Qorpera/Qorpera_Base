@@ -1,0 +1,23 @@
+{
+  "schema": "qorpera.rollout-offline-tests/v1",
+  "packetSha256": "20dcb41bd4e8beac2569ad3fbdcb743f2781b66e6dfc82dd95c79270583f1ce5",
+  "passed": true,
+  "tests": 59,
+  "failed": 0,
+  "fileSha256": {
+    "packet.test.mjs": "dca402d3989da046dcea676e4dba5d821bcdaa036d801367665073b03e1dd213",
+    "transport.test.mjs": "870f8ec753b5dec97b5619fa48a6638165b278bc8ecfaa920023e6b6ee400898",
+    "contract.mjs": "7fe3907d029b1484ec982e6540f4a26c48379641bbcc0542814eb5df97f2af42",
+    "files.mjs": "0325c759ea40a479bc026382eb21df993f8b14b384ab27f861be1278974820aa",
+    "sql-packet.mjs": "5ae69bf21c084a72530a866709483b3adf3b30296fbf7ddcb9c35e92ea2634f6",
+    "build-packet.mjs": "b85dbb547ba925ac8b93dca132fff8b4e0dadfe8c5434995445643dabc526b08",
+    "transport.mjs": "fe2b3c3771240a2397682c45431344385c65f7f0ae19654f66942c8f25ec5994",
+    "controller.mjs": "ef181866a0ee65e47a7486980fed29d10975f72deba7635a591bdbf8a27253d0",
+    "inputs.json": "9d488c268f94f8dd0433d4353f5422f82f7f4b238fbccb1f59cc662f80d8349e",
+    "packet.json": "20dcb41bd4e8beac2569ad3fbdcb743f2781b66e6dfc82dd95c79270583f1ce5"
+  },
+  "transcriptSha256": "5684644a0e0948c200c789b7963efaf852e7b87e34894c3e938a4ccb42b1330e",
+  "productionWrites": false,
+  "actualCLIInvocations": 0,
+  "actualDatabaseInvocations": 0
+}

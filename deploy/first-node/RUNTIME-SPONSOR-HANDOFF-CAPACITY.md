@@ -26,7 +26,7 @@ after capacity is released, exact active replay, no available fallback,
 reauthentication-required authorization, and separate rate-limit/outage
 failures without a handoff. Existing successful continuation coverage remains.
 
-The deployed bundle is v10:
+The correction was first deployed in bundle v10:
 `7bfd6cd12160a3b5119e7727374e28d854c1004de6640f12c40446b21d67764e`.
 Source commit: `c7085e8f3aa7429a4b17286d496efa6ebfdc64a1`.
 Its activation is a new migration; historical v9 is unchanged. Production
@@ -38,6 +38,9 @@ lease/guest cleanup.
 
 The [v10 evidence](acceptance/2026-09-06-runtime-v10/MANIFEST.json) records the
 before/after regressions, deployment and native smoke. Local database tests and
-this ordinary native run do not replace the outstanding real provider
-usage-limit and sponsor continuation acceptance gate. See the
-[acceptance ledger](RUNTIME-STEPS-0-3-ACCEPTANCE.md) for the remaining proof limits.
+this ordinary native run did not close the real provider usage-limit and sponsor
+continuation gate. That gate subsequently passed on v11, after correcting
+physical attempt identity and native-launch provenance replacement. See the
+[v11 live proof](acceptance/2026-09-06-runtime-v11/NATIVE-V11-HANDOFF-PROOF.json)
+and [acceptance ledger](RUNTIME-STEPS-0-3-ACCEPTANCE.md) for the current state and
+proof limits.

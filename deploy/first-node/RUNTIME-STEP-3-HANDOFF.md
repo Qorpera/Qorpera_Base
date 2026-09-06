@@ -1,4 +1,29 @@
-# Runtime Step 3 — handoff, 2026-09-03 08:20Z
+# Runtime Step 3 — current handoff, 2026-09-06 19:08Z
+
+Steps 0–3 acceptance is complete for the Company41 contract scope documented in
+the [current acceptance ledger](RUNTIME-STEPS-0-3-ACCEPTANCE.md). Signed runtime
+v11 (`759e44f36`) and its matching database bundle are deployed. Admission is
+enabled at policy 23, the founder pause is cleared, and the ceiling remains
+240 wakes/hour. All 153 migration records are retained. No job guests, active
+jobs, assignments or native leases remain.
+
+Actual run `94541e40-e197-4f85-bddf-441be0a4766b` received a provider usage limit,
+notified the founder, handed the same run to the other Pro account, and completed
+its file read, progress/final sends and durable result. The former harness,
+provenance mismatch and teardown blockers below are resolved. The rollout
+tooling is now versioned under `scripts/runtime-rollout/`.
+
+The [v11 evidence manifest](acceptance/2026-09-06-runtime-v11/MANIFEST.json)
+records exact pins, deployed state, regression tests, historical proof chains
+and limitations. Gmail still returned usage_limit despite refreshed Pro claims;
+the Qorpera account completed the continuation. No further login or quota
+exhaustion is needed for this acceptance. The founder authorized the production
+changes, signing, diagnostics and reopening used in this rollout.
+
+Everything below is the preserved September 3 checkpoint and describes historical
+state, not the current deployment.
+
+## Historical handoff — 2026-09-03 08:20Z
 
 Written at the end of the session that rolled out Order 3 (the wake bus) to Company41. It states exactly where
 production, the node and this branch stand, what is blocked, and the rules the next session must keep. The full
