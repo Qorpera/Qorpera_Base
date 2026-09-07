@@ -1,0 +1,134 @@
+{
+  "schema": "qorpera.runtime-second-production-review-closure/v1",
+  "recordedAt": "2026-09-07T00:29:46.624Z",
+  "passed": true,
+  "runtimeSourceCommit": "0ed9e490feebd6d602ffb5f4b7c83471cec15657",
+  "runtimeBundleSha256": "4d988b5f47e6219b2f44bae3cbc0b7363c411738ddfc32774a5d487025d483bb",
+  "reviewedFindings": [
+    {
+      "priority": "P1",
+      "finding": "Standing authority changes failed to fence admitted effects",
+      "status": "closed",
+      "proof": "Every effect, completion, context read and handoff rechecks wake authority. Isolated routine/coworker revocation and separate-connection pause/effect and stale-snapshot schedules pass."
+    },
+    {
+      "priority": "P2",
+      "finding": "Autonomous sponsor handoff invalidated the original standing pin",
+      "status": "closed",
+      "proof": "Verified same-run handoff chain preserves original standing authority. All five wake kinds and two successive autonomous handoffs pass in PostgreSQL. Actual silent file-triggered routine completes after native subscription exhaustion and control-plane handoff."
+    },
+    {
+      "priority": "P2",
+      "finding": "Concurrent wake admission exceeded the ceiling",
+      "status": "closed",
+      "proof": "Shared company insertion fence serializes producers and invalidates stale snapshots. Independent transactions competing for the last slot produce one queued and one cancelled wake."
+    }
+  ],
+  "remainingReviewFindings": [],
+  "deploymentVerified": true,
+  "additionalCorrections": [
+    "Usage signal deduplication now includes sponsor version, preserving successive handoff evidence.",
+    "Trusted startup diagnostics survive HTTP boundaries without provider text or response-body disclosure.",
+    "Expanded parity identified and removed one additional excess service_role grant on qorpera_post_company_room_message."
+  ],
+  "sourceChecks": {
+    "sourceCheck": "passed",
+    "provenanceMigrationReplay": 144,
+    "wakeContextParity": "passed",
+    "productionReviewRedGreen": "passed",
+    "sqlIntegrationCases": 46,
+    "concurrencySchedules": 8,
+    "focusedTypeScriptTests": 183,
+    "bundleGeneratorTests": 3,
+    "packageTest": "passed",
+    "linuxPackageProof": "outputs/runtime-linux-x64-package-proof-0ed9e490f.json"
+  },
+  "sqlCases": 46,
+  "concurrentSchedules": 8,
+  "functionsMatched": 26,
+  "reviewedAclDifferencesReconciled": 5,
+  "additionalAclDifferencesReconciled": 1,
+  "totalAclDifferencesReconciled": 6,
+  "productionOnlyMigrationsPreserved": 18,
+  "finalState": {
+    "bundle": {
+      "sha256": "4d988b5f47e6219b2f44bae3cbc0b7363c411738ddfc32774a5d487025d483bb",
+      "version": 13
+    },
+    "ledger": {
+      "count": 162,
+      "latest": "20260907000500"
+    },
+    "paused": false,
+    "policy": {
+      "status": "enabled",
+      "version": 27
+    },
+    "ceiling": {
+      "spend": 50000000,
+      "wakes": 240,
+      "tokens": 50000000,
+      "version": 5
+    },
+    "handoffs": 8,
+    "activeJobs": 0,
+    "observedAt": "2026-09-07T00:26:46.327806+00:00",
+    "activeLeases": 0,
+    "usageSignals": 8,
+    "currentSponsor": {
+      "status": "active",
+      "connectionId": "2e55091d-1fbf-45e7-9a25-2fe9944d775c",
+      "connectionVersion": 2
+    },
+    "openEscalations": 0,
+    "stopGrantRevoked": true,
+    "activeAssignments": 0,
+    "probeSponsorStatus": "revoked",
+    "stopResourceRevoked": true,
+    "oldRetryBackendPresent": false,
+    "temporaryResponsibilitiesRetired": 3
+  },
+  "liveRunId": "5971ddfd-a4d7-405c-95bd-714b606d9270",
+  "limits": [
+    "The real provider limit preceded the first governed effect. Completed-effect replay and two successive handoffs are separately proved in isolated PostgreSQL; no production signal was fabricated or quota deliberately exhausted.",
+    "The requested continuation read is correlated with one successful unknown_tool span before Company read. Canonical continuation bytes/hash are independently verified, but exact tool arguments are not retained in this silent run and are not claimed as independently observed.",
+    "Native-result-fence telemetry remains unconfirmed. The durable result, governed read and complete guest/lease cleanup prove this execution outcome, not complete delivery telemetry or general availability.",
+    "The two historical v12 startup failures have no established retrospective cause. Trusted stage/category diagnostics and safe timeout/transport classifications are now implemented and tested; this is not a claim that an unknown historical cause was identified.",
+    "Historical Steps 0–3 proofs and nonexposure scans retain their original versions, timestamps and scopes. They were not all rerun on v13. The preserved v12 checkpoint retains its failed-canary evidence.",
+    "The identity recovery replica is Azure loopback NFS, not an independently proved physical Synology replica. Orders 4–10, production connector breadth, disaster recovery and general launch readiness remain outside this review closure."
+  ],
+  "witnesses": [
+    {
+      "path": "outputs/runtime-source-0ed9e490f.json",
+      "sha256": "808fdbe3358022f91b093fe73b121689e51bbfc961ed7d043123e783fd5f2b59"
+    },
+    {
+      "path": "work/second-review-runtime-06.json",
+      "sha256": "e431e7ba19e0f86a5d04515c524d84740455956af834c4e5deb9aef8408e8d78"
+    },
+    {
+      "path": "work/second-review-fixes-05.json",
+      "sha256": "3e30491dfe6c3f7403779157492d4f6fdf1c4c32cc925167cbe843ffa4162ba7"
+    },
+    {
+      "path": "outputs/runtime-production-review-v13-function-parity.json",
+      "sha256": "bf725cfbdb1881f245b3e2831e81da5101726a7149b6f56917814669500574fd"
+    },
+    {
+      "path": "outputs/runtime-custody-3c0bf3bce/v13-function-pins-1788740806152.json",
+      "sha256": "f289716896be2484391411b38dd8fbcc2c8587afbeefe26826e6937341a90b78"
+    },
+    {
+      "path": "outputs/runtime-live-0ed9e490f/AUTONOMOUS-HANDOFF-PROOF.json",
+      "sha256": "52cf4c4e8dd50eaa87f0e08851a7b6df11d0b4547e1cf661dfaa1f8d2c24f095"
+    },
+    {
+      "path": "outputs/runtime-v13-privilege-reconciliation/RESULT.json",
+      "sha256": "0723542a0ddb69e8cc6df265928b47ac954ac3562dda2d2b8fa87412ca887ddc"
+    },
+    {
+      "path": "outputs/runtime-custody-3c0bf3bce/runtime-v13-final-state-1788740806360.json",
+      "sha256": "1647b5b31b3a269c9cd5253d9f9d3ed495f9884c95641e4a1b33d6ebf9ab7e4f"
+    }
+  ]
+}

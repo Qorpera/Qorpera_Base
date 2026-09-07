@@ -1,7 +1,42 @@
-# Runtime Steps 0–3 acceptance ledger — 2026-09-06
+# Runtime Steps 0–3 acceptance ledger — 2026-09-07
+
+**The second production review's three defects are closed on signed v13.**
+Current runtime source is `0ed9e490feebd6d602ffb5f4b7c83471cec15657`;
+bundle v13 is `4d988b5f47e6219b2f44bae3cbc0b7363c411738ddfc32774a5d487025d483bb`.
+The [second-review corrections](RUNTIME-SECOND-REVIEW-FIXES.md) cover effect-time
+standing authority, autonomous sponsor continuation, concurrent wake ceilings,
+successive usage signals, startup diagnostics and six privilege differences.
+The [v13 manifest](acceptance/2026-09-07-runtime-v13/MANIFEST.json) binds 42 witnesses
+and verifies the previous v12 checkpoint unchanged.
+
+Live silent routine `5971ddfd-a4d7-405c-95bd-714b606d9270` completed at 00:25 UTC
+after a real usage limit and sponsor handoff. The original routine's standing
+sponsor remained version 1 while effective execution advanced to version 2.
+It read one Company File, recorded one durable result and sent no public
+messages. Both leases and guests were cleaned up without overlap. There were
+two attempts and zero dispatch failures. The temporary routine is paused.
+Canonical continuation bytes/hash are independently verified; the requested
+read correlates with a successful span but exact arguments were not retained.
+
+Current signed image: `1026b6a5185d047e713b447f1e2d1965069902b291eef55d1a5edf3cfcbf0ee7`.
+Guest manifest: `ed4a263159da74c661d21324e1f43df2518f60d73a71dcec6c65a36389a0c49f`.
+Final readback at 00:27 UTC confirms 162 migration records, including all 18
+production-only records; policy 27 enabled; founder pause cleared; normal
+ceiling version 5; and no active jobs, assignments, leases, escalations or job
+guests. All 26 checked function bodies, owners and privileges match source.
+Signature, provider/orchestrator health and source restrictions pass.
+
+v13 passed full repository checks, 183 focused TypeScript tests, four bundle
+and package tests, 46 SQL cases over 144 migrations, eight separate-connection
+concurrency schedules, SQL-to-TypeScript context parity and exact Linux package
+reproduction. The frozen rollout passed 62 tests and all eight wrapper steps.
+Historical startup failures, incomplete native-result-fence telemetry, earlier
+scan scopes and physical NAS recovery limits remain explicitly preserved.
+
+## Historical v12 checkpoint
 
 **The three Steps 0–3 production review findings are closed on signed v12.**
-Current runtime source is `53e8fd0efc0c639cf96802e72fafacdf50ebe8d6`;
+The v12 runtime source is `53e8fd0efc0c639cf96802e72fafacdf50ebe8d6`;
 bundle v12 is `229ceb4522bbaad4a6dcf38d69b9cb6e1b93f394ddd405be6f250e90941da6e7`.
 The [v12 evidence manifest](acceptance/2026-09-06-runtime-v12/MANIFEST.json)
 binds 35 witnesses for the corrections, rollout, live checks and retained failed
@@ -30,7 +65,7 @@ historical checkpoint. Its pending deployment and paused-admission statements
 no longer describe production. The founder subsequently authorized production
 changes, signing, credential diagnostics, and reopening admission.
 
-## Current deployed state
+## Historical v12 deployed state
 
 Signed image: `6dd05d71f82db5cfaa5440389fb2b21753fea6d5efb3cbfa142e0b53f7f86f91`.
 Guest manifest: `bf249d12e0f91fd9a6f1128da95de650dd55406a50e7ab3191981308d27d58d5`.
@@ -159,7 +194,7 @@ and timestamps. Table filenames refer to the v9 directory unless labeled v10, v1
 
 ## Validation and scope
 
-The current v12 source passed full repository checks, 139 focused TypeScript
+The v12 source passed full repository checks, 139 focused TypeScript
 tests, 35 SQL cases over 139 migrations, three real consent concurrency
 schedules and actual SQL context through the production TypeScript parser.
 The clean Linux x64 package reproduced all 27 files. The signed image passed

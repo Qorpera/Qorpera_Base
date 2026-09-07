@@ -1,0 +1,185 @@
+{
+  "schema": "qorpera.production-review-autonomous-handoff/v1",
+  "passed": true,
+  "recordedAt": "2026-09-07T00:28:52.904Z",
+  "sourceCommit": "0ed9e490feebd6d602ffb5f4b7c83471cec15657",
+  "runtimeBundleSha256": "4d988b5f47e6219b2f44bae3cbc0b7363c411738ddfc32774a5d487025d483bb",
+  "runId": "5971ddfd-a4d7-405c-95bd-714b606d9270",
+  "jobId": "cc8c76cd-fd05-43f9-bdc4-cbde2e4121e1",
+  "wakeKind": "routine",
+  "sourceKind": "company-file",
+  "routineId": "62adf284-ad0a-4586-8b7e-f6965f71e045",
+  "originalRoutineVersion": 1,
+  "originalStandingSponsorVersion": 1,
+  "effectiveSponsorVersion": 2,
+  "standingPinPreserved": true,
+  "attempts": 2,
+  "dispatchFailures": 0,
+  "durableResults": 1,
+  "companyReads": 1,
+  "publicSends": 0,
+  "actualFounderTrigger": true,
+  "actualNativeUsageLimit": true,
+  "actualControlPlaneHandoff": true,
+  "signal": {
+    "id": "00d8c6c6-0915-4aef-a55c-6853f701e019",
+    "job_id": "cc8c76cd-fd05-43f9-bdc4-cbde2e4121e1",
+    "run_id": "5971ddfd-a4d7-405c-95bd-714b606d9270",
+    "source": "native_adapter",
+    "provider": "openai",
+    "resets_at": null,
+    "profile_id": "88227549-9724-43c2-8966-9fafb3e855d6",
+    "observed_at": "2026-09-07T00:24:11.287749+00:00",
+    "signal_kind": "usage_limit",
+    "sponsor_version": 1,
+    "sponsor_binding_id": "b26e5391-9b2c-433e-806d-d628270dc715",
+    "provider_connection_id": "2bd8e0ae-fc58-449a-b680-e58ff4784744",
+    "provider_connection_version": 4
+  },
+  "handoff": {
+    "id": "7891a13e-ae5f-43f2-9af3-6d2622c539cf",
+    "actor": "control_plane",
+    "job_id": "cc8c76cd-fd05-43f9-bdc4-cbde2e4121e1",
+    "reason": "usage_limit",
+    "run_id": "5971ddfd-a4d7-405c-95bd-714b606d9270",
+    "signal_id": "00d8c6c6-0915-4aef-a55c-6853f701e019",
+    "binding_id": "b26e5391-9b2c-433e-806d-d628270dc715",
+    "created_at": "2026-09-07T00:24:12.081208+00:00",
+    "to_version": 2,
+    "from_version": 1,
+    "attempt_count": 1,
+    "to_connection_id": "2e55091d-1fbf-45e7-9a25-2fe9944d775c",
+    "from_connection_id": "2bd8e0ae-fc58-449a-b680-e58ff4784744"
+  },
+  "freshContext": true,
+  "oldLaunchPreserved": {
+    "id": 5,
+    "run_id": "5971ddfd-a4d7-405c-95bd-714b606d9270",
+    "launched_at": "2026-09-07T00:24:07.625651+00:00",
+    "binary_sha256": "2f2c26cfdfacebbcce848fb50cfaaa4e8d0aa3c6ec3c1009123ecf766c8335f7",
+    "context_bytes": 33229,
+    "superseded_at": "2026-09-07T00:24:47.917063+00:00",
+    "context_sha256": "5d93df61bd03f7db2d9504e64f936a687855e773ff40d39d9230846e2819ce12",
+    "reasoning_effort": "low",
+    "runtime_bundle_id": "bf65e931-a4cf-432f-a497-8a44c24dcfbd",
+    "tool_catalog_sha256": "4b34db43d021e3a688c3a4f1aa58d5b323c5b96f361483833baa7147d6a6ae69",
+    "runtime_bundle_sha256": "4d988b5f47e6219b2f44bae3cbc0b7363c411738ddfc32774a5d487025d483bb",
+    "reasoning_policy_sha256": "dc1e46bf37526a65e668b67de60172a60868314b4c23bd788d75c77469ebf31b"
+  },
+  "continuationLaunch": {
+    "run_id": "5971ddfd-a4d7-405c-95bd-714b606d9270",
+    "created_at": "2026-09-07T00:24:47.919875+00:00",
+    "binary_sha256": "2f2c26cfdfacebbcce848fb50cfaaa4e8d0aa3c6ec3c1009123ecf766c8335f7",
+    "context_bytes": 33793,
+    "context_sha256": "007898cad7db10b1a4c3db295d4089290e238d59d89e8308d3b266bb34fc765d",
+    "reasoning_effort": "low",
+    "runtime_bundle_id": "bf65e931-a4cf-432f-a497-8a44c24dcfbd",
+    "tool_catalog_sha256": "4b34db43d021e3a688c3a4f1aa58d5b323c5b96f361483833baa7147d6a6ae69",
+    "runtime_bundle_sha256": "4d988b5f47e6219b2f44bae3cbc0b7363c411738ddfc32774a5d487025d483bb",
+    "reasoning_policy_sha256": "dc1e46bf37526a65e668b67de60172a60868314b4c23bd788d75c77469ebf31b"
+  },
+  "canonicalContinuation": {
+    "bytes": 202,
+    "continuation": {
+      "handoffId": "7891a13e-ae5f-43f2-9af3-6d2622c539cf",
+      "priorSends": [],
+      "reason": "usage_limit",
+      "receipts": [],
+      "runId": "5971ddfd-a4d7-405c-95bd-714b606d9270",
+      "schema": "qorpera.run-continuation/v1"
+    },
+    "id": "5971ddfd-a4d7-405c-95bd-714b606d9270",
+    "sha256": "301ff10b04fccb878a520e977fc29df743c1967dbeed291b95bbee185fdb20e5"
+  },
+  "contextReadCorrelatedBySuccessfulSpan": true,
+  "contextReadObservation": {
+    "id": 5191,
+    "phase": "finish",
+    "run_id": "5971ddfd-a4d7-405c-95bd-714b606d9270",
+    "operation": "unknown_tool",
+    "attempt_id": "8debc51a-9e94-4858-ac06-9836150695e8",
+    "ingested_at": "2026-09-07T00:24:55.233183+00:00",
+    "observation": {
+      "phase": "finish",
+      "readId": null,
+      "schema": "qorpera.runtime-observation/v1",
+      "status": "succeeded",
+      "attemptId": "8debc51a-9e94-4858-ac06-9836150695e8",
+      "operation": "unknown_tool",
+      "receiptId": null,
+      "durationMs": 219,
+      "inputBytes": 173,
+      "observedAt": "2026-09-07T00:24:55.203Z",
+      "inputTokens": null,
+      "outputBytes": 568,
+      "totalTokens": null,
+      "assignmentId": "4249e0a0-efcd-4c2a-abf6-4c7aa9a202c9",
+      "outputTokens": null,
+      "errorCategory": null,
+      "parentAttemptId": null,
+      "cachedInputTokens": null,
+      "cacheWriteInputTokens": null,
+      "reasoningOutputTokens": null,
+      "logicalOperationSha256": "b1637c4782e0edd7935f2817138b1d46086420362a50338696d62a11cad483a6"
+    },
+    "observed_at": "2026-09-07T00:24:55.203+00:00",
+    "assignment_id": "4249e0a0-efcd-4c2a-abf6-4c7aa9a202c9",
+    "parent_attempt_id": null,
+    "logical_operation_sha256": "b1637c4782e0edd7935f2817138b1d46086420362a50338696d62a11cad483a6"
+  },
+  "exactContextReadArgumentsRetained": false,
+  "companyReadSucceeded": true,
+  "bothLeasesReleased": true,
+  "nonoverlappingAttempts": true,
+  "bothGuestsRemoved": true,
+  "companyDefaultUnchanged": true,
+  "routinePausedAfterCompletion": true,
+  "finishedAt": "2026-09-07T00:25:01.12728+00:00",
+  "limits": [
+    "The real provider limit preceded the first governed effect. Completed-effect replay and two successive handoffs are separately proved in isolated PostgreSQL; no production signal was fabricated or quota deliberately exhausted.",
+    "The requested continuation read is correlated with one successful unknown_tool span before Company read. Canonical continuation bytes/hash are independently verified, but exact tool arguments are not retained in this silent run and are not claimed as independently observed.",
+    "Native-result-fence telemetry remains unconfirmed. The durable result, governed read and complete guest/lease cleanup prove this execution outcome, not complete delivery telemetry or general availability."
+  ],
+  "witnesses": [
+    {
+      "path": "outputs/runtime-custody-3c0bf3bce/v13-canary-state-1788740742611.json",
+      "sha256": "6ae403084909a5e085e35c7438a83c2daf22bdacf9678337f6c87b1e75e214b2"
+    },
+    {
+      "path": "outputs/runtime-custody-3c0bf3bce/handoff-native-detail-v13-1788740806046.json",
+      "sha256": "bbf1d3b6ff5d8bf71f16d47dc8164874310720040c26c596066ed03474c7ed55"
+    },
+    {
+      "path": "outputs/runtime-custody-3c0bf3bce/handoff-native-authority-v13-1788740806093.json",
+      "sha256": "6b1471ac5764e5d18af990b4d852d7819bc3610349366b872d7ad1196d1fadfe"
+    },
+    {
+      "path": "outputs/runtime-custody-3c0bf3bce/production-review-v13-canary-result-1788740806046.json",
+      "sha256": "129c2e0a07afc22295d74c45daa59bb749186eb634fd69a1d43043659a6d5ba0"
+    },
+    {
+      "path": "outputs/runtime-custody-3c0bf3bce/v13-canary-standing-1788740873523.json",
+      "sha256": "f2d58100dab6c1a8758349c219c8ad11142b495ca636421ecfe9f365a57d00fa"
+    },
+    {
+      "path": "outputs/runtime-live-0ed9e490f/ROUTINE-CANARY-ADMISSION.json",
+      "sha256": "c6d2d2b3f28be79e8c658526501ebc40b529254cbf80dda996a897f1f9ada1f9"
+    },
+    {
+      "path": "outputs/runtime-image-0ed9e490f/FINAL-NODE-READBACK.json",
+      "sha256": "d96e927e87c97926af26a2f5747644ebf1420a88c5dd26faa54d20838ecac84e"
+    },
+    {
+      "path": "outputs/runtime-image-0ed9e490f/ACTUAL-ATTEMPT-ISOLATION.json",
+      "sha256": "5dc2c42ecab1ef51e86785c5f117a8796b9f8b36c9d4dc199cb87dab0ab327d7"
+    },
+    {
+      "path": "work/v13-confirm-continuation-hash.json",
+      "sha256": "aebee23eee8f9564e20ee3162c39fbe3c899be9ed7d2e14d8239d0da092d4dc3"
+    },
+    {
+      "path": "outputs/runtime-live-3c0bf3bce/v13-routine-pause.result.json",
+      "sha256": "e32e320e17440ce4b6877f2a94240ae4ce15744eb9a8b9abb7906f3d0c215207"
+    }
+  ]
+}

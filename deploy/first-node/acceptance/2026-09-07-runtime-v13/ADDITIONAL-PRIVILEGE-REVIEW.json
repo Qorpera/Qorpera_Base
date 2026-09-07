@@ -1,0 +1,29 @@
+{
+  "schema": "qorpera.runtime-privilege-reconciliation-review/v1",
+  "issuedAt": "2026-09-07T00:22:23.593Z",
+  "sourceCommit": "0ed9e490feebd6d602ffb5f4b7c83471cec15657",
+  "changedFunctions": 1,
+  "verifiedFunctions": 26,
+  "corePath": "outputs/runtime-v13-privilege-reconciliation/core.sql",
+  "coreSha256": "32eab76fe5baaacc1df21d8d82bf93b96861cc8a5e266ca187ea7ae1ae01031b",
+  "sqlSha256": "25872042e83d72741de34b76b39e5e030dd3c963e3f27aca55688132cc411266",
+  "previousReadback": "outputs/runtime-custody-3c0bf3bce/v13-function-pins-1788740491270.json",
+  "localReadback": "outputs/runtime-production-review-v13-privilege-test.json",
+  "before": {
+    "acl": "{postgres=X/postgres,authenticated=X/postgres,service_role=X/postgres}",
+    "name": "qorpera_post_company_room_message",
+    "owner": "postgres",
+    "sha256": "547fe87d2e5a53074d4432896d91825d846f197bb34038d91e7956a62b1be500",
+    "signature": "qorpera_post_company_room_message(uuid,uuid,jsonb,uuid,bigint)"
+  },
+  "after": {
+    "acl": "{postgres=X/postgres,authenticated=X/postgres}",
+    "name": "qorpera_post_company_room_message",
+    "owner": "postgres",
+    "sha256": "547fe87d2e5a53074d4432896d91825d846f197bb34038d91e7956a62b1be500",
+    "signature": "qorpera_post_company_room_message(uuid,uuid,jsonb,uuid,bigint)"
+  },
+  "authorizationSha256": "6d9e7a91644cbb9a5d0222613b9131cf997382432cfef2176a347583be12897b",
+  "admissionReopened": false,
+  "automaticReplayAllowed": false
+}

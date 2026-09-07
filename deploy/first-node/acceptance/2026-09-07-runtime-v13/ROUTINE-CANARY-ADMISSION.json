@@ -1,0 +1,53 @@
+{
+  "passed": true,
+  "observedAt": "2026-09-07T00:23:45.545Z",
+  "routine": {
+    "status": "active",
+    "version": 1,
+    "routine_id": "62adf284-ad0a-4586-8b7e-f6965f71e045",
+    "content_sha256": "645be8c748b06886da9f2d47a3aed4eade16d9e98995d6b42cc476f1a99b0ce8",
+    "client_routine_id": "87ba8974-0f9b-4a0c-bc96-f1cff19ae020"
+  },
+  "sponsorBindingId": "b26e5391-9b2c-433e-806d-d628270dc715",
+  "trigger": {
+    "commandId": "030b15d5-a519-4b69-99d8-c4ff2a833086",
+    "environmentId": "0d2053f0-c1a8-444d-99a8-68c8214e5414",
+    "companyId": "88227549-9724-43c2-8966-9fafb3e855d6",
+    "plan": {
+      "schema": "qorpera.company-path-mutation/v1",
+      "operationKey": "runtime-v13-review-two-trigger",
+      "path": "runtime-boundary-v8/review-two-signal.txt",
+      "expectedVersion": null,
+      "entry": {
+        "path": "runtime-boundary-v8/review-two-signal.txt",
+        "kind": "file",
+        "executable": false,
+        "file": {
+          "manifestSha256": "baa425a2a861d3c3da7376d708ecfcddd7130c773912fbd0379ebb7f7c146d6b",
+          "fileSha256": "c2b4f06d970ff4fa3e5b59a4c92cf171165d39112d93d85682d6153419f4d41f",
+          "bytes": 76,
+          "mediaType": "application/octet-stream"
+        }
+      }
+    },
+    "planSha256": "c7883fe80f69b9180dfc3dbbbf9b4190bbf87ec425b21e3cb5d2011c061faaa3",
+    "state": "applied",
+    "expiresAt": "2026-09-07T00:33:43.874791+00:00",
+    "result": {
+      "path": "runtime-boundary-v8/review-two-signal.txt",
+      "state": "applied",
+      "schema": "qorpera.company-path-result/v1",
+      "version": "8142a65a-7e6e-4ed9-8274-7446534176ce",
+      "receiptId": null,
+      "proposalId": null,
+      "snapshotId": "e9a072f4-46ab-4f91-94c3-3a42a432eb23",
+      "operationKey": "runtime-v13-review-two-trigger"
+    }
+  },
+  "path": "runtime-boundary-v8/review-two-signal.txt",
+  "actualFounderRpcs": true,
+  "expectedWakeKind": "routine",
+  "expectedReplyPolicy": "silent",
+  "providerSignalFabricated": false,
+  "completionClaimed": false
+}
