@@ -74,6 +74,8 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 					signal: requestSignal,
 					headers,
 					body,
+				}).catch(() => {
+					throw new CloudRuntimeDiagnosticError("transport_unavailable", "Company File authority unavailable");
 				});
 				requestSignal.throwIfAborted();
 				// PostgREST returns no body for these void RPCs. A missing value
@@ -96,7 +98,8 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 								? 256 * 1024
 								: 4096;
 				const reader = response.body?.getReader();
-				if (!reader) throw new Error("Company File authority unavailable");
+				if (!reader)
+					throw new CloudRuntimeDiagnosticError("invalid_response", "Company File authority unavailable");
 				const cancel = (): void => {
 					void reader.cancel().catch(() => undefined);
 				};
@@ -106,10 +109,19 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 				try {
 					for (;;) {
 						requestSignal.throwIfAborted();
-						const chunk = await reader.read();
+						const chunk = await reader.read().catch(() => {
+							throw new CloudRuntimeDiagnosticError(
+								"transport_unavailable",
+								"Company File authority unavailable",
+							);
+						});
 						if (chunk.done) break;
 						count += chunk.value.byteLength;
-						if (count > maximum) throw new Error("Company File control response too large");
+						if (count > maximum)
+							throw new CloudRuntimeDiagnosticError(
+								"invalid_response",
+								"Company File control response too large",
+							);
 						chunks.push(chunk.value);
 					}
 				} finally {

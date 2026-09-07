@@ -8,6 +8,7 @@ import {
 	parseCloudAgentSendInput,
 	parseCloudAgentSendReceipt,
 } from "./cloud-agent-mouth.ts";
+import { nativeRuntimeFailureMetadata } from "./cloud-native-failure.ts";
 import type {
 	CompleteNativeProviderLoginInput,
 	NativeCredentialCapsuleStore,
@@ -101,6 +102,8 @@ function internalRejectionCategory(error: unknown): string {
 }
 
 function safeRequestDiagnostic(error: unknown): string {
+	const failure = nativeRuntimeFailureMetadata(error);
+	if (failure) return `Native provider execution failed (stage=${failure.stage}, category=${failure.category})`;
 	const message = error instanceof Error ? error.message : "";
 	const diagnostic = message.replace(/ \[mouth=(?:uninitialized|initialized|ready|send-unconfirmed|delivered)\]$/, "");
 	if (

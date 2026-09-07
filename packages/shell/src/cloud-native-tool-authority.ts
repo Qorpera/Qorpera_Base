@@ -1,4 +1,5 @@
 import { performance } from "node:perf_hooks";
+import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
 import { CLOUD_RUNTIME_MODEL_POLICY, type CloudRuntimeReasoningEffort } from "./cloud-runtime-policy.ts";
 
 export const CLOUD_NATIVE_TOOL_AUTHORITY_SCHEMA = "qorpera.native-tool-authority/v1";
@@ -202,7 +203,13 @@ export function cloudToolRequest<T>(
 	const timer = setTimeout(() => timeout.abort(), timeoutMs);
 	let abort: () => void = () => undefined;
 	return new Promise<T>((resolve, reject) => {
-		abort = (): void => reject(new Error("Cloud tool authority unavailable"));
+		abort = (): void =>
+			reject(
+				new CloudRuntimeDiagnosticError(
+					timeout.signal.aborted ? "timeout" : "cancelled",
+					"Cloud tool authority unavailable",
+				),
+			);
 		requestSignal.addEventListener("abort", abort, { once: true });
 		if (requestSignal.aborted) abort();
 		else
