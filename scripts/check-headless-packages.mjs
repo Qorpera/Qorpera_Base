@@ -20,7 +20,7 @@ async function sources(directory) {
 export async function checkHeadlessPackages(root = repository) {
 	const failures = [];
 	const runtime = await sources(join(root, "packages/runtime/src"));
-	for (const name of ["runtime", "cloud-client", "shell", "member-web"]) {
+	for (const name of ["runtime", "cloud-client", "shell", "member-web", "web"]) {
 		for (const path of await sources(join(root, `packages/${name}/src`))) {
 			const source = ts.createSourceFile(path, await readFile(path, "utf8"), ts.ScriptTarget.Latest, true);
 			for (const statement of source.statements) {
@@ -34,7 +34,7 @@ export async function checkHeadlessPackages(root = repository) {
 				const importsShell = /^(?:@qorpera\/shell(?:\/|$)|packages\/shell\/)/.test(target);
 				const importsDesktop = /^(?:electron(?:-updater)?|@qorpera\/pi-[^/]+)(?:\/|$)/.test(target);
 				const importsNodeAdapter = /^(?:node:|@qorpera\/cloud-client\/node(?:\/|$)|packages\/cloud-client\/src\/node\/)/.test(target);
-				if ((name !== "runtime" && importsRuntime) || (name !== "shell" && (importsShell || importsDesktop)) || (name === "member-web" && importsNodeAdapter)) {
+				if ((name !== "runtime" && importsRuntime) || (name !== "shell" && (importsShell || importsDesktop)) || (["member-web", "web"].includes(name) && importsNodeAdapter)) {
 					failures.push(`${relative(root, path)} imports ${target}`);
 				}
 			}
@@ -59,13 +59,17 @@ export async function checkHeadlessPackages(root = repository) {
 	const web = await build({ absWorkingDir: root, entryPoints: ["packages/member-web/src/entry.mjs"],
 		bundle: true, platform: "browser", format: "esm", target: "es2022", metafile: true, write: false, logLevel: "silent" });
 	assertMemberWebInputs(web.metafile);
+	const productWeb = await build({ absWorkingDir: root, entryPoints: ["packages/web/src/entry.mjs"],
+		tsconfig: join(root, "tsconfig.json"), bundle: true, platform: "browser", format: "esm", target: "es2022", metafile: true, write: false, logLevel: "silent" });
+	assertMemberWebInputs(productWeb.metafile);
 	return { runtimeSources: runtime.length, runtimeInputs: Object.keys(server.metafile.inputs).length,
-		browserInputs: Object.keys(client.metafile.inputs).length, webInputs: Object.keys(web.metafile.inputs).length };
+		browserInputs: Object.keys(client.metafile.inputs).length, webInputs: Object.keys(web.metafile.inputs).length,
+		productWebInputs: Object.keys(productWeb.metafile.inputs).length };
 }
 
 export function assertMemberWebInputs(metafile) {
 	for (const path of Object.keys(metafile.inputs)) {
-		if (/(?:^|\/)packages\/(?:shell|runtime|runner-orchestrator|object-gateway)\/|packages\/cloud-client\/src\/node\/|(?:^|\/)node_modules\/(?:electron(?:-updater)?|@qorpera\/pi-[^/]+)(?:\/|$)/.test(path)) {
+		if (/(?:^|\/)packages\/(?:shell|runtime|runner-orchestrator|object-gateway)\/|packages\/cloud-client\/(?:src|dist)\/node\/|(?:^|\/)node_modules\/(?:electron(?:-updater)?|@qorpera\/pi-[^/]+)(?:\/|$)/.test(path)) {
 			throw new Error(`Member web bundle contains server or desktop authority: ${path}`);
 		}
 	}

@@ -1,0 +1,1673 @@
+<title>Meet Your Co-Founder</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<style>
+:root {
+	color-scheme: light;
+	--bg: #ffffff; --chrome: #fafafa;
+	--text: #161615; --text-muted: #686866; --text-soft: #92928e; --border: rgba(18, 18, 17, 0.09);
+	--rail: #eae8e7; --rail-line: #d8d6d2; --rail-hover: #dedcd8;
+	--search: #e0dedd; --search-line: #d5d3d1; --search-ink: #85857f; --search-placeholder: #777772;
+	--selection: #0e84ff; --selection-text: #ffffff; --status: #00c887; --small: #71716b; --plus: #777771;
+	--primary: #171716; --primary-hover: #30302e; --blue: #305fbe;
+	--rail-width: 33.4%;
+	--sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+* { box-sizing: border-box; margin: 0; }
+body { background: var(--chrome); color: var(--text); font-family: var(--sans); font-size: 14px; line-height: 1.45; }
+button { font: inherit; color: inherit; cursor: pointer; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+
+.review { position: sticky; top: 0; z-index: 30; display: flex; align-items: center; gap: 14px; padding: 10px 18px; background: #1b1b1a; color: #f2f1ee; font-size: 12.5px; }
+.review-label { font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; font-size: 11px; opacity: 0.6; }
+.review-note { opacity: 0.55; }
+.review button { margin-left: auto; border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 999px; padding: 5px 14px; background: transparent; color: #f2f1ee; font-weight: 600; }
+.review button:hover { background: rgba(255, 255, 255, 0.1); }
+
+.win { display: grid; grid-template-columns: var(--rail-width) minmax(0, 1fr); height: 760px; background: var(--bg); }
+
+/* The V24 rail. */
+.rail { display: flex; flex-direction: column; min-height: 0; padding: 12px 11px 11px; background: var(--rail); border-right: 1px solid var(--rail-line); }
+.rail-top { display: flex; align-items: center; gap: 8px; }
+.rail-add { display: grid; place-items: center; flex: none; width: 28px; height: 28px; border: 0; border-radius: 6px; background: transparent; color: var(--plus); }
+.rail-add:hover { background: var(--rail-hover); }
+.rail-add svg { width: 18px; height: 18px; }
+.rail-search { display: flex; align-items: center; gap: 6px; height: 28px; flex: 1; min-width: 0; padding: 0 8px; border: 0; border-radius: 6px; background: #d9d7d7; box-shadow: inset 0 0 0 0.5px rgba(18, 18, 17, 0.08); color: var(--search-ink); }
+.rail-search svg { width: 14px; height: 14px; flex: none; }
+.rail-search input { flex: 1; min-width: 0; border: 0; background: transparent; font: inherit; font-size: 13px; color: var(--text); outline: 0; }
+.rail-search input::placeholder { color: var(--search-placeholder); }
+
+/* The Co-Founder card: low, with the 64 px figure standing on it and rising
+   above its top edge. Proportions taken from the app's own card. */
+.cofounder { position: relative; display: flex; flex-direction: column; align-items: center; gap: 1px; margin: 24px 0 6px; padding: 50px 6px 9px; border: 0; border-radius: 12px; background: transparent; color: var(--text); text-align: center; }
+.cofounder:hover { background: var(--rail-hover); }
+.cofounder.is-selected, .cofounder.is-selected:hover { background: var(--selection); color: var(--selection-text); }
+.cofounder strong { position: relative; z-index: 2; font-size: 12px; font-weight: 650; line-height: 1.2; }
+.cofounder small { font-size: 10.5px; color: var(--small); }
+.cofounder.is-selected small { color: #fff; }
+.cofounder .stand { position: absolute; left: 50%; top: -20px; width: 64px; height: 64px; transform: translateX(-50%); }
+.cofounder .stand::before { content: ""; position: absolute; left: 14%; right: 14%; bottom: 1px; height: 10px; border-radius: 50%; background: rgba(0, 30, 80, 0.3); filter: blur(5px); }
+.cofounder .stand .vf { position: relative; z-index: 1; width: 64px; height: 64px; filter: drop-shadow(0 4px 4px rgba(0, 0, 0, 0.16)); }
+.cofounder .status { position: absolute; z-index: 2; right: 2px; bottom: 4px; width: 12px; height: 12px; border-radius: 50%; background: var(--status); border: 2px solid var(--selection); }
+
+.worker-list { flex: 1; }
+.rail-footer { display: flex; align-items: center; gap: 8px; padding: 10px 6px 0; font-size: 12.5px; }
+.rail-footer .mark { display: grid; place-items: center; width: 25px; height: 25px; border-radius: 50%; background: var(--text); color: #fff; font-size: 10px; font-weight: 750; }
+.rail-footer strong { font-weight: 650; }
+.rail-footer .owner { margin-left: auto; color: var(--small); font-size: 11px; }
+
+main { display: flex; flex-direction: column; min-width: 0; background: var(--bg); }
+.thread-header { display: flex; align-items: center; gap: 7px; height: 48px; padding: 0 16px; border-bottom: 1px solid var(--border); }
+.thread-header .vf { width: 20px; height: 20px; }
+.thread-header strong { font-size: 13px; font-weight: 650; }
+
+/* The vector figure (vector-design.css). */
+.vf { position: relative; display: inline-block; width: 144px; height: 144px; flex: none; vertical-align: middle; -webkit-user-select: none; user-select: none; }
+.vf-presence, .vf-form, .vf-body { display: block; width: 100%; height: 100%; transform-origin: 50% 50%; }
+.vf-body svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.vf-typing { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; visibility: hidden; pointer-events: none; }
+
+/* The choice. */
+.meet { flex: 1; min-height: 0; overflow: auto; display: flex; justify-content: center; padding: 8px 40px 96px; }
+.meet-inner { width: 100%; max-width: 560px; display: flex; flex-direction: column; align-items: center; text-align: center; margin: auto; }
+.meet h1 { font-size: 26px; font-weight: 600; letter-spacing: 0; color: #333333; }
+.meet-stage { position: relative; width: 190px; height: 190px; margin: 16px 0 8px; }
+.meet-stage .vf { width: 190px; height: 190px; }
+.figure-strokes { position: absolute; inset: -12%; width: 124%; height: 124%; overflow: visible; pointer-events: none; }
+.meet-name { font-size: 19px; font-weight: 600; letter-spacing: 0; }
+
+/* Approved selector geometry: seven figures in one row, each in its own
+   colour; then eleven colours as centred rows of six and five. */
+.figure-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); justify-items: center; align-items: center; gap: 4px; width: min(100%, 324px); margin: 24px auto 0; }
+.figure-choice { position: relative; display: grid; place-items: center; width: min(100%, 40px); aspect-ratio: 1; padding: 3px; border: 1px solid transparent; border-radius: 50%; background: none; }
+.figure-choice .vf { width: 32px; height: 32px; }
+.figure-choice:hover { background: #f4f4f2; }
+.figure-choice[aria-checked="true"] { border-color: #d1d1ce; background: #f5f5f3; box-shadow: 0 0 0 2px #fff, 0 0 0 3px #e0e0dc; }
+.figure-choice:focus-visible, .color-choice:focus-visible { outline: 2px solid var(--blue); outline-offset: 4px; }
+.color-grid { display: grid; grid-template-columns: repeat(12, 15px); gap: 12px 5px; width: max-content; max-width: 100%; justify-content: center; margin: 18px auto 4px; }
+.color-choice { position: relative; grid-column: span 2; justify-self: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; background: var(--choice-color); }
+.color-choice:nth-child(7) { grid-column: 2 / span 2; }
+.color-choice[aria-checked="true"]::after { content: ""; position: absolute; inset: -5px; border: 1px solid #999994; border-radius: 50%; }
+
+.meet-start { min-width: 184px; height: 34px; margin-top: 28px; padding: 0 32px; border: 0; border-radius: 8px; background: var(--selection); color: #fff; font-size: 13.5px; font-weight: 600; }
+.meet-start:hover { filter: brightness(1.06); }
+</style>
+
+<div class="review">
+	<span class="review-label">Mockup</span>
+	<span class="review-note">After creating a company &#183; Messages-ratio rail &#183; vector characters, part motion 0</span>
+	<button type="button" id="replay">Replay</button>
+</div>
+
+<div class="win">
+	<aside class="rail" aria-label="Agents">
+		<div class="rail-top">
+			<label class="rail-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg><input type="search" placeholder="Search" aria-label="Search agents" autocomplete="off"></label>
+			<button class="rail-add" type="button" aria-label="Add agent"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+		</div>
+		<button class="cofounder is-selected" type="button" aria-pressed="true" id="cofounderCard">
+			<span class="stand" id="stand"><span class="status" aria-hidden="true"></span></span>
+			<strong>Co-Founder</strong>
+			<small>Getting ready</small>
+		</button>
+		<div class="worker-list" aria-label="Agents"></div>
+		<div class="rail-footer"><span class="mark" aria-hidden="true">N</span><strong>Nordlys Interi&#248;r</strong><span class="owner">Owner</span></div>
+	</aside>
+	<main>
+		<section class="meet">
+			<div class="meet-inner">
+				<h1>Your journey starts here</h1>
+				<div class="meet-stage" id="stage"></div>
+				<div class="meet-name">Co-Founder</div>
+				<div class="figure-grid" id="figures" role="radiogroup" aria-label="Choose a figure"></div>
+				<div class="color-grid" id="colors" role="radiogroup" aria-label="Choose a colour"></div>
+				<button type="button" class="meet-start">Add first agent</button>
+			</div>
+		</section>
+	</main>
+</div>
+
+<script>
+/* ---- motion-model.js (company41-website landing/public/avatars) ---- */
+"use strict";
+
+(() => {
+	// Poses are x%, y%, rotation degrees, horizontal scale, vertical scale.
+	const neutral = [0, 0, 0, 1, 1];
+	const creation = Object.freeze({ playbackRate: .8, strokeScale: 1.725 });
+	// Measured from each approved 512 px source, in the shared 100-unit frame.
+	// Planet retains its approved rig; the others retain their own eye placement.
+	const faces = Object.freeze(Object.fromEntries(Object.entries({
+		planet: [[56.5, 39.7, 6.25, 14.75, -17], [69.2, 38.1, 6.25, 14.75, -17]],
+		acorn: [[54.32, 58.08, 6.21, 15.35, -16.36], [67.32, 56.55, 6.12, 15.29, -16.61]],
+		flame: [[53.94, 64.09, 5.81, 14.6, -14.82], [66.32, 62.78, 5.81, 14.52, -15.25]],
+		rocket: [[50.03, 44.68, 5.61, 13.64, -11], [61.96, 43.1, 5.6, 13.56, -11.11]],
+		crown: [[56.74, 55.25, 5.96, 14.79, -10.81], [69.44, 53.79, 5.92, 14.59, -10.85]],
+		heart: [[65.35, 45.45, 6.56, 16.86, -9.49], [78.89, 45.43, 6.41, 16.86, -9.99]],
+		ghost: [[59.75, 36.05, 6.79, 13.54, -2.98], [72.42, 35.96, 6.39, 13.39, -3.53]],
+	}).map(([id, eyes]) => [id, Object.freeze(eyes.map(([x, y, width, height, rotation]) => Object.freeze({ x, y, width, height, rotation })))])));
+	const avatars = [
+		{ id: "planet", name: "Planet", color: "#5ec0b5", origin: "50% 50%", rhythm: "The eyes lead a glance. The body follows, then holds.", duration: 8400, poses: [
+			[0, 0, -.4, -.6, 1, 1], [.09, 0, -.4, -.6, 1, 1], [.16, -.6, -1.1, -2.4, 1.006, .996], [.36, -.6, -1.1, -2.4, 1.006, .996], [.45, .7, -1.4, 1.9, .997, 1.009], [.54, .2, -.4, .3, 1, 1], [.91, .2, -.4, .3, 1, 1], [1, 0, -.4, -.6, 1, 1],
+		] },
+		{ id: "acorn", name: "Acorn", color: "#87674c", origin: "50% 88%", rhythm: "A grounded, deliberate rock.", duration: 3600, poses: [
+			[0, 0, 0, 0, 1, 1], [.24, -.4, .4, -3, 1.018, .985], [.54, .5, -.6, 2.4, .993, 1.012], [.76, 0, .2, -.7, 1.006, .997], [1, 0, 0, 0, 1, 1],
+		] },
+		{ id: "flame", name: "Flame", color: "#fa752e", origin: "50% 86%", rhythm: "A soft, irregular flicker.", duration: 2600, poses: [
+			[0, 0, 0, 0, 1, 1], [.22, .4, -1.3, 3.5, .98, 1.025], [.47, -.6, .5, -2.6, 1.02, .985], [.73, .2, -.7, 1.3, .992, 1.012], [1, 0, 0, 0, 1, 1],
+		] },
+		{ id: "rocket", name: "Rocket", color: "#f96e2d", origin: "50% 65%", rhythm: "A light lift with a steady hover.", duration: 3200, poses: [
+			[0, 0, -2.5, -.6, 1, 1], [.23, .4, -5.2, .7, .986, 1.022], [.51, -.3, -3.7, -.4, 1.005, .996], [.77, .2, -4.4, .5, .997, 1.008], [1, 0, -2.5, -.6, 1, 1],
+		] },
+		{ id: "crown", name: "Crown", color: "#fcb51b", origin: "50% 85%", rhythm: "A small, measured nod.", duration: 4400, poses: [
+			[0, 0, 0, 0, 1, 1], [.2, .3, .6, 1.7, 1.012, .985], [.4, 0, -.8, -.8, .995, 1.009], [.6, 0, 0, .25, 1, 1], [1, 0, 0, 0, 1, 1],
+		] },
+		{ id: "heart", name: "Heart", color: "#fb672a", origin: "50% 55%", rhythm: "A quiet double heartbeat.", duration: 3000, poses: [
+			[0, 0, 0, 0, 1, 1], [.08, 0, -.3, 0, 1.052, 1.045], [.16, 0, 0, 0, .997, .997], [.26, 0, -.2, .3, 1.036, 1.03], [.38, 0, 0, 0, 1, 1], [1, 0, 0, 0, 1, 1],
+		] },
+		{ id: "ghost", name: "Ghost", color: "#312f2d", colorOnDark: "#a29d97", origin: "50% 55%", rhythm: "An unhurried floating drift.", duration: 6400, poses: [
+			[0, -.6, -1.2, -1, 1, 1], [.3, 1.5, -4.7, 1.7, .996, 1.013], [.65, .7, -2.6, .6, 1.009, .995], [1, -.6, -1.2, -1, 1, 1],
+		] },
+	];
+	const states = [
+		{ id: "still", label: "Stand still", activity: "" },
+		{ id: "idle", label: "Idle", activity: "" },
+		{ id: "creation", label: "Creation", activity: "A new agent, ready to begin." },
+		{ id: "working", label: "Working", activity: "Working through the latest notes." },
+		{ id: "writing", label: "Writing", activity: "Putting the response together." },
+		{ id: "needs-attention", label: "Needs attention", activity: "Waiting for your input." },
+		{ id: "complete", label: "Complete", activity: "The work is ready." },
+	];
+	const effectColors = Object.freeze([
+		{ name: "Neon green", color: "#62ff2f" },
+		{ name: "Hot pink", color: "#ff2d9a" },
+		{ name: "Bright orange", color: "#ff791b" },
+	]);
+	const workingActions = Object.freeze([
+		{ id: "working", label: "General work" },
+		{ id: "searching", label: "Web search" },
+		{ id: "connecting", label: "Tool connection" },
+		{ id: "computer", label: "Computer use" },
+	]);
+	const routineStates = Object.freeze(["working", "writing", "needs-attention"]);
+
+	function avatarColor(id, surface = "light", selectedColor) {
+		const avatar = avatars.find((item) => item.id === id);
+		if (!avatar || !["light", "dark", "checker"].includes(surface)) throw new RangeError("Invalid avatar or surface");
+		if (selectedColor !== undefined) {
+			if (!/^#[\da-f]{6}$/.test(selectedColor)) throw new RangeError("Invalid avatar color");
+			if (surface === "dark" && selectedColor === "#312f2d") return "#a29d97";
+			return selectedColor;
+		}
+		return surface === "dark" ? avatar.colorOnDark ?? avatar.color : avatar.color;
+	}
+
+	function statusMessage(id, state, action = "working", tool = "Cursor", routineActive = false) {
+		const avatar = avatars.find((item) => item.id === id);
+		if (!avatar || !states.some((item) => item.id === state) || !workingActions.some((item) => item.id === action) || typeof routineActive !== "boolean") throw new RangeError("Invalid status identity, state, or action");
+		if (state === "still" || state === "idle") return { lead: "", detail: "" };
+		if (state === "working" && action === "searching") return { lead: "Searching", detail: " the web" };
+		if (state === "working" && action === "connecting") return { lead: "Connecting to", detail: ` ${tool.trim().slice(0, 48) || "your tools"}` };
+		if (state === "working" && action === "computer") return { lead: avatar.name, detail: " is using its computer" };
+		if (state === "working" && routineActive) return { lead: avatar.name, detail: " is running a routine" };
+		const detail = {
+			creation: " is getting ready",
+			working: " is working", writing: " is writing",
+			"needs-attention": " needs your input", complete: " has finished",
+		};
+		return { lead: avatar.name, detail: detail[state] };
+	}
+
+	function sidebarStatus(state, { action = "working", tool = "Cursor", routineActive = false, unread = false, needsYou = false } = {}) {
+		if (!states.some((item) => item.id === state) || !workingActions.some((item) => item.id === action) || typeof tool !== "string" || [routineActive, unread, needsYou].some((value) => typeof value !== "boolean")) throw new RangeError("Invalid sidebar state or activity");
+		const live = ["creation", "working", "writing"].includes(state);
+		// A request is an obligation, not a read receipt. It stays ahead of work
+		// and unseen results until the user explicitly resolves it.
+		const kind = needsYou || state === "needs-attention" ? "attention" : live ? "working" : unread ? "new" : "quiet";
+		let text = kind === "attention" ? "Needs you" : kind === "new" ? "New" : "";
+		if (kind === "working") {
+			if (state === "creation") text = "Getting ready";
+			else if (state === "writing") text = "Writing";
+			else if (action === "searching") text = "Searching the web";
+			else if (action === "connecting") text = `Connecting to ${tool.trim().slice(0, 48) || "your tools"}`;
+			else if (action === "computer") text = "Using computer";
+			else text = routineActive ? "Running a routine" : "Working";
+		}
+		const badges = [];
+		if (kind !== "quiet") badges.push({ id: "active", tone: kind === "working" ? "green" : "blue" });
+		if (state === "working" && action === "computer") badges.push({ id: "computer", label: "Using computer" });
+		return { kind, text, badges };
+	}
+
+	function amplitude(size) {
+		if (!Number.isFinite(size) || size <= 0) throw new RangeError("Invalid avatar size");
+		return size >= 96 ? 1 : size >= 40 ? .66 : size >= 24 ? .42 : .32;
+	}
+
+	function transform(pose, amount) {
+		const [x, y, rotation, sx, sy] = pose;
+		return `translate(${(x * amount).toFixed(3)}%, ${(y * amount).toFixed(3)}%) rotate(${(rotation * amount).toFixed(3)}deg) scale(${(1 + (sx - 1) * amount).toFixed(4)}, ${(1 + (sy - 1) * amount).toFixed(4)})`;
+	}
+
+	function motion(id, state, size = 144) {
+		const avatar = avatars.find((item) => item.id === id);
+		if (!avatar || !states.some((item) => item.id === state)) throw new RangeError("Unknown avatar or motion state");
+		const index = avatars.indexOf(avatar);
+		const amount = amplitude(size);
+		let poses = null;
+		let duration = 0;
+		let rest = neutral;
+		let entryDuration = 640;
+		let entry = [
+			[0, ...neutral], [.18, 0, 1.2, -.7, 1.075, .9], [.46, 0, -4.5, 1.4, .958, 1.065], [.76, 0, .4, -.4, 1.019, .985],
+		];
+		let description = avatar.rhythm;
+		if (state === "still") {
+			entryDuration = 0;
+			entry = [[0, ...neutral]];
+			description = "The starting pose. No breathing, blinking, or effects until an activity is chosen.";
+		} else if (state === "working") {
+			poses = avatar.poses;
+			duration = avatar.duration;
+			rest = poses[0].slice(1);
+			description = `${avatar.rhythm} The eyes read, look up, and react, with short quiet holds.`;
+		} else if (state === "creation") {
+			entryDuration = 880 / creation.playbackRate;
+			entry = [[0, ...neutral], [.17, 0, 3.5, -2.6, 1.11, .84], [.38, 0, -9.5, 3.6, .92, 1.1], [.6, 0, 1, -1.2, 1.036, .97], [.8, 0, -1.2, .4, .992, 1.016]];
+			description = "Color gathers in, then a spring releases two counter-spinning streams of neon streaks.";
+		} else if (state === "idle") {
+			entryDuration = 400;
+			entry = [[0, ...neutral], [.7, 0, .2, -.15, 1.004, .997]];
+			duration = 8400 + index * 419;
+			poses = [[0, ...neutral], [.72, ...neutral], [.82, 0, -.2, .18, 1.001, 1.004], [.92, ...neutral], [1, ...neutral]];
+			description = "Almost still, with a small breath and a long rest.";
+		} else if (state === "writing") {
+			entryDuration = 0;
+			entry = [[0, ...neutral]];
+			description = "Gather into one dot, then split into three. One shared typing rhythm for every figure.";
+		} else if (state === "needs-attention") {
+			entryDuration = 740;
+			rest = [0, 0, -2, 1, 1];
+			entry = [[0, ...neutral], [.18, 0, 1, .5, 1.045, .955], [.5, 0, -4.2, -2.8, .98, 1.035], [.79, 0, .2, -1.5, 1.009, .995]];
+			description = "A glance and a short curved cue, then a quiet waiting pose.";
+		} else {
+			entryDuration = 820;
+			entry = [[0, ...neutral], [.2, 0, 1.2, -.4, 1.07, .91], [.49, 0, -6, 1.4, .96, 1.065], [.74, 0, .5, -.5, 1.022, .981], [.9, 0, -.5, .2, .997, 1.003]];
+			description = "A single spring of acknowledgement, then back to rest.";
+		}
+		entry.push([1, ...rest]);
+		const keyframes = (points) => points.map(([offset, ...pose]) => ({ offset, transform: transform(pose, amount), easing: "cubic-bezier(.42, 0, .3, 1)" }));
+		const entryFrames = keyframes(entry);
+		if (state === "creation") {
+			entryFrames[0].easing = "cubic-bezier(.5, 0, .72, .3)";
+			entryFrames[1].easing = "cubic-bezier(.12, .82, .24, 1)";
+		}
+		return {
+			origin: avatar.origin,
+			description,
+			rest: transform(rest, amount),
+			entry: { duration: entryDuration, frames: entryFrames },
+			loop: poses ? { duration, frames: keyframes(poses) } : null,
+		};
+	}
+
+	function createClock(readTime) {
+		let heldAt = null;
+		let offset = 0;
+		return {
+			now: () => (heldAt ?? readTime()) - offset,
+			pause() { if (heldAt === null) heldAt = readTime(); },
+			resume() { if (heldAt !== null) { offset += readTime() - heldAt; heldAt = null; } },
+		};
+	}
+
+	window.QORPERA_MOTION_MODEL = Object.freeze({ avatars, faces, states, creation, effectColors, workingActions, routineStates, avatarColor, statusMessage, sidebarStatus, motion, amplitude, createClock });
+})();
+
+/* ---- avatar-appearance.js (company41-website landing/public/avatars) ---- */
+"use strict";
+
+(() => {
+	const model = window.QORPERA_MOTION_MODEL;
+	// Native Ghost, Acorn, Rocket, and Crown shades remain shared choices.
+	// Choosing one on its original figure leaves that artwork untouched.
+	const palette = Object.freeze([
+		{ name: "Charcoal", color: "#312f2d" },
+		{ name: "Brown", color: "#87674c" },
+		{ name: "Coral", color: "#ff365e" },
+		{ name: "Orange", color: "#f96e2d" },
+		{ name: "Gold", color: "#fcb51b" },
+		{ name: "Green", color: "#00c878" },
+		{ name: "Teal", color: "#00bfb3" },
+		{ name: "Blue", color: "#2047bd" },
+		{ name: "Purple", color: "#b83ff5" },
+		{ name: "Pink", color: "#ff2994" },
+		{ name: "Gray", color: "#7c7c7a" },
+	].map(Object.freeze));
+	const selected = new Map();
+	const transforms = new Map();
+	const originals = new Map();
+	const rendered = new Map();
+	const materialLights = new Map();
+	// White-eye thresholds in each source's least-colored channel. Lighting is
+	// independent of this mask: preserve the original shadow/highlight field.
+	const eyeStarts = Object.freeze({ planet: 125, acorn: 100, flame: 72, rocket: 100, crown: 75, heart: 95, ghost: 95 });
+	const linearChannels = Array.from({ length: 256 }, (_, index) => {
+		const channel = index / 255;
+		return channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4;
+	});
+	const toneSteps = 4095;
+	const rangeWeights = Float32Array.from({ length: 1025 }, (_, index) => Math.exp(-.5 * (index / 1024 / .22) ** 2));
+
+	function smoothLighting(id, pixels, width, height) {
+		const source = [1, 3, 5].map((start) => Number.parseInt(avatar(id).color.slice(start, start + 2), 16));
+		const eyeChannel = source.indexOf(Math.min(...source));
+		const lights = new Float32Array(width * height);
+		const weights = new Float32Array(lights.length);
+		let count = 0;
+		for (let index = 0; index < lights.length; index++) {
+			const offset = index * 4;
+			lights[index] = linearChannels[pixels[offset]] * .2126 + linearChannels[pixels[offset + 1]] * .7152 + linearChannels[pixels[offset + 2]] * .0722;
+			// Keep the silhouette and white eyes out of the lighting filter.
+			// Their original alpha and antialiased edge pixels are never blurred.
+			if (!pixels[offset + 3] || pixels[offset + eyeChannel] > eyeStarts[id]) continue;
+			weights[index] = pixels[offset + 3] / 255;
+			count++;
+		}
+		if (!count) return lights;
+		const radius = Math.max(2, Math.round(Math.min(width, height) / 85));
+		const spatial = Float32Array.from({ length: radius * 2 + 1 }, (_, index) => Math.exp(-.5 * ((index - radius) / (radius / 2)) ** 2));
+		// Two edge-aware passes remove fine source grain, not broad form or the
+		// ring/fold shadows. Log-light differences adapt to both dark and light
+		// originals, so Ghost's texture is not magnified by a bright recolor.
+		let filtered = lights;
+		for (const vertical of [false, true]) {
+			const output = new Float32Array(lights.length);
+			const guide = Float32Array.from(filtered, (light) => Math.log2(Math.max(.0001, light)));
+			for (let y = 0; y < height; y++) {
+				for (let x = 0; x < width; x++) {
+					const index = y * width + x;
+					if (!weights[index]) { output[index] = filtered[index]; continue; }
+					let sum = 0;
+					let total = 0;
+					const position = vertical ? y : x;
+					const limit = vertical ? height : width;
+					const stride = vertical ? width : 1;
+					for (let distance = Math.max(-radius, -position); distance <= Math.min(radius, limit - position - 1); distance++) {
+						const neighbor = index + distance * stride;
+						if (!weights[neighbor]) continue;
+						const difference = Math.round(Math.abs(guide[index] - guide[neighbor]) * 1024);
+						if (difference > 1024) continue;
+						const weight = spatial[distance + radius] * rangeWeights[difference] * weights[neighbor];
+						sum += filtered[neighbor] * weight;
+						total += weight;
+					}
+					output[index] = sum / total;
+				}
+			}
+			filtered = output;
+		}
+		// Preserve some native grain at portrait scale without amplifying it
+		// into harsh chromatic noise. Broad lighting and silhouette stay intact.
+		return id === "ghost" ? filtered : Float32Array.from(filtered, (light, index) => light * .65 + lights[index] * .35);
+	}
+
+	function avatar(id) {
+		const item = model.avatars.find((entry) => entry.id === id);
+		if (!item) throw new RangeError("Unknown avatar");
+		return item;
+	}
+
+	function color(id) {
+		return selected.get(id) ?? avatar(id).color;
+	}
+
+	function setColor(id, value) {
+		const original = avatar(id).color;
+		if (value !== original && !palette.some((item) => item.color === value)) throw new RangeError("Unknown avatar color");
+		if (value === original) selected.delete(id);
+		else selected.set(id, value);
+	}
+
+	function hueSaturationValue(channels) {
+		const high = Math.max(...channels), low = Math.min(...channels);
+		const range = high - low;
+		const [red, green, blue] = channels;
+		const hue = range === 0 ? 0 : high === red ? ((green - blue) / range + 6) % 6 : high === green ? (blue - red) / range + 2 : (red - green) / range + 4;
+		return [hue, high ? range / high : 0, high];
+	}
+
+	function transform(id, value) {
+		const source = avatar(id).color;
+		if (!/^#[\da-f]{6}$/.test(value)) throw new RangeError("Invalid avatar color");
+		if (source === value) return null;
+		const key = id + value;
+		if (transforms.has(key)) return transforms.get(key);
+		const from = [1, 3, 5].map((start) => linearChannels[Number.parseInt(source.slice(start, start + 2), 16)]);
+		const to = [1, 3, 5].map((start) => linearChannels[Number.parseInt(value.slice(start, start + 2), 16)]);
+		const baseLight = materialLights.get(id) ?? from[0] * .2126 + from[1] * .7152 + from[2] * .0722;
+		const eyeStart = eyeStarts[id] / 255;
+		// Transfer diffuse shade and highlight energy in linear light, anchored
+		// to the chosen color. No percentile clamp or flattened material range.
+		// A lookup table keeps recoloring responsive and preserves dark detail.
+		const tables = to.map((channel) => Array.from({ length: toneSteps + 1 }, (_, index) => {
+			const level = index / toneSteps;
+			const lit = level <= baseLight ? channel * level / baseLight : channel + (1 - channel) * (level - baseLight) / (1 - baseLight);
+			return lit <= .0031308 ? lit * 12.92 : 1.055 * lit ** (1 / 2.4) - .055;
+		}));
+		// Bright blue/green material is not a white eye. Preserve the eyes with
+		// their own channel mask rather than treating body brightness as white.
+		const eyeChannel = from.indexOf(Math.min(...from));
+		const eyeTable = Array.from({ length: 256 }, (_, index) => Math.max(0, (index / 255 - eyeStart) / (1 - eyeStart)));
+		const fromHsv = hueSaturationValue([1, 3, 5].map((start) => Number.parseInt(source.slice(start, start + 2), 16) / 255));
+		const toHsv = hueSaturationValue([1, 3, 5].map((start) => Number.parseInt(value.slice(start, start + 2), 16) / 255));
+		const result = { tables, eyeChannel, eyeTable, hueShift: toHsv[0] - fromHsv[0], saturationGain: (toHsv[1] / fromHsv[1]) ** .8, valueGain: toHsv[2] / fromHsv[2] };
+		transforms.set(key, result);
+		return result;
+	}
+
+	function tintPixels(id, value, pixels, lighting = null, width = 512, hasEyes = true) {
+		const spec = transform(id, value);
+		if (!spec) return pixels;
+		const height = pixels.length / 4 / width;
+		const eyes = model.faces[id].map((eye) => ({ ...eye, cosine: Math.cos(eye.rotation * Math.PI / 180), sine: Math.sin(eye.rotation * Math.PI / 180) }));
+		for (let index = 0; index < pixels.length; index += 4) {
+			if (pixels[index + 3] === 0) continue;
+			if (pixels[index] === 255 && pixels[index + 1] === 255 && pixels[index + 2] === 255) continue;
+			if (id === "planet" || id === "flame") {
+				// These saturated portraits retain the source's value, pigment
+				// texture and highlight rolloff. A single luminance ramp created
+				// visible contour bands where the teal's red channel reached zero.
+				const original = hueSaturationValue([pixels[index], pixels[index + 1], pixels[index + 2]].map((channel) => channel / 255));
+				const hue = (original[0] + spec.hueShift + 6) % 6;
+				const saturation = Math.min(.98, original[1] * spec.saturationGain);
+				const value = Math.min(1, original[2] * spec.valueGain);
+				const chroma = value * saturation;
+				const secondary = chroma * (1 - Math.abs(hue % 2 - 1));
+				const shade = value - chroma;
+				const channels = [[chroma, secondary, 0], [secondary, chroma, 0], [0, chroma, secondary], [0, secondary, chroma], [secondary, 0, chroma], [chroma, 0, secondary]][Math.floor(hue)];
+				for (let channel = 0; channel < 3; channel++) pixels[index + channel] = Math.round((channels[channel] + shade) * 255);
+				continue;
+			}
+			const r = linearChannels[pixels[index]];
+			const g = linearChannels[pixels[index + 1]];
+			const b = linearChannels[pixels[index + 2]];
+			const level = (lighting ? lighting[index / 4] : r * .2126 + g * .7152 + b * .0722) * toneSteps;
+			const lower = Math.floor(level);
+			const upper = Math.min(toneSteps, lower + 1);
+			const x = ((index / 4) % width + .5) / width * 100;
+			const y = (Math.floor(index / 4 / width) + .5) / height * 100;
+			// White-eye protection belongs only to the measured eyes. Applying
+			// it across the body bleaches highlights and flattens teal and pink.
+			const inEye = hasEyes && eyes.some((eye) => {
+				const dx = x - eye.x, dy = y - eye.y;
+				const u = dx * eye.cosine + dy * eye.sine;
+				const v = -dx * eye.sine + dy * eye.cosine;
+				return Math.hypot(u, Math.max(0, Math.abs(v) - (eye.height - eye.width) / 2)) <= eye.width / 2 + 1;
+			});
+			const eye = inEye ? spec.eyeTable[pixels[index + spec.eyeChannel]] : 0;
+			for (let channel = 0; channel < 3; channel++) {
+				const table = spec.tables[channel];
+				const material = table[lower] + (table[upper] - table[lower]) * (level - lower);
+				const output = material + (1 - material) * eye;
+				pixels[index + channel] = Math.round(Math.max(0, Math.min(1, output)) * 255);
+			}
+		}
+		return pixels;
+	}
+
+	function matchFaceLighting(id, plate, body, width, height) {
+		// Fit a gentle RGB correction from the intact material surrounding each
+		// eye. This keeps generated clean plates seamless in native and recolored
+		// figures without replacing any of the approved body or silhouette.
+		const corrections = model.faces[id].map((eye) => {
+			const matrix = Array.from({ length: 3 }, () => Array(6).fill(0));
+			const angle = eye.rotation * Math.PI / 180;
+			const cosine = Math.cos(angle), sine = Math.sin(angle);
+			const radius = eye.height / 2 + 6;
+			const left = Math.max(0, Math.floor((eye.x - radius) / 100 * width));
+			const right = Math.min(width, Math.ceil((eye.x + radius) / 100 * width));
+			const top = Math.max(0, Math.floor((eye.y - radius) / 100 * height));
+			const bottom = Math.min(height, Math.ceil((eye.y + radius) / 100 * height));
+			for (let y = top; y < bottom; y += 2) {
+				for (let x = left; x < right; x += 2) {
+					const dx = (x + .5) / width * 100 - eye.x;
+					const dy = (y + .5) / height * 100 - eye.y;
+					const u = dx * cosine + dy * sine;
+					const v = -dx * sine + dy * cosine;
+					const distance = Math.hypot(u, Math.max(0, Math.abs(v) - (eye.height - eye.width) / 2)) - eye.width / 2;
+					if (distance < 2.5 || distance > 5) continue;
+					const offset = (y * width + x) * 4;
+					if (body[offset + 3] !== 255 || plate[offset + 3] !== 255 || Math.min(body[offset], body[offset + 1], body[offset + 2]) >= 220) continue;
+					const basis = [1, dx / 10, dy / 10];
+					for (let row = 0; row < 3; row++) {
+						for (let column = 0; column < 3; column++) matrix[row][column] += basis[row] * basis[column];
+						for (let channel = 0; channel < 3; channel++) matrix[row][channel + 3] += basis[row] * (body[offset + channel] - plate[offset + channel]);
+					}
+				}
+			}
+			if (matrix[0][0] < 12) return { eye, coefficients: Array.from({ length: 3 }, () => [0, 0, 0]) };
+			for (let pivot = 0; pivot < 3; pivot++) {
+				let largest = pivot;
+				for (let row = pivot + 1; row < 3; row++) if (Math.abs(matrix[row][pivot]) > Math.abs(matrix[largest][pivot])) largest = row;
+				[matrix[pivot], matrix[largest]] = [matrix[largest], matrix[pivot]];
+				const divisor = matrix[pivot][pivot];
+				if (Math.abs(divisor) < .000001) return { eye, coefficients: Array.from({ length: 3 }, () => [0, 0, 0]) };
+				for (let column = 0; column < 6; column++) matrix[pivot][column] /= divisor;
+				for (let row = 0; row < 3; row++) {
+					if (row === pivot) continue;
+					const amount = matrix[row][pivot];
+					for (let column = 0; column < 6; column++) matrix[row][column] -= amount * matrix[pivot][column];
+				}
+			}
+			return { eye, coefficients: matrix.map((row) => row.slice(3)) };
+		});
+		if (corrections.every(({ coefficients }) => coefficients.every((row) => row.every((value) => value === 0)))) return;
+		for (let y = 0; y < height; y++) {
+			for (let x = 0; x < width; x++) {
+				const px = (x + .5) / width * 100, py = (y + .5) / height * 100;
+				const correction = corrections.reduce((closest, item) => Math.hypot(px - item.eye.x, py - item.eye.y) < Math.hypot(px - closest.eye.x, py - closest.eye.y) ? item : closest);
+				const basis = [1, (px - correction.eye.x) / 10, (py - correction.eye.y) / 10];
+				const offset = (y * width + x) * 4;
+				for (let channel = 0; channel < 3; channel++) {
+					plate[offset + channel] += basis.reduce((sum, value, row) => sum + value * correction.coefficients[row][channel], 0);
+				}
+			}
+		}
+	}
+
+	function prepare(id, image) {
+		const isFace = id.endsWith("-face");
+		const figure = isFace ? id.slice(0, -5) : id;
+		avatar(figure);
+		if (originals.has(id)) return;
+		const body = isFace ? originals.get(figure) : null;
+		const width = body && figure !== "planet" ? body.width : image.naturalWidth;
+		const height = body && figure !== "planet" ? body.height : image.naturalHeight;
+		const canvas = document.createElement("canvas");
+		canvas.width = width;
+		canvas.height = height;
+		// Decode once into an explicit sRGB buffer. CSS/SVG filter pipelines can
+		// reinterpret source channels on wide-gamut displays and wash out cyan.
+		const context = canvas.getContext("2d", { colorSpace: "srgb", willReadFrequently: true });
+		context.drawImage(image, 0, 0, width, height);
+		const pixels = context.getImageData(0, 0, width, height);
+		if (id === "planet-face") {
+			// Match the blank face plate to the original body before recoloring.
+			const offsets = [-.03259, -.00343, -.01889];
+			for (let index = 0; index < pixels.data.length; index += 4) {
+				for (let channel = 0; channel < 3; channel++) pixels.data[index + channel] += offsets[channel] * 255;
+			}
+		} else if (isFace && body) {
+			matchFaceLighting(figure, pixels.data, body.pixels.data, width, height);
+		}
+		const lighting = smoothLighting(figure, pixels.data, width, height);
+		if (!isFace) {
+			// Anchor the material to its measured median light, not the luminance
+			// of three independently sampled channel medians. That small offset
+			// otherwise adds an unwanted pale tint to saturated green and teal.
+			const histogram = new Uint32Array(toneSteps + 1);
+			let count = 0;
+			for (let index = 0; index < pixels.data.length; index += 4) {
+				const data = pixels.data;
+				if (data[index + 3] !== 255 || Math.min(data[index], data[index + 1], data[index + 2]) >= 220) continue;
+				const light = lighting[index / 4];
+				histogram[Math.round(light * toneSteps)]++;
+				count++;
+			}
+			if (count > 0) {
+				let cumulative = 0;
+				for (let level = 0; level <= toneSteps; level++) {
+					cumulative += histogram[level];
+					if (cumulative <= count / 2) continue;
+					if (level > 0 && level < toneSteps) materialLights.set(id, level / toneSteps);
+					break;
+				}
+				for (const key of transforms.keys()) if (key.startsWith(id + "#")) transforms.delete(key);
+			}
+		}
+		originals.set(id, { image, pixels, lighting, width, height });
+	}
+
+	function variant(id, value) {
+		const original = originals.get(id);
+		if (!original) throw new Error(`Avatar artwork not prepared: ${id}`);
+		const isFace = id.endsWith("-face");
+		const figure = isFace ? id.slice(0, -5) : id;
+		if (!isFace && value === avatar(figure).color) return { image: original.image, url: original.image.src };
+		const key = id + value;
+		if (rendered.has(key)) return rendered.get(key);
+		const canvas = document.createElement("canvas");
+		canvas.width = original.width;
+		canvas.height = original.height;
+		const context = canvas.getContext("2d", { colorSpace: "srgb" });
+		const pixels = context.createImageData(original.width, original.height);
+		pixels.data.set(original.pixels.data);
+		tintPixels(figure, value, pixels.data, original.lighting, original.width, !isFace);
+		context.putImageData(pixels, 0, 0);
+		const result = { image: canvas, url: canvas.toDataURL("image/png") };
+		rendered.set(key, result);
+		return result;
+	}
+
+	function source(id, value = color(id.endsWith("-face") ? id.slice(0, -5) : id)) {
+		return variant(id, value).url;
+	}
+
+	function drawable(id, value = color(id)) {
+		return variant(id, value).image;
+	}
+
+	window.QORPERA_AVATAR_APPEARANCE = Object.freeze({ palette, color, setColor, transform, tintPixels, prepare, source, drawable });
+})();
+
+/* ---- motion-visuals.js (company41-website landing/public/avatars) ---- */
+"use strict";
+
+(() => {
+	const model = window.QORPERA_MOTION_MODEL;
+	const tau = Math.PI * 2;
+	const neutral = [0, 0, 0, 1, 1];
+	const palette = Object.freeze(model.effectColors.map(({ color }) => color));
+	const geometry = {
+		planet: [53, 18, -14], acorn: [44, 31, -24], flame: [38, 43, -24],
+		rocket: [39, 42, -18], crown: [46, 29, -14],
+		heart: [47, 31, -18], ghost: [43, 38, -18],
+	};
+	const durations = Object.freeze({ creation: 2800 / model.creation.playbackRate, "needs-attention": 1450 });
+	// Each lane emits a left/right pair; varied planes keep the short trails distinct.
+	const creationLanes = [
+		[.92, .88, 8, .42], [1.04, 1.04, -12, .6], [.84, 1.12, 26, .34],
+		[1.06, .9, -25, .52], [.96, 1.1, 18, .4], [1.06, .98, -6, .64],
+	];
+	const creationOrbitSlots = creationLanes.length * 2;
+	// Read across two lines, look up to think, react, then settle before reading again.
+	// Fixed holds separate the saccades so the eyes never drift continuously.
+	const workingGaze = [
+		[0, ...neutral], [240, ...neutral],
+		[440, -5.9, -1.3, -.75, 1.06, .96], [700, -5.9, -1.3, -.75, 1.06, .96],
+		[880, -3.6, 1.6, -.45, .78, 1.04], [1080, -3.6, 1.6, -.45, .78, 1.04],
+		[1300, .6, 2, .12, .86, 1.03], [1480, .6, 2, .12, .86, 1.03],
+		[1570, .6, 2, .12, .12, 1.08], [1660, .6, 2, .12, .86, 1.03],
+		[1840, -5.7, 3.1, -.65, .8, 1.02], [2140, -1.6, 3.1, -.18, .8, 1.02], [2380, -1.6, 3.1, -.18, .8, 1.02],
+		[2580, 1.6, -3.2, .4, 1.17, .94], [2850, 1.6, -3.2, .4, 1.17, .94],
+		[3130, -1.2, -3.7, -.15, .67, 1.03], [3380, -1.2, -3.7, -.15, .67, 1.03],
+		[3570, 1.9, -2.3, .46, 1.2, .96], [4020, 1.9, -2.3, .46, 1.2, .96],
+		[4180, .4, -.8, .1, 1.1, 1], [4370, .4, -.8, .1, .12, 1.06], [4490, .4, -.8, .1, 1.05, 1],
+		[4610, .4, -.8, .1, .16, 1.05], [4740, .4, -.8, .1, 1.05, 1],
+		[5060, ...neutral], [5580, ...neutral],
+		[5800, -4.4, .7, -.5, .84, 1.04], [6240, -.7, 1.5, -.08, .84, 1.04], [6640, -.7, 1.5, -.08, .84, 1.04],
+		[6880, 1.6, -.7, .34, 1.13, .96], [7320, 1.6, -.7, .34, 1.13, .96],
+		[7600, ...neutral], [8400, ...neutral],
+	];
+	// The large, left-facing crown reads the screen below it. Hold each target
+	// before a 650 ms glance; blinking keeps its own natural tempo.
+	const screenGaze = [
+		[0, 1.8, 8.8, .1, .94, 1], [1700, 1.8, 8.8, .1, .94, 1],
+		[2350, 5.4, 10.8, .18, .9, 1], [4700, 5.4, 10.8, .18, .9, 1],
+		[5350, 1.6, 9.8, .05, .92, 1], [7300, 1.6, 9.8, .05, .92, 1],
+		[7950, -.6, 5.8, -.08, 1, 1], [9300, -.6, 5.8, -.08, 1, 1],
+		[9950, 3.4, 9.4, .12, .94, 1], [12200, 3.4, 9.4, .12, .94, 1],
+		[12850, 1.8, 8.8, .1, .94, 1], [15000, 1.8, 8.8, .1, .94, 1],
+	];
+	const hoverPoses = {
+		still: [-.2, -2.2, -2.6, 1.045, 1.045],
+		idle: [.5, -1.5, 1.8, 1.026, 1.037],
+		creation: [0, -1.4, -1, 1.05, 1.04],
+		working: [1, -.9, 2.2, 1.03, 1.014],
+		writing: [0, 0, 0, 1.01, 1.01],
+		"needs-attention": [-.6, -1.3, -3.2, 1.028, 1.04],
+		complete: [0, .6, 1.4, 1.045, .99],
+	};
+	const hoverNotes = Object.freeze({
+		still: "A curious lift and lean; fully still again when you leave.",
+		idle: "A soft greeting over the quiet idle rhythm.",
+		creation: "A small lift without replaying the creation burst.",
+		working: "A quick look up while the work continues.",
+		writing: "The three dots spread out and their pulse becomes a little more expressive.",
+		"needs-attention": "A closer, attentive lean; no repeated alert.",
+		complete: "A small bow of acknowledgement, held until you leave.",
+	});
+
+	function sample(points, time) {
+		if (time <= points[0][0]) return points[0].slice(1);
+		for (let index = 1; index < points.length; index++) {
+			const right = points[index];
+			if (time > right[0]) continue;
+			const left = points[index - 1];
+			const progress = (time - left[0]) / (right[0] - left[0]);
+			const eased = progress * progress * (3 - 2 * progress);
+			return left.slice(1).map((value, axis) => value + (right[axis + 1] - value) * eased);
+		}
+		return points.at(-1).slice(1);
+	}
+
+	function face(state, elapsed, size = 144, { gaze } = {}) {
+		if (!model.states.some(({ id }) => id === state) || !Number.isFinite(elapsed)) throw new RangeError("Invalid face state or time");
+		const amount = .45 + .55 * model.amplitude(size);
+		const time = Math.max(0, elapsed) * (state === "creation" ? model.creation.playbackRate : 1);
+		let pose = neutral;
+		if (gaze === "screen" && (state === "working" || state === "writing" || state === "idle")) {
+			pose = sample(screenGaze, time % 15000);
+			const [blink] = sample([[0, 1], [5800, 1], [5910, .1], [6060, 1], [8400, 1]], time % 8400);
+			pose[3] *= blink;
+		} else if (state === "creation") {
+			pose = sample([[0, ...neutral], [150, 0, 1, -.2, .14, 1.08], [340, -2.8, -2.4, -.4, 1.18, 1.04], [720, -4.3, -1.1, -.6, 1.06, 1], [1180, -4.3, -1.1, -.6, 1.06, 1], [1660, ...neutral]], time);
+		} else if (state === "needs-attention") {
+			pose = sample([[0, ...neutral], [110, -.8, .4, -.1, .26, 1], [300, -4.6, -1.6, -.6, 1.13, 1.03], [650, -4.6, -1.6, -.6, 1.13, 1.03], [1120, -3.8, -.7, -.45, 1, 1]], time);
+		} else if (state === "working") {
+			if (time < 640) pose = sample([[0, ...neutral], [115, 0, .4, 0, .64, 1], [295, -.9, -.6, -.12, 1.06, 1], [640, ...neutral]], time);
+			else pose = sample(workingGaze, (time - 640) % 8400);
+		} else if (state === "idle") {
+			pose = sample([[0, ...neutral], [5800, ...neutral], [5910, 0, 0, 0, .1, 1], [6060, ...neutral], [8400, ...neutral]], time % 8400);
+		} else if (state === "complete") {
+			pose = sample([[0, ...neutral], [160, 0, .5, 0, .45, 1.08], [380, -1.5, -1.6, -.2, 1.12, 1], [820, ...neutral]], time);
+		}
+		return { x: pose[0] * amount, y: pose[1] * amount, turn: pose[2] * amount, open: pose[3], width: pose[4] };
+	}
+
+	function eyePose(id, index, pose) {
+		const eye = model.faces[id]?.[index];
+		if (!eye) throw new RangeError("Invalid eye identity or index");
+		const perspective = 1 + pose.turn * (index === 0 ? -.13 : .13);
+		const width = eye.width * pose.width * perspective;
+		const height = eye.height * pose.open * perspective;
+		const x = eye.x + pose.x + (index === 0 ? -.4 : .4) * Math.abs(pose.turn);
+		const y = eye.y + pose.y;
+		return { x: x - width / 2, y: y - height / 2, width, height, rx: Math.min(width, height) / 2, transform: `rotate(${eye.rotation + pose.turn * 3} ${x} ${y})` };
+	}
+
+	function strokes(id, state, elapsed, size = 144) {
+		if (!geometry[id] || !model.states.some((item) => item.id === state) || !Number.isFinite(elapsed)) throw new RangeError("Invalid stroke identity, state, or time");
+		model.amplitude(size);
+		const duration = durations[state];
+		if (!duration || elapsed <= 0 || elapsed >= duration) return [];
+		const attention = state === "needs-attention";
+		const time = elapsed * (attention ? 1 : model.creation.playbackRate);
+		const count = attention ? size < 32 ? 1 : 2 : size < 24 ? 4 : size < 40 ? 6 : size < 96 ? 8 : creationOrbitSlots;
+		const [rx, ry, tilt] = geometry[id];
+		const result = [];
+		for (let index = 0; index < count; index++) {
+			const lane = Math.floor(index / 2);
+			const direction = attention || index % 2 === 0 ? 1 : -1;
+			const delay = attention ? 150 + index * 150 : 240 + lane * 90;
+			const span = attention ? 1100 - index * 90 : 2020 - lane * 4;
+			const progress = (time - delay) / span;
+			if (progress <= 0 || progress >= 1) continue;
+			const envelope = Math.sin(Math.PI * progress);
+			const origin = attention ? 4.8 : (index % 2 === 0 ? Math.PI - .18 : .18) + direction * lane * .16;
+			const head = origin + direction * (attention ? .57 : 1.8 + lane * .13) * tau * (1 - (1 - progress) ** (attention ? 1.55 : 1.45));
+			const length = (attention ? .74 : creationLanes[lane][3]) * envelope ** (attention ? .7 : .55);
+			const angle = (tilt + (attention ? index * 8 : direction * creationLanes[lane][2])) * Math.PI / 180;
+			const expansion = attention ? 1 : progress < .18 ? .78 + .25 * (1 - (1 - progress / .18) ** 3) : 1 + .03 * (1 - (progress - .18) / .82) ** 2;
+			const radiusX = (attention ? rx + index * 2 - 2 : rx * creationLanes[lane][0]) * expansion;
+			const radiusY = (attention ? ry + index * 2.8 : ry * creationLanes[lane][1]) * expansion;
+			const points = [];
+			for (let step = 0; step <= 40; step++) {
+				const theta = head - direction * length * (1 - step / 40);
+				const x = Math.cos(theta) * radiusX;
+				const y = Math.sin(theta) * radiusY;
+				points.push({ x: 50 + x * Math.cos(angle) - y * Math.sin(angle), y: 53 - (attention ? 0 : 4 * progress) + x * Math.sin(angle) + y * Math.cos(angle), z: Math.sin(theta) });
+			}
+			const paths = { front: "", back: "" };
+			let previous = points[0];
+			let side = previous.z >= 0 ? "front" : "back";
+			paths[side] = `M${previous.x.toFixed(3)} ${previous.y.toFixed(3)}`;
+			for (const point of points.slice(1)) {
+				const nextSide = point.z >= 0 ? "front" : "back";
+				if (nextSide !== side) {
+					const fraction = previous.z / (previous.z - point.z);
+					const crossing = `${(previous.x + (point.x - previous.x) * fraction).toFixed(3)} ${(previous.y + (point.y - previous.y) * fraction).toFixed(3)}`;
+					paths[side] += `L${crossing}`;
+					paths[nextSide] += `M${crossing}`;
+					side = nextSide;
+				}
+				paths[side] += `L${point.x.toFixed(3)} ${point.y.toFixed(3)}`;
+				previous = point;
+			}
+			const minimumWidth = attention && size < 32 ? .55 : .7;
+			result.push({ index, ...paths, color: palette[attention ? index : (lane + index % 2) % palette.length], width: Math.max(minimumWidth, size / 100 * (attention ? 1.25 : 2.15 - lane % 3 * .18)) * 100 / size * Math.min(1, envelope * (attention ? 5 : 8)) });
+		}
+		// Strokes gather behind the figure, then release in front at the spring.
+		// Both phases reuse the same slots and erase from the tail, without fading.
+		if (!attention && size >= 32) {
+			const directions = size < 96 ? [-2.45, -.69, 2.7, .44] : [-2.45, -.69, 2.7, .44, -3, -.14, 2.18, .96];
+			for (const [index, angle] of directions.entries()) {
+				const pair = Math.floor(index / 2);
+				const gathered = (time - 30 - pair * 18) / 240;
+				const gathering = gathered > 0 && gathered < 1;
+				const progress = gathering ? gathered : (time - 320 - pair * 30) / 520;
+				if (progress <= 0 || progress >= 1) continue;
+				const head = 1 - (1 - progress) ** 2.8;
+				const tail = progress ** 1.5;
+				let path = "";
+				for (let step = 0; step <= 12; step++) {
+					const position = tail + (head - tail) * step / 12;
+					const bend = Math.sin(Math.PI * position) * 4;
+					const x = 50 + Math.cos(angle) * (gathering ? 61 - position * 18 : 43 + position * 19) - Math.sin(angle) * bend;
+					const y = 50 + Math.sin(angle) * (gathering ? 59 - position * 16 : 43 + position * 17) + Math.cos(angle) * bend;
+					path += `${step ? "L" : "M"}${x.toFixed(3)} ${y.toFixed(3)}`;
+				}
+				result.push({ index: index + creationOrbitSlots, front: gathering ? "" : path, back: gathering ? path : "", color: palette[index % palette.length], width: Math.max(.65, size / 100 * (gathering ? 1.4 : 1.8)) * 100 / size * Math.min(1, Math.sin(Math.PI * progress) * 5) });
+			}
+		}
+		if (!attention) for (const stroke of result) stroke.width *= model.creation.strokeScale;
+		return result;
+	}
+
+	function typing(id, progress, elapsed, size = 144, { reduced = false, hover = 0, surface = "light", color: selectedColor, transitionDuration = 620 } = {}) {
+		if (!Number.isFinite(progress) || progress < 0 || progress > 1 || !Number.isFinite(elapsed) || !Number.isFinite(hover) || hover < 0 || hover > 1) throw new RangeError("Invalid typing progress, time, or hover");
+		const color = model.avatarColor(id, surface, selectedColor);
+		const channels = [1, 3, 5].map((start) => Number.parseInt(color.slice(start, start + 2), 16));
+		const amount = model.amplitude(size);
+		const [y, sx, sy] = sample([[0, 0, 1, 1], [.2, 2, 1.04, .84], [.48, 0, .135, .135], [.6, 0, 0, 0], [1, 0, 0, 0]], progress);
+		const [radiusScale, spread, sideScale] = sample([[0, 0, 0, 0], [.32, 0, 0, 0], [.48, 1.24, 0, 0], [.6, 1.12, 0, 1], [.86, 1, 1.08, 1], [1, 1, 1, 1]], progress);
+		const radius = size >= 96 ? 7.5 : size >= 40 ? 8.2 : 8.8;
+		const pulseAmount = Math.max(0, Math.min(1, (progress - .65) / .35));
+		const dots = [0, 1, 2].map((index) => {
+			const time = Math.max(0, elapsed - transitionDuration);
+			const phase = ((time - index * 180) % 1440 + 1440) % 1440;
+			const wave = reduced ? index === 1 ? .8 : .1 : phase < 600 ? Math.sin(Math.PI * phase / 600) ** 2 : 0;
+			const pulse = .78 + .36 * wave + hover * .06 * wave;
+			const tint = .32 * (1 - wave) * pulseAmount;
+			return {
+				cx: 50 + (index - 1) * 24 * spread * (1 + hover * .12),
+				cy: 50 - (reduced ? 0 : 3.2 * amount * wave * pulseAmount * (1 + hover * .5)),
+				r: radius * radiusScale * (index === 1 ? 1 : sideScale) * (1 + (pulse - 1) * pulseAmount),
+				fill: `#${channels.map((channel) => Math.round(channel + (255 - channel) * tint).toString(16).padStart(2, "0")).join("")}`,
+			};
+		});
+		return { transform: `translate(0%, ${y.toFixed(4)}%) scale(${sx.toFixed(5)}, ${sy.toFixed(5)})`, dots };
+	}
+
+	function hover(state, progress, size = 144) {
+		if (!hoverPoses[state] || !Number.isFinite(progress) || progress < 0 || progress > 1) throw new RangeError("Invalid hover state or progress");
+		const amount = progress * model.amplitude(size);
+		const [x, y, turn, sx, sy] = hoverPoses[state];
+		return {
+			transform: `translate(${(x * amount).toFixed(4)}%, ${(y * amount).toFixed(4)}%) rotate(${(turn * amount).toFixed(4)}deg) scale(${(1 + (sx - 1) * amount).toFixed(5)}, ${(1 + (sy - 1) * amount).toFixed(5)})`,
+			look: { x: -1.8 * amount, y: -.5 * amount, turn: -.12 * amount },
+		};
+	}
+
+	window.QORPERA_MOTION_VISUALS = Object.freeze({ durations, face, eyePose, strokes, palette, typing, hover, hoverNotes, typingDuration: 620, strokeSlots: creationOrbitSlots + 8 });
+})();
+
+/* ---- vector-figures.js (company41-website landing/public/avatars) ---- */
+"use strict";
+
+/* Vector figures — the build recipe for one character, and its moving parts.
+ *
+ * A figure is its traced silhouette (from vector-trace.js), the approved
+ * colour, and at most one or two structural details drawn as shapes: the
+ * planet's ring, the acorn's cap. Everything else is light: a broad form
+ * gradient from the upper left, a soft occlusion along the lower-right edge,
+ * and one quiet highlight. Eyes are the product's own capsule eyes placed by
+ * the motion model's measured geometry.
+ *
+ * Rendering avoids SVG masks and box-relative gradients on open paths: both
+ * render differently across browsers. Rounded forms are built from stacked
+ * strokes that follow their curve, which every engine draws the same way.
+ *
+ * Motion: each figure exposes either `deform(points, seconds, amount)` — a
+ * per-frame displacement of the traced silhouette points (flame tongues,
+ * ghost hem, crown points, heart lobes, rocket nose) — or `animate(refs,
+ * seconds, amount)` for figures whose structure is a separate part (the
+ * planet's ring, the acorn's cap). vector-rig.js drives both under the
+ * product's body rhythm. */
+
+(() => {
+	const model = window.QORPERA_MOTION_MODEL;
+	const visuals = window.QORPERA_MOTION_VISUALS;
+	const NS = "http://www.w3.org/2000/svg";
+	const NEUTRAL = Object.freeze({ x: 0, y: 0, turn: 0, open: 1, width: 1 });
+	const TAU = Math.PI * 2;
+
+	function channels(hex) { return [1, 3, 5].map((start) => Number.parseInt(hex.slice(start, start + 2), 16)); }
+	function hex(values) { return `#${values.map((value) => Math.round(Math.max(0, Math.min(255, value))).toString(16).padStart(2, "0")).join("")}`; }
+	function mix(from, to, amount) {
+		const a = channels(from), b = channels(to);
+		return hex(a.map((value, index) => value + (b[index] - value) * amount));
+	}
+	function tones(id, color = model.avatarColor(id), { shade = 0.22, deep = 0.42, lightTone = "#ffffff" } = {}) {
+		return {
+			base: color,
+			light: mix(color, lightTone, 0.26),
+			glow: mix(color, lightTone, 0.5),
+			shade: mix(color, "#000000", shade),
+			deep: mix(color, "#000000", deep),
+		};
+	}
+	const element = (name, attributes = {}, children = []) => {
+		const node = document.createElementNS(NS, name);
+		for (const [key, value] of Object.entries(attributes)) if (value !== undefined && value !== null) node.setAttribute(key, String(value));
+		for (const child of children) node.append(child);
+		return node;
+	};
+	const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
+
+	/* Points (100-unit frame) to a smoothed path: Catmull-Rom handles, with
+	 * genuinely sharp corners kept sharp. The same routine the tracer uses, so
+	 * a baked figure deforms exactly like a live one. */
+	function turn(a, b, c) {
+		const ux = b[0] - a[0], uy = b[1] - a[1], vx = c[0] - b[0], vy = c[1] - b[1];
+		const cosine = (ux * vx + uy * vy) / ((Math.hypot(ux, uy) * Math.hypot(vx, vy)) || 1e-9);
+		return (Math.acos(Math.max(-1, Math.min(1, cosine))) * 180) / Math.PI;
+	}
+	function pathFrom(loops, { tension = 0.5, corner = 72 } = {}) {
+		const f = (value) => value.toFixed(2);
+		return loops.map((points) => {
+			const n = points.length;
+			let d = `M${f(points[0][0])} ${f(points[0][1])}`;
+			for (let i = 0; i < n; i++) {
+				const p0 = points[(i - 1 + n) % n], p1 = points[i], p2 = points[(i + 1) % n], p3 = points[(i + 2) % n];
+				const sharp1 = turn(p0, p1, p2) > corner;
+				const sharp2 = turn(p1, p2, p3) > corner;
+				const c1 = sharp1 ? p1 : [p1[0] + ((p2[0] - p0[0]) * tension) / 3, p1[1] + ((p2[1] - p0[1]) * tension) / 3];
+				const c2 = sharp2 ? p2 : [p2[0] - ((p3[0] - p1[0]) * tension) / 3, p2[1] - ((p3[1] - p1[1]) * tension) / 3];
+				d += ` C${f(c1[0])} ${f(c1[1])} ${f(c2[0])} ${f(c2[1])} ${f(p2[0])} ${f(p2[1])}`;
+			}
+			return `${d} Z`;
+		}).join(" ");
+	}
+	/* Blur filters get an absolute region: the default one is relative to the
+	 * element's own box, which for a thin arc is too small and cuts the
+	 * blurred shadow off with a hard edge. */
+	const blur = (id, stdDeviation) => element("filter", { id, filterUnits: "userSpaceOnUse", x: -40, y: -40, width: 180, height: 180 }, [element("feGaussianBlur", { stdDeviation })]);
+	const smooth = (edge0, edge1, value) => { const t = clamp((value - edge0) / (edge1 - edge0), 0, 1); return t * t * (3 - 2 * t); };
+
+	/* A rounded tube along a path: stacked strokes, each narrower and lifted a
+	 * little, from the dark underside up to a lit crest. Round caps make the
+	 * ends read as the ends of a tube. */
+	function tubeStrokes(d, width, steps, { transform, lift = 1 } = {}) {
+		return steps.map(([fraction, color, offset], index) => element("path", {
+			d, fill: "none", stroke: color, "stroke-width": width * fraction, "stroke-linecap": "round", "stroke-linejoin": "round",
+			transform: `translate(0 ${(-offset * lift).toFixed(2)}) ${transform ?? ""}`.trim(),
+			"data-tube": index,
+		}));
+	}
+	/* Gestures: short signature moves a figure makes now and then, and is
+	 * otherwise still. Each returns, for a progress 0..1, a body transform
+	 * (with its origin) and/or an eye override. No idle loops. */
+	const figures = {
+		planet: {
+			light: [40, 30],
+			shade: 0.18,
+			occlusion: 0.45,
+			highlight: 0.7,
+			highlightSize: 1.5,
+			/* Sphere and ring measured from the render (Measure in the room and
+			 * brightness profiles down three columns): the band spans 57–70 units
+			 * at the left and centre and 52–65 at the right, which a −4.8°
+			 * ellipse centred at 52.3 with ry 11.5 and a 12.5-unit tube
+			 * reproduces within a unit. The ring is a free part: its own
+			 * shapes, unclipped, so it can move. */
+			geometry: { sphere: [49.6, 50.2, 35.1], ring: { cx: 49.8, cy: 52.3, rx: 40.65, ry: 11.5, tube: 12.5, rotate: -4.8 } },
+			clip(uid) {
+				const [cx, cy, r] = this.geometry.sphere;
+				return element("circle", { cx, cy, r });
+			},
+			/* Ring paths are written with the arc command's own rotation and
+			 * absolute tip coordinates, so nothing here needs a transform, and
+			 * the front half is its own open arc rather than a clipped ellipse.
+			 * Clipping the whole ring to a half-plane is exactly what some
+			 * browsers get wrong, painting the back half over the sphere. */
+			ringPath() {
+				const { ring } = this.geometry;
+				const angle = (ring.rotate * Math.PI) / 180;
+				const tips = (rx) => {
+					const dx = rx * Math.cos(angle), dy = rx * Math.sin(angle);
+					return { left: [ring.cx - dx, ring.cy - dy], right: [ring.cx + dx, ring.cy + dy] };
+				};
+				const f = (value) => value.toFixed(2);
+				const ellipse = (rx, ry) => {
+					const { left, right } = tips(rx);
+					return `M${f(left[0])} ${f(left[1])} A${rx} ${ry} ${ring.rotate} 1 0 ${f(right[0])} ${f(right[1])} A${rx} ${ry} ${ring.rotate} 1 0 ${f(left[0])} ${f(left[1])} Z`;
+				};
+				const front = (rx, ry) => {
+					const { left, right } = tips(rx);
+					return `M${f(left[0])} ${f(left[1])} A${rx} ${ry} ${ring.rotate} 0 0 ${f(right[0])} ${f(right[1])}`;
+				};
+				return {
+					centre: ellipse(ring.rx, ring.ry),
+					front: front(ring.rx, ring.ry),
+					outer: ellipse(ring.rx + ring.tube / 2, ring.ry + ring.tube / 2),
+					inner: ellipse(ring.rx - ring.tube / 2, Math.max(1, ring.ry - ring.tube / 2)),
+				};
+			},
+			guides() {
+				const [cx, cy, r] = this.geometry.sphere;
+				const { centre, outer, inner } = this.ringPath();
+				return [element("circle", { cx, cy, r }), element("path", { d: centre }), element("path", { d: outer }), element("path", { d: inner })];
+			},
+			formGradient(t, uid) {
+				return element("radialGradient", { id: `${uid}-form`, cx: 0.4, cy: 0.3, r: 0.88 }, [
+					element("stop", { offset: 0, "stop-color": t.light }),
+					element("stop", { offset: 0.55, "stop-color": t.base }),
+					element("stop", { offset: 1, "stop-color": t.shade }),
+				]);
+			},
+			layers(t, uid, refs) {
+				const { sphere, ring } = this.geometry;
+				const [cx, cy, r] = sphere;
+				const { centre, front: frontArc } = this.ringPath();
+				/* One gradient in page units lights the whole tube from above: the
+				 * far ends mid-toned, the front band lit on top and dark beneath.
+				 * A few faint narrow strokes lifted toward the crest soften the
+				 * roll without visible steps. */
+				const tubeGradient = element("linearGradient", { id: `${uid}-tube`, gradientUnits: "userSpaceOnUse", x1: 0, y1: ring.cy - ring.ry - ring.tube / 2, x2: 0, y2: ring.cy + ring.ry + ring.tube / 2 }, [
+					element("stop", { offset: 0, "stop-color": mix(t.base, "#ffffff", 0.14) }),
+					element("stop", { offset: 0.5, "stop-color": t.base }),
+					element("stop", { offset: 0.78, "stop-color": mix(t.base, "#000000", 0.08) }),
+					element("stop", { offset: 1, "stop-color": mix(t.base, "#000000", 0.26) }),
+				]);
+				const crest = mix(t.base, "#ffffff", 0.32);
+				const steps = [
+					[1, `url(#${uid}-tube)`, 0],
+				];
+				const crestStroke = (d) => element("path", {
+					d, fill: "none", stroke: crest, "stroke-width": ring.tube * 0.4, "stroke-linecap": "round", opacity: 0.5, transform: "translate(0 -3.2)", filter: `url(#${uid}-crest)`,
+				});
+				const crestBlur = blur(`${uid}-crest`, 1.6);
+				const shadowBlur = blur(`${uid}-shade`, 2.4);
+				const sphereClip = element("clipPath", { id: `${uid}-sphere` }, [element("circle", { cx, cy, r })]);
+				/* The whole ring goes behind the sphere; only the FRONT ARC is drawn
+				 * over it, along with its shadow and crease, so the back of the
+				 * ring can never mark the sphere. One plain circular clip, no
+				 * transforms inside clip paths, no masks. */
+				const back = element("g", { class: "vf-part", "data-part": "ring-back" }, [...tubeStrokes(centre, ring.tube, steps, {}), crestStroke(centre)]);
+				const shadowGroup = element("g", { "clip-path": `url(#${uid}-sphere)` }, [
+					element("path", { d: frontArc, fill: "none", stroke: t.deep, "stroke-width": ring.tube * 1.1, "stroke-linecap": "round", opacity: 0.5, transform: "translate(0 5.2)", filter: `url(#${uid}-shade)` }),
+					element("path", { d: frontArc, fill: "none", stroke: t.deep, "stroke-width": ring.tube + 2.4, "stroke-linecap": "round", opacity: 0.3 }),
+				]);
+				const front = element("g", { class: "vf-part", "data-part": "ring-front" }, [
+					shadowGroup,
+					...tubeStrokes(frontArc, ring.tube, steps, {}),
+					crestStroke(frontArc),
+				]);
+				refs.parts = { ringBack: back, ringFront: front };
+				return { defs: [tubeGradient, crestBlur, shadowBlur, sphereClip], under: [back], over: [front] };
+			},
+			/* The ring is a separate body: a slow precession and a slight bob,
+			 * nothing that could read as the ring flexing. */
+			animate(refs, seconds, amount) {
+				const { ring } = this.geometry;
+				const turn = 2.4 * amount * Math.sin(seconds * 0.55);
+				const lift = 0.8 * amount * Math.sin(seconds * 0.55 + 1.6);
+				const transform = `translate(0 ${lift.toFixed(2)}) rotate(${turn.toFixed(2)} ${ring.cx} ${ring.cy})`;
+				refs.parts.ringBack.setAttribute("transform", transform);
+				refs.parts.ringFront.setAttribute("transform", transform);
+			},
+		},
+		acorn: {
+			light: [40, 58],
+			shade: 0.12,
+			occlusion: 0.26,
+			formMid: 0.62,
+			highlight: 0.55,
+			highlightSize: 1.7,
+			lightTone: "#ffefd8",
+			/* The cap is a separate part: the silhouette above the rim. Measured
+			 * from brightness profiles down the render, the rim crease is an
+			 * ARCH — 37 units high in the middle, 47 at the sides — and it is
+			 * subtle: cap and nut share one brown, a slight darkening as the
+			 * cap turns under, a narrow deep crease, and a short shadow on the
+			 * nut. The cap can tip as one piece. */
+			geometry: { rim: "M-10 67.7 Q50 6.5 110 67.7", pivot: [50, 30] },
+			guides() { return [element("path", { d: this.geometry.rim })]; },
+			layers(t, uid, refs, silhouette) {
+				const { rim } = this.geometry;
+				const above = `${rim} L110 -20 L-10 -20 Z`;
+				const capGradient = element("linearGradient", { id: `${uid}-cap`, gradientUnits: "userSpaceOnUse", x1: 30, y1: 4, x2: 60, y2: 48 }, [
+					element("stop", { offset: 0, "stop-color": mix(t.base, "#ffefd8", 0.2) }),
+					element("stop", { offset: 0.7, "stop-color": t.base }),
+					element("stop", { offset: 1, "stop-color": mix(t.base, "#000000", 0.04) }),
+				]);
+				const turnBlur = blur(`${uid}-turn`, 0.9);
+				const shadeBlur = blur(`${uid}-rimshade`, 1.1);
+				/* One silhouette clip, nothing nested. */
+				const cap = element("g", { class: "vf-part", "data-part": "cap" }, [
+					element("g", { "clip-path": `url(#${uid}-clip)` }, [
+						element("path", { d: above, fill: `url(#${uid}-cap)` }),
+						/* The cap turning under, just above the crease. */
+						element("path", { d: rim, fill: "none", stroke: mix(t.base, "#000000", 0.2), "stroke-width": 3, opacity: 0.55, transform: "translate(0 -1.4)", filter: `url(#${uid}-turn)` }),
+						/* The crease. */
+						element("path", { d: rim, fill: "none", stroke: mix(t.base, "#000000", 0.5), "stroke-width": 1.3, opacity: 0.85 }),
+					]),
+				]);
+				/* The short shadow on the nut, staying with the nut. */
+				const nutShadow = element("path", { d: rim, fill: "none", stroke: t.deep, "stroke-width": 3.4, opacity: 0.45, transform: "translate(0 1.8)", filter: `url(#${uid}-rimshade)` });
+				refs.parts = { cap };
+				return { defs: [capGradient, turnBlur, shadeBlur], inside: [nutShadow], over: [cap] };
+			},
+			/* An acorn is a rigid object: the cap is a part for shading only and
+			 * never moves on its own. The body rhythm (a grounded rock) is all
+			 * the motion it gets. */
+		},
+		flame: {
+			light: [46, 52],
+			/* A candle flame: the whole shape bends from its base — a smooth
+			 * lean that grows with height, no shearing inside the shape — and
+			 * the tip breathes taller and shorter. The small side tongue leans
+			 * on its own slower beat. The silhouette stays a flame throughout. */
+			deform(points, s, a) {
+				const baseY = 94;
+				const lean = a * (2.2 * Math.sin(s * 1.7) + 0.9 * Math.sin(s * 3.1 + 1.2));
+				const breathe = 1 + a * 0.022 * Math.sin(s * 3.9 + 0.4);
+				return points.map(([x, y]) => {
+					const h = clamp((baseY - y) / 88, 0, 1);
+					const side = x < 44 && y < 48 ? clamp((48 - y) / 30, 0, 1) : 0;
+					const dx = lean * h * h + side * a * 1.2 * Math.sin(s * 2.3 + 1.9);
+					const ny = baseY - (baseY - y) * (1 + (breathe - 1) * h);
+					return [x + dx, ny];
+				});
+			},
+		},
+		rocket: {
+			light: [42, 30],
+			/* A rigid object: no part motion, only the body rhythm (lift and hover). */
+		},
+		crown: {
+			light: [40, 52],
+			/* A rigid object: no part motion, only the body rhythm (a measured nod). */
+		},
+		heart: {
+			light: [40, 36],
+			/* Still between beats; the beat is a gesture. */
+		},
+		ghost: {
+			light: [44, 30],
+			/* Cloth: one slow ripple travels along the hem, and the body leans
+			 * a little from its base as it drifts. The side bump is part of the
+			 * body and moves with it, not on its own. */
+			deform(points, s, a) {
+				return points.map(([x, y]) => {
+					const hem = smooth(70, 92, y);
+					const lean = clamp((94 - y) / 84, 0, 1);
+					const phase = s * 2.2 - x * 0.055;
+					const dx = a * (0.5 * hem * Math.sin(phase + 1.5) + 0.7 * lean * lean * Math.sin(s * 1.1));
+					const dy = a * 1.2 * hem * Math.sin(phase);
+					return [x + dx, y + dy];
+				});
+			},
+		},
+	};
+
+	/* Each figure's own moves. Rigid objects turn; soft ones flare or thump;
+	 * the planet turns under its eyes. */
+	/* Rigid figures turn in real 3D; the planet turns as a globe with its
+	 * ring; soft figures flare, thump or boo. */
+
+	/* Build one figure. Returns the host span with the layered rig inside:
+	 *   .vf > .vf-presence > .vf-form > .vf-body > svg, plus .vf-typing
+	 * host.vf carries the handles the rig needs. */
+	function build(id, trace, { uid = `vf-${id}-${Math.random().toString(36).slice(2, 8)}`, color } = {}) {
+		const spec = figures[id];
+		const t = tones(id, color, { shade: spec.shade, deep: spec.deep, lightTone: spec.lightTone });
+		const silhouette = typeof trace === "string" ? trace : trace.d;
+		const refs = { silhouettePaths: [], parts: null };
+
+		const svg = element("svg", { viewBox: "0 0 100 100", xmlns: NS, focusable: "false", "aria-hidden": "true" });
+		const defs = element("defs");
+		const clipShape = spec.clip ? spec.clip(uid) : element("path", { d: silhouette, "fill-rule": "evenodd" });
+		if (!spec.clip) refs.silhouettePaths.push(clipShape);
+		defs.append(
+			element("clipPath", { id: `${uid}-clip` }, [clipShape]),
+			spec.formGradient ? spec.formGradient(t, uid) : element("radialGradient", { id: `${uid}-form`, cx: 0.34, cy: 0.26, r: 0.98 }, [
+				element("stop", { offset: 0, "stop-color": t.light }),
+				element("stop", { offset: spec.formMid ?? 0.42, "stop-color": t.base }),
+				element("stop", { offset: 1, "stop-color": t.shade }),
+			]),
+			element("radialGradient", { id: `${uid}-hi`, cx: 0.5, cy: 0.5, r: 0.5 }, [
+				element("stop", { offset: 0, "stop-color": "#fff", "stop-opacity": Math.min(0.6, 0.34 * (spec.highlight ?? 1)) }),
+				element("stop", { offset: 0.5, "stop-color": "#fff", "stop-opacity": Math.min(0.3, 0.12 * (spec.highlight ?? 1)) }),
+				element("stop", { offset: 1, "stop-color": "#fff", "stop-opacity": 0 }),
+			]),
+			/* Occlusion: the part of the shape not covered by its own blurred copy
+			 * shifted up-left — a soft band along the lower-right edge. */
+			element("filter", { id: `${uid}-occlude`, filterUnits: "userSpaceOnUse", x: -40, y: -40, width: 180, height: 180 }, [
+				element("feGaussianBlur", { in: "SourceAlpha", stdDeviation: 3.6, result: "blur" }),
+				element("feOffset", { in: "blur", dx: -2.6, dy: -2.8, result: "shifted" }),
+				element("feComposite", { in: "SourceAlpha", in2: "shifted", operator: "out", result: "edge" }),
+				element("feFlood", { "flood-color": t.deep, "flood-opacity": spec.occlusion ?? 0.55 }),
+				element("feComposite", { in2: "edge", operator: "in" }),
+			]),
+			blur(`${uid}-hiblur`, 1.6),
+		);
+		const layers = spec.layers ? spec.layers(t, uid, refs, silhouette) : {};
+		for (const node of layers.defs ?? []) defs.append(node);
+		svg.append(defs);
+
+		for (const node of layers.under ?? []) svg.append(node);
+
+		const inside = element("g", { "clip-path": `url(#${uid}-clip)` });
+		inside.append(element("rect", { x: -10, y: -10, width: 120, height: 120, fill: `url(#${uid}-form)` }));
+		for (const node of layers.inside ?? []) inside.append(node);
+		const occlusionShape = spec.clip ? spec.clip(uid) : element("path", { d: silhouette, "fill-rule": "evenodd" });
+		occlusionShape.setAttribute("fill", t.deep);
+		occlusionShape.setAttribute("filter", `url(#${uid}-occlude)`);
+		if (!spec.clip) refs.silhouettePaths.push(occlusionShape);
+		inside.append(occlusionShape);
+		const [hx, hy] = spec.light;
+		const hs = spec.highlightSize ?? 1;
+		inside.append(element("ellipse", { cx: hx, cy: hy, rx: 21 * hs, ry: 14 * hs, fill: `url(#${uid}-hi)`, transform: `rotate(-28 ${hx} ${hy})`, filter: `url(#${uid}-hiblur)` }));
+		svg.append(inside);
+
+		for (const node of layers.over ?? []) svg.append(node);
+
+		const face = element("g", { class: "vf-face" });
+		const eyes = [0, 1].map((index) => {
+			const pose = visuals.eyePose(id, index, NEUTRAL);
+			return element("rect", { x: pose.x.toFixed(2), y: pose.y.toFixed(2), width: pose.width.toFixed(2), height: pose.height.toFixed(2), rx: pose.rx.toFixed(2), transform: pose.transform, fill: "#fff" });
+		});
+		face.append(...eyes);
+		svg.append(face);
+
+		const host = document.createElement("span");
+		host.className = "vf";
+		host.dataset.figure = id;
+		const presence = document.createElement("span");
+		presence.className = "vf-presence";
+		const form = document.createElement("span");
+		form.className = "vf-form";
+		const body = document.createElement("span");
+		body.className = "vf-body";
+		body.append(svg);
+		form.append(body);
+		presence.append(form);
+		const typing = element("svg", { class: "vf-typing", viewBox: "0 0 100 100", "aria-hidden": "true" }, [element("circle"), element("circle"), element("circle")]);
+		host.append(presence, typing);
+		/* A baked trace (path + points + smoothing) works like a live one. */
+		const figureTrace = typeof trace === "string" ? null
+			: trace.pathFrom ? trace
+			: { ...trace, pathFrom: (points) => pathFrom(points, trace.smoothing) };
+		host.vf = {
+			id, eyes, body, presence, form, typing, dots: [...typing.children],
+			spec, refs, svg,
+			trace: figureTrace,
+			color: t.base,
+			/* Real geometry for the turn, built lazily by the rig. */
+			solid: undefined,
+		};
+		return host;
+	}
+
+	/* Per-frame motion for a built figure: deform the silhouette or move the
+	 * part. `amount` is 0 for a still figure, scaled by the model's amplitude
+	 * for small sizes. */
+	function motion(host, seconds, amount) {
+		const { spec, refs, trace } = host.vf;
+		if (spec.deform && trace?.loops && refs.silhouettePaths.length) {
+			const d = amount > 0 ? trace.pathFrom(trace.loops.map((loop) => spec.deform(loop, seconds, amount))) : trace.d;
+			for (const path of refs.silhouettePaths) path.setAttribute("d", d);
+		}
+		if (spec.animate && refs.parts) spec.animate(refs, seconds, amount);
+	}
+
+	window.QORPERA_VECTOR_FIGURES = Object.freeze({ figures, tones, build, motion, mix, pathFrom });
+})();
+
+/* ---- vector-rig.js (company41-website landing/public/avatars) ---- */
+"use strict";
+
+/* Vector rig — drives a built vector figure.
+ *
+ * The body is still. There are no idle loops, nods, hovers, rocking or
+ * turns: a figure stands, and the life is in its eyes. Where it looks is
+ * drawn fresh every time — a target, a flick to reach it, a hold of its own
+ * length, now and then a wider look or a long stare, with a slow drift
+ * underneath and blinks on their own irregular clock. Nothing follows the
+ * pointer. Soft figures keep their shape-preserving part motion (the flame's
+ * lean, the ghost's ripple, the planet's ring). The writing form (the figure
+ * gathers into three dots) comes from the product's motion visuals.
+ * Everything pauses offscreen, in hidden tabs, and under reduced motion. */
+
+(() => {
+	const model = window.QORPERA_MOTION_MODEL;
+	const visuals = window.QORPERA_MOTION_VISUALS;
+	const figures = window.QORPERA_VECTOR_FIGURES;
+	const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
+	const media = window.matchMedia("(prefers-reduced-motion: reduce)");
+	const rand = (low, high) => low + Math.random() * (high - low);
+	const TAU = Math.PI * 2;
+	const BLINK = 118;
+
+	function mount(host, { state = "working", size = 144, interactive = false, motion = 1, gaze: gazeMode = undefined, reduced = () => media.matches } = {}) {
+		const parts = host.vf;
+		if (!parts) throw new Error("mount needs a host built by QORPERA_VECTOR_FIGURES.build");
+		const { id, eyes, body, presence, form, typing, dots } = parts;
+		let current = { state, size, interactive, motion, gaze: gazeMode };
+
+		let frame = 0;
+		let running = false;
+		let visible = true;
+		let started = performance.now();
+		const formState = { value: 0, from: 0, target: 0, startedAt: performance.now() };
+
+		const still = () => reduced();
+		const alive = () => !still() && current.state !== "still";
+
+		/* Where the eyes are, where they are going, and when they will move
+		 * again. Every number here is drawn when it is needed, so the figure
+		 * never plays the same short look twice. */
+		const look = {
+			at: { x: 0, y: 0 },
+			from: { x: 0, y: 0 },
+			to: { x: 0, y: 0 },
+			movedAt: 0,
+			arriveAt: 0,
+			holdUntil: 0,
+			phase: [Math.random() * TAU, Math.random() * TAU],
+			rate: [rand(0.11, 0.19), rand(0.08, 0.15)],
+			blinkAt: performance.now() + rand(900, 3400),
+			blinkFrom: 0,
+			again: false,
+		};
+
+		/* A resting bias, not a target that is tracked: the hero's crown keeps
+		 * its eyes down on the workspace below it. */
+		const biasOf = () => (current.gaze === "screen" ? { x: -1.1, y: 2.3 } : { x: 0, y: 0 });
+
+		function chooseLook(now) {
+			const writing = current.state === "writing";
+			const bias = biasOf();
+			const reach = writing ? 2.6 : 6.3;
+			const roll = Math.random();
+			let x, y;
+			if (roll < 0.14) { x = 0; y = 0; }
+			else if (roll < 0.74) { x = rand(-reach * 0.5, reach * 0.5); y = rand(-reach * 0.34, reach * 0.44); }
+			else { x = rand(-reach, reach); y = rand(-reach * 0.6, reach * 0.72); }
+			x += bias.x;
+			y += bias.y;
+			/* Keep the look inside the eye's range rather than clipping it flat. */
+			const far = Math.hypot(x / 7.2, y / 5);
+			if (far > 1) { x /= far; y /= far; }
+			const distance = Math.hypot(x - look.at.x, y - look.at.y);
+			look.from = { ...look.at };
+			look.to = { x, y };
+			look.movedAt = now;
+			look.arriveAt = now + 50 + distance * 7.5;
+			const hold = writing ? rand(950, 2700) : current.state === "working" ? rand(340, 1650) : rand(700, 2900);
+			/* Now and then the figure settles on something and stays with it. */
+			look.holdUntil = look.arriveAt + hold + (Math.random() < 0.12 ? rand(900, 2300) : 0);
+		}
+
+		function eyePose(now) {
+			if (!alive()) return { x: 0, y: 0, turn: 0, open: 1, width: 1 };
+			if (now >= look.holdUntil) chooseLook(now);
+			const span = Math.max(1, look.arriveAt - look.movedAt);
+			const t = clamp((now - look.movedAt) / span, 0, 1);
+			const eased = 1 - (1 - t) ** 3;
+			look.at.x = look.from.x + (look.to.x - look.from.x) * eased;
+			look.at.y = look.from.y + (look.to.y - look.from.y) * eased;
+
+			/* Blinks: their own clock, and sometimes two in quick succession. */
+			let open = 1;
+			if (look.blinkFrom) {
+				const p = (now - look.blinkFrom) / BLINK;
+				if (p >= 1) {
+					look.blinkFrom = 0;
+					if (look.again) { look.again = false; look.blinkAt = now + rand(130, 210); }
+					else { look.blinkAt = now + rand(1900, 6400); look.again = Math.random() < 0.16; }
+				} else open = 1 - Math.sin(Math.PI * p) * 0.94;
+			} else if (now >= look.blinkAt) look.blinkFrom = now;
+
+			/* A slow drift under the look, so a held gaze is never frozen. */
+			const seconds = now / 1000;
+			const driftX = Math.sin(seconds * look.rate[0] * TAU + look.phase[0]) * 0.4;
+			const driftY = Math.sin(seconds * look.rate[1] * TAU + look.phase[1]) * 0.28;
+			const amount = model.amplitude(current.size);
+			return {
+				x: clamp((look.at.x + driftX) * amount, -7.5, 7.5),
+				y: clamp((look.at.y + driftY) * amount, -5.5, 5.5),
+				turn: clamp(look.at.x * 0.05, -0.55, 0.55),
+				open,
+				width: 1,
+			};
+		}
+
+		function paint(now) {
+			/* Continuous part motion for soft figures. */
+			const amount = !alive() ? 0 : model.amplitude(current.size) * current.motion;
+			figures.motion(host, now / 1000, amount);
+
+			presence.style.transform = "none";
+			const pose = eyePose(now);
+			eyes.forEach((eye, index) => {
+				const e = visuals.eyePose(id, index, pose);
+				eye.setAttribute("x", e.x.toFixed(2));
+				eye.setAttribute("y", e.y.toFixed(2));
+				eye.setAttribute("width", Math.max(0.1, e.width).toFixed(2));
+				eye.setAttribute("height", Math.max(0.1, e.height).toFixed(2));
+				eye.setAttribute("rx", Math.max(0.05, e.rx).toFixed(2));
+				eye.setAttribute("transform", e.transform);
+			});
+
+			/* Writing: the figure gathers into one dot and splits into three. */
+			const t = still() ? 1 : clamp((now - formState.startedAt) / visuals.typingDuration, 0, 1);
+			const eased = t * t * (3 - 2 * t);
+			formState.value = formState.from + (formState.target - formState.from) * eased;
+			if (formState.value > 0 || formState.from > 0) {
+				const typingPose = visuals.typing(id, clamp(formState.value, 0, 1), now - formState.startedAt + (formState.from > 0 && formState.target === 1 ? visuals.typingDuration : 0), current.size, { reduced: still(), hover: 0, surface: document.documentElement.dataset.surface === "dark" ? "dark" : "light" });
+				form.style.transform = typingPose.transform;
+				typing.style.visibility = formState.value > 0.02 ? "visible" : "hidden";
+				typingPose.dots.forEach((dot, index) => {
+					const el = dots[index];
+					el.setAttribute("cx", dot.cx.toFixed(2));
+					el.setAttribute("cy", dot.cy.toFixed(2));
+					el.setAttribute("r", Math.max(0, dot.r).toFixed(2));
+					el.setAttribute("fill", dot.fill);
+				});
+			} else {
+				form.style.transform = "none";
+				typing.style.visibility = "hidden";
+			}
+		}
+
+		/* Hidden, disposed or reduced motion: the silhouette goes back to rest. */
+		const rest = () => { figures.motion(host, 0, 0); body.style.transform = "none"; };
+		/* A still figure, or one at rest, needs one frame and no loop. */
+		const loops = () => alive();
+		function tick(now) {
+			paint(now);
+			if (running && loops()) frame = window.requestAnimationFrame(tick);
+		}
+		function start() {
+			if (running) return;
+			running = true;
+			host.removeAttribute("data-paused");
+			frame = window.requestAnimationFrame(tick);
+		}
+		function stop() {
+			running = false;
+			window.cancelAnimationFrame(frame);
+			host.setAttribute("data-paused", "");
+		}
+		function sync() { if (visible && !document.hidden) start(); else stop(); }
+
+		const seen = new IntersectionObserver(([entry]) => { visible = entry.isIntersecting; sync(); }, { rootMargin: "12% 0px" });
+		seen.observe(host);
+		document.addEventListener("visibilitychange", sync);
+
+		body.style.transform = "none";
+		chooseLook(performance.now());
+		paint(performance.now());
+		sync();
+
+		/* Reachable from the element, for review tools and tests. */
+		host.vfRig = {
+			update(next) {
+				current = { ...current, ...next };
+				if (next.state !== undefined) {
+					started = performance.now();
+					formState.from = formState.value;
+					formState.target = current.state === "writing" ? 1 : 0;
+					formState.startedAt = performance.now();
+					chooseLook(performance.now());
+				}
+				if (running) { window.cancelAnimationFrame(frame); frame = window.requestAnimationFrame(tick); }
+				else paint(performance.now());
+			},
+			replay() { started = performance.now(); chooseLook(performance.now()); },
+			dispose() {
+				stop();
+				rest();
+				seen.disconnect();
+				document.removeEventListener("visibilitychange", sync);
+				presence.style.transform = "";
+				form.style.transform = "";
+				typing.style.visibility = "hidden";
+				host.removeAttribute("data-paused");
+				delete host.vfRig;
+			},
+		};
+		return host.vfRig;
+	}
+
+	window.QORPERA_VECTOR_RIG = Object.freeze({ mount });
+})();
+
+/* ---- vector-baked.js (company41-website landing/public/avatars) ---- */
+"use strict";
+
+/* Baked vector traces of the seven approved avatar renders.
+ * Generated from the visual workspace (Qorpera_Base-step2/.artifacts/qorpera-avatar-assets,
+ * Vector design section, cache revision vector-design-21) on 2026-09-02.
+ * Do not edit by hand: retrace and bake in the room, then copy vector-baked.json here. */
+window.QORPERA_VECTOR_BAKED = Object.freeze({"frame":100,"settings":{"epsilon":0.22,"tension":0.5,"corner":88,"passes":5},"figures":{"planet":{"d":"M47.78 11.54 C48.59 11.47 48.87 11.47 49.61 11.47 C50.35 11.47 51.60 11.49 52.23 11.54 C52.86 11.58 52.94 11.68 53.37 11.74 C53.81 11.79 54.34 11.79 54.85 11.86 C55.37 11.93 55.73 11.99 56.47 12.16 C57.21 12.33 58.38 12.59 59.30 12.87 C60.23 13.15 61.22 13.52 62.04 13.84 C62.85 14.17 63.34 14.39 64.18 14.82 C65.02 15.26 66.27 15.96 67.06 16.43 C67.86 16.91 68.19 17.13 68.94 17.68 C69.69 18.23 70.81 19.13 71.55 19.76 C72.29 20.39 72.76 20.86 73.36 21.46 C73.96 22.07 74.53 22.67 75.14 23.39 C75.75 24.12 76.43 24.98 77.03 25.81 C77.62 26.65 78.24 27.62 78.72 28.41 C79.21 29.19 79.58 29.86 79.93 30.52 C80.27 31.18 80.54 31.79 80.80 32.38 C81.06 32.97 81.26 33.42 81.50 34.04 C81.73 34.65 82.08 35.67 82.23 36.05 C82.37 36.42 82.30 36.21 82.37 36.28 C82.44 36.34 82.54 36.39 82.64 36.43 C82.73 36.47 82.44 36.43 82.95 36.50 C83.46 36.58 84.85 36.71 85.69 36.88 C86.53 37.05 87.33 37.32 87.97 37.52 C88.62 37.72 89.14 37.92 89.56 38.08 C89.98 38.25 90.15 38.34 90.49 38.51 C90.84 38.69 91.29 38.93 91.63 39.13 C91.97 39.34 92.12 39.42 92.55 39.77 C92.99 40.11 93.85 40.85 94.23 41.22 C94.61 41.58 94.66 41.70 94.86 41.96 C95.05 42.22 95.23 42.49 95.40 42.78 C95.57 43.07 95.73 43.36 95.87 43.68 C96.01 44.00 96.13 44.30 96.24 44.68 C96.35 45.06 96.47 45.61 96.53 45.94 C96.59 46.28 96.61 46.27 96.61 46.68 C96.62 47.09 96.64 47.86 96.58 48.42 C96.52 48.98 96.35 49.62 96.24 50.04 C96.14 50.46 96.10 50.60 95.96 50.95 C95.83 51.31 95.60 51.82 95.43 52.17 C95.26 52.52 95.21 52.66 94.95 53.06 C94.70 53.46 94.28 54.08 93.91 54.56 C93.55 55.03 93.09 55.52 92.74 55.92 C92.38 56.31 92.37 56.37 91.77 56.91 C91.16 57.44 90.02 58.44 89.10 59.12 C88.19 59.80 86.96 60.53 86.26 60.97 C85.56 61.41 85.50 61.44 84.90 61.75 C84.30 62.07 83.10 62.61 82.67 62.84 C82.24 63.06 82.63 62.48 82.34 63.10 C82.05 63.72 81.27 65.74 80.92 66.56 C80.57 67.38 80.50 67.51 80.24 68.04 C79.99 68.56 79.69 69.12 79.36 69.70 C79.03 70.28 78.68 70.90 78.28 71.54 C77.87 72.17 77.43 72.81 76.93 73.51 C76.42 74.20 75.82 75.01 75.23 75.72 C74.63 76.43 73.86 77.24 73.36 77.76 C72.87 78.28 72.86 78.30 72.28 78.82 C71.69 79.34 70.74 80.21 69.86 80.89 C68.97 81.57 67.87 82.33 66.98 82.90 C66.09 83.47 65.38 83.87 64.50 84.32 C63.62 84.78 62.49 85.28 61.70 85.62 C60.90 85.96 60.40 86.15 59.71 86.37 C59.03 86.60 58.55 86.76 57.58 86.97 C56.62 87.19 54.98 87.50 53.91 87.65 C52.84 87.79 52.02 87.81 51.17 87.84 C50.33 87.88 49.77 87.89 48.83 87.85 C47.88 87.82 46.38 87.71 45.51 87.62 C44.64 87.53 44.41 87.48 43.63 87.31 C42.85 87.15 41.63 86.86 40.81 86.64 C39.99 86.42 39.56 86.29 38.73 85.98 C37.90 85.66 36.67 85.14 35.85 84.76 C35.02 84.38 34.44 84.07 33.78 83.70 C33.11 83.33 32.47 82.92 31.85 82.51 C31.22 82.10 30.51 81.59 30.01 81.22 C29.50 80.85 29.25 80.65 28.80 80.28 C28.36 79.91 27.92 79.54 27.35 79.00 C26.78 78.46 25.95 77.63 25.40 77.04 C24.86 76.44 24.57 76.08 24.07 75.44 C23.57 74.80 23.06 74.21 22.41 73.20 C21.75 72.19 20.56 70.07 20.15 69.40 C19.74 68.73 20.05 69.25 19.97 69.19 C19.90 69.14 20.16 69.19 19.70 69.06 C19.25 68.93 17.97 68.62 17.24 68.41 C16.50 68.20 15.91 68.00 15.31 67.79 C14.70 67.58 14.14 67.37 13.60 67.15 C13.07 66.94 12.75 66.81 12.12 66.50 C11.49 66.18 10.35 65.56 9.82 65.27 C9.30 64.98 9.39 65.02 8.99 64.74 C8.59 64.45 7.87 63.91 7.44 63.56 C7.01 63.21 6.80 63.06 6.40 62.65 C6.00 62.23 5.39 61.51 5.04 61.08 C4.70 60.64 4.53 60.35 4.33 60.03 C4.13 59.71 3.98 59.43 3.84 59.14 C3.70 58.86 3.60 58.62 3.50 58.33 C3.39 58.04 3.32 57.92 3.22 57.41 C3.13 56.89 2.96 55.70 2.91 55.25 C2.86 54.81 2.88 55.10 2.92 54.75 C2.97 54.39 3.07 53.66 3.19 53.13 C3.30 52.60 3.47 52.01 3.62 51.57 C3.78 51.14 3.97 50.81 4.13 50.52 C4.29 50.22 4.40 50.04 4.57 49.79 C4.74 49.53 4.87 49.34 5.15 48.99 C5.43 48.65 5.90 48.09 6.24 47.74 C6.57 47.39 6.83 47.16 7.15 46.89 C7.47 46.62 7.62 46.48 8.13 46.12 C8.65 45.76 9.54 45.14 10.25 44.72 C10.97 44.30 11.59 43.95 12.42 43.58 C13.25 43.21 14.71 42.71 15.23 42.48 C15.75 42.25 15.35 42.83 15.53 42.20 C15.72 41.57 16.09 39.66 16.34 38.70 C16.59 37.75 16.82 37.10 17.03 36.46 C17.24 35.82 17.38 35.41 17.59 34.87 C17.79 34.32 17.94 33.93 18.26 33.21 C18.58 32.49 19.09 31.39 19.53 30.56 C19.97 29.73 20.38 29.04 20.90 28.22 C21.42 27.40 22.13 26.36 22.63 25.65 C23.13 24.95 23.37 24.64 23.92 24.01 C24.46 23.38 25.13 22.62 25.88 21.87 C26.62 21.12 27.56 20.24 28.40 19.52 C29.25 18.80 30.11 18.16 30.95 17.57 C31.79 16.98 32.56 16.48 33.44 15.97 C34.33 15.45 35.39 14.91 36.27 14.50 C37.15 14.08 38.02 13.74 38.75 13.47 C39.48 13.19 39.97 13.06 40.67 12.85 C41.38 12.65 42.32 12.40 43.00 12.24 C43.68 12.07 43.96 11.99 44.76 11.87 C45.55 11.75 46.97 11.61 47.78 11.54 Z M14.95 52.36 C15.04 52.30 15.14 52.32 15.20 52.32 C15.26 52.32 15.27 52.33 15.31 52.38 C15.35 52.43 15.37 52.35 15.42 52.62 C15.47 52.88 15.60 53.70 15.62 53.97 C15.63 54.24 15.52 54.25 15.52 54.25 C15.52 54.25 15.39 54.28 15.32 54.26 C15.25 54.24 15.23 54.23 15.10 54.13 C14.98 54.03 14.70 53.79 14.59 53.68 C14.47 53.57 14.45 53.56 14.43 53.45 C14.40 53.34 14.40 53.14 14.43 53.00 C14.47 52.87 14.57 52.76 14.66 52.65 C14.74 52.54 14.86 52.41 14.95 52.36 Z M84.17 46.17 C84.21 46.09 84.29 46.05 84.36 46.06 C84.43 46.06 84.50 46.10 84.58 46.18 C84.66 46.26 84.76 46.41 84.82 46.53 C84.88 46.64 84.95 46.74 84.94 46.88 C84.93 47.01 84.80 47.22 84.74 47.33 C84.68 47.45 84.63 47.49 84.57 47.55 C84.50 47.61 84.41 47.65 84.36 47.67 C84.30 47.69 84.29 47.69 84.25 47.65 C84.22 47.61 84.15 47.62 84.13 47.43 C84.11 47.24 84.11 46.70 84.12 46.49 C84.13 46.28 84.13 46.24 84.17 46.17 Z","fit":0.995,"bounds":{"x":2.89,"y":11.47,"width":93.74,"height":76.4},"loops":[[[47.78,11.54],[49.61,11.47],[52.23,11.54],[53.37,11.74],[54.85,11.86],[56.47,12.16],[59.3,12.87],[62.04,13.84],[64.18,14.82],[67.06,16.43],[68.94,17.68],[71.55,19.76],[73.36,21.46],[75.14,23.39],[77.03,25.81],[78.72,28.41],[79.93,30.52],[80.8,32.38],[81.5,34.04],[82.23,36.05],[82.37,36.28],[82.64,36.43],[82.95,36.5],[85.69,36.88],[87.97,37.52],[89.56,38.08],[90.49,38.51],[91.63,39.13],[92.55,39.77],[94.23,41.22],[94.86,41.96],[95.4,42.78],[95.87,43.68],[96.24,44.68],[96.53,45.94],[96.61,46.68],[96.58,48.42],[96.24,50.04],[95.96,50.95],[95.43,52.17],[94.95,53.06],[93.91,54.56],[92.74,55.92],[91.77,56.91],[89.1,59.12],[86.26,60.97],[84.9,61.75],[82.67,62.84],[82.34,63.1],[80.92,66.56],[80.24,68.04],[79.36,69.7],[78.28,71.54],[76.93,73.51],[75.23,75.72],[73.36,77.76],[72.28,78.82],[69.86,80.89],[66.98,82.9],[64.5,84.32],[61.7,85.62],[59.71,86.37],[57.58,86.97],[53.91,87.65],[51.17,87.84],[48.83,87.85],[45.51,87.62],[43.63,87.31],[40.81,86.64],[38.73,85.98],[35.85,84.76],[33.78,83.7],[31.85,82.51],[30.01,81.22],[28.8,80.28],[27.35,79],[25.4,77.04],[24.07,75.44],[22.41,73.2],[20.15,69.4],[19.97,69.19],[19.7,69.06],[17.24,68.41],[15.31,67.79],[13.6,67.15],[12.12,66.5],[9.82,65.27],[8.99,64.74],[7.44,63.56],[6.4,62.65],[5.04,61.08],[4.33,60.03],[3.84,59.14],[3.5,58.33],[3.22,57.41],[2.91,55.25],[2.92,54.75],[3.19,53.13],[3.62,51.57],[4.13,50.52],[4.57,49.79],[5.15,48.99],[6.24,47.74],[7.15,46.89],[8.13,46.12],[10.25,44.72],[12.42,43.58],[15.23,42.48],[15.53,42.2],[16.34,38.7],[17.03,36.46],[17.59,34.87],[18.26,33.21],[19.53,30.56],[20.9,28.22],[22.63,25.65],[23.92,24.01],[25.88,21.87],[28.4,19.52],[30.95,17.57],[33.44,15.97],[36.27,14.5],[38.75,13.47],[40.67,12.85],[43,12.24],[44.76,11.87]],[[14.95,52.36],[15.2,52.32],[15.31,52.38],[15.42,52.62],[15.62,53.97],[15.52,54.25],[15.32,54.26],[15.1,54.13],[14.59,53.68],[14.43,53.45],[14.43,53],[14.66,52.65]],[[84.17,46.17],[84.36,46.06],[84.58,46.18],[84.82,46.53],[84.94,46.88],[84.74,47.33],[84.57,47.55],[84.36,47.67],[84.25,47.65],[84.13,47.43],[84.12,46.49]]],"smoothing":{"tension":0.5,"corner":88,"passes":5}},"acorn":{"d":"M48.92 6.25 C49.40 6.17 49.72 6.18 50.20 6.19 C50.67 6.20 51.31 6.25 51.75 6.32 C52.19 6.40 52.41 6.48 52.83 6.65 C53.25 6.83 53.80 7.10 54.24 7.38 C54.68 7.65 55.03 7.93 55.47 8.30 C55.91 8.67 55.96 8.56 56.89 9.61 C57.82 10.67 60.26 13.66 61.07 14.61 C61.87 15.56 61.50 15.09 61.74 15.31 C61.98 15.53 62.23 15.73 62.49 15.92 C62.76 16.11 62.96 16.24 63.33 16.46 C63.70 16.67 64.29 16.98 64.73 17.20 C65.16 17.41 65.22 17.45 65.94 17.75 C66.66 18.04 67.83 18.43 69.02 18.97 C70.22 19.50 72.26 20.52 73.10 20.94 C73.95 21.37 73.60 21.19 74.11 21.50 C74.61 21.81 75.47 22.35 76.13 22.79 C76.80 23.23 77.27 23.51 78.09 24.15 C78.92 24.79 80.41 26.04 81.09 26.62 C81.78 27.21 81.77 27.25 82.18 27.68 C82.60 28.11 83.18 28.74 83.59 29.20 C84.01 29.67 84.20 29.83 84.66 30.47 C85.13 31.11 85.95 32.34 86.40 33.04 C86.84 33.74 87.06 34.16 87.31 34.66 C87.57 35.15 87.66 35.29 87.92 36.00 C88.19 36.71 88.68 38.13 88.90 38.91 C89.13 39.69 89.19 40.04 89.27 40.68 C89.36 41.33 89.39 42.26 89.41 42.77 C89.43 43.28 89.42 43.34 89.40 43.75 C89.37 44.16 89.34 44.79 89.26 45.24 C89.18 45.69 89.07 46.01 88.92 46.44 C88.77 46.87 88.53 47.45 88.35 47.83 C88.17 48.20 87.99 48.44 87.83 48.68 C87.68 48.91 87.63 48.99 87.41 49.23 C87.20 49.47 86.82 49.85 86.54 50.11 C86.25 50.37 85.86 50.63 85.68 50.81 C85.50 50.99 85.52 50.62 85.47 51.20 C85.42 51.78 85.47 53.19 85.40 54.29 C85.34 55.39 85.17 56.91 85.06 57.81 C84.96 58.71 84.88 59.04 84.77 59.68 C84.65 60.32 84.57 60.86 84.39 61.66 C84.22 62.46 84.04 63.32 83.71 64.45 C83.38 65.59 82.82 67.36 82.43 68.47 C82.04 69.58 81.80 70.18 81.37 71.12 C80.94 72.06 80.36 73.21 79.87 74.11 C79.37 75.01 78.97 75.65 78.39 76.53 C77.80 77.41 76.84 78.73 76.35 79.38 C75.87 80.03 75.93 79.93 75.47 80.45 C75.01 80.96 74.38 81.71 73.60 82.48 C72.81 83.25 71.50 84.42 70.73 85.08 C69.96 85.74 69.52 86.02 68.96 86.44 C68.40 86.85 68.00 87.14 67.35 87.57 C66.70 87.99 65.80 88.56 65.06 88.99 C64.32 89.42 63.48 89.85 62.90 90.15 C62.32 90.44 62.21 90.50 61.58 90.77 C60.94 91.05 59.79 91.52 59.09 91.79 C58.38 92.06 58.23 92.14 57.35 92.40 C56.47 92.66 54.79 93.14 53.79 93.34 C52.79 93.54 51.96 93.56 51.36 93.61 C50.76 93.67 50.58 93.67 50.20 93.67 C49.81 93.68 49.57 93.69 49.02 93.65 C48.47 93.61 47.73 93.57 46.90 93.42 C46.07 93.28 44.71 92.94 44.03 92.77 C43.36 92.60 43.52 92.64 42.84 92.41 C42.16 92.18 40.69 91.66 39.96 91.39 C39.23 91.11 39.01 91.00 38.46 90.74 C37.90 90.48 37.33 90.21 36.62 89.84 C35.92 89.47 34.83 88.87 34.23 88.53 C33.63 88.19 33.88 88.38 33.02 87.78 C32.15 87.18 30.13 85.80 29.03 84.94 C27.94 84.08 27.25 83.39 26.46 82.62 C25.66 81.85 24.79 80.88 24.27 80.32 C23.76 79.76 23.90 79.97 23.37 79.26 C22.85 78.55 21.67 76.89 21.11 76.06 C20.55 75.22 20.46 75.08 20.01 74.23 C19.55 73.39 18.80 71.93 18.36 70.99 C17.93 70.06 17.73 69.52 17.41 68.63 C17.09 67.75 16.69 66.55 16.43 65.70 C16.16 64.86 16.03 64.44 15.82 63.58 C15.61 62.72 15.33 61.46 15.16 60.53 C14.98 59.60 14.85 58.71 14.76 58.00 C14.66 57.29 14.64 56.90 14.58 56.25 C14.52 55.60 14.44 54.94 14.40 54.10 C14.37 53.26 14.40 51.74 14.35 51.20 C14.31 50.65 14.34 50.99 14.14 50.80 C13.93 50.61 13.42 50.28 13.15 50.03 C12.87 49.79 12.67 49.58 12.47 49.35 C12.27 49.13 12.14 48.93 11.97 48.68 C11.80 48.42 11.64 48.17 11.47 47.82 C11.29 47.47 11.08 47.01 10.94 46.59 C10.79 46.18 10.70 45.81 10.60 45.33 C10.50 44.85 10.37 44.15 10.31 43.72 C10.26 43.30 10.27 43.03 10.27 42.77 C10.27 42.52 10.24 42.64 10.29 42.21 C10.35 41.79 10.49 40.77 10.60 40.22 C10.70 39.67 10.74 39.47 10.90 38.91 C11.06 38.35 11.30 37.56 11.57 36.85 C11.83 36.15 12.13 35.40 12.51 34.67 C12.88 33.94 13.38 33.14 13.81 32.46 C14.24 31.79 14.69 31.16 15.09 30.62 C15.49 30.08 15.69 29.82 16.23 29.22 C16.77 28.62 17.65 27.68 18.32 27.02 C19.00 26.36 19.74 25.74 20.29 25.27 C20.83 24.81 21.05 24.63 21.59 24.23 C22.13 23.82 22.85 23.30 23.53 22.85 C24.21 22.39 24.68 22.05 25.68 21.49 C26.69 20.93 27.97 20.23 29.57 19.51 C31.16 18.80 34.08 17.70 35.26 17.19 C36.44 16.67 36.23 16.67 36.63 16.42 C37.03 16.17 37.33 15.95 37.65 15.68 C37.97 15.42 37.80 15.70 38.56 14.83 C39.32 13.96 41.40 11.42 42.22 10.48 C43.03 9.54 43.11 9.52 43.45 9.17 C43.79 8.83 43.94 8.69 44.27 8.43 C44.59 8.16 45.02 7.85 45.40 7.60 C45.78 7.36 46.21 7.14 46.54 6.98 C46.86 6.82 46.94 6.76 47.34 6.64 C47.74 6.51 48.45 6.32 48.92 6.25 Z","fit":0.9956,"bounds":{"x":10.26,"y":6.18,"width":79.16,"height":87.5},"loops":[[[48.92,6.25],[50.2,6.19],[51.75,6.32],[52.83,6.65],[54.24,7.38],[55.47,8.3],[56.89,9.61],[61.07,14.61],[61.74,15.31],[62.49,15.92],[63.33,16.46],[64.73,17.2],[65.94,17.75],[69.02,18.97],[73.1,20.94],[74.11,21.5],[76.13,22.79],[78.09,24.15],[81.09,26.62],[82.18,27.68],[83.59,29.2],[84.66,30.47],[86.4,33.04],[87.31,34.66],[87.92,36],[88.9,38.91],[89.27,40.68],[89.41,42.77],[89.4,43.75],[89.26,45.24],[88.92,46.44],[88.35,47.83],[87.83,48.68],[87.41,49.23],[86.54,50.11],[85.68,50.81],[85.47,51.2],[85.4,54.29],[85.06,57.81],[84.77,59.68],[84.39,61.66],[83.71,64.45],[82.43,68.47],[81.37,71.12],[79.87,74.11],[78.39,76.53],[76.35,79.38],[75.47,80.45],[73.6,82.48],[70.73,85.08],[68.96,86.44],[67.35,87.57],[65.06,88.99],[62.9,90.15],[61.58,90.77],[59.09,91.79],[57.35,92.4],[53.79,93.34],[51.36,93.61],[50.2,93.67],[49.02,93.65],[46.9,93.42],[44.03,92.77],[42.84,92.41],[39.96,91.39],[38.46,90.74],[36.62,89.84],[34.23,88.53],[33.02,87.78],[29.03,84.94],[26.46,82.62],[24.27,80.32],[23.37,79.26],[21.11,76.06],[20.01,74.23],[18.36,70.99],[17.41,68.63],[16.43,65.7],[15.82,63.58],[15.16,60.53],[14.76,58],[14.58,56.25],[14.4,54.1],[14.35,51.2],[14.14,50.8],[13.15,50.03],[12.47,49.35],[11.97,48.68],[11.47,47.82],[10.94,46.59],[10.6,45.33],[10.31,43.72],[10.27,42.77],[10.29,42.21],[10.6,40.22],[10.9,38.91],[11.57,36.85],[12.51,34.67],[13.81,32.46],[15.09,30.62],[16.23,29.22],[18.32,27.02],[20.29,25.27],[21.59,24.23],[23.53,22.85],[25.68,21.49],[29.57,19.51],[35.26,17.19],[36.63,16.42],[37.65,15.68],[38.56,14.83],[42.22,10.48],[43.45,9.17],[44.27,8.43],[45.4,7.6],[46.54,6.98],[47.34,6.64]]],"smoothing":{"tension":0.5,"corner":88,"passes":5}},"flame":{"d":"M54.80 2.75 C55.18 2.71 55.40 2.69 55.76 2.74 C56.12 2.80 56.71 2.98 56.97 3.08 C57.23 3.18 57.22 3.23 57.32 3.32 C57.43 3.41 57.49 3.45 57.60 3.63 C57.71 3.81 57.91 4.17 57.98 4.41 C58.05 4.66 58.04 4.86 58.03 5.08 C58.03 5.30 58.15 5.24 57.97 5.73 C57.79 6.23 57.19 7.49 56.96 8.05 C56.74 8.60 56.72 8.66 56.61 9.05 C56.50 9.43 56.37 10.04 56.31 10.36 C56.26 10.67 56.26 10.61 56.26 10.94 C56.26 11.26 56.25 11.82 56.30 12.30 C56.35 12.79 56.44 13.31 56.58 13.83 C56.71 14.36 56.91 14.93 57.12 15.44 C57.32 15.95 57.54 16.39 57.83 16.89 C58.12 17.38 58.39 17.81 58.86 18.39 C59.32 18.97 59.98 19.71 60.61 20.35 C61.24 20.99 61.69 21.39 62.64 22.23 C63.59 23.07 65.45 24.65 66.30 25.40 C67.15 26.15 67.05 26.05 67.72 26.71 C68.39 27.38 69.59 28.59 70.33 29.38 C71.06 30.17 71.63 30.85 72.14 31.48 C72.66 32.10 72.91 32.43 73.41 33.13 C73.92 33.83 74.54 34.70 75.15 35.69 C75.76 36.68 76.53 38.05 77.06 39.05 C77.59 40.05 77.89 40.72 78.31 41.71 C78.72 42.69 79.20 43.92 79.57 44.95 C79.93 45.99 80.25 46.98 80.51 47.89 C80.77 48.80 80.92 49.44 81.12 50.42 C81.33 51.39 81.59 52.78 81.75 53.72 C81.91 54.66 81.96 55.00 82.07 56.08 C82.18 57.15 82.34 58.99 82.40 60.16 C82.45 61.32 82.44 61.98 82.39 63.09 C82.34 64.19 82.19 65.71 82.08 66.78 C81.96 67.85 81.86 68.56 81.69 69.50 C81.53 70.44 81.25 71.75 81.10 72.42 C80.95 73.08 80.93 73.11 80.82 73.49 C80.71 73.87 80.68 74.08 80.46 74.71 C80.25 75.35 79.90 76.39 79.54 77.29 C79.18 78.19 78.73 79.22 78.28 80.14 C77.83 81.05 77.38 81.90 76.82 82.78 C76.27 83.66 75.43 84.80 74.97 85.42 C74.51 86.04 74.51 86.00 74.08 86.48 C73.65 86.96 73.00 87.68 72.38 88.29 C71.75 88.91 70.88 89.67 70.32 90.14 C69.75 90.62 69.53 90.78 68.99 91.16 C68.46 91.53 67.88 91.94 67.11 92.40 C66.33 92.86 65.14 93.52 64.34 93.92 C63.53 94.32 63.28 94.44 62.26 94.80 C61.25 95.15 59.45 95.75 58.27 96.06 C57.10 96.38 56.23 96.53 55.21 96.69 C54.19 96.85 53.34 96.96 52.15 97.03 C50.95 97.10 49.19 97.10 48.05 97.08 C46.91 97.07 46.12 96.99 45.32 96.93 C44.52 96.86 44.11 96.82 43.25 96.68 C42.40 96.53 41.06 96.25 40.20 96.04 C39.33 95.84 38.71 95.64 38.07 95.44 C37.42 95.24 37.02 95.13 36.32 94.85 C35.61 94.58 34.69 94.22 33.83 93.81 C32.97 93.39 31.95 92.82 31.17 92.37 C30.38 91.91 29.95 91.67 29.14 91.08 C28.33 90.49 27.12 89.55 26.31 88.83 C25.49 88.12 24.85 87.42 24.25 86.78 C23.66 86.13 23.15 85.47 22.76 84.96 C22.36 84.45 22.15 84.13 21.87 83.70 C21.58 83.27 21.43 83.09 21.05 82.37 C20.66 81.65 19.97 80.30 19.56 79.37 C19.15 78.44 18.87 77.64 18.61 76.80 C18.35 75.96 18.13 75.05 17.97 74.32 C17.81 73.60 17.74 73.10 17.66 72.46 C17.57 71.82 17.49 71.29 17.45 70.51 C17.41 69.73 17.39 68.54 17.41 67.77 C17.44 67.01 17.48 66.65 17.58 65.91 C17.67 65.18 17.85 64.03 17.97 63.36 C18.09 62.70 18.20 62.36 18.30 61.95 C18.40 61.53 18.43 61.36 18.59 60.87 C18.74 60.38 18.89 59.88 19.24 58.99 C19.59 58.10 19.94 57.08 20.68 55.54 C21.42 54.00 23.04 51.03 23.68 49.76 C24.33 48.49 24.32 48.48 24.57 47.92 C24.83 47.36 25.00 46.94 25.21 46.40 C25.42 45.86 25.66 45.18 25.82 44.67 C25.98 44.15 26.07 43.77 26.18 43.29 C26.29 42.81 26.41 42.30 26.48 41.80 C26.55 41.29 26.59 41.11 26.62 40.23 C26.64 39.36 26.60 37.25 26.63 36.53 C26.65 35.80 26.71 36.07 26.77 35.86 C26.83 35.65 26.88 35.47 26.99 35.29 C27.10 35.10 27.25 34.91 27.42 34.75 C27.59 34.59 27.82 34.45 28.00 34.35 C28.19 34.25 28.36 34.18 28.55 34.14 C28.73 34.10 28.90 34.10 29.10 34.11 C29.31 34.12 29.55 34.14 29.78 34.20 C30.00 34.26 30.23 34.38 30.45 34.49 C30.67 34.59 30.85 34.68 31.08 34.84 C31.32 34.99 31.60 35.20 31.87 35.43 C32.13 35.65 32.37 35.88 32.66 36.19 C32.94 36.49 33.27 36.88 33.55 37.25 C33.83 37.62 34.10 38.01 34.36 38.40 C34.61 38.80 34.85 39.17 35.08 39.62 C35.32 40.07 35.57 40.57 35.78 41.08 C35.99 41.58 36.19 42.16 36.34 42.65 C36.50 43.15 36.60 43.71 36.71 44.05 C36.82 44.40 36.93 44.59 37.01 44.74 C37.09 44.89 37.12 44.91 37.20 44.95 C37.27 44.99 37.35 45.03 37.47 44.98 C37.59 44.93 37.73 44.86 37.91 44.65 C38.09 44.45 38.35 44.09 38.56 43.73 C38.76 43.38 38.97 42.93 39.12 42.53 C39.28 42.14 39.38 41.81 39.48 41.36 C39.59 40.91 39.68 40.22 39.73 39.83 C39.79 39.45 39.78 39.42 39.79 39.06 C39.80 38.71 39.83 38.24 39.78 37.70 C39.72 37.15 39.62 36.51 39.47 35.80 C39.32 35.10 39.11 34.28 38.88 33.47 C38.65 32.66 38.33 31.75 38.10 30.94 C37.87 30.14 37.64 29.23 37.50 28.63 C37.36 28.03 37.34 27.86 37.26 27.32 C37.19 26.78 37.08 26.04 37.04 25.39 C37.00 24.74 37.01 24.07 37.02 23.44 C37.04 22.81 37.03 22.38 37.14 21.62 C37.26 20.86 37.57 19.54 37.72 18.88 C37.88 18.22 37.94 18.11 38.09 17.68 C38.25 17.24 38.38 16.85 38.64 16.27 C38.90 15.69 39.32 14.81 39.67 14.18 C40.01 13.55 40.41 12.93 40.71 12.48 C41.00 12.03 41.17 11.81 41.43 11.46 C41.70 11.10 41.98 10.73 42.29 10.36 C42.61 9.99 42.94 9.61 43.31 9.23 C43.67 8.84 44.11 8.40 44.48 8.05 C44.85 7.70 44.98 7.55 45.51 7.13 C46.04 6.72 47.01 5.99 47.65 5.56 C48.29 5.13 48.89 4.81 49.37 4.54 C49.85 4.27 50.03 4.17 50.53 3.95 C51.03 3.74 51.88 3.42 52.37 3.25 C52.86 3.09 53.06 3.05 53.46 2.96 C53.87 2.88 54.41 2.79 54.80 2.75 Z","fit":0.9941,"bounds":{"x":17.39,"y":2.71,"width":65.02,"height":94.38},"loops":[[[54.8,2.75],[55.76,2.74],[56.97,3.08],[57.32,3.32],[57.6,3.63],[57.98,4.41],[58.03,5.08],[57.97,5.73],[56.96,8.05],[56.61,9.05],[56.31,10.36],[56.26,10.94],[56.3,12.3],[56.58,13.83],[57.12,15.44],[57.83,16.89],[58.86,18.39],[60.61,20.35],[62.64,22.23],[66.3,25.4],[67.72,26.71],[70.33,29.38],[72.14,31.48],[73.41,33.13],[75.15,35.69],[77.06,39.05],[78.31,41.71],[79.57,44.95],[80.51,47.89],[81.12,50.42],[81.75,53.72],[82.07,56.08],[82.4,60.16],[82.39,63.09],[82.08,66.78],[81.69,69.5],[81.1,72.42],[80.82,73.49],[80.46,74.71],[79.54,77.29],[78.28,80.14],[76.82,82.78],[74.97,85.42],[74.08,86.48],[72.38,88.29],[70.32,90.14],[68.99,91.16],[67.11,92.4],[64.34,93.92],[62.26,94.8],[58.27,96.06],[55.21,96.69],[52.15,97.03],[48.05,97.08],[45.32,96.93],[43.25,96.68],[40.2,96.04],[38.07,95.44],[36.32,94.85],[33.83,93.81],[31.17,92.37],[29.14,91.08],[26.31,88.83],[24.25,86.78],[22.76,84.96],[21.87,83.7],[21.05,82.37],[19.56,79.37],[18.61,76.8],[17.97,74.32],[17.66,72.46],[17.45,70.51],[17.41,67.77],[17.58,65.91],[17.97,63.36],[18.3,61.95],[18.59,60.87],[19.24,58.99],[20.68,55.54],[23.68,49.76],[24.57,47.92],[25.21,46.4],[25.82,44.67],[26.18,43.29],[26.48,41.8],[26.62,40.23],[26.63,36.53],[26.77,35.86],[26.99,35.29],[27.42,34.75],[28,34.35],[28.55,34.14],[29.1,34.11],[29.78,34.2],[30.45,34.49],[31.08,34.84],[31.87,35.43],[32.66,36.19],[33.55,37.25],[34.36,38.4],[35.08,39.62],[35.78,41.08],[36.34,42.65],[36.71,44.05],[37.01,44.74],[37.2,44.95],[37.47,44.98],[37.91,44.65],[38.56,43.73],[39.12,42.53],[39.48,41.36],[39.73,39.83],[39.79,39.06],[39.78,37.7],[39.47,35.8],[38.88,33.47],[38.1,30.94],[37.5,28.63],[37.26,27.32],[37.04,25.39],[37.02,23.44],[37.14,21.62],[37.72,18.88],[38.09,17.68],[38.64,16.27],[39.67,14.18],[40.71,12.48],[41.43,11.46],[42.29,10.36],[43.31,9.23],[44.48,8.05],[45.51,7.13],[47.65,5.56],[49.37,4.54],[50.53,3.95],[52.37,3.25],[53.46,2.96]]],"smoothing":{"tension":0.5,"corner":88,"passes":5}},"rocket":{"d":"M48.95 2.94 C49.39 2.87 49.75 2.85 50.20 2.86 C50.64 2.86 51.16 2.88 51.60 2.96 C52.04 3.04 52.39 3.15 52.84 3.32 C53.30 3.49 53.82 3.70 54.33 3.97 C54.84 4.24 55.33 4.53 55.91 4.93 C56.49 5.32 57.11 5.75 57.82 6.34 C58.53 6.93 59.55 7.87 60.19 8.47 C60.82 9.07 61.01 9.24 61.64 9.94 C62.27 10.64 63.42 11.97 63.99 12.67 C64.56 13.36 64.68 13.55 65.09 14.11 C65.50 14.68 65.92 15.23 66.46 16.05 C67.01 16.88 67.84 18.20 68.35 19.05 C68.86 19.91 69.12 20.37 69.53 21.19 C69.95 22.01 70.47 23.11 70.86 23.96 C71.25 24.81 71.53 25.44 71.86 26.28 C72.19 27.11 72.54 28.03 72.87 28.97 C73.19 29.92 73.49 30.83 73.82 31.94 C74.14 33.05 74.49 34.25 74.81 35.62 C75.13 36.99 75.49 38.74 75.75 40.17 C76.02 41.59 76.20 42.52 76.41 44.16 C76.63 45.80 76.91 48.37 77.06 50.00 C77.22 51.63 77.25 52.10 77.36 53.95 C77.46 55.81 77.61 59.29 77.68 61.13 C77.75 62.98 77.72 64.13 77.79 65.04 C77.85 65.95 77.98 66.25 78.05 66.58 C78.12 66.92 78.10 66.82 78.19 67.03 C78.28 67.23 78.29 67.29 78.60 67.80 C78.91 68.30 79.61 69.32 80.05 70.04 C80.50 70.77 80.91 71.46 81.28 72.14 C81.64 72.81 81.94 73.43 82.25 74.09 C82.56 74.76 82.80 75.27 83.13 76.15 C83.45 77.03 83.91 78.38 84.19 79.37 C84.47 80.35 84.64 81.23 84.80 82.07 C84.97 82.92 85.06 83.46 85.18 84.43 C85.29 85.40 85.42 86.99 85.48 87.89 C85.53 88.79 85.52 89.16 85.51 89.84 C85.50 90.53 85.49 91.34 85.43 91.98 C85.38 92.62 85.29 93.22 85.17 93.68 C85.05 94.15 84.89 94.46 84.72 94.78 C84.55 95.09 84.36 95.33 84.13 95.56 C83.91 95.79 83.65 95.98 83.36 96.15 C83.07 96.32 82.85 96.43 82.40 96.56 C81.94 96.69 81.61 96.83 80.64 96.92 C79.67 97.01 78.12 97.08 76.56 97.11 C75.00 97.13 72.39 97.08 71.28 97.06 C70.18 97.04 70.26 97.01 69.93 96.97 C69.59 96.94 69.54 96.93 69.28 96.83 C69.01 96.74 68.55 96.55 68.32 96.43 C68.09 96.30 68.01 96.22 67.87 96.09 C67.74 95.97 67.62 95.86 67.49 95.69 C67.37 95.52 67.30 95.46 67.12 95.09 C66.93 94.71 66.61 93.87 66.41 93.45 C66.22 93.02 66.11 92.83 65.95 92.55 C65.78 92.26 65.59 91.97 65.40 91.73 C65.22 91.49 65.05 91.30 64.85 91.11 C64.65 90.91 64.42 90.73 64.20 90.58 C63.99 90.44 63.84 90.34 63.58 90.23 C63.33 90.13 62.92 90.01 62.68 89.95 C62.43 89.89 62.39 89.88 62.11 89.89 C61.83 89.90 61.46 89.91 61.01 90.03 C60.57 90.14 59.99 90.33 59.45 90.60 C58.91 90.87 58.48 91.16 57.76 91.65 C57.04 92.13 55.78 93.06 55.12 93.50 C54.47 93.95 54.28 94.08 53.80 94.33 C53.33 94.57 52.83 94.80 52.29 94.97 C51.75 95.14 50.98 95.28 50.57 95.35 C50.15 95.42 50.05 95.39 49.81 95.38 C49.56 95.38 49.46 95.38 49.11 95.31 C48.76 95.25 48.04 95.09 47.69 94.99 C47.33 94.89 47.24 94.85 46.97 94.73 C46.69 94.61 46.34 94.45 46.04 94.29 C45.74 94.13 45.86 94.24 45.18 93.78 C44.49 93.33 42.73 92.07 41.94 91.55 C41.16 91.03 40.91 90.89 40.48 90.67 C40.06 90.45 39.70 90.32 39.40 90.20 C39.09 90.08 38.86 90.02 38.64 89.97 C38.42 89.92 38.31 89.90 38.09 89.89 C37.86 89.88 37.60 89.88 37.31 89.92 C37.03 89.97 36.64 90.09 36.37 90.19 C36.11 90.28 35.94 90.37 35.72 90.51 C35.50 90.65 35.26 90.83 35.05 91.01 C34.85 91.19 34.68 91.36 34.48 91.61 C34.28 91.87 34.03 92.23 33.85 92.54 C33.67 92.84 33.57 93.04 33.39 93.45 C33.21 93.85 32.94 94.60 32.76 94.97 C32.59 95.35 32.48 95.50 32.33 95.71 C32.18 95.91 32.00 96.06 31.85 96.20 C31.69 96.34 31.65 96.40 31.39 96.52 C31.12 96.65 30.83 96.84 30.25 96.94 C29.67 97.03 29.02 97.06 27.92 97.09 C26.81 97.12 25.06 97.14 23.63 97.12 C22.20 97.10 20.31 97.03 19.34 96.96 C18.37 96.89 18.25 96.82 17.81 96.72 C17.36 96.61 16.99 96.48 16.66 96.33 C16.33 96.17 16.09 95.99 15.84 95.78 C15.59 95.57 15.38 95.36 15.18 95.07 C14.98 94.78 14.77 94.32 14.66 94.04 C14.55 93.75 14.57 93.80 14.50 93.39 C14.43 92.97 14.29 92.32 14.24 91.57 C14.19 90.81 14.16 90.10 14.22 88.87 C14.28 87.64 14.47 85.27 14.58 84.19 C14.69 83.11 14.78 82.96 14.88 82.38 C14.99 81.81 15.09 81.26 15.21 80.72 C15.33 80.19 15.45 79.74 15.61 79.18 C15.77 78.63 15.97 78.01 16.18 77.40 C16.39 76.80 16.48 76.46 16.87 75.57 C17.25 74.69 17.75 73.48 18.49 72.11 C19.24 70.74 20.84 68.23 21.35 67.35 C21.87 66.46 21.51 67.07 21.59 66.80 C21.68 66.52 21.80 66.07 21.86 65.71 C21.92 65.36 21.93 65.54 21.95 64.65 C21.98 63.75 21.96 61.82 22.01 60.35 C22.06 58.88 22.22 56.93 22.27 55.83 C22.33 54.72 22.26 54.82 22.32 53.71 C22.39 52.60 22.58 50.13 22.67 49.18 C22.77 48.23 22.81 48.54 22.87 48.01 C22.93 47.47 22.89 46.99 23.02 45.95 C23.15 44.90 23.39 43.21 23.65 41.72 C23.92 40.23 24.23 38.62 24.62 37.02 C25.00 35.41 25.54 33.53 25.96 32.11 C26.39 30.68 26.68 29.78 27.18 28.45 C27.67 27.13 28.49 25.20 28.94 24.16 C29.40 23.11 29.47 22.99 29.89 22.18 C30.32 21.37 31.06 20.03 31.49 19.28 C31.92 18.54 32.04 18.34 32.45 17.71 C32.86 17.07 33.43 16.24 33.96 15.50 C34.49 14.76 35.06 13.99 35.63 13.26 C36.20 12.53 36.87 11.71 37.39 11.12 C37.90 10.52 38.09 10.33 38.71 9.71 C39.34 9.10 40.24 8.18 41.12 7.43 C41.99 6.67 43.29 5.69 43.96 5.19 C44.63 4.68 44.76 4.62 45.12 4.40 C45.49 4.18 45.75 4.05 46.15 3.87 C46.55 3.68 47.07 3.46 47.53 3.31 C48.00 3.15 48.50 3.02 48.95 2.94 Z","fit":0.9943,"bounds":{"x":14.21,"y":2.85,"width":71.3,"height":94.29},"loops":[[[48.95,2.94],[50.2,2.86],[51.6,2.96],[52.84,3.32],[54.33,3.97],[55.91,4.93],[57.82,6.34],[60.19,8.47],[61.64,9.94],[63.99,12.67],[65.09,14.11],[66.46,16.05],[68.35,19.05],[69.53,21.19],[70.86,23.96],[71.86,26.28],[72.87,28.97],[73.82,31.94],[74.81,35.62],[75.75,40.17],[76.41,44.16],[77.06,50],[77.36,53.95],[77.68,61.13],[77.79,65.04],[78.05,66.58],[78.19,67.03],[78.6,67.8],[80.05,70.04],[81.28,72.14],[82.25,74.09],[83.13,76.15],[84.19,79.37],[84.8,82.07],[85.18,84.43],[85.48,87.89],[85.51,89.84],[85.43,91.98],[85.17,93.68],[84.72,94.78],[84.13,95.56],[83.36,96.15],[82.4,96.56],[80.64,96.92],[76.56,97.11],[71.28,97.06],[69.93,96.97],[69.28,96.83],[68.32,96.43],[67.87,96.09],[67.49,95.69],[67.12,95.09],[66.41,93.45],[65.95,92.55],[65.4,91.73],[64.85,91.11],[64.2,90.58],[63.58,90.23],[62.68,89.95],[62.11,89.89],[61.01,90.03],[59.45,90.6],[57.76,91.65],[55.12,93.5],[53.8,94.33],[52.29,94.97],[50.57,95.35],[49.81,95.38],[49.11,95.31],[47.69,94.99],[46.97,94.73],[46.04,94.29],[45.18,93.78],[41.94,91.55],[40.48,90.67],[39.4,90.2],[38.64,89.97],[38.09,89.89],[37.31,89.92],[36.37,90.19],[35.72,90.51],[35.05,91.01],[34.48,91.61],[33.85,92.54],[33.39,93.45],[32.76,94.97],[32.33,95.71],[31.85,96.2],[31.39,96.52],[30.25,96.94],[27.92,97.09],[23.63,97.12],[19.34,96.96],[17.81,96.72],[16.66,96.33],[15.84,95.78],[15.18,95.07],[14.66,94.04],[14.5,93.39],[14.24,91.57],[14.22,88.87],[14.58,84.19],[14.88,82.38],[15.21,80.72],[15.61,79.18],[16.18,77.4],[16.87,75.57],[18.49,72.11],[21.35,67.35],[21.59,66.8],[21.86,65.71],[21.95,64.65],[22.01,60.35],[22.27,55.83],[22.32,53.71],[22.67,49.18],[22.87,48.01],[23.02,45.95],[23.65,41.72],[24.62,37.02],[25.96,32.11],[27.18,28.45],[28.94,24.16],[29.89,22.18],[31.49,19.28],[32.45,17.71],[33.96,15.5],[35.63,13.26],[37.39,11.12],[38.71,9.71],[41.12,7.43],[43.96,5.19],[45.12,4.4],[46.15,3.87],[47.53,3.31]]],"smoothing":{"tension":0.5,"corner":88,"passes":5}},"crown":{"d":"M49.14 8.24 C49.60 8.15 49.90 8.16 50.39 8.15 C50.88 8.15 51.46 8.08 52.08 8.21 C52.69 8.34 53.51 8.67 54.07 8.92 C54.63 9.17 55.06 9.49 55.41 9.72 C55.76 9.96 55.89 10.06 56.17 10.33 C56.46 10.60 56.83 10.98 57.12 11.34 C57.41 11.70 57.65 12.04 57.92 12.48 C58.20 12.92 58.56 13.55 58.77 13.98 C58.99 14.41 58.61 13.29 59.23 15.08 C59.84 16.88 61.66 22.29 62.47 24.74 C63.27 27.18 63.56 28.24 64.08 29.77 C64.60 31.30 65.26 33.08 65.57 33.93 C65.89 34.79 65.84 34.61 65.98 34.89 C66.12 35.18 66.25 35.41 66.41 35.64 C66.58 35.86 66.80 36.10 66.98 36.25 C67.15 36.40 67.24 36.47 67.45 36.56 C67.65 36.65 67.93 36.76 68.18 36.80 C68.42 36.84 68.70 36.83 68.92 36.80 C69.14 36.76 69.31 36.69 69.50 36.59 C69.69 36.49 69.71 36.54 70.08 36.20 C70.45 35.85 70.69 35.70 71.74 34.53 C72.78 33.36 75.17 30.51 76.36 29.19 C77.54 27.87 78.29 27.15 78.84 26.60 C79.40 26.04 79.40 26.08 79.68 25.87 C79.95 25.65 80.14 25.52 80.49 25.31 C80.84 25.11 81.39 24.82 81.76 24.64 C82.14 24.46 82.30 24.37 82.74 24.24 C83.17 24.12 83.88 23.95 84.38 23.89 C84.88 23.82 85.24 23.82 85.74 23.88 C86.25 23.94 86.86 24.05 87.40 24.23 C87.95 24.40 88.55 24.67 89.03 24.94 C89.50 25.21 89.91 25.52 90.28 25.84 C90.65 26.15 90.90 26.42 91.23 26.83 C91.56 27.25 91.99 27.84 92.28 28.33 C92.57 28.83 92.77 29.33 92.95 29.80 C93.12 30.27 93.26 30.71 93.35 31.15 C93.44 31.58 93.46 31.88 93.48 32.42 C93.50 32.96 93.50 33.77 93.48 34.38 C93.46 34.98 93.50 35.22 93.36 36.06 C93.22 36.90 92.79 38.73 92.63 39.41 C92.47 40.10 92.58 39.41 92.40 40.14 C92.22 40.88 91.80 42.84 91.56 43.80 C91.32 44.77 91.38 44.32 90.97 45.94 C90.57 47.56 89.68 51.06 89.14 53.51 C88.59 55.96 88.12 58.29 87.69 60.63 C87.27 62.98 86.87 65.43 86.58 67.58 C86.29 69.73 86.13 71.43 85.93 73.52 C85.74 75.60 85.56 78.50 85.41 80.07 C85.25 81.64 85.12 82.24 84.99 82.95 C84.85 83.66 84.72 83.94 84.60 84.31 C84.48 84.68 84.44 84.79 84.27 85.14 C84.10 85.49 83.81 86.05 83.58 86.42 C83.36 86.78 83.17 87.04 82.93 87.33 C82.70 87.61 82.39 87.93 82.18 88.13 C81.96 88.34 81.93 88.37 81.63 88.57 C81.34 88.77 80.79 89.12 80.43 89.32 C80.07 89.51 79.84 89.61 79.48 89.74 C79.12 89.87 78.84 89.98 78.29 90.10 C77.74 90.23 77.24 90.37 76.17 90.50 C75.10 90.62 73.52 90.77 71.86 90.85 C70.21 90.94 67.47 90.96 66.26 91.01 C65.06 91.06 66.64 91.10 64.65 91.15 C62.65 91.19 58.20 91.26 54.30 91.27 C50.39 91.29 44.50 91.27 41.21 91.25 C37.92 91.23 36.01 91.18 34.57 91.14 C33.13 91.10 33.82 91.05 32.59 91.00 C31.36 90.96 28.84 90.95 27.17 90.85 C25.51 90.75 23.64 90.53 22.61 90.40 C21.57 90.27 21.43 90.18 20.96 90.06 C20.49 89.95 20.09 89.81 19.78 89.70 C19.47 89.59 19.34 89.52 19.10 89.40 C18.85 89.28 18.55 89.13 18.33 88.99 C18.10 88.86 17.97 88.76 17.75 88.60 C17.52 88.43 17.21 88.20 16.99 88.00 C16.76 87.80 16.65 87.74 16.40 87.41 C16.14 87.08 15.72 86.49 15.46 86.01 C15.19 85.53 14.97 85.03 14.79 84.52 C14.60 84.02 14.49 83.64 14.36 82.99 C14.22 82.35 14.10 81.73 13.97 80.66 C13.85 79.59 13.70 77.65 13.62 76.56 C13.54 75.46 13.53 74.78 13.47 74.10 C13.42 73.41 13.33 73.15 13.26 72.42 C13.19 71.69 13.11 70.32 13.04 69.73 C12.98 69.13 12.95 69.30 12.90 68.84 C12.85 68.39 12.89 68.06 12.75 67.01 C12.61 65.95 12.35 64.27 12.05 62.49 C11.75 60.72 11.30 58.16 10.94 56.33 C10.58 54.51 10.53 54.30 9.88 51.56 C9.23 48.82 7.64 42.39 7.06 39.91 C6.47 37.43 6.52 37.49 6.37 36.70 C6.21 35.91 6.19 35.67 6.14 35.15 C6.09 34.64 6.07 34.08 6.07 33.59 C6.07 33.11 6.08 32.74 6.14 32.23 C6.20 31.72 6.27 31.11 6.42 30.54 C6.57 29.97 6.81 29.33 7.04 28.82 C7.28 28.31 7.55 27.90 7.85 27.48 C8.15 27.06 8.47 26.67 8.83 26.31 C9.19 25.95 9.58 25.62 10.01 25.33 C10.43 25.05 11.02 24.76 11.39 24.58 C11.77 24.40 11.80 24.37 12.25 24.26 C12.70 24.14 13.53 23.95 14.06 23.89 C14.59 23.83 14.93 23.85 15.43 23.91 C15.93 23.97 16.46 24.06 17.05 24.25 C17.65 24.44 18.50 24.83 18.97 25.07 C19.45 25.31 19.57 25.44 19.91 25.69 C20.24 25.94 20.56 26.19 20.98 26.58 C21.40 26.97 21.30 26.78 22.44 28.05 C23.58 29.32 26.69 32.94 27.81 34.20 C28.93 35.46 28.83 35.30 29.14 35.61 C29.44 35.92 29.47 35.93 29.65 36.07 C29.84 36.21 30.00 36.34 30.24 36.46 C30.48 36.58 30.82 36.72 31.08 36.78 C31.35 36.84 31.60 36.84 31.83 36.82 C32.06 36.80 32.25 36.74 32.45 36.64 C32.65 36.55 32.86 36.40 33.04 36.26 C33.22 36.11 33.35 35.99 33.52 35.77 C33.69 35.55 33.90 35.23 34.06 34.94 C34.23 34.65 34.25 34.64 34.51 34.02 C34.77 33.40 34.86 33.26 35.62 31.22 C36.38 29.18 38.19 24.12 39.07 21.78 C39.94 19.43 40.43 18.23 40.86 17.13 C41.29 16.03 41.34 15.88 41.65 15.18 C41.96 14.48 42.47 13.46 42.74 12.95 C43.01 12.44 43.04 12.44 43.27 12.12 C43.51 11.80 43.91 11.33 44.15 11.05 C44.40 10.77 44.47 10.68 44.74 10.46 C45.00 10.23 45.46 9.87 45.72 9.68 C45.99 9.49 46.00 9.47 46.32 9.31 C46.64 9.14 47.18 8.85 47.65 8.68 C48.12 8.50 48.68 8.32 49.14 8.24 Z","fit":0.9941,"bounds":{"x":6.06,"y":8.15,"width":87.43,"height":83.13},"loops":[[[49.14,8.24],[50.39,8.15],[52.08,8.21],[54.07,8.92],[55.41,9.72],[56.17,10.33],[57.12,11.34],[57.92,12.48],[58.77,13.98],[59.23,15.08],[62.47,24.74],[64.08,29.77],[65.57,33.93],[65.98,34.89],[66.41,35.64],[66.98,36.25],[67.45,36.56],[68.18,36.8],[68.92,36.8],[69.5,36.59],[70.08,36.2],[71.74,34.53],[76.36,29.19],[78.84,26.6],[79.68,25.87],[80.49,25.31],[81.76,24.64],[82.74,24.24],[84.38,23.89],[85.74,23.88],[87.4,24.23],[89.03,24.94],[90.28,25.84],[91.23,26.83],[92.28,28.33],[92.95,29.8],[93.35,31.15],[93.48,32.42],[93.48,34.38],[93.36,36.06],[92.63,39.41],[92.4,40.14],[91.56,43.8],[90.97,45.94],[89.14,53.51],[87.69,60.63],[86.58,67.58],[85.93,73.52],[85.41,80.07],[84.99,82.95],[84.6,84.31],[84.27,85.14],[83.58,86.42],[82.93,87.33],[82.18,88.13],[81.63,88.57],[80.43,89.32],[79.48,89.74],[78.29,90.1],[76.17,90.5],[71.86,90.85],[66.26,91.01],[64.65,91.15],[54.3,91.27],[41.21,91.25],[34.57,91.14],[32.59,91],[27.17,90.85],[22.61,90.4],[20.96,90.06],[19.78,89.7],[19.1,89.4],[18.33,88.99],[17.75,88.6],[16.99,88],[16.4,87.41],[15.46,86.01],[14.79,84.52],[14.36,82.99],[13.97,80.66],[13.62,76.56],[13.47,74.1],[13.26,72.42],[13.04,69.73],[12.9,68.84],[12.75,67.01],[12.05,62.49],[10.94,56.33],[9.88,51.56],[7.06,39.91],[6.37,36.7],[6.14,35.15],[6.07,33.59],[6.14,32.23],[6.42,30.54],[7.04,28.82],[7.85,27.48],[8.83,26.31],[10.01,25.33],[11.39,24.58],[12.25,24.26],[14.06,23.89],[15.43,23.91],[17.05,24.25],[18.97,25.07],[19.91,25.69],[20.98,26.58],[22.44,28.05],[27.81,34.2],[29.14,35.61],[29.65,36.07],[30.24,36.46],[31.08,36.78],[31.83,36.82],[32.45,36.64],[33.04,36.26],[33.52,35.77],[34.06,34.94],[34.51,34.02],[35.62,31.22],[39.07,21.78],[40.86,17.13],[41.65,15.18],[42.74,12.95],[43.27,12.12],[44.15,11.05],[44.74,10.46],[45.72,9.68],[46.32,9.31],[47.65,8.68]]],"smoothing":{"tension":0.5,"corner":88,"passes":5}},"heart":{"d":"M30.36 5.08 C30.94 5.08 32.11 5.09 32.81 5.14 C33.51 5.19 33.89 5.25 34.56 5.36 C35.23 5.48 36.07 5.65 36.85 5.86 C37.62 6.06 38.29 6.26 39.20 6.62 C40.11 6.98 41.38 7.55 42.28 8.02 C43.18 8.48 43.84 8.90 44.59 9.41 C45.35 9.92 46.05 10.44 46.82 11.09 C47.60 11.75 48.38 12.46 49.25 13.35 C50.12 14.23 51.50 15.85 52.04 16.42 C52.57 16.99 52.29 16.66 52.49 16.75 C52.68 16.84 53.00 16.94 53.21 16.97 C53.41 16.99 53.52 16.97 53.71 16.90 C53.91 16.84 53.67 17.05 54.38 16.59 C55.09 16.13 57.19 14.65 57.97 14.13 C58.75 13.60 58.61 13.70 59.05 13.45 C59.48 13.20 60.04 12.88 60.56 12.62 C61.08 12.36 61.57 12.13 62.17 11.89 C62.77 11.64 63.44 11.38 64.17 11.16 C64.90 10.94 65.89 10.71 66.53 10.57 C67.16 10.43 67.36 10.38 67.99 10.31 C68.62 10.25 69.70 10.20 70.31 10.18 C70.93 10.16 71.13 10.17 71.68 10.19 C72.23 10.21 73.04 10.25 73.61 10.31 C74.17 10.38 74.62 10.48 75.07 10.58 C75.52 10.68 75.67 10.69 76.31 10.90 C76.95 11.11 78.19 11.53 78.91 11.82 C79.63 12.11 80.16 12.40 80.63 12.64 C81.11 12.88 81.18 12.90 81.75 13.27 C82.32 13.64 83.32 14.30 84.06 14.87 C84.79 15.44 85.60 16.19 86.14 16.69 C86.68 17.19 86.95 17.52 87.29 17.89 C87.63 18.27 87.85 18.53 88.18 18.95 C88.51 19.37 88.94 19.95 89.26 20.41 C89.58 20.87 89.69 20.98 90.11 21.71 C90.52 22.43 91.37 24.03 91.74 24.76 C92.11 25.49 92.16 25.64 92.35 26.10 C92.54 26.56 92.66 26.85 92.88 27.54 C93.10 28.24 93.50 29.60 93.68 30.26 C93.87 30.92 93.84 30.77 93.97 31.49 C94.10 32.20 94.36 33.70 94.46 34.57 C94.56 35.44 94.56 36.00 94.59 36.72 C94.61 37.43 94.64 37.89 94.62 38.87 C94.60 39.84 94.55 41.64 94.48 42.58 C94.42 43.52 94.37 43.71 94.24 44.52 C94.10 45.33 93.85 46.63 93.67 47.46 C93.49 48.29 93.37 48.72 93.15 49.52 C92.93 50.31 92.74 51.08 92.34 52.21 C91.94 53.35 91.29 55.07 90.77 56.31 C90.25 57.55 89.74 58.62 89.23 59.64 C88.72 60.66 88.23 61.51 87.71 62.42 C87.18 63.33 86.76 64.07 86.10 65.11 C85.44 66.14 84.60 67.42 83.74 68.61 C82.88 69.80 81.71 71.29 80.95 72.25 C80.18 73.21 80.09 73.35 79.17 74.38 C78.25 75.42 76.44 77.41 75.44 78.47 C74.44 79.52 73.98 79.94 73.19 80.71 C72.39 81.47 71.44 82.35 70.66 83.05 C69.87 83.76 69.22 84.32 68.45 84.96 C67.69 85.60 66.96 86.19 66.07 86.87 C65.19 87.55 63.88 88.49 63.14 89.02 C62.40 89.54 62.24 89.62 61.61 90.02 C60.97 90.43 60.00 91.05 59.33 91.45 C58.66 91.86 58.38 92.04 57.58 92.44 C56.78 92.84 55.26 93.54 54.50 93.86 C53.75 94.17 53.65 94.18 53.03 94.33 C52.41 94.49 51.44 94.71 50.78 94.79 C50.11 94.86 49.51 94.82 49.03 94.79 C48.54 94.77 48.29 94.73 47.86 94.64 C47.42 94.56 46.84 94.41 46.43 94.30 C46.02 94.18 45.87 94.16 45.39 93.96 C44.90 93.76 44.04 93.36 43.52 93.10 C42.99 92.85 42.90 92.81 42.25 92.42 C41.60 92.03 40.21 91.17 39.60 90.77 C38.98 90.38 39.22 90.53 38.56 90.05 C37.90 89.57 36.49 88.54 35.65 87.89 C34.80 87.24 34.39 86.90 33.49 86.14 C32.60 85.37 31.38 84.31 30.28 83.30 C29.18 82.28 27.80 80.92 26.90 80.03 C26.00 79.14 25.84 78.98 24.88 77.95 C23.93 76.92 22.31 75.15 21.19 73.83 C20.06 72.52 19.07 71.27 18.13 70.05 C17.20 68.84 16.23 67.46 15.59 66.54 C14.94 65.63 14.80 65.41 14.26 64.55 C13.72 63.69 12.96 62.49 12.33 61.40 C11.70 60.30 10.91 58.79 10.48 57.98 C10.06 57.17 10.16 57.39 9.78 56.54 C9.39 55.68 8.58 53.80 8.19 52.85 C7.80 51.91 7.66 51.46 7.45 50.86 C7.24 50.25 7.21 50.17 6.94 49.21 C6.67 48.24 6.09 46.23 5.82 45.07 C5.54 43.92 5.42 43.07 5.29 42.29 C5.16 41.51 5.11 41.26 5.04 40.40 C4.97 39.54 4.88 38.10 4.85 37.10 C4.82 36.11 4.83 35.28 4.87 34.41 C4.90 33.54 4.99 32.58 5.05 31.87 C5.12 31.16 5.11 31.02 5.27 30.14 C5.43 29.27 5.74 27.66 6.01 26.61 C6.28 25.55 6.66 24.48 6.89 23.80 C7.12 23.11 7.16 23.02 7.37 22.51 C7.58 22.00 7.76 21.52 8.15 20.74 C8.54 19.96 9.16 18.73 9.71 17.81 C10.26 16.90 11.00 15.88 11.44 15.26 C11.89 14.63 11.99 14.53 12.40 14.06 C12.80 13.59 13.29 13.00 13.88 12.42 C14.47 11.83 15.38 11.02 15.93 10.55 C16.47 10.09 16.72 9.92 17.14 9.62 C17.55 9.32 18.00 9.02 18.42 8.76 C18.84 8.49 19.18 8.28 19.64 8.03 C20.10 7.78 20.56 7.51 21.19 7.23 C21.83 6.95 22.80 6.58 23.44 6.35 C24.09 6.12 24.41 6.02 25.07 5.85 C25.72 5.69 26.65 5.49 27.35 5.37 C28.06 5.25 28.80 5.17 29.30 5.12 C29.80 5.07 29.77 5.08 30.36 5.08 Z","fit":0.9957,"bounds":{"x":4.83,"y":5.07,"width":89.79,"height":89.73},"loops":[[[30.36,5.08],[32.81,5.14],[34.56,5.36],[36.85,5.86],[39.2,6.62],[42.28,8.02],[44.59,9.41],[46.82,11.09],[49.25,13.35],[52.04,16.42],[52.49,16.75],[53.21,16.97],[53.71,16.9],[54.38,16.59],[57.97,14.13],[59.05,13.45],[60.56,12.62],[62.17,11.89],[64.17,11.16],[66.53,10.57],[67.99,10.31],[70.31,10.18],[71.68,10.19],[73.61,10.31],[75.07,10.58],[76.31,10.9],[78.91,11.82],[80.63,12.64],[81.75,13.27],[84.06,14.87],[86.14,16.69],[87.29,17.89],[88.18,18.95],[89.26,20.41],[90.11,21.71],[91.74,24.76],[92.35,26.1],[92.88,27.54],[93.68,30.26],[93.97,31.49],[94.46,34.57],[94.59,36.72],[94.62,38.87],[94.48,42.58],[94.24,44.52],[93.67,47.46],[93.15,49.52],[92.34,52.21],[90.77,56.31],[89.23,59.64],[87.71,62.42],[86.1,65.11],[83.74,68.61],[80.95,72.25],[79.17,74.38],[75.44,78.47],[73.19,80.71],[70.66,83.05],[68.45,84.96],[66.07,86.87],[63.14,89.02],[61.61,90.02],[59.33,91.45],[57.58,92.44],[54.5,93.86],[53.03,94.33],[50.78,94.79],[49.03,94.79],[47.86,94.64],[46.43,94.3],[45.39,93.96],[43.52,93.1],[42.25,92.42],[39.6,90.77],[38.56,90.05],[35.65,87.89],[33.49,86.14],[30.28,83.3],[26.9,80.03],[24.88,77.95],[21.19,73.83],[18.13,70.05],[15.59,66.54],[14.26,64.55],[12.33,61.4],[10.48,57.98],[9.78,56.54],[8.19,52.85],[7.45,50.86],[6.94,49.21],[5.82,45.07],[5.29,42.29],[5.04,40.4],[4.85,37.1],[4.87,34.41],[5.05,31.87],[5.27,30.14],[6.01,26.61],[6.89,23.8],[7.37,22.51],[8.15,20.74],[9.71,17.81],[11.44,15.26],[12.4,14.06],[13.88,12.42],[15.93,10.55],[17.14,9.62],[18.42,8.76],[19.64,8.03],[21.19,7.23],[23.44,6.35],[25.07,5.85],[27.35,5.37],[29.3,5.12]]],"smoothing":{"tension":0.5,"corner":88,"passes":5}},"ghost":{"d":"M51.66 4.88 C52.24 4.85 52.82 4.81 53.52 4.80 C54.21 4.80 55.10 4.81 55.85 4.85 C56.59 4.89 57.17 4.94 57.98 5.04 C58.78 5.14 59.86 5.30 60.68 5.45 C61.50 5.60 62.15 5.75 62.90 5.95 C63.65 6.14 64.46 6.38 65.16 6.62 C65.87 6.85 66.41 7.06 67.14 7.36 C67.88 7.67 68.82 8.10 69.55 8.47 C70.29 8.85 70.95 9.23 71.56 9.59 C72.17 9.96 72.66 10.28 73.22 10.66 C73.77 11.05 74.30 11.44 74.89 11.92 C75.49 12.40 76.16 12.97 76.77 13.56 C77.39 14.15 78.09 14.88 78.61 15.44 C79.12 16.00 79.40 16.34 79.86 16.93 C80.31 17.51 80.89 18.30 81.33 18.96 C81.78 19.62 82.13 20.18 82.53 20.88 C82.93 21.59 83.36 22.40 83.74 23.20 C84.12 23.99 84.50 24.88 84.81 25.64 C85.12 26.41 85.33 26.98 85.59 27.79 C85.85 28.60 86.16 29.66 86.38 30.51 C86.60 31.36 86.77 32.10 86.94 32.88 C87.10 33.66 87.22 34.31 87.36 35.18 C87.49 36.06 87.64 37.26 87.73 38.11 C87.83 38.96 87.86 39.65 87.91 40.26 C87.96 40.88 87.98 40.86 88.01 41.80 C88.05 42.74 88.13 44.47 88.12 45.90 C88.11 47.33 88.00 49.22 87.95 50.39 C87.89 51.56 87.90 51.63 87.77 52.93 C87.64 54.23 87.34 56.86 87.17 58.19 C87.00 59.51 86.93 59.83 86.73 60.87 C86.54 61.91 86.32 63.09 86.00 64.43 C85.69 65.78 85.28 67.44 84.86 68.94 C84.43 70.43 83.85 72.20 83.45 73.39 C83.04 74.58 82.75 75.26 82.42 76.07 C82.09 76.88 81.94 77.26 81.47 78.25 C80.99 79.23 80.02 81.10 79.54 81.99 C79.06 82.87 78.96 82.99 78.59 83.57 C78.22 84.14 77.76 84.82 77.32 85.42 C76.88 86.02 76.31 86.72 75.94 87.17 C75.57 87.61 75.44 87.75 75.11 88.10 C74.78 88.45 74.35 88.90 73.95 89.28 C73.55 89.66 73.18 90.02 72.72 90.40 C72.25 90.78 71.66 91.23 71.16 91.57 C70.66 91.92 70.16 92.20 69.71 92.46 C69.25 92.72 68.86 92.92 68.42 93.12 C67.97 93.33 67.48 93.52 67.03 93.69 C66.57 93.85 66.13 94.00 65.70 94.12 C65.26 94.23 64.86 94.31 64.43 94.39 C63.99 94.47 63.53 94.55 63.08 94.59 C62.63 94.62 62.14 94.63 61.72 94.63 C61.30 94.62 60.98 94.62 60.57 94.57 C60.16 94.53 59.67 94.45 59.25 94.36 C58.82 94.27 58.34 94.13 58.02 94.03 C57.70 93.94 57.60 93.90 57.30 93.77 C57.01 93.64 56.59 93.45 56.25 93.26 C55.91 93.08 55.59 92.88 55.28 92.67 C54.98 92.45 54.72 92.25 54.41 91.98 C54.10 91.70 53.89 91.55 53.43 91.00 C52.98 90.44 52.04 89.10 51.67 88.66 C51.30 88.21 51.37 88.40 51.22 88.33 C51.08 88.26 50.94 88.24 50.79 88.25 C50.65 88.25 50.49 88.29 50.36 88.35 C50.23 88.40 50.41 88.20 50.00 88.57 C49.59 88.95 48.58 90.02 47.92 90.60 C47.26 91.18 46.52 91.71 46.05 92.05 C45.58 92.39 45.42 92.46 45.08 92.64 C44.75 92.83 44.55 92.95 44.05 93.17 C43.55 93.39 42.56 93.77 42.09 93.94 C41.61 94.11 41.60 94.11 41.19 94.21 C40.77 94.31 40.20 94.45 39.58 94.55 C38.97 94.64 38.27 94.75 37.50 94.79 C36.73 94.82 35.79 94.83 34.98 94.76 C34.17 94.69 33.24 94.50 32.65 94.38 C32.06 94.26 31.83 94.18 31.44 94.05 C31.05 93.92 30.67 93.77 30.31 93.62 C29.95 93.46 29.61 93.30 29.26 93.11 C28.90 92.91 28.52 92.67 28.17 92.43 C27.83 92.19 27.47 91.90 27.19 91.67 C26.90 91.43 26.70 91.24 26.47 91.01 C26.25 90.78 26.04 90.56 25.82 90.29 C25.60 90.02 25.35 89.69 25.15 89.40 C24.95 89.11 24.80 88.88 24.62 88.56 C24.45 88.25 24.29 88.01 24.09 87.53 C23.89 87.05 23.60 86.30 23.41 85.67 C23.23 85.05 23.13 84.76 22.98 83.77 C22.83 82.78 22.63 80.52 22.51 79.72 C22.40 78.92 22.39 79.20 22.29 78.98 C22.19 78.76 22.04 78.55 21.90 78.39 C21.76 78.24 21.60 78.14 21.46 78.05 C21.31 77.97 21.55 77.97 21.04 77.88 C20.54 77.80 19.04 77.66 18.43 77.56 C17.81 77.46 17.69 77.39 17.35 77.29 C17.00 77.18 16.64 77.04 16.34 76.91 C16.05 76.79 15.84 76.67 15.57 76.52 C15.31 76.36 15.01 76.17 14.76 75.97 C14.50 75.77 14.26 75.55 14.03 75.32 C13.81 75.09 13.59 74.85 13.39 74.59 C13.20 74.33 13.01 74.04 12.85 73.77 C12.70 73.50 12.59 73.28 12.46 72.99 C12.34 72.69 12.20 72.30 12.10 71.98 C12.01 71.66 11.94 71.51 11.88 71.05 C11.82 70.58 11.71 69.84 11.72 69.19 C11.73 68.53 11.83 67.71 11.93 67.11 C12.03 66.50 12.15 66.12 12.34 65.56 C12.53 65.01 12.80 64.33 13.07 63.76 C13.34 63.18 13.52 62.84 13.96 62.11 C14.41 61.38 15.27 60.09 15.72 59.37 C16.17 58.65 16.39 58.28 16.66 57.77 C16.93 57.26 17.14 56.82 17.35 56.31 C17.56 55.81 17.75 55.31 17.92 54.74 C18.10 54.17 18.26 53.56 18.41 52.89 C18.56 52.23 18.57 52.71 18.81 50.76 C19.06 48.82 19.62 43.33 19.87 41.23 C20.12 39.13 20.14 39.19 20.30 38.15 C20.46 37.11 20.62 36.13 20.85 34.99 C21.07 33.85 21.34 32.56 21.66 31.32 C21.98 30.08 22.40 28.68 22.78 27.56 C23.15 26.44 23.54 25.49 23.91 24.60 C24.29 23.71 24.55 23.12 25.03 22.20 C25.52 21.29 26.22 20.04 26.82 19.11 C27.42 18.17 28.15 17.21 28.61 16.60 C29.08 15.99 29.16 15.91 29.59 15.43 C30.02 14.95 30.68 14.25 31.21 13.73 C31.73 13.21 32.27 12.73 32.73 12.32 C33.20 11.91 33.50 11.66 34.02 11.27 C34.54 10.87 35.28 10.35 35.85 9.97 C36.42 9.60 36.93 9.29 37.42 9.00 C37.92 8.72 38.30 8.51 38.82 8.25 C39.34 7.99 40.01 7.68 40.55 7.44 C41.09 7.21 41.51 7.04 42.08 6.83 C42.65 6.62 43.31 6.40 43.99 6.20 C44.67 6.00 45.47 5.80 46.16 5.64 C46.84 5.48 47.47 5.36 48.12 5.26 C48.76 5.15 49.42 5.08 50.01 5.01 C50.60 4.95 51.08 4.92 51.66 4.88 Z","fit":0.995,"bounds":{"x":11.71,"y":4.8,"width":76.41,"height":90.01},"loops":[[[51.66,4.88],[53.52,4.8],[55.85,4.85],[57.98,5.04],[60.68,5.45],[62.9,5.95],[65.16,6.62],[67.14,7.36],[69.55,8.47],[71.56,9.59],[73.22,10.66],[74.89,11.92],[76.77,13.56],[78.61,15.44],[79.86,16.93],[81.33,18.96],[82.53,20.88],[83.74,23.2],[84.81,25.64],[85.59,27.79],[86.38,30.51],[86.94,32.88],[87.36,35.18],[87.73,38.11],[87.91,40.26],[88.01,41.8],[88.12,45.9],[87.95,50.39],[87.77,52.93],[87.17,58.19],[86.73,60.87],[86,64.43],[84.86,68.94],[83.45,73.39],[82.42,76.07],[81.47,78.25],[79.54,81.99],[78.59,83.57],[77.32,85.42],[75.94,87.17],[75.11,88.1],[73.95,89.28],[72.72,90.4],[71.16,91.57],[69.71,92.46],[68.42,93.12],[67.03,93.69],[65.7,94.12],[64.43,94.39],[63.08,94.59],[61.72,94.63],[60.57,94.57],[59.25,94.36],[58.02,94.03],[57.3,93.77],[56.25,93.26],[55.28,92.67],[54.41,91.98],[53.43,91],[51.67,88.66],[51.22,88.33],[50.79,88.25],[50.36,88.35],[50,88.57],[47.92,90.6],[46.05,92.05],[45.08,92.64],[44.05,93.17],[42.09,93.94],[41.19,94.21],[39.58,94.55],[37.5,94.79],[34.98,94.76],[32.65,94.38],[31.44,94.05],[30.31,93.62],[29.26,93.11],[28.17,92.43],[27.19,91.67],[26.47,91.01],[25.82,90.29],[25.15,89.4],[24.62,88.56],[24.09,87.53],[23.41,85.67],[22.98,83.77],[22.51,79.72],[22.29,78.98],[21.9,78.39],[21.46,78.05],[21.04,77.88],[18.43,77.56],[17.35,77.29],[16.34,76.91],[15.57,76.52],[14.76,75.97],[14.03,75.32],[13.39,74.59],[12.85,73.77],[12.46,72.99],[12.1,71.98],[11.88,71.05],[11.72,69.19],[11.93,67.11],[12.34,65.56],[13.07,63.76],[13.96,62.11],[15.72,59.37],[16.66,57.77],[17.35,56.31],[17.92,54.74],[18.41,52.89],[18.81,50.76],[19.87,41.23],[20.3,38.15],[20.85,34.99],[21.66,31.32],[22.78,27.56],[23.91,24.6],[25.03,22.2],[26.82,19.11],[28.61,16.6],[29.59,15.43],[31.21,13.73],[32.73,12.32],[34.02,11.27],[35.85,9.97],[37.42,9],[38.82,8.25],[40.55,7.44],[42.08,6.83],[43.99,6.2],[46.16,5.64],[48.12,5.26],[50.01,5.01]]],"smoothing":{"tension":0.5,"corner":88,"passes":5}}}});
+
+
+</script>
+<script>
+	/* The vector characters from the visual workspace, as the V24 website
+	   mounts them: built from the baked traces, driven by the shared rig with
+	   part motion at 0, so the body holds and the life is in the eyes. */
+	const model = window.QORPERA_MOTION_MODEL;
+	const figures = window.QORPERA_VECTOR_FIGURES;
+	const rigs = window.QORPERA_VECTOR_RIG;
+	const baked = window.QORPERA_VECTOR_BAKED.figures;
+	const PALETTE = window.QORPERA_AVATAR_APPEARANCE.palette;
+	const ORDER = ["planet", "acorn", "flame", "rocket", "crown", "heart", "ghost"];
+	const EFFECT_COLORS = model.effectColors.map((item) => item.color);
+	const CREATION = { playbackRate: model.creation.playbackRate, strokeScale: model.creation.strokeScale, duration: 2800 / model.creation.playbackRate };
+	const REDUCED = window.matchMedia("(prefers-reduced-motion: reduce)");
+	const native = (id) => model.avatars.find((item) => item.id === id).color;
+
+	// The cloud seeds the Co-Founder as the Crown in its native gold.
+	let figure = "crown";
+	let color = native("crown");
+	const mounted = new Set();
+
+	function place(host, id, hex, size, { live = true } = {}) {
+		const built = figures.build(id, baked[id], { color: hex });
+		host.replaceChildren(built);
+		if (live) mounted.add(rigs.mount(built, { state: "working", size, interactive: false, motion: 0 }));
+		return built;
+	}
+	function clearRigs() { for (const rig of mounted) rig.dispose(); mounted.clear(); }
+
+	/* The approved creation burst (motion-visuals.js): strokes gather behind
+	   the figure, then release in front at the spring. */
+	const DIRECTIONS = [-2.45, -0.69, 2.7, 0.44, -3, -0.14, 2.18, 0.96];
+	function strokePaths(elapsed, size) {
+		const time = elapsed * CREATION.playbackRate, out = [];
+		for (const [index, angle] of DIRECTIONS.entries()) {
+			const pair = Math.floor(index / 2);
+			const gathered = (time - 30 - pair * 18) / 240;
+			const gathering = gathered > 0 && gathered < 1;
+			const progress = gathering ? gathered : (time - 320 - pair * 30) / 520;
+			if (progress <= 0 || progress >= 1) continue;
+			const head = 1 - (1 - progress) ** 2.8, tail = progress ** 1.5;
+			let path = "";
+			for (let step = 0; step <= 12; step++) {
+				const position = tail + (head - tail) * step / 12, bend = Math.sin(Math.PI * position) * 4;
+				const x = 50 + Math.cos(angle) * (gathering ? 61 - position * 18 : 43 + position * 19) - Math.sin(angle) * bend;
+				const y = 50 + Math.sin(angle) * (gathering ? 59 - position * 16 : 43 + position * 17) + Math.cos(angle) * bend;
+				path += `${step ? "L" : "M"}${x.toFixed(3)} ${y.toFixed(3)}`;
+			}
+			const width = Math.max(0.65, size / 100 * (gathering ? 1.4 : 1.8)) * 100 / size * Math.min(1, Math.sin(Math.PI * progress) * 5) * CREATION.strokeScale;
+			out.push({ path, front: !gathering, color: EFFECT_COLORS[index % EFFECT_COLORS.length], width });
+		}
+		return out;
+	}
+	const SPRING = [[0, 0, 1, 1], [0.2, 3.4, 0.94, 1.08], [0.46, -4.2, 1.06, 0.95], [0.7, 1.2, 0.99, 1.02], [1, 0, 1, 1]];
+	function sample(points, at) {
+		if (at <= points[0][0]) return points[0].slice(1);
+		for (let i = 1; i < points.length; i++) {
+			const right = points[i]; if (at > right[0]) continue;
+			const left = points[i - 1], span = (at - left[0]) / (right[0] - left[0]), eased = span * span * (3 - 2 * span);
+			return left.slice(1).map((v, axis) => v + (right[axis + 1] - v) * eased);
+		}
+		return points[points.length - 1].slice(1);
+	}
+
+	let frame = 0;
+	function play() {
+		clearRigs();
+		const stage = document.getElementById("stage");
+		stage.replaceChildren();
+		const behind = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+		behind.setAttribute("viewBox", "0 0 100 100"); behind.setAttribute("class", "figure-strokes"); behind.setAttribute("aria-hidden", "true");
+		const above = behind.cloneNode();
+		const host = document.createElement("span");
+		stage.append(behind, host, above);
+		const built = place(host, figure, color, 190);
+		built.style.transformOrigin = model.avatars.find((item) => item.id === figure).origin;
+		paintShell();
+		cancelAnimationFrame(frame);
+		if (REDUCED.matches) return;
+		const started = performance.now();
+		const tick = (now) => {
+			const elapsed = now - started;
+			if (elapsed < 1100) {
+				const [y, sx, sy] = sample(SPRING, elapsed / 1100);
+				built.style.transform = `translateY(${y.toFixed(3)}%) scale(${sx.toFixed(4)}, ${sy.toFixed(4)})`;
+			} else built.style.transform = "";
+			if (elapsed < CREATION.duration) {
+				for (const g of [behind, above]) g.replaceChildren();
+				for (const stroke of strokePaths(elapsed, 190)) {
+					const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+					path.setAttribute("d", stroke.path); path.setAttribute("fill", "none"); path.setAttribute("stroke", stroke.color);
+					path.setAttribute("stroke-width", stroke.width.toFixed(3)); path.setAttribute("stroke-linecap", "round");
+					(stroke.front ? above : behind).append(path);
+				}
+				frame = requestAnimationFrame(tick);
+			} else for (const g of [behind, above]) g.replaceChildren();
+		};
+		frame = requestAnimationFrame(tick);
+	}
+
+	function paintShell() {
+		const stand = document.getElementById("stand");
+		const status = stand.querySelector(".status");
+		const host = document.createElement("span");
+		stand.replaceChildren(host, status);
+		place(host, figure, color, 64);
+	}
+	function paintFigures() {
+		const grid = document.getElementById("figures");
+		grid.replaceChildren();
+		for (const id of ORDER) {
+			const choice = document.createElement("button");
+			choice.type = "button"; choice.className = "figure-choice";
+			choice.setAttribute("role", "radio"); choice.setAttribute("aria-checked", String(id === figure));
+			choice.setAttribute("aria-label", model.avatars.find((item) => item.id === id).name);
+			place(choice, id, id === figure ? color : native(id), 32, { live: false });
+			choice.onclick = () => { figure = id; color = native(id); paintFigures(); paintColors(); play(); };
+			grid.append(choice);
+		}
+	}
+	function paintColors() {
+		const grid = document.getElementById("colors");
+		grid.replaceChildren();
+		for (const { name, color: hex } of PALETTE) {
+			const choice = document.createElement("button");
+			choice.type = "button"; choice.className = "color-choice"; choice.style.setProperty("--choice-color", hex);
+			choice.setAttribute("role", "radio"); choice.setAttribute("aria-checked", String(hex === color)); choice.setAttribute("aria-label", name);
+			choice.onclick = () => { color = hex; paintColors(); paintFigures(); play(); };
+			grid.append(choice);
+		}
+	}
+	document.getElementById("replay").onclick = play;
+	paintFigures(); paintColors(); play();
+</script>

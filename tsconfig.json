@@ -145,6 +145,8 @@
 		"packages/coding-agent/examples/**/*"
 	],
 	"exclude": [
+		"packages/web/src/**",
+		"packages/web/test/**",
 		"packages/member-web/src/**",
 		"packages/member-web/test/**",
 		"**/dist/**",
