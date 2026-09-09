@@ -13,6 +13,7 @@ export class AttachmentTray {
 	#files: File[];
 	#urls: string[] = [];
 	#preview: SurfaceDialog | undefined;
+	#locked = false;
 	constructor(files: File[], change: (files: File[]) => void) {
 		this.#files = [...files];
 		this.#change = change;
@@ -22,6 +23,7 @@ export class AttachmentTray {
 		return this.#files.length;
 	}
 	add(files: File[]): void {
+		if (this.#locked) return;
 		let error = "";
 		const next = [...this.#files];
 		for (const file of files) {
@@ -43,6 +45,15 @@ export class AttachmentTray {
 		this.#render();
 		if (error) this.status.textContent = error;
 		this.#change([...next]);
+	}
+	sync(files: readonly File[], locked: boolean, message?: string): void {
+		if (files.length !== this.#files.length || files.some((file, index) => file !== this.#files[index])) {
+			this.#files = [...files];
+			this.#render();
+		}
+		this.#locked = locked;
+		for (const remove of this.el.querySelectorAll<HTMLButtonElement>(".attachment-remove")) remove.disabled = locked;
+		if (message !== undefined) this.status.textContent = this.count ? message : "";
 	}
 	dispose(): void {
 		this.#preview?.close(false);
@@ -96,6 +107,7 @@ export class AttachmentTray {
 							class: "attachment-remove icon-button",
 							"aria-label": `Remove ${file.name}`,
 							onclick: () => {
+								if (this.#locked) return;
 								this.#files = this.#files.filter((_, itemIndex) => itemIndex !== index);
 								this.#render();
 								this.#change([...this.#files]);

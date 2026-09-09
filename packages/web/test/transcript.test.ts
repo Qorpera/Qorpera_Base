@@ -36,6 +36,34 @@ function runnerEntry(role: "user" | "assistant", text: string, extra: Record<str
 }
 
 describe("projectTranscript", () => {
+	it.each(["valid", "wrong-input", "wrong-entry", "unsupported-type", "extra-field", "oversized"])(
+		"binds attachment previews to a canonical input (%s)",
+		(kind) => {
+			const inputId = "55555555-5555-4555-8555-555555555555";
+			const image = {
+				objectSha256: HASH,
+				bytes: kind === "oversized" ? 8388609 : 42,
+				mediaType: kind === "unsupported-type" ? "image/svg+xml" : "image/png",
+				...(kind === "extra-field" ? { url: "https://untrusted.invalid/image" } : {}),
+			};
+			const projection = projectTranscript([
+				event(1, {
+					eventId: inputId,
+					sessionInputId: kind === "wrong-input" ? SESSION : inputId,
+					body: runnerEntry("user", "Picture", {
+						id: kind === "wrong-entry" ? SESSION : inputId,
+						qorperaAttachments: [image],
+					}),
+				}),
+			]);
+			const message = projection.items[0];
+			expect(message?.kind).toBe("member");
+			const attachments = message?.kind === "member" ? message.attachments : undefined;
+			if (kind === "valid")
+				expect(attachments?.[0]?.reference).toEqual({ sha256: HASH, bytes: 42, mediaType: "image/png" });
+			else expect(attachments).toBeUndefined();
+		},
+	);
 	it("renders admitted member inputs and agent send operations only", () => {
 		const inputId = "55555555-5555-4555-8555-555555555555";
 		const events = [

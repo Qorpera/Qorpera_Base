@@ -3,6 +3,7 @@ import { CloudApi } from "../cloud/api.ts";
 import { type Cloud, describeError } from "../cloud/client.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
 import { WebCompanyComputer } from "../cloud/computer.ts";
+import { createWebSessionAttachments } from "../cloud/session-attachments.ts";
 import { createWebSessionInputWriter } from "../cloud/session-input.ts";
 import type { HostedProfile } from "../cloud/types.ts";
 import { h, notice, replace, spinner } from "../ui/dom.ts";
@@ -278,21 +279,25 @@ export function mountApplication(
 			}
 			const userId = auth.userId;
 			if (!current() || !profile || !userId) return undefined;
-			const controller = new CompanyController(api, profile, userId, (sessionId, clientInputId, text, signal) =>
-				createWebSessionInputWriter(cloud, userId, controller.signal, (target) => {
-					const route = currentRoute();
-					if (
-						disposed ||
-						company !== controller ||
-						auth.userId !== userId ||
-						route.name !== "company" ||
-						route.profileId !== profile.profileId ||
-						route.section !== "chat" ||
-						route.id !== target
-					)
-						throw new Error("Company access is unavailable.");
-					controller.assertCanSend(target);
-				})(sessionId, clientInputId, text, signal),
+			const controller = new CompanyController(
+				api,
+				profile,
+				userId,
+				(sessionId, clientInputId, text, signal, files) =>
+					createWebSessionInputWriter(cloud, userId, controller.signal, (target) => {
+						const route = currentRoute();
+						if (
+							disposed ||
+							company !== controller ||
+							auth.userId !== userId ||
+							route.name !== "company" ||
+							route.profileId !== profile.profileId ||
+							route.section !== "chat" ||
+							route.id !== target
+						)
+							throw new Error("Company access is unavailable.");
+						controller.assertCanSend(target);
+					})(sessionId, clientInputId, text, signal, files),
 			);
 			company = controller;
 			computer = new WebCompanyComputer(cloud, profile, userId, controller.signal, () => {
@@ -546,6 +551,50 @@ export function mountApplication(
 						route.id ?? "",
 						{
 							sendMessage: (id, text, signal) => controller.sendPrompt(id, text, signal),
+							previewAttachment: async (messageId, index, viewSignal) => {
+								const signal = AbortSignal.any([controller.signal, viewSignal]);
+								const check = () => {
+									signal.throwIfAborted();
+									const selected = currentRoute(),
+										state = controller.store.get();
+									const session = state.sessions.find((item) => item.sessionId === route.id);
+									if (
+										disposed ||
+										company !== controller ||
+										auth.userId !== controller.userId ||
+										state.accessLost ||
+										!state.team?.capabilities.read ||
+										!session ||
+										session.profileId !== controller.profile.profileId ||
+										session.environmentId !== controller.profile.environmentId ||
+										(session.audience.kind === "member_private" &&
+											session.audience.userId !== controller.userId) ||
+										selected.name !== "company" ||
+										selected.profileId !== controller.profile.profileId ||
+										selected.section !== "chat" ||
+										selected.id !== route.id
+									)
+										throw new Error("Attachment access changed.");
+								};
+								check();
+								const message = controller
+									.conversation(route.id!)
+									.get()
+									.projection.items.find((item) => item.id === messageId);
+								const ref =
+									message?.kind === "member" && !message.pending && Number.isSafeInteger(index) && index >= 0
+										? message.attachments?.[index]?.reference
+										: undefined;
+								if (!ref) throw new Error("This attachment is not available for preview.");
+								const bytes = await createWebSessionAttachments(cloud, controller.userId, signal, check).read(
+									route.id!,
+									messageId,
+									ref,
+									signal,
+								);
+								check();
+								return new Blob([Uint8Array.from(bytes)], { type: ref.mediaType });
+							},
 							...workspaceActions,
 							computer,
 						},

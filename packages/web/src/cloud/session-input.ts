@@ -2,6 +2,7 @@ import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-clie
 import { SESSION_PROMPT_SCHEMA } from "./api.ts";
 import type { Cloud } from "./client.ts";
 import { parseSessionInputReceipt, UUID_PATTERN } from "./parse.ts";
+import { createWebSessionAttachments, sessionAttachmentIssue } from "./session-attachments.ts";
 import type { SessionInputReceipt } from "./types.ts";
 
 export type SessionInputWriter = (
@@ -9,6 +10,7 @@ export type SessionInputWriter = (
 	clientInputId: string,
 	text: string,
 	signal: AbortSignal,
+	files?: readonly File[],
 ) => Promise<SessionInputReceipt>;
 
 /** Only queues member input. A tab never executes the resulting staff work. */
@@ -29,21 +31,42 @@ export function createWebSessionInputWriter(
 		!UUID_PATTERN.test(memberId)
 	)
 		throw new Error("Invalid member input configuration.");
-	return (sessionId, clientInputId, text, signal) =>
+	return (sessionId, clientInputId, text, signal, files = []) =>
 		withCloudDeadline(
 			async (deadline) => {
 				if (
 					!UUID_PATTERN.test(sessionId) ||
 					!UUID_PATTERN.test(clientInputId) ||
-					!text.trim() ||
+					(!text.trim() && !files.length) ||
 					new TextEncoder().encode(text).length > 65536
 				)
 					throw new Error("Message is empty or too large.");
+				const issue = sessionAttachmentIssue(files);
+				if (issue) throw new Error(issue);
 				const check = () => {
 					deadline.throwIfAborted();
 					current(sessionId);
 				};
 				check();
+				const images: { objectSha256: string; bytes: number; mediaType: string }[] = [];
+				if (files.length) {
+					const client = createWebSessionAttachments(cloud, memberId, deadline, check);
+					// Read every selected file before staging any upload. File objects are
+					// immutable; retries retain these exact selections and the input ID.
+					const selected: { bytes: Uint8Array<ArrayBuffer>; mediaType: string }[] = [];
+					for (const file of files) {
+						const bytes = new Uint8Array(await file.arrayBuffer());
+						check();
+						if (bytes.length !== file.size) throw new Error("The selected image changed.");
+						selected.push({ bytes, mediaType: file.type });
+					}
+					for (const file of selected) {
+						check();
+						const image = await client.upload(sessionId, clientInputId, file.bytes, file.mediaType, deadline);
+						check();
+						images.push({ objectSha256: image.sha256, bytes: image.bytes, mediaType: image.mediaType });
+					}
+				}
 				const { data, error } = await cloud.supabase.auth.getSession();
 				check();
 				if (
@@ -68,7 +91,7 @@ export function createWebSessionInputWriter(
 						p_session_id: sessionId,
 						p_client_input_id: clientInputId,
 						p_kind: "user_message",
-						p_body: { schema: SESSION_PROMPT_SCHEMA, text, images: [] },
+						p_body: { schema: SESSION_PROMPT_SCHEMA, text, images },
 					}),
 				});
 				try {
@@ -88,7 +111,7 @@ export function createWebSessionInputWriter(
 					if (!response.body?.locked) void response.body?.cancel().catch(() => undefined);
 				}
 			},
-			15000,
+			files.length ? 75000 : 15000,
 			AbortSignal.any([companySignal, signal]),
 		);
 }

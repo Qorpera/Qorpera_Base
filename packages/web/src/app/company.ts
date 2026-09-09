@@ -7,6 +7,7 @@ import {
 	type RealtimeSubscription,
 	subscribeProfileRealtime,
 } from "../cloud/realtime.ts";
+import { sessionAttachmentIssue } from "../cloud/session-attachments.ts";
 import type { SessionInputWriter } from "../cloud/session-input.ts";
 import { projectTranscript, type TranscriptProjection } from "../cloud/transcript.ts";
 import type {
@@ -55,11 +56,18 @@ export interface ConversationState {
 	sending: boolean;
 	sendError?: string;
 	draft?: string;
-	/** Local selected bytes; never part of the text-only append protocol. */
+	/** Local selected bytes, staged only after an explicit send. */
 	attachments?: File[];
-	retrySend?: { clientInputId: string; text: string };
+	retrySend?: { clientInputId: string; text: string; files: File[] };
 	/** Inputs this browser appended that the cloud has not listed back yet. */
-	optimistic: { clientInputId: string; inputId?: string; text: string; createdAt: string; authorUserId: string }[];
+	optimistic: {
+		clientInputId: string;
+		inputId?: string;
+		text: string;
+		attachmentCount?: number;
+		createdAt: string;
+		authorUserId: string;
+	}[];
 }
 
 function reconcileOptimistic(state: Pick<ConversationState, "optimistic" | "pending" | "events">) {
@@ -101,7 +109,11 @@ export class CompanyController {
 		this.#api = api;
 		this.#userId = userId;
 		this.#writeInput =
-			writeInput ?? ((sessionId, clientInputId, text) => api.appendPrompt(sessionId, clientInputId, text));
+			writeInput ??
+			((sessionId, clientInputId, text, _signal, files) => {
+				if (files?.length) throw new Error("Attachment transport is unavailable.");
+				return api.appendPrompt(sessionId, clientInputId, text);
+			});
 		this.store = new Store<CompanyState>({
 			profile,
 			staff: [],
@@ -144,6 +156,7 @@ export class CompanyController {
 		if (this.#stopped) return;
 		this.#stopped = true;
 		this.#abort.abort();
+		for (const store of this.conversations.values()) store.set({ draft: "", attachments: [], retrySend: undefined });
 		this.#realtime?.stop();
 		if (this.#poll) clearInterval(this.#poll);
 		this.#invalidations.clear();
@@ -463,27 +476,43 @@ export class CompanyController {
 		}
 		const store = this.conversation(sessionId);
 		const trimmed = text.trim();
-		if (!trimmed || store.get().sending) return false;
+		const files = [...(store.get().attachments ?? [])];
+		if ((!trimmed && !files.length) || store.get().sending) return false;
+		const issue = sessionAttachmentIssue(files);
+		if (issue) {
+			store.set({ sendError: issue });
+			return false;
+		}
 		const retry = store.get().retrySend;
-		const clientInputId = retry?.text === trimmed ? retry.clientInputId : crypto.randomUUID();
+		const sameFiles = (other: readonly File[]) =>
+			other.length === files.length && other.every((file, index) => file === files[index]);
+		const clientInputId =
+			retry?.text === trimmed && sameFiles(retry.files) ? retry.clientInputId : crypto.randomUUID();
 		store.set((state) => ({
 			sending: true,
 			sendError: undefined,
 			draft: text,
 			optimistic: [
 				...state.optimistic,
-				{ clientInputId, text: trimmed, createdAt: new Date().toISOString(), authorUserId: this.#userId },
+				{
+					clientInputId,
+					text: trimmed,
+					attachmentCount: files.length,
+					createdAt: new Date().toISOString(),
+					authorUserId: this.#userId,
+				},
 			],
 		}));
 		try {
 			const signal = AbortSignal.any([this.signal, ...(viewSignal ? [viewSignal] : [])]);
-			const receipt = await this.#writeInput(sessionId, clientInputId, trimmed, signal);
+			const receipt = await this.#writeInput(sessionId, clientInputId, trimmed, signal, files);
 			if (this.#stopped) return false;
 			signal.throwIfAborted();
 			store.set((state) => ({
 				sending: false,
 				retrySend: undefined,
 				draft: state.draft === text ? "" : state.draft,
+				attachments: sameFiles(state.attachments ?? []) ? [] : state.attachments,
 				optimistic: reconcileOptimistic({
 					...state,
 					optimistic: state.optimistic.map((item) =>
@@ -499,7 +528,7 @@ export class CompanyController {
 			store.set((state) => ({
 				sending: false,
 				sendError: describeError(error),
-				retrySend: { clientInputId, text: trimmed },
+				retrySend: { clientInputId, text: trimmed, files },
 				optimistic: state.optimistic.filter((item) => item.clientInputId !== clientInputId),
 			}));
 			return false;

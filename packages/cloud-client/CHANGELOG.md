@@ -4,6 +4,8 @@
 
 ### Added
 
+- Browser-safe member session-image upload and canonical-input download transport with Web Crypto integrity checks, immutable selections, bounded responses and no automatic mutation retries.
+
 - Shared browser-profile and account-cleanup session controllers, reused by desktop and the independent member web application without Node crypto or runtime imports.
 
 - Shared read-only native Company File activity display with current member authorization, bounded signed candidates, verified sequence tracking and clearing on selection, connection and account changes.

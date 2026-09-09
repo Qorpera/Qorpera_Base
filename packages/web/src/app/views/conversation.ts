@@ -1,3 +1,4 @@
+import { sessionAttachmentIssue } from "../../cloud/session-attachments.ts";
 import type { TranscriptCard, TranscriptItem } from "../../cloud/transcript.ts";
 import type { HostedSession, HostedStaffAgent } from "../../cloud/types.ts";
 import { AttachmentTray } from "../../ui/attachments.ts";
@@ -335,7 +336,7 @@ export class ConversationView {
 
 	#submit(): void {
 		const text = this.#composer.value;
-		if (!text.trim() || this.#send.disabled || !this.#actions.sendMessage) return;
+		if ((!text.trim() && !this.#attachments.count) || this.#send.disabled || !this.#actions.sendMessage) return;
 		void this.#actions.sendMessage(this.#sessionId, text, this.#lifetime.signal);
 		this.update();
 	}
@@ -348,6 +349,18 @@ export class ConversationView {
 		const agent = this.#company.staffById(session?.staffAgentId);
 		const activity = this.#company.activityFor(session?.staffAgentId);
 		const canWrite = company.team?.capabilities.write === true && session?.status === "open";
+		const attachmentIssue = sessionAttachmentIssue(conversation.attachments ?? []);
+		this.#attachments.sync(
+			conversation.attachments ?? [],
+			!canWrite || conversation.sending,
+			this.#actions.sendMessage
+				? attachmentIssue
+					? `Attachments stay on this device. ${attachmentIssue}`
+					: conversation.sending
+						? "Uploading images and sending message…"
+						: "Images stay on this device until you send. Up to 5 images, 8 MiB total."
+				: undefined,
+		);
 		this.#renderHeader(session, agent);
 		this.#renderMessages(conversation, agent?.displayName ?? session?.title ?? "Agent");
 		this.#renderStatus(conversation, activity?.activity, canWrite, session);
@@ -356,8 +369,8 @@ export class ConversationView {
 			!this.#actions.sendMessage ||
 			!canWrite ||
 			conversation.sending ||
-			!conversation.draft?.trim() ||
-			this.#attachments.count > 0;
+			(!conversation.draft?.trim() && !this.#attachments.count) ||
+			Boolean(attachmentIssue);
 		this.#send.title = this.#actions.sendMessage ? "Send message" : "Sending messages is not available yet";
 		this.#attach.disabled = this.#composer.disabled;
 		this.#more.disabled = this.#composer.disabled;
@@ -401,7 +414,7 @@ export class ConversationView {
 					sequence: Number.MAX_SAFE_INTEGER,
 					authorUserId: item.authorUserId,
 					text: item.text,
-					attachmentCount: 0,
+					attachmentCount: item.attachmentCount ?? 0,
 					createdAt: item.createdAt,
 					pending: "queued",
 				}),

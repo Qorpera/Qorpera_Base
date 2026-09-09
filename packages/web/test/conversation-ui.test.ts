@@ -194,13 +194,13 @@ describe("conversation UI boundaries", () => {
 		expect(document.querySelector("dialog")).toBeNull();
 		expect(f.api.listStaff).not.toHaveBeenCalled();
 	});
-	it("blocks text send while files are selected and exercises only an injected fixture after removal", () => {
+	it("enables supported image sends, previews locally and retains keyboard send semantics after removal", () => {
 		const sendMessage = vi.fn().mockResolvedValue(true);
 		const f = setup({ sendMessage });
 		input(f.view.el, "Message", "Keep this draft");
 		attach(f.view.el, [new File(["local"], "brief.png", { type: "image/png" })]);
 		expect(f.company.conversation(session.sessionId).get().attachments).toHaveLength(1);
-		expect(button(f.view.el, "Send message").disabled).toBe(true);
+		expect(button(f.view.el, "Send message").disabled).toBe(false);
 		button(f.view.el, "Preview brief.png").click();
 		expect(document.querySelector("dialog img")?.getAttribute("src")).toBe("blob:fixture-local-image");
 		button(document, "Close file preview").click();

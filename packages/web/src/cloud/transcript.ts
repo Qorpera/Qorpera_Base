@@ -1,3 +1,5 @@
+import type { CloudSessionAttachment } from "@qorpera/cloud-client/cloud-session-attachments";
+import { SESSION_IMAGE_TYPES } from "./session-attachments.ts";
 import type { HostedSessionEvent, JsonValue, PendingSessionInput } from "./types.ts";
 
 /* Transcript projection (runtime contract §6; launch acceptance item 8).
@@ -31,6 +33,8 @@ export interface TranscriptAttachment {
 	name: string;
 	mediaType?: string;
 	bytes?: number;
+	/** Only a canonical member-input event can supply a preview reference. */
+	reference?: CloudSessionAttachment;
 }
 
 export interface TranscriptCard {
@@ -52,6 +56,7 @@ export interface TranscriptProjection {
 }
 
 interface Entry {
+	qorperaAttachments?: unknown;
 	type?: unknown;
 	id?: unknown;
 	message?: { role?: unknown; content?: unknown };
@@ -121,6 +126,41 @@ function messageFromEntry(entry: Entry, event: HostedSessionEvent, legacy: boole
 		// Member input. Cloud-admitted inputs carry the session input id; legacy
 		// desktop entries are attributed through the event actor.
 		if (!legacy && !event.sessionInputId) return undefined;
+		if (
+			!legacy &&
+			event.eventId === event.sessionInputId &&
+			entry.id === event.eventId &&
+			Array.isArray(entry.qorperaAttachments)
+		) {
+			const images = entry.qorperaAttachments;
+			let total = 0;
+			const canonical: TranscriptAttachment[] = [];
+			for (const image of images.slice(0, 6)) {
+				const ref = asRecord(image);
+				if (
+					!ref ||
+					Object.keys(ref).length !== 3 ||
+					typeof ref.objectSha256 !== "string" ||
+					!/^[0-9a-f]{64}$/.test(ref.objectSha256) ||
+					typeof ref.bytes !== "number" ||
+					!Number.isSafeInteger(ref.bytes) ||
+					ref.bytes < 1 ||
+					typeof ref.mediaType !== "string" ||
+					!SESSION_IMAGE_TYPES.has(ref.mediaType)
+				)
+					break;
+				total += ref.bytes;
+				canonical.push({
+					kind: "image",
+					name: "Image attachment",
+					bytes: ref.bytes,
+					mediaType: ref.mediaType,
+					reference: { sha256: ref.objectSha256, bytes: ref.bytes, mediaType: ref.mediaType },
+				});
+			}
+			if (images.length <= 5 && canonical.length === images.length && total <= 8 * 1024 * 1024)
+				attachments.push(...canonical);
+		}
 		return {
 			kind: "member",
 			id: event.eventId,
