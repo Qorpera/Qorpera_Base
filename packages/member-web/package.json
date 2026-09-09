@@ -6,6 +6,6 @@
 	"description":"Independent browser client for governed Company Files and shared Company Computers.",
 	"scripts":{"clean":"shx rm -rf dist","check":"tsgo -p tsconfig.json","test":"vitest --run"},
 	"dependencies":{"@qorpera/cloud-client":"^0.83.0","@supabase/supabase-js":"2.112.3"},
-	"devDependencies":{"shx":"0.4.0","vitest":"4.1.9"},
+	"devDependencies":{"shx":"0.4.0","vitest":"4.1.11"},
 	"engines":{"node":">=22.19.0"}
 }
