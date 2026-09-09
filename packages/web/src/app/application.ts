@@ -1,6 +1,7 @@
 import type { User } from "@supabase/supabase-js";
 import { CloudApi } from "../cloud/api.ts";
 import { type Cloud, describeError } from "../cloud/client.ts";
+import { WebCompanyFiles } from "../cloud/company-files.ts";
 import { WebCompanyComputer } from "../cloud/computer.ts";
 import { createWebSessionInputWriter } from "../cloud/session-input.ts";
 import type { HostedProfile } from "../cloud/types.ts";
@@ -20,6 +21,7 @@ import { FeedbackView } from "./views/feedback.ts";
 import { FriendsController, renderFriends } from "./views/friends.ts";
 import { HubController, renderHub } from "./views/hub.ts";
 import { renderInvitations } from "./views/invitations.ts";
+import { LiveCompanyFileView } from "./views/live-company-file.ts";
 import { type MeetState, renderMeet } from "./views/meet.ts";
 import { NewConversationView } from "./views/new-conversation.ts";
 import { renderOrganization } from "./views/organization.ts";
@@ -125,6 +127,15 @@ export function mountApplication(
 		}
 	}
 	function onRouteChange(): void {
+		if (liveFile && liveFile.routeHash !== location.hash) {
+			const message = liveFile.leaveMessage();
+			if (message && !window.confirm(message)) {
+				history.replaceState(null, "", liveFile.routeHash);
+				return;
+			}
+			liveFile.dispose();
+			liveFile = undefined;
+		}
 		closeSettings(false);
 		closeFeedback(false);
 		routeRevision++;
@@ -139,6 +150,7 @@ export function mountApplication(
 	let company: CompanyController | undefined;
 	let computer: WebCompanyComputer | undefined;
 	let companyFile: CompanyFileController | undefined;
+	let liveFile: LiveCompanyFileView | undefined;
 	let conversation: ConversationView | undefined;
 	let newConversation: NewConversationView | undefined;
 	let approvals: ApprovalsView | undefined;
@@ -221,6 +233,8 @@ export function mountApplication(
 		newConversation?.dispose();
 		approvals?.dispose();
 		companyFile?.dispose();
+		liveFile?.dispose();
+		liveFile = undefined;
 		company?.stop();
 		pendingCompany = undefined;
 		company = undefined;
@@ -437,6 +451,8 @@ export function mountApplication(
 		}
 		const state = controller.store.get();
 		if (state.accessLost) {
+			liveFile?.dispose();
+			liveFile = undefined;
 			closeSettings(false);
 			companyFile?.dispose();
 			conversation?.dispose();
@@ -561,7 +577,60 @@ export function mountApplication(
 				} else approvals.update();
 				return;
 			}
-			case "file":
+			case "file": {
+				if (route.id === "history") {
+					if (!companyFile) return;
+					companyFile.start();
+					renderCompanyFile(companyFile, controller, main, {});
+					return;
+				}
+				if (state.loading || !state.team) {
+					replace(main, spinner("Checking Company File access"));
+					return;
+				}
+				const authorityKey = JSON.stringify([
+					state.team.role,
+					state.team.capabilities.read,
+					state.team.capabilities.write,
+				]);
+				if (!liveFile || liveFile.authorityKey !== authorityKey) {
+					liveFile?.dispose();
+					const stop = new AbortController();
+					const files = new WebCompanyFiles(
+						cloud,
+						controller.profile,
+						controller.userId,
+						state.team.role,
+						AbortSignal.any([stop.signal, controller.signal]),
+						() => {
+							const selected = currentRoute(),
+								team = controller.store.get().team;
+							if (
+								disposed ||
+								company !== controller ||
+								auth.userId !== controller.userId ||
+								controller.store.get().accessLost ||
+								!team?.capabilities.read ||
+								JSON.stringify([team.role, team.capabilities.read, team.capabilities.write]) !== authorityKey ||
+								selected.name !== "company" ||
+								selected.profileId !== controller.profile.profileId ||
+								selected.section !== "file" ||
+								selected.id
+							)
+								throw new Error("Company File access changed.");
+						},
+						state.team.capabilities.write,
+					);
+					liveFile = new LiveCompanyFileView(files, stop, controller.profile.profileId, authorityKey, () => {
+						if (stop.signal.aborted) return;
+						liveFile?.dispose();
+						liveFile = undefined;
+						render();
+					});
+				}
+				if (!main.contains(liveFile.el)) replace(main, liveFile.el);
+				return;
+			}
 			case "snapshot":
 			case "proposal": {
 				if (!companyFile) return;

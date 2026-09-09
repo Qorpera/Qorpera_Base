@@ -307,7 +307,7 @@ describe("account and route ownership", () => {
 	});
 
 	it("initializes Company File once while its response is delayed", async () => {
-		const f = mounted(`#/c/${profileA.profileId}/file`);
+		const f = mounted(`#/c/${profileA.profileId}/file/history`);
 		const loading = deferred<Awaited<ReturnType<typeof f.api.getCompanyFile>>>();
 		vi.mocked(f.api.getCompanyFile).mockReturnValue(loading.promise);
 		await draw();

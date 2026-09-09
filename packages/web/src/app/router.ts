@@ -57,7 +57,7 @@ export function parseRoute(hash: string): Route {
 			section === "new" ||
 			section === "meet"
 		) {
-			return { name: "company", profileId, section };
+			return { name: "company", profileId, section, ...(section === "file" && id === "history" ? { id } : {}) };
 		}
 		return { name: "company", profileId, section: "home" };
 	}

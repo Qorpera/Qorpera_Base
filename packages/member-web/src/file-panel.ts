@@ -4,16 +4,23 @@ import type {
 	CloudMemberCompanyFileClient,
 	CloudMemberCompanyProposal,
 } from "@qorpera/cloud-client/cloud-member-company-editor";
+import type { CloudMemberCompanyPresence } from "@qorpera/cloud-client/cloud-member-company-presence";
 import type { CompanyPathPresenceView } from "@qorpera/cloud-client/company-path-presence";
-import type { WebCompanySession } from "./account.ts";
 import { button, element, input, textPreview, type Work } from "./dom.ts";
 import { WebFileDownloads, WebFileUpload } from "./files.ts";
 
 type Review = CloudMemberCompanyCommand | CloudMemberCompanyProposal;
+export interface MemberFilePanelSession {
+	readonly signal: AbortSignal;
+	readonly company: { readonly role: "owner" | "admin" | "contributor" | "viewer"; readonly canWrite?: boolean };
+	current(): void;
+	files(): Promise<CloudMemberCompanyFileClient>;
+	presence(onChange: (view: CompanyPathPresenceView) => void): CloudMemberCompanyPresence;
+}
 /** Browser-owned selection and rendering around shared live-file authority. */
 export async function showFilePanel(options: {
 	root: HTMLElement;
-	company: WebCompanySession;
+	company: MemberFilePanelSession;
 	work: Work;
 	status(message: string): void;
 	current(): void;
@@ -39,7 +46,7 @@ export async function showFilePanel(options: {
 	let activityPath: string | null = null,
 		activity: CompanyPathPresenceView | undefined,
 		uploadDestination: { path: string; expectedVersion: string | null } | null = null;
-	const canWrite = company.company.role !== "viewer",
+	const canWrite = company.company.role !== "viewer" && company.company.canWrite !== false,
 		files = element("div"),
 		reviews = element("div"),
 		exports = element("div"),
@@ -85,7 +92,7 @@ export async function showFilePanel(options: {
 			(summary.join("; ") || "No recent shared activity observed.") +
 			(activity.state === "partial" ? " Some activity could not be checked." : "");
 	};
-	let observer: ReturnType<WebCompanySession["presence"]> | undefined;
+	let observer: CloudMemberCompanyPresence | undefined;
 	try {
 		observer = company.presence((view) => {
 			if (signal.aborted) return;
@@ -141,6 +148,16 @@ export async function showFilePanel(options: {
 		observe(null);
 		controls();
 	};
+	function clearEditor() {
+		selected = null;
+		dirty = false;
+		text.value = "";
+		path.input.value = "";
+		version.textContent = "";
+		details.replaceChildren();
+		observe(null);
+		controls();
+	}
 	async function list(value: string, append = false) {
 		const next = await client.list(value, signal, append ? page!.nextAfter : null, append ? page!.snapshotId : null);
 		live();
@@ -154,10 +171,7 @@ export async function showFilePanel(options: {
 				async () => {
 					if (!leave()) return;
 					if (item.kind === "directory") {
-						selected = null;
-						text.value = "";
-						details.replaceChildren();
-						observe(null);
+						clearEditor();
 						await list(item.path);
 						controls();
 					} else await open(item.path);
@@ -197,7 +211,7 @@ export async function showFilePanel(options: {
 		const file = await client.read(value, signal);
 		live();
 		if (file.kind === "directory") {
-			selected = null;
+			clearEditor();
 			await list(value);
 			return;
 		}
@@ -466,8 +480,7 @@ export async function showFilePanel(options: {
 		"New file",
 		async () => {
 			if (!leave()) return;
-			selected = null;
-			text.value = "";
+			clearEditor();
 			path.input.value = directory ? `${directory}/` : "";
 			observe(null);
 			controls();
@@ -496,8 +509,7 @@ export async function showFilePanel(options: {
 			"Up",
 			async () => {
 				if (!leave()) return;
-				selected = null;
-				text.value = "";
+				clearEditor();
 				await list(directory.includes("/") ? directory.slice(0, directory.lastIndexOf("/")) : "");
 				controls();
 			},

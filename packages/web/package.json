@@ -7,7 +7,7 @@
 	"scripts": {
 		"build": "npm --prefix ../.. run build:web-sdk && node scripts/build.mjs",
 		"dev": "npm --prefix ../.. run build:web-sdk && node scripts/build.mjs --serve",
-		"typecheck": "tsgo -p tsconfig.json",
+		"typecheck": "tsgo -p tsconfig.json && tsgo -p tsconfig.test.json",
 		"test": "vitest run",
 		"clean": "shx rm -rf dist"
 	},
