@@ -14,3 +14,4 @@
 - Preserve File drafts on cancelled navigation, clear content when access ends, and offer explicit reload recovery without replaying uncertain writes.
 - Stage selected conversation images against the exact member input before submitting a message, preserve explicit retry identity, and verify canonical image previews through the shared attachment API.
 - Add account-level browser consent cleanup and private sign-in closure, including after leaving a company, with account and route cancellation.
+- Bind deployed cloud endpoints and CSP to one validated public build configuration, require a viewer origin for release builds, and ignore stored preview overrides in configured builds.

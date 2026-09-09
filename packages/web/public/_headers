@@ -1,9 +1,9 @@
 # Cloudflare Pages response headers for app.qorpera.com.
-# The client is static and hash-routed; it talks only to the Supabase project
-# and the object gateway, so the policy pins those origins. Inline styles are
+# The build replaces the connect-src marker from the same validated public
+# configuration compiled into the client. Inline styles are
 # not used (element.style is CSSOM and is not governed by style-src).
 /*
-  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://wovsmjvghnbcbfazdtvr.supabase.co wss://wovsmjvghnbcbfazdtvr.supabase.co https://objects.qorpera.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' __QORPERA_WEB_CONNECT_SRC__; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
   X-Frame-Options: DENY

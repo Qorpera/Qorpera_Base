@@ -7,11 +7,18 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as esbuild from "esbuild";
 import { assertMemberWebInputs } from "../../../scripts/check-headless-packages.mjs";
+import { prepareDeployment } from "./deployment.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dist = join(root, "dist");
 const userland = resolve(root, "../shell/userland");
 const serve = process.argv.includes("--serve");
+const deployment = prepareDeployment({
+	configPath: process.env.QORPERA_WEB_CONFIG,
+	release: process.argv.includes("--release"),
+	serve,
+	headersTemplate: readFileSync(join(root, "public/_headers"), "utf8"),
+});
 const port = Number(process.env.QORPERA_WEB_PORT ?? 5180);
 const viewerRoot = resolve(root, "../member-web/ui");
 const viewerSource = JSON.parse(readFileSync(join(viewerRoot, "SOURCE.json"), "utf8"));
@@ -23,6 +30,7 @@ for (const source of viewerSource.sources) {
 rmSync(dist, { recursive: true, force: true });
 mkdirSync(join(dist, "assets"), { recursive: true });
 cpSync(join(root, "public"), dist, { recursive: true });
+writeFileSync(join(dist, "_headers"), deployment.headers);
 cpSync(join(viewerRoot, "vendor/NOVNC_LICENSE.txt"), join(dist, "assets/NOVNC_LICENSE.txt"));
 // Reused desktop art. The web app never reads these at build time beyond copying.
 cpSync(join(userland, "fonts"), join(dist, "assets/fonts"), { recursive: true });
@@ -69,6 +77,7 @@ const options = {
 	minify: !serve,
 	logLevel: "info",
 	define: {
+		...deployment.define,
 		__QORPERA_WEB_VERSION__: JSON.stringify(version),
 		__QORPERA_WEB_MODE__: JSON.stringify(serve ? "development" : "production"),
 	},
@@ -91,5 +100,11 @@ if (serve) {
 		.replace('href="./app.css"', `href="./${style}"`)
 		.replace('src="./main.js"', `src="./${script}"`);
 	writeFileSync(join(dist, "index.html"), html);
+	const files = ["index.html", "_headers", script, style];
+	writeFileSync(join(dist, "web-deployment.json"), `${JSON.stringify({
+		...deployment.manifest,
+		version,
+		files: Object.fromEntries(files.map(file => [file, createHash("sha256").update(readFileSync(join(dist, file))).digest("hex")])),
+	}, null, 2)}\n`);
 	console.log(`index.html -> ${script}, ${style}`);
 }
