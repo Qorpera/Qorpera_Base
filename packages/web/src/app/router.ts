@@ -21,6 +21,7 @@ export type CompanySection =
 export type Route =
 	| { name: "hub" }
 	| { name: "account" }
+	| { name: "browser-access" }
 	| { name: "friends" }
 	| { name: "invitations" }
 	| { name: "cloud-check" }
@@ -30,6 +31,7 @@ export function parseRoute(hash: string): Route {
 	const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean);
 	if (parts.length === 0) return { name: "hub" };
 	if (parts[0] === "account") return { name: "account" };
+	if (parts[0] === "browser-access") return { name: "browser-access" };
 	if (parts[0] === "friends") return { name: "friends" };
 	if (parts[0] === "invitations") return { name: "invitations" };
 	if (parts[0] === "cloud-check") return { name: "cloud-check" };
@@ -70,6 +72,8 @@ export function routeHash(route: Route): string {
 			return "#/";
 		case "account":
 			return "#/account";
+		case "browser-access":
+			return "#/browser-access";
 		case "friends":
 			return "#/friends";
 		case "invitations":

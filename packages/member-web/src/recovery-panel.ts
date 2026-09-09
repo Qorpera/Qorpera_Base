@@ -3,14 +3,16 @@ import type {
 	MemberBrowserProfileCatalog,
 } from "@qorpera/cloud-client/cloud-company-computer-browser-profiles";
 import type { CloudCompanyComputerPrivacyStatus } from "@qorpera/cloud-client/cloud-company-computer-sign-in";
-import type { MemberBrowserRecoveryCatalog } from "@qorpera/cloud-client/cloud-member-browser-recovery";
+import type {
+	CloudMemberBrowserRecovery,
+	MemberBrowserRecoveryCatalog,
+} from "@qorpera/cloud-client/cloud-member-browser-recovery";
 import { MemberBrowserRecoverySession } from "@qorpera/cloud-client/member-browser-recovery-session";
-import type { WebMemberAccount } from "./account.ts";
 import { button, element, type Work } from "./dom.ts";
 
 export async function showRecoveryPanel(options: {
 	root: HTMLElement;
-	account: WebMemberAccount;
+	account: { recovery(): { client: CloudMemberBrowserRecovery; signal: AbortSignal; current(): void } };
 	work: Work;
 	current(): void;
 	status(message: string): void;

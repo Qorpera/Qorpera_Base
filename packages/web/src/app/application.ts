@@ -15,6 +15,7 @@ import { currentRoute, navigate, type Route } from "./router.ts";
 import { debounce } from "./state.ts";
 import { type AccountViewState, renderAccount } from "./views/account.ts";
 import { ApprovalsView } from "./views/approvals.ts";
+import { BrowserRecoveryView } from "./views/browser-recovery.ts";
 import { CloudCheckView } from "./views/cloudcheck.ts";
 import { CompanyFileController, renderCompanyFile } from "./views/companyfile.ts";
 import { ConversationView } from "./views/conversation.ts";
@@ -138,6 +139,8 @@ export function mountApplication(
 			liveFile = undefined;
 		}
 		closeSettings(false);
+		browserRecovery?.dispose();
+		browserRecovery = undefined;
 		closeFeedback(false);
 		routeRevision++;
 		resolvingRoute = undefined;
@@ -156,6 +159,7 @@ export function mountApplication(
 	let newConversation: NewConversationView | undefined;
 	let approvals: ApprovalsView | undefined;
 	let cloudCheck: CloudCheckView | undefined;
+	let browserRecovery: BrowserRecoveryView | undefined;
 	let profiles: HostedProfile[] = [];
 	let teamFeedback: { message?: string; error?: string } = {};
 	let accountState: AccountViewState = {};
@@ -190,6 +194,8 @@ export function mountApplication(
 			friends.dispose();
 			cloudCheck?.dispose();
 			cloudCheck = undefined;
+			browserRecovery?.dispose();
+			browserRecovery = undefined;
 			profiles = [];
 			accountState = {};
 			friendsLoaded = false;
@@ -409,6 +415,11 @@ export function mountApplication(
 					accountState = { ...accountState, ...next };
 					render();
 				});
+			} else if (route.name === "browser-access") {
+				browserRecovery ??= new BrowserRecoveryView(cloud, auth.userId!, () => {
+					if (!current()) throw new Error("Account or browser access view changed.");
+				});
+				if (!main.contains(browserRecovery.el)) replace(main, browserRecovery.el);
 			} else if (route.name === "friends") {
 				if (!friendsLoaded) {
 					friendsLoaded = true;
@@ -738,6 +749,7 @@ export function mountApplication(
 		friends.dispose();
 		teardownCompany();
 		cloudCheck?.dispose();
+		browserRecovery?.dispose();
 		window.removeEventListener("hashchange", onRouteChange);
 		window.removeEventListener("keydown", onEscape);
 		window.removeEventListener("resize", syncNavigation);
