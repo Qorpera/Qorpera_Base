@@ -8,6 +8,7 @@ export interface ComputerViewerOptions {
 	binding: CompanyComputerScreenBinding;
 	title: string;
 	canControl: boolean;
+	privateSignIn?: boolean;
 	requestConnection(input: {
 		binding: CompanyComputerScreenBinding;
 		mode: "watch" | "control";

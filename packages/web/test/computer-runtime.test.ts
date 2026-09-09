@@ -87,6 +87,47 @@ function action(root: HTMLElement, label: string) {
 }
 
 describe("web runtime member boundary", () => {
+	it("clears shared viewing controls and releases its viewer before opening browser management", async () => {
+		const f = setup();
+		const close = vi.fn(async () => {});
+		vi.spyOn(viewer, "openComputerViewer").mockReturnValue({ close });
+		const p = panel(f.computer);
+		await settle();
+		await settle();
+		action(p.el, "Watch screen 1").click();
+		await settle();
+		action(p.el, "Manage your browsers").click();
+		await settle();
+		expect(close).toHaveBeenCalledTimes(1);
+		expect(p.el.textContent).not.toContain("Watch screen 1");
+	});
+	it("hides computer permission controls when the catalog does not allow management", async () => {
+		const f = setup({ qorpera_member_office_catalog: { ...catalog, canManage: false } });
+		const p = panel(f.computer);
+		await settle();
+		await settle();
+		expect(p.el.textContent).not.toContain("Manage computer permissions");
+	});
+	it("cancels only the observed pending start after an explicit click", async () => {
+		const intent = {
+			schema: "qorpera.office-start-intent/v1" as const,
+			intentId: id(71),
+			companyComputerId: scope.companyComputerId,
+			computerGeneration: 1,
+			state: "requested" as const,
+		};
+		const f = setup({ qorpera_runtime_office_start_status: { ...start, officeState: "provisioning", intent } });
+		const startClient = f.computer.client.start(scope);
+		const cancel = vi.spyOn(startClient, "cancel").mockResolvedValue({ ...intent, state: "cancelled" });
+		vi.spyOn(f.computer.client, "start").mockReturnValue(startClient);
+		const p = panel(f.computer);
+		await settle();
+		await settle();
+		expect(cancel).not.toHaveBeenCalled();
+		action(p.el, "Cancel pending start").click();
+		await settle();
+		expect(cancel).toHaveBeenCalledExactlyOnceWith(intent, expect.any(AbortSignal));
+	});
 	it("starts only on explicit intent and never replays an ambiguous start or cancels it on disposal", async () => {
 		const f = setup({ qorpera_runtime_office_start_status: { ...start, officeState: "provisioning" } });
 		const startClient = f.computer.client.start(scope);
@@ -204,6 +245,7 @@ describe("web runtime member boundary", () => {
 		await settle();
 		await settle();
 		action(p.el, "Watch screen 1").click();
+		await settle();
 		const options = open.mock.calls[0]![0];
 		const connecting = options.requestConnection({ binding, mode: "watch", signal: new AbortController().signal });
 		const close = vi.fn(async () => {});

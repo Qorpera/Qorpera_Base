@@ -10,6 +10,8 @@ Cloud configuration contains only public endpoints and a publishable key. `offic
 
 ## Acceptance status
 
-This is an integration candidate, not launch acceptance. Agent desktop/shell grants, private browser preparation and consent, message/attachment writes, governed File operations and presence still need product UI integration and proof. Production HTTPS/CSP, normal human sign-in, actual screen viewing, revocation, client-independent work, NAS durability and governed reset remain live acceptance gates. The `packages/member-web` proof interface does not substitute for acceptance of this app.
+Computer permissions and owned browser profiles are available through explicit controls in the Computer panel. Desktop/shell grants and browser consent use separate, versioned member APIs. Private sign-in waits for the runtime privacy acknowledgement before offering private input, and requires an explicit finish action. Closing a viewer does not finish private sign-in. Ambiguous writes require a status refresh; profile creation retains its request identity for an explicit retry.
+
+This is an integration candidate, not launch acceptance. Message/attachment writes, governed File operations and presence still need product UI integration and proof. Production HTTPS/CSP, normal human sign-in, actual screen viewing, physical privacy and revocation, client-independent work, NAS durability and governed reset remain live acceptance gates. Local fixture tests do not establish those live properties. The `packages/member-web` proof interface does not substitute for acceptance of this app.
 
 macOS/Windows release and installation proofs are deferred until after the web launch, alongside Azure.

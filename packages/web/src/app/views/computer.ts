@@ -1,10 +1,11 @@
-import type { CompanyComputerMemberView } from "@qorpera/cloud-client/cloud-company-computer-views";
 import type { WebCompanyComputer } from "../../cloud/computer.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
-import { type ComputerViewer, openComputerViewer } from "../../ui/computer-viewer.ts";
+import { ComputerViewHost } from "../../ui/computer-view-host.ts";
 import { button, h, icon, replace } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
+import { ComputerAccessPanel } from "./computer-access.ts";
+import { ComputerBrowserPanel } from "./computer-browser.ts";
 
 /** Opening reads authority. Starts and viewers require explicit member intent. */
 export class ComputerPanel {
@@ -12,10 +13,14 @@ export class ComputerPanel {
 	readonly #stop = new AbortController();
 	readonly #status = h("p", { class: "muted", role: "status" });
 	readonly #controls = h("div", { class: "stack" });
-	#viewer: ComputerViewer | undefined;
-	readonly #connections = new Map<string, CompanyComputerMemberView>();
+	readonly #screenControls = h("div", { class: "stack" });
+	readonly #views: ComputerViewHost;
+	readonly #detailsRoot = h("div", { class: "stack computer-details" });
+	#details: ComputerAccessPanel | ComputerBrowserPanel | undefined;
 	#busy = false;
 	constructor(agent: HostedStaffAgent, close: () => void, computer?: WebCompanyComputer, parentSignal?: AbortSignal) {
+		const signal = AbortSignal.any([this.#stop.signal, ...(parentSignal ? [parentSignal] : [])]);
+		this.#views = new ComputerViewHost(signal);
 		this.el = h(
 			"aside",
 			{ class: "computer-panel", "aria-label": "Agent computer" },
@@ -44,6 +49,8 @@ export class ComputerPanel {
 					h("strong", null, agent.displayName),
 					this.#status,
 					this.#controls,
+					this.#screenControls,
+					this.#detailsRoot,
 				),
 				h(
 					"section",
@@ -76,7 +83,6 @@ export class ComputerPanel {
 				close();
 			}
 		});
-		const signal = AbortSignal.any([this.#stop.signal, ...(parentSignal ? [parentSignal] : [])]);
 		signal.addEventListener("abort", () => this.dispose(), { once: true });
 		if (signal.aborted) {
 			this.dispose();
@@ -106,8 +112,11 @@ export class ComputerPanel {
 			}
 		};
 		const refresh = async () => {
+			this.#details?.dispose();
+			this.#details = undefined;
 			this.#status.textContent = "Checking computer access…";
 			replace(this.#controls);
+			replace(this.#screenControls);
 			const catalog = await computer.client.catalog(signal);
 			signal.throwIfAborted();
 			const scope = catalog.scope;
@@ -120,6 +129,36 @@ export class ComputerPanel {
 			signal.throwIfAborted();
 			this.#status.textContent = `Computer ${start.officeState}. Closing this panel leaves cloud work running.`;
 			this.#controls.append(button("Refresh computer", () => void run(refresh)));
+			if (catalog.canManage)
+				this.#controls.append(
+					button(
+						"Manage computer permissions",
+						() =>
+							void run(async () => {
+								this.#details?.dispose();
+								this.#details = new ComputerAccessPanel(
+									computer.client.access(scope, agent.id),
+									agent.displayName,
+									signal,
+								);
+								replace(this.#detailsRoot, this.#details.el);
+							}),
+					),
+				);
+			this.#controls.append(
+				button(
+					"Manage your browsers",
+					() =>
+						void run(async () => {
+							replace(this.#screenControls);
+							await this.#views.close();
+							signal.throwIfAborted();
+							this.#details?.dispose();
+							this.#details = new ComputerBrowserPanel(computer, scope, agent, this.#views, signal);
+							replace(this.#detailsRoot, this.#details.el);
+						}),
+				),
+			);
 			if (catalog.canManage && start.officeState === "provisioning" && !start.intent) {
 				const requestId = crypto.randomUUID();
 				this.#controls.append(
@@ -128,6 +167,25 @@ export class ComputerPanel {
 						() =>
 							void run(async () => {
 								await startClient.request(start.computerGeneration, requestId, signal);
+								signal.throwIfAborted();
+								await refresh();
+							}),
+					),
+				);
+			}
+			if (
+				catalog.canManage &&
+				start.officeState !== "active" &&
+				start.intent &&
+				start.intent.state !== "cancelled"
+			) {
+				const intent = start.intent;
+				this.#controls.append(
+					button(
+						"Cancel pending start",
+						() =>
+							void run(async () => {
+								await startClient.cancel(intent, signal);
 								signal.throwIfAborted();
 								await refresh();
 							}),
@@ -153,33 +211,17 @@ export class ComputerPanel {
 			const screens = status.screens.filter((screen) => screen.binding.staffAgentId === agent.id);
 			if (!screens.length) this.#controls.append(h("p", { class: "muted" }, "This agent has no screen yet."));
 			for (const screen of screens)
-				this.#controls.append(
+				this.#screenControls.append(
 					button(
 						`Watch screen ${screen.binding.screenOrdinal}`,
 						() =>
 							void run(async () => {
-								if (this.#viewer) return;
-								this.#viewer = openComputerViewer({
+								await this.#views.open({
 									binding: screen.binding,
 									title: `${agent.displayName} · Computer`,
 									canControl: catalog.canManage,
 									requestConnection: async (input) => {
-										const requestSignal = AbortSignal.any([signal, input.signal]);
-										const connection = await views.connectScreen({ ...input, signal: requestSignal });
-										if (requestSignal.aborted) {
-											await connection.close();
-											requestSignal.throwIfAborted();
-										}
-										this.#connections.set(connection.connectionId, connection);
-										return connection;
-									},
-									releaseConnection: async ({ connectionId }) => {
-										const connection = this.#connections.get(connectionId);
-										await connection?.close();
-										this.#connections.delete(connectionId);
-									},
-									onClosed: () => {
-										this.#viewer = undefined;
+										return views.connectScreen(input);
 									},
 								});
 							}),
@@ -195,9 +237,7 @@ export class ComputerPanel {
 	dispose(): void {
 		if (this.#stop.signal.aborted) return;
 		this.#stop.abort();
-		void this.#viewer?.close().catch(() => undefined);
-		for (const connection of this.#connections.values()) void connection.close().catch(() => undefined);
-		this.#connections.clear();
+		this.#details?.dispose();
 		replace(this.el);
 		this.el.remove();
 	}
