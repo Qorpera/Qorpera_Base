@@ -219,29 +219,33 @@ describe("conversation UI boundaries", () => {
 		);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
-	it("keeps production composer drafts local and cannot queue agent work by click or Enter", async () => {
+	it("keeps selected attachment bytes local and blocks text submission until they are removed", async () => {
 		const f = fixture(),
 			root = document.createElement("div");
 		vi.spyOn(f.api, "appendPrompt");
+		const network = vi.fn();
+		vi.stubGlobal("fetch", network);
 		document.body.append(root);
 		dispose = mountApplication(root, f.cloud, f.api);
 		await settle();
 		await vi.advanceTimersByTimeAsync(60);
 		input(root, "Message", "Keep this local");
+		await settle();
 		const send = button(root, "Send message");
+		expect(send.disabled).toBe(false);
+		attach(root, [new File(["local"], "brief.txt", { type: "text/plain" })]);
 		expect(send.disabled).toBe(true);
 		send.click();
 		root.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 		await settle();
 		expect(root.querySelector("textarea")!.value).toBe("Keep this local");
-		expect(root.textContent).toContain("Sending messages is not available yet");
-		attach(root, [new File(["local"], "brief.txt", { type: "text/plain" })]);
 		expect(root.querySelector(".attachment-status")?.textContent).toContain("Attachments stay on this device");
 		expect(root.textContent).not.toContain("Remove them to send");
 		button(root, "Remove brief.txt").click();
-		expect(send.disabled).toBe(true);
+		expect(send.disabled).toBe(false);
 		expect(root.querySelector("textarea")!.value).toBe("Keep this local");
 		expect(f.api.appendPrompt).not.toHaveBeenCalled();
+		expect(network).not.toHaveBeenCalled();
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 	it("keeps attachment drafts scoped to their conversation and releases previews on disposal", () => {

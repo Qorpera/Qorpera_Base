@@ -22,6 +22,44 @@ function company() {
 }
 
 describe("conversation lifecycle regressions", () => {
+	it("refuses a write from an already closed view", async () => {
+		const { controller } = company();
+		controller.store.set({ team, sessions: [session], loading: false });
+		const view = new AbortController();
+		const write = vi.spyOn(controller, "assertCanSend");
+		view.abort();
+		expect(await controller.sendPrompt(session.sessionId, "Draft", view.signal)).toBe(false);
+		expect(write).not.toHaveBeenCalled();
+	});
+	it("preserves the request identity after the view closes with an uncertain send", async () => {
+		const { api, controller } = company();
+		controller.store.set({ team, sessions: [session], loading: false });
+		const view = new AbortController(),
+			response = deferred<{ inputId: string; position: number }>();
+		const append = vi
+			.spyOn(api, "appendPrompt")
+			.mockReturnValueOnce(response.promise)
+			.mockResolvedValue({ inputId: pending(1).inputId, position: 1 });
+		const sending = controller.sendPrompt(session.sessionId, "Draft", view.signal);
+		view.abort();
+		response.resolve({ inputId: pending(1).inputId, position: 1 });
+		expect(await sending).toBe(false);
+		expect(controller.conversation(session.sessionId).get().sending).toBe(false);
+		expect(controller.conversation(session.sessionId).get().draft).toBe("Draft");
+		await controller.sendPrompt(session.sessionId, "Draft");
+		expect(append.mock.calls[1]?.[1]).toBe(append.mock.calls[0]?.[1]);
+	});
+	it("refuses writes to unknown, closed or another member's private conversation", async () => {
+		const { api, controller } = company();
+		const append = vi.spyOn(api, "appendPrompt");
+		controller.store.set({ team, sessions: [] });
+		expect(await controller.sendPrompt(session.sessionId, "Draft")).toBe(false);
+		controller.store.set({ sessions: [{ ...session, status: "closed" }] });
+		expect(await controller.sendPrompt(session.sessionId, "Draft")).toBe(false);
+		controller.store.set({ sessions: [{ ...session, audience: { kind: "member_private", userId: "other" } }] });
+		expect(await controller.sendPrompt(session.sessionId, "Draft")).toBe(false);
+		expect(append).not.toHaveBeenCalled();
+	});
 	it("does not let an older roster response overwrite the current roster", async () => {
 		const { api, controller } = company();
 		const old = deferred<(typeof staff)[]>();
@@ -64,6 +102,7 @@ describe("conversation lifecycle regressions", () => {
 
 	it("reconciles the browser operation with the server input ID exactly once", async () => {
 		const { api, controller } = company();
+		controller.store.set({ loading: false, team, sessions: [session] });
 		controller.conversation(session.sessionId, false);
 		vi.mocked(api.listSessionInputs).mockResolvedValue({
 			items: [pending(1, "One message")],

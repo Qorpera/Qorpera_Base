@@ -7,6 +7,7 @@ import {
 	type RealtimeSubscription,
 	subscribeProfileRealtime,
 } from "../cloud/realtime.ts";
+import type { SessionInputWriter } from "../cloud/session-input.ts";
 import { projectTranscript, type TranscriptProjection } from "../cloud/transcript.ts";
 import type {
 	HostedProfile,
@@ -85,6 +86,7 @@ export class CompanyController {
 	readonly conversations = new Map<string, Store<ConversationState>>();
 	readonly #api: CloudApi;
 	readonly #userId: string;
+	readonly #writeInput: SessionInputWriter;
 	#realtime: RealtimeSubscription | undefined;
 	#poll: ReturnType<typeof setInterval> | undefined;
 	#openSessionId: string | undefined;
@@ -95,9 +97,11 @@ export class CompanyController {
 	readonly #invalidations = new Set<(resource: RealtimeResource) => void>();
 	readonly #conversationLoads = new Map<string, { promise: Promise<void>; repeat: boolean }>();
 
-	constructor(api: CloudApi, profile: HostedProfile, userId: string) {
+	constructor(api: CloudApi, profile: HostedProfile, userId: string, writeInput?: SessionInputWriter) {
 		this.#api = api;
 		this.#userId = userId;
+		this.#writeInput =
+			writeInput ?? ((sessionId, clientInputId, text) => api.appendPrompt(sessionId, clientInputId, text));
 		this.store = new Store<CompanyState>({
 			profile,
 			staff: [],
@@ -433,8 +437,30 @@ export class CompanyController {
 		} while (request.repeat && !this.#stopped);
 	}
 
-	async sendPrompt(sessionId: string, text: string): Promise<boolean> {
-		if (this.#stopped) return false;
+	assertCanSend(sessionId: string): void {
+		const state = this.store.get();
+		const session = state.sessions.find((item) => item.sessionId === sessionId);
+		if (
+			this.#stopped ||
+			state.accessLost ||
+			!state.team?.capabilities.write ||
+			state.team.profileId !== this.profile.profileId ||
+			!session ||
+			session.status !== "open" ||
+			session.profileId !== this.profile.profileId ||
+			session.environmentId !== this.profile.environmentId ||
+			(session.audience.kind === "member_private" && session.audience.userId !== this.#userId)
+		)
+			throw new Error("This conversation is not available for sending.");
+	}
+
+	async sendPrompt(sessionId: string, text: string, viewSignal?: AbortSignal): Promise<boolean> {
+		if (this.#stopped || viewSignal?.aborted) return false;
+		try {
+			this.assertCanSend(sessionId);
+		} catch {
+			return false;
+		}
 		const store = this.conversation(sessionId);
 		const trimmed = text.trim();
 		if (!trimmed || store.get().sending) return false;
@@ -450,8 +476,10 @@ export class CompanyController {
 			],
 		}));
 		try {
-			const receipt = await this.#api.appendPrompt(sessionId, clientInputId, trimmed);
+			const signal = AbortSignal.any([this.signal, ...(viewSignal ? [viewSignal] : [])]);
+			const receipt = await this.#writeInput(sessionId, clientInputId, trimmed, signal);
 			if (this.#stopped) return false;
+			signal.throwIfAborted();
 			store.set((state) => ({
 				sending: false,
 				retrySend: undefined,
@@ -467,6 +495,7 @@ export class CompanyController {
 			void this.refreshActivity();
 			return true;
 		} catch (error) {
+			if (this.#stopped) return false;
 			store.set((state) => ({
 				sending: false,
 				sendError: describeError(error),

@@ -39,6 +39,69 @@ function mounted(hash = "#/") {
 }
 
 describe("account and route ownership", () => {
+	it("retries an uncertain product send with the same input identity and preserves its draft", async () => {
+		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		const send = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) =>
+			Response.json({ input_id: id(91), position: 1 }),
+		);
+		send.mockRejectedValueOnce(new Error("Response lost"));
+		vi.stubGlobal("fetch", send);
+		await draw();
+		const input = f.root.querySelector("textarea")!;
+		input.value = "One request";
+		input.dispatchEvent(new Event("input"));
+		await settle();
+		const button = f.root.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!;
+		button.click();
+		button.click();
+		await draw();
+		expect(send).toHaveBeenCalledTimes(1);
+		expect(input.value).toBe("One request");
+		button.click();
+		await draw();
+		expect(send).toHaveBeenCalledTimes(2);
+		expect(send.mock.calls[0]?.[1]?.body).toBe(send.mock.calls[1]?.[1]?.body);
+		expect(input.value).toBe("");
+	});
+	it("submits from the product composer through the authenticated member transport", async () => {
+		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		const send = vi.fn(async () => Response.json({ input_id: id(91), position: 1 }));
+		vi.stubGlobal("fetch", send);
+		await draw();
+		const input = f.root.querySelector("textarea")!;
+		input.value = "Work from the web";
+		input.dispatchEvent(new Event("input"));
+		await settle();
+		f.root.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.click();
+		await draw();
+		expect(send).toHaveBeenCalledTimes(1);
+		expect(input.value).toBe("");
+		expect(f.root.textContent).toContain("Work from the web");
+	});
+	it.each(["route", "account"])(
+		"does not dispatch a composer write after %s changes during token refresh",
+		async (change) => {
+			const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+			const send = vi.fn();
+			vi.stubGlobal("fetch", send);
+			await draw();
+			const original = await f.cloud.supabase.auth.getSession();
+			const token = deferred<typeof original>();
+			vi.mocked(f.cloud.supabase.auth.getSession).mockReturnValueOnce(token.promise);
+			const input = f.root.querySelector("textarea")!;
+			input.value = "Private draft";
+			input.dispatchEvent(new Event("input"));
+			await settle();
+			expect(f.root.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.disabled).toBe(false);
+			f.root.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.click();
+			await settle();
+			if (change === "route") history.replaceState(null, "", "/#/account");
+			else f.auth(userB);
+			token.resolve(original);
+			await draw();
+			expect(send).not.toHaveBeenCalled();
+		},
+	);
 	it.each([true, false])("waits for organization loading before resolving home (seeded: %s)", async (seeded) => {
 		const home = `#/c/${profileA.profileId}`;
 		const f = mounted(home);

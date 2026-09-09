@@ -2,6 +2,7 @@ import type { User } from "@supabase/supabase-js";
 import { CloudApi } from "../cloud/api.ts";
 import { type Cloud, describeError } from "../cloud/client.ts";
 import { WebCompanyComputer } from "../cloud/computer.ts";
+import { createWebSessionInputWriter } from "../cloud/session-input.ts";
 import type { HostedProfile } from "../cloud/types.ts";
 import { h, notice, replace, spinner } from "../ui/dom.ts";
 import { applyLanguage } from "../ui/preferences.ts";
@@ -263,7 +264,22 @@ export function mountApplication(
 			}
 			const userId = auth.userId;
 			if (!current() || !profile || !userId) return undefined;
-			const controller = new CompanyController(api, profile, userId);
+			const controller = new CompanyController(api, profile, userId, (sessionId, clientInputId, text, signal) =>
+				createWebSessionInputWriter(cloud, userId, controller.signal, (target) => {
+					const route = currentRoute();
+					if (
+						disposed ||
+						company !== controller ||
+						auth.userId !== userId ||
+						route.name !== "company" ||
+						route.profileId !== profile.profileId ||
+						route.section !== "chat" ||
+						route.id !== target
+					)
+						throw new Error("Company access is unavailable.");
+					controller.assertCanSend(target);
+				})(sessionId, clientInputId, text, signal),
+			);
 			company = controller;
 			computer = new WebCompanyComputer(cloud, profile, userId, controller.signal, () => {
 				if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
@@ -509,8 +525,15 @@ export function mountApplication(
 			case "chat": {
 				if (!conversation || conversation.sessionId !== route.id) {
 					conversation?.dispose();
-					conversation = new ConversationView(controller, route.id ?? "", { ...workspaceActions, computer }, () =>
-						setNavigationOpen(!navigationOpen),
+					conversation = new ConversationView(
+						controller,
+						route.id ?? "",
+						{
+							sendMessage: (id, text, signal) => controller.sendPrompt(id, text, signal),
+							...workspaceActions,
+							computer,
+						},
+						() => setNavigationOpen(!navigationOpen),
 					);
 					replace(main, conversation.el);
 					conversation.focus();
