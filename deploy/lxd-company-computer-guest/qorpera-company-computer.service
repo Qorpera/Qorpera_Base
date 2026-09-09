@@ -3,6 +3,7 @@ Description=Qorpera persistent shared office
 Wants=network-online.target
 Requires=systemd-tmpfiles-setup.service
 After=network-online.target systemd-tmpfiles-setup.service
+After=apparmor.service
 RequiresMountsFor=/var/lib/qorpera-office /run/qorpera-office/private
 AssertPathIsMountPoint=/var/lib/qorpera-office
 AssertPathIsMountPoint=/run/qorpera-office/private

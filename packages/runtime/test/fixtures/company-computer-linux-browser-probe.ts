@@ -327,7 +327,10 @@ try {
 	assert.equal(networkDials, 0);
 	const shell = await commands.run({
 		program: "/bin/bash",
-		args: ["-c", "test ! -e /profile; test ! -e /srv/profiles; test ! -e /run/office-browser; printf isolated"],
+		args: [
+			"-c",
+			"test ! -e /profile && test ! -e /srv/profiles && test ! -e /run/office-browser || exit 70; test -x /usr/local/lib/qorpera/qorpera-browser-bwrap || exit 71; if /usr/local/lib/qorpera/qorpera-browser-bwrap --unshare-user --ro-bind / / /usr/bin/true >/dev/null 2>&1; then exit 72; fi; printf isolated",
+		],
 		environment: { DISPLAY: ":1", PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8" },
 		workingDirectory: layout.workbenchRoot,
 		timeoutMs: 5000,
@@ -377,6 +380,7 @@ try {
 			browserCapture,
 			screenshot: { bytes: png.length, width: 1920, height: 1200 },
 			profileAbsentFromShell: true,
+			browserLauncherCannotReenableShellUserNamespaces: true,
 			fileAndPasswordUiDenied: true,
 			filePickerDenied: true,
 			developerToolsShortcutsDenied: true,

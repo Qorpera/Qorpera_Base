@@ -78,7 +78,7 @@ try {
 			await build({ absWorkingDir: repository, entryPoints: ["packages/runtime/src/cloud-company-computer-browser-child.ts"],
 				outfile: join(root, "office-browser-child.mjs"), platform: "node", format: "esm", target: "node22.19", bundle: true });
 		}
-		await writeFile(join(root, "Dockerfile"), `FROM ${image}\nCOPY --chmod=0555 qorpera-screen-session qorpera-screen-xfce /usr/local/bin/\nCOPY wallpaper.png /usr/share/backgrounds/qorpera-screen-pebble.png\n${guest ? "COPY --chmod=0444 wallpapers/ /usr/share/backgrounds/\n" : ""}${browser ? "RUN mkdir -p /usr/local/share/qorpera /usr/local/lib/qorpera && chmod 0755 /usr/local/share/qorpera /usr/local/lib/qorpera\nCOPY --chmod=0444 browser-policy.json /usr/local/share/qorpera/browser-policy.json\nCOPY --chmod=0555 office-browser-child.mjs /usr/local/lib/qorpera/office-browser-child.mjs\n" : ""}`);
+		await writeFile(join(root, "Dockerfile"), `FROM ${image}\nCOPY --chmod=0555 qorpera-screen-session qorpera-screen-xfce /usr/local/bin/\nCOPY wallpaper.png /usr/share/backgrounds/qorpera-screen-pebble.png\n${guest ? "COPY --chmod=0444 wallpapers/ /usr/share/backgrounds/\n" : ""}${browser ? "RUN mkdir -p /usr/local/share/qorpera /usr/local/lib/qorpera && chmod 0755 /usr/local/share/qorpera /usr/local/lib/qorpera && install -m 0555 /usr/bin/bwrap /usr/local/lib/qorpera/qorpera-browser-bwrap\nCOPY --chmod=0444 browser-policy.json /usr/local/share/qorpera/browser-policy.json\nCOPY --chmod=0555 office-browser-child.mjs /usr/local/lib/qorpera/office-browser-child.mjs\n" : ""}`);
 		runningImage = `qorpera-office-desktop-probe:${randomUUID()}`;
 		await run(["build", "--tag", runningImage, root]);
 	}

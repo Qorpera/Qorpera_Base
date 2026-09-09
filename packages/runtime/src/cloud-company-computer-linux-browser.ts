@@ -27,6 +27,7 @@ import {
 	assertCompanyComputerLinuxHost,
 	assertCompanyComputerWorkbenchMount,
 	type CompanyComputerCommandLimits,
+	companyComputerBrowserAppArmorRequired,
 	companyComputerLinuxSandboxArgs,
 	openCompanyComputerLinuxDirectory,
 	readCompanyComputerLinuxMetadata,
@@ -183,6 +184,7 @@ export function createCompanyComputerLinuxBrowserLaunch(options: {
 			await cloudToolRequest(check, signal);
 			for (const path of [
 				"/usr/bin/bwrap",
+				"/usr/local/lib/qorpera/qorpera-browser-bwrap",
 				"/usr/bin/tini",
 				"/usr/bin/bash",
 				"/usr/bin/node",
@@ -257,6 +259,9 @@ export function createCompanyComputerLinuxBrowserLaunch(options: {
 				"--ro-bind",
 				policyPath,
 				"/etc/opt/chrome/policies/managed/qorpera.json",
+				"--ro-bind",
+				policyPath,
+				"/etc/opt/chrome_for_testing/policies/managed/qorpera.json",
 				"--size",
 				"33554432",
 				"--tmpfs",
@@ -280,6 +285,7 @@ export function createCompanyComputerLinuxBrowserLaunch(options: {
 				files,
 				stdin: "ignore",
 				pipeCount: 2,
+				browserSandbox: { appArmor: await companyComputerBrowserAppArmorRequired() },
 				command: [
 					"/usr/bin/node",
 					"/usr/local/lib/qorpera/office-browser-child.mjs",

@@ -82,7 +82,7 @@ export async function cloudRuntimeBundle(root = repository) {
 	for (const name of (await readdir(join(root, "packages/runtime/src"))).filter((name) => /^cloud-company-computer-.*\.ts$/.test(name)).sort()) {
 		await include(`packages/runtime/src/${name}`);
 	}
-	for (const name of ["qorpera-screen-session", "qorpera-screen-xfce", "qorpera-browser-policy.json", "qorpera-company-computer.service", "qorpera-company-computer-preparation.service", "qorpera-office-preparation.conf", "qorpera-office-runtime.conf", "qorpera-office-private.mount.in"]) await include(`deploy/lxd-company-computer-guest/${name}`);
+	for (const name of ["qorpera-screen-session", "qorpera-screen-xfce", "qorpera-browser-policy.json", "qorpera-office-browser-bwrap.apparmor", "qorpera-company-computer.service", "qorpera-company-computer-preparation.service", "qorpera-office-preparation.conf", "qorpera-office-runtime.conf", "qorpera-office-private.mount.in"]) await include(`deploy/lxd-company-computer-guest/${name}`);
 	await include("packages/runner-orchestrator/src/lxd-office-image-installation-cli.ts");
 	for (const name of (await readdir(join(root, "packages/shell/userland/staff-creatures"))).sort()) {
 		if (!/^[a-z]+\.png$/.test(name)) throw new Error("Invalid office wallpaper artifact");

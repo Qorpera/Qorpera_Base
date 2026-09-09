@@ -17,14 +17,19 @@ export function spawnCompanyComputerLinuxProcess(options: {
 	files: readonly FileHandle[];
 	/** Chromium's broker-only DevTools pipes occupy descriptors 3 and 4. */
 	pipeCount?: 2;
+	/** Dedicated measured Bubblewrap copy permits Chromium's nested sandbox on AppArmor hosts. */
+	browserSandbox?: { appArmor: boolean };
 	stdin: "pipe" | "ignore";
 }): { child: ChildProcess; started: Promise<void>; stop(): void } {
 	const pipeCount = options.pipeCount ?? 0;
 	const permissionFd = 3 + pipeCount + options.files.length;
 	const readyFd = permissionFd + 1;
-	const gate = `printf 'ready\\n' >&${readyFd}; exec ${readyFd}>&-; IFS= read -r permission <&${permissionFd} || exit 125; exec ${permissionFd}<&-; [[ "$permission" == start ]] || exit 125; exec "$@"`;
+	const profileGate = options.browserSandbox?.appArmor
+		? `IFS= read -r profile </proc/self/attr/current || exit 126; [[ "$profile" == 'qorpera-office-browser-bwrap (enforce)' ]] || exit 126; `
+		: "";
+	const gate = `${profileGate}printf 'ready\\n' >&${readyFd}; exec ${readyFd}>&-; IFS= read -r permission <&${permissionFd} || exit 125; exec ${permissionFd}<&-; [[ "$permission" == start ]] || exit 125; exec "$@"`;
 	const child = spawn(
-		"/usr/bin/bwrap",
+		options.browserSandbox ? "/usr/local/lib/qorpera/qorpera-browser-bwrap" : "/usr/bin/bwrap",
 		[
 			"--as-pid-1",
 			...options.args,

@@ -83,6 +83,8 @@
 
 ### Fixed
 
+- Loaded Chrome for Testing's managed browser policies from its actual Linux path. The browser uses a measured dedicated Bubblewrap copy and enforcing AppArmor profile so Chromium's nested sandbox can start on Ubuntu without changing the shell/desktop profile or granting host capabilities. Browser startup refuses a missing or different enforcing profile when AppArmor is enabled.
+
 - Required exact pending-launch drain confirmation before reporting a screen closed when desktop startup timed out without returning a handle. Registry failure still permits physical cleanup, while unconfirmed private or shared cleanup cannot produce a successful drain.
 - Kept screen-lease renewals on their original schedule during frequent authority checks and preserved renewals that became due while a check was in flight. Confirmed renewal alone advances the schedule; expiry, changed identity and revoked access still abort the handle.
 

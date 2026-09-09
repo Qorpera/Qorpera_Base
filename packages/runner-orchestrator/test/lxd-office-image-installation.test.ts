@@ -66,6 +66,23 @@ describe("office image installation contract", () => {
 			parseOfficeImageInstallationSpec({ ...spec, dependencies: { ...spec.dependencies, executables } }),
 		).toThrow();
 	});
+	it("pins the AppArmor parser and requires the browser profile in the package closure", () => {
+		const executables = { ...spec.dependencies.executables };
+		delete executables["/usr/sbin/apparmor_parser"];
+		expect(() =>
+			parseOfficeImageInstallationSpec({ ...spec, dependencies: { ...spec.dependencies, executables } }),
+		).toThrow();
+		expect(() =>
+			parseOfficeImagePackage({
+				...manifest,
+				artifacts: manifest.artifacts.filter((a) => a.file !== "qorpera-office-browser-bwrap.apparmor"),
+			}),
+		).toThrow();
+		expect(officeImageDestination("qorpera-office-browser-bwrap.apparmor")).toEqual({
+			path: "/etc/apparmor.d/qorpera-office-browser-bwrap",
+			mode: 0o444,
+		});
+	});
 	it("maps the complete runtime package to the paths consumed by the guest", () => {
 		const result = parseOfficeImagePackage(manifest);
 		expect(result.artifacts.find((a) => a.file === "office-browser-child.mjs")?.path).toBe(

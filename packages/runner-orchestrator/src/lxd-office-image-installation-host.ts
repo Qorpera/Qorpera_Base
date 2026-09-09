@@ -302,6 +302,10 @@ async function load(path: string) {
 		if (artifact.file === units[0] || artifact.file === units[1])
 			targets.push({ path: `${OFFICE_IMAGE_ROOT}/${artifact.file}`, bytes, mode: 0o444, gid: 0 });
 	}
+	const browserBwrap = await readOfficeInstallFile("/usr/bin/bwrap", 32 * 1024 ** 2);
+	if (hash(browserBwrap) !== spec.dependencies.executables["/usr/bin/bwrap"])
+		throw new Error("OFFICE_IMAGE_DEPENDENCIES_CHANGED");
+	targets.push({ path: "/usr/local/lib/qorpera/qorpera-browser-bwrap", bytes: browserBwrap, mode: 0o555, gid: 0 });
 	const receipt = {
 		schema: "qorpera.office-image-installation-receipt/v1",
 		specSha256: hash(specBytes),
@@ -327,6 +331,11 @@ async function preflight(loaded: Awaited<ReturnType<typeof load>>) {
 	account(spec.uid, spec.gid);
 	if (!isDeepStrictEqual(await inspectOfficeImageDependencies(), spec.dependencies))
 		throw new Error("OFFICE_IMAGE_DEPENDENCIES_CHANGED");
+	command("/usr/sbin/apparmor_parser", [
+		"--skip-kernel-load",
+		"--skip-cache",
+		join(spec.packageRoot, "qorpera-office-browser-bwrap.apparmor"),
+	]);
 	const node = /^v(\d+)\.(\d+)\.(\d+)$/.exec(command("/usr/bin/node", ["--version"]));
 	if (
 		!node ||
@@ -396,6 +405,16 @@ export async function installOfficeImage(stage: "--check" | "--apply" | "--locke
 		await officeInstallLockFd(lock, 0);
 		await publishOfficeInstallFile(target);
 	}
+	const appArmor = await readFile("/sys/module/apparmor/parameters/enabled", "utf8").catch((error) => {
+		if (absent(error)) return "N";
+		throw error;
+	});
+	if (!/^[YN]\n?$/.test(appArmor)) throw new Error("OFFICE_IMAGE_APPARMOR_UNCONFIRMED");
+	command("/usr/sbin/apparmor_parser", [
+		appArmor.trim() === "Y" ? "--replace" : "--skip-kernel-load",
+		"--skip-cache",
+		"/etc/apparmor.d/qorpera-office-browser-bwrap",
+	]);
 	await officeInstallParents("/var/lib/qorpera-office/.placeholder", true);
 	await chmod("/var/lib/qorpera-office", 0o755);
 	command("/usr/bin/systemd-analyze", ["verify", ...units.map((n) => `/etc/systemd/system/${n}`)]);

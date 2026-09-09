@@ -22,6 +22,7 @@ export const OFFICE_IMAGE_EXECUTABLES = [
 	"/usr/bin/scrot",
 	"/usr/bin/systemctl",
 	"/usr/bin/systemd-tmpfiles",
+	"/usr/sbin/apparmor_parser",
 	"/usr/lib/qorpera-chromium/chrome",
 ] as const;
 export const OFFICE_IMAGE_PACKAGE_FILES = [
@@ -45,6 +46,7 @@ export const OFFICE_IMAGE_PACKAGE_FILES = [
 	"qorpera-screen-session",
 	"qorpera-screen-xfce",
 	"qorpera-browser-policy.json",
+	"qorpera-office-browser-bwrap.apparmor",
 	"LICENSE",
 ] as const;
 
@@ -89,6 +91,8 @@ export function parseOfficeImageInstallationSpec(value: unknown) {
 }
 
 export function officeImageDestination(file: string): { path: string; mode: number } {
+	if (file === "qorpera-office-browser-bwrap.apparmor")
+		return { path: "/etc/apparmor.d/qorpera-office-browser-bwrap", mode: 0o444 };
 	if (file === "qorpera-office-private.mount.in")
 		return { path: `/etc/systemd/system/${OFFICE_IMAGE_MOUNT_UNIT}`, mode: 0o644 };
 	if (["qorpera-company-computer.service", "qorpera-company-computer-preparation.service"].includes(file))

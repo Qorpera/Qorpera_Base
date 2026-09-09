@@ -57,7 +57,7 @@ if (metadata.version !== runtime.dependencies["playwright-core"] || !/^\d+\.\d+\
 }
 await mkdir(join(output, "node_modules"), { mode: 0o755 });
 await copyTree(playwright, join(output, "node_modules/playwright-core"));
-for (const name of ["qorpera-company-computer.service", "qorpera-company-computer-preparation.service", "qorpera-office-preparation.conf", "qorpera-office-runtime.conf", "qorpera-office-private.mount.in", "qorpera-screen-session", "qorpera-screen-xfce", "qorpera-browser-policy.json"]) {
+for (const name of ["qorpera-company-computer.service", "qorpera-company-computer-preparation.service", "qorpera-office-preparation.conf", "qorpera-office-runtime.conf", "qorpera-office-private.mount.in", "qorpera-screen-session", "qorpera-screen-xfce", "qorpera-browser-policy.json", "qorpera-office-browser-bwrap.apparmor"]) {
 	await copyFile(join(root, "deploy/lxd-company-computer-guest", name), join(output, name));
 	await chmod(join(output, name), name.startsWith("qorpera-screen-") ? 0o555 : 0o444);
 }

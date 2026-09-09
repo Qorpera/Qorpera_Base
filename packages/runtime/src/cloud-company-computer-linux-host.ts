@@ -81,6 +81,20 @@ export async function assertCompanyComputerImageArtifact(path: string, directory
 	}
 }
 
+/** An enabled AppArmor host must attach the reviewed browser profile before
+ * its namespace startup gate grants execution. An unreadable state is not an
+ * absent LSM and must fail closed. */
+export async function companyComputerBrowserAppArmorRequired(): Promise<boolean> {
+	const state = await readCompanyComputerLinuxMetadata("/sys/module/apparmor/parameters/enabled", 16).catch(
+		(error) => {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return "N";
+			throw error;
+		},
+	);
+	if (!/^[YN]\n?$/.test(state)) throw new Error("OFFICE_APPARMOR_STATE_UNCONFIRMED");
+	return state.trim() === "Y";
+}
+
 export async function assertCompanyComputerLinuxHost(
 	limits: CompanyComputerCommandLimits,
 	signal: AbortSignal,
