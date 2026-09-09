@@ -1,5 +1,5 @@
 const { spawn } = require("node:child_process");
-const { randomUUID } = require("node:crypto");
+const { createHash, randomUUID } = require("node:crypto");
 const { writeFileSync } = require("node:fs");
 const { connect } = require("node:net");
 const { createInterface } = require("node:readline");
@@ -13,7 +13,13 @@ const configuration = {};
 let threadParameters;
 let turnParameters;
 const companyOutputs = [];
-const companyCalls = mode === "company-silent" || mode === "company-no-send"
+const companyCalls = mode === "company-office"
+	? [
+		{ tool: "send_message", arguments: { idempotencyKey: "progress", text: "Checking the office workbench.", phase: "progress" } },
+		{ tool: "computer_shell", arguments: { operationKey: "office-check", action: { kind: "shell", command: "printf office", timeoutMs: 1000 } } },
+		{ tool: "send_message", arguments: { idempotencyKey: "final", text: "The office check is complete.", phase: "final" } },
+	]
+	: mode === "company-silent" || mode === "company-no-send"
 	? [{ tool: "company_read", arguments: { path: "note.md", offset: 0, limit: 256 } }]
 	: mode === "company-secret"
 		? [
@@ -84,7 +90,7 @@ async function handle(message) {
 		if (mode === "oversized") { process.stdout.write("x".repeat(1024 * 1024 + 1)); return; }
 		if (mode === "wire-budget") { process.stderr.write("x".repeat(17 * 1024 * 1024)); return; }
 		if (mode === "missing-result") { write({ id: message.id }); return; }
-		write({ id: message.id, result: { userAgent: `qorpera_cloud_boundary/${mode === "wrong-version" ? "0.146.0" : "0.147.0"} (fixture)${mode === "missing-fence" ? "" : " qorpera.native-result-fence/v1"}${mode === "missing-fence" || mode === "missing-direct-tools" ? "" : " qorpera.native-direct-tools/v1"}` } });
+		write({ id: message.id, result: { userAgent: `qorpera_cloud_boundary/${mode === "wrong-version" ? "0.146.0" : "0.147.0"} (fixture)${mode === "capture-image" ? " qorpera.native-capture-images/v1" : ""}${mode === "missing-fence" ? "" : " qorpera.native-result-fence/v1"}${mode === "missing-fence" || mode === "missing-direct-tools" ? "" : " qorpera.native-direct-tools/v1"}` } });
 	} else if (message.method === "config/read") {
 		if (mode === "unsafe-config") configuration.features.shell_tool = true;
 		if (mode === "extra-mcp") configuration.mcp_servers.uncontrolled = { url: "http://uncontrolled.invalid/mcp" };
@@ -170,6 +176,8 @@ async function handle(message) {
 			failed();
 		} else if (mode === "interrupted-turn") {
 			write({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "interrupted", error: null } } });
+		} else if (mode === "capture-image") {
+			write({ id: "capture_request", method: "item/tool/call", params: { threadId, turnId, callId: "capture_1", namespace: "qorpera", tool: "computer_screenshot", arguments: {} } });
 		} else if (mode.startsWith("company-")) {
 			companyCall(0);
 		} else if (mode === "wrong-thread" || mode === "wrong-turn" || mode === "wrong-namespace" || mode === "pending-tool" || mode === "cloud-tool") {
@@ -198,6 +206,14 @@ async function handle(message) {
 			write({ method: "item/reasoning/summaryTextDelta", params: { threadId, turnId, delta: "PRIVATE_REASONING_CANARY" } });
 			done();
 		}
+	} else if (message.id === "capture_request" && mode === "capture-image") {
+		const [envelope, image] = message.result.contentItems;
+		if (!message.result.success || envelope.type !== "inputText" || image.type !== "inputImage" || !image.imageUrl.startsWith("data:image/png;base64,")) throw new Error("invalid capture fixture response");
+		const pixels = Buffer.from(image.imageUrl.slice("data:image/png;base64,".length), "base64");
+		const sha256 = createHash("sha256").update(pixels).digest("hex");
+		const fenced = await fence([{ kind: "function_call_output", callId: "capture_1", output: [{ type: "input_text", text: envelope.text }, { type: "input_image", sha256 }] }]);
+		writeFileSync(evidencePath, JSON.stringify({ imageBytes: pixels.length, sha256, fenced }));
+		done();
 	} else if (message.id === "approval") {
 		writeFileSync(evidencePath, JSON.stringify(message));
 		done();

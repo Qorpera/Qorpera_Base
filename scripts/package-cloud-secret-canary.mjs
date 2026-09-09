@@ -14,8 +14,8 @@ await mkdir(output, { mode: 0o700 });
 await build({
 	absWorkingDir: root,
 	entryPoints: {
-		"qorpera-cloud-secret-broker-canary-service": "packages/shell/src/cloud-secret-canary-service-main.ts",
-		"qorpera-step2-secret-canary-destination": "packages/shell/src/cloud-secret-canary-destination-main.ts",
+		"qorpera-cloud-secret-broker-canary-service": "packages/runtime/src/cloud-secret-canary-service-main.ts",
+		"qorpera-step2-secret-canary-destination": "packages/runtime/src/cloud-secret-canary-destination-main.ts",
 	},
 	outdir: output,
 	outExtension: { ".js": ".mjs" },

@@ -2,29 +2,28 @@ import { realpathSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { JsonValue } from "@qorpera/contracts";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import * as nativeProvider from "../src/cloud-native-provider.ts";
-import {
-	type CloudRunnerBrokerDescription,
-	type CloudRunnerBrokerTransport,
-	CloudRunnerJobBroker,
-} from "../src/cloud-runner-broker.ts";
 import {
 	type CloudRunnerAuthorityStore,
 	type CloudRunnerControlRequest,
 	CloudRunnerControlRequestError,
 	type CloudRunnerControlTransport,
-	DisposableCloudRunner,
-	SupabaseCloudRunnerControlTransport,
-} from "../src/cloud-runner-control.ts";
+} from "@qorpera/cloud-client/node/cloud-runner-protocol";
+import type { JsonValue } from "@qorpera/contracts";
+import * as nativeProvider from "@qorpera/runtime/cloud-native-provider";
+import {
+	type CloudRunnerBrokerDescription,
+	type CloudRunnerBrokerTransport,
+	CloudRunnerJobBroker,
+} from "@qorpera/runtime/cloud-runner-broker";
+import { DisposableCloudRunner, SupabaseCloudRunnerControlTransport } from "@qorpera/runtime/cloud-runner-control";
 import type {
 	CloudRunnerExecutionResult,
 	CloudRunnerSandboxBackend,
 	ExecuteCloudRunnerJobOptions,
-} from "../src/cloud-runner-sandbox.ts";
-import { EphemeralCloudRunnerWorker } from "../src/cloud-runner-worker.ts";
-import { FileCloudRunnerAuthorityStore } from "../src/cloud-runner-worker-state.ts";
+} from "@qorpera/runtime/cloud-runner-sandbox";
+import { EphemeralCloudRunnerWorker } from "@qorpera/runtime/cloud-runner-worker";
+import { FileCloudRunnerAuthorityStore } from "@qorpera/runtime/cloud-runner-worker-state";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const runnerId = "a8450f9d-c912-43ea-81f6-62c7247d752a";
 const profileId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";

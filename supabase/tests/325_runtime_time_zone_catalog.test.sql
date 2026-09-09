@@ -1,6 +1,6 @@
 begin;
 do $$
-declare v_name text; v_bad jsonb; v_listener jsonb; v_schedule jsonb; v_role text;
+declare v_name text; v_bad jsonb; v_listener jsonb; v_schedule jsonb; v_anchor jsonb; v_window jsonb; v_role text;
 begin
 	if exists ((select name from pg_catalog.pg_timezone_names
 		except select name from public.qorpera_runtime_time_zone_names)
@@ -11,15 +11,21 @@ begin
 		raise exception 'Timezone parity fixture has insufficient coverage'; end if;
 	v_listener := '{"id":"changes","kind":"listener","source":"company-file","path":"reports","match":"subtree","timeZone":"UTC","replyPolicy":"silent"}';
 	v_schedule := '{"id":"tick","kind":"schedule","intervalMinutes":1440,"weekdays":["monday"],"localTime":"09:00","timeZone":"UTC","replyPolicy":"silent"}';
+	v_anchor := v_schedule || '{"startAt":"2026-08-24T09:00:00.000Z"}';
+	v_window := '{"id":"window","kind":"schedule","intervalMinutes":30,"months":[2,5],"weekdays":["monday"],"windowStart":"09:00","windowEnd":"17:00","timeZone":"UTC","replyPolicy":"required"}';
 	for v_name in select name from public.qorpera_runtime_time_zone_names loop
 		if not public.qorpera_runtime_time_zone_name_valid(v_name)
 			or not public.qorpera_cloud_routine_trigger_valid(jsonb_set(v_listener,'{timeZone}',to_jsonb(v_name)))
-			or not public.qorpera_cloud_routine_trigger_valid(jsonb_set(v_schedule,'{timeZone}',to_jsonb(v_name))) then
+			or not public.qorpera_cloud_routine_trigger_valid(jsonb_set(v_schedule,'{timeZone}',to_jsonb(v_name)))
+			or not public.qorpera_cloud_routine_trigger_valid(jsonb_set(v_anchor,'{timeZone}',to_jsonb(v_name)))
+			or not public.qorpera_cloud_routine_trigger_valid(jsonb_set(v_window,'{timeZone}',to_jsonb(v_name))) then
 			raise exception 'Valid PostgreSQL timezone rejected: %',v_name; end if;
 	end loop;
 	for v_bad in select value from jsonb_array_elements('[null,0,true,[],{},"","auto"," europe/Copenhagen","Europe/Copenhagen ","Europe/copenhagen","UTC0","+02:00","Definitely/Invalid"]') loop
 		if public.qorpera_cloud_routine_trigger_valid(jsonb_set(v_listener,'{timeZone}',v_bad))
-			or public.qorpera_cloud_routine_trigger_valid(jsonb_set(v_schedule,'{timeZone}',v_bad)) then
+			or public.qorpera_cloud_routine_trigger_valid(jsonb_set(v_schedule,'{timeZone}',v_bad))
+			or public.qorpera_cloud_routine_trigger_valid(jsonb_set(v_anchor,'{timeZone}',v_bad))
+			or public.qorpera_cloud_routine_trigger_valid(jsonb_set(v_window,'{timeZone}',v_bad)) then
 			raise exception 'Invalid or non-canonical timezone accepted: %',v_bad; end if;
 	end loop;
 	if public.qorpera_runtime_time_zone_name_valid(null)
@@ -27,7 +33,10 @@ begin
 		or public.qorpera_cloud_routine_trigger_valid(v_listener || '{"match":"invented"}')
 		or public.qorpera_cloud_routine_trigger_valid(v_schedule || '{"intervalMinutes":4}')
 		or public.qorpera_cloud_routine_trigger_valid(v_schedule || '{"weekdays":["monday","monday"]}')
-		or public.qorpera_cloud_routine_trigger_valid(v_schedule || '{"localTime":"25:00"}') then
+		or public.qorpera_cloud_routine_trigger_valid(v_schedule || '{"localTime":"25:00"}')
+		or public.qorpera_cloud_routine_trigger_valid(v_anchor || '{"startAt":"now"}')
+		or public.qorpera_cloud_routine_trigger_valid(v_window || '{"months":[2,2]}')
+		or public.qorpera_cloud_routine_trigger_valid(v_window || '{"windowEnd":"08:00"}') then
 		raise exception 'Existing trigger constraints were weakened'; end if;
 	foreach v_role in array array['anon','authenticated','service_role'] loop
 		if has_table_privilege(v_role,'public.qorpera_runtime_time_zone_names','SELECT,INSERT,UPDATE,DELETE,TRUNCATE')
@@ -53,7 +62,8 @@ do $$ begin
 		or has_function_privilege(current_user,'public.qorpera_runtime_time_zone_name_valid(text)','EXECUTE') then
 		raise exception 'Validator caller gained catalog access'; end if;
 	if not public.qorpera_cloud_routine_trigger_valid('{"id":"changes","kind":"listener","source":"company-file","path":"reports","match":"subtree","timeZone":"Europe/Copenhagen","replyPolicy":"silent"}')
-		or not public.qorpera_cloud_routine_trigger_valid('{"id":"tick","kind":"schedule","intervalMinutes":1440,"weekdays":["monday"],"localTime":"09:00","timeZone":"Europe/Copenhagen"}') then
+		or not public.qorpera_cloud_routine_trigger_valid('{"id":"tick","kind":"schedule","intervalMinutes":1440,"weekdays":["monday"],"localTime":"09:00","timeZone":"Europe/Copenhagen","startAt":"2026-08-24T09:00:00.000Z"}')
+		or not public.qorpera_cloud_routine_trigger_valid('{"id":"window","kind":"schedule","intervalMinutes":30,"months":[2,5],"windowStart":"09:00","windowEnd":"17:00","timeZone":"Europe/Copenhagen"}') then
 		raise exception 'Split-owner validation requires unintended caller privileges'; end if;
 end $$;
 reset role;

@@ -2,10 +2,10 @@ import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runCloudRunnerContainerJob } from "@qorpera/runtime/cloud-runner-container";
+import { readCloudRunnerContainerRequest } from "@qorpera/runtime/cloud-runner-container-main";
+import { startCloudRunnerModelSocketServer } from "@qorpera/runtime/cloud-runner-model-socket";
 import { afterEach, describe, expect, it } from "vitest";
-import { runCloudRunnerContainerJob } from "../src/cloud-runner-container.ts";
-import { readCloudRunnerContainerRequest } from "../src/cloud-runner-container-main.ts";
-import { startCloudRunnerModelSocketServer } from "../src/cloud-runner-model-socket.ts";
 
 const jobId = "77777777-7777-4777-8777-777777777777";
 const versionId = "66666666-6666-4666-8666-666666666666";

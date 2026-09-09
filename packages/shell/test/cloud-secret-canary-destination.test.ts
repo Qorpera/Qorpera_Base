@@ -2,8 +2,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Step2SecretCanaryLedger, step2SecretCanaryReflection } from "@qorpera/runtime/cloud-secret-canary-destination";
 import { afterEach, expect, it } from "vitest";
-import { Step2SecretCanaryLedger, step2SecretCanaryReflection } from "../src/cloud-secret-canary-destination.ts";
 
 const paths: string[] = [];
 afterEach(async () => {

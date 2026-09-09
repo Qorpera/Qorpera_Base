@@ -177,6 +177,7 @@ function pass(target, label) {
 }
 
 async function verifyDatabase(database, target) {
+	const fairAdmission = sql(database, "select strpos(pg_get_functiondef('public.qorpera_drain_company_file_wakes(integer)'::regprocedure),'exception when lock_not_available')>0;") === "t";
 	target.status = "running";
 	const recovery = `${database}_recovery`;
 	console.log(`Verifying component contracts, concurrency and recovery against ${database}`);
@@ -275,15 +276,16 @@ select pg_temp.wake_public_send(current_setting('qorpera_test.wake_binding')::js
 select pg_temp.wake_routine('${bob}','{"id":"changes","kind":"listener","source":"company-file","path":"note.md","match":"exact","timeZone":"UTC","replyPolicy":"required"}');
 select pg_temp.path_commit(pg_temp.path_plan('locked-audience','note.md',pg_temp.path_stage_file('note.md','One pending event')));
 commit;`);
-	const cursorBefore = sql(contention, "select to_jsonb(c) from public.qorpera_company_file_wake_cursors c;");
+	const cursorBefore = sql(contention, "select to_jsonb(c)-'last_scanned_at' from public.qorpera_company_file_wake_cursors c;");
 	await barrierTransaction(contention,
 		"select id from public.qorpera_shared_sessions where id='30000000-0000-4000-8000-000000000042' for update;", () => {
-			// A lock conflict must remain retryable (55P03), not become a denied
-			// claim. The server deadline also distinguishes NOWAIT from waiting.
-			sql(contention, service + helpers + `
+			// Current fair admission skips contention; the historical component
+			// raises 55P03. Neither may advance delivery or record a denial.
+			if (fairAdmission) assert.equal(JSON.parse(sql(contention, service + "set statement_timeout='2s'; select public.qorpera_drain_company_file_wakes(1);").split("\n").at(-1)).admitted, 0);
+			else sql(contention, service + helpers + `
 set statement_timeout='2s';
 select pg_temp.wake_error('select public.qorpera_drain_company_file_wakes(1)','55P03');`);
-			assert.equal(sql(contention, "select to_jsonb(c) from public.qorpera_company_file_wake_cursors c;"), cursorBefore);
+			assert.equal(sql(contention, "select to_jsonb(c)-'last_scanned_at' from public.qorpera_company_file_wake_cursors c;"), cursorBefore);
 			assert.equal(sql(contention, "select count(*) from public.qorpera_company_file_wake_claims;"), "0");
 			assert.equal(sql(contention, "select count(*) from public.qorpera_wake_occurrences;"), "1");
 		});
@@ -292,7 +294,7 @@ select pg_temp.wake_error('select public.qorpera_drain_company_file_wakes(1)','5
 	assert.equal(sql(contention, "select count(*) from public.qorpera_company_file_wake_claims where outcome='admitted';"), "1");
 	assert.equal(sql(contention, "select count(*) from public.qorpera_wake_occurrences where source_kind='company-file';"), "1");
 	assert.equal(JSON.parse(sql(contention, service + "select public.qorpera_drain_company_file_wakes(1);").split("\n").at(-1)).examined, 0);
-	pass(target, "audience row contention raises retryable 55P03 without advancement; releasing the lock admits the same event once");
+	pass(target, `audience row contention ${fairAdmission ? "skips fairly" : "raises retryable 55P03"} without advancement; releasing the lock admits the same event once`);
 
 	const activation = `${database}_activation`;
 	clone(activation, database);
@@ -383,9 +385,13 @@ select environment_id from public.qorpera_company_files where environment_id='${
 				pendingOperation = concurrentSql(revocation, `set application_name='${application}'; set statement_timeout='5s';\n` +
 					service + transactionContext + operation);
 				void pendingOperation.catch(() => undefined);
-				await waitForLock(revocation, application);
+				if (fairAdmission && phase !== "context") {
+					const pending = JSON.parse((await pendingOperation).split("\n").at(-1));
+					if (phase === "drain") assert.equal(pending.admitted, 0);
+					else assert.deepEqual(pending, []);
+				} else await waitForLock(revocation, application);
 			}, "commit");
-			const output = await pendingOperation;
+			const output = fairAdmission && phase !== "context" ? sql(revocation, service + transactionContext + operation) : await pendingOperation;
 			if (phase === "drain") {
 				assert.equal(JSON.parse(output.split("\n").at(-1)).admitted, 0);
 				assert.equal(sql(revocation, "select count(*) from public.qorpera_company_file_wake_claims where outcome='denied';"), "1");
@@ -403,7 +409,7 @@ select environment_id from public.qorpera_company_files where environment_id='${
 				assert.equal(sql(revocation, `select count(*) from public.qorpera_wake_occurrences
  where source_kind='company-file' and run_id='${recipientBinding.runId}';`), "1");
 			}
-			pass(target, `committed ${revoked} revocation is rechecked after the ${phase} lock wait`);
+			pass(target, `committed ${revoked} revocation is rechecked after ${phase} ${fairAdmission && phase !== "context" ? "contention retry" : "lock wait"}`);
 		}
 	}
 
@@ -425,6 +431,9 @@ commit;`);
 		concurrentSql(recovery, service + "select public.qorpera_drain_company_file_wakes(1);"),
 		concurrentSql(recovery, service + "select public.qorpera_drain_company_file_wakes(1);"),
 	]);
+	// Same-company consumers may skip one another's profile fence. A fresh
+	// bounded poll must deliver the remaining event without duplicating one.
+	if (fairAdmission) drains.push(sql(recovery, service + "select public.qorpera_drain_company_file_wakes(2);"));
 	assert.equal(drains.map((output) => JSON.parse(output.split("\n").at(-1)).admitted).reduce((a, b) => a + b), 2);
 	assert.equal(sql(recovery, "select count(*) from public.qorpera_company_file_wake_claims where outcome='admitted';"), "2");
 	pass(target, "interrupted drain rolls back atomically; concurrent consumers deliver each event/listener once");
@@ -446,6 +455,7 @@ commit;`);
 		concurrentSql(recovery, service + "select public.qorpera_materialize_wake_execution_runs(32);"),
 	]);
 	for (const result of materializers) if (result.status === "rejected") throw result.reason;
+	if (fairAdmission) sql(recovery, service + "select public.qorpera_materialize_wake_execution_runs(32);");
 	sequenceDiagnostic(recovery, "recovery-after-concurrent-materialization");
 	assert.equal(sql(recovery, "select count(*) from public.qorpera_wake_occurrences where status='materialized' and run_id is not null;"), "4");
 	assert.equal(sql(recovery, `select count(*) from public.qorpera_execution_runs where environment_id='${environment}';`), "4");

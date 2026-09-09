@@ -7,6 +7,9 @@ import {
 import { supabaseRequestHeaders } from "./supabase-headers.ts";
 
 export type MemberCompanyRpc =
+	| "qorpera_company_presence_scope"
+	| "qorpera_member_file_export_source"
+	| "qorpera_begin_member_company_file_upload"
 	| "qorpera_begin_member_company_path_command"
 	| "qorpera_get_member_company_path_command"
 	| "qorpera_review_member_company_path_command"
@@ -18,6 +21,7 @@ export type MemberCompanyRpc =
 	| "qorpera_authorize_member_session_attachment";
 
 export type MemberCompanyPublisherRpc =
+	| "qorpera_native_presence_subject"
 	| "qorpera_claim_company_bootstrap"
 	| "qorpera_stage_company_bootstrap_object"
 	| "qorpera_finalize_company_bootstrap"

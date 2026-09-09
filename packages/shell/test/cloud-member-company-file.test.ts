@@ -3,12 +3,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CloudContentAddressedStore, GATEWAY_EDGE_USER_AGENT } from "@qorpera/cloud-client/node/cloud-object-store";
 import { afterEach, expect, it, vi } from "vitest";
 import { FileSystemObjectStore } from "../../object-gateway/src/object-store.ts";
 import { createObjectGatewayHandler } from "../../object-gateway/src/service.ts";
 import { SupabaseObjectAuthority } from "../../object-gateway/src/supabase-authority.ts";
 import { CloudMemberCompanyFileReader } from "../src/cloud-member-company-file.ts";
-import { CloudContentAddressedStore, GATEWAY_EDGE_USER_AGENT } from "../src/cloud-object-store.ts";
 
 const companyId = "31000000-0000-4000-8000-000000000010";
 const environmentId = "31000000-0000-4000-8000-000000000020";

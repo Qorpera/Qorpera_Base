@@ -3,9 +3,12 @@ import { lstat, mkdtemp, rm } from "node:fs/promises";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+	CLOUD_NATIVE_RESULT_FENCE_SCHEMA,
+	startCloudNativeResultFence,
+} from "@qorpera/runtime/cloud-native-result-fence";
+import { CloudNativeToolBoundary, type CloudToolResult } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { CLOUD_NATIVE_RESULT_FENCE_SCHEMA, startCloudNativeResultFence } from "../src/cloud-native-result-fence.ts";
-import { CloudNativeToolBoundary, type CloudToolResult } from "../src/cloud-native-tool-boundary.ts";
 
 let root: string;
 const services: Array<Awaited<ReturnType<typeof startCloudNativeResultFence>>> = [];

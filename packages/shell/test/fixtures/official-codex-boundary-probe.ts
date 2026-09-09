@@ -11,13 +11,13 @@ import {
 	type CloudAgentSendReceipt,
 	parseCloudAgentSendInput,
 	parseCloudAgentSendReceipt,
-} from "../../src/cloud-agent-mouth.ts";
-import { CLOUD_CODEX_BOUNDARY_VERSION, runCloudCodexToolSession } from "../../src/cloud-codex-tool-session.ts";
+} from "@qorpera/runtime/cloud-agent-mouth";
+import { CLOUD_CODEX_BOUNDARY_VERSION, runCloudCodexToolSession } from "@qorpera/runtime/cloud-codex-tool-session";
 import {
 	type CloudNativeTool,
 	CloudNativeToolBoundary,
 	type CloudToolResult,
-} from "../../src/cloud-native-tool-boundary.ts";
+} from "@qorpera/runtime/cloud-native-tool-boundary";
 import { nativeCodexFixtureCommand } from "./native-codex-fixture-command.ts";
 
 export interface CodexBoundaryProof {

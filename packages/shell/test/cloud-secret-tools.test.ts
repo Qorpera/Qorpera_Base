@@ -1,20 +1,20 @@
 import { randomUUID } from "node:crypto";
 import type { JsonValue } from "@qorpera/contracts";
-import { afterEach, expect, it, vi } from "vitest";
-import type { CloudCompanyPathControl } from "../src/cloud-company-path-gateway.ts";
-import { type CloudNativeToolBinding, CloudNativeToolRun } from "../src/cloud-native-tool-authority.ts";
-import { CloudNativeToolBoundary } from "../src/cloud-native-tool-boundary.ts";
+import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
+import { type CloudNativeToolBinding, CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
+import { CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
 import {
 	type CloudNativeToolOperationControlPlane,
 	CloudNativeToolOperations,
-} from "../src/cloud-native-tool-operations.ts";
-import type { BeginCloudRunnerOperationInput } from "../src/cloud-runner-broker.ts";
-import { CloudRuntimeObservability, type CloudRuntimeObservation } from "../src/cloud-runtime-observability.ts";
+} from "@qorpera/runtime/cloud-native-tool-operations";
+import type { BeginCloudRunnerOperationInput } from "@qorpera/runtime/cloud-runner-broker";
+import { CloudRuntimeObservability, type CloudRuntimeObservation } from "@qorpera/runtime/cloud-runtime-observability";
 import {
 	type CloudSecretOperationClient,
 	cloudSecretTools,
 	describeCloudSecretTools,
-} from "../src/cloud-secret-tools.ts";
+} from "@qorpera/runtime/cloud-secret-tools";
+import { afterEach, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 const runs: CloudNativeToolRun[] = [];

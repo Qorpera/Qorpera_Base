@@ -1,9 +1,9 @@
-import { describe, expect, it } from "vitest";
 import {
 	buildCompanyOrganizationHierarchy,
 	parseHostedCompanyOrganization,
-} from "../src/cloud-company-organization.ts";
-import type { HostedStaffAgent } from "../src/hosted-primary.ts";
+} from "@qorpera/cloud-client/cloud-company-organization";
+import type { HostedStaffAgent } from "@qorpera/cloud-client/hosted-primary";
+import { describe, expect, it } from "vitest";
 
 const PROFILE = "10000000-0000-4000-8000-000000000001";
 const COFOUNDER = "10000000-0000-4000-8000-000000000002";

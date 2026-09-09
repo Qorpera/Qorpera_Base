@@ -3,9 +3,8 @@ import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { recoveryPublicKeyText } from "../src/cloud-identity-recovery-crypto.ts";
-import type { IdentityRecoveryRuntimeState } from "../src/cloud-identity-recovery-guest.ts";
+import { recoveryPublicKeyText } from "@qorpera/runtime/cloud-identity-recovery-crypto";
+import type { IdentityRecoveryRuntimeState } from "@qorpera/runtime/cloud-identity-recovery-guest";
 import {
 	type LxdNativeLoginBootstrapPaths,
 	type LxdRunnerBootstrapPaths,
@@ -13,7 +12,8 @@ import {
 	parseLxdRunnerBootstrapConfig,
 	runLxdNativeLoginBootstrap,
 	runLxdRunnerBootstrap,
-} from "../src/lxd-runner-bootstrap.ts";
+} from "@qorpera/runtime/lxd-runner-bootstrap";
+import { afterEach, describe, expect, it } from "vitest";
 
 const roots: string[] = [];
 const computeIdentityId = "90000000-0000-4000-8000-000000000001";

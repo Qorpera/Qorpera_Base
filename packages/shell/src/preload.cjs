@@ -95,6 +95,7 @@ contextBridge.exposeInMainWorld("qorpera", {
 		ipcRenderer.invoke("company:new", name, companyIcon, clientCreationId),
 	setCompanyIcon: (companyIcon) => ipcRenderer.invoke("company:set-icon", companyIcon),
 	openCompanyFile: () => ipcRenderer.invoke("company-file:open"),
+	openBrowserCleanup: () => ipcRenderer.invoke("account:browser-cleanup"),
 	openCompanyFileConflictRemote: () => ipcRenderer.invoke("company-file:open-conflict-remote"),
 	resolveCompanyFileConflict: (resolution) => ipcRenderer.invoke("company-file:resolve-conflict", resolution),
 	openCompanyFileReview: (checkoutId, proposalHead, expectedCanonicalHead) =>

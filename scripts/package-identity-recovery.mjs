@@ -15,8 +15,8 @@ await mkdir(output, { mode: 0o700 });
 await build({
 	absWorkingDir: root,
 	entryPoints: {
-		"qorpera-identity-recovery-service": "packages/shell/src/cloud-identity-recovery-service-main.ts",
-		"qorpera-identity-recovery-restore": "packages/shell/src/cloud-identity-recovery-restore-main.ts",
+		"qorpera-identity-recovery-service": "packages/runtime/src/cloud-identity-recovery-service-main.ts",
+		"qorpera-identity-recovery-restore": "packages/runtime/src/cloud-identity-recovery-restore-main.ts",
 	},
 	outdir: output, outExtension: { ".js": ".mjs" }, bundle: true,
 	platform: "node", format: "esm", target: "node22.19", legalComments: "none", logLevel: "silent",

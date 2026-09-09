@@ -62,7 +62,8 @@
 		"prepublishOnly": "npm run clean && npm run build"
 	},
 	"dependencies": {
-		"@qorpera/contracts": "^0.83.0"
+		"@qorpera/contracts": "^0.83.0",
+		"@whatwg-node/node-fetch": "0.8.6"
 	},
 	"devDependencies": {
 		"shx": "0.4.0",

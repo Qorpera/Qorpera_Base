@@ -1,6 +1,16 @@
 import { randomUUID } from "node:crypto";
-import type { JsonValue } from "@qorpera/contracts";
-import type { SupabaseClient } from "@supabase/supabase-js";
+import {
+	type CloudRunnerModelPolicy,
+	type CloudRunnerModelUsageObservation,
+	type ConfigureCloudRunnerModelPolicyInput,
+	normalizeCloudRunnerAllowedModels,
+	parseCloudRunnerModelPolicy,
+	parseCloudRunnerModelUsageObservation,
+} from "@qorpera/cloud-client/cloud-runner-model";
+import {
+	type CloudRunnerUsageObservation,
+	parseCloudRunnerUsageObservation,
+} from "@qorpera/cloud-client/cloud-runner-usage";
 import {
 	CLOUD_RUNNER_CAPABILITIES,
 	type CloudRunner,
@@ -13,16 +23,9 @@ import {
 	parseCloudRunnerAuditReceipt,
 	parseCloudRunnerJob,
 	runnerActivationTokenSha256,
-} from "./cloud-runner-control.ts";
-import {
-	type CloudRunnerModelPolicy,
-	type CloudRunnerModelUsageObservation,
-	type ConfigureCloudRunnerModelPolicyInput,
-	normalizeCloudRunnerAllowedModels,
-	parseCloudRunnerModelPolicy,
-	parseCloudRunnerModelUsageObservation,
-} from "./cloud-runner-model.ts";
-import { type CloudRunnerUsageObservation, parseCloudRunnerUsageObservation } from "./cloud-runner-usage.ts";
+} from "@qorpera/cloud-client/node/cloud-runner-protocol";
+import type { JsonValue } from "@qorpera/contracts";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;

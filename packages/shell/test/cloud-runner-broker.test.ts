@@ -2,8 +2,9 @@ import { createHash } from "node:crypto";
 import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { CloudRunnerModelRequest } from "@qorpera/cloud-client/cloud-runner-model";
+import { parseCloudRunnerJob } from "@qorpera/cloud-client/node/cloud-runner-protocol";
 import { scaffoldCompany } from "@qorpera/pi-coding-agent/company";
-import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	type AppendCloudRunnerCompanyRevisionGraphInput,
 	type AppendCloudRunnerTranscriptEventInput,
@@ -19,9 +20,8 @@ import {
 	type PrepareCloudRunnerCompanyRevisionInput,
 	type RegisterCloudRunnerArtifactInput,
 	SupabaseCloudRunnerBrokerTransport,
-} from "../src/cloud-runner-broker.ts";
-import { parseCloudRunnerJob } from "../src/cloud-runner-control.ts";
-import type { CloudRunnerModelRequest } from "../src/cloud-runner-model.ts";
+} from "@qorpera/runtime/cloud-runner-broker";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const profileId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
 const environmentId = "73dc6943-b71c-4ba4-a38d-78da0861e0dc";

@@ -2,7 +2,6 @@ import { createPrivateKey, generateKeyPairSync, randomBytes, randomUUID } from "
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
 import {
 	openRecoveryRelease,
 	parseRecoveryKeyBinding,
@@ -18,8 +17,9 @@ import {
 	unwrapRecoveryKey,
 	verifyRecoveryBackup,
 	wrapRecoveryKey,
-} from "../src/cloud-identity-recovery-crypto.ts";
-import { openNativeCredentialCapsule, sealNativeCredentialCapsule } from "../src/cloud-native-provider-host.ts";
+} from "@qorpera/runtime/cloud-identity-recovery-crypto";
+import { openNativeCredentialCapsule, sealNativeCredentialCapsule } from "@qorpera/runtime/cloud-native-provider-host";
+import { afterEach, describe, expect, it } from "vitest";
 
 const authority = generateKeyPairSync("rsa", { modulusLength: 3072, publicExponent: 65537 });
 const recipient = generateKeyPairSync("rsa", { modulusLength: 3072, publicExponent: 65537 });

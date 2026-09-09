@@ -1,5 +1,5 @@
+import { CloudSessionRunControl, type CloudSessionRunRpc } from "@qorpera/cloud-client/cloud-session-run-control";
 import { describe, expect, it, vi } from "vitest";
-import { CloudSessionRunControl, type CloudSessionRunRpc } from "../src/cloud-session-run-control.ts";
 
 const sessionId = "28000000-0000-4000-8000-000000000055";
 const staffAgentId = "28000000-0000-4000-8000-000000000054";

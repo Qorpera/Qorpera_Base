@@ -3,11 +3,11 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runCloudNativeRunToolSession } from "@qorpera/runtime/cloud-native-run-tool-session";
+import type { CloudNativeTool, CloudToolResult } from "@qorpera/runtime/cloud-native-tool-boundary";
+import type { CloudNativeToolOperationControlPlane } from "@qorpera/runtime/cloud-native-tool-operations";
+import { CloudRuntimeObservability, type CloudRuntimeObservation } from "@qorpera/runtime/cloud-runtime-observability";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { runCloudNativeRunToolSession } from "../src/cloud-native-run-tool-session.ts";
-import type { CloudNativeTool, CloudToolResult } from "../src/cloud-native-tool-boundary.ts";
-import type { CloudNativeToolOperationControlPlane } from "../src/cloud-native-tool-operations.ts";
-import { CloudRuntimeObservability, type CloudRuntimeObservation } from "../src/cloud-runtime-observability.ts";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 const rpcFixture = fileURLToPath(new URL("./fixtures/codex-boundary-rpc-fixture.cjs", import.meta.url));
@@ -41,7 +41,9 @@ function fixture() {
 	const assertContext = vi.fn(async () => undefined);
 	const beginExecution = vi.fn(async () => undefined);
 	const recordContextView = vi.fn(async () => undefined);
+	const close = vi.fn(async () => undefined);
 	const tools = vi.fn(() => ({
+		close,
 		assertContext,
 		recordContextView,
 		tools: [
@@ -68,7 +70,19 @@ function fixture() {
 			signal: abort.signal,
 			...patch,
 		});
-	return { ...f, abort, control, execute, tools, assertContext, beginExecution, recordContextView, evidence, start };
+	return {
+		...f,
+		abort,
+		control,
+		execute,
+		tools,
+		assertContext,
+		beginExecution,
+		recordContextView,
+		close,
+		evidence,
+		start,
+	};
 }
 
 it("uses server-owned identity and model at the native RPC callback boundary", async () => {
@@ -114,7 +128,37 @@ it("does not release a provider request when durable context-view recording fail
 	await expect(f.start()).rejects.toThrow("Native result boundary unavailable");
 	expect(f.recordContextView).toHaveBeenCalledOnce();
 	expect(f.execute).not.toHaveBeenCalled();
+	expect(f.close).toHaveBeenCalledOnce();
 	await expect(readFile(f.evidence)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it("passes the admitted run to adapters and stops authority before resource cleanup", async () => {
+	const f = fixture();
+	const close = vi.fn(async (signal: AbortSignal) => {
+		expect(signal.aborted).toBe(false);
+	});
+	await f.start({
+		tools: async (identity, _operations, run) => {
+			expect(run.identity).toEqual(identity);
+			const adapters = f.tools();
+			return {
+				...adapters,
+				close: async (signal) => {
+					expect(run.signal.aborted).toBe(true);
+					await close(signal);
+				},
+			};
+		},
+	});
+	expect(close).toHaveBeenCalledOnce();
+});
+
+it("awaits exact resource release and rejects uncertain cleanup after successful generation", async () => {
+	const f = fixture();
+	f.close.mockRejectedValueOnce(new Error("private guest cleanup error"));
+	await expect(f.start()).rejects.toThrow("Native resource cleanup was not confirmed");
+	expect(f.close).toHaveBeenCalledOnce();
+	expect(f.execute).toHaveBeenCalledOnce();
 });
 
 it("does not start native execution or build tools without cloud admission", async () => {

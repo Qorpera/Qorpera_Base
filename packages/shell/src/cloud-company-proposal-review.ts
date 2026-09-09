@@ -2,17 +2,21 @@ import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { access, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { mergeCloudCompanySnapshotsForReview } from "./cloud-company-merge.ts";
+import type {
+	HostedCompanyProposal,
+	HostedCompanySnapshot,
+	QorperaHostedPrimary,
+} from "@qorpera/cloud-client/hosted-primary";
 import {
 	type CloudCompanyTreeEntry,
 	captureCloudCompanyTree,
 	currentCloudCompanyTreeReference,
 	materializeCloudCompanyTree,
 	readCloudCompanyTreeManifest,
-} from "./cloud-company-snapshot.ts";
+} from "@qorpera/cloud-client/node/cloud-company-snapshot";
+import type { CloudContentAddressedStore } from "@qorpera/cloud-client/node/cloud-object-store";
+import { mergeCloudCompanySnapshotsForReview } from "./cloud-company-merge.ts";
 import { publishCompanySnapshotRestoreProof } from "./cloud-object-reachability.ts";
-import type { CloudContentAddressedStore } from "./cloud-object-store.ts";
-import type { HostedCompanyProposal, HostedCompanySnapshot, QorperaHostedPrimary } from "./hosted-primary.ts";
 
 const REVIEW_SCHEMA = "qorpera.cloud-company-proposal-review/v2";
 const CONFLICT_REVIEW_SCHEMA = "qorpera.cloud-company-conflict-review/v1";

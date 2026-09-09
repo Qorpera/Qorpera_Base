@@ -2,12 +2,12 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
 import {
 	CloudContentAddressedStore,
 	type CloudObjectTransport,
 	HttpCloudObjectTransport,
-} from "../src/cloud-object-store.ts";
+} from "@qorpera/cloud-client/node/cloud-object-store";
+import { describe, expect, it } from "vitest";
 
 const profileId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
 

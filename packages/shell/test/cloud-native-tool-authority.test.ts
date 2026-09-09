@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
-import { afterEach, expect, it, vi } from "vitest";
 import {
 	type CloudNativeToolAuthorityReader,
 	CloudNativeToolRun,
 	cloudToolRequest,
 	parseCloudNativeToolAuthority,
 	parseCloudNativeToolBinding,
-} from "../src/cloud-native-tool-authority.ts";
+} from "@qorpera/runtime/cloud-native-tool-authority";
+import { afterEach, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 const runs: CloudNativeToolRun[] = [];

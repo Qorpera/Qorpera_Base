@@ -141,9 +141,9 @@ try {
 	console.log("PASS real SQL + HTTP + signed-envelope backup/restore + native capsule decryption and lost-ACK replay");
 	for (const path of [
 		"scripts/test-identity-recovery.mjs", "scripts/identity-recovery-round-trip.mjs",
-		"packages/shell/src/cloud-identity-recovery.ts", "packages/shell/src/cloud-identity-recovery-crypto.ts",
-		"packages/shell/src/cloud-identity-recovery-service.ts", "packages/shell/src/cloud-identity-recovery-store.ts",
-		"packages/shell/src/cloud-identity-recovery-guest.ts", "packages/shell/src/cloud-native-provider-host.ts",
+		"packages/runtime/src/cloud-identity-recovery.ts", "packages/runtime/src/cloud-identity-recovery-crypto.ts",
+		"packages/runtime/src/cloud-identity-recovery-service.ts", "packages/runtime/src/cloud-identity-recovery-store.ts",
+		"packages/runtime/src/cloud-identity-recovery-guest.ts", "packages/runtime/src/cloud-native-provider-host.ts",
 	]) await source(path);
 	await writeFile(join(evidence, "manifest.json"), JSON.stringify({
 		schema: "qorpera.identity-recovery-verification/v1", at: new Date().toISOString(), root,

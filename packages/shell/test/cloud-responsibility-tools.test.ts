@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
+import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
+import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
+import { CloudNativeToolBoundary, type CloudToolContext } from "@qorpera/runtime/cloud-native-tool-boundary";
+import { cloudResponsibilityTools } from "@qorpera/runtime/cloud-responsibility-tools";
 import { describe, expect, it, vi } from "vitest";
-import type { CloudCompanyPathControl } from "../src/cloud-company-path-gateway.ts";
-import { CloudNativeToolRun } from "../src/cloud-native-tool-authority.ts";
-import { CloudNativeToolBoundary, type CloudToolContext } from "../src/cloud-native-tool-boundary.ts";
-import { cloudResponsibilityTools } from "../src/cloud-responsibility-tools.ts";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 async function fixture() {

@@ -1,10 +1,10 @@
-import { expect, it } from "vitest";
 import {
 	nativeRuntimeFailureMetadata,
 	nativeRuntimeUsageSignal,
 	tagNativeRuntimeFailure,
-} from "../src/cloud-native-failure.ts";
-import { nativeProviderUsageSignal } from "../src/cloud-native-provider-host.ts";
+} from "@qorpera/runtime/cloud-native-failure";
+import { nativeProviderUsageSignal } from "@qorpera/runtime/cloud-native-provider-host";
+import { expect, it } from "vitest";
 
 it("retains the innermost trusted stage through wrapper errors without exposing their content", () => {
 	const original = tagNativeRuntimeFailure(new Error("PRIVATE_FAILURE"), "codex-initialize", "transport_unavailable");

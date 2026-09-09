@@ -434,9 +434,12 @@ rollback to mismatched_input;
 savepoint sponsor_denied;
 insert into public.qorpera_session_inputs(session_id,client_input_id,kind,author_user_id,body)
 values('30000000-0000-4000-8000-000000000042',extensions.gen_random_uuid(),'kickoff','30000000-0000-4000-8000-000000000001','{}');
--- Exhaust the real reserved quota in the disposable existing ledger.
-update public.qorpera_execution_sponsor_reservations set reserved_microusd = 1000000000
-where profile_id = '30000000-0000-4000-8000-000000000010';
+-- The existing human run occupies the one allowed native execution slot.
+-- Native subscriptions do not use monetary reservation ceilings.
+update public.qorpera_provider_connection_versions
+set quota_policy = jsonb_set(quota_policy,'{max_concurrent_runs}','1'::jsonb)
+where connection_id = (current_setting('qorpera_test.wake_connection')::jsonb ->> 'connection_id')::uuid
+	and version = 2;
 select pg_temp.wake_assert(pg_temp.wake_input_run(array(select id from public.qorpera_session_inputs
 	where session_id = '30000000-0000-4000-8000-000000000042')) is null,'Sponsor denies provisional run');
 select pg_temp.wake_assert((select count(*) = 1 from public.qorpera_wake_occurrences),'Sponsor denial leaves no occurrence');

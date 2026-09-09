@@ -3,13 +3,13 @@ import { createCipheriv, randomBytes, randomUUID } from "node:crypto";
 import { link, mkdir, mkdtemp, open, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, expect, it, vi } from "vitest";
 import {
 	type NativeCompanyExecutionRequest,
 	NativeProviderHost,
 	openNativeCredentialCapsule,
 	sealNativeCredentialCapsule,
-} from "../src/cloud-native-provider-host.ts";
+} from "@qorpera/runtime/cloud-native-provider-host";
+import { afterEach, expect, it, vi } from "vitest";
 
 const roots: string[] = [];
 const key = randomBytes(32).toString("base64url");

@@ -1,11 +1,11 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { HttpCloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-control";
+import { tagNativeRuntimeFailure } from "@qorpera/runtime/cloud-native-failure";
+import type { NativeProviderHost } from "@qorpera/runtime/cloud-native-provider-host";
+import { HttpNativeProviderHostService } from "@qorpera/runtime/cloud-native-provider-service";
+import { cloudToolRequest } from "@qorpera/runtime/cloud-native-tool-authority";
+import { cloudRuntimeErrorCategory } from "@qorpera/runtime/cloud-runtime-observability";
 import { afterEach, expect, it, vi } from "vitest";
-import { HttpCloudCompanyPathControl } from "../src/cloud-company-path-control.ts";
-import { tagNativeRuntimeFailure } from "../src/cloud-native-failure.ts";
-import type { NativeProviderHost } from "../src/cloud-native-provider-host.ts";
-import { HttpNativeProviderHostService } from "../src/cloud-native-provider-service.ts";
-import { cloudToolRequest } from "../src/cloud-native-tool-authority.ts";
-import { cloudRuntimeErrorCategory } from "../src/cloud-runtime-observability.ts";
 
 afterEach(() => {
 	vi.restoreAllMocks();

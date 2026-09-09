@@ -1,27 +1,32 @@
 import { createHash, randomUUID } from "node:crypto";
+import type {
+	CompanyComputerFileExportAsset,
+	ObjectStorageFileSelection,
+} from "@qorpera/cloud-client/cloud-file-transfer";
+import { type CloudCompanyPathPlan, parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
+import type { CloudCompanyTreeEntry } from "@qorpera/cloud-client/node/cloud-company-snapshot";
+import { CloudContentAddressedStore, type CloudObjectTransport } from "@qorpera/cloud-client/node/cloud-object-store";
 import type { JsonValue } from "@qorpera/contracts";
-import { describe, expect, it, vi } from "vitest";
 import {
 	applyApprovedCompanyPath,
 	CloudCompanyHeadConflict,
 	type CloudCompanyPathControl,
 	CloudCompanyPathGateway,
-	type CloudCompanyPathPlan,
 	type CloudCompanyPathRpc,
-	parseCloudCompanyPath,
-} from "../src/cloud-company-path-gateway.ts";
-import type { CloudCompanyTreeEntry } from "../src/cloud-company-snapshot.ts";
-import { CloudNativeToolBoundary } from "../src/cloud-native-tool-boundary.ts";
-import { CloudContentAddressedStore, type CloudObjectTransport } from "../src/cloud-object-store.ts";
-import { CloudRuntimeObservability, type CloudRuntimeObservation } from "../src/cloud-runtime-observability.ts";
+} from "@qorpera/runtime/cloud-company-path-gateway";
+import type { CloudCompanyPathPresence } from "@qorpera/runtime/cloud-company-path-presence";
+import { CloudNativeToolBoundary, cloudToolJsonText } from "@qorpera/runtime/cloud-native-tool-boundary";
+import { CloudRuntimeObservability, type CloudRuntimeObservation } from "@qorpera/runtime/cloud-runtime-observability";
+import { describe, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 /** Only wire/storage orchestration is simulated here. SQL 290 exercises the
  * actual membership, native lease, path policy and transaction boundaries. */
-function fixture(observability?: CloudRuntimeObservability) {
+function fixture(observability?: CloudRuntimeObservability, presence?: CloudCompanyPathPresence) {
 	const { binding, authority } = nativeToolAuthorityFixture();
 	const identity = authority.identity;
 	const objects = new Map<string, Uint8Array>();
+	const assets = new Map<string, CompanyComputerFileExportAsset>();
 	const entries = new Map<string, CloudCompanyTreeEntry>();
 	const versions = new Map<string, string>();
 	const receipts = new Map<string, JsonValue>();
@@ -53,6 +58,23 @@ function fixture(observability?: CloudRuntimeObservability) {
 		}
 		expect(args.p_binding).toEqual(binding);
 		expect(args.p_environment_id).toBe(identity.environmentId);
+		if (method === "qorpera_native_company_file_write_source") {
+			const source = args.p_source as ObjectStorageFileSelection;
+			const asset = assets.get(source.assetId);
+			if (!asset || asset.sha256 !== source.sha256) throw new Error("Unavailable fixture export");
+			return asset;
+		}
+		if (method === "qorpera_native_company_file_write") {
+			await defaultCall("qorpera_native_company_file_write_source", args);
+			return defaultCall(
+				args.p_action === "check"
+					? "qorpera_check_company_path_mutation"
+					: args.p_action === "prepare"
+						? "qorpera_prepare_company_path_mutation"
+						: "qorpera_commit_company_path_mutation",
+				args,
+			);
+		}
 		if (method === "qorpera_read_company_path_v2") {
 			const path = args.p_path as string;
 			const entry = entries.get(path) ?? null;
@@ -153,7 +175,7 @@ function fixture(observability?: CloudRuntimeObservability) {
 		return overrides.has(method) ? overrides.get(method)!(args) : defaultCall(method, args);
 	});
 	const control: CloudCompanyPathControl = { call };
-	const gateway = new CloudCompanyPathGateway({ binding, identity, control, store });
+	const gateway = new CloudCompanyPathGateway({ binding, identity, control, store, presence });
 	const signal = new AbortController().signal;
 	const boundary = new CloudNativeToolBoundary({
 		companyId: identity.companyId,
@@ -168,6 +190,7 @@ function fixture(observability?: CloudRuntimeObservability) {
 		binding,
 		identity,
 		objects,
+		assets,
 		entries,
 		versions,
 		receipts,
@@ -181,6 +204,25 @@ function fixture(observability?: CloudRuntimeObservability) {
 		gateway,
 		boundary,
 		signal,
+		seedAsset(bytes: Uint8Array) {
+			const asset: CompanyComputerFileExportAsset = {
+				schema: "qorpera.file-transfer-asset/v1",
+				assetId: randomUUID(),
+				sha256: createHash("sha256").update(bytes).digest("hex"),
+				bytes: bytes.length,
+				mediaType: "application/octet-stream",
+				source: {
+					realm: "company_computer",
+					companyComputerId: randomUUID(),
+					screenId: randomUUID(),
+					path: "out.bin",
+				},
+				destination: { realm: "object_storage" },
+			};
+			assets.set(asset.assetId, asset);
+			objects.set(`${identity.companyId}/${asset.sha256}`, Uint8Array.from(bytes));
+			return { realm: "object_storage" as const, assetId: asset.assetId, sha256: asset.sha256 };
+		},
 		async seed(path: string, text: string) {
 			const file = await store.putFile(identity.companyId, Buffer.from(text), "application/octet-stream");
 			entries.set(path, { kind: "file", path, executable: false, file });
@@ -193,6 +235,54 @@ function fixture(observability?: CloudRuntimeObservability) {
 }
 
 describe("cloud Company File path gateway", () => {
+	it("includes scoped presence inside the confirmed read envelope without changing canonical bytes", async () => {
+		const observe = vi.fn<CloudCompanyPathPresence["observe"]>(async (path) => ({
+			schema: "qorpera.company-path-presence-view/v1",
+			state: "available",
+			observedAt: Date.now(),
+			paths: [
+				{
+					path,
+					participants: [
+						{
+							runId: randomUUID(),
+							staffAgentId: randomUUID(),
+							activity: "writing",
+							overlap: "same_object",
+							expiresAt: Date.now() + 10000,
+						},
+					],
+				},
+			],
+		}));
+		const f = fixture(undefined, { observe, close: async () => {} });
+		await f.seed("note.md", "Live bytes");
+		const value = await f.gateway.read("note.md", 0, 64, f.signal);
+		expect(value.text).toBe("Live bytes");
+		expect(value.presence).toMatchObject({ state: "available" });
+		expect(observe).toHaveBeenCalledWith("note.md", "object", "reading", expect.any(AbortSignal));
+		expect(f.confirmations.get(value.readObservationId)).toBe(
+			createHash("sha256")
+				.update(cloudToolJsonText(value, 1024 * 1024))
+				.digest("hex"),
+		);
+		expect(f.transport.put).not.toHaveBeenCalled();
+	});
+	it("bounds an unavailable presence service while completing the authorized canonical read", async () => {
+		vi.useFakeTimers();
+		try {
+			const observe = vi.fn<CloudCompanyPathPresence["observe"]>(() => new Promise(() => {}));
+			const f = fixture(undefined, { observe, close: async () => {} });
+			await f.seed("note.md", "Still available");
+			const pending = f.gateway.read("note.md", 0, 64, f.signal);
+			await vi.waitFor(() => expect(observe).toHaveBeenCalled());
+			await vi.advanceTimersByTimeAsync(2001);
+			await expect(pending).resolves.toMatchObject({ text: "Still available", presence: { state: "unavailable" } });
+			expect(f.confirmations.size).toBe(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 	it("exposes only closed path operations with cloud-derived identity", async () => {
 		const f = fixture();
 		expect(f.gateway.tools().map((tool) => tool.name)).toEqual([
@@ -393,6 +483,69 @@ describe("cloud Company File path gateway", () => {
 			),
 		).rejects.toThrow("evidence differs");
 	});
+
+	it.each(["valid", "hash", "content", "run", "status"])(
+		"records capture metadata only when it matches the issued result: %s",
+		async (fault) => {
+			const f = fixture();
+			const capture = {
+				assetId: randomUUID(),
+				screenId: randomUUID(),
+				sha256: "f".repeat(64),
+				bytes: 68,
+				width: 1,
+				height: 1,
+				mediaType: "image/png" as const,
+				surface: "browser" as const,
+			};
+			const output = JSON.stringify({
+				status: fault === "status" ? "unconfirmed" : "ok",
+				provenance: {
+					companyId: f.identity.companyId,
+					runId: fault === "run" ? randomUUID() : f.identity.runId,
+					tool: "computer_screenshot",
+				},
+				content: { text: JSON.stringify(fault === "content" ? { ...capture, width: 2 } : capture) },
+			});
+			const request = f.gateway.recordContextView(
+				{
+					schema: "qorpera.native-result-fence/v1",
+					requestId: "capture-context",
+					threadId: "thread",
+					turnId: "turn",
+					purpose: "turn",
+					outputs: [],
+				},
+				[
+					{
+						kind: "function_call_output",
+						callId: "capture-call",
+						output,
+						imageSha256: fault === "hash" ? "a".repeat(64) : capture.sha256,
+						capture,
+					},
+				],
+				f.signal,
+			);
+			if (fault !== "valid") await expect(request).rejects.toThrow("Native capture provenance changed");
+			else {
+				await request;
+				const views = f.call.mock.calls.filter(([method]) => method === "qorpera_record_native_context_view");
+				expect(views).toHaveLength(1);
+				expect(views[0][1].p_view).toMatchObject({
+					outputs: [
+						{
+							capture,
+							sha256: createHash("sha256").update(output).digest("hex"),
+							bytes: Buffer.byteLength(output),
+							readId: null,
+						},
+					],
+				});
+				expect(JSON.stringify(views)).not.toContain("data:image");
+			}
+		},
+	);
 
 	it("does not confirm a corrupted or failed transfer, and rejects a mismatched confirmation receipt", async () => {
 		const f = fixture();
@@ -638,6 +791,137 @@ describe("cloud Company File path gateway", () => {
 		expect(f.transport.put).not.toHaveBeenCalled();
 		f.overrides.set("qorpera_prepare_company_path_approval", async () => ({ ...approved, state: "open" }));
 		await expect(applyApprovedCompanyPath(options)).rejects.toThrow("not approved");
+		expect(f.transport.put).not.toHaveBeenCalled();
+	});
+});
+
+describe("Company File writes from shared exports", () => {
+	const args = (source: ObjectStorageFileSelection, path = "output.bin") => ({
+		path,
+		expectedVersion: null,
+		operationKey: "asset-write",
+		source,
+	});
+	for (const length of [0, 6, 4194305, 8388608])
+		it(`writes exact binary content of ${length} bytes through the existing gateway`, async () => {
+			const f = fixture(),
+				bytes = Buffer.alloc(length, 0xff);
+			if (length) bytes[0] = 0;
+			const input = args(f.seedAsset(bytes));
+			const response = await f.boundary.invoke("asset-write", "qorpera", "company_write", input);
+			expect(response.success).toBe(true);
+			const output = JSON.parse(JSON.parse(response.contentItems[0].text).content.text);
+			expect(output.state).toBe("applied");
+			const entry = f.entries.get(input.path);
+			expect(entry?.kind).toBe("file");
+			if (entry?.kind !== "file") throw new Error("File absent");
+			expect(Buffer.from((await f.store.restoreFile(f.identity.companyId, entry.file)).bytes).equals(bytes)).toBe(
+				true,
+			);
+			expect(
+				f.call.mock.calls
+					.filter(([method]) => method === "qorpera_native_company_file_write")
+					.map(([, value]) => value.p_action),
+			).toEqual(["check", "prepare", "commit"]);
+			expect(f.call.mock.calls.some(([method]) => method === "qorpera_commit_company_path_mutation")).toBe(false);
+			vi.mocked(f.transport.put).mockClear();
+			expect(await f.gateway.mutate("write", input, f.signal)).toMatchObject({
+				receiptId: output.receiptId,
+				state: "applied",
+			});
+			expect(f.transport.put).not.toHaveBeenCalled();
+		});
+	it("keeps protected asset writes as proposals with no candidate tree", async () => {
+		const f = fixture(),
+			input = args(f.seedAsset(Buffer.from([0, 255])), "AGENTS.md");
+		expect(await f.gateway.mutate("write", input, f.signal)).toMatchObject({ state: "proposed", snapshotId: null });
+		expect(f.entries.size).toBe(0);
+		const commit = f.call.mock.calls.find(
+			([method, value]) => method === "qorpera_native_company_file_write" && value.p_action === "commit",
+		);
+		expect(commit?.[1]).toMatchObject({ p_expected_head: null, p_tree_sha256: null });
+	});
+	it("refuses corrupt source bytes before staging or mutation admission", async () => {
+		const f = fixture(),
+			source = f.seedAsset(Buffer.from([0, 255]));
+		f.objects.set(`${f.identity.companyId}/${source.sha256}`, Buffer.from([1, 255]));
+		await expect(f.gateway.mutate("write", args(source), f.signal)).rejects.toThrow("integrity");
+		expect(f.transport.put).not.toHaveBeenCalled();
+		expect(f.call.mock.calls.some(([method]) => method === "qorpera_native_company_file_write")).toBe(false);
+	});
+	it("refuses a different asset response before reading object bytes", async () => {
+		const f = fixture(),
+			source = f.seedAsset(Buffer.from([1]));
+		f.overrides.set("qorpera_native_company_file_write_source", async () => ({
+			...f.assets.get(source.assetId),
+			assetId: randomUUID(),
+		}));
+		await expect(f.gateway.mutate("write", args(source), f.signal)).rejects.toThrow("source changed");
+		expect(f.transport.get).not.toHaveBeenCalled();
+		expect(f.transport.put).not.toHaveBeenCalled();
+	});
+	for (const phase of ["check", "prepare", "commit"])
+		it(`refuses changed source/path authority at ${phase}`, async () => {
+			const f = fixture(),
+				input = args(f.seedAsset(Buffer.from([0, 255])));
+			f.overrides.set("qorpera_native_company_file_write", async (value) => {
+				if (value.p_action === phase) throw new Error("Current authority revoked");
+				return f.defaultCall("qorpera_native_company_file_write", value);
+			});
+			await expect(f.gateway.mutate("write", input, f.signal)).rejects.toThrow("revoked");
+			expect(f.entries.size).toBe(0);
+			expect(f.receipts.size).toBe(0);
+			if (phase === "check") expect(f.transport.put).not.toHaveBeenCalled();
+		});
+	it("rebuilds only a positively identified concurrent head conflict", async () => {
+		const f = fixture(),
+			input = args(f.seedAsset(Buffer.from([1, 255])));
+		let commits = 0;
+		f.overrides.set("qorpera_native_company_file_write", async (value) => {
+			if (value.p_action === "commit" && ++commits === 1) throw new CloudCompanyHeadConflict();
+			return f.defaultCall("qorpera_native_company_file_write", value);
+		});
+		expect(await f.gateway.mutate("write", input, f.signal)).toMatchObject({ state: "applied" });
+		expect(commits).toBe(2);
+	});
+	it("does not repeat an ambiguous committed response", async () => {
+		const f = fixture(),
+			input = args(f.seedAsset(Buffer.from([2, 255])));
+		let commits = 0;
+		f.overrides.set("qorpera_native_company_file_write", async (value) => {
+			const result = await f.defaultCall("qorpera_native_company_file_write", value);
+			if (value.p_action === "commit") {
+				commits++;
+				throw new Error("Reply lost");
+			}
+			return result;
+		});
+		await expect(f.gateway.mutate("write", input, f.signal)).rejects.toThrow("Reply lost");
+		expect(commits).toBe(1);
+		expect(await f.gateway.mutate("write", input, f.signal)).toMatchObject({ state: "applied" });
+		expect(commits).toBe(1);
+	});
+	it("checks closed inputs, realm separation and the bounded source before I/O", async () => {
+		const f = fixture(),
+			input = args(f.seedAsset(Buffer.from([1]))),
+			tool = f.gateway.tools().find((t) => t.name === "company_write")!;
+		for (const value of [
+			{ ...input, text: "also text" },
+			{ ...input, path: "../hidden" },
+			{ ...input, extra: true },
+			{ ...input, source: { ...input.source, realm: "member_device" } },
+			{ ...input, source: { ...input.source, realm: "isolated_worker" } },
+			{ ...input, source: { ...input.source, path: "/tmp/file" } },
+			{ ...input, expectedVersion: "current" },
+		])
+			expect(() => tool.parseArguments(value)).toThrow();
+		expect(() =>
+			tool.parseArguments({ ...input, source: { realm: "isolated_worker", path: "output/report.bin" } }),
+		).toThrow();
+		await expect(f.gateway.mutate("mkdir", input, f.signal)).rejects.toThrow("exactly one source");
+		f.assets.get(input.source.assetId)!.bytes = 8388609;
+		await expect(f.gateway.mutate("write", input, f.signal)).rejects.toThrow();
+		expect(f.transport.get).not.toHaveBeenCalled();
 		expect(f.transport.put).not.toHaveBeenCalled();
 	});
 });

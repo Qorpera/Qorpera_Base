@@ -275,6 +275,51 @@ end
 $$;
 reset role;
 
+-- Native subscriptions bypass monetary sentinels, but API-billing connections
+-- must still enforce their own monetary quota below a higher company ceiling.
+-- The original run holds 5,000,000 units; concurrency still has three slots.
+insert into public.qorpera_provider_connection_versions
+select (jsonb_populate_record(null::public.qorpera_provider_connection_versions,
+ to_jsonb(v)||jsonb_build_object('version',2,'quota_policy',v.quota_policy||'{"monthly_microusd":5000000}'::jsonb))).*
+from public.qorpera_provider_connection_versions v
+where connection_id='29000000-0000-4000-8000-000000000160' and version=1;
+insert into public.qorpera_execution_sponsor_versions
+select (jsonb_populate_record(null::public.qorpera_execution_sponsor_versions,
+ to_jsonb(v)||'{"version":2,"provider_connection_version":2}'::jsonb)).*
+from public.qorpera_execution_sponsor_versions v
+where binding_id='29000000-0000-4000-8000-000000000170' and version=1;
+insert into public.qorpera_profile_staff(profile_id,staff_agent_id,display_name,role,charter,
+ appearance_color,appearance_shape,employment_status,lifecycle_state,model_provider,model_id,created_at,updated_at,updated_by_user_id)
+values('29000000-0000-4000-8000-000000000010','29000000-0000-4000-8000-000000000031','Quota agent','Research','Check API quota.',
+ 'blue','round','active','active','openai','gpt-native',clock_timestamp(),clock_timestamp(),'29000000-0000-4000-8000-000000000001');
+insert into public.qorpera_shared_sessions(id,client_session_id,profile_id,environment_id,title,status,
+ created_by_user_id,staff_agent_id,staff_version,execution_scope)
+values ('29000000-0000-4000-8000-000000000190','29000000-0000-4000-8000-000000000191',
+ '29000000-0000-4000-8000-000000000010','29000000-0000-4000-8000-000000000020','Quota session','open',
+ '29000000-0000-4000-8000-000000000001','29000000-0000-4000-8000-000000000031',1,'{}');
+select pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000001');
+set local role authenticated;
+select set_config('qorpera_test.connection_quota_request',public.qorpera_request_session_turn_v2(
+ '29000000-0000-4000-8000-000000000190',extensions.gen_random_uuid(),extensions.gen_random_uuid(),
+ '{"schema":"qorpera.session-prompt/v1","text":"Check API quota.","images":[]}','company_connection',
+ '29000000-0000-4000-8000-000000000170',2,null,
+ (current_setting('qorpera_test.company_identity')::jsonb->>'compute_identity_id')::uuid,
+ null,'managed_sandbox','agent_turn','agent_turn','automatic',null,'{}')::text,true);
+reset role;
+select pg_temp.path_claims('service_role');
+set local role service_role;
+select public.qorpera_materialize_session_turn_requests(32);
+reset role;
+do $$
+declare v_request uuid:=(current_setting('qorpera_test.connection_quota_request')::jsonb->>'turn_request_id')::uuid;
+begin
+ if not exists(select 1 from public.qorpera_session_turn_requests where id=v_request and status='failed')
+  or exists(select 1 from public.qorpera_execution_runs where source_id=v_request)
+  or (select count(*) from public.qorpera_execution_sponsor_reservations
+   where provider_connection_id='29000000-0000-4000-8000-000000000160' and status='reserved')<>1 then
+  raise exception 'API connection monetary quota was bypassed despite spare concurrency and company budget'; end if;
+end $$;
+
 do $$
 declare v_role text;
 begin
@@ -284,7 +329,7 @@ begin
 			or has_function_privilege(v_role,'public.qorpera_company_execution_ceiling(uuid)','EXECUTE') then
 			raise exception 'Company ceiling table or helper exposed to %',v_role; end if;
 	end loop;
-	if has_function_privilege('service_role','public.qorpera_set_company_execution_ceiling(uuid,bigint,bigint,bigint)','EXECUTE')
+	if has_function_privilege('service_role','public.qorpera_set_company_execution_ceiling(uuid,bigint,bigint,bigint,bigint)','EXECUTE')
 		or not has_function_privilege('authenticated','public.qorpera_company_execution_ceiling_json(uuid)','EXECUTE') then
 		raise exception 'Company ceiling authority is exposed or unavailable'; end if;
 end

@@ -31,7 +31,8 @@ export function stepIndex(step) { const index = STEPS.indexOf(step); need(index 
 export function stateAt(step, after = true) {
   const index = stepIndex(step), completed = STEPS.slice(0, index + (after ? 1 : 0));
   const versions = [...INPUT.baselineVersions, ...INPUT.migrations.filter(row => completed.includes(row.version)).map(row => row.version)].sort();
-  return { versions, paused: completed.includes('pause'), activated: completed.includes(FIXED.activationVersion) };
+  const activation = FIXED.bundleActivations.filter(value => completed.includes(value.migrationVersion)).at(-1);
+  return { versions, paused: completed.includes('pause'), activated: completed.includes(FIXED.activationVersion), activeBundle: activation?.sha256 ?? FIXED.previousBundle };
 }
 export function validateMigration(row, bytes) {
   need(INPUT.migrations.some(value => isDeepStrictEqual(value, row)), 'MIGRATION_PIN_REJECTED');
@@ -55,7 +56,7 @@ export function validateReadback(value, step, expected = stateAt(step)) {
     && value.policy.maxConcurrency === FIXED.concurrency && value.policy.pauseReasonMatched === expected.paused
     && value.policy.initialReasonMatched === !expected.paused, 'POLICY_REJECTED');
   need(value.legacyState === 'retired', 'LEGACY_REJECTED');
-  need(value.activeBundle === (expected.activated ? FIXED.bundle : FIXED.previousBundle), 'BUNDLE_REJECTED');
+  need(value.activeBundle === expected.activeBundle, 'BUNDLE_REJECTED');
   need(exact(value.globalWork, ['jobs', 'runs', 'assignments', 'requests', 'leases', 'receipts', 'logins', 'runners'])
     && Object.values(value.globalWork).every(count => count === 0), 'DRAIN_REJECTED');
   need(value.headAndOwnerMatched === true && value.identityMatched === true && value.historicalLedgerVersionsRetained === true

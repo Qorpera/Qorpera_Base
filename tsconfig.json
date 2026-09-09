@@ -5,22 +5,55 @@
 		"module": "NodeNext",
 		"moduleResolution": "NodeNext",
 		"paths": {
-			"*": ["./*"],
-			"@qorpera/contracts": ["./packages/contracts/src/index.ts"],
-			"@qorpera/contracts/*": ["./packages/contracts/src/*"],
-			"@qorpera/company": ["./packages/company/src/index.ts"],
-			"@qorpera/company/*": ["./packages/company/src/*.ts"],
-			"@qorpera/pi-ai": ["./packages/ai/src/index.ts"],
-			"@qorpera/pi-ai/oauth": ["./packages/ai/src/oauth.ts"],
-			"@qorpera/pi-ai/*": ["./packages/ai/src/*.ts", "./packages/ai/src/providers/*.ts"],
-			"@qorpera/pi-ai/dist/*": ["./packages/ai/src/*"],
-			"@qorpera/pi-agent-core": ["./packages/agent/src/index.ts"],
-			"@qorpera/pi-agent-core/*": ["./packages/agent/src/*"],
-			"@qorpera/pi-agent-sqlite-node": ["./packages/storage/sqlite-node/src/index.ts"],
-			"@qorpera/pi-coding-agent": ["./packages/coding-agent/src/index.ts"],
-			"@qorpera/pi-coding-agent/app-server": ["./packages/coding-agent/src/core/app-server.ts"],
-			"@qorpera/pi-coding-agent/authority": ["./packages/coding-agent/src/core/authority.ts"],
-			"@qorpera/pi-coding-agent/company": ["./packages/coding-agent/src/core/company.ts"],
+			"*": [
+				"./*"
+			],
+			"@qorpera/contracts": [
+				"./packages/contracts/src/index.ts"
+			],
+			"@qorpera/contracts/*": [
+				"./packages/contracts/src/*"
+			],
+			"@qorpera/company": [
+				"./packages/company/src/index.ts"
+			],
+			"@qorpera/company/*": [
+				"./packages/company/src/*.ts"
+			],
+			"@qorpera/pi-ai": [
+				"./packages/ai/src/index.ts"
+			],
+			"@qorpera/pi-ai/oauth": [
+				"./packages/ai/src/oauth.ts"
+			],
+			"@qorpera/pi-ai/*": [
+				"./packages/ai/src/*.ts",
+				"./packages/ai/src/providers/*.ts"
+			],
+			"@qorpera/pi-ai/dist/*": [
+				"./packages/ai/src/*"
+			],
+			"@qorpera/pi-agent-core": [
+				"./packages/agent/src/index.ts"
+			],
+			"@qorpera/pi-agent-core/*": [
+				"./packages/agent/src/*"
+			],
+			"@qorpera/pi-agent-sqlite-node": [
+				"./packages/storage/sqlite-node/src/index.ts"
+			],
+			"@qorpera/pi-coding-agent": [
+				"./packages/coding-agent/src/index.ts"
+			],
+			"@qorpera/pi-coding-agent/app-server": [
+				"./packages/coding-agent/src/core/app-server.ts"
+			],
+			"@qorpera/pi-coding-agent/authority": [
+				"./packages/coding-agent/src/core/authority.ts"
+			],
+			"@qorpera/pi-coding-agent/company": [
+				"./packages/coding-agent/src/core/company.ts"
+			],
 			"@qorpera/pi-coding-agent/company-artifacts": [
 				"./packages/coding-agent/src/core/company-artifacts.ts"
 			],
@@ -36,28 +69,85 @@
 			"@qorpera/pi-coding-agent/company-secret-vault": [
 				"./packages/coding-agent/src/core/company-secret-vault.ts"
 			],
-			"@qorpera/pi-coding-agent/company-rooms": ["./packages/coding-agent/src/core/company-rooms.ts"],
-			"@qorpera/pi-coding-agent/company-staff": ["./packages/coding-agent/src/core/company-staff.ts"],
-			"@qorpera/pi-coding-agent/founder-identity": ["./packages/coding-agent/src/core/founder-identity.ts"],
-			"@qorpera/pi-coding-agent/hooks": ["./packages/coding-agent/src/core/hooks/index.ts"],
+			"@qorpera/pi-coding-agent/company-rooms": [
+				"./packages/coding-agent/src/core/company-rooms.ts"
+			],
+			"@qorpera/pi-coding-agent/company-staff": [
+				"./packages/coding-agent/src/core/company-staff.ts"
+			],
+			"@qorpera/pi-coding-agent/founder-identity": [
+				"./packages/coding-agent/src/core/founder-identity.ts"
+			],
+			"@qorpera/pi-coding-agent/hooks": [
+				"./packages/coding-agent/src/core/hooks/index.ts"
+			],
 			"@qorpera/pi-coding-agent/oauth-onboarding": [
 				"./packages/coding-agent/src/core/oauth-onboarding.ts"
 			],
-			"@qorpera/pi-coding-agent/*": ["./packages/coding-agent/src/*"],
-			"@qorpera/pi-protocol": ["./packages/protocol/src/index.ts"],
-			"@qorpera/pi-protocol/*": ["./packages/protocol/src/*"],
-			"@qorpera/runner-orchestrator": ["./packages/runner-orchestrator/src/index.ts"],
-			"@qorpera/pi-client": ["./packages/client/src/index.ts"],
-			"@qorpera/pi-client/*": ["./packages/client/src/*"],
-			"@qorpera/pi-server": ["./packages/server/src/index.ts"],
-			"@qorpera/pi-server/*": ["./packages/server/src/*"],
-			"typebox": ["./node_modules/typebox"],
-			"@qorpera/pi-tui": ["./packages/tui/src/index.ts"],
-			"@qorpera/pi-tui/*": ["./packages/tui/src/*"],
-			"@qorpera/pi-agent-old": ["./packages/agent-old/src/index.ts"],
-			"@qorpera/pi-agent-old/*": ["./packages/agent-old/src/*"]
+			"@qorpera/pi-coding-agent/*": [
+				"./packages/coding-agent/src/*"
+			],
+			"@qorpera/pi-protocol": [
+				"./packages/protocol/src/index.ts"
+			],
+			"@qorpera/pi-protocol/*": [
+				"./packages/protocol/src/*"
+			],
+			"@qorpera/runner-orchestrator": [
+				"./packages/runner-orchestrator/src/index.ts"
+			],
+			"@qorpera/pi-client": [
+				"./packages/client/src/index.ts"
+			],
+			"@qorpera/pi-client/*": [
+				"./packages/client/src/*"
+			],
+			"@qorpera/pi-server": [
+				"./packages/server/src/index.ts"
+			],
+			"@qorpera/pi-server/*": [
+				"./packages/server/src/*"
+			],
+			"typebox": [
+				"./node_modules/typebox"
+			],
+			"@qorpera/pi-tui": [
+				"./packages/tui/src/index.ts"
+			],
+			"@qorpera/pi-tui/*": [
+				"./packages/tui/src/*"
+			],
+			"@qorpera/pi-agent-old": [
+				"./packages/agent-old/src/index.ts"
+			],
+			"@qorpera/pi-agent-old/*": [
+				"./packages/agent-old/src/*"
+			],
+			"@qorpera/runtime": [
+				"./packages/runtime/src/index.ts"
+			],
+			"@qorpera/runtime/*": [
+				"./packages/runtime/src/*.ts"
+			],
+			"@qorpera/cloud-client": [
+				"./packages/cloud-client/src/index.ts"
+			],
+			"@qorpera/cloud-client/*": [
+				"./packages/cloud-client/src/*.ts"
+			]
 		}
 	},
-	"include": ["packages/*/src/**/*", "packages/*/test/**/*", "packages/storage/*/src/**/*", "packages/storage/*/test/**/*", "packages/coding-agent/examples/**/*"],
-	"exclude": ["**/dist/**", "packages/coding-agent/examples/extensions/gondolin/**"]
+	"include": [
+		"packages/*/src/**/*",
+		"packages/*/test/**/*",
+		"packages/storage/*/src/**/*",
+		"packages/storage/*/test/**/*",
+		"packages/coding-agent/examples/**/*"
+	],
+	"exclude": [
+		"packages/member-web/src/**",
+		"packages/member-web/test/**",
+		"**/dist/**",
+		"packages/coding-agent/examples/extensions/gondolin/**"
+	]
 }

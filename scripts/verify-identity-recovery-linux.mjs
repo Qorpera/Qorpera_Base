@@ -6,13 +6,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	recoveryDigest, recoveryPossessionProof, recoveryPublicKeyDigest, sealRecoveryRelease,
-} from "../packages/shell/src/cloud-identity-recovery-crypto.ts";
+} from "../packages/runtime/src/cloud-identity-recovery-crypto.ts";
 import {
 	assertIdentityRecoveryMarker, identityRecoveryEpochFilename, restoreNativeIdentityKey,
-} from "../packages/shell/src/cloud-identity-recovery-guest.ts";
-import { FileRecoveryObjectStore } from "../packages/shell/src/cloud-identity-recovery-store.ts";
-import { openRecoveryFilesystems, parseRecoveryDirectoryMount } from "../packages/shell/src/cloud-identity-recovery-filesystems.ts";
-import { openNativeCredentialCapsule, sealNativeCredentialCapsule } from "../packages/shell/src/cloud-native-provider-host.ts";
+} from "../packages/runtime/src/cloud-identity-recovery-guest.ts";
+import { FileRecoveryObjectStore } from "../packages/runtime/src/cloud-identity-recovery-store.ts";
+import { openRecoveryFilesystems, parseRecoveryDirectoryMount } from "../packages/runtime/src/cloud-identity-recovery-filesystems.ts";
+import { openNativeCredentialCapsule, sealNativeCredentialCapsule } from "../packages/runtime/src/cloud-native-provider-host.ts";
 
 if (process.platform !== "linux") throw new Error("This synthetic filesystem probe requires Linux");
 const root = await mkdtemp(join(tmpdir(), "qorpera-recovery-linux-"));

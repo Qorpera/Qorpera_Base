@@ -29,6 +29,29 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import {
+	buildCompanyOrganizationHierarchy,
+	type CompanyOrganizationHierarchy,
+} from "@qorpera/cloud-client/cloud-company-organization";
+import type { CloudPresenceHandle } from "@qorpera/cloud-client/cloud-presence";
+import {
+	type HostedAccountEntitlement,
+	type HostedCompanyFile,
+	type HostedCompanyProposal,
+	type HostedCompanySnapshot,
+	type HostedIncomingProfileInvitation,
+	type HostedProfile,
+	type HostedProfileTeam,
+	type PendingSessionInput,
+	SessionTurnOwnershipError,
+} from "@qorpera/cloud-client/hosted-primary";
+import {
+	currentCloudCompanyTreeReference,
+	materializeCloudCompanyTree,
+} from "@qorpera/cloud-client/node/cloud-company-snapshot";
+import { CloudCompanySubstrate } from "@qorpera/cloud-client/node/cloud-company-substrate";
+import type { CloudContentAddressedStore } from "@qorpera/cloud-client/node/cloud-object-store";
+import { isStaffCharacterId, staffCharacterForTemplate } from "@qorpera/cloud-client/staff-characters";
+import {
 	type CompanyConnectorManifestRecord,
 	companyConnectorMatchesRequest,
 	companyConnectorSecretNames,
@@ -239,7 +262,6 @@ import {
 	readCloudCompanyFileConflict,
 } from "./cloud-company-file.ts";
 import { previewCloudCompanySnapshot, replaceCloudCompanyCacheWithSnapshot } from "./cloud-company-merge.ts";
-import { buildCompanyOrganizationHierarchy, type CompanyOrganizationHierarchy } from "./cloud-company-organization.ts";
 import {
 	CloudCompanyProjection,
 	cloudCompanyProjectionHasPersistedChanges,
@@ -251,12 +273,8 @@ import {
 	prepareCompanyProposalReview,
 } from "./cloud-company-proposal-review.ts";
 import { CloudCompanyPublication } from "./cloud-company-publication.ts";
-import { currentCloudCompanyTreeReference, materializeCloudCompanyTree } from "./cloud-company-snapshot.ts";
-import { CloudCompanySubstrate } from "./cloud-company-substrate.ts";
 import type { CloudMemberCompanyFileClient } from "./cloud-member-company-editor.ts";
 import { publishCompanySnapshotRestoreProofIfDue } from "./cloud-object-reachability.ts";
-import type { CloudContentAddressedStore } from "./cloud-object-store.ts";
-import type { CloudPresenceHandle } from "./cloud-presence.ts";
 import { prepareCloudPreview } from "./cloud-preview.ts";
 import {
 	acknowledgeCloudPromptOutbox,
@@ -355,17 +373,6 @@ import {
 import { connectGitHubCli, readGitHubCliStatus } from "./github-connection.ts";
 import { openGovernedCompanyWindow } from "./governed-company-window.ts";
 import {
-	type HostedAccountEntitlement,
-	type HostedCompanyFile,
-	type HostedCompanyProposal,
-	type HostedCompanySnapshot,
-	type HostedIncomingProfileInvitation,
-	type HostedProfile,
-	type HostedProfileTeam,
-	type PendingSessionInput,
-	SessionTurnOwnershipError,
-} from "./hosted-primary.ts";
-import {
 	cacheHostedProfiles,
 	cacheHostedTeam,
 	loadHostedProfileCache,
@@ -397,6 +404,7 @@ import {
 	writeLocalExecutionPermission,
 } from "./local-execution.ts";
 import { alignCloudCompanyManifestName } from "./managed-company-identity.ts";
+import { openMemberBrowserRecoveryWindow } from "./member-browser-recovery-window.ts";
 import { ModelAccountStore, type ModelAccountView } from "./model-accounts.ts";
 import { parseProductFeedbackRequest } from "./product-feedback.ts";
 import { hostedProfileAccess } from "./profile-collaboration.ts";
@@ -472,7 +480,6 @@ import {
 	type SessionRuntimeEventInput,
 } from "./session-control-plane.ts";
 import { readSidebarTranslucency, writeSidebarTranslucency } from "./shell-appearance.ts";
-import { isStaffCharacterId, staffCharacterForTemplate } from "./staff-characters.ts";
 import { removeStaffWorkspace } from "./staff-deletion.ts";
 import { applyStaffRoutineOperation, type StaffRoutineOperation } from "./staff-routines.ts";
 import {
@@ -973,6 +980,8 @@ let modelAccountUsageRefreshedAt = 0;
 let modelAccountUsageRefreshInFlight: Promise<ModelAccountView[]> | undefined;
 let qorperaAccountAuth: QorperaAccountAuth | undefined;
 let currentQorperaAccountId: string | undefined;
+let browserRecoveryWindow: BrowserWindow | undefined;
+let browserRecoveryOpening: Promise<BrowserWindow> | undefined;
 const hostedProfilesById = new Map<string, HostedProfile>();
 const hostedTeamsByProfileId = new Map<string, HostedProfileTeam>();
 const freshHostedTeamProfileIds = new Set<string>();
@@ -1048,6 +1057,8 @@ let profileInvitationHandoffInFlight = false;
 function rememberAuthenticatedAccount(account: QorperaAccountInfo): QorperaAccountInfo {
 	const nextAccountId = account.authenticated && account.user ? account.user.id : undefined;
 	if (nextAccountId !== currentQorperaAccountId) {
+		browserRecoveryWindow?.destroy();
+		browserRecoveryWindow = undefined;
 		hostedProfilesById.clear();
 		hostedTeamsByProfileId.clear();
 		freshHostedTeamProfileIds.clear();
@@ -1076,6 +1087,8 @@ async function authenticatedAccount(): Promise<QorperaAccountInfo | undefined> {
 		const account = rememberAuthenticatedAccount(await qorperaAccountAuth.info());
 		return account.authenticated && account.user ? account : undefined;
 	} catch {
+		browserRecoveryWindow?.destroy();
+		browserRecoveryWindow = undefined;
 		currentQorperaAccountId = undefined;
 		hostedProfilesById.clear();
 		hostedTeamsByProfileId.clear();
@@ -10471,6 +10484,8 @@ app.whenReady().then(async () => {
 	);
 	qorperaAccountAuth = new QorperaAccountAuth(app.getPath("userData"), {
 		openExternal: (url) => electronShell.openExternal(url),
+		officeViewerOrigin: CLOUD_PREVIEW ? undefined : process.env.QORPERA_OFFICE_VIEWER_ORIGIN?.trim(),
+		officeViewerClientOrigin: CLOUD_PREVIEW ? undefined : process.env.QORPERA_OFFICE_VIEWER_CLIENT_ORIGIN?.trim(),
 		...(CLOUD_PREVIEW
 			? {
 					projectUrl: CLOUD_PREVIEW.projectUrl,
@@ -10537,6 +10552,37 @@ app.whenReady().then(async () => {
 		}
 		return { proposal, attachment };
 	};
+	ipcMain.handle("account:browser-cleanup", async (event) => {
+		const owner = slotOf(event.sender),
+			accountId = currentQorperaAccountId;
+		if (
+			!owner ||
+			!accountId ||
+			!qorperaAccountAuth ||
+			!isTrustedProfileSwitcherSender(event.sender) ||
+			event.senderFrame !== event.sender.mainFrame
+		)
+			return { ok: false, error: "Sign in to manage your browser profiles." };
+		try {
+			if (browserRecoveryWindow && !browserRecoveryWindow.isDestroyed()) browserRecoveryWindow.show();
+			else {
+				browserRecoveryOpening ??= openMemberBrowserRecoveryWindow({
+					owner: owner.window,
+					directory: FIXED_SHELL_DIR,
+					client: qorperaAccountAuth.memberBrowserRecovery(accountId),
+					current: () => currentQorperaAccountId === accountId,
+				});
+				try {
+					browserRecoveryWindow = await browserRecoveryOpening;
+				} finally {
+					browserRecoveryOpening = undefined;
+				}
+			}
+			return { ok: true };
+		} catch {
+			return { ok: false, error: "Your browser cleanup is unavailable. Sign in and try again." };
+		}
+	});
 	ipcMain.handle("account:info", async (event): Promise<QorperaAccountInfo> => {
 		if (!slotOf(event.sender) || !qorperaAccountAuth) return { authenticated: false };
 		try {
@@ -10544,6 +10590,8 @@ app.whenReady().then(async () => {
 			if (account.authenticated) claimExistingCompanies(account);
 			return account;
 		} catch (error) {
+			browserRecoveryWindow?.destroy();
+			browserRecoveryWindow = undefined;
 			currentQorperaAccountId = undefined;
 			console.error(`Qorpera account read failed: ${error instanceof Error ? error.message : String(error)}`);
 			return { authenticated: false };
@@ -11326,6 +11374,28 @@ app.whenReady().then(async () => {
 							accountId,
 						),
 						canWrite: slotHasProfileCapability(slot, "write"),
+						presence: (signal, onChange) => {
+							if (!qorperaAccountAuth) throw new Error("Member sign-in is unavailable");
+							return qorperaAccountAuth.memberCompanyPresence(
+								attachment.profileId,
+								attachment.environmentId,
+								accountId,
+								signal,
+								onChange,
+							);
+						},
+						companyComputerViews: qorperaAccountAuth.memberCompanyComputerViews(
+							attachment.profileId,
+							attachment.environmentId,
+							accountId,
+						),
+						companyComputerMemberId: accountId,
+						staffName: (staffAgentId) => activeStaffAgent(runtime.root, staffAgentId)?.displayName,
+						companyComputer: qorperaAccountAuth.memberCompanyComputer(
+							attachment.profileId,
+							attachment.environmentId,
+							accountId,
+						),
 						current: () =>
 							currentQorperaAccountId === accountId &&
 							slot.runtime === runtime &&

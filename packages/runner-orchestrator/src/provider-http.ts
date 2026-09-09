@@ -1,3 +1,4 @@
+import type { ServiceHttpFetch } from "./http-transport.ts";
 import type {
 	CloudRunnerAssignmentDelivery,
 	CloudRunnerCapability,
@@ -130,9 +131,9 @@ export class HttpCloudRunnerProviderAdapter implements CloudRunnerProviderAdapte
 	readonly adapterId: string;
 	readonly #url: string;
 	readonly #token: string;
-	readonly #fetch: typeof fetch;
+	readonly #fetch: ServiceHttpFetch;
 
-	constructor(baseUrl: string, adapterId: string, token: string, fetchImplementation: typeof fetch = fetch) {
+	constructor(baseUrl: string, adapterId: string, token: string, fetchImplementation: ServiceHttpFetch = fetch) {
 		const url = new URL("/v1/qorpera-runner-provider", baseUrl);
 		if (
 			url.protocol !== "https:" &&

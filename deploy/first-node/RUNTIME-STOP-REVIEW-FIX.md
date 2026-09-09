@@ -1,0 +1,24 @@
+Stop permission fix and renewed production review — 7 September 2026
+
+Subsequent SQL review: the broader SQL-suite gate described below is now closed. The current candidate and full cause/fix evidence are recorded in [RUNTIME-SQL-FAILURE-FIXES.md](RUNTIME-SQL-FAILURE-FIXES.md). The remaining text preserves the outcome and bundle identity of this earlier review.
+
+The owner/admin Stop defect is fixed in the local v14 candidate. The renewed review found no additional actionable defect in the changed code. Production readiness is still not accepted: the signed rollout and the broader hosted SQL validation gap remain open. Production was not changed.
+
+The current candidate bundle is `73ffdaf4338aad0e9b177149a9f630ab43add4f0c9f106255445497c427d5a92`. This supersedes the unshipped `3263adee…` candidate recorded in `RUNTIME-THIRD-REVIEW-FIXES.md`; preserved review evidence retains that earlier hash. Migration `20260907000850_runtime_session_stop_projection.sql` runs before the unshipped v14 activation. Deployed v13 migrations are unchanged.
+
+The status RPC now projects the same current owner/admin permissions as exact-run cancellation. Its existing conversation read/write checks still apply, so an owner or admin cannot read or cancel another member's private conversation. The guarded forward migration changes only the cancellation predicate and retains the existing function owner, ACL, response shape, and run selection. No new RPC is added.
+
+Twelve added SQL cases compare the actual authenticated status and cancellation calls for owners, admins, creators, other contributors, viewers, outsiders, removed creators, and private audiences against an existing leased native run. Successful cancellation clears the job's execution capability, releases the native lease, and records the actor without generating an agent message. Denied calls preserve the state left by any preceding membership revocation. The existing complete session-run-control test now passes; its native completion fixture was updated to send the acknowledgement required by the current human-wake protocol before its final report.
+
+Validation passed on the final source: 71 SQL acceptance cases over 149 migrations; 13 separate-connection concurrency checks; continuation SQL-to-TypeScript prompt parity; the complete session-run-control/lease-cleanup SQL component; 32 focused TypeScript tests covering the RPC client, production renderer handlers, and bundle; three bundle/package tests; and the full repository check. All new database tests used disposable PostgreSQL with networking disabled and no model or connector invocation. Containers were removed. The full upgrade audit preserves all 611 original function owners and ACLs, changes the intended eleven existing bodies, and adds only the previously reviewed private wake-policy helper. The Stop fix itself changes one existing body and no grants.
+
+The re-review checked the final effective SQL, the cancellation call chain, current membership and audience boundaries, terminal lease cleanup, migration scope, packaged bundle pins, and the surviving SQL failures. No further defect was demonstrated in the fix. The earlier failed test attempts were fixture corrections: respecting the single-owner constraint, creating a private audience before downgrading its member, and observing the already-terminalized run after sponsor removal. These did not require weakening production checks.
+
+Two existing gates remain:
+
+- The broader hosted SQL suite is not green. `100_session_arbiter.test.sql`, with its normal predecessor fixtures, still fails on an invalid old event schema. `140_cloud_company_authority.test.sql` still asserts that the v3 creation RPC must be inaccessible; the earlier behavioral probe showed that this is not evidence of its claimed pinning bypass. Other historical failures still need individual triage. The previously failing `280_cloud_session_run_control.test.sql` is now green in full.
+- The candidate remains uncommitted, unsigned, and undeployed. A clean detached release, matching signed guest, production-schema wrapper rehearsal retaining the 18 production-only ledger entries, guarded rollout, and deployed acceptance are still required. Passing local checks does not replace those receipts.
+
+Read-only production state at `2026-09-07T02:03:16Z` remained v13 (`4d988b5f47e6219b2f44bae3cbc0b7363c411738ddfc32774a5d487025d483bb`), ledger 162 through `20260907000500`, enabled policy 27, no founder pause, and no active jobs, assignments, or native leases. The Stop fix therefore remains a source fix until deployment. No new claim is made about guest integrity, native-result-fence telemetry, physical NAS recovery, later Orders 4–10, or general launch readiness.
+
+The retained fix and review evidence is in [the review manifest](/Users/jonas/Documents/Codex/2026-09-05/files-pasted-by-the-user-take/outputs/runtime-stop-fix-and-review/MANIFEST.json).

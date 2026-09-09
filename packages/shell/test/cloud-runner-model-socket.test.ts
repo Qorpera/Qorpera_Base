@@ -1,14 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-
-import { afterEach, describe, expect, it, vi } from "vitest";
-
 import {
 	type CloudRunnerModelSocketServer,
 	requestCloudRunnerModelSocket,
 	startCloudRunnerModelSocketServer,
-} from "../src/cloud-runner-model-socket.ts";
+} from "@qorpera/runtime/cloud-runner-model-socket";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const requestId = "34343434-3434-4434-8434-343434343434";
 const request = {

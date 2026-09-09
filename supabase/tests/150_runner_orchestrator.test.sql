@@ -136,7 +136,8 @@ select set_config(
 		null, 'openai', 'api_key', 'openai-responses',
 		'vault://company/provider/openai', 'acct_test', 'company-api-budget',
 		'qorpera-provider-consent/v1', null,
-		'{"monthly_microusd":1000000,"reservation_microusd":100000,"max_calls_per_run":32,"max_input_tokens_per_run":2000000,"max_output_tokens_per_run":500000,"max_concurrent_runs":8}'
+		'{"monthly_microusd":1000000,"reservation_microusd":100000,"max_calls_per_run":32,"max_input_tokens_per_run":2000000,"max_output_tokens_per_run":500000,"max_concurrent_runs":8}',
+		true -- Explicit connection consent for this fixture's autonomous runs.
 	)::text,
 	false
 );
@@ -472,6 +473,43 @@ $$;
 reset role;
 select set_config('request.jwt.claims', '{"sub":"00000000-0000-4000-8000-000000000000","role":"service_role"}', false);
 set role service_role;
+do $$
+declare v_runs jsonb; v_run uuid;
+begin
+	begin
+		reset role;
+		perform set_config('request.jwt.claims', '{"sub":"15000000-0000-4000-8000-000000000001","role":"authenticated"}', true);
+		set local role authenticated;
+		perform public.qorpera_append_session_input(
+			'15000000-0000-4000-8000-000000000055', '15000000-0000-4000-8000-000000000160',
+			'user_message', '{"schema":"qorpera.session-prompt/v1","text":"Owner follows member","images":[]}'
+		);
+		perform set_config('request.jwt.claims', '{"sub":"15000000-0000-4000-8000-000000000002","role":"authenticated"}', true);
+		perform public.qorpera_append_session_input(
+			'15000000-0000-4000-8000-000000000055', '15000000-0000-4000-8000-000000000161',
+			'user_message', '{"schema":"qorpera.session-prompt/v1","text":"Member follows owner","images":[]}'
+		);
+		reset role;
+		perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+		set local role service_role;
+		v_runs := public.qorpera_materialize_session_execution_runs(32);
+		v_run := (v_runs -> 0 ->> 'run_id')::uuid;
+		if jsonb_array_length(v_runs) <> 1 or not exists (
+			select 1 from public.qorpera_execution_runs r
+			join public.qorpera_runner_jobs j on j.id = r.job_id
+			join public.qorpera_wake_occurrences w on w.run_id = r.id
+			where r.id = v_run and r.requested_by_user_id = '15000000-0000-4000-8000-000000000002'
+				and j.created_by_user_id = r.requested_by_user_id and w.requested_by_user_id = r.requested_by_user_id
+				and r.input_ids = array[(current_setting('qorpera_test.session_input')::jsonb ->> 'input_id')::uuid]
+		) or exists (
+			select 1 from public.qorpera_session_inputs where client_input_id in (
+				'15000000-0000-4000-8000-000000000160', '15000000-0000-4000-8000-000000000161'
+			) and execution_run_id is not null
+		) then raise exception 'configured-session batching crossed an author boundary or forged its requester'; end if;
+		raise sqlstate 'QRP01' using message = 'rollback mixed-author probe';
+	exception when sqlstate 'QRP01' then null;
+	end;
+end $$;
 select set_config(
 	'qorpera_test.materialized_runs',
 	public.qorpera_materialize_session_execution_runs(32)::text,
@@ -859,6 +897,11 @@ begin
 		or v_description -> 'sponsor' ? 'secret_reference' then
 		raise exception 'runner broker did not return the safe immutable run authority: %', v_description;
 	end if;
+	perform public.qorpera_send_runner_agent_message(
+		'15000000-0000-4000-8000-000000000090', repeat('d', 64),
+		v_job_id, repeat('2', 64), '15000000-0000-4000-8000-000000000104',
+		'input-ack', 'I am checking the requested work.', 'progress'
+	);
 	insert into storage.objects (bucket_id, name, metadata) values (
 		'qorpera-profile-objects',
 		'15000000-0000-4000-8000-000000000010/' || repeat('7', 64),
@@ -916,12 +959,12 @@ begin
 			'15000000-0000-4000-8000-000000000090', repeat('d', 64),
 			v_job_id, repeat('2', 64), '15000000-0000-4000-8000-000000000104',
 			(v_candidate ->> 'snapshot_id')::uuid, (v_graph ->> 'graph_id')::uuid
-		) ->> 'verified_user_id' is distinct from '15000000-0000-4000-8000-000000000001' then
+		) ->> 'verified_user_id' is distinct from '15000000-0000-4000-8000-000000000002' then
 		raise exception 'runner candidate was not fenced to its exact graph and actor';
 	end if;
 	perform public.qorpera_verify_company_snapshot_closure(
 		(v_candidate ->> 'snapshot_id')::uuid, (v_graph ->> 'graph_id')::uuid,
-		'15000000-0000-4000-8000-000000000001',
+		'15000000-0000-4000-8000-000000000002',
 		encode(extensions.digest(convert_to(repeat('7', 64) || ':10', 'utf8'), 'sha256'), 'hex'),
 		1, 10, repeat('7', 64), 0, repeat('8', 64)
 	);
@@ -1235,6 +1278,14 @@ begin
 	perform public.qorpera_accept_runner_assignment(
 		'15000000-0000-4000-8000-000000000090', repeat('d', 64),
 		(v_wake_assignment ->> 'assignment_id')::uuid, v_wake_job_id, repeat('8', 64)
+	);
+	perform public.qorpera_send_runner_agent_message(
+		'15000000-0000-4000-8000-000000000090', repeat('d', 64), v_wake_job_id, repeat('8', 64),
+		(v_wake_assignment ->> 'assignment_id')::uuid, 'routine-ack', 'I am checking the scheduled work.', 'progress'
+	);
+	perform public.qorpera_send_runner_agent_message(
+		'15000000-0000-4000-8000-000000000090', repeat('d', 64), v_wake_job_id, repeat('8', 64),
+		(v_wake_assignment ->> 'assignment_id')::uuid, 'routine-final', 'The scheduled check is complete.', 'final'
 	);
 	perform public.qorpera_complete_runner_job_v6(
 		'15000000-0000-4000-8000-000000000090', repeat('d', 64),

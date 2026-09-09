@@ -3,15 +3,15 @@ import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CloudIdentityRecoveryAuthority } from "../packages/shell/src/cloud-identity-recovery.ts";
-import { recoveryDigest, recoveryPublicKeyText } from "../packages/shell/src/cloud-identity-recovery-crypto.ts";
+import { CloudIdentityRecoveryAuthority } from "../packages/runtime/src/cloud-identity-recovery.ts";
+import { recoveryDigest, recoveryPublicKeyText } from "../packages/runtime/src/cloud-identity-recovery-crypto.ts";
 import {
 	assertIdentityRecoveryMarker, backupNativeIdentityKey, HttpIdentityRecoveryGuestTransport,
 	identityRecoveryEpochFilename, parseIdentityRecoveryRuntimeState, restoreNativeIdentityKey,
-} from "../packages/shell/src/cloud-identity-recovery-guest.ts";
-import { HttpIdentityRecoveryService } from "../packages/shell/src/cloud-identity-recovery-service.ts";
-import { FileRecoveryObjectStore } from "../packages/shell/src/cloud-identity-recovery-store.ts";
-import { openNativeCredentialCapsule, sealNativeCredentialCapsule } from "../packages/shell/src/cloud-native-provider-host.ts";
+} from "../packages/runtime/src/cloud-identity-recovery-guest.ts";
+import { HttpIdentityRecoveryService } from "../packages/runtime/src/cloud-identity-recovery-service.ts";
+import { FileRecoveryObjectStore } from "../packages/runtime/src/cloud-identity-recovery-store.ts";
+import { openNativeCredentialCapsule, sealNativeCredentialCapsule } from "../packages/runtime/src/cloud-native-provider-host.ts";
 
 function literal(value) {
 	if (typeof value === "string") return "'" + value.replaceAll("'", "''") + "'";

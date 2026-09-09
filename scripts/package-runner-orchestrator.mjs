@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { build } from "esbuild";
+import { jitlessServiceBundleOptions } from "./jitless-service-bundle.mjs";
 
 function outputDirectory(args) {
 	if (args.length === 0) return resolve(".artifacts/runner-orchestrator");
@@ -21,11 +22,8 @@ await build({
 	outfile: resolve(outputRoot, artifact),
 	bundle: true,
 	platform: "node",
-	format: "esm",
+	...jitlessServiceBundleOptions,
 	target: "node22.19",
-	banner: {
-		js: 'import { createRequire as __qorperaCreateRequire } from "node:module"; const require = __qorperaCreateRequire(import.meta.url);',
-	},
 	legalComments: "none",
 	logLevel: "silent",
 });

@@ -2,12 +2,12 @@ import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { chmod, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parseRecoveryPrivateKey, readRecoveryCredential } from "@qorpera/runtime/cloud-identity-recovery-config";
+import { recoveryPublicKeyText } from "@qorpera/runtime/cloud-identity-recovery-crypto";
+import { parseIdentityRecoveryRuntimeState } from "@qorpera/runtime/cloud-identity-recovery-guest";
+import type { NativeCompanyExecutionRequest } from "@qorpera/runtime/cloud-native-provider-host";
+import { SupabaseNativeProviderControlPlane } from "@qorpera/runtime/cloud-native-provider-service";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { parseRecoveryPrivateKey, readRecoveryCredential } from "../src/cloud-identity-recovery-config.ts";
-import { recoveryPublicKeyText } from "../src/cloud-identity-recovery-crypto.ts";
-import { parseIdentityRecoveryRuntimeState } from "../src/cloud-identity-recovery-guest.ts";
-import type { NativeCompanyExecutionRequest } from "../src/cloud-native-provider-host.ts";
-import { SupabaseNativeProviderControlPlane } from "../src/cloud-native-provider-service.ts";
 
 const signer = generateKeyPairSync("ed25519");
 const wrapper = generateKeyPairSync("rsa", { modulusLength: 3072 });

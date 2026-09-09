@@ -1073,13 +1073,7 @@ begin
 		'openai', 'codex-cli'
 	);
 
-	perform pg_temp.check_native_tools(jsonb_build_object(
-		'leaseId', v_native_authority ->> 'lease_id', 'runId', v_run_id, 'jobId', v_job_id,
-		'runnerId', v_runner_id, 'assignmentId', v_assignment ->> 'assignment_id',
-		'credentialCapsuleId', v_native_authority ->> 'credential_capsule_id',
-		'computeIdentityId', v_native_authority ->> 'compute_identity_id',
-		'provider', 'openai', 'nativeHarness', 'codex-cli', 'model', 'gpt-native'
-	));
+
 
 	for v_private_part in select value from jsonb_array_elements('[
 		{"type":"text","text":"private final answer must not become a message"},
@@ -1132,6 +1126,14 @@ begin
 		or (select status from public.qorpera_runner_jobs where id = v_job_id) <> 'leased' then
 		raise exception 'progress send was duplicated or waited for run completion';
 	end if;
+	-- Step 3 requires the durable acknowledgement before Step 2 operations.
+	perform pg_temp.check_native_tools(jsonb_build_object(
+		'leaseId', v_native_authority ->> 'lease_id', 'runId', v_run_id, 'jobId', v_job_id,
+		'runnerId', v_runner_id, 'assignmentId', v_assignment ->> 'assignment_id',
+		'credentialCapsuleId', v_native_authority ->> 'credential_capsule_id',
+		'computeIdentityId', v_native_authority ->> 'compute_identity_id',
+		'provider', 'openai', 'nativeHarness', 'codex-cli', 'model', 'gpt-native'
+	));
 	begin
 		perform pg_temp.send_native('progress-1', 'Changed under the same key', 'progress');
 		raise exception 'send replay accepted changed content';

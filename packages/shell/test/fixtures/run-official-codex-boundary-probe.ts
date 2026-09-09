@@ -1,6 +1,8 @@
-import { runNativeCodexCompactionProbe } from "./native-codex-compaction-probe.ts";
-import { runNativeCodexFenceFailureProbe } from "./native-codex-fence-failure-probe.ts";
-import { runOfficialCodexBoundaryProbe } from "./official-codex-boundary-probe.ts";
+import "./native-probe-source-loader.ts";
+
+const { runNativeCodexCompactionProbe } = await import("./native-codex-compaction-probe.ts");
+const { runNativeCodexFenceFailureProbe } = await import("./native-codex-fence-failure-probe.ts");
+const { runOfficialCodexBoundaryProbe } = await import("./official-codex-boundary-probe.ts");
 
 const [command, ...args] = process.argv.slice(2);
 if (!command) throw new Error("Expected the pinned official Codex command");

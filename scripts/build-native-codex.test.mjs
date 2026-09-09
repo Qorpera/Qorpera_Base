@@ -46,7 +46,9 @@ test("rejects ambiguous build arguments without touching the output", async () =
 		await writeFile(sentinel, "KEEP");
 		for (const args of [[], ["--source", root], ["--source", root, "--out", root, "--jobs", "0"],
 			["--source", root, "--out", root, "--profile", "unknown"], ["--source", root, "--out", root, "--out", root],
-			["--source", root, "--out", "relative"]]) {
+			["--source", root, "--out", "relative"],
+			["--source", root, "--out", root, "--target-cache", "relative"],
+			["--source", root, "--out", root, "--target-cache", root]]) {
 			const result = spawnSync(process.execPath, [script, ...args], { encoding: "utf8" });
 			assert.equal(result.status, 1);
 			assert.match(result.stderr, /Usage:/);

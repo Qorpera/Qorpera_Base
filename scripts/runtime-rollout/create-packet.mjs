@@ -25,7 +25,8 @@ export function createPacket(specification, output) {
 	assert(isAbsolute(output) && resolve(output) === output, "Output must be an absolute canonical path");
 	assert.equal(realpathSync(dirname(output)), dirname(output), "Output parent must be canonical");
 	const fixed = JSON.parse(readOwned(specification));
-	assert.deepEqual(Object.keys(fixed).sort(), requiredKeys.toSorted(), "Specification keys changed");
+	const explicitActivations = Object.hasOwn(fixed, "bundleActivations");
+	assert.deepEqual(Object.keys(fixed).sort(), [...requiredKeys, ...(explicitActivations ? ["bundleActivations"] : [])].sort(), "Specification keys changed");
 	assert.equal(fixed.project, "wovsmjvghnbcbfazdtvr", "Only the reviewed Company41 project is supported");
 	assert.equal(fixed.company, "88227549-9724-43c2-8966-9fafb3e855d6");
 	assert.equal(fixed.environment, "0d2053f0-c1a8-444d-99a8-68c8214e5414");
@@ -41,7 +42,27 @@ export function createPacket(specification, output) {
 		assert(Number.isSafeInteger(fixed[key]) && fixed[key] > 0, `Invalid ${key}`);
 	assert.equal(fixed.concurrency, 64);
 	assert.equal(fixed.policyVersionPaused, fixed.policyVersionBefore + 1);
-	assert.equal(fixed.bundleVersion, fixed.previousBundleVersion + 1);
+	if (!explicitActivations) {
+		assert.equal(fixed.bundleVersion, fixed.previousBundleVersion + 1);
+		fixed.bundleActivations = [{ migrationVersion: fixed.activationVersion, version: fixed.bundleVersion, sha256: fixed.bundle }];
+	}
+	assert(Array.isArray(fixed.bundleActivations) && fixed.bundleActivations.length > 0 && fixed.bundleActivations.length <= 20, "Bundle activation chain rejected");
+	let priorVersion = fixed.previousBundleVersion;
+	let priorMigration = "";
+	const bundleHashes = new Set([fixed.previousBundle]);
+	for (const activation of fixed.bundleActivations) {
+		assert(activation && typeof activation === "object" && !Array.isArray(activation), "Bundle activation rejected");
+		assert.deepEqual(Object.keys(activation).sort(), ["migrationVersion", "sha256", "version"]);
+		assert.match(activation.migrationVersion, /^\d{14}$/);
+		assert(activation.migrationVersion > priorMigration, "Bundle activations must follow migration order");
+		assert.equal(activation.version, priorVersion + 1, "Bundle versions must advance exactly once");
+		assert.match(activation.sha256, /^[a-f0-9]{64}$/);
+		assert(!bundleHashes.has(activation.sha256), "Bundle identity reused");
+		bundleHashes.add(activation.sha256);
+		priorVersion = activation.version;
+		priorMigration = activation.migrationVersion;
+	}
+	assert.deepEqual(fixed.bundleActivations.at(-1), { migrationVersion: fixed.activationVersion, version: fixed.bundleVersion, sha256: fixed.bundle }, "Final bundle activation differs");
 	assert.notEqual(fixed.bundle, fixed.previousBundle);
 	assert(["enabled", "disabled"].includes(fixed.initialEnablement));
 	assert(fixed.initialEnablement === "enabled" ? fixed.initialReason === null : typeof fixed.initialReason === "string" && fixed.initialReason.length > 0);
@@ -66,7 +87,14 @@ export function createPacket(specification, output) {
 		}),
 	};
 	assert.equal(inputs.productionOnly.length, 18, "Historical production-only ledger must be retained");
-	assert(inputs.migrations.length > 0 && inputs.migrations.at(-1).version === fixed.activationVersion, "Activation must be the final new migration");
+	assert(inputs.migrations.length > 0, "No new migrations");
+	if (!explicitActivations) assert.equal(inputs.migrations.at(-1).version, fixed.activationVersion, "Activation must be the final new migration");
+	for (const activation of fixed.bundleActivations) {
+		const migration = inputs.migrations.find((row) => row.version === activation.migrationVersion);
+		assert(migration, "Bundle activation is absent from the pending delta");
+		const sql = readOwned(join(fixed.source, "supabase/migrations", migration.file)).toString("utf8");
+		assert(sql.includes(`'${activation.sha256}'`) && sql.includes(`'qorpera.cloud-runtime',${activation.version},`), "Bundle activation source pin differs");
+	}
 	fixed.baselineCount = baseline.count;
 	fixed.sourceMigrationCount = names.length;
 	fixed.migrationCount = inputs.migrations.length;

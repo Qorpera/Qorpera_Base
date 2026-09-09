@@ -2,16 +2,20 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import type { ExecutionIdentity } from "@qorpera/contracts";
+import type {
+	HostedCompanyProposal,
+	HostedCompanyProposalReason,
+	QorperaHostedPrimary,
+} from "@qorpera/cloud-client/hosted-primary";
 import {
 	captureCloudCompanyTree,
 	cloudCompanyPathBelongsToLogicalTree,
 	cloudCompanyPathIsAuthorityCritical,
 	validateCloudCompanyLogicalTree,
-} from "./cloud-company-snapshot.ts";
+} from "@qorpera/cloud-client/node/cloud-company-snapshot";
+import type { CloudContentAddressedStore } from "@qorpera/cloud-client/node/cloud-object-store";
+import type { ExecutionIdentity } from "@qorpera/contracts";
 import { publishCompanySnapshotRestoreProof } from "./cloud-object-reachability.ts";
-import type { CloudContentAddressedStore } from "./cloud-object-store.ts";
-import type { HostedCompanyProposal, HostedCompanyProposalReason, QorperaHostedPrimary } from "./hosted-primary.ts";
 
 const STATE_SCHEMA = "qorpera.cloud-company-execution/v1";
 const REVIEW_ACCEPT_SCHEMA = "qorpera.cloud-company-review-accept/v1";

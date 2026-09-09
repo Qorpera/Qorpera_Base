@@ -3,27 +3,40 @@ import { lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { CloudAgentSendReceipt } from "../src/cloud-agent-mouth.ts";
-import { HttpCloudCompanyPathControl } from "../src/cloud-company-path-control.ts";
-import type { CloudCompanyPathControl, CloudCompanyPathRpc } from "../src/cloud-company-path-gateway.ts";
-import { CloudNativeCompanyRuntime } from "../src/cloud-native-company-runtime.ts";
-import { HttpNativeProviderComputerBridge } from "../src/cloud-native-provider.ts";
+import type { CompanyComputerScreenLease } from "@qorpera/cloud-client/cloud-company-computer-contract";
+import { CloudContentAddressedStore, type CloudObjectTransport } from "@qorpera/cloud-client/node/cloud-object-store";
+import type { CloudAgentSendReceipt } from "@qorpera/runtime/cloud-agent-mouth";
+import {
+	type CloudCompanyComputerSessionFactory,
+	createCloudCompanyComputerSession,
+} from "@qorpera/runtime/cloud-company-computer-control";
+import type { CompanyComputerCloudEndpoint } from "@qorpera/runtime/cloud-company-computer-tools";
+import { HttpCloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-control";
+import type { CloudCompanyPathControl, CloudCompanyPathRpc } from "@qorpera/runtime/cloud-company-path-gateway";
+import type {
+	CloudCompanyPathPresence,
+	CloudCompanyPathPresenceFactory,
+} from "@qorpera/runtime/cloud-company-path-presence";
+import { CloudNativeCompanyRuntime } from "@qorpera/runtime/cloud-native-company-runtime";
+import { HttpNativeProviderComputerBridge } from "@qorpera/runtime/cloud-native-provider";
 import {
 	type NativeCompanyExecutionRequest,
 	type NativeProviderControlPlane,
 	NativeProviderHost,
 	openNativeCredentialCapsule,
 	sealNativeCredentialCapsule,
-} from "../src/cloud-native-provider-host.ts";
-import { HttpNativeProviderHostService } from "../src/cloud-native-provider-service.ts";
-import type { CloudNativeToolOperationControlPlane } from "../src/cloud-native-tool-operations.ts";
-import { CloudContentAddressedStore, type CloudObjectTransport } from "../src/cloud-object-store.ts";
-import type { CloudRunnerNativeAuthority } from "../src/cloud-runner-broker.ts";
-import { CLOUD_RUNTIME_NATIVE_BINARY_SHA256 } from "../src/cloud-runtime-bundle.generated.ts";
-import * as runtimeBundle from "../src/cloud-runtime-bundle.ts";
-import { type CloudRuntimeObservation, parseCloudRuntimeObservation } from "../src/cloud-runtime-observability.ts";
-import type { CloudSecretOperationClient } from "../src/cloud-secret-tools.ts";
+} from "@qorpera/runtime/cloud-native-provider-host";
+import { HttpNativeProviderHostService } from "@qorpera/runtime/cloud-native-provider-service";
+import type { CloudNativeToolOperationControlPlane } from "@qorpera/runtime/cloud-native-tool-operations";
+import type { CloudRunnerNativeAuthority } from "@qorpera/runtime/cloud-runner-broker";
+import * as runtimeBundle from "@qorpera/runtime/cloud-runtime-bundle";
+import { CLOUD_RUNTIME_NATIVE_BINARY_SHA256 } from "@qorpera/runtime/cloud-runtime-bundle.generated";
+import {
+	type CloudRuntimeObservation,
+	parseCloudRuntimeObservation,
+} from "@qorpera/runtime/cloud-runtime-observability";
+import type { CloudSecretOperationClient } from "@qorpera/runtime/cloud-secret-tools";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { nativeCompanyContextFixture } from "./fixtures/native-company-context-fixture.ts";
 
 const rpcFixture = fileURLToPath(new URL("./fixtures/codex-boundary-rpc-fixture.cjs", import.meta.url));
@@ -45,7 +58,7 @@ afterEach(async () => {
 	await rm(root, { recursive: true, force: true });
 });
 
-async function fixture(mode = "company-runtime", httpPathControl = false) {
+async function fixture(mode = "company-runtime", httpPathControl = false, presence?: CloudCompanyPathPresenceFactory) {
 	const f = nativeCompanyContextFixture();
 	if (mode === "company-silent") {
 		f.context = { ...f.context, identity: { ...f.context.identity, sessionId: null } };
@@ -265,7 +278,7 @@ async function fixture(mode = "company-runtime", httpPathControl = false) {
 	const control = {
 		describeToolAuthority: vi.fn(async () => structuredClone(f.authority)),
 		beginToolOperation: vi.fn<CloudNativeToolOperationControlPlane["beginToolOperation"]>(async (_binding, input) => {
-			if (mode !== "company-secret") throw new Error("No generic effects expected");
+			if (mode !== "company-secret" && mode !== "company-office") throw new Error("No generic effects expected");
 			return {
 				run_id: f.binding.runId,
 				receipt_id: input.receiptId,
@@ -277,7 +290,7 @@ async function fixture(mode = "company-runtime", httpPathControl = false) {
 		}),
 		completeToolOperation: vi.fn<CloudNativeToolOperationControlPlane["completeToolOperation"]>(
 			async (_binding, input) => {
-				if (mode !== "company-secret") throw new Error("No generic effects expected");
+				if (mode !== "company-secret" && mode !== "company-office") throw new Error("No generic effects expected");
 				return {
 					run_id: f.binding.runId,
 					receipt_id: input.receiptId,
@@ -318,7 +331,69 @@ async function fixture(mode = "company-runtime", httpPathControl = false) {
 				}
 			: undefined;
 	const evidence = join(root, "evidence.json");
+	const officeScope = {
+		companyId: f.authority.identity.companyId,
+		environmentId: f.authority.identity.environmentId,
+		companyComputerId: randomUUID(),
+		logicalComputerId: randomUUID(),
+	};
+	const officeLease: CompanyComputerScreenLease = {
+		binding: {
+			...officeScope,
+			computerGeneration: 1,
+			screenId: randomUUID(),
+			screenOrdinal: 1,
+			screenGeneration: 1,
+			staffAgentId: f.authority.identity.staffAgentId,
+		},
+		leaseId: randomUUID(),
+		epoch: 1,
+		validForMs: 30_000,
+		driver: { kind: "agent", runId: f.binding.runId, staffAgentId: f.authority.identity.staffAgentId },
+	};
+	const officeCall = vi.fn(async (_method: string, args: Record<string, unknown>, signal: AbortSignal) => {
+		expect(args.p_binding).toEqual(f.binding);
+		expect(args.p_scope).toEqual(officeScope);
+		signal.throwIfAborted();
+		return args.p_action === "release"
+			? { state: "released" }
+			: { state: "admitted", lease: structuredClone(officeLease) };
+	});
+	const officeEndpoint: CompanyComputerCloudEndpoint = {
+		capabilities: ["shell"],
+		resourceTarget: { grantId: randomUUID(), version: 1 },
+		authorize: vi.fn(async () => {}),
+		perform: vi.fn<CompanyComputerCloudEndpoint["perform"]>(async (operation, lease, effect) => {
+			expect(operation).toMatchObject({
+				tool: "computer_shell",
+				arguments: { command: "printf office" },
+				target: { binding: officeLease.binding, resources: officeEndpoint.resourceTarget },
+			});
+			expect(lease).toEqual(officeLease);
+			expect(effect.identity).toEqual(f.authority.identity);
+			expect(effect.receiptId).toEqual(expect.any(String));
+			return { kind: "text", value: "SYNTHETIC_OFFICE_RESULT" };
+		}),
+	};
+	const officeClose = vi.fn<() => Promise<void>>();
+	const officeSession = vi.fn<CloudCompanyComputerSessionFactory>(async (run, operations) => {
+		expect(run.binding).toEqual(f.binding);
+		expect(run.signal.aborted).toBe(false);
+		const session = createCloudCompanyComputerSession({
+			run,
+			operations,
+			scope: officeScope,
+			control: { call: officeCall },
+			endpoint: officeEndpoint,
+		});
+		officeClose.mockImplementation(async () => {
+			expect(run.signal.aborted).toBe(true);
+			await session.close();
+		});
+		return { tools: session.tools, close: officeClose };
+	});
 	const runtime = new CloudNativeCompanyRuntime({
+		presence,
 		controlPlane: control,
 		pathControl: httpPathControl
 			? new HttpCloudCompanyPathControl({
@@ -340,6 +415,7 @@ async function fixture(mode = "company-runtime", httpPathControl = false) {
 		binarySha256,
 		timeoutMs: 10_000,
 		...(secretBroker ? { secretBroker } : {}),
+		...(mode === "company-office" ? { computerSession: officeSession } : {}),
 	});
 	const identityRoot = join(root, "identity");
 	await mkdir(join(identityRoot, "codex"), { recursive: true, mode: 0o700 });
@@ -367,6 +443,7 @@ async function fixture(mode = "company-runtime", httpPathControl = false) {
 	};
 	return {
 		...f,
+		wake,
 		runtime,
 		control,
 		pathCall,
@@ -379,8 +456,148 @@ async function fixture(mode = "company-runtime", httpPathControl = false) {
 		secretBroker,
 		connectorGrantId,
 		observations,
+		officeCall,
+		officeSession,
+		officeClose,
+		officeEndpoint,
 	};
 }
+
+it("composes run-bound path presence into fenced model context and closes it with the native execution", async () => {
+	const observe = vi.fn<CloudCompanyPathPresence["observe"]>(async (path) => ({
+		schema: "qorpera.company-path-presence-view/v1",
+		state: "available",
+		observedAt: Date.now(),
+		paths: [{ path, participants: [] }],
+	}));
+	const close = vi.fn(async () => {});
+	const presence = vi.fn<CloudCompanyPathPresenceFactory>(() => ({ observe, close }));
+	const f = await fixture("company-runtime", false, presence);
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(result.delivery.messageCount).toBe(2);
+	expect(presence).toHaveBeenCalledOnce();
+	expect(presence.mock.calls[0][0]).toEqual(f.binding);
+	expect(observe).toHaveBeenCalled();
+	expect(close).toHaveBeenCalledOnce();
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	expect(JSON.stringify(evidence.fenced.outputs)).toContain("qorpera.company-path-presence-view/v1");
+	expect(JSON.parse(evidence.turnParameters.input[0].text).presence).toEqual({
+		trust: "ephemeral_observation",
+		selection: "on_demand",
+		view: null,
+	});
+});
+
+it.each(["available", "unavailable"])(
+	"includes %s file-event presence in the exact recorded startup context",
+	async (state) => {
+		const path = "projects/event.md";
+		const peer = randomUUID();
+		const observe = vi.fn<CloudCompanyPathPresence["observe"]>(async (selected) => {
+			if (state === "unavailable") throw new Error("fixture presence outage");
+			return {
+				schema: "qorpera.company-path-presence-view/v1",
+				state: "available",
+				observedAt: Date.now(),
+				paths: [
+					{
+						path: selected,
+						participants: [
+							{
+								runId: peer,
+								staffAgentId: randomUUID(),
+								activity: "writing",
+								overlap: "same_object",
+								expiresAt: Date.now() + 30000,
+							},
+						],
+					},
+				],
+			};
+		});
+		const close = vi.fn(async () => {});
+		const f = await fixture("company-silent", false, () => ({ observe, close }));
+		const eventId = randomUUID();
+		Object.assign(f.wake, {
+			source: { kind: "company-file", id: eventId, occurrenceKey: `event:${eventId}` },
+			payload: {
+				eventId,
+				path,
+				previousVersion: null,
+				version: randomUUID(),
+				operation: "upsert",
+				receiptId: null,
+				proposalId: null,
+			},
+		});
+		await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+		expect(observe.mock.calls[0].slice(0, 3)).toEqual([path, "object", "reading"]);
+		const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+		const promptText = evidence.turnParameters.input[0].text;
+		const prompt = JSON.parse(promptText);
+		expect(prompt.presence).toMatchObject({
+			trust: "ephemeral_observation",
+			selection: "wake_path",
+			view: { state, paths: [{ path }] },
+		});
+		expect(prompt.presence.view.paths[0].participants).toEqual(
+			state === "available" ? [expect.objectContaining({ runId: peer })] : [],
+		);
+		const start = f.pathCall.mock.calls.find(
+			([method]) => method === "qorpera_begin_native_company_execution_v2",
+		)![1];
+		expect(start.p_context_sha256).toBe(createHash("sha256").update(promptText).digest("hex"));
+		expect(close).toHaveBeenCalledOnce();
+	},
+);
+
+it("composes office tools with the actual admitted native run and existing effect ledger, then releases occupancy", async () => {
+	const f = await fixture("company-office");
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(result.delivery.messageCount).toBe(2);
+	expect(f.officeSession).toHaveBeenCalledTimes(1);
+	expect(f.officeEndpoint.perform).toHaveBeenCalledTimes(1);
+	expect(f.control.beginToolOperation).toHaveBeenCalledTimes(1);
+	expect(f.control.completeToolOperation).toHaveBeenCalledTimes(1);
+	expect(f.officeClose).toHaveBeenCalledTimes(1);
+	expect(f.officeCall.mock.calls.filter(([, args]) => args.p_action === "release")).toHaveLength(1);
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	const names = evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name);
+	expect(names).toContain("computer_shell");
+	expect(names).toContain("computer_screen");
+	expect(names).not.toContain("computer_browser");
+	expect(names).not.toContain("computer_screenshot");
+	expect(JSON.parse(evidence.fenced.outputs[1].output)).toMatchObject({ trust: "untrusted_data" });
+	expect(JSON.stringify(evidence.fenced.outputs)).toContain("SYNTHETIC_OFFICE_RESULT");
+	expect(await readFile(join(f.companyRoot, "private-sentinel"), "utf8")).toBe("UNCHANGED_COMPANY_BYTES");
+});
+
+it("fails the native result when office cleanup is unconfirmed, without repeating the effect", async () => {
+	const f = await fixture("company-office");
+	const original = f.officeCall.getMockImplementation()!;
+	f.officeCall.mockImplementation(async (method, args, signal) => {
+		if (args.p_action === "release") throw new Error("OFFICE_RELEASE_UNAVAILABLE");
+		return original(method, args, signal);
+	});
+	await expect(f.runtime.execute(f.request, f.identityRoot, new AbortController().signal)).rejects.toThrow("cleanup");
+	expect(f.officeEndpoint.perform).toHaveBeenCalledTimes(1);
+	expect(f.officeClose).toHaveBeenCalledTimes(1);
+});
+
+it("closes an initialized office session when native execution admission fails", async () => {
+	const f = await fixture("company-office");
+	const original = f.pathCall.getMockImplementation()!;
+	f.pathCall.mockImplementation(async (method, args, signal) => {
+		if (method === "qorpera_begin_native_company_execution_v2") throw new Error("START_REVOKED");
+		return original(method, args, signal);
+	});
+	await expect(f.runtime.execute(f.request, f.identityRoot, new AbortController().signal)).rejects.toThrow(
+		"START_REVOKED",
+	);
+	expect(f.officeClose).toHaveBeenCalledTimes(1);
+	expect(f.officeEndpoint.perform).not.toHaveBeenCalled();
+	expect(f.control.sendMessage).not.toHaveBeenCalled();
+});
 
 it.each([false, true])(
 	"runs the native fence, live path tools and public mouth (HTTP control: %s)",

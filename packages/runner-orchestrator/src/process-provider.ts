@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { isAbsolute, join, resolve } from "node:path";
+import type { ServiceHttpFetch } from "./http-transport.ts";
 import type { CloudRunnerAssignmentDelivery, CloudRunnerInstance, CloudRunnerWork } from "./orchestrator.ts";
 import { validateCloudRunnerWork } from "./orchestrator.ts";
 import type { CloudRunnerProviderServiceBackend } from "./provider-service.ts";
@@ -146,10 +147,10 @@ async function stopRuntime(runtime: ProcessRuntime): Promise<void> {
 export class ProcessCloudRunnerProviderBackend implements CloudRunnerProviderServiceBackend {
 	readonly adapterId: string;
 	readonly #config: ProcessCloudRunnerProviderConfig;
-	readonly #fetch: typeof fetch;
+	readonly #fetch: ServiceHttpFetch;
 	readonly #runtimes = new Map<string, ProcessRuntime>();
 
-	constructor(config: ProcessCloudRunnerProviderConfig, fetchImplementation: typeof fetch = fetch) {
+	constructor(config: ProcessCloudRunnerProviderConfig, fetchImplementation: ServiceHttpFetch = fetch) {
 		if (!/^[a-z][a-z0-9_-]{0,63}$/.test(config.adapterId)) throw new Error("Provider adapter id is invalid");
 		for (const [label, path] of [
 			["Runner module", config.runnerModulePath],

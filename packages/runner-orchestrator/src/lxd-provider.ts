@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmod, mkdir, open, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
+import type { ServiceHttpFetch } from "./http-transport.ts";
 import type {
 	LxdClient,
 	LxdCreateInstanceRequest,
@@ -10,9 +11,12 @@ import type {
 	LxdStorageVolumeRecord,
 } from "./lxd-client.ts";
 import { type LxdNativeCompanyRuntimeConfig, validateLxdNativeCompanyRuntime } from "./lxd-company-runtime.ts";
+import { lxdNativeNodePolicy } from "./lxd-native-node-policy.ts";
 import type { CloudRunnerAssignmentDelivery, CloudRunnerInstance, CloudRunnerWork } from "./orchestrator.ts";
 import { validateCloudRunnerWork } from "./orchestrator.ts";
 import type { CloudRunnerProviderServiceBackend } from "./provider-service.ts";
+import { reserveRuntimeNodeMachine } from "./runtime-node-admission.ts";
+import { readRuntimeNodeHost } from "./runtime-node-host.ts";
 
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -27,6 +31,7 @@ const IDENTITY_VOLUME_SCHEMA = "qorpera.compute-identity-volume/v1";
 const RECOVERY_VOLUME_SCHEMA = "qorpera.native-company-recovery-volume/v1";
 
 export type LxdProviderPhysicalState =
+	| "reserving"
 	| "creating"
 	| "starting"
 	| "bootstrapping"
@@ -109,6 +114,12 @@ interface LxdProviderJournal {
 	instanceName: string;
 	runner: CloudRunnerInstance;
 	physicalState: LxdProviderPhysicalState;
+	/** Durable proof that the exact VM deletion completed before capacity RPC cleanup. */
+	deletionConfirmed?: true;
+	/** Written only after the control plane confirms this physical allocation. */
+	capacityRegistered?: true;
+	/** Exact node binding retained after the node reservation commits. */
+	nodeCapacity?: NativeNodePlacement;
 	guestAddress?: string;
 	assignmentId?: string;
 	stopReason?: "delivery_failed" | "idle" | "revoked";
@@ -321,6 +332,7 @@ function runnerFromJournal(value: unknown): CloudRunnerInstance {
 
 function physicalState(value: unknown): LxdProviderPhysicalState {
 	if (
+		value !== "reserving" &&
 		value !== "creating" &&
 		value !== "starting" &&
 		value !== "bootstrapping" &&
@@ -335,6 +347,33 @@ function physicalState(value: unknown): LxdProviderPhysicalState {
 	return value;
 }
 
+interface NativeNodePlacement {
+	nodeId: string;
+	policySha256: string;
+	machineIdSha256: string;
+	cpuMillis: number;
+	memoryBytes: number;
+}
+function nodePlacement(value: unknown): NativeNodePlacement {
+	const p = record(value, "LXD node placement");
+	if (
+		Object.keys(p).sort().join() !== "cpuMillis,machineIdSha256,memoryBytes,nodeId,policySha256" ||
+		typeof p.nodeId !== "string" ||
+		!UUID_PATTERN.test(p.nodeId) ||
+		typeof p.policySha256 !== "string" ||
+		!SHA256_PATTERN.test(p.policySha256) ||
+		typeof p.machineIdSha256 !== "string" ||
+		!SHA256_PATTERN.test(p.machineIdSha256) ||
+		!Number.isSafeInteger(p.cpuMillis) ||
+		(p.cpuMillis as number) < 1 ||
+		(p.cpuMillis as number) > 1024000 ||
+		!Number.isSafeInteger(p.memoryBytes) ||
+		(p.memoryBytes as number) < 1 ||
+		(p.memoryBytes as number) > 1125899906842624
+	)
+		throw new Error("LXD node placement is invalid");
+	return p as unknown as NativeNodePlacement;
+}
 function journalFromJson(value: unknown): LxdProviderJournal {
 	const input = record(value, "LXD provider journal");
 	const lxd = record(input.lxd, "LXD provider journal identity");
@@ -356,6 +395,10 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 			input.stopReason !== "delivery_failed" &&
 			input.stopReason !== "idle" &&
 			input.stopReason !== "revoked") ||
+		(input.deletionConfirmed !== undefined &&
+			(input.deletionConfirmed !== true ||
+				!["stopping", "stopped", "lost"].includes(String(input.physicalState)))) ||
+		(input.capacityRegistered !== undefined && input.capacityRegistered !== true) ||
 		lxd.type !== "virtual-machine" ||
 		typeof lxd.project !== "string" ||
 		typeof lxd.imageServer !== "string" ||
@@ -434,6 +477,9 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 		instanceName: input.instanceName,
 		runner: runnerFromJournal(input.runner),
 		physicalState: physicalState(input.physicalState),
+		...(input.deletionConfirmed === true ? { deletionConfirmed: true } : {}),
+		...(input.capacityRegistered === true ? { capacityRegistered: true } : {}),
+		...(input.nodeCapacity !== undefined ? { nodeCapacity: nodePlacement(input.nodeCapacity) } : {}),
 		...(typeof input.guestAddress === "string" ? { guestAddress: input.guestAddress } : {}),
 		...(typeof input.assignmentId === "string" ? { assignmentId: input.assignmentId } : {}),
 		...(input.stopReason === "delivery_failed" || input.stopReason === "idle" || input.stopReason === "revoked"
@@ -611,9 +657,9 @@ function ipv4(state: LxdInstanceStateRecord, networkInterface: string): string |
 
 export class HttpLxdGuestTransport implements LxdGuestTransport {
 	readonly #lxd: LxdClient;
-	readonly #fetch: typeof fetch;
+	readonly #fetch: ServiceHttpFetch;
 
-	constructor(lxd: LxdClient, fetchImplementation: typeof fetch = fetch) {
+	constructor(lxd: LxdClient, fetchImplementation: ServiceHttpFetch = fetch) {
 		this.#lxd = lxd;
 		this.#fetch = fetchImplementation;
 	}
@@ -691,18 +737,20 @@ export class HttpLxdGuestTransport implements LxdGuestTransport {
 }
 
 export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderServiceBackend {
+	readonly #registeredCapacity = new Set<string>();
+	readonly #registeredNodeCapacity = new Map<string, NativeNodePlacement>();
 	readonly adapterId: string;
 	readonly #config: LxdCloudRunnerProviderConfig;
 	readonly #lxd: LxdClient;
 	readonly #guest: LxdGuestTransport;
-	readonly #fetch: typeof fetch;
+	readonly #fetch: ServiceHttpFetch;
 	#serial: Promise<void> = Promise.resolve();
 
 	constructor(
 		config: LxdCloudRunnerProviderConfig,
 		lxd: LxdClient,
 		guest: LxdGuestTransport = new HttpLxdGuestTransport(lxd),
-		fetchImplementation: typeof fetch = fetch,
+		fetchImplementation: ServiceHttpFetch = fetch,
 	) {
 		validateConfig(config);
 		this.adapterId = config.adapterId;
@@ -731,6 +779,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 
 	async acquire(runId: string, work: CloudRunnerWork, signal: AbortSignal): Promise<CloudRunnerInstance> {
 		return this.#exclusive(async () => {
+			await this.#assertCapacityInventory(signal);
 			ensureStep2Work(work, this.#config.nativeCompanyRuntime !== undefined);
 			if (
 				this.#config.nativeCompanyRuntime &&
@@ -820,7 +869,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				jobType: work.jobType,
 				instanceName: this.#instanceName(acquisitionId),
 				runner,
-				physicalState: "creating",
+				physicalState: "reserving",
 				lxd: {
 					project: this.#config.project,
 					type: "virtual-machine",
@@ -910,6 +959,15 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			await this.#writeJournal({ ...current, physicalState: "stopping", stopReason: reason });
 			const instance = await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal);
 			if (!instance) {
+				if (
+					current.deletionConfirmed ||
+					current.physicalState === "reserving" ||
+					current.physicalState === "registered" ||
+					current.physicalState === "assigned"
+				) {
+					await this.#writeJournal({ ...current, physicalState: "stopping", deletionConfirmed: true });
+					await this.#releaseMachine(current, signal);
+				}
 				await this.#writeJournal({ ...current, physicalState: "lost", stopReason: reason });
 				return;
 			}
@@ -928,6 +986,11 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			await this.#lxd.setInstancePower(current.lxd.project, current.instanceName, "stop", signal);
 		}
 		await this.#lxd.deleteInstance(current.lxd.project, current.instanceName, signal);
+		if (await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal)) {
+			throw new Error("Machine capacity remains occupied until physical deletion is confirmed");
+		}
+		await this.#writeJournal({ ...current, physicalState: "stopping", deletionConfirmed: true });
+		await this.#releaseMachine(current, signal);
 	}
 
 	async #retirePoweredOff(current: LxdProviderJournal, signal?: AbortSignal): Promise<void> {
@@ -943,13 +1006,20 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		credentials: ProviderCredentials,
 		signal?: AbortSignal,
 	): Promise<LxdProviderJournal> {
-		if (!current.runner.computeIdentityId)
-			throw new Error("Journaled LXD guest is missing Compute Identity authority");
-		await this.#ensureIdentityVolume(current, current.runner.computeIdentityId, signal);
+		const computeIdentityId = current.runner.computeIdentityId;
+		if (!computeIdentityId) throw new Error("Journaled LXD guest is missing Compute Identity authority");
+		await this.#reserveMachine(current, signal);
+		if (current.physicalState === "reserving") {
+			current = { ...current, physicalState: "creating", capacityRegistered: true };
+			await this.#writeJournal(current);
+		}
+		await this.#ensureIdentityVolume(current, computeIdentityId, signal);
 		await this.#ensureRecoveryVolume(current, signal);
 		let instance = await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal);
 		if (!instance) {
 			if (current.physicalState !== "creating") {
+				if (current.physicalState === "registered" || current.physicalState === "assigned")
+					await this.#releaseMachine(current, signal);
 				const lost = { ...current, physicalState: "lost" as const };
 				await this.#writeJournal(lost);
 				throw new Error("Journaled LXD guest is missing");
@@ -958,7 +1028,9 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			if (bootstrapSha256(bootstrapFiles) !== current.lxd.bootstrapSha256) {
 				throw new Error("LXD guest bootstrap no longer matches its durable journal");
 			}
-			await this.#lxd.createInstance(current.lxd.project, this.#createRequest(current), signal);
+			const admitted = await this.#reserveMachine(current, signal);
+			admitted.throwIfAborted();
+			await this.#lxd.createInstance(current.lxd.project, this.#createRequest(current), signal, admitted);
 			instance = await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal);
 			if (!instance) throw new Error("LXD did not persist the created guest");
 		}
@@ -967,13 +1039,23 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			await this.#retirePoweredOff(current, signal);
 			throw new Error("LXD provider acquisition has powered off and cannot be replayed");
 		}
+		// A refused start has no physical intent. Keep the created, stopped VM
+		// and its charged allocation retryable until a fresh admission succeeds.
+		const startAdmission = instance.status === "Stopped" ? await this.#reserveMachine(current, signal) : undefined;
 		let address: string;
 		try {
 			if (instance.status !== "Running") {
 				if (instance.status !== "Stopped") throw new Error("LXD guest is unavailable for startup");
 				current = { ...current, physicalState: "starting" };
 				await this.#writeJournal(current);
-				await this.#lxd.setInstancePower(current.lxd.project, current.instanceName, "start", signal);
+				startAdmission!.throwIfAborted();
+				await this.#lxd.setInstancePower(
+					current.lxd.project,
+					current.instanceName,
+					"start",
+					signal,
+					startAdmission,
+				);
 			}
 			if (current.physicalState === "creating" || current.physicalState === "starting") {
 				await this.#prepareBootstrap(current, credentials, signal);
@@ -1029,6 +1111,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	#createRequest(current: LxdProviderJournal): LxdCreateInstanceRequest {
 		const liveCompany = liveCompanyAuthority(this.#config, current.jobType);
 		const companyRuntime = current.lxd.companyRuntime;
+		const placement = current.nodeCapacity ?? this.#registeredNodeCapacity.get(current.acquisitionId);
 		return {
 			name: current.instanceName,
 			type: "virtual-machine",
@@ -1038,6 +1121,14 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				"limits.cpu": String(this.#config.cpuLimit),
 				"limits.memory": this.#config.memoryLimit,
 				"user.qorpera.acquisition_id": current.acquisitionId,
+				...(placement
+					? {
+							"user.qorpera.schema": "qorpera.native-job-vm/v1",
+							"user.qorpera.provider_adapter": this.adapterId,
+							"user.qorpera.provider_policy_sha256": placement.policySha256,
+							"user.qorpera.instance_sha256": this.#machineIdentity(current).p_instance_sha256,
+						}
+					: {}),
 				"user.qorpera.bootstrap_sha256": current.lxd.bootstrapSha256,
 				"user.qorpera.compute_policy_sha256": current.lxd.policySha256,
 				"user.qorpera.runner_id": current.runner.runnerId,
@@ -1315,6 +1406,10 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			instance.type !== "virtual-machine" ||
 			JSON.stringify(instance.profiles) !== JSON.stringify(journal.lxd.profiles) ||
 			instance.config["boot.mode"] !== "uefi-secureboot" ||
+			instance.config["limits.cpu"] !== String(this.#config.cpuLimit) ||
+			instance.expandedConfig["limits.cpu"] !== String(this.#config.cpuLimit) ||
+			instance.config["limits.memory"] !== this.#config.memoryLimit ||
+			instance.expandedConfig["limits.memory"] !== this.#config.memoryLimit ||
 			instance.config["user.qorpera.acquisition_id"] !== journal.acquisitionId ||
 			instance.config["cloud-init.user-data"] !== undefined ||
 			instance.config["user.qorpera.bootstrap_sha256"] !== journal.lxd.bootstrapSha256 ||
@@ -1353,10 +1448,18 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		if (!current.runner.computeIdentityId) {
 			throw new Error("Journaled LXD guest is missing Compute Identity authority");
 		}
+		if (current.physicalState === "reserving") {
+			await this.#ensureReady(current, await this.#credentials(current.acquisitionId), signal);
+			return;
+		}
 		await this.#ensureIdentityVolume(current, current.runner.computeIdentityId, signal);
 		await this.#ensureRecoveryVolume(current, signal);
 		const instance = await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal);
 		if (!instance) {
+			// A timed-out create/start may still be pending in LXD. Missing is
+			// deletion proof only after a fully registered or retired guest.
+			if (current.deletionConfirmed || ["registered", "assigned", "stopped"].includes(current.physicalState))
+				await this.#releaseMachine(current, signal);
 			if (current.physicalState !== "stopped" && current.physicalState !== "lost") {
 				await this.#writeJournal({ ...current, physicalState: "lost" });
 			}
@@ -1367,6 +1470,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			if (instance.status !== "Stopped") throw new Error("Stopped LXD journal names a running guest");
 			// A guest left behind by an earlier provider build is removed on sight.
 			await this.#lxd.deleteInstance(current.lxd.project, current.instanceName, signal);
+			await this.#releaseMachine(current, signal);
 			return;
 		}
 		if (current.physicalState === "stopping") {
@@ -1394,6 +1498,8 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			await this.#writeJournal({ ...current, physicalState: "lost" });
 			return;
 		}
+		if (!current.capacityRegistered) await this.#reserveMachine(current, signal);
+		else if (!current.nodeCapacity) await this.#reserveNodeMachine(current, signal);
 	}
 
 	async #ensureIdentityVolume(
@@ -1575,7 +1681,14 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		const root = join(this.#config.stateRoot, journal.acquisitionId);
 		await mkdir(root, { recursive: true, mode: 0o700 });
 		await chmod(root, 0o700);
-		const updated: LxdProviderJournal = { ...journal, updatedAt: new Date().toISOString() };
+		const updated: LxdProviderJournal = {
+			...journal,
+			...(this.#registeredCapacity.has(journal.acquisitionId) ? { capacityRegistered: true as const } : {}),
+			...(this.#registeredNodeCapacity.has(journal.acquisitionId)
+				? { nodeCapacity: this.#registeredNodeCapacity.get(journal.acquisitionId)! }
+				: {}),
+			updatedAt: new Date().toISOString(),
+		};
 		const path = this.#journalPath(journal.acquisitionId);
 		const temporary = join(root, `.journal-${process.pid}-${randomUUID()}.tmp`);
 		const file = await open(temporary, "wx", 0o600);
@@ -1611,6 +1724,130 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 
 	#instanceName(acquisitionId: string): string {
 		return `qorpera-${acquisitionId.replaceAll("-", "")}`;
+	}
+
+	async #assertCapacityInventory(signal: AbortSignal): Promise<void> {
+		await mkdir(this.#config.stateRoot, { recursive: true, mode: 0o700 });
+		for (const entry of await readdir(this.#config.stateRoot, { withFileTypes: true })) {
+			if (!entry.isDirectory() || !UUID_PATTERN.test(entry.name)) continue;
+			const journal = await this.#readJournal(entry.name);
+			if (!journal || (journal.capacityRegistered && journal.nodeCapacity) || journal.physicalState === "reserving")
+				continue;
+			if (
+				(journal.deletionConfirmed || journal.physicalState === "stopped") &&
+				!(await this.#lxd.getInstance(journal.lxd.project, journal.instanceName, signal))
+			)
+				continue;
+			throw new Error("Existing LXD journal requires confirmed machine-capacity inventory before new starts");
+		}
+	}
+
+	#machineIdentity(current: LxdProviderJournal): {
+		p_allocation_id: string;
+		p_provider_adapter: string;
+		p_instance_sha256: string;
+	} {
+		return {
+			p_allocation_id: current.acquisitionId,
+			p_provider_adapter: this.adapterId,
+			p_instance_sha256: sha256(
+				JSON.stringify(
+					canonical({
+						project: current.lxd.project,
+						instanceName: current.instanceName,
+						image: current.lxd.imageFingerprint,
+						bootstrap: current.lxd.bootstrapSha256,
+						work: current.workSha256,
+					}),
+				),
+			),
+		};
+	}
+
+	async #reserveMachine(current: LxdProviderJournal, signal?: AbortSignal): Promise<AbortSignal> {
+		const identity = this.#machineIdentity(current);
+		const result = record(
+			await this.#rpc(
+				"qorpera_reserve_runtime_machine",
+				{
+					...identity,
+					p_run_id: current.runId ?? current.acquisitionId,
+					p_runner_id: current.runner.runnerId,
+				},
+				signal,
+			),
+			"Machine reservation",
+		);
+		if (
+			Object.keys(result).sort().join() !== "allocationId,instanceSha256,state" ||
+			result.state !== "reserved" ||
+			result.allocationId !== identity.p_allocation_id ||
+			result.instanceSha256 !== identity.p_instance_sha256
+		) {
+			throw new Error("Machine start was not admitted by the company ceiling");
+		}
+		signal?.throwIfAborted();
+		this.#registeredCapacity.add(current.acquisitionId);
+		await this.#writeJournal(current);
+		return this.#reserveNodeMachine(current, signal);
+	}
+
+	async #reserveNodeMachine(current: LxdProviderJournal, caller?: AbortSignal): Promise<AbortSignal> {
+		const signal = AbortSignal.any([...(caller ? [caller] : []), AbortSignal.timeout(5000)]);
+		const host = await readRuntimeNodeHost(signal),
+			{ policy, policySha256 } = lxdNativeNodePolicy(this.#config, host.machineIdSha256);
+		const prior = current.nodeCapacity ?? this.#registeredNodeCapacity.get(current.acquisitionId);
+		if (
+			prior &&
+			(prior.policySha256 !== policySha256 ||
+				prior.machineIdSha256 !== host.machineIdSha256 ||
+				prior.cpuMillis !== policy.cpuMillis ||
+				prior.memoryBytes !== policy.memoryBytes)
+		)
+			throw new Error("LXD node placement cannot be changed");
+		const identity = this.#machineIdentity(current);
+		const admission = await reserveRuntimeNodeMachine(
+			{
+				allocationId: current.acquisitionId,
+				providerKind: "native",
+				providerId: this.adapterId,
+				policySha256,
+				instanceSha256: identity.p_instance_sha256,
+				machineIdSha256: host.machineIdSha256,
+				cpuMillis: policy.cpuMillis,
+				memoryBytes: policy.memoryBytes,
+			},
+			{ call: (method, args, checked) => this.#rpc(method, args, checked) },
+			signal,
+		);
+		if (admission.state === "refused") throw new Error(admission.reason);
+		if (prior && prior.nodeId !== admission.nodeId) throw new Error("LXD node placement cannot be changed");
+		this.#registeredNodeCapacity.set(current.acquisitionId, {
+			nodeId: admission.nodeId,
+			policySha256,
+			machineIdSha256: host.machineIdSha256,
+			cpuMillis: policy.cpuMillis,
+			memoryBytes: policy.memoryBytes,
+		});
+		await this.#writeJournal(current);
+		admission.signal.throwIfAborted();
+		return admission.signal;
+	}
+
+	async #releaseMachine(current: LxdProviderJournal, signal?: AbortSignal): Promise<void> {
+		if (await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal)) {
+			throw new Error("Machine capacity remains occupied until physical deletion is confirmed");
+		}
+		const identity = this.#machineIdentity(current);
+		const result = record(await this.#rpc("qorpera_release_runtime_machine", identity, signal), "Machine release");
+		if (
+			Object.keys(result).sort().join() !== "allocationId,instanceSha256,state" ||
+			result.state !== "released" ||
+			result.allocationId !== identity.p_allocation_id ||
+			result.instanceSha256 !== identity.p_instance_sha256
+		) {
+			throw new Error("Machine capacity release was not confirmed");
+		}
 	}
 
 	async #rpc(name: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {

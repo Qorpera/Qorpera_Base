@@ -24,6 +24,55 @@ afterEach(() => {
 });
 
 describe("Qorpera account auth", () => {
+	it("does not require the Company File gateway for office or account cleanup APIs", () => {
+		const id = (n: number) => `37000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+		const auth = new QorperaAccountAuth(temporaryRoot("headless-office"), {
+			projectUrl: "https://project.test",
+			publishableKey: "public",
+			openExternal: async () => {},
+		});
+		expect(auth.memberCompanyComputer(id(1), id(2), id(3))).toBeDefined();
+		expect(auth.memberBrowserRecovery(id(3))).toBeDefined();
+		expect(() => auth.memberCompanyFile(id(1), id(2), id(3))).toThrow("gateway is not configured");
+	});
+	it("requires explicit trusted TLS configuration for office viewing", () => {
+		const id = (n: number) => `34000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+		const options = {
+			projectUrl: "https://project.test",
+			publishableKey: "public",
+			objectGatewayUrl: "https://objects.test",
+			openExternal: async () => {},
+		};
+		const auth = new QorperaAccountAuth(temporaryRoot("office-viewer"), options);
+		expect(auth.memberCompanyComputerViews(id(1), id(2), id(3))).toBeUndefined();
+		for (const officeViewerOrigin of [
+			"ws://office.test",
+			"wss://user:password@office.test",
+			"wss://office.test/path",
+			"wss://office.test?token=secret",
+		]) {
+			expect(
+				() =>
+					new QorperaAccountAuth(temporaryRoot("bad-office-viewer"), {
+						...options,
+						officeViewerOrigin,
+						officeViewerClientOrigin: "https://desktop.test",
+					}),
+			).toThrow("Invalid Company Computer viewer origin");
+		}
+		const configured = new QorperaAccountAuth(temporaryRoot("configured-office-viewer"), {
+			...options,
+			officeViewerOrigin: "wss://office.test",
+			officeViewerClientOrigin: "https://desktop.test",
+		});
+		const views = configured.memberCompanyComputerViews(id(1), id(2), id(3))!;
+		expect(
+			views({ companyId: id(1), environmentId: id(2), companyComputerId: id(4), logicalComputerId: id(5) }),
+		).toBeDefined();
+		expect(() =>
+			views({ companyId: id(9), environmentId: id(2), companyComputerId: id(4), logicalComputerId: id(5) }),
+		).toThrow();
+	});
 	it("stores the Supabase session atomically outside the renderer", () => {
 		const userData = temporaryRoot("account-storage");
 		const path = accountAuthStoragePath(userData);

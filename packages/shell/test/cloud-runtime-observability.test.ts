@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { describe, expect, it, vi } from "vitest";
-import { type CloudNativeTool, CloudNativeToolBoundary } from "../src/cloud-native-tool-boundary.ts";
+import { type CloudNativeTool, CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
 import {
 	assertCloudRuntimeObservationReceipt,
 	CLOUD_RUNTIME_OBSERVATION_SCHEMA,
@@ -10,7 +9,8 @@ import {
 	cloudRuntimeErrorCategory,
 	cloudRuntimeOperationHash,
 	parseCloudRuntimeObservation,
-} from "../src/cloud-runtime-observability.ts";
+} from "@qorpera/runtime/cloud-runtime-observability";
+import { describe, expect, it, vi } from "vitest";
 
 function observer(publish?: (row: CloudRuntimeObservation, signal: AbortSignal) => Promise<unknown>) {
 	const rows: CloudRuntimeObservation[] = [];

@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { JsonValue } from "@qorpera/contracts";
+import type { ServiceHttpFetch } from "./http-transport.ts";
 
 export type CloudRunnerCapability = "agent_turn" | "git_worktree" | "company_substrate";
 export type CloudComputeIdentityOwnershipKind = "member" | "company" | "department" | "security_boundary";
@@ -1708,14 +1709,14 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 	readonly #controlTokenSeconds: number;
 	readonly #now: () => number;
 	#nextControlRotationAt = 0;
-	readonly #fetch: typeof fetch;
+	readonly #fetch: ServiceHttpFetch;
 
 	constructor(
 		baseUrl: string,
 		publishableKey: string,
 		orchestratorId: string,
 		controlToken: string,
-		fetchImplementation: typeof fetch = fetch,
+		fetchImplementation: ServiceHttpFetch = fetch,
 		options: {
 			pendingControlToken?: string;
 			persistControlTokens?: (state: { current: string; pending?: string }) => Promise<void>;

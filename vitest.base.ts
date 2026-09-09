@@ -17,6 +17,10 @@ export const workspaceSourcePaths = {
 export default defineConfig({
 	resolve: {
 		alias: [
+ ...["runtime", "cloud-client"].flatMap((name) => [
+ { find: new RegExp('^@qorpera/' + name + '$'), replacement: fileURLToPath(new URL('./packages/' + name + '/src/index.ts', import.meta.url)) },
+ { find: new RegExp('^@qorpera/' + name + '/(.+)$'), replacement: fileURLToPath(new URL('./packages/' + name + '/src/', import.meta.url)) + '$1.ts' },
+ ]),
 			{ find: /^@qorpera\/pi-ai$/, replacement: workspaceSourcePaths.aiIndex },
 			{ find: /^@qorpera\/pi-ai\/compat$/, replacement: workspaceSourcePaths.aiCompat },
 			{ find: /^@qorpera\/pi-ai\/oauth$/, replacement: workspaceSourcePaths.aiOAuth },

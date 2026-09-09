@@ -3,13 +3,13 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { HttpNativeCompanyObjectTransport } from "@qorpera/runtime/cloud-native-company-objects";
 import { afterEach, expect, it, vi } from "vitest";
 import { ObjectGatewayJournal } from "../../object-gateway/src/journal.ts";
 import { FileSystemObjectStore } from "../../object-gateway/src/object-store.ts";
 import { ObjectGatewayReplication } from "../../object-gateway/src/replication.ts";
 import { createObjectGatewayHandler } from "../../object-gateway/src/service.ts";
 import { SupabaseObjectAuthority } from "../../object-gateway/src/supabase-authority.ts";
-import { HttpNativeCompanyObjectTransport } from "../src/cloud-native-company-objects.ts";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 const cleanups: Array<() => Promise<void>> = [];

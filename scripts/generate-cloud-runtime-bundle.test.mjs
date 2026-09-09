@@ -42,7 +42,6 @@ test("pins every packaged entrypoint and detects code, generated-output and arti
 	try {
 		const current = await cloudRuntimeBundle();
 		const files = new Set(Object.keys(current.manifest.implementation));
-		files.add("deploy/first-node/native-codex/guest-package-manifest.json");
 		for (const path of files) {
 			await mkdir(dirname(join(fixture, path)), { recursive: true });
 			await copyFile(join(repository, path), join(fixture, path));
@@ -53,20 +52,23 @@ test("pins every packaged entrypoint and detects code, generated-output and arti
 		assert.deepEqual(initial.manifest.modelPolicy, { schema: "qorpera.model-reasoning/v1", effort: "low", overrides: "none" });
 		for (const path of Object.values(CLOUD_RUNTIME_ENTRY_POINTS)) assert.match(initial.manifest.implementation[path], /^[0-9a-f]{64}$/);
 		assert.match(initial.manifest.implementation["supabase/migrations/20260828020000_runtime_wake_bus.sql"], /^[0-9a-f]{64}$/);
+		for (const path of ["packages/runtime/src/cloud-company-computer-browser-control.ts", "packages/runtime/src/cloud-company-computer-privacy.ts", "deploy/lxd-company-computer-guest/qorpera-screen-session", "deploy/lxd-company-computer-guest/qorpera-company-computer.service", "packages/runtime/src/cloud-company-computer-service-main.ts", "scripts/package-company-computer.mjs", "packages/shell/userland/staff-creatures/pebble.png"]) {
+			assert.match(initial.manifest.implementation[path], /^[0-9a-f]{64}$/);
+		}
 		assert.equal((await generateCloudRuntimeBundle(true, fixture)).sha256, initial.sha256);
 		await writeFile(join(fixture, "supabase/migrations/20260828020000_runtime_wake_bus.sql"), "-- Synthetic wake-bus drift.\n");
 		await assert.rejects(generateCloudRuntimeBundle(true, fixture), /Runtime bundle is stale/);
 		await generateCloudRuntimeBundle(false, fixture);
 
 		// This helper runs in another process; it is not a transitive import.
-		const helper = join(fixture, "packages/shell/src/cloud-native-isolation-child.ts");
+		const helper = join(fixture, "packages/runtime/src/cloud-native-isolation-child.ts");
 		await writeFile(helper, `${await readFile(helper, "utf8")}\n// Synthetic implementation change.\n`);
 		await assert.rejects(generateCloudRuntimeBundle(true, fixture), /Runtime bundle is stale/);
 		const changed = await generateCloudRuntimeBundle(false, fixture);
 		assert.notEqual(changed.sha256, initial.sha256);
 		assert.equal((await generateCloudRuntimeBundle(true, fixture)).sha256, changed.sha256);
 
-		const generated = join(fixture, "packages/shell/src/cloud-runtime-bundle.generated.ts");
+		const generated = join(fixture, "packages/runtime/src/cloud-runtime-bundle.generated.ts");
 		await writeFile(generated, "// Synthetic stale compiled bundle.\n");
 		await assert.rejects(generateCloudRuntimeBundle(true, fixture), /Runtime bundle is stale/);
 		await generateCloudRuntimeBundle(false, fixture);
@@ -74,12 +76,22 @@ test("pins every packaged entrypoint and detects code, generated-output and arti
 		await writeFile(activation, "-- Synthetic stale activation.\n");
 		await assert.rejects(generateCloudRuntimeBundle(true, fixture), /Runtime bundle is stale/);
 
-		const pin = join(fixture, "deploy/first-node/native-codex/guest-package-manifest.json");
+		const pin = join(fixture, "deploy/first-node/native-codex/linux-x64-artifact.json");
 		const native = JSON.parse(await readFile(pin, "utf8"));
-		native.nativeCompany.patchSha256 = "f".repeat(64);
+		for (const [field, value] of [
+			["bytes", 0], ["bytes", 1024 ** 3 + 1], ["bytes", 0.5],
+			["sha256", "unverified"], ["file", "other-binary"],
+			["target", "aarch64-apple-darwin"], ["profile", "dev"],
+		]) {
+			const invalid = structuredClone(native);
+			invalid.artifact[field] = value;
+			await writeFile(pin, JSON.stringify(invalid));
+			await assert.rejects(cloudRuntimeBundle(fixture), /Native artifact pin differs/);
+		}
+		native.source.patchSha256 = "f".repeat(64);
 		await writeFile(pin, JSON.stringify(native));
 		await assert.rejects(cloudRuntimeBundle(fixture), /Native artifact pin differs/);
-		await copyFile(join(repository, "deploy/first-node/native-codex/guest-package-manifest.json"), pin);
+		await copyFile(join(repository, "deploy/first-node/native-codex/linux-x64-artifact.json"), pin);
 		const patch = join(fixture, "deploy/first-node/native-codex/0001-cloud-result-fence.patch");
 		await writeFile(patch, `${await readFile(patch, "utf8")}\n# Unbuilt synthetic native patch.\n`);
 		await assert.rejects(cloudRuntimeBundle(fixture), /Native artifact pin differs/);

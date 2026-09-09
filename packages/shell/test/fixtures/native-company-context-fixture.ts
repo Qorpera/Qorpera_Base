@@ -3,7 +3,7 @@ import {
 	CLOUD_NATIVE_COMPANY_CONTEXT_SCHEMA,
 	type CloudCompanyContextSource,
 	type CloudNativeCompanyContext,
-} from "../../src/cloud-native-company-context.ts";
+} from "@qorpera/runtime/cloud-native-company-context";
 import { nativeToolAuthorityFixture } from "./native-tool-authority-fixture.ts";
 
 export function nativeCompanyContextFixture() {

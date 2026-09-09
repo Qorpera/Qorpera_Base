@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { HostedStaffAgent, QorperaHostedPrimary } from "@qorpera/cloud-client/hosted-primary";
 import {
 	archiveStaffAgent,
 	createStaffAgent,
@@ -11,7 +12,6 @@ import {
 } from "@qorpera/pi-coding-agent/company-staff";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CloudStaffSynchronizer } from "../src/cloud-staff-sync.ts";
-import type { HostedStaffAgent, QorperaHostedPrimary } from "../src/hosted-primary.ts";
 
 const profileId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
 const actorUserId = "c98d600e-654a-40da-a07f-f1d54f93cc6c";

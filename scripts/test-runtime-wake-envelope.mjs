@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { parseCloudNativeToolAuthority, parseCloudNativeToolBinding } from "../packages/shell/src/cloud-native-tool-authority.ts";
-import { parseCloudWakeEnvelope } from "../packages/shell/src/cloud-wake-bus.ts";
+import { fileURLToPath } from "node:url";
+import { build } from "esbuild";
+
+// Resolve headless workspace source without depending on a stale dist tree.
+const compiled = await build({
+ stdin: { contents: 'export { parseCloudNativeToolAuthority, parseCloudNativeToolBinding } from "../packages/runtime/src/cloud-native-tool-authority.ts"; export { parseCloudWakeEnvelope } from "../packages/runtime/src/cloud-wake-bus.ts";', resolveDir: fileURLToPath(new URL(".", import.meta.url)), loader: "ts" },
+ bundle: true, platform: "node", format: "esm", target: "node22", write: false, logLevel: "silent",
+});
+const { parseCloudNativeToolAuthority, parseCloudNativeToolBinding, parseCloudWakeEnvelope } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].contents).toString("base64")}`);
 
 // The disposable database driver supplies the real SQL-produced authority and
 // envelope together. No model, provider, HTTP request or fabricated identity is

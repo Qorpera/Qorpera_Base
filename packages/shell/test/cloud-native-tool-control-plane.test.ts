@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
+import { SupabaseNativeProviderControlPlane } from "@qorpera/runtime/cloud-native-provider-service";
+import { type CloudNativeToolBinding, CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { afterEach, expect, it, vi } from "vitest";
-import { SupabaseNativeProviderControlPlane } from "../src/cloud-native-provider-service.ts";
-import { type CloudNativeToolBinding, CloudNativeToolRun } from "../src/cloud-native-tool-authority.ts";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 const runs: CloudNativeToolRun[] = [];

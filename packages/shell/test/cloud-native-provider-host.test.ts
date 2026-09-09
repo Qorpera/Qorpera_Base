@@ -2,13 +2,12 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
 	CloudAgentMouthConnection,
 	CloudAgentSendInput,
 	CloudAgentSendReceipt,
-} from "../src/cloud-agent-mouth.ts";
-import { HttpNativeProviderComputerBridge } from "../src/cloud-native-provider.ts";
+} from "@qorpera/runtime/cloud-agent-mouth";
+import { HttpNativeProviderComputerBridge } from "@qorpera/runtime/cloud-native-provider";
 import {
 	type CompleteNativeProviderLoginInput,
 	type NativeCredentialCapsuleStore,
@@ -20,12 +19,13 @@ import {
 	OfficialCliNativeHarnessDriver,
 	openNativeCredentialCapsule,
 	sealNativeCredentialCapsule,
-} from "../src/cloud-native-provider-host.ts";
+} from "@qorpera/runtime/cloud-native-provider-host";
 import {
 	HttpNativeProviderHostService,
 	SupabaseNativeCredentialCapsuleStore,
 	SupabaseNativeProviderControlPlane,
-} from "../src/cloud-native-provider-service.ts";
+} from "@qorpera/runtime/cloud-native-provider-service";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const roots: string[] = [];
 const masterKey = randomBytes(32).toString("base64url");

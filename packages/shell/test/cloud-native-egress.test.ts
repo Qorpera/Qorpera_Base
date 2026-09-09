@@ -3,13 +3,13 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { createConnection, createServer, Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	type NativeEgressTransport,
 	nativeClientHelloServerName,
 	nativeEgressPublicAddress,
 	startNativeCodexEgress,
-} from "../src/cloud-native-egress.ts";
+} from "@qorpera/runtime/cloud-native-egress";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 function hello(name = "chatgpt.com", extras = Buffer.alloc(0)): Buffer {
 	const text = Buffer.from(name);

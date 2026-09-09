@@ -161,7 +161,7 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 		);
 		const candidate = JSON.parse(candidateEncoded);
 		const candidateSha256 = createHash("sha256").update(candidateEncoded).digest("hex");
-		const source = JSON.parse(await readFile(join(repositoryRoot, "deploy/first-node/native-codex/source.json"), "utf-8"));
+		const source = JSON.parse(await readFile(join(repositoryRoot, "deploy/first-node/native-codex/linux-x64-direct-tools-proof.json"), "utf-8")).native.source;
 		const builderPin = builder.match(/EXPECTED_PACKAGE_MANIFEST_SHA256="([0-9a-f]{64})"/)?.[1];
 		const acceptancePin = acceptance.match(/EXPECTED_PACKAGE_MANIFEST_SHA256="([0-9a-f]{64})"/)?.[1];
 		const builderArchivePin = builder.match(/EXPECTED_PACKAGE_ARCHIVE_SHA256="([0-9a-f]{64})"/)?.[1];
@@ -200,7 +200,10 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 		const currentCandidate = JSON.parse(await readFile(
 			join(repositoryRoot, "deploy/first-node/native-codex/guest-package-manifest.json"), "utf-8",
 		));
-		assert.deepEqual(currentCandidate.nativeCompany, candidate.nativeCompany);
+		const currentArtifact = JSON.parse(await readFile(join(repositoryRoot, "deploy/first-node/native-codex/linux-x64-artifact.json"), "utf-8"));
+		assert.equal(currentCandidate.nativeCompany.binarySha256, currentArtifact.artifact.sha256);
+		assert.equal(currentCandidate.nativeCompany.sourceCommit, currentArtifact.source.commit);
+		assert.equal(currentCandidate.nativeCompany.patchSha256, currentArtifact.source.patchSha256);
 		if (process.platform === "linux" && process.arch === "x64") {
 			const { nativeCompany: _nativeCompany, ...withoutNative } = currentCandidate;
 			withoutNative.artifacts = currentCandidate.artifacts.filter((item) => !item.file.startsWith("native-company/"));

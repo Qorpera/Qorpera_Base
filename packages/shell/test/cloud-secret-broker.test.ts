@@ -1,5 +1,4 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { afterEach, expect, it, vi } from "vitest";
 import {
 	CloudSecretBroker,
 	type CloudSecretBrokerAuthority,
@@ -7,8 +6,9 @@ import {
 	type CloudSecretOperationRequest,
 	PostgresCloudSecretBrokerAuthority,
 	SupabaseCloudSecretBrokerAuthority,
-} from "../src/cloud-secret-broker.ts";
-import { CloudSecretKeyring, sealCloudSecretFields, withCloudSecretFields } from "../src/cloud-secret-crypto.ts";
+} from "@qorpera/runtime/cloud-secret-broker";
+import { CloudSecretKeyring, sealCloudSecretFields, withCloudSecretFields } from "@qorpera/runtime/cloud-secret-crypto";
+import { afterEach, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 const keyrings: CloudSecretKeyring[] = [];

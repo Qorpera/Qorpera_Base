@@ -1,12 +1,12 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { describe, expect, it } from "vitest";
-import { isStaffCharacterId, STAFF_CHARACTER_BY_TEMPLATE, STAFF_CHARACTER_IDS } from "../src/staff-characters.ts";
 import {
-	getStaffTemplate,
-	listStaffTemplates,
-	STAFF_TEMPLATE_IDS,
-	type StaffTemplate,
-} from "../src/staff-templates.ts";
+	isStaffCharacterId,
+	STAFF_CHARACTER_BY_TEMPLATE,
+	STAFF_CHARACTER_IDS,
+} from "@qorpera/cloud-client/staff-characters";
+import { STAFF_TEMPLATE_IDS } from "@qorpera/cloud-client/staff-template-ids";
+import { describe, expect, it } from "vitest";
+import { getStaffTemplate, listStaffTemplates, type StaffTemplate } from "../src/staff-templates.ts";
 
 const EXPECTED_ROLES = [
 	["agent-manager", "Agent Manager"],

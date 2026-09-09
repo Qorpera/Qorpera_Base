@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const patchRoot = join(repository, "deploy/first-node/native-codex");
-const usage = "Usage: node scripts/build-native-codex.mjs --source <pinned upstream clone> --out <new directory> [--profile dev|release] [--jobs 1..16] [--prepare-only]";
+const usage = "Usage: node scripts/build-native-codex.mjs --source <pinned upstream clone> --out <new directory> [--profile dev|release] [--jobs 1..16] [--target-cache <absolute directory>] [--prepare-only]";
 
 /** The upstream release tag bumps workspace versions but leaves these path packages at 0.0.0. */
 export function normalizeNativeCargoLock(source, version) {
@@ -68,12 +68,14 @@ async function main(args) {
 		if (seen.has(flag)) throw new Error(usage);
 		seen.add(flag);
 		if (flag === "--prepare-only") options.prepareOnly = true;
-		else if (["--source", "--out", "--profile", "--jobs"].includes(flag) && args[index + 1]) {
+		else if (["--source", "--out", "--profile", "--jobs", "--target-cache"].includes(flag) && args[index + 1]) {
 			const value = args[++index];
 			options[flag.slice(2)] = flag === "--jobs" ? Number(value) : value;
 		} else throw new Error(usage);
 	}
 	if (!options.source || !options.out || !isAbsolute(options.source) || !isAbsolute(options.out) ||
+		(options["target-cache"] !== undefined && (!isAbsolute(options["target-cache"]) ||
+			resolve(options["target-cache"]) === resolve(options.source) || resolve(options["target-cache"]) === resolve(options.out))) ||
 		!["dev", "release"].includes(options.profile) || !Number.isInteger(options.jobs) || options.jobs < 1 || options.jobs > 16 ||
 		process.platform === "win32") throw new Error(usage);
 	const contract = JSON.parse(await readFile(join(patchRoot, "source.json"), "utf8"));
@@ -108,7 +110,9 @@ async function main(args) {
 	if (!compiler?.startsWith(`rustc ${contract.rustToolchain} `)) throw new Error("Pinned Rust toolchain is required");
 	const target = compiler.match(/^host: (\S+)$/m)?.[1];
 	if (!target) throw new Error("Rust target is missing");
-	const targetRoot = join(options.out, "target");
+	// Reuse only compiler intermediates; source, patch application, final artifact
+	// and evidence still get a fresh output directory and exact digest checks.
+	const targetRoot = options["target-cache"] ?? join(options.out, "target");
 	run(cargo, ["build", "--locked", "-j", String(options.jobs),
 		"-p", "codex-cli", "--bin", "codex", ...(options.profile === "release" ? ["--release"] : [])], {
 		cwd: join(source, "codex-rs"),

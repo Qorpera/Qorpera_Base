@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
+import type { CloudRunnerJob } from "@qorpera/cloud-client/node/cloud-runner-protocol";
+import { executeNativeCompanyRunnerJob } from "@qorpera/runtime/cloud-native-company-runner";
+import {
+	HttpNativeProviderComputerBridge,
+	nativeProviderExecutionGuarantees,
+} from "@qorpera/runtime/cloud-native-provider";
+import type { CloudRunnerNativeAuthority } from "@qorpera/runtime/cloud-runner-broker";
+import type { CloudRunnerSandboxProcess } from "@qorpera/runtime/cloud-runner-sandbox";
 import { afterEach, expect, it, vi } from "vitest";
-import { executeNativeCompanyRunnerJob } from "../src/cloud-native-company-runner.ts";
-import { HttpNativeProviderComputerBridge, nativeProviderExecutionGuarantees } from "../src/cloud-native-provider.ts";
-import type { CloudRunnerNativeAuthority } from "../src/cloud-runner-broker.ts";
-import type { CloudRunnerJob } from "../src/cloud-runner-control.ts";
-import type { CloudRunnerSandboxProcess } from "../src/cloud-runner-sandbox.ts";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 function fixture() {

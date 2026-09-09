@@ -1,27 +1,27 @@
 import { mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import type { HostedArtifactIndex, HostedCompanySubstrateVersion } from "@qorpera/cloud-client/hosted-primary";
+import { captureCloudCompanyTree } from "@qorpera/cloud-client/node/cloud-company-snapshot";
+import type { ResolvedCompanySubstrateReference } from "@qorpera/cloud-client/node/cloud-company-substrate";
+import { CloudContentAddressedStore, type CloudObjectTransport } from "@qorpera/cloud-client/node/cloud-object-store";
+import type { CloudRunnerJob } from "@qorpera/cloud-client/node/cloud-runner-protocol";
 import { scaffoldCompany } from "@qorpera/pi-coding-agent/company";
-import { describe, expect, it, vi } from "vitest";
-import { captureCloudCompanyTree } from "../src/cloud-company-snapshot.ts";
-import type { ResolvedCompanySubstrateReference } from "../src/cloud-company-substrate.ts";
 import {
 	executeNativeCloudRunnerJob,
 	HttpNativeProviderComputerBridge,
 	type NativeProviderComputerBridge,
 	nativeProviderExecutionGuarantees,
 	parseNativeHarnessResult,
-} from "../src/cloud-native-provider.ts";
-import { CloudContentAddressedStore, type CloudObjectTransport } from "../src/cloud-object-store.ts";
-import type { CloudRunnerNativeAuthority } from "../src/cloud-runner-broker.ts";
-import type { CloudRunnerJob } from "../src/cloud-runner-control.ts";
+} from "@qorpera/runtime/cloud-native-provider";
+import type { CloudRunnerNativeAuthority } from "@qorpera/runtime/cloud-runner-broker";
 import type {
 	CloudRunnerSandboxProcess,
 	CloudRunnerSandboxRequest,
 	CloudRunnerSubstrateResolver,
 	ResolvedCloudRunnerExecutionContext,
-} from "../src/cloud-runner-sandbox.ts";
-import type { HostedArtifactIndex, HostedCompanySubstrateVersion } from "../src/hosted-primary.ts";
+} from "@qorpera/runtime/cloud-runner-sandbox";
+import { describe, expect, it, vi } from "vitest";
 
 const authority: CloudRunnerNativeAuthority = {
 	leaseId: "10000000-0000-4000-8000-000000000001",

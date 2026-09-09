@@ -1,10 +1,10 @@
 import { type FSWatcher, watch } from "node:fs";
+import { cloudCompanyPathBelongsToLogicalTree } from "@qorpera/cloud-client/node/cloud-company-snapshot";
 import {
 	type CheckpointCloudCompanyFileInput,
 	type CloudCompanyFileCheckpointResult,
 	checkpointCloudCompanyFile,
 } from "./cloud-company-file.ts";
-import { cloudCompanyPathBelongsToLogicalTree } from "./cloud-company-snapshot.ts";
 import type { CloudSyncHealth } from "./cloud-sync-loop.ts";
 import { DurableCloudSyncLoop } from "./cloud-sync-loop.ts";
 

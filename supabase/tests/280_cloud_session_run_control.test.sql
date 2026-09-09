@@ -303,6 +303,13 @@ select pg_temp.assert_true(not has_function_privilege('authenticated', 'public.q
 rollback to savepoint native_terminal_transition;
 select set_config('request.jwt.claims', '{"role":"service_role"}', true);
 select pg_temp.assert_true(public.qorpera_reserve_execution_sponsor_authority('28000000-0000-4000-8000-000000000085'), 'completion fixture sponsor unavailable');
+-- The current human-wake protocol requires acknowledgement before final
+-- delivery, including when the fixture is only testing terminal lease cleanup.
+select public.qorpera_send_runner_agent_message(
+	'28000000-0000-4000-8000-000000000902', repeat('f', 64),
+	'28000000-0000-4000-8000-000000000075', repeat('d', 64),
+	'28000000-0000-4000-8000-000000000904', 'native-cleanup-ack', 'Checking the fixture.', 'progress'
+);
 select public.qorpera_send_runner_agent_message(
 	'28000000-0000-4000-8000-000000000902', repeat('f', 64),
 	'28000000-0000-4000-8000-000000000075', repeat('d', 64),

@@ -1,10 +1,10 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { expect, it, vi } from "vitest";
 import {
 	createStep2SecretCanaryAdapter,
 	STEP2_SECRET_CANARY_ADAPTER_SHA256,
 	STEP2_SECRET_CANARY_DESTINATION_ORIGIN,
-} from "../src/cloud-secret-canary-adapter.ts";
+} from "@qorpera/runtime/cloud-secret-canary-adapter";
+import { expect, it, vi } from "vitest";
 
 function input(overrides: Partial<Parameters<ReturnType<typeof createStep2SecretCanaryAdapter>["execute"]>[0]> = {}) {
 	return {

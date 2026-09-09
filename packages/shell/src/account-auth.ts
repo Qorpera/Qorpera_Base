@@ -2,6 +2,34 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { dirname, join } from "node:path";
+import { CloudMemberBrowserRecovery } from "@qorpera/cloud-client/cloud-member-browser-recovery";
+import { CloudMemberCompanyComputerClient } from "@qorpera/cloud-client/cloud-member-company-computer";
+import { CloudMemberCompanyPresence } from "@qorpera/cloud-client/cloud-member-company-presence";
+import {
+	NativeSubscriptionControlPlane,
+	SupabaseNativeSubscriptionControlTransport,
+} from "@qorpera/cloud-client/cloud-native-subscription-control";
+import { SupabaseCloudPresenceTransport } from "@qorpera/cloud-client/cloud-presence";
+import { withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
+import { CloudSessionRunControl } from "@qorpera/cloud-client/cloud-session-run-control";
+import type { CompanyPathPresenceView } from "@qorpera/cloud-client/company-path-presence";
+import {
+	createSupabaseHostedPrimary,
+	type HostedPrimaryDatabase,
+	type QorperaHostedPrimary,
+} from "@qorpera/cloud-client/hosted-primary";
+import {
+	HttpNativeProviderIdentityBridge,
+	type NativeProviderIdentityBridge,
+} from "@qorpera/cloud-client/native-provider-login";
+import {
+	ChainedCloudObjectTransport,
+	CloudContentAddressedStore,
+	type CloudObjectTransport,
+	GATEWAY_EDGE_USER_AGENT,
+	HttpCloudObjectTransport,
+	SupabaseCloudObjectTransport,
+} from "@qorpera/cloud-client/node/cloud-object-store";
 import {
 	createClient,
 	isAuthRetryableFetchError,
@@ -14,28 +42,8 @@ import {
 	type CloudMemberCompanyMode,
 	parseCloudMemberCompanyMode,
 } from "./cloud-member-company-editor.ts";
-import { HttpNativeProviderComputerBridge, type NativeProviderIdentityBridge } from "./cloud-native-provider.ts";
-import {
-	NativeSubscriptionControlPlane,
-	SupabaseNativeSubscriptionControlTransport,
-} from "./cloud-native-subscription-control.ts";
-import {
-	ChainedCloudObjectTransport,
-	CloudContentAddressedStore,
-	type CloudObjectTransport,
-	HttpCloudObjectTransport,
-	SupabaseCloudObjectTransport,
-} from "./cloud-object-store.ts";
-import { SupabaseCloudPresenceTransport } from "./cloud-presence.ts";
 import { SupabaseCloudRealtimeTransport } from "./cloud-realtime-sync.ts";
-import { withCloudDeadline } from "./cloud-request.ts";
 import { CloudSessionAttachments } from "./cloud-session-attachments.ts";
-import { CloudSessionRunControl } from "./cloud-session-run-control.ts";
-import {
-	createSupabaseHostedPrimary,
-	type HostedPrimaryDatabase,
-	type QorperaHostedPrimary,
-} from "./hosted-primary.ts";
 import type { ProductFeedbackSubmission } from "./product-feedback.ts";
 
 export const QORPERA_AUTH_URL = "https://wovsmjvghnbcbfazdtvr.supabase.co";
@@ -72,6 +80,8 @@ export interface QorperaAccountAuthOptions {
 	objectStoragePrimary?: "nas" | "supabase";
 	objectGatewayUrl?: string;
 	nativeProviderUrl?: string;
+	officeViewerOrigin?: string;
+	officeViewerClientOrigin?: string;
 	timeoutMs?: number;
 }
 
@@ -340,7 +350,14 @@ export class QorperaAccountAuth {
 		environmentId: string,
 		accountId: string,
 	) => ConstructorParameters<typeof CloudMemberCompanyFileClient>[0];
+	private readonly memberComputerOptions: (
+		companyId: string,
+		environmentId: string,
+		accountId: string,
+	) => ConstructorParameters<typeof CloudMemberCompanyComputerClient>[0];
 	private readonly openExternal: (url: string) => Promise<void>;
+	private readonly officeViewerOrigin?: string;
+	private readonly officeViewerClientOrigin?: string;
 	private readonly storage: FileAccountAuthStorage;
 	private readonly timeoutMs: number;
 	private refreshExpiredSessionInFlight: Promise<void> | undefined;
@@ -348,6 +365,26 @@ export class QorperaAccountAuth {
 
 	constructor(userData: string, options: QorperaAccountAuthOptions) {
 		this.openExternal = options.openExternal;
+		if (options.officeViewerOrigin || options.officeViewerClientOrigin) {
+			if (!options.officeViewerOrigin || !options.officeViewerClientOrigin)
+				throw new Error("Invalid Company Computer viewer origin");
+			const origin = new URL(options.officeViewerOrigin),
+				clientOrigin = new URL(options.officeViewerClientOrigin);
+			if (
+				origin.protocol !== "wss:" ||
+				origin.username ||
+				origin.password ||
+				origin.pathname !== "/" ||
+				origin.search ||
+				origin.hash ||
+				(origin.origin !== options.officeViewerOrigin && `${origin.origin}/` !== options.officeViewerOrigin) ||
+				clientOrigin.protocol !== "https:" ||
+				clientOrigin.origin !== options.officeViewerClientOrigin
+			)
+				throw new Error("Invalid Company Computer viewer origin");
+			this.officeViewerOrigin = origin.origin;
+			this.officeViewerClientOrigin = clientOrigin.origin;
+		}
 		this.timeoutMs = options.timeoutMs ?? DEFAULT_AUTH_TIMEOUT_MS;
 		this.storage = new FileAccountAuthStorage(accountAuthStoragePath(userData));
 		const projectUrl = options.projectUrl ?? QORPERA_AUTH_URL;
@@ -377,13 +414,11 @@ export class QorperaAccountAuth {
 		const objectGatewayUrl =
 			configuredObjectGatewayUrl ||
 			(new URL(projectUrl).origin === new URL(QORPERA_AUTH_URL).origin ? QORPERA_OBJECT_GATEWAY_URL : undefined);
-		this.memberClientOptions = (companyId, environmentId, accountId) => {
-			if (!objectGatewayUrl) throw new Error("The governed Company File gateway is not configured");
+		this.memberComputerOptions = (companyId, environmentId, accountId) => {
 			return {
 				companyId,
 				environmentId,
 				supabaseUrl: projectUrl,
-				objectGatewayUrl,
 				publishableKey: options.publishableKey ?? QORPERA_AUTH_PUBLISHABLE_KEY,
 				fetch: options.fetch,
 				accessToken: async (signal) => {
@@ -394,6 +429,10 @@ export class QorperaAccountAuth {
 					return data.session.access_token;
 				},
 			};
+		};
+		this.memberClientOptions = (companyId, environmentId, accountId) => {
+			if (!objectGatewayUrl) throw new Error("The governed Company File gateway is not configured");
+			return { ...this.memberComputerOptions(companyId, environmentId, accountId), objectGatewayUrl };
 		};
 		const storageTransport = new SupabaseCloudObjectTransport(this.client);
 		const gatewayTransport = objectGatewayUrl
@@ -428,9 +467,8 @@ export class QorperaAccountAuth {
 			const { data, error } = await this.client.rpc(name as never, args as never).abortSignal(signal);
 			return { data, error };
 		});
-		this.nativeIdentityBridge = new HttpNativeProviderComputerBridge(
+		this.nativeIdentityBridge = new HttpNativeProviderIdentityBridge(
 			options.nativeProviderUrl ?? new URL("/functions/v1/native-provider-login/", projectUrl).href,
-			undefined,
 			options.fetch ?? fetch,
 		);
 	}
@@ -453,6 +491,75 @@ export class QorperaAccountAuth {
 
 	memberCompanyFile(companyId: string, environmentId: string, accountId: string): CloudMemberCompanyFileClient {
 		return new CloudMemberCompanyFileClient(this.memberClientOptions(companyId, environmentId, accountId));
+	}
+	memberCompanyPresence(
+		companyId: string,
+		environmentId: string,
+		accountId: string,
+		signal: AbortSignal,
+		onChange: (view: CompanyPathPresenceView) => void,
+	): CloudMemberCompanyPresence {
+		const options = this.memberClientOptions(companyId, environmentId, accountId),
+			request = options.fetch ?? fetch;
+		// Supabase reuses topics within one client. This observer owns its
+		// connection so closing it cannot remove the app's member presence.
+		const client = createClient(options.supabaseUrl, options.publishableKey, {
+			auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+			accessToken: () => withCloudDeadline((requestSignal) => options.accessToken(requestSignal), 2000, signal),
+		});
+		return new CloudMemberCompanyPresence({
+			...options,
+			client,
+			signal,
+			onChange,
+			fetch: (input, init) => {
+				const headers = new Headers(init?.headers);
+				headers.set("user-agent", GATEWAY_EDGE_USER_AGENT);
+				return request(input, { ...init, headers });
+			},
+		});
+	}
+	memberCompanyComputer(
+		companyId: string,
+		environmentId: string,
+		accountId: string,
+	): CloudMemberCompanyComputerClient {
+		return new CloudMemberCompanyComputerClient(this.memberComputerOptions(companyId, environmentId, accountId));
+	}
+	memberBrowserRecovery(accountId: string): CloudMemberBrowserRecovery {
+		return new CloudMemberBrowserRecovery({
+			memberId: accountId,
+			rpc: async (method, args, signal) =>
+				withCloudDeadline(
+					async (deadline) => {
+						const check = async () => {
+							const { data, error } = await this.client.auth.getSession();
+							deadline.throwIfAborted();
+							if (error || data.session?.user.id !== accountId)
+								throw new Error("Browser cleanup account changed");
+						};
+						await check();
+						const response = await this.client.rpc(method as never, args as never).abortSignal(deadline);
+						await check();
+						return { data: response.data, error: response.error };
+					},
+					5000,
+					signal,
+				),
+		});
+	}
+	memberCompanyComputerViews(companyId: string, environmentId: string, accountId: string) {
+		if (!this.officeViewerOrigin) return undefined;
+		const client = this.memberCompanyComputer(companyId, environmentId, accountId),
+			origin = this.officeViewerOrigin,
+			clientOrigin = this.officeViewerClientOrigin!;
+		return (scope: Parameters<CloudMemberCompanyComputerClient["views"]>[0]) =>
+			client.views(
+				scope,
+				accountId,
+				`${origin}/office/${scope.companyComputerId}/view`,
+				(url) => new WebSocket(url, { headers: { Origin: clientOrigin } }),
+			);
 	}
 
 	sessionAttachments(companyId: string, environmentId: string, accountId: string): CloudSessionAttachments {

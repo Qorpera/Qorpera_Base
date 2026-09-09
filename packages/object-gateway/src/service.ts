@@ -4,6 +4,9 @@ import { boundedObjectOperation, ObjectDependencyError, type ObjectDependencyHea
 import type { MemberCompanyAuthority } from "./member-company-authority.ts";
 import { serveMemberCompanyFile } from "./member-company-file.ts";
 import { type MemberCompanyObjectAuthority, serveMemberCompanyObject } from "./member-company-objects.ts";
+import { serveMemberCompanyPresence } from "./member-company-presence.ts";
+import { createMemberCors } from "./member-cors.ts";
+import { serveMemberFileExport } from "./member-file-exports.ts";
 import {
 	MEMBER_OBSERVATIONS_PATH,
 	type MemberCompanyObservations,
@@ -33,7 +36,9 @@ export interface ObjectGatewayServiceOptions {
 	nativeObjects?: NativeCompanyObjectOptions;
 	memberObjects?: MemberCompanyObjectAuthority;
 	memberFiles?: MemberCompanyAuthority;
+	memberPresence?: MemberCompanyAuthority;
 	memberObservations?: MemberCompanyObservations;
+	memberClientOrigins?: readonly string[];
 }
 
 class HttpError extends Error {
@@ -110,6 +115,7 @@ function verified(bytes: Uint8Array, sha256: string, expectedBytes: number): Uin
 }
 
 export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions): RequestListener {
+	const memberCors = createMemberCors(options.memberClientOrigins);
 	if (options.memberFiles && !options.replication) {
 		throw new Error("Member Company File publication requires durable replication");
 	}
@@ -134,6 +140,7 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 		throw new Error("Read delegation requires a distinct revocation credential");
 	}
 	return (request, response) => {
+		if (memberCors(request, response)) return;
 		let observation: MemberRequestObservationSpan | undefined;
 		try {
 			if (request.url?.startsWith("/v1/member-company-objects/"))
@@ -232,6 +239,21 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 						scope.sessionId as string | undefined,
 					);
 					json(response, 200, { status: "revoked" });
+					return;
+				}
+				if (request.url?.startsWith("/v1/member-company-presence/")) {
+					const authority = options.memberPresence ?? options.memberFiles;
+					if (!authority) throw new HttpError(404, "Not found");
+					await serveMemberCompanyPresence(request, response, authority);
+					return;
+				}
+				if (request.url?.startsWith("/v1/member-file-exports/")) {
+					if (!options.memberFiles) throw new HttpError(404, "Not found");
+					await serveMemberFileExport(request, response, {
+						authority: options.memberFiles,
+						store: options.store,
+						readLegacyObject: (companyId, sha256) => options.authority.readLegacyObject(companyId, sha256),
+					});
 					return;
 				}
 				if (request.url?.startsWith("/v1/member-company-file/")) {

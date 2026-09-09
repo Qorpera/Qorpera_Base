@@ -1,19 +1,30 @@
-import { createHash, randomBytes, timingSafeEqual, X509Certificate } from "node:crypto";
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { createHash, randomBytes, randomUUID, timingSafeEqual, X509Certificate } from "node:crypto";
+import { lstat, mkdir, readdir } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { isIP } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
+import {
+	Headers as NodeHttpHeaders,
+	Request as NodeHttpRequest,
+	Response as NodeHttpResponse,
+} from "@whatwg-node/node-fetch";
+import type { ServiceHttpFetch, ServiceHttpRequest, ServiceHttpResponse } from "./http-transport.ts";
 import type {
 	LxdClient,
-	LxdCreateInstanceRequest,
 	LxdInstanceRecord,
 	LxdInstanceStateRecord,
 	LxdStorageVolumeRecord,
+	LxdTrackedClient,
 } from "./lxd-client.ts";
+import { LxdLoginJournal } from "./lxd-login-journal.ts";
+import { LOGIN_UUID, type LxdLoginBinding, lxdLoginNodePolicy, lxdLoginPlan } from "./lxd-login-plan.ts";
+import { checkDirectory, code, publish, readRecord, syncDirectory } from "./lxd-office-journal-files.ts";
+import { reserveRuntimeNodeMachine } from "./runtime-node-admission.ts";
+import { readRuntimeNodeHost } from "./runtime-node-host.ts";
 
 const LOGIN_SCHEMA = "qorpera.native-provider-login/v1";
 const LOGIN_RESULT_SCHEMA = "qorpera.native-provider-login-result/v1";
-const LOGIN_INSTANCE_SCHEMA = "qorpera.native-login-vm/v1";
 const IDENTITY_VOLUME_SCHEMA = "qorpera.compute-identity-volume/v1";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
@@ -156,7 +167,7 @@ function tokenMatches(expected: string, received: string): boolean {
 	return left.byteLength === right.byteLength && timingSafeEqual(left, right);
 }
 
-function bearer(request: Request): string {
+function bearer(request: ServiceHttpRequest): string {
 	const authorization = request.headers.get("authorization");
 	if (!authorization?.startsWith("Bearer ")) throw new Error("Native login capability is missing");
 	const capability = authorization.slice("Bearer ".length);
@@ -269,8 +280,8 @@ function supabaseHeaders(serviceKey: string): Record<string, string> {
 	return headers;
 }
 
-function json(value: unknown, status: number): Response {
-	return Response.json(value, { status, headers: { "cache-control": "no-store" } });
+function json(value: unknown, status: number): ServiceHttpResponse {
+	return NodeHttpResponse.json(value, { status, headers: { "cache-control": "no-store" } });
 }
 
 function sha256(value: string): string {
@@ -402,18 +413,22 @@ function validateConfig(config: LxdNativeLoginGatewayConfig): void {
 
 export class LxdNativeLoginGateway {
 	readonly #config: LxdNativeLoginGatewayConfig;
-	readonly #lxd: LxdClient;
-	readonly #fetch: typeof fetch;
+	readonly #lxd: LxdClient & Pick<LxdTrackedClient, "submitInstanceOperation" | "inspectInstanceOperation">;
+	readonly #fetch: ServiceHttpFetch;
 	readonly #serial = new Map<string, Promise<void>>();
 
-	constructor(config: LxdNativeLoginGatewayConfig, lxd: LxdClient, fetchImplementation: typeof fetch = fetch) {
+	constructor(
+		config: LxdNativeLoginGatewayConfig,
+		lxd: LxdClient & Pick<LxdTrackedClient, "submitInstanceOperation" | "inspectInstanceOperation">,
+		fetchImplementation: ServiceHttpFetch = fetch,
+	) {
 		validateConfig(config);
 		this.#config = { ...config, stateRoot: resolve(config.stateRoot) };
 		this.#lxd = lxd;
 		this.#fetch = fetchImplementation;
 	}
 
-	async handle(request: Request): Promise<Response> {
+	async handle(request: ServiceHttpRequest): Promise<ServiceHttpResponse> {
 		if (request.method === "GET" && new URL(request.url).pathname === "/healthz") return json({ ok: true }, 200);
 		if (request.method !== "POST" || new URL(request.url).pathname !== "/login") {
 			return json({ error: "Not found" }, 404);
@@ -442,9 +457,7 @@ export class LxdNativeLoginGateway {
 		}
 
 		try {
-			return await this.#exclusive(login.computeIdentityId, () =>
-				this.#route(login, authority.status, request.signal),
-			);
+			return await this.#exclusive(login.computeIdentityId, () => this.#route(login, authority, request.signal));
 		} catch (error) {
 			console.error(error instanceof Error ? error.message : "LXD native login route failed");
 			return json({ error: "Native provider login is unavailable" }, 503);
@@ -452,90 +465,299 @@ export class LxdNativeLoginGateway {
 	}
 
 	async #describe(login: NativeLoginRequest, signal?: AbortSignal): Promise<NativeLoginDescription> {
-		const response = await this.#fetch(
-			new URL("/rest/v1/rpc/qorpera_describe_native_provider_login_route", this.#config.supabaseUrl),
-			{
-				method: "POST",
-				headers: { ...supabaseHeaders(this.#config.supabaseServiceKey), "content-type": "application/json" },
-				body: JSON.stringify({
+		return description(
+			await this.#rpc(
+				"qorpera_describe_native_provider_login_route",
+				{
 					p_login_id: login.loginId,
 					p_capability_sha256: sha256(login.capability),
-				}),
-				signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
-			},
+				},
+				signal ?? new AbortController().signal,
+			),
 		);
-		if (!response.ok) throw new Error(`Native login authority RPC failed (${response.status})`);
-		return description(await response.json());
 	}
 
 	async #route(
 		login: NativeLoginRequest,
-		loginStatus: NativeLoginDescription["status"],
-		signal?: AbortSignal,
-	): Promise<Response> {
-		let stage = "bridge-token";
+		authority: NativeLoginDescription,
+		signal: AbortSignal,
+	): Promise<ServiceHttpResponse> {
+		await this.#prepareRoot();
+		let journal: LxdLoginJournal;
 		try {
-			const bridgeToken = await this.#bridgeToken(login.computeIdentityId);
-			const files = this.#bootstrapFiles(login.computeIdentityId, bridgeToken);
-			const bootstrapDigest = bootstrapSha256(files);
-			const instanceName = this.#instanceName(login.computeIdentityId);
-			if (loginStatus === "completed") {
-				stage = "instance-read";
-				const completedInstance = await this.#lxd.getInstance(this.#config.project, instanceName, signal);
-				if (completedInstance) {
-					stage = "instance-authority";
-					this.#assertInstanceAuthority(completedInstance, login.computeIdentityId, bootstrapDigest);
-					if (completedInstance.status === "Running") {
-						stage = "instance-stop";
-						await this.#lxd.setInstancePower(this.#config.project, instanceName, "stop", signal);
-					}
-				}
-				return json(
-					{
-						schema: LOGIN_RESULT_SCHEMA,
-						login_id: login.loginId,
-						status: "completed",
-						interaction_url: null,
-						user_code: null,
-					},
-					200,
-				);
-			}
-			stage = "identity-volume";
-			await this.#ensureIdentityVolume(login.computeIdentityId, signal);
-			stage = "instance-read";
-			let instance = await this.#lxd.getInstance(this.#config.project, instanceName, signal);
-			if (!instance) {
-				stage = "instance-create";
-				await this.#lxd.createInstance(
-					this.#config.project,
-					this.#createRequest(login.computeIdentityId, bootstrapDigest),
-					signal,
-				);
-				stage = "instance-reread";
-				instance = await this.#lxd.getInstance(this.#config.project, instanceName, signal);
-				if (!instance) throw new Error("LXD did not persist the native login guest");
-			}
-			stage = "instance-authority";
-			this.#assertInstanceAuthority(instance, login.computeIdentityId, bootstrapDigest);
-			if (instance.status !== "Running") {
-				stage = "instance-start";
-				await this.#lxd.setInstancePower(this.#config.project, instanceName, "start", signal);
-			}
-			stage = "guest-bootstrap";
-			await this.#installBootstrap(instanceName, files, signal);
-			stage = "guest-readiness";
-			const address = await this.#waitReady(instanceName, signal);
-			stage = "guest-forward";
-			const result = await this.#forward(address, login, signal);
-			if (result.status === "completed") {
-				stage = "instance-stop";
-				await this.#lxd.setInstancePower(this.#config.project, instanceName, "stop", signal);
-			}
-			return json(result, 200);
+			journal = await LxdLoginJournal.open(this.#config.stateRoot, login.loginId, this.#lxd);
 		} catch (error) {
-			throw new Error(`LXD native login ${stage} stage failed`, { cause: error });
+			if (!code(error, "ENOENT")) throw error;
+			const retained = await lstat(join(this.#config.stateRoot, login.loginId)).catch((error) => {
+				if (!code(error, "ENOENT")) throw error;
+				return undefined;
+			});
+			if (retained) throw new Error("LOGIN_JOURNAL_UNCONFIRMED");
+			if (authority.status === "completed") return this.#completed(login.loginId);
+			// Legacy identity-keyed VMs have no trustworthy physical allocation.
+			// Preserve them and refuse another attachment until explicitly reconciled.
+			if (
+				await this.#lxd.getInstance(
+					this.#config.project,
+					`qorpera-login-${login.computeIdentityId.replaceAll("-", "")}`,
+					signal,
+				)
+			)
+				throw new Error("LOGIN_LEGACY_INSTANCE_UNRECONCILED");
+			const host = await readRuntimeNodeHost(signal);
+			const bridge = await this.#bridgeToken(login.loginId);
+			journal = await LxdLoginJournal.open(this.#config.stateRoot, login.loginId, this.#lxd, {
+				schema: "qorpera.lxd-login-allocation/v1",
+				allocationId: randomUUID(),
+				loginId: login.loginId,
+				profileId: authority.profileId,
+				computeIdentityId: login.computeIdentityId,
+				capabilitySha256: sha256(login.capability),
+				bootstrapSha256: bootstrapSha256(this.#bootstrapFiles(login.computeIdentityId, bridge)),
+				policy: lxdLoginNodePolicy(this.#config, host.machineIdSha256).policy,
+			});
 		}
+		const binding = journal.binding,
+			plan = lxdLoginPlan(binding);
+		if (
+			binding.loginId !== login.loginId ||
+			binding.profileId !== authority.profileId ||
+			binding.computeIdentityId !== login.computeIdentityId ||
+			binding.capabilitySha256 !== sha256(login.capability)
+		)
+			throw new Error("LOGIN_JOURNAL_BINDING_CONFLICT");
+		if (authority.status === "completed" || (await journal.state()).closing) {
+			await this.#cleanup(journal, signal);
+			if (authority.status === "completed") return this.#completed(login.loginId);
+			throw new Error("LOGIN_ALLOCATION_CLOSED");
+		}
+		const bridge = await this.#bridgeToken(login.loginId, true);
+		const files = this.#bootstrapFiles(login.computeIdentityId, bridge);
+		if (bootstrapSha256(files) !== binding.bootstrapSha256) throw new Error("LOGIN_BOOTSTRAP_CHANGED");
+		// Registration precedes identity storage; each physical dispatch has an
+		// additional fresh gate after any intervening storage/inspection work.
+		await this.#admit(journal, signal);
+		await this.#ensureIdentityVolume(login.computeIdentityId, signal);
+		let instance = await this.#lxd.getInstance(binding.policy.project, plan.request.name, signal);
+		const created = await journal.observe("create", signal);
+		if (created.state === "not_dispatched") {
+			if (instance) throw new Error("LOGIN_INSTANCE_WITHOUT_CREATION_HISTORY");
+			await this.#operation(journal, "create", signal, () => this.#admit(journal, signal));
+		} else if (created.state !== "succeeded") await this.#operation(journal, "create", signal);
+		instance = await this.#lxd.getInstance(binding.policy.project, plan.request.name, signal);
+		if (!instance) throw new Error("LOGIN_INSTANCE_MISSING");
+		this.#assertInstanceAuthority(instance, binding);
+		const started = await journal.observe("start", signal);
+		if (started.state === "not_dispatched") {
+			if (instance.status !== "Stopped") throw new Error("LOGIN_INSTANCE_WITHOUT_BOOT_HISTORY");
+			await this.#operation(journal, "start", signal, () => this.#admit(journal, signal));
+		} else if (started.state !== "succeeded") await this.#operation(journal, "start", signal);
+		instance = await this.#lxd.getInstance(binding.policy.project, plan.request.name, signal);
+		if (!instance || instance.status !== "Running" || (await journal.state()).closing)
+			throw new Error("LOGIN_INSTANCE_NOT_RUNNING");
+		this.#assertInstanceAuthority(instance, binding);
+		await this.#installBootstrap(plan.request.name, files, signal);
+		const address = await this.#waitReady(plan.request.name, signal);
+		const result = await this.#forward(address, login, signal);
+		if (result.status === "completed") await this.#cleanup(journal, signal);
+		return json(result, 200);
+	}
+
+	#completed(loginId: string): ServiceHttpResponse {
+		return json(
+			{
+				schema: LOGIN_RESULT_SCHEMA,
+				login_id: loginId,
+				status: "completed",
+				interaction_url: null,
+				user_code: null,
+			},
+			200,
+		);
+	}
+	async #prepareRoot(): Promise<void> {
+		await mkdir(this.#config.stateRoot, { recursive: true, mode: 0o700 });
+		await checkDirectory(this.#config.stateRoot);
+	}
+	#machineIdentity(binding: LxdLoginBinding): Record<string, string> {
+		return {
+			p_allocation_id: binding.allocationId,
+			p_provider_adapter: binding.policy.providerId,
+			p_instance_sha256: lxdLoginPlan(binding).instanceSha256,
+		};
+	}
+	async #rpc(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
+		const checked = AbortSignal.any([signal, AbortSignal.timeout(30000)]);
+		const response = await this.#fetch(new URL(`/rest/v1/rpc/${method}`, this.#config.supabaseUrl), {
+			method: "POST",
+			redirect: "error",
+			headers: { ...supabaseHeaders(this.#config.supabaseServiceKey), "content-type": "application/json" },
+			body: JSON.stringify(args),
+			signal: checked,
+		});
+		if (!response.ok) {
+			await response.body?.cancel();
+			throw new Error("LOGIN_REGISTRY_UNCONFIRMED");
+		}
+		const value = await response.text();
+		checked.throwIfAborted();
+		if (Buffer.byteLength(value) > MAX_RESPONSE_BYTES) throw new Error("LOGIN_REGISTRY_UNCONFIRMED");
+		return JSON.parse(value) as unknown;
+	}
+	async #admit(journal: LxdLoginJournal, signal: AbortSignal): Promise<AbortSignal> {
+		const binding = journal.binding,
+			plan = lxdLoginPlan(binding);
+		if ((await journal.state()).closing) throw new Error("LOGIN_ALLOCATION_CLOSED");
+		const host = await readRuntimeNodeHost(signal);
+		if (!isDeepStrictEqual(lxdLoginNodePolicy(this.#config, host.machineIdSha256).policy, binding.policy))
+			throw new Error("LOGIN_PHYSICAL_POLICY_CHANGED");
+		const result = await this.#rpc(
+			"qorpera_reserve_runtime_login_machine",
+			{
+				...this.#machineIdentity(binding),
+				p_login_id: binding.loginId,
+				p_capability_sha256: binding.capabilitySha256,
+			},
+			signal,
+		);
+		if (
+			!isDeepStrictEqual(result, {
+				state: "reserved",
+				allocationId: binding.allocationId,
+				instanceSha256: plan.instanceSha256,
+			})
+		)
+			throw new Error("LOGIN_COMPANY_ADMISSION_REFUSED");
+		const admission = await reserveRuntimeNodeMachine(
+			{
+				allocationId: binding.allocationId,
+				providerKind: "login",
+				providerId: binding.policy.providerId,
+				policySha256: plan.policySha256,
+				instanceSha256: plan.instanceSha256,
+				machineIdSha256: host.machineIdSha256,
+				cpuMillis: plan.cpuMillis,
+				memoryBytes: plan.memoryBytes,
+			},
+			{ call: (method, args, checked) => this.#rpc(method, args, checked) },
+			signal,
+		);
+		if (admission.state === "refused") throw new Error(admission.reason);
+		await journal.place(admission.nodeId);
+		admission.signal.throwIfAborted();
+		return admission.signal;
+	}
+	async #operation(
+		journal: LxdLoginJournal,
+		action: "create" | "start" | "stop" | "delete",
+		signal: AbortSignal,
+		authorize?: () => Promise<AbortSignal>,
+	): Promise<void> {
+		let result = await journal.run(action, signal, authorize);
+		while (result.state === "pending") {
+			await new Promise<void>((resolveWait) => setTimeout(resolveWait, 250));
+			signal.throwIfAborted();
+			result = await journal.observe(action, signal);
+		}
+		if (result.state !== "succeeded") throw new Error("LOGIN_PHYSICAL_OPERATION_UNCONFIRMED");
+	}
+	async #machineDescription(binding: LxdLoginBinding, signal: AbortSignal) {
+		const value = record(
+			await this.#rpc("qorpera_describe_runtime_login_machine", this.#machineIdentity(binding), signal),
+			"Login machine description",
+		);
+		if (
+			Object.keys(value).sort().join() !==
+				"allocationId,cleanupRequired,computeIdentityId,expiresAt,loginId,profileId,releasedAt,status" ||
+			value.allocationId !== binding.allocationId ||
+			value.loginId !== binding.loginId ||
+			value.profileId !== binding.profileId ||
+			value.computeIdentityId !== binding.computeIdentityId ||
+			typeof value.cleanupRequired !== "boolean" ||
+			!["pending", "completed", "cancelled", "expired"].includes(String(value.status)) ||
+			typeof value.expiresAt !== "string" ||
+			!Number.isFinite(Date.parse(value.expiresAt)) ||
+			(value.releasedAt !== null &&
+				(typeof value.releasedAt !== "string" || !Number.isFinite(Date.parse(value.releasedAt))))
+		)
+			throw new Error("LOGIN_DESCRIPTION_UNCONFIRMED");
+		return value as typeof value & { cleanupRequired: boolean; releasedAt: string | null };
+	}
+	async #cleanup(journal: LxdLoginJournal, signal: AbortSignal): Promise<void> {
+		if ((await journal.state()).releasedAt) return;
+		if (!(await journal.close(signal))) throw new Error("LOGIN_CLEANUP_AWAITS_PHYSICAL_OPERATION");
+		for (const action of ["stop", "delete"] as const) {
+			const outcome = await journal.observe(action, signal);
+			if (outcome.state === "pending") await this.#operation(journal, action, signal);
+			else if (outcome.state === "unknown") throw new Error("LOGIN_CLEANUP_AWAITS_PHYSICAL_OPERATION");
+		}
+		const binding = journal.binding,
+			plan = lxdLoginPlan(binding);
+		let instance = await this.#lxd.getInstance(binding.policy.project, plan.request.name, signal);
+		if (instance) {
+			if (!(await journal.state()).operations.create) throw new Error("LOGIN_INSTANCE_WITHOUT_CREATION_HISTORY");
+			this.#assertInstanceAuthority(instance, binding);
+			if (instance.status === "Running") await this.#operation(journal, "stop", signal);
+			instance = await this.#lxd.getInstance(binding.policy.project, plan.request.name, signal);
+			if (instance) {
+				this.#assertInstanceAuthority(instance, binding);
+				if (instance.status !== "Stopped") throw new Error("LOGIN_STOP_UNCONFIRMED");
+				await this.#operation(journal, "delete", signal);
+			}
+		}
+		// A cleanup from another process may still have accepted stop/delete IO.
+		for (const action of ["stop", "delete"] as const) {
+			const outcome = await journal.observe(action, signal);
+			if (outcome.state !== "not_dispatched" && outcome.state !== "succeeded" && outcome.state !== "failed")
+				throw new Error("LOGIN_CLEANUP_AWAITS_PHYSICAL_OPERATION");
+		}
+		if (await this.#lxd.getInstance(binding.policy.project, plan.request.name, signal))
+			throw new Error("LOGIN_DELETION_UNCONFIRMED");
+		const result = await this.#rpc(
+			"qorpera_release_runtime_login_machine",
+			{ ...this.#machineIdentity(binding), p_login_id: binding.loginId },
+			signal,
+		);
+		if (
+			!isDeepStrictEqual(result, {
+				state: "released",
+				allocationId: binding.allocationId,
+				instanceSha256: plan.instanceSha256,
+			})
+		)
+			throw new Error("LOGIN_RELEASE_UNCONFIRMED");
+		const description = await this.#machineDescription(binding, signal);
+		if (!description.cleanupRequired || !description.releasedAt) throw new Error("LOGIN_RELEASE_UNCONFIRMED");
+		await journal.release(description.releasedAt);
+	}
+	/** Bounded scan owned by the headless service, independent of member polls.
+	 * Revoked/expired/completed logins retain capacity until exact VM deletion.
+	 * One corrupt or uncertain allocation does not prevent other cleanup. */
+	async reconcile(signal: AbortSignal): Promise<{ scanned: number; unconfirmed: number }> {
+		await this.#prepareRoot();
+		let scanned = 0,
+			unconfirmed = 0;
+		for (const name of (await readdir(this.#config.stateRoot)).sort()) {
+			signal.throwIfAborted();
+			if (!LOGIN_UUID.test(name)) {
+				unconfirmed++;
+				continue;
+			}
+			scanned++;
+			try {
+				const journal = await LxdLoginJournal.open(this.#config.stateRoot, name, this.#lxd);
+				await this.#exclusive(journal.binding.computeIdentityId, async () => {
+					const state = await journal.state();
+					if (state.releasedAt) return;
+					const description = await this.#machineDescription(journal.binding, signal);
+					if (state.closing || description.cleanupRequired) await this.#cleanup(journal, signal);
+				});
+			} catch {
+				signal.throwIfAborted();
+				unconfirmed++;
+			}
+		}
+		return { scanned, unconfirmed };
 	}
 
 	async #ensureIdentityVolume(computeIdentityId: string, signal?: AbortSignal): Promise<void> {
@@ -579,73 +801,26 @@ export class LxdNativeLoginGateway {
 		}
 	}
 
-	#createRequest(computeIdentityId: string, bootstrapDigest: string): LxdCreateInstanceRequest {
-		return {
-			name: this.#instanceName(computeIdentityId),
-			type: "virtual-machine",
-			profiles: [this.#config.loginProfile],
-			config: {
-				"boot.mode": "uefi-secureboot",
-				"limits.cpu": String(this.#config.cpuLimit),
-				"limits.memory": this.#config.memoryLimit,
-				"user.qorpera.schema": LOGIN_INSTANCE_SCHEMA,
-				"user.qorpera.compute_identity_id": computeIdentityId,
-				"user.qorpera.bootstrap_sha256": bootstrapDigest,
-				"user.qorpera.image_fingerprint": this.#config.imageFingerprint,
-			},
-			devices: {
-				root: {
-					type: "disk",
-					path: "/",
-					pool: this.#config.storagePool,
-					size: this.#config.rootDiskSize,
-				},
-				"compute-identity": {
-					type: "disk",
-					path: "/var/lib/qorpera/identity",
-					pool: this.#config.storagePool,
-					source: `${this.#config.identityVolumePrefix}${computeIdentityId}`,
-				},
-			},
-			source:
-				this.#config.imageServer === "local"
-					? { type: "image", fingerprint: this.#config.imageFingerprint }
-					: {
-							type: "image",
-							mode: "pull",
-							protocol: "simplestreams",
-							server: this.#config.imageServer,
-							fingerprint: this.#config.imageFingerprint,
-						},
-		};
-	}
-
-	#assertInstanceAuthority(instance: LxdInstanceRecord, computeIdentityId: string, bootstrapDigest: string): void {
-		const root = instance.devices.root;
-		const identity = instance.devices["compute-identity"];
+	#assertInstanceAuthority(instance: LxdInstanceRecord, binding: LxdLoginBinding): void {
+		const { request } = lxdLoginPlan(binding);
 		if (
-			instance.name !== this.#instanceName(computeIdentityId) ||
-			instance.type !== "virtual-machine" ||
-			JSON.stringify(instance.profiles) !== JSON.stringify([this.#config.loginProfile]) ||
-			instance.config["boot.mode"] !== "uefi-secureboot" ||
-			instance.config["limits.cpu"] !== String(this.#config.cpuLimit) ||
-			instance.config["limits.memory"] !== this.#config.memoryLimit ||
+			instance.name !== request.name ||
+			instance.type !== request.type ||
+			!isDeepStrictEqual(instance.profiles, request.profiles) ||
+			!isDeepStrictEqual(instance.devices, request.devices) ||
 			instance.config["cloud-init.user-data"] !== undefined ||
-			instance.config["user.qorpera.schema"] !== LOGIN_INSTANCE_SCHEMA ||
-			instance.config["user.qorpera.compute_identity_id"] !== computeIdentityId ||
-			instance.config["user.qorpera.bootstrap_sha256"] !== bootstrapDigest ||
-			instance.config["user.qorpera.image_fingerprint"] !== this.#config.imageFingerprint ||
-			root?.type !== "disk" ||
-			root.path !== "/" ||
-			root.pool !== this.#config.storagePool ||
-			root.size !== this.#config.rootDiskSize ||
-			identity?.type !== "disk" ||
-			identity.path !== "/var/lib/qorpera/identity" ||
-			identity.pool !== this.#config.storagePool ||
-			identity.source !== `${this.#config.identityVolumePrefix}${computeIdentityId}`
-		) {
-			throw new Error("LXD native login guest drifted from immutable authority");
-		}
+			Object.entries(request.config).some(([key, value]) => instance.config[key] !== value) ||
+			["limits.cpu", "limits.memory", "boot.mode"].some(
+				(key) => instance.expandedConfig?.[key] !== request.config[key],
+			) ||
+			Object.entries(request.devices).some(
+				([key, value]) => !isDeepStrictEqual(instance.expandedDevices?.[key], value),
+			) ||
+			Object.entries(instance.expandedDevices).some(
+				([key, value]) => !Object.hasOwn(request.devices, key) && value.type !== "nic",
+			)
+		)
+			throw new Error("LOGIN_INSTANCE_AUTHORITY_CHANGED");
 	}
 
 	#bootstrapFiles(computeIdentityId: string, bridgeToken: string): LoginBootstrapFile[] {
@@ -765,6 +940,7 @@ export class LxdNativeLoginGateway {
 				const address = ipv4(state, this.#config.networkInterface);
 				if (state.status === "Running" && address) {
 					const response = await this.#fetch(`http://${address}:${this.#config.nativeBridgePort}/healthz`, {
+						redirect: "error",
 						signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(1_000)]) : AbortSignal.timeout(1_000),
 					});
 					if (response.ok) return address;
@@ -781,6 +957,7 @@ export class LxdNativeLoginGateway {
 	async #forward(address: string, login: NativeLoginRequest, signal?: AbortSignal): Promise<NativeLoginResult> {
 		const response = await this.#fetch(`http://${address}:${this.#config.nativeBridgePort}/login`, {
 			method: "POST",
+			redirect: "error",
 			headers: { authorization: `Bearer ${login.capability}`, "content-type": "application/json" },
 			body: login.encoded,
 			signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
@@ -795,25 +972,28 @@ export class LxdNativeLoginGateway {
 		return parseResult(JSON.parse(encoded) as unknown, login.loginId);
 	}
 
-	async #bridgeToken(computeIdentityId: string): Promise<string> {
-		const root = join(this.#config.stateRoot, computeIdentityId);
-		await mkdir(root, { recursive: true, mode: 0o700 });
-		await chmod(root, 0o700);
-		const path = join(root, "qorpera-native-bridge");
-		try {
-			const existing = (await readFile(path, "utf-8")).trim();
-			if (!TOKEN_PATTERN.test(existing)) throw new Error("Stored native login bridge token is invalid");
-			return existing;
-		} catch (error) {
-			if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
-			const value = randomBytes(32).toString("base64url");
-			await writeFile(path, `${value}\n`, { encoding: "utf-8", flag: "wx", mode: 0o600 });
-			return value;
+	async #bridgeToken(loginId: string, existing = false): Promise<string> {
+		const root = join(this.#config.stateRoot, loginId);
+		if (!existing) {
+			try {
+				await mkdir(root, { mode: 0o700 });
+				await syncDirectory(this.#config.stateRoot);
+			} catch (error) {
+				if (!code(error, "EEXIST")) throw error;
+			}
 		}
-	}
-
-	#instanceName(computeIdentityId: string): string {
-		return `qorpera-login-${computeIdentityId.replaceAll("-", "")}`;
+		await checkDirectory(root);
+		if (!existing)
+			await publish(
+				root,
+				"bridge.json",
+				Buffer.from(`${JSON.stringify({ token: randomBytes(32).toString("base64url") })}\n`),
+			);
+		const { value } = await readRecord(join(root, "bridge.json"));
+		const input = record(value, "Login bridge token");
+		if (Object.keys(input).join() !== "token" || typeof input.token !== "string" || !TOKEN_PATTERN.test(input.token))
+			throw new Error("LOGIN_BRIDGE_UNCONFIRMED");
+		return input.token;
 	}
 
 	async #exclusive<T>(computeIdentityId: string, action: () => Promise<T>): Promise<T> {
@@ -838,6 +1018,9 @@ export class HttpLxdNativeLoginGateway {
 	readonly #host: string;
 	readonly #port: number;
 	#server?: Server;
+	#cleanup?: Promise<void>;
+	#shutdown?: AbortController;
+	readonly #requests = new Set<AbortController>();
 
 	constructor(gateway: LxdNativeLoginGateway, host = "127.0.0.1", port = 0) {
 		if (host !== "127.0.0.1") throw new Error("Native login gateway must bind to IPv4 loopback");
@@ -861,20 +1044,53 @@ export class HttpLxdNativeLoginGateway {
 		});
 		const address = server.address();
 		if (!address || typeof address === "string") throw new Error("Native login gateway address is unavailable");
+		const shutdown = new AbortController();
+		this.#shutdown = shutdown;
+		this.#cleanup = this.#reconcileLoop(shutdown.signal);
 		return address.port;
+	}
+
+	async #reconcileLoop(signal: AbortSignal): Promise<void> {
+		while (!signal.aborted) {
+			try {
+				const result = await this.#gateway.reconcile(AbortSignal.any([signal, AbortSignal.timeout(30000)]));
+				if (result.unconfirmed)
+					console.error(`Native login cleanup has ${result.unconfirmed} unconfirmed allocations`);
+			} catch {
+				if (!signal.aborted) console.error("Native login cleanup is unconfirmed");
+			}
+			if (!signal.aborted)
+				await new Promise<void>((resolveWait) => {
+					const done = () => {
+						clearTimeout(timer);
+						signal.removeEventListener("abort", done);
+						resolveWait();
+					};
+					const timer = setTimeout(done, 5000);
+					signal.addEventListener("abort", done, { once: true });
+				});
+		}
 	}
 
 	async close(): Promise<void> {
 		const server = this.#server;
 		this.#server = undefined;
-		if (!server) return;
-		await new Promise<void>((resolveClose, reject) =>
-			server.close((error) => (error ? reject(error) : resolveClose())),
-		);
+		const closed = server
+			? new Promise<void>((resolveClose, reject) =>
+					server.close((error) => (error ? reject(error) : resolveClose())),
+				)
+			: Promise.resolve();
+		this.#shutdown?.abort();
+		for (const request of this.#requests) request.abort(new Error("Native login gateway is stopping"));
+		server?.closeAllConnections();
+		await Promise.all([this.#cleanup, closed]);
+		this.#cleanup = undefined;
+		this.#shutdown = undefined;
 	}
 
 	async #handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
 		const controller = new AbortController();
+		this.#requests.add(controller);
 		const abort = (): void => controller.abort(new Error("Native login gateway request disconnected"));
 		request.once("aborted", abort);
 		response.once("close", abort);
@@ -884,13 +1100,13 @@ export class HttpLxdNativeLoginGateway {
 				encoded += Buffer.isBuffer(chunk) ? chunk.toString("utf-8") : String(chunk);
 				if (Buffer.byteLength(encoded) > MAX_REQUEST_BYTES) break;
 			}
-			const headers = new Headers();
+			const headers = new NodeHttpHeaders();
 			for (const [name, rawValue] of Object.entries(request.headers)) {
 				if (typeof rawValue === "string") headers.set(name, rawValue);
 				else if (rawValue) for (const value of rawValue) headers.append(name, value);
 			}
 			const result = await this.#gateway.handle(
-				new Request(`http://${this.#host}${request.url ?? "/"}`, {
+				new NodeHttpRequest(`http://${this.#host}${request.url ?? "/"}`, {
 					method: request.method ?? "GET",
 					headers,
 					...(request.method === "GET" || request.method === "HEAD" ? {} : { body: encoded }),
@@ -905,6 +1121,7 @@ export class HttpLxdNativeLoginGateway {
 				response.end('{"error":"Native provider login is unavailable"}\n');
 			}
 		} finally {
+			this.#requests.delete(controller);
 			request.off("aborted", abort);
 			response.off("close", abort);
 		}

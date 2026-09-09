@@ -1,4 +1,4 @@
-import type { HostedProfileTeam } from "./hosted-primary.ts";
+import type { HostedProfileTeam } from "@qorpera/cloud-client/hosted-primary";
 import type { ProfileAccess } from "./profile-ownership.ts";
 
 export function hostedProfileAccess(team: HostedProfileTeam): ProfileAccess {

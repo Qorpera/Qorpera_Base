@@ -1,6 +1,9 @@
+import {
+	nativeCompanyComputerConfiguration,
+	nativeCompanyRuntimeConfiguration,
+} from "@qorpera/runtime/cloud-native-provider-service-main";
+import { systemdCredentialMetadataIsSafe } from "@qorpera/runtime/systemd-credential";
 import { describe, expect, it } from "vitest";
-import { nativeCompanyRuntimeConfiguration } from "../src/cloud-native-provider-service-main.ts";
-import { systemdCredentialMetadataIsSafe } from "../src/systemd-credential.ts";
 
 const serviceUid = 997;
 
@@ -69,5 +72,28 @@ describe("native Company File runtime selection", () => {
 			{ QORPERA_NATIVE_OBJECT_GATEWAY_URL: "https://objects.example.test/another-route" },
 		])
 			expect(() => nativeCompanyRuntimeConfiguration({ ...configured, ...patch })).toThrow();
+	});
+});
+
+describe("native Company Computer service composition", () => {
+	const url = "https://office.example.test/office/00000000-0000-4000-8000-000000000003/native";
+	it("selects the configured headless office endpoint only with the governed runtime", () => {
+		expect(nativeCompanyComputerConfiguration({})).toBeUndefined();
+		expect(
+			nativeCompanyComputerConfiguration({
+				QORPERA_NATIVE_RUNTIME: "company-path-v1",
+				QORPERA_COMPANY_COMPUTER_URL: url,
+			}),
+		).toEqual({ url });
+	});
+	it("rejects partial selections, insecure endpoints and ambient transport credentials", () => {
+		for (const environment of [
+			{ QORPERA_COMPANY_COMPUTER_URL: url },
+			{ QORPERA_NATIVE_RUNTIME: "company-path-v1", QORPERA_COMPANY_COMPUTER_URL: "" },
+			{ QORPERA_NATIVE_RUNTIME: "company-path-v1", QORPERA_COMPANY_COMPUTER_URL: url.replace("https:", "http:") },
+			{ QORPERA_NATIVE_RUNTIME: "company-path-v1", QORPERA_COMPANY_COMPUTER_URL: `${url}?token=secret` },
+			{ QORPERA_COMPANY_COMPUTER_TOKEN: "A".repeat(43) },
+		])
+			expect(() => nativeCompanyComputerConfiguration(environment)).toThrow();
 	});
 });

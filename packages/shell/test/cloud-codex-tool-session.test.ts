@@ -3,13 +3,14 @@ import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { CLOUD_CODEX_BOUNDARY_CONFIG, runCloudCodexToolSession } from "@qorpera/runtime/cloud-codex-tool-session";
+import { CloudNativeCaptureImages } from "@qorpera/runtime/cloud-native-capture-images";
+import { nativeRuntimeFailureMetadata } from "@qorpera/runtime/cloud-native-failure";
+import * as nativeIsolation from "@qorpera/runtime/cloud-native-isolation";
+import { nativeProviderUsageSignal } from "@qorpera/runtime/cloud-native-provider-host";
+import { type CloudNativeTool, CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
+import { CloudRuntimeObservability, type CloudRuntimeObservation } from "@qorpera/runtime/cloud-runtime-observability";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { CLOUD_CODEX_BOUNDARY_CONFIG, runCloudCodexToolSession } from "../src/cloud-codex-tool-session.ts";
-import { nativeRuntimeFailureMetadata } from "../src/cloud-native-failure.ts";
-import * as nativeIsolation from "../src/cloud-native-isolation.ts";
-import { nativeProviderUsageSignal } from "../src/cloud-native-provider-host.ts";
-import { type CloudNativeTool, CloudNativeToolBoundary } from "../src/cloud-native-tool-boundary.ts";
-import { CloudRuntimeObservability, type CloudRuntimeObservation } from "../src/cloud-runtime-observability.ts";
 
 const rpcFixture = fileURLToPath(new URL("./fixtures/codex-boundary-rpc-fixture.cjs", import.meta.url));
 const binarySha256 = createHash("sha256")
@@ -94,6 +95,63 @@ it.each(["response-first", "notify-first", "fence-before-started", "prewarm-befo
 it("rejects an unpatched binary before creating a thread", async () => {
 	await expect(run("missing-fence").result).rejects.toThrow("missing native result fence");
 });
+
+it.each(["capture-image", "response-first"])(
+	"requires the image capability and transports a capture above the text-message budget: %s",
+	async (mode) => {
+		const pixels = Buffer.alloc(2 * 1024 * 1024);
+		const sha256 = createHash("sha256").update(pixels).digest("hex");
+		const capture = {
+			assetId: randomUUID(),
+			screenId: randomUUID(),
+			bytes: pixels.length,
+			sha256,
+			width: 1,
+			height: 1,
+			mediaType: "image/png" as const,
+			surface: "browser" as const,
+		};
+		const execute = vi.fn(async () => ({ kind: "json" as const, value: capture }));
+		const signal = new AbortController().signal;
+		const boundary = new CloudNativeToolBoundary({
+			companyId: randomUUID(),
+			runId: randomUUID(),
+			signal,
+			assertActive: async () => undefined,
+			captures: new CloudNativeCaptureImages({ read: async () => pixels, assertReadable: async () => undefined }),
+			tools: [
+				{
+					name: "computer_screenshot",
+					source: "runtime",
+					description: "Capture fixture",
+					inputSchema: { type: "object", additionalProperties: false },
+					parseArguments: () => ({}),
+					execute,
+				},
+			],
+		});
+		const evidence = join(root, "capture.json");
+		const result = runCloudCodexToolSession({
+			command: [process.execPath, rpcFixture, mode, evidence],
+			binarySha256,
+			boundary,
+			model: "offline-probe",
+			prompt: "Capture fixture",
+			signal,
+		});
+		if (mode === "response-first") {
+			await expect(result).rejects.toThrow("requires capture image support");
+			expect(execute).not.toHaveBeenCalled();
+		} else {
+			await expect(result).resolves.toMatchObject({ toolCalls: 1, fencedRequests: 2 });
+			expect(JSON.parse(await readFile(evidence, "utf8"))).toMatchObject({
+				imageBytes: pixels.length,
+				sha256,
+				fenced: { outputs: [{ imageSha256: sha256 }] },
+			});
+		}
+	},
+);
 
 it("rejects the older result-only patch before model admission", async () => {
 	const beforeModelStart = vi.fn(async () => undefined);

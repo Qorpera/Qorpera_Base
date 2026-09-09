@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
 	LxdClient,
 	LxdCreateInstanceRequest,
@@ -13,6 +13,7 @@ import type {
 	LxdInstanceStateRecord,
 	LxdStorageVolumeRecord,
 } from "../src/lxd-client.ts";
+import { lxdNativeNodePolicy, lxdResourceBytes } from "../src/lxd-native-node-policy.ts";
 import {
 	HttpLxdGuestTransport,
 	LxdCloudRunnerProviderBackend,
@@ -20,6 +21,16 @@ import {
 	type LxdGuestTransport,
 } from "../src/lxd-provider.ts";
 import type { CloudRunnerAssignmentDelivery, CloudRunnerWork } from "../src/orchestrator.ts";
+import { readRuntimeNodeHost } from "../src/runtime-node-host.ts";
+import { nodeAdmissionFixture } from "./fixtures/node-admission.ts";
+
+vi.mock("../src/runtime-node-host.ts", () => ({ readRuntimeNodeHost: vi.fn() }));
+const nodeHost = { machineIdSha256: "e".repeat(64), cpuMillis: 16000, memoryBytes: 64 * 1024 ** 3 };
+beforeEach(() => {
+	vi.mocked(readRuntimeNodeHost)
+		.mockReset()
+		.mockResolvedValue({ ...nodeHost });
+});
 
 const roots: string[] = [];
 const runId = "20000000-0000-4000-8000-000000000001";
@@ -246,6 +257,16 @@ function fetchProvisioner(
 	return vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
 		expect(init?.redirect).toBe("error");
 		const url = String(input);
+		if (url.includes("qorpera_reserve_runtime_node_machine"))
+			return Response.json(nodeAdmissionFixture(JSON.parse(String(init?.body))));
+		if (url.includes("qorpera_reserve_runtime_machine") || url.includes("qorpera_release_runtime_machine")) {
+			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			return Response.json({
+				state: url.includes("qorpera_reserve_runtime_machine") ? "reserved" : "released",
+				allocationId: body.p_allocation_id,
+				instanceSha256: body.p_instance_sha256,
+			});
+		}
 		requests.push({ url, body: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown> });
 		return new Response(
 			JSON.stringify({
@@ -325,7 +346,320 @@ async function acquiredFixture() {
 	};
 }
 
+describe("native physical node policy", () => {
+	it("pins public resource and host policy independently of credential rotation", () => {
+		const original = governedConfig("/provider-state");
+		const before = lxdNativeNodePolicy(original, nodeHost.machineIdSha256);
+		const changedSecrets = {
+			...original,
+			supabaseServiceKey: "rotated-service-key",
+			nativeCompanyRuntime: {
+				...original.nativeCompanyRuntime!,
+				objectGatewayToken: "rotated-object-token",
+				secretBroker: { ...original.nativeCompanyRuntime!.secretBroker, runtimeToken: "rotated-broker-token" },
+			},
+		};
+		expect(lxdNativeNodePolicy(changedSecrets, nodeHost.machineIdSha256)).toEqual(before);
+		const encoded = JSON.stringify(before.policy);
+		for (const secret of [
+			original.supabaseServiceKey,
+			original.nativeCompanyRuntime!.objectGatewayToken,
+			original.nativeCompanyRuntime!.secretBroker.runtimeToken,
+		])
+			expect(encoded).not.toContain(secret);
+		expect(before.policy).toMatchObject({ cpuMillis: 4000, memoryBytes: 8589934592, rootDiskBytes: 68719476736 });
+		for (const change of [
+			{ cpuLimit: 8 },
+			{ memoryLimit: "16GiB" },
+			{ imageFingerprint: "b".repeat(64) },
+			{ project: "other-project" },
+		])
+			expect(lxdNativeNodePolicy({ ...original, ...change }, nodeHost.machineIdSha256).policySha256).not.toBe(
+				before.policySha256,
+			);
+		expect(lxdNativeNodePolicy(original, "b".repeat(64)).policySha256).not.toBe(before.policySha256);
+	});
+	it.each(["0GiB", "1.5GiB", "8GB", "-1GiB", "1GiB\n", "99999999999999999999999999TiB", "1025TiB"])(
+		"rejects invalid resource amount %j",
+		(value) => {
+			expect(() => lxdResourceBytes(value)).toThrow("INVALID_LXD_RESOURCE_BYTES");
+		},
+	);
+	it("uses exact binary units without rounding", () => {
+		expect(["1KiB", "1MiB", "1GiB", "1TiB", "1024TiB"].map(lxdResourceBytes)).toEqual([
+			1024, 1048576, 1073741824, 1099511627776, 1125899906842624,
+		]);
+	});
+});
+
 describe("LXD cloud runner provider", () => {
+	it.each([
+		"NODE_CAPACITY_EXHAUSTED",
+		"NODE_OBSERVATION_UNAVAILABLE",
+		"NODE_PROVIDER_UNCONFIGURED",
+		"lost",
+		"wrong-cost",
+	])("retains the exact allocation without physical creation after node refusal %s", async (reason) => {
+		const stateRoot = join(await root(), "state");
+		const lxd = new FakeLxd();
+		const provision = fetchProvisioner([]);
+		const demands: Record<string, unknown>[] = [];
+		let refused = true;
+		const fetcher: typeof fetch = async (input, init) => {
+			if (String(input).includes("qorpera_reserve_runtime_node_machine")) {
+				const args = JSON.parse(String(init?.body));
+				demands.push(args);
+				if (refused) {
+					if (reason === "lost") throw new Error("node reply lost after commit");
+					return Response.json(
+						reason === "wrong-cost"
+							? { ...nodeAdmissionFixture(args), cpuMillis: 1000 }
+							: { state: "refused", reason },
+					);
+				}
+			}
+			return provision(input, init);
+		};
+		const backend = new LxdCloudRunnerProviderBackend(config(stateRoot), lxd, new FakeGuest(), fetcher);
+		await expect(backend.acquire(runId, work(), new AbortController().signal)).rejects.toThrow();
+		expect(lxd.createVolumeCalls).toHaveLength(0);
+		expect(lxd.createCalls).toHaveLength(0);
+		expect(lxd.powerCalls).toHaveLength(0);
+		const journal = JSON.parse(await readFile(join(stateRoot, runId, "journal.json"), "utf8"));
+		expect(journal).toMatchObject({ physicalState: "reserving", capacityRegistered: true });
+		expect(journal.nodeCapacity).toBeUndefined();
+		refused = false;
+		const restarted = new LxdCloudRunnerProviderBackend(config(stateRoot), lxd, new FakeGuest(), fetcher);
+		await restarted.acquire(runId, work(), new AbortController().signal);
+		expect(demands).toHaveLength(4);
+		for (const demand of demands) expect(demand).toEqual(demands[0]);
+		expect(demands[0]).toMatchObject({
+			p_allocation_id: runId,
+			p_provider_kind: "native",
+			p_provider_id: "lxd",
+			p_machine_id_sha256: nodeHost.machineIdSha256,
+			p_cpu_millis: 4000,
+			p_memory_bytes: 8 * 1024 ** 3,
+		});
+		expect(lxd.createCalls).toHaveLength(1);
+		expect(lxd.powerCalls).toEqual(["start"]);
+	});
+
+	it("keeps pre-start node refusal retryable across restart with one charged physical identity", async () => {
+		const stateRoot = join(await root(), "state");
+		const lxd = new FakeLxd(),
+			provision = fetchProvisioner([]);
+		let nodeCalls = 0;
+		const fetcher: typeof fetch = async (input, init) => {
+			if (String(input).includes("qorpera_reserve_runtime_node_machine") && ++nodeCalls === 3)
+				return Response.json({ state: "refused", reason: "NODE_OBSERVATION_UNAVAILABLE" });
+			return provision(input, init);
+		};
+		const backend = new LxdCloudRunnerProviderBackend(config(stateRoot), lxd, new FakeGuest(), fetcher);
+		await expect(backend.acquire(runId, work(), new AbortController().signal)).rejects.toThrow(
+			"NODE_OBSERVATION_UNAVAILABLE",
+		);
+		expect(lxd.createCalls).toHaveLength(1);
+		expect(lxd.powerCalls).toHaveLength(0);
+		const journalPath = join(stateRoot, runId, "journal.json");
+		const journal = JSON.parse(await readFile(journalPath, "utf8"));
+		expect(journal).toMatchObject({
+			physicalState: "creating",
+			nodeCapacity: { cpuMillis: 4000, memoryBytes: 8 * 1024 ** 3 },
+		});
+		await new LxdCloudRunnerProviderBackend(config(stateRoot), lxd, new FakeGuest(), fetcher).acquire(
+			runId,
+			work(),
+			new AbortController().signal,
+		);
+		expect(lxd.createCalls).toHaveLength(1);
+		expect(lxd.powerCalls).toEqual(["start"]);
+		expect(JSON.parse(await readFile(journalPath, "utf8")).nodeCapacity).toEqual(journal.nodeCapacity);
+	});
+
+	it("does not dispatch when host evidence is unavailable or admission arrives after cancellation", async () => {
+		const stateRoot = join(await root(), "state"),
+			lxd = new FakeLxd();
+		const provision = fetchProvisioner([]),
+			stop = new AbortController();
+		vi.mocked(readRuntimeNodeHost).mockRejectedValueOnce(new Error("RUNTIME_NODE_HOST_UNCONFIRMED"));
+		const fetcher: typeof fetch = async (input, init) => {
+			const response = await provision(input, init);
+			if (String(input).includes("qorpera_reserve_runtime_node_machine")) stop.abort();
+			return response;
+		};
+		const backend = new LxdCloudRunnerProviderBackend(config(stateRoot), lxd, new FakeGuest(), fetcher);
+		await expect(backend.acquire(runId, work(), stop.signal)).rejects.toThrow("RUNTIME_NODE_HOST_UNCONFIRMED");
+		await expect(backend.acquire(runId, work(), stop.signal)).rejects.toThrow();
+		expect(lxd.createCalls).toHaveLength(0);
+		expect(lxd.createVolumeCalls).toHaveLength(0);
+		expect(lxd.powerCalls).toHaveLength(0);
+		expect(
+			vi.mocked(provision).mock.calls.some(([url]) => String(url).includes("qorpera_release_runtime_machine")),
+		).toBe(false);
+	});
+
+	it("requires node accounting for retained legacy guests and rejects cheaper resource enrollment", async () => {
+		const f = await acquiredFixture();
+		const journal = JSON.parse(await readFile(f.journalPath, "utf8"));
+		delete journal.nodeCapacity;
+		await writeFile(f.journalPath, JSON.stringify(journal));
+		const cheaper = new LxdCloudRunnerProviderBackend(
+			{ ...config(f.stateRoot), cpuLimit: 2 },
+			f.lxd,
+			f.guest,
+			f.fetchImplementation,
+		);
+		await expect(cheaper.reconcile()).rejects.toThrow("immutable provider authority");
+		const backend = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, f.fetchImplementation);
+		await expect(backend.acquire(runId, f.request, new AbortController().signal)).rejects.toThrow(
+			"machine-capacity inventory",
+		);
+		await backend.reconcile();
+		expect(JSON.parse(await readFile(f.journalPath, "utf8")).nodeCapacity).toMatchObject({
+			cpuMillis: 4000,
+			memoryBytes: 8 * 1024 ** 3,
+		});
+		await backend.acquire(runId, f.request, new AbortController().signal);
+		expect(f.lxd.createCalls).toHaveLength(1);
+	});
+
+	it.each(["host", "cpu", "node"])("refuses changed %s placement on restart", async (changed) => {
+		const f = await acquiredFixture();
+		if (changed === "host")
+			vi.mocked(readRuntimeNodeHost).mockResolvedValue({ ...nodeHost, machineIdSha256: "a".repeat(64) });
+		const fetcher: typeof fetch = async (input, init) => {
+			if (changed === "node" && String(input).includes("qorpera_reserve_runtime_node_machine"))
+				return Response.json({
+					...nodeAdmissionFixture(JSON.parse(String(init?.body))),
+					nodeId: "36000000-0000-4000-8000-000000000011",
+				});
+			return f.fetchImplementation(input, init);
+		};
+		const backend = new LxdCloudRunnerProviderBackend(
+			{ ...config(f.stateRoot), ...(changed === "cpu" ? { cpuLimit: 2 } : {}) },
+			f.lxd,
+			f.guest,
+			fetcher,
+		);
+		await expect(backend.acquire(runId, f.request, new AbortController().signal)).rejects.toThrow(
+			"node placement cannot be changed",
+		);
+		expect(f.lxd.createCalls).toHaveLength(1);
+		expect(f.lxd.powerCalls).toEqual(["start"]);
+	});
+
+	it("cleans up an admitted VM while node health and enrollment are unavailable", async () => {
+		const f = await acquiredFixture();
+		const runner = await new LxdCloudRunnerProviderBackend(
+			config(f.stateRoot),
+			f.lxd,
+			f.guest,
+			f.fetchImplementation,
+		).acquire(runId, f.request, new AbortController().signal);
+		vi.mocked(readRuntimeNodeHost).mockRejectedValue(new Error("host unavailable"));
+		const fetcher: typeof fetch = async (input, init) => {
+			if (String(input).includes("qorpera_reserve_runtime_node_machine")) throw new Error("node offline");
+			return f.fetchImplementation(input, init);
+		};
+		await new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, fetcher).stop(runner, "idle");
+		expect(f.lxd.instance).toBeUndefined();
+		expect(f.lxd.powerCalls).toEqual(["start", "stop"]);
+	});
+	it("refuses physical creation on a capacity denial or lost reservation response", async () => {
+		for (const lost of [false, true]) {
+			const stateRoot = join(await root(), "state");
+			const lxd = new FakeLxd();
+			const provision = fetchProvisioner([]);
+			let refused = true;
+			const fetcher: typeof fetch = async (input, init) => {
+				if (String(input).includes("qorpera_reserve_runtime_machine") && refused) {
+					if (lost) throw new Error("reservation response lost");
+					return Response.json({ state: "refused", reason: "MACHINE_CAPACITY_EXHAUSTED" });
+				}
+				return provision(input, init);
+			};
+			const backend = new LxdCloudRunnerProviderBackend(config(stateRoot), lxd, new FakeGuest(), fetcher);
+			await expect(backend.acquire(runId, work(), new AbortController().signal)).rejects.toThrow();
+			expect(lxd.createCalls).toHaveLength(0);
+			expect(lxd.powerCalls).toHaveLength(0);
+			refused = false;
+			await backend.acquire(runId, work(), new AbortController().signal);
+			expect(lxd.createCalls).toHaveLength(1);
+		}
+	});
+
+	it("does not free capacity until deletion actually removes the VM", async () => {
+		const f = await acquiredFixture();
+		const backend = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, f.fetchImplementation);
+		const runner = await backend.acquire(runId, f.request, new AbortController().signal);
+		const deletion = vi.spyOn(f.lxd, "deleteInstance").mockResolvedValue(undefined);
+		await expect(backend.stop(runner, "idle")).rejects.toThrow("physical deletion is confirmed");
+		const releases = () =>
+			vi
+				.mocked(f.fetchImplementation)
+				.mock.calls.filter(([url]) => String(url).includes("qorpera_release_runtime_machine"));
+		expect(releases()).toHaveLength(0);
+		deletion.mockRestore();
+		await backend.stop(runner, "idle");
+		expect(releases()).toHaveLength(1);
+		expect(f.lxd.instance).toBeUndefined();
+	});
+
+	it("retains capacity when a timed-out creation may still be pending remotely", async () => {
+		const stateRoot = join(await root(), "state");
+		const lxd = new FakeLxd();
+		vi.spyOn(lxd, "createInstance").mockRejectedValue(new Error("remote operation response lost"));
+		const fetcher = fetchProvisioner([]);
+		const backend = new LxdCloudRunnerProviderBackend(config(stateRoot), lxd, new FakeGuest(), fetcher);
+		await expect(backend.acquire(runId, work(), new AbortController().signal)).rejects.toThrow();
+		await backend.reconcile(new AbortController().signal);
+		expect(
+			vi.mocked(fetcher).mock.calls.filter(([url]) => String(url).includes("qorpera_release_runtime_machine")),
+		).toHaveLength(0);
+	});
+
+	it("retries lost capacity cleanup after restart using persisted deletion proof", async () => {
+		const f = await acquiredFixture();
+		let loseRelease = true;
+		const fetcher: typeof fetch = async (input, init) => {
+			if (String(input).includes("qorpera_release_runtime_machine") && loseRelease)
+				throw new Error("release response lost");
+			return f.fetchImplementation(input, init);
+		};
+		const backend = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, fetcher);
+		const runner = await backend.acquire(runId, f.request, new AbortController().signal);
+		await expect(backend.stop(runner, "idle")).rejects.toThrow("release response lost");
+		expect(f.lxd.instance).toBeUndefined();
+		expect(JSON.parse(await readFile(f.journalPath, "utf8"))).toMatchObject({
+			physicalState: "stopping",
+			deletionConfirmed: true,
+		});
+		loseRelease = false;
+		const restarted = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, fetcher);
+		await restarted.reconcile();
+		expect(
+			vi
+				.mocked(f.fetchImplementation)
+				.mock.calls.filter(([url]) => String(url).includes("qorpera_release_runtime_machine")),
+		).toHaveLength(1);
+		expect(f.lxd.createCalls).toHaveLength(1);
+	});
+
+	it("blocks new starts until retained live guests have a capacity record", async () => {
+		const f = await acquiredFixture();
+		const journal = JSON.parse(await readFile(f.journalPath, "utf8"));
+		delete journal.capacityRegistered;
+		await writeFile(f.journalPath, JSON.stringify(journal));
+		const backend = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, f.fetchImplementation);
+		await expect(backend.acquire(runId, f.request, new AbortController().signal)).rejects.toThrow(
+			"machine-capacity inventory",
+		);
+		await backend.reconcile();
+		expect(JSON.parse(await readFile(f.journalPath, "utf8"))).toMatchObject({ capacityRegistered: true });
+		await backend.acquire(runId, f.request, new AbortController().signal);
+		expect(f.lxd.createCalls).toHaveLength(1);
+	});
 	it("journals a full VM before creation and safely adopts it after provider restart", async () => {
 		const directory = await root();
 		const stateRoot = join(directory, "state");
@@ -475,6 +809,7 @@ describe("LXD cloud runner provider", () => {
 		const nextRunnerId = "20000000-0000-4000-8000-000000000099";
 		const fetcher: typeof fetch = async (input, init) => {
 			const response = await provision(input, init);
+			if (!String(input).includes("qorpera_provision_execution_runner")) return response;
 			const value = (await response.json()) as Record<string, unknown>;
 			return Response.json({
 				...value,

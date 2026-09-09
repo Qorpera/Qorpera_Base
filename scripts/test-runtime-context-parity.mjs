@@ -6,9 +6,9 @@ import { randomBytes } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseCloudNativeCompanyContext, composeCloudNativeCompanyPrompt } from "../packages/shell/src/cloud-native-company-context.ts";
-import { parseCloudWakeEnvelope } from "../packages/shell/src/cloud-wake-bus.ts";
-import { assertCloudRuntimeBundle } from "../packages/shell/src/cloud-runtime-bundle.ts";
+import { parseCloudNativeCompanyContext, composeCloudNativeCompanyPrompt } from "../packages/runtime/src/cloud-native-company-context.ts";
+import { parseCloudWakeEnvelope } from "../packages/runtime/src/cloud-wake-bus.ts";
+import { assertCloudRuntimeBundle } from "../packages/runtime/src/cloud-runtime-bundle.ts";
 import { generateCloudRuntimeBundle } from "./generate-cloud-runtime-bundle.mjs";
 import { POSTGRES_IMAGE, sortMigrationNames } from "./test-hosted-db.mjs";
 

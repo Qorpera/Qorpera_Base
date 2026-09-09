@@ -3,15 +3,15 @@ import { createHash, randomBytes } from "node:crypto";
 import { lstat, mkdir, open, readFile, rm, statfs } from "node:fs/promises";
 import { constants as osConstants } from "node:os";
 import { join } from "node:path";
-import type { CloudRunnerBrokerTransport } from "../../src/cloud-runner-broker.ts";
-import {
-	type CloudRunnerControlRequest,
-	type CloudRunnerControlTransport,
-	DisposableCloudRunner,
-} from "../../src/cloud-runner-control.ts";
-import type { CloudRunnerSandboxBackend } from "../../src/cloud-runner-sandbox.ts";
-import { EphemeralCloudRunnerWorker } from "../../src/cloud-runner-worker.ts";
-import { FileCloudRunnerAuthorityStore } from "../../src/cloud-runner-worker-state.ts";
+import type {
+	CloudRunnerControlRequest,
+	CloudRunnerControlTransport,
+} from "@qorpera/cloud-client/node/cloud-runner-protocol";
+import type { CloudRunnerBrokerTransport } from "@qorpera/runtime/cloud-runner-broker";
+import { DisposableCloudRunner } from "@qorpera/runtime/cloud-runner-control";
+import type { CloudRunnerSandboxBackend } from "@qorpera/runtime/cloud-runner-sandbox";
+import { EphemeralCloudRunnerWorker } from "@qorpera/runtime/cloud-runner-worker";
+import { FileCloudRunnerAuthorityStore } from "@qorpera/runtime/cloud-runner-worker-state";
 
 // Only the dedicated, synthetic test volume. No runtime secrets or model calls.
 const root = "/var/lib/qorpera-step2-recovery";

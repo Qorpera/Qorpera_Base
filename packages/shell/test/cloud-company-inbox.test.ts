@@ -1,13 +1,13 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { HostedCompanySnapshot, HostedCompanyWorkspace } from "@qorpera/cloud-client/hosted-primary";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	CloudCompanyWorkspaceInboxSync,
 	type CompanyWorkspaceInboxPrimary,
 	readCloudCompanyInbox,
 } from "../src/cloud-company-inbox.ts";
-import type { HostedCompanySnapshot, HostedCompanyWorkspace } from "../src/hosted-primary.ts";
 
 const profileId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
 const environmentId = "73dc6943-b71c-4ba4-a38d-78da0861e0dc";

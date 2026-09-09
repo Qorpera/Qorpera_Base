@@ -1,7 +1,7 @@
+import { HttpCloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-control";
+import { CloudCompanyHeadConflict } from "@qorpera/runtime/cloud-company-path-gateway";
+import { CloudRuntimeDiagnosticError } from "@qorpera/runtime/cloud-runtime-observability";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HttpCloudCompanyPathControl } from "../src/cloud-company-path-control.ts";
-import { CloudCompanyHeadConflict } from "../src/cloud-company-path-gateway.ts";
-import { CloudRuntimeDiagnosticError } from "../src/cloud-runtime-observability.ts";
 
 afterEach(() => vi.useRealTimers());
 
@@ -14,14 +14,15 @@ function fixture(transport: typeof fetch) {
 }
 
 describe("Company File bounded control transport", () => {
-	it.each(["qorpera_assert_company_path_reads", "qorpera_verify_company_path_file"] as const)(
-		"accepts PostgREST no-content success for the void RPC %s",
-		async (method) => {
-			const transport = vi.fn<typeof fetch>(async () => new Response(null, { status: 204 }));
-			await expect(fixture(transport).call(method, {}, new AbortController().signal)).resolves.toBeNull();
-			expect(transport).toHaveBeenCalledTimes(1);
-		},
-	);
+	it.each([
+		"qorpera_assert_company_path_reads",
+		"qorpera_verify_company_path_file",
+		"qorpera_native_presence_forget",
+	] as const)("accepts PostgREST no-content success for the void RPC %s", async (method) => {
+		const transport = vi.fn<typeof fetch>(async () => new Response(null, { status: 204 }));
+		await expect(fixture(transport).call(method, {}, new AbortController().signal)).resolves.toBeNull();
+		expect(transport).toHaveBeenCalledTimes(1);
+	});
 
 	it.each([
 		"qorpera_record_runtime_observation",
@@ -36,8 +37,13 @@ describe("Company File bounded control transport", () => {
 		"qorpera_verify_company_path_tree",
 		"qorpera_prepare_company_path_mutation",
 		"qorpera_commit_company_path_mutation",
+		"qorpera_native_company_file_write_source",
+		"qorpera_native_company_file_write",
 		"qorpera_prepare_company_path_approval",
 		"qorpera_apply_company_path_approval",
+		"qorpera_native_presence_register",
+		"qorpera_company_presence_scope",
+		"qorpera_native_presence_subject",
 	] as const)("still requires a response value for %s", async (method) => {
 		const transport = vi.fn<typeof fetch>(async () => new Response(null, { status: 204 }));
 		await expect(fixture(transport).call(method, {}, new AbortController().signal)).rejects.toThrow("unavailable");

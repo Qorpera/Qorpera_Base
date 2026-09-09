@@ -3,13 +3,13 @@ import { readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
-import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/shell/src/cloud-runtime-policy.ts";
+import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtime-policy.ts";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const generatedSource = "packages/shell/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260907000500_runtime_bundle_activation_v13.sql";
-const activationVersion = 13;
-const previousActivationVersion = 12;
+const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
+const activation = "supabase/migrations/20260908000900_runtime_bundle_activation_v15.sql";
+const activationVersion = 15;
+const previousActivationVersion = 14;
 const manifestPath = "deploy/first-node/native-codex/runtime-bundle-manifest.json";
 const sha = (text) => createHash("sha256").update(text).digest("hex");
 
@@ -17,13 +17,13 @@ const sha = (text) => createHash("sha256").update(text).digest("hex");
 // launched by filename must not disappear from the import-graph provenance.
 export const CLOUD_RUNTIME_ENTRY_POINTS = Object.freeze({
 	"company-lock-heartbeat": "packages/company/src/company-lock-heartbeat.ts",
-	"qorpera-ephemeral-runner": "packages/shell/src/cloud-runner-service-main.ts",
-	"qorpera-native-provider-host": "packages/shell/src/cloud-native-provider-service-main.ts",
-	"qorpera-identity-recovery-restore": "packages/shell/src/cloud-identity-recovery-restore-main.ts",
-	"qorpera-native-isolation-child": "packages/shell/src/cloud-native-isolation-child.ts",
-	"qorpera-sandbox-probe": "packages/shell/src/cloud-runner-container-main.ts",
-	"qorpera-lxd-runner-bootstrap": "packages/shell/src/lxd-runner-bootstrap-main.ts",
-	"qorpera-lxd-native-login-bootstrap": "packages/shell/src/lxd-native-login-bootstrap-main.ts",
+	"qorpera-ephemeral-runner": "packages/runtime/src/cloud-runner-service-main.ts",
+	"qorpera-native-provider-host": "packages/runtime/src/cloud-native-provider-service-main.ts",
+	"qorpera-identity-recovery-restore": "packages/runtime/src/cloud-identity-recovery-restore-main.ts",
+	"qorpera-native-isolation-child": "packages/runtime/src/cloud-native-isolation-child.ts",
+	"qorpera-sandbox-probe": "packages/runtime/src/cloud-runner-container-main.ts",
+	"qorpera-lxd-runner-bootstrap": "packages/runtime/src/lxd-runner-bootstrap-main.ts",
+	"qorpera-lxd-native-login-bootstrap": "packages/runtime/src/lxd-native-login-bootstrap-main.ts",
 });
 
 /** PostgreSQL jsonb::text for this generated ASCII-key/string/integer manifest.
@@ -76,7 +76,18 @@ export async function cloudRuntimeBundle(root = repository) {
 		}
 	}
 	for (const path of Object.values(CLOUD_RUNTIME_ENTRY_POINTS)) await include(path);
-	for (const name of ["cloud-secret-broker-service-main.ts", "cloud-runtime-policy.ts"]) await include(`packages/shell/src/${name}`);
+	for (const name of ["cloud-secret-broker-service-main.ts", "cloud-runtime-policy.ts"]) await include(`packages/runtime/src/${name}`);
+	// Office adapters are injected at composition boundaries. Pin their sources
+	// even before a deployed service entrypoint selects the concrete guest.
+	for (const name of (await readdir(join(root, "packages/runtime/src"))).filter((name) => /^cloud-company-computer-.*\.ts$/.test(name)).sort()) {
+		await include(`packages/runtime/src/${name}`);
+	}
+	for (const name of ["qorpera-screen-session", "qorpera-screen-xfce", "qorpera-browser-policy.json", "qorpera-company-computer.service", "qorpera-company-computer-preparation.service", "qorpera-office-preparation.conf", "qorpera-office-runtime.conf", "qorpera-office-private.mount.in"]) await include(`deploy/lxd-company-computer-guest/${name}`);
+	await include("packages/runner-orchestrator/src/lxd-office-image-installation-cli.ts");
+	for (const name of (await readdir(join(root, "packages/shell/userland/staff-creatures"))).sort()) {
+		if (!/^[a-z]+\.png$/.test(name)) throw new Error("Invalid office wallpaper artifact");
+		await include(`packages/shell/userland/staff-creatures/${name}`);
+	}
 	for (const name of (await readdir(join(root, "supabase/migrations"))).filter((name) => name.endsWith(".sql")).sort()) {
 		await include(`supabase/migrations/${name}`);
 	}
@@ -85,15 +96,22 @@ export async function cloudRuntimeBundle(root = repository) {
 	}
 	for (const path of [
 		"deploy/first-node/native-codex/source.json", "deploy/first-node/native-codex/0001-cloud-result-fence.patch",
+		"deploy/first-node/native-codex/linux-x64-artifact.json",
 		"deploy/ephemeral-runner/image/run-job", "deploy/lxd-runner-guest/harness/package.json", "deploy/lxd-runner-guest/harness/package-lock.json",
 		"scripts/native-company-artifact.mjs", "scripts/package-ephemeral-runner.mjs", "scripts/generate-cloud-runtime-bundle.mjs",
-		"scripts/package-lxd-runner-guest.mjs",
-		"package-lock.json", "packages/shell/package.json",
+		"scripts/package-lxd-runner-guest.mjs", "scripts/package-company-computer.mjs",
+		"package-lock.json", "packages/runtime/package.json", "packages/cloud-client/package.json",
 	]) await include(path);
-	const native = JSON.parse(await readFile(join(root, "deploy/first-node/native-codex/guest-package-manifest.json"), "utf8")).nativeCompany;
+	// The accepted native input is independent of the later compiled guest
+	// package, whose host embeds this bundle. Reading that output here creates
+	// a circular pin update when replacing the native executable.
+	const native = JSON.parse(await readFile(join(root, "deploy/first-node/native-codex/linux-x64-artifact.json"), "utf8"));
 	const source = JSON.parse(await readFile(join(root, "deploy/first-node/native-codex/source.json"), "utf8"));
-	if (!native || !/^[0-9a-f]{64}$/.test(native.binarySha256) || native.patchSha256 !== source.patchSha256
-		|| native.sourceCommit !== source.commit
+	if (!native || native.schema !== "qorpera.native-codex-artifact/v1" || !native.artifact ||
+		!Number.isSafeInteger(native.artifact.bytes) || native.artifact.bytes < 1 || native.artifact.bytes > 1024 ** 3 ||
+		!/^[0-9a-f]{64}$/.test(native.artifact.sha256) || native.artifact.file !== "codex" ||
+		native.artifact.target !== "x86_64-unknown-linux-gnu" || native.artifact.profile !== "release" ||
+		runtimeManifestText(native.source) !== runtimeManifestText(source)
 		|| files.get("deploy/first-node/native-codex/0001-cloud-result-fence.patch") !== source.patchSha256) {
 		throw new Error("Native artifact pin differs from its reviewed source");
 	}
@@ -105,29 +123,29 @@ export async function cloudRuntimeBundle(root = repository) {
 		}));
 		return sha(runtimeManifestText(selected));
 	};
-	const shell = (names) => names.map((name) => `packages/shell/src/${name}.ts`);
+	const runtime = (names) => names.map((name) => `packages/runtime/src/${name}.ts`);
 	const manifest = {
 		schema: "qorpera.runtime-bundle/v2",
 		modelPolicy,
-		nativeBinarySha256: native.binarySha256,
+		nativeBinarySha256: native.artifact.sha256,
 		components: {
-			kernel: component(shell(["cloud-native-company-runtime", "cloud-native-run-tool-session"])),
-			constitution: component(shell(["cloud-native-company-context", "cloud-agent-mouth", "cloud-native-tool-boundary"])),
-			toolCatalog: component(shell(["cloud-company-path-gateway", "cloud-secret-tools", "cloud-native-company-runtime", "cloud-wake-bus", "cloud-responsibility-tools"])),
-			wakeAndSilence: component(shell(["cloud-native-company-runtime", "cloud-agent-mouth", "cloud-wake-bus", "cloud-responsibility-tools"])),
-			contextComposer: component(shell(["cloud-native-company-context", "cloud-company-path-gateway"])),
-			providerBootstrap: component(shell(["cloud-codex-tool-session", "cloud-native-provider-host", "lxd-runner-bootstrap-main"])),
+			kernel: component(runtime(["cloud-native-company-runtime", "cloud-native-run-tool-session"])),
+			constitution: component(runtime(["cloud-native-company-context", "cloud-agent-mouth", "cloud-native-tool-boundary"])),
+			toolCatalog: component(runtime(["cloud-company-path-gateway", "cloud-secret-tools", "cloud-native-company-runtime", "cloud-wake-bus", "cloud-responsibility-tools"])),
+			wakeAndSilence: component(runtime(["cloud-native-company-runtime", "cloud-agent-mouth", "cloud-wake-bus", "cloud-responsibility-tools"])),
+			contextComposer: component(runtime(["cloud-native-company-context", "cloud-company-path-gateway"])),
+			providerBootstrap: component(runtime(["cloud-codex-tool-session", "cloud-native-provider-host", "lxd-runner-bootstrap-main"])),
 			authorization: component([...files.keys()].filter((path) => path.startsWith("supabase/migrations/"))),
-			inboundSafety: component(shell(["cloud-native-result-fence", "cloud-native-tool-boundary"])),
-			outboundSafety: component(shell(["cloud-native-tool-operations", "cloud-secret-tools", "cloud-company-path-gateway"])),
-			interactionSurfaces: component(shell(["cloud-agent-mouth", "cloud-native-company-runtime"])),
-			workerLifecycle: component(shell(["cloud-runner-worker", "cloud-native-provider-host"])),
-			memoryAndSkills: component(shell(["cloud-codex-tool-session", "cloud-native-company-context"])),
+			inboundSafety: component(runtime(["cloud-native-result-fence", "cloud-native-tool-boundary"])),
+			outboundSafety: component(runtime(["cloud-native-tool-operations", "cloud-secret-tools", "cloud-company-path-gateway"])),
+			interactionSurfaces: component(runtime(["cloud-agent-mouth", "cloud-native-company-runtime"])),
+			workerLifecycle: component(runtime(["cloud-runner-worker", "cloud-native-provider-host"])),
+			memoryAndSkills: component(runtime(["cloud-codex-tool-session", "cloud-native-company-context"])),
 		},
 		implementation: Object.fromEntries([...files].sort(([a], [b]) => a.localeCompare(b, "en"))),
 	};
 	const text = runtimeManifestText(manifest);
-	if (Buffer.byteLength(text) > 64 * 1024) throw new Error("Runtime manifest exceeds its SQL bound");
+	if (Buffer.byteLength(text) > 128 * 1024) throw new Error("Runtime manifest exceeds its SQL bound");
 	return { manifest, text, sha256: sha(text), modelPolicySha256: sha(runtimeManifestText(modelPolicy)) };
 }
 

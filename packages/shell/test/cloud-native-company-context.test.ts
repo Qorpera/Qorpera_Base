@@ -1,14 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { JsonValue } from "@qorpera/contracts";
-import { expect, it, vi } from "vitest";
-import type { CloudCompanyPathControl } from "../src/cloud-company-path-gateway.ts";
+import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
 import {
 	CLOUD_COMPANY_RUNTIME_INSTRUCTIONS,
 	cloudCompanyContextTool,
 	composeCloudNativeCompanyPrompt,
 	parseCloudNativeCompanyContext,
-} from "../src/cloud-native-company-context.ts";
-import { CloudNativeToolBoundary } from "../src/cloud-native-tool-boundary.ts";
+} from "@qorpera/runtime/cloud-native-company-context";
+import { CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
+import { expect, it, vi } from "vitest";
 import { nativeCompanyContextFixture } from "./fixtures/native-company-context-fixture.ts";
 
 it("derives the agent, requester and company from closed cloud context, not a supplied role string", () => {

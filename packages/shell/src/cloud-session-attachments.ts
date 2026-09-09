@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { GATEWAY_EDGE_USER_AGENT } from "./cloud-object-store.ts";
-import { readBoundedCloudResponse, withCloudDeadline } from "./cloud-request.ts";
+import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
+import { GATEWAY_EDGE_USER_AGENT } from "@qorpera/cloud-client/node/cloud-object-store";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;

@@ -1,16 +1,15 @@
-import type { JsonValue } from "@qorpera/pi-protocol";
-import { describe, expect, it, vi } from "vitest";
-import type { CloudRunnerBrokerAuthority, CloudRunnerBrokerTransport } from "../src/cloud-runner-broker.ts";
 import {
 	type CloudRunnerAuthorityStore,
 	type CloudRunnerControlRequest,
 	CloudRunnerControlRequestError,
 	type CloudRunnerControlTransport,
 	createCloudRunnerPairingSecret,
-	DisposableCloudRunner,
 	parseCloudRunnerJob,
-	SupabaseCloudRunnerControlTransport,
-} from "../src/cloud-runner-control.ts";
+} from "@qorpera/cloud-client/node/cloud-runner-protocol";
+import type { JsonValue } from "@qorpera/pi-protocol";
+import type { CloudRunnerBrokerAuthority, CloudRunnerBrokerTransport } from "@qorpera/runtime/cloud-runner-broker";
+import { DisposableCloudRunner, SupabaseCloudRunnerControlTransport } from "@qorpera/runtime/cloud-runner-control";
+import { describe, expect, it, vi } from "vitest";
 
 const runnerId = "a8450f9d-c912-43ea-81f6-62c7247d752a";
 const profileId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";

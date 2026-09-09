@@ -7,9 +7,9 @@ import { createConnection, createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect as connectTls } from "node:tls";
-import { launchIsolatedNativeProcess } from "../../src/cloud-native-isolation.ts";
-import { startCloudNativeResultFence } from "../../src/cloud-native-result-fence.ts";
-import { CloudNativeToolBoundary, type CloudToolResult } from "../../src/cloud-native-tool-boundary.ts";
+import { launchIsolatedNativeProcess } from "@qorpera/runtime/cloud-native-isolation";
+import { startCloudNativeResultFence } from "@qorpera/runtime/cloud-native-result-fence";
+import { CloudNativeToolBoundary, type CloudToolResult } from "@qorpera/runtime/cloud-native-tool-boundary";
 
 const entryPoint = "/opt/qorpera-runner/qorpera-native-isolation-child.mjs";
 const fixture = "/usr/local/lib/qorpera-native-isolation-probe.mjs";

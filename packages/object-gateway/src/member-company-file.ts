@@ -195,6 +195,139 @@ function json(response: ServerResponse, value: unknown, observation?: MemberRequ
 	response.end(encoded);
 }
 
+function uploadIntent(request: IncomingMessage): { intended: Plan; source: Record<string, unknown>; manifest: Buffer } {
+	const encoded = request.headers["x-qorpera-company-upload"];
+	if (
+		typeof encoded !== "string" ||
+		encoded.length > 8192 ||
+		!/^[A-Za-z0-9_-]+$/.test(encoded) ||
+		request.headers["content-type"] !== "application/octet-stream"
+	)
+		throw new ObjectDependencyError(400);
+	let input: Record<string, unknown>;
+	try {
+		const bytes = Buffer.from(encoded, "base64url");
+		if (bytes.toString("base64url") !== encoded) throw new Error("Invalid encoding");
+		input = object(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
+	} catch {
+		throw new ObjectDependencyError(400);
+	}
+	exact(input, ["schema", "operationKey", "path", "expectedVersion", "source", "manifest"]);
+	const source = object(input.source);
+	exact(source, ["realm", "name", "sha256", "bytes", "mediaType"]);
+	if (
+		input.schema !== "qorpera.member-file-upload/v1" ||
+		source.realm !== "member_file" ||
+		typeof source.name !== "string" ||
+		Buffer.byteLength(source.name) < 1 ||
+		Buffer.byteLength(source.name) > 255 ||
+		/[\x00-\x1f\x7f/\\]/.test(source.name) ||
+		[".", ".."].includes(source.name) ||
+		Buffer.from(source.name).toString("utf8") !== source.name ||
+		typeof source.mediaType !== "string" ||
+		source.mediaType.length > 256 ||
+		!/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(source.mediaType) ||
+		!Number.isSafeInteger(source.bytes) ||
+		(source.bytes as number) < 0 ||
+		(source.bytes as number) > 8 * 1024 * 1024 ||
+		request.headers["content-length"] !== String(source.bytes)
+	)
+		throw new ObjectDependencyError(400);
+	const manifest = object(input.manifest);
+	exact(manifest, ["schema", "fileSha256", "bytes", "mediaType", "chunks"]);
+	if (
+		manifest.schema !== "qorpera.cloud-file-manifest/v1" ||
+		manifest.fileSha256 !== hash(source.sha256) ||
+		manifest.bytes !== source.bytes ||
+		manifest.mediaType !== "application/octet-stream" ||
+		!Array.isArray(manifest.chunks) ||
+		manifest.chunks.length > 2
+	)
+		throw new ObjectDependencyError(400);
+	let total = 0;
+	const chunks = manifest.chunks.map((item, index, values) => {
+		const chunk = object(item);
+		exact(chunk, ["sha256", "bytes"]);
+		if (
+			!Number.isSafeInteger(chunk.bytes) ||
+			(chunk.bytes as number) < 1 ||
+			(chunk.bytes as number) > 4 * 1024 * 1024 ||
+			(index < values.length - 1 && chunk.bytes !== 4 * 1024 * 1024)
+		)
+			throw new ObjectDependencyError(400);
+		total += chunk.bytes as number;
+		return { sha256: hash(chunk.sha256), bytes: chunk.bytes as number };
+	});
+	if (total !== source.bytes) throw new ObjectDependencyError(400);
+	const manifestBytes = Buffer.from(
+		JSON.stringify({
+			schema: manifest.schema,
+			fileSha256: manifest.fileSha256,
+			bytes: manifest.bytes,
+			mediaType: manifest.mediaType,
+			chunks,
+		}),
+	);
+	return {
+		source,
+		manifest: manifestBytes,
+		intended: plan({
+			schema: "qorpera.company-path-mutation/v1",
+			operationKey: input.operationKey,
+			path: input.path,
+			expectedVersion: input.expectedVersion,
+			entry: {
+				path: path(input.path),
+				kind: "file",
+				executable: false,
+				file: {
+					fileSha256: source.sha256,
+					manifestSha256: createHash("sha256").update(manifestBytes).digest("hex"),
+					bytes: source.bytes,
+					mediaType: "application/octet-stream",
+				},
+			},
+		}),
+	};
+}
+
+async function uploadBytes(
+	request: IncomingMessage,
+	intended: Plan,
+	manifest: Buffer,
+	signal: AbortSignal,
+): Promise<Buffer[]> {
+	const file = intended.entry?.kind === "file" ? intended.entry.file : undefined;
+	if (!file) throw new ObjectDependencyError(400);
+	const buffers: Buffer[] = [];
+	let count = 0;
+	await boundedObjectOperation(async () => {
+		for await (const part of request) {
+			signal.throwIfAborted();
+			const bytes = Buffer.from(part);
+			count += bytes.length;
+			if (count > file.bytes) throw new ObjectDependencyError(413);
+			buffers.push(bytes);
+		}
+	});
+	signal.throwIfAborted();
+	const bytes = Buffer.concat(buffers);
+	if (count !== file.bytes || createHash("sha256").update(bytes).digest("hex") !== file.fileSha256)
+		throw new ObjectDependencyError(400);
+	const parts: Buffer[] = [];
+	for (let offset = 0; offset < bytes.length; offset += 4 * 1024 * 1024)
+		parts.push(bytes.subarray(offset, offset + 4 * 1024 * 1024));
+	const expected = JSON.stringify({
+		schema: "qorpera.cloud-file-manifest/v1",
+		fileSha256: file.fileSha256,
+		bytes: file.bytes,
+		mediaType: "application/octet-stream",
+		chunks: parts.map((part) => ({ sha256: createHash("sha256").update(part).digest("hex"), bytes: part.length })),
+	});
+	if (manifest.toString("utf8") !== expected) throw new ObjectDependencyError(400);
+	return parts;
+}
+
 /** This route accepts human intent only. Whole tree metadata and service
  * credentials never leave this cloud process, and no model is run here. */
 export async function serveMemberCompanyFile(
@@ -203,7 +336,7 @@ export async function serveMemberCompanyFile(
 	options: MemberCompanyFileOptions,
 ): Promise<void> {
 	const match =
-		/^\/v1\/member-company-file\/([0-9a-f-]{36})\/(edits|proposals)(?:\/([0-9a-f-]{36}))?(?:\/(review|content))?$/.exec(
+		/^\/v1\/member-company-file\/([0-9a-f-]{36})\/(edits|proposals|uploads)(?:\/([0-9a-f-]{36}))?(?:\/(review|content|file))?$/.exec(
 			request.url ?? "",
 		);
 	if (!match) throw new ObjectDependencyError(404);
@@ -233,6 +366,24 @@ export async function serveMemberCompanyFile(
 			const proposalPlan = plan(proposal.plan);
 			const digest = hash(proposal.planSha256);
 			options.observation?.update({ proposalId: target, environmentId });
+			if (request.method === "GET" && match[4] === "file") {
+				options.observation?.operation("proposal_content");
+				const bytes = await pendingFileBytes(
+					options,
+					proposalPlan,
+					(sha256) =>
+						authority.member(
+							"qorpera_authorize_member_company_proposal_object",
+							token,
+							{ p_proposal_id: target, p_plan_sha256: digest, p_sha256: sha256 },
+							signal,
+						),
+					signal,
+				);
+				if (!isDeepStrictEqual(await describe(), proposal)) throw new ObjectDependencyError(409);
+				pendingFileResponse(response, bytes, digest, options, signal);
+				return;
+			}
 			if (request.method === "GET" && match[4] === "content") {
 				options.observation?.operation("proposal_content");
 				if (proposalPlan.entry?.kind !== "file" || proposalPlan.entry.file.bytes > 32 * 1024)
@@ -305,7 +456,7 @@ export async function serveMemberCompanyFile(
 			json(response, await describe(), options.observation);
 			return;
 		}
-		if (match[2] !== "edits") throw new ObjectDependencyError(404);
+		if (match[2] !== "edits" && (match[2] !== "uploads" || target || match[4])) throw new ObjectDependencyError(404);
 		let current: Command;
 		if (target) {
 			current = command(
@@ -321,6 +472,40 @@ export async function serveMemberCompanyFile(
 			if (request.method === "GET" && !match[4]) {
 				options.observation?.operation("command_status");
 				json(response, current, options.observation);
+				return;
+			}
+			if (request.method === "GET" && match[4] === "file") {
+				options.observation?.operation("command_content");
+				if (
+					!["ready", "review_required", "approved"].includes(current.state) ||
+					Date.parse(current.expiresAt) <= Date.now()
+				)
+					throw new ObjectDependencyError(403);
+				const bytes = await pendingFileBytes(
+					options,
+					current.plan,
+					(sha256) =>
+						authority.member(
+							"qorpera_authorize_member_company_command_object",
+							token,
+							{ p_command_id: target, p_plan_sha256: current.planSha256, p_sha256: sha256 },
+							signal,
+						),
+					signal,
+					current.companyId,
+				);
+				const latest = command(
+					await authority.member(
+						"qorpera_get_member_company_path_command",
+						token,
+						{ p_command_id: target },
+						signal,
+					),
+					environmentId,
+				);
+				if (!isDeepStrictEqual(latest, current) || Date.parse(latest.expiresAt) <= Date.now())
+					throw new ObjectDependencyError(409);
+				pendingFileResponse(response, bytes, current.planSha256, options, signal);
 				return;
 			}
 			if (request.method === "GET" && match[4] === "content") {
@@ -411,6 +596,42 @@ export async function serveMemberCompanyFile(
 						signal,
 					),
 					environmentId,
+				);
+			}
+		} else if (match[2] === "uploads") {
+			if (request.method !== "PUT" || target || match[4]) throw new ObjectDependencyError(405);
+			const upload = uploadIntent(request);
+			current = command(
+				await authority.member(
+					"qorpera_begin_member_company_file_upload",
+					token,
+					{
+						p_environment_id: environmentId,
+						p_plan: upload.intended,
+						p_manifest_text: upload.manifest.toString("utf8"),
+						p_source: upload.source,
+					},
+					signal,
+				),
+				environmentId,
+			);
+			if (!isDeepStrictEqual(current.plan, upload.intended)) throw new ObjectDependencyError(503);
+			const parts = await uploadBytes(request, current.plan, upload.manifest, signal);
+			options.observation?.operation("command_submit");
+			options.observation?.update({
+				commandId: current.commandId,
+				companyId: current.companyId,
+				environmentId,
+				logicalWriteInputBytes: upload.source.bytes as number,
+				requestBodyBytes: upload.source.bytes as number,
+			});
+			if (current.state !== "applied" && current.state !== "rejected") {
+				for (const part of parts) await stage(options, current, part, false, signal);
+				await stage(options, current, upload.manifest, false, signal);
+				await authority.publisher(
+					"qorpera_verify_company_path_file",
+					{ p_profile_id: current.companyId, p_manifest_text: upload.manifest.toString("utf8") },
+					signal,
 				);
 			}
 		} else {
@@ -569,6 +790,101 @@ function candidate(value: unknown, intended: Plan): Buffer {
 	);
 	if (bytes.length > 8 * 1024 * 1024) throw new ObjectDependencyError(413);
 	return bytes;
+}
+
+async function pendingFileBytes(
+	options: MemberCompanyFileOptions,
+	mutation: Plan,
+	authorize: (sha256: string) => Promise<unknown>,
+	signal: AbortSignal,
+	expectedCompany?: string,
+): Promise<Buffer> {
+	if (mutation.entry?.kind !== "file" || mutation.entry.file.bytes > 8 * 1024 * 1024)
+		throw new ObjectDependencyError(400);
+	const file = mutation.entry.file;
+	let company = expectedCompany;
+	const get = async (sha256: string, length?: number): Promise<Buffer> => {
+		signal.throwIfAborted();
+		const access = object(await authorize(sha256)),
+			companyId = id(access.companyId);
+		if (
+			(company !== undefined && companyId !== company) ||
+			access.sha256 !== sha256 ||
+			!Number.isSafeInteger(access.bytes) ||
+			(access.bytes as number) < 1 ||
+			(access.bytes as number) > 8 * 1024 * 1024 ||
+			(length !== undefined && access.bytes !== length)
+		)
+			throw new ObjectDependencyError(403);
+		company = companyId;
+		options.observation?.update({ companyId });
+		let bytes: Uint8Array;
+		try {
+			bytes = await options.store.get(companyId, sha256, access.bytes as number);
+		} catch (error) {
+			if (
+				!(error instanceof Error) ||
+				(error.message !== "Object not found" && !(error instanceof ObjectDependencyError && error.unavailable))
+			)
+				throw error;
+			bytes = await options.readLegacyObject(companyId, sha256);
+		}
+		if (bytes.length !== access.bytes || createHash("sha256").update(bytes).digest("hex") !== sha256)
+			throw new ObjectDependencyError(409);
+		if (!isDeepStrictEqual(await authorize(sha256), access)) throw new ObjectDependencyError(403);
+		signal.throwIfAborted();
+		return Buffer.from(bytes);
+	};
+	const manifest = object(
+		JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await get(file.manifestSha256))),
+	);
+	exact(manifest, ["schema", "fileSha256", "bytes", "mediaType", "chunks"]);
+	if (
+		manifest.schema !== "qorpera.cloud-file-manifest/v1" ||
+		manifest.fileSha256 !== file.fileSha256 ||
+		manifest.bytes !== file.bytes ||
+		manifest.mediaType !== file.mediaType ||
+		!Array.isArray(manifest.chunks) ||
+		manifest.chunks.length > 2
+	)
+		throw new ObjectDependencyError(409);
+	const chunks = manifest.chunks.map((part, index) => {
+		const chunk = object(part);
+		exact(chunk, ["sha256", "bytes"]);
+		if (
+			!Number.isSafeInteger(chunk.bytes) ||
+			(chunk.bytes as number) < 1 ||
+			(chunk.bytes as number) > 4 * 1024 * 1024 ||
+			(index < (manifest.chunks as unknown[]).length - 1 && chunk.bytes !== 4 * 1024 * 1024)
+		)
+			throw new ObjectDependencyError(409);
+		return { sha256: hash(chunk.sha256), bytes: chunk.bytes as number };
+	});
+	if (chunks.reduce((sum, chunk) => sum + chunk.bytes, 0) !== file.bytes) throw new ObjectDependencyError(409);
+	const pieces: Buffer[] = [];
+	for (const chunk of chunks) pieces.push(await get(chunk.sha256, chunk.bytes));
+	const bytes = Buffer.concat(pieces);
+	if (createHash("sha256").update(bytes).digest("hex") !== file.fileSha256) throw new ObjectDependencyError(409);
+	return bytes;
+}
+
+function pendingFileResponse(
+	response: ServerResponse,
+	bytes: Buffer,
+	digest: string,
+	options: MemberCompanyFileOptions,
+	signal: AbortSignal,
+): void {
+	signal.throwIfAborted();
+	options.observation?.update({ logicalObjectReadBytes: bytes.length });
+	response.writeHead(200, {
+		"content-type": "application/octet-stream",
+		"content-length": bytes.length,
+		"cache-control": "private, no-store",
+		"x-content-type-options": "nosniff",
+		"x-qorpera-plan-sha256": digest,
+	});
+	response.end(bytes);
 }
 
 function organizationPath(pathName: string): boolean {

@@ -2,7 +2,6 @@ import { generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	CloudIdentityRecoveryAuthority,
 	type IdentityRecoveryReceipt,
@@ -11,7 +10,7 @@ import {
 	type RecoveryControlOperation,
 	type RecoveryObjectStore,
 	SupabaseRecoveryControl,
-} from "../src/cloud-identity-recovery.ts";
+} from "@qorpera/runtime/cloud-identity-recovery";
 import {
 	type RecoveryReleaseBinding,
 	recoveryDigest,
@@ -19,7 +18,7 @@ import {
 	recoveryPublicKeyDigest,
 	recoveryPublicKeyText,
 	wrapRecoveryKey,
-} from "../src/cloud-identity-recovery-crypto.ts";
+} from "@qorpera/runtime/cloud-identity-recovery-crypto";
 import {
 	assertIdentityRecoveryMarker,
 	backupNativeIdentityKey,
@@ -28,10 +27,11 @@ import {
 	type IdentityRecoveryRuntimeState,
 	identityRecoveryEpochFilename,
 	restoreNativeIdentityKey,
-} from "../src/cloud-identity-recovery-guest.ts";
-import { HttpIdentityRecoveryService } from "../src/cloud-identity-recovery-service.ts";
-import { FileRecoveryObjectStore, SupabaseRecoveryObjectStore } from "../src/cloud-identity-recovery-store.ts";
-import { openNativeCredentialCapsule, sealNativeCredentialCapsule } from "../src/cloud-native-provider-host.ts";
+} from "@qorpera/runtime/cloud-identity-recovery-guest";
+import { HttpIdentityRecoveryService } from "@qorpera/runtime/cloud-identity-recovery-service";
+import { FileRecoveryObjectStore, SupabaseRecoveryObjectStore } from "@qorpera/runtime/cloud-identity-recovery-store";
+import { openNativeCredentialCapsule, sealNativeCredentialCapsule } from "@qorpera/runtime/cloud-native-provider-host";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const wrapper = generateKeyPairSync("rsa", { modulusLength: 3072 });
 const recipient = generateKeyPairSync("rsa", { modulusLength: 3072 });

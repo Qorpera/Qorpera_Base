@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- The unreleased new-boot successor request now requires `bootIntentId`, binding it to a separately prepared pre-boot intent. Prior unbound handoffs cannot be reconstructed or resumed automatically.
+- Unreleased preparation completion now uses `qorpera.office-preparation-completion/v2` and requires the independently read adoption-receipt digest. Older completions cannot satisfy the new preparation phase.
+
 ### Added
 
+- Allowed the selected boot's public adoption, configuration claim/completion and configuration JSON in protected stop history. Secret credential paths and other boot directories remain excluded; existing manifest bytes retain their order.
+- Added closed retained-boot service-start and inspection contracts bound to the prepared boot successor, exact configuration acknowledgement and a distinct invocation. Historical packets grant no current SQL authority.
+- Added canonical boot-directory derivation shared by the provider and root controls. Strict runtime UUIDs map to systemd's 32-hexadecimal boot-ID path without a mutable current-directory pointer.
+- Shared the closed, bounded stop-history manifest and boot/activation path parser between root sealing and provider readback. Existing wire bytes remain stable; metadata is copied and frozen without granting runtime authority.
+- Added explicit reboot/resume intents binding a planned activation to the acknowledged predecessor, protected stop history and VM shutdown evidence. Metadata is immutable and recoverable; current dispatch authority expires within five seconds and ends at post-boot handoff.
+- Added a separate new-boot successor request for reboot or explicit resume after power-off, binding a distinct activation/boot/configuration to retained stop history, VM shutdown and boot observations. Metadata recovery stays distinct from VM dispatch and physical readiness; same-boot requests retain their original restrictions.
+- Added a closed protected restart packet binding prepared successor metadata, exact service configuration and acknowledged predecessor stop. Completion rejects old invocation and command identities; nested history is copied and frozen.
+- Added closed same-boot successor requests and metadata binding a distinct activation to its stopped predecessor. Retained metadata grants no physical start, fresh inspection or capacity release.
+- Added closed, short-lived service-stop challenges binding current office revision, privacy version and drain inventory, plus immutable physical-stop acknowledgement. Historical acknowledgement grants no successor admission and cannot acknowledge newer drains.
+- Added closed service-stop requests, historical completion and fresh-inspection records bound to the retained revocation, original startup and protected command. Completion distinguishes the admitted invocation from an unadmitted automatic restart and requires an absent or empty service cgroup; it grants no successor admission or capacity release.
+- Added closed lifecycle revocation requests and receipts binding provider, activation, allocation, boot, service invocation and ordered screen drains. A revocation receipt conveys no physical stop, replacement or resource-release authority.
+- Added closed service-start completion and fresh-inspection contracts binding the original request, activation, configuration, systemd invocation, PID and cgroup. Historical completion does not establish liveness; the provider must retain a new inspection nonce and enforce an end-to-end deadline.
+- Added a closed bounded service-start request tying retained configuration completion to activation boot, configuration/receipt digests and listener ports. Protected file custody and live systemd measurement remain the root helper's responsibilities.
+- Added closed immutable activation evidence, startup identity and authority contracts binding one allocation, boot, exact configuration digest, listener pair and nonzero service invocation. These records do not substitute for physical measurements or active-work authorization.
+- Shared bounded confidential configuration requests, fixed file names/limits and closed hash-only completion validation between the provider and root helper. Completion requires independently derived command, preparation and file identities and grants no activation authority.
+- Added deterministic copied-state adoption receipt data binding the prepared guest identity, adopted layout, mount and output-inventory/review digests. Publication and admission remain the protected helper's and cloud authority's responsibilities.
+- Shared closed preparation command and completion validation between the provider and protected guest helper, matching the retained command, exact report digest and fresh systemd invocation without granting activation authority.
+- Added closed preparation-report validation binding the delivered request and content hashes, scope, boot, copy, mount and counts, with an explicit systemd invocation ID. Callers must separately verify protected custody and a fresh completed invocation; valid data grants no admission.
+- Added a closed portable office preparation manifest binding copied paths, private modes, lengths and hashes to one allocation, guest boot and reviewed copy. It contains no execution or admission authority.
 - Added provider-neutral cloud execution identity, capability, budget, and JSON value contracts.
+- Shared the portable company-computer layout validation and legacy screen/profile adoption mapper between provider preparation and the headless runtime, without filesystem or desktop dependencies.
+- Added retained-workbench receipts and boot-configuration packets binding the original adoption, planned boot intent, shutdown bytes and resumed boot observation. Shared confidential material validation preserves the original configuration format. New receipts describe current directory custody without asserting that mutable files still match their copied inventory.

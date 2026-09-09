@@ -1,0 +1,47 @@
+[Unit]
+Description=Qorpera headless office lifecycle provider
+Wants=network-online.target
+Requires=qorpera-office-host-namespace.service
+After=network-online.target qorpera-office-host-namespace.service
+ConditionPathExists=/etc/qorpera/office-provider/service.json
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=exec
+User=qorpera-office-provider
+Group=qorpera-office-provider
+SupplementaryGroups=@SOCKET_GID@
+Environment=NODE_EXTRA_CA_CERTS=/etc/qorpera/office-provider/registry-ca.pem
+WorkingDirectory=/opt/qorpera/office-provider
+# Open the existing lock first. flock's filename form otherwise recreates a
+# missing lock; /proc/self/fd/3 retains the already-open inode through exec.
+ExecStart=/usr/bin/bash --noprofile --norc -c 'exec 3<"$$1" || exit 1; exec /usr/bin/flock --exclusive --nonblock --no-fork /proc/self/fd/3 /usr/bin/node --jitless --disable-proto=throw --disallow-code-generation-from-strings /opt/qorpera/office-provider/qorpera-office-provider.cjs --config /etc/qorpera/office-provider/service.json' qorpera-office-provider @JOURNAL_LOCK@
+Restart=on-failure
+RestartSec=5s
+KillMode=mixed
+KillSignal=SIGTERM
+SendSIGKILL=yes
+TimeoutStopSec=70s
+UMask=0077
+LimitCORE=0
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=1G
+MemorySwapMax=0
+TasksMax=128
+CPUQuota=200%
+# Retain PID 1's mount namespace and proc metadata. Mount-namespace hardening
+# such as PrivateTmp/ProtectSystem/ReadWritePaths would fail the physical gate.
+# Shutdown never proves VM deletion or releases a charged allocation.
+
+[Install]
+WantedBy=multi-user.target

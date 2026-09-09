@@ -1,0 +1,15 @@
+[Unit]
+Description=Qorpera private office sign-in workspace
+DefaultDependencies=no
+Conflicts=umount.target
+Requires=systemd-tmpfiles-setup.service
+After=systemd-tmpfiles-setup.service
+Before=qorpera-company-computer.service umount.target
+
+[Mount]
+What=tmpfs
+Where=/run/qorpera-office/private
+Type=tmpfs
+Options=nodev,nosuid,noexec,size=64M,mode=0700,uid=@OFFICE_UID@,gid=@OFFICE_GID@
+TimeoutSec=10s
+# Demand-mounted by the office service. Never enabled by image installation.

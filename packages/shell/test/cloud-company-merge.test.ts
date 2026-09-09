@@ -2,6 +2,17 @@ import { realpathSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type {
+	HostedCompanyProposal,
+	HostedCompanySnapshot,
+	QorperaHostedPrimary,
+} from "@qorpera/cloud-client/hosted-primary";
+import {
+	captureCloudCompanyTree,
+	currentCloudCompanyTreeReference,
+	readCloudCompanyTreeManifest,
+} from "@qorpera/cloud-client/node/cloud-company-snapshot";
+import { CloudContentAddressedStore, type CloudObjectTransport } from "@qorpera/cloud-client/node/cloud-object-store";
 import {
 	canonicalCompanyRoot,
 	claimCompanyRuntimeLock,
@@ -19,14 +30,7 @@ import {
 	replaceCloudCompanyCacheWithSnapshot,
 } from "../src/cloud-company-merge.ts";
 import { prepareCompanyProposalReview } from "../src/cloud-company-proposal-review.ts";
-import {
-	captureCloudCompanyTree,
-	currentCloudCompanyTreeReference,
-	readCloudCompanyTreeManifest,
-} from "../src/cloud-company-snapshot.ts";
 import type { CompanyWorkspacePrimary } from "../src/cloud-company-workspace.ts";
-import { CloudContentAddressedStore, type CloudObjectTransport } from "../src/cloud-object-store.ts";
-import type { HostedCompanyProposal, HostedCompanySnapshot, QorperaHostedPrimary } from "../src/hosted-primary.ts";
 
 const profileId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
 const environmentId = "73dc6943-b71c-4ba4-a38d-78da0861e0dc";

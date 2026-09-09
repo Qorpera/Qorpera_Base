@@ -5,7 +5,7 @@ import fs, { link, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } fr
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openNativeCredentialCapsule, sealNativeCredentialCapsule } from "../../src/cloud-native-provider-host.ts";
+import { openNativeCredentialCapsule, sealNativeCredentialCapsule } from "@qorpera/runtime/cloud-native-provider-host";
 
 /** Linux-only custody component proof. No cloud credentials, service mutation,
  * provider traffic or guest-isolation claim. Each race is injected at the

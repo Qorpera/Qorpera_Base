@@ -3,11 +3,11 @@ import {
 	CLOUD_NATIVE_TOOL_AUTHORITY_SCHEMA,
 	type CloudNativeToolAuthority,
 	type CloudNativeToolBinding,
-} from "../../src/cloud-native-tool-authority.ts";
+} from "@qorpera/runtime/cloud-native-tool-authority";
 import {
 	CLOUD_RUNTIME_BUNDLE_SHA256,
 	CLOUD_RUNTIME_MODEL_POLICY_SHA256,
-} from "../../src/cloud-runtime-bundle.generated.ts";
+} from "@qorpera/runtime/cloud-runtime-bundle.generated";
 
 export function nativeToolAuthorityFixture(): { binding: CloudNativeToolBinding; authority: CloudNativeToolAuthority } {
 	const binding: CloudNativeToolBinding = {

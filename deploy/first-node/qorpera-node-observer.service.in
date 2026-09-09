@@ -1,0 +1,44 @@
+[Unit]
+Description=Qorpera complete physical node inventory observer
+Wants=network-online.target
+Requires=qorpera-node-host-namespace.service
+After=network-online.target qorpera-node-host-namespace.service
+ConditionPathExists=/etc/qorpera/node-observer.json
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=exec
+User=qorpera-node-observer
+Group=qorpera-node-observer
+SupplementaryGroups=@SOCKET_GID@
+WorkingDirectory=/opt/qorpera/node-observer
+Environment=NODE_EXTRA_CA_CERTS=/etc/qorpera/node-observer-ca.pem
+ExecStart=/usr/bin/node --jitless --disable-proto=throw --disallow-code-generation-from-strings /opt/qorpera/node-observer/qorpera-node-observer.cjs
+Restart=on-failure
+RestartSec=5s
+KillMode=control-group
+KillSignal=SIGTERM
+TimeoutStopSec=20s
+UMask=0077
+LimitCORE=0
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=512M
+MemorySwapMax=0
+TasksMax=64
+CPUQuota=100%
+# Keep PID 1's mount namespace. Do not add PrivateTmp/ProtectSystem or other
+# mount-namespace isolation: it would invalidate whole-host measurements.
+# Service failure does not release any physical allocation.
+
+[Install]
+WantedBy=multi-user.target

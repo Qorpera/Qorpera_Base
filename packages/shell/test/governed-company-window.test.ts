@@ -1,4 +1,8 @@
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { CloudMemberCompanyComputerClient } from "@qorpera/cloud-client/cloud-member-company-computer";
 import type { BrowserWindow } from "electron";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { type CloudMemberCompanyCommand, CloudMemberCompanyFileClient } from "../src/cloud-member-company-editor.ts";
@@ -15,14 +19,23 @@ const electron = vi.hoisted(() => {
 		on: vi.fn(),
 		webRequest: { onBeforeRequest: vi.fn<(callback: RequestCheck) => void>() },
 	};
-	const dialogs = { showMessageBox: vi.fn(async () => ({ response: 0 })), showMessageBoxSync: vi.fn(() => 0) };
+	const dialogs = {
+		showMessageBox: vi.fn(async () => ({ response: 0 })),
+		showMessageBoxSync: vi.fn(() => 0),
+		showSaveDialog: vi.fn(async (): Promise<{ canceled: boolean; filePath?: string }> => ({ canceled: true })),
+		showOpenDialog: vi.fn(
+			async (): Promise<{ canceled: boolean; filePaths: string[] }> => ({ canceled: true, filePaths: [] }),
+		),
+	};
 	class Window {
+		static instances: Window[] = [];
 		readonly options: unknown;
 		destroyed = false;
 		readonly closed: Array<() => void> = [];
 		readonly handlers = new Map<string, (event: Event, value: unknown) => Promise<unknown>>();
 		readonly events = new Map<string, (event: { preventDefault(): void }) => void>();
 		readonly webContents = {
+			send: vi.fn(),
 			mainFrame: { url: "" },
 			ipc: {
 				handle: (name: string, handler: (event: Event, value: unknown) => Promise<unknown>) => {
@@ -37,6 +50,7 @@ const electron = vi.hoisted(() => {
 		};
 		constructor(options: unknown) {
 			this.options = options;
+			Window.instances.push(this);
 		}
 		once(_name: string, handler: () => void) {
 			this.closed.push(handler);
@@ -84,10 +98,17 @@ const target: CloudMemberCompanyCommand = {
 };
 beforeEach(() => {
 	vi.clearAllMocks();
+	electron.Window.instances = [];
 	electron.dialogs.showMessageBox.mockResolvedValue({ response: 0 });
+	electron.dialogs.showSaveDialog.mockResolvedValue({ canceled: true });
+	electron.dialogs.showOpenDialog.mockResolvedValue({ canceled: true, filePaths: [] });
 });
 
-async function fixture(canWrite = true) {
+async function fixture(
+	canWrite = true,
+	companyComputer?: CloudMemberCompanyComputerClient,
+	presence?: Parameters<typeof openGovernedCompanyWindow>[0]["presence"],
+) {
 	const client = new CloudMemberCompanyFileClient({
 		companyId,
 		environmentId,
@@ -115,6 +136,8 @@ async function fixture(canWrite = true) {
 		directory: "/synthetic-userland",
 		title: "Company",
 		client,
+		companyComputer,
+		presence,
 		canWrite,
 		current: () => state.current,
 	})) as unknown as InstanceType<typeof electron.Window>;
@@ -135,6 +158,277 @@ async function fixture(canWrite = true) {
 }
 
 describe("governed human File window", () => {
+	it("keeps presence independent from file operations and clears it on account and window changes", async () => {
+		let changed!: Parameters<NonNullable<Parameters<typeof openGovernedCompanyWindow>[0]["presence"]>>[1];
+		let signal!: AbortSignal;
+		const observer = { select: vi.fn(), close: vi.fn(async () => {}) };
+		const factory = vi.fn((lifetime: AbortSignal, onChange: typeof changed) => {
+			signal = lifetime;
+			changed = onChange;
+			return observer;
+		});
+		const f = await fixture(false, undefined, factory),
+			handler = f.window.handlers.get("company-file:presence-select")!;
+		expect(await f.request({ method: "info" })).toMatchObject({ result: { presenceAvailable: true } });
+		expect(await handler(f.event, ["decision.md"])).toEqual({ ok: true });
+		expect(observer.select).toHaveBeenCalledWith(["decision.md"]);
+		const view = {
+			schema: "qorpera.company-path-presence-view/v1" as const,
+			state: "available" as const,
+			observedAt: Date.now(),
+			paths: [{ path: "decision.md", participants: [] }],
+		};
+		changed(view);
+		expect(f.window.webContents.send).toHaveBeenLastCalledWith("company-file:presence", view);
+		for (const paths of [["../private"], Array(9).fill("x"), { path: "decision.md" }])
+			expect(await handler(f.event, paths)).toEqual({ ok: false });
+		expect(await handler({ ...f.event, senderFrame: { url: f.event.senderFrame.url } }, ["decision.md"])).toEqual({
+			ok: false,
+		});
+		expect(factory).toHaveBeenCalledOnce();
+		f.state.current = false;
+		changed(view);
+		expect(f.window.webContents.send).toHaveBeenLastCalledWith(
+			"company-file:presence",
+			expect.objectContaining({ state: "unavailable", paths: [] }),
+		);
+		expect(await handler(f.event, ["decision.md"])).toEqual({ ok: false });
+		f.window.destroy();
+		expect(signal.aborted).toBe(true);
+		expect(observer.close).toHaveBeenCalledOnce();
+	});
+	it("opens one Company Computer window through the member client and closes it with its parent", async () => {
+		const fetch = vi.fn<typeof globalThis.fetch>(async () => {
+			throw new Error("Unexpected execution or network request");
+		});
+		const computer = new CloudMemberCompanyComputerClient({
+			companyId,
+			environmentId,
+			supabaseUrl: "https://control.test",
+			publishableKey: "public",
+			accessToken: async () => "member-token",
+			fetch,
+		});
+		const f = await fixture(true, computer);
+		expect(await f.request({ method: "info" })).toMatchObject({ ok: true, result: { computerAvailable: true } });
+		await Promise.all([f.request({ method: "computer" }), f.request({ method: "computer" })]);
+		expect(electron.Window.instances).toHaveLength(2);
+		expect(await f.request({ method: "computer" })).toEqual({ ok: true, result: { opened: true } });
+		expect(electron.Window.instances).toHaveLength(2);
+		f.window.destroy();
+		expect(electron.Window.instances[1].isDestroyed()).toBe(true);
+		expect(fetch).not.toHaveBeenCalled();
+	});
+	it("downloads only a discovered shared export, including for a read-only member", async () => {
+		const f = await fixture(false),
+			root = await mkdtemp(join(tmpdir(), "qorpera-export-window-"));
+		try {
+			const bytes = Uint8Array.from([0, 255, 128]);
+			const asset = {
+				schema: "qorpera.file-transfer-asset/v1" as const,
+				assetId: commandId,
+				sha256: "a".repeat(64),
+				bytes: bytes.length,
+				mediaType: "application/octet-stream",
+				source: {
+					realm: "company_computer" as const,
+					path: "exports/report.bin",
+					companyComputerId: version,
+					screenId: version,
+				},
+				destination: { realm: "object_storage" as const },
+			};
+			const selection = { realm: "object_storage" as const, assetId: asset.assetId, sha256: asset.sha256 };
+			vi.spyOn(f.client.exports, "list").mockResolvedValue({ items: [asset], nextAfter: null });
+			const download = vi
+				.spyOn(f.client.exports, "download")
+				.mockResolvedValue({ asset, bytes, source: { ...selection, companyId, environmentId } });
+			expect(await f.request({ method: "downloadExport", selection })).toMatchObject({ ok: false });
+			expect(electron.dialogs.showSaveDialog).not.toHaveBeenCalled();
+			expect(await f.request({ method: "exports", after: null })).toEqual({
+				ok: true,
+				result: { items: [asset], nextAfter: null },
+			});
+			expect(
+				await f.request({ method: "downloadExport", selection: { ...selection, sha256: "b".repeat(64) } }),
+			).toMatchObject({ ok: false });
+			expect(
+				await f.request({ method: "downloadExport", selection: { ...selection, destination: "/local" } }),
+			).toMatchObject({ ok: false });
+			expect(electron.dialogs.showSaveDialog).not.toHaveBeenCalled();
+			electron.dialogs.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: join(root, "chosen.bin") });
+			const saved = await f.request({ method: "downloadExport", selection });
+			expect(saved).toEqual({
+				ok: true,
+				result: { saved: true, source: { ...selection, companyId, environmentId }, bytes: 3 },
+			});
+			expect(await readFile(join(root, "chosen.bin"))).toEqual(Buffer.from(bytes));
+			expect(download).toHaveBeenCalledOnce();
+			expect(JSON.stringify(saved)).not.toContain(root);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+	it("previews and downloads a binary proposal by its exact plan without rendering its bytes", async () => {
+		const f = await fixture(),
+			root = await mkdtemp(join(tmpdir(), "qorpera-review-download-"));
+		try {
+			const bytes = Uint8Array.from([0, 255, 128]);
+			const binary: CloudMemberCompanyCommand = {
+				...target,
+				plan: {
+					...target.plan,
+					entry: {
+						path: target.plan.path,
+						kind: "file",
+						executable: false,
+						file: {
+							bytes: 3,
+							fileSha256: "c".repeat(64),
+							manifestSha256: "d".repeat(64),
+							mediaType: "application/octet-stream",
+						},
+					},
+				},
+			};
+			f.edits.mockResolvedValue({ items: [binary], nextAfter: null });
+			const pending = vi.spyOn(f.client, "pendingFile").mockResolvedValue({ bytes, planSha256: target.planSha256 });
+			await f.request({ method: "reviews", kind: "edits", after: null });
+			const key = `edit:${commandId}`,
+				planSha256 = target.planSha256;
+			expect(await f.request({ method: "preview", key, planSha256 })).toMatchObject({
+				ok: true,
+				result: { after: expect.stringContaining("Download the proposed file") },
+			});
+			electron.dialogs.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: join(root, "review.bin") });
+			const saved = await f.request({ method: "downloadReview", key, planSha256 });
+			expect(saved).toEqual({ ok: true, result: { saved: true, bytes: 3, planSha256 } });
+			expect(await readFile(join(root, "review.bin"))).toEqual(Buffer.from(bytes));
+			expect(pending).toHaveBeenCalledTimes(2);
+			expect(f.review).not.toHaveBeenCalled();
+			expect(JSON.stringify(saved)).not.toContain(root);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+	it("retains a native upload for an exact IPC retry without rereading the selected path", async () => {
+		const f = await fixture(),
+			root = await mkdtemp(join(tmpdir(), "qorpera-upload-window-"));
+		try {
+			const filePath = join(root, "selected.bin"),
+				bytes = Uint8Array.from([0, 255, 128]);
+			await writeFile(filePath, bytes);
+			electron.dialogs.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [filePath] });
+			const choice = (await f.request({ method: "chooseUpload" })) as {
+				ok: true;
+				result: { id: string; name: string; sha256: string };
+			};
+			const upload = vi
+				.spyOn(f.client, "upload")
+				.mockRejectedValueOnce(new Error("Lost response"))
+				.mockImplementation(async (input) => ({
+					command: target,
+					source: {
+						realm: "member_file",
+						name: choice.result.name,
+						sha256: choice.result.sha256,
+						bytes: input.bytes.length,
+						mediaType: input.mediaType,
+					},
+				}));
+			const input = {
+				method: "upload",
+				intent: { id: choice.result.id, path: "decision.md", expectedVersion: version },
+			};
+			expect(await f.request(input)).toMatchObject({ ok: false });
+			await writeFile(filePath, "Changed");
+			expect(await f.request(input)).toMatchObject({ ok: true });
+			expect(upload.mock.calls[1][0].bytes).toEqual(bytes);
+			expect(electron.dialogs.showOpenDialog).toHaveBeenCalledTimes(1);
+			expect(JSON.stringify(choice)).not.toContain(root);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+	it("allows only a native upload choice for writers without renderer filesystem arguments", async () => {
+		const f = await fixture(),
+			upload = vi.spyOn(f.client, "upload");
+		expect(await f.request({ method: "chooseUpload", path: "/private/secret" })).toMatchObject({ ok: false });
+		expect(electron.dialogs.showOpenDialog).not.toHaveBeenCalled();
+		expect(await f.request({ method: "chooseUpload" })).toEqual({ ok: true, result: null });
+		expect(electron.dialogs.showOpenDialog).toHaveBeenCalledWith(
+			f.window,
+			expect.objectContaining({ properties: ["openFile", "dontAddToRecent"] }),
+		);
+		expect(upload).not.toHaveBeenCalled();
+		const readonly = await fixture(false);
+		electron.dialogs.showOpenDialog.mockClear();
+		expect(await readonly.request({ method: "chooseUpload" })).toMatchObject({ ok: false });
+		expect(electron.dialogs.showOpenDialog).not.toHaveBeenCalled();
+	});
+	it("writes through the native chooser and returns only source metadata to its isolated renderer", async () => {
+		const f = await fixture(false),
+			root = await mkdtemp(join(tmpdir(), "qorpera-file-window-"));
+		try {
+			const filePath = join(root, "chosen.bin"),
+				bytes = Uint8Array.from([0, 255, 128]);
+			const selection = { realm: "company_file", path: "documents/file.bin", version } as const;
+			const source = {
+				...selection,
+				companyId,
+				environmentId,
+				sha256: "a".repeat(64),
+				manifestSha256: "b".repeat(64),
+			};
+			const download = vi
+				.spyOn(f.client, "download")
+				.mockResolvedValue({ bytes, source, mediaType: "application/octet-stream" });
+			electron.dialogs.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath });
+			const response = await f.request({ method: "download", selection });
+			expect(response).toEqual({ ok: true, result: { saved: true, source, bytes: 3 } });
+			expect(JSON.stringify(response)).not.toContain(root);
+			expect(await readFile(filePath)).toEqual(Buffer.from(bytes));
+			expect(download).toHaveBeenCalledWith(selection, expect.any(AbortSignal));
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+	it("offers a native save chooser to read-only members without exposing an arbitrary destination IPC", async () => {
+		const f = await fixture(false),
+			download = vi.spyOn(f.client, "download");
+		const selection = { realm: "company_file", path: "documents/file.bin", version };
+		expect(await f.request({ method: "download", selection, destination: "/private/other" })).toMatchObject({
+			ok: false,
+		});
+		expect(electron.dialogs.showSaveDialog).not.toHaveBeenCalled();
+		expect(await f.request({ method: "download", selection })).toEqual({ ok: true, result: { saved: false } });
+		expect(electron.dialogs.showSaveDialog).toHaveBeenCalledWith(
+			f.window,
+			expect.objectContaining({ defaultPath: "file.bin", properties: ["showOverwriteConfirmation"] }),
+		);
+		expect(download).not.toHaveBeenCalled();
+	});
+	it("refuses another chooser while a download is pending and fences account changes before fetching", async () => {
+		const f = await fixture(),
+			download = vi.spyOn(f.client, "download");
+		let finish!: (value: { canceled: boolean; filePath: string }) => void;
+		electron.dialogs.showSaveDialog.mockImplementationOnce(
+			() =>
+				new Promise((resolve) => {
+					finish = resolve;
+				}),
+		);
+		const input = { method: "download", selection: { realm: "company_file", path: "file.bin", version } };
+		const first = f.request(input);
+		expect(await f.request(input)).toMatchObject({
+			ok: false,
+			error: "Finish the current download before starting another",
+		});
+		f.state.current = false;
+		finish({ canceled: false, filePath: "/not-written.bin" });
+		expect(await first).toMatchObject({ ok: false });
+		expect(download).not.toHaveBeenCalled();
+	});
 	it("uses an isolated sandbox and permits only the three fixed display resources", async () => {
 		const { window } = await fixture();
 		expect(window.options).toMatchObject({

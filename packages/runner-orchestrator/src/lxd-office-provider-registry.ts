@@ -1,0 +1,219 @@
+import type { LxdOfficeActivationRegistry } from "./lxd-office-activation-control.ts";
+import type { LxdOfficeBootIntentRegistry } from "./lxd-office-boot-intent-control.ts";
+import type { LxdOfficeBootSuccessorRegistry } from "./lxd-office-boot-successor-control.ts";
+import type { LxdOfficeLifecycleControlRegistry } from "./lxd-office-lifecycle-control.ts";
+import type { LxdOfficeProviderRegistry } from "./lxd-office-provider-control.ts";
+import type { LxdOfficeStartRegistry } from "./lxd-office-start-control.ts";
+import type { LxdOfficeStopRegistry } from "./lxd-office-stop-control.ts";
+import type { LxdOfficeSuccessorRegistry } from "./lxd-office-successor-control.ts";
+
+export type LxdOfficeProviderMethod =
+	| Parameters<LxdOfficeProviderRegistry["call"]>[0]
+	| Parameters<LxdOfficeStartRegistry["call"]>[0]
+	| Parameters<LxdOfficeLifecycleControlRegistry["call"]>[0]
+	| Parameters<LxdOfficeStopRegistry["call"]>[0]
+	| Parameters<LxdOfficeSuccessorRegistry["call"]>[0]
+	| Parameters<LxdOfficeBootSuccessorRegistry["call"]>[0]
+	| Parameters<LxdOfficeBootIntentRegistry["call"]>[0]
+	| Parameters<LxdOfficeActivationRegistry["call"]>[0];
+export interface LxdOfficeLifecycleRegistry {
+	call(method: LxdOfficeProviderMethod, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
+}
+const METHODS = new Set<LxdOfficeProviderMethod>([
+	"qorpera_reserve_runtime_node_machine",
+	"qorpera_runtime_office_provider_status",
+	"qorpera_reserve_runtime_office_start",
+	"qorpera_check_runtime_office_start",
+	"qorpera_check_runtime_office_adoption",
+	"qorpera_prepare_runtime_office_activation",
+	"qorpera_runtime_office_activation_status",
+	"qorpera_activate_runtime_office",
+	"qorpera_begin_runtime_office_lifecycle",
+	"qorpera_runtime_office_lifecycle_status",
+	"qorpera_prepare_runtime_office_stop",
+	"qorpera_ack_runtime_office_stop",
+	"qorpera_runtime_office_stop_status",
+	"qorpera_prepare_runtime_office_successor",
+	"qorpera_runtime_office_successor_status",
+	"qorpera_check_runtime_office_successor",
+	"qorpera_activate_runtime_office_successor",
+	"qorpera_prepare_runtime_office_boot_successor",
+	"qorpera_runtime_office_boot_successor_status",
+	"qorpera_check_runtime_office_boot_successor",
+	"qorpera_activate_runtime_office_boot_successor",
+	"qorpera_prepare_runtime_office_boot_intent",
+	"qorpera_runtime_office_boot_intent_status",
+	"qorpera_check_runtime_office_boot_intent",
+]);
+const LIMIT = 65536;
+
+/** Node 22's web Response/Headers load Undici's WASM parser even when fetch
+ * is unused. Keep the production transport entirely on native HTTPS so the
+ * service can retain --jitless and its memory execution protections. */
+function nativeRpc(url: string, key: string, body: string, signal: AbortSignal): Promise<unknown> {
+	return new Promise((resolve, reject) => {
+		signal.throwIfAborted();
+		const request = httpsRequest(
+			url,
+			{
+				method: "POST",
+				signal,
+				headers: {
+					apikey: key,
+					authorization: `Bearer ${key}`,
+					"content-type": "application/json",
+					accept: "application/json",
+					"content-length": Buffer.byteLength(body),
+				},
+			},
+			(response) => {
+				response.once("error", reject);
+				const fail = () => {
+					response.destroy();
+					request.destroy();
+					reject(new Error("unconfirmed"));
+				};
+				const length = response.headers["content-length"];
+				if (
+					response.statusCode !== 200 ||
+					!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(response.headers["content-type"] ?? "") ||
+					(length !== undefined && (!/^(0|[1-9][0-9]*)$/.test(length) || Number(length) > LIMIT))
+				) {
+					fail();
+					return;
+				}
+				const chunks: Buffer[] = [];
+				let size = 0;
+				response.on("data", (chunk: Buffer) => {
+					size += chunk.length;
+					if (size > LIMIT) {
+						fail();
+						return;
+					}
+					chunks.push(chunk);
+				});
+				response.once("end", () => {
+					try {
+						signal.throwIfAborted();
+						if (!response.complete || (length !== undefined && Number(length) !== size)) throw new Error();
+						resolve(JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(Buffer.concat(chunks))));
+					} catch {
+						fail();
+					}
+				});
+			},
+		);
+		request.once("error", reject);
+		request.end(body);
+	});
+}
+
+/** Infrastructure credential boundary, separate from the guest registry.
+ * Closed lifecycle/admission RPCs; no enrollment, cancellation, deletion, arbitrary REST,
+ * redirects or automatic replay after an uncertain response. SQL remains the
+ * authority for every bound request. Errors never expose credentials/bodies. */
+export class LxdOfficeProviderHttpRegistry implements LxdOfficeLifecycleRegistry {
+	readonly #origin: string;
+	readonly #key: string;
+	readonly #fetch: typeof fetch | undefined;
+	#pending = false;
+	constructor(registryUrl: string, serviceKey: string, fetchImplementation?: typeof fetch) {
+		try {
+			const url = new URL(registryUrl);
+			if (
+				url.protocol !== "https:" ||
+				url.username ||
+				url.password ||
+				url.search ||
+				url.hash ||
+				url.pathname !== "/" ||
+				registryUrl !== url.origin ||
+				typeof serviceKey !== "string" ||
+				!/^[A-Za-z0-9_.-]{32,4096}$/.test(serviceKey)
+			)
+				throw new Error();
+			this.#origin = url.origin;
+			this.#key = serviceKey;
+			this.#fetch = fetchImplementation;
+		} catch {
+			throw new Error("INVALID_OFFICE_PROVIDER_REGISTRY");
+		}
+	}
+	async call(method: LxdOfficeProviderMethod, args: Record<string, unknown>, caller: AbortSignal): Promise<unknown> {
+		caller.throwIfAborted();
+		if (!METHODS.has(method)) throw new Error("OFFICE_PROVIDER_RPC_FORBIDDEN");
+		if (this.#pending) throw new Error("OFFICE_PROVIDER_RPC_PENDING");
+		let body: string;
+		try {
+			if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error();
+			body = JSON.stringify(args);
+			if (Buffer.byteLength(body) > LIMIT) throw new Error();
+		} catch {
+			throw new Error("INVALID_OFFICE_PROVIDER_RPC");
+		}
+		const signal = AbortSignal.any([caller, AbortSignal.timeout(5000)]);
+		this.#pending = true;
+		let abort = () => {};
+		const stopped = new Promise<never>((_, reject) => {
+			abort = () => reject(new Error("OFFICE_PROVIDER_RPC_UNCONFIRMED"));
+			signal.addEventListener("abort", abort, { once: true });
+		});
+		const operation = (async () => {
+			signal.throwIfAborted();
+			if (!this.#fetch) return nativeRpc(`${this.#origin}/rest/v1/rpc/${method}`, this.#key, body, signal);
+			const response = await this.#fetch(`${this.#origin}/rest/v1/rpc/${method}`, {
+				method: "POST",
+				redirect: "error",
+				signal,
+				headers: {
+					apikey: this.#key,
+					authorization: `Bearer ${this.#key}`,
+					"content-type": "application/json",
+					accept: "application/json",
+				},
+				body,
+			});
+			const reader = response.body?.getReader();
+			try {
+				signal.throwIfAborted();
+				const length = response.headers.get("content-length");
+				if (
+					response.status !== 200 ||
+					response.redirected ||
+					!reader ||
+					!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(response.headers.get("content-type") ?? "") ||
+					(length !== null && (!/^(0|[1-9][0-9]*)$/.test(length) || Number(length) > LIMIT))
+				)
+					throw new Error();
+				const chunks: Uint8Array[] = [];
+				let size = 0;
+				for (;;) {
+					const { value, done } = await reader.read();
+					signal.throwIfAborted();
+					if (done) break;
+					size += value.byteLength;
+					if (size > LIMIT) throw new Error();
+					chunks.push(value);
+				}
+				if (length !== null && Number(length) !== size) throw new Error();
+				return JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(Buffer.concat(chunks)));
+			} finally {
+				await reader?.cancel().catch(() => {});
+				reader?.releaseLock();
+			}
+		})()
+			.catch(() => {
+				throw new Error("OFFICE_PROVIDER_RPC_UNCONFIRMED");
+			})
+			.finally(() => {
+				this.#pending = false;
+			});
+		try {
+			return await Promise.race([operation, stopped]);
+		} finally {
+			signal.removeEventListener("abort", abort);
+		}
+	}
+}
+
+import { request as httpsRequest } from "node:https";

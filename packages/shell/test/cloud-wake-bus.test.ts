@@ -1,14 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { describe, expect, it, vi } from "vitest";
-import { CloudAgentMouth } from "../src/cloud-agent-mouth.ts";
-import type { runCloudNativeRunToolSession } from "../src/cloud-native-run-tool-session.ts";
-import { type CloudNativeToolIdentity, CloudNativeToolRun } from "../src/cloud-native-tool-authority.ts";
+import { CloudAgentMouth } from "@qorpera/runtime/cloud-agent-mouth";
+import type { runCloudNativeRunToolSession } from "@qorpera/runtime/cloud-native-run-tool-session";
+import { type CloudNativeToolIdentity, CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import {
 	CloudNativeToolBoundary,
 	type CloudToolContext,
 	type CloudToolResult,
-} from "../src/cloud-native-tool-boundary.ts";
+} from "@qorpera/runtime/cloud-native-tool-boundary";
 import {
 	CLOUD_WAKE_SCHEMA,
 	CloudNativeWakeBus,
@@ -20,7 +19,8 @@ import {
 	parseCloudWakeEnvelope,
 	parseCloudWakePolicy,
 	REQUIRED_CLOUD_WAKE_POLICY,
-} from "../src/cloud-wake-bus.ts";
+} from "@qorpera/runtime/cloud-wake-bus";
+import { describe, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 const policies = JSON.parse(readFileSync(new URL("./fixtures/wake-policies.json", import.meta.url), "utf8")) as {
@@ -104,6 +104,74 @@ async function coworkerFixture() {
 	};
 	return { binding, run, message, receipt, call, bus, createBoundary };
 }
+
+function officeWakeFixture() {
+	const { authority, envelope } = fixture();
+	const identity = { ...authority.identity, audienceKind: "company" as const, audienceUserId: null, sessionId: null };
+	const parentRunId = randomUUID();
+	const intentId = randomUUID();
+	const wake: CloudWakeEnvelope = {
+		...envelope,
+		kind: "agent",
+		actorStaffId: null,
+		actorUserId: null,
+		parentRunId,
+		audience: { kind: "company", userId: null, sessionId: null },
+		source: {
+			kind: "office-activation",
+			id: randomUUID(),
+			occurrenceKey: `office-activation:${intentId}:${parentRunId}`,
+		},
+		policy: {
+			schema: "qorpera.wake-policy/v1",
+			kind: "agent",
+			initial: "forbidden",
+			final: "forbidden",
+			silenceAllowed: true,
+			maxPublicSends: 0,
+		},
+		payload: {
+			schema: "qorpera.office-start-continuation/v1",
+			intentId,
+			activationId: randomUUID(),
+			companyComputerId: randomUUID(),
+			computerGeneration: 1,
+			receiptId: randomUUID(),
+		},
+	};
+	return { identity, wake };
+}
+
+describe("office activation continuation envelope", () => {
+	it("retains the same-agent causal chain without a human or coworker sender", () => {
+		const { identity, wake } = officeWakeFixture();
+		const parsed = parseCloudWakeEnvelope(wake, identity);
+		expect(parsed).toEqual(wake);
+		expect(Object.isFrozen(parsed.payload)).toBe(true);
+		expect(parsed.policy.maxPublicSends).toBe(0);
+	});
+	it.each([
+		(wake: CloudWakeEnvelope) => ({ ...wake, actorUserId: randomUUID() }),
+		(wake: CloudWakeEnvelope) => ({ ...wake, actorStaffId: wake.staffAgentId }),
+		(wake: CloudWakeEnvelope) => ({ ...wake, parentRunId: null }),
+		(wake: CloudWakeEnvelope) => ({ ...wake, parentRunId: wake.runId }),
+		(wake: CloudWakeEnvelope) => ({ ...wake, source: { ...wake.source, occurrenceKey: "activation" } }),
+		(wake: CloudWakeEnvelope) => ({ ...wake, source: { ...wake.source, kind: "coworker" } }),
+		(wake: CloudWakeEnvelope) => ({ ...wake, kind: "human", policy: policies[0].policy }),
+		(wake: CloudWakeEnvelope) => ({ ...wake, payload: { ...wake.payload, schema: "unknown" } }),
+		(wake: CloudWakeEnvelope) => ({ ...wake, payload: { ...wake.payload, computerGeneration: 0 } }),
+		(wake: CloudWakeEnvelope) => ({
+			...wake,
+			payload: { ...wake.payload, computerGeneration: Number.MAX_SAFE_INTEGER + 1 },
+		}),
+		(wake: CloudWakeEnvelope) => ({ ...wake, payload: { ...wake.payload, activationId: "missing" } }),
+		(wake: CloudWakeEnvelope) => ({ ...wake, payload: { ...wake.payload, receiptId: null } }),
+		(wake: CloudWakeEnvelope) => ({ ...wake, payload: { ...wake.payload, text: "Invented new work" } }),
+	])("rejects changed source, parent, actor and activation identity %#", (change) => {
+		const { identity, wake } = officeWakeFixture();
+		expect(() => parseCloudWakeEnvelope(change(wake), identity)).toThrow();
+	});
+});
 
 describe("immutable cloud wake policies", () => {
 	it.each(policies)("accepts the closed $scenario fixture", ({ policy }) => {

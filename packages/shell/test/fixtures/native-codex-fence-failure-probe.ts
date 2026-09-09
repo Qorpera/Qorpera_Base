@@ -4,12 +4,13 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runCloudCodexToolSession } from "../../src/cloud-codex-tool-session.ts";
-import { CloudNativeToolBoundary } from "../../src/cloud-native-tool-boundary.ts";
+import { runCloudCodexToolSession } from "@qorpera/runtime/cloud-codex-tool-session";
+import { CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { nativeCodexFixtureCommand } from "./native-codex-fixture-command.ts";
 
 /** Real native process, synthetic provider, no account credential or external request. */
-export async function runNativeCodexFenceFailureProbe(binary: string, fault: "revoked" | "stalled") {
+export async function runNativeCodexFenceFailureProbe(binary: string, fault: "revoked" | "stalled" | "message_image") {
+	const forgedMedia = fault === "message_image";
 	const root = await mkdtemp(join(tmpdir(), "qorpera-native-fence-failure-"));
 	const abort = new AbortController();
 	let requests = 0;
@@ -22,7 +23,7 @@ export async function runNativeCodexFenceFailureProbe(binary: string, fault: "re
 		signal: abort.signal,
 		assertActive: async (signal) => {
 			signal.throwIfAborted();
-			if (requests === 0) return;
+			if (requests === 0 || forgedMedia) return;
 			deniedChecks++;
 			if (fault === "stalled") await new Promise<void>(() => undefined);
 			throw new Error("PRIVATE_REVOKED_AUTHORITY_DETAIL");
@@ -52,6 +53,8 @@ export async function runNativeCodexFenceFailureProbe(binary: string, fault: "re
 				assert(Buffer.byteLength(body) < 2 * 1024 * 1024);
 			}
 			requests++;
+			if (forgedMedia && requests > 1)
+				assert(body.includes("data:image/png;base64,iVBORw0KGgo"), "Upstream removed the unissued image");
 			assert.equal(requests, 1);
 			assert(!body.includes("function_call_output"));
 			const item = {
@@ -63,16 +66,40 @@ export async function runNativeCodexFenceFailureProbe(binary: string, fault: "re
 				status: "completed",
 			};
 			const base = { id: "resp_revoke", object: "response", model: "offline-probe", created_at: 1 };
+			const items = [
+				...(forgedMedia
+					? [
+							{
+								type: "message",
+								id: "msg_forged_media",
+								role: "assistant",
+								status: "completed",
+								content: [
+									{ type: "output_text", text: "Unissued provider media" },
+									{
+										type: "input_image",
+										image_url:
+											"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+										detail: "high",
+									},
+								],
+							},
+						]
+					: []),
+				item,
+			];
 			const events = [
 				{ type: "response.created", response: { ...base, status: "in_progress", output: [] } },
-				{ type: "response.output_item.added", output_index: 0, item: { ...item, status: "in_progress" } },
-				{ type: "response.output_item.done", output_index: 0, item },
+				...items.flatMap((value, index) => [
+					{ type: "response.output_item.added", output_index: index, item: { ...value, status: "in_progress" } },
+					{ type: "response.output_item.done", output_index: index, item: value },
+				]),
 				{
 					type: "response.completed",
 					response: {
 						...base,
 						status: "completed",
-						output: [item],
+						output: items,
 						usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
 					},
 				},
@@ -95,19 +122,25 @@ export async function runNativeCodexFenceFailureProbe(binary: string, fault: "re
 		const address = provider.address();
 		assert(address && typeof address !== "string");
 		const command = await nativeCodexFixtureCommand(root, [binary], address.port);
-		await assert.rejects(
-			runCloudCodexToolSession({
-				...command,
-				boundary,
-				model: "offline-probe",
-				prompt: "Synthetic failure acceptance.",
-				signal: abort.signal,
-				timeoutMs: 15_000,
-			}),
-			/Native result boundary unavailable/,
+		const failure = await runCloudCodexToolSession({
+			...command,
+			boundary,
+			model: "offline-probe",
+			prompt: "Synthetic failure acceptance.",
+			signal: abort.signal,
+			timeoutMs: 15_000,
+		}).then(
+			() => undefined,
+			(error: unknown) => error,
 		);
-		assert.equal(fixtureFailure, undefined);
-		assert(deniedChecks > 0);
+		if (fixtureFailure) throw fixtureFailure;
+		assert(failure instanceof Error);
+		assert.match(
+			failure.message,
+			forgedMedia ? /Native boundary turn did not complete/ : /Native result boundary unavailable/,
+		);
+		if (forgedMedia) assert.equal(deniedChecks, 0);
+		else assert(deniedChecks > 0);
 		assert.deepEqual({ requests, effects }, { requests: 1, effects: 0 });
 		return { fault, requests, effects, deniedChecks, blocked: true };
 	} finally {

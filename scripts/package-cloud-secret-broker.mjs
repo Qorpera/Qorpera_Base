@@ -13,7 +13,7 @@ const output = resolve(args[1]);
 await mkdir(output, { mode: 0o700 });
 await build({
 	absWorkingDir: root,
-	entryPoints: { "qorpera-cloud-secret-broker-service": "packages/shell/src/cloud-secret-broker-service-main.ts" },
+	entryPoints: { "qorpera-cloud-secret-broker-service": "packages/runtime/src/cloud-secret-broker-service-main.ts" },
 	outdir: output,
 	outExtension: { ".js": ".mjs" },
 	bundle: true,

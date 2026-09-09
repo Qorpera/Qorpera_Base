@@ -289,9 +289,24 @@ begin
 			v_session, 'a1000000-0000-4000-8000-000000000070',
 			'message', '{"role":"assistant","content":"unbound"}'::jsonb, 0
 		);
-	exception when insufficient_privilege then v_ok := true;
+	exception when sqlstate '22023' then v_ok := true;
 	end;
-	if not v_ok then raise exception 'unbound trail event entered an active turn'; end if;
+	if not v_ok then raise exception 'malformed trail event entered an active turn'; end if;
+	-- Account-authored conversation content has optional execution provenance
+	-- (20260826020000). Roll back this valid unbound append so the subsequent
+	-- claimed-output checks retain their sequence and receipt expectations.
+	begin
+		v_receipt_result := public.qorpera_append_account_event(
+			v_session, 'a1000000-0000-4000-8000-000000000070',
+			'message', v_trail_body, 0
+		);
+		if v_receipt_result ->> 'execution_kind' is not null
+			or v_receipt_result ->> 'actor_user_id' is distinct from auth.uid()::text then
+			raise exception 'unbound account content gained execution authority or lost its actor';
+		end if;
+		raise sqlstate 'QT001' using message = 'rollback optional-provenance probe';
+	exception when sqlstate 'QT001' then null;
+	end;
 	perform public.qorpera_append_account_event(
 		v_session, 'a1000000-0000-4000-8000-000000000071',
 		'message', v_trail_body, 0,
@@ -671,7 +686,7 @@ begin
 			),
 			0
 		);
-	exception when insufficient_privilege then
+	exception when sqlstate '22023' then
 		v_forgery_rejected := true;
 	end;
 	if not v_forgery_rejected then

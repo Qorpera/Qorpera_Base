@@ -48,7 +48,9 @@ async function fixture() {
 	});
 	const replication = new ObjectGatewayReplication(new ObjectGatewayJournal(join(root, "journal")), store, objects);
 	const observations = new MemberCompanyObservations();
+	const pendingObjects = new Map<string, number>();
 	const state = {
+		uploadSource: undefined as unknown,
 		current: undefined as Record<string, unknown> | undefined,
 		protected: false,
 		revoked: false,
@@ -72,7 +74,19 @@ async function fixture() {
 		if (memberToken !== token || state.revoked) throw new ObjectDependencyError(403);
 		if (state.denyMethod === method) throw new ObjectDependencyError(state.denialStatus);
 		if ("p_environment_id" in args && args.p_environment_id !== environmentId) throw new ObjectDependencyError(403);
-		if (method === "qorpera_begin_member_company_path_command") {
+		if (
+			method === "qorpera_begin_member_company_path_command" ||
+			method === "qorpera_begin_member_company_file_upload"
+		) {
+			if (method === "qorpera_begin_member_company_file_upload") {
+				if (state.current && JSON.stringify(state.uploadSource) !== JSON.stringify(args.p_source))
+					throw new ObjectDependencyError(409);
+				state.uploadSource = structuredClone(args.p_source);
+				const raw = String(args.p_manifest_text),
+					manifest = JSON.parse(raw);
+				pendingObjects.set(createHash("sha256").update(raw).digest("hex"), Buffer.byteLength(raw));
+				for (const chunk of manifest.chunks) pendingObjects.set(chunk.sha256, chunk.bytes);
+			}
 			if (state.current) {
 				if (JSON.stringify(state.current.plan) !== JSON.stringify(args.p_plan))
 					throw new ObjectDependencyError(409);
@@ -106,6 +120,13 @@ async function fixture() {
 			if (!state.current || args.p_command_id !== commandId || args.p_plan_sha256 !== state.current.planSha256)
 				throw new ObjectDependencyError(403);
 			const file = record(record(record(state.current.plan).entry).file);
+			if (pendingObjects.has(String(args.p_sha256)))
+				return {
+					companyId,
+					sha256: args.p_sha256,
+					bytes: pendingObjects.get(String(args.p_sha256)),
+					backend: "nas-object-gateway",
+				};
 			if (args.p_sha256 !== file.fileSha256) throw new ObjectDependencyError(403);
 			return { companyId, sha256: file.fileSha256, bytes: file.bytes, backend: "nas-object-gateway" };
 		}
@@ -113,6 +134,13 @@ async function fixture() {
 			if (args.p_proposal_id !== proposalId || args.p_plan_sha256 !== "b".repeat(64))
 				throw new ObjectDependencyError(403);
 			const file = record(record(state.proposalPlan.entry).file);
+			if (pendingObjects.has(String(args.p_sha256)))
+				return {
+					companyId,
+					sha256: args.p_sha256,
+					bytes: pendingObjects.get(String(args.p_sha256)),
+					backend: "nas-object-gateway",
+				};
 			if (args.p_sha256 !== file.fileSha256) throw new ObjectDependencyError(403);
 			return { companyId, sha256: file.fileSha256, bytes: file.bytes, backend: "nas-object-gateway" };
 		}
@@ -209,6 +237,17 @@ async function fixture() {
 		await rm(root, { recursive: true, force: true });
 	});
 	return {
+		async upload(bytes: Uint8Array, metadata: unknown) {
+			return fetch(`${origin}/uploads`, {
+				method: "PUT",
+				headers: {
+					authorization: `Bearer ${token}`,
+					"content-type": "application/octet-stream",
+					"x-qorpera-company-upload": Buffer.from(JSON.stringify(metadata)).toString("base64url"),
+				},
+				body: Uint8Array.from(bytes),
+			});
+		},
 		state,
 		observations,
 		store,
@@ -235,6 +274,175 @@ const edit = {
 	expectedVersion: version,
 	text: "Company work, not chat state.",
 };
+
+function uploadMetadata(bytes: Uint8Array) {
+	const sha = (part: Uint8Array) => createHash("sha256").update(part).digest("hex");
+	const chunks = [];
+	for (let offset = 0; offset < bytes.length; offset += 4 * 1024 * 1024) {
+		const part = bytes.subarray(offset, offset + 4 * 1024 * 1024);
+		chunks.push({ sha256: sha(part), bytes: part.length });
+	}
+	return {
+		schema: "qorpera.member-file-upload/v1",
+		operationKey: "selected-upload-1",
+		path: "upload.bin",
+		expectedVersion: null,
+		source: {
+			realm: "member_file",
+			name: "selected.bin",
+			sha256: sha(bytes),
+			bytes: bytes.length,
+			mediaType: "application/octet-stream",
+		},
+		manifest: {
+			schema: "qorpera.cloud-file-manifest/v1",
+			fileSha256: sha(bytes),
+			bytes: bytes.length,
+			mediaType: "application/octet-stream",
+			chunks,
+		},
+	};
+}
+
+describe("selected member binary uploads", () => {
+	it.each([0, 6, 4194307, 8388608])("assembles a pending %i-byte upload for exact human review", async (size) => {
+		const f = await fixture(),
+			bytes = Buffer.alloc(size, 128);
+		f.state.protected = true;
+		expect((await f.upload(bytes, uploadMetadata(bytes))).status).toBe(200);
+		const response = await f.request(`edits/${commandId}/file`);
+		expect(response.status).toBe(200);
+		expect(response.headers.get("x-qorpera-plan-sha256")).toBe("a".repeat(64));
+		expect(Buffer.from(await response.arrayBuffer()).equals(bytes)).toBe(true);
+		expect(f.state.effects).toBe(0);
+		f.state.proposalPlan = structuredClone(record(f.state.current!.plan));
+		const proposed = await f.request(`proposals/${proposalId}/file`);
+		expect(proposed.status).toBe(200);
+		expect(Buffer.from(await proposed.arrayBuffer()).equals(bytes)).toBe(true);
+	});
+	it.each(["revocation", "corruption", "plan-change", "expired"])(
+		"refuses pending binary content after %s",
+		async (mode) => {
+			const f = await fixture(),
+				bytes = Buffer.alloc(4194307, 128);
+			f.state.protected = true;
+			await (await f.upload(bytes, uploadMetadata(bytes))).text();
+			if (mode === "expired") f.state.current!.expiresAt = "2000-01-01T00:00:00Z";
+			const get = f.store.get.bind(f.store);
+			vi.spyOn(f.store, "get").mockImplementation(async (...args) => {
+				const value = await get(...args);
+				if (mode === "revocation") f.state.revoked = true;
+				if (mode === "plan-change") f.state.current!.planSha256 = "c".repeat(64);
+				if (mode === "corruption") return new Uint8Array(value.length);
+				return value;
+			});
+			const response = await f.request(`edits/${commandId}/file`);
+			expect(response.status).toBeGreaterThanOrEqual(400);
+			expect(f.state.effects).toBe(0);
+		},
+	);
+	it.each([0, 6, 4 * 1024 * 1024 + 3, 8 * 1024 * 1024])(
+		"stages and applies all %s selected bytes with exact manifest provenance",
+		async (size) => {
+			const service = await fixture(),
+				bytes = Buffer.alloc(size, 128);
+			if (size) bytes[size - 1] = 255;
+			const metadata = uploadMetadata(bytes),
+				response = await service.upload(bytes, metadata);
+			expect(response.status).toBe(200);
+			const result = record(await response.json());
+			expect(result.state).toBe("applied");
+			expect(service.state.uploadSource).toEqual(metadata.source);
+			expect(service.state.effects).toBe(1);
+			const chunks = await Promise.all(
+				metadata.manifest.chunks.map((chunk) => service.store.get(companyId, chunk.sha256, chunk.bytes)),
+			);
+			expect(Buffer.concat(chunks)).toEqual(bytes);
+			expect(service.member).toHaveBeenCalledWith(
+				"qorpera_begin_member_company_file_upload",
+				token,
+				expect.objectContaining({ p_source: metadata.source, p_manifest_text: JSON.stringify(metadata.manifest) }),
+				expect.any(AbortSignal),
+			);
+			const writes = vi.spyOn(service.replication, "uploadWithAuthority");
+			expect((await service.upload(bytes, metadata)).status).toBe(200);
+			expect(service.state.effects).toBe(1);
+			expect(writes).not.toHaveBeenCalled();
+		},
+	);
+	it("recovers a lost applied reply without a second canonical mutation", async () => {
+		const service = await fixture(),
+			bytes = Buffer.from([0, 255]);
+		service.state.loseApply = true;
+		expect((await service.upload(bytes, uploadMetadata(bytes))).status).toBe(503);
+		expect(service.state.effects).toBe(1);
+		expect((await service.upload(bytes, uploadMetadata(bytes))).status).toBe(200);
+		expect(service.state.effects).toBe(1);
+	});
+	it("stages a protected file and applies only after its explicit review", async () => {
+		const service = await fixture(),
+			bytes = Buffer.from([0, 255]);
+		service.state.protected = true;
+		const response = await service.upload(bytes, uploadMetadata(bytes));
+		expect(response.status).toBe(200);
+		expect(record(await response.json()).state).toBe("review_required");
+		expect(service.state.effects).toBe(0);
+		expect(
+			(await service.request(`edits/${commandId}/review`, { planSha256: "a".repeat(64), decision: "approve" }))
+				.status,
+		).toBe(200);
+		expect(service.state.effects).toBe(1);
+	});
+	it.each([
+		"qorpera_begin_member_company_file_upload",
+		"qorpera_stage_member_company_path_object",
+		"qorpera_verify_company_path_file",
+		"qorpera_prepare_member_company_path_command",
+	])("retains denial at %s without application", async (method) => {
+		const service = await fixture(),
+			bytes = Buffer.from([0, 255]);
+		service.state.denyMethod = method;
+		expect((await service.upload(bytes, uploadMetadata(bytes))).status).toBe(403);
+		expect(service.state.effects).toBe(0);
+		if (method === "qorpera_begin_member_company_file_upload") expect(service.publisher).not.toHaveBeenCalled();
+	});
+	it("rejects bytes or chunk identities inconsistent with the admitted source before any staging", async () => {
+		const service = await fixture(),
+			bytes = Buffer.from([0, 255]);
+		const metadata = uploadMetadata(bytes);
+		expect((await service.upload(Buffer.from([1, 255]), metadata)).status).toBe(400);
+		expect(service.publisher).not.toHaveBeenCalled();
+		metadata.manifest.chunks[0].sha256 = "a".repeat(64);
+		const separate = await fixture();
+		expect((await separate.upload(bytes, metadata)).status).toBe(400);
+		expect(separate.publisher).not.toHaveBeenCalled();
+	});
+	it.each(["realm", "name", "length", "extra", "chunks"])(
+		"rejects invalid %s metadata before admission",
+		async (kind) => {
+			const service = await fixture(),
+				bytes = Buffer.from([0, 255]),
+				metadata = uploadMetadata(bytes);
+			if (kind === "realm") metadata.source.realm = "company_computer";
+			if (kind === "name") metadata.source.name = "../local.bin";
+			if (kind === "length") metadata.source.bytes = 8 * 1024 * 1024 + 1;
+			if (kind === "extra") Object.assign(metadata.source, { localPath: "/private/local.bin" });
+			if (kind === "chunks") metadata.manifest.chunks[0].bytes = 4 * 1024 * 1024 + 1;
+			expect((await service.upload(bytes, metadata)).status).toBe(400);
+			expect(service.member).not.toHaveBeenCalled();
+			expect(service.publisher).not.toHaveBeenCalled();
+		},
+	);
+	it("refuses a different selected name when retrying the same bytes", async () => {
+		const service = await fixture(),
+			bytes = Buffer.from([0, 255]),
+			metadata = uploadMetadata(bytes);
+		expect((await service.upload(bytes, metadata)).status).toBe(200);
+		metadata.source.name = "different.bin";
+		expect((await service.upload(bytes, metadata)).status).toBe(409);
+		expect(service.state.effects).toBe(1);
+	});
+});
 
 describe("cloud-owned human Company File edits", () => {
 	it("resumes an exact ordinary intent after interrupted publication without inventing approval", async () => {

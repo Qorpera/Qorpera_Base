@@ -1,0 +1,14 @@
+{
+	"PasswordManagerEnabled": false,
+	"AutofillAddressEnabled": false,
+	"AutofillCreditCardEnabled": false,
+	"BrowserSignin": 0,
+	"SyncDisabled": true,
+	"DeveloperToolsAvailability": 1,
+	"RemoteDebuggingAllowed": true,
+	"ExtensionInstallBlocklist": ["*"],
+	"DownloadRestrictions": 3,
+	"AllowFileSelectionDialogs": false,
+	"URLBlocklist": ["file://*", "chrome://*", "chrome-untrusted://*", "devtools://*", "javascript://*", "view-source:*"],
+	"URLAllowlist": ["chrome://newtab/"]
+}

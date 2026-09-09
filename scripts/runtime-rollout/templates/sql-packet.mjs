@@ -37,7 +37,7 @@ const policy = state => `exists(select 1 from public.qorpera_provider_execution_
   and policy_version=${state.paused ? F.policyVersionPaused : F.policyVersionBefore}
   and enablement_status=${q(state.paused ? 'disabled' : F.initialEnablement)}
   and ${state.paused ? `disabled_reason=${q(F.pauseReason)}` : `disabled_reason is not distinct from ${F.initialReason === null ? 'null' : q(F.initialReason)}`})`;
-const bundleMatched = state => `${activeBundle}=${q(state.activated ? F.bundle : F.previousBundle)}`;
+const bundleMatched = state => `${activeBundle}=${q(state.activeBundle)}`;
 function migrationRowsMatched(state, existingOnly = false) {
   const rows = INPUT.migrations.filter(row => state.versions.includes(row.version));
   return rows.length ? `not exists(select 1 from (values ${rows.map(row => `(${q(row.version)},${q(row.file.slice(15, -4))},${q(row.sha256)})`).join(',')}) expected(version,name,sha256)

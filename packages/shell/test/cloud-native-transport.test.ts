@@ -1,15 +1,15 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { request as httpRequest } from "node:http";
-import { afterEach, expect, it, vi } from "vitest";
-import { HttpNativeProviderComputerBridge } from "../src/cloud-native-provider.ts";
-import { NativeProviderHost } from "../src/cloud-native-provider-host.ts";
+import { readBoundedCloudResponse } from "@qorpera/cloud-client/cloud-request";
+import { HttpNativeProviderComputerBridge } from "@qorpera/runtime/cloud-native-provider";
+import { NativeProviderHost } from "@qorpera/runtime/cloud-native-provider-host";
 import {
 	HttpNativeProviderHostService,
 	SupabaseNativeCredentialCapsuleStore,
 	SupabaseNativeProviderControlPlane,
-} from "../src/cloud-native-provider-service.ts";
-import { readBoundedCloudResponse } from "../src/cloud-request.ts";
-import type { CloudRunnerNativeAuthority } from "../src/cloud-runner-broker.ts";
+} from "@qorpera/runtime/cloud-native-provider-service";
+import type { CloudRunnerNativeAuthority } from "@qorpera/runtime/cloud-runner-broker";
+import { afterEach, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 afterEach(() => {

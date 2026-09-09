@@ -89,6 +89,57 @@ function createVolumeRequest(): LxdCreateStorageVolumeRequest {
 }
 
 describe("LXD Unix client", () => {
+	it.each(["create", "start"])("observes accepted %s after its dispatch grant expires", async (action) => {
+		const dispatch = new AbortController(),
+			caller = new AbortController();
+		const requests: string[] = [];
+		const socket = await unixServer((method) => {
+			requests.push(method);
+			if (method !== "GET") return { body: { type: "async", operation: "/1.0/operations/accepted", metadata: {} } };
+			dispatch.abort(new Error("admission expired while observing"));
+			return { body: { type: "sync", metadata: { status_code: 200, err: "" } } };
+		});
+		const client = new LxdUnixClient(socket);
+		if (action === "create")
+			await client.createInstance("qorpera-runners", createRequest(), caller.signal, dispatch.signal);
+		else await client.setInstancePower("qorpera-runners", "guest", "start", caller.signal, dispatch.signal);
+		expect(requests).toEqual([action === "create" ? "POST" : "PUT", "GET"]);
+		expect(dispatch.signal.aborted).toBe(true);
+		expect(caller.signal.aborted).toBe(false);
+	});
+	it.each(["create", "start"])("refuses %s before sending an expired admission", async (action) => {
+		let requests = 0;
+		const socket = await unixServer(() => {
+			requests++;
+			return { body: { type: "sync", metadata: {} } };
+		});
+		const client = new LxdUnixClient(socket),
+			expired = AbortSignal.abort(new Error("expired grant"));
+		await expect(
+			action === "create"
+				? client.createInstance("qorpera-runners", createRequest(), undefined, expired)
+				: client.setInstancePower("qorpera-runners", "guest", "start", undefined, expired),
+		).rejects.toThrow("expired grant");
+		expect(requests).toBe(0);
+	});
+	it.each(["submission", "observation"])("retains cancellation during %s without another mutation", async (phase) => {
+		const dispatch = new AbortController(),
+			caller = new AbortController();
+		const requests: string[] = [];
+		const socket = await unixServer((method) => {
+			requests.push(method);
+			if (method !== "GET") {
+				if (phase === "submission") dispatch.abort();
+				return { body: { type: "async", operation: "/1.0/operations/accepted", metadata: {} } };
+			}
+			caller.abort();
+			return { body: { type: "sync", metadata: { status_code: 200, err: "" } } };
+		});
+		await expect(
+			new LxdUnixClient(socket).createInstance("qorpera-runners", createRequest(), caller.signal, dispatch.signal),
+		).rejects.toThrow();
+		expect(requests).toEqual(phase === "submission" ? ["POST"] : ["POST", "GET"]);
+	});
 	it("preserves stopped VM status when LXD returns a null network map", async () => {
 		let requests = 0;
 		const socket = await unixServer(() => {

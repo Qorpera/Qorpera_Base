@@ -1,7 +1,7 @@
+import type { CloudNativeToolIdentity } from "@qorpera/runtime/cloud-native-tool-authority";
+import { assertCloudRuntimeBundle } from "@qorpera/runtime/cloud-runtime-bundle";
+import { CLOUD_RUNTIME_NATIVE_BINARY_SHA256 } from "@qorpera/runtime/cloud-runtime-bundle.generated";
 import { describe, expect, it } from "vitest";
-import type { CloudNativeToolIdentity } from "../src/cloud-native-tool-authority.ts";
-import { CLOUD_RUNTIME_NATIVE_BINARY_SHA256 } from "../src/cloud-runtime-bundle.generated.ts";
-import { assertCloudRuntimeBundle } from "../src/cloud-runtime-bundle.ts";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 describe("compiled runtime bundle admission", () => {

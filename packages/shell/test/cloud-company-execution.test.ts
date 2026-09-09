@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CloudContentAddressedStore, type CloudObjectTransport } from "@qorpera/cloud-client/node/cloud-object-store";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	acceptReviewedCloudCompanyExecution,
@@ -20,7 +21,6 @@ import {
 	rejectReviewedCloudCompanyExecution,
 	resolvePublishedCloudCompanyExecution,
 } from "../src/cloud-company-execution.ts";
-import { CloudContentAddressedStore, type CloudObjectTransport } from "../src/cloud-object-store.ts";
 
 const PROFILE_ID = "10000000-0000-4000-8000-000000000001";
 const EXECUTION_ID = "20000000-0000-4000-8000-000000000002";

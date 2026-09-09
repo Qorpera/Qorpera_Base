@@ -1,19 +1,19 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import type { JsonValue } from "@qorpera/contracts";
-import { afterEach, expect, it, vi } from "vitest";
 import {
 	CloudSecretBroker,
 	type CloudSecretBrokerAuthority,
 	type CloudSecretCaptureDescription,
 	type CloudSecretConnectorAdapter,
 	type CloudSecretOperationRequest,
-} from "../src/cloud-secret-broker.ts";
+} from "@qorpera/runtime/cloud-secret-broker";
 import {
 	captureCloudSecret,
 	HttpCloudSecretBrokerClient,
 	HttpCloudSecretBrokerService,
-} from "../src/cloud-secret-broker-http.ts";
-import { CloudSecretKeyring } from "../src/cloud-secret-crypto.ts";
+} from "@qorpera/runtime/cloud-secret-broker-http";
+import { CloudSecretKeyring } from "@qorpera/runtime/cloud-secret-crypto";
+import { afterEach, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 const services: HttpCloudSecretBrokerService[] = [];

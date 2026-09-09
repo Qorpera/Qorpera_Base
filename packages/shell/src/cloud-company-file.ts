@@ -1,17 +1,17 @@
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import type { CompanyRuntimeLock } from "@qorpera/company/company-runtime-lock";
-import { reconcileCloudCompanyCache, recoverInterruptedCloudCompanyMerges } from "./cloud-company-merge.ts";
+import type { HostedCompanyFile, HostedCompanySnapshot } from "@qorpera/cloud-client/hosted-primary";
 import {
 	type CloudCompanyTreeReference,
 	captureCloudCompanyTree,
 	currentCloudCompanyTreeReference,
-} from "./cloud-company-snapshot.ts";
+} from "@qorpera/cloud-client/node/cloud-company-snapshot";
+import type { CloudContentAddressedStore } from "@qorpera/cloud-client/node/cloud-object-store";
+import type { CompanyRuntimeLock } from "@qorpera/company/company-runtime-lock";
+import { reconcileCloudCompanyCache, recoverInterruptedCloudCompanyMerges } from "./cloud-company-merge.ts";
 import { readLegacyCloudCompanyWorkspaceBinding } from "./cloud-company-workspace.ts";
 import { type ObjectReachabilityPrimary, publishCompanySnapshotRestoreProof } from "./cloud-object-reachability.ts";
-import type { CloudContentAddressedStore } from "./cloud-object-store.ts";
-import type { HostedCompanyFile, HostedCompanySnapshot } from "./hosted-primary.ts";
 
 const COMPANY_FILE_CACHE_SCHEMA = "qorpera.cloud-company-file-cache/v1";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;

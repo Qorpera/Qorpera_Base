@@ -21,7 +21,7 @@ function readback(step, state = stateAt(step)) {
       enablement: state.paused ? 'disabled' : FIXED.initialEnablement, maxConcurrency: FIXED.concurrency,
       version: state.paused ? FIXED.policyVersionPaused : FIXED.policyVersionBefore,
       pauseReasonMatched: state.paused, initialReasonMatched: !state.paused },
-    headAndOwnerMatched: true, identityMatched: true, legacyState: 'retired', activeBundle: state.activated ? FIXED.bundle : FIXED.previousBundle,
+    headAndOwnerMatched: true, identityMatched: true, legacyState: 'retired', activeBundle: state.activeBundle,
     globalWork: { jobs: 0, runs: 0, assignments: 0, requests: 0, leases: 0, receipts: 0, logins: 0, runners: 0 },
     historicalLedgerVersionsRetained: true, migrationRowsMatched: true, lifecycleDefinitionMatched: true,
     finalInterfacesMatched: step === 'final-readback', admissionReopened: false, productionReady: false };

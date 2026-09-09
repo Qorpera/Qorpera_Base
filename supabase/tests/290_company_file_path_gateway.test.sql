@@ -213,7 +213,30 @@ begin
 end
 $$;
 
--- No default employee access, even for an owner-sponsored native turn.
+-- Shared reads have an explicit, revocable default grant (20260828020700).
+-- Verify both the default and the owner's ability to remove it; sponsorship
+-- alone must not replace the revoked resource grant.
+select set_config('qorpera_test.default_read_grant', (
+	select jsonb_build_object('id',g.id,'resourceId',r.id,'version',r.version)::text
+	from public.qorpera_company_path_grants g join public.qorpera_company_path_resources r on r.id = g.resource_id
+	where r.environment_id = '29000000-0000-4000-8000-000000000020' and r.path = ''
+		and g.principal_id = '29000000-0000-4000-8000-000000000030'
+		and g.origin = 'default_agent_read' and g.permissions = array['read']::text[] and g.revoked_at is null
+), true);
+set local role service_role;
+select public.qorpera_read_company_path('29000000-0000-4000-8000-000000000020','note.md',current_setting('qorpera_test.path_binding')::jsonb);
+reset role;
+select pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000001');
+set local role authenticated;
+do $$
+declare v_grant jsonb := current_setting('qorpera_test.default_read_grant')::jsonb;
+begin
+	if v_grant is null then raise exception 'New staff has no ordinary default read grant'; end if;
+	perform public.qorpera_revoke_company_path((v_grant ->> 'resourceId')::uuid,
+		(v_grant ->> 'version')::uuid,(v_grant ->> 'id')::uuid);
+end $$;
+reset role;
+select pg_temp.path_claims('service_role');
 set local role service_role;
 do $$
 begin
@@ -282,6 +305,14 @@ end
 $$;
 select set_config('qorpera_test.path_note',pg_temp.path_plan('create-note','note.md',pg_temp.path_stage_file('note.md','Initial company note'))::text,true);
 set local role service_role;
+do $$
+declare b jsonb := current_setting('qorpera_test.path_binding')::jsonb;
+begin
+	perform public.qorpera_send_native_agent_message((b ->> 'leaseId')::uuid,(b ->> 'runId')::uuid,
+		(b ->> 'jobId')::uuid,(b ->> 'runnerId')::uuid,(b ->> 'assignmentId')::uuid,
+		(b ->> 'credentialCapsuleId')::uuid,(b ->> 'computeIdentityId')::uuid,
+		'openai','codex-cli','path-ack','I am checking the requested changes.','progress');
+end $$;
 select set_config('qorpera_test.path_result',pg_temp.path_commit(current_setting('qorpera_test.path_note')::jsonb)::text,true);
 reset role;
 
@@ -901,7 +932,7 @@ begin
 		(v_binding ->> 'jobId')::uuid,(v_binding ->> 'runnerId')::uuid,(v_binding ->> 'assignmentId')::uuid,
 		(v_binding ->> 'credentialCapsuleId')::uuid,(v_binding ->> 'computeIdentityId')::uuid,
 		'openai','codex-cli','path-completion-final','The authorized changes are recorded.','final');
-	v_result := jsonb_set(v_result,'{backend_result,message_count}','1');
+	v_result := jsonb_set(v_result,'{backend_result,message_count}','2');
 	v_result := jsonb_set(v_result,'{backend_result,final_message_id}',v_send -> 'messageId');
 	reset role;
 	foreach v_probe in array array['context-revoked','native-released'] loop
@@ -935,7 +966,7 @@ begin
 		or jsonb_array_length(v_completed #> '{result,company_file,proposal_receipt_ids}') < 1
 		or (select head_snapshot_id from public.qorpera_company_files where environment_id = '29000000-0000-4000-8000-000000000020') <> v_head
 		or (select count(*) from public.qorpera_execution_run_results where run_id = (v_binding ->> 'runId')::uuid) <> 1
-		or (select count(*) from public.qorpera_agent_sends where run_id = (v_binding ->> 'runId')::uuid) <> 1
+		or (select count(*) from public.qorpera_agent_sends where run_id = (v_binding ->> 'runId')::uuid) <> 2
 		or exists(select 1 from public.qorpera_native_provider_connection_leases where id = (v_binding ->> 'leaseId')::uuid and status = 'active')
 		or not exists(select 1 from public.qorpera_execution_provider_sessions where run_id = (v_binding ->> 'runId')::uuid
 			and provider_session_id = 'governed-native-fixture') then
@@ -987,6 +1018,10 @@ begin
 		or v_context #>> '{currentInputs,0,content,text}' <> 'Read the updated company.' then
 		raise exception 'Second human turn did not compose its own admitted input'; end if;
 	perform pg_temp.path_begin(v_binding);
+	perform public.qorpera_send_native_agent_message((v_binding ->> 'leaseId')::uuid,v_next_run,
+		(v_binding ->> 'jobId')::uuid,(v_binding ->> 'runnerId')::uuid,(v_binding ->> 'assignmentId')::uuid,
+		(v_binding ->> 'credentialCapsuleId')::uuid,(v_binding ->> 'computeIdentityId')::uuid,
+		'openai','codex-cli','next-human-ack','I am checking the live company.','progress');
 	v_send := public.qorpera_send_native_agent_message((v_binding ->> 'leaseId')::uuid,v_next_run,
 		(v_binding ->> 'jobId')::uuid,(v_binding ->> 'runnerId')::uuid,(v_binding ->> 'assignmentId')::uuid,
 		(v_binding ->> 'credentialCapsuleId')::uuid,(v_binding ->> 'computeIdentityId')::uuid,

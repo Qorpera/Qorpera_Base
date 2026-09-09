@@ -2,8 +2,8 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { NativeProviderHost, type NativeProviderLoginRequest } from "@qorpera/runtime/cloud-native-provider-host";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { NativeProviderHost, type NativeProviderLoginRequest } from "../src/cloud-native-provider-host.ts";
 
 const roots: string[] = [];
 afterEach(async () => {

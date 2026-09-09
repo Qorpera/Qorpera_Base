@@ -339,7 +339,31 @@ begin
 end
 $$;
 
--- No default employee access, even for an owner-sponsored native turn.
+-- Shared reads have an explicit, revocable default grant (20260828020700).
+-- Verify both the default and the owner's ability to remove it; sponsorship
+-- alone must not replace the revoked resource grant.
+select set_config('qorpera_test.default_read_grant', (
+	select jsonb_build_object('id',g.id,'resourceId',r.id,'version',r.version)::text
+	from public.qorpera_company_path_grants g join public.qorpera_company_path_resources r on r.id = g.resource_id
+	where r.environment_id = '29000000-0000-4000-8000-000000000020' and r.path = ''
+		and g.principal_id = '29000000-0000-4000-8000-000000000030'
+		and g.origin = 'default_agent_read' and g.permissions = array['read']::text[] and g.revoked_at is null
+), true);
+select pg_temp.path_claims('service_role');
+set local role service_role;
+select public.qorpera_read_company_path('29000000-0000-4000-8000-000000000020','note.md',current_setting('qorpera_test.path_binding')::jsonb);
+reset role;
+select pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000001');
+set local role authenticated;
+do $$
+declare v_grant jsonb := current_setting('qorpera_test.default_read_grant')::jsonb;
+begin
+	if v_grant is null then raise exception 'New staff has no ordinary default read grant'; end if;
+	perform public.qorpera_revoke_company_path((v_grant ->> 'resourceId')::uuid,
+		(v_grant ->> 'version')::uuid,(v_grant ->> 'id')::uuid);
+end $$;
+reset role;
+select pg_temp.path_claims('service_role');
 set local role service_role;
 do $$
 begin
@@ -408,6 +432,15 @@ end
 $$;
 select set_config('qorpera_test.path_note',pg_temp.path_plan('create-note','note.md',pg_temp.path_stage_file('note.md','Initial company note'))::text,true);
 set local role service_role;
+do $$
+declare b jsonb := current_setting('qorpera_test.path_binding')::jsonb;
+begin
+	perform public.qorpera_send_native_agent_message((b ->> 'leaseId')::uuid,(b ->> 'runId')::uuid,
+		(b ->> 'jobId')::uuid,(b ->> 'runnerId')::uuid,(b ->> 'assignmentId')::uuid,
+		(b ->> 'credentialCapsuleId')::uuid,(b ->> 'computeIdentityId')::uuid,
+		'openai','codex-cli','observation-progress','PRIVATE_TRANSCRIPT_FIXTURE_NOT_IN_DIAGNOSTICS','progress');
+end
+$$;
 select set_config('qorpera_test.path_result',pg_temp.path_commit(current_setting('qorpera_test.path_note')::jsonb)::text,true);
 reset role;
 
@@ -487,15 +520,7 @@ select set_config('qorpera_test.obs_read',public.qorpera_read_company_path_v2(
 	'29000000-0000-4000-8000-000000000020','note.md',0,8,current_setting('qorpera_test.path_binding')::jsonb)::text,true);
 select public.qorpera_confirm_company_path_read('29000000-0000-4000-8000-000000000020',
 	current_setting('qorpera_test.path_binding')::jsonb,(current_setting('qorpera_test.obs_read')::jsonb ->> 'readObservationId')::uuid,8,repeat('d',64));
-do $$
-declare b jsonb := current_setting('qorpera_test.path_binding')::jsonb;
-begin
-	perform public.qorpera_send_native_agent_message((b ->> 'leaseId')::uuid,(b ->> 'runId')::uuid,
-		(b ->> 'jobId')::uuid,(b ->> 'runnerId')::uuid,(b ->> 'assignmentId')::uuid,
-		(b ->> 'credentialCapsuleId')::uuid,(b ->> 'computeIdentityId')::uuid,
-		'openai','codex-cli','observation-progress','PRIVATE_TRANSCRIPT_FIXTURE_NOT_IN_DIAGNOSTICS','progress');
-end
-$$;
+
 reset role;
 select set_config('qorpera_test.obs_canonical_before',jsonb_build_object(
 	'events',(select count(*) from public.qorpera_execution_run_events),

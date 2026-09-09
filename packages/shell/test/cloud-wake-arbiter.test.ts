@@ -1,6 +1,6 @@
+import { type HostedPrimaryTransport, QorperaHostedPrimary } from "@qorpera/cloud-client/hosted-primary";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CloudWakeArbiter } from "../src/cloud-wake-arbiter.ts";
-import { type HostedPrimaryTransport, QorperaHostedPrimary } from "../src/hosted-primary.ts";
 
 const ENVIRONMENT = "5cd97efb-4318-4e21-9bd7-1a10c949fd65";
 const STAFF = "22222222-2222-4222-8222-222222222222";

@@ -1,6 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import type {
+	HostedSession,
+	HostedSessionEvent,
+	HostedSessionEventType,
+	QorperaHostedPrimary,
+} from "@qorpera/cloud-client/hosted-primary";
 import type { ExecutionIdentity, JsonValue } from "@qorpera/contracts";
 import {
 	listSharedTrailSessions,
@@ -11,12 +17,6 @@ import {
 	type TrailBinding,
 	type TrailExecutionIdentity,
 } from "./agent-runtime.ts";
-import type {
-	HostedSession,
-	HostedSessionEvent,
-	HostedSessionEventType,
-	QorperaHostedPrimary,
-} from "./hosted-primary.ts";
 
 const CLOUD_TRAIL_STATE_SCHEMA = "qorpera.cloud-trail-sync/v3";
 const LEGACY_CLOUD_TRAIL_STATE_SCHEMA = "qorpera.cloud-trail-sync/v2";

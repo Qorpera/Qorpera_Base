@@ -11991,6 +11991,11 @@ async function renderSettingsTab() {
 			document.documentElement.dataset.qorperaReady = "account";
 		};
 		accountCard.append(accountCopy, signOutButton);
+		const browserCleanupButton = document.createElement("button");
+		browserCleanupButton.type = "button";
+		browserCleanupButton.textContent = "Browser profile cleanup";
+		browserCleanupButton.onclick = openBrowserCleanup;
+		accountCard.appendChild(browserCleanupButton);
 		accountGroup.appendChild(accountCard);
 		content.appendChild(accountGroup);
 
@@ -12636,6 +12641,11 @@ setupCompanyNavigation();
 setupSidebarToggle();
 setupCompanyModal();
 $("signOutButton").onclick = signOut;
+async function openBrowserCleanup() {
+	try {const result=await window.qorpera.openBrowserCleanup();if(!result?.ok)showToast(result?.error||"Browser cleanup is unavailable.");}
+	catch {showToast("Browser cleanup is unavailable. Try again.");}
+}
+$("browserCleanupButton").onclick = openBrowserCleanup;
 applyNavAppearance();
 applyStaffAvatarStyle();
 

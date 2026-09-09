@@ -82,6 +82,20 @@ insert into auth.users(id,email,raw_user_meta_data) values
 	('31000000-0000-4000-8000-000000000002','builder@example.test','{"full_name":"Builder"}'),
 	('31000000-0000-4000-8000-000000000003','viewer@example.test','{"full_name":"Viewer"}');
 
+-- Earlier suite fixtures leave durable bootstrap work. Hold their claims on
+-- another worker before creating this company; the final rollback restores
+-- those jobs. All claims and finalizations below still use the real worker RPCs.
+select pg_temp.org_claims('service_role');
+set local role service_role;
+do $$
+begin
+	while public.qorpera_claim_company_bootstrap('31000000-0000-4000-8000-000000000099',300) is not null loop
+		null;
+	end loop;
+end
+$$;
+reset role;
+
 select pg_temp.org_claims('authenticated','31000000-0000-4000-8000-000000000001');
 set local role authenticated;
 select set_config('qorpera_test.org_company',public.qorpera_create_cloud_company(
@@ -95,6 +109,14 @@ set local role service_role;
 select set_config('qorpera_test.bootstrap_worker','31000000-0000-4000-8000-000000000012',true);
 select set_config('qorpera_test.bootstrap_claim',public.qorpera_claim_company_bootstrap(
 	current_setting('qorpera_test.bootstrap_worker')::uuid,60)::text,true);
+do $$
+begin
+	if current_setting('qorpera_test.bootstrap_claim')::jsonb ->> 'profileId'
+		is distinct from current_setting('qorpera_test.org_company')::jsonb ->> 'profile_id' then
+		raise exception 'Bootstrap worker claimed a different fixture company';
+	end if;
+end
+$$;
 select set_config('qorpera_test.bootstrap_document',
 	current_setting('qorpera_test.bootstrap_claim')::jsonb ->> 'formationDocument',true);
 select set_config('qorpera_test.bootstrap_agent_document',

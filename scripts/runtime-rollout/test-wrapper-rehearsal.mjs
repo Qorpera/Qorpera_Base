@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,6 +29,10 @@ try {
 	const changed = [...new Set([...git(root, "diff", "HEAD", "--name-only").split("\n"), ...git(root, "ls-files", "--others", "--exclude-standard").split("\n")])].filter(Boolean);
 	assert(changed.every((name) => /^[A-Za-z0-9_./-]+$/.test(name) && !name.includes("..")), "Unsafe fixture path");
 	for (const name of changed) {
+		if (!existsSync(join(root, name))) {
+			rmSync(join(source, name));
+			continue;
+		}
 		assert(lstatSync(join(root, name)).isFile(), "The integration fixture supports file edits and additions only");
 		mkdirSync(dirname(join(source, name)), { recursive: true });
 		copyFileSync(join(root, name), join(source, name));
@@ -39,11 +43,18 @@ try {
 			"commit", "--quiet", "-m", "Disposable wrapper rehearsal fixture");
 	}
 	const manifestFile = join(source, "deploy/first-node/native-codex/runtime-bundle-manifest.json");
-	const bundle = readFileSync(join(source, "packages/shell/src/cloud-runtime-bundle.generated.ts"), "utf8").match(/CLOUD_RUNTIME_BUNDLE_SHA256 = "([a-f0-9]{64})"/)[1];
+	const bundle = readFileSync(join(source, "packages/runtime/src/cloud-runtime-bundle.generated.ts"), "utf8").match(/CLOUD_RUNTIME_BUNDLE_SHA256 = "([a-f0-9]{64})"/)[1];
 	const names = readdirSync(join(source, "supabase/migrations")).filter((name) => /^\d{14}_.*\.sql$/.test(name)).sort();
-	const shipped = names.filter((name) => name.slice(0, 14) <= "20260828030100").map((name) => name.slice(0, 14));
+	const shipped = names.filter((name) => name.slice(0, 14) <= "20260907000500").map((name) => name.slice(0, 14));
 	const baselineEvidence = join(directory, "baseline.json"), preflightEvidence = join(directory, "preflight.json");
-	const previousBundle = "a881b7604cdd49b1da1b7d8ddf7934c2a37b583d67c122f8746ca93c1d47a962";
+	const previousBundle = "4d988b5f47e6219b2f44bae3cbc0b7363c411738ddfc32774a5d487025d483bb";
+	const bundleActivations = names.filter((name) => !shipped.includes(name.slice(0, 14)) && /_runtime_bundle_activation_v\d+\.sql$/.test(name)).map((name) => {
+		const sql = readFileSync(join(source, "supabase/migrations", name), "utf8");
+		const match = sql.match(/values \('qorpera\.cloud-runtime',(\d+),[\s\S]*::jsonb,'([a-f0-9]{64})'\);/);
+		assert(match, "Generated activation source differs");
+		return { migrationVersion: name.slice(0, 14), version: Number(match[1]), sha256: match[2] };
+	});
+	assert.equal(bundleActivations.at(-1).sha256, bundle);
 	const versions = [...shipped, ...baseline.productionOnly].sort();
 	write(baselineEvidence, [{ r: { count: versions.length, versions, activeBundle: previousBundle } }]);
 	write(preflightEvidence, { syntheticTargetMetadata: true, productionWrites: false });
@@ -53,8 +64,8 @@ try {
 		lifecycleDefinition: "da8587ccb0c03ad76344c69f228de6214800229d2138c131dd9cc18029b20741",
 		baselineEvidence, baselineSha256: hash(readFileSync(baselineEvidence)), preflightEvidence, preflightSha256: hash(readFileSync(preflightEvidence)),
 		predecessorPacketSha256: hash("synthetic fixture predecessor"), pauseReason: "Disposable wrapper rehearsal only", initialReason: "Synthetic paused baseline",
-		policyVersionBefore: 11, policyVersionPaused: 12, concurrency: 64, initialEnablement: "disabled", activationVersion: "20260905000300",
-		bundleVersion: 6, previousBundleVersion: 5, manifestSha256: hash(readFileSync(manifestFile)), cliPath: "/nonexistent/supabase-wrapper-fixture" };
+		policyVersionBefore: 27, policyVersionPaused: 28, concurrency: 64, initialEnablement: "disabled", activationVersion: bundleActivations.at(-1).migrationVersion,
+		bundleVersion: bundleActivations.at(-1).version, previousBundleVersion: 13, bundleActivations, manifestSha256: hash(readFileSync(manifestFile)), cliPath: "/nonexistent/supabase-wrapper-fixture" };
 	const spec = join(directory, "spec.json"); write(spec, specification);
 	createPacket(spec, packet);
 	const run = (name, ...args) => execFileSync(process.execPath, [join(packet, name), ...args], { cwd: packet, timeout: 60_000,

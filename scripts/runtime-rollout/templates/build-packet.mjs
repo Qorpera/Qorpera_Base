@@ -27,8 +27,10 @@ export function verifySources() {
   const value = JSON.parse(manifestBytes), manifest = value.manifest ?? value;
   need(manifest.schema === 'qorpera.runtime-bundle/v2' && manifest.implementation && Object.keys(manifest.implementation).length > 100, 'RUNTIME_MANIFEST_REJECTED');
   for (const [path, pin] of Object.entries(manifest.implementation)) need(/^[a-zA-Z0-9_./-]+$/.test(path) && !path.includes('..') && hash(readTrusted(join(FIXED.source, path))) === pin, 'RUNTIME_SOURCE_CHANGED');
-  const activation = readTrusted(join(FIXED.source, 'supabase/migrations', INPUT.migrations.find(row => row.version === FIXED.activationVersion).file)).toString('utf8');
-  need(activation.includes(`'${FIXED.bundle}'`) && activation.includes(`'qorpera.cloud-runtime',${FIXED.bundleVersion},`), 'ACTIVATION_PIN_REJECTED');
+  for (const transition of FIXED.bundleActivations) {
+    const activation = readTrusted(join(FIXED.source, 'supabase/migrations', INPUT.migrations.find(row => row.version === transition.migrationVersion).file)).toString('utf8');
+    need(activation.includes(`'${transition.sha256}'`) && activation.includes(`'qorpera.cloud-runtime',${transition.version},`), 'ACTIVATION_PIN_REJECTED');
+  }
   const migrations = new Map(INPUT.migrations.map(row => [row.version, validateMigration(row, readTrusted(join(FIXED.source, 'supabase/migrations', row.file)))]));
   return { migrations, implementationFilesVerified: Object.keys(manifest.implementation).length };
 }
@@ -53,7 +55,8 @@ export function buildPacket() {
     actualSignedAcceptance: null, actualProductionReadbacks: [], productionReady: false,
     wakeBusIncluded: true, roomsIncluded: true, ceilingAndStopIncluded: true, sponsorHandoffIncluded: true, autonomousConsentIncluded: true,
     defaultAgentReadGrantBackfillIncluded: true, bootstrapExecutionIncluded: false, recoveryKeyOperationsIncluded: false,
-    admissionReenableIncluded: false, automaticReplayAllowed: false, installerChangesIncluded: false, companyComputersIncluded: false,
+    admissionReenableIncluded: false, automaticReplayAllowed: false, installerChangesIncluded: false,
+    companyComputersIncluded: INPUT.migrations.some(row => /^\d{14}_runtime_office_/.test(row.file)),
   };
   const pin = writeExclusive(join(ROOT, 'packet.json'), packet);
   return { passed: true, sqlFiles: files.length, mutationSteps: MUTATIONS.length, packet: pin, executionEnabled: false, productionWrites: false };

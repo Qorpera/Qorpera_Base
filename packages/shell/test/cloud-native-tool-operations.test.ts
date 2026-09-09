@@ -1,15 +1,15 @@
 import { randomUUID } from "node:crypto";
 import type { JsonValue } from "@qorpera/contracts";
-import { afterEach, expect, it, vi } from "vitest";
-import { CloudNativeToolRun } from "../src/cloud-native-tool-authority.ts";
-import { CloudNativeToolBoundary } from "../src/cloud-native-tool-boundary.ts";
+import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
+import { CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
 import {
 	type CloudNativeToolOperation,
 	type CloudNativeToolOperationControlPlane,
 	CloudNativeToolOperations,
-} from "../src/cloud-native-tool-operations.ts";
-import type { BeginCloudRunnerOperationInput } from "../src/cloud-runner-broker.ts";
-import { CloudRuntimeObservability, type CloudRuntimeObservation } from "../src/cloud-runtime-observability.ts";
+} from "@qorpera/runtime/cloud-native-tool-operations";
+import type { BeginCloudRunnerOperationInput } from "@qorpera/runtime/cloud-runner-broker";
+import { CloudRuntimeObservability, type CloudRuntimeObservation } from "@qorpera/runtime/cloud-runtime-observability";
+import { afterEach, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 type ExecuteOptions = Parameters<CloudNativeToolOperations["execute"]>[0];

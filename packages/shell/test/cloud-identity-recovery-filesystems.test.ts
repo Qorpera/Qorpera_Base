@@ -1,12 +1,12 @@
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	openRecoveryFilesystems,
 	parseRecoveryDirectoryMount,
 	type RecoveryDirectoryMount,
-} from "../src/cloud-identity-recovery-filesystems.ts";
+} from "@qorpera/runtime/cloud-identity-recovery-filesystems";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const roots: string[] = [];
 afterEach(async () => {

@@ -2,9 +2,9 @@ import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { RootlessPodmanSandboxBackend } from "@qorpera/runtime/cloud-runner-podman";
+import type { CloudRunnerSandboxRequest } from "@qorpera/runtime/cloud-runner-sandbox";
 import { afterEach, describe, expect, it } from "vitest";
-import { RootlessPodmanSandboxBackend } from "../src/cloud-runner-podman.ts";
-import type { CloudRunnerSandboxRequest } from "../src/cloud-runner-sandbox.ts";
 
 const image = process.env.QORPERA_LINUX_RUNNER_IMAGE;
 const podmanPath = process.env.QORPERA_LINUX_PODMAN_PATH ?? "/usr/bin/podman";

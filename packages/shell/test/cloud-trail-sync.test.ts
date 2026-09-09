@@ -2,6 +2,13 @@ import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type {
+	AppendHostedSessionEventInput,
+	CreateHostedSessionInput,
+	HostedSession,
+	HostedSessionEvent,
+	HostedSessionPage,
+} from "@qorpera/cloud-client/hosted-primary";
 import type { JsonValue, KernelExecutionIdentity } from "@qorpera/pi-protocol";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -15,13 +22,6 @@ import {
 	trailSessionStaffAgentId,
 } from "../src/agent-runtime.ts";
 import { CloudTrailSynchronizer, cloudTrailSyncStatePath } from "../src/cloud-trail-sync.ts";
-import type {
-	AppendHostedSessionEventInput,
-	CreateHostedSessionInput,
-	HostedSession,
-	HostedSessionEvent,
-	HostedSessionPage,
-} from "../src/hosted-primary.ts";
 
 const profileId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
 const environmentId = "73dc6943-b71c-4ba4-a38d-78da0861e0dc";

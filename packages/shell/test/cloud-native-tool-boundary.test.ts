@@ -1,12 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { JsonValue } from "@qorpera/contracts";
-import { describe, expect, it, vi } from "vitest";
 import {
 	type CloudNativeTool,
 	CloudNativeToolBoundary,
 	type CloudToolResult,
 	MAX_CLOUD_TOOL_RESULT_BYTES,
-} from "../src/cloud-native-tool-boundary.ts";
+} from "@qorpera/runtime/cloud-native-tool-boundary";
+import { describe, expect, it, vi } from "vitest";
 
 const companyId = randomUUID();
 const runId = randomUUID();

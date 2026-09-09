@@ -1,10 +1,10 @@
-import type { JsonValue } from "@qorpera/pi-protocol";
-import { describe, expect, it, vi } from "vitest";
 import {
 	type HostedPrimaryTransport,
 	type HostedSessionEventType,
 	QorperaHostedPrimary,
-} from "../src/hosted-primary.ts";
+} from "@qorpera/cloud-client/hosted-primary";
+import type { JsonValue } from "@qorpera/pi-protocol";
+import { describe, expect, it, vi } from "vitest";
 
 const profileId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
 const environmentId = "73dc6943-b71c-4ba4-a38d-78da0861e0dc";

@@ -72,3 +72,60 @@ for (const kind of ["branch", "dirty", "baseline", "activation", "scope", "enabl
 		assert.throws(() => createPacket(f.spec, f.output));
 	} finally { rmSync(f.directory, { recursive: true, force: true }); }
 });
+
+function activationChainFixture() {
+	const f = fixture();
+	const additions = {
+		"20260103000000_runtime_office_registry.sql": "select 2;\n",
+		"20260104000000_activation.sql": `select 'qorpera.cloud-runtime',7,'${"e".repeat(64)}';\n`,
+		"20260105000000_after_activation.sql": "select 3;\n",
+	};
+	for (const [name, bytes] of Object.entries(additions)) write(join(f.source, "supabase/migrations", name), bytes);
+	f.git("add", "--", ...Object.keys(additions).map((name) => `supabase/migrations/${name}`));
+	f.git("-c", "user.name=Synthetic fixture", "-c", "user.email=fixture@example.test", "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "Synthetic activation chain");
+	f.fixed.commit = f.git("rev-parse", "HEAD");
+	f.fixed.bundleActivations = [
+		{ migrationVersion: "20260102000000", version: 6, sha256: "b".repeat(64) },
+		{ migrationVersion: "20260104000000", version: 7, sha256: "e".repeat(64) },
+	];
+	f.fixed.bundleVersion = 7;
+	f.fixed.bundle = "e".repeat(64);
+	f.fixed.activationVersion = "20260104000000";
+	write(f.spec, f.fixed);
+	return f;
+}
+
+test("explicit activation chain guards intermediate and trailing migrations and remains disabled", { timeout: 60_000 }, async () => {
+	const f = activationChainFixture();
+	try {
+		const result = createPacket(f.spec, f.output);
+		assert.equal(result.executionEnabled, false);
+		assert.equal(result.migrations, 4);
+		const contract = await import(`${new URL(`file://${f.output}/contract.mjs`)}`);
+		assert.equal(contract.stateAt("20260103000000").activeBundle, "b".repeat(64));
+		assert.equal(contract.stateAt("20260104000000", false).activeBundle, "b".repeat(64));
+		assert.equal(contract.stateAt("20260104000000").activeBundle, "e".repeat(64));
+		assert.equal(contract.stateAt("20260105000000", false).activeBundle, "e".repeat(64));
+		assert.equal(contract.stateAt("final-readback").activeBundle, "e".repeat(64));
+		assert.equal(JSON.parse(readFileSync(join(f.output, "packet.json"))).companyComputersIncluded, true);
+		const run = spawnSync(process.execPath, [join(f.output, "verify-offline.mjs")], { encoding: "utf8", timeout: 50_000 });
+		assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}`);
+		assert(readFileSync(join(f.output, "sql/20260103000000.sql"), "utf8").includes(`='${"b".repeat(64)}'`));
+		assert(readFileSync(join(f.output, "sql/20260105000000.sql"), "utf8").includes(`='${"e".repeat(64)}'`));
+	} finally { rmSync(f.directory, { recursive: true, force: true }); }
+});
+
+for (const kind of ["skip", "order", "digest", "pending", "final", "unknown-key", "reused-identity"]) test(`generator rejects activation-chain ${kind}`, () => {
+	const f = activationChainFixture();
+	try {
+		if (kind === "skip") f.fixed.bundleActivations.shift();
+		if (kind === "order") f.fixed.bundleActivations.reverse();
+		if (kind === "digest") f.fixed.bundleActivations[0].sha256 = "f".repeat(64);
+		if (kind === "pending") f.fixed.bundleActivations[0].migrationVersion = "20260101000000";
+		if (kind === "final") f.fixed.activationVersion = "20260105000000";
+		if (kind === "unknown-key") f.fixed.bundleActivations[0].accepted = true;
+		if (kind === "reused-identity") f.fixed.bundleActivations[0].sha256 = f.fixed.previousBundle;
+		write(f.spec, f.fixed);
+		assert.throws(() => createPacket(f.spec, f.output));
+	} finally { rmSync(f.directory, { recursive: true, force: true }); }
+});

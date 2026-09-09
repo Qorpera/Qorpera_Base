@@ -1,0 +1,126 @@
+/* Company Computer screens: the sidepanel screen card and the live viewer.
+   The card wallpaper mirrors the guest desktop's own wallpaper — a quiet
+   grey field with the agent's creature debossed into it, letterpress style —
+   so the placeholder and the real screen read as the same surface. */
+
+.screen-card {
+	position: relative; display: block; width: 100%; aspect-ratio: 16 / 10; padding: 0;
+	border: 1px solid var(--border); border-radius: 10px; overflow: hidden; cursor: pointer;
+	background:
+		radial-gradient(120% 95% at 50% 38%, #f4f5f6 0%, #e6e8ea 52%, #d3d6da 100%);
+	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65), 0 1px 2px rgba(17, 20, 24, 0.06);
+}
+.screen-card:focus-visible { outline: 2px solid var(--accent, #5367e8); outline-offset: 2px; }
+
+.screen-card-emboss { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; }
+.screen-card-emboss i {
+	position: absolute; width: 38%; aspect-ratio: 1 / 1;
+	-webkit-mask: var(--screen-creature) center / contain no-repeat;
+	mask: var(--screen-creature) center / contain no-repeat;
+}
+/* Letterpress: a soft light edge just below, the mark itself a shade deeper
+   than the field — the shape reads as pressed in, never printed on. */
+.screen-card-emboss i:first-child { background: rgba(255, 255, 255, 0.85); transform: translateY(1.5px); filter: blur(0.6px); }
+.screen-card-emboss i:last-child { background: rgba(96, 102, 110, 0.34); }
+
+.screen-card-open {
+	position: absolute; inset: 0; display: grid; place-items: center;
+	opacity: 0; transition: opacity 120ms ease; background: rgba(17, 20, 24, 0.14);
+}
+.screen-card:hover .screen-card-open, .screen-card:focus-visible .screen-card-open { opacity: 1; }
+.screen-card-open span {
+	display: inline-flex; align-items: center; gap: 7px; padding: 8px 14px; border-radius: 999px;
+	background: rgba(20, 22, 26, 0.78); color: #fff; font-size: 12px; font-weight: 600;
+	backdrop-filter: blur(6px); box-shadow: 0 4px 14px rgba(10, 12, 16, 0.35);
+}
+.screen-card-open svg { width: 13px; height: 13px; }
+
+.screen-card-status {
+	position: absolute; right: 10px; top: 10px; width: 8px; height: 8px; border-radius: 50%;
+	background: #34c759; box-shadow: 0 0 0 3px rgba(52, 199, 89, 0.22);
+}
+
+.screen-card-connect {
+	display: grid; place-items: center; align-content: center; gap: 10px;
+}
+.screen-card-connect p { margin: 0; max-width: 220px; color: var(--text-soft); font-size: 12px; text-align: center; }
+.screen-card-connect button {
+	width: auto; min-height: 32px; padding: 0 14px; border: 1px solid var(--border-strong);
+	border-radius: 999px; background: #ffffff; font-size: 11.5px; font-weight: 600; cursor: pointer;
+}
+
+.screen-card-error { margin: 8px 0 0; color: #b3261e; font-size: 11.5px; }
+
+.screen-card-off .screen-card-emboss { opacity: 0.5; filter: saturate(0.35); }
+.screen-card-power-off {
+	position: absolute; right: 10px; top: 8px; padding: 2px 8px; border-radius: 999px;
+	background: rgba(28, 30, 34, 0.55); color: rgba(255, 255, 255, 0.85);
+	font-size: 10px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+}
+
+/* The live viewer: a restrained dark shell around the session. The 16:10
+   stage stays centered without a visible bezel, while the taller titlebar
+   keeps its identity clear of the native macOS window controls. */
+.screen-viewer-overlay {
+	position: fixed; inset: 0; z-index: 240; display: grid;
+	background: rgba(12, 13, 15, 0.94); animation: screen-viewer-in 140ms ease;
+}
+@keyframes screen-viewer-in { from { opacity: 0; } to { opacity: 1; } }
+.screen-viewer-frame {
+	position: relative; display: grid; grid-template-rows: 58px minmax(0, 1fr); height: 100%;
+	min-width: 0; min-height: 0; padding: 0 12px 12px; box-sizing: border-box;
+}
+.screen-viewer-titlebar {
+	display: flex; align-items: center; justify-content: space-between; gap: 16px; min-width: 0; padding: 0 6px;
+	color: rgba(255, 255, 255, 0.82); font-size: 12.5px; font-weight: 600;
+	-webkit-app-region: no-drag;
+}
+.screen-viewer-heading {
+	display: flex; align-items: baseline; gap: 6px; min-width: 0; overflow: hidden; white-space: nowrap;
+}
+.screen-viewer-heading > span { overflow: hidden; text-overflow: ellipsis; }
+.screen-viewer-titlebar small { flex: none; color: rgba(255, 255, 255, 0.45); font-weight: 500; }
+html[data-platform="darwin"] .screen-viewer-titlebar { padding-left: 78px; }
+.screen-viewer-close {
+	display: grid; flex: none; place-items: center; width: 30px; height: 30px; padding: 0; border: 0;
+	border-radius: 8px; background: rgba(255, 255, 255, 0.12); color: #fff; font-size: 15px; cursor: pointer;
+}
+.screen-viewer-close:hover { background: rgba(255, 255, 255, 0.22); }
+.screen-viewer-controls { display: flex; align-items: center; gap: 8px; }
+.screen-viewer-controls > button:not(.screen-viewer-close) {
+	min-height: 30px; padding: 0 12px; border: 1px solid rgba(255, 255, 255, 0.2);
+	border-radius: 8px; background: rgba(255, 255, 255, 0.1); color: #fff; cursor: pointer;
+}
+.screen-viewer-controls > button[hidden] { display: none; }
+.screen-viewer-controls > button:disabled { opacity: 0.5; cursor: default; }
+.screen-viewer-controls > button:focus-visible { outline: 2px solid #a8b6ff; outline-offset: 2px; }
+.screen-viewer-stage {
+	position: relative; place-self: center; width: min(100%, calc(160vh - 112px));
+	min-width: 0; min-height: 0; aspect-ratio: 8 / 5; overflow: hidden;
+	border: 0; border-radius: 8px; background: #17181a; box-shadow: none;
+}
+.screen-viewer-stage > div { position: absolute; inset: 0; }
+.screen-viewer-status {
+	position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none;
+	background: #1d1e20; color: rgba(255, 255, 255, 0.88); font-size: 13px; letter-spacing: 0.01em;
+}
+.screen-viewer-status[hidden] { display: none; }
+.screen-viewer-status-content { display: grid; width: min(238px, calc(100vw - 64px)); gap: 12px; text-align: center; }
+.screen-viewer-progress {
+	position: relative; height: 5px; overflow: hidden; border-radius: 999px;
+	background: rgba(255, 255, 255, 0.16);
+}
+.screen-viewer-progress span {
+	position: absolute; inset: 0 auto 0 0; width: 34%; border-radius: inherit;
+	background: rgba(255, 255, 255, 0.88); animation: screen-viewer-progress 1.15s ease-in-out infinite;
+}
+.screen-viewer-status.is-error .screen-viewer-status-content { width: min(420px, calc(100vw - 64px)); }
+.screen-viewer-status.is-error .screen-viewer-progress { display: none; }
+@keyframes screen-viewer-progress {
+	0% { transform: translateX(-105%); }
+	55% { transform: translateX(195%); }
+	100% { transform: translateX(295%); }
+}
+@media (prefers-reduced-motion: reduce) {
+	.screen-viewer-progress span { animation: none; left: 33%; }
+}

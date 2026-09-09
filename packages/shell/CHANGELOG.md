@@ -9,6 +9,19 @@
 
 ### Added
 
+- Added recent native read/write activity for the inspected Company File path or folder. The isolated display clears on path, account and connection changes and expiry; activity never blocks file operations or grants access.
+
+- Added member-owned browser profiles, separate agent consent and explicit private sign-in through the cloud viewer. Closing the view preserves privacy; account-level cleanup can finish sign-in or revoke consent after company membership removal. Office APIs no longer depend on the Company File gateway configuration.
+
+- Added remote screen discovery, watch-only viewing, acknowledged owner/admin control and exact connection recovery to the Company Computer window. A bounded host relay keeps tickets and TLS endpoints out of the renderer, and closing a view leaves the cloud computer running.
+
+- Added a Company Computer control window from the governed Company File. Owners/admins can request a start, cancel its exact pending intent and configure observed agent grants. Lost replies require status recovery; closing the client leaves the cloud computer and durable intent intact.
+
+- Added shared export discovery and explicit native downloads in the Company File window, including for read-only members. The host saves only the selected, verified asset; cancellation and lost access preserve the destination.
+
+- Added explicit native file selection and checked Company File upload destinations. Uncertain uploads retain their original bytes and operation; the renderer receives no local path or upload bytes. Binary proposals support verified previews and explicit native downloads before approval.
+
+- Added member-selected binary downloads from the governed Company File window using exact listed versions and a native save chooser. Verified bytes stay in the desktop host; cancelled, stale or unauthorized downloads leave the destination untouched.
 - Added an experimental cloud-owned tool result boundary and pinned native Codex adversarial proof, covering closed arguments, provenance, bounded results, authority rechecks, cancellation and the existing public mouth. The deployed driver is unchanged.
 - Bound the experimental native tool session to cloud-derived run, agent, requester, sponsor and audience identity with live lease checks and an independent deadline. Added durable operation-receipt adapters that prevent changed call IDs or uncertain retries from repeating work; target permissions remain a separate effect-time gate.
 - Added a pinned, authorized downstream Codex result-only callback and reproducible build recipe. The private Unix-socket boundary fences native rejection and parse errors before model requests, preserves native authentication, requires verified executable identity, and fails closed on missing, revoked or stalled authority. Verified on an isolated cloud Linux VM with synthetic data; full Step 2 rollout remains gated.

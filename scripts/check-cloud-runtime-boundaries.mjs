@@ -20,10 +20,11 @@ const providerNeutralFiles = [
 	...sourceFiles("packages/company"),
 	...sourceFiles("packages/object-gateway"),
 	...sourceFiles("packages/runner-orchestrator"),
+	...sourceFiles("packages/runtime"),
+	...sourceFiles("packages/cloud-client"),
 	...readdirSync(join(repositoryRoot, "packages/shell/src"))
 		.filter((name) => name.startsWith("cloud-") && name.endsWith(".ts"))
 		.map((name) => join("packages/shell/src", name)),
-	"packages/shell/src/hosted-primary.ts",
 	"packages/shell/src/company-operation-broker.ts",
 	"packages/shell/src/connector-execution-authorization.ts",
 	"packages/shell/src/github-company-connector.ts",

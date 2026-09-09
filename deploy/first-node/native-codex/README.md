@@ -1,4 +1,4 @@
-# Pinned native result fence and governed direct tools
+# Pinned native result fence, governed direct tools and capture images
 
 This is a narrow downstream change to the official Codex 0.147.0 source, not
 an official upstream release. The user explicitly authorized this exception
@@ -21,6 +21,12 @@ provider transport, model metadata and the result-fence wire schema are unchange
 The host requires both `qorpera.native-result-fence/v1` and
 `qorpera.native-direct-tools/v1` before model admission; the older result-only
 binary is no longer accepted by this governed adapter.
+
+Capture-enabled sessions additionally require `qorpera.native-capture-images/v1`.
+Images must originate in an issued tool result and match its call, envelope and
+hash. The host rechecks the capture read set on every provider/compaction request,
+including when reconstruction has replaced pixels with summaries. Arbitrary
+provider-message media cannot acquire authority through this path.
 
 ## Build
 
@@ -45,6 +51,11 @@ The package validator requires this processing record and retains its size
 limit; it does not accept an arbitrary host `strip` result.
 Cloud acceptance is explicitly unperformed in the build manifest.
 
+`--target-cache /absolute/path` can reuse Cargo intermediates across local
+build attempts. Each attempt still creates a new checkout/output directory,
+checks the source/patch/lock and records the final executable independently.
+The cache is trusted build input, never an acceptance result.
+
 The upstream tag updates workspace package versions without updating the
 135 path-package versions in Cargo.lock. The script normalizes only those
 release metadata fields, verifying both full-file hashes before compiling
@@ -62,7 +73,7 @@ headers, credentials, installation identity or session tokens.
 Every request, including an empty initial request, needs a live acknowledgement.
 Missing, stalled, malformed, mismatched or replayed replies fail closed. The
 native deadline is five seconds; the host deadline is four. An exhaustive
-item match rejects unhandled tool-result kinds and multimodal/encrypted tool
+item match rejects unhandled tool-result kinds, unissued images and encrypted tool
 results. Native memory requests are not admitted in this adapter. Only result
 bodies can change; the reply cannot alter calls, instructions, models or roles.
 
@@ -112,8 +123,8 @@ Its exported archive was reverified and used by the actual guest packager in
 this is not a deployable-image or complete-guest isolation claim. The disposable
 builder was removed after export; retained artifact paths are in the proof.
 
-The [direct-tools Linux proof](linux-x64-direct-tools-proof.json) pins the
-current 307,161,584-byte release executable, SHA-256
+The historical [direct-tools Linux proof](linux-x64-direct-tools-proof.json) pins the
+307,161,584-byte release executable, SHA-256
 `2f2c26cfdfacebbcce848fb50cfaaa4e8d0aa3c6ec3c1009123ecf766c8335f7`.
 It verifies the provider-default direct-only inventory, all result fences,
 authority failure and twelve compaction cases. These native component proofs
@@ -121,6 +132,26 @@ use a loopback scripted provider, not real GPT or production acceptance.
 The separate [signed v52 acceptance](../RUNTIME-STEP-2-V52-ACCEPTANCE.md)
 records the clean-image rebuild and real-GPT write/receipt replay after forced
 VM restart. Production is not enrolled; remaining Step 2 gates are explicit.
+
+The current [capture-images Linux proof](linux-x64-capture-images-proof.json)
+records the 307,464,032-byte release executable, SHA-256
+`6bbe4704774454be5aff5501bfe4bbd5e023930ff87d187ca9e5ec4c333c8e8d`.
+The actual executable passes twelve image/compaction checks across local,
+remote-v1 and remote-v2 modes with both synthetic and provider-default metadata,
+plus an unissued-image refusal. The complete tool-boundary probe also passes:
+22 denied bypasses, fenced results, revocation/stall checks and twelve baseline
+compaction checks. These run in a disposable Linux AMD64 container without
+external networking, using a scripted loopback provider. They do not establish
+real model interpretation or combined office/SQL/object-gateway readiness.
+
+`linux-x64-artifact.json` is the accepted native input to runtime bundle generation.
+It must match `source.json` and the patch bytes. Generate that bundle before
+packaging its native host, then retain the actual packager's
+`guest-package-manifest.json`. The guest manifest is an output, because its host
+embeds the runtime bundle; using that output to supply the native input would
+create a circular pin dependency. The current package uses `--contract-only`:
+its signed runner image and Cosign bundle are external prerequisites. Historical
+v56 manifests, image recipes and acceptance pins retain their original bytes.
 
 Source now includes an explicit `company-path-v1`
 host/provider/guest lane with a cloud-authorized live Company File gateway;

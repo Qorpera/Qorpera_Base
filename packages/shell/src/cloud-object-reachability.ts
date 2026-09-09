@@ -1,8 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { currentCloudCompanyTreeReference, verifyCloudCompanyTreeRestore } from "./cloud-company-snapshot.ts";
-import type { CloudContentAddressedStore, CloudReachableObject } from "./cloud-object-store.ts";
 import type {
 	HostedArtifact,
 	HostedCompanySnapshot,
@@ -10,7 +8,12 @@ import type {
 	HostedObjectRestoreProof,
 	HostedObjectRootKind,
 	QorperaHostedPrimary,
-} from "./hosted-primary.ts";
+} from "@qorpera/cloud-client/hosted-primary";
+import {
+	currentCloudCompanyTreeReference,
+	verifyCloudCompanyTreeRestore,
+} from "@qorpera/cloud-client/node/cloud-company-snapshot";
+import type { CloudContentAddressedStore, CloudReachableObject } from "@qorpera/cloud-client/node/cloud-object-store";
 
 const REACHABILITY_BATCH_SIZE = 500;
 const REACHABILITY_STATE_SCHEMA = "qorpera.object-reachability-state/v1";

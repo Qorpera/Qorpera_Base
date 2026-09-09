@@ -6,7 +6,7 @@ import { hash, randomBytes } from "node:crypto";
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseCloudNativeCompanyContext, composeCloudNativeCompanyPrompt } from "../packages/shell/src/cloud-native-company-context.ts";
+import { parseCloudNativeCompanyContext, composeCloudNativeCompanyPrompt } from "../packages/runtime/src/cloud-native-company-context.ts";
 import { POSTGRES_IMAGE, sortMigrationNames } from "./test-hosted-db.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -77,7 +77,9 @@ try {
 	const fixture = component.split("-- END WAKE FIXTURE")[0];
 	const original = readFileSync(join(root, "supabase/acceptance/runtime_wake_bus.sql"), "utf8");
 	const regression = readFileSync(join(root, "supabase/acceptance/runtime_production_review.sql"), "utf8")
-		+ readFileSync(join(root, "supabase/acceptance/runtime_second_production_review.sql"), "utf8");
+		+ readFileSync(join(root, "supabase/acceptance/runtime_second_production_review.sql"), "utf8")
+		+ readFileSync(join(root, "supabase/acceptance/runtime_third_production_review.sql"), "utf8")
+		+ readFileSync(join(root, "supabase/acceptance/runtime_session_stop_authority.sql"), "utf8");
 	const end = original.indexOf("select jsonb_build_object('schema','qorpera.wake-integration-acceptance/v1'");
 	assert(end > 0);
 	const acceptance = original.slice(0, end) + regression + original.slice(end);
@@ -97,6 +99,42 @@ try {
 	const connection = parallelSetup.connection;
 	const auth = `set request.jwt.claims='{"role":"authenticated","sub":"${owner}"}'; set role authenticated;`;
 	const service = "set request.jwt.claims='{\"role\":\"service_role\"}';";
+	const companyStop = (paused) => `${auth} select public.qorpera_set_company_execution_pause('${profile}',${paused},'Review stop');`;
+	const stopEffect = (key) => parallelSetup.effect.replace("'review2-effect'", `'${key}'`);
+	const beforeStop = await begin(service + stopEffect("review3-before-stop"));
+	const oldSnapshot = await begin("set transaction isolation level repeatable read; select count(*) from public.qorpera_company_execution_pauses;");
+	const stopping = session();
+	stopping.child.stdin.end(`set application_name='review-founder-stop'; ${companyStop(true)}`);
+	await waitLock("review-founder-stop");
+	await commit(beforeStop);
+	const stopped = await stopping.done;
+	assert.equal(stopped.code, 0, stopped.error); assert.equal(JSON.parse(stopped.output).paused, true);
+	report.concurrency.push("founder_stop_waits_for_already_admitted_effect");
+	oldSnapshot.child.stdin.end(`\\set VERBOSITY verbose\n${service} ${stopEffect("review3-stale-stop")}\ncommit;`);
+	const staleStop = await oldSnapshot.done;
+	assert.notEqual(staleStop.code, 0); assert.match(staleStop.error, /40001/);
+	assert.equal(sql("select count(*) from public.qorpera_agent_sends where idempotency_key='review3-stale-stop';"), "0");
+	report.concurrency.push("stale_repeatable_read_effect_fails_after_founder_stop");
+	sql(companyStop(false));
+	const stopFirst = await begin(companyStop(true));
+	const waitingEffect = session();
+	waitingEffect.child.stdin.end(`\\set VERBOSITY verbose\nset application_name='review-stopped-effect'; ${service} ${stopEffect("review3-waiting-stop")}`);
+	await waitLock("review-stopped-effect");
+	await commit(stopFirst);
+	const refused = await waitingEffect.done;
+	assert.notEqual(refused.code, 0); assert.match(refused.error, /55000/);
+	assert.equal(sql("select count(*) from public.qorpera_agent_sends where idempotency_key='review3-waiting-stop';"), "0");
+	report.concurrency.push("waiting_read_committed_effect_observes_founder_stop");
+	const beforeResume = await begin("set transaction isolation level repeatable read; select count(*) from public.qorpera_company_execution_pauses;");
+	sql(companyStop(false));
+	beforeResume.child.stdin.end(`\\set VERBOSITY verbose\n${service} ${stopEffect("review3-stale-resume")}\ncommit;`);
+	const staleResume = await beforeResume.done;
+	assert.notEqual(staleResume.code, 0); assert.match(staleResume.error, /40001/);
+	report.concurrency.push("stale_repeatable_read_effect_retries_after_founder_resume");
+	sql(service + stopEffect("review3-resumed"));
+	assert.equal(sql("select count(*) from public.qorpera_agent_sends where idempotency_key='review3-resumed';"), "1");
+	report.concurrency.push("fresh_effect_succeeds_after_founder_resume");
+	console.log("PASS founder stop/resume serializes effects and rejects stale snapshots");
 	const firstWake = await begin(service + parallelSetup.schedule[0]);
 	const secondWake = session();
 	secondWake.child.stdin.end(`set application_name='review-wake-budget'; ${service} ${parallelSetup.schedule[1]}`);
