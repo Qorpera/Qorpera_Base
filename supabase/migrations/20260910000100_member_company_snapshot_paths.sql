@@ -16,10 +16,19 @@ begin
 		and cache.total_bytes = snapshot.total_bytes
 	join public.qorpera_profile_objects object
 		on object.profile_id = cache.profile_id and object.sha256 = cache.sha256 and object.bytes = cache.bytes
+	join public.qorpera_object_reachability_graphs graph
+		on graph.root_kind = 'company_snapshot' and graph.root_id = snapshot.id
+		and graph.profile_id = snapshot.profile_id and graph.environment_id = snapshot.environment_id
+		and graph.root_object_sha256 = snapshot.tree_manifest_sha256
+		and graph.status = 'complete' and graph.closure_verified
 	where snapshot.id = p_snapshot_id and snapshot.profile_id = (p_actor ->> 'companyId')::uuid
 		and snapshot.environment_id = (p_actor ->> 'environmentId')::uuid
-		and snapshot.tree_contract_version = 3;
-	if not found or not public.qorpera_object_root_has_current_proof('company_snapshot',p_snapshot_id) then
+		and snapshot.tree_contract_version = 3
+		and public.qorpera_object_graph_objects_available(graph.id);
+	-- ARTIFACT-GC.md: historical roots require independently verified closure,
+	-- not weekly full-content restore proofs. Current member path policy and
+	-- catalog availability are checked here; byte integrity is checked on read.
+	if not found then
 		raise exception 'Company File snapshot is unavailable' using errcode = '42501'; end if;
 	return v_tree;
 end

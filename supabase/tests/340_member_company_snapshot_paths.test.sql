@@ -168,6 +168,19 @@ begin
 end
 $$;
 
+-- Historical roots retain verified closure after the seven-day recovery
+-- proof expires. Reading one historical path must not depend on weekly
+-- full-company restoration (ARTIFACT-GC.md).
+select pg_temp.path_claims('service_role');
+update public.qorpera_object_restore_proofs
+set verified_at=statement_timestamp()-interval '8 days',valid_until=statement_timestamp()-interval '1 day'
+where graph_id in (select id from public.qorpera_object_reachability_graphs
+ where root_kind='company_snapshot' and root_id=current_setting('qorpera_test.old_snapshot')::uuid);
+do $$ begin
+ if public.qorpera_object_root_has_current_proof('company_snapshot',current_setting('qorpera_test.old_snapshot')::uuid)
+ then raise exception 'Historical fixture proof did not expire'; end if;
+end $$;
+
 do $$
 declare user_id uuid; env uuid:='34000000-0000-4000-8000-000000000020';
  snap uuid:=current_setting('qorpera_test.old_snapshot')::uuid;
@@ -224,8 +237,9 @@ declare probe text; env uuid:='34000000-0000-4000-8000-000000000020';
  hash text:=current_setting('qorpera_test.snapshot_entry')::jsonb#>>'{file,fileSha256}';
  page jsonb;
 begin
- foreach probe in array array['private','revoked','member-removed','missing-human','service-role','unpublished','missing-proof','wrong-snapshot','wrong-environment'] loop
+ foreach probe in array array['private','revoked','member-removed','missing-human','service-role','unpublished','missing-graph','unverified-closure','missing-tree-cache','wrong-snapshot','wrong-environment'] loop
   begin
+   perform pg_temp.path_claims('service_role');
    if probe='private' then
     update public.qorpera_company_path_resources set scope='member_private',owner_user_id='34000000-0000-4000-8000-000000000001'
      where environment_id=env and path='note.md';
@@ -236,9 +250,13 @@ begin
      and user_id='34000000-0000-4000-8000-000000000003';
    elsif probe='unpublished' then
     update public.qorpera_company_snapshot_publications set status='prepared',published_at=null where snapshot_id=snap;
-   elsif probe='missing-proof' then
-    delete from public.qorpera_object_restore_proofs where graph_id in
-     (select id from public.qorpera_object_reachability_graphs where root_kind='company_snapshot' and root_id=snap);
+   elsif probe='missing-graph' then
+    delete from public.qorpera_object_reachability_graphs where root_kind='company_snapshot' and root_id=snap;
+   elsif probe='unverified-closure' then
+    update public.qorpera_object_reachability_graphs set closure_verified=false where root_kind='company_snapshot' and root_id=snap;
+   elsif probe='missing-tree-cache' then
+    delete from public.qorpera_company_path_tree_cache where profile_id='34000000-0000-4000-8000-000000000010'
+     and sha256=(select tree_manifest_sha256 from public.qorpera_company_snapshots where id=snap);
    end if;
    perform pg_temp.path_claims(case when probe='service-role' then 'service_role' else 'authenticated' end,
     case when probe='missing-human' then null else '34000000-0000-4000-8000-000000000003'::uuid end);
