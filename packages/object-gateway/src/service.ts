@@ -143,7 +143,10 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 		if (memberCors(request, response)) return;
 		let observation: MemberRequestObservationSpan | undefined;
 		try {
-			if (request.url?.startsWith("/v1/member-company-objects/"))
+			if (
+				request.url?.startsWith("/v1/member-company-objects/") ||
+				request.url?.startsWith("/v1/member-company-snapshot-objects/")
+			)
 				observation = options.memberObservations?.start("object_read");
 			else if (request.url?.startsWith("/v1/member-company-file/"))
 				observation = options.memberObservations?.start("file_request");
@@ -277,7 +280,10 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 					});
 					return;
 				}
-				if (request.url?.startsWith("/v1/member-company-objects/")) {
+				if (
+					request.url?.startsWith("/v1/member-company-objects/") ||
+					request.url?.startsWith("/v1/member-company-snapshot-objects/")
+				) {
 					if (!options.memberObjects) throw new HttpError(404, "Not found");
 					await serveMemberCompanyObject(request, response, options.memberObjects, options.store, observation);
 					return;

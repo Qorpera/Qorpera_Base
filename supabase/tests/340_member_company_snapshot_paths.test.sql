@@ -260,5 +260,60 @@ begin
  end loop;
 end
 $$;
+
+-- Exercise real pagination across currently hidden entries and UTF-8 ordering.
+-- Each directory is published through the same human command route as files.
+do $$
+declare env uuid:='34000000-0000-4000-8000-000000000020'; target text;
+ command jsonb; prepared jsonb; result jsonb; entries jsonb; tree text; snap uuid;
+ page jsonb; cursor text:=null; expected text; actual text[]:='{}';
+begin
+ foreach target in array array['a-visible','z-hidden',chr(57344),chr(65536)] loop
+  perform pg_temp.path_claims('authenticated','34000000-0000-4000-8000-000000000001');
+  set local role authenticated;
+  command:=public.qorpera_begin_member_company_path_command(env,jsonb_build_object(
+   'schema','qorpera.company-path-mutation/v1','operationKey','page-'||md5(target),
+   'path',target,'expectedVersion',null,'entry',jsonb_build_object('path',target,'kind','directory')));
+  reset role;
+  perform pg_temp.path_claims('service_role');
+  set local role service_role;
+  prepared:=public.qorpera_prepare_member_company_path_command((command->>'commandId')::uuid,command->>'planSha256');
+  reset role;
+  select cache.manifest->'entries' into entries from public.qorpera_company_files file
+   join public.qorpera_company_snapshots snapshot on snapshot.id=file.head_snapshot_id
+   join public.qorpera_company_path_tree_cache cache on cache.profile_id=snapshot.profile_id and cache.sha256=snapshot.tree_manifest_sha256
+   where file.environment_id=env;
+  select jsonb_agg(entry order by (entry->>'path') collate "C") into entries
+   from jsonb_array_elements(entries||jsonb_build_array(jsonb_build_object('path',target,'kind','directory'))) entry;
+  set local role service_role;
+  tree:=pg_temp.path_stage_tree(entries);
+  result:=public.qorpera_apply_member_company_path_command_v3((command->>'commandId')::uuid,
+   command->>'planSha256',(prepared->>'snapshotId')::uuid,tree,null);
+  if result->>'state' is distinct from 'applied' then raise exception 'Directory publication failed'; end if;
+  reset role;
+ end loop;
+ select head_snapshot_id into snap from public.qorpera_company_files where environment_id=env;
+ perform pg_temp.path_claims('authenticated','34000000-0000-4000-8000-000000000001');
+ set local role authenticated;
+ perform public.qorpera_set_company_path_resource(env,'z-hidden','exact','member_private','normal',null);
+ reset role;
+ perform pg_temp.path_claims('authenticated','34000000-0000-4000-8000-000000000003');
+ set local role authenticated;
+ foreach expected in array array['a-visible','note.md',chr(57344),chr(65536)] loop
+  page:=public.qorpera_list_member_company_snapshot_paths(env,snap,cursor,1);
+  if jsonb_array_length(page->'items')<>1 or page#>>'{items,0,path}' is distinct from expected
+   then raise exception 'Filtered snapshot page order differs: %',page; end if;
+  actual:=array_append(actual,page#>>'{items,0,path}');
+  if expected=chr(65536) then
+   if (page->>'hasMore')::boolean or page->'nextAfter'<>'null'::jsonb then raise exception 'Final page cursor differs'; end if;
+  else
+   if not (page->>'hasMore')::boolean or page->>'nextAfter' is distinct from expected then raise exception 'Continuation cursor differs'; end if;
+  end if;
+  cursor:=expected;
+ end loop;
+ if cardinality(actual)<>4 then raise exception 'Pagination was incomplete'; end if;
+ reset role;
+end
+$$;
 set constraints all immediate;
 rollback;

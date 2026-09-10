@@ -1,5 +1,7 @@
+import type { CloudMemberCompanyFileReader } from "@qorpera/cloud-client/cloud-member-company-file";
 import type { CloudApi } from "../../cloud/api.ts";
 import { CloudRpcError, describeError } from "../../cloud/client.ts";
+import { WebCompanyFiles } from "../../cloud/company-files.ts";
 import { ObjectAccessError, ObjectReader } from "../../cloud/objects.ts";
 import { collectPages } from "../../cloud/pagination.ts";
 import type {
@@ -29,8 +31,8 @@ import { Store } from "../state.ts";
 
 /* Company File browsing (COMPANY-FILE.md; contract §6 table): published
  * snapshots, the canonical head, review proposals with comments and
- * accept/reject for authorizers. Object bytes are read through the
- * profile-object authority; live logical paths arrive with Order 0's gateway. */
+ * accept/reject for authorizers. Governed snapshots use current member path
+ * authority for historical listings and bytes. */
 
 export interface CompanyFileState {
 	loading: boolean;
@@ -84,6 +86,8 @@ export class CompanyFileController {
 	#fileVersion = 0;
 	#listVersion = 0;
 	#confirming = false;
+	#snapshotReader?: CloudMemberCompanyFileReader;
+	#selectionAbort = new AbortController();
 	readonly #drafts = new Map<string, string>();
 	readonly #commentRetries = new Map<string, { body: string; id: string }>();
 
@@ -104,6 +108,7 @@ export class CompanyFileController {
 
 	dispose(): void {
 		this.#disposed = true;
+		this.#selectionAbort.abort();
 		this.#unsubscribe();
 		this.#reader.dispose();
 		this.#drafts.clear();
@@ -131,6 +136,9 @@ export class CompanyFileController {
 	}
 
 	#beginSelection(key: string, preserve = false): () => boolean {
+		this.#selectionAbort.abort();
+		this.#selectionAbort = new AbortController();
+		this.#snapshotReader = undefined;
 		this.#selection = key;
 		const version = ++this.#selectionVersion;
 		this.#fileVersion++;
@@ -218,9 +226,33 @@ export class CompanyFileController {
 				(await this.#api.getSnapshot(snapshotId));
 			if (!currentRequest()) return;
 			this.store.set({ snapshot: { snapshot, loading: true } });
-			const manifest = await this.#reader.readTreeManifest(snapshot);
+			const governed = await this.#api.usesPathGateway(this.#company.profile.profileId);
 			if (!currentRequest()) return;
-			this.store.set({ snapshot: { snapshot, entries: manifest.entries, loading: false } });
+			let entries: CloudCompanyTreeEntry[];
+			if (governed) {
+				const team = this.#company.store.get().team;
+				if (!team?.capabilities.read) throw new Error("Company File access changed.");
+				const files = new WebCompanyFiles(
+					this.#api.cloud,
+					this.#company.profile,
+					this.#company.userId,
+					team.role,
+					AbortSignal.any([this.#selectionAbort.signal, this.#company.signal]),
+					() => {
+						const state = this.#company.store.get();
+						if (!currentRequest() || state.accessLost || !state.team?.capabilities.read)
+							throw new Error("Company File access changed.");
+					},
+				);
+				const reader = files.snapshot(snapshotId);
+				entries = await reader.listSnapshotEntries(files.signal);
+				if (!currentRequest()) return;
+				this.#snapshotReader = reader;
+			} else {
+				entries = (await this.#reader.readTreeManifest(snapshot)).entries;
+			}
+			if (!currentRequest()) return;
+			this.store.set({ snapshot: { snapshot, entries, loading: false } });
 		} catch (error) {
 			if (!currentRequest()) return;
 			const current = this.store.get().snapshot;
@@ -231,11 +263,18 @@ export class CompanyFileController {
 
 	async openFile(entry: CloudCompanyTreeEntry): Promise<void> {
 		const current = this.store.get().snapshot;
-		if (this.#disposed || !current || entry.kind !== "file") return;
+		if (this.#disposed || !current || current.loading || current.error || entry.kind !== "file") return;
 		const version = ++this.#fileVersion;
 		this.store.set({ snapshot: { ...current, open: entry.path, content: undefined, contentError: undefined } });
 		try {
-			const bytes = await this.#reader.readFile(entry.file);
+			const reader = this.#snapshotReader;
+			let bytes: Uint8Array;
+			if (reader) {
+				const result = await reader.read(entry.path, this.#selectionAbort.signal, 32 * 1024 * 1024);
+				if (result.kind !== "file" || !result.bytes || result.version !== current.snapshot.snapshotId)
+					throw new Error("Selected snapshot file is unavailable.");
+				bytes = result.bytes;
+			} else bytes = await this.#reader.readFile(entry.file);
 			if (this.#disposed || version !== this.#fileVersion) return;
 			const text =
 				entry.file.bytes <= 2 * 1024 * 1024 ? new TextDecoder("utf-8", { fatal: false }).decode(bytes) : undefined;
@@ -564,7 +603,7 @@ function renderSnapshot(state: CompanyFileState, profileId: string, controller: 
 			`${snapshot.tree.fileCount} files · ${fmtBytes(snapshot.tree.totalBytes)} · contract v${snapshot.tree.contractVersion} · ${fmtTime(snapshot.createdAt)}${snapshot.parentSnapshotId ? ` · parent ${shortId(snapshot.parentSnapshotId)}` : ""}`,
 		),
 		current.error ? notice("warn", current.error) : null,
-		current.loading ? spinner("Reading tree manifest") : null,
+		current.loading ? spinner("Loading files") : null,
 		entries.length
 			? h(
 					"div",

@@ -208,14 +208,17 @@ export class SupabaseObjectAuthority
 	async authorizeMemberCompanyObject(
 		userToken: string,
 		identity: MemberCompanyObjectIdentity,
+		mode?: "snapshot",
 	): Promise<AuthorizedMemberCompanyObject> {
 		const value = record(
 			await this.#rpc(
-				"qorpera_authorize_member_company_path_object",
+				mode === "snapshot"
+					? "qorpera_authorize_member_company_snapshot_object"
+					: "qorpera_authorize_member_company_path_object",
 				{
 					p_environment_id: identity.environmentId,
 					p_path: identity.path,
-					p_version: identity.version,
+					...(mode === "snapshot" ? { p_snapshot_id: identity.version } : { p_version: identity.version }),
 					p_sha256: identity.sha256,
 				},
 				userToken,

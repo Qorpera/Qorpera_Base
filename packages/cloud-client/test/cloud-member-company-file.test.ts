@@ -6,7 +6,7 @@ import { CloudMemberCompanyFileReader } from "../src/index.ts";
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const signal = () => new AbortController().signal;
-function fixture(size = 6) {
+function fixture(size = 6, snapshot = false) {
 	const bytes = new Uint8Array(size).fill(255);
 	if (size) bytes[0] = 0;
 	const chunks = [];
@@ -40,7 +40,7 @@ function fixture(size = 6) {
 		if (String(url).startsWith("https://authority.test/")) {
 			expect(JSON.parse(init?.body as string)).toEqual({
 				p_environment_id: id(2),
-				p_binding: null,
+				...(snapshot ? { p_snapshot_id: selection.version } : { p_binding: null }),
 				p_path: selection.path,
 			});
 			return Response.json({
@@ -52,7 +52,9 @@ function fixture(size = 6) {
 			});
 		}
 		expect(
-			String(url).startsWith(`https://objects.test/v1/member-company-objects/${id(2)}/${selection.version}/`),
+			String(url).startsWith(
+				`https://objects.test/v1/member-company${snapshot ? "-snapshot" : ""}-objects/${id(2)}/${selection.version}/`,
+			),
 		).toBe(true);
 		expect(headers.get("x-qorpera-company-path")).toBe(Buffer.from(selection.path).toString("base64url"));
 		const body = objects.get(String(url).split("/").at(-1)!);
@@ -71,6 +73,7 @@ function fixture(size = 6) {
 		publishableKey: "publishable",
 		accessToken: token,
 		fetch: request,
+		snapshotId: snapshot ? selection.version : undefined,
 	});
 	return { reader, bytes, manifest, file, manifestBytes, objects, state, selection, request, token };
 }
@@ -169,4 +172,106 @@ describe("browser file manifest integrity", () => {
 			).rejects.toThrow();
 		},
 	);
+});
+
+describe("published snapshot reads", () => {
+	it("uses only snapshot authority and preserves selected historical bytes", async () => {
+		const f = fixture(6, true);
+		expect((await f.reader.read(f.selection.path, signal())).bytes).toEqual(f.bytes);
+		const rpc = f.request.mock.calls.filter(([url]) => String(url).startsWith("https://authority.test/"));
+		expect(rpc).toHaveLength(2);
+		expect(rpc.every(([url]) => String(url).endsWith("/qorpera_read_member_company_snapshot_path"))).toBe(true);
+	});
+	it("refuses substitution of the current head for the historical snapshot", async () => {
+		const f = fixture(6, true);
+		f.state.version = id(9);
+		await expect(f.reader.read(f.selection.path, signal())).rejects.toThrow("scope changed");
+		expect(f.request).toHaveBeenCalledOnce();
+	});
+	it("discards historical bytes after current membership is revoked", async () => {
+		const f = fixture(6, true);
+		f.state.afterObject = () => {
+			f.state.deny = true;
+		};
+		await expect(f.reader.read(f.selection.path, signal())).rejects.toThrow("403");
+	});
+});
+
+function listing(change: Record<string, unknown> = {}) {
+	const entries = Array.from({ length: 101 }, (_, n) => ({
+		kind: "directory",
+		path: `folder${String(n).padStart(3, "0")}`,
+	}));
+	const request = vi.fn<typeof fetch>(async (_url, init) => {
+		const body = JSON.parse(init?.body as string);
+		expect(body.p_snapshot_id).toBe(id(3));
+		expect(body.p_limit).toBe(100);
+		const first = body.p_after === null;
+		if (!first) expect(body.p_after).toBe(entries[99]!.path);
+		return Response.json({
+			companyId: id(1),
+			environmentId: id(2),
+			snapshotId: id(3),
+			items: first ? entries.slice(0, 100) : entries.slice(100),
+			hasMore: first,
+			nextAfter: first ? entries[99]!.path : null,
+			...change,
+		});
+	});
+	const reader = new CloudMemberCompanyFileReader({
+		companyId: id(1),
+		environmentId: id(2),
+		snapshotId: id(3),
+		supabaseUrl: "https://authority.test",
+		objectGatewayUrl: "https://objects.test",
+		publishableKey: "publishable",
+		accessToken: async () => "member-token",
+		fetch: request,
+	});
+	return { reader, request, entries };
+}
+describe("filtered snapshot pagination", () => {
+	it("uses UTF-8 ordering across supplementary Unicode paths", async () => {
+		const items = [
+			{ kind: "directory", path: "\uE000" },
+			{ kind: "directory", path: "\u{10000}" },
+		];
+		expect(await listing({ items, hasMore: false, nextAfter: null }).reader.listSnapshotEntries(signal())).toEqual(
+			items,
+		);
+	});
+	it("collects ordered pages without fetching a tree object", async () => {
+		const f = listing();
+		expect(await f.reader.listSnapshotEntries(signal())).toEqual(f.entries);
+		expect(f.request).toHaveBeenCalledTimes(2);
+		expect(
+			f.request.mock.calls.every(([url]) => String(url).endsWith("/qorpera_list_member_company_snapshot_paths")),
+		).toBe(true);
+	});
+	it.each([
+		{ snapshotId: id(9) },
+		{ companyId: id(9) },
+		{ environmentId: id(9) },
+		{ nextAfter: "secret" },
+		{ items: [], hasMore: true },
+		{ hasMore: false },
+		{ extra: true },
+		{ items: [{ kind: "directory", path: "../private" }] },
+		{
+			items: [
+				{ kind: "directory", path: "b" },
+				{ kind: "directory", path: "a" },
+			],
+		},
+	])("rejects malformed or scope-changing pages %j", async (change) => {
+		await expect(listing(change).reader.listSnapshotEntries(signal())).rejects.toThrow();
+	});
+	it("discards an earlier page when access to a later page is denied", async () => {
+		const f = listing();
+		const original = f.request.getMockImplementation()!;
+		f.request
+			.mockImplementationOnce(original)
+			.mockImplementationOnce(async () => new Response(null, { status: 403 }));
+		await expect(f.reader.listSnapshotEntries(signal())).rejects.toThrow("403");
+	});
 });

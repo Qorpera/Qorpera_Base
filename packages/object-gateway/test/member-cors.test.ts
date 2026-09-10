@@ -86,6 +86,22 @@ const preflight = (method = "GET", headers = "authorization,x-qorpera-company-pa
 });
 
 describe("member browser CORS", () => {
+	it("preflights snapshot reads and binds both authorizations to snapshot mode", async () => {
+		const service = await fixture();
+		const route = objectRoute.replace("member-company-objects", "member-company-snapshot-objects");
+		expect((await service.request(route, preflight())).status).toBe(204);
+		expect(service.authorize).not.toHaveBeenCalled();
+		const response = await service.request(route, { headers: memberHeaders });
+		expect(response.status).toBe(200);
+		expect(Buffer.from(await response.arrayBuffer())).toEqual(bytes);
+		expect(service.authorize).toHaveBeenCalledTimes(2);
+		for (const call of service.authorize.mock.calls) expect(call[2]).toBe("snapshot");
+		expect((await service.request(route, preflight("PUT"))).status).toBe(403);
+		expect(
+			(await service.request(route, { headers: { ...memberHeaders, origin: "https://evil.test" } })).status,
+		).toBe(403);
+		expect(service.authorize).toHaveBeenCalledTimes(2);
+	});
 	it("admits only the typed binary upload headers and PUT method", async () => {
 		const service = await fixture();
 		const response = await service.request(

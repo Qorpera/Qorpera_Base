@@ -2,6 +2,7 @@ import {
 	CloudMemberCompanyFileClient,
 	parseCloudMemberCompanyMode,
 } from "@qorpera/cloud-client/cloud-member-company-editor";
+import { CloudMemberCompanyFileReader } from "@qorpera/cloud-client/cloud-member-company-file";
 import { CloudMemberCompanyPresence } from "@qorpera/cloud-client/cloud-member-company-presence";
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import type { CompanyPathPresenceView } from "@qorpera/cloud-client/company-path-presence";
@@ -68,6 +69,10 @@ export class WebCompanyFiles {
 	current(): void {
 		this.signal.throwIfAborted();
 		this.#current();
+	}
+	snapshot(snapshotId: string): CloudMemberCompanyFileReader {
+		this.current();
+		return new CloudMemberCompanyFileReader({ ...this.#options, snapshotId });
 	}
 	async files(): Promise<CloudMemberCompanyFileClient> {
 		this.current();

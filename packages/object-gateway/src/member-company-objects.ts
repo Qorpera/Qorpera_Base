@@ -26,6 +26,7 @@ export interface MemberCompanyObjectAuthority {
 	authorizeMemberCompanyObject(
 		userToken: string,
 		identity: MemberCompanyObjectIdentity,
+		mode?: "snapshot",
 	): Promise<AuthorizedMemberCompanyObject>;
 	readLegacyObject(companyId: string, sha256: string): Promise<Uint8Array>;
 }
@@ -43,7 +44,7 @@ export async function serveMemberCompanyObject(
 	observation?: MemberRequestObservationSpan,
 ): Promise<void> {
 	if (request.method !== "GET") throw new ObjectDependencyError(405);
-	const match = /^\/v1\/member-company-objects\/([0-9a-f-]{36})\/([0-9a-f-]{36})\/([0-9a-f]{64})$/.exec(
+	const match = /^\/v1\/member-company(?:-snapshot)?-objects\/([0-9a-f-]{36})\/([0-9a-f-]{36})\/([0-9a-f]{64})$/.exec(
 		request.url ?? "",
 	);
 	if (!match || !UUID.test(match[1]!) || !UUID.test(match[2]!)) throw new ObjectDependencyError(404);
@@ -68,7 +69,11 @@ export async function serveMemberCompanyObject(
 		version: match[2]!,
 		sha256: match[3]!,
 	};
-	const admitted = await authority.authorizeMemberCompanyObject(token, identity);
+	const authorize = () =>
+		request.url!.startsWith("/v1/member-company-snapshot-objects/")
+			? authority.authorizeMemberCompanyObject(token, identity, "snapshot")
+			: authority.authorizeMemberCompanyObject(token, identity);
+	const admitted = await authorize();
 	observation?.update({
 		companyId: admitted.companyId,
 		environmentId: admitted.environmentId,
@@ -90,7 +95,7 @@ export async function serveMemberCompanyObject(
 	if (bytes.byteLength !== admitted.bytes || createHash("sha256").update(bytes).digest("hex") !== identity.sha256)
 		throw new ObjectDependencyError(503);
 	observation?.update({ logicalObjectReadBytes: bytes.byteLength });
-	const current = await authority.authorizeMemberCompanyObject(token, identity);
+	const current = await authorize();
 	if (current.companyId !== admitted.companyId || current.bytes !== admitted.bytes)
 		throw new ObjectDependencyError(503);
 	observation?.update({ responseBodyBytes: bytes.byteLength });
