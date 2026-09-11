@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Use a length-neutral email code hint so sign-in instructions remain accurate with the configured eight-digit codes.
+
 ### Added
 
 - Connect the product web app's Computer panel to shared member runtime discovery, status, explicit start intents and screen viewing.

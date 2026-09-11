@@ -43,7 +43,7 @@ export function renderSignIn(auth: AuthController, container: HTMLElement): void
 		name: "code",
 		inputmode: "numeric",
 		autocomplete: "one-time-code",
-		placeholder: "6-digit code",
+		placeholder: "Code from your email",
 		value: container.querySelector<HTMLInputElement>("#signinCode")?.value ?? "",
 		maxlength: 8,
 		required: true,
