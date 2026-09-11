@@ -1251,7 +1251,11 @@ export class LxdUnixClient
 					command: argv,
 					interactive: false,
 					"wait-for-websocket": false,
-					"record-output": false,
+					// LXD's VM exec bridge closes its control socket early when
+					// stdout/stderr have no recording targets, killing the guest
+					// command. Pinned controls emit only fixed diagnostics; their
+					// protected requests and credentials never enter these streams.
+					"record-output": true,
 					user: 0,
 					group: 0,
 					cwd: "/",

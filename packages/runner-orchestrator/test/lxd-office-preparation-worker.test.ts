@@ -1,9 +1,14 @@
-import { readdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, readdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { COMPANY_COMPUTER_ADOPTION_RECEIPT_PATH, parseCompanyComputerPreparationRequest } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { officeDigest } from "../src/lxd-office-image-provenance.ts";
 import { readRecord } from "../src/lxd-office-journal-files.ts";
+import {
+	type LxdOfficePreparationIdentity,
+	LxdOfficePreparationJournal,
+} from "../src/lxd-office-preparation-journal.ts";
 import { officePreparationWorkerFixture } from "./fixtures/office-preparation-worker.ts";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -18,6 +23,65 @@ afterEach(async () => {
 const fixture = (booted = true) => officePreparationWorkerFixture(roots, booted);
 
 describe("preparation of an acknowledged first boot", () => {
+	async function recoveredFixture() {
+		const f = await fixture();
+		f.poll.mockImplementation(async (reference) => {
+			if (reference.operationId === id(20)) throw new Error("original operation expired");
+			return "succeeded";
+		});
+		await f.worker.reconcile(f.request, signal());
+		const original = await readFile(join(f.root, f.names.journal, "000001.json"));
+		const { schema: _schema, ...identity } = JSON.parse(
+			await readFile(join(f.root, f.names.journal, "authority.json"), "utf8"),
+		) as LxdOfficePreparationIdentity & { schema: string };
+		const review = {
+			schema: "qorpera.lxd-office-preparation-recovery/v1",
+			recoveryId: id(50),
+			identitySha256: officeDigest(identity),
+			originalOperationId: id(20),
+			acceptedSha256: createHash("sha256").update(original).digest("hex"),
+		};
+		const recoveryRoot = join(f.root, `preparation-recovery-${f.binding.allocationId}-${review.recoveryId}`);
+		await mkdir(recoveryRoot, { mode: 0o700 });
+		const previous = f.exec.getMockImplementation()!;
+		f.exec.mockImplementation(async (...args) => ({ ...(await previous(...args)), operationId: id(21) }));
+		const recovery = await LxdOfficePreparationJournal.open(recoveryRoot, identity, f.client, false);
+		await recovery.reconcile(signal());
+		const read = f.readProtected.getMockImplementation()!;
+		f.readProtected.mockImplementation(async (path) =>
+			path === `${f.request.reviewPath}.preparation-recovery` ? encode(review) : read(path),
+		);
+		return { ...f, review, recoveryRoot, original };
+	}
+	it("consumes an explicitly reviewed settled recovery while retaining the unknown original attempt", async () => {
+		const f = await recoveredFixture();
+		const result = await f.create().reconcile(f.request, signal());
+		expect(result).toMatchObject({ state: "awaiting_activation", operationId: id(21) });
+		expect(await readFile(join(f.root, f.names.journal, "000001.json"))).toEqual(f.original);
+		expect(await readdir(join(f.root, f.names.journal))).not.toContain("000002.json");
+		await expect(f.create().reconcile(f.request, signal())).resolves.toEqual(result);
+		expect(f.exec).toHaveBeenCalledTimes(2);
+		expect(f.stage).toHaveBeenCalledOnce();
+	});
+	it.each(["identity", "original", "prefix", "pending", "missing-journal", "guest-report", "revoked"])(
+		"refuses unconfirmed recovery: %s",
+		async (fault) => {
+			const f = await recoveredFixture();
+			if (fault === "identity") f.review.identitySha256 = "0".repeat(64);
+			if (fault === "original") f.review.originalOperationId = id(21);
+			if (fault === "prefix") f.review.acceptedSha256 = "0".repeat(64);
+			if (fault === "pending") {
+				await unlink(join(f.recoveryRoot, f.names.journal, "000002.json"));
+				f.poll.mockResolvedValue("pending");
+			}
+			if (fault === "missing-journal") await rm(f.recoveryRoot, { recursive: true });
+			if (fault === "guest-report") f.guest.delete("/run/qorpera-office-preparation/completion.json");
+			if (fault === "revoked") f.call.mockRejectedValue(new Error("revoked"));
+			await expect(f.create().reconcile(f.request, signal())).rejects.toThrow();
+			expect(f.exec).toHaveBeenCalledTimes(2);
+			expect(await readdir(f.root)).not.toContain(f.names.completion);
+		},
+	);
 	it("binds fixed guest settings and one command to retained evidence, and resumes after process replacement", async () => {
 		const f = await fixture();
 		const result = await f.worker.reconcile(f.request, signal());

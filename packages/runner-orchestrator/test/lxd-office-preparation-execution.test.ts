@@ -15,6 +15,8 @@ import {
 	type LxdOfficeConfigurationIdentity,
 	LxdOfficeConfigurationJournal,
 } from "../src/lxd-office-configuration-journal.ts";
+import { LxdOfficeControlJournal } from "../src/lxd-office-control-journal.ts";
+import { observeLxdOfficeControlJournals, runLxdOfficeControlObserver } from "../src/lxd-office-control-observer.ts";
 import { lxdOfficeGuestPlan } from "../src/lxd-office-guest.ts";
 import {
 	type LxdOfficePreparationIdentity,
@@ -243,7 +245,7 @@ for (const lane of [
 	},
 ] as const)
 	describe(`fixed ${lane.purpose} exec over actual Unix HTTP`, () => {
-		it("submits one fixed command with no shell, credential input, output recording or wait", async () => {
+		it("submits one fixed command with output recording to keep the VM exec bridge alive", async () => {
 			const f = await fixture();
 			await expect(f.client[lane.submit]("offices", name, command, signal())).resolves.toEqual(reference);
 			expect(f.calls).toEqual([
@@ -262,7 +264,7 @@ for (const lane of [
 						],
 						interactive: false,
 						"wait-for-websocket": false,
-						"record-output": false,
+						"record-output": true,
 						user: 0,
 						group: 0,
 						cwd: "/",
@@ -285,7 +287,7 @@ for (const lane of [
 			).rejects.toThrow("SUBMISSION_UNCONFIRMED");
 			expect(f.calls).toHaveLength(0);
 		});
-		it.each([0, 1, 129, 255])("checks guest process exit %s separately from task success", async (exit) => {
+		it.each([0, 1, 129, 137, 255])("checks guest process exit %s separately from task success", async (exit) => {
 			const f = await fixture();
 			f.handlers.get = async (_r, response) =>
 				send(response, { type: "sync", status_code: 200, metadata: success(exit) });
@@ -407,6 +409,76 @@ for (const lane of [
 
 for (const purpose of ["preparation", "configuration", "service-start", "service-stop", "service-restart"] as const)
 	describe(`durable ${purpose} command journal with actual filesystem and HTTP`, () => {
+		it("retains the terminal exit independently before LXD expires the operation", async () => {
+			const f = await fixture(purpose);
+			const journal = await f.initialize();
+			await journal.reconcile(signal());
+			f.handlers.get = async (_r, response) =>
+				send(response, { type: "sync", status_code: 200, metadata: success() });
+			const stop = new AbortController();
+			let observed!: () => void;
+			const captured = new Promise<void>((done) => {
+				observed = done;
+			});
+			const running = runLxdOfficeControlObserver(
+				async (checked) => {
+					await observeLxdOfficeControlJournals(f.root, f.client, checked);
+					observed();
+				},
+				stop.signal,
+				() => {
+					throw new Error("unexpected observation error");
+				},
+			);
+			try {
+				await captured;
+			} finally {
+				stop.abort();
+				await running;
+			}
+			f.handlers.get = async (_r, response) => send(response, {}, 404);
+			const calls = f.calls.length;
+			await expect((await f.reopen()).reconcile(signal())).resolves.toEqual({
+				state: "succeeded",
+				operationId: id(100),
+			});
+			expect(f.calls).toHaveLength(calls);
+			expect(f.calls.filter((call) => call.method === "POST")).toHaveLength(1);
+			expect((await f.events()).map((event) => event.kind)).toEqual(["dispatch", "accepted", "settled"]);
+		});
+		it("cannot dispatch an untouched journal or invent a missing terminal fact", async () => {
+			const f = await fixture(purpose);
+			const journal = await f.initialize();
+			await observeLxdOfficeControlJournals(f.root, f.client, signal());
+			expect(f.calls).toHaveLength(0);
+			await journal.reconcile(signal());
+			f.handlers.get = async (_r, response) => send(response, {}, 404);
+			await observeLxdOfficeControlJournals(f.root, f.client, signal());
+			expect((await f.events()).map((event) => event.kind)).toEqual(["dispatch", "accepted"]);
+			expect(f.calls.filter((call) => call.method === "POST")).toHaveLength(1);
+			await expect(
+				LxdOfficeControlJournal.observeExisting(
+					f.root,
+					"../other",
+					f.client.inspectOfficePreparation.bind(f.client),
+					signal(),
+				),
+			).rejects.toThrow("INVALID_OFFICE_CONTROL_JOURNAL_NAME");
+		});
+		it("shares immutable completion publication with a simultaneous lifecycle observation", async () => {
+			const f = await fixture(purpose);
+			const journal = await f.initialize();
+			await journal.reconcile(signal());
+			f.handlers.get = async (_r, response) =>
+				send(response, { type: "sync", status_code: 200, metadata: success(137) });
+			await Promise.allSettled([
+				journal.observe(signal()),
+				observeLxdOfficeControlJournals(f.root, f.client, signal()),
+			]);
+			await expect((await f.reopen()).observe(signal())).resolves.toEqual({ state: "failed", operationId: id(100) });
+			expect((await f.events()).map((event) => event.kind)).toEqual(["dispatch", "accepted", "settled"]);
+			expect(f.calls.filter((call) => call.method === "POST")).toHaveLength(1);
+		});
 		it("persists dispatch before POST, acceptance before GET and reopens the same completed command", async () => {
 			const f = await fixture(purpose);
 			const journal = await f.initialize();
@@ -662,7 +734,7 @@ for (const lane of [
 				],
 				interactive: false,
 				"wait-for-websocket": false,
-				"record-output": false,
+				"record-output": true,
 				user: 0,
 				group: 0,
 				cwd: "/",

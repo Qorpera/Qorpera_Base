@@ -171,6 +171,8 @@ export async function officeBootWorkerFixture(roots: string[]) {
 	const readProtected = vi.fn(async (path: string) => {
 		if (path === request.reviewPath) return reviewBytes;
 		if (path === request.writerFencePath) return handoffBytes;
+		if (path === `${request.reviewPath}.preparation-recovery`)
+			throw Object.assign(new Error("no preparation recovery review"), { code: "ENOENT" });
 		throw new Error("unexpected protected path");
 	});
 	const create = () => new LxdOfficeBootWorker({ policy, check }, { call }, { client, kernelLock, readProtected });

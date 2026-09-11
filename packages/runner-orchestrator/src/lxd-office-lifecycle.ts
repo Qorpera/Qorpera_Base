@@ -7,6 +7,7 @@ import {
 	parseCompanyComputerLifecycleRequest,
 	parseCompanyComputerPreparationCommand,
 } from "@qorpera/contracts";
+import { LxdUnixClient } from "./lxd-client.ts";
 import { LxdOfficeActivationWorker } from "./lxd-office-activation-worker.ts";
 import { assertOfficeAdoptionKernelLock } from "./lxd-office-adoption-files.ts";
 import { LxdOfficeAdoptionWorker } from "./lxd-office-adoption-worker.ts";
@@ -14,6 +15,7 @@ import { LxdOfficeBootActivationWorker } from "./lxd-office-boot-activation-work
 import { LxdOfficeBootConfigurationWorker } from "./lxd-office-boot-configuration-worker.ts";
 import { LxdOfficeBootWorker } from "./lxd-office-boot-worker.ts";
 import { LxdOfficeConfigurationWorker } from "./lxd-office-configuration-worker.ts";
+import { observeLxdOfficeControlJournals } from "./lxd-office-control-observer.ts";
 import { LxdOfficeCreationWorker } from "./lxd-office-creation-worker.ts";
 import { officeDigest, officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
 import { LxdOfficeInventoryWorker } from "./lxd-office-inventory-worker.ts";
@@ -114,6 +116,7 @@ export class LxdOfficeLifecycle {
 		guestPackageManifestSha256: string;
 	}>;
 	readonly #root: string;
+	readonly #operationClient: LxdUnixClient;
 	readonly #configSha: string;
 	readonly #planPath: string;
 	readonly #provider: LxdOfficeProviderControl;
@@ -139,6 +142,7 @@ export class LxdOfficeLifecycle {
 			g = policy.guest;
 		const limits = parseOfficeInventoryLimits(options.inventoryLimits);
 		this.#root = policy.journal.path;
+		this.#operationClient = new LxdUnixClient(policy.host.socketPath);
 		this.#planPath = officePhysicalPath(options.planPath);
 		const providerPolicySha256 = lxdOfficePhysicalPolicySha256(policy);
 		this.observationIdentity = Object.freeze({
@@ -198,6 +202,10 @@ export class LxdOfficeLifecycle {
 			registry,
 			options,
 		);
+	}
+	async observeControlOperations(signal: AbortSignal): Promise<void> {
+		await this.#kernelLock(this.#root);
+		await observeLxdOfficeControlJournals(this.#root, this.#operationClient, signal);
 	}
 	async reconcile(caller: AbortSignal): Promise<LxdOfficeLifecycleResult> {
 		caller.throwIfAborted();

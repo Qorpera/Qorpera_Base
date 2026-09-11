@@ -92,6 +92,45 @@ export class LxdOfficeControlJournal {
 		this.#client = client;
 	}
 
+	/** Retain terminal facts independently of slow cloud/guest reconciliation.
+	 * This entry point cannot submit commands or initialize missing journals. */
+	static async observeExisting(
+		stateRoot: string,
+		name: string,
+		inspect: LxdOfficeControlClient["inspect"],
+		signal: AbortSignal,
+	): Promise<LxdOfficeControlOperationResult> {
+		const match =
+			/^(preparation|configuration|boot-configuration|boot-service-restart|boot-service-start|service-start|service-stop|service-restart)-([0-9a-f-]+)$/.exec(
+				name,
+			);
+		if (!match) throw new Error("INVALID_OFFICE_CONTROL_JOURNAL_NAME");
+		await checkDirectory(stateRoot);
+		const root = join(stateRoot, name);
+		await checkDirectory(root);
+		const value = (await readRecord(join(root, "authority.json"))).value;
+		if (!value || typeof value !== "object" || Array.isArray(value))
+			throw new Error("OFFICE_CONTROL_AUTHORITY_UNCONFIRMED");
+		const { schema, ...identity } = value as Record<string, unknown>;
+		const purpose = match[1] as Purpose;
+		if (schema !== `qorpera.lxd-office-${purpose}-journal/v1`)
+			throw new Error("OFFICE_CONTROL_AUTHORITY_UNCONFIRMED");
+		const journal = await LxdOfficeControlJournal.open(
+			stateRoot,
+			identity as unknown as LxdOfficeControlIdentity,
+			{
+				inspect,
+				submit: async () => {
+					throw new Error("OFFICE_CONTROL_OBSERVER_CANNOT_DISPATCH");
+				},
+			},
+			true,
+			purpose,
+		);
+		if (journal.#root !== root) throw new Error("OFFICE_CONTROL_JOURNAL_NAME_MISMATCH");
+		return journal.observe(signal);
+	}
+
 	static async open(
 		stateRoot: string,
 		value: LxdOfficeControlIdentity,

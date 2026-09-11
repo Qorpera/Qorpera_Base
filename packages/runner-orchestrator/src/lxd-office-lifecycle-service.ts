@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Writable } from "node:stream";
+import { runLxdOfficeControlObserver } from "./lxd-office-control-observer.ts";
 import { officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
 import { LxdOfficeLifecycle, type LxdOfficeLifecycleResult, runLxdOfficeLifecycle } from "./lxd-office-lifecycle.ts";
 import { readLxdOfficeCredentialFile, readLxdOfficeProtectedFile } from "./lxd-office-physical-host.ts";
@@ -150,13 +151,24 @@ export async function runLxdOfficeLifecycleService(
 			signal,
 		);
 		const emit = createOfficeLifecycleReporter(lifecycle.observationIdentity, write);
-		await runLxdOfficeLifecycle(
-			lifecycle,
-			signal,
-			(result) => emit(result),
-			() => emit(),
-			config.pollIntervalMs,
-		);
+		const stop = new AbortController();
+		const running = AbortSignal.any([signal, stop.signal]);
+		const outcomes = await Promise.allSettled([
+			runLxdOfficeLifecycle(
+				lifecycle,
+				running,
+				(result) => emit(result),
+				() => emit(),
+				config.pollIntervalMs,
+			).finally(() => stop.abort()),
+			runLxdOfficeControlObserver(
+				(checked) => lifecycle.observeControlOperations(checked),
+				running,
+				() => emit(),
+			).finally(() => stop.abort()),
+		]);
+		if (!signal.aborted && outcomes.some((result) => result.status === "rejected"))
+			throw new Error("OFFICE_PROVIDER_LOOPS_UNCONFIRMED");
 	} catch {
 		if (!signal.aborted) throw new Error("OFFICE_PROVIDER_SERVICE_UNCONFIRMED");
 	} finally {
