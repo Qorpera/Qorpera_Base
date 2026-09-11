@@ -4,6 +4,7 @@ export * from "./company-computer-boot-configuration.ts";
 export * from "./company-computer-boot-service-restart.ts";
 export * from "./company-computer-boot-service-start.ts";
 export * from "./company-computer-configuration.ts";
+export * from "./company-computer-native-endpoint.ts";
 export * from "./company-computer-preparation.ts";
 /** JSON-compatible durable data accepted by Qorpera cloud contracts. */
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };

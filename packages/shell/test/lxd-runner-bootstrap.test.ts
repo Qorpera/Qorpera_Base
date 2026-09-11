@@ -239,6 +239,7 @@ async function companyFixture(): Promise<LxdRunnerBootstrapPaths> {
 		{ mode: 0o600 },
 	);
 	await writeFile(join(paths.credentialSource, "qorpera-native-object-token"), `${"q".repeat(43)}\n`, { mode: 0o600 });
+	await writeFile(join(paths.credentialSource, "qorpera-office-native"), "", { mode: 0o600 });
 	await writeFile(join(paths.credentialSource, "qorpera-cloud-secret-runtime"), `${"s".repeat(43)}\n`, {
 		mode: 0o600,
 	});
@@ -622,6 +623,43 @@ describe("governed native company guest bootstrap", () => {
 			"does not match immutable bootstrap authority",
 		);
 	});
+
+	it.each(["valid", "url-drift", "digest-drift", "missing", "shared", "unconfigured", "unknown-field"])(
+		"checks native office transport authority before service startup (%s)",
+		async (kind) => {
+			const paths = await companyFixture();
+			const token = (kind === "shared" ? "c" : "o").repeat(43);
+			const url = "https://office.example.test/office/90000000-0000-4000-8000-000000000099/native";
+			const bootstrap = JSON.parse(await readFile(paths.bootstrapConfig, "utf-8")) as {
+				company_runtime: Record<string, unknown>;
+			};
+			if (kind !== "unconfigured") {
+				bootstrap.company_runtime.office = {
+					environment_id: "90000000-0000-4000-8000-000000000098",
+					url,
+					token_sha256:
+						kind === "digest-drift" ? "f".repeat(64) : createHash("sha256").update(token).digest("hex"),
+					...(kind === "unknown-field" ? { token } : {}),
+				};
+				await writeFile(
+					paths.nativeProviderEnvironment,
+					`${await readFile(paths.nativeProviderEnvironment, "utf-8")}QORPERA_COMPANY_COMPUTER_URL=${kind === "url-drift" ? url.replace("0099", "0097") : url}\n`,
+				);
+			}
+			await writeFile(paths.bootstrapConfig, JSON.stringify(bootstrap));
+			const credential = join(paths.credentialSource, "qorpera-office-native");
+			if (kind === "missing") await rm(credential);
+			else await writeFile(credential, `${token}\n`, { mode: 0o600 });
+			const started: string[] = [];
+			if (kind === "valid") {
+				await startCompanyFixture(paths, started);
+				expect(started).toEqual(["qorpera-native-company-host.service", "qorpera-company-runner.service"]);
+			} else {
+				await expect(startCompanyFixture(paths, started)).rejects.toThrow();
+				expect(started).toEqual([]);
+			}
+		},
+	);
 
 	it("rejects shared workspace or direct company environment settings in the governed lane", async () => {
 		const paths = await companyFixture();

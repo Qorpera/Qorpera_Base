@@ -1373,6 +1373,137 @@ describe("LXD cloud runner provider", () => {
 		expect(lxd.volumes.has(`native-recovery-${runId}`)).toBe(true);
 	});
 
+	it.each(["matching", "foreign-company", "foreign-environment"])(
+		"injects only the exact company and environment office route (%s)",
+		async (scope) => {
+			const settings = governedConfig(join(await root(), "state"));
+			const route = {
+				companyId: work().profileId,
+				environmentId: work().environmentId,
+				url: "https://office.example.test/office/20000000-0000-4000-8000-000000000099/native",
+				token: "o".repeat(43),
+			};
+			if (scope === "foreign-company") route.companyId = "20000000-0000-4000-8000-000000000098";
+			if (scope === "foreign-environment") route.environmentId = "20000000-0000-4000-8000-000000000098";
+			const foreign = {
+				...route,
+				companyId: "20000000-0000-4000-8000-000000000097",
+				url: route.url.replace("0099", "0097"),
+				token: "p".repeat(43),
+			};
+			settings.nativeCompanyRuntime!.offices = [route, foreign];
+			const lxd = new FakeLxd(),
+				guest = new FakeGuest();
+			const backend = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([]));
+			const runner = await backend.acquire(runId, work(), new AbortController().signal);
+			const files = new Map(lxd.filePushes.map((file) => [file.path, file.content]));
+			const officeCredential = "/var/lib/qorpera-bootstrap/credentials/qorpera-office-native";
+			expect(files.get(officeCredential)).toBe(scope === "matching" ? `${route.token}\n` : "");
+			expect(lxd.filePushes.find((file) => file.path === officeCredential)?.mode).toBe(0o600);
+			const bootstrap = JSON.parse(files.get("/var/lib/qorpera-bootstrap/bootstrap.json")!);
+			const journalText = await readFile(join(settings.stateRoot, runId, "journal.json"), "utf-8");
+			const journal = JSON.parse(journalText);
+			if (scope === "matching") {
+				expect(bootstrap.company_runtime.office).toEqual({
+					environment_id: route.environmentId,
+					url: route.url,
+					token_sha256: createHash("sha256").update(route.token).digest("hex"),
+				});
+				expect(journal.lxd.companyRuntime.office).toEqual({
+					environmentId: route.environmentId,
+					url: route.url,
+					tokenSha256: createHash("sha256").update(route.token).digest("hex"),
+				});
+				expect(files.get("/var/lib/qorpera-bootstrap/native-provider.env")).toContain(
+					`QORPERA_COMPANY_COMPUTER_URL=${route.url}\n`,
+				);
+			} else {
+				expect(bootstrap.company_runtime.office).toBeUndefined();
+				expect(journal.lxd.companyRuntime.office).toBeUndefined();
+				expect(files.get("/var/lib/qorpera-bootstrap/native-provider.env")).not.toContain(
+					"QORPERA_COMPANY_COMPUTER_URL",
+				);
+			}
+			for (const secret of [route.token, foreign.token]) {
+				expect(journalText).not.toContain(secret);
+				expect(JSON.stringify(lxd.createCalls)).not.toContain(secret);
+				expect(JSON.stringify(lxd.filePushes.filter((file) => file.path !== officeCredential))).not.toContain(
+					secret,
+				);
+			}
+			expect(JSON.stringify(lxd.filePushes)).not.toContain(foreign.token);
+			const pushed = lxd.filePushes.length;
+			const restarted = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([]));
+			await expect(restarted.acquire(runId, work(), new AbortController().signal)).resolves.toEqual(runner);
+			expect(lxd.filePushes).toHaveLength(pushed);
+			expect(lxd.createCalls).toHaveLength(1);
+		},
+	);
+
+	it("freezes route credentials at construction and refuses changed restart authority", async () => {
+		const settings = governedConfig(join(await root(), "state"));
+		const route = {
+			companyId: work().profileId,
+			environmentId: work().environmentId,
+			url: "https://office.example.test/office/20000000-0000-4000-8000-000000000099/native",
+			token: "o".repeat(43),
+		};
+		settings.nativeCompanyRuntime!.offices = [route];
+		const lxd = new FakeLxd(),
+			guest = new FakeGuest();
+		const backend = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([]));
+		route.token = "p".repeat(43);
+		await backend.acquire(runId, work(), new AbortController().signal);
+		expect(lxd.filePushes.find((file) => file.path.endsWith("/qorpera-office-native"))?.content).toBe(
+			`${"o".repeat(43)}\n`,
+		);
+		const count = lxd.filePushes.length;
+		const restarted = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([]));
+		await expect(restarted.acquire(runId, work(), new AbortController().signal)).rejects.toThrow("journal");
+		expect(lxd.filePushes).toHaveLength(count);
+	});
+
+	it.each(["environmentId", "url", "tokenSha256", "unknown"])(
+		"refuses altered journal office authority (%s)",
+		async (kind) => {
+			const settings = governedConfig(join(await root(), "state"));
+			settings.nativeCompanyRuntime!.offices = [
+				{
+					companyId: work().profileId,
+					environmentId: work().environmentId,
+					url: "https://office.example.test/office/20000000-0000-4000-8000-000000000099/native",
+					token: "o".repeat(43),
+				},
+			];
+			const lxd = new FakeLxd(),
+				guest = new FakeGuest();
+			await new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([])).acquire(
+				runId,
+				work(),
+				new AbortController().signal,
+			);
+			const path = join(settings.stateRoot, runId, "journal.json");
+			const journal = JSON.parse(await readFile(path, "utf-8"));
+			journal.lxd.companyRuntime.office[kind] =
+				kind === "environmentId"
+					? "20000000-0000-4000-8000-000000000098"
+					: kind === "url"
+						? "https://other.example.test/office/20000000-0000-4000-8000-000000000099/native"
+						: "f".repeat(64);
+			await writeFile(path, JSON.stringify(journal));
+			const count = lxd.filePushes.length;
+			await expect(
+				new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([])).acquire(
+					runId,
+					work(),
+					new AbortController().signal,
+				),
+			).rejects.toThrow();
+			expect(lxd.filePushes).toHaveLength(count);
+			expect(lxd.createCalls).toHaveLength(1);
+		},
+	);
+
 	it.each(["foreign-disk", "foreign-network", "cloud-init", "raw-qemu", "prototype-key"])(
 		"refuses inherited %s before startup or secret injection",
 		async (drift) => {

@@ -10,7 +10,10 @@ import {
 	type CompanyComputerToolContent,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import { readBoundedCloudResponse } from "@qorpera/cloud-client/cloud-request";
-import type { JsonValue } from "@qorpera/contracts";
+import { type JsonValue, parseCompanyComputerNativeUrl } from "@qorpera/contracts";
+
+export { parseCompanyComputerNativeUrl } from "@qorpera/contracts";
+
 import {
 	type CloudCompanyComputerSessionFactory,
 	createCloudCompanyComputerSession,
@@ -91,23 +94,6 @@ export function parseCompanyComputerNativeDescriptor(
 		)
 			throw new Error("INVALID_OFFICE_NATIVE_DESCRIPTOR");
 	return structuredClone(record) as unknown as CompanyComputerNativeDescriptor;
-}
-
-export function parseCompanyComputerNativeUrl(value: string): { url: string; companyComputerId: string } {
-	const url = new URL(value);
-	const match = /^\/office\/([^/]+)\/native$/.exec(url.pathname);
-	if (
-		url.protocol !== "https:" ||
-		url.username ||
-		url.password ||
-		url.search ||
-		url.hash ||
-		url.href !== value ||
-		!match ||
-		!COMPANY_COMPUTER_UUID.test(match[1])
-	)
-		throw new Error("INVALID_OFFICE_NATIVE_URL");
-	return { url: url.href, companyComputerId: match[1] };
 }
 
 /** Private native-host -> office-supervisor transport. Guest dispatch still

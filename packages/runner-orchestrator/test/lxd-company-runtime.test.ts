@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { chmod, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { lxdNativeCompanyRuntimeFromEnvironment } from "../src/lxd-company-runtime.ts";
 
@@ -38,6 +38,99 @@ async function environment(): Promise<NodeJS.ProcessEnv> {
 		QORPERA_LXD_CLOUD_SECRET_CA_SHA256: createHash("sha256").update(secretCa).digest("hex"),
 	};
 }
+
+async function officeEnvironment() {
+	const current = await environment();
+	const root = dirname(current.QORPERA_LXD_NATIVE_OBJECT_TOKEN_FILE!);
+	const tokenPath = join(root, "office-token");
+	const routePath = join(root, "offices.json");
+	const route = {
+		companyId: "20000000-0000-4000-8000-000000000004",
+		environmentId: "20000000-0000-4000-8000-000000000005",
+		url: "https://office.example.test/office/20000000-0000-4000-8000-000000000099/native",
+		tokenPath,
+	};
+	const document = { schema: "qorpera.lxd-native-office-routes/v1", offices: [route] };
+	await writeFile(tokenPath, `${"o".repeat(43)}\n`, { mode: 0o600 });
+	await writeFile(routePath, JSON.stringify(document), { mode: 0o600 });
+	current.QORPERA_LXD_OFFICE_ROUTES_FILE = routePath;
+	return { current, tokenPath, routePath, document };
+}
+
+describe("protected company-scoped native office routes", () => {
+	it("loads only a complete opt-in with private separate credentials", async () => {
+		const { current, document } = await officeEnvironment();
+		expect(lxdNativeCompanyRuntimeFromEnvironment(current)?.offices).toEqual([
+			{
+				companyId: document.offices[0].companyId,
+				environmentId: document.offices[0].environmentId,
+				url: document.offices[0].url,
+				token: "o".repeat(43),
+			},
+		]);
+		expect(() =>
+			lxdNativeCompanyRuntimeFromEnvironment({
+				QORPERA_LXD_OFFICE_ROUTES_FILE: current.QORPERA_LXD_OFFICE_ROUTES_FILE,
+			}),
+		).toThrow("requires QORPERA_NATIVE_RUNTIME");
+		expect(() =>
+			lxdNativeCompanyRuntimeFromEnvironment({ ...current, QORPERA_COMPANY_COMPUTER_TOKEN: "o".repeat(43) }),
+		).toThrow("protected route and credential files");
+	});
+
+	it.each(["route-readable", "route-symlink", "token-readable", "token-symlink", "token-shared", "route-oversized"])(
+		"refuses unsafe route material (%s)",
+		async (kind) => {
+			const { current, tokenPath, routePath } = await officeEnvironment();
+			if (kind === "route-readable") await chmod(routePath, 0o644);
+			if (kind === "route-symlink") {
+				await symlink(routePath, `${routePath}.link`);
+				current.QORPERA_LXD_OFFICE_ROUTES_FILE = `${routePath}.link`;
+			}
+			if (kind === "token-readable") await chmod(tokenPath, 0o644);
+			if (kind === "token-symlink") {
+				await rm(tokenPath);
+				await symlink(current.QORPERA_LXD_NATIVE_OBJECT_TOKEN_FILE!, tokenPath);
+			}
+			if (kind === "token-shared") await writeFile(tokenPath, "q".repeat(43));
+			if (kind === "route-oversized") await writeFile(routePath, " ".repeat(65537));
+			expect(() => lxdNativeCompanyRuntimeFromEnvironment(current)).toThrow();
+		},
+	);
+
+	it.each(["scope", "target", "token", "url", "company", "unknown-field", "unknown-document", "empty"])(
+		"rejects ambiguous or malformed route authority (%s)",
+		async (kind) => {
+			const { current, routePath, document } = await officeEnvironment();
+			const second = {
+				...document.offices[0],
+				companyId: "20000000-0000-4000-8000-000000000006",
+				url: "https://office.example.test/office/20000000-0000-4000-8000-000000000098/native",
+				tokenPath: `${document.offices[0].tokenPath}.second`,
+			};
+			await writeFile(second.tokenPath, "p".repeat(43), { mode: 0o600 });
+			if (kind === "scope") second.companyId = document.offices[0].companyId;
+			if (kind === "target") second.url = document.offices[0].url;
+			if (kind === "token") second.tokenPath = document.offices[0].tokenPath;
+			if (kind === "url") second.url += "?token=leak";
+			if (kind === "company") second.companyId = "*";
+			document.offices.push(second);
+			const encoded = {
+				...document,
+				...(kind === "unknown-document" ? { token: "o".repeat(43) } : {}),
+				offices:
+					kind === "empty"
+						? []
+						: document.offices.map((route) => ({
+								...route,
+								...(kind === "unknown-field" ? { token: "o".repeat(43) } : {}),
+							})),
+			};
+			await writeFile(routePath, JSON.stringify(encoded));
+			expect(() => lxdNativeCompanyRuntimeFromEnvironment(current)).toThrow();
+		},
+	);
+});
 
 describe("explicit governed LXD runtime configuration", () => {
 	it("requires a complete opt-in and loads a private token file", async () => {

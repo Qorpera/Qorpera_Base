@@ -1,6 +1,11 @@
 import { createHash, X509Certificate } from "node:crypto";
 import { closeSync, constants, fstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
+import {
+	type LxdNativeCompanyOffice,
+	readLxdNativeCompanyOffices,
+	validateLxdNativeCompanyOffices,
+} from "./lxd-company-office.ts";
 
 export interface LxdNativeCompanyRuntimeConfig {
 	mode: "company-path-v1";
@@ -17,6 +22,7 @@ export interface LxdNativeCompanyRuntimeConfig {
 	network: string;
 	recoveryVolumePrefix: string;
 	recoveryVolumeSize: string;
+	offices?: LxdNativeCompanyOffice[];
 }
 
 function exactHttpsOrigin(value: string, label: string): string {
@@ -125,6 +131,7 @@ export function validateLxdNativeCompanyRuntime(config: LxdNativeCompanyRuntimeC
 		"network",
 		"recoveryVolumePrefix",
 		"recoveryVolumeSize",
+		...(config.offices !== undefined ? ["offices"] : []),
 	];
 	if (
 		Object.keys(config).length !== keys.length ||
@@ -164,6 +171,8 @@ export function validateLxdNativeCompanyRuntime(config: LxdNativeCompanyRuntimeC
 		throw new Error("Cloud secret broker CA certificate is invalid");
 	}
 	if (!certificate.ca) throw new Error("Cloud secret broker CA certificate is not a certificate authority");
+	if (config.offices !== undefined)
+		validateLxdNativeCompanyOffices(config.offices, [config.objectGatewayToken, config.secretBroker.runtimeToken]);
 }
 
 /** Explicit, separate rollout lane. Partial configuration must not select the legacy runtime. */
@@ -192,7 +201,13 @@ export function lxdNativeCompanyRuntimeFromEnvironment(
 			"The provider requires a private cloud secret runtime-token file, not a token in its environment",
 		);
 	}
-	if (names.every((name) => environment[name] === undefined)) return undefined;
+	if (environment.QORPERA_COMPANY_COMPUTER_TOKEN !== undefined)
+		throw new Error("Native office transport requires protected route and credential files");
+	if (
+		names.every((name) => environment[name] === undefined) &&
+		environment.QORPERA_LXD_OFFICE_ROUTES_FILE === undefined
+	)
+		return undefined;
 	const values = names.map((name) => {
 		const value = environment[name];
 		if (!value || value !== value.trim() || /[\0\r\n]/.test(value)) {
@@ -218,6 +233,9 @@ export function lxdNativeCompanyRuntimeFromEnvironment(
 		network: values[5] as string,
 		recoveryVolumePrefix: values[6] as string,
 		recoveryVolumeSize: values[7] as string,
+		...(environment.QORPERA_LXD_OFFICE_ROUTES_FILE !== undefined
+			? { offices: readLxdNativeCompanyOffices(environment.QORPERA_LXD_OFFICE_ROUTES_FILE, privateToken) }
+			: {}),
 	};
 	validateLxdNativeCompanyRuntime(config);
 	return config;

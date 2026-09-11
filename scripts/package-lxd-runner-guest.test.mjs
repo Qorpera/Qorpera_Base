@@ -111,6 +111,7 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 		const companyRunner = await readFile(join(outputRoot, "qorpera-company-runner.service"), "utf-8");
 		assert.match(companyHost, /^User=qorpera-native-company$/m);
 		assert.match(companyHost, /^LoadCredential=qorpera-native-object-token:/m);
+		assert.match(companyHost, /^LoadCredential=qorpera-office-native:\/var\/lib\/qorpera-bootstrap\/credentials\/qorpera-office-native$/m);
 		assert.match(companyHost, /^LoadCredential=qorpera-cloud-secret-runtime:/m);
 		assert.match(companyHost, /^LoadCredential=qorpera-cloud-secret-ca:/m);
 		assert.match(

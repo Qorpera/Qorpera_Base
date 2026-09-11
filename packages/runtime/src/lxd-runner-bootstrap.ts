@@ -5,6 +5,7 @@ import { chmod, chown, link, lstat, mkdir, open, readdir, readFile, rename, unli
 import { isIP } from "node:net";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import { parseCompanyComputerNativeUrl } from "@qorpera/contracts";
 import { recoveryBase64, recoveryDigest } from "./cloud-identity-recovery-crypto.ts";
 import {
 	assertIdentityRecoveryMarker,
@@ -50,6 +51,7 @@ export interface LxdRunnerBootstrapConfig {
 		objectGatewayUrl: string;
 		secretBrokerUrl: string;
 		secretBrokerCaSha256: string;
+		office?: { environmentId: string; url: string; tokenSha256: string };
 	};
 }
 
@@ -204,6 +206,7 @@ export function parseLxdRunnerBootstrapConfig(value: unknown): LxdRunnerBootstra
 				"secret_broker_url",
 				"secret_broker_ca_sha256",
 				"recovery_volume_path",
+				"office",
 			],
 			"Governed native bootstrap",
 		);
@@ -229,6 +232,16 @@ export function parseLxdRunnerBootstrapConfig(value: unknown): LxdRunnerBootstra
 		if (![secretBroker.origin, `${secretBroker.origin}/`].includes(encodedSecretBroker)) {
 			throw new Error("Cloud secret broker is invalid");
 		}
+		let office: NonNullable<LxdRunnerBootstrapConfig["companyRuntime"]>["office"];
+		if (company.office !== undefined) {
+			const route = record(company.office, "Governed office endpoint");
+			exactKeys(route, ["environment_id", "url", "token_sha256"], "Governed office endpoint");
+			office = {
+				environmentId: text(route.environment_id, "Office environment", UUID_PATTERN),
+				url: parseCompanyComputerNativeUrl(text(route.url, "Office URL", /^https:\/\//)).url,
+				tokenSha256: text(route.token_sha256, "Office token digest", SHA256_PATTERN),
+			};
+		}
 		companyRuntime = {
 			mode: "company-path-v1",
 			runId: text(company.run_id, "Native run id", UUID_PATTERN),
@@ -239,6 +252,7 @@ export function parseLxdRunnerBootstrapConfig(value: unknown): LxdRunnerBootstra
 			objectGatewayUrl: gateway,
 			secretBrokerUrl: secretBroker.origin,
 			secretBrokerCaSha256: text(company.secret_broker_ca_sha256, "Cloud secret broker CA digest", SHA256_PATTERN),
+			...(office ? { office } : {}),
 		};
 	}
 	return {
@@ -563,6 +577,7 @@ function nativeProviderEnvironment(
 					"QORPERA_NATIVE_CODEX_FENCE_SHA256",
 					"QORPERA_NATIVE_OBJECT_GATEWAY_URL",
 					"QORPERA_CLOUD_SECRET_BROKER_URL",
+					...(companyRuntime.office ? ["QORPERA_COMPANY_COMPUTER_URL"] : []),
 				]
 			: []),
 	];
@@ -596,7 +611,8 @@ function nativeProviderEnvironment(
 			environment.get("QORPERA_NATIVE_CODEX_FENCE_PATH") !== companyRuntime.codexPath ||
 			environment.get("QORPERA_NATIVE_CODEX_FENCE_SHA256") !== companyRuntime.binarySha256 ||
 			environment.get("QORPERA_NATIVE_OBJECT_GATEWAY_URL") !== companyRuntime.objectGatewayUrl ||
-			environment.get("QORPERA_CLOUD_SECRET_BROKER_URL") !== companyRuntime.secretBrokerUrl)
+			environment.get("QORPERA_CLOUD_SECRET_BROKER_URL") !== companyRuntime.secretBrokerUrl ||
+			environment.get("QORPERA_COMPANY_COMPUTER_URL") !== companyRuntime.office?.url)
 	) {
 		throw new Error("Governed native environment does not match immutable bootstrap authority");
 	}
@@ -642,6 +658,7 @@ async function verifyCredentialSource(
 						: []),
 					"qorpera-native-bridge",
 					...(boundary === "company-runner" ? ["qorpera-native-object-token"] : []),
+					...(boundary === "company-runner" ? ["qorpera-office-native"] : []),
 					"qorpera-runner-activation",
 					"qorpera-runner-assignment",
 					"qorpera-supabase-service-key",
@@ -655,6 +672,7 @@ async function verifyCredentialSource(
 		(entry) =>
 			entry !== "qorpera-supabase-service-key" &&
 			entry !== "qorpera-cloud-secret-ca" &&
+			entry !== "qorpera-office-native" &&
 			entry !== "qorpera-identity-recovery-ca",
 	)) {
 		const token = (
@@ -678,6 +696,23 @@ async function verifyCredentialSource(
 			companyRuntime.secretBrokerCaSha256,
 			"Cloud secret broker CA",
 		);
+		const encoded = await readOwnedFile(
+			`${path}/qorpera-office-native`,
+			MAX_CREDENTIAL_BYTES,
+			"Native office credential",
+			expectedUid,
+			true,
+		);
+		if (companyRuntime.office) {
+			const token = encoded.trim();
+			if (
+				!TOKEN_PATTERN.test(token) ||
+				tokens.has(token) ||
+				createHash("sha256").update(token).digest("hex") !== companyRuntime.office.tokenSha256
+			)
+				throw new Error("Native office credential differs from immutable bootstrap authority");
+			tokens.add(token);
+		} else if (encoded !== "") throw new Error("Unconfigured native office credential must be empty");
 	}
 	if (boundary === "native-login") {
 		if (!identityRecoveryCaSha256) throw new Error("Identity recovery CA authority is missing");

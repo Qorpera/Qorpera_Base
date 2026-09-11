@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmod, mkdir, open, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
+import { parseCompanyComputerNativeUrl } from "@qorpera/contracts";
 import type { ServiceHttpFetch } from "./http-transport.ts";
 import type {
 	LxdClient,
@@ -141,6 +142,7 @@ interface LxdProviderJournal {
 			recoveryVolume: string;
 			recoveryVolumeSize: string;
 			configurationSha256: string;
+			office?: { environmentId: string; url: string; tokenSha256: string };
 		};
 	};
 	credentials: {
@@ -161,6 +163,7 @@ interface ProviderCredentials {
 interface LxdGuestBootstrapAuthority {
 	runId: string;
 	profileId?: string;
+	environmentId?: string;
 	runner: CloudRunnerInstance;
 	computeIdentityId: string;
 	computeTemplateKey: string;
@@ -188,16 +191,23 @@ function companyRuntimeAuthority(
 	config: LxdCloudRunnerProviderConfig,
 	acquisitionId: string,
 	profileId?: string,
+	environmentId?: string,
 ): LxdProviderJournal["lxd"]["companyRuntime"] {
 	const runtime = config.nativeCompanyRuntime;
 	if (!runtime) return undefined;
 	if (!profileId || !UUID_PATTERN.test(profileId)) throw new Error("Governed runtime company authority is missing");
+	const office = runtime.offices?.find(
+		(route) => route.companyId === profileId && route.environmentId === environmentId,
+	);
 	return {
 		mode: "company-path-v1",
 		profileId,
 		recoveryVolume: `${runtime.recoveryVolumePrefix}${acquisitionId}`,
 		recoveryVolumeSize: runtime.recoveryVolumeSize,
 		configurationSha256: sha256(JSON.stringify(canonical(runtime))),
+		...(office
+			? { office: { environmentId: office.environmentId, url: office.url, tokenSha256: sha256(office.token) } }
+			: {}),
 	};
 }
 
@@ -445,7 +455,17 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 	if (input.schema === COMPANY_JOURNAL_SCHEMA) {
 		const company = record(lxd.companyRuntime, "Governed runtime journal");
 		if (
-			Object.keys(company).length !== 5 ||
+			Object.keys(company).sort().join() !==
+				[
+					"mode",
+					"profileId",
+					"recoveryVolume",
+					"recoveryVolumeSize",
+					"configurationSha256",
+					...(company.office !== undefined ? ["office"] : []),
+				]
+					.sort()
+					.join() ||
 			company.mode !== "company-path-v1" ||
 			typeof company.profileId !== "string" ||
 			!UUID_PATTERN.test(company.profileId) ||
@@ -458,12 +478,31 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 		) {
 			throw new Error("Governed runtime journal is invalid");
 		}
+		let office: NonNullable<LxdProviderJournal["lxd"]["companyRuntime"]>["office"];
+		if (company.office !== undefined) {
+			const route = record(company.office, "Governed office route");
+			if (
+				Object.keys(route).sort().join() !== "environmentId,tokenSha256,url" ||
+				typeof route.environmentId !== "string" ||
+				!UUID_PATTERN.test(route.environmentId) ||
+				typeof route.url !== "string" ||
+				typeof route.tokenSha256 !== "string" ||
+				!SHA256_PATTERN.test(route.tokenSha256)
+			)
+				throw new Error("Governed office route is invalid");
+			office = {
+				environmentId: route.environmentId,
+				url: parseCompanyComputerNativeUrl(route.url).url,
+				tokenSha256: route.tokenSha256,
+			};
+		}
 		companyRuntime = {
 			mode: "company-path-v1",
 			profileId: company.profileId,
 			recoveryVolume: company.recoveryVolume,
 			recoveryVolumeSize: company.recoveryVolumeSize,
 			configurationSha256: company.configurationSha256,
+			...(office ? { office } : {}),
 		};
 	} else if (lxd.companyRuntime !== undefined) {
 		throw new Error("Legacy journal cannot carry governed runtime authority");
@@ -613,7 +652,8 @@ function validateConfig(config: LxdCloudRunnerProviderConfig): void {
 		if (
 			service !== "qorpera-lxd-runner-bootstrap.service" ||
 			config.nativeCompanyRuntime.recoveryVolumePrefix === config.identityVolumePrefix ||
-			config.nativeCompanyRuntime.objectGatewayToken === config.supabaseServiceKey
+			config.nativeCompanyRuntime.objectGatewayToken === config.supabaseServiceKey ||
+			config.nativeCompanyRuntime.offices?.some((office) => office.token === config.supabaseServiceKey)
 		) {
 			throw new Error(
 				"Governed native runtime requires the pinned bootstrap and separate recovery and credential authority",
@@ -757,7 +797,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		this.#config = {
 			...config,
 			stateRoot: resolve(config.stateRoot),
-			...(config.nativeCompanyRuntime ? { nativeCompanyRuntime: { ...config.nativeCompanyRuntime } } : {}),
+			...(config.nativeCompanyRuntime ? { nativeCompanyRuntime: structuredClone(config.nativeCompanyRuntime) } : {}),
 		};
 		this.#lxd = lxd;
 		this.#guest = guest;
@@ -851,6 +891,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				{
 					runId: work.runId,
 					profileId: work.profileId,
+					environmentId: work.environmentId,
 					runner,
 					computeIdentityId: work.computeIdentityId,
 					computeTemplateKey: work.computeTemplateKey,
@@ -883,7 +924,14 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 					bootstrapSha256: bootstrapSha256(bootstrapFiles),
 					policySha256: work.computePolicySha256,
 					...(this.#config.nativeCompanyRuntime
-						? { companyRuntime: companyRuntimeAuthority(this.#config, acquisitionId, work.profileId) }
+						? {
+								companyRuntime: companyRuntimeAuthority(
+									this.#config,
+									acquisitionId,
+									work.profileId,
+									work.environmentId,
+								),
+							}
 						: {}),
 				},
 				credentials: {
@@ -1204,6 +1252,9 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		return {
 			runId: journal.runId ?? journal.acquisitionId,
 			...(journal.lxd.companyRuntime ? { profileId: journal.lxd.companyRuntime.profileId } : {}),
+			...(journal.lxd.companyRuntime?.office
+				? { environmentId: journal.lxd.companyRuntime.office.environmentId }
+				: {}),
 			runner: journal.runner,
 			computeIdentityId: journal.runner.computeIdentityId,
 			computeTemplateKey: journal.runner.templateKey,
@@ -1216,6 +1267,11 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	#bootstrapFiles(authority: LxdGuestBootstrapAuthority, credentials: ProviderCredentials): LxdGuestBootstrapFile[] {
 		const liveCompany = liveCompanyAuthority(this.#config, authority.jobType);
 		const runtime = this.#config.nativeCompanyRuntime;
+		const office = runtime?.offices?.find(
+			(route) => route.companyId === authority.profileId && route.environmentId === authority.environmentId,
+		);
+		if (office && Object.values(credentials).includes(office.token))
+			throw new Error("Governed native office credential must be independent");
 		if (
 			runtime &&
 			(runtime.objectGatewayToken === credentials.nativeBridgeToken ||
@@ -1274,6 +1330,15 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 								object_gateway_url: runtime.objectGatewayUrl,
 								secret_broker_url: runtime.secretBroker.origin,
 								secret_broker_ca_sha256: runtime.secretBroker.caSha256,
+								...(office
+									? {
+											office: {
+												environment_id: office.environmentId,
+												url: office.url,
+												token_sha256: sha256(office.token),
+											},
+										}
+									: {}),
 								recovery_volume_path: "/var/lib/qorpera-runner",
 							},
 						}
@@ -1307,6 +1372,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 						`QORPERA_NATIVE_CODEX_FENCE_SHA256=${runtime.binarySha256}`,
 						`QORPERA_NATIVE_OBJECT_GATEWAY_URL=${runtime.objectGatewayUrl}`,
 						`QORPERA_CLOUD_SECRET_BROKER_URL=${runtime.secretBroker.origin}`,
+						...(office ? [`QORPERA_COMPANY_COMPUTER_URL=${office.url}`] : []),
 					]
 				: []),
 			"",
@@ -1333,6 +1399,12 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			},
 			...(runtime
 				? [
+						{
+							path: "/var/lib/qorpera-bootstrap/credentials/qorpera-office-native",
+							// An unconfigured route has no authority. The fixed systemd
+							// credential source still exists and contains zero bytes.
+							content: office ? `${office.token}\n` : "",
+						},
 						{
 							path: "/var/lib/qorpera-bootstrap/credentials/qorpera-native-object-token",
 							content: `${runtime.objectGatewayToken}\n`,
@@ -1661,7 +1733,12 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			const journal = journalFromJson(
 				JSON.parse(await readFile(this.#journalPath(acquisitionId), "utf-8")) as unknown,
 			);
-			const expected = companyRuntimeAuthority(this.#config, acquisitionId, journal.lxd.companyRuntime?.profileId);
+			const expected = companyRuntimeAuthority(
+				this.#config,
+				acquisitionId,
+				journal.lxd.companyRuntime?.profileId,
+				journal.lxd.companyRuntime?.office?.environmentId,
+			);
 			if (
 				journal.acquisitionId !== acquisitionId ||
 				JSON.stringify(canonical(journal.lxd.companyRuntime)) !== JSON.stringify(canonical(expected))
