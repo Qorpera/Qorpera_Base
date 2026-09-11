@@ -1423,7 +1423,115 @@ export class LxdUnixClient
 	): Promise<LxdInstanceFile> {
 		if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > 65536)
 			throw new Error("LXD_INSTANCE_FILE_UNCONFIRMED");
-		return this.#readInstanceFile(project, name, path, maximumBytes, signal);
+		const file = await this.#readInstanceFile(project, name, path, maximumBytes, signal);
+		// LXD 6.9 serves procfs using its zero stat size. Preserve the real file
+		// metadata, but obtain this one public kernel value through a fixed,
+		// unprivileged read. Ordinary files never gain an execution fallback.
+		if (path !== "/proc/sys/kernel/random/boot_id" || file.content.length !== 0) return file;
+		if (file.uid !== 0 || file.gid !== 0 || file.mode !== 0o444 || maximumBytes < 37)
+			throw new Error("LXD_INSTANCE_FILE_UNCONFIRMED");
+		const content = await this.#readProcBootId(project, name, signal);
+		const after = await this.#readInstanceFile(project, name, path, maximumBytes, signal);
+		if (
+			after.uid !== file.uid ||
+			after.gid !== file.gid ||
+			after.mode !== file.mode ||
+			(after.content.length !== 0 && !after.content.equals(content))
+		)
+			throw new Error("LXD_INSTANCE_FILE_UNCONFIRMED");
+		return { ...after, content };
+	}
+
+	async #readProcBootId(project: string, name: string, signal?: AbortSignal): Promise<Buffer> {
+		try {
+			const checked = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(10000)]);
+			checked.throwIfAborted();
+			const result = await this.#request(
+				"POST",
+				projectPath(`/1.0/instances/${name}/exec`, project),
+				{
+					command: ["/usr/bin/cat", "--", "/proc/sys/kernel/random/boot_id"],
+					interactive: false,
+					"wait-for-websocket": false,
+					"record-output": true,
+					user: 65534,
+					group: 65534,
+					cwd: "/",
+					environment: {},
+				},
+				checked,
+			);
+			const envelope = record(result.body, "boot read");
+			if (
+				result.status !== 202 ||
+				envelope.type !== "async" ||
+				envelope.status_code !== 100 ||
+				typeof envelope.operation !== "string" ||
+				!envelope.operation.startsWith("/1.0/operations/")
+			)
+				throw new Error("read not accepted");
+			const operationId = envelope.operation.slice("/1.0/operations/".length);
+			if (!OPERATION_UUID.test(operationId)) throw new Error("invalid read operation");
+			const reference = { project, instanceName: name, operationId };
+			trackedOperation(envelope.metadata, reference);
+			const operation = await this.#officeMetadata(
+				projectPath(`${envelope.operation}/wait?timeout=5`, project),
+				checked,
+			);
+			if (trackedOperation(operation, reference) !== "succeeded") throw new Error("read incomplete");
+			const metadata = record(operation.metadata, "boot read result");
+			const output = record(metadata.output, "boot read output");
+			const prefix = `/1.0/instances/${name}/logs/exec-output/exec_${operationId}`;
+			if (
+				metadata.return !== 0 ||
+				Object.keys(output).sort().join() !== "1,2" ||
+				output["1"] !== `${prefix}.stdout` ||
+				output["2"] !== `${prefix}.stderr`
+			)
+				throw new Error("read output identity differs");
+			const stdout = await this.#requestPayload(
+				"GET",
+				projectPath(`${prefix}.stdout`, project),
+				undefined,
+				undefined,
+				checked,
+				64,
+				"text",
+			);
+			const stderr = await this.#requestPayload(
+				"GET",
+				projectPath(`${prefix}.stderr`, project),
+				undefined,
+				undefined,
+				checked,
+				1,
+				"text",
+			);
+			if (
+				stdout.status !== 200 ||
+				stderr.status !== 200 ||
+				stderr.body !== "" ||
+				typeof stdout.body !== "string" ||
+				!/^[0-9a-f-]{36}\n$/.test(stdout.body) ||
+				!OPERATION_UUID.test(stdout.body.slice(0, -1))
+			)
+				throw new Error("invalid boot read");
+			// Delete only the two public output logs belonging to this completed
+			// observation. No guest file or lifecycle command is changed/replayed.
+			for (const suffix of ["stdout", "stderr"]) {
+				const removed = await this.#request(
+					"DELETE",
+					projectPath(`${prefix}.${suffix}`, project),
+					undefined,
+					checked,
+				);
+				if (removed.status !== 200) throw new Error("read log cleanup unconfirmed");
+			}
+			checked.throwIfAborted();
+			return Buffer.from(stdout.body);
+		} catch {
+			throw new Error("LXD_INSTANCE_FILE_UNCONFIRMED");
+		}
 	}
 
 	async pushOfficePreparationRequest(
@@ -1833,6 +1941,7 @@ export class LxdUnixClient
 		headers: Readonly<Record<string, string>> | undefined,
 		signal?: AbortSignal,
 		maximumResponseBytes = MAX_RESPONSE_BYTES,
+		format: "json" | "text" = "json",
 	): Promise<HttpResult> {
 		return new Promise<HttpResult>((resolve, reject) => {
 			const request = httpRequest(
@@ -1851,7 +1960,8 @@ export class LxdUnixClient
 					response.on("data", (chunk: Buffer) => {
 						length += chunk.byteLength;
 						if (length > maximumResponseBytes) {
-							request.destroy(new Error("LXD response exceeded the supported size"));
+							reject(new Error("LXD response exceeded the supported size"));
+							request.destroy();
 							return;
 						}
 						chunks.push(chunk);
@@ -1860,7 +1970,10 @@ export class LxdUnixClient
 						try {
 							if (!response.complete || signal?.aborted) throw new Error("LXD response was incomplete");
 							const text = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
-							resolve({ status: response.statusCode ?? 500, body: text ? (JSON.parse(text) as unknown) : null });
+							resolve({
+								status: response.statusCode ?? 500,
+								body: format === "text" ? text : text ? (JSON.parse(text) as unknown) : null,
+							});
 						} catch (error) {
 							reject(error);
 						}

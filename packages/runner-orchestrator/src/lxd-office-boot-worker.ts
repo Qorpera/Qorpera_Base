@@ -36,8 +36,9 @@ export interface LxdOfficeBootRequest {
 /** First boot of the copied, still unadmitted office. Requires the existing
  * process-owned kernel flock and retained infrastructure writer handoff.
  * The pinned image must keep ordinary services fail-closed without provider
- * configuration/credentials. This worker installs neither, runs no guest
- * commands and cannot activate an office or release its retained capacity.
+ * configuration/credentials. This worker installs neither and cannot activate
+ * an office or release its retained capacity. Boot observation may execute a
+ * fixed unprivileged kernel read when LXD serves an empty procfs response.
  * open() uses real host/LXD/cloud IO; constructor ports are trusted test seams. */
 export class LxdOfficeBootWorker {
 	readonly #gate: Gate;

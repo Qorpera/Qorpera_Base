@@ -13,7 +13,7 @@
     "wakeAndSilence": "30cd7c0bc30189885c5407e34ba4fbbe467c433af4c11a3c93be80098e62241b",
     "contextComposer": "bf86d7b6c6e102f340eafcbb5e6100f6dd087e7069bf7542a8804569db93a06d",
     "providerBootstrap": "af40f3a69e948c33249089dabb794993607c2c1afc677606165037ce6c7b584b",
-    "authorization": "e3ce22086c1b455d33fed6afc4f30e165f6efad8c8ceab5ea3f8258635ed4115",
+    "authorization": "b9bcd5f9f805189e5faa9e57afd2ea414aa4890d136b22466e9c79600353957d",
     "inboundSafety": "154d8dcd3f023e963f205d28c8595ae4630d7041f42ff04e01ee37dc65e4141e",
     "outboundSafety": "711473332ceed46d63e65104674031b91463017e8ccd32780b3d2d661e273519",
     "interactionSurfaces": "9b5e7ffde6fe1b34fa94064a41e1a8396c3f17eb60e2527ba4f1a7d65490c5dc",
@@ -96,7 +96,7 @@
     "packages/contracts/src/company-computer-stop-acknowledgement.ts": "5e6e1d81c4d7bf92f2300fcd3800422c6298d3172034027e41c202526e6c3c31",
     "packages/contracts/src/company-computer-stop-history.ts": "0524e25e4f9e7b36cc9cfef7a3c839774ea0ee68096e4897f4d3fa9daffaffa6",
     "packages/contracts/src/index.ts": "89373c201a7012a1f3c795b44b371b028587480a4d198d696433363733be354d",
-    "packages/runner-orchestrator/src/lxd-client.ts": "fc5163f94e0e53930b893cda1073d41540c32bc9601e762f3caca78e819c97e2",
+    "packages/runner-orchestrator/src/lxd-client.ts": "3c7177f7d25e18fe2a6079c4eb0c82558a45bec6b80ff3b20621165001d6fe69",
     "packages/runner-orchestrator/src/lxd-office-activation-control.ts": "4181c1730bd2bebd98869cae3eeab2ef94dd88af8fa9c79dd1ae7baeada35b36",
     "packages/runner-orchestrator/src/lxd-office-activation-evidence.ts": "6f69bdccd13e67eff10daa788ecab7e2c2a5b82e6f0cafce033268eb019fbe06",
     "packages/runner-orchestrator/src/lxd-office-activation-history.ts": "ec82a8b22afe8fabed64a7ac938fba4841528b6d8911ae611aa4e0185726fe80",
@@ -118,7 +118,7 @@
     "packages/runner-orchestrator/src/lxd-office-boot-service-start-journal.ts": "52567370cbcd6d693de056eb0f19e2719674727ed629fbea1e3b8a5a0cf8efc1",
     "packages/runner-orchestrator/src/lxd-office-boot-successor-control.ts": "29444ac89fa4d6f2d9dc688213044f78295bf0dd1affffb091aad0d9ce859a6b",
     "packages/runner-orchestrator/src/lxd-office-boot-vm-evidence.ts": "5a1faa2c973387ba9302ea42120335257050487166bba3055848a782ba4393c7",
-    "packages/runner-orchestrator/src/lxd-office-boot-worker.ts": "08f4c8969ab398f11dbe5003e630b5cb060f3c7804047cccc12cb7cd607d0c6d",
+    "packages/runner-orchestrator/src/lxd-office-boot-worker.ts": "26a650ea9aa6ec867f52545f1ab43f0bff296144cb34e5b485357cdcb6d910ae",
     "packages/runner-orchestrator/src/lxd-office-configuration-journal.ts": "c8ddd351dc8d52c9e19615d73a2c31366f9606f4e00fbc40c01cdd387abf0605",
     "packages/runner-orchestrator/src/lxd-office-configuration-worker.ts": "e14f5131c599cc1da30e7b70e305ff7e990ee6350a51c02dcb230b3ede410dc3",
     "packages/runner-orchestrator/src/lxd-office-control-journal.ts": "c1f39d3a27c2874513a952b9ac324d7e2049caa0f60e72cfc48890c78c34a476",
@@ -318,7 +318,7 @@
     "packages/shell/userland/staff-creatures/pebble.png": "cf58f57281267e8b29cbc2d01c342f4515c5180518162e9f3b1ecabb93349639",
     "packages/shell/userland/staff-creatures/ribbon.png": "58bd66cf9f5d265020c15689f733afae21078e8f7a3df0b5b75b43b50a3acec8",
     "packages/shell/userland/staff-creatures/wisp.png": "db243657056ac0660a14a6613d2d20aba7319a826adccdcd73f53e2c9d9031a0",
-    "scripts/generate-cloud-runtime-bundle.mjs": "961418d39cac82bc64bb27587c2fb54e38628dec2314af0a4b4172dd9b18aa2d",
+    "scripts/generate-cloud-runtime-bundle.mjs": "8e2f59cf5898e92c31d339c8d9089be42fe7175844258af342595d140cabc757",
     "scripts/native-company-artifact.mjs": "e394bc799104f188769de07cd3be14e6c732a1a672113ea45d349a29d8e0ca63",
     "scripts/package-company-computer.mjs": "b9ef67b9becef0b9e8ce62dd3ab7e839ac4698e2eb005e7bbe837dee40996120",
     "scripts/package-ephemeral-runner.mjs": "13fba93c7761b15b2a2b5d9476ae4329f0d25d28a66fe19c5cbf45c2ebb6ab37",
@@ -532,6 +532,7 @@
     "supabase/migrations/20260910000200_runtime_bundle_activation_v16.sql": "1a7cc0716b37b8da79e38bbe315aad3520160fe27c42650b00260c27963fb466",
     "supabase/migrations/20260911000100_company_path_admission_errors.sql": "cfb16d44e937a9c54777c312fc3543c9069cbd7e51167f22cc0b2a1b049bd64a",
     "supabase/migrations/20260911000200_runtime_bundle_activation_v17.sql": "c9b66950fe2f0d51bdbaef6ed87f3a5d945d2145d7a4ccd1e16d73466a86d253",
-    "supabase/migrations/20260911000300_runtime_bundle_activation_v18.sql": "d4d5d3d60a7888fb6fc8ac77d9bed7095b94a28e82604d77ba005ffcb28f0f53"
+    "supabase/migrations/20260911000300_runtime_bundle_activation_v18.sql": "d4d5d3d60a7888fb6fc8ac77d9bed7095b94a28e82604d77ba005ffcb28f0f53",
+    "supabase/migrations/20260911000400_runtime_bundle_activation_v19.sql": "d955467ccc9d39c6a2935557d2ebff5d40143c0accf94252a3a48daf0d37276d"
   }
 }
