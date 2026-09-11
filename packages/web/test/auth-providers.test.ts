@@ -85,6 +85,26 @@ describe("deployed sign-in methods", () => {
 		expect(auth.store.get().error).toBeUndefined();
 	});
 
+	it("preserves a code being entered when delayed provider discovery completes", async () => {
+		const f = fixture();
+		f.auth(null);
+		const response = deferred<Response>();
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(() => response.promise),
+		);
+		auth = new AuthController(f.cloud);
+		auth.store.subscribe(() => renderSignIn(auth, root));
+		await auth.start();
+		auth.store.set({ pendingEmail: "member@example.com" });
+		await settle();
+		root.querySelector<HTMLInputElement>("#signinCode")!.value = "12345";
+		response.resolve(Response.json({ external: { google: true } }));
+		await settle();
+		expect(root.querySelector<HTMLInputElement>("#signinCode")!.value).toBe("12345");
+		expect(root.querySelectorAll("[data-provider]")).toHaveLength(0);
+	});
+
 	it("surfaces an unsuccessful callback instead of silently returning to sign-in", async () => {
 		const f = fixture();
 		f.auth(null);
