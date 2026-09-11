@@ -74,6 +74,25 @@ describe("office provider installation boundary", () => {
 		expect(result.unit).toContain(`qorpera-office-provider "${f.policy.journal.path}/adoption.lock"`);
 		expect(result.unit).toContain('exec 3<"$$1"');
 		expect(result.unit).not.toContain("@JOURNAL_LOCK@");
+		expect(result.unit).toContain(
+			`RequiresMountsFor="${f.policy.journal.mountPoint}" "${f.policy.workbench.mountPoint}"`,
+		);
+		expect(result.unit).not.toContain("@JOURNAL_MOUNT@");
+		expect(result.unit).not.toContain("@WORKBENCH_MOUNT@");
+	});
+	it("refuses templates that omit or duplicate a required mount dependency binding", () => {
+		const f = fixture();
+		for (const marker of ["@JOURNAL_MOUNT@", "@WORKBENCH_MOUNT@"]) {
+			for (const replacement of ["/wrong/mount", `${marker} ${marker}`]) {
+				expect(() =>
+					validateOfficeInstallationDocuments(
+						parseOfficeInstallationSpec(f.raw),
+						f.documents,
+						template.replace(marker, replacement),
+					),
+				).toThrow("OFFICE_INSTALL_UNIT_INVALID");
+			}
+		}
 	});
 	it("refuses changed bytes and cross-policy or destination substitutions even when hashes are repinned", () => {
 		const f = fixture(),
@@ -124,5 +143,8 @@ describe("office provider installation boundary", () => {
 			'"/srv/%%n-$${HOME}-\\"journal\\"/adoption.lock"',
 		);
 		expect(() => officeSystemdPath("/srv/journal\nExecStart=/bad")).toThrow();
+		expect(officeSystemdPath(`/srv/%n-\${HOME}-"journal"/mounted-data`, "dependency")).toBe(
+			`"/srv/%%n-\${HOME}-\\"journal\\"/mounted-data"`,
+		);
 	});
 });

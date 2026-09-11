@@ -94,6 +94,7 @@
 
 ### Fixed
 
+- Bound office-provider startup to the enrolled journal and NAS workbench mounts, so a node reboot cannot leave required storage inactive when the provider starts. Mount dependency paths preserve literal dollar signs while escaping systemd specifiers.
 - Corrected boot-successor SQL admission to preserve the original preparation observation while requiring fresh boot, configuration and receipt evidence. The prior check required a new preparation digest and rejected the concrete retained-workbench resume path. An additive migration preserves existing history and refuses a substituted preparation identity.
 - Kept configuration confirmation within its bounded reconciliation time by sharing one fresh five-second authority window across each of two complete credential-read passes. Both passes still verify all protected bytes and the unchanged receipt, and a final authority check precedes publication. Repeating full preparation before every file could exhaust the 30-second limit in the actual-systemd acceptance test.
 - Included the kernel-lock launcher in the required office image executable digests, so an image cannot pass dependency admission while omitting the command needed by every protected root control.

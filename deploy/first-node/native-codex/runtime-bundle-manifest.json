@@ -13,7 +13,7 @@
     "wakeAndSilence": "30cd7c0bc30189885c5407e34ba4fbbe467c433af4c11a3c93be80098e62241b",
     "contextComposer": "bf86d7b6c6e102f340eafcbb5e6100f6dd087e7069bf7542a8804569db93a06d",
     "providerBootstrap": "af40f3a69e948c33249089dabb794993607c2c1afc677606165037ce6c7b584b",
-    "authorization": "0f7c79ca45fc67fc75198eeca98da02478d442f0a209a8e292b13fb1278a478d",
+    "authorization": "7af81a721ab0847376ccfc2a1c22eea784b5b008af5c2b51057684e9dc360a4f",
     "inboundSafety": "154d8dcd3f023e963f205d28c8595ae4630d7041f42ff04e01ee37dc65e4141e",
     "outboundSafety": "711473332ceed46d63e65104674031b91463017e8ccd32780b3d2d661e273519",
     "interactionSurfaces": "9b5e7ffde6fe1b34fa94064a41e1a8396c3f17eb60e2527ba4f1a7d65490c5dc",
@@ -132,7 +132,7 @@
     "packages/runner-orchestrator/src/lxd-office-image-installation.ts": "19824e4d681c8180231c8e5cf07b650920fbe55f1f37bc777f01143af517fa1c",
     "packages/runner-orchestrator/src/lxd-office-image-provenance.ts": "dcdb037842142cf1ccd24670132b747c8d050e2c07e53124a4f033050ff15ec3",
     "packages/runner-orchestrator/src/lxd-office-installation-host.ts": "9145356ce409dc363768c0dbe83351d1214f26abfaaffa205e711bbae4751f16",
-    "packages/runner-orchestrator/src/lxd-office-installation.ts": "9b4ba0226aefdebc4b4cca33b936ae5f063f6640ddb7f630a13cf5284c8208a5",
+    "packages/runner-orchestrator/src/lxd-office-installation.ts": "737395be1301a6aa38be0af6e2a2dadc3df1d82881d8f036eabc6fd163e7e61b",
     "packages/runner-orchestrator/src/lxd-office-inventory-worker.ts": "acb93f4797cba86dfd575f83a26d4a3dbeaee216497889e0f7ffae5008f3ce00",
     "packages/runner-orchestrator/src/lxd-office-journal-files.ts": "6ba53f4da9a70ec61ef392f6eb75b7c09e3f29065d0c180f457364a52e7129ce",
     "packages/runner-orchestrator/src/lxd-office-lifecycle-control.ts": "6650a07a2dafdcb4f2718072c259c7585281ce294776e227bf3a73e3e0a2902c",
@@ -318,7 +318,7 @@
     "packages/shell/userland/staff-creatures/pebble.png": "cf58f57281267e8b29cbc2d01c342f4515c5180518162e9f3b1ecabb93349639",
     "packages/shell/userland/staff-creatures/ribbon.png": "58bd66cf9f5d265020c15689f733afae21078e8f7a3df0b5b75b43b50a3acec8",
     "packages/shell/userland/staff-creatures/wisp.png": "db243657056ac0660a14a6613d2d20aba7319a826adccdcd73f53e2c9d9031a0",
-    "scripts/generate-cloud-runtime-bundle.mjs": "84f8ac0a9ce18a97010b1e1a99cb0d6a33b97fbde9a7a1856494db8440046666",
+    "scripts/generate-cloud-runtime-bundle.mjs": "dac94d739d19de646cf788ca896e52726334b423d5de8c3947a1cc2a4c111fd9",
     "scripts/native-company-artifact.mjs": "e394bc799104f188769de07cd3be14e6c732a1a672113ea45d349a29d8e0ca63",
     "scripts/package-company-computer.mjs": "b9ef67b9becef0b9e8ce62dd3ab7e839ac4698e2eb005e7bbe837dee40996120",
     "scripts/package-ephemeral-runner.mjs": "13fba93c7761b15b2a2b5d9476ae4329f0d25d28a66fe19c5cbf45c2ebb6ab37",
@@ -530,6 +530,7 @@
     "supabase/migrations/20260909001000_runtime_host_inventory.sql": "afa355767073f36686d4674ba3dba5a41424f81d966c215ab5268fd02435bc6c",
     "supabase/migrations/20260910000100_member_company_snapshot_paths.sql": "5e548a27034ec2cce22affa5522aa7536dc369af1b0ac5dea34dd3f393654844",
     "supabase/migrations/20260910000200_runtime_bundle_activation_v16.sql": "1a7cc0716b37b8da79e38bbe315aad3520160fe27c42650b00260c27963fb466",
-    "supabase/migrations/20260911000100_company_path_admission_errors.sql": "cfb16d44e937a9c54777c312fc3543c9069cbd7e51167f22cc0b2a1b049bd64a"
+    "supabase/migrations/20260911000100_company_path_admission_errors.sql": "cfb16d44e937a9c54777c312fc3543c9069cbd7e51167f22cc0b2a1b049bd64a",
+    "supabase/migrations/20260911000200_runtime_bundle_activation_v17.sql": "c9b66950fe2f0d51bdbaef6ed87f3a5d945d2145d7a4ccd1e16d73466a86d253"
   }
 }

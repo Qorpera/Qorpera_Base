@@ -3,6 +3,7 @@ Description=Qorpera headless office lifecycle provider
 Wants=network-online.target
 Requires=qorpera-office-host-namespace.service
 After=network-online.target qorpera-office-host-namespace.service
+RequiresMountsFor=@JOURNAL_MOUNT@ @WORKBENCH_MOUNT@
 ConditionPathExists=/etc/qorpera/office-provider/service.json
 StartLimitIntervalSec=300
 StartLimitBurst=3

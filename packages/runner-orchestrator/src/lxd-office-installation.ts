@@ -89,11 +89,12 @@ export function parseOfficeInstallationManifest(value: unknown) {
 	});
 }
 
-/** Quote one literal systemd argument, including specifiers and environment
- * expansion. The path parser already rejects controls and backslashes. */
-export function officeSystemdPath(path: string): string {
+/** Quote a literal systemd path. Only command arguments expand environment
+ * variables; dependency paths expand specifiers but retain literal dollars. */
+export function officeSystemdPath(path: string, context: "command" | "dependency" = "command"): string {
 	officePhysicalPath(path);
-	return `"${path.replace(/%/g, "%%").replace(/\$/g, "$$$$").replace(/"/g, '\\"')}"`;
+	const literal = path.replace(/%/g, "%%").replace(/"/g, '\\"');
+	return `"${context === "command" ? literal.replace(/\$/g, "$$$$") : literal}"`;
 }
 
 export function validateOfficeInstallationDocuments(
@@ -135,10 +136,16 @@ export function validateOfficeInstallationDocuments(
 		Date.parse(certificate.validTo) <= Date.now()
 	)
 		throw new Error("OFFICE_INSTALL_CA_INVALID");
-	if (unitTemplate.split("@SOCKET_GID@").length !== 2 || unitTemplate.split("@JOURNAL_LOCK@").length !== 2)
+	if (
+		["@SOCKET_GID@", "@JOURNAL_LOCK@", "@JOURNAL_MOUNT@", "@WORKBENCH_MOUNT@"].some(
+			(marker) => unitTemplate.split(marker).length !== 2,
+		)
+	)
 		throw new Error("OFFICE_INSTALL_UNIT_INVALID");
 	const unit = unitTemplate
 		.replace("@SOCKET_GID@", String(policy.host.socketGid))
-		.replace("@JOURNAL_LOCK@", () => officeSystemdPath(`${policy.journal.path}/adoption.lock`));
+		.replace("@JOURNAL_LOCK@", () => officeSystemdPath(`${policy.journal.path}/adoption.lock`))
+		.replace("@JOURNAL_MOUNT@", () => officeSystemdPath(policy.journal.mountPoint, "dependency"))
+		.replace("@WORKBENCH_MOUNT@", () => officeSystemdPath(policy.workbench.mountPoint, "dependency"));
 	return { policy, service, unit, uid: policy.workbench.uid, gid: policy.workbench.gid };
 }
