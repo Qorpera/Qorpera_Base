@@ -270,8 +270,7 @@ begin
      case when probe='wrong-environment' then '34000000-0000-4000-8000-000000000019'::uuid else env end,
      'note.md',case when probe='wrong-snapshot' then env else snap end,hash);
     raise exception 'Snapshot read accepted denied case %',probe;
-   exception when insufficient_privilege then null; when object_not_in_prerequisite_state then
-    if probe<>'wrong-environment' then raise; end if;
+   exception when insufficient_privilege then null;
    end;
    raise exception using errcode='QTC01';
   exception when sqlstate 'QTC01' then null; end;

@@ -13,7 +13,7 @@
     "wakeAndSilence": "30cd7c0bc30189885c5407e34ba4fbbe467c433af4c11a3c93be80098e62241b",
     "contextComposer": "bf86d7b6c6e102f340eafcbb5e6100f6dd087e7069bf7542a8804569db93a06d",
     "providerBootstrap": "af40f3a69e948c33249089dabb794993607c2c1afc677606165037ce6c7b584b",
-    "authorization": "8ab69731d089aee815f81088afa49903006f499532bab71f6a9dc02f6db4f7af",
+    "authorization": "0f7c79ca45fc67fc75198eeca98da02478d442f0a209a8e292b13fb1278a478d",
     "inboundSafety": "154d8dcd3f023e963f205d28c8595ae4630d7041f42ff04e01ee37dc65e4141e",
     "outboundSafety": "711473332ceed46d63e65104674031b91463017e8ccd32780b3d2d661e273519",
     "interactionSurfaces": "9b5e7ffde6fe1b34fa94064a41e1a8396c3f17eb60e2527ba4f1a7d65490c5dc",
@@ -318,7 +318,7 @@
     "packages/shell/userland/staff-creatures/pebble.png": "cf58f57281267e8b29cbc2d01c342f4515c5180518162e9f3b1ecabb93349639",
     "packages/shell/userland/staff-creatures/ribbon.png": "58bd66cf9f5d265020c15689f733afae21078e8f7a3df0b5b75b43b50a3acec8",
     "packages/shell/userland/staff-creatures/wisp.png": "db243657056ac0660a14a6613d2d20aba7319a826adccdcd73f53e2c9d9031a0",
-    "scripts/generate-cloud-runtime-bundle.mjs": "c7099f2f5975c9f294af5cfa1d72fa14a83c80144c91fb2a7f8651c39b801ac6",
+    "scripts/generate-cloud-runtime-bundle.mjs": "84f8ac0a9ce18a97010b1e1a99cb0d6a33b97fbde9a7a1856494db8440046666",
     "scripts/native-company-artifact.mjs": "e394bc799104f188769de07cd3be14e6c732a1a672113ea45d349a29d8e0ca63",
     "scripts/package-company-computer.mjs": "b9ef67b9becef0b9e8ce62dd3ab7e839ac4698e2eb005e7bbe837dee40996120",
     "scripts/package-ephemeral-runner.mjs": "13fba93c7761b15b2a2b5d9476ae4329f0d25d28a66fe19c5cbf45c2ebb6ab37",
@@ -528,6 +528,8 @@
     "supabase/migrations/20260909000800_runtime_compute_users.sql": "a520629ed70ccfc60c6801e48a7c82a953abb55e21f53091639f76a08109fdea",
     "supabase/migrations/20260909000900_runtime_compute_requests.sql": "30e33954ba9b040d66a6f45354301940742cfd8ad068cd77d9fe9072ab4a67d8",
     "supabase/migrations/20260909001000_runtime_host_inventory.sql": "afa355767073f36686d4674ba3dba5a41424f81d966c215ab5268fd02435bc6c",
-    "supabase/migrations/20260910000100_member_company_snapshot_paths.sql": "5e548a27034ec2cce22affa5522aa7536dc369af1b0ac5dea34dd3f393654844"
+    "supabase/migrations/20260910000100_member_company_snapshot_paths.sql": "5e548a27034ec2cce22affa5522aa7536dc369af1b0ac5dea34dd3f393654844",
+    "supabase/migrations/20260910000200_runtime_bundle_activation_v16.sql": "1a7cc0716b37b8da79e38bbe315aad3520160fe27c42650b00260c27963fb466",
+    "supabase/migrations/20260911000100_company_path_admission_errors.sql": "cfb16d44e937a9c54777c312fc3543c9069cbd7e51167f22cc0b2a1b049bd64a"
   }
 }
