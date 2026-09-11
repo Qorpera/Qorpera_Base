@@ -31,8 +31,39 @@ export class AuthController {
 	}
 
 	async start(): Promise<void> {
-		const hasCallbackCode = new URL(location.href).searchParams.has("code");
-		const { error: initializationError } = await this.#cloud.supabase.auth.initialize();
+		const original = new URL(location.href);
+		const callbackFields = [
+			"code",
+			"access_token",
+			"refresh_token",
+			"provider_token",
+			"provider_refresh_token",
+			"error",
+			"error_code",
+			"error_description",
+		];
+		const originalFragment = new URLSearchParams(original.hash.slice(1));
+		const queryCallback = callbackFields.some((key) => original.searchParams.has(key));
+		const fragmentCallback =
+			!original.hash.startsWith("#/") && callbackFields.some((key) => originalFragment.has(key));
+		const { error: initializationError } = await this.#cloud.supabase.auth.initialize().finally(() => {
+			// Let Auth consume the callback first, then remove credentials even
+			// when it rejects an expired or mismatched flow. Preserve app routes.
+			const url = new URL(location.href);
+			const fields = [...callbackFields, "sb_flow_id", "expires_in", "expires_at", "token_type", "type"];
+			if (queryCallback) {
+				for (const key of fields) {
+					if (JSON.stringify(original.searchParams.getAll(key)) === JSON.stringify(url.searchParams.getAll(key)))
+						url.searchParams.delete(key);
+				}
+			}
+			if (fragmentCallback && url.hash === original.hash) {
+				for (const key of fields) originalFragment.delete(key);
+				url.hash = originalFragment.toString() || "/";
+			}
+			if (url.href !== location.href)
+				history.replaceState(history.state, "", `${url.pathname}${url.search}${url.hash}`);
+		});
 		const { data, error } = await this.#cloud.supabase.auth.getSession();
 		if (this.#disposed) return;
 		this.store.set({
@@ -40,7 +71,7 @@ export class AuthController {
 			session: data.session,
 			user: data.session?.user ?? null,
 			error:
-				!data.session && (initializationError || error || hasCallbackCode)
+				!data.session && (initializationError || error || queryCallback || fragmentCallback)
 					? "Sign-in could not be completed. Request a new email code in this browser."
 					: undefined,
 		});
@@ -52,12 +83,6 @@ export class AuthController {
 			if (!session) void this.#loadProviders();
 		});
 		this.#unsubscribe = () => subscription.unsubscribe();
-		// Strip the PKCE code from the address bar once the library has consumed it.
-		if (new URL(location.href).searchParams.has("code")) {
-			const url = new URL(location.href);
-			url.searchParams.delete("code");
-			history.replaceState(null, "", `${url.pathname}${url.search}${url.hash || "#/"}`);
-		}
 	}
 
 	dispose(): void {

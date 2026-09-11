@@ -144,4 +144,91 @@ describe("deployed sign-in methods", () => {
 		await settle();
 		expect(auth.store.get().oauthProviders).toEqual([]);
 	});
+
+	it.each([false, true])("removes callback credentials after initialization (failed: %s)", async (failed) => {
+		const f = fixture();
+		if (failed) f.auth(null);
+		vi.mocked(f.cloud.supabase.auth.initialize).mockResolvedValue({
+			error: failed ? new AuthError("Not a valid PKCE flow url") : null,
+		});
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => Response.json({ external: {} })),
+		);
+		history.replaceState(
+			null,
+			"",
+			"/?keep=yes&code=dummy-code&sb_flow_id=dummy-flow#access_token=dummy-access&refresh_token=dummy-refresh&provider_token=dummy-provider&provider_refresh_token=dummy-provider-refresh&expires_in=3600&expires_at=9999999999&token_type=bearer&type=magiclink",
+		);
+		auth = new AuthController(f.cloud);
+		await auth.start();
+		expect(location.search).toBe("?keep=yes");
+		expect(location.hash).toBe("#/");
+		expect(location.href).not.toContain("dummy-");
+	});
+
+	it("preserves an ordinary app route while removing rejected query callback data", async () => {
+		const f = fixture();
+		f.auth(null);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => Response.json({ external: {} })),
+		);
+		history.replaceState(
+			null,
+			"",
+			"/?keep=yes&error=access_denied&error_description=private-description&error_code=expired#/account",
+		);
+		auth = new AuthController(f.cloud);
+		await auth.start();
+		expect(location.search).toBe("?keep=yes");
+		expect(location.hash).toBe("#/account");
+	});
+
+	it("does not rewrite ordinary route or query parameters", async () => {
+		const f = fixture();
+		history.replaceState(null, "", "/?type=company&keep=yes#/c/company/file?code=notes");
+		const before = location.href;
+		auth = new AuthController(f.cloud);
+		await auth.start();
+		expect(location.href).toBe(before);
+	});
+
+	it("cleans a callback even when disposed during auth initialization", async () => {
+		const f = fixture();
+		const initialization = deferred<{ error: AuthError | null }>();
+		vi.mocked(f.cloud.supabase.auth.initialize).mockReturnValue(initialization.promise);
+		history.replaceState(null, "", "/#access_token=dummy-access&refresh_token=dummy-refresh");
+		auth = new AuthController(f.cloud);
+		const started = auth.start();
+		auth.dispose();
+		initialization.resolve({ error: new AuthError("Rejected callback") });
+		await started;
+		expect(location.hash).toBe("#/");
+		expect(f.cloud.supabase.auth.onAuthStateChange).not.toHaveBeenCalled();
+	});
+
+	it("does not erase a different callback or app route opened during initialization", async () => {
+		const f = fixture();
+		const initialization = deferred<{ error: AuthError | null }>();
+		vi.mocked(f.cloud.supabase.auth.initialize).mockReturnValue(initialization.promise);
+		history.replaceState(null, "", "/?code=original#access_token=dummy-original");
+		auth = new AuthController(f.cloud);
+		const started = auth.start();
+		history.replaceState({ retained: true }, "", "/?code=different&keep=yes#/account");
+		const newer = location.href;
+		initialization.resolve({ error: null });
+		await started;
+		expect(location.href).toBe(newer);
+		expect(history.state).toEqual({ retained: true });
+	});
+
+	it("cleans callback credentials if initialization rejects unexpectedly", async () => {
+		const f = fixture();
+		vi.mocked(f.cloud.supabase.auth.initialize).mockRejectedValue(new Error("Initialization failed"));
+		history.replaceState(null, "", "/#access_token=dummy-access&refresh_token=dummy-refresh");
+		auth = new AuthController(f.cloud);
+		await expect(auth.start()).rejects.toThrow("Initialization failed");
+		expect(location.hash).toBe("#/");
+	});
 });
