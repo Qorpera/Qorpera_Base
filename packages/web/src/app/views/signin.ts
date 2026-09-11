@@ -26,6 +26,7 @@ function providerButton(auth: AuthController, provider: OAuthProvider, label: st
 export function renderSignIn(auth: AuthController, container: HTMLElement): void {
 	const state = auth.store.get();
 	const pending = Boolean(state.pendingEmail);
+	const emailFocused = document.activeElement === container.querySelector("#signinEmail");
 	const email = h("input", {
 		id: "signinEmail",
 		type: "email",
@@ -33,7 +34,7 @@ export function renderSignIn(auth: AuthController, container: HTMLElement): void
 		autocomplete: "email",
 		placeholder: "you@company.com",
 		required: true,
-		value: state.pendingEmail ?? "",
+		value: state.pendingEmail ?? container.querySelector<HTMLInputElement>("#signinEmail")?.value ?? "",
 		disabled: state.busy,
 	});
 	const code = h("input", {
@@ -109,13 +110,18 @@ export function renderSignIn(auth: AuthController, container: HTMLElement): void
 				{ class: "auth-body" },
 				h("h1", { id: "authTitle" }, "Sign in"),
 				h("p", { class: "auth-lead" }, "Your companies and agents, in one place."),
-				h(
-					"div",
-					{ class: "auth-providers" },
-					providerButton(auth, "google", "Google", state.busy),
-					providerButton(auth, "github", "GitHub", state.busy),
-				),
-				h("div", { class: "auth-divider", "aria-hidden": "true" }, h("span", null, "or")),
+				!pending && state.oauthProviders.length > 0
+					? h(
+							"div",
+							{ class: "auth-providers" },
+							...state.oauthProviders.map((provider) =>
+								providerButton(auth, provider, provider === "google" ? "Google" : "GitHub", state.busy),
+							),
+						)
+					: null,
+				!pending && state.oauthProviders.length > 0
+					? h("div", { class: "auth-divider", "aria-hidden": "true" }, h("span", null, "or"))
+					: null,
 				form,
 				status,
 			),
@@ -128,4 +134,5 @@ export function renderSignIn(auth: AuthController, container: HTMLElement): void
 		art,
 	);
 	if (pending) code.focus();
+	else if (emailFocused && !state.busy) email.focus();
 }

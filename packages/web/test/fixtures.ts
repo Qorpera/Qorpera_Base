@@ -191,6 +191,7 @@ export function fixture() {
 		}),
 		supabase: {
 			auth: {
+				initialize: vi.fn(async () => ({ error: null })),
 				getSession: vi.fn(async () => ({ data: { session: getSession() } })),
 				onAuthStateChange: vi.fn((callback: typeof authCallback) => {
 					authCallback = callback;

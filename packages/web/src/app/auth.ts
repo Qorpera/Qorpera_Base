@@ -14,28 +14,42 @@ export interface AuthState {
 	message?: string;
 	error?: string;
 	busy: boolean;
+	oauthProviders: OAuthProvider[];
 }
 
 export type OAuthProvider = "github" | "google";
 
 export class AuthController {
-	readonly store = new Store<AuthState>({ ready: false, session: null, user: null, busy: false });
+	readonly store = new Store<AuthState>({ ready: false, session: null, user: null, busy: false, oauthProviders: [] });
 	readonly #cloud: Cloud;
 	#disposed = false;
 	#unsubscribe?: () => void;
+	#providerRequest?: AbortController;
 
 	constructor(cloud: Cloud) {
 		this.#cloud = cloud;
 	}
 
 	async start(): Promise<void> {
-		const { data } = await this.#cloud.supabase.auth.getSession();
+		const hasCallbackCode = new URL(location.href).searchParams.has("code");
+		const { error: initializationError } = await this.#cloud.supabase.auth.initialize();
+		const { data, error } = await this.#cloud.supabase.auth.getSession();
 		if (this.#disposed) return;
-		this.store.set({ ready: true, session: data.session, user: data.session?.user ?? null });
+		this.store.set({
+			ready: true,
+			session: data.session,
+			user: data.session?.user ?? null,
+			error:
+				!data.session && (initializationError || error || hasCallbackCode)
+					? "Sign-in could not be completed. Request a new email code in this browser."
+					: undefined,
+		});
+		if (!data.session) void this.#loadProviders();
 		const {
 			data: { subscription },
 		} = this.#cloud.supabase.auth.onAuthStateChange((_event, session) => {
 			this.store.set({ session, user: session?.user ?? null, ready: true });
+			if (!session) void this.#loadProviders();
 		});
 		this.#unsubscribe = () => subscription.unsubscribe();
 		// Strip the PKCE code from the address bar once the library has consumed it.
@@ -49,7 +63,39 @@ export class AuthController {
 	dispose(): void {
 		this.#disposed = true;
 		this.#unsubscribe?.();
+		this.#providerRequest?.abort();
 		this.store.dispose();
+	}
+
+	async #loadProviders(): Promise<void> {
+		if (this.#disposed || this.#providerRequest) return;
+		const request = new AbortController();
+		this.#providerRequest = request;
+		const timeout = setTimeout(() => request.abort(), 5000);
+		try {
+			// Public Auth settings expose enabled providers without a member or admin token.
+			const response = await fetch(`${this.#cloud.config.projectUrl}/auth/v1/settings`, {
+				headers: { apikey: this.#cloud.config.publishableKey },
+				credentials: "omit",
+				signal: request.signal,
+			});
+			if (!response.ok) throw new Error("Auth settings unavailable");
+			const settings: unknown = await response.json();
+			const external =
+				settings && typeof settings === "object" && "external" in settings ? settings.external : undefined;
+			const providers: OAuthProvider[] = ["google", "github"];
+			const oauthProviders = providers.filter(
+				(provider) =>
+					external && typeof external === "object" && (external as Record<string, unknown>)[provider] === true,
+			);
+			if (!this.#disposed) this.store.set({ oauthProviders });
+		} catch {
+			// Email remains usable when discovery fails; never advertise an unverified provider.
+			if (!this.#disposed) this.store.set({ oauthProviders: [] });
+		} finally {
+			clearTimeout(timeout);
+			this.#providerRequest = undefined;
+		}
 	}
 
 	get accessToken(): string | undefined {
@@ -99,6 +145,10 @@ export class AuthController {
 	}
 
 	async signInWithOAuth(provider: OAuthProvider): Promise<void> {
+		if (!this.store.get().oauthProviders.includes(provider)) {
+			this.store.set({ error: "This sign-in provider is unavailable. Continue with email." });
+			return;
+		}
 		this.store.set({ busy: true, error: undefined });
 		const { error } = await this.#cloud.supabase.auth.signInWithOAuth({
 			provider,
