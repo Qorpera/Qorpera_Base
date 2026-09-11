@@ -91,6 +91,26 @@ describe("explicit VM resume", () => {
 		expect(f.poll).not.toHaveBeenCalled();
 		await expect(readFile(f.names.done)).rejects.toMatchObject({ code: "ENOENT" });
 	});
+	it("waits for exact restored history after an accepted start without starting the VM again", async () => {
+		const f = await fixture(),
+			path = `${companyComputerStopHistoryDirectory(f.request.predecessor.startup.bootId, f.request.predecessor.activationId)}/manifest.json`,
+			original = f.guest.get(path)!,
+			shutdown = await readFile(f.powerOff.paths.done);
+		f.guest.delete(path);
+		await expect(f.run()).rejects.toThrow("OFFICE_RESUME_UNCONFIRMED");
+		expect(f.submit).toHaveBeenCalledOnce();
+		await expect(readFile(f.names.done)).rejects.toMatchObject({ code: "ENOENT" });
+		const seed = await readFile(f.names.seed);
+		f.guest.set(path, { ...original, content: Buffer.from("{}") });
+		await expect(f.run()).rejects.toThrow("OFFICE_RESUME_UNCONFIRMED");
+		expect(f.submit).toHaveBeenCalledOnce();
+		await expect(readFile(f.names.done)).rejects.toMatchObject({ code: "ENOENT" });
+		f.guest.set(path, original);
+		await expect(f.run()).resolves.toMatchObject({ state: "awaiting_configuration", bootId: id(103) });
+		expect(f.submit).toHaveBeenCalledOnce();
+		expect(await readFile(f.names.seed)).toEqual(seed);
+		expect(await readFile(f.powerOff.paths.done)).toEqual(shutdown);
+	});
 	it("recovers lost preparation and accepted polling replies without another command", async () => {
 		const f = await fixture();
 		f.registry.mockRejectedValueOnce(new Error("lost committed prepare"));
