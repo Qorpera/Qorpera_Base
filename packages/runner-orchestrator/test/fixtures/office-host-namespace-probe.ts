@@ -5,10 +5,13 @@ import { assertLxdOfficeHostNamespace } from "../../src/lxd-office-physical-host
 async function main(): Promise<void> {
 	assert.equal(process.platform, "linux");
 	assert.notEqual(process.geteuid?.(), 0);
-	await assert.rejects(
-		readlink("/proc/1/ns/mnt"),
-		(error: NodeJS.ErrnoException) => error.code === "EACCES" || error.code === "EPERM",
-	);
+	let directNamespace = "";
+	try {
+		directNamespace = await readlink("/proc/1/ns/mnt");
+	} catch (error) {
+		assert.ok(["EACCES", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? ""));
+	}
+	assert.equal(directNamespace, "");
 	const status = await readFile("/proc/self/status", "utf8");
 	for (const name of ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"])
 		assert.match(status, new RegExp(`^${name}:\\s+0+$`, "m"));

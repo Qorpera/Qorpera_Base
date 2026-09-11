@@ -292,11 +292,16 @@ export async function inspectLxdOfficePhysicalHost(policy: LxdOfficePhysicalPoli
  */
 export async function assertLxdOfficeHostNamespace(bootId: string): Promise<string> {
 	const namespace = await readlink("/proc/self/ns/mnt");
-	let hostNamespace: string;
+	if (!/^mnt:\[[1-9][0-9]{0,19}\]$/.test(namespace)) throw new Error("OFFICE_PROVIDER_HOST_MOUNT_NAMESPACE_REQUIRED");
+	let hostNamespace = "";
 	try {
 		hostNamespace = await readlink("/proc/1/ns/mnt");
 	} catch (error) {
 		if (!["EACCES", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+	}
+	// A restricted proc namespace link can also return an empty target. It
+	// provides no authority; use the same protected, boot-bound startup record.
+	if (hostNamespace === "") {
 		const record = parseLxdOfficeHostNamespace(
 			JSON.parse(
 				new TextDecoder("utf8", { fatal: true }).decode(
