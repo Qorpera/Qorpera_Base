@@ -12,6 +12,10 @@ const hash = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex")
 export async function officeActivationWorkerFixture(roots: string[], configured = true) {
 	const f = await officeConfigurationWorkerFixture(roots);
 	if (configured) await f.worker.reconcile(f.request, signal());
+	return createOfficeActivationWorkerFixture(f);
+}
+
+export function createOfficeActivationWorkerFixture(f: Awaited<ReturnType<typeof officeConfigurationWorkerFixture>>) {
 	let state: Record<string, unknown> | undefined,
 		transitions = 0;
 	const registry = vi.fn<LxdOfficeActivationRegistry["call"]>(async (method, args, checked) => {

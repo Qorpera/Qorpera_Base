@@ -40,6 +40,12 @@ Do not use this procedure for configuration, service start, stop or reboot.
    authority or either journal fails closed. Restart the provider only after
    this verification passes.
 
+Initial activation and later boot activation use the same retained recovery
+validation. Later boots locate the original protected review through the
+supervisor's immutable activation-phase lifecycle request. Preserve that record,
+the review and both execution journals across shutdowns and root resets. These
+historical checks do not rerun preparation or inspect mutable working files.
+
 This procedure installs no new signed guest code, bypasses no admission check,
 and grants no capacity release or ordinary service activation. Operator receipts
 must record the original failed/unknown attempt and the separate actual recovery.

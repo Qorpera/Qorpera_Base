@@ -23,6 +23,7 @@ import { readRecord } from "./lxd-office-journal-files.ts";
 import { LxdOfficeOperationJournal } from "./lxd-office-operations.ts";
 import { readLxdOfficePowerOffEvidence } from "./lxd-office-power-off-evidence.ts";
 import { LxdOfficePreparationJournal } from "./lxd-office-preparation-journal.ts";
+import { readLxdOfficePreparationRecovery } from "./lxd-office-preparation-recovery.ts";
 import { officeStopHash as hash } from "./lxd-office-stop-evidence.ts";
 
 export type LxdOfficeBootActivationEvidenceClient = LxdOfficeBootConfigurationClient & LxdOfficePreparationClient;
@@ -161,7 +162,16 @@ export async function readLxdOfficeBootActivationEvidence(
 		{ intentId, binding, bootObservationSha256: officeSha(prep.bootObservationSha256), command: preparation },
 		client,
 	);
-	if (!isDeepStrictEqual(await preparedJournal.observe(signal), { state: "succeeded", operationId: prep.operationId }))
+	const recovery = await readLxdOfficePreparationRecovery(
+		root,
+		{ intentId, binding, bootObservationSha256: officeSha(prep.bootObservationSha256), command: preparation },
+		client,
+		signal,
+		await preparedJournal.observe(signal),
+		undefined,
+		ports.readProtected,
+	);
+	if (!isDeepStrictEqual(recovery.operation, { state: "succeeded", operationId: prep.operationId }))
 		throw new Error("preparation operation unconfirmed");
 	const power = await read(`power-off-completed-${suffix}.json`),
 		payload = await createLxdOfficeBootConfigurationPayload(
@@ -309,6 +319,7 @@ export async function readLxdOfficeBootActivationEvidence(
 		signal.throwIfAborted();
 		return {
 			records,
+			preparationRecoverySha256: recovery.recoveryBytes ? hash(recovery.recoveryBytes) : null,
 			configuration,
 			configurationCompletionSha256,
 			preparationObservationSha256,

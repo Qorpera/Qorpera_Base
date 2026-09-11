@@ -24,6 +24,7 @@ import { LxdOfficePhysicalGate } from "./lxd-office-physical-gate.ts";
 import { readLxdOfficeProtectedFile } from "./lxd-office-physical-host.ts";
 import { parseLxdOfficePhysicalPolicy } from "./lxd-office-physical-policy.ts";
 import { type LxdOfficePreparationIdentity, LxdOfficePreparationJournal } from "./lxd-office-preparation-journal.ts";
+import { readLxdOfficePreparationRecovery } from "./lxd-office-preparation-recovery.ts";
 import { LxdOfficeStartControl, type LxdOfficeStartRegistry } from "./lxd-office-start-control.ts";
 
 const hash = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
@@ -301,57 +302,17 @@ export class LxdOfficePreparationWorker {
 			checked = await authorizeCommand();
 			operation = await journal.reconcile(checked);
 		}
-		// An operator may recover this one idempotent preparation command under
-		// its existing guest claim/lock. The ordinary worker NEVER retries it.
-		// Retain the original unknown/failed journal and consume only a separate,
-		// already-settled execution journal bound by a root-protected review.
-		let recoveryBytes: Buffer | undefined;
-		try {
-			recoveryBytes = await this.#readProtected(`${input.reviewPath}.preparation-recovery`, 16384);
-		} catch (error) {
-			if (!code(error, "ENOENT")) throw error;
-		}
-		if (recoveryBytes) {
-			const recovery = officeRecord(json(recoveryBytes), [
-				"schema",
-				"recoveryId",
-				"identitySha256",
-				"originalOperationId",
-				"acceptedSha256",
-			]);
-			const recoveryId = parseCompanyComputerPreparationCommand({
-				...command,
-				commandId: recovery.recoveryId,
-			}).commandId;
-			const identity = {
-				intentId: input.intentId,
-				binding,
-				bootObservationSha256: boot.bootObservationSha256,
-				command,
-			};
-			if (
-				recovery.schema !== "qorpera.lxd-office-preparation-recovery/v1" ||
-				!["unknown", "failed"].includes(operation.state) ||
-				!operation.operationId ||
-				recovery.originalOperationId !== operation.operationId ||
-				recovery.identitySha256 !== officeDigest(identity) ||
-				recovery.acceptedSha256 !==
-					hash((await readRecord(join(root, `preparation-${allocationId}`, "000001.json"))).bytes)
-			)
-				throw new Error("OFFICE_PREPARATION_RECOVERY_UNCONFIRMED");
-			checked = await authorizeCommand();
-			const recovered = await LxdOfficePreparationJournal.open(
-				join(root, `preparation-recovery-${allocationId}-${recoveryId}`),
-				identity,
-				this.#client,
-			);
-			const outcome = await recovered.observe(checked);
-			if (outcome.state !== "succeeded" || !outcome.operationId || outcome.operationId === operation.operationId)
-				throw new Error("OFFICE_PREPARATION_RECOVERY_UNCONFIRMED");
-			if (!(await this.#readProtected(`${input.reviewPath}.preparation-recovery`, 16384)).equals(recoveryBytes))
-				throw new Error("OFFICE_PREPARATION_RECOVERY_CHANGED");
-			operation = outcome;
-		}
+		const recovery = await readLxdOfficePreparationRecovery(
+			root,
+			{ intentId: input.intentId, binding, bootObservationSha256: boot.bootObservationSha256, command },
+			this.#client,
+			checked,
+			operation,
+			input.reviewPath,
+			this.#readProtected,
+		);
+		operation = recovery.operation;
+		const { recoveryBytes } = recovery;
 		const result = {
 			intentId: input.intentId,
 			allocationId,

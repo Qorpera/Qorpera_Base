@@ -23,6 +23,7 @@ import type { LxdOfficeStorageObservation } from "./lxd-office-inventory-worker.
 import { readRecord } from "./lxd-office-journal-files.ts";
 import type { readLxdOfficeCredentialFile, readLxdOfficeProtectedFile } from "./lxd-office-physical-host.ts";
 import { LxdOfficePreparationJournal } from "./lxd-office-preparation-journal.ts";
+import { readLxdOfficePreparationRecovery } from "./lxd-office-preparation-recovery.ts";
 import { createLxdOfficeConfigurationPayload } from "./lxd-office-service-bootstrap.ts";
 import type { LxdOfficeAdoptionMapping } from "./lxd-office-start-control.ts";
 
@@ -92,12 +93,16 @@ export async function readLxdOfficeActivationEvidence(
 		{ intentId: input.intentId, binding, bootObservationSha256, command: preparation },
 		client,
 	);
-	if (
-		!isDeepStrictEqual(await prepJournal.observe(signal), {
-			state: "succeeded",
-			operationId: prepObservation.operationId,
-		})
-	)
+	const recovery = await readLxdOfficePreparationRecovery(
+		root,
+		{ intentId: input.intentId, binding, bootObservationSha256, command: preparation },
+		client,
+		signal,
+		await prepJournal.observe(signal),
+		input.reviewPath,
+		ports.readProtected,
+	);
+	if (!isDeepStrictEqual(recovery.operation, { state: "succeeded", operationId: prepObservation.operationId }))
 		throw new Error("preparation operation");
 	const receipt = companyComputerPreparationAdoptionReceipt(preparedRequest);
 	const receiptSha256 = hash(`${JSON.stringify(receipt)}\n`);
@@ -222,6 +227,7 @@ export async function readLxdOfficeActivationEvidence(
 		signal.throwIfAborted();
 		return {
 			records,
+			preparationRecoverySha256: recovery.recoveryBytes ? hash(recovery.recoveryBytes) : null,
 			configuration,
 			configurationCompletionSha256: officeSha(observation.completionSha256),
 			preparationObservationSha256,
