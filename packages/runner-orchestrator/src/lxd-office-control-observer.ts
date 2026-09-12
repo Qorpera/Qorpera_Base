@@ -16,7 +16,7 @@ export async function observeLxdOfficeControlJournals(
 	signal.throwIfAborted();
 	await checkDirectory(root);
 	const names = (await readdir(root)).filter((name) =>
-		/^(preparation|configuration|boot-configuration|boot-service-restart|boot-service-start|service-start|service-stop|service-restart)-[0-9a-f-]+$/.test(
+		/^(preparation|configuration|boot-configuration|boot-service-restart|boot-service-start|service-start|service-stop|service-restart|reset-configuration|reset-service-start)-[0-9a-f-]+$/.test(
 			name,
 		),
 	);

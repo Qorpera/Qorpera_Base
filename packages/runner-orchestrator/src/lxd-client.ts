@@ -8,6 +8,8 @@ import {
 	COMPANY_COMPUTER_BOOT_SERVICE_START_MAX_BYTES,
 	COMPANY_COMPUTER_CONFIGURATION_MAX_BYTES,
 	COMPANY_COMPUTER_PREPARATION_MAX_BYTES,
+	COMPANY_COMPUTER_RESET_CONFIGURATION_MAX_BYTES,
+	COMPANY_COMPUTER_RESET_SERVICE_START_MAX_BYTES,
 	COMPANY_COMPUTER_SERVICE_RESTART_MAX_BYTES,
 	COMPANY_COMPUTER_SERVICE_START_MAX_BYTES,
 	COMPANY_COMPUTER_SERVICE_STOP_MAX_BYTES,
@@ -514,6 +516,59 @@ export interface LxdOfficeResetClient extends LxdOfficeInspectableClient {
 		signal: AbortSignal,
 	): Promise<void>;
 }
+/** Reset successor lane on the recreated root: fresh credential installation
+ * under the new boot directory, one ordinary start and its nonce inspection. */
+export interface LxdOfficeResetSuccessorClient extends LxdOfficeInspectableClient {
+	submitOfficeResetConfiguration(
+		project: string,
+		name: string,
+		command: LxdOfficePreparationCommand,
+		signal: AbortSignal,
+	): Promise<LxdOperationReference>;
+	inspectOfficeResetConfiguration(reference: LxdOperationReference, signal: AbortSignal): Promise<LxdOperationState>;
+	pushOfficeResetConfigurationRequest(
+		project: string,
+		name: string,
+		requestSha256: string,
+		content: Buffer,
+		signal: AbortSignal,
+	): Promise<void>;
+	readOfficeResetConfigurationRequest(
+		project: string,
+		name: string,
+		requestSha256: string,
+		bytes: number,
+		signal: AbortSignal,
+	): Promise<LxdInstanceFile>;
+	submitOfficeResetServiceStart(
+		project: string,
+		name: string,
+		command: LxdOfficePreparationCommand,
+		signal: AbortSignal,
+	): Promise<LxdOperationReference>;
+	submitOfficeResetServiceInspection(
+		project: string,
+		name: string,
+		command: LxdOfficePreparationCommand,
+		inspectionId: string,
+		signal: AbortSignal,
+	): Promise<LxdOperationReference>;
+	inspectOfficeResetServiceStart(reference: LxdOperationReference, signal: AbortSignal): Promise<LxdOperationState>;
+	pushOfficeResetServiceStartRequest(
+		project: string,
+		name: string,
+		requestSha256: string,
+		content: Buffer,
+		signal: AbortSignal,
+	): Promise<void>;
+	readOfficeResetServiceStartRequest(
+		project: string,
+		name: string,
+		requestSha256: string,
+		bytes: number,
+		signal: AbortSignal,
+	): Promise<LxdInstanceFile>;
+}
 export const OFFICE_RESET_OUTBOX_ROOT = "/var/lib/qorpera-office-events";
 export const OFFICE_RESET_HISTORY_ROOT = "/etc/qorpera-office/history";
 const RESET_UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
@@ -658,23 +713,29 @@ type OfficeControlPurpose =
 	| "boot-service-start"
 	| "service-start"
 	| "service-stop"
-	| "service-restart";
+	| "service-restart"
+	| "reset-configuration"
+	| "reset-service-start";
 const officeControlMaximum = (purpose: OfficeControlPurpose) =>
-	purpose === "boot-service-restart"
-		? COMPANY_COMPUTER_BOOT_SERVICE_RESTART_MAX_BYTES
-		: purpose === "boot-service-start"
-			? COMPANY_COMPUTER_BOOT_SERVICE_START_MAX_BYTES
-			: purpose === "boot-configuration"
-				? COMPANY_COMPUTER_BOOT_CONFIGURATION_MAX_BYTES
-				: purpose === "preparation"
-					? COMPANY_COMPUTER_PREPARATION_MAX_BYTES
-					: purpose === "configuration"
-						? COMPANY_COMPUTER_CONFIGURATION_MAX_BYTES
-						: purpose === "service-start"
-							? COMPANY_COMPUTER_SERVICE_START_MAX_BYTES
-							: purpose === "service-stop"
-								? COMPANY_COMPUTER_SERVICE_STOP_MAX_BYTES
-								: COMPANY_COMPUTER_SERVICE_RESTART_MAX_BYTES;
+	purpose === "reset-configuration"
+		? COMPANY_COMPUTER_RESET_CONFIGURATION_MAX_BYTES
+		: purpose === "reset-service-start"
+			? COMPANY_COMPUTER_RESET_SERVICE_START_MAX_BYTES
+			: purpose === "boot-service-restart"
+				? COMPANY_COMPUTER_BOOT_SERVICE_RESTART_MAX_BYTES
+				: purpose === "boot-service-start"
+					? COMPANY_COMPUTER_BOOT_SERVICE_START_MAX_BYTES
+					: purpose === "boot-configuration"
+						? COMPANY_COMPUTER_BOOT_CONFIGURATION_MAX_BYTES
+						: purpose === "preparation"
+							? COMPANY_COMPUTER_PREPARATION_MAX_BYTES
+							: purpose === "configuration"
+								? COMPANY_COMPUTER_CONFIGURATION_MAX_BYTES
+								: purpose === "service-start"
+									? COMPANY_COMPUTER_SERVICE_START_MAX_BYTES
+									: purpose === "service-stop"
+										? COMPANY_COMPUTER_SERVICE_STOP_MAX_BYTES
+										: COMPANY_COMPUTER_SERVICE_RESTART_MAX_BYTES;
 const officeControlError = (purpose: OfficeControlPurpose | "software", operation: string) =>
 	new Error(`LXD_OFFICE_${purpose.replaceAll("-", "_").toUpperCase()}_${operation}_UNCONFIRMED`);
 
@@ -704,7 +765,8 @@ function officeControlCommand(
 			purpose !== "boot-service-start" &&
 			purpose !== "service-start" &&
 			purpose !== "service-stop" &&
-			purpose !== "service-restart") ||
+			purpose !== "service-restart" &&
+			purpose !== "reset-service-start") ||
 			parseCompanyComputerPreparationCommand({ ...command, commandId: inspectionId }).commandId ===
 				command.commandId)
 	)
@@ -912,7 +974,8 @@ export class LxdUnixClient
 		LxdOfficeServiceStopClient,
 		LxdOfficeServiceRestartClient,
 		LxdOfficeBootServiceRestartClient,
-		LxdOfficeResetClient
+		LxdOfficeResetClient,
+		LxdOfficeResetSuccessorClient
 {
 	readonly #socketPath: string;
 	readonly #operationTimeoutSeconds: number;
@@ -1430,6 +1493,33 @@ export class LxdUnixClient
 		if (typeof inspectionId !== "string") throw officeControlError("boot-service-restart", "SUBMISSION");
 		return this.#submitOfficeControl(project, name, command, signal, "boot-service-restart", inspectionId);
 	}
+	async submitOfficeResetConfiguration(
+		project: string,
+		name: string,
+		command: LxdOfficePreparationCommand,
+		signal: AbortSignal,
+	): Promise<LxdOperationReference> {
+		return this.#submitOfficeControl(project, name, command, signal, "reset-configuration");
+	}
+	async submitOfficeResetServiceStart(
+		project: string,
+		name: string,
+		command: LxdOfficePreparationCommand,
+		signal: AbortSignal,
+	): Promise<LxdOperationReference> {
+		return this.#submitOfficeControl(project, name, command, signal, "reset-service-start");
+	}
+	async submitOfficeResetServiceInspection(
+		project: string,
+		name: string,
+		command: LxdOfficePreparationCommand,
+		inspectionId: string,
+		signal: AbortSignal,
+	): Promise<LxdOperationReference> {
+		// Undefined must never degrade an inspection into the effectful start mode.
+		if (typeof inspectionId !== "string") throw officeControlError("reset-service-start", "SUBMISSION");
+		return this.#submitOfficeControl(project, name, command, signal, "reset-service-start", inspectionId);
+	}
 	async #submitOfficeControl(
 		project: string,
 		name: string,
@@ -1535,6 +1625,18 @@ export class LxdUnixClient
 		signal: AbortSignal,
 	): Promise<LxdOperationState> {
 		return this.#inspectOfficeControl(reference, signal, "boot-service-restart");
+	}
+	async inspectOfficeResetConfiguration(
+		reference: LxdOperationReference,
+		signal: AbortSignal,
+	): Promise<LxdOperationState> {
+		return this.#inspectOfficeControl(reference, signal, "reset-configuration");
+	}
+	async inspectOfficeResetServiceStart(
+		reference: LxdOperationReference,
+		signal: AbortSignal,
+	): Promise<LxdOperationState> {
+		return this.#inspectOfficeControl(reference, signal, "reset-service-start");
 	}
 	async pushOfficeSoftwareFile(
 		project: string,
@@ -2034,6 +2136,24 @@ export class LxdUnixClient
 	): Promise<void> {
 		return this.#pushOfficeControlRequest(project, name, requestSha256, content, signal, "boot-service-restart");
 	}
+	async pushOfficeResetConfigurationRequest(
+		project: string,
+		name: string,
+		requestSha256: string,
+		content: Buffer,
+		signal: AbortSignal,
+	): Promise<void> {
+		return this.#pushOfficeControlRequest(project, name, requestSha256, content, signal, "reset-configuration");
+	}
+	async pushOfficeResetServiceStartRequest(
+		project: string,
+		name: string,
+		requestSha256: string,
+		content: Buffer,
+		signal: AbortSignal,
+	): Promise<void> {
+		return this.#pushOfficeControlRequest(project, name, requestSha256, content, signal, "reset-service-start");
+	}
 	async #pushOfficeControlRequest(
 		project: string,
 		name: string,
@@ -2156,6 +2276,24 @@ export class LxdUnixClient
 		signal: AbortSignal,
 	): Promise<LxdInstanceFile> {
 		return this.#readOfficeControlRequest(project, name, requestSha256, bytes, signal, "boot-service-restart");
+	}
+	async readOfficeResetConfigurationRequest(
+		project: string,
+		name: string,
+		requestSha256: string,
+		bytes: number,
+		signal: AbortSignal,
+	): Promise<LxdInstanceFile> {
+		return this.#readOfficeControlRequest(project, name, requestSha256, bytes, signal, "reset-configuration");
+	}
+	async readOfficeResetServiceStartRequest(
+		project: string,
+		name: string,
+		requestSha256: string,
+		bytes: number,
+		signal: AbortSignal,
+	): Promise<LxdInstanceFile> {
+		return this.#readOfficeControlRequest(project, name, requestSha256, bytes, signal, "reset-service-start");
 	}
 	async #readOfficeControlRequest(
 		project: string,

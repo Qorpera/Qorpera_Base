@@ -9,6 +9,8 @@ import {
 	COMPANY_COMPUTER_BOOT_SERVICE_START_MAX_BYTES,
 	COMPANY_COMPUTER_CONFIGURATION_MAX_BYTES,
 	COMPANY_COMPUTER_PREPARATION_MAX_BYTES,
+	COMPANY_COMPUTER_RESET_CONFIGURATION_MAX_BYTES,
+	COMPANY_COMPUTER_RESET_SERVICE_START_MAX_BYTES,
 	COMPANY_COMPUTER_SERVICE_RESTART_MAX_BYTES,
 	COMPANY_COMPUTER_SERVICE_START_MAX_BYTES,
 	COMPANY_COMPUTER_SERVICE_STOP_MAX_BYTES,
@@ -137,6 +139,24 @@ for (const lane of [
 		sample: 8192,
 		prefix: "service-restart-incoming",
 		error: "SERVICE_RESTART",
+	},
+	{
+		name: "reset-configuration",
+		push: "pushOfficeResetConfigurationRequest",
+		read: "readOfficeResetConfigurationRequest",
+		maximum: COMPANY_COMPUTER_RESET_CONFIGURATION_MAX_BYTES,
+		sample: 128 * 1024,
+		prefix: "reset-configuration-incoming",
+		error: "RESET_CONFIGURATION",
+	},
+	{
+		name: "reset-service-start",
+		push: "pushOfficeResetServiceStartRequest",
+		read: "readOfficeResetServiceStartRequest",
+		maximum: COMPANY_COMPUTER_RESET_SERVICE_START_MAX_BYTES,
+		sample: 8192,
+		prefix: "reset-service-start-incoming",
+		error: "RESET_SERVICE_START",
 	},
 ] as const)
 	describe(`bounded content-addressed office ${lane.name} staging`, () => {
