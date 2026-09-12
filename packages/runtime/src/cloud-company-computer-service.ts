@@ -69,6 +69,7 @@ export async function startCompanyComputerOfficeService(options: {
 	let native: Awaited<ReturnType<typeof startCompanyComputerNativeGateway>> | undefined;
 	let viewer: Awaited<ReturnType<typeof startCompanyComputerViewerWebSocketGateway>> | undefined;
 	let nativeGateway: CompanyComputerNativeGateway | undefined;
+	let supervisor: CompanyComputerOfficeSupervisor | undefined;
 	let closing: Promise<void> | undefined;
 	const cleanup = (): Promise<void> => {
 		ready = false;
@@ -95,12 +96,21 @@ export async function startCompanyComputerOfficeService(options: {
 		signal.throwIfAborted();
 		if (!ready) throw new Error("OFFICE_SERVICE_NOT_READY");
 	};
+	// New viewer admission and new native work additionally require the
+	// supervisor's latest status poll to have confirmed the durable state. An
+	// already-admitted viewer's periodic check, its per-input admission and its
+	// release are each confirmed by SQL on their own and stay on assertServing,
+	// so a bounded transport gap never destroys an authorized stream.
+	const assertAdmitting = (): void => {
+		assertServing();
+		supervisor?.assertConfirmed();
+	};
 	try {
 		signal.throwIfAborted();
 		const control = new CloudCompanyComputerViewerControl({ scope: options.scope, control: options.registry });
 		const authority: CompanyComputerViewerAuthority = {
 			redeem: async (capability, checked) => {
-				assertServing();
+				assertAdmitting();
 				return control.redeem(capability, AbortSignal.any([signal, checked]));
 			},
 			check: async (grant, checked) => {
@@ -129,12 +139,12 @@ export async function startCompanyComputerOfficeService(options: {
 			authority,
 			guest: {
 				connect: async (grant, checked) => {
-					assertServing();
+					assertAdmitting();
 					const combined = AbortSignal.any([signal, checked]);
 					const connected = await options.guest.viewer.connect(grant, combined);
 					try {
 						combined.throwIfAborted();
-						assertServing();
+						assertAdmitting();
 						return connected;
 					} catch (error) {
 						connected.socket.destroy();
@@ -163,7 +173,7 @@ export async function startCompanyComputerOfficeService(options: {
 				secureSurface: (challenge, checked) => options.guest.privacy.secureSurface(challenge, checked),
 			},
 		});
-		const supervisor = new CompanyComputerOfficeSupervisor({
+		supervisor = new CompanyComputerOfficeSupervisor({
 			scope: options.scope,
 			computerGeneration: options.computerGeneration,
 			viewers: {
@@ -189,9 +199,9 @@ export async function startCompanyComputerOfficeService(options: {
 			computerGeneration: options.computerGeneration,
 			token: options.native.token,
 			registry: options.registry,
-			admit: assertServing,
+			admit: assertAdmitting,
 			createSession: async (session) => {
-				assertServing();
+				assertAdmitting();
 				return options.guest.createSession({ ...session, gate });
 			},
 		});

@@ -24,6 +24,48 @@ function keys(value: unknown, expected: string): asserts value is Record<string,
 function positive(value: unknown): value is number {
 	return Number.isSafeInteger(value) && (value as number) > 0;
 }
+/** Never invoke getters or stringifiers on an error while classifying it. */
+function data(value: unknown, key: string): unknown {
+	try {
+		if (!value || (typeof value !== "object" && typeof value !== "function")) return undefined;
+		const descriptor = Object.getOwnPropertyDescriptor(value, key);
+		return descriptor && Object.hasOwn(descriptor, "value") ? descriptor.value : undefined;
+	} catch {
+		return undefined;
+	}
+}
+const transportCodes = new Set([
+	"ECONNRESET",
+	"ECONNREFUSED",
+	"ETIMEDOUT",
+	"EPIPE",
+	"EAI_AGAIN",
+	"ENETUNREACH",
+	"EHOSTUNREACH",
+]);
+/** A status poll whose outcome is unknown at the transport level: the request
+ * deadline (COMPUTER_REQUEST_STOPPED, contract §12 cloud operations continue
+ * independently of every member client) or a socket failure below the
+ * registry boundary. An authority refusal (`denied`), a malformed body, an
+ * inactive office (OFFICE_SERVICE_UNAVAILABLE) or invalid state is a confirmed
+ * answer and never counts as transport-unconfirmed. */
+function transportUnconfirmed(error: unknown): boolean {
+	const message = data(error, "message");
+	if (message !== "OFFICE_REGISTRY_UNCONFIRMED" && message !== "COMPUTER_REQUEST_STOPPED") return false;
+	let current: unknown = error;
+	for (let depth = 0; current && depth < 4; depth++) {
+		if (data(current, "message") === "COMPUTER_REQUEST_STOPPED") return true;
+		if (transportCodes.has(data(current, "code") as string)) return true;
+		current = data(current, "cause");
+	}
+	return false;
+}
+/** Consecutive transport-unconfirmed status polls tolerated before the
+ * fail-closed path runs: about fifteen polls at the 1 s cadence with the 5 s
+ * per-request deadline. Measured on the wall clock from the first unconfirmed
+ * poll; a confirmed poll resets it. */
+export const COMPANY_COMPUTER_SUPERVISOR_STALE_BUDGET_MS = 90_000;
+const stale: unique symbol = Symbol("stale");
 
 /** The long-lived runtime calls reconcile independently of every member client.
  * Reads durable transitions/expiry, fences actual viewer streams first, then
@@ -42,6 +84,8 @@ export class CompanyComputerOfficeSupervisor {
 	#privacyVersion = 0;
 	#failed = false;
 	#running = false;
+	#unconfirmedSince: number | undefined;
+	#unconfirmedPolls = 0;
 
 	constructor(options: {
 		scope: CompanyComputerScope;
@@ -61,10 +105,15 @@ export class CompanyComputerOfficeSupervisor {
 		this.#privacy = options.privacy;
 	}
 
-	async #reconcile(signal: AbortSignal): Promise<void> {
-		if (this.#failed) throw new Error("OFFICE_SUPERVISOR_RECONCILIATION_FAILED");
+	/** One status poll. A transport-unconfirmed poll after at least one confirmed
+	 * reconciliation keeps the last confirmed state, performs no physical effect
+	 * and is retried on the next tick (contract §19 observability: an uncertain
+	 * interval stays visible through `unconfirmedSince`, never reported healthy).
+	 * The first reconciliation, an aborted lifetime, an authority refusal, an
+	 * invalid body and an exhausted budget all keep the fail-closed path. */
+	async #poll(signal: AbortSignal): Promise<unknown> {
 		try {
-			const value = await companyComputerRequest(
+			return await companyComputerRequest(
 				(s) =>
 					this.#control.call(
 						"qorpera_runtime_office_supervisor_status",
@@ -73,6 +122,25 @@ export class CompanyComputerOfficeSupervisor {
 					),
 				signal,
 			);
+		} catch (error) {
+			if (this.#revision === 0 || signal.aborted || !transportUnconfirmed(error)) throw error;
+			const now = Date.now();
+			this.#unconfirmedSince ??= now;
+			this.#unconfirmedPolls++;
+			const unconfirmedMs = Math.max(0, now - this.#unconfirmedSince);
+			if (unconfirmedMs < COMPANY_COMPUTER_SUPERVISOR_STALE_BUDGET_MS) return stale;
+			throw Object.assign(new Error("OFFICE_SUPERVISOR_STATUS_STALE", { cause: error }), {
+				unconfirmedPolls: this.#unconfirmedPolls,
+				unconfirmedMs,
+			});
+		}
+	}
+
+	async #reconcile(signal: AbortSignal): Promise<void> {
+		if (this.#failed) throw new Error("OFFICE_SUPERVISOR_RECONCILIATION_FAILED");
+		try {
+			const value = await this.#poll(signal);
+			if (value === stale) return;
 			keys(value, "computerGeneration,drains,privacyChallenge,privacyState,privacyVersion,revision,scope,state");
 			keys(value.scope, "companyComputerId,companyId,environmentId,logicalComputerId");
 			assertCompanyComputerScope(value.scope as unknown as CompanyComputerScope, this.#scope);
@@ -128,6 +196,8 @@ export class CompanyComputerOfficeSupervisor {
 			});
 			this.#revision = value.revision;
 			this.#privacyVersion = value.privacyVersion as number;
+			this.#unconfirmedSince = undefined;
+			this.#unconfirmedPolls = 0;
 			// All stream barriers precede every physical side effect. SQL alone
 			// cannot erase pixels or cancel an already-running process.
 			if (challenge) await this.#viewers.fencePrivacy(challenge, signal);
@@ -148,6 +218,23 @@ export class CompanyComputerOfficeSupervisor {
 		}
 	}
 
+	/** Wall-clock time of the first poll in the current transport-unconfirmed
+	 * gap, or `undefined` while the latest poll confirmed the durable state.
+	 * Admission gates consult this to refuse new work on stale state. */
+	get unconfirmedSince(): number | undefined {
+		return this.#unconfirmedSince;
+	}
+	get unconfirmedPolls(): number {
+		return this.#unconfirmedPolls;
+	}
+	/** New viewer admission and new native work require a currently confirmed
+	 * durable state (contract §11.2: every effect is checked against the
+	 * current grant and resource scope, never against a stale observation). */
+	assertConfirmed(): void {
+		if (this.#failed) throw new Error("OFFICE_SUPERVISOR_RECONCILIATION_FAILED");
+		if (this.#unconfirmedSince !== undefined) throw new Error("OFFICE_SUPERVISOR_STATUS_STALE");
+	}
+
 	/** Concurrent callers share one attempt. Failure requires service recovery;
 	 * it never silently reopens viewer admission or retries ambiguous effects. */
 	reconcile(signal: AbortSignal): Promise<void> {
@@ -161,7 +248,9 @@ export class CompanyComputerOfficeSupervisor {
 	}
 
 	/** Host service lifetime. Never driven by a viewer window. Unexpected state
-	 * or physical failure terminates supervision with viewer admission closed. */
+	 * or physical failure terminates supervision with viewer admission closed.
+	 * A transport-unconfirmed poll only pauses new admission until the next
+	 * confirmed poll or the stale budget (see `#poll`); the cadence is fixed. */
 	async run(signal: AbortSignal): Promise<void> {
 		if (this.#running) throw new Error("OFFICE_SUPERVISOR_ALREADY_RUNNING");
 		this.#running = true;

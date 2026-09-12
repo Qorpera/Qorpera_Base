@@ -24,6 +24,7 @@ const codes = new Set([
 	"OFFICE_SERVICE_ENDED_UNEXPECTEDLY",
 	"OFFICE_SERVICE_UNAVAILABLE",
 	"OFFICE_SUPERVISOR_RECONCILIATION_FAILED",
+	"OFFICE_SUPERVISOR_STATUS_STALE",
 	"INVALID_OFFICE_SUPERVISOR_STATE",
 	"OFFICE_REGISTRY_UNCONFIRMED",
 	"OFFICE_LINUX_GUEST_FAILED",
@@ -81,6 +82,9 @@ export function companyComputerFailureDiagnostic(error: unknown): {
 	stages: CompanyComputerLifecycleStage[];
 	codes: string[];
 	categories: string[];
+	/** Consecutive transport-unconfirmed supervisor polls and their wall-clock
+	 * span, present only when the stale-status budget was exhausted. */
+	staleStatus?: { polls: number; durationMs: number };
 } {
 	const result: ReturnType<typeof companyComputerFailureDiagnostic> = {
 		schema: "qorpera.office-service-failure/v1",
@@ -103,6 +107,17 @@ export function companyComputerFailureDiagnostic(error: unknown): {
 		const message = data(current, "message");
 		if (typeof message === "string" && codes.has(message) && !result.codes.includes(message))
 			result.codes.push(message);
+		const polls = data(current, "unconfirmedPolls");
+		const durationMs = data(current, "unconfirmedMs");
+		if (
+			message === "OFFICE_SUPERVISOR_STATUS_STALE" &&
+			!result.staleStatus &&
+			Number.isSafeInteger(polls) &&
+			(polls as number) >= 0 &&
+			Number.isSafeInteger(durationMs) &&
+			(durationMs as number) >= 0
+		)
+			result.staleStatus = { polls: polls as number, durationMs: durationMs as number };
 		const code = data(current, "code");
 		const category = data(current, "category");
 		const classified =
