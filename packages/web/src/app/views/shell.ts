@@ -122,7 +122,7 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 		accountTrigger!,
 		h("span", { class: "account-chip", "aria-hidden": "true" }, initials(name)),
 		h("span", { class: "account-trigger-name" }, name),
-		h("span", { class: "account-chevron", "aria-hidden": "true" }),
+		company ? null : h("span", { class: "account-chevron", "aria-hidden": "true" }),
 	);
 	replace(
 		accountPopover!,
