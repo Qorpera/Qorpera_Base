@@ -482,8 +482,9 @@ async function preflight(loaded: Loaded): Promise<void> {
 	identity(loaded.uid, loaded.gid, loaded.policy.host.socketGid);
 	const entries = await journal(loaded);
 	const expected = targets(loaded);
-	let absent = 0;
-	for (const target of expected) if (!(await targetExists(target))) absent += 1;
+	const existing = new Set<string>();
+	for (const target of expected) if (await targetExists(target)) existing.add(target.path);
+	const absent = expected.length - existing.size;
 	if (absent && entries.length) {
 		const previous = loaded.spec.previousInstallation;
 		if (!previous) throw new Error("OFFICE_INSTALL_STATE_REQUIRES_RECOVERY");
@@ -508,6 +509,7 @@ async function preflight(loaded: Loaded): Promise<void> {
 						throw error;
 					},
 				),
+			async (path) => existing.has(path),
 		);
 	}
 }

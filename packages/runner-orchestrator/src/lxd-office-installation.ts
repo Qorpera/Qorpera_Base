@@ -125,6 +125,10 @@ export async function assertOfficeInstallationUpgrade(
 	expected: { providerPolicySha256: string; uid: number; gid: number },
 	targets: ReadonlyArray<{ path: string; sha256: string; bytes: number }>,
 	present: (path: string) => Promise<boolean>,
+	/** True when the target already exists on disk with exactly the new bytes;
+	 * such a document is not changed by the installation even if an operator
+	 * revised it after the previous receipt was written. */
+	existsIdentical: (path: string) => Promise<boolean> = async () => false,
 ): Promise<void> {
 	if (
 		receipt.providerPolicySha256 !== expected.providerPolicySha256 ||
@@ -139,8 +143,9 @@ export async function assertOfficeInstallationUpgrade(
 			continue;
 		}
 		const target = byPath.get(file.path);
-		if (!target || target.sha256 !== file.sha256 || target.bytes !== file.bytes)
-			throw new Error("OFFICE_INSTALL_PREVIOUS_DOCUMENTS_CHANGED");
+		if (!target) throw new Error("OFFICE_INSTALL_PREVIOUS_DOCUMENTS_CHANGED");
+		if (target.sha256 === file.sha256 && target.bytes === file.bytes) continue;
+		if (!(await existsIdentical(file.path))) throw new Error("OFFICE_INSTALL_PREVIOUS_DOCUMENTS_CHANGED");
 	}
 }
 
