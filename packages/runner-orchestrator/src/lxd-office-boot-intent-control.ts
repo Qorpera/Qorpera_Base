@@ -79,8 +79,8 @@ export class LxdOfficeBootIntentControl {
 			this.#previous = result;
 			return result;
 		})()
-			.catch(() => {
-				throw new Error("OFFICE_BOOT_INTENT_REQUEST_UNCONFIRMED");
+			.catch((error) => {
+				throw new Error("OFFICE_BOOT_INTENT_REQUEST_UNCONFIRMED", { cause: error });
 			})
 			.finally(() => {
 				this.#pending = false;

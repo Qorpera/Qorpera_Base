@@ -192,8 +192,8 @@ export class LxdOfficeServiceInspectionControl {
 			authority.throwIfAborted();
 			return result;
 		})()
-			.catch(() => {
-				throw new Error("OFFICE_SERVICE_INSPECTION_UNCONFIRMED");
+			.catch((error) => {
+				throw new Error("OFFICE_SERVICE_INSPECTION_UNCONFIRMED", { cause: error });
 			})
 			.finally(() => {
 				this.#busy = false;

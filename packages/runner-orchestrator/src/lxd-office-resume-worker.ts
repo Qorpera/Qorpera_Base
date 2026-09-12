@@ -83,8 +83,8 @@ export class LxdOfficeResumeWorker {
 			signal.addEventListener("abort", abort, { once: true });
 		});
 		const operation = this.#run(intentId, request, registry, signal)
-			.catch(() => {
-				throw new Error("OFFICE_RESUME_UNCONFIRMED");
+			.catch((error) => {
+				throw new Error("OFFICE_RESUME_UNCONFIRMED", { cause: error });
 			})
 			.finally(async () => {
 				await Promise.allSettled([...io]);

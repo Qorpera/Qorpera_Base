@@ -141,8 +141,8 @@ export class LxdOfficeStopControl {
 			if (performance.now() >= deadline) throw new Error("expired");
 			return parse(result);
 		})()
-			.catch(() => {
-				throw new Error("OFFICE_STOP_REQUEST_UNCONFIRMED");
+			.catch((error) => {
+				throw new Error("OFFICE_STOP_REQUEST_UNCONFIRMED", { cause: error });
 			})
 			.finally(() => {
 				this.#pending = false;

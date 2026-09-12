@@ -103,8 +103,8 @@ export class LxdOfficeServiceStopWorker {
 			},
 		};
 		const operation = this.#run(intentId, request, registry, signal)
-			.catch(() => {
-				throw new Error("OFFICE_STOP_UNCONFIRMED");
+			.catch((error) => {
+				throw new Error("OFFICE_STOP_UNCONFIRMED", { cause: error });
 			})
 			.finally(async () => {
 				await Promise.allSettled([...io]);

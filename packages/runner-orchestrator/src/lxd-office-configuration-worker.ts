@@ -97,8 +97,8 @@ export class LxdOfficeConfigurationWorker {
 			signal.addEventListener("abort", abort, { once: true });
 		});
 		const operation = this.#run(input, signal)
-			.catch(() => {
-				throw new Error("OFFICE_CONFIGURATION_UNCONFIRMED");
+			.catch((error) => {
+				throw new Error("OFFICE_CONFIGURATION_UNCONFIRMED", { cause: error });
 			})
 			.finally(() => {
 				this.#busy = false;

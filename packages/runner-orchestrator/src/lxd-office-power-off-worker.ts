@@ -94,8 +94,8 @@ export class LxdOfficePowerOffWorker {
 			signal.addEventListener("abort", abort, { once: true });
 		});
 		const operation = this.#run(intentId, request, registry, signal)
-			.catch(() => {
-				throw new Error("OFFICE_POWER_OFF_UNCONFIRMED");
+			.catch((error) => {
+				throw new Error("OFFICE_POWER_OFF_UNCONFIRMED", { cause: error });
 			})
 			.finally(async () => {
 				await Promise.allSettled([...io]);

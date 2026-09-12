@@ -96,8 +96,8 @@ export class LxdOfficeActivationWorker {
 			signal.addEventListener("abort", abort, { once: true });
 		});
 		const operation = this.#run(input, signal)
-			.catch(() => {
-				throw new Error("OFFICE_ACTIVATION_UNCONFIRMED");
+			.catch((error) => {
+				throw new Error("OFFICE_ACTIVATION_UNCONFIRMED", { cause: error });
 			})
 			.finally(() => {
 				this.#busy = false;

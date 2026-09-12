@@ -118,8 +118,8 @@ export class LxdOfficeBootActivationWorker {
 			signal.addEventListener("abort", abort, { once: true });
 		});
 		const operation = this.#run(input, registry, signal)
-			.catch(() => {
-				throw new Error("OFFICE_BOOT_ACTIVATION_UNCONFIRMED");
+			.catch((error) => {
+				throw new Error("OFFICE_BOOT_ACTIVATION_UNCONFIRMED", { cause: error });
 			})
 			.finally(async () => {
 				await Promise.allSettled([...io]);

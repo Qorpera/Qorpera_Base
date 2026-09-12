@@ -55,8 +55,8 @@ export class LxdOfficeLifecycleControl {
 			this.#receipt = receipt;
 			return receipt;
 		})()
-			.catch(() => {
-				throw new Error("OFFICE_LIFECYCLE_REQUEST_UNCONFIRMED");
+			.catch((error) => {
+				throw new Error("OFFICE_LIFECYCLE_REQUEST_UNCONFIRMED", { cause: error });
 			})
 			.finally(() => {
 				this.#pending = false;

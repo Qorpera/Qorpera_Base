@@ -109,8 +109,8 @@ export class LxdOfficeBootConfigurationWorker {
 			signal.addEventListener("abort", abort, { once: true });
 		});
 		const operation = this.#run(input, registry, signal)
-			.catch(() => {
-				throw new Error("OFFICE_BOOT_CONFIGURATION_UNCONFIRMED");
+			.catch((error) => {
+				throw new Error("OFFICE_BOOT_CONFIGURATION_UNCONFIRMED", { cause: error });
 			})
 			.finally(async () => {
 				await Promise.allSettled([...io]);
