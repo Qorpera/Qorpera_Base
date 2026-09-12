@@ -4,13 +4,16 @@ import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
 	type CompanyComputerLifecycleRequest,
+	type CompanyComputerServiceSoftwarePlan,
 	type CompanyComputerServiceSuccessor,
 	parseCompanyComputerLifecycleRequest,
 	parseCompanyComputerPreparationCommand,
+	parseCompanyComputerServiceSoftwarePlan,
 	parseCompanyComputerServiceStopAcknowledgement,
 	parseCompanyComputerServiceStopRequest,
 	parseCompanyComputerServiceSuccessor,
 	parseCompanyComputerServiceSuccessorRequest,
+	parseCompanyComputerStartupIdentity,
 } from "@qorpera/contracts";
 import { type LxdOfficeServiceRestartClient, LxdUnixClient } from "./lxd-client.ts";
 import { assertOfficeAdoptionKernelLock } from "./lxd-office-adoption-files.ts";
@@ -18,6 +21,7 @@ import type { LxdOfficeRetainedActivationHistoryClient } from "./lxd-office-boot
 import { openLxdOfficeCreationIdentity } from "./lxd-office-creation-journal.ts";
 import { inspectLxdOfficeGuestBoot, lxdOfficeGuestPlan } from "./lxd-office-guest.ts";
 import { officeCanonical, officeDigest, officeRecord } from "./lxd-office-image-provenance.ts";
+import type { LxdOfficeInvocationMeasurement } from "./lxd-office-invocation-measurement.ts";
 import { code, publish, readRecord } from "./lxd-office-journal-files.ts";
 import type { LxdOfficePhysicalGate } from "./lxd-office-physical-gate.ts";
 import { parseLxdOfficePhysicalPolicy } from "./lxd-office-physical-policy.ts";
@@ -29,6 +33,9 @@ type Client = LxdOfficeRetainedActivationHistoryClient & LxdOfficeServiceRestart
 interface Ports {
 	client?: Client;
 	kernelLock?: typeof assertOfficeAdoptionKernelLock;
+	/** A signed update reserves its successor identity before installation. */
+	softwarePlan?: CompanyComputerServiceSoftwarePlan;
+	measureInvocation?: LxdOfficeInvocationMeasurement;
 }
 export interface LxdOfficeSuccessorResult {
 	state: "active" | "awaiting_readiness" | "pending" | "unknown" | "failed";
@@ -52,6 +59,8 @@ export class LxdOfficeSuccessorWorker {
 	readonly #registry: LxdOfficeSuccessorRegistry;
 	readonly #client: Client;
 	readonly #kernelLock;
+	readonly #softwarePlan;
+	readonly #measureInvocation;
 	constructor(
 		gate: Pick<LxdOfficePhysicalGate, "policy" | "check">,
 		registry: LxdOfficeSuccessorRegistry,
@@ -62,6 +71,10 @@ export class LxdOfficeSuccessorWorker {
 		this.#registry = registry;
 		this.#client = ports.client ?? new LxdUnixClient(this.#policy.host.socketPath);
 		this.#kernelLock = ports.kernelLock ?? assertOfficeAdoptionKernelLock;
+		this.#softwarePlan =
+			ports.softwarePlan === undefined ? undefined : parseCompanyComputerServiceSoftwarePlan(ports.softwarePlan);
+		this.#measureInvocation = ports.measureInvocation;
+		if (this.#softwarePlan && !this.#measureInvocation) throw new Error("OFFICE_SOFTWARE_MEASUREMENT_REQUIRED");
 	}
 	reconcile(intentId: string, request: CompanyComputerLifecycleRequest, caller: AbortSignal) {
 		return this.#reconcile(intentId, request, caller, false);
@@ -74,6 +87,8 @@ export class LxdOfficeSuccessorWorker {
 		const recovery = parseCompanyComputerLifecycleRequest(value),
 			root = this.#policy.journal.path;
 		if (recovery.action !== "service_restart") throw new Error("OFFICE_SUCCESSOR_ACTION_REQUIRED");
+		if (this.#softwarePlan && !isDeepStrictEqual(recovery, this.#softwarePlan.predecessor))
+			throw new Error("OFFICE_SOFTWARE_PREDECESSOR_CHANGED");
 		if (pending.has(root)) throw new Error("OFFICE_SUCCESSOR_RECONCILIATION_PENDING");
 		pending.add(root);
 		const signal = AbortSignal.any([caller, AbortSignal.timeout(30000)]);
@@ -244,7 +259,10 @@ export class LxdOfficeSuccessorWorker {
 				request: parseCompanyComputerServiceSuccessorRequest({
 					schema: "qorpera.office-service-successor-request/v1",
 					predecessor: recovery,
-					attestation: { ...evidence.attestation, activationId: randomUUID() },
+					attestation: {
+						...evidence.attestation,
+						activationId: this.#softwarePlan?.successorActivationId ?? randomUUID(),
+					},
 				}),
 				startObservationSha256: evidence.startObservationSha256,
 			};
@@ -261,6 +279,8 @@ export class LxdOfficeSuccessorWorker {
 				startObservationSha256: evidence.startObservationSha256,
 			}) ||
 			!isDeepStrictEqual(successorRequest.predecessor, recovery) ||
+			(this.#softwarePlan !== undefined &&
+				successorRequest.attestation.activationId !== this.#softwarePlan.successorActivationId) ||
 			!isDeepStrictEqual(
 				{ ...successorRequest.attestation, activationId: recovery.activationId },
 				evidence.attestation,
@@ -438,6 +458,19 @@ export class LxdOfficeSuccessorWorker {
 					throw new Error("successor invocation differs");
 				if (status.state === "prepared" || (status.state === "ready" && !status.readinessFresh))
 					return { ...result, state: "awaiting_readiness" as const };
+				if (status.state === "ready" && this.#measureInvocation) {
+					await this.#measureInvocation(
+						activationId,
+						parseCompanyComputerStartupIdentity({
+							...recovery.startup,
+							serviceInvocationId: current.serviceInvocationId,
+							configurationSha256: current.configurationSha256,
+						}),
+						deadline,
+						checked,
+					);
+					assertFresh();
+				}
 				await control.activate(current.serviceInvocationId, deadline, checked);
 				assertFresh();
 				await retain(doneName, {

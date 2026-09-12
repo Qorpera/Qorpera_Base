@@ -9,6 +9,7 @@ import {
 } from "@qorpera/contracts";
 import { expect, vi } from "vitest";
 import { LxdOfficeBootActivationWorker } from "../../src/lxd-office-boot-activation-worker.ts";
+import type { LxdOfficeInvocationMeasurement } from "../../src/lxd-office-invocation-measurement.ts";
 import { officeBootConfigurationWorkerFixture } from "./office-boot-configuration-worker.ts";
 import { serviceStartId as id } from "./office-service-start.ts";
 
@@ -165,7 +166,7 @@ export async function createOfficeBootActivationWorkerFixture(
 			});
 			return { project, instanceName, operationId: id(126) };
 		});
-	const create = () =>
+	const create = (ports: { measureInvocation?: LxdOfficeInvocationMeasurement } = {}) =>
 		new LxdOfficeBootActivationWorker(
 			{ policy: f.policy, check: f.check },
 			{ call: registry },
@@ -174,6 +175,7 @@ export async function createOfficeBootActivationWorkerFixture(
 				kernelLock: f.kernelLock,
 				readProtected: f.readProtected,
 				readCredential: f.readCredential,
+				...ports,
 			},
 		);
 	return {

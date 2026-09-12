@@ -14,6 +14,7 @@ import {
 	parseCompanyComputerBootSuccessor,
 	parseCompanyComputerBootSuccessorRequest,
 	parseCompanyComputerPreparationCommand,
+	parseCompanyComputerStartupIdentity,
 } from "@qorpera/contracts";
 import { type LxdOfficeBootServiceStartClient, LxdUnixClient } from "./lxd-client.ts";
 import { assertOfficeAdoptionKernelLock } from "./lxd-office-adoption-files.ts";
@@ -31,6 +32,7 @@ import {
 import { openLxdOfficeCreationIdentity } from "./lxd-office-creation-journal.ts";
 import { inspectLxdOfficeGuestBoot, lxdOfficeGuestPlan } from "./lxd-office-guest.ts";
 import { officeCanonical, officeDigest, officeRecord } from "./lxd-office-image-provenance.ts";
+import type { LxdOfficeInvocationMeasurement } from "./lxd-office-invocation-measurement.ts";
 import { code, publish, readRecord } from "./lxd-office-journal-files.ts";
 import type { LxdOfficePhysicalGate } from "./lxd-office-physical-gate.ts";
 import { officePhysicalPath, parseLxdOfficePhysicalPolicy } from "./lxd-office-physical-policy.ts";
@@ -41,6 +43,7 @@ type Client = LxdOfficeBootActivationEvidenceClient & LxdOfficeBootServiceStartC
 interface Ports extends NonNullable<Parameters<typeof readLxdOfficeBootActivationEvidence>[5]> {
 	client?: Client;
 	kernelLock?: typeof assertOfficeAdoptionKernelLock;
+	measureInvocation?: LxdOfficeInvocationMeasurement;
 }
 export interface LxdOfficeBootActivationResult {
 	state: "active" | "awaiting_readiness" | "pending" | "unknown" | "failed";
@@ -492,6 +495,20 @@ export class LxdOfficeBootActivationWorker {
 					throw new Error("successor invocation differs");
 				if (status.state === "prepared" || (status.state === "ready" && !status.readinessFresh))
 					return { ...result, state: "awaiting_readiness" as const };
+				if (status.state === "ready" && this.#ports.measureInvocation) {
+					await this.#ports.measureInvocation(
+						bootIntent.activationId,
+						parseCompanyComputerStartupIdentity({
+							...bootIntent.predecessor.startup,
+							bootId: evidence.bootId,
+							configurationSha256: current.configurationSha256,
+							serviceInvocationId: current.serviceInvocationId,
+						}),
+						deadline,
+						checked,
+					);
+					assertFresh();
+				}
 				await control.activate(current.serviceInvocationId, deadline, checked);
 				assertFresh();
 				await retain(doneName, {

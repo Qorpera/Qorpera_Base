@@ -12,6 +12,36 @@ afterEach(async () => {
 });
 const fixture = () => officeBootActivationWorkerFixture(roots);
 describe("provider retained-boot activation", () => {
+	it("measures the new boot/configuration/invocation before admission and preserves active recovery", async () => {
+		const f = await fixture();
+		const measureInvocation = vi.fn(async (activationId, startup, deadline, checked: AbortSignal) => {
+			expect(activationId).toBe(f.request.activationId);
+			expect(startup).toEqual({
+				...f.request.predecessor.startup,
+				bootId: id(103),
+				configurationSha256: f.state.current!.request.attestation.configurationSha256,
+				serviceInvocationId: "c".repeat(32),
+			});
+			expect(f.state.current?.state).toBe("ready");
+			expect(f.state.activations).toBe(0);
+			expect(deadline).toBeGreaterThan(performance.now());
+			checked.throwIfAborted();
+		});
+		const run = () => f.create({ measureInvocation }).reconcile(f.input, signal());
+		expect((await run()).state).toBe("active");
+		expect((await run()).state).toBe("active");
+		expect(measureInvocation).toHaveBeenCalledOnce();
+		expect(f.exec).toHaveBeenCalledOnce();
+	});
+	it("withholds new-boot activation when software measurement refuses", async () => {
+		const f = await fixture();
+		const measureInvocation = vi.fn(async () => {
+			throw new Error("measurement refused");
+		});
+		await expect(f.create({ measureInvocation }).reconcile(f.input, signal())).rejects.toThrow("UNCONFIRMED");
+		expect(f.state.activations).toBe(0);
+		expect(measureInvocation).toHaveBeenCalledOnce();
+	});
 	it("admits and activates one invocation, then recovers without VM or configuration replay", async () => {
 		const f = await fixture();
 		f.configuration.registry.mockClear();

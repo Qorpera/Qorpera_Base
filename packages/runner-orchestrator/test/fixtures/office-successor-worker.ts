@@ -1,12 +1,14 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
+	type CompanyComputerServiceSoftwarePlan,
 	type CompanyComputerServiceSuccessor,
 	parseCompanyComputerServiceRestartCompletion,
 	parseCompanyComputerServiceRestartRequest,
 	parseCompanyComputerServiceSuccessorRequest,
 } from "@qorpera/contracts";
 import { expect, vi } from "vitest";
+import type { LxdOfficeInvocationMeasurement } from "../../src/lxd-office-invocation-measurement.ts";
 import { LxdOfficeSuccessorWorker } from "../../src/lxd-office-successor-worker.ts";
 import { serviceStartId as id } from "./office-service-start.ts";
 import { officeStopWorkerFixture } from "./office-stop-worker.ts";
@@ -135,11 +137,16 @@ export async function officeSuccessorWorkerFixture(roots: string[]) {
 			});
 			return { project, instanceName, operationId: id(96) };
 		});
-	const create = () =>
+	const create = (
+		ports: {
+			softwarePlan?: CompanyComputerServiceSoftwarePlan;
+			measureInvocation?: LxdOfficeInvocationMeasurement;
+		} = {},
+	) =>
 		new LxdOfficeSuccessorWorker(
 			{ policy: f.policy, check: f.check },
 			{ call: registry },
-			{ client: f.client, kernelLock: f.kernelLock },
+			{ client: f.client, kernelLock: f.kernelLock, ...ports },
 		);
 	const paths = () => {
 		const suffix = `${f.binding.allocationId}-${state.current!.request.attestation.activationId}`;

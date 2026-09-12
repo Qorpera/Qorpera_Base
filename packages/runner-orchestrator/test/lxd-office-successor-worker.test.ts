@@ -1,7 +1,9 @@
 import { readFile, rm, writeFile } from "node:fs/promises";
+import { parseCompanyComputerServiceSoftwarePlan } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readLxdOfficeStopEvidence } from "../src/lxd-office-stop-evidence.ts";
 import { serviceStartId as id } from "./fixtures/office-service-start.ts";
+import { officeSoftwareFixture } from "./fixtures/office-software.ts";
 import { officeSuccessorWorkerFixture } from "./fixtures/office-successor-worker.ts";
 
 const roots: string[] = [],
@@ -12,6 +14,64 @@ afterEach(async () => {
 });
 const fixture = () => officeSuccessorWorkerFixture(roots);
 describe("provider same-boot successor worker", () => {
+	it("uses the signed update's reserved successor and measures before activation, without repeating on recovery", async () => {
+		const f = await fixture();
+		const softwarePlan = parseCompanyComputerServiceSoftwarePlan({
+			...officeSoftwareFixture().plan,
+			predecessor: f.request,
+		});
+		const measureInvocation = vi.fn(async (activationId, startup, deadline, checked: AbortSignal) => {
+			expect(activationId).toBe(softwarePlan.successorActivationId);
+			expect(startup).toEqual({ ...f.request.startup, serviceInvocationId: "c".repeat(32) });
+			expect(f.state.current?.state).toBe("ready");
+			expect(f.state.activations).toBe(0);
+			expect(deadline).toBeGreaterThan(performance.now());
+			checked.throwIfAborted();
+		});
+		const result = await f
+			.create({ softwarePlan, measureInvocation })
+			.reconcile(f.activation.request.intentId, f.request, signal());
+		expect(result.activationId).toBe(softwarePlan.successorActivationId);
+		await expect(
+			f.create({ softwarePlan, measureInvocation }).reconcile(f.activation.request.intentId, f.request, signal()),
+		).resolves.toEqual(result);
+		expect(measureInvocation).toHaveBeenCalledOnce();
+		expect(f.exec).toHaveBeenCalledOnce();
+		await expect(
+			f
+				.create({ softwarePlan: { ...softwarePlan, successorActivationId: id(99) }, measureInvocation })
+				.reconcile(f.activation.request.intentId, f.request, signal()),
+		).rejects.toThrow();
+		expect(measureInvocation).toHaveBeenCalledOnce();
+	});
+	it.each(["failure", "deadline"])("withholds activation when the software measurement has %s", async (fault) => {
+		const f = await fixture();
+		let now = 0;
+		if (fault === "deadline") vi.spyOn(performance, "now").mockImplementation(() => now);
+		const measureInvocation = vi.fn(async () => {
+			if (fault === "failure") throw new Error("measurement refused");
+			now = 5001;
+		});
+		await expect(
+			f.create({ measureInvocation }).reconcile(f.activation.request.intentId, f.request, signal()),
+		).rejects.toThrow();
+		expect(f.state.activations).toBe(0);
+		expect(measureInvocation).toHaveBeenCalledOnce();
+	});
+	it("requires a measurement port for software updates and an exact predecessor before SQL", async () => {
+		const f = await fixture();
+		const softwarePlan = parseCompanyComputerServiceSoftwarePlan({
+			...officeSoftwareFixture().plan,
+			predecessor: f.request,
+		});
+		expect(() => f.create({ softwarePlan })).toThrow("OFFICE_SOFTWARE_MEASUREMENT_REQUIRED");
+		await expect(
+			f
+				.create({ softwarePlan, measureInvocation: async () => {} })
+				.reconcile(f.activation.request.intentId, { ...f.request, transitionId: id(99) }, signal()),
+		).rejects.toThrow("OFFICE_SOFTWARE_PREDECESSOR_CHANGED");
+		expect(f.registry).not.toHaveBeenCalled();
+	});
 	it("retains prepared identity, dispatches once, inspects before activation and preserves initial history", async () => {
 		const f = await fixture(),
 			original = await readFile(f.activation.names.completion);
