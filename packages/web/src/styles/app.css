@@ -200,7 +200,8 @@ label > input, label > select { font-weight: 400; }
 	content: ""; position: absolute; left: 7%; right: 7%; bottom: -1px; height: 12px; border-radius: 50%;
 	background: rgba(0, 30, 80, 0.3); filter: blur(5px);
 }
-.cofounder-stand .figure { position: relative; z-index: 1; width: 82px; height: 82px; filter: drop-shadow(0 4px 4px rgba(0, 0, 0, 0.16)); }
+/* V24's figure shadow: a faint plum halo that softens the silhouette against the card. */
+.cofounder-stand .figure { position: relative; z-index: 1; width: 82px; height: 82px; filter: drop-shadow(0 2px 3px rgba(39, 16, 41, 0.17)); }
 .cofounder-status {
 	position: absolute; z-index: 2; right: -4px; bottom: -6px; width: 22px; height: 22px; border-radius: 50%;
 	background: var(--rail-status); border: 3px solid var(--rail);
