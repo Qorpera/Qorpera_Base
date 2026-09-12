@@ -16,6 +16,7 @@ const userland = resolve(root, "../shell/userland");
 const serve = process.argv.includes("--serve");
 const deployment = prepareDeployment({
 	configPath: process.env.QORPERA_WEB_CONFIG,
+	configJson: process.env.QORPERA_WEB_CONFIG_JSON,
 	release: process.argv.includes("--release"),
 	serve,
 	headersTemplate: readFileSync(join(root, "public/_headers"), "utf8"),

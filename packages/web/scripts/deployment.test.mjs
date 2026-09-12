@@ -98,3 +98,19 @@ test("compiled deployment ignores stale browser overrides without reading local 
 	assert.equal(context.clientConfig.readCloudConfigOverride(), undefined);
 	assert.throws(() => context.clientConfig.writeCloudConfigOverride(DEFAULT_CLOUD_CONFIG), /deployed cloud configuration/);
 });
+
+
+test("Pages environment configuration binds release CSP without writing source files", () => {
+ const configJson = JSON.stringify({ projectUrl: "https://project.example.invalid", publishableKey: "sb_publishable_fixture123", objectGatewayUrl: "https://objects.example.invalid", officeViewerOrigin: "wss://viewer.example.invalid:8443", nativeProviderLoginUrl: "https://project.example.invalid/functions/v1/native-provider-login/" });
+ const deployment = prepareDeployment({ configJson, release: true, headersTemplate });
+ assert.equal(deployment.manifest.release, true);
+ assert.equal(deployment.manifest.configOverrideAllowed, false);
+ assert.deepEqual(deployment.config, JSON.parse(configJson));
+ assert.ok(deployment.headers.includes("wss://viewer.example.invalid:8443"));
+ assert.equal(JSON.parse(deployment.define.__QORPERA_WEB_CONFIG_LOCKED__), true);
+ assert.throws(() => prepareDeployment({ configPath: "/missing/config.json", configJson, release: true, headersTemplate }), /not both/);
+ for (const invalid of ["", "{", "null", JSON.stringify({ ...JSON.parse(configJson), serviceRoleKey: "forbidden" }), "é".repeat(4097)]) {
+  assert.throws(() => prepareDeployment({ configJson: invalid, release: true, headersTemplate }));
+ }
+ assert.throws(() => prepareDeployment({ configJson: JSON.stringify({ ...JSON.parse(configJson), officeViewerOrigin: undefined }), release: true, headersTemplate }), /viewer/);
+});

@@ -12,6 +12,8 @@
 
 ### Added
 
+- Support bounded public JSON environment configuration for Pages release builds, with shared SDK checks and release artifact validation in web CI.
+
 - Record the source commit and runtime bundle identity in web deployment artifacts; require clean source for release builds.
 
 - Add company pause/resume and observed-version execution ceilings through the documented member control plane, plus a member notification inbox with explicit acknowledgement.
