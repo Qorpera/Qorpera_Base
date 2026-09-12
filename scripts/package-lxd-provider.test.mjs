@@ -42,6 +42,8 @@ test("packages and pins the first-node LXD provider", async () => {
 		const installerPath = join(repositoryRoot, "deploy/first-node/install-lxd-provider-host.sh");
 		const installer = await readFile(installerPath, "utf-8");
 		const unit = await readFile(join(repositoryRoot, "deploy/first-node/qorpera-lxd-provider.service"));
+		assert.match(unit.toString(), /^ProcSubset=all$/m, "node admission requires CPU and memory metadata");
+		assert.match(unit.toString(), /^ProtectProc=invisible$/m, "unrelated processes must remain hidden");
 		const environmentExample = await readFile(
 			join(repositoryRoot, "deploy/first-node/lxd-provider.env.example"),
 		);
