@@ -42,6 +42,7 @@ export async function lockedCompanyComputerControlChild(
 				"/opt/qorpera-office/qorpera-company-computer-boot-service-restart-control.mjs",
 				"/opt/qorpera-office/qorpera-company-computer-service-stop-control.mjs",
 				"/opt/qorpera-office/qorpera-company-computer-service-restart-control.mjs",
+				"/opt/qorpera-office/qorpera-company-computer-reset-service-start-control.mjs",
 			].includes(controlExecutable) ||
 			inspectionId === command.commandId
 		)

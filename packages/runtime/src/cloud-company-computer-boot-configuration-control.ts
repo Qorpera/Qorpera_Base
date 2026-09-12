@@ -66,7 +66,14 @@ const inactive = {
 	execMainCode: 0,
 	execMainStatus: 0,
 };
-function linux(request: CompanyComputerPreparationRequest, bootId: string, receiptPath: string, receiptSha256: string) {
+/** The `linux` section every root helper expects for one retained
+ * preparation on a given boot. Only the boot and receipt binding vary. */
+export function companyComputerLinuxServiceSection(
+	request: CompanyComputerPreparationRequest,
+	bootId: string,
+	receiptPath: string,
+	receiptSha256: string,
+) {
 	return {
 		layout: companyComputerPreparationAdoptionReceipt(request).layout,
 		limits: request.limits,
@@ -145,7 +152,10 @@ export async function controlCompanyComputerBootConfiguration(
 		if (
 			!isDeepStrictEqual(config.scope, original.scope) ||
 			config.computerGeneration !== original.computerGeneration ||
-			!isDeepStrictEqual(config.linux, linux(original, command.bootId, receiptPath, receiptSha256))
+			!isDeepStrictEqual(
+				config.linux,
+				companyComputerLinuxServiceSection(original, command.bootId, receiptPath, receiptSha256),
+			)
 		)
 			throw new Error("new configuration differs");
 		const originalConfig = await read("/etc/qorpera-office/credentials/config.json", 16384, 0o400);
@@ -156,7 +166,12 @@ export async function controlCompanyComputerBootConfiguration(
 			prior.computerGeneration !== original.computerGeneration ||
 			!isDeepStrictEqual(
 				prior.linux,
-				linux(original, original.bootId, COMPANY_COMPUTER_ADOPTION_RECEIPT_PATH, originSha256),
+				companyComputerLinuxServiceSection(
+					original,
+					original.bootId,
+					COMPANY_COMPUTER_ADOPTION_RECEIPT_PATH,
+					originSha256,
+				),
 			)
 		)
 			throw new Error("original configuration differs");
