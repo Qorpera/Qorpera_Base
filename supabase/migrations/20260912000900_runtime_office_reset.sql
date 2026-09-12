@@ -142,7 +142,7 @@ begin
 			or jsonb_typeof(v_file->'path') is distinct from 'string' or length(v_file->>'path')>512 or (v_file->>'path')<=v_previous
 			or not ((v_file->>'path')~'^/etc/qorpera-office/history/[0-9a-f-]{36}/[0-9a-f-]{36}/(manifest|claim|[0-9a-f]{64})\.json$'
 				or (v_file->>'path') in ('/etc/qorpera-office/adoption.json','/etc/qorpera-office/credentials/config.json')
-				or (v_file->>'path')~'^/etc/qorpera-office/boots/[0-9a-f]{32}/(adoption|configuration-claim|configuration-completion)\.json$'
+				or (v_file->>'path')~'^/etc/qorpera-office/boots/[0-9a-f]{32}/(adoption|configuration-claim|configuration-completion|reset-configuration-claim|reset-configuration-completion)\.json$'
 				or (v_file->>'path')~'^/etc/qorpera-office/boots/[0-9a-f]{32}/credentials/config\.json$')
 			or not public.qorpera_screen_metadata_positive(v_file->'bytes') or (v_file->>'bytes')::bigint>65536
 			or jsonb_typeof(v_file->'sha256') is distinct from 'string' or (v_file->>'sha256')!~'^[0-9a-f]{64}$'

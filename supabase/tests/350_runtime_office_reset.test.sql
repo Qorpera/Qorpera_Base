@@ -93,6 +93,16 @@ select pg_temp.reset_state(format('select public.qorpera_assert_runtime_office_r
 
 -- Custody and restore receipts bind the exact plan and allowlisted history.
 select public.qorpera_assert_runtime_office_reset_custody(pg_temp.reset_custody(),pg_temp.reset_plan());
+-- A later reset retains the prior reset's public configuration as history.
+-- These paths are never selected for restoration as current credentials.
+select public.qorpera_assert_runtime_office_reset_custody(
+	jsonb_set(jsonb_set(pg_temp.reset_custody(),'{history,totalBytes}','710'),'{history,files}',
+		(select jsonb_agg(file order by file->>'path') from jsonb_array_elements(
+			(pg_temp.reset_custody()#>'{history,files}') || jsonb_build_array(jsonb_build_object(
+				'path','/etc/qorpera-office/boots/35000000000040008000000000000011/'||name,
+				'bytes',10,'sha256',repeat('a',64),'mode',384))) as file)), pg_temp.reset_plan())
+from (values('reset-configuration-claim.json'),('reset-configuration-completion.json')) as public_file(name);
+
 select pg_temp.reset_state(format('select public.qorpera_assert_runtime_office_reset_custody(%L::jsonb,%L::jsonb)',jsonb_set(pg_temp.reset_custody(),'{resetId}','"35000000-0000-4000-8000-000000000002"'),pg_temp.reset_plan()),'22023');
 select pg_temp.reset_state(format('select public.qorpera_assert_runtime_office_reset_custody(%L::jsonb,%L::jsonb)',jsonb_set(pg_temp.reset_custody(),'{history,totalBytes}','699'),pg_temp.reset_plan()),'22023');
 select pg_temp.reset_state(format('select public.qorpera_assert_runtime_office_reset_custody(%L::jsonb,%L::jsonb)',jsonb_set(pg_temp.reset_custody(),'{history,files,0,path}','"/etc/qorpera-office/credentials/registry"'),pg_temp.reset_plan()),'22023');

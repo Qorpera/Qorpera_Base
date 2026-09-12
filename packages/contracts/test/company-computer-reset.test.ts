@@ -382,3 +382,25 @@ describe("office reset successor contract", () => {
 			);
 	});
 });
+
+describe("repeated reset public configuration custody", () => {
+	it.each(["reset-configuration-claim.json", "reset-configuration-completion.json"])(
+		"archives %s as history without restoring it as authority",
+		(file) => {
+			const value = custody(),
+				path = `/etc/qorpera-office/boots/${id(11).replaceAll("-", "")}/${file}`;
+			const extended = {
+				...value,
+				history: {
+					...value.history,
+					totalBytes: value.history.totalBytes + 10,
+					files: [...value.history.files, { path, bytes: 10, sha256: sha("a"), mode: 0o600 as const }].sort(
+						(a, b) => (a.path < b.path ? -1 : 1),
+					),
+				},
+			};
+			expect(parseCompanyComputerResetCustodyManifest(extended, plan())).toEqual(extended);
+			expect(companyComputerResetRestorablePath(path)).toBe(false);
+		},
+	);
+});

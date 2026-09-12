@@ -165,7 +165,7 @@ const HISTORY_PATHS = [
 	/^\/etc\/qorpera-office\/history\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/(?:manifest|claim|[0-9a-f]{64})\.json$/,
 	/^\/etc\/qorpera-office\/adoption\.json$/,
 	/^\/etc\/qorpera-office\/credentials\/config\.json$/,
-	/^\/etc\/qorpera-office\/boots\/[0-9a-f]{32}\/(?:adoption|configuration-claim|configuration-completion)\.json$/,
+	/^\/etc\/qorpera-office\/boots\/[0-9a-f]{32}\/(?:adoption|configuration-claim|configuration-completion|reset-configuration-claim|reset-configuration-completion)\.json$/,
 	/^\/etc\/qorpera-office\/boots\/[0-9a-f]{32}\/credentials\/config\.json$/,
 ];
 /** Public evidence that may be restored onto a fresh root. Configuration
