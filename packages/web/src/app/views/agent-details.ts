@@ -1,5 +1,5 @@
 import type { HostedStaffAgent } from "../../cloud/types.ts";
-import { colorFor, figureElement, figureFor } from "../../ui/avatar.ts";
+import { colorFor, figureElement, figureFor, nativeColorOf } from "../../ui/avatar.ts";
 import { SurfaceDialog } from "../../ui/dialog.ts";
 import { button, h, icon, replace } from "../../ui/dom.ts";
 import { FigurePicker } from "../../ui/figure-picker.ts";
@@ -67,12 +67,14 @@ export class AgentDetails {
 			return;
 		}
 		this.#renderedKey = key;
+		// The Co-Founder wears its figure's own colour; it chooses a figure only.
+		const fixedColor = agent.templateId === "co-founder";
 		let draft: AgentDraft = {
 			displayName: agent.displayName,
 			role: agent.role,
 			charter: agent.charter,
 			figure: figureFor(agent),
-			color: colorFor(agent),
+			color: fixedColor ? nativeColorOf(figureFor(agent)) : colorFor(agent),
 		};
 		const stage = h("div", { class: "agent-edit-stage" }, figureElement(draft.figure, draft.color, { size: 100 }));
 		const name = h("input", {
@@ -101,10 +103,14 @@ export class AgentDetails {
 			},
 			draft.charter,
 		);
-		const picker = new FigurePicker(draft, (choice) => {
-			draft = { ...draft, ...choice };
-			replace(stage, figureElement(draft.figure, draft.color, { size: 100 }));
-		});
+		const picker = new FigurePicker(
+			draft,
+			(choice) => {
+				draft = { ...draft, ...choice };
+				replace(stage, figureElement(draft.figure, draft.color, { size: 100 }));
+			},
+			{ colors: !fixedColor },
+		);
 		const appearance = h(
 			"details",
 			{ class: "agent-appearance", hidden: true },

@@ -144,17 +144,20 @@ label > input, label > select { font-weight: 400; }
 /* rail */
 /* The V24 company rail with the desktop's compact default width. */
 .rail {
-	--rail: var(--sidebar-surface); --rail-line: var(--sidebar-divider); --rail-hover: var(--sidebar-hover);
+	--rail: var(--sidebar-surface); --rail-line: #c4c2c2; --rail-hover: var(--sidebar-hover);
 	--rail-search: var(--sidebar-search); --rail-search-ink: #85857f;
 	--rail-selection: var(--sidebar-selection); --rail-small: #71716b; --rail-status: #00c887;
 	display: flex; flex-direction: column; min-height: 0;
 	width: var(--rail-width); flex: none;
-	padding: 0 15px 11px; background: var(--rail); border-right: 1px solid #c4c2c2;
+	/* The trailer's rail: 15px insets, a darker edge line than the other dividers. */
+	padding: 0 15px 11px; background: var(--rail); border-right: 1px solid var(--rail-line);
+	/* One figure size and one lift; every card measure below derives from them. */
+	--figure: 82px; --lift: 27px;
 	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
 }
 .rail[hidden] { display: none; }
 /* Trailer chrome at 1x: a 52px title row holding the add button, then the search field. */
-.rail-toolbar { height: 52px; flex: none; display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-right: -4px; }
+.rail-toolbar { height: 52px; flex: none; display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
 .rail-add { color: #676664; }
 .rail-add svg { width: 18px; height: 18px; }
 .rail-mobile-close { display: none; }
@@ -184,24 +187,24 @@ label > input, label > select { font-weight: 400; }
 /* The Co-Founder occupies its own tier above the rest of the staff. Geometry
  * is the trailer's card at 1x: an 82px figure standing 27px proud of a low
  * card, 13px name, 10.5px status line, a soft shadow under the figure. */
-.rail-cofounder { padding: 43px 9px 37px; }
+.rail-cofounder { padding: calc(var(--lift) + 16px) 9px 37px; }
 .cofounder-home {
 	position: relative; display: flex; flex-direction: column; align-items: center; gap: 1px;
-	width: 100%; padding: 63px 12px 5px; border-radius: 12px;
+	width: 100%; padding: calc(var(--figure) - var(--lift) + 8px) 12px 5px; border-radius: 12px;
 	background: transparent; color: var(--text); text-align: center;
 }
 .cofounder-home:hover { background: var(--rail-hover); text-decoration: none; }
 .cofounder-home.active, .cofounder-home.active:hover { background: var(--rail-selection); color: #fff; }
-.cofounder-home strong { position: relative; z-index: 2; font-size: 13px; font-weight: 650; line-height: 16px; overflow-wrap: anywhere; }
+.cofounder-home strong { position: relative; z-index: 2; max-width: 100%; font-size: 13px; font-weight: 650; line-height: 16px; }
 .cofounder-home small { align-self: center; max-width: 200px; font-size: 10.5px; line-height: 15px; color: var(--rail-small); }
 .cofounder-home.active small { color: rgba(255, 255, 255, 0.85); }
-.cofounder-stand { position: absolute; left: 50%; top: -27px; width: 82px; height: 82px; transform: translateX(-50%); }
+.cofounder-stand { position: absolute; left: 50%; top: calc(-1 * var(--lift)); width: var(--figure); height: var(--figure); transform: translateX(-50%); }
 .cofounder-stand::before {
 	content: ""; position: absolute; left: 7%; right: 7%; bottom: -1px; height: 12px; border-radius: 50%;
 	background: rgba(0, 30, 80, 0.3); filter: blur(5px);
 }
 /* V24's figure shadow: a faint plum halo that softens the silhouette against the card. */
-.cofounder-stand .figure { position: relative; z-index: 1; width: 82px; height: 82px; filter: drop-shadow(0 2px 3px rgba(39, 16, 41, 0.17)); }
+.cofounder-stand .figure { position: relative; z-index: 1; width: var(--figure); height: var(--figure); filter: drop-shadow(0 2px 3px rgba(39, 16, 41, 0.17)); }
 .cofounder-status {
 	position: absolute; z-index: 2; right: -4px; bottom: -6px; width: 22px; height: 22px; border-radius: 50%;
 	background: var(--rail-status); border: 3px solid var(--rail);
@@ -217,7 +220,7 @@ label > input, label > select { font-weight: 400; }
 .rail-row:hover { background: var(--rail-hover); text-decoration: none; }
 .rail-row.active, .rail-row.active:hover { background: var(--rail-selection); color: #fff; }
 .rail-row .figure { width: 40px; height: 40px; }
-.rail-row-stand { position: relative; width: 40px; height: 40px; }
+.rail-row-stand { position: relative; display: grid; place-items: center; width: 40px; height: 40px; }
 .rail-row-status { position: absolute; z-index: 2; right: -2px; bottom: -2px; width: 15px; height: 15px; border-radius: 50%; background: var(--rail-status); border: 2px solid var(--rail); }
 .rail-row:hover .rail-row-status { border-color: var(--rail-hover); }
 .rail-row.active .rail-row-status { border-color: var(--rail-selection); }
@@ -225,16 +228,16 @@ label > input, label > select { font-weight: 400; }
 .rail-row-copy strong { font-size: 13px; font-weight: 600; line-height: 16px; }
 .rail-row-copy small { font-size: 10.5px; line-height: 15px; color: #6c6b6b; }
 /* Every rail label is one line; it shortens with the rail instead of wrapping. */
-.cofounder-home small, .rail-row-copy strong, .rail-row-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cofounder-home strong, .cofounder-home small, .rail-row-copy strong, .rail-row-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-row.active .rail-row-copy small { color: rgba(255, 255, 255, 0.85); }
 @media (min-width: 761px) {
 	.rail-compact .rail { padding-inline: 7px; }
-	.rail-compact .rail-toolbar { justify-content: center; margin-right: 0; }
+	.rail-compact .rail-toolbar { justify-content: center; }
 	.rail-compact .rail-search, .rail-compact .cofounder-home > strong, .rail-compact .cofounder-home > small, .rail-compact .rail-row-copy, .rail-compact .account-menu-rail .account-trigger-name, .rail-compact .rail-connection { display: none; }
 	.rail-compact .rail-cofounder { padding: 6px 0; }
 	.rail-compact .cofounder-home { height: 64px; padding: 0; }
-	.rail-compact .cofounder-stand { top: 8px; width: 48px; height: 48px; }
-	.rail-compact .cofounder-stand .figure { width: 48px; height: 48px; }
+	.rail-compact .rail { --figure: 48px; }
+	.rail-compact .cofounder-stand { top: 8px; }
 	.rail-compact .cofounder-status { width: 16px; height: 16px; border-width: 2px; }
 	.rail-compact .rail-row { grid-template-columns: 1fr; padding: 5px; justify-items: center; }
 	.rail-compact .account-menu-rail .account-trigger { justify-content: center; }
@@ -545,7 +548,7 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 	.mobile-navigation-toggle[hidden] { display: none; }
 	.rail { display: none; position: fixed; top: var(--titlebar-height); bottom: 0; left: 0; width: min(304px, calc(100vw - 48px)); z-index: 6; }
 	.rail-resizer { display: none; }
-	.rail-mobile-close { display: inline-flex; }
+	.rail-mobile-close { display: inline-flex; margin-right: auto; }
 	.frame.navigation-open .rail:not([hidden]) { display: flex; }
 	.frame.navigation-open .navigation-backdrop { display: block; position: fixed; inset: var(--titlebar-height) 0 0; z-index: 5; background: rgba(18,18,17,.25); border: 0; }
 	.page { padding: 16px; }

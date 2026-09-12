@@ -1,15 +1,7 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
-import {
-	colorFor,
-	FIGURE_IDS,
-	type FigureId,
-	figureElement,
-	figureFor,
-	nativeColorOf,
-	PALETTE,
-} from "../../ui/avatar.ts";
+import { FIGURE_IDS, type FigureId, figureElement, figureFor, nativeColorOf } from "../../ui/avatar.ts";
 import { h, notice, replace, spinner } from "../../ui/dom.ts";
 import type { CompanyController } from "../company.ts";
 import { navigate } from "../router.ts";
@@ -78,7 +70,9 @@ export function renderMeet(
 	// Company File path from a browser yet. A refusal is reported without
 	// automatic retries, and opening the company never depends on this write.
 	const figure = state.figure ?? figureFor(cofounder);
-	const color = state.color ?? colorFor(cofounder, figure);
+	// The Co-Founder wears its figure's own colour, as in the trailer; there
+	// is no separate colour to choose here.
+	const color = nativeColorOf(figure);
 	const canWrite = companyState.team?.capabilities.write === true;
 	const save = () => {
 		if (!canWrite || state.saving) return;
@@ -121,7 +115,7 @@ export function renderMeet(
 								disabled: state.saving === true,
 								// Picking a figure brings its own shade with it, as the
 								// workspace's own picker does.
-								onclick: () => setState({ ...state, figure: id, color: nativeColorOf(id) }),
+								onclick: () => setState({ ...state, figure: id }),
 							},
 							// Unchosen figures wear their native shade; only the chosen
 							// one carries the selected colour.
@@ -129,22 +123,6 @@ export function renderMeet(
 						);
 						return choice;
 					}),
-				),
-				h(
-					"div",
-					{ class: "color-grid", role: "radiogroup", "aria-label": "Choose a colour" },
-					...PALETTE().map(({ name, color: hex }) =>
-						h("button", {
-							type: "button",
-							class: "color-choice",
-							role: "radio",
-							"aria-checked": String(hex === color),
-							"aria-label": name,
-							disabled: state.saving === true,
-							dataset: { color: hex },
-							onclick: () => setState({ ...state, figure, color: hex }),
-						}),
-					),
 				),
 				canWrite
 					? h(
@@ -159,9 +137,4 @@ export function renderMeet(
 			),
 		),
 	);
-	// The palette swatches take their colour from data, not from a style
-	// attribute: the Content Security Policy forbids inline styles.
-	for (const swatch of container.querySelectorAll<HTMLElement>(".color-choice")) {
-		swatch.style.setProperty("--choice-color", swatch.dataset.color ?? "");
-	}
 }
