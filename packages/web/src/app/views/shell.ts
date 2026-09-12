@@ -318,7 +318,12 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 				title: `${agent.displayName} · ${agent.role}`,
 				"aria-current": isActive(agent.id) ? "page" : undefined,
 			},
-			agentFigure(agent, agent.displayName, { size: 48 }),
+			h(
+				"span",
+				{ class: "rail-row-stand" },
+				agentFigure(agent, agent.displayName, { size: 40 }),
+				company.activityFor(agent.id) ? h("span", { class: "rail-row-status", "aria-hidden": "true" }) : null,
+			),
 			h(
 				"span",
 				{ class: "rail-row-copy" },
@@ -394,7 +399,6 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 						icon("close"),
 					)
 				: null,
-			h("label", { class: "rail-search" }, search),
 			h(
 				"a",
 				{
@@ -407,6 +411,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 				icon("plus"),
 			),
 		),
+		h("label", { class: "rail-search" }, search),
 		h(
 			"div",
 			{ class: "rail-scroll" },

@@ -107,6 +107,9 @@ export function colorFor(
 	agent: Pick<HostedStaffAgent, "id" | "displayName" | "appearance" | "templateId">,
 	figure = figureFor(agent),
 ): string {
+	// The Co-Founder is the company's crown in its own yellow, as in the
+	// trailer; a stored colour does not recolour it.
+	if (agent.templateId === "co-founder") return nativeColor(figure);
 	const stored = (agent.appearance?.color ?? "").trim().toLowerCase();
 	const resolved = (COLOR_TOKENS[stored] ?? stored).toLowerCase();
 	if (!/^#[0-9a-f]{6}$/.test(resolved)) return nativeColor(figure);
