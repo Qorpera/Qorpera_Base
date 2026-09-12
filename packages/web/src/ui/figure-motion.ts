@@ -125,12 +125,12 @@ async function prepare(entry: LiveMotion): Promise<void> {
 		pc.drawImage(source, 0, 0, 512, 512);
 		ctx.drawImage(patch, 0, 0);
 		// The trailer's figures carry a soft silhouette. Feather the alpha edge
-		// (about one CSS pixel on an 82px figure) while the interior stays crisp:
+		// (about half a CSS pixel on an 82px figure) while the interior stays crisp:
 		// the blurred body sets the edge coverage, the sharp body the colour.
 		const feathered = document.createElement("canvas");
 		feathered.width = feathered.height = 512;
 		const fc = feathered.getContext("2d")!;
-		fc.filter = "blur(6px)";
+		fc.filter = "blur(3px)";
 		fc.drawImage(body, 0, 0);
 		fc.filter = "none";
 		fc.globalCompositeOperation = "source-atop";
