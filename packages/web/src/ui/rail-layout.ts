@@ -81,7 +81,10 @@ export class RailLayout {
 	}
 	/** A choice the member makes now is bounded by what they can see now. */
 	#set(width: number, persist = true): void {
-		this.#preferred = width === COMPACT ? COMPACT : Math.round(Math.max(MIN, Math.min(this.#cap(), width)));
+		const next = width === COMPACT ? COMPACT : Math.round(Math.max(MIN, Math.min(this.#cap(), width)));
+		// An action that moves nothing on screen is not a choice either.
+		if (next === this.#width) return;
+		this.#preferred = next;
 		this.#apply();
 		if (persist) this.#persist();
 	}

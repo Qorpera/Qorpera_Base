@@ -124,19 +124,32 @@ async function prepare(entry: LiveMotion): Promise<void> {
 		pc.globalCompositeOperation = "destination-in";
 		pc.drawImage(source, 0, 0, 512, 512);
 		ctx.drawImage(patch, 0, 0);
-		// The trailer's figures carry a soft silhouette. Feather the alpha edge
-		// (about half a CSS pixel on an 82px figure) while the interior stays crisp:
-		// the blurred body sets the edge coverage, the sharp body the colour.
-		const feathered = document.createElement("canvas");
-		feathered.width = feathered.height = 512;
-		const fc = feathered.getContext("2d")!;
-		fc.filter = "blur(3px)";
-		fc.drawImage(body, 0, 0);
-		fc.filter = "none";
-		fc.globalCompositeOperation = "source-atop";
-		fc.drawImage(body, 0, 0);
-		surfaces.set(key, { body: feathered, source });
+		surfaces.set(key, { body, source });
 	}
+}
+
+/* The trailer's figures carry a soft silhouette: about half a CSS pixel at
+ * the rail's 82px, and the same half pixel at every other size. One shared
+ * 512px surface cannot hold that, so the feather is built per size bucket
+ * (the power of two at or above the painted side) and cached. The blurred
+ * body sets the edge coverage; the sharp body keeps the colour. */
+const feathers = new Map<string, HTMLCanvasElement>();
+function featheredBody(key: string, body: HTMLCanvasElement, side: number): HTMLCanvasElement {
+	const bucket = Math.min(512, 2 ** Math.ceil(Math.log2(Math.max(32, side))));
+	const featherKey = `${key}:${bucket}`;
+	let feathered = feathers.get(featherKey);
+	if (feathered) return feathered;
+	feathered = document.createElement("canvas");
+	feathered.width = feathered.height = 512;
+	const fc = feathered.getContext("2d")!;
+	// 3px at 512 read as half a pixel on a 92px canvas; scale for the bucket.
+	fc.filter = `blur(${((3 * 92) / bucket).toFixed(2)}px)`;
+	fc.drawImage(body, 0, 0);
+	fc.filter = "none";
+	fc.globalCompositeOperation = "source-atop";
+	fc.drawImage(body, 0, 0);
+	feathers.set(featherKey, feathered);
+	return feathered;
 }
 
 function strokes(ctx: CanvasRenderingContext2D, paths: MotionPose["strokes"], front: boolean, size: number): void {
@@ -186,13 +199,15 @@ function paint(entry: LiveMotion): void {
 	const key = `${side}:${sample}:${reduced}`;
 	if (entry.painted === key) return;
 	entry.painted = key;
-	if (canvas.width !== side) canvas.width = canvas.height = side;
 	const ctx = canvas.getContext("2d")!;
+	if (canvas.width !== side) {
+		canvas.width = canvas.height = side;
+		// The 512px body is drawn several times smaller; ask for the resampler
+		// that averages, so silhouettes stay as soft as an image element's.
+		ctx.imageSmoothingQuality = "high";
+	}
 	ctx.setTransform(1, 0, 0, 1, 0, 0);
 	ctx.clearRect(0, 0, side, side);
-	// The 512px body is drawn several times smaller; ask for the resampler
-	// that averages, so silhouettes stay as soft as an image element's.
-	ctx.imageSmoothingQuality = "high";
 	ctx.scale(side / 100, side / 100);
 	const p = pose(activity, elapsed, { reduced });
 	const asset = surfaces.get(entry.id + entry.color)!;
@@ -237,7 +252,7 @@ function paint(entry: LiveMotion): void {
 		ctx.rotate((p.turn * Math.PI) / 180);
 		ctx.scale(p.scaleX * p.body, p.scaleY * p.body);
 		ctx.translate(-50, -50);
-		ctx.drawImage(asset.body, 0, 0, 100, 100);
+		ctx.drawImage(featheredBody(entry.id + entry.color, asset.body, side), 0, 0, 100, 100);
 		ctx.globalAlpha = p.eyes;
 		ctx.drawImage(eyesCanvas, 0, 0, 100, 100);
 		ctx.restore();

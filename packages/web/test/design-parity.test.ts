@@ -142,6 +142,16 @@ describe("shell presentation lifecycle", () => {
 		vi.stubGlobal("innerWidth", 1280);
 		window.dispatchEvent(new Event("resize"));
 		expect(rail.el.getAttribute("aria-valuenow")).toBe("304");
+		// Where the cap is the minimum, a key press that moves nothing leaves the preference alone.
+		vi.stubGlobal("innerWidth", 600);
+		window.dispatchEvent(new Event("resize"));
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("240");
+		press("ArrowRight");
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("240");
+		expect(localStorage.getItem("qorpera.web.rail-width")).toBe("304");
+		vi.stubGlobal("innerWidth", 1280);
+		window.dispatchEvent(new Event("resize"));
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("304");
 		vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
 			throw new Error("Blocked");
 		});
@@ -383,6 +393,8 @@ it("renders recorded responsibility targets and room links without inventing mis
 		staff.displayName,
 	);
 	expect(rail.querySelector('[aria-label="Pinned agents"], [data-toggle-rail]')).toBeNull();
+	expect(rail.querySelector(".cofounder-stand .figure")).not.toBeNull();
+	expect(rail.querySelector(".cofounder-status")).toBeNull();
 	expect(rail.querySelector(".account-menu-rail .account-trigger")).not.toBeNull();
 	expect(rail.querySelector(".account-menu-rail .account-chevron")).toBeNull();
 	expect(rail.querySelector('.rail-toolbar + .rail-search input[type="search"]')).not.toBeNull();
