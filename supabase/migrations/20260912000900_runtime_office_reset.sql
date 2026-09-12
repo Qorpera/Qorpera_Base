@@ -435,7 +435,7 @@ begin
 		custody=coalesce(v_custody,custody),custody_sha256=case when v_custody is null then custody_sha256 else v_challenge.evidence_sha256 end,
 		restore=coalesce(v_restore,restore),restore_sha256=case when v_restore is null then restore_sha256 else v_challenge.evidence_sha256 end
 		where reset_id=v_reset.reset_id and revision=v_challenge.revision returning * into v_reset;
-	if not found then raise exception 'Office reset revision changed' using errcode='40001'; end if;
+	if not found then raise sqlstate 'PGRST' using message=jsonb_build_object('code','QRC01','message','Office reset revision changed','details',null,'hint',null)::text, detail='{"status":409,"headers":{}}'; end if;
 	insert into public.qorpera_runtime_office_reset_events(reset_id,sequence,phase,previous_sha256,evidence,evidence_sha256,challenge_id)
 	values(v_reset.reset_id,v_index,v_challenge.phase,v_previous,p_evidence,v_challenge.evidence_sha256,p_challenge_id);
 	if clock_timestamp()>=v_challenge.expires_at then raise exception 'Office reset acknowledgement expired' using errcode='42501'; end if;
