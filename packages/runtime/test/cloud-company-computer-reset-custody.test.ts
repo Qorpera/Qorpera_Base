@@ -42,7 +42,9 @@ it("preserves exact stopped-outbox custody through Linux archive, root loss and 
 			{ encoding: "utf8", timeout: 60000, maxBuffer: 1024 * 1024 },
 		);
 		const proof = JSON.parse(output.trim());
-		expect(proof.checks).toBeGreaterThanOrEqual(17);
+		expect(proof.checks).toBeGreaterThanOrEqual(20);
+		expect(proof.recoveredPrefixFsyncOrdering).toBe(true);
+		expect(proof.powerLossDurabilityProof).toBe(false);
 		expect(proof.realLinuxFilesystem).toBe(true);
 		expect(proof.originalBytesAndHistoricalStartupPreserved).toBe(true);
 		expect(proof.actualResetWorker).toBe(false);

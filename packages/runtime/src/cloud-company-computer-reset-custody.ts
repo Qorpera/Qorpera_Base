@@ -24,7 +24,9 @@ export interface CompanyComputerResetCustodyGuard {
 export interface CompanyComputerResetOutboxOptions {
 	binding: CompanyComputerResetCustodyBinding;
 	/** Provider-visible root being replaced/restored; archive must be outside it.
-	 * This must name the whole affected root, not just its outbox directory. */
+	 * This must name the whole affected root, not just its outbox directory.
+	 * '/' is rejected: the worker needs a host-visible mounted guest root;
+	 * direct in-VM capture to an off-root archive is not supported here. */
 	guestRoot: string;
 	/** Every model/workbench/profile mount must be supplied by trusted policy. */
 	excludedRoots: readonly string[];
@@ -171,6 +173,34 @@ class Directory {
 		await this.handle.sync();
 		await this.check();
 	}
+	/** Reestablish durability for a verified recovered prefix. Readback alone
+	 * cannot prove an earlier process synced its writes or published links. */
+	async flushVerified(records: Snapshot["records"]): Promise<void> {
+		for (const record of records) {
+			const before = await this.read(record.name, record.bytes.length);
+			if (!unchanged(before.stat, record.stat) || !before.bytes.equals(record.bytes))
+				throw new Error("RESET_CUSTODY_FILE_CHANGED");
+			const file = await open(
+				join(this.anchor, record.name),
+				constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+			);
+			try {
+				if (!unchanged(record.stat, await file.stat({ bigint: true })))
+					throw new Error("RESET_CUSTODY_FILE_CHANGED");
+				await file.sync();
+				if (!unchanged(record.stat, await file.stat({ bigint: true })))
+					throw new Error("RESET_CUSTODY_FILE_CHANGED");
+			} finally {
+				await file.close();
+			}
+			const after = await this.read(record.name, record.bytes.length);
+			if (!unchanged(after.stat, record.stat) || !after.bytes.equals(record.bytes))
+				throw new Error("RESET_CUSTODY_FILE_CHANGED");
+		}
+		await this.check();
+		await this.handle.sync();
+		await this.check();
+	}
 }
 async function held(options: CompanyComputerResetOutboxOptions, signal: AbortSignal): Promise<void> {
 	signal.throwIfAborted();
@@ -284,6 +314,7 @@ async function verifiedArchive(
 	manifest: Readonly<CompanyComputerResetOutboxManifest>;
 	manifestSha256: string;
 	records: Snapshot["records"];
+	seal: { bytes: Buffer; stat: BigIntStats };
 }> {
 	const seal = await dir.read("manifest.json", COMPANY_COMPUTER_RESET_MANIFEST_MAX_BYTES);
 	const manifest = parseCompanyComputerResetOutboxManifest(decode(seal.bytes), binding);
@@ -294,7 +325,7 @@ async function verifiedArchive(
 		!(await dir.read("manifest.json", COMPANY_COMPUTER_RESET_MANIFEST_MAX_BYTES)).bytes.equals(seal.bytes)
 	)
 		throw new Error("RESET_CUSTODY_ARCHIVE_CHANGED");
-	return { manifest, manifestSha256: hash(seal.bytes), records: current.records };
+	return { manifest, manifestSha256: hash(seal.bytes), records: current.records, seal };
 }
 /** Read only; refuses unsealed/ambiguous source remnants. Historical startup
  * and event bytes are preserved, not replaced with the current invocation. */
@@ -318,7 +349,10 @@ export async function inventoryCompanyComputerResetOutbox(
 }
 /** archiveRoot is preprovisioned, empty, provider-owned mode0700 and outside
  * the disposable root and all excluded roots. Its seal is published last.
- * Partial copies remain unsealed and are never overwritten/repaired here. */
+ * Partial copies remain unsealed and are never overwritten/repaired here.
+ * The caller must durably provision directory ancestors (including their
+ * parent entries) and backing mounts before calling. We fsync copied files
+ * and this directory, not its externally provisioned parents or storage. */
 export async function archiveCompanyComputerResetOutbox(
 	sourceRoot: string,
 	archiveRoot: string,
@@ -336,6 +370,10 @@ export async function archiveCompanyComputerResetOutbox(
 		if ((await archive.names()).length) {
 			const existing = await verifiedArchive(archive, binding);
 			if (!isDeepStrictEqual(existing.manifest, original.manifest)) throw new Error("RESET_CUSTODY_ARCHIVE_DIFFERS");
+			await held(options, signal);
+			await archive.flushVerified([...existing.records, { name: "manifest.json", ...existing.seal }]);
+			if ((await verifiedArchive(archive, binding)).manifestSha256 !== existing.manifestSha256)
+				throw new Error("RESET_CUSTODY_ARCHIVE_CHANGED");
 			await held(options, signal);
 			await unchangedSnapshot(source, original, binding);
 			return { manifest: existing.manifest, manifestSha256: existing.manifestSha256 };
@@ -367,7 +405,10 @@ export async function archiveCompanyComputerResetOutbox(
 }
 /** Restores only the immutable outbox allowlist into a preprovisioned empty
  * original-owner directory. Does not replay SQL, restore credentials, delete
- * archive/source records, enable services or establish new execution authority. */
+ * archive/source records, enable services or establish new execution authority.
+ * The caller must already have durably provisioned archive/destination parents
+ * and mounts. Acceptance fsyncs every archive/destination file and directory,
+ * including exact recovered prefixes, before returning a receipt. */
 export async function restoreCompanyComputerResetOutbox(
 	archiveRoot: string,
 	destinationRoot: string,
@@ -384,6 +425,8 @@ export async function restoreCompanyComputerResetOutbox(
 	try {
 		const original = await verifiedArchive(archive, binding);
 		if (original.manifestSha256 !== expectedManifestSha256) throw new Error("RESET_CUSTODY_MANIFEST_DIGEST_DIFFERS");
+		await held(options, signal);
+		await archive.flushVerified([...original.records, { name: "manifest.json", ...original.seal }]);
 		destination = await Directory.acquire(destinationRoot, binding.outboxUid, binding.outboxGid);
 		if ((await destination.names()).length === 0)
 			for (const file of original.records) {
@@ -392,6 +435,8 @@ export async function restoreCompanyComputerResetOutbox(
 			}
 		const restored = await snapshot(destination, binding);
 		if (!isDeepStrictEqual(restored.manifest, original.manifest)) throw new Error("RESET_CUSTODY_RESTORE_DIFFERS");
+		await held(options, signal);
+		await destination.flushVerified(restored.records);
 		await held(options, signal);
 		if ((await verifiedArchive(archive, binding)).manifestSha256 !== expectedManifestSha256)
 			throw new Error("RESET_CUSTODY_ARCHIVE_CHANGED");

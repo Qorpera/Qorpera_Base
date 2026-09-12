@@ -3,12 +3,15 @@ import { createHash, randomUUID } from "node:crypto";
 import {
 	chmod,
 	chown,
+	type FileHandle,
 	link,
 	lstat,
 	mkdir,
 	mkdtemp,
+	open,
 	readdir,
 	readFile,
+	realpath,
 	rename,
 	rm,
 	symlink,
@@ -30,6 +33,30 @@ import { screenStartup } from "./screen-lifecycle.ts";
 const signal = () => new AbortController().signal;
 const roots: string[] = [];
 const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+// Observe and fault the actual Node FileHandle sync operation. This disposable
+// Linux tmpfs checks required syscall ordering/refusal, not power-loss survival.
+async function traceSync(
+	run: () => Promise<unknown>,
+	fail?: (path: string, index: number) => boolean | Promise<boolean>,
+): Promise<string[]> {
+	const handle = await open("/tmp", "r");
+	const prototype = Object.getPrototypeOf(handle) as { sync(this: FileHandle): Promise<void> };
+	const original = prototype.sync;
+	await handle.close();
+	const paths: string[] = [];
+	prototype.sync = async function (this: FileHandle) {
+		const path = await realpath(`/proc/self/fd/${this.fd}`);
+		paths.push(path);
+		if (await fail?.(path, paths.length - 1)) throw new Error("injected custody fsync failure");
+		await original.call(this);
+	};
+	try {
+		await run();
+		return paths;
+	} finally {
+		prototype.sync = original;
+	}
+}
 async function fixture() {
 	const root = await mkdtemp(join(tmpdir(), "reset-custody-"));
 	roots.push(root);
@@ -327,6 +354,61 @@ try {
 		assert.deepEqual(await readdir(f.archive), []);
 		checks++;
 	}
+	{
+		const f = await fixture();
+		assert.deepEqual(await traceSync(() => inventoryCompanyComputerResetOutbox(f.source, f.options, signal())), []);
+		await assert.rejects(inventoryCompanyComputerResetOutbox(f.source, { ...f.options, guestRoot: "/" }, signal()));
+		checks++;
+		const archive = () => archiveCompanyComputerResetOutbox(f.source, f.archive, f.options, signal());
+		// Interrupt the actual first attempt after exclusive seal publication but
+		// before syncing its directory. Readback now looks fully complete.
+		await assert.rejects(
+			traceSync(archive, async (path) => path === f.archive && (await readdir(f.archive)).includes("manifest.json")),
+			/injected custody fsync failure/,
+		);
+		const archiveOrder = [
+			...f.names.map((name) => join(f.archive, name)),
+			join(f.archive, "manifest.json"),
+			f.archive,
+		];
+		assert.deepEqual(await traceSync(archive), archiveOrder);
+		for (let index = 0; index < archiveOrder.length; index++)
+			await assert.rejects(
+				traceSync(archive, (_path, current) => current === index),
+				/injected custody fsync failure/,
+			);
+		assert.deepEqual(await traceSync(archive), archiveOrder);
+		checks++;
+		const sealed = await archive();
+		const restore = () =>
+			restoreCompanyComputerResetOutbox(
+				f.archive,
+				f.destination,
+				{ ...f.options, guestRoot: f.nextRoot },
+				sealed.manifestSha256,
+				signal(),
+			);
+		// All names and bytes exist after this final-file write, but its fsync
+		// fails. Recovery must flush every verified file then the directory.
+		await assert.rejects(
+			traceSync(restore, (path) => path === join(f.destination, f.names.at(-1)!)),
+			/injected custody fsync failure/,
+		);
+		assert.deepEqual((await readdir(f.destination)).sort(), f.names);
+		const restoreOrder = [...archiveOrder, ...f.names.map((name) => join(f.destination, name)), f.destination];
+		assert.deepEqual(await traceSync(restore), restoreOrder);
+		for (let index = 0; index < restoreOrder.length; index++)
+			await assert.rejects(
+				traceSync(restore, (_path, current) => current === index),
+				/injected custody fsync failure/,
+			);
+		assert.deepEqual(await traceSync(restore), restoreOrder);
+		for (const [name, bytes] of f.bytes) {
+			assert.deepEqual(await readFile(join(f.source, name)), bytes);
+			assert.deepEqual(await readFile(join(f.destination, name)), bytes);
+		}
+		checks++;
+	}
 	console.log(
 		JSON.stringify({
 			schema: "qorpera.reset-outbox-custody-probe/v1",
@@ -337,6 +419,8 @@ try {
 			archivePreserved: true,
 			noCredentialsCopied: true,
 			actualResetWorker: false,
+			recoveredPrefixFsyncOrdering: true,
+			powerLossDurabilityProof: false,
 			sqlAuthority: "fixture guard",
 			physicalRootLoss: "disposable local directory only",
 		}),
