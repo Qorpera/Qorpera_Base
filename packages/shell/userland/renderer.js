@@ -505,7 +505,6 @@ function renderAccountWelcome() {
 	document.body.classList.add("welcome");
 	document.body.classList.remove("hub", "company-shell", "hub-opening");
 	$("accountView").hidden = false;
-	$("welcomeView").hidden = true;
 	$("wordmark").hidden = false;
 	$("accountStatus").textContent = "";
 	$("accountEmailForm").hidden = false;
@@ -524,70 +523,6 @@ function renderAccountWelcome() {
 	$("accountProviders").querySelector("button")?.focus();
 }
 
-// ---- intelligence-first welcome -------------------------------------------
-
-const DEFAULT_INTELLIGENCE_PROVIDERS = [
-	{ id: "openai-codex", name: "OpenAI", description: "Continue with your OpenAI or ChatGPT account", logo: "./provider-openai.svg" },
-	{ id: "anthropic", name: "Anthropic", description: "Continue with your Claude account", logo: "./provider-anthropic.svg" },
-	{ id: "xai", name: "xAI", description: "Continue with your xAI account", logo: "./provider-xai.svg" },
-];
-
-function intelligenceIsConfigured(info) {
-	return Boolean(info?.configured || info?.ready || info?.activeProvider || info?.providerId || info?.status === "configured");
-}
-
-function intelligenceProviders(info) {
-	const source = Array.isArray(info?.providers) && info.providers.length ? info.providers : DEFAULT_INTELLIGENCE_PROVIDERS;
-	return source.map((provider, index) => ({
-		id: provider.id ?? provider.providerId ?? provider.key,
-		name: provider.name ?? provider.label ?? provider.id ?? "Provider",
-		description: provider.description ?? provider.detail ?? "Sign in and use this intelligence for your staff",
-		logo: provider.logo ?? DEFAULT_INTELLIGENCE_PROVIDERS[index % DEFAULT_INTELLIGENCE_PROVIDERS.length].logo,
-		disabled: provider.available === false || provider.enabled === false,
-	})).filter((provider) => provider.id);
-}
-
-async function renderIntelligenceWelcome(info) {
-	document.body.classList.add("welcome");
-	document.body.classList.remove("hub");
-	$("accountView").hidden = true;
-	$("welcomeView").hidden = false;
-	$("wordmark").hidden = false;
-	const list = $("intelligenceProviders");
-	list.replaceChildren();
-	for (const provider of intelligenceProviders(info)) {
-		const button = document.createElement("button");
-		button.type = "button";
-		button.className = "provider-option";
-		button.disabled = provider.disabled;
-		button.innerHTML = '<span class="provider-mark"><img alt=""></span><span class="provider-option-copy"><strong></strong><small></small></span><span class="provider-option-arrow" aria-hidden="true">→</span>';
-		button.querySelector(".provider-mark img").src = provider.logo;
-		button.querySelector("strong").textContent = provider.name;
-		button.querySelector("small").textContent = provider.description;
-		button.onclick = async () => {
-			for (const option of list.querySelectorAll("button")) option.disabled = true;
-			$("intelligenceStatus").textContent = `Opening ${provider.name} sign-in…`;
-			try {
-				const result = await window.qorpera.configureIntelligence(provider.id);
-				if (result?.ok === false) throw new Error(result.error ?? `${provider.name} could not be configured.`);
-				const next = await window.qorpera.intelligenceInfo();
-				if (!intelligenceIsConfigured(next) && result?.configured !== true && result?.ready !== true) {
-					throw new Error(result?.message ?? "Sign-in did not complete.");
-				}
-				$("intelligenceStatus").textContent = `${provider.name} is ready.`;
-				$("welcomeView").hidden = true;
-				document.body.classList.remove("welcome");
-				await bootWorkspace();
-			} catch (error) {
-				$("intelligenceStatus").textContent = error instanceof Error ? error.message : "Sign-in did not complete.";
-				for (const option of list.querySelectorAll("button")) option.disabled = false;
-			}
-		};
-		list.appendChild(button);
-	}
-	list.querySelector("button:not(:disabled)")?.focus();
-}
-
 // ---- hub -------------------------------------------------------------------
 
 /** The hub is a full-screen launcher in <main> (#view-hub) — no sidebar,
@@ -596,7 +531,6 @@ function presentCompanyHub() {
 	renderUpdateButton();
 	document.body.classList.add("hub");
 	document.body.classList.remove("welcome", "company-shell");
-	$("welcomeView").hidden = true;
 	$("accountView").hidden = true;
 	$("wordmark").hidden = false;
 	document.title = "Qorpera Base";
@@ -660,29 +594,21 @@ function renderHubCompanies(companies) {
 		const role = PROFILE_ROLE_LABELS[company.access?.role ?? company.invitationRole];
 		type.textContent = company.invitationPending
 			? `Invitation · Cloud company${role ? ` · ${role}` : ""}`
-			: company.migrationRequired
-				? "Moving Company File to the cloud"
-				: `Cloud company${role ? ` · ${role}` : ""}`;
+			: `Cloud company${role ? ` · ${role}` : ""}`;
 		card.append(avatar, label, type);
-		if (company.invitationPending || company.migrationRequired || company.setupRequired) {
+		if (company.invitationPending || company.setupRequired) {
 			const setup = document.createElement("small");
 			setup.className = "profile-setup-label";
-			setup.textContent = company.invitationPending
-				? "Invitation pending"
-				: company.migrationRequired
-					? "Moving to cloud"
-					: "Setup required";
+			setup.textContent = company.invitationPending ? "Invitation pending" : "Setup required";
 			card.appendChild(setup);
 		}
 		card.setAttribute(
 			"aria-label",
 			company.invitationPending
 				? `Accept invitation to ${company.name}`
-				: company.migrationRequired
-					? `Finish moving ${company.name} to the cloud`
 				: company.setupRequired
-						? `Connect ${company.name} Company File`
-						: `Open ${company.name} company`,
+					? `Connect ${company.name} Company File`
+					: `Open ${company.name} company`,
 		);
 		card.onclick = async () => {
 			// Opening connects the cloud Company File and can take seconds.
@@ -694,12 +620,6 @@ function renderHubCompanies(companies) {
 			avatar.appendChild(spinner);
 			let opened = false;
 			try {
-				if (company.migrationRequired) {
-					const migrated = await window.qorpera.migrateLocalCompany(company.root);
-					if (!migrated?.ok) throw new Error(migrated?.error ?? company.migrationError ?? "Cloud migration failed.");
-					await renderHub();
-					return;
-				}
 				if (company.invitationPending) {
 					const accepted = await window.qorpera.acceptCloudInvitation(company.invitationId);
 					if (!accepted?.ok) throw new Error(accepted?.error ?? "Invitation could not be accepted.");
@@ -745,11 +665,11 @@ function renderHubCompanies(companies) {
 			const remove = document.createElement("button");
 			remove.type = "button";
 			remove.setAttribute("role", "menuitem");
-			// Which dismissal this card supports: invitations decline; cloud
-			// companies follow the caller's role -- the owner deletes the
-			// profile for everyone, an invited member leaves it; local
-			// companies detach from this machine.
-			const cloudRole = company.profileType === "cloud" ? company.access?.role : undefined;
+			// Which dismissal this card supports: invitations decline; companies
+			// follow the caller's role -- the owner deletes the profile for
+			// everyone, an invited member leaves it; anything else detaches
+			// this machine's checkout.
+			const cloudRole = company.access?.role;
 			const dismissal = company.invitationPending
 				? "decline"
 				: cloudRole === "owner"
@@ -1092,7 +1012,6 @@ async function enterCompany(active) {
 	focusedDepartmentId = null;
 	document.body.classList.remove("hub", "welcome");
 	document.body.classList.add("company-shell");
-	$("welcomeView").hidden = true;
 	$("accountView").hidden = true;
 	$("hubnav").style.display = "none";
 	$("conav").style.display = "";
@@ -3232,11 +3151,7 @@ function scheduledJobEffortSelect(value, onChange) {
 	return select;
 }
 
-const ROUTINE_PLACEMENT_OPTIONS = [
-	["local", "This computer"],
-	["requires-local", "Requires this computer"],
-	["cloud", "Cloud (not yet available)"],
-];
+const ROUTINE_PLACEMENT_OPTIONS = [["cloud", "Cloud"]];
 
 function scheduledJobPlacementSelect(value, onChange) {
 	const select = document.createElement("select");
@@ -3246,7 +3161,7 @@ function scheduledJobPlacementSelect(value, onChange) {
 		option.textContent = label;
 		select.appendChild(option);
 	}
-	select.value = value ?? "local";
+	select.value = value ?? "cloud";
 	select.onchange = () => onChange(select.value);
 	return select;
 }
@@ -3418,7 +3333,7 @@ function renderAgentRoutineEditor(content, staff) {
 		agentRoutineField(
 			"Runs on",
 			placement,
-			"Cloud placement is fail-closed: this computer never runs a cloud-placed routine, and it stays parked until hosted routine execution exists.",
+			"Routines run in the cloud.",
 		),
 	);
 	form.appendChild(
@@ -8363,7 +8278,7 @@ function renderScheduledJobPanel(shell, jobs, sessions, autonomousRunning, auton
 		scheduledJobField(
 			"Runs on",
 			placementSelect,
-			"Cloud placement is fail-closed until hosted routine execution exists; this computer never runs a cloud-placed job.",
+			"Routines run in the cloud.",
 		),
 	);
 	form.appendChild(
@@ -10719,7 +10634,6 @@ const CONNECTION_LOGOS = {
 	github: "./provider-github.svg",
 	"openai-codex": "./provider-openai.svg",
 	anthropic: "./provider-anthropic.svg",
-	xai: "./provider-xai.svg",
 };
 
 function connectionLogo(connectionId) {
@@ -10763,13 +10677,12 @@ async function toggleConnection(connectionId) {
 	}
 }
 
-async function disconnectConnection(connectionId, accountId) {
+async function disconnectConnection(connectionId) {
 	if (connectingConnection || disconnectingConnection) return;
-	const operationId = `${connectionId}:${accountId}`;
-	disconnectingConnection = operationId;
+	disconnectingConnection = connectionId;
 	void renderSettingsTab();
 	try {
-		const result = await window.qorpera.disconnectAccount(connectionId, accountId);
+		const result = await window.qorpera.disconnectAccount(connectionId);
 		if (result?.ok) connectionMessages.delete(connectionId);
 		else connectionMessages.set(connectionId, result?.error ?? "Could not disconnect this account.");
 	} catch (error) {
@@ -10782,39 +10695,7 @@ async function disconnectConnection(connectionId, accountId) {
 	}
 }
 
-function renderAccountUsage(account) {
-	const windows = account?.usage?.status === "available" ? account.usage.windows : [];
-	if (!Array.isArray(windows) || windows.length === 0) return null;
-	const usage = document.createElement("div");
-	usage.className = "connection-usage";
-	for (const window of windows) {
-		const item = document.createElement("div");
-		item.className = "connection-usage-window";
-		const meta = document.createElement("div");
-		meta.className = "connection-usage-meta";
-		const label = document.createElement("span");
-		label.textContent = window.label;
-		const remaining = document.createElement("span");
-		const remainingPercent = Math.max(0, Math.min(100, Number(window.remainingPercent) || 0));
-		remaining.textContent = `${Math.round(remainingPercent)}% left`;
-		meta.append(label, remaining);
-		const track = document.createElement("div");
-		track.className = "connection-usage-track";
-		track.setAttribute("role", "meter");
-		track.setAttribute("aria-label", `${window.label} usage remaining`);
-		track.setAttribute("aria-valuemin", "0");
-		track.setAttribute("aria-valuemax", "100");
-		track.setAttribute("aria-valuenow", String(Math.round(remainingPercent)));
-		const fill = document.createElement("span");
-		fill.style.width = `${remainingPercent}%`;
-		track.appendChild(fill);
-		item.append(meta, track);
-		usage.appendChild(item);
-	}
-	return usage;
-}
-
-function renderConnectionGroup(content, title, description, connections, accountUsageById) {
+function renderConnectionGroup(content, title, description, connections) {
 	const group = document.createElement("section");
 	group.className = "settings-group";
 	const header = document.createElement("header");
@@ -10841,45 +10722,7 @@ function renderConnectionGroup(content, title, description, connections, account
 		detail.textContent = connectionMessages.get(connection.id) ?? connection.description;
 		copy.append(name, detail);
 		card.appendChild(copy);
-		const accounts = Array.isArray(connection.accounts) ? connection.accounts : [];
-		if (connection.group === "models") {
-			card.classList.add("connection-card-multiple");
-			const add = document.createElement("button");
-			add.type = "button";
-			add.className = "connection-action";
-			const busy = connectingConnection === connection.id;
-			add.dataset.busy = String(busy);
-			add.textContent = busy ? "Cancel" : accounts.length ? "Add account" : "Connect";
-			add.disabled = Boolean(connectingConnection && !busy);
-			add.onclick = () => void toggleConnection(connection.id);
-			card.appendChild(add);
-			if (accounts.length) {
-				const accountList = document.createElement("div");
-				accountList.className = "connection-account-list";
-				for (const modelAccount of accounts) {
-					const row = document.createElement("div");
-					row.className = "connection-account-row";
-					const main = document.createElement("div");
-					main.className = "connection-account-main";
-					const accountName = document.createElement("span");
-					accountName.textContent = modelAccount.accountName || "Account details unavailable";
-					const disconnect = document.createElement("button");
-					disconnect.type = "button";
-					disconnect.className = "connection-action connection-disconnect";
-					const operationId = `${connection.id}:${modelAccount.id}`;
-					const disconnecting = disconnectingConnection === operationId;
-					disconnect.textContent = disconnecting ? "Disconnecting…" : "Disconnect";
-					disconnect.disabled = Boolean(connectingConnection || (disconnectingConnection && !disconnecting));
-					disconnect.onclick = () => void disconnectConnection(connection.id, modelAccount.id);
-					main.append(accountName, disconnect);
-					row.appendChild(main);
-					const usage = renderAccountUsage(accountUsageById.get(modelAccount.id));
-					if (usage) row.appendChild(usage);
-					accountList.appendChild(row);
-				}
-				card.appendChild(accountList);
-			}
-		} else if (connection.connected) {
+		if (connection.connected) {
 			const account = document.createElement("div");
 			account.className = "connection-account";
 			const accountName = document.createElement("small");
@@ -10889,7 +10732,7 @@ function renderConnectionGroup(content, title, description, connections, account
 			disconnect.className = "connection-action connection-disconnect";
 			disconnect.textContent = "Disconnect";
 			disconnect.disabled = Boolean(connectingConnection || disconnectingConnection);
-			disconnect.onclick = () => void disconnectConnection(connection.id, connection.id);
+			disconnect.onclick = () => void disconnectConnection(connection.id);
 			account.append(accountName, disconnect);
 			card.appendChild(account);
 		} else {
@@ -10912,7 +10755,7 @@ function renderConnectionGroup(content, title, description, connections, account
 	content.appendChild(group);
 }
 
-function renderConnections(content, connections, accountUsageById) {
+function renderConnections(content, connections) {
 	const heading = document.createElement("header");
 	heading.className = "settings-heading";
 	heading.innerHTML = "<h1>Connections</h1>";
@@ -10925,12 +10768,7 @@ function renderConnections(content, connections, accountUsageById) {
 			"Services",
 			"Accounts the active company can use for external work.",
 			services,
-			accountUsageById,
 		);
-	}
-	const models = connections.filter((connection) => connection.group === "models");
-	if (models.length) {
-		renderConnectionGroup(content, "Model accounts", "", models, accountUsageById);
 	}
 }
 
@@ -11674,9 +11512,7 @@ async function renderSettingsTab() {
 		const projectionDetail = document.createElement("small");
 		const storageUsed = storage ? formatBytes(storage.storageUsedBytes) : "Unavailable";
 		const storageLimit = storage?.storageLimitBytes ? formatBytes(storage.storageLimitBytes) : undefined;
-		projectionDetail.textContent = `${storageUsed}${storageLimit ? ` of ${storageLimit}` : ""} · ${
-			info.profile?.profileType === "cloud" ? "Cloud-authoritative" : "Stored on this computer"
-		}`;
+		projectionDetail.textContent = `${storageUsed}${storageLimit ? ` of ${storageLimit}` : ""} · Cloud-authoritative`;
 		companyFileCopy.append(companyFileTitle, projectionDetail);
 		let companyFileStorageTrack;
 		if (storage?.storageLimitBytes) {
@@ -12302,30 +12138,10 @@ async function renderSettingsTab() {
 		if (renderVersion !== settingsRenderVersion || renderedTab !== settingsTab) return;
 		content.replaceChildren();
 		const connections = info.connections ?? [];
-		const cachedUsageById = new Map(
-			connections.flatMap((connection) => connection.accounts ?? []).map((account) => [account.id, account]),
-		);
-		renderConnections(content, connections, cachedUsageById);
+		renderConnections(content, connections);
 		nativeExecution = info.nativeExecution ? { ok: true, ...info.nativeExecution } : nativeExecution;
 		renderNativeExecutionConnections(content, nativeExecution);
 		syncNativeExecutionSelector();
-		void window.qorpera
-			.modelAccountUsage()
-			.then((accountUsage) => {
-				if (
-					renderVersion !== settingsRenderVersion ||
-					renderedTab !== settingsTab ||
-					!Array.isArray(accountUsage)
-				) {
-					return;
-				}
-				const scrollTop = content.scrollTop;
-				content.replaceChildren();
-				renderConnections(content, connections, new Map(accountUsage.map((account) => [account.id, account])));
-				renderNativeExecutionConnections(content, nativeExecution);
-				content.scrollTop = scrollTop;
-			})
-			.catch(() => {});
 		if (nativeLoginPollingUntil > Date.now()) {
 			setTimeout(() => {
 				if ($("settingsView").classList.contains("open") && settingsTab === "connections") {

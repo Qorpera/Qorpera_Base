@@ -59,7 +59,7 @@ export function prepareCloudPreview(
 		throw new Error("Use one --cloud-preview=/absolute/path/preview.json argument.");
 	}
 	if (argv.some((argument) => argument.startsWith("--smoke") || argument.startsWith("--company"))) {
-		throw new Error("Cloud preview cannot bypass sign-in or open a local company.");
+		throw new Error("Cloud preview cannot bypass sign-in or open an unattached company folder.");
 	}
 	// A preview must not discover credentials from the invoking terminal.
 	if (

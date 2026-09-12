@@ -1,4 +1,4 @@
-/* Sign-in, model connection, and company selection share the public brand field. */
+/* Sign-in and company selection share the public brand field. */
 :root {
 	--onboarding-gradient:
 		radial-gradient(ellipse 44% 65% at 5% 48%, rgba(207, 255, 45, 0.96) 0%, rgba(207, 255, 45, 0.58) 36%, rgba(207, 255, 45, 0) 75%),
@@ -16,14 +16,12 @@ body.hub #titlebar {
 }
 
 #accountView,
-#welcomeView,
 body.hub main {
 	background: var(--onboarding-gradient);
 	background-attachment: fixed;
 }
 
-#accountView,
-#welcomeView {
+#accountView {
 	padding: clamp(28px, 5vh, 56px) 24px;
 }
 
@@ -101,15 +99,6 @@ body.welcome .provider-mark img {
 body.welcome .provider-option-copy strong {
 	font-size: 15px;
 	font-weight: 650;
-}
-
-body.welcome .provider-option-copy small {
-	font-size: 12px;
-	line-height: 1.35;
-}
-
-body.welcome .provider-option-arrow {
-	color: #999ca3;
 }
 
 .account-card .provider-grid {
@@ -581,8 +570,7 @@ body.hub .hub-foot {
 }
 
 @media (max-width: 560px) {
-	#accountView,
-	#welcomeView {
+	#accountView {
 		padding: 18px;
 	}
 
@@ -641,7 +629,6 @@ body.hub .hub-foot {
 
 @media (forced-colors: active) {
 	#accountView,
-	#welcomeView,
 	body.hub main {
 		background: Canvas;
 	}

@@ -103,7 +103,6 @@ interface Company {
 	root?: string;
 	invitationPending?: boolean;
 	invitationId?: string;
-	migrationRequired?: boolean;
 }
 
 const company: Company = { name: "Company fixture", root: "/fixture/company" };
@@ -131,11 +130,7 @@ function launcher() {
 		appInfo: vi.fn<() => Promise<unknown>>().mockResolvedValue({ version: "fixture" }),
 		listCompanies: vi.fn<() => Promise<Company[]>>().mockResolvedValue([company]),
 		openCompany: vi.fn().mockResolvedValue(undefined),
-		migrateLocalCompany: vi.fn().mockResolvedValue({ ok: true }),
 		acceptCloudInvitation: vi.fn().mockResolvedValue({ ok: true }),
-		intelligenceInfo: vi.fn<() => Promise<unknown>>().mockResolvedValue({ ready: false }),
-		configureIntelligence: vi.fn(),
-		modelAccountUsage: vi.fn(),
 		updateState: vi.fn().mockResolvedValue(undefined),
 	};
 	const enterCompany = vi.fn(async () => {
@@ -196,30 +191,20 @@ function launcher() {
 
 afterEach(() => vi.useRealTimers());
 
-describe("company access without model allowance", () => {
-	it.each(["exhausted", "disconnected", "failed", "unresponsive"])(
-		"opens the authenticated launcher with an %s provider without checking it",
-		async (state) => {
-			const ui = launcher();
-			if (state === "failed") ui.bridge.intelligenceInfo.mockRejectedValue(new Error("insufficient_quota"));
-			else if (state === "unresponsive") ui.bridge.intelligenceInfo.mockReturnValue(new Promise(() => {}));
-			else ui.bridge.intelligenceInfo.mockResolvedValue({ ready: false, remainingPercent: 0, status: state });
-			await ui.start();
-			expect(ui.documentElement.dataset.qorperaReady).toBe("hub");
-			expect(ui.element("hubCompanies").querySelector("strong")?.textContent).toBe(company.name);
-			expect(ui.element("welcomeView").hidden).toBe(true);
-			expect(ui.bridge.intelligenceInfo).not.toHaveBeenCalled();
-			expect(ui.bridge.configureIntelligence).not.toHaveBeenCalled();
-			expect(ui.bridge.modelAccountUsage).not.toHaveBeenCalled();
-		},
-	);
+describe("company access", () => {
+	it("opens the authenticated launcher straight into the hub", async () => {
+		const ui = launcher();
+		await ui.start();
+		expect(ui.documentElement.dataset.qorperaReady).toBe("hub");
+		expect(ui.element("hubCompanies").querySelector("strong")?.textContent).toBe(company.name);
+		expect(ui.element("accountView").hidden).toBe(true);
+	});
 
-	it("completes a fresh Qorpera sign-in without requiring a model connection", async () => {
+	it("completes a fresh Qorpera sign-in and lands in the hub", async () => {
 		const ui = launcher();
 		await ui.run('completeAccountSignIn({ provider: "github" })');
 		expect(ui.bridge.accountSignIn).toHaveBeenCalledWith({ provider: "github" });
 		expect(ui.documentElement.dataset.qorperaReady).toBe("hub");
-		expect(ui.bridge.intelligenceInfo).not.toHaveBeenCalled();
 	});
 
 	it("still requires Qorpera authentication", async () => {
@@ -231,16 +216,14 @@ describe("company access without model allowance", () => {
 		expect(ui.bridge.listCompanies).not.toHaveBeenCalled();
 	});
 
-	it("restores an open company even when provider and updater checks cannot complete", async () => {
+	it("restores an open company even when the updater check cannot complete", async () => {
 		const ui = launcher();
 		const activeCompany = { id: "fixture-company", root: company.root };
 		ui.bridge.appInfo.mockResolvedValue({ version: "fixture", activeCompany });
-		ui.bridge.intelligenceInfo.mockReturnValue(new Promise(() => {}));
 		ui.bridge.updateState.mockReturnValue(new Promise(() => {}));
 		await ui.start();
 		expect(ui.enterCompany).toHaveBeenCalledWith(activeCompany);
 		expect(ui.documentElement.dataset.qorperaReady).toBe("company");
-		expect(ui.bridge.intelligenceInfo).not.toHaveBeenCalled();
 	});
 });
 
@@ -300,32 +283,26 @@ describe("recoverable cloud launcher failures", () => {
 		expect(ui.body.classList.contains("hub")).toBe(true);
 		expect(ui.element("hubCompanies").children).toHaveLength(2);
 		expect(ui.element("hubError").textContent).toContain("cloud service could not be reached");
-		expect(ui.bridge.intelligenceInfo).not.toHaveBeenCalled();
 	});
 
-	it.each(["open", "invitation", "migration"])(
-		"clears the opening spinner after a rejected %s request",
-		async (kind) => {
-			const ui = launcher();
-			ui.bridge.openCompany.mockRejectedValue(gatewayError);
-			ui.bridge.acceptCloudInvitation.mockRejectedValue(gatewayError);
-			ui.bridge.migrateLocalCompany.mockRejectedValue(gatewayError);
-			ui.bridge.listCompanies.mockResolvedValue([
-				{
-					...company,
-					invitationPending: kind === "invitation",
-					invitationId: "fixture-invitation",
-					migrationRequired: kind === "migration",
-				},
-			]);
-			await ui.start();
-			const card = ui.element("hubCompanies").children[0].children[0];
-			await card.onclick?.();
-			expect(ui.body.classList.contains("hub-opening")).toBe(false);
-			expect(card.classList.contains("loading")).toBe(false);
-			expect(ui.element("hubError").textContent).toContain("cloud service could not be reached");
-		},
-	);
+	it.each(["open", "invitation"])("clears the opening spinner after a rejected %s request", async (kind) => {
+		const ui = launcher();
+		ui.bridge.openCompany.mockRejectedValue(gatewayError);
+		ui.bridge.acceptCloudInvitation.mockRejectedValue(gatewayError);
+		ui.bridge.listCompanies.mockResolvedValue([
+			{
+				...company,
+				invitationPending: kind === "invitation",
+				invitationId: "fixture-invitation",
+			},
+		]);
+		await ui.start();
+		const card = ui.element("hubCompanies").children[0].children[0];
+		await card.onclick?.();
+		expect(ui.body.classList.contains("hub-opening")).toBe(false);
+		expect(card.classList.contains("loading")).toBe(false);
+		expect(ui.element("hubError").textContent).toContain("cloud service could not be reached");
+	});
 
 	it("shows a useful permission error instead of misclassifying it as a model or network failure", async () => {
 		const ui = launcher();
@@ -362,14 +339,13 @@ describe("recoverable cloud launcher failures", () => {
 		expect(ui.bridge.listCompanies).not.toHaveBeenCalled();
 	});
 
-	it("can retry a failed workspace bootstrap without checking the model account", async () => {
+	it("can retry a failed workspace bootstrap", async () => {
 		const ui = launcher();
 		ui.bridge.appInfo.mockRejectedValueOnce(new Error("bridge unavailable"));
 		await ui.start();
 		expect(ui.element("hubRetry").hidden).toBe(false);
 		ui.element("hubRetry").onclick?.();
 		await vi.waitFor(() => expect(ui.element("hubCompanies").children).toHaveLength(2));
-		expect(ui.bridge.intelligenceInfo).not.toHaveBeenCalled();
 	});
 });
 

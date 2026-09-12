@@ -37,11 +37,46 @@ for (const file of providerNeutralFiles) {
 	}
 }
 
-const oldBrokerPath = join(repositoryRoot, "packages/shell/src/model-request-broker.ts");
-if (existsSync(oldBrokerPath)) failures.push("packages/shell/src/model-request-broker.ts: use the explicit legacy-local boundary");
+// The local execution lane is gone: none of its modules may come back.
+const removedLocalLaneModules = [
+	"packages/shell/src/model-request-broker.ts",
+	"packages/shell/src/legacy-local-model-request-broker.ts",
+	"packages/shell/src/model-request-scope.ts",
+	"packages/shell/src/model-accounts.ts",
+	"packages/shell/src/local-execution.ts",
+	"packages/shell/src/intelligence-account.ts",
+	"packages/shell/src/intelligence-onboarding.ts",
+	"packages/shell/src/http-request-broker.ts",
+];
+for (const file of removedLocalLaneModules) {
+	if (existsSync(join(repositoryRoot, file))) failures.push(`${file}: the local execution lane was removed`);
+}
+
+const agentRuntimeSource = readFileSync(join(repositoryRoot, "packages/shell/src/agent-runtime.ts"), "utf-8");
+for (const name of ["codexSpawn", "provisionSandbox", "writeSandboxProfile"]) {
+	if (new RegExp(`export (async )?function ${name}\\(`).test(agentRuntimeSource)) {
+		failures.push(`packages/shell/src/agent-runtime.ts: may not export the local child helper ${name}`);
+	}
+}
 
 const mainPath = join(repositoryRoot, "packages/shell/src/main.ts");
 const mainSource = readFileSync(mainPath, "utf-8");
+
+const removedMainSymbols = [
+	"startLegacyPiSessionAttachment(",
+	"sendLegacyLocalPrompt(",
+	"sendLegacyLocalStaffDirective(",
+	"childProfileTypes",
+	"writeChildFrame(",
+	"function startChild(",
+	"cloud ${cause} wake is waiting for the runner orchestrator",
+];
+for (const symbol of removedMainSymbols) {
+	if (mainSource.includes(symbol)) {
+		failures.push(`packages/shell/src/main.ts: the local execution lane was removed; found ${JSON.stringify(symbol)}`);
+	}
+}
+
 const sponsoredTurnStart = mainSource.indexOf("async function requestSponsoredCloudTurn(");
 const sponsoredTurnEnd = mainSource.indexOf("function trailSessionLeafEntryId(", sponsoredTurnStart);
 if (sponsoredTurnStart < 0 || sponsoredTurnEnd <= sponsoredTurnStart) {
@@ -55,44 +90,33 @@ if (sponsoredTurnStart < 0 || sponsoredTurnEnd <= sponsoredTurnStart) {
 		failures.push("packages/shell/src/main.ts: cloud turns must reject an absent execution sponsor");
 	}
 	if (sponsoredTurn.includes("enqueueCloudPrompt(") || sponsoredTurn.includes("sendLegacyLocalPrompt(")) {
-		failures.push("packages/shell/src/main.ts: sponsored cloud turns may not fall back to the legacy local executor");
+		failures.push("packages/shell/src/main.ts: sponsored cloud turns may not fall back to a local executor");
 	}
 }
 
-const composerStart = mainSource.indexOf("const cloudSponsoredPrompt = reviewedCloudPrompt?.executionSponsor !== undefined;");
-const composerEnd = mainSource.indexOf('if (cloudStaffConversation && frame.type === "prompt")', composerStart);
-if (composerStart < 0 || composerEnd <= composerStart) {
-	failures.push("packages/shell/src/main.ts: cloud composer boundary was not found");
+// The session anchor is the only path from the composer to an agent turn.
+if (!mainSource.includes("async function anchoredSessionRpc(")) {
+	failures.push("packages/shell/src/main.ts: the session anchor rpc boundary was not found");
+}
+if (!mainSource.includes("requestSponsoredCloudTurn(runtime, arbiter, anchor.staffAgentId, ref, reviewed)")) {
+	failures.push("packages/shell/src/main.ts: the session anchor must use the sponsored turn boundary");
+}
+
+const rpcSendStart = mainSource.indexOf('ipcMain.handle("rpc:send"');
+const rpcSendEnd = mainSource.indexOf("ipcMain.handle(", rpcSendStart + 1);
+if (rpcSendStart < 0 || rpcSendEnd <= rpcSendStart) {
+	failures.push("packages/shell/src/main.ts: rpc:send handler was not found");
 } else {
-	const composer = mainSource.slice(composerStart, composerEnd);
-	if (!composer.includes("requestSponsoredCloudTurn(runtime, sendArbiter, sendStaffId, sendRef, reviewed)")) {
-		failures.push("packages/shell/src/main.ts: cloud composer must use the sponsored turn boundary");
+	const rpcSend = mainSource.slice(rpcSendStart, rpcSendEnd);
+	if (!rpcSend.includes("runtime.sessionAnchor") || !rpcSend.includes("anchoredSessionRpc(")) {
+		failures.push("packages/shell/src/main.ts: rpc:send must route prompts only through the session anchor");
 	}
-	if (composer.includes("enqueueCloudPrompt(") || composer.includes("sendLegacyLocalPrompt(")) {
-		failures.push("packages/shell/src/main.ts: cloud composer may not fall back to the legacy local executor");
+	if (!rpcSend.includes("Agents execute in the cloud.")) {
+		failures.push("packages/shell/src/main.ts: rpc:send must reject frames without an anchored cloud conversation");
 	}
-}
-
-const legacyPromptStart = mainSource.indexOf("function sendLegacyLocalPrompt(");
-const legacyPromptEnd = mainSource.indexOf("function ", legacyPromptStart + 1);
-const legacyPrompt = mainSource.slice(legacyPromptStart, legacyPromptEnd);
-if (
-	legacyPromptStart < 0 ||
-	!legacyPrompt.includes('childProfileTypes.get(child) === "cloud"') ||
-	!legacyPrompt.includes("legacy local executor rejected a cloud prompt")
-) {
-	failures.push("packages/shell/src/main.ts: the legacy local executor must fail closed for cloud profiles");
-}
-
-const legacyStaffStart = mainSource.indexOf("function sendLegacyLocalStaffDirective(");
-const legacyStaffEnd = mainSource.indexOf("function ", legacyStaffStart + 1);
-const legacyStaffDirective = mainSource.slice(legacyStaffStart, legacyStaffEnd);
-if (
-	legacyStaffStart < 0 ||
-	!legacyStaffDirective.includes('childProfileTypes.get(child) === "cloud"') ||
-	!legacyStaffDirective.includes("legacy local executor rejected a cloud staff directive")
-) {
-	failures.push("packages/shell/src/main.ts: legacy staff directives must fail closed for cloud profiles");
+	if (rpcSend.includes("sendLegacyLocalPrompt(") || rpcSend.includes("writeChildFrame(")) {
+		failures.push("packages/shell/src/main.ts: rpc:send may not execute frames on this computer");
+	}
 }
 
 if (mainSource.includes(".appendPrompt(")) {
@@ -102,11 +126,11 @@ if (mainSource.includes(".appendPrompt(")) {
 if (mainSource.includes("claimTurn(") || mainSource.includes("runtimeCloudWakeArbiter(")) {
 	failures.push("packages/shell/src/main.ts: the desktop may observe cloud queues but may not claim cloud turns or wakes");
 }
-if (!mainSource.includes("startLegacyPiSessionAttachment(") || mainSource.includes("function startChild(")) {
-	failures.push("packages/shell/src/main.ts: the inherited Pi attachment must remain an explicit legacy boundary");
+if (mainSource.includes("completeActiveCloudWake(") || mainSource.includes("submitCloudWakeProposal(")) {
+	failures.push("packages/shell/src/main.ts: cloud wakes belong to the Runner Orchestrator");
 }
-if (!mainSource.includes("cloud ${cause} wake is waiting for the runner orchestrator")) {
-	failures.push("packages/shell/src/main.ts: cloud wakes must fail closed until the Runner Orchestrator executes them");
+if (mainSource.includes("withBrokerOutputCheckpoint(") || mainSource.includes("childBrokerOutputCheckpoints")) {
+	failures.push("packages/shell/src/main.ts: the desktop has no local broker output to checkpoint");
 }
 
 if (failures.length > 0) {

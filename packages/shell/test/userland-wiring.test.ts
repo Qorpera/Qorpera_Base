@@ -92,7 +92,8 @@ describe("userland wiring", () => {
 
 	it("keeps the remaining company controls actionable and accessible", () => {
 		expect(rendererSource).toContain("window.qorpera.openCompanyFile()");
-		expect(rendererSource).toContain('? "Cloud-authoritative" : "Stored on this computer"');
+		expect(rendererSource).toContain("Cloud-authoritative");
+		expect(rendererSource).not.toContain("Stored on this computer");
 		expect(rendererSource).toContain('"Opened a synced copy. Cloud revisions remain authoritative."');
 		expect(rendererSource).toContain('info.profile?.name || info.company?.name || state.name || "Company"');
 		expect(rendererSource).toContain('window.qorpera.resolveCompanyFileConflict("local")');
@@ -429,12 +430,12 @@ describe("userland wiring", () => {
 		expect(indexSource).toContain('id="threadSponsorProvenance"');
 		expect(preloadSource).toContain('ipcRenderer.invoke("native-execution:begin-login", provider)');
 		expect(preloadSource).toContain('ipcRenderer.invoke("native-execution:revoke", providerConnectionId)');
-		expect(mainSource).toContain("const cloudSponsoredPrompt = reviewedCloudPrompt?.executionSponsor !== undefined;");
-		expect(mainSource).toContain("runtime.wakeChild && !cloudSponsoredPrompt");
-		expect(mainSource).toContain(
-			"!cloudSponsoredPrompt && runtime.childOptions.staffAgentId && !childRuntimeReady.has(reviewedChild)",
-		);
+		/* There is no local agent runtime to wait for: rpc:send hands every
+		 * frame to the anchored cloud conversation or rejects it. */
+		expect(mainSource).toContain("const anchor = runtime.sessionAnchor;");
 		expect(mainSource).toContain("await control.requestSessionTurn({");
+		expect(mainSource).not.toContain("runtime.wakeChild");
+		expect(mainSource).not.toContain("childRuntimeReady");
 		expect(rendererSource).toContain("const executionSponsor = selectedNativeExecutionSponsor()");
 		expect(rendererSource).toContain("message.qorperaRunId");
 		/* Founder ruling (2026-08-26): the thread shows the conversation, not
@@ -453,47 +454,59 @@ describe("userland wiring", () => {
 	});
 
 	it("leaves cloud wakes to the runner orchestrator", () => {
-		expect(mainSource).toMatch(/cloud \$\{cause\} wake is waiting for the runner orchestrator/);
+		/* The desktop no longer ticks wakes or runs rooms; it only observes
+		 * the durable queues the Runner Orchestrator drains. */
+		expect(mainSource).not.toContain("startWakeTicker(");
+		expect(mainSource).not.toContain("wakeChild");
+		expect(mainSource).not.toContain("startWakeChildExclusive(");
+		expect(mainSource).not.toContain("startRoomChildExclusive(");
+		expect(mainSource).not.toContain("scheduleRoomDeliveryPump(");
+		expect(mainSource).not.toContain("wake is waiting for the runner orchestrator");
+		expect(mainSource).not.toContain("claimTurn(");
 		expect(mainSource).not.toContain("runtimeCloudWakeArbiter(");
 		expect(mainSource).not.toContain("completeActiveCloudWake(");
 		expect(mainSource).not.toContain("submitCloudWakeProposal(");
 	});
 
 	it("requires a sponsored runner job and rejects desktop execution for cloud turns", () => {
-		/* The sponsored-turn path lives in requestSponsoredCloudTurn, shared by
-		 * the legacy child lane and the childless session anchor. */
+		/* The sponsored-turn path lives in requestSponsoredCloudTurn, reached
+		 * only through the childless session anchor. */
 		const turnStart = mainSource.indexOf("async function requestSponsoredCloudTurn(");
 		const turnEnd = mainSource.indexOf("function trailSessionLeafEntryId(", turnStart);
 		expect(turnStart).toBeGreaterThan(-1);
+		expect(turnEnd).toBeGreaterThan(turnStart);
 		const turnLane = mainSource.slice(turnStart, turnEnd);
 		expect(turnLane).toContain("await control.requestSessionTurn({");
 		expect(turnLane).toContain("Cloud turns never use the desktop model runtime.");
 		expect(turnLane).not.toContain("enqueueCloudPrompt(");
 		expect(turnLane).not.toContain("sendLegacyLocalPrompt(");
-		const cloudStart = mainSource.indexOf("const cloudSponsoredPrompt = reviewedCloudPrompt?.executionSponsor");
-		const cloudEnd = mainSource.indexOf('if (cloudStaffConversation && frame.type === "prompt")', cloudStart);
-		expect(cloudStart).toBeGreaterThan(-1);
-		expect(cloudEnd).toBeGreaterThan(cloudStart);
-		const cloudComposer = mainSource.slice(cloudStart, cloudEnd);
-		expect(cloudComposer).toContain(
-			"requestSponsoredCloudTurn(runtime, sendArbiter, sendStaffId, sendRef, reviewed)",
-		);
-		expect(cloudComposer).not.toContain("sendLegacyLocalPrompt(");
 		/* The childless anchor answers the whole session surface. */
 		expect(mainSource).toContain("async function anchoredSessionRpc(");
 		expect(mainSource).toContain("requestSponsoredCloudTurn(runtime, arbiter, anchor.staffAgentId, ref, reviewed)");
-		const legacyStart = mainSource.indexOf("function sendLegacyLocalPrompt(");
-		const legacyEnd = mainSource.indexOf("function ", legacyStart + 1);
-		const legacyPrompt = mainSource.slice(legacyStart, legacyEnd);
-		expect(legacyPrompt).toContain('childProfileTypes.get(child) === "cloud"');
-		expect(legacyPrompt).toContain("legacy local executor rejected a cloud prompt");
-		expect(mainSource).toContain("function sendLegacyLocalStaffDirective(");
-		expect(mainSource).toContain("legacy local executor rejected a cloud staff directive");
+		/* rpc:send routes only through the anchor and otherwise refuses. */
+		const rpcStart = mainSource.indexOf('ipcMain.handle("rpc:send"');
+		const rpcEnd = mainSource.indexOf("ipcMain.handle(", rpcStart + 1);
+		expect(rpcStart).toBeGreaterThan(-1);
+		expect(rpcEnd).toBeGreaterThan(rpcStart);
+		const rpcSend = mainSource.slice(rpcStart, rpcEnd);
+		expect(rpcSend).toContain("const anchor = runtime.sessionAnchor;");
+		expect(rpcSend).toContain("return anchoredSessionRpc(");
+		expect(rpcSend).toContain("Agents execute in the cloud.");
+		expect(rpcSend).not.toContain("sendLegacyLocalPrompt(");
+		expect(rpcSend).not.toContain("writeChildFrame(");
+		/* The local execution lane is gone from the desktop entirely. */
+		expect(mainSource).not.toContain("startLegacyPiSessionAttachment(");
+		expect(mainSource).not.toContain("function sendLegacyLocalPrompt(");
+		expect(mainSource).not.toContain("function sendLegacyLocalStaffDirective(");
+		expect(mainSource).not.toContain("childProfileTypes");
+		expect(mainSource).not.toContain("writeChildFrame(");
+		expect(mainSource).not.toContain("function startChild(");
+		expect(mainSource).not.toContain("MODEL_CONNECTIONS");
 		expect(mainSource).not.toContain(".appendPrompt(");
 		expect(mainSource).not.toContain("withBrokerOutputCheckpoint(");
 		expect(mainSource).not.toContain("childBrokerOutputCheckpoints");
-		expect(mainSource).toContain("Cloud company publication is waiting for the active agent run to finish");
-		expect(mainSource).toContain("requireDurableExecution,");
+		expect(mainSource).not.toContain("Cloud company publication is waiting for the active agent run to finish");
+		expect(mainSource).not.toContain("requireDurableExecution,");
 	});
 
 	it("renders agent details from the titlebar with only supported figure controls", () => {

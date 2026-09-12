@@ -65,9 +65,6 @@ contextBridge.exposeInMainWorld("qorpera", {
 	accountSignOut: () => ipcRenderer.invoke("account:sign-out"),
 	submitFeedback: (input) => ipcRenderer.invoke("feedback:submit", input),
 	onAccountStatus: (handler) => ipcRenderer.on("account-status", (_event, message) => handler(message)),
-	intelligenceInfo: () => ipcRenderer.invoke("intelligence:info"),
-	configureIntelligence: (providerId) => ipcRenderer.invoke("intelligence:configure", providerId),
-	disconnectIntelligence: () => ipcRenderer.invoke("intelligence:sign-out"),
 	listCompanies: () => ipcRenderer.invoke("companies:list"),
 	removeCompany: (root) => ipcRenderer.invoke("company:remove", root),
 	leaveCloudProfile: (profileId, name) => ipcRenderer.invoke("profile:leave-cloud", profileId, name),
@@ -80,7 +77,6 @@ contextBridge.exposeInMainWorld("qorpera", {
 	friendsRespond: (userId, accept) => ipcRenderer.invoke("friends:respond", userId, accept),
 	friendsRemove: (userId) => ipcRenderer.invoke("friends:remove", userId),
 	materializeCloudProfile: (profileId) => ipcRenderer.invoke("profile:materialize-cloud", profileId),
-	migrateLocalCompany: (root) => ipcRenderer.invoke("profile:migrate-local", root),
 	inviteProfileMember: (value) => ipcRenderer.invoke("profile-team:invite", value),
 	cancelProfileInvitation: (invitationId) =>
 		ipcRenderer.invoke("profile-team:cancel-invitation", invitationId),
@@ -163,8 +159,6 @@ contextBridge.exposeInMainWorld("qorpera", {
 	setSidebarTranslucency: (enabled) => ipcRenderer.invoke("settings:sidebar-translucency", enabled),
 	onSidebarTranslucency: (handler) => ipcRenderer.on("sidebar-translucency", (_event, enabled) => handler(enabled)),
 	settingsInfo: () => ipcRenderer.invoke("settings:info"),
-	setBackgroundEnabled: (enabled) => ipcRenderer.invoke("settings:background", enabled),
-	setLocalExecution: (permission) => ipcRenderer.invoke("settings:local-execution", permission),
 	nativeExecutionInfo: () => ipcRenderer.invoke("native-execution:info"),
 	createMemberComputeIdentity: () => ipcRenderer.invoke("native-execution:create-member-identity"),
 	beginNativeProviderLogin: (provider) => ipcRenderer.invoke("native-execution:begin-login", provider),
@@ -178,10 +172,8 @@ contextBridge.exposeInMainWorld("qorpera", {
 		ipcRenderer.invoke("native-execution:revoke", providerConnectionId),
 	nativeSessionTurnProvenance: (staffAgentId) =>
 		ipcRenderer.invoke("native-execution:session-provenance", staffAgentId),
-	modelAccountUsage: () => ipcRenderer.invoke("model-accounts:usage"),
 	connectAccount: (connectionId) => ipcRenderer.invoke("connection:connect", connectionId),
-	disconnectAccount: (connectionId, accountId) =>
-		ipcRenderer.invoke("connection:disconnect", connectionId, accountId),
+	disconnectAccount: (connectionId) => ipcRenderer.invoke("connection:disconnect", connectionId),
 	cancelConnection: (connectionId) => ipcRenderer.invoke("connection:cancel", connectionId),
 	connectionRequests: () => ipcRenderer.invoke("connection-requests:list"),
 	selectConnectionRequest: (identity, selection) =>

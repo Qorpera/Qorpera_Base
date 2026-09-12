@@ -6,7 +6,7 @@
 - The NAS object gateway stores immutable Company File objects, attachments, artifacts, encrypted Compute Identity capsules, and checkpoints.
 - The standalone Runner Orchestrator claims durable jobs and controls isolated execution workers. Supabase notifications are wake hints, not scheduling authority.
 - Provider-native workers run the official Codex or Claude harness under one explicit execution sponsor and provider connection. Subscription traffic never passes through Pi or a generic Qorpera model gateway.
-- Desktops observe and mutate durable cloud state. They are not required for cloud authority and cannot execute cloud turns through the legacy local model runtime.
+- Desktops observe and mutate durable cloud state. They are not required for cloud authority and execute no agent turns themselves: the shell runs no local agent process, holds no desktop model accounts, and hands every turn to the cloud.
 
 The cloud control plane is implemented and tested, but autonomous all-devices-offline execution is not complete until the Step 2 runner infrastructure passes the acceptance gate in [deploy/first-node/STEP-2-ARCHITECTURE.md](deploy/first-node/STEP-2-ARCHITECTURE.md). The exact deployed checkpoint and continuation order are recorded in [deploy/first-node/STEP-2-HANDOFF.md](deploy/first-node/STEP-2-HANDOFF.md).
 
@@ -16,15 +16,15 @@ Primary packages:
 - **[@qorpera/company](packages/company)**: provider-neutral Company File and company-domain primitives
 - **[@qorpera/runner-orchestrator](packages/runner-orchestrator)**: durable job reconciliation and provider boundary
 - **[@qorpera/object-gateway](packages/object-gateway)**: immutable NAS/object-storage authority
-- **[@qorpera/shell](packages/shell)**: desktop client, cloud synchronization, and explicit legacy-local execution boundary
+- **[@qorpera/shell](packages/shell)**: desktop client and cloud synchronization; it executes nothing locally
 
-Qorpera Base retains a hard-forked [PI coding agent](https://github.com/earendil-works/pi) harness by Mario Zechner (MIT), forked 2026-08-04 at v0.83.0, for local-company compatibility. It is not the cloud execution architecture and does not handle personal native-subscription traffic.
+Qorpera Base retains a hard-forked [PI coding agent](https://github.com/earendil-works/pi) harness by Mario Zechner (MIT), forked 2026-08-04 at v0.83.0, as the foundation the shell is built on (trail, kernel, and session primitives). The shell no longer launches it as a local agent process; it is not the cloud execution architecture and does not handle personal native-subscription traffic.
 
 ---
 
-## Legacy local PI harness
+## PI foundation packages
 
-These packages remain for the explicit local-company compatibility lane:
+These packages remain as the shell's foundation and as the standalone `pi` CLI:
 
 | Package | Description |
 |---------|-------------|
@@ -35,7 +35,7 @@ These packages remain for the explicit local-company compatibility lane:
 
 ## Permissions & Containerization
 
-The legacy local PI harness does not include a built-in permission system for restricting filesystem, process, network, or credential access. By default, it runs with the permissions of the user and process that launched it.
+The standalone `pi` CLI does not include a built-in permission system for restricting filesystem, process, network, or credential access. By default, it runs with the permissions of the user and process that launched it. The Qorpera Base shell does not run it; company agents execute in the cloud under the Runner Orchestrator.
 
 If you need stronger boundaries, containerize or sandbox Pi. See [packages/coding-agent/docs/containerization.md](packages/coding-agent/docs/containerization.md) for three patterns:
 

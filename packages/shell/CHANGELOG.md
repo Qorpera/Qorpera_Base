@@ -4,6 +4,7 @@
 
 ### Breaking Changes
 
+- Removed the local execution lane from the desktop shell. The shell no longer starts a local agent process, offers desktop model accounts or an intelligence sign-in, or runs local wakes, rooms, trigger workers or product-worker chats. All agent execution happens in the cloud through the Runner Orchestrator; the desktop only observes and mutates durable cloud state.
 - Native recovery-enabled guests require the recovery migration and per-company cloud authority provisioning before provider sign-in. Missing recovery configuration stops bootstrap before creating a key or requesting provider authentication.
 - Governed native runs require the exact activated executable bundle and reasoning-policy pins. Symbolic-only historical bundles are not silently upgraded; migration activation and signed runtime installation must be coordinated.
 

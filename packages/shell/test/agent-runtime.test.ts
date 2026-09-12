@@ -21,19 +21,14 @@ import {
 	appendKernelSessionInfo,
 	applyKernelWriteFrame,
 	bindTrailSession,
-	brokeredChildEnvironment,
 	commitTrailAppend,
 	kernelGateReviewDocument,
 	migrateLegacyCompanyAgentTrails,
 	migrateLegacyTrailSession,
 	parseTrailAppendFrame,
-	protectedCompanyAgentPaths,
 	pruneEmptyTrailSessions,
 	reconcileKernelGateCreations,
-	sandboxCommandArgs,
-	sandboxRuntimeDir,
 	trailSessionMessages,
-	writeSandboxProfile,
 } from "../src/agent-runtime.ts";
 import {
 	captureCompanyGitBaseline,
@@ -896,130 +891,6 @@ describe("kernel-bound agent runtime", () => {
 		expect(trail).toContain('"transition":"created","phase":"started"');
 		expect(trail).toContain('"transition":"creation-aborted","phase":"completed"');
 		expect(listPendingCompanyGateCreations(userData, company)).toEqual([]);
-	});
-
-	it("generates primary-agent and product-worker sandbox profiles with nested read-only boundaries", () => {
-		const previousProgramData = process.env.ProgramData;
-		if (process.platform === "win32" && !process.env.ProgramData && !process.env.PROGRAMDATA) {
-			process.env.ProgramData = join(root, "program-data");
-		}
-		const company = join(root, "company");
-		writeCompanyManifest(company);
-		const configDir = join(root, "config");
-		const runtimeDir = join(root, "runtime");
-		const repository = "departments/widget-development/repository";
-		const worktrees = "departments/widget-development/worktrees";
-		const worktree = `${worktrees}/task-a`;
-		for (const path of [repository, worktree, ".git"]) mkdirSync(join(company, path), { recursive: true });
-		writeSandboxProfile(
-			configDir,
-			runtimeDir,
-			company,
-			{ actor: "company-agent", attended: true },
-			protectedCompanyAgentPaths(company, [{ repository, worktrees }]),
-			[root],
-		);
-		let config = readFileSync(join(configDir, "config.toml"), "utf-8");
-		expect(config).not.toContain('":root" = "read"');
-		expect(config).toContain("network_proxy = false");
-		expect(config).toContain("[network]\nenabled = false");
-		expect(config).toContain("[permissions.qorpera-agent.network]\nenabled = false");
-		expect(config).toContain(`${JSON.stringify(company)} = "write"`);
-		expect(config).toContain(`${JSON.stringify(join(company, repository))} = "read"`);
-		expect(config).toContain(`${JSON.stringify(join(company, "inbox"))} = "read"`);
-		expect(config).toContain(`${JSON.stringify(join(company, ".qorpera"))} = "read"`);
-		// The one sanctioned agent-writable inbox lane (msg-*.md items).
-		expect(config).toContain(`${JSON.stringify(join(company, "inbox", "messages"))} = "write"`);
-
-		writeSandboxProfile(
-			configDir,
-			runtimeDir,
-			company,
-			{
-				actor: "product-worker",
-				attended: true,
-				department: "departments/widget-development",
-				worktree,
-			},
-			protectedCompanyAgentPaths(company, [{ repository, worktrees }]),
-			[root],
-		);
-		config = readFileSync(join(configDir, "config.toml"), "utf-8");
-		expect(config).toContain(`${JSON.stringify(company)} = "read"`);
-		expect(config).toContain(`${JSON.stringify(join(company, worktree))} = "write"`);
-		expect(config).toContain(`${JSON.stringify(join(company, worktree, ".git"))} = "read"`);
-		// Product workers do not get the primary agent's inbox lane.
-		expect(config).not.toContain(`${JSON.stringify(join(company, "inbox", "messages"))} = "write"`);
-		expect(sandboxCommandArgs("codex.js", runtimeDir, "node", ["rpc.js", "--mode", "rpc"])).toEqual(
-			expect.arrayContaining(["-C", runtimeDir, "--", "node", "rpc.js", "--mode", "rpc"]),
-		);
-		const isolatedRuntime = sandboxRuntimeDir(
-			join(root, "user-data"),
-			company,
-			"product-worker",
-			"11111111-1111-4111-8111-111111111111",
-		);
-		expect(
-			sandboxRuntimeDir(join(root, "user-data"), company, "product-worker", "22222222-2222-4222-8222-222222222222"),
-		).not.toBe(isolatedRuntime);
-		if (process.platform === "win32") {
-			const programData = process.env.ProgramData ?? process.env.PROGRAMDATA;
-			if (!programData) throw new Error("Windows test requires ProgramData");
-			expect(isolatedRuntime.startsWith(join(programData, "Qorpera", "agent-sandbox-runtime"))).toBe(true);
-			expect(isolatedRuntime).not.toContain(join(root, "user-data"));
-		}
-		if (previousProgramData === undefined) delete process.env.ProgramData;
-		else process.env.ProgramData = previousProgramData;
-	});
-
-	it("denies credentials to the child environment while keeping Windows shell discovery alive", () => {
-		const env = brokeredChildEnvironment({
-			PATH: "C:\\Windows\\System32",
-			PATHEXT: ".EXE;.CMD",
-			COMSPEC: "C:\\Windows\\System32\\cmd.exe",
-			SystemRoot: "C:\\Windows",
-			// getShellConfig (coding-agent) probes %ProgramFiles%\Git\bin\bash.exe
-			// first; stripping these regressed every kernel-spawned session to the
-			// unrunnable WSL stub — kernel-spawned work then settled with "Bash
-			// tool unavailable" (v0.18.1).
-			ProgramFiles: "C:\\Program Files",
-			"ProgramFiles(x86)": "C:\\Program Files (x86)",
-			ANTHROPIC_API_KEY: "secret",
-			OPENAI_API_KEY: "secret",
-			QORPERA_TRAIL_BROKER_TOKEN: "secret",
-			HOME: "C:\\Users\\founder",
-			USERPROFILE: "C:\\Users\\founder",
-			EMPTY: "",
-		});
-		expect(env.ProgramFiles).toBe("C:\\Program Files");
-		expect(env["ProgramFiles(x86)"]).toBe("C:\\Program Files (x86)");
-		expect(env.PATH).toBe("C:\\Windows\\System32");
-		expect(env.COMSPEC).toBeDefined();
-		expect(env.PATHEXT).toBeDefined();
-		expect(env.SystemRoot).toBeDefined();
-		expect(env.ANTHROPIC_API_KEY).toBeUndefined();
-		expect(env.OPENAI_API_KEY).toBeUndefined();
-		expect(env.QORPERA_TRAIL_BROKER_TOKEN).toBeUndefined();
-		expect(env.HOME).toBeUndefined();
-		expect(env.USERPROFILE).toBeUndefined();
-		expect(env.EMPTY).toBeUndefined();
-	});
-
-	it.runIf(process.platform === "win32")("matches Windows environment names case-insensitively", () => {
-		// Windows environment casing depends on the launching shell: Explorer
-		// hands Electron "Path", an MSYS terminal hands it "PATH" and
-		// "PROGRAMFILES". Exact-match filtering silently dropped those, which is
-		// how kernel children lost shell discovery (v0.18.1 merge sessions).
-		const env = brokeredChildEnvironment({
-			Path: "C:\\Windows\\System32",
-			PROGRAMFILES: "C:\\Program Files",
-			"ProgramFiles(x86)": "C:\\Program Files (x86)",
-			ANTHROPIC_API_KEY: "secret",
-		});
-		expect(env.Path).toBe("C:\\Windows\\System32");
-		expect(env.PROGRAMFILES).toBe("C:\\Program Files");
-		expect(env["ProgramFiles(x86)"]).toBe("C:\\Program Files (x86)");
-		expect(env.ANTHROPIC_API_KEY).toBeUndefined();
 	});
 
 	it("checkpoints content changed by the session while preserving untouched baseline dirt", () => {
