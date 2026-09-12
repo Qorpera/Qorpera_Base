@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants, realpathSync } from "node:fs";
 import { lstat, open } from "node:fs/promises";
@@ -25,7 +24,6 @@ import { readCompanyComputerBootServiceStartEvidence } from "../../packages/runt
 import { assertCompanyComputerImageArtifact } from "../../packages/runtime/src/cloud-company-computer-linux-host.ts";
 import {
 	assertCompanyComputerPreparationLockAndBoot,
-	openCompanyComputerPreparationLock,
 	readCompanyComputerPreparationProtected,
 	OFFICE_PREPARATION_CONTROL_ROOT as root,
 } from "../../packages/runtime/src/cloud-company-computer-preparation-control.ts";
@@ -37,8 +35,9 @@ import {
 } from "../../packages/runtime/src/cloud-company-computer-service-stop-systemd.ts";
 import { readCompanyComputerStopHistory } from "../../packages/runtime/src/cloud-company-computer-stop-history.ts";
 import { readCompanyComputerStopInvocation } from "../../packages/runtime/src/cloud-company-computer-stop-invocation.ts";
+import { OFFICE_SOFTWARE_TOOLS, runPinnedOfficeSoftwareTool } from "./office-software-control-launcher.ts";
 
-export const OFFICE_SOFTWARE_CONTROL_TOOL = `${root}/software-control.mjs`;
+export const OFFICE_SOFTWARE_CONTROL_TOOL = OFFICE_SOFTWARE_TOOLS.install;
 const hash = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 const decode = (bytes: Uint8Array): unknown => JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(bytes));
 const positive = (value: unknown): number => {
@@ -347,69 +346,7 @@ async function lockedInstall(input: ReturnType<typeof parseOfficeSoftwareControl
 
 export async function runOfficeSoftwareControl(args: readonly string[]): Promise<void> {
 	const input = parseOfficeSoftwareControlArgs(args);
-	const stopped = new AbortController(),
-		shutdown = () => stopped.abort();
-	process.on("SIGINT", shutdown);
-	process.on("SIGTERM", shutdown);
-	const signal = AbortSignal.any([stopped.signal, AbortSignal.timeout(60000)]);
-	try {
-		const tool = await readCompanyComputerPreparationProtected(OFFICE_SOFTWARE_CONTROL_TOOL, 16 * 1024 ** 2, 0o400);
-		if (
-			hash(tool) !== input.toolSha256 ||
-			realpathSync(fileURLToPath(import.meta.url)) !== OFFICE_SOFTWARE_CONTROL_TOOL
-		)
-			throw new Error("OFFICE_SOFTWARE_CONTROL_TOOL");
-		if (input.locked) {
-			await lockedInstall(input, signal);
-			return;
-		}
-		for (const path of ["/usr/bin/node", "/usr/bin/flock"]) await assertCompanyComputerImageArtifact(path);
-		const lock = await openCompanyComputerPreparationLock();
-		try {
-			await new Promise<void>((done, reject) => {
-				const child = spawn(
-					"/usr/bin/flock",
-					[
-						"--exclusive",
-						"--nonblock",
-						"--no-fork",
-						"/proc/self/fd/3",
-						"/usr/bin/node",
-						OFFICE_SOFTWARE_CONTROL_TOOL,
-						"--locked",
-						...args,
-					],
-					{ cwd: "/", env: {}, stdio: ["ignore", "ignore", "ignore", lock.fd], detached: true },
-				);
-				const stop = () => {
-					if (child.pid) {
-						try {
-							process.kill(-child.pid, "SIGKILL");
-						} catch {
-							child.kill("SIGKILL");
-						}
-					}
-				};
-				signal.addEventListener("abort", stop, { once: true });
-				if (signal.aborted) stop();
-				child.once("error", () => {
-					signal.removeEventListener("abort", stop);
-					reject(new Error("OFFICE_SOFTWARE_CONTROL_CHILD"));
-				});
-				child.once("close", (code) => {
-					signal.removeEventListener("abort", stop);
-					if (code !== 0 || signal.aborted) reject(new Error("OFFICE_SOFTWARE_CONTROL_CHILD"));
-					else done();
-				});
-			});
-		} finally {
-			await lock.close();
-		}
-	} finally {
-		stopped.abort();
-		process.removeListener("SIGINT", shutdown);
-		process.removeListener("SIGTERM", shutdown);
-	}
+	await runPinnedOfficeSoftwareTool("install", args, input, import.meta.url, (signal) => lockedInstall(input, signal));
 }
 if (process.argv[1] && realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))) {
 	if (process.argv.length === 3 && process.argv[2] === "--help")

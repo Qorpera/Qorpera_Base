@@ -486,6 +486,16 @@ export async function runOfficeCreationSqlProbe(
 					method === "qorpera_activate_runtime_office"
 				)
 					return bootOptions!.activation!.registry.call(method, args, signal);
+				if (
+					method === "qorpera_enroll_office_software" ||
+					method === "qorpera_begin_office_software" ||
+					method === "qorpera_check_office_software_install" ||
+					method === "qorpera_ack_office_software_install" ||
+					method === "qorpera_office_software_status" ||
+					method === "qorpera_check_office_software_invocation" ||
+					method === "qorpera_ack_office_software_invocation"
+				)
+					throw new Error("First activation fixture has no software lane");
 				return registry.call(method, args, signal);
 			},
 		};

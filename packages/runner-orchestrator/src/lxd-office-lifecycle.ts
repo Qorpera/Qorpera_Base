@@ -19,6 +19,7 @@ import { observeLxdOfficeControlJournals } from "./lxd-office-control-observer.t
 import { LxdOfficeCreationWorker } from "./lxd-office-creation-worker.ts";
 import { officeDigest, officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
 import { LxdOfficeInventoryWorker } from "./lxd-office-inventory-worker.ts";
+import type { LxdOfficeInvocationMeasurement } from "./lxd-office-invocation-measurement.ts";
 import { code, publish, readRecord } from "./lxd-office-journal-files.ts";
 import {
 	LxdOfficeLifecycleJournal,
@@ -39,6 +40,8 @@ import { LxdOfficeProviderControl } from "./lxd-office-provider-control.ts";
 import type { LxdOfficeLifecycleRegistry } from "./lxd-office-provider-registry.ts";
 import { LxdOfficeResumeWorker } from "./lxd-office-resume-worker.ts";
 import { LxdOfficeServiceStopWorker } from "./lxd-office-service-stop-worker.ts";
+import type { LxdOfficeSoftwareLaneOptions } from "./lxd-office-software-lane.ts";
+import { createLxdOfficeInvocationMeasurement } from "./lxd-office-software-transport.ts";
 import { type OfficeInventoryLimits, parseOfficeInventoryLimits } from "./lxd-office-storage-inventory.ts";
 import { LxdOfficeSuccessorWorker } from "./lxd-office-successor-worker.ts";
 
@@ -54,6 +57,10 @@ interface Workers {
 interface Options {
 	planPath: string;
 	inventoryLimits: OfficeInventoryLimits;
+	/** Enrolled software lane: successor and boot activations must measure the
+	 * expected revision before activation; an optional signed plan reserves the
+	 * pending update's successor identity. Absent for unenrolled offices. */
+	software?: Readonly<LxdOfficeSoftwareLaneOptions>;
 }
 interface Ports {
 	workers?: Workers;
@@ -65,6 +72,7 @@ interface Ports {
 	bootActivationWorker?: Pick<LxdOfficeBootActivationWorker, "reconcileSettled">;
 	kernelLock?: typeof assertOfficeAdoptionKernelLock;
 	readProtected?: typeof readLxdOfficeProtectedFile;
+	measureInvocation?: LxdOfficeInvocationMeasurement;
 }
 export interface LxdOfficeLifecycleResult {
 	state:
@@ -156,7 +164,22 @@ export class LxdOfficeLifecycle {
 			machineIdSha256: policy.host.machineIdSha256,
 			guestPackageManifestSha256: policy.image.guestPackageManifestSha256,
 		});
-		this.#configSha = officeDigest({ providerPolicySha256, inventoryLimits: limits, planPath: this.#planPath });
+		const software = options.software;
+		// Identity only: the plan digest and public pins, never the capability.
+		this.#configSha = officeDigest({
+			providerPolicySha256,
+			inventoryLimits: limits,
+			planPath: this.#planPath,
+			software: software
+				? {
+						planSha256: software.plan ? officeDigest(software.plan) : null,
+						expectedRevision: software.expectedRevision,
+						expectedService: software.expectedService,
+						measurementToolSha256: software.measurementToolSha256,
+						installToolSha256: software.installToolSha256,
+					}
+				: null,
+		});
 		this.#provider = new LxdOfficeProviderControl(
 			{
 				companyId: g.companyId,
@@ -174,12 +197,34 @@ export class LxdOfficeLifecycle {
 		this.#kernelLock = ports.kernelLock ?? assertOfficeAdoptionKernelLock;
 		this.#readProtected = ports.readProtected ?? readLxdOfficeProtectedFile;
 		this.#stopWorker = ports.stopWorker ?? new LxdOfficeServiceStopWorker(gate, registry);
-		this.#successorWorker = ports.successorWorker ?? new LxdOfficeSuccessorWorker(gate, registry);
+		const measureInvocation =
+			ports.measureInvocation ??
+			(software
+				? createLxdOfficeInvocationMeasurement({
+						root: this.#root,
+						client: this.#operationClient,
+						registry,
+						binding: (allocationId) => ({
+							schema: "qorpera.lxd-office-guest/v2",
+							...g,
+							allocationId,
+							providerPolicySha256,
+						}),
+						providerCapability: software.providerCapability,
+						expectedRevision: software.expectedRevision,
+						expectedService: software.expectedService,
+						measurementToolSha256: software.measurementToolSha256,
+					})
+				: undefined);
+		this.#successorWorker =
+			ports.successorWorker ??
+			new LxdOfficeSuccessorWorker(gate, registry, { softwarePlan: software?.plan, measureInvocation });
 		this.#powerOffWorker = ports.powerOffWorker ?? new LxdOfficePowerOffWorker(gate, registry);
 		this.#resumeWorker = ports.resumeWorker ?? new LxdOfficeResumeWorker(gate, registry);
 		this.#bootConfigurationWorker =
 			ports.bootConfigurationWorker ?? new LxdOfficeBootConfigurationWorker(gate, registry);
-		this.#bootActivationWorker = ports.bootActivationWorker ?? new LxdOfficeBootActivationWorker(gate, registry);
+		this.#bootActivationWorker =
+			ports.bootActivationWorker ?? new LxdOfficeBootActivationWorker(gate, registry, { measureInvocation });
 		this.#workers = ports.workers ?? {
 			creation: new LxdOfficeCreationWorker(gate, registry),
 			inventory: new LxdOfficeInventoryWorker(gate, registry, limits),

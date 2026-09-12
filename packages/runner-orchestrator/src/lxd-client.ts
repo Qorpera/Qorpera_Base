@@ -452,6 +452,102 @@ export interface LxdOfficeBootServiceRestartClient extends LxdOfficeInspectableC
 		signal: AbortSignal,
 	): Promise<LxdInstanceFile>;
 }
+/** Temporary provider-pinned root tools for governed service-only software
+ * revisions. Unlike image helpers, the tools themselves are staged files whose
+ * digests the provider pins explicitly in argv. Staging never installs, measures,
+ * starts or activates; exec completion is never authority. */
+export type LxdOfficeSoftwareTool = "install" | "measure";
+export interface LxdOfficeSoftwareClient extends LxdOfficeInspectableClient {
+	pushOfficeSoftwareFile(
+		project: string,
+		name: string,
+		fileName: string,
+		content: Buffer,
+		signal: AbortSignal,
+	): Promise<void>;
+	submitOfficeSoftwareControl(
+		project: string,
+		name: string,
+		tool: LxdOfficeSoftwareTool,
+		args: readonly string[],
+		signal: AbortSignal,
+	): Promise<LxdOperationReference>;
+	inspectOfficeSoftwareControl(reference: LxdOperationReference, signal: AbortSignal): Promise<LxdOperationState>;
+	readOfficeSoftwareFile(
+		project: string,
+		name: string,
+		path: string,
+		maximumBytes: number,
+		signal: AbortSignal,
+	): Promise<LxdInstanceFile>;
+}
+export const OFFICE_SOFTWARE_STAGING_ROOT = "/run/qorpera-office-preparation";
+export const OFFICE_SOFTWARE_JOURNAL_ROOT = "/var/lib/qorpera-office-service-software";
+export const OFFICE_SOFTWARE_INSTALLED_SERVICE = "/opt/qorpera-office/qorpera-company-computer-service.mjs";
+const SOFTWARE_SHA = "[0-9a-f]{64}";
+const SOFTWARE_UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+/** Exact staged names and their byte bounds. Every other name is refused. */
+const OFFICE_SOFTWARE_STAGED_FILES: ReadonlyArray<{ pattern: RegExp; maximum: number }> = Object.freeze([
+	{ pattern: /^software-control\.mjs$/, maximum: 16 * 1024 ** 2 },
+	{ pattern: /^software-measurement-control\.mjs$/, maximum: 16 * 1024 ** 2 },
+	{ pattern: new RegExp(`^software-incoming-${SOFTWARE_SHA}\\.json$`), maximum: 65536 },
+	{ pattern: new RegExp(`^software-measurement-incoming-${SOFTWARE_SHA}\\.json$`), maximum: 16384 },
+	{ pattern: new RegExp(`^software-trust-${SOFTWARE_SHA}\\.json$`), maximum: 4096 },
+	{ pattern: new RegExp(`^software-(?:previous|next)-manifest-${SOFTWARE_SHA}\\.json$`), maximum: 1024 ** 2 },
+	{ pattern: new RegExp(`^software-service-${SOFTWARE_SHA}\\.mjs$`), maximum: 32 * 1024 ** 2 },
+	{ pattern: new RegExp(`^software-capability-${SOFTWARE_UUID}$`), maximum: 64 },
+]);
+export function officeSoftwareStagedPath(fileName: string): { path: string; maximum: number } {
+	const entry =
+		typeof fileName === "string"
+			? OFFICE_SOFTWARE_STAGED_FILES.find((item) => item.pattern.test(fileName))
+			: undefined;
+	if (!entry) throw new Error("INVALID_OFFICE_SOFTWARE_STAGING");
+	return { path: `${OFFICE_SOFTWARE_STAGING_ROOT}/${fileName}`, maximum: entry.maximum };
+}
+/** Read-only public/root outputs the provider may read back. */
+const OFFICE_SOFTWARE_READ_FILES: ReadonlyArray<{ pattern: RegExp; maximum: number }> = Object.freeze([
+	{ pattern: new RegExp(`^${OFFICE_SOFTWARE_INSTALLED_SERVICE.replaceAll(".", "\\.")}$`), maximum: 16 * 1024 ** 2 },
+	{ pattern: new RegExp(`^${OFFICE_SOFTWARE_JOURNAL_ROOT}/${SOFTWARE_UUID}/installed\\.json$`), maximum: 65536 },
+	{
+		pattern: new RegExp(`^${OFFICE_SOFTWARE_STAGING_ROOT}/software-measurement-${SOFTWARE_UUID}\\.json$`),
+		maximum: 16384,
+	},
+	{
+		pattern: new RegExp(`^${OFFICE_SOFTWARE_STAGING_ROOT}/software-measurement-claim-${SOFTWARE_UUID}\\.json$`),
+		maximum: 4096,
+	},
+]);
+export function officeSoftwareReadPath(path: string): number {
+	const entry =
+		typeof path === "string" ? OFFICE_SOFTWARE_READ_FILES.find((item) => item.pattern.test(path)) : undefined;
+	if (!entry) throw new Error("INVALID_OFFICE_SOFTWARE_READBACK");
+	return entry.maximum;
+}
+/** install: commandId requestSha256 bootId toolSha256 trustSha256;
+ * measure: commandId requestSha256 bootId toolSha256. No secret is an argument. */
+export function officeSoftwareCommand(tool: LxdOfficeSoftwareTool, args: readonly string[]): readonly string[] {
+	const shapes = {
+		install: [SOFTWARE_UUID, SOFTWARE_SHA, SOFTWARE_UUID, SOFTWARE_SHA, SOFTWARE_SHA],
+		measure: [SOFTWARE_UUID, SOFTWARE_SHA, SOFTWARE_UUID, SOFTWARE_SHA],
+	};
+	if (!Object.hasOwn(shapes, tool)) throw new Error("INVALID_OFFICE_SOFTWARE_COMMAND");
+	const shape = shapes[tool];
+	if (
+		!Array.isArray(args) ||
+		args.length !== shape.length ||
+		args.some((value, index) => typeof value !== "string" || !new RegExp(`^${shape[index]}$`).test(value))
+	)
+		throw new Error("INVALID_OFFICE_SOFTWARE_COMMAND");
+	parseCompanyComputerPreparationCommand({ commandId: args[0], requestSha256: args[1], bootId: args[2] });
+	return Object.freeze([
+		"/usr/bin/env",
+		"-i",
+		"/usr/bin/node",
+		`${OFFICE_SOFTWARE_STAGING_ROOT}/${tool === "install" ? "software-control.mjs" : "software-measurement-control.mjs"}`,
+		...args,
+	]);
+}
 type OfficeControlPurpose =
 	| "preparation"
 	| "configuration"
@@ -477,7 +573,7 @@ const officeControlMaximum = (purpose: OfficeControlPurpose) =>
 							: purpose === "service-stop"
 								? COMPANY_COMPUTER_SERVICE_STOP_MAX_BYTES
 								: COMPANY_COMPUTER_SERVICE_RESTART_MAX_BYTES;
-const officeControlError = (purpose: OfficeControlPurpose, operation: string) =>
+const officeControlError = (purpose: OfficeControlPurpose | "software", operation: string) =>
 	new Error(`LXD_OFFICE_${purpose.replaceAll("-", "_").toUpperCase()}_${operation}_UNCONFIRMED`);
 
 export type LxdOfficePreparationCommand = CompanyComputerPreparationCommand;
@@ -1239,9 +1335,24 @@ export class LxdUnixClient
 		purpose: OfficeControlPurpose,
 		inspectionId?: string,
 	): Promise<LxdOperationReference> {
+		let argv: readonly string[];
 		try {
 			officeControlPath(project, name, command.requestSha256, purpose);
-			const argv = officeControlCommand(command, purpose, inspectionId);
+			argv = officeControlCommand(command, purpose, inspectionId);
+		} catch {
+			throw officeControlError(purpose, "SUBMISSION");
+		}
+		return this.#submitOfficeExec(project, name, argv, signal, purpose);
+	}
+	async #submitOfficeExec(
+		project: string,
+		name: string,
+		argv: readonly string[],
+		signal: AbortSignal,
+		purpose: OfficeControlPurpose | "software",
+	): Promise<LxdOperationReference> {
+		try {
+			if (![project, name].every((value) => INSTANCE_NAME.test(value))) throw new Error("invalid scope");
 			const checked = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
 			checked.throwIfAborted();
 			const result = await this.#request(
@@ -1322,10 +1433,97 @@ export class LxdUnixClient
 	): Promise<LxdOperationState> {
 		return this.#inspectOfficeControl(reference, signal, "boot-service-restart");
 	}
+	async pushOfficeSoftwareFile(
+		project: string,
+		name: string,
+		fileName: string,
+		content: Buffer,
+		signal: AbortSignal,
+	): Promise<void> {
+		let payload: Buffer | undefined;
+		try {
+			if (![project, name].every((value) => INSTANCE_NAME.test(value))) throw new Error("invalid scope");
+			const { path, maximum } = officeSoftwareStagedPath(fileName);
+			if (!Buffer.isBuffer(content) || content.length < 1 || content.length > maximum)
+				throw new Error("invalid size");
+			payload = Buffer.from(content);
+			const checked = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
+			checked.throwIfAborted();
+			const result = await this.#requestPayload(
+				"POST",
+				projectPath(`/1.0/instances/${encodeURIComponent(name)}/files?path=${encodeURIComponent(path)}`, project),
+				payload,
+				{
+					"content-type": "application/octet-stream",
+					"x-lxd-type": "file",
+					"x-lxd-uid": "0",
+					"x-lxd-gid": "0",
+					"x-lxd-mode": "0400",
+					"x-lxd-modify-perm": "uid,gid,mode",
+				},
+				checked,
+			);
+			checked.throwIfAborted();
+			const envelope = record(result.body, "LXD software staging response");
+			if (
+				result.status !== 200 ||
+				envelope.type !== "sync" ||
+				envelope.status_code !== 200 ||
+				(envelope.status !== undefined && envelope.status !== "Success") ||
+				(envelope.error_code !== undefined && envelope.error_code !== 0) ||
+				(envelope.error !== undefined && envelope.error !== "")
+			)
+				throw new Error("staging upload unconfirmed");
+		} catch {
+			throw officeControlError("software", "UPLOAD");
+		} finally {
+			payload?.fill(0);
+		}
+	}
+	async submitOfficeSoftwareControl(
+		project: string,
+		name: string,
+		tool: LxdOfficeSoftwareTool,
+		args: readonly string[],
+		signal: AbortSignal,
+	): Promise<LxdOperationReference> {
+		let argv: readonly string[];
+		try {
+			argv = officeSoftwareCommand(tool, args);
+		} catch {
+			throw officeControlError("software", "SUBMISSION");
+		}
+		return this.#submitOfficeExec(project, name, argv, signal, "software");
+	}
+	async inspectOfficeSoftwareControl(
+		reference: LxdOperationReference,
+		signal: AbortSignal,
+	): Promise<LxdOperationState> {
+		return this.#inspectOfficeControl(reference, signal, "software");
+	}
+	/** Root-owned public outputs only; custody (uid/gid/mode/size/digest) is
+	 * asserted by the caller against its own expectation. */
+	async readOfficeSoftwareFile(
+		project: string,
+		name: string,
+		path: string,
+		maximumBytes: number,
+		signal: AbortSignal,
+	): Promise<LxdInstanceFile> {
+		try {
+			const maximum = officeSoftwareReadPath(path);
+			if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > maximum) throw new Error("size");
+			const file = await this.#readInstanceFile(project, name, path, maximumBytes, signal);
+			signal.throwIfAborted();
+			return file;
+		} catch {
+			throw officeControlError("software", "READBACK");
+		}
+	}
 	async #inspectOfficeControl(
 		reference: LxdOperationReference,
 		signal: AbortSignal,
-		purpose: OfficeControlPurpose,
+		purpose: OfficeControlPurpose | "software",
 	): Promise<LxdOperationState> {
 		try {
 			if (

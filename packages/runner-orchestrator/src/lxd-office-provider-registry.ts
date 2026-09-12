@@ -3,6 +3,8 @@ import type { LxdOfficeBootIntentRegistry } from "./lxd-office-boot-intent-contr
 import type { LxdOfficeBootSuccessorRegistry } from "./lxd-office-boot-successor-control.ts";
 import type { LxdOfficeLifecycleControlRegistry } from "./lxd-office-lifecycle-control.ts";
 import type { LxdOfficeProviderRegistry } from "./lxd-office-provider-control.ts";
+import type { LxdOfficeSoftwareRegistry } from "./lxd-office-software-control.ts";
+import type { LxdOfficeSoftwareInvocationRegistry } from "./lxd-office-software-invocation-control.ts";
 import type { LxdOfficeStartRegistry } from "./lxd-office-start-control.ts";
 import type { LxdOfficeStopRegistry } from "./lxd-office-stop-control.ts";
 import type { LxdOfficeSuccessorRegistry } from "./lxd-office-successor-control.ts";
@@ -15,7 +17,9 @@ export type LxdOfficeProviderMethod =
 	| Parameters<LxdOfficeSuccessorRegistry["call"]>[0]
 	| Parameters<LxdOfficeBootSuccessorRegistry["call"]>[0]
 	| Parameters<LxdOfficeBootIntentRegistry["call"]>[0]
-	| Parameters<LxdOfficeActivationRegistry["call"]>[0];
+	| Parameters<LxdOfficeActivationRegistry["call"]>[0]
+	| Parameters<LxdOfficeSoftwareRegistry["call"]>[0]
+	| Parameters<LxdOfficeSoftwareInvocationRegistry["call"]>[0];
 export interface LxdOfficeLifecycleRegistry {
 	call(method: LxdOfficeProviderMethod, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
 }
@@ -44,6 +48,15 @@ const METHODS = new Set<LxdOfficeProviderMethod>([
 	"qorpera_prepare_runtime_office_boot_intent",
 	"qorpera_runtime_office_boot_intent_status",
 	"qorpera_check_runtime_office_boot_intent",
+	// Governed service-only software revisions; every call also carries the
+	// separate provider capability, which SQL requires and never returns.
+	"qorpera_enroll_office_software",
+	"qorpera_begin_office_software",
+	"qorpera_check_office_software_install",
+	"qorpera_ack_office_software_install",
+	"qorpera_office_software_status",
+	"qorpera_check_office_software_invocation",
+	"qorpera_ack_office_software_invocation",
 ]);
 const LIMIT = 65536;
 

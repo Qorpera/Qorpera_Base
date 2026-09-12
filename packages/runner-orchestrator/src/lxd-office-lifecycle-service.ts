@@ -6,6 +6,7 @@ import { LxdOfficeLifecycle, type LxdOfficeLifecycleResult, runLxdOfficeLifecycl
 import { readLxdOfficeCredentialFile, readLxdOfficeProtectedFile } from "./lxd-office-physical-host.ts";
 import { officePhysicalPath } from "./lxd-office-physical-policy.ts";
 import { LxdOfficeProviderHttpRegistry } from "./lxd-office-provider-registry.ts";
+import { loadLxdOfficeSoftwareLane, parseLxdOfficeSoftwareLaneDocument } from "./lxd-office-software-lane.ts";
 import { parseOfficeInventoryLimits } from "./lxd-office-storage-inventory.ts";
 
 export function createOfficeLifecycleWriter(stream: Writable) {
@@ -77,7 +78,7 @@ export function createOfficeLifecycleReporter(
 }
 
 export function parseLxdOfficeLifecycleServiceConfig(value: unknown) {
-	const r = officeRecord(value, [
+	const keys = [
 		"schema",
 		"policyPath",
 		"provenancePath",
@@ -86,7 +87,12 @@ export function parseLxdOfficeLifecycleServiceConfig(value: unknown) {
 		"registryCredential",
 		"inventoryLimits",
 		"pollIntervalMs",
-	]);
+	];
+	// The software lane is an optional, explicitly named sibling document.
+	const r =
+		value && typeof value === "object" && Object.hasOwn(value, "softwareLanePath")
+			? officeRecord(value, [...keys, "softwareLanePath"])
+			: officeRecord(value, keys);
 	if (r.schema !== "qorpera.lxd-office-provider-service/v1" || typeof r.registryUrl !== "string")
 		throw new Error("INVALID_OFFICE_SERVICE_CONFIG");
 	const credential = officeRecord(r.registryCredential, ["path", "bytes", "sha256"]);
@@ -113,6 +119,7 @@ export function parseLxdOfficeLifecycleServiceConfig(value: unknown) {
 		},
 		inventoryLimits: parseOfficeInventoryLimits(r.inventoryLimits),
 		pollIntervalMs: r.pollIntervalMs as number,
+		softwareLanePath: r.softwareLanePath === undefined ? undefined : officePhysicalPath(r.softwareLanePath),
 	};
 }
 
@@ -143,11 +150,25 @@ export async function runLxdOfficeLifecycleService(
 			new TextDecoder("utf8", { fatal: true }).decode(credential),
 		);
 		credential.fill(0);
+		const software =
+			config.softwareLanePath === undefined
+				? undefined
+				: await loadLxdOfficeSoftwareLane(
+						parseLxdOfficeSoftwareLaneDocument(
+							JSON.parse(
+								new TextDecoder("utf8", { fatal: true }).decode(
+									await readLxdOfficeProtectedFile(config.softwareLanePath, 16384),
+								),
+							),
+						),
+						readLxdOfficeCredentialFile,
+					);
+		signal.throwIfAborted();
 		const lifecycle = await LxdOfficeLifecycle.open(
 			config.policyPath,
 			config.provenancePath,
 			registry,
-			config,
+			{ ...config, software },
 			signal,
 		);
 		const emit = createOfficeLifecycleReporter(lifecycle.observationIdentity, write);
