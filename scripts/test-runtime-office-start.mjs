@@ -402,6 +402,7 @@ try {
 		docker(psql, `select set_config('qorpera_test.screen_startup',${literal(activationResult.startup)}::text,false);\n${readFileSync(join(root,"supabase/tests/fixtures/runtime-screen-history-cases.sql"),"utf8")}`);
 		console.log("PASS: screen usage bounds original heartbeats, exposes unknown gaps, preserves clipped/partitioned arithmetic and keeps discovery private; timestamps remain fixtures");
 		const screenResult=await testRuntimeScreenLifecycle({startup:activationResult.startup,service,literal,execute:sql=>docker(psql,sql),race,retainOpen:stopMode,
+			CompanyComputerScreenOutbox:(await import(pathToFileURL(join(bundleRoot,"screenOutbox.mjs")).href)).CompanyComputerScreenOutbox,
 			CompanyComputerScreenLifecyclePublisher: (await import(pathToFileURL(join(bundleRoot, "screenLifecycle.mjs")).href)).CompanyComputerScreenLifecyclePublisher,
 			restartDatabase:async()=>{docker(["restart",container]);await databaseReady();}});
 		const screenRecovery=stopMode?await prepareScreenObservationRecovery({startup:activationResult.startup,openLifetimeId:screenResult.openLifetimeId,

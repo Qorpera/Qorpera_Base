@@ -1,5 +1,6 @@
 import { HttpCloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-control";
 import { CloudCompanyHeadConflict } from "@qorpera/runtime/cloud-company-path-gateway";
+import { CloudCompanyPathRpcRefusal } from "@qorpera/runtime/cloud-company-path-refusal";
 import { CloudRuntimeDiagnosticError } from "@qorpera/runtime/cloud-runtime-observability";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -14,6 +15,24 @@ function fixture(transport: typeof fetch) {
 }
 
 describe("Company File bounded control transport", () => {
+	it.each([
+		[403, { code: "42501", message: "PRIVATE_DENIAL", details: null, hint: null }, true],
+		[403, { code: "42501", message: "PRIVATE_DENIAL", details: "private", hint: "private" }, true],
+		[403, { code: "42501", message: "PRIVATE_DENIAL" }, false],
+		[403, { code: "42501", message: "PRIVATE_DENIAL", details: {}, hint: null }, false],
+		[403, { code: "42501", message: "PRIVATE_DENIAL", details: null, hint: null, extra: true }, false],
+		[403, { code: "OTHER", message: "PRIVATE_DENIAL", details: null, hint: null }, false],
+		[500, { code: "42501", message: "PRIVATE_DENIAL", details: null, hint: null }, false],
+	] as const)("brands only a complete transaction denial (%i, %j)", async (status, body, denied) => {
+		const transport = vi.fn<typeof fetch>(async () => Response.json(body, { status }));
+		const error = await fixture(transport)
+			.call("qorpera_read_company_path_v2", {}, new AbortController().signal)
+			.catch((error) => error);
+		expect(error instanceof CloudCompanyPathRpcRefusal).toBe(denied);
+		expect(String(error)).not.toContain("PRIVATE_DENIAL");
+		expect(transport).toHaveBeenCalledOnce();
+	});
+
 	it.each([
 		"qorpera_assert_company_path_reads",
 		"qorpera_verify_company_path_file",

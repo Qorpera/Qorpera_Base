@@ -20,6 +20,7 @@ import type { CloudContentAddressedStore, CloudFileReference } from "@qorpera/cl
 import type { JsonValue } from "@qorpera/contracts";
 import { parseCompanyComputerScreenshotAsset } from "./cloud-company-computer-screenshots.ts";
 import { type CloudCompanyPathPresence, observeCloudCompanyPathPresence } from "./cloud-company-path-presence.ts";
+import { CloudCompanyPathRpcRefusal, CloudCompanyPathToolRefusal } from "./cloud-company-path-refusal.ts";
 import type { CloudNativeFenceRequest } from "./cloud-native-result-fence.ts";
 import {
 	type CloudNativeToolBinding,
@@ -245,8 +246,22 @@ export class CloudCompanyPathGateway {
 		this.#store = options.store;
 	}
 
-	#call(method: CloudCompanyPathRpc, argumentsValue: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
-		return cloudToolRequest((requestSignal) => this.#control.call(method, argumentsValue, requestSignal), signal);
+	async #call(
+		method: CloudCompanyPathRpc,
+		argumentsValue: Record<string, unknown>,
+		signal: AbortSignal,
+		initialAdmission = false,
+	): Promise<unknown> {
+		try {
+			return await cloudToolRequest(
+				(requestSignal) => this.#control.call(method, argumentsValue, requestSignal),
+				signal,
+			);
+		} catch (error) {
+			if (initialAdmission && error instanceof CloudCompanyPathRpcRefusal && !signal.aborted)
+				throw new CloudCompanyPathToolRefusal();
+			throw error;
+		}
 	}
 
 	#bound(): { p_environment_id: string; p_binding: CloudNativeToolBinding } {
@@ -297,6 +312,7 @@ export class CloudCompanyPathGateway {
 				"qorpera_read_company_path_v2",
 				{ ...this.#bound(), p_path: path, p_offset: offset, p_limit: limit },
 				signal,
+				true,
 			),
 			["path", "version", "entry", "manifestBytes", "companyId", "snapshotId", "readObservationId"],
 		);
@@ -547,6 +563,7 @@ export class CloudCompanyPathGateway {
 				"qorpera_list_company_paths_v2",
 				{ ...this.#bound(), p_path: path, p_after: after, p_snapshot_id: snapshotId, p_limit: limit },
 				signal,
+				true,
 			),
 			["snapshotId", "items", "hasMore", "nextAfter", "readObservationId"],
 		);
@@ -624,6 +641,7 @@ export class CloudCompanyPathGateway {
 						"qorpera_native_company_file_write_source",
 						{ ...this.#bound(), p_source: source },
 						signal,
+						true,
 					),
 				);
 				if (asset.assetId !== source.assetId || asset.sha256 !== source.sha256)
@@ -687,6 +705,8 @@ export class CloudCompanyPathGateway {
 							: "qorpera_commit_company_path_mutation",
 				{ ...this.#bound(), p_plan: plan, ...extra, ...(source ? { p_source: source, p_action: action } : {}) },
 				signal,
+				// Only check precedes presence, object staging and canonical writes.
+				action === "check",
 			);
 		const preflight = prepared(await mutation("check"), plan, false);
 		this.#remember(path);

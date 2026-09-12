@@ -224,10 +224,10 @@ describe("private durable screen outbox", () => {
 		await flushing;
 		expect(await f.files()).toHaveLength(3);
 	});
-	it("keeps a lost or malformed receipt pending without starving another lifetime", async () => {
+	it("keeps a lost or malformed receipt pending without starving another physical screen", async () => {
 		const f = await fixture();
 		await f.life.requested(signal());
-		const second = f.publisher.create(computerBinding(), null);
+		const second = f.publisher.create({ ...computerBinding(), screenId: computerId(99), screenOrdinal: 2 }, null);
 		await second.requested(signal());
 		f.call.mockImplementation(async (_method, args) => {
 			const receipt = screenReceipt(args);
@@ -240,6 +240,89 @@ describe("private durable screen outbox", () => {
 		expect(await f.queue.canHeartbeat(f.life.lifetimeId)).toBe(false);
 		expect(await f.queue.canHeartbeat(second.lifetimeId)).toBe(true);
 	});
+	it.each([false, true])(
+		"exports prior closure before a lexically earlier reopened lifetime (same timestamp=%s)",
+		async (sameTime) => {
+			const f = await fixture();
+			const oldId = computerId(99),
+				newId = computerId(10);
+			const old = observation();
+			old.event = {
+				...old.event,
+				lifetimeId: oldId,
+				sequence: 3,
+				state: "closing",
+				reason: "SCREEN_DRAIN_REQUESTED",
+			};
+			const closed = structuredClone(old);
+			closed.event = {
+				...closed.event,
+				sequence: 4,
+				eventId: computerId(92),
+				state: "closed",
+				reason: "DESKTOP_REAPED",
+			};
+			const next = observation();
+			next.event = {
+				...next.event,
+				lifetimeId: newId,
+				eventId: computerId(93),
+				observedAt: sameTime ? old.event.observedAt : "2026-09-09T01:00:01.000Z",
+			};
+			await f.queue.retain(old, signal());
+			await f.queue.retain(closed, signal());
+			await f.queue.retain(next, signal());
+			let active: string | null = oldId;
+			f.call.mockImplementation(async (method, args) => {
+				expect(method).toBe("qorpera_record_runtime_screen_event");
+				const event = args.p_event as CompanyComputerScreenObservation["event"];
+				if (event.state === "requested") {
+					expect(active).toBeNull();
+					active = event.lifetimeId;
+				} else {
+					expect(event.lifetimeId).toBe(active);
+					if (event.state === "closed") active = null;
+				}
+				return screenReceipt(args);
+			});
+			for (let n = 0; n < 3; n++) await f.queue.flush(signal());
+			expect(
+				f.call.mock.calls.map(([, args]) => (args.p_event as CompanyComputerScreenObservation["event"]).state),
+			).toEqual(["closing", "closed", "requested"]);
+			expect(active).toBe(newId);
+			expect(await f.files()).toEqual([]);
+		},
+	);
+	it("does not leapfrog unacknowledged cleanup of the same physical screen", async () => {
+		const f = await fixture();
+		const older = observation();
+		older.event = {
+			...older.event,
+			lifetimeId: computerId(99),
+			sequence: 4,
+			state: "closed",
+			reason: "DESKTOP_REAPED",
+		};
+		const newer = observation();
+		newer.event = {
+			...newer.event,
+			lifetimeId: computerId(10),
+			eventId: computerId(93),
+			observedAt: "2026-09-09T01:00:01.000Z",
+		};
+		await f.queue.retain(older, signal());
+		await f.queue.retain(newer, signal());
+		f.call.mockRejectedValue(new Error("lost or unavailable acknowledgement"));
+		await f.queue.flush(signal());
+		await f.queue.flush(signal());
+		expect(
+			f.call.mock.calls
+				.filter(([method]) => method === "qorpera_record_runtime_screen_event")
+				.map(([, args]) => (args.p_event as CompanyComputerScreenObservation["event"]).lifetimeId),
+		).toEqual([older.event.lifetimeId, older.event.lifetimeId]);
+		expect(await f.files()).toHaveLength(2);
+	});
+
 	it("publishes a sequence once and refuses changed observations without overwriting", async () => {
 		const f = await fixture(),
 			item = observation();

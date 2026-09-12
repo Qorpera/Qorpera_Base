@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { JsonValue } from "@qorpera/contracts";
 import type { CompanyComputerScreenshotAsset } from "./cloud-company-computer-screenshots.ts";
+import { CloudCompanyPathToolRefusal } from "./cloud-company-path-refusal.ts";
 import type { CloudNativeCaptureImages } from "./cloud-native-capture-images.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
 import {
@@ -376,6 +377,7 @@ export class CloudNativeToolBoundary {
 					CALL_ID_REUSED: "call_id_reused",
 					TOOL_BUDGET_EXHAUSTED: "budget_exhausted",
 					AUTHORITY_UNAVAILABLE: "authority_unavailable",
+					COMPANY_FILE_ACCESS_DENIED: "authority_unavailable",
 				} as const;
 				observation?.finish(envelope.status, {
 					errorCategory:
@@ -528,6 +530,15 @@ export class CloudNativeToolBoundary {
 			observation?.finish(proposed ? "proposed" : "succeeded", proposed ? { errorCategory: "protected_path" } : {});
 			return response;
 		} catch (error) {
+			if (
+				error instanceof CloudCompanyPathToolRefusal &&
+				!this.#signal.aborted &&
+				tool.source === "company_file" &&
+				["company_read", "company_list", "company_write", "company_mkdir", "company_delete"].includes(tool.name)
+			) {
+				observation?.finish("denied", { errorCategory: "authority_unavailable" });
+				return this.#result(callId, tool, digest, "denied", { kind: "text", value: "COMPANY_FILE_ACCESS_DENIED" });
+			}
 			observation?.finish("unconfirmed", { errorCategory: cloudRuntimeErrorCategory(error, this.#signal) });
 			// A thrown adapter error may follow a completed effect. Never echo it or automatically rerun the call.
 			return this.#result(callId, tool, digest, "unconfirmed", { kind: "text", value: "TOOL_OUTCOME_UNCONFIRMED" });

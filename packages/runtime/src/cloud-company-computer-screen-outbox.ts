@@ -305,9 +305,34 @@ export class CompanyComputerScreenOutbox implements CompanyComputerScreenEventCu
 		this.#flushing = (async () => {
 			const records = await this.#local(() => this.#records());
 			const first = new Map<string, (typeof records)[number]>();
+			const closedAt = new Map<string, number>();
+			for (const record of records)
+				if (record.observation.event.state === "closed")
+					closedAt.set(record.observation.event.lifetimeId, Date.parse(record.observation.event.observedAt));
 			for (const record of records)
 				if (!first.has(record.observation.event.lifetimeId)) first.set(record.observation.event.lifetimeId, record);
-			const ordered = [...first.values()];
+			// UUID order is not physical order. A new lifetime must wait for the
+			// earlier lifetime's queued cleanup on this same admitted screen; otherwise
+			// SQL correctly rejects it as a second physical screen. Independent screens
+			// still progress when one observation cannot be confirmed or retained.
+			const physical = new Map<string, (typeof records)[number]>();
+			for (const record of [...first.values()].sort(
+				(a, b) =>
+					a.observation.event.observedAt.localeCompare(b.observation.event.observedAt) ||
+					(closedAt.get(a.observation.event.lifetimeId) ?? Number.MAX_SAFE_INTEGER) -
+						(closedAt.get(b.observation.event.lifetimeId) ?? Number.MAX_SAFE_INTEGER) ||
+					a.name.localeCompare(b.name),
+			)) {
+				const { startup, binding } = record.observation;
+				const key = JSON.stringify([
+					startup.allocationId,
+					startup.bootId,
+					startup.serviceInvocationId,
+					binding.screenId,
+				]);
+				if (!physical.has(key)) physical.set(key, record);
+			}
+			const ordered = [...physical.values()].sort((a, b) => a.name.localeCompare(b.name));
 			const candidates = [
 				...ordered.filter((r) => r.name > this.#cursor),
 				...ordered.filter((r) => r.name <= this.#cursor),

@@ -7,6 +7,7 @@ import { type CloudCompanyPathPlan, parseCloudCompanyPath } from "@qorpera/cloud
 import type { CloudCompanyTreeEntry } from "@qorpera/cloud-client/node/cloud-company-snapshot";
 import { CloudContentAddressedStore, type CloudObjectTransport } from "@qorpera/cloud-client/node/cloud-object-store";
 import type { JsonValue } from "@qorpera/contracts";
+import { HttpCloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-control";
 import {
 	applyApprovedCompanyPath,
 	CloudCompanyHeadConflict,
@@ -15,6 +16,7 @@ import {
 	type CloudCompanyPathRpc,
 } from "@qorpera/runtime/cloud-company-path-gateway";
 import type { CloudCompanyPathPresence } from "@qorpera/runtime/cloud-company-path-presence";
+import { CloudCompanyPathRpcRefusal } from "@qorpera/runtime/cloud-company-path-refusal";
 import { CloudNativeToolBoundary, cloudToolJsonText } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudRuntimeObservability, type CloudRuntimeObservation } from "@qorpera/runtime/cloud-runtime-observability";
 import { describe, expect, it, vi } from "vitest";
@@ -235,6 +237,120 @@ function fixture(observability?: CloudRuntimeObservability, presence?: CloudComp
 }
 
 describe("cloud Company File path gateway", () => {
+	it("carries a real bounded HTTP42501 through the gateway into a redacted denied tool result", async () => {
+		const f = fixture();
+		const fetch = vi.fn(async () =>
+			Response.json(
+				{ code: "42501", message: "PRIVATE_PATH_DIAGNOSTIC", details: null, hint: null },
+				{ status: 403 },
+			),
+		);
+		const control = new HttpCloudCompanyPathControl({
+			supabaseUrl: "https://authority.example",
+			serviceRoleKey: "fixture",
+			fetch,
+		});
+		const gateway = new CloudCompanyPathGateway({
+			binding: f.binding,
+			identity: f.identity,
+			control,
+			store: f.store,
+		});
+		const boundary = new CloudNativeToolBoundary({
+			companyId: f.identity.companyId,
+			runId: f.identity.runId,
+			identity: f.identity,
+			tools: gateway.tools(),
+			assertActive: async () => {},
+			signal: f.signal,
+		});
+		const args = { path: "private.txt", offset: 0, limit: 4096 };
+		const response = await boundary.invoke("http_denied", "qorpera", "company_read", args);
+		expect(JSON.parse(response.contentItems[0].text)).toMatchObject({
+			status: "denied",
+			content: { text: "COMPANY_FILE_ACCESS_DENIED" },
+		});
+		expect(response.contentItems[0].text).not.toContain("PRIVATE_PATH_DIAGNOSTIC");
+		expect(await boundary.invoke("http_denied", "qorpera", "company_read", args)).toEqual(response);
+		expect(fetch).toHaveBeenCalledOnce();
+		expect(f.transport.get).not.toHaveBeenCalled();
+		expect(f.transport.put).not.toHaveBeenCalled();
+	});
+	it("does not infer confirmed refusal from an adapter's42501 text", async () => {
+		const f = fixture();
+		f.overrides.set("qorpera_read_company_path_v2", async () => {
+			throw new Error("42501 PRIVATE_ADAPTER_MESSAGE");
+		});
+		const response = await f.boundary.invoke("text_denied", "qorpera", "company_read", {
+			path: "private.txt",
+			offset: 0,
+			limit: 4096,
+		});
+		expect(JSON.parse(response.contentItems[0].text)).toMatchObject({
+			status: "unconfirmed",
+			content: { text: "TOOL_OUTCOME_UNCONFIRMED" },
+		});
+		expect(response.contentItems[0].text).not.toContain("PRIVATE_ADAPTER_MESSAGE");
+	});
+
+	it.each([
+		["company_read", "qorpera_read_company_path_v2", { path: "private.txt", offset: 0, limit: 4096 }],
+		["company_list", "qorpera_list_company_paths_v2", { path: "", after: null, snapshotId: null, limit: 10 }],
+		[
+			"company_write",
+			"qorpera_check_company_path_mutation",
+			{ path: "private.txt", text: "never staged", operationKey: "denied", expectedVersion: null },
+		],
+	] as const)("reports initial %s admission refusal as denied without effects or replay", async (tool, rpc, args) => {
+		const f = fixture();
+		f.overrides.set(rpc, async () => {
+			throw new CloudCompanyPathRpcRefusal();
+		});
+		const response = await f.boundary.invoke("denied_call", "qorpera", tool, args);
+		expect(JSON.parse(response.contentItems[0].text)).toMatchObject({
+			status: "denied",
+			content: { text: "COMPANY_FILE_ACCESS_DENIED" },
+		});
+		expect(await f.boundary.invoke("denied_call", "qorpera", tool, args)).toEqual(response);
+		expect(f.call.mock.calls.filter(([method]) => method === rpc)).toHaveLength(1);
+		expect(f.transport.put).not.toHaveBeenCalled();
+		expect(f.transport.get).not.toHaveBeenCalled();
+		expect(f.receipts.size).toBe(0);
+	});
+	it.each([
+		"qorpera_verify_company_path_file",
+		"qorpera_prepare_company_path_mutation",
+		"qorpera_commit_company_path_mutation",
+	] as const)("retains ambiguity for a transaction denial at %s after staging", async (rpc) => {
+		const f = fixture();
+		f.overrides.set(rpc, async () => {
+			throw new CloudCompanyPathRpcRefusal();
+		});
+		const args = { path: "a.txt", text: "staged", operationKey: "staged", expectedVersion: null };
+		const result = await f.boundary.invoke("staged_call", "qorpera", "company_write", args);
+		expect(JSON.parse(result.contentItems[0].text).status).toBe("unconfirmed");
+		expect(f.transport.put).toHaveBeenCalled();
+		expect(f.call.mock.calls.filter(([method]) => method === rpc)).toHaveLength(1);
+		expect(await f.boundary.invoke("staged_call", "qorpera", "company_write", args)).toEqual(result);
+		expect(f.call.mock.calls.filter(([method]) => method === rpc)).toHaveLength(1);
+	});
+	it("keeps a lost commit response unconfirmed even though the canonical effect happened", async () => {
+		const f = fixture();
+		f.overrides.set("qorpera_commit_company_path_mutation", async (args) => {
+			await f.defaultCall("qorpera_commit_company_path_mutation", args);
+			throw new Error("PRIVATE_NETWORK_403_42501");
+		});
+		const args = { path: "a.txt", text: "committed", operationKey: "committed", expectedVersion: null };
+		const result = await f.boundary.invoke("lost_commit", "qorpera", "company_write", args);
+		expect(JSON.parse(result.contentItems[0].text)).toMatchObject({
+			status: "unconfirmed",
+			content: { text: "TOOL_OUTCOME_UNCONFIRMED" },
+		});
+		expect(f.receipts.size).toBe(1);
+		expect(await f.boundary.invoke("lost_commit", "qorpera", "company_write", args)).toEqual(result);
+		expect(f.call.mock.calls.filter(([method]) => method === "qorpera_commit_company_path_mutation")).toHaveLength(1);
+	});
+
 	it("includes scoped presence inside the confirmed read envelope without changing canonical bytes", async () => {
 		const observe = vi.fn<CloudCompanyPathPresence["observe"]>(async (path) => ({
 			schema: "qorpera.company-path-presence-view/v1",

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {testRuntimeScreenOutboxOrder} from './test-runtime-screen-outbox-order-cases.mjs';
 import {randomUUID} from 'node:crypto';
 
 // Model PostgREST's JSON request -> typed SQL argument conversion. In
@@ -8,7 +9,7 @@ const rpcSql=args=>`select public.qorpera_record_runtime_screen_event(a.p_startu
 
 // Called after the real provider/startup SQL activation. Desired screen power
 // and readiness/reaping measurements are fixtures; no Linux display is claimed.
-export async function testRuntimeScreenLifecycle({startup,service,literal,execute,race,restartDatabase,CompanyComputerScreenLifecyclePublisher,retainOpen=false}) {
+export async function testRuntimeScreenLifecycle({startup,service,literal,execute,race,restartDatabase,CompanyComputerScreenLifecyclePublisher,CompanyComputerScreenOutbox,retainOpen=false}) {
  const conversion=JSON.parse(execute(`select jsonb_build_object('jsonArgumentIsSqlNull',j.p_privacy is null,
   'jsonbArgumentIsSqlNull',b.p_privacy is null,'nestedPrivacyIsJsonNull',j.p_event->'privacy'='null'::jsonb)
   from json_to_record('{"p_privacy":null,"p_event":{"privacy":null}}') j(p_privacy jsonb,p_event jsonb),
@@ -81,6 +82,7 @@ export async function testRuntimeScreenLifecycle({startup,service,literal,execut
   await restartDatabase();assert.deepEqual(history(),before);assert.deepEqual(JSON.parse(execute(command(closed))),closedReceipt);
   assert.deepEqual(producerHistory(),produced);
   assert.deepEqual(JSON.parse(execute(`${service} select public.qorpera_runtime_screen_history('${life.lifetimeId}',(${literal(usage.from)}#>>'{}')::timestamptz,(${literal(usage.until)}#>>'{}')::timestamptz);`)),usage);
+  await testRuntimeScreenOutboxOrder({startup,binding,service,execute,rpcSql,CompanyComputerScreenOutbox});
   let openLifetimeId=null;
   if(retainOpen){const interrupted=producer.create(binding,null);await interrupted.requested(signal);await interrupted.ready(signal);openLifetimeId=interrupted.lifetimeId;}
   console.log('SCREEN_LIFECYCLE_SQL_PROOF='+JSON.stringify({schema:'qorpera.runtime-screen-lifecycle-sql-proof/v3',actualSql:true,actualAdmittedActivation:true,concurrentReplayOnce:true,lostReplyPreservesReceipt:true,historySurvivesRestart:true,events:8,typescriptPublisherIntegrated:true,usageSurvivesRestart:true,paginatedDiscovery:true,physicalDesktop:'fixture',physicalGuestHooksExercised:false}));
