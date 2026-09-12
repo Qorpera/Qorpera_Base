@@ -385,7 +385,7 @@ it("renders recorded responsibility targets and room links without inventing mis
 	expect(rail.querySelector('[aria-label="Pinned agents"], [data-toggle-rail]')).toBeNull();
 	expect(rail.querySelector(".account-menu-rail .account-trigger")).not.toBeNull();
 	expect(rail.querySelector(".account-menu-rail .account-chevron")).toBeNull();
-	expect(rail.querySelector('.rail-toolbar input[type="search"]')).not.toBeNull();
+	expect(rail.querySelector('.rail-toolbar + .rail-search input[type="search"]')).not.toBeNull();
 	expect(rail.querySelector('.rail-toolbar a[href$="/new"]')).not.toBeNull();
 	const search = rail.querySelector<HTMLInputElement>('input[type="search"]')!;
 	search.value = "Product quality";
