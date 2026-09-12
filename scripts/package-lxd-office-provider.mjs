@@ -16,6 +16,7 @@ for (const [entry, file] of [
 	["lxd-office-provider-cli.ts", "qorpera-office-provider.cjs"],
 	["lxd-office-host-namespace-cli.ts", "qorpera-office-host-namespace.cjs"],
 	["lxd-office-installation-cli.ts", "qorpera-office-provider-install.cjs"],
+	["lxd-office-software-update-cli.ts", "qorpera-office-software-update.cjs"],
 ]) {
 	await build({ entryPoints: [`packages/runner-orchestrator/src/${entry}`], outfile: resolve(output, file), bundle: true, platform: "node", format: "cjs", target: "node22.19", legalComments: "none", logLevel: "silent" });
 	const bytes = await readFile(resolve(output, file));

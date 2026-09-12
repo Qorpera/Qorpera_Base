@@ -16,7 +16,7 @@ test("packages a standalone office provider without runtime, desktop or browser 
 		const file = join(root, "qorpera-office-provider.cjs"), bytes = await readFile(file);
 		const manifest = JSON.parse(await readFile(join(root, "manifest.json"), "utf8"));
 		const artifacts = [];
-		for (const file of ["qorpera-office-provider.cjs", "qorpera-office-host-namespace.cjs", "qorpera-office-provider-install.cjs", "qorpera-office-provider.service.in", "qorpera-office-host-namespace.service"]) {
+		for (const file of ["qorpera-office-provider.cjs", "qorpera-office-host-namespace.cjs", "qorpera-office-provider-install.cjs", "qorpera-office-software-update.cjs", "qorpera-office-provider.service.in", "qorpera-office-host-namespace.service"]) {
 			const bytes = await readFile(join(root, file));
 			artifacts.push({ file, bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
 		}
@@ -26,6 +26,13 @@ test("packages a standalone office provider without runtime, desktop or browser 
 		const helperArguments = spawnSync(process.execPath, [join(root, "qorpera-office-host-namespace.cjs"), "--unexpected"], { cwd: tmpdir(), encoding: "utf8", timeout: 10000 });
 		assert.equal(helperArguments.status, 2); assert.equal(helperArguments.stderr, "OFFICE_HOST_NAMESPACE_ARGUMENTS_INVALID\n");
 		for (const source of ["packages/runtime/", "packages/shell/", "packages/cloud-client/"]) assert(!bytes.includes(source));
+		const update = join(root, "qorpera-office-software-update.cjs");
+		const updateArguments = spawnSync(process.execPath, ["--jitless", "--disable-proto=throw", "--disallow-code-generation-from-strings", update, "--config", "relative", "begin"], { cwd: tmpdir(), encoding: "utf8", timeout: 10000 });
+		assert.equal(updateArguments.status, 2); assert.equal(updateArguments.stderr, "OFFICE_SOFTWARE_UPDATE_ARGUMENTS_INVALID\n");
+		const updateHelp = spawnSync(process.execPath, ["--jitless", "--disable-proto=throw", "--disallow-code-generation-from-strings", update, "--help"], { cwd: tmpdir(), encoding: "utf8", timeout: 10000 });
+		assert.equal(updateHelp.status, 0, updateHelp.stderr); assert.match(updateHelp.stdout, /journal flock/);
+		const updateMissing = spawnSync(process.execPath, [update, "--config", join(root, "missing.json"), "status"], { cwd: tmpdir(), encoding: "utf8", timeout: 10000 });
+		assert.equal(updateMissing.status, 1); assert.equal(updateMissing.stderr, "OFFICE_SOFTWARE_UPDATE_CONFIG_INVALID\n");
 		const help = spawnSync(process.execPath, ["--jitless", "--disable-proto=throw", "--disallow-code-generation-from-strings", file, "--help"], { cwd: tmpdir(), encoding: "utf8", timeout: 10000 });
 		assert.equal(help.status, 0, help.stderr); assert.match(help.stdout, /process-owned journal flock/);
 		const invalid = spawnSync(process.execPath, [file, "--config", "relative"], { cwd: tmpdir(), encoding: "utf8", timeout: 10000 });
