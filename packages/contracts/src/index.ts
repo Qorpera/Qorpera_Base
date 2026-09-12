@@ -57,10 +57,10 @@ export * from "./company-computer-activation.ts";
 export * from "./company-computer-boot-intent.ts";
 export * from "./company-computer-boot-successor.ts";
 export * from "./company-computer-lifecycle.ts";
+export * from "./company-computer-reset-custody.ts";
 export * from "./company-computer-service-restart.ts";
 export * from "./company-computer-service-start.ts";
 export * from "./company-computer-service-stop.ts";
 export * from "./company-computer-service-successor.ts";
 export * from "./company-computer-stop-acknowledgement.ts";
-
 export * from "./company-computer-stop-history.ts";
