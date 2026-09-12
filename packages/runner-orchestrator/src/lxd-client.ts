@@ -6,6 +6,7 @@ import {
 	COMPANY_COMPUTER_BOOT_CONFIGURATION_MAX_BYTES,
 	COMPANY_COMPUTER_BOOT_SERVICE_RESTART_MAX_BYTES,
 	COMPANY_COMPUTER_BOOT_SERVICE_START_MAX_BYTES,
+	COMPANY_COMPUTER_CODE_PACKAGE_ARTIFACTS,
 	COMPANY_COMPUTER_CONFIGURATION_MAX_BYTES,
 	COMPANY_COMPUTER_PREPARATION_MAX_BYTES,
 	COMPANY_COMPUTER_RESET_CONFIGURATION_MAX_BYTES,
@@ -17,6 +18,8 @@ import {
 	type CompanyComputerPreparationCommand,
 	parseCompanyComputerPreparationCommand,
 } from "@qorpera/contracts";
+
+import { OFFICE_CODE_PACKAGE_LOADER, officeCodePackageStage } from "./lxd-office-code-package-loader.ts";
 
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_INSTANCE_FILE_BYTES = 256 * 1024;
@@ -518,6 +521,126 @@ export interface LxdOfficeSoftwareClient extends LxdOfficeInspectableClient {
  * Listing/reads are confined to the private diagnostic outbox and public root
  * history; pushes are confined to the restore allowlist and carry explicit
  * ownership/mode. Nothing here starts, configures or activates a guest. */
+
+export interface LxdOfficeCodePackageClient {
+	discoverOfficeCodePackage(project: string, name: string, signal: AbortSignal): Promise<string | undefined>;
+	pushOfficeCodePackageDirectory(
+		project: string,
+		name: string,
+		provisionId: string,
+		directory: "root" | "artifacts",
+		signal: AbortSignal,
+	): Promise<void>;
+	pushOfficeCodePackageFile(
+		project: string,
+		name: string,
+		provisionId: string,
+		file: string,
+		content: Buffer,
+		signal: AbortSignal,
+	): Promise<void>;
+	readOfficeCodePackageFile(
+		project: string,
+		name: string,
+		provisionId: string,
+		file: string,
+		maximumBytes: number,
+		signal: AbortSignal,
+	): Promise<LxdInstanceFile>;
+	readOfficeCodePackageReceipt(
+		project: string,
+		name: string,
+		provisionId: string,
+		file: "claim" | "installed",
+		signal: AbortSignal,
+	): Promise<LxdInstanceFile>;
+	submitOfficeCodePackageTool(
+		project: string,
+		name: string,
+		provisionId: string,
+		purpose: "bootstrap" | "measure",
+		pin: { bytes: number; sha256: string },
+		args: readonly string[],
+		signal: AbortSignal,
+	): Promise<LxdOperationReference>;
+	inspectOfficeCodePackageTool(reference: LxdOperationReference, signal: AbortSignal): Promise<LxdOperationState>;
+}
+const CODE_PACKAGE_UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+function officeCodePackageMaximum(file: string, write: boolean): number {
+	if (file === "packet.json") return 4 * 1024 ** 2;
+	if (file === "original-preparation.json") return COMPANY_COMPUTER_PREPARATION_MAX_BYTES;
+	if (file === "trust.json") return 4096;
+	if (["base-manifest.json", "target-manifest.json", "base-installation.json"].includes(file)) return 1024 ** 2;
+	if (file === "base-mount-template") return 65536;
+	if (["bootstrap.cjs", "measure.cjs"].includes(file)) return 16 * 1024 ** 2;
+	if (COMPANY_COMPUTER_CODE_PACKAGE_ARTIFACTS.some((name) => file === `artifacts/${name}`)) return 32 * 1024 ** 2;
+	if (new RegExp(`^challenge-${CODE_PACKAGE_UUID}\\.json$`).test(file)) return 65536;
+	if (!write && new RegExp(`^(?:preflight|probe|observation|invocation)-${CODE_PACKAGE_UUID}\\.json$`).test(file))
+		return 65536;
+	throw new Error("code package path");
+}
+function officeCodePackageReadMaximum(path: string): number | undefined {
+	const match = new RegExp(`^/run/qorpera-office-preparation/code-package-${CODE_PACKAGE_UUID}/(.+)$`).exec(path);
+	if (match) return officeCodePackageMaximum(match[1], false);
+	return undefined;
+}
+function officeCodePackageArgs(
+	provisionId: string,
+	purpose: "bootstrap" | "measure",
+	pin: { bytes: number; sha256: string },
+	args: readonly string[],
+): string[] {
+	officeCodePackageStage(provisionId);
+	if (
+		!Number.isSafeInteger(pin.bytes) ||
+		pin.bytes < 1 ||
+		pin.bytes > 16 * 1024 ** 2 ||
+		!/^[0-9a-f]{64}$/.test(pin.sha256) ||
+		!Array.isArray(args) ||
+		!args.every((a) => typeof a === "string")
+	)
+		throw new Error("code package tool");
+	const sha = (s: string) => /^[0-9a-f]{64}$/.test(s),
+		uuid = (s: string) => new RegExp(`^${CODE_PACKAGE_UUID}$`).test(s),
+		duration = (s: string) => /^[1-9][0-9]{0,3}$/.test(s) && Number(s) <= 5000;
+	const valid =
+		purpose === "bootstrap"
+			? (args.length === 4 && args[0] === "preflight" && sha(args[1]) && sha(args[2]) && uuid(args[3])) ||
+				(args.length === 6 &&
+					args[0] === "install" &&
+					sha(args[1]) &&
+					sha(args[2]) &&
+					uuid(args[3]) &&
+					uuid(args[4]) &&
+					duration(args[5]))
+			: purpose === "measure" &&
+				((args.length === 5 &&
+					args[0] === "probe" &&
+					sha(args[1]) &&
+					sha(args[2]) &&
+					uuid(args[3]) &&
+					uuid(args[4])) ||
+					(args.length === 7 &&
+						["observation", "invocation"].includes(args[0]) &&
+						sha(args[1]) &&
+						sha(args[2]) &&
+						uuid(args[3]) &&
+						uuid(args[4]) &&
+						duration(args[5]) &&
+						sha(args[6])));
+	if (!valid) throw new Error("code package arguments");
+	return [
+		"/usr/bin/node",
+		"-e",
+		OFFICE_CODE_PACKAGE_LOADER,
+		purpose,
+		provisionId,
+		pin.sha256,
+		String(pin.bytes),
+		...args,
+	];
+}
+
 export interface LxdOfficeResetClient extends LxdOfficeInspectableClient {
 	listOfficeResetDirectory(project: string, name: string, path: string, signal: AbortSignal): Promise<string[]>;
 	readOfficeResetFile(
@@ -770,7 +893,7 @@ const officeControlMaximum = (purpose: OfficeControlPurpose) =>
 										: purpose === "service-stop"
 											? COMPANY_COMPUTER_SERVICE_STOP_MAX_BYTES
 											: COMPANY_COMPUTER_SERVICE_RESTART_MAX_BYTES;
-const officeControlError = (purpose: OfficeControlPurpose | "software", operation: string) =>
+const officeControlError = (purpose: OfficeControlPurpose | "software" | "code_package", operation: string) =>
 	new Error(`LXD_OFFICE_${purpose.replaceAll("-", "_").toUpperCase()}_${operation}_UNCONFIRMED`);
 
 export type LxdOfficePreparationCommand = CompanyComputerPreparationCommand;
@@ -877,6 +1000,7 @@ function trackedOperation(value: unknown, reference: LxdOperationReference): Lxd
 }
 
 interface HttpResult {
+	headers?: import("node:http").IncomingHttpHeaders;
 	status: number;
 	body: unknown;
 }
@@ -1596,7 +1720,7 @@ export class LxdUnixClient
 		name: string,
 		argv: readonly string[],
 		signal: AbortSignal,
-		purpose: OfficeControlPurpose | "software",
+		purpose: OfficeControlPurpose | "software" | "code_package",
 	): Promise<LxdOperationReference> {
 		try {
 			if (![project, name].every((value) => INSTANCE_NAME.test(value))) throw new Error("invalid scope");
@@ -1817,6 +1941,193 @@ export class LxdUnixClient
 			throw new Error("LXD_OFFICE_RESET_READBACK_UNCONFIRMED");
 		}
 	}
+
+	async pushOfficeCodePackageDirectory(
+		project: string,
+		name: string,
+		provisionId: string,
+		directory: "root" | "artifacts",
+		signal: AbortSignal,
+	) {
+		if (!["root", "artifacts"].includes(directory)) throw officeControlError("code_package", "UPLOAD");
+		return this.#pushOfficeCodePackage(
+			project,
+			name,
+			officeCodePackageStage(provisionId) + (directory === "artifacts" ? "/artifacts" : ""),
+			undefined,
+			signal,
+		);
+	}
+	async pushOfficeCodePackageFile(
+		project: string,
+		name: string,
+		provisionId: string,
+		file: string,
+		content: Buffer,
+		signal: AbortSignal,
+	) {
+		try {
+			const maximum = officeCodePackageMaximum(file, true);
+			if (!Buffer.isBuffer(content) || content.length < 1 || content.length > maximum) throw new Error("size");
+			return await this.#pushOfficeCodePackage(
+				project,
+				name,
+				`${officeCodePackageStage(provisionId)}/${file}`,
+				content,
+				signal,
+			);
+		} catch {
+			throw officeControlError("code_package", "UPLOAD");
+		}
+	}
+	async #pushOfficeCodePackage(
+		project: string,
+		name: string,
+		path: string,
+		content: Buffer | undefined,
+		signal: AbortSignal,
+	) {
+		let payload: Buffer | undefined;
+		try {
+			if (![project, name].every((value) => INSTANCE_NAME.test(value))) throw new Error("scope");
+			payload = content === undefined ? Buffer.alloc(0) : Buffer.from(content);
+			const checked = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
+			checked.throwIfAborted();
+			const result = await this.#requestPayload(
+				"POST",
+				projectPath(`/1.0/instances/${encodeURIComponent(name)}/files?path=${encodeURIComponent(path)}`, project),
+				payload,
+				{
+					"content-type": "application/octet-stream",
+					"x-lxd-type": content === undefined ? "directory" : "file",
+					"x-lxd-uid": "0",
+					"x-lxd-gid": "0",
+					"x-lxd-mode": content === undefined ? "0700" : "0400",
+					"x-lxd-modify-perm": "uid,gid,mode",
+				},
+				checked,
+			);
+			checked.throwIfAborted();
+			const envelope = record(result.body, "LXD code package staging response");
+			if (
+				result.status !== 200 ||
+				envelope.type !== "sync" ||
+				envelope.status_code !== 200 ||
+				(envelope.status !== undefined && envelope.status !== "Success") ||
+				(envelope.error_code !== undefined && envelope.error_code !== 0) ||
+				(envelope.error !== undefined && envelope.error !== "")
+			)
+				throw new Error("upload");
+		} catch {
+			throw officeControlError("code_package", "UPLOAD");
+		} finally {
+			payload?.fill(0);
+		}
+	}
+	async readOfficeCodePackageFile(
+		project: string,
+		name: string,
+		provisionId: string,
+		file: string,
+		maximumBytes: number,
+		signal: AbortSignal,
+	) {
+		try {
+			const maximum = officeCodePackageMaximum(file, false);
+			if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > maximum) throw new Error("size");
+			return await this.#readInstanceFile(
+				project,
+				name,
+				`${officeCodePackageStage(provisionId)}/${file}`,
+				maximumBytes,
+				signal,
+			);
+		} catch {
+			throw officeControlError("code_package", "READBACK");
+		}
+	}
+	async discoverOfficeCodePackage(project: string, name: string, signal: AbortSignal): Promise<string | undefined> {
+		try {
+			if (![project, name].every((v) => INSTANCE_NAME.test(v))) throw new Error("identity");
+			const checked = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
+			const result = await this.#requestPayload(
+				"GET",
+				projectPath(
+					`/1.0/instances/${encodeURIComponent(name)}/files?path=${encodeURIComponent("/etc/qorpera-office/code-packages")}`,
+					project,
+				),
+				undefined,
+				undefined,
+				checked,
+				4096,
+			);
+			checked.throwIfAborted();
+			const envelope = record(result.body, "package directory");
+			if (result.status === 404 && envelope.type === "error" && envelope.error_code === 404) return undefined;
+			if (
+				result.status !== 200 ||
+				envelope.type !== "sync" ||
+				envelope.status_code !== 200 ||
+				result.headers?.["x-lxd-type"] !== "directory" ||
+				result.headers?.["x-lxd-uid"] !== "0" ||
+				result.headers?.["x-lxd-gid"] !== "0" ||
+				!["0700", "448"].includes(String(result.headers?.["x-lxd-mode"]))
+			)
+				throw new Error("custody");
+			if (
+				!Array.isArray(envelope.metadata) ||
+				envelope.metadata.length !== 1 ||
+				typeof envelope.metadata[0] !== "string" ||
+				!OPERATION_UUID.test(envelope.metadata[0])
+			)
+				throw new Error("ambiguous");
+			return envelope.metadata[0];
+		} catch {
+			throw officeControlError("code_package", "READBACK");
+		}
+	}
+
+	async readOfficeCodePackageReceipt(
+		project: string,
+		name: string,
+		provisionId: string,
+		file: "claim" | "installed",
+		signal: AbortSignal,
+	) {
+		try {
+			officeCodePackageStage(provisionId);
+			if (!["claim", "installed"].includes(file)) throw new Error("file");
+			return await this.#readInstanceFile(
+				project,
+				name,
+				`/etc/qorpera-office/code-packages/${provisionId}/${file}.json`,
+				65536,
+				signal,
+			);
+		} catch {
+			throw officeControlError("code_package", "READBACK");
+		}
+	}
+	async submitOfficeCodePackageTool(
+		project: string,
+		name: string,
+		provisionId: string,
+		purpose: "bootstrap" | "measure",
+		pin: { bytes: number; sha256: string },
+		args: readonly string[],
+		signal: AbortSignal,
+	) {
+		let command: string[];
+		try {
+			command = officeCodePackageArgs(provisionId, purpose, pin, args);
+		} catch {
+			throw officeControlError("code_package", "SUBMISSION");
+		}
+		return this.#submitOfficeExec(project, name, command, signal, "code_package");
+	}
+	async inspectOfficeCodePackageTool(reference: LxdOperationReference, signal: AbortSignal) {
+		return this.#inspectOfficeControl(reference, signal, "code_package");
+	}
 	async pushOfficeResetDirectory(
 		project: string,
 		name: string,
@@ -1911,7 +2222,7 @@ export class LxdUnixClient
 	async #inspectOfficeControl(
 		reference: LxdOperationReference,
 		signal: AbortSignal,
-		purpose: OfficeControlPurpose | "software",
+		purpose: OfficeControlPurpose | "software" | "code_package",
 	): Promise<LxdOperationState> {
 		try {
 			if (
@@ -2418,10 +2729,11 @@ export class LxdUnixClient
 				!Number.isSafeInteger(maximumBytes) ||
 				maximumBytes < 1 ||
 				maximumBytes >
-					(path.startsWith("/run/qorpera-office-preparation/reset-configuration-incoming-") &&
-					/^\/run\/qorpera-office-preparation\/reset-configuration-incoming-[0-9a-f]{64}\.json$/.test(path)
-						? COMPANY_COMPUTER_RESET_CONFIGURATION_MAX_BYTES
-						: COMPANY_COMPUTER_PREPARATION_MAX_BYTES)
+					(officeCodePackageReadMaximum(path) ??
+						(path.startsWith("/run/qorpera-office-preparation/reset-configuration-incoming-") &&
+						/^\/run\/qorpera-office-preparation\/reset-configuration-incoming-[0-9a-f]{64}\.json$/.test(path)
+							? COMPANY_COMPUTER_RESET_CONFIGURATION_MAX_BYTES
+							: COMPANY_COMPUTER_PREPARATION_MAX_BYTES))
 			)
 				throw new Error("invalid request");
 			const checked = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(5000)]);
@@ -2620,6 +2932,7 @@ export class LxdUnixClient
 							const text = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
 							resolve({
 								status: response.statusCode ?? 500,
+								headers: response.headers,
 								body: format === "text" ? text : text ? (JSON.parse(text) as unknown) : null,
 							});
 						} catch (error) {
