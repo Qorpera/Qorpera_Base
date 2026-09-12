@@ -102,6 +102,23 @@ describe("company execution controls", () => {
 		);
 	});
 
+	it("accepts the SQL Unicode character limit without truncating emoji or dispatching oversized reasons", async () => {
+		const f = setup();
+		await settle();
+		const reason = "😀".repeat(1024);
+		expect(document.querySelector<HTMLInputElement>('[aria-label="Company pause or resume reason"]')!.maxLength).toBe(
+			2048,
+		);
+		input("Company pause or resume reason", reason + "x");
+		click("Pause company execution");
+		await settle();
+		expect(f.setPause).not.toHaveBeenCalled();
+		input("Company pause or resume reason", reason);
+		click("Pause company execution");
+		await settle();
+		expect(f.setPause).toHaveBeenCalledExactlyOnceWith(true, reason, expect.any(AbortSignal));
+	});
+
 	it("blocks uncertain mutation replay until an explicit refresh observes a new version", async () => {
 		const f = setup();
 		await settle();

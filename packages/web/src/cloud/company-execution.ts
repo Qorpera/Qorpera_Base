@@ -116,7 +116,8 @@ function date(value: unknown): string {
 }
 function reason(value: unknown): string | null {
 	if (value === null) return null;
-	if (typeof value !== "string" || value.length < 1 || value.length > 1024) throw invalid();
+	// PostgreSQL char_length counts Unicode code points, not UTF-16 code units.
+	if (typeof value !== "string" || value.length < 1 || [...value].length > 1024) throw invalid();
 	return value;
 }
 function state(value: unknown, profileId: string): CompanyExecutionState {
