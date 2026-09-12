@@ -1,5 +1,6 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
+import { createWebCompanyExecution } from "../../cloud/company-execution.ts";
 import { createWebNativeSubscription } from "../../cloud/native-subscription.ts";
 import type { HostedCompanyFile, HostedFriend, HostedProfile } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
@@ -8,6 +9,7 @@ import { uiText } from "../../ui/preferences.ts";
 import type { AuthController } from "../auth.ts";
 import { CompanyController } from "../company.ts";
 import { type AccountViewState, renderAccount } from "./account.ts";
+import { CompanyExecutionView } from "./company-execution.ts";
 import { ConnectionsView } from "./settings-connections.ts";
 import { PolicyView } from "./settings-policy.ts";
 import { renderTeam } from "./team.ts";
@@ -18,7 +20,12 @@ const TABS = [
 		label: "General",
 		keywords: "account plan billing companies appearance theme language region",
 	},
-	{ id: "company", label: "Company", keywords: "people team members invitations staff file organization approvals" },
+	{
+		id: "company",
+		label: "Company",
+		keywords:
+			"people team members invitations staff file organization approvals execution pause resume ceilings limits",
+	},
 	{
 		id: "connections",
 		label: "Connections",
@@ -50,6 +57,7 @@ export class SettingsView {
 	#unsubscribe: (() => void) | undefined;
 	#companyLifetime = new AbortController();
 	#connections: ConnectionsView | undefined;
+	#execution: CompanyExecutionView | undefined;
 	#policy: PolicyView | undefined;
 	#friends: HostedFriend[] | undefined;
 	#feedback: { message?: string; error?: string } = {};
@@ -207,6 +215,7 @@ export class SettingsView {
 		this.#companyLifetime.abort();
 		this.#unsubscribe?.();
 		this.#connections?.dispose();
+		this.#execution?.dispose();
 		this.#policy?.dispose();
 		if (this.#ownsCompany) this.#company?.stop();
 		this.el.remove();
@@ -301,6 +310,8 @@ export class SettingsView {
 		this.#unsubscribe?.();
 		this.#connections?.dispose();
 		this.#connections = undefined;
+		this.#execution?.dispose();
+		this.#execution = undefined;
 		this.#policy?.dispose();
 		this.#policy = undefined;
 		if (this.#ownsCompany) this.#company?.stop();
@@ -347,6 +358,7 @@ export class SettingsView {
 					h("div", { class: "settings-staff" }),
 				),
 				h("div", { class: "settings-file" }),
+				h("div", { class: "settings-execution" }),
 				...(
 					[
 						["organization", "Organization", "Responsibilities, projects and staff"],
@@ -362,6 +374,35 @@ export class SettingsView {
 				),
 			);
 		}
+		if (this.#tab === "company" && !this.#execution && company.store.get().team?.capabilities.read) {
+			const memberId = this.#auth.userId!;
+			const signal = AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]);
+			this.#execution = new CompanyExecutionView(
+				createWebCompanyExecution(this.#api.cloud, company.profile.profileId, memberId, signal, () => {
+					signal.throwIfAborted();
+					if (
+						this.#auth.userId !== memberId ||
+						this.#company !== company ||
+						company.store.get().accessLost ||
+						!company.store.get().team?.capabilities.read
+					)
+						throw new Error("The account or company changed.");
+				}),
+				signal,
+				() => {
+					const state = company.store.get();
+					return (
+						!signal.aborted &&
+						this.#auth.userId === memberId &&
+						this.#company === company &&
+						!state.accessLost &&
+						(state.team?.role === "owner" || state.team?.role === "admin")
+					);
+				},
+			);
+			panel.querySelector(".settings-execution")!.append(this.#execution.el);
+		}
+		this.#execution?.update();
 		const staffList = panel.querySelector<HTMLElement>(".settings-staff")!;
 		const staffFocus = staffList.contains(document.activeElement)
 			? document.activeElement?.closest("a")?.getAttribute("href")

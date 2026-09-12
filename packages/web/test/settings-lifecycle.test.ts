@@ -497,7 +497,13 @@ describe("settings session lifecycle", () => {
 	);
 	it("keeps policy previews local while Connections only reads member account state", async () => {
 		const f = await setup(realtimeFixture());
-		const fetch = vi.fn(async () => Response.json({ compute_identity: null, connections: [] }));
+		const connectionsUrl = "https://fixture.invalid/rest/v1/rpc/qorpera_list_member_native_execution_connections";
+		const notificationsUrl = "https://fixture.invalid/rest/v1/rpc/qorpera_list_member_notifications";
+		const fetch = vi.fn(async (input: string | URL | Request, _init?: RequestInit) => {
+			if (String(input) === connectionsUrl) return Response.json({ compute_identity: null, connections: [] });
+			if (String(input) === notificationsUrl) return Response.json([]);
+			throw new Error("Unexpected request in the settings read-only fixture");
+		});
 		vi.stubGlobal("fetch", fetch);
 		open(f.root);
 		click(f.root, "#settings-tab-policy");
@@ -525,9 +531,11 @@ describe("settings session lifecycle", () => {
 		click(f.root, "#settings-tab-policy");
 		expect(f.root.querySelector<HTMLSelectElement>('select[aria-label="Spending"]')!.value).toBe("ask");
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
-		expect(fetch).toHaveBeenCalledExactlyOnceWith(
-			"https://fixture.invalid/rest/v1/rpc/qorpera_list_member_native_execution_connections",
-			expect.objectContaining({ method: "POST" }),
-		);
+		const connectionReads = fetch.mock.calls.filter(([url]) => String(url) === connectionsUrl);
+		expect(connectionReads).toEqual([[connectionsUrl, expect.objectContaining({ method: "POST" })]]);
+		expect(fetch.mock.calls.some(([url]) => String(url) === notificationsUrl)).toBe(true);
+		expect(
+			fetch.mock.calls.every(([url]) => String(url) === connectionsUrl || String(url) === notificationsUrl),
+		).toBe(true);
 	});
 });
