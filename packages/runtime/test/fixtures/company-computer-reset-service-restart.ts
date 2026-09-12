@@ -18,8 +18,8 @@ import {
 } from "./company-computer-boot-configuration.ts";
 import { resetInvocationFixture } from "./company-computer-reset-invocation.ts";
 
-function resetServiceStopFixture() {
-	const f = resetInvocationFixture();
+function resetServiceStopFixture(options: Parameters<typeof resetInvocationFixture>[0] = {}) {
+	const f = resetInvocationFixture(options);
 	const stopRequest = parseCompanyComputerServiceStopRequest({
 		schema: "qorpera.office-service-stop-request/v1",
 		startCompletionSha256: hash(encode(f.start)),
@@ -49,7 +49,7 @@ function resetServiceStopFixture() {
 		startCommand: f.command,
 		stopRequest,
 		stopCommand: { commandId: id(802), bootId: f.bootId, requestSha256: hash(encode(stopRequest)) },
-		receipt: JSON.parse(f.files.get(f.paths.receipt)!.bytes.toString()),
+		receipt: f.receipt,
 	};
 }
 
@@ -181,7 +181,7 @@ export function appendResetServiceRestartFixture(
 		inspection,
 	};
 }
-export function resetServiceRestartFixture() {
-	const f = resetServiceStopFixture();
+export function resetServiceRestartFixture(options: Parameters<typeof resetInvocationFixture>[0] = {}) {
+	const f = resetServiceStopFixture(options);
 	return { ...f, restart: appendResetServiceRestartFixture(f) };
 }

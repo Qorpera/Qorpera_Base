@@ -6,6 +6,7 @@ import { isDeepStrictEqual } from "node:util";
 import {
 	COMPANY_COMPUTER_ADOPTION_RECEIPT_PATH,
 	COMPANY_COMPUTER_PREPARATION_MAX_BYTES,
+	COMPANY_COMPUTER_RESET_CONFIGURATION_MAX_BYTES,
 	type CompanyComputerPreparationCommand,
 	companyComputerPreparationAdoptionReceipt,
 	parseCompanyComputerPreparationCommand,
@@ -70,7 +71,12 @@ export async function readCompanyComputerPreparationProtected(
 	limit: number,
 	mode?: number,
 ): Promise<Buffer> {
-	if (!Number.isSafeInteger(limit) || limit < 0 || limit > COMPANY_COMPUTER_PREPARATION_MAX_BYTES)
+	// A reset packet wraps the original preparation as an escaped JSON string.
+	// Only its fixed incoming path receives that separately bounded larger cap.
+	const maximum = /^\/run\/qorpera-office-preparation\/reset-configuration-incoming-[a-f0-9]{64}\.json$/.test(path)
+		? COMPANY_COMPUTER_RESET_CONFIGURATION_MAX_BYTES
+		: COMPANY_COMPUTER_PREPARATION_MAX_BYTES;
+	if (!Number.isSafeInteger(limit) || limit < 0 || limit > maximum)
 		throw new Error("OFFICE_PREPARATION_CONTROL_READ_LIMIT");
 	await assertCompanyComputerImageArtifact(path);
 	const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
