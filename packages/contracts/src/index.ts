@@ -3,6 +3,7 @@ export * from "./company-computer-boot-adoption.ts";
 export * from "./company-computer-boot-configuration.ts";
 export * from "./company-computer-boot-service-restart.ts";
 export * from "./company-computer-boot-service-start.ts";
+export * from "./company-computer-code-package-provision.ts";
 export * from "./company-computer-configuration.ts";
 export * from "./company-computer-native-endpoint.ts";
 export * from "./company-computer-preparation.ts";
