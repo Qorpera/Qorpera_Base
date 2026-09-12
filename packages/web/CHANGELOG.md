@@ -8,6 +8,7 @@
 
 ### Added
 
+- Add company pause/resume and observed-version execution ceilings through the documented member control plane, plus a member notification inbox with explicit acknowledgement.
 - Submit conversation work through the shared sponsored-turn API with explicit member account selection, exact retry identity, execution history and observed-run stop controls.
 - Discover, enable and revoke existing member model accounts through the shared client SDK, with refresh recovery after uncertain changes.
 - Connect the product web app's Computer panel to shared member runtime discovery, status, explicit start intents and screen viewing.
