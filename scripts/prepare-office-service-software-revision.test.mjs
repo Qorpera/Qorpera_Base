@@ -108,11 +108,20 @@ test("prepares a verifiable service-only revision: previous inventory with only 
 		await writeFile(wrongKey, generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }), { mode: 0o600 });
 		const badKey = run(args({ "--signing-key": wrongKey, "--out": join(temporary, "badkey") }));
 		assert.equal(badKey.status, 1); assert.equal(badKey.stderr, "OFFICE_SOFTWARE_REVISION_KEY_INVALID\n");
+		const encryptedKey = join(temporary, "encrypted.pem");
+		await writeFile(encryptedKey, keys.privateKey.export({ type: "pkcs8", format: "pem", cipher: "aes-256-cbc", passphrase: "fixture-passphrase" }), { mode: 0o600 });
+		const locked = run(args({ "--signing-key": encryptedKey, "--out": join(temporary, "locked") }));
+		assert.equal(locked.status, 1); assert.equal(locked.stderr, "OFFICE_SOFTWARE_REVISION_KEY_INVALID\n");
+		const unlocked = spawnSync(process.execPath, [script, ...args({ "--signing-key": encryptedKey, "--signing-key-passphrase-stdin": "true", "--out": join(temporary, "unlocked") })], { cwd: tmpdir(), encoding: "utf8", timeout: 60000, input: "fixture-passphrase\n" });
+		assert.equal(unlocked.status, 0, unlocked.stderr);
+		assert.equal(JSON.parse(await readFile(join(temporary, "unlocked", "trust.json"), "utf8")).verificationKeySpki, keys.publicKey.export({ type: "spki", format: "der" }).toString("base64"));
+		const wrongPassphrase = spawnSync(process.execPath, [script, ...args({ "--signing-key": encryptedKey, "--signing-key-passphrase-stdin": "true", "--out": join(temporary, "wrongpass") })], { cwd: tmpdir(), encoding: "utf8", timeout: 60000, input: "not-it\n" });
+		assert.equal(wrongPassphrase.status, 1); assert.equal(wrongPassphrase.stderr, "OFFICE_SOFTWARE_REVISION_KEY_INVALID\n");
 		const missing = run(args().slice(2));
 		assert.equal(missing.status, 2); assert.equal(missing.stderr, "OFFICE_SOFTWARE_REVISION_ARGUMENTS_INVALID\n");
 		const help = run(["--help"]);
 		assert.equal(help.status, 0); assert.match(help.stdout, /--signing-key/);
-		for (const name of ["unchanged", "foreign", "badkey"]) await assert.rejects(readdir(join(temporary, name)));
+		for (const name of ["unchanged", "foreign", "badkey", "locked", "wrongpass"]) await assert.rejects(readdir(join(temporary, name)));
 		// The retained stop-worker records are accepted as-is for both inputs.
 		await writeFile(join(temporary, "stop-record.json"), JSON.stringify({ schema: "qorpera.lxd-office-stop-request/v1", request: restart.request.stop, command: acknowledgement.inspection.stop.command }));
 		await writeFile(join(temporary, "completed-record.json"), JSON.stringify({ schema: "qorpera.lxd-office-stop-completion/v1", intentId: "00000000-0000-4000-8000-0000000000aa", allocationId: predecessor.startup.allocationId, transitionId: predecessor.transitionId, commandId: acknowledgement.inspection.stop.command.commandId, receipt: acknowledgement }));

@@ -1,4 +1,5 @@
 import { createHash, createPrivateKey, createPublicKey, randomUUID, sign } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -25,6 +26,7 @@ const FLAGS = {
 	"--predecessor": "predecessor",
 	"--stop-acknowledgement": "stopAcknowledgement",
 	"--signing-key": "signingKey",
+	"--signing-key-passphrase-stdin": "signingKeyPassphraseStdin",
 	"--out": "out",
 	"--acceptance-tested-at": "acceptanceTestedAt",
 };
@@ -48,7 +50,7 @@ const USAGE = `Usage: node scripts/prepare-office-service-software-revision.mjs 
   --repository <https URL> --evidence-sha256 <64 hex> \\
   --predecessor <retained service_restart lifecycle request JSON, or the retained recovery-request / service-stop-request record> \\
   --stop-acknowledgement <retained SQL stop acknowledgement JSON, or the retained service-stop-completed record> \\
-  --signing-key <ed25519 private key PEM, read only> --out <new directory> \\
+  --signing-key <ed25519 private key PEM, read only> [--signing-key-passphrase-stdin true] --out <new directory> \\
   [--acceptance-tested-at <ISO time, default now>] \\
   [--base-source-commit <40 hex> --base-manifest-sha256 <64 hex>   (only for a revision after the first; default: previous)]
 `;
@@ -67,6 +69,7 @@ function parseArguments(argv) {
 	}
 	for (const key of REQUIRED) if (!(key in options)) fail("OFFICE_SOFTWARE_REVISION_ARGUMENTS_INVALID");
 	if (("baseSourceCommit" in options) !== ("baseManifestSha256" in options)) fail("OFFICE_SOFTWARE_REVISION_ARGUMENTS_INVALID");
+	if ("signingKeyPassphraseStdin" in options && options.signingKeyPassphraseStdin !== "true") fail("OFFICE_SOFTWARE_REVISION_ARGUMENTS_INVALID");
 	for (const key of ["previousManifest", "nextService", "predecessor", "stopAcknowledgement", "signingKey", "out"]) options[key] = resolve(options[key]);
 	return options;
 }
@@ -122,10 +125,14 @@ function timestamp(value) {
 	if (!Number.isFinite(time.getTime())) fail("OFFICE_SOFTWARE_REVISION_ARGUMENTS_INVALID");
 	return time.toISOString();
 }
-async function loadSigningKey(path) {
+async function loadSigningKey(path, passphraseStdin) {
 	const pem = await readFile(path);
+	// An encrypted PEM takes its passphrase from stdin only (never argv/env),
+	// matching the image provenance signer's custody convention.
+	const passphrase = passphraseStdin ? readFileSync(0, "utf8").replace(/[\r\n]+$/, "") : undefined;
+	if (passphraseStdin && !passphrase) fail("OFFICE_SOFTWARE_REVISION_KEY_INVALID");
 	try {
-		const privateKey = createPrivateKey({ key: pem, format: "pem" });
+		const privateKey = createPrivateKey(passphrase === undefined ? { key: pem, format: "pem" } : { key: pem, format: "pem", passphrase });
 		if (privateKey.asymmetricKeyType !== "ed25519") fail("OFFICE_SOFTWARE_REVISION_KEY_INVALID");
 		const verificationKeySpki = createPublicKey(privateKey).export({ type: "spki", format: "der" }).toString("base64");
 		return { privateKey, verificationKeySpki };
@@ -206,7 +213,7 @@ async function main(argv) {
 		} catch (error) {
 			fail(error instanceof Error && error.message.startsWith("OFFICE_SOFTWARE_REVISION_") ? error.message : "OFFICE_SOFTWARE_REVISION_INPUT_INVALID");
 		}
-		const { privateKey, verificationKeySpki } = await loadSigningKey(options.signingKey);
+		const { privateKey, verificationKeySpki } = await loadSigningKey(options.signingKey, options.signingKeyPassphraseStdin === "true");
 		const envelope = {
 			schema: "qorpera.office-service-software-envelope/v1",
 			statement,
