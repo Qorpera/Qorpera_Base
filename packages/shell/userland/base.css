@@ -219,7 +219,6 @@ main {
 	display: flex; align-items: center; gap: 10px; margin: 0; padding: 0; background: transparent;
 }
 .agent-settings-footer .agent-notification-setting strong { font-size: 12px; font-weight: 560; }
-.agent-settings-footer .agent-intro-retry { width: auto; min-height: 28px; margin: 0 10px 0 0; font-size: 11px; }
 
 .agent-figure-picker[hidden] { display: none; }
 .agent-figure-picker {
@@ -1478,7 +1477,6 @@ body.hub-opening .hub-card:not(.loading) { opacity: 0.4; pointer-events: none; t
 @media (prefers-reduced-motion: reduce) {
 	.agent-spin { border-color: var(--accent); animation: none; }
 }
-.job-last-failure { margin: 0 0 20px; }
 .run-partial-summary { margin: 18px 0; }
 .run-partial-summary h3 { margin: 0 0 6px; font-size: 12px; font-weight: 650; }
 .run-partial-summary p, .run-instructions p { margin: 0; color: var(--text-muted); font-size: 10.5px; line-height: 1.5; }
@@ -1682,7 +1680,6 @@ body.welcome #titlebar { border-bottom-color: transparent; background: var(--bg)
 #navigation .navigation-department { margin-bottom: 9px; }
 #navigation .navigation-department.dept-main { margin-bottom: 10px; }
 #navigation nav .navigation-row, #navigation .navigation-row { color: var(--text-muted); }
-#navigation .new-chat-row { display: none; }
 #navigation .session-section:not(.pinned-section) { display: none; }
 #resetPanelButton { width: calc(100% - 8px); margin: 3px 4px 0; padding: 5px 8px; border: 0; color: var(--text-soft); font-size: 10.5px; text-align: left; }
 #resetPanelButton:disabled { display: none; }
@@ -2578,7 +2575,6 @@ main { border-left: 0; }
 .agent-notification-toggle::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .16s ease; }
 .agent-notification-toggle.active { background: #111; }
 .agent-notification-toggle.active::after { transform: translateX(14px); }
-.agent-intro-retry { margin-top: 6px; }
 
 /* iMessage-style conversation: neutral staff bubbles, founder in system blue. */
 .msg.user {

@@ -9,10 +9,11 @@
  *     dist/…                  (shell main/preload/renderer)
  *     node_modules/…          (@qorpera/* dists + full production closure)
  *
- * — and point electron-builder at that. asar is OFF on purpose: the shell
- * spawns the coding agent's rpc-entry as a real file with
- * ELECTRON_RUN_AS_NODE, and jiti loads extension TypeScript from disk at
- * runtime; archives buy risk here, not value.
+ * — and point electron-builder at that. asar is OFF on purpose: jiti loads
+ * extension TypeScript from disk at runtime, and the shell reads docs and
+ * themes from the coding-agent package as real files; archives buy risk
+ * here, not value. The shell spawns no local agent process — every company
+ * runs in the cloud runtime — so no runtime binaries are bundled.
  *
  * Usage: node scripts/pack-shell.mjs [--no-build]   (installer lands in build/shell-dist)
  *
@@ -35,15 +36,10 @@ const productVersion = shellPkg.productVersion ?? "0.1.0";
 const electronVersion = shellPkg.devDependencies.electron;
 
 // Packaging targets the platform it runs on. The closure copy below can only
-// see the optional platform binaries npm installed for THIS host -- the Codex
-// vendor packages are per-platform optional dependencies -- so cross-building
-// would assemble an app whose agent binary is silently absent and the
-// structural assertion at the end would (rightly) fail.
+// see the optional platform binaries npm installed for THIS host, so
+// cross-building would assemble an app missing any per-platform optional
+// dependency.
 const isMac = process.platform === "darwin";
-const codexTriple = isMac
-	? (process.arch === "arm64" ? "aarch64-apple-darwin" : "x86_64-apple-darwin")
-	: (process.arch === "arm64" ? "aarch64-pc-windows-msvc" : "x86_64-pc-windows-msvc");
-const codexPlatformPackage = `codex-${isMac ? "darwin" : "win32"}-${process.arch}`;
 
 // Workspace packages are copied as {package.json, dist} from their source dirs.
 const workspaceDirs = {
@@ -79,20 +75,6 @@ mkdirSync(join(appDir, "node_modules"), { recursive: true });
 
 // 1. Shell code + product identity.
 cpSync(join(repoRoot, "packages", "shell", "dist"), join(appDir, "dist"), { recursive: true });
-
-/* Ad-hoc-signed builds cannot run their own binary as a sandboxed runtime
- * child (the child codesign check fails), so the app bundles the officially
- * signed Node and main falls back to it automatically until Developer ID
- * signing exists. */
-const runtimeNode = join(repoRoot, "node_modules", ".qorpera-runtime-node", "bin", "node");
-if (existsSync(runtimeNode)) {
-	/* Outside node_modules on purpose: electron-builder prunes node_modules
-	 * against the dependency list and silently dropped the binary when it
-	 * lived there. */
-	cpSync(runtimeNode, join(appDir, "runtime-node", "bin", "node"));
-} else {
-	console.warn("pack-shell: signed runtime node missing — ad-hoc builds will fail local execution");
-}
 writeFileSync(
 	join(appDir, "package.json"),
 	`${JSON.stringify(
@@ -106,9 +88,13 @@ writeFileSync(
 			main: "dist/main.js",
 			description: "Qorpera Base — the foundation every company controller is built on.",
 			// electron-builder prunes node_modules against this dependency
-			// list; without it the ENTIRE assembled closure (the agent
-			// runtime) is silently dropped from the installer — shipped
-			// hub-only apps until 0.15.0's repack caught it (2026-08-05).
+			// list; without it the ENTIRE assembled closure is silently
+			// dropped from the installer — shipped hub-only apps until
+			// 0.15.0's repack caught it (2026-08-05). The shell imports
+			// library modules from @qorpera/pi-coding-agent (company,
+			// company-connections, oauth-onboarding, …) — no agent process
+			// is spawned — so it is pinned here explicitly as a guard even
+			// though the shell's own dependency list also carries it.
 			dependencies: {
 				"@qorpera/pi-coding-agent": "*",
 				...(shellPkg.dependencies ?? {}),
@@ -119,7 +105,8 @@ writeFileSync(
 	)}\n`,
 );
 
-// 2. Production dependency closure, walked from the shell + coding agent.
+// 2. Production dependency closure, walked from the shell + the coding-agent
+//    library package it imports from.
 const copied = new Set();
 const missing = new Set();
 const required = new Set();
@@ -236,38 +223,11 @@ if (builder.status !== 0) {
 	process.exit(builder.status ?? 1);
 }
 
-// Structural assertion: the packed app must contain the agent and Codex runtimes.
-// Guards against electron-builder pruning regressions — a hub-only app
-// passes every smoke that doesn't open a company.
+// A built installer can still ship an all-white Chromium frame. Exercise the
+// unpacked packaged-mode renderer and let main reject a single-color capture
+// before the installer is allowed to publish.
 // electron-builder's unpacked output differs per platform: win-unpacked on
-// Windows, mac[-arm64]/<Product>.app/Contents/Resources on macOS.
-const packedResourcesRoot = isMac
-	? join(outDir, process.arch === "arm64" ? "mac-arm64" : "mac", "Qorpera Base.app", "Contents", "Resources")
-	: join(outDir, "win-unpacked", "resources");
-const packedAppRoot = join(packedResourcesRoot, "app");
-const packedRpcEntry = join(packedAppRoot, "node_modules", "@qorpera", "pi-coding-agent", "dist", "rpc-entry.js");
-const packedCodexEntry = join(packedAppRoot, "node_modules", "@openai", "codex", "bin", "codex.js");
-const packedCodexExecutable = join(
-	packedAppRoot,
-	"node_modules",
-	"@openai",
-	codexPlatformPackage,
-	"vendor",
-	codexTriple,
-	"bin",
-	isMac ? "codex" : "codex.exe",
-);
-const packedRuntimeFiles = [packedRpcEntry, packedCodexEntry, packedCodexExecutable];
-const missingPackedRuntimeFiles = packedRuntimeFiles.filter((path) => !existsSync(path));
-if (missingPackedRuntimeFiles.length > 0) {
-	console.error(`PACK VERIFICATION FAILED: runtime files missing:\n${missingPackedRuntimeFiles.join("\n")}`);
-	process.exit(1);
-}
-console.log("pack verification: agent and Codex runtimes present in packed app");
-
-// A structurally complete app can still ship an all-white Chromium frame.
-// Exercise the unpacked packaged-mode renderer and let main reject a
-// single-color capture before the installer is allowed to publish.
+// Windows, mac[-arm64]/<Product>.app on macOS.
 const packedShellExecutable = isMac
 	? join(
 			outDir,

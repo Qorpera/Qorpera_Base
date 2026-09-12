@@ -1,4 +1,4 @@
-import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
 	appendFileSync,
 	closeSync,
@@ -14,21 +14,10 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
-import {
-	classifyToolCall,
-	discoverAuthority,
-	readAuthorityConfig,
-	requestHash,
-} from "@qorpera/pi-coding-agent/authority";
-import type {
-	KernelExecutionIdentity,
-	KernelIntentCapability,
-	KernelModelIntentBudget,
-	ModelIntentTerminalStatus,
-} from "@qorpera/pi-protocol";
+import type { KernelExecutionIdentity, KernelIntentCapability } from "@qorpera/pi-protocol";
 import type { ConnectionRequest } from "./connection-requests.ts";
 
-export type { KernelIntentCapability, KernelModelIntentBudget } from "@qorpera/pi-protocol";
+export type { KernelIntentCapability } from "@qorpera/pi-protocol";
 
 function normalizedPhysicalPath(path: string): string {
 	const resolved = resolve(path);
@@ -134,23 +123,6 @@ export interface TrailBinding {
 	audit: { ids: Set<string>; sequence: number; lastHash: string };
 }
 
-const trailExecutions = new WeakMap<TrailBinding, KernelExecutionIdentity>();
-
-export function bindTrailExecution(binding: TrailBinding, execution?: KernelExecutionIdentity): void {
-	if (!execution) {
-		trailExecutions.delete(binding);
-		return;
-	}
-	if (
-		(execution.kind !== "turn" && execution.kind !== "wake") ||
-		!UUID_PATTERN.test(execution.id) ||
-		!UUID_PATTERN.test(execution.claimantId)
-	) {
-		throw new Error("Trail execution identity is invalid");
-	}
-	trailExecutions.set(binding, { ...execution });
-}
-
 export interface TrailAppendFrame {
 	type: "qorpera_trail_append";
 	token: string;
@@ -204,45 +176,6 @@ export interface SharedTrailMaterialization {
 	title: string;
 	staffAgentId?: string;
 	scope?: SharedTrailScope;
-}
-
-interface KernelWriteFrame {
-	type: "qorpera_kernel_write";
-	token: string;
-	operation: "create_gate" | "consume_gate" | "trust_gate" | "append_notice" | "create_message";
-	gate?: {
-		id: string;
-		file: string;
-		effectClass: string;
-		toolName: string;
-		hash: string;
-		args: unknown;
-	};
-	file?: string;
-	message?: string;
-	content?: string;
-	status?: string;
-	requestId?: string;
-	hash?: string;
-}
-
-export interface KernelGateResponseBody {
-	requestId: string;
-	file: string;
-	hash: string;
-	granted: boolean;
-}
-
-export interface SignedKernelGateResponse extends KernelGateResponseBody {
-	type: "qorpera_kernel_response";
-	signature: string;
-}
-
-export interface SignedKernelBindingResponse {
-	type: "qorpera_kernel_binding";
-	nonce: string;
-	sessionId: string;
-	signature: string;
 }
 
 const MAX_HEADER_BYTES = 64 * 1024;
@@ -439,76 +372,6 @@ function loadTrailAudit(path: string): TrailBinding["audit"] {
 		advanceTrailAuditState(audit, JSON.parse(line), path);
 	}
 	return audit;
-}
-
-/**
- * The explicit append-only migration that bindTrailSession's schema check
- * demands: rewrite a pre-v5 founder chat in place as schema 5, stamping the
- * requesting scope's authority into the header and the kernel provenance and
- * hash chain onto every entry — exactly the stamps parseTrailAppendFrame
- * gives live appends, with each entry's original timestamp kept as its
- * receivedAt (history is being adopted, not re-authored). The original bytes
- * are preserved beside the file as `<file>.v<N>.bak` (not a .jsonl, so
- * session lists ignore it). Returns true if a migration happened, false if
- * the file is already current. Throws — migrating nothing — if any entry
- * cannot satisfy the v5 validator; a legacy file either adopts whole or
- * stays untouched.
- */
-export function migrateLegacyTrailSession(root: string, sessionFile: string, scope: AgentScope): boolean {
-	const trailDir = assertPhysicalCompanyTree(root, "trail");
-	if (basename(sessionFile) !== sessionFile || !sessionFile.endsWith(".jsonl")) {
-		throw new Error("trail session must be a JSONL filename inside the company trail");
-	}
-	const path = join(trailDir, sessionFile);
-	if (!existsSync(path)) throw new Error(`trail session does not exist: ${sessionFile}`);
-	assertPhysicalCompanyTree(root, join("trail", sessionFile));
-	const header = readHeader(path);
-	if (header.version === TRAIL_SESSION_VERSION) return false;
-	if (scope.staffAgentId !== undefined) {
-		throw new Error("legacy trail sessions remain system-owned and cannot be adopted by a staff agent");
-	}
-	const original = readFileSync(path, "utf-8");
-	const entryLines = original.split(/\r?\n/).slice(1).filter(Boolean);
-	const authority = authorityForScope(scope);
-	const audit: TrailBinding["audit"] = { ids: new Set(), sequence: 0, lastHash: "" };
-	const migrated: string[] = [
-		JSON.stringify({
-			type: "session",
-			version: TRAIL_SESSION_VERSION,
-			id: header.id,
-			timestamp: header.timestamp,
-			cwd: header.cwd,
-			qorpera: authority,
-		} satisfies SessionHeader),
-	];
-	for (const line of entryLines) {
-		const entry = JSON.parse(line) as SessionEntry;
-		if (!validTrailEntry(entry, audit.ids) || typeof entry.timestamp !== "string") {
-			throw new Error(
-				`legacy trail session holds an entry schema ${TRAIL_SESSION_VERSION} cannot adopt (${entry.type ?? "untyped"}): ${sessionFile}`,
-			);
-		}
-		const stamped: SessionEntry = {
-			...unsignedTrailEntry(entry),
-			provenance: { source: "child", trust: "assertion" },
-		};
-		stamped.kernel = {
-			sequence: audit.sequence + 1,
-			receivedAt: entry.timestamp,
-			previousHash: audit.lastHash || null,
-			hash: "",
-		};
-		stamped.kernel.hash = auditHash(stamped, audit.lastHash);
-		audit.ids.add(stamped.id);
-		audit.sequence = stamped.kernel.sequence;
-		audit.lastHash = stamped.kernel.hash;
-		migrated.push(JSON.stringify(stamped));
-	}
-	writeFileSync(`${path}.v${header.version ?? 1}.bak`, original, "utf-8");
-	const staging = `${path}.migrating`;
-	writeFileSync(staging, `${migrated.join("\n")}\n`, "utf-8");
-	renameSync(staging, path);
-	return true;
 }
 
 /**
@@ -771,24 +634,6 @@ export function listSharedTrailSessions(
 	return sessions;
 }
 
-/** Read the kernel-bound staff identity for a local trail. Callers use this
- * to restore the correct staff runtime when a shared conversation is opened;
- * the renderer never supplies or overrides the identity. */
-export function trailSessionStaffAgentId(root: string, sessionFile: string): string | undefined {
-	const trailDir = assertPhysicalCompanyTree(root, "trail");
-	if (basename(sessionFile) !== sessionFile || !sessionFile.endsWith(".jsonl")) {
-		throw new Error("trail session must be a JSONL filename inside the company trail");
-	}
-	const path = join(trailDir, sessionFile);
-	if (!existsSync(path)) throw new Error(`trail session does not exist: ${sessionFile}`);
-	assertPhysicalCompanyTree(root, join("trail", sessionFile));
-	const header = readHeader(path);
-	if (header.version !== TRAIL_SESSION_VERSION) {
-		throw new Error(`trail session schema ${header.version ?? 1} requires an explicit append-only migration`);
-	}
-	return header.qorpera?.staffAgentId;
-}
-
 /** The conversation a session file currently shows: message objects along the
  * active chain (the newest entry whose parent-path carries any message,
  * walked to its root), oldest first. Linear cloud materialization makes this
@@ -1015,12 +860,11 @@ export function parseTrailAppendFrame(
 	const record = entry as SessionEntry;
 	if (Buffer.byteLength(JSON.stringify(record), "utf-8") > MAX_TRAIL_ENTRY_BYTES) return undefined;
 	if (!validTrailEntry(record, binding.audit.ids)) return undefined;
-	const durableExecution = execution ?? trailExecutions.get(binding);
 	if (
-		durableExecution &&
-		((durableExecution.kind !== "turn" && durableExecution.kind !== "wake") ||
-			!UUID_PATTERN.test(durableExecution.id) ||
-			!UUID_PATTERN.test(durableExecution.claimantId))
+		execution &&
+		((execution.kind !== "turn" && execution.kind !== "wake") ||
+			!UUID_PATTERN.test(execution.id) ||
+			!UUID_PATTERN.test(execution.claimantId))
 	) {
 		return undefined;
 	}
@@ -1031,7 +875,7 @@ export function parseTrailAppendFrame(
 		...unsigned,
 		timestamp: receivedAt,
 		provenance: { source: "child", trust: "assertion" },
-		...(durableExecution ? { execution: { ...durableExecution } } : {}),
+		...(execution ? { execution: { ...execution } } : {}),
 	};
 	stamped.kernel = {
 		sequence: binding.audit.sequence + 1,
@@ -1045,12 +889,10 @@ export function parseTrailAppendFrame(
 
 function stampKernelEntry(binding: TrailBinding, entry: SessionEntry): TrailAppendFrame {
 	const receivedAt = new Date().toISOString();
-	const execution = trailExecutions.get(binding);
 	const stamped: SessionEntry = {
 		...unsignedTrailEntry(entry),
 		timestamp: receivedAt,
 		provenance: { source: "kernel", trust: "observed" },
-		...(execution ? { execution: { ...execution } } : {}),
 	};
 	stamped.kernel = {
 		sequence: binding.audit.sequence + 1,
@@ -1118,66 +960,6 @@ export function appendKernelObservation(
 	appendKernelCustomObservation(binding, "qorpera_kernel_input", input);
 }
 
-export function appendKernelModelObservation(
-	binding: TrailBinding,
-	input: {
-		event: "request" | "intent";
-		intentNonce: string;
-		requestHash: string;
-		provider?: string;
-		model?: string;
-		requestSha256?: string;
-		status: "started" | "completed" | "failed" | "aborted" | ModelIntentTerminalStatus;
-		reservation?: { inputTokens: number; outputTokens: number; costUsd: number };
-		usage?: { inputTokens: number; outputTokens: number; costUsd: number; calls?: number };
-	},
-): void {
-	appendKernelCustomObservation(binding, "qorpera_kernel_model_request", input);
-}
-
-export function appendKernelWakeObservation(
-	binding: TrailBinding,
-	input: {
-		/** Kernel-issued causal identity for this wake. */
-		wakeId: string;
-		cause: "schedule" | "founder_response" | "inbound_event" | "agent_message";
-		intervalMinutes?: number;
-		/** Whole missed intervals coalesced into this wake (missed-wake policy). */
-		coalesced?: number;
-	},
-): void {
-	appendKernelCustomObservation(binding, "qorpera_kernel_wake", input);
-}
-
-/** Durable end-of-session marker, appended by the kernel when it releases a
- * child. Classification (Activity/Agents) reads it to distinguish "the kernel
- * closed this session" from "this trail just stopped growing" — without it,
- * liveness is a 30-minute mtime guess. `settled` records whether the child was
- * idle (post agent_settled) or mid-turn when the kernel released it. */
-export function appendKernelSessionEndObservation(
-	binding: TrailBinding,
-	input: {
-		settled: boolean;
-	},
-): void {
-	appendKernelCustomObservation(binding, "qorpera_kernel_session_end", input);
-}
-
-/** Durable evidence for an unexpected provider-process exit. The trail stays
- * the session identity; this records why its replaceable runtime disappeared
- * before the kernel resumes the same file. */
-export function appendKernelRuntimeExitObservation(
-	binding: TrailBinding,
-	input: {
-		code: number | null;
-		signal: NodeJS.Signals | null;
-		busy: boolean;
-		stderr: string;
-	},
-): void {
-	appendKernelCustomObservation(binding, "qorpera_kernel_runtime_exit", input);
-}
-
 /** Canonical lifecycle event consumed by the kernel session projector. The
  * trail is the event log; the projected runtime state is always rebuildable
  * from these observations after a renderer or kernel restart. */
@@ -1191,44 +973,6 @@ export function appendKernelSessionRuntimeObservation(
 	},
 ): void {
 	appendKernelCustomObservation(binding, "qorpera_kernel_session_runtime", input);
-}
-
-export function appendKernelHttpObservation(
-	binding: TrailBinding,
-	input: {
-		requestId: string;
-		method: string;
-		host: string;
-		/** The URL exactly as the child sent it — secret references unresolved. */
-		url: string;
-		requestSha256: string;
-		behavior?: { path: string; contentHash: string };
-		status: "started" | "completed" | "failed" | "denied";
-		deniedReason?: string;
-		httpStatus?: number;
-		bodyBytes?: number;
-		/** File mode: company-relative paths streamed into / out of. */
-		savedTo?: string;
-		sentFile?: string;
-	},
-): void {
-	appendKernelCustomObservation(binding, "qorpera_kernel_http_request", input);
-}
-
-/** Reconstructable record of the agent's visible computer navigation. Page
- * contents and screenshots stay out of the trail; it records only the action,
- * URL, and outcome needed to explain how a user handoff was reached. */
-export function appendKernelComputerObservation(
-	binding: TrailBinding,
-	input: {
-		requestId: string;
-		action: string;
-		url?: string;
-		status: "started" | "completed" | "failed" | "denied" | "handoff";
-		detail?: string;
-	},
-): void {
-	appendKernelCustomObservation(binding, "qorpera_kernel_computer_action", input);
 }
 
 /** Portable connector reconstruction record. Secret values and provider
@@ -1255,119 +999,6 @@ export function appendKernelMutationObservation(
 	},
 ): void {
 	appendKernelCustomObservation(binding, "qorpera_kernel_founder_mutation", input);
-}
-
-export function appendKernelProductStorageObservation(
-	binding: TrailBinding,
-	input: {
-		status: "hydration-required";
-		paths: Array<{ path: string; kind: "repository" | "worktree" }>;
-	},
-): void {
-	appendKernelCustomObservation(binding, "qorpera_kernel_product_storage", input);
-}
-
-function appendKernelGateObservation(
-	binding: TrailBinding,
-	input: {
-		requestId?: string;
-		file: string;
-		hash: string;
-		transition: "created" | "creation-aborted" | "consumed" | "orphan-reset" | "trusted-use";
-		phase: "started" | "completed";
-	},
-): void {
-	appendKernelCustomObservation(binding, "qorpera_kernel_gate_transition", input);
-}
-
-function trailHasGateTransition(
-	root: string,
-	trailFile: string,
-	file: string,
-	hash: string,
-	transition: "created" | "creation-aborted",
-	phase: "started" | "completed",
-): boolean {
-	const path = assertPhysicalCompanyTree(root, join("trail", trailFile));
-	loadTrailAudit(path);
-	for (const line of readFileSync(path, "utf-8").split(/\r?\n/).slice(1)) {
-		if (!line) continue;
-		const entry = JSON.parse(line) as SessionEntry;
-		if (entry.type !== "custom" || entry.customType !== "qorpera_kernel_gate_transition") continue;
-		const data = entry.data as Record<string, unknown> | undefined;
-		if (data?.file === file && data.hash === hash && data.transition === transition && data.phase === phase)
-			return true;
-	}
-	return false;
-}
-
-export function reconcileKernelGateCreations(
-	binding: TrailBinding,
-	root: string,
-	pending: Array<{
-		file: string;
-		hash: string;
-		trailFile: string;
-		phase: "planned" | "started" | "finalizing-created" | "finalizing-aborted";
-	}>,
-	advance: (
-		file: string,
-		hash: string,
-		trailFile: string,
-		phase: "planned" | "started" | "finalizing-created" | "finalizing-aborted",
-	) => void,
-	complete: (file: string, hash: string) => void,
-): void {
-	for (const creation of pending) {
-		let phase = creation.phase;
-		let trailFile = creation.trailFile;
-		if (phase === "planned") {
-			if (trailHasGateTransition(root, trailFile, creation.file, creation.hash, "created", "started")) {
-				phase = "started";
-				advance(creation.file, creation.hash, trailFile, phase);
-			} else {
-				trailFile = binding.file;
-				advance(creation.file, creation.hash, trailFile, "planned");
-				appendKernelGateObservation(binding, {
-					file: creation.file,
-					hash: creation.hash,
-					transition: "created",
-					phase: "started",
-				});
-				phase = "started";
-				advance(creation.file, creation.hash, trailFile, phase);
-			}
-		}
-		if (phase === "started") {
-			const path = join(root, "inbox", creation.file);
-			let transition: "created" | "creation-aborted" = "creation-aborted";
-			if (existsSync(path)) {
-				assertPhysicalCompanyTree(root, join("inbox", creation.file));
-				const record = parseGateDocument(creation.file, readFileSync(path, "utf-8"));
-				if (!record || record.hash !== creation.hash) {
-					throw new Error(`Pending host gate creation is not canonical: ${creation.file}`);
-				}
-				transition = "created";
-			}
-			phase = transition === "created" ? "finalizing-created" : "finalizing-aborted";
-			trailFile = binding.file;
-			advance(creation.file, creation.hash, trailFile, phase);
-		}
-		const transition = phase === "finalizing-created" ? "created" : "creation-aborted";
-		if (!trailHasGateTransition(root, trailFile, creation.file, creation.hash, transition, "completed")) {
-			if (trailFile !== binding.file) {
-				trailFile = binding.file;
-				advance(creation.file, creation.hash, trailFile, phase);
-			}
-			appendKernelGateObservation(binding, {
-				file: creation.file,
-				hash: creation.hash,
-				transition,
-				phase: "completed",
-			});
-		}
-		complete(creation.file, creation.hash);
-	}
 }
 
 const GATE_EFFECT_CLASSES = new Set(["money", "identity", "irreversible", "authority", "product_code"]);
@@ -1441,88 +1072,6 @@ export function kernelGateReviewDocument(
 	}
 }
 
-function canonicalGateEffectClass(
-	root: string,
-	binding: TrailBinding,
-	gate: NonNullable<KernelWriteFrame["gate"]>,
-): string | undefined {
-	if (gate.toolName === "behavior_signature" || gate.toolName === "extension_load") return "authority";
-	const authority = discoverAuthority(binding.cwd);
-	if (!authority || resolve(authority.root) !== resolve(root)) return undefined;
-	return classifyToolCall(authority, readAuthorityConfig(authority), gate.toolName, gate.args, binding.cwd);
-}
-
-function canonicalGateContent(
-	root: string,
-	binding: TrailBinding,
-	gate: NonNullable<KernelWriteFrame["gate"]>,
-): string | undefined {
-	const effectClass = canonicalGateEffectClass(root, binding, gate);
-	if (
-		`${gate.id}.md` !== gate.file ||
-		!/^gate-[a-f0-9]{8}(?:-[2-9][0-9]*)?$/.test(gate.id) ||
-		!gate.id.startsWith(`gate-${gate.hash.slice(0, 8)}`) ||
-		!/^[a-f0-9]{64}$/.test(gate.hash) ||
-		!effectClass ||
-		!GATE_EFFECT_CLASSES.has(effectClass) ||
-		effectClass !== gate.effectClass ||
-		requestHash(gate.toolName, gate.args) !== gate.hash ||
-		!gate.toolName ||
-		gate.toolName.length > 128 ||
-		/[\r\n]/.test(gate.toolName)
-	)
-		return undefined;
-	let serializedArgs: string;
-	try {
-		serializedArgs = JSON.stringify(gate.args, null, 2) ?? "null";
-	} catch {
-		return undefined;
-	}
-	if (Buffer.byteLength(serializedArgs, "utf-8") > 1024 * 1024) return undefined;
-	return [
-		"---",
-		`id: ${gate.id}`,
-		"status: pending   # resolved by Qorpera Base native review",
-		`class: ${effectClass}`,
-		`tool: ${gate.toolName}`,
-		`hash: ${gate.hash}`,
-		`created: ${new Date().toISOString()}`,
-		"---",
-		"",
-		`# Gate request: ${gate.toolName} (${effectClass})`,
-		"",
-		"**Exact tool:**",
-		"",
-		`    ${gate.toolName}`,
-		"",
-		"**Exact arguments:**",
-		"",
-		...serializedArgs.split("\n").map((line) => `    ${line}`),
-		"",
-		"**If denied:** the agent will not perform this action and will pursue another path.",
-		"",
-		"Resolve this request through Qorpera Base's native review UI.",
-		"",
-	].join("\n");
-}
-
-function transitionGate(
-	path: string,
-	file: string,
-	record: ParsedGateDocument,
-	status: ParsedGateDocument["status"],
-): void {
-	const lines = record.content.split(/\r?\n/);
-	const statusLines = lines.flatMap((line, index) => (/^status:\s*/.test(line) ? [index] : []));
-	if (statusLines.length !== 1) throw new Error("gate status transition requires exactly one canonical status field");
-	lines[statusLines[0]] = `status: ${status}`;
-	const next = `${lines.join("\n")}${record.content.endsWith("\n") ? "\n" : ""}`;
-	if (!parseGateDocument(file, next)) throw new Error("gate status transition produced an invalid record");
-	const temporary = `${path}.${randomUUID()}.tmp`;
-	writeFileSync(temporary, next, { encoding: "utf-8", flag: "wx" });
-	renameSync(temporary, path);
-}
-
 export function commitTrailAppend(binding: TrailBinding, append: TrailAppendFrame): void {
 	const kernel = append.entry.kernel;
 	if (
@@ -1535,321 +1084,6 @@ export function commitTrailAppend(binding: TrailBinding, append: TrailAppendFram
 	binding.audit.ids.add(append.entry.id);
 	binding.audit.sequence = kernel.sequence;
 	binding.audit.lastHash = kernel.hash;
-}
-
-export function applyKernelWriteFrame(
-	value: unknown,
-	binding: TrailBinding,
-	root: string,
-	onGateResponse?: (response: KernelGateResponseBody) => void,
-	consumeGateCapability?: (file: string, hash: string) => boolean,
-	durableGateTrust?: {
-		has: (file: string, hash: string) => boolean;
-		remember: (file: string, hash: string) => void;
-	},
-	gateCreation?: {
-		begin: (file: string, hash: string, trailFile: string) => void;
-		advance: (
-			file: string,
-			hash: string,
-			trailFile: string,
-			phase: "planned" | "started" | "finalizing-created" | "finalizing-aborted",
-		) => void;
-		complete: (file: string, hash: string) => void;
-	},
-): boolean {
-	if (!value || typeof value !== "object") return false;
-	const frame = value as Partial<KernelWriteFrame>;
-	if (frame.type !== "qorpera_kernel_write") return false;
-	if (frame.token !== binding.token) return true;
-	const inbox = assertPhysicalCompanyTree(root, "inbox");
-	if (frame.operation === "create_gate") {
-		if (!frame.gate) return true;
-		const content = canonicalGateContent(root, binding, frame.gate);
-		if (!content) return true;
-		const path = join(inbox, frame.gate.file);
-		if (existsSync(path)) return true;
-		gateCreation?.begin(frame.gate.file, frame.gate.hash, binding.file);
-		appendKernelGateObservation(binding, {
-			file: frame.gate.file,
-			hash: frame.gate.hash,
-			transition: "created",
-			phase: "started",
-		});
-		gateCreation?.advance(frame.gate.file, frame.gate.hash, binding.file, "started");
-		let created = false;
-		try {
-			writeFileSync(path, content, { encoding: "utf-8", flag: "wx" });
-			created = true;
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-		}
-		gateCreation?.advance(
-			frame.gate.file,
-			frame.gate.hash,
-			binding.file,
-			created ? "finalizing-created" : "finalizing-aborted",
-		);
-		if (created) {
-			appendKernelGateObservation(binding, {
-				file: frame.gate.file,
-				hash: frame.gate.hash,
-				transition: "created",
-				phase: "completed",
-			});
-		} else {
-			appendKernelGateObservation(binding, {
-				file: frame.gate.file,
-				hash: frame.gate.hash,
-				transition: "creation-aborted",
-				phase: "completed",
-			});
-		}
-		gateCreation?.complete(frame.gate.file, frame.gate.hash);
-		return true;
-	}
-	if (frame.operation === "create_message") {
-		if (
-			typeof frame.requestId !== "string" ||
-			typeof frame.file !== "string" ||
-			!/^msg-[a-z0-9][a-z0-9-]{0,119}\.md$/i.test(frame.file) ||
-			typeof frame.content !== "string" ||
-			Buffer.byteLength(frame.content, "utf-8") > 64 * 1024 ||
-			typeof frame.hash !== "string" ||
-			createHash("sha256").update(frame.content).digest("hex") !== frame.hash
-		) {
-			return true;
-		}
-		let granted = false;
-		try {
-			writeFileSync(join(inbox, "messages", frame.file), frame.content, { encoding: "utf-8", flag: "wx" });
-			granted = true;
-			appendKernelCustomObservation(binding, "qorpera_kernel_inbox_message", {
-				file: frame.file,
-				hash: frame.hash,
-				content: frame.content,
-			});
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-		}
-		onGateResponse?.({ requestId: frame.requestId, file: frame.file, hash: frame.hash, granted });
-		return true;
-	}
-	if (frame.operation === "consume_gate" || frame.operation === "trust_gate") {
-		if (
-			frame.status !== "consumed" ||
-			!frame.file ||
-			!/^gate-[a-z0-9-]+\.md$/i.test(frame.file) ||
-			typeof frame.requestId !== "string" ||
-			typeof frame.hash !== "string"
-		)
-			return true;
-		const path = join(inbox, frame.file);
-		let record: ParsedGateDocument | undefined;
-		try {
-			record = parseGateDocument(frame.file, readFileSync(path, "utf-8"));
-		} catch {
-			onGateResponse?.({ requestId: frame.requestId, file: frame.file, hash: frame.hash, granted: false });
-			return true;
-		}
-		const matchesHash = Boolean(record && record.hash === frame.hash);
-		const durableTool = Boolean(record && (record.tool === "behavior_signature" || record.tool === "extension_load"));
-		if (
-			frame.operation === "trust_gate" &&
-			matchesHash &&
-			durableTool &&
-			record?.status === "consumed" &&
-			durableGateTrust?.has(frame.file, frame.hash)
-		) {
-			appendKernelGateObservation(binding, {
-				requestId: frame.requestId,
-				file: frame.file,
-				hash: frame.hash,
-				transition: "trusted-use",
-				phase: "completed",
-			});
-			onGateResponse?.({ requestId: frame.requestId, file: frame.file, hash: frame.hash, granted: true });
-			return true;
-		}
-		const matchesApprovedRecord = Boolean(matchesHash && record?.status === "approved");
-		const capabilityGranted = Boolean(matchesApprovedRecord && consumeGateCapability?.(frame.file, frame.hash));
-		const granted = Boolean(
-			capabilityGranted && (frame.operation === "consume_gate" || (durableTool && durableGateTrust)),
-		);
-		if (granted && record) {
-			appendKernelGateObservation(binding, {
-				requestId: frame.requestId,
-				file: frame.file,
-				hash: frame.hash,
-				transition: "consumed",
-				phase: "started",
-			});
-			transitionGate(path, frame.file, record, "consumed");
-			if (frame.operation === "trust_gate") durableGateTrust?.remember(frame.file, frame.hash);
-			appendKernelGateObservation(binding, {
-				requestId: frame.requestId,
-				file: frame.file,
-				hash: frame.hash,
-				transition: "consumed",
-				phase: "completed",
-			});
-		} else if (
-			matchesHash &&
-			record &&
-			(record.status === "approved" || (frame.operation === "trust_gate" && record.status === "consumed"))
-		) {
-			appendKernelGateObservation(binding, {
-				requestId: frame.requestId,
-				file: frame.file,
-				hash: frame.hash,
-				transition: "orphan-reset",
-				phase: "started",
-			});
-			transitionGate(path, frame.file, record, "pending");
-			appendKernelGateObservation(binding, {
-				requestId: frame.requestId,
-				file: frame.file,
-				hash: frame.hash,
-				transition: "orphan-reset",
-				phase: "completed",
-			});
-		}
-		onGateResponse?.({ requestId: frame.requestId, file: frame.file, hash: frame.hash, granted });
-		return true;
-	}
-	if (frame.operation === "append_notice") {
-		if (typeof frame.message !== "string" || Buffer.byteLength(frame.message) > 4096) return true;
-		const path = join(inbox, "notices.md");
-		const prefix = existsSync(path) ? "" : "# Notices\n\n";
-		appendFileSync(path, `${prefix}- ${new Date().toISOString()} ${frame.message.replace(/[\r\n]+/g, " ")}\n`);
-	}
-	return true;
-}
-
-function kernelResponsePayload(response: KernelGateResponseBody): string {
-	return JSON.stringify({
-		requestId: response.requestId,
-		file: response.file,
-		hash: response.hash,
-		granted: response.granted,
-	});
-}
-
-function kernelBindingPayload(response: { nonce: string; sessionId: string }): string {
-	return JSON.stringify({ nonce: response.nonce, sessionId: response.sessionId });
-}
-
-function kernelIntentPayload(intent: Omit<KernelIntentCapability, "signature">): string {
-	return JSON.stringify({
-		nonce: intent.nonce,
-		sessionId: intent.sessionId,
-		requestHash: intent.requestHash,
-		attended: intent.attended,
-		issuedAt: intent.issuedAt,
-		expiresAt: intent.expiresAt,
-		execution: intent.execution ?? null,
-		budget: {
-			maxCalls: intent.budget.maxCalls,
-			maxInputTokens: intent.budget.maxInputTokens,
-			maxOutputTokens: intent.budget.maxOutputTokens,
-			maxCostUsd: intent.budget.maxCostUsd,
-		},
-	});
-}
-
-function intentRequestHash(frame: Record<string, unknown>): string {
-	return createHash("sha256").update(JSON.stringify(frame)).digest("hex");
-}
-
-/** Founder call (2026-08-13): the company agent runs at full permission on the
- * founder's own machine — no call, token, or dollar ceilings on their work
- * (the codex full-access posture). The signed-intent structure is unchanged:
- * every model call still rides a kernel-signed intent and every request and
- * its usage still land in the trail — the ceilings simply no longer bite.
- * Bounded budgets remain one option away via createKernelResponseSigner's
- * modelBudget parameter for lanes that want them. */
-export const DEFAULT_MODEL_INTENT_BUDGET: Readonly<KernelModelIntentBudget> = Object.freeze({
-	maxCalls: Number.MAX_SAFE_INTEGER,
-	maxInputTokens: Number.MAX_SAFE_INTEGER,
-	maxOutputTokens: Number.MAX_SAFE_INTEGER,
-	maxCostUsd: Number.MAX_SAFE_INTEGER,
-});
-
-const DEFAULT_MODEL_INTENT_LIFETIME_MS = 30 * 60 * 1000;
-const MAX_MODEL_INTENT_LIFETIME_MS = 4 * 60 * 60 * 1000;
-
-function checkedModelIntentBudget(budget: KernelModelIntentBudget): KernelModelIntentBudget {
-	if (
-		!Number.isInteger(budget.maxCalls) ||
-		budget.maxCalls < 1 ||
-		!Number.isInteger(budget.maxInputTokens) ||
-		budget.maxInputTokens < 1 ||
-		!Number.isInteger(budget.maxOutputTokens) ||
-		budget.maxOutputTokens < 1 ||
-		!Number.isFinite(budget.maxCostUsd) ||
-		budget.maxCostUsd < 0
-	) {
-		throw new Error("host model intent budget is invalid");
-	}
-	return { ...budget };
-}
-
-export function createKernelResponseSigner(options: {
-	sessionId: string;
-	modelBudget?: KernelModelIntentBudget;
-	intentLifetimeMs?: number;
-}): {
-	publicKey: string;
-	signResponse: (response: KernelGateResponseBody) => SignedKernelGateResponse;
-	signBinding: (response: { nonce: string; sessionId: string }) => SignedKernelBindingResponse;
-	signIntent: (
-		frame: Record<string, unknown>,
-		attended: boolean,
-		execution?: KernelExecutionIdentity,
-	) => KernelIntentCapability;
-} {
-	if (!options.sessionId) throw new Error("host intent signer requires a session id");
-	const budget = checkedModelIntentBudget(options.modelBudget ?? DEFAULT_MODEL_INTENT_BUDGET);
-	const lifetimeMs = options.intentLifetimeMs ?? DEFAULT_MODEL_INTENT_LIFETIME_MS;
-	if (!Number.isInteger(lifetimeMs) || lifetimeMs < 1 || lifetimeMs > MAX_MODEL_INTENT_LIFETIME_MS) {
-		throw new Error("host model intent lifetime is invalid");
-	}
-	const pair = generateKeyPairSync("ed25519");
-	const publicKey = pair.publicKey.export({ format: "der", type: "spki" }).toString("base64");
-	return {
-		publicKey,
-		signResponse: (response) => ({
-			type: "qorpera_kernel_response",
-			...response,
-			signature: sign(null, Buffer.from(kernelResponsePayload(response)), pair.privateKey).toString("base64"),
-		}),
-		signBinding: (response) => ({
-			type: "qorpera_kernel_binding",
-			...response,
-			signature: sign(null, Buffer.from(kernelBindingPayload(response)), pair.privateKey).toString("base64"),
-		}),
-		signIntent: (frame, attended, execution) => {
-			const issuedAtMs = Date.now();
-			const intent = {
-				nonce: randomUUID(),
-				sessionId: options.sessionId,
-				requestHash: intentRequestHash(frame),
-				attended,
-				issuedAt: new Date(issuedAtMs).toISOString(),
-				expiresAt: new Date(issuedAtMs + lifetimeMs).toISOString(),
-				...(execution ? { execution: { ...execution } } : {}),
-				budget: { ...budget },
-			};
-			return {
-				...intent,
-				signature: sign(null, Buffer.from(kernelIntentPayload(intent)), pair.privateKey).toString("base64"),
-			};
-		},
-	};
-}
-
-export function inboxMessagesPath(root: string): string {
-	return assertPhysicalCompanyTree(root, join("inbox", "messages"));
 }
 
 export function sandboxConfigDir(userData: string, root: string, actor: AgentScope["actor"]): string {

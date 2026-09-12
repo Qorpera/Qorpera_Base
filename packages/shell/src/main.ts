@@ -22,16 +22,15 @@ import {
 	type CompanyOrganizationHierarchy,
 } from "@qorpera/cloud-client/cloud-company-organization";
 import type { CloudPresenceHandle } from "@qorpera/cloud-client/cloud-presence";
-import {
-	type HostedAccountEntitlement,
-	type HostedCompanyFile,
-	type HostedCompanyProposal,
-	type HostedCompanySnapshot,
-	type HostedIncomingProfileInvitation,
-	type HostedProfile,
-	type HostedProfileTeam,
-	type PendingSessionInput,
-	SessionTurnOwnershipError,
+import type {
+	HostedAccountEntitlement,
+	HostedCompanyFile,
+	HostedCompanyProposal,
+	HostedCompanySnapshot,
+	HostedIncomingProfileInvitation,
+	HostedProfile,
+	HostedProfileTeam,
+	PendingSessionInput,
 } from "@qorpera/cloud-client/hosted-primary";
 import {
 	currentCloudCompanyTreeReference,
@@ -43,7 +42,6 @@ import { isStaffCharacterId, staffCharacterForTemplate } from "@qorpera/cloud-cl
 import {
 	type CompanyConnectorManifestRecord,
 	companyConnectorMatchesRequest,
-	companyConnectorSecretNames,
 	readCompanyConnectorManifests,
 } from "@qorpera/company/company-connectors";
 import {
@@ -66,16 +64,11 @@ import {
 	createStaffAgent,
 	createStaffAgents,
 	deleteStaffAgent,
-	markStaffAgentMessagesDelivered,
-	pendingStaffAgentMessages,
 	readCompanyArtifacts,
-	readStaffAgentMemory,
 	readStaffAgentMessages,
 	readStaffAgents,
-	recentDeliveredStaffAgentMessages,
 	restoreStaffAgent,
 	type StaffAgent,
-	type StaffAgentMessage,
 	type StaffAgentModel,
 	staffAgentDirectoryPath,
 	staffAgentInstructionsPath,
@@ -209,7 +202,7 @@ import {
 	stageCloudPromptOutbox,
 } from "./cloud-prompt-outbox.ts";
 import { CloudProfileRealtimeSync, type CloudRealtimeChange, type CloudRealtimeHealth } from "./cloud-realtime-sync.ts";
-import { type ArbiterClaim, type ArbiterSessionRef, CloudSessionArbiter } from "./cloud-session-arbiter.ts";
+import { type ArbiterSessionRef, CloudSessionArbiter } from "./cloud-session-arbiter.ts";
 import { CloudStaffSynchronizer } from "./cloud-staff-sync.ts";
 import {
 	type CloudSyncHealth,
@@ -250,6 +243,7 @@ import {
 	cancelConnectionRequest,
 	cancelPendingConnectionRequestsForStaff,
 	completeConnectionRequest,
+	completeConnectionRequestSync,
 	failConnectionRequest,
 	getConnectionRequest,
 	prepareConnectionRequest,
@@ -297,12 +291,6 @@ import {
 } from "./renderer-boundary.ts";
 import { bitmapLooksBlank } from "./renderer-smoke.ts";
 import {
-	queueCustomRoutineTrigger,
-	readRoutineTriggerState,
-	routineTriggerStatePath,
-	writeRoutineTriggerState,
-} from "./routine-triggers.ts";
-import {
 	type RuntimeModelSelection,
 	readCompanyRuntimeModelPreference,
 	runtimeLaunchOptions,
@@ -311,7 +299,6 @@ import { SessionControlPlane } from "./session-control-plane.ts";
 import { readSidebarTranslucency, writeSidebarTranslucency } from "./shell-appearance.ts";
 import { removeStaffWorkspace } from "./staff-deletion.ts";
 import {
-	finishStaffIntro,
 	readStaffRuntimeState,
 	recordStaffIntroPending,
 	type StaffOrientationContext,
@@ -319,14 +306,6 @@ import {
 	writeStaffRuntimeState,
 } from "./staff-runtime-state.ts";
 import { getStaffTemplate, listStaffTemplates } from "./staff-templates.ts";
-import {
-	nextScheduledWakeAt,
-	readWakeRunState,
-	removeScheduledJobRunState,
-	scheduledJobRunState,
-	wakeRunStatePath,
-	writeWakeRunState,
-} from "./wake-scheduler.ts";
 import { startWebhookListener } from "./webhook-listener.ts";
 
 const CLOUD_PREVIEW = prepareCloudPreview(
@@ -622,7 +601,6 @@ async function refreshProfileAccess(root: string): Promise<ProfileAccess | undef
 function slotHasProfileCapability(slot: Slot, capability: ProfileCapability): boolean {
 	const root = slot.runtime?.root;
 	if (!root) return false;
-	if (IS_SMOKE) return true;
 	const access = activeProfileAccess(root);
 	if (!access) return false;
 	return capability === "manage-members" ? access.capabilities.manageMembers : access.capabilities[capability];
@@ -673,7 +651,6 @@ interface CompanyRuntime {
 	childOptions: ChildOptions;
 	/** Closes the inbound webhook listener (optional kernel module). */
 	webhookClose?: () => void;
-	inventoryWatcher?: ReturnType<typeof watch>;
 	cloudTrailSync?: CloudTrailSynchronizer;
 	cloudTrailSyncLoop?: DurableCloudSyncLoop;
 	cloudTrailSyncHealth?: CloudSyncHealth;
@@ -686,7 +663,6 @@ interface CompanyRuntime {
 	cloudPresence?: CloudPresenceHandle;
 	/** Last renderer-declared open thread, retained while Presence connects. */
 	cloudPresenceThread?: string | null;
-	cloudPresenceHeartbeat?: NodeJS.Timeout;
 	cloudRunnerActivityTimer?: NodeJS.Timeout;
 	cloudRunnerActivityPolling?: boolean;
 	cloudSessionRunPolling?: boolean;
@@ -1517,65 +1493,6 @@ async function emitActiveStaffQueue(slot: Slot, runtime: CompanyRuntime): Promis
 	}
 }
 
-function abandonCloudSessionClaim(arbiter: CloudSessionArbiter): void {
-	arbiter.abandonClaim();
-}
-
-/** Finalize an already-settled claimed turn without converting an uncertain
- * network response into a second execution. A lost completion response is
- * retried while the independently renewed lease remains ours; a definitive
- * zero-row response is reconciled against the durable pending queue. */
-async function _completeCloudSessionClaim(
-	slot: Slot,
-	runtime: CompanyRuntime,
-	arbiter: CloudSessionArbiter,
-	claim: ArbiterClaim,
-	attempt = 0,
-): Promise<void> {
-	if (slot.runtime !== runtime || runtime.closing || arbiter.activeClaim !== claim) return;
-	try {
-		await arbiter.renewIfDue();
-		const fileHealth = await runtime.cloudCompanyPublication?.publishNow();
-		const staffHealth = await runtime.cloudStaffSyncLoop?.trigger();
-		const trailHealth = await runtime.cloudTrailSyncLoop?.trigger();
-		if (runtime.cloudCompanyPublication && fileHealth?.phase !== "healthy") {
-			throw new Error(fileHealth?.lastError ?? "Company File output did not finish syncing");
-		}
-		if (runtime.cloudStaffSync && staffHealth?.phase !== "healthy") {
-			throw new Error(staffHealth?.lastError ?? "staff output did not finish syncing");
-		}
-		if (runtime.cloudTrailSync && trailHealth?.phase !== "healthy") {
-			throw new Error(trailHealth?.lastError ?? "conversation output did not finish syncing");
-		}
-		const trailEndSequence = runtime.cloudTrailSync?.cursorForHostedSession(claim.hostedSessionId);
-		if (trailEndSequence === undefined) throw new Error("conversation output has no durable cloud cursor");
-		if (arbiter.activeClaim !== claim) throw new SessionTurnOwnershipError("complete");
-		await arbiter.completeTurn(trailEndSequence, claim);
-	} catch (error) {
-		if (error instanceof SessionTurnOwnershipError) {
-			let completedRemotely = false;
-			try {
-				completedRemotely = (await arbiter.turnStatus(claim)) === "completed";
-			} catch {
-				// The next queue refresh will reconcile once connectivity returns.
-			}
-			abandonCloudSessionClaim(arbiter);
-			if (!completedRemotely) console.error(`session turn ownership lost: ${error.message}`);
-			await emitActiveStaffQueue(slot, runtime);
-			return;
-		}
-		const delay = Math.min(10_000, 1_000 * 2 ** Math.min(attempt, 4));
-		if (attempt === 0) {
-			console.error(`session turn completion deferred: ${error instanceof Error ? error.message : String(error)}`);
-		}
-		setTimeout(() => {
-			void _completeCloudSessionClaim(slot, runtime, arbiter, claim, attempt + 1);
-		}, delay).unref();
-		return;
-	}
-	await emitActiveStaffQueue(slot, runtime);
-}
-
 function startCloudRealtimeSync(slot: Slot, runtime: CompanyRuntime): void {
 	if (runtime.cloudRealtimeSync || runtime.closing) return;
 	const attachment = profileAttachment(runtime.root);
@@ -1613,7 +1530,6 @@ interface Slot {
 	 * replaces the window and updates this alongside it. */
 	partition: string;
 	runtime?: CompanyRuntime;
-	kickoffPending: boolean;
 	openGeneration: number;
 }
 
@@ -2427,7 +2343,6 @@ async function closeCompany(slot: Slot): Promise<void> {
 	runtime.closePromise = (async () => {
 		try {
 			if (runtime.cloudSessionPump) clearInterval(runtime.cloudSessionPump);
-			if (runtime.cloudPresenceHeartbeat) clearInterval(runtime.cloudPresenceHeartbeat);
 			if (runtime.cloudRunnerActivityTimer) clearInterval(runtime.cloudRunnerActivityTimer);
 			runtime.cloudStaffSyncLoop?.stop();
 			runtime.cloudTrailSyncLoop?.stop();
@@ -2435,7 +2350,6 @@ async function closeCompany(slot: Slot): Promise<void> {
 			runtime.cloudCompanyProjection?.close();
 			await runtime.cloudRealtimeSync?.stop();
 			await runtime.cloudPresence?.stop();
-			runtime.inventoryWatcher?.close();
 			runtime.webhookClose?.();
 			await runtime.transitionQueue;
 			runtime.backendClose?.();
@@ -2463,168 +2377,8 @@ interface ChildOptions {
 	sessionName?: string;
 	/** Stable company-owned employee identity stamped into the trail header. */
 	staffAgentId?: string;
-	/** Host-built employee context for the anchored conversation. */
-	staffContext?: string;
 	/** Last model confirmed for this conversation. */
 	model?: RuntimeModelSelection;
-	/** Work-origin reasoning default. This belongs to the conversation or job, never the staff identity. */
-	thinkingLevel?: ScheduledJobEffort;
-}
-
-function staffAgentMessageLine(message: StaffAgentMessage, senderNames: Map<string, string>): string {
-	const sender = senderNames.get(message.fromAgentId) ?? "a former coworker";
-	return `- [${message.id}] from ${sender} (${message.fromAgentId}) at ${message.createdAt}${message.subject ? ` — ${message.subject}` : ""}:\n${message.body}`;
-}
-
-function staffMessagesContext(root: string, agentId: string, senderNames: Map<string, string>): string {
-	let queued: StaffAgentMessage[];
-	let recent: StaffAgentMessage[];
-	try {
-		queued = pendingStaffAgentMessages(root, agentId);
-		recent = recentDeliveredStaffAgentMessages(root, agentId, 5);
-	} catch {
-		return "Your coworker mailbox could not be read this launch.";
-	}
-	const shownQueued = queued.slice(0, 12);
-	const overflow = queued.length - shownQueued.length;
-	if (!queued.length && !recent.length) return "You have no coworker messages.";
-	return [
-		...(queued.length
-			? [
-					"Unhandled coworker messages (act on each: do the work, reply with send_agent_message, or record why it needs nothing):",
-					...shownQueued.map((message) => staffAgentMessageLine(message, senderNames)),
-					...(overflow > 0 ? [`…and ${overflow} more queued messages.`] : []),
-				]
-			: []),
-		...(recent.length
-			? [
-					"Recently delivered coworker messages (already shown to you once; listed for continuity):",
-					...recent.map((message) => staffAgentMessageLine(message, senderNames)),
-				]
-			: []),
-	].join("\n");
-}
-
-function staffSystemContext(root: string, agent: StaffAgent): string {
-	const artifacts = readCompanyArtifacts(root).filter((artifact) => artifact.stewardAgentId === agent.id);
-	const connectors = readCompanyConnectorManifests(root);
-	const connectionBindings = readCompanyConnections(root);
-	const routines = readScheduledJobs(root).filter((job) => job.staffAgentId === agent.id);
-	const artifactInstructions = artifacts.length
-		? [
-				"Your owned artifacts are editable metric definitions inside your agent workspace. They describe what you care about without copying service data into the company:",
-				...artifacts.map((artifact) => {
-					const missing = artifact.dataNeeds
-						.filter((need) => need.status === "missing")
-						.map(
-							(need) =>
-								`${need.label} [artifactId=${artifact.id}, dataNeedId=${need.id}] (${need.connectorHints.join(", ")})`,
-						)
-						.join("; ");
-					return `- ${artifact.relativePath}: ${artifact.title}; measures ${artifact.metrics.map((metric) => metric.label).join(", ")}${missing ? `; missing data: ${missing}` : ""}`;
-				}),
-				"Inspect these files at the start of relevant work. Keep metric definitions, scores, values, timestamps, and evidence references honest. Change, add, or remove metrics and data needs when the company's circumstances make earlier assumptions wrong.",
-				"Artifact JSON uses a closed schema. Data-need status is only missing, selected, connected, available, or declined. Artifact status is only setting-up, waiting-for-data, partial, validating, or operating. Put file and connector evidence only in sourceRefs; never invent fields such as intakeRef, selection, or waiting-for-data on a data need. Re-read the artifact after editing it and repair any invalid value before ending the turn.",
-				"Treat each missing data need as a setup plan: first use existing company files and usable connections, then propose only the smallest missing source choice. When using request_connection for one, include the exact artifactId and dataNeedId shown above. Name the artifact and affected metrics in the connection purpose. A proposal is not requested access. After the founder chooses and completes any private authorization, validate the source, update sourceRefs and evidence, and move the artifact toward operating status.",
-			].join("\n")
-		: [
-				"No dedicated artifact was seeded for this agent. Begin from the live Company File and the job specification; a template is a thin hire overlay, not a second brain or a prebuilt workspace.",
-				`Create an ordinary Company File object under agents/${agent.id}/artifacts/ only when useful work needs that durable object. If you create a qorpera.artifact/v1 object, keep its closed schema and evidence honest. Artifact creation is never a setup-completion requirement.`,
-			].join("\n");
-	const connectorInstructions = connectors.length
-		? [
-				"The company connector recipes available to you are:",
-				...connectors.map((connector) => {
-					const requiredSecrets = companyConnectorSecretNames(connector);
-					const missingDestinations = connector.destinations
-						.map((destination) => destination.host)
-						.filter((host) => !connectionBindings.destinations.some((binding) => binding.host === host));
-					const missingSecrets = requiredSecrets.filter((name) => !connectionBindings.secretNames.includes(name));
-					const readiness =
-						missingDestinations.length || missingSecrets.length
-							? `not bound; missing destinations [${missingDestinations.join(", ")}] and secrets [${missingSecrets.join(", ")}]`
-							: "execution ready";
-					return `- recipeId company:${connector.id}: ${connector.displayName}; manifest ${connector.relativePath}; implementation ${connector.implementation.kind} ${connector.implementation.entry}; operations [${connector.operations.map((operation) => `${operation.id}:${operation.access}`).join(", ")}]; environment ${connector.environment ?? "production"}; auth ${connector.authentication.kind}; destinations ${connector.destinations.map((destination) => destination.host).join(", ")}; secretNames [${requiredSecrets.join(", ")}]; ${readiness}`;
-				}),
-			].join("\n")
-		: "The company does not have an installable connector manifest yet.";
-	const routineInstructions = routines.length
-		? [
-				"Your recurring routines are:",
-				...routines.map(
-					(job) =>
-						`- ${job.id}: ${job.title}; ${job.enabled && !job.suspendedReason ? "enabled" : "not active"}; ${job.triggers
-							.map((trigger) => {
-								if (trigger.kind !== "schedule") return trigger.kind;
-								if (trigger.weekdays && trigger.localTime && trigger.timeZone) {
-									return `${trigger.weekdays.join(", ")} at ${trigger.localTime} (${trigger.timeZone})`;
-								}
-								return `every ${trigger.intervalMinutes} minutes${trigger.startAt ? ` starting ${trigger.startAt}` : ""}`;
-							})
-							.join(", ")}`,
-				),
-			].join("\n")
-		: "You do not have a recurring routine yet.";
-	const memory = readStaffAgentMemory(root, agent.id);
-	const memoryInstructions = [
-		`Private memory: agents/${agent.id}/memory.md`,
-		"This file is your durable personal memory across every session and wake. Record founder preferences, decisions, recurring context, and lessons the moment you learn them; prune anything wrong or stale. Keep it about how you work, not a copy of company data.",
-		...(memory.trim() ? ["Current memory:", memory.trim()] : []),
-	].join("\n");
-	const skillsInstructions = `Personal skills: agents/${agent.id}/skills/ holds skill files loaded only into your sessions. When you develop a repeatable procedure worth keeping, save it there as a skill; company-wide skills belong to the founder under .qorpera/skills/.`;
-	const coworkers = (() => {
-		try {
-			return readStaffAgents(root).filter((other) => other.id !== agent.id && other.employmentStatus === "active");
-		} catch {
-			return [];
-		}
-	})();
-	const coworkerInstructions = coworkers.length
-		? [
-				"Your coworkers are:",
-				...coworkers.map((other) => `- ${other.displayName} — ${other.role} [staffAgentId=${other.id}]`),
-				"Use send_agent_message with a coworker's exact staffAgentId to hand off work, ask for something they own, or report a result they are waiting on. Messages are durable and read in the coworker's own next session, never live: include all context needed to act, and do not assume they can see your conversation. Respect each other's responsibilities instead of doing a coworker's job yourself.",
-			].join("\n")
-		: "You are currently the only active staff member, so send_agent_message has no valid recipient yet.";
-	const senderNames = new Map([...coworkers, agent].map((member) => [member.id, member.displayName]));
-	const messageInstructions = staffMessagesContext(root, agent.id, senderNames);
-	const lifecycleInstructions =
-		agent.lifecycleState === "setup"
-			? [
-					"Lifecycle state: setup.",
-					"You are establishing yourself as a useful employee, not answering a single setup question. Be eager for responsibility without becoming repetitive: lead the founder through one concrete next decision at a time and keep moving after every answer.",
-					"Conception is complete when: (1) the founder understands and has had a chance to refine the durable responsibility you will own; (2) the responsibility, first useful outcome, and material evidence gaps are explicit; and (3) you have enough Company File context or connected access to begin doing useful work—not merely a selected source, empty template, or authorization request.",
-					"Suggested roles begin from their job specification. Blank roles must first establish a durable area of responsibility. In either case, create an ordinary Company File object only when the work needs one; do not manufacture an artifact to finish setup.",
-					"Never stop setup at an empty intake file. If a selected source does not provide usable data, say exactly what is still missing and immediately lead the next best path: use existing records, choose a specific live service, or connect/build the smallest appropriate connector.",
-					"Before finishing setup, offer one concrete recurring responsibility with a useful cadence and explain what the founder would receive. A schedule is optional and must not block useful work. Do not repeatedly ask once the founder has responded.",
-					"When the completion criteria are genuinely met, call complete_setup with no arguments. This is your own silent transition out of setup behavior: never announce, explain, or ask permission for the state change. Until then, end every reply with the single most useful next setup action.",
-				].join("\n")
-			: "Conception is complete. Any first-turn or during-setup clauses retained in older durable instructions no longer apply. Work normally from the responsibility, Company File, available evidence, and founder requests.";
-	return [
-		"You are a persistent staff member of this company, not a temporary chat persona.",
-		`Staff identity: ${agent.id}`,
-		`Name: ${agent.displayName}`,
-		`Role: ${agent.role}`,
-		`Durable instructions: agents/${agent.id}/instructions.md`,
-		"Instructions:",
-		agent.charter,
-		lifecycleInstructions,
-		memoryInstructions,
-		skillsInstructions,
-		coworkerInstructions,
-		messageInstructions,
-		artifactInstructions,
-		connectorInstructions,
-		routineInstructions,
-		"Keep this identity and these instructions across every launch. You may refine your instructions as the role becomes clearer, but never use them to broaden your authority. Keep private working material inside your agent directory, shared company work under files/, and maintain continuity through company files and your trail.",
-		"When the request_connection tool is available and a missing source blocks useful work after you have checked existing company data and connections, use it with exact destination hosts and opaque secret reference names. For an artifact data need, always include its exact artifactId and dataNeedId. When there is no installed provider recipe, include providerSuggestions with two to four concrete services likely to satisfy the need; do not offer broad categories or bundles. It proposes a founder choice; it does not request provider access or grant access by itself.",
-		"A selected provider label is an exact setup contract. A named service means its private account data through least-privilege provider authentication unless the label explicitly says public export, uploaded file, or another no-auth workflow. Never silently substitute a public export, local file, manual template, or different provider for the selected service; ask before changing the source or access mode.",
-		"Use run_connector for an execution-ready company-tool connector operation. Inspect its manifest and implementation contract before supplying input. A connector is transport, never an authoritative source by itself. After the smallest relevant read, use assess_artifact_source to decide separately for each datatype and affected measure whether the actual source is authoritative, supporting, or invalid. Base that decision on concrete source identity, entity scope, field meaning, time coverage, provenance, and evidence that the company actually uses this dataset as the operating record. Access, ownership, admin permission, and an empty result do not prove completeness or company usage: for example, a repository issue endpoint is not the company's defect record unless evidence establishes that workflow. Default to supporting when operational scope or completeness is unverified, and make absence or zero-count claims only from a dataset proven complete for that process. Use one stable sourceRef for the logical dataset or account; put endpoint and query details in evidence. Only then call record_artifact_observation for measures assessed authoritative. If a previously useful source is old or a real read fails, call report_artifact_source_issue for only the affected measures so their last valid values remain visible as stale or blocked. Never mark a linked connection ready from setup or authentication state alone.",
-		"When manage_routine is available, you may create or change only your own recurring work. In an attended conversation, call it only after the founder explicitly agrees to the exact work and cadence or explicitly asks for the pause, resume, or removal. Never infer consent from general enthusiasm. Reuse one stable routineKey for the same responsibility so retries update rather than duplicate. Use weekly wall-clock schedules for named weekdays and times, with timeZone auto unless the founder asks for a specific timezone. Scheduled routines default to high effort.",
-		"When use_computer is available, you own public connector setup navigation. Open the connector registrationUrl in the Qorpera-controlled Chrome profile, inspect after every navigation, and drive the provider UI until the first genuinely user-only boundary. You may fill non-sensitive public setup forms. Dismiss cookie and privacy prompts without opting into optional tracking where possible, and clear any other public dialog that obstructs the private form. Never type credentials, passwords, passkeys, recovery codes, MFA or OTP values, financial identifiers, or private founder data. Do not stop on a landing page. Call handoff only at an unobstructed sign-in, identity-verification, MFA, consent, or equivalent secure user-only boundary. The same managed Chrome profile remains open for the founder; after they complete the protected step, that completion authorizes all remaining setup within the exact selected connector scope. Snapshot the same profile and continue without requesting another approval. If a provider displays a generated client ID and secret, first read only the public ID, wait for that tool result, and update the connector manifest. In a later tool step, store the secret with the manifest's exact clientSecretName. Never issue those operations concurrently; never read, repeat, or place the secret in a file, and never ask the founder to copy or store it.",
-		"A Connection choice context is a durable founder selection, not conversational prose. Honor the selected provider and access mode exactly. If the selected source has no installed recipe, treat it as a connector-build assignment. Create connectors/<connector-id>/manifest.json with schema qorpera.connector/v1 and an implementation entry in the same directory. The manifest names this ownerAgentId as its maintainer and provenance, not its exclusive consumer, plus displayName, purpose, environment when sandboxed, operations (id, label, description, read/write access), exact destination hosts, authentication (none, api-key, or oauth2), and implementation (agent-playbook or company-tool plus entry). Authentication contains only opaque secretName references and public OAuth metadata—never credentials. OAuth recipes may describe GET or POST authorization, PKCE use, fixed public parameters, public date/host/body-digest header templates, header-based client authentication, and a separate clientSecretName when resource calls also need the client secret. Never put a credential in a manifest or public header template. Never use a sandbox signature bypass unless environment is sandbox, and never claim a production banking connector is ready when it still requires certificate-backed signing. Then use request_connection with recipeId company:<connector-id> and the exact manifest destinations and secretNames.",
-		"The built-in GitHub recipe is recipeId github with secretNames [github] and destinations api.github.com, uploads.github.com, and raw.githubusercontent.com. Never claim a built-in or company connector is installed unless it is listed above.",
-	].join("\n");
 }
 
 function staffIntroMessage(root: string, agent: StaffAgent, orientation?: StaffOrientationContext): string {
@@ -2660,24 +2414,6 @@ function staffIntroMessage(root: string, agent: StaffAgent, orientation?: StaffO
 	]
 		.filter(Boolean)
 		.join("\n\n");
-}
-
-function reconcileInterruptedStaffIntros(root: string): void {
-	const path = staffRuntimeStatePath(app.getPath("userData"), root);
-	const current = readStaffRuntimeState(path);
-	let next = current;
-	for (const intro of Object.values(current.intros)) {
-		if (intro.status !== "started") continue;
-		next = finishStaffIntro(
-			next,
-			intro.staffAgentId,
-			intro.trailFile,
-			false,
-			Date.now(),
-			"staff intro was interrupted before completion",
-		);
-	}
-	if (next !== current) writeStaffRuntimeState(path, next);
 }
 
 function enqueueRuntimeTransition<T>(runtime: CompanyRuntime, transition: () => Promise<T>): Promise<T> {
@@ -3105,22 +2841,10 @@ interface ActiveCompany {
 	environmentId?: string;
 	access: ProfileAccess;
 	backendUrl: string;
-	kickoff: boolean;
-	wakeRunning: boolean;
-	/** Exact autonomous trail currently owned by the kernel, if any. */
-	autonomousTrailFile?: string;
-	scheduledJobs: Array<
-		ScheduledJob & {
-			lastRunAt?: string;
-			lastFinishedAt?: string;
-			lastOutcome?: "succeeded" | "failed";
-			lastTrailFile?: string;
-			nextRunAt?: string;
-			failureStreak: number;
-			running: boolean;
-		}
-	>;
-	/** Trail file the live founder child is bound to (resumed or fresh), so
+	/** Routine definitions only. Runs happen in the cloud; this computer keeps
+	 * no run history for them. */
+	scheduledJobs: ScheduledJob[];
+	/** Trail file the anchored conversation is bound to (resumed or fresh), so
 	 * the chrome can mark the session active and cache under the right key. */
 	sessionFile?: string;
 }
@@ -3131,22 +2855,7 @@ function activeCompanyInfo(slot: Slot): ActiveCompany | undefined {
 	const access = activeProfileAccess(runtime.root);
 	if (!access) return undefined;
 	const attachment = profileAttachment(runtime.root);
-	const runState = readWakeRunState(wakeRunStatePath(app.getPath("userData"), runtime.root));
-	const now = Date.now();
-	const scheduledJobs = readScheduledJobs(runtime.root).map((job) => {
-		const jobState = scheduledJobRunState(runState, job.id);
-		const nextRunAt = nextScheduledWakeAt(job, jobState, now);
-		return {
-			...job,
-			lastRunAt: jobState.lastWakeAt,
-			lastFinishedAt: jobState.lastFinishedAt,
-			lastOutcome: jobState.lastOutcome,
-			lastTrailFile: jobState.lastTrailFile,
-			nextRunAt,
-			failureStreak: jobState.failureStreak,
-			running: false,
-		};
-	});
+	const scheduledJobs = readScheduledJobs(runtime.root);
 	return {
 		root: runtime.root,
 		id: runtime.storageId,
@@ -3159,9 +2868,6 @@ function activeCompanyInfo(slot: Slot): ActiveCompany | undefined {
 		environmentId: attachment.environmentId,
 		access,
 		backendUrl: `http://127.0.0.1:${runtime.backendPort}`,
-		kickoff: false,
-		wakeRunning: false,
-		autonomousTrailFile: undefined,
 		scheduledJobs,
 		sessionFile: attendedSessionBinding(runtime)?.file,
 	};
@@ -3185,35 +2891,31 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		if (!slot.runtime) void slot.window.loadFile(join(FIXED_SHELL_DIR, "index.html"));
 		return;
 	}
-	if (!IS_SMOKE) {
-		try {
-			if (!(await refreshProfileAccess(root))) {
-				throw new Error("This profile is not shared with the signed-in Qorpera account.");
-			}
-			const attachment = profileAttachment(root);
-			const accountId = currentQorperaAccountId;
-			if (!accountId || !qorperaAccountAuth) throw new Error("Sign in to open this company.");
-			const mode = await qorperaAccountAuth.companyFileMode(
-				attachment.profileId,
-				accountId,
-				AbortSignal.timeout(15_000),
-			);
-			if (mode.environmentId !== attachment.environmentId || currentQorperaAccountId !== accountId)
-				throw new Error("Company identity changed while opening it.");
-			governedCompanyFile = mode.mode === "governed";
-			if (governedCompanyFile) {
-				const profile = hostedProfilesById.get(attachment.profileId);
-				if (!profile || profile.environmentId !== mode.environmentId)
-					throw new Error("Company metadata is unavailable.");
-				root = materializeCloudCompanyDisplay(profile, accountId);
-			}
-		} catch (error) {
-			console.error(
-				`refusing to open inaccessible profile: ${error instanceof Error ? error.message : String(error)}`,
-			);
-			if (!slot.runtime) void slot.window.loadFile(join(FIXED_SHELL_DIR, "index.html"));
-			return;
+	try {
+		if (!(await refreshProfileAccess(root))) {
+			throw new Error("This profile is not shared with the signed-in Qorpera account.");
 		}
+		const attachment = profileAttachment(root);
+		const accountId = currentQorperaAccountId;
+		if (!accountId || !qorperaAccountAuth) throw new Error("Sign in to open this company.");
+		const mode = await qorperaAccountAuth.companyFileMode(
+			attachment.profileId,
+			accountId,
+			AbortSignal.timeout(15_000),
+		);
+		if (mode.environmentId !== attachment.environmentId || currentQorperaAccountId !== accountId)
+			throw new Error("Company identity changed while opening it.");
+		governedCompanyFile = mode.mode === "governed";
+		if (governedCompanyFile) {
+			const profile = hostedProfilesById.get(attachment.profileId);
+			if (!profile || profile.environmentId !== mode.environmentId)
+				throw new Error("Company metadata is unavailable.");
+			root = materializeCloudCompanyDisplay(profile, accountId);
+		}
+	} catch (error) {
+		console.error(`refusing to open inaccessible profile: ${error instanceof Error ? error.message : String(error)}`);
+		if (!slot.runtime) void slot.window.loadFile(join(FIXED_SHELL_DIR, "index.html"));
+		return;
 	}
 	// A company never runs in two windows: two anchors on one trail and two
 	// tokens against one backend both end badly. Route to the live one.
@@ -3280,7 +2982,6 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		scaffoldCompany(root);
 		validateCompanyHostStorage(root);
 		const userData = app.getPath("userData");
-		reconcileInterruptedStaffIntros(root);
 		const checkpointDir = join(dirname(sandboxConfigDir(userData, root, "company-agent")), "checkpoints");
 		reconcilePendingProductCheckpoints(checkpointDir, root);
 		const hasLocalHostState = hasCompanyHostState(userData, root);
@@ -3406,7 +3107,6 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		// the cloud. There is no unnamed company-wide agent.
 		const childOptions: ChildOptions = {
 			...runtimeLaunchOptions(app.getPath("userData"), root, undefined, undefined),
-			thinkingLevel: "low",
 		};
 		const runtime: CompanyRuntime = {
 			root,
@@ -3437,32 +3137,16 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		startCloudSessionPump(slot, runtime);
 		pendingBackendClose = undefined;
 		pendingSessions = undefined;
-		runtime.inventoryWatcher = watch(join(root, ".qorpera"), { persistent: false }, (_event, file) => {
-			if (file?.toString() !== "products.json") return;
-			try {
-				readProductProtectionInventory(runtime.root);
-			} catch (error) {
-				console.error(`product inventory refresh failed: ${(error as Error).message}`);
-			}
-		});
 		// Inbound webhooks (optional kernel module): local-loopback listener,
 		// events persisted to inbox/events/. This computer never executes a
-		// wake for them; the durable event and trigger state are left for the
-		// cloud runtime's listeners.
+		// wake for them; the durable event file is what the cloud runtime's
+		// listeners consume.
 		const webhookBinding = readWebhookBinding(root);
 		if (webhookBinding?.enabled) {
 			void startWebhookListener({
 				root,
 				token: webhookBinding.token,
 				port: webhookBinding.port,
-				onEvent: (_file, triggerEvent) => {
-					const live = slot.runtime;
-					if (!live || live.closing || !triggerEvent) return;
-					const path = routineTriggerStatePath(app.getPath("userData"), live.root);
-					const previous = readRoutineTriggerState(path);
-					const queued = queueCustomRoutineTrigger(readScheduledJobs(live.root), previous, triggerEvent);
-					if (queued.pending.length > previous.pending.length) writeRoutineTriggerState(path, queued);
-				},
 			})
 				.then((listener) => {
 					// The company may have closed while the listener was binding:
@@ -3486,7 +3170,6 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 				})
 				.catch((error) => console.error(`webhook listener failed to start: ${(error as Error).message}`));
 		}
-		slot.kickoffPending = false;
 
 		// Every company uses the same trusted Base shell. Company-authored UI is
 		// limited to sandboxed artifacts exposed inside that shell.
@@ -3571,23 +3254,6 @@ function trailModelSelection(root: string, sessionFile: string): RuntimeModelSel
 	}
 }
 
-/** Hand queued coworker mail to a freshly spawned session. Called only after
- * a spawn whose staff context was built in the same transition, so delivery
- * marking can never outrun the context that displays the messages. */
-function deliverQueuedStaffMessages(root: string, staffAgentId: string): void {
-	try {
-		const queued = pendingStaffAgentMessages(root, staffAgentId);
-		if (queued.length) {
-			markStaffAgentMessagesDelivered(
-				root,
-				queued.map((message) => message.id),
-			);
-		}
-	} catch (error) {
-		console.error(`coworker message delivery failed: ${(error as Error).message}`);
-	}
-}
-
 function latestStaffTrailFile(runtime: CompanyRuntime, staffAgentId: string): string | undefined {
 	return runtime.sessions
 		.snapshot()
@@ -3620,7 +3286,6 @@ async function attachStaffChild(
 		sessionFile,
 		...(sessionFile ? {} : { sessionName: agent.displayName }),
 		staffAgentId: agent.id,
-		staffContext: staffSystemContext(runtime.root, agent),
 		model:
 			(sessionFile ? trailModelSelection(runtime.root, sessionFile) : undefined) ??
 			agent.model ??
@@ -3638,13 +3303,14 @@ async function attachStaffChild(
 		: bindTrailSession(runtime.root, runtime.root, scope);
 	if (!sessionFile) appendKernelSessionInfo(binding, agent.displayName);
 	sessions.rememberAudit(binding);
-	deliverQueuedStaffMessages(runtime.root, agent.id);
 	if (markIntroPending) {
 		const statePath = staffRuntimeStatePath(app.getPath("userData"), runtime.root);
 		const pending = recordStaffIntroPending(readStaffRuntimeState(statePath), agent.id, binding.file, Date.now());
 		writeStaffRuntimeState(statePath, pending);
 	}
-	runtime.childOptions = options;
+	// childOptions always names the anchored trail, so a later snapshot can
+	// re-anchor the same conversation instead of minting a fresh one.
+	runtime.childOptions = { ...options, sessionFile: binding.file };
 	runtime.attachedStaffVersion = runtime.cloudStaffSync?.versionForStaff(agent.id);
 	recordAttachedTrailCursor(runtime, agent.id);
 	delete runtime.childOptions.sessionName;
@@ -4081,7 +3747,11 @@ async function bootstrapStaffTeam(
 		if (readStaffAgents(runtime.root).some((staff) => staff.employmentStatus === "active")) {
 			return { ok: false, error: "this company already has agents; use Add agent instead" };
 		}
-		const previousOptions: ChildOptions = { ...runtime.childOptions };
+		const previousAnchor = runtime.sessionAnchor;
+		const previousOptions: ChildOptions = {
+			...runtime.childOptions,
+			sessionFile: previousAnchor?.binding.file ?? runtime.childOptions.sessionFile,
+		};
 		let created: StaffAgent[] = [];
 		try {
 			snapshotFounderGitState(runtime.root, "founder initial team creation");
@@ -4128,7 +3798,6 @@ async function bootstrapStaffTeam(
 			runtime.childOptions = {
 				sessionFile: firstBinding.file,
 				staffAgentId: first.id,
-				staffContext: staffSystemContext(runtime.root, first),
 				model: previousOptions.model,
 			};
 			runtime.sessionAnchor = { binding: firstBinding, staffAgentId: first.id };
@@ -4153,7 +3822,9 @@ async function bootstrapStaffTeam(
 					// Preserve the original failure; archived records are only rollback hygiene.
 				}
 			}
-			await restoreAttendedAnchor(slot, runtime, previousOptions, "staff-bootstrap conversation restore failed");
+			if (previousAnchor && runtime.sessionAnchor !== previousAnchor) {
+				await restoreAttendedAnchor(slot, runtime, previousOptions, "staff-bootstrap conversation restore failed");
+			}
 			return { ok: false, error: error instanceof Error ? error.message : String(error) };
 		}
 	});
@@ -4177,7 +3848,11 @@ async function createStaffMember(
 	if (!runtime) return { ok: false, error: "open a company before adding staff" };
 	return enqueueRuntimeTransition(runtime, async () => {
 		if (slot.runtime !== runtime || runtime.closing) return { ok: false, error: "company runtime changed" };
-		const previousOptions: ChildOptions = { ...runtime.childOptions };
+		const previousAnchor = runtime.sessionAnchor;
+		const previousOptions: ChildOptions = {
+			...runtime.childOptions,
+			sessionFile: previousAnchor?.binding.file ?? runtime.childOptions.sessionFile,
+		};
 		try {
 			const displayName = input.displayName ?? template!.name;
 			const definition = {
@@ -4234,7 +3909,9 @@ async function createStaffMember(
 			const attached = await attachStaffChild(slot, runtime, staff, undefined, true);
 			return { ok: true, staff, sessionFile: attached.sessionFile, introStatus: "pending" as const };
 		} catch (error) {
-			await restoreAttendedAnchor(slot, runtime, previousOptions, "staff-create conversation restore failed");
+			if (previousAnchor && runtime.sessionAnchor !== previousAnchor) {
+				await restoreAttendedAnchor(slot, runtime, previousOptions, "staff-create conversation restore failed");
+			}
 			return { ok: false, error: error instanceof Error ? error.message : String(error) };
 		}
 	});
@@ -4348,7 +4025,6 @@ async function updateStaffMember(
 					triggerCloudStaffSync(runtime);
 				}
 				if (runtime.childOptions.staffAgentId === staff.id) {
-					runtime.childOptions.staffContext = staffSystemContext(runtime.root, staff);
 					if (update.model !== undefined) {
 						const resolved =
 							staff.model ?? readCompanyRuntimeModelPreference(app.getPath("userData"), runtime.root);
@@ -4770,7 +4446,6 @@ async function staffIntroReady(
 	slot: Slot,
 	staffAgentId: string,
 	trailFile: string,
-	retry: boolean,
 ): Promise<{ ok: boolean; status?: string; error?: string }> {
 	const runtime = slot.runtime;
 	if (!runtime) return { ok: false, error: "open a company before starting a staff introduction" };
@@ -4788,12 +4463,6 @@ async function staffIntroReady(
 		}
 		const arbiter = runtimeCloudSessionArbiter(runtime);
 		if (!arbiter) return { ok: false, error: "cloud conversation is unavailable" };
-		if (retry) {
-			return {
-				ok: false,
-				error: "Retry the introduction by sending a cloud message with an explicit execution sponsor.",
-			};
-		}
 		const ref = await arbiter.ensureSession(staff.id, staff.displayName, anchor.binding.sessionId);
 		if (anchor.binding.sessionId !== ref.clientSessionId) {
 			void readoptStaffCloudSession(slot, runtime, staff.id, ref);
@@ -4973,7 +4642,7 @@ function createWindow(companyRoot?: string): Slot {
 	let slot: Slot;
 	const partition = initialRendererPartition(companyRoot);
 	const { window, rendererSession } = createRendererWindow(partition, () => slot);
-	slot = { window, rendererSession, partition, kickoffPending: false, openGeneration: 0 };
+	slot = { window, rendererSession, partition, openGeneration: 0 };
 	registerRendererWindow(window, slot);
 	void window.loadFile(join(FIXED_SHELL_DIR, "index.html"));
 	return slot;
@@ -5691,7 +5360,6 @@ app.whenReady().then(async () => {
 		if (!access) return { ok: false, error: "Company is not available to the signed-in account." };
 		const company = listCompanies().find((record) => normalizedRoot(record.root) === normalizedRoot(root));
 		if (!company) return { ok: false, error: "Company is no longer registered." };
-		const _attachment = profileAttachment(company.root);
 		const owner = BrowserWindow.fromWebContents(event.sender);
 		if (!owner) return { ok: false, error: "Company selector is unavailable." };
 		const confirmation = await dialog.showMessageBox(owner, {
@@ -6463,8 +6131,6 @@ app.whenReady().then(async () => {
 			if (!approved || slot.runtime !== runtime || runtime.closing) {
 				return { ok: false, error: approved ? "company runtime changed" : "cancelled" };
 			}
-			runtime.inventoryWatcher?.close();
-			runtime.inventoryWatcher = undefined;
 			let department: ProductDepartment | undefined;
 			let failure: Error | undefined;
 			try {
@@ -6495,27 +6161,7 @@ app.whenReady().then(async () => {
 				);
 			} catch (error) {
 				failure = error instanceof Error ? error : new Error(String(error));
-				try {
-					readProductProtectionInventory(runtime.root);
-				} catch (restartError) {
-					console.error(`product transaction cleanup failed: ${(restartError as Error).message}`);
-				}
 			}
-			let watcher: ReturnType<typeof watch> | undefined;
-			try {
-				watcher = watch(join(runtime.root, ".qorpera"), { persistent: false }, (_event, file) => {
-					if (file?.toString() !== "products.json") return;
-					try {
-						readProductProtectionInventory(runtime.root);
-					} catch (inventoryError) {
-						console.error(`product inventory refresh failed: ${(inventoryError as Error).message}`);
-					}
-				});
-			} catch (error) {
-				failure ??= error instanceof Error ? error : new Error(String(error));
-			}
-			if (watcher) runtime.inventoryWatcher = watcher;
-			if (!watcher) failure ??= new Error("the product inventory watcher could not be restored");
 			return failure ? { ok: false, error: failure.message } : { ok: true, department: department! };
 		});
 	});
@@ -6683,59 +6329,15 @@ app.whenReady().then(async () => {
 			defaultId: 0,
 			cancelId: 0,
 			message: `Delete “${job.title}”?`,
-			detail:
-				"Its trail runs remain in the company. The recurring definition and local run state will stop being shown.",
+			detail: "Its trail runs remain in the company. The recurring definition will stop being shown.",
 		});
 		if (confirmation.response !== 1) return { ok: false, error: "cancelled" };
-		const deleted = deleteScheduledJob(runtime.root, id);
-		if (deleted) {
-			const statePath = wakeRunStatePath(app.getPath("userData"), runtime.root);
-			writeWakeRunState(statePath, removeScheduledJobRunState(readWakeRunState(statePath), id));
-		}
-		return { ok: deleted };
-	});
-	ipcMain.handle("company:scheduled-job-run", (event, id: unknown) => {
-		const slot = slotOf(event.sender);
-		const runtime = slot?.runtime;
-		if (!slot || !runtime || typeof id !== "string") return { ok: false, error: "invalid scheduled job" };
-		if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
-		const job = readScheduledJobs(runtime.root).find((candidate) => candidate.id === id);
-		if (!job) return { ok: false, error: "scheduled job not found" };
-		return { ok: false, error: "Routines run in the cloud. This computer cannot start a routine run." };
+		return { ok: deleteScheduledJob(runtime.root, id) };
 	});
 	ipcMain.handle("company:close", (event) => {
 		const slot = slotOf(event.sender);
 		if (slot) return closeCompany(slot);
 	});
-	ipcMain.handle(
-		"chat:open",
-		(event, sessionFile: string | null, department?: string, worktree?: string, sessionName?: unknown) => {
-			const slot = slotOf(event.sender);
-			const runtime = slot?.runtime;
-			if (!slot || !runtime) return { ok: false };
-			if (sessionFile === null && !slotHasProfileCapability(slot, "write")) {
-				return profilePermissionError("write");
-			}
-			if ((department || worktree) && !slotHasProfileCapability(slot, "authorize")) {
-				return profilePermissionError("authorize");
-			}
-			if (
-				sessionName !== undefined &&
-				(typeof sessionName !== "string" ||
-					!sessionName.trim() ||
-					Buffer.byteLength(sessionName, "utf-8") > 512 ||
-					/[\r\n]/.test(sessionName))
-			) {
-				return { ok: false, error: "invalid session name" };
-			}
-			if (sessionName !== undefined && sessionFile !== null) {
-				return { ok: false, error: "only a fresh session can receive an initial name" };
-			}
-			// Product chats ran a local product-worker process. Agents execute
-			// in the cloud; the desktop has no unnamed or product-scoped chat.
-			return { ok: false, error: "company conversations belong to named agents" };
-		},
-	);
 	ipcMain.handle("staff:create", (event, value: unknown) => {
 		const slot = slotOf(event.sender);
 		if (!slot) return { ok: false, error: "untrusted staff creation request" };
@@ -6786,13 +6388,13 @@ app.whenReady().then(async () => {
 		clipboard.writeText(staff.id);
 		return { ok: true, conversationId: staff.id };
 	});
-	ipcMain.handle("staff:intro-ready", (event, staffAgentId: unknown, trailFile: unknown, retry: unknown = false) => {
+	ipcMain.handle("staff:intro-ready", (event, staffAgentId: unknown, trailFile: unknown) => {
 		const slot = slotOf(event.sender);
-		if (!slot || typeof staffAgentId !== "string" || typeof trailFile !== "string" || typeof retry !== "boolean") {
+		if (!slot || typeof staffAgentId !== "string" || typeof trailFile !== "string") {
 			return { ok: false, error: "invalid staff introduction target" };
 		}
 		if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
-		return staffIntroReady(slot, staffAgentId, trailFile, retry);
+		return staffIntroReady(slot, staffAgentId, trailFile);
 	});
 	ipcMain.handle("room:create", (event, value: unknown) => {
 		const slot = slotOf(event.sender);
@@ -7586,10 +7188,13 @@ app.whenReady().then(async () => {
 					githubNative ? "github-native" : `company:${companyConnector!.id}`,
 				);
 				publishConnectionRequest(slot, binding, connected);
-				const syncing = beginConnectionRequestSync(userData, root, identity);
-				publishConnectionRequest(slot, binding, syncing);
+				// No desktop agent checks the first data any more: the cloud agent
+				// sees the connection on its next turn, so the request is ready now.
+				beginConnectionRequestSync(userData, root, identity);
+				const ready = completeConnectionRequestSync(userData, root, identity);
+				publishConnectionRequest(slot, binding, ready);
 				transitionLinkedArtifactRequest(root, request, "connected");
-				return { ok: true, request: projectConnectionRequest(syncing) };
+				return { ok: true, request: projectConnectionRequest(ready) };
 			}
 			const failure = safeConnectionFailure(result.error);
 			const settled = result.cancelled
@@ -7776,10 +7381,6 @@ app.whenReady().then(async () => {
 	ipcMain.handle("app:info", (event) => {
 		const slot = slotOf(event.sender);
 		const active = slot ? activeCompanyInfo(slot) : undefined;
-		if (active && slot) {
-			active.kickoff = slot.kickoffPending;
-			slot.kickoffPending = false;
-		}
 		const pending = pendingCompany;
 		pendingCompany = undefined;
 		return {
@@ -8080,13 +7681,10 @@ app.whenReady().then(async () => {
 		return { ok: false, error: "Agents execute in the cloud. Reopen the thread to attach its cloud conversation." };
 	});
 
-	// A window that already knows its company (launcher argv, company smoke)
-	// boots directly onto that company's durable partition — the open then
-	// happens in place, with no window swap.
-	const smokeCompanyIndex = process.argv.indexOf("--smoke-company");
-	const smokeCompanyRoot = smokeCompanyIndex >= 0 ? process.argv[smokeCompanyIndex + 1] : undefined;
-	const smokeBootstrapPicker = process.argv.includes("--smoke-bootstrap");
-	const initial = createWindow(pendingCompany ?? smokeCompanyRoot);
+	// A window that already knows its company (launcher argv) boots directly
+	// onto that company's durable partition — the open then happens in place,
+	// with no window swap.
+	const initial = createWindow(pendingCompany);
 	if (pendingProfileInvitationId) scheduleProfileInvitationHandoff(initial);
 
 	// Foundation self-update: packaged builds check Qorpera_Base_Releases
@@ -8211,13 +7809,11 @@ app.whenReady().then(async () => {
 
 	// Visual smoke: capture the window to a PNG once it has settled — the
 	// cheap way to verify chrome work without a human at the keyboard.
-	// Composes with --smoke-company (captures after the company loads).
 	const shotIndex = process.argv.indexOf("--smoke-shot");
 	const smokeShotTarget = shotIndex >= 0 ? process.argv[shotIndex + 1] : undefined;
 	if (smokeShotTarget) {
 		let timer: NodeJS.Timeout | undefined;
 		initial.window.webContents.on("did-finish-load", () => {
-			if (smokeCompanyRoot && !initial.window.webContents.getURL().startsWith("http://127.0.0.1:")) return;
 			if (timer) clearTimeout(timer);
 			timer = setTimeout(async () => {
 				try {
@@ -8250,92 +7846,6 @@ app.whenReady().then(async () => {
 			console.log("SHELL_READY");
 			setTimeout(() => app.quit(), 1500);
 		});
-	}
-	// A smoke run must never hang: an openCompany failure (sandbox
-	// provisioning, company lock, …) would otherwise become an unhandled
-	// rejection that leaves the process alive with no exit path.
-	let smokeFailurePending = false;
-	const failSmoke = (error: Error): void => {
-		if (smokeFailurePending) return;
-		smokeFailurePending = true;
-		console.error(`SMOKE_FAILED ${error.message}`);
-		void Promise.all([...slots.values()].map((slot) => closeCompany(slot)))
-			.catch((cleanupError) => console.error(`SMOKE_CLEANUP_FAILED ${(cleanupError as Error).message}`))
-			.finally(() => app.exit(1));
-	};
-	// Fixed-shell smoke: open a company and prove its trusted renderer loads.
-	if (smokeCompanyRoot) {
-		void openCompany(initial, smokeCompanyRoot)
-			.then(async () => {
-				if (smokeBootstrapPicker) {
-					const result = (await initial.window.webContents.executeJavaScript(`
-					(async () => {
-					let rendererError = "";
-					const captureError = (event) => { rendererError = event.error?.stack ?? event.message ?? "unknown renderer error"; };
-					window.addEventListener("error", captureError);
-					await new Promise((resolve, reject) => {
-						let attempts = 0;
-						const inspect = () => {
-							if (document.querySelectorAll(".staff-bootstrap-card").length >= 3) resolve();
-							else if (++attempts >= 50) reject(new Error("staff bootstrap cards did not render"));
-							else setTimeout(inspect, 100);
-						};
-						inspect();
-					});
-					for (let index = 0; index < 3; index += 1) document.querySelectorAll(".staff-bootstrap-card")[index]?.click();
-					return {
-						title: document.querySelector(".staff-bootstrap-head h1")?.textContent,
-						cardCount: document.querySelectorAll(".staff-bootstrap-card").length,
-						actionText: document.querySelector(".staff-bootstrap-actions .primary-button")?.textContent,
-						rendererError,
-					};
-					})()
-				`)) as { title?: string; cardCount?: number; actionText?: string; rendererError?: string };
-					if (
-						result.title !== "Choose your starting team" ||
-						result.cardCount !== 10 ||
-						result.actionText !== "Start 3 staff"
-					) {
-						throw new Error(
-							`staff bootstrap picker did not render (title=${result.title ?? "missing"}, action=${result.actionText ?? "missing"}, cards=${result.cardCount ?? 0}, renderer=${result.rendererError ?? "none"})`,
-						);
-					}
-					console.log(`BOOTSTRAP_PICKER_READY cards=${result.cardCount}`);
-				}
-				if (!smokeShotTarget)
-					setTimeout(() => {
-						console.log(`SHELL_LOADED ${initial.window.webContents.getURL()}`);
-						app.quit();
-					}, 1500);
-			})
-			.catch(failSmoke);
-	}
-	// Multi-window smoke: two companies side by side.
-	const smokeMultiIndex = process.argv.indexOf("--smoke-multi");
-	if (smokeMultiIndex >= 0 && process.argv[smokeMultiIndex + 1] && process.argv[smokeMultiIndex + 2]) {
-		const rootA = process.argv[smokeMultiIndex + 1];
-		const rootB = process.argv[smokeMultiIndex + 2];
-		void openCompany(initial, rootA)
-			.then(async () => {
-				const second = createWindow();
-				await openCompany(second, rootB);
-				// Re-opening an already-open company must route, not double-run.
-				const third = createWindow();
-				await openCompany(third, rootA);
-				setTimeout(() => {
-					for (const slot of slots.values()) {
-						const runtime = slot.runtime;
-						console.log(
-							runtime
-								? `WINDOW company=${runtime.root} port=${runtime.backendPort} url=${slot.window.webContents.getURL()}`
-								: `WINDOW hub url=${slot.window.webContents.getURL()}`,
-						);
-					}
-					console.log("MULTI_OK");
-					app.quit();
-				}, 1500);
-			})
-			.catch(failSmoke);
 	}
 });
 

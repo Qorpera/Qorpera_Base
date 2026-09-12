@@ -79,7 +79,7 @@ describe("shell starter staff templates", () => {
 	it("does not instantiate template artifacts during agent creation", () => {
 		const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
 		expect(main).not.toContain("createStarterCompanyArtifact");
-		expect(main).toContain("No dedicated artifact was seeded for this agent");
+		expect(main).not.toContain("starterArtifact");
 	});
 
 	it("ships a static asset for every approved character", () => {

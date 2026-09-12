@@ -304,23 +304,28 @@ describe("agent routines", () => {
 		expect(readScheduledJobs(root)).toHaveLength(2);
 	});
 
-	it("defaults legacy routines to local placement and persists explicit placement", () => {
+	it("runs every routine in the cloud and migrates retired placements on read", () => {
 		const job = createScheduledJob(root, {
 			title: "Cloud digest",
 			prompt: "Prepare the digest in the hosted environment.",
 			triggers: schedule(60),
-			placement: "cloud",
 		});
 		expect(job.placement).toBe("cloud");
-		expect(updateScheduledJob(root, job.id, { placement: "requires-local" }).placement).toBe("requires-local");
-		expect(() => updateScheduledJob(root, job.id, { placement: "invalid" as "cloud" })).toThrow(/placement/);
+		expect(updateScheduledJob(root, job.id, { placement: "cloud" }).placement).toBe("cloud");
+		for (const retired of ["local", "requires-local", "invalid"]) {
+			expect(() => updateScheduledJob(root, job.id, { placement: retired as "cloud" })).toThrow(/placement/);
+		}
 
 		const path = join(root, ".qorpera", "routines", `${job.id}.json`);
 		const state = JSON.parse(readFileSync(path, "utf-8")) as { placement?: string };
 		delete state.placement;
 		writeFileSync(path, JSON.stringify(state), "utf-8");
-		expect(readScheduledJobs(root)[0].placement).toBe("local");
+		expect(readScheduledJobs(root)[0].placement).toBe("cloud");
 		expect(readScheduledJobs(root)[0].publication).toEqual({ mode: "automatic" });
+		for (const retired of ["local", "requires-local"]) {
+			writeFileSync(path, JSON.stringify({ ...state, placement: retired }), "utf-8");
+			expect(readScheduledJobs(root)[0].placement).toBe("cloud");
+		}
 	});
 
 	it("preserves founder-set placement across agent routine upserts", () => {
@@ -339,11 +344,11 @@ describe("agent routines", () => {
 		expect(
 			upsertStaffScheduledJob(root, staffAgentId, "weekly-digest", {
 				title: "Weekly digest v3",
-				prompt: "Prepare the digest locally.",
+				prompt: "Prepare the digest again.",
 				triggers: schedule(24 * 60),
-				placement: "local",
+				placement: "cloud",
 			}).placement,
-		).toBe("local");
+		).toBe("cloud");
 	});
 
 	it("publishes operational routines automatically unless reviewers are explicitly configured", () => {

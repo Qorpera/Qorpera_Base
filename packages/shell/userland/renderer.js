@@ -1023,9 +1023,6 @@ async function enterCompany(active) {
 	currentStaffId = null;
 	currentRoomId = null;
 	currentRoomMessages = [];
-	if (active.kickoff) {
-		addMsg("tool", "· setup started — the agent is learning its responsibility…");
-	}
 	renderUpdateButton();
 	show("roster");
 	// With history: the chat child survives window reloads (dev-lane rebuilds
@@ -1717,33 +1714,10 @@ function syncScopeChrome() {
 			: "Steer the company… (Enter to send, Shift+Enter for newline)";
 }
 
-const scopeChip = createChipSelect("scopeBtn", "scopeMenu", async (picked) => {
-	const navigation = ++navigationGeneration;
-	const next = picked || null;
-	if (next === currentDepartment) return;
-	cacheCurrentSession();
-	const result = await window.qorpera.openChat(null, next ?? undefined);
-	if (result?.ok) {
-		currentSession = result.sessionFile ?? null;
-		currentStaffId = null;
-		currentRoomId = null;
-		clearRoomRoute();
-		currentDepartment = result.department ?? null;
-		currentWorktree = result.worktree ?? null;
-	}
-	if (navigation !== navigationGeneration) return;
-	if (!result?.ok) {
-		scopeChip.value = currentDepartment ?? "";
-		return;
-	}
-	$("messages").innerHTML = "";
-	resetWorkGroup();
-	show("chat");
-	renderThreadHeader();
-	syncConnectionRequestCards();
-	syncScopeChrome();
-	renderCompanyNavSafe();
-	hydrateAgentState(false);
+// The scope chip only reports which scope the open thread belongs to. Agents
+// run in the cloud, so the desktop cannot re-home a thread to another department.
+const scopeChip = createChipSelect("scopeBtn", "scopeMenu", () => {
+	scopeChip.value = currentDepartment ?? "";
 });
 
 /** The bottom company control stays deliberately one-line and unlabelled. */
@@ -1872,9 +1846,7 @@ function staffNeedsAttention(staff, runtime) {
 	if (
 		!runtime?.live &&
 		(state.scheduledJobs ?? []).some(
-			(job) =>
-				job.staffAgentId === staffId(staff) &&
-				(Boolean(job.suspendedReason) || job.lastOutcome === "failed"),
+			(job) => job.staffAgentId === staffId(staff) && Boolean(job.suspendedReason),
 		)
 	)
 		return true;
@@ -3153,7 +3125,7 @@ function scheduledJobEffortSelect(value, onChange) {
 
 const ROUTINE_PLACEMENT_OPTIONS = [["cloud", "Cloud"]];
 
-function scheduledJobPlacementSelect(value, onChange) {
+function scheduledJobPlacementSelect(_value, onChange) {
 	const select = document.createElement("select");
 	for (const [optionValue, label] of ROUTINE_PLACEMENT_OPTIONS) {
 		const option = document.createElement("option");
@@ -3161,7 +3133,8 @@ function scheduledJobPlacementSelect(value, onChange) {
 		option.textContent = label;
 		select.appendChild(option);
 	}
-	select.value = value ?? "cloud";
+	// Legacy drafts may still carry another placement; the only lane is cloud.
+	select.value = "cloud";
 	select.onchange = () => onChange(select.value);
 	return select;
 }
@@ -3270,7 +3243,7 @@ function renderAgentRoutineEditor(content, staff) {
 		const remove = document.createElement("button");
 		remove.type = "button";
 		remove.textContent = "Delete";
-		remove.disabled = job.running || editor.pending;
+		remove.disabled = editor.pending;
 		remove.onclick = async () => {
 			editor.pending = true;
 			const result = await scheduledJobRequest(() => window.qorpera.deleteScheduledJob(job.id), "Could not delete the routine.");
@@ -3282,20 +3255,7 @@ function renderAgentRoutineEditor(content, staff) {
 			} else editor.error = result?.error ?? "Could not delete the routine.";
 			renderAgentComputerPanel(staff, true);
 		};
-		const run = document.createElement("button");
-		run.type = "button";
-		run.textContent = job.running ? "Running…" : "Test run";
-		run.disabled = job.running || editor.pending;
-		run.onclick = async () => {
-			editor.pending = true;
-			editor.error = "";
-			const result = await scheduledJobRequest(() => window.qorpera.runScheduledJob(job.id), "Could not start the routine.");
-			editor.pending = false;
-			editor.status = result?.ok ? "Routine started." : "";
-			editor.error = result?.ok ? "" : (result?.error ?? "Could not start the routine.");
-			renderAgentComputerPanel(staff, true);
-		};
-		toolbarActions.append(remove, run);
+		toolbarActions.append(remove);
 	}
 	toolbar.appendChild(toolbarActions);
 	form.appendChild(toolbar);
@@ -3593,7 +3553,7 @@ function createAgentRoutineRow(staff, job) {
 	meta.textContent = `${scheduledJobNextLabel(job)} · ${scheduledJobScheduleLabel(job)}`;
 	copy.append(title, meta);
 	const stateLabel = document.createElement("small");
-	stateLabel.textContent = job.running ? "Running" : job.enabled && !job.suspendedReason ? "On" : "Off";
+	stateLabel.textContent = job.enabled && !job.suspendedReason ? "On" : "Off";
 	row.append(copy, stateLabel);
 	return row;
 }
@@ -4059,14 +4019,6 @@ function renderAgentSettingsPopover() {
 	};
 	notice.append(noticeTitle, toggle);
 	footer.append(status, notice);
-	if (currentStaffIntroStatus === "failed") {
-		const retry = document.createElement("button");
-		retry.type = "button";
-		retry.className = "secondary-button agent-intro-retry";
-		retry.textContent = "Retry introduction";
-		retry.onclick = () => void retryStaffIntroduction();
-		footer.prepend(retry);
-	}
 	content.appendChild(footer);
 }
 
@@ -4134,24 +4086,6 @@ function openAgentSidepanel(mode) {
 		panel.classList.remove("is-opening");
 		titlebar.classList.remove("is-opening");
 	});
-}
-
-async function retryStaffIntroduction() {
-	if (!currentStaffId || !currentSession || currentStaffIntroStatus !== "failed") return;
-	const id = currentStaffId;
-	const sessionFile = currentSession;
-	$("status").textContent = "retrying staff introduction…";
-	const result = await window.qorpera.staffIntroReady(id, sessionFile, true);
-	if (result?.ok) {
-		currentStaffIntroStatus = result.status ?? "started";
-		$("status").textContent = "introduction restarted";
-		setTimeout(() => {
-			if (currentStaffId === id && currentSession === sessionFile) sendRpc({ type: "get_messages" });
-		}, 600);
-	} else {
-		$("status").textContent = "introduction retry did not start";
-		showToast("The introduction could not be restarted yet. Try again when this staff member is ready.");
-	}
 }
 
 function syncConversationAccess() {
@@ -5429,7 +5363,7 @@ function cacheCurrentSession() {
 }
 
 async function openSession(file, pageId = "q:chats") {
-	const navigation = ++navigationGeneration;
+	++navigationGeneration;
 	const summary = (state.sessions ?? []).find((session) => session.file === file);
 	if (summary?.staffAgentId && !activeStaffMembers().some((staff) => staffId(staff) === summary.staffAgentId)) {
 		showToast("This archived staff conversation is available in the company trail but cannot be reopened.");
@@ -5451,92 +5385,13 @@ async function openSession(file, pageId = "q:chats") {
 		renderCompanyNavSafe();
 		return;
 	}
-	cacheCurrentSession();
-	// Product chats restore the exact department/worktree role capability
-	// recorded in their append-only session name.
-	const result = await window.qorpera.openChat(file, summary?.department, summary?.worktree).catch((error) => ({
-		ok: false,
-		error: String(error?.message ?? error),
-	}));
-	if (result?.ok) {
-		currentSession = result.sessionFile ?? file;
-		currentStaffId = summary?.staffAgentId ?? null;
-		currentRoomId = null;
-		clearRoomRoute();
-		currentDepartment = result.department ?? null;
-		currentWorktree = result.worktree ?? null;
-	}
-	if (navigation !== navigationGeneration) return;
-	if (!result?.ok) {
-		// A dead click teaches the founder nothing — say why the chat
-		// wouldn't open (legacy-migration refusals land here too).
-		showToast(result?.error ? `could not open this chat: ${result.error}` : "could not open this chat");
+	// Staff threads reopen through the staff session; the desktop executes
+	// nothing locally, so other historical chats stay readable in the trail only.
+	if (summary?.staffAgentId) {
+		await openStaff(summary.staffAgentId);
 		return;
 	}
-	currentNodeId = pageId;
-	setNavigationRoute(pageId);
-	// Cached pages show instantly; fresh ones get the text-line skeleton.
-	// Either way the live child re-hydrates and replaces once ready.
-	$("messages").innerHTML = sessionCache[file] ?? pageSkeletonMarkup();
-	resetWorkGroup();
-	show("chat");
-	renderThreadHeader();
-	syncConnectionRequestCards();
-	syncScopeChrome();
-	renderCompanyNavSafe();
-	hydrateAgentState(true);
-}
-
-async function newCompanyChat() {
-	const navigation = ++navigationGeneration;
-	cacheCurrentSession();
-	const result = await window.qorpera.openChat(null);
-	if (result?.ok) {
-		currentSession = result.sessionFile ?? null;
-		currentStaffId = null;
-		currentRoomId = null;
-		clearRoomRoute();
-		currentDepartment = null;
-		currentWorktree = null;
-	}
-	if (navigation !== navigationGeneration) return;
-	if (!result?.ok) return;
-	currentNodeId = "q:chats";
-	setNavigationRoute("q:chats");
-	$("messages").innerHTML = "";
-	resetWorkGroup();
-	show("chat");
-	renderThreadHeader();
-	syncConnectionRequestCards();
-	syncScopeChrome();
-	renderCompanyNavSafe();
-	hydrateAgentState(false);
-}
-
-async function newChat() {
-	const navigation = ++navigationGeneration;
-	cacheCurrentSession();
-	// "+" keeps an existing product worktree. The department Chat row starts
-	// a separate task in a fresh worktree.
-	const result = await window.qorpera.openChat(null, currentDepartment ?? undefined, currentWorktree ?? undefined);
-	if (result?.ok) {
-		currentSession = result.sessionFile ?? null;
-		currentStaffId = null;
-		currentRoomId = null;
-		clearRoomRoute();
-		currentDepartment = result.department ?? null;
-		currentWorktree = result.worktree ?? null;
-	}
-	if (navigation !== navigationGeneration) return;
-	if (!result?.ok) return;
-	$("messages").innerHTML = "";
-	resetWorkGroup();
-	show("chat");
-	renderThreadHeader();
-	syncConnectionRequestCards();
-	syncScopeChrome();
-	renderCompanyNavSafe();
-	hydrateAgentState(false);
+	showToast("This conversation lives in the company trail. Agents run in the cloud, so it cannot be reopened here.");
 }
 
 function renderHistory(messages) {
@@ -6371,23 +6226,11 @@ function renderCompanyNav() {
 		const items = document.createElement("div");
 		items.className = "navigation-department-items";
 		items.dataset.emptyLabel = department.items.length ? "No visible items" : "Empty department";
-		if (isMainDepartment) {
-			// Codex-app shape: the panel leads with starting a conversation.
-			const newChat = document.createElement("button");
-			newChat.type = "button";
-			newChat.className = "navigation-row page new-chat-row";
-			newChat.innerHTML = '<span class="navigation-row-label"></span>';
-			newChat.querySelector(".navigation-row-label").innerHTML = `${navGlyphSvg("plus", "nav-row-glyph")}New chat`;
-			newChat.title = "Start a new company chat";
-			newChat.onclick = () => void newCompanyChat();
-			items.appendChild(newChat);
-		}
 		for (const childId of department.items) {
 			const child = navigationNode(childId);
 			if (!child || (child.kind !== "page" && child.kind !== "category")) continue;
 			if (!nodeIsVisible(child.id)) continue;
-			// The chat archive lives in the pile below the departments now; the
-			// nav row it used to occupy became "New chat" above.
+			// The chat archive lives in the pile below the departments now.
 			if (isMainDepartment && child.kind === "page" && child.view?.id === "qorpera.chats") continue;
 			const row = document.createElement("button");
 			const ownsCurrent = child.kind === "category" && child.items.includes(currentNodeId);
@@ -6675,45 +6518,6 @@ async function finishDepartmentCreation() {
 	);
 }
 
-function renderProductChats(department, page) {
-	const panel = $("view-panel");
-	panel.innerHTML = "";
-	const head = document.createElement("div");
-	head.className = "collection-head";
-	const heading = document.createElement("h1");
-	heading.textContent = page.label;
-	const create = document.createElement("button");
-	create.textContent = "New product worktree chat";
-	create.disabled = !department;
-	create.onclick = () => void openDepartmentChat(department, page.id);
-	head.appendChild(heading);
-	head.appendChild(create);
-	panel.appendChild(head);
-	if (!department) {
-		panel.insertAdjacentHTML("beforeend", '<div class="empty">Product department is unavailable.</div>');
-		return;
-	}
-	const sessions = (state.sessions ?? []).filter(
-		(session) => session.kind !== "autonomous" && session.department === department.path,
-	);
-	if (!sessions.length) {
-		panel.insertAdjacentHTML("beforeend", '<div class="empty">No product worktree chats yet.</div>');
-	}
-	for (const session of sessions) {
-		const card = document.createElement("button");
-		card.className = "navigation-card chat-card";
-		card.classList.toggle("active", currentSession === session.file);
-		const label = document.createElement("strong");
-		label.textContent = session.title;
-		const meta = document.createElement("span");
-		meta.textContent = [session.worktree, new Date(session.mtimeMs).toLocaleString()].filter(Boolean).join(" · ");
-		card.appendChild(label);
-		card.appendChild(meta);
-		card.onclick = () => openSession(session.file, page.id);
-		panel.appendChild(card);
-	}
-}
-
 async function openNavigationNode(id, updateRoute = true) {
 	const navigation = updateRoute || currentNodeId !== id ? ++navigationGeneration : navigationGeneration;
 	const node = navigationNode(id);
@@ -6749,10 +6553,6 @@ async function openNavigationNode(id, updateRoute = true) {
 		renderRosterRail();
 	} else if (node.view.id === "qorpera.usage") {
 		openSettings("connections");
-	} else if (node.view.id === "qorpera.product-chat") {
-		const department = (state.departments ?? []).find((entry) => entry.id === context.departmentId);
-		renderProductChats(department, node);
-		show("panel");
 	} else if (node.view.id === "qorpera.pull-requests") {
 		const department = (state.departments ?? []).find((entry) => entry.id === context.departmentId);
 		showPullRequests(department, node);
@@ -7460,34 +7260,6 @@ async function showStaffRoutines(id) {
 	await renderActivity(false, id);
 }
 
-async function openDepartmentChat(department, pageId) {
-	const navigation = ++navigationGeneration;
-	cacheCurrentSession();
-	const result = await window.qorpera.openChat(null, department.path);
-	if (result?.ok) {
-		currentSession = result.sessionFile ?? null;
-		currentStaffId = null;
-		currentRoomId = null;
-		clearRoomRoute();
-		currentDepartment = result.department ?? null;
-		currentWorktree = result.worktree ?? null;
-	}
-	if (navigation !== navigationGeneration) return;
-	if (!result?.ok) {
-		$("status").textContent = result?.error ?? "could not start product worktree";
-		return;
-	}
-	currentNodeId = pageId;
-	setNavigationRoute(pageId);
-	$("messages").innerHTML = "";
-	resetWorkGroup();
-	show("chat");
-	renderThreadHeader();
-	syncConnectionRequestCards();
-	syncScopeChrome();
-	hydrateAgentState(false);
-}
-
 function showPullRequests(department, page) {
 	const panel = $("view-panel");
 	panel.innerHTML = "";
@@ -7921,19 +7693,10 @@ function scheduledJobScheduleLabel(job) {
 	return labels.join(" · ") || "No trigger";
 }
 
-function scheduledJobNextLabel(job) {
-	if (job.placement === "cloud") return "Waiting for cloud execution";
-	if (job.running) return "Running now";
-	if (job.suspendedReason) return "Suspended";
-	if (!job.enabled) return "Paused";
-	if (!(job.triggers ?? []).some((trigger) => trigger.kind === "schedule")) return "Waiting for event";
-	const next = Date.parse(job.nextRunAt);
-	if (!Number.isFinite(next) || next <= Date.now()) return "Due now";
-	const minutes = Math.ceil((next - Date.now()) / 60000);
-	if (minutes < 60) return `Next run in ${minutes}m`;
-	const hours = Math.ceil(minutes / 60);
-	if (hours < 24) return `Next run in ${hours}h`;
-	return `Next run in ${Math.ceil(hours / 24)}d`;
+// Routines run in the cloud; the desktop has no run history or next-run clock
+// for them yet, so every job carries the same placement label.
+function scheduledJobNextLabel() {
+	return "Runs in the cloud";
 }
 
 function scheduledJobDraft(job) {
@@ -7946,7 +7709,7 @@ function scheduledJobDraft(job) {
 		})),
 		enabled: job?.enabled ?? true,
 		effort: job?.effort ?? "high",
-		placement: job?.placement ?? "local",
+		placement: "cloud",
 		publication:
 			job?.publication?.mode === "review"
 				? { mode: "review", reviewerStaffIds: [...job.publication.reviewerStaffIds] }
@@ -8026,11 +7789,11 @@ function runFailureCause(session, outcome) {
 
 function runFailureGuidance(session, outcome) {
 	if (session.failureGuidance) return session.failureGuidance;
-	if (outcome === "incomplete") return "Review the partial work, then retry the job.";
-	return "Review the partial work below, then retry. If it repeats, choose another model.";
+	if (outcome === "incomplete") return "Review the partial work. The routine runs again on its next trigger.";
+	return "Review the partial work below. If it repeats, choose another model.";
 }
 
-function renderRunInspection(shell, jobs, sessions, autonomousRunning, autonomousTrailFile) {
+function renderRunInspection(shell, jobs, sessions, autonomousTrailFile) {
 	const run = sessions.find((session) => session.file === scheduledJobPanel.file);
 	if (!run) {
 		scheduledJobPanel = null;
@@ -8048,24 +7811,6 @@ function renderRunInspection(shell, jobs, sessions, autonomousRunning, autonomou
 	status.textContent = TRAIL_OUTCOME_LABELS[outcome] ?? outcome ?? "Run";
 	heading.append(eyebrow, status);
 	const headerActions = document.createElement("div");
-	if (job && outcome !== "running") {
-		const retry = document.createElement("button");
-		retry.type = "button";
-		retry.textContent = scheduledJobPanel.pending ? "Starting…" : autonomousRunning ? "Runtime busy" : "Retry now";
-		retry.disabled = autonomousRunning || scheduledJobPanel.pending;
-		retry.onclick = async () => {
-			scheduledJobPanel.pending = true;
-			scheduledJobPanel.error = "";
-			const result = await scheduledJobRequest(
-				() => window.qorpera.runScheduledJob(job.id),
-				"Could not retry the job.",
-			);
-			scheduledJobPanel.pending = false;
-			scheduledJobPanel.error = result?.ok ? "" : (result?.error ?? "Could not retry the job.");
-			void renderActivity(true);
-		};
-		headerActions.appendChild(retry);
-	}
 	const close = document.createElement("button");
 	close.className = "scheduled-job-close";
 	close.type = "button";
@@ -8158,10 +7903,10 @@ function renderRunInspection(shell, jobs, sessions, autonomousRunning, autonomou
 	shell.appendChild(aside);
 }
 
-function renderScheduledJobPanel(shell, jobs, sessions, autonomousRunning, autonomousTrailFile) {
+function renderScheduledJobPanel(shell, jobs, sessions, autonomousTrailFile) {
 	if (!scheduledJobPanel) return;
 	if (scheduledJobPanel.mode === "run") {
-		renderRunInspection(shell, jobs, sessions, autonomousRunning, autonomousTrailFile);
+		renderRunInspection(shell, jobs, sessions, autonomousTrailFile);
 		return;
 	}
 	const job =
@@ -8183,27 +7928,6 @@ function renderScheduledJobPanel(shell, jobs, sessions, autonomousRunning, auton
 	heading.append(eyebrow, status);
 	const headerActions = document.createElement("div");
 	if (job) {
-		const run = document.createElement("button");
-		run.type = "button";
-		run.textContent = job.running ? "Running…" : autonomousRunning ? "Runtime busy" : "Run now";
-		run.disabled = autonomousRunning || scheduledJobPanel.pending;
-		if (autonomousRunning && !job.running) {
-			run.title = "Another scheduled job or autonomous merge is running.";
-		}
-		run.onclick = async () => {
-			scheduledJobPanel.pending = true;
-			scheduledJobPanel.error = "";
-			run.disabled = true;
-			const result = await scheduledJobRequest(
-				() => window.qorpera.runScheduledJob(job.id),
-				"Could not start the job.",
-			);
-			scheduledJobPanel.pending = false;
-			scheduledJobPanel.error = result?.ok ? "" : (result?.error ?? "Could not start the job.");
-			if (result?.ok) scheduledJobPanel.dirty = false;
-			void renderActivity(true);
-		};
-		headerActions.appendChild(run);
 		const toggle = document.createElement("button");
 		toggle.type = "button";
 		toggle.textContent = job.enabled && !job.suspendedReason ? "Pause" : "Resume";
@@ -8313,42 +8037,18 @@ function renderScheduledJobPanel(shell, jobs, sessions, autonomousRunning, auton
 
 	if (job) {
 		const runs = sessions.filter((session) => session.scheduledJobId === job.id).slice(0, 5);
-		const lastFailedRun =
-			runs.find(
-				(run) => run.file === job.lastTrailFile && displayedTrailOutcome(run, autonomousTrailFile) === "failed",
-			) ?? runs.find((run) => displayedTrailOutcome(run, autonomousTrailFile) === "failed");
 		const facts = document.createElement("section");
 		facts.className = "scheduled-job-facts";
 		facts.append(
 			scheduledJobFact("Schedule", scheduledJobScheduleLabel(job)),
 			scheduledJobFact("Effort", scheduledJobEffortLabel(job.effort)),
-			scheduledJobFact("Next run", job.nextRunAt ? new Date(job.nextRunAt).toLocaleString() : "Paused"),
-			scheduledJobFact("Last ran", job.lastRunAt ? new Date(job.lastRunAt).toLocaleString() : "Never"),
-			scheduledJobFact(
-				"Last completed outcome",
-				TRAIL_OUTCOME_LABELS[job.lastOutcome] ?? (job.running ? "Running" : "No run yet"),
-			),
-			scheduledJobFact("Failure streak", String(job.failureStreak ?? 0)),
+			scheduledJobFact("Runs on", scheduledJobNextLabel(job)),
 			scheduledJobFact("Created", new Date(job.createdAt).toLocaleString()),
 			scheduledJobFact("Updated", new Date(job.updatedAt).toLocaleString()),
 			scheduledJobFact("Job ID", job.id),
 		);
 		if (job.suspendedReason) facts.appendChild(scheduledJobFact("Suspended", job.suspendedReason));
 		form.appendChild(facts);
-		if (job.lastOutcome === "failed" && lastFailedRun) {
-			const failure = document.createElement("section");
-			failure.className = "run-failure-summary job-last-failure";
-			const cause = document.createElement("strong");
-			cause.textContent = runFailureCause(lastFailedRun, "failed");
-			const guidance = document.createElement("p");
-			guidance.textContent = runFailureGuidance(lastFailedRun, "failed");
-			const inspect = document.createElement("button");
-			inspect.type = "button";
-			inspect.textContent = "Inspect failed run";
-			inspect.onclick = () => openRunInspection(lastFailedRun);
-			failure.append(cause, guidance, inspect);
-			form.appendChild(failure);
-		}
 		const recent = document.createElement("section");
 		recent.className = "scheduled-job-recent";
 		const recentHeading = document.createElement("h3");
@@ -8592,11 +8292,9 @@ function companyRuntimeTile(sessions, jobs, liveRuntime) {
 	if (working) doing.textContent = runtimeDoingLine(liveRuntime);
 	else if (!jobs.length) doing.textContent = "Resting. No schedules yet — create one to give it recurring work.";
 	else {
-		const nextJob = jobs
-			.filter((job) => job.enabled && !job.suspendedReason && Number.isFinite(Date.parse(job.nextRunAt)))
-			.sort((a, b) => Date.parse(a.nextRunAt) - Date.parse(b.nextRunAt))[0];
-		doing.textContent = nextJob
-			? `Resting. ${scheduledJobNextLabel(nextJob)} — ${nextJob.title}.`
+		const activeJobs = jobs.filter((job) => job.enabled && !job.suspendedReason);
+		doing.textContent = activeJobs.length
+			? "Resting. Routines run in the cloud."
 			: "Resting. All schedules are paused.";
 	}
 	meta.textContent = working
@@ -8605,10 +8303,7 @@ function companyRuntimeTile(sessions, jobs, liveRuntime) {
 	return tile;
 }
 
-function scheduledJobTile(job, sessions) {
-	const lastRun =
-		sessions.find((session) => session.file === job.lastTrailFile) ??
-		sessions.find((session) => session.scheduledJobId === job.id);
+function scheduledJobTile(job) {
 	const active = job.enabled && !job.suspendedReason;
 	const openDetails = (error = "") => {
 		scheduledJobPanel = {
@@ -8654,9 +8349,6 @@ function scheduledJobTile(job, sessions) {
 	else if (job.suspendedReason) {
 		doing.classList.add("failure");
 			doing.textContent = `Paused after repeated failures: ${job.suspendedReason}.`;
-	} else if (job.lastOutcome === "failed" && lastRun) {
-		doing.classList.add("failure");
-		doing.textContent = `Last run failed: ${runFailureCause(lastRun, "failed")}`;
 	} else doing.textContent = job.prompt;
 	meta.textContent = `${scheduledJobNextLabel(job)} · ${scheduledJobScheduleLabel(job)} · ${scheduledJobEffortLabel(job.effort)} effort`;
 	return tile;
@@ -8694,7 +8386,6 @@ async function renderActivity(force = false, staffOwnerId = activityStaffId) {
 	// Autonomous trails are inspected read-only in Activity. They are never
 	// rebound to the chat child, including while another run is active.
 	const liveAutonomous = liveRuntime?.autonomous ? liveRuntime : undefined;
-	const autonomousRunning = Boolean(liveAutonomous);
 	const autonomousTrailFile = liveAutonomous?.trailFile ?? "";
 	let jobs = Array.isArray(state.scheduledJobs) ? state.scheduledJobs : [];
 	const requestedNodeId = currentNodeId;
@@ -8774,7 +8465,7 @@ async function renderActivity(force = false, staffOwnerId = activityStaffId) {
 	} else {
 		const jobGrid = document.createElement("div");
 		jobGrid.className = "agents-grid";
-		for (const job of jobs) jobGrid.appendChild(scheduledJobTile(job, sessions));
+		for (const job of jobs) jobGrid.appendChild(scheduledJobTile(job));
 		main.appendChild(jobGrid);
 	}
 	const historyHead = document.createElement("h2");
@@ -8831,7 +8522,7 @@ async function renderActivity(force = false, staffOwnerId = activityStaffId) {
 		}
 	}
 	shell.appendChild(main);
-	renderScheduledJobPanel(shell, jobs, sessions, autonomousRunning, autonomousTrailFile);
+	renderScheduledJobPanel(shell, jobs, sessions, autonomousTrailFile);
 	panel.appendChild(shell);
 }
 

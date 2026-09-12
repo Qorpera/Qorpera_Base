@@ -4,6 +4,9 @@ import { dirname, resolve } from "node:path";
 import { companyRootId } from "./company-host-state.ts";
 import { companyHostStorageFile } from "./company-host-storage.ts";
 
+/** The desktop only records "pending" now that intros are delivered in the
+ * cloud; the other values remain readable because persisted state from the
+ * removed local lane still carries them and the renderer keys off "failed". */
 export type StaffIntroStatus = "pending" | "started" | "completed" | "failed";
 
 export interface StaffOrientationContext {
@@ -25,11 +28,6 @@ export interface StaffIntroState {
 export interface StaffRuntimeState {
 	version: 1;
 	intros: Record<string, StaffIntroState>;
-}
-
-export interface StaffIntroClaim {
-	claimed: boolean;
-	state: StaffRuntimeState;
 }
 
 const STAFF_RUNTIME_STATE_FILE = "staff-runtime.json";
@@ -163,20 +161,6 @@ export function writeStaffRuntimeState(path: string, state: StaffRuntimeState): 
 	}
 }
 
-function boundedError(value: string | undefined): string | undefined {
-	const source = value?.trim();
-	if (!source) return undefined;
-	let bytes = 0;
-	let result = "";
-	for (const character of source) {
-		const characterBytes = Buffer.byteLength(character, "utf-8");
-		if (bytes + characterBytes > MAX_ERROR_BYTES) break;
-		bytes += characterBytes;
-		result += character;
-	}
-	return result || undefined;
-}
-
 export function recordStaffIntroPending(
 	state: StaffRuntimeState,
 	staffAgentId: string,
@@ -205,65 +189,6 @@ export function recordStaffIntroPending(
 				createdAt: now,
 				updatedAt: now,
 				...(checkedOrientation ? { orientation: checkedOrientation } : {}),
-			},
-		},
-	};
-}
-
-/** Claim delivery before writing the hidden prompt. Pending intros may only
- * be claimed by the automatic first delivery; failed intros require an
- * explicit retry. Started and completed intros are never claimable. */
-export function claimStaffIntro(
-	state: StaffRuntimeState,
-	staffAgentId: string,
-	trailFile: string,
-	nowMs: number,
-	retry: boolean,
-): StaffIntroClaim {
-	const current = state.intros[staffAgentId];
-	if (
-		!current ||
-		current.trailFile !== trailFile ||
-		(retry ? current.status !== "failed" : current.status !== "pending")
-	) {
-		return { claimed: false, state };
-	}
-	const next: StaffIntroState = {
-		...current,
-		status: "started",
-		attempts: current.attempts + 1,
-		updatedAt: new Date(nowMs).toISOString(),
-	};
-	delete next.error;
-	return {
-		claimed: true,
-		state: {
-			...state,
-			intros: { ...state.intros, [staffAgentId]: next },
-		},
-	};
-}
-
-export function finishStaffIntro(
-	state: StaffRuntimeState,
-	staffAgentId: string,
-	trailFile: string,
-	success: boolean,
-	nowMs: number,
-	error?: string,
-): StaffRuntimeState {
-	const current = state.intros[staffAgentId];
-	if (!current || current.trailFile !== trailFile || current.status !== "started") return state;
-	const failure = boundedError(error);
-	return {
-		...state,
-		intros: {
-			...state.intros,
-			[staffAgentId]: {
-				...current,
-				status: success ? "completed" : "failed",
-				updatedAt: new Date(nowMs).toISOString(),
-				...(!success && failure ? { error: failure } : {}),
 			},
 		},
 	};

@@ -1,5 +1,4 @@
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import {
 	appendFileSync,
 	existsSync,
@@ -12,22 +11,16 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveGate } from "@qorpera/pi-coding-agent/app-server";
-import { requestHash } from "@qorpera/pi-coding-agent/authority";
-import { generateFounderIdentity } from "@qorpera/pi-coding-agent/founder-identity";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	appendKernelObservation,
 	appendKernelSessionInfo,
-	applyKernelWriteFrame,
 	bindTrailSession,
 	commitTrailAppend,
 	kernelGateReviewDocument,
 	migrateLegacyCompanyAgentTrails,
-	migrateLegacyTrailSession,
 	parseTrailAppendFrame,
 	pruneEmptyTrailSessions,
-	reconcileKernelGateCreations,
 	trailSessionMessages,
 } from "../src/agent-runtime.ts";
 import {
@@ -41,12 +34,6 @@ import {
 	savePendingProductCheckpoint,
 	snapshotFounderGitState,
 } from "../src/company-checkpoint.ts";
-import {
-	advanceCompanyGateCreation,
-	beginCompanyGateCreation,
-	completeCompanyGateCreation,
-	listPendingCompanyGateCreations,
-} from "../src/company-host-state.ts";
 
 let root: string;
 
@@ -59,15 +46,6 @@ beforeEach(() => {
 afterEach(() => {
 	if (root && existsSync(root)) rmSync(root, { recursive: true, force: true });
 });
-
-function writeCompanyManifest(company: string): void {
-	mkdirSync(join(company, ".qorpera"), { recursive: true });
-	writeFileSync(
-		join(company, ".qorpera", "company.json"),
-		`${JSON.stringify({ schema: "qorpera.company/v1", id: "11111111-1111-4111-8111-111111111111" })}\n`,
-		"utf-8",
-	);
-}
 
 function createProductCheckpointFixture(company: string): {
 	worktree: string;
@@ -262,77 +240,6 @@ describe("kernel-bound agent runtime", () => {
 		expect(pruneEmptyTrailSessions(company)).toBe(0);
 	});
 
-	it("migrates a legacy founder chat whole and binds it for live appends", () => {
-		const company = join(root, "company");
-		const scope = { actor: "company-agent", attended: false } as const;
-		// A pre-v5 chat exactly as the pivot-era kernel wrote them: no
-		// authority header, no provenance, no kernel hash chain.
-		const file = "2026-08-04T05-49-07-753Z_legacy.jsonl";
-		const entries = [
-			{ type: "session", version: 3, id: "s1", timestamp: "2026-08-04T05:49:07.753Z", cwd: company },
-			{
-				type: "model_change",
-				id: "e1",
-				parentId: null,
-				timestamp: "2026-08-04T05:49:08.000Z",
-				provider: "anthropic",
-				modelId: "claude-opus-4-8",
-			},
-			{
-				type: "message",
-				id: "e2",
-				parentId: "e1",
-				timestamp: "2026-08-04T05:49:09.000Z",
-				message: { role: "user", content: [{ type: "text", text: "hello" }] },
-			},
-		];
-		writeFileSync(join(company, "trail", file), `${entries.map((e) => JSON.stringify(e)).join("\n")}\n`, "utf-8");
-		// Refused before migration — the schema check bug that made every
-		// pre-pivot history row a dead click (v0.18.7).
-		expect(() => bindTrailSession(company, company, scope, file)).toThrow(/explicit append-only migration/);
-
-		expect(migrateLegacyTrailSession(company, file, scope)).toBe(true);
-		// Idempotent: a current file is left alone.
-		expect(migrateLegacyTrailSession(company, file, scope)).toBe(false);
-		// The original bytes survive beside the file, invisible to .jsonl lists.
-		expect(existsSync(join(company, "trail", `${file}.v3.bak`))).toBe(true);
-
-		// The migrated file binds, replays its audit chain, and accepts a live
-		// append on top of the adopted history.
-		const binding = bindTrailSession(company, company, scope, file);
-		expect(binding.audit.sequence).toBe(2);
-		const append = parseTrailAppendFrame(
-			{
-				type: "qorpera_trail_append",
-				token: binding.token,
-				entry: {
-					type: "message",
-					id: "e3",
-					parentId: "e2",
-					timestamp: new Date().toISOString(),
-					message: { role: "assistant", content: [{ type: "text", text: "welcome back" }] },
-				},
-			},
-			binding,
-		);
-		expect(append).toBeDefined();
-		commitTrailAppend(binding, append!);
-		appendFileSync(binding.path, `${JSON.stringify(append!.entry)}\n`);
-		// The extended chain still verifies end to end.
-		expect(bindTrailSession(company, company, scope, file).audit.sequence).toBe(3);
-
-		// A legacy file holding an entry v5 cannot adopt migrates nothing.
-		const poisoned = "2026-08-04T06-00-00-000Z_poisoned.jsonl";
-		writeFileSync(
-			join(company, "trail", poisoned),
-			`${JSON.stringify({ type: "session", version: 3, id: "s2", timestamp: "t", cwd: company })}\n${JSON.stringify({ type: "mystery_event", id: "x1", parentId: null, timestamp: "t" })}\n`,
-			"utf-8",
-		);
-		const before = readFileSync(join(company, "trail", poisoned), "utf-8");
-		expect(() => migrateLegacyTrailSession(company, poisoned, scope)).toThrow(/cannot adopt/);
-		expect(readFileSync(join(company, "trail", poisoned), "utf-8")).toBe(before);
-	});
-
 	it("migrates current trails from the retired controller actor label once", () => {
 		const company = join(root, "company");
 		const current = bindTrailSession(company, company, { actor: "company-agent", attended: true });
@@ -440,31 +347,7 @@ describe("kernel-bound agent runtime", () => {
 		// The named employee remains isolated from the pre-staff trail.
 	});
 
-	it("refuses to migrate a legacy trail into a staff identity", () => {
-		const company = join(root, "company");
-		const file = "2026-08-04T07-00-00-000Z_legacy-staff.jsonl";
-		const path = join(company, "trail", file);
-		const original = `${JSON.stringify({
-			type: "session",
-			version: 3,
-			id: "legacy-staff",
-			timestamp: "2026-08-04T07:00:00.000Z",
-			cwd: company,
-		})}\n`;
-		writeFileSync(path, original, "utf-8");
-
-		expect(() =>
-			migrateLegacyTrailSession(company, file, {
-				actor: "company-agent",
-				attended: true,
-				staffAgentId: "staff-night-shift",
-			}),
-		).toThrow("remain system-owned");
-		expect(readFileSync(path, "utf-8")).toBe(original);
-		expect(existsSync(`${path}.v3.bak`)).toBe(false);
-	});
-
-	it("accepts only token-bound append frames and host-owned gate transitions", () => {
+	it("accepts only token-bound append frames", () => {
 		const company = join(root, "company");
 		const binding = bindTrailSession(company, company, { actor: "company-agent", attended: true });
 		const entry = { type: "custom", id: "one", parentId: null, timestamp: new Date().toISOString(), customType: "x" };
@@ -502,395 +385,47 @@ describe("kernel-bound agent runtime", () => {
 		expect(
 			parseTrailAppendFrame({ type: "qorpera_trail_append", token: binding.token, entry: unknown }, binding),
 		).toBeUndefined();
+	});
 
-		const args = { path: "extensions/danger.ts", contentHash: "c".repeat(64) };
-		const hash = requestHash("behavior_signature", args);
-		const gateId = `gate-${hash.slice(0, 8)}`;
-		const gateFile = `${gateId}.md`;
-		expect(
-			applyKernelWriteFrame(
-				{
-					type: "qorpera_kernel_write",
-					token: binding.token,
-					operation: "create_gate",
-					gate: {
-						id: gateId,
-						file: gateFile,
-						effectClass: "authority",
-						toolName: "behavior_signature",
-						hash,
-						args,
-					},
-				},
-				binding,
-				company,
-			),
-		).toBe(true);
+	it("shows only canonical pending gate records for founder review", () => {
+		const company = join(root, "company");
+		const hash = "c".repeat(64);
+		const gateFile = `gate-${hash.slice(0, 8)}.md`;
 		const gatePath = join(company, "inbox", gateFile);
-		expect(readFileSync(gatePath, "utf-8")).toContain("status: pending");
-		expect(kernelGateReviewDocument(company, gateFile)).toContain(`hash: ${hash}`);
-		writeFileSync(gatePath, readFileSync(gatePath, "utf-8").replace("pending", "approved"), "utf-8");
+		const gate = (status: string, extra = ""): string =>
+			[
+				"---",
+				`id: gate-${hash.slice(0, 8)}`,
+				`status: ${status}   # resolved by Qorpera Base native review`,
+				"class: authority",
+				"tool: behavior_signature",
+				`hash: ${hash}`,
+				"created: 2026-08-12T00:00:00.000Z",
+				...(extra ? [extra] : []),
+				"---",
+				"",
+				"# Gate request: behavior_signature (authority)",
+				"",
+			].join("\n");
 		expect(kernelGateReviewDocument(company, gateFile)).toBeUndefined();
-		let response: { granted: boolean } | undefined;
-		let trusted = false;
-		const durableTrust = {
-			has: () => trusted,
-			remember: () => {
-				trusted = true;
-			},
-		};
-		applyKernelWriteFrame(
-			{
-				type: "qorpera_kernel_write",
-				token: binding.token,
-				operation: "trust_gate",
-				file: gateFile,
-				requestId: "request-1",
-				hash,
-				status: "consumed",
-			},
-			binding,
-			company,
-			(value) => {
-				response = value;
-			},
-			() => true,
-			durableTrust,
-		);
-		expect(response).toMatchObject({ granted: true });
-		expect(trusted).toBe(true);
-		expect(readFileSync(gatePath, "utf-8")).toContain("status: consumed");
-		expect(kernelGateReviewDocument(company, gateFile, "denied")).toContain(`hash: ${hash}`);
-		expect(readFileSync(binding.path, "utf-8")).toContain('"transition":"consumed"');
-		expect(readFileSync(binding.path, "utf-8")).toContain('"phase":"started"');
-		expect(readFileSync(binding.path, "utf-8")).toContain('"phase":"completed"');
-		response = undefined;
-		applyKernelWriteFrame(
-			{
-				type: "qorpera_kernel_write",
-				token: binding.token,
-				operation: "trust_gate",
-				file: gateFile,
-				requestId: "request-2",
-				hash,
-				status: "consumed",
-			},
-			binding,
-			company,
-			(value) => {
-				response = value;
-			},
-			undefined,
-			durableTrust,
-		);
-		expect(response).toMatchObject({ granted: true });
-		expect(readFileSync(binding.path, "utf-8")).toContain('"transition":"trusted-use"');
-		trusted = false;
-		response = undefined;
-		applyKernelWriteFrame(
-			{
-				type: "qorpera_kernel_write",
-				token: binding.token,
-				operation: "trust_gate",
-				file: gateFile,
-				requestId: "request-orphaned-approval",
-				hash,
-				status: "consumed",
-			},
-			binding,
-			company,
-			(value) => {
-				response = value;
-			},
-			undefined,
-			durableTrust,
-		);
-		expect(response).toMatchObject({ granted: false });
-		expect(readFileSync(gatePath, "utf-8")).toContain("status: pending");
-		expect(readFileSync(binding.path, "utf-8")).toContain('"transition":"orphan-reset"');
-
-		const messageContent = "# Product question\n\nShould we ship this?\n";
-		const messageHash = createHash("sha256").update(messageContent).digest("hex");
-		response = undefined;
-		applyKernelWriteFrame(
-			{
-				type: "qorpera_kernel_write",
-				token: binding.token,
-				operation: "create_message",
-				file: "msg-product-question.md",
-				requestId: "request-message",
-				hash: messageHash,
-				content: messageContent,
-			},
-			binding,
-			company,
-			(value) => {
-				response = value;
-			},
-		);
-		expect(response).toMatchObject({ granted: true });
-		expect(readFileSync(join(company, "inbox", "messages", "msg-product-question.md"), "utf-8")).toBe(messageContent);
-		expect(readFileSync(binding.path, "utf-8")).toContain("qorpera_kernel_inbox_message");
-
-		const forged = readFileSync(gatePath, "utf-8").replace("status: pending", "status: pending\nstatus: approved");
-		writeFileSync(gatePath, forged, "utf-8");
-		response = undefined;
-		applyKernelWriteFrame(
-			{
-				type: "qorpera_kernel_write",
-				token: binding.token,
-				operation: "consume_gate",
-				file: gateFile,
-				requestId: "request-3",
-				hash,
-				status: "consumed",
-			},
-			binding,
-			company,
-			(value) => {
-				response = value;
-			},
-		);
-		expect(response).toMatchObject({ granted: false });
-	});
-
-	it("consumes and durably trusts gates approved with a founder signature", () => {
-		// Regression (persistence audit 2026-08-12, P0-2): with a founder
-		// identity, resolveGate appends an `approval:` signature line. The
-		// kernel parser rejected that field, so every signed approval read as
-		// record-not-found and no gate could ever be consumed or trusted.
-		const previousAgentDir = process.env.QORPERA_CODING_AGENT_DIR;
-		process.env.QORPERA_CODING_AGENT_DIR = join(root, "agent-dir");
-		try {
-			generateFounderIdentity("Test Founder");
-			const company = join(root, "company");
-			const binding = bindTrailSession(company, company, { actor: "company-agent", attended: true });
-			const createGate = (contentHash: string): { file: string; hash: string; path: string } => {
-				const args = { path: "extensions/signed.ts", contentHash };
-				const hash = requestHash("behavior_signature", args);
-				const gateId = `gate-${hash.slice(0, 8)}`;
-				const gateFile = `${gateId}.md`;
-				applyKernelWriteFrame(
-					{
-						type: "qorpera_kernel_write",
-						token: binding.token,
-						operation: "create_gate",
-						gate: {
-							id: gateId,
-							file: gateFile,
-							effectClass: "authority",
-							toolName: "behavior_signature",
-							hash,
-							args,
-						},
-					},
-					binding,
-					company,
-				);
-				expect(resolveGate(company, gateFile, "approved")).toBe(true);
-				const approved = readFileSync(join(company, "inbox", gateFile), "utf-8");
-				expect(approved).toContain("status: approved");
-				expect(approved).toMatch(/^approval: \S+$/m);
-				return { file: gateFile, hash, path: join(company, "inbox", gateFile) };
-			};
-
-			const consumable = createGate("a".repeat(64));
-			let response: { granted: boolean } | undefined;
-			applyKernelWriteFrame(
-				{
-					type: "qorpera_kernel_write",
-					token: binding.token,
-					operation: "consume_gate",
-					file: consumable.file,
-					requestId: "signed-consume",
-					hash: consumable.hash,
-					status: "consumed",
-				},
-				binding,
-				company,
-				(value) => {
-					response = value;
-				},
-				() => true,
-			);
-			expect(response).toMatchObject({ granted: true });
-			const consumed = readFileSync(consumable.path, "utf-8");
-			expect(consumed).toContain("status: consumed");
-			// The signature attests the approval, not the lifecycle — it survives.
-			expect(consumed).toMatch(/^approval: \S+$/m);
-
-			const durable = createGate("b".repeat(64));
-			let trusted = false;
-			const durableTrust = {
-				has: () => trusted,
-				remember: () => {
-					trusted = true;
-				},
-			};
-			response = undefined;
-			applyKernelWriteFrame(
-				{
-					type: "qorpera_kernel_write",
-					token: binding.token,
-					operation: "trust_gate",
-					file: durable.file,
-					requestId: "signed-trust",
-					hash: durable.hash,
-					status: "consumed",
-				},
-				binding,
-				company,
-				(value) => {
-					response = value;
-				},
-				() => true,
-				durableTrust,
-			);
-			expect(response).toMatchObject({ granted: true });
-			expect(trusted).toBe(true);
-			response = undefined;
-			applyKernelWriteFrame(
-				{
-					type: "qorpera_kernel_write",
-					token: binding.token,
-					operation: "trust_gate",
-					file: durable.file,
-					requestId: "signed-trusted-use",
-					hash: durable.hash,
-					status: "consumed",
-				},
-				binding,
-				company,
-				(value) => {
-					response = value;
-				},
-				undefined,
-				durableTrust,
-			);
-			expect(response).toMatchObject({ granted: true });
-			expect(readFileSync(binding.path, "utf-8")).toContain('"transition":"trusted-use"');
-		} finally {
-			if (previousAgentDir === undefined) delete process.env.QORPERA_CODING_AGENT_DIR;
-			else process.env.QORPERA_CODING_AGENT_DIR = previousAgentDir;
-		}
-	});
-
-	it("rejects child gate descriptions whose displayed semantics do not match the canonical hash", () => {
-		const company = join(root, "company");
-		const binding = bindTrailSession(company, company, { actor: "company-agent", attended: false });
-		const dangerousArgs = { path: "extensions/danger.ts", contentHash: "d".repeat(64) };
-		const dangerousHash = requestHash("behavior_signature", dangerousArgs);
-		const gateId = `gate-${dangerousHash.slice(0, 8)}`;
-		const gateFile = `${gateId}.md`;
-		expect(
-			applyKernelWriteFrame(
-				{
-					type: "qorpera_kernel_write",
-					token: binding.token,
-					operation: "create_gate",
-					gate: {
-						id: gateId,
-						file: gateFile,
-						effectClass: "authority",
-						toolName: "behavior_signature",
-						hash: dangerousHash,
-						args: { path: "notes/innocent.md", contentHash: "e".repeat(64) },
-					},
-				},
-				binding,
-				company,
-			),
-		).toBe(true);
-		expect(existsSync(join(company, "inbox", gateFile))).toBe(false);
-	});
-
-	it("reconciles a gate file created before its completed trail event", () => {
-		const company = join(root, "company");
-		const binding = bindTrailSession(company, company, { actor: "company-agent", attended: false });
-		const args = { path: "extensions/recover.ts", contentHash: "f".repeat(64) };
-		const hash = requestHash("behavior_signature", args);
-		const gateId = `gate-${hash.slice(0, 8)}`;
-		const gateFile = `${gateId}.md`;
-		applyKernelWriteFrame(
-			{
-				type: "qorpera_kernel_write",
-				token: binding.token,
-				operation: "create_gate",
-				gate: {
-					id: gateId,
-					file: gateFile,
-					effectClass: "authority",
-					toolName: "behavior_signature",
-					hash,
-					args,
-				},
-			},
-			binding,
-			company,
-		);
-		const interrupted = readFileSync(binding.path, "utf-8").split(/\r?\n/).filter(Boolean).slice(0, 2);
-		writeFileSync(binding.path, `${interrupted.join("\n")}\n`, "utf-8");
-		const recoveryBinding = bindTrailSession(company, company, { actor: "company-agent", attended: false });
-		const pending: {
-			file: string;
-			hash: string;
-			trailFile: string;
-			phase: "planned" | "started" | "finalizing-created" | "finalizing-aborted";
-		} = { file: gateFile, hash, trailFile: binding.file, phase: "started" };
-		let completed = 0;
-		reconcileKernelGateCreations(
-			recoveryBinding,
-			company,
-			[pending],
-			(_file, _hash, trailFile, phase) => {
-				pending.trailFile = trailFile;
-				pending.phase = phase;
-			},
-			() => {
-				completed++;
-			},
-		);
-		expect(completed).toBe(1);
-		expect(readFileSync(recoveryBinding.path, "utf-8")).toContain('"transition":"created","phase":"completed"');
-
-		const secondRecovery = bindTrailSession(company, company, { actor: "company-agent", attended: false });
-		reconcileKernelGateCreations(
-			secondRecovery,
-			company,
-			[pending],
-			(_file, _hash, trailFile, phase) => {
-				pending.trailFile = trailFile;
-				pending.phase = phase;
-			},
-			() => {
-				completed++;
-			},
-		);
-		expect(completed).toBe(2);
-		expect(readFileSync(secondRecovery.path, "utf-8")).not.toContain("qorpera_kernel_gate_transition");
-	});
-
-	it("reconciles a gate journal persisted before its started trail event", () => {
-		const company = join(root, "company");
-		writeCompanyManifest(company);
-		const userData = join(root, "user-data");
-		const interrupted = bindTrailSession(company, company, { actor: "company-agent", attended: false });
-		const recovery = bindTrailSession(company, company, { actor: "company-agent", attended: false });
-		const file = "gate-aaaaaaaa.md";
-		const hash = "a".repeat(64);
-		beginCompanyGateCreation(userData, company, file, hash, interrupted.file);
-		reconcileKernelGateCreations(
-			recovery,
-			company,
-			listPendingCompanyGateCreations(userData, company),
-			(gateFile, gateHash, trailFile, phase) =>
-				advanceCompanyGateCreation(userData, company, gateFile, gateHash, trailFile, phase),
-			(gateFile, gateHash) => completeCompanyGateCreation(userData, company, gateFile, gateHash),
-		);
-		const trail = readFileSync(recovery.path, "utf-8");
-		expect(trail).toContain('"transition":"created","phase":"started"');
-		expect(trail).toContain('"transition":"creation-aborted","phase":"completed"');
-		expect(listPendingCompanyGateCreations(userData, company)).toEqual([]);
+		writeFileSync(gatePath, gate("pending"), "utf-8");
+		expect(kernelGateReviewDocument(company, gateFile)).toContain(`hash: ${hash}`);
+		expect(kernelGateReviewDocument(company, "notes.md")).toBeUndefined();
+		// Regression (persistence audit 2026-08-12, P0-2): a founder identity
+		// appends an `approval:` signature line; the kernel parser tolerates it.
+		writeFileSync(gatePath, gate("pending", "approval: founder-signature"), "utf-8");
+		expect(kernelGateReviewDocument(company, gateFile)).toContain("approval: founder-signature");
+		writeFileSync(gatePath, gate("approved"), "utf-8");
+		expect(kernelGateReviewDocument(company, gateFile)).toBeUndefined();
+		// A denial review shows a consumed durable gate; an approval review does not.
+		writeFileSync(gatePath, gate("consumed"), "utf-8");
+		expect(kernelGateReviewDocument(company, gateFile)).toBeUndefined();
+		expect(kernelGateReviewDocument(company, gateFile, "denied")).toContain("status: consumed");
+		// Forged or non-canonical records never reach review.
+		writeFileSync(gatePath, gate("pending", "status: approved"), "utf-8");
+		expect(kernelGateReviewDocument(company, gateFile)).toBeUndefined();
+		writeFileSync(gatePath, gate("pending", "reviewer: anyone"), "utf-8");
+		expect(kernelGateReviewDocument(company, gateFile)).toBeUndefined();
 	});
 
 	it("checkpoints content changed by the session while preserving untouched baseline dirt", () => {

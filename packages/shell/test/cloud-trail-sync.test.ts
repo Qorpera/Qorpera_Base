@@ -19,7 +19,6 @@ import {
 	listSharedTrailSessions,
 	parseTrailAppendFrame,
 	type TrailBinding,
-	trailSessionStaffAgentId,
 } from "../src/agent-runtime.ts";
 import { CloudTrailSynchronizer, cloudTrailSyncStatePath } from "../src/cloud-trail-sync.ts";
 
@@ -1124,7 +1123,10 @@ describe("cloud trail synchronization", () => {
 						"This attended message must survive a model failure.",
 			),
 		).toBeDefined();
-		expect(trailSessionStaffAgentId(machineB, onB[0].trailFile)).toBe("financial-officer");
+		expect(
+			JSON.parse(readFileSync(join(machineB, "trail", onB[0].trailFile), "utf-8").split("\n")[0]).qorpera
+				.staffAgentId,
+		).toBe("financial-officer");
 
 		if (!liveB) throw new Error("machine B trail was not materialized");
 		appendMessage(liveB, "answer", "question", "assistant", "We have 90 days of runway.");

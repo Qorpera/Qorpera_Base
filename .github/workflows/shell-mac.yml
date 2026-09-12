@@ -5,15 +5,13 @@
 #
 #   * npm ci runs WITH lifecycle scripts. Everywhere else this repo installs
 #     with --ignore-scripts, but packaging needs postinstall to fetch the
-#     Electron binary and the per-platform Codex/clipboard vendor binaries;
-#     an --ignore-scripts install packs an app with no runtime and the pack
-#     script's structural assertion fails late instead of the install failing
-#     early.
+#     Electron binary and the per-platform clipboard vendor binaries; an
+#     --ignore-scripts install packs an app that cannot launch.
 #
 #   * It runs on macos (arm64), not ubuntu. pack-shell.mjs assembles the
 #     dependency closure from the host's node_modules, and npm only installs
 #     the optional platform packages that match the host -- a Linux or
-#     Windows assembly can never contain the darwin Codex binary.
+#     Windows assembly can never contain the darwin vendor binaries.
 #
 # manual dispatch only: a mac runner build is slow and releases are cut
 # deliberately, not per-push. The produced dmg/zip are unsigned beyond

@@ -3,8 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-	claimStaffIntro,
-	finishStaffIntro,
 	readStaffRuntimeState,
 	recordStaffIntroPending,
 	staffRuntimeStatePath,
@@ -30,35 +28,23 @@ describe("staff intro runtime state", () => {
 		if (existsSync(userData)) rmSync(userData, { recursive: true, force: true });
 	});
 
-	it("claims an automatic intro at most once and completes it durably", () => {
+	it("records a pending intro once per trail and persists it durably", () => {
 		const pending = recordStaffIntroPending(
 			readStaffRuntimeState(path),
 			"staff-1",
 			"session-1.jsonl",
 			Date.parse("2026-08-15T08:00:00Z"),
 		);
-		const first = claimStaffIntro(pending, "staff-1", "session-1.jsonl", Date.parse("2026-08-15T08:01:00Z"), false);
-		expect(first.claimed).toBe(true);
-		expect(first.state.intros["staff-1"]).toMatchObject({ status: "started", attempts: 1 });
-		expect(
-			claimStaffIntro(first.state, "staff-1", "session-1.jsonl", Date.parse("2026-08-15T08:02:00Z"), false).claimed,
-		).toBe(false);
-
-		const completed = finishStaffIntro(
-			first.state,
-			"staff-1",
-			"session-1.jsonl",
-			true,
-			Date.parse("2026-08-15T08:03:00Z"),
+		expect(pending.intros["staff-1"]).toMatchObject({ status: "pending", attempts: 0 });
+		expect(recordStaffIntroPending(pending, "staff-1", "session-1.jsonl", Date.parse("2026-08-15T08:01:00Z"))).toBe(
+			pending,
 		);
-		writeStaffRuntimeState(path, completed);
+		writeStaffRuntimeState(path, pending);
 		expect(readStaffRuntimeState(path).intros["staff-1"]).toMatchObject({
-			status: "completed",
-			attempts: 1,
+			trailFile: "session-1.jsonl",
+			status: "pending",
+			attempts: 0,
 		});
-		expect(
-			claimStaffIntro(completed, "staff-1", "session-1.jsonl", Date.parse("2026-08-15T08:04:00Z"), true).claimed,
-		).toBe(false);
 	});
 
 	it("persists bounded service orientation for a queued initial team", () => {
@@ -85,63 +71,31 @@ describe("staff intro runtime state", () => {
 		).toThrow("orientation");
 	});
 
-	it("permits only an explicit retry after failure", () => {
-		const pending = recordStaffIntroPending(
-			{ version: 1, intros: {} },
-			"staff-2",
-			"session-2.jsonl",
-			Date.parse("2026-08-15T09:00:00Z"),
-		);
-		const started = claimStaffIntro(
-			pending,
-			"staff-2",
-			"session-2.jsonl",
-			Date.parse("2026-08-15T09:01:00Z"),
-			false,
-		).state;
-		const failed = finishStaffIntro(
-			started,
-			"staff-2",
-			"session-2.jsonl",
-			false,
-			Date.parse("2026-08-15T09:02:00Z"),
-			"provider unavailable",
-		);
-		expect(failed.intros["staff-2"]).toMatchObject({ status: "failed", error: "provider unavailable" });
-		expect(
-			claimStaffIntro(failed, "staff-2", "session-2.jsonl", Date.parse("2026-08-15T09:03:00Z"), false).claimed,
-		).toBe(false);
-		const retry = claimStaffIntro(failed, "staff-2", "session-2.jsonl", Date.parse("2026-08-15T09:04:00Z"), true);
-		expect(retry.claimed).toBe(true);
-		expect(retry.state.intros["staff-2"]).toMatchObject({ status: "started", attempts: 2 });
-	});
-
-	it("byte-bounds a durable failure without dropping the intro on reload", () => {
-		const pending = recordStaffIntroPending(
-			{ version: 1, intros: {} },
-			"staff-unicode",
-			"session-unicode.jsonl",
-			Date.parse("2026-08-15T09:00:00Z"),
-		);
-		const started = claimStaffIntro(
-			pending,
-			"staff-unicode",
-			"session-unicode.jsonl",
-			Date.parse("2026-08-15T09:01:00Z"),
-			false,
-		).state;
-		const failed = finishStaffIntro(
-			started,
-			"staff-unicode",
-			"session-unicode.jsonl",
-			false,
-			Date.parse("2026-08-15T09:02:00Z"),
-			"ø".repeat(2_048),
-		);
-		writeStaffRuntimeState(path, failed);
-		const reloaded = readStaffRuntimeState(path).intros["staff-unicode"];
-		expect(reloaded?.status).toBe("failed");
-		expect(Buffer.byteLength(reloaded?.error ?? "", "utf-8")).toBeLessThanOrEqual(2_048);
+	it("still reads intros the removed local lane left in started, completed, or failed states", () => {
+		const intro = (staffAgentId: string, status: "started" | "completed" | "failed", error?: string) => ({
+			staffAgentId,
+			trailFile: `${staffAgentId}.jsonl`,
+			status,
+			attempts: 1,
+			createdAt: "2026-08-15T09:00:00.000Z",
+			updatedAt: "2026-08-15T09:02:00.000Z",
+			...(error ? { error } : {}),
+		});
+		writeStaffRuntimeState(path, {
+			version: 1,
+			intros: {
+				"staff-started": intro("staff-started", "started"),
+				"staff-completed": intro("staff-completed", "completed"),
+				"staff-failed": intro("staff-failed", "failed", "provider unavailable"),
+				"staff-oversized": intro("staff-oversized", "failed", "ø".repeat(2_048)),
+			},
+		});
+		const reloaded = readStaffRuntimeState(path).intros;
+		expect(reloaded["staff-started"]?.status).toBe("started");
+		expect(reloaded["staff-completed"]?.status).toBe("completed");
+		expect(reloaded["staff-failed"]).toMatchObject({ status: "failed", error: "provider unavailable" });
+		// An error past the byte bound invalidates only that intro.
+		expect(reloaded["staff-oversized"]).toBeUndefined();
 	});
 
 	it("fails safe on malformed state and refuses trail rebinding", () => {

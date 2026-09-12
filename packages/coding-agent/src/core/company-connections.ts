@@ -189,12 +189,11 @@ export const SCHEDULED_JOB_EFFORTS = Object.freeze(["low", "medium", "high", "xh
 export type ScheduledJobEffort = (typeof SCHEDULED_JOB_EFFORTS)[number];
 
 /**
- * Transitional placement values. "cloud" targets the Runner Orchestrator.
- * "local" and "requires-local" describe compatibility work that still needs
- * the temporary desktop adapter; they are not durable company ownership and
- * must not be presented as all-machines-offline execution.
+ * Routines run in the cloud. The retired "local" and "requires-local" values
+ * described the removed desktop adapter; stored routines that still carry
+ * them migrate to "cloud" on read.
  */
-export const ROUTINE_PLACEMENTS = Object.freeze(["local", "cloud", "requires-local"] as const);
+export const ROUTINE_PLACEMENTS = Object.freeze(["cloud"] as const);
 export type RoutinePlacement = (typeof ROUTINE_PLACEMENTS)[number];
 
 export type RoutinePublicationPolicy = { mode: "automatic" } | { mode: "review"; reviewerStaffIds: string[] };
@@ -216,7 +215,7 @@ export interface ScheduledJob {
 	enabled: boolean;
 	/** Reasoning effort for each autonomous run. Scheduled work defaults high. */
 	effort: ScheduledJobEffort;
-	/** Explicit execution placement. Missing legacy values migrate to local. */
+	/** Execution placement. Missing or retired legacy values migrate to cloud. */
 	placement: RoutinePlacement;
 	/** Operational work publishes automatically unless the founder explicitly
 	 * configured this routine as a review pipeline. */
@@ -770,7 +769,7 @@ function migrateScheduledJobs(state: CompanyConnectionsState): ScheduledJob[] {
 				triggers,
 				enabled: job.enabled,
 				effort: job.effort === undefined ? "high" : validScheduledJobEffort(job.effort),
-				placement: job.placement === undefined ? "local" : validRoutinePlacement(job.placement),
+				placement: "cloud",
 				publication: validRoutinePublicationPolicy((job as Partial<ScheduledJob>).publication),
 				createdAt: job.createdAt,
 				updatedAt: job.updatedAt,
@@ -792,7 +791,7 @@ function migrateScheduledJobs(state: CompanyConnectionsState): ScheduledJob[] {
 			triggers: [validRoutineTrigger({ kind: "schedule", intervalMinutes: state.wake.intervalMinutes })],
 			enabled: state.wake.enabled,
 			effort: "high",
-			placement: "local",
+			placement: "cloud",
 			publication: { mode: "automatic" },
 			createdAt: now,
 			updatedAt: now,
@@ -869,7 +868,7 @@ export function createScheduledJob(root: string, input: ScheduledJobInput): Sche
 		triggers: validRoutineTriggers(input.triggers),
 		enabled: input.enabled ?? true,
 		effort: input.effort === undefined ? "high" : validScheduledJobEffort(input.effort),
-		placement: input.placement === undefined ? "local" : validRoutinePlacement(input.placement),
+		placement: input.placement === undefined ? "cloud" : validRoutinePlacement(input.placement),
 		publication: validRoutinePublicationPolicy(input.publication),
 		...(staffAgentId ? { staffAgentId } : {}),
 		createdAt: now,
@@ -900,8 +899,7 @@ export function upsertStaffScheduledJob(
 		enabled: input.enabled ?? true,
 		effort: input.effort ?? "high",
 		// Placement is founder-set execution policy, not per-run tuning: an
-		// agent upsert that does not name it must never move a parked cloud or
-		// requires-local routine back to this machine.
+		// agent upsert that does not name it leaves the stored value alone.
 		...(input.placement !== undefined ? { placement: input.placement } : {}),
 		staffAgentId,
 	});

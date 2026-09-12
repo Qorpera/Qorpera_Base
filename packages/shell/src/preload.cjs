@@ -36,11 +36,6 @@ async function appInfo() {
 	}
 	return result;
 }
-async function openChat(sessionFile, department, worktree, sessionName) {
-	const result = await ipcRenderer.invoke("chat:open", sessionFile, department, worktree, sessionName);
-	if (result?.ok && typeof result.sessionFile === "string") activeTrailFile = result.sessionFile;
-	return result;
-}
 async function createStaff(input) {
 	const result = await ipcRenderer.invoke("staff:create", input);
 	if (result?.ok && typeof result.sessionFile === "string") activeTrailFile = result.sessionFile;
@@ -133,9 +128,7 @@ contextBridge.exposeInMainWorld("qorpera", {
 	createScheduledJob: (input) => ipcRenderer.invoke("company:scheduled-job-create", input),
 	updateScheduledJob: (id, input) => ipcRenderer.invoke("company:scheduled-job-update", id, input),
 	deleteScheduledJob: (id) => ipcRenderer.invoke("company:scheduled-job-delete", id),
-	runScheduledJob: (id) => ipcRenderer.invoke("company:scheduled-job-run", id),
 	closeCompany: () => ipcRenderer.invoke("company:close"),
-	openChat,
 	staffCatalog: () => ipcRenderer.invoke("staff:catalog"),
 	staffCreate: createStaff,
 	staffBootstrap: bootstrapStaff,
@@ -145,8 +138,7 @@ contextBridge.exposeInMainWorld("qorpera", {
 	staffRestore: (staffAgentId) => ipcRenderer.invoke("staff:restore", staffAgentId),
 	staffOpen: openStaff,
 	copyStaffConversationId: (staffAgentId) => ipcRenderer.invoke("staff:copy-conversation-id", staffAgentId),
-	staffIntroReady: (staffAgentId, sessionFile, retry = false) =>
-		ipcRenderer.invoke("staff:intro-ready", staffAgentId, sessionFile, retry),
+	staffIntroReady: (staffAgentId, sessionFile) => ipcRenderer.invoke("staff:intro-ready", staffAgentId, sessionFile),
 	roomCreate: (input) => ipcRenderer.invoke("room:create", input),
 	roomOpen: (roomId) => ipcRenderer.invoke("room:open", roomId),
 	roomSend: (roomId, input) => ipcRenderer.invoke("room:send", roomId, input),

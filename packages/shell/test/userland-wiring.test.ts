@@ -1,7 +1,12 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
+import {
+	removedAgentRuntimeExports,
+	removedLocalLaneModules,
+	removedMainSymbols,
+} from "../../../scripts/check-cloud-runtime-boundaries.mjs";
 
 const shell = join(import.meta.dirname, "..");
 const userland = join(shell, "userland");
@@ -19,6 +24,8 @@ const feedbackCssSource = readFileSync(join(userland, "feedback.css"), "utf-8");
 const hubCarouselSource = readFileSync(join(userland, "hub-carousel.js"), "utf-8");
 const preloadSource = readFileSync(join(shell, "src", "preload.cjs"), "utf-8");
 const mainSource = readFileSync(join(shell, "src", "main.ts"), "utf-8");
+const agentRuntimeSource = readFileSync(join(shell, "src", "agent-runtime.ts"), "utf-8");
+const repositoryRoot = join(shell, "..", "..");
 
 describe("userland wiring", () => {
 	it("only calls toast helpers that renderer.js actually defines", () => {
@@ -434,8 +441,6 @@ describe("userland wiring", () => {
 		 * frame to the anchored cloud conversation or rejects it. */
 		expect(mainSource).toContain("const anchor = runtime.sessionAnchor;");
 		expect(mainSource).toContain("await control.requestSessionTurn({");
-		expect(mainSource).not.toContain("runtime.wakeChild");
-		expect(mainSource).not.toContain("childRuntimeReady");
 		expect(rendererSource).toContain("const executionSponsor = selectedNativeExecutionSponsor()");
 		expect(rendererSource).toContain("message.qorperaRunId");
 		/* Founder ruling (2026-08-26): the thread shows the conversation, not
@@ -453,19 +458,20 @@ describe("userland wiring", () => {
 		);
 	});
 
-	it("leaves cloud wakes to the runner orchestrator", () => {
-		/* The desktop no longer ticks wakes or runs rooms; it only observes
-		 * the durable queues the Runner Orchestrator drains. */
-		expect(mainSource).not.toContain("startWakeTicker(");
-		expect(mainSource).not.toContain("wakeChild");
-		expect(mainSource).not.toContain("startWakeChildExclusive(");
-		expect(mainSource).not.toContain("startRoomChildExclusive(");
-		expect(mainSource).not.toContain("scheduleRoomDeliveryPump(");
-		expect(mainSource).not.toContain("wake is waiting for the runner orchestrator");
-		expect(mainSource).not.toContain("claimTurn(");
-		expect(mainSource).not.toContain("runtimeCloudWakeArbiter(");
-		expect(mainSource).not.toContain("completeActiveCloudWake(");
-		expect(mainSource).not.toContain("submitCloudWakeProposal(");
+	it("keeps the local execution lane and cloud wake claims out of the desktop", () => {
+		/* One list, shared with scripts/check-cloud-runtime-boundaries.mjs:
+		 * the desktop no longer runs a child, ticks wakes, or runs rooms; it
+		 * only observes the durable queues the Runner Orchestrator drains. */
+		expect(removedMainSymbols.length).toBeGreaterThan(0);
+		for (const { symbol } of removedMainSymbols) {
+			expect(mainSource, `main.ts still contains ${JSON.stringify(symbol)}`).not.toContain(symbol);
+		}
+		for (const file of removedLocalLaneModules) {
+			expect(existsSync(join(repositoryRoot, file)), `${file} was removed with the local lane`).toBe(false);
+		}
+		for (const name of removedAgentRuntimeExports) {
+			expect(agentRuntimeSource).not.toMatch(new RegExp(`export (async )?function ${name}\\(`));
+		}
 	});
 
 	it("requires a sponsored runner job and rejects desktop execution for cloud turns", () => {
@@ -479,7 +485,6 @@ describe("userland wiring", () => {
 		expect(turnLane).toContain("await control.requestSessionTurn({");
 		expect(turnLane).toContain("Cloud turns never use the desktop model runtime.");
 		expect(turnLane).not.toContain("enqueueCloudPrompt(");
-		expect(turnLane).not.toContain("sendLegacyLocalPrompt(");
 		/* The childless anchor answers the whole session surface. */
 		expect(mainSource).toContain("async function anchoredSessionRpc(");
 		expect(mainSource).toContain("requestSponsoredCloudTurn(runtime, arbiter, anchor.staffAgentId, ref, reviewed)");
@@ -492,21 +497,6 @@ describe("userland wiring", () => {
 		expect(rpcSend).toContain("const anchor = runtime.sessionAnchor;");
 		expect(rpcSend).toContain("return anchoredSessionRpc(");
 		expect(rpcSend).toContain("Agents execute in the cloud.");
-		expect(rpcSend).not.toContain("sendLegacyLocalPrompt(");
-		expect(rpcSend).not.toContain("writeChildFrame(");
-		/* The local execution lane is gone from the desktop entirely. */
-		expect(mainSource).not.toContain("startLegacyPiSessionAttachment(");
-		expect(mainSource).not.toContain("function sendLegacyLocalPrompt(");
-		expect(mainSource).not.toContain("function sendLegacyLocalStaffDirective(");
-		expect(mainSource).not.toContain("childProfileTypes");
-		expect(mainSource).not.toContain("writeChildFrame(");
-		expect(mainSource).not.toContain("function startChild(");
-		expect(mainSource).not.toContain("MODEL_CONNECTIONS");
-		expect(mainSource).not.toContain(".appendPrompt(");
-		expect(mainSource).not.toContain("withBrokerOutputCheckpoint(");
-		expect(mainSource).not.toContain("childBrokerOutputCheckpoints");
-		expect(mainSource).not.toContain("Cloud company publication is waiting for the active agent run to finish");
-		expect(mainSource).not.toContain("requireDurableExecution,");
 	});
 
 	it("renders agent details from the titlebar with only supported figure controls", () => {
