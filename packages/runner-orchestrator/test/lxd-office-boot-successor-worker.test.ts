@@ -238,16 +238,25 @@ describe("provider same-boot successor after retained boot", () => {
 			return original(...args);
 		});
 		const cancel = new AbortController(),
-			result = f.worker.reconcile(f.intentId, f.request, cancel.signal);
+			result = f.worker.reconcileSettled(f.intentId, f.request, cancel.signal);
+		let settled = false;
+		void result.then(
+			() => {
+				settled = true;
+			},
+			() => {
+				settled = true;
+			},
+		);
+		const rejected = expect(result).rejects.toThrow("ABORTED");
 		await entered;
 		cancel.abort();
-		await expect(result).rejects.toThrow("ABORTED");
 		await expect(f.create().reconcile(f.intentId, f.request, signal())).rejects.toThrow("PENDING");
+		expect(settled).toBe(false);
 		release();
-		await vi.waitFor(async () => {
-			await expect(f.create().reconcile(f.intentId, f.request, signal())).resolves.toMatchObject({
-				state: "active",
-			});
+		await rejected;
+		await expect(f.create().reconcile(f.intentId, f.request, signal())).resolves.toMatchObject({
+			state: "active",
 		});
 		expect(f.exec).toHaveBeenCalledOnce();
 	});

@@ -897,7 +897,8 @@ describe("LXD cloud runner provider", () => {
 			const journalPath = join(stateRoot, runId, "journal.json");
 			const history = await readFile(journalPath, "utf-8");
 			const recovery = structuredClone(lxd.volumes.get(`native-recovery-${runId}`));
-			const caller = new AbortController();
+			const caller = new AbortController(),
+				retirementTimeout = new AbortController();
 			const getInstance = lxd.getInstance.bind(lxd);
 			let observations = 0;
 			const observation = vi.spyOn(lxd, "getInstance").mockImplementation(async (project, name) => {
@@ -908,6 +909,8 @@ describe("LXD cloud runner provider", () => {
 					expect(lxd.powerCalls).toEqual(["start"]);
 					if (outcome === "shutdown") lxd.instance = { ...lxd.instance!, status: "Stopped", statusCode: 102 };
 					if (outcome === "cancel") caller.abort(new Error("handoff cancelled"));
+					if (outcome === "timeout")
+						retirementTimeout.abort(new DOMException("Retirement timeout", "TimeoutError"));
 					if (outcome === "drift") lxd.instance!.type = "container";
 					if (outcome === "missing-recovery") {
 						lxd.volumes.delete(`native-recovery-${runId}`);
@@ -919,7 +922,9 @@ describe("LXD cloud runner provider", () => {
 			const originalTimeout = AbortSignal.timeout.bind(AbortSignal);
 			const timeout = vi
 				.spyOn(AbortSignal, "timeout")
-				.mockImplementation((ms) => originalTimeout(outcome === "timeout" && ms === 120_000 ? 50 : ms));
+				.mockImplementation((ms) =>
+					outcome === "timeout" && ms === 120_000 ? retirementTimeout.signal : originalTimeout(ms),
+				);
 			try {
 				const pending = backend.acquire(runId, { ...work(), attempt: 2 }, caller.signal);
 				if (outcome === "shutdown") {
@@ -951,6 +956,7 @@ describe("LXD cloud runner provider", () => {
 					expect(await readFile(journalPath, "utf-8")).toBe(history);
 					if (outcome === "cancel" || outcome === "timeout") {
 						observation.mockRestore();
+						timeout.mockRestore();
 						lxd.instance = { ...lxd.instance!, status: "Stopped", statusCode: 102 };
 						await new LxdCloudRunnerProviderBackend(settings, lxd, new FakeGuest(), fetcher).acquire(
 							runId,
