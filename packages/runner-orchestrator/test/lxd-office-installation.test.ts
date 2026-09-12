@@ -235,6 +235,26 @@ describe("office provider upgrade over a retained journal", () => {
 		await expect(
 			assertOfficeInstallationUpgrade(parsed, expected, changedDocument, async () => false),
 		).rejects.toThrow("OFFICE_INSTALL_PREVIOUS_DOCUMENTS_CHANGED");
+		// A document revised after the receipt is admitted only when the new target
+		// already exists on disk with exactly the new bytes.
+		await expect(
+			assertOfficeInstallationUpgrade(
+				parsed,
+				expected,
+				changedDocument,
+				async () => false,
+				async (path) => path.endsWith("service.json"),
+			),
+		).resolves.toBeUndefined();
+		await expect(
+			assertOfficeInstallationUpgrade(
+				parsed,
+				expected,
+				changedDocument,
+				async () => false,
+				async (path) => path.endsWith(".service"),
+			),
+		).rejects.toThrow("OFFICE_INSTALL_PREVIOUS_DOCUMENTS_CHANGED");
 		const changedUnit = targets.map((t) => (t.path.endsWith(".service") ? { ...t, bytes: 8 } : t));
 		await expect(assertOfficeInstallationUpgrade(parsed, expected, changedUnit, async () => false)).rejects.toThrow(
 			"OFFICE_INSTALL_PREVIOUS_DOCUMENTS_CHANGED",
