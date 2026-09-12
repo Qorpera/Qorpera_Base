@@ -63,14 +63,35 @@ boot. Every VM command is journaled under the retained operation journal; an
 unknown dispatch outcome is held under the same command identity and is never
 redispatched under a new one.
 
+After the restore acknowledgement the worker composes the guest-side successor
+lane on the recreated root through two new protected root helpers packaged with
+the guest, `qorpera-company-computer-reset-configuration-control` and
+`qorpera-company-computer-reset-service-start-control`, dispatched under the
+same content-addressed staging, kernel-lock and single-command journal rules as
+the retained-boot helpers (`reset-configuration-<allocation>-<activation>` and
+`reset-service-start-<allocation>-<activation>` journals). The configuration
+packet carries the exact original preparation document and fresh credentials
+resolved through the existing protected authority path, with only the boot
+attestation rebound; the helper binds them to the restored public receipt and
+the restored predecessor stop history, restores `/etc/qorpera-office/preparation.json`
+as allowlisted public provenance, refuses a root with any historical credential
+directory or start/stop claim, installs the credentials only under the new
+boot's directory and never starts a unit. The start packet is the SQL-prepared
+reset successor itself; the start helper verifies the acknowledged reset
+configuration, claims before `systemctl`, and answers nonce-bound inspections.
+The provider measures the invocation and activates through
+`qorpera_activate_runtime_office_reset_successor` inside one five-second
+window, exactly as the other successor lanes do.
+
 Boundary of the current implementation:
 
-- The guest-side successor lane (configuration staging and ordinary service
-  start on the recreated root through the protected root helpers) is not
-  composed for production. The composed provider holds at `restored` with
-  `OFFICE_RESET_GUEST_LANE_UNAVAILABLE`; the lane is an injected port used by
-  tests. Successor credentials are provisioned through the existing protected
-  authority path only when that lane is present.
+- The guest helpers are unit-covered only through the provider lane against a
+  synthetic root; their Linux/systemd behavior on a real recreated root is not
+  yet exercised by a disposable fixture and remains a live acceptance gate.
+- A completed reset successor is a new activation lineage: the later stop,
+  restart, reboot and second-reset evidence readers still expect an original or
+  retained-boot predecessor and have not been extended to a reset-born
+  activation. Lifecycle continuation after a reset is therefore unproven.
 - There is no automatic deletion, host failover, generation change or general
   update mechanism. The plan grants exactly one reset for one retained
   `replace` request; a plan for another predecessor is refused.
