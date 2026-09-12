@@ -116,7 +116,7 @@ export async function acknowledgeLxdOfficeSoftwareInvocation(
 		)
 			throw new Error("acknowledgement differs");
 		return Object.freeze({ evidence, evidenceSha256, deadline });
-	} catch {
-		throw new Error("OFFICE_SOFTWARE_INVOCATION_UNCONFIRMED");
+	} catch (error) {
+		throw new Error("OFFICE_SOFTWARE_INVOCATION_UNCONFIRMED", { cause: error });
 	}
 }

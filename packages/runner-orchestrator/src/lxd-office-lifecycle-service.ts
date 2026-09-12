@@ -28,6 +28,19 @@ function writeObservation(value: string): Promise<void> {
  * Times describe reconciliation observations, not exact VM transitions.
  * The next poll can report recovery after a failed sink; retained events are
  * never restamped or replayed as fresh observations. */
+/** Innermost-first chain of fixed reason codes and short internal reasons.
+ * Only conservative tokens pass (no paths, digests longer than a code, or
+ * free text with punctuation); anything else is reported as opaque. */
+export function officeLifecycleErrorCode(error: unknown): string | null {
+	const parts: string[] = [];
+	let current: unknown = error;
+	for (let depth = 0; depth < 8 && current instanceof Error; depth += 1) {
+		const message = current.message.trim();
+		parts.push(/^[A-Za-z][A-Za-z0-9 _-]{0,63}$/.test(message) ? message : "opaque");
+		current = current.cause;
+	}
+	return parts.length ? parts.reverse().join(" <- ").slice(0, 400) : null;
+}
 export function createOfficeLifecycleReporter(
 	identity: LxdOfficeLifecycle["observationIdentity"],
 	write: (value: string) => void | Promise<void>,
@@ -36,7 +49,7 @@ export function createOfficeLifecycleReporter(
 	const binding = { ...identity };
 	let pending = false;
 	let previous = "";
-	return (result?: LxdOfficeLifecycleResult): void => {
+	return (result?: LxdOfficeLifecycleResult, error?: unknown): void => {
 		if (pending) return;
 		try {
 			const record = {
@@ -50,6 +63,7 @@ export function createOfficeLifecycleReporter(
 				observationSha256: result?.observationSha256 ?? null,
 				acknowledgedAtMs: result?.acknowledgedAtMs ?? null,
 				errorCategory: result ? (result.state === "failed" ? "PHASE_FAILED" : null) : "RECONCILIATION_UNCONFIRMED",
+				errorCode: result ? null : officeLifecycleErrorCode(error),
 				physicalTransitionAt: null,
 				resourceReleaseInferred: false,
 			};
@@ -179,7 +193,7 @@ export async function runLxdOfficeLifecycleService(
 				lifecycle,
 				running,
 				(result) => emit(result),
-				() => emit(),
+				(error) => emit(undefined, error),
 				config.pollIntervalMs,
 			).finally(() => stop.abort()),
 			runLxdOfficeControlObserver(

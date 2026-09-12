@@ -249,11 +249,11 @@ export class LxdOfficeLifecycle {
 		pending.add(this.#root);
 		try {
 			return await this.#run(AbortSignal.any([caller, AbortSignal.timeout(300000)]));
-		} catch {
+		} catch (error) {
 			this.#activeIntent = undefined;
 			this.#activeRecovery = undefined;
 			this.#activeBoot = undefined;
-			throw new Error("OFFICE_LIFECYCLE_UNCONFIRMED");
+			throw new Error("OFFICE_LIFECYCLE_UNCONFIRMED", { cause: error });
 		} finally {
 			pending.delete(this.#root);
 		}
@@ -872,7 +872,7 @@ export async function runLxdOfficeLifecycle(
 	lifecycle: Pick<LxdOfficeLifecycle, "reconcile">,
 	signal: AbortSignal,
 	onResult: (result: LxdOfficeLifecycleResult) => void,
-	onError: () => void,
+	onError: (error?: unknown) => void,
 	pollIntervalMs = 2000,
 ): Promise<void> {
 	if (!Number.isSafeInteger(pollIntervalMs) || pollIntervalMs < 1000 || pollIntervalMs > 60000)
@@ -881,11 +881,11 @@ export async function runLxdOfficeLifecycle(
 		let result: LxdOfficeLifecycleResult | undefined;
 		try {
 			result = await lifecycle.reconcile(signal);
-		} catch {
+		} catch (error) {
 			// Diagnostic observers have no authority over reconciliation.
 			if (!signal.aborted) {
 				try {
-					void Promise.resolve(onError()).catch(() => {});
+					void Promise.resolve(onError(error)).catch(() => {});
 				} catch {}
 			}
 		}

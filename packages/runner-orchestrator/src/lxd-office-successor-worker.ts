@@ -113,8 +113,8 @@ export class LxdOfficeSuccessorWorker {
 			},
 		};
 		const operation = this.#run(intentId, recovery, registry, signal)
-			.catch(() => {
-				throw new Error("OFFICE_SUCCESSOR_UNCONFIRMED");
+			.catch((error) => {
+				throw new Error("OFFICE_SUCCESSOR_UNCONFIRMED", { cause: error });
 			})
 			.finally(async () => {
 				await Promise.allSettled([...io]);

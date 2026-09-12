@@ -220,9 +220,10 @@ export class LxdOfficeTypedInspectionControl<Request, Completion> {
 			authority.throwIfAborted();
 			return result;
 		})()
-			.catch(() => {
+			.catch((error) => {
 				throw new Error(
 					`OFFICE_${this.#protocol.purpose.replaceAll("-", "_").toUpperCase()}_INSPECTION_UNCONFIRMED`,
+					{ cause: error },
 				);
 			})
 			.finally(() => {
