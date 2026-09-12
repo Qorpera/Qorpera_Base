@@ -116,6 +116,7 @@ export function parseLxdOfficeCodePackageProbe(
 		"nonce",
 		"monotonicNs",
 	]);
+	parseCompanyComputerPreparationCommand({ commandId: r.probeId, bootId: r.bootId, requestSha256: r.packetSha256 });
 	const command = parseCompanyComputerPreparationCommand({
 		commandId: r.nonce,
 		bootId: r.bootId,

@@ -8,6 +8,17 @@ import { officeCodePackageControlFixture } from "./fixtures/office-code-package-
 
 const signal = () => new AbortController().signal;
 describe("separate code package SQL authority", () => {
+	it("reads historical installed revision after a subsequent reset without granting dispatch", async () => {
+		const f = officeCodePackageControlFixture(),
+			call = vi.fn<LxdOfficeCodePackageRegistry["call"]>(async () => ({
+				...f.status("installed"),
+				currentPackageRevision: 2,
+			})),
+			control = new LxdOfficeCodePackageControl(f.options, { call });
+		expect((await control.status(signal())).currentPackageRevision).toBe(2);
+		expect(call).toHaveBeenCalledOnce();
+		expect(call.mock.calls[0]![0]).toBe("qorpera_office_package_provision_status");
+	});
 	it("enrolls exact canonical relation and treats authorized status as history without dispatch", async () => {
 		const f = officeCodePackageControlFixture(),
 			call = vi.fn<LxdOfficeCodePackageRegistry["call"]>(async () => f.status()),

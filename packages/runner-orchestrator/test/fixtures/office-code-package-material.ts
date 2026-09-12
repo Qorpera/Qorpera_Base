@@ -2,15 +2,26 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { COMPANY_COMPUTER_CODE_PACKAGE_ARTIFACTS, parseCompanyComputerResetPlan } from "@qorpera/contracts";
 import { parseLxdOfficeCodePackageLaneDocument } from "../../src/lxd-office-code-package-lane.ts";
+import type { LxdOfficeGuestBinding } from "../../src/lxd-office-guest.ts";
+import type { LxdOfficePhysicalPolicy } from "../../src/lxd-office-physical-policy.ts";
+import { lxdOfficePhysicalPolicySha256 } from "../../src/lxd-office-physical-policy.ts";
+import { lxdOfficeProviderBindingSha256 } from "../../src/lxd-office-start-control.ts";
 import { officeCodePackageSignedFixture } from "./office-code-package-signed.ts";
 import { officePhysicalFixture } from "./office-physical-policy.ts";
 
 const hash = (b: Buffer) => createHash("sha256").update(b).digest("hex");
-export function officeCodePackageMaterialFixture() {
+export function officeCodePackageMaterialFixture(
+	options: {
+		configure?: (fixture: ReturnType<typeof officeCodePackageSignedFixture>) => void;
+		policy?: LxdOfficePhysicalPolicy;
+		binding?: LxdOfficeGuestBinding;
+	} = {},
+) {
 	const f = officeCodePackageSignedFixture(),
 		files = new Map<string, Buffer>(),
 		readBuffers: Buffer[] = [],
 		reads: string[] = [];
+	options.configure?.(f);
 	for (const file of COMPANY_COMPUTER_CODE_PACKAGE_ARTIFACTS) {
 		const b = Buffer.from(`reviewed synthetic ${file}`);
 		files.set(`/protected/artifacts/${file}`, b);
@@ -23,12 +34,23 @@ export function officeCodePackageMaterialFixture() {
 		files.set(`/protected/${purpose}.cjs`, b);
 		f.statement.tools[purpose] = { bytes: b.length, sha256: hash(b) };
 	}
-	const signed = f.signed(),
-		capability = hash(Buffer.from("synthetic provider capability preimage")),
+	let signed = f.signed();
+	const capability = hash(Buffer.from("synthetic provider capability preimage")),
 		physical = officePhysicalFixture();
-	physical.policy.guest.imageFingerprint = f.statement.base.imageSha256;
-	physical.policy.guest.bootstrapSha256 = f.statement.base.bootstrapSha256;
-	physical.policy.image.guestPackageManifestSha256 = hash(signed.manifests.base);
+	if (options.policy) physical.policy = options.policy;
+	else {
+		physical.policy.guest.imageFingerprint = f.statement.base.imageSha256;
+		physical.policy.guest.bootstrapSha256 = f.statement.base.bootstrapSha256;
+		physical.policy.image.guestPackageManifestSha256 = hash(signed.manifests.base);
+	}
+	const binding = options.binding ?? {
+		...physical.binding,
+		...physical.policy.guest,
+		providerPolicySha256: lxdOfficePhysicalPolicySha256(physical.policy),
+	};
+	f.reset.providerBindingSha256 = lxdOfficeProviderBindingSha256(binding);
+	f.plan.providerBindingSha256 = f.reset.providerBindingSha256;
+	signed = f.signed();
 	const document = parseLxdOfficeCodePackageLaneDocument({
 		schema: "qorpera.lxd-office-code-package-lane/v1",
 		envelopePath: "/protected/envelope.json",
@@ -65,7 +87,7 @@ export function officeCodePackageMaterialFixture() {
 		...f,
 		...signed,
 		policy: physical.policy,
-		binding: physical.binding,
+		binding,
 		resetPlan: parseCompanyComputerResetPlan(f.reset),
 		document,
 		files,

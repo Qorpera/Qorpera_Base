@@ -219,6 +219,50 @@ export class LxdOfficeCodePackageProvisionLane {
 			this.#material.verified,
 		);
 	}
+	async #retainRootEvidence(packet: LxdOfficeCodePackagePacket, receipt: unknown, signal: AbortSignal) {
+		const file = await this.#client.readOfficeCodePackageReceipt(
+			this.#binding.project,
+			lxdOfficeGuestPlan(this.#binding).request.name,
+			this.provisionId,
+			"claim",
+			signal,
+		);
+		if (file.uid !== 0 || file.gid !== 0 || file.mode !== 0o400)
+			throw new Error("OFFICE_CODE_PACKAGE_ROOT_CUSTODY_UNCONFIRMED");
+		const claim = officeRecord(JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(file.content)), [
+			"schema",
+			"requestSha256",
+			"packetSha256",
+			"probe",
+		]);
+		if (
+			claim.schema !== "qorpera.office-code-package-install-claim/v1" ||
+			claim.requestSha256 !== officeDigest(packet.request) ||
+			claim.packetSha256 !== officeDigest(packet)
+		)
+			throw new Error("OFFICE_CODE_PACKAGE_ROOT_CLAIM_UNCONFIRMED");
+		const probe = officeRecord(claim.probe, [
+			"schema",
+			"purpose",
+			"provisionId",
+			"probeId",
+			"packetSha256",
+			"bootId",
+			"challengeId",
+			"nonce",
+			"monotonicNs",
+		]);
+		parseLxdOfficeCodePackageProbe(probe, {
+			purpose: "install",
+			provisionId: this.provisionId,
+			probeId: probe.probeId as string,
+			packetSha256: officeDigest(packet),
+			bootId: packet.request.bootId,
+			challengeId: packet.request.challengeId,
+		});
+		await this.#keep(`code-package-root-claim-${this.provisionId}.json`, claim);
+		await this.#keep(`code-package-root-receipt-${this.provisionId}.json`, receipt);
+	}
 	async ensure(context: LxdOfficeCodePackageProvisionContext, signal: AbortSignal, authorize: () => Promise<void>) {
 		const { packet, status } = await this.#packet(context, signal),
 			packetSha256 = officeDigest(packet),
@@ -235,6 +279,7 @@ export class LxdOfficeCodePackageProvisionLane {
 				!isDeepStrictEqual(await this.#receipt(packet.request, signal), r.receipt)
 			)
 				throw new Error("OFFICE_CODE_PACKAGE_COMPLETION_UNCONFIRMED");
+			await this.#retainRootEvidence(packet, status.receipt, signal);
 			return { packet, receipt: status.receipt! };
 		}
 		await authorize();
@@ -347,6 +392,7 @@ export class LxdOfficeCodePackageProvisionLane {
 			performance.now() >= challenge.deadline
 		)
 			throw new Error("OFFICE_CODE_PACKAGE_OBSERVATION_UNCONFIRMED");
+		await this.#retainRootEvidence(packet, receipt, signal);
 		await this.#control.acknowledge(receipt, packet.request, observationId, evidenceSha256 as string, signal);
 		await this.#keep(completeName, {
 			schema: "qorpera.lxd-office-code-package-completed/v1",

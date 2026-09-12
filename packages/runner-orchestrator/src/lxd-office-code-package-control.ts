@@ -134,7 +134,11 @@ export class LxdOfficeCodePackageControl {
 		const state = r.state as "enrolled" | "authorized" | "installed",
 			currentPackageRevision = integer(r.currentPackageRevision, 0),
 			capabilityRevision = integer(r.capabilityRevision);
-		if (currentPackageRevision > this.#plan.targetRevision)
+		if (
+			state === "installed"
+				? currentPackageRevision < this.#plan.targetRevision
+				: currentPackageRevision !== this.#plan.targetRevision - 1
+		)
 			throw new Error("OFFICE_CODE_PACKAGE_REVISION_UNCONFIRMED");
 		const request = r.request === null ? null : this.#request(r.request);
 		same(r.requestSha256, request === null ? null : officeDigest(request));
@@ -143,7 +147,6 @@ export class LxdOfficeCodePackageControl {
 		same(r.receiptSha256, receipt === null ? null : officeDigest(receipt));
 		if ((state === "installed") !== (receipt !== null)) throw new Error("OFFICE_CODE_PACKAGE_STATE_UNCONFIRMED");
 		if (state === "installed") {
-			same(currentPackageRevision, this.#plan.targetRevision);
 			officeSha(r.installationEvidenceSha256);
 		} else same(r.installationEvidenceSha256, null);
 		return {
