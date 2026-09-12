@@ -115,7 +115,18 @@ test("packages and starts the headless office outside the workspace, with all ru
 		assert.match(prepUnit, /^PrivateNetwork=yes$/m);
 		assert.match(prepUnit, /^ReadOnlyPaths=\/var\/lib\/qorpera-office /m);
 		assert.doesNotMatch(prepUnit, /LoadCredential=|ReadWritePaths=|Conflicts=|WantedBy=/);
-		assert.doesNotMatch(unit, /EnvironmentFile=|LoadCredential=.*(?:identity|provider|openai)|ReadWritePaths=.*company-live|RuntimeDirectory=|StateDirectory=/);
+		// Only the durable event outbox persists as service-owned state. Boot
+		// credentials and authority remain outside this directory and writable roots.
+		const settings = unit.split("\n").map(line => line.trim());
+		assert.deepEqual(settings.filter(line => /^StateDirectory(?:Mode)?\s*=/.test(line)), [
+			"StateDirectory=qorpera-office-events",
+			"StateDirectoryMode=0700",
+		]);
+		for (const line of ["Group=qorpera-office", "UMask=0077", "ProtectSystem=strict"]) assert.ok(settings.includes(line), line);
+		assert.deepEqual(settings.filter(line => /^ReadWritePaths\s*=/.test(line)), [
+			"ReadWritePaths=/var/lib/qorpera-office /run/qorpera-office /var/lib/qorpera-office-events",
+		]);
+		assert.doesNotMatch(unit, /EnvironmentFile=|LoadCredential=.*(?:identity|provider|openai)|ReadWritePaths=.*company-live|RuntimeDirectory=/);
 		const repeated = run(); assert.notEqual(repeated.status, 0); assert.equal(await readFile(join(output, "manifest.json"), "utf8"), encoded);
 	} finally { await rm(temporary, { recursive: true, force: true }); }
 });
