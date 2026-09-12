@@ -38,6 +38,8 @@ import { LxdOfficePowerOffWorker } from "./lxd-office-power-off-worker.ts";
 import { LxdOfficePreparationWorker } from "./lxd-office-preparation-worker.ts";
 import { LxdOfficeProviderControl } from "./lxd-office-provider-control.ts";
 import type { LxdOfficeLifecycleRegistry } from "./lxd-office-provider-registry.ts";
+import { readLxdOfficeResetPlan } from "./lxd-office-reset-journal.ts";
+import { LxdOfficeResetWorker } from "./lxd-office-reset-worker.ts";
 import { LxdOfficeResumeWorker } from "./lxd-office-resume-worker.ts";
 import { LxdOfficeServiceStopWorker } from "./lxd-office-service-stop-worker.ts";
 import type { LxdOfficeSoftwareLaneOptions } from "./lxd-office-software-lane.ts";
@@ -70,6 +72,7 @@ interface Ports {
 	resumeWorker?: Pick<LxdOfficeResumeWorker, "reconcileSettled">;
 	bootConfigurationWorker?: Pick<LxdOfficeBootConfigurationWorker, "reconcileSettled">;
 	bootActivationWorker?: Pick<LxdOfficeBootActivationWorker, "reconcileSettled">;
+	resetWorker?: Pick<LxdOfficeResetWorker, "reconcileSettled">;
 	kernelLock?: typeof assertOfficeAdoptionKernelLock;
 	readProtected?: typeof readLxdOfficeProtectedFile;
 	measureInvocation?: LxdOfficeInvocationMeasurement;
@@ -96,12 +99,16 @@ export interface LxdOfficeLifecycleResult {
 		| "power_off"
 		| "resume"
 		| "boot_configuration"
-		| "boot_activation";
+		| "boot_activation"
+		| "reset";
 	intentId?: string;
 	observationSha256?: string;
 	transitionId?: string;
 	acknowledgedAtMs?: number;
 	activationId?: string;
+	resetId?: string;
+	resetPhase?: string;
+	reason?: string;
 }
 const pending = new Set<string>();
 
@@ -135,11 +142,13 @@ export class LxdOfficeLifecycle {
 	readonly #resumeWorker: Pick<LxdOfficeResumeWorker, "reconcileSettled">;
 	readonly #bootConfigurationWorker: Pick<LxdOfficeBootConfigurationWorker, "reconcileSettled">;
 	readonly #bootActivationWorker: Pick<LxdOfficeBootActivationWorker, "reconcileSettled">;
+	readonly #resetWorker: Pick<LxdOfficeResetWorker, "reconcileSettled">;
 	readonly #kernelLock;
 	readonly #readProtected;
 	#activeIntent: string | undefined;
 	#activeRecovery: { intentId: string; transitionId: string; activationId: string } | undefined;
 	#activeBoot: { intentId: string; transitionId: string; activationId: string; stageSha256: string } | undefined;
+	#activeReset: { intentId: string; transitionId: string; resetId: string; activationId: string } | undefined;
 	constructor(
 		gate: Pick<LxdOfficePhysicalGate, "policy" | "check" | "inspect">,
 		registry: LxdOfficeLifecycleRegistry,
@@ -216,6 +225,9 @@ export class LxdOfficeLifecycle {
 			ports.bootConfigurationWorker ?? new LxdOfficeBootConfigurationWorker(gate, registry);
 		this.#bootActivationWorker =
 			ports.bootActivationWorker ?? new LxdOfficeBootActivationWorker(gate, registry, { measureInvocation });
+		// The reset worker has no production guest successor lane yet: the
+		// composed provider holds at `restored` with a stable reason.
+		this.#resetWorker = ports.resetWorker ?? new LxdOfficeResetWorker(gate, registry, { measureInvocation });
 		this.#workers = ports.workers ?? {
 			creation: new LxdOfficeCreationWorker(gate, registry),
 			inventory: new LxdOfficeInventoryWorker(gate, registry, limits),
@@ -253,6 +265,7 @@ export class LxdOfficeLifecycle {
 			this.#activeIntent = undefined;
 			this.#activeRecovery = undefined;
 			this.#activeBoot = undefined;
+			this.#activeReset = undefined;
 			throw new Error("OFFICE_LIFECYCLE_UNCONFIRMED", { cause: error });
 		} finally {
 			pending.delete(this.#root);
@@ -266,6 +279,7 @@ export class LxdOfficeLifecycle {
 			this.#activeIntent = undefined;
 			this.#activeRecovery = undefined;
 			this.#activeBoot = undefined;
+			this.#activeReset = undefined;
 		}
 		if (!status.intent) return { state: "idle" };
 		const intentId = status.intent.intentId;
@@ -336,7 +350,6 @@ export class LxdOfficeLifecycle {
 					retained.intentId !== intentId ||
 					retained.allocationId !== status.reservation.allocationId ||
 					!isDeepStrictEqual(retained.request, recovery) ||
-					!["service_restart", "power_off", "reboot"].includes(recovery.action) ||
 					typeof retained.stopCommandId !== "string" ||
 					!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
 						retained.stopCommandId,
@@ -345,6 +358,68 @@ export class LxdOfficeLifecycle {
 					(retained.acknowledgedAtMs as number) < 1
 				)
 					throw new Error("recovery stage changed");
+				if (recovery.action === "replace") {
+					// Root replacement only under an explicit protected reset plan that
+					// binds this exact retained replace request. Without it the stopped
+					// office remains held; the plan grants no dispatch by itself.
+					this.#activeRecovery = undefined;
+					this.#activeBoot = undefined;
+					const reset = await readLxdOfficeResetPlan(this.#readProtected, this.#planPath, recovery);
+					if (!reset)
+						return { state: "held", phase: "service_stop", intentId, transitionId: recovery.transitionId };
+					const active = this.#activeReset;
+					if (
+						active?.intentId === intentId &&
+						active.transitionId === recovery.transitionId &&
+						active.resetId === reset.plan.resetId &&
+						status.officeState === "active"
+					)
+						return {
+							state: "active",
+							phase: "reset",
+							intentId,
+							transitionId: recovery.transitionId,
+							activationId: active.activationId,
+							resetId: active.resetId,
+							resetPhase: "active",
+						};
+					this.#activeReset = undefined;
+					const result = await this.#resetWorker.reconcileSettled(
+						{
+							intentId,
+							plan: reset.plan,
+							planSha256: reset.planSha256,
+							serviceBootstrapPath: context.request.serviceBootstrapPath,
+						},
+						signal,
+					);
+					signal.throwIfAborted();
+					if (
+						result.intentId !== intentId ||
+						result.transitionId !== recovery.transitionId ||
+						result.allocationId !== status.reservation.allocationId ||
+						result.resetId !== reset.plan.resetId ||
+						result.activationId !== reset.plan.successorActivationId
+					)
+						throw new Error("reset result differs");
+					if (result.state === "active")
+						this.#activeReset = {
+							intentId,
+							transitionId: recovery.transitionId,
+							resetId: result.resetId,
+							activationId: result.activationId,
+						};
+					return {
+						state: result.state,
+						phase: "reset",
+						intentId,
+						transitionId: recovery.transitionId,
+						activationId: result.activationId,
+						resetId: result.resetId,
+						resetPhase: result.phase,
+						...(result.reason === undefined ? {} : { reason: result.reason }),
+					};
+				}
 				if (["power_off", "reboot"].includes(recovery.action)) {
 					this.#activeRecovery = undefined;
 					const suffix = `${status.reservation.allocationId}-${recovery.transitionId}`,
@@ -713,7 +788,13 @@ export class LxdOfficeLifecycle {
 			}
 			const result = await this.#stopWorker.reconcileSettled(intentId, recovery, signal);
 			signal.throwIfAborted();
-			if (result.state === "stopped" && ["service_restart", "power_off", "reboot"].includes(recovery.action)) {
+			// A replace stop advances to the reset stage only under an explicit
+			// protected reset plan; otherwise it stays held after the stop.
+			const forward =
+				["service_restart", "power_off", "reboot"].includes(recovery.action) ||
+				(recovery.action === "replace" &&
+					(await readLxdOfficeResetPlan(this.#readProtected, this.#planPath, recovery)) !== undefined);
+			if (result.state === "stopped" && forward) {
 				if (
 					result.intentId !== intentId ||
 					result.transitionId !== recovery.transitionId ||

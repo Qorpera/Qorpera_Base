@@ -485,6 +485,62 @@ export class LxdOfficeOperationJournal {
 		signal.throwIfAborted();
 	}
 
+	/** Governed root reset lineage: the retained create/start/stop chain, then
+	 * exactly stop -> delete -> create -> start with the planned command IDs.
+	 * Every predecessor must have succeeded; only the final present command may
+	 * be unresolved. Original create/boot/power-off validators are unchanged,
+	 * so historical prefixes cannot be relabelled as a reset. */
+	async assertResetLineage(
+		prior: readonly { commandId: string; action: "create" | "start" | "stop" }[],
+		reset: {
+			readonly stopCommandId: string;
+			readonly deleteCommandId: string;
+			readonly createCommandId: string;
+			readonly startCommandId: string;
+		},
+		signal: AbortSignal,
+	): Promise<{ reached: "none" | "stop" | "delete" | "create" | "start"; settled: boolean }> {
+		signal.throwIfAborted();
+		const { events } = await this.#read();
+		const suffix = [
+			{ commandId: reset.stopCommandId, action: "stop" as const },
+			{ commandId: reset.deleteCommandId, action: "delete" as const },
+			{ commandId: reset.createCommandId, action: "create" as const },
+			{ commandId: reset.startCommandId, action: "start" as const },
+		];
+		const commands = [...prior, ...suffix];
+		if (
+			prior.length < 2 ||
+			prior.length % 2 !== 0 ||
+			prior.some((command, index) => command.action !== (index === 0 ? "create" : index % 2 ? "start" : "stop")) ||
+			commands.some((command) => !UUID.test(command.commandId)) ||
+			new Set(commands.map((command) => command.commandId)).size !== commands.length ||
+			commands.length > MAX_EVENTS / 3 ||
+			events.length < prior.length * 3 ||
+			events.length > commands.length * 3
+		)
+			throw new Error("OFFICE_RESET_LINEAGE_UNCONFIRMED");
+		const groups = Math.ceil(events.length / 3);
+		for (let index = 0; index < groups; index++) {
+			const command = commands[index],
+				group = events.slice(index * 3, index * 3 + 3);
+			if (
+				!command ||
+				group.some((event) => event.commandId !== command.commandId || event.action !== command.action)
+			)
+				throw new Error("OFFICE_RESET_LINEAGE_UNCONFIRMED");
+			if (index < groups - 1 && (group[2]?.kind !== "settled" || group[2]?.state !== "succeeded"))
+				throw new Error("OFFICE_RESET_LINEAGE_UNCONFIRMED");
+		}
+		signal.throwIfAborted();
+		const reachedIndex = groups - prior.length,
+			last = events.at(-1);
+		return {
+			reached: reachedIndex <= 0 ? "none" : suffix[reachedIndex - 1].action,
+			settled: reachedIndex > 0 && last?.kind === "settled" && last.state === "succeeded",
+		};
+	}
+
 	async #observe(commandId: string, action: Action, signal: AbortSignal): Promise<LxdOfficeOperationResult> {
 		const current = await this.#read();
 		const command = lastCommand(current.events, commandId);

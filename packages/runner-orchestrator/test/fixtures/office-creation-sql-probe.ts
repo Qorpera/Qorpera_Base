@@ -487,6 +487,18 @@ export async function runOfficeCreationSqlProbe(
 				)
 					return bootOptions!.activation!.registry.call(method, args, signal);
 				if (
+					method === "qorpera_begin_runtime_office_reset" ||
+					method === "qorpera_runtime_office_reset_status" ||
+					method === "qorpera_prepare_runtime_office_reset_phase" ||
+					method === "qorpera_check_runtime_office_reset_phase" ||
+					method === "qorpera_ack_runtime_office_reset_phase" ||
+					method === "qorpera_prepare_runtime_office_reset_successor" ||
+					method === "qorpera_runtime_office_reset_successor_status" ||
+					method === "qorpera_check_runtime_office_reset_successor" ||
+					method === "qorpera_activate_runtime_office_reset_successor"
+				)
+					throw new Error("First activation fixture cannot reset a root");
+				if (
 					method === "qorpera_enroll_office_software" ||
 					method === "qorpera_begin_office_software" ||
 					method === "qorpera_check_office_software_install" ||
@@ -544,6 +556,8 @@ export async function runOfficeCreationSqlProbe(
 							}
 						: {}),
 					readProtected: async (path) => {
+						if (path.endsWith(".reset"))
+							throw Object.assign(new Error("no root reset requested"), { code: "ENOENT" });
 						if (path.endsWith(".resume")) {
 							if (!resumePlan) throw Object.assign(new Error("no resume requested"), { code: "ENOENT" });
 							return Buffer.from(JSON.stringify(resumePlan));

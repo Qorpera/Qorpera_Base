@@ -3,6 +3,7 @@ import type { LxdOfficeBootIntentRegistry } from "./lxd-office-boot-intent-contr
 import type { LxdOfficeBootSuccessorRegistry } from "./lxd-office-boot-successor-control.ts";
 import type { LxdOfficeLifecycleControlRegistry } from "./lxd-office-lifecycle-control.ts";
 import type { LxdOfficeProviderRegistry } from "./lxd-office-provider-control.ts";
+import type { LxdOfficeResetRegistry, LxdOfficeResetSuccessorRegistry } from "./lxd-office-reset-control.ts";
 import type { LxdOfficeSoftwareRegistry } from "./lxd-office-software-control.ts";
 import type { LxdOfficeSoftwareInvocationRegistry } from "./lxd-office-software-invocation-control.ts";
 import type { LxdOfficeStartRegistry } from "./lxd-office-start-control.ts";
@@ -18,6 +19,8 @@ export type LxdOfficeProviderMethod =
 	| Parameters<LxdOfficeBootSuccessorRegistry["call"]>[0]
 	| Parameters<LxdOfficeBootIntentRegistry["call"]>[0]
 	| Parameters<LxdOfficeActivationRegistry["call"]>[0]
+	| Parameters<LxdOfficeResetRegistry["call"]>[0]
+	| Parameters<LxdOfficeResetSuccessorRegistry["call"]>[0]
 	| Parameters<LxdOfficeSoftwareRegistry["call"]>[0]
 	| Parameters<LxdOfficeSoftwareInvocationRegistry["call"]>[0];
 export interface LxdOfficeLifecycleRegistry {
@@ -48,6 +51,17 @@ const METHODS = new Set<LxdOfficeProviderMethod>([
 	"qorpera_prepare_runtime_office_boot_intent",
 	"qorpera_runtime_office_boot_intent_status",
 	"qorpera_check_runtime_office_boot_intent",
+	// Governed same-allocation root reset: begin/status, bounded per-phase
+	// challenges and the reset successor handoff.
+	"qorpera_begin_runtime_office_reset",
+	"qorpera_runtime_office_reset_status",
+	"qorpera_prepare_runtime_office_reset_phase",
+	"qorpera_check_runtime_office_reset_phase",
+	"qorpera_ack_runtime_office_reset_phase",
+	"qorpera_prepare_runtime_office_reset_successor",
+	"qorpera_runtime_office_reset_successor_status",
+	"qorpera_check_runtime_office_reset_successor",
+	"qorpera_activate_runtime_office_reset_successor",
 	// Governed service-only software revisions; every call also carries the
 	// separate provider capability, which SQL requires and never returns.
 	"qorpera_enroll_office_software",

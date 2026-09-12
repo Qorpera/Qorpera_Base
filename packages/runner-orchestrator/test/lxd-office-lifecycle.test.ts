@@ -57,6 +57,7 @@ async function fixture() {
 		plan: undefined as unknown,
 		recovery: undefined as unknown,
 		resume: undefined as unknown,
+		reset: undefined as unknown,
 		kernel: true,
 	};
 	const calls: string[] = [];
@@ -131,6 +132,10 @@ async function fixture() {
 		if (!state.kernel) throw new Error("lock missing");
 	});
 	const readProtected = vi.fn(async (path: string) => {
+		if (path.endsWith(".reset")) {
+			if (!state.reset) throw Object.assign(new Error("missing reset"), { code: "ENOENT" });
+			return Buffer.from(JSON.stringify(state.reset));
+		}
 		if (path.endsWith(".resume")) {
 			if (!state.resume) throw Object.assign(new Error("missing resume"), { code: "ENOENT" });
 			return Buffer.from(JSON.stringify(state.resume));

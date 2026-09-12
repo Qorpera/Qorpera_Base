@@ -481,6 +481,108 @@ export interface LxdOfficeSoftwareClient extends LxdOfficeInspectableClient {
 		signal: AbortSignal,
 	): Promise<LxdInstanceFile>;
 }
+/** Bounded custody transport for the governed same-allocation root reset.
+ * Listing/reads are confined to the private diagnostic outbox and public root
+ * history; pushes are confined to the restore allowlist and carry explicit
+ * ownership/mode. Nothing here starts, configures or activates a guest. */
+export interface LxdOfficeResetClient extends LxdOfficeInspectableClient {
+	listOfficeResetDirectory(project: string, name: string, path: string, signal: AbortSignal): Promise<string[]>;
+	readOfficeResetFile(
+		project: string,
+		name: string,
+		path: string,
+		maximumBytes: number,
+		signal: AbortSignal,
+	): Promise<LxdInstanceFile>;
+	pushOfficeResetDirectory(
+		project: string,
+		name: string,
+		path: string,
+		uid: number,
+		gid: number,
+		mode: number,
+		signal: AbortSignal,
+	): Promise<void>;
+	pushOfficeResetFile(
+		project: string,
+		name: string,
+		path: string,
+		content: Buffer,
+		uid: number,
+		gid: number,
+		mode: number,
+		signal: AbortSignal,
+	): Promise<void>;
+}
+export const OFFICE_RESET_OUTBOX_ROOT = "/var/lib/qorpera-office-events";
+export const OFFICE_RESET_HISTORY_ROOT = "/etc/qorpera-office/history";
+const RESET_UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+const OFFICE_RESET_READ_PATHS: ReadonlyArray<{ pattern: RegExp; maximum: number; directory: boolean }> = Object.freeze([
+	{ pattern: /^\/var\/lib\/qorpera-office-events$/, maximum: 0, directory: true },
+	{
+		pattern: new RegExp(`^/var/lib/qorpera-office-events/(?:scope\\.json|${RESET_UUID}-[0-9]{16}\\.json)$`),
+		maximum: 73729,
+		directory: false,
+	},
+	{ pattern: new RegExp(`^/etc/qorpera-office/history/${RESET_UUID}/${RESET_UUID}$`), maximum: 0, directory: true },
+	{
+		pattern: new RegExp(
+			`^/etc/qorpera-office/history/${RESET_UUID}/${RESET_UUID}/(?:manifest|claim|[0-9a-f]{64})\\.json$`,
+		),
+		maximum: 65536,
+		directory: false,
+	},
+	{ pattern: /^\/etc\/qorpera-office\/adoption\.json$/, maximum: 65536, directory: false },
+	{ pattern: /^\/etc\/qorpera-office\/credentials\/config\.json$/, maximum: 16384, directory: false },
+	{
+		pattern:
+			/^\/etc\/qorpera-office\/boots\/[0-9a-f]{32}\/(?:adoption|configuration-claim|configuration-completion)\.json$/,
+		maximum: 65536,
+		directory: false,
+	},
+	{
+		pattern: /^\/etc\/qorpera-office\/boots\/[0-9a-f]{32}\/credentials\/config\.json$/,
+		maximum: 16384,
+		directory: false,
+	},
+]);
+const OFFICE_RESET_WRITE_PATHS: ReadonlyArray<{ pattern: RegExp; maximum: number; directory: boolean }> = Object.freeze(
+	[
+		{ pattern: /^\/var\/lib\/qorpera-office-events$/, maximum: 0, directory: true },
+		{
+			pattern: new RegExp(`^/var/lib/qorpera-office-events/(?:scope\\.json|${RESET_UUID}-[0-9]{16}\\.json)$`),
+			maximum: 73729,
+			directory: false,
+		},
+		{ pattern: /^\/etc\/qorpera-office\/history$/, maximum: 0, directory: true },
+		{ pattern: new RegExp(`^/etc/qorpera-office/history/${RESET_UUID}$`), maximum: 0, directory: true },
+		{ pattern: new RegExp(`^/etc/qorpera-office/history/${RESET_UUID}/${RESET_UUID}$`), maximum: 0, directory: true },
+		{
+			pattern: new RegExp(
+				`^/etc/qorpera-office/history/${RESET_UUID}/${RESET_UUID}/(?:manifest|claim|[0-9a-f]{64})\\.json$`,
+			),
+			maximum: 65536,
+			directory: false,
+		},
+		{ pattern: /^\/etc\/qorpera-office\/adoption\.json$/, maximum: 65536, directory: false },
+	],
+);
+function officeResetPath(path: unknown, directory: boolean, write: boolean): number {
+	const match = (write ? OFFICE_RESET_WRITE_PATHS : OFFICE_RESET_READ_PATHS).find(
+		(entry) => entry.directory === directory && typeof path === "string" && entry.pattern.test(path),
+	);
+	if (!match || typeof path !== "string" || path !== resolve(path) || path.length > 512) throw new Error("reset path");
+	return match.maximum;
+}
+function officeResetOwner(value: unknown): string {
+	if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > 2147483647)
+		throw new Error("owner");
+	return String(value);
+}
+function officeResetMode(value: unknown, directory: boolean): string {
+	if ((directory ? [0o700] : [0o400, 0o444, 0o600]).indexOf(value as number) < 0) throw new Error("mode");
+	return (value as number).toString(8).padStart(4, "0");
+}
 export const OFFICE_SOFTWARE_STAGING_ROOT = "/run/qorpera-office-preparation";
 export const OFFICE_SOFTWARE_JOURNAL_ROOT = "/var/lib/qorpera-office-service-software";
 export const OFFICE_SOFTWARE_INSTALLED_SERVICE = "/opt/qorpera-office/qorpera-company-computer-service.mjs";
@@ -809,7 +911,8 @@ export class LxdUnixClient
 		LxdOfficeBootServiceStartClient,
 		LxdOfficeServiceStopClient,
 		LxdOfficeServiceRestartClient,
-		LxdOfficeBootServiceRestartClient
+		LxdOfficeBootServiceRestartClient,
+		LxdOfficeResetClient
 {
 	readonly #socketPath: string;
 	readonly #operationTimeoutSeconds: number;
@@ -1503,6 +1606,129 @@ export class LxdUnixClient
 	}
 	/** Root-owned public outputs only; custody (uid/gid/mode/size/digest) is
 	 * asserted by the caller against its own expectation. */
+	async listOfficeResetDirectory(project: string, name: string, path: string, signal: AbortSignal): Promise<string[]> {
+		try {
+			officeResetPath(path, true, false);
+			if (![project, name].every((value) => INSTANCE_NAME.test(value))) throw new Error("scope");
+			const checked = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
+			checked.throwIfAborted();
+			const result = await this.#requestPayload(
+				"GET",
+				projectPath(`/1.0/instances/${encodeURIComponent(name)}/files?path=${encodeURIComponent(path)}`, project),
+				undefined,
+				{ accept: "application/json" },
+				checked,
+				1048576,
+			);
+			checked.throwIfAborted();
+			const envelope = record(result.body, "LXD directory listing");
+			if (
+				result.status !== 200 ||
+				envelope.type !== "sync" ||
+				envelope.status_code !== 200 ||
+				!Array.isArray(envelope.metadata) ||
+				envelope.metadata.length > 8200 ||
+				envelope.metadata.some(
+					(entry) => typeof entry !== "string" || !entry || entry.length > 255 || /[\x00-\x1f\x7f/\\]/.test(entry),
+				)
+			)
+				throw new Error("listing");
+			return [...(envelope.metadata as string[])].sort();
+		} catch {
+			throw new Error("LXD_OFFICE_RESET_LISTING_UNCONFIRMED");
+		}
+	}
+	async readOfficeResetFile(
+		project: string,
+		name: string,
+		path: string,
+		maximumBytes: number,
+		signal: AbortSignal,
+	): Promise<LxdInstanceFile> {
+		try {
+			const maximum = officeResetPath(path, false, false);
+			if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > maximum) throw new Error("size");
+			const file = await this.#readInstanceFile(project, name, path, maximumBytes, signal);
+			signal.throwIfAborted();
+			return file;
+		} catch {
+			throw new Error("LXD_OFFICE_RESET_READBACK_UNCONFIRMED");
+		}
+	}
+	async pushOfficeResetDirectory(
+		project: string,
+		name: string,
+		path: string,
+		uid: number,
+		gid: number,
+		mode: number,
+		signal: AbortSignal,
+	): Promise<void> {
+		await this.#pushOfficeReset(project, name, path, undefined, uid, gid, mode, signal);
+	}
+	async pushOfficeResetFile(
+		project: string,
+		name: string,
+		path: string,
+		content: Buffer,
+		uid: number,
+		gid: number,
+		mode: number,
+		signal: AbortSignal,
+	): Promise<void> {
+		await this.#pushOfficeReset(project, name, path, content, uid, gid, mode, signal);
+	}
+	async #pushOfficeReset(
+		project: string,
+		name: string,
+		path: string,
+		content: Buffer | undefined,
+		uid: number,
+		gid: number,
+		mode: number,
+		signal: AbortSignal,
+	): Promise<void> {
+		let payload: Buffer | undefined;
+		try {
+			const directory = content === undefined,
+				maximum = officeResetPath(path, directory, true);
+			if (![project, name].every((value) => INSTANCE_NAME.test(value))) throw new Error("scope");
+			if (!directory && (!Buffer.isBuffer(content) || content.length < 1 || content.length > maximum))
+				throw new Error("size");
+			payload = directory ? Buffer.alloc(0) : Buffer.from(content);
+			const checked = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
+			checked.throwIfAborted();
+			const result = await this.#requestPayload(
+				"POST",
+				projectPath(`/1.0/instances/${encodeURIComponent(name)}/files?path=${encodeURIComponent(path)}`, project),
+				payload,
+				{
+					"content-type": "application/octet-stream",
+					"x-lxd-type": directory ? "directory" : "file",
+					"x-lxd-uid": officeResetOwner(uid),
+					"x-lxd-gid": officeResetOwner(gid),
+					"x-lxd-mode": officeResetMode(mode, directory),
+					"x-lxd-modify-perm": "uid,gid,mode",
+				},
+				checked,
+			);
+			checked.throwIfAborted();
+			const envelope = record(result.body, "LXD reset restore response");
+			if (
+				result.status !== 200 ||
+				envelope.type !== "sync" ||
+				envelope.status_code !== 200 ||
+				(envelope.status !== undefined && envelope.status !== "Success") ||
+				(envelope.error_code !== undefined && envelope.error_code !== 0) ||
+				(envelope.error !== undefined && envelope.error !== "")
+			)
+				throw new Error("restore upload unconfirmed");
+		} catch {
+			throw new Error("LXD_OFFICE_RESET_RESTORE_UNCONFIRMED");
+		} finally {
+			payload?.fill(0);
+		}
+	}
 	async readOfficeSoftwareFile(
 		project: string,
 		name: string,
