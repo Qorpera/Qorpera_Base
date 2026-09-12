@@ -197,7 +197,7 @@ export function parseCompanyComputerCodePackageProvisionStatement(
 			sourceCommit: text(target.sourceCommit, /^[a-f0-9]{40}$/),
 			runtimeBundle: bundle(target.runtimeBundle),
 			service: service(target.service),
-			capabilities: Object.freeze([...COMPANY_COMPUTER_CODE_PACKAGE_CAPABILITIES]),
+			capabilities: Object.freeze([...COMPANY_COMPUTER_CODE_PACKAGE_CAPABILITIES] as const),
 		}),
 		tools: Object.freeze({
 			bootstrap: artifact(tools.bootstrap, COMPANY_COMPUTER_CODE_PACKAGE_TOOL_MAX_BYTES),
