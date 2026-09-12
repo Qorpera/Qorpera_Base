@@ -117,17 +117,31 @@ describe("shell presentation lifecycle", () => {
 		frame.append(rail.el);
 		cleanup.push(() => rail.dispose());
 		const half = String(Math.floor(window.innerWidth / 2));
+		const press = (key: string) => rail.el.dispatchEvent(new KeyboardEvent("keydown", { key }));
 		expect(rail.el.getAttribute("aria-valuemax")).toBe(half);
-		for (let i = 0; i < 40; i++) rail.el.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight" }));
+		press("ArrowRight");
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("320");
+		press("End");
+		press("ArrowRight");
 		expect(rail.el.getAttribute("aria-valuenow")).toBe(half);
 		expect(localStorage.getItem("qorpera.web.rail-width")).toBe(half);
 		expect(frame.style.getPropertyValue("--rail-width")).toBe(`${half}px`);
+		// A narrower window clamps what is shown; the preference survives until the member acts.
 		vi.stubGlobal("innerWidth", 800);
 		window.dispatchEvent(new Event("resize"));
 		expect(rail.el.getAttribute("aria-valuenow")).toBe("400");
+		expect(localStorage.getItem("qorpera.web.rail-width")).toBe(half);
 		vi.stubGlobal("innerWidth", 1280);
 		window.dispatchEvent(new Event("resize"));
 		expect(rail.el.getAttribute("aria-valuenow")).toBe(half);
+		vi.stubGlobal("innerWidth", 800);
+		window.dispatchEvent(new Event("resize"));
+		press("ArrowLeft");
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("384");
+		expect(localStorage.getItem("qorpera.web.rail-width")).toBe("384");
+		vi.stubGlobal("innerWidth", 1280);
+		window.dispatchEvent(new Event("resize"));
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("384");
 		vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
 			throw new Error("Blocked");
 		});

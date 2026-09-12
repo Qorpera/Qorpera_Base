@@ -290,7 +290,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 								: "",
 						].join(" "),
 						href: `#/c/${profileId}`,
-						title: cofounder.displayName,
+						title: `${cofounder.displayName} · ${cofounder.role}`,
 						"aria-current":
 							section === "home" ||
 							(cofounderSessionId && activeSessionId === cofounderSessionId) ||
