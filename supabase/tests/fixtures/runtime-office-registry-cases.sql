@@ -21,7 +21,7 @@ select set_config('qorpera_test.office_grant',public.qorpera_set_runtime_office_
 	'30000000-0000-4000-8000-000000000030',0,true)::text,true);
 select pg_temp.wake_error($q$select public.qorpera_set_runtime_office_access(
 	(current_setting('qorpera_test.office')::jsonb->>'companyComputerId')::uuid,
-	'30000000-0000-4000-8000-000000000030',0,true)$q$,'40001');
+	'30000000-0000-4000-8000-000000000030',0,true)$q$,'PGRST');
 reset role;
 
 create function pg_temp.office_call(p_action text,p_lease jsonb default null)

@@ -661,7 +661,7 @@ begin
 			'15000000-0000-4000-8000-000000000040', 1
 		);
 		raise exception 'legacy executor entered a cloud-bound session';
-	exception when serialization_failure then null;
+	exception when sqlstate 'PGRST' then null;
 	end;
 end
 $$;

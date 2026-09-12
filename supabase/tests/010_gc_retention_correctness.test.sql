@@ -223,7 +223,7 @@ begin
 			array[repeat('b', 64)]
 		);
 		raise exception 'stale GC lease was accepted';
-	exception when serialization_failure then
+	exception when sqlstate 'PGRST' then
 		null;
 	end;
 end

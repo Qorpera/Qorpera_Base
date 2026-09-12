@@ -71,7 +71,7 @@ select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000003
 select pg_temp.wake_assert(pg_temp.profile_catalog()#>>'{profiles,0,prepared}'='true','acknowledged private lifecycle prepares the exact profile');
 select set_config('qorpera_test.browser_change',pg_temp.profile_grant(true,0)::text,true);
 select pg_temp.wake_assert(pg_temp.profile_status()#>>'{grant,state}'='active' and pg_temp.profile_status()#>>'{grant,usable}'='false','configured consent waits for drain');
-select pg_temp.wake_error($q$select pg_temp.profile_grant(true,0)$q$,'40001');
+select pg_temp.wake_error($q$select pg_temp.profile_grant(true,0)$q$,'PGRST');
 reset role;
 select pg_temp.path_claims('service_role'); set local role service_role;
 select pg_temp.profile_ack(current_setting('qorpera_test.browser_change')::jsonb->'drains');

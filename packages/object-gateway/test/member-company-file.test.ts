@@ -961,6 +961,7 @@ describe("human and publisher transport separation", () => {
 		[409, "PT409", true, 409],
 		[409, "23505", false, 409],
 		[500, "40001", false, 409],
+		[409, "QRC01", false, 409],
 		[412, "PT412", false, 412],
 	] as const)("classifies %s/%s without retrying uncertainty", async (status, code, rebuild, expectedStatus) => {
 		const authority = new SupabaseMemberCompanyAuthority({

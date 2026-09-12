@@ -78,7 +78,7 @@ set local role authenticated;
 select set_config('qorpera_test.privacy',pg_temp.privacy_request(true,0)::text,true);
 select pg_temp.wake_assert(public.qorpera_runtime_office_privacy_status(current_setting('qorpera_test.office_scope')::jsonb)->'challenge'
 	=current_setting('qorpera_test.privacy')::jsonb,'owner recovers lost response without another transition');
-select pg_temp.wake_error($q$select pg_temp.privacy_request(true,0)$q$,'40001');
+select pg_temp.wake_error($q$select pg_temp.privacy_request(true,0)$q$,'PGRST');
 select pg_temp.wake_error($q$select public.qorpera_check_runtime_office_private_surface(current_setting('qorpera_test.privacy')::jsonb)$q$,'42501');
 select pg_temp.wake_error($q$select public.qorpera_check_runtime_office_private_access(current_setting('qorpera_test.privacy')::jsonb)$q$,'42501');
 select pg_temp.wake_error($q$select public.qorpera_ack_runtime_office_privacy(current_setting('qorpera_test.privacy')::jsonb)$q$,'42501');
@@ -184,7 +184,7 @@ select pg_temp.wake_assert(public.qorpera_native_office_descriptor(current_setti
 reset role;
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000002');
 set local role authenticated;
-select pg_temp.wake_error($q$select pg_temp.browser_grant(true,0,1)$q$,'40001');
+select pg_temp.wake_error($q$select pg_temp.browser_grant(true,0,1)$q$,'PGRST');
 select set_config('qorpera_test.browser_grant',pg_temp.browser_grant(true,0)::text,true);
 reset role;
 select pg_temp.path_claims('service_role');

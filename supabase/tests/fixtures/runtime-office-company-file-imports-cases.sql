@@ -10,7 +10,7 @@ create or replace function pg_temp.import_envelope(p_args jsonb default null) re
 $$;
 set local role service_role;
 select pg_temp.wake_assert(pg_temp.import_effect('authorize')->>'state'='authorized','exact live Company File version admits import');
-select pg_temp.wake_error($q$select pg_temp.import_effect('authorize',jsonb_set(current_setting('qorpera_test.import_action')::jsonb,'{source,version}',to_jsonb(extensions.gen_random_uuid())))$q$,'40001');
+select pg_temp.wake_error($q$select pg_temp.import_effect('authorize',jsonb_set(current_setting('qorpera_test.import_action')::jsonb,'{source,version}',to_jsonb(extensions.gen_random_uuid())))$q$,'PGRST');
 select pg_temp.wake_error($q$select pg_temp.import_effect('authorize',jsonb_set(current_setting('qorpera_test.import_action')::jsonb,'{source,path}','"SOURCE.bin"'))$q$,'42501');
 select pg_temp.wake_error($q$select pg_temp.import_effect('authorize',jsonb_set(current_setting('qorpera_test.import_action')::jsonb,'{source,path}','"../source.bin"'))$q$,'42501');
 select pg_temp.wake_error($q$select pg_temp.import_effect('authorize',jsonb_set(current_setting('qorpera_test.import_action')::jsonb,'{source,assetId}',to_jsonb(extensions.gen_random_uuid())))$q$,'42501');
@@ -18,7 +18,7 @@ reset role;
 savepoint company_import_change;
 update public.qorpera_company_path_entries set version=extensions.gen_random_uuid() where path='source.bin';
 set local role service_role;
-select pg_temp.wake_error($q$select pg_temp.import_effect('authorize')$q$,'40001');
+select pg_temp.wake_error($q$select pg_temp.import_effect('authorize')$q$,'PGRST');
 reset role;
 rollback to savepoint company_import_change;
 -- A policy withdrawal is an authorization failure even though bytes/version stay.

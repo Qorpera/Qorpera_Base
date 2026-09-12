@@ -45,7 +45,7 @@ do $$ declare caps jsonb; begin
  end loop;
 end $$;
 select pg_temp.wake_error('select pg_temp.desktop_configure(null)','22023');
-select pg_temp.wake_error($q$select pg_temp.desktop_configure('["desktop"]',0)$q$,'40001');
+select pg_temp.wake_error($q$select pg_temp.desktop_configure('["desktop"]',0)$q$,'PGRST');
 select pg_temp.wake_error($q$select public.qorpera_configure_runtime_office_access(
  jsonb_set(current_setting('qorpera_test.office_scope')::jsonb,'{companyId}','"34000000-0000-4000-8000-000000000099"'),
  '30000000-0000-4000-8000-000000000030',1,true,'["desktop"]')$q$,'42501');
@@ -55,7 +55,7 @@ select pg_temp.wake_assert(current_setting('qorpera_test.desktop_grant')::jsonb=
  'staffAgentId','30000000-0000-4000-8000-000000000030','grant',
  jsonb_build_object('grantId',current_setting('qorpera_test.office_grant')::jsonb->>'grantId',
  'version',2,'state','active','capabilities','["desktop"]'::jsonb)),'explicit grant returns bound closed metadata');
-select pg_temp.wake_error('select pg_temp.desktop_configure()','40001');
+select pg_temp.wake_error('select pg_temp.desktop_configure()','PGRST');
 reset role;
 savepoint desktop_grant_legacy;
 -- The legacy enable/disable API retains explicitly configured capabilities.

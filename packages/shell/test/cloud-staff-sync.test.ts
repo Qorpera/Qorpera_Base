@@ -33,12 +33,12 @@ describe("cloud staff sync", () => {
 				[...records.values()].map((staff) => ({ ...staff, appearance: { ...staff.appearance } })),
 			deleteStaff: async (_profileId: string, staffAgentId: string, expectedVersion: number) => {
 				const current = records.get(staffAgentId);
-				if (current && current.version !== expectedVersion) throw new Error("staff version conflict (40001)");
+				if (current && current.version !== expectedVersion) throw new Error("staff version conflict (QRC01)");
 				records.delete(staffAgentId);
 			},
 			putStaff: async (_profileId: string, staff: StaffAgent, expectedVersion?: number) => {
 				const current = records.get(staff.id);
-				if ((current?.version ?? undefined) !== expectedVersion) throw new Error("staff version conflict (40001)");
+				if ((current?.version ?? undefined) !== expectedVersion) throw new Error("staff version conflict (QRC01)");
 				const hosted: HostedStaffAgent = {
 					...staff,
 					appearance: { ...staff.appearance },

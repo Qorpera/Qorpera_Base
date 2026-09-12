@@ -40,7 +40,7 @@ reset role;
 select pg_temp.path_claims('service_role');
 set local role service_role;
 select pg_temp.wake_assert(pg_temp.provider_set(0,true)='{"providerId":"36000000-0000-4000-8000-000000000001","policySha256":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","computerGeneration":1,"version":1,"preparationEnabled":true}'::jsonb,'infrastructure enrollment');
-select pg_temp.wake_error($q$select pg_temp.provider_set(0,true)$q$,'40001');
+select pg_temp.wake_error($q$select pg_temp.provider_set(0,true)$q$,'PGRST');
 select pg_temp.wake_error($q$select pg_temp.provider_set(1,true,'36000000-0000-4000-8000-000000000090')$q$,'42501');
 select pg_temp.wake_error($q$select pg_temp.provider_set(1,true,'36000000-0000-4000-8000-000000000001',repeat('e',64))$q$,'42501');
 select pg_temp.wake_error($q$select pg_temp.provider_status('36000000-0000-4000-8000-000000000090')$q$,'42501');

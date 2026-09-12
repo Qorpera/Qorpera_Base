@@ -101,6 +101,7 @@ describe("Company File bounded control transport", () => {
 	it.each([
 		[409, { code: "PT409", message: "head changed", details: null, hint: null }, true],
 		[409, { code: "40001", message: "path changed" }, false],
+		[409, { code: "QRC01", message: "storage is busy", details: null, hint: null }, false],
 		[503, { code: "PT409" }, false],
 		[403, { code: "42501", message: "PRIVATE_DIAGNOSTIC" }, false],
 		[409, { code: "PT409", approved: true }, false],

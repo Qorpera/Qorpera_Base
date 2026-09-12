@@ -258,7 +258,7 @@ begin
 			'nas-object-gateway',
 			'99000000-0000-4000-8000-000000000099'
 		);
-	exception when serialization_failure then
+	exception when sqlstate 'PGRST' then
 		v_denied := true;
 	end;
 	if not v_denied then

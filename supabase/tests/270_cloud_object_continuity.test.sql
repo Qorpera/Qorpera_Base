@@ -180,7 +180,7 @@ begin
 	begin
 		update storage.objects set metadata = '{"size":"5"}'
 		where bucket_id = 'qorpera-profile-objects' and name = current_setting('qorpera_test.continuity_profile') || '/' || repeat('a', 64);
-	exception when serialization_failure then v_denied := true;
+	exception when sqlstate 'PGRST' then v_denied := true;
 	end;
 	if not v_denied then raise exception 'late replica write crossed an active cleanup fence'; end if;
 end

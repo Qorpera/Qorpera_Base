@@ -43,7 +43,7 @@ async function until(predicate) {
 	const end = Date.now() + 8000;
 	while (!predicate()) { assert(Date.now() < end, "Software SQL barrier timed out"); await new Promise(resolve => setTimeout(resolve, 25)); }
 }
-async function deny(sql, pattern = /42501|40001|22023|23505/, actor = service) {
+async function deny(sql, pattern = /42501|QRC01|22023|23505/, actor = service) {
 	const next = session(); next.child.stdin.end(`${actor} ${sql}`); const result = await next.done;
 	assert.notEqual(result.code, 0, "Unexpected software admission"); assert.match(result.error, pattern);
 	assert.doesNotMatch(result.error, /does not exist|syntax error/); return result;
@@ -135,7 +135,7 @@ try {
 	const plan = { schema: "qorpera.office-service-software-plan/v1", updateId: randomUUID(), predecessor: stopped.predecessor, stopAcknowledgementSha256: digest(stopped.acknowledgement), successorActivationId: randomUUID(), statementSha256: digest(statement) };
 	const begin = (p = plan, s = statement, revision = 0, ack = stopped.acknowledgement) => `select public.qorpera_begin_office_software(${text(canonical(p))},${text(canonical(s))},'${digest(p)}',${revision},${text(canonical(ack))},'${capability}');`;
 	for (const changed of [{ ...plan, extra: true }, { ...plan, stopAcknowledgementSha256: hash() }, { ...plan, statementSha256: hash() }, { ...plan, successorActivationId: plan.predecessor.activationId }]) await deny(begin(changed));
-	await deny(begin(plan, statement, 1), /40001/);
+	await deny(begin(plan, statement, 1), /QRC01/);
 	for (const s of [
 		{ ...statement, previous: { ...current, sourceCommit: "9".repeat(40) } },
 		{ ...statement, next: { ...statement.next, service: artifact } },

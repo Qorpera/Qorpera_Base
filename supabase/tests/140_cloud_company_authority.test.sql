@@ -478,7 +478,7 @@ begin
 			'14000000-0000-4000-8000-000000000099'
 		);
 		raise exception 'stale proposal revision was accepted';
-	exception when serialization_failure then null;
+	exception when sqlstate 'PGRST' then null;
 	end;
 	begin
 		perform public.qorpera_reject_company_proposal(
@@ -486,7 +486,7 @@ begin
 			'14000000-0000-4000-8000-000000000099'
 		);
 		raise exception 'stale proposal revision was rejected';
-	exception when serialization_failure then null;
+	exception when sqlstate 'PGRST' then null;
 	end;
 	v_accepted := public.qorpera_accept_company_proposal(
 		(current_setting('qorpera_test.cloud_company_proposal')::jsonb ->> 'proposal_id')::uuid,
@@ -506,7 +506,7 @@ begin
 			(current_setting('qorpera_test.cloud_company_proposal')::jsonb -> 'proposal_snapshot' ->> 'snapshot_id')::uuid
 		);
 		raise exception 'accepted proposal was later reported as rejected';
-	exception when serialization_failure then null;
+	exception when sqlstate 'PGRST' then null;
 	end;
 end
 $$;

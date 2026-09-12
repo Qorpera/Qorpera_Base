@@ -2,7 +2,7 @@ set local role service_role;
 select pg_temp.wake_assert(pg_temp.node_capacity()->>'admissibleSlots'='0','no health means no admission');
 select pg_temp.wake_assert(pg_temp.node_reserve()->>'reason'='NODE_OBSERVATION_UNAVAILABLE','missing observation retains demand');
 select pg_temp.wake_assert(pg_temp.node_capacity()->>'pendingRequests'='1','waiting requests are visible');
-select pg_temp.wake_error($q$select public.qorpera_configure_runtime_node(pg_temp.node_policy(),0)$q$,'40001');
+select pg_temp.wake_error($q$select public.qorpera_configure_runtime_node(pg_temp.node_policy(),0)$q$,'PGRST');
 select pg_temp.wake_error($q$select public.qorpera_configure_runtime_node(pg_temp.node_policy()||'{"unexpected":true}',1)$q$,'42501');
 select pg_temp.wake_error($q$select public.qorpera_configure_runtime_node(pg_temp.node_policy()||'{"cpuMillis":"6000"}',1)$q$,'42501');
 select pg_temp.wake_error($q$select public.qorpera_configure_runtime_node(pg_temp.node_policy()||'{"headroomCpuMillis":6000}',1)$q$,'42501');

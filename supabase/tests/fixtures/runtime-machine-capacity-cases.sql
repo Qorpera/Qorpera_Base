@@ -5,7 +5,7 @@ reset role;
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
 set local role authenticated;
 select public.qorpera_set_company_machine_limit('30000000-0000-4000-8000-000000000010',1,0);
-select pg_temp.wake_error($q$select public.qorpera_set_company_machine_limit('30000000-0000-4000-8000-000000000010',1,0)$q$,'40001');
+select pg_temp.wake_error($q$select public.qorpera_set_company_machine_limit('30000000-0000-4000-8000-000000000010',1,0)$q$,'PGRST');
 reset role;
 select set_config('qorpera_test.machine_id',(select client_runner_id::text from public.qorpera_runners
 	where id=(current_setting('qorpera_test.wake_binding')::jsonb->>'runnerId')::uuid),true);

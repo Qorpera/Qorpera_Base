@@ -135,7 +135,7 @@ class FakeHostedPrimary {
 				createdAt: new Date().toISOString(),
 			});
 			this.#touch(session);
-			throw new Error("session event sequence changed (40001)");
+			throw new Error("session event sequence changed (QRC01)");
 		}
 		const existing = events.find((event) => event.eventId === input.eventId);
 		if (existing) {
@@ -149,7 +149,7 @@ class FakeHostedPrimary {
 			return existing;
 		}
 		if (input.expectedSequence !== undefined && input.expectedSequence !== events.length) {
-			throw new Error("session event sequence changed (40001)");
+			throw new Error("session event sequence changed (QRC01)");
 		}
 		const event: HostedSessionEvent = {
 			sessionId: input.sessionId,
