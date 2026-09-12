@@ -166,19 +166,23 @@ export class LxdOfficeLifecycle {
 		});
 		const software = options.software;
 		// Identity only: the plan digest and public pins, never the capability.
+		// Without a software lane the digest must equal the pre-lane provider's,
+		// so a retained lifecycle journal stays readable across this upgrade.
 		this.#configSha = officeDigest({
 			providerPolicySha256,
 			inventoryLimits: limits,
 			planPath: this.#planPath,
-			software: software
+			...(software
 				? {
-						planSha256: software.plan ? officeDigest(software.plan) : null,
-						expectedRevision: software.expectedRevision,
-						expectedService: software.expectedService,
-						measurementToolSha256: software.measurementToolSha256,
-						installToolSha256: software.installToolSha256,
+						software: {
+							planSha256: software.plan ? officeDigest(software.plan) : null,
+							expectedRevision: software.expectedRevision,
+							expectedService: software.expectedService,
+							measurementToolSha256: software.measurementToolSha256,
+							installToolSha256: software.installToolSha256,
+						},
 					}
-				: null,
+				: {}),
 		});
 		this.#provider = new LxdOfficeProviderControl(
 			{
