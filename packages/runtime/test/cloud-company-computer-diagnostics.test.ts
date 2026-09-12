@@ -24,6 +24,32 @@ describe("closed office failure diagnostics", () => {
 		});
 		expect(JSON.stringify(result)).not.toContain(secret);
 	});
+	it("projects only safe-integer stale-status counts from the supervisor budget failure", () => {
+		const stale = Object.assign(new Error("OFFICE_SUPERVISOR_STATUS_STALE"), {
+			unconfirmedPolls: 16,
+			unconfirmedMs: 90000,
+		});
+		expect(
+			companyComputerFailureDiagnostic(new Error("OFFICE_SUPERVISOR_RECONCILIATION_FAILED", { cause: stale })),
+		).toEqual({
+			schema: "qorpera.office-service-failure/v1",
+			stages: [],
+			codes: ["OFFICE_SUPERVISOR_RECONCILIATION_FAILED", "OFFICE_SUPERVISOR_STATUS_STALE"],
+			categories: ["unknown"],
+			staleStatus: { polls: 16, durationMs: 90000 },
+		});
+		for (const hostile of [
+			{ unconfirmedPolls: "16 /run/credentials", unconfirmedMs: 90000 },
+			{ unconfirmedPolls: 16, unconfirmedMs: -1 },
+			{ unconfirmedPolls: 1.5, unconfirmedMs: 90000 },
+		]) {
+			const result = companyComputerFailureDiagnostic(
+				Object.assign(new Error("OFFICE_SUPERVISOR_STATUS_STALE"), hostile),
+			);
+			expect(result.codes).toEqual(["OFFICE_SUPERVISOR_STATUS_STALE"]);
+			expect(result).not.toHaveProperty("staleStatus");
+		}
+	});
 	it("never invokes hostile accessors, stringifiers or serialization hooks", () => {
 		const invoked = vi.fn(() => {
 			throw new Error("private-secret");

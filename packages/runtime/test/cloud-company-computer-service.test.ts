@@ -518,6 +518,46 @@ describe("headless office service lifetime (TLS listeners, synthetic physical ad
 		expect(f.guest.close).toHaveBeenCalledOnce();
 		expect(f.guest.stopResources).not.toHaveBeenCalled();
 	});
+	it("refuses new viewer admission during a transient unconfirmed status gap and serves again after it", async () => {
+		const f = fixture();
+		const original = f.sql.getMockImplementation()!;
+		const held = computerDeferred<Response>();
+		let statusCalls = 0;
+		f.sql.mockImplementation(async (url, init) => {
+			const method = String(url).split("/").at(-1);
+			if (method === "qorpera_runtime_office_supervisor_status") {
+				statusCalls++;
+				// The second poll never answers inside the registry deadline; the
+				// third waits until the admission attempts below have been observed.
+				if (statusCalls === 2) return new Promise<Response>(() => undefined);
+				if (statusCalls === 3) return held.promise;
+			}
+			if (method === "qorpera_redeem_runtime_office_viewer") throw new Error("redeem reached SQL");
+			return original(url, init);
+		});
+		const service = await startCompanyComputerOfficeService(f.options);
+		cleanups.push(service.close);
+		const admit = () =>
+			connectCompanyComputerViewChannel({
+				url: `wss://127.0.0.1:${service.viewerPort}/office/${computerScope().companyComputerId}/view`,
+				capability: randomBytes(32).toString("base64url"),
+				binding: computerBinding(),
+				mode: "watch",
+				validForMs: 30000,
+				signal: new AbortController().signal,
+				createWebSocket: (url) => new WebSocket(url, { headers: { Origin: "https://app.qorpera.test" } }),
+			});
+		const redeems = () =>
+			f.sql.mock.calls.filter(([url]) => String(url).endsWith("qorpera_redeem_runtime_office_viewer")).length;
+		await vi.waitFor(() => expect(statusCalls).toBe(3), { timeout: 10000 });
+		await expect(admit()).rejects.toThrow();
+		expect(redeems()).toBe(0);
+		held.resolve(Response.json(f.state));
+		await vi.waitFor(() => expect(statusCalls).toBeGreaterThanOrEqual(4), { timeout: 10000 });
+		await expect(admit()).rejects.toThrow();
+		expect(redeems()).toBe(1);
+		expect(f.guest.close).not.toHaveBeenCalled();
+	});
 	it("shuts both listeners and physical resources when supervision becomes unavailable", async () => {
 		const f = fixture();
 		const service = await startCompanyComputerOfficeService(f.options);

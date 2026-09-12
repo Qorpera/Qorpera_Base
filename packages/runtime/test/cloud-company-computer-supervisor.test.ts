@@ -1,4 +1,7 @@
-import { CompanyComputerOfficeSupervisor } from "@qorpera/runtime/cloud-company-computer-supervisor";
+import {
+	COMPANY_COMPUTER_SUPERVISOR_STALE_BUDGET_MS,
+	CompanyComputerOfficeSupervisor,
+} from "@qorpera/runtime/cloud-company-computer-supervisor";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { computerBinding, computerDeferred, computerId, computerScope } from "./fixtures/company-computer.ts";
 
@@ -174,6 +177,115 @@ describe("runtime office supervision", () => {
 		await f.supervisor.reconcile(f.signal);
 		expect(f.order).toEqual(["screen-fence", "closed"]);
 		expect(f.drains.drain).not.toHaveBeenCalled();
+	});
+	it("keeps the last confirmed state through transient unconfirmed polls and resumes", async () => {
+		vi.useFakeTimers();
+		const f = fixture();
+		f.state.drains = [];
+		const abort = new AbortController();
+		const running = f.supervisor.run(abort.signal);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(f.control.call).toHaveBeenCalledTimes(1);
+		expect(f.supervisor.unconfirmedSince).toBeUndefined();
+		expect(() => f.supervisor.assertConfirmed()).not.toThrow();
+		// A wrapped registry deadline, then a poll that never answers inside the 5 s request deadline.
+		f.control.call
+			.mockRejectedValueOnce(
+				new Error("OFFICE_REGISTRY_UNCONFIRMED", { cause: new Error("COMPUTER_REQUEST_STOPPED") }),
+			)
+			.mockImplementationOnce(() => new Promise(() => undefined));
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(f.control.call).toHaveBeenCalledTimes(2);
+		expect(f.supervisor.unconfirmedSince).toBe(Date.now());
+		expect(f.supervisor.unconfirmedPolls).toBe(1);
+		expect(() => f.supervisor.assertConfirmed()).toThrow("OFFICE_SUPERVISOR_STATUS_STALE");
+		await vi.advanceTimersByTimeAsync(6000);
+		expect(f.control.call).toHaveBeenCalledTimes(3);
+		expect(f.supervisor.unconfirmedPolls).toBe(2);
+		expect(() => f.supervisor.assertConfirmed()).toThrow("OFFICE_SUPERVISOR_STATUS_STALE");
+		expect(f.viewers.close).not.toHaveBeenCalled();
+		expect(f.order).toEqual([]);
+		f.state.drains = [fixture().state.drains[0]];
+		f.state.revision = 2;
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(f.control.call).toHaveBeenCalledTimes(4);
+		expect(f.supervisor.unconfirmedSince).toBeUndefined();
+		expect(f.supervisor.unconfirmedPolls).toBe(0);
+		expect(() => f.supervisor.assertConfirmed()).not.toThrow();
+		expect(f.order).toEqual(["screen-fence", "physical-drain"]);
+		abort.abort();
+		await running;
+		expect(f.viewers.close).toHaveBeenCalledOnce();
+	});
+	it("fails closed at once on an authority refusal or inactive office after a confirmed poll", async () => {
+		for (const refusal of [
+			new Error("OFFICE_REGISTRY_UNCONFIRMED", { cause: new Error("denied") }),
+			new Error("OFFICE_REGISTRY_UNCONFIRMED", { cause: new SyntaxError("invalid response") }),
+			new Error("OFFICE_SERVICE_UNAVAILABLE"),
+		]) {
+			vi.useFakeTimers();
+			const f = fixture();
+			f.state.drains = [];
+			const abort = new AbortController();
+			const running = f.supervisor.run(abort.signal).catch((error: unknown) => error);
+			await vi.advanceTimersByTimeAsync(0);
+			f.control.call.mockRejectedValueOnce(refusal);
+			await vi.advanceTimersByTimeAsync(1000);
+			const error = await running;
+			expect(error).toHaveProperty("message", "OFFICE_SUPERVISOR_RECONCILIATION_FAILED");
+			expect(error).toHaveProperty("cause", refusal);
+			expect(f.supervisor.unconfirmedSince).toBeUndefined();
+			expect(() => f.supervisor.assertConfirmed()).toThrow("OFFICE_SUPERVISOR_RECONCILIATION_FAILED");
+			expect(f.viewers.close).toHaveBeenCalledTimes(2);
+			vi.useRealTimers();
+		}
+	});
+	it("never tolerates an unconfirmed first reconciliation or an aborted lifetime", async () => {
+		const f = fixture();
+		f.control.call.mockRejectedValueOnce(
+			new Error("OFFICE_REGISTRY_UNCONFIRMED", { cause: new Error("COMPUTER_REQUEST_STOPPED") }),
+		);
+		await expect(f.supervisor.reconcile(f.signal)).rejects.toThrow("OFFICE_SUPERVISOR_RECONCILIATION_FAILED");
+		expect(f.viewers.close).toHaveBeenCalledOnce();
+		const g = fixture();
+		await g.supervisor.reconcile(g.signal);
+		const abort = new AbortController();
+		g.control.call.mockImplementationOnce(async () => {
+			abort.abort();
+			throw new Error("OFFICE_REGISTRY_UNCONFIRMED", { cause: new Error("COMPUTER_REQUEST_STOPPED") });
+		});
+		await expect(g.supervisor.reconcile(abort.signal)).rejects.toThrow("COMPUTER_REQUEST_STOPPED");
+		await expect(g.supervisor.reconcile(g.signal)).rejects.toThrow("OFFICE_SUPERVISOR_RECONCILIATION_FAILED");
+		expect(g.viewers.close).toHaveBeenCalledOnce();
+	});
+	it("fails closed with a counted stale-status code once the unconfirmed budget is exhausted", async () => {
+		vi.useFakeTimers();
+		const f = fixture();
+		f.state.drains = [];
+		const abort = new AbortController();
+		const running = f.supervisor.run(abort.signal).catch((error: unknown) => error);
+		await vi.advanceTimersByTimeAsync(0);
+		f.control.call.mockImplementation(() => new Promise(() => undefined));
+		// Each unconfirmed poll spends the 5 s request deadline plus the 1 s cadence.
+		await vi.advanceTimersByTimeAsync(COMPANY_COMPUTER_SUPERVISOR_STALE_BUDGET_MS);
+		expect(f.viewers.close).not.toHaveBeenCalled();
+		expect(f.supervisor.unconfirmedPolls).toBe(15);
+		await vi.advanceTimersByTimeAsync(6000);
+		const error = await running;
+		expect(error).toHaveProperty("message", "OFFICE_SUPERVISOR_RECONCILIATION_FAILED");
+		expect(f.viewers.close).toHaveBeenCalledTimes(2);
+		expect(() => f.supervisor.assertConfirmed()).toThrow("OFFICE_SUPERVISOR_RECONCILIATION_FAILED");
+		expect(companyComputerFailureDiagnostic(error)).toEqual({
+			schema: "qorpera.office-service-failure/v1",
+			stages: [],
+			codes: [
+				"OFFICE_SUPERVISOR_RECONCILIATION_FAILED",
+				"OFFICE_SUPERVISOR_STATUS_STALE",
+				"COMPUTER_REQUEST_STOPPED",
+			],
+			categories: ["unknown"],
+			staleStatus: { polls: 16, durationMs: COMPANY_COMPUTER_SUPERVISOR_STALE_BUDGET_MS },
+		});
 	});
 });
 
