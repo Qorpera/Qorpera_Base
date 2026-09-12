@@ -35,7 +35,7 @@ export class CompanyExecutionView {
 	});
 	readonly #reason = h("input", {
 		type: "text",
-		maxlength: "1024",
+		maxlength: "2048",
 		"aria-label": "Company pause or resume reason",
 		placeholder: "Reason (optional)",
 	});
@@ -154,6 +154,11 @@ export class CompanyExecutionView {
 		if (!state || this.#pause.disabled || !this.#canManage()) return;
 		const paused = !state.paused;
 		const reason = this.#reason.value.trim() || undefined;
+		if (reason && [...reason].length > 1024) {
+			this.#message = "Keep the pause or resume reason within 1,024 characters.";
+			this.update();
+			return;
+		}
 		await this.#mutate((signal) => this.#control.setPause(paused, reason, signal));
 	}
 

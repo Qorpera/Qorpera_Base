@@ -70,6 +70,21 @@ test("header generation fails if the template drops or duplicates its binding", 
 	assert.throws(() => prepareDeployment({ ...input, headersTemplate: headersTemplate + headersTemplate }), /one connect-src marker/);
 });
 
+test("explicit login bridge base is locked into configuration and matching CSP", t => {
+	const nativeProviderLoginUrl = "https://login.example.invalid/functions/v1/native-provider-login/";
+	const deployment = prepareDeployment(fixture(t, { ...config, nativeProviderLoginUrl }));
+	assert.equal(deployment.config.nativeProviderLoginUrl, nativeProviderLoginUrl);
+	assert.equal(deployment.manifest.configOverrideAllowed, false);
+	assert.ok(deployment.headers.includes("https://login.example.invalid"));
+	assert.ok(!deployment.headers.includes(nativeProviderLoginUrl));
+	assert.equal(parseCloudConfig(config).nativeProviderLoginUrl, undefined);
+	for (const value of [
+		"http://login.invalid/", "https://user:secret@login.invalid/", "https://login.invalid/login",
+		"https://login.invalid/?token=x", "https://login.invalid/#x", "https://login.invalid/a/../",
+		"https://login.invalid/%2e%2e/", "https://LOGIN.invalid/", "https://login.invalid/ 'unsafe-eval'",
+	]) assert.throws(() => parseCloudConfig({ ...config, nativeProviderLoginUrl: value }), undefined, value);
+});
+
 test("compiled deployment ignores stale browser overrides without reading local storage", async t => {
 	const deployment = prepareDeployment(fixture(t));
 	const result = await build({

@@ -63,6 +63,8 @@ function setup() {
 	const listConnections = vi.fn(async () => connections());
 	const listSessionTurnProvenance = vi.fn(async (): Promise<readonly SessionTurnProvenance[]> => []);
 	const native: WebNativeSubscription = {
+		onboardingAvailable: false,
+		beginProviderLogin: vi.fn(),
 		listConnections,
 		listSessionTurnProvenance,
 		requestSessionTurn: vi.fn(),

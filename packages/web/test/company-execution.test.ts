@@ -118,6 +118,28 @@ describe("company execution public member control", () => {
 		f.company.abort();
 		expect(f.fetch).toHaveBeenCalledTimes(1);
 	});
+	it("matches SQL character limits for Unicode pause reasons in writes and notifications", async () => {
+		const f = setup();
+		const reason = "😀".repeat(600) + "a".repeat(424);
+		f.fetch.mockResolvedValueOnce(
+			Response.json({
+				schema: "qorpera.company-execution-stop/v1",
+				profileId: profileA.profileId,
+				paused: true,
+				changed: true,
+			}),
+		);
+		await expect(f.client.setPause(true, reason)).resolves.toMatchObject({ paused: true });
+		expect(JSON.parse(f.fetch.mock.calls[0]![1]!.body as string).p_reason).toBe(reason);
+		f.fetch.mockResolvedValueOnce(Response.json([{ ...paused, subject: { ...paused.subject, reason } }]));
+		await expect(f.client.listNotifications()).resolves.toMatchObject([{ subject: { reason } }]);
+		await expect(f.client.setPause(true, `${reason}a`)).rejects.toThrow("invalid response");
+		expect(f.fetch).toHaveBeenCalledTimes(2);
+		f.fetch.mockResolvedValueOnce(
+			Response.json([{ ...paused, subject: { ...paused.subject, reason: `${reason}a` } }]),
+		);
+		await expect(f.client.listNotifications()).rejects.toThrow("invalid response");
+	});
 	it("binds notification lists to the member/company and acknowledges only an observed exact id", async () => {
 		const f = setup();
 		await expect(f.client.acknowledgeNotification(id(90))).rejects.toThrow("Refresh notifications");

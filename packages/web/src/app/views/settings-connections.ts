@@ -1,11 +1,14 @@
 import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
-import type { WebNativeSubscription } from "../../cloud/native-subscription.ts";
+import type { WebNativeProviderLogin, WebNativeSubscription } from "../../cloud/native-subscription.ts";
 import { button, h, notice, replace } from "../../ui/dom.ts";
 
-/** Member connections use shared SDK intent; new sign-in needs an accepted browser gateway. */
+type ConnectionsClient = Pick<WebNativeSubscription, "listConnections" | "revokeConnection" | "createMemberSponsor"> &
+	Partial<Pick<WebNativeSubscription, "onboardingAvailable" | "beginProviderLogin">>;
+
+/** Member connections and provider sign-in use the shared SDK through the configured browser gateway. */
 export class ConnectionsView {
 	readonly el = h("div");
-	readonly #client: Pick<WebNativeSubscription, "listConnections" | "revokeConnection" | "createMemberSponsor">;
+	readonly #client: ConnectionsClient;
 	readonly #lifetime = new AbortController();
 	readonly #enableOperations = new Map<string, string>();
 	#connections: NativeExecutionConnections | undefined;
@@ -13,10 +16,9 @@ export class ConnectionsView {
 	#refreshRequired = false;
 	#error: string | undefined;
 	#message: string | undefined;
-	constructor(
-		client: Pick<WebNativeSubscription, "listConnections" | "revokeConnection" | "createMemberSponsor">,
-		signal: AbortSignal,
-	) {
+	#login: WebNativeProviderLogin | undefined;
+	#loginExpiry: ReturnType<typeof setTimeout> | undefined;
+	constructor(client: ConnectionsClient, signal: AbortSignal) {
 		this.#client = client;
 		if (signal.aborted) this.#lifetime.abort();
 		else signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
@@ -26,6 +28,7 @@ export class ConnectionsView {
 		this.#lifetime.abort();
 		this.#connections = undefined;
 		this.#enableOperations.clear();
+		this.#clearLogin();
 		this.el.replaceChildren();
 		this.el.remove();
 	}
@@ -40,6 +43,18 @@ export class ConnectionsView {
 			this.#connections = connections;
 			this.#refreshRequired = false;
 			this.#message = undefined;
+			if (
+				this.#login &&
+				connections.connections.some(
+					(connection) =>
+						connection.connectionId === this.#login?.connectionId &&
+						connection.connectionStatus === "active" &&
+						connection.authorizationState === "active",
+				)
+			) {
+				this.#clearLogin();
+				this.#message = "Model account connected. Enable it for your messages when ready.";
+			}
 		} catch {
 			if (this.#lifetime.signal.aborted) return;
 			this.#connections = undefined;
@@ -47,6 +62,63 @@ export class ConnectionsView {
 			this.#error = "Model accounts are unavailable. Refresh to check your connections.";
 		} finally {
 			this.#busy = false;
+			if (!this.#lifetime.signal.aborted) this.#draw();
+		}
+	}
+	#clearLogin(): void {
+		clearTimeout(this.#loginExpiry);
+		this.#loginExpiry = undefined;
+		this.#login = undefined;
+	}
+	async #beginLogin(provider: "openai" | "anthropic"): Promise<void> {
+		if (
+			this.#busy ||
+			this.#refreshRequired ||
+			this.#login ||
+			this.#lifetime.signal.aborted ||
+			!this.#client.onboardingAvailable ||
+			!this.#client.beginProviderLogin
+		)
+			return;
+		this.#busy = true;
+		this.#error = undefined;
+		this.#message = "Preparing provider sign-in…";
+		this.#draw();
+		try {
+			const login = await this.#client.beginProviderLogin(
+				{
+					provider,
+					displayName: "My model account",
+					clientIdentityId: crypto.randomUUID(),
+					clientLoginId: crypto.randomUUID(),
+					clientConnectionId: crypto.randomUUID(),
+				},
+				this.#lifetime.signal,
+			);
+			if (this.#lifetime.signal.aborted) return;
+			this.#login = login;
+			this.#message =
+				login.status === "completed"
+					? "Provider sign-in completed. Refresh model accounts to confirm the connection."
+					: "Finish signing in with your provider, then refresh model accounts.";
+			this.#loginExpiry = setTimeout(
+				() => {
+					if (this.#lifetime.signal.aborted) return;
+					this.#clearLogin();
+					this.#refreshRequired = true;
+					this.#message = "Sign-in instructions expired. Refresh model accounts before starting another attempt.";
+					this.#draw();
+				},
+				Math.max(0, Math.min(2_147_483_647, Date.parse(login.expiresAt) - Date.now())),
+			);
+		} catch {
+			if (this.#lifetime.signal.aborted) return;
+			this.#clearLogin();
+			this.#message = undefined;
+			this.#error = "Sign-in could not be confirmed. Refresh model accounts before starting a new sign-in attempt.";
+		} finally {
+			this.#busy = false;
+			this.#refreshRequired = true;
 			if (!this.#lifetime.signal.aborted) this.#draw();
 		}
 	}
@@ -165,7 +237,69 @@ export class ConnectionsView {
 						);
 					}),
 				),
-				notice("neutral", "Connecting a new model account from the browser is not available yet."),
+				this.#client.onboardingAvailable && this.#client.beginProviderLogin
+					? h(
+							"div",
+							{ class: "provider-sign-in" },
+							h(
+								"div",
+								{ class: "row" },
+								button("Sign in with OpenAI", () => void this.#beginLogin("openai"), {
+									disabled: this.#busy || this.#refreshRequired || Boolean(this.#login),
+								}),
+								button("Sign in with Anthropic", () => void this.#beginLogin("anthropic"), {
+									disabled: this.#busy || this.#refreshRequired || Boolean(this.#login),
+								}),
+							),
+							this.#login
+								? h(
+										"div",
+										{ class: "provider-sign-in-prompt" },
+										this.#login.interactionUrl
+											? h(
+													"p",
+													null,
+													h(
+														"a",
+														{
+															href: this.#login.interactionUrl,
+															target: "_blank",
+															rel: "noopener noreferrer",
+															referrerpolicy: "no-referrer",
+														},
+														"Open provider sign-in",
+													),
+												)
+											: null,
+										this.#login.userCode
+											? h("p", null, "Device code: ", h("code", null, this.#login.userCode))
+											: null,
+										h(
+											"p",
+											{ class: "muted" },
+											"Expires ",
+											h(
+												"time",
+												{ datetime: this.#login.expiresAt },
+												new Date(this.#login.expiresAt).toLocaleString(),
+											),
+										),
+										button(
+											"Close sign-in instructions",
+											() => {
+												if (this.#lifetime.signal.aborted) return;
+												this.#clearLogin();
+												this.#refreshRequired = true;
+												this.#message =
+													"Sign-in instructions closed. The sign-in may still complete; refresh model accounts before a new attempt.";
+												this.#draw();
+											},
+											{ small: true, disabled: this.#busy },
+										),
+									)
+								: null,
+						)
+					: notice("neutral", "Connecting a new model account from the browser is not available yet."),
 			),
 			h(
 				"section",
