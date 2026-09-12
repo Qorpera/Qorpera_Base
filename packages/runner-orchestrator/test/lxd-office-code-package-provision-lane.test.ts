@@ -12,6 +12,29 @@ import {
 
 afterEach(cleanupOfficeCodePackagePipelineFixtures);
 describe("governed provision phase pipeline", () => {
+	it("recovers lost invocation acknowledgement using a new independently measured challenge", async () => {
+		const f = await fixture(),
+			done = await f.ensure(),
+			pins = await f.lane.prepareInvocation(done.packet, f.context.originalPreparation, signal()),
+			activationId = randomUUID(),
+			startup = f.f.resetPlan.predecessor.startup;
+		f.loseInvocationAck();
+		await expect(
+			f.lane.measureInvocation(pins, activationId, startup, performance.now() + 5000, signal()),
+		).rejects.toThrow("lost invocation ack reply");
+		await f.lane.measureInvocation(pins, activationId, startup, performance.now() + 5000, signal());
+		expect(f.actions.filter((a) => a === "measure:invocation")).toHaveLength(2);
+		expect(f.actions.filter((a) => a === "bootstrap:install")).toHaveLength(1);
+	});
+	it("recovers lost SQL installation acknowledgement from exact fsynced observation without renewed authority", async () => {
+		const f = await fixture();
+		f.loseAck();
+		await expect(f.ensure()).rejects.toThrow("lost ack reply");
+		await f.ensure();
+		expect(f.actions.filter((a) => a === "bootstrap:install")).toHaveLength(1);
+		expect(f.actions.filter((a) => a === "measure:observation")).toHaveLength(1);
+		expect(f.methods.filter((m) => m === "qorpera_ack_office_package_provision")).toHaveLength(1);
+	});
 	it("stages signed exact bytes, installs once, independently observes, and uses retained completed root receipt", async () => {
 		const f = await fixture();
 		await f.lane.enroll(signal());

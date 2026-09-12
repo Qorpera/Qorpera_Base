@@ -1,6 +1,7 @@
 import type { LxdOfficeActivationRegistry } from "./lxd-office-activation-control.ts";
 import type { LxdOfficeBootIntentRegistry } from "./lxd-office-boot-intent-control.ts";
 import type { LxdOfficeBootSuccessorRegistry } from "./lxd-office-boot-successor-control.ts";
+import type { LxdOfficeCodePackageRegistry } from "./lxd-office-code-package-control.ts";
 import type { LxdOfficeLifecycleControlRegistry } from "./lxd-office-lifecycle-control.ts";
 import type { LxdOfficeProviderRegistry } from "./lxd-office-provider-control.ts";
 import type { LxdOfficeResetRegistry, LxdOfficeResetSuccessorRegistry } from "./lxd-office-reset-control.ts";
@@ -11,6 +12,7 @@ import type { LxdOfficeStopRegistry } from "./lxd-office-stop-control.ts";
 import type { LxdOfficeSuccessorRegistry } from "./lxd-office-successor-control.ts";
 
 export type LxdOfficeProviderMethod =
+	| Parameters<LxdOfficeCodePackageRegistry["call"]>[0]
 	| Parameters<LxdOfficeProviderRegistry["call"]>[0]
 	| Parameters<LxdOfficeStartRegistry["call"]>[0]
 	| Parameters<LxdOfficeLifecycleControlRegistry["call"]>[0]
@@ -27,6 +29,13 @@ export interface LxdOfficeLifecycleRegistry {
 	call(method: LxdOfficeProviderMethod, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
 }
 const METHODS = new Set<LxdOfficeProviderMethod>([
+	"qorpera_enroll_office_package_provision",
+	"qorpera_check_office_package_provision",
+	"qorpera_check_office_package_provision_observation",
+	"qorpera_ack_office_package_provision",
+	"qorpera_office_package_provision_status",
+	"qorpera_check_office_package_invocation",
+	"qorpera_ack_office_package_invocation",
 	"qorpera_reserve_runtime_node_machine",
 	"qorpera_runtime_office_provider_status",
 	"qorpera_reserve_runtime_office_start",

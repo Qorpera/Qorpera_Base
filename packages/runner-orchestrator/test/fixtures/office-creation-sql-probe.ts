@@ -508,6 +508,16 @@ export async function runOfficeCreationSqlProbe(
 					method === "qorpera_ack_office_software_invocation"
 				)
 					throw new Error("First activation fixture has no software lane");
+				if (
+					method === "qorpera_enroll_office_package_provision" ||
+					method === "qorpera_check_office_package_provision" ||
+					method === "qorpera_check_office_package_provision_observation" ||
+					method === "qorpera_ack_office_package_provision" ||
+					method === "qorpera_office_package_provision_status" ||
+					method === "qorpera_check_office_package_invocation" ||
+					method === "qorpera_ack_office_package_invocation"
+				)
+					throw new Error("First activation fixture has no package lane");
 				return registry.call(method, args, signal);
 			},
 		};
@@ -517,6 +527,7 @@ export async function runOfficeCreationSqlProbe(
 				lifecycleRegistry,
 				{ planPath: "/synthetic-lifecycle-plan", inventoryLimits: limits },
 				{
+					preparePackageInvocation: async () => undefined,
 					workers: phaseWorkers as unknown as NonNullable<
 						ConstructorParameters<typeof LxdOfficeLifecycle>[3]
 					>["workers"],

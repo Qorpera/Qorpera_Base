@@ -1,21 +1,25 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
 	COMPANY_COMPUTER_CONFIGURATION_FILES,
 	companyComputerBootDirectory,
 	companyComputerPreparationAdoptionReceipt,
+	parseCompanyComputerCodePackageProvisionReceipt,
+	parseCompanyComputerCodePackageProvisionRequest,
 	parseCompanyComputerResetConfigurationRequest,
+	parseCompanyComputerResetPlan,
 	parseCompanyComputerResetServiceStartRequest,
 } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { officeDigest } from "../src/lxd-office-image-provenance.ts";
-import { readRecord } from "../src/lxd-office-journal-files.ts";
+import { publish, readRecord } from "../src/lxd-office-journal-files.ts";
 import { readLxdOfficeResetActivationHistory } from "../src/lxd-office-reset-activation-history.ts";
 import { readLxdOfficeResetVmHistory } from "../src/lxd-office-reset-vm-history.ts";
-import { LxdOfficeResetWorker } from "../src/lxd-office-reset-worker.ts";
+import { type LxdOfficeResetCodePackageLane, LxdOfficeResetWorker } from "../src/lxd-office-reset-worker.ts";
 import { createOfficeBootActivationWorkerFixture } from "./fixtures/office-boot-activation-worker.ts";
 import { createOfficeBootConfigurationWorkerFixture } from "./fixtures/office-boot-configuration-worker.ts";
+import { officeCodePackageMaterialFixture } from "./fixtures/office-code-package-material.ts";
 import { createOfficePowerOffWorkerFixture } from "./fixtures/office-power-off-worker.ts";
 import { createOfficeResetServiceSuccessorFixture } from "./fixtures/office-reset-service-successor.ts";
 import { officeResetRegistryFixture, officeResetWorkerFixture } from "./fixtures/office-reset-worker.ts";
@@ -253,6 +257,174 @@ async function fixture() {
 		},
 	};
 }
+
+async function retainFirstPackage(f: Awaited<ReturnType<typeof fixture>>) {
+	const first = await f.packageLane.ensure.mock.results.at(-1)!.value;
+	const context = f.packageLane.ensure.mock.calls.at(-1)![0];
+	const verified = f.packageMaterial.run(),
+		receipt = { ...first.receipt, installedInventorySha256: verified.inventorySha256 },
+		packet = first.packet,
+		id = verified.plan.provisionId;
+	const claim = {
+		schema: "qorpera.office-code-package-install-claim/v1",
+		requestSha256: officeDigest(packet.request),
+		packetSha256: officeDigest(packet),
+		probe: {
+			schema: "qorpera.office-code-package-probe/v1",
+			purpose: "install",
+			provisionId: id,
+			probeId: randomUUID(),
+			packetSha256: officeDigest(packet),
+			bootId: packet.request.bootId,
+			challengeId: packet.request.challengeId,
+			nonce: randomUUID(),
+			monotonicNs: "1000",
+		},
+	};
+	for (const [name, value] of [
+		[
+			`code-package-material-${id}.json`,
+			{
+				schema: "qorpera.lxd-office-code-package-material/v1",
+				binding: f.binding,
+				document: f.packageMaterial.document,
+				resetPlan: f.plan,
+			},
+		],
+		[`code-package-packet-${id}.json`, packet],
+		[`code-package-root-claim-${id}.json`, claim],
+		[`code-package-root-receipt-${id}.json`, receipt],
+		[
+			`code-package-completed-${id}.json`,
+			{
+				schema: "qorpera.lxd-office-code-package-completed/v1",
+				packetSha256: officeDigest(packet),
+				receipt,
+				evidenceSha256: "9".repeat(64),
+			},
+		],
+	] as const)
+		await publish(f.root, name, encode(value));
+	await publish(f.root, `code-package-original-${id}.json`, context.originalPreparation);
+}
+async function nextPackagePorts(
+	f: Awaited<ReturnType<typeof fixture>>,
+	planValue: unknown,
+	registry: ReturnType<typeof officeResetRegistryFixture>,
+) {
+	await retainFirstPackage(f);
+	const plan = parseCompanyComputerResetPlan(planValue),
+		material = officeCodePackageMaterialFixture({
+			policy: f.policy,
+			binding: f.binding,
+			configure: (code) => {
+				Object.assign(code.base, structuredClone(f.packageMaterial.base));
+				Object.assign(code.target, structuredClone(f.packageMaterial.base));
+				Object.assign(code.reset, plan);
+				Object.assign(code.statement.base, {
+					imageSha256: f.binding.imageFingerprint,
+					bootstrapSha256: f.binding.bootstrapSha256,
+				});
+				Object.assign(code.plan, {
+					resetId: plan.resetId,
+					rootIncarnationId: plan.rootIncarnationId,
+					successorActivationId: plan.successorActivationId,
+					targetRevision: 2,
+				});
+			},
+		}),
+		verified = material.run();
+	material.files.set(
+		f.input.codePackageLanePath!,
+		encode({ schema: "qorpera.lxd-office-code-package-lane/v1", ...material.document }),
+	);
+	const lane: LxdOfficeResetCodePackageLane = {
+		enroll: async () => {
+			registry.state.packageEnrolled = true;
+			return {
+				state: "enrolled",
+				currentPackageRevision: 1,
+				capabilityRevision: 1,
+				request: null,
+				requestSha256: null,
+				receipt: null,
+				receiptSha256: null,
+				installationEvidenceSha256: null,
+			};
+		},
+		ensure: async (context, signal, authorize) => {
+			signal.throwIfAborted();
+			await authorize();
+			expect(context.resetPlan).toEqual(plan);
+			expect(context.restoreSha256).toBe(registry.state.restoreSha256);
+			registry.state.packageInstalled = true;
+			const request = parseCompanyComputerCodePackageProvisionRequest({
+				schema: "qorpera.office-code-package-provision-request/v1",
+				plan: verified.plan,
+				planSha256: verified.planSha256,
+				bootId: context.bootId,
+				restoreSha256: context.restoreSha256,
+				challengeId: randomUUID(),
+				targetRevision: 2,
+				capabilityRevision: 1,
+				targetManifestSha256: verified.statement.target.packageManifestSha256,
+			});
+			const receipt = parseCompanyComputerCodePackageProvisionReceipt({
+				schema: "qorpera.office-code-package-provision-receipt/v1",
+				planSha256: request.planSha256,
+				provisionId: request.plan.provisionId,
+				resetId: plan.resetId,
+				rootIncarnationId: plan.rootIncarnationId,
+				bootId: context.bootId,
+				commandId: request.plan.installCommandId,
+				requestSha256: officeDigest(request),
+				restoreSha256: context.restoreSha256,
+				state: "installed",
+				targetRevision: 2,
+				packageManifestSha256: request.targetManifestSha256,
+				installedInventorySha256: verified.inventorySha256,
+				sourceCommit: verified.statement.target.sourceCommit,
+				runtimeBundle: verified.statement.target.runtimeBundle,
+				service: verified.statement.target.service,
+			});
+			return {
+				packet: {
+					schema: "qorpera.office-code-package-control/v1",
+					request,
+					resetPlan: plan,
+					custody: context.custody,
+					restore: context.restore,
+					originPreparationSha256: hash(context.originalPreparation),
+					envelope: material.envelope,
+				},
+				receipt,
+			};
+		},
+		prepareInvocation: async (packet) => ({
+			packetSha256: officeDigest(packet),
+			trustSha256: officeDigest(material.document.trust),
+		}),
+		measureInvocation: async (_pins, activationId, startup, deadline, signal) => {
+			signal.throwIfAborted();
+			expect(activationId).toBe(plan.successorActivationId);
+			expect(startup.serviceInvocationId).toBe("e".repeat(32));
+			expect(performance.now()).toBeLessThan(deadline);
+			registry.state.packageMeasured = true;
+		},
+	};
+	return {
+		client: f.client,
+		kernelLock: f.kernelLock,
+		nasCustody: f.nasCustody,
+		readProtected: async (path: string, limit = 65536) =>
+			material.files.has(path) ? material.ports.readProtected(path, limit) : f.readProtected(path),
+		readCredential: async (path: string, limit = 4096) =>
+			material.files.has(path) ? material.ports.readCredential(path, limit) : f.readCredential(path),
+		readManifest: material.ports.readManifest,
+		readArtifact: material.ports.readArtifact,
+		codePackageLane: () => lane,
+	};
+}
 describe("composed office reset successor lane", () => {
 	it("completes a second reset from the first recreated root without replacing original preparation pins", async () => {
 		const f = await fixture();
@@ -283,18 +455,13 @@ describe("composed office reset successor lane", () => {
 			registry = officeResetRegistryFixture(plan, planSha256);
 		f.vm.freshBootId = id(950);
 		f.useRegistry(registry, "e".repeat(32));
+		const packagePorts = await nextPackagePorts(f, plan, registry);
 		const input = { ...f.input, plan, planSha256 };
 		const run = () =>
 			new LxdOfficeResetWorker(
 				{ policy: f.policy, check: f.check },
 				{ call: registry.call },
-				{
-					client: f.client,
-					kernelLock: f.kernelLock,
-					readProtected: f.readProtected,
-					readCredential: f.readCredential,
-					nasCustody: f.nasCustody,
-				},
+				packagePorts,
 			).reconcile(input, new AbortController().signal);
 		let result = await run();
 		for (let n = 0; n < 12 && result.state === "progressed"; n++) result = await run();
@@ -416,17 +583,12 @@ describe("composed office reset successor lane", () => {
 		const planSha256 = officeDigest(plan),
 			registry = officeResetRegistryFixture(plan, planSha256);
 		f.useRegistry(registry, "e".repeat(32));
+		const packagePorts = await nextPackagePorts(f, plan, registry);
 		const run = () =>
 			new LxdOfficeResetWorker(
 				{ policy: f.policy, check: f.check },
 				{ call: registry.call },
-				{
-					client: f.client,
-					kernelLock: f.kernelLock,
-					readProtected: f.readProtected,
-					readCredential: f.readCredential,
-					nasCustody: f.nasCustody,
-				},
+				packagePorts,
 			).reconcile({ ...f.input, plan, planSha256 }, new AbortController().signal);
 		let result = await run();
 		for (let n = 0; n < 12 && result.state === "progressed"; n++) result = await run();

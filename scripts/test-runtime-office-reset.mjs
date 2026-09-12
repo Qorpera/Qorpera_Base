@@ -168,7 +168,7 @@ try {
 		docker(psql, `select set_config('qorpera_test.screen_startup',${literal(activationResult.startup)}::text,false);\n${readFileSync(join(root, "supabase/tests/fixtures", fixture), "utf8")}`);
 	const { CompanyComputerScreenLifecyclePublisher } = await load("screenLifecycle");
 	const { CompanyComputerScreenOutbox } = await load("screenOutbox");
-	const screenResult = await testRuntimeScreenLifecycle({ startup: activationResult.startup, service, literal, execute: (sql) => docker(psql, sql), race, retainOpen: true, CompanyComputerScreenLifecyclePublisher, restartDatabase });
+	const screenResult = await testRuntimeScreenLifecycle({ startup: activationResult.startup, service, literal, execute: (sql) => docker(psql, sql), race, retainOpen: true, CompanyComputerScreenLifecyclePublisher, CompanyComputerScreenOutbox, restartDatabase });
 	const screenRecovery = await prepareScreenObservationRecovery({ startup: activationResult.startup, openLifetimeId: screenResult.openLifetimeId, service, owner, literal, execute: (sql) => docker(psql, sql), race, restartDatabase, CompanyComputerScreenLifecyclePublisher, CompanyComputerScreenOutbox });
 	try {
 		renewWakeBinding();
@@ -180,7 +180,7 @@ try {
 		console.log("PASS: replace revocation and physical stop acknowledgement retain the office in maintenance with one charged allocation and unconfirmed diagnostics");
 		const controls = await load("resetControl");
 		const resetResult = await testOfficeResetChain({ stop, attestation: activationResult.attestation, scope, binding, service, owner, race, session, until, literal, execute: (sql) => docker(psql, sql), restartDatabase, controls, CompanyComputerStartupControl });
-		await testRuntimeComputerLifecycle({ allocationId: activationResult.startup.allocationId, service, literal, execute: (sql) => docker(psql, sql), restartDatabase, kind: "office", stopped: true, closing: true });
+		await testRuntimeComputerLifecycle({ allocationId: activationResult.startup.allocationId, service, literal, execute: (sql) => docker(psql, sql), restartDatabase, kind: "office", stopped: true, closing: true, expectedBootRequests: 1 });
 	} finally {
 		await screenRecovery.close();
 	}

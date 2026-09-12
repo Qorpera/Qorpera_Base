@@ -14,6 +14,10 @@ import { LxdOfficeAdoptionWorker } from "./lxd-office-adoption-worker.ts";
 import { LxdOfficeBootActivationWorker } from "./lxd-office-boot-activation-worker.ts";
 import { LxdOfficeBootConfigurationWorker } from "./lxd-office-boot-configuration-worker.ts";
 import { LxdOfficeBootWorker } from "./lxd-office-boot-worker.ts";
+import {
+	type LxdOfficePreparedPackageInvocation,
+	prepareLxdOfficeRetainedCodePackageInvocation,
+} from "./lxd-office-code-package-retained.ts";
 import { LxdOfficeConfigurationWorker } from "./lxd-office-configuration-worker.ts";
 import { observeLxdOfficeControlJournals } from "./lxd-office-control-observer.ts";
 import { LxdOfficeCreationWorker } from "./lxd-office-creation-worker.ts";
@@ -57,6 +61,7 @@ interface Workers {
 	activation: Pick<LxdOfficeActivationWorker, "reconcileSettled">;
 }
 interface Options {
+	codePackageLanePath?: string;
 	resetImagePackageManifestPath?: string;
 	planPath: string;
 	inventoryLimits: OfficeInventoryLimits;
@@ -66,6 +71,10 @@ interface Options {
 	software?: Readonly<LxdOfficeSoftwareLaneOptions>;
 }
 interface Ports {
+	preparePackageInvocation?: (
+		allocationId: string,
+		signal: AbortSignal,
+	) => Promise<LxdOfficePreparedPackageInvocation | undefined>;
 	workers?: Workers;
 	stopWorker?: Pick<LxdOfficeServiceStopWorker, "reconcileSettled">;
 	successorWorker?: Pick<LxdOfficeSuccessorWorker, "reconcileSettled">;
@@ -136,6 +145,10 @@ export class LxdOfficeLifecycle {
 	readonly #configSha: string;
 	readonly #planPath: string;
 	readonly #resetImagePackageManifestPath?: string;
+	readonly #codePackageLanePath?: string;
+	readonly #preparePackageInvocation;
+	#preparedPackage: LxdOfficePreparedPackageInvocation | undefined;
+	#measurementPrepared = false;
 	readonly #provider: LxdOfficeProviderControl;
 	readonly #workers: Workers;
 	readonly #stopWorker: Pick<LxdOfficeServiceStopWorker, "reconcileSettled">;
@@ -163,6 +176,8 @@ export class LxdOfficeLifecycle {
 		this.#root = policy.journal.path;
 		this.#operationClient = new LxdUnixClient(policy.host.socketPath);
 		this.#planPath = officePhysicalPath(options.planPath);
+		this.#codePackageLanePath =
+			options.codePackageLanePath === undefined ? undefined : officePhysicalPath(options.codePackageLanePath);
 		this.#resetImagePackageManifestPath =
 			options.resetImagePackageManifestPath === undefined
 				? undefined
@@ -203,25 +218,43 @@ export class LxdOfficeLifecycle {
 		this.#kernelLock = ports.kernelLock ?? assertOfficeAdoptionKernelLock;
 		this.#readProtected = ports.readProtected ?? readLxdOfficeProtectedFile;
 		this.#stopWorker = ports.stopWorker ?? new LxdOfficeServiceStopWorker(gate, registry);
-		const measureInvocation =
-			ports.measureInvocation ??
-			(software
-				? createLxdOfficeInvocationMeasurement({
+		const historicalMeasurement = software
+			? createLxdOfficeInvocationMeasurement({
+					root: this.#root,
+					client: this.#operationClient,
+					registry,
+					binding: (allocationId) => ({
+						schema: "qorpera.lxd-office-guest/v2",
+						...g,
+						allocationId,
+						providerPolicySha256,
+					}),
+					providerCapability: software.providerCapability,
+					expectedRevision: software.expectedRevision,
+					expectedService: software.expectedService,
+					measurementToolSha256: software.measurementToolSha256,
+				})
+			: undefined;
+		this.#preparePackageInvocation =
+			ports.preparePackageInvocation ??
+			((allocationId: string, signal: AbortSignal) =>
+				prepareLxdOfficeRetainedCodePackageInvocation(
+					{
 						root: this.#root,
+						policy,
 						client: this.#operationClient,
 						registry,
-						binding: (allocationId) => ({
-							schema: "qorpera.lxd-office-guest/v2",
-							...g,
-							allocationId,
-							providerPolicySha256,
-						}),
-						providerCapability: software.providerCapability,
-						expectedRevision: software.expectedRevision,
-						expectedService: software.expectedService,
-						measurementToolSha256: software.measurementToolSha256,
-					})
-				: undefined);
+						binding: { schema: "qorpera.lxd-office-guest/v2", ...g, allocationId, providerPolicySha256 },
+					},
+					signal,
+				));
+		const measureInvocation: LxdOfficeInvocationMeasurement =
+			ports.measureInvocation ??
+			(async (...args) => {
+				if (!this.#measurementPrepared) throw new Error("OFFICE_CODE_PACKAGE_DISCOVERY_REQUIRED");
+				if (this.#preparedPackage) await this.#preparedPackage.measure(...args);
+				else if (historicalMeasurement) await historicalMeasurement(...args);
+			});
 		this.#successorWorker =
 			ports.successorWorker ??
 			new LxdOfficeSuccessorWorker(gate, registry, { softwarePlan: software?.plan, measureInvocation });
@@ -233,7 +266,7 @@ export class LxdOfficeLifecycle {
 			ports.bootActivationWorker ?? new LxdOfficeBootActivationWorker(gate, registry, { measureInvocation });
 		// The reset worker composes its guest successor lane on its own client;
 		// only the enrolled software measurement is shared with the other lanes.
-		this.#resetWorker = ports.resetWorker ?? new LxdOfficeResetWorker(gate, registry, { measureInvocation });
+		this.#resetWorker = ports.resetWorker ?? new LxdOfficeResetWorker(gate, registry);
 		this.#workers = ports.workers ?? {
 			creation: new LxdOfficeCreationWorker(gate, registry),
 			inventory: new LxdOfficeInventoryWorker(gate, registry, limits),
@@ -274,8 +307,17 @@ export class LxdOfficeLifecycle {
 			this.#activeReset = undefined;
 			throw new Error("OFFICE_LIFECYCLE_UNCONFIRMED", { cause: error });
 		} finally {
+			this.#preparedPackage?.dispose();
+			this.#preparedPackage = undefined;
+			this.#measurementPrepared = false;
 			pending.delete(this.#root);
 		}
+	}
+	async #prepareMeasurement(allocationId: string, signal: AbortSignal) {
+		this.#measurementPrepared = false;
+		this.#preparedPackage?.dispose();
+		this.#preparedPackage = await this.#preparePackageInvocation(allocationId, signal);
+		this.#measurementPrepared = true;
 	}
 	async #run(signal: AbortSignal): Promise<LxdOfficeLifecycleResult> {
 		await this.#kernelLock(this.#root);
@@ -396,6 +438,7 @@ export class LxdOfficeLifecycle {
 							plan: reset.plan,
 							planSha256: reset.planSha256,
 							imagePackageManifestPath: this.#resetImagePackageManifestPath,
+							codePackageLanePath: this.#codePackageLanePath,
 							serviceBootstrapPath: context.request.serviceBootstrapPath,
 						},
 						signal,
@@ -562,6 +605,7 @@ export class LxdOfficeLifecycle {
 										activationId: resume.activationId,
 									};
 								this.#activeBoot = undefined;
+								await this.#prepareMeasurement(status.reservation.allocationId, signal);
 								const result = await this.#bootActivationWorker.reconcileSettled(configurationRequest, signal);
 								signal.throwIfAborted();
 								if (
@@ -753,6 +797,7 @@ export class LxdOfficeLifecycle {
 				)
 					return { state: "active", phase: "service_restart", ...this.#activeRecovery };
 				this.#activeRecovery = undefined;
+				await this.#prepareMeasurement(status.reservation.allocationId, signal);
 				const result = await this.#successorWorker.reconcileSettled(intentId, recovery, signal);
 				signal.throwIfAborted();
 				if (

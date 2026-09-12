@@ -7,9 +7,9 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260912000800_runtime_bundle_activation_v23.sql";
-const activationVersion = 23;
-const previousActivationVersion = 21;
+const activation = "supabase/migrations/20260913001000_runtime_bundle_activation_v24.sql";
+const activationVersion = 24;
+const previousActivationVersion = 23;
 const manifestPath = "deploy/first-node/native-codex/runtime-bundle-manifest.json";
 const sha = (text) => createHash("sha256").update(text).digest("hex");
 
@@ -84,6 +84,8 @@ export async function cloudRuntimeBundle(root = repository) {
 	}
 	for (const name of ["qorpera-screen-session", "qorpera-screen-xfce", "qorpera-browser-policy.json", "qorpera-office-browser-bwrap.apparmor", "qorpera-company-computer.service", "qorpera-company-computer-preparation.service", "qorpera-office-preparation.conf", "qorpera-office-runtime.conf", "qorpera-office-private.mount.in"]) await include(`deploy/lxd-company-computer-guest/${name}`);
 	await include("packages/runner-orchestrator/src/lxd-office-image-installation-cli.ts");
+	for (const name of ["office-code-package-control.ts", "office-code-package-measure.ts"]) await include(`deploy/lxd-company-computer-guest/${name}`);
+	await include("packages/runner-orchestrator/src/lxd-office-code-package-loader.ts");
 	for (const name of (await readdir(join(root, "packages/shell/userland/staff-creatures"))).sort()) {
 		if (!/^[a-z]+\.png$/.test(name)) throw new Error("Invalid office wallpaper artifact");
 		await include(`packages/shell/userland/staff-creatures/${name}`);
@@ -100,6 +102,7 @@ export async function cloudRuntimeBundle(root = repository) {
 		"deploy/ephemeral-runner/image/run-job", "deploy/lxd-runner-guest/harness/package.json", "deploy/lxd-runner-guest/harness/package-lock.json",
 		"scripts/native-company-artifact.mjs", "scripts/package-ephemeral-runner.mjs", "scripts/generate-cloud-runtime-bundle.mjs",
 		"scripts/package-lxd-runner-guest.mjs", "scripts/package-company-computer.mjs",
+		"scripts/package-office-code-package-control.mjs",
 		"package-lock.json", "packages/runtime/package.json", "packages/cloud-client/package.json",
 	]) await include(path);
 	// The accepted native input is independent of the later compiled guest

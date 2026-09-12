@@ -34,6 +34,7 @@ import {
 } from "@qorpera/contracts";
 import {
 	type LxdHostInventoryClient,
+	type LxdOfficeCodePackageClient,
 	type LxdOfficeResetClient,
 	type LxdOfficeResetSuccessorClient,
 	type LxdOfficeServiceRestartClient,
@@ -45,6 +46,15 @@ import {
 import { assertOfficeAdoptionKernelLock } from "./lxd-office-adoption-files.ts";
 import type { LxdOfficeRetainedActivationHistoryClient } from "./lxd-office-boot-restart-history.ts";
 import { readLxdOfficeBootVmEvidence } from "./lxd-office-boot-vm-evidence.ts";
+import type { LxdOfficeCodePackageRegistry } from "./lxd-office-code-package-control.ts";
+import { assertLxdOfficeRetainedCodePackageRoot } from "./lxd-office-code-package-history.ts";
+import { parseLxdOfficeCodePackageLaneDocument } from "./lxd-office-code-package-lane.ts";
+import {
+	type LxdOfficeCodePackageMaterial,
+	loadLxdOfficeCodePackageMaterial,
+} from "./lxd-office-code-package-material.ts";
+import { LxdOfficeCodePackageProvisionLane } from "./lxd-office-code-package-provision-lane.ts";
+import type { LxdOfficeCodePackagePacket } from "./lxd-office-code-package-transport.ts";
 import { openLxdOfficeCreationIdentity } from "./lxd-office-creation-journal.ts";
 import {
 	assertLxdOfficeGuestInstance,
@@ -52,17 +62,16 @@ import {
 	type LxdOfficeGuestBinding,
 	lxdOfficeGuestPlan,
 } from "./lxd-office-guest.ts";
-import { assertOfficeImageResetCapability, parseOfficeImagePackage } from "./lxd-office-image-installation.ts";
 import { officeCanonical, officeDigest, officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
-import type { LxdOfficeInvocationMeasurement } from "./lxd-office-invocation-measurement.ts";
 import { code, publish, readRecord } from "./lxd-office-journal-files.ts";
 import { reserveLxdOfficeNodeMachine } from "./lxd-office-node-admission.ts";
 import { LxdOfficeOperationJournal } from "./lxd-office-operations.ts";
 import type { LxdOfficePhysicalGate } from "./lxd-office-physical-gate.ts";
 import {
 	type readLxdOfficeCredentialFile,
-	type readLxdOfficeProtectedFile,
-	readLxdOfficeProtectedImageManifestFile,
+	readLxdOfficeProtectedFile,
+	type readLxdOfficeProtectedImageManifestFile,
+	type readLxdOfficeProtectedPackageArtifactFile,
 } from "./lxd-office-physical-host.ts";
 import { officePhysicalPath, parseLxdOfficePhysicalPolicy } from "./lxd-office-physical-policy.ts";
 import { createLxdOfficeResetConfigurationPayload } from "./lxd-office-reset-configuration-payload.ts";
@@ -90,6 +99,7 @@ import { officeStopDecode, officeStopHash, readLxdOfficeStopEvidence } from "./l
 import type { RuntimeNodeRegistry } from "./runtime-node-admission.ts";
 
 type Client = LxdOfficeResetClient &
+	LxdOfficeCodePackageClient &
 	LxdOfficeResetSuccessorClient &
 	LxdTrackedClient &
 	LxdOfficeRetainedActivationHistoryClient &
@@ -100,11 +110,16 @@ export interface LxdOfficeResetWorkerRegistry {
 		method:
 			| Parameters<LxdOfficeResetRegistry["call"]>[0]
 			| Parameters<LxdOfficeResetSuccessorRegistry["call"]>[0]
-			| Parameters<RuntimeNodeRegistry["call"]>[0],
+			| Parameters<RuntimeNodeRegistry["call"]>[0]
+			| Parameters<LxdOfficeCodePackageRegistry["call"]>[0],
 		args: Record<string, unknown>,
 		signal: AbortSignal,
 	): Promise<unknown>;
 }
+export type LxdOfficeResetCodePackageLane = Pick<
+	LxdOfficeCodePackageProvisionLane,
+	"enroll" | "ensure" | "prepareInvocation" | "measureInvocation"
+>;
 interface Ports {
 	client?: Client;
 	kernelLock?: typeof assertOfficeAdoptionKernelLock;
@@ -112,7 +127,12 @@ interface Ports {
 	readCredential?: typeof readLxdOfficeCredentialFile;
 	/** Trusted test port only; production composes the guest lane on the client. */
 	successorLane?: LxdOfficeResetSuccessorLane;
-	measureInvocation?: LxdOfficeInvocationMeasurement;
+	readManifest?: typeof readLxdOfficeProtectedImageManifestFile;
+	readArtifact?: typeof readLxdOfficeProtectedPackageArtifactFile;
+	/** Trusted test port only; production composes the independently verified package lane. */
+	codePackageLane?: (
+		options: ConstructorParameters<typeof LxdOfficeCodePackageProvisionLane>[0],
+	) => LxdOfficeResetCodePackageLane;
 	/** Trusted test port only; production holds the real NAS descriptors. */
 	nasCustody?: typeof openLxdOfficeResetNasCustody;
 }
@@ -123,6 +143,8 @@ export interface LxdOfficeResetInput {
 	serviceBootstrapPath: string;
 	/** Protected manifest of the immutable preparation image, never the live root. */
 	imagePackageManifestPath?: string;
+	/** Protected signed package lane required for every new reset. */
+	codePackageLanePath?: string;
 }
 export interface LxdOfficeResetResult {
 	state: "progressed" | "held" | "pending" | "unknown" | "failed" | "awaiting_readiness" | "active";
@@ -244,6 +266,8 @@ export class LxdOfficeResetWorker {
 			plan: parseCompanyComputerResetPlan(value.plan),
 			planSha256: officeSha(value.planSha256),
 			serviceBootstrapPath: officePhysicalPath(value.serviceBootstrapPath),
+			codePackageLanePath:
+				value.codePackageLanePath === undefined ? undefined : officePhysicalPath(value.codePackageLanePath),
 			imagePackageManifestPath:
 				value.imagePackageManifestPath === undefined
 					? undefined
@@ -290,18 +314,15 @@ export class LxdOfficeResetWorker {
 			if (settle) await operation.catch(() => {});
 		}
 	}
-	async #assertResetImage(input: LxdOfficeResetInput, signal: AbortSignal): Promise<void> {
+	async #loadPackage(input: LxdOfficeResetInput, signal: AbortSignal) {
+		signal.throwIfAborted();
+		if (!input.codePackageLanePath) throw new Error("OFFICE_RESET_PACKAGE_PROVISION_UNCONFIRMED");
+		const bytes = await (this.#ports.readProtected ?? readLxdOfficeProtectedFile)(input.codePackageLanePath, 65536);
 		try {
-			signal.throwIfAborted();
-			if (!input.imagePackageManifestPath) throw new Error("missing manifest");
-			const bytes = this.#ports.readProtected
-				? await this.#ports.readProtected(input.imagePackageManifestPath, 1024 ** 2)
-				: await readLxdOfficeProtectedImageManifestFile(input.imagePackageManifestPath);
-			if (hash(bytes) !== this.#policy.image.guestPackageManifestSha256) throw new Error("image manifest differs");
-			assertOfficeImageResetCapability(parseOfficeImagePackage(officeStopDecode(bytes)));
-			signal.throwIfAborted();
-		} catch {
-			throw new Error("OFFICE_RESET_IMAGE_CAPABILITY_UNCONFIRMED");
+			const document = parseLxdOfficeCodePackageLaneDocument(officeStopDecode(bytes));
+			return await loadLxdOfficeCodePackageMaterial(document, this.#policy, input.plan, signal, this.#ports);
+		} finally {
+			bytes.fill(0);
 		}
 	}
 	async #run(
@@ -309,11 +330,24 @@ export class LxdOfficeResetWorker {
 		registry: LxdOfficeResetWorkerRegistry,
 		signal: AbortSignal,
 	): Promise<LxdOfficeResetResult> {
+		await this.#kernelLock(this.#policy.journal.path);
+		const material = await this.#loadPackage(input, signal);
+		try {
+			return await this.#runMaterial(input, registry, signal, material);
+		} finally {
+			material.dispose();
+		}
+	}
+	async #runMaterial(
+		input: LxdOfficeResetInput,
+		registry: LxdOfficeResetWorkerRegistry,
+		signal: AbortSignal,
+		material: LxdOfficeCodePackageMaterial,
+	): Promise<LxdOfficeResetResult> {
 		const root = this.#policy.journal.path,
 			{ intentId, plan } = input,
 			recovery = plan.predecessor;
 		await this.#kernelLock(root);
-		await this.#assertResetImage(input, signal);
 		const creation = await openLxdOfficeCreationIdentity(this.#policy, intentId, true, this.#client, signal),
 			{ binding } = creation,
 			{ allocationId } = binding,
@@ -337,6 +371,21 @@ export class LxdOfficeResetWorker {
 			})
 		)
 			throw new Error("reset binding differs");
+		if (plan.predecessorRootIncarnationId !== null)
+			await assertLxdOfficeRetainedCodePackageRoot(
+				root,
+				binding,
+				this.#policy,
+				plan.predecessorRootIncarnationId,
+				signal,
+				this.#ports,
+			);
+		const packageOptions = { root, binding, material, client: this.#client, registry, resetPlan: plan };
+		const packageLane =
+			this.#ports.codePackageLane?.(packageOptions) ?? new LxdOfficeCodePackageProvisionLane(packageOptions);
+		// Enroll the exact signed relationship before SQL can begin destruction.
+		// Exact historical enrollment replay creates no new authority.
+		await packageLane.enroll(signal);
 		const result = {
 			intentId,
 			allocationId,
@@ -553,7 +602,17 @@ export class LxdOfficeResetWorker {
 		const physical: Authorize = async (caller) => {
 			caller.throwIfAborted();
 			await this.#kernelLock(root);
-			await this.#assertResetImage(input, caller);
+			const freshMaterial = await this.#loadPackage(input, caller);
+			try {
+				if (
+					!isDeepStrictEqual(freshMaterial.document, material.document) ||
+					!isDeepStrictEqual(freshMaterial.verified, material.verified) ||
+					freshMaterial.providerCapability !== material.providerCapability
+				)
+					throw new Error("OFFICE_RESET_PACKAGE_MATERIAL_CHANGED");
+			} finally {
+				freshMaterial.dispose();
+			}
 			if (
 				!isDeepStrictEqual(
 					await openLxdOfficeCreationIdentity(this.#policy, intentId, true, this.#client, caller),
@@ -562,6 +621,15 @@ export class LxdOfficeResetWorker {
 				!isDeepStrictEqual(await optional(names.seed), seedValue)
 			)
 				throw new Error("reset evidence changed");
+			if (plan.predecessorRootIncarnationId !== null)
+				await assertLxdOfficeRetainedCodePackageRoot(
+					root,
+					binding,
+					this.#policy,
+					plan.predecessorRootIncarnationId,
+					caller,
+					this.#ports,
+				);
 			const gate = await this.#gate.check(binding, caller);
 			if (gate.hostBootId !== seed.hostBootId) throw new Error("reset host changed");
 			const checked = AbortSignal.any([caller, gate.signal]);
@@ -838,6 +906,23 @@ export class LxdOfficeResetWorker {
 					throw new Error("reset boot changed");
 				return checked;
 			};
+			const provisioned = await packageLane.ensure(
+				{
+					resetPlan: plan,
+					custody,
+					restore,
+					restoreSha256: context.status.restoreSha256 as string,
+					bootId: restore.bootId,
+					originalPreparation: preparation.bytes,
+				},
+				signal,
+				async () => {
+					await newBoot(signal);
+					const current = await control.status(signal);
+					if (current.phase !== "restored" && current.phase !== "prepared" && current.phase !== "active")
+						throw new Error("OFFICE_RESET_PACKAGE_PHASE_CHANGED");
+				},
+			);
 			const lane: LxdOfficeResetSuccessorLaneContext = {
 				intentId,
 				plan,
@@ -846,7 +931,7 @@ export class LxdOfficeResetWorker {
 				restoreSha256: context.status.restoreSha256 as string,
 			};
 			if (next === "prepared") return this.#prepare(context, lane, newBoot);
-			return this.#activate(context, lane, newBoot);
+			return this.#activate(context, lane, newBoot, packageLane, provisioned.packet);
 		} finally {
 			await nas.close();
 		}
@@ -1397,6 +1482,8 @@ export class LxdOfficeResetWorker {
 		context: Context,
 		lane: LxdOfficeResetSuccessorLaneContext,
 		newBoot: Authorize,
+		packageLane: LxdOfficeResetCodePackageLane,
+		packet: LxdOfficeCodePackagePacket,
 	): Promise<LxdOfficeResetResult> {
 		const { plan, names, optional, retain, registry, journal, control, signal, result } = context,
 			{ bootId } = lane;
@@ -1462,8 +1549,11 @@ export class LxdOfficeResetWorker {
 			started.resetId !== plan.resetId
 		)
 			throw new Error("reset started differs");
-		const deadline = performance.now() + 5000,
-			checked = await newBoot(signal);
+		// Stage the full package measurement material before the bounded fresh
+		// invocation window, including on recovery of a lost start reply.
+		const pins = await packageLane.prepareInvocation(packet, context.preparation.bytes, await newBoot(signal));
+		const checked = await newBoot(signal),
+			deadline = performance.now() + 5000;
 		const inspection = await this.#lane.inspect({ ...lane, command, successor: prepared, completion }, checked);
 		if (
 			inspection.serviceInvocationId !== serviceInvocationId ||
@@ -1475,8 +1565,9 @@ export class LxdOfficeResetWorker {
 			throw new Error("reset invocation differs");
 		if (current.state === "prepared" || (current.state === "ready" && !current.readinessFresh))
 			return { ...result, state: "awaiting_readiness", phase: "prepared" };
-		if (current.state === "ready" && this.#ports.measureInvocation)
-			await this.#ports.measureInvocation(
+		if (current.state === "ready")
+			await packageLane.measureInvocation(
+				pins,
 				plan.successorActivationId,
 				parseCompanyComputerStartupIdentity({
 					...plan.predecessor.startup,

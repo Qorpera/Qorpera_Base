@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {createHash,randomUUID} from 'node:crypto';
+import {enrollOriginalSoftwareFixture,officePackageSqlFixture} from './test-runtime-office-package-cases.mjs';
 
 const canonical=value=>Array.isArray(value)?value.map(canonical):value&&typeof value==='object'
  ?Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonical(value[key])])):value;
@@ -39,6 +40,7 @@ export async function testOfficeResetChain({stop,attestation,scope,binding,servi
  const activations=()=>call(`select jsonb_agg(a order by a.activation_id) from public.qorpera_runtime_office_activations a;`,'');
  const reset=()=>call(`select to_jsonb(r) from public.qorpera_runtime_office_resets r where reset_id='${plan.resetId}';`,'');
  const events=()=>call(`select coalesce(jsonb_agg(e order by e.sequence),'[]') from public.qorpera_runtime_office_reset_events e where reset_id='${plan.resetId}';`,'');
+ enrollOriginalSoftwareFixture({predecessor,service,execute,literal});
  const before=preserved(),original=activations();
  assert.equal(original.length,1);assert.equal(JSON.parse(before).privacy.state,'private');
  assert.equal(execute('select state from public.qorpera_runtime_offices;'),'maintenance');
@@ -57,6 +59,9 @@ export async function testOfficeResetChain({stop,attestation,scope,binding,servi
  await refuse(begin(plan,'x'),/Invalid office reset plan digest/);
  assert.equal(preserved(),before);assert.deepEqual(activations(),original);
  console.log('PASS: reset begin validates the closed plan against the retained activation, allocation, node and lineage; members, helpers and private tables stay unavailable');
+
+ await refuse(begin(),/requires enrolled package provision/);
+ const packageFixture=await officePackageSqlFixture({resetPlan:plan,service,owner,call,execute,deny,refuse,literal});
 
  // Begin is idempotent for the exact plan; identity rebinding is refused.
  const begun=call(begin());
@@ -208,6 +213,8 @@ export async function testOfficeResetChain({stop,attestation,scope,binding,servi
  const sCheck=(r=request)=>`select public.${rpc.check}(${literal(r)});`,sActivate=(invocation,r=request)=>`select public.${rpc.activate}(${literal(r)},'${invocation}');`;
  const startupCheck=s=>`select public.qorpera_check_runtime_office_startup(${literal(s)});`;
  const ready=(s,id=plan.successorActivationId)=>`select public.qorpera_report_runtime_office_ready(${literal(s)},'${id}',9443,9444);`;
+ await refuse(sPrepare(),/package installation unavailable/);
+ await packageFixture.install(restore,restored.restoreSha256);
  for(const sql of [sPrepare(),sStatus(),sCheck(),sActivate('c'.repeat(32))])await deny(sql,owner);
  await refuse(sStatus(),/identity unavailable/);
  for(const [change,pattern] of [[{custodySha256:'9'.repeat(64)},/chain incomplete/],[{restoreSha256:'9'.repeat(64)},/chain incomplete/],
@@ -254,6 +261,7 @@ export async function testOfficeResetChain({stop,attestation,scope,binding,servi
   const sql=method===rpc.prepare?sPrepare(args.p_request):method===rpc.status?sStatus(args.p_request):method===rpc.check?sCheck(args.p_request):sActivate(args.p_service_invocation_id,args.p_request);
   const result=call(sql);if(method===rpc.activate&&methods.filter(m=>m===rpc.activate).length===1)throw new Error('Lost committed activation reply');return result;}}):undefined;
  const signal=new AbortController().signal;
+ await packageFixture.measure(startup,plan.successorActivationId,sActivate(startup.serviceInvocationId));
  if(successorControl){
   assert.equal((await successorControl.status(signal)).state,'ready');
   await assert.rejects(successorControl.activate(startup.serviceInvocationId,performance.now()+4000,signal),/UNCONFIRMED/);
@@ -273,6 +281,7 @@ export async function testOfficeResetChain({stop,attestation,scope,binding,servi
   assert.equal((await runtime.check(signal)).state,'active');
  }
  await restartDatabase();
+ packageFixture.replay();
  assert.equal(call(sStatus()).state,'active');
  assert.equal(call(`select jsonb_build_object('allocations',(select count(*) from public.qorpera_runtime_machine_allocations where released_at is null),'stops',(select count(*) from public.qorpera_runtime_office_stops),'activations',(select count(*) from public.qorpera_runtime_office_activations),'resets',(select count(*) from public.qorpera_runtime_office_resets));`,'').allocations,1);
  assert.equal(JSON.parse(preserved()).privacy.state,'private');
@@ -296,6 +305,14 @@ export async function testOfficeResetChain({stop,attestation,scope,binding,servi
  assert.deepEqual(lifecycle.rootIncarnations.map(r=>({id:r.rootIncarnationId,previous:r.predecessorRootIncarnationId,phase:r.phase,custody:r.custodyConfirmation})),
   [{id:plan.rootIncarnationId,previous:null,phase:'active',custody:'provider_validated_external_archive_digest'}]);
  assert(!lifecycle.controlEvents.some(e=>e.event==='released'));
+ // A newly admitted bundle fences the old startup, but stop/reset authority
+ // must remain available to upgrade the physical office to that bundle.
+ execute(`with target as (select 'qorpera.cloud-runtime'::text bundle_key,(select max(version)+1 from public.qorpera_runtime_bundles) version,
+  manifest||'{"packageResetFixture":true}'::jsonb manifest from public.qorpera_runtime_bundles where id=(select runtime_bundle_id from public.qorpera_active_runtime_bundle)),
+  inserted as (insert into public.qorpera_runtime_bundles(bundle_key,version,manifest,sha256)
+   select bundle_key,version,manifest,encode(extensions.digest(convert_to(manifest::text,'utf8'),'sha256'),'hex') from target returning id,sha256)
+  update public.qorpera_active_runtime_bundle a set runtime_bundle_id=i.id,runtime_bundle_sha256=i.sha256 from inserted i;`);
+ await refuse(startupCheck(startup),/runtime bundle not admitted/);
  const next={...plan,resetId:fresh(),rootIncarnationId:fresh(),successorActivationId:fresh(),predecessorRootIncarnationId:null,
   commands:{stopCommandId:fresh(),deleteCommandId:fresh(),createCommandId:fresh(),startCommandId:fresh()},
   predecessor:{...predecessor,transitionId:fresh(),activationId:plan.successorActivationId,startup}};
@@ -304,11 +321,86 @@ export async function testOfficeResetChain({stop,attestation,scope,binding,servi
  assert.equal(transition.state,'draining');
  await refuse(begin(next,officeDigest(next)),/incarnation lineage differs|stop unacknowledged|Office reset/);
  const lineage={...next,predecessorRootIncarnationId:plan.rootIncarnationId};
+ await refuse(begin(lineage,officeDigest(lineage)),/requires enrolled package provision/);
+ const secondPackage=await officePackageSqlFixture({resetPlan:lineage,service,owner,call,execute,deny,refuse,literal,providerCapability:packageFixture.capability});
+ assert.equal(secondPackage.plan.expectedSoftwareRevision,null);
+ assert(secondPackage.statement.target.runtimeBundle.version>packageFixture.statement.target.runtimeBundle.version);
  const lineageBegun=call(begin(lineage,officeDigest(lineage)));
  assert.equal(lineageBegun.phase,'fenced');assert.equal(lineageBegun.stopAcknowledgedAtMs,null);
  await refuse(prepare('stopped',fresh(),'1'.repeat(64),lineage),/stop unacknowledged/);
  assert.equal(execute('select count(*) from public.qorpera_runtime_office_resets;'),'2');
  assert.equal(execute('select count(*) from public.qorpera_runtime_machine_allocations where released_at is null;'),'1');
  console.log('PASS: the lifecycle projection separates root-incarnation events with their custody class; a later reset must name the current incarnation and waits for its own acknowledged stop');
+ // The second root is recreated from the same immutable old image, so its
+ // existing package revision cannot be reused as evidence of installation.
+ const stopCommand={commandId:fresh(),requestSha256:officeDigest(lineage.predecessor),bootId:startup.bootId},inspectionId=fresh(),startCompletionSha256=officeDigest({second:'start'});
+ const prepareStopAgain=`select public.qorpera_prepare_runtime_office_stop(${literal(lineage.predecessor)},${literal(stopCommand)},'${inspectionId}','${startCompletionSha256}');`;
+ const inspection={schema:'qorpera.office-service-stop-inspection/v1',inspectionId,cgroupState:'empty',stop:{
+  schema:'qorpera.office-service-stop-completion/v1',command:stopCommand,transitionId:lineage.predecessor.transitionId,activationId:lineage.predecessor.activationId,
+  revocationRevision:transition.revocationRevision,configurationSha256:startup.configurationSha256,startCompletionSha256,
+  fromServiceInvocationId:startup.serviceInvocationId,observedInvocationId:startup.serviceInvocationId,stoppedInvocationId:startup.serviceInvocationId,
+  controlGroup:'/system.slice/qorpera-company-computer.service',cgroupState:'empty'}};
+ const ackStopAgain=`select public.qorpera_ack_runtime_office_stop(${literal(lineage.predecessor)},${literal(inspection)});`;
+ // A stop challenged after an unrelated revision change cannot manufacture
+ // the narrow +1 bridge back to the earlier immutable enrollment snapshot.
+ await refuse(`begin; reset role; update public.qorpera_runtime_offices set revision=revision+1;
+  ${service} ${prepareStopAgain} ${ackStopAgain} reset role;
+  select public.qorpera_assert_office_package_reset(${literal(lineage)},'${officeDigest(lineage)}',false);`,/package admission changed/);
+ call(prepareStopAgain);
+ const stoppedAgain=call(ackStopAgain);
+ const advanceAgain=(phase,observation)=>{const ev={schema:'qorpera.office-reset-phase-evidence/v1',resetId:lineage.resetId,phase,observation},nonce=fresh();
+  call(prepare(phase,nonce,officeDigest(ev),lineage));return call(ack(nonce,ev,lineage));};
+ advanceAgain('stopped',{stopCommandId:stopCommand.commandId,acknowledgedAtMs:stoppedAgain.acknowledgedAtMs,stopCompletionSha256:startCompletionSha256});
+ const custodyAgain={...custody,resetId:lineage.resetId,rootIncarnationId:lineage.rootIncarnationId,predecessorActivationId:lineage.predecessor.activationId,
+  history:{...custody.history,files:custody.history.files.map(f=>({...f,path:f.path.replace(historyRoot,`/etc/qorpera-office/history/${startup.bootId}/${lineage.predecessor.activationId}`)}))}};
+ const custodyStatus=advanceAgain('custodied',custodyAgain);
+ advanceAgain('powered_off',{commandId:lineage.commands.stopCommandId,operationId:fresh(),instanceSha256:startup.instanceSha256});
+ advanceAgain('root_deleted',{commandId:lineage.commands.deleteCommandId,operationId:fresh()});
+ advanceAgain('root_created',{commandId:lineage.commands.createCommandId,operationId:fresh(),instanceSha256:startup.instanceSha256});
+ const restoreAgain={...restore,resetId:lineage.resetId,rootIncarnationId:lineage.rootIncarnationId,custodySha256:custodyStatus.custodySha256,bootId:fresh()};
+ const restoreStatus=advanceAgain('restored',restoreAgain);
+ const attestationAgain={...successorAttestation,activationId:lineage.successorActivationId,bootId:restoreAgain.bootId,
+  configurationObservationSha256:officeDigest({second:'observation'}),configurationSha256:officeDigest({second:'configuration'})};
+ const requestAgain={...request,resetId:lineage.resetId,rootIncarnationId:lineage.rootIncarnationId,predecessor:lineage.predecessor,
+  attestation:attestationAgain,custodySha256:custodyStatus.custodySha256,restoreSha256:restoreStatus.restoreSha256};
+ await refuse(sPrepare(requestAgain),/package installation unavailable/);
+ await secondPackage.install(restoreAgain,restoreStatus.restoreSha256);
+ call(sPrepare(requestAgain));
+ const startupAgain={...startup,bootId:restoreAgain.bootId,configurationSha256:attestationAgain.configurationSha256,serviceInvocationId:'f'.repeat(32)};
+ call(ready(startupAgain,lineage.successorActivationId));
+ await secondPackage.measure(startupAgain,lineage.successorActivationId,sActivate(startupAgain.serviceInvocationId,requestAgain));
+ assert.equal(call(sActivate(startupAgain.serviceInvocationId,requestAgain)).state,'active');
+ assert.equal(execute('select current_revision from public.qorpera_office_package_baselines;'),'2');
+ assert.equal(execute('select count(*) from public.qorpera_office_package_installations;'),'2');
+ assert.equal(execute('select count(*) from public.qorpera_runtime_machine_allocations where released_at is null;'),'1');
+ packageFixture.replay();secondPackage.replay();
+ console.log('PASS: a repeated reset reinstalls the exact old image into a fresh root, requires a new scoped package installation and invocation measurement, advances only the separate package revision and retains both immutable receipts');
+ let retainedStartup=startupAgain,retainedAttestation=attestationAgain;
+ for(const reboot of [false,true]){
+  const predecessorRetained={...lineage.predecessor,action:reboot?'reboot':'service_restart',transitionId:fresh(),activationId:retainedAttestation.activationId,startup:retainedStartup};
+  const revocation=call(`select public.qorpera_begin_runtime_office_lifecycle(${literal(predecessorRetained)});`);
+  const command={commandId:fresh(),requestSha256:officeDigest(predecessorRetained),bootId:retainedStartup.bootId},nonce=fresh();
+  call(`select public.qorpera_prepare_runtime_office_stop(${literal(predecessorRetained)},${literal(command)},'${nonce}','${startCompletionSha256}');`);
+  const retainedInspection={...inspection,inspectionId:nonce,stop:{...inspection.stop,command,transitionId:predecessorRetained.transitionId,
+   activationId:predecessorRetained.activationId,revocationRevision:revocation.revocationRevision,configurationSha256:retainedStartup.configurationSha256,
+   fromServiceInvocationId:retainedStartup.serviceInvocationId,observedInvocationId:retainedStartup.serviceInvocationId,stoppedInvocationId:retainedStartup.serviceInvocationId}};
+  call(`select public.qorpera_ack_runtime_office_stop(${literal(predecessorRetained)},${literal(retainedInspection)});`);
+  const target={...retainedAttestation,activationId:fresh(),...(reboot?{bootId:fresh(),configurationSha256:officeDigest({retained:'config'}),configurationObservationSha256:officeDigest({retained:'observation'}),adoptionReceiptSha256:officeDigest({retained:'receipt'})}:{})};
+  const retainedRequest={schema:reboot?'qorpera.office-boot-successor-request/v1':'qorpera.office-service-successor-request/v1',predecessor:predecessorRetained,attestation:target};
+  if(reboot){
+   Object.assign(retainedRequest,{bootIntentId:fresh(),stopHistorySha256:officeDigest({retained:'history'}),powerOffCompletionSha256:officeDigest({retained:'power'}),bootObservationSha256:officeDigest({retained:'boot'})});
+   call(`select public.qorpera_prepare_runtime_office_boot_intent(${literal({schema:'qorpera.office-boot-intent-request/v1',bootIntentId:retainedRequest.bootIntentId,activationId:target.activationId,
+    predecessor:predecessorRetained,stopHistorySha256:retainedRequest.stopHistorySha256,powerOffCompletionSha256:retainedRequest.powerOffCompletionSha256})});`);
+  }
+  call(`select public.qorpera_prepare_runtime_office_${reboot?'boot_':''}successor(${literal(retainedRequest)});`);
+  retainedStartup={...retainedStartup,bootId:target.bootId,configurationSha256:target.configurationSha256,serviceInvocationId:officeDigest({invocation:target.activationId}).slice(0,32)};
+  call(ready(retainedStartup,target.activationId));
+  const activateRetained=`select public.qorpera_activate_runtime_office(${literal(scope)},1,'${plan.intentId}','${target.activationId}','${predecessor.providerId}','${predecessor.providerPolicySha256}','${retainedStartup.serviceInvocationId}');`;
+  await secondPackage.measure(retainedStartup,target.activationId,activateRetained);
+  assert.equal(call(activateRetained).state,'active');retainedAttestation=target;
+  assert.equal(execute('select current_revision from public.qorpera_office_package_baselines;'),'2');
+ }
+ assert.equal(execute('select count(*) from public.qorpera_office_package_installations;'),'2');
+ console.log('PASS: same-root service restart and retained boot inherit only the explicit package identity, keep software_revision NULL and require fresh full-package/service/invocation measurement for each activation');
  return {plan,custody,restore,request,startup,resetId:plan.resetId,rootIncarnationId:plan.rootIncarnationId};
 }

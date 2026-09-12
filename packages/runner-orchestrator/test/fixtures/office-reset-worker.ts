@@ -8,16 +8,23 @@ import {
 	type CompanyComputerResetPhase,
 	type CompanyComputerResetPlan,
 	companyComputerBootDirectory,
+	parseCompanyComputerCodePackageProvisionReceipt,
+	parseCompanyComputerCodePackageProvisionRequest,
 	parseCompanyComputerResetConfigurationRequest,
 } from "@qorpera/contracts";
 import { expect, vi } from "vitest";
 import type { LxdHostInventory } from "../../src/lxd-client.ts";
 import { officeCanonical, officeDigest } from "../../src/lxd-office-image-provenance.ts";
 import type { LxdOfficeResetSuccessorLane } from "../../src/lxd-office-reset-successor-lane.ts";
-import { type LxdOfficeResetInput, LxdOfficeResetWorker } from "../../src/lxd-office-reset-worker.ts";
+import {
+	type LxdOfficeResetCodePackageLane,
+	type LxdOfficeResetInput,
+	LxdOfficeResetWorker,
+} from "../../src/lxd-office-reset-worker.ts";
 import { lxdOfficeProviderBindingSha256 } from "../../src/lxd-office-start-control.ts";
 import { nodeAdmissionFixture } from "./node-admission.ts";
-import { officeImagePackageBytes } from "./office-image-package.ts";
+import { officeCodePackageMaterialFixture } from "./office-code-package-material.ts";
+import { officeImagePackageBytes, officeImagePackageFixture } from "./office-image-package.ts";
 import { serviceStartId as id } from "./office-service-start.ts";
 import { officeStopWorkerFixture } from "./office-stop-worker.ts";
 
@@ -55,6 +62,9 @@ export function officeResetRegistryFixture(plan: CompanyComputerResetPlan, planS
 		losePrepare: false,
 		loseActivate: false,
 		nodeRefused: false,
+		packageEnrolled: false,
+		packageInstalled: false,
+		packageMeasured: false,
 		calls: [] as string[],
 	};
 	const index = (phase: CompanyComputerResetPhase | null) =>
@@ -94,6 +104,7 @@ export function officeResetRegistryFixture(plan: CompanyComputerResetPlan, planS
 		if (method.endsWith("reset_successor") || method.endsWith("reset_successor_status")) {
 			const request = args.p_request as { attestation: { activationId: string; bootId: string } };
 			if (method === "qorpera_prepare_runtime_office_reset_successor") {
+				if (!state.packageInstalled) throw new Error("package absent");
 				if (!state.successor) {
 					if (state.phase !== "restored") throw new Error("chain incomplete");
 					state.successor = {
@@ -116,6 +127,7 @@ export function officeResetRegistryFixture(plan: CompanyComputerResetPlan, planS
 			expect(state.successor.request).toEqual(args.p_request);
 			expect(request.attestation.activationId).toBe(plan.successorActivationId);
 			if (method === "qorpera_activate_runtime_office_reset_successor") {
+				if (!state.packageMeasured) throw new Error("package measurement absent");
 				if (state.successor.state === "prepared" || !state.successor.readinessFresh) throw new Error("not ready");
 				expect(args.p_service_invocation_id).toBe(state.successor.serviceInvocationId);
 				if (state.successor.state !== "active") {
@@ -132,6 +144,7 @@ export function officeResetRegistryFixture(plan: CompanyComputerResetPlan, planS
 		}
 		expect(args.p_plan).toEqual(plan);
 		if (method === "qorpera_begin_runtime_office_reset") {
+			if (!state.packageEnrolled) throw new Error("package relation absent");
 			expect(args.p_plan_sha256).toBe(planSha256);
 			if (state.phase === null) {
 				state.phase = "fenced";
@@ -218,7 +231,7 @@ export function officeResetRegistryFixture(plan: CompanyComputerResetPlan, planS
 /** Stopped replace predecessor (real journals from the stop fixture), a
  * synthetic LXD/root map with a diagnostic outbox and sealed history, a
  * provider-owned archive root, and a synthetic guest successor lane. */
-export async function officeResetWorkerFixture(roots: string[]) {
+export async function officeResetWorkerFixture(roots: string[], predecessorRootIncarnationId: string | null = null) {
 	const f = await officeStopWorkerFixture(roots, "replace");
 	await f.worker.reconcile(f.activation.request.intentId, f.request, signal());
 	const imagePackageManifestPath = join(f.root, "original-image-manifest.json");
@@ -277,7 +290,7 @@ export async function officeResetWorkerFixture(roots: string[]) {
 		preparationObservationSha256: activationSeed.request.attestation.preparationObservationSha256,
 		providerBindingSha256: lxdOfficeProviderBindingSha256(f.binding),
 		nodeId: null,
-		predecessorRootIncarnationId: null,
+		predecessorRootIncarnationId,
 		rootIncarnationId: id(201),
 		successorActivationId: id(202),
 		commands: { stopCommandId: id(210), deleteCommandId: id(211), createCommandId: id(212), startCommandId: id(213) },
@@ -285,6 +298,120 @@ export async function officeResetWorkerFixture(roots: string[]) {
 	};
 	const planSha256 = officeDigest(plan);
 	const registry = officeResetRegistryFixture(plan, planSha256);
+	const packageMaterial = officeCodePackageMaterialFixture({
+		policy: f.policy,
+		binding: f.binding,
+		configure: (code) => {
+			Object.assign(code.base, officeImagePackageFixture());
+			Object.assign(code.target, officeImagePackageFixture());
+			Object.assign(code.reset, plan);
+			Object.assign(code.statement.base, {
+				imageSha256: f.binding.imageFingerprint,
+				bootstrapSha256: f.binding.bootstrapSha256,
+			});
+			Object.assign(code.plan, {
+				resetId: plan.resetId,
+				rootIncarnationId: plan.rootIncarnationId,
+				successorActivationId: plan.successorActivationId,
+			});
+		},
+	});
+	const codePackageLanePath = join(f.root, "code-package-lane.json");
+	packageMaterial.files.set(
+		codePackageLanePath,
+		Buffer.from(JSON.stringify({ schema: "qorpera.lxd-office-code-package-lane/v1", ...packageMaterial.document })),
+	);
+	const previousProtected = f.readProtected.getMockImplementation()!,
+		previousCredential = f.readCredential.getMockImplementation()!;
+	f.readProtected.mockImplementation(async (path: string, limit = 65536) =>
+		packageMaterial.files.has(path) ? packageMaterial.ports.readProtected(path, limit) : previousProtected(path),
+	);
+	f.readCredential.mockImplementation(async (path: string, limit = 65536) =>
+		packageMaterial.files.has(path) ? packageMaterial.ports.readCredential(path, limit) : previousCredential(path),
+	);
+	const packageEvents: string[] = [];
+	const packageLane = {
+		enroll: vi.fn<LxdOfficeResetCodePackageLane["enroll"]>(async () => {
+			packageEvents.push("enroll");
+			registry.state.packageEnrolled = true;
+			return {
+				state: "enrolled",
+				currentPackageRevision: 0,
+				capabilityRevision: 1,
+				request: null,
+				requestSha256: null,
+				receipt: null,
+				receiptSha256: null,
+				installationEvidenceSha256: null,
+			};
+		}),
+		ensure: vi.fn<LxdOfficeResetCodePackageLane["ensure"]>(async (context, checked, authorize) => {
+			checked.throwIfAborted();
+			await authorize();
+			expect(["restored", "prepared", "active"]).toContain(registry.state.phase);
+			expect(context.restoreSha256).toBe(registry.state.restoreSha256);
+			expect(context.resetPlan).toEqual(plan);
+			packageEvents.push("ensure");
+			registry.state.packageInstalled = true;
+			const request = parseCompanyComputerCodePackageProvisionRequest({
+				schema: "qorpera.office-code-package-provision-request/v1",
+				plan: packageMaterial.plan,
+				planSha256: packageMaterial.trust.planSha256,
+				bootId: context.bootId,
+				restoreSha256: context.restoreSha256,
+				challengeId: id(650),
+				targetRevision: 1,
+				capabilityRevision: 1,
+				targetManifestSha256: packageMaterial.statement.target.packageManifestSha256,
+			});
+			const receipt = parseCompanyComputerCodePackageProvisionReceipt({
+				schema: "qorpera.office-code-package-provision-receipt/v1",
+				planSha256: request.planSha256,
+				provisionId: request.plan.provisionId,
+				resetId: plan.resetId,
+				rootIncarnationId: plan.rootIncarnationId,
+				bootId: context.bootId,
+				commandId: request.plan.installCommandId,
+				requestSha256: officeDigest(request),
+				restoreSha256: context.restoreSha256,
+				state: "installed",
+				targetRevision: 1,
+				packageManifestSha256: request.targetManifestSha256,
+				installedInventorySha256: "6".repeat(64),
+				sourceCommit: packageMaterial.statement.target.sourceCommit,
+				runtimeBundle: packageMaterial.statement.target.runtimeBundle,
+				service: packageMaterial.statement.target.service,
+			});
+			return {
+				packet: {
+					schema: "qorpera.office-code-package-control/v1",
+					request,
+					resetPlan: plan,
+					custody: context.custody,
+					restore: context.restore,
+					originPreparationSha256: hash(context.originalPreparation),
+					envelope: packageMaterial.envelope,
+				},
+				receipt,
+			};
+		}),
+		prepareInvocation: vi.fn<LxdOfficeResetCodePackageLane["prepareInvocation"]>(async (packet) => {
+			packageEvents.push("stage");
+			return { packetSha256: officeDigest(packet), trustSha256: officeDigest(packageMaterial.document.trust) };
+		}),
+		measureInvocation: vi.fn<LxdOfficeResetCodePackageLane["measureInvocation"]>(
+			async (_pins, activationId, startup, deadline, checked) => {
+				checked.throwIfAborted();
+				expect(performance.now()).toBeLessThan(deadline);
+				expect(activationId).toBe(plan.successorActivationId);
+				expect(startup.serviceInvocationId).toBe("c".repeat(32));
+				expect(packageEvents.at(-1)).toBe("stage");
+				packageEvents.push("measure");
+				registry.state.packageMeasured = true;
+			},
+		),
+	};
+
 	const vm = {
 		state: "running" as "running" | "stopped" | "absent",
 		bootId: f.request.startup.bootId,
@@ -441,6 +568,7 @@ export async function officeResetWorkerFixture(roots: string[]) {
 		planSha256,
 		serviceBootstrapPath: f.activation.request.serviceBootstrapPath,
 		imagePackageManifestPath,
+		codePackageLanePath,
 	};
 	const create = (ports: { successorLane?: LxdOfficeResetSuccessorLane | null } = {}) =>
 		new LxdOfficeResetWorker(
@@ -452,6 +580,9 @@ export async function officeResetWorkerFixture(roots: string[]) {
 				readProtected: f.readProtected,
 				readCredential: f.readCredential,
 				nasCustody,
+				readManifest: packageMaterial.ports.readManifest,
+				readArtifact: packageMaterial.ports.readArtifact,
+				codePackageLane: () => packageLane,
 				successorLane: ports.successorLane === null ? undefined : (ports.successorLane ?? lane),
 			},
 		);
@@ -484,6 +615,9 @@ export async function officeResetWorkerFixture(roots: string[]) {
 		planSha256,
 		input,
 		registry,
+		packageMaterial,
+		packageLane,
+		packageEvents,
 		vm,
 		vmState,
 		listing,

@@ -25,7 +25,12 @@ export const officeImagePackageFixture = (reset = true) => ({
 		"node_modules/playwright-core/index.mjs",
 		"node_modules/playwright-core/browsers.json",
 		"wallpapers/qorpera-screen-pebble.png",
-	].map((file) => ({ file, bytes: 1, sha256: "a".repeat(64) })),
+	].map((file) => {
+		const mount = Buffer.from("[Mount]\nOptions=uid=@OFFICE_UID@,gid=@OFFICE_GID@\n");
+		return file === "qorpera-office-private.mount.in"
+			? { file, bytes: mount.length, sha256: createHash("sha256").update(mount).digest("hex") }
+			: { file, bytes: 1, sha256: "a".repeat(64) };
+	}),
 });
 export const officeImagePackageBytes = () => Buffer.from(JSON.stringify(officeImagePackageFixture()));
 export const officeImagePackageSha256 = () => createHash("sha256").update(officeImagePackageBytes()).digest("hex");

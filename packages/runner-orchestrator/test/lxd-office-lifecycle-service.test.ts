@@ -113,6 +113,16 @@ describe("optional provider lifecycle diagnostics", () => {
 	});
 });
 describe("protected lifecycle service configuration", () => {
+	it("accepts only a protected code-package lane reference", () => {
+		expect(
+			parseLxdOfficeLifecycleServiceConfig({ ...config(), codePackageLanePath: "/protected/package.json" })
+				.codePackageLanePath,
+		).toBe("/protected/package.json");
+		expect(() =>
+			parseLxdOfficeLifecycleServiceConfig({ ...config(), codePackageLanePath: "../package.json" }),
+		).toThrow();
+		expect(parseLxdOfficeLifecycleServiceConfig(config()).codePackageLanePath).toBeUndefined();
+	});
 	it("contains only protected references and returns detached configuration", () => {
 		const input = config(),
 			parsed = parseLxdOfficeLifecycleServiceConfig(input);

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { opendir } from "node:fs/promises";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -263,11 +264,82 @@ export class LxdOfficeCodePackageProvisionLane {
 		await this.#keep(`code-package-root-claim-${this.provisionId}.json`, claim);
 		await this.#keep(`code-package-root-receipt-${this.provisionId}.json`, receipt);
 	}
+	async #recoverAcknowledgedObservation(
+		packet: LxdOfficeCodePackagePacket,
+		status: Awaited<ReturnType<LxdOfficeCodePackageControl["status"]>>,
+		signal: AbortSignal,
+	) {
+		if (status.state !== "installed" || !status.receipt || !status.installationEvidenceSha256) return undefined;
+		let found: Record<string, unknown> | undefined,
+			scanned = 0,
+			attempts = 0;
+		for await (const entry of await opendir(this.#root)) {
+			signal.throwIfAborted();
+			if (++scanned > 32768) throw new Error("OFFICE_CODE_PACKAGE_HISTORY_LIMIT");
+			if (!entry.name.startsWith(`code-package-observation-ack-${this.provisionId}-`)) continue;
+			if (
+				++attempts > 4096 ||
+				!entry.isFile() ||
+				!/^code-package-observation-ack-[0-9a-f-]{36}-[0-9a-f-]{36}\.json$/.test(entry.name)
+			)
+				throw new Error("OFFICE_CODE_PACKAGE_ACK_HISTORY_UNCONFIRMED");
+			const pending = officeRecord(await this.#optional(entry.name), ["schema", "packetSha256", "observation"]);
+			if (
+				pending.schema !== "qorpera.lxd-office-code-package-observation-ack/v1" ||
+				pending.packetSha256 !== officeDigest(packet)
+			)
+				throw new Error("OFFICE_CODE_PACKAGE_ACK_HISTORY_UNCONFIRMED");
+			const observation = officeRecord(pending.observation, [
+					"schema",
+					"observationId",
+					"provisionId",
+					"requestSha256",
+					"receipt",
+					"receiptSha256",
+					"inventorySha256",
+					"evidenceSha256",
+				]),
+				{ evidenceSha256, ...evidence } = observation;
+			if (evidenceSha256 !== status.installationEvidenceSha256) continue;
+			const receipt = verifyLxdOfficeCodePackageProvisionReceipt(
+				observation.receipt,
+				packet.request,
+				this.#material.verified,
+			);
+			if (
+				found ||
+				evidenceSha256 !== officeDigest(evidence) ||
+				observation.schema !== "qorpera.office-code-package-observation/v1" ||
+				entry.name !== `code-package-observation-ack-${this.provisionId}-${observation.observationId}.json` ||
+				observation.provisionId !== this.provisionId ||
+				observation.requestSha256 !== officeDigest(packet.request) ||
+				observation.receiptSha256 !== officeDigest(receipt) ||
+				observation.inventorySha256 !== this.#material.verified.inventorySha256 ||
+				!isDeepStrictEqual(receipt, status.receipt)
+			)
+				throw new Error("OFFICE_CODE_PACKAGE_ACK_HISTORY_UNCONFIRMED");
+			found = {
+				schema: "qorpera.lxd-office-code-package-completed/v1",
+				packetSha256: officeDigest(packet),
+				receipt,
+				evidenceSha256,
+			};
+		}
+		if (!found) throw new Error("OFFICE_CODE_PACKAGE_ACK_HISTORY_UNCONFIRMED");
+		return found;
+	}
 	async ensure(context: LxdOfficeCodePackageProvisionContext, signal: AbortSignal, authorize: () => Promise<void>) {
 		const { packet, status } = await this.#packet(context, signal),
 			packetSha256 = officeDigest(packet),
-			completeName = `code-package-completed-${this.provisionId}.json`,
-			complete = await this.#optional(completeName);
+			completeName = `code-package-completed-${this.provisionId}.json`;
+		let complete = await this.#optional(completeName);
+		if (complete === undefined && status.state === "installed") {
+			complete = await this.#recoverAcknowledgedObservation(packet, status, signal);
+			if (!isDeepStrictEqual(await this.#receipt(packet.request, signal), status.receipt))
+				throw new Error("OFFICE_CODE_PACKAGE_COMPLETION_UNCONFIRMED");
+			await this.#retainRootEvidence(packet, status.receipt, signal);
+			await this.#keep(completeName, complete);
+		}
 		if (complete !== undefined) {
 			const r = officeRecord(complete, ["schema", "packetSha256", "receipt", "evidenceSha256"]);
 			if (
@@ -393,6 +465,11 @@ export class LxdOfficeCodePackageProvisionLane {
 		)
 			throw new Error("OFFICE_CODE_PACKAGE_OBSERVATION_UNCONFIRMED");
 		await this.#retainRootEvidence(packet, receipt, signal);
+		await this.#keep(`code-package-observation-ack-${this.provisionId}-${observationId}.json`, {
+			schema: "qorpera.lxd-office-code-package-observation-ack/v1",
+			packetSha256,
+			observation: value,
+		});
 		await this.#control.acknowledge(receipt, packet.request, observationId, evidenceSha256 as string, signal);
 		await this.#keep(completeName, {
 			schema: "qorpera.lxd-office-code-package-completed/v1",

@@ -34,6 +34,8 @@ export async function officeCodePackagePipelineFixture() {
 		claim: unknown = null,
 		state = "enrolled",
 		installationEvidenceSha256: string | null = null,
+		loseInvocationAck = false,
+		loseAck = false,
 		loseInstall = false,
 		tamperObservation = false,
 		loseDispatch = false;
@@ -85,6 +87,7 @@ export async function officeCodePackagePipelineFixture() {
 			if (method === "qorpera_ack_office_package_provision") {
 				state = "installed";
 				installationEvidenceSha256 = args.p_evidence_sha256 as string;
+				if (loseAck) throw new Error("lost ack reply");
 				return status();
 			}
 			if (method === "qorpera_check_office_package_invocation")
@@ -103,7 +106,11 @@ export async function officeCodePackagePipelineFixture() {
 					capabilityRevision: 1,
 					validForMs: 5000,
 				};
-			if (method === "qorpera_ack_office_package_invocation")
+			if (method === "qorpera_ack_office_package_invocation") {
+				if (loseInvocationAck) {
+					loseInvocationAck = false;
+					throw new Error("lost invocation ack reply");
+				}
 				return {
 					schema: "qorpera.office-code-package-invocation-measurement/v1",
 					activationId: args.p_activation_id,
@@ -111,6 +118,7 @@ export async function officeCodePackagePipelineFixture() {
 					revision: 1,
 					state: "measured",
 				};
+			}
 			return status();
 		}),
 	};
@@ -249,6 +257,12 @@ export async function officeCodePackagePipelineFixture() {
 		context,
 		authorize,
 		ensure: () => lane.ensure(context, signal(), authorize),
+		loseInvocationAck: () => {
+			loseInvocationAck = true;
+		},
+		loseAck: () => {
+			loseAck = true;
+		},
 		loseInstall: () => {
 			loseInstall = true;
 		},

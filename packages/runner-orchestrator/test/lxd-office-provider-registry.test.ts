@@ -12,6 +12,13 @@ afterEach(() => {
 describe("provider-only office HTTP registry", () => {
 	it.each([
 		method,
+		"qorpera_enroll_office_package_provision",
+		"qorpera_check_office_package_provision",
+		"qorpera_check_office_package_provision_observation",
+		"qorpera_ack_office_package_provision",
+		"qorpera_office_package_provision_status",
+		"qorpera_check_office_package_invocation",
+		"qorpera_ack_office_package_invocation",
 		"qorpera_reserve_runtime_node_machine",
 		"qorpera_begin_runtime_office_lifecycle",
 		"qorpera_runtime_office_lifecycle_status",

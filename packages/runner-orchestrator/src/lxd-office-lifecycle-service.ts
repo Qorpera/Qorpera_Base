@@ -103,7 +103,7 @@ export function parseLxdOfficeLifecycleServiceConfig(value: unknown) {
 		"pollIntervalMs",
 	];
 	// Optional paths come only from this root-protected service document.
-	const optionalKeys = ["softwareLanePath", "resetImagePackageManifestPath"].filter(
+	const optionalKeys = ["softwareLanePath", "resetImagePackageManifestPath", "codePackageLanePath"].filter(
 		(key) => value && typeof value === "object" && Object.hasOwn(value, key),
 	);
 	const r = officeRecord(value, [...keys, ...optionalKeys]);
@@ -137,6 +137,7 @@ export function parseLxdOfficeLifecycleServiceConfig(value: unknown) {
 			r.resetImagePackageManifestPath === undefined
 				? undefined
 				: officePhysicalPath(r.resetImagePackageManifestPath),
+		codePackageLanePath: r.codePackageLanePath === undefined ? undefined : officePhysicalPath(r.codePackageLanePath),
 		softwareLanePath: r.softwareLanePath === undefined ? undefined : officePhysicalPath(r.softwareLanePath),
 	};
 }

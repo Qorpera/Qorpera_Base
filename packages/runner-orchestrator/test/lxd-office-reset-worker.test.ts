@@ -1,11 +1,8 @@
-import { createHash } from "node:crypto";
 import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { COMPANY_COMPUTER_RESET_PHASES } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LxdOfficeOperationJournal } from "../src/lxd-office-operations.ts";
-import { LxdOfficeResetWorker } from "../src/lxd-office-reset-worker.ts";
-import { officeImagePackageFixture } from "./fixtures/office-image-package.ts";
 import { officeResetWorkerFixture } from "./fixtures/office-reset-worker.ts";
 import { serviceStartId as id } from "./fixtures/office-service-start.ts";
 
@@ -17,54 +14,67 @@ afterEach(async () => {
 const fixture = () => officeResetWorkerFixture(roots);
 const OUTBOX = "/var/lib/qorpera-office-events";
 describe("serialized office root reset worker", () => {
-	it.each(["missing", "digest", "historical"])(
-		"refuses %s original image capability before SQL begin or VM effects",
+	it("refuses a historical reset root without retained signed package provenance before enrollment", async () => {
+		const f = await officeResetWorkerFixture(roots, id(649));
+		await expect(f.run()).rejects.toMatchObject({
+			cause: { message: "OFFICE_CODE_PACKAGE_PRIOR_ROOT_UNCONFIRMED" },
+		});
+		expect(f.packageLane.enroll).not.toHaveBeenCalled();
+		expect(f.registry.call).not.toHaveBeenCalled();
+		expect(f.submit).not.toHaveBeenCalled();
+	});
+	it.each(["missing", "signature", "artifact"])(
+		"refuses %s signed package material before enrollment or VM effects",
 		async (failure) => {
 			const f = await fixture();
-			const bytes = Buffer.from(JSON.stringify(officeImagePackageFixture(false)));
 			const input = {
 				...f.input,
-				imagePackageManifestPath: failure === "missing" ? undefined : f.input.imagePackageManifestPath,
+				codePackageLanePath: failure === "missing" ? undefined : f.input.codePackageLanePath,
 			};
-			const policy =
-				failure === "historical"
-					? {
-							...f.policy,
-							image: {
-								...f.policy.image,
-								guestPackageManifestSha256: createHash("sha256").update(bytes).digest("hex"),
-							},
-						}
-					: f.policy;
-			// Installed helpers on the current root cannot establish capability of the recreated image.
-			f.guest.set("/opt/qorpera-office/qorpera-company-computer-reset-service-start-control.mjs", {
-				content: Buffer.from("new helper"),
-				uid: 0,
-				gid: 0,
-				mode: 0o444,
-			});
-			const worker = new LxdOfficeResetWorker(
-				{ policy, check: f.check },
-				{ call: f.registry.call },
-				{ client: f.client, kernelLock: f.kernelLock, readProtected: async () => bytes },
+			if (failure === "signature") {
+				const path = f.packageMaterial.document.envelopePath,
+					value = JSON.parse(f.packageMaterial.files.get(path)!.toString());
+				value.signature.value = Buffer.alloc(64).toString("base64");
+				f.packageMaterial.files.set(path, Buffer.from(JSON.stringify(value)));
+			}
+			if (failure === "artifact")
+				f.packageMaterial.files.set(
+					f.packageMaterial.artifactPath("qorpera-company-computer-service.mjs"),
+					Buffer.from("unreviewed service"),
+				);
+			await expect(f.create().reconcile(input, new AbortController().signal)).rejects.toThrow(
+				"OFFICE_RESET_UNCONFIRMED",
 			);
-			await expect(worker.reconcile(input, new AbortController().signal)).rejects.toMatchObject({
-				cause: { message: "OFFICE_RESET_IMAGE_CAPABILITY_UNCONFIRMED" },
-			});
 			expect(f.registry.call).not.toHaveBeenCalled();
+			expect(f.packageLane.enroll).not.toHaveBeenCalled();
 			expect(f.submit).not.toHaveBeenCalled();
 		},
 	);
-	it("rechecks the pinned image package before a later destructive phase", async () => {
+	it("rechecks complete signed material before a later destructive phase", async () => {
 		const f = await fixture();
-		for (let tick = 0; tick < 3; tick++) await f.run();
+		await f.ticks(2);
 		const before = f.submit.mock.calls.length;
-		const originalRead = f.readProtected.getMockImplementation()!;
-		f.readProtected.mockImplementation(async (path, ...args) =>
-			path === f.input.imagePackageManifestPath ? Buffer.from("{}") : originalRead(path, ...args),
-		);
-		await expect(f.run()).rejects.toMatchObject({ cause: { message: "OFFICE_RESET_IMAGE_CAPABILITY_UNCONFIRMED" } });
+		f.packageMaterial.files.set(f.packageMaterial.document.baseManifestPath, Buffer.from("{}"));
+		await expect(f.run()).rejects.toThrow("OFFICE_RESET_UNCONFIRMED");
 		expect(f.submit).toHaveBeenCalledTimes(before);
+	});
+	it("holds configuration until package installation succeeds and activation until independent package measurement", async () => {
+		const f = await fixture();
+		await f.ticks(6);
+		expect(f.registry.state.phase).toBe("restored");
+		f.packageLane.ensure.mockRejectedValueOnce(new Error("unconfirmed package install"));
+		await expect(f.run()).rejects.toThrow("OFFICE_RESET_UNCONFIRMED");
+		expect(f.lane.configure).not.toHaveBeenCalled();
+		await f.run();
+		expect(f.registry.state.phase).toBe("prepared");
+		f.packageLane.measureInvocation.mockRejectedValueOnce(new Error("actual service differs"));
+		await expect(f.run()).rejects.toThrow("OFFICE_RESET_UNCONFIRMED");
+		expect(f.registry.state.phase).toBe("prepared");
+		expect(f.packageLane.prepareInvocation).toHaveBeenCalledOnce();
+		expect(f.registry.state.calls).not.toContain("qorpera_activate_runtime_office_reset_successor");
+		await expect(f.run()).resolves.toMatchObject({ state: "active" });
+		expect(f.lane.start).toHaveBeenCalledOnce();
+		expect(f.packageMaterial.readBuffers.every((bytes) => bytes.every((byte) => byte === 0))).toBe(true);
 	});
 	it("advances one phase per tick through the full chain with one planned command per physical action", async () => {
 		const f = await fixture();

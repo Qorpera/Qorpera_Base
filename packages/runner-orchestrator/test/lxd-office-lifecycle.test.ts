@@ -298,13 +298,17 @@ async function fixture() {
 			};
 		}),
 	};
-	const open = (resetImagePackageManifestPath?: string) =>
+	const preparePackageInvocation = vi.fn<
+		NonNullable<NonNullable<ConstructorParameters<typeof LxdOfficeLifecycle>[3]>["preparePackageInvocation"]>
+	>(async () => undefined);
+	const open = (resetImagePackageManifestPath?: string, codePackageLanePath?: string) =>
 		new LxdOfficeLifecycle(
 			{ policy, check: vi.fn(), inspect: vi.fn() },
 			registry,
 			{
 				planPath: "/protected/lifecycle.json",
 				resetImagePackageManifestPath,
+				codePackageLanePath,
 				inventoryLimits: {
 					maxEntries: 100,
 					maxDepth: 4,
@@ -314,6 +318,7 @@ async function fixture() {
 				},
 			},
 			{
+				preparePackageInvocation,
 				workers: workers as unknown as NonNullable<ConstructorParameters<typeof LxdOfficeLifecycle>[3]>["workers"],
 				kernelLock,
 				readProtected,
@@ -354,6 +359,7 @@ async function fixture() {
 		bootConfigurationWorker,
 		bootActivationWorker,
 		resetWorker,
+		preparePackageInvocation,
 		resetPlan,
 		recovery,
 	};
@@ -593,7 +599,9 @@ describe("serialized office lifecycle", () => {
 		f.resetWorker.result = { state: "held", phase: "stopped", reason: "OFFICE_RESET_OUTBOX_REMNANT" };
 		await expect(f.open().reconcile(signal())).resolves.toMatchObject({ state: "progressed", phase: "service_stop" });
 		const plan = f.resetPlan(f.recovery);
-		await expect(f.open("/protected/image-manifest.json").reconcile(signal())).resolves.toEqual({
+		await expect(
+			f.open("/protected/image-manifest.json", "/protected/package-lane.json").reconcile(signal()),
+		).resolves.toEqual({
 			state: "held",
 			phase: "reset",
 			intentId,
@@ -610,6 +618,7 @@ describe("serialized office lifecycle", () => {
 				planSha256: officeDigest(plan),
 				serviceBootstrapPath: f.request.serviceBootstrapPath,
 				imagePackageManifestPath: "/protected/image-manifest.json",
+				codePackageLanePath: "/protected/package-lane.json",
 			},
 			expect.any(AbortSignal),
 		);
@@ -655,6 +664,43 @@ describe("serialized office lifecycle", () => {
 		await expect(f.open().reconcile(signal())).rejects.toThrow("OFFICE_LIFECYCLE_UNCONFIRMED");
 		expect(f.stopWorker.reconcileSettled).not.toHaveBeenCalled();
 		expect(f.powerOffWorker.reconcileSettled).not.toHaveBeenCalled();
+	});
+	it("holds restart before dispatch when retained package discovery is unconfirmed", async () => {
+		const f = await fixture();
+		await f.toPhase(7);
+		await f.open().reconcile(signal());
+		f.state.recovery = {
+			schema: "qorpera.lxd-office-recovery-plan/v1",
+			request: { ...f.recovery, action: "service_restart" },
+		};
+		await f.open().reconcile(signal());
+		f.preparePackageInvocation.mockRejectedValue(new Error("package history unavailable"));
+		await expect(f.open().reconcile(signal())).rejects.toThrow("UNCONFIRMED");
+		expect(f.successorWorker.reconcileSettled).not.toHaveBeenCalled();
+	});
+	it("prepares package staging before restart worker and disposes it after settlement", async () => {
+		const f = await fixture();
+		await f.toPhase(7);
+		await f.open().reconcile(signal());
+		f.state.recovery = {
+			schema: "qorpera.lxd-office-recovery-plan/v1",
+			request: { ...f.recovery, action: "service_restart" },
+		};
+		await f.open().reconcile(signal());
+		const dispose = vi.fn();
+		f.preparePackageInvocation.mockResolvedValue({ measure: vi.fn(), dispose });
+		await f.open().reconcile(signal());
+		expect(f.preparePackageInvocation.mock.invocationCallOrder[0]).toBeLessThan(
+			f.successorWorker.reconcileSettled.mock.invocationCallOrder[0]!,
+		);
+		expect(dispose).toHaveBeenCalledOnce();
+	});
+	it("holds reboot activation before dispatch when retained package discovery is unconfirmed", async () => {
+		const f = await atConfigurationStage();
+		await f.open().reconcile(signal());
+		f.preparePackageInvocation.mockRejectedValue(new Error("package history unavailable"));
+		await expect(f.open().reconcile(signal())).rejects.toThrow("UNCONFIRMED");
+		expect(f.bootActivationWorker.reconcileSettled).not.toHaveBeenCalled();
 	});
 	it("advances stop to restart once, holds disabled restart, and reinspects only after process recovery", async () => {
 		const f = await fixture();

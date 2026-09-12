@@ -89,10 +89,11 @@ export async function testRuntimeComputerLifecycle({allocationId,service,literal
    begin
     select * into strict original from public.qorpera_runtime_office_activations where allocation_id='${allocationId}' and superseded_at is null;
     for i in 1..501 loop
-     candidate:=original; candidate.activation_id:=extensions.gen_random_uuid();candidate.predecessor_activation_id:=null;
+     candidate:=original; candidate.activation_id:=extensions.gen_random_uuid();candidate.predecessor_activation_id:=original.activation_id;
      candidate.service_invocation_id:=replace(candidate.activation_id::text,'-','');
      candidate.state:='active';candidate.ready_at:=t;candidate.activated_at:=t;candidate.superseded_at:=t+interval '1 second';
      insert into public.qorpera_runtime_office_activations select (candidate).*;
+     original:=candidate;
     end loop;
     begin perform public.qorpera_runtime_computer_lifecycle('${allocationId}',t,t+interval '1 hour');
      raise exception 'Unbounded lifecycle response accepted'; exception when program_limit_exceeded then null; end;

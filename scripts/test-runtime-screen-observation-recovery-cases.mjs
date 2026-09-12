@@ -55,7 +55,8 @@ export async function prepareScreenObservationRecovery({startup,openLifetimeId,s
   execute(`${setup} do $proof$ declare receipt jsonb; begin receipt:=${canonicalSuffix};
    if ${retainSuffix}<>receipt then raise exception 'late canonical receipt changed'; end if; end $proof$; rollback;`);
   assert.equal(execute('select count(*) from public.qorpera_runtime_screen_observations;'),'0');
-  assert.equal(attempts.length,0);await queue.flush(signal);assert.equal(attempts.length,6);
+  assert.equal(attempts.length,0);await queue.flush(signal);assert.equal(attempts.length,2);
+  assert.equal(attempts[0].args.p_event.eventId,JSON.parse(attempts[1].args.p_record).event.eventId); // One unresolved record fences the screen.
   assert.deepEqual(await Promise.all(names.map(name=>readFile(join(root,name),'utf8'))),records);
   await queue.close();
   return {
@@ -66,7 +67,7 @@ export async function prepareScreenObservationRecovery({startup,openLifetimeId,s
       'events',(select jsonb_agg(to_jsonb(e) order by e.event_id) from public.qorpera_runtime_screen_events e),
       'lifetimes',(select jsonb_agg(to_jsonb(l) order by l.id) from public.qorpera_runtime_screen_lifetimes l));`);
      exportAvailable=true;queue=await CompanyComputerScreenOutbox.open(root,startup.scope,[],registry);
-     for(let i=0;i<6;i++)await queue.flush(signal);
+     for(let i=0;i<records.length+1;i++)await queue.flush(signal); // One record per screen per flush, plus one lost reply.
      assert.deepEqual(await readdir(root),['scope.json']);assert.equal(retentions.size,11);assert.equal(lostReply,false);
      for(const record of records){
       const original=JSON.parse(record),receipt=retentions.get(original.event.eventId);
