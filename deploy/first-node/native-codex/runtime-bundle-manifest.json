@@ -137,7 +137,7 @@
     "packages/runner-orchestrator/src/lxd-office-image-installation.ts": "19824e4d681c8180231c8e5cf07b650920fbe55f1f37bc777f01143af517fa1c",
     "packages/runner-orchestrator/src/lxd-office-image-provenance.ts": "dcdb037842142cf1ccd24670132b747c8d050e2c07e53124a4f033050ff15ec3",
     "packages/runner-orchestrator/src/lxd-office-installation-host.ts": "9145356ce409dc363768c0dbe83351d1214f26abfaaffa205e711bbae4751f16",
-    "packages/runner-orchestrator/src/lxd-office-installation.ts": "737395be1301a6aa38be0af6e2a2dadc3df1d82881d8f036eabc6fd163e7e61b",
+    "packages/runner-orchestrator/src/lxd-office-installation.ts": "186d68827bd6c2bbe7f2ccfb5401c9aaaef96b1ef6d397f0b38f17eb950af208",
     "packages/runner-orchestrator/src/lxd-office-inventory-worker.ts": "acb93f4797cba86dfd575f83a26d4a3dbeaee216497889e0f7ffae5008f3ce00",
     "packages/runner-orchestrator/src/lxd-office-invocation-measurement.ts": "119fe63226ae04400149aa9f7d172e40dd3461dbe02bffddfbbd67a7f55019f9",
     "packages/runner-orchestrator/src/lxd-office-journal-files.ts": "6ba53f4da9a70ec61ef392f6eb75b7c09e3f29065d0c180f457364a52e7129ce",
