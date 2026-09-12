@@ -495,9 +495,9 @@ describe("settings session lifecycle", () => {
 			expect(document.activeElement).toBe(control);
 		},
 	);
-	it("keeps policy previews local to the selected company and never starts settings runtime calls", async () => {
+	it("keeps policy previews local while Connections only reads member account state", async () => {
 		const f = await setup(realtimeFixture());
-		const fetch = vi.fn();
+		const fetch = vi.fn(async () => Response.json({ compute_identity: null, connections: [] }));
 		vi.stubGlobal("fetch", fetch);
 		open(f.root);
 		click(f.root, "#settings-tab-policy");
@@ -505,10 +505,13 @@ describe("settings session lifecycle", () => {
 		spending.value = "auto";
 		spending.dispatchEvent(new Event("change"));
 		click(f.root, "#settings-tab-connections");
-		for (const button of f.root.querySelectorAll<HTMLButtonElement>("#settings-content button")) {
-			expect(button.disabled).toBe(true);
-			button.click();
-		}
+		await draw();
+		expect(f.root.querySelector("#settings-content")!.textContent).toContain("No model accounts are connected");
+		expect(
+			[...f.root.querySelectorAll<HTMLButtonElement>("#settings-content button")].find(
+				(button) => button.textContent === "Add service",
+			)!.disabled,
+		).toBe(true);
 		await vi.advanceTimersByTimeAsync(60_000);
 		click(f.root, "#settings-tab-policy");
 		expect(f.root.querySelector<HTMLSelectElement>('select[aria-label="Spending"]')!.value).toBe("auto");
@@ -522,6 +525,9 @@ describe("settings session lifecycle", () => {
 		click(f.root, "#settings-tab-policy");
 		expect(f.root.querySelector<HTMLSelectElement>('select[aria-label="Spending"]')!.value).toBe("ask");
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
-		expect(fetch).not.toHaveBeenCalled();
+		expect(fetch).toHaveBeenCalledExactlyOnceWith(
+			"https://fixture.invalid/rest/v1/rpc/qorpera_list_member_native_execution_connections",
+			expect.objectContaining({ method: "POST" }),
+		);
 	});
 });

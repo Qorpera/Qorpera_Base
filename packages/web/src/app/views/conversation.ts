@@ -12,6 +12,8 @@ import type { CompanyController, ConversationState } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
 import { ComputerPanel } from "./computer.ts";
+import { SessionExecutionView } from "./session-execution.ts";
+import { SessionRunView } from "./session-run.ts";
 
 export { renderAuthorizationCard } from "../../ui/authorization-card.ts";
 
@@ -41,6 +43,8 @@ export class ConversationView {
 	readonly #conversationPane: HTMLElement;
 	readonly #lifetime = new AbortController();
 	readonly #actions: WorkspaceActions;
+	readonly #run: SessionRunView | undefined;
+	readonly #execution: SessionExecutionView | undefined;
 	#details: AgentDetails | undefined;
 	#panel: ComputerPanel | undefined;
 	#headerKey = "";
@@ -59,6 +63,18 @@ export class ConversationView {
 		this.#company = company;
 		this.#sessionId = sessionId;
 		this.#actions = actions;
+		this.#run = actions.runControl
+			? new SessionRunView(actions.runControl, sessionId, AbortSignal.any([this.#lifetime.signal, company.signal]))
+			: undefined;
+		this.#execution = actions.nativeSubscription
+			? new SessionExecutionView(
+					company,
+					sessionId,
+					actions.nativeSubscription,
+					() => this.update(),
+					AbortSignal.any([this.#lifetime.signal, company.signal]),
+				)
+			: undefined;
 		this.#composer = h("textarea", {
 			class: "composer-input",
 			rows: 1,
@@ -337,7 +353,12 @@ export class ConversationView {
 	#submit(): void {
 		const text = this.#composer.value;
 		if ((!text.trim() && !this.#attachments.count) || this.#send.disabled || !this.#actions.sendMessage) return;
-		void this.#actions.sendMessage(this.#sessionId, text, this.#lifetime.signal);
+		void this.#actions.sendMessage(this.#sessionId, text, this.#lifetime.signal).then((sent) => {
+			if (sent && !this.#disposed) {
+				this.#run?.messageSent();
+				void this.#execution?.refresh();
+			}
+		});
 		this.update();
 	}
 
@@ -349,6 +370,11 @@ export class ConversationView {
 		const agent = this.#company.staffById(session?.staffAgentId);
 		const activity = this.#company.activityFor(session?.staffAgentId);
 		const canWrite = company.team?.capabilities.write === true && session?.status === "open";
+		this.#execution?.update();
+		this.#run?.update(
+			company.accessLost || !company.team?.capabilities.read ? undefined : session?.staffAgentId,
+			canWrite,
+		);
 		const attachmentIssue = sessionAttachmentIssue(conversation.attachments ?? []);
 		this.#attachments.sync(
 			conversation.attachments ?? [],
@@ -367,6 +393,7 @@ export class ConversationView {
 		this.#composer.disabled = !canWrite || conversation.sending;
 		this.#send.disabled =
 			!this.#actions.sendMessage ||
+			(this.#execution !== undefined && !this.#execution.canSend) ||
 			!canWrite ||
 			conversation.sending ||
 			(!conversation.draft?.trim() && !this.#attachments.count) ||
@@ -526,7 +553,8 @@ export class ConversationView {
 					"Sending messages is not available yet. Your draft stays here.",
 				),
 			);
-		if (activity === "working") children.push(h("div", { class: "typing", role: "status" }, "Working…"));
+		if (this.#run) children.push(this.#run.el);
+		if (this.#execution) children.push(this.#execution.el);
 		if (activity === "needs_attention") children.push(notice("neutral", "This agent needs your attention."));
 		if (!canWrite && session?.status === "closed") children.push(notice("neutral", "This conversation is archived."));
 		else if (!canWrite)

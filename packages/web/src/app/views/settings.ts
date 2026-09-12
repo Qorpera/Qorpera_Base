@@ -1,5 +1,6 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
+import { createWebNativeSubscription } from "../../cloud/native-subscription.ts";
 import type { HostedCompanyFile, HostedFriend, HostedProfile } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { button, fmtBytes, h, icon, notice, replace } from "../../ui/dom.ts";
@@ -249,7 +250,19 @@ export class SettingsView {
 		else if (tab === "company") this.#drawCompany();
 		else if (this.#company) {
 			if (tab === "connections") {
-				this.#connections ??= new ConnectionsView();
+				if (!this.#connections) {
+					const company = this.#company;
+					const memberId = this.#auth.userId!;
+					const signal = AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]);
+					this.#connections = new ConnectionsView(
+						createWebNativeSubscription(this.#api.cloud, company.profile.profileId, memberId, signal, () => {
+							signal.throwIfAborted();
+							if (this.#auth.userId !== memberId || this.#company !== company || company.store.get().accessLost)
+								throw new Error("The account or company changed.");
+						}),
+						signal,
+					);
+				}
 				this.#panels.set(tab, this.#connections.el);
 			} else {
 				this.#policy ??= new PolicyView();

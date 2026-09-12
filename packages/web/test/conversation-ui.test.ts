@@ -17,6 +17,7 @@ beforeEach(() => {
 	vi.useFakeTimers();
 	vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
 	vi.stubGlobal("innerWidth", 1280);
+	vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("No cloud transport in this UI fixture")));
 	// jsdom does not implement the native dialog methods; focus containment is
 	// verified in Chromium separately.
 	HTMLDialogElement.prototype.showModal = function () {
@@ -226,7 +227,8 @@ describe("conversation UI boundaries", () => {
 		const network = vi.fn();
 		vi.stubGlobal("fetch", network);
 		document.body.append(root);
-		dispose = mountApplication(root, f.cloud, f.api);
+		// Isolate attachment gating from the model-account selection flow.
+		dispose = mountApplication(root, f.cloud, f.api, { nativeSubscription: undefined });
 		await settle();
 		await vi.advanceTimersByTimeAsync(60);
 		input(root, "Message", "Keep this local");

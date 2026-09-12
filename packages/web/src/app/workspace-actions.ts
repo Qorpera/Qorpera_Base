@@ -1,4 +1,6 @@
 import type { WebCompanyComputer } from "../cloud/computer.ts";
+import type { WebNativeSubscription } from "../cloud/native-subscription.ts";
+import type { WebSessionRunControl } from "../cloud/session-run-control.ts";
 import type { HostedStaffAgent } from "../cloud/types.ts";
 import type { FigureChoice } from "../ui/figure-picker.ts";
 
@@ -12,6 +14,8 @@ export interface AgentDraft extends FigureChoice {
  * write ports remain unavailable until their product integration is ready. */
 export interface WorkspaceActions {
 	computer?: WebCompanyComputer;
+	runControl?: WebSessionRunControl;
+	nativeSubscription?: WebNativeSubscription;
 	/** Supplies already-authorized bytes. No URL from a transcript is fetched. */
 	previewAttachment?: (messageId: string, attachmentIndex: number, signal: AbortSignal) => Promise<Blob>;
 	sendMessage?: (sessionId: string, text: string, signal: AbortSignal) => Promise<boolean>;

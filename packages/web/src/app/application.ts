@@ -3,8 +3,10 @@ import { CloudApi } from "../cloud/api.ts";
 import { type Cloud, describeError } from "../cloud/client.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
 import { WebCompanyComputer } from "../cloud/computer.ts";
+import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
 import { createWebSessionAttachments } from "../cloud/session-attachments.ts";
 import { createWebSessionInputWriter } from "../cloud/session-input.ts";
+import { createWebSessionRunControl } from "../cloud/session-run-control.ts";
 import type { HostedProfile } from "../cloud/types.ts";
 import { h, notice, replace, spinner } from "../ui/dom.ts";
 import { applyLanguage } from "../ui/preferences.ts";
@@ -289,21 +291,27 @@ export function mountApplication(
 				api,
 				profile,
 				userId,
-				(sessionId, clientInputId, text, signal, files) =>
-					createWebSessionInputWriter(cloud, userId, controller.signal, (target) => {
-						const route = currentRoute();
-						if (
-							disposed ||
-							company !== controller ||
-							auth.userId !== userId ||
-							route.name !== "company" ||
-							route.profileId !== profile.profileId ||
-							route.section !== "chat" ||
-							route.id !== target
-						)
-							throw new Error("Company access is unavailable.");
-						controller.assertCanSend(target);
-					})(sessionId, clientInputId, text, signal, files),
+				(sessionId, clientInputId, text, signal, files, executionSponsor) =>
+					createWebSessionInputWriter(
+						cloud,
+						userId,
+						controller.signal,
+						(target) => {
+							const route = currentRoute();
+							if (
+								disposed ||
+								company !== controller ||
+								auth.userId !== userId ||
+								route.name !== "company" ||
+								route.profileId !== profile.profileId ||
+								route.section !== "chat" ||
+								route.id !== target
+							)
+								throw new Error("Company access is unavailable.");
+							controller.assertCanSend(target);
+						},
+						profile.profileId,
+					)(sessionId, clientInputId, text, signal, files, executionSponsor),
 			);
 			company = controller;
 			computer = new WebCompanyComputer(cloud, profile, userId, controller.signal, () => {
@@ -557,11 +565,45 @@ export function mountApplication(
 			case "chat": {
 				if (!conversation || conversation.sessionId !== route.id) {
 					conversation?.dispose();
+					const checkConversationAccess = (sessionId = route.id) => {
+						const selected = currentRoute(),
+							state = controller.store.get();
+						const session = state.sessions.find((item) => item.sessionId === sessionId);
+						if (
+							disposed ||
+							company !== controller ||
+							auth.userId !== controller.userId ||
+							state.accessLost ||
+							!state.team?.capabilities.read ||
+							!session ||
+							session.profileId !== controller.profile.profileId ||
+							session.environmentId !== controller.profile.environmentId ||
+							(session.audience.kind === "member_private" && session.audience.userId !== controller.userId) ||
+							selected.name !== "company" ||
+							selected.profileId !== controller.profile.profileId ||
+							selected.section !== "chat" ||
+							selected.id !== sessionId
+						)
+							throw new Error("Conversation access changed.");
+					};
 					conversation = new ConversationView(
 						controller,
 						route.id ?? "",
 						{
 							sendMessage: (id, text, signal) => controller.sendPrompt(id, text, signal),
+							nativeSubscription: createWebNativeSubscription(
+								cloud,
+								controller.profile.profileId,
+								controller.userId,
+								controller.signal,
+								checkConversationAccess,
+							),
+							runControl: createWebSessionRunControl(
+								cloud,
+								controller.userId,
+								controller.signal,
+								checkConversationAccess,
+							),
 							previewAttachment: async (messageId, index, viewSignal) => {
 								const signal = AbortSignal.any([controller.signal, viewSignal]);
 								const check = () => {

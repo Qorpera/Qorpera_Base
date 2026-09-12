@@ -14,6 +14,7 @@ let dispose: (() => void) | undefined;
 beforeEach(() => {
 	vi.useFakeTimers();
 	vi.stubGlobal("matchMedia", () => ({ matches: true, addEventListener() {}, removeEventListener() {} }));
+	vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("No cloud transport in this UI fixture")));
 	history.replaceState(null, "", "/#/");
 	sessionStorage.clear();
 });
@@ -38,15 +39,75 @@ function mounted(hash = "#/") {
 	return { ...f, root };
 }
 
+function executionTransport() {
+	const send = vi.fn(async (init?: RequestInit) => {
+		const args = JSON.parse(String(init?.body)) as { p_client_input_id: string; p_client_request_id: string };
+		return Response.json({
+			turn_request_id: args.p_client_request_id,
+			input_id: args.p_client_input_id,
+			status: "queued",
+			sponsor_mode: "member_connection",
+		});
+	});
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+			const method = String(input).split("/").at(-1);
+			if (method === "qorpera_request_session_turn_v2") return send(init);
+			if (method === "qorpera_list_session_turn_requests") return Response.json([]);
+			if (method === "qorpera_list_member_native_execution_connections")
+				return Response.json({
+					compute_identity: {
+						compute_identity_id: id(80),
+						ownership_kind: "member",
+						owner_user_id: userA.id,
+						display_name: "My model account",
+						template_key: "member",
+						template_version: "1",
+						capabilities: ["agent_turn"],
+						policy: {},
+						status: "active",
+						created_at: userA.created_at,
+						updated_at: userA.created_at,
+					},
+					connections: [
+						{
+							connection_id: id(81),
+							connection_version: 1,
+							provider: "openai",
+							native_harness: "codex-cli",
+							authorization_state: "active",
+							max_native_concurrency: 1,
+							billing_source: "subscription",
+							consent_version: "1",
+							consented_at: userA.created_at,
+							connection_status: "active",
+							sponsor_binding_id: id(82),
+							sponsor_version: 1,
+							policy: { implementation_status: "supported", enablement_status: "enabled", policy_version: 1 },
+						},
+					],
+				});
+			throw new Error(`Unexpected fixture RPC: ${method}`);
+		}),
+	);
+	return send;
+}
+
+async function selectModel(root: HTMLElement): Promise<void> {
+	const select = root.querySelector<HTMLSelectElement>('[aria-label="Model account for this conversation"]')!;
+	select.value = id(81);
+	select.dispatchEvent(new Event("change"));
+	await settle();
+}
+
 describe("account and route ownership", () => {
 	it("retries an uncertain product send with the same input identity and preserves its draft", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
-		const send = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) =>
-			Response.json({ input_id: id(91), position: 1 }),
-		);
+		const send = executionTransport();
 		send.mockRejectedValueOnce(new Error("Response lost"));
-		vi.stubGlobal("fetch", send);
 		await draw();
+		await selectModel(f.root);
 		const input = f.root.querySelector("textarea")!;
 		input.value = "One request";
 		input.dispatchEvent(new Event("input"));
@@ -60,14 +121,14 @@ describe("account and route ownership", () => {
 		button.click();
 		await draw();
 		expect(send).toHaveBeenCalledTimes(2);
-		expect(send.mock.calls[0]?.[1]?.body).toBe(send.mock.calls[1]?.[1]?.body);
+		expect(send.mock.calls[0]?.[0]?.body).toBe(send.mock.calls[1]?.[0]?.body);
 		expect(input.value).toBe("");
 	});
 	it("submits from the product composer through the authenticated member transport", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
-		const send = vi.fn(async () => Response.json({ input_id: id(91), position: 1 }));
-		vi.stubGlobal("fetch", send);
+		const send = executionTransport();
 		await draw();
+		await selectModel(f.root);
 		const input = f.root.querySelector("textarea")!;
 		input.value = "Work from the web";
 		input.dispatchEvent(new Event("input"));
@@ -82,9 +143,9 @@ describe("account and route ownership", () => {
 		"does not dispatch a composer write after %s changes during token refresh",
 		async (change) => {
 			const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
-			const send = vi.fn();
-			vi.stubGlobal("fetch", send);
+			const send = executionTransport();
 			await draw();
+			await selectModel(f.root);
 			const original = await f.cloud.supabase.auth.getSession();
 			const token = deferred<typeof original>();
 			vi.mocked(f.cloud.supabase.auth.getSession).mockReturnValueOnce(token.promise);

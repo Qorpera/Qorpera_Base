@@ -1,9 +1,58 @@
-import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
+import type {
+	NativeExecutionConnections,
+	NativeProviderHarness,
+	SessionTurnRequestResult,
+} from "@qorpera/cloud-client/cloud-native-subscription-control";
+import { withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import { SESSION_PROMPT_SCHEMA } from "./api.ts";
 import type { Cloud } from "./client.ts";
-import { parseSessionInputReceipt, UUID_PATTERN } from "./parse.ts";
+import { createWebNativeSubscription } from "./native-subscription.ts";
+import { UUID_PATTERN } from "./parse.ts";
 import { createWebSessionAttachments, sessionAttachmentIssue } from "./session-attachments.ts";
-import type { SessionInputReceipt } from "./types.ts";
+/** A user-selected, observed member sponsorship. Scalars are retained for exact replay. */
+export interface SessionExecutionSponsor {
+	readonly connectionId: string;
+	readonly provider: string;
+	readonly nativeHarness: NativeProviderHarness;
+	readonly sponsorBindingId: string;
+	readonly sponsorVersion: number;
+	readonly computeIdentityId: string;
+	readonly workerClass: "managed_sandbox";
+}
+
+export function selectSessionExecutionSponsor(
+	observed: NativeExecutionConnections,
+	connectionId: string,
+	memberId: string,
+): SessionExecutionSponsor {
+	const identity = observed.computeIdentity;
+	const connection = observed.connections.find((item) => item.connectionId === connectionId);
+	if (
+		!identity ||
+		identity.status !== "active" ||
+		identity.ownerUserId !== memberId ||
+		!UUID_PATTERN.test(identity.computeIdentityId) ||
+		!connection ||
+		connection.connectionStatus !== "active" ||
+		connection.authorizationState !== "active" ||
+		connection.policy.implementationStatus !== "supported" ||
+		connection.policy.enablementStatus !== "enabled" ||
+		!connection.sponsorBindingId ||
+		!UUID_PATTERN.test(connection.sponsorBindingId) ||
+		!Number.isSafeInteger(connection.sponsorVersion) ||
+		connection.sponsorVersion! < 1
+	)
+		throw new Error("The selected model account is unavailable for execution.");
+	return Object.freeze({
+		connectionId: connection.connectionId,
+		provider: connection.provider,
+		nativeHarness: connection.nativeHarness,
+		sponsorBindingId: connection.sponsorBindingId,
+		sponsorVersion: connection.sponsorVersion!,
+		computeIdentityId: identity.computeIdentityId,
+		workerClass: "managed_sandbox",
+	});
+}
 
 export type SessionInputWriter = (
 	sessionId: string,
@@ -11,7 +60,8 @@ export type SessionInputWriter = (
 	text: string,
 	signal: AbortSignal,
 	files?: readonly File[],
-) => Promise<SessionInputReceipt>;
+	executionSponsor?: SessionExecutionSponsor,
+) => Promise<SessionTurnRequestResult>;
 
 /** Only queues member input. A tab never executes the resulting staff work. */
 export function createWebSessionInputWriter(
@@ -19,6 +69,7 @@ export function createWebSessionInputWriter(
 	memberId: string,
 	companySignal: AbortSignal,
 	current: (sessionId: string) => void,
+	profileId: string,
 ): SessionInputWriter {
 	const origin = new URL(cloud.config.projectUrl);
 	if (
@@ -28,10 +79,11 @@ export function createWebSessionInputWriter(
 		origin.pathname !== "/" ||
 		origin.search ||
 		origin.hash ||
-		!UUID_PATTERN.test(memberId)
+		!UUID_PATTERN.test(memberId) ||
+		!UUID_PATTERN.test(profileId)
 	)
 		throw new Error("Invalid member input configuration.");
-	return (sessionId, clientInputId, text, signal, files = []) =>
+	return (sessionId, clientInputId, text, signal, files = [], executionSponsor) =>
 		withCloudDeadline(
 			async (deadline) => {
 				if (
@@ -41,6 +93,16 @@ export function createWebSessionInputWriter(
 					new TextEncoder().encode(text).length > 65536
 				)
 					throw new Error("Message is empty or too large.");
+				if (
+					!executionSponsor ||
+					!UUID_PATTERN.test(executionSponsor.sponsorBindingId) ||
+					!UUID_PATTERN.test(executionSponsor.computeIdentityId) ||
+					!Number.isSafeInteger(executionSponsor.sponsorVersion) ||
+					executionSponsor.sponsorVersion < 1 ||
+					executionSponsor.workerClass !== "managed_sandbox"
+				)
+					throw new Error("Select an active model account before sending.");
+				const sponsor = { ...executionSponsor };
 				const issue = sessionAttachmentIssue(files);
 				if (issue) throw new Error(issue);
 				const check = () => {
@@ -67,49 +129,23 @@ export function createWebSessionInputWriter(
 						images.push({ objectSha256: image.sha256, bytes: image.bytes, mediaType: image.mediaType });
 					}
 				}
-				const { data, error } = await cloud.supabase.auth.getSession();
-				check();
-				if (
-					error ||
-					data.session?.user.id !== memberId ||
-					!data.session ||
-					!/^[A-Za-z0-9._~-]{1,8192}$/.test(data.session.access_token)
-				)
-					throw new Error("Sign in again before sending a message.");
-				const response = await fetch(`${origin.origin}/rest/v1/rpc/qorpera_append_session_input`, {
-					method: "POST",
-					signal: deadline,
-					redirect: "error",
-					cache: "no-store",
-					credentials: "omit",
-					headers: {
-						authorization: `Bearer ${data.session.access_token}`,
-						apikey: cloud.config.publishableKey,
-						"content-type": "application/json",
+				const control = createWebNativeSubscription(cloud, profileId, memberId, companySignal, () => check());
+				const receipt = await control.requestSessionTurn(
+					{
+						sessionId,
+						clientInputId,
+						clientRequestId: clientInputId,
+						body: { schema: SESSION_PROMPT_SCHEMA, text, images },
+						sponsorMode: "member_connection",
+						sponsorBindingId: sponsor.sponsorBindingId,
+						sponsorVersion: sponsor.sponsorVersion,
+						computeIdentityId: sponsor.computeIdentityId,
+						workerClass: sponsor.workerClass,
 					},
-					body: JSON.stringify({
-						p_session_id: sessionId,
-						p_client_input_id: clientInputId,
-						p_kind: "user_message",
-						p_body: { schema: SESSION_PROMPT_SCHEMA, text, images },
-					}),
-				});
-				try {
-					check();
-					if (response.status !== 200)
-						throw new Error("Message submission could not be confirmed. Retry to check the same message.");
-					const receipt = parseSessionInputReceipt(
-						JSON.parse(
-							new TextDecoder("utf-8", { fatal: true }).decode(
-								await readBoundedCloudResponse(response, 16384, deadline),
-							),
-						),
-					);
-					check();
-					return receipt;
-				} finally {
-					if (!response.body?.locked) void response.body?.cancel().catch(() => undefined);
-				}
+					deadline,
+				);
+				check();
+				return receipt;
 			},
 			files.length ? 75000 : 15000,
 			AbortSignal.any([companySignal, signal]),
