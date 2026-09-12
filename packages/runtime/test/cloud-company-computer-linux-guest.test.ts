@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Socket } from "node:net";
 import type { CompanyComputerPrivacyChallenge } from "@qorpera/cloud-client/cloud-company-computer-privacy";
 import type { CompanyComputerViewerGrant } from "@qorpera/cloud-client/cloud-company-computer-viewer";
+import { companyComputerFailureDiagnostic } from "@qorpera/runtime/cloud-company-computer-diagnostics";
 import { CloudCompanyComputerEffectControl } from "@qorpera/runtime/cloud-company-computer-effect-control";
 import { CompanyComputerScreenActionGate } from "@qorpera/runtime/cloud-company-computer-leases";
 import { CompanyComputerLinuxCommands } from "@qorpera/runtime/cloud-company-computer-linux-commands";
@@ -221,6 +222,36 @@ async function fixture() {
 }
 
 describe("whole Linux guest ownership (physical adapters mocked here; separate Linux probes execute them)", () => {
+	it("retains both pulse and physical drain failures in safe fatal diagnostics", async () => {
+		vi.useFakeTimers();
+		const f = await fixture(),
+			session = await f.create();
+		await session.endpoint.perform(f.operation({ kind: "screen", action: "open" }), f.lease, f.effect());
+		f.call.mockRejectedValueOnce(Object.assign(new Error("secret registry URL and token"), { code: "ECONNRESET" }));
+		displays[0].stop.mockRejectedValue(Object.assign(new Error("secret process path"), { code: "EACCES" }));
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(f.failure).toHaveBeenCalledOnce();
+		const diagnostic = companyComputerFailureDiagnostic(f.failure.mock.calls[0][0]);
+		expect(diagnostic.codes).toEqual([
+			"OFFICE_GUEST_FAILED",
+			"OFFICE_SHARED_PULSE_FAILED",
+			"SHARED_SURFACE_UNCONFIRMED",
+		]);
+		expect(diagnostic.categories).toEqual(["transport", "filesystem-permission"]);
+		expect(JSON.stringify(diagnostic)).not.toContain("secret");
+		await expect(f.guest.close()).rejects.toThrow("OFFICE_GUEST_DRAIN_UNCONFIRMED");
+	});
+	it("distinguishes an unexpected desktop exit from a failed authority pulse", async () => {
+		const f = await fixture(),
+			session = await f.create();
+		await session.endpoint.perform(f.operation({ kind: "screen", action: "open" }), f.lease, f.effect());
+		displays[0].exited.resolve();
+		await vi.waitFor(() => expect(f.failure).toHaveBeenCalledOnce());
+		expect(companyComputerFailureDiagnostic(f.failure.mock.calls[0][0]).codes).toEqual([
+			"OFFICE_GUEST_FAILED",
+			"OFFICE_DESKTOP_EXITED",
+		]);
+	});
 	it("retries a lost heartbeat without ending a desktop whose authority remains valid", async () => {
 		vi.useFakeTimers();
 		const f = await fixture(),

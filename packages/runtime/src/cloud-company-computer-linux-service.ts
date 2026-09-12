@@ -51,6 +51,7 @@ export async function startCompanyComputerLinuxOfficeService(
 	const objectGateway = parseCompanyComputerCaptureGateway(options.captureObjectGateway);
 	const stop = new AbortController();
 	let failed = false;
+	let failure: unknown;
 	const boundary = new CompanyComputerLinuxBoundary({ ...options.linux, ...options });
 	if (options.startup) {
 		await options.startup.check(options.signal);
@@ -74,8 +75,9 @@ export async function startCompanyComputerLinuxOfficeService(
 				registry: options.registry,
 				objectGateway,
 			}),
-		onFailure: () => {
+		onFailure: (error) => {
 			failed = true;
+			failure ??= error;
 			stop.abort();
 		},
 	});
@@ -100,9 +102,18 @@ export async function startCompanyComputerLinuxOfficeService(
 				}
 			: {}),
 	});
-	const finished = service.finished.then(() => {
-		if (failed) throw new Error("OFFICE_LINUX_GUEST_FAILED");
-	});
+	const finished = service.finished.then(
+		() => {
+			if (failed) throw new Error("OFFICE_LINUX_GUEST_FAILED", { cause: failure });
+		},
+		(error) => {
+			if (failed)
+				throw new Error(error instanceof Error ? error.message : "OFFICE_LINUX_GUEST_FAILED", {
+					cause: new AggregateError([new Error("OFFICE_LINUX_GUEST_FAILED", { cause: failure }), error]),
+				});
+			throw error;
+		},
+	);
 	void finished.catch(() => undefined);
 	if (failed) {
 		await service.close();

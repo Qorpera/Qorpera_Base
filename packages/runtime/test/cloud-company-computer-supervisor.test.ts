@@ -71,6 +71,20 @@ function fixture() {
 }
 afterEach(() => vi.useRealTimers());
 describe("runtime office supervision", () => {
+	it("retains the registry cause without including its message in diagnostics", async () => {
+		const f = fixture();
+		const cause = Object.assign(new Error("secret database credentials"), { code: "ECONNRESET" });
+		f.control.call.mockRejectedValueOnce(cause);
+		const error = await f.supervisor.reconcile(f.signal).catch((error: unknown) => error);
+		expect(error).toHaveProperty("cause", cause);
+		expect(companyComputerFailureDiagnostic(error)).toEqual({
+			schema: "qorpera.office-service-failure/v1",
+			stages: [],
+			codes: ["OFFICE_SUPERVISOR_RECONCILIATION_FAILED"],
+			categories: ["transport"],
+		});
+		expect(f.viewers.close).toHaveBeenCalledOnce();
+	});
 	it("runs on the service lifetime without viewers and closes admission on shutdown", async () => {
 		vi.useFakeTimers();
 		const f = fixture();
@@ -162,3 +176,5 @@ describe("runtime office supervision", () => {
 		expect(f.drains.drain).not.toHaveBeenCalled();
 	});
 });
+
+import { companyComputerFailureDiagnostic } from "@qorpera/runtime/cloud-company-computer-diagnostics";

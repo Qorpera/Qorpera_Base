@@ -92,9 +92,9 @@ export class HttpCloudCompanyComputerRegistry {
 				signal,
 				3000,
 			);
-		} catch {
+		} catch (error) {
 			// Never disclose SQL diagnostics, profile/input content or credentials.
-			throw new Error("OFFICE_REGISTRY_UNCONFIRMED");
+			throw new Error("OFFICE_REGISTRY_UNCONFIRMED", { cause: error });
 		}
 	}
 }

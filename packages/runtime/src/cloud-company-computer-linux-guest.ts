@@ -130,10 +130,10 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 			},
 		});
 	}
-	#fail(): void {
+	#fail(cause?: unknown): void {
 		void this.close().catch(() => undefined);
 		try {
-			this.#options.onFailure(new Error("OFFICE_GUEST_FAILED"));
+			this.#options.onFailure(new Error("OFFICE_GUEST_FAILED", { cause }));
 		} catch {
 			/* Cleanup remains owned even if its observer throws. */
 		}
@@ -195,14 +195,14 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 								?.failed("DESKTOP_EXITED", new AbortController().signal)
 								.then(() => current.lifecycle?.closed(new AbortController().signal))
 								.catch(() => undefined);
-							this.#fail();
+							this.#fail(new Error("OFFICE_DESKTOP_EXITED"));
 						}
 					},
-					() => {
+					(error) => {
 						void current.lifecycle
 							?.failed("DESKTOP_DRAIN_UNCONFIRMED", new AbortController().signal)
 							.catch(() => undefined);
-						this.#fail();
+						this.#fail(new Error("OFFICE_DESKTOP_DRAIN_UNCONFIRMED", { cause: error }));
 					},
 				);
 				await current.lifecycle?.ready(startup);
@@ -223,9 +223,15 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 									.catch(() => undefined);
 								renew();
 							},
-							() => {
+							(pulseError) => {
 								if (this.#screens.get(binding.screenOrdinal) === current && !current.closing)
-									void this.stopResources(binding, new AbortController().signal).catch(() => this.#fail());
+									void this.stopResources(binding, new AbortController().signal).catch((error) =>
+										this.#fail(
+											new Error("OFFICE_SHARED_PULSE_FAILED", {
+												cause: new AggregateError([pulseError, error]),
+											}),
+										),
+									);
 							},
 						);
 					}, 1000);
@@ -324,8 +330,8 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 					async () => {
 						await Promise.allSettled([...active]);
 						const results = await Promise.allSettled([manager.close(), commands?.close()]);
-						if (results.some((result) => result.status === "rejected"))
-							throw new Error("OFFICE_SESSION_DRAIN_UNCONFIRMED");
+						const rejected = results.find((result) => result.status === "rejected");
+						if (rejected) throw new Error("OFFICE_SESSION_DRAIN_UNCONFIRMED", { cause: rejected.reason });
 						this.#sessions.delete(session);
 					},
 					new AbortController().signal,
@@ -480,7 +486,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 										new AbortController().signal,
 									)
 									.catch(() => undefined);
-								this.#fail();
+								this.#fail(error);
 							},
 						}),
 					)
@@ -621,7 +627,8 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 				}
 				await screen.lifecycle?.closed(new AbortController().signal);
 			}
-			if (results.some((result) => result.status === "rejected")) throw new Error("OFFICE_GUEST_DRAIN_UNCONFIRMED");
+			const rejected = results.find((result) => result.status === "rejected");
+			if (rejected) throw new Error("OFFICE_GUEST_DRAIN_UNCONFIRMED", { cause: rejected.reason });
 			if (screen && this.#screens.get(binding.screenOrdinal) === screen) this.#screens.delete(binding.screenOrdinal);
 		};
 		if (screen) screen.closing ??= drain();
@@ -640,13 +647,9 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 						),
 					]);
 					await this.#desktop.close();
-					if (
-						this.#private ||
-						this.#screens.size ||
-						this.#sessions.size ||
-						results.some((result) => result.status === "rejected")
-					)
-						throw new Error("OFFICE_GUEST_DRAIN_UNCONFIRMED");
+					const rejected = results.find((result) => result.status === "rejected");
+					if (this.#private || this.#screens.size || this.#sessions.size || rejected)
+						throw new Error("OFFICE_GUEST_DRAIN_UNCONFIRMED", { cause: rejected?.reason });
 				},
 				new AbortController().signal,
 				45000,

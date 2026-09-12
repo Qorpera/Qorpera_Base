@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { companyComputerFailureDiagnostic } from "@qorpera/runtime/cloud-company-computer-diagnostics";
 import type { CompanyComputerLinuxOfficeServiceOptions } from "@qorpera/runtime/cloud-company-computer-linux-service";
 import { runCompanyComputerServiceMain } from "@qorpera/runtime/cloud-company-computer-service-main";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -103,6 +104,50 @@ const environment = {
 };
 
 describe("headless office process lifetime (physical guest mocked)", () => {
+	it.each(["startup", "supervision", "service-drain", "outbox-drain"] as const)(
+		"reports %s distinctly and safely after confirmed cleanup",
+		async (stage) => {
+			const secret = "Bearer credentials-secret /run/credentials/private";
+			const original = Object.assign(new Error(secret), { code: "EACCES" });
+			const close = vi.fn(async () => {
+				if (stage === "supervision" || stage === "service-drain") throw original;
+			});
+			mocked.start.mockImplementation(async () => {
+				if (stage === "startup") throw original;
+				if (stage !== "supervision") process.emit("SIGTERM");
+				return { finished: stage === "supervision" ? Promise.reject(original) : Promise.resolve(), close };
+			});
+			if (stage === "outbox-drain") mocked.outboxClose.mockRejectedValueOnce(original);
+			const failure = await runCompanyComputerServiceMain(environment).catch((error: unknown) => error);
+			const diagnostic = companyComputerFailureDiagnostic(failure);
+			expect(diagnostic.stages).toEqual([stage]);
+			expect(diagnostic.categories).toEqual(["filesystem-permission"]);
+			expect(JSON.stringify(diagnostic)).not.toContain(secret);
+			expect(mocked.outboxClose).toHaveBeenCalledOnce();
+		},
+	);
+	it("retains primary supervision failure when both cleanup owners fail", async () => {
+		mocked.start.mockImplementation(async () => ({
+			finished: Promise.reject(new Error("OFFICE_SERVICE_SUPERVISION_FAILED")),
+			close: async () => {
+				throw new Error("OFFICE_GUEST_DRAIN_UNCONFIRMED");
+			},
+		}));
+		mocked.outboxClose.mockRejectedValueOnce(Object.assign(new Error("private path"), { code: "EIO" }));
+		const failure = await runCompanyComputerServiceMain(environment).catch((error: unknown) => error);
+		const diagnostic = companyComputerFailureDiagnostic(failure);
+		expect(diagnostic.stages).toEqual(["outbox-drain", "service-drain", "supervision"]);
+		expect(diagnostic.codes).toEqual(["OFFICE_GUEST_DRAIN_UNCONFIRMED", "OFFICE_SERVICE_SUPERVISION_FAILED"]);
+	});
+	it("still fails a drain that rejects without an error value", async () => {
+		mocked.start.mockImplementation(async () => {
+			process.emit("SIGTERM");
+			return { finished: Promise.resolve(), close: () => Promise.reject() };
+		});
+		const failure = await runCompanyComputerServiceMain(environment).catch((error: unknown) => error);
+		expect(failure).toBeInstanceOf(Error);
+		expect(companyComputerFailureDiagnostic(failure).stages).toEqual(["service-drain"]);
+	});
 	it("requires a real systemd invocation identity before physical startup", async () => {
 		await expect(runCompanyComputerServiceMain({ ...environment, INVOCATION_ID: "" })).rejects.toThrow(
 			"INVALID_OFFICE_STARTUP_IDENTITY",

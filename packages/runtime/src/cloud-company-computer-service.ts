@@ -83,8 +83,8 @@ export async function startCompanyComputerOfficeService(options: {
 				// cleanup was unknown. Never translate that uncertainty into success.
 				await options.guest.close();
 				cleanupSignal.throwIfAborted();
-				if (listeners.some((result) => result.status === "rejected"))
-					throw new Error("OFFICE_SERVICE_DRAIN_UNCONFIRMED");
+				const rejected = listeners.find((result) => result.status === "rejected");
+				if (rejected) throw new Error("OFFICE_SERVICE_DRAIN_UNCONFIRMED", { cause: rejected.reason });
 			},
 			new AbortController().signal,
 			55000,
@@ -207,17 +207,21 @@ export async function startCompanyComputerOfficeService(options: {
 		ready = true;
 		const finished = (async () => {
 			let failed = false;
+			let failure: unknown;
 			try {
 				await supervisor.run(signal);
-			} catch {
+			} catch (error) {
 				failed = true;
+				failure = error;
 			}
 			try {
 				await cleanup();
-			} catch {
-				throw new Error("OFFICE_SERVICE_DRAIN_UNCONFIRMED");
+			} catch (error) {
+				throw new Error("OFFICE_SERVICE_DRAIN_UNCONFIRMED", {
+					cause: failed ? new AggregateError([failure, error]) : error,
+				});
 			}
-			if (failed) throw new Error("OFFICE_SERVICE_SUPERVISION_FAILED");
+			if (failed) throw new Error("OFFICE_SERVICE_SUPERVISION_FAILED", { cause: failure });
 			if (listenerFailed) throw new Error("OFFICE_SERVICE_LISTENER_FAILED");
 		})();
 		// The entrypoint awaits finished. Handling it here also prevents an
@@ -233,12 +237,12 @@ export async function startCompanyComputerOfficeService(options: {
 				await finished;
 			},
 		};
-	} catch {
+	} catch (error) {
 		try {
 			await cleanup();
-		} catch {
-			throw new Error("OFFICE_SERVICE_DRAIN_UNCONFIRMED");
+		} catch (drainError) {
+			throw new Error("OFFICE_SERVICE_DRAIN_UNCONFIRMED", { cause: new AggregateError([error, drainError]) });
 		}
-		throw new Error("OFFICE_SERVICE_START_FAILED");
+		throw new Error("OFFICE_SERVICE_START_FAILED", { cause: error });
 	}
 }

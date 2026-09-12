@@ -71,8 +71,8 @@ export class CloudCompanyComputerSharedSurfaceControl {
 				throw new Error("denied");
 			signal.throwIfAborted();
 			return { privacyVersion: result.privacyVersion as number, epoch: result.epoch as number };
-		} catch {
-			throw new Error("SHARED_SURFACE_UNCONFIRMED");
+		} catch (error) {
+			throw new Error("SHARED_SURFACE_UNCONFIRMED", { cause: error });
 		}
 	}
 }

@@ -141,10 +141,10 @@ export class CompanyComputerOfficeSupervisor {
 			} else {
 				for (const drain of drains) await this.#drains.drain(drain, signal);
 			}
-		} catch {
+		} catch (error) {
 			this.#failed = true;
 			await this.#viewers.close();
-			throw new Error("OFFICE_SUPERVISOR_RECONCILIATION_FAILED");
+			throw new Error("OFFICE_SUPERVISOR_RECONCILIATION_FAILED", { cause: error });
 		}
 	}
 

@@ -3,6 +3,11 @@ import { realpathSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { createSecureContext } from "node:tls";
 import { fileURLToPath } from "node:url";
+import {
+	CompanyComputerLifecycleFailure,
+	type CompanyComputerLifecycleStage,
+	companyComputerFailureDiagnostic,
+} from "./cloud-company-computer-diagnostics.ts";
 import { CompanyComputerLinuxBoundary } from "./cloud-company-computer-linux-boundary.ts";
 import { startCompanyComputerLinuxOfficeService } from "./cloud-company-computer-linux-service.ts";
 import { HttpCloudCompanyComputerRegistry } from "./cloud-company-computer-registry-http.ts";
@@ -36,9 +41,13 @@ export async function runCompanyComputerServiceMain(environment: NodeJS.ProcessE
 	const text = (value: Buffer): string => new TextDecoder("utf8", { fatal: true }).decode(value).trim();
 	let service: Awaited<ReturnType<typeof startCompanyComputerLinuxOfficeService>> | undefined;
 	let screenOutbox: CompanyComputerScreenOutbox | undefined;
+	let stage: CompanyComputerLifecycleStage = "credentials";
+	let failure: CompanyComputerLifecycleFailure | undefined;
 	try {
 		const configBytes = await read("qorpera-office-config");
+		stage = "configuration";
 		const config = parseCompanyComputerServiceConfig(text(configBytes));
+		stage = "credentials";
 		const registryKey = text(await read("qorpera-office-registry"));
 		const nativeToken = text(await read("qorpera-office-native"));
 		const objectsToken = text(await read("qorpera-office-objects"));
@@ -52,6 +61,7 @@ export async function runCompanyComputerServiceMain(environment: NodeJS.ProcessE
 			supabaseUrl: config.registryUrl,
 			serviceRoleKey: registryKey,
 		});
+		stage = "configuration";
 		const startupIdentity = {
 			scope: config.scope,
 			computerGeneration: config.computerGeneration,
@@ -72,9 +82,11 @@ export async function runCompanyComputerServiceMain(environment: NodeJS.ProcessE
 			computerGeneration: config.computerGeneration,
 			registry,
 		});
+		stage = "tls";
 		const tls = { cert: await read("qorpera-office-tls-cert"), key: await read("qorpera-office-tls-key") };
 		createSecureContext({ ...tls, minVersion: "TLSv1.3" });
 		stop.signal.throwIfAborted();
+		stage = "outbox";
 		screenOutbox = await CompanyComputerScreenOutbox.open(
 			"/var/lib/qorpera-office-events",
 			config.scope,
@@ -89,6 +101,7 @@ export async function runCompanyComputerServiceMain(environment: NodeJS.ProcessE
 		);
 		const screenLifecycle = new CompanyComputerScreenLifecyclePublisher(startupIdentity, registry, screenOutbox);
 		screenOutbox.start();
+		stage = "startup";
 		service = await startCompanyComputerLinuxOfficeService({
 			scope: config.scope,
 			computerGeneration: config.computerGeneration,
@@ -101,16 +114,32 @@ export async function runCompanyComputerServiceMain(environment: NodeJS.ProcessE
 			captureObjectGateway: { baseUrl: config.captureObjectGatewayUrl, token: objectsToken },
 			signal: stop.signal,
 		});
+		stage = "supervision";
 		await service.finished;
 		// An unexpected successful end is also a failed office lifetime.
 		if (!stop.signal.aborted) throw new Error("OFFICE_SERVICE_ENDED_UNEXPECTEDLY");
+	} catch (error) {
+		failure = new CompanyComputerLifecycleFailure(stage, error);
 	} finally {
 		stop.abort();
 		try {
 			await service?.close();
+		} catch (error) {
+			// close() may repeat the already-rejected lifetime promise; that is
+			// the original supervision failure, not a new drain failure.
+			if (!failure || failure.cause !== error)
+				failure = new CompanyComputerLifecycleFailure(
+					"service-drain",
+					failure ? new AggregateError([error, failure]) : error,
+				);
 		} finally {
 			try {
 				await screenOutbox?.close();
+			} catch (error) {
+				failure = new CompanyComputerLifecycleFailure(
+					"outbox-drain",
+					failure ? new AggregateError([error, failure]) : error,
+				);
 			} finally {
 				process.removeListener("SIGINT", shutdown);
 				process.removeListener("SIGTERM", shutdown);
@@ -118,6 +147,7 @@ export async function runCompanyComputerServiceMain(environment: NodeJS.ProcessE
 			}
 		}
 	}
+	if (failure) throw failure;
 }
 
 if (
@@ -135,10 +165,8 @@ if (
 		console.error("Office service accepts only --help; startup configuration must use systemd credentials.");
 		process.exitCode = 1;
 	} else {
-		runCompanyComputerServiceMain().catch(() => {
-			console.error(
-				"Office service could not start or continue; inspect protected configuration and office authority.",
-			);
+		runCompanyComputerServiceMain().catch((error) => {
+			console.error(JSON.stringify(companyComputerFailureDiagnostic(error)));
 			process.exitCode = 1;
 		});
 	}
