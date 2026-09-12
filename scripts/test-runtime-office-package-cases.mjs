@@ -131,9 +131,13 @@ export async function officePackageSqlFixture({resetPlan,service,owner,call,exec
    await refuse(measure(statement.target.service,{...runtimeBundle,sha256:hash()}),/measured bytes differ/);
    await refuse(measure(statement.target.service,runtimeBundle,hash()),/measured bytes differ/);
    const measured=call(measure());assert.equal(measured.state,'measured');assert.equal(measured.provisionId,plan.provisionId);
-   assert.deepEqual(call(measure()),measured);
    measurements.push({sql:measure(),measured});
-   assert.equal(execute(`select software_revision is null and package_provision_id=${quote(plan.provisionId)} from public.qorpera_runtime_office_activations where activation_id=${quote(activationId)};`),'t');
+   // Keep auxiliary Docker roundtrips out of the bounded acknowledgement-to-
+   // activation path. Both assertions remain mandatory after activation.
+   return () => {
+    assert.deepEqual(call(measure()),measured);
+    assert.equal(execute(`select software_revision is null and package_provision_id=${quote(plan.provisionId)} from public.qorpera_runtime_office_activations where activation_id=${quote(activationId)};`),'t');
+   };
   },
   replay(){const result=call(ack());assert.deepEqual(call(enroll()),result);assert.equal(result.state,'installed');assert.equal(result.receiptSha256,receiptSha256);for(const saved of measurements)assert.deepEqual(call(saved.sql),saved.measured);},
  };

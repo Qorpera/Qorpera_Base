@@ -261,9 +261,9 @@ export async function testOfficeResetChain({stop,attestation,scope,binding,servi
   const sql=method===rpc.prepare?sPrepare(args.p_request):method===rpc.status?sStatus(args.p_request):method===rpc.check?sCheck(args.p_request):sActivate(args.p_service_invocation_id,args.p_request);
   const result=call(sql);if(method===rpc.activate&&methods.filter(m=>m===rpc.activate).length===1)throw new Error('Lost committed activation reply');return result;}}):undefined;
  const signal=new AbortController().signal;
- await packageFixture.measure(startup,plan.successorActivationId,sActivate(startup.serviceInvocationId));
+ if(successorControl)assert.equal((await successorControl.status(signal)).state,'ready');
+ const verifyFirstPackage=await packageFixture.measure(startup,plan.successorActivationId,sActivate(startup.serviceInvocationId));
  if(successorControl){
-  assert.equal((await successorControl.status(signal)).state,'ready');
   await assert.rejects(successorControl.activate(startup.serviceInvocationId,performance.now()+4000,signal),/UNCONFIRMED/);
   const active=await successorControl.status(signal);assert.equal(active.state,'active');assert.equal(active.serviceInvocationId,startup.serviceInvocationId);
   assert.equal((await successorControl.prepare(signal)).state,'active');assert.equal(methods.filter(m=>m===rpc.activate).length,1);
@@ -271,6 +271,7 @@ export async function testOfficeResetChain({stop,attestation,scope,binding,servi
   const active=await race([`${service} ${sActivate(startup.serviceInvocationId)}`,`${service} ${sActivate(startup.serviceInvocationId)}`]);
   for(const r of active)assert.equal(r.code,0,r.error);assert.deepEqual(JSON.parse(active[0].output),JSON.parse(active[1].output));
  }
+ verifyFirstPackage();
  assert.equal(call(sActivate(startup.serviceInvocationId)).state,'active');
  assert.equal(execute('select state from public.qorpera_runtime_offices;'),'active');
  const finalReset=reset();assert.equal(finalReset.phase,'active');assert.equal(finalReset.revision,9);assert.equal(events().length,9);
@@ -368,8 +369,9 @@ export async function testOfficeResetChain({stop,attestation,scope,binding,servi
  call(sPrepare(requestAgain));
  const startupAgain={...startup,bootId:restoreAgain.bootId,configurationSha256:attestationAgain.configurationSha256,serviceInvocationId:'f'.repeat(32)};
  call(ready(startupAgain,lineage.successorActivationId));
- await secondPackage.measure(startupAgain,lineage.successorActivationId,sActivate(startupAgain.serviceInvocationId,requestAgain));
+ const verifySecondPackage=await secondPackage.measure(startupAgain,lineage.successorActivationId,sActivate(startupAgain.serviceInvocationId,requestAgain));
  assert.equal(call(sActivate(startupAgain.serviceInvocationId,requestAgain)).state,'active');
+ verifySecondPackage();
  assert.equal(execute('select current_revision from public.qorpera_office_package_baselines;'),'2');
  assert.equal(execute('select count(*) from public.qorpera_office_package_installations;'),'2');
  assert.equal(execute('select count(*) from public.qorpera_runtime_machine_allocations where released_at is null;'),'1');
@@ -396,8 +398,9 @@ export async function testOfficeResetChain({stop,attestation,scope,binding,servi
   retainedStartup={...retainedStartup,bootId:target.bootId,configurationSha256:target.configurationSha256,serviceInvocationId:officeDigest({invocation:target.activationId}).slice(0,32)};
   call(ready(retainedStartup,target.activationId));
   const activateRetained=`select public.qorpera_activate_runtime_office(${literal(scope)},1,'${plan.intentId}','${target.activationId}','${predecessor.providerId}','${predecessor.providerPolicySha256}','${retainedStartup.serviceInvocationId}');`;
-  await secondPackage.measure(retainedStartup,target.activationId,activateRetained);
-  assert.equal(call(activateRetained).state,'active');retainedAttestation=target;
+  const verifyRetainedPackage=await secondPackage.measure(retainedStartup,target.activationId,activateRetained);
+  assert.equal(call(activateRetained).state,'active');
+  verifyRetainedPackage();retainedAttestation=target;
   assert.equal(execute('select current_revision from public.qorpera_office_package_baselines;'),'2');
  }
  assert.equal(execute('select count(*) from public.qorpera_office_package_installations;'),'2');

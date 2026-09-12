@@ -173,6 +173,7 @@ describe("settings session lifecycle", () => {
 		const f = await setup(),
 			composer = f.root.querySelector<HTMLTextAreaElement>("textarea")!;
 		composer.value = "Keep my conversation draft";
+		composer.dispatchEvent(new Event("input", { bubbles: true }));
 		open(f.root);
 		await draw();
 		expect([...f.root.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).toEqual([

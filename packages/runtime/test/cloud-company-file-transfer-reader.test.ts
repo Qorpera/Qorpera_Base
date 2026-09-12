@@ -47,7 +47,8 @@ it.each([0, 5, 4194305, 8388608])("verifies exact binary bytes and chunk assembl
 	const bytes = new Uint8Array(length).fill(255);
 	if (length) bytes[length - 1] = 128;
 	const f = fixture(bytes);
-	await expect(f.read()).resolves.toEqual(bytes);
+	// Compare every byte without constructing millions of assertion properties.
+	expect(Buffer.compare(await f.read(), bytes)).toBe(0);
 	expect(f.get).toHaveBeenCalledTimes(1 + Math.ceil(length / 4194304));
 });
 it.each([

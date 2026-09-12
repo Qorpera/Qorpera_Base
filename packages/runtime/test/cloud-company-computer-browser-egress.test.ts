@@ -51,7 +51,8 @@ afterAll(async () => {
 });
 
 async function fixture() {
-	const root = await mkdtemp(join(await realpath(tmpdir()), "office-egress-"));
+	// Leave room for the Unix socket name under macOS's isolated test TMPDIR.
+	const root = await mkdtemp(join(await realpath(tmpdir()), "oe-"));
 	cleanups.push(() => rm(root, { recursive: true, force: true }));
 	const signal = new AbortController();
 	const assertActive = vi.fn(async (_signal: AbortSignal) => undefined);
