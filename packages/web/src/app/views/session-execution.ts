@@ -47,12 +47,12 @@ export class SessionExecutionView {
 		const conversation = this.#company.conversation(this.#sessionId).get();
 		const retry = conversation.retrySend;
 		const files = conversation.attachments ?? [];
-		if (
-			retry?.text === (conversation.draft ?? "").trim() &&
-			retry.files.length === files.length &&
-			retry.files.every((file, index) => file === files[index])
-		)
-			return true;
+		if (retry)
+			return (
+				retry.text === (conversation.draft ?? "").trim() &&
+				retry.files.length === files.length &&
+				retry.files.every((file, index) => file === files[index])
+			);
 		if (!conversation.executionSponsor || !this.#observed || this.#busy) return false;
 		try {
 			const current = selectSessionExecutionSponsor(

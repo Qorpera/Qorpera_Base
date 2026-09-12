@@ -534,6 +534,14 @@ export class CompanyController {
 		const sameFiles = (other: readonly File[]) =>
 			other.length === files.length && other.every((file, index) => file === files[index]);
 		const sameRequest = retry?.text === trimmed && sameFiles(retry.files);
+		if (retry && !sameRequest) {
+			store.set({
+				draft: text,
+				sendError:
+					'The earlier message may already have been accepted. Choose "Start a new message request" before sending changed text or images.',
+			});
+			return false;
+		}
 		let roomTarget: RoomMessageTarget | undefined;
 		try {
 			const observed = this.roomTargetFor(sessionId);

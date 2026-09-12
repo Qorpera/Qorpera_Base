@@ -116,6 +116,37 @@ describe("conversation lifecycle regressions", () => {
 		expect(write.mock.calls[1]![4]?.[0]).toBe(file);
 		expect(state.get().retrySend).toBeUndefined();
 	});
+	it.each(["draft", "replacement image", "removed image"])(
+		"requires explicit abandonment after changing the %s of an uncertain send",
+		async (change) => {
+			const { controller, write } = company();
+			write.mockRejectedValueOnce(new Error("Lost response"));
+			const original = new File(["original"], "image.png", { type: "image/png" });
+			const state = controller.conversation(session.sessionId, false);
+			state.set({ attachments: [original] });
+			expect(await controller.sendPrompt(session.sessionId, "Original")).toBe(false);
+			const retained = state.get().retrySend!;
+			const draft = change === "draft" ? "Edited" : "Original";
+			const files =
+				change === "removed image"
+					? []
+					: change === "replacement image"
+						? [new File(["replacement"], "image.png", { type: "image/png" })]
+						: [original];
+			state.set({ draft, attachments: files });
+			expect(await controller.sendPrompt(session.sessionId, draft)).toBe(false);
+			expect(write).toHaveBeenCalledTimes(1);
+			expect(state.get().retrySend).toBe(retained);
+			expect(retained.files[0]).toBe(original);
+			expect(retained.executionSponsor).toEqual(write.mock.calls[0]![5]);
+			expect(state.get()).toMatchObject({ draft, attachments: files });
+			controller.discardSendRetry(session.sessionId);
+			expect(state.get()).toMatchObject({ draft, attachments: files });
+			expect(await controller.sendPrompt(session.sessionId, draft)).toBe(true);
+			expect(write.mock.calls[1]![1]).not.toBe(retained.clientInputId);
+			expect(write.mock.calls[1]![4]).toEqual(files);
+		},
+	);
 	it("only explicit abandonment releases a failed replay while preserving the edited draft and files", async () => {
 		const { controller, write } = company();
 		write.mockRejectedValueOnce(new Error("Sponsor revoked"));
