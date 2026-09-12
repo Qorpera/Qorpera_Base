@@ -157,6 +157,9 @@ try {
 		"base-symlink",
 		"base-writable",
 		"changed-nas",
+		"changed-history",
+		"unlisted-history",
+		"unlisted-history-mutation",
 		"wrong-nonce",
 		"expired-probe",
 		"partial-claim",
@@ -167,6 +170,12 @@ try {
 		"observation-mutated",
 		"observation-replay",
 		"observation-expired",
+		"recovery-complete",
+		"recovery-partial",
+		"recovery-no-claim",
+		"recovery-corrupt-claim",
+		"recovery-noncanonical-claim",
+		"recovery-corrupt-receipt",
 	].filter((s) => !process.env.QORPERA_CODE_PACKAGE_SCENARIO || s === process.env.QORPERA_CODE_PACKAGE_SCENARIO);
 	assert.ok(scenarios.length > 0, "Unknown proof scenario");
 	for (let attempt = 1; attempt <= attempts; attempt++)

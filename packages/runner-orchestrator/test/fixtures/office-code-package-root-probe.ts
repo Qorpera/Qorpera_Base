@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { chmod, chown, link, lstat, mkdir, open, readFile, rename, symlink, writeFile } from "node:fs/promises";
+import { chmod, chown, link, lstat, mkdir, open, readFile, rename, symlink, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import {
 	COMPANY_COMPUTER_CODE_PACKAGE_ARTIFACTS,
@@ -73,10 +73,15 @@ const planReset = {
 	},
 	custody: { archiveRoot: "/srv/proof-reset-archive" },
 };
+const unlistedBlob = scenario.startsWith("unlisted-history")
+	? [...f.archiveFiles.keys()].find((path) => /\/[0-9a-f]{64}\.json$/.test(path))
+	: undefined;
+if (scenario.startsWith("unlisted-history")) assert.ok(unlistedBlob);
 const historyFiles = [
 	...f.archiveFiles.entries(),
 	...[...f.originFiles.entries()].map(([p, v]) => [p, v.bytes] as const),
 ]
+	.filter(([path]) => path !== unlistedBlob)
 	.map(([path, bytes]) => ({
 		path,
 		bytes: bytes.length,
@@ -356,6 +361,10 @@ const checked = (args: string[], purpose = "bootstrap") => {
 			JSON.stringify({
 				scenario,
 				failedInstall: true,
+				targetFilesMatching: verified.targetInstalledArtifacts.filter(
+					(a) => existsSync(a.path) && hash(readFileSync(a.path)) === a.sha256,
+				).length,
+				targetFilesExpected: verified.targetInstalledArtifacts.length,
 				claimRetained: existsSync(`/etc/qorpera-office/code-packages/${plan.provisionId}/claim.json`),
 				installedReceipt: existsSync(`/etc/qorpera-office/code-packages/${plan.provisionId}/installed.json`),
 				nasPreserved: true,
@@ -380,6 +389,9 @@ if (scenario === "base-symlink") {
 	await symlink("/opt/qorpera-office/moved-code", servicePath);
 }
 if (scenario === "base-writable") await chmod(servicePath, 0o666);
+if (scenario === "unlisted-history-mutation") await writeFile("/tmp/code-package-history-fault", unlistedBlob!);
+if (scenario === "changed-history")
+	await writeFile("/tmp/code-package-history-fault", `${f.historyDirectory}/manifest.json`);
 if (scenario === "changed-nas") await writeFile("/tmp/code-package-nas-fault", f.receipt.layout.workbenchRoot);
 if (
 	[
@@ -387,6 +399,8 @@ if (
 		"old-credentials",
 		"bad-target-owner",
 		"changed-nas",
+		"changed-history",
+		"unlisted-history-mutation",
 		"base-hardlink",
 		"base-symlink",
 		"base-writable",
@@ -474,6 +488,39 @@ if (
 			"installation replay accepted",
 		);
 
+		const journal = `/etc/qorpera-office/code-packages/${plan.provisionId}`;
+		// Fixture recreates the durable on-disk state of lost final publication.
+		// The real observation tool may append receipt metadata; code inodes must never change.
+		if (scenario.startsWith("recovery-")) {
+			await unlink(`${journal}/installed.json`);
+			if (scenario === "recovery-partial")
+				await writeFile(servicePath, baselineBytes.get("qorpera-company-computer-service.mjs")!);
+			if (scenario === "recovery-no-claim") await unlink(`${journal}/claim.json`);
+			if (scenario === "recovery-corrupt-claim") await writeFile(`${journal}/claim.json`, "{");
+			if (scenario === "recovery-noncanonical-claim")
+				await writeFile(
+					`${journal}/claim.json`,
+					Buffer.concat([await readFile(`${journal}/claim.json`), Buffer.from("\n")]),
+				);
+			if (scenario === "recovery-corrupt-receipt") await put(`${journal}/installed.json`, Buffer.from("{"), 0o400);
+		}
+		const codeBeforeObservation = await Promise.all(
+			COMPANY_COMPUTER_CODE_PACKAGE_ARTIFACTS.map(async (name) => ({
+				name,
+				ino: (await lstat(`/opt/qorpera-office/${name}`)).ino,
+				sha256: hash(await readFile(`/opt/qorpera-office/${name}`)),
+			})),
+		);
+		const observationMustReject = [
+			"observation-mutated",
+			"observation-expired",
+			"observation-external",
+			"recovery-partial",
+			"recovery-no-claim",
+			"recovery-corrupt-claim",
+			"recovery-noncanonical-claim",
+			"recovery-corrupt-receipt",
+		].includes(scenario);
 		const observationId = randomUUID(),
 			observationProbe = checked(["probe", hash(packet), hash(trustBytes), observationId, bootId], "measure");
 		const observation = {
@@ -505,7 +552,7 @@ if (
 			String(observation.validForMs),
 			hash(observationBytes),
 		];
-		if (["observation-mutated", "observation-expired", "observation-external"].includes(scenario)) {
+		if (observationMustReject) {
 			assert.notEqual(run(observationArgs, "measure").status, 0, "unsafe observation accepted");
 			await assert.rejects(lstat(`${stage}/observation-${observationId}.json`), { code: "ENOENT" });
 		} else {
@@ -515,6 +562,26 @@ if (
 			if (scenario === "observation-replay")
 				assert.notEqual(run(observationArgs, "measure").status, 0, "measurement replay accepted");
 		}
+
+		if (scenario.startsWith("recovery-")) {
+			for (const before of codeBeforeObservation) {
+				assert.equal(
+					(await lstat(`/opt/qorpera-office/${before.name}`)).ino,
+					before.ino,
+					"observation renamed code",
+				);
+				assert.equal(
+					hash(await readFile(`/opt/qorpera-office/${before.name}`)),
+					before.sha256,
+					"observation rewrote code",
+				);
+			}
+			if (scenario === "recovery-complete")
+				assert.deepEqual(JSON.parse(await readFile(`${journal}/installed.json`, "utf8")), receipt);
+			else if (scenario === "recovery-corrupt-receipt")
+				assert.equal(await readFile(`${journal}/installed.json`, "utf8"), "{");
+			else await assert.rejects(lstat(`${journal}/installed.json`), { code: "ENOENT" });
+		}
 		assert.equal(await readFile(note, "utf8"), "edited before package provisioning");
 		assert.equal((await lstat(note)).ino, noteBefore.ino);
 		await assert.rejects(lstat("/etc/qorpera-office/credentials"), { code: "ENOENT" });
@@ -522,9 +589,9 @@ if (
 			JSON.stringify({
 				scenario,
 				legacyBaseCodePackageInstall: true,
-				independentObservation: !["observation-mutated", "observation-expired", "observation-external"].includes(
-					scenario,
-				),
+				independentObservation: !observationMustReject,
+				recoveryWithoutCodeWrites: scenario === "recovery-complete",
+				syntheticMissingReceiptPublication: scenario.startsWith("recovery-"),
 				actualLinuxRootFiles: true,
 				actualKernelFlock: true,
 				missingHelpersInstalled: scenario === "compatible-noop" ? 0 : 3,

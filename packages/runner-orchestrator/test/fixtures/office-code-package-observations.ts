@@ -1,8 +1,9 @@
 // Build-time Linux proof adapters only. Real filesystem, loader and kernel
 // flock remain production code. No production bundle includes this module.
-import { chown, mkdir, readFile, rename } from "node:fs/promises";
+import { appendFile, chown, mkdir, readFile, rename } from "node:fs/promises";
 
 let changed = false;
+let historyChanged = false;
 export function createCompanyComputerBootConfigurationSystemdManager() {
 	return {
 		inspect: async () => {
@@ -12,6 +13,11 @@ export function createCompanyComputerBootConfigurationSystemdManager() {
 				await rename(fault, `${fault}-displaced`);
 				await mkdir(fault, { mode: 0o700 });
 				await chown(fault, 1000, 1000);
+			}
+			const historyFault = await readFile("/tmp/code-package-history-fault", "utf8").catch(() => "");
+			if (historyFault && !historyChanged) {
+				historyChanged = true;
+				await appendFile(historyFault, " ");
 			}
 			const inactive = {
 				invocationId: "",
