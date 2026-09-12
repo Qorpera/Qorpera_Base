@@ -1,12 +1,14 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+	assertOfficeInstallationUpgrade,
 	OFFICE_CONFIG_ROOT,
 	OFFICE_INSTALL_ARTIFACTS,
 	type OfficeInstallDocument,
 	officeInstallHash,
 	officeSystemdPath,
 	parseOfficeInstallationManifest,
+	parseOfficeInstallationReceipt,
 	parseOfficeInstallationSpec,
 	validateOfficeInstallationDocuments,
 } from "../src/lxd-office-installation.ts";
@@ -145,6 +147,101 @@ describe("office provider installation boundary", () => {
 		expect(() => officeSystemdPath("/srv/journal\nExecStart=/bad")).toThrow();
 		expect(officeSystemdPath(`/srv/%n-\${HOME}-"journal"/mounted-data`, "dependency")).toBe(
 			`"/srv/%%n-\${HOME}-\\"journal\\"/mounted-data"`,
+		);
+	});
+});
+
+describe("office provider upgrade over a retained journal", () => {
+	const receipt = {
+		schema: "qorpera.lxd-office-provider-installation-receipt/v1",
+		packageManifestSha256: "1".repeat(64),
+		providerPolicySha256: "2".repeat(64),
+		uid: 20041,
+		gid: 20041,
+		files: [
+			{
+				path: "/opt/qorpera/office-provider/qorpera-office-provider.cjs",
+				bytes: 10,
+				sha256: "3".repeat(64),
+				mode: 292,
+				gid: 0,
+			},
+			{ path: "/etc/qorpera/office-provider/service.json", bytes: 5, sha256: "4".repeat(64), mode: 292, gid: 0 },
+			{
+				path: "/etc/systemd/system/qorpera-office-provider.service",
+				bytes: 7,
+				sha256: "5".repeat(64),
+				mode: 420,
+				gid: 0,
+			},
+		],
+	};
+	const targets = [
+		{ path: "/opt/qorpera/office-provider/qorpera-office-provider.cjs", sha256: "9".repeat(64), bytes: 11 },
+		{ path: "/opt/qorpera/office-provider/qorpera-office-software-update.cjs", sha256: "8".repeat(64), bytes: 12 },
+		{ path: "/etc/qorpera/office-provider/service.json", sha256: "4".repeat(64), bytes: 5 },
+		{ path: "/etc/systemd/system/qorpera-office-provider.service", sha256: "5".repeat(64), bytes: 7 },
+	];
+	const expected = { providerPolicySha256: "2".repeat(64), uid: 20041, gid: 20041 };
+	it("parses an explicit previous installation reference and a closed receipt", () => {
+		const f = fixture();
+		expect(parseOfficeInstallationSpec(f.raw).previousInstallation).toBeUndefined();
+		const upgrade = parseOfficeInstallationSpec({
+			...f.raw,
+			previousInstallation: { path: "/root/previous/installation.json", bytes: 1990, sha256: "6".repeat(64) },
+		});
+		expect(upgrade.previousInstallation).toEqual({
+			path: "/root/previous/installation.json",
+			bytes: 1990,
+			sha256: "6".repeat(64),
+		});
+		expect(() =>
+			parseOfficeInstallationSpec({
+				...f.raw,
+				previousInstallation: { path: "relative", bytes: 1, sha256: "6".repeat(64) },
+			}),
+		).toThrow();
+		expect(parseOfficeInstallationReceipt(receipt).files).toHaveLength(3);
+		expect(() => parseOfficeInstallationReceipt({ ...receipt, schema: "other" })).toThrow();
+		expect(() => parseOfficeInstallationReceipt({ ...receipt, files: [] })).toThrow();
+		expect(() =>
+			parseOfficeInstallationReceipt({ ...receipt, files: [receipt.files[0], receipt.files[0]] }),
+		).toThrow();
+	});
+	it("admits an upgrade only with identical documents and the previous package moved aside", async () => {
+		const parsed = parseOfficeInstallationReceipt(receipt);
+		await expect(
+			assertOfficeInstallationUpgrade(parsed, expected, targets, async () => false),
+		).resolves.toBeUndefined();
+		await expect(
+			assertOfficeInstallationUpgrade(parsed, { ...expected, uid: 1 }, targets, async () => false),
+		).rejects.toThrow("OFFICE_INSTALL_PREVIOUS_RECEIPT_MISMATCH");
+		await expect(
+			assertOfficeInstallationUpgrade(
+				parsed,
+				{ ...expected, providerPolicySha256: "7".repeat(64) },
+				targets,
+				async () => false,
+			),
+		).rejects.toThrow("OFFICE_INSTALL_PREVIOUS_RECEIPT_MISMATCH");
+		await expect(
+			assertOfficeInstallationUpgrade(parsed, expected, targets, async (path) =>
+				path.endsWith("qorpera-office-provider.cjs"),
+			),
+		).rejects.toThrow("OFFICE_INSTALL_PREVIOUS_PACKAGE_PRESENT");
+		const changedDocument = targets.map((t) =>
+			t.path.endsWith("service.json") ? { ...t, sha256: "a".repeat(64) } : t,
+		);
+		await expect(
+			assertOfficeInstallationUpgrade(parsed, expected, changedDocument, async () => false),
+		).rejects.toThrow("OFFICE_INSTALL_PREVIOUS_DOCUMENTS_CHANGED");
+		const changedUnit = targets.map((t) => (t.path.endsWith(".service") ? { ...t, bytes: 8 } : t));
+		await expect(assertOfficeInstallationUpgrade(parsed, expected, changedUnit, async () => false)).rejects.toThrow(
+			"OFFICE_INSTALL_PREVIOUS_DOCUMENTS_CHANGED",
+		);
+		const missingTarget = targets.filter((t) => !t.path.endsWith("service.json"));
+		await expect(assertOfficeInstallationUpgrade(parsed, expected, missingTarget, async () => false)).rejects.toThrow(
+			"OFFICE_INSTALL_PREVIOUS_DOCUMENTS_CHANGED",
 		);
 	});
 });

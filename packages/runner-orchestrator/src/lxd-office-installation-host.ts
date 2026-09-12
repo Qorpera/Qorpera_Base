@@ -4,6 +4,7 @@ import { chmod, chown, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath,
 import { basename, dirname, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
+	assertOfficeInstallationUpgrade,
 	OFFICE_CONFIG_ROOT,
 	OFFICE_INSTALL_ARTIFACTS,
 	OFFICE_INSTALL_DOCUMENTS,
@@ -12,6 +13,7 @@ import {
 	type OfficeInstallDocument,
 	officeInstallHash,
 	parseOfficeInstallationManifest,
+	parseOfficeInstallationReceipt,
 	parseOfficeInstallationSpec,
 	validateOfficeInstallationDocuments,
 } from "./lxd-office-installation.ts";
@@ -479,8 +481,34 @@ async function preflight(loaded: Loaded): Promise<void> {
 	await unitOverrides();
 	identity(loaded.uid, loaded.gid, loaded.policy.host.socketGid);
 	const entries = await journal(loaded);
-	for (const target of targets(loaded)) {
-		if (!(await targetExists(target)) && entries.length) throw new Error("OFFICE_INSTALL_STATE_REQUIRES_RECOVERY");
+	const expected = targets(loaded);
+	let absent = 0;
+	for (const target of expected) if (!(await targetExists(target))) absent += 1;
+	if (absent && entries.length) {
+		const previous = loaded.spec.previousInstallation;
+		if (!previous) throw new Error("OFFICE_INSTALL_STATE_REQUIRES_RECOVERY");
+		const bytes = await protectedBytes(previous.path, previous.bytes);
+		if (officeInstallHash(bytes) !== previous.sha256) throw new Error("OFFICE_INSTALL_PREVIOUS_RECEIPT_CHANGED");
+		const receipt = parseOfficeInstallationReceipt(
+			JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(bytes)),
+		);
+		await assertOfficeInstallationUpgrade(
+			receipt,
+			{ providerPolicySha256: loaded.spec.providerPolicySha256, uid: loaded.uid, gid: loaded.gid },
+			expected.map((target) => ({
+				path: target.path,
+				sha256: officeInstallHash(target.bytes),
+				bytes: target.bytes.length,
+			})),
+			(path) =>
+				lstat(path).then(
+					() => true,
+					(error) => {
+						if (missing(error)) return false;
+						throw error;
+					},
+				),
+		);
 	}
 }
 

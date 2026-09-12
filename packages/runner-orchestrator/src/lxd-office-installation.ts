@@ -31,14 +31,20 @@ export const OFFICE_INSTALL_ARTIFACTS = [
 const documentKeys = Object.keys(OFFICE_INSTALL_DOCUMENTS) as OfficeInstallDocument[];
 export const officeInstallHash = (bytes: Buffer | string): string => createHash("sha256").update(bytes).digest("hex");
 
+function fileReference(value: unknown, maxBytes: number) {
+	const ref = officeRecord(value, ["path", "bytes", "sha256"]);
+	if (!Number.isSafeInteger(ref.bytes) || (ref.bytes as number) < 1 || (ref.bytes as number) > maxBytes)
+		throw new Error("INVALID_OFFICE_INSTALL_DOCUMENT");
+	return { path: officePhysicalPath(ref.path), bytes: ref.bytes as number, sha256: officeSha(ref.sha256) };
+}
 export function parseOfficeInstallationSpec(value: unknown) {
-	const r = officeRecord(value, [
-		"schema",
-		"packageRoot",
-		"packageManifestSha256",
-		"providerPolicySha256",
-		"documents",
-	]);
+	const keys = ["schema", "packageRoot", "packageManifestSha256", "providerPolicySha256", "documents"];
+	// An upgrade of an existing installation names its retained previous
+	// receipt explicitly; a fresh installation never carries this key.
+	const r =
+		value && typeof value === "object" && Object.hasOwn(value, "previousInstallation")
+			? officeRecord(value, [...keys, "previousInstallation"])
+			: officeRecord(value, keys);
 	if (r.schema !== "qorpera.lxd-office-provider-installation/v1") throw new Error("INVALID_OFFICE_INSTALLATION");
 	const docs = officeRecord(r.documents, documentKeys);
 	const documents = {} as Record<OfficeInstallDocument, { path: string; bytes: number; sha256: string }>;
@@ -63,7 +69,79 @@ export function parseOfficeInstallationSpec(value: unknown) {
 		packageManifestSha256: officeSha(r.packageManifestSha256),
 		providerPolicySha256: officeSha(r.providerPolicySha256),
 		documents,
+		previousInstallation:
+			r.previousInstallation === undefined ? undefined : fileReference(r.previousInstallation, 16384),
 	};
+}
+export interface OfficeInstallationReceipt {
+	packageManifestSha256: string;
+	providerPolicySha256: string;
+	uid: number;
+	gid: number;
+	files: ReadonlyArray<{ path: string; bytes: number; sha256: string; mode: number; gid: number }>;
+}
+export function parseOfficeInstallationReceipt(value: unknown): OfficeInstallationReceipt {
+	const r = officeRecord(value, ["schema", "packageManifestSha256", "providerPolicySha256", "uid", "gid", "files"]);
+	if (
+		r.schema !== "qorpera.lxd-office-provider-installation-receipt/v1" ||
+		!Number.isSafeInteger(r.uid) ||
+		!Number.isSafeInteger(r.gid) ||
+		!Array.isArray(r.files) ||
+		r.files.length < 1
+	)
+		throw new Error("INVALID_OFFICE_INSTALL_RECEIPT");
+	const files = r.files.map((item) => {
+		const f = officeRecord(item, ["path", "bytes", "sha256", "mode", "gid"]);
+		if (
+			!Number.isSafeInteger(f.bytes) ||
+			(f.bytes as number) < 0 ||
+			!Number.isSafeInteger(f.mode) ||
+			!Number.isSafeInteger(f.gid)
+		)
+			throw new Error("INVALID_OFFICE_INSTALL_RECEIPT");
+		return {
+			path: officePhysicalPath(f.path),
+			bytes: f.bytes as number,
+			sha256: officeSha(f.sha256),
+			mode: f.mode as number,
+			gid: f.gid as number,
+		};
+	});
+	if (new Set(files.map((f) => f.path)).size !== files.length) throw new Error("INVALID_OFFICE_INSTALL_RECEIPT");
+	return {
+		packageManifestSha256: officeSha(r.packageManifestSha256),
+		providerPolicySha256: officeSha(r.providerPolicySha256),
+		uid: r.uid as number,
+		gid: r.gid as number,
+		files,
+	};
+}
+/** An upgrade over a retained journal is admitted only against the exact
+ * previous installation: same policy and service identity, every retained
+ * configuration document and unit identical to the new targets, and every
+ * previous package file already moved aside so nothing is ever overwritten. */
+export async function assertOfficeInstallationUpgrade(
+	receipt: OfficeInstallationReceipt,
+	expected: { providerPolicySha256: string; uid: number; gid: number },
+	targets: ReadonlyArray<{ path: string; sha256: string; bytes: number }>,
+	present: (path: string) => Promise<boolean>,
+): Promise<void> {
+	if (
+		receipt.providerPolicySha256 !== expected.providerPolicySha256 ||
+		receipt.uid !== expected.uid ||
+		receipt.gid !== expected.gid
+	)
+		throw new Error("OFFICE_INSTALL_PREVIOUS_RECEIPT_MISMATCH");
+	const byPath = new Map(targets.map((t) => [t.path, t]));
+	for (const file of receipt.files) {
+		if (file.path.startsWith(`${OFFICE_INSTALL_ROOT}/`)) {
+			if (await present(file.path)) throw new Error("OFFICE_INSTALL_PREVIOUS_PACKAGE_PRESENT");
+			continue;
+		}
+		const target = byPath.get(file.path);
+		if (!target || target.sha256 !== file.sha256 || target.bytes !== file.bytes)
+			throw new Error("OFFICE_INSTALL_PREVIOUS_DOCUMENTS_CHANGED");
+	}
 }
 
 export function parseOfficeInstallationManifest(value: unknown) {
