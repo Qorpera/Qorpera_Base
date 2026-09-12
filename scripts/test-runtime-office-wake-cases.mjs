@@ -1,10 +1,29 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 
+// The wake fixture (supabase/tests/300_runtime_wake_bus.test.sql) claims its job,
+// assignment and native provider lease with 120-second bounds. Drivers that
+// consume the binding late (after activation, screen, lifecycle and stop phases
+// with database restarts) must keep those bounds live through the real runner
+// renewal RPCs; the native lease validator refuses any expired row and neither
+// renewal accepts a row that has already lapsed, so renew at phase boundaries.
+export function renewOfficeWakeBinding({ setup, service, execute }) {
+ const b=setup.binding;
+ const args=`'${b.runnerId}',repeat('2',64),'${b.jobId}',repeat('3',64)`;
+ const renewed=JSON.parse(execute(`${service} select public.qorpera_renew_runner_job(${args}); select public.qorpera_renew_native_provider_connection_lease('${b.leaseId}',${args},900);`).split("\n").at(-1));
+ assert.equal(renewed.lease_id,b.leaseId); assert.equal(renewed.status,"active");
+ return renewed;
+}
+
 // Existing RPCs complete the real receipt and parent run. Only physical office
 // measurements and the native model output are fixture data.
 export async function prepareOfficeWake({ setup, intent, service, execute, literal }) {
  const b=setup.binding;
+ renewOfficeWakeBinding({ setup, service, execute });
+ console.log("Wake fixture binding bounds before native begin: "+execute(`select jsonb_build_object('clock',clock_timestamp(),
+  'jobLeaseExpiresAt',(select lease_expires_at from public.qorpera_runner_jobs where id='${b.jobId}'),
+  'assignmentExpiresAt',(select expires_at from public.qorpera_runner_assignments where id='${b.assignmentId}'),
+  'nativeLeaseExpiresAt',(select expires_at from public.qorpera_native_provider_connection_leases where id='${b.leaseId}'));`));
  const waiter=JSON.parse(execute("select row_to_json(w) from public.qorpera_runtime_office_start_waiters w;"));
  assert.equal(waiter.parent_run_id,b.runId); assert.equal(waiter.intent_id,intent);
  assert.equal(waiter.staff_version,setup.identity.staffVersion);

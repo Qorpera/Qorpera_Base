@@ -18,7 +18,7 @@ import { prepareScreenObservationRecovery } from "./test-runtime-screen-observat
 import { testOfficeLifecycleRevocation } from "./test-runtime-office-lifecycle-cases.mjs";
 import { testOfficeStopAcknowledgement } from "./test-runtime-office-stop-cases.mjs";
 import { testOfficeSuccessorAdmission } from "./test-runtime-office-successor-cases.mjs";
-import { prepareOfficeWake, testOfficeWake } from "./test-runtime-office-wake-cases.mjs";
+import { prepareOfficeWake, renewOfficeWakeBinding, testOfficeWake } from "./test-runtime-office-wake-cases.mjs";
 import { openOfficeSystemdGuest } from "./fixtures/office-systemd-guest-host.mjs";
 import { testOfficeBootSystemd } from "./test-runtime-office-boot-systemd-cases.mjs";
 
@@ -145,6 +145,9 @@ try {
 			'descriptor',public.qorpera_native_office_start_descriptor(current_setting('qorpera_test.wake_binding')::jsonb),
 			'identity',public.qorpera_describe_native_tool_authority(current_setting('qorpera_test.wake_binding')::jsonb)->'identity'); commit;`).split("\n").at(-1));
 	assert.equal(setup.descriptor.state, "available");
+	// The wake fixture binding carries 120-second bounds; keep it live across the phases below.
+	const renewWakeBinding = () => renewOfficeWakeBinding({ setup, service, execute: (sql) => docker(psql, sql) });
+	renewWakeBinding();
 	const scope = setup.descriptor.scope;
 	const providers = [randomUUID(), randomUUID()];
     const creation = creationMode ? await import(pathToFileURL(join(bundleRoot, "creation.mjs")).href) : null;
@@ -407,6 +410,7 @@ try {
 			CompanyComputerScreenOutbox:(await import(pathToFileURL(join(bundleRoot,"screenOutbox.mjs")).href)).CompanyComputerScreenOutbox}):undefined;
 		try {
 		if (lifecycleRevocationMode) {
+			renewWakeBinding();
 			const { LxdOfficeLifecycleControl } = await import(pathToFileURL(join(bundleRoot, "lifecycleControl.mjs")).href);
 			const revocation = await testOfficeLifecycleRevocation({ scope, binding: bindings[winner], startup: activationResult.startup, attestation: activationResult.attestation, setup, service, owner, race, session, until, literal, action: bootSuccessorMode ? "reboot" : "service_restart",
 				execute: sql => docker(psql, sql), restartDatabase: async () => { docker(["restart", container]); await databaseReady(); }, LxdOfficeLifecycleControl });
