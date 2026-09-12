@@ -111,7 +111,7 @@ export class ConversationView {
 		});
 		const fileInput = h("input", { type: "file", multiple: true, hidden: true, "aria-label": "Attach files" });
 		fileInput.onchange = () => {
-			if (!this.#composer.disabled) this.#attachments.add([...(fileInput.files ?? [])]);
+			if (!this.#composer.disabled && !this.#isRoom) this.#attachments.add([...(fileInput.files ?? [])]);
 			fileInput.value = "";
 		};
 		this.#more = h(
@@ -134,7 +134,7 @@ export class ConversationView {
 				role: "menuitem",
 				onclick: () => {
 					this.#setMenu(false);
-					fileInput.click();
+					if (!this.#isRoom) fileInput.click();
 				},
 			},
 			icon("attach"),
@@ -167,20 +167,20 @@ export class ConversationView {
 			const files = [...(event.clipboardData?.files ?? [])];
 			if (files.length) {
 				event.preventDefault();
-				this.#attachments.add(files);
+				if (!this.#isRoom) this.#attachments.add(files);
 			}
 		});
 		this.#composerShell.addEventListener("dragover", (event) => {
 			if (!this.#composer.disabled && event.dataTransfer?.types.includes("Files")) {
 				event.preventDefault();
-				this.#composerShell.classList.add("is-dragging");
+				if (!this.#isRoom) this.#composerShell.classList.add("is-dragging");
 			}
 		});
 		this.#composerShell.addEventListener("dragleave", () => this.#composerShell.classList.remove("is-dragging"));
 		this.#composerShell.addEventListener("drop", (event) => {
 			event.preventDefault();
 			this.#composerShell.classList.remove("is-dragging");
-			if (!this.#composer.disabled) this.#attachments.add([...(event.dataTransfer?.files ?? [])]);
+			if (!this.#composer.disabled && !this.#isRoom) this.#attachments.add([...(event.dataTransfer?.files ?? [])]);
 		});
 		this.#composerWrap = h("footer", { class: "composer" }, this.#composerShell, this.#attachments.status);
 		this.#identity = h("button", {
@@ -262,6 +262,12 @@ export class ConversationView {
 
 	get sessionId(): string {
 		return this.#sessionId;
+	}
+	get #isRoom(): boolean {
+		return (
+			typeof this.#company.store.get().sessions.find((s) => s.sessionId === this.#sessionId)?.executionScope
+				?.roomId === "string"
+		);
 	}
 
 	focus(): void {
@@ -355,7 +361,7 @@ export class ConversationView {
 		if ((!text.trim() && !this.#attachments.count) || this.#send.disabled || !this.#actions.sendMessage) return;
 		void this.#actions.sendMessage(this.#sessionId, text, this.#lifetime.signal).then((sent) => {
 			if (sent && !this.#disposed) {
-				this.#run?.messageSent();
+				if (!this.#isRoom) this.#run?.messageSent();
 				void this.#execution?.refresh();
 			}
 		});
@@ -370,25 +376,31 @@ export class ConversationView {
 		const agent = this.#company.staffById(session?.staffAgentId);
 		const activity = this.#company.activityFor(session?.staffAgentId);
 		const canWrite = company.team?.capabilities.write === true && session?.status === "open";
+		const room = this.#isRoom;
 		this.#execution?.update();
 		this.#run?.update(
-			company.accessLost || !company.team?.capabilities.read ? undefined : session?.staffAgentId,
+			room || company.accessLost || !company.team?.capabilities.read ? undefined : session?.staffAgentId,
 			canWrite,
 		);
-		const attachmentIssue = sessionAttachmentIssue(conversation.attachments ?? []);
+		const attachmentIssue =
+			room && conversation.attachments?.length
+				? "Images are not supported in team rooms. Use Company File."
+				: sessionAttachmentIssue(conversation.attachments ?? []);
 		this.#attachments.sync(
 			conversation.attachments ?? [],
 			!canWrite || conversation.sending,
-			this.#actions.sendMessage
-				? attachmentIssue
-					? `Attachments stay on this device. ${attachmentIssue}`
-					: conversation.sending
-						? "Uploading images and sending message…"
-						: "Images stay on this device until you send. Up to 5 images, 8 MiB total."
-				: undefined,
+			room
+				? "Images are not supported in team rooms. Use Company File."
+				: this.#actions.sendMessage
+					? attachmentIssue
+						? `Attachments stay on this device. ${attachmentIssue}`
+						: conversation.sending
+							? "Uploading images and sending message…"
+							: "Images stay on this device until you send. Up to 5 images, 8 MiB total."
+					: undefined,
 		);
 		this.#renderHeader(session, agent);
-		this.#renderMessages(conversation, agent?.displayName ?? session?.title ?? "Agent");
+		this.#renderMessages(conversation, room ? "Agent reply" : (agent?.displayName ?? session?.title ?? "Agent"));
 		this.#renderStatus(conversation, activity?.activity, canWrite, session);
 		this.#composer.disabled = !canWrite || conversation.sending;
 		this.#send.disabled =
@@ -399,9 +411,10 @@ export class ConversationView {
 			(!conversation.draft?.trim() && !this.#attachments.count) ||
 			Boolean(attachmentIssue);
 		this.#send.title = this.#actions.sendMessage ? "Send message" : "Sending messages is not available yet";
-		this.#attach.disabled = this.#composer.disabled;
+		this.#attach.disabled = this.#composer.disabled || room;
+		this.#more.hidden = room;
 		this.#more.disabled = this.#composer.disabled;
-		if (this.#composer.disabled && !this.#menu.hidden) this.#setMenu(false, false);
+		if ((this.#composer.disabled || room) && !this.#menu.hidden) this.#setMenu(false, false);
 		this.#composerWrap.hidden = !canWrite;
 		if (this.#composer.value !== (conversation.draft ?? "")) {
 			this.#composer.value = conversation.draft ?? "";
@@ -450,6 +463,7 @@ export class ConversationView {
 		const key = JSON.stringify([
 			items,
 			agentName,
+			this.#isRoom,
 			this.#company.store.get().team?.members,
 			conversation.projection.hiddenCount,
 			conversation.loading,
@@ -497,7 +511,11 @@ export class ConversationView {
 							title: `${author} · ${fmtTime(item.createdAt)}`,
 							dataset: { messageId: item.id },
 						},
-						item.kind === "member" && !mine ? h("div", { class: "message-author" }, author) : null,
+						item.kind === "agent" && this.#isRoom
+							? h("div", { class: "message-author" }, "Agent reply · speaker unavailable")
+							: item.kind === "member" && !mine
+								? h("div", { class: "message-author" }, author)
+								: null,
 						...bodies.map((body) => h("div", { class: "bubble" }, body)),
 						attachments?.el,
 						item.phase === "progress"
@@ -553,7 +571,17 @@ export class ConversationView {
 					"Sending messages is not available yet. Your draft stays here.",
 				),
 			);
-		if (this.#run) children.push(this.#run.el);
+		if (this.#isRoom)
+			children.push(
+				notice(
+					"neutral",
+					"Multiple agents can respond in this room. Follow their replies here. Images are not supported in team rooms. Use Company File." +
+						(["owner", "admin"].includes(this.#company.store.get().team?.role ?? "")
+							? " Company-wide execution pause is available in Settings → Company."
+							: ""),
+				),
+			);
+		else if (this.#run) children.push(this.#run.el);
 		if (this.#execution) children.push(this.#execution.el);
 		if (activity === "needs_attention") children.push(notice("neutral", "This agent needs your attention."));
 		if (!canWrite && session?.status === "closed") children.push(notice("neutral", "This conversation is archived."));

@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import type { WebNativeSubscription } from "../src/cloud/native-subscription.ts";
+import { AGENT_SEND_SCHEMA, projectTranscript, RUNNER_ENTRY_SCHEMA } from "../src/cloud/transcript.ts";
 import { deferred, fixture, id, profileA, session, settle, staff, team, timestamp, userA, userB } from "./fixtures.ts";
 
 let dispose: (() => void) | undefined;
@@ -56,10 +57,21 @@ function choose(value: string): void {
 	selector().value = value;
 	selector().dispatchEvent(new Event("change"));
 }
-function setup() {
+function setup(room = false) {
 	const f = fixture();
 	const company = new CompanyController(f.api, profileA, userA.id);
-	company.store.set({ team, staff: [staff], sessions: [{ ...session, staffAgentId: staff.id }], loading: false });
+	company.store.set({
+		team,
+		staff: [staff],
+		sessions: [
+			{
+				...session,
+				staffAgentId: room ? undefined : staff.id,
+				executionScope: room ? { roomId: id(190) } : undefined,
+			},
+		],
+		loading: false,
+	});
 	const listConnections = vi.fn(async () => connections());
 	const listSessionTurnProvenance = vi.fn(async (): Promise<readonly SessionTurnProvenance[]> => []);
 	const native: WebNativeSubscription = {
@@ -72,13 +84,19 @@ function setup() {
 		revokeConnection: vi.fn(),
 	};
 	const sendMessage = vi.fn(async () => true);
-	const view = new ConversationView(company, session.sessionId, { nativeSubscription: native, sendMessage });
+	const read = vi.fn(async () => ({ sessionId: session.sessionId, staffAgentId: staff.id, run: null }));
+	const cancel = vi.fn(async () => "cancelled" as const);
+	const view = new ConversationView(company, session.sessionId, {
+		nativeSubscription: native,
+		sendMessage,
+		runControl: room ? { read, cancel } : undefined,
+	});
 	document.body.append(view.el);
 	dispose = () => {
 		view.dispose();
 		company.stop();
 	};
-	return { ...f, company, native, listConnections, listSessionTurnProvenance, view, sendMessage };
+	return { ...f, company, native, listConnections, listSessionTurnProvenance, view, sendMessage, read, cancel };
 }
 function refresh(): void {
 	[...document.querySelectorAll<HTMLButtonElement>("button")]
@@ -87,6 +105,114 @@ function refresh(): void {
 }
 
 describe("conversation execution account", () => {
+	it("keeps team-room text and explicit account choice without single-agent run or turn history", async () => {
+		const f = setup(true);
+		await settle();
+		const state = f.company.conversation(session.sessionId);
+		state.set({
+			draft: "Hello team",
+			projection: {
+				...state.get().projection,
+				items: [
+					{
+						kind: "member",
+						id: id(191),
+						sequence: 1,
+						authorUserId: userA.id,
+						text: "Earlier room message",
+						attachmentCount: 0,
+						createdAt: timestamp,
+					},
+				],
+			},
+		});
+		await settle();
+		const send = f.view.el.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!;
+		expect(send.disabled).toBe(true);
+		expect(f.view.el.querySelector(".messages")!.textContent).toContain("Earlier room message");
+		expect(f.view.el.textContent).toContain("Multiple agents can respond in this room");
+		expect(f.view.el.textContent).toContain("Company-wide execution pause is available in Settings → Company");
+		expect(f.view.el.querySelector(".session-run")).toBeNull();
+		expect(f.view.el.textContent).not.toContain("Execution history");
+		choose(id(90));
+		await settle();
+		expect(send.disabled).toBe(false);
+		send.click();
+		await settle();
+		window.dispatchEvent(new Event("focus"));
+		await settle();
+		expect(f.sendMessage).toHaveBeenCalledExactlyOnceWith(session.sessionId, "Hello team", expect.any(AbortSignal));
+		expect(f.listConnections).toHaveBeenCalledTimes(3);
+		expect(f.listSessionTurnProvenance).not.toHaveBeenCalled();
+		expect(f.read).not.toHaveBeenCalled();
+		expect(f.cancel).not.toHaveBeenCalled();
+		expect(f.native.requestSessionTurn).not.toHaveBeenCalled();
+		expect(f.native.createMemberSponsor).not.toHaveBeenCalled();
+	});
+
+	it("rejects picker, pasted and dropped images in team rooms without losing the text draft", async () => {
+		const f = setup(true);
+		await settle();
+		f.company.conversation(session.sessionId).set({ draft: "Keep team text" });
+		await settle();
+		const image = new File(["image"], "local.png", { type: "image/png" });
+		const input = f.view.el.querySelector<HTMLInputElement>('input[type="file"]')!;
+		Object.defineProperty(input, "files", { value: [image] });
+		input.dispatchEvent(new Event("change"));
+		const shell = f.view.el.querySelector(".composer-shell")!;
+		const paste = new Event("paste", { bubbles: true, cancelable: true });
+		Object.defineProperty(paste, "clipboardData", { value: { files: [image] } });
+		shell.dispatchEvent(paste);
+		const drop = new Event("drop", { bubbles: true, cancelable: true });
+		Object.defineProperty(drop, "dataTransfer", { value: { files: [image] } });
+		shell.dispatchEvent(drop);
+		await settle();
+		expect(paste.defaultPrevented).toBe(true);
+		expect(drop.defaultPrevented).toBe(true);
+		expect(f.company.conversation(session.sessionId).get().attachments ?? []).toEqual([]);
+		expect(f.company.conversation(session.sessionId).get().draft).toBe("Keep team text");
+		expect(f.view.el.querySelector<HTMLButtonElement>(".composer-more")!.hidden).toBe(true);
+		expect(f.view.el.textContent).toContain("Images are not supported in team rooms. Use Company File.");
+		expect(f.sendMessage).not.toHaveBeenCalled();
+	});
+	it("does not attribute a room agent reply to the room title or its human creator", async () => {
+		const f = setup(true);
+		await settle();
+		const execution = { kind: "run" as const, id: id(193), claimantId: id(194), runnerAssignmentId: id(195) };
+		f.company.conversation(session.sessionId).set({
+			projection: projectTranscript([
+				{
+					sessionId: session.sessionId,
+					eventId: id(192),
+					sequence: 1,
+					eventType: "message",
+					actorUserId: userA.id,
+					eventHash: "a".repeat(64),
+					createdAt: timestamp,
+					execution,
+					body: {
+						schema: RUNNER_ENTRY_SCHEMA,
+						entry: {
+							type: "message",
+							id: id(192),
+							execution,
+							message: { role: "assistant", content: [{ type: "text", text: "Room response" }] },
+							delivery: { schema: AGENT_SEND_SCHEMA, phase: "final" },
+						},
+					},
+				},
+			]),
+		});
+		await settle();
+		const reply = f.view.el.querySelector<HTMLElement>(".from-agent")!;
+		expect(reply.querySelector(".message-author")!.textContent).toBe("Agent reply · speaker unavailable");
+		expect(reply.getAttribute("aria-label")).toMatch(/^Agent reply · /);
+		expect(reply.title).toMatch(/^Agent reply · /);
+		expect(reply.getAttribute("aria-label")).not.toContain(session.title);
+		expect(reply.getAttribute("aria-label")).not.toContain(f.company.memberName(userA.id));
+		expect(reply.textContent).toContain("Room response");
+	});
+
 	it("requires explicit own-account choice and never enables a sponsor automatically", async () => {
 		const f = setup();
 		await settle();

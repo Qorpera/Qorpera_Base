@@ -8,6 +8,7 @@ import { SESSION_PROMPT_SCHEMA } from "./api.ts";
 import type { Cloud } from "./client.ts";
 import { createWebNativeSubscription } from "./native-subscription.ts";
 import { UUID_PATTERN } from "./parse.ts";
+import { createWebRoomMessages } from "./room-messages.ts";
 import { createWebSessionAttachments, sessionAttachmentIssue } from "./session-attachments.ts";
 /** A user-selected, observed member sponsorship. Scalars are retained for exact replay. */
 export interface SessionExecutionSponsor {
@@ -54,6 +55,11 @@ export function selectSessionExecutionSponsor(
 	});
 }
 
+export interface RoomMessageTarget {
+	readonly roomId: string;
+	readonly environmentId: string;
+}
+
 export type SessionInputWriter = (
 	sessionId: string,
 	clientInputId: string,
@@ -61,7 +67,8 @@ export type SessionInputWriter = (
 	signal: AbortSignal,
 	files?: readonly File[],
 	executionSponsor?: SessionExecutionSponsor,
-) => Promise<SessionTurnRequestResult>;
+	roomTarget?: RoomMessageTarget,
+) => Promise<Pick<SessionTurnRequestResult, "inputId">>;
 
 /** Only queues member input. A tab never executes the resulting staff work. */
 export function createWebSessionInputWriter(
@@ -83,8 +90,9 @@ export function createWebSessionInputWriter(
 		!UUID_PATTERN.test(profileId)
 	)
 		throw new Error("Invalid member input configuration.");
-	return (sessionId, clientInputId, text, signal, files = [], executionSponsor) =>
-		withCloudDeadline(
+	return (sessionId, clientInputId, text, signal, files = [], executionSponsor, roomTarget) => {
+		const room = roomTarget ? { ...roomTarget } : undefined;
+		return withCloudDeadline(
 			async (deadline) => {
 				if (
 					!UUID_PATTERN.test(sessionId) ||
@@ -110,6 +118,20 @@ export function createWebSessionInputWriter(
 					current(sessionId);
 				};
 				check();
+				if (room) {
+					if (files.length) throw new Error("Images are not supported in team rooms. Use Company File.");
+					return createWebRoomMessages(cloud, profileId, memberId, companySignal, () => check()).post(
+						{
+							...room,
+							sessionId,
+							clientInputId,
+							text,
+							sponsorBindingId: sponsor.sponsorBindingId,
+							sponsorVersion: sponsor.sponsorVersion,
+						},
+						deadline,
+					);
+				}
 				const images: { objectSha256: string; bytes: number; mediaType: string }[] = [];
 				if (files.length) {
 					const client = createWebSessionAttachments(cloud, memberId, deadline, check);
@@ -150,4 +172,5 @@ export function createWebSessionInputWriter(
 			files.length ? 75000 : 15000,
 			AbortSignal.any([companySignal, signal]),
 		);
+	};
 }

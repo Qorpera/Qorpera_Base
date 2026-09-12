@@ -2,6 +2,7 @@ import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-nat
 import type { CloudApi } from "../cloud/api.ts";
 import { CloudRpcError, describeError } from "../cloud/client.ts";
 import { buildCompanyHierarchy, type CompanyHierarchy, type HostedCompanyOrganization } from "../cloud/organization.ts";
+import { UUID_PATTERN } from "../cloud/parse.ts";
 import {
 	type RealtimePhase,
 	type RealtimeResource,
@@ -10,6 +11,7 @@ import {
 } from "../cloud/realtime.ts";
 import { sessionAttachmentIssue } from "../cloud/session-attachments.ts";
 import {
+	type RoomMessageTarget,
 	type SessionExecutionSponsor,
 	type SessionInputWriter,
 	selectSessionExecutionSponsor,
@@ -70,6 +72,7 @@ export interface ConversationState {
 		text: string;
 		files: File[];
 		executionSponsor: SessionExecutionSponsor;
+		roomTarget?: RoomMessageTarget;
 	};
 	/** Inputs this browser appended that the cloud has not listed back yet. */
 	optimistic: {
@@ -502,6 +505,15 @@ export class CompanyController {
 		});
 	}
 
+	roomTargetFor(sessionId: string): RoomMessageTarget | undefined {
+		const session = this.store.get().sessions.find((item) => item.sessionId === sessionId);
+		const scope = session?.executionScope;
+		if (!session || !scope || !("roomId" in scope)) return undefined;
+		if (session.staffAgentId || typeof scope.roomId !== "string" || !UUID_PATTERN.test(scope.roomId))
+			throw new Error("The team room conversation is unavailable.");
+		return Object.freeze({ roomId: scope.roomId, environmentId: session.environmentId });
+	}
+
 	async sendPrompt(sessionId: string, text: string, viewSignal?: AbortSignal): Promise<boolean> {
 		if (this.#stopped || viewSignal?.aborted) return false;
 		try {
@@ -522,6 +534,17 @@ export class CompanyController {
 		const sameFiles = (other: readonly File[]) =>
 			other.length === files.length && other.every((file, index) => file === files[index]);
 		const sameRequest = retry?.text === trimmed && sameFiles(retry.files);
+		let roomTarget: RoomMessageTarget | undefined;
+		try {
+			const observed = this.roomTargetFor(sessionId);
+			roomTarget = sameRequest ? retry.roomTarget : observed;
+			if (observed?.roomId !== roomTarget?.roomId || observed?.environmentId !== roomTarget?.environmentId)
+				throw new Error("The conversation destination changed. Refresh before starting a new request.");
+			if (roomTarget && files.length) throw new Error("Images are not supported in team rooms. Use Company File.");
+		} catch (error) {
+			store.set({ sendError: describeError(error), draft: text });
+			return false;
+		}
 		// An uncertain attempt retains its original sponsor even if discovery or
 		// the current chooser has changed. SQL checks exact replay identity.
 		const executionSponsor = sameRequest ? retry.executionSponsor : store.get().executionSponsor;
@@ -548,7 +571,9 @@ export class CompanyController {
 		}));
 		try {
 			const signal = AbortSignal.any([this.signal, ...(viewSignal ? [viewSignal] : [])]);
-			const receipt = await this.#writeInput(sessionId, clientInputId, trimmed, signal, files, executionSponsor);
+			const receipt = roomTarget
+				? await this.#writeInput(sessionId, clientInputId, trimmed, signal, files, executionSponsor, roomTarget)
+				: await this.#writeInput(sessionId, clientInputId, trimmed, signal, files, executionSponsor);
 			if (this.#stopped) return false;
 			signal.throwIfAborted();
 			store.set((state) => ({
@@ -571,7 +596,14 @@ export class CompanyController {
 			store.set((state) => ({
 				sending: false,
 				sendError: describeError(error),
-				retrySend: { clientInputId, clientRequestId, text: trimmed, files, executionSponsor },
+				retrySend: {
+					clientInputId,
+					clientRequestId,
+					text: trimmed,
+					files,
+					executionSponsor,
+					...(roomTarget ? { roomTarget } : {}),
+				},
 				optimistic: state.optimistic.filter((item) => item.clientInputId !== clientInputId),
 			}));
 			return false;

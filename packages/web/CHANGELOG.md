@@ -6,6 +6,7 @@
 
 - Use a length-neutral email code hint so sign-in instructions remain accurate with the configured eight-digit codes.
 - Accept valid Unicode pause reasons in runtime notifications using the public SQL character limit.
+- Submit team-room messages through the public room-post contract, preserve room retry identity, and match room attachments/run displays to the supported interfaces.
 
 ### Added
 

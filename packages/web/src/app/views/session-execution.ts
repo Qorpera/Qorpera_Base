@@ -24,6 +24,7 @@ export class SessionExecutionView {
 	#error: string | undefined;
 	#historyError: string | undefined;
 	#renderKey = "";
+	#room = false;
 
 	constructor(
 		company: CompanyController,
@@ -68,6 +69,17 @@ export class SessionExecutionView {
 	update(): void {
 		if (this.#lifetime.signal.aborted) return;
 		const company = this.#company.store.get();
+		const room =
+			typeof company.sessions.find((s) => s.sessionId === this.#sessionId)?.executionScope?.roomId === "string";
+		if (room !== this.#room) {
+			this.#request?.abort();
+			this.#request = undefined;
+			this.#provenance = [];
+			this.#historyError = undefined;
+			this.#busy = false;
+			this.#started = false;
+			this.#room = room;
+		}
 		const canRead =
 			!company.accessLost &&
 			company.team?.capabilities.read &&
@@ -110,7 +122,7 @@ export class SessionExecutionView {
 		this.#changed();
 		const [connections, provenance] = await Promise.allSettled([
 			this.#native.listConnections(signal),
-			this.#native.listSessionTurnProvenance(this.#sessionId, signal),
+			this.#room ? Promise.resolve([]) : this.#native.listSessionTurnProvenance(this.#sessionId, signal),
 		]);
 		if (signal.aborted) return;
 		if (connections.status === "fulfilled") this.#observed = connections.value;
@@ -135,6 +147,7 @@ export class SessionExecutionView {
 		const selected = conversation.retrySend?.executionSponsor ?? conversation.executionSponsor;
 		const locked = this.#busy || conversation.sending || Boolean(conversation.retrySend) || !canWrite;
 		const key = JSON.stringify([
+			this.#room,
 			this.#observed,
 			this.#provenance,
 			this.#error,
@@ -230,28 +243,30 @@ export class SessionExecutionView {
 							"Choose an active account enabled for your messages in Settings → Connections.",
 						)
 					: null,
-			h(
-				"details",
-				null,
-				h("summary", null, "Execution history"),
-				this.#historyError
-					? notice("neutral", this.#historyError)
-					: this.#provenance.length
-						? this.#provenance
-								.slice(0, 20)
-								.map((turn) =>
-									h(
+			this.#room
+				? null
+				: h(
+						"details",
+						null,
+						h("summary", null, "Execution history"),
+						this.#historyError
+							? notice("neutral", this.#historyError)
+							: this.#provenance.length
+								? this.#provenance
+										.slice(0, 20)
+										.map((turn) =>
+											h(
+												"p",
+												{ class: "muted" },
+												`${fmtTime(turn.createdAt)} · ${turn.provider ?? "Provider pending"} · ${turn.sponsoredByName ?? (turn.sponsorMode === "company_connection" ? "Company account" : turn.sponsorMode === "sponsorship_request" ? "Sponsorship requested" : "Member account")} · ${turn.runStatus ?? turn.status}${turn.failureReason ? ` · ${turn.failureReason}` : ""}`,
+											),
+										)
+								: h(
 										"p",
 										{ class: "muted" },
-										`${fmtTime(turn.createdAt)} · ${turn.provider ?? "Provider pending"} · ${turn.sponsoredByName ?? (turn.sponsorMode === "company_connection" ? "Company account" : turn.sponsorMode === "sponsorship_request" ? "Sponsorship requested" : "Member account")} · ${turn.runStatus ?? turn.status}${turn.failureReason ? ` · ${turn.failureReason}` : ""}`,
+										this.#busy ? "Loading execution history…" : "No execution requests yet.",
 									),
-								)
-						: h(
-								"p",
-								{ class: "muted" },
-								this.#busy ? "Loading execution history…" : "No execution requests yet.",
-							),
-			),
+					),
 		);
 	}
 
