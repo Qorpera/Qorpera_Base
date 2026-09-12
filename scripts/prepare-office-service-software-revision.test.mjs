@@ -117,11 +117,17 @@ test("prepares a verifiable service-only revision: previous inventory with only 
 		assert.equal(JSON.parse(await readFile(join(temporary, "unlocked", "trust.json"), "utf8")).verificationKeySpki, keys.publicKey.export({ type: "spki", format: "der" }).toString("base64"));
 		const wrongPassphrase = spawnSync(process.execPath, [script, ...args({ "--signing-key": encryptedKey, "--signing-key-passphrase-stdin": "true", "--out": join(temporary, "wrongpass") })], { cwd: tmpdir(), encoding: "utf8", timeout: 60000, input: "not-it\n" });
 		assert.equal(wrongPassphrase.status, 1); assert.equal(wrongPassphrase.stderr, "OFFICE_SOFTWARE_REVISION_KEY_INVALID\n");
+		const retainedSuccessor = "00000000-0000-4000-8000-0000000000ee";
+		const pinnedRun = run(args({ "--successor-activation-id": retainedSuccessor, "--out": join(temporary, "pinned") }));
+		assert.equal(pinnedRun.status, 0, pinnedRun.stderr);
+		assert.equal(JSON.parse(await readFile(join(temporary, "pinned", "plan.json"), "utf8")).successorActivationId, retainedSuccessor);
+		const collidingSuccessor = run(args({ "--successor-activation-id": predecessor.activationId, "--out": join(temporary, "colliding") }));
+		assert.equal(collidingSuccessor.status, 2); assert.equal(collidingSuccessor.stderr, "OFFICE_SOFTWARE_REVISION_ARGUMENTS_INVALID\n");
 		const missing = run(args().slice(2));
 		assert.equal(missing.status, 2); assert.equal(missing.stderr, "OFFICE_SOFTWARE_REVISION_ARGUMENTS_INVALID\n");
 		const help = run(["--help"]);
 		assert.equal(help.status, 0); assert.match(help.stdout, /--signing-key/);
-		for (const name of ["unchanged", "foreign", "badkey", "locked", "wrongpass"]) await assert.rejects(readdir(join(temporary, name)));
+		for (const name of ["unchanged", "foreign", "badkey", "locked", "wrongpass", "colliding"]) await assert.rejects(readdir(join(temporary, name)));
 		// The retained stop-worker records are accepted as-is for both inputs.
 		await writeFile(join(temporary, "stop-record.json"), JSON.stringify({ schema: "qorpera.lxd-office-stop-request/v1", request: restart.request.stop, command: acknowledgement.inspection.stop.command }));
 		await writeFile(join(temporary, "completed-record.json"), JSON.stringify({ schema: "qorpera.lxd-office-stop-completion/v1", intentId: "00000000-0000-4000-8000-0000000000aa", allocationId: predecessor.startup.allocationId, transitionId: predecessor.transitionId, commandId: acknowledgement.inspection.stop.command.commandId, receipt: acknowledgement }));

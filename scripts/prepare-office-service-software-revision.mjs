@@ -29,6 +29,7 @@ const FLAGS = {
 	"--signing-key-passphrase-stdin": "signingKeyPassphraseStdin",
 	"--out": "out",
 	"--acceptance-tested-at": "acceptanceTestedAt",
+	"--successor-activation-id": "successorActivationId",
 };
 const REQUIRED = [
 	"previousManifest",
@@ -51,7 +52,7 @@ const USAGE = `Usage: node scripts/prepare-office-service-software-revision.mjs 
   --predecessor <retained service_restart lifecycle request JSON, or the retained recovery-request / service-stop-request record> \\
   --stop-acknowledgement <retained SQL stop acknowledgement JSON, or the retained service-stop-completed record> \\
   --signing-key <ed25519 private key PEM, read only> [--signing-key-passphrase-stdin true] --out <new directory> \\
-  [--acceptance-tested-at <ISO time, default now>] \\
+  [--acceptance-tested-at <ISO time, default now>] [--successor-activation-id <uuid retained by the provider>] \\
   [--base-source-commit <40 hex> --base-manifest-sha256 <64 hex>   (only for a revision after the first; default: previous)]
 `;
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -201,12 +202,20 @@ async function main(argv) {
 				ids.add(id);
 				return id;
 			};
+			// A provider that already retained its successor request has fixed the
+			// successor identity; the plan must adopt it instead of minting one.
+			const pinned = (value) => {
+				if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value) || ids.has(value)) fail("OFFICE_SOFTWARE_REVISION_ARGUMENTS_INVALID");
+				ids.add(value);
+				return value;
+			};
+			const successorActivationId = options.successorActivationId === undefined ? fresh() : pinned(options.successorActivationId);
 			plan = v.parseCompanyComputerServiceSoftwarePlan({
 				schema: "qorpera.office-service-software-plan/v1",
 				updateId: fresh(),
 				predecessor,
 				stopAcknowledgementSha256: v.officeDigest(acknowledgement),
-				successorActivationId: fresh(),
+				successorActivationId,
 				statementSha256: v.officeDigest(statement),
 			});
 			nextManifest = nextBytes;
