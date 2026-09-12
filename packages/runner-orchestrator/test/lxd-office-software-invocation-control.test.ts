@@ -16,7 +16,7 @@ const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 afterEach(() => vi.restoreAllMocks());
 function fixture() {
 	const f = officeSoftwareFixture();
-	const options = {
+	const options: Parameters<typeof acknowledgeLxdOfficeSoftwareInvocation>[0] = {
 		activationId: f.plan.successorActivationId,
 		startup: parseCompanyComputerStartupIdentity({
 			...f.plan.predecessor.startup,
