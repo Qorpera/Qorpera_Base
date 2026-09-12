@@ -374,7 +374,11 @@ export class HttpCloudRunnerProviderService {
 		}
 		const controller = new AbortController();
 		const abort = (): void => controller.abort(new Error("Provider request disconnected"));
+		const responseClosed = (): void => {
+			if (!response.writableFinished) abort();
+		};
 		request.once("aborted", abort);
+		response.once("close", responseClosed);
 		try {
 			let encoded = "";
 			for await (const chunk of request) {
@@ -403,6 +407,7 @@ export class HttpCloudRunnerProviderService {
 			response.writeHead(status, { "content-type": "application/json" }).end('{"error":"request rejected"}\n');
 		} finally {
 			request.off("aborted", abort);
+			response.off("close", responseClosed);
 		}
 	}
 }

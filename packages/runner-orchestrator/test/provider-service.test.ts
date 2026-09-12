@@ -101,6 +101,52 @@ function backend(): CloudRunnerProviderServiceBackend & {
 }
 
 describe("runner provider HTTP service", () => {
+	it("cancels pending acquisition when the caller disconnects after sending its complete request", async () => {
+		const provider = backend();
+		let entered = (): void => undefined;
+		const started = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
+		let finish = (): void => undefined;
+		let backendSignal: AbortSignal | undefined;
+		provider.acquire.mockImplementation((_id: string, _work: CloudRunnerWork, signal: AbortSignal) => {
+			backendSignal = signal;
+			return new Promise<CloudRunnerInstance>((resolve, reject) => {
+				finish = () => resolve(runner);
+				signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+				entered();
+			});
+		});
+		const service = new HttpCloudRunnerProviderService(provider, token);
+		services.push(service);
+		const port = await service.start();
+		const caller = new AbortController();
+		const request = fetch(`http://127.0.0.1:${port}/v1/qorpera-runner-provider`, {
+			method: "POST",
+			headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+			body: JSON.stringify({
+				schema: "qorpera.runner-provider/v1",
+				action: "acquire",
+				adapter_id: "managed",
+				acquisition_id: work.runId,
+				work,
+			}),
+			signal: caller.signal,
+		});
+		const cancelled = expect(request).rejects.toThrow();
+		try {
+			await started;
+			expect(backendSignal?.aborted).toBe(false);
+			caller.abort();
+			await cancelled;
+			await vi.waitFor(() => expect(backendSignal?.aborted).toBe(true), { timeout: 500 });
+		} finally {
+			caller.abort();
+			finish();
+			await cancelled;
+		}
+	});
+
 	it("provisions and delivers exact immutable work over an authenticated boundary", async () => {
 		const provider = backend();
 		const service = new HttpCloudRunnerProviderService(provider, token);
