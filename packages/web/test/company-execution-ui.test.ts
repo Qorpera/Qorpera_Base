@@ -109,7 +109,7 @@ describe("company execution controls", () => {
 		expect(document.querySelector<HTMLInputElement>('[aria-label="Company pause or resume reason"]')!.maxLength).toBe(
 			2048,
 		);
-		input("Company pause or resume reason", reason + "x");
+		input("Company pause or resume reason", `${reason}x`);
 		click("Pause company execution");
 		await settle();
 		expect(f.setPause).not.toHaveBeenCalled();
