@@ -145,34 +145,34 @@ export async function startCompanyComputerLinuxPrivateSurface(options: {
 					30000,
 				),
 			)
-			.then(resolveClosed, () => {
+			.then(resolveClosed, (cause) => {
 				lifetime.abort();
-				const error = new Error("PRIVATE_SURFACE_DRAIN_UNCONFIRMED");
+				const error = new Error("PRIVATE_SURFACE_DRAIN_UNCONFIRMED", { cause });
 				rejectClosed(error);
 				throw error;
 			});
 		return closing;
 	};
-	const notifyFailure = (message: string): void => {
+	const notifyFailure = (message: string, cause?: unknown): void => {
 		try {
-			options.onFailure(new Error(message));
+			options.onFailure(new Error(message, { cause }));
 		} catch {
 			/* A failing service callback cannot interrupt physical cleanup. */
 		}
 	};
-	const failed = (): void => {
+	const failed = (message: string, cause?: unknown): void => {
 		if (closing) return;
-		void close().catch(() => notifyFailure("PRIVATE_SURFACE_DRAIN_UNCONFIRMED"));
-		notifyFailure("PRIVATE_SURFACE_ENDED");
+		void close().catch((error) => notifyFailure("PRIVATE_SURFACE_DRAIN_UNCONFIRMED", error));
+		notifyFailure(message, cause);
 	};
 	const aborted = (): void => {
-		void close().catch(() => notifyFailure("PRIVATE_SURFACE_DRAIN_UNCONFIRMED"));
+		void close().catch((error) => notifyFailure("PRIVATE_SURFACE_DRAIN_UNCONFIRMED", error));
 	};
 	const schedule = (): void => {
 		if (closing) return;
 		timer = setTimeout(() => {
 			renewal = cloudToolRequest(assertActive, signal, 3000);
-			void renewal.then(schedule, failed);
+			void renewal.then(schedule, (error) => failed("PRIVATE_SURFACE_AUTHORITY_UNCONFIRMED", error));
 		}, 1000);
 	};
 	try {
@@ -246,8 +246,11 @@ export async function startCompanyComputerLinuxPrivateSurface(options: {
 		signal.addEventListener("abort", aborted, { once: true });
 		signal.throwIfAborted();
 		ready = true;
-		void display.exited.then(failed, failed);
-		browser.context.once("close", failed);
+		void display.exited.then(
+			() => failed("PRIVATE_SURFACE_DISPLAY_EXITED"),
+			(error) => failed("PRIVATE_SURFACE_DISPLAY_EXITED", error),
+		);
+		browser.context.once("close", () => failed("PRIVATE_SURFACE_BROWSER_EXITED"));
 		if (!browser.context.browser()?.isConnected()) throw new Error("PRIVATE_SURFACE_ENDED");
 		schedule();
 		return {

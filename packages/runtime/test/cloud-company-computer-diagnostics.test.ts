@@ -24,6 +24,20 @@ describe("closed office failure diagnostics", () => {
 		});
 		expect(JSON.stringify(result)).not.toContain(secret);
 	});
+	it.each([
+		"PRIVATE_SURFACE_AUTHORITY_UNCONFIRMED",
+		"PRIVATE_SURFACE_DISPLAY_EXITED",
+		"PRIVATE_SURFACE_BROWSER_EXITED",
+		"PRIVATE_SURFACE_DRAIN_UNCONFIRMED",
+	])("retains private failure class %s without private browser data", (code) => {
+		const original = Object.assign(new Error("private login URL and cookies"), { code: "ECONNRESET" });
+		const result = companyComputerFailureDiagnostic(
+			new Error("OFFICE_GUEST_FAILED", { cause: new Error(code, { cause: original }) }),
+		);
+		expect(result.codes).toEqual(["OFFICE_GUEST_FAILED", code]);
+		expect(result.categories).toEqual(["transport"]);
+		expect(JSON.stringify(result)).not.toContain("cookies");
+	});
 	it("projects only safe-integer stale-status counts from the supervisor budget failure", () => {
 		const stale = Object.assign(new Error("OFFICE_SUPERVISOR_STATUS_STALE"), {
 			unconfirmedPolls: 16,

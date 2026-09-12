@@ -296,7 +296,7 @@ try {
 		}),
 	]);
 	assert.ok(socket.destroyed);
-	assert.ok(failures.includes("PRIVATE_SURFACE_ENDED"));
+	assert.ok(failures.includes("PRIVATE_SURFACE_AUTHORITY_UNCONFIRMED"));
 	await surface.close();
 	assert.deepEqual(await readdir("/run/office-screens"), []);
 	assert.deepEqual(await readdir("/run/office-browser"), []);
