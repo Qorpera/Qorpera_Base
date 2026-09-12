@@ -166,24 +166,11 @@ export class LxdOfficeLifecycle {
 		});
 		const software = options.software;
 		// Identity only: the plan digest and public pins, never the capability.
-		// Without a software lane the digest must equal the pre-lane provider's,
-		// so a retained lifecycle journal stays readable across this upgrade.
-		this.#configSha = officeDigest({
-			providerPolicySha256,
-			inventoryLimits: limits,
-			planPath: this.#planPath,
-			...(software
-				? {
-						software: {
-							planSha256: software.plan ? officeDigest(software.plan) : null,
-							expectedRevision: software.expectedRevision,
-							expectedService: software.expectedService,
-							measurementToolSha256: software.measurementToolSha256,
-							installToolSha256: software.installToolSha256,
-						},
-					}
-				: {}),
-		});
+		// The software lane is not part of the lifecycle journal's configuration
+		// identity: its plan, revision and pins are bound by SQL and the signed
+		// documents, and a retained journal must stay readable when a lane is
+		// added or a revision advances.
+		this.#configSha = officeDigest({ providerPolicySha256, inventoryLimits: limits, planPath: this.#planPath });
 		this.#provider = new LxdOfficeProviderControl(
 			{
 				companyId: g.companyId,
