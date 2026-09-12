@@ -883,24 +883,90 @@ describe("LXD cloud runner provider", () => {
 		expect(lxd.volumes.get(`native-recovery-${runId}`)).toEqual(oldRecovery);
 	});
 
-	it("does not provision a later attempt while its preceding guest is still running", async () => {
-		const stateRoot = join(await root(), "state");
-		const lxd = new FakeLxd();
-		const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
-		const backend = new LxdCloudRunnerProviderBackend(
-			governedConfig(stateRoot),
-			lxd,
-			new FakeGuest(),
-			fetchProvisioner(requests),
-		);
-		await backend.acquire(runId, work(), new AbortController().signal);
-		await expect(backend.acquire(runId, { ...work(), attempt: 2 }, new AbortController().signal)).rejects.toThrow(
-			"prior run attempt",
-		);
-		expect(requests).toHaveLength(1);
-		expect(lxd.createCalls).toHaveLength(1);
-		expect(lxd.powerCalls).toEqual(["start"]);
-	});
+	it.each(["shutdown", "cancel", "timeout", "drift", "missing-recovery"])(
+		"waits for the preceding guest during a sponsor handoff (%s)",
+		async (outcome) => {
+			const stateRoot = join(await root(), "state");
+			const lxd = new FakeLxd();
+			const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+			const settings = governedConfig(stateRoot);
+			const fetcher = fetchProvisioner(requests);
+			const backend = new LxdCloudRunnerProviderBackend(settings, lxd, new FakeGuest(), fetcher);
+			const first = await backend.acquire(runId, work(), new AbortController().signal);
+			await backend.deliver(first, delivery(work()));
+			const journalPath = join(stateRoot, runId, "journal.json");
+			const history = await readFile(journalPath, "utf-8");
+			const recovery = structuredClone(lxd.volumes.get(`native-recovery-${runId}`));
+			const caller = new AbortController();
+			const getInstance = lxd.getInstance.bind(lxd);
+			let observations = 0;
+			const observation = vi.spyOn(lxd, "getInstance").mockImplementation(async (project, name) => {
+				if (++observations === 2) {
+					expect(requests).toHaveLength(1);
+					expect(lxd.createCalls).toHaveLength(1);
+					expect(lxd.deleteCalls).toHaveLength(0);
+					expect(lxd.powerCalls).toEqual(["start"]);
+					if (outcome === "shutdown") lxd.instance = { ...lxd.instance!, status: "Stopped", statusCode: 102 };
+					if (outcome === "cancel") caller.abort(new Error("handoff cancelled"));
+					if (outcome === "drift") lxd.instance!.type = "container";
+					if (outcome === "missing-recovery") {
+						lxd.volumes.delete(`native-recovery-${runId}`);
+						lxd.volume = undefined;
+					}
+				}
+				return getInstance(project, name);
+			});
+			const originalTimeout = AbortSignal.timeout.bind(AbortSignal);
+			const timeout = vi
+				.spyOn(AbortSignal, "timeout")
+				.mockImplementation((ms) => originalTimeout(outcome === "timeout" && ms === 120_000 ? 50 : ms));
+			try {
+				const pending = backend.acquire(runId, { ...work(), attempt: 2 }, caller.signal);
+				if (outcome === "shutdown") {
+					await pending;
+					expect(observations).toBeGreaterThan(2);
+					expect(lxd.deleteCalls).toEqual([lxd.createCalls[0]!.name]);
+					expect(lxd.createCalls).toHaveLength(2);
+					expect(lxd.powerCalls).toEqual(["start", "start"]);
+					expect(lxd.volumes.get(`native-recovery-${runId}`)).toEqual(recovery);
+					expect(JSON.parse(await readFile(journalPath, "utf-8"))).toMatchObject({
+						physicalState: "stopped",
+						assignmentId: delivery(work()).assignment.assignmentId,
+					});
+				} else {
+					await expect(pending).rejects.toThrow(
+						outcome === "cancel"
+							? "handoff cancelled"
+							: outcome === "drift"
+								? "authority"
+								: outcome === "missing-recovery"
+									? "recovery volume"
+									: /aborted|timeout/i,
+					);
+					expect(requests).toHaveLength(1);
+					expect(lxd.createCalls).toHaveLength(1);
+					expect(lxd.createVolumeCalls).toHaveLength(2);
+					expect(lxd.powerCalls).toEqual(["start"]);
+					expect(lxd.deleteCalls).toHaveLength(0);
+					expect(await readFile(journalPath, "utf-8")).toBe(history);
+					if (outcome === "cancel" || outcome === "timeout") {
+						observation.mockRestore();
+						lxd.instance = { ...lxd.instance!, status: "Stopped", statusCode: 102 };
+						await new LxdCloudRunnerProviderBackend(settings, lxd, new FakeGuest(), fetcher).acquire(
+							runId,
+							{ ...work(), attempt: 2 },
+							new AbortController().signal,
+						);
+						expect(lxd.createCalls).toHaveLength(2);
+						expect(lxd.volumes.get(`native-recovery-${runId}`)).toEqual(recovery);
+					}
+				}
+			} finally {
+				observation.mockRestore();
+				timeout.mockRestore();
+			}
+		},
+	);
 
 	it.each(["run", "attempt", "missing-attempt"])(
 		"rejects altered %s authority in a governed attempt journal",

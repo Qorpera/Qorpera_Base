@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmod, mkdir, open, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { parseCompanyComputerNativeUrl } from "@qorpera/contracts";
 import type { ServiceHttpFetch } from "./http-transport.ts";
 import type {
@@ -836,20 +837,31 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			const digest = workSha256(work);
 			let current = await this.#readJournal(acquisitionId);
 			if (!current && this.#config.nativeCompanyRuntime && work.attempt > 1) {
+				// A sponsor handoff is recorded before the old one-run guest finishes
+				// shutting down. Keep this acquisition (and its renewed dispatch claim)
+				// pending instead of exhausting infrastructure retries during shutdown.
+				const retirementSignal = AbortSignal.any([signal, AbortSignal.timeout(120_000)]);
 				await mkdir(this.#config.stateRoot, { recursive: true, mode: 0o700 });
 				for (const entry of await readdir(this.#config.stateRoot, { withFileTypes: true })) {
 					if (!entry.isDirectory() || !UUID_PATTERN.test(entry.name) || entry.name === acquisitionId) continue;
-					const prior = await this.#readJournal(entry.name);
+					let prior = await this.#readJournal(entry.name);
 					if (!prior || (prior.runId ?? prior.acquisitionId) !== work.runId) continue;
 					if ((prior.attempt ?? 1) >= work.attempt) throw new Error("LXD provider refuses an older run attempt");
-					await this.#reconcileJournal(prior, signal);
-					const retired = await this.#readJournal(entry.name);
-					if (
-						!retired ||
-						!["stopped", "lost"].includes(retired.physicalState) ||
-						(await this.#lxd.getInstance(prior.lxd.project, prior.instanceName, signal))
-					) {
-						throw new Error("LXD prior run attempt has not retired its guest");
+					for (;;) {
+						retirementSignal.throwIfAborted();
+						await this.#reconcileJournal(prior, retirementSignal);
+						const retired = await this.#readJournal(entry.name);
+						if (!retired) throw new Error("LXD prior run attempt lost its journal");
+						const instance = await this.#lxd.getInstance(prior.lxd.project, prior.instanceName, retirementSignal);
+						retirementSignal.throwIfAborted();
+						if (["stopped", "lost"].includes(retired.physicalState) && !instance) break;
+						if (!instance || !["registered", "assigned"].includes(retired.physicalState)) {
+							throw new Error("LXD prior run attempt has not retired its guest");
+						}
+						// Reconciliation validates physical and retained-volume authority on
+						// every poll. Never stop a still-running prior attempt here.
+						prior = retired;
+						await delay(250, undefined, { signal: retirementSignal });
 					}
 				}
 			}
