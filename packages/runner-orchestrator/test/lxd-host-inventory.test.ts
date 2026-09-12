@@ -87,7 +87,10 @@ async function setup(
 		response.end(JSON.stringify(result.body ?? body));
 	});
 	servers.push(server);
-	await new Promise<void>((resolve) => server.listen(socket, resolve));
+	await new Promise<void>((resolve, reject) => {
+		server.once("error", reject);
+		server.listen(socket, resolve);
+	});
 	return { client: new LxdUnixClient(socket), calls };
 }
 afterEach(async () => {

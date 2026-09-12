@@ -1,4 +1,6 @@
-import { runOfficialCodexMouthProbe } from "./official-codex-mouth-probe.ts";
+import "./native-probe-source-loader.ts";
+
+const { runOfficialCodexMouthProbe } = await import("./official-codex-mouth-probe.ts");
 
 const [command, ...args] = process.argv.slice(2);
 if (!command) throw new Error("Usage: run-official-codex-mouth-probe <codex command> [arguments]");

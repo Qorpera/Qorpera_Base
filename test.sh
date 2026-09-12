@@ -3,8 +3,18 @@ set -euo pipefail
 
 # Isolate user resources, credentials, temporary files, and tool configuration.
 temp_parent="${TMPDIR:-/tmp}"
+# Darwin's per-user temporary path can exceed Unix socket limits after fixture
+# subdirectories are appended. Keep the same private, owned test isolation.
+case "${OSTYPE-}" in
+	darwin*) temp_parent="/private/tmp" ;;
+esac
 temp_parent="${temp_parent%/}"
 test_root="$(mktemp -d "$temp_parent/pi-test.XXXXXX")"
+# Darwin inherits the temporary parent's group. Keep fixtures aligned with the
+# process identity before creating their private directories.
+case "${OSTYPE-}" in
+	darwin*) chgrp "$(id -g)" "$test_root" ;;
+esac
 git_askpass="$(type -P false)"
 readonly temp_parent test_root git_askpass
 
@@ -83,6 +93,15 @@ test_env=(
 	"QORPERA_NO_LOCAL_LLM=1"
 	"AWS_EC2_METADATA_DISABLED=true"
 )
+
+# Bound local parallelism without admitting endpoint or authentication settings.
+if [[ -n ${VITEST_MAX_WORKERS-} ]]; then
+	if [[ ! $VITEST_MAX_WORKERS =~ ^([1-9]|[12][0-9]|3[0-2])$ ]]; then
+		printf 'VITEST_MAX_WORKERS must be an integer from 1 to 32\n' >&2
+		exit 1
+	fi
+	test_env+=("VITEST_MAX_WORKERS=$VITEST_MAX_WORKERS")
+fi
 
 # Native Windows needs these inherited values to launch child processes.
 for name in SystemRoot SYSTEMROOT WINDIR COMSPEC PATHEXT; do
