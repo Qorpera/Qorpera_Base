@@ -20,7 +20,13 @@ import { type CompanyComputerResetSuccessor, parseCompanyComputerResetSuccessor 
 /** The recreated root has no preparation invocation of its own: the packet
  * carries the exact original preparation document so the root helper can bind
  * the restored public receipt and the fresh boot to the permanent identity. */
-export const COMPANY_COMPUTER_RESET_CONFIGURATION_MAX_BYTES = COMPANY_COMPUTER_PREPARATION_MAX_BYTES;
+// The original JSON is carried as a string, so quotes/backslashes/JSON
+// whitespace may double in the outer packet. Each credential string keeps
+// its own byte limit and may use six-byte JSON control-character escapes.
+export const COMPANY_COMPUTER_RESET_CONFIGURATION_MAX_BYTES =
+	2 * COMPANY_COMPUTER_PREPARATION_MAX_BYTES +
+	6 * Object.values(COMPANY_COMPUTER_CONFIGURATION_LIMITS).reduce((sum, limit) => sum + limit, 0) +
+	65536;
 export const COMPANY_COMPUTER_RESET_SERVICE_START_MAX_BYTES = 16384;
 export const COMPANY_COMPUTER_RESET_CONFIGURATION_CLAIM = "reset-configuration-claim.json";
 export const COMPANY_COMPUTER_RESET_CONFIGURATION_COMPLETION = "reset-configuration-completion.json";
@@ -127,7 +133,12 @@ export function parseCompanyComputerResetConfigurationRequest(
 			ids.includes(predecessor.startup.allocationId)
 		)
 			throw new Error("identity");
-		if (typeof r.originPreparation !== "string" || !r.originPreparation) throw new Error("origin");
+		if (
+			typeof r.originPreparation !== "string" ||
+			!r.originPreparation ||
+			new TextEncoder().encode(r.originPreparation).length > COMPANY_COMPUTER_PREPARATION_MAX_BYTES
+		)
+			throw new Error("origin");
 		const original = parseCompanyComputerPreparationRequest(JSON.parse(r.originPreparation));
 		if (
 			original.allocationId !== predecessor.startup.allocationId ||

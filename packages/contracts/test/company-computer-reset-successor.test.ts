@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { COMPANY_COMPUTER_CONFIGURATION_FILES } from "../src/company-computer-configuration.ts";
 import type { CompanyComputerLifecycleRequest } from "../src/company-computer-lifecycle.ts";
+import { COMPANY_COMPUTER_PREPARATION_MAX_BYTES } from "../src/company-computer-preparation.ts";
 import type { CompanyComputerResetSuccessor } from "../src/company-computer-reset.ts";
 import {
 	type CompanyComputerResetConfigurationCompletion,
@@ -136,6 +137,16 @@ const start = (): CompanyComputerResetServiceStartCompletion => ({
 	controlGroup: "/system.slice/qorpera-company-computer.service",
 });
 describe("reset successor guest contracts", () => {
+	it("carries a maximum-sized retained preparation plus credentials without truncating its original bytes", () => {
+		const r = request();
+		r.originPreparation += " ".repeat(
+			COMPANY_COMPUTER_PREPARATION_MAX_BYTES - new TextEncoder().encode(r.originPreparation).length,
+		);
+		expect(parseCompanyComputerResetConfigurationRequest(r).originPreparation).toBe(r.originPreparation);
+		expect(() =>
+			parseCompanyComputerResetConfigurationRequest({ ...r, originPreparation: `${r.originPreparation} ` }),
+		).toThrow("INVALID_OFFICE_RESET_CONFIGURATION_REQUEST");
+	});
 	it("parses a reset configuration packet only for the exact retained origin", () => {
 		expect(parseCompanyComputerResetConfigurationRequest(request()).predecessor.action).toBe("replace");
 		for (const mutate of [

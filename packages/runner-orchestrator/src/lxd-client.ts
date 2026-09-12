@@ -2339,7 +2339,11 @@ export class LxdUnixClient
 				/[\x00-\x1f\x7f\\]/.test(path) ||
 				!Number.isSafeInteger(maximumBytes) ||
 				maximumBytes < 1 ||
-				maximumBytes > COMPANY_COMPUTER_PREPARATION_MAX_BYTES
+				maximumBytes >
+					(path.startsWith("/run/qorpera-office-preparation/reset-configuration-incoming-") &&
+					/^\/run\/qorpera-office-preparation\/reset-configuration-incoming-[0-9a-f]{64}\.json$/.test(path)
+						? COMPANY_COMPUTER_RESET_CONFIGURATION_MAX_BYTES
+						: COMPANY_COMPUTER_PREPARATION_MAX_BYTES)
 			)
 				throw new Error("invalid request");
 			const checked = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(5000)]);

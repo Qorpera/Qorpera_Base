@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
 	material: vi.fn(),
 	verifyMaterial: vi.fn(),
 	bootMaterial: vi.fn(),
+	resetMaterial: vi.fn(),
 	closeBoot: vi.fn(),
 	startInspect: vi.fn(),
 	inspect: vi.fn(),
@@ -44,6 +45,9 @@ vi.mock("../src/cloud-company-computer-service-start-evidence.ts", () => ({
 }));
 vi.mock("../src/cloud-company-computer-boot-service-start-evidence.ts", () => ({
 	readCompanyComputerBootServiceStartEvidence: mocks.bootMaterial,
+}));
+vi.mock("../src/cloud-company-computer-reset-successor-evidence.ts", () => ({
+	readCompanyComputerResetServiceStartEvidence: mocks.resetMaterial,
 }));
 vi.mock("../src/cloud-company-computer-service-start-systemd.ts", () => ({
 	createCompanyComputerServiceStartSystemdManager: () => ({ inspect: mocks.startInspect, start: mocks.start }),
@@ -124,6 +128,7 @@ function fixture() {
 	});
 	mocks.material.mockResolvedValue({ preparation, verify: mocks.verifyMaterial });
 	mocks.bootMaterial.mockResolvedValue({ verify: mocks.verifyMaterial, close: mocks.closeBoot });
+	mocks.resetMaterial.mockResolvedValue({ verify: mocks.verifyMaterial, close: mocks.closeBoot });
 	mocks.startInspect.mockImplementation(async () => ({ preparation, service: { ...state } }));
 	mocks.inspect.mockImplementation(async () => ({ service: { ...state }, cgroupState: "populated" }));
 	mocks.read.mockImplementation(async (path: string) => {
@@ -153,6 +158,31 @@ function fixture() {
 }
 beforeEach(() => vi.resetAllMocks());
 describe("independent installed software invocation measurement", () => {
+	it("measures a recreated root using its reset evidence without requesting a nonexistent retained-boot origin", async () => {
+		const f = fixture();
+		mocks.invocation.mockResolvedValue({ ...f.invocation, kind: "reset" });
+		mocks.startInspect.mockResolvedValue({
+			preparation: {
+				invocationId: "",
+				activeState: "inactive",
+				subState: "dead",
+				result: "success",
+				mainPid: 0,
+				controlPid: 0,
+				jobId: 0,
+				execMainCode: 0,
+				execMainStatus: 0,
+			},
+			service: f.state,
+		});
+		const result = await f.run();
+		expect(result.evidence.startup).toEqual(f.startup);
+		expect(mocks.resetMaterial).toHaveBeenCalledWith(f.command, f.invocation.request, expect.any(AbortSignal));
+		expect(mocks.material).not.toHaveBeenCalled();
+		expect(mocks.bootMaterial).not.toHaveBeenCalled();
+		expect(mocks.closeBoot).toHaveBeenCalledOnce();
+		expect(mocks.start).not.toHaveBeenCalled();
+	});
 	it("binds current target bytes to two fresh stable inspections and wipes configuration buffers", async () => {
 		const f = fixture(),
 			result = await f.run();

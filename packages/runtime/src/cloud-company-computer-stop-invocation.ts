@@ -1,10 +1,14 @@
 import {
 	COMPANY_COMPUTER_ADOPTION_RECEIPT_PATH,
+	COMPANY_COMPUTER_RESET_CONFIGURATION_CLAIM,
+	COMPANY_COMPUTER_RESET_CONFIGURATION_COMPLETION,
 	companyComputerBootAdoptionReceiptPath,
+	companyComputerBootDirectory,
 	parseCompanyComputerPreparationCommand,
 } from "@qorpera/contracts";
 import { readCompanyComputerBootServiceInvocation } from "./cloud-company-computer-boot-invocation-evidence.ts";
 import { OFFICE_PREPARATION_CONTROL_ROOT as root } from "./cloud-company-computer-preparation-control.ts";
+import { readCompanyComputerResetServiceInvocation } from "./cloud-company-computer-reset-invocation-evidence.ts";
 import {
 	type CompanyComputerProtectedEvidenceReader,
 	readCompanyComputerServiceInvocation,
@@ -31,6 +35,26 @@ export async function readCompanyComputerStopInvocation(
 	const bytes = await optional(`${root}/boot-service-start-completion.json`, 8192, 0o600),
 		receiptBytes = await optional(adoptionPath, 16384, 0o444),
 		claimBytes = await optional(`${root}/boot-service-start-claim.json`, 4096, 0o600);
+	const resetPaths = [
+		`${root}/reset-service-start-completion.json`,
+		`${root}/reset-service-start-claim.json`,
+		`${companyComputerBootDirectory(bootId)}/${COMPANY_COMPUTER_RESET_CONFIGURATION_COMPLETION}`,
+		`${companyComputerBootDirectory(bootId)}/${COMPANY_COMPUTER_RESET_CONFIGURATION_CLAIM}`,
+	];
+	const resetEvidence = [];
+	for (const path of resetPaths) resetEvidence.push(await optional(path, 16384, 0o600));
+	if (resetEvidence.some(Boolean)) {
+		if (
+			!resetEvidence.every(Boolean) ||
+			bytes ||
+			receiptBytes ||
+			claimBytes ||
+			(await optional(`${root}/service-start-completion.json`, 8192, 0o600)) ||
+			(await optional(`${root}/service-start-claim.json`, 4096, 0o600))
+		)
+			throw new Error("ambiguous reset start evidence");
+		return readCompanyComputerResetServiceInvocation(activationId, bootId, read);
+	}
 	if (!bytes && !receiptBytes && !claimBytes) {
 		const prior = await readCompanyComputerServiceInvocation(activationId, read);
 		if (prior.start.command.bootId !== bootId) throw new Error("prior boot differs");
