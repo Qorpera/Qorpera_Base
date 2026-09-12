@@ -1,3 +1,4 @@
+import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import type { CloudApi } from "../cloud/api.ts";
 import { CloudRpcError, describeError } from "../cloud/client.ts";
 import { buildCompanyHierarchy, type CompanyHierarchy, type HostedCompanyOrganization } from "../cloud/organization.ts";
@@ -8,7 +9,11 @@ import {
 	subscribeProfileRealtime,
 } from "../cloud/realtime.ts";
 import { sessionAttachmentIssue } from "../cloud/session-attachments.ts";
-import type { SessionInputWriter } from "../cloud/session-input.ts";
+import {
+	type SessionExecutionSponsor,
+	type SessionInputWriter,
+	selectSessionExecutionSponsor,
+} from "../cloud/session-input.ts";
 import { projectTranscript, type TranscriptProjection } from "../cloud/transcript.ts";
 import type {
 	HostedProfile,
@@ -58,7 +63,14 @@ export interface ConversationState {
 	draft?: string;
 	/** Local selected bytes, staged only after an explicit send. */
 	attachments?: File[];
-	retrySend?: { clientInputId: string; text: string; files: File[] };
+	executionSponsor?: SessionExecutionSponsor;
+	retrySend?: {
+		clientInputId: string;
+		clientRequestId: string;
+		text: string;
+		files: File[];
+		executionSponsor: SessionExecutionSponsor;
+	};
 	/** Inputs this browser appended that the cloud has not listed back yet. */
 	optimistic: {
 		clientInputId: string;
@@ -110,9 +122,8 @@ export class CompanyController {
 		this.#userId = userId;
 		this.#writeInput =
 			writeInput ??
-			((sessionId, clientInputId, text, _signal, files) => {
-				if (files?.length) throw new Error("Attachment transport is unavailable.");
-				return api.appendPrompt(sessionId, clientInputId, text);
+			(async () => {
+				throw new Error("Sponsored message transport is unavailable.");
 			});
 		this.store = new Store<CompanyState>({
 			profile,
@@ -156,7 +167,8 @@ export class CompanyController {
 		if (this.#stopped) return;
 		this.#stopped = true;
 		this.#abort.abort();
-		for (const store of this.conversations.values()) store.set({ draft: "", attachments: [], retrySend: undefined });
+		for (const store of this.conversations.values())
+			store.set({ draft: "", attachments: [], retrySend: undefined, executionSponsor: undefined });
 		this.#realtime?.stop();
 		if (this.#poll) clearInterval(this.#poll);
 		this.#invalidations.clear();
@@ -467,6 +479,29 @@ export class CompanyController {
 			throw new Error("This conversation is not available for sending.");
 	}
 
+	setExecutionSponsor(sessionId: string, observed: NativeExecutionConnections, connectionId?: string): void {
+		this.assertCanSend(sessionId);
+		const executionSponsor = connectionId
+			? selectSessionExecutionSponsor(observed, connectionId, this.#userId)
+			: undefined;
+		this.conversation(sessionId, false).set({ executionSponsor, sendError: undefined });
+	}
+
+	/** Explicitly abandon local replay identity; the cloud may have accepted it. */
+	discardSendRetry(sessionId: string): void {
+		this.assertCanSend(sessionId);
+		const store = this.conversation(sessionId, false);
+		const state = store.get();
+		if (state.sending) throw new Error("Wait for message submission before starting a new request.");
+		if (!state.retrySend) return;
+		const clientInputId = state.retrySend.clientInputId;
+		store.set({
+			retrySend: undefined,
+			sendError: undefined,
+			optimistic: state.optimistic.filter((item) => item.clientInputId !== clientInputId),
+		});
+	}
+
 	async sendPrompt(sessionId: string, text: string, viewSignal?: AbortSignal): Promise<boolean> {
 		if (this.#stopped || viewSignal?.aborted) return false;
 		try {
@@ -486,8 +521,16 @@ export class CompanyController {
 		const retry = store.get().retrySend;
 		const sameFiles = (other: readonly File[]) =>
 			other.length === files.length && other.every((file, index) => file === files[index]);
-		const clientInputId =
-			retry?.text === trimmed && sameFiles(retry.files) ? retry.clientInputId : crypto.randomUUID();
+		const sameRequest = retry?.text === trimmed && sameFiles(retry.files);
+		// An uncertain attempt retains its original sponsor even if discovery or
+		// the current chooser has changed. SQL checks exact replay identity.
+		const executionSponsor = sameRequest ? retry.executionSponsor : store.get().executionSponsor;
+		if (!executionSponsor) {
+			store.set({ sendError: "Select an active model account before sending.", draft: text });
+			return false;
+		}
+		const clientInputId = sameRequest ? retry.clientInputId : crypto.randomUUID();
+		const clientRequestId = sameRequest ? retry.clientRequestId : clientInputId;
 		store.set((state) => ({
 			sending: true,
 			sendError: undefined,
@@ -505,7 +548,7 @@ export class CompanyController {
 		}));
 		try {
 			const signal = AbortSignal.any([this.signal, ...(viewSignal ? [viewSignal] : [])]);
-			const receipt = await this.#writeInput(sessionId, clientInputId, trimmed, signal, files);
+			const receipt = await this.#writeInput(sessionId, clientInputId, trimmed, signal, files, executionSponsor);
 			if (this.#stopped) return false;
 			signal.throwIfAborted();
 			store.set((state) => ({
@@ -528,7 +571,7 @@ export class CompanyController {
 			store.set((state) => ({
 				sending: false,
 				sendError: describeError(error),
-				retrySend: { clientInputId, text: trimmed, files },
+				retrySend: { clientInputId, clientRequestId, text: trimmed, files, executionSponsor },
 				optimistic: state.optimistic.filter((item) => item.clientInputId !== clientInputId),
 			}));
 			return false;

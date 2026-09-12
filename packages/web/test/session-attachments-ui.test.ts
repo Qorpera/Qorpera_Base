@@ -80,18 +80,64 @@ async function setup() {
 		const url = String(input);
 		expect(new Headers(init?.headers).get("authorization")).toBe("Bearer fixture-token");
 		expect(init).toMatchObject({ redirect: "error", cache: "no-store", credentials: "omit" });
+		if (url.endsWith("/qorpera_list_session_turn_requests")) return Response.json([]);
+		if (url.endsWith("/qorpera_list_member_native_execution_connections"))
+			return Response.json({
+				compute_identity: {
+					compute_identity_id: id(80),
+					ownership_kind: "member",
+					owner_user_id: userA.id,
+					display_name: "Member computer",
+					template_key: "member",
+					template_version: "1",
+					capabilities: ["agent_turn"],
+					policy: {},
+					status: "active",
+					created_at: timestamp,
+					updated_at: timestamp,
+				},
+				connections: [
+					{
+						connection_id: id(81),
+						connection_version: 1,
+						provider: "openai",
+						native_harness: "codex-cli",
+						authorization_state: "active",
+						max_native_concurrency: 1,
+						billing_source: "member",
+						consent_version: "1",
+						consented_at: timestamp,
+						connection_status: "active",
+						sponsor_binding_id: id(82),
+						sponsor_version: 1,
+						policy: { implementation_status: "supported", enablement_status: "enabled", policy_version: 1 },
+					},
+				],
+			});
 		if (url.includes("/upload/")) {
 			expect(init?.method).toBe("PUT");
 			expect(init?.body).toEqual(png);
 			expect(url.endsWith(`/${hash}`)).toBe(true);
 			return Response.json({ sha256: hash, bytes: png.length, mediaType: "image/png" });
 		}
-		if (url.endsWith("/qorpera_append_session_input")) {
+		if (url.endsWith("/qorpera_request_session_turn_v2")) {
 			const body = JSON.parse(init!.body as string);
 			expect(body.p_session_id).toBe(session.sessionId);
+			expect(body.p_client_request_id).toBe(body.p_client_input_id);
+			expect(body).toMatchObject({
+				p_sponsor_mode: "member_connection",
+				p_sponsor_binding_id: id(82),
+				p_sponsor_version: 1,
+				p_compute_identity_id: id(80),
+			});
 			expect(body.p_body.images).toEqual([reference]);
 			admitted = true;
-			return Response.json({ input_id: id(90), position: 1 });
+			return Response.json({
+				input_id: id(90),
+				turn_request_id: id(91),
+				status: "queued",
+				sponsor_mode: "member_connection",
+			});
 		}
 		if (
 			url ===
@@ -106,13 +152,26 @@ async function setup() {
 	await vi.waitFor(() =>
 		expect(root.querySelector<HTMLTextAreaElement>('[aria-label="Message"]')?.disabled).toBe(false),
 	);
-	return { ...f, root, fetcher };
+	await vi.waitFor(() =>
+		expect(root.querySelector<HTMLOptionElement>(`option[value="${id(81)}"]`)?.disabled).toBe(false),
+	);
+	const account = root.querySelector<HTMLSelectElement>('[aria-label="Model account for this conversation"]')!;
+	account.value = id(81);
+	account.dispatchEvent(new Event("change"));
+	await settle();
+	const requests = () =>
+		fetcher.mock.calls.filter(
+			([url]) =>
+				!String(url).endsWith("/qorpera_list_session_turn_requests") &&
+				!String(url).endsWith("/qorpera_list_member_native_execution_connections"),
+		);
+	return { ...f, root, fetcher, requests };
 }
 describe("actual product conversation attachments", () => {
 	it("sends selected images, clears the tray on acceptance and previews only canonical verified bytes", async () => {
 		const f = await setup();
 		select(f.root, [new File([png], "review.png", { type: "image/png" })]);
-		expect(f.fetcher).not.toHaveBeenCalled();
+		expect(f.requests()).toHaveLength(0);
 		const text = f.root.querySelector<HTMLTextAreaElement>('[aria-label="Message"]')!;
 		text.value = "Review this image";
 		text.dispatchEvent(new Event("input"));
@@ -120,50 +179,51 @@ describe("actual product conversation attachments", () => {
 		await vi.waitFor(() => expect(f.root.querySelector(".attachment-chip")).toBeNull());
 		await vi.waitFor(() => expect(f.root.querySelector(".received-file")).not.toBeNull());
 		expect(text.value).toBe("");
-		expect(f.fetcher).toHaveBeenCalledTimes(2);
+		expect(f.requests()).toHaveLength(2);
 		button(f.root, "Preview Image attachment").click();
 		await vi.waitFor(() => expect(document.querySelector("dialog img")).not.toBeNull());
-		expect(f.fetcher).toHaveBeenCalledTimes(3);
+		expect(f.requests()).toHaveLength(3);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
-	it("retains files and the exact input ID after a lost append response without replaying automatically", async () => {
+	it("retains files and the exact input ID after a lost sponsored response without replaying automatically", async () => {
 		const f = await setup(),
 			normal = f.fetcher.getMockImplementation()!;
 		let lose = true;
 		f.fetcher.mockImplementation(async (input, init) => {
 			const response = await normal(input, init);
-			if (String(input).endsWith("/qorpera_append_session_input") && lose) {
+			if (String(input).endsWith("/qorpera_request_session_turn_v2") && lose) {
 				lose = false;
-				throw new Error("Lost append response");
+				throw new Error("Cloud execution could not be confirmed");
 			}
 			return response;
 		});
 		select(f.root, [new File([png], "review.png", { type: "image/png" })]);
 		button(f.root, "Send message").click();
-		await vi.waitFor(() => expect(f.root.textContent).toContain("Lost append response"));
+		await vi.waitFor(() => expect(f.root.textContent).toContain("Cloud execution could not be confirmed"));
 		expect(f.root.querySelector(".attachment-chip")).not.toBeNull();
-		expect(f.fetcher).toHaveBeenCalledTimes(2);
+		expect(f.requests()).toHaveLength(2);
 		button(f.root, "Send message").click();
 		await vi.waitFor(() => expect(f.root.querySelector(".attachment-chip")).toBeNull());
-		const appends = f.fetcher.mock.calls.filter(([url]) => String(url).endsWith("/qorpera_append_session_input"));
+		const turns = f.fetcher.mock.calls.filter(([url]) => String(url).endsWith("/qorpera_request_session_turn_v2"));
 		const uploads = f.fetcher.mock.calls.filter(([url]) => String(url).includes("/upload/"));
-		expect(appends).toHaveLength(2);
+		expect(f.fetcher.mock.calls.some(([url]) => String(url).includes("append_session_input"))).toBe(false);
+		expect(turns).toHaveLength(2);
 		expect(uploads).toHaveLength(2);
-		expect(appends[0]![1]!.body).toBe(appends[1]![1]!.body);
+		expect(turns[0]![1]!.body).toBe(turns[1]![1]!.body);
 		expect(uploads[0]![0]).toBe(uploads[1]![0]);
 		expect(uploads[0]![1]!.body).toEqual(uploads[1]![1]!.body);
 	});
-	it("does not append a message after an uncertain upload and retries that same upload explicitly", async () => {
+	it("does not request a turn after an uncertain upload and retries that same upload explicitly", async () => {
 		const f = await setup();
 		f.fetcher.mockRejectedValueOnce(new Error("Upload response lost"));
 		select(f.root, [new File([png], "review.png", { type: "image/png" })]);
 		button(f.root, "Send message").click();
 		await vi.waitFor(() => expect(f.root.textContent).toContain("Upload response lost"));
-		expect(f.fetcher).toHaveBeenCalledTimes(1);
+		expect(f.requests()).toHaveLength(1);
 		button(f.root, "Send message").click();
 		await vi.waitFor(() => expect(f.root.querySelector(".attachment-chip")).toBeNull());
-		expect(f.fetcher.mock.calls[0]![0]).toBe(f.fetcher.mock.calls[1]![0]);
-		expect(f.fetcher).toHaveBeenCalledTimes(3);
+		expect(f.requests()[0]![0]).toBe(f.requests()[1]![0]);
+		expect(f.requests()).toHaveLength(3);
 	});
 	it("fences an account change during upload and clears local images", async () => {
 		const f = await setup(),
@@ -171,13 +231,13 @@ describe("actual product conversation attachments", () => {
 		f.fetcher.mockReturnValueOnce(response.promise);
 		select(f.root, [new File([png], "private.png", { type: "image/png" })]);
 		button(f.root, "Send message").click();
-		await vi.waitFor(() => expect(f.fetcher).toHaveBeenCalledTimes(1));
+		await vi.waitFor(() => expect(f.requests()).toHaveLength(1));
 		expect(button(f.root, "Remove private.png").disabled).toBe(true);
 		f.auth(userB);
 		response.resolve(Response.json({ sha256: hash, bytes: png.length, mediaType: "image/png" }));
 		await settle();
 		await vi.waitFor(() => expect(f.root.textContent).not.toContain("private.png"));
-		expect(f.fetcher).toHaveBeenCalledTimes(1);
+		expect(f.requests()).toHaveLength(1);
 		expect(URL.revokeObjectURL).toHaveBeenCalled();
 	});
 	it("rejects unsupported files and the protocol's aggregate image limit before uploading", async () => {
@@ -192,6 +252,6 @@ describe("actual product conversation attachments", () => {
 		);
 		expect(button(f.root, "Send message").disabled).toBe(true);
 		expect(f.root.textContent).toContain("up to 5 images");
-		expect(f.fetcher).not.toHaveBeenCalled();
+		expect(f.requests()).toHaveLength(0);
 	});
 });

@@ -8,6 +8,8 @@
 
 ### Added
 
+- Submit conversation work through the shared sponsored-turn API with explicit member account selection, exact retry identity, execution history and observed-run stop controls.
+- Discover, enable and revoke existing member model accounts through the shared client SDK, with refresh recovery after uncertain changes.
 - Connect the product web app's Computer panel to shared member runtime discovery, status, explicit start intents and screen viewing.
 - Bind member requests and viewer cleanup to the selected company and account lifetime.
 - Check browser dependency boundaries and the provenance of the shared screen renderer during builds.

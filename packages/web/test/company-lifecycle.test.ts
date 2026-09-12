@@ -1,11 +1,17 @@
 // @vitest-environment jsdom
+
+import type {
+	NativeExecutionConnections,
+	SessionTurnRequestResult,
+} from "@qorpera/cloud-client/cloud-native-subscription-control";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { ApprovalsView } from "../src/app/views/approvals.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
+import type { SessionInputWriter } from "../src/cloud/session-input.ts";
 import type { HostedSessionEvent } from "../src/cloud/types.ts";
-import { deferred, event, fixture, pending, profileA, session, settle, staff, team, userA } from "./fixtures.ts";
+import { deferred, event, fixture, id, pending, profileA, session, settle, staff, team, userA } from "./fixtures.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => {
@@ -14,14 +20,133 @@ afterEach(() => {
 	vi.useRealTimers();
 	vi.restoreAllMocks();
 });
+const connections: NativeExecutionConnections = {
+	computeIdentity: {
+		computeIdentityId: id(82),
+		ownershipKind: "member",
+		ownerUserId: userA.id,
+		displayName: "Member computer",
+		templateKey: "member",
+		templateVersion: "v1",
+		capabilities: ["agent_turn"],
+		policy: {},
+		status: "active",
+		createdAt: "2026-09-12T00:00:00Z",
+		updatedAt: "2026-09-12T00:00:00Z",
+	},
+	connections: [
+		{
+			connectionId: id(80),
+			connectionVersion: 1,
+			provider: "openai",
+			nativeHarness: "codex-cli",
+			authorizationState: "active",
+			maxNativeConcurrency: 1,
+			billingSource: "member",
+			consentVersion: "v1",
+			consentedAt: "2026-09-12T00:00:00Z",
+			connectionStatus: "active",
+			sponsorBindingId: id(81),
+			sponsorVersion: 1,
+			policy: { implementationStatus: "supported", enablementStatus: "enabled", policyVersion: 1 },
+		},
+	],
+};
+const receipt: SessionTurnRequestResult = {
+	inputId: pending(1).inputId,
+	turnRequestId: id(92),
+	status: "queued",
+	sponsorMode: "member_connection",
+};
 function company() {
 	const f = fixture();
-	const controller = new CompanyController(f.api, profileA, userA.id);
+	const write = vi.fn<SessionInputWriter>().mockResolvedValue(receipt);
+	const controller = new CompanyController(f.api, profileA, userA.id, write);
+	controller.store.set({ team, sessions: [session] });
+	controller.setExecutionSponsor(session.sessionId, connections, id(80));
 	cleanup.push(() => controller.stop());
-	return { ...f, controller };
+	return { ...f, controller, write };
 }
 
 describe("conversation lifecycle regressions", () => {
+	it("requires explicit sponsorship and never falls back to ordinary append", async () => {
+		const f = fixture();
+		vi.spyOn(f.api, "appendPrompt");
+		const controller = new CompanyController(f.api, profileA, userA.id);
+		cleanup.push(() => controller.stop());
+		controller.store.set({ team, sessions: [session] });
+		expect(await controller.sendPrompt(session.sessionId, "Draft")).toBe(false);
+		controller.setExecutionSponsor(session.sessionId, connections, id(80));
+		expect(await controller.sendPrompt(session.sessionId, "Draft")).toBe(false);
+		expect(f.api.appendPrompt).not.toHaveBeenCalled();
+		expect(controller.conversation(session.sessionId).get().draft).toBe("Draft");
+	});
+	it.each(["revoked", "reauthentication", "disabled", "planned", "identity", "binding"])(
+		"rejects unavailable observed sponsorship: %s",
+		(reason) => {
+			const { controller } = company();
+			const observed = structuredClone(connections);
+			const connection = observed.connections[0]!;
+			if (reason === "revoked") connection.connectionStatus = "revoked";
+			if (reason === "reauthentication") connection.authorizationState = "reauthentication_required";
+			if (reason === "disabled") connection.policy.enablementStatus = "disabled";
+			if (reason === "planned") connection.policy.implementationStatus = "planned";
+			if (reason === "identity") observed.computeIdentity!.ownerUserId = id(99);
+			if (reason === "binding") connection.sponsorVersion = undefined;
+			expect(() => controller.setExecutionSponsor(session.sessionId, observed, id(80))).toThrow("unavailable");
+		},
+	);
+	it("retains the exact sponsor, IDs and files on retry after newer discovery and another choice", async () => {
+		const { controller, write } = company();
+		write.mockRejectedValueOnce(new Error("Lost response"));
+		const file = new File(["bytes"], "image.png", { type: "image/png" });
+		const state = controller.conversation(session.sessionId, false);
+		state.set({ attachments: [file] });
+		expect(await controller.sendPrompt(session.sessionId, "Draft")).toBe(false);
+		const retained = state.get().retrySend!;
+		const updated = structuredClone(connections);
+		updated.connections[0]!.sponsorVersion = 2;
+		updated.connections[0]!.sponsorBindingId = id(83);
+		controller.setExecutionSponsor(session.sessionId, updated, id(80));
+		expect(await controller.sendPrompt(session.sessionId, "Draft")).toBe(true);
+		expect(write.mock.calls[1]![1]).toBe(retained.clientInputId);
+		expect(retained.clientRequestId).toBe(retained.clientInputId);
+		expect(write.mock.calls[1]![5]).toEqual(write.mock.calls[0]![5]);
+		expect(write.mock.calls[1]![5]?.sponsorVersion).toBe(1);
+		expect(write.mock.calls[1]![4]?.[0]).toBe(file);
+		expect(state.get().retrySend).toBeUndefined();
+	});
+	it("only explicit abandonment releases a failed replay while preserving the edited draft and files", async () => {
+		const { controller, write } = company();
+		write.mockRejectedValueOnce(new Error("Sponsor revoked"));
+		const file = new File(["bytes"], "image.png", { type: "image/png" });
+		const state = controller.conversation(session.sessionId, false);
+		state.set({ attachments: [file] });
+		expect(await controller.sendPrompt(session.sessionId, "Original draft")).toBe(false);
+		const failedId = state.get().retrySend!.clientInputId;
+		state.set({ draft: "Edited draft" });
+		controller.discardSendRetry(session.sessionId);
+		expect(state.get()).toMatchObject({ draft: "Edited draft", attachments: [file] });
+		expect(state.get().retrySend).toBeUndefined();
+		expect(state.get().sendError).toBeUndefined();
+		expect(write).toHaveBeenCalledTimes(1);
+		const updated = structuredClone(connections);
+		updated.connections[0]!.sponsorVersion = 2;
+		controller.setExecutionSponsor(session.sessionId, updated, id(80));
+		expect(await controller.sendPrompt(session.sessionId, "Edited draft")).toBe(true);
+		expect(write.mock.calls[1]![1]).not.toBe(failedId);
+		expect(write.mock.calls[1]![5]?.sponsorVersion).toBe(2);
+		expect(write.mock.calls[1]![4]?.[0]).toBe(file);
+	});
+	it("refuses abandoning replay during submission or after losing session write authority", () => {
+		const { controller } = company();
+		const state = controller.conversation(session.sessionId, false);
+		state.set({ sending: true });
+		expect(() => controller.discardSendRetry(session.sessionId)).toThrow("Wait");
+		state.set({ sending: false });
+		controller.store.set({ sessions: [] });
+		expect(() => controller.discardSendRetry(session.sessionId)).toThrow("not available");
+	});
 	it("refuses a write from an already closed view", async () => {
 		const { controller } = company();
 		controller.store.set({ team, sessions: [session], loading: false });
@@ -32,17 +157,14 @@ describe("conversation lifecycle regressions", () => {
 		expect(write).not.toHaveBeenCalled();
 	});
 	it("preserves the request identity after the view closes with an uncertain send", async () => {
-		const { api, controller } = company();
+		const { controller, write } = company();
 		controller.store.set({ team, sessions: [session], loading: false });
 		const view = new AbortController(),
-			response = deferred<{ inputId: string; position: number }>();
-		const append = vi
-			.spyOn(api, "appendPrompt")
-			.mockReturnValueOnce(response.promise)
-			.mockResolvedValue({ inputId: pending(1).inputId, position: 1 });
+			response = deferred<SessionTurnRequestResult>();
+		const append = write.mockReturnValueOnce(response.promise).mockResolvedValue(receipt);
 		const sending = controller.sendPrompt(session.sessionId, "Draft", view.signal);
 		view.abort();
-		response.resolve({ inputId: pending(1).inputId, position: 1 });
+		response.resolve(receipt);
 		expect(await sending).toBe(false);
 		expect(controller.conversation(session.sessionId).get().sending).toBe(false);
 		expect(controller.conversation(session.sessionId).get().draft).toBe("Draft");
@@ -73,12 +195,13 @@ describe("conversation lifecycle regressions", () => {
 		expect(controller.store.get().staff[0]?.displayName).toBe("Current name");
 	});
 	it("renders asynchronous reads and failed sends, preserving the draft and retry ID", async () => {
-		const { api, controller } = company();
+		const { api, controller, write } = company();
 		const read = deferred<HostedSessionEvent[]>();
 		vi.mocked(api.readSessionEvents).mockReturnValueOnce(read.promise);
-		const append = vi.spyOn(api, "appendPrompt").mockRejectedValue(new Error("Fixture write failed"));
+		const append = write.mockRejectedValue(new Error("Fixture write failed"));
 		controller.store.set({ loading: false, team, sessions: [session] });
-		// Only this fixture connects the composer to the mocked append protocol.
+		// This fixture supplies the explicit sponsored writer.
+		void controller.loadConversation(session.sessionId);
 		const view = new ConversationView(controller, session.sessionId, {
 			sendMessage: (id, text) => controller.sendPrompt(id, text),
 		});
@@ -109,7 +232,7 @@ describe("conversation lifecycle regressions", () => {
 			hasMore: false,
 			nextAfterPosition: 1,
 		});
-		vi.spyOn(api, "appendPrompt").mockResolvedValue({ inputId: pending(1).inputId, position: 1 });
+
 		await controller.sendPrompt(session.sessionId, "One message");
 		const state = controller.conversation(session.sessionId).get();
 		expect(state.optimistic).toEqual([]);
