@@ -16,7 +16,7 @@ import {
 	assertCompanyComputerPreparationLockAndBoot,
 	readCompanyComputerPreparationProtected,
 } from "./cloud-company-computer-preparation-control.ts";
-import { readCompanyComputerResetServiceStartEvidence } from "./cloud-company-computer-reset-successor-evidence.ts";
+import { readCompanyComputerResetRetainedEvidence } from "./cloud-company-computer-reset-successor-evidence.ts";
 import { parseCompanyComputerServiceConfig } from "./cloud-company-computer-service-config.ts";
 import { companyComputerSuccessorClaimPath } from "./cloud-company-computer-service-invocation-evidence.ts";
 import { openCompanyComputerInstalledServiceSoftware } from "./cloud-company-computer-service-software-file.ts";
@@ -74,7 +74,7 @@ export async function measureCompanyComputerServiceSoftware(
 	let installed: Awaited<ReturnType<typeof openCompanyComputerInstalledServiceSoftware>> | undefined;
 	let bootMaterial:
 		| Awaited<ReturnType<typeof readCompanyComputerBootServiceStartEvidence>>
-		| Awaited<ReturnType<typeof readCompanyComputerResetServiceStartEvidence>>
+		| Awaited<ReturnType<typeof readCompanyComputerResetRetainedEvidence>>
 		| undefined;
 	try {
 		signal.throwIfAborted();
@@ -106,8 +106,8 @@ export async function measureCompanyComputerServiceSoftware(
 			invocation.kind === "original"
 				? await readCompanyComputerServiceStartEvidence(command, invocation.request, signal)
 				: undefined;
-		if (invocation.kind === "reset")
-			bootMaterial = await readCompanyComputerResetServiceStartEvidence(command, invocation.request, signal);
+		if (invocation.kind === "reset" || invocation.kind === "reset_restart")
+			bootMaterial = await readCompanyComputerResetRetainedEvidence(command, invocation.origin.request, signal);
 		else if (invocation.kind !== "original")
 			bootMaterial = await readCompanyComputerBootServiceStartEvidence(command, invocation.origin.request, signal);
 		const material = originalMaterial ?? bootMaterial!;

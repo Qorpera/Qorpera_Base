@@ -59,6 +59,7 @@ export * from "./company-computer-boot-successor.ts";
 export * from "./company-computer-lifecycle.ts";
 export * from "./company-computer-reset.ts";
 export * from "./company-computer-reset-custody.ts";
+export * from "./company-computer-reset-service-restart.ts";
 export * from "./company-computer-reset-successor.ts";
 export * from "./company-computer-service-restart.ts";
 export * from "./company-computer-service-software.ts";

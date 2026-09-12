@@ -47,11 +47,8 @@ export const COMPANY_COMPUTER_RESET_FORBIDDEN_ROOT_PATHS = Object.freeze([
 	`${root}/boot-service-start-claim.json`,
 	`${root}/boot-service-start-completion.json`,
 ]);
-export async function assertCompanyComputerResetRootClean(activationId: string): Promise<void> {
-	for (const path of [
-		...COMPANY_COMPUTER_RESET_FORBIDDEN_ROOT_PATHS,
-		`${root}/service-stop-claim-${activationId}.json`,
-	]) {
+async function assertResetRootPaths(paths: readonly string[]): Promise<void> {
+	for (const path of paths) {
 		try {
 			await lstat(path);
 		} catch (error) {
@@ -61,6 +58,26 @@ export async function assertCompanyComputerResetRootClean(activationId: string):
 		throw new Error("stale root authority present");
 	}
 }
+export async function assertCompanyComputerResetRootClean(activationId: string): Promise<void> {
+	await assertResetRootPaths([
+		...COMPANY_COMPUTER_RESET_FORBIDDEN_ROOT_PATHS,
+		`${root}/service-stop-claim-${activationId}.json`,
+	]);
+}
+/** Retained lifecycle callers independently prove the exact current invocation
+ * and its stop/successor claims. An acknowledged stop of the immutable origin
+ * is expected history here, never permission to replay its initial start. */
+export const readCompanyComputerResetRetainedEvidence = (
+	command: CompanyComputerPreparationCommand,
+	request: CompanyComputerResetServiceStartRequest,
+	signal: AbortSignal,
+) => readResetMaterial(command, request, signal, true);
+export const readCompanyComputerResetServiceStartEvidence = (
+	command: CompanyComputerPreparationCommand,
+	request: CompanyComputerResetServiceStartRequest,
+	signal: AbortSignal,
+) => readResetMaterial(command, request, signal, false);
+
 /** The restored public stop history of the predecessor must be the sealed
  * archive of the exact retained `replace` request. Its bytes are history only. */
 export async function verifyCompanyComputerResetPredecessorHistory(
@@ -96,10 +113,11 @@ export async function verifyCompanyComputerResetPredecessorHistory(
  * original preparation and receipt, the acknowledged reset configuration in
  * this boot's directory, the installed credentials and retained NAS custody.
  * No credential leaves this process and nothing here can start a unit. */
-export async function readCompanyComputerResetServiceStartEvidence(
+async function readResetMaterial(
 	command: CompanyComputerPreparationCommand,
 	request: CompanyComputerResetServiceStartRequest,
 	signal: AbortSignal,
+	retained: boolean,
 ) {
 	await assertCompanyComputerPreparationLockAndBoot(command);
 	const successor = request.request,
@@ -114,7 +132,14 @@ export async function readCompanyComputerResetServiceStartEvidence(
 	};
 	if (attestation.bootId !== command.bootId || predecessor.startup.bootId === command.bootId)
 		throw new Error("boot differs");
-	await assertCompanyComputerResetRootClean(attestation.activationId);
+	await assertResetRootPaths(
+		retained
+			? COMPANY_COMPUTER_RESET_FORBIDDEN_ROOT_PATHS
+			: [
+					...COMPANY_COMPUTER_RESET_FORBIDDEN_ROOT_PATHS,
+					`${root}/service-stop-claim-${attestation.activationId}.json`,
+				],
+	);
 	const configuredBytes = await retain(
 			`${directory}/${COMPANY_COMPUTER_RESET_CONFIGURATION_COMPLETION}`,
 			16384,
@@ -176,7 +201,14 @@ export async function readCompanyComputerResetServiceStartEvidence(
 		const verify = async () => {
 			signal.throwIfAborted();
 			await assertCompanyComputerPreparationLockAndBoot(command);
-			await assertCompanyComputerResetRootClean(attestation.activationId);
+			await assertResetRootPaths(
+				retained
+					? COMPANY_COMPUTER_RESET_FORBIDDEN_ROOT_PATHS
+					: [
+							...COMPANY_COMPUTER_RESET_FORBIDDEN_ROOT_PATHS,
+							`${root}/service-stop-claim-${attestation.activationId}.json`,
+						],
+			);
 			const credentialsRoot = await assertCompanyComputerBootCredentials(command);
 			for (const { path, bytes, mode } of evidence)
 				if (!(await read(path, bytes.length, mode)).equals(bytes)) throw new Error("retained evidence changed");

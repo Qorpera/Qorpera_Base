@@ -22,6 +22,7 @@ const bundled = await build({
 		"qorpera-company-computer-configuration-control": "packages/runtime/src/cloud-company-computer-configuration-control-main.ts",
 		"qorpera-company-computer-boot-configuration-control": "packages/runtime/src/cloud-company-computer-boot-configuration-control-main.ts",
 		"qorpera-company-computer-boot-service-restart-control": "packages/runtime/src/cloud-company-computer-boot-service-restart-control-main.ts",
+		"qorpera-company-computer-reset-service-restart-control": "packages/runtime/src/cloud-company-computer-reset-service-restart-control-main.ts",
 		"qorpera-company-computer-boot-service-start-control": "packages/runtime/src/cloud-company-computer-boot-service-start-control-main.ts",
 		"qorpera-company-computer-service-start-control": "packages/runtime/src/cloud-company-computer-service-start-control-main.ts",
 		"qorpera-company-computer-service-stop-control": "packages/runtime/src/cloud-company-computer-service-stop-control-main.ts",

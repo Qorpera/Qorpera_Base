@@ -28,7 +28,7 @@ import {
 	OFFICE_PREPARATION_CONTROL_ROOT as root,
 } from "../../packages/runtime/src/cloud-company-computer-preparation-control.ts";
 import { parseCompanyComputerServiceConfig } from "../../packages/runtime/src/cloud-company-computer-service-config.ts";
-import { readCompanyComputerResetServiceStartEvidence } from "../../packages/runtime/src/cloud-company-computer-reset-successor-evidence.ts";
+import { readCompanyComputerResetRetainedEvidence } from "../../packages/runtime/src/cloud-company-computer-reset-successor-evidence.ts";
 import { readCompanyComputerServiceStartEvidence } from "../../packages/runtime/src/cloud-company-computer-service-start-evidence.ts";
 import {
 	assertCompanyComputerServiceStopped,
@@ -228,8 +228,8 @@ async function lockedInstall(input: ReturnType<typeof parseOfficeSoftwareControl
 		const material =
 			prior.kind === "original"
 				? await readCompanyComputerServiceStartEvidence(command, prior.request, signal)
-				: prior.kind === "reset"
-					? await readCompanyComputerResetServiceStartEvidence(command, prior.request, signal)
+				: prior.kind === "reset" || prior.kind === "reset_restart"
+					? await readCompanyComputerResetRetainedEvidence(command, prior.origin.request, signal)
 					: await readCompanyComputerBootServiceStartEvidence(command, prior.origin.request, signal);
 		if ("close" in material) closeMaterial = material.close;
 		const configBytes = await read(prior.configurationPath, 16384, 0o400);

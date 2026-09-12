@@ -47,7 +47,7 @@ vi.mock("../src/cloud-company-computer-boot-service-start-evidence.ts", () => ({
 	readCompanyComputerBootServiceStartEvidence: mocks.bootMaterial,
 }));
 vi.mock("../src/cloud-company-computer-reset-successor-evidence.ts", () => ({
-	readCompanyComputerResetServiceStartEvidence: mocks.resetMaterial,
+	readCompanyComputerResetRetainedEvidence: mocks.resetMaterial,
 }));
 vi.mock("../src/cloud-company-computer-service-start-systemd.ts", () => ({
 	createCompanyComputerServiceStartSystemdManager: () => ({ inspect: mocks.startInspect, start: mocks.start }),
@@ -158,9 +158,9 @@ function fixture() {
 }
 beforeEach(() => vi.resetAllMocks());
 describe("independent installed software invocation measurement", () => {
-	it("measures a recreated root using its reset evidence without requesting a nonexistent retained-boot origin", async () => {
+	it.each(["reset", "reset_restart"])("measures %s using the immutable reset origin", async (kind) => {
 		const f = fixture();
-		mocks.invocation.mockResolvedValue({ ...f.invocation, kind: "reset" });
+		mocks.invocation.mockResolvedValue({ ...f.invocation, kind, origin: { request: f.invocation.request } });
 		mocks.startInspect.mockResolvedValue({
 			preparation: {
 				invocationId: "",
