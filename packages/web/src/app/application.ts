@@ -307,7 +307,7 @@ export function mountApplication(
 				api,
 				profile,
 				userId,
-				(sessionId, clientInputId, text, signal, files, executionSponsor) =>
+				(sessionId, clientInputId, text, signal, files, executionSponsor, roomTarget) =>
 					createWebSessionInputWriter(
 						cloud,
 						userId,
@@ -325,9 +325,15 @@ export function mountApplication(
 							)
 								throw new Error("Company access is unavailable.");
 							controller.assertCanSend(target);
+							const observedRoom = controller.roomTargetFor(target);
+							if (
+								observedRoom?.roomId !== roomTarget?.roomId ||
+								observedRoom?.environmentId !== roomTarget?.environmentId
+							)
+								throw new Error("The conversation destination changed. Refresh before sending.");
 						},
 						profile.profileId,
-					)(sessionId, clientInputId, text, signal, files, executionSponsor),
+					)(sessionId, clientInputId, text, signal, files, executionSponsor, roomTarget),
 			);
 			company = controller;
 			computer = new WebCompanyComputer(cloud, profile, userId, controller.signal, () => {
