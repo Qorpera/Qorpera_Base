@@ -52,13 +52,18 @@ import {
 	type LxdOfficeGuestBinding,
 	lxdOfficeGuestPlan,
 } from "./lxd-office-guest.ts";
+import { assertOfficeImageResetCapability, parseOfficeImagePackage } from "./lxd-office-image-installation.ts";
 import { officeCanonical, officeDigest, officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
 import type { LxdOfficeInvocationMeasurement } from "./lxd-office-invocation-measurement.ts";
 import { code, publish, readRecord } from "./lxd-office-journal-files.ts";
 import { reserveLxdOfficeNodeMachine } from "./lxd-office-node-admission.ts";
 import { LxdOfficeOperationJournal } from "./lxd-office-operations.ts";
 import type { LxdOfficePhysicalGate } from "./lxd-office-physical-gate.ts";
-import type { readLxdOfficeCredentialFile, readLxdOfficeProtectedFile } from "./lxd-office-physical-host.ts";
+import {
+	type readLxdOfficeCredentialFile,
+	type readLxdOfficeProtectedFile,
+	readLxdOfficeProtectedImageManifestFile,
+} from "./lxd-office-physical-host.ts";
 import { officePhysicalPath, parseLxdOfficePhysicalPolicy } from "./lxd-office-physical-policy.ts";
 import { createLxdOfficeResetConfigurationPayload } from "./lxd-office-reset-configuration-payload.ts";
 import {
@@ -116,6 +121,8 @@ export interface LxdOfficeResetInput {
 	plan: CompanyComputerResetPlan;
 	planSha256: string;
 	serviceBootstrapPath: string;
+	/** Protected manifest of the immutable preparation image, never the live root. */
+	imagePackageManifestPath?: string;
 }
 export interface LxdOfficeResetResult {
 	state: "progressed" | "held" | "pending" | "unknown" | "failed" | "awaiting_readiness" | "active";
@@ -237,6 +244,10 @@ export class LxdOfficeResetWorker {
 			plan: parseCompanyComputerResetPlan(value.plan),
 			planSha256: officeSha(value.planSha256),
 			serviceBootstrapPath: officePhysicalPath(value.serviceBootstrapPath),
+			imagePackageManifestPath:
+				value.imagePackageManifestPath === undefined
+					? undefined
+					: officePhysicalPath(value.imagePackageManifestPath),
 		};
 		if (!UUID.test(input.intentId) || input.intentId !== input.plan.intentId)
 			throw new Error("OFFICE_RESET_INTENT_DIFFERS");
@@ -279,6 +290,20 @@ export class LxdOfficeResetWorker {
 			if (settle) await operation.catch(() => {});
 		}
 	}
+	async #assertResetImage(input: LxdOfficeResetInput, signal: AbortSignal): Promise<void> {
+		try {
+			signal.throwIfAborted();
+			if (!input.imagePackageManifestPath) throw new Error("missing manifest");
+			const bytes = this.#ports.readProtected
+				? await this.#ports.readProtected(input.imagePackageManifestPath, 1024 ** 2)
+				: await readLxdOfficeProtectedImageManifestFile(input.imagePackageManifestPath);
+			if (hash(bytes) !== this.#policy.image.guestPackageManifestSha256) throw new Error("image manifest differs");
+			assertOfficeImageResetCapability(parseOfficeImagePackage(officeStopDecode(bytes)));
+			signal.throwIfAborted();
+		} catch {
+			throw new Error("OFFICE_RESET_IMAGE_CAPABILITY_UNCONFIRMED");
+		}
+	}
 	async #run(
 		input: LxdOfficeResetInput,
 		registry: LxdOfficeResetWorkerRegistry,
@@ -288,6 +313,7 @@ export class LxdOfficeResetWorker {
 			{ intentId, plan } = input,
 			recovery = plan.predecessor;
 		await this.#kernelLock(root);
+		await this.#assertResetImage(input, signal);
 		const creation = await openLxdOfficeCreationIdentity(this.#policy, intentId, true, this.#client, signal),
 			{ binding } = creation,
 			{ allocationId } = binding,
@@ -394,28 +420,30 @@ export class LxdOfficeResetWorker {
 			if (evidence.attestation.preparationObservationSha256 !== plan.preparationObservationSha256)
 				throw new Error("reset preparation identity differs");
 			const commands =
-				evidence.kind !== "original"
-					? (await readLxdOfficeBootVmEvidence(root, creation, evidence.origin.bootIntent, signal)).commands
-					: [
-							{ commandId: creation.createCommandId, action: "create" as const },
-							{
-								commandId: officeRecord(await optional(`boot-observation-${allocationId}.json`), [
-									"schema",
-									"intentId",
-									"allocationId",
-									"createCommandId",
-									"startCommandId",
-									"observationSha256",
-									"planSha256",
-									"copySha256",
-									"reviewSha256",
-									"bootId",
-									"instanceSha256",
-									"hostBootId",
-								]).startCommandId as string,
-								action: "start" as const,
-							},
-						];
+				evidence.kind === "reset" || evidence.kind === "reset_restart"
+					? evidence.origin.commands
+					: evidence.kind !== "original"
+						? (await readLxdOfficeBootVmEvidence(root, creation, evidence.origin.bootIntent, signal)).commands
+						: [
+								{ commandId: creation.createCommandId, action: "create" as const },
+								{
+									commandId: officeRecord(await optional(`boot-observation-${allocationId}.json`), [
+										"schema",
+										"intentId",
+										"allocationId",
+										"createCommandId",
+										"startCommandId",
+										"observationSha256",
+										"planSha256",
+										"copySha256",
+										"reviewSha256",
+										"bootId",
+										"instanceSha256",
+										"hostBootId",
+									]).startCommandId as string,
+									action: "start" as const,
+								},
+							];
 			const completionPath = evidence.initial
 				? "/run/qorpera-office-preparation/service-stop-completion.json"
 				: `/run/qorpera-office-preparation/service-stop-completion-${recovery.activationId}.json`;
@@ -428,7 +456,9 @@ export class LxdOfficeResetWorker {
 			)
 				throw new Error("root stop differs");
 			seedValue = {
-				schema: "qorpera.lxd-office-reset-seed/v1",
+				schema: commands.some((command) => command.action === "delete")
+					? "qorpera.lxd-office-reset-seed/v2"
+					: "qorpera.lxd-office-reset-seed/v1",
 				intentId,
 				planSha256: input.planSha256,
 				hostBootId: evidence.hostBootId,
@@ -523,6 +553,7 @@ export class LxdOfficeResetWorker {
 		const physical: Authorize = async (caller) => {
 			caller.throwIfAborted();
 			await this.#kernelLock(root);
+			await this.#assertResetImage(input, caller);
 			if (
 				!isDeepStrictEqual(
 					await openLxdOfficeCreationIdentity(this.#policy, intentId, true, this.#client, caller),
@@ -1028,6 +1059,14 @@ export class LxdOfficeResetWorker {
 					historyFiles.set(entry.path, { bytes: current, mode: entry.mode as 0o400 | 0o444 | 0o600 });
 				}
 			}
+			// A retained-boot stop archives that boot's adoption receipt. Reset
+			// additionally preserves the permanent preparation receipt, whose
+			// digest was pinned before begin; it is not new lifecycle authority.
+			if (!historyFiles.has("/etc/qorpera-office/adoption.json"))
+				historyFiles.set("/etc/qorpera-office/adoption.json", {
+					bytes: await read("/etc/qorpera-office/adoption.json", 16384, 0o444),
+					mode: 0o444,
+				});
 			const adoption = historyFiles.get("/etc/qorpera-office/adoption.json");
 			if (!adoption || hash(adoption.bytes) !== seed.adoptionReceiptSha256)
 				throw new Error("reset original receipt differs");

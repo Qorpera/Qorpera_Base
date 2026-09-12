@@ -196,6 +196,12 @@ async function fixture(
 
 for (const lane of [
 	{
+		purpose: "reset-service-restart",
+		submit: "submitOfficeResetServiceRestart",
+		inspect: "inspectOfficeResetServiceRestart",
+		error: "RESET_SERVICE_RESTART",
+	},
+	{
 		purpose: "boot-service-restart",
 		submit: "submitOfficeBootServiceRestart",
 		inspect: "inspectOfficeBootServiceRestart",
@@ -713,6 +719,7 @@ for (const lane of [
 	{ purpose: "service-start", inspect: "submitOfficeServiceInspection" },
 	{ purpose: "boot-service-start", inspect: "submitOfficeBootServiceInspection" },
 	{ purpose: "boot-service-restart", inspect: "submitOfficeBootServiceRestartInspection" },
+	{ purpose: "reset-service-restart", inspect: "submitOfficeResetServiceRestartInspection" },
 	{ purpose: "service-stop", inspect: "submitOfficeServiceStopInspection" },
 	{ purpose: "service-restart", inspect: "submitOfficeServiceRestartInspection" },
 ] as const)

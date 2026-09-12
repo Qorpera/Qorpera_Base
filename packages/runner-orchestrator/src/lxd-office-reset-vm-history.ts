@@ -3,6 +3,7 @@ import {
 	COMPANY_COMPUTER_RESET_PHASES,
 	type CompanyComputerResetPhaseRecord,
 	parseCompanyComputerPreparationCommand,
+	parseCompanyComputerResetCustodyBinding,
 	parseCompanyComputerResetCustodyManifest,
 	parseCompanyComputerResetPhaseRecord,
 	parseCompanyComputerResetPlan,
@@ -10,7 +11,7 @@ import {
 	parseCompanyComputerServiceStartRequest,
 } from "@qorpera/contracts";
 import type { LxdOfficeCreationIdentity } from "./lxd-office-creation-journal.ts";
-import { officeDigest, officeRecord } from "./lxd-office-image-provenance.ts";
+import { officeDigest, officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
 import { LxdOfficeOperationJournal } from "./lxd-office-operations.ts";
 import { parseLxdOfficeResetSeed } from "./lxd-office-reset-journal.ts";
 import { lxdOfficeProviderBindingSha256 } from "./lxd-office-start-control.ts";
@@ -93,6 +94,24 @@ export async function readLxdOfficeResetVmHistory(
 		"manifestSha256",
 	]);
 	const custody = parseCompanyComputerResetCustodyManifest(custodyRecord.custody, plan);
+	const custodyBinding = parseCompanyComputerResetCustodyBinding(custodyRecord.binding);
+	if (
+		!isDeepStrictEqual(custodyBinding, {
+			schema: "qorpera.office-reset-custody-binding/v1",
+			resetId: plan.resetId,
+			transitionId: plan.predecessor.transitionId,
+			predecessorActivationId: plan.predecessor.activationId,
+			successorActivationId: activationId,
+			rootIncarnationId: plan.rootIncarnationId,
+			predecessor: plan.predecessor.startup,
+			outboxUid: custodyBinding.outboxUid,
+			outboxGid: custodyBinding.outboxGid,
+		})
+	)
+		throw new Error("reset VM custody binding differs");
+	if (officeSha(custodyRecord.manifestSha256) !== officeDigest(custody))
+		throw new Error("reset custody manifest digest differs");
+
 	const custodySha256 = evidence("custodied", custody);
 	const restore = parseCompanyComputerResetRestoreReceipt(
 		await read(`reset-restore-${suffix}.json`),

@@ -19,7 +19,10 @@ import {
 } from "./lxd-office-boot-restart-history.ts";
 import { type LxdOfficeGuestBinding, lxdOfficeGuestPlan } from "./lxd-office-guest.ts";
 import { officeDigest, officeRecord } from "./lxd-office-image-provenance.ts";
-import { readRecord } from "./lxd-office-journal-files.ts";
+import { code, readRecord } from "./lxd-office-journal-files.ts";
+
+import type { LxdOfficeResetRetainedHistoryClient } from "./lxd-office-reset-restart-history.ts";
+import { readLxdOfficeResetStopEvidence } from "./lxd-office-reset-stop-evidence.ts";
 
 export const officeStopHash = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 export const officeStopDecode = (bytes: Buffer): unknown =>
@@ -35,7 +38,9 @@ export async function readLxdOfficeStopEvidence(
 	intentId: string,
 	binding: LxdOfficeGuestBinding,
 	recovery: CompanyComputerLifecycleRequest,
-	client: LxdOfficeRetainedActivationHistoryClient & Partial<LxdOfficeServiceRestartClient>,
+	client: LxdOfficeRetainedActivationHistoryClient &
+		Partial<LxdOfficeServiceRestartClient> &
+		LxdOfficeResetRetainedHistoryClient,
 	signal: AbortSignal,
 ) {
 	const records: Record<string, string> = {};
@@ -46,6 +51,15 @@ export async function readLxdOfficeStopEvidence(
 		return file;
 	};
 	const read = async (name: string) => (await readSource(name)).value;
+	for (const prefix of ["reset-activation", "reset-service-restart-request"]) {
+		try {
+			await readSource(`${prefix}-${binding.allocationId}-${recovery.activationId}.json`);
+		} catch (error) {
+			if (code(error, "ENOENT")) continue;
+			throw error;
+		}
+		return readLxdOfficeResetStopEvidence(root, intentId, binding, recovery, records, readSource, client, signal);
+	}
 	const original = await readLxdOfficeInitialActivationHistory(root, intentId, binding, read, client, signal);
 	const history =
 		original.command.bootId === recovery.startup.bootId

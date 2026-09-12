@@ -145,7 +145,7 @@ export class LxdOfficeResumeWorker {
 				(await read(doneName)) !== undefined
 			)
 				throw new Error("resume prefix lost");
-			await journal.assertLifecycleSequence(shutdown.commands, signal);
+			await journal.assertRetainedLifecycleSequence(shutdown.commands, signal);
 			await retain(seedName, { ...expected, startCommandId: randomUUID() });
 			saved = await read(seedName);
 		}
@@ -169,7 +169,7 @@ export class LxdOfficeResumeWorker {
 				!isDeepStrictEqual(await readLxdOfficePowerOffEvidence(root, creation, request, signal), shutdown)
 			)
 				throw new Error("resume history changed");
-			await journal.assertLifecycleSequence(sequence, signal);
+			await journal.assertRetainedLifecycleSequence(sequence, signal);
 			const stop = await journal.observe(shutdown.stopCommandId, "stop", signal);
 			if (stop.state !== "succeeded" || stop.operationId !== shutdown.stopOperationId)
 				throw new Error("VM shutdown unconfirmed");

@@ -298,12 +298,13 @@ async function fixture() {
 			};
 		}),
 	};
-	const open = () =>
+	const open = (resetImagePackageManifestPath?: string) =>
 		new LxdOfficeLifecycle(
 			{ policy, check: vi.fn(), inspect: vi.fn() },
 			registry,
 			{
 				planPath: "/protected/lifecycle.json",
+				resetImagePackageManifestPath,
 				inventoryLimits: {
 					maxEntries: 100,
 					maxDepth: 4,
@@ -592,7 +593,7 @@ describe("serialized office lifecycle", () => {
 		f.resetWorker.result = { state: "held", phase: "stopped", reason: "OFFICE_RESET_OUTBOX_REMNANT" };
 		await expect(f.open().reconcile(signal())).resolves.toMatchObject({ state: "progressed", phase: "service_stop" });
 		const plan = f.resetPlan(f.recovery);
-		await expect(f.open().reconcile(signal())).resolves.toEqual({
+		await expect(f.open("/protected/image-manifest.json").reconcile(signal())).resolves.toEqual({
 			state: "held",
 			phase: "reset",
 			intentId,
@@ -603,7 +604,13 @@ describe("serialized office lifecycle", () => {
 			reason: "OFFICE_RESET_OUTBOX_REMNANT",
 		});
 		expect(f.resetWorker.reconcileSettled).toHaveBeenLastCalledWith(
-			{ intentId, plan, planSha256: officeDigest(plan), serviceBootstrapPath: f.request.serviceBootstrapPath },
+			{
+				intentId,
+				plan,
+				planSha256: officeDigest(plan),
+				serviceBootstrapPath: f.request.serviceBootstrapPath,
+				imagePackageManifestPath: "/protected/image-manifest.json",
+			},
 			expect.any(AbortSignal),
 		);
 		f.resetWorker.result = { state: "active", phase: "active" };

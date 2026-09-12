@@ -101,7 +101,8 @@ export async function readLxdOfficeResetActivationHistory(
 		})
 	)
 		throw new Error("reset custody binding differs");
-	officeSha(custodyRecord.manifestSha256);
+	if (officeSha(custodyRecord.manifestSha256) !== officeDigest(custody))
+		throw new Error("reset custody manifest digest differs");
 	const custodySha256 = evidence("custodied", custody);
 	const restore = parseCompanyComputerResetRestoreReceipt(
 		await read(`reset-restore-${suffix}.json`),

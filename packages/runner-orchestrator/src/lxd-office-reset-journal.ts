@@ -14,6 +14,7 @@ import {
 import { officeCanonical, officeDigest, officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
 import { checkDirectory, code, publish, readRecord, syncDirectory } from "./lxd-office-journal-files.ts";
 import type { readLxdOfficeProtectedFile } from "./lxd-office-physical-host.ts";
+import { assertLxdOfficeVmLineageCommands, type LxdOfficeVmLineageCommand } from "./lxd-office-vm-lineage.ts";
 
 const LIMIT = 65536;
 
@@ -129,7 +130,7 @@ export class LxdOfficeResetJournal {
  * before begin while the old root is still readable; every later tick must
  * read the identical record, so a destroyed root never has to be reread. */
 export interface LxdOfficeResetSeed {
-	schema: "qorpera.lxd-office-reset-seed/v1";
+	schema: "qorpera.lxd-office-reset-seed/v1" | "qorpera.lxd-office-reset-seed/v2";
 	intentId: string;
 	planSha256: string;
 	hostBootId: string;
@@ -140,7 +141,7 @@ export interface LxdOfficeResetSeed {
 	bootObservationSha256: string;
 	originalBootId: string;
 	adoptionReceiptSha256: string;
-	commands: readonly { commandId: string; action: "create" | "start" | "stop" }[];
+	commands: readonly LxdOfficeVmLineageCommand[];
 }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 export function parseLxdOfficeResetSeed(value: unknown): LxdOfficeResetSeed {
@@ -159,7 +160,7 @@ export function parseLxdOfficeResetSeed(value: unknown): LxdOfficeResetSeed {
 		"commands",
 	]);
 	if (
-		r.schema !== "qorpera.lxd-office-reset-seed/v1" ||
+		(r.schema !== "qorpera.lxd-office-reset-seed/v1" && r.schema !== "qorpera.lxd-office-reset-seed/v2") ||
 		typeof r.intentId !== "string" ||
 		!UUID.test(r.intentId) ||
 		typeof r.hostBootId !== "string" ||
@@ -179,10 +180,16 @@ export function parseLxdOfficeResetSeed(value: unknown): LxdOfficeResetSeed {
 				typeof command !== "object" ||
 				Object.keys(command).sort().join() !== "action,commandId" ||
 				!UUID.test((command as { commandId: unknown }).commandId as string) ||
-				(command as { action: unknown }).action !== (index === 0 ? "create" : index % 2 ? "start" : "stop"),
+				(r.schema === "qorpera.lxd-office-reset-seed/v1" &&
+					(command as { action: unknown }).action !== (index === 0 ? "create" : index % 2 ? "start" : "stop")),
 		)
 	)
 		throw new Error("INVALID_OFFICE_RESET_SEED");
+	if (r.schema === "qorpera.lxd-office-reset-seed/v2") {
+		assertLxdOfficeVmLineageCommands(r.commands as LxdOfficeVmLineageCommand[], true);
+		if (!(r.commands as LxdOfficeVmLineageCommand[]).some((command) => command.action === "delete"))
+			throw new Error("INVALID_OFFICE_RESET_SEED");
+	}
 	for (const key of [
 		"planSha256",
 		"stopCompletionSha256",

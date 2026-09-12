@@ -289,7 +289,12 @@ export class LxdOfficeSuccessorWorker {
 			throw new Error("successor identity changed");
 		const activationId = successorRequest.attestation.activationId,
 			suffix = `${allocationId}-${activationId}`;
-		const purpose = evidence.kind === "original" ? "service-restart" : "boot-service-restart";
+		const purpose =
+			evidence.kind === "original"
+				? "service-restart"
+				: evidence.kind === "reset" || evidence.kind === "reset_restart"
+					? "reset-service-restart"
+					: "boot-service-restart";
 		const packetName = `${purpose}-request-${suffix}.json`,
 			indexName = `${purpose}-intent-${suffix}.json`,
 			journalName = `${purpose}-${suffix}`,

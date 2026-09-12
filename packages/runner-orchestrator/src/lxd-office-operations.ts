@@ -5,6 +5,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { LxdOperationState, LxdTrackedClient, LxdTrackedInstanceAction } from "./lxd-client.ts";
 import { type LxdOfficeGuestBinding, lxdOfficeGuestPlan } from "./lxd-office-guest.ts";
 import { checkDirectory, code, publish, readRecord, syncDirectory } from "./lxd-office-journal-files.ts";
+import { assertLxdOfficeVmLineageCommands, type LxdOfficeVmLineageCommand } from "./lxd-office-vm-lineage.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const MAX_EVENTS = 384;
@@ -485,13 +486,40 @@ export class LxdOfficeOperationJournal {
 		signal.throwIfAborted();
 	}
 
+	/** Complete current lineage, with explicit recreated-root groups supplied
+	 * by immutable reset history. Legacy chains keep their original validator. */
+	async assertRetainedLifecycleSequence(
+		commands: readonly LxdOfficeVmLineageCommand[],
+		signal: AbortSignal,
+	): Promise<void> {
+		assertLxdOfficeVmLineageCommands(commands);
+		if (!commands.some((command) => command.action === "delete"))
+			return this.assertLifecycleSequence(
+				commands as readonly { commandId: string; action: "create" | "start" | "stop" }[],
+				signal,
+			);
+		signal.throwIfAborted();
+		const { events } = await this.#read();
+		if (events.length < (commands.length - 1) * 3 || events.length > commands.length * 3)
+			throw new Error("OFFICE_VM_LINEAGE_UNCONFIRMED");
+		for (const [index, command] of commands.entries()) {
+			const group = events.slice(index * 3, index * 3 + 3);
+			if (
+				group.some((event) => event.commandId !== command.commandId || event.action !== command.action) ||
+				(index < commands.length - 1 && (group[2]?.kind !== "settled" || group[2]?.state !== "succeeded"))
+			)
+				throw new Error("OFFICE_VM_LINEAGE_UNCONFIRMED");
+		}
+		signal.throwIfAborted();
+	}
+
 	/** Governed root reset lineage: the retained create/start/stop chain, then
 	 * exactly stop -> delete -> create -> start with the planned command IDs.
 	 * Every predecessor must have succeeded; only the final present command may
 	 * be unresolved. Original create/boot/power-off validators are unchanged,
 	 * so historical prefixes cannot be relabelled as a reset. */
 	async assertResetLineage(
-		prior: readonly { commandId: string; action: "create" | "start" | "stop" }[],
+		prior: readonly LxdOfficeVmLineageCommand[],
 		reset: {
 			readonly stopCommandId: string;
 			readonly deleteCommandId: string;
@@ -508,11 +536,14 @@ export class LxdOfficeOperationJournal {
 			{ commandId: reset.createCommandId, action: "create" as const },
 			{ commandId: reset.startCommandId, action: "start" as const },
 		];
+		try {
+			assertLxdOfficeVmLineageCommands(prior, true);
+		} catch {
+			throw new Error("OFFICE_RESET_LINEAGE_UNCONFIRMED");
+		}
 		const commands = [...prior, ...suffix];
 		if (
 			prior.length < 2 ||
-			prior.length % 2 !== 0 ||
-			prior.some((command, index) => command.action !== (index === 0 ? "create" : index % 2 ? "start" : "stop")) ||
 			commands.some((command) => !UUID.test(command.commandId)) ||
 			new Set(commands.map((command) => command.commandId)).size !== commands.length ||
 			commands.length > MAX_EVENTS / 3 ||

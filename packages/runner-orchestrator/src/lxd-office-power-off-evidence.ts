@@ -13,8 +13,10 @@ import type { LxdOfficeCreationIdentity } from "./lxd-office-creation-journal.ts
 import { lxdOfficeGuestPlan } from "./lxd-office-guest.ts";
 import { officeDigest, officeRecord } from "./lxd-office-image-provenance.ts";
 import { readRecord } from "./lxd-office-journal-files.ts";
+import { readLxdOfficeResetVmHistory } from "./lxd-office-reset-vm-history.ts";
 import { readLxdOfficeResumeEvidence } from "./lxd-office-resume-evidence.ts";
 import { officeStopHash } from "./lxd-office-stop-evidence.ts";
+import type { LxdOfficeVmLineageCommand } from "./lxd-office-vm-lineage.ts";
 
 /** Historical custody and byte binding only. Callers separately require the
  * exact successful VM operation chain and current SQL/physical authority. */
@@ -41,9 +43,10 @@ async function readShutdown(
 		return readSource(name, 65536);
 	};
 	const seedFile = await read(seedName),
+		resetRoot = (seedFile.value as { schema?: unknown } | null)?.schema === "qorpera.lxd-office-power-off-request/v4",
 		later = (seedFile.value as { schema?: unknown } | null)?.schema === "qorpera.lxd-office-power-off-request/v3",
 		seed = officeRecord(seedFile.value, [
-			...(later ? ["bootIntent"] : []),
+			...(later ? ["bootIntent"] : resetRoot ? ["resetOriginActivationId"] : []),
 			"schema",
 			"intentId",
 			"binding",
@@ -62,7 +65,12 @@ async function readShutdown(
 	});
 	parseCompanyComputerPreparationCommand({ ...command, commandId: seed.startCommandId });
 	if (
-		seed.schema !== (later ? "qorpera.lxd-office-power-off-request/v3" : "qorpera.lxd-office-power-off-request/v2") ||
+		seed.schema !==
+			(resetRoot
+				? "qorpera.lxd-office-power-off-request/v4"
+				: later
+					? "qorpera.lxd-office-power-off-request/v3"
+					: "qorpera.lxd-office-power-off-request/v2") ||
 		seed.intentId !== intentId ||
 		!isDeepStrictEqual(seed.binding, binding) ||
 		!isDeepStrictEqual(seed.request, predecessor) ||
@@ -73,11 +81,13 @@ async function readShutdown(
 	)
 		throw new Error("shutdown identity differs");
 	const bootIntent = later ? parseCompanyComputerBootIntentRequest(seed.bootIntent) : undefined;
-	const resumeNames = bootIntent
-		? ["request", "prepared", "observation", "completed"].map(
-				(kind) => `resume-${kind}-${allocationId}-${bootIntent.predecessor.transitionId}.json`,
-			)
-		: [bootName];
+	const resumeNames = resetRoot
+		? [`reset-activation-${allocationId}-${seed.resetOriginActivationId}.json`]
+		: bootIntent
+			? ["request", "prepared", "observation", "completed"].map(
+					(kind) => `resume-${kind}-${allocationId}-${bootIntent.predecessor.transitionId}.json`,
+				)
+			: [bootName];
 	const records = seed.records as Record<string, unknown>,
 		entries = Object.entries(records);
 	if (
@@ -137,7 +147,7 @@ async function readShutdown(
 		!history.entries.some(
 			(entry) =>
 				entry.path ===
-					(later
+					(later || resetRoot
 						? `${companyComputerBootDirectory(predecessor.startup.bootId)}/credentials/config.json`
 						: "/etc/qorpera-office/credentials/config.json") &&
 				entry.sha256 === predecessor.startup.configurationSha256,
@@ -145,9 +155,23 @@ async function readShutdown(
 	)
 		throw new Error("shutdown archive differs");
 	const bootResume = bootIntent ? await readLxdOfficeResumeEvidence(creation, bootIntent, read, signal) : undefined;
-	const boot = bootResume
-		? { ...bootResume.observation, createCommandId: creation.createCommandId }
-		: ((await read(bootName)).value as Record<string, unknown>);
+	const reset = resetRoot
+		? await readLxdOfficeResetVmHistory(
+				root,
+				creation,
+				seed.resetOriginActivationId as string,
+				async (name) => {
+					if (!Object.hasOwn(records, name)) throw new Error("reset shutdown record unpinned");
+					return (await read(name)).value;
+				},
+				signal,
+			)
+		: undefined;
+	const boot = reset
+		? reset.observation
+		: bootResume
+			? { ...bootResume.observation, createCommandId: creation.createCommandId }
+			: ((await read(bootName)).value as Record<string, unknown>);
 	if (
 		boot.createCommandId !== creation.createCommandId ||
 		boot.startCommandId !== seed.startCommandId ||
@@ -188,6 +212,7 @@ async function readShutdown(
 	return {
 		bootIntent,
 		bootResume,
+		reset,
 		predecessorBootId: predecessor.startup.bootId,
 		hostBootId: command.bootId,
 		startCommandId: seed.startCommandId as string,
@@ -200,7 +225,7 @@ async function readShutdown(
 	};
 }
 
-export type LxdOfficeVmCommand = { commandId: string; action: "create" | "start" | "stop" };
+export type LxdOfficeVmCommand = LxdOfficeVmLineageCommand;
 
 /** Walk immutable shutdown/resume links, never a mutable latest pointer.
  * Each v3 shutdown names the boot intent that produced its stopped boot.
@@ -235,7 +260,8 @@ export async function readLxdOfficePowerOffEvidence(
 			throw new Error("shutdown predecessor differs");
 		selected = previous;
 	}
-	commands.unshift({ commandId: creation.createCommandId, action: "create" });
+	if (selected.reset) commands.unshift(...selected.reset.commands.slice(0, -1));
+	else commands.unshift({ commandId: creation.createCommandId, action: "create" });
 	if (new Set(commands.map((command) => command.commandId)).size !== commands.length)
 		throw new Error("shutdown command reused");
 	signal.throwIfAborted();
@@ -245,5 +271,10 @@ export async function readLxdOfficePowerOffEvidence(
 		predecessorBootId: _predecessorBootId,
 		...evidence
 	} = current;
-	return { ...evidence, commands, bootIds: [...boots], originalBootId: selected.predecessorBootId };
+	return {
+		...evidence,
+		commands,
+		bootIds: [...boots],
+		originalBootId: selected.reset?.originalBootId ?? selected.predecessorBootId,
+	};
 }

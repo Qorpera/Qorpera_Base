@@ -6,6 +6,7 @@ import {
 	assertLxdOfficeHostMount,
 	readLxdOfficeCredentialFile,
 	readLxdOfficeProtectedFile,
+	readLxdOfficeProtectedImageManifestFile,
 } from "../../src/lxd-office-physical-host.ts";
 import { officePhysicalFixture } from "./office-physical-policy.ts";
 
@@ -21,6 +22,8 @@ const { policy, envelope, binding } = officePhysicalFixture();
 const valid = Buffer.from(JSON.stringify(policy));
 for (const [name, bytes] of Object.entries({
 	"policy.json": valid,
+	"image-manifest.json": Buffer.alloc(100000, 32),
+	"large-image-manifest.json": Buffer.alloc(1024 ** 2 + 1, 32),
 	"evidence.json": Buffer.from(JSON.stringify(envelope)),
 	"writable.json": valid,
 	"group-writable.json": valid,
@@ -79,6 +82,12 @@ for (const name of [
 }
 assert.deepEqual(await readLxdOfficeProtectedFile(`${root}/policy.json`, 16384), valid);
 results.push("protected root-owned file read as unprivileged uid");
+assert.equal((await readLxdOfficeProtectedImageManifestFile(`${root}/image-manifest.json`)).length, 100000);
+await assert.rejects(readLxdOfficeProtectedImageManifestFile(`${root}/large-image-manifest.json`));
+await assert.rejects(readLxdOfficeProtectedFile(`${root}/image-manifest.json`, 100000), /INVALID_OFFICE_FILE_LIMIT/);
+for (const name of ["writable.json", "user-owned.json", "symlink.json", "hardlink.json", "unsafe/config.json"])
+	await assert.rejects(readLxdOfficeProtectedImageManifestFile(`${root}/${name}`));
+results.push("bounded public image inventory preserves protected reader custody and generic ceiling");
 for (const name of [
 	"writable.json",
 	"group-writable.json",

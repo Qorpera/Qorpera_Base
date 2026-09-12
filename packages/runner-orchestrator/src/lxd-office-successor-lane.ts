@@ -10,10 +10,15 @@ import {
 	parseCompanyComputerServiceRestartCompletion,
 	parseCompanyComputerServiceRestartRequest,
 } from "@qorpera/contracts";
-import type { LxdOfficeBootServiceRestartClient, LxdOfficeServiceRestartClient } from "./lxd-client.ts";
+import type {
+	LxdOfficeBootServiceRestartClient,
+	LxdOfficeResetServiceRestartClient,
+	LxdOfficeServiceRestartClient,
+} from "./lxd-client.ts";
 import { LxdOfficeBootServiceRestartInspectionControl } from "./lxd-office-boot-service-restart-inspection.ts";
 import { openLxdOfficeBootServiceRestartJournal } from "./lxd-office-boot-service-restart-journal.ts";
 import type { LxdOfficeGuestBinding } from "./lxd-office-guest.ts";
+import { lxdOfficeResetServiceSuccessorLane } from "./lxd-office-reset-service-successor-lane.ts";
 import { LxdOfficeRestartInspectionControl } from "./lxd-office-restart-inspection.ts";
 import {
 	type LxdOfficeServiceRestartIdentity,
@@ -39,8 +44,20 @@ export function lxdOfficeSuccessorLane(
 	stop: CompanyComputerServiceStopRequest,
 	acknowledgement: CompanyComputerServiceStopAcknowledgement,
 	stopCompletionSha256: string,
-	client: LxdOfficeServiceRestartClient & Partial<LxdOfficeBootServiceRestartClient>,
+	client: LxdOfficeServiceRestartClient &
+		Partial<LxdOfficeBootServiceRestartClient & LxdOfficeResetServiceRestartClient>,
 ) {
+	if (evidence.kind === "reset" || evidence.kind === "reset_restart")
+		return lxdOfficeResetServiceSuccessorLane(
+			root,
+			binding,
+			evidence,
+			successor,
+			stop,
+			acknowledgement,
+			stopCompletionSha256,
+			client,
+		);
 	if (evidence.kind === "original") {
 		const request = parseCompanyComputerServiceRestartRequest({
 			schema: "qorpera.office-service-restart-request/v1",

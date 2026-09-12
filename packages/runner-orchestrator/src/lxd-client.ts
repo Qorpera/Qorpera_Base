@@ -9,6 +9,7 @@ import {
 	COMPANY_COMPUTER_CONFIGURATION_MAX_BYTES,
 	COMPANY_COMPUTER_PREPARATION_MAX_BYTES,
 	COMPANY_COMPUTER_RESET_CONFIGURATION_MAX_BYTES,
+	COMPANY_COMPUTER_RESET_SERVICE_RESTART_MAX_BYTES,
 	COMPANY_COMPUTER_RESET_SERVICE_START_MAX_BYTES,
 	COMPANY_COMPUTER_SERVICE_RESTART_MAX_BYTES,
 	COMPANY_COMPUTER_SERVICE_START_MAX_BYTES,
@@ -454,6 +455,36 @@ export interface LxdOfficeBootServiceRestartClient extends LxdOfficeInspectableC
 		signal: AbortSignal,
 	): Promise<LxdInstanceFile>;
 }
+export interface LxdOfficeResetServiceRestartClient extends LxdOfficeInspectableClient {
+	submitOfficeResetServiceRestart(
+		project: string,
+		name: string,
+		command: LxdOfficePreparationCommand,
+		signal: AbortSignal,
+	): Promise<LxdOperationReference>;
+	submitOfficeResetServiceRestartInspection(
+		project: string,
+		name: string,
+		command: LxdOfficePreparationCommand,
+		inspectionId: string,
+		signal: AbortSignal,
+	): Promise<LxdOperationReference>;
+	inspectOfficeResetServiceRestart(reference: LxdOperationReference, signal: AbortSignal): Promise<LxdOperationState>;
+	pushOfficeResetServiceRestartRequest(
+		project: string,
+		name: string,
+		requestSha256: string,
+		content: Buffer,
+		signal: AbortSignal,
+	): Promise<void>;
+	readOfficeResetServiceRestartRequest(
+		project: string,
+		name: string,
+		requestSha256: string,
+		bytes: number,
+		signal: AbortSignal,
+	): Promise<LxdInstanceFile>;
+}
 /** Temporary provider-pinned root tools for governed service-only software
  * revisions. Unlike image helpers, the tools themselves are staged files whose
  * digests the provider pins explicitly in argv. Staging never installs, measures,
@@ -591,7 +622,7 @@ const OFFICE_RESET_READ_PATHS: ReadonlyArray<{ pattern: RegExp; maximum: number;
 	{ pattern: /^\/etc\/qorpera-office\/credentials\/config\.json$/, maximum: 16384, directory: false },
 	{
 		pattern:
-			/^\/etc\/qorpera-office\/boots\/[0-9a-f]{32}\/(?:adoption|configuration-claim|configuration-completion)\.json$/,
+			/^\/etc\/qorpera-office\/boots\/[0-9a-f]{32}\/(?:adoption|configuration-claim|configuration-completion|reset-configuration-claim|reset-configuration-completion)\.json$/,
 		maximum: 65536,
 		directory: false,
 	},
@@ -715,27 +746,30 @@ type OfficeControlPurpose =
 	| "service-stop"
 	| "service-restart"
 	| "reset-configuration"
-	| "reset-service-start";
+	| "reset-service-start"
+	| "reset-service-restart";
 const officeControlMaximum = (purpose: OfficeControlPurpose) =>
-	purpose === "reset-configuration"
-		? COMPANY_COMPUTER_RESET_CONFIGURATION_MAX_BYTES
-		: purpose === "reset-service-start"
-			? COMPANY_COMPUTER_RESET_SERVICE_START_MAX_BYTES
-			: purpose === "boot-service-restart"
-				? COMPANY_COMPUTER_BOOT_SERVICE_RESTART_MAX_BYTES
-				: purpose === "boot-service-start"
-					? COMPANY_COMPUTER_BOOT_SERVICE_START_MAX_BYTES
-					: purpose === "boot-configuration"
-						? COMPANY_COMPUTER_BOOT_CONFIGURATION_MAX_BYTES
-						: purpose === "preparation"
-							? COMPANY_COMPUTER_PREPARATION_MAX_BYTES
-							: purpose === "configuration"
-								? COMPANY_COMPUTER_CONFIGURATION_MAX_BYTES
-								: purpose === "service-start"
-									? COMPANY_COMPUTER_SERVICE_START_MAX_BYTES
-									: purpose === "service-stop"
-										? COMPANY_COMPUTER_SERVICE_STOP_MAX_BYTES
-										: COMPANY_COMPUTER_SERVICE_RESTART_MAX_BYTES;
+	purpose === "reset-service-restart"
+		? COMPANY_COMPUTER_RESET_SERVICE_RESTART_MAX_BYTES
+		: purpose === "reset-configuration"
+			? COMPANY_COMPUTER_RESET_CONFIGURATION_MAX_BYTES
+			: purpose === "reset-service-start"
+				? COMPANY_COMPUTER_RESET_SERVICE_START_MAX_BYTES
+				: purpose === "boot-service-restart"
+					? COMPANY_COMPUTER_BOOT_SERVICE_RESTART_MAX_BYTES
+					: purpose === "boot-service-start"
+						? COMPANY_COMPUTER_BOOT_SERVICE_START_MAX_BYTES
+						: purpose === "boot-configuration"
+							? COMPANY_COMPUTER_BOOT_CONFIGURATION_MAX_BYTES
+							: purpose === "preparation"
+								? COMPANY_COMPUTER_PREPARATION_MAX_BYTES
+								: purpose === "configuration"
+									? COMPANY_COMPUTER_CONFIGURATION_MAX_BYTES
+									: purpose === "service-start"
+										? COMPANY_COMPUTER_SERVICE_START_MAX_BYTES
+										: purpose === "service-stop"
+											? COMPANY_COMPUTER_SERVICE_STOP_MAX_BYTES
+											: COMPANY_COMPUTER_SERVICE_RESTART_MAX_BYTES;
 const officeControlError = (purpose: OfficeControlPurpose | "software", operation: string) =>
 	new Error(`LXD_OFFICE_${purpose.replaceAll("-", "_").toUpperCase()}_${operation}_UNCONFIRMED`);
 
@@ -766,7 +800,8 @@ function officeControlCommand(
 			purpose !== "service-start" &&
 			purpose !== "service-stop" &&
 			purpose !== "service-restart" &&
-			purpose !== "reset-service-start") ||
+			purpose !== "reset-service-start" &&
+			purpose !== "reset-service-restart") ||
 			parseCompanyComputerPreparationCommand({ ...command, commandId: inspectionId }).commandId ===
 				command.commandId)
 	)
@@ -974,6 +1009,7 @@ export class LxdUnixClient
 		LxdOfficeServiceStopClient,
 		LxdOfficeServiceRestartClient,
 		LxdOfficeBootServiceRestartClient,
+		LxdOfficeResetServiceRestartClient,
 		LxdOfficeResetClient,
 		LxdOfficeResetSuccessorClient
 {
@@ -1463,6 +1499,14 @@ export class LxdUnixClient
 	): Promise<LxdOperationReference> {
 		return this.#submitOfficeControl(project, name, command, signal, "boot-service-restart");
 	}
+	async submitOfficeResetServiceRestart(
+		project: string,
+		name: string,
+		command: LxdOfficePreparationCommand,
+		signal: AbortSignal,
+	): Promise<LxdOperationReference> {
+		return this.#submitOfficeControl(project, name, command, signal, "reset-service-restart");
+	}
 	async submitOfficeServiceStopInspection(
 		project: string,
 		name: string,
@@ -1492,6 +1536,16 @@ export class LxdUnixClient
 	): Promise<LxdOperationReference> {
 		if (typeof inspectionId !== "string") throw officeControlError("boot-service-restart", "SUBMISSION");
 		return this.#submitOfficeControl(project, name, command, signal, "boot-service-restart", inspectionId);
+	}
+	async submitOfficeResetServiceRestartInspection(
+		project: string,
+		name: string,
+		command: LxdOfficePreparationCommand,
+		inspectionId: string,
+		signal: AbortSignal,
+	): Promise<LxdOperationReference> {
+		if (typeof inspectionId !== "string") throw officeControlError("reset-service-restart", "SUBMISSION");
+		return this.#submitOfficeControl(project, name, command, signal, "reset-service-restart", inspectionId);
 	}
 	async submitOfficeResetConfiguration(
 		project: string,
@@ -1625,6 +1679,12 @@ export class LxdUnixClient
 		signal: AbortSignal,
 	): Promise<LxdOperationState> {
 		return this.#inspectOfficeControl(reference, signal, "boot-service-restart");
+	}
+	async inspectOfficeResetServiceRestart(
+		reference: LxdOperationReference,
+		signal: AbortSignal,
+	): Promise<LxdOperationState> {
+		return this.#inspectOfficeControl(reference, signal, "reset-service-restart");
 	}
 	async inspectOfficeResetConfiguration(
 		reference: LxdOperationReference,
@@ -2136,6 +2196,15 @@ export class LxdUnixClient
 	): Promise<void> {
 		return this.#pushOfficeControlRequest(project, name, requestSha256, content, signal, "boot-service-restart");
 	}
+	async pushOfficeResetServiceRestartRequest(
+		project: string,
+		name: string,
+		requestSha256: string,
+		content: Buffer,
+		signal: AbortSignal,
+	): Promise<void> {
+		return this.#pushOfficeControlRequest(project, name, requestSha256, content, signal, "reset-service-restart");
+	}
 	async pushOfficeResetConfigurationRequest(
 		project: string,
 		name: string,
@@ -2276,6 +2345,15 @@ export class LxdUnixClient
 		signal: AbortSignal,
 	): Promise<LxdInstanceFile> {
 		return this.#readOfficeControlRequest(project, name, requestSha256, bytes, signal, "boot-service-restart");
+	}
+	async readOfficeResetServiceRestartRequest(
+		project: string,
+		name: string,
+		requestSha256: string,
+		bytes: number,
+		signal: AbortSignal,
+	): Promise<LxdInstanceFile> {
+		return this.#readOfficeControlRequest(project, name, requestSha256, bytes, signal, "reset-service-restart");
 	}
 	async readOfficeResetConfigurationRequest(
 		project: string,

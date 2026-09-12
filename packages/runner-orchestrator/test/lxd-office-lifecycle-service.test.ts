@@ -135,3 +135,16 @@ describe("protected lifecycle service configuration", () => {
 			expect(() => parseLxdOfficeLifecycleServiceConfig(input)).toThrow();
 	});
 });
+
+it("accepts only a local protected reset image package path while preserving old config", () => {
+	expect(parseLxdOfficeLifecycleServiceConfig(config()).resetImagePackageManifestPath).toBeUndefined();
+	expect(
+		parseLxdOfficeLifecycleServiceConfig({
+			...config(),
+			resetImagePackageManifestPath: "/etc/qorpera-office/original-image-manifest.json",
+		}).resetImagePackageManifestPath,
+	).toBe("/etc/qorpera-office/original-image-manifest.json");
+	expect(() =>
+		parseLxdOfficeLifecycleServiceConfig({ ...config(), resetImagePackageManifestPath: "../manifest.json" }),
+	).toThrow();
+});

@@ -50,6 +50,23 @@ export const OFFICE_IMAGE_PACKAGE_FILES = [
 	"LICENSE",
 ] as const;
 
+export const OFFICE_IMAGE_RESET_PACKAGE_FILES = [
+	"qorpera-company-computer-reset-configuration-control.mjs",
+	"qorpera-company-computer-reset-service-start-control.mjs",
+	"qorpera-company-computer-reset-service-restart-control.mjs",
+] as const;
+
+/** Explicit reset capability of an already validated, immutable image package.
+ * Historical v1 packages remain valid for their original service-only uses. */
+export function assertOfficeImageResetCapability(value: ReturnType<typeof parseOfficeImagePackage>): void {
+	if (
+		OFFICE_IMAGE_RESET_PACKAGE_FILES.some(
+			(file) => !value.artifacts.some((artifact) => artifact.file === file && artifact.bytes > 0),
+		)
+	)
+		throw new Error("OFFICE_RESET_IMAGE_CAPABILITY_UNCONFIRMED");
+}
+
 function imageId(value: unknown): number {
 	if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > 2147483647)
 		throw new Error("OFFICE_IMAGE_ID_INVALID");
@@ -107,7 +124,7 @@ export function officeImageDestination(file: string): { path: string; mode: numb
 		return { path: "/usr/local/lib/qorpera/office-browser-child.mjs", mode: 0o444 };
 	if (/^wallpapers\/qorpera-screen-[a-z]+\.png$/.test(file))
 		return { path: `/usr/share/backgrounds/${posix.basename(file)}`, mode: 0o444 };
-	if ((OFFICE_IMAGE_PACKAGE_FILES as readonly string[]).includes(file))
+	if (([...OFFICE_IMAGE_PACKAGE_FILES, ...OFFICE_IMAGE_RESET_PACKAGE_FILES] as readonly string[]).includes(file))
 		return { path: `${OFFICE_IMAGE_ROOT}/${file}`, mode: 0o444 };
 	if (
 		file.startsWith("node_modules/playwright-core/") &&

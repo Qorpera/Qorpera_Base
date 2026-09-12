@@ -34,33 +34,72 @@ export function officeStopHistoryFixture(
 					.content.toString(),
 			)
 		: undefined;
+	const resetStart = files.get("/run/qorpera-office-preparation/reset-service-start-completion.json");
+	const reset = resetStart ? JSON.parse(resetStart.content.toString()) : undefined;
+	const resetRestart =
+		reset && reset.activationId !== activationId
+			? JSON.parse(
+					files
+						.get(`/run/qorpera-office-preparation/reset-service-restart-completion-${activationId}.json`)!
+						.content.toString(),
+				)
+			: undefined;
+	const resetPacket = resetRestart
+		? JSON.parse(
+				files
+					.get(
+						`/run/qorpera-office-preparation/reset-service-restart-incoming-${resetRestart.command.requestSha256}.json`,
+					)!
+					.content.toString(),
+			)
+		: undefined;
+	const resetPaths = reset
+		? [
+				"/etc/qorpera-office/adoption.json",
+				"/run/qorpera-office-preparation/reset-service-start-completion.json",
+				"/run/qorpera-office-preparation/reset-service-start-claim.json",
+				`/run/qorpera-office-preparation/reset-service-start-incoming-${reset.command.requestSha256}.json`,
+				...["reset-configuration-claim.json", "reset-configuration-completion.json", "credentials/config.json"].map(
+					(path) => `${directory}/${path}`,
+				),
+				...(resetRestart
+					? [
+							`/run/qorpera-office-preparation/reset-service-restart-completion-${activationId}.json`,
+							`/run/qorpera-office-preparation/reset-service-restart-incoming-${resetRestart.command.requestSha256}.json`,
+							`/run/qorpera-office-preparation/service-successor-${resetPacket.stop.revocation.request.activationId}.json`,
+						]
+					: []),
+			]
+		: [];
 	const sources = [...files]
 		.filter(
 			([path]) =>
-				(boot
-					? [
-							bootStartPath,
-							"/run/qorpera-office-preparation/boot-service-start-claim.json",
-							`/run/qorpera-office-preparation/boot-service-start-incoming-${start.command.requestSha256}.json`,
-							...(restart
-								? [
-										restartPath,
-										`/run/qorpera-office-preparation/boot-service-restart-incoming-${restart.command.requestSha256}.json`,
-										`/run/qorpera-office-preparation/service-successor-${restartPacket.stop.revocation.request.activationId}.json`,
-									]
-								: []),
-							...[
-								"adoption.json",
-								"configuration-claim.json",
-								"configuration-completion.json",
-								"credentials/config.json",
-							].map((name) => `${directory}/${name}`),
-						].includes(path)
-					: path === "/etc/qorpera-office/credentials/config.json" ||
-						path === "/etc/qorpera-office/adoption.json" ||
-						path === "/run/qorpera-office-preparation/configuration-completion.json" ||
-						path === "/run/qorpera-office-preparation/service-start-completion.json" ||
-						path === `/run/qorpera-office-preparation/service-restart-completion-${activationId}.json`) ||
+				(reset
+					? resetPaths.includes(path)
+					: boot
+						? [
+								bootStartPath,
+								"/run/qorpera-office-preparation/boot-service-start-claim.json",
+								`/run/qorpera-office-preparation/boot-service-start-incoming-${start.command.requestSha256}.json`,
+								...(restart
+									? [
+											restartPath,
+											`/run/qorpera-office-preparation/boot-service-restart-incoming-${restart.command.requestSha256}.json`,
+											`/run/qorpera-office-preparation/service-successor-${restartPacket.stop.revocation.request.activationId}.json`,
+										]
+									: []),
+								...[
+									"adoption.json",
+									"configuration-claim.json",
+									"configuration-completion.json",
+									"credentials/config.json",
+								].map((name) => `${directory}/${name}`),
+							].includes(path)
+						: path === "/etc/qorpera-office/credentials/config.json" ||
+							path === "/etc/qorpera-office/adoption.json" ||
+							path === "/run/qorpera-office-preparation/configuration-completion.json" ||
+							path === "/run/qorpera-office-preparation/service-start-completion.json" ||
+							path === `/run/qorpera-office-preparation/service-restart-completion-${activationId}.json`) ||
 				path === `/run/qorpera-office-preparation/service-stop-incoming-${command.requestSha256}.json` ||
 				path === completionPath,
 		)

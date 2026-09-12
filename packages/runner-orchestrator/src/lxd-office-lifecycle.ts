@@ -57,6 +57,7 @@ interface Workers {
 	activation: Pick<LxdOfficeActivationWorker, "reconcileSettled">;
 }
 interface Options {
+	resetImagePackageManifestPath?: string;
 	planPath: string;
 	inventoryLimits: OfficeInventoryLimits;
 	/** Enrolled software lane: successor and boot activations must measure the
@@ -134,6 +135,7 @@ export class LxdOfficeLifecycle {
 	readonly #operationClient: LxdUnixClient;
 	readonly #configSha: string;
 	readonly #planPath: string;
+	readonly #resetImagePackageManifestPath?: string;
 	readonly #provider: LxdOfficeProviderControl;
 	readonly #workers: Workers;
 	readonly #stopWorker: Pick<LxdOfficeServiceStopWorker, "reconcileSettled">;
@@ -161,6 +163,10 @@ export class LxdOfficeLifecycle {
 		this.#root = policy.journal.path;
 		this.#operationClient = new LxdUnixClient(policy.host.socketPath);
 		this.#planPath = officePhysicalPath(options.planPath);
+		this.#resetImagePackageManifestPath =
+			options.resetImagePackageManifestPath === undefined
+				? undefined
+				: officePhysicalPath(options.resetImagePackageManifestPath);
 		const providerPolicySha256 = lxdOfficePhysicalPolicySha256(policy);
 		this.observationIdentity = Object.freeze({
 			companyId: g.companyId,
@@ -389,6 +395,7 @@ export class LxdOfficeLifecycle {
 							intentId,
 							plan: reset.plan,
 							planSha256: reset.planSha256,
+							imagePackageManifestPath: this.#resetImagePackageManifestPath,
 							serviceBootstrapPath: context.request.serviceBootstrapPath,
 						},
 						signal,

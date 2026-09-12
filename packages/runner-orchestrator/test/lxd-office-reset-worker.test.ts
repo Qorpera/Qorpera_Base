@@ -1,8 +1,11 @@
+import { createHash } from "node:crypto";
 import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { COMPANY_COMPUTER_RESET_PHASES } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LxdOfficeOperationJournal } from "../src/lxd-office-operations.ts";
+import { LxdOfficeResetWorker } from "../src/lxd-office-reset-worker.ts";
+import { officeImagePackageFixture } from "./fixtures/office-image-package.ts";
 import { officeResetWorkerFixture } from "./fixtures/office-reset-worker.ts";
 import { serviceStartId as id } from "./fixtures/office-service-start.ts";
 
@@ -14,6 +17,55 @@ afterEach(async () => {
 const fixture = () => officeResetWorkerFixture(roots);
 const OUTBOX = "/var/lib/qorpera-office-events";
 describe("serialized office root reset worker", () => {
+	it.each(["missing", "digest", "historical"])(
+		"refuses %s original image capability before SQL begin or VM effects",
+		async (failure) => {
+			const f = await fixture();
+			const bytes = Buffer.from(JSON.stringify(officeImagePackageFixture(false)));
+			const input = {
+				...f.input,
+				imagePackageManifestPath: failure === "missing" ? undefined : f.input.imagePackageManifestPath,
+			};
+			const policy =
+				failure === "historical"
+					? {
+							...f.policy,
+							image: {
+								...f.policy.image,
+								guestPackageManifestSha256: createHash("sha256").update(bytes).digest("hex"),
+							},
+						}
+					: f.policy;
+			// Installed helpers on the current root cannot establish capability of the recreated image.
+			f.guest.set("/opt/qorpera-office/qorpera-company-computer-reset-service-start-control.mjs", {
+				content: Buffer.from("new helper"),
+				uid: 0,
+				gid: 0,
+				mode: 0o444,
+			});
+			const worker = new LxdOfficeResetWorker(
+				{ policy, check: f.check },
+				{ call: f.registry.call },
+				{ client: f.client, kernelLock: f.kernelLock, readProtected: async () => bytes },
+			);
+			await expect(worker.reconcile(input, new AbortController().signal)).rejects.toMatchObject({
+				cause: { message: "OFFICE_RESET_IMAGE_CAPABILITY_UNCONFIRMED" },
+			});
+			expect(f.registry.call).not.toHaveBeenCalled();
+			expect(f.submit).not.toHaveBeenCalled();
+		},
+	);
+	it("rechecks the pinned image package before a later destructive phase", async () => {
+		const f = await fixture();
+		for (let tick = 0; tick < 3; tick++) await f.run();
+		const before = f.submit.mock.calls.length;
+		const originalRead = f.readProtected.getMockImplementation()!;
+		f.readProtected.mockImplementation(async (path, ...args) =>
+			path === f.input.imagePackageManifestPath ? Buffer.from("{}") : originalRead(path, ...args),
+		);
+		await expect(f.run()).rejects.toMatchObject({ cause: { message: "OFFICE_RESET_IMAGE_CAPABILITY_UNCONFIRMED" } });
+		expect(f.submit).toHaveBeenCalledTimes(before);
+	});
 	it("advances one phase per tick through the full chain with one planned command per physical action", async () => {
 		const f = await fixture();
 		const phases: string[] = [];

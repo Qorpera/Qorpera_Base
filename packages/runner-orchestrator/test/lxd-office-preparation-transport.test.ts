@@ -10,6 +10,7 @@ import {
 	COMPANY_COMPUTER_CONFIGURATION_MAX_BYTES,
 	COMPANY_COMPUTER_PREPARATION_MAX_BYTES,
 	COMPANY_COMPUTER_RESET_CONFIGURATION_MAX_BYTES,
+	COMPANY_COMPUTER_RESET_SERVICE_RESTART_MAX_BYTES,
 	COMPANY_COMPUTER_RESET_SERVICE_START_MAX_BYTES,
 	COMPANY_COMPUTER_SERVICE_RESTART_MAX_BYTES,
 	COMPANY_COMPUTER_SERVICE_START_MAX_BYTES,
@@ -68,6 +69,15 @@ afterEach(async () => {
 	for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 for (const lane of [
+	{
+		name: "reset-service-restart",
+		push: "pushOfficeResetServiceRestartRequest",
+		read: "readOfficeResetServiceRestartRequest",
+		maximum: COMPANY_COMPUTER_RESET_SERVICE_RESTART_MAX_BYTES,
+		sample: 16384,
+		prefix: "reset-service-restart-incoming",
+		error: "RESET_SERVICE_RESTART",
+	},
 	{
 		name: "boot-service-restart",
 		push: "pushOfficeBootServiceRestartRequest",
@@ -335,3 +345,32 @@ for (const lane of [
 			expect(f.calls).toHaveLength(1);
 		}, 8000);
 	});
+
+describe("reset custody public boot history transport", () => {
+	it.each(["reset-configuration-claim", "reset-configuration-completion"])(
+		"reads exact retained %s without allowing overwrite or credentials",
+		async (leaf) => {
+			const content = Buffer.from("{}"),
+				path = `/etc/qorpera-office/boots/${"a".repeat(32)}/${leaf}.json`;
+			const f = await fixture((_request, response) => bytes(response, content, { "x-lxd-mode": "0444" }));
+			expect((await f.client.readOfficeResetFile("offices", "office-test", path, 65536, signal())).content).toEqual(
+				content,
+			);
+			expect(f.calls).toHaveLength(1);
+			await expect(
+				f.client.pushOfficeResetFile("offices", "office-test", path, content, 0, 0, 0o444, signal()),
+			).rejects.toThrow();
+			await expect(
+				f.client.readOfficeResetFile(
+					"offices",
+					"office-test",
+					path.replace(`${leaf}.json`, "credentials/secret.json"),
+					65536,
+					signal(),
+				),
+			).rejects.toThrow();
+			expect(f.calls).toHaveLength(1);
+			expect(f.failures).toEqual([]);
+		},
+	);
+});

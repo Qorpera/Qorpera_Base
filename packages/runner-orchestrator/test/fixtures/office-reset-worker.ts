@@ -17,6 +17,7 @@ import type { LxdOfficeResetSuccessorLane } from "../../src/lxd-office-reset-suc
 import { type LxdOfficeResetInput, LxdOfficeResetWorker } from "../../src/lxd-office-reset-worker.ts";
 import { lxdOfficeProviderBindingSha256 } from "../../src/lxd-office-start-control.ts";
 import { nodeAdmissionFixture } from "./node-admission.ts";
+import { officeImagePackageBytes } from "./office-image-package.ts";
 import { serviceStartId as id } from "./office-service-start.ts";
 import { officeStopWorkerFixture } from "./office-stop-worker.ts";
 
@@ -220,6 +221,11 @@ export function officeResetRegistryFixture(plan: CompanyComputerResetPlan, planS
 export async function officeResetWorkerFixture(roots: string[]) {
 	const f = await officeStopWorkerFixture(roots, "replace");
 	await f.worker.reconcile(f.activation.request.intentId, f.request, signal());
+	const imagePackageManifestPath = join(f.root, "original-image-manifest.json");
+	const originalRead = f.readProtected.getMockImplementation()!;
+	f.readProtected.mockImplementation(async (path, ...args) =>
+		path === imagePackageManifestPath ? officeImagePackageBytes() : originalRead(path, ...args),
+	);
 	const archiveRoot = await realpath(await mkdtemp(join(tmpdir(), "office-reset-archive-")));
 	roots.push(archiveRoot);
 	await chmod(archiveRoot, 0o700);
@@ -434,6 +440,7 @@ export async function officeResetWorkerFixture(roots: string[]) {
 		plan,
 		planSha256,
 		serviceBootstrapPath: f.activation.request.serviceBootstrapPath,
+		imagePackageManifestPath,
 	};
 	const create = (ports: { successorLane?: LxdOfficeResetSuccessorLane | null } = {}) =>
 		new LxdOfficeResetWorker(

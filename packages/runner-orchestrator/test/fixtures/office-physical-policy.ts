@@ -4,6 +4,8 @@ import type { LxdOfficeGuestBinding } from "../../src/lxd-office-guest.ts";
 import { type LxdOfficeImageStatement, officeCanonical, officeDigest } from "../../src/lxd-office-image-provenance.ts";
 import { type LxdOfficePhysicalPolicy, lxdOfficePhysicalPolicySha256 } from "../../src/lxd-office-physical-policy.ts";
 
+import { officeImagePackageSha256 } from "./office-image-package.ts";
+
 // Ephemeral in-memory signatures over synthetic test records only. These keys
 // never sign a candidate, use a release key, or write an artifact to disk.
 const keys = generateKeyPairSync("ed25519");
@@ -15,7 +17,7 @@ export function officePhysicalFixture(architecture: "x86_64" | "aarch64" = "x86_
 			baseFingerprint: "b".repeat(64),
 			architecture,
 			bytes: 1024,
-			guestPackageManifestSha256: "c".repeat(64),
+			guestPackageManifestSha256: officeImagePackageSha256(),
 			bootstrapSha256: "d".repeat(64),
 		},
 		source: { repository: "https://example.test/office.git", commit: "e".repeat(40), tree: "clean" },

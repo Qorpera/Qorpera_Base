@@ -54,9 +54,15 @@ export async function readLxdOfficeCredentialFile(path: string, limit: number): 
 	return readProtectedFile(path, limit, true);
 }
 
-async function readProtectedFile(path: string, limit: number, confidential: boolean): Promise<Buffer> {
+/** Public image inventory can contain the complete dependency closure; its
+ * caller must compare the bytes with the immutable signed image manifest pin. */
+export async function readLxdOfficeProtectedImageManifestFile(path: string): Promise<Buffer> {
+	return readProtectedFile(path, 1024 ** 2, false, 1024 ** 2);
+}
+
+async function readProtectedFile(path: string, limit: number, confidential: boolean, ceiling = 65536): Promise<Buffer> {
 	officePhysicalPath(path);
-	if (!Number.isSafeInteger(limit) || limit < 1 || limit > 65536) throw new Error("INVALID_OFFICE_FILE_LIMIT");
+	if (!Number.isSafeInteger(limit) || limit < 1 || limit > ceiling) throw new Error("INVALID_OFFICE_FILE_LIMIT");
 	await rootParents(path);
 	const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
 	let contents: Buffer | undefined;

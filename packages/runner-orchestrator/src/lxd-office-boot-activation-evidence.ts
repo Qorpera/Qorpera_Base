@@ -83,7 +83,7 @@ export async function readLxdOfficeBootActivationEvidence(
 	)
 		throw new Error("resume acknowledgement differs");
 	const vm = await LxdOfficeOperationJournal.open(root, intentId, binding, client, true);
-	await vm.assertLifecycleSequence(
+	await vm.assertRetainedLifecycleSequence(
 		[...shutdown.commands, { commandId: resume.startCommandId, action: "start" }],
 		signal,
 	);

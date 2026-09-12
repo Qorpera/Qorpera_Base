@@ -176,7 +176,7 @@ export async function readLxdOfficeBootActivationHistory(
 			throw new Error("boot predecessor differs");
 	}
 	const vm = await LxdOfficeOperationJournal.open(root, intentId, binding, client, true);
-	await vm.assertLifecycleSequence(
+	await vm.assertRetainedLifecycleSequence(
 		[...shutdown.commands, { commandId: resume.startCommandId, action: "start" }],
 		signal,
 	);

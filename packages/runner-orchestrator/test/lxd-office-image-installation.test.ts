@@ -1,9 +1,11 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+	assertOfficeImageResetCapability,
 	OFFICE_IMAGE_EXECUTABLES,
 	OFFICE_IMAGE_MOUNT_UNIT,
 	OFFICE_IMAGE_PACKAGE_FILES,
+	OFFICE_IMAGE_RESET_PACKAGE_FILES,
 	officeImageDestination,
 	parseOfficeImageInstallationSpec,
 	parseOfficeImagePackage,
@@ -49,6 +51,21 @@ const manifest = {
 	].map((file) => ({ file, bytes: 1, sha256: sha })),
 };
 describe("office image installation contract", () => {
+	it("preserves historical packages while requiring explicit reset helper inventory", () => {
+		const historical = parseOfficeImagePackage(manifest);
+		expect(() => assertOfficeImageResetCapability(historical)).toThrow("OFFICE_RESET_IMAGE_CAPABILITY_UNCONFIRMED");
+		const artifacts = [
+			...manifest.artifacts,
+			...OFFICE_IMAGE_RESET_PACKAGE_FILES.map((file) => ({ file, bytes: 1, sha256: sha })),
+		];
+		expect(() => assertOfficeImageResetCapability(parseOfficeImagePackage({ ...manifest, artifacts }))).not.toThrow();
+		for (const missing of OFFICE_IMAGE_RESET_PACKAGE_FILES)
+			expect(() =>
+				assertOfficeImageResetCapability(
+					parseOfficeImagePackage({ ...manifest, artifacts: artifacts.filter((a) => a.file !== missing) }),
+				),
+			).toThrow("OFFICE_RESET_IMAGE_CAPABILITY_UNCONFIRMED");
+	});
 	it("requires the reviewed dependency inventory and a dedicated non-root identity", () => {
 		expect(parseOfficeImageInstallationSpec(spec).dependencies.executables).toEqual(spec.dependencies.executables);
 		for (const invalid of [

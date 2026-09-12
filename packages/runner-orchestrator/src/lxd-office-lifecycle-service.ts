@@ -102,11 +102,11 @@ export function parseLxdOfficeLifecycleServiceConfig(value: unknown) {
 		"inventoryLimits",
 		"pollIntervalMs",
 	];
-	// The software lane is an optional, explicitly named sibling document.
-	const r =
-		value && typeof value === "object" && Object.hasOwn(value, "softwareLanePath")
-			? officeRecord(value, [...keys, "softwareLanePath"])
-			: officeRecord(value, keys);
+	// Optional paths come only from this root-protected service document.
+	const optionalKeys = ["softwareLanePath", "resetImagePackageManifestPath"].filter(
+		(key) => value && typeof value === "object" && Object.hasOwn(value, key),
+	);
+	const r = officeRecord(value, [...keys, ...optionalKeys]);
 	if (r.schema !== "qorpera.lxd-office-provider-service/v1" || typeof r.registryUrl !== "string")
 		throw new Error("INVALID_OFFICE_SERVICE_CONFIG");
 	const credential = officeRecord(r.registryCredential, ["path", "bytes", "sha256"]);
@@ -133,6 +133,10 @@ export function parseLxdOfficeLifecycleServiceConfig(value: unknown) {
 		},
 		inventoryLimits: parseOfficeInventoryLimits(r.inventoryLimits),
 		pollIntervalMs: r.pollIntervalMs as number,
+		resetImagePackageManifestPath:
+			r.resetImagePackageManifestPath === undefined
+				? undefined
+				: officePhysicalPath(r.resetImagePackageManifestPath),
 		softwareLanePath: r.softwareLanePath === undefined ? undefined : officePhysicalPath(r.softwareLanePath),
 	};
 }
