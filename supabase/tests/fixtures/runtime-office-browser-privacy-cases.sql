@@ -32,6 +32,29 @@ begin
 	end loop;
 end
 $$;
+-- Exercise real owner ticket issuance and gateway redemption before a profile
+-- can be prepared. Issuance alone (including a refused browser Origin) is not enough.
+create function pg_temp.private_browser_visit(p_redeem boolean) returns void language plpgsql as $$
+declare ticket jsonb; challenge jsonb:=current_setting('qorpera_test.privacy')::jsonb;
+	binding jsonb; epoch bigint; saved text:=current_setting('request.jwt.claims');
+begin
+	select public.qorpera_runtime_office_scope(o)||jsonb_build_object('computerGeneration',o.generation,
+		'screenId',s.id,'screenOrdinal',s.ordinal,'screenGeneration',s.generation,'staffAgentId',s.staff_agent_id),s.epoch
+	into binding,epoch from public.qorpera_runtime_offices o join public.qorpera_runtime_office_screens s on s.office_id=o.id
+	where s.id=(challenge->>'screenId')::uuid;
+	perform pg_temp.path_claims('authenticated',(challenge->>'memberId')::uuid);
+	ticket:=public.qorpera_create_runtime_office_viewer(binding,epoch,'control',challenge);
+	perform pg_temp.path_claims('service_role');
+	-- Taking over an existing driver may create a new exact drain.
+	perform pg_temp.ack_drains(public.qorpera_runtime_office_supervisor_status(challenge->'scope',
+		(challenge->>'computerGeneration')::bigint)->'drains');
+	if p_redeem then
+		perform public.qorpera_redeem_runtime_office_viewer(challenge->'scope',
+			encode(extensions.digest(ticket->>'capability','sha256'),'hex'));
+	end if;
+	perform set_config('request.jwt.claims',saved,true);
+end
+$$;
 -- A contributor owns their profile. An administrator cannot supply consent.
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000002');
 set local role authenticated;
@@ -122,6 +145,24 @@ select pg_temp.wake_error($q$select public.qorpera_request_runtime_office_drain(
 select pg_temp.wake_assert(public.qorpera_runtime_office_privacy_status(current_setting('qorpera_test.office_scope')::jsonb)->'challenge'='null'::jsonb,
 	'admin status does not expose another member private challenge');
 reset role;
+savepoint unvisited_private_browser;
+select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000002');
+select set_config('qorpera_test.unvisited_exit',pg_temp.privacy_request(false,1)::text,true);
+select pg_temp.path_claims('service_role');
+select pg_temp.ack_drains(current_setting('qorpera_test.unvisited_exit')::jsonb->'drains');
+select public.qorpera_ack_runtime_office_privacy(current_setting('qorpera_test.unvisited_exit')::jsonb);
+select pg_temp.wake_assert((select not prepared from public.qorpera_runtime_browser_profiles where id=current_setting('qorpera_test.browser_profile')::uuid),'acknowledged private entry without a viewer is not preparation');
+rollback to savepoint unvisited_private_browser;
+select pg_temp.private_browser_visit(false);
+select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000002');
+select set_config('qorpera_test.unvisited_exit',pg_temp.privacy_request(false,1)::text,true);
+select pg_temp.path_claims('service_role');
+select pg_temp.ack_drains(current_setting('qorpera_test.unvisited_exit')::jsonb->'drains');
+select public.qorpera_ack_runtime_office_privacy(current_setting('qorpera_test.unvisited_exit')::jsonb);
+select pg_temp.wake_assert((select not prepared from public.qorpera_runtime_browser_profiles where id=current_setting('qorpera_test.browser_profile')::uuid),'issued-only private viewer is not preparation');
+rollback to savepoint unvisited_private_browser;
+release savepoint unvisited_private_browser;
+select pg_temp.private_browser_visit(true);
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000002');
 set local role authenticated;
 select pg_temp.wake_assert(public.qorpera_check_runtime_office_private_access(current_setting('qorpera_test.privacy')::jsonb)->>'state'='authorized','current owner private input check');
@@ -271,6 +312,10 @@ set local role service_role;
 select pg_temp.ack_drains(current_setting('qorpera_test.privacy')::jsonb->'drains');
 select public.qorpera_ack_runtime_office_privacy(current_setting('qorpera_test.privacy')::jsonb);
 reset role;
+select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000002');
+set local role authenticated;
+reset role;
+select pg_temp.private_browser_visit(true);
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000002');
 set local role authenticated;
 select set_config('qorpera_test.privacy',pg_temp.privacy_request(false,5)::text,true);
