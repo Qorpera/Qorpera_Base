@@ -63,6 +63,8 @@ export function parseCompanyComputerStopHistoryManifest(
 			"adoption.json",
 			"configuration-claim.json",
 			"configuration-completion.json",
+			"reset-configuration-claim.json",
+			"reset-configuration-completion.json",
 			"credentials/config.json",
 		].map((path) => `${bootDirectory}/${path}`);
 		let previous = "",
