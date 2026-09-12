@@ -76,7 +76,7 @@ export async function testOfficeLifecycleRevocation({ scope, binding, startup, a
 	// Native/viewer grant data remains a bounded capability, not stop evidence.
 	assert(viewer); await deny(`select * from public.qorpera_runtime_office_lifecycle_transitions;`);
 	console.log("PASS: an in-flight admission waits for revocation and fails; old activation, readiness, new screens and viewers stay fenced");
-	const contenders = await race([request, request, { ...request, transitionId: randomUUID() }, { ...request, action: "replace" }].map(value => `${service} ${begin(value)}`));
+	const contenders = await race([request, request, { ...request, transitionId: randomUUID() }, { ...request, action: action === "replace" ? "service_restart" : "replace" }].map(value => `${service} ${begin(value)}`));
 	assert.equal(contenders.filter(r => r.code === 0).length, 2);
 	for (const result of contenders.filter(r => r.code === 0)) assert.deepEqual(JSON.parse(result.output), expected);
 	const methods = [];

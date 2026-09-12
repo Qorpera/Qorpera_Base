@@ -223,6 +223,43 @@ async function fixture() {
 			bootObservationSha256: "b".repeat(64),
 		})),
 	};
+	const resetPlan = (predecessor: unknown) => ({
+		schema: "qorpera.lxd-office-reset-plan/v1",
+		resetId: "77777777-7777-4777-8777-777777777771",
+		intentId,
+		predecessor,
+		preparationObservationSha256: "1".repeat(64),
+		providerBindingSha256: "c".repeat(64),
+		nodeId: null,
+		predecessorRootIncarnationId: null,
+		rootIncarnationId: "77777777-7777-4777-8777-777777777772",
+		successorActivationId: "77777777-7777-4777-8777-777777777773",
+		commands: {
+			stopCommandId: "77777777-7777-4777-8777-777777777774",
+			deleteCommandId: "77777777-7777-4777-8777-777777777775",
+			createCommandId: "77777777-7777-4777-8777-777777777776",
+			startCommandId: "77777777-7777-4777-8777-777777777777",
+		},
+		custody: { archiveRoot: "/var/lib/qorpera-office-provider/reset-custody" },
+	});
+	const resetWorker = {
+		result: { state: "active", phase: "active" } as { state: string; phase: string; reason?: string },
+		reconcileSettled: vi.fn(
+			async (input: { intentId: string; plan: { resetId: string; successorActivationId: string } }) => {
+				calls.push("reset");
+				if (resetWorker.result.state === "active") state.office = "active";
+				return {
+					...resetWorker.result,
+					intentId: input.intentId,
+					allocationId,
+					resetId: input.plan.resetId,
+					transitionId: recovery.transitionId,
+					activationId: input.plan.successorActivationId,
+					...(resetWorker.result.state === "active" ? { serviceInvocationId: "f".repeat(32) } : {}),
+				};
+			},
+		),
+	};
 	const bootConfigurationWorker = {
 		reconcileSettled: vi.fn(async (input: { request: { bootIntentId: string; activationId: string } }) => ({
 			state: "awaiting_boot_admission" as const,
@@ -285,6 +322,9 @@ async function fixture() {
 				resumeWorker,
 				bootConfigurationWorker,
 				bootActivationWorker,
+				resetWorker: resetWorker as unknown as NonNullable<
+					ConstructorParameters<typeof LxdOfficeLifecycle>[3]
+				>["resetWorker"],
 			},
 		);
 	const approve = () => {
@@ -312,6 +352,8 @@ async function fixture() {
 		resumeWorker,
 		bootConfigurationWorker,
 		bootActivationWorker,
+		resetWorker,
+		resetPlan,
 		recovery,
 	};
 }
@@ -514,6 +556,85 @@ describe("serialized office lifecycle", () => {
 		expect(f.stopWorker.reconcileSettled).toHaveBeenCalledOnce();
 		expect(f.powerOffWorker.reconcileSettled).toHaveBeenCalledTimes(2);
 		expect(f.successorWorker.reconcileSettled).not.toHaveBeenCalled();
+	});
+	it("holds a stopped replace without a protected reset plan and never dispatches the reset worker", async () => {
+		const f = await fixture();
+		await f.toPhase(7);
+		await f.open().reconcile(signal());
+		f.state.recovery = { schema: "qorpera.lxd-office-recovery-plan/v1", request: f.recovery };
+		for (let n = 0; n < 2; n++)
+			await expect(f.open().reconcile(signal())).resolves.toMatchObject({ state: "held", phase: "service_stop" });
+		expect(f.stopWorker.reconcileSettled).toHaveBeenCalledTimes(2);
+		expect(f.resetWorker.reconcileSettled).not.toHaveBeenCalled();
+		expect(f.successorWorker.reconcileSettled).not.toHaveBeenCalled();
+		expect(f.powerOffWorker.reconcileSettled).not.toHaveBeenCalled();
+		// A plan for a different predecessor grants nothing either.
+		f.state.reset = f.resetPlan({ ...f.recovery, transitionId: allocationId });
+		await expect(f.open().reconcile(signal())).rejects.toSatisfy(
+			(error: Error) =>
+				error.message === "OFFICE_LIFECYCLE_UNCONFIRMED" &&
+				(error.cause as Error).message === "OFFICE_RESET_PLAN_PREDECESSOR_DIFFERS",
+		);
+		f.state.reset = f.resetPlan({ ...f.recovery, action: "reboot" });
+		await expect(f.open().reconcile(signal())).rejects.toSatisfy(
+			(error: Error) =>
+				error.message === "OFFICE_LIFECYCLE_UNCONFIRMED" &&
+				(error.cause as Error).message === "INVALID_OFFICE_RESET_PLAN",
+		);
+		expect(f.resetWorker.reconcileSettled).not.toHaveBeenCalled();
+	});
+	it("advances a stopped replace into the governed reset under a protected plan and caches only active", async () => {
+		const f = await fixture();
+		await f.toPhase(7);
+		await f.open().reconcile(signal());
+		f.state.recovery = { schema: "qorpera.lxd-office-recovery-plan/v1", request: f.recovery };
+		f.state.reset = f.resetPlan(f.recovery);
+		f.resetWorker.result = { state: "held", phase: "restored", reason: "OFFICE_RESET_GUEST_LANE_UNAVAILABLE" };
+		await expect(f.open().reconcile(signal())).resolves.toMatchObject({ state: "progressed", phase: "service_stop" });
+		const plan = f.resetPlan(f.recovery);
+		await expect(f.open().reconcile(signal())).resolves.toEqual({
+			state: "held",
+			phase: "reset",
+			intentId,
+			transitionId: f.recovery.transitionId,
+			activationId: plan.successorActivationId,
+			resetId: plan.resetId,
+			resetPhase: "restored",
+			reason: "OFFICE_RESET_GUEST_LANE_UNAVAILABLE",
+		});
+		expect(f.resetWorker.reconcileSettled).toHaveBeenLastCalledWith(
+			{ intentId, plan, planSha256: officeDigest(plan), serviceBootstrapPath: f.request.serviceBootstrapPath },
+			expect.any(AbortSignal),
+		);
+		f.resetWorker.result = { state: "active", phase: "active" };
+		const lifecycle = f.open();
+		await expect(lifecycle.reconcile(signal())).resolves.toMatchObject({
+			state: "active",
+			phase: "reset",
+			resetPhase: "active",
+			resetId: plan.resetId,
+		});
+		await expect(lifecycle.reconcile(signal())).resolves.toMatchObject({ state: "active", resetPhase: "active" });
+		expect(f.resetWorker.reconcileSettled).toHaveBeenCalledTimes(2);
+		await f.open().reconcile(signal());
+		expect(f.resetWorker.reconcileSettled).toHaveBeenCalledTimes(3);
+		expect(f.stopWorker.reconcileSettled).toHaveBeenCalledOnce();
+		expect(f.successorWorker.reconcileSettled).not.toHaveBeenCalled();
+		// A result for another reset identity is never accepted.
+		f.resetWorker.reconcileSettled.mockResolvedValueOnce({
+			state: "active",
+			phase: "active",
+			intentId,
+			allocationId,
+			resetId: plan.rootIncarnationId,
+			transitionId: f.recovery.transitionId,
+			activationId: plan.successorActivationId,
+		});
+		await expect(f.open().reconcile(signal())).rejects.toSatisfy(
+			(error: Error) =>
+				error.message === "OFFICE_LIFECYCLE_UNCONFIRMED" &&
+				(error.cause as Error).message === "reset result differs",
+		);
 	});
 	it("refuses a lost power-off forward stage instead of rerunning service shutdown", async () => {
 		const f = await fixture();

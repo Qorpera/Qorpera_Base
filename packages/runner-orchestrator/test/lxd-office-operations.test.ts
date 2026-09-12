@@ -221,6 +221,63 @@ describe("durable office operation recovery", () => {
 		await expect(f.journal.assertInitialBootSequence(id(10), id(11), signal())).rejects.toThrow();
 		await expect(f.journal.assertPowerOffSequence(id(10), id(11), id(12), signal())).rejects.toThrow();
 	});
+	it("confirms reset lineage only as an exact successful suffix of the retained VM commands", async () => {
+		const f = await fixture();
+		f.client.inspectInstanceOperation.mockResolvedValue("succeeded");
+		const prior = [
+			{ commandId: id(10), action: "create" as const },
+			{ commandId: id(11), action: "start" as const },
+		];
+		const reset = { stopCommandId: id(20), deleteCommandId: id(21), createCommandId: id(22), startCommandId: id(23) };
+		await expect(f.journal.assertResetLineage(prior, reset, signal())).rejects.toThrow(
+			"OFFICE_RESET_LINEAGE_UNCONFIRMED",
+		);
+		for (const command of prior) await f.journal.reconcile(command.commandId, command.action, signal());
+		await expect(f.journal.assertResetLineage(prior, reset, signal())).resolves.toEqual({
+			reached: "none",
+			settled: false,
+		});
+		await expect(f.journal.assertResetLineage([prior[0]], reset, signal())).rejects.toThrow(
+			"OFFICE_RESET_LINEAGE_UNCONFIRMED",
+		);
+		await expect(
+			f.journal.assertResetLineage(prior, { ...reset, deleteCommandId: id(20) }, signal()),
+		).rejects.toThrow("OFFICE_RESET_LINEAGE_UNCONFIRMED");
+		f.client.inspectInstanceOperation.mockResolvedValue("pending");
+		await expect(f.journal.reconcile(id(20), "stop", signal())).resolves.toMatchObject({ state: "pending" });
+		await expect(f.journal.assertResetLineage(prior, reset, signal())).resolves.toEqual({
+			reached: "stop",
+			settled: false,
+		});
+		// An unresolved stop cannot be followed by delete evidence.
+		await expect(f.journal.assertResetLineage(prior, { ...reset, stopCommandId: id(29) }, signal())).rejects.toThrow(
+			"OFFICE_RESET_LINEAGE_UNCONFIRMED",
+		);
+		f.client.inspectInstanceOperation.mockResolvedValue("succeeded");
+		await f.journal.reconcile(id(20), "stop", signal());
+		await expect(f.journal.assertResetLineage(prior, reset, signal())).resolves.toEqual({
+			reached: "stop",
+			settled: true,
+		});
+		for (const [commandId, action] of [
+			[id(21), "delete"],
+			[id(22), "create"],
+			[id(23), "start"],
+		] as const)
+			await f.journal.reconcile(commandId, action, signal());
+		await expect(f.journal.assertResetLineage(prior, reset, signal())).resolves.toEqual({
+			reached: "start",
+			settled: true,
+		});
+		await expect(f.journal.assertLifecycleSequence(prior, signal())).rejects.toThrow("OFFICE_VM_LINEAGE_UNCONFIRMED");
+		f.client.inspectInstanceOperation.mockResolvedValue("failed");
+		const g = await fixture();
+		await g.journal.reconcile(id(10), "create", signal());
+		await g.journal.observe(id(10), "create", signal());
+		await expect(g.journal.assertResetLineage(prior, reset, signal())).rejects.toThrow(
+			"OFFICE_RESET_LINEAGE_UNCONFIRMED",
+		);
+	});
 	it("does not advance a failed or unresolved predecessor in VM lineage", async () => {
 		const f = await fixture(),
 			commands = [
