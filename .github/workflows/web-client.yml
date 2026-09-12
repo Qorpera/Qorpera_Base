@@ -5,7 +5,7 @@ name: Web client
 on:
   workflow_dispatch:
   push:
-    branches: [master, web/client-app]
+    branches: [master, web/client-app, 'release/web-runtime-*']
     paths:
       - '.github/workflows/web-client.yml'
       - 'packages/web/**'
