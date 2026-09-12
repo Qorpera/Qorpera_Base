@@ -29,7 +29,7 @@ const sql=s=>docker(psql,s),rpc=(name,args)=>JSON.parse(sql(`${service} select p
 async function ready(){let count=0;for(let n=0;n<60&&count<2;n++){const r=spawnSync("docker",["exec",container,"pg_isready","-h","127.0.0.1","-U","postgres","-d","inventory"],{timeout:2000});count=r.status===0?count+1:0;if(count<2)await new Promise(r=>setTimeout(r,250));}assert.equal(count,2);}
 let started=false,server;
 try {
-	await build({entryPoints:{observer:join(root,"packages/runner-orchestrator/src/runtime-node-observer.ts"),inventory:join(root,"packages/runner-orchestrator/src/runtime-node-inventory.ts"),lxd:join(root,"packages/runner-orchestrator/src/lxd-client.ts"),health:join(root,"packages/runner-orchestrator/src/runtime-node-health.ts")},outdir:scratch,bundle:true,platform:"node",format:"cjs",outExtension:{".js":".cjs"},target:"node22"});
+	await build({entryPoints:{observer:join(root,"packages/runner-orchestrator/src/runtime-node-observer.ts"),inventory:join(root,"packages/runner-orchestrator/src/runtime-node-inventory.ts"),lxd:join(root,"packages/runner-orchestrator/src/lxd-client.ts"),health:join(root,"packages/runner-orchestrator/src/runtime-node-health.ts"),digest:join(root,"packages/runner-orchestrator/src/lxd-office-image-provenance.ts")},outdir:scratch,bundle:true,platform:"node",format:"cjs",outExtension:{".js":".cjs"},target:"node22"});
 	const require=createRequire(import.meta.url),{RuntimeNodeInventoryObserver}=require(join(scratch,"observer.cjs")),{runtimeNodeInstanceConfigurationSha256}=require(join(scratch,"inventory.cjs")),{LxdUnixClient}=require(join(scratch,"lxd.cjs"));
 	docker(["run","-d","--rm","--name",container,"--network","none","-e","POSTGRES_PASSWORD=disposable-inventory","-e","POSTGRES_DB=inventory",POSTGRES_IMAGE]);started=true;await ready();sql(read("supabase/tests/bootstrap.sql"));
 	const migrations=sortMigrationNames(readdirSync(join(root,"supabase/migrations")));for(const name of migrations)sql(read(`supabase/migrations/${name}`));
@@ -83,7 +83,7 @@ try {
 	assert.equal(runningHistory.placement.physical.physicalId,nativeConfig["volatile.uuid"]);assert.equal(runningHistory.intervals.at(-1).state,"running");assert.equal(runningHistory.screenUsage,null);
 	assert.equal(runningHistory.profileId,sql(`select profile_id from public.qorpera_runtime_machine_allocations where id=${quote(native.id)};`));
 	const computerView=testRuntimeNodeComputers({nodeId,allocationId:native.id,sql,rpc,quote});
-	vm.status="Stopped";vm.statusCode=102;assert.equal((await observe()).state,"ready");assert.equal(capacity().allocatedCpuMillis,3000);
+		vm.status="Stopped";vm.statusCode=102;assert.equal((await observe()).state,"ready",JSON.stringify(lastPublication?.p_inventory));assert.equal(capacity().allocatedCpuMillis,3000);
 	computerView.assertPhysical('suspended');
 	const originalUUID=vm.config["volatile.uuid"];vm.config["volatile.uuid"]=vm.expandedConfig["volatile.uuid"]=randomUUID();
 	assert.equal((await observe()).state,"unavailable");assert.equal(reserve().reason,"NODE_OBSERVATION_UNAVAILABLE");
@@ -116,6 +116,7 @@ try {
 	computerView.assertReleased();
 	assert.equal((await observe()).state,"ready");
 	await testRuntimeNodeHealth({nodeId,sql,psql,service,literal,quote,restartDatabase:async()=>{docker(["restart",container]);await ready();},
+		read,officeDigest:require(join(scratch,'digest.cjs')).officeDigest,parsePolicy:require(join(scratch,'inventory.cjs')).parseRuntimeNodeInventoryPolicy,
 		RuntimeNodeHealthPublisher:require(join(scratch,'health.cjs')).RuntimeNodeHealthPublisher});
 	sql(read("supabase/tests/fixtures/runtime-computer-history-cases.sql"));
 	await testRuntimeComputerLifecycle({allocationId:native.id,service:"set request.jwt.claims='{\"role\":\"service_role\"}'; set role service_role;",literal,execute:sql,

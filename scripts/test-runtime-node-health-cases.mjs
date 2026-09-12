@@ -4,8 +4,10 @@ import {spawn} from 'node:child_process';
 
 // Actual publisher and SQL, with typed fixture measurements. The installed
 // systemd probe separately supplies actual Linux kernel/filesystem evidence.
-export async function testRuntimeNodeHealth({nodeId,sql,psql,service,literal,quote,restartDatabase,RuntimeNodeHealthPublisher}) {
- const policy=sql(`select policy_sha256 from public.qorpera_runtime_node_inventory_policies where node_id=${quote(nodeId)};`);
+export async function testRuntimeNodeHealth({nodeId,sql,psql,service,literal,quote,restartDatabase,RuntimeNodeHealthPublisher,read,officeDigest,parsePolicy}) {
+ const storedPolicy=JSON.parse(sql(`select to_jsonb(p) from public.qorpera_runtime_node_inventory_policies p where node_id=${quote(nodeId)};`));
+ const parsedPolicy=parsePolicy(storedPolicy.policy),policy=officeDigest(parsedPolicy);
+ assert.notEqual(policy,storedPolicy.policy_sha256,'fixture must exercise the actual producer/SQL encoding mismatch');
  const machine=sql(`select machine_id_sha256 from public.qorpera_runtime_nodes where id=${quote(nodeId)};`);
  const call=(name,args,role=service)=>JSON.parse(sql(`${role} select public.${name}(${args.join(',')});`).split('\n').at(-1));
  const view=()=>call('qorpera_runtime_node_health',[quote(nodeId)]);
@@ -13,7 +15,8 @@ export async function testRuntimeNodeHealth({nodeId,sql,psql,service,literal,quo
  const snapshot=()=>sql(`select jsonb_build_object('nodes',(select jsonb_agg(to_jsonb(n) order by id) from public.qorpera_runtime_nodes n),
   'demands',(select jsonb_agg(to_jsonb(d) order by allocation_id) from public.qorpera_runtime_node_demands d),
   'allocations',(select jsonb_agg(to_jsonb(a) order by id) from public.qorpera_runtime_machine_allocations a),
-  'inventory',(select jsonb_agg(to_jsonb(i) order by observation_id) from public.qorpera_runtime_node_inventory_receipts i));`);
+  'inventory',(select jsonb_agg(to_jsonb(i) order by observation_id) from public.qorpera_runtime_node_inventory_receipts i),
+  'policies',(select jsonb_agg(to_jsonb(p) order by node_id) from public.qorpera_runtime_node_inventory_policies p));`);
  const before=snapshot(),records=[];let fail=false,loseReply=true;
  const sample=(offset=0)=>{const at=Date.now()+offset;return {schema:'qorpera.runtime-node-health/v1',nodeId,machineIdSha256:machine,policySha256:policy,
   observerPackageSha256:'e'.repeat(64),bootId:'36000000-0000-4000-8000-000000000011',observationId:randomUUID(),observedAt:new Date(at).toISOString(),
@@ -23,6 +26,52 @@ export async function testRuntimeNodeHealth({nodeId,sql,psql,service,literal,quo
  const registry={async call(method,args){assert.equal(method,'qorpera_observe_runtime_node_health');const record=structuredClone(args.p_observation);records.push(record);
   const result=call(method,[literal(record)]);if(loseReply){loseReply=false;throw new Error('discarded committed health receipt');}return result;}};
  const publisher=new RuntimeNodeHealthPublisher(nodeId,machine,policy,registry,async()=>{if(fail)throw new Error('PRIVATE measurement failure');return sample();});
+ // Recreate only the exact pre-upgrade health functions inside a rollback-only
+ // transaction. This proves historical receipts survive the real forward
+ // migration, while the ordinary driver still applies ALL migrations in order.
+ const old=read('supabase/migrations/20260909000700_runtime_node_health.sql');
+ const oldFunctions=old.slice(old.indexOf('create function public.qorpera_observe_runtime_node_health('),old.indexOf('create function public.qorpera_runtime_node_health_history(')).replaceAll('create function','create or replace function');
+ const upgrade=read('supabase/migrations/20260913000500_runtime_node_health_policy_digest.sql');
+ const legacy={...sample(-20000),policySha256:storedPolicy.policy_sha256},current=sample(-10000);
+ sql(`begin; ${oldFunctions}
+  drop function public.qorpera_node_health_policy_matches(jsonb,text,text);
+  drop function public.qorpera_node_health_policy_json(jsonb);
+  set local request.jwt.claims='{"role":"service_role"}';
+  select public.qorpera_observe_runtime_node_health(${literal(legacy)});
+  do $proof$ begin
+   begin perform public.qorpera_observe_runtime_node_health(${literal(current)});
+    raise exception 'Pre-upgrade SQL unexpectedly accepted producer digest';
+   exception when insufficient_privilege then null; end;
+  end $proof$;
+  create temporary table retained_health_before as select * from public.qorpera_runtime_node_health_receipts;
+  ${upgrade}
+  do $proof$ begin
+   if exists((select * from public.qorpera_runtime_node_health_receipts except select * from retained_health_before)
+    union all (select * from retained_health_before except select * from public.qorpera_runtime_node_health_receipts)) then raise exception 'Upgrade rewrote historical health'; end if;
+   if public.qorpera_runtime_node_health(${quote(nodeId)})->>'state'<>'complete' then raise exception 'Historical digest no longer readable'; end if;
+   perform public.qorpera_observe_runtime_node_health(${literal(legacy)});
+   perform public.qorpera_observe_runtime_node_health(${literal(current)});
+   if public.qorpera_runtime_node_health(${quote(nodeId)})->>'state'<>'complete' then raise exception 'Producer digest not current'; end if;
+  end $proof$; rollback;`);
+ const compact=value=>sql(`select public.qorpera_node_health_policy_json(${literal(value)});`);
+ // Actual officeDigest and parser, including nested arrays, zero/max integers
+ // and path characters whose JSON escaping must not be changed by whitespace removal.
+ for(const variant of [parsedPolicy,{...parsedPolicy,infrastructure:[]},
+  {...parsedPolicy,host:{...parsedPolicy.host,socketGid:0,socketPath:'/var/lib/comma,colon:"quote"é😀/socket'}},
+  {...parsedPolicy,host:{...parsedPolicy.host,socketGid:4294967294},operatingMemoryBytes:1125899906842624},
+  {...parsedPolicy,infrastructure:[...parsedPolicy.infrastructure,{...parsedPolicy.infrastructure[0],name:'second',physicalId:randomUUID()}]}]) {
+  const parsed=parsePolicy(variant);
+  assert.equal(sql(`select encode(extensions.digest(public.qorpera_node_health_policy_json(${literal(parsed)}),'sha256'),'hex');`),officeDigest(parsed));
+  assert.deepEqual(JSON.parse(compact(parsed)),parsed);
+ }
+ for(const value of [9007199254740992,1.5,-1,{'1':'index'}, {'é':'unicode-key'}, {a:null}]) assert.equal(compact(value),'');
+ for(const alternate of [{...parsedPolicy,operatingCpuMillis:parsedPolicy.operatingCpuMillis+1},
+  {...parsedPolicy,host:{...parsedPolicy.host,serverName:'different-host'}}])
+  assert.throws(()=>call('qorpera_observe_runtime_node_health',[literal({...sample(),policySha256:officeDigest(parsePolicy(alternate))})]),/host or policy differs/);
+ assert.throws(()=>call('qorpera_observe_runtime_node_health',[literal({...sample(),machineIdSha256:'a'.repeat(64)})]),/host or policy differs/);
+ assert.equal(sql(`select public.qorpera_node_health_policy_matches(${literal(parsedPolicy)},${quote('f'.repeat(64))},${quote(policy)});`),'f');
+ const legacyReceipt=call('qorpera_observe_runtime_node_health',[literal(legacy)]);
+ assert.equal(view().state,'complete');assert.deepEqual(view().currentMeasurement,legacy);
  await assert.rejects(publisher.observe(new AbortController().signal),/discarded/);assert.equal(records.length,1);
  assert.deepEqual(view().currentMeasurement,records[0]);assert.equal(view().state,'complete');assert.equal(view().usedForAdmission,false);
  const oldReceipt=call('qorpera_observe_runtime_node_health',[literal(records[0])]);
@@ -46,7 +95,24 @@ export async function testRuntimeNodeHealth({nodeId,sql,psql,service,literal,quo
  const paged=[];let time=null,id=null;
  do {const page=call('qorpera_runtime_node_health_history',[quote(nodeId),time?quote(time):'null',id?quote(id):'null','1']);
   assert.equal(page.snapshotAcrossPages,false);paged.push(...page.records.map(r=>r.observation));time=page.nextBeforeTime;id=page.nextBeforeId;}while(id);
- assert.equal(paged.length,5);assert(paged.some(o=>o.observationId===delayed.observationId));assert(paged.some(o=>o.bootId===null));
+ assert.equal(paged.length,6);assert(paged.some(o=>o.observationId===delayed.observationId));assert(paged.some(o=>o.bootId===null));
+ assert.deepEqual(call('qorpera_observe_runtime_node_health',[literal(legacy)]),legacyReceipt);
+ assert.equal(view().observationId,concurrent.observationId,'historical policy replay must not refresh latest health');
+ const changedPolicy={...parsedPolicy,operatingCpuMillis:parsedPolicy.operatingCpuMillis+1};
+ sql(`begin; set local request.jwt.claims='{"role":"service_role"}';
+  update public.qorpera_runtime_node_inventory_policies set policy=${literal(changedPolicy)},
+   policy_sha256=encode(extensions.digest((${literal(changedPolicy)})::text,'sha256'),'hex') where node_id=${quote(nodeId)};
+  do $proof$ begin
+   if public.qorpera_runtime_node_health(${quote(nodeId)})->>'reason'<>'OBSERVER_POLICY_CHANGED' then raise exception 'Changed policy reported current'; end if;
+   begin perform public.qorpera_observe_runtime_node_health(${literal(sample())});raise exception 'Old policy accepted after change'; exception when insufficient_privilege then null; end;
+  end $proof$; rollback;`);
+ sql(`begin; set local request.jwt.claims='{"role":"service_role"}';
+  update public.qorpera_runtime_node_inventory_policies set policy_sha256=${quote('f'.repeat(64))} where node_id=${quote(nodeId)};
+  do $proof$ begin
+   if public.qorpera_runtime_node_health(${quote(nodeId)})->>'reason'<>'OBSERVER_POLICY_CHANGED' then raise exception 'Broken inventory pin reported current'; end if;
+   begin perform public.qorpera_observe_runtime_node_health(${literal(sample())});raise exception 'Broken inventory pin admitted producer'; exception when insufficient_privilege then null; end;
+   begin perform public.qorpera_observe_runtime_node_health(${literal({...sample(),policySha256:'f'.repeat(64)})});raise exception 'Broken inventory pin admitted legacy'; exception when insufficient_privilege then null; end;
+  end $proof$; rollback;`);
  const ids=paged.map(o=>o.observationId);assert.equal(new Set(ids).size,ids.length);
  for(const bad of [{...sample(),secret:'PRIVATE'}, {...sample(),memory:null}, {...sample(),errors:['PRIVATE error']}, {...sample(),cpu:{usedBasisPoints:10001,from:records[0].cpu.from,until:records[0].cpu.until}},
   {...sample(),rootFilesystem:{totalBytes:10,freeBytes:11,availableBytes:1}}, {...sample(),network:{...concurrent.network,sendErrors:-1}},
@@ -62,6 +128,9 @@ export async function testRuntimeNodeHealth({nodeId,sql,psql,service,literal,quo
    if exists(select 1 from unnest(array['anon','authenticated','qorpera_secret_broker']) role where has_function_privilege(role,'public.qorpera_runtime_node_health(uuid)','execute')
     or has_function_privilege(role,'public.qorpera_runtime_node_health_history(uuid,timestamptz,uuid,integer)','execute')
     or has_function_privilege(role,'public.qorpera_observe_runtime_node_health(jsonb)','execute')) then raise exception 'Health RPC leaked'; end if;
+   if exists(select 1 from unnest(array['anon','authenticated','service_role','qorpera_secret_broker']) role where
+    has_function_privilege(role,'public.qorpera_node_health_policy_json(jsonb)','execute') or
+    has_function_privilege(role,'public.qorpera_node_health_policy_matches(jsonb,text,text)','execute')) then raise exception 'Policy bridge leaked'; end if;
    if has_function_privilege('service_role','public.qorpera_assert_runtime_node_health(jsonb)','execute') or has_table_privilege('service_role','public.qorpera_runtime_node_health_receipts','SELECT,INSERT,UPDATE,DELETE') then raise exception 'Raw health custody leaked'; end if;
    perform set_config('request.jwt.claims','{"role":"authenticated"}',true);
    begin perform public.qorpera_runtime_node_health(${quote(nodeId)});raise exception 'Member health read'; exception when insufficient_privilege then null; end;
@@ -71,5 +140,6 @@ export async function testRuntimeNodeHealth({nodeId,sql,psql,service,literal,quo
  assert.equal(view().observationId,concurrent.observationId);assert.equal(snapshot(),before);
  console.log('NODE_HEALTH_SQL_PROOF='+JSON.stringify({schema:'qorpera.runtime-node-health-sql-proof/v1',actualSql:true,actualPublisher:true,
   measurements:'fixture',closedMetadata:true,explicitUnavailable:true,lostCommittedReply:true,concurrentReplayOnce:true,
-  outOfOrderDoesNotRefresh:true,historyPagination:true,staleUnknown:true,operatorOnly:true,admissionAndAllocationsUnchanged:true,databaseRestart:true,observations:5}));
+  actualProducerPolicyDigest:true,preUpgradeMismatchRejected:true,legacyReceiptsPreserved:true,alternatePolicyAndMachineRejected:true,
+  outOfOrderDoesNotRefresh:true,historyPagination:true,staleUnknown:true,operatorOnly:true,admissionAndAllocationsUnchanged:true,databaseRestart:true,observations:6}));
 }
