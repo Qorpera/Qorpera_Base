@@ -455,6 +455,18 @@ export class LxdOfficeResetWorker {
 			seed.commands[0]?.commandId !== creation.createCommandId
 		)
 			throw new Error("reset seed differs");
+		// Immutable lookup by activation; later stop/restart/reboot must resolve
+		// the reset's retained plan without consulting a mutable latest pointer.
+		const activationIndex = {
+			schema: "qorpera.lxd-office-reset-activation-index/v1",
+			intentId,
+			binding,
+			plan,
+		};
+		const activationIndexName = `reset-activation-${allocationId}-${plan.successorActivationId}.json`;
+		if ((await optional(activationIndexName)) === undefined) await retain(activationIndexName, activationIndex);
+		else if (!isDeepStrictEqual(await optional(activationIndexName), activationIndex))
+			throw new Error("reset activation index differs");
 		const phaseIndex = (phase: CompanyComputerResetPhase | null) =>
 			phase === null ? -1 : COMPANY_COMPUTER_RESET_PHASES.indexOf(phase);
 		// SQL is the authority; the local journal may trail it only by the phase

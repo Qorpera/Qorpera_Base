@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readdir, readFile, rm } from "node:fs/promises";
+import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
 	COMPANY_COMPUTER_CONFIGURATION_FILES,
@@ -9,6 +9,9 @@ import {
 	parseCompanyComputerResetServiceStartRequest,
 } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readRecord } from "../src/lxd-office-journal-files.ts";
+import { readLxdOfficeResetActivationHistory } from "../src/lxd-office-reset-activation-history.ts";
+import { readLxdOfficeResetVmHistory } from "../src/lxd-office-reset-vm-history.ts";
 import { officeResetWorkerFixture } from "./fixtures/office-reset-worker.ts";
 import { serviceStartId as id } from "./fixtures/office-service-start.ts";
 
@@ -205,6 +208,94 @@ async function fixture() {
 	return { ...f, guest, staged, lost, operations, configure, configurationState, start, inspect, run, until };
 }
 describe("composed office reset successor lane", () => {
+	it("retains an immutable reset activation history without reopening guest files or current authority", async () => {
+		const f = await fixture();
+		await f.until("active");
+		const calls = f.registry.state.calls.length;
+		f.guest.clear();
+		const history = await readLxdOfficeResetActivationHistory(
+			f.root,
+			f.input.intentId,
+			f.binding,
+			f.plan.successorActivationId,
+			async (name) => (await readRecord(join(f.root, name))).value,
+			f.client,
+			new AbortController().signal,
+		);
+		expect(history).toMatchObject({
+			kind: "reset",
+			initial: false,
+			plan: f.plan,
+			bootObservationSha256: f.registry.state.restoreSha256,
+			originalBootId: f.request.startup.bootId,
+			completion: { activationId: f.plan.successorActivationId, serviceInvocationId: "c".repeat(32) },
+		});
+		expect(history.commands.map((command) => command.action)).toEqual([
+			"create",
+			"start",
+			"stop",
+			"delete",
+			"create",
+			"start",
+		]);
+		const creation = (await readRecord(join(f.root, `intent-${f.input.intentId}.json`))).value as Parameters<
+			typeof readLxdOfficeResetVmHistory
+		>[1];
+		const vm = await readLxdOfficeResetVmHistory(
+			f.root,
+			creation,
+			f.plan.successorActivationId,
+			async (name) => (await readRecord(join(f.root, name))).value,
+			new AbortController().signal,
+		);
+		expect(vm.commands).toEqual(history.commands);
+		expect(vm.observation).toMatchObject({
+			bootId: f.vm.freshBootId,
+			startCommandId: f.plan.commands.startCommandId,
+		});
+		expect(f.registry.state.calls).toHaveLength(calls);
+		expect(f.start).toHaveBeenCalledOnce();
+		expect(f.configure).toHaveBeenCalledOnce();
+	});
+	it.each(["index", "origin", "restore", "configured", "completion", "phase"] as const)(
+		"rejects changed retained reset %s history",
+		async (part) => {
+			const f = await fixture();
+			await f.until("active");
+			const path =
+				part === "index"
+					? join(f.root, `reset-activation-${f.binding.allocationId}-${f.plan.successorActivationId}.json`)
+					: part === "origin"
+						? f.paths.seed
+						: part === "restore"
+							? f.paths.restore
+							: part === "configured"
+								? f.paths.configuration
+								: part === "completion"
+									? f.paths.started
+									: f.paths.phase(9);
+			const value = JSON.parse(await readFile(path, "utf8"));
+			if (part === "index") value.plan.rootIncarnationId = id(901);
+			else if (part === "origin") value.originalBootId = id(902);
+			else if (part === "restore") value.bootId = id(903);
+			else if (part === "configured") value.serviceBootstrapSha256 = "f".repeat(64);
+			else if (part === "completion") value.completion.serviceInvocationId = "e".repeat(32);
+			else value.previousSha256 = "f".repeat(64);
+			await writeFile(path, encode(value));
+			await expect(
+				readLxdOfficeResetActivationHistory(
+					f.root,
+					f.input.intentId,
+					f.binding,
+					f.plan.successorActivationId,
+					async (name) => (await readRecord(join(f.root, name))).value,
+					f.client,
+					new AbortController().signal,
+				),
+			).rejects.toThrow();
+			expect(f.start).toHaveBeenCalledOnce();
+		},
+	);
 	it("installs fresh credentials under the new boot directory with one configuration dispatch and activates with one start", async () => {
 		const f = await fixture();
 		await expect(f.until("active")).resolves.toMatchObject({
