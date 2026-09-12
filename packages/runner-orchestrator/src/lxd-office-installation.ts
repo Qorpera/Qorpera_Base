@@ -24,6 +24,7 @@ export const OFFICE_INSTALL_ARTIFACTS = [
 	"qorpera-office-provider.cjs",
 	"qorpera-office-host-namespace.cjs",
 	"qorpera-office-provider-install.cjs",
+	"qorpera-office-software-update.cjs",
 	"qorpera-office-provider.service.in",
 	"qorpera-office-host-namespace.service",
 ] as const;

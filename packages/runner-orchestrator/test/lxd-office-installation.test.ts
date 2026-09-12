@@ -124,7 +124,7 @@ describe("office provider installation boundary", () => {
 			runtime: { node: ">=22.19.0", platform: "linux" },
 			artifacts: OFFICE_INSTALL_ARTIFACTS.map((file) => ({ file, bytes: 1, sha256: "a".repeat(64) })),
 		};
-		expect(parseOfficeInstallationManifest(manifest)).toHaveLength(5);
+		expect(parseOfficeInstallationManifest(manifest)).toHaveLength(OFFICE_INSTALL_ARTIFACTS.length);
 		expect(() => parseOfficeInstallationManifest({ ...manifest, artifacts: manifest.artifacts.slice(1) })).toThrow();
 		expect(() =>
 			parseOfficeInstallationManifest({
