@@ -144,7 +144,7 @@
     "packages/runner-orchestrator/src/lxd-office-lifecycle-control.ts": "6650a07a2dafdcb4f2718072c259c7585281ce294776e227bf3a73e3e0a2902c",
     "packages/runner-orchestrator/src/lxd-office-lifecycle-journal.ts": "ccfa170960a4145ae5be0c5fb9145c2297cc1fee97031cae08c9d4726a4703e4",
     "packages/runner-orchestrator/src/lxd-office-lifecycle-service.ts": "7adeac51266fa287f275f21b9506aba69761092448f8b07bde75fda3c6a8fe54",
-    "packages/runner-orchestrator/src/lxd-office-lifecycle.ts": "8dafa1479dcd735c85d2e5792cb69ddb0afedab16e5a00cd0452551d7361ac8e",
+    "packages/runner-orchestrator/src/lxd-office-lifecycle.ts": "658d22f3ae00d93b9c4157e6db2e5a1d527ad90cfb5f87b42a7394d014b80243",
     "packages/runner-orchestrator/src/lxd-office-node-admission.ts": "2cdbfc97fa924c5e2825f7ffc83c0c80b04687ff93f956108db2b04bfeeaad60",
     "packages/runner-orchestrator/src/lxd-office-operations.ts": "7c4a1808d17bce48bab1d3424371dc2d7c9f965adefefca248a0e35385c7620e",
     "packages/runner-orchestrator/src/lxd-office-physical-gate.ts": "b59bee535e997902de7c3f3863d18ea5b4cd13625d7614f13dc2a844e27f1084",
