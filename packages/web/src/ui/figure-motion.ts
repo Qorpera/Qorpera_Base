@@ -124,7 +124,18 @@ async function prepare(entry: LiveMotion): Promise<void> {
 		pc.globalCompositeOperation = "destination-in";
 		pc.drawImage(source, 0, 0, 512, 512);
 		ctx.drawImage(patch, 0, 0);
-		surfaces.set(key, { body, source });
+		// The trailer's figures carry a soft silhouette. Feather the alpha edge
+		// (about one CSS pixel on an 82px figure) while the interior stays crisp:
+		// the blurred body sets the edge coverage, the sharp body the colour.
+		const feathered = document.createElement("canvas");
+		feathered.width = feathered.height = 512;
+		const fc = feathered.getContext("2d")!;
+		fc.filter = "blur(6px)";
+		fc.drawImage(body, 0, 0);
+		fc.filter = "none";
+		fc.globalCompositeOperation = "source-atop";
+		fc.drawImage(body, 0, 0);
+		surfaces.set(key, { body: feathered, source });
 	}
 }
 
@@ -179,6 +190,9 @@ function paint(entry: LiveMotion): void {
 	const ctx = canvas.getContext("2d")!;
 	ctx.setTransform(1, 0, 0, 1, 0, 0);
 	ctx.clearRect(0, 0, side, side);
+	// The 512px body is drawn several times smaller; ask for the resampler
+	// that averages, so silhouettes stay as soft as an image element's.
+	ctx.imageSmoothingQuality = "high";
 	ctx.scale(side / 100, side / 100);
 	const p = pose(activity, elapsed, { reduced });
 	const asset = surfaces.get(entry.id + entry.color)!;
