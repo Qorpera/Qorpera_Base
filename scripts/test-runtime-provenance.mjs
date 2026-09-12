@@ -75,18 +75,16 @@ try {
 		update public.qorpera_shared_sessions set audience_kind='member_private',audience_user_id='29000000-0000-4000-8000-000000000001'
 		where id='29000000-0000-4000-8000-000000000040';
 			${privateMarker}`);
-	const grantMarker = "-- No default employee access, even for an owner-sponsored native turn.";
-	assert.equal(fixture.split(grantMarker).length, 2, "Grant denial setup marker must be unique");
-	// Step 3 creates ordinary, revocable default read grants. Revoke this
-	// fixture agent's default before exercising the existing no-grant cases.
-	// Historical pre-upgrade admission above retains its original setup.
-	const currentGrantSetup = `
-		update public.qorpera_company_path_grants grant_row set revoked_at=clock_timestamp()
-		from public.qorpera_company_path_resources resource
-		where grant_row.resource_id=resource.id and resource.environment_id='29000000-0000-4000-8000-000000000020'
-			and grant_row.principal_kind='staff_agent' and grant_row.principal_id='29000000-0000-4000-8000-000000000030'
-			and grant_row.origin='default_agent_read' and grant_row.revoked_at is null;
-		${grantMarker}`;
+	const grantMarker = "-- Shared reads have an explicit, revocable default grant (20260828020700).";
+	const denialMarker = "set local role service_role;\ndo $$\nbegin\n\tbegin\n\t\tperform public.qorpera_read_company_path";
+	assert.equal(privateSetup.split(grantMarker).length, 2, "Default grant setup marker must be unique");
+	assert.equal(privateSetup.split(denialMarker).length, 2, "Grant denial setup marker must be unique");
+	const defaultGrantSetup = privateSetup.slice(privateSetup.indexOf(grantMarker), privateSetup.indexOf(denialMarker));
+	// The current fixture proves the default read and revokes it through the
+	// owner RPC before testing denial. Before 20700 there is no default grant:
+	// omit only its read/revocation setup, retaining the same denial and explicit
+	// grant assertions when admitting the historical pre-19700 private run.
+	const historicalPrivateSetup = privateSetup.replace(defaultGrantSetup, "select pg_temp.path_claims('service_role');\n");
 	const acknowledge = `
 		create function pg_temp.path_ack(p_binding jsonb) returns jsonb language sql as $$
 			select public.qorpera_send_native_agent_message((p_binding->>'leaseId')::uuid,(p_binding->>'runId')::uuid,
@@ -98,16 +96,9 @@ try {
 		select pg_temp.path_ack(current_setting('qorpera_test.path_binding')::jsonb);
 		reset role;
 	`;
-	let currentFixture = fixture.replace(grantMarker, () => currentGrantSetup)
-		.replace(admissionMarker, () => `${acknowledge}\n${admissionMarker}`);
-	const completionCount = "v_result := jsonb_set(v_result,'{backend_result,message_count}','1');";
-	const sendCount = "(select count(*) from public.qorpera_agent_sends where run_id = (v_binding ->> 'runId')::uuid) <> 1";
-	const nextTurnSend = "perform pg_temp.path_begin(v_binding);\n\tv_send := public.qorpera_send_native_agent_message";
-	for (const marker of [completionCount, sendCount, nextTurnSend]) assert.equal(currentFixture.split(marker).length, 2);
-	currentFixture = currentFixture.replace(completionCount, completionCount.replace("'1'", "'2'"))
-		.replace(sendCount, sendCount.replace("<> 1", "<> 2"))
-		.replace(nextTurnSend, "perform pg_temp.path_begin(v_binding);\n\tperform pg_temp.path_ack(v_binding);\n\tv_send := public.qorpera_send_native_agent_message");
-	const currentPrivateSetup = privateSetup.replace(grantMarker, () => currentGrantSetup) + acknowledge;
+	// SQL 290 now owns both human-turn acknowledgements and their exact send
+	// counts. The private prefix ends before that send, so supply just its ack.
+	const currentPrivateSetup = privateSetup + acknowledge;
 	let upgradeReady = false;
 	let authorityReady = false;
 	for (const migration of migrations) {
@@ -146,7 +137,7 @@ try {
 			// Preserve real v1 admitted work, then prove that additive migration
 			// does not invent an effort or rewrite its historical bundle/input.
 			docker(["exec", container, "createdb", "-U", "postgres", "-T", "qorpera_test", "qorpera_upgrade_provenance"]);
-			docker(upgradePsql, `${privateSetup}
+			docker(upgradePsql, `${historicalPrivateSetup}
 				create table public.qorpera_test_provenance_history as
 				select current_setting('qorpera_test.path_binding')::jsonb as binding,to_jsonb(run) as run,
 					(select jsonb_agg(to_jsonb(input) order by input.id) from public.qorpera_session_inputs input
@@ -251,7 +242,7 @@ try {
 	assert.equal(fixture.split(marker).length, 2, "Real path fixture integration marker must be unique");
 	const cases = readFileSync(join(root, "supabase/tests/fixtures/runtime-provenance-cases.sql"), "utf8");
 	assert.match(fixture, /rollback;\s*$/i);
-	sql(currentFixture.replace(marker, () => `${cases}\n${marker}`).replace(/rollback;\s*$/i, `
+	sql(fixture.replace(marker, () => `${cases}\n${marker}`).replace(/rollback;\s*$/i, `
 		create table public.qorpera_test_provenance_binding as select current_setting('qorpera_test.path_binding')::jsonb as binding;
 		commit;`));
 	console.log("PASS: real admission, incompatible-bundle/binary/effort rejection, exact reads, CAS, privacy, context views and completion");

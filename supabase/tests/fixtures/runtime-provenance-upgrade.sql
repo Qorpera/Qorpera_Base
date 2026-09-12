@@ -22,13 +22,25 @@ begin
 				and bundle.sha256 = active.runtime_bundle_sha256
 			where bundle.sha256 = current_setting('qorpera_test.expected_runtime_bundle') and bundle.version > 1) then
 		raise exception 'Upgrade lost the old bundle or failed to activate the new one'; end if;
-	set local role service_role;
 	begin
-		perform public.qorpera_describe_native_tool_authority(v_history.binding);
-		raise exception 'Historical symbolic bundle reached the new native runtime';
+		perform public.qorpera_execution_runtime_manifest(v_run);
+		raise exception 'Historical symbolic bundle passed executable manifest validation';
 	exception when insufficient_privilege then
 		get stacked diagnostics v_message = message_text;
 		if v_message <> 'Run requires an executable runtime bundle' then raise; end if;
+	end;
+	-- Current native admission checks wake authority before the manifest. A
+	-- pre-wake-bus run must stay denied there too; never fabricate a wake to
+	-- reach the later executable-bundle check exercised independently above.
+	if exists(select 1 from public.qorpera_wake_occurrences where run_id = v_run.id) then
+		raise exception 'Upgrade invented wake authority for historical work'; end if;
+	set local role service_role;
+	begin
+		perform public.qorpera_describe_native_tool_authority(v_history.binding);
+		raise exception 'Historical run without wake authority reached the native runtime';
+	exception when insufficient_privilege then
+		get stacked diagnostics v_message = message_text;
+		if v_message <> 'Admitted wake authority is unavailable' then raise; end if;
 	end;
 	reset role;
 	if v_run.audience_kind <> 'member_private' or v_run.audience_user_id <> v_run.requested_by_user_id then

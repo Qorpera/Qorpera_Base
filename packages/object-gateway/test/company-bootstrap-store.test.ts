@@ -96,6 +96,7 @@ async function fixture(backend: "nas" | "legacy" = "nas") {
 						memberSessionId: "32000000-0000-4000-8000-000000000010",
 						formationDocument,
 						cofounderAgentDocument: agentDocument,
+						cofounderResponsibilityDocuments: {},
 						pathGatewayVersion: 1,
 						baseSnapshotId: snapshotId,
 						baseTreeSha256: hash(head),
