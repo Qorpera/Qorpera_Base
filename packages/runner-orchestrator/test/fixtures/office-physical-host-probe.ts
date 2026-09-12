@@ -7,6 +7,7 @@ import {
 	readLxdOfficeCredentialFile,
 	readLxdOfficeProtectedFile,
 	readLxdOfficeProtectedImageManifestFile,
+	readLxdOfficeProtectedPackageArtifactFile,
 } from "../../src/lxd-office-physical-host.ts";
 import { officePhysicalFixture } from "./office-physical-policy.ts";
 
@@ -88,6 +89,15 @@ await assert.rejects(readLxdOfficeProtectedFile(`${root}/image-manifest.json`, 1
 for (const name of ["writable.json", "user-owned.json", "symlink.json", "hardlink.json", "unsafe/config.json"])
 	await assert.rejects(readLxdOfficeProtectedImageManifestFile(`${root}/${name}`));
 results.push("bounded public image inventory preserves protected reader custody and generic ceiling");
+assert.equal((await readLxdOfficeProtectedPackageArtifactFile(`${root}/image-manifest.json`, 100000)).length, 100000);
+await assert.rejects(readLxdOfficeProtectedPackageArtifactFile(`${root}/image-manifest.json`, 99999));
+await assert.rejects(
+	readLxdOfficeProtectedPackageArtifactFile(`${root}/image-manifest.json`, 32 * 1024 ** 2 + 1),
+	/INVALID_OFFICE_FILE_LIMIT/,
+);
+for (const name of ["writable.json", "user-owned.json", "symlink.json", "hardlink.json", "unsafe/config.json"])
+	await assert.rejects(readLxdOfficeProtectedPackageArtifactFile(`${root}/${name}`, 100000));
+results.push("bounded code artifact reader preserves exact file custody");
 for (const name of [
 	"writable.json",
 	"group-writable.json",

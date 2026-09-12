@@ -60,6 +60,13 @@ export async function readLxdOfficeProtectedImageManifestFile(path: string): Pro
 	return readProtectedFile(path, 1024 ** 2, false, 1024 ** 2);
 }
 
+/** Signed package code has a separate bounded size class. This reader proves
+ * file custody only; callers must verify the artifact bytes against their
+ * already verified immutable package inventory before staging. */
+export async function readLxdOfficeProtectedPackageArtifactFile(path: string, limit: number): Promise<Buffer> {
+	return readProtectedFile(path, limit, false, 32 * 1024 ** 2);
+}
+
 async function readProtectedFile(path: string, limit: number, confidential: boolean, ceiling = 65536): Promise<Buffer> {
 	officePhysicalPath(path);
 	if (!Number.isSafeInteger(limit) || limit < 1 || limit > ceiling) throw new Error("INVALID_OFFICE_FILE_LIMIT");
