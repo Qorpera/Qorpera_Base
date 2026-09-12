@@ -296,7 +296,14 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 								? "page"
 								: undefined,
 					},
-					h("span", { class: "cofounder-stand" }, agentFigure(cofounder, cofounder.displayName, { size: 64 })),
+					h(
+						"span",
+						{ class: "cofounder-stand" },
+						agentFigure(cofounder, cofounder.displayName, { size: 82 }),
+						company.activityFor(cofounder.id)
+							? h("span", { class: "cofounder-status", "aria-hidden": "true" })
+							: null,
+					),
 					h("strong", null, cofounder.displayName),
 					h("small", null, statusLine(company, cofounder)),
 				)

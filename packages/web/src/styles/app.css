@@ -176,24 +176,32 @@ label > input, label > select { font-weight: 400; }
 .rail-scroll { flex: 1; min-height: 0; overflow-y: auto; padding-top: 2px; }
 .rail-empty { padding: 14px 8px; color: var(--rail-small); font-size: 12.5px; }
 
-/* The Co-Founder occupies its own tier above the rest of the staff. */
-.rail-cofounder { padding-top: 26px; padding-bottom: 6px; }
+/* The Co-Founder occupies its own tier above the rest of the staff. Geometry
+ * is the trailer's card at 1x: an 82px figure standing 27px proud of a low
+ * card, 13px name, 10.5px status line, a soft shadow under the figure. */
+.rail-cofounder { padding-top: 31px; padding-bottom: 6px; }
 .cofounder-home {
-	position: relative; display: flex; flex-direction: column; align-items: center; gap: 2px;
-	width: 100%; padding: 50px 12px 10px; border-radius: 12px;
+	position: relative; display: flex; flex-direction: column; align-items: center; gap: 1px;
+	width: 100%; padding: 63px 12px 7px; border-radius: 11px;
 	background: transparent; color: var(--text); text-align: center;
 }
 .cofounder-home:hover { background: var(--rail-hover); text-decoration: none; }
 .cofounder-home.active, .cofounder-home.active:hover { background: var(--rail-selection); color: #fff; }
-.cofounder-home strong { position: relative; z-index: 2; font-size: 12px; font-weight: 650; line-height: 1.2; overflow-wrap: anywhere; }
-.cofounder-home small { align-self: stretch; font-size: 10.5px; line-height: 1.4; color: var(--rail-small); }
+.cofounder-home strong { position: relative; z-index: 2; font-size: 13px; font-weight: 650; line-height: 16px; overflow-wrap: anywhere; }
+.cofounder-home small { align-self: stretch; font-size: 10.5px; line-height: 15px; color: var(--rail-small); }
 .cofounder-home.active small { color: #fff; }
-.cofounder-stand { position: absolute; left: 50%; top: -20px; width: 64px; height: 64px; transform: translateX(-50%); }
+.cofounder-stand { position: absolute; left: 50%; top: -27px; width: 82px; height: 82px; transform: translateX(-50%); }
 .cofounder-stand::before {
-	content: ""; position: absolute; left: 14%; right: 14%; bottom: 1px; height: 10px; border-radius: 50%;
+	content: ""; position: absolute; left: 7%; right: 7%; bottom: -1px; height: 12px; border-radius: 50%;
 	background: rgba(0, 30, 80, 0.3); filter: blur(5px);
 }
-.cofounder-stand .figure { position: relative; z-index: 1; width: 64px; height: 64px; }
+.cofounder-stand .figure { position: relative; z-index: 1; width: 82px; height: 82px; }
+.cofounder-status {
+	position: absolute; z-index: 2; right: 0; bottom: -2px; width: 16px; height: 16px; border-radius: 50%;
+	background: var(--rail-status); border: 3px solid var(--rail);
+}
+.cofounder-home:hover .cofounder-status { border-color: var(--rail-hover); }
+.cofounder-home.active .cofounder-status { border-color: var(--rail-selection); }
 
 .rail-list { display: grid; gap: 1px; }
 .rail-row {
@@ -217,6 +225,7 @@ label > input, label > select { font-weight: 400; }
 	.rail-compact .cofounder-home { height: 64px; padding: 0; }
 	.rail-compact .cofounder-stand { top: 8px; width: 48px; height: 48px; }
 	.rail-compact .cofounder-stand .figure { width: 48px; height: 48px; }
+	.rail-compact .cofounder-status { width: 12px; height: 12px; border-width: 2px; }
 	.rail-compact .rail-row { grid-template-columns: 1fr; padding: 5px; justify-items: center; }
 	.rail-compact .account-menu-rail .account-trigger { justify-content: center; }
 	.rail-compact .account-menu-rail .account-popover { position: fixed; left: 8px; right: auto; bottom: 66px; width: 260px; z-index: 50; }
