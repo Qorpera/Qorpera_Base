@@ -191,16 +191,16 @@ label > input, label > select { font-weight: 400; }
 .cofounder-home:hover { background: var(--rail-hover); text-decoration: none; }
 .cofounder-home.active, .cofounder-home.active:hover { background: var(--rail-selection); color: #fff; }
 .cofounder-home strong { position: relative; z-index: 2; font-size: 13px; font-weight: 650; line-height: 16px; overflow-wrap: anywhere; }
-.cofounder-home small { align-self: stretch; font-size: 10.5px; line-height: 15px; color: var(--rail-small); }
+.cofounder-home small { align-self: center; max-width: 200px; font-size: 10.5px; line-height: 15px; color: var(--rail-small); }
 .cofounder-home.active small { color: rgba(255, 255, 255, 0.85); }
 .cofounder-stand { position: absolute; left: 50%; top: -27px; width: 82px; height: 82px; transform: translateX(-50%); }
 .cofounder-stand::before {
 	content: ""; position: absolute; left: 7%; right: 7%; bottom: -1px; height: 12px; border-radius: 50%;
 	background: rgba(0, 30, 80, 0.3); filter: blur(5px);
 }
-.cofounder-stand .figure { position: relative; z-index: 1; width: 82px; height: 82px; }
+.cofounder-stand .figure { position: relative; z-index: 1; width: 82px; height: 82px; filter: drop-shadow(0 4px 4px rgba(0, 0, 0, 0.16)); }
 .cofounder-status {
-	position: absolute; z-index: 2; right: -1px; bottom: -3px; width: 16px; height: 16px; border-radius: 50%;
+	position: absolute; z-index: 2; right: -4px; bottom: -6px; width: 22px; height: 22px; border-radius: 50%;
 	background: var(--rail-status); border: 3px solid var(--rail);
 }
 .cofounder-home:hover .cofounder-status { border-color: var(--rail-hover); }
@@ -215,7 +215,7 @@ label > input, label > select { font-weight: 400; }
 .rail-row.active, .rail-row.active:hover { background: var(--rail-selection); color: #fff; }
 .rail-row .figure { width: 40px; height: 40px; }
 .rail-row-stand { position: relative; width: 40px; height: 40px; }
-.rail-row-status { position: absolute; z-index: 2; right: 0; bottom: 0; width: 11px; height: 11px; border-radius: 50%; background: var(--rail-status); border: 2px solid var(--rail); }
+.rail-row-status { position: absolute; z-index: 2; right: -2px; bottom: -2px; width: 15px; height: 15px; border-radius: 50%; background: var(--rail-status); border: 2px solid var(--rail); }
 .rail-row:hover .rail-row-status { border-color: var(--rail-hover); }
 .rail-row.active .rail-row-status { border-color: var(--rail-selection); }
 .rail-row-copy { display: flex; flex-direction: column; justify-content: flex-start; gap: 2px; min-width: 0; }
@@ -232,7 +232,7 @@ label > input, label > select { font-weight: 400; }
 	.rail-compact .cofounder-home { height: 64px; padding: 0; }
 	.rail-compact .cofounder-stand { top: 8px; width: 48px; height: 48px; }
 	.rail-compact .cofounder-stand .figure { width: 48px; height: 48px; }
-	.rail-compact .cofounder-status { width: 12px; height: 12px; border-width: 2px; }
+	.rail-compact .cofounder-status { width: 16px; height: 16px; border-width: 2px; }
 	.rail-compact .rail-row { grid-template-columns: 1fr; padding: 5px; justify-items: center; }
 	.rail-compact .account-menu-rail .account-trigger { justify-content: center; }
 	.rail-compact .account-menu-rail .account-popover { position: fixed; left: 8px; right: auto; bottom: 66px; width: 260px; z-index: 50; }
