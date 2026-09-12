@@ -62,6 +62,7 @@ export class CompanyComputerNativeGateway {
 	readonly #registry: HttpCloudCompanyComputerRegistry;
 	readonly #createSession: CompanyComputerNativeGuestSessionFactory;
 	readonly #admit: () => void;
+	readonly #admitWork: () => void;
 	readonly #sessions = new Map<string, Promise<Session>>();
 	readonly #completed: string[] = [];
 	readonly #stop = new AbortController();
@@ -76,6 +77,8 @@ export class CompanyComputerNativeGateway {
 		createSession: CompanyComputerNativeGuestSessionFactory;
 		/** Service startup/shutdown barrier, before body reads or SQL effects. */
 		admit?: () => void;
+		/** Fresh supervisor state for new work only; exact cleanup remains available. */
+		admitWork?: () => void;
 	}) {
 		assertCompanyComputerScope(options.scope, options.scope);
 		if (
@@ -90,6 +93,7 @@ export class CompanyComputerNativeGateway {
 		this.#registry = options.registry;
 		this.#createSession = options.createSession;
 		this.#admit = options.admit ?? (() => {});
+		this.#admitWork = options.admitWork ?? (() => {});
 	}
 	#checkLease(lease: CompanyComputerScreenLease, run: CloudNativeToolRun): void {
 		officeNativeRecord(lease, "binding,driver,epoch,leaseId,validForMs");
@@ -235,6 +239,7 @@ export class CompanyComputerNativeGateway {
 			await cloudToolRequest(() => this.#close(session), signal, 20000);
 			return { schema: COMPANY_COMPUTER_NATIVE_SCHEMA, state: "released", leaseId: lease.leaseId };
 		}
+		this.#admitWork();
 		const op = officeNativeRecord(
 			body.operation,
 			"arguments,logicalOperationKey,requiresCompanyRevision,target,tool,toolVersion",

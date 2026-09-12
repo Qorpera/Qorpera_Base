@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { connect, createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -14,12 +14,15 @@ import {
 	startCompanyComputerOfficeService,
 } from "@qorpera/runtime/cloud-company-computer-service";
 import { CompanyComputerStartupControl } from "@qorpera/runtime/cloud-company-computer-startup";
+import { CompanyComputerOfficeSupervisor } from "@qorpera/runtime/cloud-company-computer-supervisor";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { nativeToolAuthorityFixture } from "../../shell/test/fixtures/native-tool-authority-fixture.ts";
 import {
 	computerBinding,
 	computerDeferred,
 	computerId,
 	computerLease,
+	computerOperation,
 	computerRfbServerHello,
 	computerScope,
 } from "./fixtures/company-computer.ts";
@@ -557,6 +560,81 @@ describe("headless office service lifetime (TLS listeners, synthetic physical ad
 		await expect(admit()).rejects.toThrow();
 		expect(redeems()).toBe(1);
 		expect(f.guest.close).not.toHaveBeenCalled();
+	});
+	it("keeps exact native release available when the composed service refuses stale new work", async () => {
+		const f = fixture();
+		const source = nativeToolAuthorityFixture();
+		const scope = {
+			...computerScope(),
+			companyId: source.authority.identity.companyId,
+			environmentId: source.authority.identity.environmentId,
+		};
+		f.options.scope = scope;
+		f.state.scope = scope;
+		const lease = {
+			...computerLease(),
+			binding: { ...computerBinding(), ...scope, staffAgentId: source.authority.identity.staffAgentId },
+			driver: { kind: "agent", runId: source.binding.runId, staffAgentId: source.authority.identity.staffAgentId },
+		};
+		const resources = { officeGrantId: randomUUID(), officeGrantVersion: 1, officePrivacyVersion: 0 };
+		const perform = vi.fn(async () => ({ kind: "text" as const, value: "fixture" }));
+		const physicalClose = vi.fn(async () => {
+			f.order.push("native:physical-close");
+		});
+		f.guest.createSession.mockResolvedValue({
+			endpoint: { capabilities: ["shell"], resourceTarget: resources, authorize: async () => undefined, perform },
+			close: physicalClose,
+		});
+		const original = f.sql.getMockImplementation()!;
+		f.sql.mockImplementation(async (url, init) => {
+			const method = String(url).split("/").at(-1);
+			if (method === "qorpera_describe_native_tool_authority") return Response.json(source.authority);
+			if (method === "qorpera_native_office_descriptor")
+				return Response.json({ state: "available", scope, capabilities: ["shell"], resources });
+			if (method === "qorpera_native_office_operation") return Response.json({ state: "authorized" });
+			if (method === "qorpera_native_office_screen") {
+				f.order.push("native:sql-release");
+				return Response.json({ state: "released" });
+			}
+			return original(url, init);
+		});
+		const service = await startCompanyComputerOfficeService(f.options);
+		cleanups.push(service.close);
+		const post = (body: unknown) =>
+			fetch(`https://127.0.0.1:${service.nativePort}/office/${scope.companyComputerId}/native`, {
+				method: "POST",
+				headers: { authorization: `Bearer ${f.options.native.token}`, "content-type": "application/json" },
+				body: JSON.stringify(body),
+			});
+		const body = {
+			schema: "qorpera.company-computer-native/v1",
+			action: "perform",
+			nativeBinding: source.binding,
+			lease,
+			operation: {
+				...computerOperation(),
+				tool: "computer_shell",
+				arguments: { kind: "shell", command: "printf fixture", timeoutMs: 1000 },
+				target: { realm: "company_computer", binding: lease.binding, resources },
+			},
+			receipt: { receiptId: randomUUID(), idempotencyKey: "a".repeat(64) },
+		};
+		expect((await post(body)).status).toBe(200);
+		const status = vi.spyOn(CompanyComputerOfficeSupervisor.prototype, "assertConfirmed").mockImplementation(() => {
+			throw new Error("OFFICE_SUPERVISOR_STATUS_STALE");
+		});
+		try {
+			expect((await post(body)).status).toBe(503);
+			expect(
+				(await post({ schema: body.schema, action: "release", nativeBinding: source.binding, lease })).status,
+			).toBe(200);
+			expect(perform).toHaveBeenCalledOnce();
+			expect(physicalClose).toHaveBeenCalledOnce();
+			expect(f.order.indexOf("native:physical-close")).toBeLessThan(f.order.indexOf("native:sql-release"));
+			expect(f.guest.close).not.toHaveBeenCalled();
+		} finally {
+			status.mockRestore();
+		}
 	});
 	it("shuts both listeners and physical resources when supervision becomes unavailable", async () => {
 		const f = fixture();

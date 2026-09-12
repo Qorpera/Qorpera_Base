@@ -79,7 +79,7 @@ afterAll(async () => {
 	await rm(directory, { recursive: true, force: true });
 });
 
-async function fixture(options: { unavailable?: boolean } = {}) {
+async function fixture(options: { unavailable?: boolean; admitWork?: () => void } = {}) {
 	const source = nativeToolAuthorityFixture();
 	const scope = {
 		...computerScope(),
@@ -187,7 +187,14 @@ async function fixture(options: { unavailable?: boolean } = {}) {
 		},
 	);
 	const token = randomBytes(32).toString("base64url");
-	const gateway = new CompanyComputerNativeGateway({ scope, computerGeneration: 1, token, registry, createSession });
+	const gateway = new CompanyComputerNativeGateway({
+		scope,
+		computerGeneration: 1,
+		token,
+		registry,
+		createSession,
+		admitWork: options.admitWork,
+	});
 	const listener = await startCompanyComputerNativeGateway({
 		host: "127.0.0.1",
 		port: 0,
@@ -369,6 +376,42 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 		await f.endpoint.close();
 		expect(f.physicalClose).toHaveBeenCalledOnce();
 		expect(f.order.indexOf("guest:close")).toBeLessThan(f.order.indexOf("qorpera_native_office_screen:release"));
+	});
+	it("releases only the exact existing session while stale status blocks all new work", async () => {
+		let stale = false;
+		const admitWork = vi.fn(() => {
+			if (stale) throw new Error("OFFICE_SUPERVISOR_STATUS_STALE");
+		});
+		const f = await fixture({ admitWork });
+		await f.endpoint.perform(f.operation, f.lease, f.context);
+		stale = true;
+		f.sql.mockClear();
+		const next = { ...f.body(), receipt: { receiptId: randomUUID(), idempotencyKey: "b".repeat(64) } };
+		expect((await f.post(next)).status).toBe(503);
+		expect((await f.post({ ...next, lease: { ...f.lease, leaseId: randomUUID() } })).status).toBe(503);
+		expect(f.sql).not.toHaveBeenCalled();
+		expect(f.perform).toHaveBeenCalledOnce();
+		const release = {
+			schema: COMPANY_COMPUTER_NATIVE_SCHEMA,
+			action: "release",
+			nativeBinding: f.source.binding,
+			lease: f.lease,
+		};
+		for (const invalid of [
+			{ ...release, lease: { ...f.lease, epoch: f.lease.epoch + 1 } },
+			{ ...release, lease: { ...f.lease, leaseId: randomUUID() } },
+			{ ...release, operation: f.operation },
+		])
+			expect((await f.post(invalid)).status).toBe(503);
+		expect((await f.post(release, { token: randomBytes(32).toString("base64url") })).status).toBe(403);
+		expect(f.physicalClose).not.toHaveBeenCalled();
+		expect(f.sql).not.toHaveBeenCalled();
+		expect((await f.post(release)).status).toBe(200);
+		expect((await f.post(release)).status).toBe(200);
+		expect(f.physicalClose).toHaveBeenCalledOnce();
+		expect(f.order.indexOf("guest:close")).toBeLessThan(f.order.indexOf("qorpera_native_office_screen:release"));
+		expect(f.sql).toHaveBeenCalledOnce();
+		expect(f.createSession).toHaveBeenCalledOnce();
 	});
 	it("never dispatches a receipt twice and never reopens a released session", async () => {
 		const f = await fixture();

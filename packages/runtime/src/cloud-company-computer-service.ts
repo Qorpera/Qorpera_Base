@@ -199,7 +199,8 @@ export async function startCompanyComputerOfficeService(options: {
 			computerGeneration: options.computerGeneration,
 			token: options.native.token,
 			registry: options.registry,
-			admit: assertAdmitting,
+			admit: assertServing,
+			admitWork: assertAdmitting,
 			createSession: async (session) => {
 				assertAdmitting();
 				return options.guest.createSession({ ...session, gate });
