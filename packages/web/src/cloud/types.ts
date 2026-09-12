@@ -110,6 +110,14 @@ export type HostedSessionExecutionIdentity =
 	| { kind: "turn" | "wake"; id: string; claimantId: string }
 	| { kind: "run"; id: string; claimantId: string; runnerAssignmentId: string };
 
+export interface HostedStaffSpeaker {
+	runId: string;
+	staffAgentId: string;
+	staffVersion: number;
+	/** Name captured at send time; absent when historical version cannot be established. */
+	displayName?: string;
+}
+
 export interface HostedSessionEvent {
 	sessionId: string;
 	sequence: number;
@@ -120,6 +128,7 @@ export interface HostedSessionEvent {
 	previousHash?: string;
 	eventHash: string;
 	execution?: HostedSessionExecutionIdentity;
+	staffSpeaker?: HostedStaffSpeaker;
 	sessionInputId?: string;
 	createdAt: string;
 }

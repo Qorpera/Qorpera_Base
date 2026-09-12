@@ -1,6 +1,6 @@
 import type { CloudSessionAttachment } from "@qorpera/cloud-client/cloud-session-attachments";
 import { SESSION_IMAGE_TYPES } from "./session-attachments.ts";
-import type { HostedSessionEvent, JsonValue, PendingSessionInput } from "./types.ts";
+import type { HostedSessionEvent, HostedStaffSpeaker, JsonValue, PendingSessionInput } from "./types.ts";
 
 /* Transcript projection (runtime contract §6; launch acceptance item 8).
  * Only two things become visible conversation content: a member's admitted
@@ -23,6 +23,7 @@ export interface TranscriptMessage {
 	attachments?: TranscriptAttachment[];
 	phase?: "progress" | "final";
 	runId?: string;
+	staffSpeaker?: HostedStaffSpeaker;
 	createdAt: string;
 	pending?: "queued" | "processing" | "failed";
 	failureReason?: string;
@@ -199,6 +200,7 @@ function messageFromEntry(entry: Entry, event: HostedSessionEvent, legacy: boole
 			...(attachments.length ? { attachments } : {}),
 			phase,
 			...(runId ? { runId } : {}),
+			...(event.staffSpeaker?.runId === runId ? { staffSpeaker: event.staffSpeaker } : {}),
 			createdAt: event.createdAt,
 		};
 	}

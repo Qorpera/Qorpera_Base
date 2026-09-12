@@ -71,6 +71,32 @@ function attach(root: ParentNode, files: File[]): void {
 }
 
 describe("conversation UI boundaries", () => {
+	it("uses recorded room speaker names and never substitutes the current staff or sponsor", () => {
+		const f = setup();
+		f.company.store.set({ sessions: [{ ...session, executionScope: { roomId: id(79) } }] });
+		const agent: TranscriptMessage = {
+			kind: "agent",
+			id: id(80),
+			sequence: 1,
+			text: "Result",
+			attachmentCount: 0,
+			phase: "final",
+			createdAt: timestamp,
+			authorUserId: userA.id,
+			staffSpeaker: { runId: id(81), staffAgentId: id(82), staffVersion: 1, displayName: "Historical Bob" },
+		};
+		const state = f.company.conversation(session.sessionId);
+		for (const [speaker, name] of [
+			[agent.staffSpeaker, "Historical Bob"],
+			[{ runId: id(81), staffAgentId: id(82), staffVersion: 1 }, `Agent ${id(82)}`],
+			[undefined, "Agent reply · speaker unavailable"],
+		] as const) {
+			state.set({ projection: { items: [{ ...agent, staffSpeaker: speaker }], hiddenCount: 0, lastSequence: 1 } });
+			f.view.update();
+			expect(f.view.el.querySelector(".message-author")?.textContent).toBe(name);
+			expect(f.view.el.querySelector(".message")?.getAttribute("aria-label")).toContain(name);
+		}
+	});
 	it("groups agent bubbles within one message while retaining authors, timestamps and delivery state", () => {
 		const f = setup();
 		f.company.store.set({

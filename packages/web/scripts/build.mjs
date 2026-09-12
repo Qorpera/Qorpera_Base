@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import * as esbuild from "esbuild";
 import { assertMemberWebInputs } from "../../../scripts/check-headless-packages.mjs";
 import { prepareDeployment } from "./deployment.mjs";
+import { webSourceProvenance } from "./provenance.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dist = join(root, "dist");
@@ -19,6 +20,7 @@ const deployment = prepareDeployment({
 	serve,
 	headersTemplate: readFileSync(join(root, "public/_headers"), "utf8"),
 });
+const provenance = webSourceProvenance(resolve(root, "../.."), process.argv.includes("--release"));
 const port = Number(process.env.QORPERA_WEB_PORT ?? 5180);
 const viewerRoot = resolve(root, "../member-web/ui");
 const viewerSource = JSON.parse(readFileSync(join(viewerRoot, "SOURCE.json"), "utf8"));
@@ -103,6 +105,7 @@ if (serve) {
 	const files = ["index.html", "_headers", script, style];
 	writeFileSync(join(dist, "web-deployment.json"), `${JSON.stringify({
 		...deployment.manifest,
+		...provenance,
 		version,
 		files: Object.fromEntries(files.map(file => [file, createHash("sha256").update(readFileSync(join(dist, file))).digest("hex")])),
 	}, null, 2)}\n`);

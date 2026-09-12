@@ -4,11 +4,15 @@
 
 ### Fixed
 
+- Render room replies with immutable server-projected staff identity and preserve accepted human messages even when no agent is eligible.
+
 - Use a length-neutral email code hint so sign-in instructions remain accurate with the configured eight-digit codes.
 - Accept valid Unicode pause reasons in runtime notifications using the public SQL character limit.
 - Submit team-room messages through the public room-post contract, preserve room retry identity, and match room attachments/run displays to the supported interfaces.
 
 ### Added
+
+- Record the source commit and runtime bundle identity in web deployment artifacts; require clean source for release builds.
 
 - Add company pause/resume and observed-version execution ceilings through the documented member control plane, plus a member notification inbox with explicit acknowledgement.
 - Add provider sign-in through the exported native login SDK when an accepted public gateway is configured; keep login capability handling outside the UI and require explicit recovery after uncertainty.

@@ -3,7 +3,9 @@ const MAX_REQUEST_BYTES = 64 * 1024;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 
 export interface NativeProviderLoginProxyOptions {
-	upstreamUrl: string;
+	upstreamUrl?: string;
+	/** Exact browser origins; native callers without Origin still require a capability. */
+	allowedOrigins?: readonly string[];
 	fetchImplementation?: typeof fetch;
 	timeoutMs?: number;
 }
@@ -35,7 +37,7 @@ function loginCapability(request: Request): string {
 	return capability;
 }
 
-export async function forwardNativeProviderLogin(
+async function forwardLogin(
 	request: Request,
 	options: NativeProviderLoginProxyOptions,
 ): Promise<Response> {
@@ -58,7 +60,7 @@ export async function forwardNativeProviderLogin(
 		if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) {
 			throw new Error("Native login proxy timeout is invalid");
 		}
-		const upstream = await (options.fetchImplementation ?? fetch)(upstreamLoginUrl(options.upstreamUrl), {
+		const upstream = await (options.fetchImplementation ?? fetch)(upstreamLoginUrl(options.upstreamUrl ?? ""), {
 			method: "POST",
 			headers: {
 				accept: "application/json",
@@ -84,4 +86,29 @@ export async function forwardNativeProviderLogin(
 	} catch {
 		return jsonResponse({ error: "Native provider login is unavailable" }, 503);
 	}
+}
+
+
+/** Browser policy is applied before reading credentials or contacting the private upstream. */
+export async function forwardNativeProviderLogin(
+ request: Request,
+ options: NativeProviderLoginProxyOptions,
+): Promise<Response> {
+ const origin = request.headers.get("origin");
+ const allowed = options.allowedOrigins ?? ["https://app.qorpera.com"];
+ if (origin && !allowed.some(value => {
+  try { const url = new URL(value); return url.protocol === "https:" && url.origin === value && value === origin; }
+  catch { return false; }
+ })) return jsonResponse({ error: "Browser origin is not allowed" }, 403);
+ let response: Response;
+ if (request.method === "OPTIONS") {
+  const method = request.headers.get("access-control-request-method");
+  const requested = (request.headers.get("access-control-request-headers") ?? "").split(",").map(value => value.trim().toLowerCase()).filter(Boolean);
+  response = origin && method === "POST" && requested.every(value => ["authorization", "content-type"].includes(value))
+   ? new Response(null, { status: 204, headers: { "cache-control": "no-store", "access-control-allow-methods": "POST", "access-control-allow-headers": "Authorization, Content-Type" } })
+   : jsonResponse({ error: "Invalid native login preflight" }, 403);
+ } else response = await forwardLogin(request, options);
+ response.headers.set("vary", "Origin, Access-Control-Request-Method, Access-Control-Request-Headers");
+ if (origin) response.headers.set("access-control-allow-origin", origin);
+ return response;
 }

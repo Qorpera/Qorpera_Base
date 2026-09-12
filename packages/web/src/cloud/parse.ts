@@ -425,6 +425,30 @@ export function parseEvent(value: unknown): HostedSessionEvent {
 			claimantId: uuid(input.execution_claimant_id, "event claimant id"),
 		};
 	}
+	let staffSpeaker: HostedSessionEvent["staffSpeaker"];
+	if (input.staff_speaker !== undefined && input.staff_speaker !== null) {
+		const speaker = record(input.staff_speaker, "staff speaker");
+		const runId = uuid(speaker.run_id, "speaker run id");
+		if (
+			Object.keys(speaker).some(
+				(key) => !["run_id", "staff_agent_id", "staff_version", "display_name"].includes(key),
+			) ||
+			execution?.kind !== "run" ||
+			execution.id !== runId ||
+			sessionInputId ||
+			(speaker.display_name !== null &&
+				(typeof speaker.display_name !== "string" ||
+					!speaker.display_name.trim() ||
+					speaker.display_name.length > 512))
+		)
+			throw new CloudShapeError("staff speaker");
+		staffSpeaker = {
+			runId,
+			staffAgentId: uuid(speaker.staff_agent_id, "speaker staff id"),
+			staffVersion: boundedInteger(speaker.staff_version, "speaker staff version", 1, Number.MAX_SAFE_INTEGER),
+			...(typeof speaker.display_name === "string" ? { displayName: speaker.display_name } : {}),
+		};
+	}
 	return {
 		sessionId: uuid(input.session_id, "event session id"),
 		sequence: boundedInteger(input.sequence, "event sequence", 1, Number.MAX_SAFE_INTEGER),
@@ -435,6 +459,7 @@ export function parseEvent(value: unknown): HostedSessionEvent {
 		...(typeof previousHash === "string" && SHA256_PATTERN.test(previousHash) ? { previousHash } : {}),
 		eventHash: input.event_hash,
 		...(execution ? { execution } : {}),
+		...(staffSpeaker ? { staffSpeaker } : {}),
 		...(sessionInputId ? { sessionInputId } : {}),
 		createdAt: timestamp(input.created_at, "event creation time"),
 	};

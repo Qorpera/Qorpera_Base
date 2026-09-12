@@ -78,3 +78,43 @@ describe("native provider login proxy", () => {
 		assert.equal(called, false);
 	});
 });
+
+
+describe("native provider browser origin policy", () => {
+ it("accepts exact app preflight without credentials or an upstream", async () => {
+  const response = await forwardNativeProviderLogin(new Request("https://example.test/login", { method: "OPTIONS", headers: {
+   origin: "https://app.qorpera.com", "access-control-request-method": "POST", "access-control-request-headers": "authorization, content-type",
+  } }), {});
+  assert.equal(response.status, 204);
+  assert.equal(response.headers.get("access-control-allow-origin"), "https://app.qorpera.com");
+  assert.equal(response.headers.get("access-control-allow-credentials"), null);
+  assert.match(response.headers.get("vary") ?? "", /Origin/);
+ });
+ it("refuses hostile, null and suffix origins before upstream dispatch", async () => {
+  for (const origin of ["https://evil.example", "null", "https://app.qorpera.com.evil.example", "http://app.qorpera.com"]) {
+   const response = await forwardNativeProviderLogin(new Request("https://example.test/login", { method: "POST", headers: { origin, authorization: `Bearer ${capability}` }, body: "{}" }), {
+    upstreamUrl: "https://private.example/", fetchImplementation: async () => { throw new Error("must not dispatch"); },
+   });
+   assert.equal(response.status, 403);
+   assert.equal(response.headers.get("access-control-allow-origin"), null);
+  }
+ });
+ it("refuses other methods and request headers in preflight", async () => {
+  for (const [method, headers] of [["DELETE", "authorization"], ["POST", "authorization,x-service-secret"]]) {
+   const response = await forwardNativeProviderLogin(new Request("https://example.test/login", { method: "OPTIONS", headers: {
+    origin: "https://app.qorpera.com", "access-control-request-method": method, "access-control-request-headers": headers,
+   } }), {});
+   assert.equal(response.status, 403);
+  }
+ });
+ it("keeps success, capability refusal and unavailable responses browser readable", async () => {
+  for (const status of [200, 400, 503]) {
+   const response = await forwardNativeProviderLogin(new Request("https://example.test/login", { method: "POST", headers: {
+    origin: "https://app.qorpera.com", ...(status === 400 ? {} : { authorization: `Bearer ${capability}` }),
+   }, body: "{}" }), { upstreamUrl: status === 503 ? undefined : "https://private.example/", fetchImplementation: async () => Response.json({ status: "awaiting_member" }) });
+   assert.equal(response.status, status);
+   assert.equal(response.headers.get("access-control-allow-origin"), "https://app.qorpera.com");
+   assert.equal(response.headers.get("cache-control"), "no-store");
+  }
+ });
+});

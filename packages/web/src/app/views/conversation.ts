@@ -483,7 +483,15 @@ export class ConversationView {
 		for (const item of items) {
 			if (item.kind === "member" || item.kind === "agent") {
 				const mine = item.kind === "member" && item.authorUserId === this.#company.userId;
-				const author = item.kind === "agent" ? agentName : this.#company.memberName(item.authorUserId);
+				const author =
+					item.kind === "agent"
+						? this.#isRoom
+							? (item.staffSpeaker?.displayName ??
+								(item.staffSpeaker
+									? `Agent ${item.staffSpeaker.staffAgentId}`
+									: "Agent reply · speaker unavailable"))
+							: agentName
+						: this.#company.memberName(item.authorUserId);
 				const attachments = item.attachmentCount
 					? new ReceivedAttachments(item, this.#actions.previewAttachment)
 					: undefined;
@@ -512,7 +520,7 @@ export class ConversationView {
 							dataset: { messageId: item.id },
 						},
 						item.kind === "agent" && this.#isRoom
-							? h("div", { class: "message-author" }, "Agent reply · speaker unavailable")
+							? h("div", { class: "message-author" }, author)
 							: item.kind === "member" && !mine
 								? h("div", { class: "message-author" }, author)
 								: null,
