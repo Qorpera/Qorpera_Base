@@ -111,14 +111,23 @@ describe("shell presentation lifecycle", () => {
 		expect(view.el.querySelector<HTMLButtonElement>(".recipient-footer .btn-primary")!.disabled).toBe(false);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
-	it("stores rail size within bounds and keeps resizing usable when storage is blocked", () => {
+	it("caps the rail at half the window and keeps resizing usable when storage is blocked", () => {
 		const frame = h("div"),
 			rail = new RailLayout(frame);
 		frame.append(rail.el);
 		cleanup.push(() => rail.dispose());
-		for (let i = 0; i < 20; i++) rail.el.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight" }));
-		expect(rail.el.getAttribute("aria-valuenow")).toBe("380");
-		expect(localStorage.getItem("qorpera.web.rail-width")).toBe("380");
+		const half = String(Math.floor(window.innerWidth / 2));
+		expect(rail.el.getAttribute("aria-valuemax")).toBe(half);
+		for (let i = 0; i < 40; i++) rail.el.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight" }));
+		expect(rail.el.getAttribute("aria-valuenow")).toBe(half);
+		expect(localStorage.getItem("qorpera.web.rail-width")).toBe(half);
+		expect(frame.style.getPropertyValue("--rail-width")).toBe(`${half}px`);
+		vi.stubGlobal("innerWidth", 800);
+		window.dispatchEvent(new Event("resize"));
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("400");
+		vi.stubGlobal("innerWidth", 1280);
+		window.dispatchEvent(new Event("resize"));
+		expect(rail.el.getAttribute("aria-valuenow")).toBe(half);
 		vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
 			throw new Error("Blocked");
 		});
@@ -360,6 +369,8 @@ it("renders recorded responsibility targets and room links without inventing mis
 		staff.displayName,
 	);
 	expect(rail.querySelector('[aria-label="Pinned agents"], [data-toggle-rail]')).toBeNull();
+	expect(rail.querySelector(".account-menu-rail .account-trigger")).not.toBeNull();
+	expect(rail.querySelector(".account-menu-rail .account-chevron")).toBeNull();
 	expect(rail.querySelector('.rail-toolbar input[type="search"]')).not.toBeNull();
 	expect(rail.querySelector('.rail-toolbar a[href$="/new"]')).not.toBeNull();
 	const search = rail.querySelector<HTMLInputElement>('input[type="search"]')!;

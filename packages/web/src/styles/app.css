@@ -188,7 +188,7 @@ label > input, label > select { font-weight: 400; }
 .cofounder-home:hover { background: var(--rail-hover); text-decoration: none; }
 .cofounder-home.active, .cofounder-home.active:hover { background: var(--rail-selection); color: #fff; }
 .cofounder-home strong { position: relative; z-index: 2; font-size: 12px; font-weight: 650; line-height: 1.2; overflow-wrap: anywhere; }
-.cofounder-home small { font-size: 10.5px; line-height: 1.4; color: var(--rail-small); overflow-wrap: anywhere; }
+.cofounder-home small { display: block; width: 100%; font-size: 10.5px; line-height: 1.4; color: var(--rail-small); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cofounder-home.active small { color: #fff; }
 .cofounder-stand { position: absolute; left: 50%; top: -20px; width: 64px; height: 64px; transform: translateX(-50%); }
 .cofounder-stand::before {
@@ -212,7 +212,7 @@ label > input, label > select { font-weight: 400; }
 @media (min-width: 761px) {
 	.rail-compact .rail { padding-inline: 7px; }
 	.rail-compact .rail-toolbar { justify-content: center; }
-	.rail-compact .rail-search, .rail-compact .cofounder-home > strong, .rail-compact .cofounder-home > small, .rail-compact .rail-row-copy, .rail-compact .account-trigger-name, .rail-compact .account-chevron, .rail-compact .rail-connection { display: none; }
+	.rail-compact .rail-search, .rail-compact .cofounder-home > strong, .rail-compact .cofounder-home > small, .rail-compact .rail-row-copy, .rail-compact .account-trigger-name, .rail-compact .rail-connection { display: none; }
 	.rail-compact .rail-cofounder { padding: 6px 0; }
 	.rail-compact .cofounder-home { height: 64px; padding: 0; }
 	.rail-compact .cofounder-stand { top: 8px; width: 48px; height: 48px; }
@@ -229,7 +229,6 @@ label > input, label > select { font-weight: 400; }
 .account-menu-rail .account-trigger:hover, .account-menu-rail.is-open .account-trigger { background: var(--rail-hover); }
 .account-menu-rail .account-chip { width: 30px; height: 30px; font-size: 12px; }
 .account-menu-rail .account-trigger-name { flex: 1; min-width: 0; max-width: none; }
-.account-menu-rail .account-chevron { transform: translateY(2px) rotate(225deg); }
 .account-menu-rail .account-popover {
 	top: auto; bottom: calc(100% + 8px); left: 0; right: 0; width: auto;
 	max-height: calc(100dvh - var(--titlebar-height) - 88px);
