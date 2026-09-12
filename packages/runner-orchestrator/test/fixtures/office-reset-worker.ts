@@ -8,16 +8,13 @@ import {
 	type CompanyComputerResetPhase,
 	type CompanyComputerResetPlan,
 	companyComputerBootDirectory,
-	parseCompanyComputerConfigurationMaterial,
+	parseCompanyComputerResetConfigurationRequest,
 } from "@qorpera/contracts";
 import { expect, vi } from "vitest";
 import type { LxdHostInventory } from "../../src/lxd-client.ts";
 import { officeCanonical, officeDigest } from "../../src/lxd-office-image-provenance.ts";
-import {
-	type LxdOfficeResetInput,
-	type LxdOfficeResetSuccessorLane,
-	LxdOfficeResetWorker,
-} from "../../src/lxd-office-reset-worker.ts";
+import type { LxdOfficeResetSuccessorLane } from "../../src/lxd-office-reset-successor-lane.ts";
+import { type LxdOfficeResetInput, LxdOfficeResetWorker } from "../../src/lxd-office-reset-worker.ts";
 import { lxdOfficeProviderBindingSha256 } from "../../src/lxd-office-start-control.ts";
 import { nodeAdmissionFixture } from "./node-admission.ts";
 import { serviceStartId as id } from "./office-service-start.ts";
@@ -380,14 +377,18 @@ export async function officeResetWorkerFixture(roots: string[]) {
 		},
 		close: async () => {},
 	}));
+	/** Synthetic guest lane: installs the packet's material under the fresh
+	 * boot directory and reports a running invocation without any transport. */
 	const lane = {
 		configure: vi.fn<LxdOfficeResetSuccessorLane["configure"]>(async (input) => {
-			const body = parseCompanyComputerConfigurationMaterial(JSON.parse(input.material.toString()));
-			expect(JSON.parse(body.configuration).linux.attestation.bootId).toBe(input.bootId);
+			const body = parseCompanyComputerResetConfigurationRequest(JSON.parse(input.request.toString()));
+			expect(JSON.parse(body.material.configuration).linux.attestation.bootId).toBe(input.bootId);
 			expect(input.bootId).toBe(vm.freshBootId);
-			return Object.fromEntries(
+			expect(hash(input.request)).toBe(input.command.requestSha256);
+			expect(body.predecessor).toEqual(plan.predecessor);
+			const files = Object.fromEntries(
 				Object.entries(COMPANY_COMPUTER_CONFIGURATION_FILES).map(([key, file]) => {
-					const content = Buffer.from(body[key as keyof typeof COMPANY_COMPUTER_CONFIGURATION_FILES]);
+					const content = Buffer.from(body.material[key as keyof typeof COMPANY_COMPUTER_CONFIGURATION_FILES]);
 					guest.set(`${companyComputerBootDirectory(input.bootId)}/credentials/${file}`, {
 						content,
 						uid: 0,
@@ -397,25 +398,35 @@ export async function officeResetWorkerFixture(roots: string[]) {
 					return [file, { bytes: content.length, sha256: hash(content) }];
 				}),
 			) as Awaited<ReturnType<LxdOfficeResetSuccessorLane["configure"]>>;
+			expect(files).toEqual(input.expected.files);
+			return files;
 		}),
 		start: vi.fn<LxdOfficeResetSuccessorLane["start"]>(async (input) => {
 			expect(registry.state.successor?.state).toBe("prepared");
+			expect(input.claimed).toBe(false);
 			Object.assign(registry.state.successor!, {
 				state: "ready",
 				serviceInvocationId: "c".repeat(32),
 				readinessFresh: true,
 			});
 			return {
+				schema: "qorpera.office-reset-service-start-completion/v1",
+				command: input.command,
+				resetId: plan.resetId,
+				activationId: plan.successorActivationId,
+				configurationCompletionSha256: "d".repeat(64),
+				configurationSha256: input.successor.request.attestation.configurationSha256,
 				serviceInvocationId: "c".repeat(32),
-				configurationSha256: input.attestation.configurationSha256,
 				mainPid: 700,
 				controlGroup: "/system.slice/qorpera-company-computer.service",
 			};
 		}),
 		inspect: vi.fn<LxdOfficeResetSuccessorLane["inspect"]>(async (input) => {
-			expect(input.activationId).toBe(plan.successorActivationId);
-			const request = registry.state.successor!.request as { attestation: { configurationSha256: string } };
-			return { serviceInvocationId: "c".repeat(32), configurationSha256: request.attestation.configurationSha256 };
+			expect(input.plan.successorActivationId).toBe(plan.successorActivationId);
+			return {
+				serviceInvocationId: input.completion.serviceInvocationId,
+				configurationSha256: input.completion.configurationSha256,
+			};
 		}),
 	};
 	const input: LxdOfficeResetInput = {
@@ -489,7 +500,13 @@ export async function officeResetWorkerFixture(roots: string[]) {
 			custody: join(f.root, `reset-custody-${suffix}.json`),
 			restore: join(f.root, `reset-restore-${suffix}.json`),
 			successor: join(f.root, `reset-successor-request-${suffix}.json`),
+			configuration: join(f.root, `reset-configuration-${suffix}.json`),
+			started: join(f.root, `reset-service-started-${suffix}.json`),
 			done: join(f.root, `reset-completed-${suffix}.json`),
+			journalRoot: (purpose: "reset-configuration" | "reset-service-start") =>
+				join(f.root, `${purpose}-${f.binding.allocationId}-${plan.successorActivationId}`),
+			journal: (purpose: "reset-configuration" | "reset-service-start", file: string) =>
+				join(f.root, `${purpose}-${f.binding.allocationId}-${plan.successorActivationId}`, file),
 			phase: (n: number) => join(f.root, `reset-phase-${suffix}-${n}.json`),
 			archive: join(archiveRoot, plan.resetId),
 		},

@@ -6,10 +6,10 @@ import {
 	COMPANY_COMPUTER_PREPARATION_MAX_BYTES,
 	COMPANY_COMPUTER_RESET_PHASES,
 	type CompanyComputerActivationAttestation,
-	type CompanyComputerConfigurationCompletion,
 	type CompanyComputerPreparationCommand,
 	type CompanyComputerPreparationRequest,
 	type CompanyComputerResetChallengePhase,
+	type CompanyComputerResetConfigurationCompletion,
 	type CompanyComputerResetCustodyBinding,
 	type CompanyComputerResetCustodyManifest,
 	type CompanyComputerResetPhase,
@@ -18,14 +18,13 @@ import {
 	type CompanyComputerResetStatus,
 	type CompanyComputerResetSuccessor,
 	companyComputerResetRestorablePath,
-	parseCompanyComputerConfigurationMaterial,
-	parseCompanyComputerConfigurationRequest,
 	parseCompanyComputerPreparationCommand,
 	parseCompanyComputerPreparationRequest,
 	parseCompanyComputerResetCustodyManifest,
 	parseCompanyComputerResetOutboxManifest,
 	parseCompanyComputerResetPlan,
 	parseCompanyComputerResetRestoreReceipt,
+	parseCompanyComputerResetServiceStartCompletion,
 	parseCompanyComputerResetSuccessor,
 	parseCompanyComputerResetSuccessorRequest,
 	parseCompanyComputerServiceStopAcknowledgement,
@@ -36,6 +35,7 @@ import {
 import {
 	type LxdHostInventoryClient,
 	type LxdOfficeResetClient,
+	type LxdOfficeResetSuccessorClient,
 	type LxdOfficeServiceRestartClient,
 	type LxdTrackedClient,
 	LxdUnixClient,
@@ -60,6 +60,7 @@ import { LxdOfficeOperationJournal } from "./lxd-office-operations.ts";
 import type { LxdOfficePhysicalGate } from "./lxd-office-physical-gate.ts";
 import type { readLxdOfficeCredentialFile, readLxdOfficeProtectedFile } from "./lxd-office-physical-host.ts";
 import { officePhysicalPath, parseLxdOfficePhysicalPolicy } from "./lxd-office-physical-policy.ts";
+import { createLxdOfficeResetConfigurationPayload } from "./lxd-office-reset-configuration-payload.ts";
 import {
 	LxdOfficeResetControl,
 	type LxdOfficeResetRegistry,
@@ -74,12 +75,17 @@ import {
 	sealLxdOfficeResetArchive,
 } from "./lxd-office-reset-custody.ts";
 import { LxdOfficeResetJournal, type LxdOfficeResetSeed, parseLxdOfficeResetSeed } from "./lxd-office-reset-journal.ts";
-import { createLxdOfficeConfigurationPayload } from "./lxd-office-service-bootstrap.ts";
+import {
+	createLxdOfficeResetSuccessorLane,
+	type LxdOfficeResetSuccessorLane,
+	type LxdOfficeResetSuccessorLaneContext,
+} from "./lxd-office-reset-successor-lane.ts";
 import { lxdOfficeProviderBindingSha256 } from "./lxd-office-start-control.ts";
 import { officeStopDecode, officeStopHash, readLxdOfficeStopEvidence } from "./lxd-office-stop-evidence.ts";
 import type { RuntimeNodeRegistry } from "./runtime-node-admission.ts";
 
 type Client = LxdOfficeResetClient &
+	LxdOfficeResetSuccessorClient &
 	LxdTrackedClient &
 	LxdOfficeRetainedActivationHistoryClient &
 	LxdOfficeServiceRestartClient &
@@ -94,49 +100,12 @@ export interface LxdOfficeResetWorkerRegistry {
 		signal: AbortSignal,
 	): Promise<unknown>;
 }
-/** Guest-side handoff on the recreated root: fresh credential installation,
- * one ordinary service start and a nonce-bound inspection. The composed
- * provider has no production implementation yet; without it the reset holds
- * at `restored` with a stable reason instead of improvising a start path. */
-export interface LxdOfficeResetSuccessorLane {
-	configure(
-		input: {
-			binding: LxdOfficeGuestBinding;
-			resetId: string;
-			bootId: string;
-			command: CompanyComputerPreparationCommand;
-			material: Buffer;
-			adoptionReceiptSha256: string;
-		},
-		signal: AbortSignal,
-	): Promise<CompanyComputerConfigurationCompletion["files"]>;
-	start(
-		input: {
-			binding: LxdOfficeGuestBinding;
-			resetId: string;
-			bootId: string;
-			activationId: string;
-			command: CompanyComputerPreparationCommand;
-			attestation: CompanyComputerActivationAttestation;
-		},
-		signal: AbortSignal,
-	): Promise<{ serviceInvocationId: string; configurationSha256: string; mainPid: number; controlGroup: string }>;
-	inspect(
-		input: {
-			binding: LxdOfficeGuestBinding;
-			resetId: string;
-			bootId: string;
-			activationId: string;
-			inspectionId: string;
-		},
-		signal: AbortSignal,
-	): Promise<{ serviceInvocationId: string; configurationSha256: string }>;
-}
 interface Ports {
 	client?: Client;
 	kernelLock?: typeof assertOfficeAdoptionKernelLock;
 	readProtected?: typeof readLxdOfficeProtectedFile;
 	readCredential?: typeof readLxdOfficeCredentialFile;
+	/** Trusted test port only; production composes the guest lane on the client. */
 	successorLane?: LxdOfficeResetSuccessorLane;
 	measureInvocation?: LxdOfficeInvocationMeasurement;
 	/** Trusted test port only; production holds the real NAS descriptors. */
@@ -162,6 +131,7 @@ export interface LxdOfficeResetResult {
 interface Preparation {
 	request: CompanyComputerPreparationRequest;
 	command: CompanyComputerPreparationCommand;
+	bytes: Buffer;
 	adoptionReceiptSha256: string;
 }
 type Authorize = (caller: AbortSignal) => Promise<AbortSignal>;
@@ -240,6 +210,7 @@ export class LxdOfficeResetWorker {
 	readonly #client: Client;
 	readonly #kernelLock;
 	readonly #ports: Ports;
+	readonly #lane: LxdOfficeResetSuccessorLane;
 	constructor(
 		gate: Pick<LxdOfficePhysicalGate, "policy" | "check">,
 		registry: LxdOfficeResetWorkerRegistry,
@@ -251,6 +222,7 @@ export class LxdOfficeResetWorker {
 		this.#client = ports.client ?? new LxdUnixClient(this.#policy.host.socketPath);
 		this.#kernelLock = ports.kernelLock ?? assertOfficeAdoptionKernelLock;
 		this.#ports = { ...ports };
+		this.#lane = ports.successorLane ?? createLxdOfficeResetSuccessorLane(this.#policy.journal.path, this.#client);
 	}
 	reconcile(input: LxdOfficeResetInput, caller: AbortSignal) {
 		return this.#reconcile(input, caller, false);
@@ -808,8 +780,6 @@ export class LxdOfficeResetWorker {
 					return checked;
 				});
 			}
-			const lane = this.#ports.successorLane;
-			if (!lane) return { ...result, state: "held", phase: current, reason: "OFFICE_RESET_GUEST_LANE_UNAVAILABLE" };
 			const restore = parseCompanyComputerResetRestoreReceipt(
 				await optional(names.restore),
 				custody,
@@ -825,8 +795,15 @@ export class LxdOfficeResetWorker {
 					throw new Error("reset boot changed");
 				return checked;
 			};
-			if (next === "prepared") return this.#prepare(context, restore.bootId, lane, newBoot);
-			return this.#activate(context, restore.bootId, lane, newBoot);
+			const lane: LxdOfficeResetSuccessorLaneContext = {
+				intentId,
+				plan,
+				binding,
+				bootId: restore.bootId,
+				restoreSha256: context.status.restoreSha256 as string,
+			};
+			if (next === "prepared") return this.#prepare(context, lane, newBoot);
+			return this.#activate(context, lane, newBoot);
 		} finally {
 			await nas.close();
 		}
@@ -871,7 +848,12 @@ export class LxdOfficeResetWorker {
 			observation.adoptionReceiptPath !== "/etc/qorpera-office/adoption.json"
 		)
 			throw new Error("original preparation differs");
-		return { request, command, adoptionReceiptSha256: officeSha(observation.adoptionReceiptSha256) };
+		return {
+			request,
+			command,
+			bytes: file.bytes,
+			adoptionReceiptSha256: officeSha(observation.adoptionReceiptSha256),
+		};
 	}
 	/** Export the diagnostic outbox and public root history byte-for-byte into
 	 * the provider-owned archive while the old root is still readable, then
@@ -1180,55 +1162,73 @@ export class LxdOfficeResetWorker {
 			custodySha256,
 		);
 	}
+	/** The expected reset configuration completion on the fresh root, derived
+	 * from the retained configuration command and configured file digests. */
+	async #configured(context: Context, bootId: string) {
+		const { plan, seed, preparation, names, optional } = context;
+		const configuration = officeRecord(await optional(names.configuration), [
+				"schema",
+				"resetId",
+				"bootId",
+				"command",
+				"serviceBootstrapSha256",
+			]),
+			command = parseCompanyComputerPreparationCommand(configuration.command),
+			configured = officeRecord(await optional(names.configured), [
+				"schema",
+				"resetId",
+				"bootId",
+				"commandId",
+				"files",
+			]),
+			files = configured.files as CompanyComputerResetConfigurationCompletion["files"];
+		if (
+			configuration.schema !== "qorpera.lxd-office-reset-configuration/v1" ||
+			configuration.resetId !== plan.resetId ||
+			configuration.bootId !== bootId ||
+			command.bootId !== bootId ||
+			configured.schema !== "qorpera.lxd-office-reset-configured/v1" ||
+			configured.resetId !== plan.resetId ||
+			configured.bootId !== bootId ||
+			configured.commandId !== command.commandId
+		)
+			throw new Error("reset configured differs");
+		const completion: CompanyComputerResetConfigurationCompletion = {
+			schema: "qorpera.office-reset-configuration-completion/v1",
+			command,
+			resetId: plan.resetId,
+			rootIncarnationId: plan.rootIncarnationId,
+			activationId: plan.successorActivationId,
+			originPreparationSha256: preparation.command.requestSha256,
+			adoptionReceiptSha256: seed.adoptionReceiptSha256,
+			files,
+		};
+		return { command, files, completion, serviceBootstrapSha256: officeSha(configuration.serviceBootstrapSha256) };
+	}
 	/** Fresh credentials through the existing protected authority path, one
-	 * durable configuration command, then SQL successor preparation. */
+	 * durable configuration command on the recreated root, then SQL successor
+	 * preparation. The staged packet carries the permanent original preparation
+	 * document; only the boot attestation is rebound to the fresh root. */
 	async #prepare(
 		context: Context,
-		bootId: string,
-		lane: LxdOfficeResetSuccessorLane,
+		lane: LxdOfficeResetSuccessorLaneContext,
 		newBoot: Authorize,
 	): Promise<LxdOfficeResetResult> {
 		const { input, plan, seed, binding, preparation, names, optional, retain, registry, journal, signal, result } =
-			context;
-		const payload = await createLxdOfficeConfigurationPayload(
+				context,
+			{ bootId } = lane;
+		const payload = await createLxdOfficeResetConfigurationPayload(
 			input.serviceBootstrapPath,
 			binding,
-			preparation.request,
-			preparation.command,
+			plan,
+			{ ...preparation, request: preparation.request },
+			bootId,
 			signal,
 			this.#ports,
 		);
-		let material: Buffer | undefined;
 		try {
-			// The existing protected authority path resolves credentials for the
-			// permanent original preparation; only the boot attestation is rebound
-			// to the fresh root, with the restored original receipt. No secret is
-			// read from the old root and no historical private key is reused.
-			const source = parseCompanyComputerConfigurationRequest(
-				JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(payload.bytes)),
-			);
-			const serviceConfig = JSON.parse(source.configuration) as {
-				linux: { attestation: { bootId: string; adoptionReceiptPath: string; adoptionReceiptSha256: string } };
-			};
-			if (
-				serviceConfig.linux.attestation.bootId !== seed.originalBootId ||
-				serviceConfig.linux.attestation.adoptionReceiptSha256 !== seed.adoptionReceiptSha256
-			)
-				throw new Error("reset configuration source differs");
-			serviceConfig.linux.attestation.bootId = bootId;
-			material = Buffer.from(
-				JSON.stringify(
-					parseCompanyComputerConfigurationMaterial({
-						configuration: JSON.stringify(serviceConfig),
-						registry: source.registry,
-						native: source.native,
-						objects: source.objects,
-						tlsCert: source.tlsCert,
-						tlsKey: source.tlsKey,
-					}),
-				),
-			);
-			const requestSha256 = hash(material);
+			if (preparation.request.bootId !== seed.originalBootId) throw new Error("reset configuration source differs");
+			const requestSha256 = hash(payload.bytes);
 			let commandValue = await optional(names.configuration);
 			if (commandValue === undefined) {
 				await newBoot(signal);
@@ -1237,7 +1237,7 @@ export class LxdOfficeResetWorker {
 					resetId: plan.resetId,
 					bootId,
 					command: { commandId: randomUUID(), bootId, requestSha256 },
-					serviceBootstrapSha256: payload.planBytesSha256,
+					serviceBootstrapSha256: payload.serviceBootstrapSha256,
 				};
 				await retain(names.configuration, commandValue);
 			}
@@ -1255,22 +1255,33 @@ export class LxdOfficeResetWorker {
 				configuration.bootId !== bootId ||
 				command.bootId !== bootId ||
 				command.requestSha256 !== requestSha256 ||
-				configuration.serviceBootstrapSha256 !== payload.planBytesSha256
+				configuration.serviceBootstrapSha256 !== payload.serviceBootstrapSha256 ||
+				[
+					plan.commands.stopCommandId,
+					plan.commands.deleteCommandId,
+					plan.commands.createCommandId,
+					plan.commands.startCommandId,
+					preparation.command.commandId,
+				].includes(command.commandId)
 			)
 				throw new Error("reset configuration differs");
+			const expected: CompanyComputerResetConfigurationCompletion = {
+				schema: "qorpera.office-reset-configuration-completion/v1",
+				command,
+				resetId: plan.resetId,
+				rootIncarnationId: plan.rootIncarnationId,
+				activationId: plan.successorActivationId,
+				originPreparationSha256: preparation.command.requestSha256,
+				adoptionReceiptSha256: seed.adoptionReceiptSha256,
+				files: payload.files,
+			};
 			let configuredValue = await optional(names.configured);
 			if (configuredValue === undefined) {
-				const files = await lane.configure(
-					{
-						binding,
-						resetId: plan.resetId,
-						bootId,
-						command,
-						material,
-						adoptionReceiptSha256: seed.adoptionReceiptSha256,
-					},
+				const files = await this.#lane.configure(
+					{ ...lane, command, request: payload.bytes, expected },
 					await newBoot(signal),
 				);
+				if (!isDeepStrictEqual(files, payload.files)) throw new Error("reset configured files differ");
 				configuredValue = {
 					schema: "qorpera.lxd-office-reset-configured/v1",
 					resetId: plan.resetId,
@@ -1280,15 +1291,8 @@ export class LxdOfficeResetWorker {
 				};
 				await retain(names.configured, configuredValue);
 			}
-			const configured = officeRecord(configuredValue, ["schema", "resetId", "bootId", "commandId", "files"]),
-				files = configured.files as CompanyComputerConfigurationCompletion["files"];
-			if (
-				configured.schema !== "qorpera.lxd-office-reset-configured/v1" ||
-				configured.resetId !== plan.resetId ||
-				configured.bootId !== bootId ||
-				configured.commandId !== command.commandId
-			)
-				throw new Error("reset configured differs");
+			const configured = await this.#configured(context, bootId);
+			if (!isDeepStrictEqual(configured.completion, expected)) throw new Error("reset configured differs");
 			const attestation: CompanyComputerActivationAttestation = {
 				schema: "qorpera.office-activation-attestation/v1",
 				activationId: plan.successorActivationId,
@@ -1299,10 +1303,10 @@ export class LxdOfficeResetWorker {
 					resetId: plan.resetId,
 					bootId,
 					commandId: command.commandId,
-					files,
-					serviceBootstrapSha256: payload.planBytesSha256,
+					files: configured.files,
+					serviceBootstrapSha256: payload.serviceBootstrapSha256,
 				}),
-				configurationSha256: files["config.json"].sha256,
+				configurationSha256: configured.files["config.json"].sha256,
 				adoptionReceiptSha256: seed.adoptionReceiptSha256,
 				nativePort: payload.plan.native.port,
 				viewerPort: payload.plan.viewer.port,
@@ -1332,21 +1336,28 @@ export class LxdOfficeResetWorker {
 			return { ...result, state: "progressed", phase: "prepared" };
 		} finally {
 			payload.bytes.fill(0);
-			material?.fill(0);
 		}
 	}
 	/** One ordinary service start, a fresh nonce inspection, readiness and
-	 * SQL activation within one five-second window. */
+	 * SQL activation within one five-second window. The staged start packet is
+	 * the prepared successor itself, whose canonical digest the retained start
+	 * command already binds. */
 	async #activate(
 		context: Context,
-		bootId: string,
-		lane: LxdOfficeResetSuccessorLane,
+		lane: LxdOfficeResetSuccessorLaneContext,
 		newBoot: Authorize,
 	): Promise<LxdOfficeResetResult> {
-		const { plan, binding, names, optional, retain, registry, journal, control, signal, result } = context;
+		const { plan, names, optional, retain, registry, journal, control, signal, result } = context,
+			{ bootId } = lane;
 		const request = parseCompanyComputerResetSuccessorRequest(await optional(names.successor)),
 			prepared = parseCompanyComputerResetSuccessor(await optional(names.prepared), request);
 		if (journal.evidenceSha256("prepared") !== officeDigest(prepared)) throw new Error("reset prepared differs");
+		const configured = await this.#configured(context, bootId);
+		if (
+			configured.files["config.json"].sha256 !== request.attestation.configurationSha256 ||
+			request.attestation.bootId !== bootId
+		)
+			throw new Error("reset configured differs");
 		const successor = new LxdOfficeResetSuccessorControl(request, registry);
 		let startValue = await optional(names.start);
 		if (startValue === undefined) {
@@ -1363,26 +1374,22 @@ export class LxdOfficeResetWorker {
 			start.schema !== "qorpera.lxd-office-reset-service-start/v1" ||
 			start.resetId !== plan.resetId ||
 			command.bootId !== bootId ||
-			command.requestSha256 !== officeDigest(prepared)
+			command.requestSha256 !== officeDigest(prepared) ||
+			command.commandId === configured.command.commandId
 		)
 			throw new Error("reset start differs");
 		let startedValue = await optional(names.started);
 		if (startedValue === undefined) {
 			const authorized = await successor.check(await newBoot(signal));
-			if (authorized.successor.state !== "prepared") throw new Error("reset invocation already claimed");
-			const completion = await lane.start(
-				{
-					binding,
-					resetId: plan.resetId,
-					bootId,
-					activationId: plan.successorActivationId,
-					command,
-					attestation: request.attestation,
-				},
+			// A recorded invocation means a prior start reply was lost: the lane
+			// may observe its own dispatched journal but never start again.
+			const claimed = authorized.successor.state !== "prepared";
+			const completion = await this.#lane.start(
+				{ ...lane, command, configuration: configured.completion, successor: prepared, claimed },
 				authorized.signal,
 			);
 			if (
-				!/^(?!0{32}$)[0-9a-f]{32}$/.test(completion.serviceInvocationId) ||
+				(claimed && authorized.successor.serviceInvocationId !== completion.serviceInvocationId) ||
 				completion.serviceInvocationId === plan.predecessor.startup.serviceInvocationId ||
 				completion.configurationSha256 !== request.attestation.configurationSha256
 			)
@@ -1396,27 +1403,17 @@ export class LxdOfficeResetWorker {
 			await retain(names.started, startedValue);
 		}
 		const started = officeRecord(startedValue, ["schema", "resetId", "commandId", "completion"]),
-			completion = officeRecord(started.completion, [
-				"serviceInvocationId",
-				"configurationSha256",
-				"mainPid",
-				"controlGroup",
-			]),
-			serviceInvocationId = completion.serviceInvocationId as string;
-		if (started.commandId !== command.commandId || started.resetId !== plan.resetId)
+			completion = parseCompanyComputerResetServiceStartCompletion(started.completion, command, prepared),
+			{ serviceInvocationId } = completion;
+		if (
+			started.schema !== "qorpera.lxd-office-reset-service-started/v1" ||
+			started.commandId !== command.commandId ||
+			started.resetId !== plan.resetId
+		)
 			throw new Error("reset started differs");
 		const deadline = performance.now() + 5000,
 			checked = await newBoot(signal);
-		const inspection = await lane.inspect(
-			{
-				binding,
-				resetId: plan.resetId,
-				bootId,
-				activationId: plan.successorActivationId,
-				inspectionId: randomUUID(),
-			},
-			checked,
-		);
+		const inspection = await this.#lane.inspect({ ...lane, command, successor: prepared, completion }, checked);
 		if (
 			inspection.serviceInvocationId !== serviceInvocationId ||
 			inspection.configurationSha256 !== completion.configurationSha256
@@ -1433,7 +1430,7 @@ export class LxdOfficeResetWorker {
 				parseCompanyComputerStartupIdentity({
 					...plan.predecessor.startup,
 					bootId,
-					configurationSha256: completion.configurationSha256 as string,
+					configurationSha256: completion.configurationSha256,
 					serviceInvocationId,
 				}),
 				deadline,

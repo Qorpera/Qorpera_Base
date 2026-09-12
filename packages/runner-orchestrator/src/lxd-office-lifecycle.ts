@@ -225,8 +225,8 @@ export class LxdOfficeLifecycle {
 			ports.bootConfigurationWorker ?? new LxdOfficeBootConfigurationWorker(gate, registry);
 		this.#bootActivationWorker =
 			ports.bootActivationWorker ?? new LxdOfficeBootActivationWorker(gate, registry, { measureInvocation });
-		// The reset worker has no production guest successor lane yet: the
-		// composed provider holds at `restored` with a stable reason.
+		// The reset worker composes its guest successor lane on its own client;
+		// only the enrolled software measurement is shared with the other lanes.
 		this.#resetWorker = ports.resetWorker ?? new LxdOfficeResetWorker(gate, registry, { measureInvocation });
 		this.#workers = ports.workers ?? {
 			creation: new LxdOfficeCreationWorker(gate, registry),

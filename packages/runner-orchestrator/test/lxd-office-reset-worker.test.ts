@@ -79,18 +79,6 @@ describe("serialized office root reset worker", () => {
 		expect(f.submit).toHaveBeenCalledTimes(4);
 		expect(f.lane.start).toHaveBeenCalledOnce();
 	});
-	it("holds at restored with a stable reason when no guest successor lane is composed", async () => {
-		const f = await fixture();
-		expect(await f.ticks(6)).toMatchObject({ state: "progressed", phase: "restored" });
-		await expect(f.run({ successorLane: null })).resolves.toMatchObject({
-			state: "held",
-			phase: "restored",
-			reason: "OFFICE_RESET_GUEST_LANE_UNAVAILABLE",
-		});
-		expect(f.registry.state.phase).toBe("restored");
-		expect(f.lane.configure).not.toHaveBeenCalled();
-		expect(f.submit).toHaveBeenCalledTimes(4);
-	});
 	it.each(COMPANY_COMPUTER_RESET_PHASES.slice(1, 7))(
 		"recovers a lost committed %s acknowledgement without redispatch",
 		async (phase) => {

@@ -589,7 +589,7 @@ describe("serialized office lifecycle", () => {
 		await f.open().reconcile(signal());
 		f.state.recovery = { schema: "qorpera.lxd-office-recovery-plan/v1", request: f.recovery };
 		f.state.reset = f.resetPlan(f.recovery);
-		f.resetWorker.result = { state: "held", phase: "restored", reason: "OFFICE_RESET_GUEST_LANE_UNAVAILABLE" };
+		f.resetWorker.result = { state: "held", phase: "stopped", reason: "OFFICE_RESET_OUTBOX_REMNANT" };
 		await expect(f.open().reconcile(signal())).resolves.toMatchObject({ state: "progressed", phase: "service_stop" });
 		const plan = f.resetPlan(f.recovery);
 		await expect(f.open().reconcile(signal())).resolves.toEqual({
@@ -599,8 +599,8 @@ describe("serialized office lifecycle", () => {
 			transitionId: f.recovery.transitionId,
 			activationId: plan.successorActivationId,
 			resetId: plan.resetId,
-			resetPhase: "restored",
-			reason: "OFFICE_RESET_GUEST_LANE_UNAVAILABLE",
+			resetPhase: "stopped",
+			reason: "OFFICE_RESET_OUTBOX_REMNANT",
 		});
 		expect(f.resetWorker.reconcileSettled).toHaveBeenLastCalledWith(
 			{ intentId, plan, planSha256: officeDigest(plan), serviceBootstrapPath: f.request.serviceBootstrapPath },

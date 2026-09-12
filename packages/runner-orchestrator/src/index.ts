@@ -17,6 +17,7 @@ export * from "./lxd-office-provider-registry.ts";
 export * from "./lxd-office-reset-control.ts";
 export * from "./lxd-office-reset-custody.ts";
 export * from "./lxd-office-reset-journal.ts";
+export * from "./lxd-office-reset-successor-lane.ts";
 export * from "./lxd-office-reset-worker.ts";
 export * from "./lxd-office-service-start-journal.ts";
 export * from "./lxd-office-service-stop-worker.ts";
