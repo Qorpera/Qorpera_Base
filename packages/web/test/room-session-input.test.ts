@@ -98,6 +98,25 @@ describe("room session input routing", () => {
 		expect(f.fetch).toHaveBeenCalledTimes(4);
 		expect(f.append).not.toHaveBeenCalled();
 	});
+	it("requires explicit abandonment before posting an edited uncertain room message", async () => {
+		const f = setup();
+		f.fetch.mockResolvedValueOnce(Response.json(rooms)).mockRejectedValueOnce(new Error("Lost post reply"));
+		expect(await f.controller.sendPrompt(session.sessionId, "Original room draft")).toBe(false);
+		const state = f.controller.conversation(session.sessionId, false),
+			retained = state.get().retrySend!;
+		state.set({ draft: "Edited room draft" });
+		expect(await f.controller.sendPrompt(session.sessionId, "Edited room draft")).toBe(false);
+		expect(f.fetch).toHaveBeenCalledTimes(2);
+		expect(state.get().retrySend).toBe(retained);
+		expect(retained.roomTarget).toEqual(target);
+		f.controller.discardSendRetry(session.sessionId);
+		expect(state.get().draft).toBe("Edited room draft");
+		expect(await f.controller.sendPrompt(session.sessionId, "Edited room draft")).toBe(true);
+		expect(f.fetch).toHaveBeenCalledTimes(4);
+		expect(f.write.mock.calls[1]![1]).not.toBe(retained.clientInputId);
+		expect(f.write.mock.calls[1]![2]).toBe("Edited room draft");
+		expect(f.write.mock.calls[1]![6]).toEqual(target);
+	});
 	it.each(["another room", "direct conversation"])(
 		"refuses replay when the canonical destination becomes %s",
 		async (change) => {

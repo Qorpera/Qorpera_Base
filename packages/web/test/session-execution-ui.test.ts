@@ -346,6 +346,45 @@ describe("conversation execution account", () => {
 		expect(f.native.requestSessionTurn).not.toHaveBeenCalled();
 	});
 
+	it.each(["direct draft", "room draft", "direct image"])(
+		"requires explicit abandonment for an edited %s even with a valid sponsor",
+		async (change) => {
+			const f = setup(change === "room draft");
+			await settle();
+			choose(id(90));
+			await settle();
+			const state = f.company.conversation(session.sessionId);
+			const selected = state.get().executionSponsor!;
+			const retained = {
+				clientInputId: id(150),
+				clientRequestId: id(150),
+				text: "Original",
+				files: [],
+				executionSponsor: selected,
+			};
+			state.set({ draft: "Original", retrySend: retained });
+			await settle();
+			const send = f.view.el.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!;
+			expect(send.disabled).toBe(false);
+			const files = change === "direct image" ? [new File(["new image"], "new.png", { type: "image/png" })] : [];
+			const draft = change === "direct image" ? "Original" : "Edited";
+			state.set({ draft, attachments: files });
+			await settle();
+			expect(send.disabled).toBe(true);
+			send.click();
+			expect(f.sendMessage).not.toHaveBeenCalled();
+			expect(state.get().retrySend).toBe(retained);
+			expect(selector().disabled).toBe(true);
+			[...f.view.el.querySelectorAll<HTMLButtonElement>("button")]
+				.find((b) => b.textContent === "Start a new message request")!
+				.click();
+			await settle();
+			expect(state.get()).toMatchObject({ draft, attachments: files, executionSponsor: selected });
+			expect(state.get().retrySend).toBeUndefined();
+			expect(send.disabled).toBe(false);
+			expect(f.sendMessage).not.toHaveBeenCalled();
+		},
+	);
 	it("requires current account authority for an edited draft after an uncertain send", async () => {
 		const f = setup();
 		await settle();
