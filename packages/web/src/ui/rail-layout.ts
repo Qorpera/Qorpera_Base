@@ -4,8 +4,8 @@ import { matchesKey } from "./keys.ts";
 const COMPACT = 80;
 const MIN = 240;
 const DEFAULT = 304;
-/** The rail may take at most half of the window, like a wide Messages sidebar. */
-const MAX_SHARE = 0.5;
+/** The rail may take at most two fifths of the window, a touch wider than a Messages sidebar. */
+const MAX_SHARE = 0.4;
 
 /** Only a browser layout preference. Company navigation remains canonical. */
 export class RailLayout {
@@ -75,7 +75,7 @@ export class RailLayout {
 		window.addEventListener("resize", () => this.#apply(), { signal: this.#lifetime.signal });
 		this.#apply();
 	}
-	/** Half of the window, but never below the narrowest expanded rail. */
+	/** Two fifths of the window, but never below the narrowest expanded rail. */
 	#cap(): number {
 		return Math.max(MIN, Math.floor(window.innerWidth * MAX_SHARE));
 	}
