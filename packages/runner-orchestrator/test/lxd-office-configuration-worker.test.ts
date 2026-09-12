@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { officeDigest } from "../src/lxd-office-image-provenance.ts";
 import { readRecord } from "../src/lxd-office-journal-files.ts";
+import { LxdOfficeStartControl } from "../src/lxd-office-start-control.ts";
 import { officeConfigurationWorkerFixture } from "./fixtures/office-configuration-worker.ts";
 
 const roots: string[] = [];
@@ -38,21 +39,36 @@ describe("provider configuration of an acknowledged prepared boot", () => {
 	it("refuses an expired credential inspection and recovers without dispatching again", async () => {
 		const f = await fixture(),
 			read = f.file.getMockImplementation()!;
-		let delayed = false;
+		let expiry: AbortController | undefined;
+		const checkAdoption = LxdOfficeStartControl.prototype.checkAdoption;
+		const admission = vi.spyOn(LxdOfficeStartControl.prototype, "checkAdoption").mockImplementation(async function (
+			this: LxdOfficeStartControl,
+			...args
+		) {
+			const checked = await checkAdoption.apply(this, args);
+			expiry = new AbortController();
+			return { ...checked, signal: AbortSignal.any([checked.signal, expiry.signal]) };
+		});
+		let expired = false;
 		f.file.mockImplementation(async (...args) => {
-			if (!delayed && args[2].startsWith("/etc/qorpera-office/credentials/")) {
-				delayed = true;
+			if (!expired && args[2].startsWith("/etc/qorpera-office/credentials/")) {
 				const authority = args[4];
-				if (!authority) throw new Error("missing inspection authority");
-				await new Promise<void>((resolve) => {
-					if (authority.aborted) resolve();
-					else authority.addEventListener("abort", () => resolve(), { once: true });
-				});
+				if (!authority || !expiry) throw new Error("missing inspection authority");
+				expect(authority.aborted).toBe(false);
+				// Expire the real admission's composed signal at the read boundary,
+				// without spending five wall-clock seconds under suite contention.
+				expiry.abort(new DOMException("Inspection authority expired", "TimeoutError"));
+				expect(authority.aborted).toBe(true);
+				expired = true;
 			}
 			return read(...args);
 		});
-		await expect(f.worker.reconcileSettled(f.request, signal())).rejects.toThrow("OFFICE_CONFIGURATION_UNCONFIRMED");
-		expect(delayed).toBe(true);
+		await expect(f.worker.reconcileSettled(f.request, signal())).rejects.toMatchObject({
+			message: "OFFICE_CONFIGURATION_UNCONFIRMED",
+			cause: { name: "TimeoutError", message: "Inspection authority expired" },
+		});
+		expect(expired).toBe(true);
+		admission.mockRestore();
 		expect(await readdir(f.root)).not.toContain(f.names.completion);
 		f.file.mockImplementation(read);
 		await expect(f.create().reconcile(f.request, signal())).resolves.toMatchObject({ state: "awaiting_activation" });
