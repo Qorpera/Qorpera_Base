@@ -102,8 +102,8 @@
     },
     {
       "file": "qorpera-lxd-native-login-bootstrap.mjs",
-      "bytes": 36195,
-      "sha256": "3f920bac69ac1ac1073c7b174b6bd4df1c45f644314e0708024f881d9101d93a"
+      "bytes": 39667,
+      "sha256": "969b00a0b0425b947bf4e24e7e6fbe774654b9110f45ddea3de7be79e3ce76c2"
     },
     {
       "file": "qorpera-lxd-native-login-bootstrap.service",
@@ -112,8 +112,8 @@
     },
     {
       "file": "qorpera-lxd-runner-bootstrap.mjs",
-      "bytes": 56055,
-      "sha256": "44911072d38f58219f71c1a6736e5fbc4d034bb9c9d42153afa50cfae9d7a56f"
+      "bytes": 60637,
+      "sha256": "e74bc1af10a7da82ccf7a43e999971bfa8129f66e1cab74fa214ec4b846367d6"
     },
     {
       "file": "qorpera-lxd-runner-bootstrap.service",
@@ -122,8 +122,8 @@
     },
     {
       "file": "qorpera-native-company-host.service",
-      "bytes": 3235,
-      "sha256": "23ec747b69de6eccf04c423a0d752a80585e7155318fbf7f6d0d199f453349d5"
+      "bytes": 3333,
+      "sha256": "4041b2766375b8dc4d06e2590701b5cb8fdae406016f6f448638c804d3eff4c9"
     },
     {
       "file": "qorpera-native-isolation-child.mjs",
@@ -137,8 +137,8 @@
     },
     {
       "file": "qorpera-native-provider-host.mjs",
-      "bytes": 1275474,
-      "sha256": "eaff086b84163f2e05409c750f6d3515c37e90944d2c4b163e99ce30dea6414d"
+      "bytes": 1279983,
+      "sha256": "8f8d7c23b19a3b087edf5ffa588e66d43c92687a3afda468e43be10096e0be0c"
     },
     {
       "file": "qorpera-native-provider-host.service",
