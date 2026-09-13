@@ -37,22 +37,52 @@ function loginCapability(request: Request): string {
 	return capability;
 }
 
-async function forwardLogin(
-	request: Request,
-	options: NativeProviderLoginProxyOptions,
-): Promise<Response> {
+class LoginBodyTooLarge extends Error {}
+
+/** Bound retained bytes even without Content-Length; cancellation must not wait for the peer. */
+async function readLoginBody(
+	message: Request | Response,
+	limit: number,
+	signal: AbortSignal,
+): Promise<Uint8Array<ArrayBuffer>> {
+	const reader = message.body?.getReader();
+	const cancel = () => {
+		void reader?.cancel().catch(() => {});
+	};
+	signal.addEventListener("abort", cancel, { once: true });
+	try {
+		signal.throwIfAborted();
+		const declared = Number(message.headers.get("content-length") ?? "0");
+		if (Number.isFinite(declared) && declared > limit) throw new LoginBodyTooLarge();
+		const bytes = new Uint8Array(limit);
+		let length = 0;
+		while (reader) {
+			const next = await reader.read();
+			signal.throwIfAborted();
+			if (next.done) break;
+			if (next.value.byteLength > limit - length) throw new LoginBodyTooLarge();
+			bytes.set(next.value, length);
+			length += next.value.byteLength;
+		}
+		return bytes.slice(0, length);
+	} catch (error) {
+		cancel();
+		throw error;
+	} finally {
+		signal.removeEventListener("abort", cancel);
+		reader?.releaseLock();
+	}
+}
+
+async function forwardLogin(request: Request, options: NativeProviderLoginProxyOptions): Promise<Response> {
 	if (request.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
 	let capability: string;
-	let body: Uint8Array;
+	let body: Uint8Array<ArrayBuffer>;
 	try {
 		capability = loginCapability(request);
-		const declared = Number(request.headers.get("content-length") ?? "0");
-		if (Number.isFinite(declared) && declared > MAX_REQUEST_BYTES) {
-			return jsonResponse({ error: "Native login request is too large" }, 413);
-		}
-		body = new Uint8Array(await request.arrayBuffer());
-		if (body.byteLength > MAX_REQUEST_BYTES) return jsonResponse({ error: "Native login request is too large" }, 413);
-	} catch {
+		body = await readLoginBody(request, MAX_REQUEST_BYTES, request.signal);
+	} catch (error) {
+		if (error instanceof LoginBodyTooLarge) return jsonResponse({ error: "Native login request is too large" }, 413);
 		return jsonResponse({ error: "Invalid native login request" }, 400);
 	}
 	try {
@@ -60,6 +90,7 @@ async function forwardLogin(
 		if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) {
 			throw new Error("Native login proxy timeout is invalid");
 		}
+		const signal = AbortSignal.any([request.signal, AbortSignal.timeout(timeoutMs)]);
 		const upstream = await (options.fetchImplementation ?? fetch)(upstreamLoginUrl(options.upstreamUrl ?? ""), {
 			method: "POST",
 			headers: {
@@ -69,46 +100,58 @@ async function forwardLogin(
 			},
 			body: body.buffer,
 			redirect: "error",
-			signal: AbortSignal.any([request.signal, AbortSignal.timeout(timeoutMs)]),
+			signal,
 		});
-		const declared = Number(upstream.headers.get("content-length") ?? "0");
-		if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
-			return jsonResponse({ error: "Native login response is too large" }, 502);
-		}
-		const responseBody = new Uint8Array(await upstream.arrayBuffer());
-		if (responseBody.byteLength > MAX_RESPONSE_BYTES) {
-			return jsonResponse({ error: "Native login response is too large" }, 502);
-		}
+		const responseBody = await readLoginBody(upstream, MAX_RESPONSE_BYTES, signal);
 		return new Response(responseBody, {
 			status: upstream.status,
 			headers: { "cache-control": "no-store", "content-type": "application/json" },
 		});
-	} catch {
+	} catch (error) {
+		if (error instanceof LoginBodyTooLarge) return jsonResponse({ error: "Native login response is too large" }, 502);
 		return jsonResponse({ error: "Native provider login is unavailable" }, 503);
 	}
 }
 
-
 /** Browser policy is applied before reading credentials or contacting the private upstream. */
 export async function forwardNativeProviderLogin(
- request: Request,
- options: NativeProviderLoginProxyOptions,
+	request: Request,
+	options: NativeProviderLoginProxyOptions,
 ): Promise<Response> {
- const origin = request.headers.get("origin");
- const allowed = options.allowedOrigins ?? ["https://app.qorpera.com"];
- if (origin && !allowed.some(value => {
-  try { const url = new URL(value); return url.protocol === "https:" && url.origin === value && value === origin; }
-  catch { return false; }
- })) return jsonResponse({ error: "Browser origin is not allowed" }, 403);
- let response: Response;
- if (request.method === "OPTIONS") {
-  const method = request.headers.get("access-control-request-method");
-  const requested = (request.headers.get("access-control-request-headers") ?? "").split(",").map(value => value.trim().toLowerCase()).filter(Boolean);
-  response = origin && method === "POST" && requested.every(value => ["authorization", "content-type"].includes(value))
-   ? new Response(null, { status: 204, headers: { "cache-control": "no-store", "access-control-allow-methods": "POST", "access-control-allow-headers": "Authorization, Content-Type" } })
-   : jsonResponse({ error: "Invalid native login preflight" }, 403);
- } else response = await forwardLogin(request, options);
- response.headers.set("vary", "Origin, Access-Control-Request-Method, Access-Control-Request-Headers");
- if (origin) response.headers.set("access-control-allow-origin", origin);
- return response;
+	const origin = request.headers.get("origin");
+	const allowed = options.allowedOrigins ?? ["https://app.qorpera.com"];
+	if (
+		origin &&
+		!allowed.some((value) => {
+			try {
+				const url = new URL(value);
+				return url.protocol === "https:" && url.origin === value && value === origin;
+			} catch {
+				return false;
+			}
+		})
+	)
+		return jsonResponse({ error: "Browser origin is not allowed" }, 403);
+	let response: Response;
+	if (request.method === "OPTIONS") {
+		const method = request.headers.get("access-control-request-method");
+		const requested = (request.headers.get("access-control-request-headers") ?? "")
+			.split(",")
+			.map((value) => value.trim().toLowerCase())
+			.filter(Boolean);
+		response =
+			origin && method === "POST" && requested.every((value) => ["authorization", "content-type"].includes(value))
+				? new Response(null, {
+						status: 204,
+						headers: {
+							"cache-control": "no-store",
+							"access-control-allow-methods": "POST",
+							"access-control-allow-headers": "Authorization, Content-Type",
+						},
+					})
+				: jsonResponse({ error: "Invalid native login preflight" }, 403);
+	} else response = await forwardLogin(request, options);
+	response.headers.set("vary", "Origin, Access-Control-Request-Method, Access-Control-Request-Headers");
+	if (origin) response.headers.set("access-control-allow-origin", origin);
+	return response;
 }
