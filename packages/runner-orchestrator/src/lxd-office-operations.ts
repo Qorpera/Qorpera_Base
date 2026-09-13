@@ -116,6 +116,28 @@ export class LxdOfficeOperationJournal {
 	/** Local operator read only: validate the original authority and hash chain,
 	 * without creating files, loading credentials or contacting a provider. */
 	static async readHistory(stateRoot: string, allocationId: string) {
+		return (await LxdOfficeOperationJournal.#existing(stateRoot, allocationId)).history();
+	}
+
+	/** Capture only the accepted tail of an existing validated journal. Missing
+	 * dispatch replies remain unknown; this entry point cannot create or submit. */
+	static async observeExisting(
+		stateRoot: string,
+		allocationId: string,
+		inspect: LxdTrackedClient["inspectInstanceOperation"],
+		signal: AbortSignal,
+	): Promise<void> {
+		signal.throwIfAborted();
+		const journal = await LxdOfficeOperationJournal.#existing(stateRoot, allocationId, inspect);
+		const tail = (await journal.#read()).events.at(-1);
+		if (tail?.kind === "accepted") await journal.#observe(tail.commandId, tail.action, signal);
+	}
+
+	static async #existing(
+		stateRoot: string,
+		allocationId: string,
+		inspect?: LxdTrackedClient["inspectInstanceOperation"],
+	) {
 		if (resolve(stateRoot) !== stateRoot || !UUID.test(allocationId)) throw new Error("INVALID_LXD_OFFICE_HISTORY");
 		await checkDirectory(stateRoot);
 		const root = join(stateRoot, allocationId);
@@ -138,9 +160,9 @@ export class LxdOfficeOperationJournal {
 		};
 		const journal = new LxdOfficeOperationJournal(root, authority.intentId, binding, {
 			submitInstanceOperation: denied,
-			inspectInstanceOperation: denied,
+			inspectInstanceOperation: inspect ?? denied,
 		});
-		return journal.history();
+		return journal;
 	}
 
 	async history() {

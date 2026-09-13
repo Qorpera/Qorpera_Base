@@ -191,27 +191,43 @@ export async function runLxdOfficeLifecycleService(
 			signal,
 		);
 		const emit = createOfficeLifecycleReporter(lifecycle.observationIdentity, write);
-		const stop = new AbortController();
-		const running = AbortSignal.any([signal, stop.signal]);
-		const outcomes = await Promise.allSettled([
-			runLxdOfficeLifecycle(
-				lifecycle,
-				running,
-				(result) => emit(result),
-				(error) => emit(undefined, error),
-				config.pollIntervalMs,
-			).finally(() => stop.abort()),
-			runLxdOfficeControlObserver(
-				(checked) => lifecycle.observeControlOperations(checked),
-				running,
-				() => emit(),
-			).finally(() => stop.abort()),
-		]);
-		if (!signal.aborted && outcomes.some((result) => result.status === "rejected"))
-			throw new Error("OFFICE_PROVIDER_LOOPS_UNCONFIRMED");
+		await runOfficeLifecycleLoops(lifecycle, signal, config.pollIntervalMs, emit);
 	} catch {
 		if (!signal.aborted) throw new Error("OFFICE_PROVIDER_SERVICE_UNCONFIRMED");
 	} finally {
 		credential?.fill(0);
 	}
+}
+
+/** Independent loops share one process lock and shutdown scope. Slow cloud or
+ * guest-control IO must not consume the VM operation retention window. */
+export async function runOfficeLifecycleLoops(
+	lifecycle: Pick<LxdOfficeLifecycle, "reconcile" | "observeControlOperations" | "observeVmOperations">,
+	signal: AbortSignal,
+	pollIntervalMs: number,
+	emit: ReturnType<typeof createOfficeLifecycleReporter>,
+): Promise<void> {
+	const stop = new AbortController();
+	const running = AbortSignal.any([signal, stop.signal]);
+	const outcomes = await Promise.allSettled([
+		runLxdOfficeLifecycle(
+			lifecycle,
+			running,
+			(result) => emit(result),
+			(error) => emit(undefined, error),
+			pollIntervalMs,
+		).finally(() => stop.abort()),
+		runLxdOfficeControlObserver(
+			(checked) => lifecycle.observeControlOperations(checked),
+			running,
+			() => emit(),
+		).finally(() => stop.abort()),
+		runLxdOfficeControlObserver(
+			(checked) => lifecycle.observeVmOperations(checked),
+			running,
+			() => emit(),
+		).finally(() => stop.abort()),
+	]);
+	if (!signal.aborted && outcomes.some((result) => result.status === "rejected"))
+		throw new Error("OFFICE_PROVIDER_LOOPS_UNCONFIRMED");
 }

@@ -31,6 +31,7 @@ import {
 	OFFICE_LIFECYCLE_PHASES,
 	parseLxdOfficeLifecycleRequest,
 } from "./lxd-office-lifecycle-journal.ts";
+import { observeLxdOfficeOperationJournals } from "./lxd-office-operation-observer.ts";
 import { LxdOfficePhysicalGate } from "./lxd-office-physical-gate.ts";
 import { readLxdOfficeProtectedFile } from "./lxd-office-physical-host.ts";
 import {
@@ -293,6 +294,10 @@ export class LxdOfficeLifecycle {
 	async observeControlOperations(signal: AbortSignal): Promise<void> {
 		await this.#kernelLock(this.#root);
 		await observeLxdOfficeControlJournals(this.#root, this.#operationClient, signal);
+	}
+	async observeVmOperations(signal: AbortSignal): Promise<void> {
+		await this.#kernelLock(this.#root);
+		await observeLxdOfficeOperationJournals(this.#root, this.#operationClient, signal);
 	}
 	async reconcile(caller: AbortSignal): Promise<LxdOfficeLifecycleResult> {
 		caller.throwIfAborted();
