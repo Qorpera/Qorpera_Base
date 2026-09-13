@@ -38,5 +38,11 @@ mkfs.ext4 -q -F "$private_journal/journal.ext4"
 mount -o loop,nodev,nosuid "$private_journal/journal.ext4" /mnt/journal
 # mount's auto-clear loop device is released by unmount/namespace teardown.
 trap 'umount /mnt/journal && rm -f -- "$private_journal/journal.ext4" && rmdir -- "$private_journal"' EXIT
-python3 "$fixture_dir/run-isolated.py" "$fixture_dir/probe.cjs" > "$output_dir/kernel-boundary-results.json"
-python3 "$fixture_dir/full-driver.py" "$fixture_dir/full.cjs" "$output_dir"
+mkdir -m 755 /run/qorpera-fixture-code
+cp -- "$fixture_dir/probe.cjs" /run/qorpera-fixture-code/probe.cjs
+cp -- "$fixture_dir/full.cjs" /run/qorpera-fixture-code/full.cjs
+chmod 444 /run/qorpera-fixture-code/*.cjs
+cmp -- "$fixture_dir/probe.cjs" /run/qorpera-fixture-code/probe.cjs
+cmp -- "$fixture_dir/full.cjs" /run/qorpera-fixture-code/full.cjs
+python3 "$fixture_dir/run-isolated.py" /run/qorpera-fixture-code/probe.cjs > "$output_dir/kernel-boundary-results.json"
+python3 "$fixture_dir/full-driver.py" /run/qorpera-fixture-code/full.cjs "$output_dir"
