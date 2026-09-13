@@ -108,47 +108,94 @@ describe("web runtime member boundary", () => {
 		await settle();
 		expect(p.el.textContent).not.toContain("Manage computer permissions");
 	});
-	it("cancels only the observed pending start after an explicit click", async () => {
-		const intent = {
-			schema: "qorpera.office-start-intent/v1" as const,
-			intentId: id(71),
-			companyComputerId: scope.companyComputerId,
-			computerGeneration: 1,
-			state: "requested" as const,
-		};
-		const f = setup({ qorpera_runtime_office_start_status: { ...start, officeState: "provisioning", intent } });
-		const startClient = f.computer.client.start(scope);
-		const cancel = vi.spyOn(startClient, "cancel").mockResolvedValue({ ...intent, state: "cancelled" });
-		vi.spyOn(f.computer.client, "start").mockReturnValue(startClient);
-		const p = panel(f.computer);
-		await settle();
-		await settle();
-		expect(cancel).not.toHaveBeenCalled();
-		action(p.el, "Cancel pending start").click();
-		await settle();
-		expect(cancel).toHaveBeenCalledExactlyOnceWith(intent, expect.any(AbortSignal));
-	});
-	it("starts only on explicit intent and never replays an ambiguous start or cancels it on disposal", async () => {
-		const f = setup({ qorpera_runtime_office_start_status: { ...start, officeState: "provisioning" } });
-		const startClient = f.computer.client.start(scope);
-		const request = vi.spyOn(startClient, "request").mockRejectedValue(new Error("Response lost"));
-		const cancel = vi.spyOn(startClient, "cancel");
-		vi.spyOn(f.computer.client, "start").mockReturnValue(startClient);
-		const p = panel(f.computer);
-		await settle();
-		await settle();
-		expect(request).not.toHaveBeenCalled();
-		const startButton = action(p.el, "Start computer");
-		startButton.click();
-		startButton.click();
-		await settle();
-		expect(request).toHaveBeenCalledTimes(1);
-		action(p.el, "Refresh computer").click();
-		await settle();
-		await settle();
-		expect(request).toHaveBeenCalledTimes(1);
-		p.dispose();
-		expect(cancel).not.toHaveBeenCalled();
+	it.each(["provisioning", "recovering"])(
+		"cancels only the observed %s start after an explicit click",
+		async (officeState) => {
+			const intent = {
+				schema: "qorpera.office-start-intent/v1" as const,
+				intentId: id(71),
+				companyComputerId: scope.companyComputerId,
+				computerGeneration: 1,
+				state: "requested" as const,
+			};
+			const f = setup({ qorpera_runtime_office_start_status: { ...start, officeState, intent } });
+			const startClient = f.computer.client.start(scope);
+			const cancel = vi.spyOn(startClient, "cancel").mockResolvedValue({ ...intent, state: "cancelled" });
+			vi.spyOn(f.computer.client, "start").mockReturnValue(startClient);
+			const p = panel(f.computer);
+			await settle();
+			await settle();
+			expect(cancel).not.toHaveBeenCalled();
+			action(p.el, "Cancel pending start").click();
+			await settle();
+			expect(cancel).toHaveBeenCalledExactlyOnceWith(intent, expect.any(AbortSignal));
+		},
+	);
+	it.each(["provisioning", "recovering"])(
+		"starts a %s office only on explicit intent and never replays an ambiguous start or cancels it on disposal",
+		async (officeState) => {
+			const f = setup({ qorpera_runtime_office_start_status: { ...start, officeState } });
+			const startClient = f.computer.client.start(scope);
+			const request = vi.spyOn(startClient, "request").mockRejectedValue(new Error("Response lost"));
+			const cancel = vi.spyOn(startClient, "cancel");
+			vi.spyOn(f.computer.client, "start").mockReturnValue(startClient);
+			const p = panel(f.computer);
+			await settle();
+			await settle();
+			expect(request).not.toHaveBeenCalled();
+			const startButton = action(p.el, "Start computer");
+			startButton.click();
+			startButton.click();
+			await settle();
+			expect(request).toHaveBeenCalledTimes(1);
+			action(p.el, "Refresh computer").click();
+			await settle();
+			await settle();
+			expect(request).toHaveBeenCalledTimes(1);
+			p.dispose();
+			expect(cancel).not.toHaveBeenCalled();
+		},
+	);
+	it.each([
+		["provisioning", true],
+		["recovering", true],
+		["active", false],
+		["maintenance", false],
+		["retired", false],
+	] as const)("offers only supported member start actions for %s", async (officeState, eligibleState) => {
+		for (const canManage of [true, false]) {
+			for (const intentState of [null, "requested", "reserved", "cancelled"] as const) {
+				const intent =
+					intentState === null
+						? null
+						: {
+								schema: "qorpera.office-start-intent/v1",
+								intentId: id(71),
+								companyComputerId: scope.companyComputerId,
+								computerGeneration: 1,
+								state: intentState,
+							};
+				const f = setup({
+					qorpera_member_office_catalog: { ...catalog, canManage },
+					qorpera_runtime_office_start_status: { ...start, officeState, intent },
+				});
+				const p = panel(f.computer);
+				await settle();
+				await settle();
+				const labels = [...p.el.querySelectorAll("button")].map((button) => button.textContent);
+				expect(labels.includes("Start computer")).toBe(canManage && eligibleState && intentState === null);
+				expect(labels.includes("Cancel pending start")).toBe(
+					canManage && eligibleState && (intentState === "requested" || intentState === "reserved"),
+				);
+				expect(
+					f.fetch.mock.calls.some(([url]) =>
+						/\/(?:qorpera_request_runtime_office_start|qorpera_cancel_runtime_office_start)$/.test(String(url)),
+					),
+				).toBe(false);
+				p.dispose();
+				f.stop.abort();
+			}
+		}
 	});
 	it("does not offer another agent's screen", async () => {
 		const f = setup({

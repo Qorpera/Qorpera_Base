@@ -159,7 +159,9 @@ export class ComputerPanel {
 						}),
 				),
 			);
-			if (catalog.canManage && start.officeState === "provisioning" && !start.intent) {
+			const canManageStart =
+				catalog.canManage && (start.officeState === "provisioning" || start.officeState === "recovering");
+			if (canManageStart && !start.intent) {
 				const requestId = crypto.randomUUID();
 				this.#controls.append(
 					button(
@@ -173,12 +175,7 @@ export class ComputerPanel {
 					),
 				);
 			}
-			if (
-				catalog.canManage &&
-				start.officeState !== "active" &&
-				start.intent &&
-				start.intent.state !== "cancelled"
-			) {
+			if (canManageStart && start.intent && start.intent.state !== "cancelled") {
 				const intent = start.intent;
 				this.#controls.append(
 					button(
