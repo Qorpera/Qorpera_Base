@@ -782,7 +782,19 @@ export class LxdOfficeResetWorker {
 						expected = { powered_off: "none", root_deleted: "stop", root_created: "delete", restored: "create" }[
 							phase
 						];
-					if (lineage.reached !== expected || (expected !== "none" && !lineage.settled))
+					const administrativeCreate =
+						phase === "root_created" &&
+						action === "create" &&
+						commandId === plan.commands.createCommandId &&
+						lineage.administrativelyDisposed === true &&
+						journal.phase === "root_deleted" &&
+						context.status.phase === "root_deleted" &&
+						(await operations.administrativeDispositions()).some(
+							(disposition) =>
+								isDeepStrictEqual(disposition.plan, plan) &&
+								disposition.phaseEvidenceSha256 === journal.evidenceSha256("root_deleted"),
+						);
+					if (lineage.reached !== expected || (expected !== "none" && !lineage.settled && !administrativeCreate))
 						throw new Error("reset lineage differs");
 					const window = await challenge(phase, officeDigest({ dispatch: commandId, action }), "dispatch");
 					const checked = await guarded(window.signal);

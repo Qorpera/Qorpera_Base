@@ -57,6 +57,7 @@ export type CompanyOperationKind = (typeof COMPANY_OPERATION_KINDS)[number];
 export * from "./company-computer-activation.ts";
 export * from "./company-computer-boot-intent.ts";
 export * from "./company-computer-boot-successor.ts";
+export * from "./company-computer-delete-disposition.ts";
 export * from "./company-computer-lifecycle.ts";
 export * from "./company-computer-reset.ts";
 export * from "./company-computer-reset-custody.ts";

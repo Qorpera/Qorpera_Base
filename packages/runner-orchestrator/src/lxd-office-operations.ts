@@ -1,10 +1,20 @@
 import { createHash } from "node:crypto";
 import { mkdir, readdir } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { LxdOperationState, LxdTrackedClient, LxdTrackedInstanceAction } from "./lxd-client.ts";
+import {
+	assertLxdOfficeDeleteDispositionContext,
+	type LxdOfficeDeleteDispositionContext,
+	readLxdOfficeDeleteDisposition,
+} from "./lxd-office-delete-disposition.ts";
 import { type LxdOfficeGuestBinding, lxdOfficeGuestPlan } from "./lxd-office-guest.ts";
 import { checkDirectory, code, publish, readRecord, syncDirectory } from "./lxd-office-journal-files.ts";
+import {
+	assertLxdOfficeDeleteDispositionPhases,
+	type LxdOfficeAdministrativeDeleteMarker,
+	lxdOfficeVmCompletion,
+} from "./lxd-office-operation-completion.ts";
 import { assertLxdOfficeVmLineageCommands, type LxdOfficeVmLineageCommand } from "./lxd-office-vm-lineage.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -20,14 +30,16 @@ interface EventFields {
 	operationId: string | null;
 	state: "succeeded" | "failed" | null;
 }
-type Event = EventFields &
-	(
-		| { schema: "qorpera.lxd-office-operation-event/v1" }
-		| {
-				schema: "qorpera.lxd-office-operation-event/v2";
-				recordedAt: string | null;
-		  }
-	);
+type Event =
+	| (EventFields &
+			(
+				| { schema: "qorpera.lxd-office-operation-event/v1" }
+				| {
+						schema: "qorpera.lxd-office-operation-event/v2";
+						recordedAt: string | null;
+				  }
+			))
+	| LxdOfficeAdministrativeDeleteMarker;
 
 function timestamp(value: unknown): value is string {
 	if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) return false;
@@ -119,6 +131,43 @@ export class LxdOfficeOperationJournal {
 		return (await LxdOfficeOperationJournal.#existing(stateRoot, allocationId)).history();
 	}
 
+	/** Root operator metadata reconciliation. This entry point has no client
+	 * capable of VM dispatch or operation inspection. */
+	static async recordAdministrativeDisposition(
+		stateRoot: string,
+		allocationId: string,
+		context: LxdOfficeDeleteDispositionContext,
+	): Promise<void> {
+		await (await LxdOfficeOperationJournal.#existing(stateRoot, allocationId)).#recordAdministrativeDisposition(
+			context,
+		);
+	}
+
+	/** Terminal prefix proof shared by reset and successor history readers.
+	 * Generic readHistory deliberately remains an unauthoritative observation. */
+	static async assertCompletedHistory(
+		stateRoot: string,
+		allocationId: string,
+		commands: readonly LxdOfficeVmLineageCommand[],
+	) {
+		assertLxdOfficeVmLineageCommands(commands);
+		const journal = await LxdOfficeOperationJournal.#existing(stateRoot, allocationId);
+		const current = await journal.#read();
+		if (current.events.length < commands.length * 3) throw new Error("OFFICE_VM_LINEAGE_UNCONFIRMED");
+		const contexts = await journal.#dispositions(current);
+		for (const [index, command] of commands.entries()) {
+			const group = current.events.slice(index * 3, index * 3 + 3);
+			if (
+				group.some((event) => event.commandId !== command.commandId || event.action !== command.action) ||
+				!journal.#completion(group[2], current.authoritySha256, contexts)
+			)
+				throw new Error("OFFICE_VM_LINEAGE_UNCONFIRMED");
+		}
+		return [...contexts.values()].filter((context) =>
+			commands.some((command) => command.commandId === context.document.deleteCommandId),
+		);
+	}
+
 	/** Capture only the accepted tail of an existing validated journal. Missing
 	 * dispatch replies remain unknown; this entry point cannot create or submit. */
 	static async observeExisting(
@@ -192,7 +241,17 @@ export class LxdOfficeOperationJournal {
 				kind: event.kind,
 				operationId: event.operationId,
 				state: event.state,
-				recordedAt: event.schema === "qorpera.lxd-office-operation-event/v2" ? event.recordedAt : null,
+				recordedAt: event.schema !== "qorpera.lxd-office-operation-event/v1" ? event.recordedAt : null,
+				...(event.kind === "administrative_disposition"
+					? {
+							auditId: event.auditId,
+							resetId: event.resetId,
+							nextCreateCommandId: event.nextCreateCommandId,
+							dispositionSha256: event.dispositionSha256,
+							sqlReceiptSha256: event.sqlReceiptSha256,
+							phaseEvidenceSha256: event.phaseEvidenceSha256,
+						}
+					: {}),
 				timeSource:
 					event.schema === "qorpera.lxd-office-operation-event/v1"
 						? "not_recorded"
@@ -200,13 +259,15 @@ export class LxdOfficeOperationJournal {
 							? "clock_unavailable"
 							: "provider_journal_clock",
 				reason:
-					event.kind === "dispatch"
-						? "DISPATCH_RECORDED"
-						: event.kind === "accepted"
-							? "PROVIDER_OPERATION_ACCEPTED"
-							: event.state === "failed"
-								? "PROVIDER_OPERATION_FAILED"
-								: "PROVIDER_OPERATION_SUCCEEDED",
+					event.kind === "administrative_disposition"
+						? "ADMINISTRATIVE_DISPOSITION_ORIGINAL_OUTCOME_UNKNOWN"
+						: event.kind === "dispatch"
+							? "DISPATCH_RECORDED"
+							: event.kind === "accepted"
+								? "PROVIDER_OPERATION_ACCEPTED"
+								: event.state === "failed"
+									? "PROVIDER_OPERATION_FAILED"
+									: "PROVIDER_OPERATION_SUCCEEDED",
 				physicalTransitionAt: null,
 			})),
 			serviceReadinessInferred: false,
@@ -214,7 +275,13 @@ export class LxdOfficeOperationJournal {
 		};
 	}
 
-	async #read(): Promise<{ events: Event[]; previousSha256: string }> {
+	/** Root-verified historical incidents, with the complete administrative
+	 * phase chain. This conveys provenance, never a current effect grant. */
+	async administrativeDispositions() {
+		return [...(await this.#dispositions(await this.#read())).values()];
+	}
+
+	async #read(): Promise<{ events: Event[]; previousSha256: string; authoritySha256: string }> {
 		try {
 			await checkDirectory(this.#root);
 			const authority = await readRecord(join(this.#root, "authority.json"));
@@ -234,11 +301,14 @@ export class LxdOfficeOperationJournal {
 				const event = value as Event;
 				if (
 					(event.schema !== "qorpera.lxd-office-operation-event/v1" &&
-						event.schema !== "qorpera.lxd-office-operation-event/v2") ||
+						event.schema !== "qorpera.lxd-office-operation-event/v2" &&
+						event.schema !== "qorpera.lxd-office-operation-event/v3") ||
 					Object.keys(event).sort().join() !==
 						(event.schema === "qorpera.lxd-office-operation-event/v1"
 							? "action,commandId,kind,operationId,previousSha256,schema,sequence,state"
-							: "action,commandId,kind,operationId,previousSha256,recordedAt,schema,sequence,state") ||
+							: event.schema === "qorpera.lxd-office-operation-event/v2"
+								? "action,commandId,kind,operationId,previousSha256,recordedAt,schema,sequence,state"
+								: "action,auditId,commandId,dispositionSha256,kind,nextCreateCommandId,operationId,phaseEvidenceSha256,previousSha256,recordedAt,resetId,schema,sequence,sqlReceiptSha256,state") ||
 					(event.schema === "qorpera.lxd-office-operation-event/v2" &&
 						event.recordedAt !== null &&
 						!timestamp(event.recordedAt)) ||
@@ -249,10 +319,37 @@ export class LxdOfficeOperationJournal {
 					!["create", "start", "stop", "delete"].includes(event.action)
 				)
 					throw new Error("invalid event identity");
+				if (
+					(event.kind === "administrative_disposition") !==
+					(event.schema === "qorpera.lxd-office-operation-event/v3")
+				)
+					throw new Error("invalid administrative schema");
+				if (
+					event.schema === "qorpera.lxd-office-operation-event/v3" &&
+					(event.kind !== "administrative_disposition" ||
+						event.state !== "unknown" ||
+						event.action !== "delete" ||
+						index < 11 ||
+						index % 3 !== 2 ||
+						!timestamp(event.recordedAt) ||
+						![event.auditId, event.resetId, event.nextCreateCommandId].every(
+							(id) => typeof id === "string" && UUID.test(id),
+						) ||
+						![event.dispositionSha256, event.sqlReceiptSha256, event.phaseEvidenceSha256].every(
+							(digest) => typeof digest === "string" && /^[a-f0-9]{64}$/.test(digest),
+						))
+				)
+					throw new Error("invalid administrative marker");
 				const previous = events.at(-1);
 				if (event.kind === "dispatch") {
 					if (
-						(previous && previous.kind !== "settled") ||
+						(previous &&
+							previous.kind !== "settled" &&
+							!(
+								previous.kind === "administrative_disposition" &&
+								event.action === "create" &&
+								event.commandId === previous.nextCreateCommandId
+							)) ||
 						commands.has(event.commandId) ||
 						event.operationId !== null ||
 						event.state !== null
@@ -272,6 +369,14 @@ export class LxdOfficeOperationJournal {
 						if (previous.kind !== "dispatch" || operations.has(event.operationId) || event.state !== null)
 							throw new Error("conflicting acceptance");
 						operations.add(event.operationId);
+					} else if (event.kind === "administrative_disposition") {
+						if (
+							previous.kind !== "accepted" ||
+							previous.operationId !== event.operationId ||
+							commands.has(event.nextCreateCommandId) ||
+							event.nextCreateCommandId === event.commandId
+						)
+							throw new Error("unbound administrative marker");
 					} else if (event.kind === "settled") {
 						if (
 							previous.kind !== "accepted" ||
@@ -284,10 +389,120 @@ export class LxdOfficeOperationJournal {
 				events.push(event);
 				previousSha256 = sha256(bytes);
 			}
-			return { events, previousSha256 };
+			return { events, previousSha256, authoritySha256: sha256(authority.bytes) };
 		} catch {
 			throw new Error("LXD_OFFICE_JOURNAL_UNCONFIRMED");
 		}
+	}
+
+	#completion(
+		event: Event | undefined,
+		authoritySha256: string,
+		contexts: ReadonlyMap<string, LxdOfficeDeleteDispositionContext>,
+	) {
+		return lxdOfficeVmCompletion(
+			event,
+			event?.kind === "administrative_disposition" ? contexts.get(event.auditId) : undefined,
+			{ authoritySha256, ...this.#authority },
+		);
+	}
+
+	async #dispositions(current: { events: Event[]; authoritySha256: string }) {
+		const contexts = new Map<string, LxdOfficeDeleteDispositionContext>();
+		for (const event of current.events) {
+			if (event.kind !== "administrative_disposition") continue;
+			const context = await readLxdOfficeDeleteDisposition(this.#authority.binding.allocationId, event.auditId);
+			contexts.set(event.auditId, context);
+			this.#completion(event, current.authoritySha256, contexts);
+			const stopped = current.events[event.sequence - 3];
+			if (
+				stopped?.kind !== "settled" ||
+				stopped.state !== "succeeded" ||
+				stopped.action !== "stop" ||
+				stopped.commandId !== context.plan.commands.stopCommandId
+			)
+				throw new Error("OFFICE_DELETE_DISPOSITION_STOP_DIFFERS");
+			await assertLxdOfficeDeleteDispositionPhases(
+				context,
+				async (name) => (await readRecord(join(dirname(this.#root), name))).value,
+				true,
+			);
+		}
+		return contexts;
+	}
+
+	/** Metadata only: preserve the original accepted tail and append its
+	 * distinct administrative boundary. The caller holds the operation lock;
+	 * this method cannot invoke a client operation or advance SQL/reset phases. */
+	async #recordAdministrativeDisposition(context: LxdOfficeDeleteDispositionContext): Promise<void> {
+		assertLxdOfficeDeleteDispositionContext(context);
+		const verified = await readLxdOfficeDeleteDisposition(
+			this.#authority.binding.allocationId,
+			context.document.auditId,
+		);
+		if (!isDeepStrictEqual(context, verified)) throw new Error("OFFICE_DELETE_DISPOSITION_RECEIPT_CHANGED");
+		const current = await this.#read();
+		const last = current.events.at(-1);
+		if (last?.kind === "administrative_disposition") {
+			lxdOfficeVmCompletion(last, verified, { authoritySha256: current.authoritySha256, ...this.#authority });
+			await assertLxdOfficeDeleteDispositionPhases(
+				verified,
+				async (name) => (await readRecord(join(dirname(this.#root), name))).value,
+				false,
+			);
+			return;
+		}
+		if (
+			last?.kind !== "accepted" ||
+			last.action !== "delete" ||
+			current.events.length !== verified.document.journal.eventCount ||
+			current.events.length > MAX_EVENTS - 7
+		)
+			throw new Error("OFFICE_DELETE_DISPOSITION_TAIL_DIFFERS");
+		const marker: LxdOfficeAdministrativeDeleteMarker = {
+			schema: "qorpera.lxd-office-operation-event/v3",
+			sequence: current.events.length,
+			previousSha256: current.previousSha256,
+			commandId: last.commandId,
+			action: "delete",
+			kind: "administrative_disposition",
+			operationId: last.operationId as string,
+			state: "unknown",
+			recordedAt: this.#now().toISOString(),
+			auditId: verified.document.auditId,
+			resetId: verified.plan.resetId,
+			nextCreateCommandId: verified.plan.commands.createCommandId,
+			dispositionSha256: verified.dispositionSha256,
+			sqlReceiptSha256: verified.sqlReceiptSha256,
+			phaseEvidenceSha256: verified.phaseEvidenceSha256,
+		};
+		if (!timestamp(marker.recordedAt)) throw new Error("OFFICE_DELETE_DISPOSITION_CLOCK_UNCONFIRMED");
+		lxdOfficeVmCompletion(marker, verified, { authoritySha256: current.authoritySha256, ...this.#authority });
+		const contexts = await this.#dispositions(current);
+		const commands = current.events
+			.filter((event) => event.kind === "dispatch")
+			.map(({ commandId, action }) => ({ commandId, action }));
+		assertLxdOfficeVmLineageCommands(commands);
+		for (let i = 2; i < current.events.length - 2; i += 3) {
+			if (!this.#completion(current.events[i], current.authoritySha256, contexts))
+				throw new Error("OFFICE_DELETE_DISPOSITION_PREFIX_UNCONFIRMED");
+		}
+		const stopped = current.events[current.events.length - 3];
+		if (
+			stopped?.kind !== "settled" ||
+			stopped.state !== "succeeded" ||
+			stopped.action !== "stop" ||
+			stopped.commandId !== verified.plan.commands.stopCommandId
+		)
+			throw new Error("OFFICE_DELETE_DISPOSITION_STOP_DIFFERS");
+		await assertLxdOfficeDeleteDispositionPhases(
+			verified,
+			async (name) => (await readRecord(join(dirname(this.#root), name))).value,
+			false,
+		);
+		await publish(this.#root, `${String(marker.sequence).padStart(6, "0")}.json`, encode(marker));
+		const retained = (await this.#read()).events.at(-1);
+		if (!isDeepStrictEqual(retained, marker)) throw new Error("OFFICE_DELETE_DISPOSITION_JOURNAL_RACE");
 	}
 
 	async #append(
@@ -331,7 +546,17 @@ export class LxdOfficeOperationJournal {
 		let command = lastCommand(current.events, commandId);
 		if (command && command.action !== action) throw new Error("LXD_OFFICE_COMMAND_CONFLICT");
 		if (!command) {
-			if (current.events.at(-1) && current.events.at(-1)?.kind !== "settled")
+			await this.#dispositions(current);
+			const tail = current.events.at(-1);
+			if (
+				tail &&
+				tail.kind !== "settled" &&
+				!(
+					tail.kind === "administrative_disposition" &&
+					action === "create" &&
+					commandId === tail.nextCreateCommandId
+				)
+			)
 				throw new Error("LXD_OFFICE_OPERATION_UNSETTLED");
 			// Reserve room for acceptance and settlement before dispatching.
 			if (current.events.length > MAX_EVENTS - 3) throw new Error("LXD_OFFICE_JOURNAL_FULL");
@@ -521,14 +746,16 @@ export class LxdOfficeOperationJournal {
 				signal,
 			);
 		signal.throwIfAborted();
-		const { events } = await this.#read();
+		const current = await this.#read(),
+			{ events } = current;
+		const contexts = await this.#dispositions(current);
 		if (events.length < (commands.length - 1) * 3 || events.length > commands.length * 3)
 			throw new Error("OFFICE_VM_LINEAGE_UNCONFIRMED");
 		for (const [index, command] of commands.entries()) {
 			const group = events.slice(index * 3, index * 3 + 3);
 			if (
 				group.some((event) => event.commandId !== command.commandId || event.action !== command.action) ||
-				(index < commands.length - 1 && (group[2]?.kind !== "settled" || group[2]?.state !== "succeeded"))
+				(index < commands.length - 1 && !this.#completion(group[2], current.authoritySha256, contexts))
 			)
 				throw new Error("OFFICE_VM_LINEAGE_UNCONFIRMED");
 		}
@@ -549,9 +776,15 @@ export class LxdOfficeOperationJournal {
 			readonly startCommandId: string;
 		},
 		signal: AbortSignal,
-	): Promise<{ reached: "none" | "stop" | "delete" | "create" | "start"; settled: boolean }> {
+	): Promise<{
+		reached: "none" | "stop" | "delete" | "create" | "start";
+		settled: boolean;
+		administrativelyDisposed?: true;
+	}> {
 		signal.throwIfAborted();
-		const { events } = await this.#read();
+		const current = await this.#read(),
+			{ events } = current;
+		const contexts = await this.#dispositions(current);
 		const suffix = [
 			{ commandId: reset.stopCommandId, action: "stop" as const },
 			{ commandId: reset.deleteCommandId, action: "delete" as const },
@@ -582,7 +815,7 @@ export class LxdOfficeOperationJournal {
 				group.some((event) => event.commandId !== command.commandId || event.action !== command.action)
 			)
 				throw new Error("OFFICE_RESET_LINEAGE_UNCONFIRMED");
-			if (index < groups - 1 && (group[2]?.kind !== "settled" || group[2]?.state !== "succeeded"))
+			if (index < groups - 1 && !this.#completion(group[2], current.authoritySha256, contexts))
 				throw new Error("OFFICE_RESET_LINEAGE_UNCONFIRMED");
 		}
 		signal.throwIfAborted();
@@ -591,6 +824,11 @@ export class LxdOfficeOperationJournal {
 		return {
 			reached: reachedIndex <= 0 ? "none" : suffix[reachedIndex - 1].action,
 			settled: reachedIndex > 0 && last?.kind === "settled" && last.state === "succeeded",
+			...(reachedIndex > 0 &&
+			last?.kind === "administrative_disposition" &&
+			this.#completion(last, current.authoritySha256, contexts) === "administratively_disposed"
+				? { administrativelyDisposed: true as const }
+				: {}),
 		};
 	}
 
@@ -601,6 +839,7 @@ export class LxdOfficeOperationJournal {
 		if (command.kind === "settled")
 			return { state: command.state as "succeeded" | "failed", operationId: command.operationId as string };
 		if (command.kind === "dispatch") return { state: "unknown" };
+		if (command.kind === "administrative_disposition") return { state: "unknown", operationId: command.operationId };
 		const { binding, request } = lxdOfficeGuestPlan(this.#authority.binding);
 		const operationId = command.operationId as string;
 		let state: LxdOperationState;

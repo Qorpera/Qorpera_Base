@@ -21,6 +21,7 @@ import { createOfficeBootActivationWorkerFixture } from "./fixtures/office-boot-
 import { createOfficeBootConfigurationWorkerFixture } from "./fixtures/office-boot-configuration-worker.ts";
 import { officeCodePackageMaterialFixture } from "./fixtures/office-code-package-material.ts";
 import { createOfficePowerOffWorkerFixture } from "./fixtures/office-power-off-worker.ts";
+import { recoverOfficeResetDelete } from "./fixtures/office-reset-delete-recovery.ts";
 import { createOfficeResetServiceSuccessorFixture } from "./fixtures/office-reset-service-successor.ts";
 import { officeResetRegistryFixture, officeResetWorkerFixture } from "./fixtures/office-reset-worker.ts";
 import { createOfficeResumeWorkerFixture } from "./fixtures/office-resume-worker.ts";
@@ -426,176 +427,195 @@ async function nextPackagePorts(
 	};
 }
 describe("composed office reset successor lane", () => {
-	it("completes a second reset from the first recreated root without replacing original preparation pins", async () => {
+	it.each([false, true])(
+		"second reset retains preparation and prior recovery=%s",
+		async (recovered) => {
+			const f = await fixture();
+			const recovery = recovered ? await recoverOfficeResetDelete(f) : undefined;
+			await f.until("active");
+			const stop = await createOfficeStopWorkerFixture(
+				{ ...f, request: f.input, completionPath: `${RUN}/reset-service-start-completion.json` },
+				"replace",
+				`${companyComputerBootDirectory(f.vm.freshBootId)}/credentials/config.json`,
+				false,
+				id(910),
+			);
+			await stop.worker.reconcile(f.input.intentId, stop.request, new AbortController().signal);
+			const plan = {
+				...f.plan,
+				resetId: id(920),
+				rootIncarnationId: id(921),
+				successorActivationId: id(922),
+				predecessorRootIncarnationId: f.plan.rootIncarnationId,
+				predecessor: stop.request,
+				commands: {
+					stopCommandId: id(930),
+					deleteCommandId: id(931),
+					createCommandId: id(932),
+					startCommandId: id(933),
+				},
+			};
+			const planSha256 = officeDigest(plan),
+				registry = officeResetRegistryFixture(plan, planSha256);
+			f.vm.freshBootId = id(950);
+			f.useRegistry(registry, "e".repeat(32));
+			const packagePorts = await nextPackagePorts(f, plan, registry);
+			const input = { ...f.input, plan, planSha256 };
+			const run = () =>
+				new LxdOfficeResetWorker(
+					{ policy: f.policy, check: f.check },
+					{ call: registry.call },
+					packagePorts,
+				).reconcile(input, new AbortController().signal);
+			let result = await run();
+			for (let n = 0; n < 12 && result.state === "progressed"; n++) result = await run();
+			expect(result).toMatchObject({
+				state: "active",
+				activationId: plan.successorActivationId,
+				serviceInvocationId: "e".repeat(32),
+			});
+			const history = await readLxdOfficeResetActivationHistory(
+				f.root,
+				input.intentId,
+				f.binding,
+				plan.successorActivationId,
+				async (name) => (await readRecord(join(f.root, name))).value,
+				f.client,
+				new AbortController().signal,
+			);
+			expect(history.seed.schema).toBe("qorpera.lxd-office-reset-seed/v2");
+			expect(history.cleanResetAcceptance).toBe(true);
+			expect(history.administrativeDispositions).toHaveLength(recovered ? 1 : 0);
+			await recovery?.preserved();
+			expect(history.commands.map((command) => command.action)).toEqual([
+				"create",
+				"start",
+				"stop",
+				"delete",
+				"create",
+				"start",
+				"stop",
+				"delete",
+				"create",
+				"start",
+			]);
+			expect(history.originalBootId).toBe(f.request.startup.bootId);
+			expect(f.configure).toHaveBeenCalledTimes(2);
+			expect(f.start).toHaveBeenCalledTimes(2);
+		},
+		120_000,
+	);
+	it.each([false, true])(
+		"stop/restart/reboot retains prior recovery=%s",
+		async (recovered) => {
+			const f = await fixture();
+			const recovery = recovered ? await recoverOfficeResetDelete(f) : undefined;
+			await f.until("active");
+			const originalVm = {
+				get: f.get.getMockImplementation()!,
+				state: f.vmState.getMockImplementation()!,
+				submit: f.submit.getMockImplementation()!,
+			};
+			const stop = await createOfficeStopWorkerFixture(
+				{ ...f, request: f.input, completionPath: `${RUN}/reset-service-start-completion.json` },
+				"service_restart",
+				`${companyComputerBootDirectory(f.vm.freshBootId)}/credentials/config.json`,
+				false,
+				id(810),
+			);
+			stop.exec.mockClear();
+			await expect(
+				stop.worker.reconcile(f.input.intentId, stop.request, new AbortController().signal),
+			).resolves.toMatchObject({ state: "stopped" });
+			expect(stop.exec).toHaveBeenCalledOnce();
+			expect(f.start).toHaveBeenCalledOnce();
+			const successor = await createOfficeResetServiceSuccessorFixture(stop);
+			await expect(
+				successor.worker.reconcile(f.input.intentId, stop.request, new AbortController().signal),
+			).resolves.toMatchObject({ state: "active" });
+			expect(successor.exec).toHaveBeenCalledOnce();
+			const nextActivation = successor.state.current!.request.attestation.activationId;
+			const next = await createOfficeStopWorkerFixture(
+				{
+					...f,
+					request: f.input,
+					completionPath: `${RUN}/reset-service-restart-completion-${nextActivation}.json`,
+				},
+				"reboot",
+				`${companyComputerBootDirectory(f.vm.freshBootId)}/credentials/config.json`,
+				false,
+				id(811),
+			);
+			await expect(
+				next.worker.reconcile(f.input.intentId, next.request, new AbortController().signal),
+			).resolves.toMatchObject({ state: "stopped" });
+			const power = await createOfficePowerOffWorkerFixture({ ...f.stop, ...next, activation: f.stop.activation });
+			await expect(power.run()).resolves.toMatchObject({ state: "powered_off" });
+			expect(JSON.parse(await readFile(power.paths.seed, "utf8")).schema).toBe(
+				"qorpera.lxd-office-power-off-request/v4",
+			);
+			const resume = await createOfficeResumeWorkerFixture(power, {
+				bootIntentId: id(850),
+				activationId: id(851),
+				bootId: id(852),
+				operationId: id(853),
+			});
+			await expect(resume.run()).resolves.toMatchObject({ state: "awaiting_configuration" });
+			const configured = await createOfficeBootConfigurationWorkerFixture(resume);
+			await configured.run();
+			const activated = await createOfficeBootActivationWorkerFixture(configured);
+			await expect(activated.run()).resolves.toMatchObject({ state: "active" });
+			const replacing = await createOfficeStopWorkerFixture(
+				{ ...f, request: f.input, completionPath: `${RUN}/boot-service-start-completion.json` },
+				"replace",
+				`${companyComputerBootDirectory(id(852))}/credentials/config.json`,
+				false,
+				id(860),
+			);
+			await replacing.worker.reconcile(f.input.intentId, replacing.request, new AbortController().signal);
+			f.get.mockImplementation(originalVm.get);
+			f.vmState.mockImplementation(originalVm.state);
+			f.submit.mockImplementation(async (...args) => ({
+				...(await originalVm.submit(...args)),
+				operationId: id(1200 + f.submit.mock.calls.length),
+			}));
+			f.vm.bootId = id(852);
+			f.vm.freshBootId = id(870);
+			f.vm.state = "running";
+			const plan = {
+				...f.plan,
+				resetId: id(880),
+				rootIncarnationId: id(881),
+				successorActivationId: id(882),
+				predecessorRootIncarnationId: f.plan.rootIncarnationId,
+				predecessor: replacing.request,
+				commands: {
+					stopCommandId: id(890),
+					deleteCommandId: id(891),
+					createCommandId: id(892),
+					startCommandId: id(893),
+				},
+			};
+			const planSha256 = officeDigest(plan),
+				registry = officeResetRegistryFixture(plan, planSha256);
+			f.useRegistry(registry, "e".repeat(32));
+			const packagePorts = await nextPackagePorts(f, plan, registry);
+			const run = () =>
+				new LxdOfficeResetWorker(
+					{ policy: f.policy, check: f.check },
+					{ call: registry.call },
+					packagePorts,
+				).reconcile({ ...f.input, plan, planSha256 }, new AbortController().signal);
+			let result = await run();
+			for (let n = 0; n < 12 && result.state === "progressed"; n++) result = await run();
+			expect(result).toMatchObject({ state: "active", serviceInvocationId: "e".repeat(32) });
+			await recovery?.preserved();
+		},
+		120_000,
+	);
+	it.each([false, true])("immutable reset history retains recovery=%s", async (recovered) => {
 		const f = await fixture();
-		await f.until("active");
-		const stop = await createOfficeStopWorkerFixture(
-			{ ...f, request: f.input, completionPath: `${RUN}/reset-service-start-completion.json` },
-			"replace",
-			`${companyComputerBootDirectory(f.vm.freshBootId)}/credentials/config.json`,
-			false,
-			id(910),
-		);
-		await stop.worker.reconcile(f.input.intentId, stop.request, new AbortController().signal);
-		const plan = {
-			...f.plan,
-			resetId: id(920),
-			rootIncarnationId: id(921),
-			successorActivationId: id(922),
-			predecessorRootIncarnationId: f.plan.rootIncarnationId,
-			predecessor: stop.request,
-			commands: {
-				stopCommandId: id(930),
-				deleteCommandId: id(931),
-				createCommandId: id(932),
-				startCommandId: id(933),
-			},
-		};
-		const planSha256 = officeDigest(plan),
-			registry = officeResetRegistryFixture(plan, planSha256);
-		f.vm.freshBootId = id(950);
-		f.useRegistry(registry, "e".repeat(32));
-		const packagePorts = await nextPackagePorts(f, plan, registry);
-		const input = { ...f.input, plan, planSha256 };
-		const run = () =>
-			new LxdOfficeResetWorker(
-				{ policy: f.policy, check: f.check },
-				{ call: registry.call },
-				packagePorts,
-			).reconcile(input, new AbortController().signal);
-		let result = await run();
-		for (let n = 0; n < 12 && result.state === "progressed"; n++) result = await run();
-		expect(result).toMatchObject({
-			state: "active",
-			activationId: plan.successorActivationId,
-			serviceInvocationId: "e".repeat(32),
-		});
-		const history = await readLxdOfficeResetActivationHistory(
-			f.root,
-			input.intentId,
-			f.binding,
-			plan.successorActivationId,
-			async (name) => (await readRecord(join(f.root, name))).value,
-			f.client,
-			new AbortController().signal,
-		);
-		expect(history.seed.schema).toBe("qorpera.lxd-office-reset-seed/v2");
-		expect(history.commands.map((command) => command.action)).toEqual([
-			"create",
-			"start",
-			"stop",
-			"delete",
-			"create",
-			"start",
-			"stop",
-			"delete",
-			"create",
-			"start",
-		]);
-		expect(history.originalBootId).toBe(f.request.startup.bootId);
-		expect(f.configure).toHaveBeenCalledTimes(2);
-		expect(f.start).toHaveBeenCalledTimes(2);
-	}, 120_000);
-	it("stops the recreated-root activation through the ordinary lifecycle worker", async () => {
-		const f = await fixture();
-		await f.until("active");
-		const originalVm = {
-			get: f.get.getMockImplementation()!,
-			state: f.vmState.getMockImplementation()!,
-			submit: f.submit.getMockImplementation()!,
-		};
-		const stop = await createOfficeStopWorkerFixture(
-			{ ...f, request: f.input, completionPath: `${RUN}/reset-service-start-completion.json` },
-			"service_restart",
-			`${companyComputerBootDirectory(f.vm.freshBootId)}/credentials/config.json`,
-			false,
-			id(810),
-		);
-		stop.exec.mockClear();
-		await expect(
-			stop.worker.reconcile(f.input.intentId, stop.request, new AbortController().signal),
-		).resolves.toMatchObject({ state: "stopped" });
-		expect(stop.exec).toHaveBeenCalledOnce();
-		expect(f.start).toHaveBeenCalledOnce();
-		const successor = await createOfficeResetServiceSuccessorFixture(stop);
-		await expect(
-			successor.worker.reconcile(f.input.intentId, stop.request, new AbortController().signal),
-		).resolves.toMatchObject({ state: "active" });
-		expect(successor.exec).toHaveBeenCalledOnce();
-		const nextActivation = successor.state.current!.request.attestation.activationId;
-		const next = await createOfficeStopWorkerFixture(
-			{ ...f, request: f.input, completionPath: `${RUN}/reset-service-restart-completion-${nextActivation}.json` },
-			"reboot",
-			`${companyComputerBootDirectory(f.vm.freshBootId)}/credentials/config.json`,
-			false,
-			id(811),
-		);
-		await expect(
-			next.worker.reconcile(f.input.intentId, next.request, new AbortController().signal),
-		).resolves.toMatchObject({ state: "stopped" });
-		const power = await createOfficePowerOffWorkerFixture({ ...f.stop, ...next, activation: f.stop.activation });
-		await expect(power.run()).resolves.toMatchObject({ state: "powered_off" });
-		expect(JSON.parse(await readFile(power.paths.seed, "utf8")).schema).toBe(
-			"qorpera.lxd-office-power-off-request/v4",
-		);
-		const resume = await createOfficeResumeWorkerFixture(power, {
-			bootIntentId: id(850),
-			activationId: id(851),
-			bootId: id(852),
-			operationId: id(853),
-		});
-		await expect(resume.run()).resolves.toMatchObject({ state: "awaiting_configuration" });
-		const configured = await createOfficeBootConfigurationWorkerFixture(resume);
-		await configured.run();
-		const activated = await createOfficeBootActivationWorkerFixture(configured);
-		await expect(activated.run()).resolves.toMatchObject({ state: "active" });
-		const replacing = await createOfficeStopWorkerFixture(
-			{ ...f, request: f.input, completionPath: `${RUN}/boot-service-start-completion.json` },
-			"replace",
-			`${companyComputerBootDirectory(id(852))}/credentials/config.json`,
-			false,
-			id(860),
-		);
-		await replacing.worker.reconcile(f.input.intentId, replacing.request, new AbortController().signal);
-		f.get.mockImplementation(originalVm.get);
-		f.vmState.mockImplementation(originalVm.state);
-		f.submit.mockImplementation(async (...args) => ({
-			...(await originalVm.submit(...args)),
-			operationId: id(1200 + f.submit.mock.calls.length),
-		}));
-		f.vm.bootId = id(852);
-		f.vm.freshBootId = id(870);
-		f.vm.state = "running";
-		const plan = {
-			...f.plan,
-			resetId: id(880),
-			rootIncarnationId: id(881),
-			successorActivationId: id(882),
-			predecessorRootIncarnationId: f.plan.rootIncarnationId,
-			predecessor: replacing.request,
-			commands: {
-				stopCommandId: id(890),
-				deleteCommandId: id(891),
-				createCommandId: id(892),
-				startCommandId: id(893),
-			},
-		};
-		const planSha256 = officeDigest(plan),
-			registry = officeResetRegistryFixture(plan, planSha256);
-		f.useRegistry(registry, "e".repeat(32));
-		const packagePorts = await nextPackagePorts(f, plan, registry);
-		const run = () =>
-			new LxdOfficeResetWorker(
-				{ policy: f.policy, check: f.check },
-				{ call: registry.call },
-				packagePorts,
-			).reconcile({ ...f.input, plan, planSha256 }, new AbortController().signal);
-		let result = await run();
-		for (let n = 0; n < 12 && result.state === "progressed"; n++) result = await run();
-		expect(result).toMatchObject({ state: "active", serviceInvocationId: "e".repeat(32) });
-	}, 120_000);
-	it("retains an immutable reset activation history without reopening guest files or current authority", async () => {
-		const f = await fixture();
+		const recovery = recovered ? await recoverOfficeResetDelete(f) : undefined;
 		await f.until("active");
 		const calls = f.registry.state.calls.length;
 		f.guest.clear();
@@ -635,6 +655,34 @@ describe("composed office reset successor lane", () => {
 			new AbortController().signal,
 		);
 		expect(vm.commands).toEqual(history.commands);
+		expect(history.cleanResetAcceptance).toBe(!recovered);
+		expect(vm.cleanResetAcceptance).toBe(!recovered);
+		expect(history.administrativeDispositions).toHaveLength(recovered ? 1 : 0);
+		expect(vm.administrativeDispositions).toEqual(history.administrativeDispositions);
+		await recovery?.preserved();
+		if (recovery) {
+			recovery.protectedRead.mockRejectedValue(new Error("protected receipt removed"));
+			await expect(
+				readLxdOfficeResetActivationHistory(
+					f.root,
+					f.input.intentId,
+					f.binding,
+					f.plan.successorActivationId,
+					async (name) => (await readRecord(join(f.root, name))).value,
+					f.client,
+					new AbortController().signal,
+				),
+			).rejects.toThrow("OFFICE_DELETE_DISPOSITION_UNCONFIRMED");
+			await expect(
+				readLxdOfficeResetVmHistory(
+					f.root,
+					creation,
+					f.plan.successorActivationId,
+					async (name) => (await readRecord(join(f.root, name))).value,
+					new AbortController().signal,
+				),
+			).rejects.toThrow("OFFICE_DELETE_DISPOSITION_UNCONFIRMED");
+		}
 		expect(vm.observation).toMatchObject({
 			bootId: f.vm.freshBootId,
 			startCommandId: f.plan.commands.startCommandId,

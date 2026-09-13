@@ -166,20 +166,27 @@ export async function readLxdOfficeResetVmHistory(
 		vm.events.length < commands.length * 3
 	)
 		throw new Error("reset VM journal differs");
-	for (const [n, command] of commands.entries()) {
-		const group = vm.events.slice(n * 3, n * 3 + 3);
+	const administrativeDispositions = await LxdOfficeOperationJournal.assertCompletedHistory(
+		root,
+		binding.allocationId,
+		commands,
+	);
+	for (const disposition of administrativeDispositions)
 		if (
-			group.some((event) => event.commandId !== command.commandId || event.action !== command.action) ||
-			group[2].kind !== "settled" ||
-			group[2].state !== "succeeded"
+			(disposition.plan.resetId === plan.resetId ||
+				disposition.document.deleteCommandId === plan.commands.deleteCommandId) &&
+			!isDeepStrictEqual(disposition.plan, plan)
 		)
-			throw new Error("reset VM command differs");
-	}
+			throw new Error("reset VM administrative plan differs");
 	signal.throwIfAborted();
 	return {
 		plan,
 		seed,
 		commands,
+		administrativeDispositions,
+		cleanResetAcceptance: !administrativeDispositions.some(
+			(disposition) => disposition.plan.resetId === plan.resetId,
+		),
 		originalBootId: seed.originalBootId,
 		observation: {
 			createCommandId: creation.createCommandId,

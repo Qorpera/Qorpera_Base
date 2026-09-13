@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { COMPANY_COMPUTER_RESET_PHASES } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LxdOfficeOperationJournal } from "../src/lxd-office-operations.ts";
+import { recoverOfficeResetDelete } from "./fixtures/office-reset-delete-recovery.ts";
 import { officeResetWorkerFixture } from "./fixtures/office-reset-worker.ts";
 import { serviceStartId as id } from "./fixtures/office-service-start.ts";
 
@@ -14,6 +15,38 @@ afterEach(async () => {
 const fixture = () => officeResetWorkerFixture(roots);
 const OUTBOX = "/var/lib/qorpera-office-events";
 describe("serialized office root reset worker", () => {
+	it("continues only the planned create after administrative deletion and preserves its unknown outcome", async () => {
+		const f = await fixture();
+		const recovery = await recoverOfficeResetDelete(f);
+		await expect(f.run()).resolves.toMatchObject({ state: "progressed", phase: "root_created" });
+		await expect(f.until("active")).resolves.toMatchObject({ state: "active" });
+		expect(f.submit.mock.calls.map(([, action]) => action.action)).toEqual(["stop", "delete", "create", "start"]);
+		const history = await LxdOfficeOperationJournal.readHistory(f.root, f.binding.allocationId);
+		expect(
+			history.events.filter((event) => event.commandId === f.plan.commands.deleteCommandId).at(-1),
+		).toMatchObject({
+			kind: "administrative_disposition",
+			state: "unknown",
+		});
+		await recovery.preserved();
+	});
+	it.each(["receipt", "phase", "sql", "nas", "challenge"])(
+		"refuses administrative create with changed %s boundary",
+		async (boundary) => {
+			const f = await fixture();
+			const recovery = await recoverOfficeResetDelete(f);
+			if (boundary === "receipt") recovery.protectedRead.mockRejectedValue(new Error("receipt absent"));
+			if (boundary === "phase") await rm(f.paths.phase(5));
+			if (boundary === "sql") f.registry.state.phase = "powered_off";
+			if (boundary === "nas") f.nas.fail = true;
+			if (boundary === "challenge") f.registry.state.challengeValidForMs = 1;
+			if (boundary === "phase")
+				await expect(f.run()).resolves.toMatchObject({ state: "unknown", phase: "powered_off" });
+			else await expect(f.run()).rejects.toThrow("OFFICE_RESET_UNCONFIRMED");
+			expect(f.submit.mock.calls.map(([, action]) => action.action)).toEqual(["stop", "delete"]);
+			await recovery.preserved();
+		},
+	);
 	it("refuses a historical reset root without retained signed package provenance before enrollment", async () => {
 		const f = await officeResetWorkerFixture(roots, id(649));
 		await expect(f.run()).rejects.toMatchObject({
