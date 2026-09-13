@@ -111,14 +111,47 @@ describe("shell presentation lifecycle", () => {
 		expect(view.el.querySelector<HTMLButtonElement>(".recipient-footer .btn-primary")!.disabled).toBe(false);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
-	it("stores rail size within bounds and keeps resizing usable when storage is blocked", () => {
+	it("caps the rail at two fifths of the window and keeps resizing usable when storage is blocked", () => {
 		const frame = h("div"),
 			rail = new RailLayout(frame);
 		frame.append(rail.el);
 		cleanup.push(() => rail.dispose());
-		for (let i = 0; i < 20; i++) rail.el.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight" }));
-		expect(rail.el.getAttribute("aria-valuenow")).toBe("380");
-		expect(localStorage.getItem("qorpera.web.rail-width")).toBe("380");
+		const cap = String(Math.floor(window.innerWidth * 0.4));
+		const press = (key: string) => rail.el.dispatchEvent(new KeyboardEvent("keydown", { key }));
+		expect(rail.el.getAttribute("aria-valuemax")).toBe(cap);
+		press("ArrowRight");
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("320");
+		press("End");
+		press("ArrowRight");
+		expect(rail.el.getAttribute("aria-valuenow")).toBe(cap);
+		expect(localStorage.getItem("qorpera.web.rail-width")).toBe(cap);
+		expect(frame.style.getPropertyValue("--rail-width")).toBe(`${cap}px`);
+		// A narrower window clamps what is shown; the preference survives until the member acts.
+		vi.stubGlobal("innerWidth", 800);
+		window.dispatchEvent(new Event("resize"));
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("320");
+		expect(localStorage.getItem("qorpera.web.rail-width")).toBe(cap);
+		vi.stubGlobal("innerWidth", 1280);
+		window.dispatchEvent(new Event("resize"));
+		expect(rail.el.getAttribute("aria-valuenow")).toBe(cap);
+		vi.stubGlobal("innerWidth", 800);
+		window.dispatchEvent(new Event("resize"));
+		press("ArrowLeft");
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("304");
+		expect(localStorage.getItem("qorpera.web.rail-width")).toBe("304");
+		vi.stubGlobal("innerWidth", 1280);
+		window.dispatchEvent(new Event("resize"));
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("304");
+		// Where the cap is the minimum, a key press that moves nothing leaves the preference alone.
+		vi.stubGlobal("innerWidth", 600);
+		window.dispatchEvent(new Event("resize"));
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("240");
+		press("ArrowRight");
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("240");
+		expect(localStorage.getItem("qorpera.web.rail-width")).toBe("304");
+		vi.stubGlobal("innerWidth", 1280);
+		window.dispatchEvent(new Event("resize"));
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("304");
 		vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
 			throw new Error("Blocked");
 		});
@@ -360,7 +393,11 @@ it("renders recorded responsibility targets and room links without inventing mis
 		staff.displayName,
 	);
 	expect(rail.querySelector('[aria-label="Pinned agents"], [data-toggle-rail]')).toBeNull();
-	expect(rail.querySelector('.rail-toolbar input[type="search"]')).not.toBeNull();
+	expect(rail.querySelector(".cofounder-stand .figure")).not.toBeNull();
+	expect(rail.querySelector(".cofounder-status")).toBeNull();
+	expect(rail.querySelector(".account-menu-rail .account-trigger")).not.toBeNull();
+	expect(rail.querySelector(".account-menu-rail .account-chevron")).toBeNull();
+	expect(rail.querySelector('.rail-toolbar + .rail-search input[type="search"]')).not.toBeNull();
 	expect(rail.querySelector('.rail-toolbar a[href$="/new"]')).not.toBeNull();
 	const search = rail.querySelector<HTMLInputElement>('input[type="search"]')!;
 	search.value = "Product quality";

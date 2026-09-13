@@ -11,9 +11,12 @@ export class FigurePicker {
 	readonly el = h("div", { class: "appearance-picker" });
 	#choice: FigureChoice;
 	readonly #change: (choice: FigureChoice) => void;
-	constructor(choice: FigureChoice, change: (choice: FigureChoice) => void) {
+	readonly #colors: boolean;
+	/** `colors: false` offers figures only; each figure then brings its own shade. */
+	constructor(choice: FigureChoice, change: (choice: FigureChoice) => void, options: { colors?: boolean } = {}) {
 		this.#choice = choice;
 		this.#change = change;
+		this.#colors = options.colors !== false;
 		this.#render();
 	}
 	#choose(choice: FigureChoice): void {
@@ -48,23 +51,27 @@ export class FigurePicker {
 					),
 				),
 			),
-			h(
-				"div",
-				{ class: "color-grid", role: "radiogroup", "aria-label": "Agent color" },
-				...PALETTE().map(({ name, color: hex }, index) =>
-					h("button", {
-						type: "button",
-						class: "color-choice",
-						role: "radio",
-						tabindex:
-							hex === color || (index === 0 && !PALETTE().some((item) => item.color === color)) ? "0" : "-1",
-						"aria-checked": String(hex === color),
-						"aria-label": name,
-						dataset: { color: hex },
-						onclick: () => this.#choose({ figure, color: hex }),
-					}),
-				),
-			),
+			this.#colors
+				? h(
+						"div",
+						{ class: "color-grid", role: "radiogroup", "aria-label": "Agent color" },
+						...PALETTE().map(({ name, color: hex }, index) =>
+							h("button", {
+								type: "button",
+								class: "color-choice",
+								role: "radio",
+								tabindex:
+									hex === color || (index === 0 && !PALETTE().some((item) => item.color === color))
+										? "0"
+										: "-1",
+								"aria-checked": String(hex === color),
+								"aria-label": name,
+								dataset: { color: hex },
+								onclick: () => this.#choose({ figure, color: hex }),
+							}),
+						),
+					)
+				: null,
 		);
 		for (const swatch of this.el.querySelectorAll<HTMLElement>("[data-color]"))
 			swatch.style.setProperty("--choice-color", swatch.dataset.color ?? "");

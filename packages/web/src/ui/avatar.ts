@@ -193,5 +193,8 @@ export function agentFigure(
 		appearance: { color: "", shape: "" },
 	};
 	const figure = figureFor(subject);
-	return figureElement(figure, colorFor(subject, figure), { identity: subject.id || fallbackName, ...options });
+	// The Co-Founder wears its figure's own colour, as in the trailer. The
+	// resolver stays honest about what is stored; only the rendering differs.
+	const color = subject.templateId === "co-founder" ? nativeColor(figure) : colorFor(subject, figure);
+	return figureElement(figure, color, { identity: subject.id || fallbackName, ...options });
 }

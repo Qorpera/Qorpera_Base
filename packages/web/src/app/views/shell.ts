@@ -1,5 +1,5 @@
 import type { User } from "@supabase/supabase-js";
-import type { HostedProfile, HostedStaffAgent } from "../../cloud/types.ts";
+import type { HostedProfile, HostedStaffAgent, HostedStaffExecutionActivity } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { badge, button, h, icon, initials, notice, replace } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
@@ -122,7 +122,7 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 		accountTrigger!,
 		h("span", { class: "account-chip", "aria-hidden": "true" }, initials(name)),
 		h("span", { class: "account-trigger-name" }, name),
-		h("span", { class: "account-chevron", "aria-hidden": "true" }),
+		company ? null : h("span", { class: "account-chevron", "aria-hidden": "true" }),
 	);
 	replace(
 		accountPopover!,
@@ -244,8 +244,7 @@ function searchField(company: CompanyController, onInput: () => void) {
 	return current;
 }
 
-function statusLine(company: CompanyController, agent: HostedStaffAgent | undefined): string {
-	const activity = company.activityFor(agent?.id);
+function statusLine(agent: HostedStaffAgent | undefined, activity: HostedStaffExecutionActivity | undefined): string {
 	if (activity?.activity === "needs_attention") return "Needs you";
 	if (activity?.activity === "working") return "Working";
 	return agent?.role ?? "";
@@ -274,6 +273,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		(state.organization ? company.staffById(state.organization.cofounder.staffAgentId) : undefined) ??
 		active.find((agent) => agent.templateId === "co-founder");
 
+	const cofounderActivity = company.activityFor(cofounder?.id);
 	const cofounderCard =
 		cofounder && matches(`${cofounder.displayName} ${cofounder.role}`)
 			? h(
@@ -288,7 +288,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 								: "",
 						].join(" "),
 						href: `#/c/${profileId}`,
-						title: cofounder.displayName,
+						title: `${cofounder.displayName} · ${cofounder.role}`,
 						"aria-current":
 							section === "home" ||
 							(cofounderSessionId && activeSessionId === cofounderSessionId) ||
@@ -296,14 +296,23 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 								? "page"
 								: undefined,
 					},
-					h("span", { class: "cofounder-stand" }, agentFigure(cofounder, cofounder.displayName, { size: 64 })),
+					h(
+						"span",
+						{ class: "cofounder-stand" },
+						agentFigure(cofounder, cofounder.displayName, { size: 82 }),
+						// The green disc means "working now", the one state the trailer's dot shows.
+						cofounderActivity?.activity === "working"
+							? h("span", { class: "cofounder-status", "aria-hidden": "true" })
+							: null,
+					),
 					h("strong", null, cofounder.displayName),
-					h("small", null, statusLine(company, cofounder)),
+					h("small", null, statusLine(cofounder, cofounderActivity)),
 				)
 			: null;
 
-	const staffRow = (agent: HostedStaffAgent) =>
-		h(
+	const staffRow = (agent: HostedStaffAgent) => {
+		const activity = company.activityFor(agent.id);
+		return h(
 			"a",
 			{
 				class: ["rail-row", isActive(agent.id) ? "active" : ""].join(" "),
@@ -311,14 +320,20 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 				title: `${agent.displayName} · ${agent.role}`,
 				"aria-current": isActive(agent.id) ? "page" : undefined,
 			},
-			agentFigure(agent, agent.displayName, { size: 48 }),
+			h(
+				"span",
+				{ class: "rail-row-stand" },
+				agentFigure(agent, agent.displayName, { size: 40 }),
+				activity?.activity === "working" ? h("span", { class: "rail-row-status", "aria-hidden": "true" }) : null,
+			),
 			h(
 				"span",
 				{ class: "rail-row-copy" },
 				h("strong", null, agent.displayName),
-				h("small", null, statusLine(company, agent)),
+				h("small", null, statusLine(agent, activity)),
 			),
 		);
+	};
 
 	const staffRows = active
 		.filter((agent) => agent.id !== cofounder?.id)
@@ -343,7 +358,11 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 				title: session.title,
 				"aria-current": activeSessionId === session.sessionId ? "page" : undefined,
 			},
-			h("span", { class: "avatar small" }, session.title.slice(0, 1).toUpperCase()),
+			h(
+				"span",
+				{ class: "rail-row-stand" },
+				h("span", { class: "avatar small" }, session.title.slice(0, 1).toUpperCase()),
+			),
 			h(
 				"span",
 				{ class: "rail-row-copy" },
@@ -387,7 +406,6 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 						icon("close"),
 					)
 				: null,
-			h("label", { class: "rail-search" }, search),
 			h(
 				"a",
 				{
@@ -400,6 +418,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 				icon("plus"),
 			),
 		),
+		h("label", { class: "rail-search" }, search),
 		h(
 			"div",
 			{ class: "rail-scroll" },
