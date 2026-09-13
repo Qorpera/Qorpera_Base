@@ -13,6 +13,9 @@ superseded by the responsibility model, 2026-09-01; see section 14)
 
 **Azure backup/overflow deferred to post-build:** 2026-08-31
 
+**Runtime testing execution policy ratified:** 2026-09-13 — Linux runtime-hosting
+nodes are the default verification environment; see section 24
+
 **Wording correction ratified:** 2026-09-06 — section 5 and the section 19
 checkpoint no longer describe departments; no rule changes
 
@@ -1725,7 +1728,8 @@ while Azure backup/overflow remains disabled.
 
 Passing unit tests against a local provider, describing the behavior in an
 instruction file, or leaving a desktop open to execute work does not pass this
-gate.
+gate. Section 24 defines the testing environments and evidence required to
+distinguish component verification from deployed acceptance.
 
 ## 22. Launch boundary
 
@@ -1770,3 +1774,96 @@ Ratified 2026-09-01: the chapter is required, and its implementation is
 deferred until the platform runs on its primary services; it is built and
 proven during partner testing. Until then a paused or unimplemented
 resilience path MUST be reported as unavailable, never as healthy.
+
+## 24. Testing
+
+### 24.1 Execution environment and scope
+
+Runtime verification MUST use the actual Linux runtime-hosting machines as its
+default execution environment, using available nodes or isolated test
+allocations on them. This includes runtime unit/regression suites, packaging
+checks and system integration tests. Release verification of the runtime MUST
+run there; a developer workstation is not the reference runtime platform.
+
+Quick local checks MAY supplement node execution. Web development and
+frontend-only tests MAY run locally. Fixing macOS-specific test portability is
+not a prerequisite for the cloud runtime release unless it exposes a defect in
+the supported runtime. This chapter does not authorize desktop/macOS app
+integration or advance any deferred implementation order.
+
+If suitable node capacity or access is unavailable, report the specific missing
+resource and the affected verification, and continue independent work. Local or
+other Linux CI results MAY provide interim feedback, but MUST NOT be silently
+substituted for required node or deployed acceptance. Availability and measured
+performance, not an assumption that Linux is always faster, guide scheduling.
+
+### 24.2 Real boundaries and component tests
+
+Running on a node does not make a test an end-to-end test. Pure logic tests MAY
+use deterministic fixtures and simulated failures there. System integration
+tests MUST exercise the actual relevant components: LXD and guest lifecycle,
+Linux permissions and namespaces, systemd, the configured storage backend,
+database concurrency, network routing, and provider boundaries, as applicable
+to the behavior under test. Use the intended deployment versions/configuration
+and record material differences.
+
+Docker or other containers MAY provide disposable databases, dependencies and
+component test environments. They MUST NOT stand in for the host kernel,
+hypervisor, storage or guest-service boundary whose behavior a test claims to
+prove. Docker on a developer Mac is not evidence of execution on a runtime
+node. Simulated systemd, storage, provider or reset results MUST be identified
+as simulated; passing them does not close their real integration gates.
+
+Final acceptance MUST exercise the installed release through its supported
+public interfaces and real services. Headless acceptance MUST establish
+operation without a web or desktop executor, including external package
+import/call and client-independent continuation. Where web integration is in
+scope, separate end-to-end acceptance MUST connect the deployed web client to
+that runtime. Existing phase-specific and launch gates remain authoritative;
+this chapter neither replaces them nor pulls deferred gates into earlier work.
+
+### 24.3 Isolation and parallel execution
+
+Available runtime-hosting machines SHOULD be used for parallel independent
+test groups, with explicit ownership and bounded CPU, memory and storage use.
+Reserve test capacity; do not treat idle but allocated company resources as
+free. Use disposable test companies/identities, VMs, storage and workspaces
+where needed. Tests MUST NOT accidentally inherit live endpoint credentials
+or provider tokens. Unit/regression tests MUST use faux providers; real provider
+calls belong only to explicitly scoped live integration/acceptance tests.
+
+Absence of customer traffic permits use of available machines; it does not
+remove isolation requirements. Parallel reset, deletion, recovery, migration
+or deployment tests MUST NOT mutate the same allocation or shared service
+state concurrently. One owner MUST serialize shared live mutations. Preserve
+unrelated workloads, retained evidence and unresolved operations. Cleanup MUST
+be limited to identified test-owned resources; this chapter is not blanket
+authorization to erase a node or existing company data.
+
+Tests that reboot a host or alter host-wide LXD, networking or storage services
+MUST reserve the affected host/resources exclusively and account for all
+dependent workloads. Separate VM names alone do not isolate host-wide effects.
+
+### 24.4 Feedback, acceptance evidence and efficiency
+
+Run focused affected tests while iterating, and the applicable combined suites
+at integration/release checkpoints. Reuse passing evidence for unchanged code
+and dependencies when its environment and assumptions still apply; changes to
+shared contracts or infrastructure require the corresponding broader checks.
+Do not rerun the entire repository solely because an unrelated document or
+test-report description changed. Do not weaken assertions, isolation or
+security checks to improve timings.
+
+Exercise risky real-system boundaries early on isolated node allocations,
+before accumulating broad fixture-only proof. Independent agents MAY own
+separate test groups and reviews; agent parallelism MUST respect the same
+resource and mutation ownership rules.
+
+For each verification group, retain a concise record of source/package
+identity, execution host/environment and relevant versions, command/scope,
+elapsed time, result, and any simulated or untested boundary. Existing test
+logs and deployment records SHOULD supply this evidence without duplicate
+bespoke reporting machinery. Profile the slow groups and use bounded
+parallelism or sharding where safe. Test counts alone are not a progress or
+readiness measure: report separately what passed as a component test, what
+passed on real node infrastructure, and which deployed acceptance gates remain.
