@@ -2,6 +2,12 @@
 
 Cloud execution services live here and run independently of the desktop application. Explicit module subpaths contain native provider execution, durable tool fencing, Company File gateways, wake processing, identity recovery, secret custody, and shared office computer components.
 
+For a repeatable standalone installation and public import/call check, see
+[`scripts/headless-runtime/README.md`](../../scripts/headless-runtime/README.md).
+The installer consumes an exact local tarball closure, verifies installed bytes,
+and refuses transitive source-checkout dependencies. Its component receipts are
+separate from node-hosted release and live headless/web acceptance.
+
 The runner orchestrator remains in `@qorpera/runner-orchestrator`. Supabase owns canonical state and admission. This package consumes `@qorpera/cloud-client` wire representations and shared adapters; neither that package nor the desktop may import runtime implementation. `scripts/check-headless-packages.mjs` enforces source boundaries and bundles the runtime and browser client separately during `npm run check`.
 
 Native provider credentials stay in isolated provider computers. Shared office guests contain a persistent workbench and concurrent agent desktops. Office tools must use the admitted run, existing effect ledger, exact screen/resource leases, current grants, and guest enforcement. A screen is a work coordination boundary, not a security silo.
