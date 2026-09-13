@@ -1,0 +1,44 @@
+name: Isolated delete metadata Linux proof
+on:
+  push:
+    branches: [codex/linux-delete-metadata-proof-20260913]
+permissions:
+  contents: read
+jobs:
+  kernel:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 20
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+      - name: Verify exact candidate source and bundled fixtures
+        run: |
+          mkdir -p .artifacts/linux-delete-metadata-proof
+          python3 scripts/linux-delete-metadata-proof/verify-inputs.py > .artifacts/linux-delete-metadata-proof/source-verification.json
+      - name: Run without network in disposable namespaces
+        shell: bash
+        run: |
+          set -euo pipefail
+          fixture_dir="$PWD/scripts/linux-delete-metadata-proof"
+          output_dir="$PWD/.artifacts/linux-delete-metadata-proof"
+          node_bin="$(command -v node)"
+          host_mnt="$(readlink /proc/self/ns/mnt)"
+          host_net="$(readlink /proc/self/ns/net)"
+          host_pid="$(readlink /proc/self/ns/pid)"
+          sudo env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted \
+            unshare --mount --net --pid --fork --mount-proc \
+            bash "$fixture_dir/namespace-bootstrap.sh" "$fixture_dir" "$output_dir" "$node_bin" "$host_mnt" "$host_net" "$host_pid" \
+            2>&1 | tee "$output_dir/execution.log"
+      - name: Retain private test evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: linux-delete-metadata-proof-${{ github.sha }}
+          path: .artifacts/linux-delete-metadata-proof/
+          if-no-files-found: error
+          retention-days: 14

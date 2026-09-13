@@ -1,0 +1,712 @@
+{
+  "sourceCommit": "1a903000b3826059c611cd9c9628172c45ce3cd0",
+  "outfile": "scripts/linux-delete-metadata-proof/full.cjs",
+  "sha256": "593e10d504346e125dcf31203f816f9089e5d34c5669b4d651cd0e9d0abbce4b",
+  "inputs": [
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-image-provenance.ts",
+      "sha256": "dcdb037842142cf1ccd24670132b747c8d050e2c07e53124a4f033050ff15ec3",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-guest.ts",
+      "sha256": "269594cc16546ce42a3a7f61b2c60d146452e48c2cbe038d0d279f82b1df0f0b",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-physical-policy.ts",
+      "sha256": "dcf127c515b7ab2bbd08a00c465e8859b2c8598e9cb675e5b4b81c89378755c3",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-image-installation.ts",
+      "sha256": "77f9bc06a02baca1bd91aa14709f43f3e81a86cbca470ae16e6d5ef42bc3eeb5",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/test/fixtures/office-image-package.ts",
+      "sha256": "35201ccc34e478f9c637f9cf0e611a49081bde499763f3fe7aa241be3229d48f",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/test/fixtures/office-physical-policy.ts",
+      "sha256": "360d519a314eae5acb15693cd582c5c5e791b24f903f5bf70b2ba87789d41ecd",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/contracts/src/company-computer-adoption.ts",
+      "sha256": "8cb0c6d5b91eb93e0b674cddb1ee5c40dae473903ad5ed523bf92b15798d9813",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/contracts/src/company-computer-activation.ts",
+      "sha256": "708a518a3388da74b920ade382d5f8878adf08e2618caf109b686fcd22eb0795",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/contracts/src/company-computer-lifecycle.ts",
+      "sha256": "147e00a86c7a9f6ded54ec2d0c151e0c70e2a7c58cc31384f02ba8fa1351da20",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/contracts/src/company-computer-boot-intent.ts",
+      "sha256": "c8ea7d5421505790bc2558ddec9008431765cc600a176ca10b080747947233a9",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/contracts/src/company-computer-preparation.ts",
+      "sha256": "103354dd2c5b9450845eb2f0ecccc213fed44c066dc66b6afa39f26af6d8bd10",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/contracts/src/company-computer-configuration.ts",
+      "sha256": "bdbe7af8de3a02d35bc8de1b3454fbc2c7945145e6419f3482080e9a5c2ddc7e",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/contracts/src/company-computer-boot-adoption.ts",
+      "sha256": "fe06bf703a63c4a65fe1b7a743fa28b5b7778ce9c593323d17b017984db4bc2a",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/contracts/src/company-computer-boot-configuration.ts",
+      "sha256": "2e5ebc379bc3aa04df33f35c603750a9d084f3dc03588e6cf74bb940aa9be302",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/contracts/src/company-computer-boot-successor.ts",
+      "sha256": "9c03cb57aa9ff98f06341b9e15609a2b6b5ccdd994bc11c1cb22e10341fbb1b3",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/contracts/src/company-computer-boot-service-start.ts",
+      "sha256": "47bd754a66e3b0e1db2a88959377a9f6da61a175f294566863e02216823bbc10",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/contracts/src/company-computer-service-stop.ts",
+      "sha256": "1722d251378a126208abc84428b0bcbd558bd62470058d77190d0493acca346e",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/contracts/src/company-computer-service-successor.ts",
+      "sha256": "c0fffb850d939e9c017d058d1b064892e3a5b98f8b6b084743c77ea3fb3d77d8",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/contracts/src/company-computer-stop-acknowledgement.ts",
+      "sha256": "5e6e1d81c4d7bf92f2300fcd3800422c6298d3172034027e41c202526e6c3c31",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/contracts/src/company-computer-boot-service-restart.ts",
+      "sha256": "866e671183006eed3068cb7fa6112fdbcc52189c3a54f2af869c48c36fafc51f",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/contracts/src/company-computer-code-package-provision.ts",
+      "sha256": "809b8de6a8d15970f61da2456fb469f71b6aa3d3732f72abc048c9993a1ceb6a",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/contracts/src/company-computer-native-endpoint.ts",
+      "sha256": "40afdbb9930a77df73a28b07fbeeea485aee0f9cbfe94ed92122d5eeb82d76b2",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/contracts/src/company-computer-reset-custody.ts",
+      "sha256": "02515de9e92303e342f8064ac8c0638cdc0ba1855e2bff672b7df625a4b57d71",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/contracts/src/company-computer-reset.ts",
+      "sha256": "313c99521dd34fa55c0769737baa997f493e8ae1ddcf56e72076863ed1c20439",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/contracts/src/company-computer-delete-disposition.ts",
+      "sha256": "0188b90d9eee9dbabd84770a630db7d13fb52293dd1b488afed09f639304e01d",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/contracts/src/company-computer-reset-successor.ts",
+      "sha256": "bb7e008e14b86672fcf37ea54bdf185db38387d164bf8b6097ac2d9dead3295d",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/contracts/src/company-computer-reset-service-restart.ts",
+      "sha256": "52f2326845655c1c2ea9afa1bb8296538994a11b561dac1e4fc5da40ec79c70b",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/contracts/src/company-computer-service-start.ts",
+      "sha256": "0b424271ed67bc212ffbdc6a05c2299153cc786a15ff49757902707ae34e6d78",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/contracts/src/company-computer-service-restart.ts",
+      "sha256": "9bd61cfce306f9ee172658387919eaa0704e901318625ad32fce77d0bfd0a845",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/contracts/src/company-computer-service-software.ts",
+      "sha256": "e30f413d87607c0c3e6167c3168f5f37ae90b21a90c2c0e6ccb075d9b051799c",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/contracts/src/company-computer-service-software-measurement.ts",
+      "sha256": "b4fbf4bab8453539820492aa2c586be6741b0c31a89548eb06033d1d5574cec9",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/contracts/src/company-computer-stop-history.ts",
+      "sha256": "a626bcaea89571b9b91d59afdb5658f63ae5d7758a352e4cc4769a8665e82026",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/contracts/src/index.ts",
+      "sha256": "66af45ea0a64de4ef537e13406b5daac9da1daf07cefdf75f6c35327c1020863",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-host-namespace.ts",
+      "sha256": "984d656dd4a98beef7bffc45bbfc4a1cd27d76ecb93f7a757b1b7c5966ea242c",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-physical-host.ts",
+      "sha256": "8c70958c7bcd5828ab5c07ce773068284df66d35dc66e42831bcd2580b2f9a40",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-delete-disposition.ts",
+      "sha256": "9b06fbddd9eb20a687d95cad2e90f4dd290ce311452d358be7b761274a0f3af0",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/test/helpers/office-delete-disposition-fixture.ts",
+      "sha256": "da2af3778439dfcc335235ecbe4b9167ef53d48158b2337858ba0cfc6e670029",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-journal-files.ts",
+      "sha256": "6ba53f4da9a70ec61ef392f6eb75b7c09e3f29065d0c180f457364a52e7129ce",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-operation-completion.ts",
+      "sha256": "25315252c341605196ae994adb9e8a73eebef1cfbc55d9b6564186942cba1039",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-vm-lineage.ts",
+      "sha256": "235ee51315b08604d3090d92bfabe4f7e31bc69adfc25f704d6f64a559ede2ea",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-operations.ts",
+      "sha256": "838d574f391e45ba3de8e9abfdece36513fd90b782c8ae59fa3dda0a95d802f3",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-reset-journal.ts",
+      "sha256": "54266501ad4611c8d07b62369f1bc4c2824fd2e456949287f0211f27f7b9dd50",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-delete-reconciliation.ts",
+      "sha256": "e22c5c66b15cc7c838ff405ef96864f0ef6d78553741790c0114f7b8e0424539",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-code-package-loader.ts",
+      "sha256": "bbe787e59cbf3cf503eed9c97561e7e8d23fb560a1b3f6785425c5a6e6944fb7",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-client.ts",
+      "sha256": "c6e4efdadca9315b8c43d35812ee506ebc46dd02eef1d2450f5cbeeb793948ec",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-control-journal.ts",
+      "sha256": "a3dfb07819d04dd8c602626235578817a779429aa8e38a995fe4f2a818901ee9",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-control-observer.ts",
+      "sha256": "fff9cb22f89a8b2c5934fe1a45d87151453fb2e93de4e585e2d06072ddec9823",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-start-control.ts",
+      "sha256": "3523087ba7d77d68ed5435bd355808153cba87645ba52fb1764dd1a0eae392ae",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-activation-control.ts",
+      "sha256": "4181c1730bd2bebd98869cae3eeab2ef94dd88af8fa9c79dd1ae7baeada35b36",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-adoption-plan.ts",
+      "sha256": "4869b0b72ac8a09ca145cb2b9453d2ccf085c91aeb37c231c0343145ca489f5a",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-configuration-journal.ts",
+      "sha256": "c8ddd351dc8d52c9e19615d73a2c31366f9606f4e00fbc40c01cdd387abf0605",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-preparation-journal.ts",
+      "sha256": "645933d5276e89ad6684ae0dfa6648f83585a76639a677262e29e951e3a2bdcf",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-lifecycle-journal.ts",
+      "sha256": "ccfa170960a4145ae5be0c5fb9145c2297cc1fee97031cae08c9d4726a4703e4",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-preparation-recovery.ts",
+      "sha256": "f1c407830789149914ba2b9259a9f9cb03ba00064c6a0de12d17ba7e707d9ccd",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-service-bootstrap.ts",
+      "sha256": "556c17d8b8a410d47df60bb923a6ccc09addb032b4668b2e27403c3418941184",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-activation-evidence.ts",
+      "sha256": "bc2ab2d5bb7d9d18ccf809877e002684fe1c6ab83224d2927b2c85b027761d11",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-storage-inventory.ts",
+      "sha256": "d2867a257942d200a595846661442d870e23001a6fc801cf561ff5f4b1a920ef",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-storage-review.ts",
+      "sha256": "f2706efe452f07812b94698fbddc0cc379a50d9f126e5050f3d6669490993ff9",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-adoption-files.ts",
+      "sha256": "b03178f60628b6588a444e02331a44f2d369222e437a8a80fffc1de334f9f9b8",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-creation-journal.ts",
+      "sha256": "515cc04bfdc38e547bf871b30ca2d91871de9a618efd70cca4a345365bf57317",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-physical-gate.ts",
+      "sha256": "b59bee535e997902de7c3f3863d18ea5b4cd13625d7614f13dc2a844e27f1084",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-service-inspection.ts",
+      "sha256": "9f884526d737011761d8d508a61121bbac893895e1f9c8ed5c3cd71412eea6f6",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-service-start-journal.ts",
+      "sha256": "5ef92ecf6338f2f510479d71383da9eecc2fe189f2c1ca5db98709f01c4f217d",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-activation-worker.ts",
+      "sha256": "24fcdb1f28fcfe53cb6530048ef10d805230e980165310b359db6c8203256b8b",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-adoption-worker.ts",
+      "sha256": "33d886150ab161c79b7a5feb29260bd68efb4754ea5c4e1e0328d4f5befed2f3",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-boot-configuration-journal.ts",
+      "sha256": "b15a962b899d1ca239432e19879584630986af58bb2ca7b59aff35b0f1e6d479",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-boot-configuration-payload.ts",
+      "sha256": "a29198e0dfa437b48d785bbb8ef913b13209b022c0bdfb1e564ed1d24eb9a256",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-reset-vm-history.ts",
+      "sha256": "dc381c8014b2b8501e6d5906b6e3dd21029787be0065fee0c0c505bf22e5754b",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-resume-evidence.ts",
+      "sha256": "ea5e4f5305fe270db860904057bbd76ffbf905bab971ea6735f4ff12adb611b1",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-service-restart-journal.ts",
+      "sha256": "bcbfb3061f3142a692bf8d3c505d158e7b9850faeeee565e556fc22fb50fffd0",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-activation-history.ts",
+      "sha256": "ec82a8b22afe8fabed64a7ac938fba4841528b6d8911ae611aa4e0185726fe80",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-boot-service-start-journal.ts",
+      "sha256": "52567370cbcd6d693de056eb0f19e2719674727ed629fbea1e3b8a5a0cf8efc1",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-boot-activation-history.ts",
+      "sha256": "ebba9b94dc03c2bdcd13a259bda67e53150b30712a648ec424b40d625944caa3",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-boot-service-restart-journal.ts",
+      "sha256": "290814eac981ddabed72cbb947d3b3d9cd2af32ec7f7cc9b2ad73a3be0c22f70",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-boot-restart-history.ts",
+      "sha256": "efffbd564e9efa1374e3edbbe8eb632d61abc8ff3bb9189852068ba203e828ad",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-reset-successor-journal.ts",
+      "sha256": "7aa0937062620de819b8b0306ad0b07b7ad86965f20f4db8a5953f1af039e818",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-reset-activation-history.ts",
+      "sha256": "9a20278c4d7ddda422440e767dbcf14805d0a8084e17eaf206789c686c623118",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-reset-service-restart-journal.ts",
+      "sha256": "76650124eee43f650d3c4363374fb0d451a8497fe601acdf8be242559553b60f",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-reset-restart-history.ts",
+      "sha256": "ed60112c9802faa232643e4c4769b89fdeaa35701df77b6675d7f081d1cbe69e",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-reset-stop-evidence.ts",
+      "sha256": "59f5d8d08f2123c97cfdadd8488fd81f8654d84288417412e0dc1f73000b4664",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-stop-evidence.ts",
+      "sha256": "e1aa1436d229392556443198009643b6255727668a261e20c33a06f0e81fc0e9",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-power-off-evidence.ts",
+      "sha256": "5e67810d92091b0f9ffe5ea3fe5f864c25f5d64ab83f95107c55f9d3f07d0b19",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-boot-activation-evidence.ts",
+      "sha256": "f5419b804b46cadeb05b9989bd46c88f06fc8e6b9d072a300656a7a521ca9b28",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-typed-inspection.ts",
+      "sha256": "516af36b0410279d64116132bc720f8a14ce17bb4d5227ba9d20e2aa096123ab",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-boot-service-inspection.ts",
+      "sha256": "cc6884a5983809861663c91ed275e2a39836cc2fc9395ced99f0a02ee1a703a5",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-boot-successor-control.ts",
+      "sha256": "18237d24e0cf021b367d850d2d041e8092976a609217b7c44b6976ddcd9c972c",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-stop-history.ts",
+      "sha256": "803fc6ca37867048a4ee0ec90f3377ce2537f69ac368630a8fb2591abe6e9210",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-boot-activation-worker.ts",
+      "sha256": "67bda654decfd5ff339d25be4aed431a860280b1fbe7d87fbb33905e0cb22f62",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-boot-intent-control.ts",
+      "sha256": "822766c652252913ab8de4278cdd5eddf4a0c7784b19f8bcdca46c7e31ee9587",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/runtime-node-admission.ts",
+      "sha256": "8c2ccd2321bc046199956e8c47c6a617183360e3246b02cac07d8ce4223ca045",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-node-admission.ts",
+      "sha256": "2cdbfc97fa924c5e2825f7ffc83c0c80b04687ff93f956108db2b04bfeeaad60",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-resume-worker.ts",
+      "sha256": "4a0120d99b7f01d2139ecc5ef53cd3d9ae997c31029052d9a36c779191bcbafc",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-boot-configuration-worker.ts",
+      "sha256": "f2ddf9a2d4adc2318f7a4dd7842abb0465cf87e42faacec369e0c6d1f7a835dd",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-boot-worker.ts",
+      "sha256": "26a650ea9aa6ec867f52545f1ab43f0bff296144cb34e5b485357cdcb6d910ae",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-code-package-lane.ts",
+      "sha256": "7b79af68ce784faa12ad7ca45859713cbaf73a5dca69fac9ec700d53b282d8c3",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-code-package-provision-verification.ts",
+      "sha256": "83dd815910384fca6961acbec9dfe3220bebafd19c94b566c43e53e7dc3e5ee4",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-code-package-command.ts",
+      "sha256": "19daa9dce073b07b621a5e314702b828a4f22820f2dac1acb86d8f9a64be203a",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-code-package-transport.ts",
+      "sha256": "349baad75e73673bc0aed41da64850b38377ba4fddb00e40b8b764f939e68a74",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-code-package-history.ts",
+      "sha256": "ec594ce8d658a671e1b92f96754b52105f3f0043699a2307b850ec102182b459",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-code-package-material.ts",
+      "sha256": "0b8844f2221c358e4a6ee45a4724a9da4c51f450812087d5da841ab7e1f7b858",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-code-package-control.ts",
+      "sha256": "0e60da19cf89656fed282abd980731b73d02a2802de26108f2d97f089a50a83d",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-code-package-provision-lane.ts",
+      "sha256": "d1e49d9267d938e06a96873cefce4c5cdc93984b7ba6017e58669f642f7e84e9",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-code-package-retained.ts",
+      "sha256": "d40cab94d65bf09cd84b130d9da6909769d43a352c5c43edbd54812a299b7845",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-guest-preparation.ts",
+      "sha256": "50ac58148189958b3c79518d1403c2aed025d2649bf77e3e37dfdb4b5b80ce47",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-preparation-worker.ts",
+      "sha256": "3f8cd6dcfde96925c85dc0c25506f3977128e6547c6d5028d38f3c73534a3e8c",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-configuration-worker.ts",
+      "sha256": "7b34284c476eee182ba61ed43d73103e636a445b9b6d84de1ba08c30e67db04f",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-provider-control.ts",
+      "sha256": "fc02cf197e3354324ea4c49c6518308178ca315fe505a22fe090c3ef4a07b8c3",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-creation-worker.ts",
+      "sha256": "88a0efc54627f1ac88fdc4968dff1bebebb6589db2df19b818453652a305177a",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-inventory-worker.ts",
+      "sha256": "acb93f4797cba86dfd575f83a26d4a3dbeaee216497889e0f7ffae5008f3ce00",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-operation-observer.ts",
+      "sha256": "6aca937c004604f66ce9b8954dd35f614e5917be3b6454e4be8f9a7223c429b6",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-boot-vm-evidence.ts",
+      "sha256": "5a1faa2c973387ba9302ea42120335257050487166bba3055848a782ba4393c7",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-stop-control.ts",
+      "sha256": "0ee6ede186a0c4b9953f3f5153a28b742eb5690509d3c1796e643fedaadce3a3",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-power-off-worker.ts",
+      "sha256": "1147c0157f0e175a0ac8ced6a0b41270d4e91a94a9e074c4a57c21d7a19f6203",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-reset-configuration-payload.ts",
+      "sha256": "785551cb139ca4f2b6b740e8561772c74acbfc22541a8a9a24b24f63311f5980",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-reset-control.ts",
+      "sha256": "9e0affba7302b83823c661c88f7e08173f39022e91a91cce1b28d69a464250f7",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-reset-custody.ts",
+      "sha256": "eb6dbacc5a1430a8fe9b45ed593257fac6224ee0a2c618f3c87967fee6c1928f",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-reset-service-inspection.ts",
+      "sha256": "da69aa6cf30b331f856641b7739f7627a5dd0b9b19906118da98158350ba9292",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-reset-successor-lane.ts",
+      "sha256": "51382824c85b8bd228e0046df2f4eb663160c9dfdf4fc5d9a44153697ef2781c",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-reset-worker.ts",
+      "sha256": "9ab0e8f2f359bbb090ad259140de33c12e39254949c528e0b60294220d93a837",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-lifecycle-control.ts",
+      "sha256": "75d5af18d195e2c64778a015c3898ac2626ec19611126b3fe26b0430fa78323c",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-service-stop-journal.ts",
+      "sha256": "286f54dba2df05da98074fd27f5d4064ead3519926f72fe4686f8e82f8c1d847",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-stop-inspection.ts",
+      "sha256": "5f3fd59b61053682e97d32cbdf52edcfd58121fdf40a31be2fac0c94fb834f9e",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-service-stop-worker.ts",
+      "sha256": "0ae2ca57d48f3672637118877ceeda8a1a8492e4bd1f7ff99c9d40d73e8370f6",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-service-software.ts",
+      "sha256": "9fe4cb9dba35100e57c6ef13509acf264b8ba1a2d79eba468c082844d496717f",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-software-invocation-control.ts",
+      "sha256": "ad329cd5cebb94de5349ee2a44902ab48eb58cfcecbf1c1dffc9bfe20662719a",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-software-transport.ts",
+      "sha256": "9f39abb5891c83c715dfcf3533a1174f12168b61b923f2c7ff259238f568146c",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-successor-control.ts",
+      "sha256": "8bf34f7af8bb7b9549c6dc0d9b9118b6f10b42adca8fe2ffb999accea33b1bdc",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-boot-service-restart-inspection.ts",
+      "sha256": "2f80bf5a0445d596ddc20b903c7ae933ee649a135a576b3fd4d22844e2edb133",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-reset-service-restart-inspection.ts",
+      "sha256": "bce0c04f92146cda66fb11fadb4e3fd2b0c8d7d9283e6d4374d01648f8549257",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-reset-service-successor-lane.ts",
+      "sha256": "acec817858598ffd5d2cab2d85f1e94c423ea6167496fc1990f723821ec48a45",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-restart-inspection.ts",
+      "sha256": "f3f8120209171e635a8eeceb135a076f8c2be5eba33907322ea697ad8ecc81d6",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-successor-lane.ts",
+      "sha256": "721ff21c669ff40e751c7de6bff2cf1f78de1c8a1bec7240119a7dc9f199c530",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-successor-worker.ts",
+      "sha256": "bed647cdacf99fa51056b99a698932b2fe00ca0c92bfcd85117a552d7d731cf5",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-lifecycle.ts",
+      "sha256": "12db9866ed55c770f6eea40afb4afa385bf1628f229fdd4602f9bd146e562317",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-provider-registry.ts",
+      "sha256": "c0f592b3124001c4b1c47b78f9308199104410b8ab3de2aa7546af7e00052e34",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-software-lane.ts",
+      "sha256": "229a89311235fd8d4f1fd959118e573740087a43a21ea0bcc95144a2e18530ba",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-lifecycle-service.ts",
+      "sha256": "cc6387e6e487ddaf596e6fb48c2b1a4217ffb0680c49d2bc9ed0ac6a69e56d11",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-installation.ts",
+      "sha256": "d3bdb8b06492a769a35c77ce080ee1724c0ddd6044dfc260849adea8667571e7",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-installation-host.ts",
+      "sha256": "1f92c87f01da6b1631a0770d97d11dcabbb6cc64412a1cf0906eaf78a20871d4",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "packages/runner-orchestrator/src/lxd-office-delete-metadata-command.ts",
+      "sha256": "ca0f11467a738a891e15338c0a4941ec58937eb1954d1c1748ce6e5e1fb7b56a",
+      "kind": "candidate-source"
+    },
+    {
+      "path": "scripts/linux-delete-metadata-proof/full-entry.ts",
+      "sha256": "89bc8547ccdeb0fbc66f88e9a0369daf79ba54f203f62f14db765e7be1e6254c",
+      "kind": "fixture-source"
+    }
+  ]
+}
