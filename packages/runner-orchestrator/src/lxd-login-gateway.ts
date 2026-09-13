@@ -10,13 +10,8 @@ import {
 	Response as NodeHttpResponse,
 } from "@whatwg-node/node-fetch";
 import type { ServiceHttpFetch, ServiceHttpRequest, ServiceHttpResponse } from "./http-transport.ts";
-import type {
-	LxdClient,
-	LxdInstanceRecord,
-	LxdInstanceStateRecord,
-	LxdStorageVolumeRecord,
-	LxdTrackedClient,
-} from "./lxd-client.ts";
+import type { LxdClient, LxdInstanceRecord, LxdStorageVolumeRecord, LxdTrackedClient } from "./lxd-client.ts";
+import { lxdGuestIpv4 } from "./lxd-guest-network.ts";
 import { LxdLoginJournal } from "./lxd-login-journal.ts";
 import { LOGIN_UUID, type LxdLoginBinding, lxdLoginNodePolicy, lxdLoginPlan } from "./lxd-login-plan.ts";
 import { checkDirectory, code, publish, readRecord, syncDirectory } from "./lxd-office-journal-files.ts";
@@ -296,12 +291,6 @@ function bootstrapSha256(files: readonly LoginBootstrapFile[]): string {
 	);
 }
 
-function ipv4(state: LxdInstanceStateRecord, networkInterface: string): string | undefined {
-	return state.network[networkInterface]?.addresses.find(
-		(address) => address.family === "inet" && address.scope === "global" && !address.address.startsWith("169.254."),
-	)?.address;
-}
-
 function parseResult(value: unknown, loginId: string): NativeLoginResult {
 	const input = record(value, "Native login result");
 	exactKeys(input, ["schema", "login_id", "status", "interaction_url", "user_code"], "Native login result");
@@ -557,7 +546,7 @@ export class LxdNativeLoginGateway {
 			throw new Error("LOGIN_INSTANCE_NOT_RUNNING");
 		this.#assertInstanceAuthority(instance, binding);
 		await this.#installBootstrap(plan.request.name, files, signal);
-		const address = await this.#waitReady(plan.request.name, signal);
+		const address = await this.#waitReady(instance, signal);
 		const result = await this.#forward(address, login, signal);
 		if (result.status === "completed") await this.#cleanup(journal, signal);
 		return json(result, 200);
@@ -931,13 +920,13 @@ export class LxdNativeLoginGateway {
 		throw new Error("LXD native login guest agent did not become ready", { cause: lastError });
 	}
 
-	async #waitReady(instanceName: string, signal?: AbortSignal): Promise<string> {
+	async #waitReady(instance: LxdInstanceRecord, signal?: AbortSignal): Promise<string> {
 		const deadline = Date.now() + (this.#config.guestReadyTimeoutMs ?? 300_000);
 		while (Date.now() < deadline) {
 			if (signal?.aborted) throw signal.reason;
 			try {
-				const state = await this.#lxd.getInstanceState(this.#config.project, instanceName, signal);
-				const address = ipv4(state, this.#config.networkInterface);
+				const state = await this.#lxd.getInstanceState(this.#config.project, instance.name, signal);
+				const address = lxdGuestIpv4(instance, state, this.#config.networkInterface);
 				if (state.status === "Running" && address) {
 					const response = await this.#fetch(`http://${address}:${this.#config.nativeBridgePort}/healthz`, {
 						redirect: "error",

@@ -19,6 +19,7 @@ import {
 	parseCompanyComputerPreparationCommand,
 } from "@qorpera/contracts";
 
+import { lxdMacAddress } from "./lxd-guest-network.ts";
 import { OFFICE_CODE_PACKAGE_LOADER, officeCodePackageStage } from "./lxd-office-code-package-loader.ts";
 
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
@@ -46,6 +47,7 @@ export interface LxdInstanceStateRecord {
 		Record<
 			string,
 			{
+				hwaddr?: string;
 				addresses: readonly { family: string; address: string; scope: string }[];
 			}
 		>
@@ -1066,7 +1068,10 @@ function instanceState(value: unknown): LxdInstanceStateRecord {
 	// recognize shutdown instead of treating every poll as a malformed response.
 	const networkInput =
 		input.status === "Stopped" && input.network === null ? {} : record(input.network, "LXD instance network state");
-	const network: Record<string, { addresses: readonly { family: string; address: string; scope: string }[] }> = {};
+	const network: Record<
+		string,
+		{ hwaddr?: string; addresses: readonly { family: string; address: string; scope: string }[] }
+	> = {};
 	for (const [name, rawInterface] of Object.entries(networkInput)) {
 		const networkInterface = record(rawInterface, "LXD instance network interface");
 		if (!Array.isArray(networkInterface.addresses)) throw new Error("LXD instance network addresses are invalid");
@@ -1081,7 +1086,10 @@ function instanceState(value: unknown): LxdInstanceStateRecord {
 			}
 			return { family: address.family, address: address.address, scope: address.scope };
 		});
-		network[name] = { addresses };
+		const rawMac = networkInterface.hwaddr;
+		const hwaddr = rawMac === undefined || rawMac === "" ? undefined : lxdMacAddress(rawMac);
+		if (rawMac !== undefined && rawMac !== "" && !hwaddr) throw new Error("LXD instance network MAC is invalid");
+		network[name] = { addresses, ...(hwaddr ? { hwaddr } : {}) };
 	}
 	return { status: input.status, statusCode: input.status_code, network };
 }

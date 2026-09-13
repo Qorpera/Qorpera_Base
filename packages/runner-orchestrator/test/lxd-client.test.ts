@@ -170,6 +170,47 @@ describe("LXD Unix client", () => {
 		);
 	});
 
+	it("retains normalized optional guest MAC identity and omits absent/blank MACs", async () => {
+		const socket = await unixServer(() => ({
+			body: {
+				type: "sync",
+				metadata: {
+					status: "Running",
+					status_code: 103,
+					network: {
+						enp5s0: { hwaddr: "00:16:3E:B9:C4:8C", addresses: [] },
+						lo: { hwaddr: "", addresses: [] },
+						other: { addresses: [] },
+					},
+				},
+			},
+		}));
+		expect((await new LxdUnixClient(socket).getInstanceState("qorpera-runners", "guest")).network).toEqual({
+			enp5s0: { hwaddr: "00:16:3e:b9:c4:8c", addresses: [] },
+			lo: { addresses: [] },
+			other: { addresses: [] },
+		});
+	});
+
+	it.each([null, 42, "bad", "00:16:3e:b9:c4", "00:16:3e:b9:c4:zz"])(
+		"rejects malformed guest MAC %s",
+		async (hwaddr) => {
+			const socket = await unixServer(() => ({
+				body: {
+					type: "sync",
+					metadata: {
+						status: "Running",
+						status_code: 103,
+						network: { eth0: { hwaddr, addresses: [] } },
+					},
+				},
+			}));
+			await expect(new LxdUnixClient(socket).getInstanceState("qorpera-runners", "guest")).rejects.toThrow(
+				"network MAC is invalid",
+			);
+		},
+	);
+
 	it("returns inherited devices and configuration, not only local overrides", async () => {
 		const request = createRequest();
 		const inherited = { type: "disk", path: "/company", source: "/srv/company" };

@@ -103,7 +103,10 @@ class FakeLxd implements LxdClient {
 			status: this.instance?.status ?? "Stopped",
 			statusCode: this.instance?.statusCode ?? 102,
 			network: {
-				enp5s0: { addresses: [{ family: "inet", address: "10.41.0.9", scope: "global" }] },
+				enp5s0: {
+					hwaddr: "00:16:3e:b9:c4:8c",
+					addresses: [{ family: "inet", address: "10.41.0.9", scope: "global" }],
+				},
 			},
 		};
 	}
@@ -130,10 +133,10 @@ class FakeLxd implements LxdClient {
 			type: "virtual-machine",
 			status: "Stopped",
 			statusCode: 102,
-			config: structuredClone(request.config),
+			config: { ...request.config, "volatile.eth0.hwaddr": "00:16:3e:b9:c4:8c" },
 			profiles: [...request.profiles],
 			devices: structuredClone(request.devices),
-			expandedDevices: structuredClone(request.devices),
+			expandedDevices: { ...request.devices, eth0: { type: "nic", name: "eth0", network: "qorpera0" } },
 			expandedConfig: structuredClone(request.config),
 		};
 	}
@@ -172,7 +175,7 @@ function config(root: string): LxdNativeLoginGatewayConfig {
 		stateRoot: root,
 		project: "qorpera-runners",
 		loginProfile: "qorpera-login-v1",
-		networkInterface: "enp5s0",
+		networkInterface: "eth0",
 		imageServer: "local",
 		imageFingerprint: "a".repeat(64),
 		storagePool: "qorpera-vm",

@@ -13,7 +13,7 @@
     "wakeAndSilence": "30cd7c0bc30189885c5407e34ba4fbbe467c433af4c11a3c93be80098e62241b",
     "contextComposer": "a64cad068f4d86ac9ecb77d0379c2624bfb0bc95aa53661a058534cbecdfe7a1",
     "providerBootstrap": "af40f3a69e948c33249089dabb794993607c2c1afc677606165037ce6c7b584b",
-    "authorization": "5b30170362755baf96b27ad9677ba576276b6ef180ee36df25ce6ebbc63a7874",
+    "authorization": "11f6ea5c52600230d3ce58e692165c7548860af49c2ed41e41ca8af1f9d72884",
     "inboundSafety": "9d6646e7b09426c5f0e31429123094cbcca6992ff140807a68bdbdf979f822ac",
     "outboundSafety": "133fc54b1cdcc0aaad350e6e24917c73cbe96846ea5c58873259c42f3d632469",
     "interactionSurfaces": "9b5e7ffde6fe1b34fa94064a41e1a8396c3f17eb60e2527ba4f1a7d65490c5dc",
@@ -109,7 +109,8 @@
     "packages/contracts/src/company-computer-stop-acknowledgement.ts": "5e6e1d81c4d7bf92f2300fcd3800422c6298d3172034027e41c202526e6c3c31",
     "packages/contracts/src/company-computer-stop-history.ts": "a626bcaea89571b9b91d59afdb5658f63ae5d7758a352e4cc4769a8665e82026",
     "packages/contracts/src/index.ts": "66af45ea0a64de4ef537e13406b5daac9da1daf07cefdf75f6c35327c1020863",
-    "packages/runner-orchestrator/src/lxd-client.ts": "c6e4efdadca9315b8c43d35812ee506ebc46dd02eef1d2450f5cbeeb793948ec",
+    "packages/runner-orchestrator/src/lxd-client.ts": "89d1133c36aff61fd7c5c0bca6e5694fe78408b310a79df627c8f90be702b5ef",
+    "packages/runner-orchestrator/src/lxd-guest-network.ts": "21bacff10ad32d0af12dd2535a364aba49449e17b9c5e3a436c6b5437e3023c8",
     "packages/runner-orchestrator/src/lxd-office-activation-control.ts": "4181c1730bd2bebd98869cae3eeab2ef94dd88af8fa9c79dd1ae7baeada35b36",
     "packages/runner-orchestrator/src/lxd-office-activation-evidence.ts": "bc2ab2d5bb7d9d18ccf809877e002684fe1c6ab83224d2927b2c85b027761d11",
     "packages/runner-orchestrator/src/lxd-office-activation-history.ts": "ec82a8b22afe8fabed64a7ac938fba4841528b6d8911ae611aa4e0185726fe80",
@@ -381,7 +382,7 @@
     "packages/shell/userland/staff-creatures/pebble.png": "cf58f57281267e8b29cbc2d01c342f4515c5180518162e9f3b1ecabb93349639",
     "packages/shell/userland/staff-creatures/ribbon.png": "58bd66cf9f5d265020c15689f733afae21078e8f7a3df0b5b75b43b50a3acec8",
     "packages/shell/userland/staff-creatures/wisp.png": "db243657056ac0660a14a6613d2d20aba7319a826adccdcd73f53e2c9d9031a0",
-    "scripts/generate-cloud-runtime-bundle.mjs": "89c7a79b188253c35e90220d0c1896915760ef3e5c53d988c229a02371e23b66",
+    "scripts/generate-cloud-runtime-bundle.mjs": "10057bb3e26d0b1859ff5b7b8a70fa00154eadacc4f665a86d4511b28fa7cde9",
     "scripts/native-company-artifact.mjs": "e394bc799104f188769de07cd3be14e6c732a1a672113ea45d349a29d8e0ca63",
     "scripts/package-company-computer.mjs": "9dfda1b80f545ef71f72028e5f7bfa657a124c913ac9c1d427ed350c3b3a05d4",
     "scripts/package-ephemeral-runner.mjs": "13fba93c7761b15b2a2b5d9476ae4329f0d25d28a66fe19c5cbf45c2ebb6ab37",
@@ -613,6 +614,7 @@
     "supabase/migrations/20260913000500_runtime_node_health_policy_digest.sql": "beaafa1c8dfa7124fa5b5a8a9127e15abd61d8bb8271781285ff406bbd3c9c34",
     "supabase/migrations/20260913000600_runtime_office_package_revision.sql": "47429544d1c4bfb0ab7c72b63eb987661f57ea9b52252dc9962b875ee1445504",
     "supabase/migrations/20260913001000_runtime_bundle_activation_v24.sql": "9891872893fd13f10fc055822b96ac26b967ae47cb947dcfa2d29ab34973bfee",
-    "supabase/migrations/20260913010000_runtime_office_delete_administrative_disposition.sql": "980e340397d89915842e948609e5351bd8901db68f34f0d5402c1cc9fddddbb4"
+    "supabase/migrations/20260913010000_runtime_office_delete_administrative_disposition.sql": "980e340397d89915842e948609e5351bd8901db68f34f0d5402c1cc9fddddbb4",
+    "supabase/migrations/20260913020000_runtime_bundle_activation_v25.sql": "8058a104c81100596aa67367e76c64e4c6111fa326109b080b3ca8b72a72092b"
   }
 }

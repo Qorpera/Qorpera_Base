@@ -107,7 +107,7 @@ try {
 	await databaseReady();
 	docker(psql.map(x => x === "postgres" ? "fixture_admin" : x), "create role postgres login superuser; grant all on database office to postgres;");
 	docker(psql, readFileSync(join(root, "supabase/tests/bootstrap.sql"), "utf8"));
-	const migrations = sortMigrationNames(readdirSync(join(root, "supabase/migrations"))).filter(name => !name.includes("runtime_bundle_activation_v25"));
+	const migrations = sortMigrationNames(readdirSync(join(root, "supabase/migrations"))).filter(name => !name.includes("runtime_bundle_activation_v26"));
 	for (const name of migrations) docker(psql, readFileSync(join(root, "supabase/migrations", name), "utf8"));
 	docker(psql, readFileSync(join(root, "supabase/tests/fixtures/runtime-node-inventory-observer.sql"), "utf8"));
 	const wake = readFileSync(join(root, "supabase/tests/300_runtime_wake_bus.test.sql"), "utf8").split("-- END WAKE FIXTURE");

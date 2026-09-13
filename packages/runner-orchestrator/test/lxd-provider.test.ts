@@ -1716,7 +1716,23 @@ describe("LXD cloud runner provider", () => {
 		vi.spyOn(lxd, "getInstanceState").mockResolvedValue({
 			status: "Running",
 			statusCode: 103,
-			network: { enp5s0: { addresses: [{ family: "inet", address: "10.41.0.2", scope: "global" }] } },
+			network: {
+				enp5s0: {
+					hwaddr: "00:16:3e:b9:c4:8c",
+					addresses: [{ family: "inet", address: "10.41.0.2", scope: "global" }],
+				},
+			},
+		});
+		vi.spyOn(lxd, "getInstance").mockResolvedValue({
+			name: "guest",
+			type: "virtual-machine",
+			status: "Running",
+			statusCode: 103,
+			config: { "volatile.eth0.hwaddr": "00:16:3e:b9:c4:8c" },
+			profiles: [],
+			devices: {},
+			expandedConfig: {},
+			expandedDevices: { eth0: { type: "nic", name: "eth0" } },
 		});
 		const cancel = vi.fn();
 		const fetcher = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
@@ -1724,7 +1740,7 @@ describe("LXD cloud runner provider", () => {
 			return new Response(new ReadableStream<Uint8Array>({ cancel }), { status: 200 });
 		});
 		const transport = new HttpLxdGuestTransport(lxd, fetcher);
-		const address = await transport.waitReady("qorpera-runners", "guest", "enp5s0", 8082, 1_000);
+		const address = await transport.waitReady("qorpera-runners", "guest", "eth0", 8082, 1_000);
 		expect(address).toBe("10.41.0.2");
 		await transport.deliver(address, 8082, "q".repeat(43), delivery(work()));
 		expect(fetcher.mock.calls.map(([input]) => String(input))).toEqual([

@@ -5,14 +5,9 @@ import { isAbsolute, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { parseCompanyComputerNativeUrl } from "@qorpera/contracts";
 import type { ServiceHttpFetch } from "./http-transport.ts";
-import type {
-	LxdClient,
-	LxdCreateInstanceRequest,
-	LxdInstanceRecord,
-	LxdInstanceStateRecord,
-	LxdStorageVolumeRecord,
-} from "./lxd-client.ts";
+import type { LxdClient, LxdCreateInstanceRequest, LxdInstanceRecord, LxdStorageVolumeRecord } from "./lxd-client.ts";
 import { type LxdNativeCompanyRuntimeConfig, validateLxdNativeCompanyRuntime } from "./lxd-company-runtime.ts";
+import { lxdGuestIpv4 } from "./lxd-guest-network.ts";
 import { lxdNativeNodePolicy } from "./lxd-native-node-policy.ts";
 import type { CloudRunnerAssignmentDelivery, CloudRunnerInstance, CloudRunnerWork } from "./orchestrator.ts";
 import { validateCloudRunnerWork } from "./orchestrator.ts";
@@ -686,16 +681,6 @@ function ensureStep2Work(
 	}
 }
 
-function ipv4(state: LxdInstanceStateRecord, networkInterface: string): string | undefined {
-	return state.network[networkInterface]?.addresses.find(
-		(address) =>
-			address.family === "inet" &&
-			address.scope === "global" &&
-			isIP(address.address) === 4 &&
-			!address.address.startsWith("169.254."),
-	)?.address;
-}
-
 export class HttpLxdGuestTransport implements LxdGuestTransport {
 	readonly #lxd: LxdClient;
 	readonly #fetch: ServiceHttpFetch;
@@ -720,7 +705,10 @@ export class HttpLxdGuestTransport implements LxdGuestTransport {
 			try {
 				const state = await this.#lxd.getInstanceState(project, instanceName, signal);
 				poweredOff = state.status === "Stopped";
-				const address = ipv4(state, networkInterface);
+				const instance =
+					state.status === "Running" ? await this.#lxd.getInstance(project, instanceName, signal) : undefined;
+				const address =
+					instance?.name === instanceName ? lxdGuestIpv4(instance, state, networkInterface) : undefined;
 				if (state.status === "Running" && address) {
 					const response = await this.#fetch(`http://${address}:${port}/healthz`, {
 						redirect: "error",
