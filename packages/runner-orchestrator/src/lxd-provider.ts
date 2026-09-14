@@ -793,16 +793,30 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		this.#fetch = fetchImplementation;
 	}
 
+	/** Every journal is reconciled on every pass. One journal that cannot make
+	 * progress (for example a reserving acquisition the node ceiling refuses
+	 * while another guest still holds the slot) must not stop the retirement of
+	 * finished guests behind it, or the slot is never released and the provider
+	 * livelocks. Failures are still reported after the pass; an abort stops it. */
 	async reconcile(signal?: AbortSignal): Promise<void> {
 		await this.#exclusive(async () => {
 			await mkdir(this.#config.stateRoot, { recursive: true, mode: 0o700 });
 			await chmod(this.#config.stateRoot, 0o700);
+			const failures: unknown[] = [];
 			for (const entry of await readdir(this.#config.stateRoot, { withFileTypes: true })) {
 				if (!entry.isDirectory() || !UUID_PATTERN.test(entry.name)) continue;
 				const current = await this.#readJournal(entry.name);
 				if (!current) continue;
-				await this.#reconcileJournal(current, signal);
+				try {
+					await this.#reconcileJournal(current, signal);
+				} catch (error) {
+					if (signal?.aborted) throw error;
+					failures.push(error);
+				}
 			}
+			if (failures.length === 1) throw failures[0];
+			if (failures.length > 1)
+				throw new AggregateError(failures, "LXD provider reconcile failed for several journals");
 		});
 	}
 
