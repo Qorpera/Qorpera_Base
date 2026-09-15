@@ -13,6 +13,7 @@ import {
 	COMPANY_COMPUTER_RESET_SERVICE_RESTART_MAX_BYTES,
 	COMPANY_COMPUTER_RESET_SERVICE_START_MAX_BYTES,
 	COMPANY_COMPUTER_SERVICE_RESTART_MAX_BYTES,
+	COMPANY_COMPUTER_SERVICE_SOFTWARE_FILES,
 	COMPANY_COMPUTER_SERVICE_START_MAX_BYTES,
 	COMPANY_COMPUTER_SERVICE_STOP_MAX_BYTES,
 	type CompanyComputerPreparationCommand,
@@ -808,6 +809,8 @@ const OFFICE_SOFTWARE_STAGED_FILES: ReadonlyArray<{ pattern: RegExp; maximum: nu
 	{ pattern: new RegExp(`^software-trust-${SOFTWARE_SHA}\\.json$`), maximum: 4096 },
 	{ pattern: new RegExp(`^software-(?:previous|next)-manifest-${SOFTWARE_SHA}\\.json$`), maximum: 1024 ** 2 },
 	{ pattern: new RegExp(`^software-service-${SOFTWARE_SHA}\\.mjs$`), maximum: 32 * 1024 ** 2 },
+	// Guest code entries of a guest-code revision, staged by their content digest.
+	{ pattern: new RegExp(`^software-file-${SOFTWARE_SHA}$`), maximum: 32 * 1024 ** 2 },
 	{ pattern: new RegExp(`^software-capability-${SOFTWARE_UUID}$`), maximum: 64 },
 ]);
 export function officeSoftwareStagedPath(fileName: string): { path: string; maximum: number } {
@@ -821,6 +824,11 @@ export function officeSoftwareStagedPath(fileName: string): { path: string; maxi
 /** Read-only public/root outputs the provider may read back. */
 const OFFICE_SOFTWARE_READ_FILES: ReadonlyArray<{ pattern: RegExp; maximum: number }> = Object.freeze([
 	{ pattern: new RegExp(`^${OFFICE_SOFTWARE_INSTALLED_SERVICE.replaceAll(".", "\\.")}$`), maximum: 16 * 1024 ** 2 },
+	// Installed guest code entries of a guest-code revision (closed contract list).
+	...Object.values(COMPANY_COMPUTER_SERVICE_SOFTWARE_FILES).map((entry) => ({
+		pattern: new RegExp(`^${entry.path.replaceAll(".", "\\.")}$`),
+		maximum: 32 * 1024 ** 2,
+	})),
 	{ pattern: new RegExp(`^${OFFICE_SOFTWARE_JOURNAL_ROOT}/${SOFTWARE_UUID}/installed\\.json$`), maximum: 65536 },
 	{
 		pattern: new RegExp(`^${OFFICE_SOFTWARE_STAGING_ROOT}/software-measurement-${SOFTWARE_UUID}\\.json$`),

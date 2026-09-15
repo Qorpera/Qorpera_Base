@@ -137,6 +137,69 @@ test("prepares a verifiable service-only revision: previous inventory with only 
 		assert.deepEqual(retainedPlan.predecessor, predecessor);
 		assert.equal(retainedPlan.stopAcknowledgementSha256, plan.stopAcknowledgementSha256);
 		assert.notEqual(retainedPlan.updateId, plan.updateId);
+		// A guest-code revision replaces named closed entries next to (or instead of) the service.
+		const controlBytes = randomBytes(120), sessionBytes = Buffer.from("#!/bin/sh\nexec true\n");
+		await writeFile(join(temporary, "configuration-control.mjs"), controlBytes);
+		await writeFile(join(temporary, "screen-session"), sessionBytes);
+		const guestArgs = (extra = {}) => [
+			...args({ "--out": join(temporary, "guest"), ...extra }),
+			"--next-file", `qorpera-company-computer-configuration-control.mjs=${join(temporary, "configuration-control.mjs")}`,
+			"--next-file", `qorpera-screen-session=${join(temporary, "screen-session")}`,
+		];
+		const guest = run(guestArgs());
+		assert.equal(guest.status, 0, guest.stderr);
+		const guestOut = join(temporary, "guest");
+		assert.deepEqual((await readdir(guestOut)).sort(), ["README.md", "envelope.json", "manifest.json", "next-manifest.json", "plan.json", "previous-manifest.json", "qorpera-company-computer-configuration-control.mjs", "qorpera-company-computer-service.mjs", "qorpera-screen-session", "statement.json", "trust.json"]);
+		const guestEnvelope = JSON.parse(await readFile(join(guestOut, "envelope.json"), "utf8")), guestPlan = JSON.parse(await readFile(join(guestOut, "plan.json"), "utf8")), guestTrust = JSON.parse(await readFile(join(guestOut, "trust.json"), "utf8"));
+		const guestManifests = { previous: await readFile(join(guestOut, "previous-manifest.json")), next: await readFile(join(guestOut, "next-manifest.json")) };
+		h.verifyLxdOfficeServiceSoftware(guestEnvelope, guestPlan, guestTrust, guestManifests);
+		const guestStatement = guestEnvelope.statement;
+		assert.equal(guestStatement.acceptance.change, "guest-code");
+		assert.deepEqual(guestStatement.next.service, { path: "/opt/qorpera-office/qorpera-company-computer-service.mjs", bytes: 300, sha256: hash(serviceBytes) });
+		assert.deepEqual(guestStatement.previous.files, [
+			{ file: "qorpera-company-computer-configuration-control.mjs", path: "/opt/qorpera-office/qorpera-company-computer-configuration-control.mjs", bytes: 123, sha256: hash("qorpera-company-computer-configuration-control.mjs"), mode: 0o444 },
+			{ file: "qorpera-screen-session", path: "/usr/local/bin/qorpera-screen-session", bytes: 123, sha256: hash("qorpera-screen-session"), mode: 0o555 },
+		]);
+		assert.deepEqual(guestStatement.next.files, [
+			{ file: "qorpera-company-computer-configuration-control.mjs", path: "/opt/qorpera-office/qorpera-company-computer-configuration-control.mjs", bytes: 120, sha256: hash(controlBytes), mode: 0o444 },
+			{ file: "qorpera-screen-session", path: "/usr/local/bin/qorpera-screen-session", bytes: sessionBytes.length, sha256: hash(sessionBytes), mode: 0o555 },
+		]);
+		const guestNext = JSON.parse(guestManifests.next.toString());
+		const guestExpected = structuredClone(expected);
+		for (const [file, bytes] of [["qorpera-company-computer-configuration-control.mjs", controlBytes], ["qorpera-screen-session", sessionBytes]]) {
+			const at = guestExpected.artifacts.findIndex((artifact) => artifact.file === file);
+			guestExpected.artifacts[at] = { ...guestExpected.artifacts[at], bytes: bytes.length, sha256: hash(bytes) };
+		}
+		assert.deepEqual(guestNext, guestExpected);
+		assert.ok((await readFile(join(guestOut, "qorpera-company-computer-configuration-control.mjs"))).equals(controlBytes));
+		assert.ok((await readFile(join(guestOut, "qorpera-screen-session"))).equals(sessionBytes));
+		const guestReadme = (await readFile(join(guestOut, "README.md"))).toString();
+		assert.match(guestReadme, /guest-code software revision/);
+		assert.match(guestReadme, /filesDir/);
+		assert.match(guestReadme, /qorpera-screen-session/);
+		// Guest code alone: the service entry stays the image's own and the README says so.
+		const onlyFiles = run(guestArgs({ "--out": join(temporary, "guest-only") }).filter((value, index, all) => value !== "--next-service" && all[index - 1] !== "--next-service"));
+		assert.equal(onlyFiles.status, 0, onlyFiles.stderr);
+		const onlyStatement = JSON.parse(await readFile(join(temporary, "guest-only", "statement.json"), "utf8"));
+		assert.deepEqual(onlyStatement.next.service, onlyStatement.previous.service);
+		assert.equal(onlyStatement.acceptance.change, "guest-code");
+		assert.deepEqual((await readdir(join(temporary, "guest-only"))).includes("qorpera-company-computer-service.mjs"), false);
+		assert.match((await readFile(join(temporary, "guest-only", "README.md"))).toString(), /\(unchanged\)/);
+		h.verifyLxdOfficeServiceSoftware(JSON.parse(await readFile(join(temporary, "guest-only", "envelope.json"), "utf8")), JSON.parse(await readFile(join(temporary, "guest-only", "plan.json"), "utf8")), JSON.parse(await readFile(join(temporary, "guest-only", "trust.json"), "utf8")), { previous: await readFile(join(temporary, "guest-only", "previous-manifest.json")), next: await readFile(join(temporary, "guest-only", "next-manifest.json")) });
+		// Unknown entries, the service by entry name, duplicates and unit files are refused.
+		for (const [name, entry] of [
+			["unknown", `qorpera-other=${join(temporary, "screen-session")}`],
+			["service", `qorpera-company-computer-service.mjs=${join(temporary, "configuration-control.mjs")}`],
+			["unit", `qorpera-company-computer.service=${join(temporary, "screen-session")}`],
+			["duplicate", `qorpera-screen-session=${join(temporary, "screen-session")}`],
+			["empty", "qorpera-screen-session="],
+		]) {
+			const refused = run([...guestArgs({ "--out": join(temporary, `guest-${name}`) }), "--next-file", entry]);
+			assert.equal(refused.status, 2, name); assert.equal(refused.stderr, "OFFICE_SOFTWARE_REVISION_ARGUMENTS_INVALID\n");
+			await assert.rejects(readdir(join(temporary, `guest-${name}`)));
+		}
+		const neither = run(args({ "--out": join(temporary, "neither") }).filter((value, index, all) => value !== "--next-service" && all[index - 1] !== "--next-service"));
+		assert.equal(neither.status, 2); assert.equal(neither.stderr, "OFFICE_SOFTWARE_REVISION_ARGUMENTS_INVALID\n");
 	} finally {
 		await rm(temporary, { recursive: true, force: true });
 	}

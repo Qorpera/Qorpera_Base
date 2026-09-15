@@ -3,7 +3,9 @@ import { chmod, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	COMPANY_COMPUTER_SERVICE_SOFTWARE_FILES,
 	COMPANY_COMPUTER_SERVICE_SOFTWARE_PATH,
+	companyComputerServiceSoftwareChangedFiles,
 	companyComputerServiceSoftwareMeasurementText,
 	parseCompanyComputerServiceSoftwareInvocationChallenge,
 	parseCompanyComputerServiceSoftwareInvocationEvidence,
@@ -32,7 +34,7 @@ import {
 } from "../src/lxd-office-software-transport.ts";
 import { officePhysicalFixture } from "./fixtures/office-physical-policy.ts";
 import { officeServiceRestartFixture } from "./fixtures/office-service-restart.ts";
-import { officeSoftwareFixture } from "./fixtures/office-software.ts";
+import { officeGuestCodeFixtureFiles, officeSoftwareFixture } from "./fixtures/office-software.ts";
 
 const sha = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const roots: string[] = [];
@@ -41,7 +43,7 @@ afterEach(async () => {
 	vi.restoreAllMocks();
 	for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
-async function fixture() {
+async function fixture(options: { guestCode?: boolean } = {}) {
 	const root = await realpath(await mkdtemp(join(tmpdir(), "office-software-transport-")));
 	await chmod(root, 0o700);
 	roots.push(root);
@@ -78,8 +80,18 @@ async function fixture() {
 	const next = { ...statement.next, service: { ...statement.next.service, sha256: sha(serviceBytes) } };
 	const manifestNext = structuredClone(software.next);
 	manifestNext.artifacts[0] = { ...manifestNext.artifacts[0], sha256: next.service.sha256 };
+	const guestCode = options.guestCode ? officeGuestCodeFixtureFiles(software.previous, manifestNext) : undefined;
 	const manifests = { previous: software.manifests.previous, next: Buffer.from(JSON.stringify(manifestNext)) };
-	statement.next = { packageManifestSha256: sha(manifests.next), service: next.service };
+	statement.next = {
+		packageManifestSha256: sha(manifests.next),
+		service: next.service,
+		...(guestCode ? { files: guestCode.nextFiles } : {}),
+	};
+	if (guestCode) {
+		statement.previous = { ...statement.previous, files: guestCode.previousFiles };
+		statement.acceptance = { ...statement.acceptance, change: "guest-code" };
+	}
+	const guestBytes: Record<string, Buffer> = guestCode?.bytes ?? {};
 	envelope.signature.value = sign(null, Buffer.from(officeCanonical(statement)), software.keys.privateKey).toString(
 		"base64",
 	);
@@ -98,10 +110,14 @@ async function fixture() {
 		planSha256: trust.planSha256,
 		state: "installed",
 		service: { ...statement.next.service },
+		...(guestCode ? { files: structuredClone(guestCode.nextFiles) } : {}),
 		installedAt: "2026-09-12T01:00:00.000Z",
 	};
 	let installedBytes: Buffer = serviceBytes;
 	let installedMode = 0o444;
+	const installedFiles = new Map<string, { content: Buffer; mode: number }>();
+	for (const entry of guestCode?.nextFiles ?? [])
+		installedFiles.set(entry.path, { content: guestBytes[entry.file]!, mode: entry.mode });
 	const client = {
 		pushOfficeSoftwareFile: vi.fn<LxdOfficeSoftwareClient["pushOfficeSoftwareFile"]>(
 			async (project, instance, fileName, content) => {
@@ -142,6 +158,8 @@ async function fixture() {
 						gid: 0,
 						mode: installedMode,
 					});
+					for (const [path, file] of installedFiles)
+						guest.set(path, { content: file.content, uid: 0, gid: 0, mode: file.mode });
 				} else {
 					const staged = guest.get(
 						`${OFFICE_SOFTWARE_STAGING_ROOT}/software-measurement-incoming-${args[1]}.json`,
@@ -205,7 +223,7 @@ async function fixture() {
 		const staged = await stageLxdOfficeSoftwareInstall(
 			client,
 			binding,
-			{ envelope, plan, trust, manifests, serviceBytes, providerCapability: "c".repeat(64) },
+			{ envelope, plan, trust, manifests, serviceBytes, files: guestBytes, providerCapability: "c".repeat(64) },
 			signal(),
 		);
 		transport.trustSha256 = staged.trustSha256;
@@ -245,6 +263,7 @@ async function fixture() {
 		trust,
 		manifests,
 		serviceBytes,
+		guestBytes,
 		receipt,
 		transport,
 		stage,
@@ -253,6 +272,9 @@ async function fixture() {
 		setInstalled(bytes: Buffer, mode = 0o444) {
 			installedBytes = bytes;
 			installedMode = mode;
+		},
+		setInstalledFile(path: string, content: Buffer, mode: number) {
+			installedFiles.set(path, { content, mode });
 		},
 	};
 }
@@ -325,6 +347,105 @@ describe("provider software staging", () => {
 			),
 		).rejects.toThrow("OFFICE_SOFTWARE_STAGING_DIFFERS");
 		expect(f.client.pushOfficeSoftwareFile).toHaveBeenCalledTimes(1);
+	});
+});
+describe("provider guest-code software staging and installation", () => {
+	it("stages every changed guest code entry under its digest and refuses a missing, foreign or altered entry", async () => {
+		const f = await fixture({ guestCode: true });
+		const changed = companyComputerServiceSoftwareChangedFiles(f.statement as never);
+		expect(changed.map((entry) => entry.file)).toEqual(Object.keys(f.guestBytes).sort());
+		const staged = await f.stage();
+		const names = [...f.guest.keys()].map((path) => path.slice(OFFICE_SOFTWARE_STAGING_ROOT.length + 1)).sort();
+		expect(names).toEqual(
+			[
+				"software-control.mjs",
+				"software-measurement-control.mjs",
+				`software-capability-${f.plan.updateId}`,
+				`software-next-manifest-${staged.planSha256}.json`,
+				`software-previous-manifest-${staged.planSha256}.json`,
+				`software-service-${f.statement.next.service.sha256}.mjs`,
+				`software-trust-${staged.trustSha256}.json`,
+				...changed.map((entry) => `software-file-${entry.sha256}`),
+			].sort(),
+		);
+		for (const entry of changed) {
+			expect(
+				f.guest
+					.get(`${OFFICE_SOFTWARE_STAGING_ROOT}/software-file-${entry.sha256}`)
+					?.content.equals(f.guestBytes[entry.file]!),
+			).toBe(true);
+			expect(officeSoftwareStagedPath(`software-file-${entry.sha256}`).maximum).toBe(32 * 1024 ** 2);
+			expect(officeSoftwareReadPath(entry.path)).toBe(32 * 1024 ** 2);
+		}
+		for (const { path } of Object.values(COMPANY_COMPUTER_SERVICE_SOFTWARE_FILES))
+			expect(officeSoftwareReadPath(path)).toBe(32 * 1024 ** 2);
+		expect(() => officeSoftwareStagedPath("software-file-abc")).toThrow("INVALID_OFFICE_SOFTWARE_STAGING");
+		expect(() => officeSoftwareReadPath("/usr/local/bin/other")).toThrow("INVALID_OFFICE_SOFTWARE_READBACK");
+		const [first] = changed;
+		for (const files of [
+			undefined,
+			{},
+			{ ...f.guestBytes, [first.file]: Buffer.concat([f.guestBytes[first.file]!, Buffer.from([1])]) },
+			{ ...f.guestBytes, "qorpera-screen-xfce": Buffer.from("foreign") },
+		]) {
+			f.client.pushOfficeSoftwareFile.mockClear();
+			await expect(
+				stageLxdOfficeSoftwareInstall(
+					f.client,
+					f.binding,
+					{
+						envelope: f.envelope,
+						plan: f.plan,
+						trust: f.trust,
+						manifests: f.manifests,
+						serviceBytes: f.serviceBytes,
+						files,
+						providerCapability: "c".repeat(64),
+					},
+					signal(),
+				),
+			).rejects.toThrow("OFFICE_SOFTWARE_STAGING_DIFFERS");
+			expect(f.client.pushOfficeSoftwareFile).not.toHaveBeenCalled();
+		}
+		// A service-only revision refuses any guest code bytes.
+		const plain = await fixture();
+		await expect(
+			stageLxdOfficeSoftwareInstall(
+				plain.client,
+				plain.binding,
+				{
+					envelope: plain.envelope,
+					plan: plain.plan,
+					trust: plain.trust,
+					manifests: plain.manifests,
+					serviceBytes: plain.serviceBytes,
+					files: f.guestBytes,
+					providerCapability: "c".repeat(64),
+				},
+				signal(),
+			),
+		).rejects.toThrow("OFFICE_SOFTWARE_STAGING_DIFFERS");
+	});
+	it("measures every installed guest code entry host-side and withholds evidence when one differs", async () => {
+		const f = await fixture({ guestCode: true });
+		await f.stage();
+		const result = await f.install();
+		expect(result.receipt).toEqual(f.receipt);
+		expect(result.measuredFiles).toEqual(f.statement.next.files);
+		const prefix = `software-install-${f.binding.allocationId}-${f.plan.updateId}-${f.challenge().challengeId}`;
+		const evidence = JSON.parse(await readFile(join(f.root, `${prefix}-evidence.json`), "utf8"));
+		expect(evidence.evidence.measuredFiles).toEqual(f.statement.next.files);
+		expect(officeDigest(evidence.evidence)).toBe(result.evidenceSha256);
+		for (const kind of ["different bytes", "writable mode"] as const) {
+			const g = await fixture({ guestCode: true });
+			await g.stage();
+			const entry = g.statement.next.files![1]!;
+			if (kind === "different bytes") g.setInstalledFile(entry.path, Buffer.from("other"), entry.mode);
+			else g.setInstalledFile(entry.path, g.guestBytes[entry.file]!, 0o644);
+			await expect(g.install()).rejects.toThrow("software installed guest code differs");
+			const files = await readdir(g.root);
+			expect(files.some((file) => file.endsWith("-evidence.json"))).toBe(false);
+		}
 	});
 });
 describe("provider software installation transport", () => {

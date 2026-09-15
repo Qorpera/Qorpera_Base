@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { readBoundedCloudResponse, supabaseServiceHeaders } from "../../packages/cloud-client/src/cloud-request.ts";
 import {
+	companyComputerServiceSoftwareChangedFiles,
 	parseCompanyComputerPreparationCommand,
 	parseCompanyComputerServiceStopAcknowledgement,
 	parseCompanyComputerServiceStopRequest,
@@ -279,6 +280,10 @@ async function lockedInstall(input: ReturnType<typeof parseOfficeSoftwareControl
 			`${root}/software-service-${statement.next.service.sha256}.mjs`,
 			statement.next.service.bytes,
 		);
+		// A guest-code revision stages each changed entry under its content digest.
+		const files: Record<string, Buffer> = {};
+		for (const entry of companyComputerServiceSoftwareChangedFiles(statement))
+			files[entry.file] = await readServiceCandidate(`${root}/software-file-${entry.sha256}`, entry.bytes);
 		const manager = createCompanyComputerServiceStopSystemdManager();
 		const verifyLocal = async (checked: AbortSignal) => {
 			checked.throwIfAborted();
@@ -308,7 +313,7 @@ async function lockedInstall(input: ReturnType<typeof parseOfficeSoftwareControl
 			checked.throwIfAborted();
 		};
 		return await installOfficeSoftwareWithinChallenge(
-			{ envelope: packet.envelope, plan, trust, manifests, serviceBytes },
+			{ envelope: packet.envelope, plan, trust, manifests, serviceBytes, files },
 			{
 				challengeId: String(packet.challengeId),
 				targetRevision: positive(packet.targetRevision),

@@ -4,6 +4,7 @@ import { type FileHandle, lstat, mkdir, open, readFile, realpath, rename } from 
 import { dirname, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
+	companyComputerServiceSoftwareChangedFiles,
 	parseCompanyComputerServiceSoftwareEnvelope,
 	parseCompanyComputerServiceSoftwarePlan,
 } from "@qorpera/contracts";
@@ -25,6 +26,9 @@ export interface LxdOfficeServiceSoftwareFilesOptions {
 	trust: Verification[2];
 	manifests: Verification[3];
 	serviceBytes: Buffer;
+	/** Exact bytes of every changed guest code entry of a guest-code revision,
+	 * keyed by package entry name; unchanged entries are neither staged nor touched. */
+	files?: Readonly<Record<string, Buffer>>;
 	/** Must hold the provider/guest exclusive update lock and independently
 	 * verify current stopped-service and SQL update dispatch authority. Neither
 	 * a signature nor this filesystem primitive supplies those authorities. */
@@ -180,7 +184,59 @@ export async function installLxdOfficeServiceSoftwareFiles(
 		signal.throwIfAborted();
 	};
 	await authorize();
-	const target = await anchor(directory, 0o755);
+	// Every target of the revision: the service (legacy journal names, so an
+	// interrupted earlier update still reconciles) and each changed guest code
+	// entry (names suffixed by the entry). Unchanged entries are never touched.
+	const changedFiles = companyComputerServiceSoftwareChangedFiles(statement);
+	const provided = options.files ?? {};
+	if (
+		Object.keys(provided).some((file) => !changedFiles.some((entry) => entry.file === file)) ||
+		changedFiles.some((entry) => {
+			const bytes = provided[entry.file];
+			return !Buffer.isBuffer(bytes) || bytes.length !== entry.bytes || hash(bytes) !== entry.sha256;
+		})
+	)
+		throw new Error("OFFICE_SOFTWARE_ARTIFACT_CHANGED");
+	const serviceChanged = statement.previous.service.sha256 !== statement.next.service.sha256;
+	type Target = {
+		directory: string;
+		name: string;
+		mode: number;
+		previous: { bytes: number; sha256: string };
+		next: { bytes: number; sha256: string };
+		bytes: Buffer;
+		journal: { previous: string; next: string; intent: string };
+		candidate: string;
+	};
+	const targets: Target[] = [];
+	if (serviceChanged)
+		targets.push({
+			directory,
+			name: service,
+			mode: 0o444,
+			previous: statement.previous.service,
+			next: statement.next.service,
+			bytes: next,
+			journal: { previous: "previous.mjs", next: "next.mjs", intent: "install-intent.json" },
+			candidate: `.qorpera-service-update-${plan.updateId}.mjs`,
+		});
+	for (const entry of changedFiles) {
+		const before = statement.previous.files!.find((item) => item.file === entry.file)!;
+		targets.push({
+			directory: dirname(entry.path),
+			name: entry.path.slice(dirname(entry.path).length + 1),
+			mode: entry.mode,
+			previous: before,
+			next: entry,
+			bytes: Buffer.from(provided[entry.file]),
+			journal: {
+				previous: `previous-${entry.file}`,
+				next: `next-${entry.file}`,
+				intent: `install-intent-${entry.file}.json`,
+			},
+			candidate: `.qorpera-update-${plan.updateId}-${entry.file}`,
+		});
+	}
 	let parent: Anchor | undefined, journal: Anchor | undefined;
 	try {
 		parent = await anchor(OFFICE_SERVICE_SOFTWARE_JOURNAL, 0o700);
@@ -204,68 +260,7 @@ export async function installLxdOfficeServiceSoftwareFiles(
 		);
 		await retain(journal, "previous-manifest.json", manifests.previous, 0o400);
 		await retain(journal, "next-manifest.json", manifests.next, 0o400);
-		const current = await read(target, service, 0o444, 32 * 1024 ** 2);
-		const intentBytes = await optional(journal, "install-intent.json", 0o400, 65536);
-		const candidateName = `.qorpera-service-update-${plan.updateId}.mjs`;
-		let intent: {
-			schema: string;
-			planSha256: string;
-			previous: ReturnType<typeof identity>;
-			next: ReturnType<typeof identity>;
-		};
-		if (!intentBytes) {
-			if (
-				current.bytes.length !== statement.previous.service.bytes ||
-				hash(current.bytes) !== statement.previous.service.sha256
-			)
-				throw new Error("OFFICE_SOFTWARE_PREDECESSOR_CHANGED");
-			if (await optional(journal, "installed.json", 0o400, 65536)) throw new Error("OFFICE_SOFTWARE_INTENT_LOST");
-			await authorize();
-			await retain(journal, "previous.mjs", current.bytes, 0o400);
-			await retain(journal, "next.mjs", next, 0o400);
-			const staged = await retain(target, candidateName, next, 0o444);
-			intent = {
-				schema: "qorpera.office-software-install-intent/v1",
-				planSha256,
-				previous: current.identity,
-				next: staged.identity,
-			};
-			await retain(journal, "install-intent.json", encode(intent), 0o400);
-		} else {
-			const value: unknown = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(intentBytes.bytes));
-			if (!value || typeof value !== "object" || Array.isArray(value))
-				throw new Error("OFFICE_SOFTWARE_INTENT_CHANGED");
-			intent = value as typeof intent;
-			if (
-				Object.keys(intent).sort().join() !== "next,planSha256,previous,schema" ||
-				intent.schema !== "qorpera.office-software-install-intent/v1" ||
-				intent.planSha256 !== planSha256
-			)
-				throw new Error("OFFICE_SOFTWARE_INTENT_CHANGED");
-		}
-		const previous = await read(journal, "previous.mjs", 0o400, statement.previous.service.bytes);
-		const storedNext = await read(journal, "next.mjs", 0o400, next.length);
-		if (hash(previous.bytes) !== statement.previous.service.sha256 || !storedNext.bytes.equals(next))
-			throw new Error("OFFICE_SOFTWARE_CUSTODY_CHANGED");
-		await authorize();
-		let observed = await read(target, service, 0o444, 32 * 1024 ** 2);
-		if (observed.bytes.equals(previous.bytes) && isDeepStrictEqual(observed.identity, intent.previous)) {
-			const staged = await read(target, candidateName, 0o444, next.length);
-			if (!staged.bytes.equals(next) || !isDeepStrictEqual(staged.identity, intent.next))
-				throw new Error("OFFICE_SOFTWARE_STAGING_CHANGED");
-			await authorize();
-			const final = await read(target, service, 0o444, previous.bytes.length);
-			if (!final.bytes.equals(previous.bytes) || !isDeepStrictEqual(final.identity, intent.previous))
-				throw new Error("OFFICE_SOFTWARE_PREDECESSOR_CHANGED");
-			await rename(join(target.path, candidateName), join(target.path, service));
-			await target.file.sync();
-			observed = await read(target, service, 0o444, next.length);
-		}
-		if (!observed.bytes.equals(next) || !isDeepStrictEqual(observed.identity, intent.next))
-			throw new Error("OFFICE_SOFTWARE_INSTALL_UNCONFIRMED");
-		// Reconciliation may resume after rename but before its directory fsync.
-		// The installation receipt must never outrun durable target publication.
-		await target.file.sync();
+		for (const item of targets) await installTarget(item, journal, planSha256, authorize);
 		await authorize();
 		const completed = await optional(journal, "installed.json", 0o400, 65536);
 		const receipt = verifyLxdOfficeServiceSoftwareReceipt(
@@ -277,6 +272,7 @@ export async function installLxdOfficeServiceSoftwareFiles(
 						planSha256,
 						state: "installed",
 						service: statement.next.service,
+						...(statement.next.files ? { files: statement.next.files } : {}),
 						installedAt: new Date().toISOString(),
 					},
 			envelope,
@@ -292,6 +288,88 @@ export async function installLxdOfficeServiceSoftwareFiles(
 	} finally {
 		await journal?.file.close();
 		await parent?.file.close();
+	}
+}
+
+/** One target: retain previous/next bytes and an intent under the update
+ * journal, stage the candidate beside the target, then rename atomically. An
+ * interrupted rename reconciles from the retained intent and exact inode. */
+async function installTarget(
+	item: {
+		directory: string;
+		name: string;
+		mode: number;
+		previous: { bytes: number; sha256: string };
+		next: { bytes: number; sha256: string };
+		bytes: Buffer;
+		journal: { previous: string; next: string; intent: string };
+		candidate: string;
+	},
+	journal: Anchor,
+	planSha256: string,
+	authorize: () => Promise<void>,
+): Promise<void> {
+	const target = await anchor(item.directory, 0o755);
+	try {
+		const current = await read(target, item.name, item.mode, 32 * 1024 ** 2);
+		const intentBytes = await optional(journal, item.journal.intent, 0o400, 65536);
+		let intent: {
+			schema: string;
+			planSha256: string;
+			previous: ReturnType<typeof identity>;
+			next: ReturnType<typeof identity>;
+		};
+		if (!intentBytes) {
+			if (current.bytes.length !== item.previous.bytes || hash(current.bytes) !== item.previous.sha256)
+				throw new Error("OFFICE_SOFTWARE_PREDECESSOR_CHANGED");
+			if (await optional(journal, "installed.json", 0o400, 65536)) throw new Error("OFFICE_SOFTWARE_INTENT_LOST");
+			await authorize();
+			await retain(journal, item.journal.previous, current.bytes, 0o400);
+			await retain(journal, item.journal.next, item.bytes, 0o400);
+			const staged = await retain(target, item.candidate, item.bytes, item.mode);
+			intent = {
+				schema: "qorpera.office-software-install-intent/v1",
+				planSha256,
+				previous: current.identity,
+				next: staged.identity,
+			};
+			await retain(journal, item.journal.intent, encode(intent), 0o400);
+		} else {
+			const value: unknown = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(intentBytes.bytes));
+			if (!value || typeof value !== "object" || Array.isArray(value))
+				throw new Error("OFFICE_SOFTWARE_INTENT_CHANGED");
+			intent = value as typeof intent;
+			if (
+				Object.keys(intent).sort().join() !== "next,planSha256,previous,schema" ||
+				intent.schema !== "qorpera.office-software-install-intent/v1" ||
+				intent.planSha256 !== planSha256
+			)
+				throw new Error("OFFICE_SOFTWARE_INTENT_CHANGED");
+		}
+		const previous = await read(journal, item.journal.previous, 0o400, item.previous.bytes);
+		const storedNext = await read(journal, item.journal.next, 0o400, item.bytes.length);
+		if (hash(previous.bytes) !== item.previous.sha256 || !storedNext.bytes.equals(item.bytes))
+			throw new Error("OFFICE_SOFTWARE_CUSTODY_CHANGED");
+		await authorize();
+		let observed = await read(target, item.name, item.mode, 32 * 1024 ** 2);
+		if (observed.bytes.equals(previous.bytes) && isDeepStrictEqual(observed.identity, intent.previous)) {
+			const staged = await read(target, item.candidate, item.mode, item.bytes.length);
+			if (!staged.bytes.equals(item.bytes) || !isDeepStrictEqual(staged.identity, intent.next))
+				throw new Error("OFFICE_SOFTWARE_STAGING_CHANGED");
+			await authorize();
+			const final = await read(target, item.name, item.mode, previous.bytes.length);
+			if (!final.bytes.equals(previous.bytes) || !isDeepStrictEqual(final.identity, intent.previous))
+				throw new Error("OFFICE_SOFTWARE_PREDECESSOR_CHANGED");
+			await rename(join(target.path, item.candidate), join(target.path, item.name));
+			await target.file.sync();
+			observed = await read(target, item.name, item.mode, item.bytes.length);
+		}
+		if (!observed.bytes.equals(item.bytes) || !isDeepStrictEqual(observed.identity, intent.next))
+			throw new Error("OFFICE_SOFTWARE_INSTALL_UNCONFIRMED");
+		// Reconciliation may resume after rename but before its directory fsync.
+		// The installation receipt must never outrun durable target publication.
+		await target.file.sync();
+	} finally {
 		await target.file.close();
 	}
 }

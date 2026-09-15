@@ -4,6 +4,7 @@ import { open, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
+	companyComputerServiceSoftwareChangedFiles,
 	parseCompanyComputerPreparationCommand,
 	parseCompanyComputerServiceStopAcknowledgement,
 	parseCompanyComputerServiceStopRequest,
@@ -61,7 +62,10 @@ const credentialRecord = (value: unknown, minimum: number, maximum: number) => {
  * here: both credentials are separate protected files. */
 export function parseLxdOfficeSoftwareUpdateConfig(value: unknown) {
 	try {
+		// `filesDir` is present only for guest-code revisions.
+		const optional = value && typeof value === "object" && "filesDir" in value ? ["filesDir"] : [];
 		const r = officeRecord(value, [
+			...optional,
 			"schema",
 			"policyPath",
 			"provenancePath",
@@ -106,6 +110,7 @@ export function parseLxdOfficeSoftwareUpdateConfig(value: unknown) {
 			previousManifestPath: officePhysicalPath(r.previousManifestPath),
 			nextManifestPath: officePhysicalPath(r.nextManifestPath),
 			servicePath: officePhysicalPath(r.servicePath),
+			...(optional.length ? { filesDir: officePhysicalPath(r.filesDir) } : {}),
 			journalRoot: officePhysicalPath(r.journalRoot),
 		});
 	} catch {
@@ -281,6 +286,7 @@ export async function runLxdOfficeSoftwareUpdate(
 					trust: inputs.trust,
 					manifests: inputs.manifests,
 					serviceBytes: inputs.serviceBytes,
+					files: inputs.files,
 					providerCapability: capability,
 				},
 				checked,
@@ -386,6 +392,14 @@ async function loadInputs(
 	const next = verified.statement.next.service;
 	const serviceBytes = await readArtifact(config.servicePath, next.bytes);
 	if (serviceBytes.length !== next.bytes || hash(serviceBytes) !== next.sha256) throw new Error("service differs");
+	// Changed guest code entries are read from the revision directory by entry name.
+	const files: Record<string, Buffer> = {};
+	for (const entry of companyComputerServiceSoftwareChangedFiles(verified.statement)) {
+		if (!config.filesDir) throw new Error("guest code directory required");
+		const bytes = await readArtifact(join(config.filesDir, entry.file), entry.bytes);
+		if (bytes.length !== entry.bytes || hash(bytes) !== entry.sha256) throw new Error("guest code differs");
+		files[entry.file] = bytes;
+	}
 	const toolPackage = parseToolPackage(
 		decode(await readArtifact(join(config.toolPackageDir, "manifest.json"), 65536)),
 		config.tools,
@@ -445,6 +459,7 @@ async function loadInputs(
 		trust,
 		manifests,
 		serviceBytes,
+		files,
 		tools,
 		verified,
 		binding,

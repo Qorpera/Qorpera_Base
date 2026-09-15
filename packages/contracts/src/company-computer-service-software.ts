@@ -9,6 +9,76 @@ export interface CompanyComputerServiceSoftwareArtifact {
 	readonly bytes: number;
 	readonly sha256: string;
 }
+/** Guest code entries a governed revision may replace beside the service: the
+ * root control bundles, the image installer, the browser child, the screen
+ * helpers and the browser policy. Units, tmpfiles fragments, the AppArmor
+ * profile, the mount unit, wallpapers and node_modules still need a new image.
+ * Destinations mirror the image installer; the file name is the package entry. */
+export const COMPANY_COMPUTER_SERVICE_SOFTWARE_FILES: Readonly<Record<string, { path: string; mode: number }>> =
+	Object.freeze({
+		"qorpera-company-computer-preparation.mjs": {
+			path: "/opt/qorpera-office/qorpera-company-computer-preparation.mjs",
+			mode: 0o444,
+		},
+		"qorpera-company-computer-preparation-control.mjs": {
+			path: "/opt/qorpera-office/qorpera-company-computer-preparation-control.mjs",
+			mode: 0o444,
+		},
+		"qorpera-company-computer-configuration-control.mjs": {
+			path: "/opt/qorpera-office/qorpera-company-computer-configuration-control.mjs",
+			mode: 0o444,
+		},
+		"qorpera-company-computer-boot-configuration-control.mjs": {
+			path: "/opt/qorpera-office/qorpera-company-computer-boot-configuration-control.mjs",
+			mode: 0o444,
+		},
+		"qorpera-company-computer-boot-service-start-control.mjs": {
+			path: "/opt/qorpera-office/qorpera-company-computer-boot-service-start-control.mjs",
+			mode: 0o444,
+		},
+		"qorpera-company-computer-boot-service-restart-control.mjs": {
+			path: "/opt/qorpera-office/qorpera-company-computer-boot-service-restart-control.mjs",
+			mode: 0o444,
+		},
+		"qorpera-company-computer-service-start-control.mjs": {
+			path: "/opt/qorpera-office/qorpera-company-computer-service-start-control.mjs",
+			mode: 0o444,
+		},
+		"qorpera-company-computer-service-stop-control.mjs": {
+			path: "/opt/qorpera-office/qorpera-company-computer-service-stop-control.mjs",
+			mode: 0o444,
+		},
+		"qorpera-company-computer-service-restart-control.mjs": {
+			path: "/opt/qorpera-office/qorpera-company-computer-service-restart-control.mjs",
+			mode: 0o444,
+		},
+		"qorpera-company-computer-reset-configuration-control.mjs": {
+			path: "/opt/qorpera-office/qorpera-company-computer-reset-configuration-control.mjs",
+			mode: 0o444,
+		},
+		"qorpera-company-computer-reset-service-start-control.mjs": {
+			path: "/opt/qorpera-office/qorpera-company-computer-reset-service-start-control.mjs",
+			mode: 0o444,
+		},
+		"qorpera-company-computer-reset-service-restart-control.mjs": {
+			path: "/opt/qorpera-office/qorpera-company-computer-reset-service-restart-control.mjs",
+			mode: 0o444,
+		},
+		"qorpera-office-image-install.cjs": { path: "/opt/qorpera-office/qorpera-office-image-install.cjs", mode: 0o444 },
+		"office-browser-child.mjs": { path: "/usr/local/lib/qorpera/office-browser-child.mjs", mode: 0o444 },
+		"qorpera-screen-session": { path: "/usr/local/bin/qorpera-screen-session", mode: 0o555 },
+		"qorpera-screen-xfce": { path: "/usr/local/bin/qorpera-screen-xfce", mode: 0o555 },
+		"qorpera-screen-browser": { path: "/usr/local/bin/qorpera-screen-browser", mode: 0o555 },
+		"qorpera-browser-policy.json": { path: "/usr/local/share/qorpera/browser-policy.json", mode: 0o444 },
+	});
+export interface CompanyComputerServiceSoftwareFile {
+	readonly file: string;
+	readonly path: string;
+	readonly bytes: number;
+	readonly sha256: string;
+	readonly mode: number;
+}
+export type CompanyComputerServiceSoftwareChange = "service-only" | "guest-code";
 /** A separately signed service revision preserves the original image identity.
  * Package digests identify the original image package and reviewed inventories;
  * they do not claim that the retained root disk is a newly built image. */
@@ -24,10 +94,20 @@ export interface CompanyComputerServiceSoftwareStatement {
 		readonly packageManifestSha256: string;
 		readonly sourceCommit: string;
 		readonly service: CompanyComputerServiceSoftwareArtifact;
+		/** Present (same file set as next) only for a guest-code revision. */
+		readonly files?: readonly CompanyComputerServiceSoftwareFile[];
 	};
-	readonly next: { readonly packageManifestSha256: string; readonly service: CompanyComputerServiceSoftwareArtifact };
+	readonly next: {
+		readonly packageManifestSha256: string;
+		readonly service: CompanyComputerServiceSoftwareArtifact;
+		readonly files?: readonly CompanyComputerServiceSoftwareFile[];
+	};
 	readonly source: { readonly repository: string; readonly commit: string; readonly tree: "clean" };
-	readonly acceptance: { readonly testedAt: string; readonly evidenceSha256: string; readonly change: "service-only" };
+	readonly acceptance: {
+		readonly testedAt: string;
+		readonly evidenceSha256: string;
+		readonly change: CompanyComputerServiceSoftwareChange;
+	};
 }
 export interface CompanyComputerServiceSoftwareEnvelope {
 	readonly schema: "qorpera.office-service-software-envelope/v1";
@@ -52,6 +132,8 @@ export interface CompanyComputerServiceSoftwareReceipt {
 	readonly planSha256: string;
 	readonly state: "installed";
 	readonly service: CompanyComputerServiceSoftwareArtifact;
+	/** The installed guest code entries of a guest-code revision. */
+	readonly files?: readonly CompanyComputerServiceSoftwareFile[];
 	readonly installedAt: string;
 }
 const SHA = /^[0-9a-f]{64}$/;
@@ -108,11 +190,68 @@ function artifact(value: unknown): CompanyComputerServiceSoftwareArtifact {
 		sha256: sha(r.sha256),
 	});
 }
+function files(value: unknown): readonly CompanyComputerServiceSoftwareFile[] {
+	if (!Array.isArray(value) || value.length < 1 || value.length > 64)
+		throw new Error("OFFICE_SERVICE_SOFTWARE_FILES_INVALID");
+	const names = new Set<string>();
+	const parsed = value.map((entry) => {
+		const f = record(entry, ["file", "path", "bytes", "sha256", "mode"]);
+		const known =
+			typeof f.file === "string" && Object.hasOwn(COMPANY_COMPUTER_SERVICE_SOFTWARE_FILES, f.file)
+				? COMPANY_COMPUTER_SERVICE_SOFTWARE_FILES[f.file]
+				: undefined;
+		if (
+			!known ||
+			names.has(f.file as string) ||
+			f.path !== known.path ||
+			f.mode !== known.mode ||
+			!Number.isSafeInteger(f.bytes) ||
+			(f.bytes as number) < 1 ||
+			(f.bytes as number) > 32 * 1024 ** 2
+		)
+			throw new Error("OFFICE_SERVICE_SOFTWARE_FILES_INVALID");
+		names.add(f.file as string);
+		return Object.freeze({
+			file: f.file as string,
+			path: known.path,
+			bytes: f.bytes as number,
+			sha256: sha(f.sha256),
+			mode: known.mode,
+		});
+	});
+	for (let index = 1; index < parsed.length; index++)
+		if (parsed[index - 1].file >= parsed[index].file) throw new Error("OFFICE_SERVICE_SOFTWARE_FILES_INVALID");
+	return Object.freeze(parsed);
+}
+/** The guest code entries whose bytes a statement replaces (never the service). */
+export function companyComputerServiceSoftwareChangedFiles(
+	statement: CompanyComputerServiceSoftwareStatement,
+): readonly CompanyComputerServiceSoftwareFile[] {
+	const previous = new Map((statement.previous.files ?? []).map((entry) => [entry.file, entry]));
+	return Object.freeze(
+		(statement.next.files ?? []).filter((entry) => {
+			const before = previous.get(entry.file);
+			return !before || before.sha256 !== entry.sha256 || before.bytes !== entry.bytes;
+		}),
+	);
+}
 export function parseCompanyComputerServiceSoftwareStatement(value: unknown): CompanyComputerServiceSoftwareStatement {
 	const r = record(value, ["schema", "base", "previous", "next", "source", "acceptance"]);
 	const base = record(r.base, ["imageSha256", "bootstrapSha256", "packageManifestSha256", "sourceCommit"]);
-	const previous = record(r.previous, ["packageManifestSha256", "sourceCommit", "service"]);
-	const next = record(r.next, ["packageManifestSha256", "service"]);
+	const guestCode =
+		!!r.previous &&
+		typeof r.previous === "object" &&
+		Object.hasOwn(r.previous, "files") &&
+		!!r.next &&
+		typeof r.next === "object" &&
+		Object.hasOwn(r.next, "files");
+	const previous = record(r.previous, [
+		"packageManifestSha256",
+		"sourceCommit",
+		"service",
+		...(guestCode ? ["files"] : []),
+	]);
+	const next = record(r.next, ["packageManifestSha256", "service", ...(guestCode ? ["files"] : [])]);
 	const source = record(r.source, ["repository", "commit", "tree"]);
 	const acceptance = record(r.acceptance, ["testedAt", "evidenceSha256", "change"]);
 	if (typeof source.repository !== "string" || source.repository.length > 2048)
@@ -127,12 +266,24 @@ export function parseCompanyComputerServiceSoftwareStatement(value: unknown): Co
 		repository.search ||
 		repository.toString() !== source.repository ||
 		source.tree !== "clean" ||
-		acceptance.change !== "service-only"
+		acceptance.change !== (guestCode ? "guest-code" : "service-only")
 	)
 		throw new Error("OFFICE_SERVICE_SOFTWARE_STATEMENT_INVALID");
 	const oldService = artifact(previous.service),
 		newService = artifact(next.service);
-	if (oldService.sha256 === newService.sha256 || previous.packageManifestSha256 === next.packageManifestSha256)
+	const oldFiles = guestCode ? files(previous.files) : undefined,
+		newFiles = guestCode ? files(next.files) : undefined;
+	if (
+		oldFiles &&
+		newFiles &&
+		(oldFiles.length !== newFiles.length || oldFiles.some((entry, index) => entry.file !== newFiles[index].file))
+	)
+		throw new Error("OFFICE_SERVICE_SOFTWARE_FILES_INVALID");
+	const filesChanged = !!newFiles && newFiles.some((entry, index) => entry.sha256 !== oldFiles![index].sha256);
+	if (
+		(oldService.sha256 === newService.sha256 && !filesChanged) ||
+		previous.packageManifestSha256 === next.packageManifestSha256
+	)
 		throw new Error("OFFICE_SERVICE_SOFTWARE_REVISION_UNCHANGED");
 	return Object.freeze({
 		schema: "qorpera.office-service-software-statement/v1",
@@ -146,13 +297,18 @@ export function parseCompanyComputerServiceSoftwareStatement(value: unknown): Co
 			packageManifestSha256: sha(previous.packageManifestSha256),
 			sourceCommit: commit(previous.sourceCommit),
 			service: oldService,
+			...(oldFiles ? { files: oldFiles } : {}),
 		}),
-		next: Object.freeze({ packageManifestSha256: sha(next.packageManifestSha256), service: newService }),
+		next: Object.freeze({
+			packageManifestSha256: sha(next.packageManifestSha256),
+			service: newService,
+			...(newFiles ? { files: newFiles } : {}),
+		}),
 		source: Object.freeze({ repository: source.repository, commit: commit(source.commit), tree: "clean" }),
 		acceptance: Object.freeze({
 			testedAt: timestamp(acceptance.testedAt),
 			evidenceSha256: sha(acceptance.evidenceSha256),
-			change: "service-only",
+			change: guestCode ? "guest-code" : "service-only",
 		}),
 	});
 }
@@ -200,7 +356,16 @@ export function parseCompanyComputerServiceSoftwarePlan(value: unknown): Company
 	});
 }
 export function parseCompanyComputerServiceSoftwareReceipt(value: unknown): CompanyComputerServiceSoftwareReceipt {
-	const r = record(value, ["schema", "plan", "planSha256", "state", "service", "installedAt"]);
+	const withFiles = !!value && typeof value === "object" && Object.hasOwn(value, "files");
+	const r = record(value, [
+		"schema",
+		"plan",
+		"planSha256",
+		"state",
+		"service",
+		"installedAt",
+		...(withFiles ? ["files"] : []),
+	]);
 	if (r.schema !== "qorpera.office-service-software-receipt/v1" || r.state !== "installed")
 		throw new Error("OFFICE_SERVICE_SOFTWARE_RECEIPT_INVALID");
 	return Object.freeze({
@@ -209,6 +374,7 @@ export function parseCompanyComputerServiceSoftwareReceipt(value: unknown): Comp
 		planSha256: sha(r.planSha256),
 		state: "installed",
 		service: artifact(r.service),
+		...(withFiles ? { files: files(r.files) } : {}),
 		installedAt: timestamp(r.installedAt),
 	});
 }

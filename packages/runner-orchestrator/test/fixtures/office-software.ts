@@ -1,10 +1,41 @@
 import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
-import { COMPANY_COMPUTER_SERVICE_SOFTWARE_PATH } from "@qorpera/contracts";
+import {
+	COMPANY_COMPUTER_SERVICE_SOFTWARE_FILES,
+	COMPANY_COMPUTER_SERVICE_SOFTWARE_PATH,
+	type CompanyComputerServiceSoftwareFile,
+} from "@qorpera/contracts";
 import { OFFICE_IMAGE_PACKAGE_FILES } from "../../src/lxd-office-image-installation.ts";
 import { officeCanonical, officeDigest } from "../../src/lxd-office-image-provenance.ts";
 
 const hash = (value: Buffer | string) => createHash("sha256").update(value).digest("hex");
-export function officeSoftwareFixture() {
+/** Guest code entries a guest-code fixture revises next to the service: one
+ * control bundle under /opt/qorpera-office and one desktop script under
+ * /usr/local/bin, so both destination roots and modes are exercised. */
+export const OFFICE_SOFTWARE_GUEST_CODE_FIXTURE_FILES = [
+	"qorpera-company-computer-configuration-control.mjs",
+	"qorpera-screen-session",
+] as const;
+type PackageManifest = { artifacts: Array<{ file: string; bytes: number; sha256: string }> };
+/** Replace the fixture guest code entries in `next` with fresh bytes and
+ * return the statement file lists plus the bytes an installer must stage. */
+export function officeGuestCodeFixtureFiles(previous: PackageManifest, next: PackageManifest) {
+	const previousFiles: CompanyComputerServiceSoftwareFile[] = [],
+		nextFiles: CompanyComputerServiceSoftwareFile[] = [],
+		bytes: Record<string, Buffer> = {};
+	for (const [index, file] of OFFICE_SOFTWARE_GUEST_CODE_FIXTURE_FILES.entries()) {
+		const known = COMPANY_COMPUTER_SERVICE_SOFTWARE_FILES[file];
+		const before = previous.artifacts.find((artifact) => artifact.file === file);
+		const at = next.artifacts.findIndex((artifact) => artifact.file === file);
+		if (!known || !before || at < 0) throw new Error("fixture manifest lacks a guest code entry");
+		const content = Buffer.alloc(40 + index, 0x30 + index);
+		bytes[file] = content;
+		next.artifacts[at] = { ...next.artifacts[at], bytes: content.length, sha256: hash(content) };
+		previousFiles.push({ file, path: known.path, bytes: before.bytes, sha256: before.sha256, mode: known.mode });
+		nextFiles.push({ file, path: known.path, bytes: content.length, sha256: hash(content), mode: known.mode });
+	}
+	return { previousFiles, nextFiles, bytes };
+}
+export function officeSoftwareFixture(options: { guestCode?: boolean } = {}) {
 	const keys = generateKeyPairSync("ed25519");
 	const previous = {
 		schema: "qorpera.company-computer-package/v1",
@@ -31,6 +62,7 @@ export function officeSoftwareFixture() {
 	};
 	const next = structuredClone(previous);
 	next.artifacts[0] = { ...next.artifacts[0], bytes: 234, sha256: hash("new service") };
+	const guest = options.guestCode ? officeGuestCodeFixtureFiles(previous, next) : undefined;
 	const manifests = { previous: Buffer.from(JSON.stringify(previous)), next: Buffer.from(JSON.stringify(next)) };
 	const statement = {
 		schema: "qorpera.office-service-software-statement/v1",
@@ -48,6 +80,7 @@ export function officeSoftwareFixture() {
 				bytes: previous.artifacts[0].bytes,
 				sha256: previous.artifacts[0].sha256,
 			},
+			...(guest ? { files: guest.previousFiles } : {}),
 		},
 		next: {
 			packageManifestSha256: hash(manifests.next),
@@ -56,12 +89,13 @@ export function officeSoftwareFixture() {
 				bytes: next.artifacts[0].bytes,
 				sha256: next.artifacts[0].sha256,
 			},
+			...(guest ? { files: guest.nextFiles } : {}),
 		},
 		source: { repository: "https://example.test/source", commit: "a".repeat(40), tree: "clean" },
 		acceptance: {
 			testedAt: "2026-09-12T00:00:00.000Z",
 			evidenceSha256: hash("reviewed evidence"),
-			change: "service-only",
+			change: guest ? "guest-code" : "service-only",
 		},
 	};
 	const plan = {
@@ -114,7 +148,19 @@ export function officeSoftwareFixture() {
 		planSha256: trust.planSha256,
 		state: "installed",
 		service: { ...statement.next.service },
+		...(guest ? { files: structuredClone(guest.nextFiles) } : {}),
 		installedAt: "2026-09-12T01:00:00.000Z",
 	};
-	return { keys, previous, next, manifests, statement, envelope, plan, trust, receipt };
+	return {
+		keys,
+		previous,
+		next,
+		manifests,
+		statement,
+		envelope,
+		plan,
+		trust,
+		receipt,
+		guestBytes: guest?.bytes ?? {},
+	};
 }

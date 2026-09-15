@@ -22,7 +22,7 @@ import {
 } from "../src/lxd-office-software-update.ts";
 import { officePhysicalFixture } from "./fixtures/office-physical-policy.ts";
 import { officeServiceRestartFixture } from "./fixtures/office-service-restart.ts";
-import { officeSoftwareFixture } from "./fixtures/office-software.ts";
+import { officeGuestCodeFixtureFiles, officeSoftwareFixture } from "./fixtures/office-software.ts";
 
 const sha = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const signal = () => new AbortController().signal;
@@ -68,7 +68,7 @@ function config(journalRoot: string, override: Record<string, unknown> = {}) {
 /** One complete, internally consistent update: policy, retained stop records
  * in a real 0700 journal, signed statement/plan/trust, exact bytes, tool
  * package, in-memory protected files, SQL and LXD fakes. */
-async function fixture() {
+async function fixture(options: { guestCode?: boolean } = {}) {
 	const root = await realpath(await mkdtemp(join(tmpdir(), "office-software-update-")));
 	await chmod(root, 0o700);
 	roots.push(root);
@@ -98,6 +98,7 @@ async function fixture() {
 	const serviceBytes = Buffer.alloc(234, 7);
 	const manifestNext = structuredClone(software.next);
 	manifestNext.artifacts[0] = { ...manifestNext.artifacts[0], bytes: serviceBytes.length, sha256: sha(serviceBytes) };
+	const guestCode = options.guestCode ? officeGuestCodeFixtureFiles(software.previous, manifestNext) : undefined;
 	const manifests = { previous: software.manifests.previous, next: Buffer.from(JSON.stringify(manifestNext)) };
 	const statement = {
 		...software.statement,
@@ -106,10 +107,13 @@ async function fixture() {
 			imageSha256: predecessor.startup.imageSha256,
 			bootstrapSha256: predecessor.startup.bootstrapSha256,
 		},
+		...(guestCode ? { previous: { ...software.statement.previous, files: guestCode.previousFiles } } : {}),
 		next: {
 			packageManifestSha256: sha(manifests.next),
 			service: { ...software.statement.next.service, bytes: serviceBytes.length, sha256: sha(serviceBytes) },
+			...(guestCode ? { files: guestCode.nextFiles } : {}),
 		},
+		...(guestCode ? { acceptance: { ...software.statement.acceptance, change: "guest-code" } } : {}),
 	};
 	const envelope = {
 		schema: "qorpera.office-service-software-envelope/v1",
@@ -132,6 +136,7 @@ async function fixture() {
 		planSha256: trust.planSha256,
 		state: "installed",
 		service: { ...statement.next.service },
+		...(guestCode ? { files: structuredClone(guestCode.nextFiles) } : {}),
 		installedAt: "2026-09-12T01:00:00.000Z",
 	};
 	const tools = { install: Buffer.from("install tool"), measure: Buffer.from("measure tool") };
@@ -176,8 +181,12 @@ async function fixture() {
 		commandId: stopCommand.commandId,
 		receipt: acknowledgement,
 	});
-	const c = config(root);
+	const filesDir = "/etc/qorpera/office-provider/revision-1";
+	const c = config(root, guestCode ? { filesDir } : {});
 	const files = new Map<string, Buffer>([
+		...Object.entries(guestCode?.bytes ?? {}).map(
+			([file, bytes]) => [join(filesDir, file), bytes] as [string, Buffer],
+		),
 		[CONFIG_PATH, Buffer.from(JSON.stringify(c))],
 		[c.envelopePath, Buffer.from(JSON.stringify(envelope))],
 		[c.planPath, Buffer.from(JSON.stringify(plan))],
@@ -286,6 +295,8 @@ async function fixture() {
 					mode: 0o400,
 				});
 				guest.set(OFFICE_SOFTWARE_INSTALLED_SERVICE, { content: serviceBytes, uid: 0, gid: 0, mode: 0o444 });
+				for (const entry of guestCode?.nextFiles ?? [])
+					guest.set(entry.path, { content: guestCode!.bytes[entry.file]!, uid: 0, gid: 0, mode: entry.mode });
 				return { project, instanceName: instance, operationId: "00000000-0000-4000-8000-00000000abcd" };
 			},
 		),
@@ -346,6 +357,8 @@ async function fixture() {
 		suffix,
 		retain,
 		evidenceSha256,
+		guestCode,
+		filesDir,
 	};
 }
 const secretFree = (value: unknown) => {
@@ -375,10 +388,19 @@ describe("software update configuration", () => {
 			{ tools: { install: "a".repeat(64) } },
 			{ tools: { install: "A".repeat(64), measure: "b".repeat(64) } },
 			{ extra: true },
+			{ filesDir: "relative/revision" },
+			{ filesDir: "/etc/qorpera/office-provider/../revision" },
+			{ filesDir: 7 },
 		])
 			expect(() => parseLxdOfficeSoftwareUpdateConfig({ ...config("/mnt/j"), ...broken })).toThrow(
 				"OFFICE_SOFTWARE_UPDATE_CONFIG_INVALID",
 			);
+		// The guest code directory is the one optional key.
+		const withFiles = parseLxdOfficeSoftwareUpdateConfig(
+			config("/mnt/j", { filesDir: "/etc/qorpera/office-provider/revision-2" }),
+		);
+		expect(withFiles.filesDir).toBe("/etc/qorpera/office-provider/revision-2");
+		expect("filesDir" in parsed).toBe(false);
 		const missing = config("/mnt/j") as Record<string, unknown>;
 		delete missing.journalRoot;
 		expect(() => parseLxdOfficeSoftwareUpdateConfig(missing)).toThrow("OFFICE_SOFTWARE_UPDATE_CONFIG_INVALID");
@@ -386,6 +408,43 @@ describe("software update configuration", () => {
 });
 
 describe("software update steps", () => {
+	it("stages and installs a guest-code revision from the revision directory and refuses one without it", async () => {
+		const f = await fixture({ guestCode: true });
+		await f.run("enroll", f.evidenceSha256);
+		await f.run("begin");
+		const staged = secretFree(await f.run("stage"));
+		const stagedNames = [...f.guest.keys()].map((path) => path.slice(OFFICE_SOFTWARE_STAGING_ROOT.length + 1)).sort();
+		expect(stagedNames).toEqual(
+			[
+				"software-control.mjs",
+				"software-measurement-control.mjs",
+				`software-capability-${f.plan.updateId}`,
+				`software-next-manifest-${staged.result.planSha256}.json`,
+				`software-previous-manifest-${staged.result.planSha256}.json`,
+				`software-service-${f.statement.next.service.sha256}.mjs`,
+				`software-trust-${staged.result.trustSha256}.json`,
+				...f.guestCode!.nextFiles.map((entry) => `software-file-${entry.sha256}`),
+			].sort(),
+		);
+		const installed = secretFree(await f.run("install"));
+		expect(installed.result).toMatchObject({ receipt: f.receipt, targetRevision: 1 });
+		expect(installed.result.measuredFiles).toEqual(f.guestCode!.nextFiles);
+		for (const entry of f.guestCode!.nextFiles)
+			expect(f.ports.readArtifact).toHaveBeenCalledWith(join(f.filesDir, entry.file), entry.bytes);
+		// A missing directory, a missing entry and altered entry bytes all refuse before any credential is read.
+		const first = f.guestCode!.nextFiles[0]!;
+		for (const change of [
+			(g: Awaited<ReturnType<typeof fixture>>) =>
+				g.files.set(CONFIG_PATH, Buffer.from(JSON.stringify(config(g.root)))),
+			(g: Awaited<ReturnType<typeof fixture>>) => g.files.delete(join(g.filesDir, first.file)),
+			(g: Awaited<ReturnType<typeof fixture>>) => g.files.set(join(g.filesDir, first.file), Buffer.from("altered")),
+		]) {
+			const g = await fixture({ guestCode: true });
+			change(g);
+			await expect(g.run("status")).rejects.toThrow("OFFICE_SOFTWARE_UPDATE_INPUTS_UNCONFIRMED");
+			expect(g.ports.readCredential).not.toHaveBeenCalled();
+		}
+	});
 	it("composes enroll, begin, stage, install and status one invocation at a time without secrets", async () => {
 		const f = await fixture();
 		const enrolled = secretFree(await f.run("enroll", f.evidenceSha256));

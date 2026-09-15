@@ -1,6 +1,8 @@
 import { createHash, randomUUID, sign } from "node:crypto";
 import {
+	COMPANY_COMPUTER_SERVICE_SOFTWARE_FILES,
 	COMPANY_COMPUTER_SERVICE_SOFTWARE_PATH,
+	companyComputerServiceSoftwareChangedFiles,
 	parseCompanyComputerServiceSoftwareEnvelope,
 	parseCompanyComputerServiceSoftwarePlan,
 	parseCompanyComputerServiceSoftwareReceipt,
@@ -240,6 +242,123 @@ describe("service-only software evidence prerequisite (no installation or admiss
 			const f = fixture();
 			Object.defineProperty(f.statement, key, { value: "untrusted", enumerable: false });
 			expect(() => parseCompanyComputerServiceSoftwareStatement(f.statement)).toThrow();
+		}
+	});
+	it("verifies a guest-code revision whose listed entries match both manifests and binds its receipt", () => {
+		const f = fixture({ guestCode: true });
+		const verified = verifyLxdOfficeServiceSoftware(f.envelope, f.plan, f.trust, f.manifests);
+		expect(verified.statement.acceptance.change).toBe("guest-code");
+		expect(verified.statement.next.files).toEqual(f.statement.next.files);
+		expect(companyComputerServiceSoftwareChangedFiles(verified.statement)).toEqual(f.statement.next.files);
+		expect(verifyLxdOfficeServiceSoftwareReceipt(f.receipt, f.envelope, f.plan, f.trust, f.manifests)).toEqual(
+			f.receipt,
+		);
+		for (const entry of f.statement.next.files!) {
+			expect(COMPANY_COMPUTER_SERVICE_SOFTWARE_FILES[entry.file]).toEqual({ path: entry.path, mode: entry.mode });
+			expect(entry.sha256).toBe(hash(f.guestBytes[entry.file]!));
+		}
+		// An unchanged service is allowed once a listed entry changes.
+		const g = fixture({ guestCode: true });
+		g.statement.next.service = { ...g.statement.previous.service };
+		g.next.artifacts[0] = { ...g.previous.artifacts[0] };
+		g.manifests.next = Buffer.from(JSON.stringify(g.next));
+		g.statement.next.packageManifestSha256 = hash(g.manifests.next);
+		g.envelope.signature.value = sign(null, Buffer.from(officeCanonical(g.statement)), g.keys.privateKey).toString(
+			"base64",
+		);
+		g.plan.statementSha256 = officeDigest(g.statement);
+		const same = verifyLxdOfficeServiceSoftware(
+			g.envelope,
+			g.plan,
+			{ ...g.trust, statementSha256: g.plan.statementSha256, planSha256: officeDigest(g.plan) },
+			g.manifests,
+		);
+		expect(same.statement.next.service).toEqual(same.statement.previous.service);
+		expect(companyComputerServiceSoftwareChangedFiles(same.statement)).toHaveLength(2);
+		// The receipt must carry the same file list.
+		const { files: _files, ...withoutFiles } = f.receipt;
+		for (const receipt of [
+			withoutFiles,
+			{ ...f.receipt, files: f.statement.previous.files },
+			{ ...f.receipt, files: [f.receipt.files![0]] },
+		])
+			expect(() => verifyLxdOfficeServiceSoftwareReceipt(receipt, f.envelope, f.plan, f.trust, f.manifests)).toThrow(
+				"OFFICE_SERVICE_SOFTWARE_RECEIPT_UNCONFIRMED",
+			);
+	});
+	it("rejects guest-code statements that disagree with the closed entry map, the manifests or the change kind", () => {
+		const f = fixture({ guestCode: true });
+		const [first, second] = f.statement.next.files!;
+		for (const change of [
+			{ acceptance: { ...f.statement.acceptance, change: "service-only" } },
+			{ next: { ...f.statement.next, files: [first] } },
+			{
+				previous: {
+					...f.statement.previous,
+					files: [f.statement.previous.files![1], f.statement.previous.files![0]],
+				},
+			},
+			{ next: { ...f.statement.next, files: [{ ...first, path: "/opt/qorpera-office/other.mjs" }, second] } },
+			{ next: { ...f.statement.next, files: [{ ...first, mode: 0o644 }, second] } },
+			{
+				next: {
+					...f.statement.next,
+					files: [
+						{
+							...first,
+							file: "qorpera-company-computer-service.mjs",
+							path: COMPANY_COMPUTER_SERVICE_SOFTWARE_PATH,
+						},
+						second,
+					],
+				},
+			},
+			{
+				next: {
+					...f.statement.next,
+					files: [
+						{
+							...first,
+							file: "qorpera-company-computer.service",
+							path: "/etc/systemd/system/qorpera-company-computer.service",
+							mode: 0o644,
+						},
+						second,
+					],
+				},
+			},
+			{ previous: { ...f.statement.previous, files: undefined } },
+		])
+			expect(() => parseCompanyComputerServiceSoftwareStatement({ ...f.statement, ...change })).toThrow();
+		// A service-only statement never lists files.
+		const plain = fixture();
+		expect(() =>
+			parseCompanyComputerServiceSoftwareStatement({
+				...plain.statement,
+				previous: { ...plain.statement.previous, files: f.statement.previous.files },
+				next: { ...plain.statement.next, files: f.statement.next.files },
+			}),
+		).toThrow();
+		// A listed entry whose digest is not what the signed next manifest carries is refused,
+		// and so is a manifest change to an entry the statement does not list.
+		for (const kind of ["listed", "unlisted"] as const) {
+			const g = fixture({ guestCode: true });
+			const file = kind === "listed" ? first.file : "qorpera-company-computer-service-stop-control.mjs";
+			g.next.artifacts.find((a) => a.file === file)!.sha256 = hash("different");
+			g.manifests.next = Buffer.from(JSON.stringify(g.next));
+			g.statement.next.packageManifestSha256 = hash(g.manifests.next);
+			g.envelope.signature.value = sign(null, Buffer.from(officeCanonical(g.statement)), g.keys.privateKey).toString(
+				"base64",
+			);
+			g.plan.statementSha256 = officeDigest(g.statement);
+			expect(() =>
+				verifyLxdOfficeServiceSoftware(
+					g.envelope,
+					g.plan,
+					{ ...g.trust, statementSha256: g.plan.statementSha256, planSha256: officeDigest(g.plan) },
+					g.manifests,
+				),
+			).toThrow();
 		}
 	});
 	it("refuses changed historical receipts and never interprets them as successor activation", () => {

@@ -221,6 +221,8 @@ export class LxdOfficeSoftwareControl {
 		) => Promise<{
 			receipt: unknown;
 			measuredService: unknown;
+			/** Host-side measurement of every guest code entry of a guest-code revision. */
+			measuredFiles?: unknown;
 			evidenceSha256: string;
 		}>,
 		caller: AbortSignal,
@@ -286,6 +288,9 @@ export class LxdOfficeSoftwareControl {
 			);
 			if (!isDeepStrictEqual(measured.measuredService, this.#verified.statement.next.service))
 				throw new Error("measured bytes changed");
+			const expectedFiles = this.#verified.statement.next.files;
+			if (expectedFiles && !isDeepStrictEqual(measured.measuredFiles, expectedFiles))
+				throw new Error("measured guest code changed");
 			const evidenceSha256 = officeSha(measured.evidenceSha256);
 			const result = officeRecord(
 				await this.#call(
@@ -305,7 +310,13 @@ export class LxdOfficeSoftwareControl {
 			this.#assertState(result);
 			if (result.schema !== "qorpera.office-software-installation/v1" || result.state !== "installed")
 				throw new Error("installation changed");
-			return Object.freeze({ receipt, challengeId, evidenceSha256, targetRevision: this.#revision + 1 });
+			return Object.freeze({
+				receipt,
+				challengeId,
+				evidenceSha256,
+				targetRevision: this.#revision + 1,
+				...(expectedFiles ? { measuredFiles: structuredClone(expectedFiles) } : {}),
+			});
 		});
 	}
 	#assertState(value: Record<string, unknown>) {

@@ -4,7 +4,7 @@ import {
 	parseCompanyComputerServiceSoftwarePlan,
 	parseCompanyComputerServiceSoftwareReceipt,
 } from "@qorpera/contracts";
-import { parseOfficeImagePackage } from "./lxd-office-image-installation.ts";
+import { officeImageDestination, parseOfficeImagePackage } from "./lxd-office-image-installation.ts";
 import { officeCanonical, officeDigest, officeImagePublicKey, officeSha } from "./lxd-office-image-provenance.ts";
 
 /** Verification only: trusted digests/key must come from protected enrollment.
@@ -55,9 +55,27 @@ export function verifyLxdOfficeServiceSoftware(
 				service.sha256 !== statement[revision].service.sha256
 			)
 				throw new Error("service differs");
+			// A guest-code revision names every replaced entry; each must match the
+			// inventory of that revision exactly, including the image destination.
+			const revised = new Set<string>();
+			for (const entry of statement[revision].files ?? []) {
+				const artifact = parsed.artifacts.find((a) => a.file === entry.file);
+				const destination = officeImageDestination(entry.file);
+				if (
+					!artifact ||
+					artifact.bytes !== entry.bytes ||
+					artifact.sha256 !== entry.sha256 ||
+					destination.path !== entry.path ||
+					destination.mode !== entry.mode
+				)
+					throw new Error("guest code entry differs");
+				revised.add(entry.file);
+			}
 			return {
 				playwright: parsed.playwright,
-				artifacts: Object.fromEntries(parsed.artifacts.filter((a) => a !== service).map((a) => [a.file, a])),
+				artifacts: Object.fromEntries(
+					parsed.artifacts.filter((a) => a !== service && !revised.has(a.file)).map((a) => [a.file, a]),
+				),
 			};
 		});
 		if (officeCanonical(inventories[0]) !== officeCanonical(inventories[1]))
@@ -84,6 +102,7 @@ export function verifyLxdOfficeServiceSoftwareReceipt(
 			receipt.planSha256 !== verified.planSha256 ||
 			officeDigest(receipt.plan) !== verified.planSha256 ||
 			officeCanonical(receipt.service) !== officeCanonical(verified.statement.next.service) ||
+			officeCanonical(receipt.files ?? null) !== officeCanonical(verified.statement.next.files ?? null) ||
 			Date.parse(receipt.installedAt) < Date.parse(verified.statement.acceptance.testedAt)
 		)
 			throw new Error("unconfirmed");

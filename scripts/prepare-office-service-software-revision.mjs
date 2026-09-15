@@ -7,16 +7,19 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { build } from "esbuild";
 
-/** Prepare one governed service-only software revision for an existing office
- * VM: the next inventory is the installed image's package manifest with only
- * the service entry replaced, the statement is signed with the operator's
- * ed25519 key, and plan/trust are derived so that the provider's verifier
- * accepts the set before anything is staged. No live access; nothing here
- * enrolls, begins or installs. The private key is read once and never printed. */
+/** Prepare one governed software revision for an existing office VM: the next
+ * inventory is the installed image's package manifest with only the service
+ * entry replaced (service-only) or with the service and/or named guest code
+ * entries replaced (guest-code, `--next-file`), the statement is signed with
+ * the operator's ed25519 key, and plan/trust are derived so that the
+ * provider's verifier accepts the set before anything is staged. No live
+ * access; nothing here enrolls, begins or installs. The private key is read
+ * once and never printed. */
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const FLAGS = {
 	"--previous-manifest": "previousManifest",
 	"--next-service": "nextService",
+	"--next-file": "nextFiles",
 	"--source-commit": "sourceCommit",
 	"--previous-source-commit": "previousSourceCommit",
 	"--base-source-commit": "baseSourceCommit",
@@ -33,7 +36,6 @@ const FLAGS = {
 };
 const REQUIRED = [
 	"previousManifest",
-	"nextService",
 	"sourceCommit",
 	"previousSourceCommit",
 	"repository",
@@ -45,7 +47,8 @@ const REQUIRED = [
 ];
 const USAGE = `Usage: node scripts/prepare-office-service-software-revision.mjs \\
   --previous-manifest <installed image package manifest.json> \\
-  --next-service <new qorpera-company-computer-service.mjs> \\
+  [--next-service <new qorpera-company-computer-service.mjs>] \\
+  [--next-file <guest code entry name>=<new file>]...   (repeatable; at least one of --next-service/--next-file) \\
   --source-commit <40 hex of the new service's clean source tree> \\
   --previous-source-commit <40 hex of the installed image/revision source> \\
   --repository <https URL> --evidence-sha256 <64 hex> \\
@@ -62,16 +65,28 @@ const fail = (code) => {
 function parseArguments(argv) {
 	const options = {};
 	if (argv.length === 1 && argv[0] === "--help") return undefined;
+	const nextFiles = new Map();
 	for (let index = 0; index < argv.length; index += 2) {
 		const key = FLAGS[argv[index]];
 		const value = argv[index + 1];
-		if (!key || typeof value !== "string" || !value || value.startsWith("--") || key in options) fail("OFFICE_SOFTWARE_REVISION_ARGUMENTS_INVALID");
+		if (!key || typeof value !== "string" || !value || value.startsWith("--")) fail("OFFICE_SOFTWARE_REVISION_ARGUMENTS_INVALID");
+		if (key === "nextFiles") {
+			// `<entry name>=<path>`: the name is a closed contract entry, given once.
+			const separator = value.indexOf("=");
+			const name = separator > 0 ? value.slice(0, separator) : "", path = value.slice(separator + 1);
+			if (!name || !path || path.startsWith("--") || nextFiles.has(name)) fail("OFFICE_SOFTWARE_REVISION_ARGUMENTS_INVALID");
+			nextFiles.set(name, resolve(path));
+			continue;
+		}
+		if (key in options) fail("OFFICE_SOFTWARE_REVISION_ARGUMENTS_INVALID");
 		options[key] = value;
 	}
 	for (const key of REQUIRED) if (!(key in options)) fail("OFFICE_SOFTWARE_REVISION_ARGUMENTS_INVALID");
+	if (!("nextService" in options) && nextFiles.size === 0) fail("OFFICE_SOFTWARE_REVISION_ARGUMENTS_INVALID");
+	options.nextFiles = nextFiles;
 	if (("baseSourceCommit" in options) !== ("baseManifestSha256" in options)) fail("OFFICE_SOFTWARE_REVISION_ARGUMENTS_INVALID");
 	if ("signingKeyPassphraseStdin" in options && options.signingKeyPassphraseStdin !== "true") fail("OFFICE_SOFTWARE_REVISION_ARGUMENTS_INVALID");
-	for (const key of ["previousManifest", "nextService", "predecessor", "stopAcknowledgement", "signingKey", "out"]) options[key] = resolve(options[key]);
+	for (const key of ["previousManifest", "nextService", "predecessor", "stopAcknowledgement", "signingKey", "out"]) if (key in options) options[key] = resolve(options[key]);
 	return options;
 }
 /** Bundle the repository's own verifier and parsers once per run; the script
@@ -86,7 +101,7 @@ async function loadVerifier() {
 				'export { verifyLxdOfficeServiceSoftware } from "./packages/runner-orchestrator/src/lxd-office-service-software.ts";',
 				'export { officeCanonical, officeDigest } from "./packages/runner-orchestrator/src/lxd-office-image-provenance.ts";',
 				'export { parseOfficeImagePackage } from "./packages/runner-orchestrator/src/lxd-office-image-installation.ts";',
-				'export { COMPANY_COMPUTER_SERVICE_SOFTWARE_PATH, parseCompanyComputerLifecycleRequest, parseCompanyComputerServiceSoftwareStatement, parseCompanyComputerServiceSoftwarePlan } from "./packages/contracts/src/index.ts";',
+				'export { COMPANY_COMPUTER_SERVICE_SOFTWARE_FILES, COMPANY_COMPUTER_SERVICE_SOFTWARE_PATH, parseCompanyComputerLifecycleRequest, parseCompanyComputerServiceSoftwareStatement, parseCompanyComputerServiceSoftwarePlan } from "./packages/contracts/src/index.ts";',
 			].join("\n"),
 			resolveDir: root,
 			loader: "ts",
@@ -152,9 +167,11 @@ async function main(argv) {
 	const { module: v, dispose } = await loadVerifier();
 	try {
 		let previousBytes, serviceBytes, predecessorValue, acknowledgementValue;
+		const guestFiles = new Map();
 		try {
 			previousBytes = await readFile(options.previousManifest);
-			serviceBytes = await readFile(options.nextService);
+			if (options.nextService !== undefined) serviceBytes = await readFile(options.nextService);
+			for (const [name, path] of options.nextFiles) guestFiles.set(name, await readFile(path));
 			predecessorValue = await readJson(options.predecessor);
 			acknowledgementValue = await readJson(options.stopAcknowledgement);
 		} catch {
@@ -164,14 +181,32 @@ async function main(argv) {
 		try {
 			const parsed = v.parseOfficeImagePackage(JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(previousBytes)));
 			previous = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(previousBytes));
-			const index = previous.artifacts.findIndex((artifact) => artifact.file === "qorpera-company-computer-service.mjs");
-			const entry = parsed.artifacts.find((artifact) => artifact.file === "qorpera-company-computer-service.mjs");
-			if (index < 0 || !entry || !isDeepStrictEqual(Object.keys(previous.artifacts[index]).sort(), ["bytes", "file", "sha256"]))
-				fail("OFFICE_SOFTWARE_REVISION_INPUT_INVALID");
+			const locate = (file) => {
+				const index = previous.artifacts.findIndex((artifact) => artifact.file === file);
+				const entry = parsed.artifacts.find((artifact) => artifact.file === file);
+				if (index < 0 || !entry || !isDeepStrictEqual(Object.keys(previous.artifacts[index]).sort(), ["bytes", "file", "sha256"]))
+					fail("OFFICE_SOFTWARE_REVISION_INPUT_INVALID");
+				return { index, entry };
+			};
+			const { index, entry } = locate("qorpera-company-computer-service.mjs");
+			if (serviceBytes === undefined) serviceBytes = Buffer.alloc(0);
+			const nextService = options.nextService === undefined ? { bytes: entry.bytes, sha256: entry.sha256 } : { bytes: serviceBytes.length, sha256: hash(serviceBytes) };
 			// The next inventory is the previous manifest with only the service entry
-			// replaced; helper bundles, units and browser files stay the image's own.
+			// replaced (and, for a guest-code revision, the named guest code entries);
+			// everything else stays the image's own build.
 			nextManifest = structuredClone(previous);
-			nextManifest.artifacts[index] = { ...previous.artifacts[index], bytes: serviceBytes.length, sha256: hash(serviceBytes) };
+			nextManifest.artifacts[index] = { ...previous.artifacts[index], ...nextService };
+			const previousFiles = [], nextFiles = [];
+			for (const name of [...guestFiles.keys()].sort()) {
+				const known = Object.hasOwn(v.COMPANY_COMPUTER_SERVICE_SOFTWARE_FILES, name) ? v.COMPANY_COMPUTER_SERVICE_SOFTWARE_FILES[name] : undefined;
+				if (!known || name === "qorpera-company-computer-service.mjs") fail("OFFICE_SOFTWARE_REVISION_ARGUMENTS_INVALID");
+				const bytes = guestFiles.get(name);
+				const located = locate(name);
+				nextManifest.artifacts[located.index] = { ...previous.artifacts[located.index], bytes: bytes.length, sha256: hash(bytes) };
+				previousFiles.push({ file: name, path: known.path, bytes: located.entry.bytes, sha256: located.entry.sha256, mode: known.mode });
+				nextFiles.push({ file: name, path: known.path, bytes: bytes.length, sha256: hash(bytes), mode: known.mode });
+			}
+			const guestCode = guestFiles.size > 0;
 			const predecessor = extractPredecessor(predecessorValue, v.parseCompanyComputerLifecycleRequest);
 			const acknowledgement = extractAcknowledgement(acknowledgementValue, predecessor);
 			const nextBytes = Buffer.from(`${JSON.stringify(nextManifest, null, 2)}\n`);
@@ -187,13 +222,15 @@ async function main(argv) {
 					packageManifestSha256: hash(previousBytes),
 					sourceCommit: options.previousSourceCommit,
 					service: { path: v.COMPANY_COMPUTER_SERVICE_SOFTWARE_PATH, bytes: entry.bytes, sha256: entry.sha256 },
+					...(guestCode ? { files: previousFiles } : {}),
 				},
 				next: {
 					packageManifestSha256: hash(nextBytes),
-					service: { path: v.COMPANY_COMPUTER_SERVICE_SOFTWARE_PATH, bytes: serviceBytes.length, sha256: hash(serviceBytes) },
+					service: { path: v.COMPANY_COMPUTER_SERVICE_SOFTWARE_PATH, ...nextService },
+					...(guestCode ? { files: nextFiles } : {}),
 				},
 				source: { repository: options.repository, commit: options.sourceCommit, tree: "clean" },
-				acceptance: { testedAt: timestamp(options.acceptanceTestedAt), evidenceSha256: options.evidenceSha256, change: "service-only" },
+				acceptance: { testedAt: timestamp(options.acceptanceTestedAt), evidenceSha256: options.evidenceSha256, change: guestCode ? "guest-code" : "service-only" },
 			});
 			const ids = new Set([predecessor.activationId, predecessor.transitionId]);
 			const fresh = () => {
@@ -244,7 +281,8 @@ async function main(argv) {
 		const files = [
 			["previous-manifest.json", previousBytes],
 			["next-manifest.json", nextManifest],
-			["qorpera-company-computer-service.mjs", serviceBytes],
+			...(options.nextService === undefined ? [] : [["qorpera-company-computer-service.mjs", serviceBytes]]),
+			...[...guestFiles.keys()].sort().map((name) => [name, guestFiles.get(name)]),
 			["statement.json", json(statement)],
 			["envelope.json", json(envelope)],
 			["plan.json", json(plan)],
@@ -262,7 +300,8 @@ async function main(argv) {
 				previous: written["previous-manifest.json"],
 				next: written["next-manifest.json"],
 			});
-			if (hash(written["qorpera-company-computer-service.mjs"]) !== statement.next.service.sha256) throw new Error("service");
+			if (options.nextService !== undefined && hash(written["qorpera-company-computer-service.mjs"]) !== statement.next.service.sha256) throw new Error("service");
+			for (const entry of statement.next.files ?? []) if (hash(written[entry.file]) !== entry.sha256) throw new Error("guest code");
 		} catch {
 			fail("OFFICE_SOFTWARE_REVISION_UNCONFIRMED");
 		}
@@ -287,11 +326,13 @@ async function main(argv) {
 		await writeFile(
 			join(options.out, "README.md"),
 			[
-				"# Governed service-only software revision",
+				`# Governed ${statement.acceptance.change} software revision`,
 				"",
 				`Update \`${plan.updateId}\` for allocation \`${plan.predecessor.startup.allocationId}\` (stopped predecessor transition \`${plan.predecessor.transitionId}\`, successor activation \`${plan.successorActivationId}\`).`,
 				"",
-				"The next inventory is the installed image's package manifest with only the service entry replaced. Helper bundles, units and browser files remain the image's own builds. The signed statement, plan and trust verify with `verifyLxdOfficeServiceSoftware` against `previous-manifest.json` and `next-manifest.json`.",
+				statement.acceptance.change === "guest-code"
+					? "The next inventory is the installed image's package manifest with the service entry and the guest code entries listed below replaced. Units, tmpfiles fragments, the AppArmor profile, wallpapers and the browser runtime remain the image's own builds. The signed statement, plan and trust verify with `verifyLxdOfficeServiceSoftware` against `previous-manifest.json` and `next-manifest.json`."
+					: "The next inventory is the installed image's package manifest with only the service entry replaced. Helper bundles, units and browser files remain the image's own builds. The signed statement, plan and trust verify with `verifyLxdOfficeServiceSoftware` against `previous-manifest.json` and `next-manifest.json`.",
 				"",
 				"| File | Bytes | SHA-256 |",
 				"|---|---|---|",
@@ -303,10 +344,11 @@ async function main(argv) {
 				`- stopAcknowledgementSha256: \`${plan.stopAcknowledgementSha256}\``,
 				`- verificationKeySpki: \`${verificationKeySpki}\``,
 				`- previous service: ${statement.previous.service.bytes} bytes \`${statement.previous.service.sha256}\` (source ${statement.previous.sourceCommit})`,
-				`- next service: ${statement.next.service.bytes} bytes \`${statement.next.service.sha256}\` (source ${statement.source.commit})`,
+				`- next service: ${statement.next.service.bytes} bytes \`${statement.next.service.sha256}\` (source ${statement.source.commit})${statement.previous.service.sha256 === statement.next.service.sha256 ? " (unchanged)" : ""}`,
+				...(statement.next.files ?? []).map((entry, i) => `- guest code \`${entry.file}\` → \`${entry.path}\` mode ${entry.mode.toString(8)}: ${statement.previous.files[i].bytes} bytes \`${statement.previous.files[i].sha256}\` → ${entry.bytes} bytes \`${entry.sha256}\``),
 				`- acceptance: ${statement.acceptance.testedAt}, evidence \`${statement.acceptance.evidenceSha256}\``,
 				"",
-				"Stage this directory as root-owned protected files on the node and name them in the provider's `qorpera.lxd-office-software-update/v1` document for `qorpera-office-software-update.cjs`. The signing key is not part of this set.",
+				`Stage this directory as root-owned protected files on the node and name them in the provider's \`qorpera.lxd-office-software-update/v1\` document for \`qorpera-office-software-update.cjs\`${statement.acceptance.change === "guest-code" ? " (its `filesDir` is this directory: guest code entries are read by entry name)" : ""}. The signing key is not part of this set.`,
 				"",
 			].join("\n"),
 			{ mode: 0o400, flag: "wx" },

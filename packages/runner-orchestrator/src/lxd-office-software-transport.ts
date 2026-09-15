@@ -6,8 +6,10 @@ import { isDeepStrictEqual } from "node:util";
 import {
 	COMPANY_COMPUTER_SERVICE_SOFTWARE_PATH,
 	type CompanyComputerServiceSoftwareArtifact,
+	type CompanyComputerServiceSoftwareFile,
 	type CompanyComputerServiceSoftwareInvocationChallenge,
 	type CompanyComputerStartupIdentity,
+	companyComputerServiceSoftwareChangedFiles,
 	companyComputerServiceSoftwareMeasurementText,
 	parseCompanyComputerPreparationCommand,
 	parseCompanyComputerServiceStopAcknowledgement,
@@ -190,6 +192,8 @@ export interface LxdOfficeSoftwareInstallStaging {
 	trust: Verification[2];
 	manifests: Verification[3];
 	serviceBytes: Buffer;
+	/** Exact bytes of every changed guest code entry of a guest-code revision. */
+	files?: Readonly<Record<string, Buffer>>;
 	/** Exactly 64 lowercase hex characters; root/provider custody only. */
 	providerCapability: string;
 }
@@ -229,6 +233,17 @@ export async function stageLxdOfficeSoftwareInstall(
 		[`software-next-manifest-${verified.planSha256}.json`, Buffer.from(staging.manifests.next)],
 		[`software-service-${next.sha256}.mjs`, Buffer.from(staging.serviceBytes)],
 	];
+	// A guest-code revision also stages every changed entry under its digest.
+	const changed = companyComputerServiceSoftwareChangedFiles(verified.statement);
+	const provided = staging.files ?? {};
+	if (Object.keys(provided).some((file) => !changed.some((entry) => entry.file === file)))
+		throw new Error("OFFICE_SOFTWARE_STAGING_DIFFERS");
+	for (const entry of changed) {
+		const bytes = provided[entry.file];
+		if (!Buffer.isBuffer(bytes) || bytes.length !== entry.bytes || hash(bytes) !== entry.sha256)
+			throw new Error("OFFICE_SOFTWARE_STAGING_DIFFERS");
+		files.push([`software-file-${entry.sha256}`, Buffer.from(bytes)]);
+	}
 	for (const [fileName, bytes] of files) {
 		signal.throwIfAborted();
 		await client.pushOfficeSoftwareFile(project, name, fileName, bytes, signal);
@@ -301,7 +316,7 @@ export function createLxdOfficeSoftwareInstallPhysical(
 		challenge: Readonly<LxdOfficeSoftwareInstallChallenge>,
 		deadline: number,
 		signal: AbortSignal,
-	): Promise<{ receipt: unknown; measuredService: unknown; evidenceSha256: string }> => {
+	): Promise<{ receipt: unknown; measuredService: unknown; measuredFiles?: unknown; evidenceSha256: string }> => {
 		if (
 			challenge.planSha256 !== verified.planSha256 ||
 			!isDeepStrictEqual(challenge.plan, plan) ||
@@ -394,6 +409,21 @@ export function createLxdOfficeSoftwareInstallPhysical(
 						bytes: installed.content.length,
 						sha256: expected.sha256,
 					};
+					// Every guest code entry of a guest-code revision is measured host-side too.
+					const measuredFiles: CompanyComputerServiceSoftwareFile[] = [];
+					for (const entry of statement.next.files ?? []) {
+						const file = await client.readOfficeSoftwareFile(project, name, entry.path, entry.bytes, signal);
+						fresh();
+						if (
+							file.uid !== 0 ||
+							file.gid !== 0 ||
+							file.mode !== entry.mode ||
+							file.content.length !== entry.bytes ||
+							hash(file.content) !== entry.sha256
+						)
+							throw new Error("software installed guest code differs");
+						measuredFiles.push({ ...entry });
+					}
 					const evidence = {
 						schema: "qorpera.lxd-office-software-install-evidence/v1",
 						updateId: plan.updateId,
@@ -405,9 +435,10 @@ export function createLxdOfficeSoftwareInstallPhysical(
 						capabilityRevision: challenge.capabilityRevision,
 						receipt,
 						measuredService,
+						...(statement.next.files ? { measuredFiles } : {}),
 						installedFile: { uid: installed.uid, gid: installed.gid, mode: installed.mode },
 					};
-					return { receipt, measuredService, evidenceSha256: officeDigest(evidence), evidence };
+					return { receipt, measuredService, measuredFiles, evidenceSha256: officeDigest(evidence), evidence };
 				},
 				evidence: (result) => result.evidence,
 			},
