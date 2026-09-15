@@ -46,6 +46,15 @@ function endpoint(value: unknown): void {
 	if (url.protocol !== "https:" || url.origin !== value) throw new Error("INVALID_OFFICE_SERVICE_CONFIG");
 }
 
+/** The provider-authored desktop zone is validated by the parser but is not part of the
+ * physical binding; comparisons against preparation-derived sections drop it. */
+export function companyComputerLinuxBinding<T extends { desktopTimeZone?: string }>(
+	linux: T,
+): Omit<T, "desktopTimeZone"> {
+	const { desktopTimeZone: _zone, ...binding } = linux;
+	return binding;
+}
+
 /** Parses a bounded closed document; the physical boundary subsequently checks
  * every Linux path, mount and attestation before any listener can serve. */
 export function parseCompanyComputerServiceConfig(text: string): CompanyComputerServiceConfig {

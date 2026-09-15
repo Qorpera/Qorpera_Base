@@ -27,7 +27,10 @@ import {
 	OFFICE_PREPARATION_CONTROL_ROOT as root,
 } from "./cloud-company-computer-preparation-control.ts";
 import { openCompanyComputerRetainedWorkbench } from "./cloud-company-computer-retained-workbench.ts";
-import { parseCompanyComputerServiceConfig } from "./cloud-company-computer-service-config.ts";
+import {
+	companyComputerLinuxBinding,
+	parseCompanyComputerServiceConfig,
+} from "./cloud-company-computer-service-config.ts";
 import { readCompanyComputerStopHistory } from "./cloud-company-computer-stop-history.ts";
 
 const hash = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
@@ -230,7 +233,7 @@ async function readResetMaterial(
 							config.viewer.port !== attestation.viewerPort ||
 							!isDeepStrictEqual(config.scope, original.scope) ||
 							config.computerGeneration !== original.computerGeneration ||
-							!isDeepStrictEqual(config.linux, expectedLinux)
+							!isDeepStrictEqual(companyComputerLinuxBinding(config.linux), expectedLinux)
 						)
 							throw new Error("reset configuration differs");
 					}

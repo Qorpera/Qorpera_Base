@@ -1,4 +1,7 @@
-import { parseCompanyComputerServiceConfig } from "@qorpera/runtime/cloud-company-computer-service-config";
+import {
+	companyComputerLinuxBinding,
+	parseCompanyComputerServiceConfig,
+} from "@qorpera/runtime/cloud-company-computer-service-config";
 import { describe, expect, it } from "vitest";
 import { computerServiceConfig } from "./fixtures/company-computer-service.ts";
 
@@ -9,6 +12,15 @@ describe("protected office process configuration", () => {
 		expect(parsed).toEqual(config);
 		config.linux.layout.workbenchRoot = "/other";
 		expect(parsed.linux.layout.workbenchRoot).toBe("/srv/workbench");
+	});
+	it("binds the physical linux section without the provider-authored desktop zone", () => {
+		const config = computerServiceConfig();
+		const zoned = parseCompanyComputerServiceConfig(
+			JSON.stringify({ ...config, linux: { ...config.linux, desktopTimeZone: "Europe/Copenhagen" } }),
+		);
+		expect(companyComputerLinuxBinding(zoned.linux)).toEqual(config.linux);
+		expect(companyComputerLinuxBinding(config.linux)).toEqual(config.linux);
+		expect(zoned.linux.desktopTimeZone).toBe("Europe/Copenhagen");
 	});
 	it("admits an optional IANA desktop zone and refuses anything else there", () => {
 		const config = computerServiceConfig();

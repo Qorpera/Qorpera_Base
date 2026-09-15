@@ -27,7 +27,10 @@ import {
 	readCompanyComputerPreparationProtected as read,
 } from "./cloud-company-computer-preparation-control.ts";
 import { openCompanyComputerRetainedWorkbench } from "./cloud-company-computer-retained-workbench.ts";
-import { parseCompanyComputerServiceConfig } from "./cloud-company-computer-service-config.ts";
+import {
+	companyComputerLinuxBinding,
+	parseCompanyComputerServiceConfig,
+} from "./cloud-company-computer-service-config.ts";
 import { createCompanyComputerServiceStartSystemdManager } from "./cloud-company-computer-service-start-systemd.ts";
 import {
 	type CompanyComputerServiceStopObservation,
@@ -153,7 +156,7 @@ export async function controlCompanyComputerBootConfiguration(
 			!isDeepStrictEqual(config.scope, original.scope) ||
 			config.computerGeneration !== original.computerGeneration ||
 			!isDeepStrictEqual(
-				config.linux,
+				companyComputerLinuxBinding(config.linux),
 				companyComputerLinuxServiceSection(original, command.bootId, receiptPath, receiptSha256),
 			)
 		)
@@ -165,7 +168,7 @@ export async function controlCompanyComputerBootConfiguration(
 			!isDeepStrictEqual(prior.scope, original.scope) ||
 			prior.computerGeneration !== original.computerGeneration ||
 			!isDeepStrictEqual(
-				prior.linux,
+				companyComputerLinuxBinding(prior.linux),
 				companyComputerLinuxServiceSection(
 					original,
 					original.bootId,

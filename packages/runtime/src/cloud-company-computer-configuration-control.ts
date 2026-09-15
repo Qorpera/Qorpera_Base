@@ -22,7 +22,10 @@ import {
 	publishCompanyComputerPreparationProtected,
 	readCompanyComputerPreparationProtected,
 } from "./cloud-company-computer-preparation-control.ts";
-import { parseCompanyComputerServiceConfig } from "./cloud-company-computer-service-config.ts";
+import {
+	companyComputerLinuxBinding,
+	parseCompanyComputerServiceConfig,
+} from "./cloud-company-computer-service-config.ts";
 
 export const OFFICE_CONFIGURATION_MAX_BYTES = COMPANY_COMPUTER_CONFIGURATION_MAX_BYTES;
 const root = OFFICE_PREPARATION_CONTROL_ROOT;
@@ -91,7 +94,7 @@ export async function controlCompanyComputerConfiguration(
 		if (
 			!isDeepStrictEqual(config.scope, request.scope) ||
 			config.computerGeneration !== request.computerGeneration ||
-			!isDeepStrictEqual(config.linux, {
+			!isDeepStrictEqual(companyComputerLinuxBinding(config.linux), {
 				layout: receipt.layout,
 				limits: request.limits,
 				workbenchMount: request.workbenchMount,

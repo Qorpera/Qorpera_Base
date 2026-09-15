@@ -32,7 +32,10 @@ import {
 	verifyCompanyComputerResetPredecessorHistory,
 } from "./cloud-company-computer-reset-successor-evidence.ts";
 import { openCompanyComputerRetainedWorkbench } from "./cloud-company-computer-retained-workbench.ts";
-import { parseCompanyComputerServiceConfig } from "./cloud-company-computer-service-config.ts";
+import {
+	companyComputerLinuxBinding,
+	parseCompanyComputerServiceConfig,
+} from "./cloud-company-computer-service-config.ts";
 
 export {
 	createCompanyComputerBootConfigurationSystemdManager as createCompanyComputerResetConfigurationSystemdManager,
@@ -111,7 +114,7 @@ export async function controlCompanyComputerResetConfiguration(
 			!isDeepStrictEqual(config.scope, original.scope) ||
 			config.computerGeneration !== original.computerGeneration ||
 			!isDeepStrictEqual(
-				config.linux,
+				companyComputerLinuxBinding(config.linux),
 				companyComputerLinuxServiceSection(
 					original,
 					command.bootId,

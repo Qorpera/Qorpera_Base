@@ -12,7 +12,10 @@ import {
 } from "@qorpera/contracts";
 import { readCompanyComputerBootServiceInvocation } from "./cloud-company-computer-boot-invocation-evidence.ts";
 import { OFFICE_PREPARATION_CONTROL_ROOT as root } from "./cloud-company-computer-preparation-control.ts";
-import { parseCompanyComputerServiceConfig } from "./cloud-company-computer-service-config.ts";
+import {
+	companyComputerLinuxBinding,
+	parseCompanyComputerServiceConfig,
+} from "./cloud-company-computer-service-config.ts";
 import type { CompanyComputerProtectedEvidenceReader } from "./cloud-company-computer-service-invocation-evidence.ts";
 import { readCompanyComputerStopHistory } from "./cloud-company-computer-stop-history.ts";
 
@@ -114,8 +117,8 @@ export async function verifyCompanyComputerBootPredecessor(
 			hash(configBytes) !== predecessor.startup.configurationSha256 ||
 			!isDeepStrictEqual(config.scope, original.scope) ||
 			config.computerGeneration !== original.computerGeneration ||
-			!isDeepStrictEqual(config.linux, {
-				...initialConfig.linux,
+			!isDeepStrictEqual(companyComputerLinuxBinding(config.linux), {
+				...companyComputerLinuxBinding(initialConfig.linux),
 				attestation: {
 					...initialConfig.linux.attestation,
 					bootId: predecessor.startup.bootId,
