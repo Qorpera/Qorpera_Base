@@ -205,6 +205,15 @@ if (mode === "--stop" || mode === "--inspect") {
 						.get(`${root}/service-stop-completion.json`)!
 						.equals(await readFile(`${root}/service-stop-completion.json`)),
 				);
+				// The provider's power-off evidence requires the original boot's
+				// configuration completion inside the sealed history (D-OFFICE-STOP-1).
+				for (const path of [
+					`${root}/configuration-completion.json`,
+					`${root}/service-start-completion.json`,
+					"/etc/qorpera-office/adoption.json",
+					"/etc/qorpera-office/credentials/config.json",
+				])
+					assert(history.files.get(path)?.equals(await readFile(path)), `sealed history lacks ${path}`);
 				if (scenario === "archive-recover-completion") {
 					await unlink(`${root}/service-stop-completion.json`);
 					assert.equal(run("--inspect", "normal").status, 1);

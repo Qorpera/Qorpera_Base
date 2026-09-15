@@ -69,6 +69,11 @@ export async function readCompanyComputerInitialServiceInvocation(read: CompanyC
 		})
 	)
 		throw new Error("initial claim differs");
+	// The provider's stop evidence requires the original boot's configuration
+	// completion in the sealed history, exactly as later boots retain theirs.
+	// Retaining it here (through the caller's reader) seals it with the stop.
+	const configured = await read(`${root}/configuration-completion.json`, 16384, 0o600);
+	if (hash(configured) !== request.configurationCompletionSha256) throw new Error("initial configuration differs");
 	return { bytes, start, request, stopPaths: stopPaths(start.activationId, true) };
 }
 
