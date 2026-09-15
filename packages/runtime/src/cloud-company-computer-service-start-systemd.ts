@@ -81,8 +81,11 @@ export function createCompanyComputerServiceStartSystemdManager(): CompanyComput
 			await assertCompanyComputerSystemdImage();
 			// A crashed predecessor leaves the unit failed and, with Restart=on-failure,
 			// systemd's own registry-refused restarts may have exhausted the start
-			// limit; the governed successor start clears both before starting.
-			await systemctl(["reset-failed", office], 10000, signal);
+			// limit; the governed successor start clears both before starting. A unit
+			// that never ran in this boot is not loaded, and reset-failed refuses it,
+			// so the reset is issued only for an actually failed unit.
+			const state = (await systemctl(["show", "--property=ActiveState", "--value", office], 5000, signal)).trim();
+			if (state === "failed") await systemctl(["reset-failed", office], 10000, signal);
 			await systemctl(["start", office], 30000, signal);
 		},
 	};
