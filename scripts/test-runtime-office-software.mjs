@@ -144,6 +144,28 @@ try {
 		{ ...statement, next: { ...statement.next, service: { ...statement.next.service, bytes: "123457" } } },
 	]) await deny(begin({ ...plan, statementSha256: digest(s) }, s));
 	await deny(begin(plan, statement, 0, { ...stopped.acknowledgement, acknowledgedAtMs: 1 }));
+	// Guest-code revisions: both inventories list the same closed entries; the declared change kind and the
+	// "something must change" rule follow the lists; unknown entries, foreign paths or modes are refused.
+	const entry = (file, path, mode, bytes = 100, sha256 = hash()) => ({ file, path, bytes, sha256, mode });
+	const prevFiles = [entry("qorpera-company-computer-configuration-control.mjs", "/opt/qorpera-office/qorpera-company-computer-configuration-control.mjs", 292), entry("qorpera-screen-session", "/usr/local/bin/qorpera-screen-session", 365)];
+	const nextFiles = prevFiles.map(f => ({ ...f, bytes: 101, sha256: hash() }));
+	const guest = { ...statement, previous: { ...current, files: prevFiles }, next: { ...statement.next, files: nextFiles }, acceptance: { ...statement.acceptance, change: "guest-code" } };
+	const guestPlan = (s) => ({ ...plan, updateId: randomUUID(), successorActivationId: randomUUID(), statementSha256: digest(s) });
+	assert.match(query(`${service} begin; ${begin(guestPlan(guest), guest)} rollback;`), /"begun"/);
+	const sameService = { ...guest, next: { ...guest.next, service: artifact } };
+	assert.match(query(`${service} begin; ${begin(guestPlan(sameService), sameService)} rollback;`), /"begun"/);
+	for (const s of [
+		{ ...guest, acceptance: statement.acceptance },
+		{ ...guest, previous: current },
+		{ ...guest, next: { ...guest.next, files: [nextFiles[0]] } },
+		{ ...guest, next: { ...guest.next, files: [{ ...nextFiles[0], path: "/opt/qorpera-office/other.mjs" }, nextFiles[1]] } },
+		{ ...guest, next: { ...guest.next, files: [{ ...nextFiles[0], mode: 420 }, nextFiles[1]] } },
+		{ ...guest, next: { ...guest.next, files: [{ ...nextFiles[0], file: "qorpera-company-computer.service", path: "/etc/systemd/system/qorpera-company-computer.service", mode: 420 }, nextFiles[1]] } },
+		{ ...guest, next: { ...guest.next, files: [nextFiles[0], nextFiles[0]] } },
+		{ ...sameService, next: { ...sameService.next, files: prevFiles } },
+		{ ...statement, acceptance: { ...statement.acceptance, change: "guest-code" } },
+	]) await deny(begin(guestPlan(s), s));
+	console.log("PASS guest-code statements are accepted only with matching closed file lists on both inventories and a real change");
 	const holder = session(); holder.child.stdin.write(`begin; select public.qorpera_lock_profile_gc_fence('${scope.companyId}'); select 'SOFTWARE_LOCKED';\n`);
 	await until(() => holder.output().includes("SOFTWARE_LOCKED"));
 	await deny(`set statement_timeout='1s'; ${begin().replaceAll(text(capability), "null")}`, /42501/);
