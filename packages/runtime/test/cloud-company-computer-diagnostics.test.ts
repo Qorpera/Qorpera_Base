@@ -5,6 +5,32 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 describe("closed office failure diagnostics", () => {
+	it("surfaces the inner privacy-transition and screen-lifecycle causes of a reconciliation failure", () => {
+		const result = companyComputerFailureDiagnostic(
+			new CompanyComputerLifecycleFailure(
+				"supervision",
+				new Error("OFFICE_SERVICE_SUPERVISION_FAILED", {
+					cause: new Error("OFFICE_SUPERVISOR_RECONCILIATION_FAILED", {
+						cause: new Error("OFFICE_GUEST_DRAIN_UNCONFIRMED", {
+							cause: new Error("SCREEN_LIFECYCLE_UNCONFIRMED", { cause: new Error("secret text /etc/path") }),
+						}),
+					}),
+				}),
+			),
+		);
+		expect(result.codes).toEqual([
+			"OFFICE_SERVICE_SUPERVISION_FAILED",
+			"OFFICE_SUPERVISOR_RECONCILIATION_FAILED",
+			"OFFICE_GUEST_DRAIN_UNCONFIRMED",
+			"SCREEN_LIFECYCLE_UNCONFIRMED",
+		]);
+		expect(JSON.stringify(result)).not.toContain("secret");
+		expect(
+			companyComputerFailureDiagnostic(
+				new Error("OFFICE_PHYSICAL_DRAIN_REQUIRED", { cause: new Error("OFFICE_PRIVACY_FENCED") }),
+			).codes,
+		).toEqual(["OFFICE_PHYSICAL_DRAIN_REQUIRED", "OFFICE_PRIVACY_FENCED"]);
+	});
 	it("retains useful cause codes while excluding credentials, paths, stacks and arbitrary fields", () => {
 		const secret = "Bearer private-token /run/credentials/customer SQL payload";
 		const original = Object.assign(new Error(secret), { code: "EACCES", path: secret, token: secret });

@@ -79,6 +79,10 @@ export function createCompanyComputerServiceStartSystemdManager(): CompanyComput
 		},
 		async start(signal) {
 			await assertCompanyComputerSystemdImage();
+			// A crashed predecessor leaves the unit failed and, with Restart=on-failure,
+			// systemd's own registry-refused restarts may have exhausted the start
+			// limit; the governed successor start clears both before starting.
+			await systemctl(["reset-failed", office], 10000, signal);
 			await systemctl(["start", office], 30000, signal);
 		},
 	};
