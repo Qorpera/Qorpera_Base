@@ -1,6 +1,7 @@
 import { isIP } from "node:net";
 import type { CompanyComputerScope } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import { assertCompanyComputerScope } from "@qorpera/cloud-client/cloud-company-computer-contract";
+import { isCompanyComputerScreenTimeZone } from "./cloud-company-computer-desktop.ts";
 import { assertCompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
 import type { CompanyComputerLinuxOfficeServiceOptions } from "./cloud-company-computer-linux-service.ts";
 
@@ -82,6 +83,8 @@ export function parseCompanyComputerServiceConfig(text: string): CompanyComputer
 		)
 			throw new Error("origins");
 		for (const origin of viewer.origins) endpoint(origin);
+		const optional =
+			value.linux && typeof value.linux === "object" && "desktopTimeZone" in value.linux ? ["desktopTimeZone"] : [];
 		const linux = record(value.linux, [
 			"layout",
 			"limits",
@@ -91,7 +94,9 @@ export function parseCompanyComputerServiceConfig(text: string): CompanyComputer
 			"browserRuntimeRoot",
 			"captureRoot",
 			"attestation",
+			...optional,
 		]);
+		if (optional.length && !isCompanyComputerScreenTimeZone(linux.desktopTimeZone)) throw new Error("time zone");
 		strings(linux.layout, ["workbenchRoot", "desktopHome", "screenStateRoot", "browserProfilesRoot"]);
 		assertCompanyComputerGuestLayout(linux.layout as CompanyComputerServiceConfig["linux"]["layout"]);
 		for (const item of Object.values(record(linux.limits, ["memoryBytes", "pids", "cpuQuota", "cpuPeriod"])))

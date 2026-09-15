@@ -115,6 +115,17 @@ describe("office image installation contract", () => {
 		expect(officeImageDestination("qorpera-office-private.mount.in").path).toBe(
 			`/etc/systemd/system/${OFFICE_IMAGE_MOUNT_UNIT}`,
 		);
+		expect(officeImageDestination("qorpera-screen-browser")).toEqual({
+			path: "/usr/local/bin/qorpera-screen-browser",
+			mode: 0o555,
+		});
+		for (const frame of ["qorpera-screen-brain.png", "qorpera-screen-brain-00.png", "qorpera-screen-brain-23.png"])
+			expect(officeImageDestination(`wallpapers/${frame}`)).toEqual({
+				path: `/usr/share/backgrounds/${frame}`,
+				mode: 0o444,
+			});
+		for (const frame of ["qorpera-screen-brain-24.png", "qorpera-screen-brain-7.png", "qorpera-screen-Brain.png"])
+			expect(() => officeImageDestination(`wallpapers/${frame}`)).toThrow("OFFICE_IMAGE_PACKAGE_PATH_INVALID");
 	});
 	it("rejects arbitrary paths, traversal and duplicated or missing artifacts", () => {
 		for (const path of [

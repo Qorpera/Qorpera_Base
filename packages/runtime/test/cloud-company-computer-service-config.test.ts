@@ -10,6 +10,18 @@ describe("protected office process configuration", () => {
 		config.linux.layout.workbenchRoot = "/other";
 		expect(parsed.linux.layout.workbenchRoot).toBe("/srv/workbench");
 	});
+	it("admits an optional IANA desktop zone and refuses anything else there", () => {
+		const config = computerServiceConfig();
+		const zoned = { ...config, linux: { ...config.linux, desktopTimeZone: "Europe/Copenhagen" } };
+		expect(parseCompanyComputerServiceConfig(JSON.stringify(zoned)).linux.desktopTimeZone).toBe("Europe/Copenhagen");
+		expect(parseCompanyComputerServiceConfig(JSON.stringify(config)).linux.desktopTimeZone).toBeUndefined();
+		for (const zone of ["", "Europe/Copenhagen\n", "../zoneinfo", 42, null])
+			expect(() =>
+				parseCompanyComputerServiceConfig(
+					JSON.stringify({ ...config, linux: { ...config.linux, desktopTimeZone: zone } }),
+				),
+			).toThrow("INVALID_OFFICE_SERVICE_CONFIG");
+	});
 	it.each([
 		["schema", "old"],
 		["computeIdentityId", "forbidden"],

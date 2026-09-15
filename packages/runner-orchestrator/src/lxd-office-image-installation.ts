@@ -50,6 +50,9 @@ export const OFFICE_IMAGE_PACKAGE_FILES = [
 	"LICENSE",
 ] as const;
 
+/** Desktop helpers admitted by newer packages; historical packages without them remain valid. */
+export const OFFICE_IMAGE_DESKTOP_PACKAGE_FILES = ["qorpera-screen-browser"] as const;
+
 export const OFFICE_IMAGE_RESET_PACKAGE_FILES = [
 	"qorpera-company-computer-reset-configuration-control.mjs",
 	"qorpera-company-computer-reset-service-start-control.mjs",
@@ -116,13 +119,14 @@ export function officeImageDestination(file: string): { path: string; mode: numb
 		return { path: `/etc/systemd/system/${file}`, mode: 0o644 };
 	if (["qorpera-office-runtime.conf", "qorpera-office-preparation.conf"].includes(file))
 		return { path: `/usr/lib/tmpfiles.d/${file}`, mode: 0o644 };
-	if (["qorpera-screen-session", "qorpera-screen-xfce"].includes(file))
+	if (["qorpera-screen-session", "qorpera-screen-xfce", ...OFFICE_IMAGE_DESKTOP_PACKAGE_FILES].includes(file))
 		return { path: `/usr/local/bin/${file}`, mode: 0o555 };
 	if (file === "qorpera-browser-policy.json")
 		return { path: "/usr/local/share/qorpera/browser-policy.json", mode: 0o444 };
 	if (file === "office-browser-child.mjs")
 		return { path: "/usr/local/lib/qorpera/office-browser-child.mjs", mode: 0o444 };
-	if (/^wallpapers\/qorpera-screen-[a-z]+\.png$/.test(file))
+	// Static figure plus the optional hourly tone-on-tone frames (-00 .. -23).
+	if (/^wallpapers\/qorpera-screen-[a-z]+(?:-(?:[01][0-9]|2[0-3]))?\.png$/.test(file))
 		return { path: `/usr/share/backgrounds/${posix.basename(file)}`, mode: 0o444 };
 	if (([...OFFICE_IMAGE_PACKAGE_FILES, ...OFFICE_IMAGE_RESET_PACKAGE_FILES] as readonly string[]).includes(file))
 		return { path: `${OFFICE_IMAGE_ROOT}/${file}`, mode: 0o444 };

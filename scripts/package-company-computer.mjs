@@ -66,11 +66,14 @@ for (const name of ["qorpera-company-computer.service", "qorpera-company-compute
 }
 await mkdir(join(output, "wallpapers"), { mode: 0o755 });
 // Reuse the existing artwork as inert image bytes, never desktop application code.
-for (const name of (await readdir(join(root, "packages/shell/userland/staff-creatures"))).sort()) {
-	if (!/^[a-z]+\.png$/.test(name)) throw new Error("Invalid office wallpaper artifact");
-	await copyFile(join(root, "packages/shell/userland/staff-creatures", name), join(output, "wallpapers", `qorpera-screen-${name}`));
-	await chmod(join(output, "wallpapers", `qorpera-screen-${name}`), 0o444);
+// Tone-on-tone agent figures: one static frame per staff character plus 24 hourly frames each.
+for (const name of (await readdir(join(root, "deploy/lxd-company-computer-guest/backdrops"))).sort()) {
+	if (!/^qorpera-screen-[a-z]+(?:-(?:[01][0-9]|2[0-3]))?\.png$/.test(name)) throw new Error("Invalid office wallpaper artifact");
+	await copyFile(join(root, "deploy/lxd-company-computer-guest/backdrops", name), join(output, "wallpapers", name));
+	await chmod(join(output, "wallpapers", name), 0o444);
 }
+await copyFile(join(root, "deploy/lxd-company-computer-guest/qorpera-screen-browser"), join(output, "qorpera-screen-browser"));
+await chmod(join(output, "qorpera-screen-browser"), 0o555);
 await copyFile(join(root, "LICENSE"), join(output, "LICENSE"));
 const artifacts = [];
 async function inventory(directory = "") {

@@ -37,6 +37,12 @@ template/identity derivation. The helper copies the image's
 read/write and atomic rename into `<screenStateRoot>/<screen UUID>/wallpaper.png`;
 it does not use the cross-filesystem `copyFile` syscall that failed in the old
 VirtioFS proof. Repeat preparation when authenticated appearance changes.
+When the image also carries the 24 hourly tone-on-tone frames
+`qorpera-screen-<creature>-00.png` … `-23.png`, the helper stages them as
+`<screen UUID>/backdrops/<HH>.png`; a partial set removes the directory and
+keeps the static wallpaper. An optional provider-configured `timeZone` (IANA
+name, `linux.desktopTimeZone` in the service configuration) is published as
+`<screen UUID>/time-zone`; without it the desktop stays on the image's UTC.
 Use the verified desktop-state writer identity/UID mapping: new directories are
 `0700` and the wallpaper is `0600`. The supervisor must confirm the desktop can
 read them; this helper does not chown NAS data or change credential permissions.
@@ -45,12 +51,18 @@ Supply its returned path as **`QORPERA_SCREEN_WALLPAPER`**. Package the included
 executable `qorpera-screen-xfce` at `/usr/local/bin/qorpera-screen-xfce` alongside
 the wrapper when image integration is separately authorized. The wrapper
 refuses an absent helper or a wallpaper outside that screen's state directory.
-Inside the clean per-screen D-Bus environment, the helper applies the former
-agent wallpaper, scaled image, hidden desktop icons, enabled native desktop
+Inside the clean per-screen D-Bus environment, the helper applies the agent
+wallpaper (or the hourly set with xfdesktop's chronological cycle on the
+wrapper's `TZ`), scaled image, hidden desktop icons, enabled native desktop
 menu and disabled dock shadow **before** starting XFCE. Existing unrelated
-desktop settings remain intact. The image-owned dock still needs the current
-authorized browser and governed Files/Terminal launchers; do not reuse the
-old ambient/raw-NAS launch commands.
+desktop settings remain intact. Before that, the wrapper rewrites the panel
+configuration in the screen state on every start: a top bar with the window
+list and clock, and a dock with exactly three launchers — Terminal
+(`xfce4-terminal` running Bash in the workbench), Files (`thunar` in the
+workbench) and Browser (`/usr/local/bin/qorpera-screen-browser`, which raises
+the office browser window already on the screen or explains that Chromium only
+starts through the grant broker). The image must install `xfce4-terminal`,
+`thunar` and `tzdata`; no ambient/raw-NAS launch command is ever written.
 
 The wrapper is not an authorization or sandbox implementation. Directory-name
 validation cannot detect bind mounts, NAS aliases, unsafe inherited image

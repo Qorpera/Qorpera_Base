@@ -86,9 +86,10 @@ export async function cloudRuntimeBundle(root = repository) {
 	await include("packages/runner-orchestrator/src/lxd-office-image-installation-cli.ts");
 	for (const name of ["office-code-package-control.ts", "office-code-package-measure.ts"]) await include(`deploy/lxd-company-computer-guest/${name}`);
 	await include("packages/runner-orchestrator/src/lxd-office-code-package-loader.ts");
-	for (const name of (await readdir(join(root, "packages/shell/userland/staff-creatures"))).sort()) {
-		if (!/^[a-z]+\.png$/.test(name)) throw new Error("Invalid office wallpaper artifact");
-		await include(`packages/shell/userland/staff-creatures/${name}`);
+	await include("deploy/lxd-company-computer-guest/qorpera-screen-browser");
+	for (const name of (await readdir(join(root, "deploy/lxd-company-computer-guest/backdrops"))).sort()) {
+		if (!/^qorpera-screen-[a-z]+(?:-(?:[01][0-9]|2[0-3]))?\.png$/.test(name)) throw new Error("Invalid office wallpaper artifact");
+		await include(`deploy/lxd-company-computer-guest/backdrops/${name}`);
 	}
 	for (const name of (await readdir(join(root, "supabase/migrations"))).filter((name) => name.endsWith(".sql")).sort()) {
 		await include(`supabase/migrations/${name}`);

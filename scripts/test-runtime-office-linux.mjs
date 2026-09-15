@@ -63,14 +63,14 @@ try {
 	if (desktop) {
 		await mkdir(join(root, "artifacts"));
 		await chmod(join(root, "artifacts"), 0o777);
-		for (const name of ["qorpera-screen-session", "qorpera-screen-xfce"])
+		for (const name of ["qorpera-screen-session", "qorpera-screen-xfce", "qorpera-screen-browser"])
 			await copyFile(join(repository, "deploy/lxd-company-computer-guest", name), join(root, name));
-		await copyFile(join(repository, "packages/shell/userland/staff-creatures/pebble.png"), join(root, "wallpaper.png"));
+		await copyFile(join(repository, "deploy/lxd-company-computer-guest/backdrops/qorpera-screen-pebble.png"), join(root, "wallpaper.png"));
 		if (guest) {
 			await mkdir(join(root, "wallpapers"));
-			for (const name of await readdir(join(repository, "packages/shell/userland/staff-creatures"))) {
-				if (!/^[a-z]+\.png$/.test(name)) throw new Error("Invalid fixture creature artifact");
-				await copyFile(join(repository, "packages/shell/userland/staff-creatures", name), join(root, "wallpapers", `qorpera-screen-${name}`));
+			for (const name of await readdir(join(repository, "deploy/lxd-company-computer-guest/backdrops"))) {
+				if (!/^qorpera-screen-[a-z]+(?:-(?:[01][0-9]|2[0-3]))?\.png$/.test(name)) throw new Error("Invalid fixture creature artifact");
+				await copyFile(join(repository, "deploy/lxd-company-computer-guest/backdrops", name), join(root, "wallpapers", name));
 			}
 		}
 		if (browser) {
@@ -78,7 +78,7 @@ try {
 			await build({ absWorkingDir: repository, entryPoints: ["packages/runtime/src/cloud-company-computer-browser-child.ts"],
 				outfile: join(root, "office-browser-child.mjs"), platform: "node", format: "esm", target: "node22.19", bundle: true });
 		}
-		await writeFile(join(root, "Dockerfile"), `FROM ${image}\nCOPY --chmod=0555 qorpera-screen-session qorpera-screen-xfce /usr/local/bin/\nCOPY wallpaper.png /usr/share/backgrounds/qorpera-screen-pebble.png\n${guest ? "COPY --chmod=0444 wallpapers/ /usr/share/backgrounds/\n" : ""}${browser ? "RUN mkdir -p /usr/local/share/qorpera /usr/local/lib/qorpera && chmod 0755 /usr/local/share/qorpera /usr/local/lib/qorpera && install -m 0555 /usr/bin/bwrap /usr/local/lib/qorpera/qorpera-browser-bwrap\nCOPY --chmod=0444 browser-policy.json /usr/local/share/qorpera/browser-policy.json\nCOPY --chmod=0555 office-browser-child.mjs /usr/local/lib/qorpera/office-browser-child.mjs\n" : ""}`);
+		await writeFile(join(root, "Dockerfile"), `FROM ${image}\nCOPY --chmod=0555 qorpera-screen-session qorpera-screen-xfce qorpera-screen-browser /usr/local/bin/\nCOPY wallpaper.png /usr/share/backgrounds/qorpera-screen-pebble.png\n${guest ? "COPY --chmod=0444 wallpapers/ /usr/share/backgrounds/\n" : ""}${browser ? "RUN mkdir -p /usr/local/share/qorpera /usr/local/lib/qorpera && chmod 0755 /usr/local/share/qorpera /usr/local/lib/qorpera && install -m 0555 /usr/bin/bwrap /usr/local/lib/qorpera/qorpera-browser-bwrap\nCOPY --chmod=0444 browser-policy.json /usr/local/share/qorpera/browser-policy.json\nCOPY --chmod=0555 office-browser-child.mjs /usr/local/lib/qorpera/office-browser-child.mjs\n" : ""}`);
 		runningImage = `qorpera-office-desktop-probe:${randomUUID()}`;
 		await run(["build", "--tag", runningImage, root]);
 	}

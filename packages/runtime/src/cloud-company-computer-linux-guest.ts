@@ -79,6 +79,8 @@ export interface CompanyComputerLinuxGuestOptions {
 	displayRuntimeRoot: string;
 	browserRuntimeRoot: string;
 	captureRoot: string;
+	/** Optional provider-configured IANA zone for the desktop's local day; absent keeps the image default (UTC). */
+	desktopTimeZone?: string;
 	registry: Pick<HttpCloudCompanyComputerRegistry, "call">;
 	/** Required by the production service composition; physical-only fixtures can omit this port. */
 	screenLifecycle?: CompanyComputerScreenLifecycle;
@@ -177,6 +179,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 					{
 						binding,
 						layout: this.#options.layout,
+						timeZone: this.#options.desktopTimeZone,
 						boundary: {
 							assertReady: async (exact, checked) => {
 								await this.#assertShared(exact, checked);

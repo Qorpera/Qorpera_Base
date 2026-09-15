@@ -30,7 +30,10 @@ export interface LxdOfficeServiceBootstrap {
 	native: { host: string; port: number };
 	viewer: { host: string; port: number; origins: string[] };
 	credentials: Record<Credential, { path: string; bytes: number; sha256: string }>;
+	/** Optional IANA zone for the office desktop's local day (clock, terminal, backdrop cycle). */
+	desktopTimeZone?: string;
 }
+const DESKTOP_TIME_ZONE = /^[A-Za-z0-9_+-]+(?:\/[A-Za-z0-9_+-]+){0,2}$/;
 const hash = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
 function endpoint(value: unknown): void {
 	if (typeof value !== "string" || value.length > 2048) throw new Error("endpoint");
@@ -42,6 +45,8 @@ export function parseLxdOfficeServiceBootstrap(
 	binding: LxdOfficeGuestBinding,
 ): LxdOfficeServiceBootstrap {
 	try {
+		const optional =
+			value && typeof value === "object" && "desktopTimeZone" in value ? (["desktopTimeZone"] as const) : [];
 		const input = officeRecord(value, [
 			"schema",
 			"providerBindingSha256",
@@ -50,7 +55,15 @@ export function parseLxdOfficeServiceBootstrap(
 			"native",
 			"viewer",
 			"credentials",
+			...optional,
 		]);
+		if (
+			optional.length &&
+			(typeof input.desktopTimeZone !== "string" ||
+				input.desktopTimeZone.length > 64 ||
+				!DESKTOP_TIME_ZONE.test(input.desktopTimeZone))
+		)
+			throw new Error("time zone");
 		if (
 			input.schema !== "qorpera.lxd-office-service-bootstrap/v1" ||
 			officeSha(input.providerBindingSha256) !== lxdOfficeProviderBindingSha256(binding)
@@ -170,6 +183,7 @@ export async function createLxdOfficeConfigurationPayload(
 				displayRuntimeRoot: "/run/qorpera-office/display",
 				browserRuntimeRoot: "/run/qorpera-office/browser",
 				captureRoot: "/run/qorpera-office/captures",
+				...(plan.desktopTimeZone === undefined ? {} : { desktopTimeZone: plan.desktopTimeZone }),
 				attestation: {
 					allocationId: request.allocationId,
 					instanceSha256: request.instanceSha256,

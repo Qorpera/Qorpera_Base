@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # Invoked inside the wrapper's clean environment and per-screen D-Bus session.
-# Retains the historical desktop appearance without ambient browser/File launchers.
+# The wrapper has already written the dock (terminal, files, browser control)
+# and either an hourly backdrop set or nothing beside the static wallpaper.
 if [[ $# -ne 1 || -z ${DISPLAY:-} || -z ${XDG_CONFIG_HOME:-} ]]; then
 	echo "usage: qorpera-screen-xfce <screen_wallpaper>" >&2
 	exit 64
@@ -33,7 +34,29 @@ set_xfce_property() {
 	fi
 }
 backdrop="/backdrop/screen0/monitor${monitor}/workspace0"
-set_xfce_property xfce4-desktop "${backdrop}/last-image" string "${wallpaper}"
+backdrops=${QORPERA_SCREEN_BACKDROPS:-}
+if [[ -n ${backdrops} ]]; then
+	# xfdesktop's chronological cycle splits the local day evenly over the
+	# files in the directory of the current image: 24 frames, one per hour.
+	if [[ ${backdrops} != "${XDG_CONFIG_HOME%/config}/backdrops" || ! -d ${backdrops} || -L ${backdrops} ]]; then
+		echo "Invalid screen backdrop set." >&2
+		exit 65
+	fi
+	for ((h = 0; h < 24; h++)); do
+		printf -v hour '%02d' "${h}"
+		if [[ ! -f ${backdrops}/${hour}.png || -L ${backdrops}/${hour}.png ]]; then
+			echo "Invalid screen backdrop set." >&2
+			exit 65
+		fi
+	done
+	set_xfce_property xfce4-desktop "${backdrop}/last-image" string "${backdrops}/$(date +%H).png"
+	set_xfce_property xfce4-desktop "${backdrop}/backdrop-cycle-enable" bool true
+	set_xfce_property xfce4-desktop "${backdrop}/backdrop-cycle-period" int 6
+	set_xfce_property xfce4-desktop "${backdrop}/backdrop-cycle-random-order" bool false
+else
+	set_xfce_property xfce4-desktop "${backdrop}/last-image" string "${wallpaper}"
+	set_xfce_property xfce4-desktop "${backdrop}/backdrop-cycle-enable" bool false
+fi
 set_xfce_property xfce4-desktop "${backdrop}/image-style" int 5
 set_xfce_property xfce4-desktop /desktop-icons/style int 0
 set_xfce_property xfce4-desktop /desktop-menu/show bool true

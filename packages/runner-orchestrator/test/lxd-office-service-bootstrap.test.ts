@@ -35,6 +35,17 @@ describe("protected provider service bootstrap", () => {
 		expect(parsed.viewer.origins).toEqual(["https://app.invalid"]);
 		expect(parsed.credentials.native.path).toBe("/etc/qorpera-provider/native");
 	});
+	it("carries an optional desktop zone only as a validated IANA name", () => {
+		const { plan, binding } = fixture();
+		expect(parseLxdOfficeServiceBootstrap({ ...plan, desktopTimeZone: "Europe/Copenhagen" }, binding)).toEqual({
+			...plan,
+			desktopTimeZone: "Europe/Copenhagen",
+		});
+		for (const zone of ["", "Europe/Copenhagen; id", "../etc", 7, undefined])
+			expect(() => parseLxdOfficeServiceBootstrap({ ...plan, desktopTimeZone: zone }, binding)).toThrow(
+				"INVALID_OFFICE_SERVICE_BOOTSTRAP",
+			);
+	});
 	it.each([
 		"http://registry.invalid",
 		"https://user:secret@registry.invalid",

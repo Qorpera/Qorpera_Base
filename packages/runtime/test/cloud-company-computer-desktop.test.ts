@@ -7,7 +7,9 @@ import { promisify } from "node:util";
 import { assertCompanyComputerScreenBinding } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import { STAFF_CHARACTER_BY_TEMPLATE, STAFF_CHARACTER_IDS } from "@qorpera/cloud-client/staff-characters";
 import {
+	COMPANY_COMPUTER_SCREEN_HOURS,
 	companyComputerScreenCreature,
+	isCompanyComputerScreenTimeZone,
 	prepareCompanyComputerScreenWallpaper,
 } from "@qorpera/runtime/cloud-company-computer-desktop";
 import type { CompanyComputerGuestBoundary } from "@qorpera/runtime/cloud-company-computer-guest";
@@ -88,6 +90,40 @@ describe("restored agent wallpaper preparation (synthetic image bytes, local fil
 		]);
 	});
 
+	it("stages the hourly tone-on-tone set and the company zone beside the wallpaper, and clears both when withdrawn", async () => {
+		const fixture = await desktopFixture();
+		const signal = new AbortController().signal;
+		for (const hour of COMPANY_COMPUTER_SCREEN_HOURS)
+			await writeFile(join(fixture.imageRoot, `qorpera-screen-brain-${hour}.png`), `synthetic brain ${hour}`);
+		const screen = join(fixture.layout.screenStateRoot, computerId(6));
+		const staged = await prepareCompanyComputerScreenWallpaper({ ...fixture, timeZone: "Europe/Copenhagen" }, signal);
+		expect(staged).toEqual({
+			wallpaper: join(screen, "wallpaper.png"),
+			creature: "brain",
+			backdrops: join(screen, "backdrops"),
+		});
+		expect((await readdir(screen)).sort()).toEqual(["backdrops", "time-zone", "wallpaper.png"]);
+		expect(await readFile(join(screen, "time-zone"), "utf8")).toBe("Europe/Copenhagen\n");
+		expect((await stat(join(screen, "backdrops"))).mode & 0o777).toBe(0o700);
+		expect((await readdir(join(screen, "backdrops"))).sort()).toEqual(
+			COMPANY_COMPUTER_SCREEN_HOURS.map((hour) => `${hour}.png`),
+		);
+		expect(await readFile(join(screen, "backdrops", "19.png"), "utf8")).toBe("synthetic brain 19");
+		expect((await stat(join(screen, "backdrops", "19.png"))).mode & 0o777).toBe(0o600);
+		// A partial hourly set (an older or damaged image) falls back to the static wallpaper.
+		await rm(join(fixture.imageRoot, "qorpera-screen-brain-07.png"));
+		const withdrawn = await prepareCompanyComputerScreenWallpaper(fixture, signal);
+		expect(withdrawn).toEqual({ wallpaper: join(screen, "wallpaper.png"), creature: "brain" });
+		expect((await readdir(screen)).sort()).toEqual(["wallpaper.png"]);
+		for (const zone of ["Europe/Copenhagen; rm -rf /", "../../etc", "", "x".repeat(65)])
+			await expect(prepareCompanyComputerScreenWallpaper({ ...fixture, timeZone: zone }, signal)).rejects.toThrow(
+				"INVALID_SCREEN_TIME_ZONE",
+			);
+		expect(isCompanyComputerScreenTimeZone("America/Argentina/Buenos_Aires")).toBe(true);
+		expect(isCompanyComputerScreenTimeZone("Etc/GMT+1")).toBe(true);
+		expect(isCompanyComputerScreenTimeZone("A/B/C/D")).toBe(false);
+	});
+
 	it("keeps the previous wallpaper and removes staging bytes when authority changes before publication", async () => {
 		const fixture = await desktopFixture();
 		const signal = new AbortController().signal;
@@ -163,16 +199,20 @@ printf '\\n' >> "$TEST_LOG"
 		{ mode: 0o700 },
 	);
 	await writeFile(join(bin, "xfce4-session"), '#!/bin/sh\nprintf "SESSION\\n" >> "$TEST_LOG"\n', { mode: 0o700 });
+	const backdrops = join(root, "screen with spaces", "backdrops");
+	await mkdir(backdrops);
+	for (const hour of COMPANY_COMPUTER_SCREEN_HOURS) await writeFile(join(backdrops, `${hour}.png`), `frame ${hour}`);
 	const env = {
 		PATH: `${bin}:/usr/bin:/bin`,
 		DISPLAY: ":1",
 		XDG_CONFIG_HOME: config,
+		TZ: "Etc/GMT-9",
 		TEST_LOG: log,
 		TEST_MONITOR: "Virtual-1",
 		TEST_QUERY_STATUS: "1",
 		TEST_SET_STATUS: "0",
 	};
-	return { root, wallpaper, log, env };
+	return { root, wallpaper, backdrops, log, env };
 }
 
 describe("restored XFCE startup settings (real Bash helper, fake X11/XFCE commands)", () => {
@@ -187,6 +227,7 @@ describe("restored XFCE startup settings (real Bash helper, fake X11/XFCE comman
 			const calls = (await readFile(fixture.log, "utf8")).trimEnd().split("\n");
 			const properties = [
 				["xfce4-desktop", "/backdrop/screen0/monitorVirtual-1/workspace0/last-image", "string", fixture.wallpaper],
+				["xfce4-desktop", "/backdrop/screen0/monitorVirtual-1/workspace0/backdrop-cycle-enable", "bool", "false"],
 				["xfce4-desktop", "/backdrop/screen0/monitorVirtual-1/workspace0/image-style", "int", "5"],
 				["xfce4-desktop", "/desktop-icons/style", "int", "0"],
 				["xfce4-desktop", "/desktop-menu/show", "bool", "true"],
@@ -206,6 +247,41 @@ describe("restored XFCE startup settings (real Bash helper, fake X11/XFCE comman
 			);
 		},
 	);
+
+	it("cycles the hourly set chronologically on the company's local clock when the wrapper supplies it", async () => {
+		const fixture = await xfceFixture();
+		const env = { ...fixture.env, QORPERA_SCREEN_BACKDROPS: fixture.backdrops };
+		await execute("/bin/bash", [xfceHelper, fixture.wallpaper], { env, timeout: 3000 });
+		const calls = (await readFile(fixture.log, "utf8")).trimEnd().split("\n");
+		expect(calls.pop()).toBe("SESSION");
+		const hour = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", hourCycle: "h23", timeZone: "Etc/GMT-9" })
+			.format(new Date())
+			.padStart(2, "0");
+		const backdrop = "/backdrop/screen0/monitorVirtual-1/workspace0";
+		expect(
+			calls
+				.slice(0, 4)
+				.map((call) => call.trimEnd().split("\t").slice(3, 4).concat(call.trimEnd().split("\t").slice(-1))),
+		).toEqual([
+			[`${backdrop}/last-image`, join(fixture.backdrops, `${hour}.png`)],
+			[`${backdrop}/backdrop-cycle-enable`, "true"],
+			[`${backdrop}/backdrop-cycle-period`, "6"],
+			[`${backdrop}/backdrop-cycle-random-order`, "false"],
+		]);
+		// A set elsewhere, or one missing a frame, never reaches the desktop.
+		await rm(join(fixture.backdrops, "23.png"));
+		await expect(execute("/bin/bash", [xfceHelper, fixture.wallpaper], { env, timeout: 3000 })).rejects.toMatchObject(
+			{
+				code: 65,
+			},
+		);
+		await expect(
+			execute("/bin/bash", [xfceHelper, fixture.wallpaper], {
+				env: { ...env, QORPERA_SCREEN_BACKDROPS: join(fixture.root, "elsewhere") },
+				timeout: 3000,
+			}),
+		).rejects.toMatchObject({ code: 65 });
+	});
 
 	it.each(["missing monitor", "invalid monitor", "failed property"])(
 		"does not start XFCE after %s",
@@ -244,5 +320,61 @@ describe("restored XFCE startup settings (real Bash helper, fake X11/XFCE comman
 		expect(wrapper).toContain(`XDG_CONFIG_HOME="\${screen_state}/config"`);
 		expect(wrapper).toContain(`/usr/bin/dbus-run-session -- /usr/local/bin/qorpera-screen-xfce "\${wallpaper}"`);
 		expect(wrapper).not.toMatch(/QORPERA_LIVE_COMPANY_ROOT|dataset\/live|qorpera-chrome/);
+		// The desktop follows the company's local day and carries only the office dock.
+		expect(wrapper).toContain(`TZ="\${time_zone}" QORPERA_SCREEN_BACKDROPS="\${backdrops}"`);
+		expect(wrapper).toContain(`! -f /usr/share/zoneinfo/\${time_zone}`);
+		for (const launcher of ["qorpera-terminal.desktop", "qorpera-files.desktop", "qorpera-browser.desktop"])
+			expect(wrapper).toContain(launcher);
+		expect(wrapper).toContain("Exec=/usr/local/bin/qorpera-screen-browser");
+		expect(wrapper).not.toMatch(/Exec=.*qorpera-chromium|xfce4-web-browser|xfce4-appfinder|applicationsmenu/);
+		const browser = await readFile(
+			new URL("../../../deploy/lxd-company-computer-guest/qorpera-screen-browser", import.meta.url),
+			"utf8",
+		);
+		expect(browser).toContain("xdotool windowactivate");
+		expect(browser).not.toMatch(/qorpera-chromium|bwrap|playwright/);
+	});
+
+	it("writes the dock, launchers and terminal shell into the screen state before the desktop starts", async () => {
+		const fixture = await xfceFixture();
+		const wrapper = new URL("../../../deploy/lxd-company-computer-guest/qorpera-screen-session", import.meta.url);
+		// Extract only the file-writing block; the remaining wrapper needs a real X server.
+		const text = await readFile(wrapper, "utf8");
+		const start = text.indexOf("panel_config=");
+		const end = text.indexOf(`cd "\${workbench_root}"`);
+		// The guest image resolves aliases with GNU realpath; the local double must not.
+		const block = text
+			.slice(start, end)
+			.replaceAll(`$(/usr/bin/realpath -e -- "\${directory}")`, `$(cd "\${directory}" && pwd -P)`);
+		expect(start).toBeGreaterThan(0);
+		expect(end).toBeGreaterThan(start);
+		expect(block).not.toContain("/usr/bin/realpath");
+		const screenState = join(fixture.root, "screen with spaces");
+		const workbench = join(fixture.root, "workbench dir");
+		await mkdir(workbench);
+		await execute(
+			"/bin/bash",
+			[
+				"-c",
+				`set -euo pipefail; umask 0077; screen_state=${JSON.stringify(screenState)}; workbench_root=${JSON.stringify(workbench)}\n${block}`,
+			],
+			{ timeout: 3000 },
+		);
+		const config = join(screenState, "config", "xfce4");
+		const panel = await readFile(join(config, "xfconf", "xfce-perchannel-xml", "xfce4-panel.xml"), "utf8");
+		expect(panel).toContain('<channel name="xfce4-panel" version="1.0">');
+		expect(panel.match(/value="launcher"/g)).toHaveLength(3);
+		expect(panel).not.toMatch(/applicationsmenu|xfce4-web-browser|xfce4-appfinder|directorymenu/);
+		expect(await readFile(join(config, "panel", "launcher-4", "qorpera-terminal.desktop"), "utf8")).toContain(
+			`Path=${workbench}`,
+		);
+		expect(await readFile(join(config, "panel", "launcher-5", "qorpera-files.desktop"), "utf8")).toContain(
+			"Exec=thunar .",
+		);
+		expect(await readFile(join(config, "panel", "launcher-6", "qorpera-browser.desktop"), "utf8")).toContain(
+			"Exec=/usr/local/bin/qorpera-screen-browser",
+		);
+		expect(await readFile(join(config, "terminal", "terminalrc"), "utf8")).toContain("CustomCommand=/usr/bin/bash");
+		expect((await stat(join(config, "terminal", "terminalrc"))).mode & 0o777).toBe(0o600);
 	});
 });
