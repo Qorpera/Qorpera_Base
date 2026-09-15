@@ -163,6 +163,24 @@ describe("runtime office supervision", () => {
 		await expect(f.supervisor.reconcile(f.signal)).rejects.toThrow("OFFICE_SUPERVISOR_RECONCILIATION_FAILED");
 		expect(f.viewers.close).toHaveBeenCalledOnce();
 	});
+	it("accepts a shared office whose cleared challenge left a positive privacy version, still refusing regression", async () => {
+		// A retired generation's challenge cleared by the provider's correction path
+		// leaves privacy_version > 0 with no challenge; that office must still start.
+		const f = fixture();
+		Object.assign(f.state, { privacyState: "shared", privacyVersion: 12, privacyChallenge: null });
+		await f.supervisor.reconcile(f.signal);
+		expect(f.order).toEqual(["screen-fence", "physical-drain"]);
+		f.state.privacyVersion = 11;
+		await expect(f.supervisor.reconcile(f.signal)).rejects.toThrow("OFFICE_SUPERVISOR_RECONCILIATION_FAILED");
+		expect(f.order).toEqual(["screen-fence", "physical-drain", "closed"]);
+		// Without a challenge any non-shared state stays refused.
+		for (const privacyState of ["entering", "private", "leaving"]) {
+			const g = fixture();
+			Object.assign(g.state, { privacyState, privacyVersion: 12, privacyChallenge: null });
+			await expect(g.supervisor.reconcile(g.signal)).rejects.toThrow("OFFICE_SUPERVISOR_RECONCILIATION_FAILED");
+			expect(g.order).toEqual(["closed"]);
+		}
+	});
 	it("retains failed physical reconciliation and never silently reopens the service", async () => {
 		const f = fixture();
 		f.drains.drain.mockRejectedValueOnce(new Error("guest state unknown"));

@@ -160,8 +160,11 @@ export class CompanyComputerOfficeSupervisor {
 				value.privacyChallenge === null
 					? null
 					: parseCompanyComputerPrivacyChallenge(value.privacyChallenge, this.#scope);
+			// Without a retained challenge the office must be shared; the version may
+			// be positive when a retired generation's challenge was cleared by the
+			// provider's correction path (the monotonic check above still holds).
 			if (
-				(!challenge && (value.privacyState !== "shared" || value.privacyVersion !== 0)) ||
+				(!challenge && value.privacyState !== "shared") ||
 				(challenge &&
 					(challenge.computerGeneration !== this.#generation ||
 						challenge.version !== value.privacyVersion ||
