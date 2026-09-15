@@ -505,6 +505,36 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 		expect(options.signal.aborted).toBe(true);
 		expect(privateCloses[0]).toHaveBeenCalledOnce();
 	});
+	it("ends only the private surface when its authority renewal is refused, then admits a fresh surface", async () => {
+		const f = await fixture();
+		await f.guest.privacy.fence(f.challenge, f.run.signal);
+		const first = await f.guest.viewer.connect(f.privateViewer(), f.run.signal);
+		first.socket.destroy();
+		const options = physical.privateStart.mock.calls[0][0];
+		// The real surface tears itself down before reporting; the fixture closes explicitly.
+		await (await physical.privateStart.mock.results[0].value).close();
+		options.onFailure(new Error("PRIVATE_SURFACE_AUTHORITY_UNCONFIRMED"));
+		await vi.waitFor(() => expect(f.events().at(-1)).toMatchObject({ reason: "DESKTOP_EXITED" }));
+		expect(f.failure).not.toHaveBeenCalled();
+		const next = await vi.waitFor(async () => f.guest.viewer.connect(f.privateViewer(), f.run.signal));
+		next.socket.destroy();
+		expect(physical.privateStart).toHaveBeenCalledTimes(2);
+		expect(f.failure).not.toHaveBeenCalled();
+		await f.guest.close();
+	});
+	it("keeps an unconfirmed private teardown fatal for the guest", async () => {
+		const f = await fixture();
+		await f.guest.privacy.fence(f.challenge, f.run.signal);
+		const first = await f.guest.viewer.connect(f.privateViewer(), f.run.signal);
+		first.socket.destroy();
+		const options = physical.privateStart.mock.calls[0][0];
+		options.onFailure(new Error("PRIVATE_SURFACE_DRAIN_UNCONFIRMED"));
+		await vi.waitFor(() => expect(f.failure).toHaveBeenCalledOnce());
+		expect(companyComputerFailureDiagnostic(f.failure.mock.calls[0][0]).codes).toEqual([
+			"OFFICE_GUEST_FAILED",
+			"PRIVATE_SURFACE_DRAIN_UNCONFIRMED",
+		]);
+	});
 	it("owns cancellation while a private surface is still starting and awaits its late cleanup", async () => {
 		const f = await fixture();
 		const pending = computerDeferred<void>();

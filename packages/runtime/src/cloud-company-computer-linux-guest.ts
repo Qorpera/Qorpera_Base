@@ -478,15 +478,42 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 									throw new Error("OFFICE_PHYSICAL_DRAIN_REQUIRED");
 							},
 							onFailure: (error) => {
+								if (error.message === "PRIVATE_SURFACE_DRAIN_UNCONFIRMED") {
+									void current.lifecycle
+										?.failed("DESKTOP_DRAIN_UNCONFIRMED", new AbortController().signal)
+										.catch(() => undefined);
+									this.#fail(error);
+									return;
+								}
+								// Lost private authority (for example the SQL check refusing while a
+								// viewer-disconnect drain is pending) or a private display/browser
+								// exit ends only this private surface, which has already begun its
+								// own physical teardown. The office keeps its retained privacy fence;
+								// the drain supervisor, a later viewer or the owner's exit prepares a
+								// fresh surface. Only an unconfirmed teardown is fatal for the guest.
 								void current.lifecycle
-									?.failed(
-										error.message === "PRIVATE_SURFACE_DRAIN_UNCONFIRMED"
-											? "DESKTOP_DRAIN_UNCONFIRMED"
-											: "DESKTOP_EXITED",
-										new AbortController().signal,
-									)
+									?.failed("DESKTOP_EXITED", new AbortController().signal)
 									.catch(() => undefined);
-								this.#fail(error);
+								current.stop.abort();
+								clearTimeout(current.timer);
+								current.closing ??= cloudToolRequest(
+									async () => {
+										let surface: Awaited<PrivateSurface["opening"]> | undefined;
+										try {
+											surface = await current.opening;
+										} catch {
+											surface = undefined;
+										}
+										await surface?.closed;
+										if (this.#private === current) this.#private = undefined;
+									},
+									new AbortController().signal,
+									30000,
+								).catch((cause) => {
+									this.#fail(new Error("PRIVATE_SURFACE_DRAIN_UNCONFIRMED", { cause }));
+									throw cause;
+								});
+								void current.closing.catch(() => undefined);
 							},
 						}),
 					)
