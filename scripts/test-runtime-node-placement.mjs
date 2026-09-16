@@ -1,0 +1,119 @@
+// Local PostgreSQL only: applies every migration to a disposable container and
+// proves the 2026-09-16 placement chooser with two registered nodes. No hosted
+// database, provider or node is touched.
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { randomBytes, randomUUID } from "node:crypto";
+import { readFileSync, readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { POSTGRES_IMAGE, sortMigrationNames } from "./test-hosted-db.mjs";
+
+const root = dirname(dirname(fileURLToPath(import.meta.url)));
+const container = `qorpera-node-placement-${randomBytes(6).toString("hex")}`;
+const psql = ["exec", "-i", container, "psql", "-X", "-qAt", "-U", "postgres", "-d", "placement", "-v", "ON_ERROR_STOP=1"];
+function docker(args, input) {
+	const result = spawnSync("docker", args, { input, encoding: "utf8", timeout: 120_000, maxBuffer: 16 * 1024 * 1024 });
+	assert(!result.error && result.status === 0, `${result.stderr}\n${result.stdout?.slice(-4000) ?? ""}\n${result.error ?? ""}`);
+	return result.stdout.trim();
+}
+const sql = (text) => docker(psql, text);
+const literal = (value) => `'${JSON.stringify(value).replaceAll("'", "''")}'::jsonb`;
+const service = `set request.jwt.claims='{"role":"service_role"}'; set role service_role;`;
+const read = (path) => readFileSync(join(root, path), "utf8");
+const nodeA = "36000000-0000-4000-8000-000000000010", // the capacity fixture node, reconfigured to the amendment sizes
+	nodeB = "36000000-0000-4000-8000-0000000000b2";
+const policy = (id, label, machine) => ({
+	schema: "qorpera.runtime-node-policy/v1", nodeId: id, machineIdSha256: machine, label, cpuMillis: 32000, memoryBytes: 131072 * 1024 * 1024,
+	headroomCpuMillis: 8000, headroomMemoryBytes: 60 * 1024 * 1024 * 1024, standardCpuMillis: 8000, standardMemoryBytes: 16 * 1024 * 1024 * 1024, enabled: true,
+});
+const observe = (id, machine, state = "ready") => `select public.qorpera_test_observe_runtime_node(${literal({
+	schema: "qorpera.runtime-node-observation/v1", nodeId: id, machineIdSha256: machine, observationId: randomUUID(),
+	observedAt: new Date().toISOString(), cpuMillis: 32000, memoryBytes: 131072 * 1024 * 1024, state })});`;
+let started = false;
+try {
+	docker(["run", "-d", "--rm", "--name", container, "--network", "none", "-e", "POSTGRES_PASSWORD=disposable-placement", "-e", "POSTGRES_DB=placement", POSTGRES_IMAGE]);
+	started = true;
+	let ready = 0;
+	for (let attempt = 0; attempt < 60 && ready < 2; attempt++) {
+		const result = spawnSync("docker", ["exec", container, "pg_isready", "-U", "postgres", "-d", "placement"], { timeout: 2000 });
+		ready = result.status === 0 ? ready + 1 : 0;
+		if (ready < 2) await new Promise((resolve) => setTimeout(resolve, 500));
+	}
+	assert.equal(ready, 2, "postgres did not become ready");
+	sql(read("supabase/tests/bootstrap.sql"));
+	const migrations = sortMigrationNames(readdirSync(join(root, "supabase/migrations")));
+	for (const name of migrations) sql(read(`supabase/migrations/${name}`));
+	sql(read("supabase/tests/fixtures/runtime-node-inventory-observer.sql"));
+	const mA = "c".repeat(64), mB = "b".repeat(64);
+	// Governed companies, offices and the fixture node come from the capacity proof's setup.
+	const wake = read("supabase/tests/300_runtime_wake_bus.test.sql").split("-- END WAKE FIXTURE");
+	const office = read("supabase/tests/fixtures/runtime-office-registry-cases.sql").split("set local role service_role;\nselect set_config('qorpera_test.office_lease'");
+	assert.equal(wake.length, 2); assert.equal(office.length, 2);
+	sql(`${wake[0]}\n${office[0]}\n${read("supabase/tests/fixtures/runtime-node-capacity-setup.sql")}\ncommit;`);
+	sql(`${service} select public.qorpera_configure_runtime_node(${literal(policy(nodeA, "node-a", mA))},1); select public.qorpera_configure_runtime_node(${literal(policy(nodeB, "node-b", mB))},0);`);
+	sql(`${service} select public.qorpera_enroll_runtime_node_provider('${nodeA}','${mA}','native','native-a',repeat('1',64),4000,8589934592);
+		select public.qorpera_enroll_runtime_node_provider('${nodeB}','${mB}','native','native-b',repeat('2',64),4000,8589934592);
+		select public.qorpera_enroll_runtime_node_provider('${nodeA}','${mA}','login','login-a',repeat('3',64),4000,8589934592);`);
+	// No observations yet: nobody is eligible; the chooser defers (records it) and leaves the node-level reservation to refuse.
+	const alloc1 = randomUUID();
+	let d = JSON.parse(sql(`${service} select public.qorpera_runtime_node_placement_decide('${alloc1}','native','native-a');`));
+	assert.equal(d.decision, "deferred");
+	assert.equal(d.reason, "NO_ELIGIBLE_NODE");
+	sql(`${service} ${observe(nodeA, mA)} ${observe(nodeB, mB)}`);
+	// Both eligible and empty: ties resolve to the lowest node id (node A).
+	d = JSON.parse(sql(`${service} select public.qorpera_runtime_node_placement_decide('${alloc1}','native','native-a');`));
+	assert.equal(d.decision, "placed"); assert.equal(d.reason, "LEAST_LOADED"); assert.equal(d.preferredNodeId, nodeA);
+	const dB = JSON.parse(sql(`${service} select public.qorpera_runtime_node_placement_decide('${randomUUID()}','native','native-b');`));
+	assert.equal(dB.decision, "refused"); assert.equal(dB.reason, "NODE_NOT_PREFERRED"); assert.equal(dB.preferredNodeId, nodeA);
+	// Load node A through the official path: the capacity proof's governed companies and office
+	// registrations give two real office allocations; both are reserved on node A (8000 mCPU / 16 GiB each).
+	const secondCompany = wake[0].split("insert into public.qorpera_shared_sessions")[0]
+		.replaceAll("30000000", "30100000").replaceAll("path-", "second-path-")
+		.replaceAll("where sha256 = current_setting", "where profile_id='30100000-0000-4000-8000-000000000010' and sha256 = current_setting");
+	const secondOffice = office[0].split("create function pg_temp.office_call")[0].replaceAll("30000000", "30100000").replaceAll("34000000", "34100000");
+	const helpers = wake[0].split("-- BEGIN WAKE HELPERS")[1].split("create function pg_temp.wake_routine")[0];
+	sql(`${secondCompany}\n${helpers}\n${secondOffice}\n${service}
+	 select public.qorpera_set_runtime_office_provider(current_setting('qorpera_test.office_scope')::jsonb,1,'36000000-0000-4000-8000-000000000001',repeat('e',64),0,true);
+	 select public.qorpera_reserve_runtime_machine('34100000-0000-4000-8000-000000000088','lxd',repeat('d',64),null,null,(current_setting('qorpera_test.office_scope')::jsonb->>'companyComputerId')::uuid,1); commit;`);
+	const offices = JSON.parse(sql(`select jsonb_agg(jsonb_build_object('id',a.id,'policy',p.policy_sha256,'instance',a.instance_sha256)) from public.qorpera_runtime_machine_allocations a
+		join public.qorpera_runtime_office_providers p on p.office_id=a.office_id and p.computer_generation=a.computer_generation where a.runner_id is null;`));
+	assert.equal(offices.length, 2);
+	sql(`${service} ${observe(nodeA, mA)} ${observe(nodeB, mB)}`);
+	// The fixture already binds office provider …01 (policy f…, 2000 mCPU / 2 GiB) to node A; reserving that office there loads node A to 2 free slots against node B's 3.
+	const fixtureOffice = offices.find((o) => o.policy === "f".repeat(64));
+	assert(fixtureOffice, "fixture office allocation missing");
+	const r = JSON.parse(sql(`${service} select public.qorpera_reserve_runtime_node_machine('${fixtureOffice.id}','office','36000000-0000-4000-8000-000000000001','${fixtureOffice.policy}','${fixtureOffice.instance}','${mA}',2000,2147483648);`));
+	assert.equal(r.state, "reserved", JSON.stringify(r));
+	// Node A now has 2 free slots, node B 3: node B is preferred; node A's claimant is refused.
+	const dA2 = JSON.parse(sql(`${service} select public.qorpera_runtime_node_placement_decide('${randomUUID()}','native','native-a');`));
+	assert.equal(dA2.decision, "refused"); assert.equal(dA2.preferredNodeId, nodeB);
+	const dB2 = JSON.parse(sql(`${service} select public.qorpera_runtime_node_placement_decide('${randomUUID()}','native','native-b');`));
+	assert.equal(dB2.decision, "placed"); assert.equal(dB2.nodeId, nodeB);
+	const free = Object.fromEntries(dB2.candidates.map((c) => [c.providerId, c.freeSlots]));
+	assert.equal(free["native-a"], 2); assert.equal(free["native-b"], 3); // the fixture node also carries its own native provider ("process")
+	// A stale observation makes a node ineligible; the other node wins even with fewer free slots.
+	sql(`update public.qorpera_runtime_node_observations set observed_at=clock_timestamp()-interval '5 minutes' where node_id='${nodeB}';`);
+	const dA3 = JSON.parse(sql(`${service} select public.qorpera_runtime_node_placement_decide('${randomUUID()}','native','native-a');`));
+	assert.equal(dA3.decision, "placed"); assert.equal(dA3.nodeId, nodeA);
+	// An adapter without a node row is left alone (single-node behaviour), never refused.
+	const dU = JSON.parse(sql(`${service} select public.qorpera_runtime_node_placement_decide('${randomUUID()}','native','native-unregistered');`));
+	assert.equal(dU.decision, "unbound"); assert.equal(dU.reason, "PROVIDER_UNBOUND");
+	// Login kind ranks only nodes with a login provider.
+	const dL = JSON.parse(sql(`${service} select public.qorpera_runtime_node_placement_decide('${randomUUID()}','login','login-a');`));
+	assert.equal(dL.decision, "placed"); assert.equal(dL.candidates.length, 1);
+	// Records: one row per allocation, attempts counted, decisions overwritten by the latest.
+	assert.equal(sql(`select attempts||' '||decision from public.qorpera_runtime_node_placements where allocation_id='${alloc1}';`), "2 placed");
+	// The patched reservations carry the chooser call.
+	for (const [fn, kind] of [["public.qorpera_reserve_runtime_machine(uuid,text,text,uuid,uuid,uuid,bigint)", "native"], ["public.qorpera_reserve_runtime_login_machine(uuid,text,text,uuid,text)", "login"]]) {
+		const def = sql(`select pg_get_functiondef('${fn}'::regprocedure);`);
+		assert(def.includes(`qorpera_runtime_node_placement_decide(p_allocation_id,'${kind}',p_provider_adapter)`), `${fn} not patched`);
+		assert(def.includes("v_placement jsonb"), `${fn} declare not patched`);
+	}
+	// Non-service callers are refused.
+	const denied = spawnSync("docker", psql, { input: `set request.jwt.claims='{"role":"authenticated"}'; set role authenticated; select public.qorpera_runtime_node_placement_decide('${randomUUID()}','native','native-a');`, encoding: "utf8" });
+	assert.notEqual(denied.status, 0); assert.match(denied.stderr, /authority required|permission denied/);
+	console.log(JSON.stringify({ schema: "qorpera.runtime-node-placement-sql-proof/v1", migrations: migrations.length, twoNodePreference: true, refusalRecorded: true, staleObservationExcluded: true, unboundAdapterUntouched: true, reservationsPatched: true, passed: true }));
+} finally {
+	if (started) spawnSync("docker", ["rm", "-f", container], { timeout: 30_000 });
+}
