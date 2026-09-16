@@ -10,6 +10,7 @@ import {
 	type CompanyComputerPrivacyChallenge,
 	parseCompanyComputerPrivacyChallenge,
 } from "./cloud-company-computer-privacy.ts";
+import { type CompanyComputerMaintenance, parseCompanyComputerMaintenance } from "./cloud-company-computer-start.ts";
 import {
 	assertCompanyComputerViewerUrl,
 	COMPANY_COMPUTER_VIEW_TOKEN,
@@ -43,6 +44,7 @@ export interface CompanyComputerMemberStatus {
 	state: "provisioning" | "active" | "maintenance" | "recovering" | "retired";
 	privacyState: "shared" | "entering" | "private" | "leaving";
 	privacyVersion: number;
+	maintenance: CompanyComputerMaintenance | null;
 	screens: CompanyComputerMemberScreen[];
 	viewers: {
 		viewerSessionId: string;
@@ -111,7 +113,13 @@ export class CloudCompanyComputerViews {
 	}
 	async status(signal: AbortSignal): Promise<CompanyComputerMemberStatus> {
 		const value = await this.#request("qorpera_runtime_office_member_status", { p_scope: this.#scope }, signal);
-		keys(value, "computerGeneration,privacyState,privacyVersion,scope,screens,state,viewers");
+		const withMaintenance = !!value && typeof value === "object" && "maintenance" in value;
+		keys(
+			value,
+			withMaintenance
+				? "computerGeneration,maintenance,privacyState,privacyVersion,scope,screens,state,viewers"
+				: "computerGeneration,privacyState,privacyVersion,scope,screens,state,viewers",
+		);
 		keys(value.scope, "companyComputerId,companyId,environmentId,logicalComputerId");
 		assertCompanyComputerScope(value.scope as unknown as CompanyComputerScope, this.#scope);
 		epoch(value.computerGeneration);
@@ -163,7 +171,9 @@ export class CloudCompanyComputerViews {
 				throw new Error("INVALID_OFFICE_VIEW_RESPONSE");
 			viewers.add(viewer.viewerSessionId);
 		}
-		return structuredClone(value) as unknown as CompanyComputerMemberStatus;
+		const status = structuredClone(value) as unknown as CompanyComputerMemberStatus;
+		status.maintenance = withMaintenance ? parseCompanyComputerMaintenance(value.maintenance) : null;
+		return status;
 	}
 	/** Explicit intent only. Call status to observe the runtime acknowledgement;
 	 * never assume this response means that member input is ready. */

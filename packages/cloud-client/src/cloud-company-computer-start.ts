@@ -12,11 +12,45 @@ export interface CompanyComputerStartIntent {
 	computerGeneration: number;
 	state: "requested" | "reserved" | "cancelled";
 }
+/** 2026-09-17 amendment: why the office is in maintenance, when the backend
+ * knows (a host reboot opened by the node). Absent on older backends. */
+export interface CompanyComputerMaintenance {
+	reason: "host_reboot";
+	state: "requested" | "resumed" | "activated";
+	transitionId: string;
+	requestedAt: string;
+	resumedAt: string | null;
+	activatedAt: string | null;
+}
+export function parseCompanyComputerMaintenance(value: unknown): CompanyComputerMaintenance | null {
+	if (value === null || value === undefined) return null;
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("INVALID_OFFICE_MAINTENANCE");
+	const r = value as Record<string, unknown>;
+	if (
+		Object.keys(r).sort().join() !== "activatedAt,reason,requestedAt,resumedAt,state,transitionId" ||
+		r.reason !== "host_reboot" ||
+		!["requested", "resumed", "activated"].includes(r.state as string) ||
+		typeof r.transitionId !== "string" ||
+		typeof r.requestedAt !== "string" ||
+		(r.resumedAt !== null && typeof r.resumedAt !== "string") ||
+		(r.activatedAt !== null && typeof r.activatedAt !== "string")
+	)
+		throw new Error("INVALID_OFFICE_MAINTENANCE");
+	return {
+		reason: "host_reboot",
+		state: r.state as CompanyComputerMaintenance["state"],
+		transitionId: r.transitionId,
+		requestedAt: r.requestedAt,
+		resumedAt: r.resumedAt as string | null,
+		activatedAt: r.activatedAt as string | null,
+	};
+}
 export interface CompanyComputerStartStatus {
 	scope: CompanyComputerScope;
 	computerGeneration: number;
 	officeState: "provisioning" | "active" | "maintenance" | "recovering" | "retired";
 	intent: CompanyComputerStartIntent | null;
+	maintenance: CompanyComputerMaintenance | null;
 }
 export type CompanyComputerStartRpc = (
 	method:
@@ -127,7 +161,14 @@ export class CloudCompanyComputerStart {
 	}
 	async status(signal: AbortSignal): Promise<CompanyComputerStartStatus> {
 		const result = await this.#request("qorpera_runtime_office_start_status", { p_scope: this.#scope }, signal);
-		record(result, "computerGeneration,intent,officeState,scope");
+		// `maintenance` arrives from backends at or after the 2026-09-17 amendment.
+		const withMaintenance = !!result && typeof result === "object" && "maintenance" in result;
+		record(
+			result,
+			withMaintenance
+				? "computerGeneration,intent,maintenance,officeState,scope"
+				: "computerGeneration,intent,officeState,scope",
+		);
 		record(result.scope, "companyComputerId,companyId,environmentId,logicalComputerId");
 		assertCompanyComputerScope(result.scope as unknown as CompanyComputerScope, this.#scope);
 		generation(result.computerGeneration);
@@ -137,6 +178,7 @@ export class CloudCompanyComputerStart {
 			scope: { ...this.#scope },
 			computerGeneration: result.computerGeneration,
 			officeState: result.officeState as CompanyComputerStartStatus["officeState"],
+			maintenance: withMaintenance ? parseCompanyComputerMaintenance(result.maintenance) : null,
 			intent:
 				result.intent === null
 					? null

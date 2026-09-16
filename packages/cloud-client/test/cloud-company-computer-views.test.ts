@@ -30,6 +30,7 @@ function fixture() {
 		state: "active",
 		privacyState: "shared",
 		privacyVersion: 0,
+		maintenance: null,
 		screens: [screen],
 		viewers: [],
 	};

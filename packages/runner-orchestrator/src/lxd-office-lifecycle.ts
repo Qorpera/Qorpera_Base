@@ -4,7 +4,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import {
 	parseCompanyComputerBootIntentRequest,
-	parseCompanyComputerLifecycleRequest,
+	type parseCompanyComputerLifecycleRequest,
 	parseCompanyComputerPreparationCommand,
 } from "@qorpera/contracts";
 import { LxdUnixClient } from "./lxd-client.ts";
@@ -20,7 +20,14 @@ import {
 } from "./lxd-office-code-package-retained.ts";
 import { LxdOfficeConfigurationWorker } from "./lxd-office-configuration-worker.ts";
 import { observeLxdOfficeControlJournals } from "./lxd-office-control-observer.ts";
+import { openLxdOfficeCreationIdentity } from "./lxd-office-creation-journal.ts";
 import { LxdOfficeCreationWorker } from "./lxd-office-creation-worker.ts";
+import {
+	ensureLxdOfficeHostRebootReceipt,
+	LxdOfficeHostRebootGate,
+	type LxdOfficeHostRebootPlan,
+	parseLxdOfficeRecoveryPlan,
+} from "./lxd-office-host-reboot.ts";
 import { officeDigest, officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
 import { LxdOfficeInventoryWorker } from "./lxd-office-inventory-worker.ts";
 import type { LxdOfficeInvocationMeasurement } from "./lxd-office-invocation-measurement.ts";
@@ -161,6 +168,9 @@ export class LxdOfficeLifecycle {
 	readonly #resetWorker: Pick<LxdOfficeResetWorker, "reconcileSettled">;
 	readonly #kernelLock;
 	readonly #readProtected;
+	readonly #gate: Pick<LxdOfficePhysicalGate, "policy" | "check" | "inspect"> &
+		Partial<Pick<LxdOfficeHostRebootGate, "physical">>;
+	readonly #registry: LxdOfficeLifecycleRegistry;
 	#activeIntent: string | undefined;
 	#activeRecovery: { intentId: string; transitionId: string; activationId: string } | undefined;
 	#activeBoot: { intentId: string; transitionId: string; activationId: string; stageSha256: string } | undefined;
@@ -216,6 +226,8 @@ export class LxdOfficeLifecycle {
 			},
 			registry,
 		);
+		this.#gate = gate;
+		this.#registry = registry;
 		this.#kernelLock = ports.kernelLock ?? assertOfficeAdoptionKernelLock;
 		this.#readProtected = ports.readProtected ?? readLxdOfficeProtectedFile;
 		this.#stopWorker = ports.stopWorker ?? new LxdOfficeServiceStopWorker(gate, registry);
@@ -285,11 +297,9 @@ export class LxdOfficeLifecycle {
 		options: Options,
 		signal: AbortSignal,
 	) {
-		return new LxdOfficeLifecycle(
-			await LxdOfficePhysicalGate.open(policyPath, provenancePath, signal),
-			registry,
-			options,
-		);
+		const gate = await LxdOfficePhysicalGate.open(policyPath, provenancePath, signal);
+		// A resumed host boot answers as its lineage anchor (2026-09-17 amendment).
+		return new LxdOfficeLifecycle(new LxdOfficeHostRebootGate(gate, gate.policy.journal.path), registry, options);
 	}
 	async observeControlOperations(signal: AbortSignal): Promise<void> {
 		await this.#kernelLock(this.#root);
@@ -342,17 +352,17 @@ export class LxdOfficeLifecycle {
 		// disable; same-boot restart requires fresh enabled SQL authority. Retain
 		// this plan for process recovery; deleting it cannot undo maintenance.
 		let recovery: ReturnType<typeof parseCompanyComputerLifecycleRequest> | undefined;
+		let hostReboot: LxdOfficeHostRebootPlan | undefined;
 		try {
-			const envelope = officeRecord(
+			const plan = parseLxdOfficeRecoveryPlan(
 				JSON.parse(
 					new TextDecoder("utf8", { fatal: true }).decode(
 						await this.#readProtected(`${this.#planPath}.recovery`, 65536),
 					),
 				),
-				["schema", "request"],
 			);
-			if (envelope.schema !== "qorpera.lxd-office-recovery-plan/v1") throw new Error("recovery plan");
-			recovery = parseCompanyComputerLifecycleRequest(envelope.request);
+			recovery = plan.request;
+			hostReboot = plan.hostReboot;
 		} catch (error) {
 			if (!code(error, "ENOENT")) throw error;
 		}
@@ -499,6 +509,34 @@ export class LxdOfficeLifecycle {
 						if (!isDeepStrictEqual(resume.predecessor, recovery)) throw new Error("resume plan differs");
 					} catch (error) {
 						if (!code(error, "ENOENT")) throw error;
+					}
+					// A guard-marked host reboot: the resumed host boot must be received
+					// (receipt + backend record) before any resume-chain worker runs.
+					if (resume && hostReboot && bootStage === undefined) {
+						if (!this.#gate.physical) throw new Error("host reboot gate");
+						const physicalHostBootId = await this.#gate.physical(signal);
+						signal.throwIfAborted();
+						const creation = await openLxdOfficeCreationIdentity(
+							this.#gate.policy,
+							intentId,
+							true,
+							this.#operationClient,
+							signal,
+						);
+						await ensureLxdOfficeHostRebootReceipt(
+							{
+								root: this.#root,
+								intentId,
+								binding: creation.binding,
+								request: recovery,
+								plan: hostReboot,
+								physicalHostBootId,
+								client: this.#operationClient,
+								registry: this.#registry,
+							},
+							signal,
+						);
+						signal.throwIfAborted();
 					}
 					if (bootStage !== undefined) {
 						const saved = officeRecord(bootStage, [

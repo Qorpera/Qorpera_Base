@@ -2,6 +2,7 @@ import type { LxdOfficeActivationRegistry } from "./lxd-office-activation-contro
 import type { LxdOfficeBootIntentRegistry } from "./lxd-office-boot-intent-control.ts";
 import type { LxdOfficeBootSuccessorRegistry } from "./lxd-office-boot-successor-control.ts";
 import type { LxdOfficeCodePackageRegistry } from "./lxd-office-code-package-control.ts";
+import type { LxdOfficeHostRebootRegistry } from "./lxd-office-host-reboot.ts";
 import type { LxdOfficeLifecycleControlRegistry } from "./lxd-office-lifecycle-control.ts";
 import type { LxdOfficeProviderRegistry } from "./lxd-office-provider-control.ts";
 import type { LxdOfficeResetRegistry, LxdOfficeResetSuccessorRegistry } from "./lxd-office-reset-control.ts";
@@ -12,6 +13,7 @@ import type { LxdOfficeStopRegistry } from "./lxd-office-stop-control.ts";
 import type { LxdOfficeSuccessorRegistry } from "./lxd-office-successor-control.ts";
 
 export type LxdOfficeProviderMethod =
+	| Parameters<LxdOfficeHostRebootRegistry["call"]>[0]
 	| Parameters<LxdOfficeCodePackageRegistry["call"]>[0]
 	| Parameters<LxdOfficeProviderRegistry["call"]>[0]
 	| Parameters<LxdOfficeStartRegistry["call"]>[0]
@@ -38,6 +40,9 @@ const METHODS = new Set<LxdOfficeProviderMethod>([
 	"qorpera_ack_office_package_invocation",
 	"qorpera_reserve_runtime_node_machine",
 	"qorpera_runtime_office_provider_status",
+	"qorpera_runtime_office_provider_activation",
+	"qorpera_begin_runtime_office_host_reboot",
+	"qorpera_record_runtime_office_host_reboot_resume",
 	"qorpera_reserve_runtime_office_start",
 	"qorpera_check_runtime_office_start",
 	"qorpera_check_runtime_office_adoption",

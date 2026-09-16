@@ -20,6 +20,7 @@ function fixture() {
 		scope,
 		computerGeneration: 1,
 		officeState: "provisioning",
+		maintenance: null,
 		intent: intent as CompanyComputerStartIntent | null,
 	};
 	const rpc = vi.fn<CompanyComputerStartRpc>(async (method) => ({
@@ -67,6 +68,7 @@ describe("shared member office startup API", () => {
 		f.intent.state = "cancelled";
 		await expect(f.client.status(signal())).resolves.toMatchObject({
 			officeState: "provisioning",
+			maintenance: null,
 			intent: { state: "cancelled" },
 		});
 	});

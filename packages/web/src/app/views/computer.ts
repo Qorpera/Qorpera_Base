@@ -127,7 +127,10 @@ export class ComputerPanel {
 			const startClient = computer.client.start(scope);
 			const start = await startClient.status(signal);
 			signal.throwIfAborted();
-			this.#status.textContent = `Computer ${start.officeState}. Closing this panel leaves cloud work running.`;
+			this.#status.textContent =
+				start.officeState === "maintenance" && start.maintenance?.reason === "host_reboot"
+					? `Computer in maintenance: its host is rebooting (${start.maintenance.state}). It comes back on its own; work that needs it waits and is retried.`
+					: `Computer ${start.officeState}. Closing this panel leaves cloud work running.`;
 			this.#controls.append(button("Refresh computer", () => void run(refresh)));
 			if (catalog.canManage)
 				this.#controls.append(

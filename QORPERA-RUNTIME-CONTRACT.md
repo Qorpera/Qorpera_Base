@@ -1516,6 +1516,54 @@ does not reorder the implementation order.
   with reasons, and a node reboot returns its sockets and observer without
   operator work.
 
+### 2026-09-17 amendment: host reboot as a Company Computer lifecycle event
+
+- **Ratification.** Decided by Jonas on 16 September 2026 22:00 UTC (option B
+  of D-HOST-REBOOT-2): when a runtime node is rebooted, the Company Computers
+  on it close with a visible maintenance state and come back on their own once
+  the host is up again, and work that was cut off is retried. This amendment
+  makes that a lifecycle event of the 2026-09-16 amendment's Order 4 nodes.
+- **Orderly host reboot.** A host reboot is an orderly `reboot` lifecycle
+  transition of every active office on the node, opened by the node itself
+  before the host goes down (a root guard ordered after the office provider and
+  the LXD daemon). The transition follows the existing acknowledged-stop chain:
+  screens drain, the office enters `maintenance`, the guest service stops with
+  a sealed stop archive, and the VM powers off. The host reboots only after the
+  power-off is recorded or the guard's window (five minutes) lapses.
+- **Host boot receipt.** The office lineage is anchored to the host boot in
+  which its VM chain was last observed. A resume in a different host boot is
+  admitted only for a transition the guard opened as a host reboot: the
+  provider verifies the stopped guest's identity against its retained journal,
+  publishes a host reboot receipt (`qorpera.lxd-office-host-reboot/v1`:
+  the anchoring host boot and the resumed host boot), records the resumed host
+  boot in the backend, and then continues the ordinary resume, boot
+  configuration and boot-successor activation. Every later physical check
+  reads the resumed host boot as the lineage anchor through that receipt; the
+  guest-facing boot adoption chain keeps the anchor unchanged, because a guest
+  cannot observe a host boot. The office keeps its generation, workbench,
+  allocation and screens.
+- **Visible maintenance.** The backend records the host reboot on the
+  transition (`qorpera_runtime_office_host_reboots`: requested, resumed,
+  activated) and exposes it to members and providers as
+  `maintenance: {reason: "host_reboot", …}` next to the office state. A member
+  sees "in maintenance: host reboot" instead of a vanished computer.
+- **Retry of cut-off work.** An agent that needs the office while it is in
+  `maintenance` parks a start intent exactly as during provisioning; the
+  waiter survives maintenance and the activation wake re-runs the agent with
+  its full context when the successor activation is active. Runs whose machine
+  died with the host lose their lease and are re-claimed by the next dispatch
+  (the ordinary attempt budget); a node without observations for 60 seconds is
+  not a placement candidate, so new work goes elsewhere meanwhile.
+- **Out of scope.** An unplanned host loss (power cut, kernel crash) leaves no
+  stop archive; that office generation still ends with retire and
+  re-provision (D-HOST-REBOOT-4, §23 material). A second host reboot before
+  the resume has completed is refused and held for the operator.
+- **Acceptance.** On the isolated test nodes: a live host reboot of a node
+  with an active office; the office reported in maintenance with reason
+  `host_reboot` while the host is down; the same guest resumed with a host
+  reboot receipt and a boot-successor activation; a screen lease refused during
+  maintenance and granted afterwards; evidence retained.
+
 ### Current implementation checkpoint
 
 The NAS-backed live Company File and native cloud runner path already exist.
