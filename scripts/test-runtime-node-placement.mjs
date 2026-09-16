@@ -189,6 +189,17 @@ try {
 	assert.equal(chosen.reason, "LEAST_LOADED"); assert.equal(chosen.nodeId, nodeB); assert.equal(chosen.url, "https://node-b.example:10000/");
 	const deniedGateway = spawnSync("docker", psql, { input: `set request.jwt.claims='{"role":"authenticated"}'; set role authenticated; select public.qorpera_runtime_login_gateway_choose();`, encoding: "utf8", timeout: 60_000 });
 	assert.notEqual(deniedGateway.status, 0);
+	// Inventory policy replacement: exact previous digest, history kept, enrolment re-validated, observer digest must follow.
+	const invBefore = JSON.parse(sql(`select jsonb_build_object('sha',policy_sha256,'policy',policy) from public.qorpera_runtime_node_inventory_policies where node_id='${nodeA}';`));
+	const replaced = { ...invBefore.policy, operatingCpuMillis: Number(invBefore.policy.operatingCpuMillis) + 1000 };
+	const wrongPrevious = spawnSync("docker", psql, { input: `${service} select public.qorpera_replace_runtime_node_inventory(${literal(replaced)},repeat('0',64));`, encoding: "utf8", timeout: 60_000 });
+	assert.notEqual(wrongPrevious.status, 0); assert.match(wrongPrevious.stderr, /policy changed/);
+	const replacement = JSON.parse(sql(`${service} select public.qorpera_replace_runtime_node_inventory(${literal(replaced)},'${invBefore.sha}');`));
+	assert.equal(replacement.replaced, true); assert.notEqual(replacement.policySha256, invBefore.sha);
+	assert.equal(sql(`select count(*)||' '||max(replaced_by_sha256) from public.qorpera_runtime_node_inventory_policy_history where node_id='${nodeA}';`), `1 ${replacement.policySha256}`);
+	assert.equal(sql(`select policy_sha256 from public.qorpera_runtime_node_inventory_policies where node_id='${nodeA}';`), replacement.policySha256);
+	const same = JSON.parse(sql(`${service} select public.qorpera_replace_runtime_node_inventory(${literal(replaced)},'${replacement.policySha256}');`));
+	assert.equal(same.replaced, false);
 	// Records: one row per allocation, attempts counted, decisions overwritten by the latest.
 	assert.equal(sql(`select attempts||' '||decision from public.qorpera_runtime_node_placements where allocation_id='${alloc1}';`), "2 placed");
 	// The patched reservations carry the chooser call.
@@ -200,7 +211,7 @@ try {
 	// Non-service callers are refused.
 	const denied = spawnSync("docker", psql, { input: `set request.jwt.claims='{"role":"authenticated"}'; set role authenticated; select public.qorpera_runtime_node_placement_decide('${randomUUID()}','native','native-a');`, encoding: "utf8" });
 	assert.notEqual(denied.status, 0); assert.match(denied.stderr, /authority required|permission denied/);
-	console.log(JSON.stringify({ schema: "qorpera.runtime-node-placement-sql-proof/v1", migrations: migrations.length, twoNodePreference: true, identityHome: true, claimTimeHome: true, loginGateways: true, completedLoginsOnly: true, placementDeferral: true, refusalRecorded: true, staleObservationExcluded: true, unboundAdapterUntouched: true, reservationsPatched: true, passed: true }));
+	console.log(JSON.stringify({ schema: "qorpera.runtime-node-placement-sql-proof/v1", migrations: migrations.length, twoNodePreference: true, identityHome: true, claimTimeHome: true, loginGateways: true, completedLoginsOnly: true, placementDeferral: true, inventoryReplace: true, refusalRecorded: true, staleObservationExcluded: true, unboundAdapterUntouched: true, reservationsPatched: true, passed: true }));
 } finally {
 	if (started) spawnSync("docker", ["rm", "-f", container], { timeout: 30_000 });
 }
