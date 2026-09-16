@@ -160,6 +160,26 @@ try {
 	assert.equal(sql(`select status from public.qorpera_runner_jobs where id='${jobId}';`), "queued");
 	const homeClaim = sql(`${service} select public.qorpera_claim_runner_job_for_orchestrator('6a000000-0000-4000-8000-000000000001','${randomUUID()}',60);`);
 	assert(homeClaim !== "null" && homeClaim.includes(jobId), "home orchestrator claims the job");
+	// Placement deferral: a typed admission refusal keeps the job queued and uncounted; the refusing
+	// orchestrator waits for a node-preference refusal, everyone waits for a capacity refusal.
+	const homeOrchestrator = "6a000000-0000-4000-8000-000000000001";
+	const homeClaimId = JSON.parse(homeClaim).claim_id;
+	const deferred = JSON.parse(sql(`${service} select public.qorpera_release_runner_job_claim('${homeOrchestrator}','${homeClaimId}','${randomUUID()}','ADMISSION_REFUSED:NODE_NOT_PREFERRED');`));
+	assert.equal(deferred.deferred, true); assert.equal(deferred.dispatch_failure_count, 0);
+	assert.equal(sql(`select status||' '||dispatch_failure_count||' '||coalesce(dispatch_refused_by::text,'-') from public.qorpera_runner_jobs where id='${jobId}';`), `queued 0 ${homeOrchestrator}`);
+	assert.equal(sql(`select count(*) from public.qorpera_execution_run_events where run_id='${runId}' and event_type='placement_deferred';`), "1");
+	assert.equal(sql(`${service} select public.qorpera_claim_runner_job_for_orchestrator('${homeOrchestrator}','${randomUUID()}',60);`), "null", "refusing orchestrator is deferred");
+	sql(`update public.qorpera_runner_jobs set dispatch_deferred_until=statement_timestamp()-interval '1 second' where id='${jobId}';`);
+	const again = sql(`${service} select public.qorpera_claim_runner_job_for_orchestrator('${homeOrchestrator}','${randomUUID()}',60);`);
+	assert(again.includes(jobId), "deferral passed: the home orchestrator claims again");
+	const capacity = JSON.parse(sql(`${service} select public.qorpera_release_runner_job_claim('${homeOrchestrator}','${JSON.parse(again).claim_id}','${randomUUID()}','ADMISSION_REFUSED:MACHINE_CAPACITY_EXHAUSTED');`));
+	assert.equal(capacity.deferred, true);
+	assert.equal(sql(`select coalesce(dispatch_refused_by::text,'-')||' '||dispatch_failure_count from public.qorpera_runner_jobs where id='${jobId}';`), "- 0");
+	assert.equal(sql(`${service} select public.qorpera_claim_runner_job_for_orchestrator('${homeOrchestrator}','${randomUUID()}',60);`), "null", "capacity deferral holds every orchestrator");
+	sql(`update public.qorpera_runner_jobs set dispatch_deferred_until=statement_timestamp()-interval '1 second' where id='${jobId}';`);
+	const third = sql(`${service} select public.qorpera_claim_runner_job_for_orchestrator('${homeOrchestrator}','${randomUUID()}',60);`);
+	const plain = JSON.parse(sql(`${service} select public.qorpera_release_runner_job_claim('${homeOrchestrator}','${JSON.parse(third).claim_id}','${randomUUID()}','guest agent probe failed');`));
+	assert.equal(plain.dispatch_failure_count, 1, "an ordinary failure still counts");
 	// Login gateways: the edge function's choice follows the login candidates and falls back to any registered gateway.
 	assert.equal(JSON.parse(sql(`${service} select public.qorpera_runtime_login_gateway_choose();`)).reason, "NO_GATEWAY");
 	if (sql(`select count(*) from public.qorpera_runtime_node_providers where provider_kind='login' and node_id='${nodeB}';`) === "0") sql(`${service} select public.qorpera_enroll_runtime_node_provider('${nodeB}','${mB}','login','login-b',repeat('9',64),4000,8589934592);`);
@@ -180,7 +200,7 @@ try {
 	// Non-service callers are refused.
 	const denied = spawnSync("docker", psql, { input: `set request.jwt.claims='{"role":"authenticated"}'; set role authenticated; select public.qorpera_runtime_node_placement_decide('${randomUUID()}','native','native-a');`, encoding: "utf8" });
 	assert.notEqual(denied.status, 0); assert.match(denied.stderr, /authority required|permission denied/);
-	console.log(JSON.stringify({ schema: "qorpera.runtime-node-placement-sql-proof/v1", migrations: migrations.length, twoNodePreference: true, identityHome: true, claimTimeHome: true, loginGateways: true, completedLoginsOnly: true, refusalRecorded: true, staleObservationExcluded: true, unboundAdapterUntouched: true, reservationsPatched: true, passed: true }));
+	console.log(JSON.stringify({ schema: "qorpera.runtime-node-placement-sql-proof/v1", migrations: migrations.length, twoNodePreference: true, identityHome: true, claimTimeHome: true, loginGateways: true, completedLoginsOnly: true, placementDeferral: true, refusalRecorded: true, staleObservationExcluded: true, unboundAdapterUntouched: true, reservationsPatched: true, passed: true }));
 } finally {
 	if (started) spawnSync("docker", ["rm", "-f", container], { timeout: 30_000 });
 }

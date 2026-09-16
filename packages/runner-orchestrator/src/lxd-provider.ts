@@ -765,6 +765,25 @@ export class HttpLxdGuestTransport implements LxdGuestTransport {
 	}
 }
 
+/** The company ceiling or the node chooser refused or deferred a machine start. The
+ * orchestrator releases its claim without spending an infrastructure retry on it. */
+export class LxdMachineAdmissionRefused extends Error {
+	readonly category = "admission_refused" as const;
+	readonly state: "refused" | "deferred";
+	readonly reason: string;
+
+	constructor(state: "refused" | "deferred", reason: string) {
+		super("Machine start was not admitted by the company ceiling");
+		this.name = "LxdMachineAdmissionRefused";
+		this.state = state;
+		this.reason = reason;
+	}
+}
+
+/** A reserving journal is advanced only by the orchestrator's acquire; after this long without
+ * progress the acquisition is retired instead of being re-tried by every reconcile pass. */
+const RESERVING_RETIREMENT_MS = 10 * 60_000;
+
 export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderServiceBackend {
 	readonly #registeredCapacity = new Set<string>();
 	readonly #registeredNodeCapacity = new Map<string, NativeNodePlacement>();
@@ -1535,7 +1554,12 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			throw new Error("Journaled LXD guest is missing Compute Identity authority");
 		}
 		if (current.physicalState === "reserving") {
-			await this.#ensureReady(current, await this.#credentials(current.acquisitionId), signal);
+			// Only the orchestrator's acquire advances a reserving journal. Reconcile no longer re-runs
+			// a reservation the ceiling or the chooser refused (16 Sep 2026: refused journals of
+			// terminal runs were re-tried on every pass); a stale one is retired.
+			if (Date.now() - Date.parse(current.updatedAt) < RESERVING_RETIREMENT_MS) return;
+			if (current.capacityRegistered || current.nodeCapacity) await this.#releaseMachine(current, signal);
+			await this.#writeJournal({ ...current, physicalState: "lost", stopReason: "idle" });
 			return;
 		}
 		await this.#ensureIdentityVolume(current, current.runner.computeIdentityId, signal);
@@ -1869,6 +1893,13 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			),
 			"Machine reservation",
 		);
+		if (
+			(result.state === "refused" || result.state === "deferred") &&
+			typeof result.reason === "string" &&
+			/^[A-Z_]{3,64}$/.test(result.reason)
+		) {
+			throw new LxdMachineAdmissionRefused(result.state, result.reason);
+		}
 		if (
 			Object.keys(result).sort().join() !== "allocationId,instanceSha256,state" ||
 			result.state !== "reserved" ||

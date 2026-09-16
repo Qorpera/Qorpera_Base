@@ -483,4 +483,49 @@ describe("runner provider HTTP service", () => {
 			log.mockRestore();
 		}
 	});
+	it("answers a typed admission refusal with its reason code only", async () => {
+		const provider = backend();
+		const refusal = Object.assign(new Error("Machine start was not admitted by the company ceiling"), {
+			category: "admission_refused",
+			state: "refused",
+			reason: "NODE_NOT_PREFERRED",
+		});
+		provider.acquire.mockRejectedValue(refusal);
+		const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		const service = new HttpCloudRunnerProviderService(provider, token);
+		services.push(service);
+		try {
+			const port = await service.start();
+			const response = await fetch(`http://127.0.0.1:${port}/v1/qorpera-runner-provider`, {
+				method: "POST",
+				headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+				body: JSON.stringify({
+					schema: "qorpera.runner-provider/v1",
+					action: "acquire",
+					adapter_id: "managed",
+					acquisition_id: work.runId,
+					work,
+				}),
+			});
+			expect(response.status).toBe(422);
+			expect(await response.json()).toEqual({
+				error: "request rejected",
+				category: "admission_refused",
+				state: "refused",
+				reason: "NODE_NOT_PREFERRED",
+			});
+			expect(log).toHaveBeenCalledExactlyOnceWith(
+				JSON.stringify({
+					schema: "qorpera.provider-request-error/v1",
+					providerAdapter: "managed",
+					status: "rejected",
+					errorCategory: "admission_refused",
+					state: "refused",
+					reason: "NODE_NOT_PREFERRED",
+				}),
+			);
+		} finally {
+			log.mockRestore();
+		}
+	});
 });

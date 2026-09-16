@@ -676,7 +676,9 @@ describe("LXD cloud runner provider", () => {
 		if (!f.lxd.instance) throw new Error("fixture guest missing");
 		f.lxd.instance = { ...f.lxd.instance, status: "Stopped", statusCode: 102 };
 		const backend = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, fetcher);
-		await expect(backend.reconcile()).rejects.toThrow("company ceiling");
+		// 16 Sep 2026: reconcile no longer re-runs a refused reservation at all; the reserving
+		// journal waits for the orchestrator's acquire, and the finished guest is retired cleanly.
+		await backend.reconcile();
 		expect(f.lxd.instance).toBeUndefined();
 		expect(JSON.parse(await readFile(f.journalPath, "utf8"))).toMatchObject({ physicalState: "stopped" });
 		expect(
@@ -687,6 +689,52 @@ describe("LXD cloud runner provider", () => {
 		expect(JSON.parse(await readFile(join(f.stateRoot, reservingId, "journal.json"), "utf8"))).toMatchObject({
 			physicalState: "reserving",
 		});
+	});
+	it("retires a reserving journal that made no progress for ten minutes", async () => {
+		const f = await acquiredFixture();
+		const reservingId = "10000000-0000-4000-8000-000000000002";
+		const journal = JSON.parse(await readFile(f.journalPath, "utf8"));
+		const stale = new Date(Date.now() - 11 * 60_000).toISOString();
+		const reserving = {
+			...journal,
+			acquisitionId: reservingId,
+			...(journal.runId === undefined ? {} : { runId: reservingId }),
+			instanceName: `qorpera-${reservingId.replaceAll("-", "")}`,
+			physicalState: "reserving",
+			createdAt: stale,
+			updatedAt: stale,
+		};
+		delete reserving.nodeCapacity;
+		delete reserving.guestAddress;
+		delete reserving.assignmentId;
+		await mkdir(join(f.stateRoot, reservingId), { recursive: true, mode: 0o700 });
+		await writeFile(join(f.stateRoot, reservingId, "journal.json"), JSON.stringify(reserving), { mode: 0o600 });
+		const backend = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, f.fetchImplementation);
+		await backend.reconcile();
+		expect(JSON.parse(await readFile(join(f.stateRoot, reservingId, "journal.json"), "utf8"))).toMatchObject({
+			physicalState: "lost",
+		});
+		const releases = vi
+			.mocked(f.fetchImplementation)
+			.mock.calls.filter(([url, init]) => String(url).includes("qorpera_release_runtime_machine") && String(init?.body).includes(reservingId));
+		expect(releases).toHaveLength(reserving.capacityRegistered ? 1 : 0);
+	});
+	it("reports a typed admission refusal from the reservation", async () => {
+		const directory = await root();
+		const stateRoot = join(directory, "state");
+		const lxd = new FakeLxd();
+		const guest = new FakeGuest();
+		const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+		const base = fetchProvisioner(requests);
+		const fetcher: typeof fetch = async (input, init) => {
+			if (String(input).includes("qorpera_reserve_runtime_machine"))
+				return Response.json({ state: "refused", reason: "NODE_NOT_PREFERRED", preferredNodeId: "36000000-0000-4000-8000-000000000010" });
+			return base(input, init);
+		};
+		const backend = new LxdCloudRunnerProviderBackend(config(stateRoot), lxd, guest, fetcher);
+		const failure = await backend.acquire(runId, work(), new AbortController().signal).catch((error: unknown) => error);
+		expect(failure).toMatchObject({ name: "LxdMachineAdmissionRefused", category: "admission_refused", state: "refused", reason: "NODE_NOT_PREFERRED" });
+		expect(lxd.createCalls).toHaveLength(0);
 	});
 	it("blocks new starts until retained live guests have a capacity record", async () => {
 		const f = await acquiredFixture();

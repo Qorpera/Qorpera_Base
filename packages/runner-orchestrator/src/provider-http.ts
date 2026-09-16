@@ -115,14 +115,59 @@ function parseRunnerInstance(value: unknown, adapterId: string): CloudRunnerInst
 	};
 }
 
+export interface CloudRunnerProviderAdmissionRefusal {
+	readonly state: "refused" | "deferred";
+	readonly reason: string;
+}
+
 export class CloudRunnerProviderRequestError extends Error {
 	readonly status: number;
+	/** Set when the provider answered a typed admission refusal (ceiling or node chooser). */
+	readonly admission: CloudRunnerProviderAdmissionRefusal | undefined;
 
-	constructor(status: number) {
+	constructor(status: number, admission?: CloudRunnerProviderAdmissionRefusal) {
 		super(`Runner provider request failed (${status})`);
 		this.name = "CloudRunnerProviderRequestError";
 		this.status = status;
+		this.admission = admission;
 	}
+}
+
+const ADMISSION_BODY_LIMIT_BYTES = 4096;
+
+/** Reads a bounded 422 body and keeps only a well-formed admission refusal. */
+async function providerAdmissionRefusal(response: {
+	readonly status: number;
+	readonly body?: { cancel(): Promise<void> } | null;
+	text(): Promise<string>;
+}): Promise<CloudRunnerProviderAdmissionRefusal | undefined> {
+	if (response.status !== 422) {
+		void response.body?.cancel().catch(() => undefined);
+		return undefined;
+	}
+	let encoded: string;
+	try {
+		encoded = await response.text();
+	} catch {
+		return undefined;
+	}
+	if (Buffer.byteLength(encoded) > ADMISSION_BODY_LIMIT_BYTES) return undefined;
+	let value: unknown;
+	try {
+		value = JSON.parse(encoded) as unknown;
+	} catch {
+		return undefined;
+	}
+	if (typeof value !== "object" || value === null) return undefined;
+	const body = value as { category?: unknown; state?: unknown; reason?: unknown };
+	if (
+		body.category !== "admission_refused" ||
+		(body.state !== "refused" && body.state !== "deferred") ||
+		typeof body.reason !== "string" ||
+		!/^[A-Z_]{3,64}$/.test(body.reason)
+	)
+		return undefined;
+	return { state: body.state, reason: body.reason };
 }
 
 /** HTTP boundary to a managed-computer provisioner. The provisioner receives
@@ -222,7 +267,7 @@ export class HttpCloudRunnerProviderAdapter implements CloudRunnerProviderAdapte
 			redirect: "error",
 			signal: requestSignal,
 		});
-		if (!response.ok) throw new CloudRunnerProviderRequestError(response.status);
+		if (!response.ok) throw new CloudRunnerProviderRequestError(response.status, await providerAdmissionRefusal(response));
 		const encoded = await response.text();
 		if (Buffer.byteLength(encoded) > PROVIDER_RESPONSE_LIMIT_BYTES) {
 			throw new Error("Runner provider response exceeds its byte limit");

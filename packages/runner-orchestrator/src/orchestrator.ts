@@ -1,3 +1,4 @@
+import { CloudRunnerProviderRequestError } from "./provider-http.ts";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { JsonValue } from "@qorpera/contracts";
 import type { ServiceHttpFetch } from "./http-transport.ts";
@@ -312,6 +313,13 @@ function definitiveRejectionStatus(error: unknown): number | undefined {
 	if (!error || typeof error !== "object") return undefined;
 	const status = (error as { status?: unknown }).status;
 	return typeof status === "number" ? status : undefined;
+}
+
+/** A typed admission refusal is reported by its reason code so the control plane can defer the job
+ * instead of counting an infrastructure failure; everything else stays a redacted message. */
+function deliveryFailure(error: unknown): string {
+	if (error instanceof CloudRunnerProviderRequestError && error.admission) return `ADMISSION_REFUSED:${error.admission.reason}`;
+	return safeDeliveryFailure(error);
 }
 
 function safeDeliveryFailure(error: unknown): string {
@@ -1522,7 +1530,7 @@ export class CloudRunnerOrchestrator {
 				.then((lateRunner) => this.#providerAdapter.stop(lateRunner, "delivery_failed"))
 				.catch(() => undefined);
 			await this.#controlPlane
-				.releaseClaim(claim, clientAssignmentId, safeDeliveryFailure(error))
+				.releaseClaim(claim, clientAssignmentId, deliveryFailure(error))
 				.catch(() => undefined);
 			throw error;
 		}

@@ -247,6 +247,21 @@ function sourceMatches(expected: string, received: string | undefined): boolean 
 	return received === expected || received === `::ffff:${expected}`;
 }
 
+/** A typed admission refusal (ceiling or node chooser) carries only a fixed reason code; anything
+ * else stays an opaque rejection so backend exceptions never reach the journal or the caller. */
+function admissionRefusal(error: unknown): { state: "refused" | "deferred"; reason: string } | undefined {
+	if (typeof error !== "object" || error === null) return undefined;
+	const candidate = error as { category?: unknown; state?: unknown; reason?: unknown };
+	if (
+		candidate.category !== "admission_refused" ||
+		(candidate.state !== "refused" && candidate.state !== "deferred") ||
+		typeof candidate.reason !== "string" ||
+		!/^[A-Z_]{3,64}$/.test(candidate.reason)
+	)
+		return undefined;
+	return { state: candidate.state, reason: candidate.reason };
+}
+
 export class HttpCloudRunnerProviderService {
 	readonly #backend: CloudRunnerProviderServiceBackend;
 	readonly #token: string;
@@ -395,16 +410,24 @@ export class HttpCloudRunnerProviderService {
 			if (controller.signal.aborted) return;
 			// The operator journal is telemetry too. Never log a backend exception,
 			// which can contain request bodies, private host paths or credentials.
+			const refusal = admissionRefusal(error);
 			console.error(
 				JSON.stringify({
 					schema: "qorpera.provider-request-error/v1",
 					providerAdapter: this.#backend.adapterId,
 					status: "rejected",
-					errorCategory: error instanceof SyntaxError ? "invalid_arguments" : "unknown",
+					errorCategory: error instanceof SyntaxError ? "invalid_arguments" : refusal ? "admission_refused" : "unknown",
+					...(refusal ? { state: refusal.state, reason: refusal.reason } : {}),
 				}),
 			);
 			const status = error instanceof SyntaxError ? 400 : 422;
-			response.writeHead(status, { "content-type": "application/json" }).end('{"error":"request rejected"}\n');
+			response
+				.writeHead(status, { "content-type": "application/json" })
+				.end(
+					refusal
+						? `${JSON.stringify({ error: "request rejected", category: "admission_refused", state: refusal.state, reason: refusal.reason })}\n`
+						: '{"error":"request rejected"}\n',
+				);
 		} finally {
 			request.off("aborted", abort);
 			response.off("close", responseClosed);
