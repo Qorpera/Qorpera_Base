@@ -18,7 +18,10 @@ export class HttpIdentityRecoveryService {
 	async start(port = 0): Promise<string> {
 		if (this.#server) throw new Error("Recovery service is already running");
 		const server = createServer((request, response) => {
-			void this.#handle(request, response).catch(() => {
+			void this.#handle(request, response).catch((error: unknown) => {
+				// Operator diagnostics only: the error class and its bounded generic message; never a body, capability or key.
+				const detail = error instanceof Error ? `${error.name}: ${error.message}` : "Error";
+				console.error(`PHQL_RECOVERY_REQUEST_REFUSED ${request.url ?? ""} ${detail.slice(0, 200)}`);
 				if (!response.headersSent)
 					response.writeHead(503, { "content-type": "application/json", "cache-control": "no-store" });
 				response.end('{"error":"Recovery operation refused or unavailable"}');
