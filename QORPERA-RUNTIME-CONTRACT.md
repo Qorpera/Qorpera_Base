@@ -755,7 +755,8 @@ boundaries. Work that needs actual isolation runs in an isolated worker.
 A company starts with one Company Computer. When all screens on the company's
 Company Computers are occupied, the control plane MAY start an additional
 machine for the same company environment, attached to the same shared NAS
-workbench and the same live Company File. Scale-up and scale-down are
+workbench and the same live Company File. Sizes, screens per machine and
+the node chooser are set by the 2026-09-16 amendment (section 19). Scale-up and scale-down are
 control-plane lifecycle operations under the kernel-owned spend ceilings.
 Order 4's acceptance is provable on one machine; additional machines are
 capacity work after it.
@@ -1463,6 +1464,49 @@ NOT represent missing cloud machinery as working autonomy.
   work after Order 4's one-machine acceptance.
 - The failure-model chapter (section 23) is implemented during partner
   testing, after Orders 0–10 run on the primary services.
+
+### 2026-09-16 amendment: multi-node capacity and Company Computer sizing
+
+Ratified by the founder on 16 September 2026 after the second runtime-hosting
+node came online. It refines section 12 and the Order 4 capacity records; it
+does not reorder the implementation order.
+
+- **Nodes are symmetric compute.** Every enabled runtime-hosting node is the
+  same kind of engine for the traffic members bring. No node is reserved for a
+  workload class; placement decides per start.
+- **Placement chooses the least-loaded eligible node.** A start (Company
+  Computer or member execution machine) is reserved on the enabled, healthy
+  node with the most free standard slots; ties go to the node with the lowest
+  allocated CPU, then memory. The placement record names the chosen node and
+  the reason, and a refused start names every node's refusal. Providers are
+  bound per node; the chooser selects among their nodes before the provider
+  reserves. Concurrent admission MUST NOT allocate the same slot twice.
+- **Guest addresses are unique per node.** Several member execution machines
+  and several Company Computers MUST run on one node at the same time; a
+  fixed guest address in an image is a defect, not a limit (D-NATIVE-ADDR-1).
+- **Standard sizes.** Company Computer: 8 vCPU, 16 GiB memory, 128 GiB root
+  disk. Member execution machine (the member's own model session; holds no
+  company files): 4 vCPU, 8 GiB. Node policy targets three Company Computers
+  per node plus member machines within the node's operating headroom. Sizes
+  are policy values and change by a new policy, never by editing a running
+  allocation.
+- **Screens per Company Computer.** Six desktop screens per Company Computer
+  is the configured target; the actual count is measured on the live machine
+  before it is promised, and an additional Company Computer for the same
+  company (section 12) starts when all screens are occupied.
+- **Storage.** Company Computers mount the shared NAS workbench and the live
+  Company File projection directly; nothing of the company is copied per
+  machine. Reads use the mount; Company File writes pass through the live
+  mutation gateway (12.1). Node-local disk holds only machine roots, the
+  runtime, images and journals. Usage and capacity records live in the
+  backend (Order 4 records), not on nodes. Installing custom applications on
+  an agent's machine is out of scope for this amendment.
+- **Order.** The chooser, the address fix and the sizing policies are Order 4
+  capacity work executed now on the isolated test nodes; the one-machine
+  acceptance already achieved stands. Acceptance: two members' starts land on
+  two nodes with recorded placements, a start with all nodes full is refused
+  with reasons, and a node reboot returns its sockets and observer without
+  operator work.
 
 ### Current implementation checkpoint
 
