@@ -412,7 +412,12 @@ export async function runLxdOfficeHostShutdown(
 		pollMs = options.pollMs ?? 2000,
 		now = options.now ?? Date.now;
 	const guard = await openGuard(configPath, signal);
-	const physical = (await guard.gate.inspect(signal)).hostBootId;
+	// The provider's physical inspection is for its unprivileged account; the
+	// root guard reads the kernel boot id itself (same source, same format).
+	const physical = uuid(
+		(await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim(),
+		"OFFICE_HOST_BOOT_ID_UNCONFIRMED",
+	);
 	const anchor = lxdOfficeHostRebootAnchor(
 		await readLxdOfficeHostRebootReceipts(guard.root, readJournalRecordAsRoot),
 		physical,
