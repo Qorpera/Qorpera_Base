@@ -345,6 +345,9 @@ async function writeProtectedPlan(path: string, bytes: Buffer): Promise<void> {
 	const handle = await open(temporary, "wx", 0o444);
 	try {
 		await handle.writeFile(bytes);
+		// World-readable regardless of the caller's umask: the provider's own
+		// account must read the root-owned plan.
+		await handle.chmod(0o444);
 		await handle.sync();
 	} finally {
 		await handle.close();
