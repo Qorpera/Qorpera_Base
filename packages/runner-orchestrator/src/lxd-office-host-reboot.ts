@@ -221,8 +221,13 @@ export async function ensureLxdOfficeHostRebootReceipt(
 	const receipts = await readLxdOfficeHostRebootReceipts(root);
 	const anchor = plan.shutdownHostBootId,
 		mapped = lxdOfficeHostRebootAnchor(receipts, input.physicalHostBootId);
-	// Same host boot as the shutdown: an ordinary reboot transition, no receipt.
-	if (input.physicalHostBootId === anchor) return undefined;
+	// Same host boot as the shutdown (the reboot did not happen, or the node
+	// came back on the same boot): no receipt, but the backend row still
+	// records the unchanged host so the successor activation closes it.
+	if (input.physicalHostBootId === anchor) {
+		await recordResume(input.registry, request, anchor, signal);
+		return undefined;
+	}
 	// A host boot that already resumes another lineage anchor is not this one.
 	if (mapped !== input.physicalHostBootId && mapped !== anchor) throw new Error("host reboot anchor differs");
 	const name = lxdOfficeHostRebootReceiptName(allocationId, transitionId);
@@ -276,21 +281,29 @@ export async function ensureLxdOfficeHostRebootReceipt(
 		receipt = parseLxdOfficeHostRebootReceipt((await readRecord(join(root, name), 4096)).value);
 		if (!isDeepStrictEqual(receipt, expected)) throw new Error("host reboot receipt differs");
 	}
-	// Idempotent for the same resumed host boot; the backend refuses any other.
+	await recordResume(input.registry, request, receipt.resumedHostBootId, signal);
+	return receipt;
+}
+/** Idempotent for the same resumed host boot; the backend refuses any other. */
+async function recordResume(
+	registry: LxdOfficeHostRebootRegistry,
+	request: CompanyComputerLifecycleRequest,
+	resumedHostBootId: string,
+	signal: AbortSignal,
+): Promise<void> {
 	const recorded = officeRecordLoose(
-		await input.registry.call(
+		await registry.call(
 			"qorpera_record_runtime_office_host_reboot_resume",
-			{ p_request: request, p_resumed_host_boot_id: receipt.resumedHostBootId },
+			{ p_request: request, p_resumed_host_boot_id: resumedHostBootId },
 			signal,
 		),
 	);
 	if (
 		recorded.schema !== "qorpera.office-host-reboot/v1" ||
-		recorded.transitionId !== transitionId ||
-		recorded.resumedHostBootId !== receipt.resumedHostBootId
+		recorded.transitionId !== request.transitionId ||
+		recorded.resumedHostBootId !== resumedHostBootId
 	)
 		throw new Error("host reboot record differs");
-	return receipt;
 }
 function officeRecordLoose(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("host reboot record");

@@ -164,7 +164,10 @@ describe("ensureLxdOfficeHostRebootReceipt", () => {
 			registry: registry as never,
 		});
 		expect(await ensureLxdOfficeHostRebootReceipt(input(plan.shutdownHostBootId), signal())).toBeUndefined();
-		expect(registry.call).not.toHaveBeenCalled();
+		// The unchanged host is still recorded so the successor closes the row.
+		expect(registry.call).toHaveBeenCalledTimes(1);
+		expect(registry.call.mock.calls[0]?.[1]).toMatchObject({ p_resumed_host_boot_id: plan.shutdownHostBootId });
+		registry.call.mockClear();
 		const instance = await client.getInstance();
 		assertLxdOfficeGuestInstance(f.binding, instance as never);
 		const first = await ensureLxdOfficeHostRebootReceipt(input(id(77)), signal());
