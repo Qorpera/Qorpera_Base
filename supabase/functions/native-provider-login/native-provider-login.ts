@@ -77,17 +77,28 @@ async function readLoginBody(
 }
 
 /** The resolver's answer is used only when it is a valid gateway base; anything else keeps the configured upstream. */
-async function resolveUpstream(options: NativeProviderLoginProxyOptions, signal: AbortSignal): Promise<string> {
+async function resolveUpstream(
+	options: NativeProviderLoginProxyOptions,
+	signal: AbortSignal,
+): Promise<{ url: string; source: "resolver" | "configured" | "fallback" }> {
 	if (options.upstreamResolver) {
 		try {
 			const chosen = await options.upstreamResolver();
 			signal.throwIfAborted();
-			if (typeof chosen === "string" && chosen) return upstreamLoginUrl(chosen);
+			if (typeof chosen === "string" && chosen) return { url: upstreamLoginUrl(chosen), source: "resolver" };
 		} catch (error) {
 			if (signal.aborted) throw error;
+			return { url: upstreamLoginUrl(options.upstreamUrl ?? ""), source: "fallback" };
 		}
+		return { url: upstreamLoginUrl(options.upstreamUrl ?? ""), source: "fallback" };
 	}
-	return upstreamLoginUrl(options.upstreamUrl ?? "");
+	return { url: upstreamLoginUrl(options.upstreamUrl ?? ""), source: "configured" };
+}
+
+/** Host of the gateway that was tried and why, for operators; never the capability or body. */
+function gatewayHeader(target: { url: string; source: string } | undefined, outcome: string): string {
+	const host = target ? new URL(target.url).host : "none";
+	return `${outcome}; gateway=${host}; source=${target?.source ?? "none"}`;
 }
 
 async function forwardLogin(request: Request, options: NativeProviderLoginProxyOptions): Promise<Response> {
@@ -101,14 +112,15 @@ async function forwardLogin(request: Request, options: NativeProviderLoginProxyO
 		if (error instanceof LoginBodyTooLarge) return jsonResponse({ error: "Native login request is too large" }, 413);
 		return jsonResponse({ error: "Invalid native login request" }, 400);
 	}
+	let target: { url: string; source: string } | undefined;
 	try {
 		const timeoutMs = options.timeoutMs ?? 30_000;
 		if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) {
 			throw new Error("Native login proxy timeout is invalid");
 		}
 		const signal = AbortSignal.any([request.signal, AbortSignal.timeout(timeoutMs)]);
-		const target = await resolveUpstream(options, signal);
-		const upstream = await (options.fetchImplementation ?? fetch)(target, {
+		target = await resolveUpstream(options, signal);
+		const upstream = await (options.fetchImplementation ?? fetch)(target.url, {
 			method: "POST",
 			headers: {
 				accept: "application/json",
@@ -122,11 +134,18 @@ async function forwardLogin(request: Request, options: NativeProviderLoginProxyO
 		const responseBody = await readLoginBody(upstream, MAX_RESPONSE_BYTES, signal);
 		return new Response(responseBody, {
 			status: upstream.status,
-			headers: { "cache-control": "no-store", "content-type": "application/json" },
+			headers: {
+				"cache-control": "no-store",
+				"content-type": "application/json",
+				"x-qorpera-login-gateway": gatewayHeader(target, "forwarded"),
+			},
 		});
 	} catch (error) {
+		const failure = error instanceof Error ? error.name : "Error";
 		if (error instanceof LoginBodyTooLarge) return jsonResponse({ error: "Native login response is too large" }, 502);
-		return jsonResponse({ error: "Native provider login is unavailable" }, 503);
+		const response = jsonResponse({ error: "Native provider login is unavailable" }, 503);
+		response.headers.set("x-qorpera-login-gateway", gatewayHeader(target, `failed:${failure}`));
+		return response;
 	}
 }
 
