@@ -135,6 +135,26 @@ try {
 	const loginStill = JSON.parse(sql(`${service} select public.qorpera_runtime_node_placement_decide('${randomUUID()}','login','login-a');`));
 	assert.equal(loginStill.decision, "placed"); assert.equal(loginStill.reason, "LEAST_LOADED");
 	assert(sql(`select pg_get_functiondef('public.qorpera_reserve_runtime_machine(uuid,text,text,uuid,uuid,uuid,bigint)'::regprocedure);`).includes("p_provider_adapter,v_run.compute_identity_id)"), "run reservation passes the identity");
+	// Claim time: a queued job of the homed identity is invisible to an orchestrator on another adapter and claimed by the home one.
+	sql(`${service} select public.qorpera_register_runner_orchestrator('6a000000-0000-4000-8000-000000000001','home orchestrator','lxd',repeat('1',64),3600);
+	 select public.qorpera_register_runner_orchestrator('6a000000-0000-4000-8000-000000000002','away orchestrator','native-b',repeat('2',64),3600);`);
+	const baseRun = sql(`select id from public.qorpera_execution_runs where compute_identity_id='${identity}' order by created_at limit 1;`);
+	assert(baseRun, "a fixture run of the identity exists");
+	const jobId = randomUUID(), runId = randomUUID();
+	sql(`insert into public.qorpera_runner_jobs(id,profile_id,environment_id,session_id,substrate_version_id,client_job_id,required_capability,job_type,payload,created_by_user_id)
+	 select '${jobId}',profile_id,environment_id,session_id,substrate_version_id,'${runId}','agent_turn','agent_turn','{}',requested_by_user_id from public.qorpera_execution_runs where id='${baseRun}';
+	 insert into public.qorpera_execution_runs(id,profile_id,environment_id,source_kind,source_id,session_id,job_id,substrate_version_id,company_snapshot_id,staff_agent_id,staff_version,input_ids,sponsor_binding_id,sponsor_version,required_capability,job_type,payload_sha256,compute_identity_id,compute_recovery_epoch,logical_computer_id,transcript_start_sequence,created_by_user_id,deadline_at)
+	 select '${runId}',profile_id,environment_id,'session_turn','${runId}',session_id,'${jobId}',substrate_version_id,company_snapshot_id,staff_agent_id,staff_version,input_ids,sponsor_binding_id,sponsor_version,'agent_turn','agent_turn',repeat('e',64),compute_identity_id,compute_recovery_epoch,logical_computer_id,0,requested_by_user_id,statement_timestamp()+interval '10 minutes' from public.qorpera_execution_runs where id='${baseRun}';
+	 update public.qorpera_runner_jobs set run_id='${runId}' where id='${jobId}';
+	 select public.qorpera_reserve_execution_sponsor_authority('${runId}');`);
+	if (sql(`select count(*) from public.qorpera_runner_model_policies where job_id='${jobId}';`) === "0") sql(`insert into public.qorpera_runner_model_policies select * from jsonb_populate_record(null::public.qorpera_runner_model_policies,(select to_jsonb(p)||jsonb_build_object('job_id','${jobId}') from public.qorpera_runner_model_policies p join public.qorpera_execution_runs r on r.job_id=p.job_id where r.id='${baseRun}' limit 1));`);
+	const claimable = JSON.parse(sql(`select jsonb_build_object('queued',job.status='queued','deadline',run.deadline_at>statement_timestamp(),'sponsor',public.qorpera_execution_sponsor_available(run),'compute',public.qorpera_execution_compute_available(run)) from public.qorpera_runner_jobs job join public.qorpera_execution_runs run on run.id=job.run_id where job.id='${jobId}';`));
+	assert(claimable.queued && claimable.deadline && claimable.sponsor && claimable.compute, `the test job is claimable on its own terms: ${JSON.stringify(claimable)}`);
+	const awayClaim = sql(`${service} select public.qorpera_claim_runner_job_for_orchestrator('6a000000-0000-4000-8000-000000000002','${randomUUID()}',60);`);
+	assert.equal(awayClaim, "null", "non-home orchestrator sees no work");
+	assert.equal(sql(`select status from public.qorpera_runner_jobs where id='${jobId}';`), "queued");
+	const homeClaim = sql(`${service} select public.qorpera_claim_runner_job_for_orchestrator('6a000000-0000-4000-8000-000000000001','${randomUUID()}',60);`);
+	assert(homeClaim !== "null" && homeClaim.includes(jobId), "home orchestrator claims the job");
 	// Records: one row per allocation, attempts counted, decisions overwritten by the latest.
 	assert.equal(sql(`select attempts||' '||decision from public.qorpera_runtime_node_placements where allocation_id='${alloc1}';`), "2 placed");
 	// The patched reservations carry the chooser call.
@@ -146,7 +166,7 @@ try {
 	// Non-service callers are refused.
 	const denied = spawnSync("docker", psql, { input: `set request.jwt.claims='{"role":"authenticated"}'; set role authenticated; select public.qorpera_runtime_node_placement_decide('${randomUUID()}','native','native-a');`, encoding: "utf8" });
 	assert.notEqual(denied.status, 0); assert.match(denied.stderr, /authority required|permission denied/);
-	console.log(JSON.stringify({ schema: "qorpera.runtime-node-placement-sql-proof/v1", migrations: migrations.length, twoNodePreference: true, identityHome: true, refusalRecorded: true, staleObservationExcluded: true, unboundAdapterUntouched: true, reservationsPatched: true, passed: true }));
+	console.log(JSON.stringify({ schema: "qorpera.runtime-node-placement-sql-proof/v1", migrations: migrations.length, twoNodePreference: true, identityHome: true, claimTimeHome: true, refusalRecorded: true, staleObservationExcluded: true, unboundAdapterUntouched: true, reservationsPatched: true, passed: true }));
 } finally {
 	if (started) spawnSync("docker", ["rm", "-f", container], { timeout: 30_000 });
 }
