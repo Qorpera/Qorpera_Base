@@ -1481,6 +1481,14 @@ does not reorder the implementation order.
   the reason, and a refused start names every node's refusal. Providers are
   bound per node; the chooser selects among their nodes before the provider
   reserves. Concurrent admission MUST NOT allocate the same slot twice.
+- **Runs follow the member's identity home.** A member's identity volume is
+  created and initialised on the node where that member logged in and never
+  lives on shared disk (12.1), so a native run is placed on the least-loaded
+  eligible node among the nodes holding a login of its compute identity; a
+  claimant elsewhere is refused with the home node named, and an identity with
+  no home defers until a login exists. Login machines choose the least-loaded
+  node and thereby open new homes. (Found on the first cross-node run, 16
+  September 2026.)
 - **Guest addresses are unique per node.** Several member execution machines
   and several Company Computers MUST run on one node at the same time; a
   fixed guest address in an image is a defect, not a limit (D-NATIVE-ADDR-1).
