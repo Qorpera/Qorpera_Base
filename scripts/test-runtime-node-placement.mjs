@@ -85,6 +85,12 @@ try {
 	assert(fixtureOffice, "fixture office allocation missing");
 	const r = JSON.parse(sql(`${service} select public.qorpera_reserve_runtime_node_machine('${fixtureOffice.id}','office','36000000-0000-4000-8000-000000000001','${fixtureOffice.policy}','${fixtureOffice.instance}','${mA}',2000,2147483648);`));
 	assert.equal(r.state, "reserved", JSON.stringify(r));
+	// Historical policy rows for the same provider on one node must not multiply that node's demand.
+	sql(`insert into public.qorpera_runtime_node_providers(provider_kind,provider_id,node_id,policy_sha256,cpu_millis,memory_bytes) values ('native','native-a','${nodeA}',repeat('5',64),4000,8589934592),('native','native-a','${nodeA}',repeat('6',64),4000,8589934592);`);
+	const dup = JSON.parse(sql(`${service} select public.qorpera_runtime_node_placement_candidates('native');`));
+	const rowA = dup.find((c) => c.providerId === "native-a");
+	assert.equal(dup.filter((c) => c.providerId === "native-a").length, 1, "one candidate row per provider per node");
+	assert.equal(rowA.allocatedCpuMillis, 2000, "demand counted once despite three policy rows");
 	// Node A now has 2 free slots, node B 3: node B is preferred; node A's claimant is refused.
 	const dA2 = JSON.parse(sql(`${service} select public.qorpera_runtime_node_placement_decide('${randomUUID()}','native','native-a');`));
 	assert.equal(dA2.decision, "refused"); assert.equal(dA2.preferredNodeId, nodeB);
