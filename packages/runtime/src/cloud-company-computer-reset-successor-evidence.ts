@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat } from "node:fs/promises";
+import { lstat, readdir } from "node:fs/promises";
 import { isDeepStrictEqual } from "node:util";
 import {
 	COMPANY_COMPUTER_ADOPTION_RECEIPT_PATH,
@@ -50,14 +50,30 @@ export const COMPANY_COMPUTER_RESET_FORBIDDEN_ROOT_PATHS = Object.freeze([
 	`${root}/boot-service-start-claim.json`,
 	`${root}/boot-service-start-completion.json`,
 ]);
+/** The image's tmpfiles layout (qorpera-office-preparation.conf) creates the
+ * credential directory itself, root-only and empty, on every boot of a fresh
+ * root. Only a credential directory that holds anything, or is not that exact
+ * private empty directory, is historical authority. */
+const CREDENTIAL_DIRECTORY = "/etc/qorpera-office/credentials";
 async function assertResetRootPaths(paths: readonly string[]): Promise<void> {
 	for (const path of paths) {
+		let stat: Awaited<ReturnType<typeof lstat>>;
 		try {
-			await lstat(path);
+			stat = await lstat(path);
 		} catch (error) {
 			if (missing(error)) continue;
 			throw error;
 		}
+		if (
+			path === CREDENTIAL_DIRECTORY &&
+			stat.isDirectory() &&
+			!stat.isSymbolicLink() &&
+			stat.uid === 0 &&
+			stat.gid === 0 &&
+			(stat.mode & 0o7777) === 0o700 &&
+			(await readdir(path)).length === 0
+		)
+			continue;
 		throw new Error("stale root authority present");
 	}
 }
