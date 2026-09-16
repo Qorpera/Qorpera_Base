@@ -163,6 +163,28 @@ describe("runtime office supervision", () => {
 		await expect(f.supervisor.reconcile(f.signal)).rejects.toThrow("OFFICE_SUPERVISOR_RECONCILIATION_FAILED");
 		expect(f.viewers.close).toHaveBeenCalledOnce();
 	});
+	it("names the refused registry-status invariant in the retained cause chain", async () => {
+		const cause = (error: unknown, depth: number): string | undefined => {
+			let current: unknown = error;
+			for (let index = 0; index < depth; index++) current = (current as { cause?: unknown })?.cause;
+			return current instanceof Error ? current.message : undefined;
+		};
+		for (const [patch, code] of [
+			[{ computerGeneration: 2 }, "OFFICE_SUPERVISOR_STATE_GENERATION"],
+			[{ privacyVersion: -1 }, "OFFICE_SUPERVISOR_STATE_PRIVACY_VERSION"],
+			[{ privacyState: "private" }, "OFFICE_SUPERVISOR_STATE_CHALLENGE"],
+			[{ state: "unknown" }, "OFFICE_SUPERVISOR_STATE_OFFICE_STATE"],
+			[{ drains: [fixture().state.drains[0], fixture().state.drains[0]] }, "OFFICE_SUPERVISOR_STATE_DRAIN"],
+			[{ credentials: "private" }, "OFFICE_SUPERVISOR_STATE_KEYS"],
+		] as const) {
+			const f = fixture();
+			Object.assign(f.state, patch);
+			const error = await f.supervisor.reconcile(f.signal).catch((e: unknown) => e);
+			expect(cause(error, 0)).toBe("OFFICE_SUPERVISOR_RECONCILIATION_FAILED");
+			expect(cause(error, 1)).toBe("INVALID_OFFICE_SUPERVISOR_STATE");
+			expect(cause(error, 2)).toBe(code);
+		}
+	});
 	it("accepts a shared office whose cleared challenge left a positive privacy version, still refusing regression", async () => {
 		// A retired generation's challenge cleared by the provider's correction path
 		// leaves privacy_version > 0 with no challenge; that office must still start.

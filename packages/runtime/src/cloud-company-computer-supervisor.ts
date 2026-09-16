@@ -17,9 +17,14 @@ export interface CompanyComputerSupervisorRegistry {
 		signal: AbortSignal,
 	): Promise<unknown>;
 }
-function keys(value: unknown, expected: string): asserts value is Record<string, unknown> {
+/** The outer code stays closed; the retained cause names which invariant the
+ * registry status violated (constants only, surfaced by the diagnostics). */
+function invalid(code: string): Error {
+	return new Error("INVALID_OFFICE_SUPERVISOR_STATE", { cause: new Error(code) });
+}
+function keys(value: unknown, expected: string, code: string): asserts value is Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== expected)
-		throw new Error("INVALID_OFFICE_SUPERVISOR_STATE");
+		throw invalid(code);
 }
 function positive(value: unknown): value is number {
 	return Number.isSafeInteger(value) && (value as number) > 0;
@@ -141,21 +146,27 @@ export class CompanyComputerOfficeSupervisor {
 		try {
 			const value = await this.#poll(signal);
 			if (value === stale) return;
-			keys(value, "computerGeneration,drains,privacyChallenge,privacyState,privacyVersion,revision,scope,state");
-			keys(value.scope, "companyComputerId,companyId,environmentId,logicalComputerId");
+			keys(
+				value,
+				"computerGeneration,drains,privacyChallenge,privacyState,privacyVersion,revision,scope,state",
+				"OFFICE_SUPERVISOR_STATE_KEYS",
+			);
+			keys(
+				value.scope,
+				"companyComputerId,companyId,environmentId,logicalComputerId",
+				"OFFICE_SUPERVISOR_STATE_SCOPE",
+			);
 			assertCompanyComputerScope(value.scope as unknown as CompanyComputerScope, this.#scope);
-			if (
-				value.computerGeneration !== this.#generation ||
-				!positive(value.revision) ||
-				value.revision < this.#revision ||
-				!Number.isSafeInteger(value.privacyVersion) ||
-				(value.privacyVersion as number) < this.#privacyVersion ||
-				!["shared", "entering", "private", "leaving"].includes(value.privacyState as string) ||
-				!["provisioning", "active", "maintenance", "recovering", "retired"].includes(value.state as string) ||
-				!Array.isArray(value.drains) ||
-				value.drains.length > 32
-			)
-				throw new Error("INVALID_OFFICE_SUPERVISOR_STATE");
+			if (value.computerGeneration !== this.#generation) throw invalid("OFFICE_SUPERVISOR_STATE_GENERATION");
+			if (!positive(value.revision) || value.revision < this.#revision)
+				throw invalid("OFFICE_SUPERVISOR_STATE_REVISION");
+			if (!Number.isSafeInteger(value.privacyVersion) || (value.privacyVersion as number) < this.#privacyVersion)
+				throw invalid("OFFICE_SUPERVISOR_STATE_PRIVACY_VERSION");
+			if (!["shared", "entering", "private", "leaving"].includes(value.privacyState as string))
+				throw invalid("OFFICE_SUPERVISOR_STATE_PRIVACY_STATE");
+			if (!["provisioning", "active", "maintenance", "recovering", "retired"].includes(value.state as string))
+				throw invalid("OFFICE_SUPERVISOR_STATE_OFFICE_STATE");
+			if (!Array.isArray(value.drains) || value.drains.length > 32) throw invalid("OFFICE_SUPERVISOR_STATE_DRAINS");
 			const challenge =
 				value.privacyChallenge === null
 					? null
@@ -172,14 +183,15 @@ export class CompanyComputerOfficeSupervisor {
 							? !["entering", "private"].includes(value.privacyState as string)
 							: !["leaving", "shared"].includes(value.privacyState as string))))
 			)
-				throw new Error("INVALID_OFFICE_SUPERVISOR_STATE");
+				throw invalid("OFFICE_SUPERVISOR_STATE_CHALLENGE");
 			const screens = new Set<string>();
 			const ordinals = new Set<number>();
 			const drains = value.drains.map((drain): CompanyComputerDrainChallenge => {
-				keys(drain, "binding,drainId,epoch,state");
+				keys(drain, "binding,drainId,epoch,state", "OFFICE_SUPERVISOR_STATE_DRAIN");
 				keys(
 					drain.binding,
 					"companyComputerId,companyId,computerGeneration,environmentId,logicalComputerId,screenGeneration,screenId,screenOrdinal,staffAgentId",
+					"OFFICE_SUPERVISOR_STATE_DRAIN",
 				);
 				const parsed = drain as unknown as CompanyComputerDrainChallenge;
 				assertCompanyComputerScope(parsed.binding, this.#scope);
@@ -192,7 +204,7 @@ export class CompanyComputerOfficeSupervisor {
 					screens.has(parsed.binding.screenId) ||
 					ordinals.has(parsed.binding.screenOrdinal)
 				)
-					throw new Error("INVALID_OFFICE_SUPERVISOR_STATE");
+					throw invalid("OFFICE_SUPERVISOR_STATE_DRAIN");
 				screens.add(parsed.binding.screenId);
 				ordinals.add(parsed.binding.screenOrdinal);
 				return structuredClone(parsed);
