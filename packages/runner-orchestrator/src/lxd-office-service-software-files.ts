@@ -77,6 +77,20 @@ async function anchor(path: string, mode: number) {
 	}
 }
 type Anchor = Awaited<ReturnType<typeof anchor>>;
+async function createServiceSoftwareJournalRoot() {
+	try {
+		await mkdir(OFFICE_SERVICE_SOFTWARE_JOURNAL, { mode: 0o700 });
+	} catch (error) {
+		if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+		return;
+	}
+	const parent = await open(dirname(OFFICE_SERVICE_SOFTWARE_JOURNAL), constants.O_RDONLY | constants.O_DIRECTORY);
+	try {
+		await parent.sync();
+	} finally {
+		await parent.close();
+	}
+}
 async function read(root: Anchor, name: string, mode: number, limit: number) {
 	await root.check();
 	const file = await open(join(root.path, name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -239,6 +253,10 @@ export async function installLxdOfficeServiceSoftwareFiles(
 	}
 	let parent: Anchor | undefined, journal: Anchor | undefined;
 	try {
+		// The historical image ships without the guest journal root; the first
+		// governed revision creates it (root-only) and the anchor still verifies
+		// ownership, mode and identity before anything is written beneath it.
+		await createServiceSoftwareJournalRoot();
 		parent = await anchor(OFFICE_SERVICE_SOFTWARE_JOURNAL, 0o700);
 		await authorize();
 		try {
