@@ -147,6 +147,29 @@ describe("reset successor guest contracts", () => {
 			parseCompanyComputerResetConfigurationRequest({ ...r, originPreparation: `${r.originPreparation} ` }),
 		).toThrow("INVALID_OFFICE_RESET_CONFIGURATION_REQUEST");
 	});
+	it("binds the origin whatever the key order of the retained scope", () => {
+		const r = request();
+		const scope = r.predecessor.startup.scope as Record<string, string>;
+		const sorted = Object.fromEntries(
+			Object.keys(scope)
+				.sort()
+				.map((key) => [key, scope[key]]),
+		);
+		const reversed = Object.fromEntries(
+			Object.keys(scope)
+				.sort()
+				.reverse()
+				.map((key) => [key, scope[key]]),
+		);
+		expect(JSON.stringify(sorted)).not.toBe(JSON.stringify(reversed));
+		for (const variant of [sorted, reversed])
+			expect(
+				parseCompanyComputerResetConfigurationRequest({
+					...r,
+					predecessor: { ...r.predecessor, startup: { ...r.predecessor.startup, scope: variant } },
+				}).predecessor.startup.scope,
+			).toEqual(scope);
+	});
 	it("parses a reset configuration packet only for the exact retained origin", () => {
 		expect(parseCompanyComputerResetConfigurationRequest(request()).predecessor.action).toBe("replace");
 		for (const mutate of [

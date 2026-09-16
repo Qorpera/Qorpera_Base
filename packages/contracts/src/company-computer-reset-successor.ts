@@ -12,6 +12,7 @@ import {
 import {
 	COMPANY_COMPUTER_PREPARATION_MAX_BYTES,
 	type CompanyComputerPreparationCommand,
+	type CompanyComputerPreparationRequest,
 	parseCompanyComputerPreparationCommand,
 	parseCompanyComputerPreparationRequest,
 } from "./company-computer-preparation.ts";
@@ -99,8 +100,15 @@ function uuid(value: unknown): string {
 function sameCommand(a: CompanyComputerPreparationCommand, b: CompanyComputerPreparationCommand): boolean {
 	return a.commandId === b.commandId && a.requestSha256 === b.requestSha256 && a.bootId === b.bootId;
 }
-function equal(a: unknown, b: unknown): boolean {
-	return JSON.stringify(a) === JSON.stringify(b);
+/** The retained replace request reaches this parser through canonical
+ * (key-sorted) records while the original preparation keeps its authored key
+ * order; the scope is the same identity whatever the order. */
+function sameScope(
+	a: CompanyComputerPreparationRequest["scope"],
+	b: CompanyComputerPreparationRequest["scope"],
+): boolean {
+	const keys = ["companyId", "environmentId", "companyComputerId", "logicalComputerId"] as const;
+	return keys.every((key) => a[key] === b[key]);
 }
 export function parseCompanyComputerResetConfigurationRequest(
 	value: unknown,
@@ -142,7 +150,7 @@ export function parseCompanyComputerResetConfigurationRequest(
 		const original = parseCompanyComputerPreparationRequest(JSON.parse(r.originPreparation));
 		if (
 			original.allocationId !== predecessor.startup.allocationId ||
-			!equal(original.scope, predecessor.startup.scope) ||
+			!sameScope(original.scope, predecessor.startup.scope) ||
 			original.computerGeneration !== predecessor.startup.computerGeneration ||
 			original.instanceSha256 !== predecessor.startup.instanceSha256 ||
 			original.imageSha256 !== predecessor.startup.imageSha256 ||
