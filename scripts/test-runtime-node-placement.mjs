@@ -125,6 +125,11 @@ try {
 	 commit;`);
 	const loginReservation = sql(`select jsonb_build_object('allocs',(select count(*) from public.qorpera_runtime_machine_allocations where login_compute_identity_id='${identity}'),'requests',(select jsonb_agg(jsonb_build_object('adapter',r.provider_adapter,'refusal',r.last_refusal)) from public.qorpera_runtime_login_machine_requests r where r.compute_identity_id='${identity}'),'logins',(select jsonb_agg(jsonb_build_object('status',l.status,'identity',l.compute_identity_id)) from public.qorpera_native_provider_login_sessions l where l.profile_id='30000000-0000-4000-8000-000000000010'));`);
 	assert.equal(sql(`select provider_adapter from public.qorpera_runtime_machine_allocations where login_compute_identity_id='${identity}';`), "lxd");
+	// A reserved but unfinished login is not a home yet; the identity defers until its login session completes.
+	sql(`${service} select public.qorpera_enroll_runtime_node_provider('${nodeA}','${mA}','native','lxd',repeat('4',64),4000,8589934592);`);
+	const pendingHome = JSON.parse(sql(`${service} select public.qorpera_runtime_node_placement_decide('${randomUUID()}','native','lxd','${identity}');`));
+	assert.equal(pendingHome.reason, "NO_IDENTITY_HOME"); assert.deepEqual(pendingHome.identityHomes, []);
+	sql(`update public.qorpera_native_provider_login_sessions set status='completed', completed_at=statement_timestamp() where id=(select login_session_id from public.qorpera_runtime_machine_allocations where login_compute_identity_id='${identity}');`);
 	sql(`${service} select public.qorpera_enroll_runtime_node_provider('${nodeA}','${mA}','native','lxd',repeat('4',64),4000,8589934592);`);
 	const home = JSON.parse(sql(`${service} select public.qorpera_runtime_node_placement_decide('${randomUUID()}','native','lxd','${identity}');`));
 	assert.equal(home.decision, "placed"); assert.equal(home.reason, "IDENTITY_HOME_LEAST_LOADED"); assert.deepEqual(home.identityHomes, ["lxd"]);
@@ -175,7 +180,7 @@ try {
 	// Non-service callers are refused.
 	const denied = spawnSync("docker", psql, { input: `set request.jwt.claims='{"role":"authenticated"}'; set role authenticated; select public.qorpera_runtime_node_placement_decide('${randomUUID()}','native','native-a');`, encoding: "utf8" });
 	assert.notEqual(denied.status, 0); assert.match(denied.stderr, /authority required|permission denied/);
-	console.log(JSON.stringify({ schema: "qorpera.runtime-node-placement-sql-proof/v1", migrations: migrations.length, twoNodePreference: true, identityHome: true, claimTimeHome: true, loginGateways: true, refusalRecorded: true, staleObservationExcluded: true, unboundAdapterUntouched: true, reservationsPatched: true, passed: true }));
+	console.log(JSON.stringify({ schema: "qorpera.runtime-node-placement-sql-proof/v1", migrations: migrations.length, twoNodePreference: true, identityHome: true, claimTimeHome: true, loginGateways: true, completedLoginsOnly: true, refusalRecorded: true, staleObservationExcluded: true, unboundAdapterUntouched: true, reservationsPatched: true, passed: true }));
 } finally {
 	if (started) spawnSync("docker", ["rm", "-f", container], { timeout: 30_000 });
 }
