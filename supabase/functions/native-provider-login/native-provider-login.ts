@@ -141,6 +141,7 @@ async function forwardLogin(request: Request, options: NativeProviderLoginProxyO
 			},
 		});
 	} catch (error) {
+		// Upstream detail stays private: the body is generic and the header names only the error class.
 		const failure = error instanceof Error ? error.name : "Error";
 		if (error instanceof LoginBodyTooLarge) return jsonResponse({ error: "Native login response is too large" }, 502);
 		const response = jsonResponse({ error: "Native provider login is unavailable" }, 503);
