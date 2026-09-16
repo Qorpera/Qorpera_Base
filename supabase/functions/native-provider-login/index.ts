@@ -1,5 +1,30 @@
 import { forwardNativeProviderLogin } from "./native-provider-login.ts";
 
-Deno.serve((request) => forwardNativeProviderLogin(request, {
- upstreamUrl: Deno.env.get("QORPERA_NATIVE_PROVIDER_UPSTREAM_URL"),
-}));
+const RPC_TIMEOUT_MS = 5_000;
+
+/** Asks the backend which registered login gateway is least loaded (qorpera_runtime_login_gateway_choose). */
+async function chooseLoginGateway(): Promise<string | undefined> {
+	const base = Deno.env.get("SUPABASE_URL");
+	const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+	if (!base || !key) return undefined;
+	const response = await fetch(new URL("/rest/v1/rpc/qorpera_runtime_login_gateway_choose", base), {
+		method: "POST",
+		headers: { apikey: key, authorization: `Bearer ${key}`, "content-type": "application/json", accept: "application/json" },
+		body: "{}",
+		redirect: "error",
+		signal: AbortSignal.timeout(RPC_TIMEOUT_MS),
+	});
+	if (!response.ok) {
+		await response.body?.cancel();
+		return undefined;
+	}
+	const chosen = (await response.json()) as { url?: unknown };
+	return typeof chosen?.url === "string" ? chosen.url : undefined;
+}
+
+Deno.serve((request) =>
+	forwardNativeProviderLogin(request, {
+		upstreamUrl: Deno.env.get("QORPERA_NATIVE_PROVIDER_UPSTREAM_URL"),
+		upstreamResolver: chooseLoginGateway,
+	}),
+);

@@ -4,6 +4,8 @@ const MAX_RESPONSE_BYTES = 64 * 1024;
 
 export interface NativeProviderLoginProxyOptions {
 	upstreamUrl?: string;
+	/** Chooses the login gateway per request (least-loaded node); an undefined or invalid result falls back to upstreamUrl. */
+	upstreamResolver?: () => Promise<string | undefined>;
 	/** Exact browser origins; native callers without Origin still require a capability. */
 	allowedOrigins?: readonly string[];
 	fetchImplementation?: typeof fetch;
@@ -74,6 +76,20 @@ async function readLoginBody(
 	}
 }
 
+/** The resolver's answer is used only when it is a valid gateway base; anything else keeps the configured upstream. */
+async function resolveUpstream(options: NativeProviderLoginProxyOptions, signal: AbortSignal): Promise<string> {
+	if (options.upstreamResolver) {
+		try {
+			const chosen = await options.upstreamResolver();
+			signal.throwIfAborted();
+			if (typeof chosen === "string" && chosen) return upstreamLoginUrl(chosen);
+		} catch (error) {
+			if (signal.aborted) throw error;
+		}
+	}
+	return upstreamLoginUrl(options.upstreamUrl ?? "");
+}
+
 async function forwardLogin(request: Request, options: NativeProviderLoginProxyOptions): Promise<Response> {
 	if (request.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
 	let capability: string;
@@ -91,7 +107,8 @@ async function forwardLogin(request: Request, options: NativeProviderLoginProxyO
 			throw new Error("Native login proxy timeout is invalid");
 		}
 		const signal = AbortSignal.any([request.signal, AbortSignal.timeout(timeoutMs)]);
-		const upstream = await (options.fetchImplementation ?? fetch)(upstreamLoginUrl(options.upstreamUrl ?? ""), {
+		const target = await resolveUpstream(options, signal);
+		const upstream = await (options.fetchImplementation ?? fetch)(target, {
 			method: "POST",
 			headers: {
 				accept: "application/json",

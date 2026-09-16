@@ -155,6 +155,15 @@ try {
 	assert.equal(sql(`select status from public.qorpera_runner_jobs where id='${jobId}';`), "queued");
 	const homeClaim = sql(`${service} select public.qorpera_claim_runner_job_for_orchestrator('6a000000-0000-4000-8000-000000000001','${randomUUID()}',60);`);
 	assert(homeClaim !== "null" && homeClaim.includes(jobId), "home orchestrator claims the job");
+	// Login gateways: the edge function's choice follows the login candidates and falls back to any registered gateway.
+	assert.equal(JSON.parse(sql(`${service} select public.qorpera_runtime_login_gateway_choose();`)).reason, "NO_GATEWAY");
+	if (sql(`select count(*) from public.qorpera_runtime_node_providers where provider_kind='login' and node_id='${nodeB}';`) === "0") sql(`${service} select public.qorpera_enroll_runtime_node_provider('${nodeB}','${mB}','login','login-b',repeat('9',64),4000,8589934592);`);
+	sql(`${service} ${observe(nodeA, mA)} ${observe(nodeB, mB)}`);
+	sql(`${service} select public.qorpera_register_runtime_login_gateway('login-a','${nodeA}','https://node-a.example:10000/'); select public.qorpera_register_runtime_login_gateway('login-b','${nodeB}','https://node-b.example:10000/');`);
+	const chosen = JSON.parse(sql(`${service} select public.qorpera_runtime_login_gateway_choose();`));
+	assert.equal(chosen.reason, "LEAST_LOADED"); assert.equal(chosen.nodeId, nodeB); assert.equal(chosen.url, "https://node-b.example:10000/");
+	const deniedGateway = spawnSync("docker", psql, { input: `set request.jwt.claims='{"role":"authenticated"}'; set role authenticated; select public.qorpera_runtime_login_gateway_choose();`, encoding: "utf8", timeout: 60_000 });
+	assert.notEqual(deniedGateway.status, 0);
 	// Records: one row per allocation, attempts counted, decisions overwritten by the latest.
 	assert.equal(sql(`select attempts||' '||decision from public.qorpera_runtime_node_placements where allocation_id='${alloc1}';`), "2 placed");
 	// The patched reservations carry the chooser call.
@@ -166,7 +175,7 @@ try {
 	// Non-service callers are refused.
 	const denied = spawnSync("docker", psql, { input: `set request.jwt.claims='{"role":"authenticated"}'; set role authenticated; select public.qorpera_runtime_node_placement_decide('${randomUUID()}','native','native-a');`, encoding: "utf8" });
 	assert.notEqual(denied.status, 0); assert.match(denied.stderr, /authority required|permission denied/);
-	console.log(JSON.stringify({ schema: "qorpera.runtime-node-placement-sql-proof/v1", migrations: migrations.length, twoNodePreference: true, identityHome: true, claimTimeHome: true, refusalRecorded: true, staleObservationExcluded: true, unboundAdapterUntouched: true, reservationsPatched: true, passed: true }));
+	console.log(JSON.stringify({ schema: "qorpera.runtime-node-placement-sql-proof/v1", migrations: migrations.length, twoNodePreference: true, identityHome: true, claimTimeHome: true, loginGateways: true, refusalRecorded: true, staleObservationExcluded: true, unboundAdapterUntouched: true, reservationsPatched: true, passed: true }));
 } finally {
 	if (started) spawnSync("docker", ["rm", "-f", container], { timeout: 30_000 });
 }

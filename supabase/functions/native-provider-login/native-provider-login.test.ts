@@ -306,3 +306,47 @@ describe("native provider browser origin policy", () => {
 		}
 	});
 });
+
+describe("login gateway resolver", () => {
+	it("uses the chosen gateway and falls back to the configured upstream", async () => {
+	const targets: string[] = [];
+	const fetchImplementation = async (input: string | URL | Request) => {
+		targets.push(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+		return Response.json({ status: "awaiting_member" });
+	};
+	const request = () =>
+		new Request("https://edge.example/native-provider-login", {
+			method: "POST",
+			headers: { authorization: `Bearer ${"a".repeat(43)}`, "content-type": "application/json" },
+			body: "{}",
+		});
+	await forwardNativeProviderLogin(request(), {
+		upstreamUrl: "https://node-a.example:10000/",
+		upstreamResolver: async () => "https://node-b.example:10000/",
+		fetchImplementation,
+	});
+	await forwardNativeProviderLogin(request(), {
+		upstreamUrl: "https://node-a.example:10000/",
+		upstreamResolver: async () => undefined,
+		fetchImplementation,
+	});
+	await forwardNativeProviderLogin(request(), {
+		upstreamUrl: "https://node-a.example:10000/",
+		upstreamResolver: async () => {
+			throw new Error("backend unavailable");
+		},
+		fetchImplementation,
+	});
+	await forwardNativeProviderLogin(request(), {
+		upstreamUrl: "https://node-a.example:10000/",
+		upstreamResolver: async () => "http://untrusted.example/",
+		fetchImplementation,
+	});
+	assert.deepEqual(targets, [
+		"https://node-b.example:10000/login",
+		"https://node-a.example:10000/login",
+		"https://node-a.example:10000/login",
+		"https://node-a.example:10000/login",
+	]);
+	});
+});
