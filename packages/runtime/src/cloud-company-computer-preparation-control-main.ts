@@ -31,6 +31,9 @@ export async function lockedCompanyComputerControlChild(
 			"/opt/qorpera-office/qorpera-company-computer-service-start-control.mjs",
 			"/opt/qorpera-office/qorpera-company-computer-service-stop-control.mjs",
 			"/opt/qorpera-office/qorpera-company-computer-service-restart-control.mjs",
+			"/opt/qorpera-office/qorpera-company-computer-reset-configuration-control.mjs",
+			"/opt/qorpera-office/qorpera-company-computer-reset-service-start-control.mjs",
+			"/opt/qorpera-office/qorpera-company-computer-reset-service-restart-control.mjs",
 		].includes(controlExecutable)
 	)
 		throw new Error("OFFICE_CONTROL_EXECUTABLE_UNCONFIRMED");
