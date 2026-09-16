@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
 	COMPANY_COMPUTER_ADOPTION_RECEIPT_PATH,
 	companyComputerPreparationAdoptionReceipt,
+	companyComputerResetAdoptionReceiptPath,
 	parseCompanyComputerPreparationRequest,
 } from "@qorpera/contracts";
 import { CompanyComputerLinuxBoundary } from "@qorpera/runtime/cloud-company-computer-linux-boundary";
@@ -149,6 +150,62 @@ describe("physical office preflight (kernel/filesystem mocked; separate Linux pr
 		f.registry.call.mockRejectedValue(new Error("office still provisioning"));
 		await expect(boundary.assertOfficeReady(f.signal)).rejects.toThrow();
 		expect(f.registry.call).toHaveBeenCalledTimes(2);
+	});
+	it("binds a reset-born boot to the original attested receipt through the retained reset receipt", async () => {
+		const f = fixture();
+		const a = f.options.attestation;
+		const originBootId = a.bootId;
+		const resetBootId = computerId(73);
+		const retained = {
+			schema: "qorpera.office-state-reset-retained/v1",
+			state: "complete",
+			scope: f.options.scope,
+			computerGeneration: 1,
+			allocationId: a.allocationId,
+			instanceSha256: a.instanceSha256,
+			imageSha256: a.imageSha256,
+			bootstrapSha256: a.bootstrapSha256,
+			bootId: resetBootId,
+			layout: f.options.layout,
+			workbenchMount: f.options.workbenchMount,
+			origin: {
+				bootId: originBootId,
+				preparationSha256: "1".repeat(64),
+				adoptionReceiptSha256: a.adoptionReceiptSha256,
+			},
+			reset: {
+				resetId: computerId(74),
+				rootIncarnationId: computerId(75),
+				activationId: computerId(76),
+				predecessor: { transitionId: computerId(77), activationId: computerId(78), bootId: computerId(79) },
+			},
+		};
+		const originalText = JSON.stringify(f.receipt);
+		let retainedText = JSON.stringify(retained);
+		a.bootId = resetBootId;
+		physical.read.mockImplementation(async (path) =>
+			path.endsWith("boot_id")
+				? `${resetBootId}\n`
+				: path === companyComputerResetAdoptionReceiptPath(resetBootId)
+					? retainedText
+					: originalText,
+		);
+		const boundary = f.create();
+		await boundary.assertOfficeReady(f.signal);
+		expect(physical.artifact).toHaveBeenCalledWith(companyComputerResetAdoptionReceiptPath(resetBootId));
+		for (const broken of [
+			{ ...retained, bootId: computerId(80) },
+			{ ...retained, origin: { ...retained.origin, adoptionReceiptSha256: "9".repeat(64) } },
+			{ ...retained, origin: { ...retained.origin, bootId: computerId(81) } },
+			{ ...retained, allocationId: computerId(82) },
+			{ ...retained, layout: { ...retained.layout, workbenchRoot: "/srv/other" } },
+		]) {
+			retainedText = JSON.stringify(broken);
+			await expect(boundary.assertOfficeReady(f.signal)).rejects.toThrow("OFFICE_GUEST_READINESS_UNCONFIRMED");
+		}
+		physical.artifact.mockRejectedValueOnce(new Error("missing"));
+		retainedText = JSON.stringify(retained);
+		await expect(boundary.assertOfficeReady(f.signal)).rejects.toThrow("OFFICE_GUEST_READINESS_UNCONFIRMED");
 	});
 	it.each(["tmpfs", "ramfs", "overlay"])("rejects volatile workbench filesystem %s", (filesystem) => {
 		const f = fixture();

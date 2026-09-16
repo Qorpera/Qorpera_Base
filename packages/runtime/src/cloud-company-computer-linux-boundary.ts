@@ -8,7 +8,12 @@ import {
 	COMPANY_COMPUTER_UUID,
 	type CompanyComputerScreenBinding,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
-import { companyComputerBootAdoptionReceiptPath, parseCompanyComputerBootAdoptionReceipt } from "@qorpera/contracts";
+import {
+	companyComputerBootAdoptionReceiptPath,
+	companyComputerResetAdoptionReceiptPath,
+	parseCompanyComputerBootAdoptionReceipt,
+	parseCompanyComputerResetAdoptionReceipt,
+} from "@qorpera/contracts";
 import type { CompanyComputerGuestBoundary } from "./cloud-company-computer-guest.ts";
 import { assertCompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
 import type { CompanyComputerLinuxGuestOptions } from "./cloud-company-computer-linux-guest.ts";
@@ -196,6 +201,46 @@ export class CompanyComputerLinuxBoundary implements CompanyComputerGuestBoundar
 						)
 							throw new Error("retained adoption differs");
 					} else {
+						// A reset-born boot keeps the original attested receipt (the registry
+						// pins its digest); its boot is bound through the recreated root's
+						// retained reset receipt, which must name this boot and this origin.
+						let originBootId = attestation.bootId;
+						if (receipt?.bootId !== attestation.bootId) {
+							const retainedPath = companyComputerResetAdoptionReceiptPath(attestation.bootId);
+							await assertCompanyComputerImageArtifact(retainedPath);
+							const retained = parseCompanyComputerResetAdoptionReceipt(
+								JSON.parse(await readCompanyComputerLinuxMetadata(retainedPath, 16384)),
+							);
+							if (
+								retained.bootId !== attestation.bootId ||
+								retained.origin.adoptionReceiptSha256 !== attestation.adoptionReceiptSha256 ||
+								retained.origin.bootId !== receipt?.bootId ||
+								!isDeepStrictEqual(
+									{
+										scope: retained.scope,
+										computerGeneration: retained.computerGeneration,
+										allocationId: retained.allocationId,
+										instanceSha256: retained.instanceSha256,
+										imageSha256: retained.imageSha256,
+										bootstrapSha256: retained.bootstrapSha256,
+										layout: retained.layout,
+										workbenchMount: retained.workbenchMount,
+									},
+									{
+										scope: options.scope,
+										computerGeneration: options.computerGeneration,
+										allocationId: attestation.allocationId,
+										instanceSha256: attestation.instanceSha256,
+										imageSha256: attestation.imageSha256,
+										bootstrapSha256: attestation.bootstrapSha256,
+										layout: options.layout,
+										workbenchMount: options.workbenchMount,
+									},
+								)
+							)
+								throw new Error("reset retained receipt differs");
+							originBootId = retained.origin.bootId;
+						}
 						const expected = {
 							schema: "qorpera.office-state-adoption/v1",
 							state: "complete",
@@ -205,7 +250,7 @@ export class CompanyComputerLinuxBoundary implements CompanyComputerGuestBoundar
 							instanceSha256: attestation.instanceSha256,
 							imageSha256: attestation.imageSha256,
 							bootstrapSha256: attestation.bootstrapSha256,
-							bootId: attestation.bootId,
+							bootId: originBootId,
 							layout: options.layout,
 							workbenchMount: options.workbenchMount,
 							disposition: receipt?.disposition,

@@ -3,6 +3,7 @@ import {
 	COMPANY_COMPUTER_CONFIGURATION_LIMITS,
 	type CompanyComputerConfigurationCompletion,
 	type CompanyComputerConfigurationMaterial,
+	companyComputerBootDirectory,
 	parseCompanyComputerConfigurationMaterial,
 } from "./company-computer-configuration.ts";
 import {
@@ -13,6 +14,7 @@ import {
 	COMPANY_COMPUTER_PREPARATION_MAX_BYTES,
 	type CompanyComputerPreparationCommand,
 	type CompanyComputerPreparationRequest,
+	companyComputerPreparationAdoptionReceipt,
 	parseCompanyComputerPreparationCommand,
 	parseCompanyComputerPreparationRequest,
 } from "./company-computer-preparation.ts";
@@ -317,5 +319,135 @@ export function parseCompanyComputerResetServiceInspection(
 		return Object.freeze({ schema: "qorpera.office-reset-service-inspection/v1", inspectionId, start });
 	} catch {
 		throw new Error("INVALID_OFFICE_RESET_SERVICE_INSPECTION");
+	}
+}
+
+/** A reset-born boot keeps the original public adoption receipt attested (the
+ * registry pins its digest); this retained record binds that origin to the
+ * recreated root's boot so the service's readiness check can accept the
+ * original receipt under a rebound boot attestation. Reboots use
+ * qorpera.office-state-retained/v1 with a boot intent instead. */
+export interface CompanyComputerResetAdoptionReceipt {
+	readonly schema: "qorpera.office-state-reset-retained/v1";
+	readonly state: "complete";
+	readonly scope: CompanyComputerPreparationRequest["scope"];
+	readonly computerGeneration: number;
+	readonly allocationId: string;
+	readonly instanceSha256: string;
+	readonly imageSha256: string;
+	readonly bootstrapSha256: string;
+	readonly bootId: string;
+	readonly layout: ReturnType<typeof companyComputerPreparationAdoptionReceipt>["layout"];
+	readonly workbenchMount: CompanyComputerPreparationRequest["workbenchMount"];
+	readonly origin: {
+		readonly bootId: string;
+		readonly preparationSha256: string;
+		readonly adoptionReceiptSha256: string;
+	};
+	readonly reset: {
+		readonly resetId: string;
+		readonly rootIncarnationId: string;
+		readonly activationId: string;
+		readonly predecessor: { readonly transitionId: string; readonly activationId: string; readonly bootId: string };
+	};
+}
+export function companyComputerResetAdoptionReceiptPath(bootId: string): string {
+	return `${companyComputerBootDirectory(bootId)}/reset-adoption.json`;
+}
+export function companyComputerResetAdoptionReceipt(
+	request: CompanyComputerResetConfigurationRequest,
+	bootId: string,
+): Readonly<CompanyComputerResetAdoptionReceipt> {
+	const original = parseCompanyComputerPreparationRequest(JSON.parse(request.originPreparation)),
+		initial = companyComputerPreparationAdoptionReceipt(original);
+	return parseCompanyComputerResetAdoptionReceipt({
+		schema: "qorpera.office-state-reset-retained/v1",
+		state: "complete",
+		scope: initial.scope,
+		computerGeneration: initial.computerGeneration,
+		allocationId: initial.allocationId,
+		instanceSha256: initial.instanceSha256,
+		imageSha256: initial.imageSha256,
+		bootstrapSha256: initial.bootstrapSha256,
+		bootId,
+		layout: initial.layout,
+		workbenchMount: initial.workbenchMount,
+		origin: {
+			bootId: initial.bootId,
+			preparationSha256: request.originPreparationSha256,
+			adoptionReceiptSha256: request.adoptionReceiptSha256,
+		},
+		reset: {
+			resetId: request.resetId,
+			rootIncarnationId: request.rootIncarnationId,
+			activationId: request.activationId,
+			predecessor: {
+				transitionId: request.predecessor.transitionId,
+				activationId: request.predecessor.activationId,
+				bootId: request.predecessor.startup.bootId,
+			},
+		},
+	});
+}
+export function parseCompanyComputerResetAdoptionReceipt(
+	value: unknown,
+): Readonly<CompanyComputerResetAdoptionReceipt> {
+	try {
+		const r = record(value, [
+			"schema",
+			"state",
+			"scope",
+			"computerGeneration",
+			"allocationId",
+			"instanceSha256",
+			"imageSha256",
+			"bootstrapSha256",
+			"bootId",
+			"layout",
+			"workbenchMount",
+			"origin",
+			"reset",
+		]);
+		if (
+			r.schema !== "qorpera.office-state-reset-retained/v1" ||
+			r.state !== "complete" ||
+			new TextEncoder().encode(JSON.stringify(value)).length > 16384
+		)
+			throw new Error("receipt");
+		record(r.scope, ["companyId", "environmentId", "companyComputerId", "logicalComputerId"]);
+		for (const key of ["companyId", "environmentId", "companyComputerId", "logicalComputerId"])
+			uuid((r.scope as Record<string, unknown>)[key]);
+		if (!Number.isSafeInteger(r.computerGeneration) || (r.computerGeneration as number) < 1)
+			throw new Error("generation");
+		uuid(r.allocationId);
+		for (const key of ["instanceSha256", "imageSha256", "bootstrapSha256"]) sha(r[key]);
+		record(r.layout, ["workbenchRoot", "desktopHome", "screenStateRoot", "browserProfilesRoot"]);
+		record(r.workbenchMount, ["filesystem", "source", "root", "mountPoint"]);
+		const origin = record(r.origin, ["bootId", "preparationSha256", "adoptionReceiptSha256"]);
+		sha(origin.preparationSha256);
+		sha(origin.adoptionReceiptSha256);
+		const reset = record(r.reset, ["resetId", "rootIncarnationId", "activationId", "predecessor"]),
+			predecessor = record(reset.predecessor, ["transitionId", "activationId", "bootId"]);
+		const ids = [
+			uuid(r.bootId),
+			uuid(origin.bootId),
+			uuid(reset.resetId),
+			uuid(reset.rootIncarnationId),
+			uuid(reset.activationId),
+			uuid(predecessor.transitionId),
+			uuid(predecessor.activationId),
+			uuid(predecessor.bootId),
+		];
+		if (
+			r.bootId === origin.bootId ||
+			r.bootId === predecessor.bootId ||
+			reset.activationId === predecessor.activationId
+		)
+			throw new Error("boot reused");
+		if (new Set([reset.resetId, reset.rootIncarnationId, reset.activationId]).size !== 3) throw new Error("identity");
+		void ids;
+		return Object.freeze(JSON.parse(JSON.stringify(r))) as CompanyComputerResetAdoptionReceipt;
+	} catch {
+		throw new Error("INVALID_OFFICE_RESET_ADOPTION_RECEIPT");
 	}
 }

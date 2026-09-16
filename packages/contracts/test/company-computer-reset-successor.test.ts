@@ -6,6 +6,9 @@ import type { CompanyComputerResetSuccessor } from "../src/company-computer-rese
 import {
 	type CompanyComputerResetConfigurationCompletion,
 	type CompanyComputerResetServiceStartCompletion,
+	companyComputerResetAdoptionReceipt,
+	companyComputerResetAdoptionReceiptPath,
+	parseCompanyComputerResetAdoptionReceipt,
 	parseCompanyComputerResetConfigurationCompletion,
 	parseCompanyComputerResetConfigurationRequest,
 	parseCompanyComputerResetServiceInspection,
@@ -255,5 +258,49 @@ describe("reset successor guest contracts", () => {
 		expect(() => parseCompanyComputerResetServiceInspection(inspection, id(21), start(), successor())).toThrow(
 			"INVALID_OFFICE_RESET_SERVICE_INSPECTION",
 		);
+	});
+});
+
+describe("reset retained adoption receipt", () => {
+	it("binds the original attested receipt to the recreated root's boot", () => {
+		const r = parseCompanyComputerResetConfigurationRequest(request());
+		const receipt = companyComputerResetAdoptionReceipt(r, id(90));
+		expect(receipt.schema).toBe("qorpera.office-state-reset-retained/v1");
+		expect(receipt.bootId).toBe(id(90));
+		expect(receipt.origin).toEqual({
+			bootId: original().bootId,
+			preparationSha256: sha("1"),
+			adoptionReceiptSha256: sha("2"),
+		});
+		expect(receipt.reset).toEqual({
+			resetId: id(1),
+			rootIncarnationId: id(5),
+			activationId: id(4),
+			predecessor: {
+				transitionId: r.predecessor.transitionId,
+				activationId: r.predecessor.activationId,
+				bootId: r.predecessor.startup.bootId,
+			},
+		});
+		expect(parseCompanyComputerResetAdoptionReceipt(JSON.parse(JSON.stringify(receipt)))).toEqual(receipt);
+		expect(companyComputerResetAdoptionReceiptPath(id(90))).toBe(
+			`/etc/qorpera-office/boots/${id(90).replaceAll("-", "")}/reset-adoption.json`,
+		);
+	});
+	it("refuses a reused or foreign boot", () => {
+		const r = parseCompanyComputerResetConfigurationRequest(request());
+		expect(() => companyComputerResetAdoptionReceipt(r, original().bootId)).toThrow(
+			"INVALID_OFFICE_RESET_ADOPTION_RECEIPT",
+		);
+		expect(() => companyComputerResetAdoptionReceipt(r, r.predecessor.startup.bootId)).toThrow(
+			"INVALID_OFFICE_RESET_ADOPTION_RECEIPT",
+		);
+		const receipt = JSON.parse(JSON.stringify(companyComputerResetAdoptionReceipt(r, id(90))));
+		expect(() => parseCompanyComputerResetAdoptionReceipt({ ...receipt, extra: 1 })).toThrow(
+			"INVALID_OFFICE_RESET_ADOPTION_RECEIPT",
+		);
+		expect(() =>
+			parseCompanyComputerResetAdoptionReceipt({ ...receipt, schema: "qorpera.office-state-retained/v1" }),
+		).toThrow("INVALID_OFFICE_RESET_ADOPTION_RECEIPT");
 	});
 });

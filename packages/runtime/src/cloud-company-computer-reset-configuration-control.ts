@@ -11,6 +11,8 @@ import {
 	type CompanyComputerResetConfigurationCompletion,
 	companyComputerBootDirectory,
 	companyComputerPreparationAdoptionReceipt,
+	companyComputerResetAdoptionReceipt,
+	companyComputerResetAdoptionReceiptPath,
 	parseCompanyComputerPreparationCommand,
 	parseCompanyComputerPreparationRequest,
 	parseCompanyComputerResetConfigurationRequest,
@@ -218,6 +220,17 @@ export async function controlCompanyComputerResetConfiguration(
 			} finally {
 				current.fill(0);
 			}
+		}
+		// The reset-born boot's retained receipt: public (0444) so the service's
+		// readiness check can bind the original attested receipt to this boot.
+		const retainedPath = companyComputerResetAdoptionReceiptPath(command.bootId),
+			retainedBytes = encode(companyComputerResetAdoptionReceipt(input, command.bootId));
+		try {
+			if (!(await read(retainedPath, 16384, 0o444)).equals(retainedBytes))
+				throw new Error("retained receipt differs");
+		} catch (error) {
+			if (!missing(error)) throw error;
+			await publish(retainedPath, retainedBytes, 0o444);
 		}
 		await verify();
 		await assertCompanyComputerBootCredentials(command);
