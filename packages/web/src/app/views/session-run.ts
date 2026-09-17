@@ -131,7 +131,8 @@ export class SessionRunView {
 
 	#render(): void {
 		const run = this.#state?.run;
-		this.el.hidden = !this.#staffAgentId || this.#lifetime.signal.aborted;
+		// Quiet unless there is a run to watch or a stop to confirm.
+		this.el.hidden = !this.#staffAgentId || this.#lifetime.signal.aborted || (!run && !this.#uncertain);
 		const key = JSON.stringify([run, this.#message, this.#busy, this.#uncertain, this.#canCancel, this.el.hidden]);
 		if (key === this.#renderKey) return;
 		this.#renderKey = key;

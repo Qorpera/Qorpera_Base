@@ -1,178 +1,240 @@
-import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
+import type {
+	NativeExecutionConnections,
+	NativeMemberConnection,
+} from "@qorpera/cloud-client/cloud-native-subscription-control";
 import type { WebNativeProviderLogin, WebNativeSubscription } from "../../cloud/native-subscription.ts";
-import { button, h, notice, replace } from "../../ui/dom.ts";
+import { button, h, replace } from "../../ui/dom.ts";
 
 type ConnectionsClient = Pick<WebNativeSubscription, "listConnections" | "revokeConnection" | "createMemberSponsor"> &
 	Partial<Pick<WebNativeSubscription, "onboardingAvailable" | "beginProviderLogin">>;
 
-/** Member connections and provider sign-in use the shared SDK through the configured browser gateway. */
+type Provider = "openai" | "anthropic";
+const PROVIDERS: ReadonlyArray<{ id: Provider; label: string; logo: string }> = [
+	{ id: "openai", label: "ChatGPT / Codex", logo: "provider-openai.svg" },
+	{ id: "anthropic", label: "Claude", logo: "provider-anthropic.svg" },
+];
+const WATCH_MS = 5000;
+
+interface Attempt {
+	/** Kept across a retry so an uncertain first try and its retry are one sign-in. */
+	ids: { clientIdentityId: string; clientLoginId: string; clientConnectionId: string };
+	login?: WebNativeProviderLogin;
+	error?: string;
+	starting: boolean;
+}
+
+const live = (connection: NativeMemberConnection) =>
+	connection.connectionStatus === "active" && connection.authorizationState === "active";
+
+/** One card per provider: connect, finish the provider's own sign-in, done.
+ * A connected account is enabled for the member's own messages right away. */
 export class ConnectionsView {
 	readonly el = h("div");
 	readonly #client: ConnectionsClient;
 	readonly #lifetime = new AbortController();
-	readonly #enableOperations = new Map<string, string>();
+	readonly #attempts = new Map<Provider, Attempt>();
+	readonly #enabling = new Set<string>();
 	#connections: NativeExecutionConnections | undefined;
-	#busy = false;
-	#refreshRequired = false;
+	#loading = true;
+	#working: string | undefined;
 	#error: string | undefined;
-	#message: string | undefined;
-	#login: WebNativeProviderLogin | undefined;
-	#loginExpiry: ReturnType<typeof setTimeout> | undefined;
+	#watch: ReturnType<typeof setTimeout> | undefined;
 	constructor(client: ConnectionsClient, signal: AbortSignal) {
 		this.#client = client;
 		if (signal.aborted) this.#lifetime.abort();
 		else signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
+		this.#draw();
 		void this.#refresh();
 	}
 	dispose(): void {
 		this.#lifetime.abort();
+		clearTimeout(this.#watch);
 		this.#connections = undefined;
-		this.#enableOperations.clear();
-		this.#clearLogin();
+		this.#attempts.clear();
 		this.el.replaceChildren();
 		this.el.remove();
 	}
+	#current(provider: Provider): NativeMemberConnection | undefined {
+		const mine = (this.#connections?.connections ?? []).filter(
+			(item) => item.provider === provider && item.connectionStatus !== "revoked",
+		);
+		return mine.find(live) ?? mine[0];
+	}
 	async #refresh(): Promise<void> {
-		if (this.#busy || this.#lifetime.signal.aborted) return;
-		this.#busy = true;
-		this.#error = undefined;
-		this.#draw();
+		if (this.#lifetime.signal.aborted) return;
+		clearTimeout(this.#watch);
 		try {
 			const connections = await this.#client.listConnections(this.#lifetime.signal);
 			if (this.#lifetime.signal.aborted) return;
 			this.#connections = connections;
-			this.#refreshRequired = false;
-			this.#message = undefined;
-			if (
-				this.#login &&
-				connections.connections.some(
-					(connection) =>
-						connection.connectionId === this.#login?.connectionId &&
-						connection.connectionStatus === "active" &&
-						connection.authorizationState === "active",
+			this.#error = undefined;
+			for (const [provider, attempt] of this.#attempts)
+				if (
+					attempt.login &&
+					(connections.connections.some(
+						(item) => item.connectionId === attempt.login?.connectionId && live(item),
+					) ||
+						Date.parse(attempt.login.expiresAt) <= Date.now())
 				)
-			) {
-				this.#clearLogin();
-				this.#message = "Model account connected. Enable it for your messages when ready.";
+					this.#attempts.delete(provider);
+			void this.#enable();
+		} catch {
+			if (this.#lifetime.signal.aborted) return;
+			this.#error = "Your model accounts could not be read.";
+		} finally {
+			this.#loading = false;
+			if (!this.#lifetime.signal.aborted) {
+				this.#draw();
+				// While a provider sign-in is open, watch for it to finish.
+				if ([...this.#attempts.values()].some((attempt) => attempt.login))
+					this.#watch = setTimeout(() => void this.#refresh(), WATCH_MS);
 			}
-		} catch {
-			if (this.#lifetime.signal.aborted) return;
-			this.#connections = undefined;
-			this.#refreshRequired = true;
-			this.#error = "Model accounts are unavailable. Refresh to check your connections.";
-		} finally {
-			this.#busy = false;
-			if (!this.#lifetime.signal.aborted) this.#draw();
 		}
 	}
-	#clearLogin(): void {
-		clearTimeout(this.#loginExpiry);
-		this.#loginExpiry = undefined;
-		this.#login = undefined;
-	}
-	async #beginLogin(provider: "openai" | "anthropic"): Promise<void> {
-		if (
-			this.#busy ||
-			this.#refreshRequired ||
-			this.#login ||
-			this.#lifetime.signal.aborted ||
-			!this.#client.onboardingAvailable ||
-			!this.#client.beginProviderLogin
-		)
-			return;
-		this.#busy = true;
-		this.#error = undefined;
-		this.#message = "Preparing provider sign-in…";
-		this.#draw();
-		try {
-			const login = await this.#client.beginProviderLogin(
-				{
-					provider,
-					displayName: "My model account",
-					clientIdentityId: crypto.randomUUID(),
-					clientLoginId: crypto.randomUUID(),
-					clientConnectionId: crypto.randomUUID(),
-				},
-				this.#lifetime.signal,
-			);
-			if (this.#lifetime.signal.aborted) return;
-			this.#login = login;
-			this.#message =
-				login.status === "completed"
-					? "Provider sign-in completed. Refresh model accounts to confirm the connection."
-					: "Finish signing in with your provider, then refresh model accounts.";
-			this.#loginExpiry = setTimeout(
-				() => {
-					if (this.#lifetime.signal.aborted) return;
-					this.#clearLogin();
-					this.#refreshRequired = true;
-					this.#message = "Sign-in instructions expired. Refresh model accounts before starting another attempt.";
-					this.#draw();
-				},
-				Math.max(0, Math.min(2_147_483_647, Date.parse(login.expiresAt) - Date.now())),
-			);
-		} catch {
-			if (this.#lifetime.signal.aborted) return;
-			this.#clearLogin();
-			this.#message = undefined;
-			this.#error = "Sign-in could not be confirmed. Refresh model accounts before starting a new sign-in attempt.";
-		} finally {
-			this.#busy = false;
-			this.#refreshRequired = true;
-			if (!this.#lifetime.signal.aborted) this.#draw();
-		}
-	}
-	async #mutate(connectionId: string, action: "revoke" | "enable"): Promise<void> {
-		if (this.#busy || this.#refreshRequired || this.#lifetime.signal.aborted) return;
-		const connection = this.#connections?.connections.find((item) => item.connectionId === connectionId);
-		if (!connection || connection.connectionStatus === "revoked") return;
-		if (
-			action === "enable" &&
-			(connection.sponsorBindingId ||
-				connection.connectionStatus !== "active" ||
-				connection.authorizationState !== "active" ||
+	/** Connecting an account is the member's choice to use it for their messages. */
+	async #enable(): Promise<void> {
+		const connections = this.#connections;
+		if (!connections || connections.computeIdentity?.status !== "active") return;
+		for (const connection of connections.connections) {
+			const key = `${connection.connectionId}:${connection.connectionVersion}`;
+			if (
+				connection.sponsorBindingId ||
+				!live(connection) ||
 				connection.policy.implementationStatus !== "supported" ||
 				connection.policy.enablementStatus !== "enabled" ||
-				this.#connections?.computeIdentity?.status !== "active")
-		)
-			return;
-		this.#busy = true;
-		this.#message = undefined;
-		this.#error = undefined;
-		this.#draw();
-		try {
-			if (action === "revoke")
-				await this.#client.revokeConnection({ providerConnectionId: connectionId }, this.#lifetime.signal);
-			else {
-				const key = `${connectionId}:${connection.connectionVersion}`;
-				const operationId = this.#enableOperations.get(key) ?? crypto.randomUUID();
-				this.#enableOperations.set(key, operationId);
+				this.#enabling.has(key)
+			)
+				continue;
+			this.#enabling.add(key);
+			try {
 				await this.#client.createMemberSponsor(
 					{
-						clientBindingId: operationId,
-						providerConnectionId: connectionId,
+						providerConnectionId: connection.connectionId,
 						providerConnectionVersion: connection.connectionVersion,
 						allowAutonomous: false,
 					},
 					this.#lifetime.signal,
 				);
+				if (!this.#lifetime.signal.aborted) void this.#refresh();
+			} catch {
+				// Shown as "Connected"; the conversation says so if it still cannot send.
 			}
-			if (this.#lifetime.signal.aborted) return;
-			this.#message =
-				action === "revoke"
-					? "Connection revoked. Refresh to read the current account state."
-					: "Account enabled for your messages. Refresh to read its current state.";
-		} catch {
-			if (this.#lifetime.signal.aborted) return;
-			this.#error = "The account change could not be confirmed. Refresh before trying again.";
-		} finally {
-			this.#busy = false;
-			this.#refreshRequired = true;
-			if (!this.#lifetime.signal.aborted) this.#draw();
 		}
 	}
+	async #connect(provider: Provider): Promise<void> {
+		const begin = this.#client.beginProviderLogin;
+		const existing = this.#attempts.get(provider);
+		if (this.#lifetime.signal.aborted || !this.#client.onboardingAvailable || !begin || existing?.starting) return;
+		const attempt: Attempt = {
+			ids: existing?.ids ?? {
+				clientIdentityId: crypto.randomUUID(),
+				clientLoginId: crypto.randomUUID(),
+				clientConnectionId: crypto.randomUUID(),
+			},
+			starting: true,
+		};
+		this.#attempts.set(provider, attempt);
+		this.#draw();
+		try {
+			attempt.login = await begin(
+				{ provider, displayName: "My model account", ...attempt.ids },
+				this.#lifetime.signal,
+			);
+		} catch {
+			attempt.error = "Sign-in could not be started. Try again.";
+		} finally {
+			attempt.starting = false;
+		}
+		if (this.#lifetime.signal.aborted) return;
+		this.#draw();
+		if (attempt.login) void this.#refresh();
+	}
+	async #disconnect(connection: NativeMemberConnection): Promise<void> {
+		if (this.#working || this.#lifetime.signal.aborted) return;
+		this.#working = connection.connectionId;
+		this.#draw();
+		try {
+			await this.#client.revokeConnection({ providerConnectionId: connection.connectionId }, this.#lifetime.signal);
+		} catch {
+			if (!this.#lifetime.signal.aborted) this.#error = "The account could not be disconnected. Try again.";
+		} finally {
+			this.#working = undefined;
+			if (!this.#lifetime.signal.aborted) await this.#refresh();
+		}
+	}
+	#card(provider: (typeof PROVIDERS)[number]): HTMLElement {
+		const connection = this.#current(provider.id);
+		const attempt = this.#attempts.get(provider.id);
+		const canConnect = Boolean(this.#client.onboardingAvailable && this.#client.beginProviderLogin);
+		const connected = connection && live(connection);
+		const status = attempt?.starting
+			? "Preparing sign-in. The first time can take a minute or two."
+			: attempt?.login
+				? "Waiting for you to finish signing in…"
+				: (attempt?.error ??
+					(this.#loading
+						? "Checking…"
+						: connected
+							? `Connected${connection.providerAccountReference ? ` · ${connection.providerAccountReference}` : ""}`
+							: connection
+								? "Sign in again to keep using this account"
+								: canConnect
+									? "Not connected"
+									: "Not available yet"));
+		const action = connected
+			? button(
+					this.#working === connection.connectionId ? "Disconnecting…" : "Disconnect",
+					() => void this.#disconnect(connection),
+					{ disabled: Boolean(this.#working) },
+				)
+			: attempt?.login
+				? button("Cancel", () => {
+						this.#attempts.delete(provider.id);
+						this.#draw();
+					})
+				: button(
+						attempt?.starting ? "Connecting…" : connection ? "Sign in again" : "Connect",
+						() => void this.#connect(provider.id),
+						{
+							disabled: !canConnect || this.#loading || attempt?.starting === true,
+						},
+					);
+		const login = attempt?.login;
+		return h(
+			"article",
+			{ class: "connection-card" },
+			h("img", { class: "connection-logo", src: `./assets/${provider.logo}`, alt: "" }),
+			h(
+				"div",
+				{ class: "settings-copy" },
+				h("strong", null, provider.label),
+				h("small", { role: "status" }, status),
+			),
+			action,
+			login && (login.interactionUrl || login.userCode)
+				? h(
+						"div",
+						{ class: "connection-sign-in" },
+						login.userCode ? h("p", null, "Your code: ", h("code", null, login.userCode)) : null,
+						login.interactionUrl
+							? h(
+									"a",
+									{
+										class: "btn btn-primary",
+										href: login.interactionUrl,
+										target: "_blank",
+										rel: "noopener noreferrer",
+										referrerpolicy: "no-referrer",
+									},
+									`Open ${provider.id === "openai" ? "OpenAI" : "Anthropic"} sign-in`,
+								)
+							: null,
+						h("small", null, "This page updates by itself when you are done."),
+					)
+				: null,
+		);
+	}
 	#draw(): void {
-		const connections = this.#connections?.connections ?? [];
 		replace(
 			this.el,
 			h("h1", null, "Connections"),
@@ -180,126 +242,16 @@ export class ConnectionsView {
 				"section",
 				{ class: "settings-group" },
 				h("h2", null, "Model accounts"),
-				h(
-					"p",
-					{ class: "muted" },
-					"Select an enabled model account in a conversation to sponsor its work. Enabling here permits your messages; it does not enable autonomous work.",
-				),
-				button(this.#busy ? "Checking…" : "Refresh model accounts", () => void this.#refresh(), {
-					disabled: this.#busy,
-				}),
-				this.#error ? notice("danger", this.#error) : null,
-				this.#message ? notice("neutral", this.#message) : null,
-				!this.#busy && !this.#error && !connections.length
-					? notice("neutral", "No model accounts are connected for this company.")
-					: null,
-				h(
-					"div",
-					{ class: "connection-list" },
-					...connections.map((connection) => {
-						const usable =
-							connection.connectionStatus === "active" &&
-							connection.authorizationState === "active" &&
-							connection.policy.implementationStatus === "supported" &&
-							connection.policy.enablementStatus === "enabled";
-						return h(
-							"article",
-							{ class: "connection-card" },
-							h(
-								"div",
-								{ class: "settings-copy" },
-								h("strong", null, connection.providerAccountReference ?? connection.provider),
-								h(
-									"small",
-									null,
-									`${connection.provider} · ${connection.connectionStatus} · ${connection.authorizationState}`,
-								),
-								h("small", null, usable ? "Execution enabled" : "Execution unavailable"),
-							),
-							!connection.sponsorBindingId
-								? button("Enable for my messages", () => void this.#mutate(connection.connectionId, "enable"), {
-										disabled:
-											this.#busy ||
-											this.#refreshRequired ||
-											!usable ||
-											this.#connections?.computeIdentity?.status !== "active",
-									})
-								: h(
-										"small",
-										null,
-										usable && this.#connections?.computeIdentity?.status === "active"
-											? "Available for your messages"
-											: "Unavailable for your messages",
-									),
-							button("Revoke connection", () => void this.#mutate(connection.connectionId, "revoke"), {
-								disabled: this.#busy || this.#refreshRequired || connection.connectionStatus === "revoked",
-							}),
-						);
-					}),
-				),
-				this.#client.onboardingAvailable && this.#client.beginProviderLogin
+				this.#error
 					? h(
-							"div",
-							{ class: "provider-sign-in" },
-							h(
-								"div",
-								{ class: "row" },
-								button("Sign in with OpenAI", () => void this.#beginLogin("openai"), {
-									disabled: this.#busy || this.#refreshRequired || Boolean(this.#login),
-								}),
-								button("Sign in with Anthropic", () => void this.#beginLogin("anthropic"), {
-									disabled: this.#busy || this.#refreshRequired || Boolean(this.#login),
-								}),
-							),
-							this.#login
-								? h(
-										"div",
-										{ class: "provider-sign-in-prompt" },
-										this.#login.interactionUrl
-											? h(
-													"p",
-													null,
-													h(
-														"a",
-														{
-															href: this.#login.interactionUrl,
-															target: "_blank",
-															rel: "noopener noreferrer",
-															referrerpolicy: "no-referrer",
-														},
-														"Open provider sign-in",
-													),
-												)
-											: null,
-										this.#login.userCode
-											? h("p", null, "Device code: ", h("code", null, this.#login.userCode))
-											: null,
-										h(
-											"p",
-											{ class: "muted" },
-											"Expires ",
-											h(
-												"time",
-												{ datetime: this.#login.expiresAt },
-												new Date(this.#login.expiresAt).toLocaleString(),
-											),
-										),
-										button(
-											"Close sign-in instructions",
-											() => {
-												if (this.#lifetime.signal.aborted) return;
-												this.#clearLogin();
-												this.#refreshRequired = true;
-												this.#message =
-													"Sign-in instructions closed. The sign-in may still complete; refresh model accounts before a new attempt.";
-												this.#draw();
-											},
-											{ small: true, disabled: this.#busy },
-										),
-									)
-								: null,
+							"p",
+							{ class: "muted", role: "status" },
+							this.#error,
+							" ",
+							button("Try again", () => void this.#refresh(), { small: true }),
 						)
-					: notice("neutral", "Connecting a new model account from the browser is not available yet."),
+					: null,
+				h("div", { class: "connection-list" }, ...PROVIDERS.map((provider) => this.#card(provider))),
 			),
 			h(
 				"section",

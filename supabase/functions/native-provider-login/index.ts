@@ -22,8 +22,19 @@ async function chooseLoginGateway(capabilitySha256: string): Promise<string | un
 	return typeof chosen?.url === "string" ? chosen.url : undefined;
 }
 
+/** Exact web origins this deployment serves, as a JSON array; absent means the production app only. */
+function allowedOrigins(): readonly string[] | undefined {
+	const value = Deno.env.get("QORPERA_WEB_ORIGINS");
+	if (!value) return undefined;
+	const parsed: unknown = JSON.parse(value);
+	if (!Array.isArray(parsed) || parsed.length < 1 || parsed.length > 8 || parsed.some((item) => typeof item !== "string"))
+		throw new Error("QORPERA_WEB_ORIGINS must be a JSON array of one to eight origins");
+	return parsed as string[];
+}
+
 Deno.serve((request) =>
 	forwardNativeProviderLogin(request, {
+		allowedOrigins: allowedOrigins(),
 		upstreamUrl: Deno.env.get("QORPERA_NATIVE_PROVIDER_UPSTREAM_URL"),
 		upstreamResolver: chooseLoginGateway,
 	}),

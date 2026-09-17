@@ -29,7 +29,7 @@ const UNITS = { minutes: 1, hours: 60, days: 1440 } as const;
 
 function accountLabel(account: NativeMemberConnection): string {
 	const name =
-		account.provider === "openai-codex" ? "ChatGPT" : account.provider === "anthropic" ? "Claude" : account.provider;
+		account.provider === "openai" || account.provider === "openai-codex" ? "ChatGPT" : account.provider === "anthropic" ? "Claude" : account.provider;
 	return account.providerAccountReference ? `${name} · ${account.providerAccountReference}` : name;
 }
 

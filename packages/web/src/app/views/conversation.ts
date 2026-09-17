@@ -609,7 +609,6 @@ export class ConversationView {
 			);
 		else if (this.#run) children.push(this.#run.el);
 		if (this.#execution) children.push(this.#execution.el);
-		if (activity === "needs_attention") children.push(notice("neutral", "This agent needs your attention."));
 		if (!canWrite && session?.status === "closed") children.push(notice("neutral", "This conversation is archived."));
 		else if (
 			!canWrite &&

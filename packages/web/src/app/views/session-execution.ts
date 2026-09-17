@@ -8,7 +8,8 @@ import { button, fmtTime, h, notice, replace } from "../../ui/dom.ts";
 import type { CompanyController } from "../company.ts";
 
 /** A member explicitly selects their own observed sponsor. Runtime admission
- * remains in the shared SDK; no account is selected or enabled automatically. */
+ * remains in the shared SDK. The member's own usable account is chosen for them;
+ * a picker appears only when they have more than one. */
 export class SessionExecutionView {
 	readonly el = h("div", { class: "session-execution" });
 	readonly #company: CompanyController;
@@ -134,8 +135,41 @@ export class SessionExecutionView {
 		}
 		this.#busy = false;
 		this.#request = undefined;
+		this.#choose();
 		this.#render();
 		this.#changed();
+	}
+
+	#available(): string[] {
+		const observed = this.#observed;
+		if (!observed) return [];
+		return observed.connections
+			.filter((connection) => {
+				try {
+					selectSessionExecutionSponsor(observed, connection.connectionId, this.#company.userId);
+					return true;
+				} catch {
+					return false;
+				}
+			})
+			.map((connection) => connection.connectionId);
+	}
+
+	/** A member's message runs on the member's own account. With one usable
+	 * account there is nothing to ask; a stale choice follows its account. */
+	#choose(): void {
+		const conversation = this.#company.conversation(this.#sessionId).get();
+		if (!this.#observed || conversation.sending || conversation.retrySend || this.canSend) return;
+		const available = this.#available();
+		const kept = conversation.executionSponsor?.connectionId;
+		const next = kept && available.includes(kept) ? kept : available[0];
+		if (!next) return;
+		try {
+			this.#company.setExecutionSponsor(this.#sessionId, this.#observed, next);
+			this.#error = undefined;
+		} catch {
+			// The member can still choose; sending stays off until an account is usable.
+		}
 	}
 
 	#render(): void {
@@ -203,14 +237,11 @@ export class SessionExecutionView {
 			this.#render();
 			this.#changed();
 		});
+		const several = this.#available().length > 1;
 		replace(
 			this.el,
-			h("label", { class: "field" }, "Model account", select),
-			button(this.#busy ? "Refreshing accounts…" : "Refresh model accounts", () => void this.refresh(), {
-				small: true,
-				disabled: this.#busy,
-			}),
-			this.#error ? notice("neutral", this.#error) : null,
+			several && !conversation.retrySend ? select : null,
+			this.#error ? h("p", { class: "muted" }, this.#error) : null,
 			conversation.retrySend
 				? h(
 						"div",
@@ -236,37 +267,9 @@ export class SessionExecutionView {
 							{ small: true, disabled: conversation.sending || !canWrite },
 						),
 					)
-				: !selected || !this.canSend
-					? h(
-							"p",
-							{ class: "muted" },
-							"Choose an active account enabled for your messages in Settings → Connections.",
-						)
+				: this.#observed && !this.#error && !this.canSend && !this.#busy
+					? h("p", { class: "muted" }, "Connect a model account in Settings → Connections to send messages.")
 					: null,
-			this.#room
-				? null
-				: h(
-						"details",
-						null,
-						h("summary", null, "Execution history"),
-						this.#historyError
-							? notice("neutral", this.#historyError)
-							: this.#provenance.length
-								? this.#provenance
-										.slice(0, 20)
-										.map((turn) =>
-											h(
-												"p",
-												{ class: "muted" },
-												`${fmtTime(turn.createdAt)} · ${turn.provider ?? "Provider pending"} · ${turn.sponsoredByName ?? (turn.sponsorMode === "company_connection" ? "Company account" : turn.sponsorMode === "sponsorship_request" ? "Sponsorship requested" : "Member account")} · ${turn.runStatus ?? turn.status}${turn.failureReason ? ` · ${turn.failureReason}` : ""}`,
-											),
-										)
-								: h(
-										"p",
-										{ class: "muted" },
-										this.#busy ? "Loading execution history…" : "No execution requests yet.",
-									),
-					),
 		);
 	}
 
