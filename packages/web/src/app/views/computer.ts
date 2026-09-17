@@ -4,6 +4,7 @@ import { agentFigure } from "../../ui/avatar.ts";
 import { ComputerViewHost } from "../../ui/computer-view-host.ts";
 import { button, h, icon, replace } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
+import { type AgentRoutineAccess, AgentRoutines } from "./agent-routines.ts";
 import { ComputerAccessPanel } from "./computer-access.ts";
 import { ComputerBrowserPanel } from "./computer-browser.ts";
 
@@ -18,7 +19,13 @@ export class ComputerPanel {
 	readonly #detailsRoot = h("div", { class: "stack computer-details" });
 	#details: ComputerAccessPanel | ComputerBrowserPanel | undefined;
 	#busy = false;
-	constructor(agent: HostedStaffAgent, close: () => void, computer?: WebCompanyComputer, parentSignal?: AbortSignal) {
+	constructor(
+		agent: HostedStaffAgent,
+		close: () => void,
+		computer?: WebCompanyComputer,
+		parentSignal?: AbortSignal,
+		routines?: AgentRoutineAccess,
+	) {
 		const signal = AbortSignal.any([this.#stop.signal, ...(parentSignal ? [parentSignal] : [])]);
 		this.#views = new ComputerViewHost(signal);
 		this.el = h(
@@ -52,28 +59,7 @@ export class ComputerPanel {
 					this.#screenControls,
 					this.#detailsRoot,
 				),
-				h(
-					"section",
-					{ class: "computer-routines" },
-					h(
-						"header",
-						null,
-						h("h2", null, "Routines"),
-						h(
-							"button",
-							{
-								type: "button",
-								class: "icon-button",
-								disabled: true,
-								"aria-label": "Create routine",
-								title: "Create routine",
-							},
-							icon("plus"),
-						),
-					),
-					h("p", { class: "muted" }, "Recurring work, on a schedule or when something happens."),
-					h("div", { class: "routine-empty" }, icon("clock"), h("p", null, "Routines will appear here.")),
-				),
+				new AgentRoutines(agent, routines, signal).el,
 			),
 		);
 		this.el.addEventListener("keydown", (event) => {

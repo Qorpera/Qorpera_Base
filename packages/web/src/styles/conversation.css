@@ -200,6 +200,27 @@
 .computer-routines > header { display: flex; align-items: center; justify-content: space-between; }
 .routine-empty { text-align: center; color: var(--text-soft); padding: 18px 0; }
 .routine-empty .icon { width: 24px; height: 24px; }
+.routine-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 6px 10px; padding: 12px 0; border-top: 1px solid var(--border); }
+.routine-row:first-of-type { margin-top: 12px; }
+.routine-row-copy { display: grid; gap: 3px; min-width: 0; overflow-wrap: anywhere; }
+.routine-row-copy strong { font-size: 13px; }
+.routine-row-copy span { color: var(--text-muted); }
+.routine-row-copy small { color: var(--text-soft); font-size: 11px; }
+.routine-row-actions { grid-column: 1 / -1; display: flex; gap: 8px; }
+.routine-editor { display: grid; gap: 14px; margin-top: 14px; }
+.routine-editor label { display: grid; gap: 6px; font-weight: 500; }
+.routine-editor label small { color: var(--text-muted); font-weight: 400; line-height: 1.5; }
+.routine-editor input[type=text], .routine-editor textarea, .routine-editor select { width: 100%; min-width: 0; }
+.routine-editor textarea { resize: vertical; }
+.routine-when { display: grid; gap: 10px; }
+.routine-inline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.routine-inline input[type=number] { width: 84px; }
+.routine-inline input[type=time] { width: 110px; }
+.routine-inline input[type=text] { flex: 1; min-width: 140px; }
+.routine-days { display: flex; flex-wrap: wrap; gap: 6px; }
+.routine-editor .routine-days label { display: inline-flex; flex-direction: row; align-items: center; gap: 5px; padding: 5px 9px; border: 1px solid var(--border); border-radius: 8px; font-weight: 400; cursor: pointer; }
+.routine-days input[type=checkbox] { width: 14px; height: 14px; min-height: 0; margin: 0; padding: 0; }
+.routine-editor .surface-actions { margin: 0; }
 
 .new-conversation { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .new-conversation-header { min-height: var(--titlebar-height); flex: none; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 18px; border-bottom: 1px solid var(--sidebar-divider); background: var(--header-surface); }

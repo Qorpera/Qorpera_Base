@@ -317,3 +317,19 @@ protected, so these actions are offered to owners and admins only.
 **Removed.** The Policy settings tab was a local draft with no backend and is
 gone. The direct roster write for figures is gone; governed companies refuse
 it.
+
+## 2026-09-17 — Routines live in the agent's Computer panel
+
+**Decision.** The web client is the first client of the cloud routine calls
+(`@qorpera/cloud-client/cloud-routines`). An owner or admin creates, edits,
+pauses and resumes an agent's routines from the Routines section of that
+agent's Computer panel. A routine has one trigger: chosen days at a time,
+every so often, or a change under a Company File path, plus a reply choice
+(always, only when useful, silent). The cloud schedules and delivers; nothing
+runs in the browser.
+
+**Whose account.** A routine runs while nobody is present, so it names the
+model account of the member who saves it. Saving records that member's
+consent to unattended use of that account and binds one sponsor per account
+version, reused on later saves. The cloud has no member delete for routines;
+"Pause" is the removal a member has.

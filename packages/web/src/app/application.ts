@@ -6,6 +6,7 @@ import { createWebCompanyExecution } from "../cloud/company-execution.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
 import { WebCompanyComputer } from "../cloud/computer.ts";
 import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
+import { createWebRoutines } from "../cloud/routines.ts";
 import { createWebSessionAttachments } from "../cloud/session-attachments.ts";
 import { createWebSessionInputWriter } from "../cloud/session-input.ts";
 import { createWebSessionRunControl } from "../cloud/session-run-control.ts";
@@ -739,6 +740,7 @@ export function mountApplication(
 								check();
 								return new Blob([Uint8Array.from(bytes)], { type: ref.mediaType });
 							},
+							routines: createWebRoutines(cloud, controller.profile, controller.signal, checkConversationAccess),
 							...agentActions,
 							...workspaceActions,
 							computer,
