@@ -1062,7 +1062,11 @@ export class LxdNativeLoginGateway {
 			await this.#repinLogin(binding, signal);
 			return;
 		}
-		if (!freshVolume && (await this.#guestFileExists(instanceName, RECOVERY_MASTER_KEY_PATH, signal))) return;
+		// The key lives on the identity volume inside the guest. Asking before the
+		// guest agent answers reads as "no key" and would recover an identity that
+		// is already here, on every sign-in.
+		await this.#waitForGuestAgent(instanceName, signal);
+		await this.#waitForIdentityMount(instanceName, signal);
 		if (await this.#guestFileExists(instanceName, RECOVERY_MASTER_KEY_PATH, signal)) return;
 		const registrar = this.#config.identityRecoveryRegistrarCapability,
 			guestManifestSha256 = this.#config.guestManifestSha256,
@@ -1237,6 +1241,25 @@ export class LxdNativeLoginGateway {
 		console.error(`LXD native login identity restore completed (recovery ${recoveryId}, epoch ${epoch})`);
 	}
 
+	/** The guest agent mounts the identity volume shortly after it starts answering. */
+	async #waitForIdentityMount(instanceName: string, signal: AbortSignal): Promise<void> {
+		const deadline = Date.now() + 60_000;
+		for (;;) {
+			try {
+				await this.#lxd.execInstance(
+					this.#config.project,
+					instanceName,
+					["/usr/bin/mountpoint", "-q", "/var/lib/qorpera/identity"],
+					signal,
+				);
+				return;
+			} catch (error) {
+				if (signal.aborted) throw error;
+				if (Date.now() >= deadline) throw new Error("LOGIN_IDENTITY_VOLUME_UNMOUNTED");
+			}
+			await delay(250, undefined, { signal });
+		}
+	}
 	async #guestFileExists(instanceName: string, path: string, signal: AbortSignal): Promise<boolean> {
 		try {
 			await this.#lxd.execInstance(this.#config.project, instanceName, ["/usr/bin/test", "-f", path], signal);
