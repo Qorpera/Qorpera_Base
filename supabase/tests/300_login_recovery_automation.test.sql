@@ -24,7 +24,7 @@ insert into public.qorpera_member_compute_identities(id,profile_id,ownership_kin
 insert into public.qorpera_identity_recovery_authorities(id,profile_id,signing_public_key,wrapping_public_key,service_origin,capability_sha256)
   values ('30000000-0000-4000-8000-000000000030','30000000-0000-4000-8000-000000000010',repeat('A',59),repeat('A',550),'https://recovery.example.test',repeat('c',64));
 select pg_temp.claims('service_role'); set local role service_role;
-select public.qorpera_configure_runtime_node('{"schema":"qorpera.runtime-node-policy/v1","nodeId":"30000000-0000-4000-8000-000000000040","machineIdSha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","label":"lra-node","cpuMillis":32000,"memoryBytes":137438953472,"headroomCpuMillis":8000,"headroomMemoryBytes":68719476736,"standardCpuMillis":8000,"standardMemoryBytes":17179869184,"enabled":true}'::jsonb,1);
+select public.qorpera_configure_runtime_node('{"schema":"qorpera.runtime-node-policy/v1","nodeId":"30000000-0000-4000-8000-000000000040","machineIdSha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","label":"lra-node","cpuMillis":32000,"memoryBytes":137438953472,"headroomCpuMillis":8000,"headroomMemoryBytes":68719476736,"standardCpuMillis":8000,"standardMemoryBytes":17179869184,"enabled":true}'::jsonb,0);
 reset role;
 
 -- A member begins a login; a backup exists (established identity).

@@ -191,7 +191,9 @@ function lxdLoginConfig(config: LxdCloudRunnerProviderConfig): LxdNativeLoginGat
 		identityRecoveryRegistrarCapability: optionalCredentialFile(
 			"QORPERA_LXD_LOGIN_RECOVERY_REGISTRAR_CAPABILITY_FILE",
 		),
-		guestManifestSha256: optionalSha256("QORPERA_LXD_LOGIN_GUEST_MANIFEST_SHA256"),
+		guestManifestSha256:
+			optionalSha256("QORPERA_LXD_LOGIN_GUEST_MANIFEST_SHA256") ??
+			optionalSha256("QORPERA_LXD_GUEST_PACKAGE_MANIFEST_SHA256"),
 	};
 }
 
