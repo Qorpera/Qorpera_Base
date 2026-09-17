@@ -183,6 +183,40 @@ function liveCompanyAuthority(config: LxdCloudRunnerProviderConfig, jobType: str
 	return { root: config.liveCompanyRoot, profileId: config.liveCompanyProfileId };
 }
 
+/** True when a journal still answers to this provider's governed runtime.
+ * While the guest can run, the recorded authority must equal the configured
+ * one exactly, office credential digest included. A retired guest holds no
+ * authority: its mode, company, retained volume and office route must still
+ * match, but a later configuration or credential (an office credential is
+ * replaced with every computer generation) does not make its journal
+ * unreadable. Otherwise one rotation strands every kept journal, reconcile and
+ * the capacity inventory refuse, and the node stops taking work. */
+function sameCompanyRuntimeAuthority(
+	config: LxdCloudRunnerProviderConfig,
+	journal: LxdProviderJournal,
+	acquisitionId: string,
+): boolean {
+	const recorded = journal.lxd.companyRuntime;
+	const expected = companyRuntimeAuthority(
+		config,
+		acquisitionId,
+		recorded?.profileId,
+		recorded?.office?.environmentId,
+	);
+	if (JSON.stringify(canonical(recorded)) === JSON.stringify(canonical(expected))) return true;
+	if (!recorded || !expected || (journal.physicalState !== "stopped" && journal.physicalState !== "lost"))
+		return false;
+	const route = (value: NonNullable<typeof recorded>) =>
+		JSON.stringify(
+			canonical({
+				...value,
+				configurationSha256: undefined,
+				office: value.office ? { environmentId: value.office.environmentId, url: value.office.url } : undefined,
+			}),
+		);
+	return route(recorded) === route(expected);
+}
+
 function companyRuntimeAuthority(
 	config: LxdCloudRunnerProviderConfig,
 	acquisitionId: string,
@@ -1771,15 +1805,9 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			const journal = journalFromJson(
 				JSON.parse(await readFile(this.#journalPath(acquisitionId), "utf-8")) as unknown,
 			);
-			const expected = companyRuntimeAuthority(
-				this.#config,
-				acquisitionId,
-				journal.lxd.companyRuntime?.profileId,
-				journal.lxd.companyRuntime?.office?.environmentId,
-			);
 			if (
 				journal.acquisitionId !== acquisitionId ||
-				JSON.stringify(canonical(journal.lxd.companyRuntime)) !== JSON.stringify(canonical(expected))
+				!sameCompanyRuntimeAuthority(this.#config, journal, acquisitionId)
 			) {
 				throw new Error(
 					"LXD journal cannot switch runtime mode or governed configuration; use a separate rollout lane",

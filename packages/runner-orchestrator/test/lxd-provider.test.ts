@@ -1639,6 +1639,46 @@ describe("LXD cloud runner provider", () => {
 		expect(lxd.filePushes).toHaveLength(count);
 	});
 
+	it.each(["retired", "live", "retired-moved"])(
+		"keeps only a retired journal readable after an office credential rotation (%s)",
+		async (scope) => {
+			const settings = governedConfig(join(await root(), "state"));
+			const route = {
+				companyId: work().profileId,
+				environmentId: work().environmentId,
+				url: "https://office.example.test/office/20000000-0000-4000-8000-000000000099/native",
+				token: "o".repeat(43),
+			};
+			settings.nativeCompanyRuntime!.offices = [route];
+			const lxd = new FakeLxd(),
+				guest = new FakeGuest();
+			const backend = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([]));
+			const runner = await backend.acquire(runId, work(), new AbortController().signal);
+			if (scope !== "live") {
+				await backend.stop(runner, "idle");
+				await backend.reconcile();
+			}
+			const path = join(settings.stateRoot, runId, "journal.json");
+			const before = await readFile(path, "utf-8");
+			expect(JSON.parse(before).physicalState).toBe(scope === "live" ? "registered" : "stopped");
+			const rotated = governedConfig(settings.stateRoot);
+			rotated.nativeCompanyRuntime!.offices = [
+				{
+					...route,
+					token: "p".repeat(43),
+					...(scope === "retired-moved"
+						? { url: "https://other.example.test/office/20000000-0000-4000-8000-000000000099/native" }
+						: {}),
+				},
+			];
+			const restarted = new LxdCloudRunnerProviderBackend(rotated, lxd, guest, fetchProvisioner([]));
+			if (scope === "retired") await expect(restarted.reconcile()).resolves.toBeUndefined();
+			else await expect(restarted.reconcile()).rejects.toThrow("journal");
+			// The journal keeps the digest of the credential its guest was given.
+			expect(await readFile(path, "utf-8")).toBe(before);
+		},
+	);
+
 	it.each(["environmentId", "url", "tokenSha256", "unknown"])(
 		"refuses altered journal office authority (%s)",
 		async (kind) => {
