@@ -247,6 +247,7 @@ function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" 
 		nodeRefusal: null as string | null,
 		nodeSequence: [] as Array<string | null>,
 		loseCompany: 0,
+		releasing: 0,
 		loseNode: 0,
 		loseRelease: 0,
 		cleanupRequired: false,
@@ -284,6 +285,7 @@ function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" 
 		if (url.endsWith("qorpera_reserve_runtime_login_machine")) {
 			control.committed = true;
 			if (control.loseCompany-- > 0) throw new Error("lost company reply");
+			if (control.releasing-- > 0) return Response.json({ state: "refused", reason: "COMPUTE_IDENTITY_RELEASING" });
 			if (control.companyRefusal) return Response.json({ state: "refused", reason: control.companyRefusal });
 			return Response.json({
 				state: "reserved",
@@ -611,6 +613,33 @@ describe("LXD native login gateway", () => {
 		const attempts = boundary.requests.filter((r) => r.url.endsWith("qorpera_reserve_runtime_login_machine"));
 		expect(new Set(attempts.map((r) => JSON.parse(r.body).p_allocation_id)).size).toBe(1);
 	});
+	it("waits while a replaced sign-in gives its machine back, and refuses a real occupant at once", async () => {
+		const root = await stateRoot(),
+			lxd = new FakeLxd(),
+			boundary = fetchBoundary([
+				{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: null },
+			]);
+		boundary.control.releasing = 2;
+		const waiting = new LxdNativeLoginGateway(
+			{ ...config(root), identityReleaseWaitMs: 60_000 },
+			lxd,
+			boundary.fetchImplementation,
+		);
+		expect((await waiting.handle(loginRequest())).status).toBe(200);
+		expect(lxd.createCalls).toHaveLength(1);
+		const reservations = boundary.requests.filter((r) => r.url.endsWith("qorpera_reserve_runtime_login_machine"));
+		expect(reservations.length).toBeGreaterThanOrEqual(3);
+		expect(new Set(reservations.map((r) => JSON.parse(r.body).p_allocation_id)).size).toBe(1);
+
+		const otherRoot = await stateRoot(),
+			otherLxd = new FakeLxd(),
+			occupied = fetchBoundary([]);
+		occupied.control.companyRefusal = "COMPUTE_IDENTITY_OCCUPIED";
+		const refused = new LxdNativeLoginGateway(config(otherRoot), otherLxd, occupied.fetchImplementation);
+		expect((await refused.handle(loginRequest())).status).toBe(503);
+		expect(otherLxd.createCalls).toHaveLength(0);
+		expect(occupied.requests.filter((r) => r.url.endsWith("qorpera_reserve_runtime_login_machine"))).toHaveLength(1);
+	}, 20_000);
 	it("retains a stopped created VM when fresh pre-start admission is refused", async () => {
 		const root = await stateRoot(),
 			lxd = new FakeLxd(),

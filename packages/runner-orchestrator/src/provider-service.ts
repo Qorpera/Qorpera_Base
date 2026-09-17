@@ -416,7 +416,8 @@ export class HttpCloudRunnerProviderService {
 					schema: "qorpera.provider-request-error/v1",
 					providerAdapter: this.#backend.adapterId,
 					status: "rejected",
-					errorCategory: error instanceof SyntaxError ? "invalid_arguments" : refusal ? "admission_refused" : "unknown",
+					errorCategory:
+						error instanceof SyntaxError ? "invalid_arguments" : refusal ? "admission_refused" : "unknown",
 					...(refusal ? { state: refusal.state, reason: refusal.reason } : {}),
 				}),
 			);

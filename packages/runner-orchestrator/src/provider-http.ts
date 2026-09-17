@@ -267,7 +267,8 @@ export class HttpCloudRunnerProviderAdapter implements CloudRunnerProviderAdapte
 			redirect: "error",
 			signal: requestSignal,
 		});
-		if (!response.ok) throw new CloudRunnerProviderRequestError(response.status, await providerAdmissionRefusal(response));
+		if (!response.ok)
+			throw new CloudRunnerProviderRequestError(response.status, await providerAdmissionRefusal(response));
 		const encoded = await response.text();
 		if (Buffer.byteLength(encoded) > PROVIDER_RESPONSE_LIMIT_BYTES) {
 			throw new Error("Runner provider response exceeds its byte limit");

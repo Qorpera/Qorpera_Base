@@ -1,7 +1,7 @@
-import { CloudRunnerProviderRequestError } from "./provider-http.ts";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { JsonValue } from "@qorpera/contracts";
 import type { ServiceHttpFetch } from "./http-transport.ts";
+import { CloudRunnerProviderRequestError } from "./provider-http.ts";
 
 export type CloudRunnerCapability = "agent_turn" | "git_worktree" | "company_substrate";
 export type CloudComputeIdentityOwnershipKind = "member" | "company" | "department" | "security_boundary";
@@ -318,7 +318,8 @@ function definitiveRejectionStatus(error: unknown): number | undefined {
 /** A typed admission refusal is reported by its reason code so the control plane can defer the job
  * instead of counting an infrastructure failure; everything else stays a redacted message. */
 function deliveryFailure(error: unknown): string {
-	if (error instanceof CloudRunnerProviderRequestError && error.admission) return `ADMISSION_REFUSED:${error.admission.reason}`;
+	if (error instanceof CloudRunnerProviderRequestError && error.admission)
+		return `ADMISSION_REFUSED:${error.admission.reason}`;
 	return safeDeliveryFailure(error);
 }
 

@@ -4,7 +4,7 @@ import type {
 } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import type { WebNativeSubscription } from "../../cloud/native-subscription.ts";
 import { selectSessionExecutionSponsor } from "../../cloud/session-input.ts";
-import { button, fmtTime, h, notice, replace } from "../../ui/dom.ts";
+import { button, h, replace } from "../../ui/dom.ts";
 import type { CompanyController } from "../company.ts";
 
 /** A member explicitly selects their own observed sponsor. Runtime admission

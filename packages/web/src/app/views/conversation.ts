@@ -386,7 +386,6 @@ export class ConversationView {
 		const conversation = this.#company.conversation(this.#sessionId).get();
 		const session = company.sessions.find((item) => item.sessionId === this.#sessionId);
 		const agent = this.#company.staffById(session?.staffAgentId);
-		const activity = this.#company.activityFor(session?.staffAgentId);
 		const canWrite = company.team?.capabilities.write === true && session?.status === "open";
 		const room = this.#isRoom;
 		this.#execution?.update();
@@ -413,7 +412,7 @@ export class ConversationView {
 		);
 		this.#renderHeader(session, agent);
 		this.#renderMessages(conversation, room ? "Agent reply" : (agent?.displayName ?? session?.title ?? "Agent"));
-		this.#renderStatus(conversation, activity?.activity, canWrite, session);
+		this.#renderStatus(conversation, canWrite, session);
 		this.#composer.disabled = !canWrite || conversation.sending;
 		this.#send.disabled =
 			!this.#actions.sendMessage ||
@@ -580,12 +579,7 @@ export class ConversationView {
 		if (this.#stickToBottom) this.#messages.scrollTop = this.#messages.scrollHeight;
 	}
 
-	#renderStatus(
-		conversation: ConversationState,
-		activity: string | undefined,
-		canWrite: boolean,
-		session: HostedSession | undefined,
-	): void {
+	#renderStatus(conversation: ConversationState, canWrite: boolean, session: HostedSession | undefined): void {
 		const children: (HTMLElement | null)[] = [];
 		if (conversation.error) children.push(notice("danger", conversation.error));
 		if (conversation.sendError) children.push(notice("danger", conversation.sendError));

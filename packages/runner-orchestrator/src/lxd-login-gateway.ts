@@ -190,6 +190,8 @@ export interface LxdNativeLoginGatewayConfig {
 	/** Bound on waiting for the recovery's quiet period before the restore (default 180 s). */
 	recoveryWaitMs?: number;
 	/** A member post that outlasts this budget answers `preparing` (default 20 s); the work continues. */
+	/** How long a new sign-in waits for the member's replaced sign-in to give its machine back (default 120 s). */
+	identityReleaseWaitMs?: number;
 	loginPreparingAfterMs?: number;
 }
 
@@ -657,6 +659,9 @@ export class LxdNativeLoginGateway {
 		const bridge = await this.#bridgeToken(login.loginId, true);
 		const files = this.#bootstrapFiles(login.computeIdentityId, bridge);
 		if (bootstrapSha256(files) !== binding.bootstrapSha256) throw new Error("LOGIN_BOOTSTRAP_CHANGED");
+		// This route holds the identity's lock, so the reconcile loop cannot delete a
+		// replaced sign-in's machine on this node meanwhile: do it here, first.
+		await this.#releaseReplaced(login, signal);
 		// Registration precedes identity storage; each physical dispatch has an
 		// additional fresh gate after any intervening storage/inspection work.
 		await this.#admit(journal, signal);
@@ -738,15 +743,25 @@ export class LxdNativeLoginGateway {
 		const host = await readRuntimeNodeHost(signal);
 		if (!isDeepStrictEqual(lxdLoginNodePolicy(this.#config, host.machineIdSha256).policy, binding.policy))
 			throw new Error("LOGIN_PHYSICAL_POLICY_CHANGED");
-		const result = await this.#rpc(
-			"qorpera_reserve_runtime_login_machine",
-			{
-				...this.#machineIdentity(binding),
-				p_login_id: binding.loginId,
-				p_capability_sha256: binding.capabilitySha256,
-			},
-			signal,
-		);
+		// A member's new sign-in replaces their unfinished one. Its node deletes that
+		// machine on its next reconcile; until then the reservation answers
+		// COMPUTE_IDENTITY_RELEASING, which is a wait, not a refusal.
+		const releasingUntil = Date.now() + (this.#config.identityReleaseWaitMs ?? 120_000);
+		let result: unknown;
+		for (;;) {
+			result = await this.#rpc(
+				"qorpera_reserve_runtime_login_machine",
+				{
+					...this.#machineIdentity(binding),
+					p_login_id: binding.loginId,
+					p_capability_sha256: binding.capabilitySha256,
+				},
+				signal,
+			);
+			const refusal = result && typeof result === "object" ? (result as { reason?: unknown }).reason : undefined;
+			if (refusal !== "COMPUTE_IDENTITY_RELEASING" || Date.now() >= releasingUntil) break;
+			await delay(2000, undefined, { signal });
+		}
 		if (
 			!isDeepStrictEqual(result, {
 				state: "reserved",
@@ -856,6 +871,25 @@ export class LxdNativeLoginGateway {
 		const description = await this.#machineDescription(binding, signal);
 		if (!description.cleanupRequired || !description.releasedAt) throw new Error("LOGIN_RELEASE_UNCONFIRMED");
 		await journal.release(description.releasedAt);
+	}
+	/** Deletes this node's machines of the same identity whose login can no longer
+	 * be used (cancelled by a newer sign-in, expired, completed). Uncertain ones are
+	 * left to the reconcile loop; the reservation then decides. */
+	async #releaseReplaced(login: NativeLoginRequest, signal: AbortSignal): Promise<void> {
+		for (const name of (await readdir(this.#config.stateRoot)).sort()) {
+			signal.throwIfAborted();
+			if (!LOGIN_UUID.test(name) || name === login.loginId) continue;
+			try {
+				const journal = await LxdLoginJournal.open(this.#config.stateRoot, name, this.#lxd);
+				if (journal.binding.computeIdentityId !== login.computeIdentityId) continue;
+				const state = await journal.state();
+				if (state.releasedAt) continue;
+				const description = await this.#machineDescription(journal.binding, signal);
+				if (state.closing || description.cleanupRequired) await this.#cleanup(journal, signal);
+			} catch {
+				signal.throwIfAborted();
+			}
+		}
 	}
 	/** Bounded scan owned by the headless service, independent of member polls.
 	 * Revoked/expired/completed logins retain capacity until exact VM deletion.
