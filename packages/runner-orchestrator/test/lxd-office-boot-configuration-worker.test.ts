@@ -52,7 +52,7 @@ describe("resumed boot configuration", () => {
 		async (kind) => {
 			const f = await fixture();
 			const path = f.input.serviceBootstrapPath,
-				original = (await f.readProtected(path, 16384)).toString("utf8"),
+				original = (await f.readProtected(path)).toString("utf8"),
 				material = { tlsCert: `${f.secrets.tlsCert}\n`, tlsKey: `${f.secrets.tlsKey}\n` };
 			const plan = JSON.parse(original);
 			for (const [key, text] of Object.entries(material))
@@ -79,17 +79,17 @@ describe("resumed boot configuration", () => {
 			};
 			const readProtected = f.readProtected.getMockImplementation()!,
 				readCredential = f.readCredential.getMockImplementation()!;
-			f.readProtected.mockImplementation(async (file: string, limit: number) => {
+			f.readProtected.mockImplementation(async (file: string) => {
 				if (file === path) return Buffer.from(next);
 				if (file.endsWith("/service-bootstrap-revisions.json")) {
 					if (kind === "unrecorded") throw Object.assign(new Error("missing"), { code: "ENOENT" });
 					return Buffer.from(JSON.stringify(chain));
 				}
-				return readProtected(file, limit);
+				return readProtected(file);
 			});
-			f.readCredential.mockImplementation(async (file: string, limit: number) => {
+			f.readCredential.mockImplementation(async (file: string) => {
 				const name = Object.keys(material).find((key) => file === plan.credentials[key].path);
-				return name ? Buffer.from(material[name as keyof typeof material]) : readCredential(file, limit);
+				return name ? Buffer.from(material[name as keyof typeof material]) : readCredential(file);
 			});
 			if (kind === "unrecorded") {
 				await expect(f.run()).rejects.toThrow("OFFICE_BOOT_CONFIGURATION_UNCONFIRMED");

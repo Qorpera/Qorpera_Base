@@ -18,7 +18,7 @@ afterEach(async () => {
 async function plans() {
 	const f = await officeBootConfigurationWorkerFixture(roots);
 	const path = f.input.serviceBootstrapPath;
-	const original = await f.readProtected(path, 16384);
+	const original = await f.readProtected(path);
 	const rotate = (text: string, suffix: string, keys = ["tlsCert", "tlsKey"]) => {
 		const plan = JSON.parse(text);
 		for (const key of keys)
@@ -42,13 +42,13 @@ const revision = (revision: number, previousPlan: string, next: string, changed 
 });
 const serve = (f: Awaited<ReturnType<typeof plans>>["f"], current: string, chain?: unknown) => {
 	const original = f.readProtected.getMockImplementation()!;
-	f.readProtected.mockImplementation(async (path: string, limit: number) => {
+	f.readProtected.mockImplementation(async (path: string) => {
 		if (path === f.input.serviceBootstrapPath) return Buffer.from(current);
 		if (path.endsWith("/service-bootstrap-revisions.json")) {
 			if (chain === undefined) throw Object.assign(new Error("missing"), { code: "ENOENT" });
 			return Buffer.from(JSON.stringify(chain));
 		}
-		return original(path, limit);
+		return original(path);
 	});
 };
 
