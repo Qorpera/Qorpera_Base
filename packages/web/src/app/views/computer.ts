@@ -8,16 +8,68 @@ import { type AgentRoutineAccess, AgentRoutines } from "./agent-routines.ts";
 import { ComputerAccessPanel } from "./computer-access.ts";
 import { ComputerBrowserPanel } from "./computer-browser.ts";
 
-/** Opening reads authority. Starts and viewers require explicit member intent. */
+/** The full-screen place a member watches an agent's computer. It holds the
+ * wait: the computer starting, or the agent not being on it yet. */
+class ComputerStage {
+	readonly #stop = new AbortController();
+	readonly #line = h("p", { role: "status" }, "Opening the computer…");
+	readonly #el: HTMLElement;
+	constructor(agent: HostedStaffAgent, onClose: () => void) {
+		this.#el = h(
+			"div",
+			{
+				class: "computer-stage",
+				role: "dialog",
+				"aria-modal": "true",
+				"aria-label": `${agent.displayName} · Computer`,
+			},
+			h(
+				"button",
+				{
+					type: "button",
+					class: "icon-button computer-stage-close",
+					"aria-label": "Close computer",
+					onclick: () => this.close(),
+				},
+				icon("close"),
+			),
+			h("div", { class: "computer-stage-body" }, agentFigure(agent, agent.displayName, { size: 72 }), this.#line),
+		);
+		this.#el.addEventListener("keydown", (event) => {
+			if (matchesKey(event, "dismiss")) {
+				event.preventDefault();
+				event.stopPropagation();
+				this.close();
+			}
+		});
+		this.#stop.signal.addEventListener("abort", onClose, { once: true });
+		document.body.append(this.#el);
+		this.#el.querySelector<HTMLButtonElement>("button")?.focus();
+	}
+	get signal(): AbortSignal {
+		return this.#stop.signal;
+	}
+	say(text: string): void {
+		if (this.#line.textContent !== text) this.#line.textContent = text;
+	}
+	close(): void {
+		if (this.#stop.signal.aborted) return;
+		this.#el.remove();
+		this.#stop.abort();
+	}
+}
+
+/** Opening the panel only reads. One action opens the computer: it starts it
+ * when needed and shows this agent's screen full screen. */
 export class ComputerPanel {
 	readonly el: HTMLElement;
 	readonly #stop = new AbortController();
 	readonly #status = h("p", { class: "muted", role: "status" });
 	readonly #controls = h("div", { class: "stack" });
-	readonly #screenControls = h("div", { class: "stack" });
 	readonly #views: ComputerViewHost;
 	readonly #detailsRoot = h("div", { class: "stack computer-details" });
 	#details: ComputerAccessPanel | ComputerBrowserPanel | undefined;
+	#stage: ComputerStage | undefined;
 	#busy = false;
 	constructor(
 		agent: HostedStaffAgent,
@@ -56,7 +108,6 @@ export class ComputerPanel {
 					h("strong", null, agent.displayName),
 					this.#status,
 					this.#controls,
-					this.#screenControls,
 					this.#detailsRoot,
 				),
 				new AgentRoutines(agent, routines, signal).el,
@@ -86,136 +137,155 @@ export class ComputerPanel {
 				await work();
 			} catch {
 				if (!signal.aborted) {
-					this.#status.textContent = "Computer access could not be confirmed. Refresh to check again.";
-					replace(
-						this.#controls,
-						button("Refresh computer", () => void run(refresh)),
-					);
+					this.#status.textContent = "The computer could not be reached. Try again.";
+					this.#stage?.close();
+					draw();
 				}
 			} finally {
 				this.#busy = false;
 				this.#controls.inert = false;
 			}
 		};
-		const refresh = async () => {
-			this.#details?.dispose();
-			this.#details = undefined;
-			this.#status.textContent = "Checking computer access…";
-			replace(this.#controls);
-			replace(this.#screenControls);
-			const catalog = await computer.client.catalog(signal);
-			signal.throwIfAborted();
-			const scope = catalog.scope;
-			if (!scope) {
-				this.#status.textContent = "A computer has not been provisioned for this company.";
-				return;
-			}
-			const startClient = computer.client.start(scope);
-			const start = await startClient.status(signal);
-			signal.throwIfAborted();
-			this.#status.textContent =
-				start.officeState === "maintenance" && start.maintenance?.reason === "host_reboot"
-					? `Computer in maintenance: its host is rebooting (${start.maintenance.state}). It comes back on its own; work that needs it waits and is retried.`
-					: `Computer ${start.officeState}. Closing this panel leaves cloud work running.`;
-			this.#controls.append(button("Refresh computer", () => void run(refresh)));
-			if (catalog.canManage)
-				this.#controls.append(
-					button(
-						"Manage computer permissions",
-						() =>
-							void run(async () => {
-								this.#details?.dispose();
-								this.#details = new ComputerAccessPanel(
-									computer.client.access(scope, agent.id),
-									agent.displayName,
-									signal,
-								);
-								replace(this.#detailsRoot, this.#details.el);
-							}),
-					),
+		const wait = (ms: number, until: AbortSignal) =>
+			new Promise<void>((resolve, reject) => {
+				const timer = setTimeout(resolve, ms);
+				until.addEventListener(
+					"abort",
+					() => {
+						clearTimeout(timer);
+						reject(new Error("closed"));
+					},
+					{ once: true },
 				);
-			this.#controls.append(
-				button(
-					"Manage your browsers",
-					() =>
-						void run(async () => {
-							replace(this.#screenControls);
-							await this.#views.close();
-							signal.throwIfAborted();
-							this.#details?.dispose();
-							this.#details = new ComputerBrowserPanel(computer, scope, agent, this.#views, signal);
-							replace(this.#detailsRoot, this.#details.el);
-						}),
+			});
+		let canManage = false;
+		const startRequests = new Map<string, string>();
+		let scope: Awaited<ReturnType<WebCompanyComputer["client"]["catalog"]>>["scope"];
+		const draw = () => {
+			replace(
+				this.#controls,
+				button("Open computer", () => void run(open), { primary: true, disabled: !scope }),
+				h(
+					"div",
+					{ class: "computer-more" },
+					canManage && scope ? button("Permissions", () => void run(permissions), { small: true }) : null,
+					scope ? button("Your browsers", () => void run(browsers), { small: true }) : null,
 				),
 			);
-			const canManageStart =
-				catalog.canManage && (start.officeState === "provisioning" || start.officeState === "recovering");
-			if (canManageStart && !start.intent) {
-				const requestId = crypto.randomUUID();
-				this.#controls.append(
-					button(
-						"Start computer",
-						() =>
-							void run(async () => {
-								await startClient.request(start.computerGeneration, requestId, signal);
-								signal.throwIfAborted();
-								await refresh();
-							}),
-					),
-				);
-			}
-			if (canManageStart && start.intent && start.intent.state !== "cancelled") {
-				const intent = start.intent;
-				this.#controls.append(
-					button(
-						"Cancel pending start",
-						() =>
-							void run(async () => {
-								await startClient.cancel(intent, signal);
-								signal.throwIfAborted();
-								await refresh();
-							}),
-					),
-				);
-			}
-			if (start.officeState !== "active") return;
-			let views: ReturnType<WebCompanyComputer["views"]>;
-			try {
-				views = computer.views(scope);
-			} catch {
-				this.#controls.append(h("p", { class: "muted" }, "Screen viewing is not configured."));
-				return;
-			}
-			const status = await views.status(signal);
-			signal.throwIfAborted();
-			if (status.state !== "active" || status.privacyState !== "shared") {
-				this.#controls.append(
-					h("p", null, "Shared viewing is unavailable while the computer is private or changing state."),
-				);
-				return;
-			}
-			const screens = status.screens.filter((screen) => screen.binding.staffAgentId === agent.id);
-			if (!screens.length) this.#controls.append(h("p", { class: "muted" }, "This agent has no screen yet."));
-			for (const screen of screens)
-				this.#screenControls.append(
-					button(
-						`Watch screen ${screen.binding.screenOrdinal}`,
-						() =>
-							void run(async () => {
-								await this.#views.open({
-									binding: screen.binding,
-									title: `${agent.displayName} · Computer`,
-									canControl: catalog.canManage,
-									requestConnection: async (input) => {
-										return views.connectScreen(input);
-									},
-								});
-							}),
-						{ disabled: screen.drainPending },
-					),
-				);
 		};
-		void run(refresh);
+		const permissions = async () => {
+			if (!scope) return;
+			this.#details?.dispose();
+			this.#details = new ComputerAccessPanel(computer.client.access(scope, agent.id), agent.displayName, signal);
+			replace(this.#detailsRoot, this.#details.el);
+		};
+		const browsers = async () => {
+			if (!scope) return;
+			await this.#views.close();
+			signal.throwIfAborted();
+			this.#details?.dispose();
+			this.#details = new ComputerBrowserPanel(computer, scope, agent, this.#views, signal);
+			replace(this.#detailsRoot, this.#details.el);
+		};
+		/** Reads what the panel needs to offer the one action; starts nothing. */
+		const look = async () => {
+			this.#status.textContent = "Checking the computer…";
+			const catalog = await computer.client.catalog(signal);
+			signal.throwIfAborted();
+			scope = catalog.scope;
+			canManage = catalog.canManage;
+			if (!scope) {
+				this.#status.textContent = "This company has no computer yet.";
+				draw();
+				return;
+			}
+			const start = await computer.client.start(scope).status(signal);
+			signal.throwIfAborted();
+			this.#status.textContent =
+				start.officeState === "active"
+					? "The computer is on."
+					: start.officeState === "maintenance"
+						? "The computer is restarting and comes back on its own."
+						: "The computer is off.";
+			draw();
+		};
+		/** One action: start the computer if it is off, then show this agent's
+		 * screen full screen, waiting for it if the agent is not on the computer yet. */
+		const open = async () => {
+			if (!scope) return;
+			const current = scope;
+			const stage = new ComputerStage(agent, () => undefined);
+			this.#stage = stage;
+			const until = AbortSignal.any([signal, stage.signal]);
+			try {
+				const startClient = computer.client.start(current);
+				let requested = false;
+				for (;;) {
+					const start = await startClient.status(until);
+					if (start.officeState === "active") break;
+					if (start.officeState === "maintenance")
+						stage.say("The computer is restarting. It comes back on its own.");
+					else if (start.officeState === "retired") {
+						stage.say("This computer has been retired.");
+						return;
+					} else if (!canManage) {
+						stage.say("The computer is off. An owner or admin can start it.");
+					} else {
+						if (!start.intent && !requested) {
+							requested = true;
+							// One identity per computer generation: a second click after an unclear
+							// answer is the same request, not another start.
+							const key = String(start.computerGeneration);
+							let requestId = startRequests.get(key);
+							if (!requestId) {
+								requestId = crypto.randomUUID();
+								startRequests.set(key, requestId);
+							}
+							await startClient.request(start.computerGeneration, requestId, until);
+						}
+						stage.say("Starting the computer…");
+					}
+					await wait(3000, until);
+				}
+				this.#status.textContent = "The computer is on.";
+				let views: ReturnType<WebCompanyComputer["views"]>;
+				try {
+					views = computer.views(current);
+				} catch {
+					stage.say("Screen viewing is not set up here.");
+					return;
+				}
+				for (;;) {
+					const status = await views.status(until);
+					if (status.state === "active" && status.privacyState === "shared") {
+						const screen = status.screens
+							.filter((item) => item.binding.staffAgentId === agent.id && !item.drainPending)
+							.sort((a, b) => a.binding.screenOrdinal - b.binding.screenOrdinal)[0];
+						if (screen) {
+							stage.close();
+							await this.#views.open({
+								binding: screen.binding,
+								title: `${agent.displayName} · Computer`,
+								canControl: canManage,
+								requestConnection: async (input) => views.connectScreen(input),
+							});
+							return;
+						}
+						stage.say(
+							`${agent.displayName} is not using the computer right now. The screen appears here as soon as it does.`,
+						);
+					} else stage.say("The computer is private right now. Shared viewing returns when that ends.");
+					await wait(3000, until);
+				}
+			} catch (error) {
+				if (stage.signal.aborted && !signal.aborted) return;
+				throw error;
+			} finally {
+				if (this.#stage === stage && stage.signal.aborted) this.#stage = undefined;
+			}
+		};
+		draw();
+		void run(look);
 	}
 	focus(): void {
 		this.el.querySelector<HTMLButtonElement>("button")?.focus();
@@ -223,6 +293,7 @@ export class ComputerPanel {
 	dispose(): void {
 		if (this.#stop.signal.aborted) return;
 		this.#stop.abort();
+		this.#stage?.close();
 		this.#details?.dispose();
 		replace(this.el);
 		this.el.remove();
