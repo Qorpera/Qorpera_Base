@@ -132,7 +132,7 @@ returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_session public.qorpera_native_provider_login_sessions%rowtype; v_identity public.qorpera_member_compute_identities%rowtype;
 	v_target public.qorpera_identity_recovery_targets%rowtype; v_backup public.qorpera_identity_key_backups%rowtype;
 	v_recovery public.qorpera_identity_recoveries%rowtype; v_authority public.qorpera_identity_recovery_authorities%rowtype;
-	v_user uuid; v_owner boolean; v_self boolean;
+	v_user uuid; v_owner boolean; v_self boolean; v_owner_user uuid;
 begin
 	if auth.role() is distinct from 'service_role' or p_login_id is null or p_client_request_id is null
 		or p_storage_source is null or p_storage_source not in ('nas','supabase') then
@@ -149,10 +149,17 @@ begin
 	v_self:=v_identity.ownership_kind='member' and v_identity.owner_user_id=v_user;
 	if v_identity.status<>'active' or not (v_owner or v_self) then
 		raise exception 'login recovery requires the identity owner or a company owner' using errcode='42501'; end if;
+	-- The recovery of record keeps the existing shape: a company owner requests, the member consents.
+	-- For a member's own login the company's owner of record stands as the requesting owner.
+	v_owner_user:=case when v_owner then v_user else
+		coalesce((select p.created_by_user_id from public.qorpera_profiles p join public.qorpera_profile_members m
+				on m.profile_id=p.id and m.user_id=p.created_by_user_id and m.role='owner' where p.id=v_identity.profile_id),
+			(select min(m.user_id) from public.qorpera_profile_members m where m.profile_id=v_identity.profile_id and m.role='owner')) end;
+	if v_owner_user is null then raise exception 'login recovery requires a company owner of record' using errcode='42501'; end if;
 	select * into v_recovery from public.qorpera_identity_recoveries
 		where profile_id=v_identity.profile_id and client_request_id=p_client_request_id;
 	if found then
-		if v_recovery.compute_identity_id<>v_identity.id or v_recovery.target_id<>p_target_id or v_recovery.owner_user_id<>v_user
+		if v_recovery.compute_identity_id<>v_identity.id or v_recovery.target_id<>p_target_id or v_recovery.owner_user_id<>v_owner_user
 			or v_recovery.storage_source<>p_storage_source then
 			raise exception 'recovery request id is already bound' using errcode='23505'; end if;
 	else
@@ -168,7 +175,7 @@ begin
 		insert into public.qorpera_identity_recoveries(client_request_id,profile_id,compute_identity_id,authority_id,
 			backup_revision,storage_source,target_id,owner_user_id,member_consent_user_id,status,expires_at)
 		values(p_client_request_id,v_identity.profile_id,v_identity.id,v_target.authority_id,v_backup.revision,
-			p_storage_source,v_target.id,v_user,case when v_self then v_user else null end,'awaiting_member',v_target.expires_at)
+			p_storage_source,v_target.id,v_owner_user,case when v_self then v_user else null end,'awaiting_member',v_target.expires_at)
 		returning * into v_recovery;
 		if v_identity.ownership_kind<>'member' or v_self then
 			v_recovery:=public.qorpera_activate_identity_recovery(v_recovery.id);
@@ -176,7 +183,7 @@ begin
 	end if;
 	select * into v_backup from public.qorpera_identity_key_backups where compute_identity_id=v_identity.id and revision=v_recovery.backup_revision;
 	select * into v_authority from public.qorpera_identity_recovery_authorities where id=v_recovery.authority_id;
-	return public.qorpera_identity_recovery_json(v_recovery)||jsonb_build_object('loginId',v_session.id,'requestedByUserId',v_user,
+	return public.qorpera_identity_recovery_json(v_recovery)||jsonb_build_object('loginId',v_session.id,'requestedByUserId',v_user,'ownerUserId',v_owner_user,
 		'backupSha256',v_backup.object_sha256,'authorityId',v_authority.id,'serviceOrigin',v_authority.service_origin,
 		'signingPublicKey',v_authority.signing_public_key);
 end

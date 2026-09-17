@@ -1538,8 +1538,10 @@ does not reorder the implementation order.
   their own member-owned identity for that login; a company owner may recover
   any identity of the company for a login they began. The node's gateway
   requests it on the login's behalf (`qorpera_request_login_identity_recovery`,
-  service role, login-bound); the recovery activates as before, with the
-  quiet period, single-use target, and 60-second release grant unchanged.
+  service role, login-bound). The recovery of record keeps its shape: the
+  company's owner of record stands as the requesting owner and the member as
+  the consenting owner; activation, the quiet period, the single-use target
+  and the 60-second release grant are unchanged.
 - **Where the keys live.** The recipient key is generated inside the pinned
   login guest and never leaves it; the gateway mints the target capability,
   pushes it into the guest, reads back only the public key, and runs the
