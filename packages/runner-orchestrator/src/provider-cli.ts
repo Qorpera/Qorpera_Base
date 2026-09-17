@@ -187,7 +187,26 @@ function lxdLoginConfig(config: LxdCloudRunnerProviderConfig): LxdNativeLoginGat
 		claudePath: config.claudePath,
 		loginBootstrapService:
 			process.env.QORPERA_LXD_LOGIN_BOOTSTRAP_SERVICE ?? "qorpera-lxd-native-login-bootstrap.service",
+		// 2026-09-17 amendment: identity recovery on a node without the identity volume.
+		identityRecoveryRegistrarCapability: optionalCredentialFile(
+			"QORPERA_LXD_LOGIN_RECOVERY_REGISTRAR_CAPABILITY_FILE",
+		),
+		guestManifestSha256: optionalSha256("QORPERA_LXD_LOGIN_GUEST_MANIFEST_SHA256"),
 	};
+}
+
+function optionalCredentialFile(name: string): string | undefined {
+	const path = process.env[name];
+	if (!path) return undefined;
+	const value = readFileSync(path, "utf8").trim();
+	if (!/^[A-Za-z0-9_-]{43}$/.test(value)) throw new Error(`${name} must name a 32-byte base64url capability`);
+	return value;
+}
+function optionalSha256(name: string): string | undefined {
+	const value = process.env[name];
+	if (!value) return undefined;
+	if (!/^[0-9a-f]{64}$/.test(value)) throw new Error(`${name} must be a hex SHA-256`);
+	return value;
 }
 
 interface ProviderRuntime {

@@ -3,6 +3,7 @@ import { lstat, mkdir, readdir } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { isIP } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import {
 	Headers as NodeHttpHeaders,
@@ -10,7 +11,13 @@ import {
 	Response as NodeHttpResponse,
 } from "@whatwg-node/node-fetch";
 import type { ServiceHttpFetch, ServiceHttpRequest, ServiceHttpResponse } from "./http-transport.ts";
-import type { LxdClient, LxdInstanceRecord, LxdStorageVolumeRecord, LxdTrackedClient } from "./lxd-client.ts";
+import type {
+	LxdClient,
+	LxdInspectableClient,
+	LxdInstanceRecord,
+	LxdStorageVolumeRecord,
+	LxdTrackedClient,
+} from "./lxd-client.ts";
 import { lxdGuestIpv4 } from "./lxd-guest-network.ts";
 import { LxdLoginJournal } from "./lxd-login-journal.ts";
 import { LOGIN_UUID, type LxdLoginBinding, lxdLoginNodePolicy, lxdLoginPlan } from "./lxd-login-plan.ts";
@@ -63,6 +70,61 @@ interface LoginBootstrapFile {
 	content: string;
 }
 
+const RECOVERY_ROOT = "/var/lib/qorpera-recovery";
+const RECOVERY_CREDENTIALS_DIRECTORY = `${RECOVERY_ROOT}/credentials`;
+const RECOVERY_PUBLIC_KEY_PATH = `${RECOVERY_ROOT}/recipient-public-key`;
+const RECOVERY_RESULT_PATH = `${RECOVERY_ROOT}/restore-result.json`;
+const RECOVERY_MASTER_KEY_PATH = "/var/lib/qorpera/identity/qorpera-native-provider-master-key";
+/** RSA-3072 recipient key generated inside the pinned guest; only the public half is read back. */
+const RECOVERY_KEYGEN_SCRIPT = [
+	"set -e; umask 077",
+	`rm -rf ${RECOVERY_ROOT}; mkdir -p ${RECOVERY_CREDENTIALS_DIRECTORY}`,
+	`cd ${RECOVERY_CREDENTIALS_DIRECTORY}`,
+	`/usr/bin/node -e 'const c=require("node:crypto"),fs=require("node:fs");const {publicKey,privateKey}=c.generateKeyPairSync("rsa",{modulusLength:3072,publicExponent:65537});fs.writeFileSync("qorpera-recovery-recipient-key",privateKey.export({type:"pkcs8",format:"der"}).toString("base64url"),{mode:0o600});fs.writeFileSync("${RECOVERY_PUBLIC_KEY_PATH}",publicKey.export({type:"spki",format:"der"}).toString("base64url")+"\\n",{mode:0o600});'`,
+].join("; ");
+const RECOVERY_RESTORE_SCRIPT = `set -e; umask 077; CREDENTIALS_DIRECTORY=${RECOVERY_CREDENTIALS_DIRECTORY} /usr/bin/node /opt/qorpera-runner/qorpera-identity-recovery-restore.mjs > ${RECOVERY_RESULT_PATH}`;
+
+function recoveryRuntimeState(value: unknown): {
+	canInitialize: boolean;
+	blocked: boolean;
+	recoveryConfiguration: { authorityId: string; serviceOrigin: string; signingPublicKey: string } | null;
+} {
+	const r = record(value, "Identity recovery state");
+	if (typeof r.canInitialize !== "boolean" || typeof r.blocked !== "boolean")
+		throw new Error("Identity recovery state is invalid");
+	let recoveryConfiguration: { authorityId: string; serviceOrigin: string; signingPublicKey: string } | null = null;
+	if (r.recoveryConfiguration !== null && r.recoveryConfiguration !== undefined) {
+		const c = record(r.recoveryConfiguration, "Identity recovery configuration");
+		recoveryConfiguration = {
+			authorityId: uuid(c.authorityId, "Identity recovery authority"),
+			serviceOrigin: text(c.serviceOrigin, "Identity recovery service origin"),
+			signingPublicKey: text(c.signingPublicKey, "Identity recovery signing key", 1024),
+		};
+		if (!/^https:\/\/[A-Za-z0-9.-]+(:[0-9]+)?$/.test(recoveryConfiguration.serviceOrigin))
+			throw new Error("Identity recovery service origin is invalid");
+	}
+	return { canInitialize: r.canInitialize, blocked: r.blocked, recoveryConfiguration };
+}
+function loginRecoveryRequest(value: unknown, targetId: string) {
+	const r = record(value, "Login recovery");
+	const epoch = r.epoch;
+	if (!Number.isSafeInteger(epoch) || (epoch as number) < 1) throw new Error("Login recovery epoch is invalid");
+	if (r.targetId !== targetId) throw new Error("Login recovery target differs");
+	return {
+		recoveryId: uuid(r.recoveryId, "Login recovery id"),
+		status: text(r.status, "Login recovery status", 32),
+		epoch: epoch as number,
+		notBefore:
+			r.notBefore === null || r.notBefore === undefined
+				? null
+				: text(r.notBefore, "Login recovery quiet period", 64),
+		backupSha256: text(r.backupSha256, "Login recovery backup", 64),
+		authorityId: uuid(r.authorityId, "Login recovery authority"),
+		serviceOrigin: text(r.serviceOrigin, "Login recovery service origin"),
+		signingPublicKey: text(r.signingPublicKey, "Login recovery signing key", 1024),
+	};
+}
+
 export interface LxdNativeLoginGatewayConfig {
 	adapterId: string;
 	supabaseUrl: string;
@@ -87,6 +149,12 @@ export interface LxdNativeLoginGatewayConfig {
 	codexPath: string;
 	claudePath: string;
 	loginBootstrapService?: string;
+	/** 2026-09-17 amendment: node registrar for identity recovery targets (operator-enrolled capability) and the
+	 * login image's guest manifest digest. Without both, an established identity on a fresh volume is refused. */
+	identityRecoveryRegistrarCapability?: string;
+	guestManifestSha256?: string;
+	/** Bound on waiting for the recovery's quiet period before the restore (default 180 s). */
+	recoveryWaitMs?: number;
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -526,7 +594,7 @@ export class LxdNativeLoginGateway {
 		// Registration precedes identity storage; each physical dispatch has an
 		// additional fresh gate after any intervening storage/inspection work.
 		await this.#admit(journal, signal);
-		await this.#ensureIdentityVolume(login.computeIdentityId, signal);
+		const freshVolume = await this.#ensureIdentityVolume(login.computeIdentityId, signal);
 		let instance = await this.#lxd.getInstance(binding.policy.project, plan.request.name, signal);
 		const created = await journal.observe("create", signal);
 		if (created.state === "not_dispatched") {
@@ -545,6 +613,9 @@ export class LxdNativeLoginGateway {
 		if (!instance || instance.status !== "Running" || (await journal.state()).closing)
 			throw new Error("LOGIN_INSTANCE_NOT_RUNNING");
 		this.#assertInstanceAuthority(instance, binding);
+		// 2026-09-17 amendment: an established identity on a node without its
+		// volume is restored before the login bootstrap runs (no operator).
+		await this.#recoverEstablishedIdentity(journal, binding, plan.request.name, freshVolume, signal);
 		await this.#installBootstrap(plan.request.name, files, signal);
 		const address = await this.#waitReady(instance, signal);
 		const result = await this.#forward(address, login, signal);
@@ -749,9 +820,10 @@ export class LxdNativeLoginGateway {
 		return { scanned, unconfirmed };
 	}
 
-	async #ensureIdentityVolume(computeIdentityId: string, signal?: AbortSignal): Promise<void> {
+	async #ensureIdentityVolume(computeIdentityId: string, signal?: AbortSignal): Promise<boolean> {
 		const name = `${this.#config.identityVolumePrefix}${computeIdentityId}`;
 		let volume = await this.#lxd.getStorageVolume(this.#config.project, this.#config.storagePool, name, signal);
+		const created = !volume;
 		if (!volume) {
 			await this.#lxd.createStorageVolume(
 				this.#config.project,
@@ -774,6 +846,7 @@ export class LxdNativeLoginGateway {
 		}
 		if (!volume) throw new Error("LXD did not persist the Compute Identity volume");
 		this.#assertIdentityVolumeAuthority(volume, computeIdentityId);
+		return created;
 	}
 
 	#assertIdentityVolumeAuthority(volume: LxdStorageVolumeRecord, computeIdentityId: string): void {
@@ -856,6 +929,162 @@ export class LxdNativeLoginGateway {
 				content: `${this.#config.supabaseServiceKey}\n`,
 			},
 		];
+	}
+
+	/** Identity recovery for a login of an established identity whose volume is
+	 * new on this node: keys generated inside the pinned guest, the target
+	 * registered through the node registrar, the recovery requested on the
+	 * login's behalf, and the shipped restore client run in the guest. The
+	 * master key never leaves the guest; the gateway holds only the target
+	 * capability it minted, the identity's public key and backend ids. */
+	async #recoverEstablishedIdentity(
+		journal: LxdLoginJournal,
+		binding: LxdLoginBinding,
+		instanceName: string,
+		freshVolume: boolean,
+		signal: AbortSignal,
+	): Promise<void> {
+		const state = recoveryRuntimeState(
+			await this.#rpc(
+				"qorpera_identity_recovery_runtime_state",
+				{ p_compute_identity_id: binding.computeIdentityId },
+				signal,
+			),
+		);
+		if (state.canInitialize) return;
+		if (state.blocked) throw new Error("LOGIN_IDENTITY_RECOVERY_PENDING");
+		if (!freshVolume && (await this.#guestFileExists(instanceName, RECOVERY_MASTER_KEY_PATH, signal))) return;
+		if (await this.#guestFileExists(instanceName, RECOVERY_MASTER_KEY_PATH, signal)) return;
+		const registrar = this.#config.identityRecoveryRegistrarCapability,
+			guestManifestSha256 = this.#config.guestManifestSha256,
+			configuration = state.recoveryConfiguration;
+		if (!registrar || !guestManifestSha256) throw new Error("LOGIN_IDENTITY_RECOVERY_REQUIRED");
+		if (!configuration) throw new Error("LOGIN_IDENTITY_RECOVERY_AUTHORITY_MISSING");
+		const nodeId = (await journal.state()).nodeId;
+		if (!nodeId) throw new Error("LOGIN_IDENTITY_RECOVERY_NODE_UNKNOWN");
+		await this.#waitForGuestAgent(instanceName, signal);
+		// 1. Recipient key inside the guest; the target capability is minted here and pushed.
+		const targetId = randomUUID(),
+			targetCapability = randomBytes(32).toString("base64url");
+		await this.#lxd.execInstance(
+			this.#config.project,
+			instanceName,
+			["/bin/bash", "-c", RECOVERY_KEYGEN_SCRIPT],
+			signal,
+		);
+		await this.#lxd.pushInstanceFile(
+			this.#config.project,
+			instanceName,
+			`${RECOVERY_CREDENTIALS_DIRECTORY}/qorpera-recovery-target`,
+			`${targetCapability}\n`,
+			0o600,
+			signal,
+		);
+		const recipientPublicKey = (
+			await this.#readGuestText(instanceName, RECOVERY_PUBLIC_KEY_PATH, 4096, signal)
+		).trim();
+		if (!/^[A-Za-z0-9_-]{400,1024}$/.test(recipientPublicKey)) throw new Error("LOGIN_IDENTITY_RECOVERY_KEY_INVALID");
+		// 2. Register the target through the node registrar.
+		const registration = await this.#fetch(new URL("/v1/provider-target", configuration.serviceOrigin).href, {
+			method: "POST",
+			headers: { "content-type": "application/json", accept: "application/json" },
+			body: JSON.stringify({
+				registrarNodeId: nodeId,
+				registrarCapability: registrar,
+				targetId,
+				computeIdentityId: binding.computeIdentityId,
+				nodeId,
+				imageSha256: this.#config.imageFingerprint,
+				guestManifestSha256,
+				recipientPublicKey,
+				targetCapability,
+			}),
+			redirect: "error",
+			signal,
+		});
+		const registered = (await registration.json().catch(() => undefined)) as { targetId?: unknown } | undefined;
+		if (!registration.ok || registered?.targetId !== targetId)
+			throw new Error("LOGIN_IDENTITY_RECOVERY_TARGET_REFUSED");
+		// 3. The login is the consent: request the recovery on its behalf.
+		const recovery = loginRecoveryRequest(
+			await this.#rpc(
+				"qorpera_request_login_identity_recovery",
+				{
+					p_login_id: binding.loginId,
+					p_target_id: targetId,
+					p_client_request_id: randomUUID(),
+					p_storage_source: "nas",
+				},
+				signal,
+			),
+			targetId,
+		);
+		if (recovery.status !== "approved") throw new Error("LOGIN_IDENTITY_RECOVERY_NOT_APPROVED");
+		// 4. Restore inside the guest with the shipped client, after the quiet period.
+		await this.#lxd.pushInstanceFile(
+			this.#config.project,
+			instanceName,
+			`${RECOVERY_CREDENTIALS_DIRECTORY}/qorpera-recovery-restore`,
+			`${JSON.stringify({
+				schema: "qorpera.identity-recovery-restore/v1",
+				companyId: binding.profileId,
+				computeIdentityId: binding.computeIdentityId,
+				authorityId: recovery.authorityId,
+				recoveryId: recovery.recoveryId,
+				targetId,
+				epoch: recovery.epoch,
+				backupSha256: recovery.backupSha256,
+				serviceOrigin: recovery.serviceOrigin,
+				signingPublicKey: recovery.signingPublicKey,
+			})}\n`,
+			0o600,
+			signal,
+		);
+		const waitMs = this.#config.recoveryWaitMs ?? 180_000;
+		const notBefore = recovery.notBefore ? Date.parse(recovery.notBefore) : Number.NaN;
+		if (Number.isFinite(notBefore)) {
+			const delayMs = notBefore + 2000 - Date.now();
+			if (delayMs > waitMs) throw new Error("LOGIN_IDENTITY_RECOVERY_DEFERRED");
+			if (delayMs > 0) await delay(delayMs, undefined, { signal });
+		}
+		let result: { status?: unknown; receiptId?: unknown; epoch?: unknown } | undefined;
+		try {
+			await this.#lxd.execInstance(
+				this.#config.project,
+				instanceName,
+				["/bin/bash", "-c", RECOVERY_RESTORE_SCRIPT],
+				signal,
+			);
+			const text = await this.#readGuestText(instanceName, RECOVERY_RESULT_PATH, 4096, signal);
+			const line = text.trim().split("\n").pop() ?? "";
+			result = JSON.parse(line) as typeof result;
+		} finally {
+			await this.#lxd
+				.execInstance(this.#config.project, instanceName, ["/bin/rm", "-rf", RECOVERY_ROOT], signal)
+				.catch(() => undefined);
+		}
+		if (result?.status !== "completed" || result.epoch !== recovery.epoch)
+			throw new Error("LOGIN_IDENTITY_RECOVERY_FAILED");
+		console.error(
+			`LXD native login identity recovered (login ${binding.loginId}, recovery ${recovery.recoveryId}, epoch ${recovery.epoch}, node ${nodeId})`,
+		);
+	}
+
+	async #guestFileExists(instanceName: string, path: string, signal: AbortSignal): Promise<boolean> {
+		try {
+			await this.#lxd.execInstance(this.#config.project, instanceName, ["/usr/bin/test", "-f", path], signal);
+			return true;
+		} catch (error) {
+			if (signal.aborted) throw error;
+			return false;
+		}
+	}
+
+	async #readGuestText(instanceName: string, path: string, limit: number, signal: AbortSignal): Promise<string> {
+		const reader = (this.#lxd as Partial<Pick<LxdInspectableClient, "readInstanceFile">>).readInstanceFile;
+		if (!reader) throw new Error("LOGIN_IDENTITY_RECOVERY_READBACK_UNAVAILABLE");
+		const file = await reader.call(this.#lxd, this.#config.project, instanceName, path, limit, signal);
+		return new TextDecoder("utf8", { fatal: true }).decode(file.content);
 	}
 
 	async #installBootstrap(instanceName: string, files: readonly LoginBootstrapFile[], signal?: AbortSignal) {

@@ -65,7 +65,14 @@ export class HttpIdentityRecoveryService {
 		}
 		const path = request.url;
 		if (
-			!["/v1/backup/prepare", "/v1/backup", "/v1/release", "/v1/complete", "/operator/target"].includes(path ?? "")
+			![
+				"/v1/backup/prepare",
+				"/v1/backup",
+				"/v1/release",
+				"/v1/complete",
+				"/v1/provider-target",
+				"/operator/target",
+			].includes(path ?? "")
 		) {
 			response.writeHead(404);
 			response.end();
@@ -156,6 +163,35 @@ export class HttpIdentityRecoveryService {
 							String(input.targetCapability),
 							String(input.releaseSha256),
 							String(input.proof),
+							signal,
+						);
+					} else if (path === "/v1/provider-target") {
+						// 2026-09-17 amendment: a runtime node's login gateway registers a
+						// target for a guest on its own node; the registrar capability is
+						// enrolled by the operator and compared by digest in SQL.
+						const input = recoveryRecord(value, [
+							"registrarNodeId",
+							"registrarCapability",
+							"targetId",
+							"computeIdentityId",
+							"nodeId",
+							"imageSha256",
+							"guestManifestSha256",
+							"recipientPublicKey",
+							"targetCapability",
+						]);
+						result = await this.#authority.registerTargetByRegistrar(
+							{
+								registrarNodeId: String(input.registrarNodeId),
+								registrarCapability: String(input.registrarCapability),
+								targetId: String(input.targetId),
+								computeIdentityId: String(input.computeIdentityId),
+								nodeId: String(input.nodeId),
+								imageSha256: String(input.imageSha256),
+								guestManifestSha256: String(input.guestManifestSha256),
+								recipientPublicKey: String(input.recipientPublicKey),
+								targetCapability: String(input.targetCapability),
+							},
 							signal,
 						);
 					} else {

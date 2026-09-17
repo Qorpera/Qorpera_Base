@@ -156,9 +156,27 @@ class FakeLxd implements LxdClient {
 		this.filePushes.push({ path, content, mode });
 	}
 
+	guestFiles = new Map<string, string>();
 	async execInstance(_project: string, _name: string, command: readonly string[]): Promise<void> {
 		if (this.instance?.status !== "Running") throw new Error("fake VM agent is unavailable");
 		this.execCalls.push([...command]);
+		if (command[0] === "/usr/bin/test" && command[1] === "-f" && !this.guestFiles.has(command[2]!))
+			throw new Error("LXD instance command failed");
+		const script = command[0] === "/bin/bash" && command[1] === "-c" ? command[2]! : "";
+		if (script.includes("generateKeyPairSync"))
+			this.guestFiles.set("/var/lib/qorpera-recovery/recipient-public-key", `${"M".repeat(560)}\n`);
+		if (script.includes("qorpera-identity-recovery-restore.mjs"))
+			this.guestFiles.set(
+				"/var/lib/qorpera-recovery/restore-result.json",
+				`${JSON.stringify({ status: "completed", receiptId: "30000000-0000-4000-8000-000000000099", epoch: 2 })}\n`,
+			);
+		if (command[0] === "/bin/rm")
+			for (const key of [...this.guestFiles.keys()]) if (key.startsWith(command[2]!)) this.guestFiles.delete(key);
+	}
+	async readInstanceFile(_project: string, _name: string, path: string, maximumBytes: number) {
+		const content = this.guestFiles.get(path);
+		if (content === undefined) throw new Error("LXD instance file is missing");
+		return { content: Buffer.from(content).subarray(0, maximumBytes), uid: 0, gid: 0, mode: 0o600 };
 	}
 
 	async deleteInstance(_project: string, _name: string): Promise<void> {
@@ -235,6 +253,10 @@ function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" 
 		releasedAt: null as string | null,
 		status: "pending" as "pending" | "completed" | "expired" | "cancelled",
 		committed: false,
+		recovery: "new" as "new" | "established" | "blocked",
+		recoveryApproval: "approved" as string,
+		recoveryRequests: [] as Record<string, unknown>[],
+		targetRegistrations: [] as Record<string, unknown>[],
 	};
 	const fetchImplementation = vi.fn<typeof fetch>(async (input, init) => {
 		const url = String(input);
@@ -305,6 +327,47 @@ function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" 
 				releasedAt: control.releasedAt,
 			});
 		}
+		if (url.endsWith("qorpera_identity_recovery_runtime_state")) {
+			return Response.json({
+				companyId: profileId,
+				computeIdentityId,
+				epoch: control.recovery === "established" ? 1 : 0,
+				blocked: control.recovery === "blocked",
+				canInitialize: control.recovery === "new",
+				recoveryConfiguration: {
+					authorityId: "30000000-0000-4000-8000-000000000030",
+					serviceOrigin: "https://recovery.example.test:10000",
+					signingPublicKey: "S".repeat(60),
+					wrappingPublicKey: "W".repeat(550),
+				},
+			});
+		}
+		if (url.endsWith("qorpera_request_login_identity_recovery")) {
+			control.recoveryRequests.push(args);
+			return Response.json({
+				recoveryId: "30000000-0000-4000-8000-000000000098",
+				companyId: profileId,
+				computeIdentityId,
+				targetId: args.p_target_id,
+				backupRevision: 1,
+				storageSource: "nas",
+				status: control.recoveryApproval,
+				epoch: 2,
+				notBefore: new Date(Date.now() + 100).toISOString(),
+				expiresAt,
+				receiptId: null,
+				loginId,
+				requestedByUserId: ownerUserId,
+				backupSha256: "b".repeat(64),
+				authorityId: "30000000-0000-4000-8000-000000000030",
+				serviceOrigin: "https://recovery.example.test:10000",
+				signingPublicKey: "S".repeat(60),
+			});
+		}
+		if (url === "https://recovery.example.test:10000/v1/provider-target") {
+			control.targetRegistrations.push(args);
+			return Response.json({ targetId: args.targetId, computeIdentityId, registrarNodeId: args.registrarNodeId });
+		}
 		if (url.endsWith("/healthz")) return Response.json({ ok: true });
 		if (url.endsWith("/login")) {
 			const response = logins.shift();
@@ -329,6 +392,89 @@ interface NativeLoginResponse {
 }
 
 describe("LXD native login gateway", () => {
+	it("restores an established identity on a fresh volume before the bootstrap (2026-09-17 amendment)", async () => {
+		const root = await stateRoot(),
+			lxd = new FakeLxd(),
+			boundary = fetchBoundary([
+				{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: "ABCD-EFGH" },
+			]);
+		boundary.control.recovery = "established";
+		const gateway = new LxdNativeLoginGateway(
+			{
+				...config(root),
+				identityRecoveryRegistrarCapability: "r".repeat(43),
+				guestManifestSha256: "m".repeat(64),
+				recoveryWaitMs: 5000,
+			},
+			lxd,
+			boundary.fetchImplementation,
+		);
+		const response = await gateway.handle(loginRequest());
+		expect(response.status).toBe(200);
+		expect(boundary.control.targetRegistrations).toHaveLength(1);
+		const registration = boundary.control.targetRegistrations[0]!;
+		expect(registration).toMatchObject({
+			registrarNodeId: "30000000-0000-4000-8000-000000000010",
+			nodeId: "30000000-0000-4000-8000-000000000010",
+			registrarCapability: "r".repeat(43),
+			computeIdentityId,
+			imageSha256: "a".repeat(64),
+			guestManifestSha256: "m".repeat(64),
+			recipientPublicKey: "M".repeat(560),
+		});
+		expect(boundary.control.recoveryRequests).toEqual([
+			expect.objectContaining({ p_login_id: loginId, p_target_id: registration.targetId, p_storage_source: "nas" }),
+		]);
+		const pushed = lxd.filePushes.map((file) => file.path);
+		expect(pushed).toContain("/var/lib/qorpera-recovery/credentials/qorpera-recovery-target");
+		expect(pushed).toContain("/var/lib/qorpera-recovery/credentials/qorpera-recovery-restore");
+		const restore = JSON.parse(lxd.filePushes.find((f) => f.path.endsWith("qorpera-recovery-restore"))!.content);
+		expect(restore).toMatchObject({
+			schema: "qorpera.identity-recovery-restore/v1",
+			companyId: profileId,
+			computeIdentityId,
+			recoveryId: "30000000-0000-4000-8000-000000000098",
+			targetId: registration.targetId,
+			epoch: 2,
+			serviceOrigin: "https://recovery.example.test:10000",
+		});
+		// The restore ran before the bootstrap, and the recovery scratch was removed afterwards.
+		const scripts = lxd.execCalls.map((c) => c.join(" "));
+		const restoreIndex = scripts.findIndex((s) => s.includes("qorpera-identity-recovery-restore.mjs")),
+			bootstrapIndex = scripts.findIndex((s) => s.includes("systemctl restart"));
+		expect(restoreIndex).toBeGreaterThan(-1);
+		expect(bootstrapIndex).toBeGreaterThan(restoreIndex);
+		expect(scripts.some((s) => s.startsWith("/bin/rm -rf /var/lib/qorpera-recovery"))).toBe(true);
+		expect(lxd.guestFiles.has("/var/lib/qorpera-recovery/recipient-public-key")).toBe(false);
+	});
+	it("refuses an established identity on a fresh volume when the node has no registrar, and a fenced identity always", async () => {
+		for (const [recovery, extra] of [
+			["established", {}],
+			["blocked", { identityRecoveryRegistrarCapability: "r".repeat(43), guestManifestSha256: "m".repeat(64) }],
+		] as const) {
+			const root = await stateRoot(),
+				lxd = new FakeLxd(),
+				boundary = fetchBoundary([]);
+			boundary.control.recovery = recovery;
+			const gateway = new LxdNativeLoginGateway({ ...config(root), ...extra }, lxd, boundary.fetchImplementation);
+			expect((await gateway.handle(loginRequest())).status).toBe(503);
+			expect(boundary.control.targetRegistrations).toHaveLength(0);
+			expect(boundary.control.recoveryRequests).toHaveLength(0);
+			expect(lxd.execCalls.some((c) => c.join(" ").includes("systemctl restart"))).toBe(false);
+		}
+	});
+	it("skips recovery when the identity's master key is already on this node's volume", async () => {
+		const root = await stateRoot(),
+			lxd = new FakeLxd(),
+			boundary = fetchBoundary([
+				{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: null },
+			]);
+		boundary.control.recovery = "established";
+		lxd.guestFiles.set("/var/lib/qorpera/identity/qorpera-native-provider-master-key", "present");
+		const gateway = new LxdNativeLoginGateway(config(root), lxd, boundary.fetchImplementation);
+		expect((await gateway.handle(loginRequest())).status).toBe(200);
+		expect(boundary.control.targetRegistrations).toHaveLength(0);
+	});
 	it("service shutdown aborts an in-flight member request and retains its VM allocation for background cleanup", async () => {
 		const root = await stateRoot(),
 			lxd = new FakeLxd(),

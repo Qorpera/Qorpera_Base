@@ -5,7 +5,8 @@ const MAX_RESPONSE_BYTES = 64 * 1024;
 export interface NativeProviderLoginProxyOptions {
 	upstreamUrl?: string;
 	/** Chooses the login gateway per request (least-loaded node); an undefined or invalid result falls back to upstreamUrl. */
-	upstreamResolver?: () => Promise<string | undefined>;
+	/** Receives the SHA-256 of the login capability so the backend can prefer the identity's home node. */
+	upstreamResolver?: (capabilitySha256: string) => Promise<string | undefined>;
 	/** Exact browser origins; native callers without Origin still require a capability. */
 	allowedOrigins?: readonly string[];
 	fetchImplementation?: typeof fetch;
@@ -40,6 +41,11 @@ function loginCapability(request: Request): string {
 }
 
 class LoginBodyTooLarge extends Error {}
+
+async function sha256Hex(value: string): Promise<string> {
+	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+	return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 
 /** Bound retained bytes even without Content-Length; cancellation must not wait for the peer. */
 async function readLoginBody(
@@ -80,10 +86,11 @@ async function readLoginBody(
 async function resolveUpstream(
 	options: NativeProviderLoginProxyOptions,
 	signal: AbortSignal,
+	capabilitySha256: string,
 ): Promise<{ url: string; source: "resolver" | "configured" | "fallback" }> {
 	if (options.upstreamResolver) {
 		try {
-			const chosen = await options.upstreamResolver();
+			const chosen = await options.upstreamResolver(capabilitySha256);
 			signal.throwIfAborted();
 			if (typeof chosen === "string" && chosen) return { url: upstreamLoginUrl(chosen), source: "resolver" };
 		} catch (error) {
@@ -119,7 +126,7 @@ async function forwardLogin(request: Request, options: NativeProviderLoginProxyO
 			throw new Error("Native login proxy timeout is invalid");
 		}
 		const signal = AbortSignal.any([request.signal, AbortSignal.timeout(timeoutMs)]);
-		target = await resolveUpstream(options, signal);
+		target = await resolveUpstream(options, signal, await sha256Hex(capability));
 		const upstream = await (options.fetchImplementation ?? fetch)(target.url, {
 			method: "POST",
 			headers: {

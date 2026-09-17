@@ -320,11 +320,19 @@ describe("login gateway resolver", () => {
 			headers: { authorization: `Bearer ${"a".repeat(43)}`, "content-type": "application/json" },
 			body: "{}",
 		});
+	const digests: string[] = [];
 	await forwardNativeProviderLogin(request(), {
 		upstreamUrl: "https://node-a.example:10000/",
-		upstreamResolver: async () => "https://node-b.example:10000/",
+		upstreamResolver: async (capabilitySha256) => {
+			digests.push(capabilitySha256);
+			return "https://node-b.example:10000/";
+		},
 		fetchImplementation,
 	});
+	// The resolver receives only the digest of the login capability (never the capability), so the backend can prefer the identity's home node.
+	assert.deepEqual(digests, [
+		Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode("a".repeat(43)))), (b) => b.toString(16).padStart(2, "0")).join(""),
+	]);
 	await forwardNativeProviderLogin(request(), {
 		upstreamUrl: "https://node-a.example:10000/",
 		upstreamResolver: async () => undefined,

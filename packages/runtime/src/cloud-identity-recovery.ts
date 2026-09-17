@@ -345,6 +345,40 @@ export class CloudIdentityRecoveryAuthority {
 		);
 	}
 
+	/** Node registrar registration (2026-09-17 amendment): SQL binds the target
+	 * to the registrar's own node and checks the enrolled capability digest. */
+	async registerTargetByRegistrar(
+		input: {
+			registrarNodeId: string;
+			registrarCapability: string;
+			targetId: string;
+			computeIdentityId: string;
+			nodeId: string;
+			imageSha256: string;
+			guestManifestSha256: string;
+			recipientPublicKey: string;
+			targetCapability: string;
+		},
+		signal: AbortSignal,
+	): Promise<unknown> {
+		recoveryPublicKey(input.recipientPublicKey, "rsa");
+		return this.#control.call(
+			"register_identity_recovery_target",
+			{
+				p_target_id: recoveryUuid(input.targetId),
+				p_compute_identity_id: recoveryUuid(input.computeIdentityId),
+				p_node_id: recoveryUuid(input.nodeId),
+				p_image_sha256: recoverySha256(input.imageSha256),
+				p_guest_manifest_sha256: recoverySha256(input.guestManifestSha256),
+				p_recipient_public_key: input.recipientPublicKey,
+				p_target_capability_sha256: recoveryDigest(recoveryCapability(input.targetCapability)),
+				p_registrar_node_id: recoveryUuid(input.registrarNodeId),
+				p_registrar_capability_sha256: recoveryDigest(recoveryCapability(input.registrarCapability)),
+			},
+			signal,
+		);
+	}
+
 	async #backupKey(plan: RecoveryBackupPlan, source: "nas" | "supabase", signal: AbortSignal): Promise<Buffer> {
 		this.#assertBinding(plan.binding);
 		if (plan.status !== "ready") throw new Error("Recovery backup is unverified");

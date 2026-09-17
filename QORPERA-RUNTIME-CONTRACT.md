@@ -1516,6 +1516,45 @@ does not reorder the implementation order.
   with reasons, and a node reboot returns its sockets and observer without
   operator work.
 
+### 2026-09-17 amendment: identity recovery inside a member login
+
+- **Ratification.** Follow-up to the 2026-09-16 amendment's identity-home rule
+  (D-LOGIN-RECOVERY-1): a member login of an established identity on a node
+  that lacks its identity volume completes without operator work.
+- **Logins follow the identity home.** The login gateway chooser prefers an
+  eligible gateway on a node where a login of that identity completed before
+  (`IDENTITY_HOME`); only when no home node is eligible does it fall back to
+  the least-loaded node (`HOME_UNAVAILABLE_LEAST_LOADED`). The edge function
+  hands the chooser the digest of the login capability, never the capability.
+- **Node registrars.** A runtime node's login gateway may register recovery
+  targets for guests on its own node through the recovery service route
+  `/v1/provider-target`, authorized by a per-node registrar capability that the
+  operator enrols in the backend (`qorpera_identity_recovery_registrars`);
+  the backend binds such a target to the registrar's node. The independent
+  operator route `/operator/target` stays for replacement nodes; the design
+  note "target registration is an operator assertion" is narrowed to targets
+  on nodes without an enrolled registrar.
+- **The login is the consent.** The member who began the login may recover
+  their own member-owned identity for that login; a company owner may recover
+  any identity of the company for a login they began. The node's gateway
+  requests it on the login's behalf (`qorpera_request_login_identity_recovery`,
+  service role, login-bound); the recovery activates as before, with the
+  quiet period, single-use target, and 60-second release grant unchanged.
+- **Where the keys live.** The recipient key is generated inside the pinned
+  login guest and never leaves it; the gateway mints the target capability,
+  pushes it into the guest, reads back only the public key, and runs the
+  shipped restore client in the guest after the quiet period. The gateway's
+  own credentials do not change; the guest's bootstrap is unchanged.
+- **Out of scope.** Identities without a ready backup, identities fenced by an
+  unfinished recovery (refused as `LOGIN_IDENTITY_RECOVERY_PENDING` until it
+  expires), and a member who is neither the identity's owner nor a company
+  owner (refused; the member surface for consent is unchanged).
+- **Acceptance.** On the isolated test nodes: a login of an established
+  identity placed on a node whose identity volume is absent; the target
+  registered by the node, the recovery requested on the login's behalf, the
+  restore completed in the guest, and the login completed with the member's
+  device code; evidence retained.
+
 ### 2026-09-17 amendment: host reboot as a Company Computer lifecycle event
 
 - **Ratification.** Decided by Jonas on 16 September 2026 22:00 UTC (option B
