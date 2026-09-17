@@ -94,11 +94,11 @@ function executionTransport() {
 	return send;
 }
 
-async function selectModel(root: HTMLElement): Promise<void> {
-	const select = root.querySelector<HTMLSelectElement>('[aria-label="Model account for this conversation"]')!;
-	select.value = id(81);
-	select.dispatchEvent(new Event("change"));
+/** The member's one usable account is chosen for them: no picker, no prompt to connect. */
+async function modelChosen(root: HTMLElement): Promise<void> {
 	await settle();
+	expect(root.querySelector('[aria-label="Model account for this conversation"]')).toBeNull();
+	expect(root.querySelector(".session-execution")!.textContent).toBe("");
 }
 
 describe("account and route ownership", () => {
@@ -107,7 +107,7 @@ describe("account and route ownership", () => {
 		const send = executionTransport();
 		send.mockRejectedValueOnce(new Error("Response lost"));
 		await draw();
-		await selectModel(f.root);
+		await modelChosen(f.root);
 		const input = f.root.querySelector("textarea")!;
 		input.value = "One request";
 		input.dispatchEvent(new Event("input"));
@@ -128,7 +128,7 @@ describe("account and route ownership", () => {
 		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 		const send = executionTransport();
 		await draw();
-		await selectModel(f.root);
+		await modelChosen(f.root);
 		const input = f.root.querySelector("textarea")!;
 		input.value = "Work from the web";
 		input.dispatchEvent(new Event("input"));
@@ -145,7 +145,7 @@ describe("account and route ownership", () => {
 			const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 			const send = executionTransport();
 			await draw();
-			await selectModel(f.root);
+			await modelChosen(f.root);
 			const original = await f.cloud.supabase.auth.getSession();
 			const token = deferred<typeof original>();
 			vi.mocked(f.cloud.supabase.auth.getSession).mockReturnValueOnce(token.promise);

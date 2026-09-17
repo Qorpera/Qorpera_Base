@@ -491,7 +491,9 @@ describe("settings session lifecycle", () => {
 		open(f.root);
 		click(f.root, "#settings-tab-connections");
 		await draw();
-		expect(f.root.querySelector("#settings-content")!.textContent).toContain("No model accounts are connected");
+		const cards = [...f.root.querySelectorAll<HTMLElement>("#settings-content .connection-card")];
+		expect(cards.map((card) => card.querySelector("strong")!.textContent)).toEqual(["ChatGPT / Codex", "Claude"]);
+		for (const card of cards) expect(card.querySelector('small[role="status"]')!.textContent).toMatch(/^Not /);
 		expect(
 			[...f.root.querySelectorAll<HTMLButtonElement>("#settings-content button")].find(
 				(button) => button.textContent === "Add service",

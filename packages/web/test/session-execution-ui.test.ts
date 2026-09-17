@@ -18,7 +18,7 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-function connections(): NativeExecutionConnections {
+function connections(count = 2): NativeExecutionConnections {
 	return {
 		computeIdentity: {
 			computeIdentityId: id(80),
@@ -33,7 +33,7 @@ function connections(): NativeExecutionConnections {
 			createdAt: timestamp,
 			updatedAt: timestamp,
 		},
-		connections: [80, 81].map((n) => ({
+		connections: [80, 81].slice(0, count).map((n) => ({
 			connectionId: id(n + 10),
 			connectionVersion: 1,
 			provider: n === 80 ? "openai" : "anthropic",
@@ -50,14 +50,18 @@ function connections(): NativeExecutionConnections {
 		})),
 	};
 }
-function selector(): HTMLSelectElement {
-	return document.querySelector<HTMLSelectElement>('[aria-label="Model account for this conversation"]')!;
+function withSponsorVersion(observed: NativeExecutionConnections, sponsorVersion: number): NativeExecutionConnections {
+	return { ...observed, connections: observed.connections.map((c) => ({ ...c, sponsorVersion })) };
+}
+/** The picker exists only while the member has more than one usable account. */
+function selector(): HTMLSelectElement | null {
+	return document.querySelector<HTMLSelectElement>('[aria-label="Model account for this conversation"]');
 }
 function choose(value: string): void {
-	selector().value = value;
-	selector().dispatchEvent(new Event("change"));
+	selector()!.value = value;
+	selector()!.dispatchEvent(new Event("change"));
 }
-function setup(room = false) {
+function setup(room = false, observed: NativeExecutionConnections = connections()) {
 	const f = fixture();
 	const company = new CompanyController(f.api, profileA, userA.id);
 	company.store.set({
@@ -72,7 +76,7 @@ function setup(room = false) {
 		],
 		loading: false,
 	});
-	const listConnections = vi.fn(async () => connections());
+	const listConnections = vi.fn(async () => structuredClone(observed));
 	const listSessionTurnProvenance = vi.fn(async (): Promise<readonly SessionTurnProvenance[]> => []);
 	const native: WebNativeSubscription = {
 		onboardingAvailable: false,
@@ -96,16 +100,38 @@ function setup(room = false) {
 		view.dispose();
 		company.stop();
 	};
-	return { ...f, company, native, listConnections, listSessionTurnProvenance, view, sendMessage, read, cancel };
+	const sponsor = () => company.conversation(session.sessionId).get().executionSponsor;
+	const send = () => view.el.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!;
+	return {
+		...f,
+		company,
+		native,
+		listConnections,
+		listSessionTurnProvenance,
+		view,
+		sendMessage,
+		read,
+		cancel,
+		sponsor,
+		send,
+	};
 }
+/** Accounts are re-read when the member returns to the window; there is no refresh button. */
 function refresh(): void {
-	[...document.querySelectorAll<HTMLButtonElement>("button")]
-		.find((button) => button.textContent === "Refresh model accounts")!
-		.click();
+	window.dispatchEvent(new Event("focus"));
 }
+function type(view: ConversationView, text: string): void {
+	const input = view.el.querySelector("textarea")!;
+	input.value = text;
+	input.dispatchEvent(new Event("input"));
+}
+function buttonNamed(view: ConversationView, label: string): HTMLButtonElement | undefined {
+	return [...view.el.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === label);
+}
+const CONNECT_HINT = "Connect a model account in Settings → Connections to send messages.";
 
 describe("conversation execution account", () => {
-	it("keeps team-room text and explicit account choice without single-agent run or turn history", async () => {
+	it("keeps team-room text and the member's own account without single-agent run or turn history", async () => {
 		const f = setup(true);
 		await settle();
 		const state = f.company.conversation(session.sessionId);
@@ -127,19 +153,16 @@ describe("conversation execution account", () => {
 			},
 		});
 		await settle();
-		const send = f.view.el.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!;
-		expect(send.disabled).toBe(true);
 		expect(f.view.el.querySelector(".messages")!.textContent).toContain("Earlier room message");
 		expect(f.view.el.textContent).toContain("Multiple agents can respond in this room");
 		expect(f.view.el.textContent).toContain("Company-wide execution pause is available in Settings → Company");
 		expect(f.view.el.querySelector(".session-run")).toBeNull();
 		expect(f.view.el.textContent).not.toContain("Execution history");
-		choose(id(90));
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		expect(f.send().disabled).toBe(false);
+		f.send().click();
 		await settle();
-		expect(send.disabled).toBe(false);
-		send.click();
-		await settle();
-		window.dispatchEvent(new Event("focus"));
+		refresh();
 		await settle();
 		expect(f.sendMessage).toHaveBeenCalledExactlyOnceWith(session.sessionId, "Hello team", expect.any(AbortSignal));
 		expect(f.listConnections).toHaveBeenCalledTimes(3);
@@ -213,105 +236,138 @@ describe("conversation execution account", () => {
 		expect(reply.textContent).toContain("Room response");
 	});
 
-	it("requires explicit own-account choice and never enables a sponsor automatically", async () => {
-		const f = setup();
+	it("chooses the member's single usable account for them and shows no account controls", async () => {
+		const f = setup(false, connections(1));
+		expect(f.sponsor()).toBeUndefined();
 		await settle();
-		expect(selector().value).toBe("");
-		expect(f.company.conversation(session.sessionId).get().executionSponsor).toBeUndefined();
-		const input = f.view.el.querySelector("textarea")!;
-		input.value = "Hello";
-		input.dispatchEvent(new Event("input"));
+		expect(f.sponsor()).toMatchObject({ connectionId: id(90), sponsorBindingId: id(100), sponsorVersion: 1 });
+		expect(selector()).toBeNull();
+		expect(f.view.el.querySelector(".session-execution label")).toBeNull();
+		expect(buttonNamed(f.view, "Refresh model accounts")).toBeUndefined();
+		expect(f.view.el.textContent).not.toContain("Execution history");
+		expect(f.view.el.textContent).not.toContain(CONNECT_HINT);
+		type(f.view, "Hello");
 		await settle();
-		expect(f.view.el.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.disabled).toBe(true);
-		choose(id(90));
-		await settle();
-		expect(f.company.conversation(session.sessionId).get().executionSponsor?.connectionId).toBe(id(90));
-		expect(f.view.el.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.disabled).toBe(false);
+		expect(f.send().disabled).toBe(false);
 		expect(f.native.createMemberSponsor).not.toHaveBeenCalled();
 		expect(f.native.requestSessionTurn).not.toHaveBeenCalled();
 	});
 
-	it("refuses another member's account and connections lacking an active binding", async () => {
+	it("shows a picker only with several usable accounts and keeps the member's choice across refreshes", async () => {
 		const f = setup();
 		await settle();
-		const other = connections();
-		f.listConnections.mockResolvedValue({
-			...other,
-			computeIdentity: { ...other.computeIdentity!, ownerUserId: userB.id },
-		});
+		expect(selector()!.value).toBe(id(90));
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		choose(id(91));
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(91));
 		refresh();
 		await settle();
-		expect([...selector().options].filter((option) => option.value).every((option) => option.disabled)).toBe(true);
-		choose(id(90));
-		await settle();
-		expect(f.company.conversation(session.sessionId).get().executionSponsor).toBeUndefined();
-		f.listConnections.mockResolvedValue({
-			...other,
-			connections: [{ ...other.connections[0]!, sponsorBindingId: undefined, sponsorVersion: undefined }],
-		});
+		expect(selector()!.value).toBe(id(91));
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+		// The chosen account went away: the remaining usable one takes over and the picker goes.
+		f.listConnections.mockResolvedValue(connections(1));
 		refresh();
 		await settle();
-		expect(selector().options[1]!.disabled).toBe(true);
-		expect(f.view.el.textContent).toContain("Settings → Connections");
+		expect(selector()).toBeNull();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		type(f.view, "Hello");
+		await settle();
+		expect(f.send().disabled).toBe(false);
 	});
 
-	it("locks an uncertain retry to its original sponsor across refreshes and attempted selection", async () => {
+	it("never chooses another member's account or a connection lacking an active binding", async () => {
+		const mine = connections();
+		const f = setup(false, { ...mine, computeIdentity: { ...mine.computeIdentity!, ownerUserId: userB.id } });
+		await settle();
+		type(f.view, "Hello");
+		await settle();
+		expect(f.sponsor()).toBeUndefined();
+		expect(selector()).toBeNull();
+		expect(f.send().disabled).toBe(true);
+		expect(f.view.el.textContent).toContain(CONNECT_HINT);
+		f.listConnections.mockResolvedValue({
+			...mine,
+			connections: [{ ...mine.connections[0]!, sponsorBindingId: undefined, sponsorVersion: undefined }],
+		});
+		refresh();
+		await settle();
+		expect(f.sponsor()).toBeUndefined();
+		expect(f.send().disabled).toBe(true);
+		expect(f.view.el.textContent).toContain(CONNECT_HINT);
+		// Only the bound account is usable, so it is the one chosen, without a picker.
+		f.listConnections.mockResolvedValue({
+			...mine,
+			connections: [
+				{ ...mine.connections[0]!, sponsorBindingId: undefined, sponsorVersion: undefined },
+				mine.connections[1]!,
+			],
+		});
+		refresh();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+		expect(selector()).toBeNull();
+		expect(f.send().disabled).toBe(false);
+		expect(f.view.el.textContent).not.toContain(CONNECT_HINT);
+		expect(f.native.createMemberSponsor).not.toHaveBeenCalled();
+	});
+
+	it("locks an uncertain retry to its original sponsor across refreshes", async () => {
 		const f = setup();
 		await settle();
-		choose(id(90));
+		const selected = f.sponsor()!;
+		const retained = {
+			clientInputId: id(150),
+			clientRequestId: id(150),
+			text: "Hello",
+			files: [],
+			executionSponsor: selected,
+		};
+		f.company.conversation(session.sessionId).set({ retrySend: retained });
 		await settle();
-		const selected = f.company.conversation(session.sessionId).get().executionSponsor!;
+		expect(selector()).toBeNull();
+		f.listConnections.mockResolvedValue(withSponsorVersion(connections(), 2));
+		refresh();
+		await settle();
+		expect(selector()).toBeNull();
+		expect(f.sponsor()).toEqual(selected);
+		expect(f.company.conversation(session.sessionId).get().retrySend).toBe(retained);
+		expect(f.view.el.textContent).toContain("Retry keeps the original model account");
+	});
+
+	it("re-binds the same account at its new sponsor version on refresh, but not during a retry", async () => {
+		const f = setup();
+		await settle();
+		choose(id(91));
+		await settle();
+		expect(f.sponsor()).toMatchObject({ connectionId: id(91), sponsorVersion: 1 });
+		f.listConnections.mockResolvedValue(withSponsorVersion(connections(), 2));
+		refresh();
+		await settle();
+		expect(f.sponsor()).toMatchObject({ connectionId: id(91), sponsorVersion: 2 });
+		type(f.view, "Hello");
+		await settle();
+		expect(f.send().disabled).toBe(false);
 		f.company.conversation(session.sessionId).set({
 			retrySend: {
 				clientInputId: id(150),
 				clientRequestId: id(150),
 				text: "Hello",
 				files: [],
-				executionSponsor: selected,
+				executionSponsor: f.sponsor()!,
 			},
 		});
-		await settle();
-		expect(selector().disabled).toBe(true);
-		choose(id(91));
-		await settle();
-		expect(f.company.conversation(session.sessionId).get().executionSponsor).toEqual(selected);
+		f.listConnections.mockResolvedValue(withSponsorVersion(connections(), 3));
 		refresh();
 		await settle();
-		expect(selector().value).toBe(id(90));
-		expect(selector().disabled).toBe(true);
-		expect(f.view.el.textContent).toContain("Retry keeps the original model account");
-	});
-
-	it("does not silently adopt a changed sponsor version on refresh", async () => {
-		const f = setup();
-		await settle();
-		choose(id(90));
-		await settle();
-		const observed = connections();
-		f.listConnections.mockResolvedValue({
-			...observed,
-			connections: observed.connections.map((c) => ({ ...c, sponsorVersion: 2 })),
-		});
-		refresh();
-		await settle();
-		expect(f.company.conversation(session.sessionId).get().executionSponsor?.sponsorVersion).toBe(1);
-		const input = f.view.el.querySelector("textarea")!;
-		input.value = "Hello";
-		input.dispatchEvent(new Event("input"));
-		await settle();
-		expect(f.view.el.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.disabled).toBe(true);
-		choose("");
-		choose(id(90));
-		await settle();
-		expect(f.company.conversation(session.sessionId).get().executionSponsor?.sponsorVersion).toBe(2);
+		expect(f.sponsor()).toMatchObject({ connectionId: id(91), sponsorVersion: 2 });
+		expect(f.company.conversation(session.sessionId).get().retrySend?.executionSponsor.sponsorVersion).toBe(2);
 	});
 
 	it("explicitly releases a failed attempt for a new account choice while preserving the draft and files", async () => {
 		const f = setup();
 		await settle();
-		choose(id(90));
-		await settle();
-		const selected = f.company.conversation(session.sessionId).get().executionSponsor!;
+		const selected = f.sponsor()!;
 		const image = new File(["image"], "local.png", { type: "image/png" });
 		f.company.conversation(session.sessionId).set({ sending: true });
 		await settle();
@@ -328,20 +384,18 @@ describe("conversation execution account", () => {
 			},
 		});
 		await settle();
-		expect(selector().disabled).toBe(true);
+		expect(selector()).toBeNull();
 		expect(f.view.el.textContent).toContain("The earlier message may already have been accepted");
-		[...f.view.el.querySelectorAll<HTMLButtonElement>("button")]
-			.find((b) => b.textContent === "Start a new message request")!
-			.click();
+		buttonNamed(f.view, "Start a new message request")!.click();
 		await settle();
 		const state = f.company.conversation(session.sessionId).get();
 		expect(state.retrySend).toBeUndefined();
 		expect(state.draft).toBe("Keep this draft");
 		expect(state.attachments?.[0]).toBe(image);
-		expect(selector().disabled).toBe(false);
+		expect(selector()!.disabled).toBe(false);
 		choose(id(91));
 		await settle();
-		expect(f.company.conversation(session.sessionId).get().executionSponsor?.connectionId).toBe(id(91));
+		expect(f.sponsor()?.connectionId).toBe(id(91));
 		expect(f.sendMessage).not.toHaveBeenCalled();
 		expect(f.native.requestSessionTurn).not.toHaveBeenCalled();
 	});
@@ -350,8 +404,6 @@ describe("conversation execution account", () => {
 		"requires explicit abandonment for an edited %s even with a valid sponsor",
 		async (change) => {
 			const f = setup(change === "room draft");
-			await settle();
-			choose(id(90));
 			await settle();
 			const state = f.company.conversation(session.sessionId);
 			const selected = state.get().executionSponsor!;
@@ -374,7 +426,7 @@ describe("conversation execution account", () => {
 			send.click();
 			expect(f.sendMessage).not.toHaveBeenCalled();
 			expect(state.get().retrySend).toBe(retained);
-			expect(selector().disabled).toBe(true);
+			expect(selector()).toBeNull();
 			[...f.view.el.querySelectorAll<HTMLButtonElement>("button")]
 				.find((b) => b.textContent === "Start a new message request")!
 				.click();
@@ -388,9 +440,7 @@ describe("conversation execution account", () => {
 	it("requires current account authority for an edited draft after an uncertain send", async () => {
 		const f = setup();
 		await settle();
-		choose(id(90));
-		await settle();
-		const selected = f.company.conversation(session.sessionId).get().executionSponsor!;
+		const selected = f.sponsor()!;
 		f.company.conversation(session.sessionId).set({
 			draft: "Original",
 			retrySend: {
@@ -404,25 +454,29 @@ describe("conversation execution account", () => {
 		f.listConnections.mockRejectedValue(new Error("Unavailable"));
 		refresh();
 		await settle();
-		const send = f.view.el.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!;
-		expect(send.disabled).toBe(false);
-		const input = f.view.el.querySelector("textarea")!;
-		input.value = "Changed message";
-		input.dispatchEvent(new Event("input"));
+		expect(f.send().disabled).toBe(false);
+		type(f.view, "Changed message");
 		await settle();
-		expect(send.disabled).toBe(true);
+		expect(f.send().disabled).toBe(true);
 	});
 
-	it("refreshes accounts when returning from account settings", async () => {
-		const f = setup();
+	it("picks up a newly connected account when returning from account settings", async () => {
+		const f = setup(false, { ...connections(), connections: [] });
 		await settle();
-		window.dispatchEvent(new Event("focus"));
+		type(f.view, "Hello");
+		await settle();
+		expect(f.view.el.textContent).toContain(CONNECT_HINT);
+		expect(f.send().disabled).toBe(true);
+		f.listConnections.mockResolvedValue(connections(1));
+		refresh();
 		await settle();
 		expect(f.listConnections).toHaveBeenCalledTimes(2);
-		expect(selector().value).toBe("");
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		expect(f.view.el.textContent).not.toContain(CONNECT_HINT);
+		expect(f.send().disabled).toBe(false);
 	});
 
-	it("renders cloud provenance and clears account data on access loss or disposal", async () => {
+	it("reads cloud provenance without showing it and clears account data on access loss or disposal", async () => {
 		const f = setup();
 		await settle();
 		f.listSessionTurnProvenance.mockResolvedValue([
@@ -441,7 +495,9 @@ describe("conversation execution account", () => {
 		]);
 		refresh();
 		await settle();
-		expect(f.view.el.textContent).toContain("openai · Account A · completed");
+		expect(f.listSessionTurnProvenance).toHaveBeenCalledTimes(2);
+		expect(f.view.el.textContent).not.toContain("Account A");
+		expect(f.view.el.textContent).not.toContain("Execution history");
 		const pending = deferred<NativeExecutionConnections>();
 		f.listConnections.mockReturnValueOnce(pending.promise);
 		refresh();

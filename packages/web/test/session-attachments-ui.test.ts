@@ -153,13 +153,17 @@ async function setup() {
 	await vi.waitFor(() =>
 		expect(root.querySelector<HTMLTextAreaElement>('[aria-label="Message"]')?.disabled).toBe(false),
 	);
-	await vi.waitFor(() =>
-		expect(root.querySelector<HTMLOptionElement>(`option[value="${id(81)}"]`)?.disabled).toBe(false),
-	);
-	const account = root.querySelector<HTMLSelectElement>('[aria-label="Model account for this conversation"]')!;
-	account.value = id(81);
-	account.dispatchEvent(new Event("change"));
+	// The member's one usable account is chosen for them; sending opens once it is, with no picker.
+	const message = root.querySelector<HTMLTextAreaElement>('[aria-label="Message"]')!;
+	const draft = (value: string) => {
+		message.value = value;
+		message.dispatchEvent(new Event("input"));
+	};
+	draft("Account check");
+	await vi.waitFor(() => expect(button(root, "Send message").disabled).toBe(false));
+	draft("");
 	await settle();
+	expect(root.querySelector('[aria-label="Model account for this conversation"]')).toBeNull();
 	const requests = () =>
 		fetcher.mock.calls.filter(
 			([url]) =>
