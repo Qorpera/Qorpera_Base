@@ -711,6 +711,70 @@ describe("provider software invocation measurement transport", () => {
 		).rejects.toThrow();
 		expect((await readdir(f.root)).some((file) => file.endsWith("-evidence.json"))).toBe(false);
 	});
+	it("stages the pinned measurement tool again before every measurement when the lane carries it", async () => {
+		const f = await fixture();
+		await f.stage();
+		const { startup, challenge } = invocation(f);
+		const capability = "0123456789abcdef".repeat(4);
+		const registry = vi.fn<LxdOfficeSoftwareInvocationRegistry["call"]>(async (method, args) => {
+			if (method === "qorpera_check_office_software_invocation")
+				return {
+					...challenge,
+					challengeId: args.p_challenge_id,
+					activationId: args.p_activation_id,
+					startup: args.p_startup,
+				};
+			return {
+				schema: "qorpera.office-software-measurement/v1",
+				activationId: args.p_activation_id,
+				revision: 1,
+				state: "measured",
+			};
+		});
+		const options = {
+			root: f.root,
+			client: f.client,
+			registry: { call: registry },
+			binding: (allocationId: string) => ({ ...f.binding, allocationId }),
+			providerCapability: capability,
+			expectedRevision: 1,
+			expectedService: challenge.service,
+			measurementToolSha256: f.pins.measure,
+		};
+		// A reboot empties the guest staging root; the tool must come back first.
+		f.guest.delete(`${OFFICE_SOFTWARE_STAGING_ROOT}/software-measurement-control.mjs`);
+		f.client.pushOfficeSoftwareFile.mockClear();
+		const order: string[] = [];
+		f.client.pushOfficeSoftwareFile.mockImplementationOnce(async (...args) => {
+			order.push(`push:${args[2]}`);
+			f.guest.set(`${OFFICE_SOFTWARE_STAGING_ROOT}/${args[2]}`, {
+				uid: 0,
+				gid: 0,
+				mode: 0o400,
+				content: Buffer.from(args[3]),
+			});
+		});
+		const submit = f.client.submitOfficeSoftwareControl.getMockImplementation()!;
+		f.client.submitOfficeSoftwareControl.mockImplementationOnce(async (...args) => {
+			order.push(`submit:${args[2]}`);
+			return submit(...args);
+		});
+		await expect(
+			createLxdOfficeInvocationMeasurement({ ...options, measurementTool: f.tools.measure })(
+				challenge.activationId,
+				startup,
+				performance.now() + 4000,
+				signal(),
+			),
+		).resolves.toBeUndefined();
+		expect(order.slice(0, 2)).toEqual(["push:software-measurement-control.mjs", "submit:measure"]);
+		expect(f.guest.get(`${OFFICE_SOFTWARE_STAGING_ROOT}/software-measurement-control.mjs`)?.content).toEqual(
+			f.tools.measure,
+		);
+		expect(() =>
+			createLxdOfficeSoftwareMeasurementPhysical(f.root, f.binding, f.client, f.pins.measure, Buffer.from("other")),
+		).toThrow("OFFICE_SOFTWARE_TOOL_PIN_DIFFERS");
+	});
 	it("composes challenge, protected measurement and acknowledgement for the workers without journaling the capability", async () => {
 		const f = await fixture();
 		await f.stage();

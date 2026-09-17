@@ -455,9 +455,12 @@ export function createLxdOfficeSoftwareMeasurementPhysical(
 	bindingValue: LxdOfficeGuestBinding,
 	client: Client,
 	toolSha256Value: string,
+	tool?: Buffer,
 ) {
 	const binding = lxdOfficeGuestPlan(bindingValue).binding,
 		toolSha256 = officeSha(toolSha256Value);
+	if (tool !== undefined && (!Buffer.isBuffer(tool) || hash(tool) !== toolSha256))
+		throw new Error("OFFICE_SOFTWARE_TOOL_PIN_DIFFERS");
 	return async (
 		challenge: Readonly<CompanyComputerServiceSoftwareInvocationChallenge>,
 		deadline: number,
@@ -465,6 +468,18 @@ export function createLxdOfficeSoftwareMeasurementPhysical(
 	): Promise<{ evidence: unknown; evidenceSha256: string }> => {
 		if (challenge.startup.allocationId !== binding.allocationId)
 			throw new Error("OFFICE_SOFTWARE_ALLOCATION_DIFFERS");
+		// The guest staging root is a tmpfs: a boot activation measures on a
+		// fresh boot where nothing the update lane staged survives.
+		if (tool !== undefined) {
+			signal.throwIfAborted();
+			await client.pushOfficeSoftwareFile(
+				binding.project,
+				lxdOfficeGuestPlan(binding).request.name,
+				"software-measurement-control.mjs",
+				tool,
+				signal,
+			);
+		}
 		const text = companyComputerServiceSoftwareMeasurementText(challenge),
 			bytes = Buffer.from(text);
 		let commandId = randomUUID();
@@ -541,6 +556,8 @@ export interface LxdOfficeInvocationMeasurementOptions {
 	expectedRevision: number;
 	expectedService: CompanyComputerServiceSoftwareArtifact;
 	measurementToolSha256: string;
+	/** Exact pinned measurement tool bytes; staged again before every measurement. */
+	measurementTool?: Buffer;
 }
 /** Concrete LxdOfficeInvocationMeasurement for successor and boot activation
  * workers: fresh capability-bound SQL challenge, protected guest measurement,
@@ -565,6 +582,7 @@ export function createLxdOfficeInvocationMeasurement(
 			binding,
 			options.client,
 			measurementToolSha256,
+			options.measurementTool,
 		);
 		await acknowledgeLxdOfficeSoftwareInvocation(
 			{

@@ -86,6 +86,35 @@ describe("office software lane document", () => {
 	});
 });
 describe("provider service configuration software lane", () => {
+	it("names a host copy of the pinned measurement tool and loads its exact bytes", async () => {
+		const tool = Buffer.from("measure tool bytes");
+		const lane = parseLxdOfficeSoftwareLaneDocument({
+			...document(),
+			tools: { install: "7".repeat(64), measure: sha(tool) },
+			measurementTool: { path: "/etc/qorpera-office/software-control/measure.mjs", bytes: tool.length, sha256: sha(tool) },
+		});
+		expect(lane.measurementTool).toEqual({
+			path: "/etc/qorpera-office/software-control/measure.mjs",
+			bytes: tool.length,
+			sha256: sha(tool),
+		});
+		expect(() =>
+			parseLxdOfficeSoftwareLaneDocument({
+				...document(),
+				measurementTool: { path: "/etc/qorpera-office/software-control/measure.mjs", bytes: 1, sha256: sha(tool) },
+			}),
+		).toThrow("INVALID_OFFICE_SOFTWARE_LANE");
+		const read = async () => Buffer.from(capability, "ascii");
+		const options = await loadLxdOfficeSoftwareLane(lane, read, async (path, limit) => {
+			expect([path, limit]).toEqual(["/etc/qorpera-office/software-control/measure.mjs", tool.length]);
+			return Buffer.from(tool);
+		});
+		expect(options.measurementTool).toEqual(tool);
+		await expect(loadLxdOfficeSoftwareLane(lane, read, async () => Buffer.from("other bytes"))).rejects.toThrow(
+			"OFFICE_SOFTWARE_TOOL_PIN_DIFFERS",
+		);
+		expect((await loadLxdOfficeSoftwareLane(parseLxdOfficeSoftwareLaneDocument(document()), read)).measurementTool).toBeUndefined();
+	});
 	it("keeps the existing closed configuration and accepts only an explicit lane path", () => {
 		expect(parseLxdOfficeLifecycleServiceConfig(serviceConfig()).softwareLanePath).toBeUndefined();
 		expect(

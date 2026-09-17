@@ -246,6 +246,7 @@ export class LxdOfficeLifecycle {
 					expectedRevision: software.expectedRevision,
 					expectedService: software.expectedService,
 					measurementToolSha256: software.measurementToolSha256,
+					...(software.measurementTool ? { measurementTool: software.measurementTool } : {}),
 				})
 			: undefined;
 		this.#preparePackageInvocation =
