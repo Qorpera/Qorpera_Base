@@ -11,7 +11,6 @@ import type {
 	CompanyComputerMemberView,
 } from "@qorpera/cloud-client/cloud-company-computer-views";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ComputerAccessPanel } from "../src/app/views/computer-access.ts";
 import { ComputerBrowserPanel } from "../src/app/views/computer-browser.ts";
 import { WebCompanyComputer } from "../src/cloud/computer.ts";
 import { ComputerViewHost } from "../src/ui/computer-view-host.ts";
@@ -201,59 +200,6 @@ function setup() {
 	};
 	return { ...f, state, calls, computer, host, stop, browser };
 }
-
-describe("staff computer permissions", () => {
-	it("uses observed versions and selected capabilities, independently of browser consent", async () => {
-		const f = setup(),
-			panel = new ComputerAccessPanel(f.computer.client.access(scope, staff.id), staff.displayName, f.stop.signal);
-		cleanup.push(() => panel.dispose());
-		await settled();
-		expect(button(panel.el, "Save computer permissions").disabled).toBe(true);
-		const desktop = panel.el.querySelector<HTMLInputElement>('[aria-label="Allow desktop interaction"]')!;
-		desktop.checked = true;
-		desktop.dispatchEvent(new Event("change"));
-		button(panel.el, "Save computer permissions").click();
-		await settled();
-		expect(f.calls.filter((call) => call.method === "qorpera_configure_runtime_office_access")).toEqual([
-			{
-				method: "qorpera_configure_runtime_office_access",
-				args: {
-					p_scope: scope,
-					p_staff_agent_id: staff.id,
-					p_expected_version: 0,
-					p_enabled: true,
-					p_capabilities: ["desktop"],
-				},
-			},
-		]);
-		button(panel.el, "Revoke computer access").click();
-		await settled();
-		expect(
-			f.calls.filter((call) => call.method === "qorpera_configure_runtime_office_access")[1]?.args,
-		).toMatchObject({ p_expected_version: 1, p_enabled: false, p_capabilities: ["desktop"] });
-		expect(f.calls.some((call) => call.method.includes("browser"))).toBe(false);
-	});
-	it("requires a refresh after a lost permission response and never replays it", async () => {
-		const f = setup();
-		f.state.access.grant = { grantId: id(50), version: 7, state: "active", capabilities: ["shell"] };
-		const panel = new ComputerAccessPanel(
-			f.computer.client.access(scope, staff.id),
-			staff.displayName,
-			f.stop.signal,
-		);
-		cleanup.push(() => panel.dispose());
-		await settled();
-		f.state.fail = "qorpera_configure_runtime_office_access";
-		const revoke = button(panel.el, "Revoke computer access");
-		revoke.click();
-		revoke.click();
-		await settled();
-		expect(panel.el.textContent).toContain("Refresh before");
-		button(panel.el, "Refresh permissions").click();
-		await settled();
-		expect(f.calls.filter((call) => call.method === "qorpera_configure_runtime_office_access")).toHaveLength(1);
-	});
-});
 
 describe("private browser preparation and consent", () => {
 	it("rejects browser metadata for another member before exposing it", async () => {

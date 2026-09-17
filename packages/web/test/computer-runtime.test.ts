@@ -146,35 +146,16 @@ function spyViewer(close = vi.fn(async () => {})) {
 }
 
 describe("web runtime member boundary", () => {
-	it("releases its shared viewer before opening browser management", async () => {
-		const f = setup();
-		const released = deferred<void>();
-		const close = vi.fn(() => released.promise);
-		const open = spyViewer(close);
-		const p = await looked(f.computer);
-		await openComputer(p);
-		expect(open).toHaveBeenCalledTimes(1);
-		action(p.el, "Your browsers").click();
-		await settle();
-		expect(close).toHaveBeenCalledTimes(1);
-		expect(p.el.querySelector("[aria-label='Your browser profiles']")).toBeNull();
-		released.resolve();
-		await settle();
-		expect(close).toHaveBeenCalledTimes(1);
-		expect(p.el.querySelector(".computer-details [aria-label='Your browser profiles']")).not.toBeNull();
-	});
-	it("offers permissions only when the catalog allows management", async () => {
-		const member = setup({ qorpera_member_office_catalog: { ...catalog, canManage: false } });
-		const p = await looked(member.computer);
-		expect(labels(p.el)).not.toContain("Permissions");
-		expect(labels(p.el)).toContain("Your browsers");
-		expect(p.el.textContent).not.toContain("Manage computer permissions");
-		p.dispose();
-		const admin = setup();
-		const q = await looked(admin.computer);
-		action(q.el, "Permissions").click();
-		await settle();
-		expect(q.el.querySelector(".computer-details [aria-label='Agent computer permissions']")).not.toBeNull();
+	it("offers exactly one action, to members and managers alike", async () => {
+		for (const canManage of [false, true]) {
+			const f = setup({ qorpera_member_office_catalog: { ...catalog, canManage } });
+			const p = await looked(f.computer);
+			const offered = labels(p.el).filter(Boolean);
+			expect(offered).toEqual(["Open computer"]);
+			expect(p.el.textContent).not.toContain("permissions");
+			expect(p.el.textContent).not.toContain("browsers");
+			p.dispose();
+		}
 	});
 	it("offers one disabled action when the company has no computer", async () => {
 		const f = setup({ qorpera_member_office_catalog: { ...catalog, scope: null } });
@@ -303,8 +284,8 @@ describe("web runtime member boundary", () => {
 				expect(offered.some((label) => label?.startsWith("Watch"))).toBe(false);
 				expect(offered).toContain("Open computer");
 				expect(action(p.el, "Open computer").disabled).toBe(false);
-				expect(offered.includes("Permissions")).toBe(canManage);
-				expect(offered).toContain("Your browsers");
+				expect(offered).not.toContain("Permissions");
+				expect(offered).not.toContain("Your browsers");
 				expect(statusLine(p)).toBe(
 					officeState === "active"
 						? "The computer is on."
@@ -377,10 +358,7 @@ describe("web runtime member boundary", () => {
 	});
 	it.each([
 		["SCREEN_CAPACITY_EXHAUSTED", "All screens on this computer are in use. Try again when one is free."],
-		[
-			"AGENT_HAS_NO_COMPUTER_ACCESS",
-			`${staff.displayName} does not have access to the computer yet. An owner or admin can grant it under Permissions.`,
-		],
+		["AGENT_HAS_NO_COMPUTER_ACCESS", `${staff.displayName} does not have access to the computer.`],
 	])("says why a screen cannot be opened (%s) and stops asking", async (reason, text) => {
 		const f = setup({
 			qorpera_runtime_office_member_status: { ...status, screens: [] },

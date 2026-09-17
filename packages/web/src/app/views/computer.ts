@@ -5,8 +5,6 @@ import { ComputerViewHost } from "../../ui/computer-view-host.ts";
 import { button, h, icon, replace } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { type AgentRoutineAccess, AgentRoutines } from "./agent-routines.ts";
-import { ComputerAccessPanel } from "./computer-access.ts";
-import { ComputerBrowserPanel } from "./computer-browser.ts";
 
 /** The full-screen place a member watches an agent's computer. It holds the
  * wait: the computer starting, or the agent not being on it yet. */
@@ -67,8 +65,6 @@ export class ComputerPanel {
 	readonly #status = h("p", { class: "muted", role: "status" });
 	readonly #controls = h("div", { class: "stack" });
 	readonly #views: ComputerViewHost;
-	readonly #detailsRoot = h("div", { class: "stack computer-details" });
-	#details: ComputerAccessPanel | ComputerBrowserPanel | undefined;
 	#stage: ComputerStage | undefined;
 	#busy = false;
 	constructor(
@@ -108,7 +104,6 @@ export class ComputerPanel {
 					h("strong", null, agent.displayName),
 					this.#status,
 					this.#controls,
-					this.#detailsRoot,
 				),
 				new AgentRoutines(agent, routines, signal).el,
 			),
@@ -165,27 +160,7 @@ export class ComputerPanel {
 			replace(
 				this.#controls,
 				button("Open computer", () => void run(open), { primary: true, disabled: !scope }),
-				h(
-					"div",
-					{ class: "computer-more" },
-					canManage && scope ? button("Permissions", () => void run(permissions), { small: true }) : null,
-					scope ? button("Your browsers", () => void run(browsers), { small: true }) : null,
-				),
 			);
-		};
-		const permissions = async () => {
-			if (!scope) return;
-			this.#details?.dispose();
-			this.#details = new ComputerAccessPanel(computer.client.access(scope, agent.id), agent.displayName, signal);
-			replace(this.#detailsRoot, this.#details.el);
-		};
-		const browsers = async () => {
-			if (!scope) return;
-			await this.#views.close();
-			signal.throwIfAborted();
-			this.#details?.dispose();
-			this.#details = new ComputerBrowserPanel(computer, scope, agent, this.#views, signal);
-			replace(this.#detailsRoot, this.#details.el);
 		};
 		/** Reads what the panel needs to offer the one action; starts nothing. */
 		const look = async () => {
@@ -294,7 +269,7 @@ export class ComputerPanel {
 									opened.reason === "SCREEN_CAPACITY_EXHAUSTED"
 										? "All screens on this computer are in use. Try again when one is free."
 										: opened.reason === "AGENT_HAS_NO_COMPUTER_ACCESS"
-											? `${agent.displayName} does not have access to the computer yet. An owner or admin can grant it under Permissions.`
+											? `${agent.displayName} does not have access to the computer.`
 											: opened.reason === "SCREEN_OCCUPIED"
 												? `${agent.displayName}'s screen is being handed over. It opens here in a moment.`
 												: "The computer is not ready yet.",
@@ -323,7 +298,6 @@ export class ComputerPanel {
 		if (this.#stop.signal.aborted) return;
 		this.#stop.abort();
 		this.#stage?.close();
-		this.#details?.dispose();
 		replace(this.el);
 		this.el.remove();
 	}
