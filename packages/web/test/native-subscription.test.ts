@@ -497,7 +497,7 @@ describe("native provider onboarding browser adapter", () => {
 			});
 		const rejected = expect(f.client.beginProviderLogin(f.input)).rejects.toThrow("Refresh connections");
 		await reached.promise;
-		await vi.advanceTimersByTimeAsync(45000);
+		await vi.advanceTimersByTimeAsync(120000);
 		await rejected;
 		token.resolve(original);
 		await settle();

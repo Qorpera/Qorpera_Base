@@ -10,7 +10,8 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
 
 export interface NativeProviderLoginPrompt {
 	loginId: string;
-	status: "awaiting_member" | "completed";
+	/** `preparing`: the node is still booting or recovering the login machine; post the same login again shortly. */
+	status: "awaiting_member" | "completed" | "preparing";
 	interactionUrl?: string;
 	userCode?: string;
 }
@@ -99,7 +100,7 @@ export class HttpNativeProviderIdentityBridge implements NativeProviderIdentityB
 		if (
 			value.schema !== BRIDGE_LOGIN_RESPONSE_SCHEMA ||
 			value.login_id !== authorization.loginId ||
-			(value.status !== "awaiting_member" && value.status !== "completed") ||
+			(value.status !== "awaiting_member" && value.status !== "completed" && value.status !== "preparing") ||
 			Object.keys(value).some(
 				(key) => !["schema", "login_id", "status", "interaction_url", "user_code"].includes(key),
 			)

@@ -397,6 +397,39 @@ interface NativeLoginResponse {
 }
 
 describe("LXD native login gateway", () => {
+	it("answers `preparing` when a post outlasts its budget and hands the prompt to a later post of the same login", async () => {
+		const root = await stateRoot(),
+			lxd = new FakeLxd(),
+			boundary = fetchBoundary([
+				{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: "SLOW-CODE" },
+				{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: "SLOW-CODE" },
+			]);
+		let release = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const transport: typeof fetch = async (input, init) => {
+			if (String(input) === "http://10.41.0.9:8083/login") await gate;
+			return boundary.fetchImplementation(input, init);
+		};
+		const gateway = new LxdNativeLoginGateway({ ...config(root), loginPreparingAfterMs: 200 }, lxd, transport);
+		const first = await gateway.handle(loginRequest());
+		expect(first.status).toBe(200);
+		expect(await first.json()).toEqual({
+			schema: "qorpera.native-provider-login-result/v1",
+			login_id: loginId,
+			status: "preparing",
+			interaction_url: null,
+			user_code: null,
+		});
+		// The work continued: one VM was created and started while the member was told to come back.
+		expect(lxd.createCalls).toHaveLength(1);
+		release();
+		const second = await gateway.handle(loginRequest());
+		expect(second.status).toBe(200);
+		expect(await second.json()).toMatchObject({ status: "awaiting_member", user_code: "SLOW-CODE" });
+		expect(lxd.createCalls).toHaveLength(1);
+	});
 	it("restores an established identity on a fresh volume before the bootstrap (2026-09-17 amendment)", async () => {
 		const root = await stateRoot(),
 			lxd = new FakeLxd(),

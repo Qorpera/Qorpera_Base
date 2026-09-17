@@ -86,6 +86,36 @@ const RECOVERY_KEYGEN_SCRIPT = [
  * login bootstrap makes the mount 0700 too, but it has not run yet here. */
 const RECOVERY_RESTORE_SCRIPT = `set -e; umask 077; chmod 0700 /var/lib/qorpera/identity; CREDENTIALS_DIRECTORY=${RECOVERY_CREDENTIALS_DIRECTORY} /usr/bin/node /opt/qorpera-runner/qorpera-identity-recovery-restore.mjs > ${RECOVERY_RESULT_PATH}`;
 
+function preparing(loginId: string) {
+	return {
+		schema: "qorpera.native-provider-login-result/v1",
+		login_id: loginId,
+		status: "preparing",
+		interaction_url: null,
+		user_code: null,
+	};
+}
+async function withBudget<T>(
+	work: Promise<T>,
+	budgetMs: number,
+): Promise<{ state: "fulfilled"; value: T } | { state: "rejected"; error: unknown } | { state: "pending" }> {
+	let timer: NodeJS.Timeout | undefined;
+	const pending = new Promise<{ state: "pending" }>((resolve) => {
+		timer = setTimeout(() => resolve({ state: "pending" }), budgetMs);
+	});
+	try {
+		return await Promise.race([
+			work.then(
+				(value) => ({ state: "fulfilled" as const, value }),
+				(error: unknown) => ({ state: "rejected" as const, error }),
+			),
+			pending,
+		]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 function recoveryRuntimeState(value: unknown): {
 	canInitialize: boolean;
 	blocked: boolean;
@@ -159,6 +189,8 @@ export interface LxdNativeLoginGatewayConfig {
 	guestManifestSha256?: string;
 	/** Bound on waiting for the recovery's quiet period before the restore (default 180 s). */
 	recoveryWaitMs?: number;
+	/** A member post that outlasts this budget answers `preparing` (default 20 s); the work continues. */
+	loginPreparingAfterMs?: number;
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -517,12 +549,42 @@ export class LxdNativeLoginGateway {
 			return json({ error: "Native login is unavailable" }, 403);
 		}
 
-		try {
-			return await this.#exclusive(login.computeIdentityId, () => this.#route(login, authority, request.signal));
-		} catch (error) {
-			console.error(error instanceof Error ? error.message : "LXD native login route failed");
+		// The login machine's boot or identity recovery outlives any single member
+		// post (edge deadline 30 s): the route runs under the service lifetime,
+		// a post that outlasts its budget answers `preparing`, and a later post of
+		// the same login joins the running work or reads the guest's prompt.
+		const budgetMs = this.#config.loginPreparingAfterMs ?? 20_000;
+		const running = this.#routes.get(login.loginId);
+		const settled = await (running
+			? withBudget(running, budgetMs)
+			: withBudget(this.#startRoute(login, authority), budgetMs));
+		if (settled.state === "pending") return json(preparing(login.loginId), 200);
+		if (settled.state === "rejected") {
+			console.error(settled.error instanceof Error ? settled.error.message : "LXD native login route failed");
 			return json({ error: "Native provider login is unavailable" }, 503);
 		}
+		if (running) {
+			// The earlier work finished; this post reads the guest's current prompt.
+			const again = await withBudget(this.#startRoute(login, authority), budgetMs);
+			if (again.state === "pending") return json(preparing(login.loginId), 200);
+			if (again.state === "rejected") {
+				console.error(again.error instanceof Error ? again.error.message : "LXD native login route failed");
+				return json({ error: "Native provider login is unavailable" }, 503);
+			}
+			return again.value;
+		}
+		return settled.value;
+	}
+
+	readonly #routes = new Map<string, Promise<ServiceHttpResponse>>();
+	#startRoute(login: NativeLoginRequest, authority: NativeLoginDescription): Promise<ServiceHttpResponse> {
+		const work = this.#exclusive(login.computeIdentityId, () =>
+			this.#route(login, authority, this.#lifetime.signal),
+		).finally(() => {
+			if (this.#routes.get(login.loginId) === work) this.#routes.delete(login.loginId);
+		});
+		this.#routes.set(login.loginId, work);
+		return work;
 	}
 
 	async #describe(login: NativeLoginRequest, signal?: AbortSignal): Promise<NativeLoginDescription> {

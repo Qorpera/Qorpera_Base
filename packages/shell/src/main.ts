@@ -12754,7 +12754,13 @@ app.whenReady().then(async () => {
 				provider,
 				nativeHarness: provider === "openai" ? "codex-cli" : "claude-code",
 			});
-			const login = await bridge.beginLogin(authorization);
+			let login = await bridge.beginLogin(authorization);
+			// The node answers `preparing` while it boots or recovers the login machine; post again shortly.
+			for (let attempt = 0; login.status === "preparing" && attempt < 24; attempt++) {
+				await new Promise((resolve) => setTimeout(resolve, 5000));
+				login = await bridge.beginLogin(authorization);
+			}
+			if (login.status === "preparing") throw new Error("Provider login is still preparing; try again in a minute.");
 			if (login.interactionUrl) await electronShell.openExternal(login.interactionUrl);
 			return {
 				ok: true,
