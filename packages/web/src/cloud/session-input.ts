@@ -58,6 +58,8 @@ export function selectSessionExecutionSponsor(
 export interface RoomMessageTarget {
 	readonly roomId: string;
 	readonly environmentId: string;
+	/** True for an agent's shared thread (one bound agent; attachments allowed). */
+	readonly agentThread: boolean;
 }
 
 export type SessionInputWriter = (
@@ -118,20 +120,8 @@ export function createWebSessionInputWriter(
 					current(sessionId);
 				};
 				check();
-				if (room) {
-					if (files.length) throw new Error("Images are not supported in team rooms. Use Company File.");
-					return createWebRoomMessages(cloud, profileId, memberId, companySignal, () => check()).post(
-						{
-							...room,
-							sessionId,
-							clientInputId,
-							text,
-							sponsorBindingId: sponsor.sponsorBindingId,
-							sponsorVersion: sponsor.sponsorVersion,
-						},
-						deadline,
-					);
-				}
+				if (room && !room.agentThread && files.length)
+					throw new Error("Images are not supported in team rooms. Use Company File.");
 				const images: { objectSha256: string; bytes: number; mediaType: string }[] = [];
 				if (files.length) {
 					const client = createWebSessionAttachments(cloud, memberId, deadline, check);
@@ -150,6 +140,21 @@ export function createWebSessionInputWriter(
 						check();
 						images.push({ objectSha256: image.sha256, bytes: image.bytes, mediaType: image.mediaType });
 					}
+				}
+				if (room) {
+					return createWebRoomMessages(cloud, profileId, memberId, companySignal, () => check()).post(
+						{
+							roomId: room.roomId,
+							environmentId: room.environmentId,
+							sessionId,
+							clientInputId,
+							text,
+							...(images.length ? { images } : {}),
+							sponsorBindingId: sponsor.sponsorBindingId,
+							sponsorVersion: sponsor.sponsorVersion,
+						},
+						deadline,
+					);
 				}
 				const control = createWebNativeSubscription(cloud, profileId, memberId, companySignal, () => check());
 				const receipt = await control.requestSessionTurn(

@@ -356,7 +356,9 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			matches(session.title) &&
 			(!session.staffAgentId ||
 				!active.some((agent) => agent.id === session.staffAgentId) ||
-				(session.executionScope && ("roomId" in session.executionScope || "group" in session.executionScope))),
+				(session.executionScope &&
+					("group" in session.executionScope ||
+						("roomId" in session.executionScope && session.executionScope.agentThread !== true)))),
 	);
 	const sessionRows = otherSessions.map((session) =>
 		h(
@@ -379,11 +381,9 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 				h(
 					"small",
 					null,
-					session.audience.kind === "member_private"
-						? "private"
-						: session.executionScope && "roomId" in session.executionScope
-							? "room"
-							: "company",
+					session.executionScope && "roomId" in session.executionScope && !session.staffAgentId
+						? "room"
+						: "company",
 				),
 			),
 		),

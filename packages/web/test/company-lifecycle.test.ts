@@ -202,14 +202,12 @@ describe("conversation lifecycle regressions", () => {
 		await controller.sendPrompt(session.sessionId, "Draft");
 		expect(append.mock.calls[1]?.[1]).toBe(append.mock.calls[0]?.[1]);
 	});
-	it("refuses writes to unknown, closed or another member's private conversation", async () => {
+	it("refuses writes to unknown or closed conversations", async () => {
 		const { api, controller } = company();
 		const append = vi.spyOn(api, "appendPrompt");
 		controller.store.set({ team, sessions: [] });
 		expect(await controller.sendPrompt(session.sessionId, "Draft")).toBe(false);
 		controller.store.set({ sessions: [{ ...session, status: "closed" }] });
-		expect(await controller.sendPrompt(session.sessionId, "Draft")).toBe(false);
-		controller.store.set({ sessions: [{ ...session, audience: { kind: "member_private", userId: "other" } }] });
 		expect(await controller.sendPrompt(session.sessionId, "Draft")).toBe(false);
 		expect(append).not.toHaveBeenCalled();
 	});

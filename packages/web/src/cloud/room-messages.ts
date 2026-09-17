@@ -8,6 +8,8 @@ export interface RoomMessageInput {
 	environmentId: string;
 	clientInputId: string;
 	text: string;
+	/** Staged uploads of this input; only an agent thread accepts them. */
+	images?: readonly { objectSha256: string; bytes: number; mediaType: string }[];
 	sponsorBindingId: string;
 	sponsorVersion: number;
 }
@@ -72,12 +74,26 @@ export function createWebRoomMessages(
 									"environmentId",
 									"clientInputId",
 									"text",
+									"images",
 									"sponsorBindingId",
 									"sponsorVersion",
 								].includes(key),
 						)
 					)
-						throw new Error("Room messages support text only.");
+						throw new Error("Room messages support text and images only.");
+					const images = request.images ?? [];
+					if (
+						images.length > 5 ||
+						images.some(
+							(image) =>
+								!/^[0-9a-f]{64}$/.test(image.objectSha256) ||
+								!Number.isSafeInteger(image.bytes) ||
+								image.bytes < 1 ||
+								image.bytes > 8 * 1024 * 1024 ||
+								!["image/png", "image/jpeg", "image/gif", "image/webp"].includes(image.mediaType),
+						)
+					)
+						throw new Error("Room message images are invalid.");
 					for (const value of [
 						request.roomId,
 						request.sessionId,
@@ -171,7 +187,11 @@ export function createWebRoomMessages(
 						await rpc("qorpera_post_company_room_message", {
 							p_room_id: request.roomId,
 							p_client_input_id: request.clientInputId,
-							p_body: { schema: "qorpera.session-prompt/v1", text: request.text, images: [] },
+							p_body: {
+								schema: "qorpera.session-prompt/v1",
+								text: request.text,
+								images: images.map((image) => ({ ...image })),
+							},
 							p_sponsor_binding_id: request.sponsorBindingId,
 							p_sponsor_version: request.sponsorVersion,
 						}),

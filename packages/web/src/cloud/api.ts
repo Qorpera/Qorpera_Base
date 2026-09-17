@@ -2,7 +2,9 @@ import type { Cloud } from "./client.ts";
 import { type HostedCompanyOrganization, parseHostedCompanyOrganization } from "./organization.ts";
 import { collectPages, type PageCursor } from "./pagination.ts";
 import {
+	type AgentThreadHandle,
 	parseAccountEntitlement,
+	parseAgentThreadHandle,
 	parseCompanyFile,
 	parseCompanyProposal,
 	parseCompanyProposalComment,
@@ -242,22 +244,14 @@ export class CloudApi {
 			.then(parseStaffSessionHandle);
 	}
 
-	ensureMemberPrivateStaffSession(
-		environmentId: string,
-		staffAgentId: string,
-		audienceUserId: string,
-		clientSessionId: string,
-		title: string,
-	): Promise<StaffSessionHandle> {
+	/** The agent's one shared thread (2026-09-17 amendment); the kernel binds it to the agent's room. */
+	agentThread(environmentId: string, staffAgentId: string): Promise<AgentThreadHandle> {
 		return this.cloud
-			.rpc("qorpera_ensure_member_private_staff_session", {
+			.rpc("qorpera_agent_thread", {
 				p_environment_id: requiredUuid(environmentId, "Environment id"),
 				p_staff_agent_id: requiredUuid(staffAgentId, "Staff agent id"),
-				p_audience_user_id: requiredUuid(audienceUserId, "Member id"),
-				p_client_session_id: requiredUuid(clientSessionId, "Client session id"),
-				p_title: title.trim().slice(0, 256) || "Conversation",
 			})
-			.then(parseStaffSessionHandle);
+			.then(parseAgentThreadHandle);
 	}
 
 	readSessionEvents(sessionId: string, afterSequence = 0, limit = 500): Promise<HostedSessionEvent[]> {

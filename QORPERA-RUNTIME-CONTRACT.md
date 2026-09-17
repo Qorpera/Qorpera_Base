@@ -1661,6 +1661,33 @@ removal; until it is removed it MUST NOT be reachable from any member client.
   `power_off` → plan revision → resume, run by a root timer that first renews
   the node's certificate. The office is offline only while a rotation happens.
 
+### 2026-09-17 amendment: agent threads are shared channels bound by rooms
+
+- **One thread per agent.** Every active agent has exactly one conversation
+  with the company's members: a shared session with company audience that
+  every member sees identically, each message attributed to the member who
+  wrote it and every reply spoken by the agent. It is the closest thing to a
+  multiplayer channel the provider terms allow.
+- **Rooms bind it; they are not a surface.** The kernel binds each agent
+  thread to a room whose members are all active company members and that one
+  agent (`bound_staff_agent_id`). Rooms remain the backend binding of who may
+  post and whom a post wakes; clients present agents and threads, never rooms.
+  Membership follows company membership automatically; archiving the agent
+  archives the thread.
+- **Private runtime rooms.** A member's post runs the agent on that member's
+  own model account (sponsor binding), through that member's own execution
+  binding. Provider-side context windows are per member and never pooled; the
+  shared thread and the Company File are the agent's continuity across
+  members. A post into an agent thread requires a reply (initial optional,
+  final required); team rooms keep their optional policy.
+- **No member-private conversations.** Member-private sessions and the
+  member-private Co-Founder conversation are withdrawn. Members MAY hold
+  member-private facts in the Company File; an agent uses them only to think
+  and MUST NOT repeat them into a shared thread. §14.2's separate one-to-one
+  Co-Founder conversation no longer exists: the Co-Founder's thread is shared.
+- **Images.** An agent thread accepts the same attachments as an agent
+  session did; team rooms stay text-only.
+
 ### Current implementation checkpoint
 
 The NAS-backed live Company File and native cloud runner path already exist.

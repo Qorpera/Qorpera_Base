@@ -139,7 +139,7 @@ describe("room messages use the public room admission contract", () => {
 		const f = setup();
 		await expect(f.client.post({ ...f.input, text: "😀".repeat(16385) })).rejects.toThrow();
 		await expect(f.client.post({ ...f.input, text: "   " })).rejects.toThrow();
-		const withImages = { ...f.input, images: [{ sha256: "discarding-this-is-not-allowed" }] };
+		const withImages = { ...f.input, images: [{ objectSha256: "not-a-digest", bytes: 1, mediaType: "image/png" }] };
 		await expect(f.client.post(withImages)).rejects.toThrow();
 		expect(f.fetch).not.toHaveBeenCalled();
 		await f.client.post({ ...f.input, text: "😀".repeat(16384) });

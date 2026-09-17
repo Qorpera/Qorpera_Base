@@ -7,7 +7,8 @@ import { HubController } from "../src/app/views/hub.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
-import type { HostedAccountEntitlement, HostedProfile, StaffSessionHandle } from "../src/cloud/types.ts";
+import type { AgentThreadHandle } from "../src/cloud/parse.ts";
+import type { HostedAccountEntitlement, HostedProfile } from "../src/cloud/types.ts";
 import { deferred, fixture, id, profileA, profileB, session, settle, staff, team, userA, userB } from "./fixtures.ts";
 
 let dispose: (() => void) | undefined;
@@ -221,23 +222,18 @@ describe("account and route ownership", () => {
 			responsibilities: [],
 			projects: [],
 		});
-		const create = vi.spyOn(f.api, "ensureMemberPrivateStaffSession").mockResolvedValue({
-			...session,
-			audience: { kind: "member_private", userId: userA.id },
-			created: true,
+		const create = vi.spyOn(f.api, "agentThread").mockResolvedValue({
+			sessionId: session.sessionId,
+			roomId: id(31),
+			staffAgentId: staff.id,
+			status: "active",
 		});
 		await draw();
 		expect(create).not.toHaveBeenCalled();
 		expect(f.root.querySelector("main")?.textContent).toContain("Opening company");
 		loading.resolve(team);
 		await draw();
-		expect(create).toHaveBeenCalledExactlyOnceWith(
-			profileA.environmentId,
-			staff.id,
-			userA.id,
-			expect.any(String),
-			"Co-Founder",
-		);
+		expect(create).toHaveBeenCalledExactlyOnceWith(profileA.environmentId, staff.id);
 		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 	});
 
@@ -247,7 +243,9 @@ describe("account and route ownership", () => {
 		const loading = deferred<typeof team>();
 		vi.mocked(f.api.getTeam).mockReturnValue(loading.promise);
 		vi.mocked(f.api.listSessions).mockResolvedValue([]);
-		const create = vi.spyOn(f.api, "ensureStaffSession").mockResolvedValue({ ...session, created: true });
+		const create = vi
+			.spyOn(f.api, "agentThread")
+			.mockResolvedValue({ sessionId: session.sessionId, roomId: id(31), staffAgentId: staff.id, status: "active" });
 		await draw();
 		expect(location.hash).toBe(route);
 		expect(f.root.querySelector("main")?.textContent).toContain("Opening company");
@@ -327,25 +325,16 @@ describe("account and route ownership", () => {
 
 	it("does not navigate after a staff-session request finishes on another page", async () => {
 		const { api, root } = mounted();
-		const opened = deferred<StaffSessionHandle>();
+		const opened = deferred<AgentThreadHandle>();
 		vi.mocked(api.listSessions).mockResolvedValue([]);
-		vi.spyOn(api, "ensureStaffSession").mockReturnValue(opened.promise);
+		vi.spyOn(api, "agentThread").mockReturnValue(opened.promise);
 		await draw();
 		location.hash = `#/c/${profileA.profileId}/staff/${staff.id}`;
 		await draw();
-		expect(api.ensureStaffSession).toHaveBeenCalledTimes(1);
+		expect(api.agentThread).toHaveBeenCalledTimes(1);
 		location.hash = "#/account";
 		await draw();
-		opened.resolve({
-			sessionId: session.sessionId,
-			clientSessionId: session.clientSessionId,
-			environmentId: session.environmentId,
-			title: session.title,
-			audience: session.audience,
-			created: true,
-			createdByUserId: userA.id,
-			createdAt: session.createdAt,
-		});
+		opened.resolve({ sessionId: session.sessionId, roomId: id(31), staffAgentId: staff.id, status: "active" });
 		await draw();
 		expect(location.hash).toBe("#/account");
 		expect(root.textContent).toContain("Plan & billing");

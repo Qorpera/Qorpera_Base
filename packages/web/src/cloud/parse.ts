@@ -290,6 +290,23 @@ export function parseSessions(value: unknown): HostedSession[] {
 	return array(value, "session list").map(parseSession);
 }
 
+export interface AgentThreadHandle {
+	sessionId: string;
+	roomId: string;
+	staffAgentId: string;
+	status: "active" | "archived";
+}
+export function parseAgentThreadHandle(value: unknown): AgentThreadHandle {
+	const input = record(value, "agent thread");
+	if (input.schema !== "qorpera.agent-thread/v1" || (input.status !== "active" && input.status !== "archived"))
+		throw new Error("Invalid agent thread.");
+	return {
+		sessionId: uuid(input.session_id, "agent thread session id"),
+		roomId: uuid(input.room_id, "agent thread room id"),
+		staffAgentId: uuid(input.staff_agent_id, "agent thread staff id"),
+		status: input.status,
+	};
+}
 export function parseStaffSessionHandle(value: unknown): StaffSessionHandle {
 	const input = record(value, "staff session");
 	const companySnapshotId = optionalUuid(input.company_snapshot_id, "session Company File revision");

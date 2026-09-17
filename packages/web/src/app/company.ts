@@ -98,8 +98,21 @@ function reconcileOptimistic(state: Pick<ConversationState, "optimistic" | "pend
 const EVENT_PAGE = 500;
 
 /** Company-audience staff conversations, as the desktop arbiter selects them. */
+/** The agent's one shared thread: the company-audience session the kernel
+ * binds to the agent's room (execution scope `agentThread`). */
+export function isAgentThreadSession(session: HostedSession): boolean {
+	const scope = session.executionScope ?? {};
+	return (
+		!!session.staffAgentId &&
+		session.status === "open" &&
+		session.audience.kind === "company" &&
+		"roomId" in scope &&
+		scope.agentThread === true
+	);
+}
 export function isPrimaryStaffSession(session: HostedSession): boolean {
 	if (!session.staffAgentId || session.status !== "open" || session.audience.kind !== "company") return false;
+	if (isAgentThreadSession(session)) return true;
 	const scope = session.executionScope ?? {};
 	return !("autonomousLabel" in scope || "roomId" in scope || "group" in scope || "parentSession" in scope);
 }
@@ -317,30 +330,22 @@ export class CompanyController {
 	}
 
 	primarySessionFor(staffAgentId: string): HostedSession | undefined {
-		return this.store
-			.get()
-			.sessions.find((session) => session.staffAgentId === staffAgentId && isPrimaryStaffSession(session));
+		const sessions = this.store.get().sessions.filter((session) => session.staffAgentId === staffAgentId);
+		return sessions.find(isAgentThreadSession) ?? sessions.find(isPrimaryStaffSession);
 	}
 
-	/** Adopt-or-create the company-audience conversation for a staff agent. */
+	/** The agent's shared thread (2026-09-17 amendment): one conversation every
+	 * member sees, bound to the agent's room by the kernel. */
 	async openStaffConversation(agent: HostedStaffAgent): Promise<string> {
 		if (this.#stopped) throw new Error("This company is no longer open.");
 		const existing = this.primarySessionFor(agent.id);
 		if (existing) return existing.sessionId;
-		const team = this.store.get().team;
-		if (!team?.capabilities.write)
-			throw new Error("Only a contributor can start this conversation. There is none yet.");
-		const handle = await this.#api.ensureStaffSession(
-			this.profile.environmentId,
-			agent.id,
-			crypto.randomUUID(),
-			agent.displayName,
-		);
+		const thread = await this.#api.agentThread(this.profile.environmentId, agent.id);
 		await this.refreshSessions();
-		return handle.sessionId;
+		return thread.sessionId;
 	}
 
-	/** The member's private Co-Founder conversation (contract §14.2). */
+	/** The Co-Founder's shared thread; there is no member-private conversation. */
 	async openCofounderConversation(): Promise<{ sessionId?: string; reason?: string }> {
 		if (this.#stopped) return { reason: "This company is no longer open." };
 		const { organization, organizationState, team, sessions } = this.store.get();
@@ -355,28 +360,18 @@ export class CompanyController {
 				reason: "This company has no Co-Founder yet. The cloud seeds one when Order 0 bootstraps the company.",
 			};
 		if (organization.cofounder.memberSessionId) return { sessionId: organization.cofounder.memberSessionId };
-		const privateSession = sessions.find(
-			(session) =>
-				session.staffAgentId === organization.cofounder.staffAgentId &&
-				session.audience.kind === "member_private" &&
-				session.audience.userId === this.#userId &&
-				session.status === "open",
+		const thread = sessions.find(
+			(session) => session.staffAgentId === organization.cofounder.staffAgentId && isAgentThreadSession(session),
 		);
-		if (privateSession) return { sessionId: privateSession.sessionId };
-		if (!team?.capabilities.write) return { reason: "Viewers do not have a private Co-Founder conversation." };
+		if (thread) return { sessionId: thread.sessionId };
+		if (!team?.capabilities.read) return { reason: "This company is not readable." };
 		try {
-			const handle = await this.#api.ensureMemberPrivateStaffSession(
-				this.profile.environmentId,
-				organization.cofounder.staffAgentId,
-				this.#userId,
-				crypto.randomUUID(),
-				"Co-Founder",
-			);
+			const handle = await this.#api.agentThread(this.profile.environmentId, organization.cofounder.staffAgentId);
 			await this.refreshSessions();
 			return { sessionId: handle.sessionId };
 		} catch (error) {
 			if (error instanceof CloudRpcError && error.missing) {
-				return { reason: "Member-private Co-Founder sessions are not deployed on this cloud yet." };
+				return { reason: "Agent threads are not deployed on this cloud yet." };
 			}
 			return { reason: describeError(error) };
 		}
@@ -478,8 +473,7 @@ export class CompanyController {
 			!session ||
 			session.status !== "open" ||
 			session.profileId !== this.profile.profileId ||
-			session.environmentId !== this.profile.environmentId ||
-			(session.audience.kind === "member_private" && session.audience.userId !== this.#userId)
+			session.environmentId !== this.profile.environmentId
 		)
 			throw new Error("This conversation is not available for sending.");
 	}
@@ -511,9 +505,14 @@ export class CompanyController {
 		const session = this.store.get().sessions.find((item) => item.sessionId === sessionId);
 		const scope = session?.executionScope;
 		if (!session || !scope || !("roomId" in scope)) return undefined;
-		if (session.staffAgentId || typeof scope.roomId !== "string" || !UUID_PATTERN.test(scope.roomId))
+		if (typeof scope.roomId !== "string" || !UUID_PATTERN.test(scope.roomId))
 			throw new Error("The team room conversation is unavailable.");
-		return Object.freeze({ roomId: scope.roomId, environmentId: session.environmentId });
+		// An agent thread is a room the kernel bound to one agent; a team room has no single agent.
+		return Object.freeze({
+			roomId: scope.roomId,
+			environmentId: session.environmentId,
+			agentThread: isAgentThreadSession(session),
+		});
 	}
 
 	async sendPrompt(sessionId: string, text: string, viewSignal?: AbortSignal): Promise<boolean> {
@@ -548,9 +547,14 @@ export class CompanyController {
 		try {
 			const observed = this.roomTargetFor(sessionId);
 			roomTarget = sameRequest ? retry.roomTarget : observed;
-			if (observed?.roomId !== roomTarget?.roomId || observed?.environmentId !== roomTarget?.environmentId)
+			if (
+				observed?.roomId !== roomTarget?.roomId ||
+				observed?.environmentId !== roomTarget?.environmentId ||
+				observed?.agentThread !== roomTarget?.agentThread
+			)
 				throw new Error("The conversation destination changed. Refresh before starting a new request.");
-			if (roomTarget && files.length) throw new Error("Images are not supported in team rooms. Use Company File.");
+			if (roomTarget && !roomTarget.agentThread && files.length)
+				throw new Error("Images are not supported in team rooms. Use Company File.");
 		} catch (error) {
 			store.set({ sendError: describeError(error), draft: text });
 			return false;

@@ -273,11 +273,11 @@ export class ConversationView {
 	get sessionId(): string {
 		return this.#sessionId;
 	}
+	/** A team room: a room with no single bound agent. An agent's shared thread
+	 * is a room too, but it behaves like the agent's own conversation here. */
 	get #isRoom(): boolean {
-		return (
-			typeof this.#company.store.get().sessions.find((s) => s.sessionId === this.#sessionId)?.executionScope
-				?.roomId === "string"
-		);
+		const session = this.#company.store.get().sessions.find((s) => s.sessionId === this.#sessionId);
+		return typeof session?.executionScope?.roomId === "string" && !session.staffAgentId;
 	}
 
 	focus(): void {

@@ -48,7 +48,7 @@ export const RPC_PROBES: RpcProbeEntry[] = [
 		area: "Conversations",
 	},
 	{
-		name: "qorpera_ensure_member_private_staff_session",
+		name: "qorpera_agent_thread",
 		params: ["p_environment_id", "p_staff_agent_id", "p_audience_user_id", "p_client_session_id", "p_title"],
 		area: "Co-Founder private session (Order 0)",
 	},

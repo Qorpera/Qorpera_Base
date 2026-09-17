@@ -11,7 +11,7 @@ afterEach(() => {
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
 });
-const target = { roomId: id(70), environmentId: profileA.environmentId };
+const target = { roomId: id(70), environmentId: profileA.environmentId, agentThread: false };
 const roomSession: HostedSession = { ...session, executionScope: { roomId: target.roomId } };
 const sponsor: SessionExecutionSponsor = {
 	connectionId: id(80),
@@ -157,19 +157,19 @@ describe("room session input routing", () => {
 		expect(f.cloud.supabase.auth.getSession).not.toHaveBeenCalled();
 		expect(f.append).not.toHaveBeenCalled();
 	});
-	it.each([
-		{ ...roomSession, staffAgentId: id(9) },
-		{ ...roomSession, executionScope: { roomId: "invalid" } },
-	])("refuses ambiguous or malformed canonical room scope", async (invalidSession) => {
-		const f = setup();
-		f.controller.store.set({ sessions: [invalidSession] });
-		expect(await f.controller.sendPrompt(session.sessionId, "Draft")).toBe(false);
-		expect(f.controller.conversation(session.sessionId, false).get().sendError).toContain(
-			"room conversation is unavailable",
-		);
-		expect(f.write).not.toHaveBeenCalled();
-		expect(f.fetch).not.toHaveBeenCalled();
-	});
+	it.each([{ ...roomSession, executionScope: { roomId: "invalid" } }])(
+		"refuses a malformed canonical room scope",
+		async (invalidSession) => {
+			const f = setup();
+			f.controller.store.set({ sessions: [invalidSession] });
+			expect(await f.controller.sendPrompt(session.sessionId, "Draft")).toBe(false);
+			expect(f.controller.conversation(session.sessionId, false).get().sendError).toContain(
+				"room conversation is unavailable",
+			);
+			expect(f.write).not.toHaveBeenCalled();
+			expect(f.fetch).not.toHaveBeenCalled();
+		},
+	);
 	it("fences the current account before room discovery or post", async () => {
 		const f = setup();
 		f.auth(userB);

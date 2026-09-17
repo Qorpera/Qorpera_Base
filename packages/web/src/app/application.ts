@@ -659,7 +659,6 @@ export function mountApplication(
 							!session ||
 							session.profileId !== controller.profile.profileId ||
 							session.environmentId !== controller.profile.environmentId ||
-							(session.audience.kind === "member_private" && session.audience.userId !== controller.userId) ||
 							selected.name !== "company" ||
 							selected.profileId !== controller.profile.profileId ||
 							selected.section !== "chat" ||
@@ -701,8 +700,6 @@ export function mountApplication(
 										!session ||
 										session.profileId !== controller.profile.profileId ||
 										session.environmentId !== controller.profile.environmentId ||
-										(session.audience.kind === "member_private" &&
-											session.audience.userId !== controller.userId) ||
 										selected.name !== "company" ||
 										selected.profileId !== controller.profile.profileId ||
 										selected.section !== "chat" ||
