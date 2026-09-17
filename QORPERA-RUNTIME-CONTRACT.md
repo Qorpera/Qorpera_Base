@@ -1605,6 +1605,44 @@ does not reorder the implementation order.
   reboot receipt and a boot-successor activation; a screen lease refused during
   maintenance and granted afterwards; evidence retained.
 
+### 2026-09-17 amendment: the company browser and the Company Computer as a given
+
+The company comes first. Agents are the primary workers against it; members
+review and steer through the agents. Three consequences replace the earlier
+member-centred browser model of section 12.
+
+1. **The Company Computer is a given for every agent.** Each active agent of a
+   company has desktop and shell access to the company's computers by default.
+   Access is not a setting a member has to find. The grant rows and their
+   versions remain, because runs and leases bind to them.
+2. **A member opens an agent's computer.** "Opening an agent's screen" is a
+   member operation: it opens the agent's screen when it has none, and the
+   office starts the desktop when the first viewer connects. A desktop start
+   belongs to the office, never to the viewer that happened to ask first.
+3. **One company browser.** A company has one set of website sign-ins. Every
+   agent has a company-owned browser profile from the start; no member owns,
+   prepares, lends or revokes a browser profile, and there is no private member
+   browser on the Company Computer. Because a browser locks its profile to one
+   running process and each agent works on its own desktop, agents keep separate
+   profile directories and the office service keeps their sign-ins in step: a
+   sign-in or sign-out in one agent's browser reaches the company's store and
+   the other open browsers, and a browser that opens later starts signed in.
+   Session cookies are kept, so a sign-in survives a browser or service restart.
+   The store lives beside the profiles on the company workbench with the same
+   protection and never enters a browser namespace, log, transcript or viewer.
+   A site that binds a session to one browser, or rotates its token on every
+   use, can still sign other agents out; that is the site's rule.
+
+Signing in stays a typed handoff on the office desktop: a reviewer takes
+control of the agent's screen and types; the model never receives the
+password. A connector still precedes the browser wherever one exists. A
+person's own accounts do not belong on the Company Computer; an agent acts for
+a person only through a connection that person grants to the company.
+
+The member-owned profile, per-agent browser consent and office-wide private
+sign-in machinery of the earlier text has no client and is scheduled for
+removal; until it is removed it MUST NOT be reachable from any member client.
+
 ### Current implementation checkpoint
 
 The NAS-backed live Company File and native cloud runner path already exist.

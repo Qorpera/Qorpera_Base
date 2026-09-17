@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
 	assertCompanyComputerLease,
@@ -12,6 +13,10 @@ import {
 } from "@qorpera/cloud-client/cloud-company-computer-privacy";
 import { parseCompanyComputerViewerGrant } from "@qorpera/cloud-client/cloud-company-computer-viewer";
 import { CloudCompanyComputerBrowserControl } from "./cloud-company-computer-browser-control.ts";
+import {
+	CompanyComputerBrowserLogins,
+	type CompanyComputerLoginContext,
+} from "./cloud-company-computer-browser-logins.ts";
 import { prepareCompanyComputerScreenWallpaper } from "./cloud-company-computer-desktop.ts";
 import { CompanyComputerGuestEndpoint } from "./cloud-company-computer-endpoint.ts";
 import {
@@ -104,6 +109,8 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	readonly #stop = new AbortController();
 	readonly #screens = new Map<number, SharedScreen>();
 	readonly #sessions = new Set<NativeSession>();
+	/** The company's one set of website sign-ins, shared by every agent's browser. */
+	readonly #logins: CompanyComputerBrowserLogins;
 	#private?: PrivateSurface;
 	#privacy?: CompanyComputerPrivacyChallenge;
 	/** Confirmed shared version while the registry retains no challenge. */
@@ -124,6 +131,9 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		};
 		this.#sharedControl = new CloudCompanyComputerSharedSurfaceControl({ ...options, control: options.registry });
 		this.#privateControl = new CloudCompanyComputerPrivateSurfaceControl({ ...options, control: options.registry });
+		this.#logins = new CompanyComputerBrowserLogins({
+			path: join(this.#options.layout.browserProfilesRoot, "company-logins.json"),
+		});
 		this.#desktop = new CompanyComputerLinuxDesktopLauncher({
 			...this.#options,
 			runtimeRoot: options.displayRuntimeRoot,
@@ -294,6 +304,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		let closing: Promise<void> | undefined;
 		let commands: CompanyComputerLinuxCommands | undefined;
 		let browser: CompanyComputerBrowserSession | undefined;
+		let detachLogins: (() => Promise<void>) | undefined;
 		let automation: CompanyComputerGuestAutomation | undefined;
 		const signal = AbortSignal.any([stop.signal, this.#stop.signal, input.run.signal]);
 		const admitted = async (exact: CompanyComputerScreenBinding, checked: AbortSignal): Promise<void> => {
@@ -340,6 +351,8 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 				closing ??= cloudToolRequest(
 					async () => {
 						await Promise.allSettled([...active]);
+						// A last look at this browser's sign-ins before it closes.
+						await detachLogins?.().catch(() => undefined);
 						const results = await Promise.allSettled([manager.close(), commands?.close()]);
 						const rejected = results.find((result) => result.status === "rejected");
 						if (rejected) throw new Error("OFFICE_SESSION_DRAIN_UNCONFIRMED", { cause: rejected.reason });
@@ -371,7 +384,11 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 				});
 			},
 			automation: {
-				stopBrowser: () => manager.close(),
+				stopBrowser: async () => {
+					await detachLogins?.().catch(() => undefined);
+					detachLogins = undefined;
+					await manager.close();
+				},
 				perform: async (action, currentLease, context, operation) => {
 					const checked = AbortSignal.any([signal, context.signal]);
 					checked.throwIfAborted();
@@ -394,6 +411,10 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 							} finally {
 								checked.removeEventListener("abort", cancel);
 							}
+							// Signed in wherever the company is; a failure here never blocks browsing.
+							detachLogins = await this.#logins
+								.attach(binding.screenId, browser.context as unknown as CompanyComputerLoginContext)
+								.catch(() => undefined);
 							automation = undefined;
 						}
 					}
@@ -688,6 +709,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 							this.stopResources(screen.binding, new AbortController().signal),
 						),
 					]);
+					await this.#logins.close().catch(() => undefined);
 					await this.#desktop.close();
 					const rejected = results.find((result) => result.status === "rejected");
 					if (this.#private || this.#screens.size || this.#sessions.size || rejected)
