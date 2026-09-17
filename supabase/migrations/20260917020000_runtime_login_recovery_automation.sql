@@ -154,7 +154,7 @@ begin
 	v_owner_user:=case when v_owner then v_user else
 		coalesce((select p.created_by_user_id from public.qorpera_profiles p join public.qorpera_profile_members m
 				on m.profile_id=p.id and m.user_id=p.created_by_user_id and m.role='owner' where p.id=v_identity.profile_id),
-			(select min(m.user_id) from public.qorpera_profile_members m where m.profile_id=v_identity.profile_id and m.role='owner')) end;
+			(select m.user_id from public.qorpera_profile_members m where m.profile_id=v_identity.profile_id and m.role='owner' order by m.user_id limit 1)) end;
 	if v_owner_user is null then raise exception 'login recovery requires a company owner of record' using errcode='42501'; end if;
 	select * into v_recovery from public.qorpera_identity_recoveries
 		where profile_id=v_identity.profile_id and client_request_id=p_client_request_id;
