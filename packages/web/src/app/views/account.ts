@@ -81,20 +81,6 @@ export function renderAccount(
 			"section",
 			{ class: "page account", "data-form-owner": owner },
 			h("h1", null, uiText("General")),
-			h(
-				"a",
-				{ class: "settings-card settings-link", href: "#/browser-access" },
-				h(
-					"span",
-					{ class: "settings-copy" },
-					h("strong", null, "Browser access"),
-					h(
-						"small",
-						null,
-						"Revoke browser consent or finish private sign-in, including in companies you have left.",
-					),
-				),
-			),
 			state.error ? notice("danger", state.error) : null,
 			state.message ? notice("ok", state.message) : null,
 			h(

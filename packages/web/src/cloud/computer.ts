@@ -1,6 +1,5 @@
 import type { CompanyComputerScope } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import { CloudMemberCompanyComputerClient } from "@qorpera/cloud-client/cloud-member-company-computer";
-import { MemberCompanyBrowserSession } from "@qorpera/cloud-client/member-company-browser-session";
 import type { Cloud } from "./client.ts";
 import type { HostedProfile } from "./types.ts";
 
@@ -54,17 +53,5 @@ export class WebCompanyComputer {
 		const origin = this.#cloud.config.officeViewerOrigin;
 		if (!origin) throw new Error("Screen viewing is not configured.");
 		return this.client.views(scope, this.#memberId, `${origin}/office/${scope.companyComputerId}/view`);
-	}
-	browser(scope: CompanyComputerScope, signal: AbortSignal): MemberCompanyBrowserSession {
-		this.#current();
-		return new MemberCompanyBrowserSession({
-			profiles: this.client.browserProfiles(scope, this.#memberId),
-			signIn: this.client.signIn(scope, this.#memberId),
-			current: () => {
-				signal.throwIfAborted();
-				this.#current();
-			},
-			signal,
-		});
 	}
 }

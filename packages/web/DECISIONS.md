@@ -333,3 +333,18 @@ model account of the member who saves it. Saving records that member's
 consent to unattended use of that account and binds one sponsor per account
 version, reused on later saves. The cloud has no member delete for routines;
 "Pause" is the removal a member has.
+
+## 2026-09-17 — No private member browsers in the web client
+
+**Decision (Jonas).** The company comes first: agents are the primary workers
+against it, and members are mounted on the agents as reviewers. A member's
+private browser on the Company Computer does not fit that, so the web client
+has none: the "Your browsers" panel (browser profiles, private sign-in,
+per-agent browser consent) and the account's "Browser access" page are
+deleted, together with the per-agent computer permissions form. Computer
+access is a default for every agent (migration 20260917045000), and the
+Computer panel offers one action, Open computer.
+
+**Still in the backend and runtime.** The privacy challenge, private display
+and browser-profile grant machinery of contract section 12 is untouched; no
+client reaches it now. Removing it is a contract amendment, not a web change.

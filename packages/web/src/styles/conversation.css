@@ -199,14 +199,6 @@
 .computer-stage-close { position: absolute; top: 16px; right: 16px; color: #d8d8d4; }
 .computer-stage-body { display: grid; justify-items: center; gap: 18px; max-width: min(420px, 80vw); text-align: center; font-size: 14px; line-height: 1.5; }
 .computer-stage-body p { margin: 0; }
-.computer-details { width: 100%; min-width: 0; text-align: left; }
-.computer-details:empty { display: none; }
-.computer-details > section { border-top: 1px solid var(--border); margin-top: 10px; padding-top: 16px; }
-.computer-details h2 { margin: 0; font-size: 14px; }
-.computer-details label.row { flex-direction: row; align-items: center; gap: 8px; font-weight: 400; }
-.computer-details input[type=checkbox] { flex: none; min-height: 0; width: 16px; height: 16px; margin: 0; padding: 0; }
-.computer-details select, .computer-details input[type=text] { width: 100%; min-width: 0; }
-.computer-details button { white-space: normal; overflow-wrap: anywhere; }
 .computer-routines { border-top: 1px solid var(--border); margin-top: 26px; padding-top: 20px; font-size: 12px; }
 .computer-routines h2 { margin: 0; font-size: 14px; }
 .computer-routines > header { display: flex; align-items: center; justify-content: space-between; }
