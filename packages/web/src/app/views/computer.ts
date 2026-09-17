@@ -255,6 +255,8 @@ export class ComputerPanel {
 					stage.say("Screen viewing is not set up here.");
 					return;
 				}
+				stage.say(`Opening ${agent.displayName}'s computer…`);
+				let asked = false;
 				for (;;) {
 					const status = await views.status(until);
 					if (status.state === "active" && status.privacyState === "shared") {
@@ -262,18 +264,34 @@ export class ComputerPanel {
 							.filter((item) => item.binding.staffAgentId === agent.id && !item.drainPending)
 							.sort((a, b) => a.binding.screenOrdinal - b.binding.screenOrdinal)[0];
 						if (screen) {
-							stage.close();
+							stage.say("Connecting…");
 							await this.#views.open({
 								binding: screen.binding,
 								title: `${agent.displayName} · Computer`,
 								canControl: canManage,
 								requestConnection: async (input) => views.connectScreen(input),
 							});
+							stage.close();
 							return;
 						}
-						stage.say(
-							`${agent.displayName} is not using the computer right now. The screen appears here as soon as it does.`,
-						);
+						if (!asked) {
+							// The agent has no screen yet: open one. Its desktop starts when we connect.
+							asked = true;
+							const opened = await views.openScreen(agent.id, until);
+							if (opened.state === "refused") {
+								stage.say(
+									opened.reason === "SCREEN_CAPACITY_EXHAUSTED"
+										? "All screens on this computer are in use. Try again when one is free."
+										: opened.reason === "AGENT_HAS_NO_COMPUTER_ACCESS"
+											? `${agent.displayName} does not have access to the computer yet. An owner or admin can grant it under Permissions.`
+											: opened.reason === "SCREEN_OCCUPIED"
+												? `${agent.displayName}'s screen is being handed over. It opens here in a moment.`
+												: "The computer is not ready yet.",
+								);
+								if (opened.reason !== "SCREEN_OCCUPIED" && opened.reason !== "COMPUTER_NOT_ACTIVE") return;
+								asked = false;
+							} else continue;
+						}
 					} else stage.say("The computer is private right now. Shared viewing returns when that ends.");
 					await wait(3000, until);
 				}

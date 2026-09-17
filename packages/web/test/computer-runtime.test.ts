@@ -79,6 +79,7 @@ function setup(overrides: Record<string, unknown> = {}) {
 		qorpera_member_office_catalog: catalog,
 		qorpera_runtime_office_start_status: start,
 		qorpera_runtime_office_member_status: status,
+		qorpera_open_runtime_office_screen: { state: "open" },
 		...overrides,
 	};
 	const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -345,17 +346,19 @@ describe("web runtime member boundary", () => {
 			}
 		}
 	});
-	it("waits for this agent's screen and never shows another agent's screen", async () => {
+	it("opens a screen for an agent that has none, once, and never shows another agent's screen", async () => {
 		const other = { ...status.screens[0]!, binding: { ...binding, staffAgentId: id(99) } };
 		const f = setup({ qorpera_runtime_office_member_status: { ...status, screens: [other] } });
 		const open = spyViewer();
 		const p = await looked(f.computer);
-		expect(p.el.textContent).not.toContain("This agent has no screen yet");
+		expect(methods(f)).not.toContain("qorpera_open_runtime_office_screen");
 		await openComputer(p);
 		await poll();
-		expect(stageText()).toBe(
-			`${staff.displayName} is not using the computer right now. The screen appears here as soon as it does.`,
-		);
+		await poll();
+		const opens = f.fetch.mock.calls.filter(([url]) => String(url).endsWith("qorpera_open_runtime_office_screen"));
+		expect(opens).toHaveLength(1);
+		expect(JSON.parse(opens[0]![1]!.body as string)).toMatchObject({ p_staff_agent_id: staff.id });
+		expect(stageText()).toBe(`Opening ${staff.displayName}'s computer…`);
 		expect(open).not.toHaveBeenCalled();
 		const mine = (screenOrdinal: number, drainPending = false) => ({
 			...status.screens[0]!,
@@ -371,6 +374,28 @@ describe("web runtime member boundary", () => {
 		expect(open).toHaveBeenCalledExactlyOnceWith(
 			expect.objectContaining({ binding: mine(3).binding, title: `${staff.displayName} · Computer` }),
 		);
+	});
+	it.each([
+		["SCREEN_CAPACITY_EXHAUSTED", "All screens on this computer are in use. Try again when one is free."],
+		[
+			"AGENT_HAS_NO_COMPUTER_ACCESS",
+			`${staff.displayName} does not have access to the computer yet. An owner or admin can grant it under Permissions.`,
+		],
+	])("says why a screen cannot be opened (%s) and stops asking", async (reason, text) => {
+		const f = setup({
+			qorpera_runtime_office_member_status: { ...status, screens: [] },
+			qorpera_open_runtime_office_screen: { state: "refused", reason },
+		});
+		const open = spyViewer();
+		const p = await looked(f.computer);
+		await openComputer(p);
+		await poll();
+		expect(stageText()).toBe(text);
+		const calls = f.fetch.mock.calls.length;
+		await poll();
+		await poll();
+		expect(f.fetch).toHaveBeenCalledTimes(calls);
+		expect(open).not.toHaveBeenCalled();
 	});
 	it("uses current member credentials and the selected environment for discovery", async () => {
 		const f = setup();

@@ -24,6 +24,7 @@ import { withCloudDeadline } from "./cloud-request.ts";
 export type CloudCompanyComputerViewsRpc = (
 	method:
 		| "qorpera_runtime_office_member_status"
+		| "qorpera_open_runtime_office_screen"
 		| "qorpera_request_runtime_office_drain"
 		| "qorpera_create_runtime_office_viewer"
 		| "qorpera_cancel_runtime_office_viewer",
@@ -174,6 +175,40 @@ export class CloudCompanyComputerViews {
 		const status = structuredClone(value) as unknown as CompanyComputerMemberStatus;
 		status.maintenance = withMaintenance ? parseCompanyComputerMaintenance(value.maintenance) : null;
 		return status;
+	}
+	/** A member opens an agent's screen so there is a desktop to look at before the
+	 * agent's first run leases one. The guest starts it when a viewer connects. */
+	async openScreen(
+		staffAgentId: string,
+		signal: AbortSignal,
+	): Promise<
+		| { state: "open" }
+		| {
+				state: "refused";
+				reason:
+					| "COMPUTER_NOT_ACTIVE"
+					| "AGENT_HAS_NO_COMPUTER_ACCESS"
+					| "SCREEN_CAPACITY_EXHAUSTED"
+					| "SCREEN_OCCUPIED";
+		  }
+	> {
+		if (!COMPANY_COMPUTER_UUID.test(staffAgentId)) throw new Error("INVALID_OFFICE_VIEW_REQUEST");
+		const value = (await this.#request(
+			"qorpera_open_runtime_office_screen",
+			{ p_scope: this.#scope, p_staff_agent_id: staffAgentId },
+			signal,
+		)) as { state?: unknown; reason?: unknown } | null;
+		if (!value || typeof value !== "object") throw new Error("INVALID_OFFICE_VIEW_RESPONSE");
+		if (value.state === "open") return { state: "open" };
+		if (
+			value.state === "refused" &&
+			(value.reason === "COMPUTER_NOT_ACTIVE" ||
+				value.reason === "AGENT_HAS_NO_COMPUTER_ACCESS" ||
+				value.reason === "SCREEN_CAPACITY_EXHAUSTED" ||
+				value.reason === "SCREEN_OCCUPIED")
+		)
+			return { state: "refused", reason: value.reason };
+		throw new Error("INVALID_OFFICE_VIEW_RESPONSE");
 	}
 	/** Explicit intent only. Call status to observe the runtime acknowledgement;
 	 * never assume this response means that member input is ready. */
