@@ -36,6 +36,8 @@ export interface CompanyComputerPreparationRequest {
 		readonly root: string;
 		readonly mountPoint: "/var/lib/qorpera-office";
 	};
+	/** 2 adds the company root; absent means the original four roots. */
+	readonly layoutVersion?: 2;
 	readonly limits: {
 		readonly memoryBytes: number;
 		readonly pids: number;
@@ -64,6 +66,12 @@ export function parseCompanyComputerPreparationCommand(value: unknown): Readonly
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
 const roots = ["desktop", "profiles", "screens", "workbench"];
+/** Layout version 2 adds `company`: company-owned kept state (the shared
+ * browser sign-ins) that a later generation carries through `shared.company`.
+ * Version 1 generations keep their exact four roots and receipt bytes. */
+export function companyComputerPreparationRoots(request: { layoutVersion?: 2 }): readonly string[] {
+	return request.layoutVersion === 2 ? [...roots, "company"] : roots;
+}
 function record(value: unknown, keys: string[]): Record<string, unknown> {
 	if (
 		!value ||
@@ -94,6 +102,7 @@ function freeze<T>(value: T): Readonly<T> {
  * roots. Original host inode numbers are not portable through virtiofs; this
  * manifest instead binds the copied paths, private modes, lengths and hashes. */
 export function parseCompanyComputerPreparationRequest(value: unknown): Readonly<CompanyComputerPreparationRequest> {
+	const optional = value && typeof value === "object" && "layoutVersion" in value ? (["layoutVersion"] as const) : [];
 	const request = record(value, [
 		"schema",
 		"scope",
@@ -109,8 +118,11 @@ export function parseCompanyComputerPreparationRequest(value: unknown): Readonly
 		"workbenchMount",
 		"limits",
 		"entries",
+		...optional,
 	]);
 	if (request.schema !== "qorpera.office-guest-preparation/v1") throw new Error("INVALID_OFFICE_PREPARATION_REQUEST");
+	if (optional.length && request.layoutVersion !== 2) throw new Error("INVALID_OFFICE_PREPARATION_REQUEST");
+	const admitted = companyComputerPreparationRoots(request as { layoutVersion?: 2 });
 	for (const value of Object.values(
 		record(request.scope, ["companyId", "environmentId", "companyComputerId", "logicalComputerId"]),
 	))
@@ -170,7 +182,7 @@ export function parseCompanyComputerPreparationRequest(value: unknown): Readonly
 			const parts = item.path.split("/");
 			if (
 				parts.length > 64 ||
-				!roots.includes(parts[0]) ||
+				!admitted.includes(parts[0]) ||
 				parts.some((part) => !part || part === "." || part === ".." || encoder.encode(part).length > 255)
 			)
 				throw new Error("INVALID_OFFICE_PREPARATION_REQUEST");
@@ -191,7 +203,7 @@ export function parseCompanyComputerPreparationRequest(value: unknown): Readonly
 		if (total > 64 * 1024 ** 3) throw new Error("INVALID_OFFICE_PREPARATION_REQUEST");
 		entries.set(item.path, item as unknown as CompanyComputerPreparationEntry);
 	}
-	for (const name of [".", ...roots])
+	for (const name of [".", ...admitted])
 		if (entries.get(name)?.kind !== "directory") throw new Error("INVALID_OFFICE_PREPARATION_REQUEST");
 	for (const path of entries.keys()) {
 		if (path === ".") continue;
@@ -243,6 +255,7 @@ export function companyComputerPreparationAdoptionReceipt(value: CompanyComputer
 			desktopHome: `${root}/desktop`,
 			screenStateRoot: `${root}/screens`,
 			browserProfilesRoot: `${root}/profiles`,
+			...(request.layoutVersion === 2 ? { companyRoot: `${root}/company` } : {}),
 		},
 		workbenchMount: request.workbenchMount,
 		disposition: "migration_completed" as const,

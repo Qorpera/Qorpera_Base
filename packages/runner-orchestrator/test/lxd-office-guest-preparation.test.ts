@@ -103,6 +103,58 @@ function reportFixture() {
 	};
 	return { request, report, expected };
 }
+describe("layout version 2 (company root)", () => {
+	it("derives layoutVersion 2, the fifth admitted root and the receipt's company root only from a plan that names it", () => {
+		const { options, request } = fixture();
+		expect(request).not.toHaveProperty("layoutVersion");
+		expect(companyComputerPreparationAdoptionReceipt(request).layout).not.toHaveProperty("companyRoot");
+		const plan = planLxdOfficeAdoption(
+			{
+				schema: "qorpera.lxd-office-adoption-input/v1",
+				adoptionId: id(3),
+				shared: { workbench: "old", desktopHome: null, company: null },
+				legacy: null,
+				quarantine: [],
+			},
+			options.binding,
+			options.observation,
+		);
+		const v2 = createLxdOfficeGuestPreparationRequest({
+			...options,
+			plan,
+			result: { ...options.result, planSha256: officeDigest(plan) },
+		});
+		expect(v2.layoutVersion).toBe(2);
+		expect(v2.entries.find((entry) => entry.path === "company")).toEqual({
+			path: "company",
+			kind: "directory",
+			mode: 0o700,
+			bytes: 0,
+			sha256: null,
+		});
+		const root = `/var/lib/qorpera-office/.qorpera-adopted-${id(3)}`;
+		expect(companyComputerPreparationAdoptionReceipt(v2).layout).toEqual({
+			workbenchRoot: `${root}/workbench`,
+			desktopHome: `${root}/desktop`,
+			screenStateRoot: `${root}/screens`,
+			browserProfilesRoot: `${root}/profiles`,
+			companyRoot: `${root}/company`,
+		});
+		// A version 1 request must not carry a company entry, and version 2 must carry it.
+		expect(() =>
+			parseCompanyComputerPreparationRequest({
+				...request,
+				entries: [...request.entries, v2.entries.find((e) => e.path === "company")!],
+			}),
+		).toThrow("INVALID_OFFICE_PREPARATION_REQUEST");
+		expect(() =>
+			parseCompanyComputerPreparationRequest({ ...v2, entries: v2.entries.filter((e) => e.path !== "company") }),
+		).toThrow("INVALID_OFFICE_PREPARATION_REQUEST");
+		expect(() => parseCompanyComputerPreparationRequest({ ...v2, layoutVersion: 3 })).toThrow(
+			"INVALID_OFFICE_PREPARATION_REQUEST",
+		);
+	});
+});
 describe("closed preparation completion data", () => {
 	function completionFixture() {
 		const f = reportFixture();

@@ -70,7 +70,10 @@ export function planLxdOfficeAdoption(
 	)
 		throw new Error("OFFICE_ADOPTION_OBSERVATION_MISMATCH");
 	const input = officeRecord(value, ["schema", "adoptionId", "shared", "legacy", "quarantine"]);
-	const shared = officeRecord(input.shared, ["workbench", "desktopHome"]);
+	// Naming `company` (even as null) selects layout version 2: a fifth root for
+	// company-owned kept state that the next generation carries the same way.
+	const companyRoot = !!input.shared && typeof input.shared === "object" && "company" in input.shared;
+	const shared = officeRecord(input.shared, ["workbench", "desktopHome", ...(companyRoot ? ["company"] : [])]);
 	if (
 		input.schema !== "qorpera.lxd-office-adoption-input/v1" ||
 		typeof input.adoptionId !== "string" ||
@@ -86,6 +89,7 @@ export function planLxdOfficeAdoption(
 		desktopHome: `${base}/${destinationName}/desktop`,
 		screenStateRoot: `${base}/${destinationName}/screens`,
 		browserProfilesRoot: `${base}/${destinationName}/profiles`,
+		...(companyRoot ? { companyRoot: `${base}/${destinationName}/company` } : {}),
 	});
 	const hostLayout = layout(root);
 	const guestLayout = layout("/var/lib/qorpera-office");
@@ -111,6 +115,7 @@ export function planLxdOfficeAdoption(
 	};
 	if (shared.workbench !== null) select(shared.workbench, "workbench", "shared");
 	if (shared.desktopHome !== null) select(shared.desktopHome, "desktop", "shared");
+	if (companyRoot && shared.company !== null) select(shared.company, "company", "shared");
 	let screens: ReturnType<typeof planCompanyComputerStateAdoption> = [];
 	if (input.legacy !== null) {
 		const legacy = officeRecord(input.legacy, ["roots", "mappings"]);
@@ -187,7 +192,7 @@ export function planLxdOfficeAdoption(
 		}
 		items.set(item.destination, item);
 	};
-	for (const destination of ["workbench", "desktop", "screens", "profiles"])
+	for (const destination of ["workbench", "desktop", "screens", "profiles", ...(companyRoot ? ["company"] : [])])
 		add({ destination, kind: "directory", mode: 0o700, source: null });
 	for (const entry of entries) {
 		if (entry.path === ".") continue;

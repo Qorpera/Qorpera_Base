@@ -131,8 +131,13 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		};
 		this.#sharedControl = new CloudCompanyComputerSharedSurfaceControl({ ...options, control: options.registry });
 		this.#privateControl = new CloudCompanyComputerPrivateSurfaceControl({ ...options, control: options.registry });
+		// Layout version 2 keeps the company's sign-ins in the company root, which a
+		// later generation carries over; version 1 offices keep them beside the profiles.
 		this.#logins = new CompanyComputerBrowserLogins({
-			path: join(this.#options.layout.browserProfilesRoot, "company-logins.json"),
+			path:
+				this.#options.layout.companyRoot !== undefined
+					? join(this.#options.layout.companyRoot, "browser-logins.json")
+					: join(this.#options.layout.browserProfilesRoot, "company-logins.json"),
 		});
 		this.#desktop = new CompanyComputerLinuxDesktopLauncher({
 			...this.#options,

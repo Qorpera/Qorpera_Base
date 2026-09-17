@@ -66,6 +66,7 @@ export function createLxdOfficeGuestPreparationRequest(options: {
 		gid: options.gid,
 		workbenchMount: options.workbenchMount,
 		limits: options.limits,
+		...(plan.guestLayout.companyRoot !== undefined ? { layoutVersion: 2 } : {}),
 		copy: {
 			adoptionId: result.adoptionId,
 			observationSha256: result.observationSha256,
@@ -91,6 +92,7 @@ export function createLxdOfficeGuestPreparationRequest(options: {
 			desktopHome: `${root}/desktop`,
 			screenStateRoot: `${root}/screens`,
 			browserProfilesRoot: `${root}/profiles`,
+			...(plan.guestLayout.companyRoot !== undefined ? { companyRoot: `${root}/company` } : {}),
 		})
 	)
 		throw new Error("OFFICE_PREPARATION_LAYOUT_MISMATCH");

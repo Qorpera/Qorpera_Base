@@ -22,6 +22,32 @@ describe("protected office process configuration", () => {
 		expect(companyComputerLinuxBinding(config.linux)).toEqual(config.linux);
 		expect(zoned.linux.desktopTimeZone).toBe("Europe/Copenhagen");
 	});
+	it("admits the layout version 2 company root and refuses one that overlaps or is unsafe", () => {
+		const config = computerServiceConfig();
+		const withCompany = {
+			...config,
+			linux: {
+				...config.linux,
+				layout: { ...config.linux.layout, companyRoot: `${config.linux.layout.workbenchRoot}-company` },
+			},
+		};
+		const parsed = parseCompanyComputerServiceConfig(JSON.stringify(withCompany));
+		expect(parsed.linux.layout.companyRoot).toBe(`${config.linux.layout.workbenchRoot}-company`);
+		expect(parseCompanyComputerServiceConfig(JSON.stringify(config)).linux.layout).not.toHaveProperty("companyRoot");
+		for (const companyRoot of [
+			`${config.linux.layout.workbenchRoot}/company`,
+			"relative/company",
+			"/etc/qorpera-office/credentials",
+		])
+			expect(() =>
+				parseCompanyComputerServiceConfig(
+					JSON.stringify({
+						...config,
+						linux: { ...config.linux, layout: { ...config.linux.layout, companyRoot } },
+					}),
+				),
+			).toThrow("INVALID_OFFICE_SERVICE_CONFIG");
+	});
 	it("admits an optional IANA desktop zone and refuses anything else there", () => {
 		const config = computerServiceConfig();
 		const zoned = { ...config, linux: { ...config.linux, desktopTimeZone: "Europe/Copenhagen" } };

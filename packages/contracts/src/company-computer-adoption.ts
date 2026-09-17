@@ -25,6 +25,8 @@ export interface CompanyComputerGuestLayout {
 	screenStateRoot: string;
 	/** Broker-only; never mounted into arbitrary agent shell/file-manager surfaces. */
 	browserProfilesRoot: string;
+	/** Layout version 2: company-owned kept state (shared browser sign-ins), service-only. */
+	companyRoot?: string;
 }
 function isOfficeStatePath(path: unknown): path is string {
 	return (
@@ -41,8 +43,10 @@ function isOfficeStatePath(path: unknown): path is string {
 }
 export function assertCompanyComputerGuestLayout(layout: CompanyComputerGuestLayout): void {
 	const paths = Object.values(layout);
+	const keys = Object.keys(layout).sort().join();
 	if (
-		Object.keys(layout).sort().join() !== "browserProfilesRoot,desktopHome,screenStateRoot,workbenchRoot" ||
+		(keys !== "browserProfilesRoot,desktopHome,screenStateRoot,workbenchRoot" &&
+			keys !== "browserProfilesRoot,companyRoot,desktopHome,screenStateRoot,workbenchRoot") ||
 		paths.some(
 			(path) =>
 				!isOfficeStatePath(path) ||

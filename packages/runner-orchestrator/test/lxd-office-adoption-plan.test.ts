@@ -118,6 +118,73 @@ describe("executable office adoption mapping", () => {
 		expect(Object.isFrozen(plan.items[0])).toBe(true);
 		expect(plan.screens[0].browser).toMatchObject({ grant: { version: 3 } });
 	});
+	it("adds the company root only when the input names it, and carries a retired company tree through it", () => {
+		const f = fixture(true);
+		expect(f.plan().guestLayout).not.toHaveProperty("companyRoot");
+		expect(f.plan().items.map((item) => item.destination)).not.toContain("company");
+		const v2 = planLxdOfficeAdoption(
+			{ ...f.input, shared: { ...f.input.shared, company: null } },
+			f.binding,
+			f.observation,
+		);
+		expect(v2.guestLayout.companyRoot).toBe(`/var/lib/qorpera-office/.qorpera-adopted-${id(3)}/company`);
+		expect(v2.items.filter((item) => item.destination === "company")).toEqual([
+			{ destination: "company", kind: "directory", mode: 0o700, source: null },
+		]);
+		// A retired generation's company root (the shared browser sign-ins) moves with the next one.
+		const g = fixture(false);
+		for (const path of ["retired", "retired/company", "retired/company/browser-logins.json"])
+			g.entries.push({
+				path,
+				kind: path.endsWith(".json") ? "file" : "directory",
+				dev: "1",
+				ino: String(100 + g.entries.length),
+				uid: 1000,
+				gid: 1000,
+				mode: path.endsWith(".json") ? 0o600 : 0o700,
+				mtimeNs: "1",
+				ctimeNs: "1",
+				bytes: path.endsWith(".json") ? 1 : 0,
+				sha256: path.endsWith(".json") ? "b".repeat(64) : null,
+			});
+		g.entries.push({
+			path: "retired/loose",
+			kind: "file",
+			dev: "1",
+			ino: "999",
+			uid: 1000,
+			gid: 1000,
+			mode: 0o600,
+			mtimeNs: "1",
+			ctimeNs: "1",
+			bytes: 1,
+			sha256: "c".repeat(64),
+		});
+		const carried = planLxdOfficeAdoption(
+			{
+				...g.input,
+				shared: { ...g.input.shared, company: "retired/company" },
+				quarantine: [...g.input.quarantine, "retired/loose"],
+			},
+			g.binding,
+			g.observation,
+		);
+		expect(
+			carried.items
+				.filter((item) => item.destination.startsWith("company"))
+				.map((item) => [item.destination, item.source?.path]),
+		).toEqual([
+			["company", "retired/company"],
+			["company/browser-logins.json", "retired/company/browser-logins.json"],
+		]);
+		expect(() =>
+			planLxdOfficeAdoption(
+				{ ...g.input, shared: { ...g.input.shared, company: "retired/company" } },
+				g.binding,
+				g.observation,
+			),
+		).toThrow("UNREVIEWED_OFFICE_STORAGE");
+	});
 	it("initializes empty roots only from an actual empty source inventory", () => {
 		const f = fixture(true);
 		expect(f.plan().items.map((item) => [item.destination, item.source])).toEqual([

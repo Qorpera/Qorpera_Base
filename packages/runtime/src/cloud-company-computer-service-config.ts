@@ -106,7 +106,13 @@ export function parseCompanyComputerServiceConfig(text: string): CompanyComputer
 			...optional,
 		]);
 		if (optional.length && !isCompanyComputerScreenTimeZone(linux.desktopTimeZone)) throw new Error("time zone");
-		strings(linux.layout, ["workbenchRoot", "desktopHome", "screenStateRoot", "browserProfilesRoot"]);
+		strings(linux.layout, [
+			"workbenchRoot",
+			"desktopHome",
+			"screenStateRoot",
+			"browserProfilesRoot",
+			...(linux.layout && typeof linux.layout === "object" && "companyRoot" in linux.layout ? ["companyRoot"] : []),
+		]);
 		assertCompanyComputerGuestLayout(linux.layout as CompanyComputerServiceConfig["linux"]["layout"]);
 		for (const item of Object.values(record(linux.limits, ["memoryBytes", "pids", "cpuQuota", "cpuPeriod"])))
 			positive(item);
