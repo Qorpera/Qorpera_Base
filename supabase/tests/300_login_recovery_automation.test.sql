@@ -88,5 +88,15 @@ reset role;
 select pg_temp.claims('authenticated','30000000-0000-4000-8000-000000000001'); set local role authenticated;
 select pg_temp.denied($q$select public.qorpera_runtime_login_gateway_choose(repeat('2',64))$q$);
 reset role;
+-- Re-pin (20260917030000): authenticated callers refused; a plain generation update refused;
+-- the gateway's re-pin of a login already on the current generation is a no-op.
+select pg_temp.claims('authenticated','30000000-0000-4000-8000-000000000002'); set local role authenticated;
+select pg_temp.denied(format('select public.qorpera_repin_login_recovery_epoch(%L)',current_setting('t.login2')));
+reset role;
+select pg_temp.claims('service_role'); set local role service_role;
+select pg_temp.denied(format('update public.qorpera_native_provider_login_sessions set compute_recovery_epoch=compute_recovery_epoch+1 where id=%L',current_setting('t.login2')));
+-- login2's identity is fenced by the approved recovery: re-pin refused until it completes.
+select pg_temp.denied(format('select public.qorpera_repin_login_recovery_epoch(%L)',current_setting('t.login2')));
+reset role;
 select 'LOGIN_RECOVERY_AUTOMATION_OK' as result;
 rollback;

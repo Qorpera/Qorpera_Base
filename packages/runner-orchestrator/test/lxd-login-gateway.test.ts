@@ -257,6 +257,7 @@ function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" 
 		recoveryApproval: "approved" as string,
 		recoveryRequests: [] as Record<string, unknown>[],
 		targetRegistrations: [] as Record<string, unknown>[],
+		repins: [] as Record<string, unknown>[],
 	};
 	const fetchImplementation = vi.fn<typeof fetch>(async (input, init) => {
 		const url = String(input);
@@ -364,6 +365,10 @@ function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" 
 				signingPublicKey: "S".repeat(60),
 			});
 		}
+		if (url.endsWith("qorpera_repin_login_recovery_epoch")) {
+			control.repins.push(args);
+			return Response.json({ loginId: args.p_login_id, epoch: 2, repinned: true });
+		}
 		if (url === "https://recovery.example.test:10000/v1/provider-target") {
 			control.targetRegistrations.push(args);
 			return Response.json({ targetId: args.targetId, computeIdentityId, registrarNodeId: args.registrarNodeId });
@@ -451,6 +456,8 @@ describe("LXD native login gateway", () => {
 		expect(restoreIndex).toBeGreaterThan(-1);
 		expect(bootstrapIndex).toBeGreaterThan(restoreIndex);
 		expect(scripts.some((s) => s.startsWith("/bin/rm -rf /var/lib/qorpera-recovery"))).toBe(true);
+		// The login is re-pinned to the restored generation before its bootstrap runs.
+		expect(boundary.control.repins).toEqual([{ p_login_id: loginId }]);
 		expect(lxd.guestFiles.has("/var/lib/qorpera-recovery/recipient-public-key")).toBe(false);
 	});
 	it("refuses an established identity on a fresh volume when the node has no registrar, and a fenced identity always", async () => {

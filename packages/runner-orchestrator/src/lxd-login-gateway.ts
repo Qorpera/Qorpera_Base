@@ -963,6 +963,7 @@ export class LxdNativeLoginGateway {
 			const pending = await this.#pendingRestore(instanceName, binding, state.epoch, signal);
 			if (!pending) throw new Error("LOGIN_IDENTITY_RECOVERY_PENDING");
 			await this.#restoreInGuest(instanceName, pending.recoveryId, pending.epoch, signal);
+			await this.#repinLogin(binding, signal);
 			return;
 		}
 		if (!freshVolume && (await this.#guestFileExists(instanceName, RECOVERY_MASTER_KEY_PATH, signal))) return;
@@ -1060,7 +1061,20 @@ export class LxdNativeLoginGateway {
 			if (delayMs > 0) await delay(delayMs, undefined, { signal });
 		}
 		await this.#restoreInGuest(instanceName, recovery.recoveryId, recovery.epoch, signal);
+		await this.#repinLogin(binding, signal);
 		console.error(`LXD native login identity recovered (login ${binding.loginId}, node ${nodeId})`);
+	}
+
+	/** The login's own recovery advanced the identity's generation past the one
+	 * the session was pinned to; the backend re-pins it so the login's backup
+	 * stage and completion run on the restored generation. */
+	async #repinLogin(binding: LxdLoginBinding, signal: AbortSignal): Promise<void> {
+		const r = record(
+			await this.#rpc("qorpera_repin_login_recovery_epoch", { p_login_id: binding.loginId }, signal),
+			"Login re-pin",
+		);
+		if (r.loginId !== binding.loginId || !Number.isSafeInteger(r.epoch))
+			throw new Error("LOGIN_IDENTITY_RECOVERY_REPIN_FAILED");
 	}
 
 	/** The restore config an earlier, cut-off post left in the guest, if it belongs to the pending generation. */
