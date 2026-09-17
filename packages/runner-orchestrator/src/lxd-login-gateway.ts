@@ -87,11 +87,13 @@ const RECOVERY_RESTORE_SCRIPT = `set -e; umask 077; CREDENTIALS_DIRECTORY=${RECO
 function recoveryRuntimeState(value: unknown): {
 	canInitialize: boolean;
 	blocked: boolean;
+	epoch: number | null;
 	recoveryConfiguration: { authorityId: string; serviceOrigin: string; signingPublicKey: string } | null;
 } {
 	const r = record(value, "Identity recovery state");
 	if (typeof r.canInitialize !== "boolean" || typeof r.blocked !== "boolean")
 		throw new Error("Identity recovery state is invalid");
+	const epoch = Number.isSafeInteger(r.epoch) ? (r.epoch as number) : null;
 	let recoveryConfiguration: { authorityId: string; serviceOrigin: string; signingPublicKey: string } | null = null;
 	if (r.recoveryConfiguration !== null && r.recoveryConfiguration !== undefined) {
 		const c = record(r.recoveryConfiguration, "Identity recovery configuration");
@@ -103,7 +105,7 @@ function recoveryRuntimeState(value: unknown): {
 		if (!/^https:\/\/[A-Za-z0-9.-]+(:[0-9]+)?$/.test(recoveryConfiguration.serviceOrigin))
 			throw new Error("Identity recovery service origin is invalid");
 	}
-	return { canInitialize: r.canInitialize, blocked: r.blocked, recoveryConfiguration };
+	return { canInitialize: r.canInitialize, blocked: r.blocked, epoch, recoveryConfiguration };
 }
 function loginRecoveryRequest(value: unknown, targetId: string) {
 	const r = record(value, "Login recovery");
@@ -615,7 +617,8 @@ export class LxdNativeLoginGateway {
 		this.#assertInstanceAuthority(instance, binding);
 		// 2026-09-17 amendment: an established identity on a node without its
 		// volume is restored before the login bootstrap runs (no operator).
-		await this.#recoverEstablishedIdentity(journal, binding, plan.request.name, freshVolume, signal);
+		await this.#recoveryFor(journal, binding, plan.request.name, freshVolume);
+		signal.throwIfAborted();
 		await this.#installBootstrap(plan.request.name, files, signal);
 		const address = await this.#waitReady(instance, signal);
 		const result = await this.#forward(address, login, signal);
@@ -952,7 +955,14 @@ export class LxdNativeLoginGateway {
 			),
 		);
 		if (state.canInitialize) return;
-		if (state.blocked) throw new Error("LOGIN_IDENTITY_RECOVERY_PENDING");
+		if (state.blocked) {
+			// A recovery this guest already holds the credentials for (an earlier
+			// post of the same login was cut off after approval): finish it.
+			const pending = await this.#pendingRestore(instanceName, binding, state.epoch, signal);
+			if (!pending) throw new Error("LOGIN_IDENTITY_RECOVERY_PENDING");
+			await this.#restoreInGuest(instanceName, pending.recoveryId, pending.epoch, signal);
+			return;
+		}
 		if (!freshVolume && (await this.#guestFileExists(instanceName, RECOVERY_MASTER_KEY_PATH, signal))) return;
 		if (await this.#guestFileExists(instanceName, RECOVERY_MASTER_KEY_PATH, signal)) return;
 		const registrar = this.#config.identityRecoveryRegistrarCapability,
@@ -1047,6 +1057,49 @@ export class LxdNativeLoginGateway {
 			if (delayMs > waitMs) throw new Error("LOGIN_IDENTITY_RECOVERY_DEFERRED");
 			if (delayMs > 0) await delay(delayMs, undefined, { signal });
 		}
+		await this.#restoreInGuest(instanceName, recovery.recoveryId, recovery.epoch, signal);
+		console.error(`LXD native login identity recovered (login ${binding.loginId}, node ${nodeId})`);
+	}
+
+	/** The restore config an earlier, cut-off post left in the guest, if it belongs to the pending generation. */
+	async #pendingRestore(
+		instanceName: string,
+		binding: LxdLoginBinding,
+		epoch: number | null,
+		signal: AbortSignal,
+	): Promise<{ recoveryId: string; epoch: number } | undefined> {
+		let text: string;
+		try {
+			text = await this.#readGuestText(
+				instanceName,
+				`${RECOVERY_CREDENTIALS_DIRECTORY}/qorpera-recovery-restore`,
+				4096,
+				signal,
+			);
+		} catch (error) {
+			if (signal.aborted) throw error;
+			return undefined;
+		}
+		try {
+			const r = record(JSON.parse(text), "Pending restore");
+			if (
+				r.schema !== "qorpera.identity-recovery-restore/v1" ||
+				r.computeIdentityId !== binding.computeIdentityId ||
+				r.companyId !== binding.profileId ||
+				!Number.isSafeInteger(r.epoch) ||
+				(epoch !== null && r.epoch !== epoch)
+			)
+				return undefined;
+			return { recoveryId: uuid(r.recoveryId, "Pending restore recovery"), epoch: r.epoch as number };
+		} catch {
+			return undefined;
+		}
+	}
+
+	/** Runs the shipped restore client in the guest; the recovery scratch is
+	 * removed only after a completed restore, so a refused (too early) attempt
+	 * can be repeated by the next post. */
+	async #restoreInGuest(instanceName: string, recoveryId: string, epoch: number, signal: AbortSignal): Promise<void> {
 		let result: { status?: unknown; receiptId?: unknown; epoch?: unknown } | undefined;
 		try {
 			await this.#lxd.execInstance(
@@ -1058,16 +1111,18 @@ export class LxdNativeLoginGateway {
 			const text = await this.#readGuestText(instanceName, RECOVERY_RESULT_PATH, 4096, signal);
 			const line = text.trim().split("\n").pop() ?? "";
 			result = JSON.parse(line) as typeof result;
-		} finally {
-			await this.#lxd
-				.execInstance(this.#config.project, instanceName, ["/bin/rm", "-rf", RECOVERY_ROOT], signal)
-				.catch(() => undefined);
+		} catch (error) {
+			if (signal.aborted) throw error;
+			console.error(
+				`LXD native login identity restore did not complete (recovery ${recoveryId}); the next post retries`,
+			);
+			throw new Error("LOGIN_IDENTITY_RECOVERY_PENDING");
 		}
-		if (result?.status !== "completed" || result.epoch !== recovery.epoch)
-			throw new Error("LOGIN_IDENTITY_RECOVERY_FAILED");
-		console.error(
-			`LXD native login identity recovered (login ${binding.loginId}, recovery ${recovery.recoveryId}, epoch ${recovery.epoch}, node ${nodeId})`,
-		);
+		if (result?.status !== "completed" || result.epoch !== epoch) throw new Error("LOGIN_IDENTITY_RECOVERY_FAILED");
+		await this.#lxd
+			.execInstance(this.#config.project, instanceName, ["/bin/rm", "-rf", RECOVERY_ROOT], signal)
+			.catch(() => undefined);
+		console.error(`LXD native login identity restore completed (recovery ${recoveryId}, epoch ${epoch})`);
 	}
 
 	async #guestFileExists(instanceName: string, path: string, signal: AbortSignal): Promise<boolean> {
@@ -1214,6 +1269,35 @@ export class LxdNativeLoginGateway {
 		return input.token;
 	}
 
+	/** Identity recoveries run under the service lifetime, not the member's
+	 * connection: an edge timeout must not abandon a registered target and an
+	 * approved recovery half-way. A re-post of the same login joins the run. */
+	readonly #recoveries = new Map<string, Promise<void>>();
+	readonly #lifetime = new AbortController();
+	/** Stops in-flight recoveries at service shutdown. */
+	shutdown(): void {
+		this.#lifetime.abort(new Error("LXD native login gateway shutdown"));
+	}
+	#recoveryFor(
+		journal: LxdLoginJournal,
+		binding: LxdLoginBinding,
+		instanceName: string,
+		freshVolume: boolean,
+	): Promise<void> {
+		const running = this.#recoveries.get(binding.loginId);
+		if (running) return running;
+		const work = this.#recoverEstablishedIdentity(
+			journal,
+			binding,
+			instanceName,
+			freshVolume,
+			this.#lifetime.signal,
+		).finally(() => {
+			if (this.#recoveries.get(binding.loginId) === work) this.#recoveries.delete(binding.loginId);
+		});
+		this.#recoveries.set(binding.loginId, work);
+		return work;
+	}
 	async #exclusive<T>(computeIdentityId: string, action: () => Promise<T>): Promise<T> {
 		const previous = this.#serial.get(computeIdentityId) ?? Promise.resolve();
 		let release = (): void => undefined;
@@ -1299,6 +1383,7 @@ export class HttpLxdNativeLoginGateway {
 				)
 			: Promise.resolve();
 		this.#shutdown?.abort();
+		this.#gateway.shutdown();
 		for (const request of this.#requests) request.abort(new Error("Native login gateway is stopping"));
 		server?.closeAllConnections();
 		await Promise.all([this.#cleanup, closed]);
