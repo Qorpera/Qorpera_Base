@@ -170,7 +170,8 @@ begin
 	execute v_definition;
 
 	-- A post into an agent thread requires a reply; team rooms keep their optional policy.
-	v_definition := pg_get_functiondef('public.qorpera_runtime_wake_policy(uuid)'::regprocedure);
+	-- 20260907000100 wrapped the policy body in qorpera_runtime_wake_policy_internal.
+	v_definition := pg_get_functiondef('public.qorpera_runtime_wake_policy_internal(uuid)'::regprocedure);
 	v_old := 'return public.qorpera_wake_policy_value(v_wake.wake_kind,v_reporting);';
 	v_new := $new$if v_wake.wake_kind = 'room' and exists (select 1 from public.qorpera_company_rooms room
 		where room.session_id = v_wake.session_id and room.bound_staff_agent_id = v_wake.staff_agent_id) then
