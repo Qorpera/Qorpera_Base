@@ -1643,6 +1643,24 @@ The member-owned profile, per-agent browser consent and office-wide private
 sign-in machinery of the earlier text has no client and is scheduled for
 removal; until it is removed it MUST NOT be reachable from any member client.
 
+### 2026-09-17 amendment: kept company state and credential rotation
+
+- **Company root.** A Company Computer generation MAY carry a fifth admitted
+  root, `company/`, for company-owned kept state (layout version 2). The next
+  generation carries it through the adoption input's `shared.company` exactly
+  as it carries the workbench and the desktop home. The company browser's
+  shared sign-ins live there; they are service-only and never mounted into a
+  desktop, shell or browser surface. A generation built without it keeps its
+  exact version 1 layout and receipt.
+- **Boot plan continuity.** A later boot MAY take a boot plan whose digest
+  differs from the predecessor boot's only through a root-owned revision
+  chain beside the plan, each step changing nothing but the credentials it
+  names. Any other difference is refused.
+- **Certificate rotation.** The office TLS credential is the node's tailnet
+  certificate. Replacing it is a lifecycle operation, not a rebuild:
+  `power_off` → plan revision → resume, run by a root timer that first renews
+  the node's certificate. The office is offline only while a rotation happens.
+
 ### Current implementation checkpoint
 
 The NAS-backed live Company File and native cloud runner path already exist.
