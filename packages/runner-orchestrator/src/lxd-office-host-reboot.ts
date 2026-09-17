@@ -305,7 +305,7 @@ async function recordResume(
 	)
 		throw new Error("host reboot record differs");
 }
-function officeRecordLoose(value: unknown): Record<string, unknown> {
+export function officeRecordLoose(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("host reboot record");
 	return value as Record<string, unknown>;
 }
@@ -324,7 +324,7 @@ export type LxdOfficeHostGuardResult =
 
 /** The guard runs as root next to the provider's journal (owned by the service
  * account): same bounded, immutable-record reading, without the owner pin. */
-async function readJournalRecordAsRoot(path: string, limit = 16384): Promise<{ value: unknown; bytes: Buffer }> {
+export async function readJournalRecordAsRoot(path: string, limit = 16384): Promise<{ value: unknown; bytes: Buffer }> {
 	const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
 	try {
 		const before = await file.stat();
@@ -353,7 +353,7 @@ async function readJournalRecordAsRoot(path: string, limit = 16384): Promise<{ v
 	}
 }
 
-async function writeProtectedPlan(path: string, bytes: Buffer): Promise<void> {
+export async function writeProtectedPlan(path: string, bytes: Buffer): Promise<void> {
 	const temporary = `${path}.new`;
 	const handle = await open(temporary, "wx", 0o444);
 	try {
@@ -369,7 +369,7 @@ async function writeProtectedPlan(path: string, bytes: Buffer): Promise<void> {
 	await syncDirectory(dirname(path));
 	if (!(await readFile(path)).equals(bytes)) throw new Error("plan differs");
 }
-async function exists(path: string): Promise<boolean> {
+export async function exists(path: string): Promise<boolean> {
 	try {
 		await lstat(path);
 		return true;
@@ -379,7 +379,7 @@ async function exists(path: string): Promise<boolean> {
 	}
 }
 
-async function openGuard(configPath: string, signal: AbortSignal) {
+export async function openGuard(configPath: string, signal: AbortSignal) {
 	const config = parseLxdOfficeLifecycleServiceConfig(decode(await readLxdOfficeProtectedFile(configPath, 16384)));
 	const credential = await readLxdOfficeCredentialFile(config.registryCredential.path, 4096);
 	if (
