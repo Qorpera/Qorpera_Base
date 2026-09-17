@@ -74,15 +74,6 @@
 .connection-logo { width: 26px; height: 26px; object-fit: contain; }
 .connection-accounts { grid-column: 2 / -1; display: grid; gap: 10px; }
 .connection-account { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding-top: 10px; border-top: 1px solid #dededb; }
-.policy-heading { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 0 32px 18px 0; }
-.policy-heading h1 { margin-bottom: 0; }
-.policy-note { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #73736f; }
-.policy-note .icon { width: 14px; height: 14px; }
-.policy-row { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 12px; min-height: 40px; padding: 4px 12px; }
-.policy-row .icon { color: #777773; }
-.policy-row span { font-size: 12.5px; font-weight: 500; }
-.policy-row select { min-width: 76px; min-height: 32px; padding: 4px 22px 4px 6px; border: 0; background: transparent; font-size: 12.5px; }
-.policy-help { margin: 24px 12px; font-size: 11.5px; color: #73736f; line-height: 1.6; }
 .settings-dialog :focus-visible { outline: 2px solid #5b84c4; outline-offset: 2px; }
 .settings-dialog [hidden] { display: none; }
 @media (hover: none) { .company-person .person-actions { opacity: 1; } }
@@ -102,5 +93,4 @@
  .connection-card { grid-template-columns: minmax(0, 1fr); }
  .connection-card > .btn { justify-self: start; }
  .connection-account { flex-wrap: wrap; }
- .policy-heading { align-items: start; flex-direction: column; gap: 8px; }
 }

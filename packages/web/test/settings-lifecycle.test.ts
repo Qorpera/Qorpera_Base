@@ -100,7 +100,7 @@ describe("settings session lifecycle", () => {
 			expect(f.cloud.rpc).not.toHaveBeenCalled();
 		},
 	);
-	it("preserves the selected company, policy draft and focus when the profile list refreshes", async () => {
+	it("preserves the selected company and focus when the profile list refreshes", async () => {
 		const f = fixture(),
 			auth = new AuthController(f.cloud);
 		await auth.start();
@@ -119,15 +119,11 @@ describe("settings session lifecycle", () => {
 			company.stop();
 			auth.dispose();
 		};
-		click(view.el, "#settings-tab-policy");
-		const spending = view.el.querySelector<HTMLSelectElement>('select[aria-label="Spending"]')!;
-		spending.value = "auto";
-		spending.dispatchEvent(new Event("change"));
-		spending.focus();
+		const content = view.el.querySelector<HTMLElement>("#settings-content")!;
+		content.focus();
 		view.updateProfiles([{ ...profileA }, profileB]);
-		expect(view.el.querySelector('select[aria-label="Spending"]')).toBe(spending);
-		expect(spending.value).toBe("auto");
-		expect(document.activeElement).toBe(spending);
+		expect(view.el.querySelector("#settings-content")).toBe(content);
+		expect(document.activeElement).toBe(content);
 		expect(view.el.querySelector<HTMLSelectElement>(".settings-company-picker")!.value).toBe(profileA.profileId);
 		expect(view.el.querySelector<HTMLElement>(".settings-company-label")!.hidden).toBe(false);
 		expect(f.api.getTeam).not.toHaveBeenCalled();
@@ -180,7 +176,6 @@ describe("settings session lifecycle", () => {
 			"General",
 			"Company",
 			"Connections",
-			"Policy",
 		]);
 		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(true);
 		click(f.root, "#settings-tab-company");
@@ -272,10 +267,6 @@ describe("settings session lifecycle", () => {
 		vi.mocked(fixtureState.api.getTeam).mockRejectedValue(new Error("Team temporarily unavailable"));
 		const f = await setup(fixtureState);
 		open(f.root);
-		click(f.root, "#settings-tab-policy");
-		const spending = f.root.querySelector<HTMLSelectElement>('select[aria-label="Spending"]')!;
-		spending.value = "auto";
-		spending.dispatchEvent(new Event("change"));
 		click(f.root, "#settings-tab-company");
 		const channel = vi.mocked(f.cloud.supabase.channel).mock.results[0]!.value;
 		vi.mocked(channel.subscribe).mock.calls[0]![0]!(REALTIME_SUBSCRIBE_STATES.SUBSCRIBED);
@@ -292,9 +283,6 @@ describe("settings session lifecycle", () => {
 		await draw();
 		expect(f.root.querySelector(".settings-team")!.textContent).not.toContain("Team temporarily unavailable");
 		expect(f.root.querySelector(".company-danger")).not.toBeNull();
-		click(f.root, "#settings-tab-policy");
-		expect(f.root.querySelector('select[aria-label="Spending"]')).toBe(spending);
-		expect(spending.value).toBe("auto");
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 	it.each(["delete", "leave"])("closes settings and refreshes the hub after %s", async (action) => {
@@ -478,25 +466,19 @@ describe("settings session lifecycle", () => {
 		expect(f.root.querySelector(".settings-overlay")).toBeNull();
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
-	it.each(["policy", "connections"])(
-		"keeps the focused %s control through an unrelated company refresh",
-		async (tab) => {
-			const f = await setup();
-			open(f.root);
-			click(f.root, `#settings-tab-${tab}`);
-			await draw();
-			const control =
-				tab === "policy"
-					? f.root.querySelector<HTMLSelectElement>('select[aria-label="Spending"]')!
-					: f.root.querySelector<HTMLElement>("#settings-content")!;
-			control.focus();
-			f.hints.get("qorpera_profile_access_state")!();
-			await draw();
-			expect(control.isConnected).toBe(true);
-			expect(document.activeElement).toBe(control);
-		},
-	);
-	it("keeps policy previews local while Connections only reads member account state", async () => {
+	it.each(["connections"])("keeps the focused %s control through an unrelated company refresh", async (tab) => {
+		const f = await setup();
+		open(f.root);
+		click(f.root, `#settings-tab-${tab}`);
+		await draw();
+		const control = f.root.querySelector<HTMLElement>("#settings-content")!;
+		control.focus();
+		f.hints.get("qorpera_profile_access_state")!();
+		await draw();
+		expect(control.isConnected).toBe(true);
+		expect(document.activeElement).toBe(control);
+	});
+	it("only reads member account state on Connections", async () => {
 		const f = await setup(realtimeFixture());
 		const connectionsUrl = "https://fixture.invalid/rest/v1/rpc/qorpera_list_member_native_execution_connections";
 		const notificationsUrl = "https://fixture.invalid/rest/v1/rpc/qorpera_list_member_notifications";
@@ -507,10 +489,6 @@ describe("settings session lifecycle", () => {
 		});
 		vi.stubGlobal("fetch", fetch);
 		open(f.root);
-		click(f.root, "#settings-tab-policy");
-		const spending = f.root.querySelector<HTMLSelectElement>('select[aria-label="Spending"]')!;
-		spending.value = "auto";
-		spending.dispatchEvent(new Event("change"));
 		click(f.root, "#settings-tab-connections");
 		await draw();
 		expect(f.root.querySelector("#settings-content")!.textContent).toContain("No model accounts are connected");
@@ -520,17 +498,6 @@ describe("settings session lifecycle", () => {
 			)!.disabled,
 		).toBe(true);
 		await vi.advanceTimersByTimeAsync(60_000);
-		click(f.root, "#settings-tab-policy");
-		expect(f.root.querySelector<HTMLSelectElement>('select[aria-label="Spending"]')!.value).toBe("auto");
-		const picker = f.root.querySelector<HTMLSelectElement>('[aria-label="Company for settings"]')!;
-		picker.value = profileB.profileId;
-		picker.dispatchEvent(new Event("change"));
-		await draw();
-		expect(f.root.querySelector<HTMLSelectElement>('select[aria-label="Spending"]')!.value).toBe("ask");
-		click(f.root, ".settings-close");
-		open(f.root);
-		click(f.root, "#settings-tab-policy");
-		expect(f.root.querySelector<HTMLSelectElement>('select[aria-label="Spending"]')!.value).toBe("ask");
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 		const connectionReads = fetch.mock.calls.filter(([url]) => String(url) === connectionsUrl);
 		expect(connectionReads).toEqual([[connectionsUrl, expect.objectContaining({ method: "POST" })]]);

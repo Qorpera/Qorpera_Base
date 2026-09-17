@@ -37,6 +37,7 @@ const status: CompanyComputerMemberStatus = {
 	scope,
 	computerGeneration: 1,
 	state: "active",
+	maintenance: null,
 	privacyState: "shared",
 	privacyVersion: 0,
 	screens: [{ binding, epoch: 0, drainPending: false, driver: "idle", takeoverMemberId: null }],

@@ -11,7 +11,6 @@ import { CompanyController } from "../company.ts";
 import { type AccountViewState, renderAccount } from "./account.ts";
 import { CompanyExecutionView } from "./company-execution.ts";
 import { ConnectionsView } from "./settings-connections.ts";
-import { PolicyView } from "./settings-policy.ts";
 import { renderTeam } from "./team.ts";
 
 const TABS = [
@@ -31,7 +30,6 @@ const TABS = [
 		label: "Connections",
 		keywords: "providers subscriptions openai codex anthropic claude secrets",
 	},
-	{ id: "policy", label: "Policy", keywords: "spending communication changes sharing ask act auto" },
 ] as const;
 type Tab = (typeof TABS)[number]["id"];
 
@@ -58,7 +56,6 @@ export class SettingsView {
 	#companyLifetime = new AbortController();
 	#connections: ConnectionsView | undefined;
 	#execution: CompanyExecutionView | undefined;
-	#policy: PolicyView | undefined;
 	#friends: HostedFriend[] | undefined;
 	#feedback: { message?: string; error?: string } = {};
 	#file: HostedCompanyFile | undefined;
@@ -216,7 +213,6 @@ export class SettingsView {
 		this.#unsubscribe?.();
 		this.#connections?.dispose();
 		this.#execution?.dispose();
-		this.#policy?.dispose();
 		if (this.#ownsCompany) this.#company?.stop();
 		this.el.remove();
 	}
@@ -273,9 +269,6 @@ export class SettingsView {
 					);
 				}
 				this.#panels.set(tab, this.#connections.el);
-			} else {
-				this.#policy ??= new PolicyView();
-				this.#panels.set(tab, this.#policy.el);
 			}
 		}
 		const panel =
@@ -312,8 +305,6 @@ export class SettingsView {
 		this.#connections = undefined;
 		this.#execution?.dispose();
 		this.#execution = undefined;
-		this.#policy?.dispose();
-		this.#policy = undefined;
 		if (this.#ownsCompany) this.#company?.stop();
 		this.#company = company;
 		this.#ownsCompany = owned;
@@ -321,7 +312,7 @@ export class SettingsView {
 		this.#file = undefined;
 		this.#fileLoading = false;
 		this.#fileError = undefined;
-		for (const tab of ["company", "connections", "policy"] as const) this.#panels.delete(tab);
+		for (const tab of ["company", "connections"] as const) this.#panels.delete(tab);
 		if (company) {
 			this.#unsubscribe = company.store.subscribe(() => {
 				if (company.store.get().accessLost) {

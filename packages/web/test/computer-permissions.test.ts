@@ -82,6 +82,7 @@ function setup() {
 			scope,
 			computerGeneration: 1,
 			state: "active",
+			maintenance: null,
 			privacyState: "shared",
 			privacyVersion: 0,
 			screens: [{ binding, epoch: 0, driver: "idle", drainPending: false, takeoverMemberId: null }],
