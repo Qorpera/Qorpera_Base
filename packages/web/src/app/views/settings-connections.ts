@@ -16,11 +16,24 @@ const PROVIDERS: ReadonlyArray<{ id: Provider; label: string; logo: string }> = 
 const WATCH_MS = 5000;
 
 interface Attempt {
-	/** Kept across a retry so an uncertain first try and its retry are one sign-in. */
-	ids: { clientIdentityId: string; clientLoginId: string; clientConnectionId: string };
 	login?: WebNativeProviderLogin;
 	error?: string;
 	starting: boolean;
+}
+
+/** Sign-ins in progress outlive the page that started them: a node may spend a
+ * minute building the member's runner, and the settings page can be rebuilt or
+ * closed meanwhile. A rebuilt page picks the same attempt up again. */
+export class ProviderSignIns {
+	readonly attempts = new Map<Provider, Attempt>();
+	readonly #listeners = new Set<() => void>();
+	subscribe(listener: () => void): () => void {
+		this.#listeners.add(listener);
+		return () => this.#listeners.delete(listener);
+	}
+	changed(): void {
+		for (const listener of [...this.#listeners]) listener();
+	}
 }
 
 const live = (connection: NativeMemberConnection) =>
@@ -32,15 +45,33 @@ export class ConnectionsView {
 	readonly el = h("div");
 	readonly #client: ConnectionsClient;
 	readonly #lifetime = new AbortController();
-	readonly #attempts = new Map<Provider, Attempt>();
+	readonly #begin: WebNativeSubscription["beginProviderLogin"] | undefined;
+	readonly #signIns: ProviderSignIns;
+	readonly #attempts: Map<Provider, Attempt>;
 	readonly #enabling = new Set<string>();
 	#connections: NativeExecutionConnections | undefined;
 	#loading = true;
 	#working: string | undefined;
 	#error: string | undefined;
 	#watch: ReturnType<typeof setTimeout> | undefined;
-	constructor(client: ConnectionsClient, signal: AbortSignal) {
+	/** `signIns` and `begin` come from the application when sign-ins should
+	 * outlive this page; alone, the page keeps its own. */
+	constructor(
+		client: ConnectionsClient,
+		signal: AbortSignal,
+		signIns = new ProviderSignIns(),
+		begin: WebNativeSubscription["beginProviderLogin"] | undefined = client.beginProviderLogin?.bind(client),
+	) {
 		this.#client = client;
+		this.#signIns = signIns;
+		this.#attempts = signIns.attempts;
+		this.#begin = begin;
+		const stop = signIns.subscribe(() => {
+			if (this.#lifetime.signal.aborted) return;
+			this.#draw();
+			if ([...this.#attempts.values()].some((attempt) => attempt.login)) void this.#refresh();
+		});
+		this.#lifetime.signal.addEventListener("abort", stop, { once: true });
 		if (signal.aborted) this.#lifetime.abort();
 		else signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		this.#draw();
@@ -50,7 +81,6 @@ export class ConnectionsView {
 		this.#lifetime.abort();
 		clearTimeout(this.#watch);
 		this.#connections = undefined;
-		this.#attempts.clear();
 		this.el.replaceChildren();
 		this.el.remove();
 	}
@@ -122,50 +152,65 @@ export class ConnectionsView {
 		}
 	}
 	async #connect(provider: Provider): Promise<void> {
-		const begin = this.#client.beginProviderLogin;
-		const existing = this.#attempts.get(provider);
-		if (this.#lifetime.signal.aborted || !this.#client.onboardingAvailable || !begin || existing?.starting) return;
-		const attempt: Attempt = {
-			ids: existing?.ids ?? {
+		const begin = this.#begin;
+		const attempts = this.#attempts,
+			signIns = this.#signIns;
+		if (
+			this.#lifetime.signal.aborted ||
+			!this.#client.onboardingAvailable ||
+			!begin ||
+			attempts.get(provider)?.starting
+		)
+			return;
+		const attempt: Attempt = { starting: true };
+		attempts.set(provider, attempt);
+		signIns.changed();
+		try {
+			// Every start is a new sign-in with its own identity; a start is never replayed.
+			attempt.login = await begin({
+				provider,
+				displayName: "My model account",
 				clientIdentityId: crypto.randomUUID(),
 				clientLoginId: crypto.randomUUID(),
 				clientConnectionId: crypto.randomUUID(),
-			},
-			starting: true,
-		};
-		this.#attempts.set(provider, attempt);
-		this.#draw();
-		try {
-			attempt.login = await begin(
-				{ provider, displayName: "My model account", ...attempt.ids },
-				this.#lifetime.signal,
-			);
+			});
 		} catch {
-			attempt.error = "Sign-in could not be started. Try again.";
+			attempt.error =
+				"Sign-in could not be started. If you started one a moment ago, give it a few minutes to clear.";
 		} finally {
 			attempt.starting = false;
 		}
-		if (this.#lifetime.signal.aborted) return;
-		this.#draw();
-		if (attempt.login) void this.#refresh();
+		// The page that started this may be gone; whichever page is open now redraws.
+		if (attempts.get(provider) === attempt) signIns.changed();
 	}
 	async #disconnect(connection: NativeMemberConnection): Promise<void> {
 		if (this.#working || this.#lifetime.signal.aborted) return;
 		this.#working = connection.connectionId;
 		this.#draw();
+		let failed = false;
 		try {
 			await this.#client.revokeConnection({ providerConnectionId: connection.connectionId }, this.#lifetime.signal);
 		} catch {
-			if (!this.#lifetime.signal.aborted) this.#error = "The account could not be disconnected. Try again.";
+			failed = true;
 		} finally {
 			this.#working = undefined;
 			if (!this.#lifetime.signal.aborted) await this.#refresh();
+		}
+		// A successful re-read clears errors, so say it only after the read still shows the account.
+		if (
+			failed &&
+			!this.#lifetime.signal.aborted &&
+			!this.#error &&
+			this.#connections?.connections.some((item) => item.connectionId === connection.connectionId && live(item))
+		) {
+			this.#error = "The account could not be disconnected. Try again.";
+			this.#draw();
 		}
 	}
 	#card(provider: (typeof PROVIDERS)[number]): HTMLElement {
 		const connection = this.#current(provider.id);
 		const attempt = this.#attempts.get(provider.id);
-		const canConnect = Boolean(this.#client.onboardingAvailable && this.#client.beginProviderLogin);
+		const canConnect = Boolean(this.#client.onboardingAvailable && this.#begin);
 		const connected = connection && live(connection);
 		const status = attempt?.starting
 			? "Preparing sign-in. The first time can take a minute or two."
@@ -190,7 +235,7 @@ export class ConnectionsView {
 			: attempt?.login
 				? button("Cancel", () => {
 						this.#attempts.delete(provider.id);
-						this.#draw();
+						this.#signIns.changed();
 					})
 				: button(
 						attempt?.starting ? "Connecting…" : connection ? "Sign in again" : "Connect",

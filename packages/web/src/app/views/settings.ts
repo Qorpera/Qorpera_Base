@@ -10,7 +10,7 @@ import type { AuthController } from "../auth.ts";
 import { CompanyController } from "../company.ts";
 import { type AccountViewState, renderAccount } from "./account.ts";
 import { CompanyExecutionView } from "./company-execution.ts";
-import { ConnectionsView } from "./settings-connections.ts";
+import { ConnectionsView, ProviderSignIns } from "./settings-connections.ts";
 import { renderTeam } from "./team.ts";
 
 const TABS = [
@@ -32,6 +32,9 @@ const TABS = [
 	},
 ] as const;
 type Tab = (typeof TABS)[number]["id"];
+
+/** Provider sign-ins in progress, per member and company, for the life of the tab. */
+const SIGN_INS = new Map<string, ProviderSignIns>();
 
 /** A settings session owns its async work; the conversation stays mounted below it. */
 export class SettingsView {
@@ -259,6 +262,24 @@ export class SettingsView {
 					const company = this.#company;
 					const memberId = this.#auth.userId!;
 					const signal = AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]);
+					const key = `${memberId}:${company.profile.profileId}`;
+					let signIns = SIGN_INS.get(key);
+					if (!signIns) {
+						signIns = new ProviderSignIns();
+						SIGN_INS.set(key, signIns);
+					}
+					// A sign-in belongs to the member, not to this page: it continues while
+					// the page is rebuilt or closed, and stops only if the account changes.
+					const auth = this.#auth;
+					const signIn = createWebNativeSubscription(
+						this.#api.cloud,
+						company.profile.profileId,
+						memberId,
+						new AbortController().signal,
+						() => {
+							if (auth.userId !== memberId) throw new Error("The account changed.");
+						},
+					);
 					this.#connections = new ConnectionsView(
 						createWebNativeSubscription(this.#api.cloud, company.profile.profileId, memberId, signal, () => {
 							signal.throwIfAborted();
@@ -266,6 +287,8 @@ export class SettingsView {
 								throw new Error("The account or company changed.");
 						}),
 						signal,
+						signIns,
+						(input) => signIn.beginProviderLogin(input),
 					);
 				}
 				this.#panels.set(tab, this.#connections.el);
