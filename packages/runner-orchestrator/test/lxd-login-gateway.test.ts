@@ -248,6 +248,7 @@ function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" 
 		nodeSequence: [] as Array<string | null>,
 		loseCompany: 0,
 		releasing: 0,
+		orphaned: false,
 		loseNode: 0,
 		loseRelease: 0,
 		cleanupRequired: false,
@@ -317,6 +318,7 @@ function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" 
 				instanceSha256: args.p_instance_sha256,
 			});
 		}
+		if (url.endsWith("qorpera_runtime_login_journal_orphaned")) return Response.json(control.orphaned);
 		if (url.endsWith("qorpera_describe_runtime_login_machine")) {
 			if (!control.committed) return Response.json({ error: "absent" }, { status: 403 });
 			return Response.json({
@@ -612,6 +614,21 @@ describe("LXD native login gateway", () => {
 		expect(lxd.createCalls).toHaveLength(1);
 		const attempts = boundary.requests.filter((r) => r.url.endsWith("qorpera_reserve_runtime_login_machine"));
 		expect(new Set(attempts.map((r) => JSON.parse(r.body).p_allocation_id)).size).toBe(1);
+	});
+	it("retires a journal that never reserved a machine, and only when the backend agrees", async () => {
+		const root = await stateRoot(),
+			lxd = new FakeLxd(),
+			boundary = fetchBoundary([]);
+		boundary.control.companyRefusal = "COMPUTE_IDENTITY_OCCUPIED";
+		const gateway = () => new LxdNativeLoginGateway(config(root), lxd, boundary.fetchImplementation);
+		expect((await gateway().handle(loginRequest())).status).toBe(503);
+		expect(lxd.createCalls).toHaveLength(0);
+		boundary.control.committed = false;
+		expect(await gateway().reconcile(new AbortController().signal)).toEqual({ scanned: 1, unconfirmed: 1 });
+		boundary.control.orphaned = true;
+		expect(await gateway().reconcile(new AbortController().signal)).toEqual({ scanned: 1, unconfirmed: 0 });
+		expect(await gateway().reconcile(new AbortController().signal)).toEqual({ scanned: 1, unconfirmed: 0 });
+		expect(lxd.createCalls).toHaveLength(0);
 	});
 	it("waits while a replaced sign-in gives its machine back, and refuses a real occupant at once", async () => {
 		const root = await stateRoot(),

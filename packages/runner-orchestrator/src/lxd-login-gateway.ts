@@ -872,6 +872,24 @@ export class LxdNativeLoginGateway {
 		if (!description.cleanupRequired || !description.releasedAt) throw new Error("LOGIN_RELEASE_UNCONFIRMED");
 		await journal.release(description.releasedAt);
 	}
+	/** A journal that never reserved a machine has nothing to release: no physical
+	 * operation was dispatched, no instance exists, and the backend knows no request
+	 * for it while the login is over or holds its machine elsewhere. */
+	async #retireOrphan(journal: LxdLoginJournal, signal: AbortSignal): Promise<boolean> {
+		const state = await journal.state();
+		if (Object.keys(state.operations).length) return false;
+		const binding = journal.binding;
+		if (await this.#lxd.getInstance(binding.policy.project, lxdLoginPlan(binding).request.name, signal)) return false;
+		const orphaned = await this.#rpc(
+			"qorpera_runtime_login_journal_orphaned",
+			{ p_allocation_id: binding.allocationId, p_login_id: binding.loginId },
+			signal,
+		);
+		if (orphaned !== true) return false;
+		if (!state.closing && !(await journal.close(signal))) return false;
+		await journal.release(new Date().toISOString());
+		return true;
+	}
 	/** Deletes this node's machines of the same identity whose login can no longer
 	 * be used (cancelled by a newer sign-in, expired, completed). Uncertain ones are
 	 * left to the reconcile loop; the reservation then decides. */
@@ -910,6 +928,7 @@ export class LxdNativeLoginGateway {
 				await this.#exclusive(journal.binding.computeIdentityId, async () => {
 					const state = await journal.state();
 					if (state.releasedAt) return;
+					if (await this.#retireOrphan(journal, signal)) return;
 					const description = await this.#machineDescription(journal.binding, signal);
 					if (state.closing || description.cleanupRequired) await this.#cleanup(journal, signal);
 				});
