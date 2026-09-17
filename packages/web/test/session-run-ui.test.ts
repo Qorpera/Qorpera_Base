@@ -179,11 +179,71 @@ describe("cloud run UI", () => {
 		await settle();
 		expect(sendMessage).toHaveBeenCalledExactlyOnceWith(session.sessionId, "Hello", expect.any(AbortSignal));
 		expect(read).toHaveBeenCalledTimes(2);
-		expect(view.el.textContent).toContain("No active cloud run");
+		expect(view.el.textContent).not.toContain("cloud run");
 		expect(view.el.querySelector(".typing")).toBeNull();
 		view.dispose();
 		await vi.advanceTimersByTimeAsync(20_000);
 		expect(read).toHaveBeenCalledTimes(2);
 		expect(cancel).not.toHaveBeenCalled();
+	});
+
+	it("shows the agent working in the thread and turns the empty send button into Stop", async () => {
+		const f = fixture();
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({ team, staff: [staff], sessions: [{ ...session, staffAgentId: staff.id }], loading: false });
+		company.conversation(session.sessionId).set({
+			loading: false,
+			projection: {
+				items: [
+					{ kind: "member", id: id(70), body: "hi", createdAt: "2026-09-17T06:00:00.000Z", actorUserId: userA.id },
+				],
+			},
+		} as never);
+		const read = vi.fn(async () => state());
+		const cancel = vi.fn(async () => "cancelled" as const);
+		const view = new ConversationView(company, session.sessionId, {
+			runControl: { read, cancel },
+			sendMessage: vi.fn(async () => true),
+		});
+		document.body.append(view.el);
+		dispose = () => {
+			view.dispose();
+			company.stop();
+		};
+		await settle();
+		expect(view.el.querySelector(".typing")).toBeNull();
+		expect(document.querySelector('[aria-label="Stop"]')).toBeNull();
+		company.store.set({
+			activity: [
+				{
+					runId: id(90),
+					staffAgentId: staff.id,
+					sourceKind: "session_turn",
+					jobStatus: "queued",
+					activity: "waiting",
+					updatedAt: "2026-09-17T06:00:01.000Z",
+				},
+			],
+		} as never);
+		view.update();
+		await settle();
+		expect(view.el.querySelector(".typing")).not.toBeNull();
+		expect(view.el.textContent).not.toContain("queued");
+		// A draft takes the button back for sending.
+		const input = view.el.querySelector("textarea")!;
+		input.value = "one more thing";
+		input.dispatchEvent(new Event("input"));
+		view.update();
+		expect(document.querySelector('[aria-label="Stop"]')).toBeNull();
+		input.value = "";
+		input.dispatchEvent(new Event("input"));
+		view.update();
+		button("Stop").click();
+		await settle();
+		expect(cancel).toHaveBeenCalledExactlyOnceWith(session.sessionId, id(90), expect.any(AbortSignal));
+		company.store.set({ activity: [] });
+		view.update();
+		await settle();
+		expect(view.el.querySelector(".typing")).toBeNull();
 	});
 });

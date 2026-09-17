@@ -31,6 +31,10 @@ export class ConversationView {
 	readonly #status = h("div", { class: "thread-status" });
 	readonly #composer: HTMLTextAreaElement;
 	readonly #send: HTMLButtonElement;
+	#stopMode = false;
+	#cannotSend = true;
+	#working = false;
+	#activityKey = "";
 	readonly #composerWrap: HTMLElement;
 	readonly #composerShell: HTMLElement;
 	readonly #attachments: AttachmentTray;
@@ -65,7 +69,12 @@ export class ConversationView {
 		this.#sessionId = sessionId;
 		this.#actions = actions;
 		this.#run = actions.runControl
-			? new SessionRunView(actions.runControl, sessionId, AbortSignal.any([this.#lifetime.signal, company.signal]))
+			? new SessionRunView(
+					actions.runControl,
+					sessionId,
+					AbortSignal.any([this.#lifetime.signal, company.signal]),
+					() => this.#syncSend(),
+				)
 			: undefined;
 		this.#execution = actions.nativeSubscription
 			? new SessionExecutionView(
@@ -99,7 +108,7 @@ export class ConversationView {
 				class: "composer-send",
 				"aria-label": "Send message",
 				title: "Send message",
-				onclick: () => this.#submit(),
+				onclick: () => (this.#stopMode ? this.#run?.stop() : this.#submit()),
 			},
 			icon("send"),
 		);
@@ -368,6 +377,27 @@ export class ConversationView {
 		this.#autosize();
 	}
 
+	/** One button: it sends a draft, and with nothing to send it stops the run the agent is on. */
+	#syncSend(): void {
+		// The run controller reports once while this view is still being built.
+		if (this.#disposed || !this.#send) return;
+		const empty = !this.#composer.value.trim() && !this.#attachments.count;
+		const stop = empty && this.#working && (this.#run?.stoppable === true || this.#run?.stopping === true);
+		if (stop !== this.#stopMode) {
+			this.#stopMode = stop;
+			replace(this.#send, stop ? h("span", { class: "composer-stop", "aria-hidden": "true" }) : icon("send"));
+			this.#send.classList.toggle("stopping", stop);
+		}
+		const label = stop
+			? "Stop"
+			: this.#actions.sendMessage
+				? "Send message"
+				: "Sending messages is not available yet";
+		this.#send.title = label;
+		this.#send.setAttribute("aria-label", stop ? "Stop" : "Send message");
+		this.#send.disabled = stop ? this.#run?.stopping === true : this.#cannotSend;
+	}
+
 	#submit(): void {
 		const text = this.#composer.value;
 		if ((!text.trim() && !this.#attachments.count) || this.#send.disabled || !this.#actions.sendMessage) return;
@@ -410,18 +440,27 @@ export class ConversationView {
 							: "Images stay on this device until you send. Up to 5 images, 8 MiB total."
 					: undefined,
 		);
+		// The agent's run is watched quietly; a change in who is working re-reads it.
+		const activity = room ? undefined : this.#company.activityFor(session?.staffAgentId);
+		const working = activity !== undefined && activity.activity !== "needs_attention";
+		const activityKey = `${activity?.runId ?? ""}:${activity?.activity ?? ""}`;
+		if (activityKey !== this.#activityKey) {
+			this.#activityKey = activityKey;
+			void this.#run?.refresh();
+		}
+		this.#working = working || (conversation.sending && !room);
 		this.#renderHeader(session, agent);
 		this.#renderMessages(conversation, room ? "Agent reply" : (agent?.displayName ?? session?.title ?? "Agent"));
 		this.#renderStatus(conversation, canWrite, session);
 		this.#composer.disabled = !canWrite || conversation.sending;
-		this.#send.disabled =
+		this.#cannotSend =
 			!this.#actions.sendMessage ||
 			(this.#execution !== undefined && !this.#execution.canSend) ||
 			!canWrite ||
 			conversation.sending ||
 			(!conversation.draft?.trim() && !this.#attachments.count) ||
 			Boolean(attachmentIssue);
-		this.#send.title = this.#actions.sendMessage ? "Send message" : "Sending messages is not available yet";
+		this.#syncSend();
 		this.#attach.disabled = this.#composer.disabled || room;
 		this.#more.hidden = room;
 		this.#more.disabled = this.#composer.disabled;
@@ -485,6 +524,7 @@ export class ConversationView {
 			conversation.projection.hiddenCount,
 			conversation.loading,
 			conversation.error,
+			this.#working,
 		]);
 		if (key === this.#renderedKey) return;
 		this.#renderedKey = key;
@@ -572,9 +612,19 @@ export class ConversationView {
 			}
 		}
 		if (conversation.loading && !items.length) nodes.push(spinner("Loading conversation"));
-		if (!conversation.loading && !items.length && !conversation.error) {
+		if (!conversation.loading && !items.length && !conversation.error && !this.#working) {
 			nodes.push(h("div", { class: "empty" }, "No messages yet."));
 		}
+		if (this.#working && !conversation.loading)
+			nodes.push(
+				h(
+					"div",
+					{ class: "message from-agent typing", role: "status", "aria-label": `${agentName} is working` },
+					h("span", null),
+					h("span", null),
+					h("span", null),
+				),
+			);
 		replace(this.#messages, ...nodes);
 		if (this.#stickToBottom) this.#messages.scrollTop = this.#messages.scrollHeight;
 	}
@@ -601,7 +651,6 @@ export class ConversationView {
 							: ""),
 				),
 			);
-		else if (this.#run) children.push(this.#run.el);
 		if (this.#execution) children.push(this.#execution.el);
 		if (!canWrite && session?.status === "closed") children.push(notice("neutral", "This conversation is archived."));
 		else if (

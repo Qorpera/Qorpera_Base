@@ -248,9 +248,15 @@ function searchField(company: CompanyController, onInput: () => void) {
 
 function statusLine(agent: HostedStaffAgent | undefined, activity: HostedStaffExecutionActivity | undefined): string {
 	if (activity?.activity === "needs_attention") return "Needs you";
-	if (activity?.activity === "working") return "Working";
+	if (activity) return "Working";
 	return agent?.role ?? "";
 }
+
+/** A queued run is already the agent's work from the member's side of the screen. */
+const isWorking = (activity: HostedStaffExecutionActivity | undefined) =>
+	activity !== undefined && activity.activity !== "needs_attention";
+const figureActivity = (activity: HostedStaffExecutionActivity | undefined) =>
+	isWorking(activity) ? "Working" : activity ? "Waiting" : "Idle";
 
 export function renderRail(container: HTMLElement, company: CompanyController, context: ShellContext): void {
 	const restoreFocus = preserveAccountFocus();
@@ -301,11 +307,12 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 					h(
 						"span",
 						{ class: "cofounder-stand" },
-						agentFigure(cofounder, cofounder.displayName, { size: 82 }),
+						agentFigure(cofounder, cofounder.displayName, {
+							size: 82,
+							activity: figureActivity(cofounderActivity),
+						}),
 						// The green disc means "working now", the one state the trailer's dot shows.
-						cofounderActivity?.activity === "working"
-							? h("span", { class: "cofounder-status", "aria-hidden": "true" })
-							: null,
+						isWorking(cofounderActivity) ? h("span", { class: "cofounder-status", "aria-hidden": "true" }) : null,
 					),
 					h("strong", null, cofounder.displayName),
 					h("small", null, statusLine(cofounder, cofounderActivity)),
@@ -325,8 +332,8 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			h(
 				"span",
 				{ class: "rail-row-stand" },
-				agentFigure(agent, agent.displayName, { size: 40 }),
-				activity?.activity === "working" ? h("span", { class: "rail-row-status", "aria-hidden": "true" }) : null,
+				agentFigure(agent, agent.displayName, { size: 40, activity: figureActivity(activity) }),
+				isWorking(activity) ? h("span", { class: "rail-row-status", "aria-hidden": "true" }) : null,
 			),
 			h(
 				"span",

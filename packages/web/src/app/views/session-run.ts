@@ -18,7 +18,9 @@ export class SessionRunView {
 	#message = "Cloud run status is unavailable.";
 	#renderKey = "";
 
-	constructor(control: WebSessionRunControl, sessionId: string, signal: AbortSignal) {
+	readonly #changed: () => void;
+	constructor(control: WebSessionRunControl, sessionId: string, signal: AbortSignal, changed: () => void = () => {}) {
+		this.#changed = changed;
 		this.#control = control;
 		this.#sessionId = sessionId;
 		if (signal.aborted) this.dispose();
@@ -52,7 +54,6 @@ export class SessionRunView {
 		this.#request = request;
 		const signal = AbortSignal.any([request.signal, this.#lifetime.signal]);
 		this.#busy = true;
-		this.#state = undefined;
 		this.#message = "Checking cloud run…";
 		this.#render();
 		try {
@@ -78,6 +79,20 @@ export class SessionRunView {
 				if (!signal.aborted) this.#render();
 			}
 		}
+	}
+
+	/** The member can stop the agent's current run from the composer. */
+	get stoppable(): boolean {
+		return Boolean(
+			this.#canCancel && this.#state?.run?.canCancel && !this.#uncertain && !this.#lifetime.signal.aborted,
+		);
+	}
+	get stopping(): boolean {
+		return this.#uncertain && this.#busy;
+	}
+	stop(): void {
+		const run = this.#state?.run;
+		if (run) void this.#cancel(run.runId);
 	}
 
 	/** Refresh after admission without retrying the message or assuming a run exists. */
@@ -136,6 +151,7 @@ export class SessionRunView {
 		const key = JSON.stringify([run, this.#message, this.#busy, this.#uncertain, this.#canCancel, this.el.hidden]);
 		if (key === this.#renderKey) return;
 		this.#renderKey = key;
+		this.#changed();
 		replace(
 			this.el,
 			h("span", { role: "status" }, this.#message),

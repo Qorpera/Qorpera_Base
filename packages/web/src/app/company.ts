@@ -174,6 +174,7 @@ export class CompanyController {
 			store.set({ draft: "", attachments: [], retrySend: undefined, executionSponsor: undefined });
 		this.#realtime?.stop();
 		if (this.#poll) clearInterval(this.#poll);
+		clearTimeout(this.#watching);
 		this.#invalidations.clear();
 		// Deliver a final access-loss update before dropping observers.
 		queueMicrotask(() => {
@@ -291,6 +292,7 @@ export class CompanyController {
 			const activity = await this.#api.listStaffActivity(this.profile.environmentId);
 			if (this.#stopped || version !== this.#versions.activity) return;
 			this.store.set({ activity });
+			if (activity.some((item) => item.activity !== "needs_attention")) this.#watchWork(6_000);
 		} catch {
 			/* Activity is an indicator; its absence must not block the company. */
 		}
@@ -598,6 +600,8 @@ export class CompanyController {
 			}));
 			await this.loadConversation(sessionId);
 			void this.refreshActivity();
+			// The run is admitted a moment after the message; watch for it to appear.
+			this.#watchWork(20_000);
 			return true;
 		} catch (error) {
 			if (this.#stopped) return false;
@@ -616,6 +620,32 @@ export class CompanyController {
 			}));
 			return false;
 		}
+	}
+
+	/** While an agent works, the member watches it happen: activity and the open
+	 * conversation are re-read every couple of seconds, easing off after two
+	 * minutes. The watch ends by itself a few seconds after the work does. */
+	#watching: ReturnType<typeof setTimeout> | undefined;
+	#watchUntil = 0;
+	#watchSince = 0;
+	#watchWork(forMs: number): void {
+		if (this.#stopped) return;
+		this.#watchUntil = Math.max(this.#watchUntil, Date.now() + forMs);
+		if (this.#watching) return;
+		if (!this.#watchSince) this.#watchSince = Date.now();
+		const wait = Date.now() - this.#watchSince < 120_000 ? 2_000 : 5_000;
+		this.#watching = setTimeout(() => {
+			this.#watching = undefined;
+			if (this.#stopped) return;
+			if (Date.now() >= this.#watchUntil) {
+				this.#watchSince = 0;
+				return;
+			}
+			// Re-arm first: a refresh that still sees work extends the watch.
+			this.#watchWork(0);
+			if (this.#openSessionId) void this.loadConversation(this.#openSessionId);
+			void this.refreshActivity();
+		}, wait);
 	}
 
 	readonly #refreshOpenConversation = debounce(() => {
