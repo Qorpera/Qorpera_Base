@@ -75,8 +75,10 @@ export function parseCloudWakePolicy(value: unknown): CloudWakePolicy {
 				maxPublicSends = 0;
 				break;
 			case "room":
+				// A team room may stay silent; an agent's shared thread (the kernel
+				// says final required) answers every post. Both keep three sends.
 				initial = "optional";
-				final = "optional";
+				final = policy.final === "required" ? "required" : "optional";
 				maxPublicSends = 3;
 				break;
 			default:
