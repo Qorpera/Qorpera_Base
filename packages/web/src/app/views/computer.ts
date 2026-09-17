@@ -269,7 +269,18 @@ export class ComputerPanel {
 								binding: screen.binding,
 								title: `${agent.displayName} · Computer`,
 								canControl: canManage,
-								requestConnection: async (input) => views.connectScreen(input),
+								// The first view starts the agent's desktop, which can outlast one
+								// connection attempt; the start continues, so a later attempt holds.
+								requestConnection: async (input) => {
+									for (let attempt = 0; ; attempt++) {
+										try {
+											return await views.connectScreen(input);
+										} catch (error) {
+											if (attempt >= 8 || input.signal.aborted) throw error;
+											await wait(3000, input.signal);
+										}
+									}
+								},
 							});
 							stage.close();
 							return;

@@ -183,6 +183,7 @@ export async function startCompanyComputerOfficeService(options: {
 			},
 			drains,
 			privacy,
+			sharedBaseline: (privacyVersion) => options.guest.privacy.shared?.(privacyVersion),
 			control: {
 				call: async (...args) => {
 					const state = await options.registry.call(...args);

@@ -447,9 +447,30 @@ describe("web runtime member boundary", () => {
 			expect.objectContaining({ binding, title: `${staff.displayName} · Computer`, canControl: true }),
 		);
 		expect(connect).not.toHaveBeenCalled();
+		// The first view starts the desktop and may fail; the same request is tried again until a view holds.
+		const held = { connectionId: "held" } as never;
+		connect.mockReset();
+		connect
+			.mockRejectedValueOnce(new Error("Not under test"))
+			.mockRejectedValueOnce(new Error("Not under test"))
+			.mockResolvedValue(held);
 		const input = { binding, mode: "watch" as const, signal: new AbortController().signal };
-		await expect(open.mock.calls[0]![0].requestConnection(input)).rejects.toThrow("Not under test");
-		expect(connect).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ binding, mode: "watch" }));
+		const connection = open.mock.calls[0]![0].requestConnection(input);
+		await poll();
+		await poll();
+		await expect(connection).resolves.toBe(held);
+		expect(connect).toHaveBeenCalledTimes(3);
+		expect(connect).toHaveBeenLastCalledWith(expect.objectContaining({ binding, mode: "watch" }));
+		// A closed viewer stops the retries.
+		const closing = new AbortController();
+		connect.mockReset();
+		connect.mockRejectedValue(new Error("Not under test"));
+		const stopped = open.mock.calls[0]![0].requestConnection({ ...input, signal: closing.signal });
+		const refused = expect(stopped).rejects.toThrow();
+		await settle();
+		closing.abort();
+		await refused;
+		expect(connect).toHaveBeenCalledTimes(1);
 		p.dispose();
 		expect(open.mock.results[0]!.value.close).toHaveBeenCalled();
 	});

@@ -106,6 +106,8 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	readonly #sessions = new Set<NativeSession>();
 	#private?: PrivateSurface;
 	#privacy?: CompanyComputerPrivacyChallenge;
+	/** Confirmed shared version while the registry retains no challenge. */
+	#sharedVersion = 0;
 	#gate?: CompanyComputerScreenActionGate;
 	#closing?: Promise<void>;
 
@@ -154,7 +156,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		await this.#options.boundary.assertReady(binding, combined);
 		const state = await this.#sharedControl.check(binding, combined);
 		combined.throwIfAborted();
-		if (this.#private || state.privacyVersion !== (this.#privacy?.version ?? 0))
+		if (this.#private || state.privacyVersion !== Math.max(this.#privacy?.version ?? 0, this.#sharedVersion))
 			throw new Error("OFFICE_PRIVACY_FENCED");
 		return state;
 	}
@@ -172,7 +174,10 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 				lifecycle: this.#options.screenLifecycle?.create(binding, null),
 			};
 			this.#screens.set(binding.screenOrdinal, current);
-			const startup = AbortSignal.any([signal, this.#stop.signal, current.stop.signal]);
+			// A desktop start belongs to the office, not to whoever asked first: a
+			// viewer that gives up, or whose gateway deadline passes, must not cancel
+			// a start the next caller would simply have to repeat.
+			const startup = AbortSignal.any([this.#stop.signal, current.stop.signal]);
 			current.opening = (async () => {
 				await current.lifecycle?.requested(startup);
 				await prepareCompanyComputerScreenWallpaper(
@@ -255,6 +260,9 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 					throw drainError;
 				}
 				await current.lifecycle?.closed(new AbortController().signal).catch(() => undefined);
+				// Confirmed reaped: the next request starts a fresh desktop instead of
+				// finding this failed one forever.
+				if (this.#screens.get(binding.screenOrdinal) === current) this.#screens.delete(binding.screenOrdinal);
 				throw error;
 			});
 			void current.opening.catch(() => undefined);
@@ -589,6 +597,10 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		},
 	};
 	readonly privacy: CompanyComputerServiceGuest["privacy"] = {
+		shared: (privacyVersion) => {
+			if (Number.isSafeInteger(privacyVersion) && privacyVersion > this.#sharedVersion)
+				this.#sharedVersion = privacyVersion;
+		},
 		fence: async (value, signal) => {
 			const challenge = parseCompanyComputerPrivacyChallenge(value, this.#options.scope);
 			if (

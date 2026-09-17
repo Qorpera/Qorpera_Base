@@ -324,14 +324,19 @@ async function serveCompanyComputerViewer(
 			),
 			started,
 		);
-		const attached = await companyComputerRequest(async (signal) => {
-			const result = await guest.connect(structuredClone(grant!), signal);
-			if (signal.aborted) {
-				result.socket.destroy();
-				throw new Error("VIEWER_STOPPED");
-			}
-			return result;
-		}, stop.signal);
+		const attached = await companyComputerRequest(
+			async (signal) => {
+				const result = await guest.connect(structuredClone(grant!), signal);
+				if (signal.aborted) {
+					result.socket.destroy();
+					throw new Error("VIEWER_STOPPED");
+				}
+				return result;
+				// The first view of a screen starts its desktop; that is slower than a warm attach.
+			},
+			stop.signal,
+			25_000,
+		);
 		upstream = attached.socket;
 		upstream.on("error", () => socket.destroy());
 		upstream.on("close", () => socket.destroy());

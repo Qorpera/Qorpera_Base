@@ -30,6 +30,7 @@ function fixture() {
 		drains: [drain],
 	};
 	const order: string[] = [];
+	const baselines: number[] = [];
 	const control = { call: vi.fn(async () => structuredClone(state)) };
 	const viewers = {
 		fencePrivacy: vi.fn(async () => {
@@ -58,11 +59,15 @@ function fixture() {
 		control,
 		viewers,
 		drains,
+		sharedBaseline: (version: number) => {
+			baselines.push(version);
+		},
 		privacy,
 	});
 	return {
 		supervisor,
 		order,
+		baselines,
 		control,
 		state,
 		viewers,
@@ -184,6 +189,17 @@ describe("runtime office supervision", () => {
 			expect(cause(error, 1)).toBe("INVALID_OFFICE_SUPERVISOR_STATE");
 			expect(cause(error, 2)).toBe(code);
 		}
+	});
+	it("tells the guest the confirmed version of a shared office that retains no challenge", async () => {
+		const f = fixture();
+		Object.assign(f.state, { privacyState: "shared", privacyVersion: 16, privacyChallenge: null, drains: [] });
+		await f.supervisor.reconcile(f.signal);
+		expect(f.baselines).toEqual([16]);
+		// With a retained challenge the fence carries the version instead.
+		const g = fixture();
+		Object.assign(g.state, { privacyState: "private", privacyVersion: 1, privacyChallenge: g.challenge, drains: [] });
+		await g.supervisor.reconcile(g.signal);
+		expect(g.baselines).toEqual([]);
 	});
 	it("accepts a shared office whose cleared challenge left a positive privacy version, still refusing regression", async () => {
 		// A retired generation's challenge cleared by the provider's correction path

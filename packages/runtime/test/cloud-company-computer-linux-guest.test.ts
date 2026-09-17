@@ -353,6 +353,27 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 		await expect(f.guest.close()).rejects.toThrow("OFFICE_GUEST_DRAIN_UNCONFIRMED");
 		expect(f.events().some((e) => e.state === "closed")).toBe(false);
 	});
+	it("refuses shared work at a registry version it has not been told, and admits it after the baseline", async () => {
+		// A reset office: privacy version 16, shared, no retained challenge.
+		const f = await fixture();
+		f.state.version = 16;
+		const session = await f.create();
+		const operation = f.operation({ kind: "screen", action: "open" });
+		await session.endpoint.authorize(operation, f.run.identity, f.lease, f.run.signal);
+		await expect(session.endpoint.perform(operation, f.lease, f.effect())).rejects.toThrow();
+		expect(physical.launch).not.toHaveBeenCalled();
+		f.guest.privacy.shared?.(16);
+		// A lower baseline never replaces a higher one.
+		f.guest.privacy.shared?.(3);
+		const next = await f.create();
+		await next.endpoint.authorize(operation, f.run.identity, f.lease, f.run.signal);
+		await expect(next.endpoint.perform(operation, f.lease, f.effect())).resolves.toEqual({
+			kind: "json",
+			value: { screenId: f.binding.screenId, status: "open" },
+		});
+		expect(physical.launch).toHaveBeenCalledOnce();
+		await f.guest.close();
+	});
 	it("constructs and authorizes without starting a guest, then opens inside the admitted effect", async () => {
 		const f = await fixture();
 		const session = await f.create();

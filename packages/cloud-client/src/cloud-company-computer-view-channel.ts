@@ -99,7 +99,9 @@ export async function connectCompanyComputerViewChannel(options: {
 		let receiver: CompanyComputerViewChannel["onmessage"] = null;
 		let flushing = false;
 		let sent = false;
-		const timeout = setTimeout(() => fail(), Math.min(5000, options.validForMs));
+		// The first view of a screen starts its desktop in the guest, which takes
+		// longer than a warm attach; giving up early also cancels that start.
+		const timeout = setTimeout(() => fail(), Math.min(25000, options.validForMs));
 		const discard = (): void => {
 			ticket.fill(0);
 			handshake.fill(0);

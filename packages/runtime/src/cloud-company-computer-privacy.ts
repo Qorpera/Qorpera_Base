@@ -23,6 +23,9 @@ export interface CompanyComputerPrivacyBoundary {
 	 * channels, guest dispatch and launches. Retain this barrier after failure.
 	 * A matching SQL acknowledgement is NOT permission to clear a newer barrier. */
 	fence(challenge: CompanyComputerPrivacyChallenge, signal: AbortSignal): Promise<void>;
+	/** The registry confirms the office is shared at this privacy version with no
+	 * retained challenge. Never lowers a version the boundary already holds. */
+	shared?(privacyVersion: number): void;
 	/** After every screen has physically drained: on entry prove broker-only
 	 * profile disposition and an unobserved sign-in surface; on exit close the
 	 * private browser, release held input, clear clipboard, discard private

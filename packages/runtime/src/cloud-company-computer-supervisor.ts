@@ -84,6 +84,7 @@ export class CompanyComputerOfficeSupervisor {
 	readonly #viewers: Pick<CompanyComputerViewerConnections, "fencePrivacy" | "fenceScreen" | "close">;
 	readonly #drains: Pick<CompanyComputerDrainSupervisor, "drain">;
 	readonly #privacy: Pick<CompanyComputerPrivacySupervisor, "transition">;
+	readonly #sharedBaseline: ((privacyVersion: number) => void) | undefined;
 	#active: Promise<void> | undefined;
 	#revision = 0;
 	#privacyVersion = 0;
@@ -99,6 +100,9 @@ export class CompanyComputerOfficeSupervisor {
 		viewers: Pick<CompanyComputerViewerConnections, "fencePrivacy" | "fenceScreen" | "close">;
 		drains: Pick<CompanyComputerDrainSupervisor, "drain">;
 		privacy: Pick<CompanyComputerPrivacySupervisor, "transition">;
+		/** Told the confirmed privacy version whenever the office is shared with no
+		 * retained challenge, so the guest's own version check has a baseline. */
+		sharedBaseline?: (privacyVersion: number) => void;
 	}) {
 		assertCompanyComputerScope(options.scope, options.scope);
 		if (!positive(options.computerGeneration)) throw new Error("INVALID_OFFICE_GENERATION");
@@ -108,6 +112,7 @@ export class CompanyComputerOfficeSupervisor {
 		this.#viewers = options.viewers;
 		this.#drains = options.drains;
 		this.#privacy = options.privacy;
+		this.#sharedBaseline = options.sharedBaseline;
 	}
 
 	/** One status poll. A transport-unconfirmed poll after at least one confirmed
@@ -215,6 +220,10 @@ export class CompanyComputerOfficeSupervisor {
 			this.#unconfirmedPolls = 0;
 			// All stream barriers precede every physical side effect. SQL alone
 			// cannot erase pixels or cancel an already-running process.
+			// A reset office keeps its privacy version but no challenge (the correction
+			// path cleared it). The guest compares every shared check against the
+			// version it holds; without this baseline it holds 0 and refuses them all.
+			if (!challenge) this.#sharedBaseline?.(value.privacyVersion as number);
 			if (challenge) await this.#viewers.fencePrivacy(challenge, signal);
 			for (const drain of drains) await this.#viewers.fenceScreen(drain, signal);
 			if (value.state !== "active") {
