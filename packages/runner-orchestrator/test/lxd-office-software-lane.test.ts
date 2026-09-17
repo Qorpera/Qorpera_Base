@@ -91,7 +91,11 @@ describe("provider service configuration software lane", () => {
 		const lane = parseLxdOfficeSoftwareLaneDocument({
 			...document(),
 			tools: { install: "7".repeat(64), measure: sha(tool) },
-			measurementTool: { path: "/etc/qorpera-office/software-control/measure.mjs", bytes: tool.length, sha256: sha(tool) },
+			measurementTool: {
+				path: "/etc/qorpera-office/software-control/measure.mjs",
+				bytes: tool.length,
+				sha256: sha(tool),
+			},
 		});
 		expect(lane.measurementTool).toEqual({
 			path: "/etc/qorpera-office/software-control/measure.mjs",
@@ -113,7 +117,9 @@ describe("provider service configuration software lane", () => {
 		await expect(loadLxdOfficeSoftwareLane(lane, read, async () => Buffer.from("other bytes"))).rejects.toThrow(
 			"OFFICE_SOFTWARE_TOOL_PIN_DIFFERS",
 		);
-		expect((await loadLxdOfficeSoftwareLane(parseLxdOfficeSoftwareLaneDocument(document()), read)).measurementTool).toBeUndefined();
+		expect(
+			(await loadLxdOfficeSoftwareLane(parseLxdOfficeSoftwareLaneDocument(document()), read)).measurementTool,
+		).toBeUndefined();
 	});
 	it("keeps the existing closed configuration and accepts only an explicit lane path", () => {
 		expect(parseLxdOfficeLifecycleServiceConfig(serviceConfig()).softwareLanePath).toBeUndefined();
