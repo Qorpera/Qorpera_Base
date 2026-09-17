@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat } from "node:fs/promises";
+import { lstat, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -24,14 +24,16 @@ import { openLxdOfficeBootConfigurationJournal } from "./lxd-office-boot-configu
 import { createLxdOfficeBootConfigurationPayload } from "./lxd-office-boot-configuration-payload.ts";
 import { LxdOfficeBootIntentControl, type LxdOfficeBootIntentRegistry } from "./lxd-office-boot-intent-control.ts";
 import { openLxdOfficeCreationIdentity } from "./lxd-office-creation-journal.ts";
-import { inspectLxdOfficeGuestBoot, lxdOfficeGuestPlan } from "./lxd-office-guest.ts";
-import { officeCanonical, officeDigest, officeRecord } from "./lxd-office-image-provenance.ts";
+import { inspectLxdOfficeGuestBoot, type LxdOfficeGuestBinding, lxdOfficeGuestPlan } from "./lxd-office-guest.ts";
+import { officeCanonical, officeDigest, officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
 import { code, publish, readRecord } from "./lxd-office-journal-files.ts";
 import type { LxdOfficePhysicalGate } from "./lxd-office-physical-gate.ts";
-import type { readLxdOfficeCredentialFile, readLxdOfficeProtectedFile } from "./lxd-office-physical-host.ts";
+import type { readLxdOfficeCredentialFile } from "./lxd-office-physical-host.ts";
+import { readLxdOfficeProtectedFile } from "./lxd-office-physical-host.ts";
 import { officePhysicalPath, parseLxdOfficePhysicalPolicy } from "./lxd-office-physical-policy.ts";
 import { readLxdOfficePowerOffEvidence } from "./lxd-office-power-off-evidence.ts";
 import { LxdOfficeResumeWorker } from "./lxd-office-resume-worker.ts";
+import { assertLxdOfficeServiceBootstrapContinuity } from "./lxd-office-service-bootstrap-revisions.ts";
 
 const hash = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
 const json = (bytes: Buffer): unknown => JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(bytes));
@@ -122,6 +124,69 @@ export class LxdOfficeBootConfigurationWorker {
 			signal.removeEventListener("abort", abort);
 			if (settle) await operation.catch(() => {});
 		}
+	}
+	/** The digest the predecessor boot recorded for its plan: that boot's own
+	 * boot-configuration intent, or the origin configuration intent. */
+	async #assertPlanContinuity(
+		root: string,
+		binding: LxdOfficeGuestBinding,
+		planPath: string,
+		planSha256: string,
+		predecessorBootId: string,
+		read: (name: string, limit?: number) => Promise<{ value: unknown; bytes: Buffer }>,
+		signal: AbortSignal,
+	): Promise<void> {
+		const { allocationId } = binding;
+		let predecessorSha256: string | undefined;
+		for (const name of (await readdir(root)).sort()) {
+			if (
+				!name.startsWith(`boot-configuration-intent-${allocationId}-`) ||
+				!name.endsWith(".json") ||
+				name.length !== `boot-configuration-intent-${allocationId}-`.length + 41
+			)
+				continue;
+			const value = officeRecord((await read(name)).value, [
+				"schema",
+				"intentId",
+				"allocationId",
+				"bootIntentId",
+				"activationId",
+				"bootId",
+				"bootObservationSha256",
+				"originPreparationSha256",
+				"serviceBootstrapSha256",
+				"serviceBootstrapPath",
+				"requestSha256",
+				"requestBytes",
+				"commandId",
+			]);
+			if (value.bootId !== predecessorBootId) continue;
+			if (predecessorSha256 !== undefined) throw new Error("predecessor boot recorded twice");
+			predecessorSha256 = officeSha(value.serviceBootstrapSha256);
+		}
+		if (predecessorSha256 === undefined) {
+			const origin = officeRecord((await read(`configuration-intent-${allocationId}.json`)).value, [
+				"schema",
+				"intentId",
+				"allocationId",
+				"bootId",
+				"bootObservationSha256",
+				"preparationObservationSha256",
+				"serviceBootstrapSha256",
+				"requestSha256",
+				"requestBytes",
+				"commandId",
+			]);
+			if (origin.bootId !== predecessorBootId) throw new Error("predecessor boot unrecorded");
+			predecessorSha256 = officeSha(origin.serviceBootstrapSha256);
+		}
+		const planBytes = await (this.#ports.readProtected ?? readLxdOfficeProtectedFile)(planPath, 16384);
+		if (hash(planBytes) !== planSha256) throw new Error("plan changed");
+		await assertLxdOfficeServiceBootstrapContinuity(
+			{ planBytes, planPath, predecessorSha256, binding },
+			this.#ports.readProtected ?? readLxdOfficeProtectedFile,
+			signal,
+		);
 	}
 	async #run(input: LxdOfficeBootConfigurationRequest, registry: LxdOfficeBootIntentRegistry, signal: AbortSignal) {
 		const root = this.#policy.journal.path,
@@ -310,6 +375,18 @@ export class LxdOfficeBootConfigurationWorker {
 			});
 			let index = await optional(names.index);
 			if (index === undefined) {
+				// A new boot takes the plan as it is now. It may differ from the plan
+				// the predecessor boot recorded only through the retained revision
+				// chain beside it (an office credential replaced while powered off).
+				await this.#assertPlanContinuity(
+					root,
+					binding,
+					input.serviceBootstrapPath,
+					payload.serviceBootstrapSha256,
+					request.predecessor.startup.bootId,
+					read,
+					signal,
+				);
 				const checked = await authorize();
 				if ((await optional(names.observation)) !== undefined || (await optional(names.completion)) !== undefined)
 					throw new Error("configuration identity lost");

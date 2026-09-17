@@ -6,6 +6,7 @@ import {
 	companyComputerBootDirectory,
 } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { officeStopHash as hash } from "../src/lxd-office-stop-evidence.ts";
 import { officeBootConfigurationWorkerFixture } from "./fixtures/office-boot-configuration-worker.ts";
 import { serviceStartId as id } from "./fixtures/office-service-start.ts";
 
@@ -46,6 +47,66 @@ describe("resumed boot configuration", () => {
 		expect(f.credentialBuffers.every((bytes) => bytes.every((byte) => byte === 0))).toBe(true);
 		expect(f.stage.mock.calls[0][3].every((byte) => byte === 0)).toBe(true);
 	});
+	it.each(["recorded", "unrecorded"])(
+		"takes a plan with replaced TLS credentials only through the %s revision chain",
+		async (kind) => {
+			const f = await fixture();
+			const path = f.input.serviceBootstrapPath,
+				original = (await f.readProtected(path, 16384)).toString("utf8"),
+				material = { tlsCert: `${f.secrets.tlsCert}\n`, tlsKey: `${f.secrets.tlsKey}\n` };
+			const plan = JSON.parse(original);
+			for (const [key, text] of Object.entries(material))
+				plan.credentials[key] = {
+					path: `${plan.credentials[key].path}-r1`,
+					bytes: Buffer.byteLength(text),
+					sha256: hash(Buffer.from(text)),
+				};
+			const next = JSON.stringify(plan);
+			const chain = {
+				schema: "qorpera.lxd-office-service-bootstrap-revisions/v1",
+				allocationId: f.binding.allocationId,
+				revisions: [
+					{
+						revision: 1,
+						previousSha256: hash(Buffer.from(original)),
+						nextSha256: hash(Buffer.from(next)),
+						previousPlan: original,
+						changed: ["tlsCert", "tlsKey"],
+						reason: "tailnet certificate renewed",
+						at: "2026-09-17T12:00:00Z",
+					},
+				],
+			};
+			const readProtected = f.readProtected.getMockImplementation()!,
+				readCredential = f.readCredential.getMockImplementation()!;
+			f.readProtected.mockImplementation(async (file: string, limit: number) => {
+				if (file === path) return Buffer.from(next);
+				if (file.endsWith("/service-bootstrap-revisions.json")) {
+					if (kind === "unrecorded") throw Object.assign(new Error("missing"), { code: "ENOENT" });
+					return Buffer.from(JSON.stringify(chain));
+				}
+				return readProtected(file, limit);
+			});
+			f.readCredential.mockImplementation(async (file: string, limit: number) => {
+				const name = Object.keys(material).find((key) => file === plan.credentials[key].path);
+				return name ? Buffer.from(material[name as keyof typeof material]) : readCredential(file, limit);
+			});
+			if (kind === "unrecorded") {
+				await expect(f.run()).rejects.toThrow("OFFICE_BOOT_CONFIGURATION_UNCONFIRMED");
+				expect(f.stage).not.toHaveBeenCalled();
+				expect(f.exec).not.toHaveBeenCalled();
+				return;
+			}
+			const result = await f.run();
+			expect(result).toMatchObject({ state: "awaiting_boot_admission", bootId: id(103) });
+			expect(JSON.parse(await readFile(f.names.index, "utf8")).serviceBootstrapSha256).toBe(hash(Buffer.from(next)));
+			const staged = JSON.parse(f.staged()!.toString());
+			expect(staged.material.tlsCert).toBe(material.tlsCert);
+			expect(
+				f.guest.get(`${companyComputerBootDirectory(id(103))}/credentials/tls-cert.pem`)?.content.toString(),
+			).toBe(material.tlsCert);
+		},
+	);
 	it("cannot initiate a missing VM resume", async () => {
 		const f = await fixture(false);
 		await expect(f.run()).rejects.toThrow("OFFICE_BOOT_CONFIGURATION_UNCONFIRMED");
