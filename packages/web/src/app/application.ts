@@ -1,6 +1,7 @@
 import type { User } from "@supabase/supabase-js";
 import { CloudApi } from "../cloud/api.ts";
 import { type Cloud, describeError } from "../cloud/client.ts";
+import { createWebCompanyAgents } from "../cloud/company-agents.ts";
 import { createWebCompanyExecution } from "../cloud/company-execution.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
 import { WebCompanyComputer } from "../cloud/computer.ts";
@@ -578,12 +579,35 @@ export function mountApplication(
 			notifications = undefined;
 		}
 		if (route.section !== "meet") meetState = {};
+		// Agents are Company File documents. Each write re-checks that this
+		// member still holds the authority the company showed when it began.
+		const agents = () => {
+			const team = controller.store.get().team;
+			if (!team?.capabilities.authorize) throw new Error("Only an owner or admin can change agents.");
+			return createWebCompanyAgents(
+				new WebCompanyFiles(cloud, controller.profile, controller.userId, team.role, controller.signal, () => {
+					const now = controller.store.get();
+					if (
+						disposed ||
+						company !== controller ||
+						auth.userId !== controller.userId ||
+						now.accessLost ||
+						!now.team?.capabilities.authorize
+					)
+						throw new Error("Company access changed.");
+				}),
+			);
+		};
+		const agentActions: WorkspaceActions = {
+			createAgent: (_profileId, draft, signal) => agents().create(draft, signal),
+			updateAgent: (agent, draft, signal) => agents().update(agent, draft, signal),
+		};
 		switch (route.section) {
 			case "new": {
 				if (!newConversation) {
 					newConversation = new NewConversationView(
 						controller,
-						workspaceActions,
+						{ ...agentActions, ...workspaceActions },
 						() => navigate({ name: "company", profileId: controller.profile.profileId, section: "home" }),
 						() => setNavigationOpen(!navigationOpen),
 					);
@@ -715,6 +739,7 @@ export function mountApplication(
 								check();
 								return new Blob([Uint8Array.from(bytes)], { type: ref.mediaType });
 							},
+							...agentActions,
 							...workspaceActions,
 							computer,
 						},
@@ -845,11 +870,22 @@ export function mountApplication(
 				return;
 			}
 			case "meet":
-				renderMeet(controller, api, main, meetState, (next) => {
-					if (!current() || company !== controller) return;
-					meetState = next;
-					render();
-				});
+				renderMeet(
+					controller,
+					(agent, figure, color) =>
+						agents().update(
+							agent,
+							{ displayName: agent.displayName, role: agent.role, charter: agent.charter, figure, color },
+							controller.signal,
+						),
+					main,
+					meetState,
+					(next) => {
+						if (!current() || company !== controller) return;
+						meetState = next;
+						render();
+					},
+				);
 				return;
 			case "organization":
 			case "responsibility":

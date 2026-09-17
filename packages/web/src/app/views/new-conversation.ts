@@ -87,7 +87,7 @@ export class NewConversationView {
 				),
 			],
 			() => this.#configure(),
-			{ disabled: !this.#company.store.get().team?.capabilities.write },
+			{ disabled: !this.#company.store.get().team?.capabilities.authorize },
 		);
 		create.classList.add("new-agent-card");
 		create.setAttribute("aria-label", "New agent");
@@ -122,7 +122,7 @@ export class NewConversationView {
 		const active = this.#company.store.get().staff.filter((agent) => agent.employmentStatus === "active");
 		for (const id of this.#selected) if (!active.some((agent) => agent.id === id)) this.#selected.delete(id);
 		const create = this.el.querySelector<HTMLButtonElement>(".new-agent-card");
-		if (create) create.disabled = !this.#company.store.get().team?.capabilities.write;
+		if (create) create.disabled = !this.#company.store.get().team?.capabilities.authorize;
 		const agents = active.filter((agent) =>
 			`${agent.displayName} ${agent.role}`.toLowerCase().includes(this.#query.trim().toLowerCase()),
 		);
@@ -215,7 +215,7 @@ export class NewConversationView {
 		);
 	}
 	#configure(): void {
-		if (!this.#company.store.get().team?.capabilities.write) return;
+		if (!this.#company.store.get().team?.capabilities.authorize) return;
 		this.#editing = true;
 		const stage = h(
 			"div",
@@ -291,7 +291,7 @@ export class NewConversationView {
 			h("div", { class: "surface-actions" }, button("Cancel", this.#close), create),
 		);
 		this.#syncControls = () => {
-			const canWrite = this.#company.store.get().team?.capabilities.write === true;
+			const canWrite = this.#company.store.get().team?.capabilities.authorize === true;
 			fields.disabled = this.#pending || !canWrite;
 			create.disabled = this.#pending || !canWrite || !this.#actions.createAgent;
 			back.disabled = this.#pending;
@@ -301,7 +301,7 @@ export class NewConversationView {
 			if (
 				this.#pending ||
 				!this.#actions.createAgent ||
-				!this.#company.store.get().team?.capabilities.write ||
+				!this.#company.store.get().team?.capabilities.authorize ||
 				!form.reportValidity()
 			)
 				return;

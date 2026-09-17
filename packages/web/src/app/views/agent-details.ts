@@ -127,7 +127,7 @@ export class AgentDetails {
 		const status = h("p", { class: "surface-status", role: "status" });
 		const save = h("button", { type: "submit", class: "btn btn-primary", hidden: true }, "Save changes");
 		const edit = button([icon("edit"), "Edit agent"], () => {
-			if (!this.#company.store.get().team?.capabilities.write) return;
+			if (!this.#company.store.get().team?.capabilities.authorize) return;
 			this.#editing = true;
 			this.#syncControls();
 			name.focus();
@@ -173,7 +173,7 @@ export class AgentDetails {
 			h("div", { class: "agent-details-footer" }, edit, h("div", { class: "surface-actions" }, cancel, save)),
 		);
 		this.#syncControls = () => {
-			const canWrite = this.#company.store.get().team?.capabilities.write === true;
+			const canWrite = this.#company.store.get().team?.capabilities.authorize === true;
 			for (const field of [name, role, description]) field.readOnly = !this.#editing || !canWrite || this.#pending;
 			fields.disabled = this.#pending || (this.#editing && !canWrite);
 			appearance.hidden = !this.#editing;
@@ -194,7 +194,7 @@ export class AgentDetails {
 				this.#pending ||
 				!this.#editing ||
 				!this.#actions.updateAgent ||
-				!this.#company.store.get().team?.capabilities.write ||
+				!this.#company.store.get().team?.capabilities.authorize ||
 				!form.reportValidity()
 			)
 				return;

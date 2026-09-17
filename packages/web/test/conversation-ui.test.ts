@@ -207,7 +207,7 @@ describe("conversation UI boundaries", () => {
 		const f = setup({ updateAgent });
 		button(f.view.el, "Open agent details").click();
 		button(document, "Edit agent").click();
-		f.company.store.set({ team: { ...team, capabilities: { ...team.capabilities, write: false } } });
+		f.company.store.set({ team: { ...team, capabilities: { ...team.capabilities, authorize: false } } });
 		document.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
 		expect(updateAgent).not.toHaveBeenCalled();
 		f.company.store.set({ team });

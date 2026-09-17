@@ -716,7 +716,10 @@ describe("LXD cloud runner provider", () => {
 		});
 		const releases = vi
 			.mocked(f.fetchImplementation)
-			.mock.calls.filter(([url, init]) => String(url).includes("qorpera_release_runtime_machine") && String(init?.body).includes(reservingId));
+			.mock.calls.filter(
+				([url, init]) =>
+					String(url).includes("qorpera_release_runtime_machine") && String(init?.body).includes(reservingId),
+			);
 		expect(releases).toHaveLength(reserving.capacityRegistered ? 1 : 0);
 	});
 	it("reports a typed admission refusal from the reservation", async () => {
@@ -728,12 +731,23 @@ describe("LXD cloud runner provider", () => {
 		const base = fetchProvisioner(requests);
 		const fetcher: typeof fetch = async (input, init) => {
 			if (String(input).includes("qorpera_reserve_runtime_machine"))
-				return Response.json({ state: "refused", reason: "NODE_NOT_PREFERRED", preferredNodeId: "36000000-0000-4000-8000-000000000010" });
+				return Response.json({
+					state: "refused",
+					reason: "NODE_NOT_PREFERRED",
+					preferredNodeId: "36000000-0000-4000-8000-000000000010",
+				});
 			return base(input, init);
 		};
 		const backend = new LxdCloudRunnerProviderBackend(config(stateRoot), lxd, guest, fetcher);
-		const failure = await backend.acquire(runId, work(), new AbortController().signal).catch((error: unknown) => error);
-		expect(failure).toMatchObject({ name: "LxdMachineAdmissionRefused", category: "admission_refused", state: "refused", reason: "NODE_NOT_PREFERRED" });
+		const failure = await backend
+			.acquire(runId, work(), new AbortController().signal)
+			.catch((error: unknown) => error);
+		expect(failure).toMatchObject({
+			name: "LxdMachineAdmissionRefused",
+			category: "admission_refused",
+			state: "refused",
+			reason: "NODE_NOT_PREFERRED",
+		});
 		expect(lxd.createCalls).toHaveLength(0);
 	});
 	it("blocks new starts until retained live guests have a capacity record", async () => {

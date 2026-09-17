@@ -20,7 +20,6 @@ import {
 	parseProfiles,
 	parseSessionInputReceipt,
 	parseSessionPage,
-	parseStaff,
 	parseStaffExecutionActivity,
 	parseStaffList,
 	parseStaffSessionHandle,
@@ -118,33 +117,6 @@ export class CloudApi {
 
 	async removeFriend(userId: string): Promise<void> {
 		await this.cloud.rpc("qorpera_remove_friend", { p_user_id: requiredUuid(userId, "Account id") });
-	}
-
-	/** Give a staff agent a new figure and colour. Every other field is handed
-	 * back as it was read, and the agent's version guards the write, so two
-	 * members editing at once get a conflict instead of a silent overwrite
-	 * (qorpera_put_profile_staff). */
-	async setStaffAppearance(agent: HostedStaffAgent, creature: string, color: string): Promise<HostedStaffAgent> {
-		return parseStaff(
-			await this.cloud.rpc("qorpera_put_profile_staff", {
-				p_profile_id: requiredUuid(agent.profileId, "Profile id"),
-				p_staff_agent_id: requiredUuid(agent.id, "Staff id"),
-				p_display_name: agent.displayName,
-				p_role: agent.role,
-				p_charter: agent.charter,
-				p_template_id: agent.templateId ?? null,
-				p_department_id: agent.departmentId ?? null,
-				p_appearance_color: color,
-				p_appearance_shape: agent.appearance.shape,
-				p_appearance_creature: creature,
-				p_model_provider: agent.model?.provider ?? null,
-				p_model_id: agent.model?.modelId ?? null,
-				p_employment_status: agent.employmentStatus,
-				p_lifecycle_state: agent.lifecycleState,
-				p_created_at: agent.createdAt,
-				p_expected_version: agent.version,
-			}),
-		);
 	}
 
 	getTeam(profileId: string): Promise<HostedProfileTeam> {

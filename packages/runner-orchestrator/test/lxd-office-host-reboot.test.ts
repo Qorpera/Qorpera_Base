@@ -29,7 +29,7 @@ async function scratch() {
 	return root;
 }
 const receipt = (allocationId: string, transitionId: string, shutdown: string, resumed: string) => ({
-	schema: "qorpera.lxd-office-host-reboot/v1",
+	schema: "qorpera.lxd-office-host-reboot/v1" as const,
 	intentId: id(1),
 	allocationId,
 	transitionId,

@@ -113,6 +113,7 @@ function fixture() {
 			scope,
 			computerGeneration: 1,
 			state: "active",
+			maintenance: null,
 			privacyState: "shared",
 			privacyVersion: 0,
 			screens: [{ binding, epoch: 1, drainPending: false, driver: "agent", takeoverMemberId: null }],

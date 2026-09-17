@@ -304,3 +304,16 @@ tunnel or NAS deployment is required to publish this shell. The repository's
 generated bundle checksum files still reflect the web dependency lockfile;
 they are source provenance only and must not be deployed or applied as part
 of this work.
+
+## 2026-09-17 — Agents are written through the Company File
+
+**Decision.** Creating an agent, saving agent edits and saving the
+Co-Founder's figure are governed Company File writes of the agent's document
+(`organization/agents/<id>.json`), using the codec the desktop uses, now in
+`@qorpera/cloud-client/cloud-company-agent`. The browser never writes the
+staff roster; the cloud projects the document onto it. Agent paths are
+protected, so these actions are offered to owners and admins only.
+
+**Removed.** The Policy settings tab was a local draft with no backend and is
+gone. The direct roster write for figures is gone; governed companies refuse
+it.

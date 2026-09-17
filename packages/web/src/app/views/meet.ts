@@ -1,4 +1,3 @@
-import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { FIGURE_IDS, type FigureId, figureElement, figureFor, nativeColorOf } from "../../ui/avatar.ts";
@@ -34,7 +33,7 @@ export function cofounderOf(company: CompanyController): HostedStaffAgent | unde
 
 export function renderMeet(
 	company: CompanyController,
-	api: CloudApi,
+	saveAppearance: (agent: HostedStaffAgent, figure: string, color: string) => Promise<void>,
 	container: HTMLElement,
 	state: MeetState,
 	setState: (next: MeetState) => void,
@@ -64,22 +63,19 @@ export function renderMeet(
 		return;
 	}
 
-	// Once Order 0's bootstrap completes, a staff record is a projection of the
-	// Company File and the roster RPC stops accepting member writes
-	// (qorpera_guard_company_file_staff_write). The client cannot change a
-	// Company File path from a browser yet. A refusal is reported without
-	// automatic retries, and opening the company never depends on this write.
+	// A staff record is a projection of the Company File, so the figure is
+	// saved as a governed write of the agent's document. A refusal is reported
+	// without automatic retries, and opening the company never depends on it.
 	const figure = state.figure ?? figureFor(cofounder);
 	// The Co-Founder wears its figure's own colour, as in the trailer; there
 	// is no separate colour to choose here.
 	const color = nativeColorOf(figure);
-	const canWrite = companyState.team?.capabilities.write === true;
+	const canWrite = companyState.team?.capabilities.authorize === true;
 	const save = () => {
 		if (!canWrite || state.saving) return;
 		const route = location.hash;
 		setState({ ...state, saving: true, error: undefined });
-		void api
-			.setStaffAppearance(cofounder, figure, color)
+		void saveAppearance(cofounder, figure, color)
 			.then(async () => {
 				await company.refreshStaff();
 				if (!company.signal.aborted && location.hash === route && container.isConnected) open();

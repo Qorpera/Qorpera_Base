@@ -518,6 +518,12 @@ export async function runOfficeCreationSqlProbe(
 					method === "qorpera_ack_office_package_invocation"
 				)
 					throw new Error("First activation fixture has no package lane");
+				if (
+					method === "qorpera_begin_runtime_office_host_reboot" ||
+					method === "qorpera_record_runtime_office_host_reboot_resume" ||
+					method === "qorpera_runtime_office_provider_activation"
+				)
+					throw new Error("First activation fixture has no host reboot lane");
 				return registry.call(method, args, signal);
 			},
 		};
