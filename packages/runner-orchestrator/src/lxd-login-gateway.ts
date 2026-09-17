@@ -82,7 +82,9 @@ const RECOVERY_KEYGEN_SCRIPT = [
 	`cd ${RECOVERY_CREDENTIALS_DIRECTORY}`,
 	`/usr/bin/node -e 'const c=require("node:crypto"),fs=require("node:fs");const {publicKey,privateKey}=c.generateKeyPairSync("rsa",{modulusLength:3072,publicExponent:65537});fs.writeFileSync("qorpera-recovery-recipient-key",privateKey.export({type:"pkcs8",format:"der"}).toString("base64url"),{mode:0o600});fs.writeFileSync("${RECOVERY_PUBLIC_KEY_PATH}",publicKey.export({type:"spki",format:"der"}).toString("base64url")+"\\n",{mode:0o600});'`,
 ].join("; ");
-const RECOVERY_RESTORE_SCRIPT = `set -e; umask 077; CREDENTIALS_DIRECTORY=${RECOVERY_CREDENTIALS_DIRECTORY} /usr/bin/node /opt/qorpera-runner/qorpera-identity-recovery-restore.mjs > ${RECOVERY_RESULT_PATH}`;
+/** The restore client keeps the identity volume private and service-owned; the
+ * login bootstrap makes the mount 0700 too, but it has not run yet here. */
+const RECOVERY_RESTORE_SCRIPT = `set -e; umask 077; chmod 0700 /var/lib/qorpera/identity; CREDENTIALS_DIRECTORY=${RECOVERY_CREDENTIALS_DIRECTORY} /usr/bin/node /opt/qorpera-runner/qorpera-identity-recovery-restore.mjs > ${RECOVERY_RESULT_PATH}`;
 
 function recoveryRuntimeState(value: unknown): {
 	canInitialize: boolean;
@@ -986,7 +988,7 @@ export class LxdNativeLoginGateway {
 			this.#config.project,
 			instanceName,
 			`${RECOVERY_CREDENTIALS_DIRECTORY}/qorpera-recovery-target`,
-			`${targetCapability}\n`,
+			targetCapability,
 			0o600,
 			signal,
 		);

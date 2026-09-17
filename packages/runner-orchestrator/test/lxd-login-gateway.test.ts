@@ -427,6 +427,12 @@ describe("LXD native login gateway", () => {
 		]);
 		const pushed = lxd.filePushes.map((file) => file.path);
 		expect(pushed).toContain("/var/lib/qorpera-recovery/credentials/qorpera-recovery-target");
+		// The capability file is the bare capability (the restore client refuses a trailing newline),
+		// and the restore makes the identity mount private before the client runs.
+		expect(lxd.filePushes.find((f) => f.path.endsWith("qorpera-recovery-target"))!.content).toMatch(
+			/^[A-Za-z0-9_-]{43}$/,
+		);
+		expect(lxd.execCalls.some((c) => c.join(" ").includes("chmod 0700 /var/lib/qorpera/identity"))).toBe(true);
 		expect(pushed).toContain("/var/lib/qorpera-recovery/credentials/qorpera-recovery-restore");
 		const restore = JSON.parse(lxd.filePushes.find((f) => f.path.endsWith("qorpera-recovery-restore"))!.content);
 		expect(restore).toMatchObject({
