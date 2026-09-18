@@ -81,9 +81,9 @@ savepoint import_later_run;
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
 set local role authenticated;
 select public.qorpera_set_runtime_office_access((current_setting('qorpera_test.office_scope')::jsonb->>'companyComputerId')::uuid,
- '30000000-0000-4000-8000-000000000031',0,true);
+ '30000000-0000-4000-8000-000000000031',1,true);
 select public.qorpera_set_runtime_office_access((current_setting('qorpera_test.office_scope')::jsonb->>'companyComputerId')::uuid,
- '30000000-0000-4000-8000-000000000030',1,false);
+ '30000000-0000-4000-8000-000000000030',2,false);
 select set_config('qorpera_test.import_later_turn',public.qorpera_request_session_turn_v2(
  '30000000-0000-4000-8000-000000000042',extensions.gen_random_uuid(),extensions.gen_random_uuid(),
  '{"schema":"qorpera.session-prompt/v1","text":"Reuse the shared export.","images":[]}','member_connection',

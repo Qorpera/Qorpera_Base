@@ -7,7 +7,7 @@ select set_config('qorpera_test.browser_profile','34000000-0000-4000-8000-000000
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
 set local role authenticated;
 select public.qorpera_set_runtime_office_access((current_setting('qorpera_test.office_scope')::jsonb->>'companyComputerId')::uuid,
-	'30000000-0000-4000-8000-000000000031',0,true);
+	'30000000-0000-4000-8000-000000000031',1,true);
 reset role;
 -- Physical screen readiness is synthetic. The second idle desktop must still
 -- be part of the barrier, even though it has no current agent lease.

@@ -319,7 +319,9 @@ begin
 			and profile_id = v_profile and state = 'source_inventory' and projection_status = 'verified')
 		or not exists (select 1 from public.qorpera_shared_sessions where id = owner_session
 			and profile_id = v_profile and staff_agent_id = cofounder::text
-			and audience_kind = 'member_private' and audience_user_id = '31000000-0000-4000-8000-000000000001')
+			and audience_kind = 'company' and execution_scope ->> 'agentThread' = 'true')
+		or not exists (select 1 from public.qorpera_company_rooms room where room.profile_id = v_profile
+			and room.bound_staff_agent_id = cofounder and room.session_id = owner_session and room.status = 'active')
 		or (select count(*) from public.qorpera_session_inputs input
 			where input.session_id = owner_session and input.kind = 'kickoff') <> 1
 		or not exists (select 1 from public.qorpera_session_inputs input
@@ -436,7 +438,7 @@ set local role authenticated;
 select set_config('qorpera_test.builder_session',(
 	select item ->> 'session_id' from jsonb_array_elements(public.qorpera_list_shared_sessions(
 		(current_setting('qorpera_test.org_company')::jsonb ->> 'environment_id')::uuid)) item
-	where item ->> 'audience_kind' = 'member_private')::text,true);
+	where item ->> 'audience_kind' = 'company')::text,true);
 do $$
 declare v_sessions jsonb := public.qorpera_list_shared_sessions(
 	(current_setting('qorpera_test.org_company')::jsonb ->> 'environment_id')::uuid);
@@ -445,31 +447,24 @@ declare v_sessions jsonb := public.qorpera_list_shared_sessions(
 	v_bootstrap jsonb := public.qorpera_company_organization_bootstrap(
 		(current_setting('qorpera_test.org_company')::jsonb ->> 'profile_id')::uuid);
 begin
-	if jsonb_array_length(v_sessions) <> 1 or v_sessions -> 0 ->> 'audience_user_id' <>
-		'31000000-0000-4000-8000-000000000002' then
-		raise exception 'Member did not receive exactly one private Co-Founder conversation'; end if;
+	if jsonb_array_length(v_sessions) <> 1 or (v_sessions -> 0 ->> 'session_id')::uuid is distinct from v_owner_session then
+		raise exception 'Member did not receive the one shared Co-Founder thread'; end if;
 	if v_bootstrap #>> '{cofounder,member_session_id}' is distinct from current_setting('qorpera_test.builder_session')
 		or v_bootstrap #>> '{cofounder,formation_id}' is distinct from
 			current_setting('qorpera_test.org_company')::jsonb #>> '{organization,cofounder,formation_id}' then
-		raise exception 'Member organization bootstrap did not bind the member-private Co-Founder session'; end if;
-	begin
-		perform public.qorpera_read_session_events(v_owner_session);
-		raise exception 'Member read another member private conversation';
-	exception when insufficient_privilege then null; end;
-	begin
-		perform public.qorpera_create_shared_session_v2(
-			(current_setting('qorpera_test.org_company')::jsonb ->> 'environment_id')::uuid,
-			current_setting('qorpera_test.owner_client_session')::uuid,
-			'Co-Founder',(current_setting('qorpera_test.org_company')::jsonb #>>
-				'{organization,cofounder,staff_agent_id}'),null);
-		raise exception 'Legacy creation adopted another member private conversation';
-	exception when insufficient_privilege then null; end;
-	begin
-		perform public.qorpera_create_shared_session_v2(
-			(current_setting('qorpera_test.org_company')::jsonb ->> 'environment_id')::uuid,
-			'31000000-0000-4000-8000-000000000011','Leaking child',null,v_owner_session);
-		raise exception 'Private conversation became another member parent';
-	exception when insufficient_privilege then null; end;
+		raise exception 'Member organization bootstrap did not bind the shared Co-Founder thread'; end if;
+	-- The thread is one shared channel (2026-09-17 amendment): every member reads the same events.
+	perform public.qorpera_read_session_events(v_owner_session);
+	-- Legacy creation with the thread's client id adopts the one shared thread; no second Co-Founder
+	-- conversation appears for this member or anyone else.
+	perform public.qorpera_create_shared_session_v2(
+		(current_setting('qorpera_test.org_company')::jsonb ->> 'environment_id')::uuid,
+		current_setting('qorpera_test.owner_client_session')::uuid,
+		'Co-Founder',(current_setting('qorpera_test.org_company')::jsonb #>>
+			'{organization,cofounder,staff_agent_id}'),null);
+	if jsonb_array_length(public.qorpera_list_shared_sessions(
+		(current_setting('qorpera_test.org_company')::jsonb ->> 'environment_id')::uuid)) <> 1 then
+		raise exception 'Legacy creation produced a second Co-Founder conversation'; end if;
 end
 $$;
 reset role;
@@ -488,8 +483,8 @@ set local role authenticated;
 do $$
 begin
 	if jsonb_array_length(public.qorpera_list_shared_sessions(
-		(current_setting('qorpera_test.org_company')::jsonb ->> 'environment_id')::uuid)) <> 0 then
-		raise exception 'Read-only viewer received a private Co-Founder conversation'; end if;
+		(current_setting('qorpera_test.org_company')::jsonb ->> 'environment_id')::uuid)) <> 1 then
+		raise exception 'Read-only viewer does not see the one shared Co-Founder thread'; end if;
 	begin
 		perform public.qorpera_company_organization_bootstrap(
 			(current_setting('qorpera_test.org_company')::jsonb ->> 'profile_id')::uuid);
@@ -498,6 +493,17 @@ begin
 end
 $$;
 reset role;
+do $$
+begin
+	-- A viewer reads the shared thread but is not one of its participants (it cannot post or wake the agent).
+	if exists (select 1 from public.qorpera_company_room_members member
+		join public.qorpera_company_rooms room on room.id = member.room_id
+		where room.profile_id = (current_setting('qorpera_test.org_company')::jsonb ->> 'profile_id')::uuid
+			and member.principal_kind = 'member' and member.principal_id = '31000000-0000-4000-8000-000000000003'
+			and member.status = 'active') then
+		raise exception 'Read-only viewer became a participant of an agent thread'; end if;
+end
+$$;
 
 create function pg_temp.org_stage_file(p_path text,p_text text)
 returns jsonb language plpgsql security definer as $$

@@ -29,7 +29,7 @@ select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000002
 set local role authenticated;
 select pg_temp.wake_error($q$select pg_temp.office_start_request()$q$,'42501');
 select pg_temp.wake_assert(public.qorpera_runtime_office_start_status(current_setting('qorpera_test.office_scope')::jsonb)
-	=jsonb_build_object('scope',current_setting('qorpera_test.office_scope')::jsonb,'computerGeneration',1,'officeState','provisioning','intent',null),
+	=jsonb_build_object('scope',current_setting('qorpera_test.office_scope')::jsonb,'computerGeneration',1,'officeState','provisioning','intent',null,'maintenance',null),
 	'members can read an empty current start status');
 reset role;
 select pg_temp.path_claims('authenticated','35000000-0000-4000-8000-000000000099');
@@ -119,7 +119,7 @@ update public.qorpera_runtime_offices set generation=2;
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000002');
 set local role authenticated;
 select pg_temp.wake_assert(public.qorpera_runtime_office_start_status(current_setting('qorpera_test.office_scope')::jsonb)
-	=jsonb_build_object('scope',current_setting('qorpera_test.office_scope')::jsonb,'computerGeneration',2,'officeState','provisioning','intent',null),
+	=jsonb_build_object('scope',current_setting('qorpera_test.office_scope')::jsonb,'computerGeneration',2,'officeState','provisioning','intent',null,'maintenance',null),
 	'new generation does not expose stale start recovery');
 reset role;
 select pg_temp.path_claims('service_role');
@@ -194,7 +194,7 @@ reset role;
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
 set local role authenticated;
 select public.qorpera_set_runtime_office_access((current_setting('qorpera_test.office_scope')::jsonb->>'companyComputerId')::uuid,
-	'30000000-0000-4000-8000-000000000030',1,false);
+	'30000000-0000-4000-8000-000000000030',2,false);
 reset role;
 select pg_temp.path_claims('service_role');
 set local role service_role;

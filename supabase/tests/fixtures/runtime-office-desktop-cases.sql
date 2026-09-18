@@ -62,7 +62,7 @@ savepoint desktop_grant_legacy;
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
 set local role authenticated;
 select public.qorpera_set_runtime_office_access((current_setting('qorpera_test.office_scope')::jsonb->>'companyComputerId')::uuid,
- '30000000-0000-4000-8000-000000000030',2,false);
+ '30000000-0000-4000-8000-000000000030',3,false);
 select pg_temp.wake_assert(public.qorpera_runtime_office_access_status(current_setting('qorpera_test.office_scope')::jsonb,
  '30000000-0000-4000-8000-000000000030')#>'{grant,capabilities}'='["desktop"]'::jsonb,'legacy revocation preserves configured set');
 reset role;

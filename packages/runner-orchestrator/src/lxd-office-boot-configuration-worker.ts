@@ -126,7 +126,8 @@ export class LxdOfficeBootConfigurationWorker {
 		}
 	}
 	/** The digest the predecessor boot recorded for its plan: that boot's own
-	 * boot-configuration intent, or the origin configuration intent. */
+	 * boot-configuration intent, the reset configuration of an office born from
+	 * a reset, or the origin configuration intent. */
 	async #assertPlanContinuity(
 		root: string,
 		binding: LxdOfficeGuestBinding,
@@ -161,6 +162,27 @@ export class LxdOfficeBootConfigurationWorker {
 				"commandId",
 			]);
 			if (value.bootId !== predecessorBootId) continue;
+			if (predecessorSha256 !== undefined) throw new Error("predecessor boot recorded twice");
+			predecessorSha256 = officeSha(value.serviceBootstrapSha256);
+		}
+		// An office born from a reset was first configured by the reset lane, which records the plan
+		// digest of that boot under the reset's successor activation.
+		for (const name of predecessorSha256 === undefined ? (await readdir(root)).sort() : []) {
+			if (
+				!name.startsWith(`reset-configuration-${allocationId}-`) ||
+				!name.endsWith(".json") ||
+				name.length !== `reset-configuration-${allocationId}-`.length + 41
+			)
+				continue;
+			const value = officeRecord((await read(name)).value, [
+				"schema",
+				"resetId",
+				"bootId",
+				"command",
+				"serviceBootstrapSha256",
+			]);
+			if (value.schema !== "qorpera.lxd-office-reset-configuration/v1" || value.bootId !== predecessorBootId)
+				continue;
 			if (predecessorSha256 !== undefined) throw new Error("predecessor boot recorded twice");
 			predecessorSha256 = officeSha(value.serviceBootstrapSha256);
 		}

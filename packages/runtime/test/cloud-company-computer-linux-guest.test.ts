@@ -357,10 +357,14 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 		// A reset office: privacy version 16, shared, no retained challenge.
 		const f = await fixture();
 		f.state.version = 16;
+		// The run was admitted at that registry version; only the guest has not been told it yet.
+		f.resources.officePrivacyVersion = 16;
 		const session = await f.create();
 		const operation = f.operation({ kind: "screen", action: "open" });
-		await session.endpoint.authorize(operation, f.run.identity, f.lease, f.run.signal);
-		await expect(session.endpoint.perform(operation, f.lease, f.effect())).rejects.toThrow();
+		// Admission is refused at authorization already: no effect is ever attempted at an untold version.
+		await expect(session.endpoint.authorize(operation, f.run.identity, f.lease, f.run.signal)).rejects.toThrow(
+			"OFFICE_PRIVACY_FENCED",
+		);
 		expect(physical.launch).not.toHaveBeenCalled();
 		f.guest.privacy.shared?.(16);
 		// A lower baseline never replaces a higher one.

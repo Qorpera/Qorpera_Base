@@ -306,6 +306,11 @@ select profile_id,staff_id,name,role,charter,appearance_color,appearance_shape,e
 	model_provider,model_id,created_at,updated_at,updated_by_user_id from public.qorpera_profile_staff,
 	(values ('30000000-0000-4000-8000-000000000031'::uuid,'Bob'),('30000000-0000-4000-8000-000000000032'::uuid,'Carol')) b(staff_id,name)
 where staff_agent_id = '30000000-0000-4000-8000-000000000030';
+-- This file exercises wake mechanics with each agent's plain company conversation as its public
+-- audience. The agents' shared threads (created with the staff rows, 2026-09-17 amendment) are
+-- retired here; the final block reopens one and proves it is the first public audience.
+update public.qorpera_shared_sessions set status = 'closed'
+where environment_id = '30000000-0000-4000-8000-000000000020' and execution_scope ->> 'agentThread' = 'true';
 insert into public.qorpera_shared_sessions(id,client_session_id,profile_id,environment_id,title,status,
 	created_by_user_id,staff_agent_id,staff_version,execution_scope)
 select session_id,extensions.gen_random_uuid(),profile_id,'30000000-0000-4000-8000-000000000020',display_name,'open',
@@ -923,4 +928,25 @@ begin
 end
 $$;
 
+-- The agent's shared thread is its first public audience; a routine wake is admitted into it.
+select pg_temp.path_claims('service_role');
+do $$
+declare v_thread uuid; v_routine jsonb; v_wake uuid;
+begin
+	update public.qorpera_shared_sessions set status = 'open'
+	where environment_id = '30000000-0000-4000-8000-000000000020' and execution_scope ->> 'agentThread' = 'true'
+		and staff_agent_id = '30000000-0000-4000-8000-000000000031' returning id into strict v_thread;
+	update public.qorpera_shared_sessions set status = 'open' where id = '30000000-0000-4000-8000-000000000042';
+	perform pg_temp.wake_assert(public.qorpera_wake_public_session('30000000-0000-4000-8000-000000000010',
+		'30000000-0000-4000-8000-000000000020','30000000-0000-4000-8000-000000000031',null) = v_thread,
+		'The agent thread precedes the plain company conversation as the public audience');
+	v_routine := pg_temp.wake_routine('30000000-0000-4000-8000-000000000031',
+		jsonb_build_object('id','tick','kind','schedule','intervalMinutes',5,'replyPolicy','required'));
+	v_wake := pg_temp.wake_schedule(v_routine,'thread-audience');
+	perform pg_temp.wake_assert((select session_id from public.qorpera_wake_occurrences where id = v_wake) = v_thread,
+		'A reporting routine wake is pinned to the agent thread');
+	perform pg_temp.wake_assert(jsonb_array_length(public.qorpera_materialize_wake_execution_runs(1)) = 1,
+		'A routine wake into the agent thread is authorised and materializes');
+end
+$$;
 rollback;

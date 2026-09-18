@@ -50,7 +50,7 @@ export async function createOfficeCombinedControl(root, { rebuild = false } = {}
 ${await readFile(join(root, "supabase/tests/fixtures/runtime-office-company-file-source.sql"), "utf8")}
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
 set local role authenticated;
-select public.qorpera_set_runtime_office_access((current_setting('qorpera_test.office_scope')::jsonb->>'companyComputerId')::uuid,'30000000-0000-4000-8000-000000000031',0,true);
+select public.qorpera_set_runtime_office_access((current_setting('qorpera_test.office_scope')::jsonb->>'companyComputerId')::uuid,'30000000-0000-4000-8000-000000000031',1,true);
 select public.qorpera_register_runtime_browser_profile(current_setting('qorpera_test.office_scope')::jsonb,'34000000-0000-4000-8000-000000000071');
 reset role;
 -- Existing signed-in profile preparation is a fixture, consent is an actual owner RPC.

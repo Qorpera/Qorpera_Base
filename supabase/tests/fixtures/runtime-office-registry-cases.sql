@@ -16,9 +16,11 @@ select pg_temp.wake_assert(public.qorpera_register_runtime_office(
 select pg_temp.wake_error($q$select public.qorpera_register_runtime_office(
 	'30000000-0000-4000-8000-000000000020','34000000-0000-4000-8000-000000000001',repeat('c',64),repeat('b',64),2)$q$,'23505');
 select set_config('qorpera_test.office_scope',(current_setting('qorpera_test.office')::jsonb-'state')::text,true);
+-- Every active agent already holds the default grant (version 1, 2026-09-17 amendment); the owner's
+-- explicit configuration is therefore the second version, and a replay of the first is stale.
 select set_config('qorpera_test.office_grant',public.qorpera_set_runtime_office_access(
 	(current_setting('qorpera_test.office')::jsonb->>'companyComputerId')::uuid,
-	'30000000-0000-4000-8000-000000000030',0,true)::text,true);
+	'30000000-0000-4000-8000-000000000030',1,true)::text,true);
 select pg_temp.wake_error($q$select public.qorpera_set_runtime_office_access(
 	(current_setting('qorpera_test.office')::jsonb->>'companyComputerId')::uuid,
 	'30000000-0000-4000-8000-000000000030',0,true)$q$,'PGRST');
@@ -69,7 +71,7 @@ select pg_temp.wake_error($q$update public.qorpera_logical_computers set compute
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
 set local role authenticated;
 select public.qorpera_set_runtime_office_access((current_setting('qorpera_test.office')::jsonb->>'companyComputerId')::uuid,
-	'30000000-0000-4000-8000-000000000030',1,false);
+	'30000000-0000-4000-8000-000000000030',2,false);
 reset role;
 select pg_temp.path_claims('service_role');
 set local role service_role;
@@ -81,7 +83,7 @@ reset role;
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
 set local role authenticated;
 select public.qorpera_set_runtime_office_access((current_setting('qorpera_test.office')::jsonb->>'companyComputerId')::uuid,
-	'30000000-0000-4000-8000-000000000030',2,true);
+	'30000000-0000-4000-8000-000000000030',3,true);
 reset role;
 select pg_temp.path_claims('service_role');
 set local role service_role;
