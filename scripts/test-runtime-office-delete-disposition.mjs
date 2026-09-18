@@ -107,7 +107,11 @@ try {
 	await databaseReady();
 	docker(psql.map(x => x === "postgres" ? "fixture_admin" : x), "create role postgres login superuser; grant all on database office to postgres;");
 	docker(psql, readFileSync(join(root, "supabase/tests/bootstrap.sql"), "utf8"));
-	const migrations = sortMigrationNames(readdirSync(join(root, "supabase/migrations"))).filter(name => !name.includes("runtime_bundle_activation_v26"));
+	// The newest bundle activation is held back: the cases apply it mid-test as "a newer bundle than the office was built for".
+	const names = sortMigrationNames(readdirSync(join(root, "supabase/migrations")));
+	const future = names.filter(name => /runtime_bundle_activation_v\d+\.sql$/.test(name)).sort((l, r) => Number(/_v(\d+)\.sql$/.exec(l)[1]) - Number(/_v(\d+)\.sql$/.exec(r)[1])).at(-1);
+	assert.ok(future);
+	const migrations = names.filter(name => name !== future);
 	for (const name of migrations) docker(psql, readFileSync(join(root, "supabase/migrations", name), "utf8"));
 	docker(psql, readFileSync(join(root, "supabase/tests/fixtures/runtime-node-inventory-observer.sql"), "utf8"));
 	const wake = readFileSync(join(root, "supabase/tests/300_runtime_wake_bus.test.sql"), "utf8").split("-- END WAKE FIXTURE");

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {readFileSync} from 'node:fs';
+import {readdirSync,readFileSync} from 'node:fs';
 import {createHash,randomUUID} from 'node:crypto';
 import {enrollOriginalSoftwareFixture,officePackageSqlFixture} from './test-runtime-office-package-cases.mjs';
 
@@ -216,7 +216,8 @@ export async function testOfficeResetChain({stop,attestation,scope,binding,servi
   `update public.qorpera_runtime_office_screens set drain_pending=true,drain_id=extensions.gen_random_uuid(),drain_acknowledged_at=null;`,
   `update public.qorpera_profile_members set role='contributor' where user_id='${document.operator.principalId}';`
  ])await deny(`begin;reset role;${mutation}${owner}${dispose()}rollback;`,owner);
- const futureBundle=readFileSync(new URL('../supabase/migrations/20260913200000_runtime_bundle_activation_v26.sql',import.meta.url),'utf8');
+ const futureName=readdirSync(new URL('../supabase/migrations/',import.meta.url)).filter(name=>/runtime_bundle_activation_v\d+\.sql$/.test(name)).sort((l,r)=>Number(/_v(\d+)\.sql$/.exec(l)[1])-Number(/_v(\d+)\.sql$/.exec(r)[1])).at(-1);
+ const futureBundle=readFileSync(new URL('../supabase/migrations/'+futureName,import.meta.url),'utf8');
  await refuse(`begin;reset role;${futureBundle}${owner}${dispose()}rollback;`,/bundle/,owner);
  assert.equal(auditCount(),0);assert.equal(snapshot(),preservedAdmin);
  console.log('PASS: provider/ordinary session/helper/table/null/identity/phase/digest/revision/privacy/pause/package/membership refusals preserve all rows');
