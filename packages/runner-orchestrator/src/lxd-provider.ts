@@ -1597,8 +1597,11 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			return;
 		}
 		await this.#ensureIdentityVolume(current, current.runner.computeIdentityId, signal);
-		await this.#ensureRecoveryVolume(current, signal);
 		const instance = await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal);
+		// A lost run never restarts. When its guest is gone as well, a recovery volume that was never
+		// created (the run was lost before its first start) is not a fault; every other journal still
+		// has to name its retained recovery volume.
+		if (instance || current.physicalState !== "lost") await this.#ensureRecoveryVolume(current, signal);
 		if (!instance) {
 			// A timed-out create/start may still be pending in LXD. Missing is
 			// deletion proof only after a fully registered or retired guest.

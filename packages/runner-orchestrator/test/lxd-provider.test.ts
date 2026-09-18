@@ -722,6 +722,50 @@ describe("LXD cloud runner provider", () => {
 			);
 		expect(releases).toHaveLength(reserving.capacityRegistered ? 1 : 0);
 	});
+	it("reconciles a lost journal whose guest and recovery volume never existed", async () => {
+		const directory = await root();
+		const settings = governedConfig(join(directory, "state"));
+		const lxd = new FakeLxd();
+		const guest = new FakeGuest();
+		const fetcher = fetchProvisioner([]);
+		const backend = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetcher);
+		await backend.acquire(runId, work(), new AbortController().signal);
+		const journal = JSON.parse(await readFile(join(settings.stateRoot, runId, "journal.json"), "utf8"));
+		const variant = (id: string, physicalState: string) => {
+			const copy = {
+				...journal,
+				acquisitionId: id,
+				runId: id,
+				instanceName: `qorpera-${id.replaceAll("-", "")}`,
+				physicalState,
+				lxd: {
+					...journal.lxd,
+					companyRuntime: { ...journal.lxd.companyRuntime, recoveryVolume: `native-recovery-${id}` },
+				},
+			};
+			for (const key of ["nodeCapacity", "capacityRegistered", "guestAddress", "assignmentId"]) delete copy[key];
+			return copy;
+		};
+		const lostId = "10000000-0000-4000-8000-000000000003";
+		await mkdir(join(settings.stateRoot, lostId), { recursive: true, mode: 0o700 });
+		await writeFile(join(settings.stateRoot, lostId, "journal.json"), JSON.stringify(variant(lostId, "lost")), {
+			mode: 0o600,
+		});
+		await backend.reconcile();
+		expect(JSON.parse(await readFile(join(settings.stateRoot, lostId, "journal.json"), "utf8"))).toMatchObject({
+			physicalState: "lost",
+		});
+		expect(lxd.volumes.has(`native-recovery-${lostId}`)).toBe(false);
+		// A journal that is not lost still has to name its retained recovery volume.
+		const stoppedId = "10000000-0000-4000-8000-000000000004";
+		await mkdir(join(settings.stateRoot, stoppedId), { recursive: true, mode: 0o700 });
+		await writeFile(
+			join(settings.stateRoot, stoppedId, "journal.json"),
+			JSON.stringify(variant(stoppedId, "stopped")),
+			{ mode: 0o600 },
+		);
+		await expect(backend.reconcile()).rejects.toThrow("Native recovery volume is missing");
+	});
 	it("reports a typed admission refusal from the reservation", async () => {
 		const directory = await root();
 		const stateRoot = join(directory, "state");
