@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { type FileHandle, link, mkdtemp, open, readFile, realpath, rm, unlink } from "node:fs/promises";
+import { type FileHandle, link, lstat, mkdtemp, open, readdir, readFile, realpath, rm, unlink } from "node:fs/promises";
 import { CLOUD_FILE_TRANSFER_MAX_BYTES, parseWorkbenchFilePath } from "@qorpera/cloud-client/cloud-file-transfer";
 import { readCompanyComputerWorkbenchFile } from "./cloud-company-computer-file-reader.ts";
 
@@ -10,7 +10,42 @@ import { readCompanyComputerWorkbenchFile } from "./cloud-company-computer-file-
  * Private staging permits an atomic hard-link publication without exposing a
  * replaceable source name. The destination is never overwritten or rolled back.
  * A concurrent workspace edit may invalidate completion and retain an unknown
- * effect; it cannot cause cleanup to delete the public destination. */
+ * effect; it cannot cause cleanup to delete the public destination.
+ *
+ * The persistent workbench may be a network filesystem (NFS, also behind
+ * virtiofs). There an unlinked inode that some layer still holds open stays in
+ * its directory under a server-chosen ".nfs…" placeholder name until the last
+ * holder lets go. The destination link shares that inode, so the staging
+ * directory cannot always be emptied at once. That is cleanup debt inside the
+ * broker-private parent, never an import failure; later imports sweep it. */
+const NETWORK_PLACEHOLDER = /^\.nfs[0-9a-f]{8,64}$/;
+const STAGING_NAME = /^\.qorpera-import-[A-Za-z0-9]{6}$/;
+const STAGING_SWEEP_AGE_MS = 10 * 60_000;
+
+/** Exported for its unit test only. */
+export async function removeCompanyComputerImportStaging(directory: string): Promise<void> {
+	try {
+		await rm(directory, { recursive: true, force: false });
+	} catch (error) {
+		const names = await readdir(directory).catch(() => undefined);
+		if (!names || !names.length || !names.every((name) => NETWORK_PLACEHOLDER.test(name))) throw error;
+	}
+}
+
+async function sweepStaging(stagingPath: string, uid: bigint): Promise<void> {
+	const names = await readdir(stagingPath).catch(() => [] as string[]);
+	for (const name of names.filter((entry) => STAGING_NAME.test(entry)).slice(0, 64)) {
+		const directory = `${stagingPath}/${name}`;
+		try {
+			const info = await lstat(directory, { bigint: true });
+			if (!info.isDirectory() || info.uid !== uid || Date.now() - Number(info.mtimeMs) < STAGING_SWEEP_AGE_MS)
+				continue;
+			await removeCompanyComputerImportStaging(directory);
+		} catch {
+			// Best effort: a placeholder that is still held simply waits for a later sweep.
+		}
+	}
+}
 export async function writeCompanyComputerWorkbenchFile(
 	root: FileHandle,
 	stagingRoot: FileHandle,
@@ -45,11 +80,12 @@ export async function writeCompanyComputerWorkbenchFile(
 	const parents: Array<{ file: FileHandle; path: string }> = [{ file: root, path: rootPath }];
 	let temporary: string | undefined, source: FileHandle | undefined;
 	const closeFiles = async () => {
-		const closed = await Promise.allSettled([
-			source?.close(),
-			...parents.slice(1).map(({ file }) => file.close()),
-			temporary ? rm(temporary, { recursive: true, force: false }) : undefined,
-		]);
+		// Handles close before the staging directory goes: an open descriptor is
+		// exactly what turns an unlink into a network placeholder.
+		const closed = await Promise.allSettled([source?.close(), ...parents.slice(1).map(({ file }) => file.close())]);
+		closed.push(
+			...(await Promise.allSettled([temporary ? removeCompanyComputerImportStaging(temporary) : undefined])),
+		);
 		const failed = closed.find((entry) => entry.status === "rejected");
 		if (failed?.status === "rejected") throw failed.reason;
 	};
@@ -69,6 +105,7 @@ export async function writeCompanyComputerWorkbenchFile(
 		signal.throwIfAborted();
 		await check(parents[0]);
 		await check({ file: stagingRoot, path: stagingPath }, true);
+		await sweepStaging(fdPath(stagingRoot), uid);
 		const parts = path.split("/");
 		for (const component of parts.slice(0, -1)) {
 			signal.throwIfAborted();
@@ -118,6 +155,8 @@ export async function writeCompanyComputerWorkbenchFile(
 		// link() is no-replace, including existing symlinks and directories. The
 		// source name is broker-private; the target parent is the checked inode.
 		await link(sourcePath, `${fdPath(parent.file)}/${parts.at(-1)!}`);
+		await source.close();
+		source = undefined;
 		await unlink(sourcePath);
 		await parent.file.sync();
 		for (const entry of parents) await check(entry);

@@ -195,6 +195,8 @@ function json(response: ServerResponse, value: unknown, observation?: MemberRequ
 	response.end(encoded);
 }
 
+const UPLOAD_BODY_DEADLINE_MS = 25_000;
+
 function uploadIntent(request: IncomingMessage): { intended: Plan; source: Record<string, unknown>; manifest: Buffer } {
 	const encoded = request.headers["x-qorpera-company-upload"];
 	if (
@@ -301,6 +303,9 @@ async function uploadBytes(
 	if (!file) throw new ObjectDependencyError(400);
 	const buffers: Buffer[] = [];
 	let count = 0;
+	// Receiving up to 8 MiB from a member's own link is not a storage dependency: the
+	// default 5 s object deadline refused ordinary uploads on slower connections. The
+	// request's own 30 s budget (signal) and the proxy's idle body timeout still bound it.
 	await boundedObjectOperation(async () => {
 		for await (const part of request) {
 			signal.throwIfAborted();
@@ -309,7 +314,7 @@ async function uploadBytes(
 			if (count > file.bytes) throw new ObjectDependencyError(413);
 			buffers.push(bytes);
 		}
-	});
+	}, UPLOAD_BODY_DEADLINE_MS);
 	signal.throwIfAborted();
 	const bytes = Buffer.concat(buffers);
 	if (count !== file.bytes || createHash("sha256").update(bytes).digest("hex") !== file.fileSha256)

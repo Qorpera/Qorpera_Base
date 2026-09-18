@@ -598,6 +598,11 @@ export class CloudMemberCompanyFileClient {
 						throw new Error("Company File changed. Reload this path before editing again.");
 					if (response.status === 401 || response.status === 403)
 						throw new Error("Company File access was denied. Check your membership or sign in again.");
+					// A 400 is a definite refusal before anything was saved (for example a missing folder).
+					if (response.status === 400)
+						throw new Error(
+							"Company File did not accept this change. Check that the folder exists and the name is allowed.",
+						);
 					throw new Error(
 						"Company File is unavailable. A save may already have completed; check its status before retrying.",
 					);
