@@ -4,8 +4,12 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CloudAgentMouth, type CloudAgentSendInput, type CloudAgentSendReceipt } from "../../src/cloud-agent-mouth.ts";
-import { OfficialCliNativeHarnessDriver } from "../../src/cloud-native-provider-host.ts";
+import {
+	CloudAgentMouth,
+	type CloudAgentSendInput,
+	type CloudAgentSendReceipt,
+} from "@qorpera/runtime/cloud-agent-mouth";
+import { OfficialCliNativeHarnessDriver } from "@qorpera/runtime/cloud-native-provider-host";
 
 /** Exercises the installed official CLI, with a loopback scripted provider and no real credentials or model calls. */
 export async function runOfficialCodexMouthProbe(codexCommand: readonly [string, ...string[]]): Promise<{

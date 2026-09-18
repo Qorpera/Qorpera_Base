@@ -1,0 +1,70 @@
+{
+  "schema": "qorpera.runtime-acceptance-failed-attempts/v1",
+  "recordedAt": "2026-09-06T20:36:38.242Z",
+  "runtimeBundleSha256": "229ceb4522bbaad4a6dcf38d69b9cb6e1b93f394ddd405be6f250e90941da6e7",
+  "failedAcceptance": [
+    {
+      "runId": "6dfdf7d7-8f9a-4388-843e-5264a9cfff34",
+      "acceptancePassed": false,
+      "terminalStatus": "completed",
+      "attempts": 2,
+      "dispatchFailures": 0,
+      "durableResults": 1,
+      "finishedAt": "2026-09-06T20:20:52.71056+00:00",
+      "reason": "Continuation tool arguments were rejected; no Company File read.",
+      "witness": {
+        "path": "outputs/runtime-custody-3c0bf3bce/handoff-native-state-v12-1788726926885.json",
+        "sha256": "82a3ce19697870a633fddb018077b396556987b90ccab25c62c982c2e304bb34"
+      }
+    },
+    {
+      "runId": "0546380f-cd6d-4567-a060-d7fdfbc58705",
+      "acceptancePassed": false,
+      "terminalStatus": "failed",
+      "attempts": 2,
+      "dispatchFailures": 1,
+      "durableResults": 0,
+      "finishedAt": "2026-09-06T20:23:58.027712+00:00",
+      "reason": "Replacement attempt failed during startup; root cause not established.",
+      "witness": {
+        "path": "outputs/runtime-custody-3c0bf3bce/handoff-native-state-v12b-1788726926837.json",
+        "sha256": "c63c7fe42151d25dfb3fa90c873cdfd6ff80ab49aa411410cfb85bd674176aa6"
+      }
+    },
+    {
+      "runId": "b25a8da2-06d7-4656-9a55-ff27a2aff2a9",
+      "acceptancePassed": false,
+      "terminalStatus": "failed",
+      "attempts": 2,
+      "dispatchFailures": 0,
+      "durableResults": 0,
+      "finishedAt": "2026-09-06T20:26:54.239576+00:00",
+      "reason": "Replacement attempt failed during startup; root cause not established.",
+      "witness": {
+        "path": "outputs/runtime-custody-3c0bf3bce/handoff-native-state-v12c-1788726926837.json",
+        "sha256": "3749d4e121d3487f37189f7da07e42565c7091efcf0fde1d82df2af00b9cf15b"
+      }
+    }
+  ],
+  "subsequentSuccessfulRun": "dca1a05e-6de1-44bc-bc72-23437d8ad68a",
+  "subsequentSuccessRequiredCodeOrPolicyChange": false,
+  "productionHistoryRewritten": false,
+  "diagnostics": [
+    {
+      "path": "outputs/runtime-live-53e8fd0ef/STARTUP-LOGS.json",
+      "sha256": "8f3d2f2fb8429daf84d43a0523bead108c9d6b39436a45f4b32e16601325a431"
+    },
+    {
+      "path": "outputs/runtime-live-53e8fd0ef/WAKE-PARSER-DIAGNOSTIC.json",
+      "sha256": "7951decef9749ab36c1982ddeea5290cfd19d23c8f3917e1f0f4446ae55dc92c"
+    },
+    {
+      "path": "outputs/runtime-live-3c0bf3bce/v12-third-canary.diagnostics.json",
+      "sha256": "d9328d307ab8fd399cef3e5c8b6bdedcf5d839790ce675105187c0afa06be6b0"
+    }
+  ],
+  "limits": [
+    "Closed diagnostic hashes identify wake-envelope / unknown at startup. Stored wake authorization and exact SQL envelope projections pass; this does not establish the live transport failure cause.",
+    "The successful canary recovered one provider dispatch failure automatically before its replacement attempt. This is not zero-failure availability evidence."
+  ]
+}

@@ -1,13 +1,19 @@
 import { link, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import type {
+	HostedArtifactIndex,
+	HostedArtifactIndexEntry,
+	HostedCompanyOperation,
+	HostedCompanySnapshot,
+	HostedCompanySubstrateVersion,
+} from "@qorpera/cloud-client/hosted-primary";
+import { captureCloudCompanyTree } from "@qorpera/cloud-client/node/cloud-company-snapshot";
+import type { ResolvedCompanySubstrateReference } from "@qorpera/cloud-client/node/cloud-company-substrate";
+import { CloudContentAddressedStore, type CloudObjectTransport } from "@qorpera/cloud-client/node/cloud-object-store";
+import type { CloudRunnerJob } from "@qorpera/cloud-client/node/cloud-runner-protocol";
 import { scaffoldCompany } from "@qorpera/pi-coding-agent/company";
 import type { JsonValue } from "@qorpera/pi-protocol";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { captureCloudCompanyTree } from "../src/cloud-company-snapshot.ts";
-import type { ResolvedCompanySubstrateReference } from "../src/cloud-company-substrate.ts";
-import { CloudContentAddressedStore, type CloudObjectTransport } from "../src/cloud-object-store.ts";
-import type { CloudRunnerJob } from "../src/cloud-runner-control.ts";
 import type {
 	CloudRunnerCanonicalTranscriptEvent,
 	CloudRunnerQueuedInput,
@@ -17,15 +23,9 @@ import type {
 	CloudRunnerSandboxRequest,
 	CloudRunnerSubstrateResolver,
 	ResolvedCloudRunnerExecutionContext,
-} from "../src/cloud-runner-sandbox.ts";
-import { executeCloudRunnerJob } from "../src/cloud-runner-sandbox.ts";
-import type {
-	HostedArtifactIndex,
-	HostedArtifactIndexEntry,
-	HostedCompanyOperation,
-	HostedCompanySnapshot,
-	HostedCompanySubstrateVersion,
-} from "../src/hosted-primary.ts";
+} from "@qorpera/runtime/cloud-runner-sandbox";
+import { executeCloudRunnerJob } from "@qorpera/runtime/cloud-runner-sandbox";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const profileId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
 const environmentId = "73dc6943-b71c-4ba4-a38d-78da0861e0dc";

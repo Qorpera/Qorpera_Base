@@ -1,0 +1,269 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 0077
+
+# Computer-specific wrapper adapted from codex/step3-remaining-ops. The
+# authenticated guest supervisor must verify containment before invocation,
+# supply ONLY the environment below, and reap this entire service on recovery.
+# No service/provider credentials, canonical Company File mount, or ambient
+# browser profile is admitted here. Browser launch belongs to the grant broker.
+if [[ $# -ne 3 ]]; then
+	echo "usage: qorpera-screen-session <screen_uuid> <ordinal> <display>" >&2
+	exit 64
+fi
+screen_id=$1
+ordinal=$2
+display=$3
+if [[ ! ${screen_id} =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ||
+	! ${ordinal} =~ ^([1-9]|[12][0-9]|3[0-2])$ || ${display} != ":${ordinal}" ]]; then
+	echo "Invalid screen binding." >&2
+	exit 64
+fi
+workbench_root=${QORPERA_WORKBENCH_ROOT:?Required noncanonical workbench}
+desktop_home=${QORPERA_DESKTOP_HOME:?Required desktop home}
+screen_state_root=${QORPERA_SCREEN_STATE_ROOT:?Required desktop state root}
+runtime_root=${QORPERA_SCREEN_RUNTIME_ROOT:?Required supervisor-owned ephemeral runtime root}
+for directory in "${workbench_root}" "${desktop_home}" "${screen_state_root}" "${runtime_root}"; do
+	if [[ ${directory} != /* || ${directory} == / || ! -d ${directory} || -L ${directory} ||
+		$(/usr/bin/realpath -e -- "${directory}") != "${directory}" ||
+		${directory} =~ (^|/)(live|company-live|identity|credentials|\.codex|\.claude)(/|$) ]]; then
+		echo "Unsafe desktop directory." >&2
+		exit 65
+	fi
+done
+screen_state="${screen_state_root}/${screen_id}"
+runtime_dir="${runtime_root}/${screen_id}"
+mkdir -p "${screen_state}" "${screen_state}/config" "${screen_state}/cache" "${screen_state}/data" "${runtime_dir}"
+for directory in "${screen_state}" "${screen_state}/config" "${screen_state}/cache" "${screen_state}/data" "${runtime_dir}"; do
+	if [[ -L ${directory} || $(/usr/bin/realpath -e -- "${directory}") != "${directory}" ]]; then
+		echo "Unsafe desktop state alias." >&2
+		exit 65
+	fi
+done
+wallpaper=${QORPERA_SCREEN_WALLPAPER:?Required agent wallpaper from the verified guest helper}
+if [[ ${wallpaper} != "${screen_state}/wallpaper.png" || ! -s ${wallpaper} || ! -f ${wallpaper} ||
+	-L ${wallpaper} || $(/usr/bin/realpath -e -- "${wallpaper}") != "${wallpaper}" ||
+	! -x /usr/local/bin/qorpera-screen-xfce ]]; then
+	echo "The bound screen wallpaper or desktop helper is unavailable." >&2
+	exit 65
+fi
+# Optional desktop appearance published by the verified guest helper next to
+# the wallpaper: an hourly backdrop set (tone-on-tone agent figure following
+# the company's local day) and the IANA zone that keeps the desktop clock,
+# terminal and backdrop cycle on that local time. Absent files keep UTC and
+# the static wallpaper; malformed files are refused, never guessed at.
+time_zone=Etc/UTC
+if [[ -e ${screen_state}/time-zone ]]; then
+	if [[ -L ${screen_state}/time-zone || ! -f ${screen_state}/time-zone ]]; then
+		echo "Unsafe screen time zone." >&2
+		exit 65
+	fi
+	read -r time_zone < "${screen_state}/time-zone" || true
+	if [[ ! ${time_zone} =~ ^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+){0,2}$ || ${#time_zone} -gt 64 ||
+		! -f /usr/share/zoneinfo/${time_zone} ]]; then
+		echo "Unsafe screen time zone." >&2
+		exit 65
+	fi
+fi
+backdrops=""
+if [[ -e ${screen_state}/backdrops ]]; then
+	backdrops="${screen_state}/backdrops"
+	if [[ -L ${backdrops} || ! -d ${backdrops} || $(/usr/bin/realpath -e -- "${backdrops}") != "${backdrops}" ]]; then
+		echo "Unsafe screen backdrop set." >&2
+		exit 65
+	fi
+	for ((h = 0; h < 24; h++)); do
+		printf -v hour '%02d' "${h}"
+		if [[ -L ${backdrops}/${hour}.png || ! -s ${backdrops}/${hour}.png || ! -f ${backdrops}/${hour}.png ]]; then
+			echo "Incomplete screen backdrop set." >&2
+			exit 65
+		fi
+	done
+fi
+# The dock holds exactly the office tools: a terminal and file manager in the
+# workbench, and the office browser control. Chromium itself only ever starts
+# through the grant broker; the launcher raises or explains it. Everything is
+# rewritten on each start so the desktop never drifts from the image recipe.
+panel_config="${screen_state}/config/xfce4/xfconf/xfce-perchannel-xml"
+launchers="${screen_state}/config/xfce4/panel"
+terminal_config="${screen_state}/config/xfce4/terminal"
+mkdir -p "${panel_config}" "${launchers}/launcher-4" "${launchers}/launcher-5" "${launchers}/launcher-6" "${terminal_config}"
+for directory in "${panel_config}" "${launchers}" "${terminal_config}"; do
+	if [[ -L ${directory} || $(/usr/bin/realpath -e -- "${directory}") != "${directory}" ]]; then
+		echo "Unsafe desktop configuration alias." >&2
+		exit 65
+	fi
+done
+write_desktop_file() {
+	local target=$1
+	local temporary="${target}.tmp.$$"
+	cat > "${temporary}"
+	mv -f -- "${temporary}" "${target}"
+}
+write_desktop_file "${panel_config}/xfce4-panel.xml" <<'PANEL'
+<?xml version="1.0" encoding="UTF-8"?>
+
+<channel name="xfce4-panel" version="1.0">
+  <property name="configver" type="int" value="2"/>
+  <property name="panels" type="array">
+    <value type="int" value="1"/>
+    <value type="int" value="2"/>
+    <property name="dark-mode" type="bool" value="true"/>
+    <property name="panel-1" type="empty">
+      <property name="position" type="string" value="p=6;x=0;y=0"/>
+      <property name="length" type="uint" value="100"/>
+      <property name="position-locked" type="bool" value="true"/>
+      <property name="icon-size" type="uint" value="16"/>
+      <property name="size" type="uint" value="26"/>
+      <property name="plugin-ids" type="array">
+        <value type="int" value="1"/>
+        <value type="int" value="2"/>
+        <value type="int" value="3"/>
+      </property>
+    </property>
+    <property name="panel-2" type="empty">
+      <property name="autohide-behavior" type="uint" value="0"/>
+      <property name="position" type="string" value="p=10;x=0;y=0"/>
+      <property name="length" type="uint" value="1"/>
+      <property name="position-locked" type="bool" value="true"/>
+      <property name="size" type="uint" value="48"/>
+      <property name="plugin-ids" type="array">
+        <value type="int" value="4"/>
+        <value type="int" value="5"/>
+        <value type="int" value="6"/>
+      </property>
+    </property>
+  </property>
+  <property name="plugins" type="empty">
+    <property name="plugin-1" type="string" value="tasklist">
+      <property name="grouping" type="uint" value="1"/>
+    </property>
+    <property name="plugin-2" type="string" value="separator">
+      <property name="expand" type="bool" value="true"/>
+      <property name="style" type="uint" value="0"/>
+    </property>
+    <property name="plugin-3" type="string" value="clock"/>
+    <property name="plugin-4" type="string" value="launcher">
+      <property name="items" type="array">
+        <value type="string" value="qorpera-terminal.desktop"/>
+      </property>
+    </property>
+    <property name="plugin-5" type="string" value="launcher">
+      <property name="items" type="array">
+        <value type="string" value="qorpera-files.desktop"/>
+      </property>
+    </property>
+    <property name="plugin-6" type="string" value="launcher">
+      <property name="items" type="array">
+        <value type="string" value="qorpera-browser.desktop"/>
+      </property>
+    </property>
+  </property>
+</channel>
+PANEL
+write_desktop_file "${launchers}/launcher-4/qorpera-terminal.desktop" <<DESKTOP
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Terminal
+Comment=Shell in the company workbench
+Exec=xfce4-terminal
+Path=${workbench_root}
+Icon=utilities-terminal
+Terminal=false
+StartupNotify=false
+DESKTOP
+write_desktop_file "${launchers}/launcher-5/qorpera-files.desktop" <<DESKTOP
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Files
+Comment=Company workbench files
+Exec=thunar .
+Path=${workbench_root}
+Icon=system-file-manager
+Terminal=false
+StartupNotify=false
+DESKTOP
+write_desktop_file "${launchers}/launcher-6/qorpera-browser.desktop" <<'DESKTOP'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Browser
+Comment=Office browser on this screen
+Exec=/usr/local/bin/qorpera-screen-browser
+Icon=web-browser
+Terminal=false
+StartupNotify=false
+DESKTOP
+# The office account carries no login shell; the terminal runs Bash explicitly.
+write_desktop_file "${terminal_config}/terminalrc" <<'TERMINAL'
+[Configuration]
+RunCustomCommand=TRUE
+CustomCommand=/usr/bin/bash
+MiscDefaultWorkingDir=
+TERMINAL
+cd "${workbench_root}"
+mkdir -p /tmp/.ICE-unix
+chmod 1777 /tmp/.ICE-unix
+xvnc_pid=""
+session_pid=""
+cleanup() {
+	trap - EXIT TERM INT
+	for child in "${session_pid}" "${xvnc_pid}"; do
+		[[ -n ${child} ]] && kill -TERM -- "-${child}" 2>/dev/null || true
+	done
+	for (( attempt=0; attempt<30; attempt++ )); do
+		alive=false
+		for child in "${session_pid}" "${xvnc_pid}"; do
+			if [[ -n ${child} ]] && kill -0 -- "-${child}" 2>/dev/null; then alive=true; fi
+		done
+		[[ ${alive} == false ]] && break
+		sleep 0.1
+	done
+	for child in "${session_pid}" "${xvnc_pid}"; do
+		if [[ -n ${child} ]]; then
+			kill -KILL -- "-${child}" 2>/dev/null || true
+			wait "${child}" 2>/dev/null || true
+		fi
+	done
+}
+trap cleanup EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
+
+# Both sockets are confined behind the guest broker. No TCP RFB/X listener,
+# clipboard forwarding, resize or in-session configuration override is allowed.
+# -noreset keeps the assigned X socket alive when the last client disconnects.
+/usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 HOME="${desktop_home}" \
+	/usr/bin/setsid /usr/bin/Xtigervnc "${display}" -rfbport -1 \
+	-rfbunixpath "${runtime_dir}/viewer.sock" -rfbunixmode 0600 -nolisten tcp -ac -noreset -rendernode '' \
+	-SecurityTypes None -AlwaysShared -DisconnectClients=0 -AcceptSetDesktopSize=0 \
+	-AcceptCutText=0 -SendCutText=0 -SendPrimary=0 -SetPrimary=0 -AllowOverride '' \
+	-geometry 1920x1200 -depth 24 -desktop "Qorpera Screen ${ordinal}" >&2 &
+xvnc_pid=$!
+ready=false
+for (( attempt=0; attempt<50; attempt++ )); do
+	if DISPLAY=${display} /usr/bin/xset q >/dev/null 2>&1; then ready=true; break; fi
+	if ! kill -0 "${xvnc_pid}" 2>/dev/null; then exit 1; fi
+	sleep 0.2
+done
+if [[ ${ready} != true ]]; then echo "Display did not become ready." >&2; exit 1; fi
+
+/usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 HOME="${desktop_home}" DISPLAY="${display}" \
+	SHELL=/usr/bin/bash TZ="${time_zone}" QORPERA_SCREEN_BACKDROPS="${backdrops}" \
+	XDG_RUNTIME_DIR="${runtime_dir}" XDG_CONFIG_HOME="${screen_state}/config" \
+	XDG_CACHE_HOME="${screen_state}/cache" XDG_DATA_HOME="${screen_state}/data" \
+	/usr/bin/setsid /usr/bin/dbus-run-session -- /usr/local/bin/qorpera-screen-xfce "${wallpaper}" >&2 &
+session_pid=$!
+ready=false
+for (( attempt=0; attempt<75; attempt++ )); do
+	if ! kill -0 "${xvnc_pid}" 2>/dev/null || ! kill -0 "${session_pid}" 2>/dev/null; then exit 1; fi
+	window_manager=$(DISPLAY=${display} /usr/bin/xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null || true)
+	if [[ ${window_manager} =~ window\ id\ \#\ 0x[1-9a-f][0-9a-f]* ]]; then ready=true; break; fi
+	sleep 0.2
+done
+if [[ ${ready} != true ]]; then echo "Desktop did not become ready." >&2; exit 1; fi
+printf '{"schema":"qorpera.screen-ready/v1","screenId":"%s","ordinal":%s}\n' "${screen_id}" "${ordinal}"
+# Bash 5 on the Linux image; either half ending tears down and reaps both groups.
+wait -n "${xvnc_pid}" "${session_pid}"

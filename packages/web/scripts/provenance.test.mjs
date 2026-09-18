@@ -1,0 +1,30 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+import { webSourceProvenance } from "./provenance.mjs";
+
+test("release provenance binds actual source and runtime manifest and refuses dirty source", t => {
+ const root=mkdtempSync(join(tmpdir(),"qorpera-web-provenance-"));
+ t.after(()=>rmSync(root,{recursive:true,force:true}));
+ const git=args=>execFileSync("git",args,{cwd:root,encoding:"utf8",stdio:["ignore","pipe","ignore"]}).trim();
+ git(["init"]);git(["config","user.name","Fixture"]);git(["config","user.email","fixture@example.invalid"]);
+ mkdirSync(join(root,"deploy/first-node/native-codex"),{recursive:true});
+ const bundle = { schema: "test" };
+ const digest = createHash("sha256").update('{"schema": "test"}').digest("hex");
+ writeFileSync(join(root,"deploy/first-node/native-codex/runtime-bundle-manifest.json"),JSON.stringify(bundle));
+ mkdirSync(join(root,"packages/runtime/src"),{recursive:true});
+ writeFileSync(join(root,"packages/runtime/src/cloud-runtime-bundle.generated.ts"),`export const CLOUD_RUNTIME_BUNDLE_SHA256 = "${digest}";`);
+ git(["add","deploy/first-node/native-codex/runtime-bundle-manifest.json","packages/runtime/src/cloud-runtime-bundle.generated.ts"]);git(["-c","core.hooksPath=/dev/null","commit","-m","fixture"]);
+ const observed=webSourceProvenance(root,true);
+ assert.equal(observed.sourceCommit,git(["rev-parse","HEAD"]));assert.equal(observed.sourceDirty,false);
+ assert.equal(observed.runtimeBundleSha256,digest);assert.match(observed.runtimeManifestSha256,/^[0-9a-f]{64}$/);
+ writeFileSync(join(root,"uncommitted-source.ts"),"export const changed=true;");
+ assert.throws(()=>webSourceProvenance(root,true),/clean source/);
+ assert.equal(webSourceProvenance(root).sourceDirty,true);
+ writeFileSync(join(root,"packages/runtime/src/cloud-runtime-bundle.generated.ts"),`export const CLOUD_RUNTIME_BUNDLE_SHA256 = "${"0".repeat(64)}";`);
+ assert.throws(()=>webSourceProvenance(root),/differs from its manifest/);
+});

@@ -1,0 +1,183 @@
+{
+  "schema": "qorpera.native-fence-component-proof/v1",
+  "date": "2026-08-28",
+  "sourceBase": "a0b692947d5c867353591b36172afcc997f0521e",
+  "sourceState": "uncommitted governed-runtime implementation; measured cloud fixture hashes below",
+  "nativeSource": "be6e8eac029b183056b7e4402879f15d2c85f61b",
+  "patchSha256": "5465d454fa8dcf3773bd7861144fb6c2a885846047430a3c0963142146b2cc31",
+  "build": {
+    "rust": "1.95.0",
+    "profile": "release",
+    "target": "x86_64-unknown-linux-gnu",
+    "binaryBytes": 307148960,
+    "binarySha256": "babeed68a7732f96fa6bcd69ac3a9e4124bcfab5340ce0fbab61363b8b1a148f",
+    "artifactMetadataSha256": "8c59696c6df3bb370c37b0021908a3a08bbe90d2d8a12165c985522324cf3653",
+    "archiveSha256": "138e137f23bd9b51c0f3de62a7afeaf59052787d0e441d650c71499ac79a0297",
+    "processing": {
+      "tool": "rust-llvm-objcopy",
+      "toolchain": "1.95.0",
+      "operation": "strip-debug",
+      "inputSha256": "9510f0e8f5e498f3da989213c8ded5aab1698efee3396a5effa305f76852cd51",
+      "toolSha256": "211b1e47ef0078d91f33d5076e958bf40a65b0f634d59c9802f0b049b9662728"
+    },
+    "buildInputArchiveSha256": "5d1f2a2befd8a32becc8896654fad824fb88456508ef8a34af7517e937383575",
+    "postprocessingArchiveSha256": "2df4881c619411ded88f5b67185f7ad3ab7962666dc36c84ce3caf494567d9b8",
+    "compilerWarnings": [
+      "Upstream app-server unused_mut at app-server/src/lib.rs:1327",
+      "Upstream cloud-tasks unused HttpClientFactory and OutboundProxyPolicy imports"
+    ]
+  },
+  "environment": {
+    "node": "company41-node-01",
+    "guest": "qorpera-step2-release-tmnehy",
+    "project": "default",
+    "image": "5e644adaf5d1c43149ea7310ac2a7cad927fa6603343e8fa9070a9200a24b7b8",
+    "distribution": "Ubuntu 26.04",
+    "nodeVersion": "24.19.0",
+    "executionUser": "fencebuild",
+    "acceptanceNetwork": "new namespace, loopback only",
+    "companyMount": false,
+    "providerCredential": false,
+    "productionChange": false,
+    "cleanup": "disposable guest stopped and removed after verified artifact export"
+  },
+  "proof": {
+    "platform": "linux",
+    "codexVersion": "0.147.0",
+    "providerModel": "gpt-5.6-sol",
+    "toolInventory": [
+      "functions.exec",
+      "functions.wait",
+      "qorpera.read_document",
+      "qorpera.send_message"
+    ],
+    "forcedBypassesDenied": 22,
+    "canonicalBytesUnchanged": true,
+    "unbrokeredRequests": 0,
+    "syntheticSecretExcluded": true,
+    "controlledResultsFenced": 8,
+    "nativeResultsFenced": 23,
+    "unfencedNativeResults": 0,
+    "publicMessages": 2,
+    "immediateDelivery": true,
+    "retryDeduplicated": true,
+    "privateOutputExcluded": true,
+    "allNativeResultsFenced": true,
+    "failureChecks": [
+      {
+        "fault": "revoked",
+        "requests": 1,
+        "effects": 0,
+        "deniedChecks": 1,
+        "blocked": true
+      },
+      {
+        "fault": "stalled",
+        "requests": 1,
+        "effects": 0,
+        "deniedChecks": 1,
+        "blocked": true
+      }
+    ],
+    "compactionChecks": [
+      {
+        "mode": "local",
+        "compactions": 1,
+        "modelRequests": 4,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 1,
+        "revoked": false,
+        "resumedWithLaws": true
+      },
+      {
+        "mode": "local",
+        "compactions": 1,
+        "modelRequests": 2,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 0,
+        "revoked": true,
+        "resumedWithLaws": false
+      },
+      {
+        "mode": "remote",
+        "compactions": 1,
+        "modelRequests": 4,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 1,
+        "revoked": false,
+        "resumedWithLaws": true
+      },
+      {
+        "mode": "remote",
+        "compactions": 1,
+        "modelRequests": 2,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 0,
+        "revoked": true,
+        "resumedWithLaws": false
+      },
+      {
+        "mode": "remote-v2",
+        "compactions": 1,
+        "modelRequests": 4,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 1,
+        "revoked": false,
+        "resumedWithLaws": true
+      },
+      {
+        "mode": "remote-v2",
+        "compactions": 1,
+        "modelRequests": 2,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 0,
+        "revoked": true,
+        "resumedWithLaws": false
+      }
+    ]
+  },
+  "packaging": {
+    "artifactReverifiedAfterExport": true,
+    "guestPackageManifestSha256": "e25203efcc31d0afc35d5a1f651e2f8bb2d7eb243b582b5e2a25922eb4169556",
+    "mode": "contract-only",
+    "signedRunnerImageIncluded": false,
+    "deployablePackageAccepted": false
+  },
+  "retained": {
+    "localArchive": "/tmp/qorpera-step2-gates.tmNEHY/linux-x64-release-artifact.tar.gz",
+    "nodeArchive": "/home/company41-admin/qorpera-step2-release-tmnehy-artifact.tar.gz",
+    "localArtifact": "/tmp/qorpera-step2-release-artifact.COLeLV",
+    "localGuestPackage": "/tmp/qorpera-step2-gates.tmNEHY/release-guest-package"
+  },
+  "scope": {
+    "scriptedProvider": true,
+    "syntheticAuthority": true,
+    "syntheticCompanyAdapter": true,
+    "realGPT": false,
+    "deployedRunPath": false,
+    "completeGuestIsolation": false,
+    "step2Accepted": false
+  },
+  "fixtureSha256": {
+    "packages/shell/src/cloud-agent-mouth.ts": "99e4986804b94d963ce7a326a555198ddb8bbebc2a648b7793cff3515d698d31",
+    "packages/shell/src/cloud-codex-tool-session.ts": "4ccde85bea502eb2e0b45eb1013855a944dd293cb32444b4dd7c6d224739a37f",
+    "packages/shell/src/cloud-native-result-fence.ts": "ba167d1f69939a7ef5a0a26591c3c6bdccfb94eb180abda6ddffdb0cfab521dc",
+    "packages/shell/src/cloud-native-tool-boundary.ts": "d2286a2444ea56b2afb782a0ffc3064eeaaf9ea7ef8633510cc0d845da81f5cb",
+    "packages/shell/src/cloud-native-tool-authority.ts": "05a5a7b8f58b4f2808903bd2f01e3c04b806fd06682d4ea1ff6f199158b03185",
+    "packages/shell/test/fixtures/native-codex-fixture-command.ts": "a74a9d1ecfd7948302262eefd7c616998875619a16951c1a554ae8af2130d692",
+    "packages/shell/test/fixtures/native-codex-fence-failure-probe.ts": "aef646be01a0ebb78695589a2960de35f364c959b07e955b23731bfe9bde4c04",
+    "packages/shell/test/fixtures/native-codex-compaction-probe.ts": "2dd1088bc5b563f1d524d10eba2e9979c90e380bb1aebbd6592747bdf092d272",
+    "packages/shell/test/fixtures/official-codex-boundary-probe.ts": "6e40f802f981116cbcfb5164ed732a8b52f16d761911db456ce13ab6c06757b2",
+    "packages/shell/test/fixtures/run-official-codex-boundary-probe.ts": "141ceab2506739696bc4e45aa5ad1ffa64956dbfea43a9f5e02fac7cb7deb97a",
+    "scripts/build-native-codex.mjs": "78063bdee343dee50c24bccfd5166074b93ddfd3b38c34de169ce7c94cc3cce8",
+    "scripts/native-company-artifact.mjs": "e394bc799104f188769de07cd3be14e6c732a1a672113ea45d349a29d8e0ca63",
+    "stage-linux-release.mjs": "bb63dbc58eaf07637b18f68555b9ba745f45e1ae973ddccfd6c1b6bbe71bf277",
+    "run-linux-acceptance.sh": "e685d1a61b81b06f0ca87cf184d5c6c0602a971c383d8a359fb397748d536af3"
+  }
+}

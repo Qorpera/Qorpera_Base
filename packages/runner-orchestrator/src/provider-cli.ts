@@ -4,6 +4,7 @@ import { isIP } from "node:net";
 import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LxdUnixClient } from "./lxd-client.ts";
+import { lxdNativeCompanyRuntimeFromEnvironment } from "./lxd-company-runtime.ts";
 import { verifyLxdImageProvenanceFiles } from "./lxd-image-provenance.ts";
 import {
 	HttpLxdNativeLoginGateway,
@@ -16,6 +17,7 @@ import {
 	type LxdCloudRunnerProviderConfig,
 } from "./lxd-provider.ts";
 import { nodeHttpFetch } from "./node-http-fetch.ts";
+import { ProviderNodeObservability } from "./node-observability.ts";
 import { ProcessCloudRunnerProviderBackend, type ProcessCloudRunnerProviderConfig } from "./process-provider.ts";
 import {
 	type CloudRunnerProviderServiceBackend,
@@ -108,6 +110,7 @@ function processConfig(): ProcessCloudRunnerProviderConfig {
 }
 
 function lxdConfig(): LxdCloudRunnerProviderConfig {
+	const nativeCompanyRuntime = lxdNativeCompanyRuntimeFromEnvironment(process.env);
 	return {
 		adapterId: required("QORPERA_RUNNER_PROVIDER_ADAPTER"),
 		supabaseUrl: required("QORPERA_SUPABASE_URL"),
@@ -138,6 +141,7 @@ function lxdConfig(): LxdCloudRunnerProviderConfig {
 		claudePath: process.env.QORPERA_CLAUDE_PATH ?? "/usr/local/bin/claude",
 		guestBootstrapService: process.env.QORPERA_LXD_GUEST_BOOTSTRAP_SERVICE ?? "qorpera-lxd-runner-bootstrap.service",
 		...liveCompanyConfig(),
+		...(nativeCompanyRuntime ? { nativeCompanyRuntime } : {}),
 	};
 }
 
@@ -154,6 +158,10 @@ function liveCompanyConfig(): { liveCompanyRoot?: string; liveCompanyProfileId?:
 }
 
 function lxdLoginConfig(config: LxdCloudRunnerProviderConfig): LxdNativeLoginGatewayConfig {
+	const recoveryTrust = config.nativeCompanyRuntime?.secretBroker;
+	if (!recoveryTrust) {
+		throw new Error("LXD native login requires the governed recovery-authority CA");
+	}
 	return {
 		adapterId: config.adapterId,
 		supabaseUrl: config.supabaseUrl,
@@ -172,12 +180,35 @@ function lxdLoginConfig(config: LxdCloudRunnerProviderConfig): LxdNativeLoginGat
 		memoryLimit: config.memoryLimit,
 		nativeBridgePort: config.nativeBridgePort,
 		guestTrustedSource: config.guestAssignmentSource,
+		identityRecoveryCaCertificate: recoveryTrust.caCertificate,
+		identityRecoveryCaSha256: recoveryTrust.caSha256,
 		guestReadyTimeoutMs: config.guestReadyTimeoutMs,
 		codexPath: config.codexPath,
 		claudePath: config.claudePath,
 		loginBootstrapService:
 			process.env.QORPERA_LXD_LOGIN_BOOTSTRAP_SERVICE ?? "qorpera-lxd-native-login-bootstrap.service",
+		// 2026-09-17 amendment: identity recovery on a node without the identity volume.
+		identityRecoveryRegistrarCapability: optionalCredentialFile(
+			"QORPERA_LXD_LOGIN_RECOVERY_REGISTRAR_CAPABILITY_FILE",
+		),
+		guestManifestSha256:
+			optionalSha256("QORPERA_LXD_LOGIN_GUEST_MANIFEST_SHA256") ??
+			optionalSha256("QORPERA_LXD_GUEST_PACKAGE_MANIFEST_SHA256"),
 	};
+}
+
+function optionalCredentialFile(name: string): string | undefined {
+	const path = process.env[name];
+	if (!path) return undefined;
+	const value = readFileSync(path, "utf8").trim();
+	if (!/^[A-Za-z0-9_-]{43}$/.test(value)) throw new Error(`${name} must name a 32-byte base64url capability`);
+	return value;
+}
+function optionalSha256(name: string): string | undefined {
+	const value = process.env[name];
+	if (!value) return undefined;
+	if (!/^[0-9a-f]{64}$/.test(value)) throw new Error(`${name} must be a hex SHA-256`);
+	return value;
 }
 
 interface ProviderRuntime {
@@ -231,7 +262,14 @@ async function main(): Promise<void> {
 		required("QORPERA_RUNNER_PROVIDER_TOKEN"),
 		network.host,
 		port(),
-		network.options,
+		{
+			...network.options,
+			nodeObservations: new ProviderNodeObservability({
+				providerAdapter: current.backend.adapterId,
+				nodeId: process.env.QORPERA_RUNNER_NODE_ID,
+				softwareVersion: process.env.QORPERA_RUNNER_PROVIDER_SOFTWARE_VERSION,
+			}),
+		},
 	);
 	const shutdown = new AbortController();
 	const stop = (): void => shutdown.abort();

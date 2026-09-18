@@ -2,13 +2,12 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
 	CloudAgentMouthConnection,
 	CloudAgentSendInput,
 	CloudAgentSendReceipt,
-} from "../src/cloud-agent-mouth.ts";
-import { HttpNativeProviderComputerBridge } from "../src/cloud-native-provider.ts";
+} from "@qorpera/runtime/cloud-agent-mouth";
+import { HttpNativeProviderComputerBridge } from "@qorpera/runtime/cloud-native-provider";
 import {
 	type CompleteNativeProviderLoginInput,
 	type NativeCredentialCapsuleStore,
@@ -16,15 +15,17 @@ import {
 	type NativeProviderExecutionRequest,
 	NativeProviderHost,
 	type NativeProviderLoginDescription,
+	nativeProviderUsageSignal,
 	OfficialCliNativeHarnessDriver,
 	openNativeCredentialCapsule,
 	sealNativeCredentialCapsule,
-} from "../src/cloud-native-provider-host.ts";
+} from "@qorpera/runtime/cloud-native-provider-host";
 import {
 	HttpNativeProviderHostService,
 	SupabaseNativeCredentialCapsuleStore,
 	SupabaseNativeProviderControlPlane,
-} from "../src/cloud-native-provider-service.ts";
+} from "@qorpera/runtime/cloud-native-provider-service";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const roots: string[] = [];
 const masterKey = randomBytes(32).toString("base64url");
@@ -129,6 +130,33 @@ async function waitFor(check: () => boolean): Promise<void> {
 	}
 	throw new Error("condition was not reached");
 }
+
+describe("native provider usage signal", () => {
+	it("maps only the safe allowance, capacity and network categories to typed signals", () => {
+		expect(
+			nativeProviderUsageSignal(new Error("Provider harness exited with 7 (provider allowance unavailable)")),
+		).toBe("usage_limit");
+		expect(
+			nativeProviderUsageSignal(
+				new Error("Native provider execution harness-execution stage failed (unknown) [mouth=ready]", {
+					cause: new Error("Codex did not complete its turn (provider capacity unavailable)"),
+				}),
+			),
+		).toBe("rate_limited");
+		expect(
+			nativeProviderUsageSignal(new Error("Provider harness exited with 1 (provider network unavailable)")),
+		).toBe("provider_outage");
+		for (const message of [
+			"Provider harness exited with 7 (authentication unavailable)",
+			"Provider harness exited with 7 (provider context unavailable)",
+			"You've hit your usage limit. Try again later.",
+			"Provider harness output exceeded its byte limit",
+		]) {
+			expect(nativeProviderUsageSignal(new Error(message))).toBeUndefined();
+		}
+		expect(nativeProviderUsageSignal("provider allowance unavailable")).toBeUndefined();
+	});
+});
 
 describe("native provider host", () => {
 	it("authenticates, seals and restores a provider-native credential directory", async () => {
@@ -493,6 +521,9 @@ describe("native provider host", () => {
 			beginLogin: vi.fn(async (_harness, identityRoot) => {
 				await mkdir(join(identityRoot, "codex"), { recursive: true });
 				await writeFile(join(identityRoot, "codex", "auth.json"), '{"refresh_token":"private"}\n');
+				await writeFile(join(identityRoot, "codex", "config.toml"), 'model = "not-credential-state"\n');
+				await mkdir(join(identityRoot, "codex", "log"));
+				await writeFile(join(identityRoot, "codex", "log", "login.log"), "private login diagnostic\n");
 				return {
 					prompt: Promise.resolve({
 						interactionUrl: "https://auth.openai.com/device",
@@ -552,6 +583,11 @@ describe("native provider host", () => {
 		const capsule = capsules.values.get(completed[0]?.encryptedCapsuleReference as string);
 		expect(capsule).toBeDefined();
 		expect(Buffer.from(capsule as Uint8Array).toString("utf-8")).not.toContain("refresh_token");
+		const restored = await temporaryRoot("qorpera-native-login-restored-");
+		await openNativeCredentialCapsule(capsule as Uint8Array, restored, masterKey, completed[0]!.capsuleId);
+		expect(await readdir(restored)).toEqual(["codex"]);
+		expect(await readdir(join(restored, "codex"))).toEqual(["auth.json"]);
+		expect(await readFile(join(restored, "codex", "auth.json"), "utf8")).toContain("private");
 		await expect(host.beginLogin(request)).resolves.toMatchObject({ status: "completed" });
 	});
 

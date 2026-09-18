@@ -1,0 +1,26 @@
+{
+  "schema": "qorpera.member-web-viewer-source/v1",
+  "description": "Browser-only renderer and licensed noVNC source, copied unchanged from the verified desktop display. No host bridge or execution implementation is included.",
+  "sources": [
+    {
+      "file": "screen-viewer.js",
+      "source": "packages/shell/userland/screen-viewer.js",
+      "sha256": "8433beffa7253c9e5aa3330b83ee39e451c987bba29a9d9114161c5073b7fc5a"
+    },
+    {
+      "file": "screens.css",
+      "source": "packages/shell/userland/screens.css",
+      "sha256": "fcc1bb3409437049647f53eade471f7298717195d31cd92540e8c5bccc7930bb"
+    },
+    {
+      "file": "vendor/novnc-rfb.js",
+      "source": "packages/shell/userland/vendor/novnc-rfb.js",
+      "sha256": "ea8c20928abd8b8a71c4f75a12504a6c46dccc9f4e172dd443c47cc416711c36"
+    },
+    {
+      "file": "vendor/NOVNC_LICENSE.txt",
+      "source": "packages/shell/userland/vendor/NOVNC_LICENSE.txt",
+      "sha256": "3ccd2242d7f5b6c5ae831a486f63cce1f18d8cd11c511f6a7a7251673763b2d1"
+    }
+  ]
+}

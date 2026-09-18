@@ -1,0 +1,288 @@
+{
+  "schema": "qorpera.runtime-acceptance-checkpoint/v1",
+  "recordedAt": "2026-09-06T19:10:52.983Z",
+  "runtimeSourceCommit": "759e44f36d54e4660159c7c8a378499cdb4e593f",
+  "runtimeBundleSha256": "ef0f569327e34673b8cfbd80541864ab116ca688c2eca79beb4bc0f3550e84ad",
+  "providerSourceCommit": "bf08dd923d61ba8432d86559a71cf473ac72f9b9",
+  "fullyAccepted": true,
+  "acceptedContractSteps": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "remainingLiveGate": null,
+  "sourceWorkspace": "/Users/jonas/Documents/Codex/2026-09-05/files-pasted-by-the-user-take",
+  "files": [
+    {
+      "file": "SOURCE-COMMIT.json",
+      "source": "outputs/runtime-source-759e44f36.json",
+      "sha256": "b63b3149e618a10dd2369d2f34a6ec0863001f5f5c65afa7cf6dcc44fea57712",
+      "bytes": 2535,
+      "passingScope": null
+    },
+    {
+      "file": "LINUX-PACKAGE-PROOF.json",
+      "source": "outputs/runtime-linux-x64-package-proof-759e44f36.json",
+      "sha256": "161f35995e196714049190dd0356d3f8dbfa9b2ed0962f222a234d262407a253",
+      "bytes": 1802,
+      "passingScope": true
+    },
+    {
+      "file": "BUILD-RESULT.json",
+      "source": "outputs/runtime-image-759e44f36/BUILD-RESULT.json",
+      "sha256": "d22222b309dabd5758fc6d922b42cf5bba5e52fe32f3a5b346981cb0943317ce",
+      "bytes": 1194,
+      "passingScope": true
+    },
+    {
+      "file": "ACCEPTANCE.json",
+      "source": "outputs/runtime-image-759e44f36/ACCEPTANCE.json",
+      "sha256": "75acb99a9c975005ac96b8861c6343a066c83480fa425bc01615e44998f9aafa",
+      "bytes": 1745,
+      "passingScope": true
+    },
+    {
+      "file": "SIGNED-RESULT.json",
+      "source": "outputs/runtime-image-759e44f36/SIGNED-RESULT.json",
+      "sha256": "18eb04509b772e2950272d91b0a24cd900106db042b1e620a5f1b49c808a9fcc",
+      "bytes": 1015,
+      "passingScope": true
+    },
+    {
+      "file": "PHYSICAL-FENCE.json",
+      "source": "outputs/runtime-image-759e44f36/PHYSICAL-FENCE.json",
+      "sha256": "a96edc99f20f74758d9d4306950b0f3387d520ae6ca11be5bc62b28bdd2c62a1",
+      "bytes": 886,
+      "passingScope": null
+    },
+    {
+      "file": "DISABLED-INSTALLATION.json",
+      "source": "outputs/runtime-image-759e44f36/DISABLED-INSTALLATION.json",
+      "sha256": "6ab2f51e4048c694686a3fd1f766cdb7cbc9c74ca202fc64f73fa9306392edd9",
+      "bytes": 1721,
+      "passingScope": true
+    },
+    {
+      "file": "SERVICES-ACTIVE.json",
+      "source": "outputs/runtime-image-759e44f36/SERVICES-ACTIVE.json",
+      "sha256": "e8b3abafbd861a329ee1218cde27e023977062ad063dbf6647f4e98e0478961d",
+      "bytes": 979,
+      "passingScope": true
+    },
+    {
+      "file": "FINAL-NODE-READBACK.json",
+      "source": "outputs/runtime-image-759e44f36/FINAL-NODE-READBACK.json",
+      "sha256": "818a5d20dddc7217bf01ba79d3d503ca7893e3ab1edd8dd964161c9115947518",
+      "bytes": 1068,
+      "passingScope": true
+    },
+    {
+      "file": "ACTUAL-ATTEMPT-ISOLATION.json",
+      "source": "outputs/runtime-image-759e44f36/ACTUAL-ATTEMPT-ISOLATION.json",
+      "sha256": "585aafb89c7ac3c02d909fc07fc09decc3677bc5334408ce10437ba31e2d2c4a",
+      "bytes": 2912,
+      "passingScope": true
+    },
+    {
+      "file": "OFFLINE-TESTS.json",
+      "source": "outputs/runtime-rollout-759e44f36/OFFLINE-TESTS.json",
+      "sha256": "87b5502245cce40a693bd37cadf7c5975aa70b3391e007550786a7d5283a8a6e",
+      "bytes": 1282,
+      "passingScope": true
+    },
+    {
+      "file": "WRAPPER-REHEARSAL.json",
+      "source": "outputs/runtime-rollout-759e44f36/WRAPPER-REHEARSAL.json",
+      "sha256": "4931b678d1b01ec3ad6a7fa59c3705e8e394389690957291e37086eace628edd",
+      "bytes": 2712,
+      "passingScope": true
+    },
+    {
+      "file": "FROZEN.json",
+      "source": "outputs/runtime-rollout-759e44f36/FROZEN.json",
+      "sha256": "abdaefa2895e7bc562038252ca8ad287164efec2e3c5f82eb78043525f2044c3",
+      "bytes": 4266,
+      "passingScope": null
+    },
+    {
+      "file": "ROLLOUT-PREFLIGHT-RESULT.json",
+      "source": "outputs/runtime-rollout-759e44f36-activation/evidence/rollout-preflight-result.json",
+      "sha256": "b0ed630d72759eb88ef17e308236cadf3510ea757a7e5219272b1abf70b976a9",
+      "bytes": 7133,
+      "passingScope": true
+    },
+    {
+      "file": "ROLLOUT-PAUSE-RESULT.json",
+      "source": "outputs/runtime-rollout-759e44f36-activation/evidence/rollout-pause-result.json",
+      "sha256": "b77e1b8fe30de072d88072502b4b6950373c2a6565a518c1186238a15761f512",
+      "bytes": 7125,
+      "passingScope": true
+    },
+    {
+      "file": "ROLLOUT-20260906000500-RESULT.json",
+      "source": "outputs/runtime-rollout-759e44f36-activation/evidence/rollout-20260906000500-result.json",
+      "sha256": "036228529e56e4b6deaa6358ab2ae4b9a3d1fdf8cb7e55ca60e64b218229c4d3",
+      "bytes": 7167,
+      "passingScope": true
+    },
+    {
+      "file": "ROLLOUT-20260906000600-RESULT.json",
+      "source": "outputs/runtime-rollout-759e44f36-activation/evidence/rollout-20260906000600-result.json",
+      "sha256": "fc26b3baf5db43472f51aec4b3b3cc1c8bec9dabc9f4f1d22a32ef2f63bbd38a",
+      "bytes": 7191,
+      "passingScope": true
+    },
+    {
+      "file": "ROLLOUT-FINAL-READBACK-RESULT.json",
+      "source": "outputs/runtime-rollout-759e44f36-activation/evidence/rollout-final-readback-result.json",
+      "sha256": "a9013a860522b01e89a52125f66d7539d5f6e3032eba930a531fa9bbcf6da1e7",
+      "bytes": 7191,
+      "passingScope": true
+    },
+    {
+      "file": "ADMISSION-RESULT.json",
+      "source": "outputs/runtime-live-759e44f36/ADMISSION-RESULT.json",
+      "sha256": "0cb2c9d6996a53c48bda5594f6520b6f16479e38aae354b0cb665d854e56a7d4",
+      "bytes": 5820,
+      "passingScope": true
+    },
+    {
+      "file": "NATIVE-V11-HANDOFF-PROOF.json",
+      "source": "outputs/runtime-live-3c0bf3bce/NATIVE-V11-HANDOFF-PROOF.json",
+      "sha256": "a91b850acd92f6829e1fefeef46b731252bf6e80100543754626dc65d4a6e17b",
+      "bytes": 8017,
+      "passingScope": true
+    },
+    {
+      "file": "V11-RUNNER-RETIREMENT-RESULT.json",
+      "source": "outputs/runtime-live-3c0bf3bce/V11-RUNNER-RETIREMENT-RESULT.json",
+      "sha256": "448b3611bd096b860c0f4bf6233138a98dbdf32e22e62c04a4ddd87c2958a692",
+      "bytes": 228,
+      "passingScope": true
+    },
+    {
+      "file": "founder-resume-handoff-launch.result.json",
+      "source": "outputs/runtime-live-3c0bf3bce/founder-resume-handoff-launch.result.json",
+      "sha256": "a8c573330f07f160c4e99a8a359b457e6730d3d5b38e238dbec6fdfacc0ca72a",
+      "bytes": 1052,
+      "passingScope": true
+    },
+    {
+      "file": "HANDOFF-LAUNCH-RED-GREEN-PROOF.json",
+      "source": "outputs/runtime-custody-3c0bf3bce/HANDOFF-LAUNCH-RED-GREEN-PROOF.json",
+      "sha256": "e504cbc50389f7dd4d19a871b2f338266180fcc93ca28466a641f0aedb5c5d38",
+      "bytes": 5250,
+      "passingScope": true
+    },
+    {
+      "file": "HANDOFF-LAUNCH-PRODUCTION-PROOF.json",
+      "source": "outputs/runtime-custody-3c0bf3bce/HANDOFF-LAUNCH-PRODUCTION-PROOF.json",
+      "sha256": "da6f35f5aea956c8fdaf55af99de1fb969cbd52febdb2d4a01ab8f10b055e6e4",
+      "bytes": 1266,
+      "passingScope": true
+    },
+    {
+      "file": "PROVIDER-PRO-ACCOUNT-CLAIMS.json",
+      "source": "outputs/runtime-handoff-provider-v10/PRO-ACCOUNT-CLAIMS.json",
+      "sha256": "14830e22d09dde7430460bef5a1aacc564a275539ea26d4e235f8922779796fc",
+      "bytes": 2158,
+      "passingScope": true
+    },
+    {
+      "file": "PROVIDER-FAILED-ACQUISITION-DIAGNOSTIC.json",
+      "source": "outputs/runtime-handoff-provider-v10/FAILED-ACQUISITION-DIAGNOSTIC.json",
+      "sha256": "71c9dac166ce7fa52c55bea2cda03ab3de59ecba79371a2e99df1cdbdab93e1c",
+      "bytes": 1548,
+      "passingScope": true
+    },
+    {
+      "file": "PROVIDER-ACTUAL-ATTEMPT-ISOLATION.json",
+      "source": "outputs/runtime-handoff-provider-v10/ACTUAL-ATTEMPT-ISOLATION.json",
+      "sha256": "1cdb3098b27ecedec28c65da9b680d8c186e5b1bfd55f9bb1dc8edc539c4ab4b",
+      "bytes": 3153,
+      "passingScope": true
+    },
+    {
+      "file": "PROVIDER-BUILD-RESULT.json",
+      "source": "outputs/runtime-handoff-provider-v10/BUILD-RESULT.json",
+      "sha256": "fdacc95889575743d436e272116df8a6e903c93423469ea26fad3e270a19b7ba",
+      "bytes": 1403,
+      "passingScope": true
+    },
+    {
+      "file": "PROVIDER-LINUX-PACKAGE-VERIFIED.json",
+      "source": "outputs/runtime-handoff-provider-v10/LINUX-PACKAGE-VERIFIED.json",
+      "sha256": "0ab8522fb5aa84516e890cde2fd1db3856f7977736412089c5797bad0af416d6",
+      "bytes": 872,
+      "passingScope": true
+    },
+    {
+      "file": "PROVIDER-UPGRADE-RESULT.json",
+      "source": "outputs/runtime-handoff-provider-v10/UPGRADE-RESULT.json",
+      "sha256": "3f5b80dd22bee40215eaaa6b023fe54c744ae9d533953dff982a48ed66b08676",
+      "bytes": 896,
+      "passingScope": true
+    },
+    {
+      "file": "PROVIDER-EXPIRED-LOGIN-RESULT.json",
+      "source": "outputs/runtime-handoff-provider-v10/EXPIRED-LOGIN-RESULT.json",
+      "sha256": "37b6f571a051c30daba52a16fa8f2c107961742291d486eeb8b472b259f5fff6",
+      "bytes": 775,
+      "passingScope": null
+    },
+    {
+      "file": "FINAL-DATABASE-READBACK.json",
+      "source": "outputs/runtime-custody-3c0bf3bce/runtime-v11-final-state-1788721674089.json",
+      "sha256": "fda9698e8e260948b53b5e1fd190a907ddf0a6d28f6119796afba391f97e57e6",
+      "bytes": 849,
+      "passingScope": null
+    },
+    {
+      "file": "LAUNCH-GUARD-READBACK.json",
+      "source": "outputs/runtime-custody-3c0bf3bce/runtime-v11-launch-guard-1788721537000.json",
+      "sha256": "a0580aae4d498634bec05d5482f532fb81db52d3af5b39140ce844f35fb2d8bb",
+      "bytes": 1028,
+      "passingScope": null
+    },
+    {
+      "file": "LEGACY-CONNECTION-01-DISABLED.json",
+      "source": "outputs/runtime-live-3c0bf3bce/handoff-v10-disable-legacy-connection-01.result.json",
+      "sha256": "1a5221b29885ea7114ece530fa390feda76d336993e7dd2810282d3214cf9f4f",
+      "bytes": 529,
+      "passingScope": true
+    },
+    {
+      "file": "LEGACY-CONNECTION-02-DISABLED.json",
+      "source": "outputs/runtime-live-3c0bf3bce/handoff-v10-disable-legacy-connection-02.result.json",
+      "sha256": "72de940bb354f7f89d61e602f22cef9275511840234d81dfcde8f131dd51d0e3",
+      "bytes": 529,
+      "passingScope": true
+    }
+  ],
+  "previousCheckpoints": [
+    {
+      "file": "../2026-09-06-runtime-v10/MANIFEST.json",
+      "sha256": "f418847ea356b25a224cdc43ee7255c1d9ef7033470952b5a9f8635a9c372e57",
+      "filesVerifiedUnchanged": true
+    },
+    {
+      "file": "../2026-09-06-runtime-v10-fallback/MANIFEST.json",
+      "sha256": "aa97c5e070b4c4cf3f58866361370dd38cf69570611cbae5066b4bff9b3ebf70",
+      "filesVerifiedUnchanged": true
+    },
+    {
+      "file": "../2026-09-06-runtime-v10-account-status/MANIFEST.json",
+      "sha256": "42559443f6c4ee7cfb08753b2e26e0031430f045ea209d3e8fa160db9076650c",
+      "filesVerifiedUnchanged": true
+    }
+  ],
+  "limits": [
+    "The chained v9/v10 evidence retains its actual execution versions, timestamps and scan scopes. Those tests were not all rerun on v11.",
+    "The upgraded Gmail account still reports usage_limit with no reset timestamp. The successful native continuation used the existing Qorpera Pro account.",
+    "Native-result-fence telemetry reports unconfirmed; governed completion, file read, canonical sends and durable result are proved independently.",
+    "Historical nonexposure scans do not claim coverage of the later subscription login or this handoff. This run used no connector secrets; released transient guest contents cannot be retrospectively scanned.",
+    "The repaired Azure recovery replica is loopback NFS, not an independent physical Synology replica.",
+    "Bounded summaries are included; raw witnesses remain in the source workspace with recorded hashes. Orders 4–10, production connector breadth and deferred Azure overflow are outside this acceptance."
+  ]
+}

@@ -1,0 +1,29 @@
+{
+	"name": "@qorpera/web",
+	"version": "0.83.0",
+	"private": true,
+	"type": "module",
+	"description": "Qorpera web app — a pure cloud client for Qorpera companies (no local kernel).",
+	"scripts": {
+		"build": "npm --prefix ../.. run build:web-sdk && node scripts/build.mjs",
+		"build:release": "npm --prefix ../.. run check:runtime-bundle && npm --prefix ../.. run build:web-sdk && node scripts/build.mjs --release",
+		"dev": "npm --prefix ../.. run build:web-sdk && node scripts/build.mjs --serve",
+		"typecheck": "tsgo -p tsconfig.json && tsgo -p tsconfig.test.json",
+		"test": "vitest run",
+		"clean": "shx rm -rf dist"
+	},
+	"dependencies": {
+		"@qorpera/cloud-client": "*",
+		"@supabase/supabase-js": "2.112.3",
+		"marked": "18.0.5"
+	},
+	"devDependencies": {
+		"esbuild": "0.28.1",
+		"jsdom": "27.4.0",
+		"shx": "0.4.0",
+		"vitest": "4.1.11"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	}
+}

@@ -1,0 +1,67 @@
+{
+  "schema": "qorpera.live-native-grant-revocation-proof/v1",
+  "passed": true,
+  "observedAt": "2026-09-06T13:10:44.623Z",
+  "runId": "fad4c17f-7a1a-42e0-928d-e669d0bde2d5",
+  "jobId": "30883acc-a470-4fc7-a7a3-6bb104df2726",
+  "runnerId": "0fc913f6-cff5-447b-af15-f364f2958f1f",
+  "runtimeBundleSha256": "b60a49ccef8953ba2a4e3b4559d01d2852a8cfdf737123c9bf435171409b5f51",
+  "nativeBinarySha256": "2f2c26cfdfacebbcce848fb50cfaaa4e8d0aa3c6ec3c1009123ecf766c8335f7",
+  "secretId": "2f8af02f-19aa-485e-928d-4bf9e43bf7f7",
+  "secretVersion": 2,
+  "grantId": "98108aaf-05bf-401a-b323-0363fe4db041",
+  "revokedAt": "2026-09-06T13:07:03.69567+00:00",
+  "revokedBy": "4fa1e977-a64a-4d39-a5c6-91ffd677f507",
+  "successfulEffectsBeforeRevocation": 1,
+  "postRevocationConnectorAttempts": 1,
+  "postRevocationEffectReceipts": 0,
+  "postRevocationEffects": 0,
+  "retriesAfterAuthorityFailure": 0,
+  "initialToolCatalogRetainedOperation": true,
+  "authorityFailureCategory": "authority_unavailable",
+  "authorityFailureObservedDurationMs": 260,
+  "companySecretRemainedActive": true,
+  "completedRunResults": 1,
+  "activeLeases": 0,
+  "guestObservedAndRemoved": true,
+  "observerJournalReadFailures": 7,
+  "observerInventoryReadFailures": 0,
+  "initialReadOnlyControllerFailurePreserved": true,
+  "signedGuestModified": false,
+  "privateContentsReturned": false,
+  "fullStepsZeroThroughThreeAcceptance": false,
+  "evidence": {
+    "readback": {
+      "path": "outputs/runtime-live-3c0bf3bce/custody-human-06.readback-1788700039356.json",
+      "sha256": "7f96605a0a5cfbeeb1effb3faf63051cdd32a1942ae81e461606ad23735bb3f2"
+    },
+    "observer": {
+      "path": "outputs/runtime-live-3c0bf3bce/custody-human-06.diagnostics.json",
+      "sha256": "e100588939711fb01d737655774a8dcad7bceebb8cbd7ecb6b432af0189c9c62"
+    },
+    "grantReadback": {
+      "path": "outputs/runtime-custody-3c0bf3bce/custody-grant-revocation-readback-1788700035454.json",
+      "sha256": "c380325cd69fdc573d01efc23fee112def785503115dff934e8b536e8b326179"
+    },
+    "revocation": {
+      "path": "outputs/runtime-custody-3c0bf3bce/revoke-current-grant-live.result.json",
+      "sha256": "16d1c6827fdcf9a93236fcf5f16c1833bc44ff50b4a46475241902c1ea8875ac"
+    },
+    "trigger": {
+      "path": "outputs/runtime-custody-3c0bf3bce/GRANT-LIVE-REVOKER-02-TRIGGER.json",
+      "sha256": "ccbc2f7fe00172479a199786f202579289faa65184dc96250a70ad46eadefa17"
+    },
+    "controller": {
+      "path": "outputs/runtime-custody-3c0bf3bce/GRANT-LIVE-REVOKER-02-RESULT.json",
+      "sha256": "48ce6bd1c297576c655622f9a21f76bd437351766868078f80cd2aa389b22640"
+    },
+    "ledger": {
+      "path": "outputs/runtime-custody-3c0bf3bce/LIVE-GRANT-REVOCATION-LEDGER-RESULT.json",
+      "sha256": "4b2f593502586c6da8644f9dcd3cb61c4ed36c8e3f742e9bfef562949f5dd853"
+    },
+    "initialPollFailure": {
+      "path": "outputs/runtime-custody-3c0bf3bce/GRANT-LIVE-REVOKER-FIRST-POLL-FAILURE.json",
+      "sha256": "460fccf2fe1fbd49714a593567730c266e32bdd69c96d9c4c92615b6acfa05ee"
+    }
+  }
+}

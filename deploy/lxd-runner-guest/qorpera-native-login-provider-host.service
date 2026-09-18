@@ -1,0 +1,46 @@
+[Unit]
+Description=Qorpera native provider login host inside an LXD full VM
+Documentation=https://github.com/Qorpera/Qorpera_Base
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=/var/lib/qorpera/identity
+
+[Service]
+Type=exec
+User=qorpera-native-provider
+Group=qorpera-native-execution
+WorkingDirectory=/var/lib/qorpera-native-provider
+Environment=HOME=/var/lib/qorpera-native-provider
+EnvironmentFile=/var/lib/qorpera-bootstrap/native-provider.env
+LoadCredential=qorpera-supabase-service-key:/var/lib/qorpera-bootstrap/credentials/qorpera-supabase-service-key
+LoadCredential=qorpera-native-bridge:/var/lib/qorpera-bootstrap/credentials/qorpera-native-bridge
+LoadCredential=qorpera-native-provider-master-key:/var/lib/qorpera/identity/qorpera-native-provider-master-key
+LoadCredential=qorpera-native-identity-epoch:/var/lib/qorpera-bootstrap/native-identity-epoch.json
+LoadCredential=qorpera-identity-recovery-ca:/var/lib/qorpera-bootstrap/credentials/qorpera-identity-recovery-ca
+Environment=NODE_EXTRA_CA_CERTS=/run/credentials/qorpera-native-login-provider-host.service/qorpera-identity-recovery-ca
+ExecStart=/usr/bin/node /opt/qorpera-runner/qorpera-native-provider-host.mjs
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=45s
+KillSignal=SIGTERM
+UMask=0077
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/qorpera-native-provider
+InaccessiblePaths=-/qorpera/company-live -/var/lib/qorpera-native-workspace
+ProtectHome=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

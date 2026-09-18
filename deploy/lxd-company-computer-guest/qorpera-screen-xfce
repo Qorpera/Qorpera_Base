@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Invoked inside the wrapper's clean environment and per-screen D-Bus session.
+# The wrapper has already written the dock (terminal, files, browser control)
+# and either an hourly backdrop set or nothing beside the static wallpaper.
+if [[ $# -ne 1 || -z ${DISPLAY:-} || -z ${XDG_CONFIG_HOME:-} ]]; then
+	echo "usage: qorpera-screen-xfce <screen_wallpaper>" >&2
+	exit 64
+fi
+wallpaper=$1
+if [[ ${wallpaper} != "${XDG_CONFIG_HOME%/config}/wallpaper.png" ||
+	! -f ${wallpaper} || -L ${wallpaper} ]]; then
+	echo "Invalid screen wallpaper." >&2
+	exit 65
+fi
+monitor=""
+while read -r candidate state remainder; do
+	if [[ ${state} == connected ]]; then monitor=${candidate}; break; fi
+done < <(xrandr --query)
+if [[ -z ${monitor} || ! ${monitor} =~ ^[A-Za-z0-9._-]+$ ]]; then
+	echo "The screen display did not publish a usable monitor." >&2
+	exit 1
+fi
+set_xfce_property() {
+	local channel=$1
+	local path=$2
+	local type=$3
+	local value=$4
+	if xfconf-query -c "${channel}" -p "${path}" >/dev/null 2>&1; then
+		xfconf-query -c "${channel}" -p "${path}" -s "${value}"
+	else
+		xfconf-query -c "${channel}" -p "${path}" -n -t "${type}" -s "${value}"
+	fi
+}
+backdrop="/backdrop/screen0/monitor${monitor}/workspace0"
+backdrops=${QORPERA_SCREEN_BACKDROPS:-}
+if [[ -n ${backdrops} ]]; then
+	# xfdesktop's chronological cycle splits the local day evenly over the
+	# files in the directory of the current image: 24 frames, one per hour.
+	if [[ ${backdrops} != "${XDG_CONFIG_HOME%/config}/backdrops" || ! -d ${backdrops} || -L ${backdrops} ]]; then
+		echo "Invalid screen backdrop set." >&2
+		exit 65
+	fi
+	for ((h = 0; h < 24; h++)); do
+		printf -v hour '%02d' "${h}"
+		if [[ ! -f ${backdrops}/${hour}.png || -L ${backdrops}/${hour}.png ]]; then
+			echo "Invalid screen backdrop set." >&2
+			exit 65
+		fi
+	done
+	set_xfce_property xfce4-desktop "${backdrop}/last-image" string "${backdrops}/$(date +%H).png"
+	set_xfce_property xfce4-desktop "${backdrop}/backdrop-cycle-enable" bool true
+	set_xfce_property xfce4-desktop "${backdrop}/backdrop-cycle-period" int 6
+	set_xfce_property xfce4-desktop "${backdrop}/backdrop-cycle-random-order" bool false
+else
+	set_xfce_property xfce4-desktop "${backdrop}/last-image" string "${wallpaper}"
+	set_xfce_property xfce4-desktop "${backdrop}/backdrop-cycle-enable" bool false
+fi
+set_xfce_property xfce4-desktop "${backdrop}/image-style" int 5
+set_xfce_property xfce4-desktop /desktop-icons/style int 0
+set_xfce_property xfce4-desktop /desktop-menu/show bool true
+set_xfce_property xfwm4 /general/show_dock_shadow bool false
+exec xfce4-session

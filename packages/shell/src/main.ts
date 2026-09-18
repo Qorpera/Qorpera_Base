@@ -25,9 +25,32 @@ import {
 	watch,
 	writeFileSync,
 } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
+import {
+	buildCompanyOrganizationHierarchy,
+	type CompanyOrganizationHierarchy,
+} from "@qorpera/cloud-client/cloud-company-organization";
+import type { CloudPresenceHandle } from "@qorpera/cloud-client/cloud-presence";
+import {
+	type HostedAccountEntitlement,
+	type HostedCompanyFile,
+	type HostedCompanyProposal,
+	type HostedCompanySnapshot,
+	type HostedIncomingProfileInvitation,
+	type HostedProfile,
+	type HostedProfileTeam,
+	type PendingSessionInput,
+	SessionTurnOwnershipError,
+} from "@qorpera/cloud-client/hosted-primary";
+import {
+	currentCloudCompanyTreeReference,
+	materializeCloudCompanyTree,
+} from "@qorpera/cloud-client/node/cloud-company-snapshot";
+import { CloudCompanySubstrate } from "@qorpera/cloud-client/node/cloud-company-substrate";
+import type { CloudContentAddressedStore } from "@qorpera/cloud-client/node/cloud-object-store";
+import { isStaffCharacterId, staffCharacterForTemplate } from "@qorpera/cloud-client/staff-characters";
 import {
 	type CompanyConnectorManifestRecord,
 	companyConnectorMatchesRequest,
@@ -61,7 +84,6 @@ import {
 	type CompanyArtifactSourceIssueUpdate,
 	createStaffAgent,
 	createStaffAgents,
-	createStarterCompanyArtifact,
 	deleteStaffAgent,
 	markStaffAgentMessagesDelivered,
 	pendingStaffAgentMessages,
@@ -164,7 +186,13 @@ import {
 	type WebContents,
 } from "electron";
 import electronUpdater from "electron-updater";
-import { QorperaAccountAuth, type QorperaAccountInfo, type QorperaAccountProvider } from "./account-auth.ts";
+import {
+	QORPERA_AUTH_URL,
+	QORPERA_OBJECT_GATEWAY_URL,
+	QorperaAccountAuth,
+	type QorperaAccountInfo,
+	type QorperaAccountProvider,
+} from "./account-auth.ts";
 import {
 	appendBoundTrailEntry,
 	appendKernelComputerObservation,
@@ -210,6 +238,8 @@ import {
 import { migrateCompanyToAgentsOnly } from "./agents-only-company-migration.ts";
 import { readBackgroundCompanyRoots, setBackgroundCompanyEnabled } from "./background-companies.ts";
 import { CloudProfileAccessRefresh } from "./cloud-access-refresh.ts";
+import { deleteCloudCompanyAgent, writeCloudCompanyAgent } from "./cloud-company-agent.ts";
+import { cloudCompanyDisplayRoot, prepareCloudCompanyDisplay } from "./cloud-company-display.ts";
 import {
 	acceptReviewedCloudCompanyExecution,
 	type CloudCompanyExecutionCheckout,
@@ -243,11 +273,9 @@ import {
 	prepareCompanyProposalReview,
 } from "./cloud-company-proposal-review.ts";
 import { CloudCompanyPublication } from "./cloud-company-publication.ts";
-import { currentCloudCompanyTreeReference, materializeCloudCompanyTree } from "./cloud-company-snapshot.ts";
-import { CloudCompanySubstrate } from "./cloud-company-substrate.ts";
+import type { CloudMemberCompanyFileClient } from "./cloud-member-company-editor.ts";
 import { publishCompanySnapshotRestoreProofIfDue } from "./cloud-object-reachability.ts";
-import type { CloudContentAddressedStore } from "./cloud-object-store.ts";
-import type { CloudPresenceHandle } from "./cloud-presence.ts";
+import { prepareCloudPreview } from "./cloud-preview.ts";
 import {
 	acknowledgeCloudPromptOutbox,
 	pendingCloudPromptOutbox,
@@ -343,17 +371,7 @@ import {
 	GITHUB_CONNECTION_DESTINATIONS,
 } from "./github-company-connector.ts";
 import { connectGitHubCli, readGitHubCliStatus } from "./github-connection.ts";
-import {
-	type HostedAccountEntitlement,
-	type HostedCompanyFile,
-	type HostedCompanyProposal,
-	type HostedCompanySnapshot,
-	type HostedIncomingProfileInvitation,
-	type HostedProfile,
-	type HostedProfileTeam,
-	type PendingSessionInput,
-	SessionTurnOwnershipError,
-} from "./hosted-primary.ts";
+import { openGovernedCompanyWindow } from "./governed-company-window.ts";
 import {
 	cacheHostedProfiles,
 	cacheHostedTeam,
@@ -386,6 +404,7 @@ import {
 	writeLocalExecutionPermission,
 } from "./local-execution.ts";
 import { alignCloudCompanyManifestName } from "./managed-company-identity.ts";
+import { openMemberBrowserRecoveryWindow } from "./member-browser-recovery-window.ts";
 import { ModelAccountStore, type ModelAccountView } from "./model-accounts.ts";
 import { parseProductFeedbackRequest } from "./product-feedback.ts";
 import { hostedProfileAccess } from "./profile-collaboration.ts";
@@ -461,7 +480,6 @@ import {
 	type SessionRuntimeEventInput,
 } from "./session-control-plane.ts";
 import { readSidebarTranslucency, writeSidebarTranslucency } from "./shell-appearance.ts";
-import { isStaffCharacterId, staffCharacterForTemplate } from "./staff-characters.ts";
 import { removeStaffWorkspace } from "./staff-deletion.ts";
 import { applyStaffRoutineOperation, type StaffRoutineOperation } from "./staff-routines.ts";
 import {
@@ -490,6 +508,26 @@ import {
 	writeWakeRunState,
 } from "./wake-scheduler.ts";
 import { startWebhookListener } from "./webhook-listener.ts";
+
+const CLOUD_PREVIEW = prepareCloudPreview(
+	process.argv,
+	{ home: app.getPath("home"), userData: app.getPath("userData") },
+	{ projectUrl: QORPERA_AUTH_URL, objectGatewayUrl: QORPERA_OBJECT_GATEWAY_URL },
+	process.env,
+);
+if (CLOUD_PREVIEW) {
+	// Before the instance lock, registry, Auth or model-account stores open.
+	// Electron's home path is isolated without rewriting the OS HOME variable.
+	app.setPath("home", CLOUD_PREVIEW.home);
+	app.setPath("userData", CLOUD_PREVIEW.userData);
+	app.setPath("sessionData", CLOUD_PREVIEW.sessionData);
+	app.setPath("logs", CLOUD_PREVIEW.logs);
+	app.setPath("crashDumps", CLOUD_PREVIEW.crashDumps);
+	process.env.QORPERA_CODING_AGENT_DIR = CLOUD_PREVIEW.agentDir;
+	process.env.GH_CONFIG_DIR = CLOUD_PREVIEW.githubConfigDir;
+	process.env.GIT_CONFIG_GLOBAL = CLOUD_PREVIEW.gitConfigPath;
+	process.env.GIT_CONFIG_NOSYSTEM = "1";
+}
 
 // Electron 43's Windows GPU compositor can produce a live but completely
 // white renderer (Chromium UnknownVizError) on the founder's current display
@@ -636,6 +674,7 @@ function sourceModelCredentials(): Record<string, unknown> {
 }
 
 function ambientModelProviders(): string[] {
+	if (CLOUD_PREVIEW) return [];
 	return [...new Set([...MODEL_ENV_PROVIDERS].flatMap(([name, provider]) => (process.env[name] ? [provider] : [])))];
 }
 
@@ -941,6 +980,8 @@ let modelAccountUsageRefreshedAt = 0;
 let modelAccountUsageRefreshInFlight: Promise<ModelAccountView[]> | undefined;
 let qorperaAccountAuth: QorperaAccountAuth | undefined;
 let currentQorperaAccountId: string | undefined;
+let browserRecoveryWindow: BrowserWindow | undefined;
+let browserRecoveryOpening: Promise<BrowserWindow> | undefined;
 const hostedProfilesById = new Map<string, HostedProfile>();
 const hostedTeamsByProfileId = new Map<string, HostedProfileTeam>();
 const freshHostedTeamProfileIds = new Set<string>();
@@ -1016,6 +1057,8 @@ let profileInvitationHandoffInFlight = false;
 function rememberAuthenticatedAccount(account: QorperaAccountInfo): QorperaAccountInfo {
 	const nextAccountId = account.authenticated && account.user ? account.user.id : undefined;
 	if (nextAccountId !== currentQorperaAccountId) {
+		browserRecoveryWindow?.destroy();
+		browserRecoveryWindow = undefined;
 		hostedProfilesById.clear();
 		hostedTeamsByProfileId.clear();
 		freshHostedTeamProfileIds.clear();
@@ -1044,6 +1087,8 @@ async function authenticatedAccount(): Promise<QorperaAccountInfo | undefined> {
 		const account = rememberAuthenticatedAccount(await qorperaAccountAuth.info());
 		return account.authenticated && account.user ? account : undefined;
 	} catch {
+		browserRecoveryWindow?.destroy();
+		browserRecoveryWindow = undefined;
 		currentQorperaAccountId = undefined;
 		hostedProfilesById.clear();
 		hostedTeamsByProfileId.clear();
@@ -1259,6 +1304,8 @@ function shellVersion(): string {
 
 interface CompanyRuntime {
 	root: string;
+	governedCompanyFile?: boolean;
+	companyFileWindow?: BrowserWindow;
 	/** Durable lifecycle source for every attended and autonomous session in
 	 * this company. Child processes attach to it; they do not define it. */
 	sessions: SessionControlPlane;
@@ -1300,6 +1347,8 @@ interface CompanyRuntime {
 	cloudStaffSync?: CloudStaffSynchronizer;
 	cloudStaffSyncLoop?: DurableCloudSyncLoop;
 	cloudStaffSyncHealth?: CloudSyncHealth;
+	/** Closed semantic projection rebuilt from canonical Company File paths. */
+	organizationHierarchy?: CompanyOrganizationHierarchy;
 	cloudRealtimeSync?: CloudProfileRealtimeSync;
 	cloudPresence?: CloudPresenceHandle;
 	/** Last renderer-declared open thread, retained while Presence connects. */
@@ -1378,23 +1427,29 @@ function createCloudTrailSynchronizer(
 	liveBindings: () => Iterable<TrailBinding>,
 	onMaterialized: (binding: TrailBinding) => void,
 	onCursorAdvanced: (advance: { hostedSessionId: string; cursor: number; requiresReload: boolean }) => void,
+	governedCompanyFile: boolean,
 ): CloudTrailSynchronizer | undefined {
 	const attachment = profileAttachment(root);
 	const primary = qorperaAccountAuth?.hostedPrimary();
 	const objects = qorperaAccountAuth?.hostedObjects();
 	if (attachment.profileType !== "cloud" || !primary || !objects || !currentQorperaAccountId) return undefined;
+	const attachments = governedCompanyFile
+		? qorperaAccountAuth!.sessionAttachments(attachment.profileId, attachment.environmentId, currentQorperaAccountId)
+		: undefined;
 	return new CloudTrailSynchronizer({
 		root,
 		userData: app.getPath("userData"),
 		profileId: attachment.profileId,
 		environmentId: attachment.environmentId,
 		primary,
-		loadObject: (reference) =>
-			objects.getObject(attachment.profileId, {
-				sha256: reference.sha256,
-				bytes: reference.bytes,
-				mediaType: reference.mediaType,
-			}),
+		loadObject: (reference, source) =>
+			attachments
+				? attachments.read(source.sessionId, source.inputId, reference, AbortSignal.timeout(30_000))
+				: objects.getObject(attachment.profileId, {
+						sha256: reference.sha256,
+						bytes: reference.bytes,
+						mediaType: reference.mediaType,
+					}),
 		canWrite: () => activeProfileAccess(root)?.capabilities.write === true,
 		liveBindings,
 		onMaterialized,
@@ -1413,6 +1468,44 @@ function createCloudStaffSynchronizer(root: string): CloudStaffSynchronizer | un
 		primary,
 		canWrite: () => activeProfileAccess(root)?.capabilities.write === true,
 	});
+}
+
+function governedCloudCompanyAgentEditor(runtime: CompanyRuntime): CloudMemberCompanyFileClient | undefined {
+	const attachment = profileAttachment(runtime.root);
+	if (attachment.profileType !== "cloud" || !runtime.governedCompanyFile) return undefined;
+	if (!qorperaAccountAuth || !currentQorperaAccountId) {
+		throw new Error("Sign in to change this company's agents.");
+	}
+	return qorperaAccountAuth.memberCompanyFile(attachment.profileId, attachment.environmentId, currentQorperaAccountId);
+}
+
+async function readCloudOrganizationHierarchy(root: string): Promise<CompanyOrganizationHierarchy | undefined> {
+	const attachment = profileAttachment(root);
+	const primary = qorperaAccountAuth?.hostedPrimary();
+	if (attachment.profileType !== "cloud" || !primary) return undefined;
+	const [organization, staff] = await Promise.all([
+		primary.getCompanyOrganization(attachment.profileId),
+		primary.listStaff(attachment.profileId),
+	]);
+	return buildCompanyOrganizationHierarchy(organization, staff);
+}
+
+async function refreshCloudOrganizationHierarchy(runtime: CompanyRuntime): Promise<void> {
+	try {
+		const hierarchy = await readCloudOrganizationHierarchy(runtime.root);
+		if (!runtime.closing && hierarchy) runtime.organizationHierarchy = hierarchy;
+	} catch (error) {
+		console.error(
+			`cloud organization projection unavailable: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+}
+
+async function refreshGovernedCloudStaff(runtime: CompanyRuntime): Promise<void> {
+	runtime.cloudStaffSync ??= createCloudStaffSynchronizer(runtime.root);
+	if (!runtime.cloudStaffSync) throw new Error("Cloud staff projection is unavailable.");
+	await runtime.cloudStaffSync.sync();
+	await refreshCloudOrganizationHierarchy(runtime);
 }
 
 function recordCloudSyncHealth(
@@ -1464,7 +1557,10 @@ function createCloudStaffSyncLoop(runtime: CompanyRuntime): DurableCloudSyncLoop
 		userData: app.getPath("userData"),
 		profileId: attachment.profileId,
 		channel: "staff",
-		sync: () => sync.sync(),
+		sync: async () => {
+			await sync.sync();
+			await refreshCloudOrganizationHierarchy(runtime);
+		},
 		onHealth: (health) => recordCloudSyncHealth(runtime, "staff", health),
 	});
 	recordCloudSyncHealth(runtime, "staff", loop.health());
@@ -1727,17 +1823,27 @@ function cloudQueuedPromptBody(value: unknown): CloudQueuedPromptBody | undefine
 async function prepareCloudPromptBody(
 	runtime: CompanyRuntime,
 	prompt: ReviewedPromptFrame,
+	sessionId: string,
 ): Promise<CloudQueuedPromptBody> {
 	const attachment = profileAttachment(runtime.root);
 	const objects = qorperaAccountAuth?.hostedObjects();
 	if (attachment.profileType !== "cloud" || !objects) throw new Error("cloud prompt storage is unavailable");
+	const accountId = currentQorperaAccountId;
+	if (!accountId || !prompt.clientInputId || !qorperaAccountAuth)
+		throw new Error("Cloud prompt member identity is unavailable");
+	const attachments = runtime.governedCompanyFile
+		? qorperaAccountAuth.sessionAttachments(attachment.profileId, attachment.environmentId, accountId)
+		: undefined;
 	const images: CloudQueuedImageReference[] = [];
 	let totalImageBytes = 0;
 	for (const image of prompt.images ?? []) {
 		const bytes = Buffer.from(image.data, "base64");
 		totalImageBytes += bytes.byteLength;
 		if (totalImageBytes > MAX_PROMPT_IMAGE_BYTES) throw new Error("prompt images exceed the 8 MiB turn allowance");
-		const reference = await objects.putObject(attachment.profileId, bytes, image.mimeType);
+		const reference = attachments
+			? await attachments.upload(sessionId, prompt.clientInputId, bytes, image.mimeType, AbortSignal.timeout(30_000))
+			: await objects.putObject(attachment.profileId, bytes, image.mimeType);
+		if (currentQorperaAccountId !== accountId || runtime.closing) throw new Error("Cloud prompt member changed");
 		images.push({ objectSha256: reference.sha256, bytes: reference.bytes, mediaType: reference.mediaType });
 	}
 	return {
@@ -1941,6 +2047,7 @@ async function installCloudTrailSync(runtime: CompanyRuntime): Promise<void> {
 			() => liveTrailBindings(runtime),
 			(binding) => runtime.sessions.rememberAudit(binding),
 			(advance) => recordAttachedTrailAdvance(runtime, advance),
+			runtime.governedCompanyFile === true,
 		);
 	}
 	if (!runtime.cloudTrailSync) return;
@@ -1958,6 +2065,7 @@ function recordCloudCompanyHealth(runtime: CompanyRuntime, health: CloudSyncHeal
 }
 
 function installCloudCompanySync(runtime: CompanyRuntime): void {
+	if (runtime.governedCompanyFile) return;
 	if (runtime.closing) return;
 	const attachment = profileAttachment(runtime.root);
 	const primary = qorperaAccountAuth?.hostedPrimary();
@@ -2380,9 +2488,13 @@ function startCloudRealtimeSync(slot: Slot, runtime: CompanyRuntime): void {
 			if (change.resource === "trail") {
 				triggerCloudTrailSync(runtime);
 				void emitActiveStaffQueue(slot, runtime);
-			} else if (change.resource === "staff") triggerCloudStaffSync(runtime);
-			else if (change.resource === "company-file") void runtime.cloudCompanyPublication?.publishNow();
-			else triggerHostedAccessRefresh(attachment.profileId, change.subjectUserId);
+			} else if (change.resource === "staff") {
+				triggerCloudStaffSync(runtime);
+				void refreshCloudOrganizationHierarchy(runtime);
+			} else if (change.resource === "company-file") {
+				void runtime.cloudCompanyPublication?.publishNow();
+				void refreshCloudOrganizationHierarchy(runtime);
+			} else triggerHostedAccessRefresh(attachment.profileId, change.subjectUserId);
 		},
 		onHealth: (health) => recordCloudRealtimeHealth(runtime, health),
 	});
@@ -2762,6 +2874,25 @@ function cloudCompanyCacheRoot(profile: HostedProfile): string {
 	return `${newCompanyRoot(profile.profileName)}-${profile.profileId.slice(0, 8)}`;
 }
 
+function materializeCloudCompanyDisplay(profile: HostedProfile, accountId: string): string {
+	const userData = app.getPath("userData");
+	const root = prepareCloudCompanyDisplay(userData, accountId, profile.profileId, profile.environmentId);
+	if (resolve(scaffoldCompany(root).root) !== resolve(root))
+		throw new Error("The company display root changed unexpectedly");
+	const attachment = readProfileAttachment(userData, root);
+	if (
+		attachment &&
+		(attachment.profileType !== "cloud" ||
+			attachment.profileId !== profile.profileId ||
+			attachment.environmentId !== profile.environmentId)
+	)
+		throw new Error("Company display attachment changed");
+	attachCloudProfile(userData, root, { profileId: profile.profileId, environmentId: profile.environmentId });
+	alignManagedCloudCompanyName(root, profile);
+	registerCompany(root);
+	return root;
+}
+
 interface CloudCacheMaterializationMarker {
 	schema: "qorpera.cloud-cache-materialization/v1";
 	profileId: string;
@@ -2935,6 +3066,7 @@ function backgroundCompanyEnabled(root: string): boolean {
 }
 
 function syncBackgroundLoginItem(roots: readonly string[]): void {
+	if (CLOUD_PREVIEW) return;
 	if (process.platform !== "win32" && process.platform !== "darwin") return;
 	try {
 		app.setLoginItemSettings({ openAtLogin: roots.length > 0 });
@@ -3384,6 +3516,8 @@ async function closeCompany(slot: Slot): Promise<void> {
 		return;
 	}
 	runtime.closing = true;
+	runtime.companyFileWindow?.destroy();
+	runtime.companyFileWindow = undefined;
 	runtime.closePromise = (async () => {
 		try {
 			if (runtime.cloudSessionPump) clearInterval(runtime.cloudSessionPump);
@@ -3556,19 +3690,14 @@ function staffSystemContext(root: string, agent: StaffAgent): string {
 						.join("; ");
 					return `- ${artifact.relativePath}: ${artifact.title}; measures ${artifact.metrics.map((metric) => metric.label).join(", ")}${missing ? `; missing data: ${missing}` : ""}`;
 				}),
-				"Inspect these files at the start of relevant work. Keep metric definitions, scores, values, timestamps, and evidence references honest. Change, add, or remove metrics and data needs when the company's circumstances make the starter assumptions wrong.",
+				"Inspect these files at the start of relevant work. Keep metric definitions, scores, values, timestamps, and evidence references honest. Change, add, or remove metrics and data needs when the company's circumstances make earlier assumptions wrong.",
 				"Artifact JSON uses a closed schema. Data-need status is only missing, selected, connected, available, or declined. Artifact status is only setting-up, waiting-for-data, partial, validating, or operating. Put file and connector evidence only in sourceRefs; never invent fields such as intakeRef, selection, or waiting-for-data on a data need. Re-read the artifact after editing it and repair any invalid value before ending the turn.",
 				"Treat each missing data need as a setup plan: first use existing company files and usable connections, then propose only the smallest missing source choice. When using request_connection for one, include the exact artifactId and dataNeedId shown above. Name the artifact and affected metrics in the connection purpose. A proposal is not requested access. After the founder chooses and completes any private authorization, validate the source, update sourceRefs and evidence, and move the artifact toward operating status.",
 			].join("\n")
-		: agent.templateId
-			? [
-					`Your suggested-role artifact is missing or invalid. Inspect agents/${agent.id}/artifacts/starter-${agent.templateId}.json and repair it before continuing setup.`,
-					"The qorpera.artifact/v1 schema is closed. Artifact status is setting-up, waiting-for-data, partial, validating, or operating. Metric status is unknown, measured, stale, or blocked. Data-need status is missing, selected, connected, available, or declined. Data needs use sourceRefs for evidence paths; remove unsupported fields. Do not replace the starter measures unless the company's circumstances require it.",
-				].join("\n")
-			: [
-					"You do not own an artifact yet because this is a blank agent, not a suggested role. Begin broadly: ask what durable responsibility, outcome, or measure the founder wants you to own. Do not invent a specialty from your name.",
-					`After the founder defines it, create an ordinary JSON artifact under agents/${agent.id}/artifacts/ using schema qorpera.artifact/v1. Give it an id, title, purpose, this stewardAgentId, status (setting-up, waiting-for-data, partial, validating, or operating), createdAt, and updatedAt. Artifact, metric, and data-need ids use only letters, numbers, dots, colons, underscores, and hyphens. Metrics need id, label, description, direction (higher-is-better, lower-is-better, target, or observe), status (unknown, measured, stale, or blocked), and evidence. Data needs require id, label, purpose, connectorHints, status (missing, selected, connected, available, or declined), and sourceRefs. Link supporting company work with relative paths into files/. Then use that adaptable artifact to drive setup and ongoing work.`,
-				].join("\n");
+		: [
+				"No dedicated artifact was seeded for this agent. Begin from the live Company File and the job specification; a template is a thin hire overlay, not a second brain or a prebuilt workspace.",
+				`Create an ordinary Company File object under agents/${agent.id}/artifacts/ only when useful work needs that durable object. If you create a qorpera.artifact/v1 object, keep its closed schema and evidence honest. Artifact creation is never a setup-completion requirement.`,
+			].join("\n");
 	const connectorInstructions = connectors.length
 		? [
 				"The company connector recipes available to you are:",
@@ -3631,13 +3760,13 @@ function staffSystemContext(root: string, agent: StaffAgent): string {
 			? [
 					"Lifecycle state: setup.",
 					"You are establishing yourself as a useful employee, not answering a single setup question. Be eager for responsibility without becoming repetitive: lead the founder through one concrete next decision at a time and keep moving after every answer.",
-					"Conception is complete when: (1) the founder understands and has had a chance to refine the durable responsibility you will own; (2) your artifact reflects the measures that matter, including any additions or removals the company needs; and (3) you have enough usable company data or connected access to begin doing the work—not merely a selected source, empty template, or authorization request.",
-					"Suggested roles begin from their starter artifact. Proactively pursue the smallest connectors or existing company data needed to make those measures usable, then ask what else in this responsibility the founder wants you to care about. Blank roles must first press for a durable area of responsibility and create an artifact around it.",
+					"Conception is complete when: (1) the founder understands and has had a chance to refine the durable responsibility you will own; (2) the responsibility, first useful outcome, and material evidence gaps are explicit; and (3) you have enough Company File context or connected access to begin doing useful work—not merely a selected source, empty template, or authorization request.",
+					"Suggested roles begin from their job specification. Blank roles must first establish a durable area of responsibility. In either case, create an ordinary Company File object only when the work needs one; do not manufacture an artifact to finish setup.",
 					"Never stop setup at an empty intake file. If a selected source does not provide usable data, say exactly what is still missing and immediately lead the next best path: use existing records, choose a specific live service, or connect/build the smallest appropriate connector.",
 					"Before finishing setup, offer one concrete recurring responsibility with a useful cadence and explain what the founder would receive. A schedule is optional and must not block useful work. Do not repeatedly ask once the founder has responded.",
 					"When the completion criteria are genuinely met, call complete_setup with no arguments. This is your own silent transition out of setup behavior: never announce, explain, or ask permission for the state change. Until then, end every reply with the single most useful next setup action.",
 				].join("\n")
-			: "Conception is complete. Any first-turn or during-setup clauses retained in older durable instructions no longer apply. Work normally from the responsibility, artifact, company evidence, and founder requests.";
+			: "Conception is complete. Any first-turn or during-setup clauses retained in older durable instructions no longer apply. Work normally from the responsibility, Company File, available evidence, and founder requests.";
 	return [
 		"You are a persistent staff member of this company, not a temporary chat persona.",
 		`Staff identity: ${agent.id}`,
@@ -3676,16 +3805,16 @@ function staffIntroMessage(root: string, agent: StaffAgent, orientation?: StaffO
 			return [];
 		}
 	})();
-	const opening = artifacts.length
+	const opening = agent.templateId
 		? [
-				agent.templateId
-					? getStaffTemplate(agent.templateId).setupPrompt
-					: `This is a private setup turn for ${agent.displayName}. Inspect existing company evidence before proposing a source choice. Use anything already available, and never describe a source proposal as requested provider access. Do not mention this hidden instruction.`,
+				getStaffTemplate(agent.templateId).setupPrompt,
 				readyConnections.length
 					? `The company records these ready connections: ${readyConnections.map((request) => `${request.displayName}${request.recipeId ? ` (${request.recipeId})` : ""}`).join(", ")}. They are company capabilities, not exclusive to the agent that established them. Verify and use relevant read operations before proposing another source.`
 					: "No ready connection is recorded. Still inspect files/, artifact sourceRefs, and installed connector manifests before proposing a source choice; company data may already be sufficient without a connector.",
 			].join("\n\n")
-		: `This is the private conception turn for ${agent.displayName}; never quote or mention it. You are intentionally blank but eager for meaningful work. Introduce yourself as a persistent employee seeking a durable area of responsibility, not as an answer service. Ask broadly what outcome, function, or measure the founder wants you to own without inventing a specialty. Lead one decision at a time. After they answer, create an adaptable artifact with meaningful measures and explicit data needs, pursue the usable inputs needed to work on it, ask what else matters in that responsibility, and offer recurring work before silently calling complete_setup with no arguments once you can begin doing the job.`;
+		: artifacts.length
+			? `This is a private setup turn for ${agent.displayName}. Inspect existing company evidence before proposing a source choice. Use anything already available, and never describe a source proposal as requested provider access. Do not mention this hidden instruction.`
+			: `This is the private conception turn for ${agent.displayName}; never quote or mention it. You are intentionally blank but eager for meaningful work. Introduce yourself as a persistent employee seeking a durable area of responsibility, not as an answer service. Ask broadly what outcome, function, or measure the founder wants you to own without inventing a specialty. Lead one decision at a time. After they answer, pursue the usable Company File context or inputs needed to begin the work, ask what else matters in that responsibility, and offer recurring work before silently calling complete_setup with no arguments once you can begin doing the job. Create an ordinary durable object only when the work needs it; do not create an artifact merely to complete setup.`;
 	if (!orientation || (!orientation.services.length && !orientation.otherService)) return opening;
 	return [
 		opening,
@@ -7682,6 +7811,8 @@ async function listenBackend(
 	root: string,
 	authToken: string,
 	sessions: SessionControlPlane,
+	governedCompanyFile: boolean,
+	organizationReadModel: () => CompanyOrganizationHierarchy | undefined,
 ): Promise<{ port: number; close: () => void }> {
 	type RoomPreview = Pick<CompanyRoomMessage, "id" | "text" | "speaker" | "createdAt">;
 	const roomPreviews = new Map<
@@ -7696,6 +7827,7 @@ async function listenBackend(
 			root,
 			port,
 			authToken,
+			governedCompanyFile,
 			fixedShell: { directory: FIXED_SHELL_DIR },
 			sessionRuntime: sessions,
 			staffReadModel: () => readStaffAgents(root),
@@ -7730,6 +7862,7 @@ async function listenBackend(
 				});
 			},
 			staffMessageReadModel: () => readStaffAgentMessages(root),
+			organizationReadModel,
 			artifactReadModel: () => readCompanyArtifacts(root),
 			connectorReadModel: () => readCompanyConnectorManifests(root),
 			artifactUpdateModel: (id, update) => {
@@ -7860,6 +7993,7 @@ function activeCompanyInfo(slot: Slot): ActiveCompany | undefined {
 class CompanyOpenCancelledError extends Error {}
 
 async function openCompany(slot: Slot, root: string): Promise<void> {
+	let governedCompanyFile = false;
 	try {
 		root = canonicalCompanyRoot(root);
 	} catch {
@@ -7878,6 +8012,25 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		try {
 			if (!(await refreshProfileAccess(root))) {
 				throw new Error("This profile is not shared with the signed-in Qorpera account.");
+			}
+			const attachment = profileAttachment(root);
+			if (attachment.profileType === "cloud") {
+				const accountId = currentQorperaAccountId;
+				if (!accountId || !qorperaAccountAuth) throw new Error("Sign in to open this company.");
+				const mode = await qorperaAccountAuth.companyFileMode(
+					attachment.profileId,
+					accountId,
+					AbortSignal.timeout(15_000),
+				);
+				if (mode.environmentId !== attachment.environmentId || currentQorperaAccountId !== accountId)
+					throw new Error("Company identity changed while opening it.");
+				governedCompanyFile = mode.mode === "governed";
+				if (governedCompanyFile) {
+					const profile = hostedProfilesById.get(attachment.profileId);
+					if (!profile || profile.environmentId !== mode.environmentId)
+						throw new Error("Company metadata is unavailable.");
+					root = materializeCloudCompanyDisplay(profile, accountId);
+				}
 			}
 		} catch (error) {
 			console.error(
@@ -7911,7 +8064,7 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 	let installedRuntime: CompanyRuntime | undefined;
 	try {
 		const openingAttachment = profileAttachment(root);
-		if (openingAttachment.profileType === "cloud") {
+		if (openingAttachment.profileType === "cloud" && !governedCompanyFile) {
 			const openingProfile = hostedProfilesById.get(openingAttachment.profileId);
 			if (openingProfile) alignManagedCloudCompanyName(root, openingProfile);
 			const primary = qorperaAccountAuth?.hostedPrimary();
@@ -8028,6 +8181,14 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 				);
 			}
 		}
+		let organizationHierarchy: CompanyOrganizationHierarchy | undefined;
+		try {
+			organizationHierarchy = await readCloudOrganizationHierarchy(root);
+		} catch (error) {
+			console.error(
+				`initial cloud organization projection deferred: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
 		if (openingCancelled()) throw new CompanyOpenCancelledError();
 		const sessions = await SessionControlPlane.create(root, KERNEL_INSTANCE_ID, sessionCachePath);
 		if (openingCancelled()) throw new CompanyOpenCancelledError();
@@ -8043,6 +8204,7 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 			(advance) => {
 				if (installedRuntime) recordAttachedTrailAdvance(installedRuntime, advance);
 			},
+			governedCompanyFile,
 		);
 		if (cloudTrailSync) {
 			try {
@@ -8055,7 +8217,13 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		}
 		if (openingCancelled()) throw new CompanyOpenCancelledError();
 		const backendToken = randomUUID();
-		const backend = await listenBackend(root, backendToken, sessions);
+		const backend = await listenBackend(
+			root,
+			backendToken,
+			sessions,
+			governedCompanyFile,
+			() => installedRuntime?.organizationHierarchy ?? organizationHierarchy,
+		);
 		pendingBackendClose = backend.close;
 		if (openingCancelled()) throw new CompanyOpenCancelledError();
 		// Opening a company starts the trusted host only. A model process is
@@ -8067,6 +8235,7 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 		};
 		const runtime: CompanyRuntime = {
 			root,
+			governedCompanyFile,
 			sessions,
 			storageId,
 			childOptions,
@@ -8080,6 +8249,7 @@ async function openCompany(slot: Slot, root: string): Promise<void> {
 			resumedConnectionSetupIds: new Set(),
 			cloudTrailSync,
 			cloudStaffSync,
+			organizationHierarchy,
 			closing: false,
 			runtimeLock,
 		};
@@ -8452,6 +8622,29 @@ function trailModelSelection(root: string, sessionFile: string): RuntimeModelSel
 async function persistStaffAgentModel(root: string, staffAgentId: string, model: RuntimeModelSelection): Promise<void> {
 	const current = readStaffAgents(root).find((agent) => agent.id === staffAgentId);
 	if (!current || (current.model?.provider === model.provider && current.model?.modelId === model.modelId)) return;
+	const slot = slotForCompany(root);
+	const runtime = slot?.runtime;
+	if (runtime) {
+		const editor = governedCloudCompanyAgentEditor(runtime);
+		if (!editor) {
+			updateStaffAgent(root, staffAgentId, { model: { provider: model.provider, modelId: model.modelId } });
+			await commitCompanyMaterializationAsync(root, [join(".qorpera", "staff.json")]);
+			return;
+		}
+		if (current.templateId === "co-founder") return;
+		await writeCloudCompanyAgent({
+			editor,
+			agent: {
+				...current,
+				model: { provider: model.provider, modelId: model.modelId },
+				updatedAt: new Date().toISOString(),
+			},
+			operationKey: `staff-model:${staffAgentId}:${randomUUID()}`,
+			signal: AbortSignal.timeout(60_000),
+		});
+		await refreshGovernedCloudStaff(runtime);
+		return;
+	}
 	updateStaffAgent(root, staffAgentId, { model: { provider: model.provider, modelId: model.modelId } });
 	// Async on purpose: this runs while the agent child is alive, where a
 	// synchronous git call can park forever and freeze the shell.
@@ -8629,7 +8822,7 @@ async function requestSponsoredCloudTurn(
 		) {
 			throw new Error("The selected personal subscription is unavailable or was revoked.");
 		}
-		const body = await prepareCloudPromptBody(runtime, reviewed);
+		const body = await prepareCloudPromptBody(runtime, reviewed, sessionRef.hostedSessionId);
 		const request = await control.requestSessionTurn({
 			sessionId: sessionRef.hostedSessionId,
 			clientInputId: reviewed.clientInputId,
@@ -8982,6 +9175,12 @@ async function bootstrapStaffTeam(
 	}
 	const runtime = slot.runtime;
 	if (!runtime) return { ok: false, error: "open a company before adding agents" };
+	if (runtime.governedCompanyFile && profileAttachment(runtime.root).profileType === "cloud") {
+		return {
+			ok: false,
+			error: "Initial teams are no longer seeded from local templates. Add each cloud agent through its Company File lifecycle operation.",
+		};
+	}
 	return enqueueRuntimeTransition(runtime, async () => {
 		if (slot.runtime !== runtime || runtime.closing || runtime.wakeChild || isChildBusy(runtime.child)) {
 			return { ok: false, error: "company runtime is busy" };
@@ -9020,15 +9219,6 @@ async function bootstrapStaffTeam(
 					};
 				}),
 			);
-			const artifactPaths = created.map(
-				(staff, index) =>
-					createStarterCompanyArtifact(
-						runtime.root,
-						staff.id,
-						templates[index]!.id,
-						templates[index]!.starterArtifact,
-					).relativePath,
-			);
 			const statePath = staffRuntimeStatePath(app.getPath("userData"), runtime.root);
 			let introState = readStaffRuntimeState(statePath);
 			const bindings = created.map((staff) => {
@@ -9046,7 +9236,6 @@ async function bootstrapStaffTeam(
 			commitCompanyMaterialization(runtime.root, [
 				join(".qorpera", "staff.json"),
 				...created.map((staff) => relative(runtime.root, staffAgentDirectoryPath(runtime.root, staff.id))),
-				...artifactPaths,
 			]);
 			triggerCloudStaffSync(runtime);
 			const first = created[0]!;
@@ -9141,9 +9330,8 @@ async function createStaffMember(
 		if (slot.runtime !== runtime || runtime.closing) return { ok: false, error: "company runtime changed" };
 		let staffChild: ChildProcessWithoutNullStreams | undefined;
 		try {
-			snapshotFounderGitState(runtime.root, "founder staff creation");
 			const displayName = input.displayName ?? template!.name;
-			const staff = createStaffAgent(runtime.root, {
+			const definition = {
 				displayName,
 				role: template?.role ?? "Role to define with the founder",
 				charter:
@@ -9160,16 +9348,39 @@ async function createStaffMember(
 					shape: input.appearance?.shape ?? template?.avatarShapeToken ?? "round",
 					creature: input.appearance?.creature ?? (template ? staffCharacterForTemplate(template.id) : "planet"),
 				},
-			});
-			const artifactPath = template
-				? createStarterCompanyArtifact(runtime.root, staff.id, template.id, template.starterArtifact).relativePath
-				: undefined;
-			commitCompanyMaterialization(runtime.root, [
-				join(".qorpera", "staff.json"),
-				relative(runtime.root, staffAgentDirectoryPath(runtime.root, staff.id)),
-				...(artifactPath ? [artifactPath] : []),
-			]);
-			triggerCloudStaffSync(runtime);
+			};
+			const editor = governedCloudCompanyAgentEditor(runtime);
+			let staff: StaffAgent;
+			if (editor) {
+				const now = new Date().toISOString();
+				const intended: StaffAgent = {
+					id: randomUUID(),
+					...definition,
+					employmentStatus: "active",
+					lifecycleState: "setup",
+					createdAt: now,
+					updatedAt: now,
+				};
+				await writeCloudCompanyAgent({
+					editor,
+					agent: intended,
+					startupInstructions: staffIntroMessage(runtime.root, intended),
+					operationKey: `staff-create:${intended.id}:${randomUUID()}`,
+					signal: AbortSignal.timeout(60_000),
+				});
+				await refreshGovernedCloudStaff(runtime);
+				const projected = readStaffAgents(runtime.root).find((candidate) => candidate.id === intended.id);
+				if (!projected) throw new Error("Cloud staff projection did not include the created agent.");
+				staff = projected;
+			} else {
+				snapshotFounderGitState(runtime.root, "founder staff creation");
+				staff = createStaffAgent(runtime.root, definition);
+				commitCompanyMaterialization(runtime.root, [
+					join(".qorpera", "staff.json"),
+					relative(runtime.root, staffAgentDirectoryPath(runtime.root, staff.id)),
+				]);
+				triggerCloudStaffSync(runtime);
+			}
 			if (profileAttachment(runtime.root).profileType === "cloud") {
 				// Cloud staff conversations are childless from their first breath.
 				const attached = await attachStaffChild(slot, runtime, staff, undefined, true);
@@ -9285,15 +9496,39 @@ async function updateStaffMember(
 				return { ok: false, error: "wait for the current company work to finish" };
 			}
 			try {
-				if (!activeStaffAgent(runtime.root, staffAgentId))
-					return { ok: false, error: "staff member is unavailable" };
-				snapshotFounderGitState(runtime.root, "founder staff update");
-				const staff = updateStaffAgent(runtime.root, staffAgentId, update);
-				commitCompanyMaterialization(runtime.root, [
-					join(".qorpera", "staff.json"),
-					relative(runtime.root, staffAgentInstructionsPath(runtime.root, staff.id)),
-				]);
-				triggerCloudStaffSync(runtime);
+				const current = activeStaffAgent(runtime.root, staffAgentId);
+				if (!current) return { ok: false, error: "staff member is unavailable" };
+				const editor = governedCloudCompanyAgentEditor(runtime);
+				let staff: StaffAgent;
+				if (editor) {
+					const intended: StaffAgent = {
+						...current,
+						...(update.displayName ? { displayName: update.displayName } : {}),
+						...(update.role ? { role: update.role } : {}),
+						...(update.appearance ? { appearance: update.appearance } : {}),
+						...(update.model && { model: update.model }),
+						updatedAt: new Date().toISOString(),
+					};
+					if (update.model === null) delete intended.model;
+					await writeCloudCompanyAgent({
+						editor,
+						agent: intended,
+						operationKey: `staff-update:${staffAgentId}:${randomUUID()}`,
+						signal: AbortSignal.timeout(60_000),
+					});
+					await refreshGovernedCloudStaff(runtime);
+					const projected = readStaffAgents(runtime.root).find((candidate) => candidate.id === staffAgentId);
+					if (!projected) throw new Error("Cloud staff projection did not include the updated agent.");
+					staff = projected;
+				} else {
+					snapshotFounderGitState(runtime.root, "founder staff update");
+					staff = updateStaffAgent(runtime.root, staffAgentId, update);
+					commitCompanyMaterialization(runtime.root, [
+						join(".qorpera", "staff.json"),
+						relative(runtime.root, staffAgentInstructionsPath(runtime.root, staff.id)),
+					]);
+					triggerCloudStaffSync(runtime);
+				}
 				if (runtime.childOptions.staffAgentId === staff.id) {
 					runtime.childOptions.staffContext = staffSystemContext(runtime.root, staff);
 					if (update.model !== undefined) {
@@ -9321,6 +9556,7 @@ async function updateStaffMember(
 async function archiveStaffMember(
 	slot: Slot,
 	staffAgentId: string,
+	publishCloud = true,
 ): Promise<{ ok: true; staff: StaffAgent } | { ok: false; error: string }> {
 	const runtime = slot.runtime;
 	if (!runtime) return { ok: false, error: "open a company before archiving staff" };
@@ -9342,20 +9578,48 @@ async function archiveStaffMember(
 				...runtime.childOptions,
 				sessionFile: previousBinding?.file ?? runtime.childOptions.sessionFile,
 			};
-			let archived = false;
+			let localArchived = false;
+			let cloudApplied = false;
 			try {
-				snapshotFounderGitState(runtime.root, "founder staff archive");
 				if (attached && previousChild) await stopChild(previousChild);
 				if (attached) runtime.sessionAnchor = undefined;
-				const deleted = archiveStaffAgent(runtime.root, staff.id);
-				archived = true;
-				commitCompanyMaterialization(runtime.root, [join(".qorpera", "staff.json")]);
+				const editor = publishCloud ? governedCloudCompanyAgentEditor(runtime) : undefined;
+				let deleted: StaffAgent;
+				if (editor) {
+					if (staff.templateId === "co-founder") {
+						throw new Error("The company Co-Founder cannot be archived.");
+					}
+					await writeCloudCompanyAgent({
+						editor,
+						agent: { ...staff, employmentStatus: "archived", updatedAt: new Date().toISOString() },
+						operationKey: `staff-archive:${staff.id}:${randomUUID()}`,
+						signal: AbortSignal.timeout(60_000),
+					});
+					cloudApplied = true;
+					await refreshGovernedCloudStaff(runtime);
+					const projected = readStaffAgents(runtime.root).find((candidate) => candidate.id === staff.id);
+					if (!projected || projected.employmentStatus !== "archived") {
+						throw new Error("Cloud staff projection did not archive the agent.");
+					}
+					deleted = projected;
+				} else {
+					snapshotFounderGitState(runtime.root, "founder staff archive");
+					deleted = archiveStaffAgent(runtime.root, staff.id);
+					localArchived = true;
+					commitCompanyMaterialization(runtime.root, [join(".qorpera", "staff.json")]);
+				}
 				try {
 					cancelPendingConnectionRequestsForStaff(app.getPath("userData"), runtime.root, staff.id);
 				} catch (error) {
 					console.error(`staff connection request cleanup failed: ${(error as Error).message}`);
 				}
-				triggerCloudStaffSync(runtime);
+				if (profileAttachment(runtime.root).profileType === "cloud" && publishCloud && !editor) {
+					runtime.cloudStaffSync ??= createCloudStaffSynchronizer(runtime.root);
+					if (!runtime.cloudStaffSync) throw new Error("Cloud staff archive is unavailable.");
+					await runtime.cloudStaffSync.sync();
+				} else if (publishCloud) {
+					triggerCloudStaffSync(runtime);
+				}
 				if (attached) {
 					const next = readStaffAgents(runtime.root).find(
 						(candidate) => candidate.employmentStatus !== "archived",
@@ -9389,9 +9653,19 @@ async function archiveStaffMember(
 				}
 				return { ok: true, staff: deleted };
 			} catch (error) {
+				if (localArchived) {
+					try {
+						restoreStaffAgent(runtime.root, staff.id);
+						commitCompanyMaterialization(runtime.root, [join(".qorpera", "staff.json")]);
+						localArchived = false;
+					} catch (rollbackError) {
+						console.error(`staff archive rollback failed: ${(rollbackError as Error).message}`);
+					}
+				}
 				if (attached && slot.runtime === runtime && !runtime.closing) {
-					if (archived) {
+					if (localArchived || cloudApplied) {
 						runtime.child = undefined;
+						runtime.sessionAnchor = undefined;
 						runtime.childOptions = { model: previousOptions.model };
 					} else {
 						await restoreAttendedChild(
@@ -9411,9 +9685,104 @@ async function archiveStaffMember(
 async function permanentlyDeleteStaffMember(
 	slot: Slot,
 	staffAgentId: string,
-	keepArtifacts: boolean,
 ): Promise<{ ok: true; staff: StaffAgent } | { ok: false; error: string }> {
-	const archived = await archiveStaffMember(slot, staffAgentId);
+	const activeRuntime = slot.runtime;
+	if (!activeRuntime) return { ok: false, error: "open a company before deleting staff" };
+	const editor = governedCloudCompanyAgentEditor(activeRuntime);
+	if (editor) {
+		return enqueueRuntimeTransition(activeRuntime, async () => {
+			if (slot.runtime !== activeRuntime || activeRuntime.closing) {
+				return { ok: false, error: "company runtime changed" };
+			}
+			if (isChildBusy(activeRuntime.child) || activeRuntime.wakeChild) {
+				return { ok: false, error: "wait for the current company work to finish" };
+			}
+			const staff = readStaffAgents(activeRuntime.root).find((candidate) => candidate.id === staffAgentId);
+			if (!staff) return { ok: false, error: "staff member is unavailable" };
+			if (staff.templateId === "co-founder") {
+				return { ok: false, error: "The company Co-Founder cannot be permanently deleted." };
+			}
+			const previousChild = activeRuntime.child;
+			const attached = Boolean(
+				(previousChild || activeRuntime.sessionAnchor) && activeRuntime.childOptions.staffAgentId === staff.id,
+			);
+			const previousBinding = attendedSessionBinding(activeRuntime);
+			const previousOptions: ChildOptions = {
+				...activeRuntime.childOptions,
+				sessionFile: previousBinding?.file ?? activeRuntime.childOptions.sessionFile,
+			};
+			let applied = false;
+			try {
+				if (attached && previousChild) await stopChild(previousChild);
+				if (attached) activeRuntime.sessionAnchor = undefined;
+				const artifactPaths = readCompanyArtifacts(activeRuntime.root)
+					.filter((artifact) => artifact.stewardAgentId === staffAgentId)
+					.map((artifact) => artifact.relativePath);
+				await deleteCloudCompanyAgent({
+					editor,
+					agentId: staffAgentId,
+					operationKey: `staff-delete:${staffAgentId}:${randomUUID()}`,
+					signal: AbortSignal.timeout(60_000),
+				});
+				applied = true;
+				await refreshGovernedCloudStaff(activeRuntime);
+				if (readStaffAgents(activeRuntime.root).some((candidate) => candidate.id === staffAgentId)) {
+					throw new Error("Cloud staff projection retained the deleted agent.");
+				}
+				const agentDirectory = staffAgentDirectoryPath(activeRuntime.root, staffAgentId);
+				removeStaffWorkspace(agentDirectory, false);
+				for (const artifactPath of artifactPaths) {
+					const absolute = join(activeRuntime.root, artifactPath);
+					if (existsSync(absolute)) rmSync(absolute, { recursive: true, force: true });
+				}
+				try {
+					cancelPendingConnectionRequestsForStaff(app.getPath("userData"), activeRuntime.root, staffAgentId);
+				} catch (error) {
+					console.error(`staff connection request cleanup failed: ${(error as Error).message}`);
+				}
+				const computerProfile = join(
+					app.getPath("userData"),
+					"chrome-computers",
+					companyRootId(activeRuntime.root),
+					staffAgentId,
+				);
+				if (existsSync(computerProfile)) rmSync(computerProfile, { recursive: true, force: true });
+				if (attached) {
+					const next = readStaffAgents(activeRuntime.root).find(
+						(candidate) => candidate.employmentStatus === "active",
+					);
+					if (next) {
+						const nextTrail =
+							readStaffRuntimeState(staffRuntimeStatePath(app.getPath("userData"), activeRuntime.root)).intros[
+								next.id
+							]?.trailFile ?? latestStaffTrailFile(activeRuntime, next.id);
+						await attachStaffChild(slot, activeRuntime, next, nextTrail, !nextTrail);
+					} else {
+						activeRuntime.child = undefined;
+						activeRuntime.sessionAnchor = undefined;
+						activeRuntime.childOptions = { model: previousOptions.model };
+					}
+				}
+				return { ok: true, staff };
+			} catch (error) {
+				if (applied) {
+					triggerCloudStaffSync(activeRuntime);
+					activeRuntime.child = undefined;
+					activeRuntime.sessionAnchor = undefined;
+					activeRuntime.childOptions = { model: previousOptions.model };
+				} else if (attached && slot.runtime === activeRuntime && !activeRuntime.closing) {
+					await restoreAttendedChild(
+						slot,
+						activeRuntime,
+						previousOptions,
+						"staff-delete agent runtime restore failed",
+					);
+				}
+				return { ok: false, error: error instanceof Error ? error.message : String(error) };
+			}
+		});
+	}
+	const archived = await archiveStaffMember(slot, staffAgentId, false);
 	if (!archived.ok) return archived;
 	const runtime = slot.runtime;
 	if (!runtime) return { ok: false, error: "company runtime closed after archiving the agent" };
@@ -9445,7 +9814,7 @@ async function permanentlyDeleteStaffMember(
 					? deleteStaffAgent(runtime.root, staffAgentId)
 					: archived.staff;
 				const agentDirectory = staffAgentDirectoryPath(runtime.root, staffAgentId);
-				removeStaffWorkspace(agentDirectory, keepArtifacts);
+				removeStaffWorkspace(agentDirectory, false);
 				commitCompanyMaterialization(runtime.root, [
 					join(".qorpera", "staff.json"),
 					relative(runtime.root, agentDirectory),
@@ -9491,9 +9860,34 @@ async function restoreStaffMember(
 					(candidate) => candidate.id === staffAgentId && candidate.employmentStatus === "archived",
 				);
 				if (!archived) return { ok: false, error: "archived staff member is unavailable" };
-				snapshotFounderGitState(runtime.root, "founder staff restore");
-				const staff = restoreStaffAgent(runtime.root, staffAgentId);
-				commitCompanyMaterialization(runtime.root, [join(".qorpera", "staff.json")]);
+				const editor = governedCloudCompanyAgentEditor(runtime);
+				let staff: StaffAgent;
+				if (editor) {
+					if (archived.templateId === "co-founder") {
+						return { ok: false, error: "The company Co-Founder is not an archivable agent." };
+					}
+					await writeCloudCompanyAgent({
+						editor,
+						agent: { ...archived, employmentStatus: "active", updatedAt: new Date().toISOString() },
+						operationKey: `staff-restore:${staffAgentId}:${randomUUID()}`,
+						signal: AbortSignal.timeout(60_000),
+					});
+					await refreshGovernedCloudStaff(runtime);
+					const projected = readStaffAgents(runtime.root).find((candidate) => candidate.id === staffAgentId);
+					if (!projected || projected.employmentStatus !== "active") {
+						throw new Error("Cloud staff projection did not restore the agent.");
+					}
+					staff = projected;
+				} else {
+					snapshotFounderGitState(runtime.root, "founder staff restore");
+					staff = restoreStaffAgent(runtime.root, staffAgentId);
+					commitCompanyMaterialization(runtime.root, [join(".qorpera", "staff.json")]);
+				}
+				if (profileAttachment(runtime.root).profileType === "cloud" && !editor) {
+					runtime.cloudStaffSync ??= createCloudStaffSynchronizer(runtime.root);
+					if (!runtime.cloudStaffSync) throw new Error("Cloud staff restore is unavailable.");
+					await runtime.cloudStaffSync.sync();
+				}
 				return { ok: true, staff };
 			} catch (error) {
 				return { ok: false, error: error instanceof Error ? error.message : String(error) };
@@ -9618,15 +10012,13 @@ async function staffIntroReady(
 	return enqueueRuntimeTransition(runtime, async () => {
 		if (slot.runtime !== runtime || runtime.closing) return { ok: false, error: "company runtime changed" };
 		const staff = activeStaffAgent(runtime.root, staffAgentId);
-		const child = runtime.child;
 		if (!staff) return { ok: false, error: "staff member is unavailable" };
-		if (!child) return { ok: false, error: "staff member is not attached" };
 		if (profileAttachment(runtime.root).profileType === "cloud") {
-			const binding = childBindings.get(child);
+			const anchor = runtime.sessionAnchor;
 			if (
 				runtime.childOptions.staffAgentId !== staff.id ||
-				binding?.file !== trailFile ||
-				!isCurrentRuntimeChild(slot, runtime, child)
+				anchor?.staffAgentId !== staff.id ||
+				anchor.binding.file !== trailFile
 			) {
 				return { ok: false, error: "staff introduction target is not the attached session" };
 			}
@@ -9638,11 +10030,17 @@ async function staffIntroReady(
 					error: "Retry the introduction by sending a cloud message with an explicit execution sponsor.",
 				};
 			}
+			const ref = await arbiter.ensureSession(staff.id, staff.displayName, anchor.binding.sessionId);
+			if (anchor.binding.sessionId !== ref.clientSessionId) {
+				void readoptStaffCloudSession(slot, runtime, staff.id, ref);
+			}
 			setTimeout(() => {
 				void refreshCloudSessionQueue(slot, runtime).catch(() => undefined);
 			}, 0).unref();
 			return { ok: true, status: "pending" };
 		}
+		const child = runtime.child;
+		if (!child) return { ok: false, error: "staff member is not attached" };
 		return beginAttachedStaffIntro(slot, runtime, staff, child, trailFile, retry);
 	});
 }
@@ -9875,7 +10273,7 @@ function createRendererWindow(
 		width: 1360,
 		height: 860,
 		show: options.show ?? true,
-		title: "Qorpera Base",
+		title: CLOUD_PREVIEW ? "Qorpera Base — Cloud Preview" : "Qorpera Base",
 		backgroundColor: sidebarTranslucency ? "#00ffffff" : "#ffffff",
 		...(sidebarTranslucency ? { vibrancy: "sidebar" as const, visualEffectState: "active" as const } : {}),
 		// Frameless, Desktop-style chrome: the fixed shell draws the titlebar
@@ -10122,9 +10520,18 @@ app.whenReady().then(async () => {
 	);
 	qorperaAccountAuth = new QorperaAccountAuth(app.getPath("userData"), {
 		openExternal: (url) => electronShell.openExternal(url),
-		...(process.env.QORPERA_NATIVE_PROVIDER_URL?.trim()
-			? { nativeProviderUrl: process.env.QORPERA_NATIVE_PROVIDER_URL.trim() }
-			: {}),
+		officeViewerOrigin: CLOUD_PREVIEW ? undefined : process.env.QORPERA_OFFICE_VIEWER_ORIGIN?.trim(),
+		officeViewerClientOrigin: CLOUD_PREVIEW ? undefined : process.env.QORPERA_OFFICE_VIEWER_CLIENT_ORIGIN?.trim(),
+		...(CLOUD_PREVIEW
+			? {
+					projectUrl: CLOUD_PREVIEW.projectUrl,
+					publishableKey: CLOUD_PREVIEW.publishableKey,
+					objectGatewayUrl: CLOUD_PREVIEW.objectGatewayUrl,
+					nativeProviderUrl: CLOUD_PREVIEW.nativeProviderUrl,
+				}
+			: process.env.QORPERA_NATIVE_PROVIDER_URL?.trim()
+				? { nativeProviderUrl: process.env.QORPERA_NATIVE_PROVIDER_URL.trim() }
+				: {}),
 	});
 	try {
 		rememberAuthenticatedAccount(await qorperaAccountAuth.info());
@@ -10181,6 +10588,37 @@ app.whenReady().then(async () => {
 		}
 		return { proposal, attachment };
 	};
+	ipcMain.handle("account:browser-cleanup", async (event) => {
+		const owner = slotOf(event.sender),
+			accountId = currentQorperaAccountId;
+		if (
+			!owner ||
+			!accountId ||
+			!qorperaAccountAuth ||
+			!isTrustedProfileSwitcherSender(event.sender) ||
+			event.senderFrame !== event.sender.mainFrame
+		)
+			return { ok: false, error: "Sign in to manage your browser profiles." };
+		try {
+			if (browserRecoveryWindow && !browserRecoveryWindow.isDestroyed()) browserRecoveryWindow.show();
+			else {
+				browserRecoveryOpening ??= openMemberBrowserRecoveryWindow({
+					owner: owner.window,
+					directory: FIXED_SHELL_DIR,
+					client: qorperaAccountAuth.memberBrowserRecovery(accountId),
+					current: () => currentQorperaAccountId === accountId,
+				});
+				try {
+					browserRecoveryWindow = await browserRecoveryOpening;
+				} finally {
+					browserRecoveryOpening = undefined;
+				}
+			}
+			return { ok: true };
+		} catch {
+			return { ok: false, error: "Your browser cleanup is unavailable. Sign in and try again." };
+		}
+	});
 	ipcMain.handle("account:info", async (event): Promise<QorperaAccountInfo> => {
 		if (!slotOf(event.sender) || !qorperaAccountAuth) return { authenticated: false };
 		try {
@@ -10188,6 +10626,8 @@ app.whenReady().then(async () => {
 			if (account.authenticated) claimExistingCompanies(account);
 			return account;
 		} catch (error) {
+			browserRecoveryWindow?.destroy();
+			browserRecoveryWindow = undefined;
 			currentQorperaAccountId = undefined;
 			console.error(`Qorpera account read failed: ${error instanceof Error ? error.message : String(error)}`);
 			return { authenticated: false };
@@ -10322,8 +10762,36 @@ app.whenReady().then(async () => {
 				);
 				return [];
 			});
+		// Retain old caches on disk, but show only one entry per cloud company.
+		// A display root from another signed-in human is never selected.
+		const visibleCompanies = companies.filter((company) => {
+			const attachment = profileAttachment(company.root);
+			if (attachment.profileType !== "cloud") return true;
+			const displayRoot = cloudCompanyDisplayRoot(userData, userId, attachment.profileId, attachment.environmentId);
+			const exactDisplay = companies.find(
+				(candidate) => normalizedRoot(candidate.root) === normalizedRoot(displayRoot),
+			);
+			if (exactDisplay) return company === exactDisplay;
+			if (
+				normalizedRoot(company.root).startsWith(`${normalizedRoot(join(userData, "cloud-company-display"))}${sep}`)
+			)
+				return false;
+			return (
+				company ===
+				companies.find((candidate) => {
+					const current = profileAttachment(candidate.root);
+					return (
+						current.profileType === "cloud" &&
+						current.profileId === attachment.profileId &&
+						!normalizedRoot(candidate.root).startsWith(
+							`${normalizedRoot(join(userData, "cloud-company-display"))}${sep}`,
+						)
+					);
+				})
+			);
+		});
 		const entries = await Promise.all(
-			companies.map(async (company) => {
+			visibleCompanies.map(async (company) => {
 				const attachment = profileAttachment(company.root);
 				let access: ProfileAccess | undefined;
 				if (attachment.profileType === "cloud") {
@@ -10364,7 +10832,7 @@ app.whenReady().then(async () => {
 			}),
 		);
 		const attachedProfileIds = new Set(
-			companies
+			visibleCompanies
 				.map((company) => profileAttachment(company.root))
 				.filter((attachment) => attachment.profileType === "cloud")
 				.map((attachment) => attachment.profileId),
@@ -10551,6 +11019,15 @@ app.whenReady().then(async () => {
 			if (!profile) return { ok: false, error: "Cloud profile is not available to this account." };
 			const team = await refreshHostedTeam(profile.profileId);
 			const access = hostedProfileAccess(team);
+			const mode = await qorperaAccountAuth!.companyFileMode(
+				profile.profileId,
+				account.user.id,
+				AbortSignal.timeout(15_000),
+			);
+			if (mode.environmentId !== profile.environmentId || currentQorperaAccountId !== account.user.id)
+				throw new Error("Company identity changed while opening it.");
+			if (mode.mode === "governed")
+				return { ok: true, root: materializeCloudCompanyDisplay(profile, account.user.id) };
 			const companyFile = await primary.getCompanyFile(profile.environmentId);
 			const existing = listCompanies().find((company) => {
 				const attachment = readProfileAttachment(app.getPath("userData"), company.root);
@@ -10811,6 +11288,10 @@ app.whenReady().then(async () => {
 				companyName: name.trim(),
 				contractVersion: 2,
 			});
+			if (!created.companyFile.headSnapshotId) {
+				throw new Error("The canonical Company File bootstrap did not publish a head.");
+			}
+			const sourceSnapshot = await primary.getCompanySnapshot(created.companyFile.headSnapshotId);
 			const root = cloudCompanyCacheRoot(created.profile);
 			let existingAttachment = readProfileAttachment(app.getPath("userData"), root);
 			if (
@@ -10834,11 +11315,17 @@ app.whenReady().then(async () => {
 					throw new Error(`The managed Company File cache path is already in use: ${root}`);
 				}
 			} else {
-				const materializedRoot = await materializeManagedCloudCache(root, created.profile, objects);
+				const materializedRoot = await materializeManagedCloudCache(root, created.profile, objects, sourceSnapshot);
 				attachCloudProfile(app.getPath("userData"), materializedRoot, {
 					profileId: created.profile.profileId,
 					environmentId: created.profile.environmentId,
 				});
+				CloudCompanyFileCacheState.open(
+					app.getPath("userData"),
+					created.profile.profileId,
+					created.profile.environmentId,
+					materializedRoot,
+				).adopt(sourceSnapshot);
 			}
 			const checkpoint = await checkpointCloudCompanyFile({
 				userData: app.getPath("userData"),
@@ -10898,6 +11385,63 @@ app.whenReady().then(async () => {
 			if (attachment.profileType !== "cloud") {
 				return { ok: false, error: "This company does not have a cloud Company File." };
 			}
+			const accountId = currentQorperaAccountId;
+			if (!accountId || !qorperaAccountAuth || !isTrustedProfileSwitcherSender(event.sender))
+				throw new Error("Sign in to open the Company File.");
+			const mode = await qorperaAccountAuth.companyFileMode(
+				attachment.profileId,
+				accountId,
+				AbortSignal.timeout(15_000),
+			);
+			if (mode.environmentId !== attachment.environmentId || currentQorperaAccountId !== accountId)
+				throw new Error("Company identity changed while opening it.");
+			if (mode.mode === "governed") {
+				if (!runtime.governedCompanyFile) throw new Error("Reopen this company to use its live Company File.");
+				if (runtime.companyFileWindow && !runtime.companyFileWindow.isDestroyed()) {
+					focusWindow(runtime.companyFileWindow);
+				} else {
+					runtime.companyFileWindow = await openGovernedCompanyWindow({
+						owner: slot.window,
+						directory: FIXED_SHELL_DIR,
+						title: hostedProfilesById.get(attachment.profileId)?.profileName ?? "Company",
+						client: qorperaAccountAuth.memberCompanyFile(
+							attachment.profileId,
+							attachment.environmentId,
+							accountId,
+						),
+						canWrite: slotHasProfileCapability(slot, "write"),
+						presence: (signal, onChange) => {
+							if (!qorperaAccountAuth) throw new Error("Member sign-in is unavailable");
+							return qorperaAccountAuth.memberCompanyPresence(
+								attachment.profileId,
+								attachment.environmentId,
+								accountId,
+								signal,
+								onChange,
+							);
+						},
+						companyComputerViews: qorperaAccountAuth.memberCompanyComputerViews(
+							attachment.profileId,
+							attachment.environmentId,
+							accountId,
+						),
+						companyComputerMemberId: accountId,
+						staffName: (staffAgentId) => activeStaffAgent(runtime.root, staffAgentId)?.displayName,
+						companyComputer: qorperaAccountAuth.memberCompanyComputer(
+							attachment.profileId,
+							attachment.environmentId,
+							accountId,
+						),
+						current: () =>
+							currentQorperaAccountId === accountId &&
+							slot.runtime === runtime &&
+							!runtime.closing &&
+							slotHasProfileCapability(slot, "read"),
+					});
+				}
+				return { ok: true, governed: true, readOnly: !slotHasProfileCapability(slot, "write") };
+			}
+			if (runtime.governedCompanyFile) throw new Error("Company File mode changed. Reopen the company.");
 			const conflict = readCloudCompanyFileConflict(
 				app.getPath("userData"),
 				attachment.profileId,
@@ -10959,6 +11503,7 @@ app.whenReady().then(async () => {
 		const slot = slotOf(event.sender);
 		const runtime = slot?.runtime;
 		if (!slot || !runtime) return { ok: false, error: "Open a company first." };
+		if (runtime.governedCompanyFile) return { ok: false, error: "Use the live Company File editor." };
 		try {
 			const attachment = profileAttachment(runtime.root);
 			if (attachment.profileType !== "cloud") throw new Error("This company has no cloud Company File.");
@@ -10993,6 +11538,7 @@ app.whenReady().then(async () => {
 		const slot = slotOf(event.sender);
 		const runtime = slot?.runtime;
 		if (!slot || !runtime) return { ok: false, error: "Open a company first." };
+		if (runtime.governedCompanyFile) return { ok: false, error: "Use the live Company File editor." };
 		if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
 		if (resolution !== "local" && resolution !== "cloud") {
 			return { ok: false, error: "invalid Company File conflict resolution" };
@@ -11054,6 +11600,7 @@ app.whenReady().then(async () => {
 			const slot = slotOf(event.sender);
 			const runtime = slot?.runtime;
 			if (!slot || !runtime) return { ok: false, error: "Open a company first." };
+			if (runtime.governedCompanyFile) return { ok: false, error: "Use the live Company File editor." };
 			if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
 			try {
 				const attachment = profileAttachment(runtime.root);
@@ -11087,6 +11634,7 @@ app.whenReady().then(async () => {
 			const slot = slotOf(event.sender);
 			const runtime = slot?.runtime;
 			if (!slot || !runtime) return { ok: false, error: "Open a company first." };
+			if (runtime.governedCompanyFile) return { ok: false, error: "Use the live Company File editor." };
 			if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
 			try {
 				const attachment = profileAttachment(runtime.root);
@@ -11135,6 +11683,7 @@ app.whenReady().then(async () => {
 			const slot = slotOf(event.sender);
 			const runtime = slot?.runtime;
 			if (!slot || !runtime) return { ok: false, error: "Open a company first." };
+			if (runtime.governedCompanyFile) return { ok: false, error: "Use the live Company File editor." };
 			if (!slotHasProfileCapability(slot, "write")) return profilePermissionError("write");
 			try {
 				const attachment = profileAttachment(runtime.root);
@@ -11170,6 +11719,7 @@ app.whenReady().then(async () => {
 		const slot = slotOf(event.sender);
 		const runtime = slot?.runtime;
 		if (!slot || !runtime) return { ok: false, error: "Open a company first." };
+		if (runtime.governedCompanyFile) return { ok: false, error: "Use the live Company File editor." };
 		try {
 			const { proposal, attachment } = await exactCompanyProposal(runtime, proposalId, proposalSnapshotId);
 			if (proposal.status !== "open") throw new Error("This Company File proposal is no longer awaiting review.");
@@ -11192,6 +11742,7 @@ app.whenReady().then(async () => {
 		const slot = slotOf(event.sender);
 		const runtime = slot?.runtime;
 		if (!slot || !runtime) return { ok: false, error: "Open a company first." };
+		if (runtime.governedCompanyFile) return { ok: false, error: "Use the live Company File editor." };
 		if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
 		try {
 			const { proposal, attachment } = await exactCompanyProposal(runtime, proposalId, proposalSnapshotId);
@@ -11315,6 +11866,7 @@ app.whenReady().then(async () => {
 			const slot = slotOf(event.sender);
 			const runtime = slot?.runtime;
 			if (!slot || !runtime) return { ok: false, error: "Open a company first." };
+			if (runtime.governedCompanyFile) return { ok: false, error: "Use the live Company File editor." };
 			if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
 			try {
 				if (
@@ -11348,6 +11900,7 @@ app.whenReady().then(async () => {
 		const slot = slotOf(event.sender);
 		const runtime = slot?.runtime;
 		if (!slot || !runtime) return { ok: false, error: "Open a company first." };
+		if (runtime.governedCompanyFile) return { ok: false, error: "Use the live Company File editor." };
 		if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
 		try {
 			const { proposal, attachment } = await exactCompanyProposal(runtime, proposalId, proposalSnapshotId);
@@ -11386,6 +11939,7 @@ app.whenReady().then(async () => {
 			const slot = slotOf(event.sender);
 			const runtime = slot?.runtime;
 			if (!slot || !runtime) return { ok: false, error: "Open a company first." };
+			if (runtime.governedCompanyFile) return { ok: false, error: "Use the live Company File editor." };
 			try {
 				if (typeof proposalId !== "string" || typeof body !== "string" || typeof clientCommentId !== "string") {
 					throw new Error("Company proposal comment is invalid.");
@@ -11408,6 +11962,7 @@ app.whenReady().then(async () => {
 		const slot = slotOf(event.sender);
 		const runtime = slot?.runtime;
 		if (!slot || !runtime) return { ok: false, error: "Open a company first." };
+		if (runtime.governedCompanyFile) return { ok: false, error: "Use the live Company File editor." };
 		try {
 			if (typeof proposalId !== "string") throw new Error("Company proposal identity is invalid.");
 			const attachment = profileAttachment(runtime.root);
@@ -11434,6 +11989,9 @@ app.whenReady().then(async () => {
 		)
 			return { ok: false, error: "invalid product transaction" };
 		if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
+		if (runtime.governedCompanyFile) {
+			return { ok: false, error: "Product registration must use the live Company File, not this display cache." };
+		}
 		return enqueueRuntimeTransition(runtime, async () => {
 			if (slot.runtime !== runtime || runtime.closing || runtime.wakeChild || isChildBusy(runtime.child)) {
 				return { ok: false, error: "company runtime is not available" };
@@ -11789,21 +12347,11 @@ app.whenReady().then(async () => {
 		if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
 		return archiveStaffMember(slot, staffAgentId);
 	});
-	ipcMain.handle("staff:delete", (event, staffAgentId: unknown, options: unknown) => {
+	ipcMain.handle("staff:delete", (event, staffAgentId: unknown) => {
 		const slot = slotOf(event.sender);
 		if (!slot || typeof staffAgentId !== "string") return { ok: false, error: "invalid staff identity" };
-		if (
-			!options ||
-			typeof options !== "object" ||
-			Array.isArray(options) ||
-			Object.keys(options).length !== 1 ||
-			!("keepArtifacts" in options) ||
-			typeof options.keepArtifacts !== "boolean"
-		) {
-			return { ok: false, error: "invalid staff deletion options" };
-		}
 		if (!slotHasProfileCapability(slot, "authorize")) return profilePermissionError("authorize");
-		return permanentlyDeleteStaffMember(slot, staffAgentId, options.keepArtifacts);
+		return permanentlyDeleteStaffMember(slot, staffAgentId);
 	});
 	ipcMain.handle("staff:restore", (event, staffAgentId: unknown) => {
 		const slot = slotOf(event.sender);
@@ -12242,7 +12790,13 @@ app.whenReady().then(async () => {
 				provider,
 				nativeHarness: provider === "openai" ? "codex-cli" : "claude-code",
 			});
-			const login = await bridge.beginLogin(authorization);
+			let login = await bridge.beginLogin(authorization);
+			// The node answers `preparing` while it boots or recovers the login machine; post again shortly.
+			for (let attempt = 0; login.status === "preparing" && attempt < 24; attempt++) {
+				await new Promise((resolve) => setTimeout(resolve, 5000));
+				login = await bridge.beginLogin(authorization);
+			}
+			if (login.status === "preparing") throw new Error("Provider login is still preparing; try again in a minute.");
 			if (login.interactionUrl) await electronShell.openExternal(login.interactionUrl);
 			return {
 				ok: true,
@@ -12352,6 +12906,7 @@ app.whenReady().then(async () => {
 		const account = await authenticatedAccount();
 		const root = slot?.runtime?.root;
 		const attachment = root ? profileAttachment(root) : undefined;
+		const governedCompanyFile = slot?.runtime?.governedCompanyFile === true;
 		let team: HostedProfileTeam | ReturnType<typeof profileTeamInfo> | undefined;
 		let access: ProfileAccess | undefined;
 		let hostedProfile: HostedProfile | undefined;
@@ -12372,8 +12927,9 @@ app.whenReady().then(async () => {
 					const primary = qorperaAccountAuth?.hostedPrimary();
 					accountEntitlement = await primary?.getAccountEntitlement();
 					companyFile = await primary?.getCompanyFile(attachment.environmentId);
-					companyProposals =
-						(await primary?.listCompanyProposals(attachment.environmentId, "open", 100))?.items ?? [];
+					companyProposals = governedCompanyFile
+						? []
+						: ((await primary?.listCompanyProposals(attachment.environmentId, "open", 100))?.items ?? []);
 					nativeExecution = await qorperaAccountAuth
 						?.nativeSubscriptionControl()
 						.listConnections(attachment.profileId);
@@ -12394,7 +12950,12 @@ app.whenReady().then(async () => {
 		const projectionHealth = slot?.runtime?.cloudCompanyProjectionHealth;
 		const fileCheckpoint = filePublication?.lastCheckpoint();
 		let projectionHasPendingChanges = slot?.runtime?.cloudCompanyProjection?.hasPendingChanges() ?? false;
-		if (!slot?.runtime?.cloudCompanyProjection && attachment?.profileType === "cloud" && root) {
+		if (
+			!governedCompanyFile &&
+			!slot?.runtime?.cloudCompanyProjection &&
+			attachment?.profileType === "cloud" &&
+			root
+		) {
 			try {
 				projectionHasPendingChanges = await cloudCompanyProjectionHasPersistedChanges({
 					companyRoot: root,
@@ -12407,7 +12968,7 @@ app.whenReady().then(async () => {
 			}
 		}
 		const recoverableReviews =
-			attachment?.profileType === "cloud"
+			attachment?.profileType === "cloud" && !governedCompanyFile
 				? listRecoverableCloudCompanyExecutions(app.getPath("userData"), attachment.profileId).filter(
 						(review) =>
 							!review.cloudProposalId && (!root || normalizedRoot(review.companyRoot) === normalizedRoot(root)),
@@ -12416,7 +12977,7 @@ app.whenReady().then(async () => {
 		const localRecoverableExecutions = recoverableReviews.length;
 		const recoverableExecutions = localRecoverableExecutions + companyProposals.length;
 		const fileConflictPaths =
-			attachment?.profileType === "cloud" && root
+			attachment?.profileType === "cloud" && root && !governedCompanyFile
 				? (readCloudCompanyFileConflict(
 						app.getPath("userData"),
 						attachment.profileId,
@@ -12501,21 +13062,28 @@ app.whenReady().then(async () => {
 												: slot?.runtime?.cloudSessionArbiterHealth?.phase === "healthy"
 													? "cloud"
 													: "pending",
-								execution: "local",
+								execution: attachment.profileType === "cloud" ? "cloud" : "local",
+								companyFileMode: governedCompanyFile ? "governed" : "legacy",
 								files:
 									attachment.profileType === "local"
 										? "local"
-										: settingsRefreshError ||
-												recoverableExecutions > 0 ||
-												fileConflictPaths > 0 ||
-												fileHealth?.phase === "attention" ||
-												projectionHealth?.phase === "attention"
-											? "attention"
-											: fileHealth?.phase === "retrying" || projectionHealth?.phase === "retrying"
-												? "offline"
-												: fileHealth?.phase === "healthy" && fileIsCurrent
+										: governedCompanyFile
+											? settingsRefreshError
+												? "attention"
+												: companyFile?.headSnapshotId
 													? "cloud"
-													: "pending",
+													: "pending"
+											: settingsRefreshError ||
+													recoverableExecutions > 0 ||
+													fileConflictPaths > 0 ||
+													fileHealth?.phase === "attention" ||
+													projectionHealth?.phase === "attention"
+												? "attention"
+												: fileHealth?.phase === "retrying" || projectionHealth?.phase === "retrying"
+													? "offline"
+													: fileHealth?.phase === "healthy" && fileIsCurrent
+														? "cloud"
+														: "pending",
 							},
 							access,
 							team,
@@ -13429,7 +13997,7 @@ app.whenReady().then(async () => {
 	// Foundation self-update: packaged builds check Qorpera_Base_Releases
 	// (public) via electron-updater; downloads apply on quit. The foundation
 	// is deliberately static, so this stays quiet almost always.
-	if (app.isPackaged) {
+	if (app.isPackaged && !CLOUD_PREVIEW) {
 		const { autoUpdater } = electronUpdater;
 		let updateCheckInFlight: Promise<void> | undefined;
 		autoUpdater.on("checking-for-update", () => {
@@ -13505,12 +14073,11 @@ app.whenReady().then(async () => {
 			return true;
 		});
 	} else {
-		foundationUpdateState = IS_SMOKE
-			? { phase: "idle", message: "Check for updates" }
-			: {
-					phase: "unavailable",
-					message: "Updates are checked by installed builds",
-				};
+		foundationUpdateState = CLOUD_PREVIEW
+			? { phase: "unavailable", message: "Cloud preview — updates disabled" }
+			: IS_SMOKE
+				? { phase: "idle", message: "Check for updates" }
+				: { phase: "unavailable", message: "Updates are checked by installed builds" };
 		ipcMain.handle("update:state", (event) => {
 			return slotOf(event.sender) ? foundationUpdateState : undefined;
 		});
@@ -13521,7 +14088,7 @@ app.whenReady().then(async () => {
 
 		// In development, reload the fixed renderer after the copied shell files
 		// settle. Main-process changes still require an app restart.
-		if (!IS_SMOKE) {
+		if (!IS_SMOKE && !app.isPackaged) {
 			let reloadTimer: NodeJS.Timeout | undefined;
 			try {
 				watch(DIRNAME, { recursive: true }, () => {

@@ -124,6 +124,7 @@
 
 ### Fixed
 
+- Blocked legacy Company File initialization and artifact, configuration, inbox and gate writes when the app server is only a display client for a governed cloud company.
 - Fixed company-controller failure recovery: Activity now shows the useful model failure cause, historical autonomous runs open in a read-only inspector with stable start times, and failed turns include retry guidance plus a conservative summary of work completed before they stopped.
 - Fixed scheduled-company autonomy lifecycle and observability: interrupted runs reconcile as failures, run-state persistence is atomic and company-isolated, suspension clears only on explicit resume, deleted jobs drop stale state, autonomous writes serialize with product/userland operations, and stale incomplete trails no longer render as live.
 - Fixed controller model preference leaking between companies and Windows sandbox Git rejecting the exact founder-owned company as dubious ownership; preferences now use per-company kernel state and each child receives only its authorized root/worktree as command-scoped `safe.directory` entries.

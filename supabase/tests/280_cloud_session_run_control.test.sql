@@ -67,6 +67,9 @@ begin
 	v_sponsor := (public.qorpera_create_execution_sponsor_binding(
 		v_profile, '28000000-0000-4000-8000-000000000061', 'company_api_billing', v_provider, 1, false
 	) ->> 'binding_id')::uuid;
+	insert into public.qorpera_member_compute_identities (id, profile_id, ownership_kind, client_identity_id, display_name)
+	values ('28000000-0000-4000-8000-000000000906', v_profile, 'company',
+		'28000000-0000-4000-8000-000000000906', 'Lease cleanup fixture');
 	for v_index in 1..5 loop
 		v_job := ('28000000-0000-4000-8000-' || lpad((70 + v_index)::text, 12, '0'))::uuid;
 		v_run := ('28000000-0000-4000-8000-' || lpad((80 + v_index)::text, 12, '0'))::uuid;
@@ -86,9 +89,10 @@ begin
 		insert into public.qorpera_execution_runs (
 			id, profile_id, environment_id, source_kind, source_id, session_id, job_id, substrate_version_id,
 			company_snapshot_id, staff_agent_id, staff_version, input_ids, sponsor_binding_id, sponsor_version,
-			required_capability, job_type, payload_sha256, transcript_start_sequence, created_by_user_id
+			required_capability, job_type, payload_sha256, transcript_start_sequence, created_by_user_id, compute_identity_id
 		) values (v_run, v_profile, v_environment, 'session_turn', v_run, v_session, v_job, v_substrate,
-			v_snapshot, v_staff, 1, array[v_run], v_sponsor, 1, 'agent_turn', 'agent_turn', repeat('c', 64), 0, v_member);
+			v_snapshot, v_staff, 1, array[v_run], v_sponsor, 1, 'agent_turn', 'agent_turn', repeat('c', 64), 0, v_member,
+			case when v_index = 5 then '28000000-0000-4000-8000-000000000906'::uuid else null end);
 		update public.qorpera_runner_jobs set run_id = v_run where id = v_job;
 	end loop;
 end
@@ -225,8 +229,6 @@ begin
 	from public.qorpera_execution_sponsor_versions as sponsor
 	join public.qorpera_execution_runs as run on run.sponsor_binding_id = sponsor.binding_id and run.sponsor_version = sponsor.version
 	where run.id = v_run;
-	insert into public.qorpera_member_compute_identities (id, profile_id, ownership_kind, client_identity_id, display_name)
-	values (v_identity, v_profile, 'company', v_identity, 'Lease cleanup fixture');
 	insert into public.qorpera_native_credential_capsules (
 		id, profile_id, compute_identity_id, ownership_kind, provider, native_harness,
 		encrypted_capsule_reference, attestation_policy_sha256, created_by_user_id
@@ -237,10 +239,15 @@ begin
 	insert into public.qorpera_runners (
 		id, profile_id, client_runner_id, display_name, capabilities, status,
 		activation_token_sha256, activation_expires_at, activated_at, session_token_sha256,
-		session_expires_at, registered_by_user_id
+		session_expires_at, registered_by_user_id, compute_identity_id
 	) values (v_runner, v_profile, v_runner, 'Lease cleanup fixture', '["agent_turn"]', 'active',
 		repeat('e', 64), statement_timestamp() + interval '1 hour', statement_timestamp(), repeat('f', 64),
-		statement_timestamp() + interval '1 hour', v_owner);
+		statement_timestamp() + interval '1 hour', v_owner, v_identity);
+	update public.qorpera_runners runner set runner_kind='qorpera_computer',
+		worker_class=run.worker_class,template_key=identity.template_key,template_version=identity.template_version,
+		compute_policy_sha256=public.qorpera_compute_policy_sha256(identity.policy)
+	from public.qorpera_execution_runs run,public.qorpera_member_compute_identities identity
+	where runner.id=v_runner and run.id=v_run and identity.id=v_identity;
 	insert into public.qorpera_runner_job_claims (id, orchestrator_id, client_claim_id, job_id, run_id, status, lease_expires_at)
 	values (v_claim, v_orchestrator, v_claim, v_job, v_run, 'accepted', statement_timestamp() + interval '2 minutes');
 	insert into public.qorpera_runner_assignments (id, claim_id, job_id, run_id, runner_id, capability_sha256, status, expires_at, accepted_at)
@@ -257,6 +264,31 @@ update public.qorpera_runner_jobs set status = 'leased', attempt_count = 1,
 	lease_token_sha256 = repeat('d', 64), lease_expires_at = statement_timestamp() + interval '2 minutes'
 where id = '28000000-0000-4000-8000-000000000075';
 savepoint native_terminal_transition;
+-- Recovery epochs fence existing leases and runner credentials even when the
+-- caller knows their original tokens. Only the fixture generation is advanced.
+update public.qorpera_member_compute_identities set recovery_epoch=1
+where id='28000000-0000-4000-8000-000000000906';
+select pg_temp.assert_true(not (select public.qorpera_execution_compute_available(run)
+  from public.qorpera_execution_runs run where id='28000000-0000-4000-8000-000000000085'),'Old run survived generation change');
+do $$
+begin
+  begin
+    update public.qorpera_native_provider_connection_leases set expires_at=clock_timestamp()+interval '3 minutes'
+    where id='28000000-0000-4000-8000-000000000907';
+    raise exception 'Old native lease renewed after recovery';
+  exception when insufficient_privilege then
+    if sqlerrm <> 'native lease generation is fenced for recovery' then raise; end if;
+  end;
+  begin
+    update public.qorpera_runners set session_expires_at=clock_timestamp()+interval '1 hour'
+    where id='28000000-0000-4000-8000-000000000902';
+    raise exception 'Old runner renewed after recovery';
+  exception when insufficient_privilege then
+    if sqlerrm <> 'runner identity is fenced for recovery' then raise; end if;
+  end;
+end
+$$;
+rollback to savepoint native_terminal_transition;
 set role authenticated;
 select pg_temp.assert_true(public.qorpera_get_session_run_control('28000000-0000-4000-8000-000000000065') #>> '{run,status}' = 'leased', 'leased run not projected');
 select public.qorpera_cancel_session_run('28000000-0000-4000-8000-000000000065', '28000000-0000-4000-8000-000000000085');
@@ -271,6 +303,13 @@ select pg_temp.assert_true(not has_function_privilege('authenticated', 'public.q
 rollback to savepoint native_terminal_transition;
 select set_config('request.jwt.claims', '{"role":"service_role"}', true);
 select pg_temp.assert_true(public.qorpera_reserve_execution_sponsor_authority('28000000-0000-4000-8000-000000000085'), 'completion fixture sponsor unavailable');
+-- The current human-wake protocol requires acknowledgement before final
+-- delivery, including when the fixture is only testing terminal lease cleanup.
+select public.qorpera_send_runner_agent_message(
+	'28000000-0000-4000-8000-000000000902', repeat('f', 64),
+	'28000000-0000-4000-8000-000000000075', repeat('d', 64),
+	'28000000-0000-4000-8000-000000000904', 'native-cleanup-ack', 'Checking the fixture.', 'progress'
+);
 select public.qorpera_send_runner_agent_message(
 	'28000000-0000-4000-8000-000000000902', repeat('f', 64),
 	'28000000-0000-4000-8000-000000000075', repeat('d', 64),

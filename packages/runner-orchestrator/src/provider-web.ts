@@ -1,4 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
+import { Response as NodeHttpResponse } from "@whatwg-node/node-fetch";
+import type { ServiceHttpRequest, ServiceHttpResponse } from "./http-transport.ts";
 import type { CloudRunnerProviderServiceBackend } from "./provider-service.ts";
 import { executeCloudRunnerProviderRequest } from "./provider-service.ts";
 
@@ -11,8 +13,8 @@ function tokenMatches(expected: string, authorization: string | null): boolean {
 	return received.length === wanted.length && timingSafeEqual(received, wanted);
 }
 
-function json(value: unknown, status: number): Response {
-	return Response.json(value, { status, headers: { "cache-control": "no-store" } });
+function json(value: unknown, status: number): ServiceHttpResponse {
+	return NodeHttpResponse.json(value, { status, headers: { "cache-control": "no-store" } });
 }
 
 export class WebCloudRunnerProviderService {
@@ -27,7 +29,7 @@ export class WebCloudRunnerProviderService {
 		this.#token = token;
 	}
 
-	async handle(request: Request): Promise<Response> {
+	async handle(request: ServiceHttpRequest): Promise<ServiceHttpResponse> {
 		if (request.method === "GET") return json({ ok: true }, 200);
 		if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
 		if (!tokenMatches(this.#token, request.headers.get("authorization"))) {

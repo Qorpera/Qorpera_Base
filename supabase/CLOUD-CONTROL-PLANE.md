@@ -68,7 +68,13 @@ ownership is one of member, company, department, or security boundary. Member
 subscription capsules are always owned by the member who completed the native
 login; they cannot be relabeled as company credentials. Company-owned compute
 identities may hold company-owned credentials, while department and security
-boundary identities give company policy a narrower durable scope.
+boundary identities give company policy a narrower durable scope. The
+`department` ownership label is a production-applied compute-identity scope
+key (`20260821001000`), not an organization object: the runtime contract's
+organization model has responsibilities and no department object (section
+14.3, amended 2026-09-01). No production compute identity uses the label; it
+is scheduled for rename to a responsibility scope in a later forward
+migration and MUST NOT be read as department membership or authority.
 
 A logical computer is a durable machine policy identity: template,
 capabilities, permissions, compute-identity reference, optional encrypted
@@ -97,6 +103,16 @@ lease, and provenance, not refresh tokens. A short-lived lease authorizes one
 run and one native harness. Only the trusted computer-side credential bridge
 may decrypt the capsule for the unmodified provider-native harness; Qorpera
 application and control-plane code must never receive the plaintext.
+
+Runtime Step 2 has one explicitly authorized exception to "unmodified": the
+pinned Codex result-only callback and governed direct-tool selection in
+[`../deploy/first-node/native-codex/README.md`](../deploy/first-node/native-codex/README.md).
+It does not change native authentication or credential/transport ownership.
+Direct tool selection applies only to the cloud-fenced native process; the host
+requires its separate capability marker before admitting a model request.
+Its source and executable hashes, fail-closed handshake and acceptance gates
+are required; this exception does not authorize a model gateway to receive
+personal-subscription credentials or traffic.
 
 This is an application security boundary, not a claim of cryptographic
 infrastructure-operator blindness. Until confidential, remotely attested

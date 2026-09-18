@@ -1,0 +1,288 @@
+{
+  "schema": "qorpera.runtime-review-closure-checkpoint/v1",
+  "recordedAt": "2026-09-07T00:29:46.637Z",
+  "runtimeSourceCommit": "0ed9e490feebd6d602ffb5f4b7c83471cec15657",
+  "runtimeBundleSha256": "4d988b5f47e6219b2f44bae3cbc0b7363c411738ddfc32774a5d487025d483bb",
+  "providerSourceCommit": "bf08dd923d61ba8432d86559a71cf473ac72f9b9",
+  "reviewFindingsClosed": true,
+  "reviewNumber": 2,
+  "closedFindings": 3,
+  "privilegeDifferencesReconciled": 6,
+  "contractSteps": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "generalProductionReadinessAccepted": false,
+  "sourceWorkspace": "/Users/jonas/Documents/Codex/2026-09-05/files-pasted-by-the-user-take",
+  "files": [
+    {
+      "file": "SOURCE-COMMIT.json",
+      "source": "outputs/runtime-source-0ed9e490f.json",
+      "sha256": "808fdbe3358022f91b093fe73b121689e51bbfc961ed7d043123e783fd5f2b59",
+      "bytes": 4272
+    },
+    {
+      "file": "LINUX-PACKAGE-PROOF.json",
+      "source": "outputs/runtime-linux-x64-package-proof-0ed9e490f.json",
+      "sha256": "fb00350e044a39d37641217292c0d8dd5a74b1aad0f605bdc2467f3a169f81eb",
+      "bytes": 1802
+    },
+    {
+      "file": "ORIGINAL-REPRODUCTIONS.json",
+      "source": "work/second-review-runtime-06.json",
+      "sha256": "e431e7ba19e0f86a5d04515c524d84740455956af834c4e5deb9aef8408e8d78",
+      "bytes": 31286
+    },
+    {
+      "file": "REGRESSION-RESULTS.json",
+      "source": "work/second-review-fixes-05.json",
+      "sha256": "3e30491dfe6c3f7403779157492d4f6fdf1c4c32cc925167cbe843ffa4162ba7",
+      "bytes": 30405
+    },
+    {
+      "file": "FUNCTION-PARITY.json",
+      "source": "outputs/runtime-production-review-v13-function-parity.json",
+      "sha256": "bf725cfbdb1881f245b3e2831e81da5101726a7149b6f56917814669500574fd",
+      "bytes": 10760
+    },
+    {
+      "file": "FINAL-FUNCTION-PINS.json",
+      "source": "outputs/runtime-custody-3c0bf3bce/v13-function-pins-1788740806152.json",
+      "sha256": "f289716896be2484391411b38dd8fbcc2c8587afbeefe26826e6937341a90b78",
+      "bytes": 6772
+    },
+    {
+      "file": "SOURCE-PRIVILEGE-TEST.json",
+      "source": "outputs/runtime-production-review-v13-privilege-test.json",
+      "sha256": "9001ada903f8e98b727216224e726b92da519a2afcacb6a830b50b2e8d269d4f",
+      "bytes": 31111
+    },
+    {
+      "file": "ADDITIONAL-PRIVILEGE-REPAIR-TEST.json",
+      "source": "outputs/runtime-v13-privilege-repair-test.json",
+      "sha256": "f4326803d8f92a717d004f8bd9f9b0ff3d41f21d346adadb7bd56af9262ff0bc",
+      "bytes": 31302
+    },
+    {
+      "file": "ADDITIONAL-PRIVILEGE-REVIEW.json",
+      "source": "outputs/runtime-v13-privilege-reconciliation/REVIEW.json",
+      "sha256": "0f5bd44c0f76890d83b8f4b4aa4c40959b17048f769147399049a4b800e5a804",
+      "bytes": 1456
+    },
+    {
+      "file": "ADDITIONAL-PRIVILEGE-RESULT.json",
+      "source": "outputs/runtime-v13-privilege-reconciliation/RESULT.json",
+      "sha256": "0723542a0ddb69e8cc6df265928b47ac954ac3562dda2d2b8fa87412ca887ddc",
+      "bytes": 5898
+    },
+    {
+      "file": "BUILD-RESULT.json",
+      "source": "outputs/runtime-image-0ed9e490f/BUILD-RESULT.json",
+      "sha256": "23a63464b43f6a0b1e82fdb71a192d801af0c7e91ba5653baef6e915cff4fb45",
+      "bytes": 1194
+    },
+    {
+      "file": "ACCEPTANCE.json",
+      "source": "outputs/runtime-image-0ed9e490f/ACCEPTANCE.json",
+      "sha256": "a8f4d7a464d26be8511c78a23d9d819cf2946f169038b597f794607153e447e9",
+      "bytes": 1745
+    },
+    {
+      "file": "SIGNED-RESULT.json",
+      "source": "outputs/runtime-image-0ed9e490f/SIGNED-RESULT.json",
+      "sha256": "2d04f5b7ea1d4067414cbf53511b242fb4cbbb94c9a5ccf712821186b0f413e8",
+      "bytes": 1015
+    },
+    {
+      "file": "PHYSICAL-FENCE.json",
+      "source": "outputs/runtime-image-0ed9e490f/PHYSICAL-FENCE.json",
+      "sha256": "e5d7c0b025e41c8f9895a74570408fb176e9ce67f505796688035ee3ab8fafd6",
+      "bytes": 886
+    },
+    {
+      "file": "DISABLED-INSTALLATION.json",
+      "source": "outputs/runtime-image-0ed9e490f/DISABLED-INSTALLATION.json",
+      "sha256": "f95d75fcb56e4d911b33a128ab9981b503b2603f136b5a3d1988c3a4dc3870ae",
+      "bytes": 1721
+    },
+    {
+      "file": "SERVICES-ACTIVE.json",
+      "source": "outputs/runtime-image-0ed9e490f/SERVICES-ACTIVE.json",
+      "sha256": "fdc8e1208a236ba8c76dd0d49a31b3a04c2e94663b17cfdf3f92fa0d418828f3",
+      "bytes": 979
+    },
+    {
+      "file": "FINAL-NODE-READBACK.json",
+      "source": "outputs/runtime-image-0ed9e490f/FINAL-NODE-READBACK.json",
+      "sha256": "d96e927e87c97926af26a2f5747644ebf1420a88c5dd26faa54d20838ecac84e",
+      "bytes": 985
+    },
+    {
+      "file": "ACTUAL-ATTEMPT-ISOLATION.json",
+      "source": "outputs/runtime-image-0ed9e490f/ACTUAL-ATTEMPT-ISOLATION.json",
+      "sha256": "5dc2c42ecab1ef51e86785c5f117a8796b9f8b36c9d4dc199cb87dab0ab327d7",
+      "bytes": 2912
+    },
+    {
+      "file": "OFFLINE-TESTS.json",
+      "source": "outputs/runtime-rollout-0ed9e490f/OFFLINE-TESTS.json",
+      "sha256": "640120e86c4fc36a8a859f206fb1f9eb5efbede381cfb48018598df648046948",
+      "bytes": 1282
+    },
+    {
+      "file": "WRAPPER-REHEARSAL.json",
+      "source": "outputs/runtime-rollout-0ed9e490f/WRAPPER-REHEARSAL.json",
+      "sha256": "aa757db1273f750da9f90ec1f7e827043a11af3278a7c0a0760d4c63c5cdc118",
+      "bytes": 4059
+    },
+    {
+      "file": "FROZEN.json",
+      "source": "outputs/runtime-rollout-0ed9e490f/FROZEN.json",
+      "sha256": "5bc59162dc4b4ca6fcf0d98c035f28f7aaa6895c32caabecbcc39fc4c26b40f8",
+      "bytes": 5157
+    },
+    {
+      "file": "ROLLOUT-PREFLIGHT-RESULT.json",
+      "source": "outputs/runtime-rollout-0ed9e490f-activation/evidence/rollout-preflight-result.json",
+      "sha256": "db7675969673458aad2b2067c8437d911bb7d28edcf1a4b98a956ef2521a781d",
+      "bytes": 7277
+    },
+    {
+      "file": "ROLLOUT-PAUSE-RESULT.json",
+      "source": "outputs/runtime-rollout-0ed9e490f-activation/evidence/rollout-pause-result.json",
+      "sha256": "a6b8908033ce9915cc6a74a1be0356a2d9b77ab002669e96b0c91153397f58ec",
+      "bytes": 7269
+    },
+    {
+      "file": "ROLLOUT-20260907000100-RESULT.json",
+      "source": "outputs/runtime-rollout-0ed9e490f-activation/evidence/rollout-20260907000100-result.json",
+      "sha256": "a21cc9623e141b8abf574c69e3c36543d7d3a68a031d17bc48842c6cf0b5954a",
+      "bytes": 7311
+    },
+    {
+      "file": "ROLLOUT-20260907000200-RESULT.json",
+      "source": "outputs/runtime-rollout-0ed9e490f-activation/evidence/rollout-20260907000200-result.json",
+      "sha256": "cbc39608354c333f2728d07e966634b989a749a28bf03b53303fb42246bd88d0",
+      "bytes": 7335
+    },
+    {
+      "file": "ROLLOUT-20260907000300-RESULT.json",
+      "source": "outputs/runtime-rollout-0ed9e490f-activation/evidence/rollout-20260907000300-result.json",
+      "sha256": "a7481dd88e49542a86da829d55f8fa62775184799ef22d1c3cd272fdf6bb2504",
+      "bytes": 7359
+    },
+    {
+      "file": "ROLLOUT-20260907000400-RESULT.json",
+      "source": "outputs/runtime-rollout-0ed9e490f-activation/evidence/rollout-20260907000400-result.json",
+      "sha256": "9ad1c323e531238c316cfb81bb328e76d953e73dff3e615d43eccda0938ce792",
+      "bytes": 7383
+    },
+    {
+      "file": "ROLLOUT-20260907000500-RESULT.json",
+      "source": "outputs/runtime-rollout-0ed9e490f-activation/evidence/rollout-20260907000500-result.json",
+      "sha256": "0507c39a1840b626cfaaced22768c27696849ab7052d14e8e8fbc3881343c31f",
+      "bytes": 7407
+    },
+    {
+      "file": "ROLLOUT-FINAL-READBACK-RESULT.json",
+      "source": "outputs/runtime-rollout-0ed9e490f-activation/evidence/rollout-final-readback-result.json",
+      "sha256": "c9a973cdab8a451ef4521aea1f3e0fc1515717f8783ce45b91ca31b18f953ed3",
+      "bytes": 7407
+    },
+    {
+      "file": "ADMISSION-RESULT.json",
+      "source": "outputs/runtime-live-0ed9e490f/ADMISSION-RESULT.json",
+      "sha256": "2fc4adbf1b36cfb4dae0a9605b973709c9c6de128bc8a015e3ab712ba43340a5",
+      "bytes": 6036
+    },
+    {
+      "file": "ROUTINE-CANARY-ADMISSION.json",
+      "source": "outputs/runtime-live-0ed9e490f/ROUTINE-CANARY-ADMISSION.json",
+      "sha256": "c6d2d2b3f28be79e8c658526501ebc40b529254cbf80dda996a897f1f9ada1f9",
+      "bytes": 2005
+    },
+    {
+      "file": "AUTONOMOUS-HANDOFF-PROOF.json",
+      "source": "outputs/runtime-live-0ed9e490f/AUTONOMOUS-HANDOFF-PROOF.json",
+      "sha256": "52cf4c4e8dd50eaa87f0e08851a7b6df11d0b4547e1cf661dfaa1f8d2c24f095",
+      "bytes": 8296
+    },
+    {
+      "file": "REVIEW-CLOSURE.json",
+      "source": "outputs/runtime-live-0ed9e490f/REVIEW-CLOSURE.json",
+      "sha256": "593eef4c87f0cb02acf5e970c1fb0fa08a0a971c84177c259e9618c583258af5",
+      "bytes": 6331
+    },
+    {
+      "file": "ROUTINE-CLEANUP.json",
+      "source": "outputs/runtime-live-3c0bf3bce/v13-routine-pause.result.json",
+      "sha256": "e32e320e17440ce4b6877f2a94240ae4ce15744eb9a8b9abb7906f3d0c215207",
+      "bytes": 1154
+    },
+    {
+      "file": "SUPERSEDED-RUNNER-RETIREMENT.json",
+      "source": "outputs/runtime-live-3c0bf3bce/V13-RUNNER-RETIREMENT-RESULT.json",
+      "sha256": "85283a529a1a55bed33996f9eb250ae314f454a758b1dd8279a89cdfd1ee285b",
+      "bytes": 228
+    },
+    {
+      "file": "CANONICAL-CONTINUATION.json",
+      "source": "work/v13-confirm-continuation-hash.json",
+      "sha256": "aebee23eee8f9564e20ee3162c39fbe3c899be9ed7d2e14d8239d0da092d4dc3",
+      "bytes": 646
+    },
+    {
+      "file": "AUTONOMOUS-STANDING-PINS.json",
+      "source": "outputs/runtime-custody-3c0bf3bce/v13-canary-standing-1788740873523.json",
+      "sha256": "f2d58100dab6c1a8758349c219c8ad11142b495ca636421ecfe9f365a57d00fa",
+      "bytes": 7857
+    },
+    {
+      "file": "LIVE-HANDOFF-DETAIL.json",
+      "source": "outputs/runtime-custody-3c0bf3bce/handoff-native-detail-v13-1788740806046.json",
+      "sha256": "bbf1d3b6ff5d8bf71f16d47dc8164874310720040c26c596066ed03474c7ed55",
+      "bytes": 4522
+    },
+    {
+      "file": "LIVE-DURABLE-RESULT.json",
+      "source": "outputs/runtime-custody-3c0bf3bce/production-review-v13-canary-result-1788740806046.json",
+      "sha256": "129c2e0a07afc22295d74c45daa59bb749186eb634fd69a1d43043659a6d5ba0",
+      "bytes": 1744
+    },
+    {
+      "file": "FINAL-DATABASE-READBACK.json",
+      "source": "outputs/runtime-custody-3c0bf3bce/runtime-v13-final-state-1788740806360.json",
+      "sha256": "1647b5b31b3a269c9cd5253d9f9d3ed495f9884c95641e4a1b33d6ebf9ab7e4f",
+      "bytes": 849
+    },
+    {
+      "file": "ADDITIONAL-PRIVILEGE-REPAIR.sql",
+      "source": "outputs/runtime-v13-privilege-reconciliation/core.sql",
+      "sha256": "32eab76fe5baaacc1df21d8d82bf93b96861cc8a5e266ca187ea7ae1ae01031b",
+      "bytes": 1194
+    },
+    {
+      "file": "FINAL-NODE-READBACK.sh",
+      "source": "outputs/runtime-image-0ed9e490f/final-node-readback.sh",
+      "sha256": "fa94efa0afd6c877813e5254836c3257c63068a326777f3debdd5b6d166af748",
+      "bytes": 7400
+    }
+  ],
+  "previousCheckpoints": [
+    {
+      "file": "../2026-09-06-runtime-v12/MANIFEST.json",
+      "sha256": "1c637e5726f356ebda21b1ea2643e8f3ed4b5c93f4602d06e4079caa008e8bf1",
+      "filesVerifiedUnchanged": true
+    }
+  ],
+  "limits": [
+    "The real provider limit preceded the first governed effect. Completed-effect replay and two successive handoffs are separately proved in isolated PostgreSQL; no production signal was fabricated or quota deliberately exhausted.",
+    "The requested continuation read is correlated with one successful unknown_tool span before Company read. Canonical continuation bytes/hash are independently verified, but exact tool arguments are not retained in this silent run and are not claimed as independently observed.",
+    "Native-result-fence telemetry remains unconfirmed. The durable result, governed read and complete guest/lease cleanup prove this execution outcome, not complete delivery telemetry or general availability.",
+    "The two historical v12 startup failures have no established retrospective cause. Trusted stage/category diagnostics and safe timeout/transport classifications are now implemented and tested; this is not a claim that an unknown historical cause was identified.",
+    "Historical Steps 0–3 proofs and nonexposure scans retain their original versions, timestamps and scopes. They were not all rerun on v13. The preserved v12 checkpoint retains its failed-canary evidence.",
+    "The identity recovery replica is Azure loopback NFS, not an independently proved physical Synology replica. Orders 4–10, production connector breadth, disaster recovery and general launch readiness remain outside this review closure."
+  ]
+}

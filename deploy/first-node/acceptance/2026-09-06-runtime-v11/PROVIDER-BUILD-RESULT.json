@@ -1,0 +1,35 @@
+{
+  "schema": "qorpera.startup-provider-package/v1",
+  "passed": true,
+  "observedAt": "2026-09-06T18:39:10.942Z",
+  "image": "node@sha256:4d676821dff059fd00d277ee4261ef34ea712317fed0737c03941481b5760c96",
+  "sourceCommitBase": "6d3a8c53fcfce99c1f3bf5c42b144c6c24048a59",
+  "sourceHashes": {
+    "packages/runner-orchestrator/src/lxd-provider.ts": "029111010f3e9b5a35bc67348b74a83a7fe5f0d3bc19923f51938e4c2f3c0f70",
+    "packages/runner-orchestrator/test/lxd-provider.test.ts": "05207824a2e77ccaa334979de2a2ca71ab2b4692c525e5b3f5b8dd37778747bb",
+    "packages/runner-orchestrator/src/lxd-client.ts": "0b3cd6aee435a555a4b8b97021ea5d950bf445618e30a88a2a29896cb5a0d0e2",
+    "packages/runner-orchestrator/test/lxd-client.test.ts": "0e4232dfc5f69cbe7aedcd7ae4e18351ee37647bbf02dc2cff4bfb626bc16e6e"
+  },
+  "manifest": {
+    "schema": "qorpera.lxd-provider-package/v1",
+    "runtime": {
+      "node": ">=22.19.0"
+    },
+    "artifacts": [
+      {
+        "file": "qorpera-lxd-provider.mjs",
+        "bytes": 178403,
+        "sha256": "15f8cdb8812bde6192bc7d6dd40463dec76ccbf58fb08a439d2d1390375a3ad0"
+      },
+      {
+        "file": "qorpera-lxd-image-provenance.mjs",
+        "bytes": 15911,
+        "sha256": "316006ebe6d263cb716ebf0fbed0917d170f47e777d25838b5720706f787dcec"
+      }
+    ]
+  },
+  "cleanupConfirmed": true,
+  "network": "none",
+  "productionMutation": false,
+  "signingPerformed": false
+}

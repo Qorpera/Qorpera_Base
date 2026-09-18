@@ -1,0 +1,21 @@
+{
+  "readOnly": true,
+  "scope": "Exact live SQL envelope projection for the three human canaries, after completion; not a replay of the locked runtime RPC.",
+  "results": [
+    {
+      "runId": "6dfdf7d7-8f9a-4388-843e-5264a9cfff34",
+      "parsed": true,
+      "kind": "human"
+    },
+    {
+      "runId": "0546380f-cd6d-4567-a060-d7fdfbc58705",
+      "parsed": true,
+      "kind": "human"
+    },
+    {
+      "runId": "b25a8da2-06d7-4656-9a55-ff27a2aff2a9",
+      "parsed": true,
+      "kind": "human"
+    }
+  ]
+}

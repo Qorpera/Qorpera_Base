@@ -1,0 +1,55 @@
+{
+  "schema": "qorpera.fallback-token-plan-metadata/v1",
+  "passed": true,
+  "privateContentsReturned": false,
+  "providerRequestMade": false,
+  "credentialFilesWritten": false,
+  "metadata": {
+    "passed": true,
+    "records": [
+      {
+        "label": "current",
+        "capsuleId": "3dd681e1-b643-43ef-ad0f-92709d9a2269",
+        "encryptedSha256": "ccdd76f788eedf215f351c43b98b9070ca332b190c19b5a0b7536b4b1434dce8",
+        "claims": [
+          {
+            "type": "id_token",
+            "present": true,
+            "planType": "pro",
+            "expiresAt": "2026-09-02T10:25:39.000Z"
+          },
+          {
+            "type": "access_token",
+            "present": true,
+            "planType": "pro",
+            "expiresAt": "2026-09-12T09:25:39.000Z"
+          }
+        ]
+      },
+      {
+        "label": "new",
+        "capsuleId": "d5fea972-5aec-48c1-9d14-865be5917a0c",
+        "encryptedSha256": "1a7aeffc9062cd91fb8efae08b9c6838256ad9a72afe853b875d5be2fd66c20a",
+        "claims": [
+          {
+            "type": "id_token",
+            "present": true,
+            "planType": "free",
+            "expiresAt": "2026-09-06T19:09:31.000Z"
+          },
+          {
+            "type": "access_token",
+            "present": true,
+            "planType": "free",
+            "expiresAt": "2026-09-16T18:09:31.000Z"
+          }
+        ]
+      }
+    ],
+    "providerRequestMade": false,
+    "credentialValuesReturned": false,
+    "credentialFilesWritten": false
+  },
+  "loginGuestStopped": true,
+  "observedAt": "2026-09-06T18:14:30.958255+00:00"
+}

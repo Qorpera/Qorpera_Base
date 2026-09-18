@@ -2,16 +2,18 @@
 set -euo pipefail
 
 EXPECTED_HOSTNAME="company41-node-01"
-EXPECTED_BASE_FINGERPRINT="7ef31bed9834094a06517d63b93434588049efcbe2ab5d67419a6167988b7d4f"
-EXPECTED_PACKAGE_MANIFEST_SHA256="2c54b1e3010c880043086d8d932afa007c925ec69667ae572efe17b91d2a98c4"
+EXPECTED_BASE_FINGERPRINT="5e644adaf5d1c43149ea7310ac2a7cad927fa6603343e8fa9070a9200a24b7b8"
+EXPECTED_SOURCE_COMMIT="509f514362a8000a8398faa86663a873c2828f97"
+EXPECTED_PACKAGE_ARCHIVE_SHA256="6a662a6b93c3737d417b08764591c784f69d65b732beb75934f7703ae2fa13d9"
+EXPECTED_PACKAGE_MANIFEST_SHA256="94b5dd1675f85955f8059eb25429b4d35800147206b1fa87ce7e5638bcea3d14"
 EXPECTED_RUNNER_IMAGE="localhost/qorpera/sandbox-probe:135b4fc7b40f70a0fd6859fb9400fbb42d820ebc@sha256:adda31f15d111ed8a06d4d773bac9d8d309047e09862642a292068d62b9b60e1"
-STAGING_ROOT="/home/company41-admin/step2-lxd/lxd-runner-guest-v45"
+PACKAGE_ARCHIVE="/home/company41-admin/step2-lxd/lxd-runner-guest-v56-secret-proof.tar.gz"
 LXD_POOL="qorpera-vm"
 LXD_NETWORK="qorpera0"
 LXD_BUILDER_PROJECT="default"
-BUILDER_INSTANCE="qorpera-runner-image-build-v45"
-IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v45-unsigned"
-STATE_LOG="/var/log/qorpera-lxd-runner-image-candidate.txt"
+BUILDER_INSTANCE="qorpera-runner-image-build-v56-proven"
+IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v56-secret-proof-unsigned"
+STATE_LOG="/var/log/qorpera-lxd-runner-image-candidate-v56.txt"
 
 if [[ ${EUID} -ne 0 ]]; then
 	echo "Run this script through sudo." >&2
@@ -21,15 +23,31 @@ if [[ $(hostname) != "${EXPECTED_HOSTNAME}" ]]; then
 	echo "Refusing to build on unexpected host $(hostname)." >&2
 	exit 1
 fi
-if [[ ! -f ${STAGING_ROOT}/manifest.json || -L ${STAGING_ROOT}/manifest.json ]]; then
-	echo "The staged LXD runner guest package is missing." >&2
+if [[ ! -f ${PACKAGE_ARCHIVE} || -L ${PACKAGE_ARCHIVE} ]]; then
+	echo "The sealed LXD runner guest package archive is missing." >&2
 	exit 1
 fi
-if [[ $(sha256sum "${STAGING_ROOT}/manifest.json" | awk '{ print $1 }') != "${EXPECTED_PACKAGE_MANIFEST_SHA256}" ]]; then
+if [[ $(sha256sum "${PACKAGE_ARCHIVE}" | awk '{ print $1 }') != "${EXPECTED_PACKAGE_ARCHIVE_SHA256}" ]]; then
+	echo "The sealed LXD runner guest package archive checksum does not match the candidate recipe." >&2
+	exit 1
+fi
+
+package_root=$(mktemp -d /run/qorpera-lxd-runner-package.XXXXXX)
+cleanup() {
+	rm -rf -- "${package_root}"
+	if lxc info "${BUILDER_INSTANCE}" --project "${LXD_BUILDER_PROJECT}" >/dev/null 2>&1 &&
+		[[ $(lxc config get "${BUILDER_INSTANCE}" user.qorpera.image_builder --project "${LXD_BUILDER_PROJECT}" 2>/dev/null || true) == true ]]; then
+		lxc delete "${BUILDER_INSTANCE}" --project "${LXD_BUILDER_PROJECT}" --force >/dev/null 2>&1 || true
+	fi
+}
+trap cleanup EXIT HUP INT TERM
+tar --extract --gzip --file "${PACKAGE_ARCHIVE}" --directory "${package_root}" --no-same-owner
+if [[ ! -f ${package_root}/manifest.json || -L ${package_root}/manifest.json ]] ||
+	[[ $(sha256sum "${package_root}/manifest.json" | awk '{ print $1 }') != "${EXPECTED_PACKAGE_MANIFEST_SHA256}" ]]; then
 	echo "The staged guest package manifest checksum does not match the candidate recipe." >&2
 	exit 1
 fi
-PACKAGE_ROOT=${STAGING_ROOT} EXPECTED_RUNNER_IMAGE=${EXPECTED_RUNNER_IMAGE} node <<'NODE'
+PACKAGE_ROOT=${package_root} EXPECTED_RUNNER_IMAGE=${EXPECTED_RUNNER_IMAGE} node <<'NODE'
 const { createHash } = require("node:crypto");
 const { lstatSync, readFileSync, realpathSync } = require("node:fs");
 const { join, resolve } = require("node:path");
@@ -38,6 +56,8 @@ const root = realpathSync(process.env.PACKAGE_ROOT);
 const manifest = JSON.parse(readFileSync(join(root, "manifest.json"), "utf8"));
 if (
   manifest.schema !== "qorpera.lxd-runner-guest-package/v1" ||
+  manifest.nativeCompany?.schema !== "qorpera.native-company-guest/v1" ||
+  manifest.nativeCompany?.binarySha256 !== "2f2c26cfdfacebbcce848fb50cfaaa4e8d0aa3c6ec3c1009123ecf766c8335f7" ||
   manifest.runnerImage?.image !== process.env.EXPECTED_RUNNER_IMAGE ||
   !Array.isArray(manifest.artifacts)
 ) {
@@ -58,9 +78,19 @@ if lxc image info "${IMAGE_ALIAS}" --project "${LXD_BUILDER_PROJECT}" >/dev/null
 	echo "Refusing to replace existing local image alias ${IMAGE_ALIAS}." >&2
 	exit 1
 fi
+builder_precreated=false
 if lxc info "${BUILDER_INSTANCE}" --project "${LXD_BUILDER_PROJECT}" >/dev/null 2>&1; then
-	echo "Refusing to reuse existing builder instance ${BUILDER_INSTANCE}." >&2
-	exit 1
+	if [[ $(lxc list "${BUILDER_INSTANCE}" --project "${LXD_BUILDER_PROJECT}" --format csv --columns s) != STOPPED ]] ||
+		[[ $(lxc config get "${BUILDER_INSTANCE}" volatile.base_image --project "${LXD_BUILDER_PROJECT}") != "${EXPECTED_BASE_FINGERPRINT}" ]] ||
+		[[ $(lxc config get "${BUILDER_INSTANCE}" user.qorpera.image_builder --project "${LXD_BUILDER_PROJECT}") != true ]] ||
+		[[ $(lxc config get "${BUILDER_INSTANCE}" user.qorpera.purpose --project "${LXD_BUILDER_PROJECT}") != step2-v56-secret-proof ]] ||
+		[[ $(lxc config get "${BUILDER_INSTANCE}" limits.cpu --project "${LXD_BUILDER_PROJECT}") != 4 ]] ||
+		[[ $(lxc config get "${BUILDER_INSTANCE}" limits.memory --project "${LXD_BUILDER_PROJECT}") != 8GiB ]] ||
+		[[ $(lxc config device get "${BUILDER_INSTANCE}" root size --project "${LXD_BUILDER_PROJECT}") != 80GiB ]]; then
+		echo "Refusing to resume an unrecognized precreated builder instance ${BUILDER_INSTANCE}." >&2
+		exit 1
+	fi
+	builder_precreated=true
 fi
 if [[ $(lxc config get core.https_address) != "" ]]; then
 	echo "The LXD daemon unexpectedly exposes a remote listener." >&2
@@ -72,27 +102,19 @@ if ! lxc image info "${EXPECTED_BASE_FINGERPRINT}" --project "${LXD_BUILDER_PROJ
 	exit 1
 fi
 
-archive=$(mktemp --suffix=.tar.gz)
-cleanup() {
-	rm -f -- "${archive}"
-	if lxc info "${BUILDER_INSTANCE}" --project "${LXD_BUILDER_PROJECT}" >/dev/null 2>&1 &&
-		[[ $(lxc config get "${BUILDER_INSTANCE}" user.qorpera.image_builder --project "${LXD_BUILDER_PROJECT}" 2>/dev/null || true) == true ]]; then
-		lxc delete "${BUILDER_INSTANCE}" --project "${LXD_BUILDER_PROJECT}" --force >/dev/null 2>&1 || true
-	fi
-}
-trap cleanup EXIT HUP INT TERM
-
-tar --create --gzip --file "${archive}" --directory "${STAGING_ROOT}" .
-lxc init "${EXPECTED_BASE_FINGERPRINT}" "${BUILDER_INSTANCE}" \
-	--project "${LXD_BUILDER_PROJECT}" \
-	--vm \
-	--storage "${LXD_POOL}" \
-	--network "${LXD_NETWORK}" \
-	--config boot.mode=uefi-secureboot \
-	--config limits.cpu=4 \
-	--config limits.memory=8GiB \
-	--config user.qorpera.image_builder=true
-lxc config device set "${BUILDER_INSTANCE}" root size=80GiB --project "${LXD_BUILDER_PROJECT}"
+if [[ ${builder_precreated} != true ]]; then
+	lxc init "${EXPECTED_BASE_FINGERPRINT}" "${BUILDER_INSTANCE}" \
+		--project "${LXD_BUILDER_PROJECT}" \
+		--vm \
+		--storage "${LXD_POOL}" \
+		--network "${LXD_NETWORK}" \
+		--device root,size=80GiB \
+		--config boot.mode=uefi-secureboot \
+		--config limits.cpu=4 \
+		--config limits.memory=8GiB \
+		--config user.qorpera.image_builder=true \
+		--config user.qorpera.purpose=step2-v56-secret-proof
+fi
 lxc start "${BUILDER_INSTANCE}" --project "${LXD_BUILDER_PROJECT}"
 
 guest_ready=false
@@ -109,7 +131,7 @@ if [[ ${guest_ready} != true ]]; then
 fi
 
 lxc exec "${BUILDER_INSTANCE}" --project "${LXD_BUILDER_PROJECT}" -- /usr/bin/install -d -o root -g root -m 0700 /root/qorpera-lxd-runner-guest </dev/null
-lxc file push "${archive}" "${BUILDER_INSTANCE}/root/qorpera-lxd-runner-guest/package.tar.gz" --project "${LXD_BUILDER_PROJECT}"
+lxc file push "${PACKAGE_ARCHIVE}" "${BUILDER_INSTANCE}/root/qorpera-lxd-runner-guest/package.tar.gz" --project "${LXD_BUILDER_PROJECT}"
 lxc exec "${BUILDER_INSTANCE}" --project "${LXD_BUILDER_PROJECT}" -- /usr/bin/tar \
 	--extract --gzip --file /root/qorpera-lxd-runner-guest/package.tar.gz \
 	--directory /root/qorpera-lxd-runner-guest </dev/null
@@ -128,10 +150,11 @@ lxc stop "${BUILDER_INSTANCE}" --project "${LXD_BUILDER_PROJECT}" --timeout 120
 lxc publish "${BUILDER_INSTANCE}" \
 	--project "${LXD_BUILDER_PROJECT}" \
 	--alias "${IMAGE_ALIAS}" \
-	description="Qorpera Step 2 Ubuntu 26.04 LXD runner candidate" \
+	description="Qorpera Runtime Step 2 integrated secret-custody proof candidate" \
 	os=Ubuntu \
 	release=26.04 \
 	user.qorpera.schema=qorpera.lxd-runner-image/v1 \
+	user.qorpera.source_commit="${EXPECTED_SOURCE_COMMIT}" \
 	user.qorpera.guest_package_manifest_sha256="${EXPECTED_PACKAGE_MANIFEST_SHA256}" \
 	user.qorpera.runner_image="${EXPECTED_RUNNER_IMAGE}" \
 	user.qorpera.provenance=unsigned-candidate
@@ -141,13 +164,15 @@ if [[ ! ${fingerprint} =~ ^[0-9a-f]{64}$ ]]; then
 	echo "LXD did not return a complete immutable image fingerprint." >&2
 	exit 1
 fi
-lxc delete "${BUILDER_INSTANCE}" --project "${LXD_BUILDER_PROJECT}"
+lxc delete "${BUILDER_INSTANCE}" --project "${LXD_BUILDER_PROJECT}" --force
 
 state_tmp=$(mktemp)
 {
 	echo "generated_at=$(date --iso-8601=seconds)"
 	echo "hostname=$(hostname)"
 	echo "base_fingerprint=${EXPECTED_BASE_FINGERPRINT}"
+	echo "source_commit=${EXPECTED_SOURCE_COMMIT}"
+	echo "package_archive_sha256=${EXPECTED_PACKAGE_ARCHIVE_SHA256}"
 	echo "guest_package_manifest_sha256=${EXPECTED_PACKAGE_MANIFEST_SHA256}"
 	echo "runner_image=${EXPECTED_RUNNER_IMAGE}"
 	echo "image_alias=${IMAGE_ALIAS}"
@@ -159,7 +184,7 @@ install -o root -g root -m 0644 "${state_tmp}" "${STATE_LOG}"
 rm -f -- "${state_tmp}"
 
 trap - EXIT HUP INT TERM
-rm -f -- "${archive}"
+rm -rf -- "${package_root}"
 echo "LXD_RUNNER_IMAGE_CANDIDATE_READY_UNSIGNED"
 echo "fingerprint=${fingerprint}"
 echo "Do not enable the provider until this exact image has signed provenance and a clean-boot acceptance test."

@@ -30,7 +30,9 @@ ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
 ProtectProc=invisible
-ProcSubset=pid
+# Node admission reads /proc/cpuinfo and /proc/meminfo via node:os.
+# Keep other users' processes hidden while exposing host hardware metadata.
+ProcSubset=all
 RestrictSUIDSGID=yes
 RestrictRealtime=yes
 RestrictNamespaces=yes

@@ -12,8 +12,11 @@ import {
 } from "node:fs";
 import { chmod, lstat, mkdir, readdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import {
+	cloudCompanyPathBelongsToLogicalTree,
+	cloudCompanyPathIsAuthorityCritical,
+} from "@qorpera/cloud-client/node/cloud-company-snapshot";
 import { type CompanyRuntimeLock, canonicalCompanyRoot } from "@qorpera/company/company-runtime-lock";
-import { cloudCompanyPathBelongsToLogicalTree, cloudCompanyPathIsAuthorityCritical } from "./cloud-company-snapshot.ts";
 import { type CloudSyncHealth, DurableCloudSyncLoop } from "./cloud-sync-loop.ts";
 
 const PROJECTION_STATE_SCHEMA = "qorpera.company-file-projection/v1";

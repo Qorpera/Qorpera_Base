@@ -33,7 +33,7 @@ printf '[Journal]\nStorage=persistent\nSystemMaxUse=256M\n' > /etc/systemd/journ
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install --yes ca-certificates crun dbus-user-session fuse-overlayfs git nodejs npm podman slirp4netns uidmap
+apt-get install --yes bubblewrap ca-certificates crun dbus-user-session fuse-overlayfs git nodejs npm podman slirp4netns uidmap
 
 node_version=$(node --version | sed 's/^v//')
 if ! dpkg --compare-versions "${node_version}" ge 22.19.0; then
@@ -93,6 +93,7 @@ const expected = new Set([
 	"harness/package-lock.json",
   "harness/package.json",
   "install-image-contract.sh",
+  "qorpera-company-runner.service",
   "qorpera-ephemeral-runner.mjs",
   "qorpera-ephemeral-runner.service",
   "qorpera-lxd-runner-bootstrap.mjs",
@@ -100,13 +101,36 @@ const expected = new Set([
   "qorpera-lxd-native-login-bootstrap.mjs",
   "qorpera-lxd-native-login-bootstrap.service",
   "qorpera-native-provider-host.mjs",
+  "qorpera-identity-recovery-restore.mjs",
+  "qorpera-native-isolation-child.mjs",
+  "qorpera-native-login-provider-host.service",
   "qorpera-native-provider-host.service",
+  "qorpera-native-company-host.service",
   "runner-image/contract.json",
   "runner-image/qorpera-sandbox-probe.cosign-bundle.json",
   "runner-image/qorpera-sandbox-probe.oci.tar",
   "qorpera-sandbox-probe.mjs",
   "run-job",
 ]);
+if (manifest.nativeCompany) {
+  const native = manifest.nativeCompany;
+  const artifactMetadata = lstatSync(join(root, "native-company/artifact.json"));
+  if (!artifactMetadata.isFile() || artifactMetadata.isSymbolicLink() || artifactMetadata.size > 65536) {
+    throw new Error("Governed native artifact metadata is unsafe");
+  }
+  const artifact = JSON.parse(readFileSync(join(root, "native-company/artifact.json"), "utf8"));
+  if (native.schema !== "qorpera.native-company-guest/v1" ||
+      native.binaryPath !== "/opt/qorpera-harnesses/native-company/codex" ||
+      native.target !== "x86_64-unknown-linux-gnu" || native.profile !== "release" ||
+      !/^[0-9a-f]{64}$/.test(native.binarySha256) ||
+      artifact.schema !== "qorpera.native-codex-artifact/v1" ||
+      artifact.artifact?.file !== "codex" || artifact.artifact.sha256 !== native.binarySha256 ||
+      artifact.artifact.target !== native.target || artifact.artifact.profile !== "release" ||
+      artifact.source?.commit !== native.sourceCommit || artifact.source?.patchSha256 !== native.patchSha256) {
+    throw new Error("Governed native company image contract is invalid");
+  }
+  for (const name of ["codex", "artifact.json", "LICENSE", "NOTICE"]) expected.add(`native-company/${name}`);
+}
 for (const artifact of manifest.artifacts) {
   if (!artifact || typeof artifact.file !== "string" || !expected.delete(artifact.file)) {
     throw new Error("Guest package contains an unexpected artifact");
@@ -123,6 +147,9 @@ for (const artifact of manifest.artifacts) {
   if (digest !== artifact.sha256) throw new Error("Guest package artifact checksum mismatch");
 }
 if (expected.size !== 0) throw new Error("Guest package is incomplete");
+if (manifest.nativeCompany && manifest.artifacts.find((item) => item.file === "native-company/codex")?.sha256 !== manifest.nativeCompany.binarySha256) {
+  throw new Error("Governed native binary pin does not match packaged bytes");
+}
 NODE
 
 if getent group "${NATIVE_EXECUTION_GROUP}" >/dev/null; then
@@ -148,6 +175,18 @@ if [[ $(getent passwd "${RUNNER_USER}" | cut -d: -f6) != /var/lib/qorpera-runner
 	exit 1
 fi
 usermod -aG "${NATIVE_EXECUTION_GROUP}" "${RUNNER_USER}"
+
+# Governed execution never joins the NAS sharing group or the legacy
+# cross-process workspace group. These accounts are private to the new lane.
+for company_account in qorpera-company-runner qorpera-native-company; do
+	if ! getent passwd "${company_account}" >/dev/null; then
+		useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin --user-group "${company_account}"
+	fi
+	if [[ $(id -Gn "${company_account}") != "${company_account}" ]]; then
+		echo "A governed service account has unexpected supplementary groups." >&2
+		exit 1
+	fi
+done
 
 subid_end=$((SUBID_START + SUBID_COUNT - 1))
 for subid_file in /etc/subuid /etc/subgid; do
@@ -183,13 +222,18 @@ for artifact in \
 	company-lock-heartbeat.mjs \
 	qorpera-ephemeral-runner.mjs \
 	qorpera-native-provider-host.mjs \
+	qorpera-identity-recovery-restore.mjs \
+	qorpera-native-isolation-child.mjs \
 	qorpera-lxd-runner-bootstrap.mjs \
 	qorpera-lxd-native-login-bootstrap.mjs; do
 	install -o root -g root -m 0555 "${PACKAGE_ROOT}/${artifact}" "/opt/qorpera-runner/${artifact}"
 	node --check "/opt/qorpera-runner/${artifact}"
 done
 for unit in \
+	qorpera-company-runner.service \
+	qorpera-native-company-host.service \
 	qorpera-ephemeral-runner.service \
+	qorpera-native-login-provider-host.service \
 	qorpera-native-provider-host.service \
 	qorpera-lxd-runner-bootstrap.service \
 	qorpera-lxd-native-login-bootstrap.service; do
@@ -207,6 +251,19 @@ claude_version=$(DISABLE_AUTOUPDATER=1 /usr/local/bin/claude --version)
 if [[ ${codex_version} != *"0.147.0"* || ${claude_version} != 2.1.231* ]]; then
 	echo "The installed native harness versions do not match their package lock." >&2
 	exit 1
+fi
+
+native_company_enabled=$(PACKAGE_ROOT=${PACKAGE_ROOT} node -e '
+const { readFileSync } = require("node:fs");
+const { join } = require("node:path");
+process.stdout.write(JSON.parse(readFileSync(join(process.env.PACKAGE_ROOT, "manifest.json"), "utf8")).nativeCompany ? "yes" : "no");
+')
+if [[ ${native_company_enabled} == yes ]]; then
+	install -d -o root -g root -m 0755 /opt/qorpera-harnesses/native-company
+	install -o root -g root -m 0555 "${PACKAGE_ROOT}/native-company/codex" /opt/qorpera-harnesses/native-company/codex
+	for native_file in artifact.json LICENSE NOTICE; do
+		install -o root -g root -m 0444 "${PACKAGE_ROOT}/native-company/${native_file}" "/opt/qorpera-harnesses/native-company/${native_file}"
+	done
 fi
 
 runner_image=$(PACKAGE_ROOT=${PACKAGE_ROOT} node -e '
@@ -256,13 +313,19 @@ install -o root -g root -m 0644 \
 	/etc/qorpera/ephemeral-runner-image.cosign-bundle.json
 
 systemd-analyze verify \
+	/etc/systemd/system/qorpera-company-runner.service \
+	/etc/systemd/system/qorpera-native-company-host.service \
 	/etc/systemd/system/qorpera-ephemeral-runner.service \
+	/etc/systemd/system/qorpera-native-login-provider-host.service \
 	/etc/systemd/system/qorpera-native-provider-host.service \
 	/etc/systemd/system/qorpera-lxd-runner-bootstrap.service \
 	/etc/systemd/system/qorpera-lxd-native-login-bootstrap.service
 systemctl daemon-reload
 systemctl disable \
+	qorpera-company-runner.service \
+	qorpera-native-company-host.service \
 	qorpera-ephemeral-runner.service \
+	qorpera-native-login-provider-host.service \
 	qorpera-native-provider-host.service \
 	qorpera-lxd-native-login-bootstrap.service \
 	>/dev/null 2>&1 || true

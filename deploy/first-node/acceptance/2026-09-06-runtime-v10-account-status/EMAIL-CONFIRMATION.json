@@ -1,0 +1,67 @@
+{
+  "schema": "qorpera.fallback-email-confirmation/v1",
+  "passed": true,
+  "privateContentsReturned": false,
+  "providerRequestMade": false,
+  "credentialFilesWritten": false,
+  "metadata": {
+    "passed": true,
+    "records": [
+      {
+        "label": "current",
+        "capsuleId": "3dd681e1-b643-43ef-ad0f-92709d9a2269",
+        "encryptedSha256": "ccdd76f788eedf215f351c43b98b9070ca332b190c19b5a0b7536b4b1434dce8",
+        "claims": [
+          {
+            "type": "id_token",
+            "present": true,
+            "planType": "pro",
+            "emailMatchesUserProvidedAccount": true,
+            "organizationCount": 2,
+            "defaultOrganizationCount": 1,
+            "accountIdMatchesCredential": true
+          },
+          {
+            "type": "access_token",
+            "present": true,
+            "planType": "pro",
+            "emailMatchesUserProvidedAccount": null,
+            "organizationCount": null,
+            "defaultOrganizationCount": null,
+            "accountIdMatchesCredential": true
+          }
+        ]
+      },
+      {
+        "label": "new",
+        "capsuleId": "d5fea972-5aec-48c1-9d14-865be5917a0c",
+        "encryptedSha256": "1a7aeffc9062cd91fb8efae08b9c6838256ad9a72afe853b875d5be2fd66c20a",
+        "claims": [
+          {
+            "type": "id_token",
+            "present": true,
+            "planType": "free",
+            "emailMatchesUserProvidedAccount": true,
+            "organizationCount": 1,
+            "defaultOrganizationCount": 1,
+            "accountIdMatchesCredential": true
+          },
+          {
+            "type": "access_token",
+            "present": true,
+            "planType": "free",
+            "emailMatchesUserProvidedAccount": null,
+            "organizationCount": null,
+            "defaultOrganizationCount": null,
+            "accountIdMatchesCredential": true
+          }
+        ]
+      }
+    ],
+    "providerRequestMade": false,
+    "credentialValuesReturned": false,
+    "credentialFilesWritten": false
+  },
+  "loginGuestStopped": true,
+  "observedAt": "2026-09-06T18:27:38.716932+00:00"
+}

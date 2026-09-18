@@ -42,6 +42,8 @@ test("packages and pins the first-node LXD provider", async () => {
 		const installerPath = join(repositoryRoot, "deploy/first-node/install-lxd-provider-host.sh");
 		const installer = await readFile(installerPath, "utf-8");
 		const unit = await readFile(join(repositoryRoot, "deploy/first-node/qorpera-lxd-provider.service"));
+		assert.match(unit.toString(), /^ProcSubset=all$/m, "node admission requires CPU and memory metadata");
+		assert.match(unit.toString(), /^ProtectProc=invisible$/m, "unrelated processes must remain hidden");
 		const environmentExample = await readFile(
 			join(repositoryRoot, "deploy/first-node/lxd-provider.env.example"),
 		);
@@ -58,6 +60,24 @@ test("packages and pins the first-node LXD provider", async () => {
 		for (const expected of expectedPins) {
 			assert.ok(installer.includes(expected), `installer is missing checksum pin ${expected}`);
 		}
+		for (const name of [
+			"QORPERA_NATIVE_RUNTIME",
+			"QORPERA_NATIVE_CODEX_FENCE_PATH",
+			"QORPERA_NATIVE_CODEX_FENCE_SHA256",
+			"QORPERA_NATIVE_OBJECT_GATEWAY_URL",
+			"QORPERA_LXD_NATIVE_OBJECT_TOKEN_FILE",
+			"QORPERA_LXD_COMPANY_NETWORK",
+			"QORPERA_LXD_RECOVERY_VOLUME_PREFIX",
+			"QORPERA_LXD_RECOVERY_VOLUME_SIZE",
+			"QORPERA_CLOUD_SECRET_BROKER_URL",
+			"QORPERA_LXD_CLOUD_SECRET_RUNTIME_TOKEN_FILE",
+			"QORPERA_LXD_CLOUD_SECRET_CA_FILE",
+			"QORPERA_LXD_CLOUD_SECRET_CA_SHA256",
+		]) {
+			assert.ok(environmentExample.includes(`${name}=`), `provider example is missing ${name}`);
+		}
+		assert.ok(!environmentExample.includes("QORPERA_NATIVE_OBJECT_GATEWAY_TOKEN="));
+		assert.ok(!environmentExample.includes("QORPERA_CLOUD_SECRET_BROKER_TOKEN="));
 		assert.ok(installer.includes("const payload = await response.json()"));
 		assert.ok(installer.includes("payload.ok !== true || Object.keys(payload).length !== 1"));
 		assert.ok(!installer.includes("(await response.text()) !=="));

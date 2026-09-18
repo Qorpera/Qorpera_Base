@@ -1,7 +1,7 @@
+import { SupabaseCloudPresenceTransport } from "@qorpera/cloud-client/cloud-presence";
+import type { HostedPrimaryDatabase, QorperaHostedPrimary } from "@qorpera/cloud-client/hosted-primary";
 import type { RealtimeChannel, SupabaseClient } from "@supabase/supabase-js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SupabaseCloudPresenceTransport } from "../src/cloud-presence.ts";
-import type { HostedPrimaryDatabase, QorperaHostedPrimary } from "../src/hosted-primary.ts";
 
 type ChannelStatus = "SUBSCRIBED" | "CHANNEL_ERROR" | "TIMED_OUT" | "CLOSED";
 
@@ -114,8 +114,8 @@ describe("cloud presence", () => {
 		channels[0].emitStatus("SUBSCRIBED");
 		handle.setOpenThread("legal-agent");
 		handle.sendActivity("legal-agent", "working");
-		expect(channels[0].tracked.at(-1)).toMatchObject({ staff_agent_id: "legal-agent" });
-		expect(channels[0].sent.at(-1)).toMatchObject({ event: "agent_activity" });
+		await vi.waitFor(() => expect(channels[0].tracked.at(-1)).toMatchObject({ staff_agent_id: "legal-agent" }));
+		await vi.waitFor(() => expect(channels[0].sent.at(-1)).toMatchObject({ event: "agent_activity" }));
 		const sentPayload = channels[0].sent.at(-1)?.payload as { client_id?: unknown };
 		expect(typeof sentPayload.client_id).toBe("string");
 		channels[0].state = {
@@ -177,7 +177,7 @@ describe("cloud presence", () => {
 		expect(channels).toHaveLength(2);
 		expect(removed).toContain(channels[0]);
 		channels[1].emitStatus("SUBSCRIBED");
-		expect(channels[1].tracked.at(-1)).toMatchObject({ staff_agent_id: "legal-agent" });
+		await vi.waitFor(() => expect(channels[1].tracked.at(-1)).toMatchObject({ staff_agent_id: "legal-agent" }));
 		channels[1].emitBroadcast("agent_activity", {
 			client_id: sentPayload.client_id,
 			user_id: "spoofed",

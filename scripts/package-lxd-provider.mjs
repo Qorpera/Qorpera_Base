@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { build } from "esbuild";
+import { jitlessServiceBundleOptions } from "./jitless-service-bundle.mjs";
 
 function outputDirectory(args) {
 	if (args.length === 0) return resolve(".artifacts/lxd-provider");
@@ -30,6 +31,7 @@ for (const [entryPoint, file] of entryPoints) {
 		banner: {
 			js: 'import { createRequire as __qorperaCreateRequire } from "node:module"; const require = __qorperaCreateRequire(import.meta.url);',
 		},
+		...(file === "qorpera-lxd-provider.mjs" ? jitlessServiceBundleOptions : {}),
 		legalComments: "none",
 		logLevel: "silent",
 	});

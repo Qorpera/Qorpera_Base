@@ -56,6 +56,24 @@ import { FIXED_SHELL_NAVIGATION, type ShellNavigationState } from "./shell-navig
 import { readUsageRateCatalog, type UsageRateCatalog } from "./usage-pricing.ts";
 import { companyUsageWindowError, readCompanyUsage } from "./usage-summary.ts";
 
+export interface CompanyOrganizationHierarchyNodeView {
+	id: string;
+	kind: "cofounder" | "responsibility" | "project" | "room" | "agent";
+	label: string;
+	status: string;
+	role?: string;
+	canonicalId: string;
+	children: CompanyOrganizationHierarchyNodeView[];
+}
+
+export interface CompanyOrganizationHierarchyView {
+	schema: "qorpera.company-organization-hierarchy/v1";
+	profileId: string;
+	formationState: string;
+	primary: CompanyOrganizationHierarchyNodeView[];
+	inactive: CompanyOrganizationHierarchyNodeView[];
+}
+
 export interface CompanyRoomSidebarView extends CompanyRoom {
 	lastMessage?: Pick<CompanyRoomMessage, "id" | "text" | "speaker" | "createdAt">;
 	lastStaffMessage?: Pick<CompanyRoomMessage, "id" | "text" | "speaker" | "createdAt">;
@@ -64,6 +82,9 @@ export interface CompanyRoomSidebarView extends CompanyRoom {
 export interface CompanyAppOptions {
 	root: string;
 	port?: number;
+	/** This root contains display projections only, never the live Company File.
+	 * File reads, edits and approvals must use the authenticated cloud gateway. */
+	governedCompanyFile?: boolean;
 	/** Host-owned static shell served on the same local origin as its read models. */
 	fixedShell?: { directory: string };
 	/**
@@ -100,6 +121,9 @@ export interface CompanyAppOptions {
 	scheduledJobReadModel?: () => readonly CompanyScheduledJobView[];
 	/** Durable agent-to-agent mail from the host-protected company ledger. */
 	staffMessageReadModel?: () => readonly StaffAgentMessage[];
+	/** Semantic company hierarchy projected from canonical Company File state.
+	 * The app server strips it to this closed renderer view. */
+	organizationReadModel?: () => CompanyOrganizationHierarchyView | undefined;
 }
 
 export type CompanyConnectionRequestStatus = "pending" | "connecting" | "connected" | "denied" | "failed" | "cancelled";
@@ -1422,6 +1446,31 @@ function scheduledJobView(job: CompanyScheduledJobView): CompanyScheduledJobView
 	};
 }
 
+function organizationNodeView(node: CompanyOrganizationHierarchyNodeView): CompanyOrganizationHierarchyNodeView {
+	return {
+		id: node.id,
+		kind: node.kind,
+		label: node.label,
+		status: node.status,
+		...(node.role !== undefined ? { role: node.role } : {}),
+		canonicalId: node.canonicalId,
+		children: node.children.map(organizationNodeView),
+	};
+}
+
+function organizationHierarchyView(
+	hierarchy: CompanyOrganizationHierarchyView | undefined,
+): CompanyOrganizationHierarchyView | undefined {
+	if (!hierarchy) return undefined;
+	return {
+		schema: "qorpera.company-organization-hierarchy/v1",
+		profileId: hierarchy.profileId,
+		formationState: hierarchy.formationState,
+		primary: hierarchy.primary.map(organizationNodeView),
+		inactive: hierarchy.inactive.map(organizationNodeView),
+	};
+}
+
 function stateFor(
 	root: string,
 	runtime?: SessionRuntimeSnapshot,
@@ -1433,6 +1482,8 @@ function stateFor(
 	connectionRequests: readonly CompanyConnectionRequestView[] = [],
 	scheduledJobs: readonly CompanyScheduledJobView[] = [],
 	agentMessages: readonly StaffAgentMessage[] = [],
+	governedCompanyFile = false,
+	organizationHierarchy?: CompanyOrganizationHierarchyView,
 ): unknown {
 	const projectedSessions = sessions ?? listTrailSessions(root);
 	const publicRuntime = runtime ? publicSessionRuntimeSnapshot(runtime) : undefined;
@@ -1442,7 +1493,7 @@ function stateFor(
 		}
 	> = [];
 	try {
-		departments = listProductDepartments(root).map((department) => ({
+		departments = (governedCompanyFile ? [] : listProductDepartments(root)).map((department) => ({
 			...department,
 			pullRequests: listPullRequestRecords(root, department.pullRequestsPath),
 		}));
@@ -1462,7 +1513,8 @@ function stateFor(
 	return {
 		name: companyName(root),
 		shellNavigation: readShellNavigation(),
-		inbox: readInbox(root),
+		inbox: governedCompanyFile ? [] : readInbox(root),
+		companyFile: { mode: governedCompanyFile ? "governed" : "legacy" },
 		sessions: projectedSessions.map((session) => {
 			const view = {
 				...session,
@@ -1482,6 +1534,7 @@ function stateFor(
 		connectionRequests,
 		scheduledJobs,
 		agentMessages,
+		organizationHierarchy: organizationHierarchyView(organizationHierarchy) ?? null,
 		trailSessions: projectedSessions.length,
 		departments,
 	};
@@ -1732,6 +1785,19 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 	const authorized = (request: IncomingMessage): boolean => request.headers["x-qorpera-token"] === authToken;
 	return createServer((request: IncomingMessage, response: ServerResponse) => {
 		const url = new URL(request.url ?? "/", "http://localhost");
+		if (
+			options.governedCompanyFile &&
+			(url.pathname === "/api/authority" ||
+				url.pathname.startsWith("/api/authority/") ||
+				url.pathname.startsWith("/api/inbox/") ||
+				url.pathname === "/api/gate" ||
+				url.pathname === "/api/artifact/update")
+		) {
+			response
+				.writeHead(409, { "content-type": "application/json", "cache-control": "no-store" })
+				.end(JSON.stringify({ error: "Use the live Company File editor for file reads, changes and approvals." }));
+			return;
+		}
 		if (url.pathname.startsWith("/shell/") && options.fixedShell) {
 			const entry = decodedPath(url.pathname.slice("/shell/".length), response);
 			if (entry !== undefined) serveFixedShell(options.fixedShell.directory, entry, response);
@@ -1755,6 +1821,13 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 			const connectionRequests = safeReadModel(options.connectionRequestReadModel, connectionRequestView);
 			const scheduledJobs = safeReadModel(options.scheduledJobReadModel, scheduledJobView);
 			const agentMessages = safeReadModel(options.staffMessageReadModel, staffMessageView);
+			let organizationHierarchy: CompanyOrganizationHierarchyView | undefined;
+			try {
+				organizationHierarchy = options.organizationReadModel?.();
+			} catch {
+				// A malformed or temporarily unavailable semantic projection must
+				// not take down the rest of the company read model.
+			}
 			response
 				.writeHead(200, {
 					"content-type": "application/json",
@@ -1773,6 +1846,8 @@ export function createCompanyAppServer(options: CompanyAppOptions): Server {
 							connectionRequests,
 							scheduledJobs,
 							agentMessages,
+							options.governedCompanyFile,
+							organizationHierarchy,
 						),
 					),
 				);

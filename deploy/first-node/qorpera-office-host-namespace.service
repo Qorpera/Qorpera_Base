@@ -1,0 +1,27 @@
+[Unit]
+Description=Qorpera office host mount namespace record
+After=local-fs.target
+Before=qorpera-office-provider.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=root
+Group=root
+ExecStart=/usr/bin/node --jitless --disable-proto=throw --disallow-code-generation-from-strings /opt/qorpera/office-provider/qorpera-office-host-namespace.cjs
+UMask=0077
+NoNewPrivileges=yes
+# Read PID 1's namespace even when its credentials/capabilities differ. This
+# capability belongs only to the fixed startup helper, never the provider.
+CapabilityBoundingSet=CAP_SYS_PTRACE
+AmbientCapabilities=
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX
+TimeoutStartSec=10s
+# This helper must remain in PID 1's mount namespace. PrivateTmp,
+# ProtectSystem, ProtectHome and related mount-namespace options are invalid.

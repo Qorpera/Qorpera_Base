@@ -1,0 +1,243 @@
+{
+  "schema": "qorpera.live-initial-native-acceptance/v1",
+  "passed": true,
+  "recordedAt": "2026-09-05T14:00:58.297Z",
+  "sourceCommit": "a80f32ec17e9c11ecc09ac6c68149c38a07c6da1",
+  "readback": [
+    {
+      "wake": {
+        "kind": "first-run",
+        "status": "completed",
+        "sourceKind": "input"
+      },
+      "jobId": "688365d6-2607-4be4-baba-eef838a6b426",
+      "model": "gpt-5.6-sol",
+      "runId": "60d9b25e-0040-461c-8e89-8daa147faef3",
+      "sends": [
+        {
+          "phase": "progress",
+          "eventId": "2ee8fbbc-2701-41b4-a37b-8306cdc51b03",
+          "createdAt": "2026-09-05T13:39:05.605694+00:00",
+          "textSha256": "82e1cc0cc419e35b785751a36439c1225592920bff2d4f5f81d278044ff0e362"
+        },
+        {
+          "phase": "final",
+          "eventId": "ae345366-580d-49a6-8b33-4a32c9d130be",
+          "createdAt": "2026-09-05T13:39:09.20841+00:00",
+          "textSha256": "b27dee9ae89e33607214384dc4737b16d62532d758916946e2fcd294b59d0ae0"
+        }
+      ],
+      "bundle": "d7d83b5c8100b33b7fab473724d006124a166eff585bfa7f0b60a8fa9901750c",
+      "launch": {
+        "bundle": "d7d83b5c8100b33b7fab473724d006124a166eff585bfa7f0b60a8fa9901750c",
+        "binarySha256": "2f2c26cfdfacebbcce848fb50cfaaa4e8d0aa3c6ec3c1009123ecf766c8335f7",
+        "contextBytes": 4449,
+        "contextSha256": "9ad2974654926ea8a6b8326161e4cb70ad33acdece3e8a8bbea49f7537d0d519",
+        "toolCatalogSha256": "df507e6b49b502427d91cb33d8a708ab197a266b51bfa80b2d12c7e43206f91c"
+      },
+      "runner": {
+        "id": "a214caf7-3c1d-4c8b-b0e1-af03bbbbc9e6",
+        "status": "active",
+        "version": "a80f32ec1-production",
+        "sessionLive": true
+      },
+      "results": 1,
+      "attempts": 1,
+      "jobStatus": "completed",
+      "observedAt": "2026-09-05T13:52:44.195953+00:00",
+      "activeLeases": 0,
+      "staffAgentId": "37e5f62b-177a-4d66-9cb3-a7357fbcd0f9",
+      "terminalObservations": [
+        {
+          "at": "2026-09-05T13:38:58.134+00:00",
+          "status": "succeeded",
+          "operation": "company_context"
+        },
+        {
+          "at": "2026-09-05T13:39:00.151+00:00",
+          "status": "unconfirmed",
+          "operation": "native_result_fence"
+        },
+        {
+          "at": "2026-09-05T13:39:01.989+00:00",
+          "status": "unconfirmed",
+          "operation": "native_result_fence"
+        },
+        {
+          "at": "2026-09-05T13:39:06.179+00:00",
+          "status": "unconfirmed",
+          "operation": "native_result_fence"
+        },
+        {
+          "at": "2026-09-05T13:39:09.968+00:00",
+          "status": "unconfirmed",
+          "operation": "native_result_fence"
+        },
+        {
+          "at": "2026-09-05T13:39:12.626+00:00",
+          "status": "succeeded",
+          "operation": "model_turn"
+        }
+      ]
+    },
+    {
+      "wake": {
+        "kind": "human",
+        "status": "completed",
+        "sourceKind": "input"
+      },
+      "jobId": "2b63c31c-e1d4-499f-b11a-78b60b99404c",
+      "model": "provider-default",
+      "runId": "596cd42f-8a81-44af-9ead-00b9769edeea",
+      "sends": [
+        {
+          "phase": "progress",
+          "eventId": "1e24a4e3-74ae-4791-af71-a9eac137388b",
+          "createdAt": "2026-09-05T13:41:10.065665+00:00",
+          "textSha256": "8ca123af1f29b2d77e354ba128d19bc494b29740bf9a05b7ca18dc17cfe6dab6"
+        },
+        {
+          "phase": "final",
+          "eventId": "3b262949-47da-47ba-b530-761487e879d4",
+          "createdAt": "2026-09-05T13:41:12.692312+00:00",
+          "textSha256": "30dec0d7b814ae5d8e5432335c176138d31c3d6ee2782c04bf7f7c3e41440491"
+        }
+      ],
+      "bundle": "d7d83b5c8100b33b7fab473724d006124a166eff585bfa7f0b60a8fa9901750c",
+      "launch": {
+        "bundle": "d7d83b5c8100b33b7fab473724d006124a166eff585bfa7f0b60a8fa9901750c",
+        "binarySha256": "2f2c26cfdfacebbcce848fb50cfaaa4e8d0aa3c6ec3c1009123ecf766c8335f7",
+        "contextBytes": 15563,
+        "contextSha256": "9305495d8656a76b8e2c8a7550a36161228b921682305c183392606fd5f869af",
+        "toolCatalogSha256": "df507e6b49b502427d91cb33d8a708ab197a266b51bfa80b2d12c7e43206f91c"
+      },
+      "runner": {
+        "id": "a63f8e3e-b448-4c50-8765-f1bf8123a51b",
+        "status": "active",
+        "version": "a80f32ec1-production",
+        "sessionLive": true
+      },
+      "results": 1,
+      "attempts": 1,
+      "jobStatus": "completed",
+      "observedAt": "2026-09-05T13:52:44.199204+00:00",
+      "activeLeases": 0,
+      "staffAgentId": "52874779-795f-4cc4-9390-4d2fdc32ee32",
+      "terminalObservations": [
+        {
+          "at": "2026-09-05T13:41:02.997+00:00",
+          "status": "succeeded",
+          "operation": "company_context"
+        },
+        {
+          "at": "2026-09-05T13:41:05.066+00:00",
+          "status": "unconfirmed",
+          "operation": "native_result_fence"
+        },
+        {
+          "at": "2026-09-05T13:41:07.278+00:00",
+          "status": "unconfirmed",
+          "operation": "native_result_fence"
+        },
+        {
+          "at": "2026-09-05T13:41:10.676+00:00",
+          "status": "unconfirmed",
+          "operation": "native_result_fence"
+        },
+        {
+          "at": "2026-09-05T13:41:13.332+00:00",
+          "status": "unconfirmed",
+          "operation": "native_result_fence"
+        },
+        {
+          "at": "2026-09-05T13:41:15.654+00:00",
+          "status": "succeeded",
+          "operation": "model_turn"
+        }
+      ]
+    },
+    {
+      "wake": {
+        "kind": "human",
+        "status": "completed",
+        "sourceKind": "input"
+      },
+      "jobId": "f01b494d-022c-4c23-812b-706f19b91ec3",
+      "model": "gpt-5.6-sol",
+      "runId": "57b5ffc2-7b59-403d-9314-837f43712cf0",
+      "sends": [
+        {
+          "phase": "progress",
+          "eventId": "7834e67f-b11a-4f25-8788-6c470c85bc2b",
+          "createdAt": "2026-09-05T13:44:21.511691+00:00",
+          "textSha256": "47bf80163462f8d0dd2049e620636eff34752a5cad51cfc4d63b4bedd77c0796"
+        },
+        {
+          "phase": "final",
+          "eventId": "535b74a0-aa6f-4dff-a688-f48aac839c98",
+          "createdAt": "2026-09-05T13:44:25.317428+00:00",
+          "textSha256": "19b7118c85158f36d78221e337918d7fab074f666c3bafffc4ccad5f83775f73"
+        }
+      ],
+      "bundle": "d7d83b5c8100b33b7fab473724d006124a166eff585bfa7f0b60a8fa9901750c",
+      "launch": {
+        "bundle": "d7d83b5c8100b33b7fab473724d006124a166eff585bfa7f0b60a8fa9901750c",
+        "binarySha256": "2f2c26cfdfacebbcce848fb50cfaaa4e8d0aa3c6ec3c1009123ecf766c8335f7",
+        "contextBytes": 6156,
+        "contextSha256": "f7bb24b1fca944db13f14abadd0d43339dead6113515ff64527815227825a3da",
+        "toolCatalogSha256": "df507e6b49b502427d91cb33d8a708ab197a266b51bfa80b2d12c7e43206f91c"
+      },
+      "runner": {
+        "id": "af5fdc5e-ec1a-42bc-82e3-7b613c0a4d14",
+        "status": "active",
+        "version": "a80f32ec1-production",
+        "sessionLive": true
+      },
+      "results": 1,
+      "attempts": 1,
+      "jobStatus": "completed",
+      "observedAt": "2026-09-05T13:52:44.214027+00:00",
+      "activeLeases": 0,
+      "staffAgentId": "37e5f62b-177a-4d66-9cb3-a7357fbcd0f9",
+      "terminalObservations": [
+        {
+          "at": "2026-09-05T13:44:13.316+00:00",
+          "status": "succeeded",
+          "operation": "company_context"
+        },
+        {
+          "at": "2026-09-05T13:44:15.17+00:00",
+          "status": "unconfirmed",
+          "operation": "native_result_fence"
+        },
+        {
+          "at": "2026-09-05T13:44:18.696+00:00",
+          "status": "unconfirmed",
+          "operation": "native_result_fence"
+        },
+        {
+          "at": "2026-09-05T13:44:22.573+00:00",
+          "status": "unconfirmed",
+          "operation": "native_result_fence"
+        },
+        {
+          "at": "2026-09-05T13:44:26.257+00:00",
+          "status": "unconfirmed",
+          "operation": "native_result_fence"
+        },
+        {
+          "at": "2026-09-05T13:44:30.176+00:00",
+          "status": "succeeded",
+          "operation": "model_turn"
+        }
+      ]
+    }
+  ],
+  "hireProducerSha256": "209e8e999b93396f359288bb2dcc90abbee6b73c30801aa98fdd86f393d0851c",
+  "sponsorBindingSha256": "7167fc6d9752dd91e0cb40280956f7f0a9d31c638fc153d535dc3b7d21302d4c",
+  "privatePathMatchesOriginalFailedSession": true,
+  "failedHistoricalRunsUnmodified": true,
+  "signedGuestModified": false,
+  "allSteps03Complete": false,
+  "scope": "Actual hire-created first-run, same-agent human reply protocol, and original Co-Founder private session native execution. Provider account remaining allowance and unconfirmed native_result_fence observations are not claimed passed."
+}

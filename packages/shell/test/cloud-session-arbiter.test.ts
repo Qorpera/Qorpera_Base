@@ -1,6 +1,6 @@
+import { type HostedPrimaryTransport, QorperaHostedPrimary } from "@qorpera/cloud-client/hosted-primary";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CloudSessionArbiter } from "../src/cloud-session-arbiter.ts";
-import { type HostedPrimaryTransport, QorperaHostedPrimary } from "../src/hosted-primary.ts";
 
 const ENVIRONMENT = "5cd97efb-4318-4e21-9bd7-1a10c949fd65";
 const HOSTED_SESSION = "8f5773e2-effc-4702-ab48-90c080f92345";
@@ -40,6 +40,8 @@ function fakePrimary(overrides: {
 				client_session_id:
 					overrides.created === false ? CLOUD_CLIENT_SESSION : (input.p_client_session_id as string),
 				environment_id: ENVIRONMENT,
+				audience_kind: "member_private",
+				audience_user_id: AUTHOR,
 				title: "Financial Officer",
 				created: overrides.created ?? true,
 				created_by_user_id: AUTHOR,
@@ -53,6 +55,8 @@ function fakePrimary(overrides: {
 					client_session_id: CLOUD_CLIENT_SESSION,
 					profile_id: AUTHOR,
 					environment_id: ENVIRONMENT,
+					audience_kind: "member_private",
+					audience_user_id: AUTHOR,
 					title: "Financial Officer",
 					staff_agent_id: "staff-1",
 					status: "open",
@@ -74,6 +78,8 @@ function fakePrimary(overrides: {
 									client_session_id: CLOUD_CLIENT_SESSION,
 									profile_id: AUTHOR,
 									environment_id: ENVIRONMENT,
+									audience_kind: "member_private",
+									audience_user_id: AUTHOR,
 									title: "Financial Officer",
 									staff_agent_id: "staff-1",
 									status: "open",

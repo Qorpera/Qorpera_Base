@@ -256,7 +256,7 @@ begin
 			current_setting('qorpera_test.supabase_promotion_profile')::uuid,
 			'99000000-0000-4000-8000-000000000073'
 		);
-	exception when serialization_failure then
+	exception when sqlstate 'PGRST' then
 		v_denied := true;
 	end;
 	if not v_denied then

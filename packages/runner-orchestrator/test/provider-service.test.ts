@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { NODE_OBSERVATIONS_PATH, ProviderNodeObservability } from "../src/node-observability.ts";
 import type { CloudRunnerAssignmentDelivery, CloudRunnerInstance, CloudRunnerWork } from "../src/orchestrator.ts";
 import { type CloudRunnerProviderServiceBackend, HttpCloudRunnerProviderService } from "../src/provider-service.ts";
 
@@ -67,6 +68,19 @@ const runner: CloudRunnerInstance = {
 
 const services: HttpCloudRunnerProviderService[] = [];
 
+function observations(): ProviderNodeObservability {
+	return new ProviderNodeObservability({
+		providerAdapter: "managed",
+		nodeId: "20000000-0000-4000-8000-000000000001",
+		softwareVersion: "0.83.0",
+		sources: {
+			cpuTimes: () => [{ user: 100, nice: 0, sys: 50, idle: 500, irq: 0 }],
+			memory: () => ({ totalBytes: 1000, freeBytes: 250 }),
+			disk: async () => ({ blockSize: 4096n, blocks: 1000n, availableBlocks: 500n }),
+		},
+	});
+}
+
 afterEach(async () => {
 	for (const service of services.splice(0)) await service.close();
 });
@@ -87,6 +101,52 @@ function backend(): CloudRunnerProviderServiceBackend & {
 }
 
 describe("runner provider HTTP service", () => {
+	it("cancels pending acquisition when the caller disconnects after sending its complete request", async () => {
+		const provider = backend();
+		let entered = (): void => undefined;
+		const started = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
+		let finish = (): void => undefined;
+		let backendSignal: AbortSignal | undefined;
+		provider.acquire.mockImplementation((_id: string, _work: CloudRunnerWork, signal: AbortSignal) => {
+			backendSignal = signal;
+			return new Promise<CloudRunnerInstance>((resolve, reject) => {
+				finish = () => resolve(runner);
+				signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+				entered();
+			});
+		});
+		const service = new HttpCloudRunnerProviderService(provider, token);
+		services.push(service);
+		const port = await service.start();
+		const caller = new AbortController();
+		const request = fetch(`http://127.0.0.1:${port}/v1/qorpera-runner-provider`, {
+			method: "POST",
+			headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+			body: JSON.stringify({
+				schema: "qorpera.runner-provider/v1",
+				action: "acquire",
+				adapter_id: "managed",
+				acquisition_id: work.runId,
+				work,
+			}),
+			signal: caller.signal,
+		});
+		const cancelled = expect(request).rejects.toThrow();
+		try {
+			await started;
+			expect(backendSignal?.aborted).toBe(false);
+			caller.abort();
+			await cancelled;
+			await vi.waitFor(() => expect(backendSignal?.aborted).toBe(true), { timeout: 500 });
+		} finally {
+			caller.abort();
+			finish();
+			await cancelled;
+		}
+	});
+
 	it("provisions and delivers exact immutable work over an authenticated boundary", async () => {
 		const provider = backend();
 		const service = new HttpCloudRunnerProviderService(provider, token);
@@ -216,5 +276,256 @@ describe("runner provider HTTP service", () => {
 					tls: { certificate: Buffer.alloc(0), privateKey: Buffer.from("key") },
 				}),
 		).toThrow("TLS material");
+	});
+
+	it("source-fences and authenticates the cached operational view before reading it", async () => {
+		const monitor = observations();
+		const snapshot = vi.spyOn(monitor, "snapshot");
+		const service = new HttpCloudRunnerProviderService(backend(), token, "127.0.0.1", 0, {
+			nodeObservations: monitor,
+			trustedSource: "127.0.0.1",
+		});
+		services.push(service);
+		const port = await service.start();
+		const endpoint = `http://127.0.0.1:${port}${NODE_OBSERVATIONS_PATH}`;
+		expect((await fetch(endpoint)).status).toBe(401);
+		expect((await fetch(endpoint, { headers: { authorization: "Bearer wrong" } })).status).toBe(401);
+		expect(snapshot).not.toHaveBeenCalled();
+		const response = await fetch(endpoint, { headers: { authorization: `Bearer ${token}` } });
+		expect(response.status).toBe(200);
+		expect(response.headers.get("cache-control")).toBe("no-store");
+		const value = await response.json();
+		expect(value).toMatchObject({
+			schema: "qorpera.node-observation/v1",
+			providerAdapter: "managed",
+			nodeId: "20000000-0000-4000-8000-000000000001",
+			softwareVersion: "0.83.0",
+			cpu: { status: "unknown", reason: "warming_up", value: null },
+			network: { status: "unknown", reason: "not_observed" },
+		});
+		expect(JSON.stringify(value)).not.toContain(token);
+		expect(snapshot).toHaveBeenCalledTimes(1);
+
+		const deniedMonitor = observations();
+		const deniedRead = vi.spyOn(deniedMonitor, "snapshot");
+		const denied = new HttpCloudRunnerProviderService(backend(), token, "127.0.0.1", 0, {
+			nodeObservations: deniedMonitor,
+			trustedSource: "192.0.2.10",
+		});
+		services.push(denied);
+		const deniedPort = await denied.start();
+		expect(
+			(
+				await fetch(`http://127.0.0.1:${deniedPort}${NODE_OBSERVATIONS_PATH}`, {
+					headers: { authorization: `Bearer ${token}` },
+				})
+			).status,
+		).toBe(403);
+		expect(deniedRead).not.toHaveBeenCalled();
+	});
+
+	it("keeps rich observations out of public health and rejects alternate operational routes", async () => {
+		const monitor = observations();
+		const snapshot = vi.spyOn(monitor, "snapshot");
+		const service = new HttpCloudRunnerProviderService(backend(), token, "127.0.0.1", 0, {
+			nodeObservations: monitor,
+		});
+		services.push(service);
+		const port = await service.start();
+		await expect(fetch(`http://127.0.0.1:${port}/healthz`).then((response) => response.json())).resolves.toEqual({
+			ok: true,
+		});
+		expect((await fetch(`http://127.0.0.1:${port}${NODE_OBSERVATIONS_PATH}`, { method: "POST" })).status).toBe(404);
+		expect((await fetch(`http://127.0.0.1:${port}${NODE_OBSERVATIONS_PATH}?path=/private`)).status).toBe(404);
+		expect(snapshot).not.toHaveBeenCalled();
+	});
+
+	it("reports an unconfigured observer explicitly instead of a healthy or zero-valued node", async () => {
+		const service = new HttpCloudRunnerProviderService(backend(), token);
+		services.push(service);
+		const port = await service.start();
+		const response = await fetch(`http://127.0.0.1:${port}${NODE_OBSERVATIONS_PATH}`, {
+			headers: { authorization: `Bearer ${token}` },
+		});
+		expect(response.status).toBe(503);
+		await expect(response.json()).resolves.toEqual({
+			schema: "qorpera.node-observation-error/v1",
+			status: "unknown",
+			reason: "not_configured",
+		});
+	});
+
+	it("serves cached stale measurements without resampling or overwriting their timestamps", async () => {
+		let now = Date.parse("2026-08-31T12:00:00.000Z");
+		const memory = vi.fn(() => ({ totalBytes: 1000, freeBytes: 250 }));
+		const disk = vi.fn(async () => ({ blockSize: 4096n, blocks: 1000n, availableBlocks: 500n }));
+		const monitor = new ProviderNodeObservability({
+			providerAdapter: "managed",
+			sources: {
+				cpuTimes: () => [{ user: 100, nice: 0, sys: 50, idle: 500, irq: 0 }],
+				memory,
+				disk,
+				now: () => now,
+			},
+		});
+		const service = new HttpCloudRunnerProviderService(backend(), token, "127.0.0.1", 0, {
+			nodeObservations: monitor,
+		});
+		services.push(service);
+		const port = await service.start();
+		now += 61_000;
+		for (let index = 0; index < 3; index += 1) {
+			const response = await fetch(`http://127.0.0.1:${port}${NODE_OBSERVATIONS_PATH}`, {
+				headers: { authorization: `Bearer ${token}` },
+			});
+			expect(response.status).toBe(200);
+			await expect(response.json()).resolves.toMatchObject({
+				memory: {
+					observedAt: "2026-08-31T12:00:00.000Z",
+					freshness: "stale",
+					value: { totalBytes: 1000, freeBytes: 250, usedBytes: 750 },
+				},
+			});
+		}
+		expect(memory).toHaveBeenCalledTimes(1);
+		expect(disk).toHaveBeenCalledTimes(1);
+	});
+
+	it.each(["start", "snapshot"] as const)(
+		"contains %s failures without breaking product work or exporting errors",
+		async (method) => {
+			const monitor = observations();
+			vi.spyOn(monitor, method).mockImplementation(() => {
+				throw new Error("PRIVATE credential and /root/private-host-path");
+			});
+			const provider = backend();
+			const service = new HttpCloudRunnerProviderService(provider, token, "127.0.0.1", 0, {
+				nodeObservations: monitor,
+			});
+			services.push(service);
+			const port = await service.start();
+			const response = await fetch(`http://127.0.0.1:${port}${NODE_OBSERVATIONS_PATH}`, {
+				headers: { authorization: `Bearer ${token}` },
+			});
+			expect(response.status).toBe(503);
+			await expect(response.json()).resolves.toEqual({
+				schema: "qorpera.node-observation-error/v1",
+				status: "unavailable",
+				reason: "observation_failed",
+			});
+			const acquire = await fetch(`http://127.0.0.1:${port}/v1/qorpera-runner-provider`, {
+				method: "POST",
+				headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+				body: JSON.stringify({
+					schema: "qorpera.runner-provider/v1",
+					action: "acquire",
+					adapter_id: "managed",
+					acquisition_id: work.runId,
+					work,
+				}),
+			});
+			expect(acquire.status).toBe(200);
+			expect(provider.acquire).toHaveBeenCalledOnce();
+		},
+	);
+
+	it("starts and stops sampling with service lifetime, even when optional cleanup fails", async () => {
+		const monitor = observations();
+		const start = vi.spyOn(monitor, "start");
+		const stop = vi.spyOn(monitor, "stop");
+		const provider = backend();
+		const service = new HttpCloudRunnerProviderService(provider, token, "127.0.0.1", 0, {
+			nodeObservations: monitor,
+		});
+		services.push(service);
+		expect(start).not.toHaveBeenCalled();
+		await service.start();
+		expect(start).toHaveBeenCalledOnce();
+		await service.close();
+		expect(stop).toHaveBeenCalledOnce();
+		expect(provider.close).toHaveBeenCalledOnce();
+		stop.mockImplementation(() => {
+			throw new Error("PRIVATE cleanup failure");
+		});
+		await expect(service.close()).resolves.toBeUndefined();
+	});
+
+	it("keeps raw backend diagnostics out of the operator journal", async () => {
+		const provider = backend();
+		provider.acquire.mockRejectedValue(new Error("PRIVATE_CREDENTIAL /private/company/file customer body"));
+		const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		const service = new HttpCloudRunnerProviderService(provider, token);
+		services.push(service);
+		try {
+			const port = await service.start();
+			const response = await fetch(`http://127.0.0.1:${port}/v1/qorpera-runner-provider`, {
+				method: "POST",
+				headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+				body: JSON.stringify({
+					schema: "qorpera.runner-provider/v1",
+					action: "acquire",
+					adapter_id: "managed",
+					acquisition_id: work.runId,
+					work,
+				}),
+			});
+			expect(response.status).toBe(422);
+			expect(log).toHaveBeenCalledExactlyOnceWith(
+				JSON.stringify({
+					schema: "qorpera.provider-request-error/v1",
+					providerAdapter: "managed",
+					status: "rejected",
+					errorCategory: "unknown",
+				}),
+			);
+			expect(await response.text()).not.toContain("PRIVATE_CREDENTIAL");
+		} finally {
+			log.mockRestore();
+		}
+	});
+	it("answers a typed admission refusal with its reason code only", async () => {
+		const provider = backend();
+		const refusal = Object.assign(new Error("Machine start was not admitted by the company ceiling"), {
+			category: "admission_refused",
+			state: "refused",
+			reason: "NODE_NOT_PREFERRED",
+		});
+		provider.acquire.mockRejectedValue(refusal);
+		const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		const service = new HttpCloudRunnerProviderService(provider, token);
+		services.push(service);
+		try {
+			const port = await service.start();
+			const response = await fetch(`http://127.0.0.1:${port}/v1/qorpera-runner-provider`, {
+				method: "POST",
+				headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+				body: JSON.stringify({
+					schema: "qorpera.runner-provider/v1",
+					action: "acquire",
+					adapter_id: "managed",
+					acquisition_id: work.runId,
+					work,
+				}),
+			});
+			expect(response.status).toBe(422);
+			expect(await response.json()).toEqual({
+				error: "request rejected",
+				category: "admission_refused",
+				state: "refused",
+				reason: "NODE_NOT_PREFERRED",
+			});
+			expect(log).toHaveBeenCalledExactlyOnceWith(
+				JSON.stringify({
+					schema: "qorpera.provider-request-error/v1",
+					providerAdapter: "managed",
+					status: "rejected",
+					errorCategory: "admission_refused",
+					state: "refused",
+					reason: "NODE_NOT_PREFERRED",
+				}),
+			);
+		} finally {
+			log.mockRestore();
+		}
 	});
 });

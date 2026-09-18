@@ -1,0 +1,323 @@
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+
+const ENVELOPE_SCHEMA = "qorpera.cloud-secret-envelope/v1";
+const PAYLOAD_SCHEMA = "qorpera.cloud-secret-payload/v1";
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const FIELD = /^[a-z][a-z0-9_]{0,63}$/;
+const SHA256 = /^[0-9a-f]{64}$/;
+const MAX_PLAINTEXT_BYTES = 64 * 1024;
+const MAX_ENVELOPE_BYTES = 128 * 1024;
+
+export interface CloudSecretEnvelopeIdentity {
+	readonly companyId: string;
+	readonly environmentId: string;
+	readonly secretId: string;
+	readonly version: number;
+	readonly keyId: string;
+}
+
+interface CloudSecretEnvelope {
+	schema: typeof ENVELOPE_SCHEMA;
+	companyId: string;
+	environmentId: string;
+	secretId: string;
+	version: number;
+	keyId: string;
+	aadSha256: string;
+	payloadIv: string;
+	payloadTag: string;
+	payloadCiphertext: string;
+	wrapIv: string;
+	wrapTag: string;
+	wrappedKey: string;
+}
+
+function exactRecord(value: unknown, keys: readonly string[], label: string): Record<string, unknown> {
+	if (
+		!value ||
+		typeof value !== "object" ||
+		Array.isArray(value) ||
+		Object.getPrototypeOf(value) !== Object.prototype ||
+		Object.keys(value).sort().join() !== [...keys].sort().join()
+	)
+		throw new Error(`${label} is invalid`);
+	return value as Record<string, unknown>;
+}
+
+function validateIdentity(identity: CloudSecretEnvelopeIdentity): CloudSecretEnvelopeIdentity {
+	if (
+		![identity.companyId, identity.environmentId, identity.secretId].every((value) => UUID.test(value)) ||
+		!Number.isSafeInteger(identity.version) ||
+		identity.version < 1 ||
+		!KEY_ID.test(identity.keyId)
+	)
+		throw new Error("Cloud secret envelope identity is invalid");
+	return Object.freeze({
+		companyId: identity.companyId,
+		environmentId: identity.environmentId,
+		secretId: identity.secretId,
+		version: identity.version,
+		keyId: identity.keyId,
+	});
+}
+
+function aad(identity: CloudSecretEnvelopeIdentity): Buffer {
+	return Buffer.from(
+		JSON.stringify({
+			schema: ENVELOPE_SCHEMA,
+			companyId: identity.companyId,
+			environmentId: identity.environmentId,
+			secretId: identity.secretId,
+			version: identity.version,
+			keyId: identity.keyId,
+		}),
+		"utf8",
+	);
+}
+
+function base64(value: Uint8Array): string {
+	return Buffer.from(value).toString("base64url");
+}
+
+function bytes(value: unknown, length: number | readonly [number, number], label: string): Buffer {
+	if (typeof value !== "string" || !/^[A-Za-z0-9_-]+$/.test(value)) throw new Error(`${label} is invalid`);
+	const decoded = Buffer.from(value, "base64url");
+	const valid = Array.isArray(length)
+		? decoded.byteLength >= length[0] && decoded.byteLength <= length[1]
+		: decoded.byteLength === length;
+	if (!valid || base64(decoded) !== value) {
+		decoded.fill(0);
+		throw new Error(`${label} is invalid`);
+	}
+	return decoded;
+}
+
+function key(value: Uint8Array): Buffer {
+	if (value.byteLength !== 32) throw new Error("Cloud secret wrapping key must contain 32 bytes");
+	return Buffer.from(value);
+}
+
+function normalizedFields(value: Readonly<Record<string, string>>): Record<string, string> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Cloud secret fields are invalid");
+	const names = Object.keys(value).sort();
+	if (names.length < 1 || names.length > 16 || names.some((name) => !FIELD.test(name))) {
+		throw new Error("Cloud secret fields are invalid");
+	}
+	const fields: Record<string, string> = {};
+	for (const name of names) {
+		const descriptor = Object.getOwnPropertyDescriptor(value, name);
+		if (!descriptor || !Object.hasOwn(descriptor, "value") || typeof descriptor.value !== "string") {
+			throw new Error("Cloud secret fields are invalid");
+		}
+		if (!descriptor.value || Buffer.byteLength(descriptor.value) > 32 * 1024) {
+			throw new Error("Cloud secret field is invalid");
+		}
+		fields[name] = descriptor.value;
+	}
+	const encoded = Buffer.from(JSON.stringify({ schema: PAYLOAD_SCHEMA, fields }), "utf8");
+	try {
+		if (encoded.byteLength > MAX_PLAINTEXT_BYTES) throw new Error("Cloud secret payload is too large");
+	} finally {
+		encoded.fill(0);
+	}
+	return fields;
+}
+
+export function sealCloudSecretFields(
+	fieldsValue: Readonly<Record<string, string>>,
+	wrappingKey: Uint8Array,
+	identityValue: CloudSecretEnvelopeIdentity,
+): Uint8Array {
+	const identity = validateIdentity(identityValue);
+	const fields = normalizedFields(fieldsValue);
+	const plaintext = Buffer.from(JSON.stringify({ schema: PAYLOAD_SCHEMA, fields }), "utf8");
+	const associatedData = aad(identity);
+	const dataKey = randomBytes(32);
+	const payloadIv = randomBytes(12);
+	const wrapIv = randomBytes(12);
+	const kek = key(wrappingKey);
+	try {
+		const payloadCipher = createCipheriv("aes-256-gcm", dataKey, payloadIv);
+		payloadCipher.setAAD(associatedData);
+		const payloadCiphertext = Buffer.concat([payloadCipher.update(plaintext), payloadCipher.final()]);
+		const payloadTag = payloadCipher.getAuthTag();
+		const wrapCipher = createCipheriv("aes-256-gcm", kek, wrapIv);
+		wrapCipher.setAAD(associatedData);
+		const wrappedKey = Buffer.concat([wrapCipher.update(dataKey), wrapCipher.final()]);
+		const wrapTag = wrapCipher.getAuthTag();
+		const envelope: CloudSecretEnvelope = {
+			schema: ENVELOPE_SCHEMA,
+			...identity,
+			aadSha256: createHash("sha256").update(associatedData).digest("hex"),
+			payloadIv: base64(payloadIv),
+			payloadTag: base64(payloadTag),
+			payloadCiphertext: base64(payloadCiphertext),
+			wrapIv: base64(wrapIv),
+			wrapTag: base64(wrapTag),
+			wrappedKey: base64(wrappedKey),
+		};
+		const encoded = Buffer.from(JSON.stringify(envelope), "utf8");
+		if (encoded.byteLength > MAX_ENVELOPE_BYTES) {
+			encoded.fill(0);
+			throw new Error("Cloud secret envelope is too large");
+		}
+		return encoded;
+	} finally {
+		plaintext.fill(0);
+		associatedData.fill(0);
+		dataKey.fill(0);
+		payloadIv.fill(0);
+		wrapIv.fill(0);
+		kek.fill(0);
+		for (const name of Object.keys(fields)) fields[name] = "";
+	}
+}
+
+function parseEnvelope(value: Uint8Array, expected: CloudSecretEnvelopeIdentity): CloudSecretEnvelope {
+	if (value.byteLength < 1 || value.byteLength > MAX_ENVELOPE_BYTES)
+		throw new Error("Cloud secret envelope is invalid");
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(value));
+	} catch {
+		throw new Error("Cloud secret envelope is invalid");
+	}
+	const input = exactRecord(
+		parsed,
+		[
+			"schema",
+			"companyId",
+			"environmentId",
+			"secretId",
+			"version",
+			"keyId",
+			"aadSha256",
+			"payloadIv",
+			"payloadTag",
+			"payloadCiphertext",
+			"wrapIv",
+			"wrapTag",
+			"wrappedKey",
+		],
+		"Cloud secret envelope",
+	);
+	if (
+		input.schema !== ENVELOPE_SCHEMA ||
+		input.companyId !== expected.companyId ||
+		input.environmentId !== expected.environmentId ||
+		input.secretId !== expected.secretId ||
+		input.version !== expected.version ||
+		input.keyId !== expected.keyId ||
+		typeof input.aadSha256 !== "string" ||
+		!SHA256.test(input.aadSha256)
+	)
+		throw new Error("Cloud secret envelope identity differs");
+	return input as unknown as CloudSecretEnvelope;
+}
+
+/**
+ * Plaintext is scoped to this callback. Callers must not retain, return, log,
+ * serialize, or copy the fields; the cloud broker applies a separate output
+ * fence to the callback result before releasing anything.
+ */
+export async function withCloudSecretFields<T>(
+	envelopeBytes: Uint8Array,
+	wrappingKey: Uint8Array,
+	identityValue: CloudSecretEnvelopeIdentity,
+	use: (fields: Readonly<Record<string, string>>) => Promise<T>,
+): Promise<T> {
+	const identity = validateIdentity(identityValue);
+	const envelope = parseEnvelope(envelopeBytes, identity);
+	const associatedData = aad(identity);
+	const digest = createHash("sha256").update(associatedData).digest("hex");
+	if (digest !== envelope.aadSha256) {
+		associatedData.fill(0);
+		throw new Error("Cloud secret envelope authentication differs");
+	}
+	const payloadIv = bytes(envelope.payloadIv, 12, "Cloud secret payload IV");
+	const payloadTag = bytes(envelope.payloadTag, 16, "Cloud secret payload tag");
+	const payloadCiphertext = bytes(
+		envelope.payloadCiphertext,
+		[1, MAX_PLAINTEXT_BYTES + 16],
+		"Cloud secret payload ciphertext",
+	);
+	const wrapIv = bytes(envelope.wrapIv, 12, "Cloud secret wrap IV");
+	const wrapTag = bytes(envelope.wrapTag, 16, "Cloud secret wrap tag");
+	const wrappedKey = bytes(envelope.wrappedKey, 32, "Cloud secret wrapped key");
+	const kek = key(wrappingKey);
+	let dataKey: Buffer | undefined;
+	let plaintext: Buffer | undefined;
+	let fields: Record<string, string> | undefined;
+	try {
+		const wrapDecipher = createDecipheriv("aes-256-gcm", kek, wrapIv);
+		wrapDecipher.setAAD(associatedData);
+		wrapDecipher.setAuthTag(wrapTag);
+		dataKey = Buffer.concat([wrapDecipher.update(wrappedKey), wrapDecipher.final()]);
+		if (dataKey.byteLength !== 32) throw new Error("Cloud secret data key is invalid");
+		const payloadDecipher = createDecipheriv("aes-256-gcm", dataKey, payloadIv);
+		payloadDecipher.setAAD(associatedData);
+		payloadDecipher.setAuthTag(payloadTag);
+		plaintext = Buffer.concat([payloadDecipher.update(payloadCiphertext), payloadDecipher.final()]);
+		if (plaintext.byteLength > MAX_PLAINTEXT_BYTES) throw new Error("Cloud secret payload is too large");
+		const payload = exactRecord(JSON.parse(plaintext.toString("utf8")), ["schema", "fields"], "Cloud secret payload");
+		if (payload.schema !== PAYLOAD_SCHEMA) throw new Error("Cloud secret payload schema is invalid");
+		fields = normalizedFields(payload.fields as Readonly<Record<string, string>>);
+		return await use(fields);
+	} catch {
+		throw new Error("Cloud secret envelope could not be opened");
+	} finally {
+		associatedData.fill(0);
+		payloadIv.fill(0);
+		payloadTag.fill(0);
+		payloadCiphertext.fill(0);
+		wrapIv.fill(0);
+		wrapTag.fill(0);
+		wrappedKey.fill(0);
+		kek.fill(0);
+		dataKey?.fill(0);
+		plaintext?.fill(0);
+		if (fields) for (const name of Object.keys(fields)) fields[name] = "";
+	}
+}
+
+/** A broker keyring never exposes raw key material to an adapter. */
+export class CloudSecretKeyring {
+	readonly #keys = new Map<string, Buffer>();
+
+	constructor(keys: Readonly<Record<string, Uint8Array>>) {
+		for (const [keyId, value] of Object.entries(keys)) {
+			if (!KEY_ID.test(keyId) || value.byteLength !== 32 || this.#keys.has(keyId)) {
+				this.close();
+				throw new Error("Cloud secret keyring is invalid");
+			}
+			this.#keys.set(keyId, Buffer.from(value));
+		}
+		if (this.#keys.size < 1) throw new Error("Cloud secret keyring is empty");
+	}
+
+	has(keyId: string): boolean {
+		return this.#keys.has(keyId);
+	}
+
+	seal(fields: Readonly<Record<string, string>>, identity: CloudSecretEnvelopeIdentity): Uint8Array {
+		const wrappingKey = this.#keys.get(identity.keyId);
+		if (!wrappingKey) throw new Error("Cloud secret wrapping key is unavailable");
+		return sealCloudSecretFields(fields, wrappingKey, identity);
+	}
+
+	use<T>(
+		envelope: Uint8Array,
+		identity: CloudSecretEnvelopeIdentity,
+		callback: (fields: Readonly<Record<string, string>>) => Promise<T>,
+	): Promise<T> {
+		const wrappingKey = this.#keys.get(identity.keyId);
+		if (!wrappingKey) throw new Error("Cloud secret wrapping key is unavailable");
+		return withCloudSecretFields(envelope, wrappingKey, identity, callback);
+	}
+
+	close(): void {
+		for (const value of this.#keys.values()) value.fill(0);
+		this.#keys.clear();
+	}
+}

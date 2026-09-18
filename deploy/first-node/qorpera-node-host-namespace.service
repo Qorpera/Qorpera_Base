@@ -1,0 +1,24 @@
+[Unit]
+Description=Qorpera node observer host namespace record
+After=local-fs.target
+Before=qorpera-node-observer.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=root
+Group=root
+ExecStart=/usr/bin/node --jitless --disable-proto=throw --disallow-code-generation-from-strings /opt/qorpera/node-observer/qorpera-node-host-namespace.cjs
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_SYS_PTRACE
+AmbientCapabilities=
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX
+TimeoutStartSec=10s
+# Reuses the protected, boot-bound namespace record shared by host providers.

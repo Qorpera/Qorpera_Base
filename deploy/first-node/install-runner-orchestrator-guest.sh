@@ -2,7 +2,7 @@
 set -euo pipefail
 
 EXPECTED_HOSTNAME="company41-orchestrator-01"
-EXPECTED_ARTIFACT_SHA256="feed554f90c93a972f24a04897759c746c3e8cef9767ccd7a95be74f13b86b92"
+EXPECTED_ARTIFACT_SHA256="ffdb33f8a02585b5e1dd97c33921dbb817484d01ae7dd1ab00e758e7366abd95"
 EXPECTED_UNIT_SHA256="12128aaf4be23d759e940407bf32c99b145aa8e927fe31f730a15ce7c447f4df"
 EXPECTED_ENV_EXAMPLE_SHA256="d931b488ad444978b62b0c91797418d553641d235015889646bde7d1b6fc8850"
 STAGING_ROOT="/var/lib/qorpera-bootstrap/orchestrator"
@@ -29,13 +29,22 @@ if [[ $(hostname) != "${EXPECTED_HOSTNAME}" ]]; then
 	echo "Refusing to install on unexpected guest $(hostname)." >&2
 	exit 1
 fi
-if [[ -e /etc/qorpera/runner-orchestrator.env ]]; then
-	echo "Refusing to replace an already configured Runner Orchestrator." >&2
-	exit 1
-fi
 if systemctl is-active --quiet "${SERVICE_NAME}"; then
 	echo "Refusing to replace a running Runner Orchestrator." >&2
 	exit 1
+fi
+
+configuration=absent-fail-closed
+if [[ -e /etc/qorpera/runner-orchestrator.env ]]; then
+	if [[ ! -f /etc/qorpera/runner-orchestrator.env || -L /etc/qorpera/runner-orchestrator.env ]]; then
+		echo "Refusing an unsafe existing Runner Orchestrator configuration." >&2
+		exit 1
+	fi
+	if [[ $(stat -c '%U:%G:%a' /etc/qorpera/runner-orchestrator.env) != root:root:600 ]]; then
+		echo "Refusing an incorrectly owned or readable Runner Orchestrator configuration." >&2
+		exit 1
+	fi
+	configuration=present-preserved
 fi
 
 verify_sha256() {
@@ -92,11 +101,11 @@ state_tmp=$(mktemp)
 	echo "unit_load_state=$(systemctl show "${SERVICE_NAME}" -p LoadState --value)"
 	echo "unit_file_state=$(systemctl show "${SERVICE_NAME}" -p UnitFileState --value)"
 	echo "unit_active_state=$(systemctl show "${SERVICE_NAME}" -p ActiveState --value)"
-	echo "configuration=absent-fail-closed"
+	echo "configuration=${configuration}"
 } >"${state_tmp}"
 install -o root -g root -m 0644 "${state_tmp}" "${STATE_LOG}"
 rm -f "${state_tmp}"
 
 echo "RUNNER_ORCHESTRATOR_UNIT_INSTALLED_DISABLED"
 echo "artifact=${INSTALL_ROOT}/qorpera-runner-orchestrator.mjs"
-echo "configuration=/etc/qorpera/runner-orchestrator.env (intentionally absent)"
+echo "configuration=/etc/qorpera/runner-orchestrator.env (${configuration})"

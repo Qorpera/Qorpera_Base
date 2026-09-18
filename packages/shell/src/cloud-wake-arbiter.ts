@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { type QorperaHostedPrimary, WakeOwnershipError } from "@qorpera/cloud-client/hosted-primary";
 import type { ArbiterExecutionPin } from "./cloud-session-arbiter.ts";
-import { type QorperaHostedPrimary, WakeOwnershipError } from "./hosted-primary.ts";
 
 /**
  * Per-company client of the hosted wake claims (migration 20260819012000,

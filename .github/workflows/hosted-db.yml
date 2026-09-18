@@ -40,3 +40,6 @@ jobs:
 
       - name: Apply all migrations and run SQL regression tests
         run: npm run test:hosted-db
+
+      - name: Verify office deletion disposition against disposable PostgreSQL
+        run: node scripts/test-runtime-office-delete-disposition.mjs

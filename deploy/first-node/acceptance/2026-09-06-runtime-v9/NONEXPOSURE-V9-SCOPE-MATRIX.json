@@ -1,0 +1,187 @@
+{
+  "schema": "qorpera.custody-final-nonexposure-matrix/v1",
+  "passed": true,
+  "recordedAt": "2026-09-06T16:57:10.121Z",
+  "scopes": [
+    {
+      "artifact": {
+        "path": "outputs/runtime-custody-3c0bf3bce/GATEWAY-V9-DELTA-RESULT.json",
+        "sha256": "f545d74409587717d1c57c0f861bcaeecd5314b5dcebdd409a25e18a38d6ed52"
+      },
+      "schema": "qorpera.gateway-custody-nonexposure/v1",
+      "startedAt": "2026-09-06T16:51:08.438Z",
+      "finishedAt": "2026-09-06T16:51:31.457Z",
+      "files": 297,
+      "tables": null,
+      "rows": null,
+      "bytes": 7220392,
+      "patternCount": 37,
+      "reusedFiles": 189,
+      "reusedTables": null,
+      "changedTables": null,
+      "changedBytes": 3700935,
+      "matches": 0,
+      "protectedPlatformCredentialMatches": 0,
+      "scope": "Declared private runtime gateway object, journal, operator package and crash roots; decoded gateway unit journal MESSAGE fields",
+      "exclusions": [
+        "Authorized process memory and decrypted systemd credential mounts",
+        "Original physical NAS and public NAS gateway",
+        "Other VMs and node host",
+        "Supabase Storage replicas"
+      ],
+      "privateContentsReturned": false
+    },
+    {
+      "artifact": {
+        "path": "outputs/runtime-custody-3c0bf3bce/ORCHESTRATOR-V9-DELTA-RESULT.json",
+        "sha256": "a01e60cf020fbd09e30d774f78221f9014b5af63ef3173ba91883bd19b0d4480"
+      },
+      "schema": "qorpera.orchestrator-custody-nonexposure/v1",
+      "startedAt": "2026-09-06T16:51:09.569Z",
+      "finishedAt": "2026-09-06T16:51:09.595Z",
+      "files": 58,
+      "tables": null,
+      "rows": null,
+      "bytes": 862398,
+      "patternCount": 37,
+      "reusedFiles": 57,
+      "reusedTables": null,
+      "changedTables": null,
+      "changedBytes": 108,
+      "matches": 0,
+      "protectedPlatformCredentialMatches": 0,
+      "scope": "Declared orchestrator mutable runtime, bootstrap, provider and configuration roots plus crash roots; decoded orchestrator/bootstrap unit journal MESSAGE fields",
+      "exclusions": [
+        "Authorized process memory and decrypted systemd credential mounts",
+        "Original physical NAS and public NAS gateway",
+        "Other VMs and node host",
+        "Supabase Storage replicas",
+        "Installed immutable runtime packages and harness binaries",
+        "Seven identified August 23 sandbox-probe OCI image diff directories; container records absent; their metadata included and rechecked unchanged"
+      ],
+      "privateContentsReturned": false
+    },
+    {
+      "artifact": {
+        "path": "outputs/runtime-custody-3c0bf3bce/DATABASE-V9-DELTA-RESULT.json",
+        "sha256": "364f06cace5fbcf27151bb39b14fc78cc4fb0c5c5bbe887d14537c9e63718df3"
+      },
+      "schema": "qorpera.custody-database-delta/v1",
+      "startedAt": "2026-09-06T16:51:52.368Z",
+      "finishedAt": "2026-09-06T16:55:26.119Z",
+      "files": null,
+      "tables": 158,
+      "rows": 34254,
+      "bytes": 19470079,
+      "patternCount": 37,
+      "reusedFiles": null,
+      "reusedTables": 86,
+      "changedTables": 72,
+      "changedBytes": null,
+      "matches": 0,
+      "protectedPlatformCredentialMatches": 0,
+      "exclusions": [
+        "Auth tables",
+        "External Company File object bytes",
+        "Unknown credential patterns"
+      ],
+      "privateContentsReturned": false
+    },
+    {
+      "artifact": {
+        "path": "outputs/runtime-custody-3c0bf3bce/NODE-V9-FINAL-RESULT.json",
+        "sha256": "2b605aa41f1fd5fb40593a9ca9e766079e0e5133d200a536c22f44d1a4a0ef58"
+      },
+      "schema": "qorpera.node-final-custody-nonexposure/v1",
+      "startedAt": "2026-09-06T16:53:49.817Z",
+      "finishedAt": "2026-09-06T16:53:58.447Z",
+      "files": 1104,
+      "tables": null,
+      "rows": null,
+      "bytes": 8764570,
+      "patternCount": 37,
+      "reusedFiles": 941,
+      "reusedTables": null,
+      "changedTables": null,
+      "changedBytes": 1390651,
+      "matches": 0,
+      "protectedPlatformCredentialMatches": 12,
+      "scope": "Node provider state, configuration, encrypted credentials, company mount and crash roots, plus freshly inventoried top-level release scripts and logs; decoded new provider journal messages; unchanged files reuse passing/classified baseline, all changed/new bytes scanned",
+      "exclusions": [
+        "Authorized process memory and decrypted systemd credential mounts",
+        "Original physical NAS and public NAS gateway",
+        "Guest VMs",
+        "Supabase Storage replicas",
+        "Installed signed runtime/image packages",
+        "Release subdirectories and nonselected file types; current scan recipe and current scan log created after the input inventory"
+      ],
+      "privateContentsReturned": false
+    },
+    {
+      "artifact": {
+        "path": "outputs/runtime-custody-3c0bf3bce/BROKER-V9-FINAL-HOST-RESULT.json",
+        "sha256": "da6647d84891e18a00d3c8e39a47023f4109fc21fe32739eb4abf10807e7b6dd"
+      },
+      "schema": "qorpera.custody-host-nonexposure/v1",
+      "startedAt": null,
+      "finishedAt": "2026-09-06T16:52:55.108Z",
+      "files": 2213,
+      "tables": null,
+      "rows": null,
+      "bytes": 87175266,
+      "patternCount": 58,
+      "reusedFiles": null,
+      "reusedTables": null,
+      "changedTables": null,
+      "changedBytes": null,
+      "matches": 0,
+      "protectedPlatformCredentialMatches": 0,
+      "scope": "Declared persistent roots, decoded system journal, and selected custody service arguments/environments",
+      "exclusions": [
+        "Authorized decrypted systemd credential mounts and bounded process memory",
+        "Job guests and on-prem node, scanned separately",
+        "Production database and Company File, scanned separately"
+      ],
+      "privateContentsReturned": false
+    },
+    {
+      "artifact": {
+        "path": "outputs/runtime-custody-3c0bf3bce/BROKER-V9-FINAL-STORAGE-RESULT.json",
+        "sha256": "7543999a38572c2e155fa31f8419185e44c54e36890d812035b3185088c2be32"
+      },
+      "schema": "qorpera.broker-storage-nonexposure/v1",
+      "startedAt": "2026-09-06T16:54:06.885Z",
+      "finishedAt": "2026-09-06T16:54:58.405Z",
+      "files": 411,
+      "tables": null,
+      "rows": null,
+      "bytes": 154176192,
+      "patternCount": 58,
+      "reusedFiles": null,
+      "reusedTables": null,
+      "changedTables": null,
+      "changedBytes": null,
+      "matches": 0,
+      "protectedPlatformCredentialMatches": 0,
+      "scope": "Every listed content-addressed object beneath Company41 in Supabase qorpera-profile-objects, including historical objects; SHA-256 integrity verified; exact full-byte pattern search inside the broker",
+      "exclusions": [
+        "Other companies and other buckets",
+        "Original NAS storage",
+        "Unknown credentials and split values spanning object boundaries"
+      ],
+      "privateContentsReturned": false
+    }
+  ],
+  "protectedPlatformCredentialMatches": 12,
+  "unclassifiedMatches": 0,
+  "companyConnectorCredentialMatches": 0,
+  "limitations": [
+    "Exact declared credential patterns only; unknown credentials and excluded roots are not covered.",
+    "Gateway, orchestrator, node and database scans inherit exact unchanged byte hashes from prior passing or explicitly classified scans. Changed/new contents are fully scanned.",
+    "Database statements span several snapshots; this is not one database-wide transaction.",
+    "Broker host and all 411 content-addressed Company41 Storage objects were fully scanned with 58 patterns.",
+    "Authorized transient memory and decrypted systemd credential mounts are excluded. Destroyed guest files are not retrospectively scanned.",
+    "The last node health-readback recipe and log were created after the release-log inventory; they contain closed public metadata and are not claimed scanned."
+  ],
+  "rawCredentialsExported": false
+}

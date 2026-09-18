@@ -2,12 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Dirent } from "node:fs";
 import { chmod, lstat, mkdir, open, readdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import {
-	type CompanyRuntimeLock,
-	canonicalCompanyRoot,
-	claimCompanyRuntimeLock,
-	releaseCompanyRuntimeLock,
-} from "@qorpera/company/company-runtime-lock";
+import type { HostedCompanySnapshot } from "@qorpera/cloud-client/hosted-primary";
 import {
 	type CloudCompanyTreeEntry,
 	type CloudCompanyTreeManifest,
@@ -17,10 +12,15 @@ import {
 	materializeCloudCompanyTree,
 	readCloudCompanyTreeManifest,
 	validateCloudCompanyTreeEntries,
-} from "./cloud-company-snapshot.ts";
+} from "@qorpera/cloud-client/node/cloud-company-snapshot";
+import type { CloudContentAddressedStore } from "@qorpera/cloud-client/node/cloud-object-store";
+import {
+	type CompanyRuntimeLock,
+	canonicalCompanyRoot,
+	claimCompanyRuntimeLock,
+	releaseCompanyRuntimeLock,
+} from "@qorpera/company/company-runtime-lock";
 import type { CompanyWorkspacePrimary } from "./cloud-company-workspace.ts";
-import type { CloudContentAddressedStore } from "./cloud-object-store.ts";
-import type { HostedCompanySnapshot } from "./hosted-primary.ts";
 
 const MAX_SNAPSHOT_LINEAGE = 10_000;
 const MERGE_JOURNAL_SCHEMA = "qorpera.cloud-company-merge-journal/v1";

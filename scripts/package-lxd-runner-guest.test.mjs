@@ -31,12 +31,17 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 				"harness/package-lock.json",
 				"harness/package.json",
 				"install-image-contract.sh",
+				"qorpera-company-runner.service",
 				"qorpera-ephemeral-runner.mjs",
 				"qorpera-ephemeral-runner.service",
+				"qorpera-identity-recovery-restore.mjs",
 				"qorpera-lxd-native-login-bootstrap.mjs",
 				"qorpera-lxd-native-login-bootstrap.service",
 				"qorpera-lxd-runner-bootstrap.mjs",
 				"qorpera-lxd-runner-bootstrap.service",
+				"qorpera-native-company-host.service",
+				"qorpera-native-isolation-child.mjs",
+				"qorpera-native-login-provider-host.service",
 				"qorpera-native-provider-host.mjs",
 				"qorpera-native-provider-host.service",
 				"qorpera-sandbox-probe.mjs",
@@ -63,6 +68,14 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 			join(outputRoot, "qorpera-native-provider-host.service"),
 			"utf-8",
 		);
+		const nativeLoginBootstrapService = await readFile(
+			join(outputRoot, "qorpera-lxd-native-login-bootstrap.service"),
+			"utf-8",
+		);
+		const nativeLoginProviderService = await readFile(
+			join(outputRoot, "qorpera-native-login-provider-host.service"),
+			"utf-8",
+		);
 		assert.match(
 			ephemeralRunnerService,
 			/^ReadWritePaths=.*(?:^|\s)-\/qorpera\/company-live(?:\s|$)/m,
@@ -84,6 +97,53 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 			);
 			assert.match(service, /^UMask=0007$/m, `${serviceName} must preserve group access to shared files`);
 		}
+		for (const name of ["qorpera-native-company-host.service", "qorpera-company-runner.service"]) {
+			const service = await readFile(join(outputRoot, name), "utf-8");
+			assert.match(service, /^UMask=0077$/m);
+			assert.match(service, /^NoNewPrivileges=yes$/m);
+			assert.match(service, /^ProtectControlGroups=yes$/m);
+			assert.match(service, /^InaccessiblePaths=.*\/qorpera\/company-live/m);
+			assert.doesNotMatch(service, /^ReadWritePaths=.*\/qorpera\/company-live/m);
+			assert.doesNotMatch(service, /^SupplementaryGroups=/m);
+			assert.doesNotMatch(service, /safe\.directory/);
+		}
+		const companyHost = await readFile(join(outputRoot, "qorpera-native-company-host.service"), "utf-8");
+		const companyRunner = await readFile(join(outputRoot, "qorpera-company-runner.service"), "utf-8");
+		assert.match(companyHost, /^User=qorpera-native-company$/m);
+		assert.match(companyHost, /^LoadCredential=qorpera-native-object-token:/m);
+		assert.match(companyHost, /^LoadCredential=qorpera-office-native:\/var\/lib\/qorpera-bootstrap\/credentials\/qorpera-office-native$/m);
+		assert.match(companyHost, /^LoadCredential=qorpera-cloud-secret-runtime:/m);
+		assert.match(companyHost, /^LoadCredential=qorpera-cloud-secret-ca:/m);
+		assert.match(
+			companyHost,
+			/^Environment=NODE_EXTRA_CA_CERTS=\/run\/credentials\/qorpera-native-company-host\.service\/qorpera-cloud-secret-ca$/m,
+		);
+		assert.match(companyHost, /^LoadCredential=qorpera-native-identity-epoch:/m);
+		assert.match(nativeProviderService, /^LoadCredential=qorpera-native-identity-epoch:/m);
+		assert.match(nativeLoginProviderService, /^LoadCredential=qorpera-identity-recovery-ca:/m);
+		assert.match(
+			nativeLoginProviderService,
+			/^Environment=NODE_EXTRA_CA_CERTS=\/run\/credentials\/qorpera-native-login-provider-host\.service\/qorpera-identity-recovery-ca$/m,
+		);
+		assert.match(nativeLoginProviderService, /^RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6$/m);
+		assert.doesNotMatch(nativeLoginProviderService, /\/qorpera\/company-live.*ReadWritePaths|ReadWritePaths=.*\/qorpera\/company-live/m);
+		assert.match(nativeLoginBootstrapService, /^RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6$/m);
+		assert.doesNotMatch(nativeLoginBootstrapService, /\bAF_NETLINK\b/);
+		assert.ok(!manifest.artifacts.some((artifact) => artifact.file === "qorpera-identity-recovery-service.mjs"));
+		assert.match(companyHost, /^RestrictNamespaces=user mnt pid net ipc uts cgroup$/m);
+		assert.match(companyHost, /^ProcSubset=all$/m);
+		assert.match(companyHost, /^ProtectProc=invisible$/m);
+		assert.match(companyHost, /^ProtectHostname=private$/m);
+		assert.match(companyHost, /^ProtectKernelTunables=no$/m);
+		assert.match(companyHost, /^ProtectKernelLogs=no$/m);
+		assert.match(companyHost, /^CapabilityBoundingSet=$/m);
+		assert.match(companyHost, /^RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK$/m);
+		assert.match(companyHost, /^MemoryMax=2G$/m);
+		assert.match(companyHost, /^TasksMax=256$/m);
+		assert.match(companyHost, /^CPUQuota=200%$/m);
+		assert.match(companyRunner, /^User=qorpera-company-runner$/m);
+		assert.match(companyRunner, /^AssertPathIsMountPoint=\/var\/lib\/qorpera-runner$/m);
+		assert.doesNotMatch(companyRunner, /LoadCredential=qorpera-(?:supabase-service-key|native-object-token)/);
 
 		const builderPath = join(repositoryRoot, "deploy/first-node/build-lxd-runner-image-candidate.sh");
 		const builder = await readFile(builderPath, "utf-8");
@@ -96,24 +156,77 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 			join(repositoryRoot, "deploy/lxd-runner-guest/install-image-contract.sh"),
 			"utf-8",
 		);
-		const manifestSha256 = createHash("sha256").update(manifestEncoded).digest("hex");
+		const candidateEncoded = await readFile(
+			join(repositoryRoot, "deploy/first-node/native-codex/v56-guest-package-manifest.json"),
+			"utf-8",
+		);
+		const candidate = JSON.parse(candidateEncoded);
+		const candidateSha256 = createHash("sha256").update(candidateEncoded).digest("hex");
+		const source = JSON.parse(await readFile(join(repositoryRoot, "deploy/first-node/native-codex/linux-x64-direct-tools-proof.json"), "utf-8")).native.source;
 		const builderPin = builder.match(/EXPECTED_PACKAGE_MANIFEST_SHA256="([0-9a-f]{64})"/)?.[1];
 		const acceptancePin = acceptance.match(/EXPECTED_PACKAGE_MANIFEST_SHA256="([0-9a-f]{64})"/)?.[1];
+		const builderArchivePin = builder.match(/EXPECTED_PACKAGE_ARCHIVE_SHA256="([0-9a-f]{64})"/)?.[1];
+		const acceptanceArchivePin = acceptance.match(/EXPECTED_PACKAGE_ARCHIVE_SHA256="([0-9a-f]{64})"/)?.[1];
+		const builderSourceCommit = builder.match(/EXPECTED_SOURCE_COMMIT="([0-9a-f]{40})"/)?.[1];
+		const acceptanceSourceCommit = acceptance.match(/EXPECTED_SOURCE_COMMIT="([0-9a-f]{40})"/)?.[1];
+		const acceptanceImageFingerprint = acceptance.match(/EXPECTED_IMAGE_FINGERPRINT="([0-9a-f]{64})"/)?.[1];
 		assert.ok(builderPin, "image candidate builder must pin a package manifest");
 		assert.equal(acceptancePin, builderPin, "image candidate recipes must pin the same package manifest");
+		assert.match(builderArchivePin ?? "", /^[0-9a-f]{64}$/);
+		assert.equal(acceptanceArchivePin, builderArchivePin, "image candidate recipes must pin the same package archive");
+		assert.match(builderSourceCommit ?? "", /^[0-9a-f]{40}$/);
+		assert.equal(acceptanceSourceCommit, builderSourceCommit, "image candidate recipes must pin the same source commit");
+		assert.equal(
+			acceptanceImageFingerprint,
+			"507024b38d726a12fc74514e7e473f7766e8e339495e610c425d80b6787f61d9",
+			"image acceptance must pin the signed v56 input fingerprint",
+		);
+		assert.equal(builderPin, candidateSha256, "candidate recipes must pin the full governed guest manifest");
+		assert.equal(candidate.nativeCompany.schema, "qorpera.native-company-guest/v1");
+		assert.equal(candidate.nativeCompany.sourceCommit, source.commit);
+		assert.equal(candidate.nativeCompany.patchSha256, source.patchSha256);
+		assert.equal(candidate.nativeCompany.profile, "release");
+		assert.equal(candidate.nativeCompany.target, "x86_64-unknown-linux-gnu");
+		assert.deepEqual(candidate.artifacts.filter((item) => item.file.startsWith("native-company/")).map((item) => item.file), [
+			"native-company/artifact.json", "native-company/codex", "native-company/LICENSE", "native-company/NOTICE",
+		]);
+		assert.equal(candidate.artifacts.find((item) => item.file === "native-company/codex").sha256, candidate.nativeCompany.binarySha256);
+		assert.ok(acceptance.includes(`EXPECTED_NATIVE_CODEX_SHA256="${candidate.nativeCompany.binarySha256}"`));
+		assert.ok(acceptance.includes(`EXPECTED_NATIVE_HELPER_SHA256="${candidate.artifacts.find((item) => item.file === "qorpera-native-isolation-child.mjs").sha256}"`));
+		assert.ok(acceptance.includes(`EXPECTED_NATIVE_PROVIDER_HOST_SHA256="${candidate.artifacts.find((item) => item.file === "qorpera-native-provider-host.mjs").sha256}"`));
+		assert.ok(acceptance.includes(`EXPECTED_NATIVE_COMPANY_SERVICE_SHA256="${candidate.artifacts.find((item) => item.file === "qorpera-native-company-host.service").sha256}"`));
+		assert.ok(acceptance.includes(`EXPECTED_RUNNER_BOOTSTRAP_SHA256="${candidate.artifacts.find((item) => item.file === "qorpera-lxd-runner-bootstrap.mjs").sha256}"`));
+		// These recipes are the frozen v56 release, whose original manifest is
+		// retained by its archive hash. Current runtime bytes have their own pin.
+		const currentCandidate = JSON.parse(await readFile(
+			join(repositoryRoot, "deploy/first-node/native-codex/guest-package-manifest.json"), "utf-8",
+		));
+		const currentArtifact = JSON.parse(await readFile(join(repositoryRoot, "deploy/first-node/native-codex/linux-x64-artifact.json"), "utf-8"));
+		assert.equal(currentCandidate.nativeCompany.binarySha256, currentArtifact.artifact.sha256);
+		assert.equal(currentCandidate.nativeCompany.sourceCommit, currentArtifact.source.commit);
+		assert.equal(currentCandidate.nativeCompany.patchSha256, currentArtifact.source.patchSha256);
 		if (process.platform === "linux" && process.arch === "x64") {
-			assert.equal(
-				builderPin,
-				manifestSha256,
-				`image candidate recipes must pin the Linux x64 package manifest ${manifestSha256}`,
+			const { nativeCompany: _nativeCompany, ...withoutNative } = currentCandidate;
+			withoutNative.artifacts = currentCandidate.artifacts.filter((item) => !item.file.startsWith("native-company/"));
+			assert.deepEqual(
+				withoutNative,
+				manifest,
+				"governed candidate must include every current Linux x64 runtime artifact without stale or omitted bundles",
 			);
 		}
 		assert.ok(builder.includes('LXD_BUILDER_PROJECT="default"'));
+		assert.ok(builder.includes('PACKAGE_ARCHIVE="/home/company41-admin/step2-lxd/lxd-runner-guest-v56-secret-proof.tar.gz"'));
+		assert.ok(builder.includes("--no-same-owner"));
+		assert.ok(!builder.includes('STAGING_ROOT="/home/company41-admin/step2-lxd/lxd-runner-guest-v52"'));
+		assert.ok(acceptance.includes('IMAGE_ALIAS="qorpera-runner-ubuntu-26.04-v56-secret-proof-unsigned"'));
 		assert.match(installer, /apt-get install --yes[^\n]*\bcrun\b/);
+		assert.match(installer, /apt-get install --yes[^\n]*\bbubblewrap\b/);
 		assert.ok(installer.includes("/usr/bin/podman info >/dev/null"));
 		assert.ok(acceptance.includes("install -d -o qorpera-runner -g qorpera-runner -m 0700 /run/qorpera-runner"));
 		assert.ok(acceptance.includes("XDG_RUNTIME_DIR=/run/qorpera-runner"));
 		assert.ok(!acceptance.includes("XDG_RUNTIME_DIR=/var/lib/qorpera-runner/tmp"));
+		assert.ok(acceptance.includes("! mountpoint -q /var/lib/qorpera/identity"));
+		assert.ok(acceptance.includes("qorpera-company-runner.service qorpera-native-company-host.service"));
 		const syntax = spawnSync("/usr/bin/env", ["bash", "-n", builderPath, acceptancePath], {
 			cwd: repositoryRoot,
 			encoding: "utf-8",

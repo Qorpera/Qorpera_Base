@@ -1,0 +1,21 @@
+{
+  "schema": "qorpera.native-codex-source/v1",
+  "repository": "https://github.com/openai/codex.git",
+  "tag": "rust-v0.147.0",
+  "tagObject": "3ed6f04f6bf8b7c46299d1cb1ff99c74ce21a51d",
+  "commit": "be6e8eac029b183056b7e4402879f15d2c85f61b",
+  "version": "0.147.0",
+  "rustToolchain": "1.95.0",
+  "protocol": "qorpera.native-result-fence/v1",
+  "capabilities": [
+    "qorpera.native-result-fence/v1",
+    "qorpera.native-direct-tools/v1",
+    "qorpera.native-capture-images/v1"
+  ],
+  "patchSha256": "5eb9ee03406e843ceea1f81d046750aa16785c03a84315c7be96a6c68004eb9a",
+  "cargoLock": {
+    "upstreamSha256": "eeab4e9d3466da54037032251e2f13ad1ed11eae18bb8ee7dd2c89dbb86f645d",
+    "normalizedSha256": "bc4fe450de929afe82928734f860ca83e5f9dc5f9f1211b0974ea47b57af77ca",
+    "pathPackages": 135
+  }
+}

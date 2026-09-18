@@ -1,0 +1,47 @@
+{
+  "passed": true,
+  "observedAt": "2026-09-06T18:06:46.009Z",
+  "scriptSha256": "6942797610ccf618a5a03f5143940b77b72c75d9a2d1159a6176bdf35b7648e2",
+  "transportSha256": "a1c4ec8656d2c60a22db7426a2271777be956aa62462d1964b48fd0035074ef4",
+  "result": {
+    "schema": "qorpera.fallback-recovery-mount-final/v1",
+    "passed": true,
+    "privateContentsReturned": false,
+    "readOnly": true,
+    "observedAt": "2026-09-06T18:06:20.850338+00:00",
+    "state": {
+      "MainPID": "2828",
+      "NRestarts": "0",
+      "ActiveState": "active",
+      "SubState": "running"
+    },
+    "configurationSha256": {
+      "/etc/systemd/system/mnt-qorpera\\x2drecovery-nas.mount": "274509b825e671fdd0335259ba8087fc8e7156fa7952c84040fe1fab3f99a3da",
+      "/etc/systemd/system/qorpera-identity-recovery.service.d/50-recovery-storage.conf": "8f1d346adb85fbd946b909bac1409930e4eef8d0b943d131112f5005a83fd107"
+    },
+    "serviceStorage": {
+      "mounts": [
+        {
+          "path": "/var/lib/qorpera-recovery/journal",
+          "mountPoint": "/var/lib/qorpera-recovery",
+          "filesystem": "ext4",
+          "source": "/dev/nvme0n2",
+          "writable": true
+        },
+        {
+          "path": "/mnt/qorpera-recovery/nas/objects",
+          "mountPoint": "/mnt/qorpera-recovery/nas",
+          "filesystem": "nfs4",
+          "source": "127.0.0.1:/",
+          "writable": true
+        }
+      ],
+      "objectSha256": "0da2d67e99c85efb07077588ae8b2a302604039221d3d47057b2c0580ab25c43",
+      "objectBytes": 1108,
+      "journalEntries": 5
+    },
+    "stableAcrossFiveSeconds": true,
+    "persistentMountEnabled": true
+  },
+  "automaticReplayAllowed": false
+}

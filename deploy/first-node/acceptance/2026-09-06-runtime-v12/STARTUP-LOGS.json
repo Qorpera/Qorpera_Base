@@ -1,0 +1,91 @@
+{
+  "observedAt": "2026-09-06T20:31:24.981Z",
+  "readOnly": true,
+  "rawMessagesPersisted": false,
+  "results": {
+    "postgres": [
+      {
+        "context_identifiers": [
+          "qorpera_company_retained_object_hashes",
+          "qorpera_claim_company_object_gc"
+        ],
+        "count": 1,
+        "first_at": "2026-09-06T20:25:09.730000",
+        "last_at": "2026-09-06T20:25:09.730000",
+        "sql_state": "57014",
+        "knownErrors": [],
+        "standardErrors": [
+          "canceling statement due to statement timeout"
+        ],
+        "rawMessageWithheld": true
+      },
+      {
+        "context_identifiers": [],
+        "count": 1,
+        "first_at": "2026-09-06T20:25:10.320000",
+        "last_at": "2026-09-06T20:25:10.320000",
+        "sql_state": "42501",
+        "knownErrors": [],
+        "standardErrors": [
+          "permission denied"
+        ],
+        "rawMessageWithheld": true
+      },
+      {
+        "context_identifiers": [
+          "qorpera_create_member_execution_sponsor"
+        ],
+        "count": 1,
+        "first_at": "2026-09-06T20:22:13.802000",
+        "last_at": "2026-09-06T20:22:13.802000",
+        "sql_state": "42501",
+        "knownErrors": [
+          "execution sponsor is invalid",
+          "member execution sponsor is invalid"
+        ],
+        "standardErrors": [],
+        "rawMessageWithheld": true
+      },
+      {
+        "context_identifiers": [
+          "qorpera_assign_runner_job"
+        ],
+        "count": 1,
+        "first_at": "2026-09-06T20:23:12.566000",
+        "last_at": "2026-09-06T20:23:12.566000",
+        "sql_state": "55000",
+        "knownErrors": [
+          "compatible runner is unavailable"
+        ],
+        "standardErrors": [],
+        "rawMessageWithheld": true
+      }
+    ],
+    "edge": [
+      {
+        "execution_time_ms": "",
+        "path": "/rest/v1/rpc/qorpera_describe_company_run_context",
+        "status": "200",
+        "timestamp": "2026-09-06T20:23:18.434000"
+      },
+      {
+        "execution_time_ms": "",
+        "path": "/rest/v1/rpc/qorpera_read_native_wake",
+        "status": "200",
+        "timestamp": "2026-09-06T20:23:18.771000"
+      },
+      {
+        "execution_time_ms": "",
+        "path": "/rest/v1/rpc/qorpera_describe_company_run_context",
+        "status": "200",
+        "timestamp": "2026-09-06T20:26:19.802000"
+      },
+      {
+        "execution_time_ms": "",
+        "path": "/rest/v1/rpc/qorpera_read_native_wake",
+        "status": "200",
+        "timestamp": "2026-09-06T20:26:20.221000"
+      }
+    ]
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "schema": "qorpera.live-handoff-attempt-isolation/v1",
+  "passed": true,
+  "observedAt": "2026-09-07T00:27:00.896231+00:00",
+  "runId": "5971ddfd-a4d7-405c-95bd-714b606d9270",
+  "attempts": [
+    {
+      "journalSha256": "05321002837c121fab7889616470bb554740f58a8a945fba301dc13dfcf569fa",
+      "acquisitionId": "5971ddfd-a4d7-405c-95bd-714b606d9270",
+      "runId": "5971ddfd-a4d7-405c-95bd-714b606d9270",
+      "attempt": 1,
+      "workSha256": "475e7f42d330d5d37dd5672ebf9bab4810531f4fcaf9cf86a8a4e1aa46274332",
+      "instanceName": "qorpera-5971ddfda4d7405c95bd714b606d9270",
+      "physicalState": "stopped",
+      "createdAt": "2026-09-07T00:23:47.702Z",
+      "updatedAt": "2026-09-07T00:24:27.491Z",
+      "assignmentId": "96590178-93d8-4898-b5bb-11f9c38129db",
+      "imageFingerprint": "1026b6a5185d047e713b447f1e2d1965069902b291eef55d1a5edf3cfcbf0ee7",
+      "recoveryVolume": "qorpera-recovery-5971ddfd-a4d7-405c-95bd-714b606d9270",
+      "credentialHashes": {
+        "activationSha256": "212305f372c379c30ea58142c98e3f658beb1a919c21bfcf74298018494e001c",
+        "assignmentSha256": "dcc75b86344d9ed20d3a7f6b7e1ad9ca27a6e2ae28bc50116f29c7b7ef19a682",
+        "nativeBridgeSha256": "bb7e78e3b88581a060c08efb64e531668410a8cc634aaa449b588dac7fac064a"
+      }
+    },
+    {
+      "journalSha256": "0265d5a18bb9016cb1ab7250c0a6d0d07145db749dd38a687d4ed0f61d3d88df",
+      "acquisitionId": "d29efd00-c77e-876c-accc-bbd73233681a",
+      "runId": "5971ddfd-a4d7-405c-95bd-714b606d9270",
+      "attempt": 2,
+      "workSha256": "dae159b8a5f4b2628982bdced64d7781b9a44c3b95fa76db95af72486b7a3096",
+      "instanceName": "qorpera-d29efd00c77e876cacccbbd73233681a",
+      "physicalState": "stopped",
+      "createdAt": "2026-09-07T00:24:28.571Z",
+      "updatedAt": "2026-09-07T00:25:06.188Z",
+      "assignmentId": "4249e0a0-efcd-4c2a-abf6-4c7aa9a202c9",
+      "imageFingerprint": "1026b6a5185d047e713b447f1e2d1965069902b291eef55d1a5edf3cfcbf0ee7",
+      "recoveryVolume": "qorpera-recovery-d29efd00-c77e-876c-accc-bbd73233681a",
+      "credentialHashes": {
+        "activationSha256": "eea81be92c0f28f5b7e6bef993ebc8b724045de90adc21042622b405d49d7d7d",
+        "assignmentSha256": "28abd551bc8eceea260b3106d740b51f6bdf48ae90774253e9e288b47cadda93",
+        "nativeBridgeSha256": "d6f50c97d85f2f04dd84fd692966a3f00632f5c95fd1b1eb46687180844d333c"
+      }
+    }
+  ],
+  "distinctGuestsCredentialsAndRecoveryVolumes": true,
+  "bothGuestsRemoved": true,
+  "jobGuests": 0,
+  "loginGuestStopped": true,
+  "providerSha256": "15f8cdb8812bde6192bc7d6dd40463dec76ccbf58fb08a439d2d1390375a3ad0",
+  "units": {
+    "companyProvider": "active",
+    "orchestrator": "active"
+  },
+  "credentialValuesReturned": false,
+  "mutationsPerformed": false,
+  "remoteLogSha256": "04eaca7bbefc632d5bc908034ea63dc9fb62e98259c27fa14be14e6454109a53",
+  "firstGuestRemovedBeforeSecondCreated": true,
+  "canonicalHelperRestored": true
+}

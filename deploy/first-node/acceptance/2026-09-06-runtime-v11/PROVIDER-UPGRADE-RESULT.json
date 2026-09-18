@@ -1,0 +1,20 @@
+{
+  "schema": "qorpera.handoff-provider-upgrade/v1",
+  "passed": true,
+  "sourceCommit": "bf08dd923d61ba8432d86559a71cf473ac72f9b9",
+  "observedAt": "2026-09-06T18:44:25.796181+00:00",
+  "providerSha256": "15f8cdb8812bde6192bc7d6dd40463dec76ccbf58fb08a439d2d1390375a3ad0",
+  "previousProviderSha256": "932b15a056aa8e28f0001e59ca6e778cbbc565d1ceb8511d5d9ebd18a76e7a2e",
+  "historicalJournalsPreserved": 75,
+  "historicalJournalHashesUnchanged": true,
+  "signedGuestAndConfigurationUnchanged": true,
+  "authenticatedReconciliationPassed": true,
+  "companyProvider": "active",
+  "orchestrator": "active",
+  "jobGuests": 0,
+  "admissionResumed": false,
+  "privateContentsReturned": false,
+  "canonicalHelperRestored": true,
+  "preflightSha256": "b8a7a7367e00faaeea179a9ccf3f034b1117142c0fb08f8ba77cd90d980dfbb0",
+  "recipeSha256": "41966db6ba5d379c00a7bb7a3c226fe19813fdb5875939206cd0676b977d7d9a"
+}

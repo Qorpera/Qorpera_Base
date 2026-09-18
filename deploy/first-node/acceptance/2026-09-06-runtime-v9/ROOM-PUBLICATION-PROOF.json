@@ -1,0 +1,315 @@
+{
+  "schema": "qorpera.live-room-publication-proof/v1",
+  "passed": true,
+  "recordedAt": "2026-09-05T17:07:46.945Z",
+  "sourceCommit": "3c0bf3bceaeea2f9f9676c2936761f7e2d9cede7",
+  "runtimeBundleSha256": "b60a49ccef8953ba2a4e3b4559d01d2852a8cfdf737123c9bf435171409b5f51",
+  "runs": [
+    {
+      "wake": {
+        "kind": "room",
+        "status": "completed",
+        "sourceKind": "room"
+      },
+      "jobId": "1373a442-e1d0-4036-971b-ac2906a8e26c",
+      "model": "gpt-5.6-sol",
+      "runId": "150205cc-1100-4758-a9bd-a6de85ac36ec",
+      "sends": [
+        {
+          "phase": "final",
+          "eventId": "7277eeee-c07e-402f-b783-1583c943bb5c",
+          "createdAt": "2026-09-05T17:01:58.71983+00:00",
+          "textSha256": "0acefdccd874add8b03e09432c772ca640f99c0f2f35acd6285fa767e48b0344"
+        }
+      ],
+      "bundle": "b60a49ccef8953ba2a4e3b4559d01d2852a8cfdf737123c9bf435171409b5f51",
+      "launch": {
+        "bundle": "b60a49ccef8953ba2a4e3b4559d01d2852a8cfdf737123c9bf435171409b5f51",
+        "binarySha256": "2f2c26cfdfacebbcce848fb50cfaaa4e8d0aa3c6ec3c1009123ecf766c8335f7",
+        "contextBytes": 8570,
+        "contextSha256": "5c2935b8ef55f2623ce6102be8a38b07db33b5fe31d8d48a0708c7f3b140c158",
+        "toolCatalogSha256": "df507e6b49b502427d91cb33d8a708ab197a266b51bfa80b2d12c7e43206f91c"
+      },
+      "runner": {
+        "id": "edd56c3a-e47e-48c8-b691-6e53941254e9",
+        "status": "active",
+        "version": "3c0bf3bce-production",
+        "sessionLive": true
+      },
+      "results": 1,
+      "attempts": 1,
+      "jobStatus": "completed",
+      "observedAt": "2026-09-05T17:02:17.793657+00:00",
+      "activeLeases": 0,
+      "staffAgentId": "73757922-d355-4eba-91aa-edf808a3124e",
+      "terminalObservations": [
+        {
+          "at": "2026-09-05T17:01:45.659+00:00",
+          "status": "succeeded",
+          "operation": "company_context"
+        },
+        {
+          "at": "2026-09-05T17:01:48.101+00:00",
+          "status": "unconfirmed",
+          "operation": "native_result_fence"
+        },
+        {
+          "at": "2026-09-05T17:01:50.233+00:00",
+          "status": "unconfirmed",
+          "operation": "native_result_fence"
+        },
+        {
+          "at": "2026-09-05T17:01:55.601+00:00",
+          "status": "unconfirmed",
+          "operation": "native_result_fence"
+        },
+        {
+          "at": "2026-09-05T17:01:59.328+00:00",
+          "status": "unconfirmed",
+          "operation": "native_result_fence"
+        },
+        {
+          "at": "2026-09-05T17:02:01.561+00:00",
+          "status": "succeeded",
+          "operation": "model_turn"
+        }
+      ]
+    },
+    {
+      "wake": {
+        "kind": "room",
+        "status": "completed",
+        "sourceKind": "room"
+      },
+      "jobId": "80f12884-8bb0-41a1-8338-220d3dc00200",
+      "model": "gpt-5.6-sol",
+      "runId": "0cb20fad-c9c3-4265-85b8-17044ad1becc",
+      "sends": null,
+      "bundle": "b60a49ccef8953ba2a4e3b4559d01d2852a8cfdf737123c9bf435171409b5f51",
+      "launch": {
+        "bundle": "b60a49ccef8953ba2a4e3b4559d01d2852a8cfdf737123c9bf435171409b5f51",
+        "binarySha256": "2f2c26cfdfacebbcce848fb50cfaaa4e8d0aa3c6ec3c1009123ecf766c8335f7",
+        "contextBytes": 7023,
+        "contextSha256": "6f1c19bc24dccd1efb232b793c7e704c55f7d2201853667bfa9ca11a0f579261",
+        "toolCatalogSha256": "df507e6b49b502427d91cb33d8a708ab197a266b51bfa80b2d12c7e43206f91c"
+      },
+      "runner": {
+        "id": "b5060520-3cc8-4af8-b7ae-54e47a536f92",
+        "status": "active",
+        "version": "3c0bf3bce-production",
+        "sessionLive": true
+      },
+      "results": 1,
+      "attempts": 1,
+      "jobStatus": "completed",
+      "observedAt": "2026-09-05T17:02:17.791457+00:00",
+      "activeLeases": 0,
+      "staffAgentId": "37e5f62b-177a-4d66-9cb3-a7357fbcd0f9",
+      "terminalObservations": [
+        {
+          "at": "2026-09-05T17:01:16.879+00:00",
+          "status": "succeeded",
+          "operation": "company_context"
+        },
+        {
+          "at": "2026-09-05T17:01:19.395+00:00",
+          "status": "unconfirmed",
+          "operation": "native_result_fence"
+        },
+        {
+          "at": "2026-09-05T17:01:21.509+00:00",
+          "status": "unconfirmed",
+          "operation": "native_result_fence"
+        },
+        {
+          "at": "2026-09-05T17:01:23.968+00:00",
+          "status": "succeeded",
+          "operation": "model_turn"
+        }
+      ]
+    }
+  ],
+  "wakes": [
+    {
+      "id": "2b807c1e-03d9-4ba8-ae0e-575a739a1d50",
+      "wake_kind": "room",
+      "source_kind": "room",
+      "source_id": "cd6f7c4b-ae16-4252-b4ce-adb03f1cc8ba",
+      "status": "completed",
+      "run_id": "150205cc-1100-4758-a9bd-a6de85ac36ec",
+      "staff_agent_id": "73757922-d355-4eba-91aa-edf808a3124e",
+      "created_at": "2026-09-05 17:00:52.820684+00",
+      "payload": {
+        "roomId": "56327b7c-edb8-477f-91b5-6a90aa5dc2e5",
+        "inputIds": [
+          "cd6f7c4b-ae16-4252-b4ce-adb03f1cc8ba"
+        ],
+        "recipientStaffId": "73757922-d355-4eba-91aa-edf808a3124e"
+      }
+    },
+    {
+      "id": "8769b00d-50de-426d-8361-fd1e71826a1c",
+      "wake_kind": "room",
+      "source_kind": "room",
+      "source_id": "cd6f7c4b-ae16-4252-b4ce-adb03f1cc8ba",
+      "status": "completed",
+      "run_id": "0cb20fad-c9c3-4265-85b8-17044ad1becc",
+      "staff_agent_id": "37e5f62b-177a-4d66-9cb3-a7357fbcd0f9",
+      "created_at": "2026-09-05 17:00:52.820684+00",
+      "payload": {
+        "roomId": "56327b7c-edb8-477f-91b5-6a90aa5dc2e5",
+        "inputIds": [
+          "cd6f7c4b-ae16-4252-b4ce-adb03f1cc8ba"
+        ],
+        "recipientStaffId": "37e5f62b-177a-4d66-9cb3-a7357fbcd0f9"
+      }
+    }
+  ],
+  "publication": [
+    {
+      "runId": "0cb20fad-c9c3-4265-85b8-17044ad1becc",
+      "sends": null,
+      "sessionId": "1b17a686-2108-45a7-8125-ba05da540aa4",
+      "sourceKind": "room_delivery",
+      "runSnapshot": "96dcb8e8-85fe-42ba-8f3c-ac3d23d54ae9",
+      "contextViews": [
+        {
+          "id": "1c2ce687-5fed-475f-8629-1c7b76415790",
+          "sha256": "c695056caffd8ab5dd229dafd290031e31fd25bc1cf4c29f6bee6bad2068ac6c",
+          "ordinal": 1,
+          "parentId": null,
+          "createdAt": "2026-09-05T17:01:19.933581+00:00"
+        },
+        {
+          "id": "9144f77b-b9c8-4a07-a1fc-a743f7d028d3",
+          "sha256": "7824bb9bba8dd7fdf3fcf72816c718435a095a66d5e156bf153d3a70d73fbc6f",
+          "ordinal": 2,
+          "parentId": "1c2ce687-5fed-475f-8629-1c7b76415790",
+          "createdAt": "2026-09-05T17:01:21.8831+00:00"
+        }
+      ],
+      "publicMessages": 0,
+      "sessionSnapshot": "1b8e5bdd-4a15-469b-93da-7df71e27fa66"
+    },
+    {
+      "runId": "150205cc-1100-4758-a9bd-a6de85ac36ec",
+      "sends": [
+        {
+          "key": "room-v8-publication-probe-01",
+          "phase": "final",
+          "eventId": "7277eeee-c07e-402f-b783-1583c943bb5c",
+          "textSha256": "0acefdccd874add8b03e09432c772ca640f99c0f2f35acd6285fa767e48b0344",
+          "bodyMatches": true,
+          "sessionMatches": true
+        }
+      ],
+      "sessionId": "1b17a686-2108-45a7-8125-ba05da540aa4",
+      "sourceKind": "room_delivery",
+      "runSnapshot": "96dcb8e8-85fe-42ba-8f3c-ac3d23d54ae9",
+      "contextViews": [
+        {
+          "id": "0f1b8fe4-0b58-45ba-a496-0587633120b1",
+          "sha256": "adf015e96f72658cdd7f8b85551e8ba71aa345a8b1ed9d79303c5a029f905d15",
+          "ordinal": 1,
+          "parentId": null,
+          "createdAt": "2026-09-05T17:01:48.564092+00:00"
+        },
+        {
+          "id": "d02f1730-ae53-44d6-982d-ef89eb6f198c",
+          "sha256": "c2c6607f8a7928ac4803a1f2a64b74925f2ff4f4952d41eaaa22ed8d8923a974",
+          "ordinal": 2,
+          "parentId": "0f1b8fe4-0b58-45ba-a496-0587633120b1",
+          "createdAt": "2026-09-05T17:01:50.781276+00:00"
+        },
+        {
+          "id": "508d7161-24e7-4d17-a3f6-1c3e49cc8b86",
+          "sha256": "fcb395fe643b9c8b672d8eb52f87b1f9788928df8a2ba41e91266101a3077631",
+          "ordinal": 3,
+          "parentId": "d02f1730-ae53-44d6-982d-ef89eb6f198c",
+          "createdAt": "2026-09-05T17:01:55.725439+00:00"
+        },
+        {
+          "id": "65eaa0f4-a0aa-4ec0-879b-f3d4f90522f0",
+          "sha256": "fc0707db441f7af10432cea52988218378083a11e7732434b017806d67b9285e",
+          "ordinal": 4,
+          "parentId": "508d7161-24e7-4d17-a3f6-1c3e49cc8b86",
+          "createdAt": "2026-09-05T17:01:59.201911+00:00"
+        }
+      ],
+      "publicMessages": 1,
+      "sessionSnapshot": "1b8e5bdd-4a15-469b-93da-7df71e27fa66"
+    }
+  ],
+  "exactRoomInputProducedTwoWakes": true,
+  "silentRecipientPublicSends": 0,
+  "speakerPublicSends": 1,
+  "publicMessageReceiptAndSessionMatched": true,
+  "successorSnapshotPublished": true,
+  "contextViewAncestryRecorded": true,
+  "observedGuests": [
+    {
+      "event": "guest_observed",
+      "at": "2026-09-05T17:00:56.582Z",
+      "guest": "qorpera-0cb20fadc9c3426585b817044ad1becc",
+      "acquisitionId": "0cb20fad-c9c3-4265-85b8-17044ad1becc"
+    },
+    {
+      "event": "guest_observed",
+      "at": "2026-09-05T17:01:28.859Z",
+      "guest": "qorpera-150205cc11004758a9bda6de85ac36ec",
+      "acquisitionId": "150205cc-1100-4758-a9bd-a6de85ac36ec"
+    }
+  ],
+  "observedJobGuestsRemoved": true,
+  "diagnosticReadFailures": {
+    "inventory": 0,
+    "journal": 14
+  },
+  "deployedCorrections": [
+    {
+      "name": "qorpera_assign_runner_job",
+      "owner": "postgres",
+      "acl": "{postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}",
+      "securityDefiner": true,
+      "definitionSha256": "4cbfdffdc68a4dd4a1a88bc4e30346995a8ec7cc6c37cb1c89609329f3f96d56"
+    },
+    {
+      "name": "qorpera_claim_runner_job_for_orchestrator",
+      "owner": "postgres",
+      "acl": "{postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}",
+      "securityDefiner": true,
+      "definitionSha256": "c261319f55fd18e7136b5d0ae3620612bf12c7f25c122970dcb9e8e36eb79527"
+    },
+    {
+      "name": "qorpera_renew_runner_job_claim",
+      "owner": "postgres",
+      "acl": "{postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}",
+      "securityDefiner": true,
+      "definitionSha256": "fbabd2fef9ab9ce6f9556fe931313c7faefbd7b41404a33e2a5d019f72ed08d4"
+    },
+    {
+      "name": "qorpera_run_head_follows_session_pin",
+      "owner": "postgres",
+      "acl": "{postgres=X/postgres}",
+      "securityDefiner": true,
+      "definitionSha256": "6b0142a7c52bf499f91ca76510b43f4ecebe20b85a9edcda5f554947a3373d1d"
+    }
+  ],
+  "terminalClaimErrorCodesVerified": true,
+  "sendBudgetLiveProofIncluded": false,
+  "observationSemantics": "native_result_fence remains unconfirmed by design: context callbacks and binding checks are observed, socket delivery and provider request completion are not. Mandatory durable context-view lineage is recorded separately.",
+  "artifacts": {
+    "outputs/runtime-live-3c0bf3bce/room-01.request.json": "2754ac1d56b50c062b68eaba32a263134ce54613706538df3786836f1b085cfe",
+    "outputs/runtime-live-3c0bf3bce/room-01.result.json": "d86c07333b0f6e5d934552e24b1998da6044a34f0020f2fe1e218bfce3d509cb",
+    "outputs/runtime-live-3c0bf3bce/founder-resume-v8.result.json": "cfcbbb859a920294019a12b6bd42d1139857c0b481116d2ec4ce9b6f25016533",
+    "outputs/runtime-live-3c0bf3bce/ADMISSION-RESULT.json": "bf702e5c9a06edec3f21c271932ea279dfc764deab2bd769f2fe3432327b0ddf",
+    "outputs/runtime-live-3c0bf3bce/room-01.diagnostics.json": "cfe175939c0b85eff4ca06dbac48554aa432e2c0b887d273e8bd0cb50a8bdcdc",
+    "outputs/runtime-image-3c0bf3bce/SIGNED-RESULT.json": "4f965732e6273ee9a0c03d8a1df74dfdd333de79e14130593a5527b40e4c77d5",
+    "outputs/runtime-image-3c0bf3bce/SERVICES-ACTIVE.json": "ce3611e7301005ed7707e7ce25452c0df4ffbe1b2dc545f4ef70714b31ec93ed",
+    "outputs/runtime-rollout-3c0bf3bce-activation/evidence/rollout-final-readback-result.json": "8cec018d0eb1997c4c43b93c898335462b0f4af0504c303c9a154201236046b2",
+    "outputs/runtime-live-459b50c36/ROOM-FAILURE-PROOF.json": "9aa536d6130c37a93e7f2e2ab448dbc4b9ab3489af14d5656e7bca2a3e0638b4"
+  },
+  "historicalFailuresPreserved": true,
+  "signedGuestModified": false,
+  "allSteps03Complete": false
+}

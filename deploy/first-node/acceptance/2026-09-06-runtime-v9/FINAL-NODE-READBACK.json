@@ -1,0 +1,22 @@
+{
+  "schema": "qorpera.runtime-final-node-readback/v1",
+  "passed": true,
+  "observedAt": "2026-09-06T16:56:05.134845+00:00",
+  "sourceCommit": "8424d35c18546cabee8a080a63eb6ab71f5f59f8",
+  "companyProvider": "active",
+  "legacyProvider": "inactive",
+  "orchestrator": "active",
+  "providerHealthSource": "company41-orchestrator-01",
+  "nodeSourceDeniedWith403": true,
+  "providerHealthHttpsPassed": true,
+  "signatureVerified": true,
+  "imageFingerprint": "a6c17ca322a4d7f5e533db0bc46ed7d8082c81afd0da197bdd9bb25426510214",
+  "guestPackageManifestSha256": "b02d2d613affd0c6124537bdde58d9c27f22922faca808bf87cd1fe2f63a5948",
+  "providerSha256": "932b15a056aa8e28f0001e59ca6e778cbbc565d1ceb8511d5d9ebd18a76e7a2e",
+  "orchestratorSha256": "25fc38add4f8b236154c87338e3427eb61ce7a15f712adb914f52cad864fa54c",
+  "jobGuests": 0,
+  "databaseAdmissionChanged": false,
+  "remoteLogSha256": "2935e6b001a973681daa5575ac5213897f44fe412453d71927360057904882fa",
+  "canonicalHelperRestored": true,
+  "providerStateRoot": "/var/lib/qorpera-company-provider/runs-runtime-8424d35c1"
+}

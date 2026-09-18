@@ -1,0 +1,98 @@
+{
+  "schema": "qorpera.runtime-source-commit/v1",
+  "commit": "53e8fd0efc0c639cf96802e72fafacdf50ebe8d6",
+  "parent": "567ea771b2bac03d40ba0e7fb52fb30b5e4a552d",
+  "observedAt": "2026-09-06T20:13:39.115Z",
+  "sourceCheckoutClean": true,
+  "releaseCheckout": "/Users/jonas/Documents/Codex/2026-09-05/files-pasted-by-the-user-take/work/release-53e8fd0ef",
+  "releaseCheckoutDetached": true,
+  "verifiedSourceFiles": [
+    {
+      "path": "deploy/first-node/RUNTIME-PRODUCTION-REVIEW-FIXES.md",
+      "sha256": "5b0230148900bcc73b77de24540a5b540406eb6d4a7e857687de5d16561826bf"
+    },
+    {
+      "path": "deploy/first-node/native-codex/guest-package-manifest.json",
+      "sha256": "bf249d12e0f91fd9a6f1128da95de650dd55406a50e7ab3191981308d27d58d5"
+    },
+    {
+      "path": "deploy/first-node/native-codex/runtime-bundle-manifest.json",
+      "sha256": "a3b36c5c2494ab0f280492c2c5fa8534c32afdd22e39d09b3e6989313f0ce0fe"
+    },
+    {
+      "path": "packages/shell/src/cloud-native-company-context.ts",
+      "sha256": "9e6e472935b864bece02d91d9318f016feb1ca0d4c843a1c2bae00a4f9057c7d"
+    },
+    {
+      "path": "packages/shell/src/cloud-native-tool-operations.ts",
+      "sha256": "dc723a50c800766bcc6d0d7caab66a9fa85a340df0a525e787003adf896d9dc2"
+    },
+    {
+      "path": "packages/shell/src/cloud-runtime-bundle.generated.ts",
+      "sha256": "442069748770178d9e0e29e352e7d6081b2f3bf18cc77bda4696104327b2ffae"
+    },
+    {
+      "path": "packages/shell/test/cloud-native-company-context.test.ts",
+      "sha256": "bb2b222788b9d315b7618dd5277cab314e88dc6d9a25461c90c90aee67d786ab"
+    },
+    {
+      "path": "packages/shell/test/cloud-native-tool-operations.test.ts",
+      "sha256": "38fa36810f21306563b9f4b2a159e7eb5ee85e01e14a3f21cd85c51bba2cb3eb"
+    },
+    {
+      "path": "packages/shell/test/fixtures/native-company-context-fixture.ts",
+      "sha256": "14a419ebf4516b315e750b53bbec80f209cadbeeb3d833b66757bc525fe0b3d5"
+    },
+    {
+      "path": "scripts/generate-cloud-runtime-bundle.mjs",
+      "sha256": "9e40403d3e5538c21b2f9edde7d1cf03687c8321b92fc399adaa15224fdee2e6"
+    },
+    {
+      "path": "scripts/test-runtime-production-review.mjs",
+      "sha256": "42c7c2028e43fcac61061772c36092ca804c2d0635c6093fb85e1a6dc7040cc6"
+    },
+    {
+      "path": "supabase/acceptance/runtime_production_review.sql",
+      "sha256": "1750c15d697a34eb58d3424acc96c43dbf1d3ad84898945eaed2830325a510d0"
+    },
+    {
+      "path": "supabase/migrations/20260906000700_runtime_autonomous_withdrawal_fence.sql",
+      "sha256": "096833418286b4914289759994ac6e9ede8b2745a9237b12dd777eaab218f0de"
+    },
+    {
+      "path": "supabase/migrations/20260906000800_runtime_native_lease_lifecycle.sql",
+      "sha256": "d58e5cdbbd192567a1c9151ceb84adb6734d458541a897a5039c95ca4b62f5c1"
+    },
+    {
+      "path": "supabase/migrations/20260906000900_runtime_confirmed_work_continuation.sql",
+      "sha256": "670d9958820111a5543bbe40e19dc173b7c2df0964ddd39c658c46ad71b81fa0"
+    },
+    {
+      "path": "supabase/migrations/20260906001000_runtime_bundle_activation_v12.sql",
+      "sha256": "0549b553548e57ff0737b2067637a9eae234356a28cad119899827335e5523c8"
+    }
+  ],
+  "runtimeBundleSha256": "229ceb4522bbaad4a6dcf38d69b9cb6e1b93f394ddd405be6f250e90941da6e7",
+  "checks": {
+    "sourceCheck": "passed",
+    "provenanceMigrationReplay": 139,
+    "wakeContextParity": "passed",
+    "productionReviewRedGreen": "passed",
+    "sqlIntegrationCases": 35,
+    "consentConcurrencySchedules": 3,
+    "focusedTypeScriptTests": 139,
+    "bundleGeneratorTests": 3,
+    "packageTest": "passed",
+    "linuxPackageProof": "outputs/runtime-linux-x64-package-proof-53e8fd0ef.json"
+  },
+  "regressionReport": {
+    "path": "work/production-review-fixes-04.json",
+    "sha256": "438977007b7f251a6c5263a203bdb39e25ded4ddc29e3bdb1ea9a934de2f1cd8"
+  },
+  "redRegressionReport": {
+    "path": "work/prod-review-runtime-02.json",
+    "sha256": "d6ee540411915178cebfa6bd90b1cf233d1e7c48f2257e5d5b8634e5f152a0d0"
+  },
+  "authorizationSha256": "6d9e7a91644cbb9a5d0222613b9131cf997382432cfef2176a347583be12897b",
+  "productionWrites": false
+}

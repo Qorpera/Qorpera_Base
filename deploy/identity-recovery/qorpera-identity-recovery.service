@@ -1,0 +1,45 @@
+[Unit]
+Description=Qorpera independent cloud identity recovery authority
+Wants=network-online.target
+After=network-online.target
+# Only the independent local journal is a startup dependency. The NFS replica
+# mounts below the local /mnt/qorpera-recovery parent, at /mnt/qorpera-recovery/nas.
+RequiresMountsFor=/var/lib/qorpera-recovery
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=exec
+User=qorpera-recovery
+Group=qorpera-recovery
+LoadCredential=qorpera-recovery-config:/etc/qorpera-recovery/config.json
+LoadCredential=qorpera-supabase-service-key:/etc/qorpera-recovery/supabase-key
+LoadCredential=qorpera-recovery-control:/etc/qorpera-recovery/control
+LoadCredential=qorpera-recovery-operator:/etc/qorpera-recovery/operator
+LoadCredential=qorpera-recovery-signing-key:/etc/qorpera-recovery/signing-key
+LoadCredential=qorpera-recovery-wrapping-key:/etc/qorpera-recovery/wrapping-key
+ExecStart=/usr/bin/node /opt/qorpera-recovery/qorpera-identity-recovery-service.mjs
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/qorpera-recovery /mnt/qorpera-recovery
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+CapabilityBoundingSet=
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=256M
+TasksMax=32
+CPUQuota=100%
+
+[Install]
+WantedBy=multi-user.target

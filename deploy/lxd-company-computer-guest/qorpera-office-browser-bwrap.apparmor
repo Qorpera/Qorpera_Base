@@ -1,0 +1,25 @@
+abi <abi/5.0>,
+
+# This measured Bubblewrap copy is used only by the browser launcher. The
+# service starts with UID/GID confinement, an empty capability bounding set
+# and NoNewPrivileges. These AppArmor permissions grant no Linux capabilities;
+# they permit Chromium's own nested user-namespace sandbox to initialize.
+# Shell and desktop commands continue using Ubuntu's ordinary bwrap profile
+# and have nested user namespaces disabled by the kernel.
+profile qorpera-office-browser-bwrap /usr/local/lib/qorpera/qorpera-browser-bwrap flags=(attach_disconnected,mediate_deleted) {
+  allow capability,
+  allow file rwlkm /{**,},
+  allow ix /{**,},
+  allow network,
+  allow unix,
+  allow ptrace,
+  allow signal,
+  allow mqueue,
+  allow io_uring,
+  allow userns,
+  allow mount,
+  allow umount,
+  allow pivot_root,
+  allow dbus,
+  audit deny change_profile,
+}

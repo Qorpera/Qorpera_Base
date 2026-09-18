@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { type CloudCompanyTreeReference, currentCloudCompanyTreeReference } from "./cloud-company-snapshot.ts";
+import type { HostedCompanySnapshot, HostedCompanyWorkspace } from "@qorpera/cloud-client/hosted-primary";
+import {
+	type CloudCompanyTreeReference,
+	currentCloudCompanyTreeReference,
+} from "@qorpera/cloud-client/node/cloud-company-snapshot";
 import type { CloudRealtimeChange } from "./cloud-realtime-sync.ts";
 import { type CloudSyncHealth, DurableCloudSyncLoop } from "./cloud-sync-loop.ts";
-import type { HostedCompanySnapshot, HostedCompanyWorkspace } from "./hosted-primary.ts";
 
 const COMPANY_INBOX_SCHEMA = "qorpera.cloud-company-inbox/v1";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;

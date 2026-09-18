@@ -1,9 +1,16 @@
-# Company41 Step 2 first-node architecture
+# Company41 infrastructure Step 2 architecture (historical)
 
-**Status:** authoritative architecture and completion gate. The deployed v20
-boundary has run one real Codex job but has not completed the functional or
-production-storage gates. See [`STEP-2-HANDOFF.md`](STEP-2-HANDOFF.md) for the
-current checkpoint.
+This document records the earlier first-node infrastructure phase, not Runtime
+Step 2 in the later ten-step implementation order. Its v20 inventory, private
+Company File checkouts, Claude launch requirement, and references to a future
+infrastructure Step 3 are historical. They must not override the pure-cloud,
+single-live-Company-File runtime contract. Repositories remain the exception;
+an agent does not receive its own canonical company checkout.
+
+Current trust-boundary implementation and open rollout gates are recorded in
+[`RUNTIME-STEP-2-GOVERNED-GUEST.md`](RUNTIME-STEP-2-GOVERNED-GUEST.md) and
+[`RUNTIME-STEP-2-NATIVE-BOUNDARY.md`](RUNTIME-STEP-2-NATIVE-BOUNDARY.md).
+[`STEP-2-HANDOFF.md`](STEP-2-HANDOFF.md) preserves the infrastructure checkpoint.
 
 ## Decision
 
@@ -82,6 +89,14 @@ LXD projects provide quotas and an additional administrative grouping, but Qorpe
 
 ## Native subscription boundary
 
+Runtime Step 2 (the later trust-boundary step, not this infrastructure phase)
+has an explicit 2026-08-28 exception for the
+[pinned Codex fence/direct-tools patch](native-codex/README.md). It preserves official
+login, provider transport and credential custody. Source/binary pinning and
+its separate acceptance gates are mandatory. The historical unmodified-Codex
+requirement below is superseded only to that narrow extent; this is not a
+production deployment record or a Claude exception.
+
 Personal Codex and Claude subscriptions are a primary Step 2 path, not a compatibility option.
 
 1. A member creates a cloud-only Member Compute Identity.
@@ -89,7 +104,7 @@ Personal Codex and Claude subscriptions are a primary Step 2 path, not a compati
 3. The member completes the provider's official native login flow. The provider-native harness receives plaintext inside the authorized execution boundary; Qorpera application/control-plane code does not.
 4. The login host publishes only an encrypted capsule/checkpoint plus opaque connection identity, ownership, consent, policy, lease, revocation, and provenance records.
 5. A turn names exactly one sponsor, provider connection, Compute Identity, native harness, and immutable Company File revision.
-6. The orchestrator obtains an exclusive concurrency lease for that provider connection before provisioning or attaching a job VM.
+6. The orchestrator obtains a concurrency lease for that provider connection, under the connection's configurable concurrency policy (runtime contract section 17, amended 2026-09-01: quota, not exclusivity, is the ceiling), before provisioning or attaching a job VM.
 7. The job VM receives a short-lived, assignment-scoped capability. The native host unwraps the capsule only for the official harness and does not expose plaintext through the orchestrator, desktop client, Pi, a generic model gateway, logs, argv, or ordinary job metadata.
 8. Events and outputs stream into the canonical Qorpera run and transcript. Provider runtime IDs are resumable hints, not the durable session identity.
 9. Revocation invalidates future login/capsule leases and must deny subsequent execution even if an old VM or checkpoint still exists.
@@ -110,7 +125,7 @@ Connections are never pooled, silently substituted, or selected based on another
 2. Supabase transactionally creates the immutable run/job and revision pins.
 3. The Runner Orchestrator claims the durable job and records a provider acquisition identity before provisioning.
 4. The Ubuntu/LXD provider service creates or resumes the correct isolated VM and returns a registered runner identity.
-5. The orchestrator issues a short-lived job capability only after runner registration, sponsor/connection authorization, revocation, quota, and exclusive-concurrency checks pass.
+5. The orchestrator issues a short-lived job capability only after runner registration, sponsor/connection authorization, revocation, quota, and connection-concurrency-policy checks pass.
 6. The runner materializes objects by immutable hash into a private checkout and verifies every pin before native execution.
 7. The runner reserves an idempotent attempt receipt, starts the official harness, and continuously uploads deterministic transcript events and artifacts.
 8. Completion records immutable outputs before any Company File publication. Publication is a validated compare-and-swap revision or a review proposal, never a shared writable NAS checkout.
@@ -126,7 +141,7 @@ Step 2 includes:
 - a deployable standalone Runner Orchestrator service;
 - an Ubuntu/LXD provider implementation with idempotent create/resume/monitor/destroy;
 - isolated headless job VMs running the unmodified native harnesses;
-- exact sponsor/provider provenance and exclusive connection concurrency;
+- exact sponsor/provider provenance and per-connection concurrency policy with per-run usage accounting;
 - canonical transcript reconstruction across sponsor changes and devices;
 - revocation and crash/retry proof;
 - an explicit Supabase-primary acceptance profile that runs without the NAS;

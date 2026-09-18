@@ -3,8 +3,8 @@ import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { JsonValue } from "@qorpera/pi-protocol";
+import { FileCloudRunnerAuthorityStore } from "@qorpera/runtime/cloud-runner-worker-state";
 import { afterEach, describe, expect, it } from "vitest";
-import { FileCloudRunnerAuthorityStore } from "../src/cloud-runner-worker-state.ts";
 
 const temporaryDirectories: string[] = [];
 

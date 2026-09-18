@@ -1,5 +1,5 @@
+import type { HostedProfileTeam } from "@qorpera/cloud-client/hosted-primary";
 import { describe, expect, it } from "vitest";
-import type { HostedProfileTeam } from "../src/hosted-primary.ts";
 import { hostedProfileAccess } from "../src/profile-collaboration.ts";
 
 const ownerId = "10000000-0000-4000-8000-000000000001";

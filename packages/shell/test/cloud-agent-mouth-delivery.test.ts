@@ -2,10 +2,10 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { HostedSession, HostedSessionEvent } from "@qorpera/cloud-client/hosted-primary";
 import { expect, it, vi } from "vitest";
 import { listSharedTrailSessions } from "../src/agent-runtime.ts";
 import { CloudTrailSynchronizer } from "../src/cloud-trail-sync.ts";
-import type { HostedSession, HostedSessionEvent } from "../src/hosted-primary.ts";
 
 it("materializes explicit cloud sends before completion and replays them on another read-only client", async () => {
 	const root = await mkdtemp(join(tmpdir(), "qorpera-mouth-delivery-"));
@@ -18,6 +18,7 @@ it("materializes explicit cloud sends before completion and replays them on anot
 			environmentId: randomUUID(),
 			title: "Cloud agent",
 			staffAgentId: randomUUID(),
+			audience: { kind: "company" },
 			createdByUserId: randomUUID(),
 			status: "open",
 			createdAt: now,

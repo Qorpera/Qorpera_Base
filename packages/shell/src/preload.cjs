@@ -95,6 +95,7 @@ contextBridge.exposeInMainWorld("qorpera", {
 		ipcRenderer.invoke("company:new", name, companyIcon, clientCreationId),
 	setCompanyIcon: (companyIcon) => ipcRenderer.invoke("company:set-icon", companyIcon),
 	openCompanyFile: () => ipcRenderer.invoke("company-file:open"),
+	openBrowserCleanup: () => ipcRenderer.invoke("account:browser-cleanup"),
 	openCompanyFileConflictRemote: () => ipcRenderer.invoke("company-file:open-conflict-remote"),
 	resolveCompanyFileConflict: (resolution) => ipcRenderer.invoke("company-file:resolve-conflict", resolution),
 	openCompanyFileReview: (checkoutId, proposalHead, expectedCanonicalHead) =>
@@ -144,7 +145,7 @@ contextBridge.exposeInMainWorld("qorpera", {
 	staffBootstrap: bootstrapStaff,
 	staffUpdate: (staffAgentId, update) => ipcRenderer.invoke("staff:update", staffAgentId, update),
 	staffArchive: (staffAgentId) => ipcRenderer.invoke("staff:archive", staffAgentId),
-	staffDelete: (staffAgentId, options) => ipcRenderer.invoke("staff:delete", staffAgentId, options),
+	staffDelete: (staffAgentId) => ipcRenderer.invoke("staff:delete", staffAgentId),
 	staffRestore: (staffAgentId) => ipcRenderer.invoke("staff:restore", staffAgentId),
 	staffOpen: openStaff,
 	copyStaffConversationId: (staffAgentId) => ipcRenderer.invoke("staff:copy-conversation-id", staffAgentId),

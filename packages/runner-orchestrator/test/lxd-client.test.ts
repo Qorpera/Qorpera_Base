@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { type LxdCreateInstanceRequest, type LxdCreateStorageVolumeRequest, LxdUnixClient } from "../src/lxd-client.ts";
+import { HttpLxdGuestTransport } from "../src/lxd-provider.ts";
 
 const roots: string[] = [];
 const servers: Server[] = [];
@@ -88,6 +89,156 @@ function createVolumeRequest(): LxdCreateStorageVolumeRequest {
 }
 
 describe("LXD Unix client", () => {
+	it.each(["create", "start"])("observes accepted %s after its dispatch grant expires", async (action) => {
+		const dispatch = new AbortController(),
+			caller = new AbortController();
+		const requests: string[] = [];
+		const socket = await unixServer((method) => {
+			requests.push(method);
+			if (method !== "GET") return { body: { type: "async", operation: "/1.0/operations/accepted", metadata: {} } };
+			dispatch.abort(new Error("admission expired while observing"));
+			return { body: { type: "sync", metadata: { status_code: 200, err: "" } } };
+		});
+		const client = new LxdUnixClient(socket);
+		if (action === "create")
+			await client.createInstance("qorpera-runners", createRequest(), caller.signal, dispatch.signal);
+		else await client.setInstancePower("qorpera-runners", "guest", "start", caller.signal, dispatch.signal);
+		expect(requests).toEqual([action === "create" ? "POST" : "PUT", "GET"]);
+		expect(dispatch.signal.aborted).toBe(true);
+		expect(caller.signal.aborted).toBe(false);
+	});
+	it.each(["create", "start"])("refuses %s before sending an expired admission", async (action) => {
+		let requests = 0;
+		const socket = await unixServer(() => {
+			requests++;
+			return { body: { type: "sync", metadata: {} } };
+		});
+		const client = new LxdUnixClient(socket),
+			expired = AbortSignal.abort(new Error("expired grant"));
+		await expect(
+			action === "create"
+				? client.createInstance("qorpera-runners", createRequest(), undefined, expired)
+				: client.setInstancePower("qorpera-runners", "guest", "start", undefined, expired),
+		).rejects.toThrow("expired grant");
+		expect(requests).toBe(0);
+	});
+	it.each(["submission", "observation"])("retains cancellation during %s without another mutation", async (phase) => {
+		const dispatch = new AbortController(),
+			caller = new AbortController();
+		const requests: string[] = [];
+		const socket = await unixServer((method) => {
+			requests.push(method);
+			if (method !== "GET") {
+				if (phase === "submission") dispatch.abort();
+				return { body: { type: "async", operation: "/1.0/operations/accepted", metadata: {} } };
+			}
+			caller.abort();
+			return { body: { type: "sync", metadata: { status_code: 200, err: "" } } };
+		});
+		await expect(
+			new LxdUnixClient(socket).createInstance("qorpera-runners", createRequest(), caller.signal, dispatch.signal),
+		).rejects.toThrow();
+		expect(requests).toEqual(phase === "submission" ? ["POST"] : ["POST", "GET"]);
+	});
+	it("preserves stopped VM status when LXD returns a null network map", async () => {
+		let requests = 0;
+		const socket = await unixServer(() => {
+			requests++;
+			return { body: { type: "sync", metadata: { status: "Stopped", status_code: 102, network: null } } };
+		});
+		const client = new LxdUnixClient(socket);
+		await expect(client.getInstanceState("qorpera-runners", "guest")).resolves.toEqual({
+			status: "Stopped",
+			statusCode: 102,
+			network: {},
+		});
+		await expect(
+			new HttpLxdGuestTransport(client).waitReady("qorpera-runners", "guest", "enp5s0", 8082, 10_000),
+		).rejects.toThrow("powered off before activating");
+		expect(requests).toBe(2);
+	});
+
+	it.each([
+		{ status: "Running", status_code: 103, network: null },
+		{ status: "Stopped", status_code: 102 },
+		{ status: "Stopped", status_code: 102, network: [] },
+		{ status: "Stopped", status_code: 102, network: 42 },
+	])("rejects malformed network state outside the stopped-null case (%#)", async (metadata) => {
+		const socket = await unixServer(() => ({ body: { type: "sync", metadata } }));
+		await expect(new LxdUnixClient(socket).getInstanceState("qorpera-runners", "guest")).rejects.toThrow(
+			"network state is invalid",
+		);
+	});
+
+	it("retains normalized optional guest MAC identity and omits absent/blank MACs", async () => {
+		const socket = await unixServer(() => ({
+			body: {
+				type: "sync",
+				metadata: {
+					status: "Running",
+					status_code: 103,
+					network: {
+						enp5s0: { hwaddr: "00:16:3E:B9:C4:8C", addresses: [] },
+						lo: { hwaddr: "", addresses: [] },
+						other: { addresses: [] },
+					},
+				},
+			},
+		}));
+		expect((await new LxdUnixClient(socket).getInstanceState("qorpera-runners", "guest")).network).toEqual({
+			enp5s0: { hwaddr: "00:16:3e:b9:c4:8c", addresses: [] },
+			lo: { addresses: [] },
+			other: { addresses: [] },
+		});
+	});
+
+	it.each([null, 42, "bad", "00:16:3e:b9:c4", "00:16:3e:b9:c4:zz"])(
+		"rejects malformed guest MAC %s",
+		async (hwaddr) => {
+			const socket = await unixServer(() => ({
+				body: {
+					type: "sync",
+					metadata: {
+						status: "Running",
+						status_code: 103,
+						network: { eth0: { hwaddr, addresses: [] } },
+					},
+				},
+			}));
+			await expect(new LxdUnixClient(socket).getInstanceState("qorpera-runners", "guest")).rejects.toThrow(
+				"network MAC is invalid",
+			);
+		},
+	);
+
+	it("returns inherited devices and configuration, not only local overrides", async () => {
+		const request = createRequest();
+		const inherited = { type: "disk", path: "/company", source: "/srv/company" };
+		const socket = await unixServer(() => ({
+			body: {
+				type: "sync",
+				metadata: {
+					...request,
+					status: "Running",
+					status_code: 103,
+					expanded_devices: { ...request.devices, inherited },
+					expanded_config: { ...request.config, "raw.qemu": "profile override" },
+				},
+			},
+		}));
+		const actual = await new LxdUnixClient(socket).getInstance("qorpera-runners", request.name);
+		expect(actual?.devices.inherited).toBeUndefined();
+		expect(actual?.expandedDevices.inherited).toEqual(inherited);
+		expect(actual?.expandedConfig["raw.qemu"]).toBe("profile override");
+	});
+
+	it("rejects a response that omits expanded authority", async () => {
+		const request = createRequest();
+		const socket = await unixServer(() => ({
+			body: { type: "sync", metadata: { ...request, status: "Running", status_code: 103 } },
+		}));
+		await expect(new LxdUnixClient(socket).getInstance("qorpera-runners", request.name)).rejects.toThrow("devices");
+	});
 	it("uses the local socket, waits for async operations, and preserves the VM type", async () => {
 		const requests: Array<{ method: string; url: string; body: unknown }> = [];
 		const socket = await unixServer((method, url, body) => {

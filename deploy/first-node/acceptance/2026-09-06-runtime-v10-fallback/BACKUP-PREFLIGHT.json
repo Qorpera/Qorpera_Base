@@ -1,0 +1,12 @@
+{
+  "schema": "qorpera.fallback-backup-preflight/v1",
+  "passed": true,
+  "observedAt": "2026-09-06T18:07:05.460Z",
+  "loginId": "936f6a44-8c9d-45ab-921f-aab0853d8911",
+  "revision": 1,
+  "status": "ready",
+  "objectSha256": "0da2d67e99c85efb07077588ae8b2a302604039221d3d47057b2c0580ab25c43",
+  "objectBytes": 1108,
+  "privateContentsReturned": false,
+  "identityKeyFilesWritten": false
+}

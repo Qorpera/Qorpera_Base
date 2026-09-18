@@ -1,5 +1,7 @@
 import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import { request as httpsRequest } from "node:https";
+import { Headers as NodeHttpHeaders, Response as NodeHttpResponse } from "@whatwg-node/node-fetch";
+import type { ServiceHttpRequest, ServiceHttpResponse } from "./http-transport.ts";
 
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const MAX_REDIRECTS = 5;
@@ -14,7 +16,7 @@ function encodedBody(body: RequestInit["body"]): Buffer | undefined {
 }
 
 function responseHeaders(values: IncomingHttpHeaders): Headers {
-	const headers = new Headers();
+	const headers = new NodeHttpHeaders();
 	for (const [name, value] of Object.entries(values)) {
 		if (Array.isArray(value)) {
 			for (const entry of value) headers.append(name, entry);
@@ -29,16 +31,25 @@ function responseStatus(status: number): number {
 	return status === 0 ? 200 : status;
 }
 
-async function requestBody(input: string | URL | Request, init: RequestInit): Promise<Buffer | undefined> {
+async function requestBody(input: string | URL | ServiceHttpRequest, init: RequestInit): Promise<Buffer | undefined> {
 	if (init.body !== undefined && init.body !== null) return encodedBody(init.body);
-	if (!(input instanceof Request) || input.method === "GET" || input.method === "HEAD") return undefined;
+	if (!isRequest(input) || input.method === "GET" || input.method === "HEAD") return undefined;
 	return Buffer.from(await input.arrayBuffer());
 }
 
-function mergedHeaders(input: string | URL | Request, init: RequestInit): Headers {
-	const headers = new Headers(input instanceof Request ? input.headers : undefined);
+function mergedHeaders(input: string | URL | ServiceHttpRequest, init: RequestInit): Headers {
+	const headers = new NodeHttpHeaders(isRequest(input) ? Array.from(input.headers.entries()) : undefined);
 	if (init.headers !== undefined) {
-		for (const [name, value] of new Headers(init.headers)) headers.set(name, value);
+		const overrides = new NodeHttpHeaders();
+		if (Symbol.iterator in init.headers) {
+			for (const pair of init.headers) {
+				if (pair.length !== 2) throw new TypeError("HTTP header entries must be pairs");
+				overrides.append(pair[0]!, pair[1]!);
+			}
+		} else {
+			for (const [name, value] of Object.entries(init.headers)) overrides.append(name, String(value));
+		}
+		for (const [name, value] of overrides) headers.set(name, value);
 	}
 	return headers;
 }
@@ -51,13 +62,13 @@ async function executeRequest(
 	redirect: NonNullable<RequestInit["redirect"]>,
 	signal: AbortSignal | null | undefined,
 	redirects: number,
-): Promise<Response> {
+): Promise<ServiceHttpResponse> {
 	if (url.protocol !== "http:" && url.protocol !== "https:") {
 		throw new TypeError("Node HTTP transport requires HTTP or HTTPS");
 	}
 	if (signal?.aborted) throw signal.reason;
 	if (body && !headers.has("content-length")) headers.set("content-length", String(body.byteLength));
-	return new Promise<Response>((resolve, reject) => {
+	return new Promise<ServiceHttpResponse>((resolve, reject) => {
 		let settled = false;
 		const finish = (action: () => void): void => {
 			if (settled) return;
@@ -72,18 +83,19 @@ async function executeRequest(
 				const status = response.statusCode ?? 0;
 				const location = response.headers.location;
 				if (status >= 300 && status < 400 && location) {
-					response.resume();
 					if (redirect === "error") {
+						response.destroy();
 						finish(() => reject(new TypeError("Node HTTP transport rejected a redirect")));
 						return;
 					}
 					if (redirect === "follow") {
+						response.destroy();
 						if (redirects >= MAX_REDIRECTS) {
 							finish(() => reject(new TypeError("Node HTTP transport exceeded its redirect limit")));
 							return;
 						}
 						const nextUrl = new URL(location, url);
-						const nextHeaders = new Headers(headers);
+						const nextHeaders = new NodeHttpHeaders(Array.from(headers.entries()));
 						if (nextUrl.origin !== url.origin) {
 							nextHeaders.delete("authorization");
 							nextHeaders.delete("cookie");
@@ -124,7 +136,7 @@ async function executeRequest(
 				response.once("end", () =>
 					finish(() =>
 						resolve(
-							new Response(Buffer.concat(chunks), {
+							new NodeHttpResponse(Buffer.concat(chunks), {
 								status: responseStatus(status),
 								statusText: response.statusMessage,
 								headers: responseHeaders(response.headers),
@@ -149,10 +161,27 @@ async function executeRequest(
  * built-in fetch lazily requires WebAssembly, which V8 deliberately hides in
  * jitless mode. This narrow transport preserves the no-JIT/MDWE boundary.
  */
-export const nodeHttpFetch: typeof fetch = async (input, init = {}) => {
-	const url = new URL(input instanceof Request ? input.url : input);
-	const method = (init.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+function isRequest(input: string | URL | ServiceHttpRequest): input is ServiceHttpRequest {
+	// Referencing the global Request constructor itself loads Undici/WASM on
+	// Node 22. The typed transport accepts strings, URLs and Request objects.
+	return typeof input !== "string" && !(input instanceof URL);
+}
+
+export async function nodeHttpFetch(
+	input: string | URL | ServiceHttpRequest,
+	init: RequestInit = {},
+): Promise<ServiceHttpResponse> {
+	const url = new URL(isRequest(input) ? input.url : input);
+	const method = (init.method ?? (isRequest(input) ? input.method : "GET")).toUpperCase();
 	const headers = mergedHeaders(input, init);
 	const body = await requestBody(input, init);
-	return executeRequest(url, method, headers, body, init.redirect ?? "follow", init.signal, 0);
-};
+	return executeRequest(
+		url,
+		method,
+		headers,
+		body,
+		init.redirect ?? "follow",
+		init.signal ?? (isRequest(input) ? input.signal : undefined),
+		0,
+	);
+}

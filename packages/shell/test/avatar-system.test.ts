@@ -3,8 +3,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
 import { inflateSync } from "node:zlib";
+import { STAFF_CHARACTER_IDS } from "@qorpera/cloud-client/staff-characters";
 import { describe, expect, it } from "vitest";
-import { STAFF_CHARACTER_IDS } from "../src/staff-characters.ts";
 
 const directory = join(import.meta.dirname, "../userland/avatars");
 const modules = ["motion-model.js", "motion-visuals.js", "avatar-state.js", "avatar-appearance.js"]

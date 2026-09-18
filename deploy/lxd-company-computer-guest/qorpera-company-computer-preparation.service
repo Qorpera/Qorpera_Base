@@ -1,0 +1,54 @@
+[Unit]
+Description=Qorpera read-only office guest preparation
+RequiresMountsFor=/var/lib/qorpera-office
+AssertPathIsMountPoint=/var/lib/qorpera-office
+# Provider bootstrap provisions this protected root-owned report directory.
+AssertPathIsDirectory=/run/qorpera-office-preparation
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+# Retain the completed invocation for the provider's explicit result check.
+RemainAfterExit=yes
+User=qorpera-office
+Group=qorpera-office
+WorkingDirectory=/opt/qorpera-office
+Environment=HOME=/nonexistent
+ExecStart=/usr/bin/node /opt/qorpera-office/qorpera-company-computer-preparation.mjs
+# PID 1 opens the output before dropping uid. The provider must correlate it
+# with the current completed invocation, exact request digest and guest boot.
+StandardOutput=truncate:/run/qorpera-office-preparation/result.json
+StandardError=journal
+Restart=no
+TimeoutStartSec=310
+TimeoutStopSec=10
+KillMode=control-group
+SendSIGKILL=yes
+UMask=0077
+LimitCORE=0
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ReadOnlyPaths=/var/lib/qorpera-office /etc/qorpera-office/preparation.json
+InaccessiblePaths=-/etc/qorpera-office/credentials -/etc/qorpera-office/boots -/var/lib/qorpera/identity -/qorpera/company-live
+ProtectHome=yes
+ProtectProc=invisible
+ProtectHostname=private
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryMax=4G
+MemorySwapMax=0
+TasksMax=512
+CPUQuota=200%

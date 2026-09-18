@@ -1,0 +1,1388 @@
+import { type ChildProcessByStdio, type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
+import { constants, type Stats } from "node:fs";
+import { chmod, lstat, mkdir, mkdtemp, open, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import type { Readable } from "node:stream";
+import type { JsonValue } from "@qorpera/contracts";
+import {
+	CLOUD_AGENT_SEND_INSTRUCTIONS,
+	CloudAgentMouth,
+	type CloudAgentMouthConnection,
+	type CloudAgentSendInput,
+	type CloudAgentSendReceipt,
+} from "./cloud-agent-mouth.ts";
+import { nativeRuntimeFailureMetadata } from "./cloud-native-failure.ts";
+import { launchIsolatedNativeProcess, type NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
+
+const CAPSULE_SCHEMA = "qorpera.native-credential-capsule/v1";
+const LOGIN_RESULT_SCHEMA = "qorpera.native-provider-login-result/v1";
+const HARNESS_RESULT_SCHEMA = "qorpera.native-harness-result/v2";
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+const SHA256_PATTERN = /^[0-9a-f]{64}$/;
+const MAX_CAPSULE_PLAINTEXT_BYTES = 64 * 1024 * 1024;
+const MAX_CAPSULE_FILES = 4096;
+const MAX_HARNESS_OUTPUT_BYTES = 16 * 1024 * 1024;
+const MAX_PROMPT_BYTES = 16 * 1024 * 1024;
+const EXECUTION_AUTHORITY_RECHECK_MS = 15_000;
+const PROVIDER_DEFAULT_MODEL = "provider-default";
+const CODEX_CREDENTIAL_PATHS: ReadonlySet<string> = new Set(["codex/auth.json"]);
+
+export type NativeHarnessKind = "codex-cli" | "claude-code";
+export type NativeComputeOwnershipKind = "member" | "company" | "department" | "security_boundary";
+
+export interface NativeProviderLoginRequest {
+	loginId: string;
+	clientConnectionId: string;
+	computeIdentityId: string;
+	computeIdentityOwnershipKind: NativeComputeOwnershipKind;
+	computeIdentityOwnerUserId?: string;
+	computeIdentityOwnerScopeKey?: string;
+	provider: "openai" | "anthropic";
+	nativeHarness: NativeHarnessKind;
+	capability: string;
+	expiresAt: string;
+}
+
+export interface NativeProviderLoginDescription extends Omit<NativeProviderLoginRequest, "capability"> {
+	profileId: string;
+}
+
+export interface CompleteNativeProviderLoginInput {
+	loginId: string;
+	capability: string;
+	capsuleId: string;
+	encryptedCapsuleReference: string;
+	attestationPolicySha256: string;
+	providerAccountReference?: string;
+}
+
+export interface NativeProviderControlPlane {
+	describeLogin(loginId: string, capability: string, signal?: AbortSignal): Promise<NativeProviderLoginDescription>;
+	completeLogin(input: CompleteNativeProviderLoginInput, signal?: AbortSignal): Promise<void>;
+	validateExecution(request: NativeProviderExecutionRequest, signal?: AbortSignal): Promise<void>;
+	sendMessage(
+		request: NativeProviderExecutionRequest,
+		input: CloudAgentSendInput,
+		signal?: AbortSignal,
+	): Promise<CloudAgentSendReceipt>;
+}
+
+export interface NativeCredentialCapsuleStore {
+	put(reference: string, bytes: Uint8Array, signal?: AbortSignal): Promise<void>;
+	get(reference: string, signal?: AbortSignal): Promise<Uint8Array>;
+}
+
+export interface NativeHarnessLoginPrompt {
+	interactionUrl?: string;
+	userCode?: string;
+}
+
+export interface NativeHarnessLoginHandle {
+	prompt: Promise<NativeHarnessLoginPrompt>;
+	completed: Promise<{ providerAccountReference?: string }>;
+	cancel(): Promise<void>;
+}
+
+export interface NativeHarnessExecutionInput {
+	harness: NativeHarnessKind;
+	model: string;
+	identityRoot: string;
+	companyRoot: string;
+	prompt: string;
+	mouth: CloudAgentMouthConnection;
+	signal?: AbortSignal;
+}
+
+export interface NativeHarnessDriver {
+	beginLogin(
+		harness: NativeHarnessKind,
+		identityRoot: string,
+		signal?: AbortSignal,
+	): Promise<NativeHarnessLoginHandle>;
+	execute(input: NativeHarnessExecutionInput): Promise<{ providerSessionId?: string }>;
+}
+
+/** Cloud-selected execution, distinct from the official CLI's login driver. */
+export interface NativeCloudExecutionDriver {
+	execute(
+		request: NativeCompanyExecutionRequest,
+		identityRoot: string,
+		signal: AbortSignal,
+	): Promise<{
+		providerSessionId: string;
+		delivery: { messageCount: number; finalMessageId: string | null };
+	}>;
+}
+
+export interface NativeProviderExecutionAuthority {
+	leaseId: string;
+	runId: string;
+	credentialCapsuleId: string;
+	encryptedCapsuleReference: string;
+	attestationPolicySha256: string;
+	computeIdentityId: string;
+	runnerId: string;
+	assignmentId: string;
+	provider: "openai" | "anthropic";
+	nativeHarness: NativeHarnessKind;
+	model: string;
+	expiresAt: string;
+}
+
+interface NativeProviderExecutionIdentity {
+	authority: NativeProviderExecutionAuthority;
+	job: {
+		jobId: string;
+		jobType: "agent_turn";
+		requiredCapability: "agent_turn";
+		attemptCount: number;
+		payload: JsonValue;
+	};
+}
+
+export interface NativeCompanyExecutionRequest extends NativeProviderExecutionIdentity {
+	runtime: "company-path-v1";
+	input?: never;
+	outputRoot?: never;
+}
+
+export interface NativeLegacyExecutionRequest extends NativeProviderExecutionIdentity {
+	runtime?: never;
+	input: {
+		companyRoot: string;
+		executionContextPath: string;
+		queuedInputsPath: string;
+		transcriptPath: string;
+	};
+	outputRoot: string;
+}
+
+export type NativeProviderExecutionRequest = NativeCompanyExecutionRequest | NativeLegacyExecutionRequest;
+
+interface CapsuleFile {
+	path: string;
+	mode: number;
+	data: string;
+}
+
+interface CapsuleArchive {
+	schema: typeof CAPSULE_SCHEMA;
+	files: CapsuleFile[];
+}
+
+interface LoginState {
+	request: NativeProviderLoginRequest;
+	root: string;
+	handle: NativeHarnessLoginHandle;
+	status: "awaiting_member" | "completed" | "failed";
+	prompt: NativeHarnessLoginPrompt;
+	error?: Error;
+}
+
+type NativeHarnessChild = ChildProcessByStdio<null, Readable, Readable> | ChildProcessWithoutNullStreams;
+
+async function grantWorkspaceGroupAccess(root: string): Promise<void> {
+	/* The workspace mixes runner-owned materialized entries with entries the
+	 * harness created as this process's user. Only the latter need (or
+	 * permit) a mode change; chmod on a foreign-owned entry raises EPERM,
+	 * so restrict the walk to entries this process owns. */
+	/* The host service umask already lands harness output group-shared;
+	 * this walk only repairs stragglers, so no single entry — vanished,
+	 * foreign-owned, or unreadable — may fail the attempt. */
+	const ownUid = process.getuid?.();
+	const pending = [root];
+	while (pending.length > 0) {
+		const current = pending.pop() as string;
+		let metadata: Awaited<ReturnType<typeof lstat>>;
+		try {
+			metadata = await lstat(current);
+		} catch {
+			continue;
+		}
+		if (metadata.isSymbolicLink()) continue;
+		const owned = ownUid === undefined || metadata.uid === ownUid;
+		if (metadata.isDirectory()) {
+			if (owned) await chmod(current, metadata.mode | 0o050).catch(() => undefined);
+			let entries: string[];
+			try {
+				entries = await readdir(current);
+			} catch {
+				continue;
+			}
+			for (const entry of entries) pending.push(join(current, entry));
+			continue;
+		}
+		if (metadata.isFile() && owned) await chmod(current, metadata.mode | 0o040).catch(() => undefined);
+	}
+}
+
+function requiredUuid(value: string, label: string): void {
+	if (!UUID_PATTERN.test(value)) throw new Error(`${label} is invalid`);
+}
+
+function requiredAbsolutePath(value: string, label: string): string {
+	if (!isAbsolute(value)) throw new Error(`${label} must be absolute`);
+	return resolve(value);
+}
+
+function safeRelativePath(path: string): boolean {
+	return (
+		path.length > 0 &&
+		path.length <= 4096 &&
+		!path.includes("\\") &&
+		!path.startsWith("/") &&
+		path.split("/").every((part) => part && part !== "." && part !== ".." && !part.includes("\0"))
+	);
+}
+
+function sameLogin(left: NativeProviderLoginRequest, right: NativeProviderLoginRequest): boolean {
+	return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function waitFor(delayMs: number, signal: AbortSignal): Promise<boolean> {
+	if (signal.aborted) return Promise.resolve(false);
+	return new Promise((resolveWait) => {
+		const timer = setTimeout(() => {
+			signal.removeEventListener("abort", abort);
+			resolveWait(true);
+		}, delayMs);
+		const abort = (): void => {
+			clearTimeout(timer);
+			resolveWait(false);
+		};
+		signal.addEventListener("abort", abort, { once: true });
+	});
+}
+
+function cleanHarnessEnvironment(identityRoot: string): NodeJS.ProcessEnv {
+	const home = join(identityRoot, "home");
+	const environment: NodeJS.ProcessEnv = {
+		HOME: home,
+		USERPROFILE: home,
+		CODEX_HOME: join(identityRoot, "codex"),
+		CLAUDE_CONFIG_DIR: join(identityRoot, "claude"),
+		XDG_CONFIG_HOME: join(identityRoot, "xdg", "config"),
+		XDG_DATA_HOME: join(identityRoot, "xdg", "data"),
+		XDG_CACHE_HOME: join(identityRoot, "xdg", "cache"),
+		PATH: process.env.PATH ?? "",
+		NO_COLOR: "1",
+		BROWSER: "echo",
+		DISABLE_AUTOUPDATER: "1",
+	};
+	for (const key of ["SystemRoot", "ComSpec", "PATHEXT", "WINDIR"]) {
+		if (process.env[key]) environment[key] = process.env[key];
+	}
+	return environment;
+}
+
+async function prepareHarnessEnvironment(identityRoot: string): Promise<NodeJS.ProcessEnv> {
+	await Promise.all(
+		["home", "codex", "claude", join("xdg", "config"), join("xdg", "data"), join("xdg", "cache")].map((path) =>
+			mkdir(join(identityRoot, path), { recursive: true, mode: 0o700 }),
+		),
+	);
+	return cleanHarnessEnvironment(identityRoot);
+}
+
+async function collectCapsuleFiles(root: string, durablePaths?: ReadonlySet<string>): Promise<CapsuleArchive> {
+	const files: CapsuleFile[] = [];
+	let totalBytes = 0;
+	const durablePathList = durablePaths === undefined ? undefined : [...durablePaths];
+	const containsDurableFile = (path: string): boolean =>
+		durablePathList === undefined || durablePathList.some((durablePath) => durablePath.startsWith(`${path}/`));
+	const visit = async (directory: string, prefix: string): Promise<void> => {
+		const metadata = await lstat(directory);
+		if (!metadata.isDirectory()) throw new Error("Credential capsule directory is unsafe");
+		const handle =
+			process.platform === "linux"
+				? await open(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
+				: undefined;
+		try {
+			if (handle) {
+				const opened = await handle.stat();
+				if (!opened.isDirectory() || opened.dev !== metadata.dev || opened.ino !== metadata.ino)
+					throw new Error("Credential capsule directory changed");
+			}
+			// Linux deployment walks from open directory descriptors. Renaming a
+			// parent into a symlink cannot redirect a later child read outside it.
+			const anchored = handle ? `/proc/self/fd/${handle.fd}` : directory;
+			const entries = await readdir(anchored, { withFileTypes: true });
+			entries.sort((left, right) => left.name.localeCompare(right.name, "en"));
+			for (const entry of entries) {
+				const absolute = join(anchored, entry.name);
+				const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+				if (!safeRelativePath(relativePath)) throw new Error("Credential capsule contains an invalid path");
+				const entryMetadata = await lstat(absolute);
+				// Compatibility aliases are still ignored at login. Losing a path
+				// from the original capsule during refresh is an error below, not
+				// permission to replace stored credentials with an incomplete archive.
+				if (entryMetadata.isSymbolicLink()) continue;
+				if (entryMetadata.isDirectory()) {
+					if (!containsDurableFile(relativePath)) continue;
+					await visit(absolute, relativePath);
+					continue;
+				}
+				if (!entryMetadata.isFile()) throw new Error("Credential capsule contains an unsupported entry");
+				if (durablePaths !== undefined && !durablePaths.has(relativePath)) continue;
+				totalBytes += entryMetadata.size;
+				if (files.length >= MAX_CAPSULE_FILES || totalBytes > MAX_CAPSULE_PLAINTEXT_BYTES)
+					throw new Error("Credential capsule exceeds its storage budget");
+				files.push({
+					path: relativePath,
+					mode: entryMetadata.mode & 0o777,
+					data: (await readCapsuleFile(absolute, entryMetadata)).toString("base64"),
+				});
+			}
+		} finally {
+			await handle?.close();
+		}
+	};
+	await visit(root, "");
+	if (durablePaths && (files.length !== durablePaths.size || files.some((file) => !durablePaths.has(file.path))))
+		throw new Error("Credential capsule lost an original credential path");
+	return { schema: CAPSULE_SCHEMA, files };
+}
+
+async function readCapsuleFile(path: string, expected: Stats): Promise<Buffer> {
+	// O_NONBLOCK makes a raced FIFO fail its type check instead of hanging
+	// credential finalization. O_NOFOLLOW prevents a raced symlink dereference.
+	const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+	try {
+		const opened = await handle.stat();
+		if (
+			!opened.isFile() ||
+			opened.nlink !== 1 ||
+			opened.dev !== expected.dev ||
+			opened.ino !== expected.ino ||
+			opened.size !== expected.size ||
+			opened.mtimeMs !== expected.mtimeMs ||
+			opened.ctimeMs !== expected.ctimeMs ||
+			(process.getuid && opened.uid !== process.getuid())
+		)
+			throw new Error("Credential capsule file is unsafe or changed");
+		// Read at most the validated size plus one byte. readFile() after lstat
+		// could otherwise allocate past the capsule budget if a file grew.
+		const data = Buffer.alloc(opened.size + 1);
+		let offset = 0;
+		while (offset < data.length) {
+			const { bytesRead } = await handle.read(data, offset, data.length - offset, offset);
+			if (bytesRead === 0) break;
+			offset += bytesRead;
+		}
+		const after = await handle.stat();
+		const linked = await lstat(path);
+		if (
+			offset !== opened.size ||
+			after.size !== opened.size ||
+			after.nlink !== 1 ||
+			after.mtimeMs !== opened.mtimeMs ||
+			after.ctimeMs !== opened.ctimeMs ||
+			!linked.isFile() ||
+			linked.dev !== opened.dev ||
+			linked.ino !== opened.ino
+		)
+			throw new Error("Credential capsule file is unsafe or changed");
+		return data.subarray(0, offset);
+	} finally {
+		await handle.close();
+	}
+}
+
+async function restoreCapsuleFiles(
+	root: string,
+	archive: CapsuleArchive,
+	credentialPaths?: ReadonlySet<string>,
+): Promise<void> {
+	if (archive.schema !== CAPSULE_SCHEMA || !Array.isArray(archive.files) || archive.files.length > MAX_CAPSULE_FILES) {
+		throw new Error("Credential capsule archive is invalid");
+	}
+	let totalBytes = 0;
+	const paths = new Set<string>();
+	const directories = new Set<string>();
+	for (const file of archive.files) {
+		if (
+			!safeRelativePath(file.path) ||
+			paths.has(file.path) ||
+			directories.has(file.path) ||
+			!Number.isSafeInteger(file.mode) ||
+			file.mode < 0 ||
+			file.mode > 0o777 ||
+			typeof file.data !== "string"
+		) {
+			throw new Error("Credential capsule entry is invalid");
+		}
+		const components = file.path.split("/");
+		for (let index = 1; index < components.length; index++) {
+			const parent = components.slice(0, index).join("/");
+			if (paths.has(parent)) throw new Error("Credential capsule entry is invalid");
+			directories.add(parent);
+		}
+		paths.add(file.path);
+		const bytes = Buffer.from(file.data, "base64");
+		totalBytes += bytes.byteLength;
+		if (totalBytes > MAX_CAPSULE_PLAINTEXT_BYTES) throw new Error("Credential capsule exceeds its storage budget");
+		const target = resolve(root, ...file.path.split("/"));
+		const child = relative(root, target);
+		if (!child || child === ".." || child.startsWith(`..${sep}`)) {
+			throw new Error("Credential capsule entry escapes its identity root");
+		}
+		// The login archive is not runtime configuration. Validate the complete
+		// archive, but materialize only credentials selected by trusted host
+		// policy. Extra CLI state must never enter the native auth-only mount.
+		if (credentialPaths && !credentialPaths.has(file.path)) continue;
+		await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+		await writeFile(target, bytes, { flag: "wx", mode: file.mode & 0o700 });
+		await chmod(target, file.mode & 0o700);
+	}
+	if (credentialPaths && [...credentialPaths].some((path) => !paths.has(path)))
+		throw new Error("Credential capsule is missing a required credential path");
+}
+
+function capsuleKey(value: string): Buffer {
+	const key = Buffer.from(value, "base64url");
+	if (key.byteLength !== 32) throw new Error("Native credential capsule key must contain 32 bytes");
+	return key;
+}
+
+function credentialSealingFailure(error: unknown): string {
+	if (!(error instanceof Error)) return "unknown";
+	for (const [message, reason] of [
+		["Credential capsule contains an invalid path", "invalid-path"],
+		["Credential capsule cannot contain symbolic links", "symbolic-link"],
+		["Credential capsule contains an unsupported entry", "unsupported-entry"],
+		["Credential capsule exceeds its storage budget", "storage-budget"],
+		["Credential capsule directory is unsafe", "unsafe-directory"],
+		["Credential capsule directory changed", "changed-directory"],
+		["Credential capsule file is unsafe or changed", "unsafe-file"],
+		["Credential capsule lost an original credential path", "missing-credential"],
+	] as const) {
+		if (error.message === message) return reason;
+	}
+	return harnessExecutionFailureCategory(error);
+}
+
+function harnessExecutionFailureCategory(error: unknown): string {
+	if (!(error instanceof Error)) return "unknown";
+	const code = (error as NodeJS.ErrnoException).code;
+	if (
+		error.name === "AbortError" ||
+		code === "ABORT_ERR" ||
+		["Native execution cancelled", "Native execution stopped", "Native provider host stopped"].includes(error.message)
+	) {
+		return "cancelled";
+	}
+	if (error.name === "TimeoutError" || code === "ETIMEDOUT") return "timeout";
+	if (code === "ENOENT" || code === "ENOTDIR") return "filesystem-not-found";
+	if (code === "EACCES" || code === "EPERM") return "filesystem-permission";
+	if (code === "EROFS") return "filesystem-read-only";
+	if (code === "EISDIR" || code === "ENOTEMPTY") return "filesystem-layout";
+	if (code === "ENOSPC") return "resource-capacity";
+	if (code === "EMFILE" || code === "ENFILE") return "resource-file-descriptors";
+	if (code === "ENOMEM") return "resource-memory";
+	if (code === "EPIPE" || code === "ERR_STREAM_WRITE_AFTER_END") return "process-pipe";
+	return "unknown";
+}
+
+function safeHarnessExecutionFailure(error: unknown, mouthState: CloudAgentMouth["diagnosticState"]): Error {
+	let message: string;
+	const metadata = nativeRuntimeFailureMetadata(error);
+	if (metadata) {
+		message = `Native provider execution failed (stage=${metadata.stage}, category=${metadata.category})`;
+	} else if (
+		error instanceof Error &&
+		(/^Provider harness exited with [A-Za-z0-9_-]{1,32}(?: \((?:authentication|model|provider allowance|provider capacity|provider context|provider network|provider policy|local sandbox|provider request|provider authorization|provider tool schema|harness configuration|harness internal|public message transport) unavailable\))?$/.test(
+			error.message,
+		) ||
+			/^Codex did not complete its turn(?: \((?:authentication|model|provider allowance|provider capacity|provider context|provider network|provider policy|local sandbox|provider request|provider authorization|provider tool schema|harness configuration|harness internal|public message transport) unavailable\))?$/.test(
+				error.message,
+			) ||
+			error.message === "Provider harness output exceeded its byte limit")
+	) {
+		message = error.message;
+	} else {
+		message = `Native provider execution harness-execution stage failed (${harnessExecutionFailureCategory(error)})`;
+	}
+	return new Error(`${message} [mouth=${mouthState}]`, { cause: error });
+}
+
+export async function sealNativeCredentialCapsule(
+	root: string,
+	keyValue: string,
+	capsuleId: string,
+	durablePaths?: ReadonlySet<string>,
+): Promise<Uint8Array> {
+	requiredUuid(capsuleId, "Credential capsule id");
+	const archive = await collectCapsuleFiles(requiredAbsolutePath(root, "Credential capsule root"), durablePaths);
+	const plaintext = Buffer.from(JSON.stringify(archive), "utf-8");
+	if (plaintext.byteLength > MAX_CAPSULE_PLAINTEXT_BYTES)
+		throw new Error("Credential capsule exceeds its storage budget");
+	const nonce = randomBytes(12);
+	const cipher = createCipheriv("aes-256-gcm", capsuleKey(keyValue), nonce);
+	cipher.setAAD(Buffer.from(`${CAPSULE_SCHEMA}:${capsuleId}`, "utf-8"));
+	const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+	const tag = cipher.getAuthTag();
+	return Buffer.concat([Buffer.from("QNC1", "ascii"), nonce, tag, ciphertext]);
+}
+
+export async function openNativeCredentialCapsule(
+	bytes: Uint8Array,
+	root: string,
+	keyValue: string,
+	capsuleId: string,
+	credentialPaths?: ReadonlySet<string>,
+): Promise<void> {
+	requiredUuid(capsuleId, "Credential capsule id");
+	if (bytes.byteLength < 32 || Buffer.from(bytes.subarray(0, 4)).toString("ascii") !== "QNC1") {
+		throw new Error("Credential capsule envelope is invalid");
+	}
+	const nonce = bytes.subarray(4, 16);
+	const tag = bytes.subarray(16, 32);
+	const ciphertext = bytes.subarray(32);
+	const decipher = createDecipheriv("aes-256-gcm", capsuleKey(keyValue), nonce);
+	decipher.setAAD(Buffer.from(`${CAPSULE_SCHEMA}:${capsuleId}`, "utf-8"));
+	decipher.setAuthTag(Buffer.from(tag));
+	let archive: CapsuleArchive;
+	try {
+		archive = JSON.parse(
+			Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf-8"),
+		) as CapsuleArchive;
+	} catch (error) {
+		throw new Error("Credential capsule failed authenticated decryption", { cause: error });
+	}
+	await restoreCapsuleFiles(requiredAbsolutePath(root, "Credential capsule root"), archive, credentialPaths);
+}
+
+function collectChildOutput(child: NativeHarnessChild): {
+	output: () => string;
+	completed: Promise<void>;
+} {
+	let output = "";
+	let exceeded = false;
+	const append = (chunk: Buffer): void => {
+		if (exceeded) return;
+		output += chunk.toString("utf-8");
+		if (Buffer.byteLength(output) > MAX_HARNESS_OUTPUT_BYTES) exceeded = true;
+	};
+	child.stdout.on("data", append);
+	child.stderr.on("data", append);
+	return {
+		output: () => output,
+		completed: new Promise<void>((resolveChild, reject) => {
+			child.once("error", reject);
+			child.once("close", (code, signal) => {
+				if (exceeded) reject(new Error("Provider harness output exceeded its byte limit"));
+				else if (code !== 0) {
+					const category = nativeHarnessFailureCategory(output);
+					reject(
+						new Error(
+							`Provider harness exited with ${code ?? signal ?? "failure"}${category ? ` (${category})` : ""}`,
+						),
+					);
+				} else resolveChild();
+			});
+		}),
+	};
+}
+
+export type NativeProviderUsageSignal = "usage_limit" | "rate_limited" | "provider_outage";
+
+/**
+ * Typed usage signal from a harness failure (contract section 17). The
+ * adapter distinguishes quota exhaustion (switch sponsor), transient rate
+ * limiting (retry) and provider outage (wait or fail over) from the safe
+ * failure category the host attached, never from provider text. Any other
+ * failure is not a usage signal.
+ */
+export function nativeProviderUsageSignal(error: unknown): NativeProviderUsageSignal | undefined {
+	const metadata = nativeRuntimeFailureMetadata(error);
+	if (metadata) return metadata.usageSignal ?? undefined;
+	let current: unknown = error;
+	for (let depth = 0; depth < 8 && current instanceof Error; depth += 1) {
+		const match = /\((provider allowance|provider capacity|provider network) unavailable\)/.exec(current.message);
+		if (match) {
+			if (match[1] === "provider allowance") return "usage_limit";
+			if (match[1] === "provider capacity") return "rate_limited";
+			return "provider_outage";
+		}
+		current = current.cause;
+	}
+	return undefined;
+}
+
+function nativeHarnessFailureCategory(output: string): string | undefined {
+	const diagnostics: string[] = [];
+	for (const line of output.split(/\r?\n/)) {
+		if (!line.trim()) continue;
+		try {
+			const event = JSON.parse(line) as Record<string, unknown>;
+			if (event.type === "error" && typeof event.message === "string") diagnostics.push(event.message);
+			if (event.error && typeof event.error === "object") {
+				const failure = event.error as Record<string, unknown>;
+				const message = failure.message;
+				if (typeof message === "string") diagnostics.push(message);
+				if (typeof failure.code === "string") diagnostics.push(failure.code);
+				if (typeof failure.type === "string") diagnostics.push(failure.type);
+			}
+			if (event.type === "item.completed" && event.item && typeof event.item === "object") {
+				const item = event.item as Record<string, unknown>;
+				if (item.type === "error" && typeof item.message === "string") diagnostics.push(item.message);
+			}
+		} catch {
+			// Startup failures can be plain stderr. The text is classified below but is never emitted.
+			diagnostics.push(line);
+		}
+	}
+	const detail = diagnostics.join("\n").toLowerCase();
+	if (!detail) return undefined;
+	if (
+		/(?:mcp|send_message|public mouth).*(?:fail|error|timed? ?out|timeout|unauthor|invalid|reject)|(?:fail|error|timed? ?out|timeout).*(?:mcp|public mouth)/.test(
+			detail,
+		)
+	) {
+		return "public message transport unavailable";
+	}
+	if (
+		/error loading config|failed to (?:load|read|parse) config|invalid configuration|config.*toml.*error|missing environment variable/.test(
+			detail,
+		)
+	) {
+		return "harness configuration unavailable";
+	}
+	if (
+		/invalid_function_parameters|invalid_json_schema|invalid.*(?:tool|function).*schema|schema.*(?:tool|function).*invalid|duplicate tool:/.test(
+			detail,
+		)
+	) {
+		return "provider tool schema unavailable";
+	}
+	if (
+		/unauthori[sz]ed|authentication|not logged in|login required|sign in again|refresh.?token|access.?token.*(?:refresh|expired|invalid)|status(?: code)? 401|\b401\b/.test(
+			detail,
+		)
+	) {
+		return "authentication unavailable";
+	}
+	if (/forbidden|insufficient_scope|status(?: code)? 403|\b403\b/.test(detail)) {
+		return "provider authorization unavailable";
+	}
+	if (/model .*(?:not found|unsupported|unavailable)|unknown model|invalid model/.test(detail)) {
+		return "model unavailable";
+	}
+	if (/not supported (?:for|on) (?:this )?model|unsupported (?:parameter|option)/.test(detail)) {
+		return "model unavailable";
+	}
+	if (
+		/usage[_ ]limit|quota|out of credits|spend cap|upgrade to plus|shared rollout token budget exhausted/.test(detail)
+	) {
+		return "provider allowance unavailable";
+	}
+	if (/context[_ ]window|maximum context length|too many tokens/.test(detail)) {
+		return "provider context unavailable";
+	}
+	if (/content[_ ]filter|content policy|cyber[_ ]policy|misalignment[_ ]policy/.test(detail)) {
+		return "provider policy unavailable";
+	}
+	if (/rate.?limit|too many requests|at capacity|high demand|status(?: code)? 429|\b429\b/.test(detail)) {
+		return "provider capacity unavailable";
+	}
+	if (
+		/network|timed? out|timeout|connection|stream disconnected|dns|tls|certificate|socket|status(?: code)? 50[234]/.test(
+			detail,
+		)
+	) {
+		return "provider network unavailable";
+	}
+	if (/sandbox|workspace|permission denied|operation not permitted|read-only file system/.test(detail)) {
+		return "local sandbox unavailable";
+	}
+	if (
+		/bad request|invalid[_ ]request|unprocessable|unsupported operation|status(?: code)? 4(?:00|04|22)/.test(detail)
+	) {
+		return "provider request unavailable";
+	}
+	if (/agent loop died|session configured event was not the first|spawn failed|thread .*panicked/.test(detail)) {
+		return "harness internal unavailable";
+	}
+	return undefined;
+}
+
+function interactionFromOutput(output: string): NativeHarnessLoginPrompt {
+	const ansiCsiPattern = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, "g");
+	const plainOutput = output.replace(ansiCsiPattern, "");
+	const interactionUrl = plainOutput.match(/https:\/\/[^\s<>'"`]+/i)?.[0]?.replace(/[),.;]+$/, "");
+	const standaloneCode = plainOutput
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.find((line) => /^[A-Z0-9]{2,32}(?:-[A-Z0-9]{2,32})+$/.test(line));
+	const labeledCode = plainOutput.match(/(?:code|enter)\s*[:=]\s*([A-Z0-9-]{4,64})/i)?.[1];
+	const explicitCode = standaloneCode ?? labeledCode;
+	return {
+		...(interactionUrl ? { interactionUrl } : {}),
+		...(explicitCode ? { userCode: explicitCode } : {}),
+	};
+}
+
+async function terminateChild(child: NativeHarnessChild): Promise<void> {
+	if (child.exitCode !== null || child.signalCode !== null) return;
+	child.kill("SIGTERM");
+	await new Promise<void>((resolveWait) => {
+		const timer = setTimeout(() => {
+			child.kill("SIGKILL");
+			resolveWait();
+		}, 5000);
+		child.once("close", () => {
+			clearTimeout(timer);
+			resolveWait();
+		});
+	});
+}
+
+export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
+	readonly #codexPath: string;
+	readonly #claudePath: string;
+	readonly #isolation: NativeIsolationConfiguration | undefined;
+
+	constructor(codexPath = "codex", claudePath = "claude", isolation?: NativeIsolationConfiguration) {
+		this.#codexPath = codexPath;
+		this.#claudePath = claudePath;
+		this.#isolation = isolation ? Object.freeze({ ...isolation }) : undefined;
+	}
+
+	async #loginProcess(
+		command: string,
+		args: string[],
+		root: string,
+		environment: NodeJS.ProcessEnv,
+		signal: AbortSignal,
+	): Promise<{ child: NativeHarnessChild; close(): Promise<void> }> {
+		signal.throwIfAborted();
+		if (!this.#isolation) {
+			const child = spawn(command, args, {
+				cwd: root,
+				env: environment,
+				stdio: ["ignore", "pipe", "pipe"],
+				windowsHide: true,
+			});
+			return { child, close: () => terminateChild(child) };
+		}
+		const scratchRoot = await mkdtemp(join(tmpdir(), "qorpera-native-auth-"));
+		try {
+			for (const name of ["workspace", "home", "config", "data", "cache"])
+				await mkdir(join(scratchRoot, name), { mode: 0o700 });
+			const isolated = await launchIsolatedNativeProcess({
+				configuration: this.#isolation,
+				command,
+				args,
+				scratchRoot,
+				codexHome: join(root, "codex"),
+				signal,
+			});
+			isolated.child.stdin.end();
+			return {
+				child: isolated.child,
+				async close() {
+					await isolated.close();
+					await rm(scratchRoot, { recursive: true, force: true });
+				},
+			};
+		} catch (error) {
+			await rm(scratchRoot, { recursive: true, force: true });
+			throw error;
+		}
+	}
+
+	async beginLogin(
+		harness: NativeHarnessKind,
+		identityRoot: string,
+		signal?: AbortSignal,
+	): Promise<NativeHarnessLoginHandle> {
+		if (this.#isolation && harness !== "codex-cli")
+			throw new Error("The governed native runtime currently accepts Codex only");
+		const root = requiredAbsolutePath(identityRoot, "Native identity root");
+		const environment = await prepareHarnessEnvironment(root);
+		const command = harness === "codex-cli" ? this.#codexPath : this.#claudePath;
+		const args = harness === "codex-cli" ? ["login", "--device-auth"] : ["auth", "login", "--claudeai"];
+		const cancellation = new AbortController();
+		const loginSignal = AbortSignal.any([
+			cancellation.signal,
+			AbortSignal.timeout(600_000),
+			...(signal ? [signal] : []),
+		]);
+		const launched = await this.#loginProcess(command, args, root, environment, loginSignal);
+		const child = launched.child;
+		const capture = collectChildOutput(child);
+		const abort = (): void => {
+			void launched.close();
+		};
+		loginSignal.addEventListener("abort", abort, { once: true });
+		if (loginSignal.aborted) abort();
+		const prompt = new Promise<NativeHarnessLoginPrompt>((resolvePrompt, reject) => {
+			const started = Date.now();
+			const poll = (): void => {
+				const parsed = interactionFromOutput(capture.output());
+				if (parsed.interactionUrl || parsed.userCode || child.exitCode !== null) {
+					resolvePrompt(parsed);
+					return;
+				}
+				if (Date.now() - started >= 10_000) {
+					reject(new Error("Provider login did not present an official interaction URL"));
+					return;
+				}
+				setTimeout(poll, 50);
+			};
+			poll();
+		});
+		const completed = capture.completed
+			.then(async () => {
+				loginSignal.throwIfAborted();
+				const statusArgs = harness === "codex-cli" ? ["login", "status"] : ["auth", "status"];
+				const status = await this.#loginProcess(command, statusArgs, root, environment, loginSignal);
+				const stopStatus = (): void => {
+					void status.close();
+				};
+				loginSignal.addEventListener("abort", stopStatus, { once: true });
+				try {
+					const checked = collectChildOutput(status.child);
+					await checked.completed;
+					loginSignal.throwIfAborted();
+					const reference = checked.output().trim();
+					return reference
+						? { providerAccountReference: `${harness}:${createHash("sha256").update(reference).digest("hex")}` }
+						: {};
+				} finally {
+					loginSignal.removeEventListener("abort", stopStatus);
+					await status.close();
+				}
+			})
+			.finally(async () => {
+				loginSignal.removeEventListener("abort", abort);
+				await launched.close();
+			});
+		void completed.catch(() => undefined);
+		return {
+			prompt,
+			completed,
+			cancel: async () => {
+				cancellation.abort();
+				await launched.close();
+			},
+		};
+	}
+
+	async execute(input: NativeHarnessExecutionInput): Promise<{ providerSessionId?: string }> {
+		if (this.#isolation) throw new Error("Governed execution requires the native cloud tool boundary");
+		const root = requiredAbsolutePath(input.identityRoot, "Native identity root");
+		const companyRoot = requiredAbsolutePath(input.companyRoot, "Native Company File root");
+		const environment = await prepareHarnessEnvironment(root);
+		if (!input.model.trim() || input.model.length > 160 || /[\0\r\n]/.test(input.model)) {
+			throw new Error("Native model is invalid");
+		}
+		if (Buffer.byteLength(input.prompt) > MAX_PROMPT_BYTES) throw new Error("Native prompt exceeds its byte limit");
+		const mouthUrl = new URL(input.mouth.url);
+		if (
+			mouthUrl.protocol !== "http:" ||
+			mouthUrl.hostname !== "127.0.0.1" ||
+			mouthUrl.pathname !== "/mcp" ||
+			mouthUrl.username ||
+			mouthUrl.password ||
+			mouthUrl.search ||
+			mouthUrl.hash ||
+			!TOKEN_PATTERN.test(input.mouth.bearerToken)
+		) {
+			throw new Error("Native public mouth connection is invalid");
+		}
+		environment.QORPERA_AGENT_SEND_TOKEN = input.mouth.bearerToken;
+		const command = input.harness === "codex-cli" ? this.#codexPath : this.#claudePath;
+		const modelArgs = input.model === PROVIDER_DEFAULT_MODEL ? [] : ["--model", input.model];
+		const args =
+			input.harness === "codex-cli"
+				? [
+						"exec",
+						"--json",
+						"--ephemeral",
+						"--ignore-user-config",
+						"--skip-git-repo-check",
+						"--sandbox",
+						"workspace-write",
+						// Snappy by default (founder, 2026-08-26): route reasoning
+						// effort low unless a turn explicitly raises it.
+						"-c",
+						"model_reasoning_effort=low",
+						"-c",
+						`mcp_servers.qorpera={url=${JSON.stringify(input.mouth.url)},bearer_token_env_var="QORPERA_AGENT_SEND_TOKEN",required=true,enabled_tools=["send_message"]}`,
+						...modelArgs,
+						"--cd",
+						companyRoot,
+						"-",
+					]
+				: [
+						"--print",
+						"--output-format",
+						"json",
+						"--no-session-persistence",
+						"--permission-mode",
+						"auto",
+						// Safe mode disables even the explicit MCP mouth. Exclude file-based
+						// settings and executable hooks while retaining normal permissions.
+						"--setting-sources",
+						"",
+						"--settings",
+						JSON.stringify({ disableAllHooks: true }),
+						"--strict-mcp-config",
+						"--mcp-config",
+						JSON.stringify({
+							mcpServers: {
+								qorpera: {
+									type: "http",
+									url: input.mouth.url,
+									// biome-ignore lint/suspicious/noTemplateCurlyInString: Claude expands this MCP header from its environment.
+									headers: { Authorization: "Bearer ${QORPERA_AGENT_SEND_TOKEN}" },
+								},
+							},
+						}),
+						"--allowedTools",
+						"mcp__qorpera__send_message",
+						...modelArgs,
+					];
+		const child = spawn(command, args, {
+			cwd: companyRoot,
+			env: environment,
+			stdio: ["pipe", "pipe", "pipe"],
+			windowsHide: true,
+		});
+		const capture = collectChildOutput(child);
+		const abort = (): void => {
+			void terminateChild(child);
+		};
+		input.signal?.addEventListener("abort", abort, { once: true });
+		if (input.signal?.aborted) abort();
+		child.stdin.end(input.prompt, "utf-8");
+		try {
+			await capture.completed;
+			input.signal?.throwIfAborted();
+			if (input.harness !== "codex-cli") {
+				const output = JSON.parse(capture.output()) as Record<string, unknown>;
+				if (output.is_error === true || output.type !== "result" || output.subtype !== "success") {
+					throw new Error("Claude Code did not complete its turn");
+				}
+				return {
+					...(typeof output.session_id === "string" ? { providerSessionId: output.session_id } : {}),
+				};
+			}
+			let providerSessionId: string | undefined;
+			let completed = false;
+			let failed = false;
+			for (const line of capture.output().split(/\r?\n/)) {
+				if (!line.trim()) continue;
+				try {
+					const event = JSON.parse(line) as Record<string, unknown>;
+					if (event.type === "thread.started" && typeof event.thread_id === "string") {
+						providerSessionId = event.thread_id;
+					}
+					if (event.type === "turn.completed") completed = true;
+					if (event.type === "turn.failed" || event.type === "error") failed = true;
+				} catch {
+					// The official CLI may emit non-JSON diagnostics alongside JSONL events.
+				}
+			}
+			if (!completed || failed) {
+				const category = nativeHarnessFailureCategory(capture.output());
+				throw new Error(`Codex did not complete its turn${category ? ` (${category})` : ""}`);
+			}
+			input.signal?.throwIfAborted();
+			return { ...(providerSessionId ? { providerSessionId } : {}) };
+		} finally {
+			input.signal?.removeEventListener("abort", abort);
+		}
+	}
+}
+
+function exactDescription(request: NativeProviderLoginRequest, description: NativeProviderLoginDescription): void {
+	if (
+		description.loginId !== request.loginId ||
+		description.clientConnectionId !== request.clientConnectionId ||
+		description.computeIdentityId !== request.computeIdentityId ||
+		description.computeIdentityOwnershipKind !== request.computeIdentityOwnershipKind ||
+		description.computeIdentityOwnerUserId !== request.computeIdentityOwnerUserId ||
+		description.computeIdentityOwnerScopeKey !== request.computeIdentityOwnerScopeKey ||
+		description.provider !== request.provider ||
+		description.nativeHarness !== request.nativeHarness ||
+		description.expiresAt !== request.expiresAt
+	) {
+		throw new Error("Native login request does not match its durable control-plane authority");
+	}
+}
+
+async function boundedText(path: string, label: string): Promise<string> {
+	const metadata = await lstat(path);
+	if (!metadata.isFile() || metadata.size > MAX_PROMPT_BYTES) throw new Error(`${label} exceeds its byte limit`);
+	return readFile(path, "utf-8");
+}
+
+async function executionPrompt(
+	request: NativeLegacyExecutionRequest,
+): Promise<{ prompt: string; requireFinalSend: boolean }> {
+	const [context, inputs, transcript] = await Promise.all([
+		boundedText(request.input.executionContextPath, "Execution context"),
+		boundedText(request.input.queuedInputsPath, "Queued inputs"),
+		boundedText(request.input.transcriptPath, "Canonical transcript"),
+	]);
+	const execution = JSON.parse(context) as {
+		schema?: unknown;
+		run?: { runId?: unknown; jobId?: unknown; sessionId?: unknown };
+	};
+	if (
+		execution?.schema !== "qorpera.runner-execution-context/v1" ||
+		execution?.run?.runId !== request.authority.runId ||
+		execution.run.jobId !== request.job.jobId ||
+		(execution.run.sessionId !== undefined &&
+			(typeof execution.run.sessionId !== "string" || !UUID_PATTERN.test(execution.run.sessionId)))
+	) {
+		throw new Error("Native execution context does not match its run");
+	}
+	const requireFinalSend = execution.run.sessionId !== undefined;
+	const prompt = [
+		"You are a Qorpera agent working in the cloud. No member desktop is needed to execute this turn.\n",
+		"The Qorpera transcript is canonical. Use it to reconstruct context; do not assume local provider-session continuity.",
+		" The supplied Company File is the digital company you work over, not chat memory or a scratch directory. Work directly on its mounted live state; do not create a company checkout or a commit/merge workflow. Isolated review work, when explicitly designated by the execution context, must not modify live state.\n",
+		"Your identity is the run's staffAgentId in the execution context. Read agents/<staffAgentId>/instructions.md in the Company File when present for your job specification.\n",
+		CLOUD_AGENT_SEND_INSTRUCTIONS,
+		requireFinalSend
+			? " The send tool is already bound to this run's authorized conversation: you cannot choose another recipient or speak as another agent. A final send is required. A kickoff is a private startup instruction, not a message to quote.\n"
+			: " This job has no conversation recipient. Do the assigned work silently; do not call send_message or invent a human recipient.\n",
+		"\n<execution-context>\n",
+		context,
+		"\n</execution-context>\n<canonical-transcript>\n",
+		transcript,
+		"\n</canonical-transcript>\n<queued-inputs>\n",
+		inputs,
+		"\n</queued-inputs>\n",
+	].join("");
+	if (Buffer.byteLength(prompt) > MAX_PROMPT_BYTES) throw new Error("Native turn context exceeds its byte limit");
+	return { prompt, requireFinalSend };
+}
+
+export class NativeProviderHost {
+	readonly #controlPlane: NativeProviderControlPlane;
+	readonly #capsules: NativeCredentialCapsuleStore;
+	readonly #harness: NativeHarnessDriver;
+	readonly #cloudRuntime?: NativeCloudExecutionDriver;
+	readonly #masterKey: string;
+	readonly #backupIdentityKey?: (request: NativeProviderLoginRequest) => Promise<void>;
+	readonly #computeIdentityId: string;
+	readonly #temporaryRoot: string;
+	readonly #logins = new Map<string, LoginState>();
+
+	constructor(options: {
+		controlPlane: NativeProviderControlPlane;
+		capsules: NativeCredentialCapsuleStore;
+		harness: NativeHarnessDriver;
+		cloudRuntime?: NativeCloudExecutionDriver;
+		masterKey: string;
+		computeIdentityId: string;
+		temporaryRoot?: string;
+		backupIdentityKey?: (request: NativeProviderLoginRequest) => Promise<void>;
+	}) {
+		capsuleKey(options.masterKey);
+		requiredUuid(options.computeIdentityId, "Native host Compute Identity id");
+		this.#controlPlane = options.controlPlane;
+		this.#capsules = options.capsules;
+		this.#harness = options.harness;
+		this.#cloudRuntime = options.cloudRuntime;
+		this.#masterKey = options.masterKey;
+		this.#backupIdentityKey = options.backupIdentityKey;
+		this.#computeIdentityId = options.computeIdentityId;
+		this.#temporaryRoot = resolve(options.temporaryRoot ?? tmpdir());
+	}
+
+	async beginLogin(request: NativeProviderLoginRequest, signal?: AbortSignal): Promise<JsonValue> {
+		requiredUuid(request.loginId, "Native login id");
+		requiredUuid(request.clientConnectionId, "Native client connection id");
+		requiredUuid(request.computeIdentityId, "Native compute identity id");
+		if (request.computeIdentityId !== this.#computeIdentityId) {
+			throw new Error("Native login names another Compute Identity");
+		}
+		if (
+			!TOKEN_PATTERN.test(request.capability) ||
+			!Number.isFinite(Date.parse(request.expiresAt)) ||
+			Date.parse(request.expiresAt) <= Date.now()
+		) {
+			throw new Error("Native login capability is invalid");
+		}
+		const existing = this.#logins.get(request.loginId);
+		if (existing) {
+			if (!sameLogin(existing.request, request)) throw new Error("Native login id is bound to another request");
+			if (existing.status === "failed") throw existing.error ?? new Error("Native provider login failed");
+			return {
+				schema: LOGIN_RESULT_SCHEMA,
+				login_id: request.loginId,
+				status: existing.status === "completed" ? "completed" : "awaiting_member",
+				interaction_url: existing.prompt.interactionUrl ?? null,
+				user_code: existing.prompt.userCode ?? null,
+			};
+		}
+		const description = await this.#controlPlane.describeLogin(request.loginId, request.capability, signal);
+		exactDescription(request, description);
+		const root = await mkdtemp(join(this.#temporaryRoot, `qorpera-native-login-${request.loginId}-`));
+		const handle = await this.#harness.beginLogin(request.nativeHarness, root, signal);
+		const state: LoginState = {
+			request: structuredClone(request),
+			root,
+			handle,
+			status: "awaiting_member",
+			prompt: {},
+		};
+		this.#logins.set(request.loginId, state);
+		try {
+			state.prompt = await handle.prompt;
+		} catch (error) {
+			state.status = "failed";
+			state.error = error instanceof Error ? error : new Error(String(error));
+			await handle.cancel().catch(() => undefined);
+			await rm(root, { recursive: true, force: true });
+			throw state.error;
+		}
+		void this.#finishLogin(state).catch((error: unknown) => {
+			state.status = "failed";
+			state.error = error instanceof Error ? error : new Error(String(error));
+			console.error(state.error.message);
+		});
+		return {
+			schema: LOGIN_RESULT_SCHEMA,
+			login_id: request.loginId,
+			status: "awaiting_member",
+			interaction_url: state.prompt.interactionUrl ?? null,
+			user_code: state.prompt.userCode ?? null,
+		};
+	}
+
+	async execute(request: NativeProviderExecutionRequest, signal?: AbortSignal): Promise<JsonValue> {
+		const { authority } = request;
+		if ((request.runtime === "company-path-v1") !== Boolean(this.#cloudRuntime)) {
+			throw new Error("Native provider execution runtime is not configured for this request");
+		}
+		for (const [label, value] of [
+			["Native lease id", authority.leaseId],
+			["Native run id", authority.runId],
+			["Native capsule id", authority.credentialCapsuleId],
+			["Native compute identity id", authority.computeIdentityId],
+			["Native runner id", authority.runnerId],
+			["Native assignment id", authority.assignmentId],
+			["Native job id", request.job.jobId],
+		] as const)
+			requiredUuid(value, label);
+		if (authority.computeIdentityId !== this.#computeIdentityId) {
+			throw new Error("Native execution names another Compute Identity");
+		}
+		if (
+			request.job.jobType !== "agent_turn" ||
+			request.job.requiredCapability !== "agent_turn" ||
+			!SHA256_PATTERN.test(authority.attestationPolicySha256) ||
+			!Number.isFinite(Date.parse(authority.expiresAt)) ||
+			Date.parse(authority.expiresAt) <= Date.now() ||
+			!authority.encryptedCapsuleReference.trim() ||
+			!authority.model.trim()
+		) {
+			throw new Error("Native execution authority is invalid");
+		}
+		const executionAbort = new AbortController();
+		const externalAbort = (): void => executionAbort.abort(signal?.reason ?? new Error("Native execution stopped"));
+		if (signal?.aborted) externalAbort();
+		else signal?.addEventListener("abort", externalAbort, { once: true });
+		let stage = "initial-authority-validation";
+		try {
+			await this.#controlPlane.validateExecution(request, executionAbort.signal);
+		} catch (error) {
+			throw new Error(`Native provider execution ${stage} stage failed`, { cause: error });
+		}
+		const validationStop = new AbortController();
+		let validationError: unknown;
+		const validationSignal = AbortSignal.any([executionAbort.signal, validationStop.signal]);
+		const monitor = (async () => {
+			while (await waitFor(EXECUTION_AUTHORITY_RECHECK_MS, validationSignal)) {
+				try {
+					await this.#controlPlane.validateExecution(request, validationSignal);
+				} catch (error) {
+					validationError = error;
+					executionAbort.abort(error);
+					return;
+				}
+			}
+		})();
+		let root: string | undefined;
+		let durableCredentialPaths: ReadonlySet<string> | undefined;
+		let harnessStarted = false;
+		let output: JsonValue | undefined;
+		let failure: Error | undefined;
+		const mouth = this.#cloudRuntime
+			? undefined
+			: new CloudAgentMouth(
+					authority.runId,
+					(input) => this.#controlPlane.sendMessage(request, input, executionAbort.signal),
+					executionAbort.signal,
+				);
+		try {
+			stage = "temporary-workspace";
+			root = await mkdtemp(join(this.#temporaryRoot, `qorpera-native-run-${authority.runId}-`));
+			stage = "credential-download";
+			const capsule = await this.#capsules.get(authority.encryptedCapsuleReference, executionAbort.signal);
+			stage = "credential-opening";
+			await openNativeCredentialCapsule(
+				capsule,
+				root,
+				this.#masterKey,
+				authority.credentialCapsuleId,
+				request.runtime === "company-path-v1" ? CODEX_CREDENTIAL_PATHS : undefined,
+			);
+			durableCredentialPaths = new Set((await collectCapsuleFiles(root)).files.map((file) => file.path));
+			let result: { providerSessionId?: string };
+			let delivery: { messageCount: number; finalMessageId: string | null };
+			if (request.runtime === "company-path-v1") {
+				if (!this.#cloudRuntime) throw new Error("Native company runtime is unavailable");
+				// No local prompt/transcript, canonical mount, group walk or MCP
+				// endpoint participates in the governed cloud execution path.
+				stage = "harness-execution";
+				harnessStarted = true;
+				const executed = await this.#cloudRuntime.execute(request, root, executionAbort.signal);
+				result = executed;
+				delivery = executed.delivery;
+			} else {
+				if (!mouth) throw new Error("Native legacy mouth is unavailable");
+				stage = "prompt-materialization";
+				const context = await executionPrompt(request);
+				stage = "public-mouth-start";
+				const mouthConnection = await mouth.start();
+				stage = "harness-execution";
+				harnessStarted = true;
+				result = await this.#harness.execute({
+					harness: authority.nativeHarness,
+					model: authority.model,
+					identityRoot: root,
+					companyRoot: request.input.companyRoot,
+					prompt: context.prompt,
+					mouth: mouthConnection,
+					signal: executionAbort.signal,
+				});
+				stage = "public-mouth-completion";
+				delivery = await mouth.finish(context.requireFinalSend);
+				await mouth.close();
+				stage = "workspace-normalization";
+				await grantWorkspaceGroupAccess(request.input.companyRoot);
+			}
+			output = {
+				schema: HARNESS_RESULT_SCHEMA,
+				run_id: authority.runId,
+				message_count: delivery.messageCount,
+				final_message_id: delivery.finalMessageId,
+				provider_session_id: result.providerSessionId ?? null,
+			};
+		} catch (error) {
+			if (stage === "harness-execution") {
+				if (validationError) {
+					failure = new Error("Native provider execution completion-authority-validation stage failed", {
+						cause: validationError,
+					});
+				} else {
+					failure = safeHarnessExecutionFailure(error, mouth?.diagnosticState ?? "uninitialized");
+				}
+			} else {
+				const reason = stage === "credential-sealing" ? ` (${credentialSealingFailure(error)})` : "";
+				failure = new Error(`Native provider execution ${stage} stage failed${reason}`, { cause: error });
+			}
+		} finally {
+			await mouth?.close();
+			// A provider may rotate its login token before a later request fails.
+			// Preserve only the original credential paths, never transient sessions,
+			// and recheck live authority immediately before replacing the capsule.
+			if (root && durableCredentialPaths && harnessStarted) {
+				stage = "completion-authority-validation";
+				try {
+					executionAbort.signal.throwIfAborted();
+					stage = "credential-sealing";
+					const refreshedCapsule = await sealNativeCredentialCapsule(
+						root,
+						this.#masterKey,
+						authority.credentialCapsuleId,
+						durableCredentialPaths,
+					);
+					stage = "completion-authority-validation";
+					await this.#controlPlane.validateExecution(request, executionAbort.signal);
+					executionAbort.signal.throwIfAborted();
+					stage = "credential-upload";
+					await this.#capsules.put(authority.encryptedCapsuleReference, refreshedCapsule, executionAbort.signal);
+				} catch (error) {
+					const reason = stage === "credential-sealing" ? ` (${credentialSealingFailure(error)})` : "";
+					failure ??= new Error(`Native provider execution ${stage} stage failed${reason}`, { cause: error });
+				}
+			}
+			validationStop.abort();
+			try {
+				await monitor;
+			} catch (error) {
+				failure ??= new Error(
+					`Native provider execution authority-monitor stage failed (${harnessExecutionFailureCategory(error)})`,
+					{ cause: error },
+				);
+			}
+			signal?.removeEventListener("abort", externalAbort);
+			/* A failed or fenced attempt still leaves partial output that the
+			 * durable review path must be able to read; normalize best-effort
+			 * without masking the original failure. */
+			if (failure && request.runtime !== "company-path-v1")
+				await grantWorkspaceGroupAccess(request.input.companyRoot).catch(() => undefined);
+			if (root) {
+				try {
+					await rm(root, { recursive: true, force: true });
+				} catch (error) {
+					failure ??= new Error(
+						`Native provider execution cleanup stage failed (${harnessExecutionFailureCategory(error)})`,
+						{ cause: error },
+					);
+				}
+			}
+		}
+		if (failure) throw failure;
+		if (!output) throw new Error("Native provider execution internal-completion stage failed");
+		return output;
+	}
+
+	async #finishLogin(state: LoginState): Promise<void> {
+		let stage = "harness-completion";
+		try {
+			const completed = await state.handle.completed;
+			stage = "identity-key-backup";
+			await this.#backupIdentityKey?.(state.request);
+			const capsuleId = randomUUID();
+			const reference = `native-capsule/${capsuleId}`;
+			stage = "credential-sealing";
+			const capsule = await sealNativeCredentialCapsule(
+				state.root,
+				this.#masterKey,
+				capsuleId,
+				state.request.nativeHarness === "codex-cli" ? CODEX_CREDENTIAL_PATHS : undefined,
+			);
+			stage = "credential-upload";
+			await this.#capsules.put(reference, capsule);
+			stage = "control-plane-commit";
+			await this.#controlPlane.completeLogin({
+				loginId: state.request.loginId,
+				capability: state.request.capability,
+				capsuleId,
+				encryptedCapsuleReference: reference,
+				attestationPolicySha256: createHash("sha256").update("qorpera.native-provider-host/v1").digest("hex"),
+				...(completed.providerAccountReference
+					? { providerAccountReference: completed.providerAccountReference }
+					: {}),
+			});
+			state.status = "completed";
+		} catch (error) {
+			const reason = stage === "credential-sealing" ? ` (${credentialSealingFailure(error)})` : "";
+			throw new Error(`Native provider login ${stage} stage failed${reason}`, { cause: error });
+		} finally {
+			await rm(state.root, { recursive: true, force: true });
+		}
+	}
+}

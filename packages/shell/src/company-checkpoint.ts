@@ -12,7 +12,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { cloudCompanyPathBelongsToLogicalTree } from "./cloud-company-snapshot.ts";
+import { cloudCompanyPathBelongsToLogicalTree } from "@qorpera/cloud-client/node/cloud-company-snapshot";
 
 export interface CompanyGitBaseline {
 	dirtyPaths: Map<string, string>;

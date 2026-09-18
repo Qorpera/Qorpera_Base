@@ -72,6 +72,7 @@ jobs:
         run: >-
           node ../../node_modules/vitest/dist/cli.js --run
           test/lxd-client.test.ts
+          test/lxd-guest-network.test.ts
           test/lxd-image-provenance.test.ts
           test/lxd-login-gateway.test.ts
           test/lxd-provider.test.ts

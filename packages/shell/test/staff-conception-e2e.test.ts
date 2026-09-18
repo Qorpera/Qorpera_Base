@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { StaffTemplateId } from "@qorpera/cloud-client/staff-template-ids";
 import type { AgentTool } from "@qorpera/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall } from "@qorpera/pi-ai";
 import { readScheduledJobs } from "@qorpera/pi-coding-agent/company-connections";
@@ -49,7 +50,7 @@ import {
 } from "../../coding-agent/test/suite/harness.ts";
 import { createConnectionRequest, readConnectionRequests } from "../src/connection-requests.ts";
 import { applyStaffRoutineOperation } from "../src/staff-routines.ts";
-import { listStaffTemplates, type StaffTemplate, type StaffTemplateId } from "../src/staff-templates.ts";
+import { listStaffTemplates, type StaffTemplate } from "../src/staff-templates.ts";
 
 const OBSERVED_AT = "2026-08-16T12:00:00.000Z";
 const SOURCE_FILE = "files/conception-source.json";

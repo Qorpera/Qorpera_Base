@@ -1,5 +1,6 @@
 import { isAbsolute, resolve } from "node:path";
 import { FileRunnerOrchestratorControlTokenStore } from "./control-token-store.ts";
+import type { ServiceHttpFetch } from "./http-transport.ts";
 import { nodeHttpFetch } from "./node-http-fetch.ts";
 import { CloudRunnerOrchestrator, SupabaseCloudRunnerOrchestratorControlPlane } from "./orchestrator.ts";
 import { HttpCloudRunnerProviderAdapter } from "./provider-http.ts";
@@ -24,7 +25,7 @@ export interface CloudRunnerOrchestratorServiceConfig {
 export interface CloudRunnerOrchestratorServiceOptions {
 	config: CloudRunnerOrchestratorServiceConfig;
 	signal: AbortSignal;
-	fetchImplementation?: typeof fetch;
+	fetchImplementation?: ServiceHttpFetch;
 	onError?: (error: unknown) => void;
 }
 

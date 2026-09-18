@@ -1,0 +1,26 @@
+{
+  "schema": "qorpera.fallback-account-comparison/v1",
+  "passed": true,
+  "observedAt": "2026-09-06T18:10:40.603Z",
+  "loginId": "936f6a44-8c9d-45ab-921f-aab0853d8911",
+  "currentConnectionId": "2e55091d-1fbf-45e7-9a25-2fe9944d775c",
+  "newConnectionId": "2bd8e0ae-fc58-449a-b680-e58ff4784744",
+  "sameProviderAccount": false,
+  "records": [
+    {
+      "capsuleId": "3dd681e1-b643-43ef-ad0f-92709d9a2269",
+      "encryptedSha256": "ccdd76f788eedf215f351c43b98b9070ca332b190c19b5a0b7536b4b1434dce8",
+      "encryptedBytes": 5535,
+      "refreshTokenPresent": true
+    },
+    {
+      "capsuleId": "d5fea972-5aec-48c1-9d14-865be5917a0c",
+      "encryptedSha256": "3b96d0703572201dfd208560a42a2283dfbc812df238793a33cf6177b6bfab7d",
+      "encryptedBytes": 5235,
+      "refreshTokenPresent": true
+    }
+  ],
+  "credentialValuesReturned": false,
+  "credentialFilesWritten": false,
+  "providerAuthenticationAttempted": false
+}

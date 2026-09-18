@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+	type CloudRoutineScheduleHead,
 	CloudRoutineScheduleReconciler,
 	type CloudRunnerOrchestrationClaim,
 	CloudRunnerOrchestrator,
 	type CloudRunnerOrchestratorControlPlane,
+	CloudRunnerOrchestratorRequestError,
 	LocalCloudRunnerProviderAdapter,
 	SupabaseCloudRunnerOrchestratorControlPlane,
 	validateCloudRunnerWork,
@@ -95,6 +97,22 @@ function controlPlane(claimed: CloudRunnerOrchestrationClaim | undefined = claim
 		releaseClaim: vi.fn(async () => undefined),
 	};
 	return control;
+}
+
+function scheduleHead(routineId = "12121212-1212-4212-8212-121212121212"): CloudRoutineScheduleHead {
+	const { work } = claim();
+	return {
+		routineId,
+		profileId: work.profileId,
+		environmentId: work.environmentId,
+		version: 3,
+		staffAgentId: work.staffAgentId,
+		triggers: [{ id: "schedule-main", kind: "schedule", intervalMinutes: 60, replyPolicy: "required" }],
+		scheduleCursors: [{ triggerId: "schedule-main" }],
+		contentSha256: "a".repeat(64),
+		effectiveAt: "2026-08-20T07:00:00.000Z",
+		updatedAt: "2026-08-20T08:00:00.000Z",
+	};
 }
 
 function localAdapter(deliver = vi.fn(async (): Promise<void> => undefined)) {
@@ -259,7 +277,7 @@ describe("cloud runner orchestrator", () => {
 		).resolves.toEqual({ occurrenceId, status: "queued", scheduledFor });
 	});
 
-	it("advances durable interval cursors and reports bounded catch-up honestly", async () => {
+	it.each(["optional", "required", "silent"])("enqueues %s interval wakes", async (replyPolicy) => {
 		const routineId = "12121212-1212-4212-8212-121212121212";
 		const control = controlPlane(undefined);
 		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({
@@ -270,7 +288,7 @@ describe("cloud runner orchestrator", () => {
 					environmentId: "99999999-9999-4999-8999-999999999999",
 					version: 3,
 					staffAgentId: "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd",
-					triggers: [{ id: "schedule-main", kind: "schedule", intervalMinutes: 60 }],
+					triggers: [{ id: "schedule-main", kind: "schedule", intervalMinutes: 60, replyPolicy }],
 					scheduleCursors: [
 						{
 							triggerId: "schedule-main",
@@ -350,6 +368,125 @@ describe("cloud runner orchestrator", () => {
 		]);
 	});
 
+	it("stops a rejected trigger's catch-up while continuing independent triggers and pages", async () => {
+		const control = controlPlane();
+		const first = scheduleHead();
+		const second = scheduleHead("13131313-1313-4313-8313-131313131313");
+		first.triggers = [
+			{ id: "blocked", kind: "schedule", intervalMinutes: 60 },
+			{ id: "independent", kind: "schedule", intervalMinutes: 60 },
+		];
+		first.scheduleCursors = ["blocked", "independent"].map((triggerId) => ({
+			triggerId,
+			lastScheduledFor: "2026-08-20T08:00:00.000Z",
+			nextDueAt: "2026-08-20T09:00:00.000Z",
+		}));
+		second.scheduleCursors = [{ ...first.scheduleCursors[0], triggerId: "schedule-main" }];
+		vi.mocked(control.listRoutineScheduleHeads).mockImplementation(async (after) =>
+			after
+				? { items: [second], hasMore: false }
+				: { items: [first], hasMore: true, nextAfterRoutineId: first.routineId },
+		);
+		const failure = new CloudRunnerOrchestratorRequestError(503);
+		vi.mocked(control.enqueueRoutineWake).mockImplementation(async (input) => {
+			if (input.triggerId === "blocked") throw failure;
+			return { occurrenceId: input.occurrenceId, status: "queued", scheduledFor: input.scheduledFor };
+		});
+		const reconciler = new CloudRoutineScheduleReconciler({
+			now: () => new Date("2026-08-20T10:30:00.000Z"),
+			catchUpLimit: 3,
+		});
+
+		await expect(reconciler.reconcile(control)).rejects.toMatchObject({ errors: [failure] });
+
+		expect(vi.mocked(control.enqueueRoutineWake).mock.calls.map(([input]) => input)).toMatchObject([
+			{ triggerId: "blocked", scheduledFor: "2026-08-20T09:00:00.000Z" },
+			{ triggerId: "independent", scheduledFor: "2026-08-20T09:00:00.000Z" },
+			{ triggerId: "independent", scheduledFor: "2026-08-20T10:00:00.000Z" },
+			{ routineId: second.routineId, scheduledFor: "2026-08-20T09:00:00.000Z" },
+			{ routineId: second.routineId, scheduledFor: "2026-08-20T10:00:00.000Z" },
+		]);
+		expect(control.listRoutineScheduleHeads).toHaveBeenLastCalledWith(first.routineId, 250);
+	});
+
+	it("recomputes an unadmitted initial slot from the existing latest-slot rule", async () => {
+		const control = controlPlane();
+		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({ items: [scheduleHead()], hasMore: false });
+		const failure = new CloudRunnerOrchestratorRequestError(401);
+		vi.mocked(control.enqueueRoutineWake).mockRejectedValue(failure);
+		let now = new Date("2026-08-20T09:30:00.000Z");
+		const reconciler = new CloudRoutineScheduleReconciler({ now: () => now });
+
+		await expect(reconciler.reconcile(control)).rejects.toMatchObject({ errors: [failure] });
+		now = new Date("2026-08-20T09:45:00.000Z");
+		await expect(reconciler.reconcile(control)).rejects.toMatchObject({ errors: [failure] });
+		now = new Date("2026-08-20T10:30:00.000Z");
+		await expect(reconciler.reconcile(control)).rejects.toMatchObject({ errors: [failure] });
+
+		const attempts = vi.mocked(control.enqueueRoutineWake).mock.calls.map(([input]) => input);
+		expect(attempts[1]).toEqual(attempts[0]);
+		expect(attempts.map((input) => input.scheduledFor)).toEqual([
+			"2026-08-20T09:00:00.000Z",
+			"2026-08-20T09:00:00.000Z",
+			"2026-08-20T10:00:00.000Z",
+		]);
+		expect(attempts[2]?.occurrenceId).not.toBe(attempts[0]?.occurrenceId);
+		expect(attempts.every((input) => input.expectedLastScheduledFor === undefined)).toBe(true);
+	});
+
+	it("retries a durable cursor's first pending slot until the existing catch-up bound coalesces it", async () => {
+		const control = controlPlane();
+		const head = scheduleHead();
+		head.scheduleCursors = [
+			{
+				triggerId: "schedule-main",
+				lastScheduledFor: "2026-08-20T08:00:00.000Z",
+				nextDueAt: "2026-08-20T09:00:00.000Z",
+			},
+		];
+		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({ items: [head], hasMore: false });
+		const failure = new CloudRunnerOrchestratorRequestError(503);
+		vi.mocked(control.enqueueRoutineWake).mockRejectedValue(failure);
+		let now = new Date("2026-08-20T09:30:00.000Z");
+		const reconciler = new CloudRoutineScheduleReconciler({ now: () => now, catchUpLimit: 2 });
+
+		await expect(reconciler.reconcile(control)).rejects.toMatchObject({ errors: [failure] });
+		now = new Date("2026-08-20T10:30:00.000Z");
+		await expect(reconciler.reconcile(control)).rejects.toMatchObject({ errors: [failure] });
+		now = new Date("2026-08-20T12:30:00.000Z");
+		await expect(reconciler.reconcile(control)).rejects.toMatchObject({ errors: [failure] });
+
+		const attempts = vi.mocked(control.enqueueRoutineWake).mock.calls.map(([input]) => input);
+		expect(attempts).toHaveLength(3);
+		expect(attempts[1]).toEqual(attempts[0]);
+		expect(attempts[2]).toMatchObject({
+			scheduledFor: "2026-08-20T12:00:00.000Z",
+			expectedLastScheduledFor: "2026-08-20T08:00:00.000Z",
+			payload: { schema: "qorpera.routine-schedule-occurrence/v1", coalesced: 3 },
+		});
+		expect(attempts[2]?.occurrenceId).not.toBe(attempts[0]?.occurrenceId);
+	});
+
+	it("does not isolate cancellation as an enqueue failure", async () => {
+		const control = controlPlane();
+		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({
+			items: [scheduleHead(), scheduleHead("13131313-1313-4313-8313-131313131313")],
+			hasMore: false,
+		});
+		const controller = new AbortController();
+		const failure = new DOMException("Stopped", "AbortError");
+		vi.mocked(control.enqueueRoutineWake).mockImplementation(async () => {
+			controller.abort();
+			throw failure;
+		});
+		const reconciler = new CloudRoutineScheduleReconciler({
+			now: () => new Date("2026-08-20T12:30:00.000Z"),
+		});
+
+		await expect(reconciler.reconcile(control, controller.signal)).rejects.toBe(failure);
+		expect(control.enqueueRoutineWake).toHaveBeenCalledOnce();
+	});
+
 	it("does not backfill a weekly occurrence from before the routine version existed", async () => {
 		const control = controlPlane(undefined);
 		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({
@@ -387,7 +524,7 @@ describe("cloud runner orchestrator", () => {
 		expect(control.enqueueRoutineWake).not.toHaveBeenCalled();
 	});
 
-	it("starts weekday intervals at their explicit anchor", async () => {
+	it.each(["optional", "required", "silent"])("enqueues %s weekday wakes", async (replyPolicy) => {
 		const control = controlPlane(undefined);
 		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({
 			items: [
@@ -401,6 +538,7 @@ describe("cloud runner orchestrator", () => {
 						{
 							id: "weekday-review",
 							kind: "schedule",
+							replyPolicy,
 							intervalMinutes: 1_440,
 							startAt: "2026-08-24T09:00:00.000Z",
 							weekdays: ["monday", "tuesday", "wednesday", "thursday", "friday"],
@@ -431,7 +569,7 @@ describe("cloud runner orchestrator", () => {
 		});
 	});
 
-	it("reconciles advanced interval windows across excluded days", async () => {
+	it.each(["optional", "required", "silent"])("enqueues %s window wakes", async (replyPolicy) => {
 		const control = controlPlane(undefined);
 		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({
 			items: [
@@ -445,6 +583,7 @@ describe("cloud runner orchestrator", () => {
 						{
 							id: "office-hours",
 							kind: "schedule",
+							replyPolicy,
 							intervalMinutes: 30,
 							months: [8],
 							weekdays: ["monday", "tuesday", "wednesday", "thursday", "friday"],
@@ -485,7 +624,7 @@ describe("cloud runner orchestrator", () => {
 		]);
 	});
 
-	it("rejects noncanonical interval start timestamps instead of silently parking them", async () => {
+	it("rejects noncanonical timestamps, malformed policies, and payload silence flags", async () => {
 		const control = controlPlane(undefined);
 		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({
 			items: [
@@ -498,8 +637,19 @@ describe("cloud runner orchestrator", () => {
 					triggers: [
 						{ id: "infinite", kind: "schedule", intervalMinutes: 60, startAt: "infinity" },
 						{ id: "relative", kind: "schedule", intervalMinutes: 60, startAt: "now" },
+						{ id: "unknown-policy", kind: "schedule", intervalMinutes: 60, replyPolicy: "unknown" },
+						{ id: "null-policy", kind: "schedule", intervalMinutes: 60, replyPolicy: null },
+						{ id: "boolean-policy", kind: "schedule", intervalMinutes: 60, replyPolicy: false },
+						{ id: "payload-flag", kind: "schedule", intervalMinutes: 60, silenceAllowed: true },
 					],
-					scheduleCursors: [{ triggerId: "infinite" }, { triggerId: "relative" }],
+					scheduleCursors: [
+						{ triggerId: "infinite" },
+						{ triggerId: "relative" },
+						{ triggerId: "unknown-policy" },
+						{ triggerId: "null-policy" },
+						{ triggerId: "boolean-policy" },
+						{ triggerId: "payload-flag" },
+					],
 					contentSha256: "a".repeat(64),
 					effectiveAt: "2026-08-20T07:00:00.000Z",
 					updatedAt: "2026-08-20T08:00:00.000Z",
@@ -788,6 +938,93 @@ describe("cloud runner orchestrator", () => {
 		await orchestrator.run(controller.signal, { pollIntervalMs: 10 });
 		expect(control.claimNext).toHaveBeenCalledTimes(2);
 		expect(local.deliver).toHaveBeenCalledOnce();
+	});
+
+	it.each([401, 503])("isolates persistent enqueue %i failures from later schedules and dispatch", async (status) => {
+		const control = controlPlane();
+		const blocked = scheduleHead();
+		const independent = scheduleHead("13131313-1313-4313-8313-131313131313");
+		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({ items: [blocked, independent], hasMore: false });
+		const failure = new CloudRunnerOrchestratorRequestError(status);
+		vi.mocked(control.enqueueRoutineWake).mockImplementation(async (input) => {
+			if (input.routineId === blocked.routineId) throw failure;
+			return { occurrenceId: input.occurrenceId, status: "queued", scheduledFor: input.scheduledFor };
+		});
+		vi.mocked(control.claimNext)
+			.mockResolvedValueOnce(undefined)
+			.mockResolvedValueOnce(claim())
+			.mockResolvedValue(undefined);
+		const occurrenceReconciler = { reconcile: vi.fn(async () => undefined) };
+		const controller = new AbortController();
+		const local = localAdapter(vi.fn(async () => controller.abort()));
+		let errorCount = 0;
+		const onError = vi.fn((_error: unknown) => {
+			errorCount += 1;
+			if (errorCount >= 4) controller.abort();
+		});
+		const orchestrator = new CloudRunnerOrchestrator({
+			orchestratorId,
+			controlPlane: control,
+			providerAdapter: local.adapter,
+			occurrenceReconcilers: [occurrenceReconciler],
+			clientClaimId: () => claimId,
+			clientAssignmentId: () => assignmentId,
+			createCapability: () => capability,
+		});
+
+		await orchestrator.run(controller.signal, { pollIntervalMs: 10, onError });
+
+		expect(vi.mocked(control.enqueueRoutineWake).mock.calls.map(([input]) => input.routineId)).toEqual([
+			blocked.routineId,
+			independent.routineId,
+			blocked.routineId,
+			independent.routineId,
+		]);
+		expect(onError.mock.calls.map(([error]) => error)).toEqual([failure, failure]);
+		expect(occurrenceReconciler.reconcile).toHaveBeenCalledTimes(2);
+		expect(control.reconcileExpired).toHaveBeenCalledTimes(2);
+		expect(local.reconcile).toHaveBeenCalledTimes(2);
+		expect(control.claimNext).toHaveBeenCalledTimes(2);
+		expect(local.deliver).toHaveBeenCalledOnce();
+	});
+
+	it("returns admission errors beside a successful single-poll dispatch", async () => {
+		const control = controlPlane();
+		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({ items: [scheduleHead()], hasMore: false });
+		const failure = new CloudRunnerOrchestratorRequestError(401);
+		vi.mocked(control.enqueueRoutineWake).mockRejectedValue(failure);
+		const local = localAdapter();
+		const orchestrator = new CloudRunnerOrchestrator({
+			orchestratorId,
+			controlPlane: control,
+			providerAdapter: local.adapter,
+			clientClaimId: () => claimId,
+			clientAssignmentId: () => assignmentId,
+			createCapability: () => capability,
+		});
+
+		await expect(orchestrator.runOnce()).resolves.toMatchObject({
+			status: "assigned",
+			reconciliationErrors: [failure],
+		});
+		expect(control.reconcileExpired).toHaveBeenCalledOnce();
+		expect(local.deliver).toHaveBeenCalledOnce();
+	});
+
+	it("preserves fatal schedule-discovery errors instead of dispatching through them", async () => {
+		const control = controlPlane();
+		const failure = new CloudRunnerOrchestratorRequestError(401);
+		vi.mocked(control.listRoutineScheduleHeads).mockRejectedValue(failure);
+		const local = localAdapter();
+		const orchestrator = new CloudRunnerOrchestrator({
+			orchestratorId,
+			controlPlane: control,
+			providerAdapter: local.adapter,
+		});
+
+		await expect(orchestrator.runOnce()).rejects.toBe(failure);
+		expect(control.reconcileExpired).not.toHaveBeenCalled();
+		expect(control.claimNext).not.toHaveBeenCalled();
 	});
 
 	it("dispatches independent durable claims concurrently after one reconciliation pass", async () => {

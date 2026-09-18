@@ -42,3 +42,11 @@ unattested VM; such a claim requires deployed and verified confidential
 compute. Revocation, sponsor handoff, user removal, quota exhaustion, or
 provider-policy change invalidates future leases. Existing run history retains
 the original sponsor, provider, credential ownership, and compute identity.
+
+Technical exception authorized on 2026-08-28: the pinned Codex result-only
+callback and cloud-fenced direct-tool selection documented in
+[`../deploy/first-node/native-codex/README.md`](../deploy/first-node/native-codex/README.md)
+may be used after its runtime gates pass. Native login and provider traffic
+remain inside the same credential boundary; no subscription proxy is added.
+This technical approval does not itself establish new commercial rights or
+complete the real-provider acceptance gate. Claude remains unmodified.

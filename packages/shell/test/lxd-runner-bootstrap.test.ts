@@ -1,7 +1,10 @@
+import { createHash, generateKeyPairSync } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { recoveryPublicKeyText } from "@qorpera/runtime/cloud-identity-recovery-crypto";
+import type { IdentityRecoveryRuntimeState } from "@qorpera/runtime/cloud-identity-recovery-guest";
 import {
 	type LxdNativeLoginBootstrapPaths,
 	type LxdRunnerBootstrapPaths,
@@ -9,10 +12,32 @@ import {
 	parseLxdRunnerBootstrapConfig,
 	runLxdNativeLoginBootstrap,
 	runLxdRunnerBootstrap,
-} from "../src/lxd-runner-bootstrap.ts";
+} from "@qorpera/runtime/lxd-runner-bootstrap";
+import { afterEach, describe, expect, it } from "vitest";
 
 const roots: string[] = [];
 const computeIdentityId = "90000000-0000-4000-8000-000000000001";
+const fixtureKey = Buffer.alloc(32, 7).toString("base64url");
+const identityRecoveryCa = readFileSync(
+	new URL("../../../deploy/cloud-secret-broker/supabase-prod-ca-2021.crt", import.meta.url),
+	"utf-8",
+);
+const identityRecoveryCaSha256 = createHash("sha256").update(identityRecoveryCa).digest("hex");
+const fixtureState: IdentityRecoveryRuntimeState = {
+	companyId: "90000000-0000-4000-8000-000000000004",
+	computeIdentityId,
+	epoch: 0,
+	blocked: false,
+	policySha256: "a".repeat(64),
+	keySha256: createHash("sha256").update(Buffer.alloc(32, 7)).digest("hex"),
+	canInitialize: false,
+	recoveryConfiguration: {
+		authorityId: "90000000-0000-4000-8000-000000000005",
+		serviceOrigin: "https://recovery.example.test",
+		signingPublicKey: recoveryPublicKeyText(generateKeyPairSync("ed25519").publicKey),
+		wrappingPublicKey: recoveryPublicKeyText(generateKeyPairSync("rsa", { modulusLength: 3072 }).publicKey),
+	},
+};
 
 afterEach(async () => {
 	for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
@@ -44,6 +69,15 @@ async function fixture(): Promise<{
 	const sharedGid = currentGid > 0 ? currentGid : 1;
 	await mkdir(paths.credentialSource, { recursive: true, mode: 0o700 });
 	await mkdir(paths.identityVolume, { recursive: true, mode: 0o700 });
+	await writeFile(paths.identityMasterKey, `${fixtureKey}\n`, { mode: 0o600 });
+	await writeFile(
+		paths.identityMarker,
+		JSON.stringify({
+			schema: "qorpera.compute-identity-volume/v1",
+			compute_identity_id: computeIdentityId,
+		}),
+		{ mode: 0o600 },
+	);
 	await writeFile(
 		paths.bootstrapConfig,
 		`${JSON.stringify({
@@ -137,6 +171,7 @@ async function loginFixture(): Promise<{ root: string; paths: LxdNativeLoginBoot
 			supabase_url: "https://project.test",
 			native_bridge_url: "http://127.0.0.1:8083/",
 			trusted_source: "10.41.0.1",
+			identity_recovery_ca_sha256: identityRecoveryCaSha256,
 			native_provider_environment_path: "/var/lib/qorpera-bootstrap/native-provider.env",
 			credential_source: "/var/lib/qorpera-bootstrap/credentials",
 			identity_volume_path: "/var/lib/qorpera/identity",
@@ -159,6 +194,7 @@ async function loginFixture(): Promise<{ root: string; paths: LxdNativeLoginBoot
 		].join("\n"),
 		{ mode: 0o600 },
 	);
+	await writeFile(join(paths.credentialSource, "qorpera-identity-recovery-ca"), identityRecoveryCa, { mode: 0o600 });
 	await writeFile(join(paths.credentialSource, "qorpera-native-bridge"), `${"c".repeat(43)}\n`, { mode: 0o600 });
 	await writeFile(join(paths.credentialSource, "qorpera-supabase-service-key"), "service-key-test\n", {
 		mode: 0o600,
@@ -166,6 +202,70 @@ async function loginFixture(): Promise<{ root: string; paths: LxdNativeLoginBoot
 	const escapedMount = paths.identityVolume.replaceAll(" ", "\\040");
 	await writeFile(paths.mountInfo, `42 1 0:99 / ${escapedMount} rw - virtiofs identity rw\n`);
 	return { root, paths };
+}
+
+async function companyFixture(): Promise<LxdRunnerBootstrapPaths> {
+	const { root, paths } = await fixture();
+	const secretBrokerCa = await readFile(
+		new URL("../../../deploy/cloud-secret-broker/supabase-prod-ca-2021.crt", import.meta.url),
+		"utf-8",
+	);
+	const binary = join(root, "codex-pinned");
+	const content = "synthetic native executable, never executed by bootstrap tests\n";
+	await writeFile(binary, content, { mode: 0o500 });
+	const digest = createHash("sha256").update(content).digest("hex");
+	const bootstrap = JSON.parse(await readFile(paths.bootstrapConfig, "utf-8")) as Record<string, unknown>;
+	bootstrap.schema = "qorpera.lxd-company-runner-bootstrap/v1";
+	bootstrap.company_runtime = {
+		mode: "company-path-v1",
+		run_id: "90000000-0000-4000-8000-000000000003",
+		profile_id: "90000000-0000-4000-8000-000000000004",
+		runner_id: "90000000-0000-4000-8000-000000000002",
+		codex_path: binary,
+		binary_sha256: digest,
+		object_gateway_url: "https://objects.test",
+		secret_broker_url: "https://secrets.test",
+		secret_broker_ca_sha256: createHash("sha256").update(secretBrokerCa).digest("hex"),
+		recovery_volume_path: "/var/lib/qorpera-runner",
+	};
+	await writeFile(paths.bootstrapConfig, `${JSON.stringify(bootstrap)}\n`, { mode: 0o600 });
+	const config = JSON.parse(await readFile(paths.runnerConfig, "utf-8")) as Record<string, unknown>;
+	delete config.native_bridge_shared_gid;
+	config.authority_state_path = join(paths.runnerStateDirectory, "authority.json");
+	await writeFile(paths.runnerConfig, `${JSON.stringify(config)}\n`, { mode: 0o600 });
+	await writeFile(
+		paths.nativeProviderEnvironment,
+		`${await readFile(paths.nativeProviderEnvironment, "utf-8")}QORPERA_NATIVE_RUNTIME=company-path-v1\nQORPERA_NATIVE_CODEX_FENCE_PATH=${binary}\nQORPERA_NATIVE_CODEX_FENCE_SHA256=${digest}\nQORPERA_NATIVE_OBJECT_GATEWAY_URL=https://objects.test\nQORPERA_CLOUD_SECRET_BROKER_URL=https://secrets.test\n`,
+		{ mode: 0o600 },
+	);
+	await writeFile(join(paths.credentialSource, "qorpera-native-object-token"), `${"q".repeat(43)}\n`, { mode: 0o600 });
+	await writeFile(join(paths.credentialSource, "qorpera-office-native"), "", { mode: 0o600 });
+	await writeFile(join(paths.credentialSource, "qorpera-cloud-secret-runtime"), `${"s".repeat(43)}\n`, {
+		mode: 0o600,
+	});
+	await writeFile(join(paths.credentialSource, "qorpera-cloud-secret-ca"), secretBrokerCa, { mode: 0o600 });
+	await mkdir(paths.runnerHomeDirectory, { mode: 0o700 });
+	await writeFile(
+		paths.mountInfo,
+		`1 0 8:1 / / rw - ext4 root rw\n${await readFile(paths.mountInfo, "utf-8")}43 1 0:100 / ${paths.runnerHomeDirectory.replaceAll(" ", "\\040")} rw - virtiofs recovery rw\n`,
+	);
+	return paths;
+}
+
+async function startCompanyFixture(paths: LxdRunnerBootstrapPaths, started: string[]): Promise<void> {
+	const uid = process.getuid?.() ?? 0;
+	const gid = process.getgid?.() ?? 0;
+	await runLxdRunnerBootstrap({
+		paths,
+		identityRuntimeState: async () => fixtureState,
+		expectedRootUid: uid,
+		expectedRootGid: gid,
+		serviceIdentity: { uid, gid },
+		nativeServiceIdentity: { uid, gid },
+		startService: async (service) => {
+			started.push(service);
+		},
+	});
 }
 
 describe("LXD runner guest bootstrap", () => {
@@ -177,6 +277,7 @@ describe("LXD runner guest bootstrap", () => {
 
 		await runLxdRunnerBootstrap({
 			paths,
+			identityRuntimeState: async () => fixtureState,
 			expectedRootUid: uid,
 			expectedRootGid: gid,
 			serviceIdentity: { uid, gid },
@@ -215,6 +316,7 @@ describe("LXD runner guest bootstrap", () => {
 		await expect(
 			runLxdRunnerBootstrap({
 				paths,
+				identityRuntimeState: async () => fixtureState,
 				expectedRootUid: process.getuid?.() ?? 0,
 				expectedRootGid: process.getgid?.() ?? 0,
 				serviceIdentity: { uid: process.getuid?.() ?? 0, gid: process.getgid?.() ?? 0 },
@@ -241,6 +343,7 @@ describe("LXD runner guest bootstrap", () => {
 		await expect(
 			runLxdRunnerBootstrap({
 				paths,
+				identityRuntimeState: async () => fixtureState,
 				expectedRootUid: uid,
 				expectedRootGid: gid,
 				serviceIdentity: { uid, gid },
@@ -279,6 +382,7 @@ describe("LXD native login guest bootstrap", () => {
 
 		await runLxdNativeLoginBootstrap({
 			paths,
+			identityRuntimeState: async () => ({ ...fixtureState, keySha256: null, canInitialize: true }),
 			expectedRootUid: uid,
 			expectedRootGid: gid,
 			nativeServiceIdentity: { uid, gid },
@@ -287,13 +391,39 @@ describe("LXD native login guest bootstrap", () => {
 			},
 		});
 
-		expect(started).toEqual(["qorpera-native-provider-host.service"]);
+		expect(started).toEqual(["qorpera-native-login-provider-host.service"]);
 		expect(JSON.parse(await readFile(paths.identityMarker, "utf-8"))).toEqual({
 			schema: "qorpera.compute-identity-volume/v1",
 			compute_identity_id: computeIdentityId,
 		});
 		expect((await readFile(paths.identityMasterKey, "utf-8")).trim()).toMatch(/^[A-Za-z0-9_-]{43}$/);
 		expect((await stat(join(root, "native"))).mode & 0o777).toBe(0o700);
+	});
+
+	it("stops before key initialization or provider sign-in when recovery is not configured", async () => {
+		const { paths } = await loginFixture();
+		const uid = process.getuid?.() ?? 0;
+		const gid = process.getgid?.() ?? 0;
+		const started: string[] = [];
+		await expect(
+			runLxdNativeLoginBootstrap({
+				paths,
+				expectedRootUid: uid,
+				expectedRootGid: gid,
+				nativeServiceIdentity: { uid, gid },
+				identityRuntimeState: async () => ({
+					...fixtureState,
+					keySha256: null,
+					canInitialize: true,
+					recoveryConfiguration: null,
+				}),
+				startService: async (service) => {
+					started.push(service);
+				},
+			}),
+		).rejects.toThrow("configured cloud recovery authority");
+		expect(started).toEqual([]);
+		await expect(readFile(paths.identityMasterKey)).rejects.toMatchObject({ code: "ENOENT" });
 	});
 
 	it("rejects unknown configuration fields and extra guest credentials", async () => {
@@ -303,6 +433,7 @@ describe("LXD native login guest bootstrap", () => {
 			supabase_url: "https://project.test",
 			native_bridge_url: "http://127.0.0.1:8083/",
 			trusted_source: "10.41.0.1",
+			identity_recovery_ca_sha256: identityRecoveryCaSha256,
 			native_provider_environment_path: "/var/lib/qorpera-bootstrap/native-provider.env",
 			credential_source: "/var/lib/qorpera-bootstrap/credentials",
 			identity_volume_path: "/var/lib/qorpera/identity",
@@ -318,11 +449,223 @@ describe("LXD native login guest bootstrap", () => {
 		await expect(
 			runLxdNativeLoginBootstrap({
 				paths,
+				identityRuntimeState: async () => fixtureState,
 				expectedRootUid: uid,
 				expectedRootGid: gid,
 				nativeServiceIdentity: { uid, gid },
 				startService: async () => undefined,
 			}),
 		).rejects.toThrow("unexpected entries");
+	});
+
+	it("rejects a recovery-authority CA that differs from the pinned bootstrap", async () => {
+		const { paths } = await loginFixture();
+		await writeFile(join(paths.credentialSource, "qorpera-identity-recovery-ca"), "not the pinned CA\n", {
+			mode: 0o600,
+		});
+		const started: string[] = [];
+		await expect(
+			runLxdNativeLoginBootstrap({
+				paths,
+				identityRuntimeState: async () => ({ ...fixtureState, keySha256: null, canInitialize: true }),
+				expectedRootUid: process.getuid?.() ?? 0,
+				expectedRootGid: process.getgid?.() ?? 0,
+				nativeServiceIdentity: { uid: process.getuid?.() ?? 0, gid: process.getgid?.() ?? 0 },
+				startService: async (service) => {
+					started.push(service);
+				},
+			}),
+		).rejects.toThrow("does not match immutable bootstrap authority");
+		expect(started).toEqual([]);
+	});
+});
+
+describe("governed native company guest bootstrap", () => {
+	it("does not create a replacement key when established identity material is missing", async () => {
+		const paths = await companyFixture();
+		await rm(paths.identityMasterKey);
+		const started: string[] = [];
+		await expect(startCompanyFixture(paths, started)).rejects.toThrow("master key is missing");
+		expect(started).toEqual([]);
+		await expect(readFile(paths.identityMasterKey)).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
+	it("rejects old volumes after the cloud recovery generation advances", async () => {
+		const paths = await companyFixture();
+		const uid = process.getuid?.() ?? 0;
+		const gid = process.getgid?.() ?? 0;
+		const started: string[] = [];
+		await expect(
+			runLxdRunnerBootstrap({
+				paths,
+				expectedRootUid: uid,
+				expectedRootGid: gid,
+				serviceIdentity: { uid, gid },
+				nativeServiceIdentity: { uid, gid },
+				identityRuntimeState: async () => ({ ...fixtureState, epoch: 1 }),
+				startService: async (service) => {
+					started.push(service);
+				},
+			}),
+		).rejects.toMatchObject({ code: "ENOENT" });
+		expect(started).toEqual([]);
+	});
+
+	it("rejects a missing login key when cloud credential history already exists", async () => {
+		const { paths } = await loginFixture();
+		const uid = process.getuid?.() ?? 0;
+		const gid = process.getgid?.() ?? 0;
+		await expect(
+			runLxdNativeLoginBootstrap({
+				paths,
+				expectedRootUid: uid,
+				expectedRootGid: gid,
+				nativeServiceIdentity: { uid, gid },
+				identityRuntimeState: async () => fixtureState,
+				startService: async () => {
+					throw new Error("Must not start");
+				},
+			}),
+		).rejects.toThrow("master key is missing");
+	});
+
+	it("selects private service identities and retains outcome state across restart", async () => {
+		const paths = await companyFixture();
+		const started: string[] = [];
+		await startCompanyFixture(paths, started);
+		expect(started).toEqual(["qorpera-native-company-host.service", "qorpera-company-runner.service"]);
+		const marker = join(paths.runnerHomeDirectory, ".qorpera-native-company-recovery.json");
+		expect(JSON.parse(await readFile(marker, "utf-8"))).toMatchObject({
+			schema: "qorpera.native-company-recovery-volume/v1",
+			compute_identity_id: computeIdentityId,
+			run_id: "90000000-0000-4000-8000-000000000003",
+			profile_id: "90000000-0000-4000-8000-000000000004",
+		});
+		const outcome = join(paths.runnerStateDirectory, "outcome.json");
+		await writeFile(outcome, "private retained outcome", { mode: 0o600 });
+		await startCompanyFixture(paths, started);
+		expect(await readFile(outcome, "utf-8")).toBe("private retained outcome");
+		expect((await stat(marker)).mode & 0o777).toBe(0o600);
+	});
+
+	it.each(["missing", "same-device", "shared", "nested"])(
+		"blocks %s recovery/mount authority before service startup",
+		async (kind) => {
+			const paths = await companyFixture();
+			let mounts = await readFile(paths.mountInfo, "utf-8");
+			if (kind === "missing")
+				mounts = mounts
+					.split("\n")
+					.filter((line) => !line.startsWith("43 "))
+					.join("\n");
+			if (kind === "same-device") mounts = mounts.replace("43 1 0:100", "43 1 0:99");
+			if (kind === "shared") mounts += "44 1 0:101 / /foreign-company rw - nfs4 remote rw\n";
+			if (kind === "nested") mounts += `44 1 0:101 / ${paths.runnerHomeDirectory}/private rw - tmpfs overlay rw\n`;
+			await writeFile(paths.mountInfo, mounts);
+			const started: string[] = [];
+			await expect(startCompanyFixture(paths, started)).rejects.toThrow(/mount/);
+			expect(started).toEqual([]);
+		},
+	);
+
+	it("rejects a recovery marker from another company and does not erase retained data", async () => {
+		const paths = await companyFixture();
+		await startCompanyFixture(paths, []);
+		const marker = join(paths.runnerHomeDirectory, ".qorpera-native-company-recovery.json");
+		const data = JSON.parse(await readFile(marker, "utf-8")) as Record<string, unknown>;
+		data.profile_id = "90000000-0000-4000-8000-000000000099";
+		await writeFile(marker, JSON.stringify(data), { mode: 0o600 });
+		const started: string[] = [];
+		await expect(startCompanyFixture(paths, started)).rejects.toThrow("immutable company and run authority");
+		expect(started).toEqual([]);
+		expect(JSON.parse(await readFile(marker, "utf-8"))).toEqual(data);
+	});
+
+	it("rejects an unmarked nonempty recovery volume", async () => {
+		const paths = await companyFixture();
+		await writeFile(join(paths.runnerHomeDirectory, "unreconciled.json"), "uncertain outcome");
+		await expect(startCompanyFixture(paths, [])).rejects.toThrow("operator reconciliation");
+	});
+
+	it("rejects mismatched binary pins and shared native credentials", async () => {
+		const paths = await companyFixture();
+		const bootstrap = JSON.parse(await readFile(paths.bootstrapConfig, "utf-8")) as {
+			company_runtime: { binary_sha256: string };
+		};
+		const original = bootstrap.company_runtime.binary_sha256;
+		bootstrap.company_runtime.binary_sha256 = "f".repeat(64);
+		await writeFile(paths.bootstrapConfig, JSON.stringify(bootstrap), { mode: 0o600 });
+		await writeFile(
+			paths.nativeProviderEnvironment,
+			(await readFile(paths.nativeProviderEnvironment, "utf-8")).replace(original, "f".repeat(64)),
+			{ mode: 0o600 },
+		);
+		await expect(startCompanyFixture(paths, [])).rejects.toThrow("checksum mismatch");
+		const other = await companyFixture();
+		await writeFile(join(other.credentialSource, "qorpera-native-object-token"), `${"c".repeat(43)}\n`, {
+			mode: 0o600,
+		});
+		await expect(startCompanyFixture(other, [])).rejects.toThrow("credentials must be independent");
+		const sharedSecretBroker = await companyFixture();
+		await writeFile(
+			join(sharedSecretBroker.credentialSource, "qorpera-cloud-secret-runtime"),
+			`${"c".repeat(43)}\n`,
+			{
+				mode: 0o600,
+			},
+		);
+		await expect(startCompanyFixture(sharedSecretBroker, [])).rejects.toThrow("credentials must be independent");
+		const tamperedBrokerCa = await companyFixture();
+		await writeFile(join(tamperedBrokerCa.credentialSource, "qorpera-cloud-secret-ca"), "not the pinned CA\n", {
+			mode: 0o600,
+		});
+		await expect(startCompanyFixture(tamperedBrokerCa, [])).rejects.toThrow(
+			"does not match immutable bootstrap authority",
+		);
+	});
+
+	it.each(["valid", "url-drift", "digest-drift", "missing", "shared", "unconfigured", "unknown-field"])(
+		"checks native office transport authority before service startup (%s)",
+		async (kind) => {
+			const paths = await companyFixture();
+			const token = (kind === "shared" ? "c" : "o").repeat(43);
+			const url = "https://office.example.test/office/90000000-0000-4000-8000-000000000099/native";
+			const bootstrap = JSON.parse(await readFile(paths.bootstrapConfig, "utf-8")) as {
+				company_runtime: Record<string, unknown>;
+			};
+			if (kind !== "unconfigured") {
+				bootstrap.company_runtime.office = {
+					environment_id: "90000000-0000-4000-8000-000000000098",
+					url,
+					token_sha256:
+						kind === "digest-drift" ? "f".repeat(64) : createHash("sha256").update(token).digest("hex"),
+					...(kind === "unknown-field" ? { token } : {}),
+				};
+				await writeFile(
+					paths.nativeProviderEnvironment,
+					`${await readFile(paths.nativeProviderEnvironment, "utf-8")}QORPERA_COMPANY_COMPUTER_URL=${kind === "url-drift" ? url.replace("0099", "0097") : url}\n`,
+				);
+			}
+			await writeFile(paths.bootstrapConfig, JSON.stringify(bootstrap));
+			const credential = join(paths.credentialSource, "qorpera-office-native");
+			if (kind === "missing") await rm(credential);
+			else await writeFile(credential, `${token}\n`, { mode: 0o600 });
+			const started: string[] = [];
+			if (kind === "valid") {
+				await startCompanyFixture(paths, started);
+				expect(started).toEqual(["qorpera-native-company-host.service", "qorpera-company-runner.service"]);
+			} else {
+				await expect(startCompanyFixture(paths, started)).rejects.toThrow();
+				expect(started).toEqual([]);
+			}
+		},
+	);
+
+	it("rejects shared workspace or direct company environment settings in the governed lane", async () => {
+		const paths = await companyFixture();
+		const config = JSON.parse(await readFile(paths.runnerConfig, "utf-8")) as Record<string, unknown>;
+		config.native_bridge_shared_gid = 42041;
+		await writeFile(paths.runnerConfig, JSON.stringify(config), { mode: 0o600 });
+		await expect(startCompanyFixture(paths, [])).rejects.toThrow("without a shared workspace");
 	});
 });

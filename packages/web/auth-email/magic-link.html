@@ -1,0 +1,14 @@
+<!-- Supabase Auth → Email Templates → Magic Link. Subject: "Your Qorpera sign-in code".
+     Sent by signInWithOtp for existing accounts. {{ .Token }} is the six-digit code the
+     web and mobile clients accept; {{ .ConfirmationURL }} signs the same browser in. -->
+<div style="margin:0;padding:32px 16px;background:#f7f7f5;font-family:'Source Sans 3',-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;color:#161615;">
+  <div style="max-width:480px;margin:0 auto;background:#ffffff;border:1px solid rgba(11,11,11,0.11);border-radius:14px;padding:32px;">
+    <p style="margin:0 0 24px;font-size:20px;font-weight:700;letter-spacing:-0.02em;">Qorpera</p>
+    <h1 style="margin:0 0 8px;font-size:22px;font-weight:600;letter-spacing:-0.02em;">Your sign-in code</h1>
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.5;color:#5a616e;">Enter this code in the Qorpera window you signed in from. It expires in an hour and works once.</p>
+    <p style="margin:0 0 24px;font-size:34px;font-weight:700;letter-spacing:0.28em;font-variant-numeric:tabular-nums;">{{ .Token }}</p>
+    <p style="margin:0 0 6px;font-size:14px;line-height:1.5;color:#5a616e;">Or, if you are reading this on the same device, open the link:</p>
+    <p style="margin:0 0 28px;"><a href="{{ .ConfirmationURL }}" style="display:inline-block;padding:11px 18px;background:#161615;color:#ffffff;border-radius:8px;text-decoration:none;font-size:15px;font-weight:600;">Sign in to Qorpera</a></p>
+    <p style="margin:0;font-size:12.5px;line-height:1.5;color:#83868d;">If you didn’t request this, ignore this email. Nobody can sign in without the code or the link.</p>
+  </div>
+</div>

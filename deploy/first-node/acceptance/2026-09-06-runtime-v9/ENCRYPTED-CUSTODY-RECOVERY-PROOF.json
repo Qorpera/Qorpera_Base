@@ -1,0 +1,63 @@
+{
+  "schema": "qorpera.encrypted-custody-recovery-proof/v1",
+  "passed": true,
+  "observedAt": "2026-09-06T13:35:26.778Z",
+  "companyId": "88227549-9724-43c2-8966-9fafb3e855d6",
+  "runtimeBundleSha256": "b60a49ccef8953ba2a4e3b4559d01d2852a8cfdf737123c9bf435171409b5f51",
+  "nativeRunId": "74cbd0c2-3303-4d5f-81cd-5a399fe1079b",
+  "newGrantId": "8f64eb94-22e4-4b70-bd9d-8ac1c23a3474",
+  "currentSecretVersion": 2,
+  "encryptedBackupSha256": "b0ba5fd79340c649ddf55db58813372a0a432d877b5ac02e46aec69c6cbfcfb0",
+  "restoredValueMatchesSource": true,
+  "allVersionStatesPreserved": true,
+  "recoveredEncryptedProjectionActivated": true,
+  "recoveredProjectionSurvivedVmRestart": true,
+  "nativeUseAfterRestart": true,
+  "oldGrantRemainsRevoked": true,
+  "immutableVersionEnvelopesUnchanged": true,
+  "duplicateEffectPrevented": true,
+  "reflectedResponsesWithheld": 4,
+  "guestObservedAndRemoved": true,
+  "temporaryPrivateTransportRemoved": true,
+  "temporaryRestoreResourcesRemovedFromActiveInventory": true,
+  "temporaryOperatorRoleRemoved": true,
+  "restoreVaultRetainedOnlyBySoftDelete": true,
+  "restoreVaultScheduledPurgeDate": "2026-09-13T13:34:31+00:00",
+  "sourceVaultUnchanged": true,
+  "originalEncryptedProjectionPreserved": true,
+  "privateContentsReturned": false,
+  "fullStepsZeroThroughThreeAcceptance": false,
+  "separateIdentityNasRecoveryAvailable": false,
+  "remainingCustodyGates": [
+    "secret-wide revocation",
+    "agent and member revocation boundaries",
+    "post-run non-exposure scans"
+  ],
+  "authorizationSha256": "6d9e7a91644cbb9a5d0222613b9131cf997382432cfef2176a347583be12897b",
+  "evidence": {
+    "target": {
+      "path": "outputs/runtime-custody-3c0bf3bce/RECOVERY-TARGET-VERIFIED.json",
+      "sha256": "cb47f1669e52dbaaa1e929a984bebf849e7f38491fff8e70ac1c737b34a88ad4"
+    },
+    "backupRestore": {
+      "path": "outputs/runtime-custody-3c0bf3bce/ENCRYPTED-KEYRING-RECOVERY-RESULT.json",
+      "sha256": "ebbaab22ff63f65345a0548f2f8925fc4eda94661b24212275046618f3f491e5"
+    },
+    "activation": {
+      "path": "outputs/runtime-custody-3c0bf3bce/RECOVERED-KEYRING-ACTIVATION-RESULT.json",
+      "sha256": "d8ddcda4cf51d6684f55a542f4c8936286acee42f1e5fefe6c690d82a94b3bbd"
+    },
+    "restart": {
+      "path": "outputs/runtime-custody-3c0bf3bce/KEYRING-RECOVERY-RESTART-PROOF-RESULT.json",
+      "sha256": "1d6997f1baaf0c25adf70e42dca5fa2704cf0b44ca1482d76b10888e5465cdff"
+    },
+    "native": {
+      "path": "outputs/runtime-custody-3c0bf3bce/NATIVE-CUSTODY-RECOVERY-USE-PROOF.json",
+      "sha256": "c6219fd9abe30683e8baacba3244ec5839c27c875e12616b75752dc35ed2f5a8"
+    },
+    "cleanup": {
+      "path": "outputs/runtime-custody-3c0bf3bce/RECOVERY-TARGET-CLEANUP-VERIFIED.json",
+      "sha256": "b3e62a12abe4c56db86e880060f5b73e07061fc32a46c4b4df597b65890ab245"
+    }
+  }
+}

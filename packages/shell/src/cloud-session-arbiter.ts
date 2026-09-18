@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import type { JsonValue } from "@qorpera/contracts";
 import {
 	type HostedSession,
 	type HostedSessionRecoveryPage,
@@ -9,7 +8,8 @@ import {
 	type SessionTurnClaim,
 	type SessionTurnInput,
 	SessionTurnOwnershipError,
-} from "./hosted-primary.ts";
+} from "@qorpera/cloud-client/hosted-primary";
+import type { JsonValue } from "@qorpera/contracts";
 
 /**
  * Per-company client of the hosted session arbiter (migration 20260818007000,

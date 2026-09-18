@@ -1,0 +1,21 @@
+{
+  "readOnly": true,
+  "observedAt": "2026-09-07T00:27:11.288Z",
+  "sqlSha256": "7d16ff0dfe63adfaada67a84395e89ef747ed55f3ae13321e6eaa398c6899ac7",
+  "processGroupAbsent": true,
+  "rows": [
+    {
+      "bytes": 202,
+      "continuation": {
+        "handoffId": "7891a13e-ae5f-43f2-9af3-6d2622c539cf",
+        "priorSends": [],
+        "reason": "usage_limit",
+        "receipts": [],
+        "runId": "5971ddfd-a4d7-405c-95bd-714b606d9270",
+        "schema": "qorpera.run-continuation/v1"
+      },
+      "id": "5971ddfd-a4d7-405c-95bd-714b606d9270",
+      "sha256": "301ff10b04fccb878a520e977fc29df743c1967dbeed291b95bbee185fdb20e5"
+    }
+  ]
+}

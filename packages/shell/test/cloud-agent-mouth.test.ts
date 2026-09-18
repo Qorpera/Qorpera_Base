@@ -1,5 +1,4 @@
 import { request } from "node:http";
-import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	CLOUD_AGENT_SEND_SCHEMA,
 	CloudAgentMouth,
@@ -8,7 +7,8 @@ import {
 	type CloudAgentSendReceipt,
 	parseCloudAgentSendInput,
 	parseCloudAgentSendReceipt,
-} from "../src/cloud-agent-mouth.ts";
+} from "@qorpera/runtime/cloud-agent-mouth";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { runCloudMouthProbe } from "./fixtures/cloud-mouth-probe.ts";
 
 const runId = "19000000-0000-4000-8000-000000000001";

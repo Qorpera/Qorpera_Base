@@ -2,13 +2,16 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
 import {
 	loadEphemeralCloudRunnerServiceConfig,
 	parseEphemeralCloudRunnerServiceConfig,
 	runEphemeralCloudRunnerService,
-} from "../src/cloud-runner-service.ts";
-import { safeCloudRunnerServiceError, withCloudRunnerShutdownSignals } from "../src/cloud-runner-service-main.ts";
+} from "@qorpera/runtime/cloud-runner-service";
+import {
+	safeCloudRunnerServiceError,
+	withCloudRunnerShutdownSignals,
+} from "@qorpera/runtime/cloud-runner-service-main";
+import { afterEach, describe, expect, it } from "vitest";
 
 const runnerId = "77777777-7777-4777-8777-777777777777";
 const activationToken = "a".repeat(43);

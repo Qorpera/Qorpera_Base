@@ -1,5 +1,5 @@
+import { HttpCloudRunnerAssignmentInbox } from "@qorpera/runtime/cloud-runner-assignment-inbox";
 import { describe, expect, it } from "vitest";
-import { HttpCloudRunnerAssignmentInbox } from "../src/cloud-runner-assignment-inbox.ts";
 
 const token = "a".repeat(43);
 const assignment = {

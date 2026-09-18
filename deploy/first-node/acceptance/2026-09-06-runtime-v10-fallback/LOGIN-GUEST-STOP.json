@@ -1,0 +1,13 @@
+{
+  "schema": "qorpera.completed-fallback-login-stop/v1",
+  "passed": true,
+  "observedAt": "2026-09-06T18:12:01.478152+00:00",
+  "loginId": "936f6a44-8c9d-45ab-921f-aab0853d8911",
+  "guest": "qorpera-login-6cb7e55940d74ee6848a2ad2b65c20be",
+  "status": "Stopped",
+  "activeCodexProcessesBeforeStop": 0,
+  "deviceConfigurationPreserved": true,
+  "identityVolumeDeleted": false,
+  "guestDeleted": false,
+  "privateContentsReturned": false
+}

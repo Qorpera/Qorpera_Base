@@ -1,0 +1,28 @@
+{
+  "schema": "qorpera.startup-provider-linux-verification/v1",
+  "passed": true,
+  "observedAt": "2026-09-06T18:40:42.748Z",
+  "sourceCommit": "bf08dd923d61ba8432d86559a71cf473ac72f9b9",
+  "cleanCommittedSourceVerified": true,
+  "image": "node@sha256:4d676821dff059fd00d277ee4261ef34ea712317fed0737c03941481b5760c96",
+  "manifest": {
+    "schema": "qorpera.lxd-provider-package/v1",
+    "runtime": {
+      "node": ">=22.19.0"
+    },
+    "artifacts": [
+      {
+        "file": "qorpera-lxd-provider.mjs",
+        "bytes": 178403,
+        "sha256": "15f8cdb8812bde6192bc7d6dd40463dec76ccbf58fb08a439d2d1390375a3ad0"
+      },
+      {
+        "file": "qorpera-lxd-image-provenance.mjs",
+        "bytes": 15911,
+        "sha256": "316006ebe6d263cb716ebf0fbed0917d170f47e777d25838b5720706f787dcec"
+      }
+    ]
+  },
+  "cleanupConfirmed": true,
+  "productionMutation": false
+}

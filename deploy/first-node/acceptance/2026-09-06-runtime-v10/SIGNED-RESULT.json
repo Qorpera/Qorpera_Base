@@ -1,0 +1,18 @@
+{
+  "schema": "qorpera.signed-runtime-image/v1",
+  "passed": true,
+  "signedAt": "2026-09-06T17:19:49.561Z",
+  "sourceCommit": "c7085e8f3aa7429a4b17286d496efa6ebfdc64a1",
+  "runtimeBundleSha256": "7bfd6cd12160a3b5119e7727374e28d854c1004de6640f12c40446b21d67764e",
+  "imageFingerprint": "ab1c1be97bec88f5c3beb66819c3b4a4e6650ad859f16a2c45635d93bed601db",
+  "guestManifestSha256": "a41fd03a0a5c97ab4fc72f60865829d18587adf6e0a8593d418221d7f0e149f1",
+  "acceptanceSha256": "284f7b3be4a28604aa4bd657e88cc3d43f651433d9e3f44729f01087a50d484f",
+  "statementSha256": "fcad1cb848723b7af28bd5d281ec01b01f17bfe388f3d4033753bb267c9c646c",
+  "envelopeSha256": "c9ec236ab66caf1925970ef45cebce7d725788c3b43af910e3877f0c00a89fe2",
+  "publicKeySha256": "b62d24b8335468ef39cd7e16a50beb9d5ddab7343c4e5695273cd0a8d8bb1039",
+  "signerSha256": "316006ebe6d263cb716ebf0fbed0917d170f47e777d25838b5720706f787dcec",
+  "signatureVerified": true,
+  "privateMaterialReturned": false,
+  "providerActivated": false,
+  "admissionReopened": false
+}

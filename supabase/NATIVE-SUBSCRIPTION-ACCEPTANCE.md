@@ -13,6 +13,19 @@ mandatory assertion below has passed against a deployed environment.
 
 ## Security and ownership boundary
 
+Authorized exception, 2026-08-28: runtime Step 2 may use the narrowly patched,
+source- and binary-pinned Codex artifact described in
+[`../deploy/first-node/native-codex/README.md`](../deploy/first-node/native-codex/README.md).
+The approved differences are the pre-model tool-result callback, local capability
+markers, and direct tool selection only for runs enabled by the cloud fence socket.
+The direct-tools extension prevents unavailable Code Mode tools from being advertised;
+ordinary native sessions retain upstream selection. Native login, credential custody, provider transport and sponsor
+selection are unchanged. This is not authorization for a credential-reading
+proxy, arbitrary provider patches, deployment, or a claim that real-subscription
+acceptance passed. References below to an unmodified/official Codex harness
+include only this explicitly approved downstream artifact after its own gates
+pass. Claude has no such exception.
+
 - Qorpera application and control-plane code must never receive, parse, log, or
   store a plaintext provider credential. The official Codex or Claude harness
   receives it only inside the authorized execution boundary.
@@ -131,8 +144,12 @@ For each member, capture sanitized control-plane evidence proving:
 - the consented sponsor binding ID and immutable sponsor version;
 - an opaque encrypted capsule/checkpoint reference, with no plaintext token or
   refresh token column, response field, log field, or desktop state;
-- the configured personal concurrency limit, initially one unless the provider
-  explicitly authorizes more.
+- the configured per-connection concurrency policy consented at login. The
+  runtime contract (section 17, amended 2026-09-01) replaced the exclusive
+  per-connection lease with a configurable policy that is uncapped by default
+  (founder decision 2026-09-02; the schema bound is 64 per connection) and
+  bounded by the global provider policy; quota, not exclusivity, is the
+  ceiling.
 
 Restart the physical client after each login and verify the ready connection is
 discovered from durable cloud state. The official login must not be repeated
@@ -183,13 +200,14 @@ background process on either test client fails the gate.
 
 ### 4. Prove personal entitlement is not multiplied
 
-1. Keep one A-sponsored run actively leased inside the official Codex harness.
-2. Queue a second A-sponsored run from another shared session.
-3. Provisioning additional rented computers must not create a second active
-   native-provider lease for A's connection while its concurrency limit is one.
-4. The second run must remain durably waiting and later execute under the same
-   connection only after the first lease is released. It must not use B's
-   connection.
+1. Keep N A-sponsored runs actively leased inside the official Codex harness,
+   where N is A's consented per-connection concurrency policy.
+2. Queue one more A-sponsored run from another shared session.
+3. Provisioning additional rented computers must not create an (N+1)th active
+   native-provider lease for A's connection beyond its policy.
+4. That run must remain durably waiting and later execute under the same
+   connection only after one of A's leases is released. It must not use B's
+   connection, and no credential fallback of any kind occurs.
 5. Repeat for B's connection and Claude harness.
 
 ### 5. Revoke and prove future denial

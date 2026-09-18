@@ -1,0 +1,203 @@
+{
+  "schema": "qorpera.runtime-acceptance-checkpoint/v1",
+  "recordedAt": "2026-09-06T17:30:03.865Z",
+  "runtimeSourceCommit": "c7085e8f3aa7429a4b17286d496efa6ebfdc64a1",
+  "runtimeBundleSha256": "7bfd6cd12160a3b5119e7727374e28d854c1004de6640f12c40446b21d67764e",
+  "fullyAccepted": false,
+  "remainingLiveGate": "Provider usage-limit notification and automatic sponsor handoff",
+  "sourceWorkspace": "/Users/jonas/Documents/Codex/2026-09-05/files-pasted-by-the-user-take",
+  "files": [
+    {
+      "file": "SOURCE-COMMIT.json",
+      "source": "outputs/runtime-source-c7085e8f3.json",
+      "sha256": "3e97bf510f52d306da2a3e54431b18bb1d3ad5b5be78bca71e9690a866effcd2",
+      "bytes": 2784,
+      "passingScope": null
+    },
+    {
+      "file": "LINUX-PACKAGE-PROOF.json",
+      "source": "outputs/runtime-linux-x64-package-proof-c7085e8f3.json",
+      "sha256": "85d7f3638a94003e8fd1be9b6422b88a4714f9c17bb5fcb747bed467feed59ef",
+      "bytes": 1802,
+      "passingScope": true
+    },
+    {
+      "file": "BUILD-RESULT.json",
+      "source": "outputs/runtime-image-c7085e8f3/BUILD-RESULT.json",
+      "sha256": "f6a7dcce18b25e73a1088ed00918111a7cd38e8549f4e96049e7699b3ba83bef",
+      "bytes": 1194,
+      "passingScope": true
+    },
+    {
+      "file": "ACCEPTANCE.json",
+      "source": "outputs/runtime-image-c7085e8f3/ACCEPTANCE.json",
+      "sha256": "284f7b3be4a28604aa4bd657e88cc3d43f651433d9e3f44729f01087a50d484f",
+      "bytes": 1745,
+      "passingScope": true
+    },
+    {
+      "file": "SIGNED-RESULT.json",
+      "source": "outputs/runtime-image-c7085e8f3/SIGNED-RESULT.json",
+      "sha256": "085cbbefc805ca1f1082d6ac6a9b745a52923ae61df3703e92c67014196407f7",
+      "bytes": 1015,
+      "passingScope": true
+    },
+    {
+      "file": "PHYSICAL-FENCE.json",
+      "source": "outputs/runtime-image-c7085e8f3/PHYSICAL-FENCE.json",
+      "sha256": "f4f25cb97b454faf4d0ec8687df730e1e44caeb0706ecab685341f81e22420de",
+      "bytes": 886,
+      "passingScope": null
+    },
+    {
+      "file": "DISABLED-INSTALLATION.json",
+      "source": "outputs/runtime-image-c7085e8f3/DISABLED-INSTALLATION.json",
+      "sha256": "884b5388f384312acb6129a93c674d9211c31287ef6232d1b226026e1605aef1",
+      "bytes": 1721,
+      "passingScope": true
+    },
+    {
+      "file": "SERVICES-ACTIVE.json",
+      "source": "outputs/runtime-image-c7085e8f3/SERVICES-ACTIVE.json",
+      "sha256": "aaa8aa9d87cd71e06b2603e5b17d86e924a45779bdb25c59810c756d146bb640",
+      "bytes": 979,
+      "passingScope": true
+    },
+    {
+      "file": "FINAL-NODE-READBACK.json",
+      "source": "outputs/runtime-image-c7085e8f3/FINAL-NODE-READBACK.json",
+      "sha256": "a35558bb2b51e172e3829cf8d9019036a9efc58242db4fdb64055eb331118b05",
+      "bytes": 1068,
+      "passingScope": true
+    },
+    {
+      "file": "OFFLINE-TESTS.json",
+      "source": "outputs/runtime-rollout-c7085e8f3/OFFLINE-TESTS.json",
+      "sha256": "ed5c05beba24fd5aacf71bdad6b709c360621980aaf33a15434592f0af26d1dd",
+      "bytes": 1282,
+      "passingScope": true
+    },
+    {
+      "file": "WRAPPER-REHEARSAL.json",
+      "source": "outputs/runtime-rollout-c7085e8f3/WRAPPER-REHEARSAL.json",
+      "sha256": "62b809b9962950039b890923a6460d66f589f4fba3fb46aa3832e3d3ee82d062",
+      "bytes": 2712,
+      "passingScope": true
+    },
+    {
+      "file": "FROZEN.json",
+      "source": "outputs/runtime-rollout-c7085e8f3/FROZEN.json",
+      "sha256": "f5be26d2193bdbe7c88a35ab087385d243f4cb0cd7772018b9d36557d90fb8be",
+      "bytes": 4266,
+      "passingScope": null
+    },
+    {
+      "file": "ROLLOUT-PREFLIGHT-RESULT.json",
+      "source": "outputs/runtime-rollout-c7085e8f3-activation/evidence/rollout-preflight-result.json",
+      "sha256": "8b749c8a1b1bf5b8cf032392f8b67a54c7a54cedf922295a7d5debf29e1cfba1",
+      "bytes": 7085,
+      "passingScope": true
+    },
+    {
+      "file": "ROLLOUT-PAUSE-RESULT.json",
+      "source": "outputs/runtime-rollout-c7085e8f3-activation/evidence/rollout-pause-result.json",
+      "sha256": "6abca0b744f487a4012a0f54d646ba9d05c90b41236125b4131fe702c6f0fdb0",
+      "bytes": 7077,
+      "passingScope": true
+    },
+    {
+      "file": "ROLLOUT-20260906000300-RESULT.json",
+      "source": "outputs/runtime-rollout-c7085e8f3-activation/evidence/rollout-20260906000300-result.json",
+      "sha256": "f61f16c6aededd93b145652df55c5d528ff5fa73805fefd64cf08f9a2d38a765",
+      "bytes": 7119,
+      "passingScope": true
+    },
+    {
+      "file": "ROLLOUT-20260906000400-RESULT.json",
+      "source": "outputs/runtime-rollout-c7085e8f3-activation/evidence/rollout-20260906000400-result.json",
+      "sha256": "6baaff45b00f03674d029d9cc2ef7a8324d05e55b353773197d75886596cb18f",
+      "bytes": 7143,
+      "passingScope": true
+    },
+    {
+      "file": "ROLLOUT-FINAL-READBACK-RESULT.json",
+      "source": "outputs/runtime-rollout-c7085e8f3-activation/evidence/rollout-final-readback-result.json",
+      "sha256": "4d8aa491fa9da20bd81692ba908908a21778ed4fe36116099d52e0cbf5bdc1da",
+      "bytes": 7143,
+      "passingScope": true
+    },
+    {
+      "file": "ADMISSION-RESULT.json",
+      "source": "outputs/runtime-live-c7085e8f3/ADMISSION-RESULT.json",
+      "sha256": "365b61f4bcc1f18519de98e3b55a809e24415dd8247364758a7cd3f598d7f78c",
+      "bytes": 5772,
+      "passingScope": true
+    },
+    {
+      "file": "NATIVE-V10-SMOKE-PROOF.json",
+      "source": "outputs/runtime-live-3c0bf3bce/NATIVE-V10-SMOKE-PROOF.json",
+      "sha256": "9c75c2be253f65dcc5911ddcd375a576252161b7d9b958002e5414425fe7e70d",
+      "bytes": 2285,
+      "passingScope": true
+    },
+    {
+      "file": "V10-RUNNER-RETIREMENT-RESULT.json",
+      "source": "outputs/runtime-live-3c0bf3bce/V10-RUNNER-RETIREMENT-RESULT.json",
+      "sha256": "9a28a638ce6c3a83e6775a52aac4227f12eb00e0250ab990996f02409fa86d31",
+      "bytes": 228,
+      "passingScope": true
+    },
+    {
+      "file": "SPONSOR-HANDOFF-V10-STATUS.json",
+      "source": "outputs/runtime-live-3c0bf3bce/SPONSOR-HANDOFF-V10-STATUS.json",
+      "sha256": "bfeadfb5ed382e492666aafd2f9cb1570a3783ae5b67cc00c20d5e71d884c59a",
+      "bytes": 1736,
+      "passingScope": false
+    },
+    {
+      "file": "HANDOFF-CAPACITY-PRODUCTION-PROOF.json",
+      "source": "outputs/runtime-custody-3c0bf3bce/HANDOFF-CAPACITY-PRODUCTION-PROOF.json",
+      "sha256": "94ca6dd841a77abe797af2237d8ac2bc11daa695f6a59fe8f8a24cf17264e0c2",
+      "bytes": 1417,
+      "passingScope": true
+    },
+    {
+      "file": "HANDOFF-CAPACITY-RED-GREEN-PROOF.json",
+      "source": "outputs/runtime-custody-3c0bf3bce/HANDOFF-CAPACITY-RED-GREEN-PROOF.json",
+      "sha256": "359d9b7e3e28ea3cb79313f27e867b060b40414b5baffc25fdd4963917f7190b",
+      "bytes": 5283,
+      "passingScope": true
+    },
+    {
+      "file": "NONEXPOSURE-V10-SCOPE-MATRIX.json",
+      "source": "outputs/runtime-custody-3c0bf3bce/NONEXPOSURE-V10-SCOPE-MATRIX.json",
+      "sha256": "ba3ec333f1575d3cf2a73501e5845af5fc584eeac339f69f5710f38b3f6d11a4",
+      "bytes": 8382,
+      "passingScope": true
+    },
+    {
+      "file": "BROKER-V10-FINAL-STORAGE-RESULT.json",
+      "source": "outputs/runtime-custody-3c0bf3bce/BROKER-V10-FINAL-STORAGE-RESULT.json",
+      "sha256": "468693f67b00395abe3784e46b0ba09bc741eedcf51d075309cccca4db1a9791",
+      "bytes": 1658,
+      "passingScope": true
+    },
+    {
+      "file": "FINAL-DATABASE-READBACK.json",
+      "source": "outputs/runtime-custody-3c0bf3bce/runtime-v10-final-state-1788715472316.json",
+      "sha256": "bfba7c312fdee9879a6dc3d55ad794f8ebdf9aae4562535f24be0d36192e2015",
+      "bytes": 849,
+      "passingScope": null
+    }
+  ],
+  "previousCheckpoint": {
+    "file": "../2026-09-06-runtime-v9/MANIFEST.json",
+    "sha256": "44b274563ad0be5f5c9fe3025809fe13255d095623fcdd294b759dd7b58a1b39",
+    "filesVerifiedUnchanged": true
+  },
+  "limits": [
+    "Bounded summaries are included; referenced raw witnesses remain in the source workspace with recorded SHA-256 hashes.",
+    "Earlier proofs retain their actual versions and timestamps. They are not relabeled as v10 executions.",
+    "Orders 4–10 and deferred Azure overflow are not accepted by this checkpoint."
+  ]
+}

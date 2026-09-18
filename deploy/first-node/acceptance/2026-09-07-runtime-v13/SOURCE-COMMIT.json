@@ -1,0 +1,102 @@
+{
+  "schema": "qorpera.runtime-source-commit/v1",
+  "commit": "0ed9e490feebd6d602ffb5f4b7c83471cec15657",
+  "parent": "5cb127e7fcf2c1a48815b9483d559e98dbe2d8e3",
+  "observedAt": "2026-09-07T00:16:17.637Z",
+  "sourceCheckoutClean": true,
+  "releaseCheckout": "/Users/jonas/Documents/Codex/2026-09-05/files-pasted-by-the-user-take/work/release-0ed9e490f",
+  "releaseCheckoutDetached": true,
+  "verifiedSourceFiles": [
+    {
+      "path": "deploy/first-node/RUNTIME-SECOND-REVIEW-FIXES.md",
+      "sha256": "725766aa58a19198d1112ae327f9ac6699b2f3eb70cc84a0d30dcad891a06eeb"
+    },
+    {
+      "path": "deploy/first-node/native-codex/guest-package-manifest.json",
+      "sha256": "ed4a263159da74c661d21324e1f43df2518f60d73a71dcec6c65a36389a0c49f"
+    },
+    {
+      "path": "deploy/first-node/native-codex/runtime-bundle-manifest.json",
+      "sha256": "039f88aa6c399f2fc73d0403228a101cd19631ab360e9aebe48bd11fc0909107"
+    },
+    {
+      "path": "packages/shell/src/cloud-company-path-control.ts",
+      "sha256": "02a438c8e40bafa39e4c83aee54e0ddc486637e4c0ea9e3742d12ebeb7ecaa84"
+    },
+    {
+      "path": "packages/shell/src/cloud-native-provider-service.ts",
+      "sha256": "fff33c1c32cddf1e1145f73a348e3892f01b351aefd70a6ca9636c5ea26a8695"
+    },
+    {
+      "path": "packages/shell/src/cloud-native-tool-authority.ts",
+      "sha256": "d5b8b95a77676816e44636f89dbdf47679a4897dbe1f5ffe92f729107a5dd162"
+    },
+    {
+      "path": "packages/shell/src/cloud-runtime-bundle.generated.ts",
+      "sha256": "bc70751a489fb3e568b2e87c53bb147c3147a2e8aeb5e4a9e44a7dc2a8167c31"
+    },
+    {
+      "path": "packages/shell/test/cloud-native-startup-diagnostics.test.ts",
+      "sha256": "7f583556de7363a4c4b54d815656a9d0ce0922c949b6ec82e406bd0245aa7968"
+    },
+    {
+      "path": "scripts/generate-cloud-runtime-bundle.mjs",
+      "sha256": "aa4a380d0c7e2984ad5b3d43e636615a630dcdc721d8b2dffcfe92201c81408a"
+    },
+    {
+      "path": "scripts/test-runtime-production-review.mjs",
+      "sha256": "bbb8b549e194f746f2f82e97db68621d653dbec97468e8223b4cc6e91413d477"
+    },
+    {
+      "path": "supabase/acceptance/runtime_second_production_review.sql",
+      "sha256": "d2bcf183ae2baec15807aad9eb328acadbfdacfe93b18e720a35276229720839"
+    },
+    {
+      "path": "supabase/acceptance/runtime_second_review_concurrency.sql",
+      "sha256": "4bbeb1b39d026d022fae41daff7824c911b7d77578e081384efc9ed19931c2ca"
+    },
+    {
+      "path": "supabase/migrations/20260907000100_runtime_standing_wake_authority.sql",
+      "sha256": "93cc5c05b0310b0cb977ee3c1277f3c65bc93f283b9bc46722b9e055901bd9c1"
+    },
+    {
+      "path": "supabase/migrations/20260907000200_runtime_wake_admission_serialization.sql",
+      "sha256": "66f76a201f114fd0a9dfaf1dfe0b4a948784a3019c1d959fb0f348918ddcae6a"
+    },
+    {
+      "path": "supabase/migrations/20260907000300_runtime_entrypoint_privileges.sql",
+      "sha256": "2b2be86aaa1e5ffa7a4c75fa6495055600079151a9dce4c7c90eefee9d9406af"
+    },
+    {
+      "path": "supabase/migrations/20260907000400_runtime_handoff_usage_signal_scope.sql",
+      "sha256": "94285a8170d150a1a3121197f2c6791f258b4152d862cf9eea5d55a053defe21"
+    },
+    {
+      "path": "supabase/migrations/20260907000500_runtime_bundle_activation_v13.sql",
+      "sha256": "c24fefc697836604980f87c278b2160c4db3c4debd12d1d9aab37da5f4336284"
+    }
+  ],
+  "runtimeBundleSha256": "4d988b5f47e6219b2f44bae3cbc0b7363c411738ddfc32774a5d487025d483bb",
+  "checks": {
+    "sourceCheck": "passed",
+    "provenanceMigrationReplay": 144,
+    "wakeContextParity": "passed",
+    "productionReviewRedGreen": "passed",
+    "sqlIntegrationCases": 46,
+    "concurrencySchedules": 8,
+    "focusedTypeScriptTests": 183,
+    "bundleGeneratorTests": 3,
+    "packageTest": "passed",
+    "linuxPackageProof": "outputs/runtime-linux-x64-package-proof-0ed9e490f.json"
+  },
+  "regressionReport": {
+    "path": "work/second-review-fixes-05.json",
+    "sha256": "3e30491dfe6c3f7403779157492d4f6fdf1c4c32cc925167cbe843ffa4162ba7"
+  },
+  "redRegressionReport": {
+    "path": "work/second-review-runtime-06.json",
+    "sha256": "e431e7ba19e0f86a5d04515c524d84740455956af834c4e5deb9aef8408e8d78"
+  },
+  "authorizationSha256": "6d9e7a91644cbb9a5d0222613b9131cf997382432cfef2176a347583be12897b",
+  "productionWrites": false
+}

@@ -1,6 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import type {
+	HostedSession,
+	HostedSessionEvent,
+	HostedSessionEventType,
+	QorperaHostedPrimary,
+} from "@qorpera/cloud-client/hosted-primary";
 import type { ExecutionIdentity, JsonValue } from "@qorpera/contracts";
 import {
 	listSharedTrailSessions,
@@ -11,12 +17,6 @@ import {
 	type TrailBinding,
 	type TrailExecutionIdentity,
 } from "./agent-runtime.ts";
-import type {
-	HostedSession,
-	HostedSessionEvent,
-	HostedSessionEventType,
-	QorperaHostedPrimary,
-} from "./hosted-primary.ts";
 
 const CLOUD_TRAIL_STATE_SCHEMA = "qorpera.cloud-trail-sync/v3";
 const LEGACY_CLOUD_TRAIL_STATE_SCHEMA = "qorpera.cloud-trail-sync/v2";
@@ -86,7 +86,10 @@ export interface CloudTrailSynchronizerOptions {
 	profileId: string;
 	environmentId: string;
 	primary: CloudTrailPrimary;
-	loadObject?: (reference: { sha256: string; bytes: number; mediaType: string }) => Promise<Uint8Array>;
+	loadObject?: (
+		reference: { sha256: string; bytes: number; mediaType: string },
+		source: { sessionId: string; inputId: string },
+	) => Promise<Uint8Array>;
 	canWrite: () => boolean;
 	liveBindings?: () => Iterable<TrailBinding>;
 	onMaterialized?: (binding: TrailBinding) => void;
@@ -638,7 +641,10 @@ export class CloudTrailSynchronizer {
 						}
 						const images: Array<{ type: "image"; data: string; mimeType: string }> = [];
 						for (const attachment of attachments) {
-							const bytes = await this.#options.loadObject!(attachment);
+							const bytes = await this.#options.loadObject!(attachment, {
+								sessionId: hosted.sessionId,
+								inputId: event.sessionInputId,
+							});
 							images.push({
 								type: "image",
 								data: Buffer.from(bytes).toString("base64"),

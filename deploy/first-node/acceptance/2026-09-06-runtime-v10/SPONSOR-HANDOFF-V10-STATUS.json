@@ -1,0 +1,37 @@
+{
+  "schema": "qorpera.sponsor-handoff-acceptance-status/v1",
+  "passed": false,
+  "recordedAt": "2026-09-06T17:30:03.720Z",
+  "runtimeBundleSha256": "7bfd6cd12160a3b5119e7727374e28d854c1004de6640f12c40446b21d67764e",
+  "reason": "Actual provider usage-limit notification and same-run sponsor continuation remain unproven",
+  "currentConnectionWorks": true,
+  "currentExecution": {
+    "path": "outputs/runtime-live-3c0bf3bce/NATIVE-V10-SMOKE-PROOF.json",
+    "sha256": "9c75c2be253f65dcc5911ddcd375a576252161b7d9b958002e5414425fe7e70d"
+  },
+  "previousAccountDiagnostic": {
+    "path": "outputs/runtime-live-3c0bf3bce/SPONSOR-HANDOFF-V9-STATUS.json",
+    "sha256": "8aa8a8312d0075c3dc9e93f66c49deca76350dac3bb455a40075457774013c8d"
+  },
+  "actualUsageLimitSignals": 0,
+  "actualHandoffs": 0,
+  "temporaryProbeBindingRevoked": true,
+  "capacityFixDeployed": true,
+  "capacityFixReadback": {
+    "path": "outputs/runtime-custody-3c0bf3bce/HANDOFF-CAPACITY-PRODUCTION-PROOF.json",
+    "sha256": "94ca6dd841a77abe797af2237d8ac2bc11daa695f6a59fe8f8a24cf17264e0c2"
+  },
+  "negativeCases": {
+    "path": "outputs/runtime-custody-3c0bf3bce/HANDOFF-CAPACITY-RED-GREEN-PROOF.json",
+    "sha256": "359d9b7e3e28ea3cb79313f27e867b060b40414b5baffc25fdd4963917f7190b"
+  },
+  "remaining": [
+    "Reconnect a working eligible fallback account through the normal connection flow.",
+    "Observe a real adapter usage-limit event, member notification, same-run binding-version handoff and successful canonical-context continuation."
+  ],
+  "limits": [
+    "The old account probe failure cause remains unknown.",
+    "No production usage signal was fabricated and no quota was deliberately exhausted."
+  ],
+  "fullStepsZeroThroughThreeAcceptance": false
+}

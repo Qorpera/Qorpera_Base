@@ -142,6 +142,7 @@
 				<button class="hub-sign-out hub-update-button" id="hubUpdateButton" type="button">Check for updates</button>
 				<span class="spacer"></span>
 				<button class="hub-sign-out" id="friendsButton" type="button">Friends</button>
+				<button class="hub-sign-out" id="browserCleanupButton" type="button">Browser profile cleanup</button>
 				<button class="hub-sign-out" id="signOutButton" type="button">Sign out</button>
 			</div>
 		</div>
@@ -258,7 +259,8 @@
 	<div class="staff-context-separator"></div>
 	<button id="staffContextHide" type="button" role="menuitem"><span class="staff-context-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l18 18"/><path d="M10.6 10.7a2 2 0 0 0 2.7 2.7"/><path d="M9.9 4.4A10.8 10.8 0 0 1 12 4c5 0 8.5 4.3 9.5 6.1a4 4 0 0 1 0 3.8 14.7 14.7 0 0 1-2.1 2.8M6.2 6.2a14.2 14.2 0 0 0-3.7 3.9 4 4 0 0 0 0 3.8C3.5 15.7 7 20 12 20a10 10 0 0 0 4.1-.9"/></svg></span><span>Hide from sidebar</span></button>
 	<div class="staff-context-separator"></div>
-	<button id="staffContextDelete" type="button" role="menuitem"><span class="staff-context-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/></svg></span><span>Archive</span></button>
+	<button id="staffContextArchive" type="button" role="menuitem"><span class="staff-context-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v4H4zM6 9v10h12V9M10 13h4"/></svg></span><span>Archive</span></button>
+	<button id="staffContextDelete" type="button" role="menuitem"><span class="staff-context-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/></svg></span><span>Delete permanently</span></button>
 </div>
 
 <div class="modal-backdrop hidden-staff-backdrop" id="hiddenStaffModal" hidden>
@@ -315,16 +317,8 @@
 	<section class="confirm-modal staff-delete-modal" role="alertdialog" aria-modal="true" aria-labelledby="staffDeleteTitle" aria-describedby="staffDeleteDescription">
 		<header><h2 id="staffDeleteTitle">Archive agent?</h2></header>
 		<p id="staffDeleteDescription"></p>
-		<label class="staff-delete-option" for="staffDeleteKeepArtifacts">
-			<input id="staffDeleteKeepArtifacts" type="checkbox" checked>
-			<span>
-				<strong>Keep this agent’s artifacts</strong>
-				<small>If permanently deleted, preserve its artifact files in the company without an active owner.</small>
-			</span>
-		</label>
 		<footer>
 			<button class="secondary-button" id="staffDeleteCancel" type="button">Cancel</button>
-			<button class="danger-button" id="staffDeletePermanent" type="button">Delete permanently</button>
 			<button class="primary-button" id="staffDeleteConfirm" type="button">Archive</button>
 		</footer>
 	</section>

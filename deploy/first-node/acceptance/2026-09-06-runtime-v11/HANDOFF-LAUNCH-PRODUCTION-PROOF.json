@@ -1,0 +1,33 @@
+{
+  "schema": "qorpera.handoff-launch-provenance-production/v1",
+  "passed": true,
+  "recordedAt": "2026-09-06T19:10:52.760Z",
+  "sourceCommit": "759e44f36d54e4660159c7c8a378499cdb4e593f",
+  "runtimeBundleSha256": "ef0f569327e34673b8cfbd80541864ab116ca688c2eca79beb4bc0f3550e84ad",
+  "migration": "20260906000500",
+  "readback": {
+    "path": "outputs/runtime-custody-3c0bf3bce/runtime-v11-launch-guard-1788721537000.json",
+    "sha256": "a0580aae4d498634bec05d5482f532fb81db52d3af5b39140ce844f35fb2d8bb"
+  },
+  "trigger": {
+    "name": "qorpera_native_execution_launches_immutable",
+    "type": 27,
+    "enabled": "O",
+    "function": "qorpera_guard_native_launch_replacement()"
+  },
+  "function": {
+    "acl": "{postgres=X/postgres}",
+    "name": "qorpera_guard_native_launch_replacement",
+    "owner": "postgres",
+    "activeLeaseGate": true,
+    "securityDefiner": true,
+    "serviceRoleGate": true,
+    "definitionSha256": "8c636fea37e49bc3c192901a97727c93099b1d363d09f2e28d692c8b74a6b6be",
+    "supersededMarkerGate": true,
+    "priorLaunchHistoryGate": true
+  },
+  "successfulLiveReplacement": {
+    "path": "outputs/runtime-live-3c0bf3bce/NATIVE-V11-HANDOFF-PROOF.json",
+    "sha256": "a91b850acd92f6829e1fefeef46b731252bf6e80100543754626dc65d4a6e17b"
+  }
+}

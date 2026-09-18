@@ -7,6 +7,7 @@ import {
 } from "node:http";
 import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
 import { isIP } from "node:net";
+import { NODE_OBSERVATIONS_PATH, type ProviderNodeObservability } from "./node-observability.ts";
 import type { CloudRunnerAssignmentDelivery, CloudRunnerInstance, CloudRunnerWork } from "./orchestrator.ts";
 import { validateCloudRunnerWork } from "./orchestrator.ts";
 
@@ -37,6 +38,7 @@ export interface CloudRunnerProviderServiceTlsConfig {
 export interface CloudRunnerProviderServiceNetworkOptions {
 	trustedSource?: string;
 	tls?: CloudRunnerProviderServiceTlsConfig;
+	nodeObservations?: ProviderNodeObservability;
 }
 
 type ProviderRequest =
@@ -245,6 +247,21 @@ function sourceMatches(expected: string, received: string | undefined): boolean 
 	return received === expected || received === `::ffff:${expected}`;
 }
 
+/** A typed admission refusal (ceiling or node chooser) carries only a fixed reason code; anything
+ * else stays an opaque rejection so backend exceptions never reach the journal or the caller. */
+function admissionRefusal(error: unknown): { state: "refused" | "deferred"; reason: string } | undefined {
+	if (typeof error !== "object" || error === null) return undefined;
+	const candidate = error as { category?: unknown; state?: unknown; reason?: unknown };
+	if (
+		candidate.category !== "admission_refused" ||
+		(candidate.state !== "refused" && candidate.state !== "deferred") ||
+		typeof candidate.reason !== "string" ||
+		!/^[A-Z_]{3,64}$/.test(candidate.reason)
+	)
+		return undefined;
+	return { state: candidate.state, reason: candidate.reason };
+}
+
 export class HttpCloudRunnerProviderService {
 	readonly #backend: CloudRunnerProviderServiceBackend;
 	readonly #token: string;
@@ -252,6 +269,8 @@ export class HttpCloudRunnerProviderService {
 	readonly #port: number;
 	readonly #trustedSource?: string;
 	readonly #tls?: CloudRunnerProviderServiceTlsConfig;
+	readonly #nodeObservations?: ProviderNodeObservability;
+	#nodeObservationsStarted = false;
 	#server?: HttpServer | HttpsServer;
 
 	constructor(
@@ -283,6 +302,7 @@ export class HttpCloudRunnerProviderService {
 		this.#port = port;
 		this.#trustedSource = options.trustedSource;
 		this.#tls = options.tls;
+		this.#nodeObservations = options.nodeObservations;
 	}
 
 	async start(): Promise<number> {
@@ -303,12 +323,25 @@ export class HttpCloudRunnerProviderService {
 		});
 		const address = server.address();
 		if (!address || typeof address === "string") throw new Error("Runner provider address is unavailable");
+		try {
+			this.#nodeObservations?.start();
+			this.#nodeObservationsStarted = this.#nodeObservations !== undefined;
+		} catch {
+			// Optional diagnostics must never turn a working provider into an outage.
+			this.#nodeObservationsStarted = false;
+		}
 		return address.port;
 	}
 
 	async close(): Promise<void> {
 		const server = this.#server;
 		this.#server = undefined;
+		this.#nodeObservationsStarted = false;
+		try {
+			this.#nodeObservations?.stop();
+		} catch {
+			// No raw diagnostic error (or error-derived digest) is exported or logged.
+		}
 		if (!server) return;
 		await new Promise<void>((resolve, reject) => {
 			server.close((error) => (error ? reject(error) : resolve()));
@@ -326,6 +359,26 @@ export class HttpCloudRunnerProviderService {
 			response.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}\n');
 			return;
 		}
+		if (request.method === "GET" && request.url === NODE_OBSERVATIONS_PATH) {
+			if (!tokenMatches(this.#token, request.headers.authorization)) {
+				response.writeHead(401).end();
+				return;
+			}
+			try {
+				if (!this.#nodeObservations || !this.#nodeObservationsStarted) throw new Error("Observations unavailable");
+				const encoded = `${JSON.stringify(this.#nodeObservations.snapshot())}\n`;
+				response.writeHead(200, { "content-type": "application/json" }).end(encoded);
+			} catch {
+				response.writeHead(503, { "content-type": "application/json" }).end(
+					`${JSON.stringify({
+						schema: "qorpera.node-observation-error/v1",
+						status: this.#nodeObservations ? "unavailable" : "unknown",
+						reason: this.#nodeObservations ? "observation_failed" : "not_configured",
+					})}\n`,
+				);
+			}
+			return;
+		}
 		if (request.method !== "POST" || request.url !== REQUEST_PATH) {
 			response.writeHead(404).end();
 			return;
@@ -336,7 +389,11 @@ export class HttpCloudRunnerProviderService {
 		}
 		const controller = new AbortController();
 		const abort = (): void => controller.abort(new Error("Provider request disconnected"));
+		const responseClosed = (): void => {
+			if (!response.writableFinished) abort();
+		};
 		request.once("aborted", abort);
+		response.once("close", responseClosed);
 		try {
 			let encoded = "";
 			for await (const chunk of request) {
@@ -351,13 +408,30 @@ export class HttpCloudRunnerProviderService {
 			response.writeHead(200, { "content-type": "application/json" }).end(`${JSON.stringify({ value })}\n`);
 		} catch (error) {
 			if (controller.signal.aborted) return;
-			/* The body stays generic (the caller is a remote control plane), but
-			 * the operator needs the real refusal in the journal. */
-			console.error(`provider request rejected: ${error instanceof Error ? error.message : String(error)}`);
+			// The operator journal is telemetry too. Never log a backend exception,
+			// which can contain request bodies, private host paths or credentials.
+			const refusal = admissionRefusal(error);
+			console.error(
+				JSON.stringify({
+					schema: "qorpera.provider-request-error/v1",
+					providerAdapter: this.#backend.adapterId,
+					status: "rejected",
+					errorCategory:
+						error instanceof SyntaxError ? "invalid_arguments" : refusal ? "admission_refused" : "unknown",
+					...(refusal ? { state: refusal.state, reason: refusal.reason } : {}),
+				}),
+			);
 			const status = error instanceof SyntaxError ? 400 : 422;
-			response.writeHead(status, { "content-type": "application/json" }).end('{"error":"request rejected"}\n');
+			response
+				.writeHead(status, { "content-type": "application/json" })
+				.end(
+					refusal
+						? `${JSON.stringify({ error: "request rejected", category: "admission_refused", state: refusal.state, reason: refusal.reason })}\n`
+						: '{"error":"request rejected"}\n',
+				);
 		} finally {
 			request.off("aborted", abort);
+			response.off("close", responseClosed);
 		}
 	}
 }

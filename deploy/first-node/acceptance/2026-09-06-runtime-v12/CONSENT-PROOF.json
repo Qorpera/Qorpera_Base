@@ -1,0 +1,87 @@
+{
+  "schema": "qorpera.live-autonomous-withdrawal-proof/v1",
+  "passed": true,
+  "recordedAt": "2026-09-06T20:22:52.783Z",
+  "sourceCommit": "53e8fd0efc0c639cf96802e72fafacdf50ebe8d6",
+  "connectionId": "2bd8e0ae-fc58-449a-b680-e58ff4784744",
+  "actualOwnerRpc": true,
+  "oldSponsorVersionDeniedAfterWithdrawal": true,
+  "oldSponsorVersionRemainsDeniedAfterReconsent": true,
+  "freshVersionAccepted": true,
+  "deniedRequestsCreatedNoBindings": true,
+  "oldConsentVersionBytesUnchanged": true,
+  "companyDefaultUnchanged": true,
+  "consentRestored": true,
+  "latestConnectionVersion": 4,
+  "originalVersions": [
+    {
+      "sha256": "5944c73097650bbec9f25d92f3e156f078540c33f4d27ebd83a83eca408a6b54",
+      "version": 1,
+      "allowAutonomous": false
+    },
+    {
+      "sha256": "f42fcb123759541ca64eecc3c80f8445130f6d5f491df4f8439be53c12b28d8b",
+      "version": 2,
+      "allowAutonomous": true
+    }
+  ],
+  "finalVersions": [
+    {
+      "sha256": "5944c73097650bbec9f25d92f3e156f078540c33f4d27ebd83a83eca408a6b54",
+      "version": 1,
+      "allowAutonomous": false
+    },
+    {
+      "sha256": "f42fcb123759541ca64eecc3c80f8445130f6d5f491df4f8439be53c12b28d8b",
+      "version": 2,
+      "allowAutonomous": true
+    },
+    {
+      "sha256": "e2a4f2693dd09d9465a2b83423ae02b4a24c0694cac510574e9ef29231d169d2",
+      "version": 3,
+      "allowAutonomous": false
+    },
+    {
+      "sha256": "40aa7ca5ef7ea9cbc6235ab937edcbe986d80b3b0f64cac7247dd81ddb3ef0dc",
+      "version": 4,
+      "allowAutonomous": true
+    }
+  ],
+  "limits": [
+    "Queued-wake cancellation and already-admitted effect denial were exercised in isolated SQL regressions; this live proof exercises the actual owner consent and member sponsor admission RPCs."
+  ],
+  "witnesses": [
+    {
+      "path": "outputs/runtime-custody-3c0bf3bce/production-review-v12-consent-state-1788726069790.json",
+      "sha256": "d395485778269bdcd59dd2746c86730265d4920bbc2319f7b2889174cc983c86"
+    },
+    {
+      "path": "outputs/runtime-custody-3c0bf3bce/production-review-v12-consent-state-1788726154015.json",
+      "sha256": "4a53bcb958eb53617544d3427c3fa538122a496c0b6ec3e10b733ce0949a72ea"
+    },
+    {
+      "path": "outputs/runtime-custody-3c0bf3bce/production-review-v12-denied-bindings-1788726154513.json",
+      "sha256": "4888ed44b0d09afa27b42648ca1b81b535660aaf40b1ec24e4f30a78178ee74c"
+    },
+    {
+      "path": "outputs/runtime-live-3c0bf3bce/v12-consent-withdraw.result.json",
+      "sha256": "697bc48b646c20ece56a98f38a20d1f3c70fd7ca39dfb71739b79f7862487a34"
+    },
+    {
+      "path": "outputs/runtime-live-3c0bf3bce/v12-consent-old-denied-withdrawn.failure.json",
+      "sha256": "3f05c2d8d3738b4cd2166e97d60af46c78a2a4487744a7d2e242d61d9bb755da"
+    },
+    {
+      "path": "outputs/runtime-live-3c0bf3bce/v12-consent-reconsent.result.json",
+      "sha256": "547a3511b1acfbac74a0ada96ef5396eee1a9f3eb168c24f920d58ee7f40fb32"
+    },
+    {
+      "path": "outputs/runtime-live-3c0bf3bce/v12-consent-old-denied-reconsented.failure.json",
+      "sha256": "fb23ec4cc691760a22d3bc2338ded91883975bd8829f89608692e4d82b790e26"
+    },
+    {
+      "path": "outputs/runtime-live-3c0bf3bce/v12-consent-fresh-accepted.result.json",
+      "sha256": "273c6126234bc360e702b0f3c0fe012a69f01871c646bcefbe2553968f51c7dc"
+    }
+  ]
+}

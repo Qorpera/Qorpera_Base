@@ -1,0 +1,65 @@
+{
+  "schema": "qorpera.live-handoff-attempt-isolation/v1",
+  "passed": true,
+  "observedAt": "2026-09-06T18:48:08.945074+00:00",
+  "runId": "503eee81-672b-41fe-af58-041179ecdddf",
+  "attempts": [
+    {
+      "journalSha256": "18c00b4b5b283d77c80f7225376013d91612773117f00bcdf3fd001f771af994",
+      "acquisitionId": "503eee81-672b-41fe-af58-041179ecdddf",
+      "runId": "503eee81-672b-41fe-af58-041179ecdddf",
+      "attempt": 1,
+      "workSha256": "1f9565dddd1799ac1275aad4faa8034937fa05b92f4481821f81e9f9dae4f32e",
+      "instanceName": "qorpera-503eee81672b41feaf58041179ecdddf",
+      "physicalState": "stopped",
+      "createdAt": "2026-09-06T18:46:18.030Z",
+      "updatedAt": "2026-09-06T18:46:46.303Z",
+      "assignmentId": "0e187463-b925-4f1e-aa4a-c21fe2d4efc5",
+      "runnerClientId": null,
+      "imageFingerprint": "ab1c1be97bec88f5c3beb66819c3b4a4e6650ad859f16a2c45635d93bed601db",
+      "recoveryVolume": "qorpera-recovery-503eee81-672b-41fe-af58-041179ecdddf",
+      "credentialHashes": {
+        "activationSha256": "08c31dd971d22dd69cf0975d1c73136bdeb1a7fb17aac1d47131d642db463b1d",
+        "assignmentSha256": "7c8fbb4d0e5a1710eb030666914656454ad266a63917b788358ca80a6e33dc1a",
+        "nativeBridgeSha256": "8ed52fc025667954620c28352e084a6a7fe32a5deac471b36e98d3601f79357e"
+      }
+    },
+    {
+      "journalSha256": "d7fce4e3ac65187fb574cf01b6bd8b7f5b953a7fd2f61a2260c1b0cb43937aa6",
+      "acquisitionId": "a087f432-6152-80a4-b10e-40896e62637a",
+      "runId": "503eee81-672b-41fe-af58-041179ecdddf",
+      "attempt": 2,
+      "workSha256": "941a32e01795a42076fae553a1cef373ff670bd40158bd400c5f410309d9bef5",
+      "instanceName": "qorpera-a087f432615280a4b10e40896e62637a",
+      "physicalState": "stopped",
+      "createdAt": "2026-09-06T18:46:46.413Z",
+      "updatedAt": "2026-09-06T18:47:13.322Z",
+      "assignmentId": "89851625-26fb-4238-b094-7f10c86d2e7c",
+      "runnerClientId": null,
+      "imageFingerprint": "ab1c1be97bec88f5c3beb66819c3b4a4e6650ad859f16a2c45635d93bed601db",
+      "recoveryVolume": "qorpera-recovery-a087f432-6152-80a4-b10e-40896e62637a",
+      "credentialHashes": {
+        "activationSha256": "90f0e90c351f98616d57b9916d85322a4642c5f182db9166018abab0dc6ea71d",
+        "assignmentSha256": "b870018c162e947515ad62a0643e195cabb8a0b599ddfc0bd184f8d499a002a4",
+        "nativeBridgeSha256": "45e5e05a5eafc7bca829f0eb62b48a00f3131f6e55fb8e23266d897259568158"
+      }
+    }
+  ],
+  "distinctGuestsCredentialsAndRecoveryVolumes": true,
+  "bothGuestsRemoved": true,
+  "jobGuests": 0,
+  "loginGuestStopped": true,
+  "providerSha256": "15f8cdb8812bde6192bc7d6dd40463dec76ccbf58fb08a439d2d1390375a3ad0",
+  "units": {
+    "companyProvider": "active",
+    "orchestrator": "active"
+  },
+  "credentialValuesReturned": false,
+  "mutationsPerformed": false,
+  "operation": "c7085e8f3-verify-handoff-attempts-01",
+  "recipeSha256": "3ef2a45a5284da30cc380b0d84257a2af9b27da46aca584904a54aeba9a85b1b",
+  "remoteLogSha256": "ce0aa37cc33a1ff059323e4edca16b3a29ba3ccff8116e15a5d68eb88eb285e4",
+  "canonicalHelperRestored": true,
+  "firstGuestRetiredBeforeSecondCreated": true,
+  "nativeContinuationCompleted": false
+}

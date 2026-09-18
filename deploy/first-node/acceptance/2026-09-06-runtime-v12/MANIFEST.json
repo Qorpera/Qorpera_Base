@@ -1,0 +1,243 @@
+{
+  "schema": "qorpera.runtime-review-closure-checkpoint/v1",
+  "recordedAt": "2026-09-06T20:36:38.258Z",
+  "runtimeSourceCommit": "53e8fd0efc0c639cf96802e72fafacdf50ebe8d6",
+  "runtimeBundleSha256": "229ceb4522bbaad4a6dcf38d69b9cb6e1b93f394ddd405be6f250e90941da6e7",
+  "providerSourceCommit": "bf08dd923d61ba8432d86559a71cf473ac72f9b9",
+  "reviewFindingsClosed": true,
+  "closedFindings": 3,
+  "contractSteps": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "generalProductionReadinessAccepted": false,
+  "sourceWorkspace": "/Users/jonas/Documents/Codex/2026-09-05/files-pasted-by-the-user-take",
+  "files": [
+    {
+      "file": "SOURCE-COMMIT.json",
+      "source": "outputs/runtime-source-53e8fd0ef.json",
+      "sha256": "ab2f27de6f00aaa4869300d47bf9ef772c29d4e16e8ae0fba7cf3a5790912d57",
+      "bytes": 4104
+    },
+    {
+      "file": "LINUX-PACKAGE-PROOF.json",
+      "source": "outputs/runtime-linux-x64-package-proof-53e8fd0ef.json",
+      "sha256": "2639710727c289b972b87f348a814061e5075b15595638e48d58afc635721782",
+      "bytes": 1802
+    },
+    {
+      "file": "ORIGINAL-REPRODUCTIONS.json",
+      "source": "work/prod-review-runtime-02.json",
+      "sha256": "d6ee540411915178cebfa6bd90b1cf233d1e7c48f2257e5d5b8634e5f152a0d0",
+      "bytes": 25885
+    },
+    {
+      "file": "REGRESSION-RESULTS.json",
+      "source": "work/production-review-fixes-04.json",
+      "sha256": "438977007b7f251a6c5263a203bdb39e25ded4ddc29e3bdb1ea9a934de2f1cd8",
+      "bytes": 27799
+    },
+    {
+      "file": "FUNCTION-PARITY.json",
+      "source": "outputs/runtime-production-review-v12-function-parity.json",
+      "sha256": "1659e50e7db23f16dd7679ecd8f8789b79b51cf66f84bc23d0aff20fb367943c",
+      "bytes": 7562
+    },
+    {
+      "file": "FINAL-FUNCTION-PINS.json",
+      "source": "outputs/runtime-custody-3c0bf3bce/production-review-v12-function-pins-1788726926887.json",
+      "sha256": "d6bb3daf1b82d2c98a650290d62985faa705250826149ac32f3cf20a13cee77e",
+      "bytes": 5584
+    },
+    {
+      "file": "PRIVILEGE-RECONCILIATION-TEST.json",
+      "source": "outputs/runtime-production-review-v12-privilege-test.json",
+      "sha256": "0ec9ea86cdd1a1fbf89f10c56ee3daab7718fb426d8214b04265b09961c4a81a",
+      "bytes": 29958
+    },
+    {
+      "file": "PRIVILEGE-RECONCILIATION-REVIEW.json",
+      "source": "outputs/runtime-v12-privilege-reconciliation/REVIEW.json",
+      "sha256": "33715187d6d9eebaf793f08f9536586805bb9f2e2e58bb34127812f163896b4c",
+      "bytes": 8511
+    },
+    {
+      "file": "PRIVILEGE-RECONCILIATION-RESULT.json",
+      "source": "outputs/runtime-v12-privilege-reconciliation/RESULT.json",
+      "sha256": "b3a65a89bab0c043572e1066cc2ec28c16ece4a95489bb12b1d47c3eb91419f5",
+      "bytes": 5778
+    },
+    {
+      "file": "BUILD-RESULT.json",
+      "source": "outputs/runtime-image-53e8fd0ef/BUILD-RESULT.json",
+      "sha256": "8683567e61faf82e651a5df7cebe9d856ae27f3f364d86eb287ea3d5d8173c2b",
+      "bytes": 1194
+    },
+    {
+      "file": "ACCEPTANCE.json",
+      "source": "outputs/runtime-image-53e8fd0ef/ACCEPTANCE.json",
+      "sha256": "3be0c378cc6e1ba224bd7c033ed3e0b28700b0b146784876d6dea151212682fd",
+      "bytes": 1745
+    },
+    {
+      "file": "SIGNED-RESULT.json",
+      "source": "outputs/runtime-image-53e8fd0ef/SIGNED-RESULT.json",
+      "sha256": "fa53935b8739904b52b917c27e543d1c8edaa803dc84892bea40daec69b90a60",
+      "bytes": 1015
+    },
+    {
+      "file": "PHYSICAL-FENCE.json",
+      "source": "outputs/runtime-image-53e8fd0ef/PHYSICAL-FENCE.json",
+      "sha256": "eac97bedff682e8903706478be39bd42b3d566142cb238d6da3318dcee4a738c",
+      "bytes": 886
+    },
+    {
+      "file": "DISABLED-INSTALLATION.json",
+      "source": "outputs/runtime-image-53e8fd0ef/DISABLED-INSTALLATION.json",
+      "sha256": "7ce567a7227a46f5fce5763d73fbdc998c21efe6832cc3cdc6aee3418c2c85a3",
+      "bytes": 1721
+    },
+    {
+      "file": "SERVICES-ACTIVE.json",
+      "source": "outputs/runtime-image-53e8fd0ef/SERVICES-ACTIVE.json",
+      "sha256": "72d17b19b746acb5265c0e88332d042a97b14732e0fe1346585b57d4ccd3ed83",
+      "bytes": 979
+    },
+    {
+      "file": "FINAL-NODE-READBACK.json",
+      "source": "outputs/runtime-image-53e8fd0ef/FINAL-NODE-READBACK.json",
+      "sha256": "8478e0a6fc82aa16441363f0d0268a212dd6602f48dd264ead793d7de5d4ddc6",
+      "bytes": 985
+    },
+    {
+      "file": "ACTUAL-ATTEMPT-ISOLATION.json",
+      "source": "outputs/runtime-image-53e8fd0ef/ACTUAL-ATTEMPT-ISOLATION.json",
+      "sha256": "d6bb36e874a02671e429b4e10508ed053792a0d2d348d0424de7f4b259d518de",
+      "bytes": 2912
+    },
+    {
+      "file": "OFFLINE-TESTS.json",
+      "source": "outputs/runtime-rollout-53e8fd0ef/OFFLINE-TESTS.json",
+      "sha256": "766125fbf48087647fc76635e1ebb3d2c40a9764b3c3288a3e5f9610c28fbeeb",
+      "bytes": 1282
+    },
+    {
+      "file": "WRAPPER-REHEARSAL.json",
+      "source": "outputs/runtime-rollout-53e8fd0ef/WRAPPER-REHEARSAL.json",
+      "sha256": "e1f751b3a1f2a39af6c3480a3ffc23b9694f84e731f4d3f1871ad1265dbad8e2",
+      "bytes": 3610
+    },
+    {
+      "file": "FROZEN.json",
+      "source": "outputs/runtime-rollout-53e8fd0ef/FROZEN.json",
+      "sha256": "4ce86aafc8f6306dc3d94a7efc71322af1fa3c99caa49f2e832a42c09787f9ce",
+      "bytes": 4860
+    },
+    {
+      "file": "ROLLOUT-PREFLIGHT-RESULT.json",
+      "source": "outputs/runtime-rollout-53e8fd0ef-activation/evidence/rollout-preflight-result.json",
+      "sha256": "ec9dca39aa10505ee31a4615cbe16c6acb06e39fced8182dff8f5eefd283356d",
+      "bytes": 7181
+    },
+    {
+      "file": "ROLLOUT-PAUSE-RESULT.json",
+      "source": "outputs/runtime-rollout-53e8fd0ef-activation/evidence/rollout-pause-result.json",
+      "sha256": "5ad63b875edd49435839d6ca4c7da857e30b7eb52302dae8aea2fca65af18a14",
+      "bytes": 7173
+    },
+    {
+      "file": "ROLLOUT-20260906000700-RESULT.json",
+      "source": "outputs/runtime-rollout-53e8fd0ef-activation/evidence/rollout-20260906000700-result.json",
+      "sha256": "d1dd39b90526b7a8fc9da64eeb2ed8ddb09374b0495f110c7c25c7a6f2c2ef8d",
+      "bytes": 7215
+    },
+    {
+      "file": "ROLLOUT-20260906000800-RESULT.json",
+      "source": "outputs/runtime-rollout-53e8fd0ef-activation/evidence/rollout-20260906000800-result.json",
+      "sha256": "f5e5dd4a21ad32fa8e25e347a5236e71c2e2f82d02127ec03f7f013dc0be6e53",
+      "bytes": 7239
+    },
+    {
+      "file": "ROLLOUT-20260906000900-RESULT.json",
+      "source": "outputs/runtime-rollout-53e8fd0ef-activation/evidence/rollout-20260906000900-result.json",
+      "sha256": "39dce1cd7075b39329fc8c61db0f8f38f94aee2927c7fe9af3bcb2308d716a67",
+      "bytes": 7263
+    },
+    {
+      "file": "ROLLOUT-20260906001000-RESULT.json",
+      "source": "outputs/runtime-rollout-53e8fd0ef-activation/evidence/rollout-20260906001000-result.json",
+      "sha256": "aa643c2529bee1c3293c9305e435b18ddb94cfdb48f6b1a5f8a6e053e106f202",
+      "bytes": 7287
+    },
+    {
+      "file": "ROLLOUT-FINAL-READBACK-RESULT.json",
+      "source": "outputs/runtime-rollout-53e8fd0ef-activation/evidence/rollout-final-readback-result.json",
+      "sha256": "80e9a3ce6aec296e25fe7b1ad853b6f04e89f3cd37a28a3859c1c54ec3c77ffb",
+      "bytes": 7287
+    },
+    {
+      "file": "ADMISSION-RESULT.json",
+      "source": "outputs/runtime-live-53e8fd0ef/ADMISSION-RESULT.json",
+      "sha256": "e7bdc153b8e5395a13aba314eb75188c964521228bf45b15a0c483de71e6df6e",
+      "bytes": 5916
+    },
+    {
+      "file": "CONSENT-PROOF.json",
+      "source": "outputs/runtime-live-53e8fd0ef/CONSENT-PROOF.json",
+      "sha256": "9f53cf18b26d489a78c2122dd198ed15e81fd9a4389aa222e0a74e63858e3fc8",
+      "bytes": 3290
+    },
+    {
+      "file": "NATIVE-CONTINUATION-PROOF.json",
+      "source": "outputs/runtime-live-53e8fd0ef/NATIVE-CONTINUATION-PROOF.json",
+      "sha256": "d9819c5f1323ea5144e8fac691c2db92d234637f3f2ffb75cc5e09d6aee8a1f2",
+      "bytes": 18364
+    },
+    {
+      "file": "RETAINED-FAILED-CANARIES.json",
+      "source": "outputs/runtime-live-53e8fd0ef/RETAINED-FAILED-CANARIES.json",
+      "sha256": "207c9f4817ce10a203c85c3aa331e8a1e32b14cb73f00f33ec2b45359d7fa872",
+      "bytes": 3010
+    },
+    {
+      "file": "STARTUP-LOGS.json",
+      "source": "outputs/runtime-live-53e8fd0ef/STARTUP-LOGS.json",
+      "sha256": "8f3d2f2fb8429daf84d43a0523bead108c9d6b39436a45f4b32e16601325a431",
+      "bytes": 2558
+    },
+    {
+      "file": "WAKE-PARSER-DIAGNOSTIC.json",
+      "source": "outputs/runtime-live-53e8fd0ef/WAKE-PARSER-DIAGNOSTIC.json",
+      "sha256": "7951decef9749ab36c1982ddeea5290cfd19d23c8f3917e1f0f4446ae55dc92c",
+      "bytes": 515
+    },
+    {
+      "file": "REVIEW-CLOSURE.json",
+      "source": "outputs/runtime-live-53e8fd0ef/REVIEW-CLOSURE.json",
+      "sha256": "a58bab2f54390756d5cc35a3934d83c9d5c2dd0b88af2a97f1e75c25a566c7c9",
+      "bytes": 5595
+    },
+    {
+      "file": "FINAL-DATABASE-READBACK.json",
+      "source": "outputs/runtime-custody-3c0bf3bce/runtime-v12-final-state-1788726897192.json",
+      "sha256": "8ac2171d98f8e81b46d90c5a6083a0832a2f8215ee1551590c8099e6ae5acefa",
+      "bytes": 848
+    }
+  ],
+  "previousCheckpoints": [
+    {
+      "file": "../2026-09-06-runtime-v11/MANIFEST.json",
+      "sha256": "886aa3bbb3b03c41a61d9ca0f667a2efc948cbe15a2b2cd497ed555ad76e809b",
+      "filesVerifiedUnchanged": true
+    }
+  ],
+  "limits": [
+    "A completed effect before quota is proved with synthetic signals only in isolated PostgreSQL. The actual production provider limit happened before any governed effect; no production signal was fabricated and quota was not deliberately exhausted.",
+    "Three v12 canaries failed acceptance and remain preserved. Two startup failures have no established root cause. The successful fourth canary completed on unchanged artifacts after one recovered dispatch failure; this closes the reviewed behavior checks, not general availability certification.",
+    "The context-read span is named unknown_tool in current telemetry; its successful status, ordering, reported arguments and independently verified continuation hash support the correlated read. Native-result-fence delivery telemetry remains unconfirmed.",
+    "Historical Steps 0–3 proofs retain their original versions, timestamps and nonexposure scan scopes; they were not all rerun on v12.",
+    "The configured identity recovery replica is Azure loopback NFS, not an independently proved physical Synology replica. Orders 4–10, production connector breadth, disaster recovery and general launch readiness are outside this review closure."
+  ]
+}

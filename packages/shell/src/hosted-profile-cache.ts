@@ -8,7 +8,7 @@ import type {
 	HostedProfileMember,
 	HostedProfileRole,
 	HostedProfileTeam,
-} from "./hosted-primary.ts";
+} from "@qorpera/cloud-client/hosted-primary";
 
 const HOSTED_PROFILE_CACHE_SCHEMA = "qorpera.hosted-profile-cache/v1";
 const CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1_000;

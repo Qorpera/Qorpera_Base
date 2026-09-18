@@ -478,7 +478,7 @@ begin
 			'14000000-0000-4000-8000-000000000099'
 		);
 		raise exception 'stale proposal revision was accepted';
-	exception when serialization_failure then null;
+	exception when sqlstate 'PGRST' then null;
 	end;
 	begin
 		perform public.qorpera_reject_company_proposal(
@@ -486,7 +486,7 @@ begin
 			'14000000-0000-4000-8000-000000000099'
 		);
 		raise exception 'stale proposal revision was rejected';
-	exception when serialization_failure then null;
+	exception when sqlstate 'PGRST' then null;
 	end;
 	v_accepted := public.qorpera_accept_company_proposal(
 		(current_setting('qorpera_test.cloud_company_proposal')::jsonb ->> 'proposal_id')::uuid,
@@ -506,7 +506,7 @@ begin
 			(current_setting('qorpera_test.cloud_company_proposal')::jsonb -> 'proposal_snapshot' ->> 'snapshot_id')::uuid
 		);
 		raise exception 'accepted proposal was later reported as rejected';
-	exception when serialization_failure then null;
+	exception when sqlstate 'PGRST' then null;
 	end;
 end
 $$;
@@ -514,17 +514,36 @@ $$;
 reset role;
 select set_config('request.jwt.claims', '', false);
 
+-- The audience-safe v3 wrapper is intentionally callable by members. Its
+-- actual session columns still pin canonical revisions through the trigger;
+-- caller-supplied execution-scope metadata must not choose a different head.
+select set_config('request.jwt.claims',
+	'{"sub":"14000000-0000-4000-8000-000000000001","role":"authenticated"}', false);
+set role authenticated;
 do $$
+declare v_session jsonb; v_head uuid;
 begin
-	if has_function_privilege(
-		'authenticated',
-		'public.qorpera_create_shared_session_v3(uuid, uuid, text, text, uuid, jsonb)',
-		'execute'
-	) then
-		raise exception 'authenticated clients can bypass revision-pinned session creation';
+	select (public.qorpera_get_company_file(
+		(current_setting('qorpera_test.cloud_company')::jsonb ->> 'environment_id')::uuid
+	) ->> 'head_snapshot_id')::uuid into strict v_head;
+	v_session := public.qorpera_create_shared_session_v3(
+		(current_setting('qorpera_test.cloud_company')::jsonb ->> 'environment_id')::uuid,
+		'14000000-0000-4000-8000-000000000131', 'Direct pinned session', null, null,
+		'{"companySnapshotId":"14000000-0000-4000-8000-000000000999","staffVersion":999}'
+	);
+	if v_head is null or (v_session ->> 'company_snapshot_id')::uuid is distinct from v_head then
+		raise exception 'direct member session creation bypassed canonical revision pinning';
+	end if;
+	if has_function_privilege('anon',
+		'public.qorpera_create_shared_session_v3(uuid,uuid,text,text,uuid,jsonb)', 'execute')
+		or has_function_privilege('authenticated',
+		'public.qorpera_create_shared_session_v3_profile_scope(uuid,uuid,text,text,uuid,jsonb)', 'execute') then
+		raise exception 'session creation exposed an anonymous or private implementation entrypoint';
 	end if;
 end
 $$;
+reset role;
+select set_config('request.jwt.claims', '', false);
 
 -- The object catalog counts content-addressed bytes once and refuses a new
 -- object that would cross the allowance before Storage records it.

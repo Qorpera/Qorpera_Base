@@ -1,0 +1,39 @@
+{
+	"name": "@qorpera/cloud-client",
+	"version": "0.83.0",
+	"private": true,
+	"type": "module",
+	"description": "Qorpera cloud client APIs and wire contracts for desktop and web.",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		},
+		"./*": {
+			"types": "./dist/*.d.ts",
+			"import": "./dist/*.js"
+		}
+	},
+	"files": [
+		"dist",
+		"README.md",
+		"CHANGELOG.md"
+	],
+	"scripts": {
+		"clean": "shx rm -rf dist",
+		"build": "tsgo -p tsconfig.build.json",
+		"test": "vitest --run"
+	},
+	"dependencies": {
+		"@qorpera/contracts": "^0.83.0",
+		"@qorpera/company": "^0.83.0",
+		"@supabase/supabase-js": "2.112.3"
+	},
+	"devDependencies": {
+		"shx": "0.4.0",
+		"vitest": "4.1.11"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	}
+}

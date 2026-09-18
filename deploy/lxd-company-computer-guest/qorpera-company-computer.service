@@ -1,0 +1,73 @@
+[Unit]
+Description=Qorpera persistent shared office
+Wants=network-online.target
+Requires=systemd-tmpfiles-setup.service
+After=network-online.target systemd-tmpfiles-setup.service
+After=apparmor.service
+RequiresMountsFor=/var/lib/qorpera-office /run/qorpera-office/private
+AssertPathIsMountPoint=/var/lib/qorpera-office
+AssertPathIsMountPoint=/run/qorpera-office/private
+# Exact adopted roots come from protected configuration. The runtime verifies
+# their descriptors, mount and receipt before opening either listener.
+AssertPathIsDirectory=/run/qorpera-office/display
+AssertPathIsDirectory=/run/qorpera-office/browser
+AssertPathIsDirectory=/run/qorpera-office/captures
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=exec
+User=qorpera-office
+Group=qorpera-office
+StateDirectory=qorpera-office-events
+StateDirectoryMode=0700
+WorkingDirectory=/opt/qorpera-office
+Environment=HOME=/nonexistent
+# %b is the kernel boot ID without hyphens. A later boot cannot load old credentials.
+LoadCredential=qorpera-office-config:/etc/qorpera-office/boots/%b/credentials/config.json
+LoadCredential=qorpera-office-registry:/etc/qorpera-office/boots/%b/credentials/registry
+LoadCredential=qorpera-office-native:/etc/qorpera-office/boots/%b/credentials/native
+LoadCredential=qorpera-office-objects:/etc/qorpera-office/boots/%b/credentials/objects
+LoadCredential=qorpera-office-tls-cert:/etc/qorpera-office/boots/%b/credentials/tls-cert.pem
+LoadCredential=qorpera-office-tls-key:/etc/qorpera-office/boots/%b/credentials/tls-key.pem
+ExecStart=/usr/bin/node /opt/qorpera-office/qorpera-company-computer-service.mjs
+Restart=on-failure
+RestartSec=10
+# The main process owns graceful browser flush and all guest drains. Its exit
+# or the timeout then kills every remaining descendant in the service cgroup.
+KillMode=mixed
+KillSignal=SIGTERM
+SendSIGKILL=yes
+TimeoutStopSec=70
+UMask=0077
+LimitCORE=0
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/qorpera-office /run/qorpera-office /var/lib/qorpera-office-events
+InaccessiblePaths=/etc/qorpera-office/credentials -/etc/qorpera-office/boots/%b/credentials -/var/lib/qorpera/identity -/qorpera/company-live
+ProtectHome=yes
+ProtectProc=invisible
+ProcSubset=all
+ProtectHostname=private
+ProtectClock=yes
+# Bubblewrap must create fresh procfs inside the unprivileged PID namespace;
+# masked parent procfs prevents that. Host writes remain denied by uid/caps.
+ProtectKernelTunables=no
+ProtectKernelLogs=no
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=user mnt pid net ipc uts cgroup
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryMax=4G
+MemorySwapMax=0
+TasksMax=512
+CPUQuota=200%
+
+[Install]
+WantedBy=multi-user.target

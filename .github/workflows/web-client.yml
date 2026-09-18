@@ -1,0 +1,81 @@
+name: Web client
+
+# Checks only. Cloudflare Pages owns deployment of its configured production
+# branch; this workflow never publishes an artifact or changes Pages settings.
+on:
+  workflow_dispatch:
+  push:
+    branches: [master, web/client-app, 'release/web-runtime-*']
+    paths:
+      - '.github/workflows/web-client.yml'
+      - 'packages/web/**'
+      - 'packages/contracts/**'
+      - 'packages/company/**'
+      - 'packages/cloud-client/**'
+      - 'packages/member-web/ui/**'
+      - 'packages/shell/userland/**'
+      - 'packages/runtime/src/cloud-runtime-bundle.generated.ts'
+      - 'deploy/first-node/native-codex/runtime-bundle-manifest.json'
+      - 'supabase/migrations/**'
+      - 'supabase/functions/native-provider-login/**'
+      - 'scripts/check-headless-packages.mjs'
+      - 'scripts/generate-cloud-runtime-bundle.mjs'
+      - 'scripts/web-deployment.test.mjs'
+      - 'package.json'
+      - 'package-lock.json'
+  pull_request:
+    paths:
+      - '.github/workflows/web-client.yml'
+      - 'packages/web/**'
+      - 'packages/contracts/**'
+      - 'packages/company/**'
+      - 'packages/cloud-client/**'
+      - 'packages/member-web/ui/**'
+      - 'packages/shell/userland/**'
+      - 'packages/runtime/src/cloud-runtime-bundle.generated.ts'
+      - 'deploy/first-node/native-codex/runtime-bundle-manifest.json'
+      - 'supabase/migrations/**'
+      - 'supabase/functions/native-provider-login/**'
+      - 'scripts/check-headless-packages.mjs'
+      - 'scripts/generate-cloud-runtime-bundle.mjs'
+      - 'scripts/web-deployment.test.mjs'
+      - 'package.json'
+      - 'package-lock.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-client-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    name: Check and build release artifact
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Build shared SDK declarations before checking consumers
+        run: npm run build:web-sdk
+      - name: Typecheck
+        run: npm run typecheck --workspace packages/web
+      - name: Unit tests
+        run: npm test --workspace packages/web
+      - name: Deployment configuration and provenance contracts
+        run: node --test scripts/web-deployment.test.mjs supabase/functions/native-provider-login/native-provider-login.test.ts
+      - name: Lint
+        run: npx biome check packages/web/src packages/web/test
+      - name: Build release artifact against public fixture endpoints
+        env:
+          QORPERA_WEB_CONFIG_JSON: >-
+            {"projectUrl":"https://project.example.invalid","publishableKey":"sb_publishable_fixture123","objectGatewayUrl":"https://objects.example.invalid","officeViewerOrigin":"wss://viewer.example.invalid:8443","nativeProviderLoginUrl":"https://project.example.invalid/functions/v1/native-provider-login/"}
+        run: npm run build:release --workspace packages/web

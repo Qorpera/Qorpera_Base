@@ -1,0 +1,55 @@
+{
+  "schema": "qorpera.sponsor-handoff-acceptance-status/v1",
+  "passed": false,
+  "recordedAt": "2026-09-06T16:57:10.127Z",
+  "runtimeBundleSha256": "c90ab35c33b6af3a3fecbf0f9d1f06210a94a4769746c54c8a3ad94bbd87fab6",
+  "reason": "Live usage-limit notification and same-run sponsor continuation remain unproven",
+  "currentConnectionWorks": true,
+  "recordedAccountComparison": {
+    "path": "outputs/runtime-live-3c0bf3bce/SPONSOR-CAPSULE-COMPARISON-RESULT.json",
+    "sha256": "aeec8a86a78f08e3fee450a44fa547709529a62690ab6fbbc57b2b2193f2102c"
+  },
+  "olderAccountProbe": {
+    "runId": "841e8805-7cc5-43b0-9c11-e3cf4595df2e",
+    "jobId": "6e5c29c1-2fe6-438e-801a-8c5da7345099",
+    "jobStatus": "failed",
+    "stage": "codex-turn-completion",
+    "category": "provider_failed",
+    "underlyingCause": "unknown",
+    "sends": 0,
+    "results": 0,
+    "leases": 0
+  },
+  "actualUsageLimitSignals": 0,
+  "actualHandoffs": 0,
+  "temporaryBindingRevoked": true,
+  "currentSponsorUnchanged": true,
+  "artifacts": [
+    {
+      "path": "outputs/runtime-custody-3c0bf3bce/sponsor-v9-run-state-1788713425505.json",
+      "sha256": "53dd31838f38b26a17b2f5957a3a174364189f4a1c5805739fdc06d052f070ee"
+    },
+    {
+      "path": "outputs/runtime-live-3c0bf3bce/sponsor-old-account-v9-01.diagnostics.json",
+      "sha256": "06319a1659eae39f6067582578c49c294d5c749199fd942b429ea87fe5de9a84"
+    },
+    {
+      "path": "outputs/runtime-live-3c0bf3bce/sponsor-v9-probe-binding-retire.result.json",
+      "sha256": "2cfe7f52682bbbd3cdf40757ce30d7d95d3d25769f2308eede1569e871911cac"
+    },
+    {
+      "path": "outputs/runtime-custody-3c0bf3bce/runtime-v9-final-state-1788713733109.json",
+      "sha256": "5455f5d8fe65eb4b45c2e252601c0c0d0f87ffaaffd29de0ba413a1c8e9be670"
+    }
+  ],
+  "remaining": [
+    "Obtain a working eligible fallback connection of the same principal through the normal reconnect flow.",
+    "Prove a real adapter usage-limit event, member notification, same-run binding-version handoff and successful continuation with canonical context.",
+    "Retain the separate rate-limit/outage rejection evidence; SQL and local adapter tests alone do not establish this live gate."
+  ],
+  "limits": [
+    "Expired old access tokens have refresh tokens; expiration alone does not establish the reason the provider failed.",
+    "No production usage signal was fabricated and no subscription quota was deliberately exhausted."
+  ],
+  "fullStepsZeroThroughThreeAcceptance": false
+}

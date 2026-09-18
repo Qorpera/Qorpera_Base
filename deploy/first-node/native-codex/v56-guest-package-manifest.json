@@ -1,0 +1,174 @@
+{
+  "schema": "qorpera.lxd-runner-guest-package/v1",
+  "platform": "linux-x64",
+  "runtime": {
+    "node": ">=22.19.0",
+    "podman": ">=5.0.0",
+    "cgroups": "v2"
+  },
+  "nativeHarnesses": {
+    "codex": "0.147.0",
+    "claudeCode": "2.1.231"
+  },
+  "nativeCompany": {
+    "schema": "qorpera.native-company-guest/v1",
+    "binaryPath": "/opt/qorpera-harnesses/native-company/codex",
+    "binarySha256": "2f2c26cfdfacebbcce848fb50cfaaa4e8d0aa3c6ec3c1009123ecf766c8335f7",
+    "sourceCommit": "be6e8eac029b183056b7e4402879f15d2c85f61b",
+    "patchSha256": "2ee0b5ef1485c7715dcf6d2d0be9ae24a2fb7e7e7f8c5a47f18becc4064b1bbc",
+    "target": "x86_64-unknown-linux-gnu",
+    "profile": "release"
+  },
+  "runnerImage": {
+    "schema": "qorpera.ephemeral-runner-image-contract/v1",
+    "source_commit": "135b4fc7b40f70a0fd6859fb9400fbb42d820ebc",
+    "base_image": "docker.io/library/node@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d",
+    "image": "localhost/qorpera/sandbox-probe:135b4fc7b40f70a0fd6859fb9400fbb42d820ebc@sha256:adda31f15d111ed8a06d4d773bac9d8d309047e09862642a292068d62b9b60e1",
+    "archive": {
+      "file": "runner-image/qorpera-sandbox-probe.oci.tar",
+      "bytes": 84122624,
+      "sha256": "c9370c825bdbd589bf0c1391e567b8f5ea8ba36161cc554b32fcfb235f046239"
+    },
+    "cosign_bundle": {
+      "file": "runner-image/qorpera-sandbox-probe.cosign-bundle.json",
+      "bytes": 10639,
+      "sha256": "98a00fefd625c9aceeadd746ee610682a8787e5ce85ec0a6ac513a354a7491ce",
+      "certificate_identity": "https://github.com/Qorpera/Qorpera_Base/.github/workflows/ephemeral-runner-linux.yml@refs/heads/codex/step2-first-node",
+      "certificate_oidc_issuer": "https://token.actions.githubusercontent.com",
+      "workflow_sha": "135b4fc7b40f70a0fd6859fb9400fbb42d820ebc",
+      "workflow_trigger": "workflow_dispatch"
+    }
+  },
+  "artifacts": [
+    {
+      "file": "company-lock-heartbeat.mjs",
+      "bytes": 712,
+      "sha256": "bf335b5abc24694ad1c9090b8b2f3e3556e0d0273b951b8cbc2193956d65bd80"
+    },
+    {
+      "file": "harness/package-lock.json",
+      "bytes": 8455,
+      "sha256": "60dc3982202781406f39aa1e9e4c2df4cc93898aac3be693dea2321dd346d002"
+    },
+    {
+      "file": "harness/package.json",
+      "bytes": 173,
+      "sha256": "0d421bba01ad3191ceaf78f59737c21b0ccc96afd81275bc92f30540356ff401"
+    },
+    {
+      "file": "install-image-contract.sh",
+      "bytes": 15733,
+      "sha256": "7c16cb80e000a2e45db4b2bfba7e2584c2b76b3fc9002fece703965733b6e9d9"
+    },
+    {
+      "file": "native-company/artifact.json",
+      "bytes": 1636,
+      "sha256": "eacab0be3014117f270a3ac552edd709836ec665898e04a6f0e03a24caa85ba2"
+    },
+    {
+      "file": "native-company/codex",
+      "bytes": 307161584,
+      "sha256": "2f2c26cfdfacebbcce848fb50cfaaa4e8d0aa3c6ec3c1009123ecf766c8335f7"
+    },
+    {
+      "file": "native-company/LICENSE",
+      "bytes": 10926,
+      "sha256": "d17f227e4df5da1600391338865ce0f3055211760a36688f816941d58232d8dc"
+    },
+    {
+      "file": "native-company/NOTICE",
+      "bytes": 242,
+      "sha256": "9d71575ecfd9a843fc1677b0efb08053c6ba9fd686a0de1a6f5382fd3c220915"
+    },
+    {
+      "file": "qorpera-company-runner.service",
+      "bytes": 1927,
+      "sha256": "ad9f88e91918a827757304fc53ee37838c7daeb116a834d29dc7c821aa4b334b"
+    },
+    {
+      "file": "qorpera-ephemeral-runner.mjs",
+      "bytes": 295909,
+      "sha256": "ed6f8ba65103fa64c63b18930e95cdbb43921ba89276e18f8935e41f738a0ddf"
+    },
+    {
+      "file": "qorpera-ephemeral-runner.service",
+      "bytes": 2167,
+      "sha256": "b6ce18e94b9b39df14d2fa9d232ad5d28f4acc96bc3f6045114657e4c38dfe03"
+    },
+    {
+      "file": "qorpera-identity-recovery-restore.mjs",
+      "bytes": 28431,
+      "sha256": "2a41e6b55e8c78bfdb79d3308fa834ae25b1ec03cc787a692d999d9aa2f514eb"
+    },
+    {
+      "file": "qorpera-lxd-native-login-bootstrap.mjs",
+      "bytes": 36001,
+      "sha256": "8fd64e7c86719558ca692c4cafb1aae00b3e3929f24b2e6baafdb6e4f4f4c7a7"
+    },
+    {
+      "file": "qorpera-lxd-native-login-bootstrap.service",
+      "bytes": 966,
+      "sha256": "653ef229d8254824cbfa1ff2e91046396818d43e91edc33d221d9e97fecaa66d"
+    },
+    {
+      "file": "qorpera-lxd-runner-bootstrap.mjs",
+      "bytes": 55856,
+      "sha256": "78aec00a277c9e9b40354ef223f219cb1151d8280fdfcda6e8e7509bc32ab173"
+    },
+    {
+      "file": "qorpera-lxd-runner-bootstrap.service",
+      "bytes": 988,
+      "sha256": "572957568cc37c1ee29cfbaf3269f2af7d0c820f10e9c91d52a96df46c945659"
+    },
+    {
+      "file": "qorpera-native-company-host.service",
+      "bytes": 3235,
+      "sha256": "23ec747b69de6eccf04c423a0d752a80585e7155318fbf7f6d0d199f453349d5"
+    },
+    {
+      "file": "qorpera-native-isolation-child.mjs",
+      "bytes": 2893,
+      "sha256": "84bc4ab892cfe18a905a9dfcae9cd5a8206c054ae114af58feb73d63a7931df9"
+    },
+    {
+      "file": "qorpera-native-login-provider-host.service",
+      "bytes": 1789,
+      "sha256": "0f5e9ca1118ca9f678e6f26f061dd3c3d17710f8360a58b14c7055edc4ea9275"
+    },
+    {
+      "file": "qorpera-native-provider-host.mjs",
+      "bytes": 266821,
+      "sha256": "90e3cff0f6e595fb1c8b802d57be07793818f46d54dd8818f9a1ccf24b01d3d9"
+    },
+    {
+      "file": "qorpera-native-provider-host.service",
+      "bytes": 1978,
+      "sha256": "1b15b9537e0d7d5eec01d5dd99f0df1415e6459422415eebec43c7f048b1bd6f"
+    },
+    {
+      "file": "qorpera-sandbox-probe.mjs",
+      "bytes": 20676,
+      "sha256": "7d238382fde632f7540ab9aab89ce348fbfc7c5295283c341be7e81deee4cdaf"
+    },
+    {
+      "file": "run-job",
+      "bytes": 262,
+      "sha256": "e479e861b75ffe1d25090c7e7914c6f59b6d77819619e9b882c2c993e2dcfe4e"
+    },
+    {
+      "file": "runner-image/contract.json",
+      "bytes": 1112,
+      "sha256": "fb0bc315f357ba16220f729ca2810a2ae8ba9299bf9765daed02a52a9f3c8f38"
+    },
+    {
+      "file": "runner-image/qorpera-sandbox-probe.cosign-bundle.json",
+      "bytes": 10639,
+      "sha256": "98a00fefd625c9aceeadd746ee610682a8787e5ce85ec0a6ac513a354a7491ce"
+    },
+    {
+      "file": "runner-image/qorpera-sandbox-probe.oci.tar",
+      "bytes": 84122624,
+      "sha256": "c9370c825bdbd589bf0c1391e567b8f5ea8ba36161cc554b32fcfb235f046239"
+    }
+  ]
+}

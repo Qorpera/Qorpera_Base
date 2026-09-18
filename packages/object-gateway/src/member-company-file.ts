@@ -1,0 +1,1073 @@
+import { createHash } from "node:crypto";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { isDeepStrictEqual } from "node:util";
+import { boundedObjectOperation, ObjectDependencyError } from "./dependency.ts";
+import { type MemberCompanyAuthority, MemberCompanyHeadConflict } from "./member-company-authority.ts";
+import type { MemberRequestObservationSpan } from "./member-observability.ts";
+import type { FileSystemObjectStore } from "./object-store.ts";
+import type { ObjectGatewayReplication } from "./replication.ts";
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const SHA = /^[0-9a-f]{64}$/;
+const OMITTED = [
+	"company-git-history",
+	"session-trail",
+	"staff-registry",
+	"product-git-checkouts",
+	"dependency-caches",
+	"staff-instructions",
+	"system-metadata",
+];
+
+interface FileEntry {
+	path: string;
+	kind: "file";
+	executable: boolean;
+	file: { manifestSha256: string; fileSha256: string; bytes: number; mediaType: "application/octet-stream" };
+}
+type Entry = FileEntry | { path: string; kind: "directory" };
+interface Plan {
+	schema: "qorpera.company-path-mutation/v1";
+	operationKey: string;
+	path: string;
+	expectedVersion: string | null;
+	entry: Entry | null;
+}
+interface Command {
+	commandId: string;
+	environmentId: string;
+	companyId: string;
+	plan: Plan;
+	planSha256: string;
+	state: "ready" | "review_required" | "approved" | "applied" | "rejected";
+	expiresAt: string;
+	result: Record<string, unknown> | null;
+}
+
+export interface MemberCompanyFileOptions {
+	authority: MemberCompanyAuthority;
+	store: FileSystemObjectStore;
+	replication: ObjectGatewayReplication;
+	readLegacyObject(companyId: string, sha256: string): Promise<Uint8Array>;
+	observation?: MemberRequestObservationSpan;
+}
+
+function object(value: unknown): Record<string, unknown> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new ObjectDependencyError(400);
+	return value as Record<string, unknown>;
+}
+
+function exact(value: Record<string, unknown>, keys: readonly string[]): void {
+	if (Object.keys(value).length !== keys.length || keys.some((key) => !Object.hasOwn(value, key)))
+		throw new ObjectDependencyError(400);
+}
+
+function id(value: unknown): string {
+	if (typeof value !== "string" || !UUID.test(value)) throw new ObjectDependencyError(400);
+	return value;
+}
+
+function hash(value: unknown): string {
+	if (typeof value !== "string" || !SHA.test(value)) throw new ObjectDependencyError(400);
+	return value;
+}
+
+function path(value: unknown): string {
+	if (typeof value !== "string" || !value || Buffer.byteLength(value) > 4096 || /[\0-\x1f\x7f]/.test(value))
+		throw new ObjectDependencyError(400);
+	return value;
+}
+
+function entry(value: unknown): Entry {
+	const item = object(value);
+	const name = path(item.path);
+	if (item.kind === "directory") {
+		exact(item, ["path", "kind"]);
+		return { path: name, kind: "directory" };
+	}
+	exact(item, ["path", "kind", "executable", "file"]);
+	if (item.kind !== "file" || typeof item.executable !== "boolean") throw new ObjectDependencyError(400);
+	const file = object(item.file);
+	exact(file, ["manifestSha256", "fileSha256", "bytes", "mediaType"]);
+	if (file.mediaType !== "application/octet-stream" || !Number.isSafeInteger(file.bytes) || (file.bytes as number) < 0)
+		throw new ObjectDependencyError(400);
+	return {
+		path: name,
+		kind: "file",
+		executable: item.executable,
+		file: {
+			manifestSha256: hash(file.manifestSha256),
+			fileSha256: hash(file.fileSha256),
+			bytes: file.bytes as number,
+			mediaType: file.mediaType,
+		},
+	};
+}
+
+function plan(value: unknown): Plan {
+	const input = object(value);
+	exact(input, ["schema", "operationKey", "path", "expectedVersion", "entry"]);
+	if (
+		input.schema !== "qorpera.company-path-mutation/v1" ||
+		typeof input.operationKey !== "string" ||
+		!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/.test(input.operationKey)
+	)
+		throw new ObjectDependencyError(400);
+	const name = path(input.path);
+	const next = input.entry === null ? null : entry(input.entry);
+	if (next && next.path !== name) throw new ObjectDependencyError(400);
+	return {
+		schema: input.schema,
+		operationKey: input.operationKey,
+		path: name,
+		expectedVersion: input.expectedVersion === null ? null : id(input.expectedVersion),
+		entry: next,
+	};
+}
+
+function command(value: unknown, environmentId: string): Command {
+	const input = object(value);
+	const next = plan(input.plan);
+	if (
+		input.environmentId !== environmentId ||
+		!["ready", "review_required", "approved", "applied", "rejected"].includes(String(input.state)) ||
+		typeof input.expiresAt !== "string" ||
+		!Number.isFinite(Date.parse(input.expiresAt))
+	)
+		throw new ObjectDependencyError(503);
+	const result = input.result === null ? null : object(input.result);
+	if (
+		(input.state === "applied") !== (result !== null) ||
+		(result && (result.state !== "applied" || result.path !== next.path || result.operationKey !== next.operationKey))
+	)
+		throw new ObjectDependencyError(503);
+	if (result) {
+		id(result.snapshotId);
+		id(result.version);
+	}
+	return {
+		commandId: id(input.commandId),
+		environmentId,
+		companyId: id(input.companyId),
+		plan: next,
+		planSha256: hash(input.planSha256),
+		state: input.state as Command["state"],
+		expiresAt: input.expiresAt,
+		result,
+	};
+}
+
+async function body(
+	request: IncomingMessage,
+	observation?: MemberRequestObservationSpan,
+): Promise<Record<string, unknown>> {
+	const length = request.headers["content-length"];
+	if (
+		!length ||
+		!/^[1-9][0-9]{0,5}$/.test(length) ||
+		Number(length) > 256 * 1024 ||
+		request.headers["content-type"] !== "application/json"
+	)
+		throw new ObjectDependencyError(400);
+	return boundedObjectOperation(async () => {
+		const chunks: Buffer[] = [];
+		let count = 0;
+		for await (const part of request) {
+			const chunk = Buffer.from(part);
+			count += chunk.length;
+			observation?.update({ requestBodyBytes: count });
+			if (count > Number(length)) throw new ObjectDependencyError(413);
+			chunks.push(chunk);
+		}
+		if (count !== Number(length)) throw new ObjectDependencyError(400);
+		try {
+			return object(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks))));
+		} catch {
+			throw new ObjectDependencyError(400);
+		}
+	});
+}
+
+function json(response: ServerResponse, value: unknown, observation?: MemberRequestObservationSpan): void {
+	const encoded = JSON.stringify(value);
+	observation?.update({ responseBodyBytes: Buffer.byteLength(encoded) });
+	response.writeHead(200, { "content-type": "application/json", "cache-control": "private, no-store" });
+	response.end(encoded);
+}
+
+const UPLOAD_BODY_DEADLINE_MS = 25_000;
+
+function uploadIntent(request: IncomingMessage): { intended: Plan; source: Record<string, unknown>; manifest: Buffer } {
+	const encoded = request.headers["x-qorpera-company-upload"];
+	if (
+		typeof encoded !== "string" ||
+		encoded.length > 8192 ||
+		!/^[A-Za-z0-9_-]+$/.test(encoded) ||
+		request.headers["content-type"] !== "application/octet-stream"
+	)
+		throw new ObjectDependencyError(400);
+	let input: Record<string, unknown>;
+	try {
+		const bytes = Buffer.from(encoded, "base64url");
+		if (bytes.toString("base64url") !== encoded) throw new Error("Invalid encoding");
+		input = object(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
+	} catch {
+		throw new ObjectDependencyError(400);
+	}
+	exact(input, ["schema", "operationKey", "path", "expectedVersion", "source", "manifest"]);
+	const source = object(input.source);
+	exact(source, ["realm", "name", "sha256", "bytes", "mediaType"]);
+	if (
+		input.schema !== "qorpera.member-file-upload/v1" ||
+		source.realm !== "member_file" ||
+		typeof source.name !== "string" ||
+		Buffer.byteLength(source.name) < 1 ||
+		Buffer.byteLength(source.name) > 255 ||
+		/[\x00-\x1f\x7f/\\]/.test(source.name) ||
+		[".", ".."].includes(source.name) ||
+		Buffer.from(source.name).toString("utf8") !== source.name ||
+		typeof source.mediaType !== "string" ||
+		source.mediaType.length > 256 ||
+		!/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(source.mediaType) ||
+		!Number.isSafeInteger(source.bytes) ||
+		(source.bytes as number) < 0 ||
+		(source.bytes as number) > 8 * 1024 * 1024 ||
+		request.headers["content-length"] !== String(source.bytes)
+	)
+		throw new ObjectDependencyError(400);
+	const manifest = object(input.manifest);
+	exact(manifest, ["schema", "fileSha256", "bytes", "mediaType", "chunks"]);
+	if (
+		manifest.schema !== "qorpera.cloud-file-manifest/v1" ||
+		manifest.fileSha256 !== hash(source.sha256) ||
+		manifest.bytes !== source.bytes ||
+		manifest.mediaType !== "application/octet-stream" ||
+		!Array.isArray(manifest.chunks) ||
+		manifest.chunks.length > 2
+	)
+		throw new ObjectDependencyError(400);
+	let total = 0;
+	const chunks = manifest.chunks.map((item, index, values) => {
+		const chunk = object(item);
+		exact(chunk, ["sha256", "bytes"]);
+		if (
+			!Number.isSafeInteger(chunk.bytes) ||
+			(chunk.bytes as number) < 1 ||
+			(chunk.bytes as number) > 4 * 1024 * 1024 ||
+			(index < values.length - 1 && chunk.bytes !== 4 * 1024 * 1024)
+		)
+			throw new ObjectDependencyError(400);
+		total += chunk.bytes as number;
+		return { sha256: hash(chunk.sha256), bytes: chunk.bytes as number };
+	});
+	if (total !== source.bytes) throw new ObjectDependencyError(400);
+	const manifestBytes = Buffer.from(
+		JSON.stringify({
+			schema: manifest.schema,
+			fileSha256: manifest.fileSha256,
+			bytes: manifest.bytes,
+			mediaType: manifest.mediaType,
+			chunks,
+		}),
+	);
+	return {
+		source,
+		manifest: manifestBytes,
+		intended: plan({
+			schema: "qorpera.company-path-mutation/v1",
+			operationKey: input.operationKey,
+			path: input.path,
+			expectedVersion: input.expectedVersion,
+			entry: {
+				path: path(input.path),
+				kind: "file",
+				executable: false,
+				file: {
+					fileSha256: source.sha256,
+					manifestSha256: createHash("sha256").update(manifestBytes).digest("hex"),
+					bytes: source.bytes,
+					mediaType: "application/octet-stream",
+				},
+			},
+		}),
+	};
+}
+
+async function uploadBytes(
+	request: IncomingMessage,
+	intended: Plan,
+	manifest: Buffer,
+	signal: AbortSignal,
+): Promise<Buffer[]> {
+	const file = intended.entry?.kind === "file" ? intended.entry.file : undefined;
+	if (!file) throw new ObjectDependencyError(400);
+	const buffers: Buffer[] = [];
+	let count = 0;
+	// Receiving up to 8 MiB from a member's own link is not a storage dependency: the
+	// default 5 s object deadline refused ordinary uploads on slower connections. The
+	// request's own 30 s budget (signal) and the proxy's idle body timeout still bound it.
+	await boundedObjectOperation(async () => {
+		for await (const part of request) {
+			signal.throwIfAborted();
+			const bytes = Buffer.from(part);
+			count += bytes.length;
+			if (count > file.bytes) throw new ObjectDependencyError(413);
+			buffers.push(bytes);
+		}
+	}, UPLOAD_BODY_DEADLINE_MS);
+	signal.throwIfAborted();
+	const bytes = Buffer.concat(buffers);
+	if (count !== file.bytes || createHash("sha256").update(bytes).digest("hex") !== file.fileSha256)
+		throw new ObjectDependencyError(400);
+	const parts: Buffer[] = [];
+	for (let offset = 0; offset < bytes.length; offset += 4 * 1024 * 1024)
+		parts.push(bytes.subarray(offset, offset + 4 * 1024 * 1024));
+	const expected = JSON.stringify({
+		schema: "qorpera.cloud-file-manifest/v1",
+		fileSha256: file.fileSha256,
+		bytes: file.bytes,
+		mediaType: "application/octet-stream",
+		chunks: parts.map((part) => ({ sha256: createHash("sha256").update(part).digest("hex"), bytes: part.length })),
+	});
+	if (manifest.toString("utf8") !== expected) throw new ObjectDependencyError(400);
+	return parts;
+}
+
+/** This route accepts human intent only. Whole tree metadata and service
+ * credentials never leave this cloud process, and no model is run here. */
+export async function serveMemberCompanyFile(
+	request: IncomingMessage,
+	response: ServerResponse,
+	options: MemberCompanyFileOptions,
+): Promise<void> {
+	const match =
+		/^\/v1\/member-company-file\/([0-9a-f-]{36})\/(edits|proposals|uploads)(?:\/([0-9a-f-]{36}))?(?:\/(review|content|file))?$/.exec(
+			request.url ?? "",
+		);
+	if (!match) throw new ObjectDependencyError(404);
+	const environmentId = id(match[1]);
+	const target = match[3] ? id(match[3]) : undefined;
+	const header = request.headers.authorization;
+	if (!header?.startsWith("Bearer ") || header.length < 8 || header.length > 8192 || /[\r\n]/.test(header))
+		throw new ObjectDependencyError(401);
+	const token = header.slice(7);
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(new ObjectDependencyError(503)), 30_000);
+	const signal = controller.signal;
+	const authority = options.authority;
+	try {
+		if (match[2] === "proposals" && target) {
+			const describe = async (): Promise<Record<string, unknown>> =>
+				object(
+					await authority.member(
+						"qorpera_describe_member_company_path_proposal",
+						token,
+						{ p_environment_id: environmentId, p_proposal_id: target },
+						signal,
+					),
+				);
+			const proposal = await describe();
+			if (proposal.proposalId !== target) throw new ObjectDependencyError(503);
+			const proposalPlan = plan(proposal.plan);
+			const digest = hash(proposal.planSha256);
+			options.observation?.update({ proposalId: target, environmentId });
+			if (request.method === "GET" && match[4] === "file") {
+				options.observation?.operation("proposal_content");
+				const bytes = await pendingFileBytes(
+					options,
+					proposalPlan,
+					(sha256) =>
+						authority.member(
+							"qorpera_authorize_member_company_proposal_object",
+							token,
+							{ p_proposal_id: target, p_plan_sha256: digest, p_sha256: sha256 },
+							signal,
+						),
+					signal,
+				);
+				if (!isDeepStrictEqual(await describe(), proposal)) throw new ObjectDependencyError(409);
+				pendingFileResponse(response, bytes, digest, options, signal);
+				return;
+			}
+			if (request.method === "GET" && match[4] === "content") {
+				options.observation?.operation("proposal_content");
+				if (proposalPlan.entry?.kind !== "file" || proposalPlan.entry.file.bytes > 32 * 1024)
+					throw new ObjectDependencyError(400);
+				const file = proposalPlan.entry.file;
+				const authorize = async (): Promise<Record<string, unknown>> =>
+					object(
+						await authority.member(
+							"qorpera_authorize_member_company_proposal_object",
+							token,
+							{ p_proposal_id: target, p_plan_sha256: digest, p_sha256: file.fileSha256 },
+							signal,
+						),
+					);
+				let bytes: Uint8Array = new Uint8Array();
+				if (file.bytes) {
+					const access = await authorize();
+					if (access.sha256 !== file.fileSha256 || access.bytes !== file.bytes)
+						throw new ObjectDependencyError(503);
+					const companyId = id(access.companyId);
+					options.observation?.update({ companyId });
+					try {
+						bytes = await options.store.get(companyId, file.fileSha256, file.bytes);
+					} catch (error) {
+						if (
+							!(error instanceof Error) ||
+							(error.message !== "Object not found" &&
+								!(error instanceof ObjectDependencyError && error.unavailable))
+						)
+							throw error;
+						bytes = await options.readLegacyObject(companyId, file.fileSha256);
+					}
+					if (!isDeepStrictEqual(await authorize(), access)) throw new ObjectDependencyError(403);
+				}
+				if (
+					bytes.length !== file.bytes ||
+					createHash("sha256").update(bytes).digest("hex") !== file.fileSha256 ||
+					!isDeepStrictEqual(await describe(), proposal)
+				)
+					throw new ObjectDependencyError(409);
+				options.observation?.update({ logicalObjectReadBytes: bytes.length });
+				signal.throwIfAborted();
+				json(
+					response,
+					{
+						proposalId: target,
+						planSha256: digest,
+						text: new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+					},
+					options.observation,
+				);
+				return;
+			}
+			if (request.method !== "POST" || match[4] !== "review") throw new ObjectDependencyError(405);
+			options.observation?.operation("proposal_review");
+			const input = await body(request, options.observation);
+			exact(input, ["planSha256", "decision"]);
+			if (input.planSha256 !== digest || !["approve", "reject", "skip"].includes(String(input.decision)))
+				throw new ObjectDependencyError(400);
+			const reviewed = object(
+				await authority.member(
+					"qorpera_review_company_path_proposal",
+					token,
+					{ p_proposal_id: target, p_plan_sha256: digest, p_decision: input.decision },
+					signal,
+				),
+			);
+			if (reviewed.state === "approved") await applyProposal(options, environmentId, target, digest, signal);
+			else if (["rejected", "withdrawn"].includes(String(reviewed.state))) options.observation?.effect("rejected");
+			json(response, await describe(), options.observation);
+			return;
+		}
+		if (match[2] !== "edits" && (match[2] !== "uploads" || target || match[4])) throw new ObjectDependencyError(404);
+		let current: Command;
+		if (target) {
+			current = command(
+				await authority.member("qorpera_get_member_company_path_command", token, { p_command_id: target }, signal),
+				environmentId,
+			);
+			if (current.commandId !== target) throw new ObjectDependencyError(503);
+			options.observation?.update({
+				commandId: current.commandId,
+				companyId: current.companyId,
+				environmentId: current.environmentId,
+			});
+			if (request.method === "GET" && !match[4]) {
+				options.observation?.operation("command_status");
+				json(response, current, options.observation);
+				return;
+			}
+			if (request.method === "GET" && match[4] === "file") {
+				options.observation?.operation("command_content");
+				if (
+					!["ready", "review_required", "approved"].includes(current.state) ||
+					Date.parse(current.expiresAt) <= Date.now()
+				)
+					throw new ObjectDependencyError(403);
+				const bytes = await pendingFileBytes(
+					options,
+					current.plan,
+					(sha256) =>
+						authority.member(
+							"qorpera_authorize_member_company_command_object",
+							token,
+							{ p_command_id: target, p_plan_sha256: current.planSha256, p_sha256: sha256 },
+							signal,
+						),
+					signal,
+					current.companyId,
+				);
+				const latest = command(
+					await authority.member(
+						"qorpera_get_member_company_path_command",
+						token,
+						{ p_command_id: target },
+						signal,
+					),
+					environmentId,
+				);
+				if (!isDeepStrictEqual(latest, current) || Date.parse(latest.expiresAt) <= Date.now())
+					throw new ObjectDependencyError(409);
+				pendingFileResponse(response, bytes, current.planSha256, options, signal);
+				return;
+			}
+			if (request.method === "GET" && match[4] === "content") {
+				options.observation?.operation("command_content");
+				if (
+					!["ready", "review_required", "approved"].includes(current.state) ||
+					Date.parse(current.expiresAt) <= Date.now() ||
+					current.plan.entry?.kind !== "file" ||
+					current.plan.entry.file.bytes > 32 * 1024
+				)
+					throw new ObjectDependencyError(403);
+				const file = current.plan.entry.file;
+				const authorize = async (): Promise<Record<string, unknown>> =>
+					object(
+						await authority.member(
+							"qorpera_authorize_member_company_command_object",
+							token,
+							{ p_command_id: target, p_plan_sha256: current.planSha256, p_sha256: file.fileSha256 },
+							signal,
+						),
+					);
+				let bytes: Uint8Array = new Uint8Array();
+				if (file.bytes) {
+					const access = await authorize();
+					if (
+						access.companyId !== current.companyId ||
+						access.sha256 !== file.fileSha256 ||
+						access.bytes !== file.bytes
+					)
+						throw new ObjectDependencyError(503);
+					try {
+						bytes = await options.store.get(current.companyId, file.fileSha256, file.bytes);
+					} catch (error) {
+						if (
+							!(error instanceof Error) ||
+							(error.message !== "Object not found" &&
+								!(error instanceof ObjectDependencyError && error.unavailable))
+						)
+							throw error;
+						bytes = await options.readLegacyObject(current.companyId, file.fileSha256);
+					}
+					if (!isDeepStrictEqual(await authorize(), access)) throw new ObjectDependencyError(403);
+				}
+				const latest = command(
+					await authority.member(
+						"qorpera_get_member_company_path_command",
+						token,
+						{ p_command_id: target },
+						signal,
+					),
+					environmentId,
+				);
+				if (
+					bytes.length !== file.bytes ||
+					createHash("sha256").update(bytes).digest("hex") !== file.fileSha256 ||
+					!isDeepStrictEqual(latest, current) ||
+					Date.parse(latest.expiresAt) <= Date.now()
+				)
+					throw new ObjectDependencyError(409);
+				options.observation?.update({ logicalObjectReadBytes: bytes.length });
+				signal.throwIfAborted();
+				json(
+					response,
+					{
+						commandId: target,
+						planSha256: current.planSha256,
+						text: new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+					},
+					options.observation,
+				);
+				return;
+			}
+			if (request.method !== "POST" || match[4] !== "review") throw new ObjectDependencyError(405);
+			options.observation?.operation("command_review");
+			const input = await body(request, options.observation);
+			exact(input, ["planSha256", "decision"]);
+			if (input.planSha256 !== current.planSha256 || !["approve", "reject", "skip"].includes(String(input.decision)))
+				throw new ObjectDependencyError(400);
+			// A ready command already carries this human's exact ordinary edit.
+			// Explicitly resuming it needs no new approval, but apply still checks
+			// its expiry, original member, resource version and path authority.
+			if (current.state !== "ready" || input.decision !== "approve") {
+				current = command(
+					await authority.member(
+						"qorpera_review_member_company_path_command",
+						token,
+						{ p_command_id: target, p_plan_sha256: current.planSha256, p_decision: input.decision },
+						signal,
+					),
+					environmentId,
+				);
+			}
+		} else if (match[2] === "uploads") {
+			if (request.method !== "PUT" || target || match[4]) throw new ObjectDependencyError(405);
+			const upload = uploadIntent(request);
+			current = command(
+				await authority.member(
+					"qorpera_begin_member_company_file_upload",
+					token,
+					{
+						p_environment_id: environmentId,
+						p_plan: upload.intended,
+						p_manifest_text: upload.manifest.toString("utf8"),
+						p_source: upload.source,
+					},
+					signal,
+				),
+				environmentId,
+			);
+			if (!isDeepStrictEqual(current.plan, upload.intended)) throw new ObjectDependencyError(503);
+			const parts = await uploadBytes(request, current.plan, upload.manifest, signal);
+			options.observation?.operation("command_submit");
+			options.observation?.update({
+				commandId: current.commandId,
+				companyId: current.companyId,
+				environmentId,
+				logicalWriteInputBytes: upload.source.bytes as number,
+				requestBodyBytes: upload.source.bytes as number,
+			});
+			if (current.state !== "applied" && current.state !== "rejected") {
+				for (const part of parts) await stage(options, current, part, false, signal);
+				await stage(options, current, upload.manifest, false, signal);
+				await authority.publisher(
+					"qorpera_verify_company_path_file",
+					{ p_profile_id: current.companyId, p_manifest_text: upload.manifest.toString("utf8") },
+					signal,
+				);
+			}
+		} else {
+			if (request.method !== "POST" || match[4]) throw new ObjectDependencyError(405);
+			options.observation?.operation("command_submit");
+			const input = await body(request, options.observation);
+			exact(input, [
+				"operation",
+				"operationKey",
+				"path",
+				"expectedVersion",
+				...(input.operation === "write" ? ["text"] : []),
+			]);
+			let next: Entry | null;
+			let bytes: Buffer | undefined;
+			let manifest: Buffer | undefined;
+			if (input.operation === "write") {
+				if (
+					typeof input.text !== "string" ||
+					input.text.includes("\0") ||
+					Buffer.byteLength(input.text) > 32 * 1024 ||
+					Buffer.from(input.text).toString("utf8") !== input.text
+				)
+					throw new ObjectDependencyError(400);
+				bytes = Buffer.from(input.text);
+				options.observation?.update({ logicalWriteInputBytes: bytes.length });
+				const sha = createHash("sha256").update(bytes).digest("hex");
+				manifest = Buffer.from(
+					JSON.stringify({
+						schema: "qorpera.cloud-file-manifest/v1",
+						fileSha256: sha,
+						bytes: bytes.length,
+						mediaType: "application/octet-stream",
+						chunks: bytes.length ? [{ sha256: sha, bytes: bytes.length }] : [],
+					}),
+				);
+				next = {
+					path: path(input.path),
+					kind: "file",
+					executable: false,
+					file: {
+						fileSha256: sha,
+						manifestSha256: createHash("sha256").update(manifest).digest("hex"),
+						bytes: bytes.length,
+						mediaType: "application/octet-stream",
+					},
+				};
+			} else if (input.operation === "mkdir") next = { path: path(input.path), kind: "directory" };
+			else if (input.operation === "delete") next = null;
+			else throw new ObjectDependencyError(400);
+			const intended = plan({
+				schema: "qorpera.company-path-mutation/v1",
+				operationKey: input.operationKey,
+				path: input.path,
+				expectedVersion: input.expectedVersion,
+				entry: next,
+			});
+			current = command(
+				await authority.member(
+					"qorpera_begin_member_company_path_command",
+					token,
+					{ p_environment_id: environmentId, p_plan: intended },
+					signal,
+				),
+				environmentId,
+			);
+			if (!isDeepStrictEqual(current.plan, intended)) throw new ObjectDependencyError(503);
+			options.observation?.update({
+				commandId: current.commandId,
+				companyId: current.companyId,
+				environmentId: current.environmentId,
+			});
+			if (current.state === "review_required") options.observation?.effect("proposed");
+			else if (current.state === "applied") options.observation?.effect("replayed");
+			else if (current.state === "rejected") options.observation?.effect("rejected");
+			if (current.state !== "applied" && current.state !== "rejected" && bytes && manifest) {
+				if (bytes.length) await stage(options, current, bytes, false, signal);
+				await stage(options, current, manifest, false, signal);
+				await authority.publisher(
+					"qorpera_verify_company_path_file",
+					{ p_profile_id: current.companyId, p_manifest_text: manifest.toString("utf8") },
+					signal,
+				);
+			}
+		}
+		if (current.state === "review_required") options.observation?.effect("proposed");
+		else if (current.state === "applied") options.observation?.effect("replayed");
+		else if (current.state === "rejected") options.observation?.effect("rejected");
+		if (current.state === "ready" || current.state === "approved")
+			current = await applyCommand(options, current, signal);
+		const visible = command(
+			await authority.member(
+				"qorpera_get_member_company_path_command",
+				token,
+				{ p_command_id: current.commandId },
+				signal,
+			),
+			environmentId,
+		);
+		if (
+			visible.commandId !== current.commandId ||
+			visible.companyId !== current.companyId ||
+			visible.planSha256 !== current.planSha256
+		)
+			throw new ObjectDependencyError(503);
+		signal.throwIfAborted();
+		json(response, visible, options.observation);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+async function stage(
+	options: MemberCompanyFileOptions,
+	current: Command,
+	bytes: Buffer,
+	tree: boolean,
+	signal: AbortSignal,
+): Promise<string> {
+	const sha = createHash("sha256").update(bytes).digest("hex");
+	const args = {
+		p_command_id: current.commandId,
+		p_plan_sha256: current.planSha256,
+		p_sha256: sha,
+		p_bytes: bytes.length,
+		p_tree: tree,
+	};
+	const check = async (confirm: boolean): Promise<void> => {
+		signal.throwIfAborted();
+		if (
+			(await options.authority.publisher(
+				"qorpera_stage_member_company_path_object",
+				{ ...args, p_confirm: confirm },
+				signal,
+			)) !== current.companyId
+		)
+			throw new ObjectDependencyError(403);
+	};
+	await options.replication.uploadWithAuthority(current.companyId, sha, bytes, {
+		authorize: () => check(false),
+		confirm: () => check(true),
+	});
+	const stored = await options.store.get(current.companyId, sha, bytes.length);
+	if (!Buffer.from(stored).equals(bytes)) throw new ObjectDependencyError(503);
+	signal.throwIfAborted();
+	return sha;
+}
+
+function candidate(value: unknown, intended: Plan): Buffer {
+	if (!Array.isArray(value) || value.length > 50_000) throw new ObjectDependencyError(503);
+	const entries = value.map(entry).filter((item) => item.path !== intended.path);
+	if (intended.entry) entries.push(intended.entry);
+	entries.sort((left, right) => Buffer.compare(Buffer.from(left.path), Buffer.from(right.path)));
+	const bytes = Buffer.from(
+		JSON.stringify({ schema: "qorpera.company-tree/v1", contractVersion: 3, omittedLayers: OMITTED, entries }),
+	);
+	if (bytes.length > 8 * 1024 * 1024) throw new ObjectDependencyError(413);
+	return bytes;
+}
+
+async function pendingFileBytes(
+	options: MemberCompanyFileOptions,
+	mutation: Plan,
+	authorize: (sha256: string) => Promise<unknown>,
+	signal: AbortSignal,
+	expectedCompany?: string,
+): Promise<Buffer> {
+	if (mutation.entry?.kind !== "file" || mutation.entry.file.bytes > 8 * 1024 * 1024)
+		throw new ObjectDependencyError(400);
+	const file = mutation.entry.file;
+	let company = expectedCompany;
+	const get = async (sha256: string, length?: number): Promise<Buffer> => {
+		signal.throwIfAborted();
+		const access = object(await authorize(sha256)),
+			companyId = id(access.companyId);
+		if (
+			(company !== undefined && companyId !== company) ||
+			access.sha256 !== sha256 ||
+			!Number.isSafeInteger(access.bytes) ||
+			(access.bytes as number) < 1 ||
+			(access.bytes as number) > 8 * 1024 * 1024 ||
+			(length !== undefined && access.bytes !== length)
+		)
+			throw new ObjectDependencyError(403);
+		company = companyId;
+		options.observation?.update({ companyId });
+		let bytes: Uint8Array;
+		try {
+			bytes = await options.store.get(companyId, sha256, access.bytes as number);
+		} catch (error) {
+			if (
+				!(error instanceof Error) ||
+				(error.message !== "Object not found" && !(error instanceof ObjectDependencyError && error.unavailable))
+			)
+				throw error;
+			bytes = await options.readLegacyObject(companyId, sha256);
+		}
+		if (bytes.length !== access.bytes || createHash("sha256").update(bytes).digest("hex") !== sha256)
+			throw new ObjectDependencyError(409);
+		if (!isDeepStrictEqual(await authorize(sha256), access)) throw new ObjectDependencyError(403);
+		signal.throwIfAborted();
+		return Buffer.from(bytes);
+	};
+	const manifest = object(
+		JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await get(file.manifestSha256))),
+	);
+	exact(manifest, ["schema", "fileSha256", "bytes", "mediaType", "chunks"]);
+	if (
+		manifest.schema !== "qorpera.cloud-file-manifest/v1" ||
+		manifest.fileSha256 !== file.fileSha256 ||
+		manifest.bytes !== file.bytes ||
+		manifest.mediaType !== file.mediaType ||
+		!Array.isArray(manifest.chunks) ||
+		manifest.chunks.length > 2
+	)
+		throw new ObjectDependencyError(409);
+	const chunks = manifest.chunks.map((part, index) => {
+		const chunk = object(part);
+		exact(chunk, ["sha256", "bytes"]);
+		if (
+			!Number.isSafeInteger(chunk.bytes) ||
+			(chunk.bytes as number) < 1 ||
+			(chunk.bytes as number) > 4 * 1024 * 1024 ||
+			(index < (manifest.chunks as unknown[]).length - 1 && chunk.bytes !== 4 * 1024 * 1024)
+		)
+			throw new ObjectDependencyError(409);
+		return { sha256: hash(chunk.sha256), bytes: chunk.bytes as number };
+	});
+	if (chunks.reduce((sum, chunk) => sum + chunk.bytes, 0) !== file.bytes) throw new ObjectDependencyError(409);
+	const pieces: Buffer[] = [];
+	for (const chunk of chunks) pieces.push(await get(chunk.sha256, chunk.bytes));
+	const bytes = Buffer.concat(pieces);
+	if (createHash("sha256").update(bytes).digest("hex") !== file.fileSha256) throw new ObjectDependencyError(409);
+	return bytes;
+}
+
+function pendingFileResponse(
+	response: ServerResponse,
+	bytes: Buffer,
+	digest: string,
+	options: MemberCompanyFileOptions,
+	signal: AbortSignal,
+): void {
+	signal.throwIfAborted();
+	options.observation?.update({ logicalObjectReadBytes: bytes.length });
+	response.writeHead(200, {
+		"content-type": "application/octet-stream",
+		"content-length": bytes.length,
+		"cache-control": "private, no-store",
+		"x-content-type-options": "nosniff",
+		"x-qorpera-plan-sha256": digest,
+	});
+	response.end(bytes);
+}
+
+function organizationPath(pathName: string): boolean {
+	const key = pathName.normalize("NFKC").toUpperCase().toLowerCase();
+	return (
+		key === "organization/formation.json" ||
+		/^organization\/(?:agents|responsibilities|projects|rooms)\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$/.test(
+			key,
+		)
+	);
+}
+
+async function organizationDocument(
+	options: MemberCompanyFileOptions,
+	companyId: string,
+	mutation: Plan,
+): Promise<string | null> {
+	if (!organizationPath(mutation.path)) return null;
+	if (mutation.entry === null) return null;
+	if (mutation.entry?.kind !== "file" || mutation.entry.file.bytes > 32 * 1024) throw new ObjectDependencyError(400);
+	const file = mutation.entry.file;
+	let bytes: Uint8Array<ArrayBufferLike> = new Uint8Array();
+	if (file.bytes) {
+		try {
+			bytes = await options.store.get(companyId, file.fileSha256, file.bytes);
+		} catch (error) {
+			if (
+				!(error instanceof Error) ||
+				(error.message !== "Object not found" && !(error instanceof ObjectDependencyError && error.unavailable))
+			)
+				throw error;
+			bytes = await options.readLegacyObject(companyId, file.fileSha256);
+		}
+	}
+	if (bytes.length !== file.bytes || createHash("sha256").update(bytes).digest("hex") !== file.fileSha256)
+		throw new ObjectDependencyError(409);
+	try {
+		return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+	} catch {
+		throw new ObjectDependencyError(400);
+	}
+}
+
+async function applyCommand(
+	options: MemberCompanyFileOptions,
+	initial: Command,
+	signal: AbortSignal,
+): Promise<Command> {
+	const args = { p_command_id: initial.commandId, p_plan_sha256: initial.planSha256 };
+	for (let attempt = 0; attempt < 4; attempt++) {
+		const prepared = object(
+			await options.authority.publisher("qorpera_prepare_member_company_path_command", args, signal),
+		);
+		const current = command(prepared, initial.environmentId);
+		if (
+			current.commandId !== initial.commandId ||
+			current.companyId !== initial.companyId ||
+			current.planSha256 !== initial.planSha256 ||
+			!isDeepStrictEqual(current.plan, initial.plan)
+		)
+			throw new ObjectDependencyError(503);
+		if (current.state === "applied") {
+			options.observation?.effect("replayed");
+			return current;
+		}
+		if (current.state !== "ready" && current.state !== "approved") throw new ObjectDependencyError(403);
+		const bytes = candidate(prepared.entries, current.plan);
+		const sha = await stage(options, current, bytes, true, signal);
+		if (
+			(await options.authority.publisher(
+				"qorpera_verify_company_path_tree",
+				{ p_profile_id: current.companyId, p_manifest_text: bytes.toString("utf8") },
+				signal,
+			)) !== sha
+		)
+			throw new ObjectDependencyError(503);
+		try {
+			const document = await organizationDocument(options, current.companyId, current.plan);
+			options.observation?.effect("unconfirmed");
+			const applied = command(
+				await options.authority.publisher(
+					"qorpera_apply_member_company_path_command_v3",
+					{
+						...args,
+						p_expected_head: id(prepared.snapshotId),
+						p_tree_sha256: sha,
+						p_document_text: document,
+					},
+					signal,
+				),
+				initial.environmentId,
+			);
+			if (
+				applied.state !== "applied" ||
+				applied.commandId !== initial.commandId ||
+				applied.companyId !== initial.companyId ||
+				applied.planSha256 !== initial.planSha256 ||
+				!isDeepStrictEqual(applied.plan, initial.plan)
+			)
+				throw new ObjectDependencyError(503);
+			options.observation?.effect("applied");
+			return applied;
+		} catch (error) {
+			if (!(error instanceof MemberCompanyHeadConflict) || attempt === 3) throw error;
+			options.observation?.effect("none");
+		}
+	}
+	throw new ObjectDependencyError(409);
+}
+
+async function applyProposal(
+	options: MemberCompanyFileOptions,
+	environmentId: string,
+	proposalId: string,
+	digest: string,
+	signal: AbortSignal,
+): Promise<void> {
+	const args = { p_proposal_id: proposalId, p_plan_sha256: digest };
+	for (let attempt = 0; attempt < 4; attempt++) {
+		const prepared = object(await options.authority.publisher("qorpera_prepare_company_path_approval", args, signal));
+		if (prepared.environmentId !== environmentId) throw new ObjectDependencyError(403);
+		if (prepared.state === "applied") {
+			options.observation?.effect("replayed");
+			return;
+		}
+		if (prepared.state !== "approved") throw new ObjectDependencyError(403);
+		const companyId = id(prepared.companyId);
+		options.observation?.update({ companyId });
+		const bytes = candidate(prepared.entries, plan(prepared.plan));
+		const sha = createHash("sha256").update(bytes).digest("hex");
+		const check = async (confirm: boolean): Promise<void> => {
+			signal.throwIfAborted();
+			if (
+				(await options.authority.publisher(
+					"qorpera_stage_company_path_approval_object",
+					{ ...args, p_sha256: sha, p_bytes: bytes.length, p_confirm: confirm },
+					signal,
+				)) !== companyId
+			)
+				throw new ObjectDependencyError(403);
+		};
+		await options.replication.uploadWithAuthority(companyId, sha, bytes, {
+			authorize: () => check(false),
+			confirm: () => check(true),
+		});
+		if (!Buffer.from(await options.store.get(companyId, sha, bytes.length)).equals(bytes))
+			throw new ObjectDependencyError(503);
+		if (
+			(await options.authority.publisher(
+				"qorpera_verify_company_path_tree",
+				{ p_profile_id: companyId, p_manifest_text: bytes.toString("utf8") },
+				signal,
+			)) !== sha
+		)
+			throw new ObjectDependencyError(503);
+		try {
+			const document = await organizationDocument(options, companyId, plan(prepared.plan));
+			options.observation?.effect("unconfirmed");
+			const result = object(
+				await options.authority.publisher(
+					"qorpera_apply_company_path_approval_v3",
+					{
+						...args,
+						p_expected_head: id(prepared.snapshotId),
+						p_tree_sha256: sha,
+						p_document_text: document,
+					},
+					signal,
+				),
+			);
+			if (result.state !== "applied" || result.proposalId !== proposalId) throw new ObjectDependencyError(503);
+			id(result.snapshotId);
+			options.observation?.effect("applied");
+			return;
+		} catch (error) {
+			if (!(error instanceof MemberCompanyHeadConflict) || attempt === 3) throw error;
+			options.observation?.effect("none");
+		}
+	}
+	throw new ObjectDependencyError(409);
+}

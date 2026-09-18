@@ -1,15 +1,15 @@
 import { createHash } from "node:crypto";
+import type {
+	CloudRunnerControlRequest,
+	CloudRunnerControlTransport,
+} from "@qorpera/cloud-client/node/cloud-runner-protocol";
+import { DisposableCloudRunner } from "@qorpera/runtime/cloud-runner-control";
 import { describe, expect, it } from "vitest";
 import {
 	type CloudRunnerAdminTransport,
 	prepareCloudRunnerRegistration,
 	QorperaCloudRunnerAdmin,
 } from "../src/cloud-runner-admin.ts";
-import {
-	type CloudRunnerControlRequest,
-	type CloudRunnerControlTransport,
-	DisposableCloudRunner,
-} from "../src/cloud-runner-control.ts";
 
 const profileId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
 const environmentId = "73dc6943-b71c-4ba4-a38d-78da0861e0dc";

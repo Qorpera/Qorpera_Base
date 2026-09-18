@@ -1,8 +1,6 @@
 import { link, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { scaffoldCompany } from "@qorpera/pi-coding-agent/company";
-import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	captureCloudCompanyTree,
 	captureCloudCompanyTreeWithReachability,
@@ -10,13 +8,15 @@ import {
 	materializeCloudCompanyTree,
 	validateCloudCompanyTreeEntries,
 	verifyCloudCompanyTreeRestore,
-} from "../src/cloud-company-snapshot.ts";
+} from "@qorpera/cloud-client/node/cloud-company-snapshot";
+import { CloudContentAddressedStore, type CloudObjectTransport } from "@qorpera/cloud-client/node/cloud-object-store";
+import { scaffoldCompany } from "@qorpera/pi-coding-agent/company";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	CloudCompanyWorkspaceState,
 	type CompanyWorkspacePrimary,
 	checkpointCloudCompanyWorkspace,
 } from "../src/cloud-company-workspace.ts";
-import { CloudContentAddressedStore, type CloudObjectTransport } from "../src/cloud-object-store.ts";
 
 const profileId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
 const environmentId = "73dc6943-b71c-4ba4-a38d-78da0861e0dc";

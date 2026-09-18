@@ -1,0 +1,53 @@
+{
+  "schema": "qorpera.native-v10-smoke/v1",
+  "passed": true,
+  "observedAt": "2026-09-06T17:24:31.737Z",
+  "sourceCommit": "c7085e8f3aa7429a4b17286d496efa6ebfdc64a1",
+  "runtimeBundleSha256": "7bfd6cd12160a3b5119e7727374e28d854c1004de6640f12c40446b21d67764e",
+  "runId": "a02f032b-93f8-4f48-9dd5-298527a400f8",
+  "jobId": "6881b023-6f27-4f5e-a610-dcb3907667be",
+  "runnerId": "f736c2ae-b530-4f4f-b24a-884cfe458c4e",
+  "attempts": 1,
+  "dispatchFailures": 0,
+  "actualFounderAdmission": true,
+  "actualNativeExecution": true,
+  "canonicalProgressAndFinal": true,
+  "companyReadSucceeded": true,
+  "durableResults": 1,
+  "activeLeases": 0,
+  "jobGuestRemoved": true,
+  "jobGuestCount": 0,
+  "inventorySha256": "429f4cd4ab0110ae1107ddf9c310f029739c692eaf114531ad8db389da772580",
+  "launch": {
+    "bundle": "7bfd6cd12160a3b5119e7727374e28d854c1004de6640f12c40446b21d67764e",
+    "binarySha256": "2f2c26cfdfacebbcce848fb50cfaaa4e8d0aa3c6ec3c1009123ecf766c8335f7",
+    "contextBytes": 33347,
+    "contextSha256": "50d0725d83d4c1e4ca13063c41f60c58c49d62224a659f017e14d108d0390150",
+    "toolCatalogSha256": "df507e6b49b502427d91cb33d8a708ab197a266b51bfa80b2d12c7e43206f91c"
+  },
+  "sends": [
+    {
+      "id": "aa07444e-db0d-433c-8c54-9c33efa9c771",
+      "phase": "progress",
+      "createdAt": "2026-09-06T17:22:49.800539+00:00",
+      "textSha256": "45a70681ab79b0b41bb489c7a54fbea05c2c4a1b43743fefcd123d9921279785"
+    },
+    {
+      "id": "c828c55d-64aa-4240-83f5-07a01d911e74",
+      "phase": "final",
+      "createdAt": "2026-09-06T17:22:55.939274+00:00",
+      "textSha256": "ed79c1d402dd03f4a862738aa7eb29901c4020067cfae12e8afbecebf4ffc73d"
+    }
+  ],
+  "startedAt": "2026-09-06T17:22:39.897653+00:00",
+  "finishedAt": "2026-09-06T17:22:58.199028+00:00",
+  "readback": {
+    "path": "outputs/runtime-custody-3c0bf3bce/native-v10-smoke-state-1788715423059.json",
+    "sha256": "300457857be81e13c521f91263cad36b73117315cebef0cf9d9fd8c145b3f8de"
+  },
+  "admissionSha256": "317bc07ea24fe5b0c70f2fab1dcd09f5223239b960319e22215d3fb656068416",
+  "usageSignals": 0,
+  "handoffs": 0,
+  "liveHandoffProven": false,
+  "telemetryLimit": "Native-result-fence observations report unconfirmed; this proof claims completed governed execution and successful read, not complete fence telemetry."
+}

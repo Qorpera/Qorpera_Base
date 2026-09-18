@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Dock launcher for the office browser. Chromium never starts from the desktop
+# session: the company runtime launches it through the grant broker with the
+# admitted profile. This helper raises the office browser window already on
+# this screen, or tells the person at the screen where the browser comes from.
+if [[ -z ${DISPLAY:-} ]]; then
+	echo "usage: qorpera-screen-browser (inside a screen session)" >&2
+	exit 64
+fi
+windows=()
+while IFS= read -r window; do
+	[[ ${window} =~ ^[0-9]+$ ]] && windows+=("${window}")
+done < <(xdotool search --onlyvisible --class '^([Cc]hromium|[Cc]hrome)' 2>/dev/null || true)
+if (( ${#windows[@]} > 0 )); then
+	exec xdotool windowactivate "${windows[-1]}"
+fi
+exec xmessage -center -buttons OK:0 -default OK \
+	"The office browser is not open on this screen. It opens through the company runtime when an agent browses or a member signs in privately."

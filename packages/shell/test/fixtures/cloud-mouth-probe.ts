@@ -3,13 +3,13 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { CloudAgentSendInput, CloudAgentSendReceipt } from "../../src/cloud-agent-mouth.ts";
+import type { CloudAgentSendInput, CloudAgentSendReceipt } from "@qorpera/runtime/cloud-agent-mouth";
 import {
 	type NativeProviderExecutionRequest,
 	NativeProviderHost,
 	OfficialCliNativeHarnessDriver,
 	sealNativeCredentialCapsule,
-} from "../../src/cloud-native-provider-host.ts";
+} from "@qorpera/runtime/cloud-native-provider-host";
 
 /** No model calls or real credentials. Runnable unchanged on a cloud Linux VM. */
 export async function runCloudMouthProbe(companyParent = tmpdir()): Promise<{

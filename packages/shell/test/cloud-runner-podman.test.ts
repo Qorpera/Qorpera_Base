@@ -2,8 +2,7 @@ import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { JsonValue } from "@qorpera/pi-protocol";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import type { CloudRunnerModelSocketFactory } from "../src/cloud-runner-model-socket.ts";
+import type { CloudRunnerModelSocketFactory } from "@qorpera/runtime/cloud-runner-model-socket";
 import {
 	NodePodmanCommandTransport,
 	type PodmanCommandLimits,
@@ -11,8 +10,9 @@ import {
 	type PodmanCommandResult,
 	type PodmanCommandTransport,
 	RootlessPodmanSandboxBackend,
-} from "../src/cloud-runner-podman.ts";
-import type { CloudRunnerSandboxRequest } from "../src/cloud-runner-sandbox.ts";
+} from "@qorpera/runtime/cloud-runner-podman";
+import type { CloudRunnerSandboxRequest } from "@qorpera/runtime/cloud-runner-sandbox";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const jobId = "77777777-7777-4777-8777-777777777777";
 const versionId = "66666666-6666-4666-8666-666666666666";

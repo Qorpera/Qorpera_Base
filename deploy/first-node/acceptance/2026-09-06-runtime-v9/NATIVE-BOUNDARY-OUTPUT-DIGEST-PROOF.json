@@ -1,0 +1,127 @@
+{
+  "schema": "qorpera.native-boundary-output-digest-proof/v1",
+  "passed": true,
+  "recordedAt": "2026-09-06T15:32:29.866Z",
+  "method": "Offline reconstruction of closed host envelopes, matched byte count and SHA-256 to immutable native context views; no calls were submitted.",
+  "evidence": [
+    {
+      "file": "boundary-native-identities-1788708706318.json",
+      "sha256": "4464e01a5e5e2522a1310e1a6a1e1b559230fecfb42638276683e189d146b2c4"
+    },
+    {
+      "file": "boundary-provenance-1788708490381.json",
+      "sha256": "79d5c47af6bbf400f29f65f035bcc69393d89707f949c16e642d917e7c92ca90"
+    },
+    {
+      "file": "context-paging-state-1788708623878.json",
+      "sha256": "1e7e1be33db8a3f26132d9ba7d854b2491b96f9302c849114b14de48e038085d"
+    }
+  ],
+  "privateRun": "a766ef3a-9008-4253-b27a-88c51d82546e",
+  "matched": [
+    {
+      "name": "exact-sibling",
+      "tool": "company_read",
+      "args": {
+        "path": "members/4fa1e977-a64a-4d39-a5c6-91ffd677f507/private/runtime-boundary-v8/exact.txt.sibling",
+        "offset": 0,
+        "limit": 128
+      },
+      "callId": "call_FqtgbpzZB15bE1xzh8POA9ug",
+      "status": "unconfirmed",
+      "sha256": "df9f18b1324b8b33d7961e4ea50ac976a108681fcf3d6714d093b19065028a17",
+      "bytes": 1817
+    },
+    {
+      "name": "subtree-prefix-sibling",
+      "tool": "company_read",
+      "args": {
+        "path": "members/4fa1e977-a64a-4d39-a5c6-91ffd677f507/private/runtime-boundary-v8/subtree-sibling.txt",
+        "offset": 0,
+        "limit": 128
+      },
+      "callId": "call_1NpGotzzgKPAoLTH2cvuM8Cv",
+      "status": "unconfirmed",
+      "sha256": "820adbbe064fa377b0f4d72eaf21c1cfa420e05e33bb130ca212e68220f42225",
+      "bytes": 1817
+    },
+    {
+      "name": "other-member-private",
+      "tool": "company_read",
+      "args": {
+        "path": "members/f6891a3e-0782-4075-92b4-ddc6069c8f4a/private/runtime-boundary-v8/private.txt",
+        "offset": 0,
+        "limit": 128
+      },
+      "callId": "call_ZNraK3zg5wPWfonND7aBu1Js",
+      "status": "unconfirmed",
+      "sha256": "58cf1b8a5e803a21f38620d82042c1c66daa0f3f2be09337a97260effb358773",
+      "bytes": 1817
+    },
+    {
+      "name": "stale-private-write",
+      "tool": "company_write",
+      "args": {
+        "path": "members/4fa1e977-a64a-4d39-a5c6-91ffd677f507/private/runtime-boundary-v8/exact.txt",
+        "operationKey": "v8-private-stale-01",
+        "expectedVersion": "32bdf0bb-4bde-4112-a121-4b0be89dc118",
+        "text": "Stale must not apply."
+      },
+      "callId": "call_9sKGtYGXrup59AqHlqxh1r43",
+      "status": "unconfirmed",
+      "sha256": "8ad23ebc42f1eb270d7b57df95c4043abfb0124abd2b64664e865abac350cd95",
+      "bytes": 1818
+    }
+  ],
+  "pagingRun": "abaa9d6c-ce75-49fa-9c80-66009d960f9b",
+  "pages": [
+    {
+      "offset": 976,
+      "nextOffset": 1868,
+      "sourceId": "83f9b85a-d987-416e-a8d3-b42b5fa18c87",
+      "sourceSha256": "558f2555a988677cd2e4ff54d111deafe9411604b8895f3d6f79b1bdb59b0221",
+      "bytes": 1024,
+      "callId": "call_TIDEvsl299PZNuMjZ27MjDqm",
+      "envelopeSha256": "e876eefbcae240347d523b86c0e3db4f09b08e6a16dc1cd729ea45aad7a2fb8f"
+    },
+    {
+      "offset": 1868,
+      "nextOffset": 2760,
+      "sourceId": "83f9b85a-d987-416e-a8d3-b42b5fa18c87",
+      "sourceSha256": "558f2555a988677cd2e4ff54d111deafe9411604b8895f3d6f79b1bdb59b0221",
+      "bytes": 1024,
+      "callId": "call_Wi2Or9NVh0KpxgIL1EarXl2i",
+      "envelopeSha256": "77cd22339945b23ab0b5df986d93e2cda669554658fb3ee126c33fc944fc061e"
+    },
+    {
+      "offset": 2760,
+      "nextOffset": 3668,
+      "sourceId": "83f9b85a-d987-416e-a8d3-b42b5fa18c87",
+      "sourceSha256": "558f2555a988677cd2e4ff54d111deafe9411604b8895f3d6f79b1bdb59b0221",
+      "bytes": 1024,
+      "callId": "call_8nLHuUl4yaVDRfMLRxCHbfnN",
+      "envelopeSha256": "fca0966a600a19d4632cb0d1a56d7d88c8624362aaa3349882619a550ec1e059"
+    },
+    {
+      "offset": 3668,
+      "nextOffset": 4584,
+      "sourceId": "83f9b85a-d987-416e-a8d3-b42b5fa18c87",
+      "sourceSha256": "558f2555a988677cd2e4ff54d111deafe9411604b8895f3d6f79b1bdb59b0221",
+      "bytes": 1024,
+      "callId": "call_c5VOHPPTslYjjBPakJ14Qwi1",
+      "envelopeSha256": "90c6c58a836aaf91bcc2229dd1c6d053e908fdec049bce9bb651fc18e551ab9d"
+    },
+    {
+      "offset": 4584,
+      "nextOffset": null,
+      "sourceId": "83f9b85a-d987-416e-a8d3-b42b5fa18c87",
+      "sourceSha256": "558f2555a988677cd2e4ff54d111deafe9411604b8895f3d6f79b1bdb59b0221",
+      "bytes": 72,
+      "callId": "call_i3XwJPHDRZZiaYx0NHLCY8dh",
+      "envelopeSha256": "55a5260d42d1aa415db81329754b7c188886de34ab5730426d80f628ee44743b"
+    }
+  ],
+  "finalMarkerCount": 2,
+  "telemetryCompleteness": false,
+  "automaticReplayAllowed": false
+}

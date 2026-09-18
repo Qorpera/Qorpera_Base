@@ -51,6 +51,8 @@ test("packages directly executable ephemeral runner bundles", async () => {
 				"company-lock-heartbeat.mjs",
 				"qorpera-ephemeral-runner.mjs",
 				"qorpera-native-provider-host.mjs",
+				"qorpera-identity-recovery-restore.mjs",
+				"qorpera-native-isolation-child.mjs",
 				"qorpera-sandbox-probe.mjs",
 				"qorpera-lxd-runner-bootstrap.mjs",
 				"qorpera-lxd-native-login-bootstrap.mjs",
@@ -62,6 +64,12 @@ test("packages directly executable ephemeral runner bundles", async () => {
 			assert.equal(content.byteLength, artifact.bytes);
 			assert.equal(createHash("sha256").update(content).digest("hex"), artifact.sha256);
 		}
+		const recovery = spawnSync(process.execPath, [join(outputRoot, "qorpera-identity-recovery-restore.mjs"), "--help"], {
+			encoding: "utf-8",
+		});
+		assert.equal(recovery.status, 0, recovery.stderr);
+		assert.match(recovery.stdout, /No work is started/);
+		assert.ok(!manifest.artifacts.some((artifact) => artifact.file === "qorpera-identity-recovery-service.mjs"));
 	} finally {
 		await rm(outputRoot, { recursive: true, force: true });
 	}

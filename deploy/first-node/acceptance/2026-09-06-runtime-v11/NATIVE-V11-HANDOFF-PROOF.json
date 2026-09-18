@@ -1,0 +1,184 @@
+{
+  "schema": "qorpera.actual-native-sponsor-handoff/v1",
+  "passed": true,
+  "recordedAt": "2026-09-06T19:09:46.179Z",
+  "sourceCommit": "759e44f36d54e4660159c7c8a378499cdb4e593f",
+  "runtimeBundleSha256": "ef0f569327e34673b8cfbd80541864ab116ca688c2eca79beb4bc0f3550e84ad",
+  "runId": "94541e40-e197-4f85-bddf-441be0a4766b",
+  "jobId": "2fde4359-3ec9-4bca-85db-828926ff3033",
+  "staffId": "37e5f62b-177a-4d66-9cb3-a7357fbcd0f9",
+  "sessionId": "9e79c72b-1d53-42da-a947-8f7ac7cd6dcb",
+  "actualFounderAdmission": true,
+  "actualNativeAdapterUsageLimit": true,
+  "actualControlPlaneHandoff": true,
+  "actualNativeContinuationCompleted": true,
+  "runIdentityPreserved": true,
+  "attempts": 2,
+  "dispatchFailures": 0,
+  "signal": {
+    "id": "b8ed2df4-ab57-4c69-a0bb-ba11c3fc84bd",
+    "job_id": "2fde4359-3ec9-4bca-85db-828926ff3033",
+    "run_id": "94541e40-e197-4f85-bddf-441be0a4766b",
+    "source": "native_adapter",
+    "provider": "openai",
+    "resets_at": null,
+    "profile_id": "88227549-9724-43c2-8966-9fafb3e855d6",
+    "observed_at": "2026-09-06T19:06:48.212623+00:00",
+    "signal_kind": "usage_limit",
+    "sponsor_version": 1,
+    "sponsor_binding_id": "d3f2e5d3-39e1-462d-8004-8dea4c863bc8",
+    "provider_connection_id": "2bd8e0ae-fc58-449a-b680-e58ff4784744",
+    "provider_connection_version": 2
+  },
+  "handoff": {
+    "id": "a58ea923-1c5e-4391-bac1-5fe89fd208f1",
+    "actor": "control_plane",
+    "job_id": "2fde4359-3ec9-4bca-85db-828926ff3033",
+    "reason": "usage_limit",
+    "run_id": "94541e40-e197-4f85-bddf-441be0a4766b",
+    "signal_id": "b8ed2df4-ab57-4c69-a0bb-ba11c3fc84bd",
+    "binding_id": "d3f2e5d3-39e1-462d-8004-8dea4c863bc8",
+    "created_at": "2026-09-06T19:06:49.23085+00:00",
+    "to_version": 2,
+    "from_version": 1,
+    "attempt_count": 1,
+    "to_connection_id": "2e55091d-1fbf-45e7-9a25-2fe9944d775c",
+    "from_connection_id": "2bd8e0ae-fc58-449a-b680-e58ff4784744"
+  },
+  "sponsorVersions": [
+    {
+      "version": 1,
+      "allowAutonomous": true,
+      "providerConnectionId": "2bd8e0ae-fc58-449a-b680-e58ff4784744",
+      "providerConnectionVersion": 2
+    },
+    {
+      "version": 2,
+      "allowAutonomous": true,
+      "providerConnectionId": "2e55091d-1fbf-45e7-9a25-2fe9944d775c",
+      "providerConnectionVersion": 2
+    }
+  ],
+  "founderHandoffNotification": {
+    "id": "9cf48ff2-3b6e-419b-babb-a213f6e00144",
+    "kind": "sponsor_handoff",
+    "userId": "4fa1e977-a64a-4d39-a5c6-91ffd677f507",
+    "subject": {
+      "at": "2026-09-06T19:06:49.23085+00:00",
+      "runId": "94541e40-e197-4f85-bddf-441be0a4766b",
+      "reason": "usage_limit",
+      "schema": "qorpera.member-notification.sponsor-handoff/v1",
+      "signalId": "b8ed2df4-ab57-4c69-a0bb-ba11c3fc84bd",
+      "handoffId": "a58ea923-1c5e-4391-bac1-5fe89fd208f1",
+      "toConnectionId": "2e55091d-1fbf-45e7-9a25-2fe9944d775c",
+      "fromConnectionId": "2bd8e0ae-fc58-449a-b680-e58ff4784744"
+    },
+    "createdAt": "2026-09-06T19:06:49.242981+00:00",
+    "acknowledgedAt": null
+  },
+  "founderUsageLimitNotification": {
+    "id": "f4357ba4-f55b-4ce9-bed0-033d11d2d1be",
+    "kind": "provider_usage_limit",
+    "userId": "4fa1e977-a64a-4d39-a5c6-91ffd677f507",
+    "subject": {
+      "runId": "d3b20e44-5ae7-443a-82c2-e3130cb80d1f",
+      "schema": "qorpera.member-notification.provider-usage-limit/v1",
+      "provider": "openai",
+      "resetsAt": null,
+      "signalId": "9bb5236d-0afe-4df6-912c-e46848b07048",
+      "connectionId": "2bd8e0ae-fc58-449a-b680-e58ff4784744",
+      "sponsorVersion": 1,
+      "sponsorBindingId": "af1ceda0-72cc-4207-891a-965306ad2327",
+      "connectionVersion": 2
+    },
+    "createdAt": "2026-09-06T18:33:22.723059+00:00",
+    "acknowledgedAt": null
+  },
+  "usageLimitNotificationDeduplicatedFromPreviousSameConnectionSignal": true,
+  "freshCanonicalContext": true,
+  "oldLaunchArchivedExactly": true,
+  "launchHistory": {
+    "id": 2,
+    "run_id": "94541e40-e197-4f85-bddf-441be0a4766b",
+    "launched_at": "2026-09-06T19:06:44.42052+00:00",
+    "binary_sha256": "2f2c26cfdfacebbcce848fb50cfaaa4e8d0aa3c6ec3c1009123ecf766c8335f7",
+    "context_bytes": 33372,
+    "superseded_at": "2026-09-06T19:07:12.174183+00:00",
+    "context_sha256": "fba922d0cc8417dcb2c1e5e0eb6f4775f8a2a780602eea0f4c2b230db63db419",
+    "reasoning_effort": "low",
+    "runtime_bundle_id": "3f593a96-cd92-4b57-81c4-6cbf4ea305e6",
+    "tool_catalog_sha256": "df507e6b49b502427d91cb33d8a708ab197a266b51bfa80b2d12c7e43206f91c",
+    "runtime_bundle_sha256": "ef0f569327e34673b8cfbd80541864ab116ca688c2eca79beb4bc0f3550e84ad",
+    "reasoning_policy_sha256": "dc1e46bf37526a65e668b67de60172a60868314b4c23bd788d75c77469ebf31b"
+  },
+  "continuationLaunch": {
+    "bundle": "ef0f569327e34673b8cfbd80541864ab116ca688c2eca79beb4bc0f3550e84ad",
+    "binarySha256": "2f2c26cfdfacebbcce848fb50cfaaa4e8d0aa3c6ec3c1009123ecf766c8335f7",
+    "contextBytes": 33372,
+    "contextSha256": "080e27d6b76a3496cfcf8ddef93411e200e4e7165d357685223a5df9c5befc86",
+    "toolCatalogSha256": "df507e6b49b502427d91cb33d8a708ab197a266b51bfa80b2d12c7e43206f91c"
+  },
+  "bothNativeLeasesReleased": true,
+  "leasesNeverOverlapped": true,
+  "distinctRunnersAndAssignments": true,
+  "distinctCredentialCapsules": true,
+  "firstGuestRemovedBeforeSecondCreated": true,
+  "bothGuestsRemoved": true,
+  "loginGuestStopped": true,
+  "companyReadSucceeded": true,
+  "canonicalProgressAndFinal": true,
+  "sends": [
+    {
+      "id": "c0e95bfc-4bc9-4984-aa3e-7620d4bf74d0",
+      "phase": "progress",
+      "createdAt": "2026-09-06T19:07:18.531703+00:00",
+      "textSha256": "22219f32f0e4c58842e6615341cfce3a1bc4b5190043772702a551ebcf619c94"
+    },
+    {
+      "id": "9c4eb47c-fe54-4c89-9753-21ac27e78371",
+      "phase": "final",
+      "createdAt": "2026-09-06T19:07:25.05471+00:00",
+      "textSha256": "3f36dacd0b99de24b5a61e9cadb86e3d5d98db0afdaf5deef0ef117ba365d541"
+    }
+  ],
+  "durableResults": 1,
+  "finishedAt": "2026-09-06T19:07:27.530429+00:00",
+  "companyDefaultSponsorUnchanged": true,
+  "privateCredentialValuesReturned": false,
+  "witnesses": [
+    {
+      "path": "outputs/runtime-custody-3c0bf3bce/handoff-native-state-v11-1788721656518.json",
+      "sha256": "326a012d3cd989c6436300233e51a262da4520261b1ebf366493e7ad67fdde65"
+    },
+    {
+      "path": "outputs/runtime-custody-3c0bf3bce/handoff-native-detail-v11-1788721674193.json",
+      "sha256": "d45316d6b1222fd7adadaf915e69c321f0c70c48b858d4ee6b33b214f94272c2"
+    },
+    {
+      "path": "outputs/runtime-custody-3c0bf3bce/handoff-native-authority-v11-1788721720088.json",
+      "sha256": "1485677546b97d24621251899c5927249627dd3ff3799e7e9d953308ffb84f56"
+    },
+    {
+      "path": "outputs/runtime-custody-3c0bf3bce/handoff-native-state-v11-1788721617740.json",
+      "sha256": "f0a8b96cf413e65ce706fe6f03f8bed4d824c6b7c5907174da4c459e7fa6f2b9"
+    },
+    {
+      "path": "outputs/runtime-live-3c0bf3bce/handoff-native-v11-01.result.json",
+      "sha256": "44d08b338584822d60d239a7f571df55e1859ee03d82bfea22f9b39123830d0b"
+    },
+    {
+      "path": "outputs/runtime-image-759e44f36/ACTUAL-ATTEMPT-ISOLATION.json",
+      "sha256": "585aafb89c7ac3c02d909fc07fc09decc3677bc5334408ce10437ba31e2d2c4a"
+    },
+    {
+      "path": "outputs/runtime-image-759e44f36/FINAL-NODE-READBACK.json",
+      "sha256": "818a5d20dddc7217bf01ba79d3d503ca7893e3ab1edd8dd964161c9115947518"
+    }
+  ],
+  "limits": [
+    "The upgraded Gmail account still returned usage_limit with no reset timestamp; Pro token metadata does not establish provider quota availability.",
+    "The usage-limit notification is the existing unacknowledged notification for the same connection/version from the first real limit signal; the successful run generated its own handoff notification.",
+    "Native-result-fence telemetry reports unconfirmed. This proof establishes completed governed execution, successful file read, canonical sends and durable result, not complete fence telemetry.",
+    "No production usage signal was fabricated and no quota was deliberately exhausted."
+  ]
+}

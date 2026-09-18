@@ -1,0 +1,123 @@
+{
+  "schema": "qorpera.company41-production-rollout-offline-freeze/v2",
+  "sourceCommit": "c7085e8f3aa7429a4b17286d496efa6ebfdc64a1",
+  "runtimeBundleSha256": "7bfd6cd12160a3b5119e7727374e28d854c1004de6640f12c40446b21d67764e",
+  "projectRef": "wovsmjvghnbcbfazdtvr",
+  "packetSha256": "653f281f27eeff4a1f9ca857cff5a43a9b05d1414216fbfade88687801505fa5",
+  "files": {
+    "OFFLINE-TESTS.json": {
+      "bytes": 1282,
+      "sha256": "ed5c05beba24fd5aacf71bdad6b709c360621980aaf33a15434592f0af26d1dd"
+    },
+    "README.md": {
+      "bytes": 1860,
+      "sha256": "e48a7fe6a6b6142d22dbab20e9a134e6e44db8d648d7cbaf606fffabb4ff6ca9"
+    },
+    "WRAPPER-REHEARSAL.json": {
+      "bytes": 2712,
+      "sha256": "62b809b9962950039b890923a6460d66f589f4fba3fb46aa3832e3d3ee82d062"
+    },
+    "build-packet.mjs": {
+      "bytes": 6239,
+      "sha256": "b85dbb547ba925ac8b93dca132fff8b4e0dadfe8c5434995445643dabc526b08"
+    },
+    "contract.mjs": {
+      "bytes": 8626,
+      "sha256": "f4d03ad4bdf7a2192065112bb69d5cd82124b2acdf027d6d848de062f27a0ad3"
+    },
+    "controller.mjs": {
+      "bytes": 13894,
+      "sha256": "bf2a5985535e75becc53ab09de3b8c3da690e41d105443eee2c650e855dc853e"
+    },
+    "files.mjs": {
+      "bytes": 2302,
+      "sha256": "0325c759ea40a479bc026382eb21df993f8b14b384ab27f861be1278974820aa"
+    },
+    "freeze-packet.mjs": {
+      "bytes": 5982,
+      "sha256": "c59507477694879f875fec309c397421e0bd3192a24d491abda4aeea08d808f9"
+    },
+    "inputs.json": {
+      "bytes": 4193,
+      "sha256": "1fbd721d48a9878c481a06d2d4c2a7d203eaf11a4faaa41ae37a718fc272b216"
+    },
+    "packet.json": {
+      "bytes": 3076,
+      "sha256": "653f281f27eeff4a1f9ca857cff5a43a9b05d1414216fbfade88687801505fa5"
+    },
+    "packet.test.mjs": {
+      "bytes": 18708,
+      "sha256": "dca402d3989da046dcea676e4dba5d821bcdaa036d801367665073b03e1dd213"
+    },
+    "rehearsal-baseline.json": {
+      "bytes": 2655,
+      "sha256": "b306bb55c3946cfcc7adb60523fc5775c95760205dc0bce72213dcc98a6e502f"
+    },
+    "rehearse-wrapper.mjs": {
+      "bytes": 11798,
+      "sha256": "e76b83e9177c4a10f3ba781d1f85e57828e3545ca769323735815e46d2f569c5"
+    },
+    "sql-packet.mjs": {
+      "bytes": 15779,
+      "sha256": "5ae69bf21c084a72530a866709483b3adf3b30296fbf7ddcb9c35e92ea2634f6"
+    },
+    "sql/20260906000300.sql": {
+      "bytes": 33161,
+      "sha256": "250cb8828955d70da9fe167dc4c06183b7ee62607b4615af4c3c3c794a8313c4"
+    },
+    "sql/20260906000400.sql": {
+      "bytes": 115285,
+      "sha256": "d8803c601aef106eac270b4dcc8940d657b6f6d1e9b8d658ae5d29b9babf148d"
+    },
+    "sql/final-readback.sql": {
+      "bytes": 11186,
+      "sha256": "4bd588fbcec70bf982b0cc0803dd9388293647e97d9a35f83089660457dff67f"
+    },
+    "sql/pause.sql": {
+      "bytes": 22975,
+      "sha256": "cff1232b943c63fb1efd90215b6b7591b54bcc3f0a11926b15aea3710f8bd85e"
+    },
+    "sql/preflight.sql": {
+      "bytes": 6335,
+      "sha256": "a1032d899e1a57b35310e53a4947e47466dd115d295b871dfe96266a2ef7953f"
+    },
+    "sql/reconcile-20260906000300.sql": {
+      "bytes": 6340,
+      "sha256": "a5f60a9c3a8d8fe32841e03185be69c7134194ba5be226cf10272fef979c2b3c"
+    },
+    "sql/reconcile-20260906000400.sql": {
+      "bytes": 6340,
+      "sha256": "7b0b9cd52afdd9805a2350ec5ad9633b63e9804138390c0aa946df73af2a0180"
+    },
+    "sql/reconcile-pause.sql": {
+      "bytes": 6331,
+      "sha256": "e77648f81503ad86ed3d6da85349feaa1382c6164fd3f5e3f290e2f4ea9265a7"
+    },
+    "transport.mjs": {
+      "bytes": 3315,
+      "sha256": "fe2b3c3771240a2397682c45431344385c65f7f0ae19654f66942c8f25ec5994"
+    },
+    "transport.test.mjs": {
+      "bytes": 5704,
+      "sha256": "870f8ec753b5dec97b5619fa48a6638165b278bc8ecfaa920023e6b6ee400898"
+    },
+    "verify-offline.mjs": {
+      "bytes": 1802,
+      "sha256": "47248c8ec7f87e97105ba1e2908f9eb0372a3868ba2bee8519a152ce2ef386d4"
+    }
+  },
+  "offlineTests": {
+    "bytes": 1282,
+    "sha256": "ed5c05beba24fd5aacf71bdad6b709c360621980aaf33a15434592f0af26d1dd"
+  },
+  "wrapperRehearsal": {
+    "bytes": 2712,
+    "sha256": "62b809b9962950039b890923a6460d66f589f4fba3fb46aa3832e3d3ee82d062"
+  },
+  "issuedAt": null,
+  "expiresAt": null,
+  "executionEnabled": false,
+  "actualGateBindingsIssued": false,
+  "productionReady": false,
+  "productionWrites": false
+}
