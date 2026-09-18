@@ -1,23 +1,36 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { type FileHandle, link, lstat, mkdtemp, open, readdir, readFile, realpath, rm, unlink } from "node:fs/promises";
+import {
+	type FileHandle,
+	lstat,
+	mkdtemp,
+	open,
+	readdir,
+	readFile,
+	realpath,
+	rename,
+	rm,
+	unlink,
+} from "node:fs/promises";
 import { CLOUD_FILE_TRANSFER_MAX_BYTES, parseWorkbenchFilePath } from "@qorpera/cloud-client/cloud-file-transfer";
 import { readCompanyComputerWorkbenchFile } from "./cloud-company-computer-file-reader.ts";
 
 /** Import under an already admitted workbench handle. stagingRoot MUST be the
  * broker-only screen-state parent, never a directory mounted into commands,
  * desktops or browsers. Both handles stay caller-owned on the same pinned mount.
- * Private staging permits an atomic hard-link publication without exposing a
- * replaceable source name. The destination is never overwritten or rolled back.
+ * Private staging keeps partial bytes off the public name; an exclusive claim of
+ * that name followed by a rename publishes the file. What existed before the
+ * claim is never overwritten, and a published file is never rolled back.
  * A concurrent workspace edit may invalidate completion and retain an unknown
  * effect; it cannot cause cleanup to delete the public destination.
  *
  * The persistent workbench may be a network filesystem (NFS, also behind
  * virtiofs). There an unlinked inode that some layer still holds open stays in
  * its directory under a server-chosen ".nfs…" placeholder name until the last
- * holder lets go. The destination link shares that inode, so the staging
- * directory cannot always be emptied at once. That is cleanup debt inside the
- * broker-private parent, never an import failure; later imports sweep it. */
+ * holder lets go. Imports before service revision 4 published through a hard
+ * link and left such staging directories behind; they are cleanup debt inside
+ * the broker-private parent, never an import failure, and each import sweeps
+ * what has become removable. */
 const NETWORK_PLACEHOLDER = /^\.nfs[0-9a-f]{8,64}$/;
 const STAGING_NAME = /^\.qorpera-import-[A-Za-z0-9]{6}$/;
 const STAGING_SWEEP_AGE_MS = 10 * 60_000;
@@ -152,12 +165,38 @@ export async function writeCompanyComputerWorkbenchFile(
 		await check({ file: stagingRoot, path: stagingPath }, true);
 		for (const entry of parents) await check(entry);
 		signal.throwIfAborted();
-		// link() is no-replace, including existing symlinks and directories. The
-		// source name is broker-private; the target parent is the checked inode.
-		await link(sourcePath, `${fdPath(parent.file)}/${parts.at(-1)!}`);
+		// Publication: claim the name exclusively (no-replace, also for symlinks and
+		// directories, and also on NFS), then rename the finished private file over that
+		// empty claim. The name therefore never shows partial bytes, and nothing that
+		// existed before the claim can be replaced. A hard link cannot be used here: on
+		// the persistent workbench (NFS, also behind virtiofs) the unlinked staging name
+		// survives as a second link while any layer holds the inode, and an imported
+		// file must have exactly one link to be readable again.
+		const target = `${fdPath(parent.file)}/${parts.at(-1)!}`;
 		await source.close();
 		source = undefined;
-		await unlink(sourcePath);
+		const claim = await open(
+			target,
+			constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+			0o600,
+		);
+		let claimed: bigint | undefined;
+		try {
+			claimed = (await claim.stat({ bigint: true })).ino;
+		} finally {
+			await claim.close();
+		}
+		try {
+			const current = await lstat(target, { bigint: true });
+			if (!current.isFile() || current.ino !== claimed || current.dev !== rootInfo.dev || current.size !== 0n)
+				throw new Error("WORKBENCH_IMPORT_CHANGED");
+			await rename(sourcePath, target);
+		} catch (error) {
+			// Only our own untouched empty claim is withdrawn; anything else stays.
+			const left = await lstat(target, { bigint: true }).catch(() => undefined);
+			if (left?.isFile() && left.ino === claimed && left.size === 0n) await unlink(target).catch(() => undefined);
+			throw error;
+		}
 		await parent.file.sync();
 		for (const entry of parents) await check(entry);
 		const actual = await readCompanyComputerWorkbenchFile(root, path, signal);
