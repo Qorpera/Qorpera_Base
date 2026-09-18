@@ -1688,6 +1688,23 @@ removal; until it is removed it MUST NOT be reachable from any member client.
 - **Images.** An agent thread accepts the same attachments as an agent
   session did; team rooms stay text-only.
 
+### 2026-09-18 amendment: who runs an agent's first run
+
+§14.1's "exactly one first-run wake" is a cloud obligation, not a client
+habit. The silent kickoff is seeded in the agent's shared thread, and the
+greeting appears there.
+
+- **Whose account.** Creating an agent is the creating member's own action, so
+  the first run is sponsored by that member's own model account: the account
+  they last used for a run in this company, or their only usable account when
+  they have never run anything. No other member's account is ever chosen.
+- **No usable account.** The kickoff stays pending. Its author starts it later
+  with an account of their choice (`qorpera_start_agent_first_run`); nobody
+  else can. This is the normal case for a brand-new company, whose founder
+  connects an account after the Co-Founder exists.
+- **Limits.** The founder stop holds the queued first run until resume. A first
+  run is a member-caused turn and does not count against the wake-rate ceiling.
+
 ### Current implementation checkpoint
 
 The NAS-backed live Company File and native cloud runner path already exist.

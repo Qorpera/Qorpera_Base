@@ -661,6 +661,25 @@ begin
 end
 $$;
 
+-- The kickoff lives in the agent's shared thread. A creator without exactly one usable model account gets no
+-- queued first-run turn (it stays pending for them to start), and nobody else can start it.
+do $$
+declare v_profile uuid := (current_setting('qorpera_test.org_company')::jsonb ->> 'profile_id')::uuid;
+	v_first public.qorpera_agent_first_runs%rowtype; v_author uuid;
+begin
+	select * into strict v_first from public.qorpera_agent_first_runs
+	where profile_id = v_profile and staff_agent_id = '31000000-0000-4000-8000-000000000400';
+	select author_user_id into strict v_author from public.qorpera_session_inputs where id = v_first.input_id;
+	if not exists (select 1 from public.qorpera_company_rooms room where room.profile_id = v_profile
+			and room.bound_staff_agent_id = v_first.staff_agent_id and room.status = 'active'
+			and room.session_id = v_first.session_id)
+		or public.qorpera_member_first_run_sponsor(v_profile,v_author) is not null
+		or exists (select 1 from public.qorpera_session_turn_requests where input_id = v_first.input_id)
+		or public.qorpera_queue_agent_first_run(v_profile,v_first.staff_agent_id,null) is not null then
+		raise exception 'Agent first run was not seeded in the thread or was queued without a usable account'; end if;
+end
+$$;
+
 -- A generic publisher cannot create an agent path without its synchronized
 -- staff projection. The deferred constraint aborts the whole publication.
 select set_config('qorpera_test.unprojected_agent_path',
