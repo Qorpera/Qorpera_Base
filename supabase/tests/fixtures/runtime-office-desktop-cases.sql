@@ -24,7 +24,9 @@ do $$ declare bad jsonb; begin
  end loop;
  perform pg_temp.wake_assert(not public.qorpera_valid_office_desktop_action(jsonb_build_object('kind','desktop','action','type','text',repeat('ø',8193))),'text limit counts bytes');
 end $$;
-create function pg_temp.desktop_configure(p_caps jsonb default '["desktop"]',p_version bigint default 1,p_enabled boolean default true)
+-- The default grant is version 1 and the registry setup's explicit grant version 2 (2026-09-17 amendment:
+-- every agent has the Company Computer), so this flow configures from version 2 and lands on version 3.
+create function pg_temp.desktop_configure(p_caps jsonb default '["desktop"]',p_version bigint default 2,p_enabled boolean default true)
 returns jsonb language sql as $$
  select public.qorpera_configure_runtime_office_access(current_setting('qorpera_test.office_scope')::jsonb,
   '30000000-0000-4000-8000-000000000030',p_version,p_enabled,p_caps)
@@ -38,7 +40,7 @@ reset role;
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
 set local role authenticated;
 select pg_temp.wake_assert(public.qorpera_runtime_office_access_status(current_setting('qorpera_test.office_scope')::jsonb,
- '30000000-0000-4000-8000-000000000030')#>'{grant,capabilities}'='["shell"]'::jsonb,'migration preserves legacy shell-only grants');
+ '30000000-0000-4000-8000-000000000030')#>'{grant,capabilities}'='["desktop","shell"]'::jsonb,'every agent holds the default desktop and shell grant (2026-09-17 amendment)');
 do $$ declare caps jsonb; begin
  for caps in select value from jsonb_array_elements('[null,[],{},["browser"],["shell","desktop"],["desktop","desktop"],["desktop","shell","browser"]]') loop
   perform pg_temp.wake_error(format('select pg_temp.desktop_configure(%L::jsonb)',caps::text),'22023');
@@ -46,16 +48,35 @@ do $$ declare caps jsonb; begin
 end $$;
 select pg_temp.wake_error('select pg_temp.desktop_configure(null)','22023');
 select pg_temp.wake_error($q$select pg_temp.desktop_configure('["desktop"]',0)$q$,'PGRST');
+select pg_temp.wake_error($q$select pg_temp.desktop_configure('["desktop"]',1)$q$,'PGRST');
 select pg_temp.wake_error($q$select public.qorpera_configure_runtime_office_access(
  jsonb_set(current_setting('qorpera_test.office_scope')::jsonb,'{companyId}','"34000000-0000-4000-8000-000000000099"'),
- '30000000-0000-4000-8000-000000000030',1,true,'["desktop"]')$q$,'42501');
+ '30000000-0000-4000-8000-000000000030',2,true,'["desktop"]')$q$,'42501');
 select set_config('qorpera_test.desktop_grant',pg_temp.desktop_configure()::text,true);
 select pg_temp.wake_assert(current_setting('qorpera_test.desktop_grant')::jsonb=
  jsonb_build_object('schema','qorpera.office-access-status/v1','scope',current_setting('qorpera_test.office_scope')::jsonb,
  'staffAgentId','30000000-0000-4000-8000-000000000030','grant',
  jsonb_build_object('grantId',current_setting('qorpera_test.office_grant')::jsonb->>'grantId',
- 'version',2,'state','active','capabilities','["desktop"]'::jsonb)),'explicit grant returns bound closed metadata');
+ 'version',3,'state','active','capabilities','["desktop"]'::jsonb)),'explicit grant returns bound closed metadata');
 select pg_temp.wake_error('select pg_temp.desktop_configure()','PGRST');
+reset role;
+-- The company browser (2026-09-17 amendment) gives every agent with access a company-owned profile
+-- and an active grant from the start. The cases below prove that desktop authority implies neither
+-- browser nor shell, so the owner of record retires that grant through the real API first.
+select set_config('qorpera_test.company_browser_profile',(select g.profile_id::text
+ from public.qorpera_runtime_browser_grants g join public.qorpera_runtime_browser_profiles p on p.id=g.profile_id
+ where p.company_owned and g.state='active' and g.staff_agent_id='30000000-0000-4000-8000-000000000030'
+  and g.office_id=(current_setting('qorpera_test.office_scope')::jsonb->>'companyComputerId')::uuid),true);
+select pg_temp.path_claims('service_role');
+set local role service_role;
+select pg_temp.wake_assert(public.qorpera_native_office_descriptor(current_setting('qorpera_test.wake_binding')::jsonb)->'capabilities'='["desktop","browser"]'::jsonb,
+ 'the company browser is present by default and independent of the desktop grant');
+reset role;
+select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+set local role authenticated;
+select pg_temp.wake_assert(public.qorpera_set_runtime_browser_grant(current_setting('qorpera_test.office_scope')::jsonb,
+ current_setting('qorpera_test.company_browser_profile')::uuid,'30000000-0000-4000-8000-000000000030',1,1,false)
+ @>'{"state":"revoked","drains":[]}'::jsonb,'owner of record retires the company browser grant; no screen is open yet');
 reset role;
 savepoint desktop_grant_legacy;
 -- The legacy enable/disable API retains explicitly configured capabilities.
@@ -127,7 +148,7 @@ reset role;
 savepoint desktop_authority;
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
 set local role authenticated;
-select pg_temp.desktop_configure('["shell"]',2);
+select pg_temp.desktop_configure('["shell"]',3);
 reset role;
 select pg_temp.path_claims('service_role');
 set local role service_role;
@@ -147,7 +168,7 @@ reset role;
 rollback to savepoint desktop_authority;
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
 set local role authenticated;
-select pg_temp.desktop_configure('["desktop"]',2,false);
+select pg_temp.desktop_configure('["desktop"]',3,false);
 reset role;
 select pg_temp.path_claims('service_role');
 set local role service_role;

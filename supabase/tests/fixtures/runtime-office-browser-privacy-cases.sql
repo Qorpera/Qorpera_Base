@@ -1,4 +1,37 @@
 -- Uses the real native authority fixture, with synthetic physical acknowledgements.
+-- The company browser (2026-09-17 amendment): every agent with computer access starts with a
+-- company-owned profile and an active grant. These cases prove the member-lent private profile,
+-- and one agent drives one profile (qorpera_browser_one_profile), so the owner of record first
+-- retires agent 30's company grant through the real API. Another member cannot do that.
+-- The default grant also carries desktop; the cases below prove that browser consent implies
+-- neither desktop nor shell, so the owner narrows agent 30 to the former shell-only grant first
+-- (default version 1, registry setup version 2, this configuration version 3).
+select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+set local role authenticated;
+select pg_temp.wake_assert(public.qorpera_configure_runtime_office_access(current_setting('qorpera_test.office_scope')::jsonb,
+	'30000000-0000-4000-8000-000000000030',2,true,'["shell"]')#>'{grant,capabilities}'='["shell"]'::jsonb,'owner narrows the default grant to shell only');
+reset role;
+select set_config('qorpera_test.company_browser_profile',(select g.profile_id::text
+	from public.qorpera_runtime_browser_grants g join public.qorpera_runtime_browser_profiles p on p.id=g.profile_id
+	where p.company_owned and g.state='active' and g.staff_agent_id='30000000-0000-4000-8000-000000000030'
+		and g.office_id=(current_setting('qorpera_test.office_scope')::jsonb->>'companyComputerId')::uuid),true);
+select pg_temp.path_claims('service_role');
+set local role service_role;
+select pg_temp.wake_assert(public.qorpera_native_office_descriptor(current_setting('qorpera_test.wake_binding')::jsonb)#>>'{resources,browserProfileId}'
+	=current_setting('qorpera_test.company_browser_profile'),'the default browser is the company-owned profile');
+reset role;
+select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000002');
+set local role authenticated;
+select pg_temp.wake_error($q$select public.qorpera_set_runtime_browser_grant(current_setting('qorpera_test.office_scope')::jsonb,
+	current_setting('qorpera_test.company_browser_profile')::uuid,'30000000-0000-4000-8000-000000000030',1,1,false)$q$,'42501');
+reset role;
+select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+set local role authenticated;
+select pg_temp.wake_assert(public.qorpera_set_runtime_browser_grant(current_setting('qorpera_test.office_scope')::jsonb,
+	current_setting('qorpera_test.company_browser_profile')::uuid,'30000000-0000-4000-8000-000000000030',1,1,false)
+	@>'{"state":"revoked","drains":[]}'::jsonb,'owner of record retires the company browser grant; no screen is open yet');
+reset role;
+select pg_temp.path_claims('service_role');
 set local role service_role;
 select set_config('qorpera_test.office_lease',(pg_temp.office_call('acquire')->'lease')::text,true);
 select pg_temp.wake_public_send(current_setting('qorpera_test.wake_binding')::jsonb,'progress');

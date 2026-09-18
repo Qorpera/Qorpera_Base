@@ -43,7 +43,9 @@ export async function testOfficeStopAcknowledgement({request,revocation,lease,sc
 	// Owner revocation remains legal while maintenance is in force, and can
 	// issue a newer drain than both the original revocation and stop challenge.
 	const profile=call(`select jsonb_build_object('id',p.id,'owner',p.owner_user_id,'version',p.version,'grantVersion',g.version,'staff',g.staff_agent_id)
-		from public.qorpera_runtime_browser_profiles p join public.qorpera_runtime_browser_grants g on g.profile_id=p.id limit 1;`,'');
+		from public.qorpera_runtime_browser_profiles p join public.qorpera_runtime_browser_grants g on g.profile_id=p.id
+		-- Company-owned agent profiles also exist now (2026-09-17 company browser); take the adopted member-owned grant.
+		where not p.company_owned and g.state='active' limit 1;`,'');
 	const browserOwner=`set request.jwt.claims='{"role":"authenticated","sub":"${profile.owner}"}'; set role authenticated;`;
 	const revoke=()=>call(`select public.qorpera_set_runtime_browser_grant(${literal(scope)},'${profile.id}','${profile.staff}',${profile.version},${profile.grantVersion++},false);`,browserOwner);
 	const current=revoke();assert.equal(current.drains.length,1);assert.notEqual(current.drains[0].drainId,revocation.drains[0].drainId);

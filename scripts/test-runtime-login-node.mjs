@@ -64,7 +64,10 @@ try {
 	const {policySha256}=lxdLoginNodePolicy(config,host.machineIdSha256);
 	const nodePolicy={schema:"qorpera.runtime-node-policy/v1",nodeId,machineIdSha256:host.machineIdSha256,label:"login-node-fixture",cpuMillis:6000,memoryBytes:16*1024**3,headroomCpuMillis:2000,headroomMemoryBytes:1024**3,standardCpuMillis:4000,standardMemoryBytes:8*1024**3,enabled:true};
 	const observe=state=>sql(`${service} select public.qorpera_test_observe_runtime_node(${literal({schema:"qorpera.runtime-node-observation/v1",nodeId,machineIdSha256:host.machineIdSha256,observationId:randomUUID(),observedAt:new Date().toISOString(),cpuMillis:host.cpuMillis,memoryBytes:host.memoryBytes,state})});`);
-	const signatures={qorpera_describe_native_provider_login_route:["p_login_id","p_capability_sha256"],qorpera_reserve_runtime_login_machine:["p_allocation_id","p_provider_adapter","p_instance_sha256","p_login_id","p_capability_sha256"],qorpera_reserve_runtime_node_machine:["p_allocation_id","p_provider_kind","p_provider_id","p_policy_sha256","p_instance_sha256","p_machine_id_sha256","p_cpu_millis","p_memory_bytes"],qorpera_describe_runtime_login_machine:["p_allocation_id","p_provider_adapter","p_instance_sha256"],qorpera_release_runtime_login_machine:["p_allocation_id","p_provider_adapter","p_instance_sha256","p_login_id"]};
+	const signatures={qorpera_describe_native_provider_login_route:["p_login_id","p_capability_sha256"],qorpera_reserve_runtime_login_machine:["p_allocation_id","p_provider_adapter","p_instance_sha256","p_login_id","p_capability_sha256"],qorpera_reserve_runtime_node_machine:["p_allocation_id","p_provider_kind","p_provider_id","p_policy_sha256","p_instance_sha256","p_machine_id_sha256","p_cpu_millis","p_memory_bytes"],qorpera_describe_runtime_login_machine:["p_allocation_id","p_provider_adapter","p_instance_sha256"],qorpera_release_runtime_login_machine:["p_allocation_id","p_provider_adapter","p_instance_sha256","p_login_id"],
+		// Login recovery automation (2026-09-16/17): before forwarding, the gateway asks whether the identity has an
+		// established backup to restore; this new identity has none and may initialize.
+		qorpera_identity_recovery_runtime_state:["p_compute_identity_id"]};
 	let loseNode=false,loseRelease=false,companyCalls=0,nodeCalls=0,forwarded=0;
 	const fetcher=async(input,init)=>{
 		init?.signal?.throwIfAborted(); const url=new URL(String(input)); assert.equal(init.redirect,"error");
@@ -83,13 +86,16 @@ try {
 	let instance,creates=0,starts=0,stops=0,deletes=0,loseStopPoll=false;const volumes=new Map(),operations=new Map();
 	const lxd={async getInstance(_project,name){return instance?.name===name?structuredClone(instance):undefined;},async getStorageVolume(_project,_pool,name){return volumes.get(name);},async createStorageVolume(_project,_pool,request){volumes.set(request.name,{name:request.name,type:request.type,contentType:request.content_type,description:request.description,config:request.config});},
 		async submitInstanceOperation(project,action,signal){signal.throwIfAborted();const operationId=randomUUID();operations.set(operationId,action.action);
-			if(action.action==="create"){creates++;const request=action.request;instance={...structuredClone(request),status:"Stopped",statusCode:102,expandedDevices:structuredClone(request.devices),expandedConfig:structuredClone(request.config)};observe("unavailable");}
+			if(action.action==="create"){creates++;const request=action.request;// The gateway binds the guest address by NIC identity, never by interface name alone (1b361957b, 2026-09-13):
+				// the profile-supplied NIC and its LXD-assigned MAC appear as on a real instance, and the guest state reports it.
+				instance={...structuredClone(request),status:"Stopped",statusCode:102,config:{...structuredClone(request.config),"volatile.enp5s0.hwaddr":"00:16:3e:b9:c4:8c"},
+					expandedDevices:{...structuredClone(request.devices),enp5s0:{type:"nic",name:"enp5s0",network:"qorpera0"}},expandedConfig:structuredClone(request.config)};observe("unavailable");}
 			if(action.action==="start"){starts++;instance.status="Running";instance.statusCode=103;}
 			if(action.action==="stop"){stops++;instance.status="Stopped";instance.statusCode=102;}
 			if(action.action==="delete"){deletes++;instance=undefined;}
 			return {project,instanceName:action.action==="create"?action.request.name:action.name,operationId};},
 		async inspectInstanceOperation(reference,signal){signal.throwIfAborted();assert(operations.has(reference.operationId));if(loseStopPoll && operations.get(reference.operationId)==="stop"){loseStopPoll=false;throw new Error("lost accepted stop poll");}return "succeeded";},
-		async getInstanceState(){return {status:instance.status,statusCode:instance.statusCode,network:{enp5s0:{addresses:[{family:"inet",scope:"global",address:"10.41.0.9"}]}}};},async pushInstanceFile(){},async execInstance(){},
+		async getInstanceState(){return {status:instance.status,statusCode:instance.statusCode,network:{enp5s0:{hwaddr:"00:16:3e:b9:c4:8c",addresses:[{family:"inet",scope:"global",address:"10.41.0.9"}]}}};},async pushInstanceFile(){},async execInstance(){},
 		async createInstance(){throw new Error("untracked creation forbidden");},async setInstancePower(){throw new Error("untracked power forbidden");},async deleteInstance(){throw new Error("untracked deletion forbidden");},
 	};
 	const gateway=()=>new LxdNativeLoginGateway(config,lxd,fetcher);

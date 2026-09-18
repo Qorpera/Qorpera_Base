@@ -17,7 +17,7 @@ select pg_temp.wake_assert(pg_temp.member_exports((current_setting('qorpera_test
 select pg_temp.wake_error($q$select pg_temp.member_exports(null,51)$q$,'22023');
 select pg_temp.wake_error($q$select pg_temp.member_export(jsonb_build_object('realm','object_storage','assetId',current_setting('qorpera_test.export_asset')::jsonb->>'assetId','sha256',repeat('a',64)))$q$,'42501');
 select pg_temp.wake_error($q$select pg_temp.member_export('{"realm":"company_computer","path":"projects/report.bin"}')$q$,'22023');
-select pg_temp.wake_error($q$select public.qorpera_member_file_export_source('30000000-0000-4000-8000-000000000099',jsonb_build_object('realm','object_storage','assetId',current_setting('qorpera_test.export_asset')::jsonb->>'assetId','sha256',repeat('c',64)))$q$,'55000');
+select pg_temp.wake_error($q$select public.qorpera_member_file_export_source('30000000-0000-4000-8000-000000000099',jsonb_build_object('realm','object_storage','assetId',current_setting('qorpera_test.export_asset')::jsonb->>'assetId','sha256',repeat('c',64)))$q$,'42501');
 reset role;
 savepoint member_exports;
 update public.qorpera_runtime_office_access set state='revoked';

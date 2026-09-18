@@ -1,4 +1,21 @@
 -- Real ownership, privacy transitions and consent; physical drains are fixture acknowledgements.
+-- The company browser (2026-09-17 amendment): agent 30 starts with a company-owned profile and an active
+-- grant, and one agent drives one profile (qorpera_browser_one_profile). These cases prove a member's own
+-- profile and consent, so the owner of record first retires the company grant through the real API.
+select set_config('qorpera_test.company_browser_profile',(select g.profile_id::text
+ from public.qorpera_runtime_browser_grants g join public.qorpera_runtime_browser_profiles p on p.id=g.profile_id
+ where p.company_owned and g.state='active' and g.staff_agent_id='30000000-0000-4000-8000-000000000030'
+  and g.office_id=(current_setting('qorpera_test.office_scope')::jsonb->>'companyComputerId')::uuid),true);
+select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000003'); set local role authenticated;
+select pg_temp.wake_error($q$select public.qorpera_set_runtime_browser_grant(current_setting('qorpera_test.office_scope')::jsonb,
+ current_setting('qorpera_test.company_browser_profile')::uuid,'30000000-0000-4000-8000-000000000030',1,1,false)$q$,'42501');
+reset role;
+select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001'); set local role authenticated;
+select pg_temp.wake_assert(public.qorpera_set_runtime_browser_grant(current_setting('qorpera_test.office_scope')::jsonb,
+ current_setting('qorpera_test.company_browser_profile')::uuid,'30000000-0000-4000-8000-000000000030',1,1,false)
+ @>'{"state":"revoked","drains":[]}'::jsonb,'owner of record retires the company browser grant; no screen is open yet');
+reset role;
+select pg_temp.path_claims('service_role');
 set local role service_role;
 select set_config('qorpera_test.office_lease',(pg_temp.office_call('acquire')->'lease')::text,true);
 reset role;
@@ -41,10 +58,23 @@ select pg_temp.wake_assert(pg_temp.profile_status()->'grant'='null'::jsonb,'no i
 select pg_temp.wake_assert(jsonb_array_length(pg_temp.profile_catalog()->'profiles')=1,'profile discovered after reply loss');
 reset role;
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001'); set local role authenticated;
-select pg_temp.wake_assert(pg_temp.profile_catalog()->'profiles'='[]'::jsonb,'company owner cannot enumerate another browser owner');
-select pg_temp.wake_assert(public.qorpera_member_browser_recovery()->'offices'='[]'::jsonb,'account cleanup cannot enumerate another browser owner');
+-- The owner of record sees the company-owned agent profiles (2026-09-17 company browser); another member's own
+-- profile is never among them.
+select pg_temp.wake_assert(not exists(select 1 from jsonb_array_elements(pg_temp.profile_catalog()->'profiles') item
+	where item->>'profileId'='36000000-0000-4000-8000-000000000001' or item->>'label'='Work browser'),'company owner cannot enumerate another browser owner');
+-- The owner of record is listed for this office only through the company-owned profiles held in their name;
+-- the entry carries the office scope alone and nothing of the other member or their profile.
+select pg_temp.wake_assert(public.qorpera_member_browser_recovery()->'offices'=jsonb_build_array(jsonb_build_object(
+	'scope',current_setting('qorpera_test.office_scope')::jsonb,'ownsPrivacy',false))
+	and public.qorpera_member_browser_recovery()::text not like '%36000000-0000-4000-8000-000000000001%'
+	and public.qorpera_member_browser_recovery()::text not like '%30000000-0000-4000-8000-000000000003%','account cleanup cannot enumerate another browser owner');
 select pg_temp.wake_error($q$select pg_temp.profile_status()$q$,'42501');
 select pg_temp.wake_error($q$select pg_temp.profile_create()$q$,'42501');
+reset role;
+-- A member who owns no profile here still gets nothing at all, whoever else has one.
+select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000002'); set local role authenticated;
+select pg_temp.wake_assert(pg_temp.profile_catalog()->'profiles'='[]'::jsonb,'another member cannot enumerate another browser owner');
+select pg_temp.wake_assert(public.qorpera_member_browser_recovery()->'offices'='[]'::jsonb,'account cleanup of another member cannot enumerate another browser owner');
 reset role;
 
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000003'); set local role authenticated;
@@ -58,6 +88,19 @@ select pg_temp.wake_error($q$select public.qorpera_ack_runtime_office_privacy(cu
 select pg_temp.profile_ack(current_setting('qorpera_test.browser_privacy')::jsonb->'drains');
 select public.qorpera_ack_runtime_office_privacy(current_setting('qorpera_test.browser_privacy')::jsonb);
 reset role;
+-- Preparation requires the owner's redeemed private viewer (20260913000300 preparation evidence), so the
+-- owner really opens the private surface: actual ticket issuance and gateway redemption, as in the privacy cases.
+do $$ declare challenge jsonb:=current_setting('qorpera_test.browser_privacy')::jsonb; binding jsonb; epoch bigint; ticket jsonb; begin
+ select public.qorpera_runtime_office_scope(o)||jsonb_build_object('computerGeneration',o.generation,
+  'screenId',s.id,'screenOrdinal',s.ordinal,'screenGeneration',s.generation,'staffAgentId',s.staff_agent_id),s.epoch
+ into binding,epoch from public.qorpera_runtime_offices o join public.qorpera_runtime_office_screens s on s.office_id=o.id
+ where s.id=(challenge->>'screenId')::uuid;
+ perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000003');
+ ticket:=public.qorpera_create_runtime_office_viewer(binding,epoch,'control',challenge);
+ perform pg_temp.path_claims('service_role');
+ perform pg_temp.profile_ack(public.qorpera_runtime_office_supervisor_status(challenge->'scope',(challenge->>'computerGeneration')::bigint)->'drains');
+ perform public.qorpera_redeem_runtime_office_viewer(challenge->'scope',encode(extensions.digest(ticket->>'capability','sha256'),'hex'));
+end $$;
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000003'); set local role authenticated;
 select public.qorpera_check_runtime_office_private_access(current_setting('qorpera_test.browser_privacy')::jsonb);
 select set_config('qorpera_test.browser_privacy',pg_temp.profile_privacy(false,1)::text,true);

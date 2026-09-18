@@ -136,7 +136,8 @@ export async function testOfficeDesktop({ root, query, setup }) {
 		const token = randomBytes(32).toString("base64url");
 		const gateway = new code.CompanyComputerNativeGateway({scope:setup.scope,computerGeneration:1,token,registry,
 			createSession:async ({run:bound,descriptor,lease,effects})=>{
-                assert.deepEqual(descriptor.capabilities,["desktop"]);
+                // The company browser (2026-09-17 amendment): every agent with access also holds a company-owned browser grant.
+                assert.deepEqual(descriptor.capabilities,["desktop","browser"]);
                 await physical.request({action:"open",binding:lease.binding});
 				const automation = new code.CompanyComputerGuestAutomation({binding:lease.binding,
 					layout:{workbenchRoot:"/srv/workbench",desktopHome:"/srv/desktop",screenStateRoot:"/srv/screens",browserProfilesRoot:"/srv/profiles"},
@@ -149,7 +150,9 @@ export async function testOfficeDesktop({ root, query, setup }) {
 		listener = await code.startCompanyComputerNativeGateway({host:"127.0.0.1",port:0,tls:{cert,key},gateway});
 		const factory = code.createHttpCompanyComputerSessionFactory({url:`https://127.0.0.1:${listener.port}/office/${setup.scope.companyComputerId}/native`,token,registry});
 		session = await factory(run,new code.CloudNativeToolOperations(run,control)); assert(session);
-        assert(!session.tools.some(tool=>["computer_browser","computer_shell","computer_transfer"].includes(tool.name)));
+        // A desktop-only office grant still implies no shell or transfer; the browser tool now comes from the company browser grant.
+        assert(!session.tools.some(tool=>["computer_shell","computer_transfer"].includes(tool.name)));
+        assert(session.tools.some(tool=>tool.name==="computer_browser"));
         const tool=session.tools.find(tool=>tool.name==="computer_desktop"), screenshot=session.tools.find(tool=>tool.name==="computer_screenshot");assert(tool&&screenshot);
         const context={companyId:run.identity.companyId,runId:run.identity.runId,signal:run.signal};
         const cases=[

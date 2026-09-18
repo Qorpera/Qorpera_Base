@@ -157,9 +157,20 @@ try {
 	assert.equal(capacity.allocatedComputers,2); assert.equal(capacity.allocatedCompanies,2); assert.equal(capacity.admissibleSlots,0);
 	const profile="30000000-0000-4000-8000-000000000010";
 	const identity=sql(`select compute_identity_id from public.qorpera_runners where client_runner_id='${native.id}';`);
-	const newLogin=()=>JSON.parse(sql(`set request.jwt.claims='{"role":"authenticated","sub":"30000000-0000-4000-8000-000000000001"}'; set role authenticated;
-	 select public.qorpera_begin_native_provider_login('${profile}','${randomUUID()}','${randomUUID()}','${identity}','openai','codex-cli',repeat('8',64),900);`)).login_id;
-	const logins=[1,2,3].map(index=>({loginId:newLogin(),allocationId:randomUUID(),instance:String(index).repeat(64)}));
+	// A new sign-in replaces the same member's unfinished one (2026-09-17 login supersede amendment), so two pending
+	// logins for one identity now exist only when two authorizing members sign a company-owned identity in. The
+	// identity race uses exactly that; the third login stays the owner's own member identity.
+	const loginOwner='30000000-0000-4000-8000-000000000001',loginAdmin=randomUUID(),companyIdentity=randomUUID();
+	sql(`insert into auth.users(id) values('${loginAdmin}');
+	 insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role) values('${profile}','${loginAdmin}','login-admin@example.test','Login admin','admin');
+	 insert into public.qorpera_member_compute_identities(id,profile_id,ownership_kind,client_identity_id,display_name)
+	 values('${companyIdentity}','${profile}','company','${companyIdentity}','Login race fixture');`);
+	const newLogin=(member=loginOwner,computeIdentity=identity)=>JSON.parse(sql(`set request.jwt.claims='{"role":"authenticated","sub":"${member}"}'; set role authenticated;
+	 select public.qorpera_begin_native_provider_login('${profile}','${randomUUID()}','${randomUUID()}','${computeIdentity}','openai','codex-cli',repeat('8',64),900);`)).login_id;
+	const supersededLogin=newLogin(loginOwner,companyIdentity);
+	const logins=[newLogin(loginOwner,companyIdentity),newLogin(loginAdmin,companyIdentity),newLogin()].map((loginId,index)=>({loginId,allocationId:randomUUID(),instance:String(index+1).repeat(64)}));
+	assert.equal(sql(`select status from public.qorpera_native_provider_login_sessions where id='${supersededLogin}';`),'cancelled','a newer sign-in supersedes the same member\'s earlier pending one');
+	assert.equal(sql(`select count(*) from public.qorpera_native_provider_login_sessions where id in ('${logins[0].loginId}','${logins[1].loginId}') and status='pending';`),'2','another member\'s pending sign-in is not superseded');
 	const loginReserve=entry=>`select public.qorpera_reserve_runtime_login_machine('${entry.allocationId}','lxd','${entry.instance}','${entry.loginId}',repeat('8',64));`;
 	const loginRelease=entry=>`select public.qorpera_release_runtime_login_machine('${entry.allocationId}','lxd','${entry.instance}','${entry.loginId}');`;
 	const identityBarrier=session();
