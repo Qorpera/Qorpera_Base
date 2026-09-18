@@ -265,6 +265,20 @@ begin
 end
 $$;
 reset role;
+-- Wake-rate trips are stamped with their hour, not with the month start; the founder's view counts them too,
+-- and leaves out a trip from an earlier month.
+insert into public.qorpera_company_ceiling_trips(profile_id,run_id,period_start,dimension,attempted,used,ceiling) values
+	('29000000-0000-4000-8000-000000000010',extensions.gen_random_uuid(),date_trunc('hour',statement_timestamp()),'wakes',1,8,8),
+	('29000000-0000-4000-8000-000000000010',extensions.gen_random_uuid(),date_trunc('month',statement_timestamp()) - interval '3 days','wakes',1,8,8);
+select pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000001');
+set local role authenticated;
+do $$
+begin
+	if (public.qorpera_company_execution_ceiling_json('29000000-0000-4000-8000-000000000010') ->> 'trips')::bigint <> 2 then
+		raise exception 'Ceiling view did not count the hourly wake trip inside the period'; end if;
+end
+$$;
+reset role;
 select pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000002');
 set local role authenticated;
 do $$
