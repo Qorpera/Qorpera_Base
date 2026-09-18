@@ -3,7 +3,8 @@ import { matchesKey } from "./keys.ts";
 
 const COMPACT = 80;
 const MIN = 240;
-const DEFAULT = 304;
+/** Half again the desktop's 304px rail. */
+const DEFAULT = 456;
 /** The rail may take at most two fifths of the window, a touch wider than a Messages sidebar. */
 const MAX_SHARE = 0.4;
 

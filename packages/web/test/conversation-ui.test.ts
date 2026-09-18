@@ -250,11 +250,7 @@ describe("conversation UI boundaries", () => {
 		const f = fixture(),
 			root = document.createElement("div");
 		vi.spyOn(f.api, "appendPrompt");
-		const notificationUrl = `${f.cloud.config.projectUrl}/rest/v1/rpc/qorpera_list_member_notifications`;
-		const network = vi.fn(async (request: string | URL | Request, init?: RequestInit) => {
-			if (String(request) === notificationUrl && init?.method === "POST") return Response.json([]);
-			throw new Error("Uploads and message admission are not allowed in this local attachment fixture");
-		});
+		const network = vi.fn();
 		vi.stubGlobal("fetch", network);
 		document.body.append(root);
 		// Isolate attachment gating from the model-account selection flow.
@@ -277,7 +273,7 @@ describe("conversation UI boundaries", () => {
 		expect(send.disabled).toBe(false);
 		expect(root.querySelector("textarea")!.value).toBe("Keep this local");
 		expect(f.api.appendPrompt).not.toHaveBeenCalled();
-		expect(network).toHaveBeenCalledExactlyOnceWith(notificationUrl, expect.objectContaining({ method: "POST" }));
+		expect(network).not.toHaveBeenCalled();
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 	it("keeps attachment drafts scoped to their conversation and releases previews on disposal", () => {

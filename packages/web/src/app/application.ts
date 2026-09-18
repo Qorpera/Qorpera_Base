@@ -29,7 +29,7 @@ import { HubController, renderHub } from "./views/hub.ts";
 import { renderInvitations } from "./views/invitations.ts";
 import { LiveCompanyFileView } from "./views/live-company-file.ts";
 import { type MeetState, renderMeet } from "./views/meet.ts";
-import { MemberNotificationStatus, MemberNotificationsView } from "./views/member-notifications.ts";
+import { MemberNotificationsView } from "./views/member-notifications.ts";
 import { NewConversationView } from "./views/new-conversation.ts";
 import { renderOrganization } from "./views/organization.ts";
 import { SettingsView } from "./views/settings.ts";
@@ -164,9 +164,6 @@ export function mountApplication(
 	let newConversation: NewConversationView | undefined;
 	let approvals: ApprovalsView | undefined;
 	let notifications: MemberNotificationsView | undefined;
-	let notificationStatus: MemberNotificationStatus | undefined;
-	let recentUnreadNotifications: number | undefined;
-	let notificationPhase: "loading" | "ready" | "unavailable" = "loading";
 	let cloudCheck: CloudCheckView | undefined;
 	let profiles: HostedProfile[] = [];
 	let teamFeedback: { message?: string; error?: string } = {};
@@ -233,8 +230,6 @@ export function mountApplication(
 			openSettings,
 			openFeedback,
 			invitations: hub.store.get().invitations.length,
-			recentUnreadNotifications,
-			notificationPhase,
 			...(route.name === "company" && route.section !== "meet" && company && !company.store.get().accessLost
 				? { navigation: { open: navigationOpen, toggle: () => setNavigationOpen(!navigationOpen) } }
 				: {}),
@@ -242,10 +237,6 @@ export function mountApplication(
 	}
 
 	function teardownCompany(): void {
-		notificationStatus?.dispose();
-		notificationStatus = undefined;
-		recentUnreadNotifications = undefined;
-		notificationPhase = "loading";
 		unsubscribeCompany?.();
 		unsubscribeFile?.();
 		conversation?.dispose();
@@ -339,46 +330,7 @@ export function mountApplication(
 			companyFile = new CompanyFileController(api, controller);
 			unsubscribeCompany = controller.store.subscribe(() => render());
 			unsubscribeFile = companyFile.store.subscribe(() => render());
-			void controller
-				.start()
-				.then(() => {
-					if (disposed || company !== controller || controller.signal.aborted) return;
-					const notificationsClient = createWebCompanyExecution(
-						cloud,
-						profile.profileId,
-						userId,
-						controller.signal,
-						() => {
-							const selected = currentRoute();
-							if (
-								disposed ||
-								company !== controller ||
-								auth.userId !== userId ||
-								controller.store.get().accessLost ||
-								!controller.store.get().team?.capabilities.read ||
-								selected.name !== "company" ||
-								selected.profileId !== profile.profileId
-							)
-								throw new Error("Notification account changed.");
-						},
-					);
-					notificationStatus = new MemberNotificationStatus(
-						notificationsClient,
-						controller.signal,
-						(count, phase) => {
-							if (disposed || company !== controller) return;
-							recentUnreadNotifications = count;
-							notificationPhase = phase;
-							render();
-						},
-					);
-				})
-				.catch(() => {
-					if (disposed || company !== controller || controller.signal.aborted) return;
-					recentUnreadNotifications = undefined;
-					notificationPhase = "unavailable";
-					render();
-				});
+			void controller.start();
 			return controller;
 		})();
 		pendingCompany = { profileId, revision: routeRevision, promise };
@@ -779,9 +731,7 @@ export function mountApplication(
 								throw new Error("Notification access changed.");
 						},
 					);
-					notifications = new MemberNotificationsView(client, controller.signal, (items) =>
-						notificationStatus?.observe(items),
-					);
+					notifications = new MemberNotificationsView(client, controller.signal);
 				}
 				if (!main.contains(notifications.el)) replace(main, notifications.el);
 				return;

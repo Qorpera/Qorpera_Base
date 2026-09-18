@@ -1,7 +1,6 @@
 import type { CompanyExecutionNotification, WebCompanyExecution } from "../../cloud/company-execution.ts";
 import { button, fmtTime, h, notice, replace } from "../../ui/dom.ts";
 
-type NotificationReader = Pick<WebCompanyExecution, "listNotifications">;
 type NotificationClient = Pick<WebCompanyExecution, "listNotifications" | "acknowledgeNotification">;
 
 function notificationCopy(item: CompanyExecutionNotification): { title: string; detail: string } {
@@ -49,61 +48,6 @@ function notificationCopy(item: CompanyExecutionNotification): { title: string; 
 				title: "Execution sponsor changed",
 				detail: "The runtime moved work to another eligible sponsor after a usage limit.",
 			};
-	}
-}
-
-/** Read-only company badge. SQL returns at most the 50 most recent records;
- * this count is deliberately scoped to that window, not an invented total. */
-export class MemberNotificationStatus {
-	readonly #client: NotificationReader;
-	readonly #changed: (count: number | undefined, phase: "loading" | "ready" | "unavailable") => void;
-	readonly #lifetime = new AbortController();
-	#request: AbortController | undefined;
-	#timer: ReturnType<typeof setInterval> | undefined;
-	constructor(
-		client: NotificationReader,
-		signal: AbortSignal,
-		changed: (count: number | undefined, phase: "loading" | "ready" | "unavailable") => void,
-	) {
-		this.#client = client;
-		this.#changed = changed;
-		if (signal.aborted) {
-			this.dispose();
-			return;
-		}
-		signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
-		for (const event of ["focus", "online"])
-			window.addEventListener(event, () => void this.refresh(), { signal: this.#lifetime.signal });
-		document.addEventListener("visibilitychange", () => void this.refresh(), { signal: this.#lifetime.signal });
-		this.#timer = setInterval(() => void this.refresh(), 30_000);
-		void this.refresh();
-	}
-	observe(items: readonly CompanyExecutionNotification[]): void {
-		if (this.#lifetime.signal.aborted) return;
-		this.#request?.abort();
-		this.#request = undefined;
-		this.#changed(items.filter((item) => !item.acknowledgedAt).length, "ready");
-	}
-	async refresh(): Promise<void> {
-		if (this.#lifetime.signal.aborted || this.#request || document.visibilityState === "hidden") return;
-		const request = new AbortController();
-		this.#request = request;
-		this.#changed(undefined, "loading");
-		const signal = AbortSignal.any([request.signal, this.#lifetime.signal]);
-		try {
-			const items = await this.#client.listNotifications(signal);
-			if (!signal.aborted) this.#changed(items.filter((item) => !item.acknowledgedAt).length, "ready");
-		} catch {
-			if (!signal.aborted) this.#changed(undefined, "unavailable");
-		} finally {
-			if (this.#request === request) this.#request = undefined;
-		}
-	}
-	dispose(): void {
-		this.#lifetime.abort();
-		this.#request?.abort();
-		this.#request = undefined;
-		clearInterval(this.#timer);
 	}
 }
 

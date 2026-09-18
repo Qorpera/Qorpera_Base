@@ -112,6 +112,7 @@ describe("shell presentation lifecycle", () => {
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 	it("caps the rail at two fifths of the window and keeps resizing usable when storage is blocked", () => {
+		vi.stubGlobal("innerWidth", 1280);
 		const frame = h("div"),
 			rail = new RailLayout(frame);
 		frame.append(rail.el);
@@ -119,8 +120,10 @@ describe("shell presentation lifecycle", () => {
 		const cap = String(Math.floor(window.innerWidth * 0.4));
 		const press = (key: string) => rail.el.dispatchEvent(new KeyboardEvent("keydown", { key }));
 		expect(rail.el.getAttribute("aria-valuemax")).toBe(cap);
+		// The default is half again the desktop's 304px rail.
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("456");
 		press("ArrowRight");
-		expect(rail.el.getAttribute("aria-valuenow")).toBe("320");
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("472");
 		press("End");
 		press("ArrowRight");
 		expect(rail.el.getAttribute("aria-valuenow")).toBe(cap);
@@ -158,7 +161,7 @@ describe("shell presentation lifecycle", () => {
 		rail.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Home" }));
 		expect(frame.classList.contains("rail-compact")).toBe(true);
 		rail.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
-		expect(rail.el.getAttribute("aria-valuenow")).toBe("304");
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("456");
 	});
 	it("changes marked labels without translating company names or message text", () => {
 		const label = uiText("Company"),
@@ -397,8 +400,9 @@ it("renders recorded responsibility targets and room links without inventing mis
 	expect(rail.querySelector(".cofounder-status")).toBeNull();
 	expect(rail.querySelector(".account-menu-rail .account-trigger")).not.toBeNull();
 	expect(rail.querySelector(".account-menu-rail .account-chevron")).toBeNull();
-	expect(rail.querySelector('.rail-toolbar + .rail-search input[type="search"]')).not.toBeNull();
-	expect(rail.querySelector('.rail-toolbar a[href$="/new"]')).not.toBeNull();
+	// Search and the add button share the top row, search first.
+	expect(rail.querySelector('.rail-toolbar > .rail-search > input[type="search"]')).not.toBeNull();
+	expect(rail.querySelector('.rail-toolbar > .rail-search + .rail-add[href$="/new"]')).not.toBeNull();
 	const search = rail.querySelector<HTMLInputElement>('input[type="search"]')!;
 	search.value = "Product quality";
 	search.dispatchEvent(new Event("input"));

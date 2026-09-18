@@ -142,7 +142,7 @@ label > input, label > select { font-weight: 400; }
 .account-signout { color: var(--text-muted); }
 
 /* rail */
-/* The V24 company rail with the desktop's compact default width. */
+/* The V24 company rail. RailLayout sets its width; the default is half again the desktop's 304px. */
 .rail {
 	--rail: var(--sidebar-surface); --rail-line: #c4c2c2; --rail-hover: var(--sidebar-hover);
 	--rail-search: var(--sidebar-search); --rail-search-ink: #85857f;
@@ -156,10 +156,11 @@ label > input, label > select { font-weight: 400; }
 	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
 }
 .rail[hidden] { display: none; }
-/* Trailer chrome at 1x: a 52px title row holding the add button, then the search field. */
-.rail-toolbar { height: 52px; flex: none; display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
-.rail-add { color: #676664; }
-.rail-add svg { width: 18px; height: 18px; }
+/* One top row: the search field takes whatever width the add button leaves. Both
+ * are half again the trailer's 1x chrome (31px field, 18px plus). */
+.rail-toolbar { flex: none; display: flex; align-items: center; justify-content: flex-end; gap: 6px; padding-top: 14px; }
+.rail-add { width: 46px; height: 46px; border-radius: 9px; color: #676664; }
+.rail-add svg { width: 27px; height: 27px; }
 .rail-mobile-close { display: none; }
 .rail-resizer { position: absolute; z-index: 8; left: calc(var(--rail-width) - 4px); top: 0; bottom: 0; width: 8px; cursor: col-resize; touch-action: none; }
 .rail-resizer:hover, .rail-resizer:focus-visible { background: rgb(0 122 255 / 12%); outline: none; }
@@ -167,10 +168,10 @@ label > input, label > select { font-weight: 400; }
 .rail-resizing { cursor: col-resize; user-select: none; }
 .rail-add:hover { text-decoration: none; background: var(--rail-hover); }
 .rail-search {
-	display: flex; flex-direction: row; align-items: center; gap: 6px; height: 31px; flex: none; min-width: 0;
-	margin: 4px 5px 0 6px;
+	display: flex; flex-direction: row; align-items: center; gap: 6px; height: 46px; flex: 1; min-width: 0;
+	margin-left: 6px;
 	padding: 0 8px 0 35px;
-	border-radius: 6px; background: var(--rail-search) no-repeat 11px 50%; color: var(--rail-search-ink);
+	border-radius: 9px; background: var(--rail-search) no-repeat 11px 50%; color: var(--rail-search-ink);
 	box-shadow: inset 0 0 0 0.5px rgba(18, 18, 17, 0.08);
 	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2385857f' stroke-width='1.8'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m20 20-4-4'/%3E%3C/svg%3E");
 	background-size: 17px 17px;

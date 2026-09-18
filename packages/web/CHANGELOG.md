@@ -31,3 +31,11 @@
 - Stage selected conversation images against the exact member input before submitting a message, preserve explicit retry identity, and verify canonical image previews through the shared attachment API.
 - Add account-level browser consent cleanup and private sign-in closure, including after leaving a company, with account and route cancellation.
 - Bind deployed cloud endpoints and CSP to one validated public build configuration, require a viewer origin for release builds, and ignore stored preview overrides in configured builds.
+
+### Changed
+
+- Put the rail's search field on the same row as the new-agent button, both half again as large (46px field, 27px plus), and widen the default rail from 304px to 456px.
+
+### Removed
+
+- Remove the rail's Notifications row and the background unread-count polling behind it; the notification inbox stays reachable at its company URL.

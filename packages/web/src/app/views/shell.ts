@@ -18,8 +18,6 @@ export interface ShellContext {
 	auth: AuthController;
 	/** Company invitations waiting for this account, for the menu's count. */
 	invitations: number;
-	recentUnreadNotifications?: number;
-	notificationPhase?: "loading" | "ready" | "unavailable";
 	openSettings: () => void;
 	openFeedback: () => void;
 	navigation?: { open: boolean; toggle: () => void };
@@ -415,6 +413,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 						icon("close"),
 					)
 				: null,
+			h("label", { class: "rail-search" }, search),
 			h(
 				"a",
 				{
@@ -427,7 +426,6 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 				icon("plus"),
 			),
 		),
-		h("label", { class: "rail-search" }, search),
 		h(
 			"div",
 			{ class: "rail-scroll" },
@@ -455,29 +453,6 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		h(
 			"div",
 			{ class: "rail-footer" },
-			h(
-				"a",
-				{
-					class: ["rail-row", section === "notifications" ? "active" : ""].join(" "),
-					href: `#/c/${profileId}/notifications`,
-					"aria-current": section === "notifications" ? "page" : undefined,
-				},
-				icon("bell"),
-				h(
-					"span",
-					{ class: "rail-row-copy" },
-					h("strong", null, "Notifications"),
-					h(
-						"small",
-						{ role: "status" },
-						context.notificationPhase === "ready"
-							? `${context.recentUnreadNotifications ?? 0} unread in recent notifications`
-							: context.notificationPhase === "unavailable"
-								? "Notification status unavailable"
-								: "Checking notifications…",
-					),
-				),
-			),
 			state.realtime !== "connected"
 				? h(
 						"div",

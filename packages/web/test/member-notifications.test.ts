@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
 import { parseRoute, routeHash } from "../src/app/router.ts";
-import { MemberNotificationStatus, MemberNotificationsView } from "../src/app/views/member-notifications.ts";
+import { MemberNotificationsView } from "../src/app/views/member-notifications.ts";
 import type { CompanyExecutionNotification, WebCompanyExecution } from "../src/cloud/company-execution.ts";
 import { deferred, fixture, id, profileA, settle, timestamp, userB } from "./fixtures.ts";
 
@@ -161,54 +161,13 @@ describe("member notification inbox", () => {
 		expect(f.view.el.textContent).not.toContain("raw secret");
 	});
 });
-describe("recent unread notification status", () => {
-	it("reads while visible with a bounded interval, suspends when hidden, and clears unavailable state", async () => {
-		vi.useFakeTimers();
-		let visibility: DocumentVisibilityState = "visible";
-		vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
-		const client = { listNotifications: vi.fn(async () => [item]) },
-			lifetime = new AbortController(),
-			changed = vi.fn();
-		const status = new MemberNotificationStatus(client, lifetime.signal, changed);
-		cleanup.push(() => status.dispose());
-		await settle();
-		expect(changed).toHaveBeenLastCalledWith(1, "ready");
-		await vi.advanceTimersByTimeAsync(30000);
-		expect(client.listNotifications).toHaveBeenCalledTimes(2);
-		visibility = "hidden";
-		await vi.advanceTimersByTimeAsync(90000);
-		expect(client.listNotifications).toHaveBeenCalledTimes(2);
-		visibility = "visible";
-		vi.mocked(client.listNotifications).mockRejectedValueOnce(new Error("private"));
-		document.dispatchEvent(new Event("visibilitychange"));
-		await settle();
-		expect(changed).toHaveBeenLastCalledWith(undefined, "unavailable");
-		lifetime.abort();
-		await vi.advanceTimersByTimeAsync(60000);
-		expect(client.listNotifications).toHaveBeenCalledTimes(3);
-	});
-	it("does not allow an older badge read to undo a fresh inbox acknowledgment", async () => {
-		vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
-		const pending = deferred<readonly CompanyExecutionNotification[]>(),
-			client = { listNotifications: vi.fn(() => pending.promise) },
-			changed = vi.fn(),
-			lifetime = new AbortController();
-		const status = new MemberNotificationStatus(client, lifetime.signal, changed);
-		cleanup.push(() => status.dispose());
-		status.observe([{ ...item, acknowledgedAt: timestamp }]);
-		pending.resolve([item]);
-		await settle();
-		expect(changed).toHaveBeenLastCalledWith(0, "ready");
-	});
-});
 describe("company notification route", () => {
 	it("round-trips a company-scoped URL", () => {
 		const route = { name: "company" as const, profileId: profileA.profileId, section: "notifications" as const };
 		expect(parseRoute(routeHash(route))).toEqual(route);
 	});
-	it("mounts from the reachable rail link with real authenticated list and acknowledgment transport", async () => {
+	it("mounts from its company URL with real authenticated list and acknowledgment transport", async () => {
 		vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
-		vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
 		history.replaceState(null, "", `#/c/${profileA.profileId}/notifications`);
 		const f = fixture(),
 			root = document.createElement("div");
@@ -238,18 +197,18 @@ describe("company notification route", () => {
 		});
 		vi.stubGlobal("fetch", fetcher);
 		cleanup.push(mountApplication(root, f.cloud, f.api));
-		await vi.waitFor(() => expect(root.textContent).toContain("1 unread in recent notifications"));
-		expect(root.querySelector(`.rail a[href="#/c/${profileA.profileId}/notifications"]`)).not.toBeNull();
+		await vi.waitFor(() => expect(root.textContent).toContain("Model account usage limit reached"));
+		// The rail carries no notification entry or unread count.
+		expect(root.querySelector('.rail a[href$="/notifications"]')).toBeNull();
+		expect(root.querySelector(".rail")?.textContent).not.toContain("Notifications");
 		action(root, "Acknowledge").click();
-		await vi.waitFor(() => expect(root.textContent).toContain("0 unread in recent notifications"));
+		await vi.waitFor(() => expect(root.textContent).toContain("Acknowledged"));
 		expect(
 			fetcher.mock.calls.filter(([url]) => String(url).endsWith("/qorpera_acknowledge_member_notification")),
 		).toHaveLength(1);
-		expect(root.textContent).toContain("Acknowledged");
 	});
 	it("discards a late account A notification response after switching account", async () => {
 		vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
-		vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
 		history.replaceState(null, "", `#/c/${profileA.profileId}/notifications`);
 		const f = fixture(),
 			root = document.createElement("div"),
