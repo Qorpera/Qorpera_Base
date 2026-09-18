@@ -665,7 +665,7 @@ export class LxdNativeLoginGateway {
 		// Registration precedes identity storage; each physical dispatch has an
 		// additional fresh gate after any intervening storage/inspection work.
 		await this.#admit(journal, signal);
-		const freshVolume = await this.#ensureIdentityVolume(login.computeIdentityId, signal);
+		await this.#ensureIdentityVolume(login.computeIdentityId, signal);
 		let instance = await this.#lxd.getInstance(binding.policy.project, plan.request.name, signal);
 		const created = await journal.observe("create", signal);
 		if (created.state === "not_dispatched") {
@@ -686,7 +686,7 @@ export class LxdNativeLoginGateway {
 		this.#assertInstanceAuthority(instance, binding);
 		// 2026-09-17 amendment: an established identity on a node without its
 		// volume is restored before the login bootstrap runs (no operator).
-		await this.#recoveryFor(journal, binding, plan.request.name, freshVolume);
+		await this.#recoveryFor(journal, binding, plan.request.name);
 		signal.throwIfAborted();
 		await this.#installBootstrap(plan.request.name, files, signal);
 		const address = await this.#waitReady(instance, signal);
@@ -1061,7 +1061,6 @@ export class LxdNativeLoginGateway {
 		journal: LxdLoginJournal,
 		binding: LxdLoginBinding,
 		instanceName: string,
-		freshVolume: boolean,
 		signal: AbortSignal,
 	): Promise<void> {
 		const state = recoveryRuntimeState(
@@ -1432,23 +1431,14 @@ export class LxdNativeLoginGateway {
 	shutdown(): void {
 		this.#lifetime.abort(new Error("LXD native login gateway shutdown"));
 	}
-	#recoveryFor(
-		journal: LxdLoginJournal,
-		binding: LxdLoginBinding,
-		instanceName: string,
-		freshVolume: boolean,
-	): Promise<void> {
+	#recoveryFor(journal: LxdLoginJournal, binding: LxdLoginBinding, instanceName: string): Promise<void> {
 		const running = this.#recoveries.get(binding.loginId);
 		if (running) return running;
-		const work = this.#recoverEstablishedIdentity(
-			journal,
-			binding,
-			instanceName,
-			freshVolume,
-			this.#lifetime.signal,
-		).finally(() => {
-			if (this.#recoveries.get(binding.loginId) === work) this.#recoveries.delete(binding.loginId);
-		});
+		const work = this.#recoverEstablishedIdentity(journal, binding, instanceName, this.#lifetime.signal).finally(
+			() => {
+				if (this.#recoveries.get(binding.loginId) === work) this.#recoveries.delete(binding.loginId);
+			},
+		);
 		this.#recoveries.set(binding.loginId, work);
 		return work;
 	}
