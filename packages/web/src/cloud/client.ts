@@ -44,14 +44,33 @@ export interface Cloud {
 	rpc(name: string, args?: Record<string, unknown>): Promise<unknown>;
 }
 
+const LEGACY_AUTH_STORAGE_KEY = "qorpera-web-auth/v1";
+
+/** A session belongs to one backend. Keying the stored session by the backend's
+ * host keeps a sign-in from another backend (a moved production, a preview) from
+ * being presented to this one, where it can only fail. */
+export function authStorageKey(projectUrl: string): string {
+	return `${LEGACY_AUTH_STORAGE_KEY}/${new URL(projectUrl).host}`;
+}
+
+function dropLegacySession(): void {
+	try {
+		globalThis.localStorage?.removeItem(LEGACY_AUTH_STORAGE_KEY);
+		globalThis.localStorage?.removeItem(`${LEGACY_AUTH_STORAGE_KEY}-code-verifier`);
+	} catch {
+		// Storage can be unavailable (private window, blocked site data); nothing to drop then.
+	}
+}
+
 export function createCloud(config: CloudConfig): Cloud {
+	dropLegacySession();
 	const supabase = createClient(config.projectUrl, config.publishableKey, {
 		auth: {
 			flowType: "pkce",
 			persistSession: true,
 			autoRefreshToken: true,
 			detectSessionInUrl: true,
-			storageKey: "qorpera-web-auth/v1",
+			storageKey: authStorageKey(config.projectUrl),
 		},
 		realtime: { params: { eventsPerSecond: 10 } },
 	});
