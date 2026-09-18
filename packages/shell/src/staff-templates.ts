@@ -142,7 +142,7 @@ const STAFF_TEMPLATE_CATALOG = Object.freeze(
 						],
 					],
 				),
-				avatarColorToken: "qorpera-terracotta",
+				avatarColorToken: "qorpera-orange",
 				avatarShapeToken: "tilted",
 			},
 			{
@@ -188,7 +188,7 @@ const STAFF_TEMPLATE_CATALOG = Object.freeze(
 						],
 					],
 				),
-				avatarColorToken: "qorpera-emerald",
+				avatarColorToken: "qorpera-green",
 				avatarShapeToken: "gem",
 			},
 			{
@@ -285,7 +285,7 @@ const STAFF_TEMPLATE_CATALOG = Object.freeze(
 						],
 					],
 				),
-				avatarColorToken: "qorpera-violet",
+				avatarColorToken: "qorpera-purple",
 				avatarShapeToken: "soft-square",
 			},
 			{
@@ -336,7 +336,7 @@ const STAFF_TEMPLATE_CATALOG = Object.freeze(
 						],
 					],
 				),
-				avatarColorToken: "qorpera-cobalt",
+				avatarColorToken: "qorpera-blue",
 				avatarShapeToken: "wide",
 			},
 			{
@@ -438,7 +438,7 @@ const STAFF_TEMPLATE_CATALOG = Object.freeze(
 						],
 					],
 				),
-				avatarColorToken: "qorpera-amber",
+				avatarColorToken: "qorpera-gold",
 				avatarShapeToken: "gem",
 			},
 			{
@@ -489,7 +489,7 @@ const STAFF_TEMPLATE_CATALOG = Object.freeze(
 						],
 					],
 				),
-				avatarColorToken: "qorpera-terracotta",
+				avatarColorToken: "qorpera-orange",
 				avatarShapeToken: "tilted",
 			},
 			{
@@ -540,7 +540,7 @@ const STAFF_TEMPLATE_CATALOG = Object.freeze(
 						],
 					],
 				),
-				avatarColorToken: "qorpera-indigo",
+				avatarColorToken: "qorpera-blue",
 				avatarShapeToken: "round",
 			},
 			{

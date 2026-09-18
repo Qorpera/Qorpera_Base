@@ -3,71 +3,19 @@
 <head>
 <meta charset="utf-8">
 <title>Qorpera Base</title>
-<link rel="icon" type="image/png" href="../assets/qorpera.png">
+<link rel="icon" type="image/png" href="./avatars/qorpera.png">
 <link rel="stylesheet" href="./tokens.css">
 <link rel="stylesheet" href="./base.css">
 <link rel="stylesheet" href="./policy-settings.css">
-<link rel="stylesheet" href="./character-motion.css">
 <link rel="stylesheet" href="./artifacts.css">
 <link rel="stylesheet" href="./rail-resize.css">
 <link rel="stylesheet" href="./pinned-agents.css">
 <link rel="stylesheet" href="./onboarding.css">
 <link rel="stylesheet" href="./feedback.css">
 <link rel="stylesheet" href="./routine-editor.css">
+<link rel="stylesheet" href="./avatars/avatar-system.css">
 </head>
 <body>
-<svg width="0" height="0" aria-hidden="true" focusable="false" style="position:absolute;width:0;height:0;overflow:hidden">
-	<defs>
-		<filter id="staff-color-charcoal" color-interpolation-filters="sRGB">
-			<feFlood flood-color="#171716" result="color"/>
-			<feComposite in="color" in2="SourceAlpha" operator="in"/>
-		</filter>
-		<filter id="staff-color-brown" color-interpolation-filters="sRGB">
-			<feFlood flood-color="#9c7151" result="color"/>
-			<feComposite in="color" in2="SourceAlpha" operator="in"/>
-		</filter>
-		<filter id="staff-color-coral" color-interpolation-filters="sRGB">
-			<feFlood flood-color="#ff365e" result="color"/>
-			<feComposite in="color" in2="SourceAlpha" operator="in"/>
-		</filter>
-		<filter id="staff-color-orange" color-interpolation-filters="sRGB">
-			<feFlood flood-color="#ff642e" result="color"/>
-			<feComposite in="color" in2="SourceAlpha" operator="in"/>
-		</filter>
-		<filter id="staff-color-amber" color-interpolation-filters="sRGB">
-			<feFlood flood-color="#ffae00" result="color"/>
-			<feComposite in="color" in2="SourceAlpha" operator="in"/>
-		</filter>
-		<filter id="staff-color-emerald" color-interpolation-filters="sRGB">
-			<feFlood flood-color="#00c878" result="color"/>
-			<feComposite in="color" in2="SourceAlpha" operator="in"/>
-		</filter>
-		<filter id="staff-color-teal" color-interpolation-filters="sRGB">
-			<feFlood flood-color="#00bfb3" result="color"/>
-			<feComposite in="color" in2="SourceAlpha" operator="in"/>
-		</filter>
-		<filter id="staff-color-cobalt" color-interpolation-filters="sRGB">
-			<feFlood flood-color="#0071e3" result="color"/>
-			<feComposite in="color" in2="SourceAlpha" operator="in"/>
-		</filter>
-		<filter id="staff-color-violet" color-interpolation-filters="sRGB">
-			<feFlood flood-color="#8a4dff" result="color"/>
-			<feComposite in="color" in2="SourceAlpha" operator="in"/>
-		</filter>
-		<filter id="staff-color-pink" color-interpolation-filters="sRGB">
-			<feFlood flood-color="#ff2994" result="color"/>
-			<feComposite in="color" in2="SourceAlpha" operator="in"/>
-		</filter>
-		<filter id="staff-color-gray" color-interpolation-filters="sRGB">
-			<feFlood flood-color="#7c7c7a" result="color"/>
-			<feComposite in="color" in2="SourceAlpha" operator="in"/>
-		</filter>
-		<filter id="staff-color-indigo" color-interpolation-filters="sRGB">
-			<feFlood flood-color="#5367e8" result="color"/>
-			<feComposite in="color" in2="SourceAlpha" operator="in"/>
-		</filter>
-	</defs>
-</svg>
 <header id="titlebar">
 	<div class="titlebar-rail">
 		<button id="addStaffButton" class="rail-add-staff" type="button" aria-label="Add agent" title="Add agent"><span aria-hidden="true">+</span></button>
@@ -95,7 +43,7 @@
 </header>
 <section id="accountView" aria-labelledby="accountTitle" hidden>
 	<div class="welcome-card account-card">
-		<div class="welcome-brand staff-avatar shape-soft-square" aria-hidden="true"><span class="staff-face"><i></i><i></i></span></div>
+		<img class="welcome-brand app-mark" src="./avatars/qorpera.png" alt="" width="78" height="78">
 		<h1 id="accountTitle">Qorpera</h1>
 		<p>Sign in to keep your companies and agents connected to you.</p>
 		<div class="provider-grid" id="accountProviders" aria-label="Qorpera sign-in methods">
@@ -116,7 +64,7 @@
 </section>
 <section id="welcomeView" aria-labelledby="welcomeTitle" hidden>
 	<div class="welcome-card">
-		<div class="welcome-brand staff-avatar shape-soft-square" aria-hidden="true"><span class="staff-face"><i></i><i></i></span></div>
+		<img class="welcome-brand app-mark" src="./avatars/qorpera.png" alt="" width="78" height="78">
 		<h1 id="welcomeTitle">Connect intelligence</h1>
 		<p>Choose the intelligence provider your staff will use.</p>
 		<div id="intelligenceProviders" class="provider-grid" aria-label="Intelligence providers"></div>
@@ -490,7 +438,7 @@
 		<header>
 			<h2 id="companyModalTitle">Create a company</h2>
 		</header>
-		<div class="company-icon-stage" aria-hidden="true"><span id="companyIconPreview" class="company-icon"><span class="company-agent-avatar company-agent-avatar-halo"></span></span></div>
+		<div class="company-icon-stage" aria-hidden="true"><span id="companyIconPreview" class="company-icon"></span></div>
 		<div id="companyAvatarPicker" class="company-avatar-picker" role="group" aria-label="Choose a company avatar"></div>
 		<div class="company-picture-actions">
 			<button class="secondary-button" id="companyPictureUpload" type="button">Upload picture</button>
@@ -522,13 +470,12 @@
 				<button id="staffConfigureBack" class="staff-configure-back secondary-button" type="button">Back</button>
 				<div class="staff-creator-center">
 					<div class="staff-creator-stage">
-						<span id="staffCreatorAvatar" class="staff-avatar shape-round" aria-hidden="true"><span class="staff-face"><i></i><i></i></span></span>
+						<span id="staffCreatorAvatar" class="staff-avatar avatar-figure" aria-hidden="true"></span>
 						<h3 id="staffCreatorRole">New Agent</h3>
 						<p id="staffCreatorDescription"></p>
 					</div>
 					<div class="staff-appearance-picker">
 						<div id="staffCreaturePicker" class="staff-creature-picker" role="radiogroup" aria-label="Agent character"></div>
-						<div id="staffShapePicker" class="staff-shape-picker" role="radiogroup" aria-label="Agent face shape"></div>
 						<div id="staffColorPicker" class="staff-color-picker" role="radiogroup" aria-label="Agent color"></div>
 					</div>
 					<label class="staff-name-field"><span>Name</span><input id="staffDisplayName" type="text" maxlength="64" autocomplete="off" placeholder="Agent name"><small>This becomes their persistent identity in the company.</small></label>
@@ -578,6 +525,12 @@
 <script src="./localization.js"></script>
 <script src="./feedback.js"></script>
 <script src="./staff-drag.js"></script>
+<script src="./avatars/motion-model.js"></script>
+<script src="./avatars/motion-visuals.js"></script>
+<script src="./avatars/avatar-appearance.js"></script>
+<script src="./avatars/status-text.js"></script>
+<script src="./avatars/avatar-state.js"></script>
+<script src="./avatars/avatar-controller.js"></script>
 <script src="./renderer.js"></script>
 <script src="./routine-editor-model.js"></script>
 <script src="./routine-editor.js"></script>

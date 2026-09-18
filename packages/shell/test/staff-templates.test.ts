@@ -83,100 +83,62 @@ describe("shell starter staff templates", () => {
 	});
 
 	it("ships a static asset for every approved character", () => {
-		expect(STAFF_CHARACTER_IDS).not.toContain("lantern");
-		expect(existsSync(new URL("../userland/staff-creatures/lantern.png", import.meta.url))).toBe(false);
+		expect(STAFF_CHARACTER_IDS).toEqual(["planet", "acorn", "flame", "rocket", "crown", "heart", "ghost"]);
 		for (const characterId of STAFF_CHARACTER_IDS) {
-			const asset = new URL(`../userland/staff-creatures/${characterId}.png`, import.meta.url);
+			const asset = new URL(`../userland/avatars/${characterId}.png`, import.meta.url);
 			expect(existsSync(asset)).toBe(true);
 			expect(statSync(asset).size).toBeGreaterThan(10_000);
 			const png = readFileSync(asset);
 			expect(png.subarray(1, 4).toString("ascii")).toBe("PNG");
 			expect(png[25]).toBe(6);
+			expect(existsSync(new URL(`../userland/avatars/${characterId}-face-plate.png`, import.meta.url))).toBe(true);
 		}
 	});
 
-	it("loads the creature motion layer with integrated eyes and activity states", () => {
+	it("loads the shared avatar pipeline before the app renderer", () => {
 		const index = readFileSync(new URL("../userland/index.html", import.meta.url), "utf8");
-		const motion = readFileSync(new URL("../userland/character-motion.css", import.meta.url), "utf8");
-		const colors = readFileSync(new URL("../userland/staff-creature-colors.svg", import.meta.url), "utf8");
-		const renderer = readFileSync(new URL("../userland/renderer.js", import.meta.url), "utf8");
-		expect(index).toContain('<link rel="stylesheet" href="./character-motion.css">');
-		expect(motion).toContain(".staff-avatar > .staff-face i");
-		expect(motion).toContain("@keyframes creature-eye-one-blink");
-		expect(motion).toContain("@keyframes creature-working");
-		expect(motion).toContain("@keyframes creature-writing");
-		expect(motion).toContain("@keyframes creature-writing-dots");
-		expect(motion).toContain("@keyframes creature-writing-eye-one");
-		expect(motion).toContain("@keyframes creature-writing-eye-two");
-		expect(motion).toContain(".staff-avatar::before {");
-		expect(motion).toContain(".staff-avatar::after {");
-		expect(motion).toContain(".staff-avatar.writing::before");
-		expect(motion).toContain(".staff-avatar.writing::after");
-		expect(motion).not.toContain("creature-writing-cloud");
-		expect(motion).not.toContain("creature-writing-dots-visibility");
-		expect(motion).not.toContain("creature-writing-marks");
-		expect(motion).toContain("@keyframes creature-attention");
-		expect(motion).toContain(".staff-avatar.writing");
-		expect(motion).toContain(".staff-avatar.needs-attention");
-		expect(motion).toContain('.staff-avatar[data-creature="folio"]');
-		expect(motion).toContain('.staff-avatar[data-creature="folio"].working > .staff-creature-image');
-		expect(motion).toContain('.staff-avatar[data-creature="folio"].working::before');
-		expect(motion).toContain('.staff-avatar[data-creature="folio"].working::after');
-		expect(motion).toContain('.staff-avatar[data-creature="folio"].stowing');
-		expect(motion).toContain("@keyframes folio-page-enter");
-		expect(motion).toContain("@keyframes folio-read-scan");
-		expect(motion).not.toMatch(/data-creature="folio"\]\.(?:writing|needs-attention)/);
-		expect(motion).not.toMatch(/data-creature="folio"\]\s*>\s*\.staff-creature-image/);
-		expect(motion).not.toContain("lantern");
-		expect(motion).toContain('--staff-creature-filter: url("#staff-color-cobalt") !important;');
-		expect(motion).toContain(".staff-appearance-picker .staff-color-picker");
-		expect(colors.match(/<filter id=/g)).toHaveLength(12);
-		expect(colors).toContain('flood-color="#ff365e"');
-		expect(colors).toContain('flood-color="#0071e3"');
-		expect(renderer).toContain('const STAFF_MOTION_STATES = ["idle", "working", "writing", "needs-attention"];');
-		expect(renderer).toContain('folio: Object.freeze({ label: "Folio", asset: "./staff-creatures/folio.png" })');
-		expect(renderer).not.toContain("lantern");
-		expect(renderer).toContain('if (staffNeedsAttention(staff, runtime)) return "needs-attention";');
-		expect(renderer).toContain('runtime.activity?.kind === "writing"');
-		expect(renderer).toContain("function setAvatarMotionState(avatar, status, actualStatus = status)");
-		expect(renderer).toContain("staffWorkElapsed(avatar.dataset.staffId, motion, actualMotion)");
-		expect(renderer).toContain('if (motion !== actualMotion) return "0ms";');
-		expect(renderer).toContain(
-			"const actualStatus = staffId(staffOrTemplate) ? staffStatus(staffOrTemplate) : status;",
-		);
-		expect(renderer).not.toContain('showThreadActivity("typing")');
-		expect(renderer).not.toContain('showThreadActivity("thinking")');
+		expect(index).toContain('<link rel="stylesheet" href="./avatars/avatar-system.css">');
+		expect(index).not.toContain("character-motion.css");
+		expect(index).not.toContain('<filter id="staff-color-');
+		let previous = -1;
+		for (const file of [
+			"motion-model.js",
+			"motion-visuals.js",
+			"avatar-appearance.js",
+			"status-text.js",
+			"avatar-state.js",
+			"avatar-controller.js",
+		]) {
+			const position = index.indexOf(`src="./avatars/${file}"`);
+			expect(position).toBeGreaterThan(previous);
+			previous = position;
+		}
+		expect(index.indexOf('src="./renderer.js"')).toBeGreaterThan(previous);
 	});
 
-	it("keeps creature color filters document-local for stable roster paints", () => {
-		const index = readFileSync(new URL("../userland/index.html", import.meta.url), "utf8");
-		const motion = readFileSync(new URL("../userland/character-motion.css", import.meta.url), "utf8");
-		const colors = readFileSync(new URL("../userland/staff-creature-colors.svg", import.meta.url), "utf8");
-		const inlinePalette = Object.fromEntries(
-			[...index.matchAll(/<filter id="staff-color-([^"]+)"[^>]*>[\s\S]*?<feFlood flood-color="([^"]+)"/g)].map(
-				([, id, color]) => [id, color],
-			),
-		);
-		const assetPalette = Object.fromEntries(
-			[...colors.matchAll(/<filter id="([^"]+)"[^>]*>[\s\S]*?<feFlood flood-color="([^"]+)"/g)].map(
-				([, id, color]) => [id, color],
-			),
-		);
-		expect(Object.keys(inlinePalette)).toHaveLength(12);
-		expect(inlinePalette).toEqual(assetPalette);
-		expect(index.indexOf('id="staff-color-charcoal"')).toBeLessThan(index.indexOf('<header id="titlebar">'));
-		expect(motion).toContain("filter: var(--staff-creature-filter, none) !important;");
-		expect(motion).not.toContain('url("./staff-creature-colors.svg#');
-		expect(motion).toMatch(
-			/@media \(forced-colors: active\) \{[\s\S]*?\.staff-avatar\[style\*="--staff-color:"\] \{\s*--staff-creature-filter: none !important;\s*\}[\s\S]*?\.staff-avatar\[style\*="--staff-color:"\] > \.staff-creature-image \{\s*filter: none !important;/,
-		);
+	it("uses approved artwork and shared motion instead of the retired silhouette filters", () => {
+		const renderer = readFileSync(new URL("../userland/renderer.js", import.meta.url), "utf8");
+		const controller = readFileSync(new URL("../userland/avatars/avatar-controller.js", import.meta.url), "utf8");
+		const css = readFileSync(new URL("../userland/avatars/avatar-system.css", import.meta.url), "utf8");
+		expect(renderer).toContain("window.QORPERA_AVATARS.mount(");
+		expect(renderer).toContain("runtime?.activity?.kind");
+		expect(renderer).not.toContain("STAFF_CREATURE_FILTERS");
+		expect(renderer).not.toContain("./staff-creatures/");
+		expect(controller).toContain("motionState.createActors(clock");
+		expect(controller).toContain("visuals.eyePose(rig.figure");
+		expect(controller).toContain("visuals.typing(rig.figure");
+		expect(controller).toContain('globalCompositeOperation = "destination-out"');
+		expect(css).toContain("@media (prefers-reduced-motion: reduce)");
+		expect(css).toContain("forced-color-adjust: none");
 	});
 
 	it("keeps character identity independent from suggested role identity", () => {
 		expect(new Set(Object.values(STAFF_CHARACTER_BY_TEMPLATE))).toEqual(new Set(STAFF_CHARACTER_IDS));
-		expect(STAFF_CHARACTER_BY_TEMPLATE["agent-manager"]).toBe("brain");
-		expect(STAFF_CHARACTER_BY_TEMPLATE["operations-specialist"]).toBe("pebble");
-		expect(STAFF_CHARACTER_BY_TEMPLATE["product-manager"]).toBe("folio");
+		expect(STAFF_CHARACTER_BY_TEMPLATE["agent-manager"]).toBe("crown");
+		expect(STAFF_CHARACTER_BY_TEMPLATE["operations-specialist"]).toBe("acorn");
+		expect(STAFF_CHARACTER_BY_TEMPLATE["product-manager"]).toBe("planet");
+		for (const retired of ["folio", "brain", "pebble", "wisp", "storm"])
+			expect(isStaffCharacterId(retired)).toBe(false);
 		expect(STAFF_CHARACTER_IDS.every(isStaffCharacterId)).toBe(true);
 		expect(STAFF_CHARACTER_IDS.some((characterId) => new Set<string>(STAFF_TEMPLATE_IDS).has(characterId))).toBe(
 			false,

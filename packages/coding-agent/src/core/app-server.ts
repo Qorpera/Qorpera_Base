@@ -42,7 +42,7 @@ import {
 	readCompanyPolicy,
 	updateCompanyPolicySource,
 } from "./company-policy.ts";
-import type { CompanyRoom } from "./company-rooms.ts";
+import type { CompanyRoom, CompanyRoomMessage } from "./company-rooms.ts";
 import type { StaffAgent, StaffAgentMessage } from "./company-staff.ts";
 import {
 	readFounderIdentity,
@@ -50,6 +50,7 @@ import {
 	signGateApproval,
 	verifyAuthorityPolicy,
 } from "./founder-identity.ts";
+import { type SessionSidebarPreview, sessionSidebarPreview } from "./session-preview.ts";
 import { isPublicSessionGroup, isPublicSessionRuntime, publicSessionRuntimeSnapshot } from "./session-visibility.ts";
 import { FIXED_SHELL_NAVIGATION, type ShellNavigationState } from "./shell-navigation.ts";
 import { readUsageRateCatalog, type UsageRateCatalog } from "./usage-pricing.ts";
@@ -71,6 +72,11 @@ export interface CompanyOrganizationHierarchyView {
 	formationState: string;
 	primary: CompanyOrganizationHierarchyNodeView[];
 	inactive: CompanyOrganizationHierarchyNodeView[];
+}
+
+export interface CompanyRoomSidebarView extends CompanyRoom {
+	lastMessage?: Pick<CompanyRoomMessage, "id" | "text" | "speaker" | "createdAt">;
+	lastStaffMessage?: Pick<CompanyRoomMessage, "id" | "text" | "speaker" | "createdAt">;
 }
 
 export interface CompanyAppOptions {
@@ -97,7 +103,7 @@ export interface CompanyAppOptions {
 	/** Company-folder staff registry read through the desktop host. */
 	staffReadModel?: () => readonly StaffAgent[];
 	/** Company-folder multi-staff room registry read through the desktop host. */
-	roomReadModel?: () => readonly CompanyRoom[];
+	roomReadModel?: () => readonly CompanyRoomSidebarView[];
 	/** Agent-owned, ordinary company artifacts validated before display. */
 	artifactReadModel?: () => readonly CompanyArtifactRecord[];
 	/** Agent-built connector recipes discovered from ordinary company files.
@@ -297,6 +303,7 @@ interface PhysicalFile {
 	path: string;
 	content: Buffer;
 	mtimeMs: number;
+	contentOffset: number;
 }
 
 const MAX_APP_FILE_BYTES = 64 * 1024 * 1024;
@@ -314,6 +321,7 @@ function readPhysicalFileWithin(
 	directory: string,
 	entry: string,
 	maxBytes = MAX_APP_FILE_BYTES,
+	tailBytes?: number,
 ): PhysicalFile | undefined {
 	let descriptor: number | undefined;
 	try {
@@ -339,10 +347,11 @@ function readPhysicalFileWithin(
 			return undefined;
 		}
 
-		const content = Buffer.alloc(opened.size);
+		const contentOffset = tailBytes === undefined ? 0 : Math.max(0, opened.size - tailBytes);
+		const content = Buffer.alloc(opened.size - contentOffset);
 		let offset = 0;
 		while (offset < content.length) {
-			const count = readSync(descriptor, content, offset, content.length - offset, offset);
+			const count = readSync(descriptor, content, offset, content.length - offset, contentOffset + offset);
 			if (count === 0) return undefined;
 			offset += count;
 		}
@@ -359,7 +368,7 @@ function readPhysicalFileWithin(
 		) {
 			return undefined;
 		}
-		return { path: actual, content, mtimeMs: opened.mtimeMs };
+		return { path: actual, content, mtimeMs: opened.mtimeMs, contentOffset };
 	} catch {
 		return undefined;
 	} finally {
@@ -568,7 +577,7 @@ function readInbox(root: string): InboxItem[] {
  * host-authored authority header, so the categorization is trustworthy. */
 export type SessionCategory = "conversation" | "product" | "conception" | "merge" | "wake" | "autonomous";
 
-interface SessionSummary {
+interface SessionSummary extends SessionSidebarPreview {
 	file: string;
 	mtimeMs: number;
 	/** Stable run start from the append-only session header. Unlike the file
@@ -1091,6 +1100,7 @@ function listTrailSessions(root: string, onlyFiles?: ReadonlySet<string>): Sessi
 			sessions.push({
 				file,
 				mtimeMs: source.mtimeMs,
+				...(kind === "chat" ? sessionSidebarPreview(source.content) : {}),
 				title:
 					kind === "autonomous"
 						? (scheduledJobTitle ?? sessionAuthority?.label ?? name)
@@ -1122,7 +1132,7 @@ function createTrailSessionReadModel(
 	root: string,
 	isTrailVisible?: (trailFile: string) => boolean,
 ): () => SessionSummary[] {
-	const cached = new Map<string, { fingerprint: string; session?: SessionSummary }>();
+	const cached = new Map<string, { fingerprint: string; size?: bigint; session?: SessionSummary }>();
 	return () => {
 		const dir = physicalDirectoryWithin(root, "trail");
 		if (!dir) {
@@ -1135,27 +1145,40 @@ function createTrailSessionReadModel(
 		for (const file of present) {
 			let fingerprint: string;
 			let mtimeMs: number | undefined;
+			let size: bigint | undefined;
 			try {
 				const stat = statSync(join(dir, file), { bigint: true });
 				fingerprint = `${stat.size}:${stat.mtimeNs}`;
+				size = stat.size;
 				mtimeMs = Number(stat.mtimeNs / 1_000_000n);
 			} catch {
 				fingerprint = "unreadable";
 			}
 			const previous = cached.get(file);
 			if (previous?.fingerprint === fingerprint) continue;
-			if (previous?.session?.kind === "chat" && mtimeMs !== undefined) {
-				// A chat's identity/title/scope are established before its first
-				// founder turn. Later appends only move it in recency order, so a
-				// growing persistent conversation never needs whole-file reparsing.
+			if (
+				previous?.session?.kind === "chat" &&
+				mtimeMs !== undefined &&
+				size !== undefined &&
+				previous.size !== undefined &&
+				size > previous.size
+			) {
+				// Identity stays cached. Only a bounded tail is reread for visible
+				// snippets and stable completed-message IDs, never mtime-as-unread.
+				const tailBytes = Math.min(MAX_APP_FILE_BYTES, Math.max(524_288, Number(size - previous.size) + 4096));
+				const tail = readPhysicalFileWithin(dir, file, MAX_APP_FILE_BYTES, tailBytes);
 				cached.set(file, {
 					fingerprint,
-					session: { ...previous.session, mtimeMs },
+					size,
+					session: tail
+						? { ...previous.session, mtimeMs, ...sessionSidebarPreview(tail.content, tail.contentOffset > 0) }
+						: undefined,
 				});
 				continue;
 			}
 			cached.set(file, {
 				fingerprint,
+				size,
 				session: listTrailSessions(root, new Set([file]))[0],
 			});
 		}
@@ -1261,7 +1284,21 @@ function staffView(agent: StaffAgent): StaffAgent {
 	};
 }
 
-function roomView(room: CompanyRoom): CompanyRoom {
+function roomView(room: CompanyRoomSidebarView): CompanyRoomSidebarView {
+	const previews: Pick<CompanyRoomSidebarView, "lastMessage" | "lastStaffMessage"> = {};
+	for (const field of ["lastMessage", "lastStaffMessage"] as const) {
+		const message = room[field];
+		if (!message || (field === "lastStaffMessage" && message.speaker.kind !== "staff")) continue;
+		previews[field] = {
+			id: message.id,
+			text: message.text.replace(/\s+/g, " ").trim().slice(0, 240),
+			speaker:
+				message.speaker.kind === "staff"
+					? { kind: "staff", staffAgentId: message.speaker.staffAgentId }
+					: { kind: "founder" },
+			createdAt: message.createdAt,
+		};
+	}
 	return {
 		id: room.id,
 		participantIds: [...room.participantIds],
@@ -1270,6 +1307,7 @@ function roomView(room: CompanyRoom): CompanyRoom {
 		status: room.status,
 		createdAt: room.createdAt,
 		updatedAt: room.updatedAt,
+		...previews,
 	};
 }
 
@@ -1438,7 +1476,7 @@ function stateFor(
 	runtime?: SessionRuntimeSnapshot,
 	sessions?: SessionSummary[],
 	staff: readonly StaffAgent[] = [],
-	rooms: readonly CompanyRoom[] = [],
+	rooms: readonly CompanyRoomSidebarView[] = [],
 	artifacts: readonly CompanyArtifactRecord[] = [],
 	connectors: readonly CompanyConnectorView[] = [],
 	connectionRequests: readonly CompanyConnectionRequestView[] = [],
