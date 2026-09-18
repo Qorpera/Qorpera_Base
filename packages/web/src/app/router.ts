@@ -8,7 +8,6 @@ export type CompanySection =
 	| "chat"
 	| "staff"
 	| "approvals"
-	| "notifications"
 	| "file"
 	| "snapshot"
 	| "proposal"
@@ -52,7 +51,6 @@ export function parseRoute(hash: string): Route {
 		}
 		if (
 			section === "approvals" ||
-			section === "notifications" ||
 			section === "file" ||
 			section === "organization" ||
 			section === "team" ||

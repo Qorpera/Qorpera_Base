@@ -2,7 +2,6 @@ import type { User } from "@supabase/supabase-js";
 import { CloudApi } from "../cloud/api.ts";
 import { type Cloud, describeError } from "../cloud/client.ts";
 import { createWebCompanyAgents } from "../cloud/company-agents.ts";
-import { createWebCompanyExecution } from "../cloud/company-execution.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
 import { WebCompanyComputer } from "../cloud/computer.ts";
 import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
@@ -29,7 +28,6 @@ import { HubController, renderHub } from "./views/hub.ts";
 import { renderInvitations } from "./views/invitations.ts";
 import { LiveCompanyFileView } from "./views/live-company-file.ts";
 import { type MeetState, renderMeet } from "./views/meet.ts";
-import { MemberNotificationsView } from "./views/member-notifications.ts";
 import { NewConversationView } from "./views/new-conversation.ts";
 import { renderOrganization } from "./views/organization.ts";
 import { SettingsView } from "./views/settings.ts";
@@ -144,8 +142,6 @@ export function mountApplication(
 			liveFile = undefined;
 		}
 		closeSettings(false);
-		notifications?.dispose();
-		notifications = undefined;
 		closeFeedback(false);
 		routeRevision++;
 		resolvingRoute = undefined;
@@ -163,7 +159,6 @@ export function mountApplication(
 	let conversation: ConversationView | undefined;
 	let newConversation: NewConversationView | undefined;
 	let approvals: ApprovalsView | undefined;
-	let notifications: MemberNotificationsView | undefined;
 	let cloudCheck: CloudCheckView | undefined;
 	let profiles: HostedProfile[] = [];
 	let teamFeedback: { message?: string; error?: string } = {};
@@ -242,8 +237,6 @@ export function mountApplication(
 		conversation?.dispose();
 		newConversation?.dispose();
 		approvals?.dispose();
-		notifications?.dispose();
-		notifications = undefined;
 		companyFile?.dispose();
 		liveFile?.dispose();
 		liveFile = undefined;
@@ -486,8 +479,6 @@ export function mountApplication(
 			conversation?.dispose();
 			newConversation?.dispose();
 			approvals?.dispose();
-			notifications?.dispose();
-			notifications = undefined;
 			navigationOpen = false;
 			navigationFocus = undefined;
 			syncNavigation();
@@ -515,10 +506,6 @@ export function mountApplication(
 		if (route.section !== "approvals") {
 			approvals?.dispose();
 			approvals = undefined;
-		}
-		if (route.section !== "notifications") {
-			notifications?.dispose();
-			notifications = undefined;
 		}
 		if (route.section !== "meet") meetState = {};
 		// Agents are Company File documents. Each write re-checks that this
@@ -702,38 +689,6 @@ export function mountApplication(
 				}
 				replace(main, spinner("Opening conversation"));
 				void resolveStaff(controller, route.id ?? "");
-				return;
-			}
-			case "notifications": {
-				if (state.loading || !state.team) {
-					replace(main, spinner("Checking notification access"));
-					return;
-				}
-				if (!notifications) {
-					const client = createWebCompanyExecution(
-						cloud,
-						controller.profile.profileId,
-						controller.userId,
-						controller.signal,
-						() => {
-							const selected = currentRoute();
-							const access = controller.store.get();
-							if (
-								disposed ||
-								company !== controller ||
-								auth.userId !== controller.userId ||
-								access.accessLost ||
-								!access.team?.capabilities.read ||
-								selected.name !== "company" ||
-								selected.profileId !== controller.profile.profileId ||
-								selected.section !== "notifications"
-							)
-								throw new Error("Notification access changed.");
-						},
-					);
-					notifications = new MemberNotificationsView(client, controller.signal);
-				}
-				if (!main.contains(notifications.el)) replace(main, notifications.el);
 				return;
 			}
 			case "approvals": {

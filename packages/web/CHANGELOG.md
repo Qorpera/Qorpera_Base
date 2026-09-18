@@ -7,7 +7,7 @@
 - Render room replies with immutable server-projected staff identity and preserve accepted human messages even when no agent is eligible.
 
 - Use a length-neutral email code hint so sign-in instructions remain accurate with the configured eight-digit codes.
-- Accept valid Unicode pause reasons in runtime notifications using the public SQL character limit.
+- Accept valid Unicode pause reasons using the public SQL character limit.
 - Submit team-room messages through the public room-post contract, preserve room retry identity, and match room attachments/run displays to the supported interfaces.
 
 ### Added
@@ -16,7 +16,7 @@
 
 - Record the source commit and runtime bundle identity in web deployment artifacts; require clean source for release builds.
 
-- Add company pause/resume and observed-version execution ceilings through the documented member control plane, plus a member notification inbox with explicit acknowledgement.
+- Add company pause/resume and observed-version execution ceilings through the documented member control plane.
 - Add provider sign-in through the exported native login SDK when an accepted public gateway is configured; keep login capability handling outside the UI and require explicit recovery after uncertainty.
 - Submit conversation work through the shared sponsored-turn API with explicit member account selection, exact retry identity, execution history and observed-run stop controls.
 - Discover, enable and revoke existing member model accounts through the shared client SDK, with refresh recovery after uncertain changes.
@@ -38,4 +38,4 @@
 
 ### Removed
 
-- Remove the rail's Notifications row and the background unread-count polling behind it; the notification inbox stays reachable at its company URL.
+- Remove the member notification inbox: the rail's Notifications row and its unread-count polling, the Notifications page and route (old links open the company home), and the client's notification list/acknowledge calls.
