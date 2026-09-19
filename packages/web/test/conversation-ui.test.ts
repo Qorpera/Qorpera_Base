@@ -42,6 +42,7 @@ afterEach(() => {
 	vi.useRealTimers();
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
+	localStorage.clear();
 });
 function setup(actions: WorkspaceActions = {}) {
 	const f = fixture();
@@ -305,40 +306,79 @@ describe("conversation UI boundaries", () => {
 		expect(button(restored.el, "Preview private.png")).toBeDefined();
 		restored.dispose();
 	});
-	it("shows unavailable computer controls without RPCs, handles narrow layouts, and restores focus", () => {
-		// jsdom lays nothing out: give the thread and the panel the widths the stylesheet would.
-		let threadWidth = 900,
-			panelWidth = 420;
-		vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(function (this: Element) {
-			return this.classList.contains("thread-body") ? threadWidth : 0;
-		});
-		vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
-			return this.classList.contains("computer-panel") ? panelWidth : 0;
-		});
+	it("keeps the computer popover compact and the conversation usable at every width", () => {
 		const f = setup(),
 			toggle = button(f.view.el, "Open agent computer");
+		toggle.focus();
 		toggle.click();
-		expect(f.view.el.querySelector(".computer-panel")?.textContent).toContain("Computer unavailable");
-		// Routines live in the agent's details now, not beside the computer.
-		expect(f.view.el.querySelector(".computer-panel")?.textContent).not.toContain("Routines");
-		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(false);
-		// Without room for the panel beside the conversation, however wide the rail is, the panel covers it.
-		threadWidth = 735;
-		window.dispatchEvent(new Event("resize"));
-		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(true);
-		expect(f.view.el.querySelector(".thread-body")?.classList.contains("computer-covers")).toBe(true);
-		threadWidth = 900;
-		window.dispatchEvent(new Event("qorpera-rail-resize"));
-		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(false);
-		// The phone layout makes the panel as wide as the thread, so it covers the conversation too.
-		threadWidth = panelWidth = 744;
-		window.dispatchEvent(new Event("resize"));
-		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(true);
-		button(f.view.el, "Close computer").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		const panel = f.view.el.querySelector<HTMLElement>(".computer-panel")!;
+		expect(document.activeElement).toBe(toggle);
+		expect(toggle.getAttribute("aria-expanded")).toBe("true");
+		expect(panel.textContent).toContain("Computer access is not available yet.");
+		expect(panel.querySelector("header, select, .computer-preview, .computer-close")).toBeNull();
+		expect(panel.querySelector("[aria-label='Close computer']")).toBeNull();
+		expect(panel.textContent).not.toContain("Open computer");
+		expect(panel.textContent).not.toContain("Routines");
+		const composer = f.view.el.querySelector<HTMLTextAreaElement>(".composer-input")!;
+		for (const width of [1280, 600, 375]) {
+			vi.stubGlobal("innerWidth", width);
+			window.dispatchEvent(new Event("resize"));
+			expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBeFalsy();
+			composer.focus();
+			expect(document.activeElement).toBe(composer);
+		}
+		panel.focus();
+		panel.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		expect(f.view.el.querySelector(".computer-panel")).toBeNull();
-		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(false);
+		expect(toggle.getAttribute("aria-expanded")).toBe("false");
+		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBeFalsy();
 		expect(document.activeElement).toBe(toggle);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
+	});
+	it("uses the same computer toggle to close and reopen the popover without moving focus", () => {
+		const f = setup(),
+			toggle = button(f.view.el, "Open agent computer");
+		toggle.focus();
+		for (let attempt = 0; attempt < 2; attempt++) {
+			toggle.click();
+			expect(f.view.el.querySelectorAll(".computer-panel")).toHaveLength(1);
+			expect(toggle.getAttribute("aria-expanded")).toBe("true");
+			expect(document.activeElement).toBe(toggle);
+			toggle.click();
+			expect(f.view.el.querySelector(".computer-panel")).toBeNull();
+			expect(toggle.getAttribute("aria-expanded")).toBe("false");
+			expect(document.activeElement).toBe(toggle);
+		}
+		expect(f.cloud.rpc).not.toHaveBeenCalled();
+	});
+
+	it.each([false, true])("restores notification focus with the computer open (entered: %s)", async (entered) => {
+		const host = document.createElement("div");
+		document.body.append(host);
+		const f = setup({ notificationHost: host });
+		button(f.view.el, "Open agent computer").click();
+		const panel = f.view.el.querySelector<HTMLElement>(".computer-panel")!;
+		// The renderer sets this class when native fullscreen is unavailable.
+		panel.classList.toggle("is-entered", entered);
+		f.company.store.set({
+			activity: [
+				{
+					runId: id(70),
+					staffAgentId: staff.id,
+					sourceKind: "room_delivery",
+					jobStatus: "failed",
+					activity: "needs_attention",
+					updatedAt: timestamp,
+				},
+			],
+		});
+		await settle();
+		const close = button(host, "Dismiss notification");
+		close.focus();
+		close.click();
+		expect(host.querySelector(".notification-card")).toBeNull();
+		expect(document.activeElement).toBe(entered ? panel : f.view.el.querySelector(".composer-input"));
+		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBeFalsy();
 	});
 
 	it("closes an unresolved run popup immediately without discarding work or reopening on polling", async () => {
