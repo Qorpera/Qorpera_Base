@@ -13,6 +13,8 @@ import { deferred, fixture, id, profileA, settle, staff, team, userA } from "./f
 const cleanup: (() => void)[] = [];
 beforeEach(() => {
 	vi.stubGlobal("innerWidth", 1280);
+	// A desktop window: anchored details stay beside their agent.
+	vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
 	// jsdom has no native dialog methods.
 	HTMLDialogElement.prototype.showModal = function () {
 		this.open = true;

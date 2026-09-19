@@ -187,13 +187,36 @@ export interface HostedStaffAgent {
 	updatedByUserId: string;
 }
 
+export const EXECUTION_SOURCE_KINDS = [
+	"session_turn",
+	"wake",
+	"manual",
+	"room_delivery",
+	"proposal_review",
+	"system",
+] as const;
+export type ExecutionSourceKind = (typeof EXECUTION_SOURCE_KINDS)[number];
+
 export interface HostedStaffExecutionActivity {
 	runId: string;
 	staffAgentId: string;
-	sourceKind: "session_turn" | "wake" | "manual" | "room_delivery" | "proposal_review" | "system";
+	sourceKind: ExecutionSourceKind;
 	jobStatus: "queued" | "leased" | "completed" | "failed" | "cancelled";
 	activity: "waiting" | "working" | "needs_attention";
 	updatedAt: string;
+}
+
+/** A failed or stopped run nobody has dismissed yet (qorpera_get_execution_run_recovery). */
+export interface HostedRunRecovery {
+	runId: string;
+	sourceKind: ExecutionSourceKind;
+	jobStatus: "failed" | "cancelled";
+	lastError?: string;
+	/** An open Company File proposal the run left behind: it waits on a decision. */
+	proposalId?: string;
+	/** Operations still executing or of unknown outcome. The cloud refuses to
+	 * dismiss the run until they settle. */
+	unsettledOperations: number;
 }
 
 export interface HostedAccountEntitlement {
