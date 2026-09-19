@@ -821,7 +821,7 @@ export class CloudCompanyPathGateway {
 				name: "company_list",
 				source: "company_file",
 				description:
-					"List only authorized immediate children of a live Company File directory. Use path empty for root and null after/snapshotId for the first page. Keep both returned cursor and snapshot for later pages.",
+					"List only authorized immediate children of a live Company File directory, with limit at most 50 entries. Use path empty for root and null after/snapshotId for the first page. Keep both returned cursor and snapshot for later pages.",
 				inputSchema: {
 					type: "object",
 					additionalProperties: false,

@@ -8,7 +8,14 @@ It does not establish live model behavior, deployed acceptance or an optimal
 prompt. A deterministic assertion about prompt bytes or a scripted provider
 trace is not evidence that a model follows those instructions.
 
-## Verification checkpoint
+The subsequent [live behavior screen](RUNTIME-STEP-10-BEHAVIOR-SCREEN.md) records
+57 real-model trials, prompt refinements, and the final candidate verification.
+It uses a different native harness and does not close the installed-release gate.
+
+## Verification checkpoint before live behavior tuning
+
+The following checkpoint is for source `3599a579`; the linked behavior screen
+supersedes its bundle pin and records verification after the later prompt changes.
 
 - Local and isolated Linux `npm run check` passed, checking 2,203 files with
   no warnings or fixes on the final source.
@@ -153,7 +160,9 @@ with the exact compiled bootstrap, synthetic company context and isolated
 fixture tool services. It should collect public send receipts, ordered tool
 calls, continuation/replay outcomes and private terminal disposition. Fixtures
 must contain no secrets or production state; any model authentication remains
-outside the prompt and captured evidence. No such run was performed in this audit.
+outside the prompt and captured evidence. The later live screen uses the production
+composer and parsers with synthetic effects, but not the pinned patched adapter;
+the exact-native acceptance gate remains open.
 
 Record source/bundle and prompt hashes, native artifact/version, model and
 resolved effort, scenario/repetition, host, timing and available usage. Compare

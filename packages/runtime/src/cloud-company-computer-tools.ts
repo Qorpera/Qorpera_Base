@@ -387,6 +387,7 @@ export function createCompanyComputerTools(options: {
 					"After a confirmed screen-admission refusal, explicitly open the screen again to retry; no action is replayed automatically. " +
 					"Use browser list_tabs then select_tab for multiple or closed tabs. Tab IDs belong to this admitted screen session; " +
 					"list_tabs returns bounded title/URL previews and nextAfterTabId for pagination. Restart listing if its cursor closes. " +
+					"Browser snapshots report semantic roles and text, not pixels. In replies and saved reports, preserve the observed roles: a link is not a footer link and a button is not a primary action unless evidence explicitly establishes that placement or hierarchy. Describe a text-only finding as reported by the snapshot, not visually verified; actual appearance requires screenshot evidence. " +
 					"Transfer export reads one relative workbench file into an immutable cloud asset, retaining source and receipt. It never reads a member device or Company File path; transfers require the shell/workbench grant. " +
 					"Transfer import accepts a completed shared object asset or a Company File path and exact version obtained from company_list/company_read. It checks current path authority, verifies immutable bytes, and never overwrites the workbench destination. " +
 					"Company File changes use governed file tools. Model-provider subscription credentials never belong on the Company Computer. " +

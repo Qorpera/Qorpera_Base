@@ -56,6 +56,13 @@ are shared, following the September 17–18 contract amendments.
 instructions and enforcement, records resolved conflicts, and separates
 deterministic regression evidence from outstanding native-model behavior checks.
 
+[Live behavior screening](RUNTIME-STEP-10-BEHAVIOR-SCREEN.md) subsequently exercised
+18 synthetic scenarios in 57 real-model trials. It found and corrected pagination
+recovery and evidence-reporting weaknesses. The final checks preserve truthful
+proposal, continuation, silence and blocker behavior. These screens use official
+Codex 0.152 with production prompt/parser components, not the pinned patched
+Linux adapter, and do not replace installed-release acceptance.
+
 The task's verification record documents exact hosts, commands, results and
 environment differences. It is component evidence, not deployed acceptance.
 The current guest-package manifest pins the host bundle rebuilt on Linux x64;
