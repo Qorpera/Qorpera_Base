@@ -6,12 +6,18 @@ export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): () 
 	let drag: { id: number; x: number; y: number; left: number; top: number; moved: boolean } | undefined;
 	let observer: ResizeObserver | undefined;
 	const expanded = () => panel.classList.contains("is-entered") || Boolean(document.fullscreenElement);
+	// The status row (send errors, run actions) sits above the composer and must stay reachable.
+	const below = (parent: HTMLElement) =>
+		[...parent.querySelectorAll<HTMLElement>(".thread-status, .composer")].reduce(
+			(sum, element) => sum + element.getBoundingClientRect().height,
+			0,
+		);
 	const place = (left: number, top: number) => {
 		const parent = panel.parentElement;
 		if (!parent || expanded()) return;
 		const inset = 8;
 		const header = parent.querySelector<HTMLElement>(".thread-header")?.getBoundingClientRect().height ?? 0;
-		const footer = parent.querySelector<HTMLElement>(".composer")?.getBoundingClientRect().height ?? 0;
+		const footer = below(parent);
 		const minTop = header + inset;
 		position = {
 			left: Math.max(inset, Math.min(left, parent.clientWidth - panel.offsetWidth - inset)),
@@ -24,7 +30,7 @@ export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): () 
 		const parent = panel.parentElement;
 		if (!parent || expanded()) return;
 		const header = parent.querySelector<HTMLElement>(".thread-header")?.getBoundingClientRect().height ?? 0;
-		const footer = parent.querySelector<HTMLElement>(".composer")?.getBoundingClientRect().height ?? 0;
+		const footer = below(parent);
 		const height = Math.max(0, parent.clientHeight - header - footer - 16);
 		const width = Math.max(0, Math.min(400, parent.clientWidth - 40, (height * 16) / 9));
 		panel.style.setProperty("--computer-width", `${width}px`);
@@ -42,7 +48,7 @@ export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): () 
 		observer = new ResizeObserver(reclamp);
 		observer.observe(panel.parentElement);
 		observer.observe(panel);
-		for (const boundary of panel.parentElement.querySelectorAll(".thread-header, .composer")) {
+		for (const boundary of panel.parentElement.querySelectorAll(".thread-header, .thread-status, .composer")) {
 			observer.observe(boundary);
 		}
 	};

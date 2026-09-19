@@ -295,6 +295,21 @@ describe("computer preview dragging", () => {
 		expect(f.panel.offsetWidth).toBe(400);
 		expect(f.panel.offsetHeight).toBe(225);
 	});
+	it("keeps the status row above the composer uncovered", async () => {
+		const f = setup();
+		const status = document.createElement("div");
+		status.className = "thread-status";
+		status.getBoundingClientRect = () => new DOMRect(100, 198, 1000, 40);
+		f.composer.before(status);
+		f.size.height = 400;
+		vi.mocked(f.composer.getBoundingClientRect).mockReturnValue(new DOMRect(100, 238, 1000, 212));
+		await Promise.resolve();
+		expect(f.observe).toHaveBeenCalledWith(status);
+		expect(f.panel.offsetHeight).toBeCloseTo(82);
+		expect(Number.parseFloat(f.panel.style.getPropertyValue("--computer-top")) + f.panel.offsetHeight).toBeCloseTo(
+			140,
+		);
+	});
 	it("fits a dragged preview after shrinking and after returning from expanded mode", async () => {
 		const f = setup();
 		await Promise.resolve();
