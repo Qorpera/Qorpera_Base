@@ -3,14 +3,17 @@ import { matchesKey } from "./keys.ts";
 
 const COMPACT = 80;
 const MIN = 240;
-const DEFAULT = 304;
+/** Half again the desktop's 304px rail. */
+const DEFAULT = 456;
 /** The rail may take at most two fifths of the window, a touch wider than a Messages sidebar. */
 const MAX_SHARE = 0.4;
+const STORAGE_KEY = "qorpera.web.rail-width";
 
 /** Only a browser layout preference. Company navigation remains canonical. */
 export class RailLayout {
 	readonly el: HTMLElement;
 	readonly #frame: HTMLElement;
+	readonly #rail: HTMLElement;
 	readonly #lifetime = new AbortController();
 	/** What the member last chose; the shown width is this, clamped to the window. */
 	#preferred = DEFAULT;
@@ -18,10 +21,11 @@ export class RailLayout {
 	#max = 0;
 	#dragging = false;
 	#dragged = false;
-	constructor(frame: HTMLElement) {
+	constructor(frame: HTMLElement, rail: HTMLElement) {
 		this.#frame = frame;
+		this.#rail = rail;
 		try {
-			const width = Number(localStorage.getItem("qorpera.web.rail-width"));
+			const width = Number(localStorage.getItem(STORAGE_KEY));
 			if (Number.isFinite(width) && (width === COMPACT || width >= MIN)) this.#preferred = width;
 		} catch {
 			/* Browser storage is optional. */
@@ -58,14 +62,18 @@ export class RailLayout {
 		this.el.addEventListener("pointerup", finish);
 		this.el.addEventListener("pointercancel", finish);
 		this.el.addEventListener("lostpointercapture", finish);
-		this.el.addEventListener("dblclick", () => this.#set(DEFAULT));
+		this.el.addEventListener("dblclick", () => this.#reset());
 		this.el.addEventListener("keydown", (event) => {
+			if (matchesKey(event, "accept")) {
+				event.preventDefault();
+				this.#reset();
+				return;
+			}
 			let width: number | undefined;
 			if (matchesKey(event, "left")) width = this.#width <= MIN ? COMPACT : this.#width - 16;
 			if (matchesKey(event, "right")) width = this.#width === COMPACT ? MIN : this.#width + 16;
 			if (matchesKey(event, "first")) width = COMPACT;
 			if (matchesKey(event, "last")) width = this.#cap();
-			if (matchesKey(event, "accept")) width = DEFAULT;
 			if (width !== undefined) {
 				event.preventDefault();
 				this.#set(width);
@@ -88,9 +96,20 @@ export class RailLayout {
 		this.#apply();
 		if (persist) this.#persist();
 	}
+	/** Back to the default forgets the stored choice, so a later default reaches this member too.
+	 * The choice is not clamped: a narrow window shows less, a wide one the whole default. */
+	#reset(): void {
+		this.#preferred = DEFAULT;
+		this.#apply();
+		try {
+			localStorage.removeItem(STORAGE_KEY);
+		} catch {
+			/* Layout still works for this window. */
+		}
+	}
 	#persist(): void {
 		try {
-			localStorage.setItem("qorpera.web.rail-width", String(this.#preferred));
+			localStorage.setItem(STORAGE_KEY, String(this.#preferred));
 		} catch {
 			/* Layout still works for this window. */
 		}
@@ -101,7 +120,10 @@ export class RailLayout {
 		if (width === this.#width && max === this.#max) return;
 		this.#width = width;
 		this.#max = max;
-		this.#frame.style.setProperty("--rail-width", `${width}px`);
+		// Only the rail and its edge read the width. Set on the frame, every change
+		// would restyle the whole app, once per frame while the window is resized.
+		this.#rail.style.setProperty("--rail-width", `${width}px`);
+		this.el.style.setProperty("--rail-width", `${width}px`);
 		this.#frame.classList.toggle("rail-compact", width === COMPACT);
 		this.el.setAttribute("aria-valuemax", String(max));
 		this.el.setAttribute("aria-valuenow", String(width));

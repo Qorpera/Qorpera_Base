@@ -359,7 +359,8 @@ export class ConversationView {
 	}
 
 	#syncPanelLayout(): void {
-		const covered = Boolean(this.#panel) && window.innerWidth <= 1040;
+		// The overlay width in conversation.css: default rail + panel + a usable conversation.
+		const covered = Boolean(this.#panel) && window.innerWidth <= 1192;
 		if (covered && this.#conversationPane.contains(document.activeElement)) this.#panel?.focus();
 		this.#conversationPane.inert = covered;
 		this.#autosize();

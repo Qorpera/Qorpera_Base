@@ -23,21 +23,6 @@ const ceiling = {
 	tokens_used: 600,
 	trips: 2,
 };
-const paused = {
-	schema: "qorpera.member-notification/v1",
-	notification_id: id(90),
-	profile_id: profileA.profileId,
-	kind: "company_execution_paused",
-	created_at: timestamp,
-	acknowledged_at: null,
-	subject: {
-		schema: "qorpera.member-notification.company-execution-stop/v1",
-		paused: true,
-		byUserId: userA.id,
-		reason: "Review work",
-		at: timestamp,
-	},
-};
 function setup() {
 	const f = fixture(),
 		company = new AbortController(),
@@ -118,7 +103,7 @@ describe("company execution public member control", () => {
 		f.company.abort();
 		expect(f.fetch).toHaveBeenCalledTimes(1);
 	});
-	it("matches SQL character limits for Unicode pause reasons in writes and notifications", async () => {
+	it("matches SQL character limits for Unicode pause reasons", async () => {
 		const f = setup();
 		const reason = "😀".repeat(600) + "a".repeat(424);
 		f.fetch.mockResolvedValueOnce(
@@ -131,100 +116,8 @@ describe("company execution public member control", () => {
 		);
 		await expect(f.client.setPause(true, reason)).resolves.toMatchObject({ paused: true });
 		expect(JSON.parse(f.fetch.mock.calls[0]![1]!.body as string).p_reason).toBe(reason);
-		f.fetch.mockResolvedValueOnce(Response.json([{ ...paused, subject: { ...paused.subject, reason } }]));
-		await expect(f.client.listNotifications()).resolves.toMatchObject([{ subject: { reason } }]);
 		await expect(f.client.setPause(true, `${reason}a`)).rejects.toThrow("invalid response");
-		expect(f.fetch).toHaveBeenCalledTimes(2);
-		f.fetch.mockResolvedValueOnce(
-			Response.json([{ ...paused, subject: { ...paused.subject, reason: `${reason}a` } }]),
-		);
-		await expect(f.client.listNotifications()).rejects.toThrow("invalid response");
-	});
-	it("binds notification lists to the member/company and acknowledges only an observed exact id", async () => {
-		const f = setup();
-		await expect(f.client.acknowledgeNotification(id(90))).rejects.toThrow("Refresh notifications");
-		expect(f.fetch).not.toHaveBeenCalled();
-		f.fetch.mockResolvedValueOnce(Response.json([paused]));
-		expect(await f.client.listNotifications()).toMatchObject([
-			{ notificationId: id(90), profileId: profileA.profileId, acknowledgedAt: null },
-		]);
-		expect(JSON.parse(f.fetch.mock.calls[0]![1]!.body as string)).toEqual({
-			p_profile_id: profileA.profileId,
-			p_limit: 50,
-		});
-		f.fetch.mockResolvedValueOnce(Response.json({ ...paused, acknowledged_at: timestamp }));
-		expect(await f.client.acknowledgeNotification(id(90))).toMatchObject({
-			notificationId: id(90),
-			acknowledgedAt: timestamp,
-		});
-		expect(JSON.parse(f.fetch.mock.calls[1]![1]!.body as string)).toEqual({ p_notification_id: id(90) });
-		f.fetch.mockResolvedValueOnce(Response.json([]));
-		await f.client.listNotifications();
-		await expect(f.client.acknowledgeNotification(id(90))).rejects.toThrow("Refresh notifications");
-	});
-	it("projects every published notification subject including machine capacity without exposing extra fields", async () => {
-		const f = setup();
-		const subjects = [
-			{
-				kind: "provider_usage_limit",
-				subject: {
-					schema: "qorpera.member-notification.provider-usage-limit/v1",
-					provider: "openai",
-					resetsAt: timestamp,
-					runId: id(11),
-					connectionId: id(12),
-					private: "hidden",
-				},
-			},
-			{
-				kind: "company_ceiling_tripped",
-				subject: {
-					schema: "qorpera.member-notification.company-ceiling-tripped/v1",
-					dimension: "spend",
-					ceiling: 100,
-					periodStart: timestamp,
-				},
-			},
-			{
-				kind: "company_ceiling_tripped",
-				subject: {
-					schema: "qorpera.member-notification.company-ceiling-tripped/v1",
-					dimension: "wakes",
-					ceiling: 20,
-					periodStart: timestamp,
-					used: 20,
-				},
-			},
-			{
-				kind: "company_ceiling_tripped",
-				subject: {
-					schema: "qorpera.member-notification.machine-capacity/v1",
-					dimension: "machines",
-					ceiling: 2,
-					used: 2,
-					allocationId: id(13),
-				},
-			},
-			{
-				kind: "sponsor_handoff",
-				subject: {
-					schema: "qorpera.member-notification.sponsor-handoff/v1",
-					runId: id(11),
-					fromConnectionId: id(12),
-					toConnectionId: id(14),
-					reason: "usage_limit",
-					at: timestamp,
-				},
-			},
-			{ kind: "company_execution_resumed", subject: { ...paused.subject, paused: false } },
-		];
-		f.fetch.mockResolvedValueOnce(
-			Response.json(subjects.map((v, i) => ({ ...paused, ...v, notification_id: id(100 + i) }))),
-		);
-		const result = await f.client.listNotifications();
-		expect(result).toHaveLength(6);
-		expect(result[0]!.subject).not.toHaveProperty("private");
-		expect(result[3]!.subject).toMatchObject({ dimension: "machines", used: 2, ceiling: 2 });
+		expect(f.fetch).toHaveBeenCalledTimes(1);
 	});
 	it.each([
 		{ ...ceiling, profile_id: id(99) },
@@ -235,17 +128,6 @@ describe("company execution public member control", () => {
 		const f = setup();
 		f.fetch.mockResolvedValueOnce(Response.json(value));
 		await expect(f.client.read()).rejects.toThrow("invalid response");
-	});
-	it("rejects cross-profile notifications, duplicate identities and mismatched acknowledgment receipts", async () => {
-		const f = setup();
-		f.fetch.mockResolvedValueOnce(Response.json([{ ...paused, profile_id: id(99) }]));
-		await expect(f.client.listNotifications()).rejects.toThrow("invalid response");
-		f.fetch.mockResolvedValueOnce(Response.json([paused, paused]));
-		await expect(f.client.listNotifications()).rejects.toThrow("invalid response");
-		f.fetch.mockResolvedValueOnce(Response.json([paused]));
-		await f.client.listNotifications();
-		f.fetch.mockResolvedValueOnce(Response.json({ ...paused, notification_id: id(91), acknowledged_at: timestamp }));
-		await expect(f.client.acknowledgeNotification(id(90))).rejects.toThrow("invalid response");
 	});
 	it("refuses a refreshed account before dispatch and fences a company change after auth", async () => {
 		const f = setup();

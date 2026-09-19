@@ -262,12 +262,6 @@ describe("conversation UI boundaries", () => {
 		const f = fixture(),
 			root = document.createElement("div");
 		vi.spyOn(f.api, "appendPrompt");
-		const notificationUrl = `${f.cloud.config.projectUrl}/rest/v1/rpc/qorpera_list_member_notifications`;
-		const network = vi.fn(async (request: string | URL | Request, init?: RequestInit) => {
-			if (String(request) === notificationUrl && init?.method === "POST") return Response.json([]);
-			throw new Error("Uploads and message admission are not allowed in this local attachment fixture");
-		});
-		vi.stubGlobal("fetch", network);
 		document.body.append(root);
 		// Isolate attachment gating from the model-account selection flow.
 		dispose = mountApplication(root, f.cloud, f.api, { nativeSubscription: undefined });
@@ -289,7 +283,7 @@ describe("conversation UI boundaries", () => {
 		expect(send.disabled).toBe(false);
 		expect(root.querySelector("textarea")!.value).toBe("Keep this local");
 		expect(f.api.appendPrompt).not.toHaveBeenCalled();
-		expect(network).toHaveBeenCalledExactlyOnceWith(notificationUrl, expect.objectContaining({ method: "POST" }));
+		expect(fetch).not.toHaveBeenCalled();
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 	it("keeps attachment drafts scoped to their conversation and releases previews on disposal", () => {
@@ -313,7 +307,9 @@ describe("conversation UI boundaries", () => {
 		expect(f.view.el.querySelector(".computer-panel")?.textContent).toContain("Computer unavailable");
 		// Routines live in the agent's details now, not beside the computer.
 		expect(f.view.el.querySelector(".computer-panel")?.textContent).not.toContain("Routines");
-		vi.stubGlobal("innerWidth", 390);
+		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(false);
+		// Below the width that holds the default rail, the panel and the conversation, the panel covers it.
+		vi.stubGlobal("innerWidth", 1192);
 		window.dispatchEvent(new Event("resize"));
 		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(true);
 		button(f.view.el, "Close computer").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
