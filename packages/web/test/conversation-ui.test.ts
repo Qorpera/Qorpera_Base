@@ -401,55 +401,142 @@ describe("safe formatted messages", () => {
 });
 
 describe("new conversation and agent setup", () => {
-	function setupNew(actions: WorkspaceActions = {}) {
+	function setupNew(actions: WorkspaceActions = {}, agents = [staff]) {
 		const f = fixture(),
 			company = new CompanyController(f.api, profileA, userA.id);
-		company.store.set({ staff: [staff], sessions: [session], loading: false });
+		company.store.set({ staff: agents, sessions: [session], loading: false });
 		const view = new NewConversationView(company, actions, () => {});
 		document.body.append(view.el);
 		dispose = () => {
 			view.dispose();
 			company.stop();
 		};
-		return { ...f, company, view };
+		return { ...f, company, view, search: recipients(view.el) };
 	}
-	it("keeps keyboard focus on the recipient across activity refreshes and recovers when it disappears", async () => {
+	function recipients(root: ParentNode): HTMLInputElement {
+		return root.querySelector<HTMLInputElement>('[aria-label="Search conversation recipients"]')!;
+	}
+	function choice(root: ParentNode, key: string): HTMLElement {
+		const result = root.querySelector<HTMLElement>(`[role="option"][data-choice="${key}"]`);
+		if (!result) throw new Error(`Missing choice: ${key}`);
+		return result;
+	}
+	function choices(root: ParentNode): string[] {
+		return [...root.querySelectorAll<HTMLElement>('[role="option"]')].map((row) => row.dataset.choice!);
+	}
+	function press(target: HTMLElement, key: string): KeyboardEvent {
+		const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+		target.dispatchEvent(event);
+		return event;
+	}
+	it("hangs one list from the To: field: new agent, new group chat, then the agents", async () => {
 		const f = setupNew();
 		await settle();
-		f.view.el.querySelector<HTMLAnchorElement>(".recipient-card")!.focus();
-		f.company.store.set({ activity: [] });
-		await settle();
-		expect(document.activeElement).toBe(f.view.el.querySelector(".recipient-card"));
-		expect(document.activeElement?.getAttribute("data-agent-id")).toBe(staff.id);
-		f.company.store.set({ staff: [] });
-		await settle();
-		const search = f.view.el.querySelector<HTMLInputElement>('[aria-label="Search conversation recipients"]')!;
-		expect(document.activeElement).toBe(search);
-		search.value = "Fixture";
-		search.dispatchEvent(new Event("input"));
-		search.setSelectionRange(2, 2);
-		f.company.store.set({ staff: [staff] });
-		await settle();
-		expect(document.activeElement).toBe(search);
-		expect(search.selectionStart).toBe(2);
+		f.search.focus();
+		expect(f.search.getAttribute("role")).toBe("combobox");
+		expect(f.search.getAttribute("aria-expanded")).toBe("true");
+		expect(f.view.el.querySelector<HTMLElement>(".recipient-menu")!.hidden).toBe(false);
+		expect(choices(f.view.el)).toEqual(["create", "group", staff.id]);
+		expect(choice(f.view.el, staff.id).textContent).toContain("Fixture agent");
+		// The old screen's heading, cards and Open/Cancel footer are gone.
+		expect(f.view.el.querySelector("h1, .recipient-card, .recipient-footer")).toBeNull();
+		document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+		expect(f.search.getAttribute("aria-expanded")).toBe("false");
+		expect(f.view.el.querySelector<HTMLElement>(".recipient-menu")!.hidden).toBe(true);
+		f.search.click();
+		expect(f.search.getAttribute("aria-expanded")).toBe("true");
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
-	it("waits for permission, searches existing agents, and preserves a local setup draft", () => {
+	it("opens an agent's conversation straight from the list, the Co-Founder at home", async () => {
+		const other = { ...staff, id: id(92), displayName: "Second agent", role: "Research" },
+			cofounder = { ...staff, id: id(93), displayName: "Co-Founder", templateId: "co-founder" };
+		const f = setupNew({}, [cofounder, staff, other]);
+		await settle();
+		f.search.focus();
+		choice(f.view.el, other.id).click();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/staff/${other.id}`);
+		choice(f.view.el, cofounder.id).click();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}`);
+		input(f.view.el, "Search conversation recipients", "fixture");
+		expect(choices(f.view.el)).toEqual(["create", "group", staff.id]);
+		// Typing highlights the first match, so Enter opens it.
+		expect(f.search.getAttribute("aria-activedescendant")).toBe(choice(f.view.el, staff.id).id);
+		expect(press(f.search, "Enter").defaultPrevented).toBe(true);
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/staff/${staff.id}`);
+		expect(f.cloud.rpc).not.toHaveBeenCalled();
+	});
+	it("moves through the list with the arrow keys and closes it with Escape", async () => {
+		const f = setupNew();
+		f.company.store.set({ team });
+		await settle();
+		f.search.focus();
+		expect(f.search.hasAttribute("aria-activedescendant")).toBe(false);
+		press(f.search, "ArrowDown");
+		expect(f.search.getAttribute("aria-activedescendant")).toBe(choice(f.view.el, "create").id);
+		expect(choice(f.view.el, "create").getAttribute("aria-selected")).toBe("true");
+		press(f.search, "ArrowUp");
+		expect(f.search.getAttribute("aria-activedescendant")).toBe(choice(f.view.el, staff.id).id);
+		expect(choice(f.view.el, "create").hasAttribute("aria-selected")).toBe(false);
+		expect(press(f.search, "Escape").defaultPrevented).toBe(true);
+		expect(f.search.getAttribute("aria-expanded")).toBe("false");
+		expect(f.search.hasAttribute("aria-activedescendant")).toBe(false);
+		// With the list already closed, Escape is left to the page.
+		expect(press(f.search, "Escape").defaultPrevented).toBe(false);
+		press(f.search, "ArrowDown");
+		expect(f.search.getAttribute("aria-expanded")).toBe("true");
+	});
+	it("keeps focus and the caret in the field across refreshes and drops a row that disappears", async () => {
+		const f = setupNew();
+		await settle();
+		f.search.focus();
+		for (let step = 0; step < 3; step++) press(f.search, "ArrowDown");
+		const row = choice(f.view.el, staff.id);
+		expect(f.search.getAttribute("aria-activedescendant")).toBe(row.id);
+		f.company.store.set({ activity: [] });
+		await settle();
+		// Activity refreshes neither rebuild the rows nor move the highlight.
+		expect(choice(f.view.el, staff.id)).toBe(row);
+		expect(f.search.getAttribute("aria-activedescendant")).toBe(row.id);
+		f.company.store.set({ staff: [] });
+		await settle();
+		expect(document.activeElement).toBe(f.search);
+		expect(f.search.hasAttribute("aria-activedescendant")).toBe(false);
+		expect(f.view.el.querySelector(".recipient-empty")?.textContent).toBe("No agents yet.");
+		f.search.value = "Fixture";
+		f.search.dispatchEvent(new Event("input"));
+		f.search.setSelectionRange(2, 2);
+		f.company.store.set({ staff: [staff] });
+		await settle();
+		expect(document.activeElement).toBe(f.search);
+		expect(f.search.selectionStart).toBe(2);
+		expect(f.cloud.rpc).not.toHaveBeenCalled();
+	});
+	it("waits for permission, names a new agent from the search, and preserves a local setup draft", async () => {
 		const f = setupNew();
 		expect(parseRoute(`#/c/${profileA.profileId}/new`)).toEqual({
 			name: "company",
 			profileId: profileA.profileId,
 			section: "new",
 		});
-		expect(button(f.view.el, "New agent").disabled).toBe(true);
+		expect(choice(f.view.el, "create").getAttribute("aria-disabled")).toBe("true");
+		choice(f.view.el, "create").click();
+		expect(f.view.el.querySelector("form")).toBeNull();
 		f.company.store.set({ team });
+		await settle();
+		expect(choice(f.view.el, "create").hasAttribute("aria-disabled")).toBe(false);
 		input(f.view.el, "Search conversation recipients", "missing");
-		expect(f.view.el.querySelectorAll(".recipient-card")).toHaveLength(0);
-		button(f.view.el, "New agent").click();
+		expect(choices(f.view.el)).toEqual(["create", "group"]);
+		expect(f.view.el.querySelector(".recipient-empty")?.textContent).toBe("No agents match.");
+		expect(choice(f.view.el, "create").textContent).toBe("New agent “missing”");
+		choice(f.view.el, "create").click();
+		expect(f.view.el.querySelector<HTMLInputElement>('[aria-label="Agent name"]')?.value).toBe("missing");
 		input(f.view.el, "Agent name", "Draft agent");
 		expect(button(f.view.el, "Create agent").disabled).toBe(true);
 		button(f.view.el, "Back").click();
-		button(f.view.el, "New agent").click();
+		expect(document.activeElement).toBe(recipients(f.view.el));
+		expect(recipients(f.view.el).value).toBe("missing");
+		// The member's own name wins over what is typed in the search.
+		choice(f.view.el, "create").click();
 		expect(f.view.el.querySelector<HTMLInputElement>('[aria-label="Agent name"]')?.value).toBe("Draft agent");
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
@@ -459,7 +546,7 @@ describe("new conversation and agent setup", () => {
 		const f = setupNew({ createAgent });
 		f.company.store.set({ team });
 		await settle();
-		button(f.view.el, "New agent").click();
+		choice(f.view.el, "create").click();
 		input(f.view.el, "Agent name", "New agent");
 		input(f.view.el, "Agent title", "Research");
 		for (let index = 0; index < 2; index++)
