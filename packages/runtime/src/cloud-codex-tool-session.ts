@@ -1,7 +1,7 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { lstat, mkdir, mkdtemp, readdir, realpath, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -723,6 +723,13 @@ export async function runCloudCodexToolSession(options: {
 				mkdir(path, { mode: 0o700 }),
 			),
 		);
+		// Generate one host-owned bootstrap and explicitly load these exact bytes.
+		// Ambient project/home instruction discovery remains disabled: a Company
+		// File or restored auth home must never add a second platform prompt.
+		const nativeInstructions = [CLOUD_TOOL_RESULT_INSTRUCTIONS, options.runtimeInstructions]
+			.filter(Boolean)
+			.join("\n");
+		await writeFile(join(workspace, "AGENTS.md"), nativeInstructions, { mode: 0o400, flag: "wx" });
 		signal.throwIfAborted();
 		stage = "codex-result-fence";
 		fence = await startCloudNativeResultFence({
@@ -832,9 +839,7 @@ export async function runCloudCodexToolSession(options: {
 				approvalPolicy: "never",
 				approvalsReviewer: "user",
 				sandbox: "read-only",
-				developerInstructions: [CLOUD_TOOL_RESULT_INSTRUCTIONS, options.runtimeInstructions]
-					.filter(Boolean)
-					.join("\n"),
+				developerInstructions: nativeInstructions,
 				dynamicTools: [options.boundary.specification],
 			}),
 		);

@@ -1,6 +1,7 @@
 const { spawn } = require("node:child_process");
 const { createHash, randomUUID } = require("node:crypto");
-const { writeFileSync } = require("node:fs");
+const { readFileSync, statSync, writeFileSync } = require("node:fs");
+const { join } = require("node:path");
 const { connect } = require("node:net");
 const { createInterface } = require("node:readline");
 
@@ -102,6 +103,14 @@ async function handle(message) {
 		write({ id: message.id, result: { data: [{ skills: mode === "extra-skills" ? [{ name: "PRIVATE_UNCONTROLLED_SKILL" }] : [], errors: [] }] } });
 	} else if (message.method === "thread/start") {
 		threadParameters = message.params;
+		if (mode === "bootstrap") {
+			const path = join(message.params.cwd, "AGENTS.md");
+			writeFileSync(evidencePath, JSON.stringify({
+				bootstrap: readFileSync(path, "utf8"),
+				mode: statSync(path).mode & 0o777,
+				threadParameters,
+			}));
+		}
 		if (mode === "prewarm-before-thread") await fence([], { turnId: "", purpose: "prewarm" });
 		write({ id: message.id, result: { thread: { id: threadId } } });
 	} else if (message.method === "turn/start") {

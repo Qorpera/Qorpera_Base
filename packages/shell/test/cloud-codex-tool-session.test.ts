@@ -30,6 +30,7 @@ function run(
 	options: {
 		timeoutMs?: number;
 		identityRoot?: string;
+		runtimeInstructions?: string;
 		signal?: AbortSignal;
 		binarySha256?: string;
 		isolation?: nativeIsolation.NativeIsolationConfiguration;
@@ -94,6 +95,18 @@ it.each(["response-first", "notify-first", "fence-before-started", "prewarm-befo
 
 it("rejects an unpatched binary before creating a thread", async () => {
 	await expect(run("missing-fence").result).rejects.toThrow("missing native result fence");
+});
+
+it("loads the exact host-generated AGENTS.md bytes without enabling ambient instructions", async () => {
+	const { result, evidence } = run("bootstrap", { runtimeInstructions: "HOST_OWNED_CONSTITUTION" });
+	await result;
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	expect(recorded.bootstrap).toBe(recorded.threadParameters.developerInstructions);
+	expect(recorded.bootstrap).toContain("HOST_OWNED_CONSTITUTION");
+	expect(recorded.bootstrap).not.toContain("Private test input");
+	expect(recorded.mode).toBe(0o400);
+	expect(CLOUD_CODEX_BOUNDARY_CONFIG).toContain("project_doc_max_bytes=0");
+	await expect(stat(recorded.threadParameters.cwd)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
 it.each(["capture-image", "response-first"])(

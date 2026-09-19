@@ -9,8 +9,8 @@ import {
 	observeCloudCompanyPathPresence,
 } from "./cloud-company-path-presence.ts";
 import {
-	CLOUD_COMPANY_RUNTIME_INSTRUCTIONS,
 	cloudCompanyContextTool,
+	compileCloudNativeCompanyInstructions,
 	composeCloudNativeCompanyPrompt,
 	parseCloudNativeCompanyContext,
 } from "./cloud-native-company-context.ts";
@@ -264,7 +264,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					identityRoot,
 					isolation: this.#isolation,
 					prompt,
-					runtimeInstructions: CLOUD_COMPANY_RUNTIME_INSTRUCTIONS,
+					runtimeInstructions: compileCloudNativeCompanyInstructions(context, wake),
 					signal,
 					timeoutMs: this.#timeoutMs,
 					tools: async (identity, operations, run) => {

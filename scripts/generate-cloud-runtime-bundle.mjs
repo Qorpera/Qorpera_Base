@@ -7,9 +7,9 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260919233000_runtime_bundle_activation_v36.sql";
-const activationVersion = 36;
-const previousActivationVersion = 35;
+const activation = "supabase/migrations/20260919235000_runtime_bundle_activation_v37.sql";
+const activationVersion = 37;
+const previousActivationVersion = 36;
 const manifestPath = "deploy/first-node/native-codex/runtime-bundle-manifest.json";
 const sha = (text) => createHash("sha256").update(text).digest("hex");
 
@@ -134,11 +134,11 @@ export async function cloudRuntimeBundle(root = repository) {
 		nativeBinarySha256: native.artifact.sha256,
 		components: {
 			kernel: component(runtime(["cloud-native-company-runtime", "cloud-native-run-tool-session"])),
-			constitution: component(runtime(["cloud-native-company-context", "cloud-agent-mouth", "cloud-native-tool-boundary"])),
+			constitution: component(runtime(["cloud-runtime-constitution"])),
 			toolCatalog: component(runtime(["cloud-company-path-gateway", "cloud-secret-tools", "cloud-native-company-runtime", "cloud-wake-bus", "cloud-responsibility-tools"])),
 			wakeAndSilence: component(runtime(["cloud-native-company-runtime", "cloud-agent-mouth", "cloud-wake-bus", "cloud-responsibility-tools"])),
-			contextComposer: component(runtime(["cloud-native-company-context", "cloud-company-path-gateway"])),
-			providerBootstrap: component(runtime(["cloud-codex-tool-session", "cloud-native-provider-host", "lxd-runner-bootstrap-main"])),
+			contextComposer: component(runtime(["cloud-native-company-context", "cloud-runtime-hire-overlays", "cloud-company-path-gateway"])),
+			providerBootstrap: component(runtime(["cloud-codex-tool-session", "cloud-native-company-context", "cloud-runtime-constitution", "cloud-runtime-hire-overlays", "cloud-native-provider-host", "lxd-runner-bootstrap-main"])),
 			authorization: component([...files.keys()].filter((path) => path.startsWith("supabase/migrations/"))),
 			inboundSafety: component(runtime(["cloud-native-result-fence", "cloud-native-tool-boundary"])),
 			outboundSafety: component(runtime(["cloud-native-tool-operations", "cloud-secret-tools", "cloud-company-path-gateway"])),
