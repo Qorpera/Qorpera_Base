@@ -17,7 +17,7 @@ describe.skipIf(!binary)("pinned downstream native artifact (requires QORPERA_CO
 			expect(proof).toEqual({
 				platform: process.platform,
 				codexVersion: "0.147.0",
-				providerModel: model === "provider-default" ? "gpt-5.6-sol" : model,
+				providerModel: model === "provider-default" ? "gpt-6-astra" : model,
 				toolInventory: ["qorpera.read_document", "qorpera.send_message"],
 				forcedBypassesDenied: 22,
 				canonicalBytesUnchanged: true,

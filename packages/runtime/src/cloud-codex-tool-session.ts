@@ -831,7 +831,7 @@ export async function runCloudCodexToolSession(options: {
 		rpc.startThread();
 		const started = object(
 			await rpc.request("thread/start", {
-				...(options.model === "provider-default" ? {} : { model: options.model }),
+				model: options.model === "provider-default" ? "gpt-6-astra" : options.model,
 				cwd: workspace,
 				runtimeWorkspaceRoots: [],
 				environments: [],

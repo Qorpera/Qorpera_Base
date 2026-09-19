@@ -28,6 +28,7 @@ afterEach(async () => {
 function run(
 	mode: string,
 	options: {
+		model?: string;
 		timeoutMs?: number;
 		identityRoot?: string;
 		runtimeInstructions?: string;
@@ -95,6 +96,19 @@ it.each(["response-first", "notify-first", "fence-before-started", "prewarm-befo
 
 it("rejects an unpatched binary before creating a thread", async () => {
 	await expect(run("missing-fence").result).rejects.toThrow("missing native result fence");
+});
+
+it.each([
+	["provider-default", "gpt-6-astra"],
+	["gpt-5.6-sol", "gpt-5.6-sol"],
+])("starts native threads with model %s and low effort", async (model, expectedModel) => {
+	const { result, evidence } = run("model-selection", { model });
+	await result;
+	expect(JSON.parse(await readFile(evidence, "utf8"))).toMatchObject({
+		threadParameters: { model: expectedModel },
+		turnParameters: { effort: "low" },
+		configuration: { model_reasoning_effort: "low" },
+	});
 });
 
 it("loads the exact host-generated AGENTS.md bytes without enabling ambient instructions", async () => {
