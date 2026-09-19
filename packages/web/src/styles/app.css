@@ -48,13 +48,31 @@ label > input, label > select { font-weight: 400; }
 .frame { display: flex; flex-direction: column; height: 100%; background: var(--bg); font-family: var(--font-sans); }
 .body { position: relative; display: flex; flex: 1; min-height: 0; }
 
-/* A compact company-scoped surface for control-plane updates, without an inbox. */
-.execution-notices { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; max-height: 30dvh; overflow: auto; padding: 10px 16px; border-bottom: 1px solid var(--border-strong); background: var(--warning-soft); color: var(--text); }
-.execution-notices[hidden] { display: none; }
-.execution-notice-copy { display: flex; flex: 1 1 320px; flex-direction: column; gap: 2px; overflow-wrap: anywhere; font-size: 13px; }
-.execution-notice-actions { display: flex; flex-wrap: wrap; gap: 6px; }
-.execution-notice-actions [aria-disabled="true"] { opacity: 0.5; cursor: default; }
-.execution-notice-error { flex: 1 1 320px; margin: 0; font-size: 13px; }
+/* One viewport stack keeps company and conversation notifications off the layout. */
+.notification-stack {
+	position: fixed; top: max(12px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); z-index: 100;
+	display: flex; flex-direction: column; gap: 8px; width: min(380px, calc(100% - 24px));
+	pointer-events: none;
+}
+.execution-notices[hidden], .run-notification[hidden] { display: none; }
+.notification-card, .notification-ghost {
+	display: flex; align-items: center; gap: 8px; min-height: 52px; padding: 6px 6px 6px 16px;
+	border: 1px solid var(--border-strong); border-radius: var(--radius-lg);
+	background: color-mix(in srgb, var(--overlay) 86%, transparent); color: var(--text);
+	backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16); pointer-events: auto;
+}
+.notification-ghost { position: absolute; margin: 0; pointer-events: none; }
+.notification-error { border-color: color-mix(in srgb, var(--danger) 38%, transparent); }
+.notification-indicator { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
+.notification-title { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
+.notification-close {
+	display: grid; place-items: center; flex: none; width: 36px; height: 36px; padding: 0;
+	border: 0; border-radius: 9px; background: transparent; color: var(--text-muted); cursor: pointer;
+}
+.notification-close:hover { background: var(--hover); color: var(--text); }
+.notification-close .icon { width: 16px; height: 16px; }
+.notification-close[aria-disabled="true"] { opacity: 0.5; cursor: default; }
 
 /* buttons */
 .btn {
