@@ -65,10 +65,10 @@ describe("group chat identity", () => {
 			expect(root.querySelector(".group-chat-avatar svg")?.outerHTML).toBe(icon("friends").outerHTML);
 			expect(root.querySelector(".figure")).toBeNull();
 		}
-		expect(identity.getAttribute("aria-label")).toBe(`${group.title} · Group chat`);
-		expect(identity.disabled).toBe(true);
-		expect(identity.hasAttribute("aria-haspopup")).toBe(false);
-		expect(identity.hasAttribute("aria-expanded")).toBe(false);
+		expect(identity.getAttribute("aria-label")).toBe("Open group details");
+		expect(identity.disabled).toBe(false);
+		expect(identity.getAttribute("aria-haspopup")).toBe("dialog");
+		expect(identity.getAttribute("aria-expanded")).toBe("false");
 		expect(view.el.querySelector<HTMLButtonElement>(".thread-computer")?.hidden).toBe(true);
 		expect(view.el.querySelector(".thread-status")?.textContent).toContain("respond in this group chat");
 		expect(view.el.textContent).not.toContain("team rooms");

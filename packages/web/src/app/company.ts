@@ -1,6 +1,7 @@
 import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import type { CloudApi } from "../cloud/api.ts";
 import { CloudRpcError, describeError } from "../cloud/client.ts";
+import { type GroupChatDetails, readGroupChatDetails } from "../cloud/group-details.ts";
 import { buildCompanyHierarchy, type CompanyHierarchy, type HostedCompanyOrganization } from "../cloud/organization.ts";
 import { UUID_PATTERN } from "../cloud/parse.ts";
 import {
@@ -401,6 +402,32 @@ export class CompanyController {
 	#recheckRecovery(runId: string): void {
 		const entry = this.#recoveryReads.get(runId);
 		if (entry) entry.due = 0;
+	}
+
+	async groupDetails(sessionId: string, viewSignal: AbortSignal): Promise<GroupChatDetails> {
+		const signal = AbortSignal.any([this.signal, viewSignal]);
+		const current = () => {
+			signal.throwIfAborted();
+			const state = this.store.get();
+			const session = state.sessions.find((item) => item.sessionId === sessionId);
+			if (
+				state.accessLost ||
+				!state.team?.capabilities.read ||
+				state.team.profileId !== this.profile.profileId ||
+				!session ||
+				session.staffAgentId ||
+				typeof session.executionScope?.roomId !== "string" ||
+				session.profileId !== this.profile.profileId ||
+				session.environmentId !== this.profile.environmentId
+			)
+				throw new Error("This group chat is no longer available.");
+			return session;
+		};
+		const session = current();
+		const details = await readGroupChatDetails(this.#api.cloud, session, signal);
+		if (current().executionScope?.roomId !== session.executionScope?.roomId)
+			throw new Error("This group chat has changed. Open its details again.");
+		return details;
 	}
 
 	staffById(id: string | undefined): HostedStaffAgent | undefined {

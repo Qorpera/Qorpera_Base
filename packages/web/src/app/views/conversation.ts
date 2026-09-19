@@ -14,6 +14,7 @@ import type { CompanyController, ConversationState, FailedRun } from "../company
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
 import { ComputerPanel } from "./computer.ts";
+import { GroupDetails } from "./group-details.ts";
 import { SessionExecutionView } from "./session-execution.ts";
 import { SessionRunView } from "./session-run.ts";
 
@@ -54,7 +55,7 @@ export class ConversationView {
 	readonly #actions: WorkspaceActions;
 	readonly #run: SessionRunView | undefined;
 	readonly #execution: SessionExecutionView | undefined;
-	#details: AgentDetails | undefined;
+	#details: AgentDetails | GroupDetails | undefined;
 	#panel: ComputerPanel | undefined;
 	#headerKey = "";
 	#renderedKey = "";
@@ -319,26 +320,22 @@ export class ConversationView {
 
 	#openDetails(): void {
 		const state = this.#company.store.get();
-		const agent = this.#company.staffById(
-			state.sessions.find((session) => session.sessionId === this.#sessionId)?.staffAgentId,
-		);
+		const session = state.sessions.find((session) => session.sessionId === this.#sessionId);
+		const agent = this.#company.staffById(session?.staffAgentId);
 		if (this.#details) {
 			this.#details.dialog.close();
 			return;
 		}
-		if (!agent) return;
+		if (this.#company.signal.aborted || state.accessLost || !state.team?.capabilities.read) return;
+		if (!agent && !isGroupChat(session)) return;
 		this.#identity.setAttribute("aria-expanded", "true");
-		this.#details = new AgentDetails(
-			this.#company,
-			agent,
-			this.#actions,
-			() => {
-				this.#details = undefined;
-				this.#identity.setAttribute("aria-expanded", "false");
-			},
-			this.#identity,
-			this.#lifetime.signal,
-		);
+		const closed = () => {
+			this.#details = undefined;
+			this.#identity.setAttribute("aria-expanded", "false");
+		};
+		this.#details = agent
+			? new AgentDetails(this.#company, agent, this.#actions, closed, this.#identity, this.#lifetime.signal)
+			: new GroupDetails(this.#company, this.#sessionId, closed, this.#identity, this.#lifetime.signal);
 	}
 
 	#toggleComputer(): void {
@@ -477,11 +474,16 @@ export class ConversationView {
 		const title = agent?.displayName ?? session?.title ?? "Conversation";
 		const group = isGroupChat(session);
 		const key = JSON.stringify([title, group, agent?.id, agent?.appearance]);
-		this.#identity.disabled = !agent;
+		const state = this.#company.store.get();
+		this.#identity.disabled =
+			(!agent && !group) ||
+			!state.team?.capabilities.read ||
+			Boolean(state.accessLost) ||
+			this.#company.signal.aborted;
 		this.#computer.hidden = !agent;
 		this.#identity.title = title;
-		this.#identity.setAttribute("aria-label", agent ? "Open agent details" : group ? `${title} · Group chat` : title);
-		if (agent) {
+		this.#identity.setAttribute("aria-label", agent ? "Open agent details" : group ? "Open group details" : title);
+		if (agent || group) {
 			this.#identity.setAttribute("aria-haspopup", "dialog");
 			this.#identity.setAttribute("aria-expanded", String(Boolean(this.#details)));
 		} else {
@@ -505,7 +507,7 @@ export class ConversationView {
 			this.#identity,
 			group ? groupChatAvatar() : agentFigure(agent, title, { size: 32 }),
 			h("h1", null, title),
-			agent ? icon("chevron") : null,
+			agent || group ? icon("chevron") : null,
 		);
 	}
 
