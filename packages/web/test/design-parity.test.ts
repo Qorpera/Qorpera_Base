@@ -522,7 +522,12 @@ it("keeps the rail's search field, rows and focus through redraws and pauses the
 	expect(document.activeElement).toBe(rebuilt);
 	// When the focused row goes away, focus moves to the nearest row left, not to the page.
 	otherRow.focus();
-	f.company.store.set({ staff: [{ ...staff, role: "Lead designer" }, { ...other, employmentStatus: "archived" }] });
+	f.company.store.set({
+		staff: [
+			{ ...staff, role: "Lead designer" },
+			{ ...other, employmentStatus: "archived" },
+		],
+	});
 	draw();
 	expect(rail.querySelector(`a[href$="/staff/${other.id}"]`)).toBeNull();
 	expect(document.activeElement).toBe(rebuilt);
