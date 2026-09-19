@@ -1687,6 +1687,10 @@ removal; until it is removed it MUST NOT be reachable from any member client.
   Co-Founder conversation no longer exists: the Co-Founder's thread is shared.
 - **Images.** An agent thread accepts the same attachments as an agent
   session did; team rooms stay text-only.
+- **The thread outlives edits of its agent (added 2026-09-19).** A wake or
+  room delivery runs at the agent's current version and MAY use a thread that
+  was opened at an earlier version of the same agent; a run older than the
+  thread's recorded version is refused. Editing an agent never silences it.
 
 ### 2026-09-18 amendment: who runs an agent's first run
 
