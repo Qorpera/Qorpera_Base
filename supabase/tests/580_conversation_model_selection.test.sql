@@ -17,6 +17,7 @@ set role authenticated;
 
 do $$
 declare v_session uuid := current_setting('qorpera_test.model_room_session')::uuid; v_result jsonb;
+	v_message text; v_detail text;
 begin
 	v_result := public.qorpera_get_session_model(v_session);
 	if v_result ->> 'model_id' <> 'gpt-native' or (v_result ->> 'version')::bigint <> 0 then
@@ -27,7 +28,11 @@ begin
 	begin
 		perform public.qorpera_set_session_model(v_session,'gpt-6-astra',0);
 		raise exception 'stale conversation version accepted';
-	exception when serialization_failure then null; end;
+	exception when sqlstate 'PGRST' then
+		get stacked diagnostics v_message = message_text,v_detail = pg_exception_detail;
+		if v_message::jsonb ->> 'code' <> 'QRC01' or v_detail::jsonb <> '{"status":409,"headers":{}}'::jsonb then
+			raise exception 'conversation conflict did not use the application conflict envelope'; end if;
+	end;
 	begin
 		perform public.qorpera_set_session_model(v_session,'arbitrary-model',1);
 		raise exception 'unsupported conversation model accepted';

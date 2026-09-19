@@ -148,9 +148,9 @@ describe("conversation model transport", () => {
 	it("preserves conflict and permission errors without replaying a write", async () => {
 		const f = setup();
 		f.fetch.mockResolvedValueOnce(
-			Response.json({ code: "40001", message: "Conversation model changed; refresh first." }, { status: 409 }),
+			Response.json({ code: "QRC01", message: "Conversation model changed; refresh first." }, { status: 409 }),
 		);
-		await expect(f.control.set(session.sessionId, "gpt-5.6-sol", 0)).rejects.toMatchObject({ code: "40001" });
+		await expect(f.control.set(session.sessionId, "gpt-5.6-sol", 0)).rejects.toMatchObject({ code: "QRC01" });
 		f.fetch.mockResolvedValueOnce(new Response(null, { status: 403 }));
 		await expect(f.control.set(session.sessionId, "gpt-5.6-sol", 0)).rejects.toBeInstanceOf(CloudRpcError);
 		f.fetch.mockRejectedValueOnce(new Error("Lost response after commit"));

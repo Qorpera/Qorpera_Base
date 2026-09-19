@@ -59,7 +59,9 @@ begin
 		raise exception 'Conversation model is invalid' using errcode = '22023'; end if;
 	select * into v_choice from public.qorpera_session_models where session_id = p_session_id;
 	if coalesce(v_choice.version,0) <> p_expected_version then
-		raise exception 'Conversation model changed; refresh before retrying' using errcode = '40001'; end if;
+		raise sqlstate 'PGRST' using message = jsonb_build_object('code','QRC01',
+			'message','Conversation model changed; refresh before retrying','details',null,'hint',null)::text,
+			detail = '{"status":409,"headers":{}}'; end if;
 	insert into public.qorpera_session_models(session_id,model_id,version,updated_by_user_id)
 	values(p_session_id,p_model_id,p_expected_version + 1,v_user)
 	on conflict(session_id) do update set model_id = excluded.model_id,version = excluded.version,
