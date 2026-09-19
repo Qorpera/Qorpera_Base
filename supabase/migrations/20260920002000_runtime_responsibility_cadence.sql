@@ -220,3 +220,12 @@ begin
 	loop perform public.qorpera_sync_responsibility_cadence(v_id); end loop;
 end
 $$;
+
+-- No function here is callable by default: PostgreSQL grants EXECUTE to PUBLIC on creation, and the secret
+-- broker must keep exactly its three custody calls (306_governed_company_computer_privileges).
+revoke all on function public.qorpera_responsibility_cadence_minutes(text) from public, anon, authenticated, qorpera_secret_broker;
+revoke all on function public.qorpera_unattended_sponsor(uuid, uuid, uuid) from public, anon, authenticated, qorpera_secret_broker;
+revoke all on function public.qorpera_put_system_routine_version(uuid, uuid, text, text, jsonb, uuid, bigint, uuid) from public, anon, authenticated, qorpera_secret_broker;
+revoke all on function public.qorpera_sync_responsibility_cadence(uuid) from public, anon, authenticated, qorpera_secret_broker;
+revoke all on function public.qorpera_responsibility_cadence_changed() from public, anon, authenticated, qorpera_secret_broker;
+revoke all on function public.qorpera_unattended_account_available() from public, anon, authenticated, qorpera_secret_broker;

@@ -56,3 +56,8 @@ begin
 	end if;
 end
 $$;
+
+-- No function here is callable by default: PostgreSQL grants EXECUTE to PUBLIC on creation, and the secret
+-- broker must keep exactly its three custody calls (306_governed_company_computer_privileges).
+revoke all on function public.qorpera_company_path_allowed(jsonb, text, text) from public, anon, authenticated, qorpera_secret_broker;
+revoke all on function public.qorpera_company_path_allowed_before_hiring(jsonb, text, text) from public, anon, authenticated, qorpera_secret_broker;

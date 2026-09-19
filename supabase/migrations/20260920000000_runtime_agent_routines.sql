@@ -405,3 +405,15 @@ grant execute on function public.qorpera_drain_company_file_wakes(integer) to se
 revoke all on function public.qorpera_drain_company_file_wakes_before_lifecycle(integer)
 	from public, anon, authenticated, service_role;
 grant execute on function public.qorpera_drain_company_file_wakes_before_lifecycle(integer) to service_role;
+
+-- No function here is callable by default: PostgreSQL grants EXECUTE to PUBLIC on creation, and the secret
+-- broker must keep exactly its three custody calls (306_governed_company_computer_privileges).
+revoke all on function public.qorpera_agent_routine_sponsor(public.qorpera_execution_runs) from public, anon, authenticated, qorpera_secret_broker;
+revoke all on function public.qorpera_agent_routine_view(public.qorpera_cloud_routines) from public, anon, authenticated, qorpera_secret_broker;
+revoke all on function public.qorpera_manage_agent_routine(jsonb, jsonb) from public, anon, authenticated, qorpera_secret_broker;
+revoke all on function public.qorpera_expire_cloud_routines() from public, anon, authenticated, qorpera_secret_broker;
+revoke all on function public.qorpera_routine_occurrence_lifecycle() from public, anon, authenticated, qorpera_secret_broker;
+revoke all on function public.qorpera_routine_occurrence_recorded() from public, anon, authenticated, qorpera_secret_broker;
+revoke all on function public.qorpera_routine_authorization_outcome() from public, anon, authenticated, qorpera_secret_broker;
+revoke all on function public.qorpera_drain_company_file_wakes(integer) from public, anon, authenticated, qorpera_secret_broker;
+revoke all on function public.qorpera_drain_company_file_wakes_before_lifecycle(integer) from public, anon, authenticated, qorpera_secret_broker;

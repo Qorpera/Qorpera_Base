@@ -116,7 +116,7 @@ against three sales hires that conflict with direction.
 
 ## Bundle
 
-Runtime bundle v38, `50078458e19a2ed989dfbff3b999d73cac3ff903387c7411c3f9c6bbbfbff630`
+Runtime bundle v38, `6d3c9d2b7dc1738464b9aeb7b3ba39836962ac3d3f270106e4a1df7cad9bff2f`
 (`20260920003000_runtime_bundle_activation_v38.sql`). Guest artifact pinned from a
 Linux x64 build on `company41-node-02`: `qorpera-native-provider-host.mjs`,
 1,338,913 bytes, `78ff4f0172804a896befeffefae1a12d279c44a96f5c73de8b53b6c1f4357313`.
