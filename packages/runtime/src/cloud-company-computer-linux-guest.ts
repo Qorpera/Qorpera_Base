@@ -195,9 +195,16 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 			const startup = AbortSignal.any([this.#stop.signal, current.stop.signal]);
 			current.opening = (async () => {
 				await current.lifecycle?.requested(startup);
+				// The backdrop is the agent's own avatar. An office whose database has
+				// not yet learned this read keeps the id-derived figure; a missing
+				// avatar never blocks the desktop.
+				const appearance = await this.#sharedControl.appearance(binding, startup).catch(() => undefined);
+				startup.throwIfAborted();
 				await prepareCompanyComputerScreenWallpaper(
 					{
 						binding,
+						creature: appearance?.creature,
+						templateId: appearance?.templateId,
 						layout: this.#options.layout,
 						timeZone: this.#options.desktopTimeZone,
 						boundary: {

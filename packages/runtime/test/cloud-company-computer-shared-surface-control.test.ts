@@ -52,4 +52,36 @@ describe("shared desktop lifetime authority", () => {
 		vi.spyOn(performance, "now").mockReturnValueOnce(100).mockReturnValue(5100);
 		await expect(f.control.check(computerBinding(), f.signal)).rejects.toThrow("SHARED_SURFACE_UNCONFIRMED");
 	});
+	it("reads exactly the two saved avatar fields for the bound screen and nothing else", async () => {
+		const f = fixture();
+		f.call.mockResolvedValue({ creature: "rocket", templateId: null });
+		await expect(f.control.appearance(computerBinding(), f.signal)).resolves.toEqual({
+			creature: "rocket",
+			templateId: undefined,
+		});
+		expect(f.call).toHaveBeenCalledExactlyOnceWith(
+			"qorpera_runtime_office_screen_appearance",
+			{ p_binding: computerBinding() },
+			expect.any(AbortSignal),
+		);
+		for (const response of [
+			null,
+			[],
+			{ creature: "rocket" },
+			{ creature: "rocket", templateId: null, displayName: "not an avatar field" },
+			{ creature: 7, templateId: null },
+			{ creature: "", templateId: null },
+			{ creature: null, templateId: "x".repeat(257) },
+		]) {
+			f.call.mockResolvedValue(response);
+			await expect(f.control.appearance(computerBinding(), f.signal)).rejects.toThrow(
+				"SCREEN_APPEARANCE_UNCONFIRMED",
+			);
+		}
+		f.call.mockClear();
+		await expect(f.control.appearance({ ...computerBinding(), computerGeneration: 2 }, f.signal)).rejects.toThrow(
+			"OFFICE_GENERATION_MISMATCH",
+		);
+		expect(f.call).not.toHaveBeenCalled();
+	});
 });

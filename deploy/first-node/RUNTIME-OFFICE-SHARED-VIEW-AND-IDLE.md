@@ -44,6 +44,14 @@ The new explicit mapping keeps guest asset identities independent of UI names.
 Packaging checks the complete static and hourly wallpaper inventory, and the
 desktop regression prepares every current avatar against the checked-in PNGs.
 
+That first table followed the old template-to-name list, not the figures inside
+the files, so every desktop showed another agent's avatar (the file named
+`folio` draws the acorn, `brain` the planet, and so on). The table now follows
+the traced figure in each template and a regression test compares it with the
+baked avatar paths. The guest service also reads the agent's saved avatar for
+the bound screen, so the agent-id hash is only a fallback. No artwork changed:
+an installed office needs only the new service file and the new SQL function.
+
 ## Release and acceptance
 
 This is a source candidate, not evidence of an installed production release.

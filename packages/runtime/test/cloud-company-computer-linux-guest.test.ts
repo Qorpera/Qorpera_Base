@@ -102,6 +102,7 @@ async function fixture() {
 	const resources = { officeGrantId: computerId(80), officeGrantVersion: 1, officePrivacyVersion: 0 };
 	const descriptor = { state: "available" as const, scope, capabilities: ["shell" as const], resources };
 	const state = { privacy: "shared", version: 0, epoch: 1 };
+	const appearance = vi.fn((): unknown => ({ creature: "rocket", templateId: "agent-manager" }));
 	const order: string[] = [];
 	const call = vi.fn(async (method: string, args: Record<string, unknown>): Promise<unknown> => {
 		order.push(`${method}:${args.p_action ?? "read"}`);
@@ -111,6 +112,7 @@ async function fixture() {
 		}
 		if (method === "qorpera_check_runtime_office_private_surface")
 			return { state: "authorized", privacyState: state.privacy, version: state.version, validForMs: 5000 };
+		if (method === "qorpera_runtime_office_screen_appearance") return appearance();
 		if (method === "qorpera_native_office_operation") {
 			if (args.p_action === "authorize") return { state: "authorized" };
 			if (args.p_action === "finish") return { state: "drained" };
@@ -211,6 +213,7 @@ async function fixture() {
 		order,
 		boundary,
 		state,
+		appearance,
 		failure,
 		operation,
 		effect,
@@ -247,6 +250,38 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 		await session.endpoint.perform(operation, f.lease, f.effect());
 		expect(displays[0].stop).not.toHaveBeenCalled();
 		expect(physical.launch).toHaveBeenCalledOnce();
+		expect(f.failure).not.toHaveBeenCalled();
+	});
+	it("draws the screen agent's saved avatar, and an office that cannot read it still starts its desktop", async () => {
+		const f = await fixture();
+		const session = await f.create();
+		await session.endpoint.perform(f.operation({ kind: "screen", action: "open" }), f.lease, f.effect());
+		expect(physical.prepare).toHaveBeenCalledOnce();
+		expect(physical.prepare.mock.calls[0][0]).toMatchObject({
+			binding: f.binding,
+			creature: "rocket",
+			templateId: "agent-manager",
+		});
+		await f.guest.stopResources(f.binding, new AbortController().signal);
+		// A database without the read (or a malformed answer) leaves both fields
+		// unset, so the preparation derives the figure from the agent id.
+		f.appearance.mockImplementation(() => ({ creature: "rocket", templateId: "agent-manager", extra: true }));
+		await f.guest.viewer.connect(
+			{
+				binding: f.binding,
+				viewerSessionId: computerId(90),
+				memberId: computerId(91),
+				mode: "shared",
+				privacyVersion: 0,
+				screenEpoch: 1,
+				validForMs: 30000,
+			},
+			f.run.signal,
+		);
+		expect(physical.prepare).toHaveBeenCalledTimes(2);
+		expect(physical.prepare.mock.calls[1][0].creature).toBeUndefined();
+		expect(physical.prepare.mock.calls[1][0].templateId).toBeUndefined();
+		expect(physical.launch).toHaveBeenCalledTimes(2);
 		expect(f.failure).not.toHaveBeenCalled();
 	});
 	it("retains both pulse and physical drain failures in safe fatal diagnostics", async () => {

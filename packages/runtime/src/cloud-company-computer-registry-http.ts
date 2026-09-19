@@ -26,6 +26,7 @@ const methods = [
 	"qorpera_ack_runtime_office_privacy",
 	"qorpera_check_runtime_office_private_surface",
 	"qorpera_check_runtime_office_shared_surface",
+	"qorpera_runtime_office_screen_appearance",
 	"qorpera_check_runtime_office_guest_binding",
 	"qorpera_runtime_office_privacy_status",
 	"qorpera_runtime_office_supervisor_status",

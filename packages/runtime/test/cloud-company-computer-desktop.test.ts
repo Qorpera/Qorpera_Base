@@ -8,6 +8,7 @@ import { assertCompanyComputerScreenBinding } from "@qorpera/cloud-client/cloud-
 import { STAFF_CHARACTER_BY_TEMPLATE, STAFF_CHARACTER_IDS } from "@qorpera/cloud-client/staff-characters";
 import {
 	COMPANY_COMPUTER_SCREEN_HOURS,
+	companyComputerScreenCharacter,
 	companyComputerScreenCreature,
 	isCompanyComputerScreenTimeZone,
 	prepareCompanyComputerScreenWallpaper,
@@ -61,11 +62,45 @@ describe("restored agent wallpaper preparation (synthetic image bytes, local fil
 		for (const character of binding.staffAgentId) seed = (seed * 31 + character.charCodeAt(0)) >>> 0;
 		for (const template of [undefined, "unknown-template", "__proto__", "../../outside"])
 			expect(companyComputerScreenCreature(binding, template)).toBe(
-				COMPANY_COMPUTER_WALLPAPER_IDS[seed % COMPANY_COMPUTER_WALLPAPER_IDS.length],
+				COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER[STAFF_CHARACTER_IDS[seed % STAFF_CHARACTER_IDS.length]],
 			);
-		expect(companyComputerScreenCreature(binding, "agent-manager", "flame")).toBe("bloom");
-		expect(companyComputerScreenCreature(binding, "agent-manager", "../../outside")).toBe("brain");
+		// The same walk the clients use (`figureFor`), so an agent nobody has
+		// dressed yet shows the same figure on its desktop as in its avatar.
+		expect(companyComputerScreenCharacter(binding)).toBe(STAFF_CHARACTER_IDS[seed % STAFF_CHARACTER_IDS.length]);
+		expect(companyComputerScreenCharacter(binding, "co-founder")).toBe("crown");
+		expect(companyComputerScreenCreature(binding, "agent-manager", "flame")).toBe("ribbon");
+		expect(companyComputerScreenCreature(binding, "agent-manager", "../../outside")).toBe("halo");
 		expect(() => companyComputerScreenCreature({ ...binding, screenOrdinal: 33 })).toThrow("SCREEN_BINDING_MISMATCH");
+	});
+
+	it("maps every avatar to the installed file that actually draws it", async () => {
+		// The file names are historical; the figure inside each template is the
+		// traced path of a current avatar. Pin the table to the art itself.
+		const baked = await readFile(
+			fileURLToPath(new URL("../../web/public/assets/avatars/vector-baked.js", import.meta.url)),
+			"utf8",
+		);
+		const figures = (
+			JSON.parse(baked.slice(baked.indexOf("Object.freeze(") + 14, baked.lastIndexOf(")"))) as {
+				figures: Record<string, { d: string }>;
+			}
+		).figures;
+		expect(Object.keys(figures).sort()).toEqual([...STAFF_CHARACTER_IDS].sort());
+		const drawn = new Set<string>();
+		for (const character of STAFF_CHARACTER_IDS) {
+			const asset = COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER[character];
+			const template = await readFile(
+				fileURLToPath(
+					new URL(`../../../deploy/lxd-company-computer-guest/backdrops-source/${asset}.html`, import.meta.url),
+				),
+				"utf8",
+			);
+			expect(template.match(/<path d="([^"]+)"/)?.[1], `${character} is drawn by ${asset}`).toBe(
+				figures[character].d,
+			);
+			drawn.add(asset);
+		}
+		expect([...drawn].sort()).toEqual([...COMPANY_COMPUTER_WALLPAPER_IDS].sort());
 	});
 
 	it("prepares every current avatar from the actual packaged guest artwork", async () => {
@@ -91,9 +126,9 @@ describe("restored agent wallpaper preparation (synthetic image bytes, local fil
 		const first = await prepareCompanyComputerScreenWallpaper(fixture, signal);
 		expect(first).toEqual({
 			wallpaper: join(fixture.layout.screenStateRoot, computerId(6), "wallpaper.png"),
-			creature: "brain",
+			creature: "halo",
 		});
-		expect(await readFile(first.wallpaper, "utf8")).toBe("synthetic brain image bytes");
+		expect(await readFile(first.wallpaper, "utf8")).toBe("synthetic halo image bytes");
 		expect((await stat(first.wallpaper)).mode & 0o777).toBe(0o600);
 		const config = join(fixture.layout.screenStateRoot, computerId(6), "config");
 		await mkdir(config);
@@ -103,11 +138,11 @@ describe("restored agent wallpaper preparation (synthetic image bytes, local fil
 			signal,
 		);
 		expect(next.wallpaper).toBe(first.wallpaper);
-		expect(next.creature).toBe("wisp");
-		expect(await readFile(next.wallpaper, "utf8")).toBe("synthetic wisp image bytes");
+		expect(next.creature).toBe("pebble");
+		expect(await readFile(next.wallpaper, "utf8")).toBe("synthetic pebble image bytes");
 		expect(await readFile(join(config, "persistent.xml"), "utf8")).toBe("preserved setting");
 		await prepareCompanyComputerScreenWallpaper({ ...fixture, creature: "flame" }, signal);
-		expect(await readFile(next.wallpaper, "utf8")).toBe("synthetic bloom image bytes");
+		expect(await readFile(next.wallpaper, "utf8")).toBe("synthetic ribbon image bytes");
 		expect((await readdir(join(fixture.layout.screenStateRoot, computerId(6)))).sort()).toEqual([
 			"config",
 			"wallpaper.png",
@@ -118,12 +153,12 @@ describe("restored agent wallpaper preparation (synthetic image bytes, local fil
 		const fixture = await desktopFixture();
 		const signal = new AbortController().signal;
 		for (const hour of COMPANY_COMPUTER_SCREEN_HOURS)
-			await writeFile(join(fixture.imageRoot, `qorpera-screen-brain-${hour}.png`), `synthetic brain ${hour}`);
+			await writeFile(join(fixture.imageRoot, `qorpera-screen-halo-${hour}.png`), `synthetic halo ${hour}`);
 		const screen = join(fixture.layout.screenStateRoot, computerId(6));
 		const staged = await prepareCompanyComputerScreenWallpaper({ ...fixture, timeZone: "Europe/Copenhagen" }, signal);
 		expect(staged).toEqual({
 			wallpaper: join(screen, "wallpaper.png"),
-			creature: "brain",
+			creature: "halo",
 			backdrops: join(screen, "backdrops"),
 		});
 		expect((await readdir(screen)).sort()).toEqual(["backdrops", "time-zone", "wallpaper.png"]);
@@ -132,12 +167,12 @@ describe("restored agent wallpaper preparation (synthetic image bytes, local fil
 		expect((await readdir(join(screen, "backdrops"))).sort()).toEqual(
 			COMPANY_COMPUTER_SCREEN_HOURS.map((hour) => `${hour}.png`),
 		);
-		expect(await readFile(join(screen, "backdrops", "19.png"), "utf8")).toBe("synthetic brain 19");
+		expect(await readFile(join(screen, "backdrops", "19.png"), "utf8")).toBe("synthetic halo 19");
 		expect((await stat(join(screen, "backdrops", "19.png"))).mode & 0o777).toBe(0o600);
 		// A partial hourly set (an older or damaged image) falls back to the static wallpaper.
-		await rm(join(fixture.imageRoot, "qorpera-screen-brain-07.png"));
+		await rm(join(fixture.imageRoot, "qorpera-screen-halo-07.png"));
 		const withdrawn = await prepareCompanyComputerScreenWallpaper(fixture, signal);
-		expect(withdrawn).toEqual({ wallpaper: join(screen, "wallpaper.png"), creature: "brain" });
+		expect(withdrawn).toEqual({ wallpaper: join(screen, "wallpaper.png"), creature: "halo" });
 		expect((await readdir(screen)).sort()).toEqual(["wallpaper.png"]);
 		for (const zone of ["Europe/Copenhagen; rm -rf /", "../../etc", "", "x".repeat(65)])
 			await expect(prepareCompanyComputerScreenWallpaper({ ...fixture, timeZone: zone }, signal)).rejects.toThrow(
@@ -159,7 +194,7 @@ describe("restored agent wallpaper preparation (synthetic image bytes, local fil
 		await expect(
 			prepareCompanyComputerScreenWallpaper({ ...fixture, templateId: "software-developer" }, signal),
 		).rejects.toThrow("STALE_BINDING");
-		expect(await readFile(wallpaper, "utf8")).toBe("synthetic brain image bytes");
+		expect(await readFile(wallpaper, "utf8")).toBe("synthetic halo image bytes");
 		expect(await readdir(join(fixture.layout.screenStateRoot, computerId(6)))).toEqual(["wallpaper.png"]);
 	});
 
@@ -179,7 +214,7 @@ describe("restored agent wallpaper preparation (synthetic image bytes, local fil
 		const fixture = await desktopFixture();
 		const outside = join(fixture.root, "outside");
 		if (alias === "image") {
-			const source = join(fixture.imageRoot, "qorpera-screen-brain.png");
+			const source = join(fixture.imageRoot, "qorpera-screen-halo.png");
 			await writeFile(outside, "outside bytes");
 			await rm(source);
 			await symlink(outside, source);

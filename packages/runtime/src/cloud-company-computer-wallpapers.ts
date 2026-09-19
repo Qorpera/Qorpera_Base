@@ -1,6 +1,10 @@
 import type { StaffCharacterId } from "@qorpera/cloud-client/staff-characters";
 
-/** Guest image assets have stable names and ordering independent of UI avatars. */
+/**
+ * Guest image assets keep the file names every installed office image already
+ * carries. The names are historical; the figure drawn in each file is one of the
+ * current avatars (see `deploy/lxd-company-computer-guest/backdrops-source`).
+ */
 export const COMPANY_COMPUTER_WALLPAPER_IDS = Object.freeze([
 	"pebble",
 	"folio",
@@ -13,14 +17,20 @@ export const COMPANY_COMPUTER_WALLPAPER_IDS = Object.freeze([
 
 export type CompanyComputerWallpaperId = (typeof COMPANY_COMPUTER_WALLPAPER_IDS)[number];
 
+/**
+ * Which installed file draws which avatar. This follows the traced figure inside
+ * each template, not the old template-to-name table: `brain.html` holds the
+ * planet silhouette, `folio.html` the acorn, and so on. A regression test pins
+ * every entry to the baked avatar path so the two cannot drift apart again.
+ */
 export const COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER = Object.freeze({
-	planet: "folio",
-	acorn: "pebble",
-	flame: "bloom",
-	rocket: "wisp",
-	crown: "brain",
-	heart: "ribbon",
-	ghost: "halo",
+	planet: "brain",
+	acorn: "folio",
+	flame: "ribbon",
+	rocket: "pebble",
+	crown: "halo",
+	heart: "bloom",
+	ghost: "wisp",
 } satisfies Readonly<Record<StaffCharacterId, CompanyComputerWallpaperId>>);
 
 /** Hourly frames follow the image name with the two-digit local hour. */
