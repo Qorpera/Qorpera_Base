@@ -1375,8 +1375,22 @@ export function validateCloudRunnerWork(work: CloudRunnerWork): void {
 	) {
 		throw new Error("Runner job payload is invalid");
 	}
-	// A room delivery is caused by a member post, like a session turn; only autonomous kinds need consent.
-	if (work.sourceKind !== "session_turn" && work.sourceKind !== "room_delivery" && !work.sponsor.allowAutonomous) {
+	// Coding dispatch is a SQL-authorized continuation of the original member
+	// request. Its exact claim route checks current parent ancestry and sponsor;
+	// generic claims exclude this schema. A shape alone is not remote authority.
+	const codingContinuation =
+		work.sourceKind === "wake" &&
+		Object.keys(work.payload).sort().join() === "occurrenceId,requestId,schema" &&
+		work.payload.schema === "qorpera.coding-run/v1" &&
+		typeof work.payload.requestId === "string" &&
+		UUID_PATTERN.test(work.payload.requestId) &&
+		work.payload.occurrenceId === work.sourceId;
+	if (
+		work.sourceKind !== "session_turn" &&
+		work.sourceKind !== "room_delivery" &&
+		!codingContinuation &&
+		!work.sponsor.allowAutonomous
+	) {
 		throw new Error("Execution sponsor does not permit autonomous work");
 	}
 }

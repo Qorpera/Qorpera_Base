@@ -1,4 +1,5 @@
 import {
+	nativeCodingConfiguration,
 	nativeCompanyComputerConfiguration,
 	nativeCompanyRuntimeConfiguration,
 } from "@qorpera/runtime/cloud-native-provider-service-main";
@@ -42,6 +43,27 @@ describe("systemd credential metadata", () => {
 		]) {
 			expect(systemdCredentialMetadataIsSafe(metadata, serviceUid, 8192, "linux")).toBe(false);
 		}
+	});
+});
+
+describe("native coding service composition", () => {
+	it("keeps coding off without an installed service and selects only an explicit HTTPS origin", () => {
+		expect(nativeCodingConfiguration({})).toBeUndefined();
+		expect(
+			nativeCodingConfiguration({
+				QORPERA_NATIVE_RUNTIME: "company-path-v1",
+				QORPERA_CODING_COMMAND_URL: "https://coding.example.test",
+			}),
+		).toEqual({ url: "https://coding.example.test" });
+	});
+	it.each([
+		{ QORPERA_CODING_COMMAND_URL: "https://coding.example.test" },
+		{ QORPERA_NATIVE_RUNTIME: "company-path-v1", QORPERA_CODING_COMMAND_URL: "http://coding.example.test" },
+		{ QORPERA_NATIVE_RUNTIME: "company-path-v1", QORPERA_CODING_COMMAND_URL: "https://coding.example.test/commands" },
+		{ QORPERA_NATIVE_RUNTIME: "company-path-v1", QORPERA_CODING_COMMAND_URL: "https://secret@coding.example.test" },
+		{ QORPERA_CODING_COMMAND_TOKEN: "A".repeat(43) },
+	])("refuses partial or ambient configuration %j", (environment) => {
+		expect(() => nativeCodingConfiguration(environment)).toThrow();
 	});
 });
 

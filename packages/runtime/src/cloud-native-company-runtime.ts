@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { CloudContentAddressedStore } from "@qorpera/cloud-client/node/cloud-object-store";
 import { CLOUD_AGENT_SEND_INSTRUCTIONS, CloudAgentMouth, parseCloudAgentSendInput } from "./cloud-agent-mouth.ts";
+import { type CloudCodingControl, cloudCodingTools } from "./cloud-coding-tools.ts";
 import type { CloudCompanyComputerSessionFactory } from "./cloud-company-computer-control.ts";
 import { type CloudCompanyPathControl, CloudCompanyPathGateway } from "./cloud-company-path-gateway.ts";
 import {
@@ -64,6 +65,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	readonly #isolation: NativeIsolationConfiguration | undefined;
 	readonly #secretBroker: CloudSecretOperationClient | undefined;
 	readonly #computerSession: CloudCompanyComputerSessionFactory | undefined;
+	readonly #codingControl: CloudCodingControl | undefined;
 
 	constructor(options: {
 		presence?: CloudCompanyPathPresenceFactory;
@@ -81,6 +83,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		secretBroker?: CloudSecretOperationClient;
 		/** Explicit cloud-office adapter; no local execution or inferred resource grant. */
 		computerSession?: CloudCompanyComputerSessionFactory;
+		/** Installed coding service only; absence keeps the tools out of the catalog. */
+		codingControl?: CloudCodingControl;
 	}) {
 		this.#control = options.controlPlane;
 		this.#presenceFactory = options.presence;
@@ -92,6 +96,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		this.#isolation = options.isolation ? Object.freeze({ ...options.isolation }) : undefined;
 		this.#secretBroker = options.secretBroker;
 		this.#computerSession = options.computerSession;
+		this.#codingControl = options.codingControl;
 	}
 
 	async execute(request: NativeCompanyExecutionRequest, identityRoot: string, signal: AbortSignal) {
@@ -292,6 +297,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 									: []),
 								cloudCoworkerMessageTool(binding, identity, wakeControl),
 								...cloudResponsibilityTools(binding, identity, this.#paths),
+								...(this.#codingControl ? cloudCodingTools(binding, identity, this.#codingControl) : []),
 								...(identity.sessionId && wake.policy.final !== "forbidden" ? [send] : []),
 							],
 							assertContext: (requestSignal) => gateway.assertReadableContext(requestSignal),

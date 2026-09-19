@@ -1,0 +1,80 @@
+# Isolated coding workers
+
+This service implements runtime-contract Order 9 using Qorpera repository VMs and the existing native Codex runtime. Installation and live acceptance are separate from source/component verification. The migrations leave coding execution disabled until an operator configures its executor, repository grants, orchestrator binding, and VM policy.
+
+## Execution path
+
+The parent dispatch tool creates a durable worker, request and todo handle. The executor claims one request with a renewable SQL lease, materializes the coding wake through canonical admission, reserves company and node capacity, and reconciles a retained repository VM. The repository VM has a fixed worker branch, no identity volume, no host mount, and no GitHub, provider or cloud-control credential.
+
+The native model runs through the existing provider on its separate identity allocation. Its four tools start/read/cancel repository commands and submit a final commit. Commands execute as the coding uid in a bounded systemd cgroup. A root-owned guest lease, tied to the boot and Linux uptime, expires independently of the executor's network connection. A reviewed timer stops the entire command slice on expiry. A receipt's hash binds the exact command, timeout, worker, VM, request and turn.
+
+After native completion, the executor verifies command quiescence, exports the exact commit as a bundle, validates it in a fresh constrained Git broker, pushes only the fixed worker branch, and creates or verifies the same draft PR. It physically stops the VM before recording successful completion. The disk and canonical capacity custody remain retained. Follow-up reuses the worker, allocation, repository and branch; a new native runner does not replace that repository allocation.
+
+An independent completion listener consumes the SQL outbox and delivers one causal wake to the parent. The worker has no human messaging tool. The parent can continue other work while coding runs. Neither service depends on a desktop client remaining online.
+
+Unknown create, command, push, PR or dispatch outcomes retain intent and require observation/reconciliation. Process restart is not permission to replay an effect. Expired or revoked request authority does not grant resume; cleanup has a separate stop-only authorization. A failed or uncertain run must remain visibly unsuccessful.
+
+## Package and configure
+
+Build the three reviewable artifacts on an allocated Linux runtime node from a checkout whose `npm run check` passes:
+
+```sh
+node scripts/package-coding-guest.mjs --out /task-owned/new-guest-package
+node scripts/package-coding-executor.mjs --out /task-owned/new-executor-package
+node scripts/package-coding-listener.mjs --out /task-owned/new-listener-package
+```
+
+The scripts package files and checksums; they do not install or activate services. The executor and listener packages also pin the generated runtime bundle. The guest package includes command, Git and watchdog entrypoints. Install those artifacts and the supplied watchdog service, timer and slice into a dedicated coding image, with the ownership, workspace and utility requirements in `command-guest-installation.json` and `COMMAND-GUEST.md`. Enable the timer in the image. Use a separate non-root coding account with no privileged groups and a writable `/workspace`. Configure its Git author identity as a service identity.
+
+Before enabling work, independently verify image/bootstrap provenance, isolated LXD project/network policy, blocked metadata/control-plane/office-network access, storage and genuine reserved node capacity. Pin the resulting image fingerprint, bootstrap digest and provider policy. A pinned network name is not by itself evidence of network isolation. Disposable unsigned candidate tests are permitted by the runtime contract; production activation retains the provenance gates.
+
+Install `qorpera-coding-executor.service` with its persistent dedicated account and private state directory. The service uses the local LXD socket, protected machine identity, a loopback HTTP backend, and a separately configured HTTPS reverse proxy. Its reviewed JSON configuration has this shape (substitute measured deployment values):
+
+```json
+{
+  "schema": "qorpera.coding-executor-service/v1",
+  "owner": "coding-node-02",
+  "supabaseUrl": "https://PROJECT.supabase.co",
+  "supabasePublishableKey": "PUBLIC_KEY",
+  "orchestratorId": "ADMITTED_ORCHESTRATOR_UUID",
+  "providerUrl": "https://NATIVE_PROVIDER_ORIGIN",
+  "providerAdapterId": "native-node",
+  "commandPort": 8789,
+  "vmPolicy": {
+    "providerId": "native-node",
+    "providerPolicySha256": "MEASURED_SHA256",
+    "project": "coding",
+    "imageFingerprint": "MEASURED_SHA256",
+    "bootstrapSha256": "MEASURED_SHA256",
+    "storagePool": "coding-disks",
+    "network": "coding-net",
+    "cpus": 2,
+    "memoryBytes": 4294967296,
+    "rootDiskBytes": 68719476736
+  },
+  "guest": {
+    "uid": 1000,
+    "gid": 1000,
+    "workspacePath": "/workspace",
+    "commandHelperSha256": "PACKAGE_SHA256",
+    "gitHelperSha256": "PACKAGE_SHA256",
+    "watchdogHelperSha256": "PACKAGE_SHA256"
+  },
+  "repositories": [{
+    "repository": {"host": "github.com", "owner": "OWNER", "name": "REPO", "baseBranch": "main"},
+    "credential": "qorpera-coding-repository-example"
+  }]
+}
+```
+
+All privileged credentials use systemd `LoadCredential`: registry service key, orchestrator control token, provider transport token, distinct coding-command transport token, and one explicitly scoped repository credential for each configured repository. Add the repository `LoadCredential` entries to the reviewed service unit. Provision repository-limited contents and pull-request permissions; never put a credential into configuration JSON, a model prompt or the repository VM. Configuration allowlisting does not substitute for current SQL repository authority.
+
+On the **native provider** service, select `QORPERA_NATIVE_RUNTIME=company-path-v1`, set `QORPERA_CODING_COMMAND_URL` to the executor's HTTPS origin, and provision the same distinct `qorpera-coding-command` systemd credential. The fenced Codex binary, existing native isolation and identity recovery configuration remain required. Rebuild/provision the native image through its existing reviewed deployment process; do not attach an existing identity volume to a repository VM.
+
+Install the independent listener unit with its `owner`/`supabaseUrl` configuration and registry credential. Configure SQL executor ownership, repository grants, native orchestrator binding and the exact VM policy through the migration-defined administrative RPCs. Apply bundle activation only with the matching installed artifacts.
+
+## Acceptance still required before declaring Order 9 complete
+
+Exercise the installed path through a real parent dispatch: edit and test a disposable repository, publish a real draft PR, receive the completion wake with clients offline, and follow up on the same worker/VM/repository/branch/PR. Record actual provider, LXD, systemd, storage and network evidence. Include cancellation, lease/network loss, sponsor/repository revocation, process replacement and unknown-effect reconciliation. Verify the guest watchdog stops actual processes and that repository code cannot obtain host/provider/GitHub credentials.
+
+Component tests use real Linux processes, Git and PostgreSQL where stated, and simulated LXD/provider/systemd ports where stated. Those passing tests do not close the installed end-to-end gate. PostgreSQL component proof on 18.6 must not be presented as parity with an intended 17.6 deployment.

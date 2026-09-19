@@ -1,4 +1,5 @@
 import { readBoundedCloudResponse } from "@qorpera/cloud-client/cloud-request";
+import { parseCloudCodingWorker } from "@qorpera/contracts";
 import {
 	type CloudNativeToolBinding,
 	type CloudNativeToolIdentity,
@@ -117,7 +118,7 @@ export interface CloudWakeEnvelope {
 	readonly actorUserId: string | null;
 	readonly audience: Readonly<{ kind: "company" | "member_private"; userId: string | null; sessionId: string | null }>;
 	readonly source: Readonly<{
-		kind: "input" | "schedule" | "company-file" | "coworker" | "room" | "office-activation";
+		kind: "input" | "schedule" | "company-file" | "coworker" | "room" | "office-activation" | "coding-completion";
 		id: string;
 		occurrenceKey: string;
 	}>;
@@ -300,6 +301,54 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		uuid(activation.activationId);
 		uuid(activation.companyComputerId);
 		uuid(activation.receiptId);
+	} else if (wake.kind === "agent" && source.kind === "coding-completion") {
+		const completion = closed(wake.payload, [
+			"schema",
+			"eventId",
+			"requestId",
+			"workerId",
+			"turn",
+			"receiptId",
+			"worker",
+			"result",
+		]);
+		const worker = parseCloudCodingWorker(completion.worker);
+		if (
+			completion.schema !== "qorpera.coding-completion/v1" ||
+			uuid(completion.eventId) !== source.id ||
+			uuid(completion.workerId) !== worker.id ||
+			completion.turn !== worker.turn ||
+			worker.companyId !== identity.companyId ||
+			worker.parentAgentId !== identity.staffAgentId ||
+			!["waiting", "completed", "failed", "cancelled", "recovery-required"].includes(worker.state) ||
+			parentRunId === null ||
+			parentRunId === identity.runId ||
+			actorStaffId !== null ||
+			actorUserId !== null ||
+			audience.kind !== "company" ||
+			audience.userId !== null ||
+			audience.sessionId !== null ||
+			wake.routine !== null ||
+			source.occurrenceKey !== `coding-completion:${worker.id}:${worker.turn}:${uuid(completion.requestId)}`
+		)
+			throw new Error("Invalid coding completion wake");
+		uuid(completion.receiptId);
+		if (!completion.result || typeof completion.result !== "object" || Array.isArray(completion.result))
+			throw new Error("Invalid coding completion result");
+		const result = completion.result as Record<string, unknown>;
+		if (Object.hasOwn(result, "reason")) {
+			closed(result, ["reason"]);
+			if (result.reason !== "executor-lease-expired" && result.reason !== "delegation-authority-changed")
+				throw new Error("Invalid coding completion failure");
+		} else if (
+			Object.keys(result).some((key) => !["summary", "noChange", "draftPrVerified"].includes(key)) ||
+			typeof result.summary !== "string" ||
+			!result.summary.trim() ||
+			Buffer.byteLength(JSON.stringify(result)) > 8192 ||
+			(result.noChange !== undefined && typeof result.noChange !== "boolean") ||
+			(result.draftPrVerified !== undefined && typeof result.draftPrVerified !== "boolean")
+		)
+			throw new Error("Invalid coding completion result");
 	} else if (wake.kind === "agent") {
 		const message = closed(wake.payload, ["text", "senderStaffId", "receiptId"]);
 		if (

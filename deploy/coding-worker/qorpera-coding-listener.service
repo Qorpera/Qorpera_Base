@@ -1,0 +1,32 @@
+[Unit]
+Description=Qorpera durable coding completion listener
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+ExecStart=/usr/bin/node /opt/qorpera-coding-listener/qorpera-coding-listener.mjs
+LoadCredential=qorpera-coding-listener-config:/etc/qorpera/coding-listener.json
+LoadCredential=qorpera-coding-registry:/etc/qorpera/coding-registry.key
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=15s
+KillMode=control-group
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+UMask=0077
+MemoryMax=256M
+TasksMax=32
+CPUQuota=25%
+
+[Install]
+WantedBy=multi-user.target

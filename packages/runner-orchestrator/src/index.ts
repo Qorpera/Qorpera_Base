@@ -1,3 +1,13 @@
+export * from "./coding-command-transport.ts";
+export * from "./coding-executor.ts";
+export * from "./coding-executor-host.ts";
+export * from "./coding-git.ts";
+export * from "./coding-git-seed.ts";
+export * from "./coding-git-transfer.ts";
+export * from "./coding-lease-transport.ts";
+export * from "./coding-native-dispatch.ts";
+export * from "./coding-vm.ts";
+export * from "./coding-workspace.ts";
 export * from "./control-token-store.ts";
 export type { ServiceHttpFetch, ServiceHttpRequest, ServiceHttpResponse } from "./http-transport.ts";
 export * from "./lxd-client.ts";

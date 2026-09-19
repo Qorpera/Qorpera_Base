@@ -3,7 +3,10 @@ import { open, readFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CloudContentAddressedStore } from "@qorpera/cloud-client/node/cloud-object-store";
+import type { CloudCodingCommandScope } from "@qorpera/contracts";
 import { createClient } from "@supabase/supabase-js";
+import { createHttpCloudCodingCommandGateway, parseCloudCodingCommandUrl } from "./cloud-coding-command-http.ts";
+import { HttpCloudCodingControl } from "./cloud-coding-control.ts";
 import {
 	createHttpCompanyComputerSessionFactory,
 	parseCompanyComputerNativeUrl,
@@ -17,15 +20,22 @@ import {
 	fetchIdentityRecoveryRuntimeState,
 	HttpIdentityRecoveryGuestTransport,
 } from "./cloud-identity-recovery-guest.ts";
+import { CloudNativeCodingRuntime } from "./cloud-native-coding-runtime.ts";
 import { HttpNativeCompanyObjectTransport } from "./cloud-native-company-objects.ts";
 import { CloudNativeCompanyRuntime } from "./cloud-native-company-runtime.ts";
 import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
-import { NativeProviderHost, OfficialCliNativeHarnessDriver } from "./cloud-native-provider-host.ts";
+import {
+	type NativeCloudExecutionDriver,
+	NativeProviderHost,
+	OfficialCliNativeHarnessDriver,
+} from "./cloud-native-provider-host.ts";
 import {
 	HttpNativeProviderHostService,
 	SupabaseNativeCredentialCapsuleStore,
 	SupabaseNativeProviderControlPlane,
 } from "./cloud-native-provider-service.ts";
+import { parseCloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
+import { cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
 import { HttpCloudSecretBrokerClient } from "./cloud-secret-broker-http.ts";
 import {
 	systemdCredentialMetadataIsSafe as credentialMetadataIsSafe,
@@ -153,9 +163,21 @@ export function nativeCompanyComputerConfiguration(environment: NodeJS.ProcessEn
 	return { url: parseCompanyComputerNativeUrl(required(environment, "QORPERA_COMPANY_COMPUTER_URL")).url };
 }
 
+/** Source integration stays off until the dedicated coding service is
+ * installed. Ordinary company jobs cannot select a command endpoint. */
+export function nativeCodingConfiguration(environment: NodeJS.ProcessEnv): { url: string } | undefined {
+	if (environment.QORPERA_CODING_COMMAND_TOKEN !== undefined)
+		throw new Error("Coding command transport requires a systemd credential");
+	if (environment.QORPERA_CODING_COMMAND_URL === undefined) return undefined;
+	if (environment.QORPERA_NATIVE_RUNTIME !== "company-path-v1")
+		throw new Error("Coding workers require the cloud-native runtime");
+	return { url: parseCloudCodingCommandUrl(required(environment, "QORPERA_CODING_COMMAND_URL")) };
+}
+
 export async function runNativeProviderHostServiceMain(environment: NodeJS.ProcessEnv = process.env): Promise<void> {
 	const runtimeConfiguration = nativeCompanyRuntimeConfiguration(environment);
 	const computerConfiguration = nativeCompanyComputerConfiguration(environment);
+	const codingConfiguration = nativeCodingConfiguration(environment);
 	const baseUrl = required(environment, "QORPERA_SUPABASE_URL");
 	const serviceKey = await credentialOrEnvironment(
 		environment,
@@ -212,7 +234,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 		{ computeIdentityId, epoch: state.epoch },
 		{ connectionConcurrency: optionalConcurrency(environment.QORPERA_NATIVE_CONNECTION_CONCURRENCY) },
 	);
-	let cloudRuntime: CloudNativeCompanyRuntime | undefined;
+	let cloudRuntime: NativeCloudExecutionDriver | undefined;
 	if (runtimeConfiguration) {
 		const objectToken = await credentialOrEnvironment(
 			environment,
@@ -249,7 +271,20 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 		)
 			throw new Error("Company Computer requires a distinct private systemd credential");
 		const pathControl = new HttpCloudCompanyPathControl({ supabaseUrl: baseUrl, serviceRoleKey: serviceKey });
-		cloudRuntime = new CloudNativeCompanyRuntime({
+		const codingToken = codingConfiguration
+			? await systemdCredential(environment, "qorpera-coding-command")
+			: undefined;
+		if (
+			codingConfiguration &&
+			(!codingToken ||
+				!TOKEN_PATTERN.test(codingToken) ||
+				[masterKey, bridgeToken, objectToken, serviceKey, secretBrokerToken, computerToken].includes(codingToken))
+		)
+			throw new Error("Coding command transport requires a distinct private systemd credential");
+		const codingControl = codingConfiguration
+			? new HttpCloudCodingControl({ supabaseUrl: baseUrl, serviceRoleKey: serviceKey })
+			: undefined;
+		const companyRuntime = new CloudNativeCompanyRuntime({
 			controlPlane,
 			pathControl,
 			presence: (binding, identity, signal) =>
@@ -267,6 +302,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 			command: runtimeConfiguration.command,
 			binarySha256: runtimeConfiguration.binarySha256,
 			isolation: runtimeConfiguration.isolation,
+			...(codingControl ? { codingControl } : {}),
 			...(computerConfiguration && computerToken
 				? {
 						computerSession: createHttpCompanyComputerSessionFactory({
@@ -299,6 +335,97 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 					}
 				: {}),
 		});
+		cloudRuntime =
+			codingControl && codingConfiguration && codingToken
+				? {
+						execute: async (request, identityRoot, signal) => {
+							const payload = request.job.payload;
+							if (
+								!payload ||
+								typeof payload !== "object" ||
+								Array.isArray(payload) ||
+								payload.schema !== "qorpera.coding-run/v1"
+							)
+								return companyRuntime.execute(request, identityRoot, signal);
+							const binding = parseCloudNativeToolBinding({
+								leaseId: request.authority.leaseId,
+								runId: request.authority.runId,
+								jobId: request.job.jobId,
+								runnerId: request.authority.runnerId,
+								assignmentId: request.authority.assignmentId,
+								credentialCapsuleId: request.authority.credentialCapsuleId,
+								computeIdentityId: request.authority.computeIdentityId,
+								provider: request.authority.provider,
+								nativeHarness: request.authority.nativeHarness,
+								model: request.authority.model,
+							});
+							const resolved = await codingControl.call(
+								"qorpera_resolve_native_coding_scope",
+								{ p_binding: binding },
+								signal,
+							);
+							if (
+								!resolved ||
+								typeof resolved !== "object" ||
+								Array.isArray(resolved) ||
+								!("coding" in resolved) ||
+								!resolved.coding ||
+								typeof resolved.coding !== "object" ||
+								Array.isArray(resolved.coding)
+							)
+								throw new Error("Coding native scope unavailable");
+							const coding = resolved.coding as Record<string, unknown>;
+							const scope: CloudCodingCommandScope = {
+								workerId: coding.workerId as string,
+								requestId: coding.requestId as string,
+								vmId: coding.vmId as string,
+								turn: coding.turn as number,
+							};
+							const runtime = new CloudNativeCodingRuntime({
+								scope,
+								control: {
+									call: (method, args, checked) => codingControl.call(method, args, checked),
+									describeToolAuthority: (value, checked) =>
+										controlPlane.describeToolAuthority(value, checked),
+									beginToolOperation: (value, input, checked) =>
+										controlPlane.beginToolOperation(value, input, checked),
+									completeToolOperation: (value, input, checked) =>
+										controlPlane.completeToolOperation(value, input, checked),
+								},
+								gateway: createHttpCloudCodingCommandGateway({
+									url: codingConfiguration.url,
+									token: codingToken,
+									binding,
+									authorize: async (target, identity, checked) => {
+										const authorization = await codingControl.call(
+											"qorpera_authorize_native_coding_execution",
+											{
+												p_binding: binding,
+												p_worker_id: target.workerId,
+												p_request_id: target.requestId,
+												p_vm_id: target.vmId,
+												p_turn: target.turn,
+											},
+											checked,
+										);
+										if (
+											!authorization ||
+											typeof authorization !== "object" ||
+											Array.isArray(authorization) ||
+											!("identity" in authorization) ||
+											cloudToolJsonText(authorization.identity) !== cloudToolJsonText(identity)
+										)
+											throw new Error("Coding command authority differs");
+									},
+								}),
+								command: runtimeConfiguration.command,
+								binarySha256: runtimeConfiguration.binarySha256,
+								isolation: runtimeConfiguration.isolation,
+							});
+							return runtime.execute(request, identityRoot, signal);
+						},
+					}
+				: companyRuntime;
 	} else if (environment.QORPERA_CLOUD_SECRET_BROKER_URL || environment.QORPERA_CLOUD_SECRET_BROKER_TOKEN) {
 		throw new Error("Cloud secret broker requires the cloud-native Company File runtime");
 	}

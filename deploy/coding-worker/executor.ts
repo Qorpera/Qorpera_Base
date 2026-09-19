@@ -1,0 +1,143 @@
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { setTimeout } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
+import { type CloudCodingRepository, parseCloudCodingRepository } from "../../packages/contracts/src/cloud-coding.ts";
+import { CloudCodingExecutor } from "../../packages/runner-orchestrator/src/coding-executor.ts";
+import { LxdCodingExecutorHost, type LxdCodingExecutorHostOptions } from "../../packages/runner-orchestrator/src/coding-executor-host.ts";
+import { lxdCodingVmPlan } from "../../packages/runner-orchestrator/src/coding-vm.ts";
+import { LxdUnixClient } from "../../packages/runner-orchestrator/src/lxd-client.ts";
+import { HttpCloudRunnerProviderAdapter } from "../../packages/runner-orchestrator/src/provider-http.ts";
+import { HttpCloudCodingCommandService } from "../../packages/runtime/src/cloud-coding-command-http.ts";
+import { authorizeCodingCommand } from "./command-authority.ts";
+import { CodingExecutorHttpControl } from "./control.ts";
+import { readCodingServiceCredential } from "./credentials.ts";
+
+interface Config {
+	schema: "qorpera.coding-executor-service/v1";
+	owner: string;
+	supabaseUrl: string;
+	supabasePublishableKey: string;
+	orchestratorId: string;
+	providerUrl: string;
+	providerAdapterId: string;
+	commandPort: number;
+	vmPolicy: LxdCodingExecutorHostOptions["vmPolicy"];
+	guest: LxdCodingExecutorHostOptions["guest"];
+	repositories: { repository: CloudCodingRepository; credential: string }[];
+}
+function object(value: unknown): Record<string, unknown> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	return value as Record<string, unknown>;
+}
+function origin(value: unknown): string {
+	if (typeof value !== "string") throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	const url = new URL(value);
+	if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	return url.origin;
+}
+export function parseCodingExecutorConfiguration(value: unknown): Config {
+	const config = object(value);
+	if (Object.keys(config).sort().join() !== "commandPort,guest,orchestratorId,owner,providerAdapterId,providerUrl,repositories,schema,supabasePublishableKey,supabaseUrl,vmPolicy" ||
+		config.schema !== "qorpera.coding-executor-service/v1" || typeof config.owner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(config.owner) ||
+		typeof config.orchestratorId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(config.orchestratorId) ||
+		typeof config.supabasePublishableKey !== "string" || !config.supabasePublishableKey || /[\r\n\0]/.test(config.supabasePublishableKey) ||
+		typeof config.providerAdapterId !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(config.providerAdapterId) ||
+		!Number.isSafeInteger(config.commandPort) || Number(config.commandPort) < 1024 || Number(config.commandPort) > 65535 ||
+		!Array.isArray(config.repositories) || config.repositories.length < 1 || config.repositories.length > 100) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	const repositories = config.repositories.map((value) => {
+		const entry = object(value);
+		if (Object.keys(entry).sort().join() !== "credential,repository" || typeof entry.credential !== "string" ||
+			!/^qorpera-coding-repository-[a-z0-9-]{1,60}$/.test(entry.credential)) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+		return { repository: parseCloudCodingRepository(entry.repository), credential: entry.credential };
+	});
+	if (new Set(repositories.map((r) => JSON.stringify(r.repository))).size !== repositories.length) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	const vmPolicy = object(config.vmPolicy);
+	if (Object.keys(vmPolicy).sort().join() !== "bootstrapSha256,cpus,imageFingerprint,memoryBytes,network,project,providerId,providerPolicySha256,rootDiskBytes,storagePool") throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	const id = "11111111-1111-4111-8111-111111111111";
+	lxdCodingVmPlan({ ...vmPolicy, schema: "qorpera.lxd-coding-vm/v1", workerId: id, allocationId: id, companyId: id, environmentId: id, repository: repositories[0].repository } as Parameters<typeof lxdCodingVmPlan>[0]);
+	const guest = object(config.guest);
+	if (Object.keys(guest).sort().join() !== "commandHelperSha256,gid,gitHelperSha256,uid,watchdogHelperSha256,workspacePath" ||
+		![guest.uid, guest.gid].every((v) => Number.isSafeInteger(v) && Number(v) >= 1000 && Number(v) <= 2147483647) ||
+		![guest.commandHelperSha256, guest.gitHelperSha256, guest.watchdogHelperSha256].every((v) => typeof v === "string" && /^[0-9a-f]{64}$/.test(v)) ||
+		typeof guest.workspacePath !== "string" || resolve(guest.workspacePath) !== guest.workspacePath || guest.workspacePath === "/" || /[\s\0]/.test(guest.workspacePath)) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	return {
+		schema: "qorpera.coding-executor-service/v1", owner: config.owner, supabaseUrl: origin(config.supabaseUrl),
+		supabasePublishableKey: config.supabasePublishableKey, orchestratorId: config.orchestratorId,
+		providerUrl: origin(config.providerUrl), providerAdapterId: config.providerAdapterId,
+		commandPort: Number(config.commandPort), vmPolicy: vmPolicy as unknown as Config["vmPolicy"],
+		guest: guest as unknown as Config["guest"], repositories,
+	};
+}
+
+/** Independent Linux service: native provider and repository VM are separate
+ * allocations, and no member client participates in this execution loop. */
+export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = process.env): Promise<void> {
+	if (process.platform !== "linux" || !process.getuid?.() || !process.geteuid?.()) throw new Error("UNPRIVILEGED_LINUX_REQUIRED");
+	if (!environment.CREDENTIALS_DIRECTORY) throw new Error("CODING_CREDENTIALS_REQUIRED");
+	const directory = environment.CREDENTIALS_DIRECTORY;
+	const credential = (name: string) => readCodingServiceCredential(directory, name);
+	const config = parseCodingExecutorConfiguration(JSON.parse(await credential("qorpera-coding-executor-config")));
+	const machine = (await readFile("/etc/machine-id", "utf8")).trim();
+	if (!/^[0-9a-f]{32}$/.test(machine)) throw new Error("CODING_NODE_IDENTITY_INVALID");
+	const control = new CodingExecutorHttpControl({ supabaseUrl: config.supabaseUrl, serviceRoleKey: await credential("qorpera-coding-registry") });
+	const host = new LxdCodingExecutorHost({
+		control, owner: config.owner, machineIdSha256: createHash("sha256").update(machine).digest("hex"),
+		vmPolicy: config.vmPolicy, client: new LxdUnixClient(), guest: config.guest,
+		orchestratorId: config.orchestratorId, journalRoot: "/var/lib/qorpera-coding-executor",
+		controlPlaneConfig: { supabaseUrl: config.supabaseUrl, publishableKey: config.supabasePublishableKey,
+			controlToken: await credential("qorpera-coding-orchestrator"), controlStatePath: "/var/lib/qorpera-coding-executor/control.json" },
+		providerAdapter: new HttpCloudRunnerProviderAdapter(config.providerUrl, config.providerAdapterId, await credential("qorpera-coding-provider")),
+		repositoryCredentials: {
+			async withRepositoryToken(repository, use, signal) {
+				signal.throwIfAborted();
+				const entry = config.repositories.find((r) => JSON.stringify(r.repository) === JSON.stringify(repository));
+				if (!entry) throw new Error("CODING_REPOSITORY_CREDENTIAL_UNAVAILABLE");
+				const token = await credential(entry.credential);
+				if (!/^[A-Za-z0-9_]{20,512}$/.test(token)) throw new Error("CODING_REPOSITORY_CREDENTIAL_INVALID");
+				signal.throwIfAborted();
+				return use(token);
+			},
+		},
+	});
+	const stop = new AbortController();
+	const shutdown = () => stop.abort();
+	process.on("SIGTERM", shutdown);
+	process.on("SIGINT", shutdown);
+	const commands = new HttpCloudCodingCommandService({
+		token: await credential("qorpera-coding-command"), port: config.commandPort,
+		authorize: (request, signal) => authorizeCodingCommand(control, request, signal),
+		async execute(request, signal) {
+			const transport = await host.commandTransport(request.scope, async (action, scope, commandId, inputSha256, checked) => {
+				if (action !== request.action || JSON.stringify(scope) !== JSON.stringify(request.scope) || commandId !== request.input.commandId ||
+					(request.action === "start" && inputSha256 !== request.input.inputSha256)) throw new Error("CODING_COMMAND_REQUEST_CHANGED");
+				await authorizeCodingCommand(control, request, checked);
+			}, signal);
+			return request.action === "start" ? transport.start(request.scope, request.input, signal) :
+				request.action === "read" ? transport.read(request.scope, request.input.commandId, signal) : transport.cancel(request.scope, request.input.commandId, signal);
+		},
+	});
+	try {
+		await commands.start(stop.signal);
+		const executor = new CloudCodingExecutor({ control, host, owner: config.owner });
+		while (!stop.signal.aborted) {
+			try {
+				const status = await executor.runOnce(stop.signal);
+				if (status !== "idle") console.log(JSON.stringify({ event: "coding-execution", status }));
+			} catch {
+				if (!stop.signal.aborted) console.error("CODING_EXECUTOR_TICK_UNCONFIRMED");
+			}
+			await setTimeout(2000, undefined, { signal: stop.signal }).catch(() => undefined);
+		}
+	} finally {
+		stop.abort();
+		await commands.close();
+		process.off("SIGTERM", shutdown);
+		process.off("SIGINT", shutdown);
+	}
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+	runCodingExecutorMain().catch(() => { console.error("CODING_EXECUTOR_START_FAILED"); process.exitCode = 1; });
+}

@@ -1,0 +1,63 @@
+{
+  "schema": "qorpera.coding-command-installation/v1",
+  "state": "requires-reviewed-image-installation",
+  "entrypoint": {
+    "source": "packages/runtime/src/cloud-coding-command-guest.ts",
+    "installedPath": "/opt/qorpera-coding/cloud-coding-command-guest.mjs",
+    "owner": "root:root",
+    "mode": "0444"
+  },
+  "configuration": {
+    "path": "/etc/qorpera-coding/guest.json",
+    "owner": "root:root",
+    "mode": "0444",
+    "schema": "qorpera.coding-command-guest/v1",
+    "requiredFields": [
+      "workerId",
+      "vmId",
+      "bootId",
+      "uid",
+      "gid",
+      "workspacePath"
+    ]
+  },
+  "rootDirectories": [
+    "/etc/qorpera-coding",
+    "/opt/qorpera-coding",
+    "/var/lib/qorpera-coding",
+    "/var/lib/qorpera-coding/inbox",
+    "/var/lib/qorpera-coding/commands",
+    "/var/lib/qorpera-coding/output"
+  ],
+  "rootDirectoryMode": "0755",
+  "requirements": [
+    "Linux KVM/QEMU guest",
+    "systemd",
+    "Node.js >=22.19",
+    "bash",
+    "dedicated non-root coding uid/gid >=1000",
+    "coding-user-owned isolated repository workspace"
+  ],
+  "limits": {
+    "commandBytes": 16384,
+    "requestJsonBytes": 65536,
+    "outputBytes": 4096,
+    "timeoutMs": 1800000,
+    "memoryBytes": 2147483648,
+    "tasks": 256,
+    "cpuPercent": 200
+  },
+  "credentialPolicy": "No provider, GitHub, cloud-control, member or office credentials enter the command environment or coding user home.",
+  "installationPerformed": false,
+  "watchdog": {
+    "entrypoint": "/opt/qorpera-coding/cloud-coding-watchdog.mjs",
+    "service": "qorpera-coding-watchdog.service",
+    "timer": "qorpera-coding-watchdog.timer",
+    "slice": "qorpera-coding.slice",
+    "leaseFile": "/var/lib/qorpera-coding/lease.json",
+    "refreshFile": "/var/lib/qorpera-coding/inbox/lease-refresh.json",
+    "leaseMaxMs": 60000,
+    "checkIntervalMs": 1000,
+    "enableTimerBeforeFirstRefresh": true
+  }
+}
