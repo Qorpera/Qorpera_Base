@@ -322,7 +322,7 @@ describe("conversation UI boundaries", () => {
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 
-	it("explains the run behind the rail's red disc and lets a writer dismiss it", async () => {
+	it("explains the run behind the rail's red disc and lets a writer dismiss it, keeping keyboard focus", async () => {
 		const f = setup();
 		const run = {
 			runId: id(70),
@@ -340,37 +340,65 @@ describe("conversation UI boundaries", () => {
 			unsettledOperations: 0,
 		};
 		const card = () => f.view.el.querySelector<HTMLElement>(".thread-status .notice-warn");
+		const dismiss = () => card()?.querySelector<HTMLButtonElement>('[data-action="dismiss-run"]') ?? null;
+		const show = async (patch: Parameters<typeof f.company.store.set>[0]) => {
+			f.company.store.set(patch);
+			await settle();
+		};
+		vi.mocked(f.api.listStaffActivity).mockResolvedValue([run]);
+		vi.spyOn(f.api, "getRunRecovery").mockResolvedValue(details);
 		const discard = vi.spyOn(f.api, "discardFailedRun").mockRejectedValueOnce(new Error("Try again later."));
-		f.company.store.set({ activity: [run], recoveries: { [run.runId]: details } });
-		await settle();
+		// Until its details are read, the run cannot be dismissed: the cloud might refuse.
+		await show({ activity: [run] });
+		expect(card()?.textContent).toContain("A run did not finish.");
+		expect(dismiss()).toBeNull();
+		await show({ recoveries: { [run.runId]: details } });
 		expect(card()?.textContent).toContain("A run did not finish: Native provider bridge request failed (422)");
-		// A refusal is shown on the card and the run stays.
-		button(card()!, "Dismiss").click();
+		// Polling that changes nothing shown keeps the same button, and the keyboard on it.
+		dismiss()!.focus();
+		const focused = dismiss();
+		await show({ activity: [{ ...run }] });
+		expect(dismiss()).toBe(focused);
+		expect(document.activeElement).toBe(focused);
+		// A refusal is shown on the card, tied to the button, and focus stays on it.
+		dismiss()!.click();
 		await settle();
 		expect(discard).toHaveBeenCalledWith(run.runId);
-		expect(card()?.textContent).toContain("Try again later.");
+		const error = document.getElementById(dismiss()!.getAttribute("aria-describedby")!);
+		expect(error?.textContent).toBe("Could not dismiss it: Try again later.");
+		expect(document.activeElement).toBe(dismiss());
 		discard.mockResolvedValueOnce();
 		vi.mocked(f.api.listStaffActivity).mockResolvedValue([]);
-		button(card()!, "Dismiss").click();
+		dismiss()!.click();
 		await settle();
 		expect(discard).toHaveBeenCalledTimes(2);
 		expect(card()).toBeNull();
-		// Work of unknown outcome cannot be dismissed yet; readers only see the card.
-		f.company.store.set({ activity: [run], recoveries: { [run.runId]: { ...details, unsettledOperations: 1 } } });
-		await settle();
-		expect(card()?.textContent).toContain("still being checked");
-		expect(card()?.querySelector("button")).toBeNull();
-		f.company.store.set({
+		// Work of unknown outcome cannot be dismissed here; readers only see the card.
+		await show({ activity: [run], recoveries: { [run.runId]: { ...details, unsettledOperations: 1 } } });
+		expect(card()?.textContent).toContain("unknown outcome");
+		expect(dismiss()).toBeNull();
+		await show({
 			team: { ...team, capabilities: { ...team.capabilities, write: false } },
 			recoveries: { [run.runId]: details },
 		});
-		await settle();
 		expect(card()?.textContent).toContain("A run did not finish");
-		expect(card()?.querySelector("button")).toBeNull();
-		// A run that left Company File changes points at them instead.
-		f.company.store.set({ recoveries: { [run.runId]: { ...details, proposalId: id(71) } } });
-		await settle();
+		expect(dismiss()).toBeNull();
+		// A run that left Company File changes points at them; only deciders are asked to decide.
+		await show({ team, recoveries: { [run.runId]: { ...details, proposalId: id(71) } } });
 		expect(card()?.querySelector("a")?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/proposal/${id(71)}`);
+		expect(card()?.textContent).toContain("to keep or discard them");
+		await show({ team: { ...team, capabilities: { ...team.capabilities, authorize: false } } });
+		expect(card()?.textContent).toContain("An owner or admin decides");
+		// A failed review points at the proposal list; the cloud does not dismiss reviews.
+		const review = { ...run, sourceKind: "proposal_review" as const };
+		await show({
+			team,
+			activity: [review],
+			recoveries: { [run.runId]: { ...details, sourceKind: "proposal_review" } },
+		});
+		expect(card()?.textContent).toContain("A review did not finish");
+		expect(card()?.querySelector("a")?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/file`);
+		expect(dismiss()).toBeNull();
 	});
 });
 

@@ -436,7 +436,11 @@ export function parseRunRecovery(value: unknown): HostedRunRecovery {
 /** qorpera_resolve_failed_execution_run answers with the run it resolved. */
 export function parseRunDismissal(value: unknown, runId: string): void {
 	const result = record(value, "run dismissal");
-	if (uuid(result.run_id, "dismissed run id") !== runId.toLowerCase() || result.resolved !== true) {
+	if (
+		uuid(result.run_id, "dismissed run id") !== runId.toLowerCase() ||
+		result.action !== "discard" ||
+		result.resolved !== true
+	) {
 		throw new CloudShapeError("run dismissal");
 	}
 }

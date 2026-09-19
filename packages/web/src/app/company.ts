@@ -54,11 +54,15 @@ function stillFailed(
 	activity: HostedStaffExecutionActivity[],
 ): Record<string, HostedRunRecovery> {
 	const failed = new Set(activity.filter(isFailedRun).map((row) => row.runId));
-	return Object.fromEntries(Object.entries(recoveries).filter(([runId]) => failed.has(runId)));
+	const kept = Object.entries(recoveries).filter(([runId]) => failed.has(runId));
+	return kept.length === Object.keys(recoveries).length ? recoveries : Object.fromEntries(kept);
 }
 
-/** A failed run's details can change (its proposal decided elsewhere), so they are read again this often. */
-const RECOVERY_RECHECK_MS = 30_000;
+/* A failed run's details change only while it holds an open proposal or work of
+ * unknown outcome, which are settled elsewhere. Those are read again a little
+ * more often than the 30 s poll; any other failed run is read once. */
+const RECOVERY_RECHECK_MS = 25_000;
+const RECOVERY_RETRY_MS = 5_000;
 
 export interface CompanyState {
 	profile: HostedProfile;
@@ -160,8 +164,11 @@ export class CompanyController {
 	#polling = false;
 	readonly #invalidations = new Set<(resource: RealtimeResource) => void>();
 	readonly #conversationLoads = new Map<string, { promise: Promise<void>; repeat: boolean }>();
-	/** When each failed run's details were last requested. */
-	readonly #recoveryReads = new Map<string, number>();
+	/** Per failed run: when its details may be read next (performance.now()), and
+	 * the latest request, so an older answer never replaces a newer one. */
+	readonly #recoveryReads = new Map<string, { due: number; request: number }>();
+	/** The details RPC is not deployed on this cloud. */
+	#recoveriesMissing = false;
 
 	constructor(api: CloudApi, profile: HostedProfile, userId: string, writeInput?: SessionInputWriter) {
 		this.#api = api;
@@ -347,20 +354,53 @@ export class CompanyController {
 	/* A failed run's details say why it failed and whether it left an open Company
 	 * File proposal, which makes it a decision rather than a failure. */
 	async #readRecoveries(activity: HostedStaffExecutionActivity[]): Promise<void> {
-		const now = Date.now();
+		if (this.#recoveriesMissing) return;
+		const now = performance.now();
 		const failed = new Set(activity.filter(isFailedRun).map((row) => row.runId));
 		for (const runId of this.#recoveryReads.keys()) if (!failed.has(runId)) this.#recoveryReads.delete(runId);
-		const due = [...failed].filter((runId) => now - (this.#recoveryReads.get(runId) ?? 0) >= RECOVERY_RECHECK_MS);
+		const due = [...failed].filter((runId) => (this.#recoveryReads.get(runId)?.due ?? 0) <= now);
 		if (!due.length) return;
-		for (const runId of due) this.#recoveryReads.set(runId, now);
-		// A run dismissed meanwhile no longer has details; the next activity read drops it.
-		const read = await Promise.all(due.map((runId) => this.#api.getRunRecovery(runId).catch(() => undefined)));
+		const answers = await Promise.all(
+			due.map((runId) => {
+				const request = (this.#recoveryReads.get(runId)?.request ?? 0) + 1;
+				// Not due again until this answer is in.
+				this.#recoveryReads.set(runId, { due: Number.POSITIVE_INFINITY, request });
+				return this.#api.getRunRecovery(runId).then(
+					(recovery) => ({ runId, request, recovery }),
+					(error: unknown) => ({ runId, request, error }),
+				);
+			}),
+		);
 		if (this.#stopped) return;
+		const read: HostedRunRecovery[] = [];
+		for (const answer of answers) {
+			const entry = this.#recoveryReads.get(answer.runId);
+			if (entry?.request !== answer.request) continue;
+			if ("recovery" in answer) {
+				const { recovery } = answer;
+				const changes = recovery.proposalId !== undefined || recovery.unsettledOperations > 0;
+				entry.due = changes ? performance.now() + RECOVERY_RECHECK_MS : Number.POSITIVE_INFINITY;
+				read.push(recovery);
+			} else if (answer.error instanceof CloudRpcError && answer.error.missing) {
+				this.#recoveriesMissing = true;
+			} else {
+				entry.due = performance.now() + RECOVERY_RETRY_MS;
+			}
+		}
+		const known = this.store.get().recoveries;
+		const changed = read.filter((recovery) => JSON.stringify(known[recovery.runId]) !== JSON.stringify(recovery));
+		if (!changed.length) return;
 		this.store.set((state) => {
 			const recoveries = { ...state.recoveries };
-			for (const recovery of read) if (recovery) recoveries[recovery.runId] = recovery;
+			for (const recovery of changed) recoveries[recovery.runId] = recovery;
 			return { recoveries: stillFailed(recoveries, state.activity) };
 		});
+	}
+
+	/** The next activity read asks again for a run's details. */
+	#recheckRecovery(runId: string): void {
+		const entry = this.#recoveryReads.get(runId);
+		if (entry) entry.due = 0;
 	}
 
 	staffById(id: string | undefined): HostedStaffAgent | undefined {
@@ -404,9 +444,13 @@ export class CompanyController {
 	/** The run stops standing in for the agent's state; the next activity read shows what is left. */
 	async dismissFailedRun(runId: string): Promise<void> {
 		if (this.#stopped) return;
-		await this.#api.discardFailedRun(runId);
-		this.#recoveryReads.delete(runId);
-		await this.refreshActivity();
+		try {
+			await this.#api.discardFailedRun(runId);
+		} finally {
+			// Refused or not, read again: someone may have settled the run first.
+			this.#recheckRecovery(runId);
+			await this.refreshActivity();
+		}
 	}
 
 	primarySessionFor(staffAgentId: string): HostedSession | undefined {
@@ -748,6 +792,11 @@ export class CompanyController {
 			void this.refreshOrganization();
 		} else if (resource === "access") {
 			void this.refreshTeam();
+		} else if (resource === "company-file") {
+			// Accepting a proposal moves the Company File head: runs waiting on one are read again.
+			const waiting = Object.values(this.store.get().recoveries).filter((recovery) => recovery.proposalId);
+			for (const recovery of waiting) this.#recheckRecovery(recovery.runId);
+			if (waiting.length) void this.refreshActivity();
 		}
 	}
 

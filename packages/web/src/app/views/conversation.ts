@@ -57,6 +57,7 @@ export class ConversationView {
 	#stickToBottom = true;
 	readonly #unsubscribe: (() => void)[] = [];
 	#disposed = false;
+	#statusKey = "";
 	#dismissing: string | undefined;
 	#dismissError: { runId: string; message: string } | undefined;
 	#receivedAttachments: ReceivedAttachments[] = [];
@@ -616,10 +617,28 @@ export class ConversationView {
 	}
 
 	#renderStatus(conversation: ConversationState, canWrite: boolean, session: HostedSession | undefined): void {
+		const company = this.#company.store.get();
+		const failed = this.#isRoom ? undefined : this.#company.failedRunFor(session?.staffAgentId);
+		// Rebuilt only when something shown changes, so a focused button survives polling.
+		const key = JSON.stringify([
+			conversation.error,
+			conversation.sendError,
+			conversation.loading,
+			canWrite,
+			this.#isRoom,
+			session?.status,
+			company.accessLost,
+			company.team?.role,
+			company.team?.capabilities,
+			failed,
+			this.#dismissing,
+			this.#dismissError,
+		]);
+		if (key === this.#statusKey) return;
+		this.#statusKey = key;
 		const children: (HTMLElement | null)[] = [];
 		if (conversation.error) children.push(notice("danger", conversation.error));
 		if (conversation.sendError) children.push(notice("danger", conversation.sendError));
-		const failed = this.#isRoom ? undefined : this.#company.failedRunFor(session?.staffAgentId);
 		if (failed) children.push(this.#failedRunCard(failed, canWrite));
 		if (canWrite && !this.#actions.sendMessage)
 			children.push(
@@ -634,7 +653,7 @@ export class ConversationView {
 				notice(
 					"neutral",
 					"Multiple agents can respond in this room. Follow their replies here. Images are not supported in team rooms. Use Company File." +
-						(["owner", "admin"].includes(this.#company.store.get().team?.role ?? "")
+						(["owner", "admin"].includes(company.team?.role ?? "")
 							? " Company-wide execution pause is available in Settings → Company."
 							: ""),
 				),
@@ -646,42 +665,61 @@ export class ConversationView {
 			session &&
 			!conversation.loading &&
 			!conversation.error &&
-			!this.#company.store.get().accessLost &&
-			this.#company.store.get().team?.capabilities.read === true
+			!company.accessLost &&
+			company.team?.capabilities.read === true
 		)
 			children.push(notice("neutral", "You can read this conversation. Contributors and above can write."));
+		const refocus = this.#status.contains(document.activeElement)
+			? (document.activeElement as HTMLElement).dataset.action
+			: undefined;
 		replace(this.#status, ...children);
+		if (refocus) this.#status.querySelector<HTMLElement>(`[data-action="${refocus}"]`)?.focus();
 	}
 
-	/** The card behind the rail's red disc (shell spec §11.1). A run that left Company
-	 * File changes is settled by deciding them; any other failed run can be dismissed,
-	 * unless some of its work still has an unknown outcome. */
+	/** The card behind the rail's red disc (shell spec §11.1): why the run did not
+	 * finish, and the one thing this client can do about it. */
 	#failedRunCard({ activity, recovery }: FailedRun, canWrite: boolean): HTMLElement {
-		if (recovery?.proposalId)
+		const profileId = this.#company.profile.profileId;
+		if (recovery?.proposalId) {
+			const changes = h("a", { href: `#/c/${profileId}/proposal/${recovery.proposalId}` }, "the changes");
+			return this.#company.store.get().team?.capabilities.authorize
+				? notice("warn", "A run stopped after changing Company File. Review ", changes, " to keep or discard them.")
+				: notice(
+						"warn",
+						"A run stopped after changing Company File. An owner or admin decides whether to keep ",
+						changes,
+						".",
+					);
+		}
+		const reason = recovery?.lastError ? `: ${recovery.lastError}` : ".";
+		if (activity.sourceKind === "proposal_review")
 			return notice(
 				"warn",
-				"A run stopped after changing Company File. ",
-				h(
-					"a",
-					{ href: `#/c/${this.#company.profile.profileId}/proposal/${recovery.proposalId}` },
-					"Review the changes",
-				),
-				" to keep or discard them.",
+				`A review did not finish${reason} The proposal it was reviewing is still open in `,
+				h("a", { href: `#/c/${profileId}/file` }, "Company File"),
+				".",
 			);
 		const unsettled = (recovery?.unsettledOperations ?? 0) > 0;
 		const dismissing = this.#dismissing === activity.runId;
 		const error = this.#dismissError?.runId === activity.runId ? this.#dismissError.message : undefined;
+		const errorId = `failed-run-error-${activity.runId}`;
+		// Dismiss waits for the details, which say whether the cloud would refuse it.
+		const dismiss =
+			canWrite && recovery && !unsettled
+				? button(dismissing ? "Dismissing…" : "Dismiss", () => void this.#dismiss(activity.runId), { small: true })
+				: null;
+		if (dismiss) {
+			dismiss.dataset.action = "dismiss-run";
+			// Still focusable while busy, so the keyboard stays on it.
+			if (dismissing) dismiss.setAttribute("aria-disabled", "true");
+			if (error) dismiss.setAttribute("aria-describedby", errorId);
+		}
 		return notice(
 			"warn",
-			h("p", null, recovery?.lastError ? `A run did not finish: ${recovery.lastError}` : "A run did not finish."),
-			unsettled ? h("p", null, "Part of its work is still being checked, so it cannot be dismissed yet.") : null,
-			error ? h("p", null, error) : null,
-			canWrite && !unsettled && activity.sourceKind !== "proposal_review"
-				? button(dismissing ? "Dismissing…" : "Dismiss", () => void this.#dismiss(activity.runId), {
-						small: true,
-						disabled: dismissing,
-					})
-				: null,
+			h("p", null, `A run did not finish${reason}`),
+			unsettled ? h("p", null, "Some of its work has an unknown outcome, so it cannot be dismissed here.") : null,
+			error ? h("p", { id: errorId }, `Could not dismiss it: ${error}`) : null,
+			dismiss,
 		);
 	}
 

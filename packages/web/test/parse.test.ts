@@ -47,7 +47,8 @@ describe("parsers", () => {
 	it("accepts only a dismissal of the run that was asked for", () => {
 		expect(() => parseRunDismissal({ run_id: S1, action: "discard", resolved: true }, S1)).not.toThrow();
 		expect(() => parseRunDismissal({ run_id: S2, action: "discard", resolved: true }, S1)).toThrow("run dismissal");
-		expect(() => parseRunDismissal({ run_id: S1, resolved: false }, S1)).toThrow("run dismissal");
+		expect(() => parseRunDismissal({ run_id: S1, action: "discard", resolved: false }, S1)).toThrow("run dismissal");
+		expect(() => parseRunDismissal({ run_id: S1, action: "retry", resolved: true }, S1)).toThrow("run dismissal");
 	});
 
 	it("parses the hosted profile list", () => {

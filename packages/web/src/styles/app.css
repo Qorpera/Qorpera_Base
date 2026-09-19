@@ -53,7 +53,7 @@ label > input, label > select { font-weight: 400; }
 	display: inline-flex; align-items: center; gap: 6px;
 }
 .btn:hover:not(:disabled) { background: var(--hover); }
-.btn:disabled { opacity: 0.5; cursor: default; }
+.btn:disabled, .btn[aria-disabled="true"] { opacity: 0.5; cursor: default; }
 .btn-primary { background: var(--primary); color: var(--on-primary); border-color: var(--primary); }
 .btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
 .btn-danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
@@ -266,7 +266,8 @@ label > input, label > select { font-weight: 400; }
 @media (forced-colors: active) {
 	.cofounder-home.active, .rail-row.active { outline: 2px solid Highlight; }
 	/* Forced colours empty both discs into rings; the failed one stays filled. */
-	.cofounder-status.failed, .rail-row-status.failed { forced-color-adjust: none; background: CanvasText; border-color: Canvas; }
+	/* Under .rail so it outranks the hover and selected ring colours. */
+	.rail :is(.cofounder-status, .rail-row-status).failed { forced-color-adjust: none; background: CanvasText; border-color: Canvas; }
 }
 
 .avatar {
