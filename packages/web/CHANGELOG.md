@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Keep the rail's "Needs you" for runs waiting on a member decision, including a failed run that left Company File changes. An agent with a failed or stopped run nobody has dismissed now rests idle with a red status disc, the opposite of the green working disc; the rail link names the state in words, also in the compact rail.
 - Render room replies with immutable server-projected staff identity and preserve accepted human messages even when no agent is eligible.
 
 - Use a length-neutral email code hint so sign-in instructions remain accurate with the configured eight-digit codes.
@@ -15,7 +16,7 @@
 ### Added
 
 - Add a dark theme. Settings → General → Theme offers System default (follows the device's appearance), Light and Dark; the choice is kept per browser, follows changes made in other tabs, and a head script applies it before the first paint.
-
+- Show a failed or stopped run in the agent's conversation with its error and a Dismiss action (the desktop's discard), so an old failure stops standing in for the agent's state; a run that left Company File changes links to them instead.
 - Support bounded public JSON environment configuration for Pages release builds, with shared SDK checks and release artifact validation in web CI.
 
 - Record the source commit and runtime bundle identity in web deployment artifacts; require clean source for release builds.

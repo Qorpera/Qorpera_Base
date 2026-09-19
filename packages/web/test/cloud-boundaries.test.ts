@@ -6,8 +6,7 @@ import { ObjectReader } from "../src/cloud/objects.ts";
 import { collectPages } from "../src/cloud/pagination.ts";
 import { probeRpcs } from "../src/cloud/probe.ts";
 import { figureElement } from "../src/ui/avatar.ts";
-import * as figureMotion from "../src/ui/figure-motion.ts";
-import { deferred, fixture, id, profileA, session, settle, timestamp, userA } from "./fixtures.ts";
+import { deferred, fixture, id, profileA, session, settle, stubFigureMotion, timestamp, userA } from "./fixtures.ts";
 
 afterEach(() => {
 	document.body.replaceChildren();
@@ -125,9 +124,7 @@ describe("cloud boundary regressions", () => {
 
 	it("disposes removed avatar rigs without requiring another mount", async () => {
 		const dispose = vi.fn();
-		vi.stubGlobal("QORPERA_MOTION_MODEL", { avatars: [] });
-		vi.stubGlobal("QORPERA_AVATAR_APPEARANCE", { palette: [] });
-		vi.spyOn(figureMotion, "mountFigureMotion").mockReturnValue({ dispose });
+		stubFigureMotion(dispose);
 		const retained = figureElement("crown");
 		document.body.append(retained);
 		await settle();

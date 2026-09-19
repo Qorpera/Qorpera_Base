@@ -1,11 +1,12 @@
 import type { User } from "@supabase/supabase-js";
-import type { HostedProfile, HostedStaffAgent, HostedStaffExecutionActivity } from "../../cloud/types.ts";
+import type { HostedProfile, HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { badge, button, h, icon, initials, notice, replace } from "../../ui/dom.ts";
+import type { Activity } from "../../ui/figure-motion.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { presentationLocale, uiText } from "../../ui/preferences.ts";
 import { type AuthController, displayName } from "../auth.ts";
-import type { CompanyController } from "../company.ts";
+import type { AgentState, CompanyController } from "../company.ts";
 import type { Route } from "../router.ts";
 import type { SettingsTab } from "./settings.ts";
 
@@ -328,50 +329,83 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 	return parts;
 }
 
-function statusLine(agent: HostedStaffAgent | undefined, activity: HostedStaffExecutionActivity | undefined): string {
-	if (activity?.activity === "needs_attention") return "Needs you";
-	if (activity) return "Working";
-	return agent?.role ?? "";
+interface RailLook {
+	figure: Activity;
+	/** Replaces the role under the name. */
+	line?: string;
+	/** What only the disc shows. */
+	note?: string;
+	disc?: "working" | "failed";
+}
+
+/* How the rail draws each agent state. The green disc is the trailer's "working
+ * now" dot; the red one is its opposite, a run that did not finish. */
+const RAIL_LOOK: Record<AgentState, RailLook> = {
+	idle: { figure: "Idle" },
+	working: { figure: "Working", line: "Working", disc: "working" },
+	decision: { figure: "Waiting", line: "Needs you" },
+	failed: { figure: "Idle", note: "A run did not finish", disc: "failed" },
+};
+
+function statusDisc(look: RailLook, className: string): HTMLElement | null {
+	if (!look.disc) return null;
+	return h("span", { class: look.disc === "failed" ? `${className} failed` : className, "aria-hidden": "true" });
+}
+
+/** The tooltip. Any state also goes into the link's name, which the compact rail
+ * needs: it hides the text beside the figure and the disc says nothing aloud. */
+function railLabel(
+	agent: Pick<HostedStaffAgent, "displayName" | "role">,
+	look: RailLook,
+): { title: string; "aria-label"?: string } {
+	const state = look.note ?? look.line;
+	const label = [agent.displayName, agent.role, state].filter(Boolean).join(" · ");
+	return state ? { title: label, "aria-label": label } : { title: label };
 }
 
 /* Each rail row is built from its model alone, and the model is also what decides
  * whether the row is rebuilt: whatever a row shows is in its key by construction.
  * Which row is current is set in place instead, since it changes with every navigation. */
 interface AgentModel extends Pick<HostedStaffAgent, "id" | "displayName" | "role" | "templateId" | "appearance"> {
-	figure: "Working" | "Waiting" | "Idle";
-	status: string;
+	state: AgentState;
 }
 interface SessionModel {
 	title: string;
 	kind: "room" | "company";
 }
 function cofounderCard(model: AgentModel, href: string): HTMLElement {
+	const look = RAIL_LOOK[model.state];
 	return h(
 		"a",
-		{ class: "cofounder-home", href, title: `${model.displayName} · ${model.role}` },
+		{ class: "cofounder-home", href, ...railLabel(model, look) },
 		h(
 			"span",
 			{ class: "cofounder-stand" },
-			agentFigure(model, model.displayName, { size: 82, activity: model.figure }),
-			// The green disc means "working now", the one state the trailer's dot shows.
-			model.figure === "Working" ? h("span", { class: "cofounder-status", "aria-hidden": "true" }) : null,
+			agentFigure(model, model.displayName, { size: 82, activity: look.figure }),
+			statusDisc(look, "cofounder-status"),
 		),
 		h("strong", null, model.displayName),
-		h("small", null, model.status),
+		h("small", null, look.line ?? model.role),
 	);
 }
 
 function agentRow(model: AgentModel, href: string): HTMLElement {
+	const look = RAIL_LOOK[model.state];
 	return h(
 		"a",
-		{ class: "rail-row", href, title: `${model.displayName} · ${model.role}` },
+		{ class: "rail-row", href, ...railLabel(model, look) },
 		h(
 			"span",
 			{ class: "rail-row-stand" },
-			agentFigure(model, model.displayName, { size: 40, activity: model.figure }),
-			model.figure === "Working" ? h("span", { class: "rail-row-status", "aria-hidden": "true" }) : null,
+			agentFigure(model, model.displayName, { size: 40, activity: look.figure }),
+			statusDisc(look, "rail-row-status"),
 		),
-		h("span", { class: "rail-row-copy" }, h("strong", null, model.displayName), h("small", null, model.status)),
+		h(
+			"span",
+			{ class: "rail-row-copy" },
+			h("strong", null, model.displayName),
+			h("small", null, look.line ?? model.role),
+		),
 	);
 }
 
@@ -441,16 +475,14 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		return entry.element;
 	};
 	const agentModel = (agent: HostedStaffAgent): AgentModel => {
-		const activity = company.activityFor(agent.id);
 		return {
 			id: agent.id,
 			displayName: agent.displayName,
 			role: agent.role,
 			templateId: agent.templateId,
 			appearance: agent.appearance,
-			// A queued run is already the agent's work from the member's side of the screen.
-			figure: !activity ? "Idle" : activity.activity === "needs_attention" ? "Waiting" : "Working",
-			status: statusLine(agent, activity),
+			// State is part of the cache key, including idle/failed transitions with the same figure and role.
+			state: company.agentState(agent.id),
 		};
 	};
 	const cofounderElement =

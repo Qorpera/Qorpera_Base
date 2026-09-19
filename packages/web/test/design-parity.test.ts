@@ -11,6 +11,7 @@ import { SettingsView } from "../src/app/views/settings.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
 import { projectTranscript, type TranscriptMessage } from "../src/cloud/transcript.ts";
+import type { HostedStaffExecutionActivity } from "../src/cloud/types.ts";
 import { renderAuthorizationCard } from "../src/ui/authorization-card.ts";
 import { SurfaceDialog } from "../src/ui/dialog.ts";
 import { h } from "../src/ui/dom.ts";
@@ -35,6 +36,7 @@ import {
 	session,
 	settle,
 	staff,
+	stubFigureMotion,
 	team,
 	timestamp,
 	userA,
@@ -75,13 +77,13 @@ function companyFixture() {
 	return { ...f, company };
 }
 /** The company rail and its resizer inside the app frame, drawn for the company home unless told otherwise. */
-function mountRail(f: ReturnType<typeof companyFixture>) {
+function mountRail(f: ReturnType<typeof companyFixture>, section: "home" | "file" = "home") {
 	const rail = h("aside", { class: "rail" }),
 		frame = h("div", { class: "frame" }, rail);
 	document.body.append(frame);
 	const auth = new AuthController(f.cloud);
 	cleanup.push(() => auth.dispose());
-	const draw = (route: Route = { name: "company", profileId: profileA.profileId, section: "home" }) =>
+	const draw = (route: Route = { name: "company", profileId: profileA.profileId, section }) =>
 		renderRail(rail, f.company, {
 			profiles: [profileA],
 			user: userA,
@@ -357,6 +359,206 @@ describe("shell presentation lifecycle", () => {
 		await settle();
 		expect(view.el.querySelector(".settings-file")?.textContent).not.toContain("99 B");
 		expect(view.el.querySelector(".settings-file")?.textContent).toContain("40 B used");
+	});
+	it("draws each agent state, with a red disc on an idle agent whose run did not finish", () => {
+		const mount = stubFigureMotion();
+		const f = companyFixture();
+		const cofounder = {
+			...staff,
+			id: id(40),
+			displayName: "Co-Founder",
+			role: "Co-founder",
+			templateId: "co-founder",
+		};
+		const cases: {
+			name: string;
+			run?: [HostedStaffExecutionActivity["jobStatus"], HostedStaffExecutionActivity["activity"]];
+			proposal?: boolean;
+			figure: string;
+			line: string;
+			disc: "red" | "green" | "none";
+		}[] = [
+			{ name: "Failed", run: ["failed", "needs_attention"], figure: "Idle", line: "Analyst", disc: "red" },
+			{ name: "Stopped", run: ["cancelled", "needs_attention"], figure: "Idle", line: "Analyst", disc: "red" },
+			{
+				name: "Decision",
+				run: ["completed", "needs_attention"],
+				figure: "Waiting",
+				line: "Needs you",
+				disc: "none",
+			},
+			// A failed run that left Company File changes is a decision too.
+			{
+				name: "Recovery",
+				run: ["failed", "needs_attention"],
+				proposal: true,
+				figure: "Waiting",
+				line: "Needs you",
+				disc: "none",
+			},
+			{ name: "Leased", run: ["leased", "working"], figure: "Working", line: "Working", disc: "green" },
+			{ name: "Queued", run: ["queued", "waiting"], figure: "Working", line: "Working", disc: "green" },
+			{ name: "Quiet", figure: "Idle", line: "Analyst", disc: "none" },
+		];
+		const rows = cases.map((row, index) => ({
+			...row,
+			runId: id(60 + index),
+			agent: { ...staff, id: id(41 + index), displayName: row.name, role: "Analyst" },
+		}));
+		f.company.store.set({
+			staff: [cofounder, ...rows.map((row) => row.agent)],
+			activity: [
+				...rows.flatMap(({ run, runId, agent }) =>
+					run
+						? [
+								{
+									runId,
+									staffAgentId: agent.id,
+									sourceKind: "session_turn" as const,
+									jobStatus: run[0],
+									activity: run[1],
+									updatedAt: timestamp,
+								},
+							]
+						: [],
+				),
+				{
+					runId: id(69),
+					staffAgentId: cofounder.id,
+					sourceKind: "room_delivery",
+					jobStatus: "failed",
+					activity: "needs_attention",
+					updatedAt: timestamp,
+				},
+			],
+			recoveries: Object.fromEntries(
+				rows
+					.filter((row) => row.proposal)
+					.map(({ runId }) => [
+						runId,
+						{
+							runId,
+							sourceKind: "session_turn",
+							jobStatus: "failed",
+							proposalId: id(99),
+							unsettledOperations: 0,
+						},
+					]),
+			),
+		});
+		const { rail } = mountRail(f, "file");
+		const figures = new Map(mount.mock.calls.map(([, , , , options]) => [options?.identity, options?.activity]));
+		const disc = (status: Element | null) =>
+			!status ? "none" : status.classList.contains("failed") ? "red" : "green";
+		for (const { agent, figure, line, disc: shown } of rows) {
+			const link = rail.querySelector(`a[href$="/staff/${agent.id}"]`)!;
+			const status = link.querySelector(".rail-row-status");
+			expect(figures.get(agent.id), agent.displayName).toBe(figure);
+			expect(link.querySelector("small")?.textContent, agent.displayName).toBe(line);
+			expect(disc(status), agent.displayName).toBe(shown);
+			// The disc is only drawn. The link names the state in words, which the
+			// compact rail needs: it hides the text beside the figure.
+			if (status) expect(status.getAttribute("aria-hidden")).toBe("true");
+			const state = shown === "red" ? "A run did not finish" : line === "Analyst" ? undefined : line;
+			const words = [agent.displayName, "Analyst", state].filter(Boolean).join(" · ");
+			expect(link.getAttribute("aria-label"), agent.displayName).toBe(state ? words : null);
+			expect(link.getAttribute("title"), agent.displayName).toBe(words);
+		}
+		// The Co-Founder's failed room delivery reads the same way on its card.
+		const card = rail.querySelector(".cofounder-home")!;
+		expect(figures.get(cofounder.id)).toBe("Idle");
+		expect(card.querySelector("small")?.textContent).toBe("Co-founder");
+		expect(disc(card.querySelector(".cofounder-status"))).toBe("red");
+		expect(card.getAttribute("aria-label")).toBe("Co-Founder · Co-founder · A run did not finish");
+	});
+	it("redraws the status disc as a run fails, is picked up again and is dismissed", () => {
+		stubFigureMotion();
+		const f = companyFixture();
+		const { rail, draw } = mountRail(f);
+		const disc = () => rail.querySelector(`a[href$="/staff/${staff.id}"] .rail-row-status`);
+		const failed = {
+			runId: id(70),
+			staffAgentId: staff.id,
+			sourceKind: "wake" as const,
+			jobStatus: "failed" as const,
+			activity: "needs_attention" as const,
+			updatedAt: timestamp,
+		};
+		expect(disc()).toBeNull();
+		// Idle and failed share the figure and the subtitle, so a redraw must look at the disc itself.
+		f.company.store.set({ activity: [failed] });
+		draw();
+		expect(disc()?.classList.contains("failed")).toBe(true);
+		f.company.store.set({ activity: [{ ...failed, runId: id(71), jobStatus: "leased", activity: "working" }] });
+		draw();
+		expect(disc()?.classList.contains("failed")).toBe(false);
+		f.company.store.set({ activity: [failed] });
+		draw();
+		f.company.store.set({ activity: [] });
+		draw();
+		expect(disc()).toBeNull();
+	});
+	it.each(["agent", "cofounder"])("updates the %s state without disturbing a composing search", (kind) => {
+		stubFigureMotion();
+		const f = companyFixture();
+		if (kind === "cofounder") f.company.store.set({ staff: [{ ...staff, templateId: "co-founder" }] });
+		const { rail, draw } = mountRail(f);
+		const row = () =>
+			rail.querySelector<HTMLElement>(kind === "cofounder" ? ".cofounder-home" : `a[href$="/staff/${staff.id}"]`)!;
+		const disc = () => row().querySelector(".rail-row-status, .cofounder-status");
+		const search = rail.querySelector<HTMLInputElement>('input[type="search"]')!;
+		search.focus();
+		search.dispatchEvent(new CompositionEvent("compositionstart"));
+		search.value = "Fixture";
+		search.setSelectionRange(1, 3);
+		search.dispatchEvent(new InputEvent("input", { isComposing: true }));
+		const observer = new MutationObserver(() => {});
+		observer.observe(rail, { childList: true, subtree: true });
+		const failed: HostedStaffExecutionActivity = {
+			runId: id(72),
+			staffAgentId: staff.id,
+			sourceKind: "wake",
+			jobStatus: "failed",
+			activity: "needs_attention",
+			updatedAt: timestamp,
+		};
+		const idle = row();
+		f.company.store.set({ activity: [failed] });
+		draw();
+		expect(row()).not.toBe(idle);
+		expect(disc()?.classList.contains("failed")).toBe(true);
+		expect(row().getAttribute("aria-label")).toContain("A run did not finish");
+		f.company.store.set({ activity: [] });
+		draw();
+		expect(disc()).toBeNull();
+		expect(row().hasAttribute("aria-label")).toBe(false);
+		f.company.store.set({
+			activity: [failed],
+			recoveries: {
+				[failed.runId]: {
+					runId: failed.runId,
+					sourceKind: "wake",
+					jobStatus: "failed",
+					proposalId: id(73),
+					unsettledOperations: 0,
+				},
+			},
+		});
+		draw();
+		expect(disc()).toBeNull();
+		expect(row().querySelector("small")?.textContent).toBe("Needs you");
+		expect(row().getAttribute("aria-label")).toContain("Needs you");
+		expect(document.activeElement).toBe(search);
+		expect(search.value).toBe("Fixture");
+		expect([search.selectionStart, search.selectionEnd]).toEqual([1, 3]);
+		expect(
+			observer
+				.takeRecords()
+				.flatMap((record) => [...record.removedNodes])
+				.some((node) => node === search || node.contains(search)),
+		).toBe(false);
+		observer.disconnect();
+		search.dispatchEvent(new CompositionEvent("compositionend", { data: "Fixture" }));
 	});
 });
 
