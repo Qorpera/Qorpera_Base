@@ -28,6 +28,7 @@ afterEach(() => {
 	vi.useRealTimers();
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
+	vi.unstubAllEnvs();
 });
 
 function message(sequence: number, createdAt: string): TranscriptMessage {
@@ -192,5 +193,103 @@ describe("conversation timestamp rendering", () => {
 		window.dispatchEvent(new Event("focus"));
 		setLanguagePreference("en");
 		expect(time.textContent).toBe(beforeDisposal);
+	});
+
+	it.each(["focus", "visibilitychange", "minute"])(
+		"reconciles day separators after a time-zone change on %s without replacing transcript content",
+		(trigger) => {
+			vi.stubEnv("TZ", "UTC");
+			vi.setSystemTime(new Date("2026-09-20T23:00:00Z"));
+			const f = setup([
+				{ ...message(1, "2026-09-20T21:59:00Z"), attachmentCount: 1 },
+				{
+					kind: "authorization_request",
+					id: id(200),
+					sequence: 2,
+					actorUserId: userA.id,
+					body: { title: "Approve the change" },
+					createdAt: "2026-09-20T22:01:00Z",
+				},
+				message(3, "2026-09-20T22:02:00Z"),
+			]);
+			const transcript = f.view.el.querySelector<HTMLElement>(".messages")!;
+			const originalRows = [...transcript.querySelectorAll(".message, .auth-card")];
+			const attachment = transcript.querySelector(".received-attachments");
+			const firstTime = transcript.querySelector<HTMLTimeElement>("time")!;
+			expect(transcript.querySelectorAll(":scope > time")).toHaveLength(1);
+			expect(firstTime.textContent).toMatch(/Today.*9:59/);
+			for (const zone of ["Europe/Copenhagen", "UTC"]) {
+				vi.stubEnv("TZ", zone);
+				if (trigger === "minute") vi.advanceTimersByTime(60_000);
+				else if (trigger === "focus") window.dispatchEvent(new Event("focus"));
+				else document.dispatchEvent(new Event("visibilitychange"));
+				const times = [...transcript.querySelectorAll<HTMLTimeElement>(":scope > time")];
+				expect(times).toHaveLength(zone === "UTC" ? 1 : 2);
+				expect(times[0]).toBe(firstTime);
+				expect(times[0]?.textContent).toMatch(zone === "UTC" ? /Today.*9:59/ : /Yesterday.*11:59/);
+				if (zone !== "UTC") {
+					expect(times[1]?.textContent).toMatch(/Today.*12:01/);
+					expect(times[1]?.dateTime).toBe("2026-09-20T22:01:00.000Z");
+					expect(times[1]?.nextElementSibling).toBe(originalRows[1]);
+				}
+				const currentRows = [...transcript.querySelectorAll(".message, .auth-card")];
+				expect(currentRows).toHaveLength(originalRows.length);
+				currentRows.forEach((row, index) => {
+					expect(row).toBe(originalRows[index]);
+				});
+				expect(transcript.querySelector(".received-attachments")).toBe(attachment);
+			}
+		},
+	);
+
+	it.each([false, true])("preserves the reading position after a time-zone change (at bottom: %s)", (atBottom) => {
+		vi.stubEnv("TZ", "UTC");
+		vi.setSystemTime(new Date("2026-09-20T23:00:00Z"));
+		const f = setup(
+			Array.from({ length: 10 }, (_, index) =>
+				message(index + 1, new Date(Date.parse("2026-09-20T21:58:00Z") + index * 60_000).toISOString()),
+			),
+		);
+		const transcript = f.view.el.querySelector<HTMLElement>(".messages")!;
+		const rows = [...transcript.querySelectorAll<HTMLElement>(".message")];
+		Object.defineProperties(transcript, {
+			clientHeight: { value: 200 },
+			scrollHeight: {
+				get: () => rows.length * 100 + transcript.querySelectorAll(":scope > time").length * 20,
+			},
+		});
+		vi.spyOn(transcript, "getBoundingClientRect").mockImplementation(() => new DOMRect(0, 0, 400, 200));
+		for (const row of rows) {
+			const offset = () => {
+				let top = 0;
+				for (const sibling of transcript.children) {
+					if (sibling === row) break;
+					top += sibling.tagName === "TIME" ? 20 : 100;
+				}
+				return top;
+			};
+			Object.defineProperty(row, "offsetTop", { get: offset });
+			vi.spyOn(row, "getBoundingClientRect").mockImplementation(
+				() => new DOMRect(0, offset() - transcript.scrollTop, 400, 100),
+			);
+		}
+		// Emulate the browser's scrollTop clamp as jsdom does not implement layout.
+		let scrollTop = 0;
+		Object.defineProperty(transcript, "scrollTop", {
+			get: () => scrollTop,
+			set: (value: number) => {
+				scrollTop = Math.max(0, Math.min(value, transcript.scrollHeight - transcript.clientHeight));
+			},
+		});
+		transcript.scrollTop = atBottom ? transcript.scrollHeight - transcript.clientHeight : 350;
+		transcript.dispatchEvent(new Event("scroll"));
+		const anchorTop = rows[3]!.getBoundingClientRect().top;
+		for (const zone of ["Europe/Copenhagen", "UTC"]) {
+			vi.stubEnv("TZ", zone);
+			window.dispatchEvent(new Event("focus"));
+			expect(transcript.querySelectorAll(":scope > time")).toHaveLength(zone === "UTC" ? 1 : 2);
+			if (atBottom) expect(transcript.scrollTop).toBe(transcript.scrollHeight - transcript.clientHeight);
+			else expect(rows[3]!.getBoundingClientRect().top).toBe(anchorTop);
+		}
 	});
 });

@@ -79,6 +79,7 @@ export class ConversationView {
 	#runNotificationKey = "";
 	#receivedAttachments: ReceivedAttachments[] = [];
 	readonly #timestampTimer: number;
+	#timestampRows: { date: Date; node: HTMLElement; separator?: HTMLTimeElement }[] = [];
 
 	constructor(
 		company: CompanyController,
@@ -585,13 +586,37 @@ export class ConversationView {
 		);
 	}
 
-	#refreshTimestamps(): void {
+	#refreshTimestamps(preserveScroll = true): void {
 		if (this.#disposed) return;
 		const now = new Date();
-		// Refresh relative dates without replacing messages, attachments, or the scroll position.
-		for (const time of this.#messages.querySelectorAll<HTMLTimeElement>(".conversation-timestamp")) {
-			const date = parseConversationTimestamp(time.dateTime);
-			if (!date) continue;
+		let previousDate: Date | undefined;
+		const groups = this.#timestampRows.map((row) => {
+			const separated = needsConversationTimestamp(row.date, previousDate);
+			previousDate = row.date;
+			return { row, separated };
+		});
+		const regroup = preserveScroll && groups.some(({ row, separated }) => Boolean(row.separator) !== separated);
+		const scrollTop = this.#messages.scrollTop;
+		const viewportTop = regroup && !this.#stickToBottom ? this.#messages.getBoundingClientRect().top : 0;
+		const anchor =
+			regroup && !this.#stickToBottom
+				? this.#timestampRows.find(({ node }) => node.getBoundingClientRect().bottom > viewportTop)?.node
+				: undefined;
+		const anchorTop = anchor?.getBoundingClientRect().top ?? 0;
+		// Reconcile local-day boundaries too: travel can add or remove a midnight
+		// between adjacent messages. Keep the message and attachment nodes intact.
+		for (const { row, separated } of groups) {
+			if (!separated) {
+				row.separator?.remove();
+				row.separator = undefined;
+				continue;
+			}
+			const { date } = row;
+			if (!row.separator) {
+				row.separator = h("time", { class: "conversation-timestamp", datetime: date.toISOString() });
+				row.node.before(row.separator);
+			}
+			const time = row.separator;
 			const label = conversationTimestampLabel(date, now);
 			const title = conversationTimestampTitle(date);
 			if (time.textContent !== label) time.textContent = label;
@@ -599,6 +624,11 @@ export class ConversationView {
 				time.title = title;
 				time.setAttribute("aria-label", title);
 			}
+		}
+		if (regroup) {
+			if (this.#stickToBottom) this.#messages.scrollTop = this.#messages.scrollHeight;
+			else if (anchor) this.#messages.scrollTop += anchor.getBoundingClientRect().top - anchorTop;
+			else this.#messages.scrollTop = scrollTop;
 		}
 	}
 
@@ -639,23 +669,8 @@ export class ConversationView {
 				if (request) decisions.set(request, item);
 			}
 		const nodes: HTMLElement[] = [];
-		const now = new Date();
-		let previousDate: Date | undefined;
+		this.#timestampRows = [];
 		for (const item of items) {
-			const date = parseConversationTimestamp(item.createdAt);
-			if (date) {
-				if (needsConversationTimestamp(date, previousDate)) {
-					const title = conversationTimestampTitle(date);
-					nodes.push(
-						h(
-							"time",
-							{ class: "conversation-timestamp", datetime: date.toISOString(), title, "aria-label": title },
-							conversationTimestampLabel(date, now),
-						),
-					);
-				}
-				previousDate = date;
-			}
 			if (item.kind === "member" || item.kind === "agent") {
 				const mine = item.kind === "member" && item.authorUserId === this.#company.userId;
 				const author =
@@ -728,6 +743,9 @@ export class ConversationView {
 					),
 				);
 			}
+			const date = parseConversationTimestamp(item.createdAt);
+			const node = nodes[nodes.length - 1];
+			if (date && node) this.#timestampRows.push({ date, node });
 		}
 		if (conversation.loading && !items.length) nodes.push(spinner("Loading conversation"));
 		if (!conversation.loading && !items.length && !conversation.error && !this.#working) {
@@ -744,6 +762,7 @@ export class ConversationView {
 				),
 			);
 		replace(this.#messages, ...nodes);
+		this.#refreshTimestamps(false);
 		if (this.#stickToBottom) this.#messages.scrollTop = this.#messages.scrollHeight;
 	}
 
