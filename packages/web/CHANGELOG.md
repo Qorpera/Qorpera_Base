@@ -9,6 +9,7 @@
 - Use a length-neutral email code hint so sign-in instructions remain accurate with the configured eight-digit codes.
 - Accept valid Unicode pause reasons in runtime notifications using the public SQL character limit.
 - Submit team-room messages through the public room-post contract, preserve room retry identity, and match room attachments/run displays to the supported interfaces.
+- Make primary buttons inside Settings readable; they rendered white text on the light grey settings button.
 
 ### Added
 
@@ -34,5 +35,11 @@
 
 ### Changed
 
+- Make the Settings window 20% larger, give its sections icons, and set their labels in whole-pixel, medium-weight dark ink so they no longer read soft.
+- Move Friends into Settings as its own tab, together with the company invitations waiting for the account. The profile menu's Friends item opens that tab and carries the invitation count, and the company invite picker's "Add a friend" switches to it.
 - Open an agent's routines and responsibilities as pages of its details popup, from two buttons beside the close button, each with a way back; routines left the Computer panel.
 - Edit an agent's name, title and description in place, saving on Enter or when leaving the field, and change the figure from a picker under it that saves each choice, as on the desktop; the Edit agent button is gone and the description is taller.
+
+### Removed
+
+- Remove the standalone Friends (`#/friends`) and Invitations (`#/invitations`) pages and the separate Invitations menu item; both live on the Settings Friends tab.

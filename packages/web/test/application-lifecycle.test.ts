@@ -315,12 +315,28 @@ describe("account and route ownership", () => {
 		await draw();
 		expect(root.textContent).toContain("Account B plan");
 		expect(root.textContent).not.toContain("Account A private plan");
-		location.hash = "#/friends";
+		expect(api.listFriends).not.toHaveBeenCalled();
+		const openFriends = () => {
+			root.querySelector<HTMLButtonElement>(".account-trigger")!.click();
+			root.querySelector<HTMLButtonElement>('[data-account-action="friends"]')!.click();
+		};
+		openFriends();
 		await draw();
 		expect(api.listFriends).toHaveBeenCalledTimes(1);
+		expect(root.querySelector("#settings-tab-friends")?.getAttribute("aria-selected")).toBe("true");
 		auth(userA);
 		await draw();
+		expect(root.querySelector(".settings-overlay")).toBeNull();
+		openFriends();
+		await draw();
 		expect(api.listFriends).toHaveBeenCalledTimes(2);
+	});
+
+	it.each(["#/friends", "#/invitations"])("sends the retired %s page to the company hub", async (hash) => {
+		const f = mounted(hash);
+		await draw();
+		expect(f.root.querySelector(".company-card[href]")?.textContent).toContain(profileA.profileName);
+		expect(f.root.querySelector(".settings-overlay")).toBeNull();
 	});
 
 	it("does not navigate after a staff-session request finishes on another page", async () => {
@@ -347,13 +363,13 @@ describe("account and route ownership", () => {
 		vi.mocked(f.api.listProfiles).mockReturnValue(profiles.promise);
 		location.hash = `#/c/${profileB.profileId}/file`;
 		await draw();
-		location.hash = "#/friends";
+		location.hash = "#/account";
 		await draw();
 		profiles.resolve([profileB]);
 		await draw();
-		expect(location.hash).toBe("#/friends");
+		expect(location.hash).toBe("#/account");
 		expect(f.api.getCompanyFile).not.toHaveBeenCalled();
-		expect(f.root.querySelector("main")?.textContent).toContain("Friends");
+		expect(f.root.querySelector("main")?.textContent).toContain("Plan & billing");
 	});
 
 	it("initializes Company File once while its response is delayed", async () => {
@@ -415,9 +431,14 @@ describe("account and route ownership", () => {
 		expect(f.root.querySelector(".settings-dialog")?.textContent).toContain("Delete company");
 		f.root.querySelector<HTMLButtonElement>(".settings-close")!.click();
 		f.root.querySelector<HTMLButtonElement>(".rail .account-trigger")!.click();
-		f.root.querySelector<HTMLAnchorElement>('.account-popover a[href="#/friends"]')!.click();
+		f.root.querySelector<HTMLButtonElement>('.account-popover [data-account-action="friends"]')!.click();
 		await draw();
 		expect(f.api.listFriends).toHaveBeenCalledTimes(2);
+		expect(f.root.querySelector("#settings-tab-friends")?.getAttribute("aria-selected")).toBe("true");
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		f.root.querySelector<HTMLButtonElement>(".settings-close")!.click();
+		location.hash = "#/account";
+		await draw();
 		expect(f.root.querySelector(".topbar .account-trigger")?.textContent).toContain("Account A");
 		expect(f.root.querySelector(".account-company-name")).toBeNull();
 		location.hash = `#/c/${profileA.profileId}/chat/${session.sessionId}`;

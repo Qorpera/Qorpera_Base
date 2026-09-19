@@ -131,7 +131,7 @@ describe("profile feedback", () => {
 		f.submit.click();
 		if (change === "account") f.auth(userB);
 		else if (change === "route") {
-			location.hash = "#/friends";
+			location.hash = "#/account";
 			window.dispatchEvent(new HashChangeEvent("hashchange"));
 		} else {
 			dispose?.();

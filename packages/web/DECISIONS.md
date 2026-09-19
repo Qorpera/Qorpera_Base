@@ -349,6 +349,19 @@ Computer panel offers one action, Open computer.
 and browser-profile grant machinery of contract section 12 is untouched; no
 client reaches it now. Removing it is a contract amendment, not a web change.
 
+## 2026-09-19 — Friends and company invitations share one Settings tab
+
+**Decision (Jonas).** Friends and the company invitations waiting for the
+account live together on one Friends tab in Settings, not on pages of their
+own. The profile popup holds Account and settings, Friends (with the count of
+waiting invitations), Feedback and Sign out. The separate Invitations item and
+the `#/friends` and `#/invitations` pages are gone; old links land on the
+company hub. The Company tab's "Add a friend" opens the Friends tab. This
+replaces the popup contents in the 2026-09-05 entry.
+
+**Settings look.** The window is 20% larger (1200×816), and each section in
+its menu has an icon and a 13px medium-weight label.
+
 ## 2026-09-19 — Agent details hold routines and responsibilities; edits are in place
 
 **Decision (Jonas).** Routines leave the Computer panel for the agent's details
