@@ -3,11 +3,11 @@ import { forwardNativeProviderLogin } from "./native-provider-login.ts";
 const RPC_TIMEOUT_MS = 5_000;
 
 /** Asks the backend for the login gateway: the identity's home node when eligible, else the least loaded (qorpera_runtime_login_gateway_choose). */
-async function chooseLoginGateway(capabilitySha256: string): Promise<string | undefined> {
+async function chooseLoginGateway(capabilitySha256: string, purpose?: "account_refresh"): Promise<string | undefined> {
 	const base = Deno.env.get("SUPABASE_URL");
 	const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 	if (!base || !key) return undefined;
-	const response = await fetch(new URL("/rest/v1/rpc/qorpera_runtime_login_gateway_choose", base), {
+	const response = await fetch(new URL(`/rest/v1/rpc/qorpera_runtime_${purpose ?? "login"}_gateway_choose`, base), {
 		method: "POST",
 		headers: { apikey: key, authorization: `Bearer ${key}`, "content-type": "application/json", accept: "application/json" },
 		body: JSON.stringify({ p_capability_sha256: capabilitySha256 }),

@@ -42,6 +42,7 @@ export class ConversationView {
 	readonly #send: HTMLButtonElement;
 	#stopMode = false;
 	#cannotSend = true;
+	#submitting = false;
 	#working = false;
 	#activityKey = "";
 	readonly #composerWrap: HTMLElement;
@@ -413,18 +414,57 @@ export class ConversationView {
 				: "Sending messages is not available yet";
 		this.#send.title = label;
 		this.#send.setAttribute("aria-label", stop ? "Stop" : "Send message");
-		this.#send.disabled = stop ? this.#run?.stopping === true : this.#cannotSend;
+		this.#send.disabled = stop ? this.#run?.stopping === true : this.#submitting || this.#cannotSend;
 	}
 
 	#submit(): void {
 		const text = this.#composer.value;
-		if ((!text.trim() && !this.#attachments.count) || this.#send.disabled || !this.#actions.sendMessage) return;
-		void this.#actions.sendMessage(this.#sessionId, text, this.#lifetime.signal).then((sent) => {
-			if (sent && !this.#disposed) {
-				if (!this.#isRoom) this.#run?.messageSent();
-				void this.#execution?.refresh();
+		if (
+			this.#submitting ||
+			(!text.trim() && !this.#attachments.count) ||
+			this.#send.disabled ||
+			!this.#actions.sendMessage
+		)
+			return;
+		const state = this.#company.conversation(this.#sessionId).get();
+		const files = [...(state.attachments ?? [])];
+		const retry = state.retrySend;
+		this.#submitting = true;
+		this.#syncSend();
+		void (async () => {
+			try {
+				// Reconcile a runtime account handoff before new input. An uncertain
+				// retry retains its exact original request and account authority.
+				if (this.#execution && !retry) await this.#execution.refresh();
+				if (this.#disposed || this.#notificationSignal.aborted) return;
+				this.update();
+				const current = this.#company.conversation(this.#sessionId).get();
+				const currentFiles = current.attachments ?? [];
+				// Editing during the account check cancels this submission; no draft
+				// or attachment is replaced, and a later click sends the edited input.
+				if (
+					this.#cannotSend ||
+					this.#composer.value !== text ||
+					current.retrySend !== retry ||
+					files.length !== currentFiles.length ||
+					files.some((file, index) => file !== currentFiles[index])
+				)
+					return;
+				const sent = await this.#actions.sendMessage!(this.#sessionId, text, this.#lifetime.signal);
+				if (sent && !this.#disposed) {
+					if (!this.#isRoom) this.#run?.messageSent();
+					void this.#execution?.refresh();
+				}
+			} catch {
+				if (!this.#disposed && !this.#notificationSignal.aborted)
+					this.#company
+						.conversation(this.#sessionId)
+						.set({ sendError: "The message could not be confirmed. Try again." });
+			} finally {
+				this.#submitting = false;
+				if (!this.#disposed) this.update();
 			}
-		});
+		})();
 		this.update();
 	}
 

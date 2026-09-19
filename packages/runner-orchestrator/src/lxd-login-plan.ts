@@ -31,6 +31,7 @@ export function lxdLoginNodePolicy(config: LxdNativeLoginGatewayConfig, machineI
 type LoginPolicy = ReturnType<typeof lxdLoginNodePolicy>["policy"];
 
 export interface LxdLoginBinding {
+	purpose?: "account_refresh";
 	schema: "qorpera.lxd-login-allocation/v1";
 	allocationId: string;
 	loginId: string;
@@ -79,8 +80,12 @@ function validatePolicy(policy: LoginPolicy): void {
 export function lxdLoginPlan(value: LxdLoginBinding) {
 	const binding = structuredClone(value);
 	if (!binding || typeof binding !== "object" || Array.isArray(binding)) throw new Error("INVALID_LOGIN_BINDING");
-	keys(binding, "schema,allocationId,loginId,profileId,computeIdentityId,capabilitySha256,bootstrapSha256,policy");
+	keys(
+		binding,
+		`schema,allocationId,loginId,profileId,computeIdentityId,capabilitySha256,bootstrapSha256,policy${binding.purpose === undefined ? "" : ",purpose"}`,
+	);
 	if (
+		(binding.purpose !== undefined && binding.purpose !== "account_refresh") ||
 		binding.schema !== "qorpera.lxd-login-allocation/v1" ||
 		[binding.allocationId, binding.loginId, binding.profileId, binding.computeIdentityId].some(
 			(id) => typeof id !== "string" || !LOGIN_UUID.test(id),
@@ -91,10 +96,11 @@ export function lxdLoginPlan(value: LxdLoginBinding) {
 	validatePolicy(binding.policy);
 	const p = binding.policy;
 	const request: LxdCreateInstanceRequest = {
-		name: `qorpera-login-${binding.allocationId.replaceAll("-", "")}`,
+		name: `qorpera-${binding.purpose === "account_refresh" ? "refresh" : "login"}-${binding.allocationId.replaceAll("-", "")}`,
 		type: "virtual-machine",
 		profiles: [p.loginProfile],
 		config: {
+			...(binding.purpose ? { "user.qorpera.purpose": binding.purpose } : {}),
 			"boot.mode": "uefi-secureboot",
 			"limits.cpu": String(p.cpuLimit),
 			"limits.memory": p.memoryLimit,

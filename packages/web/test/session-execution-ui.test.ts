@@ -54,15 +54,42 @@ function connections(count = 2): NativeExecutionConnections {
 function withSponsorVersion(observed: NativeExecutionConnections, sponsorVersion: number): NativeExecutionConnections {
 	return { ...observed, connections: observed.connections.map((c) => ({ ...c, sponsorVersion })) };
 }
-/** The picker exists only while the member has more than one usable account. */
+/** Account selection is automatic; there must never be a conversation picker. */
 function selector(): HTMLSelectElement | null {
 	return document.querySelector<HTMLSelectElement>('[aria-label="Model account for this conversation"]');
 }
-function choose(value: string): void {
-	selector()!.value = value;
-	selector()!.dispatchEvent(new Event("change"));
+function withUsage(remaining: readonly (number | undefined)[]): NativeExecutionConnections {
+	const observed = connections();
+	return {
+		...observed,
+		connections: observed.connections.map((connection, index) => ({
+			...connection,
+			providerAccountReference: `codex-cli:${"a".repeat(64)}`,
+			...(remaining[index] === undefined
+				? {}
+				: {
+						providerAccountUsage: {
+							observedAt: new Date().toISOString(),
+							windows: [
+								{
+									id: "primary" as const,
+									label: "5 hours",
+									usedPercent: 100 - remaining[index]!,
+									resetAt: "2099-01-01T00:00:00.000Z",
+								},
+							],
+						},
+					}),
+		})),
+	};
 }
-function setup(room = false, observed: NativeExecutionConnections = connections()) {
+
+function setup(
+	room = false,
+	observed: NativeExecutionConnections = connections(),
+	selectSessionAccount?: WebNativeSubscription["selectSessionAccount"],
+	refreshAccountMetadata?: WebNativeSubscription["refreshAccountMetadata"],
+) {
 	const f = fixture();
 	const company = new CompanyController(f.api, profileA, userA.id);
 	company.store.set({
@@ -84,6 +111,8 @@ function setup(room = false, observed: NativeExecutionConnections = connections(
 		beginProviderLogin: vi.fn(),
 		listConnections,
 		listSessionTurnProvenance,
+		...(selectSessionAccount ? { selectSessionAccount } : {}),
+		...(refreshAccountMetadata ? { refreshAccountMetadata } : {}),
 		requestSessionTurn: vi.fn(),
 		createMemberSponsor: vi.fn(),
 		revokeConnection: vi.fn(),
@@ -131,6 +160,37 @@ function buttonNamed(view: ConversationView, label: string): HTMLButtonElement |
 }
 const CONNECT_HINT = "Connect a model account in Settings → Connections to send messages.";
 
+describe("room startup usage refresh", () => {
+	it("waits for usage before selecting, then keeps hydration out of subsequent turn checks", async () => {
+		const pending = deferred<void>();
+		const hydrate = vi.fn(() => pending.promise);
+		const select = vi.fn(async () => id(90));
+		const f = setup(false, connections(), select, hydrate);
+		await settle();
+		expect(hydrate).toHaveBeenCalledTimes(1);
+		expect(select).not.toHaveBeenCalled();
+		expect(f.sponsor()).toBeUndefined();
+		pending.resolve();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		refresh();
+		await settle();
+		expect(select).toHaveBeenCalledTimes(2);
+		expect(hydrate).toHaveBeenCalledTimes(1);
+	});
+	it("does not choose from a failed refresh and allows recovery on focus", async () => {
+		const hydrate = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValue(undefined);
+		const select = vi.fn(async () => id(90));
+		const f = setup(false, connections(), select, hydrate);
+		await settle();
+		expect(select).not.toHaveBeenCalled();
+		expect(f.sponsor()).toBeUndefined();
+		refresh();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+	});
+});
+
 describe("conversation execution account", () => {
 	it("keeps group-chat text and the member's own account without single-agent run or turn history", async () => {
 		const f = setup(true);
@@ -166,7 +226,7 @@ describe("conversation execution account", () => {
 		refresh();
 		await settle();
 		expect(f.sendMessage).toHaveBeenCalledExactlyOnceWith(session.sessionId, "Hello team", expect.any(AbortSignal));
-		expect(f.listConnections).toHaveBeenCalledTimes(3);
+		expect(f.listConnections).toHaveBeenCalledTimes(4);
 		expect(f.listSessionTurnProvenance).not.toHaveBeenCalled();
 		expect(f.read).not.toHaveBeenCalled();
 		expect(f.cancel).not.toHaveBeenCalled();
@@ -254,27 +314,342 @@ describe("conversation execution account", () => {
 		expect(f.native.requestSessionTurn).not.toHaveBeenCalled();
 	});
 
-	it("shows a picker only with several usable accounts and keeps the member's choice across refreshes", async () => {
-		const f = setup();
-		await settle();
-		expect(selector()!.value).toBe(id(90));
-		expect(f.sponsor()?.connectionId).toBe(id(90));
-		choose(id(91));
-		await settle();
-		expect(f.sponsor()?.connectionId).toBe(id(91));
-		refresh();
-		await settle();
-		expect(selector()!.value).toBe(id(91));
-		expect(f.sponsor()?.connectionId).toBe(id(91));
-		// The chosen account went away: the remaining usable one takes over and the picker goes.
-		f.listConnections.mockResolvedValue(connections(1));
-		refresh();
+	it("chooses the most remaining allowance once and keeps that account across quota changes", async () => {
+		const f = setup(true, withUsage([20, 80]));
 		await settle();
 		expect(selector()).toBeNull();
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+		expect(f.view.el.textContent).not.toContain("codex-cli:");
+		f.listConnections.mockResolvedValue(withUsage([95, 40]));
+		refresh();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+		type(f.view, "Hello");
+		await settle();
+		f.send().click();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+		expect(selector()).toBeNull();
+
+		// Reopening this room retains its account in company conversation state.
+		f.view.dispose();
+		const reopened = new ConversationView(f.company, session.sessionId, { nativeSubscription: f.native });
+		document.body.append(reopened.el);
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+		reopened.dispose();
+
+		// A new room independently chooses the current highest allowance.
+		const nextSession = {
+			...session,
+			sessionId: id(192),
+			clientSessionId: id(193),
+			executionScope: { roomId: id(194) },
+		};
+		f.company.store.set({ sessions: [...f.company.store.get().sessions, nextSession] });
+		const next = new ConversationView(f.company, nextSession.sessionId, { nativeSubscription: f.native });
+		document.body.append(next.el);
+		await settle();
+		expect(f.company.conversation(nextSession.sessionId).get().executionSponsor?.connectionId).toBe(id(90));
+		expect(selector()).toBeNull();
+		next.dispose();
+	});
+
+	it("switches an exhausted account to the next best and disables sending when all are exhausted", async () => {
+		const f = setup(true, withUsage([80, 40]));
+		await settle();
 		expect(f.sponsor()?.connectionId).toBe(id(90));
+		f.listConnections.mockResolvedValue(withUsage([0, 40]));
+		refresh();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(91));
 		type(f.view, "Hello");
 		await settle();
 		expect(f.send().disabled).toBe(false);
+		f.listConnections.mockResolvedValue(withUsage([0, 0]));
+		refresh();
+		await settle();
+		expect(f.send().disabled).toBe(true);
+		expect(f.view.el.textContent).toContain("usage limits");
+		expect(selector()).toBeNull();
+	});
+
+	it("uses the least remaining window, ranks unknown quota last and ignores expired windows", async () => {
+		const observed = withUsage([90, 30]);
+		observed.connections[0]!.providerAccountUsage!.windows = [
+			...observed.connections[0]!.providerAccountUsage!.windows,
+			{
+				id: "secondary",
+				label: "Weekly",
+				usedPercent: 95,
+				resetAt: "2099-01-01T00:00:00.000Z",
+			},
+		];
+		const f = setup(true, observed);
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+		// Losing current account makes an account with measured allowance preferable to unknown.
+		f.company.setExecutionSponsor(session.sessionId, observed, undefined);
+		f.listConnections.mockResolvedValue(withUsage([undefined, 10]));
+		refresh();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+		const expired = withUsage([0, 0]);
+		expired.connections[0]!.providerAccountUsage!.windows[0]!.resetAt = "2020-01-01T00:00:00.000Z";
+		f.listConnections.mockResolvedValue(expired);
+		refresh();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+	});
+
+	it("treats stale observations as unknown and resolves equal allowance deterministically", async () => {
+		const observed = withUsage([100, 25]);
+		observed.connections[0]!.providerAccountUsage!.observedAt = "2020-01-01T00:00:00.000Z";
+		const f = setup(true, observed);
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+		const staleExhaustion = withUsage([0, 0]);
+		staleExhaustion.connections[0]!.providerAccountUsage!.observedAt = "2020-01-01T00:00:00.000Z";
+		f.listConnections.mockResolvedValue(staleExhaustion);
+		refresh();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		f.company.setExecutionSponsor(session.sessionId, observed, undefined);
+		const tied = withUsage([50, 50]);
+		f.listConnections.mockResolvedValue({ ...tied, connections: [...tied.connections].reverse() });
+		refresh();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+	});
+
+	it("honors authoritative usage-limit signals and follows the runtime sponsor handoff", async () => {
+		const f = setup(true, withUsage([90, 40]));
+		await settle();
+		const handoff = withUsage([90, 40]);
+		handoff.connections[0]!.usageLimitResetAt = "2099-01-01T00:00:00.000Z";
+		handoff.connections[1]!.sponsorBindingId = id(100);
+		handoff.connections[1]!.sponsorVersion = 2;
+		f.listConnections.mockResolvedValue(handoff);
+		refresh();
+		await settle();
+		expect(f.sponsor()).toMatchObject({ connectionId: id(91), sponsorBindingId: id(100), sponsorVersion: 2 });
+		// An expired authoritative block no longer prevents admission after all quota windows reset.
+		const reset = withUsage([undefined, 0]);
+		reset.connections[0]!.usageLimitResetAt = "2020-01-01T00:00:00.000Z";
+		f.listConnections.mockResolvedValue(reset);
+		refresh();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+	});
+
+	it("restores the server's sticky room account before reading its current binding", async () => {
+		const selectAccount = vi.fn(async () => id(90));
+		const f = setup(true, withUsage([20, 90]), selectAccount);
+		await settle();
+		expect(selectAccount).toHaveBeenCalledExactlyOnceWith(session.sessionId, expect.any(AbortSignal));
+		expect(selectAccount.mock.invocationCallOrder[0]).toBeLessThan(f.listConnections.mock.invocationCallOrder[0]!);
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		expect(selector()).toBeNull();
+		// A server handoff wins even while the old quota observation looks usable.
+		selectAccount.mockResolvedValue(id(91));
+		refresh();
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+	});
+
+	it("does not silently choose locally when server account selection is unavailable", async () => {
+		const selectAccount = vi.fn(async (): Promise<string | undefined> => undefined);
+		const f = setup(true, withUsage([80, 90]), selectAccount);
+		await settle();
+		type(f.view, "Hello");
+		await settle();
+		expect(f.sponsor()).toBeUndefined();
+		expect(f.send().disabled).toBe(true);
+		selectAccount.mockResolvedValue(id(90));
+		refresh();
+		await settle();
+		expect(f.send().disabled).toBe(false);
+		selectAccount.mockRejectedValue(new Error("private server error"));
+		refresh();
+		await settle();
+		expect(f.send().disabled).toBe(true);
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		expect(f.view.el.textContent).toContain("Model accounts are unavailable");
+		expect(f.view.el.textContent).not.toContain("private server error");
+	});
+
+	it("never invokes server reselection for an uncertain retry", async () => {
+		const selectAccount = vi.fn(async () => id(90));
+		const f = setup(true, withUsage([80, 90]), selectAccount);
+		await settle();
+		const retained = {
+			clientInputId: id(150),
+			clientRequestId: id(150),
+			text: "Hello",
+			files: [],
+			executionSponsor: f.sponsor()!,
+		};
+		f.company.conversation(session.sessionId).set({ draft: "Hello", retrySend: retained });
+		f.listConnections.mockResolvedValue(withUsage([0, 90]));
+		refresh();
+		await settle();
+		expect(selectAccount).toHaveBeenCalledOnce();
+		expect(f.company.conversation(session.sessionId).get().retrySend).toBe(retained);
+		expect(f.send().disabled).toBe(false);
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+	});
+
+	it("checks the latest room account before send and suppresses duplicate submissions", async () => {
+		const selectAccount = vi.fn(async () => id(90));
+		const f = setup(true, withUsage([80, 90]), selectAccount);
+		await settle();
+		type(f.view, "Hello");
+		await settle();
+		const selection = deferred<string>();
+		selectAccount.mockReturnValueOnce(selection.promise);
+		const sending = deferred<boolean>();
+		let sentAccount: string | undefined;
+		f.sendMessage.mockImplementation(async () => {
+			sentAccount = f.sponsor()?.connectionId;
+			return sending.promise;
+		});
+		f.send().click();
+		f.send().click();
+		f.view.el.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+		await settle();
+		expect(selectAccount).toHaveBeenCalledTimes(2);
+		expect(f.sendMessage).not.toHaveBeenCalled();
+		selection.resolve(id(91));
+		await settle();
+		expect(f.sendMessage).toHaveBeenCalledExactlyOnceWith(session.sessionId, "Hello", expect.any(AbortSignal));
+		expect(sentAccount).toBe(id(91));
+		expect(f.send().disabled).toBe(true);
+		f.view.el.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+		expect(f.sendMessage).toHaveBeenCalledOnce();
+		sending.resolve(true);
+		await settle();
+	});
+
+	it.each(["draft", "attachments"])("cancels submission when %s change during account preflight", async (change) => {
+		const selectAccount = vi.fn(async () => id(90));
+		const f = setup(false, withUsage([80, 90]), selectAccount);
+		await settle();
+		const state = f.company.conversation(session.sessionId);
+		const originalFile = new File(["first"], "first.png", { type: "image/png" });
+		state.set({ draft: "Original", attachments: change === "attachments" ? [originalFile] : [] });
+		await settle();
+		const selection = deferred<string>();
+		selectAccount.mockReturnValueOnce(selection.promise);
+		f.send().click();
+		const editedFile = new File(["second"], "second.png", { type: "image/png" });
+		if (change === "draft") type(f.view, "Edited draft");
+		else state.set({ attachments: [editedFile] });
+		await settle();
+		selection.resolve(id(91));
+		await settle();
+		expect(f.sendMessage).not.toHaveBeenCalled();
+		expect(state.get().draft).toBe(change === "draft" ? "Edited draft" : "Original");
+		if (change === "attachments") expect(state.get().attachments?.[0]).toBe(editedFile);
+		expect(f.send().disabled).toBe(false);
+	});
+
+	it("never sends after the conversation is disposed during account preflight", async () => {
+		const selectAccount = vi.fn(async () => id(90));
+		const f = setup(true, withUsage([80, 90]), selectAccount);
+		await settle();
+		type(f.view, "Keep draft");
+		await settle();
+		const selection = deferred<string>();
+		selectAccount.mockReturnValueOnce(selection.promise);
+		f.send().click();
+		f.view.dispose();
+		selection.resolve(id(91));
+		await settle();
+		expect(f.sendMessage).not.toHaveBeenCalled();
+		expect(f.company.conversation(session.sessionId).get().draft).toBe("Keep draft");
+	});
+
+	it("does not send when account preflight fails and keeps the draft intact", async () => {
+		const selectAccount = vi.fn(async () => id(90));
+		const f = setup(true, withUsage([80, 90]), selectAccount);
+		await settle();
+		type(f.view, "Keep draft");
+		await settle();
+		selectAccount.mockRejectedValue(new Error("unavailable"));
+		f.send().click();
+		await settle();
+		expect(f.sendMessage).not.toHaveBeenCalled();
+		expect(f.company.conversation(session.sessionId).get().draft).toBe("Keep draft");
+		expect(f.send().disabled).toBe(true);
+	});
+
+	it.each(["access lost", "write revoked", "company stopped"])("cancels account preflight when %s", async (change) => {
+		const selectAccount = vi.fn(async () => id(90));
+		const f = setup(true, withUsage([80, 90]), selectAccount);
+		await settle();
+		type(f.view, "Keep draft");
+		await settle();
+		const selection = deferred<string>();
+		selectAccount.mockReturnValueOnce(selection.promise);
+		f.send().click();
+		if (change === "access lost") f.company.store.set({ accessLost: true });
+		else if (change === "write revoked")
+			f.company.store.set({ team: { ...team, capabilities: { ...team.capabilities, write: false } } });
+		else f.company.stop();
+		await settle();
+		selection.resolve(id(91));
+		await settle();
+		expect(f.sendMessage).not.toHaveBeenCalled();
+		if (change !== "company stopped")
+			expect(f.company.conversation(session.sessionId).get().draft).toBe("Keep draft");
+	});
+
+	it("does not replace a retry that appears while account preflight is pending", async () => {
+		const selectAccount = vi.fn(async () => id(90));
+		const f = setup(true, withUsage([80, 90]), selectAccount);
+		await settle();
+		type(f.view, "Hello");
+		await settle();
+		const retained = {
+			clientInputId: id(150),
+			clientRequestId: id(150),
+			text: "Hello",
+			files: [],
+			executionSponsor: f.sponsor()!,
+		};
+		const selection = deferred<string>();
+		selectAccount.mockReturnValueOnce(selection.promise);
+		f.send().click();
+		f.company.conversation(session.sessionId).set({ retrySend: retained });
+		selection.resolve(id(91));
+		await settle();
+		expect(f.sendMessage).not.toHaveBeenCalled();
+		expect(f.company.conversation(session.sessionId).get().retrySend).toBe(retained);
+		expect(f.sponsor()).toBe(retained.executionSponsor);
+		expect(f.send().disabled).toBe(false);
+	});
+
+	it("sends an exact uncertain retry without refreshing or changing its original account", async () => {
+		const selectAccount = vi.fn(async () => id(90));
+		const f = setup(true, withUsage([80, 90]), selectAccount);
+		await settle();
+		const retained = {
+			clientInputId: id(150),
+			clientRequestId: id(150),
+			text: "Hello",
+			files: [],
+			executionSponsor: f.sponsor()!,
+		};
+		f.company.conversation(session.sessionId).set({ draft: "Hello", retrySend: retained });
+		await settle();
+		f.sendMessage.mockResolvedValue(false);
+		selectAccount.mockRejectedValue(new Error("must not select"));
+		f.send().click();
+		await settle();
+		expect(f.sendMessage).toHaveBeenCalledExactlyOnceWith(session.sessionId, "Hello", expect.any(AbortSignal));
+		expect(selectAccount).toHaveBeenCalledOnce();
+		expect(f.company.conversation(session.sessionId).get().retrySend).toBe(retained);
+		expect(f.sponsor()?.connectionId).toBe(id(90));
 	});
 
 	it("never chooses another member's account or a connection lacking an active binding", async () => {
@@ -327,7 +702,7 @@ describe("conversation execution account", () => {
 		f.company.conversation(session.sessionId).set({ retrySend: retained });
 		await settle();
 		expect(selector()).toBeNull();
-		f.listConnections.mockResolvedValue(withSponsorVersion(connections(), 2));
+		f.listConnections.mockResolvedValue(withSponsorVersion(withUsage([0, 100]), 2));
 		refresh();
 		await settle();
 		expect(selector()).toBeNull();
@@ -337,9 +712,7 @@ describe("conversation execution account", () => {
 	});
 
 	it("re-binds the same account at its new sponsor version on refresh, but not during a retry", async () => {
-		const f = setup();
-		await settle();
-		choose(id(91));
+		const f = setup(false, withUsage([20, 80]));
 		await settle();
 		expect(f.sponsor()).toMatchObject({ connectionId: id(91), sponsorVersion: 1 });
 		f.listConnections.mockResolvedValue(withSponsorVersion(connections(), 2));
@@ -365,7 +738,7 @@ describe("conversation execution account", () => {
 		expect(f.company.conversation(session.sessionId).get().retrySend?.executionSponsor.sponsorVersion).toBe(2);
 	});
 
-	it("explicitly releases a failed attempt for a new account choice while preserving the draft and files", async () => {
+	it("explicitly releases a failed attempt for automatic account selection while preserving the draft and files", async () => {
 		const f = setup();
 		await settle();
 		const selected = f.sponsor()!;
@@ -387,15 +760,16 @@ describe("conversation execution account", () => {
 		await settle();
 		expect(selector()).toBeNull();
 		expect(f.view.el.textContent).toContain("The earlier message may already have been accepted");
+		f.listConnections.mockResolvedValue(withUsage([0, 80]));
+		refresh();
+		await settle();
 		buttonNamed(f.view, "Start a new message request")!.click();
 		await settle();
 		const state = f.company.conversation(session.sessionId).get();
 		expect(state.retrySend).toBeUndefined();
 		expect(state.draft).toBe("Keep this draft");
 		expect(state.attachments?.[0]).toBe(image);
-		expect(selector()!.disabled).toBe(false);
-		choose(id(91));
-		await settle();
+		expect(selector()).toBeNull();
 		expect(f.sponsor()?.connectionId).toBe(id(91));
 		expect(f.sendMessage).not.toHaveBeenCalled();
 		expect(f.native.requestSessionTurn).not.toHaveBeenCalled();

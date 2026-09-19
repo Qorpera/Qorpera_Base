@@ -12,7 +12,7 @@ import type { WorkspaceActions } from "./workspace-actions.ts";
  * write. Once a session exists, ordinary conversation state owns send recovery. */
 export function createConversationStarter(options: {
 	company: CompanyController;
-	native: Pick<WebNativeSubscription, "listConnections">;
+	native: Pick<WebNativeSubscription, "listConnections" | "selectSessionAccount" | "refreshAccountMetadata">;
 	editor: (signal: AbortSignal) => Promise<Pick<CloudMemberCompanyFileClient, "read" | "edit" | "review">>;
 	current: () => void;
 	send: (sessionId: string, text: string, signal: AbortSignal) => Promise<boolean>;
@@ -47,6 +47,10 @@ export function createConversationStarter(options: {
 			throw new Error("Enter a message of no more than 64 KiB.");
 		busy = true;
 		try {
+			if (options.native.refreshAccountMetadata) {
+				await options.native.refreshAccountMetadata(signal);
+				check();
+			}
 			const observed = await options.native.listConnections(signal);
 			check();
 			let sponsor: SessionExecutionSponsor | undefined;
@@ -55,7 +59,7 @@ export function createConversationStarter(options: {
 					sponsor = selectSessionExecutionSponsor(observed, connection.connectionId, company.userId);
 					break;
 				} catch {
-					// As in the conversation picker, skip accounts unavailable to this member.
+					// Check account availability before creating a conversation.
 				}
 			}
 			if (!sponsor) throw new Error("Connect a model account in Settings → Connections to send messages.");
@@ -144,6 +148,17 @@ export function createConversationStarter(options: {
 				if (!session || session.staffAgentId || session.status !== "open")
 					throw new Error("The group chat is still opening. Send again to retry the same conversation.");
 				sessionId = session.sessionId;
+			}
+			if (options.native.selectSessionAccount) {
+				const connectionId = await options.native.selectSessionAccount(sessionId, signal);
+				check();
+				if (!connectionId)
+					throw new Error("No model account is currently available. Try again after an account resets.");
+				// Selection may have followed a runtime handoff, so read the current
+				// sponsor version after the server has chosen this room's account.
+				const currentAccounts = await options.native.listConnections(signal);
+				check();
+				sponsor = selectSessionExecutionSponsor(currentAccounts, connectionId, company.userId);
 			}
 			company.assertCanSend(sessionId);
 			const conversation = company.conversation(sessionId, false);

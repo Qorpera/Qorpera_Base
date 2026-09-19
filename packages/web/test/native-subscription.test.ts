@@ -49,6 +49,45 @@ function setup(loginBase?: string) {
 	};
 }
 describe("native subscription browser transport", () => {
+	it("selects the durable conversation account with scoped authenticated transport", async () => {
+		const f = setup();
+		f.fetch.mockResolvedValueOnce(Response.json(id(94)));
+		expect(await f.client.selectSessionAccount!(session.sessionId, f.view.signal)).toBe(id(94));
+		const [url, request] = f.fetch.mock.calls[0]!;
+		expect(url).toBe("https://fixture.invalid/rest/v1/rpc/qorpera_select_member_session_account");
+		expect(JSON.parse(String(request?.body))).toEqual({
+			p_profile_id: profileA.profileId,
+			p_session_id: session.sessionId,
+		});
+		expect(request).toMatchObject({ method: "POST", redirect: "error", cache: "no-store", credentials: "omit" });
+		expect(f.current).toHaveBeenCalledWith(session.sessionId);
+		f.fetch.mockResolvedValueOnce(Response.json(null));
+		expect(await f.client.selectSessionAccount!(session.sessionId)).toBeUndefined();
+	});
+	it("rejects malformed account selections and does not send after an account switch", async () => {
+		const f = setup();
+		f.fetch.mockResolvedValueOnce(Response.json({ access_token: "private" }));
+		await expect(f.client.selectSessionAccount!(session.sessionId)).rejects.toThrow(
+			"Invalid conversation account response",
+		);
+		await expect(f.client.selectSessionAccount!("invalid")).rejects.toThrow("Invalid conversation account request");
+		expect(f.fetch).toHaveBeenCalledTimes(1);
+		f.auth(userB);
+		await expect(f.client.selectSessionAccount!(session.sessionId)).rejects.toThrow("Refresh its status");
+		expect(f.fetch).toHaveBeenCalledTimes(1);
+	});
+	it("discards a late durable selection when its conversation changes", async () => {
+		const f = setup(),
+			response = deferred<Response>();
+		f.fetch.mockReturnValueOnce(response.promise);
+		const selected = f.client.selectSessionAccount!(session.sessionId, f.view.signal);
+		await settle();
+		f.current.mockImplementation(() => {
+			throw new Error("Conversation changed");
+		});
+		response.resolve(Response.json(id(94)));
+		await expect(selected).rejects.toThrow("Refresh its status");
+	});
 	it("submits the SDK's exact sponsored request without dispatching a local runtime", async () => {
 		const f = setup();
 		expect(await f.client.requestSessionTurn(f.input, f.view.signal)).toEqual({

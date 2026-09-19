@@ -6,7 +6,7 @@ export interface NativeProviderLoginProxyOptions {
 	upstreamUrl?: string;
 	/** Chooses the login gateway per request (least-loaded node); an undefined or invalid result falls back to upstreamUrl. */
 	/** Receives the SHA-256 of the login capability so the backend can prefer the identity's home node. */
-	upstreamResolver?: (capabilitySha256: string) => Promise<string | undefined>;
+	upstreamResolver?: (capabilitySha256: string, purpose?: "account_refresh") => Promise<string | undefined>;
 	/** Exact browser origins; native callers without Origin still require a capability. */
 	allowedOrigins?: readonly string[];
 	fetchImplementation?: typeof fetch;
@@ -126,7 +126,11 @@ async function forwardLogin(request: Request, options: NativeProviderLoginProxyO
 			throw new Error("Native login proxy timeout is invalid");
 		}
 		const signal = AbortSignal.any([request.signal, AbortSignal.timeout(timeoutMs)]);
-		target = await resolveUpstream(options, signal, await sha256Hex(capability));
+		const refresh = new URL(request.url).pathname.endsWith("/account-refresh");
+		target = await resolveUpstream(refresh && options.upstreamResolver
+			? { ...options, upstreamResolver: (hash) => options.upstreamResolver!(hash, "account_refresh") }
+			: options, signal, await sha256Hex(capability));
+		if (refresh) target.url = new URL("account-refresh", target.url).href;
 		const upstream = await (options.fetchImplementation ?? fetch)(target.url, {
 			method: "POST",
 			headers: {

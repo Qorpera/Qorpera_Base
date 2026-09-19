@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { createConversationStarter } from "../src/app/start-conversation.ts";
 import type { SessionInputWriter } from "../src/cloud/session-input.ts";
-import { deferred, fixture, id, profileA, session, staff, team, timestamp, userA } from "./fixtures.ts";
+import { deferred, fixture, id, profileA, session, settle, staff, team, timestamp, userA } from "./fixtures.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => {
@@ -88,11 +88,13 @@ function setup() {
 		status: "active",
 	});
 	const listConnections = vi.fn(async () => observed);
+	const selectSessionAccount = vi.fn(async (): Promise<string | undefined> => id(90));
+	const refreshAccountMetadata = vi.fn(async (): Promise<void> => undefined);
 	const current = vi.fn();
 	const getEditor = vi.fn(async () => editor as unknown as CloudMemberCompanyFileClient);
 	const start = createConversationStarter({
 		company,
-		native: { listConnections },
+		native: { listConnections, selectSessionAccount, refreshAccountMetadata },
 		editor: getEditor,
 		current,
 		send: (sessionId, text, signal) => company.sendPrompt(sessionId, text, signal),
@@ -103,6 +105,8 @@ function setup() {
 		editor,
 		getEditor,
 		listConnections,
+		selectSessionAccount,
+		refreshAccountMetadata,
 		current,
 		start,
 		write,
@@ -112,6 +116,27 @@ function setup() {
 }
 
 describe("starting a conversation on first send", () => {
+	it("refreshes account usage before creating a room or selecting its first sponsor", async () => {
+		const f = setup();
+		const pending = deferred<void>();
+		f.refreshAccountMetadata.mockReturnValue(pending.promise);
+		const start = f.start([staff.id], "Hello", f.signal);
+		await settle();
+		expect(f.listConnections).not.toHaveBeenCalled();
+		expect(f.api.agentThread).not.toHaveBeenCalled();
+		expect(f.write).not.toHaveBeenCalled();
+		pending.resolve();
+		await start;
+		expect(f.selectSessionAccount).toHaveBeenCalledTimes(1);
+		expect(f.write).toHaveBeenCalledTimes(1);
+	});
+	it("keeps the first message unsent when usage cannot be refreshed", async () => {
+		const f = setup();
+		f.refreshAccountMetadata.mockRejectedValue(new Error("Usage unavailable"));
+		await expect(f.start([staff.id], "Hello", f.signal)).rejects.toThrow("Usage unavailable");
+		expect(f.api.agentThread).not.toHaveBeenCalled();
+		expect(f.write).not.toHaveBeenCalled();
+	});
 	it("creates the missing rooms directory before the first governed room document", async () => {
 		const f = setup();
 		f.editor.read.mockResolvedValueOnce({ path: "organization/rooms", kind: "absent", version: null, text: "" });
@@ -151,6 +176,68 @@ describe("starting a conversation on first send", () => {
 		expect(f.getEditor).not.toHaveBeenCalled();
 		expect(f.write).toHaveBeenCalledOnce();
 	});
+	it.each(["agent", "group"])(
+		"uses the server-selected account and current binding for the first %s message",
+		async (kind) => {
+			const f = setup();
+			const selected = {
+				...observed.connections[0]!,
+				connectionId: id(91),
+				sponsorBindingId: id(101),
+				sponsorVersion: 2,
+			};
+			f.listConnections.mockResolvedValueOnce(observed).mockResolvedValue({
+				...observed,
+				connections: [...observed.connections, selected],
+			});
+			f.selectSessionAccount.mockImplementation(async () => {
+				expect(f.company.store.get().sessions.some((item) => item.sessionId === session.sessionId)).toBe(true);
+				return selected.connectionId;
+			});
+			await f.start(kind === "agent" ? [staff.id] : [staff.id, f.other.id], "Hello", f.signal);
+			expect(f.selectSessionAccount).toHaveBeenCalledExactlyOnceWith(session.sessionId, expect.any(AbortSignal));
+			expect(f.listConnections.mock.invocationCallOrder[1]).toBeGreaterThan(
+				f.selectSessionAccount.mock.invocationCallOrder[0]!,
+			);
+			expect(f.write.mock.calls[0]?.[5]).toMatchObject({
+				connectionId: id(91),
+				sponsorBindingId: id(101),
+				sponsorVersion: 2,
+			});
+		},
+	);
+	it.each(["unavailable", "failed"])(
+		"does not fall back to the first account when server selection is %s",
+		async (outcome) => {
+			const f = setup();
+			if (outcome === "unavailable") f.selectSessionAccount.mockResolvedValue(undefined);
+			else f.selectSessionAccount.mockRejectedValue(new Error("Selection failed"));
+			await expect(f.start([staff.id], "Keep draft", f.signal)).rejects.toThrow();
+			expect(f.write).not.toHaveBeenCalled();
+			expect(f.company.conversation(session.sessionId, false).get().executionSponsor).toBeUndefined();
+		},
+	);
+	it.each(["cancelled", "access lost", "draft changed", "send began"])(
+		"rechecks conversation authority after pending selection when %s",
+		async (change) => {
+			const f = setup();
+			const selection = deferred<string | undefined>();
+			const view = new AbortController();
+			f.selectSessionAccount.mockReturnValueOnce(selection.promise);
+			const result = f.start([staff.id], "New draft", view.signal);
+			await settle();
+			expect(f.selectSessionAccount).toHaveBeenCalledOnce();
+			const conversation = f.company.conversation(session.sessionId, false);
+			if (change === "cancelled") view.abort();
+			else if (change === "access lost") f.company.store.set({ accessLost: true });
+			else if (change === "draft changed") conversation.set({ draft: "Earlier draft" });
+			else conversation.set({ sending: true });
+			selection.resolve(id(90));
+			await expect(result).rejects.toThrow();
+			expect(f.write).not.toHaveBeenCalled();
+			if (change === "draft changed") expect(conversation.get().draft).toBe("Earlier draft");
+		},
+	);
 	it.each(["text", "images"])(
 		"preserves an existing agent's unsent %s without sending it from the new composer",
 		async (kind) => {
