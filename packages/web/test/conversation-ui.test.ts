@@ -209,7 +209,7 @@ describe("conversation UI boundaries", () => {
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 	it("discards pending metadata saves on disposal and blocks writes after a role downgrade", async () => {
-		const pending = deferred<void>(),
+		const pending = deferred<number>(),
 			updateAgent = vi.fn((_agent: unknown, _draft: unknown, _signal: AbortSignal) => pending.promise);
 		const f = setup({ updateAgent });
 		button(f.view.el, "Open agent details").click();
@@ -231,7 +231,7 @@ describe("conversation UI boundaries", () => {
 		expect(updateAgent.mock.calls[0]![1]).toMatchObject({ displayName: "Renamed", role: staff.role });
 		f.view.dispose();
 		expect(updateAgent.mock.calls[0]![2].aborted).toBe(true);
-		pending.resolve();
+		pending.resolve(staff.version + 1);
 		await settle();
 		expect(document.querySelector("dialog")).toBeNull();
 		expect(f.api.listStaff).not.toHaveBeenCalled();
@@ -286,7 +286,9 @@ describe("conversation UI boundaries", () => {
 		expect(send.disabled).toBe(false);
 		expect(root.querySelector("textarea")!.value).toBe("Keep this local");
 		expect(f.api.appendPrompt).not.toHaveBeenCalled();
-		expect(fetch).not.toHaveBeenCalled();
+		expect(
+			vi.mocked(fetch).mock.calls.filter(([url]) => !String(url).endsWith("/qorpera_list_member_notifications")),
+		).toHaveLength(0);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 	it("keeps attachment drafts scoped to their conversation and releases previews on disposal", () => {
@@ -304,6 +306,15 @@ describe("conversation UI boundaries", () => {
 		restored.dispose();
 	});
 	it("shows unavailable computer controls without RPCs, handles narrow layouts, and restores focus", () => {
+		// jsdom lays nothing out: give the thread and the panel the widths the stylesheet would.
+		let threadWidth = 900,
+			panelWidth = 420;
+		vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(function (this: Element) {
+			return this.classList.contains("thread-body") ? threadWidth : 0;
+		});
+		vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+			return this.classList.contains("computer-panel") ? panelWidth : 0;
+		});
 		const f = setup(),
 			toggle = button(f.view.el, "Open agent computer");
 		toggle.click();
@@ -311,8 +322,16 @@ describe("conversation UI boundaries", () => {
 		// Routines live in the agent's details now, not beside the computer.
 		expect(f.view.el.querySelector(".computer-panel")?.textContent).not.toContain("Routines");
 		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(false);
-		// Below the width that holds the default rail, the panel and the conversation, the panel covers it.
-		vi.stubGlobal("innerWidth", 1192);
+		// Without room for the panel beside the conversation, however wide the rail is, the panel covers it.
+		threadWidth = 735;
+		window.dispatchEvent(new Event("resize"));
+		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(true);
+		expect(f.view.el.querySelector(".thread-body")?.classList.contains("computer-covers")).toBe(true);
+		threadWidth = 900;
+		window.dispatchEvent(new Event("qorpera-rail-resize"));
+		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(false);
+		// The phone layout makes the panel as wide as the thread, so it covers the conversation too.
+		threadWidth = panelWidth = 744;
 		window.dispatchEvent(new Event("resize"));
 		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(true);
 		button(f.view.el, "Close computer").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
@@ -320,6 +339,85 @@ describe("conversation UI boundaries", () => {
 		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(false);
 		expect(document.activeElement).toBe(toggle);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
+	});
+
+	it("explains the run behind the rail's red disc and lets a writer dismiss it, keeping keyboard focus", async () => {
+		const f = setup();
+		const run = {
+			runId: id(70),
+			staffAgentId: staff.id,
+			sourceKind: "room_delivery" as const,
+			jobStatus: "failed" as const,
+			activity: "needs_attention" as const,
+			updatedAt: timestamp,
+		};
+		const details = {
+			runId: run.runId,
+			sourceKind: run.sourceKind,
+			jobStatus: run.jobStatus,
+			lastError: "Native provider bridge request failed (422)",
+			unsettledOperations: 0,
+		};
+		const card = () => f.view.el.querySelector<HTMLElement>(".thread-status .notice-warn");
+		const dismiss = () => card()?.querySelector<HTMLButtonElement>('[data-action="dismiss-run"]') ?? null;
+		const show = async (patch: Parameters<typeof f.company.store.set>[0]) => {
+			f.company.store.set(patch);
+			await settle();
+		};
+		vi.mocked(f.api.listStaffActivity).mockResolvedValue([run]);
+		vi.spyOn(f.api, "getRunRecovery").mockResolvedValue(details);
+		const discard = vi.spyOn(f.api, "discardFailedRun").mockRejectedValueOnce(new Error("Try again later."));
+		// Until its details are read, the run cannot be dismissed: the cloud might refuse.
+		await show({ activity: [run] });
+		expect(card()?.textContent).toContain("A run did not finish.");
+		expect(dismiss()).toBeNull();
+		await show({ recoveries: { [run.runId]: details } });
+		expect(card()?.textContent).toContain("A run did not finish: Native provider bridge request failed (422)");
+		// Polling that changes nothing shown keeps the same button, and the keyboard on it.
+		dismiss()!.focus();
+		const focused = dismiss();
+		await show({ activity: [{ ...run }] });
+		expect(dismiss()).toBe(focused);
+		expect(document.activeElement).toBe(focused);
+		// A refusal is shown on the card, tied to the button, and focus stays on it.
+		dismiss()!.click();
+		await settle();
+		expect(discard).toHaveBeenCalledWith(run.runId);
+		const error = document.getElementById(dismiss()!.getAttribute("aria-describedby")!);
+		expect(error?.textContent).toBe("Could not dismiss it: Try again later.");
+		expect(document.activeElement).toBe(dismiss());
+		discard.mockResolvedValueOnce();
+		vi.mocked(f.api.listStaffActivity).mockResolvedValue([]);
+		dismiss()!.click();
+		await settle();
+		expect(discard).toHaveBeenCalledTimes(2);
+		expect(card()).toBeNull();
+		// Work of unknown outcome cannot be dismissed here; readers only see the card.
+		await show({ activity: [run], recoveries: { [run.runId]: { ...details, unsettledOperations: 1 } } });
+		expect(card()?.textContent).toContain("unknown outcome");
+		expect(dismiss()).toBeNull();
+		await show({
+			team: { ...team, capabilities: { ...team.capabilities, write: false } },
+			recoveries: { [run.runId]: details },
+		});
+		expect(card()?.textContent).toContain("A run did not finish");
+		expect(dismiss()).toBeNull();
+		// A run that left Company File changes points at them; only deciders are asked to decide.
+		await show({ team, recoveries: { [run.runId]: { ...details, proposalId: id(71) } } });
+		expect(card()?.querySelector("a")?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/proposal/${id(71)}`);
+		expect(card()?.textContent).toContain("to keep or discard them");
+		await show({ team: { ...team, capabilities: { ...team.capabilities, authorize: false } } });
+		expect(card()?.textContent).toContain("An owner or admin decides");
+		// A failed review points at the proposal list; the cloud does not dismiss reviews.
+		const review = { ...run, sourceKind: "proposal_review" as const };
+		await show({
+			team,
+			activity: [review],
+			recoveries: { [run.runId]: { ...details, sourceKind: "proposal_review" } },
+		});
+		expect(card()?.textContent).toContain("A review did not finish");
+		expect(card()?.querySelector("a")?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/file`);
+		expect(dismiss()).toBeNull();
 	});
 });
 

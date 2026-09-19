@@ -16,6 +16,7 @@ import type {
 	HostedProfileMember,
 	HostedProfileRole,
 	HostedProfileTeam,
+	HostedRunRecovery,
 	HostedSession,
 	HostedSessionAudience,
 	HostedSessionEvent,
@@ -28,7 +29,7 @@ import type {
 	SessionInputReceipt,
 	StaffSessionHandle,
 } from "./types.ts";
-import { HOSTED_PROFILE_ROLES, HOSTED_SESSION_EVENT_TYPES } from "./types.ts";
+import { EXECUTION_SOURCE_KINDS, HOSTED_PROFILE_ROLES, HOSTED_SESSION_EVENT_TYPES } from "./types.ts";
 
 /* Strict parsers ported from the desktop's hosted-primary.ts. Identities are
  * always validated; presentational fields tolerate absence where an older
@@ -403,16 +404,45 @@ export function parseStaffExecutionActivity(value: unknown): HostedStaffExecutio
 		return {
 			runId: uuid(activity.run_id, "activity run id"),
 			staffAgentId: uuid(activity.staff_agent_id, "activity staff id"),
-			sourceKind: oneOf(
-				activity.source_kind,
-				["session_turn", "wake", "manual", "room_delivery", "proposal_review", "system"],
-				"activity source",
-			),
+			sourceKind: oneOf(activity.source_kind, EXECUTION_SOURCE_KINDS, "activity source"),
 			jobStatus: oneOf(activity.job_status, ["queued", "leased", "completed", "failed", "cancelled"], "job status"),
 			activity: oneOf(activity.activity, ["waiting", "working", "needs_attention"], "activity state"),
 			updatedAt: timestamp(activity.updated_at, "activity time"),
 		};
 	});
+}
+
+export function parseRunRecovery(value: unknown): HostedRunRecovery {
+	const recovery = record(value, "run recovery");
+	const run = record(recovery.run, "recovery run");
+	const job = record(recovery.job, "recovery job");
+	const operations = array(recovery.operations ?? [], "recovery operations").map((entry) =>
+		record(entry, "recovery operation"),
+	);
+	// The error is shown to the member as found; a missing or odd one is not a reason to hide the run.
+	const lastError = typeof job.last_error === "string" ? job.last_error.trim().slice(0, 500) : "";
+	return {
+		runId: uuid(run.run_id, "recovery run id"),
+		sourceKind: oneOf(run.source_kind, EXECUTION_SOURCE_KINDS, "recovery source"),
+		jobStatus: oneOf(job.status, ["failed", "cancelled"], "recovery job status"),
+		...(lastError ? { lastError } : {}),
+		...(recovery.proposal_id ? { proposalId: uuid(recovery.proposal_id, "recovery proposal id") } : {}),
+		unsettledOperations: operations.filter(
+			(operation) => operation.status === "executing" || operation.status === "ambiguous",
+		).length,
+	};
+}
+
+/** qorpera_resolve_failed_execution_run answers with the run it resolved. */
+export function parseRunDismissal(value: unknown, runId: string): void {
+	const result = record(value, "run dismissal");
+	if (
+		uuid(result.run_id, "dismissed run id") !== runId.toLowerCase() ||
+		result.action !== "discard" ||
+		result.resolved !== true
+	) {
+		throw new CloudShapeError("run dismissal");
+	}
 }
 
 function sessionEventType(value: unknown): HostedSessionEventType {

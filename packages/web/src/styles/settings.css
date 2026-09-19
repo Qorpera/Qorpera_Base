@@ -97,9 +97,19 @@
 .person-copy > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .person-meta { white-space: nowrap; }
 .person-actions { display: flex; gap: 6px; }
-.connection-list { display: grid; gap: 10px; }
-.connection-card { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 14px; border-radius: 13px; background: #f1f1ef; }
-.connection-logo { width: 26px; height: 26px; object-fit: contain; }
+.connection-list { display: grid; padding: 4px 16px 14px; border-radius: 16px; background: #f1f1ef; }
+.connection-card { display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 18px 0; }
+.connection-card + .connection-card { border-top: 1px solid #dededb; }
+.connection-logo { width: 32px; height: 32px; object-fit: contain; justify-self: center; }
+.connection-card .settings-copy { gap: 4px; }
+.connection-actions { display: flex; flex-wrap: wrap; justify-content: end; gap: 8px; }
+.settings-content .connection-actions .btn, .settings-content .connection-add { border-radius: 999px; }
+.connection-add-area { display: grid; justify-items: start; gap: 10px; padding-top: 20px; }
+.connection-empty { margin: 16px 0 0; font-size: 12px; }
+.connection-provider-picker { display: flex; flex-wrap: wrap; gap: 8px; width: 100%; padding-top: 12px; border-top: 1px solid #dededb; }
+.connection-provider-picker p { flex-basis: 100%; margin: 0 0 4px; font-size: 12px; color: var(--text-muted); }
+.connection-provider-picker .btn { display: flex; align-items: center; gap: 10px; }
+.connection-provider-picker .connection-logo { width: 20px; height: 20px; }
 .connection-sign-in { grid-column: 2 / -1; display: grid; justify-items: start; gap: 10px; padding-top: 12px; border-top: 1px solid #dededb; }
 .connection-sign-in p { margin: 0; }
 .connection-sign-in code { font-size: 17px; letter-spacing: .08em; font-weight: 600; user-select: all; }
@@ -123,8 +133,9 @@
  .company-person .person-actions { opacity: 1; flex-wrap: wrap; justify-content: end; }
  .company-person { grid-template-columns: 42px minmax(0, 1fr); gap: 12px; }
  .company-person .person-actions { grid-column: 2; justify-content: start; }
- .connection-card { grid-template-columns: 26px minmax(0, 1fr); }
+ .connection-card { grid-template-columns: 42px minmax(0, 1fr); }
  .connection-card > .btn { grid-column: 2; justify-self: start; }
+ .connection-actions { grid-column: 2; justify-content: start; }
  .connection-account { flex-wrap: wrap; }
  .person-meta { display: none; }
 }
