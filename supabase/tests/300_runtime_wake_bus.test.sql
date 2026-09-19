@@ -953,13 +953,16 @@ $$;
 
 rollback to thread_audience;
 
--- The thread outlives edits of its agent. A wake admitted at the agent's later version answers in
--- the thread opened at the earlier one. A thread that claims a version its agent never had stays
--- unusable, a member turn keeps its exact version, and a run that is in flight when its agent is
--- edited ends: every run is held to the agent version it was admitted at.
+-- An agent edit never ends a run and applies from the agent's next run. A wake admitted at the
+-- agent's later version answers in the thread opened at the earlier one; a thread that claims a
+-- version its agent never had stays unusable; a member turn keeps its exact version. A run in
+-- flight through an edit keeps sending, writing the Company File and reading the charter of its
+-- own version; a wake queued through an edit is admitted at the current version. Archiving still
+-- ends the agent's runs.
 do $$
 declare v_thread uuid; v_routine jsonb; v_wake uuid; v_run uuid; v_binding jsonb; v_result jsonb; v_room uuid;
 	v_delivery_run uuid; v_delivery jsonb; v_base public.qorpera_execution_runs%rowtype;
+	v_charter text; v_row public.qorpera_execution_runs%rowtype; v_queued uuid; v_queued_run uuid; v_queued_binding jsonb;
 	v_member jsonb := current_setting('qorpera_test.wake_binding')::jsonb;
 begin
 	update public.qorpera_shared_sessions set status = 'open'
@@ -1013,11 +1016,48 @@ begin
 	perform pg_temp.wake_error(format('select pg_temp.wake_public_send(%L,%L,%L)',v_member,'progress','member-turn-pin'),
 		'PGRST');
 
-	perform pg_temp.wake_public_send(v_binding,'progress','thread-before-second-edit');
-	update public.qorpera_profile_staff set version = version + 1
+	select charter into strict v_charter from public.qorpera_profile_staff
 	where profile_id = '30000000-0000-4000-8000-000000000010' and staff_agent_id = '30000000-0000-4000-8000-000000000031';
-	perform pg_temp.wake_error(format('select pg_temp.wake_public_send(%L,%L,%L)',v_binding,'progress','edited-in-flight'),
-		'42501','Admitted wake authority is unavailable');
+	v_queued := pg_temp.wake_schedule(pg_temp.wake_routine('30000000-0000-4000-8000-000000000031',
+		jsonb_build_object('id','queued','kind','schedule','intervalMinutes',5,'replyPolicy','required')),'queued-through-edit');
+	update public.qorpera_profile_staff set charter = 'An edited charter that applies from the next run.',display_name = 'Robert',version = version + 1
+	where profile_id = '30000000-0000-4000-8000-000000000010' and staff_agent_id = '30000000-0000-4000-8000-000000000031';
+
+	-- The run in flight: send, Company File write and its own charter all survive the edit.
+	perform pg_temp.wake_public_send(v_binding,'progress','edited-in-flight');
+	perform pg_temp.wake_assert((select count(*) from public.qorpera_agent_sends where run_id = v_run
+		and idempotency_key = 'edited-in-flight') = 1,'An edit does not end the run in flight');
+	perform set_config('qorpera_test.wake_binding',v_binding::text,true);
+	perform pg_temp.path_commit(pg_temp.path_plan('edited-in-flight','edited-note.md',
+		pg_temp.path_stage_file('edited-note.md','Written by a run whose agent was edited meanwhile.')));
+	perform set_config('qorpera_test.wake_binding',v_member::text,true);
+	select * into strict v_row from public.qorpera_execution_runs where id = v_run;
+	perform pg_temp.wake_assert(public.qorpera_company_context_source(v_row,'job_spec',v_row.staff_agent_id) ->> 'text' = v_charter,
+		'A run in flight keeps the charter of its own version');
+	perform pg_temp.wake_assert((select (c #>> '{agent,version}')::bigint = v_row.staff_version and c #>> '{agent,name}' = 'Bob'
+		from public.qorpera_describe_company_run_context(v_binding) c),
+		'A run in flight describes its agent as of its own version');
+
+	-- The wake that waited through the edit is the agent's next run.
+	perform public.qorpera_materialize_wake_execution_runs(1);
+	select run_id into strict v_queued_run from public.qorpera_wake_occurrences where id = v_queued;
+	perform pg_temp.wake_assert((select r.staff_version = a.version and r.staff_version > w.staff_version
+		from public.qorpera_execution_runs r join public.qorpera_wake_occurrences w on w.run_id = r.id
+		join public.qorpera_profile_staff a on a.profile_id = r.profile_id and a.staff_agent_id = r.staff_agent_id
+		where r.id = v_queued_run),'A wake queued through an edit is admitted at the current version');
+	v_queued_binding := pg_temp.wake_start(v_queued_run);
+	perform pg_temp.wake_public_send(v_queued_binding,'progress','queued-through-edit');
+	select * into strict v_row from public.qorpera_execution_runs where id = v_queued_run;
+	perform pg_temp.wake_assert(public.qorpera_company_context_source(v_row,'job_spec',v_row.staff_agent_id) ->> 'text'
+		= 'An edited charter that applies from the next run.','The next run reads the edited charter');
+	perform pg_temp.wake_assert((select c #>> '{agent,name}' = 'Robert' from public.qorpera_describe_company_run_context(v_queued_binding) c),
+		'The next run describes the edited agent');
+
+	-- Archiving is not an edit: it ends the agent's runs.
+	update public.qorpera_profile_staff set employment_status = 'archived',version = version + 1
+	where profile_id = '30000000-0000-4000-8000-000000000010' and staff_agent_id = '30000000-0000-4000-8000-000000000031';
+	perform pg_temp.wake_error(format('select pg_temp.wake_public_send(%L,%L,%L)',v_queued_binding,'progress','after-archive'),
+		'42501');
 end
 $$;
 rollback;
