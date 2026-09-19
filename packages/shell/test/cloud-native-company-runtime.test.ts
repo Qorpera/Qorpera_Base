@@ -631,6 +631,7 @@ it.each([
 				"company_read",
 				"company_write",
 				"escalate_responsibility",
+				"manage_routine",
 				"read_context",
 				"read_responsibility_escalations",
 				"resolve_responsibility_escalation",

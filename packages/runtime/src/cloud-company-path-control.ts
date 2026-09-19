@@ -34,6 +34,7 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 	call(method: CloudCompanyPathRpc, argumentsValue: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
 		const permitted: readonly CloudCompanyPathRpc[] = [
 			"qorpera_escalate_responsibility",
+			"qorpera_manage_agent_routine",
 			"qorpera_list_responsibility_escalations",
 			"qorpera_resolve_responsibility_escalation",
 			"qorpera_record_runtime_observation",
