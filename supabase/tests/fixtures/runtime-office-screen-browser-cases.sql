@@ -47,8 +47,19 @@ update public.qorpera_runtime_browser_profiles set company_owned=false
 	where id=(pg_temp.sb_grant()->'grant'->>'profileId')::uuid;
 set local role service_role;
 select pg_temp.wake_assert(pg_temp.sb_grant()->>'state'='authorized','a lent member profile still serves its agent under the lease');
+select pg_temp.wake_assert(pg_temp.sb_grant('agent')->>'state'='authorized','the agent it was lent to may open it under its own lease');
+-- ...while the dock never starts it, lease or not: a shared viewer's click during
+-- the agent's run must not drive another member's privately prepared profile.
+select pg_temp.wake_error($q$select pg_temp.sb_grant('desktop')$q$,'42501');
 reset role;
+select pg_temp.wake_assert((select count(*)=0 from public.qorpera_runtime_office_browser_opens where opener='desktop'),'a refused dock open records nothing');
 rollback to savepoint sb_member_profile;
+-- The same dock click on the company-owned profile during the run is fine.
+savepoint sb_dock_during_run;
+set local role service_role;
+select pg_temp.wake_assert(pg_temp.sb_grant('desktop')->>'state'='authorized','the dock opens the company-owned profile during an agent run');
+reset role;
+rollback to savepoint sb_dock_during_run;
 
 -- No lease and nobody present: no authority, though the grant itself is current.
 set local role service_role;
