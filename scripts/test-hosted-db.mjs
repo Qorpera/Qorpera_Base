@@ -24,6 +24,19 @@ export function sortMigrationNames(names) {
 	return migrations;
 }
 
+/** A test may begin with `-- @fixture <file> until "<marker>"` to run after another test's
+ * fixture section instead of copying it. The marker line itself is not included. */
+export function expandTestFixture(name, read) {
+	const source = read(name);
+	const directive = /^-- @fixture ([0-9a-z_.-]+\.test\.sql) until "([^"\n]+)"\n/.exec(source);
+	if (!directive) return source;
+	const [line, fixtureName, marker] = directive;
+	const fixture = read(fixtureName);
+	const end = fixture.indexOf(marker);
+	if (fixtureName === name || end < 0) throw new Error(`Test fixture is unavailable: ${fixtureName}`);
+	return fixture.slice(0, end) + source.slice(line.length);
+}
+
 export function buildContainerName(pid, suffix) {
 	if (!/^\d+$/.test(String(pid)) || !/^[0-9a-f]{8}$/.test(suffix)) {
 		throw new Error("Invalid hosted database container identity");
@@ -142,7 +155,7 @@ async function main() {
 		}
 		for (const test of tests) {
 			process.stdout.write(`Running ${test}\n`);
-			runPsql(containerName, readFileSync(join(testsRoot, test), "utf-8"));
+			runPsql(containerName, expandTestFixture(test, (name) => readFileSync(join(testsRoot, name), "utf-8")));
 		}
 		process.stdout.write(`Hosted database checks passed (${migrations.length} migrations, ${tests.length} tests)\n`);
 	} finally {
