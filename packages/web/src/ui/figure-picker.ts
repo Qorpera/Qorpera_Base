@@ -12,20 +12,41 @@ export class FigurePicker {
 	#choice: FigureChoice;
 	readonly #change: (choice: FigureChoice) => void;
 	readonly #colors: boolean;
-	/** `colors: false` offers figures only; each figure then brings its own shade. */
-	constructor(choice: FigureChoice, change: (choice: FigureChoice) => void, options: { colors?: boolean } = {}) {
+	readonly #keepColor: boolean;
+	/** `colors: false` offers figures only; each figure then brings its own shade.
+	 * `keepColor` shows every figure in the chosen colour and keeps that colour
+	 * when the figure changes, as the desktop's agent picker does. */
+	constructor(
+		choice: FigureChoice,
+		change: (choice: FigureChoice) => void,
+		options: { colors?: boolean; keepColor?: boolean } = {},
+	) {
 		this.#choice = choice;
 		this.#change = change;
 		this.#colors = options.colors !== false;
+		this.#keepColor = this.#colors && options.keepColor === true;
 		this.#render();
+	}
+	/** Shows a choice made elsewhere, such as a saved figure, without reporting
+	 * it. `redraw` rebuilds the figures even when the choice is unchanged. */
+	update(choice: FigureChoice, redraw = false): void {
+		if (!redraw && choice.figure === this.#choice.figure && choice.color === this.#choice.color) return;
+		const focused = this.el.contains(document.activeElement) ? document.activeElement : null;
+		this.#choice = choice;
+		this.#render();
+		this.#refocus(focused?.getAttribute("aria-label"));
 	}
 	#choose(choice: FigureChoice): void {
 		const focused = document.activeElement?.getAttribute("aria-label");
 		this.#choice = choice;
 		this.#render();
 		this.#change(choice);
+		this.#refocus(focused);
+	}
+	#refocus(label: string | null | undefined): void {
+		if (!label) return;
 		[...this.el.querySelectorAll<HTMLButtonElement>("button")]
-			.find((button) => button.getAttribute("aria-label") === focused)
+			.find((button) => button.getAttribute("aria-label") === label)
 			?.focus();
 	}
 	#render(): void {
@@ -45,9 +66,9 @@ export class FigurePicker {
 							tabindex: id === figure ? "0" : "-1",
 							"aria-checked": String(id === figure),
 							"aria-label": id,
-							onclick: () => this.#choose({ figure: id, color: nativeColorOf(id) }),
+							onclick: () => this.#choose({ figure: id, color: this.#keepColor ? color : nativeColorOf(id) }),
 						},
-						figureElement(id, id === figure ? color : undefined, { size: 32, still: true }),
+						figureElement(id, id === figure || this.#keepColor ? color : undefined, { size: 32, still: true }),
 					),
 				),
 			),

@@ -1,13 +1,19 @@
 .settings-overlay { position: fixed; z-index: 400; inset: 0; display: grid; place-items: center; padding: 36px; background: rgb(20 20 19 / 48%); backdrop-filter: blur(1.5px); font-family: var(--font-sans); font-optical-sizing: auto; font-synthesis: none; text-rendering: geometricPrecision; }
-.settings-dialog { position: relative; display: grid; grid-template-columns: 190px minmax(0, 1fr); width: min(1000px, calc(100vw - 72px)); height: min(680px, calc(100dvh - 72px)); overflow: hidden; border: 1px solid #d9d9d6; border-radius: 16px; background: var(--overlay); color: #1d1d1b; box-shadow: 0 24px 80px rgb(0 0 0 / 24%); }
+.settings-dialog { position: relative; display: grid; grid-template-columns: 228px minmax(0, 1fr); width: min(1200px, calc(100vw - 72px)); height: min(816px, calc(100dvh - 72px)); overflow: hidden; border: 1px solid #d9d9d6; border-radius: 16px; background: var(--overlay); color: #1d1d1b; box-shadow: 0 24px 80px rgb(0 0 0 / 24%); }
 .settings-nav { display: flex; flex-direction: column; gap: 3px; padding: 16px 12px; border-right: 1px solid #dededb; background: #f1f1ef; min-width: 0; }
-.settings-nav input { width: 100%; min-width: 0; height: 34px; margin-bottom: 10px; padding: 0 10px; border: 1px solid #d8d8d5; border-radius: 9px; background: #e6e6e3; font-size: 12.5px; }
+.settings-nav input { width: 100%; min-width: 0; height: 36px; margin-bottom: 10px; padding: 0 11px; border: 1px solid #d8d8d5; border-radius: 9px; background: #e6e6e3; font-size: 13px; }
+.settings-nav input::placeholder { color: #7c7c78; }
 .settings-nav [role=tablist] { display: flex; flex-direction: column; gap: 3px; }
-.settings-nav [role=tab] { min-height: 34px; padding: 6px 10px; border: 0; border-radius: 8px; background: transparent; color: #383836; font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; }
+/* Whole-pixel, medium-weight labels in near-black ink: at the old 12.5px
+   regular grey the labels read soft against the grey rail. */
+.settings-nav [role=tab] { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 6px 10px; border: 0; border-radius: 8px; background: transparent; color: #262624; font: inherit; font-size: 13px; font-weight: 500; text-align: left; cursor: pointer; }
+.settings-nav [role=tab] > .icon { width: 17px; height: 17px; flex: none; color: #6f6f6b; }
 .settings-nav [role=tab]:hover { background: #e8e8e5; }
-.settings-nav [aria-selected=true] { background: #dededb; color: #171716; }
-.settings-company-label { margin-top: auto; min-width: 0; font-size: 11px; color: #72726e; }
-.settings-company-picker { width: 100%; min-width: 0; margin-top: 6px; font-size: 12px; }
+.settings-nav [aria-selected=true] { background: #dededb; color: #121211; }
+.settings-nav [aria-selected=true] > .icon { color: #262624; }
+.settings-tab-count { display: grid; place-items: center; min-width: 19px; height: 19px; margin-left: auto; padding: 0 6px; border-radius: 999px; background: #1d1d1b; color: #fff; font-size: 11px; font-weight: 700; }
+.settings-company-label { margin-top: auto; min-width: 0; font-size: 11.5px; color: #6c6c68; }
+.settings-company-picker { width: 100%; min-width: 0; margin-top: 6px; font-size: 13px; }
 .settings-close { position: absolute; top: 13px; right: 15px; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 7px; background: #efefed; color: #686865; font-size: 20px; cursor: pointer; }
 .settings-content { min-width: 0; overflow-y: auto; padding: 30px 40px 40px; }
 .settings-content .page { max-width: none; padding: 0; margin: 0; }
@@ -15,6 +21,8 @@
 .settings-content h2 { font-size: 12px; font-weight: 500; color: #73736f; margin: 0 0 9px; }
 .settings-content h3 { font-size: 13px; }
 .settings-content .btn { min-height: 32px; padding: 0 12px; border: 1px solid #d7d7d3; border-radius: 9px; background: #e7e7e4; font-size: 12px; white-space: nowrap; }
+.settings-content .btn-primary { border-color: #1d1d1b; background: #1d1d1b; color: #fff; }
+.settings-content .btn-primary:hover:not(:disabled) { background: #3a3a37; }
 .settings-content .btn-danger { color: #ac3934; }
 .settings-content .notice { font-size: 12px; overflow-wrap: anywhere; }
 .settings-content .advanced { font-size: 12px; margin-top: 24px; }
@@ -55,7 +63,8 @@
 .company-invite summary { display: flex; gap: 12px; align-items: center; cursor: pointer; list-style: none; }
 .invite-plus { background: transparent; border: 1px dashed #bcbcb8; color: #777; font-size: 20px; }
 .company-invite form { margin: 14px 0 8px; }
-.company-invite a { font-size: 12px; }
+.company-invite .link-button { padding: 0; border: 0; background: none; color: var(--blue); font: inherit; font-size: 12px; cursor: pointer; }
+.company-invite .link-button:hover { text-decoration: underline; }
 .invite-picker { margin: 14px 0; padding: 14px; max-width: 440px; border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 8px 24px rgb(0 0 0 / 7%); background: #fff; }
 .invite-picker > input { width: 100%; font-size: 12.5px; background: #f3f3f1; border-color: transparent; }
 .invite-results { max-height: 220px; overflow: auto; margin: 8px -5px; }
@@ -67,6 +76,27 @@
 .settings-staff .figure { width: 46px; height: 46px; }
 .settings-staff a { display: grid; justify-items: center; gap: 6px; max-width: 100px; color: inherit; text-decoration: none; text-align: center; }
 .settings-staff small { font-size: 11px; }
+/* Friends: one box holds the field and every group (company invitations,
+   requests, friends), so the tab reads as a single list. */
+.settings-lead { margin: -12px 0 22px; color: #73736f; font-size: 12.5px; }
+.panel { border: 1px solid #e3e3e0; border-radius: 13px; background: #fff; overflow: hidden; }
+.panel-search { display: flex; gap: 8px; padding: 10px; border-bottom: 1px solid #ececea; }
+.panel-search input { flex: 1; min-width: 0; height: 34px; padding: 0 11px; border: 1px solid transparent; border-radius: 9px; background: #f1f1ef; font-size: 12.5px; }
+.panel-search .btn { min-height: 34px; }
+.panel-group + .panel-group { border-top: 1px solid #ececea; }
+.panel-group-title { padding: 12px 16px 2px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .09em; color: #85857f; }
+.panel-empty { margin: 0; padding: 16px; font-size: 12.5px; }
+.panel .spinner { padding: 16px; }
+.person-row { display: flex; align-items: center; gap: 12px; min-height: 58px; padding: 8px 16px; }
+.person-row + .person-row { border-top: 1px solid #f0f0ee; }
+.person-row .person-avatar { width: 34px; height: 34px; font-size: 12px; }
+.company-logo.person-company { width: 34px; height: 34px; }
+.person-copy { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; line-height: 1.3; }
+.person-copy strong { font-size: 13px; font-weight: 600; }
+.person-copy > span, .person-meta { font-size: 11.5px; }
+.person-copy > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.person-meta { white-space: nowrap; }
+.person-actions { display: flex; gap: 6px; }
 .connection-list { display: grid; gap: 10px; }
 .connection-card { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 14px; border-radius: 13px; background: #f1f1ef; }
 .connection-logo { width: 26px; height: 26px; object-fit: contain; }
@@ -84,8 +114,9 @@
  .settings-dialog { width: 100%; height: 100%; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
  .settings-nav { padding: 12px; border-right: 0; border-bottom: 1px solid #dededb; }
  .settings-nav input { width: calc(100% - 44px); }
- .settings-nav [role=tablist] { flex-direction: row; flex-wrap: wrap; }
- .settings-nav [role=tab] { flex: 1; text-align: center; padding: 6px; }
+ .settings-nav [role=tablist] { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+ .settings-nav [role=tab] { justify-content: center; padding: 6px; }
+ .settings-tab-count { margin-left: 0; }
  .settings-company-label { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
  .settings-company-picker { margin-top: 0; }
  .settings-content { padding: 24px 20px; }
@@ -95,4 +126,5 @@
  .connection-card { grid-template-columns: 26px minmax(0, 1fr); }
  .connection-card > .btn { grid-column: 2; justify-self: start; }
  .connection-account { flex-wrap: wrap; }
+ .person-meta { display: none; }
 }

@@ -1,17 +1,23 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
-import type { HostedFriend } from "../../cloud/types.ts";
-import { button, fmtDate, h, initials, notice, replace, spinner } from "../../ui/dom.ts";
+import type { HostedFriend, HostedIncomingProfileInvitation } from "../../cloud/types.ts";
+import { button, companyLogo, fmtDate, h, notice, personAvatar, replace, spinner } from "../../ui/dom.ts";
+import { uiText } from "../../ui/preferences.ts";
 import { Store } from "../state.ts";
+import type { HubController } from "./hub.ts";
 
-/* Friends: the account's address book. A company invitation can only reach
- * someone this account is already friends with (the desktop enforces the same
- * rule), so this page is where that list is grown. Four RPCs, nothing else:
- * qorpera_list_friends, _send_friend_request, _respond_friend_request,
- * _remove_friend. */
+/* Friends: the account's address book, and the company invitations waiting
+ * for it. A company invitation can only reach someone this account is already
+ * friends with (the desktop enforces the same rule), so this tab is where that
+ * list is grown. Four RPCs, nothing else: qorpera_list_friends,
+ * _send_friend_request, _respond_friend_request, _remove_friend. Invitations
+ * are the hub's state (qorpera_list_profile_invitations); accepting one opens
+ * the company. */
 
 export interface FriendsState {
 	loading: boolean;
+	/** The list has been read once, so an empty list means no friends. */
+	loaded?: boolean;
 	friends: HostedFriend[];
 	error?: string;
 	message?: string;
@@ -39,7 +45,7 @@ export class FriendsController {
 		if (this.#disposed) return;
 		this.store.set({ loading: true, error: undefined });
 		try {
-			this.store.set({ friends: await this.#api.listFriends(), loading: false });
+			this.store.set({ friends: await this.#api.listFriends(), loading: false, loaded: true });
 		} catch (error) {
 			this.store.set({ loading: false, error: describeError(error) });
 		}
@@ -94,7 +100,7 @@ function personRow(friend: HostedFriend, meta: string, ...actions: HTMLElement[]
 	return h(
 		"div",
 		{ class: "person-row" },
-		h("span", { class: "person-chip", "aria-hidden": "true" }, initials(friend.displayName)),
+		personAvatar(friend.displayName, friend.userId),
 		h(
 			"div",
 			{ class: "person-copy" },
@@ -103,6 +109,30 @@ function personRow(friend: HostedFriend, meta: string, ...actions: HTMLElement[]
 		),
 		h("span", { class: "muted small person-meta" }, meta),
 		h("div", { class: "person-actions" }, ...actions),
+	);
+}
+
+function invitationRow(hub: HubController, invitation: HostedIncomingProfileInvitation, busy: boolean): HTMLElement {
+	return h(
+		"div",
+		{ class: "person-row" },
+		companyLogo(invitation.profileId, "person-company"),
+		h(
+			"div",
+			{ class: "person-copy" },
+			h("strong", null, invitation.profileName),
+			h(
+				"span",
+				{ class: "muted small" },
+				`Invited as ${invitation.role} · expires ${fmtDate(invitation.expiresAt)}`,
+			),
+		),
+		h(
+			"div",
+			{ class: "person-actions" },
+			button("Decline", () => void hub.respondInvitation(invitation, false), { disabled: busy }),
+			button("Accept", () => void hub.respondInvitation(invitation, true), { primary: true, disabled: busy }),
+		),
 	);
 }
 
@@ -133,13 +163,13 @@ function field(friends: FriendsController): HTMLInputElement {
 	return searchField;
 }
 
-export function renderFriends(friends: FriendsController, container: HTMLElement): void {
+export function renderFriends(friends: FriendsController, hub: HubController, container: HTMLElement): void {
 	const state = friends.store.get();
+	const companies = hub.store.get();
 	const busy = (friend: HostedFriend) => state.busy === friend.userId;
 	const query = (state.query ?? "").trim().toLowerCase();
-	const matches = (friend: HostedFriend) =>
-		!query || friend.displayName.toLowerCase().includes(query) || friend.email.toLowerCase().includes(query);
-	const shown = state.friends.filter(matches);
+	const matches = (...texts: string[]) => !query || texts.some((text) => text.toLowerCase().includes(query));
+	const shown = state.friends.filter((friend) => matches(friend.displayName, friend.email));
 	const incoming = shown.filter((friend) => friend.status === "pending" && friend.direction === "incoming");
 	const outgoing = shown.filter((friend) => friend.status === "pending" && friend.direction === "outgoing");
 	const accepted = shown.filter((friend) => friend.status === "accepted");
@@ -153,6 +183,12 @@ export function renderFriends(friends: FriendsController, container: HTMLElement
 			friends.store.set({ query: "" });
 		});
 	};
+	const invitations = group(
+		"Company invitations",
+		companies.invitations
+			.filter((invitation) => matches(invitation.profileName))
+			.map((invitation) => invitationRow(hub, invitation, companies.busyInvitation === invitation.id)),
+	);
 	const groups = [
 		group(
 			"Requests for you",
@@ -186,17 +222,19 @@ export function renderFriends(friends: FriendsController, container: HTMLElement
 			),
 		),
 	].filter(Boolean) as HTMLElement[];
-	const empty = state.loading
-		? spinner("Loading friends")
-		: h(
-				"p",
-				{ class: "panel-empty muted" },
-				query
-					? invitable
-						? `Nobody here by that address. Send ${query} a friend request.`
-						: "Nobody here by that name."
-					: "Nobody yet. Add someone by their Qorpera email address.",
-			);
+	const empty = groups.length
+		? null
+		: state.loading && !state.loaded
+			? spinner("Loading friends")
+			: h(
+					"p",
+					{ class: "panel-empty muted" },
+					query
+						? invitable
+							? `Nobody here by that address. Send ${query} a friend request.`
+							: "Nobody here by that name."
+						: "No friends yet. Add someone by their Qorpera email address.",
+				);
 	// Replacing the container detaches the field, and a detached element loses
 	// focus, so the caret is put back exactly where the typist left it.
 	const typing = document.activeElement === search;
@@ -205,13 +243,14 @@ export function renderFriends(friends: FriendsController, container: HTMLElement
 		container,
 		h(
 			"section",
-			{ class: "page account-page" },
-			h("h1", null, "Friends"),
+			{ class: "page friends" },
+			h("h1", null, uiText("Friends")),
 			h(
 				"p",
-				{ class: "page-lead" },
-				"People you can invite into a company. An invitation only reaches an account you are already friends with.",
+				{ class: "settings-lead" },
+				"Invite friends into your companies. Invitations to join other companies show up here too.",
 			),
+			companies.error && companies.invitations.length ? notice("danger", companies.error) : null,
 			state.error ? notice("danger", state.error) : null,
 			state.message ? notice("ok", state.message) : null,
 			h(
@@ -229,11 +268,13 @@ export function renderFriends(friends: FriendsController, container: HTMLElement
 					search,
 					h(
 						"button",
-						{ type: "submit", class: "hub-create-submit", disabled: !invitable || state.sending === true },
+						{ type: "submit", class: "btn btn-primary", disabled: !invitable || state.sending === true },
 						state.sending ? "Sending…" : "Send request",
 					),
 				),
-				...(groups.length ? groups : [empty]),
+				invitations,
+				...groups,
+				empty,
 			),
 		),
 	);

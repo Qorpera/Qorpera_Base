@@ -2,7 +2,6 @@ import type { User } from "@supabase/supabase-js";
 import { CloudApi } from "../cloud/api.ts";
 import { type Cloud, describeError } from "../cloud/client.ts";
 import { createWebCompanyAgents } from "../cloud/company-agents.ts";
-import { createWebCompanyExecution } from "../cloud/company-execution.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
 import { WebCompanyComputer } from "../cloud/computer.ts";
 import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
@@ -24,15 +23,12 @@ import { CloudCheckView } from "./views/cloudcheck.ts";
 import { CompanyFileController, renderCompanyFile } from "./views/companyfile.ts";
 import { ConversationView } from "./views/conversation.ts";
 import { FeedbackView } from "./views/feedback.ts";
-import { FriendsController, renderFriends } from "./views/friends.ts";
 import { HubController, renderHub } from "./views/hub.ts";
-import { renderInvitations } from "./views/invitations.ts";
 import { LiveCompanyFileView } from "./views/live-company-file.ts";
 import { type MeetState, renderMeet } from "./views/meet.ts";
-import { MemberNotificationStatus, MemberNotificationsView } from "./views/member-notifications.ts";
 import { NewConversationView } from "./views/new-conversation.ts";
 import { renderOrganization } from "./views/organization.ts";
-import { SettingsView } from "./views/settings.ts";
+import { type SettingsTab, SettingsView } from "./views/settings.ts";
 import { renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
 import { renderSignIn } from "./views/signin.ts";
 import { renderTeam } from "./views/team.ts";
@@ -50,7 +46,6 @@ export function mountApplication(
 ): () => void {
 	const auth = new AuthController(cloud);
 	let hub = new HubController(api);
-	let friends = new FriendsController(api);
 
 	const topbar = h("header", { class: "topbar" });
 	const rail = h("aside", { id: "company-navigation", class: "rail", "aria-label": "Company navigation" });
@@ -62,7 +57,7 @@ export function mountApplication(
 		onclick: () => setNavigationOpen(false),
 	});
 	const frame = h("div", { class: "frame" }, topbar, h("div", { class: "body" }, backdrop, rail, main));
-	const railLayout = new RailLayout(frame);
+	const railLayout = new RailLayout(frame, rail);
 	rail.after(railLayout.el);
 	applyLanguage();
 	window.addEventListener("languagechange", applyLanguage);
@@ -88,15 +83,17 @@ export function mountApplication(
 		frame.inert = false;
 		if (restoreFocus) frame.querySelector<HTMLElement>(".account-trigger")?.focus();
 	}
-	function openSettings(): void {
+	function openSettings(tab?: SettingsTab): void {
 		if (settings || feedback || !auth.userId) return;
 		settings = new SettingsView(
 			api,
 			auth,
+			hub,
 			profiles,
 			company?.store.get().accessLost ? undefined : company,
 			() => closeSettings(),
 			companyRemovedHandler(),
+			tab,
 		);
 		frame.inert = true;
 		root.append(settings.el);
@@ -145,8 +142,6 @@ export function mountApplication(
 			liveFile = undefined;
 		}
 		closeSettings(false);
-		notifications?.dispose();
-		notifications = undefined;
 		closeFeedback(false);
 		routeRevision++;
 		resolvingRoute = undefined;
@@ -164,10 +159,6 @@ export function mountApplication(
 	let conversation: ConversationView | undefined;
 	let newConversation: NewConversationView | undefined;
 	let approvals: ApprovalsView | undefined;
-	let notifications: MemberNotificationsView | undefined;
-	let notificationStatus: MemberNotificationStatus | undefined;
-	let recentUnreadNotifications: number | undefined;
-	let notificationPhase: "loading" | "ready" | "unavailable" = "loading";
 	let cloudCheck: CloudCheckView | undefined;
 	let profiles: HostedProfile[] = [];
 	let teamFeedback: { message?: string; error?: string } = {};
@@ -175,7 +166,6 @@ export function mountApplication(
 	let meetState: MeetState = {};
 	let unsubscribeCompany: (() => void) | undefined;
 	let homeReason: string | undefined;
-	let friendsLoaded = false;
 
 	const render = debounce(() => void draw(), 10);
 
@@ -187,7 +177,6 @@ export function mountApplication(
 			settings?.updateProfiles(profiles);
 			render();
 		});
-		friends.store.subscribe(() => render());
 	}
 	observeAccount();
 	auth.store.subscribe(() => {
@@ -200,12 +189,10 @@ export function mountApplication(
 			routeRevision++;
 			teardownCompany();
 			hub.dispose();
-			friends.dispose();
 			cloudCheck?.dispose();
 			cloudCheck = undefined;
 			profiles = [];
 			accountState = {};
-			friendsLoaded = false;
 			meetState = {};
 			resolvingRoute = undefined;
 			routeError = undefined;
@@ -217,7 +204,6 @@ export function mountApplication(
 			rail.replaceChildren();
 			main.replaceChildren();
 			hub = new HubController(api, userId);
-			friends = new FriendsController(api);
 			observeAccount();
 			if (userId) void hub.refresh();
 		}
@@ -234,8 +220,6 @@ export function mountApplication(
 			openSettings,
 			openFeedback,
 			invitations: hub.store.get().invitations.length,
-			recentUnreadNotifications,
-			notificationPhase,
 			...(route.name === "company" && route.section !== "meet" && company && !company.store.get().accessLost
 				? { navigation: { open: navigationOpen, toggle: () => setNavigationOpen(!navigationOpen) } }
 				: {}),
@@ -243,17 +227,11 @@ export function mountApplication(
 	}
 
 	function teardownCompany(): void {
-		notificationStatus?.dispose();
-		notificationStatus = undefined;
-		recentUnreadNotifications = undefined;
-		notificationPhase = "loading";
 		unsubscribeCompany?.();
 		unsubscribeFile?.();
 		conversation?.dispose();
 		newConversation?.dispose();
 		approvals?.dispose();
-		notifications?.dispose();
-		notifications = undefined;
 		companyFile?.dispose();
 		liveFile?.dispose();
 		liveFile = undefined;
@@ -340,46 +318,7 @@ export function mountApplication(
 			companyFile = new CompanyFileController(api, controller);
 			unsubscribeCompany = controller.store.subscribe(() => render());
 			unsubscribeFile = companyFile.store.subscribe(() => render());
-			void controller
-				.start()
-				.then(() => {
-					if (disposed || company !== controller || controller.signal.aborted) return;
-					const notificationsClient = createWebCompanyExecution(
-						cloud,
-						profile.profileId,
-						userId,
-						controller.signal,
-						() => {
-							const selected = currentRoute();
-							if (
-								disposed ||
-								company !== controller ||
-								auth.userId !== userId ||
-								controller.store.get().accessLost ||
-								!controller.store.get().team?.capabilities.read ||
-								selected.name !== "company" ||
-								selected.profileId !== profile.profileId
-							)
-								throw new Error("Notification account changed.");
-						},
-					);
-					notificationStatus = new MemberNotificationStatus(
-						notificationsClient,
-						controller.signal,
-						(count, phase) => {
-							if (disposed || company !== controller) return;
-							recentUnreadNotifications = count;
-							notificationPhase = phase;
-							render();
-						},
-					);
-				})
-				.catch(() => {
-					if (disposed || company !== controller || controller.signal.aborted) return;
-					recentUnreadNotifications = undefined;
-					notificationPhase = "unavailable";
-					render();
-				});
+			void controller.start();
 			return controller;
 		})();
 		pendingCompany = { profileId, revision: routeRevision, promise };
@@ -481,14 +420,6 @@ export function mountApplication(
 					accountState = { ...accountState, ...next };
 					render();
 				});
-			} else if (route.name === "friends") {
-				if (!friendsLoaded) {
-					friendsLoaded = true;
-					void friends.refresh();
-				}
-				renderFriends(friends, main);
-			} else if (route.name === "invitations") {
-				renderInvitations(hub, main);
 			} else if (route.name === "cloud-check") {
 				cloudCheck ??= new CloudCheckView(cloud);
 				replace(main, cloudCheck.el);
@@ -535,8 +466,6 @@ export function mountApplication(
 			conversation?.dispose();
 			newConversation?.dispose();
 			approvals?.dispose();
-			notifications?.dispose();
-			notifications = undefined;
 			navigationOpen = false;
 			navigationFocus = undefined;
 			syncNavigation();
@@ -564,10 +493,6 @@ export function mountApplication(
 		if (route.section !== "approvals") {
 			approvals?.dispose();
 			approvals = undefined;
-		}
-		if (route.section !== "notifications") {
-			notifications?.dispose();
-			notifications = undefined;
 		}
 		if (route.section !== "meet") meetState = {};
 		// Agents are Company File documents. Each write re-checks that this
@@ -753,40 +678,6 @@ export function mountApplication(
 				void resolveStaff(controller, route.id ?? "");
 				return;
 			}
-			case "notifications": {
-				if (state.loading || !state.team) {
-					replace(main, spinner("Checking notification access"));
-					return;
-				}
-				if (!notifications) {
-					const client = createWebCompanyExecution(
-						cloud,
-						controller.profile.profileId,
-						controller.userId,
-						controller.signal,
-						() => {
-							const selected = currentRoute();
-							const access = controller.store.get();
-							if (
-								disposed ||
-								company !== controller ||
-								auth.userId !== controller.userId ||
-								access.accessLost ||
-								!access.team?.capabilities.read ||
-								selected.name !== "company" ||
-								selected.profileId !== controller.profile.profileId ||
-								selected.section !== "notifications"
-							)
-								throw new Error("Notification access changed.");
-						},
-					);
-					notifications = new MemberNotificationsView(client, controller.signal, (items) =>
-						notificationStatus?.observe(items),
-					);
-				}
-				if (!main.contains(notifications.el)) replace(main, notifications.el);
-				return;
-			}
 			case "approvals": {
 				if (!approvals) {
 					approvals = new ApprovalsView(controller);
@@ -896,7 +787,7 @@ export function mountApplication(
 						teamFeedback = next;
 						render();
 					},
-					{ onCompanyRemoved: companyRemovedHandler() },
+					{ onCompanyRemoved: companyRemovedHandler(), addFriend: () => openSettings("friends") },
 				);
 				return;
 		}
@@ -915,7 +806,6 @@ export function mountApplication(
 		closeFeedback(false);
 		auth.dispose();
 		hub.dispose();
-		friends.dispose();
 		teardownCompany();
 		cloudCheck?.dispose();
 		window.removeEventListener("hashchange", onRouteChange);

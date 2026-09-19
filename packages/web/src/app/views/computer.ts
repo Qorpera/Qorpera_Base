@@ -4,7 +4,6 @@ import { agentFigure } from "../../ui/avatar.ts";
 import { ComputerViewHost } from "../../ui/computer-view-host.ts";
 import { button, h, icon, replace } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
-import { type AgentRoutineAccess, AgentRoutines } from "./agent-routines.ts";
 
 /** The full-screen place a member watches an agent's computer. It holds the
  * wait: the computer starting, or the agent not being on it yet. */
@@ -67,13 +66,7 @@ export class ComputerPanel {
 	readonly #views: ComputerViewHost;
 	#stage: ComputerStage | undefined;
 	#busy = false;
-	constructor(
-		agent: HostedStaffAgent,
-		close: () => void,
-		computer?: WebCompanyComputer,
-		parentSignal?: AbortSignal,
-		routines?: AgentRoutineAccess,
-	) {
+	constructor(agent: HostedStaffAgent, close: () => void, computer?: WebCompanyComputer, parentSignal?: AbortSignal) {
 		const signal = AbortSignal.any([this.#stop.signal, ...(parentSignal ? [parentSignal] : [])]);
 		this.#views = new ComputerViewHost(signal);
 		this.el = h(
@@ -105,7 +98,6 @@ export class ComputerPanel {
 					this.#status,
 					this.#controls,
 				),
-				new AgentRoutines(agent, routines, signal).el,
 			),
 		);
 		this.el.addEventListener("keydown", (event) => {

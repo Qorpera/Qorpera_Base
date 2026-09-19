@@ -183,18 +183,22 @@ describe("conversation UI boundaries", () => {
 		expect(root.querySelector(".attachment-chip")).toBeNull();
 		expect(root.querySelector<HTMLTextAreaElement>(".composer-input")?.value).toBe("");
 	});
-	it("opens badge-free details, preserves focus through refreshes, and keeps edits local without a write port", () => {
+	it("opens badge-free details, stays read-only without a write port and keeps focus through refreshes", async () => {
 		const f = setup();
 		const identity = button(f.view.el, "Open agent details");
 		expect(f.view.el.querySelector(".thread-header .badge")).toBeNull();
 		identity.focus();
 		identity.click();
-		expect(document.querySelector("dialog")?.textContent).toContain(staff.charter);
-		button(document, "Edit agent").click();
-		input(document, "Agent name", "Local draft");
+		const field = (label: string) => document.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)!;
+		expect(field("Agent description").value).toBe(staff.charter);
+		expect(field("Agent name").readOnly).toBe(true);
+		expect(button(document, "Edit figure").disabled).toBe(true);
+		expect(document.querySelector(".agent-inline-field.is-editable")).toBeNull();
+		const close = button(document, "Close agent details");
+		expect(document.activeElement).toBe(close);
 		f.company.store.set({ staff: [{ ...staff, version: 2 }] });
-		expect(document.querySelector<HTMLInputElement>('[aria-label="Agent name"]')?.value).toBe("Local draft");
-		expect(button(document, "Save changes").disabled).toBe(true);
+		await settle();
+		expect(document.activeElement).toBe(close);
 		document.querySelector("dialog")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		expect(document.querySelector("dialog")).toBeNull();
 		expect(document.activeElement).toBe(identity);
@@ -203,19 +207,27 @@ describe("conversation UI boundaries", () => {
 	});
 	it("discards pending metadata saves on disposal and blocks writes after a role downgrade", async () => {
 		const pending = deferred<void>(),
-			updateAgent = vi.fn(() => pending.promise);
+			updateAgent = vi.fn((_agent: unknown, _draft: unknown, _signal: AbortSignal) => pending.promise);
 		const f = setup({ updateAgent });
 		button(f.view.el, "Open agent details").click();
-		button(document, "Edit agent").click();
+		const name = document.querySelector<HTMLInputElement>('[aria-label="Agent name"]')!;
+		name.focus();
+		input(document, "Agent name", "Renamed");
 		f.company.store.set({ team: { ...team, capabilities: { ...team.capabilities, authorize: false } } });
-		document.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+		await settle();
+		expect(name.readOnly).toBe(true);
+		name.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 		expect(updateAgent).not.toHaveBeenCalled();
+		expect(name.value).toBe(staff.displayName);
 		f.company.store.set({ team });
-		document.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+		await settle();
+		name.focus();
+		input(document, "Agent name", "Renamed");
+		name.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 		expect(updateAgent).toHaveBeenCalledTimes(1);
-		const signal = vi.mocked(updateAgent).mock.calls[0];
-		expect(signal).toBeDefined();
+		expect(updateAgent.mock.calls[0]![1]).toMatchObject({ displayName: "Renamed", role: staff.role });
 		f.view.dispose();
+		expect(updateAgent.mock.calls[0]![2].aborted).toBe(true);
 		pending.resolve();
 		await settle();
 		expect(document.querySelector("dialog")).toBeNull();
@@ -250,12 +262,6 @@ describe("conversation UI boundaries", () => {
 		const f = fixture(),
 			root = document.createElement("div");
 		vi.spyOn(f.api, "appendPrompt");
-		const notificationUrl = `${f.cloud.config.projectUrl}/rest/v1/rpc/qorpera_list_member_notifications`;
-		const network = vi.fn(async (request: string | URL | Request, init?: RequestInit) => {
-			if (String(request) === notificationUrl && init?.method === "POST") return Response.json([]);
-			throw new Error("Uploads and message admission are not allowed in this local attachment fixture");
-		});
-		vi.stubGlobal("fetch", network);
 		document.body.append(root);
 		// Isolate attachment gating from the model-account selection flow.
 		dispose = mountApplication(root, f.cloud, f.api, { nativeSubscription: undefined });
@@ -277,7 +283,7 @@ describe("conversation UI boundaries", () => {
 		expect(send.disabled).toBe(false);
 		expect(root.querySelector("textarea")!.value).toBe("Keep this local");
 		expect(f.api.appendPrompt).not.toHaveBeenCalled();
-		expect(network).toHaveBeenCalledExactlyOnceWith(notificationUrl, expect.objectContaining({ method: "POST" }));
+		expect(fetch).not.toHaveBeenCalled();
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 	it("keeps attachment drafts scoped to their conversation and releases previews on disposal", () => {
@@ -299,8 +305,11 @@ describe("conversation UI boundaries", () => {
 			toggle = button(f.view.el, "Open agent computer");
 		toggle.click();
 		expect(f.view.el.querySelector(".computer-panel")?.textContent).toContain("Computer unavailable");
-		expect(button(f.view.el, "Create routine").disabled).toBe(true);
-		vi.stubGlobal("innerWidth", 390);
+		// Routines live in the agent's details now, not beside the computer.
+		expect(f.view.el.querySelector(".computer-panel")?.textContent).not.toContain("Routines");
+		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(false);
+		// Below the width that holds the default rail, the panel and the conversation, the panel covers it.
+		vi.stubGlobal("innerWidth", 1192);
 		window.dispatchEvent(new Event("resize"));
 		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(true);
 		button(f.view.el, "Close computer").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));

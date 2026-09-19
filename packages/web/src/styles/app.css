@@ -132,7 +132,6 @@ label > input, label > select { font-weight: 400; }
 	font: inherit; font-weight: 550; text-align: left; cursor: pointer;
 }
 .account-item:hover { background: var(--hover); text-decoration: none; }
-.account-item.active { background: var(--pane-strong); }
 .account-item .icon { width: 16px; height: 16px; flex: none; color: var(--text-soft); }
 .account-item-label { flex: 1; min-width: 0; }
 .account-count {
@@ -143,7 +142,7 @@ label > input, label > select { font-weight: 400; }
 .account-signout { color: var(--text-muted); }
 
 /* rail */
-/* The V24 company rail with the desktop's compact default width. */
+/* The V24 company rail. RailLayout sets its width; the default is half again the desktop's 304px. */
 .rail {
 	--rail: var(--sidebar-surface); --rail-line: #c4c2c2; --rail-hover: var(--sidebar-hover);
 	--rail-search: var(--sidebar-search); --rail-search-ink: #85857f;
@@ -157,10 +156,11 @@ label > input, label > select { font-weight: 400; }
 	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
 }
 .rail[hidden] { display: none; }
-/* Trailer chrome at 1x: a 52px title row holding the add button, then the search field. */
-.rail-toolbar { height: 52px; flex: none; display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
-.rail-add { color: #676664; }
-.rail-add svg { width: 18px; height: 18px; }
+/* One top row: the search field takes whatever width the add button leaves. The two
+ * controls share one height, half again the trailer's 1x chrome (31px field, 18px plus). */
+.rail-toolbar { --rail-control: 46px; flex: none; display: flex; align-items: center; gap: 6px; padding-top: 14px; }
+.rail-add { width: var(--rail-control); height: var(--rail-control); border-radius: 9px; color: #676664; }
+.rail-add svg { width: 27px; height: 27px; }
 .rail-mobile-close { display: none; }
 .rail-resizer { position: absolute; z-index: 8; left: calc(var(--rail-width) - 4px); top: 0; bottom: 0; width: 8px; cursor: col-resize; touch-action: none; }
 .rail-resizer:hover, .rail-resizer:focus-visible { background: rgb(0 122 255 / 12%); outline: none; }
@@ -168,10 +168,10 @@ label > input, label > select { font-weight: 400; }
 .rail-resizing { cursor: col-resize; user-select: none; }
 .rail-add:hover { text-decoration: none; background: var(--rail-hover); }
 .rail-search {
-	display: flex; flex-direction: row; align-items: center; gap: 6px; height: 31px; flex: none; min-width: 0;
-	margin: 4px 5px 0 6px;
+	display: flex; flex-direction: row; align-items: center; gap: 6px; height: var(--rail-control); flex: 1; min-width: 0;
+	margin-left: 6px;
 	padding: 0 8px 0 35px;
-	border-radius: 6px; background: var(--rail-search) no-repeat 11px 50%; color: var(--rail-search-ink);
+	border-radius: 9px; background: var(--rail-search) no-repeat 11px 50%; color: var(--rail-search-ink);
 	box-shadow: inset 0 0 0 0.5px rgba(18, 18, 17, 0.08);
 	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2385857f' stroke-width='1.8'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m20 20-4-4'/%3E%3C/svg%3E");
 	background-size: 17px 17px;
@@ -362,7 +362,6 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 /* The company logo. Until a company carries one, its placeholder is a figure
  * in ink, standing on its own rather than inside a disc. */
 .company-logo { width: 116px; height: 116px; }
-.company-logo.person-company { width: 40px; height: 40px; }
 
 .company-card-new { border-style: dashed; background: transparent; box-shadow: none; justify-content: center; }
 .company-card-new:hover { background: #fbfbfa; box-shadow: none; transform: none; }
@@ -376,36 +375,6 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 .company-card-compose input { flex: none; width: 100%; height: 44px; font-size: 15px; }
 .company-card-compose .hub-create-submit { height: 38px; padding: 0 18px; font-size: 14px; }
 .company-card-compose .hub-progress { align-items: flex-start; }
-
-/* Account pages: friends and invitations. One box holds the field and every
- * section, so the page reads as a single list rather than stacked cards. */
-/* Friends and Invitations are narrow reading columns, centred in the pane. */
-.account-page { max-width: 720px; padding: 34px 32px 64px; }
-.page-lead { margin: 0 0 22px; color: var(--text-muted); font-size: 15px; }
-.panel { border: 1px solid var(--border); border-radius: 16px; background: var(--bg); overflow: hidden; }
-.panel-search { display: flex; gap: 10px; padding: 12px; border-bottom: 1px solid var(--border); }
-.panel-search input { flex: 1; height: 40px; padding: 0 12px; border-radius: 10px; font-size: 14.5px; }
-.panel-search .hub-create-submit { height: 40px; padding: 0 16px; font-size: 14px; }
-.panel-group + .panel-group { border-top: 1px solid var(--border); }
-.panel-group-title {
-	padding: 12px 16px 2px; font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
-	color: var(--text-soft);
-}
-.panel-empty { padding: 18px 16px; margin: 0; }
-.panel .spinner { padding: 16px; }
-.person-row { display: flex; align-items: center; gap: 12px; padding: 12px 16px; }
-.person-row + .person-row { border-top: 1px solid var(--border); }
-.person-chip {
-	width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; flex: none;
-	background: var(--pane-strong); color: var(--text-muted); font-size: 12px; font-weight: 700;
-}
-.person-copy { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.3; }
-.person-copy > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.person-meta { white-space: nowrap; }
-.person-actions { display: flex; gap: 8px; }
-@media (max-width: 560px) {
-	.person-meta { display: none; }
-}
 
 /* First run: give the seeded Co-Founder a face. The approved design is
  * packages/web/design/cofounder-first-run.html. It is set in the system face,
@@ -549,7 +518,8 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 	.mobile-navigation-toggle[hidden] { display: none; }
 	.rail { display: none; position: fixed; top: var(--titlebar-height); bottom: 0; left: 0; width: min(304px, calc(100vw - 48px)); z-index: 6; }
 	.rail-resizer { display: none; }
-	.rail-mobile-close { display: inline-flex; margin-right: auto; }
+	.rail-mobile-close { display: inline-flex; }
+	.rail-mobile-close + .rail-search { margin-left: 0; }
 	.frame.navigation-open .rail:not([hidden]) { display: flex; }
 	.frame.navigation-open .navigation-backdrop { display: block; position: fixed; inset: var(--titlebar-height) 0 0; z-index: 5; background: rgba(18,18,17,.25); border: 0; }
 	.page { padding: 16px; }
