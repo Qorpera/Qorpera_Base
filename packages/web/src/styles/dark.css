@@ -115,7 +115,7 @@
 :root[data-theme="dark"] .message.typing { background: #3a3a3c; }
 :root[data-theme="dark"] .message.typing span { background: #a3a29e; }
 :root[data-theme="dark"] .composer-shell { background: #242423; }
-:root[data-theme="dark"] :is(.composer-shell:focus-within, .composer-shell.is-dragging) { border-color: #3f7fd6; box-shadow: 0 0 0 2px rgb(10 132 255 / 22%); }
+:root[data-theme="dark"] .composer-shell.is-dragging { border-color: #3f7fd6; box-shadow: 0 0 0 2px rgb(10 132 255 / 22%); }
 :root[data-theme="dark"] .composer-send:disabled { background: #353534; color: #71706c; }
 :root[data-theme="dark"] .composer-send:not(:disabled):hover { background: var(--primary-hover); }
 :root[data-theme="dark"] .composer-menu { box-shadow: 0 12px 30px rgb(0 0 0 / 45%); }
