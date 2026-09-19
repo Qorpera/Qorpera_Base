@@ -103,6 +103,23 @@ async function modelChosen(root: HTMLElement): Promise<void> {
 }
 
 describe("account and route ownership", () => {
+	it("sends the first message from the recipient composer before navigating to the conversation", async () => {
+		const f = mounted(`#/c/${profileA.profileId}/new`);
+		vi.mocked(f.api.listSessions).mockResolvedValue([{ ...session, staffAgentId: staff.id }]);
+		const send = executionTransport();
+		await draw();
+		f.root.querySelector<HTMLElement>(`[data-choice="${staff.id}"]`)!.click();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/new`);
+		const input = f.root.querySelector("textarea")!;
+		input.value = "First message";
+		input.dispatchEvent(new Event("input"));
+		f.root.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.click();
+		await draw();
+		expect(send).toHaveBeenCalledOnce();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		expect(f.root.querySelector("textarea")!.value).toBe("");
+		expect(f.root.textContent).toContain("First message");
+	});
 	it("retries an uncertain product send with the same input identity and preserves its draft", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 		const send = executionTransport();

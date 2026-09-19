@@ -21,6 +21,9 @@ export interface WorkspaceActions {
 	/** Supplies already-authorized bytes. No URL from a transcript is fetched. */
 	previewAttachment?: (messageId: string, attachmentIndex: number, signal: AbortSignal) => Promise<Blob>;
 	sendMessage?: (sessionId: string, text: string, signal: AbortSignal) => Promise<boolean>;
+	/** Opens the selected recipients and submits the first message. Failed sends
+	 * remain in the returned session so its normal retry UI can recover them. */
+	startConversation?: (recipientIds: readonly string[], text: string, signal: AbortSignal) => Promise<string>;
 	updateAgent?: (agent: HostedStaffAgent, draft: AgentDraft, signal: AbortSignal) => Promise<void>;
 	createAgent?: (profileId: string, draft: AgentDraft, signal: AbortSignal) => Promise<string>;
 }
