@@ -131,7 +131,7 @@ function buttonNamed(view: ConversationView, label: string): HTMLButtonElement |
 const CONNECT_HINT = "Connect a model account in Settings → Connections to send messages.";
 
 describe("conversation execution account", () => {
-	it("keeps team-room text and the member's own account without single-agent run or turn history", async () => {
+	it("keeps group-chat text and the member's own account without single-agent run or turn history", async () => {
 		const f = setup(true);
 		await settle();
 		const state = f.company.conversation(session.sessionId);
@@ -154,7 +154,7 @@ describe("conversation execution account", () => {
 		});
 		await settle();
 		expect(f.view.el.querySelector(".messages")!.textContent).toContain("Earlier room message");
-		expect(f.view.el.textContent).toContain("Multiple agents can respond in this room");
+		expect(f.view.el.textContent).toContain("Multiple agents can respond in this group chat");
 		expect(f.view.el.textContent).toContain("Company-wide execution pause is available in Settings → Company");
 		expect(f.view.el.querySelector(".session-run")).toBeNull();
 		expect(f.view.el.textContent).not.toContain("Execution history");
@@ -173,7 +173,7 @@ describe("conversation execution account", () => {
 		expect(f.native.createMemberSponsor).not.toHaveBeenCalled();
 	});
 
-	it("rejects picker, pasted and dropped images in team rooms without losing the text draft", async () => {
+	it("rejects picker, pasted and dropped images in group chats without losing the text draft", async () => {
 		const f = setup(true);
 		await settle();
 		f.company.conversation(session.sessionId).set({ draft: "Keep team text" });
@@ -195,7 +195,7 @@ describe("conversation execution account", () => {
 		expect(f.company.conversation(session.sessionId).get().attachments ?? []).toEqual([]);
 		expect(f.company.conversation(session.sessionId).get().draft).toBe("Keep team text");
 		expect(f.view.el.querySelector<HTMLButtonElement>(".composer-more")!.hidden).toBe(true);
-		expect(f.view.el.textContent).toContain("Images are not supported in team rooms. Use Company File.");
+		expect(f.view.el.textContent).toContain("Images are not supported in group chats. Use Company File.");
 		expect(f.sendMessage).not.toHaveBeenCalled();
 	});
 	it("does not attribute a room agent reply to the room title or its human creator", async () => {
