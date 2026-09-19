@@ -68,6 +68,8 @@ export const RPC_PROBES: RpcProbeEntry[] = [
 		area: "Conversations",
 	},
 	{ name: "qorpera_list_staff_execution_activity", params: ["p_environment_id"], area: "Conversations" },
+	{ name: "qorpera_get_execution_run_recovery", params: ["p_run_id"], area: "Conversations" },
+	{ name: "qorpera_resolve_failed_execution_run", params: ["p_run_id", "p_action"], area: "Conversations" },
 	{ name: "qorpera_get_company_file", params: ["p_environment_id"], area: "Company File" },
 	{ name: "qorpera_company_uses_path_gateway", params: ["p_profile_id"], area: "Company File (Order 0)" },
 	{ name: "qorpera_list_company_workspaces", params: ["p_environment_id"], area: "Company File" },

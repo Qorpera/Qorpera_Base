@@ -12,6 +12,7 @@ import { createWebSessionInputWriter } from "../cloud/session-input.ts";
 import { createWebSessionRunControl } from "../cloud/session-run-control.ts";
 import type { HostedProfile } from "../cloud/types.ts";
 import { h, notice, replace, spinner } from "../ui/dom.ts";
+import { isPhoneLayout } from "../ui/layout.ts";
 import { applyLanguage, watchTheme } from "../ui/preferences.ts";
 import { RailLayout } from "../ui/rail-layout.ts";
 import { AuthController } from "./auth.ts";
@@ -133,7 +134,7 @@ export function mountApplication(
 		render();
 	}
 	function syncNavigation(): void {
-		main.inert = navigationOpen && window.matchMedia("(max-width: 760px)").matches;
+		main.inert = navigationOpen && isPhoneLayout();
 		executionNotices.inert = main.inert;
 	}
 	function onEscape(event: KeyboardEvent): void {
