@@ -3,7 +3,7 @@
 Source baseline: `f44e5300a` (`origin/master`, 2026-09-19).
 Package: `@qorpera/runtime` 0.83.0. Candidate activation: v32.
 
-The existing cloud loop now compiles a shared, 604-word constitution, native
+The existing cloud loop now compiles a shared, 644-word constitution, native
 context/turn protocol, admitted identity/bundle binding, and one thin behavioral
 overlay. `cloud-runtime-constitution.ts` holds the shared law;
 `cloud-runtime-hire-overlays.ts` holds Co-Founder and employee defaults.
@@ -15,12 +15,16 @@ Co-Founder mapping. Editable names, role descriptions, template labels and
 charters cannot select it. The existing charter remains a hash-bound, pageable
 source at the admitted staff revision. It supplies mission, responsibilities,
 voice and escalation preferences without a second platform prompt or a new
-company-state schema.
+company-state schema. It also supplies `initialAcknowledgementSatisfied` from
+canonical progress receipts for the current run and session. The composer
+derives `delivery.beforeWork` from that fact, the admitted wake policy and any
+continuation, so resumed attempts do not repeat a confirmed acknowledgement.
+Transcript text cannot satisfy that gate.
 
 The final JSON context block is `hireOverlay`: identity, name, role, charter
 source and the current first-run assignment. Mutable text remains escaped data,
 never interpolated into developer instructions. Startup assignments are issued
-only on first-run wakes; ordinary wakes and office continuations retain their
+only on fresh first-run wakes; resumed first runs, ordinary wakes and office continuations retain their
 existing continuation rules. No template artifacts or new wakes are created.
 
 The Codex adapter writes one host-owned, read-only `AGENTS.md` in its private
@@ -43,7 +47,14 @@ authority adapters, hostile hire text, exact bootstrap bytes, source pagination,
 first-run selection, all five wake policies and bundle drift. These use a
 scripted native process and faux authority/provider boundaries, not real model
 behavior. SQL context parity uses real PostgreSQL and all migrations, including
-canonical versus spoofed Co-Founder identity and private/company audiences.
+canonical versus spoofed Co-Founder identity, legacy private/company audiences,
+forged transcript acknowledgements, and a real sponsor handoff with a fresh
+assignment and no duplicate greeting. Current product threads and greetings
+are shared, following the September 17–18 contract amendments.
+
+[The prompt audit](RUNTIME-STEP-10-PROMPT-AUDIT.md) maps the current contract to
+instructions and enforcement, records resolved conflicts, and separates
+deterministic regression evidence from outstanding native-model behavior checks.
 
 The task's verification record documents exact hosts, commands, results and
 environment differences. It is component evidence, not deployed acceptance.

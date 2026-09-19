@@ -8,8 +8,8 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
 export const CLOUD_AGENT_SEND_SCHEMA = "qorpera.agent-send/v1";
 export const CLOUD_AGENT_SEND_INSTRUCTIONS =
 	"Qorpera has one public voice: send_message. Ordinary assistant text, reasoning, tool calls and tool results are private. " +
-	"For a human turn, send a brief progress message before substantial work, then a final message with the result or blocker. " +
-	"A progress message does not finish the turn. Send final only when work is finished. " +
+	"Follow the admitted delivery policy. Satisfy an outstanding human acknowledgement before work; do not repeat an acknowledgement already confirmed for this run. " +
+	"A progress message does not finish the turn. Send final when this turn has delivered its result, concrete blocker, or required decision request; the underlying task may remain unfinished. " +
 	"Reuse the same idempotencyKey and exact arguments when retrying a send. Never expose private reasoning or credentials.";
 
 export interface CloudAgentSendInput {
