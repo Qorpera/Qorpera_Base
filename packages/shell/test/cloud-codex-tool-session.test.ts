@@ -8,7 +8,11 @@ import { CloudNativeCaptureImages } from "@qorpera/runtime/cloud-native-capture-
 import { nativeRuntimeFailureMetadata } from "@qorpera/runtime/cloud-native-failure";
 import * as nativeIsolation from "@qorpera/runtime/cloud-native-isolation";
 import { nativeProviderUsageSignal } from "@qorpera/runtime/cloud-native-provider-host";
-import { type CloudNativeTool, CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
+import {
+	CLOUD_TOOL_RESULT_INSTRUCTIONS,
+	type CloudNativeTool,
+	CloudNativeToolBoundary,
+} from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudRuntimeObservability, type CloudRuntimeObservation } from "@qorpera/runtime/cloud-runtime-observability";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
@@ -36,6 +40,7 @@ function run(
 		isolation?: nativeIsolation.NativeIsolationConfiguration;
 		beforeModelStart?: (signal: AbortSignal) => Promise<void>;
 		observability?: CloudRuntimeObservability;
+		tools?: CloudNativeTool[];
 		recordContextView?: Parameters<typeof runCloudCodexToolSession>[0]["recordContextView"];
 	} = {},
 ) {
@@ -46,7 +51,7 @@ function run(
 		runId: randomUUID(),
 		signal,
 		assertActive: async () => undefined,
-		tools: [
+		tools: options.tools ?? [
 			{
 				name: "read_document",
 				description: "Read a test document",
@@ -64,8 +69,8 @@ function run(
 		boundary,
 		model: "offline-probe",
 		prompt: "Private test input",
-		signal,
 		...options,
+		signal,
 	});
 	return { result, execute, evidence };
 }
@@ -97,11 +102,18 @@ it("rejects an unpatched binary before creating a thread", async () => {
 	await expect(run("missing-fence").result).rejects.toThrow("missing native result fence");
 });
 
+it("requires composition telemetry before admitting a model request", async () => {
+	const beforeModelStart = vi.fn(async () => undefined);
+	await expect(run("missing-composition", { beforeModelStart }).result).rejects.toThrow("message composition support");
+	expect(beforeModelStart).not.toHaveBeenCalled();
+});
+
 it("loads the exact host-generated AGENTS.md bytes without enabling ambient instructions", async () => {
 	const { result, evidence } = run("bootstrap", { runtimeInstructions: "HOST_OWNED_CONSTITUTION" });
 	await result;
 	const recorded = JSON.parse(await readFile(evidence, "utf8"));
 	expect(recorded.bootstrap).toBe(recorded.threadParameters.developerInstructions);
+	expect(recorded.bootstrap).toContain(CLOUD_TOOL_RESULT_INSTRUCTIONS);
 	expect(recorded.bootstrap).toContain("HOST_OWNED_CONSTITUTION");
 	expect(recorded.bootstrap).not.toContain("Private test input");
 	expect(recorded.mode).toBe(0o400);
@@ -641,4 +653,97 @@ it.each(["start", "update", "finish"])("isolates an unexpected optional observer
 	});
 	await expect(run("observed-usage", { observability }).result).resolves.toMatchObject({ fencedRequests: 1 });
 	await observability.close();
+});
+
+function composing(mode: string, signal?: AbortSignal) {
+	const { rows, observability } = observationCollector();
+	const execute = vi.fn<CloudNativeTool["execute"]>(async () => ({ kind: "text", value: "Delivered" }));
+	const invocation = run(mode, {
+		observability,
+		signal,
+		tools: [
+			{
+				name: "send_message",
+				source: "runtime",
+				description: "Public reply fixture",
+				inputSchema: { type: "object", properties: { text: { type: "string" } }, additionalProperties: false },
+				parseArguments: () => ({}),
+				execute,
+			},
+		],
+	});
+	return {
+		...invocation,
+		execute,
+		rows,
+		observability,
+		release: () => writeFile(`${invocation.evidence}.continue`, "continue"),
+	};
+}
+
+it("exports writing before the complete send call and renews long composition without retaining text", async () => {
+	const f = composing("composition-held");
+	const phases = () => f.rows.filter((row) => row.operation === "message_composition");
+	try {
+		await vi.waitFor(() => expect(phases()).toHaveLength(1));
+		expect(f.execute).not.toHaveBeenCalled();
+		expect(phases()[0]).toMatchObject({ phase: "start", status: "started", inputBytes: null, outputBytes: null });
+		await vi.waitFor(() => expect(phases()).toHaveLength(3), { timeout: 6500 });
+		expect(phases().map((row) => row.phase)).toEqual(["start", "start", "finish"]);
+		expect(phases()[2].attemptId).toBe(phases()[0].attemptId);
+		expect(phases()[1].attemptId).not.toBe(phases()[0].attemptId);
+		expect(f.execute).not.toHaveBeenCalled();
+		await f.release();
+		await f.result;
+		await f.observability.close();
+		expect(f.execute).toHaveBeenCalledOnce();
+		expect(phases()).toHaveLength(4);
+		expect(phases()[3]).toMatchObject({ phase: "finish", status: "succeeded", attemptId: phases()[1].attemptId });
+		expect(JSON.stringify(f.rows)).not.toMatch(/PRIVATE_|PUBLIC_REPLY|public_reply|thread_fixture|turn_fixture/);
+	} finally {
+		await f.release();
+		await f.result.catch(() => undefined);
+		await f.observability.close();
+	}
+}, 10000);
+
+it("does not revive a composition whose finish preceded its start", async () => {
+	const f = composing("composition-replayed");
+	await vi.waitFor(async () => expect(JSON.parse(await readFile(f.evidence, "utf8"))).toEqual({ stage: "composing" }));
+	await f.release();
+	await f.result;
+	await f.observability.close();
+	expect(f.rows.filter((row) => row.operation === "message_composition")).toEqual([]);
+});
+
+it("ends an unfinished composition when its turn completes", async () => {
+	const f = composing("composition-unfinished");
+	await vi.waitFor(() => expect(f.rows.some((row) => row.operation === "message_composition")).toBe(true));
+	await f.release();
+	await f.result;
+	await f.observability.close();
+	expect(
+		f.rows.filter((row) => row.operation === "message_composition").map((row) => [row.phase, row.status]),
+	).toEqual([
+		["start", "started"],
+		["finish", "unconfirmed"],
+	]);
+	expect(f.execute).not.toHaveBeenCalled();
+});
+
+it("clears writing and its renewal timer when composition is cancelled", async () => {
+	const abort = new AbortController();
+	const f = composing("composition-held", abort.signal);
+	const failure = expect(f.result).rejects.toThrow("Native boundary execution stopped");
+	await vi.waitFor(() => expect(f.rows.some((row) => row.operation === "message_composition")).toBe(true));
+	abort.abort();
+	await failure;
+	await f.observability.close();
+	expect(
+		f.rows.filter((row) => row.operation === "message_composition").map((row) => [row.phase, row.status]),
+	).toEqual([
+		["start", "started"],
+		["finish", "cancelled"],
+	]);
+	expect(f.execute).not.toHaveBeenCalled();
 });

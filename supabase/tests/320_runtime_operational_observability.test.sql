@@ -637,7 +637,7 @@ declare v_run uuid := (current_setting('qorpera_test.path_binding')::jsonb ->> '
 	v_event jsonb; v_operation text; v_status text; v_category text; v_query jsonb;
 begin
 	foreach v_operation in array array['model_turn','model_request','company_read','company_list','company_write',
-		'company_mkdir','company_delete','company_context','send_message','connector','unknown_tool','run_authority',
+		'company_mkdir','company_delete','company_context','send_message','message_composition','connector','unknown_tool','run_authority',
 		'context_authority','native_result_fence','diagnostic_export'] loop
 		v_event := pg_temp.observation() || jsonb_build_object('operation',v_operation,'assignmentId',null,
 			'phase','finish','status','succeeded','logicalOperationSha256',null,'observedAt','0001-01-01T00:00:00.000Z',
@@ -914,8 +914,17 @@ declare b jsonb := current_setting('qorpera_test.path_binding')::jsonb;
 	v_run uuid := (b ->> 'runId')::uuid; v_start jsonb; v_other jsonb; v_activity jsonb;
 begin
 	if pg_temp.member_staff_activity() ->> 'phase' is distinct from 'working' then
-		raise exception 'Absent send telemetry fabricated writing'; end if;
-	v_start := pg_temp.observation() || jsonb_build_object('operation','send_message',
+		raise exception 'Absent composition telemetry fabricated writing'; end if;
+	-- A delivery may remain in flight after composition has already finished.
+	-- Its transport span must never put the agent into the writing state.
+	v_other := pg_temp.observation() || jsonb_build_object('operation','send_message',
+		'observedAt',to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'));
+	set local role service_role;
+	perform public.qorpera_record_runtime_observation(v_run,v_other);
+	reset role;
+	if pg_temp.member_staff_activity() ->> 'phase' is distinct from 'working' then
+		raise exception 'Send transport telemetry fabricated writing'; end if;
+	v_start := pg_temp.observation() || jsonb_build_object('operation','message_composition',
 		'observedAt',to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'));
 	set local role service_role;
 	perform public.qorpera_record_runtime_observation(v_run,v_start);
@@ -924,13 +933,13 @@ begin
 	if v_activity ->> 'phase' is distinct from 'writing' or v_activity ->> 'activity' <> 'working'
 		or v_activity ->> 'run_id' <> v_run::text
 		or v_activity - array['run_id','staff_agent_id','source_kind','job_status','activity','updated_at','phase'] <> '{}'::jsonb then
-		raise exception 'Current public send was not projected as closed presentation metadata'; end if;
-	-- A finished send never lingers as typing, even if other work keeps running.
+		raise exception 'Current composition was not projected as closed presentation metadata'; end if;
+	-- Finished composition never lingers as typing, even while delivery is pending.
 	set local role service_role;
 	perform public.qorpera_record_runtime_observation(v_run,v_start || '{"phase":"finish","status":"succeeded","durationMs":1}');
 	reset role;
 	if pg_temp.member_staff_activity() ->> 'phase' is distinct from 'working' then
-		raise exception 'Completed send kept the writing phase'; end if;
+		raise exception 'Completed composition kept the writing phase'; end if;
 	-- A finish delivered before its start is still terminal for that attempt.
 	v_other := v_start || jsonb_build_object('attemptId',extensions.gen_random_uuid());
 	set local role service_role;
@@ -938,28 +947,36 @@ begin
 	perform public.qorpera_record_runtime_observation(v_run,v_other);
 	reset role;
 	if pg_temp.member_staff_activity() ->> 'phase' is distinct from 'working' then
-		raise exception 'Out-of-order start revived a finished send'; end if;
+		raise exception 'Out-of-order start revived finished composition'; end if;
+	-- Cancellation also closes the presentation span without waiting for expiry.
+	v_other := v_start || jsonb_build_object('attemptId',extensions.gen_random_uuid());
+	set local role service_role;
+	perform public.qorpera_record_runtime_observation(v_run,v_other);
+	perform public.qorpera_record_runtime_observation(v_run,v_other || '{"phase":"finish","status":"cancelled","durationMs":1}');
+	reset role;
+	if pg_temp.member_staff_activity() ->> 'phase' is distinct from 'working' then
+		raise exception 'Cancelled composition kept the writing phase'; end if;
 	-- Freshly ingested old work and old ingestion with a fresh sender clock
 	-- both expire. Unknown/previous assignments cannot animate the current run.
 	insert into public.qorpera_runtime_observations(run_id,attempt_id,phase,assignment_id,
 		operation,observed_at,ingested_at,observation)
 	values
 		(v_run,extensions.gen_random_uuid(),'start',(b ->> 'assignmentId')::uuid,
-			'send_message',clock_timestamp()-interval '21 seconds',clock_timestamp(),v_start),
+			'message_composition',clock_timestamp()-interval '21 seconds',clock_timestamp(),v_start),
 		(v_run,extensions.gen_random_uuid(),'start',(b ->> 'assignmentId')::uuid,
-			'send_message',clock_timestamp(),clock_timestamp()-interval '21 seconds',v_start),
+			'message_composition',clock_timestamp(),clock_timestamp()-interval '21 seconds',v_start),
 		(v_run,extensions.gen_random_uuid(),'start',extensions.gen_random_uuid(),
-			'send_message',clock_timestamp(),clock_timestamp(),v_start),
+			'message_composition',clock_timestamp(),clock_timestamp(),v_start),
 		(v_run,extensions.gen_random_uuid(),'start',null,
-			'send_message',clock_timestamp(),clock_timestamp(),v_start);
+			'message_composition',clock_timestamp(),clock_timestamp(),v_start);
 	if pg_temp.member_staff_activity() ->> 'phase' is distinct from 'working' then
-		raise exception 'Stale or unbound send telemetry animated the current assignment'; end if;
+		raise exception 'Stale or unbound composition telemetry animated the current assignment'; end if;
 	v_other := v_start || jsonb_build_object('attemptId',extensions.gen_random_uuid());
 	set local role service_role;
 	perform public.qorpera_record_runtime_observation(v_run,v_other);
 	reset role;
 	if pg_temp.member_staff_activity() ->> 'phase' is distinct from 'writing' then
-		raise exception 'An older finished send masked the current send'; end if;
+		raise exception 'An older finished composition masked the current composition'; end if;
 	begin
 		update public.qorpera_runner_jobs set lease_expires_at = clock_timestamp()-interval '1 second'
 		where id = (b ->> 'jobId')::uuid;

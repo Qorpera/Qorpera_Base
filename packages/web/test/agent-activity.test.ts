@@ -50,17 +50,33 @@ function setup() {
 		company.stop();
 		auth.dispose();
 	});
-	return { company, view, rail, draw, mount };
+	return { company, view, rail, draw, mount, api: f.api, cloud: f.cloud };
 }
 
 describe("shared agent activity", () => {
-	it("switches the thread and sidebar together, with the same figure identity, colour and hover text", async () => {
+	it("refreshes RPC activity into matching thread and sidebar figures, colours and hover text", async () => {
 		const f = setup();
+		vi.mocked(f.api.listStaffActivity).mockRestore();
+		const rpc = vi.mocked(f.cloud.rpc);
 		for (const phase of ["working", "writing", "working"] as const) {
 			f.mount.mockClear();
-			f.company.store.set({ activity: [{ ...working, phase }] });
+			rpc.mockResolvedValueOnce([
+				{
+					run_id: working.runId,
+					staff_agent_id: working.staffAgentId,
+					source_kind: working.sourceKind,
+					job_status: working.jobStatus,
+					activity: working.activity,
+					updated_at: working.updatedAt,
+					phase,
+				},
+			]);
+			await f.company.refreshActivity();
 			await settle();
 			f.draw();
+			expect(rpc).toHaveBeenLastCalledWith("qorpera_list_staff_execution_activity", {
+				p_environment_id: profileA.environmentId,
+			});
 			const indicator = f.view.el.querySelector<HTMLElement>(".thread-activity")!;
 			const label = phase === "writing" ? "Writing" : "Working";
 			expect(indicator.title).toBe(`${staff.displayName} · ${label}`);
@@ -74,9 +90,11 @@ describe("shared agent activity", () => {
 			expect(calls[0]![2]).toBe(calls[1]![2]);
 			for (const call of calls) expect(call[4]?.activity).toBe(phase === "writing" ? "Thinking" : "Working");
 		}
-		f.company.store.set({ activity: [] });
+		rpc.mockResolvedValueOnce([]);
+		await f.company.refreshActivity();
 		await settle();
 		f.draw();
+		expect(rpc).toHaveBeenCalledTimes(4);
 		expect(f.view.el.querySelector(".thread-activity")).toBeNull();
 		expect(f.rail.querySelector(".rail-row-status")).toBeNull();
 	});
