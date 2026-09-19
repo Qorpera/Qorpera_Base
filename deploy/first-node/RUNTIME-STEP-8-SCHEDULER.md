@@ -119,7 +119,7 @@ against three sales hires that conflict with direction.
 Runtime bundle v38, `6d3c9d2b7dc1738464b9aeb7b3ba39836962ac3d3f270106e4a1df7cad9bff2f`
 (`20260920003000_runtime_bundle_activation_v38.sql`). Guest artifact pinned from a
 Linux x64 build on `company41-node-02`: `qorpera-native-provider-host.mjs`,
-1,338,913 bytes, `78ff4f0172804a896befeffefae1a12d279c44a96f5c73de8b53b6c1f4357313`.
+1,338,913 bytes, `5fd4558d353901238b5a9925dcc9932fc7798c94ee784751c3d03283a4c92ec5`.
 Seven bundle, guest-package and SQL-harness tests passed there; SQL context
 parity passed after all 286 migrations. `npm run check` passes. If master ships
 another activation first, allocate the next version and regenerate; never
