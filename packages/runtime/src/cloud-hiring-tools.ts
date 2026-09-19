@@ -4,6 +4,7 @@ import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
 import { type CloudNativeTool, type CloudToolContext, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
 
 const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 /** The figures a client can draw (cloud-client staff-characters). The colour follows the figure. */
 const FIGURES = ["planet", "acorn", "flame", "rocket", "crown", "heart", "ghost"] as const;
 const FIELDS = ["operationKey", "name", "role", "jobDescription", "firstAssignment", "figure"] as const;
@@ -28,10 +29,15 @@ function agentIdFor(runId: string, operationKey: string): string {
 }
 
 export const CLOUD_HIRE_TOOL_DESCRIPTION =
-	"Propose a new coworker for this company. The proposal goes to a member with authority over the company for approval; nothing exists until they approve, so tell the member it is waiting for them and never say the person is hired. " +
+	"Hire a new coworker for this company. No member approval is needed: when the result says applied, the agent exists and its first run is queued, so tell the member who you hired and why. If the result says proposed, it is waiting for a member instead; say that. " +
 	"Hire for a continuing responsibility that nobody owns, not for a one-off task. First read the current responsibilities and look at your coworkers: an existing coworker who can own it beats a new hire. Write jobDescription as the new agent's thin job specification: mission, the outcomes it owns, its voice, and when it should escalate and to whom. Write firstAssignment as the first concrete piece of work it should start on when it wakes. " +
-	"The new agent starts with the default read access to the shared Company File and no other grants; you cannot give it authority, and an approving member can widen it later. figure picks its avatar. " +
+	"The new agent starts with the default read access to the shared Company File and no other grants; you cannot give it authority, and a member can widen it later. A run can hire at most three coworkers. figure picks its avatar. " +
 	"Keep operationKey stable for one intended hire; an unconfirmed result needs the same key again, never a new one.";
+
+export const CLOUD_GROUP_CHAT_TOOL_DESCRIPTION =
+	"Open a group chat with coworkers when work needs several of you in one place; for a question to one coworker use send_coworker_message instead. No member approval is needed. " +
+	"coworkerIds are the ids of coworkers listed in your context; you are always a member, and the member who asked is included unless you set includeRequestingMember to false. Give it a short name people will recognise and a one-sentence purpose. " +
+	"When the result says applied the chat exists: tell the member its name. A run can open at most five. Keep operationKey stable for one intended chat.";
 
 /** The hire is an ordinary governed Company File write of the canonical agent
  * document (contract 14.1), so attribution, proposal, approval and the
@@ -39,7 +45,7 @@ export const CLOUD_HIRE_TOOL_DESCRIPTION =
  * existing kernel's. The model never supplies an identity, a grant or a path.
  */
 export function cloudHiringTools(
-	gateway: Pick<CloudCompanyPathGateway, "mutate">,
+	gateway: Pick<CloudCompanyPathGateway, "mutate" | "applyOwnOrganizationDocument">,
 	identity: CloudNativeToolIdentity,
 	now: () => Date = () => new Date(),
 ): readonly CloudNativeTool[] {
@@ -56,6 +62,22 @@ export function cloudHiringTools(
 		)
 			throw new Error("Hiring tool identity differs");
 		context.signal.throwIfAborted();
+	};
+	// A new agent or room document is approved by policy and applied at once; if the cloud declines
+	// (a limit, a revoked authority) the document simply stays a proposal and the model is told so.
+	const settle = async (
+		result: Awaited<ReturnType<CloudCompanyPathGateway["mutate"]>>,
+		document: string,
+		signal: AbortSignal,
+	): Promise<string> => {
+		if (result.state !== "proposed" || !result.proposalId) return result.state;
+		try {
+			return (await gateway.applyOwnOrganizationDocument(result.proposalId, document, signal)).state;
+		} catch (error) {
+			signal.throwIfAborted();
+			if (error instanceof Error && /limit/i.test(error.message)) throw error;
+			return "proposed";
+		}
 	};
 	const tool: CloudNativeTool = {
 		name: "hire_agent",
@@ -136,6 +158,7 @@ export function cloudHiringTools(
 				context.signal,
 				context.observation,
 			);
+			const state = await settle(result, document, context.signal);
 			return {
 				kind: "text",
 				value: cloudToolJsonText({
@@ -144,13 +167,117 @@ export function cloudHiringTools(
 					agentId,
 					name: hire.name,
 					role: hire.role,
-					state: result.state,
+					state,
 					proposalId: result.proposalId,
 					receiptId: result.receiptId,
-					awaiting: result.state === "proposed" ? "member_approval" : null,
+					awaiting: state === "proposed" ? "member_approval" : null,
 				}),
 			};
 		},
 	};
-	return [tool];
+	const roomFields = ["operationKey", "name", "purpose", "coworkerIds", "includeRequestingMember"] as const;
+	const roomTool: CloudNativeTool = {
+		name: "create_group_chat",
+		source: "runtime",
+		description: CLOUD_GROUP_CHAT_TOOL_DESCRIPTION,
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["operationKey", "name", "purpose", "coworkerIds"],
+			properties: {
+				operationKey: { type: "string", pattern: OPERATION_KEY.source },
+				name: { type: "string", minLength: 1, maxLength: 256 },
+				purpose: { type: "string", minLength: 1, maxLength: 2048 },
+				coworkerIds: {
+					type: "array",
+					minItems: 1,
+					maxItems: 16,
+					uniqueItems: true,
+					items: { type: "string", pattern: UUID.source },
+				},
+				includeRequestingMember: { type: "boolean" },
+			},
+		},
+		parseArguments(value) {
+			if (
+				!value ||
+				typeof value !== "object" ||
+				Array.isArray(value) ||
+				Object.keys(value).some((key) => !roomFields.includes(key as (typeof roomFields)[number]))
+			)
+				throw new Error("Invalid group chat request");
+			const a = value as Record<string, unknown>;
+			if (typeof a.operationKey !== "string" || !OPERATION_KEY.test(a.operationKey))
+				throw new Error("Invalid group chat key");
+			if (
+				!Array.isArray(a.coworkerIds) ||
+				a.coworkerIds.length < 1 ||
+				a.coworkerIds.length > 16 ||
+				a.coworkerIds.some((id) => typeof id !== "string" || !UUID.test(id) || id === expected.staffAgentId) ||
+				new Set(a.coworkerIds).size !== a.coworkerIds.length
+			)
+				throw new Error("Invalid group chat coworkers");
+			if (a.includeRequestingMember !== undefined && typeof a.includeRequestingMember !== "boolean")
+				throw new Error("Invalid group chat membership");
+			return {
+				operationKey: a.operationKey,
+				name: text(a.name, 256, true),
+				purpose: text(a.purpose, 2048, false),
+				coworkerIds: [...(a.coworkerIds as string[])].sort(),
+				includeRequestingMember: a.includeRequestingMember !== false,
+			};
+		},
+		async execute(value, context) {
+			assertContext(context);
+			const chat = value as {
+				operationKey: string;
+				name: string;
+				purpose: string;
+				coworkerIds: string[];
+				includeRequestingMember: boolean;
+			};
+			const roomId = agentIdFor(expected.runId, `room:${chat.operationKey}`);
+			const document = JSON.stringify({
+				schema: "qorpera.company-room/v1",
+				roomId,
+				key: `chat-${roomId}`,
+				name: chat.name,
+				purpose: chat.purpose,
+				status: "active",
+				projectId: null,
+				members: [
+					...(chat.includeRequestingMember ? [{ kind: "member", id: expected.requesterUserId }] : []),
+					{ kind: "staff_agent", id: expected.staffAgentId },
+					...chat.coworkerIds.map((id) => ({ kind: "staff_agent", id })),
+				],
+				version: 1,
+			});
+			const result = await gateway.mutate(
+				"write",
+				{
+					path: `organization/rooms/${roomId}.json`,
+					operationKey: `room:${chat.operationKey}`,
+					expectedVersion: null,
+					text: document,
+				},
+				context.signal,
+				context.observation,
+			);
+			const state = await settle(result, document, context.signal);
+			return {
+				kind: "text",
+				value: cloudToolJsonText({
+					schema: "qorpera.group-chat-receipt/v1",
+					runId: expected.runId,
+					roomId,
+					name: chat.name,
+					state,
+					proposalId: result.proposalId,
+					receiptId: result.receiptId,
+					awaiting: state === "proposed" ? "member_approval" : null,
+				}),
+			};
+		},
+	};
+	return [tool, roomTool];
 }

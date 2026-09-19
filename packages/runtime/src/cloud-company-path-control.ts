@@ -58,6 +58,8 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_native_company_file_write",
 			"qorpera_prepare_company_path_approval",
 			"qorpera_apply_company_path_approval",
+			"qorpera_apply_company_path_approval_v3",
+			"qorpera_self_approve_organization_proposal",
 			"qorpera_native_presence_register",
 			"qorpera_company_presence_scope",
 			"qorpera_native_presence_subject",

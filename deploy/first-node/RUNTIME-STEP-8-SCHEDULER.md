@@ -16,7 +16,7 @@ wake policy with valid silence. See [the wake bus record](RUNTIME-STEP-3-WAKE-BU
 
 What was missing for Order 8: an agent could not give itself a routine, nothing
 expired, there was no quiet policy, nothing suspended a routine whose account
-stopped working, a responsibility's cadence was recorded but never acted on,
+stopped working,
 and routines are control-plane rows rather than Company File documents.
 
 ## Built in this change
@@ -36,13 +36,15 @@ The tool offers the three shapes people use (`every`, `weekly` with a Monday to
 Friday default, `file_change`) and compiles them to the scheduler's closed
 trigger forms; the trigger id is host-owned.
 
-**Model account.** An unattended run needs an account whose owner allows
-unattended use. That is an account setting made once, not a per-routine
-approval. The routine pins the account that already runs the agent when it
-qualifies, else the requester's most recent qualifying account. When none
-exists the routine is saved paused (`needs_model_account`) and the member is
-told once per agent. When a member later allows unattended use, every waiting
-routine in the company starts by itself on that account.
+**Model account (founder decision 2026-09-20: unattended use is not a
+setting).** The kernel's consent and sponsor records stay, because runs, leases
+and custody bind to them, but they are granted by default. The web client
+records the owner's consent and binds the consented version whenever an account
+is bound. An agent's routine uses the account that already runs the agent; when
+the requesting member's own account has not recorded consent yet, saving the
+routine records it in that member's name and binds the account. A routine waits
+(`needs_model_account`, one notice) only when the requester has no connected
+account at all.
 
 ### Scheduler rules as code (contract 16.3)
 
@@ -53,33 +55,43 @@ routine in the company starts by itself on that account.
 | Weekday default | A wall-clock routine runs Monday to Friday unless the agent names other days. |
 | Authorization suspension | Three occurrences in a row cancelled because the account can no longer run unattended pause the routine (`authorization_failed`) and create one durable notification for the account owner. A materialized occurrence resets the count. |
 
-### Responsibility cadence (contract 14.3, Order 8 placement)
+### Agents hire coworkers and open group chats, with no member approval (founder decision 2026-09-20)
 
-An active responsibility with a recognised `attentionCadence` (`hourly`,
-`daily`, `weekly`, `every N minutes|hours|days`, at most one week) owns one
-schedule routine that wakes its accountable agent with a review intent and
-optional reporting. The first review is one interval from now. The routine
-follows the responsibility in the same transaction: a new cadence is a new
-version, a new owner is woken instead of the old one, a pause pauses it, a
-retirement retires it, and a free-text cadence schedules nothing. The review
-runs on the accountable member's unattended account, else the company owner's,
-else the recorder's. The agent sees these in its routine list as read-only so
-it does not duplicate them. Existing responsibilities are backfilled.
-
-### Agents propose coworkers (contract 14.1, 14.2)
-
-`hire_agent` writes the canonical fourteen-field agent document through the
-governed path gateway. An agent document is always proposal-gated, so nothing
-exists until an authorized member approves; the existing projection then
-creates the agent, its default read grant and its single first-run wake, and
-enforces that a creating agent cannot delegate authority it lacks. The new
-agent starts with no grants beyond the default.
+`hire_agent` writes the canonical fourteen-field agent document and
+`create_group_chat` writes the canonical room document, both through the
+governed path gateway. These are organization documents, and an organization
+document only becomes an agent or a room in the approval lane, where the
+projection runs. The lane stays and the approval is given by policy:
+`qorpera_self_approve_organization_proposal(p_binding, p_proposal_id)` approves a
+NEW agent or NEW room that this run proposed, in the name of the requesting
+member when that member may approve, else of the company owner, and the runtime
+applies it at once through the projecting entrypoint
+(`qorpera_apply_company_path_approval_v3`). The projection creates the agent with
+its default read grant and single first-run wake, or the room with its members.
+Limits per run: three hires, five rooms. If the cloud declines, the document
+stays an ordinary proposal and the agent says so.
 
 Path authority gained one narrow rule, guarded by a migration-time assertion
-that agent documents are still proposal-gated: any active agent may propose a
-new agent document while holding only the default read grant; only the company
-Co-Founder may propose a change to an existing one; the requesting member's
-own write authority still applies.
+that agent and room documents are still proposal-gated: any active agent holding
+only the default read grant may create a new agent or room document and the
+`organization`, `organization/agents` and `organization/rooms` folders; only the
+company Co-Founder may propose a change to an existing agent or room, and a
+member approves that. The approval lane's source-authority re-check uses the
+same rule. The requesting member's own write authority still applies.
+
+### Responsibilities are the agent's description (founder direction 2026-09-20)
+
+The employee overlay now treats the job description as the agent's list of
+responsibilities and the reference it works from: on a first run it orients
+itself, reads its sources, sets up the routines that keep each responsibility
+alive and says briefly what it set up; with no responsibilities written it asks
+the one question that settles its role. The web client's default description is
+a name-free placeholder (the old one hard-coded the agent's name and went stale
+on rename, and duplicated platform behavior). A responsibility-cadence mechanism
+built from responsibility objects was removed again before merge, because agents
+now create their own routines. The structured responsibility objects, their
+pages, escalation routing and the contract's 14.3 are unchanged here and need
+their own decision.
 
 ## Proofs
 
@@ -91,12 +103,13 @@ Real PostgreSQL (task-local 18.6 on `company41-node-02`; CI runs the pinned
   closed request (no other agent, no sponsor, no trigger id, no one-minute
   loop), control-plane-only execution, pause/resume/remove, finite watch,
   expiry by tick, quiet-hour deferral, suspension with one notice, and the
-  no-unattended-account path.
-- `375_runtime_agent_hiring.test.sql`: a read-only agent proposes a coworker;
-  no staff row and no file before approval; ordinary paths stay closed.
-- `380_runtime_responsibility_cadence.test.sql`: cadence vocabulary, creation,
-  follow-the-responsibility transitions, read-only visibility, automatic start
-  when unattended use is allowed.
+  automatic consent and binding for an account that never recorded it.
+- `375_runtime_agent_hiring.test.sql`: end to end with a read-only agent: the
+  hire is approved by policy and applied; the staff row, exactly one first run
+  and only the default read grant exist; the approval is recorded in the
+  requesting owner's name; an existing agent document, another proposal and
+  ordinary paths stay closed; a fourth hire in one run is refused; a group chat
+  is created with its members.
 - The other 52 SQL test files pass unchanged with these migrations. Six files
   fail identically with and without them on that host (loopback connections
   and time zone data of the task-local server); CI is authoritative.
@@ -110,18 +123,22 @@ file-change watch with quiet reporting; "every weekday morning, only tell me if
 more than 10 wait" became one business-day routine in the member's time zone;
 "check again tomorrow at 09:00" became a one-occurrence watch; a one-off
 question created nothing; with no unattended account the agent said so plainly.
-The Co-Founder proposed an onboarding owner with a real job description and
-said it awaits approval, did not hire for a one-off task, and still argued
+An agent whose description listed two responsibilities in prose read its
+sources, set up three routines covering both, flagged a partner already quiet
+for twelve days and named its chosen times as assumptions; one with no
+responsibilities written asked a single question. The Co-Founder hired an
+onboarding owner with a real job description, opened a named group chat with
+two coworkers and the founder, did not hire for a one-off task, and still argued
 against three sales hires that conflict with direction.
 
 ## Bundle
 
-Runtime bundle v38, `6d3c9d2b7dc1738464b9aeb7b3ba39836962ac3d3f270106e4a1df7cad9bff2f`
+Runtime bundle v38, `6e2eaaabd4f46cbc58e02621eab982da38247c4cd5d88d6dd43bae6ea45c12fb`
 (`20260920003000_runtime_bundle_activation_v38.sql`). Guest artifact pinned from a
 Linux x64 build on `company41-node-02`: `qorpera-native-provider-host.mjs`,
-1,338,913 bytes, `5fd4558d353901238b5a9925dcc9932fc7798c94ee784751c3d03283a4c92ec5`.
+1,348,166 bytes, `22b2141dd5e5df0dadac761a8feabf96a106ad672a28b42e4cd03d9fb1f25193`.
 Seven bundle, guest-package and SQL-harness tests passed there; SQL context
-parity passed after all 286 migrations. `npm run check` passes. If master ships
+parity passed after all 285 migrations. `npm run check` passes. If master ships
 another activation first, allocate the next version and regenerate; never
 relabel a shipped bundle.
 
@@ -142,6 +159,6 @@ relabel a shipped bundle.
    client, and the web client does not show agent-made or responsibility
    routines as such.
 5. **Live acceptance**: clients closed, an agent-made routine firing on the
-   node, a cadence review running silently, a hire approved from the web and
-   its first run. Needs the migrations, bundle v38 and the runner image rolled
+   node, and an agent-made hire with its first run and an agent-made group chat
+   appearing in the web client. Needs the migrations, bundle v38 and the runner image rolled
    out through the existing lane.

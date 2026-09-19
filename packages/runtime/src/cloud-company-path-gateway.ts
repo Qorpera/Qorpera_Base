@@ -72,6 +72,8 @@ export type CloudCompanyPathRpc =
 	| "qorpera_native_company_file_write"
 	| "qorpera_prepare_company_path_approval"
 	| "qorpera_apply_company_path_approval"
+	| "qorpera_apply_company_path_approval_v3"
+	| "qorpera_self_approve_organization_proposal"
 	| "qorpera_native_presence_register"
 	| "qorpera_company_presence_scope"
 	| "qorpera_native_presence_subject"
@@ -612,6 +614,42 @@ export class CloudCompanyPathGateway {
 		return value;
 	}
 
+	/** Founder decision 2026-09-20: a NEW agent or room this run proposed needs no member approval.
+	 * The cloud approves it by policy (20260920001000) and the ordinary approval lane applies and
+	 * projects it. Anything else is refused by the cloud and stays a proposal. */
+	async applyOwnOrganizationDocument(
+		proposalId: string,
+		documentText: string,
+		signal: AbortSignal,
+	): Promise<{ state: "applied"; proposalId: string; snapshotId: string }> {
+		const approved = closed(
+			await cloudToolRequest(
+				(requestSignal) =>
+					this.#control.call(
+						"qorpera_self_approve_organization_proposal",
+						{ p_binding: this.#binding, p_proposal_id: proposalId },
+						requestSignal,
+					),
+				signal,
+			),
+			["proposalId", "planSha256", "state"],
+		);
+		if (
+			approved.proposalId !== proposalId ||
+			typeof approved.planSha256 !== "string" ||
+			!SHA.test(approved.planSha256)
+		)
+			throw new Error("Organization approval receipt differs");
+		return applyApprovedCompanyPath({
+			proposalId,
+			planSha256: approved.planSha256,
+			documentText,
+			control: this.#control,
+			store: this.#store,
+			signal,
+		});
+	}
+
 	async mutate(
 		operation: "write" | "mkdir" | "delete",
 		input: {
@@ -991,6 +1029,8 @@ async function stageCompanyPathCandidate(
 export async function applyApprovedCompanyPath(options: {
 	proposalId: string;
 	planSha256: string;
+	/** Exact UTF-8 text of a projected organization document (agent, room); applied through the projecting entrypoint. */
+	documentText?: string;
 	control: CloudCompanyPathControl;
 	store: CloudContentAddressedStore;
 	signal: AbortSignal;
@@ -1050,8 +1090,15 @@ export async function applyApprovedCompanyPath(options: {
 				await cloudToolRequest(
 					(signal) =>
 						options.control.call(
-							"qorpera_apply_company_path_approval",
-							{ ...args, p_expected_head: head, p_tree_sha256: tree },
+							options.documentText === undefined
+								? "qorpera_apply_company_path_approval"
+								: "qorpera_apply_company_path_approval_v3",
+							{
+								...args,
+								p_expected_head: head,
+								p_tree_sha256: tree,
+								...(options.documentText === undefined ? {} : { p_document_text: options.documentText }),
+							},
 							signal,
 						),
 					options.signal,

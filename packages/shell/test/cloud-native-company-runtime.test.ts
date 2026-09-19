@@ -630,6 +630,7 @@ it.each([
 				"company_mkdir",
 				"company_read",
 				"company_write",
+				"create_group_chat",
 				"escalate_responsibility",
 				"hire_agent",
 				"manage_routine",

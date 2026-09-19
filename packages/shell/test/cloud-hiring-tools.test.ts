@@ -25,16 +25,25 @@ async function fixture() {
 				proposalId: "6f3f4c3e-3c0b-4a4e-9d55-2f0f7f1f8a11",
 			}) as never,
 	);
+	const apply = vi.fn<CloudCompanyPathGateway["applyOwnOrganizationDocument"]>(async (proposalId) => ({
+		state: "applied",
+		proposalId,
+		snapshotId: "6f3f4c3e-3c0b-4a4e-9d55-2f0f7f1f8a12",
+	}));
 	let tick = 0;
 	const boundary = new CloudNativeToolBoundary({
 		companyId: run.identity.companyId,
 		runId: run.identity.runId,
 		identity: run.identity,
-		tools: cloudHiringTools({ mutate }, run.identity, () => new Date(Date.UTC(2026, 8, 19, 20, 0, tick++))),
+		tools: cloudHiringTools(
+			{ mutate, applyOwnOrganizationDocument: apply },
+			run.identity,
+			() => new Date(Date.UTC(2026, 8, 19, 20, 0, tick++)),
+		),
 		assertActive: (signal) => run.assertActive(signal),
 		signal: run.signal,
 	});
-	return { run, mutate, boundary };
+	return { run, mutate, apply, boundary };
 }
 const hire = {
 	operationKey: "sales-dev-1",
@@ -46,8 +55,15 @@ const hire = {
 	figure: "flame",
 };
 
+const chat = {
+	operationKey: "onboarding-sync",
+	name: "Onboarding sync",
+	purpose: "Coordinate salon onboarding between support and billing.",
+	coworkerIds: ["6f3f4c3e-3c0b-4a4e-9d55-2f0f7f1f8b01", "6f3f4c3e-3c0b-4a4e-9d55-2f0f7f1f8a99"],
+};
+
 describe("agent hiring tool", () => {
-	it("writes one canonical agent document as a governed proposal and reports that it awaits approval", async () => {
+	it("writes one canonical agent document, approves it by policy and reports the hire as applied", async () => {
 		const f = await fixture();
 		try {
 			const result = await f.boundary.invoke("hire_1", "qorpera", "hire_agent", hire);
@@ -72,7 +88,8 @@ describe("agent hiring tool", () => {
 				lifecycleState: "setup",
 			});
 			const receipt = JSON.parse(JSON.parse(result.contentItems[0].text).content.text);
-			expect(receipt).toMatchObject({ state: "proposed", awaiting: "member_approval", agentId: document.agentId });
+			expect(f.apply.mock.calls[0].slice(0, 2)).toEqual(["6f3f4c3e-3c0b-4a4e-9d55-2f0f7f1f8a11", input.text]);
+			expect(receipt).toMatchObject({ state: "applied", awaiting: null, agentId: document.agentId });
 		} finally {
 			f.run.close();
 		}
@@ -101,6 +118,75 @@ describe("agent hiring tool", () => {
 		const f = await fixture();
 		try {
 			expect((await f.boundary.invoke("bad", "qorpera", "hire_agent", { ...hire, ...extra })).success).toBe(false);
+			expect(f.mutate).not.toHaveBeenCalled();
+		} finally {
+			f.run.close();
+		}
+	});
+	it("falls back to a waiting proposal when the cloud declines policy approval, and surfaces a limit", async () => {
+		const f = await fixture();
+		try {
+			f.apply.mockRejectedValueOnce(new Error("Organization approval authority is unavailable"));
+			const waiting = await f.boundary.invoke("hire_w", "qorpera", "hire_agent", hire);
+			expect(JSON.parse(JSON.parse(waiting.contentItems[0].text).content.text)).toMatchObject({
+				state: "proposed",
+				awaiting: "member_approval",
+			});
+			f.apply.mockRejectedValueOnce(new Error("This run reached its limit for new agents"));
+			const limited = await f.boundary.invoke("hire_l", "qorpera", "hire_agent", { ...hire, operationKey: "x2" });
+			expect(limited.success).toBe(false);
+		} finally {
+			f.run.close();
+		}
+	});
+	it("opens a group chat with itself, the chosen coworkers and the requesting member", async () => {
+		const f = await fixture();
+		try {
+			const result = await f.boundary.invoke("chat_1", "qorpera", "create_group_chat", chat);
+			expect(result.success, JSON.stringify(result)).toBe(true);
+			const [, input] = f.mutate.mock.calls[0];
+			expect(input.path).toMatch(/^organization\/rooms\/[0-9a-f-]{36}\.json$/);
+			const document = JSON.parse(input.text as string);
+			expect(document).toMatchObject({
+				schema: "qorpera.company-room/v1",
+				roomId: input.path.slice(19, 55),
+				name: "Onboarding sync",
+				status: "active",
+				projectId: null,
+				version: 1,
+			});
+			expect(document.members).toEqual([
+				{ kind: "member", id: f.run.identity.requesterUserId },
+				{ kind: "staff_agent", id: f.run.identity.staffAgentId },
+				...[...chat.coworkerIds].sort().map((id) => ({ kind: "staff_agent", id })),
+			]);
+			expect(f.apply).toHaveBeenCalledTimes(1);
+			const solo = await f.boundary.invoke("chat_2", "qorpera", "create_group_chat", {
+				...chat,
+				operationKey: "agents-only",
+				includeRequestingMember: false,
+			});
+			expect(solo.success).toBe(true);
+			expect(JSON.parse(f.mutate.mock.calls[1][1].text as string).members[0]).toEqual({
+				kind: "staff_agent",
+				id: f.run.identity.staffAgentId,
+			});
+		} finally {
+			f.run.close();
+		}
+	});
+	it.each([
+		["itself as a coworker", (id: string) => ({ coworkerIds: [id] })],
+		["no coworkers", () => ({ coworkerIds: [] })],
+		["a member list", () => ({ members: [] })],
+	])("rejects a group chat with %s", async (_label, extra) => {
+		const f = await fixture();
+		try {
+			const response = await f.boundary.invoke("bad", "qorpera", "create_group_chat", {
+				...chat,
+				...extra(f.run.identity.staffAgentId),
+			});
+			expect(response.success).toBe(false);
 			expect(f.mutate).not.toHaveBeenCalled();
 		} finally {
 			f.run.close();

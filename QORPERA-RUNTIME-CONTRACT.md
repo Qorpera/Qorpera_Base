@@ -1705,29 +1705,37 @@ greeting appears there.
 - **Limits.** The founder stop holds the queued first run until resume. A first
   run is a member-caused turn and does not count against the wake-rate ceiling.
 
-### 2026-09-19 amendment: agents set up their own standing work and propose coworkers
+### 2026-09-19/20 amendment: agents set themselves up, hire and convene without approval
 
-Founder decisions, 2026-09-19.
+Founder decisions, 2026-09-19 and 2026-09-20.
 
 1. **An agent's routine needs no member approval.** Part of what makes an
    agent useful is that it sets itself up to meet its responsibilities. An
    agent creates, changes, pauses and removes its own routines through its run
    authority. The routine wakes that same agent; the model chooses what, when
    and for how long, never another agent, a requester, a model account or a
-   computer. What an unattended run does need is a model account whose owner
-   allows unattended use. That is an account setting made once. A routine
-   without one waits, the member is told once, and it starts by itself when
-   unattended use is allowed.
-2. **The gate is authority, never the client.** A capability a signed-in member
+   computer.
+2. **Unattended use of a connected model account is not a setting.** The
+   consent and sponsor records of section 11.5 and Order 3 stay, because runs,
+   leases and custody bind to them, but they are granted by default when an
+   account is bound and when standing work needs them. A member who does not
+   want an account used disconnects it.
+3. **Hiring a coworker and opening a group chat need no member approval.** Any
+   active agent may create a new agent (14.1) or a new room (14.7). The
+   governed write, its receipt, the projection and the rule that a creator
+   cannot delegate authority it lacks are unchanged; the approval of a NEW
+   agent or room is given by policy in the name of the requesting member, or of
+   the company owner, and is bounded per run. A change to an existing agent or
+   room stays proposed by the Co-Founder (14.2) and approved by a member.
+4. **The gate is authority, never the client.** A capability a signed-in member
    has through one client is a cloud operation. Whether an agent may perform it
    is decided by the authority chain of its run, not by which surface first
    exposed it.
-3. **A responsibility keeps its own cadence.** An active responsibility with a
-   recognised attention cadence owns one schedule routine for its accountable
-   agent, and that routine follows the responsibility.
-4. **Any active agent may propose a coworker** (14.1); only the Co-Founder may
-   propose a change to an existing agent (14.2). An agent document stays
-   proposal-gated, so a hire exists only after an authorized member approves.
+5. **An agent's description is its responsibilities.** The job description is
+   written as the agent's responsibilities in plain prose and is the reference
+   the agent orients itself by, on its first run and afterwards, creating the
+   routines that keep each responsibility alive. How this replaces the
+   structured responsibility objects of 14.3 is an open amendment.
 
 [Step 8 record](deploy/first-node/RUNTIME-STEP-8-SCHEDULER.md) states what is
 built and what keeps Order 8 open.
