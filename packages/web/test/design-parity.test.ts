@@ -674,7 +674,7 @@ describe("received content presentation", () => {
 	});
 });
 
-it("renders recorded responsibility targets and room links without inventing missing relationships", () => {
+it("shows agents and projects with room links, and no responsibility pages even when responsibilities are recorded", () => {
 	const f = companyFixture();
 	const organization: HostedCompanyOrganization = {
 		schema: "qorpera.company-organization/v1",
@@ -746,15 +746,13 @@ it("renders recorded responsibility targets and room links without inventing mis
 	expect(rail.textContent).toContain("No matching conversations.");
 	const root = h("div");
 	renderOrganization(f.company, root);
-	const card = root.querySelector(".responsibility-node")!;
-	expect(card.textContent).toBe("Product quality");
-	expect(card.querySelector(".figure, p, .badge")).toBeNull();
-	expect(card.getAttribute("href")).toBe(`#/c/${profileA.profileId}/responsibility/${id(31)}`);
-	renderOrganization(f.company, root, { kind: "responsibility", id: id(31) });
-	expect(root.textContent).toContain("Under 5");
-	expect(root.textContent).toContain("quality/report.md");
+	// What an agent is responsible for is its own description; recorded responsibility objects have no page.
+	expect(root.textContent).not.toContain("Product quality");
+	expect(root.querySelector('a[href*="/responsibility/"], .responsibility-node')).toBeNull();
 	expect(root.querySelector(`a[href$="/project/${id(33)}"]`)).not.toBeNull();
+	expect(root.querySelector(`a[href$="/staff/${staff.id}"]`)).not.toBeNull();
 	renderOrganization(f.company, root, { kind: "project", id: id(33) });
+	expect(root.textContent).not.toContain("Sponsoring responsibility");
 	expect(root.querySelector('a[href*="/chat/"]')).toBeNull();
 	f.company.store.set({
 		sessions: [{ ...session, executionScope: { kind: "project", projectId: id(33), roomId: id(34) } }],

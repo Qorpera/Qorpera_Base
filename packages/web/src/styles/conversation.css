@@ -238,7 +238,6 @@
 .agent-notifications small { color: var(--text-muted); font-size: 11px; font-weight: 400; }
 .agent-notifications input[role=switch] { appearance: none; position: relative; width: 32px; min-height: 20px; height: 20px; border: 0; border-radius: 12px; background: #e3e3e0; padding: 0; flex: none; }
 .agent-notifications input[role=switch]::before { content: ""; position: absolute; left: 2px; top: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgb(0 0 0 / 12%); }
-.responsibility-preview { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); gap: 10px; }
 .appearance-picker .figure-grid { margin: 4px auto 0; }
 .appearance-picker .color-grid { margin-top: 16px; }
 .file-preview-dialog { width: 760px; margin: auto; }

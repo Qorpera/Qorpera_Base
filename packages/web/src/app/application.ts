@@ -878,7 +878,6 @@ export function mountApplication(
 				);
 				return;
 			case "organization":
-			case "responsibility":
 			case "project":
 				renderOrganization(
 					controller,
