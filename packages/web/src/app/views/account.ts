@@ -9,7 +9,9 @@ import type { HostedAccountEntitlement } from "../../cloud/types.ts";
 import { button, fmtBytes, h, notice, replace } from "../../ui/dom.ts";
 import { preserveFormDrafts } from "../../ui/forms.ts";
 import {
+	composerColorPreference,
 	languagePreference,
+	setComposerColorPreference,
 	setLanguagePreference,
 	setThemePreference,
 	themePreference,
@@ -81,6 +83,24 @@ export function renderAccount(
 			setState({ error: "Your browser could not save the theme preference." });
 		}
 	};
+	const composerColor = h(
+		"select",
+		{ "aria-label": "Composer color" },
+		...(["blue", "green", "grey"] as const).map((value) => {
+			const option = h("option", { value });
+			const label = uiText(value.charAt(0).toUpperCase() + value.slice(1));
+			option.dataset.uiText = label.dataset.uiText;
+			option.textContent = label.textContent;
+			return option;
+		}),
+	);
+	composerColor.value = composerColorPreference();
+	composerColor.onchange = () => {
+		if (!setComposerColorPreference(composerColor.value)) {
+			composerColor.value = composerColorPreference();
+			setState({ error: "Your browser could not save the composer color preference." });
+		}
+	};
 	const entitlement = state.entitlement;
 	const planName = entitlement
 		? ({ internal: "Complimentary", freemium: "Freemium", pro: "Pro", team: "Team" }[entitlement.planKey] ??
@@ -149,6 +169,17 @@ export function renderAccount(
 						h("small", null, uiText("System default follows your device’s appearance.")),
 					),
 					theme,
+				),
+				h(
+					"label",
+					{ class: "settings-preference-row" },
+					h(
+						"span",
+						{ class: "settings-copy" },
+						uiText("Composer color"),
+						h("small", null, uiText("Send button and your message bubbles.")),
+					),
+					composerColor,
 				),
 			),
 			h(
