@@ -462,7 +462,29 @@ export function createWebNativeSubscription(
 		},
 		listSessionTurnProvenance: (sessionId, signal) => client(signal, sessionId).listSessionTurnProvenance(sessionId),
 		requestSessionTurn: (input, signal) => client(signal, input.sessionId).requestSessionTurn(input),
-		createMemberSponsor: (input, signal) => client(signal).createMemberSponsor({ ...input, profileId }),
+		// Unattended use is the default (founder decision 2026-09-20), not a setting: binding an account
+		// records its owner's consent first and binds the consented version, so routines, coworker wakes
+		// and first runs can use the account while nobody is online.
+		createMemberSponsor: async (input, signal) => {
+			signal?.throwIfAborted();
+			const consent = (await cloud.rpc("qorpera_consent_provider_connection_autonomous", {
+				p_profile_id: profileId,
+				p_connection_id: input.providerConnectionId,
+				p_allow_autonomous: true,
+			})) as { connection_id?: unknown; version?: unknown; allow_autonomous?: unknown } | null;
+			if (
+				consent?.connection_id !== input.providerConnectionId ||
+				consent.allow_autonomous !== true ||
+				!Number.isSafeInteger(consent.version)
+			)
+				throw new Error("Invalid cloud response");
+			return client(signal).createMemberSponsor({
+				...input,
+				providerConnectionVersion: consent.version as number,
+				allowAutonomous: true,
+				profileId,
+			});
+		},
 		revokeConnection: (input, signal) => client(signal).revokeConnection({ ...input, profileId }),
 	};
 }

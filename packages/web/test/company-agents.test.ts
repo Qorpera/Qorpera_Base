@@ -57,8 +57,10 @@ describe("web company agents", () => {
 			employmentStatus: "active",
 			lifecycleState: "setup",
 		});
-		expect(document.hireOverlay.charter).toContain("You are Ledger");
-		expect(document.startupInstructions).toContain("Ledger");
+		// The description is the agent's responsibilities: a placeholder, never the name (a rename would leave it stale).
+		expect(document.hireOverlay.charter).toContain("No responsibilities have been written");
+		expect(document.hireOverlay.charter).not.toContain("Ledger");
+		expect(document.startupInstructions).not.toContain("Ledger");
 		expect(f.editor.review).toHaveBeenCalledTimes(1);
 	});
 	it("saves edits as the next revision and keeps startup instructions, grants and the creation text", async () => {
