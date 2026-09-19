@@ -6,6 +6,7 @@ import { AttachmentTray } from "../../ui/attachments.ts";
 import { authorizationRequestId, renderAuthorizationCard } from "../../ui/authorization-card.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { button, fmtTime, h, icon, notice, replace, spinner } from "../../ui/dom.ts";
+import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
@@ -283,7 +284,7 @@ export class ConversationView {
 	 * is a room too, but it behaves like the agent's own conversation here. */
 	get #isRoom(): boolean {
 		const session = this.#company.store.get().sessions.find((s) => s.sessionId === this.#sessionId);
-		return typeof session?.executionScope?.roomId === "string" && !session.staffAgentId;
+		return isGroupChat(session);
 	}
 
 	focus(): void {
@@ -425,13 +426,13 @@ export class ConversationView {
 		);
 		const attachmentIssue =
 			room && conversation.attachments?.length
-				? "Images are not supported in team rooms. Use Company File."
+				? "Images are not supported in group chats. Use Company File."
 				: sessionAttachmentIssue(conversation.attachments ?? []);
 		this.#attachments.sync(
 			conversation.attachments ?? [],
 			!canWrite || conversation.sending,
 			room
-				? "Images are not supported in team rooms. Use Company File."
+				? "Images are not supported in group chats. Use Company File."
 				: this.#actions.sendMessage
 					? attachmentIssue
 						? `Attachments stay on this device. ${attachmentIssue}`
@@ -474,10 +475,19 @@ export class ConversationView {
 
 	#renderHeader(session: HostedSession | undefined, agent: HostedStaffAgent | undefined): void {
 		const title = agent?.displayName ?? session?.title ?? "Conversation";
-		const key = JSON.stringify([title, agent?.id, agent?.appearance]);
+		const group = isGroupChat(session);
+		const key = JSON.stringify([title, group, agent?.id, agent?.appearance]);
 		this.#identity.disabled = !agent;
 		this.#computer.hidden = !agent;
 		this.#identity.title = title;
+		this.#identity.setAttribute("aria-label", agent ? "Open agent details" : group ? `${title} · Group chat` : title);
+		if (agent) {
+			this.#identity.setAttribute("aria-haspopup", "dialog");
+			this.#identity.setAttribute("aria-expanded", String(Boolean(this.#details)));
+		} else {
+			this.#identity.removeAttribute("aria-haspopup");
+			this.#identity.removeAttribute("aria-expanded");
+		}
 		if (key === this.#headerKey) return;
 		this.#headerKey = key;
 		if (this.#panel) {
@@ -491,7 +501,12 @@ export class ConversationView {
 			this.#computer.setAttribute("aria-expanded", String(Boolean(this.#panel)));
 			this.#syncPanelLayout();
 		}
-		replace(this.#identity, agentFigure(agent, title, { size: 32 }), h("h1", null, title), icon("chevron"));
+		replace(
+			this.#identity,
+			group ? groupChatAvatar() : agentFigure(agent, title, { size: 32 }),
+			h("h1", null, title),
+			agent ? icon("chevron") : null,
+		);
 	}
 
 	#renderMessages(conversation: ConversationState, agentName: string): void {
@@ -659,7 +674,7 @@ export class ConversationView {
 			children.push(
 				notice(
 					"neutral",
-					"Multiple agents can respond in this room. Follow their replies here. Images are not supported in team rooms. Use Company File." +
+					"Multiple agents can respond in this group chat. Follow their replies here. Images are not supported in group chats. Use Company File." +
 						(["owner", "admin"].includes(company.team?.role ?? "")
 							? " Company-wide execution pause is available in Settings → Company."
 							: ""),
