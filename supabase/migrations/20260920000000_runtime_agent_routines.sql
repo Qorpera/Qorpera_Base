@@ -80,7 +80,7 @@ revoke all on function public.qorpera_agent_routine_sponsor(public.qorpera_execu
 
 create function public.qorpera_agent_routine_view(p_routine public.qorpera_cloud_routines)
 returns jsonb language sql stable security definer set search_path = '' as $$
-	select jsonb_build_object('routineKey', p_routine.routine_key, 'routineId', p_routine.id,
+	select jsonb_build_object('routineKey', p_routine.routine_key, 'routineId', p_routine.id, 'origin', p_routine.origin,
 		'version', p_routine.current_version, 'status', p_routine.status, 'pauseReason', p_routine.pause_reason,
 		'title', version.title, 'intent', version.prompt, 'trigger', version.triggers -> 0,
 		'expiresAt', p_routine.expires_at, 'maxOccurrences', p_routine.max_occurrences,
@@ -125,7 +125,8 @@ begin
 			select jsonb_agg(public.qorpera_agent_routine_view(routine) order by routine.routine_key)
 			from public.qorpera_cloud_routines routine
 			where routine.profile_id = v_run.profile_id and routine.environment_id = v_run.environment_id
-				and routine.origin = 'agent' and routine.owner_staff_agent_id = v_run.staff_agent_id
+				-- A responsibility's cadence is shown so the agent does not duplicate it; only its own are editable.
+				and routine.origin in ('agent','responsibility') and routine.owner_staff_agent_id = v_run.staff_agent_id
 				and routine.status <> 'retired'), '[]'::jsonb));
 	end if;
 

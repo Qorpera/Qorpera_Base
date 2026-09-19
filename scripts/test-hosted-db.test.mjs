@@ -38,6 +38,10 @@ test("a test can run after another test's fixture section", () => {
 	const read = (name) => files[name];
 	assert.equal(expandTestFixture("300_base.test.sql", read), files["300_base.test.sql"]);
 	assert.equal(expandTestFixture("370_next.test.sql", read), "begin;\nselect 1;\nselect 3;\nrollback;\n");
+	files["fixtures/more.sql"] = "select 10;\n-- END MORE\nselect 11;\n";
+	files["395_two.test.sql"] =
+		'-- @fixture 300_base.test.sql until "-- END FIXTURE"\n-- @fixture fixtures/more.sql until "-- END MORE"\nselect 4;\n';
+	assert.equal(expandTestFixture("395_two.test.sql", read), "begin;\nselect 1;\nselect 10;\nselect 4;\n");
 	assert.throws(() => expandTestFixture("380_self.test.sql", read), /fixture is unavailable/);
 	assert.throws(() => expandTestFixture("390_missing.test.sql", read), /fixture is unavailable/);
 });
