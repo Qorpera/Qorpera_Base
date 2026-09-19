@@ -209,7 +209,11 @@
 .agent-inline-field { display: flex; flex-direction: row; align-items: center; gap: 6px; width: fit-content; max-width: calc(100% + 16px); min-width: 0; margin: 0 -8px; padding: 2px 8px; border-radius: 7px; font-weight: inherit; cursor: default; transition: background 120ms ease, box-shadow 120ms ease; }
 .agent-inline-field.is-editable { cursor: text; }
 .agent-inline-field.is-editable:hover { background: #f2f2ef; }
-.agent-inline-field.is-editable:focus-within { width: calc(100% + 16px); background: #fff; box-shadow: inset 0 0 0 1px #80b8f7, 0 0 0 3px rgb(0 122 255 / 10%); }
+.agent-inline-field:focus-within { outline: 1px solid var(--text-soft); outline-offset: -1px; }
+.agent-inline-field.is-editable:focus-within { width: calc(100% + 16px); background: #fff; }
+@media (forced-colors: active) {
+	.agent-inline-field:focus-within { outline: 2px solid Highlight; outline-offset: 2px; }
+}
 .agent-inline-field > .icon { width: 15px; height: 15px; color: #8a8a86; opacity: 0; transition: opacity 120ms ease; }
 .agent-inline-field.is-editable:hover > .icon { opacity: 1; }
 .agent-inline-field:focus-within > .icon { display: none; }
@@ -217,6 +221,7 @@
 .agent-inline-field:focus-within > .agent-inline-size { flex: 1; }
 .agent-inline-size::after { content: attr(data-value) " "; grid-area: 1 / 1; visibility: hidden; overflow: hidden; white-space: pre; font: inherit; letter-spacing: inherit; }
 .agent-inline-size > input, .agent-inline-size > textarea { grid-area: 1 / 1; width: 100%; min-width: 0; min-height: 0; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; color: inherit; font: inherit; letter-spacing: inherit; outline: none; }
+.agent-inline-size > :is(input, textarea):focus-visible { outline: none; }
 .agent-inline-size > input { text-overflow: ellipsis; }
 .agent-inline-field:not(.is-editable) .agent-inline-size > * { cursor: default; }
 .agent-inline-name { padding-block: 3px; font-family: var(--font-display); font-size: 25px; font-weight: 650; line-height: 1.25; letter-spacing: -.025em; }

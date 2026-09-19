@@ -116,7 +116,7 @@
 .connection-sign-in small { color: #73736f; }
 .connection-accounts { grid-column: 2 / -1; display: grid; gap: 10px; }
 .connection-account { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding-top: 10px; border-top: 1px solid #dededb; }
-.settings-dialog :focus-visible { outline: 2px solid #5b84c4; outline-offset: 2px; }
+.settings-dialog :focus-visible:not(:where(input, textarea)) { outline: 2px solid #5b84c4; outline-offset: 2px; }
 .settings-dialog [hidden] { display: none; }
 @media (hover: none) { .company-person .person-actions { opacity: 1; } }
 @media (max-width: 720px) {
