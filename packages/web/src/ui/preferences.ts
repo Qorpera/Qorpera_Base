@@ -1,8 +1,10 @@
 /** Browser presentation preferences contain no account or company state. */
 export type LanguagePreference = "system" | "en" | "da";
 export type ThemePreference = "system" | "light" | "dark";
+export type ComposerColorPreference = "blue" | "green" | "grey";
 const LANGUAGE_KEY = "qorpera.web.language";
 const THEME_KEY = "qorpera.web.theme";
+const COMPOSER_COLOR_KEY = "qorpera.web.composer-color";
 const SYSTEM_DARK = "(prefers-color-scheme: dark)";
 const DANISH: Record<string, string> = {
 	General: "Generelt",
@@ -14,6 +16,12 @@ const DANISH: Record<string, string> = {
 	"Current plan": "Nuværende abonnement",
 	Appearance: "Udseende",
 	Theme: "Tema",
+	"Composer color": "Skrivefeltets farve",
+	"Send button, your message bubbles, and selected agent cards.":
+		"Send-knappen, dine beskedbobler og valgte agentkort.",
+	Blue: "Blå",
+	Green: "Grøn",
+	Grey: "Grå",
 	Light: "Lys",
 	Dark: "Mørk",
 	"System default follows your device’s appearance.": "Systemstandarden følger din enheds udseende.",
@@ -89,6 +97,30 @@ export function setLanguagePreference(value: string): boolean {
 	return true;
 }
 
+export function composerColorPreference(): ComposerColorPreference {
+	try {
+		const value = localStorage.getItem(COMPOSER_COLOR_KEY);
+		return value === "green" || value === "grey" ? value : "blue";
+	} catch {
+		return "blue";
+	}
+}
+
+export function applyComposerColor(): void {
+	document.documentElement.dataset.composerColor = composerColorPreference();
+}
+
+export function setComposerColorPreference(value: string): boolean {
+	if (value !== "blue" && value !== "green" && value !== "grey") return false;
+	try {
+		localStorage.setItem(COMPOSER_COLOR_KEY, value);
+	} catch {
+		return false;
+	}
+	applyComposerColor();
+	return true;
+}
+
 export function themePreference(): ThemePreference {
 	try {
 		const value = localStorage.getItem(THEME_KEY);
@@ -130,8 +162,10 @@ export function watchTheme(): () => void {
 	const system = window.matchMedia(SYSTEM_DARK);
 	const onStorage = (event: StorageEvent) => {
 		if (event.key === THEME_KEY || event.key === null) applyTheme();
+		if (event.key === COMPOSER_COLOR_KEY || event.key === null) applyComposerColor();
 	};
 	applyTheme();
+	applyComposerColor();
 	system.addEventListener("change", applyTheme);
 	window.addEventListener("storage", onStorage);
 	return () => {

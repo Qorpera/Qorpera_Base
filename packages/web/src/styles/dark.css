@@ -110,14 +110,14 @@
 
 /* ---- conversation ------------------------------------------------------------ */
 :root[data-theme="dark"] .bubble { background: #3a3a3c; color: var(--text); }
-:root[data-theme="dark"] .mine .bubble { background: #0a84ff; color: #fff; box-shadow: none; }
+:root[data-theme="dark"] .mine .bubble { background: var(--composer-accent); color: var(--composer-on-accent); box-shadow: none; }
 :root[data-theme="dark"] .message-progress .bubble { color: #d6d5d1; }
 :root[data-theme="dark"] .message.typing { background: #3a3a3c; }
 :root[data-theme="dark"] .message.typing span { background: #a3a29e; }
 :root[data-theme="dark"] .composer-shell { background: #242423; }
-:root[data-theme="dark"] .composer-shell.is-dragging { border-color: #3f7fd6; box-shadow: 0 0 0 2px rgb(10 132 255 / 22%); }
+:root[data-theme="dark"] .composer-shell.is-dragging { border-color: var(--composer-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--composer-accent) 22%, transparent); }
 :root[data-theme="dark"] .composer-send:disabled { background: #353534; color: #71706c; }
-:root[data-theme="dark"] .composer-send:not(:disabled):hover { background: var(--primary-hover); }
+:root[data-theme="dark"] .composer-send:not(:disabled):hover { background: var(--composer-accent-hover); }
 :root[data-theme="dark"] .composer-menu { box-shadow: 0 12px 30px rgb(0 0 0 / 45%); }
 :root[data-theme="dark"] .attachment-chip { background: #2c2c2b; }
 :root[data-theme="dark"] .attachment-remove { background: #3a3a38; box-shadow: 0 1px 4px rgb(0 0 0 / 40%); }
