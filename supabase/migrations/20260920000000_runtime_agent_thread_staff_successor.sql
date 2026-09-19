@@ -48,7 +48,7 @@ do $guard$ begin
 	end if;
 end $guard$;
 
-CREATE OR REPLACE FUNCTION public.qorpera_wake_authorized(p_wake qorpera_wake_occurrences)
+CREATE OR REPLACE FUNCTION public.qorpera_wake_authorized(p_wake public.qorpera_wake_occurrences)
  RETURNS boolean
  LANGUAGE plpgsql
  SECURITY DEFINER
