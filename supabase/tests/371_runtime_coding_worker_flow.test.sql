@@ -269,6 +269,7 @@ declare b jsonb:=current_setting('qorpera_test.path_binding')::jsonb;
 	 event_id uuid; latest_event_id uuid; delivery jsonb; result jsonb; sent jsonb; first_page jsonb; second_page jsonb;
 	 wake public.qorpera_wake_occurrences%rowtype;
 	 worker_id uuid; request_id uuid; token uuid; vm uuid:='37100000-0000-4000-8000-000000000001'; v_version bigint;
+	 conflict_message text; conflict_detail text;
 begin
 	set local role service_role;
 	perform public.qorpera_send_native_agent_message((b ->> 'leaseId')::uuid,(b ->> 'runId')::uuid,
@@ -319,6 +320,22 @@ begin
 	v_version:=(w ->> 'version')::bigint;
 	w:=public.qorpera_record_coding_progress(request_id,token,v_version,'running',vm);
 	if public.qorpera_record_coding_progress(request_id,token,v_version,'running',vm)<>w then raise exception 'Progress retry changed'; end if;
+	begin perform public.qorpera_record_coding_progress(request_id,token,1,'running',vm);
+		raise exception 'Stale progress version accepted';
+	exception when sqlstate 'PGRST' then
+		get stacked diagnostics conflict_message=message_text,conflict_detail=pg_exception_detail;
+		if conflict_message::jsonb is distinct from '{"code":"QRC01","message":"Coding version changed","details":null,"hint":null}'::jsonb
+			or conflict_detail::jsonb is distinct from '{"status":409,"headers":{}}'::jsonb then
+			raise exception 'Progress version fence lost structured conflict'; end if;
+	end;
+	begin perform public.qorpera_complete_coding_request(request_id,token,1,'completed','{"summary":"No change needed","noChange":true}');
+		raise exception 'Stale completion version accepted';
+	exception when sqlstate 'PGRST' then
+		get stacked diagnostics conflict_message=message_text,conflict_detail=pg_exception_detail;
+		if conflict_message::jsonb is distinct from '{"code":"QRC01","message":"Coding version changed","details":null,"hint":null}'::jsonb
+			or conflict_detail::jsonb is distinct from '{"status":409,"headers":{}}'::jsonb then
+			raise exception 'Completion version fence lost structured conflict'; end if;
+	end;
 	begin perform public.qorpera_complete_coding_request(request_id,token,(w ->> 'version')::bigint,'completed','{"summary":"Done"}');
 		raise exception 'Completion claimed unverified publication'; exception when invalid_parameter_value then null; end;
 	v_version:=(w ->> 'version')::bigint;
@@ -338,7 +355,13 @@ begin
 		raise exception 'Coding completion woke a still-running parent'; end if;
 	followup:=jsonb_build_object('operationKey','coding-followup','workerId',worker_id,'expectedVersion',(w ->> 'version')::bigint,'goal','Follow up on the same branch');
 	begin perform public.qorpera_followup_coding_worker(b,followup||'{"expectedVersion":1}');
-		raise exception 'Stale worker version accepted'; exception when serialization_failure then null; end;
+		raise exception 'Stale worker version accepted';
+	exception when sqlstate 'PGRST' then
+		get stacked diagnostics conflict_message=message_text,conflict_detail=pg_exception_detail;
+		if conflict_message::jsonb is distinct from '{"code":"QRC01","message":"Coding version changed","details":null,"hint":null}'::jsonb
+			or conflict_detail::jsonb is distinct from '{"status":409,"headers":{}}'::jsonb then
+			raise exception 'Followup version fence lost structured conflict'; end if;
+	end;
 	w:=public.qorpera_followup_coding_worker(b,followup);
 	if w ->> 'id'<>original ->> 'id' or w ->> 'branch'<>original ->> 'branch' or w ->> 'vmId'<>vm::text or w ->> 'turn'<>'2' then
 		raise exception 'Followup replaced worker, VM or branch'; end if;
@@ -348,6 +371,14 @@ begin
 	begin perform public.qorpera_heartbeat_coding_request(request_id,token);
 		raise exception 'Revoked repository authority renewed'; exception when insufficient_privilege then null; end;
 	-- Cleanup remains authorized by parent ownership after repository revocation.
+	begin perform public.qorpera_cancel_coding_worker(b,worker_id,1,'coding-cancel-stale');
+		raise exception 'Stale cancellation version accepted';
+	exception when sqlstate 'PGRST' then
+		get stacked diagnostics conflict_message=message_text,conflict_detail=pg_exception_detail;
+		if conflict_message::jsonb is distinct from '{"code":"QRC01","message":"Coding version changed","details":null,"hint":null}'::jsonb
+			or conflict_detail::jsonb is distinct from '{"status":409,"headers":{}}'::jsonb then
+			raise exception 'Cancellation version fence lost structured conflict'; end if;
+	end;
 	w:=public.qorpera_cancel_coding_worker(b,worker_id,(w ->> 'version')::bigint,'coding-cancel');
 	begin perform public.qorpera_record_coding_progress(request_id,token,(w ->> 'version')::bigint,'running',vm);
 		raise exception 'Cancelled claim retained authority'; exception when insufficient_privilege then null; end;

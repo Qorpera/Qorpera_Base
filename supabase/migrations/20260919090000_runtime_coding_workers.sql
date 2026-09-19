@@ -288,7 +288,7 @@ begin
 		if q.kind<>'followup' or q.input<>p_followup then raise exception 'Coding operation replay differs' using errcode='23505'; end if;
 		return q.response;
 	end if;
-	if w.version<>(p_followup ->> 'expectedVersion')::bigint then raise exception 'Coding version changed' using errcode='40001'; end if;
+	if w.version<>(p_followup ->> 'expectedVersion')::bigint then raise sqlstate 'PGRST' using message=jsonb_build_object('code','QRC01','message','Coding version changed','details',null,'hint',null)::text, detail='{"status":409,"headers":{}}'; end if;
 	if w.state not in ('waiting','completed','failed') or w.vm_id is null then
 		raise exception 'Coding worker cannot accept followup' using errcode='55000'; end if;
 	v_hash:=encode(extensions.digest(p_followup::text,'sha256'),'hex');
@@ -315,7 +315,7 @@ begin
 		if q.kind<>'cancel' or q.input<>v_input then raise exception 'Coding operation replay differs' using errcode='23505'; end if;
 		return q.response;
 	end if;
-	if w.version<>p_expected_version then raise exception 'Coding version changed' using errcode='40001'; end if;
+	if w.version<>p_expected_version then raise sqlstate 'PGRST' using message=jsonb_build_object('code','QRC01','message','Coding version changed','details',null,'hint',null)::text, detail='{"status":409,"headers":{}}'; end if;
 	if w.state='cancelled' then raise exception 'Coding worker already cancelled' using errcode='55000'; end if;
 	v_hash:=encode(extensions.digest(v_input::text,'sha256'),'hex');
 	perform public.qorpera_begin_native_tool_operation(p_binding,v_receipt,'coding:'||p_operation_key,v_hash,v_hash,false);
@@ -422,7 +422,7 @@ begin
 	if w.version=p_expected_version+1 and w.state=p_state and (p_vm_id is null or w.vm_id=p_vm_id)
 		and p_result is null and p_pull_request is null and q.kind<>'cancel' then
 		return public.qorpera_coding_worker_json(w); end if;
-	if p_expected_version is distinct from w.version then raise exception 'Coding version changed' using errcode='40001'; end if;
+	if p_expected_version is distinct from w.version then raise sqlstate 'PGRST' using message=jsonb_build_object('code','QRC01','message','Coding version changed','details',null,'hint',null)::text, detail='{"status":409,"headers":{}}'; end if;
 	if p_pull_request is not null or p_result is not null or q.kind='cancel'
 		or not ((w.state='queued' and p_state in ('provisioning','running')) or (w.state='provisioning' and p_state='ready')
 			or (w.state='ready' and p_state='running'))
@@ -449,7 +449,7 @@ begin
 	end if;
 	q:=public.qorpera_coding_locked_request(p_request_id,p_lease_token);
 	select * into strict w from public.qorpera_coding_workers where id=q.worker_id;
-	if p_expected_version is distinct from w.version then raise exception 'Coding version changed' using errcode='40001'; end if;
+	if p_expected_version is distinct from w.version then raise sqlstate 'PGRST' using message=jsonb_build_object('code','QRC01','message','Coding version changed','details',null,'hint',null)::text, detail='{"status":409,"headers":{}}'; end if;
 	if p_state is null or p_state not in ('waiting','completed','failed','cancelled','recovery-required')
 		or (q.kind='cancel') is distinct from (p_state='cancelled')
 		or jsonb_typeof(p_result) is distinct from 'object' or octet_length(p_result::text)>8192
