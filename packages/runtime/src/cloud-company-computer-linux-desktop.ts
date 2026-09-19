@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { type FileHandle, mkdir, mkdtemp, open, rm, writeFile } from "node:fs/promises";
+import { type FileHandle, lstat, mkdir, mkdtemp, open, rm, unlink, writeFile } from "node:fs/promises";
 import { connect, type Socket } from "node:net";
 import { join, resolve } from "node:path";
 import {
@@ -38,6 +38,7 @@ interface Desktop {
 	handle?: CompanyComputerScreenSessionHandle;
 	xSocket?: string;
 	rfbSocket?: string;
+	sessionDirectory?: string;
 	connections: Set<Socket>;
 }
 
@@ -56,6 +57,32 @@ async function privateChild(parent: FileHandle, name: string): Promise<FileHandl
 		await directory.close();
 		throw error;
 	}
+}
+
+/** Name of the dock launcher's request inside the service-owned session directory (`/run/qorpera` in the desktop). */
+export const COMPANY_COMPUTER_BROWSER_REQUEST_FILE = "browser-request";
+
+/**
+ * Consume the dock launcher's "open the browser" request. The desktop namespace
+ * can write anything into this directory, so the request is only its presence:
+ * nothing is read, no link is followed, and whatever sits at the name is
+ * removed without descending into it. Every other fact (which screen, which
+ * profile, who may open it) comes from the service and SQL.
+ */
+export async function takeCompanyComputerBrowserRequest(sessionDirectory: string): Promise<boolean> {
+	const path = join(sessionDirectory, COMPANY_COMPUTER_BROWSER_REQUEST_FILE);
+	const info = await lstat(path).catch(() => undefined);
+	if (!info) return false;
+	if (info.isDirectory()) {
+		// Not a request. `rm` does not follow links; a directory placed here is simply cleared.
+		await rm(path, { recursive: true, force: true }).catch(() => undefined);
+		return false;
+	}
+	const removed = await unlink(path).then(
+		() => true,
+		() => false,
+	);
+	return removed && info.isFile();
 }
 
 /** Real persistent desktop launcher. Only the admitted supervisor supplies
@@ -283,6 +310,7 @@ export class CompanyComputerLinuxDesktopLauncher implements CompanyComputerScree
 			ownedByProcess = true;
 			desktop.xSocket = join(temporary, "x11", `X${binding.screenOrdinal}`);
 			desktop.rfbSocket = join(temporary, "session", binding.screenId, "viewer.sock");
+			desktop.sessionDirectory = join(temporary, "session");
 			const kill = (): void => {
 				desktop.ready = false;
 				for (const socket of desktop.connections) socket.destroy();
@@ -382,6 +410,11 @@ export class CompanyComputerLinuxDesktopLauncher implements CompanyComputerScree
 	/** Broker-only path for receipt-admitted xdotool/scrot and browser launch. */
 	xSocket(binding: CompanyComputerScreenBinding): string {
 		return this.#live(binding).xSocket!;
+	}
+
+	/** True once per dock-launcher request on this ready desktop; see `takeCompanyComputerBrowserRequest`. */
+	async takeBrowserRequest(binding: CompanyComputerScreenBinding): Promise<boolean> {
+		return takeCompanyComputerBrowserRequest(this.#live(binding).sessionDirectory!);
 	}
 
 	/** Private raw RFB transport. The caller still applies the existing viewer

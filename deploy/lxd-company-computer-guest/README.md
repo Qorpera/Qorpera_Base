@@ -65,10 +65,36 @@ desktop settings remain intact. Before that, the wrapper rewrites the panel
 configuration in the screen state on every start: a top bar with the window
 list and clock, and a dock with exactly three launchers — Terminal
 (`xfce4-terminal` running Bash in the workbench), Files (`thunar` in the
-workbench) and Browser (`/usr/local/bin/qorpera-screen-browser`, which raises
-the office browser window already on the screen or explains that Chromium only
-starts through the grant broker). The image must install `xfce4-terminal`,
-`thunar` and `tzdata`; no ambient/raw-NAS launch command is ever written.
+workbench) and Browser (`/usr/local/bin/qorpera-screen-browser`). The image
+must install `xfce4-terminal`, `thunar` and `tzdata`; no ambient/raw-NAS launch
+command is ever written.
+
+**The company browser belongs to the screen.** The Browser launcher raises the
+browser window already on the screen. When there is none it touches the empty
+file `/run/qorpera/browser-request` (the service-owned `<runtime>/session`
+directory bound into the desktop), waits about ten seconds for a Chromium
+window and raises it; if none appears it says only that the browser could not
+be opened. The file carries no data and nothing in it is read. The office
+service polls for it while the desktop is ready, removes it without following
+links, and opens the screen agent's granted profile through the same contained
+launch as before (bwrap, managed policy, egress relay, profile custody). Whether
+that may happen is decided by the broker-only SQL function
+`qorpera_office_screen_browser_grant(p_binding, p_opener)`: the screen agent's
+current grant, and either an agent holding the screen lease or a live
+shared/control viewer whose member still has input permission (then only a
+company-owned profile). Each open is recorded in
+`qorpera_runtime_office_browser_opens` with the run and the members who were
+present. An agent run joins the screen's browser instead of starting its own,
+still proves its own grant under its lease before every action
+(`qorpera_native_office_browser_grant`), and lets go of it at run end; the
+window stays. The browser closes with the screen: drain, privacy fence, lost
+grant, service stop, and, as before, when an agent action fails or is cancelled
+mid-flight (only a physical close proves its automation stopped). Signing in to
+third-party sites stays a takeover (`control`) activity under the contract;
+nothing here records member keystrokes beyond the existing per-input commitment
+ledger. `qorpera-screen-browser` is guest code: an existing computer gets the
+new launcher through a guest-code revision, while the service side needs only
+the service file and the SQL migration.
 
 The wrapper is not an authorization or sandbox implementation. Directory-name
 validation cannot detect bind mounts, NAS aliases, unsafe inherited image
