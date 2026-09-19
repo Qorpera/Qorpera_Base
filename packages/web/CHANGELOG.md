@@ -17,6 +17,7 @@
 
 ### Added
 
+- Add a dark theme. Settings → General → Theme offers System default (follows the device's appearance), Light and Dark; the choice is kept per browser, follows changes made in other tabs, and a head script applies it before the first paint.
 - Show a failed or stopped run in the agent's conversation with its error and a Dismiss action (the desktop's discard), so an old failure stops standing in for the agent's state; a run that left Company File changes links to them instead.
 - Support bounded public JSON environment configuration for Pages release builds, with shared SDK checks and release artifact validation in web CI.
 
