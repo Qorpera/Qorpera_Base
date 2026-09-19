@@ -1,6 +1,6 @@
 import type { CompanyExecutionNotification, WebCompanyExecution } from "../../cloud/company-execution.ts";
-import { button, h, replace } from "../../ui/dom.ts";
-import { notification } from "../../ui/notification.ts";
+import { button, h } from "../../ui/dom.ts";
+import { notification, updateNotification } from "../../ui/notification.ts";
 
 type Client = Pick<WebCompanyExecution, "listNotifications" | "acknowledgeNotification">;
 
@@ -123,7 +123,7 @@ export class ExecutionNotices {
 				this.#draw();
 			} else void this.#acknowledge();
 		};
-		replace(
+		updateNotification(
 			this.el,
 			error || item
 				? notification(error ?? title(item!), dismiss, {
@@ -132,8 +132,9 @@ export class ExecutionNotices {
 						error: Boolean(error),
 					})
 				: null,
+			error ? `error:${error}` : item?.notificationId,
+			this.#lifetime.signal,
 		);
-		this.el.hidden = !item && !error;
 		if (focused) {
 			const target = this.el.hidden
 				? null

@@ -55,11 +55,12 @@ label > input, label > select { font-weight: 400; }
 	pointer-events: none;
 }
 .execution-notices[hidden], .run-notification[hidden] { display: none; }
-.notification-card {
+.notification-card, .notification-ghost {
 	display: flex; align-items: center; gap: 8px; min-height: 52px; padding: 6px 6px 6px 16px;
 	border: 1px solid var(--border-strong); border-radius: var(--radius-lg); background: var(--overlay); color: var(--text);
 	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16); pointer-events: auto;
 }
+.notification-ghost { position: absolute; margin: 0; pointer-events: none; }
 .notification-title { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
 .notification-close {
 	display: grid; place-items: center; flex: none; width: 36px; height: 36px; padding: 0;

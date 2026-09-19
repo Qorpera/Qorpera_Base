@@ -7,7 +7,7 @@ import { agentFigure } from "../../ui/avatar.ts";
 import { fmtTime, h, icon, notice, replace, spinner } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
-import { notification } from "../../ui/notification.ts";
+import { notification, updateNotification } from "../../ui/notification.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import type { CompanyController, ConversationState } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
@@ -54,6 +54,7 @@ export class ConversationView {
 	readonly #body: HTMLElement;
 	readonly #conversationPane: HTMLElement;
 	readonly #lifetime = new AbortController();
+	readonly #notificationSignal: AbortSignal;
 	readonly #actions: WorkspaceActions;
 	readonly #run: SessionRunView | undefined;
 	readonly #execution: SessionExecutionView | undefined;
@@ -76,6 +77,7 @@ export class ConversationView {
 		toggleNavigation?: () => void,
 	) {
 		this.#company = company;
+		this.#notificationSignal = AbortSignal.any([this.#lifetime.signal, company.signal]);
 		this.#sessionId = sessionId;
 		this.#actions = actions;
 		this.#run = actions.runControl
@@ -731,8 +733,13 @@ export class ConversationView {
 						"Review",
 					)
 				: undefined;
-		replace(this.#runNotification, hidden ? null : notification(title, dismiss, { action }));
-		this.#runNotification.hidden = Boolean(hidden);
+		updateNotification(
+			this.#runNotification,
+			hidden ? null : notification(title, dismiss, { action }),
+			hidden ? undefined : runId,
+			this.#notificationSignal,
+			!company.accessLost && company.team?.capabilities.read === true,
+		);
 		if (focused) {
 			if (!hidden) this.#runNotification.querySelector<HTMLElement>("button")?.focus({ preventScroll: true });
 			else if (this.#conversationPane.inert) this.#panel?.focus();
