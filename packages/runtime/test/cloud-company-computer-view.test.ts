@@ -62,6 +62,7 @@ function viewerGrant(mode: CompanyComputerViewerGrant["mode"] = "watch"): Compan
 async function gatewayFixture(
 	mode: CompanyComputerViewerGrant["mode"] = "watch",
 	initial?: { greeting: Buffer; remainder?: Buffer },
+	onRefusal?: Parameters<typeof startCompanyComputerViewerGateway>[0]["onRefusal"],
 ) {
 	const received: Buffer[] = [];
 	const guestSockets = new Set<Socket>();
@@ -98,6 +99,7 @@ async function gatewayFixture(
 		host: "127.0.0.1",
 		port: 0,
 		authority,
+		onRefusal,
 		guest: {
 			connect: async (_grant, signal) => {
 				const socket = connect(guestPort, "127.0.0.1");
@@ -308,6 +310,39 @@ describe("private viewer gateway and member client (loopback only, authority/gue
 		release[1] = 0;
 		expect(Buffer.concat(fixture.received)).toEqual(Buffer.concat([hello, key, release]));
 		await expect(fixture.attach()).rejects.toThrow("VIEW_UNAVAILABLE");
+	});
+
+	it("journals why a ticket was refused while the member still sees only VIEW_UNAVAILABLE", async () => {
+		const refusals: Array<[string, unknown]> = [];
+		const fixture = await gatewayFixture("watch", undefined, (stage, error) => refusals.push([stage, error]));
+		const capability = randomBytes(32).toString("base64url");
+		(await fixture.attach(capability)).socket.destroy();
+		// The same ticket again: the authority refuses it before any guest contact.
+		await expect(fixture.attach(capability)).rejects.toThrow("VIEW_UNAVAILABLE");
+		const redeem = refusals.filter(([stage]) => stage === "redeem");
+		expect(redeem).toHaveLength(1);
+		expect((redeem[0][1] as Error).message).toBe("CAPABILITY_ALREADY_REDEEMED");
+		// A malformed first line is refused at the handshake, again with the same closed answer.
+		const socket = connect(fixture.gateway.port, "127.0.0.1");
+		sockets.add(socket);
+		const answer = await new Promise<string>((resolve) => {
+			let text = "";
+			socket.on("data", (bytes: Buffer) => {
+				text += bytes.toString("utf8");
+			});
+			socket.on("close", () => resolve(text));
+			socket.write(`${JSON.stringify({ schema: "not-the-view-schema", capability })}\n`);
+		});
+		expect(JSON.parse(answer)).toEqual({ ok: false, error: "VIEW_UNAVAILABLE" });
+		expect(refusals.at(-1)?.[0]).toBe("handshake");
+		expect((refusals.at(-1)?.[1] as Error).message).toBe("INVALID_VIEW_HANDSHAKE");
+		// An observer that throws changes nothing for the member.
+		const broken = await gatewayFixture("watch", undefined, () => {
+			throw new Error("journal unavailable");
+		});
+		const reused = randomBytes(32).toString("base64url");
+		(await broken.attach(reused)).socket.destroy();
+		await expect(broken.attach(reused)).rejects.toThrow("VIEW_UNAVAILABLE");
 	});
 
 	it("drops clipboard transfer even for a controller and refuses capability reuse", async () => {

@@ -5,6 +5,7 @@ import {
 	CompanyComputerWebSocketDecoder,
 	companyComputerWebSocketFrame,
 } from "@qorpera/cloud-client/node/cloud-company-computer-rfb";
+import type { CompanyComputerViewerRefusalObserver } from "./cloud-company-computer-diagnostics.ts";
 import {
 	type CompanyComputerViewerAuthority,
 	CompanyComputerViewerConnections,
@@ -78,6 +79,8 @@ export async function startCompanyComputerViewerWebSocketGateway(options: {
 	guest: CompanyComputerViewerGuestTransport;
 	/** Service owner stops sibling listeners and physical resources. */
 	onFailure?: () => void;
+	/** Journal-only reason for each refused or ended viewer; never reaches the client. */
+	onRefusal?: CompanyComputerViewerRefusalObserver;
 }): Promise<{ port: number; connections: CompanyComputerViewerConnections; close(): Promise<void> }> {
 	if (
 		!options.host ||
@@ -123,6 +126,14 @@ export async function startCompanyComputerViewerWebSocketGateway(options: {
 	server.on("tlsClientError", (_error, socket) => socket.destroy());
 	server.on("upgrade", (request, socket, head) => {
 		const key = request.headers["sec-websocket-key"];
+		// Which fixed check refused, for the journal only. Nothing the client sent is recorded.
+		const refusal = closed
+			? "VIEWER_UPGRADE_CLOSED"
+			: request.method !== "GET" || request.url !== options.path
+				? "VIEWER_UPGRADE_PATH"
+				: typeof request.headers.origin !== "string" || !origins.has(request.headers.origin)
+					? "VIEWER_UPGRADE_ORIGIN"
+					: "VIEWER_UPGRADE_INVALID";
 		if (
 			closed ||
 			request.method !== "GET" ||
@@ -140,6 +151,7 @@ export async function startCompanyComputerViewerWebSocketGateway(options: {
 			!/^[A-Za-z0-9+/]{22}==$/.test(key) ||
 			Buffer.from(key, "base64").toString("base64") !== key
 		) {
+			connections.refused("upgrade", new Error(refusal));
 			socket.destroy();
 			return;
 		}
