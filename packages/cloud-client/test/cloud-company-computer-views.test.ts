@@ -169,6 +169,39 @@ describe("member office viewer client", () => {
 		]);
 		await view.close();
 	});
+	it("joins the agent with shared input without draining or replacing its lease", async () => {
+		const f = fixture();
+		f.grant.mode = "shared";
+		// Shared fencing is independent of the agent's current lease epoch.
+		f.grant.screenEpoch = 1;
+		const view = await f.client.connectScreen({ binding: f.binding, mode: "shared", signal: f.abort.signal });
+		expect(view.mode).toBe("shared");
+		expect(f.rpc.mock.calls.map(([method]) => method)).toEqual([
+			"qorpera_runtime_office_member_status",
+			"qorpera_create_runtime_office_viewer",
+		]);
+		expect(f.rpc.mock.calls[1][1]).toEqual({
+			p_binding: f.binding,
+			p_epoch: 2,
+			p_mode: "shared",
+			p_private_challenge: null,
+		});
+		await view.close();
+		expect(f.rpc.mock.calls.at(-1)?.[0]).toBe("qorpera_cancel_runtime_office_viewer");
+	});
+	it.each(["private", "draining", "takeover", "screen"])("refuses shared input during %s", async (change) => {
+		const f = fixture();
+		f.grant.mode = "shared";
+		if (change === "private") f.status.privacyState = "private";
+		if (change === "draining") f.screen.drainPending = true;
+		if (change === "takeover") Object.assign(f.screen, { takeoverMemberId: id(9) });
+		if (change === "screen") f.screen.binding = { ...f.binding, screenGeneration: 3 };
+		await expect(
+			f.client.connectScreen({ binding: f.binding, mode: "shared", signal: f.abort.signal }),
+		).rejects.toThrow();
+		expect(f.rpc).toHaveBeenCalledOnce();
+		expect(f.createWebSocket).not.toHaveBeenCalled();
+	});
 	it("waits for the exact acknowledged takeover before issuing control", async () => {
 		vi.useFakeTimers();
 		const f = fixture(),

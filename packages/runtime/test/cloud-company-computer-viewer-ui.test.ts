@@ -8,18 +8,19 @@ interface ViewConnection {
 	connectionId: string;
 	url?: string;
 	channel?: { readyState: number; send(bytes: unknown): void; close(): void };
-	mode: "watch" | "control";
+	mode: "watch" | "shared" | "control";
 	binding: CompanyComputerScreenBinding;
 }
 
 interface ViewerOptions {
 	canControl?: boolean;
 	privateSignIn?: boolean;
+	sharedControl?: boolean;
 	binding: CompanyComputerScreenBinding;
 	title: string;
 	requestConnection(input: {
 		binding: CompanyComputerScreenBinding;
-		mode: "watch" | "control";
+		mode: "watch" | "shared" | "control";
 		signal: AbortSignal;
 	}): Promise<ViewConnection>;
 	releaseConnection(input: { connectionId: string }): Promise<void>;
@@ -153,6 +154,39 @@ function viewerFixture() {
 }
 
 describe("viewer UI state machine (fake DOM/noVNC, not visual cloud acceptance)", () => {
+	it("opens shared input immediately and reconnects with fresh shared authority", async () => {
+		const f = viewerFixture();
+		f.options.sharedControl = true;
+		const viewer = f.api.open(f.options);
+		await vi.waitFor(() => expect(f.instances).toHaveLength(1));
+		expect(f.instances[0].viewOnly).toBe(true);
+		f.instances[0].emit("connect");
+		expect(f.instances[0].viewOnly).toBe(false);
+		expect(f.button("Take control").hidden).toBe(true);
+		f.button("Take control").onclick?.();
+		expect(f.requestConnection).toHaveBeenCalledOnce();
+		expect(f.elements.some((element) => element.textContent === "Shared with the agent")).toBe(true);
+		f.instances[0].emit("disconnect");
+		expect(f.instances[0].viewOnly).toBe(true);
+		f.button("Reconnect").onclick?.();
+		await vi.waitFor(() => expect(f.instances).toHaveLength(2));
+		f.instances[1].emit("connect");
+		expect(f.instances[1].viewOnly).toBe(false);
+		expect(f.requestConnection.mock.calls.map(([input]) => input.mode)).toEqual(["shared", "shared"]);
+		await viewer.close();
+		expect(f.releaseConnection).toHaveBeenCalledTimes(2);
+	});
+	it("keeps shared viewing read-only when the member cannot control", async () => {
+		const f = viewerFixture();
+		f.options.sharedControl = true;
+		f.options.canControl = false;
+		const viewer = f.api.open(f.options);
+		await vi.waitFor(() => expect(f.instances).toHaveLength(1));
+		f.instances[0].emit("connect");
+		expect(f.instances[0].viewOnly).toBe(true);
+		expect(f.requestConnection.mock.calls[0][0].mode).toBe("watch");
+		await viewer.close();
+	});
 	it("uses explicit private control, never shared takeover, and reconnects only on a new click", async () => {
 		const f = viewerFixture();
 		f.options.canControl = false;

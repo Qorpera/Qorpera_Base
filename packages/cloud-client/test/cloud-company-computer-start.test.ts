@@ -37,6 +37,20 @@ function fixture() {
 }
 afterEach(() => vi.useRealTimers());
 describe("shared member office startup API", () => {
+	it.each(["idle", "host_reboot"])("preserves the server's %s maintenance reason", async (reason) => {
+		const f = fixture();
+		const maintenance = {
+			reason,
+			state: "requested",
+			transitionId: id(10),
+			requestedAt: "2026-09-19T12:00:00Z",
+			resumedAt: null,
+			activatedAt: null,
+		};
+		f.rpc.mockResolvedValueOnce({ data: { ...f.status, officeState: "maintenance", maintenance }, error: null });
+		await expect(f.client.status(signal())).resolves.toMatchObject({ maintenance });
+		expect(f.rpc).toHaveBeenCalledOnce();
+	});
 	it("submits only authenticated scope/generation/request identity and accepts a coalesced intent", async () => {
 		const f = fixture();
 		await expect(f.client.request(1, id(9), signal())).resolves.toEqual(f.intent);

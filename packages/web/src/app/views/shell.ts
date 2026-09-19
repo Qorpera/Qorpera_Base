@@ -3,6 +3,7 @@ import type { HostedProfile, HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { badge, button, h, icon, initials, notice, replace } from "../../ui/dom.ts";
 import type { Activity } from "../../ui/figure-motion.ts";
+import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { presentationLocale, uiText } from "../../ui/preferences.ts";
 import { type AuthController, displayName } from "../auth.ts";
@@ -371,7 +372,7 @@ interface AgentModel extends Pick<HostedStaffAgent, "id" | "displayName" | "role
 }
 interface SessionModel {
 	title: string;
-	kind: "room" | "company";
+	kind: "Group chat" | "company";
 }
 function cofounderCard(model: AgentModel, href: string): HTMLElement {
 	const look = RAIL_LOOK[model.state];
@@ -412,11 +413,13 @@ function agentRow(model: AgentModel, href: string): HTMLElement {
 function sessionRow(model: SessionModel, href: string): HTMLElement {
 	return h(
 		"a",
-		{ class: "rail-row", href, title: model.title },
+		{ class: "rail-row", href, title: `${model.title} · ${model.kind}` },
 		h(
 			"span",
 			{ class: "rail-row-stand" },
-			h("span", { class: "avatar small" }, model.title.slice(0, 1).toUpperCase()),
+			model.kind === "Group chat"
+				? groupChatAvatar()
+				: h("span", { class: "avatar small" }, model.title.slice(0, 1).toUpperCase()),
 		),
 		h("span", { class: "rail-row-copy" }, h("strong", null, model.title), h("small", null, model.kind)),
 	);
@@ -520,10 +523,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 					`#/c/${profileId}/chat/${session.sessionId}`,
 					{
 						title: session.title,
-						kind:
-							session.executionScope && "roomId" in session.executionScope && !session.staffAgentId
-								? ("room" as const)
-								: ("company" as const),
+						kind: isGroupChat(session) ? ("Group chat" as const) : ("company" as const),
 					},
 					activeSessionId === session.sessionId,
 					sessionRow,

@@ -14,7 +14,7 @@ import {
 	computerScope,
 } from "./fixtures/company-computer.ts";
 
-function fixture(mode: "control" | "watch" = "control") {
+function fixture(mode: CompanyComputerViewerGrant["mode"] = "control") {
 	const grant: CompanyComputerViewerGrant = {
 		binding: computerBinding(),
 		viewerSessionId: computerId(21),
@@ -47,25 +47,30 @@ function fixture(mode: "control" | "watch" = "control") {
 }
 afterEach(() => vi.restoreAllMocks());
 describe("durable viewer authority adapter", () => {
-	it("redeems exact office tickets and admits keyed input before a single forward", async () => {
-		const f = fixture();
-		const grant = await f.control.redeem(f.token, f.signal);
-		expect(f.call.mock.calls[0][1]).toEqual({
-			p_scope: computerScope(),
-			p_capability_sha256: createHash("sha256").update(f.token).digest("hex"),
-		});
-		const forward = vi.fn();
-		await f.control.forwardInput(grant, f.input, forward, f.signal);
-		expect(forward).toHaveBeenCalledOnce();
-		const args = f.call.mock.calls[1][1];
-		expect(args).toMatchObject({ p_sequence: 1, p_grant: grant });
-		expect(args.p_input_commitment).toMatch(/^[0-9a-f]{64}$/);
-		expect(args.p_input_commitment).not.toBe(f.input.sha256);
-		expect(Object.keys(args).sort()).toEqual(["p_grant", "p_input_commitment", "p_sequence"]);
-		expect(f.input.bytes[7]).toBe(65);
-		await expect(f.control.forwardInput(grant, f.input, forward, f.signal)).rejects.toThrow("INVALID_VIEWER_INPUT");
-		expect(forward).toHaveBeenCalledOnce();
-	});
+	it.each(["control", "shared"] as const)(
+		"redeems exact %s tickets and admits keyed input before a single forward",
+		async (mode) => {
+			const f = fixture(mode);
+			const grant = await f.control.redeem(f.token, f.signal);
+			expect(f.call.mock.calls[0][1]).toEqual({
+				p_scope: computerScope(),
+				p_capability_sha256: createHash("sha256").update(f.token).digest("hex"),
+			});
+			const forward = vi.fn();
+			await f.control.forwardInput(grant, f.input, forward, f.signal);
+			expect(forward).toHaveBeenCalledOnce();
+			const args = f.call.mock.calls[1][1];
+			expect(args).toMatchObject({ p_sequence: 1, p_grant: grant });
+			expect(args.p_input_commitment).toMatch(/^[0-9a-f]{64}$/);
+			expect(args.p_input_commitment).not.toBe(f.input.sha256);
+			expect(Object.keys(args).sort()).toEqual(["p_grant", "p_input_commitment", "p_sequence"]);
+			expect(f.input.bytes[7]).toBe(65);
+			await expect(f.control.forwardInput(grant, f.input, forward, f.signal)).rejects.toThrow(
+				"INVALID_VIEWER_INPUT",
+			);
+			expect(forward).toHaveBeenCalledOnce();
+		},
+	);
 	it("does not forward or retry on a lost input admission response", async () => {
 		const f = fixture();
 		const grant = await f.control.redeem(f.token, f.signal);

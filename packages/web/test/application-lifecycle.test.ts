@@ -74,6 +74,7 @@ function executionTransport() {
 					connections: [
 						{
 							connection_id: id(81),
+							client_connection_id: id(181),
 							connection_version: 1,
 							provider: "openai",
 							native_harness: "codex-cli",

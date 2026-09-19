@@ -13,6 +13,11 @@ import {
 	prepareCompanyComputerScreenWallpaper,
 } from "@qorpera/runtime/cloud-company-computer-desktop";
 import type { CompanyComputerGuestBoundary } from "@qorpera/runtime/cloud-company-computer-guest";
+import {
+	COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER,
+	COMPANY_COMPUTER_WALLPAPER_FILES,
+	COMPANY_COMPUTER_WALLPAPER_IDS,
+} from "@qorpera/runtime/cloud-company-computer-wallpapers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { computerBinding, computerId } from "./fixtures/company-computer.ts";
 
@@ -36,7 +41,7 @@ async function desktopFixture() {
 	};
 	const imageRoot = join(root, "image");
 	await Promise.all([...Object.values(layout), imageRoot].map((directory) => mkdir(directory)));
-	for (const creature of STAFF_CHARACTER_IDS)
+	for (const creature of COMPANY_COMPUTER_WALLPAPER_IDS)
 		await writeFile(join(imageRoot, `qorpera-screen-${creature}.png`), `synthetic ${creature} image bytes`);
 	const binding = computerBinding();
 	const boundary: CompanyComputerGuestBoundary = {
@@ -48,17 +53,36 @@ async function desktopFixture() {
 describe("restored agent wallpaper preparation (synthetic image bytes, local filesystem)", () => {
 	it("uses the existing template mapping and renderer identity hash without accepting arbitrary asset names", () => {
 		for (const [template, character] of Object.entries(STAFF_CHARACTER_BY_TEMPLATE))
-			expect(companyComputerScreenCreature(computerBinding(), template)).toBe(character);
+			expect(companyComputerScreenCreature(computerBinding(), template)).toBe(
+				COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER[character],
+			);
 		const binding = computerBinding();
 		let seed = 0;
 		for (const character of binding.staffAgentId) seed = (seed * 31 + character.charCodeAt(0)) >>> 0;
 		for (const template of [undefined, "unknown-template", "__proto__", "../../outside"])
 			expect(companyComputerScreenCreature(binding, template)).toBe(
-				STAFF_CHARACTER_IDS[seed % STAFF_CHARACTER_IDS.length],
+				COMPANY_COMPUTER_WALLPAPER_IDS[seed % COMPANY_COMPUTER_WALLPAPER_IDS.length],
 			);
-		expect(companyComputerScreenCreature(binding, "agent-manager", "bloom")).toBe("bloom");
+		expect(companyComputerScreenCreature(binding, "agent-manager", "flame")).toBe("bloom");
 		expect(companyComputerScreenCreature(binding, "agent-manager", "../../outside")).toBe("brain");
 		expect(() => companyComputerScreenCreature({ ...binding, screenOrdinal: 33 })).toThrow("SCREEN_BINDING_MISMATCH");
+	});
+
+	it("prepares every current avatar from the actual packaged guest artwork", async () => {
+		const fixture = await desktopFixture();
+		const imageRoot = fileURLToPath(new URL("../../../deploy/lxd-company-computer-guest/backdrops", import.meta.url));
+		expect((await readdir(imageRoot)).sort()).toEqual(COMPANY_COMPUTER_WALLPAPER_FILES);
+		for (const character of STAFF_CHARACTER_IDS) {
+			const prepared = await prepareCompanyComputerScreenWallpaper(
+				{ ...fixture, imageRoot, creature: character },
+				new AbortController().signal,
+			);
+			expect(await readFile(prepared.wallpaper)).toEqual(
+				await readFile(join(imageRoot, `qorpera-screen-${COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER[character]}.png`)),
+			);
+			expect(prepared.backdrops).toBeDefined();
+			expect(await readdir(prepared.backdrops!)).toHaveLength(24);
+		}
 	});
 
 	it("publishes the exact image bytes under the bound UUID and refreshes appearance without deleting desktop settings", async () => {
@@ -82,7 +106,7 @@ describe("restored agent wallpaper preparation (synthetic image bytes, local fil
 		expect(next.creature).toBe("wisp");
 		expect(await readFile(next.wallpaper, "utf8")).toBe("synthetic wisp image bytes");
 		expect(await readFile(join(config, "persistent.xml"), "utf8")).toBe("preserved setting");
-		await prepareCompanyComputerScreenWallpaper({ ...fixture, creature: "bloom" }, signal);
+		await prepareCompanyComputerScreenWallpaper({ ...fixture, creature: "flame" }, signal);
 		expect(await readFile(next.wallpaper, "utf8")).toBe("synthetic bloom image bytes");
 		expect((await readdir(join(fixture.layout.screenStateRoot, computerId(6)))).sort()).toEqual([
 			"config",

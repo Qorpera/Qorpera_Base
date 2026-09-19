@@ -13,7 +13,7 @@ const PROVIDERS: ReadonlyArray<{ id: Provider; label: string; logo: string }> = 
 	{ id: "openai", label: "ChatGPT / Codex", logo: "provider-openai.svg" },
 	{ id: "anthropic", label: "Claude", logo: "provider-anthropic.svg" },
 ];
-const WATCH_MS = 5000;
+const WATCH_MS = 2000;
 
 interface Attempt {
 	login?: WebNativeProviderLogin;
@@ -55,6 +55,8 @@ export class ConnectionsView {
 	#working: string | undefined;
 	#error: string | undefined;
 	#watch: ReturnType<typeof setTimeout> | undefined;
+	#refreshing: Promise<void> | undefined;
+	#refreshAgain = false;
 	/** `signIns` and `begin` come from the application when sign-ins should
 	 * outlive this page; alone, the page keeps its own. */
 	constructor(
@@ -75,6 +77,12 @@ export class ConnectionsView {
 		this.#lifetime.signal.addEventListener("abort", stop, { once: true });
 		if (signal.aborted) this.#lifetime.abort();
 		else signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
+		const resume = () => {
+			if (!document.hidden && this.el.isConnected && [...this.#attempts.values()].some((attempt) => attempt.login))
+				void this.#refresh();
+		};
+		window.addEventListener("focus", resume, { signal: this.#lifetime.signal });
+		document.addEventListener("visibilitychange", resume, { signal: this.#lifetime.signal });
 		this.#draw();
 		void this.#refresh();
 	}
@@ -85,9 +93,28 @@ export class ConnectionsView {
 		this.el.replaceChildren();
 		this.el.remove();
 	}
-	async #refresh(): Promise<void> {
-		if (this.#lifetime.signal.aborted) return;
+	#refresh(): Promise<void> {
+		if (this.#lifetime.signal.aborted) return Promise.resolve();
 		clearTimeout(this.#watch);
+		this.#refreshAgain = true;
+		this.#refreshing ??= this.#readUntilCurrent();
+		return this.#refreshing;
+	}
+	async #readUntilCurrent(): Promise<void> {
+		try {
+			// Changes during a read need one fresh read afterwards. Keep a single
+			// request in flight so a slow response cannot overwrite newer accounts.
+			do {
+				this.#refreshAgain = false;
+				await this.#readConnections();
+			} while (this.#refreshAgain && !this.#lifetime.signal.aborted);
+		} finally {
+			this.#refreshing = undefined;
+			if (!this.#lifetime.signal.aborted && [...this.#attempts.values()].some((attempt) => attempt.login))
+				this.#watch = setTimeout(() => void this.#refresh(), WATCH_MS);
+		}
+	}
+	async #readConnections(): Promise<void> {
 		try {
 			const observed = await this.#client.listConnections(this.#lifetime.signal);
 			if (this.#lifetime.signal.aborted) return;
@@ -106,7 +133,10 @@ export class ConnectionsView {
 				if (
 					attempt.login &&
 					(connections.connections.some(
-						(item) => item.connectionId === attempt.login?.connectionId && live(item),
+						(item) =>
+							item.provider === provider &&
+							item.clientConnectionId === attempt.login?.clientConnectionId &&
+							live(item),
 					) ||
 						Date.parse(attempt.login.expiresAt) <= Date.now())
 				)
@@ -117,12 +147,7 @@ export class ConnectionsView {
 			this.#error = "Your model accounts could not be read.";
 		} finally {
 			this.#loading = false;
-			if (!this.#lifetime.signal.aborted) {
-				this.#draw();
-				// While a provider sign-in is open, watch for it to finish.
-				if ([...this.#attempts.values()].some((attempt) => attempt.login))
-					this.#watch = setTimeout(() => void this.#refresh(), WATCH_MS);
-			}
+			if (!this.#lifetime.signal.aborted) this.#draw();
 		}
 	}
 	/** Connecting an account is the member's choice to use it for their messages. */
@@ -237,7 +262,7 @@ export class ConnectionsView {
 				"div",
 				{ class: "settings-copy" },
 				h("strong", null, provider.label),
-				h("small", { class: "connection-email" }, email ?? "Email unavailable"),
+				h("small", { class: "connection-email" }, email ?? (live(connection) ? "Connected" : "Email not provided")),
 				!live(connection)
 					? h("small", { role: "status" }, "Sign out and add this account again to reconnect.")
 					: null,
@@ -307,7 +332,7 @@ export class ConnectionsView {
 				connection.connectionStatus !== "revoked" &&
 				PROVIDERS.some((provider) => provider.id === connection.provider) &&
 				![...this.#attempts.values()].some(
-					(attempt) => attempt.login?.connectionId === connection.connectionId && !live(connection),
+					(attempt) => attempt.login?.clientConnectionId === connection.clientConnectionId && !live(connection),
 				),
 		);
 		const canConnect = Boolean(this.#client.onboardingAvailable && this.#begin);

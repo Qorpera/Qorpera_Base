@@ -33,6 +33,8 @@ export type NativeMemberComputeIdentity = NativeComputeIdentity & {
 
 export interface NativeMemberConnection {
 	connectionId: string;
+	/** Correlates this server-owned connection with the member's sign-in attempt. */
+	clientConnectionId: string;
 	connectionVersion: number;
 	provider: string;
 	nativeHarness: NativeProviderHarness;
@@ -613,6 +615,7 @@ export class NativeSubscriptionControlPlane {
 				}
 				return {
 					connectionId: uuid(connection.connection_id, "native connection id"),
+					clientConnectionId: uuid(connection.client_connection_id, "native client connection id"),
 					connectionVersion: integer(connection.connection_version, "native connection version"),
 					provider: text(connection.provider, "native connection provider", 64),
 					nativeHarness: parseHarness(connection.native_harness),
