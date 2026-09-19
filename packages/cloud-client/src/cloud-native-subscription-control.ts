@@ -39,6 +39,7 @@ export interface NativeMemberConnection {
 	authorizationState: "active" | "reauthentication_required" | "revoked";
 	maxNativeConcurrency: number;
 	providerAccountReference?: string;
+	providerAccountEmail?: string;
 	billingSource: string;
 	consentVersion: string;
 	consentedAt: string;
@@ -626,6 +627,15 @@ export class NativeSubscriptionControlPlane {
 							}
 						: {}),
 					billingSource: text(connection.billing_source, "native billing source", 120),
+					...(optionalText(connection.provider_account_email, "provider account email", 254)
+						? {
+								providerAccountEmail: optionalText(
+									connection.provider_account_email,
+									"provider account email",
+									254,
+								),
+							}
+						: {}),
 					consentVersion: text(connection.consent_version, "native consent version", 120),
 					consentedAt: timestamp(connection.consented_at, "native consent time"),
 					connectionStatus: connection.connection_status,
