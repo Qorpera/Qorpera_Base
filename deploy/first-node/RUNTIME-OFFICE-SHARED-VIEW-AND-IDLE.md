@@ -75,6 +75,26 @@ physically closing it. Third-party sign-in remains a takeover (`control`)
 activity.
 Details: `deploy/lxd-company-computer-guest/README.md`.
 
+## Rollout order for the backdrop, dock browser and refusal journal
+
+1. **SQL first.** Apply `20260920020000_runtime_office_screen_appearance.sql`
+   and `20260920021000_runtime_office_screen_browser.sql` before any office
+   runs the new service. Both only add objects; the old service never calls
+   them. The other order is not safe: a new service on old SQL fails every
+   agent browser action with `BROWSER_GRANT_UNCONFIRMED`, because the screen's
+   browser authority does not exist yet. The avatar read degrades safely in
+   that state (the desktop starts with the figure derived from the agent id).
+2. **Service-only software revision** (the single file
+   `/opt/qorpera-office/qorpera-company-computer-service.mjs`). It carries the
+   corrected avatar-to-backdrop table and the avatar read, the screen-owned
+   browser, and the `qorpera.office-viewer-refusal/v1` journal lines. No
+   artwork ships: the installed PNGs already draw the current avatars.
+3. **Guest-code revision** for `/usr/local/bin/qorpera-screen-browser`. Until
+   an office has it, its old launcher still raises a browser an agent opened
+   but cannot ask for one, and still shows the stale private sign-in text.
+4. The bundle activation follows the repository's guarded rollout like any
+   other; none of the steps above depends on it being active first.
+
 ## Release and acceptance
 
 This is a source candidate, not evidence of an installed production release.
