@@ -8,6 +8,7 @@ import {
 	type CloudCompanyPathPresenceFactory,
 	observeCloudCompanyPathPresence,
 } from "./cloud-company-path-presence.ts";
+import { cloudHiringTools } from "./cloud-hiring-tools.ts";
 import {
 	cloudCompanyContextTool,
 	compileCloudNativeCompanyInstructions,
@@ -32,6 +33,7 @@ import {
 import { type CloudNativeTool, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperationControlPlane } from "./cloud-native-tool-operations.ts";
 import { cloudResponsibilityTools } from "./cloud-responsibility-tools.ts";
+import { cloudRoutineTools } from "./cloud-routine-tools.ts";
 import { assertCloudRuntimeBundle } from "./cloud-runtime-bundle.ts";
 import {
 	assertCloudRuntimeObservationReceipt,
@@ -292,6 +294,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 									: []),
 								cloudCoworkerMessageTool(binding, identity, wakeControl),
 								...cloudResponsibilityTools(binding, identity, this.#paths),
+								...cloudRoutineTools(binding, identity, this.#paths),
+								...(identity.audienceKind === "company" ? cloudHiringTools(gateway, identity) : []),
 								...(identity.sessionId && wake.policy.final !== "forbidden" ? [send] : []),
 							],
 							assertContext: (requestSignal) => gateway.assertReadableContext(requestSignal),

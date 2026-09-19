@@ -1,6 +1,6 @@
 -- A run whose agent was edited meanwhile still speaks under a name. The speaker
 -- row kept the name only while the agent's version equalled the run's, so after
--- 20260920000500 let runs outlive edits, such a message had no name and clients
+-- 20260920004500 let runs outlive edits, such a message had no name and clients
 -- labelled it with the agent's raw id in rooms.
 
 do $guard$ begin

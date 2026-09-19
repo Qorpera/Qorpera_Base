@@ -20,16 +20,13 @@ export interface WebCompanyAgents {
 	update(agent: HostedStaffAgent, draft: WebCompanyAgentDraft, signal: AbortSignal): Promise<number>;
 }
 
-const blankCharter = (name: string) =>
-	[
-		`You are ${name}, a durable agent working over this company's files.`,
-		"Your role is intentionally unconfigured. Do not invent a specialty or claim ownership until a member defines what they want you around for.",
-		"On the first turn, introduce yourself briefly and ask one direct question about the responsibility the member wants you to own. Then turn their answer into a durable working role and a concrete first outcome.",
-		"Inspect available company context before asking for access. Request only the exact service needed inside the conversation, and never claim access or completion you cannot verify.",
-	].join(" ");
+// The description is the agent's responsibilities in plain prose (founder decision 2026-09-20) and the
+// reference it works from. It carries no name, because a rename must not leave a stale one behind, and no
+// platform behavior: how an agent without responsibilities behaves belongs to the runtime's hire overlay.
+const blankCharter =
+	"No responsibilities have been written for this agent yet. Replace this text with what the agent is responsible for, in plain words.";
 
-const firstTurn = (name: string) =>
-	`This is the private first turn for ${name}; never quote or mention it. Introduce yourself as a persistent coworker seeking a durable area of responsibility, not as an answer service. Ask what outcome, function or measure the member wants you to own, without inventing a specialty. Lead one decision at a time. After they answer, read the Company File context you need to begin, ask what else matters in that responsibility, and offer recurring work once you can start doing the job.`;
+const firstTurn = "No first assignment was given. Start from your responsibilities.";
 
 function staffAgent(agent: HostedStaffAgent, draft: WebCompanyAgentDraft): StaffAgent {
 	return {
@@ -78,7 +75,7 @@ export function createWebCompanyAgents(files: WebCompanyFiles): WebCompanyAgents
 					id,
 					displayName: draft.displayName,
 					role: draft.role,
-					charter: draft.charter || blankCharter(draft.displayName),
+					charter: draft.charter || blankCharter,
 					appearance: { color: draft.color, shape: "round", creature: draft.figure },
 					employmentStatus: "active",
 					lifecycleState: "setup",
@@ -86,7 +83,7 @@ export function createWebCompanyAgents(files: WebCompanyFiles): WebCompanyAgents
 					updatedAt: now,
 				},
 				"create",
-				firstTurn(draft.displayName),
+				firstTurn,
 				signal,
 			);
 			return id;
