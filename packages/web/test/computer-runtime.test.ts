@@ -134,8 +134,8 @@ describe("automatic computer popover", () => {
 		expect(p.el.querySelector(".computer-loading-spinner")).not.toBeNull();
 		expect(p.el.querySelector("header, select, .computer-preview, .figure")).toBeNull();
 		expect(p.el.textContent).not.toContain("Open computer");
-		const closeButton = p.el.querySelector(".computer-close");
-		expect(closeButton?.getAttribute("aria-label")).toBe("Close computer");
+		expect(p.el.querySelector(".computer-close, [aria-label='Close computer']")).toBeNull();
+		expect(p.el.tabIndex).toBe(-1);
 		await settle();
 		await settle();
 		expect(open).toHaveBeenCalledExactlyOnceWith(
@@ -153,7 +153,7 @@ describe("automatic computer popover", () => {
 		]);
 		expect(methods(f).some((method) => START_WRITES.test(`/${method}`))).toBe(false);
 		expect(p.el.querySelector<HTMLElement>(".computer-loading")?.hidden).toBe(true);
-		expect(p.el.querySelector(".computer-close")).toBe(closeButton);
+		expect(p.el.querySelector(".computer-close, [aria-label='Close computer']")).toBeNull();
 		open.mock.calls[0]![0].onClosed();
 		expect(p.el.isConnected).toBe(false);
 	});
@@ -179,7 +179,7 @@ describe("automatic computer popover", () => {
 		f.replies.qorpera_runtime_office_start_status = start;
 		retry.focus();
 		retry.click();
-		expect(document.activeElement).toBe(p.el.querySelector(".computer-close"));
+		expect(document.activeElement).toBe(p.el);
 		retry.click();
 		await settle();
 		await settle();
@@ -206,14 +206,15 @@ describe("automatic computer popover", () => {
 		expect(composer.selectionStart).toBe(5);
 		expect(composer.selectionEnd).toBe(12);
 	});
-	it.each(["button", "Escape"])("closing by %s cancels polling without cancelling the runtime", async (how) => {
+	it("closing with Escape cancels polling without cancelling the runtime", async () => {
 		const f = setup({ qorpera_runtime_office_start_status: { ...start, officeState: "maintenance" } });
 		const startClient = spyStart(f),
 			cancel = vi.spyOn(startClient, "cancel");
 		const p = await opened(f.computer);
 		expect(statusLine(p)).toBe("The computer is restarting. It comes back on its own.");
-		if (how === "button") p.el.querySelector<HTMLButtonElement>(".computer-close")!.click();
-		else p.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		p.focus();
+		expect(document.activeElement).toBe(p.el);
+		p.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		await settle();
 		expect(p.el.isConnected).toBe(false);
 		const requests = methods(f);
@@ -439,7 +440,7 @@ describe("web runtime member boundary", () => {
 		vi.spyOn(views, "status").mockReturnValue(pending.promise);
 		vi.spyOn(f.computer, "views").mockReturnValue(views);
 		const p = await opened(f.computer);
-		p.el.querySelector<HTMLButtonElement>(".computer-close")!.click();
+		p.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		pending.resolve(status);
 		await settle();
 		await poll();

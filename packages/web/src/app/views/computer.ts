@@ -1,7 +1,7 @@
 import type { WebCompanyComputer } from "../../cloud/computer.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { ComputerViewHost } from "../../ui/computer-view-host.ts";
-import { h, icon, replace } from "../../ui/dom.ts";
+import { h, replace } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
 
 /** Opening the thread's computer is the explicit intent to start and watch it. */
@@ -19,16 +19,7 @@ export class ComputerPanel {
 	constructor(agent: HostedStaffAgent, close: () => void, computer?: WebCompanyComputer, parentSignal?: AbortSignal) {
 		const signal = AbortSignal.any([this.#stop.signal, ...(parentSignal ? [parentSignal] : [])]);
 		this.#views = new ComputerViewHost(signal);
-		this.el = h(
-			"aside",
-			{ class: "computer-panel", "aria-label": "Agent computer" },
-			h(
-				"button",
-				{ type: "button", class: "icon-button computer-close", "aria-label": "Close computer", onclick: close },
-				icon("close"),
-			),
-			this.#body,
-		);
+		this.el = h("aside", { class: "computer-panel", "aria-label": "Agent computer", tabindex: "-1" }, this.#body);
 		this.el.addEventListener("keydown", (event) => {
 			if (matchesKey(event, "dismiss")) {
 				event.preventDefault();
@@ -201,7 +192,7 @@ export class ComputerPanel {
 	}
 
 	focus(): void {
-		this.el.querySelector<HTMLButtonElement>(".computer-close")?.focus();
+		this.el.focus();
 	}
 
 	dispose(): void {

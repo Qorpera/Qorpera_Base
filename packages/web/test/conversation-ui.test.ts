@@ -307,10 +307,14 @@ describe("conversation UI boundaries", () => {
 	it("keeps the computer popover compact and the conversation usable at every width", () => {
 		const f = setup(),
 			toggle = button(f.view.el, "Open agent computer");
+		toggle.focus();
 		toggle.click();
 		const panel = f.view.el.querySelector<HTMLElement>(".computer-panel")!;
+		expect(document.activeElement).toBe(toggle);
+		expect(toggle.getAttribute("aria-expanded")).toBe("true");
 		expect(panel.textContent).toContain("Computer access is not available yet.");
-		expect(panel.querySelector("header, select, .computer-preview")).toBeNull();
+		expect(panel.querySelector("header, select, .computer-preview, .computer-close")).toBeNull();
+		expect(panel.querySelector("[aria-label='Close computer']")).toBeNull();
 		expect(panel.textContent).not.toContain("Open computer");
 		expect(panel.textContent).not.toContain("Routines");
 		const composer = f.view.el.querySelector<HTMLTextAreaElement>(".composer-input")!;
@@ -321,10 +325,28 @@ describe("conversation UI boundaries", () => {
 			composer.focus();
 			expect(document.activeElement).toBe(composer);
 		}
-		button(f.view.el, "Close computer").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		panel.focus();
+		panel.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		expect(f.view.el.querySelector(".computer-panel")).toBeNull();
+		expect(toggle.getAttribute("aria-expanded")).toBe("false");
 		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBeFalsy();
 		expect(document.activeElement).toBe(toggle);
+		expect(f.cloud.rpc).not.toHaveBeenCalled();
+	});
+	it("uses the same computer toggle to close and reopen the popover without moving focus", () => {
+		const f = setup(),
+			toggle = button(f.view.el, "Open agent computer");
+		toggle.focus();
+		for (let attempt = 0; attempt < 2; attempt++) {
+			toggle.click();
+			expect(f.view.el.querySelectorAll(".computer-panel")).toHaveLength(1);
+			expect(toggle.getAttribute("aria-expanded")).toBe("true");
+			expect(document.activeElement).toBe(toggle);
+			toggle.click();
+			expect(f.view.el.querySelector(".computer-panel")).toBeNull();
+			expect(toggle.getAttribute("aria-expanded")).toBe("false");
+			expect(document.activeElement).toBe(toggle);
+		}
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 });

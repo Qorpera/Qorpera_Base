@@ -353,7 +353,6 @@ export class ConversationView {
 			this.#company.signal,
 		);
 		this.#body.append(this.#panel.el);
-		this.#panel.focus();
 		this.#autosize();
 		this.#computer.setAttribute("aria-expanded", "true");
 	}
