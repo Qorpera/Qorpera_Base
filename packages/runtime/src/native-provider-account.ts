@@ -12,6 +12,19 @@ function email(value: unknown): string | undefined {
 		: undefined;
 }
 
+/** Stable provider account identity for quota deduplication only. Credential
+ * rotations do not change the key; raw account IDs never leave the host. */
+export function nativeProviderAccountIdentity(metadata: string): string | undefined {
+	try {
+		if (metadata.length > 256 * 1024) return undefined;
+		const accountId = object(object(JSON.parse(metadata))?.tokens)?.account_id;
+		if (typeof accountId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(accountId)) return undefined;
+		return createHash("sha256").update("openai-account:").update(accountId).digest("hex");
+	} catch {
+		return undefined;
+	}
+}
+
 /** Display metadata only: claims never grant authority; only the email is projected.
  * This is called only after the official CLI confirms a successful login. */
 export function nativeProviderAccountEmail(harness: "codex-cli" | "claude-code", metadata: string): string | undefined {
@@ -37,3 +50,5 @@ export function nativeProviderAccountEmail(harness: "codex-cli" | "claude-code",
 	}
 	return undefined;
 }
+
+import { createHash } from "node:crypto";

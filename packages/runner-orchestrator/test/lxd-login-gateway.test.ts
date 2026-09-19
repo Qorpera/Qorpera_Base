@@ -262,11 +262,30 @@ function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" 
 		repins: [] as Record<string, unknown>[],
 	};
 	const fetchImplementation = vi.fn<typeof fetch>(async (input, init) => {
-		const url = String(input);
+		const originalUrl = String(input);
+		const url = originalUrl.replaceAll("account_refresh", "login");
 		const authorization = new Headers(init?.headers).get("authorization");
 		const body = String(init?.body ?? "");
-		requests.push({ url, authorization, body });
+		requests.push({ url: originalUrl, authorization, body });
 		const args = body ? JSON.parse(body) : {};
+		if (args.p_request_id) args.p_login_id = args.p_request_id;
+		if (originalUrl.endsWith("qorpera_describe_native_account_refresh_route"))
+			return Response.json({
+				request_id: loginId,
+				profile_id: profileId,
+				compute_identity_id: computeIdentityId,
+				requested_by_user_id: ownerUserId,
+				expires_at: expiresAt,
+				status: control.status,
+			});
+		if (url.endsWith("/account-refresh")) {
+			control.status = "completed";
+			return Response.json({
+				schema: "qorpera.native-account-refresh-result/v1",
+				request_id: loginId,
+				status: "completed",
+			});
+		}
 		if (url.includes("qorpera_describe_native_provider_login")) {
 			control.status = statuses.shift() ?? control.status;
 			return Response.json({
@@ -401,6 +420,74 @@ interface NativeLoginResponse {
 }
 
 describe("LXD native login gateway", () => {
+	it("hydrates accounts in a bounded identity guest without provider login or model work, then cleans it up", async () => {
+		const root = await stateRoot(),
+			lxd = new FakeLxd(),
+			boundary = fetchBoundary([]);
+		boundary.control.recovery = "established";
+		lxd.guestFiles.set("/var/lib/qorpera/identity/qorpera-native-provider-master-key", "present");
+		const gateway = new LxdNativeLoginGateway(config(root), lxd, boundary.fetchImplementation);
+		const body = {
+			schema: "qorpera.native-account-refresh/v1",
+			request_id: loginId,
+			compute_identity_id: computeIdentityId,
+			requested_by_user_id: ownerUserId,
+			expires_at: expiresAt,
+			refresh_capability: capability,
+		};
+		const request = () =>
+			new Request("http://127.0.0.1/account-refresh", {
+				method: "POST",
+				headers: { authorization: `Bearer ${capability}`, "content-type": "application/json" },
+				body: JSON.stringify(body),
+			});
+		const response = await gateway.handle(request());
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({
+			schema: "qorpera.native-account-refresh-result/v1",
+			request_id: loginId,
+			status: "completed",
+		});
+		expect(lxd.createCalls[0]?.name).toMatch(/^qorpera-refresh-/);
+		expect(lxd.createCalls[0]?.config["user.qorpera.purpose"]).toBe("account_refresh");
+		expect(lxd.powerCalls).toEqual(["start", "stop"]);
+		expect(lxd.deleteCalls).toBe(1);
+		expect(boundary.control.releasedAt).not.toBeNull();
+		expect(
+			boundary.requests.some(
+				(r) =>
+					r.url.endsWith("/login") ||
+					r.url.endsWith("/execute") ||
+					r.url.includes("runtime_login") ||
+					r.url.includes("provider_login"),
+			),
+		).toBe(false);
+		expect(boundary.requests.filter((r) => r.url.endsWith("/account-refresh"))).toHaveLength(1);
+		expect((await gateway.handle(request())).status).toBe(200);
+		expect(lxd.createCalls).toHaveLength(1);
+	});
+	it("rejects a refresh identity mismatch before machine allocation", async () => {
+		const root = await stateRoot(),
+			lxd = new FakeLxd(),
+			boundary = fetchBoundary([]);
+		const gateway = new LxdNativeLoginGateway(config(root), lxd, boundary.fetchImplementation);
+		const response = await gateway.handle(
+			new Request("http://127.0.0.1/account-refresh", {
+				method: "POST",
+				headers: { authorization: `Bearer ${capability}` },
+				body: JSON.stringify({
+					schema: "qorpera.native-account-refresh/v1",
+					request_id: loginId,
+					compute_identity_id: randomUUID(),
+					requested_by_user_id: ownerUserId,
+					expires_at: expiresAt,
+					refresh_capability: capability,
+				}),
+			}),
+		);
+		expect(response.status).toBe(403);
+		expect(lxd.createCalls).toHaveLength(0);
+	});
 	it("answers `preparing` when a post outlasts its budget and hands the prompt to a later post of the same login", async () => {
 		const root = await stateRoot(),
 			lxd = new FakeLxd(),

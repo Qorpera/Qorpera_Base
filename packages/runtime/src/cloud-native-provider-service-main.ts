@@ -1,6 +1,7 @@
 import { constants, realpathSync } from "node:fs";
 import { open, readFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { CloudContentAddressedStore } from "@qorpera/cloud-client/node/cloud-object-store";
 import { createClient } from "@supabase/supabase-js";
@@ -343,10 +344,13 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 	process.once("SIGTERM", stop);
 	try {
 		await service.start();
-		await new Promise<void>((resolveWait) =>
-			shutdown.signal.addEventListener("abort", () => resolveWait(), { once: true }),
-		);
+		while (!shutdown.signal.aborted) {
+			await host.refreshAccountMetadata(shutdown.signal);
+			await delay(60_000, undefined, { signal: shutdown.signal }).catch(() => undefined);
+		}
 	} finally {
+		shutdown.abort();
+		await host.stopAccountMetadataRefresh();
 		process.removeListener("SIGINT", stop);
 		process.removeListener("SIGTERM", stop);
 		await service.close();

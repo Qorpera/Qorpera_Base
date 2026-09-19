@@ -8,9 +8,17 @@ import {
 	type SessionTurnRequestResult,
 } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
+import {
+	type NativeAccountRefreshDescription,
+	type NativeAccountRefreshRequest,
+	nativeAccountRefreshBody,
+	parseNativeAccountRefreshDescription,
+	parseNativeAccountRefreshResult,
+} from "@qorpera/cloud-client/native-account-refresh";
 import { HttpNativeProviderIdentityBridge } from "@qorpera/cloud-client/native-provider-login";
 import { type Cloud, CloudRpcError } from "./client.ts";
 import { parseCloudConfig } from "./deployment-config.ts";
+import { UUID_PATTERN } from "./parse.ts";
 
 export interface WebNativeProviderLoginInput {
 	provider: "openai" | "anthropic";
@@ -33,6 +41,8 @@ export interface WebNativeSubscription {
 	readonly onboardingAvailable: boolean;
 	beginProviderLogin(input: WebNativeProviderLoginInput, signal?: AbortSignal): Promise<WebNativeProviderLogin>;
 	listConnections(signal?: AbortSignal): Promise<NativeExecutionConnections>;
+	refreshAccountMetadata?(signal?: AbortSignal): Promise<void>;
+	selectSessionAccount?(sessionId: string, signal?: AbortSignal): Promise<string | undefined>;
 	listSessionTurnProvenance(sessionId: string, signal?: AbortSignal): Promise<readonly SessionTurnProvenance[]>;
 	requestSessionTurn(input: RequestSponsoredSessionTurnInput, signal?: AbortSignal): Promise<SessionTurnRequestResult>;
 	createMemberSponsor(
@@ -69,68 +79,86 @@ export function createWebNativeSubscription(
 		cloud.config.nativeProviderLoginUrl === undefined
 			? undefined
 			: parseCloudConfig(cloud.config).nativeProviderLoginUrl;
-	const client = (signal?: AbortSignal, sessionId?: string) =>
-		new NativeSubscriptionControlPlane({
-			rpc: (method, args) => {
-				// Snapshot SDK arguments before authentication can yield to another UI action.
-				const body = JSON.stringify(args);
-				return withCloudDeadline(
-					async (deadline) => {
-						const check = () => {
-							deadline.throwIfAborted();
-							current(sessionId);
-						};
-						check();
-						const { data, error } = await cloud.supabase.auth.getSession();
-						check();
-						if (
-							error ||
-							!data.session ||
-							data.session.user.id !== memberId ||
-							!/^[A-Za-z0-9._~-]{1,8192}$/.test(data.session.access_token)
-						)
-							throw new Error("Sign in again to manage cloud execution.");
-						const response = await fetch(`${origin.origin}/rest/v1/rpc/${method}`, {
-							method: "POST",
-							headers: {
-								authorization: `Bearer ${data.session.access_token}`,
-								apikey: cloud.config.publishableKey,
-								"content-type": "application/json",
-							},
-							body,
-							signal: deadline,
-							redirect: "error",
-							cache: "no-store",
-							credentials: "omit",
-						});
-						try {
-							check();
-							if (response.status === 401 || response.status === 403)
+	const rpc = (method: string, args: Readonly<Record<string, unknown>>, signal?: AbortSignal, sessionId?: string) => {
+		// Snapshot SDK arguments before authentication can yield to another UI action.
+		const body = JSON.stringify(args);
+		return withCloudDeadline(
+			async (deadline) => {
+				const check = () => {
+					deadline.throwIfAborted();
+					current(sessionId);
+				};
+				check();
+				const { data, error } = await cloud.supabase.auth.getSession();
+				check();
+				if (
+					error ||
+					!data.session ||
+					data.session.user.id !== memberId ||
+					!/^[A-Za-z0-9._~-]{1,8192}$/.test(data.session.access_token)
+				)
+					throw new Error("Sign in again to manage cloud execution.");
+				const response = await fetch(`${origin.origin}/rest/v1/rpc/${method}`, {
+					method: "POST",
+					headers: {
+						authorization: `Bearer ${data.session.access_token}`,
+						apikey: cloud.config.publishableKey,
+						"content-type": "application/json",
+					},
+					body,
+					signal: deadline,
+					redirect: "error",
+					cache: "no-store",
+					credentials: "omit",
+				});
+				try {
+					check();
+					if (response.status === 401 || response.status === 403)
+						throw new CloudRpcError(
+							method,
+							{ message: "You do not have permission to manage this cloud execution.", code: "42501" },
+							response.status,
+						);
+					if (response.status !== 200) {
+						if (method === "qorpera_begin_native_account_refresh") {
+							const failure: unknown = JSON.parse(
+								new TextDecoder().decode(await readBoundedCloudResponse(response, 64 * 1024, deadline)),
+							);
+							if (failure && typeof failure === "object" && "code" in failure && failure.code === "55000")
 								throw new CloudRpcError(
 									method,
-									{ message: "You do not have permission to manage this cloud execution.", code: "42501" },
+									{ message: "Account refresh is in progress", code: "55000" },
 									response.status,
 								);
-							if (response.status !== 200) throw new Error("Cloud execution response was unavailable.");
-							const value: unknown = JSON.parse(
-								new TextDecoder("utf-8", { fatal: true }).decode(
-									await readBoundedCloudResponse(response, 1024 * 1024, deadline),
-								),
-							);
-							check();
-							return value;
-						} finally {
-							if (!response.body?.locked) void response.body?.cancel().catch(() => undefined);
 						}
-					},
-					10000,
-					AbortSignal.any([companySignal, ...(signal ? [signal] : [])]),
-				).catch((error: unknown) => {
-					if (error instanceof CloudRpcError && error.denied) throw error;
-					throw new Error("Cloud execution could not be confirmed. Refresh its status before trying again.");
-				});
+						throw new Error("Cloud execution response was unavailable.");
+					}
+					const value: unknown = JSON.parse(
+						new TextDecoder("utf-8", { fatal: true }).decode(
+							await readBoundedCloudResponse(response, 1024 * 1024, deadline),
+						),
+					);
+					check();
+					return value;
+				} finally {
+					if (!response.body?.locked) void response.body?.cancel().catch(() => undefined);
+				}
 			},
+			10000,
+			AbortSignal.any([companySignal, ...(signal ? [signal] : [])]),
+		).catch((error: unknown) => {
+			if (
+				error instanceof CloudRpcError &&
+				(error.denied || (method === "qorpera_begin_native_account_refresh" && error.code === "55000"))
+			)
+				throw error;
+			throw new Error("Cloud execution could not be confirmed. Refresh its status before trying again.");
 		});
+	};
+	const client = (signal?: AbortSignal, sessionId?: string) =>
+		new NativeSubscriptionControlPlane({ rpc: (method, args) => rpc(method, args, signal, sessionId) });
+	let pendingMetadataRefresh: Promise<void> | undefined;
+	let metadataAdmission: { clientRequestId: string; capability: string; expiresAt: number } | undefined;
 	return {
 		onboardingAvailable: loginBase !== undefined,
 		beginProviderLogin: (input, signal) => {
@@ -269,6 +297,169 @@ export function createWebNativeSubscription(
 				});
 		},
 		listConnections: (signal) => client(signal).listConnections(profileId),
+		refreshAccountMetadata: async (signal) => {
+			const checked = AbortSignal.any([companySignal, ...(signal ? [signal] : [])]);
+			checked.throwIfAborted();
+			current();
+			if (!pendingMetadataRefresh) {
+				if (!metadataAdmission || metadataAdmission.expiresAt <= Date.now()) {
+					const bytes = crypto.getRandomValues(new Uint8Array(32));
+					const capability = btoa(String.fromCharCode(...bytes))
+						.replaceAll("+", "-")
+						.replaceAll("/", "_")
+						.replace(/=+$/, "");
+					metadataAdmission = {
+						clientRequestId: crypto.randomUUID(),
+						capability,
+						expiresAt: Date.now() + 300_000,
+					};
+				}
+				const admission = metadataAdmission;
+				const work = withCloudDeadline(
+					async (deadline) => {
+						const accounts = await client(deadline).listConnections(profileId);
+						if (
+							!accounts.computeIdentity ||
+							!accounts.connections.some(
+								(account) =>
+									account.provider === "openai" &&
+									account.nativeHarness === "codex-cli" &&
+									account.connectionStatus === "active" &&
+									account.authorizationState === "active",
+							)
+						)
+							return;
+						if (!loginBase) throw new Error("Account refresh is not configured");
+						const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(admission.capability));
+						const pause = () =>
+							new Promise<void>((resolve, reject) => {
+								deadline.throwIfAborted();
+								const stop = () => {
+									clearTimeout(timer);
+									reject(new Error("Account refresh interrupted"));
+								};
+								const timer = setTimeout(() => {
+									deadline.removeEventListener("abort", stop);
+									resolve();
+								}, 1000);
+								deadline.addEventListener("abort", stop, { once: true });
+							});
+						const args = {
+							p_profile_id: profileId,
+							p_client_request_id: admission.clientRequestId,
+							p_capability_sha256: Array.from(new Uint8Array(digest), (byte) =>
+								byte.toString(16).padStart(2, "0"),
+							).join(""),
+						};
+						let authority: NativeAccountRefreshDescription;
+						for (;;) {
+							try {
+								authority = parseNativeAccountRefreshDescription(
+									await rpc("qorpera_begin_native_account_refresh", args, deadline),
+								);
+								break;
+							} catch (error) {
+								if (!(error instanceof CloudRpcError) || error.code !== "55000") throw error;
+								const receipt = await rpc(
+									"qorpera_get_native_account_refresh",
+									{ p_profile_id: profileId },
+									deadline,
+								);
+								if (receipt !== null) {
+									const observed = parseNativeAccountRefreshDescription(receipt);
+									if (
+										observed.profileId !== profileId ||
+										observed.requestedByUserId !== memberId ||
+										observed.computeIdentityId !== accounts.computeIdentity.computeIdentityId
+									)
+										throw new Error("Account refresh authority changed");
+									if (observed.status === "completed" && Date.parse(observed.expiresAt) > Date.now()) return;
+								}
+								await pause();
+							}
+						}
+						if (
+							authority.profileId !== profileId ||
+							authority.computeIdentityId !== accounts.computeIdentity.computeIdentityId ||
+							authority.requestedByUserId !== memberId ||
+							Date.parse(authority.expiresAt) <= Date.now()
+						)
+							throw new Error("Account refresh authority changed");
+						admission.expiresAt = Date.parse(authority.expiresAt);
+						if (authority.status === "completed") return;
+						const request: NativeAccountRefreshRequest = { ...authority, capability: admission.capability };
+						const body = JSON.stringify(nativeAccountRefreshBody(request));
+						for (;;) {
+							deadline.throwIfAborted();
+							current();
+							const { data, error } = await cloud.supabase.auth.getSession();
+							deadline.throwIfAborted();
+							current();
+							if (error || data.session?.user.id !== memberId) throw new Error("Account refresh member changed");
+							const response = await fetch(new URL("account-refresh", loginBase).href, {
+								method: "POST",
+								headers: {
+									authorization: `Bearer ${admission.capability}`,
+									"content-type": "application/json",
+								},
+								body,
+								signal: deadline,
+								redirect: "error",
+								cache: "no-store",
+								credentials: "omit",
+							});
+							try {
+								if (!response.ok) throw new Error("Account refresh unavailable");
+								const value: unknown = JSON.parse(
+									new TextDecoder("utf-8", { fatal: true }).decode(
+										await readBoundedCloudResponse(response, 64 * 1024, deadline),
+									),
+								);
+								deadline.throwIfAborted();
+								current();
+								if (parseNativeAccountRefreshResult(value, authority.requestId) === "completed") return;
+							} finally {
+								if (!response.body?.locked) void response.body?.cancel().catch(() => undefined);
+							}
+							await pause();
+						}
+					},
+					120_000,
+					companySignal,
+				)
+					.then(() => {
+						metadataAdmission = undefined;
+					})
+					.catch(() => {
+						throw new Error("Account usage could not be refreshed. Try again shortly.");
+					});
+				pendingMetadataRefresh = work;
+				void work
+					.finally(() => {
+						if (pendingMetadataRefresh === work) pendingMetadataRefresh = undefined;
+					})
+					.catch(() => undefined);
+			}
+			await withCloudDeadline(() => pendingMetadataRefresh!, 120_000, checked);
+			checked.throwIfAborted();
+			current();
+		},
+		selectSessionAccount: async (sessionId, signal) => {
+			if (!UUID_PATTERN.test(sessionId)) throw new Error("Invalid conversation account request.");
+			const value = await rpc(
+				"qorpera_select_member_session_account",
+				{
+					p_profile_id: profileId,
+					p_session_id: sessionId,
+				},
+				signal,
+				sessionId,
+			);
+			if (value === null) return undefined;
+			if (typeof value !== "string" || !UUID_PATTERN.test(value))
+				throw new Error("Invalid conversation account response.");
+			return value;
+		},
 		listSessionTurnProvenance: (sessionId, signal) => client(signal, sessionId).listSessionTurnProvenance(sessionId),
 		requestSessionTurn: (input, signal) => client(signal, input.sessionId).requestSessionTurn(input),
 		createMemberSponsor: (input, signal) => client(signal).createMemberSponsor({ ...input, profileId }),
