@@ -5,17 +5,46 @@ import {
 	assertCompanyComputerScreenBinding,
 	type CompanyComputerScreenBinding,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
-import { isStaffCharacterId, STAFF_CHARACTER_BY_TEMPLATE } from "@qorpera/cloud-client/staff-characters";
+import {
+	isStaffCharacterId,
+	STAFF_CHARACTER_BY_TEMPLATE,
+	STAFF_CHARACTER_IDS,
+	type StaffCharacterId,
+} from "@qorpera/cloud-client/staff-characters";
 import type { CompanyComputerGuestBoundary } from "./cloud-company-computer-guest.ts";
 import { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
 import {
 	COMPANY_COMPUTER_SCREEN_HOURS,
 	COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER,
-	COMPANY_COMPUTER_WALLPAPER_IDS,
 	type CompanyComputerWallpaperId,
 } from "./cloud-company-computer-wallpapers.ts";
 
 export { COMPANY_COMPUTER_SCREEN_HOURS } from "./cloud-company-computer-wallpapers.ts";
+
+/** The founding agent's template is not in the hireable template list, but every client draws it as the crown. */
+const FOUNDER_TEMPLATE_CHARACTER: Readonly<Record<string, StaffCharacterId>> = Object.freeze({ "co-founder": "crown" });
+
+/**
+ * The avatar a client draws for this agent, by the clients' own rules
+ * (`figureFor` in the web client): the saved figure, else the template's, else a
+ * stable one derived from the agent id. The hash walks the avatar list, not the
+ * asset list, so an agent without a saved figure still gets its own backdrop.
+ */
+export function companyComputerScreenCharacter(
+	binding: CompanyComputerScreenBinding,
+	templateId?: string,
+	creature?: string,
+): StaffCharacterId {
+	assertCompanyComputerScreenBinding(binding, binding);
+	if (isStaffCharacterId(creature)) return creature;
+	const mapped = Object.entries({ ...STAFF_CHARACTER_BY_TEMPLATE, ...FOUNDER_TEMPLATE_CHARACTER }).find(
+		([id]) => id === templateId,
+	);
+	if (mapped) return mapped[1];
+	let seed = 0;
+	for (const character of binding.staffAgentId) seed = (seed * 31 + character.charCodeAt(0)) >>> 0;
+	return STAFF_CHARACTER_IDS[seed % STAFF_CHARACTER_IDS.length];
+}
 
 /** Resolve current avatar identities to the guest image's stable asset catalog. */
 export function companyComputerScreenCreature(
@@ -23,13 +52,7 @@ export function companyComputerScreenCreature(
 	templateId?: string,
 	creature?: string,
 ): CompanyComputerWallpaperId {
-	assertCompanyComputerScreenBinding(binding, binding);
-	if (isStaffCharacterId(creature)) return COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER[creature];
-	const mapped = Object.entries(STAFF_CHARACTER_BY_TEMPLATE).find(([id]) => id === templateId);
-	if (mapped) return COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER[mapped[1]];
-	let seed = 0;
-	for (const character of binding.staffAgentId) seed = (seed * 31 + character.charCodeAt(0)) >>> 0;
-	return COMPANY_COMPUTER_WALLPAPER_IDS[seed % COMPANY_COMPUTER_WALLPAPER_IDS.length];
+	return COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER[companyComputerScreenCharacter(binding, templateId, creature)];
 }
 
 async function assertPhysicalDirectory(directory: string): Promise<void> {

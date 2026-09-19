@@ -31,8 +31,14 @@ disjoint, physical directories, verified by the Step 2 containment adapter:
 Before invocation, under the existing serialized guest reconcile, call
 `prepareCompanyComputerScreenWallpaper({ binding, layout, boundary, templateId,
 creature }, signal)` with the current agent metadata from the authorized cloud
-registry. Explicit creature appearance takes precedence over the reused
-template/identity derivation. The helper copies the image's
+registry. The service reads both fields for the bound screen through the
+broker-only `qorpera_runtime_office_screen_appearance(p_binding)` when it starts
+a desktop; an office that cannot read them still starts, with the figure every
+client derives from the agent id. Explicit creature appearance takes precedence
+over the reused template/identity derivation. The image's file names are
+historical (`pebble`, `folio`, `brain`, `wisp`, `halo`, `ribbon`, `bloom`);
+`cloud-company-computer-wallpapers.ts` maps each current avatar to the file
+whose traced figure is that avatar, and a test pins the table to the art. The helper copies the image's
 `/usr/share/backgrounds/qorpera-screen-<creature>.png` through an explicit
 read/write and atomic rename into `<screenStateRoot>/<screen UUID>/wallpaper.png`;
 it does not use the cross-filesystem `copyFile` syscall that failed in the old
