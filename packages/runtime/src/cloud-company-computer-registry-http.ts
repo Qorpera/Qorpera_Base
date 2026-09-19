@@ -22,6 +22,7 @@ const methods = [
 	"qorpera_read_native_office_capture",
 	"qorpera_assert_native_office_captures",
 	"qorpera_native_office_browser_grant",
+	"qorpera_office_screen_browser_grant",
 	"qorpera_ack_runtime_office_drain",
 	"qorpera_ack_runtime_office_privacy",
 	"qorpera_check_runtime_office_private_surface",

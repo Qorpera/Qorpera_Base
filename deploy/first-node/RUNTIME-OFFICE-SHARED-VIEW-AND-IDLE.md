@@ -52,6 +52,24 @@ baked avatar paths. The guest service also reads the agent's saved avatar for
 the bound screen, so the agent-id hash is only a fallback. No artwork changed:
 an installed office needs only the new service file and the new SQL function.
 
+## The dock browser on a shared screen
+
+A member sharing an agent's desktop clicks the browser icon in the dock and
+gets the company browser on that screen, for member and agent alike. The
+browser is owned by the screen, not by a run: the dock launcher leaves an empty
+request file, the office service opens the screen agent's granted profile
+through the unchanged contained launch, a later agent run joins the same
+window, and run end lets go of it. Authority is the broker-only
+`qorpera_office_screen_browser_grant` (migration
+`20260920001000_runtime_office_screen_browser.sql`): the agent's current grant
+plus an agent lease or a live shared/control viewer with input permission; a
+member alone only ever opens a company-owned profile. Opens are recorded with
+the members present. Unchanged: the run's own grant check before every agent
+action, per-connection egress checks, one Chromium per profile, the privacy
+fence and drain closing it, and a failed or cancelled agent action physically
+closing it. Third-party sign-in remains a takeover (`control`) activity.
+Details: `deploy/lxd-company-computer-guest/README.md`.
+
 ## Release and acceptance
 
 This is a source candidate, not evidence of an installed production release.

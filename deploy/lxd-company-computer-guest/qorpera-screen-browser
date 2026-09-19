@@ -1,20 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Dock launcher for the office browser. Chromium never starts from the desktop
-# session: the company runtime launches it through the grant broker with the
-# admitted profile. This helper raises the office browser window already on
-# this screen, or tells the person at the screen where the browser comes from.
+# Dock launcher for the company browser. Chromium never starts from the desktop
+# session: the office service launches it, contained, with the screen agent's
+# granted profile. This helper raises the browser window already on this
+# screen; otherwise it asks the service for one and raises it when it appears.
+#
+# The request is an empty file in the service-owned runtime directory. It
+# carries no data: the service derives the screen, the profile and whether
+# anybody present may open it. A refusal looks the same from here as a failure.
 if [[ -z ${DISPLAY:-} ]]; then
 	echo "usage: qorpera-screen-browser (inside a screen session)" >&2
 	exit 64
 fi
-windows=()
-while IFS= read -r window; do
-	[[ ${window} =~ ^[0-9]+$ ]] && windows+=("${window}")
-done < <(xdotool search --onlyvisible --class '^([Cc]hromium|[Cc]hrome)' 2>/dev/null || true)
-if (( ${#windows[@]} > 0 )); then
-	exec xdotool windowactivate "${windows[-1]}"
+runtime_root=/run/qorpera
+raise_browser() {
+	local window windows=()
+	while IFS= read -r window; do
+		[[ ${window} =~ ^[0-9]+$ ]] && windows+=("${window}")
+	done < <(xdotool search --onlyvisible --class '^([Cc]hromium|[Cc]hrome)' 2>/dev/null || true)
+	(( ${#windows[@]} > 0 )) || return 1
+	xdotool windowactivate "${windows[${#windows[@]} - 1]}"
+}
+if raise_browser; then exit 0; fi
+if [[ -d ${runtime_root} && ! -L ${runtime_root} ]]; then
+	: > "${runtime_root}/browser-request" 2>/dev/null || true
 fi
-exec xmessage -center -buttons OK:0 -default OK \
-	"The office browser is not open on this screen. It opens through the company runtime when an agent browses or a member signs in privately."
+# About ten seconds: a cold Chromium start on a busy office.
+for ((attempt = 0; attempt < 40; attempt++)); do
+	sleep 0.25
+	if raise_browser; then exit 0; fi
+done
+exec xmessage -center -buttons OK:0 -default OK "The browser could not be opened on this screen."

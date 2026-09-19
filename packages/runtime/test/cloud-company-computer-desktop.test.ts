@@ -392,6 +392,73 @@ describe("restored XFCE startup settings (real Bash helper, fake X11/XFCE comman
 		);
 		expect(browser).toContain("xdotool windowactivate");
 		expect(browser).not.toMatch(/qorpera-chromium|bwrap|playwright/);
+		// The launcher starts nothing itself and says nothing about private sign-in,
+		// which no member client can reach any more.
+		expect(browser).not.toMatch(/chromium-browser|google-chrome|signs in|privately/i);
+		expect(browser).toContain("runtime_root=/run/qorpera");
+	});
+
+	it("asks the office service for the browser through one empty file, waits for the window and is honest when none comes", async () => {
+		const root = await mkdtemp(join(await realpath(tmpdir()), "qorpera-dock-"));
+		roots.push(root);
+		const bin = join(root, "bin");
+		const runtime = join(root, "run");
+		await mkdir(bin);
+		await mkdir(runtime);
+		const script = (
+			await readFile(
+				new URL("../../../deploy/lxd-company-computer-guest/qorpera-screen-browser", import.meta.url),
+				"utf8",
+			)
+		).replace("runtime_root=/run/qorpera", `runtime_root=${JSON.stringify(runtime)}`);
+		expect(script).toContain(runtime);
+		const launcher = join(root, "qorpera-screen-browser");
+		await writeFile(launcher, script, { mode: 0o755 });
+		const double = async (name: string, body: string) =>
+			writeFile(join(bin, name), `#!/bin/bash\n${body}\n`, { mode: 0o755 });
+		// The X tools are doubles: `search` finds a window only while "window" exists.
+		await double(
+			"xdotool",
+			`echo "$*" >> ${JSON.stringify(join(root, "xdotool.log"))}
+if [[ $1 == search ]]; then [[ -e ${JSON.stringify(join(root, "window"))} ]] && echo 4194311; exit 0; fi`,
+		);
+		await double("xmessage", `printf '%s' "\${!#}" > ${JSON.stringify(join(root, "message"))}`);
+		// Stands in for the office service: the second wait "opens" the browser if asked.
+		await double(
+			"sleep",
+			`count=$(cat ${JSON.stringify(join(root, "sleeps"))} 2>/dev/null || echo 0); echo $((count + 1)) > ${JSON.stringify(join(root, "sleeps"))}
+if [[ -e ${JSON.stringify(join(root, "service"))} && -e ${JSON.stringify(join(runtime, "browser-request"))} && $count -ge 1 ]]; then : > ${JSON.stringify(join(root, "window"))}; fi`,
+		);
+		const run = () =>
+			execute("/bin/bash", [launcher], {
+				timeout: 10000,
+				env: { PATH: `${bin}:/usr/bin:/bin`, DISPLAY: ":1" },
+			});
+		await expect(execute("/bin/bash", [launcher], { env: { PATH: `${bin}:/usr/bin:/bin` } })).rejects.toThrow();
+
+		// 1. A browser window is already on the screen: raise it, ask for nothing.
+		await writeFile(join(root, "window"), "");
+		await run();
+		expect(await readFile(join(root, "xdotool.log"), "utf8")).toContain("windowactivate 4194311");
+		expect(await readdir(runtime)).toEqual([]);
+
+		// 2. No window: one empty request, then the window the service opened is raised.
+		await rm(join(root, "window"));
+		await rm(join(root, "xdotool.log"));
+		await writeFile(join(root, "service"), "");
+		await run();
+		expect(await readdir(runtime)).toEqual(["browser-request"]);
+		expect((await stat(join(runtime, "browser-request"))).size).toBe(0);
+		expect(await readFile(join(root, "xdotool.log"), "utf8")).toContain("windowactivate 4194311");
+		expect(await readdir(root)).not.toContain("message");
+
+		// 3. The service refuses or fails: after the whole wait, one plain sentence.
+		await rm(join(root, "window"));
+		await rm(join(root, "service"));
+		await rm(join(root, "sleeps"));
+		await run();
+		expect(await readFile(join(root, "message"), "utf8")).toBe("The browser could not be opened on this screen.");
+		expect((await readFile(join(root, "sleeps"), "utf8")).trim()).toBe("40");
 	});
 
 	it("writes the dock, launchers and terminal shell into the screen state before the desktop starts", async () => {

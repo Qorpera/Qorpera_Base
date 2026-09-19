@@ -1,4 +1,11 @@
-import { CompanyComputerLinuxDesktopLauncher } from "@qorpera/runtime/cloud-company-computer-linux-desktop";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+	COMPANY_COMPUTER_BROWSER_REQUEST_FILE,
+	CompanyComputerLinuxDesktopLauncher,
+	takeCompanyComputerBrowserRequest,
+} from "@qorpera/runtime/cloud-company-computer-linux-desktop";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { computerBinding, computerId, computerScope } from "./fixtures/company-computer.ts";
 
@@ -116,5 +123,50 @@ describe("Linux desktop admission (real XFCE lifecycle uses the explicit Linux p
 		await launcher.close();
 		await expect(launcher.launch(computerBinding(), new AbortController().signal)).rejects.toThrow();
 		expect(options.boundary.assertReady).not.toHaveBeenCalled();
+	});
+});
+
+describe("dock browser request (an empty file in the service-owned session directory)", () => {
+	const roots: string[] = [];
+	afterEach(async () => {
+		for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+	});
+	async function session() {
+		const root = await mkdtemp(join(await realpath(tmpdir()), "qorpera-browser-request-"));
+		roots.push(root);
+		const directory = join(root, "session");
+		await mkdir(directory);
+		return { root, directory, request: join(directory, COMPANY_COMPUTER_BROWSER_REQUEST_FILE) };
+	}
+
+	it("is consumed exactly once and carries nothing", async () => {
+		const f = await session();
+		expect(await takeCompanyComputerBrowserRequest(f.directory)).toBe(false);
+		await writeFile(f.request, "");
+		expect(await takeCompanyComputerBrowserRequest(f.directory)).toBe(true);
+		expect(await takeCompanyComputerBrowserRequest(f.directory)).toBe(false);
+		expect(await readdir(f.directory)).toEqual([]);
+		// Content is never read: a request with bytes in it is the same request.
+		await writeFile(f.request, "https://example.test/ --profile-directory=/srv/profiles/other");
+		expect(await takeCompanyComputerBrowserRequest(f.directory)).toBe(true);
+		expect(await readdir(f.directory)).toEqual([]);
+	});
+
+	it("never follows what the desktop put at the name", async () => {
+		const f = await session();
+		const outside = join(f.root, "outside");
+		await writeFile(outside, "service-owned bytes");
+		await symlink(outside, f.request);
+		expect(await takeCompanyComputerBrowserRequest(f.directory)).toBe(false);
+		expect(await readFile(outside, "utf8")).toBe("service-owned bytes");
+		expect(await readdir(f.directory)).toEqual([]);
+		const tree = join(f.root, "tree");
+		await mkdir(tree);
+		await writeFile(join(tree, "kept"), "kept");
+		await mkdir(f.request);
+		await symlink(tree, join(f.request, "link"));
+		expect(await takeCompanyComputerBrowserRequest(f.directory)).toBe(false);
+		expect(await readFile(join(tree, "kept"), "utf8")).toBe("kept");
+		expect(await readdir(f.directory)).toEqual([]);
 	});
 });

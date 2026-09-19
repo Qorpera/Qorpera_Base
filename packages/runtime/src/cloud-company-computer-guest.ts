@@ -52,6 +52,8 @@ export interface CompanyComputerBrowserSession {
 	readonly grant: CompanyComputerBrowserGrant;
 	readonly context: BrowserContext;
 	assertActive(signal: AbortSignal): Promise<void>;
+	/** True once the physical browser has closed or begun closing; a later open starts a fresh one. */
+	isEnded?(): boolean;
 	close(): Promise<void>;
 }
 
@@ -203,6 +205,7 @@ export class PersistentCompanyComputerBrowser {
 			grant,
 			context,
 			close,
+			isEnded: () => ended || closing !== undefined,
 			assertActive: async (requestSignal) => {
 				if (closing || ended) {
 					void close().catch(() => undefined);
