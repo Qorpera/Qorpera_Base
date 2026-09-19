@@ -18,9 +18,6 @@ import { GroupDetails } from "./group-details.ts";
 import { SessionExecutionView } from "./session-execution.ts";
 import { SessionRunView } from "./session-run.ts";
 
-/** Beside the computer panel the conversation keeps at least this much room. */
-const CONVERSATION_MIN_WIDTH = 316;
-
 // Popup dismissal lasts for this company controller, including conversation navigation.
 // It does not settle or discard work whose outcome still needs review.
 const dismissedRunNotifications = new WeakMap<CompanyController, Set<string>>();
@@ -262,8 +259,8 @@ export class ConversationView {
 			once: true,
 			signal: this.#lifetime.signal,
 		});
-		window.addEventListener("resize", () => this.#syncPanelLayout(), { signal: this.#lifetime.signal });
-		window.addEventListener("qorpera-rail-resize", () => this.#syncPanelLayout(), { signal: this.#lifetime.signal });
+		window.addEventListener("resize", () => this.#autosize(), { signal: this.#lifetime.signal });
+		window.addEventListener("qorpera-rail-resize", () => this.#autosize(), { signal: this.#lifetime.signal });
 		document.addEventListener(
 			"click",
 			(event) => {
@@ -363,7 +360,7 @@ export class ConversationView {
 		if (this.#panel) {
 			this.#panel.dispose();
 			this.#panel = undefined;
-			this.#syncPanelLayout();
+			this.#autosize();
 			this.#computer.setAttribute("aria-expanded", "false");
 			this.#computer.focus();
 			return;
@@ -380,20 +377,8 @@ export class ConversationView {
 			this.#company.signal,
 		);
 		this.#body.append(this.#panel.el);
-		this.#panel.focus();
-		this.#syncPanelLayout();
-		this.#computer.setAttribute("aria-expanded", "true");
-	}
-
-	#syncPanelLayout(): void {
-		// The thread's width and the panel's own (420px beside the thread, all of it in the phone
-		// layout) decide, so any rail width and any panel rule in conversation.css count.
-		const covered =
-			Boolean(this.#panel) && this.#body.clientWidth - (this.#panel?.el.offsetWidth ?? 0) < CONVERSATION_MIN_WIDTH;
-		this.#body.classList.toggle("computer-covers", covered);
-		if (covered && this.#conversationPane.contains(document.activeElement)) this.#panel?.focus();
-		this.#conversationPane.inert = covered;
 		this.#autosize();
+		this.#computer.setAttribute("aria-expanded", "true");
 	}
 
 	/** One button: it sends a draft, and with nothing to send it stops the run the agent is on. */
@@ -562,7 +547,7 @@ export class ConversationView {
 			if (this.#panel) this.#body.append(this.#panel.el);
 			if (focused) this.#panel ? this.#panel.focus() : this.#composer.focus();
 			this.#computer.setAttribute("aria-expanded", String(Boolean(this.#panel)));
-			this.#syncPanelLayout();
+			this.#autosize();
 		}
 		replace(
 			this.#identity,
@@ -830,7 +815,8 @@ export class ConversationView {
 		);
 		if (focused) {
 			if (!hidden) this.#runNotification.querySelector<HTMLElement>("button")?.focus({ preventScroll: true });
-			else if (this.#conversationPane.inert) this.#panel?.focus();
+			else if (this.#conversationPane.inert || this.#panel?.el.classList.contains("is-entered"))
+				this.#panel?.focus();
 			else if (!this.#composer.disabled && !this.#composerWrap.hidden) this.#composer.focus({ preventScroll: true });
 			else if (!this.#identity.disabled) this.#identity.focus({ preventScroll: true });
 			else {
