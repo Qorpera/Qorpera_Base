@@ -338,6 +338,9 @@ export class ConnectionsView {
 				const expired = resetIn !== undefined && resetIn <= 0;
 				const remaining = Math.round((100 - window.usedPercent) * 10) / 10;
 				const value = expired ? "Usage unavailable" : `${remaining}% ${stale ? "at last check" : "left"}`;
+				const fill = h("span");
+				// CSSOM property updates work with the release CSP; style attributes do not.
+				fill.style.width = `${remaining}%`;
 				return h(
 					"div",
 					{ class: "connection-usage-window" },
@@ -369,7 +372,7 @@ export class ConnectionsView {
 									"aria-valuenow": remaining,
 									"aria-valuetext": value,
 								},
-								h("span", { style: `width: ${remaining}%` }),
+								fill,
 							),
 				);
 			}),
