@@ -61,7 +61,7 @@ request file, the office service opens the screen agent's granted profile
 through the unchanged contained launch, a later agent run joins the same
 window, and run end lets go of it. Authority is the broker-only
 `qorpera_office_screen_browser_grant` (migration
-`20260920001000_runtime_office_screen_browser.sql`): the agent's current grant
+`20260920021000_runtime_office_screen_browser.sql`): the agent's current grant
 plus an agent lease or a live shared/control viewer with input permission; a
 member alone only ever opens a company-owned profile. Opens are recorded with
 the members present. Unchanged: the run's own grant check before every agent
