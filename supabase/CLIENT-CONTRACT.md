@@ -524,14 +524,21 @@ above.
     `qorpera_acknowledge_member_notification` (the desktop list/acknowledge
     surface in the Steps 0–2 amendment ratification was never built), so
     request 8's "the web client will render member notifications" no longer
-    holds. Two consequences on the runtime side:
-    - The usage-limit notice and the "never silent" sponsor handoff of
-      `QORPERA-RUNTIME-CONTRACT.md` §17 reach no member in any client.
-    - Nothing acknowledges a row, and the open-row unique index in
-      `20260828019980_provider_usage_signals.sql` keeps an unacknowledged
-      row in place, so repeat usage-limit and ceiling notices for the same key
-      are dropped (handoffs, keyed per handoff, keep accumulating).
+    holds. Consequences on the runtime side:
+    - No notice reaches a member in any client: the usage-limit notice and the
+      "never silent" sponsor handoff of `QORPERA-RUNTIME-CONTRACT.md` §17, the
+      ceiling-trip notice of §7.4, and the founder stop notice of §21 item 30.
+      Web Settings still shows the paused state and the month's trip count,
+      but nothing tells a member when either changes.
+    - Nothing acknowledges a row. Where the dedupe key is fixed — usage limits
+      (connection and version, `20260828019980`) and spend/token trips
+      (profile, month and dimension, `20260828019995`) — the open-row unique
+      index keeps the first unacknowledged row and later notices are dropped.
+      Where the key is new each time — pause/resume, hourly wake trips,
+      machine-capacity refusals and handoffs — one unacknowledged row is added
+      per event and never cleared.
 
     Request: decide where these notices reach a member now — a surface a
-    client still shows, such as the run or conversation state — or record
-    in §17 that they are paused until a client shows them again.
+    client still shows, such as the run or conversation state — or record in
+    §7.4, §17 and §21 that they are paused until a client shows them again,
+    and whether rows should keep being written meanwhile.

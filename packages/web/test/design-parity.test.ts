@@ -60,6 +60,26 @@ function companyFixture() {
 	cleanup.push(() => company.stop());
 	return { ...f, company };
 }
+/** The company rail inside the app frame, drawn for the company home. */
+function mountRail(f: ReturnType<typeof companyFixture>) {
+	const rail = h("aside", { class: "rail" }),
+		frame = h("div", { class: "frame" }, rail);
+	document.body.append(frame);
+	const auth = new AuthController(f.cloud);
+	cleanup.push(() => auth.dispose());
+	const draw = () =>
+		renderRail(rail, f.company, {
+			profiles: [profileA],
+			user: userA,
+			route: { name: "company", profileId: profileA.profileId, section: "home" },
+			auth,
+			invitations: 0,
+			openSettings: () => {},
+			openFeedback: () => {},
+		});
+	draw();
+	return { rail, frame, draw };
+}
 const imageMessage: TranscriptMessage = {
 	kind: "member",
 	id: id(90),
@@ -175,6 +195,14 @@ describe("shell presentation lifecycle", () => {
 		expect(frame.classList.contains("rail-compact")).toBe(true);
 		rail.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
 		expect(rail.el.getAttribute("aria-valuenow")).toBe("456");
+	});
+	it("reads a stored 304px, the previous default, as no choice", () => {
+		localStorage.setItem("qorpera.web.rail-width", "304");
+		const aside = h("aside", { class: "rail" }),
+			rail = new RailLayout(h("div", null, aside), aside);
+		cleanup.push(() => rail.dispose());
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("456");
+		expect(localStorage.getItem("qorpera.web.rail-width")).toBeNull();
 	});
 	it("changes marked labels without translating company names or message text", () => {
 		const label = uiText("Company"),
@@ -394,19 +422,7 @@ it("renders recorded responsibility targets and room links without inventing mis
 		],
 	};
 	f.company.store.set({ organization, organizationState: "ready" });
-	const rail = h("nav");
-	document.body.append(rail);
-	const auth = new AuthController(f.cloud);
-	cleanup.push(() => auth.dispose());
-	renderRail(rail, f.company, {
-		profiles: [profileA],
-		user: userA,
-		route: { name: "company", profileId: profileA.profileId, section: "home" },
-		auth,
-		invitations: 0,
-		openSettings: () => {},
-		openFeedback: () => {},
-	});
+	const { rail } = mountRail(f);
 	expect(rail.querySelector('a[href*="/responsibility/"], a[href*="/project/"]')).toBeNull();
 	expect(rail.querySelector('.rail-cofounder .cofounder-home[aria-current="page"]')?.textContent).toContain(
 		staff.displayName,
@@ -445,48 +461,50 @@ it("renders recorded responsibility targets and room links without inventing mis
 	expect(f.cloud.rpc).not.toHaveBeenCalled();
 });
 
-it("keeps the rail search and keyboard focus through redraws and drops the search when the rail collapses", () => {
+it("keeps the rail's search field, rows and focus through redraws and pauses the search while the rail is collapsed", () => {
 	const f = companyFixture();
-	const rail = h("nav"),
-		frame = h("div", null, rail);
-	document.body.append(frame);
-	const auth = new AuthController(f.cloud);
-	cleanup.push(() => auth.dispose());
-	const draw = () =>
-		renderRail(rail, f.company, {
-			profiles: [profileA],
-			user: userA,
-			route: { name: "company", profileId: profileA.profileId, section: "home" },
-			auth,
-			invitations: 0,
-			openSettings: () => {},
-			openFeedback: () => {},
-		});
+	const { rail, frame, draw } = mountRail(f);
+	const toolbar = rail.querySelector(".rail-toolbar"),
+		list = rail.querySelector(".rail-scroll"),
+		search = rail.querySelector<HTMLInputElement>('input[type="search"]')!,
+		row = rail.querySelector<HTMLElement>(`a[href$="/staff/${staff.id}"]`)!;
+	// An update that changes nothing the rail shows leaves its elements, and keyboard focus, alone.
+	row.focus();
+	f.company.store.set({ activity: [] });
 	draw();
-	// A store-driven redraw rebuilds the add link; keyboard focus follows it.
-	const add = rail.querySelector<HTMLElement>(".rail-add")!;
-	add.focus();
+	expect(rail.querySelector(`a[href$="/staff/${staff.id}"]`)).toBe(row);
+	expect(document.activeElement).toBe(row);
+	// A change rebuilds the rows inside the same list, and focus moves to the rebuilt row.
+	f.company.store.set({ staff: [{ ...staff, role: "Lead designer" }] });
 	draw();
-	expect(rail.querySelector(".rail-add")).not.toBe(add);
-	expect(document.activeElement).toBe(rail.querySelector(".rail-add"));
-	// A dead key or IME composition is not moved mid-word; the committed text filters.
-	const search = rail.querySelector<HTMLInputElement>('input[type="search"]')!;
+	const rebuilt = rail.querySelector<HTMLElement>(`a[href$="/staff/${staff.id}"]`)!;
+	expect(rebuilt).not.toBe(row);
+	expect(document.activeElement).toBe(rebuilt);
+	expect(rail.querySelector(".rail-toolbar")).toBe(toolbar);
+	expect(rail.querySelector(".rail-scroll")).toBe(list);
+	// Every keystroke filters, composed text included, and redraws never move the field.
 	search.focus();
-	const toolbar = rail.querySelector(".rail-toolbar");
 	search.dispatchEvent(new CompositionEvent("compositionstart"));
-	search.value = "´";
+	search.value = "é";
 	search.dispatchEvent(new InputEvent("input", { isComposing: true }));
 	draw();
-	expect(rail.querySelector(".rail-toolbar")).toBe(toolbar);
-	search.value = "é";
-	search.dispatchEvent(new CompositionEvent("compositionend", { data: "é" }));
-	expect(rail.querySelector(".rail-toolbar")).not.toBe(toolbar);
-	expect(rail.textContent).toContain("No matching conversations.");
+	expect(search.closest(".rail-toolbar")).toBe(toolbar);
 	expect(document.activeElement).toBe(search);
-	// Collapsing hides the field, so its filter goes with it.
-	frame.classList.add("rail-compact");
-	window.dispatchEvent(new Event("qorpera-rail-resize"));
-	expect(search.value).toBe("");
+	expect(rail.textContent).toContain("No matching conversations.");
+	// Collapsing hides the field: its text stays, and it filters again once the rail opens.
+	const layout = new RailLayout(frame, rail);
+	frame.append(layout.el);
+	cleanup.push(() => layout.dispose());
+	layout.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Home" }));
+	expect(search.value).toBe("é");
 	expect(rail.textContent).toContain(staff.displayName);
+	layout.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+	expect(rail.textContent).toContain("No matching conversations.");
+	// In the phone layout a collapsed width does not hide the field, so it keeps filtering.
+	layout.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Home" }));
+	vi.stubGlobal("innerWidth", 700);
+	window.dispatchEvent(new Event("resize"));
+	expect(frame.classList.contains("rail-compact")).toBe(true);
+	expect(rail.textContent).toContain("No matching conversations.");
 	expect(f.cloud.rpc).not.toHaveBeenCalled();
 });

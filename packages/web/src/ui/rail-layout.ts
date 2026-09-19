@@ -5,6 +5,8 @@ const COMPACT = 80;
 const MIN = 240;
 /** Half again the desktop's 304px rail. */
 const DEFAULT = 456;
+/** The default before this one. Stored, it was almost always a reset to that default. */
+const PREVIOUS_DEFAULT = 304;
 /** The rail may take at most two fifths of the window, a touch wider than a Messages sidebar. */
 const MAX_SHARE = 0.4;
 const STORAGE_KEY = "qorpera.web.rail-width";
@@ -26,7 +28,8 @@ export class RailLayout {
 		this.#rail = rail;
 		try {
 			const width = Number(localStorage.getItem(STORAGE_KEY));
-			if (Number.isFinite(width) && (width === COMPACT || width >= MIN)) this.#preferred = width;
+			if (width === PREVIOUS_DEFAULT) localStorage.removeItem(STORAGE_KEY);
+			else if (Number.isFinite(width) && (width === COMPACT || width >= MIN)) this.#preferred = width;
 		} catch {
 			/* Browser storage is optional. */
 		}
@@ -96,20 +99,17 @@ export class RailLayout {
 		this.#apply();
 		if (persist) this.#persist();
 	}
-	/** Back to the default forgets the stored choice, so a later default reaches this member too.
-	 * The choice is not clamped: a narrow window shows less, a wide one the whole default. */
+	/** Back to the default, not clamped: a narrow window shows less of it, a wide one all of it. */
 	#reset(): void {
 		this.#preferred = DEFAULT;
 		this.#apply();
-		try {
-			localStorage.removeItem(STORAGE_KEY);
-		} catch {
-			/* Layout still works for this window. */
-		}
+		this.#persist();
 	}
+	/** The default is stored as no choice at all, so a later default reaches this member too. */
 	#persist(): void {
 		try {
-			localStorage.setItem(STORAGE_KEY, String(this.#preferred));
+			if (this.#preferred === DEFAULT) localStorage.removeItem(STORAGE_KEY);
+			else localStorage.setItem(STORAGE_KEY, String(this.#preferred));
 		} catch {
 			/* Layout still works for this window. */
 		}

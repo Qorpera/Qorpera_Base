@@ -141,7 +141,9 @@ label > input, label > select { font-weight: 400; }
 .account-signout { color: var(--text-muted); }
 
 /* rail */
-/* The V24 company rail. RailLayout sets its width; the default is half again the desktop's 304px. */
+/* The V24 company rail. RailLayout sets its width on the rail and its edge, the only two
+ * readers; not inheriting, a change never restyles what is inside the rail. */
+@property --rail-width { syntax: "*"; inherits: false; }
 .rail {
 	--rail: var(--sidebar-surface); --rail-line: #c4c2c2; --rail-hover: var(--sidebar-hover);
 	--rail-search: var(--sidebar-search); --rail-search-ink: #85857f;
@@ -518,7 +520,7 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 	.rail { display: none; position: fixed; top: var(--titlebar-height); bottom: 0; left: 0; width: min(304px, calc(100vw - 48px)); z-index: 6; }
 	.rail-resizer { display: none; }
 	.rail-mobile-close { display: inline-flex; }
-	.rail-mobile-close + .rail-search { margin-left: 0; }
+	.rail-mobile-close:not([hidden]) + .rail-search { margin-left: 0; }
 	.frame.navigation-open .rail:not([hidden]) { display: flex; }
 	.frame.navigation-open .navigation-backdrop { display: block; position: fixed; inset: var(--titlebar-height) 0 0; z-index: 5; background: rgba(18,18,17,.25); border: 0; }
 	.page { padding: 16px; }

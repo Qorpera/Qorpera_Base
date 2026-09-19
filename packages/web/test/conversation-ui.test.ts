@@ -289,16 +289,22 @@ describe("conversation UI boundaries", () => {
 		restored.dispose();
 	});
 	it("shows unavailable computer controls without RPCs, handles narrow layouts, and restores focus", () => {
+		// jsdom lays nothing out: give the thread the width the window and the rail leave it.
+		let threadWidth = 900;
+		vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(function (this: Element) {
+			return this.classList.contains("thread-body") ? threadWidth : 0;
+		});
 		const f = setup(),
 			toggle = button(f.view.el, "Open agent computer");
 		toggle.click();
 		expect(f.view.el.querySelector(".computer-panel")?.textContent).toContain("Computer unavailable");
 		expect(button(f.view.el, "Create routine").disabled).toBe(true);
 		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(false);
-		// Below the width that holds the default rail, the panel and the conversation, the panel covers it.
-		vi.stubGlobal("innerWidth", 1192);
-		window.dispatchEvent(new Event("resize"));
+		// Without room for the panel beside the conversation, however wide the rail is, the panel covers it.
+		threadWidth = 735;
+		window.dispatchEvent(new Event("qorpera-rail-resize"));
 		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(true);
+		expect(f.view.el.querySelector(".thread-body")?.classList.contains("computer-covers")).toBe(true);
 		button(f.view.el, "Close computer").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		expect(f.view.el.querySelector(".computer-panel")).toBeNull();
 		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(false);

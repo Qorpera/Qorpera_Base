@@ -16,6 +16,9 @@ import { ComputerPanel } from "./computer.ts";
 import { SessionExecutionView } from "./session-execution.ts";
 import { SessionRunView } from "./session-run.ts";
 
+/** The 420px computer panel (conversation.css) beside a conversation still 316px wide. */
+const PANEL_BESIDE_CONVERSATION = 420 + 316;
+
 export { renderAuthorizationCard } from "../../ui/authorization-card.ts";
 
 /* One conversation over the canonical transcript. Rendering follows
@@ -242,7 +245,7 @@ export class ConversationView {
 		this.#body = h("div", { class: "thread-body" }, this.#conversationPane);
 		this.el = h("section", { class: "thread" }, this.#body);
 		window.addEventListener("resize", () => this.#syncPanelLayout(), { signal: this.#lifetime.signal });
-		window.addEventListener("qorpera-rail-resize", () => this.#autosize(), { signal: this.#lifetime.signal });
+		window.addEventListener("qorpera-rail-resize", () => this.#syncPanelLayout(), { signal: this.#lifetime.signal });
 		document.addEventListener(
 			"click",
 			(event) => {
@@ -371,8 +374,9 @@ export class ConversationView {
 	}
 
 	#syncPanelLayout(): void {
-		// The overlay width in conversation.css: default rail + panel + a usable conversation.
-		const covered = Boolean(this.#panel) && window.innerWidth <= 1192;
+		// The thread's own width decides, so the rail's width, whatever the member made it, counts.
+		const covered = Boolean(this.#panel) && this.#body.clientWidth < PANEL_BESIDE_CONVERSATION;
+		this.#body.classList.toggle("computer-covers", covered);
 		if (covered && this.#conversationPane.contains(document.activeElement)) this.#panel?.focus();
 		this.#conversationPane.inert = covered;
 		this.#autosize();
