@@ -135,15 +135,16 @@ export class ComputerPanel {
 		};
 		const wait = (ms: number, until: AbortSignal) =>
 			new Promise<void>((resolve, reject) => {
-				const timer = setTimeout(resolve, ms);
-				until.addEventListener(
-					"abort",
-					() => {
-						clearTimeout(timer);
-						reject(new Error("closed"));
-					},
-					{ once: true },
-				);
+				const abort = () => {
+					clearTimeout(timer);
+					reject(new Error("closed"));
+				};
+				const timer = setTimeout(() => {
+					until.removeEventListener("abort", abort);
+					resolve();
+				}, ms);
+				until.addEventListener("abort", abort, { once: true });
+				if (until.aborted) abort();
 			});
 		let canManage = false;
 		const startRequests = new Map<string, string>();
@@ -171,9 +172,11 @@ export class ComputerPanel {
 			this.#status.textContent =
 				start.officeState === "active"
 					? "The computer is on."
-					: start.officeState === "maintenance"
-						? "The computer is restarting and comes back on its own."
-						: "The computer is off.";
+					: start.maintenance?.reason === "idle"
+						? "The computer starts when needed."
+						: start.officeState === "maintenance"
+							? "The computer is restarting and comes back on its own."
+							: "The computer is off.";
 			draw();
 		};
 		/** One action: start the computer if it is off, then show this agent's
@@ -186,34 +189,41 @@ export class ComputerPanel {
 			const until = AbortSignal.any([signal, stage.signal]);
 			try {
 				const startClient = computer.client.start(current);
-				let requested = false;
-				for (;;) {
-					const start = await startClient.status(until);
-					if (start.officeState === "active") break;
-					if (start.officeState === "maintenance")
-						stage.say("The computer is restarting. It comes back on its own.");
-					else if (start.officeState === "retired") {
-						stage.say("This computer has been retired.");
-						return;
-					} else if (!canManage) {
-						stage.say("The computer is off. An owner or admin can start it.");
-					} else {
-						if (!start.intent && !requested) {
-							requested = true;
-							// One identity per computer generation: a second click after an unclear
-							// answer is the same request, not another start.
-							const key = String(start.computerGeneration);
-							let requestId = startRequests.get(key);
-							if (!requestId) {
-								requestId = crypto.randomUUID();
-								startRequests.set(key, requestId);
+				const ensureActive = async (until: AbortSignal, expectedGeneration?: number): Promise<boolean> => {
+					let requestedKey: string | undefined;
+					for (;;) {
+						const start = await startClient.status(until);
+						if (expectedGeneration !== undefined && start.computerGeneration !== expectedGeneration)
+							throw new Error("OFFICE_SCREEN_CHANGED");
+						if (start.officeState === "active") return true;
+						const idle = start.maintenance?.reason === "idle";
+						const key = idle ? start.maintenance!.transitionId : String(start.computerGeneration);
+						if (start.officeState === "maintenance" && !idle)
+							stage.say("The computer is restarting. It comes back on its own.");
+						else if (start.officeState === "retired") {
+							stage.say("This computer has been retired.");
+							return false;
+						} else if (!canManage && !idle) {
+							stage.say("The computer is off. An owner or admin can start it.");
+						} else if (idle && !computer.canRequestWake) {
+							stage.say("You have read-only access. A company member with write access can wake the computer.");
+						} else {
+							if ((!start.intent || idle) && requestedKey !== key) {
+								requestedKey = key;
+								// Retrying an unclear reply retains the generation or idle cycle's request identity.
+								let requestId = startRequests.get(key);
+								if (!requestId) {
+									requestId = crypto.randomUUID();
+									startRequests.set(key, requestId);
+								}
+								await startClient.request(start.computerGeneration, requestId, until);
 							}
-							await startClient.request(start.computerGeneration, requestId, until);
+							stage.say("Starting the computer…");
 						}
-						stage.say("Starting the computer…");
+						await wait(3000, until);
 					}
-					await wait(3000, until);
-				}
+				};
+				if (!(await ensureActive(until))) return;
 				this.#status.textContent = "The computer is on.";
 				let views: ReturnType<WebCompanyComputer["views"]>;
 				try {
@@ -226,6 +236,13 @@ export class ComputerPanel {
 				let asked = false;
 				for (;;) {
 					const status = await views.status(until);
+					if (status.state !== "active") {
+						if (!(await ensureActive(until))) return;
+						asked = false;
+						stage.say(`Opening ${agent.displayName}'s computer…`);
+						await wait(3000, until);
+						continue;
+					}
 					if (status.state === "active" && status.privacyState === "shared") {
 						const screen = status.screens
 							.filter((item) => item.binding.staffAgentId === agent.id && !item.drainPending)
@@ -236,6 +253,7 @@ export class ComputerPanel {
 								binding: screen.binding,
 								title: `${agent.displayName} · Computer`,
 								canControl: canManage,
+								sharedControl: true,
 								// The first view starts the agent's desktop, which can outlast one
 								// connection attempt; the start continues, so a later attempt holds.
 								requestConnection: async (input) => {
@@ -244,6 +262,13 @@ export class ComputerPanel {
 											return await views.connectScreen(input);
 										} catch (error) {
 											if (attempt >= 8 || input.signal.aborted) throw error;
+											// Idle admission can win the race after the panel's
+											// active read. The open viewer is fresh machine demand.
+											const state = await startClient.status(input.signal);
+											if (state.maintenance?.reason === "idle") {
+												if (!(await ensureActive(input.signal, input.binding.computerGeneration)))
+													throw error;
+											}
 											await wait(3000, input.signal);
 										}
 									}

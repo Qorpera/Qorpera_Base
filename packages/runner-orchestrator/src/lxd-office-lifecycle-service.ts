@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Writable } from "node:stream";
 import { runLxdOfficeControlObserver } from "./lxd-office-control-observer.ts";
+import { parseOfficeIdleMs } from "./lxd-office-idle-policy.ts";
 import { officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
 import { LxdOfficeLifecycle, type LxdOfficeLifecycleResult, runLxdOfficeLifecycle } from "./lxd-office-lifecycle.ts";
 import { readLxdOfficeCredentialFile, readLxdOfficeProtectedFile } from "./lxd-office-physical-host.ts";
@@ -103,7 +104,7 @@ export function parseLxdOfficeLifecycleServiceConfig(value: unknown) {
 		"pollIntervalMs",
 	];
 	// Optional paths come only from this root-protected service document.
-	const optionalKeys = ["softwareLanePath", "resetImagePackageManifestPath", "codePackageLanePath"].filter(
+	const optionalKeys = ["softwareLanePath", "resetImagePackageManifestPath", "codePackageLanePath", "idleMs"].filter(
 		(key) => value && typeof value === "object" && Object.hasOwn(value, key),
 	);
 	const r = officeRecord(value, [...keys, ...optionalKeys]);
@@ -122,6 +123,7 @@ export function parseLxdOfficeLifecycleServiceConfig(value: unknown) {
 	// Validate the endpoint without loading a credential or sending a request.
 	new LxdOfficeProviderHttpRegistry(r.registryUrl, "validation-only-".repeat(3));
 	return {
+		idleMs: parseOfficeIdleMs(r.idleMs ?? 300000),
 		policyPath: officePhysicalPath(r.policyPath),
 		provenancePath: officePhysicalPath(r.provenancePath),
 		planPath: officePhysicalPath(r.planPath),

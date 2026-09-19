@@ -5,28 +5,31 @@ import {
 	assertCompanyComputerScreenBinding,
 	type CompanyComputerScreenBinding,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
-import {
-	isStaffCharacterId,
-	STAFF_CHARACTER_BY_TEMPLATE,
-	STAFF_CHARACTER_IDS,
-	type StaffCharacterId,
-} from "@qorpera/cloud-client/staff-characters";
+import { isStaffCharacterId, STAFF_CHARACTER_BY_TEMPLATE } from "@qorpera/cloud-client/staff-characters";
 import type { CompanyComputerGuestBoundary } from "./cloud-company-computer-guest.ts";
 import { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
+import {
+	COMPANY_COMPUTER_SCREEN_HOURS,
+	COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER,
+	COMPANY_COMPUTER_WALLPAPER_IDS,
+	type CompanyComputerWallpaperId,
+} from "./cloud-company-computer-wallpapers.ts";
 
-/** Reused from the older screen agent and renderer; keep desktop and agent card identities aligned. */
+export { COMPANY_COMPUTER_SCREEN_HOURS } from "./cloud-company-computer-wallpapers.ts";
+
+/** Resolve current avatar identities to the guest image's stable asset catalog. */
 export function companyComputerScreenCreature(
 	binding: CompanyComputerScreenBinding,
 	templateId?: string,
 	creature?: string,
-): StaffCharacterId {
+): CompanyComputerWallpaperId {
 	assertCompanyComputerScreenBinding(binding, binding);
-	if (isStaffCharacterId(creature)) return creature;
+	if (isStaffCharacterId(creature)) return COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER[creature];
 	const mapped = Object.entries(STAFF_CHARACTER_BY_TEMPLATE).find(([id]) => id === templateId);
-	if (mapped) return mapped[1];
+	if (mapped) return COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER[mapped[1]];
 	let seed = 0;
 	for (const character of binding.staffAgentId) seed = (seed * 31 + character.charCodeAt(0)) >>> 0;
-	return STAFF_CHARACTER_IDS[seed % STAFF_CHARACTER_IDS.length];
+	return COMPANY_COMPUTER_WALLPAPER_IDS[seed % COMPANY_COMPUTER_WALLPAPER_IDS.length];
 }
 
 async function assertPhysicalDirectory(directory: string): Promise<void> {
@@ -35,10 +38,6 @@ async function assertPhysicalDirectory(directory: string): Promise<void> {
 		throw new Error("UNSAFE_DESKTOP_STATE_DIRECTORY");
 }
 
-/** Hourly frames follow the image name with the two-digit local hour. */
-export const COMPANY_COMPUTER_SCREEN_HOURS = Object.freeze(
-	Array.from({ length: 24 }, (_value, hour) => String(hour).padStart(2, "0")),
-);
 const TIME_ZONE = /^[A-Za-z0-9_+-]+(?:\/[A-Za-z0-9_+-]+){0,2}$/;
 
 /** IANA zone names only; the guest wrapper additionally requires the zone to exist in its image. */
@@ -96,7 +95,7 @@ export async function prepareCompanyComputerScreenWallpaper(
 		timeZone?: string;
 	},
 	signal: AbortSignal,
-): Promise<{ wallpaper: string; creature: StaffCharacterId; backdrops?: string }> {
+): Promise<{ wallpaper: string; creature: CompanyComputerWallpaperId; backdrops?: string }> {
 	assertCompanyComputerGuestLayout(options.layout);
 	if (options.timeZone !== undefined && !isCompanyComputerScreenTimeZone(options.timeZone))
 		throw new Error("INVALID_SCREEN_TIME_ZONE");
