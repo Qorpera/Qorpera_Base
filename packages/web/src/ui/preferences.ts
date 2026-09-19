@@ -1,6 +1,9 @@
 /** Browser presentation preferences contain no account or company state. */
 export type LanguagePreference = "system" | "en" | "da";
+export type ThemePreference = "system" | "light" | "dark";
 const LANGUAGE_KEY = "qorpera.web.language";
+const THEME_KEY = "qorpera.web.theme";
+const SYSTEM_DARK = "(prefers-color-scheme: dark)";
 const DANISH: Record<string, string> = {
 	General: "Generelt",
 	Company: "Virksomhed",
@@ -12,6 +15,8 @@ const DANISH: Record<string, string> = {
 	Appearance: "Udseende",
 	Theme: "Tema",
 	Light: "Lys",
+	Dark: "Mørk",
+	"System default follows your device’s appearance.": "Systemstandarden følger din enheds udseende.",
 	"Language & region": "Sprog og område",
 	Language: "Sprog",
 	"System default": "Systemstandard",
@@ -82,4 +87,55 @@ export function setLanguagePreference(value: string): boolean {
 	applyLanguage();
 	window.dispatchEvent(new Event("qorpera-language-change"));
 	return true;
+}
+
+export function themePreference(): ThemePreference {
+	try {
+		const value = localStorage.getItem(THEME_KEY);
+		return value === "light" || value === "dark" ? value : "system";
+	} catch {
+		return "system";
+	}
+}
+
+/** The theme on screen: the stored choice, else the device's appearance. */
+export function presentationTheme(): "light" | "dark" {
+	const preference = themePreference();
+	return preference === "system" ? (window.matchMedia(SYSTEM_DARK).matches ? "dark" : "light") : preference;
+}
+
+/** Runs before the first paint (theme.ts) and again on every change. Colours
+ * come from the stylesheet; the figure painter repaints on
+ * `qorpera-theme-change`. */
+export function applyTheme(): void {
+	const theme = presentationTheme();
+	if (document.documentElement.dataset.theme === theme) return;
+	document.documentElement.dataset.theme = theme;
+	window.dispatchEvent(new Event("qorpera-theme-change"));
+}
+
+export function setThemePreference(value: string): boolean {
+	if (value !== "system" && value !== "light" && value !== "dark") return false;
+	try {
+		localStorage.setItem(THEME_KEY, value);
+	} catch {
+		return false;
+	}
+	applyTheme();
+	return true;
+}
+
+/** Follow the device's appearance and choices made in other tabs. */
+export function watchTheme(): () => void {
+	const system = window.matchMedia(SYSTEM_DARK);
+	const onStorage = (event: StorageEvent) => {
+		if (event.key === THEME_KEY || event.key === null) applyTheme();
+	};
+	applyTheme();
+	system.addEventListener("change", applyTheme);
+	window.addEventListener("storage", onStorage);
+	return () => {
+		system.removeEventListener("change", applyTheme);
+		window.removeEventListener("storage", onStorage);
+	};
 }

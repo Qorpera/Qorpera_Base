@@ -46,6 +46,7 @@ const artwork: FigureArtwork = {
 	},
 	prepare: vi.fn(),
 	drawable: () => document.createElement("canvas"),
+	colorOnDark: (_id, color) => (color === "#312f2d" ? "#a29d97" : color),
 };
 beforeEach(() => {
 	now = 0;
@@ -169,6 +170,37 @@ describe("2D studio playback in the shell", () => {
 		await settle();
 		expect(host.querySelector("canvas")!.hidden).toBe(true);
 		expect(frames.size).toBe(0);
+	});
+	it("paints charcoal in the light ink on the dark theme and repaints when the theme changes", async () => {
+		const drawable = vi.spyOn(artwork, "drawable");
+		const root = document.documentElement;
+		root.dataset.theme = "light";
+		try {
+			const charcoal = document.createElement("span"),
+				gold = document.createElement("span");
+			document.body.append(charcoal, gold);
+			mounted.push(mountFigureMotion(charcoal, "crown", "#312f2d", artwork, { still: true, identity: "ink" }));
+			await settle();
+			show([charcoal]);
+			expect(drawable).toHaveBeenLastCalledWith("crown-face", "#312f2d");
+			expect(context.fillStyle).toBe("#312f2d");
+			root.dataset.theme = "dark";
+			window.dispatchEvent(new Event("qorpera-theme-change"));
+			await settle();
+			expect(drawable).toHaveBeenLastCalledWith("crown-face", "#a29d97");
+			expect(context.fillStyle).toBe("#a29d97");
+			// Other colours are painted as stored.
+			mounted.push(mountFigureMotion(gold, "crown", "#fcb51b", artwork, { still: true, identity: "gold" }));
+			await settle();
+			show([gold]);
+			expect(context.fillStyle).toBe("#fcb51b");
+			root.dataset.theme = "light";
+			window.dispatchEvent(new Event("qorpera-theme-change"));
+			await settle();
+			expect(context.fillStyle).toBe("#312f2d");
+		} finally {
+			delete root.dataset.theme;
+		}
 	});
 	it("retains the studio's holds, complete Working loop, and symbolic states", () => {
 		expect(localTime("Idle", 90)).toBeCloseTo(221 / 60);

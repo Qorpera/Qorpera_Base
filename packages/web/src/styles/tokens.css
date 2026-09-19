@@ -8,6 +8,12 @@
  * recipe, surface grain) adapted from T3 Code
  * <https://github.com/pingdotgg/t3code>, MIT License,
  * Copyright (c) 2026 T3 Tools Inc.
+ *
+ * Two themes. The light values below are the approved design; the dark block
+ * after them redefines every colour token, and dark.css covers the colours
+ * the views still write out directly. `data-theme` on the root element picks
+ * the theme (ui/preferences.ts); a colour added outside these tokens needs a
+ * dark counterpart in dark.css.
  */
 @font-face {
 	font-family: "Source Sans 3";
@@ -33,6 +39,7 @@
 	--pane-strong: rgba(18, 18, 17, 0.075);
 	--hover: rgba(18, 18, 17, 0.055);
 	--popover: rgba(255, 255, 255, 0.98);
+	--overlay: #ffffff;                      /* dialogs, popovers, menus */
 	--text: #161615;
 	--text-muted: #686866;
 	--text-soft: #92928e;
@@ -51,6 +58,7 @@
 	/* action color — send, links, focus, slider fill */
 	--primary: #171716;
 	--primary-hover: #30302e;
+	--on-primary: #ffffff;
 	--ring: color-mix(in srgb, var(--sidebar-selection) 65%, transparent);
 	--blue: #305fbe;                         /* readable small-text variant */
 
@@ -100,4 +108,44 @@
 	   no overlay element, no per-frame compositing cost) */
 	--surface-grain: none;
 	--surface-grain-size: 256px 256px;
+}
+
+/* Dark: warm near-black surfaces that lift toward the viewer, as the light
+ * theme's warm greys sink away from it. Layout tokens are shared. */
+:root[data-theme="dark"] {
+	color-scheme: dark;
+
+	--chrome: #1a1a19;
+	--bg: #1d1d1c;
+	--pane-strong: rgba(255, 255, 255, 0.08);
+	--hover: rgba(255, 255, 255, 0.07);
+	--popover: rgba(42, 42, 41, 0.98);
+	--overlay: #2a2a29;
+	--text: #edece9;
+	--text-muted: #a9a8a3;
+	--text-soft: #7f7e7a;
+	--border: rgba(255, 255, 255, 0.09);
+	--border-strong: rgba(255, 255, 255, 0.17);
+	--header-surface: #232322;
+	--sidebar-surface: #292928;
+	--sidebar-search: #363635;
+	--sidebar-divider: #333332;
+	--sidebar-vibrancy-tint: rgba(41, 41, 40, 0.32);
+	--sidebar-hover: #333332;
+
+	--primary: #edece9;
+	--primary-hover: #d7d6d2;
+	--on-primary: #1b1b1a;
+	--blue: #6ea4ff;
+
+	--accent: #e5835c;
+	--accent-soft: rgba(229, 131, 92, 0.16);
+
+	--danger: #f4776b;
+	--danger-soft: rgba(244, 119, 107, 0.16);
+	--danger-muted: color-mix(in srgb, var(--danger) 65%, var(--bg));
+	--warning-soft: rgba(245, 158, 11, 0.16);
+	--ok-soft: rgba(16, 185, 129, 0.16);
+
+	--send-idle: rgba(255, 255, 255, 0.12);
 }

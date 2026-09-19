@@ -13,7 +13,14 @@ import { projectTranscript, type TranscriptMessage } from "../src/cloud/transcri
 import { renderAuthorizationCard } from "../src/ui/authorization-card.ts";
 import { SurfaceDialog } from "../src/ui/dialog.ts";
 import { h } from "../src/ui/dom.ts";
-import { languagePreference, setLanguagePreference, uiText } from "../src/ui/preferences.ts";
+import {
+	languagePreference,
+	setLanguagePreference,
+	setThemePreference,
+	themePreference,
+	uiText,
+	watchTheme,
+} from "../src/ui/preferences.ts";
 import { RailLayout } from "../src/ui/rail-layout.ts";
 import { ReceivedAttachments } from "../src/ui/received-attachments.ts";
 import {
@@ -254,6 +261,63 @@ describe("shell presentation lifecycle", () => {
 		});
 		expect(setLanguagePreference("en")).toBe(false);
 		expect(languagePreference()).toBe("da");
+	});
+	it("follows the device's appearance until a theme is chosen, in every open tab", () => {
+		let deviceDark = false;
+		const listeners = new Set<() => void>();
+		vi.stubGlobal("matchMedia", (query: string) => ({
+			get matches() {
+				return query === "(prefers-color-scheme: dark)" && deviceDark;
+			},
+			addEventListener: (_type: string, listener: () => void) => listeners.add(listener),
+			removeEventListener: (_type: string, listener: () => void) => listeners.delete(listener),
+		}));
+		const deviceChanged = () => {
+			for (const listener of listeners) listener();
+		};
+		const changes = vi.fn();
+		window.addEventListener("qorpera-theme-change", changes);
+		const unwatch = watchTheme();
+		cleanup.push(() => {
+			unwatch();
+			window.removeEventListener("qorpera-theme-change", changes);
+			delete document.documentElement.dataset.theme;
+		});
+		const theme = () => document.documentElement.dataset.theme;
+		expect(themePreference()).toBe("system");
+		expect(theme()).toBe("light");
+		deviceDark = true;
+		deviceChanged();
+		expect(theme()).toBe("dark");
+		expect(setThemePreference("light")).toBe(true);
+		expect(localStorage.getItem("qorpera.web.theme")).toBe("light");
+		expect(theme()).toBe("light");
+		// A chosen theme holds when the device changes.
+		deviceDark = false;
+		deviceChanged();
+		deviceDark = true;
+		deviceChanged();
+		expect(theme()).toBe("light");
+		expect(setThemePreference("sepia")).toBe(false);
+		expect(themePreference()).toBe("light");
+		// Another tab chooses Dark.
+		localStorage.setItem("qorpera.web.theme", "dark");
+		window.dispatchEvent(new StorageEvent("storage", { key: "qorpera.web.theme" }));
+		expect(theme()).toBe("dark");
+		expect(changes).toHaveBeenCalledTimes(4);
+		unwatch();
+		deviceDark = false;
+		expect(setThemePreference("system")).toBe(true);
+		expect(theme()).toBe("light");
+		deviceDark = true;
+		deviceChanged();
+		expect(theme()).toBe("light");
+		vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+			throw new Error("Blocked");
+		});
+		expect(setThemePreference("dark")).toBe(false);
+		expect(themePreference()).toBe("system");
+		expect(theme()).toBe("light");
 	});
 	it("ignores storage totals returned after settings moves to another company", async () => {
 		const f = companyFixture(),

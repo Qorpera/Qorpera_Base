@@ -56,6 +56,28 @@ for (const icon of [
 }
 
 const version = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
+const boundary = { name: "member-authority-boundary", setup(build) {
+	build.onEnd(result => {
+		if (!result.metafile) return;
+		// Stylesheets contain copied art/font URLs; executable outputs must be self-contained.
+		assertMemberWebInputs({ ...result.metafile, outputs: Object.fromEntries(Object.entries(result.metafile.outputs).filter(([path]) => path.endsWith(".js"))) });
+	});
+} };
+// The head script that sets the theme before the first paint. It runs as a
+// classic script beside the vendored avatar scripts, so it is its own IIFE.
+const themeOptions = {
+	entryPoints: [{ in: join(root, "src/theme.ts"), out: "theme" }],
+	bundle: true,
+	format: "iife",
+	platform: "browser",
+	target: ["es2022"],
+	outdir: dist,
+	entryNames: serve ? "[name]" : "build/[name]-[hash]",
+	metafile: true,
+	plugins: [boundary],
+	minify: !serve,
+	logLevel: "info",
+};
 const options = {
 	entryPoints: [{ in: join(root, "src/entry.mjs"), out: "main" }, { in: join(root, "src/styles/app.css"), out: "app" }],
 	bundle: true,
@@ -67,13 +89,7 @@ const options = {
 	// stale main.js across deploys; the HTML is rewritten to point at them.
 	entryNames: serve ? "[name]" : "build/[name]-[hash]",
 	metafile: true,
-	plugins: [{ name: "member-authority-boundary", setup(build) {
-		build.onEnd(result => {
-			if (!result.metafile) return;
-			// Stylesheets contain copied art/font URLs; executable outputs must be self-contained.
-			assertMemberWebInputs({ ...result.metafile, outputs: Object.fromEntries(Object.entries(result.metafile.outputs).filter(([path]) => path.endsWith(".js"))) });
-		});
-	} }],
+	plugins: [boundary],
 	sourcemap: true,
 	// Fonts and art are copied into dist/assets above; leave their URLs untouched.
 	external: ["*.woff2", "*.png", "*.svg"],
@@ -87,6 +103,7 @@ const options = {
 };
 
 if (serve) {
+	await (await esbuild.context(themeOptions)).watch();
 	const context = await esbuild.context(options);
 	await context.watch();
 	const { hosts, port: boundPort } = await context.serve({ servedir: dist, port, host: "127.0.0.1" });
@@ -94,21 +111,28 @@ if (serve) {
 	console.log(`Qorpera web client serving on http://127.0.0.1:${boundPort}/`);
 } else {
 	const result = await esbuild.build(options);
-	writeFileSync(join(dist, "build-manifest.json"), `${JSON.stringify(result.metafile, null, 2)}\n`);
-	const outputs = Object.keys(result.metafile.outputs).map((file) => file.slice(file.indexOf("dist/") + 5));
+	const themeResult = await esbuild.build(themeOptions);
+	const metafile = {
+		inputs: { ...result.metafile.inputs, ...themeResult.metafile.inputs },
+		outputs: { ...result.metafile.outputs, ...themeResult.metafile.outputs },
+	};
+	writeFileSync(join(dist, "build-manifest.json"), `${JSON.stringify(metafile, null, 2)}\n`);
+	const outputs = Object.keys(metafile.outputs).map((file) => file.slice(file.indexOf("dist/") + 5));
 	const script = outputs.find((file) => /^build\/main-[A-Z0-9]+\.js$/.test(file));
 	const style = outputs.find((file) => /^build\/app-[A-Z0-9]+\.css$/.test(file));
-	if (!script || !style) throw new Error("Hashed bundle names were not produced");
+	const theme = outputs.find((file) => /^build\/theme-[A-Z0-9]+\.js$/.test(file));
+	if (!script || !style || !theme) throw new Error("Hashed bundle names were not produced");
 	const html = readFileSync(join(dist, "index.html"), "utf8")
+		.replace('src="./theme.js"', `src="./${theme}"`)
 		.replace('href="./app.css"', `href="./${style}"`)
 		.replace('src="./main.js"', `src="./${script}"`);
 	writeFileSync(join(dist, "index.html"), html);
-	const files = ["index.html", "_headers", script, style];
+	const files = ["index.html", "_headers", theme, script, style];
 	writeFileSync(join(dist, "web-deployment.json"), `${JSON.stringify({
 		...deployment.manifest,
 		...provenance,
 		version,
 		files: Object.fromEntries(files.map(file => [file, createHash("sha256").update(readFileSync(join(dist, file))).digest("hex")])),
 	}, null, 2)}\n`);
-	console.log(`index.html -> ${script}, ${style}`);
+	console.log(`index.html -> ${theme}, ${script}, ${style}`);
 }
