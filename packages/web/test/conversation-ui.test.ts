@@ -304,38 +304,26 @@ describe("conversation UI boundaries", () => {
 		expect(button(restored.el, "Preview private.png")).toBeDefined();
 		restored.dispose();
 	});
-	it("shows unavailable computer controls without RPCs, handles narrow layouts, and restores focus", () => {
+	it("keeps the computer popover compact and the conversation usable at every width", () => {
 		const f = setup(),
 			toggle = button(f.view.el, "Open agent computer");
 		toggle.click();
-		expect(f.view.el.querySelector(".computer-panel")?.textContent).toContain("Computer unavailable");
-		// Routines live in the agent's details now, not beside the computer.
-		expect(f.view.el.querySelector(".computer-panel")?.textContent).not.toContain("Routines");
-		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(false);
-		// Floating and stacked split views leave the conversation available on small screens.
-		vi.stubGlobal("innerWidth", 600);
-		window.dispatchEvent(new Event("resize"));
-		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(false);
 		const panel = f.view.el.querySelector<HTMLElement>(".computer-panel")!;
-		const layout = panel.querySelector<HTMLSelectElement>('[aria-label="Computer layout"]')!;
-		layout.value = "split";
-		layout.dispatchEvent(new Event("change", { bubbles: true }));
-		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(false);
+		expect(panel.textContent).toContain("Computer access is not available yet.");
+		expect(panel.querySelector("header, select, .computer-preview")).toBeNull();
+		expect(panel.textContent).not.toContain("Open computer");
+		expect(panel.textContent).not.toContain("Routines");
 		const composer = f.view.el.querySelector<HTMLTextAreaElement>(".composer-input")!;
-		composer.focus();
-		expect(document.activeElement).toBe(composer);
-		layout.value = "expanded";
-		layout.dispatchEvent(new Event("change", { bubbles: true }));
-		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(true);
-		expect(panel.contains(document.activeElement)).toBe(true);
-		layout.value = "floating";
-		layout.dispatchEvent(new Event("change", { bubbles: true }));
-		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(false);
-		layout.value = "expanded";
-		layout.dispatchEvent(new Event("change", { bubbles: true }));
+		for (const width of [1280, 600, 375]) {
+			vi.stubGlobal("innerWidth", width);
+			window.dispatchEvent(new Event("resize"));
+			expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBeFalsy();
+			composer.focus();
+			expect(document.activeElement).toBe(composer);
+		}
 		button(f.view.el, "Close computer").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		expect(f.view.el.querySelector(".computer-panel")).toBeNull();
-		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(false);
+		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBeFalsy();
 		expect(document.activeElement).toBe(toggle);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});

@@ -240,7 +240,7 @@ export class ConversationView {
 		);
 		this.#body = h("div", { class: "thread-body" }, this.#conversationPane);
 		this.el = h("section", { class: "thread" }, this.#body);
-		window.addEventListener("resize", () => this.#syncPanelLayout(), { signal: this.#lifetime.signal });
+		window.addEventListener("resize", () => this.#autosize(), { signal: this.#lifetime.signal });
 		window.addEventListener("qorpera-rail-resize", () => this.#autosize(), { signal: this.#lifetime.signal });
 		document.addEventListener(
 			"click",
@@ -336,7 +336,7 @@ export class ConversationView {
 		if (this.#panel) {
 			this.#panel.dispose();
 			this.#panel = undefined;
-			this.#syncPanelLayout();
+			this.#autosize();
 			this.#computer.setAttribute("aria-expanded", "false");
 			this.#computer.focus();
 			return;
@@ -351,20 +351,11 @@ export class ConversationView {
 			() => this.#toggleComputer(),
 			this.#actions.computer,
 			this.#company.signal,
-			() => this.#syncPanelLayout(),
 		);
 		this.#body.append(this.#panel.el);
 		this.#panel.focus();
-		this.#syncPanelLayout();
-		this.#computer.setAttribute("aria-expanded", "true");
-	}
-
-	#syncPanelLayout(): void {
-		// Floating and split layouts keep the conversation usable, including on narrow screens.
-		const covered = this.#panel?.layout === "expanded";
-		if (covered && this.#conversationPane.contains(document.activeElement)) this.#panel?.focus();
-		this.#conversationPane.inert = covered;
 		this.#autosize();
+		this.#computer.setAttribute("aria-expanded", "true");
 	}
 
 	/** One button: it sends a draft, and with nothing to send it stops the run the agent is on. */
@@ -474,18 +465,12 @@ export class ConversationView {
 			const focused = this.#panel.el.contains(document.activeElement);
 			this.#panel.dispose();
 			this.#panel = agent
-				? new ComputerPanel(
-						agent,
-						() => this.#toggleComputer(),
-						this.#actions.computer,
-						this.#company.signal,
-						() => this.#syncPanelLayout(),
-					)
+				? new ComputerPanel(agent, () => this.#toggleComputer(), this.#actions.computer, this.#company.signal)
 				: undefined;
 			if (this.#panel) this.#body.append(this.#panel.el);
 			if (focused) this.#panel ? this.#panel.focus() : this.#composer.focus();
 			this.#computer.setAttribute("aria-expanded", String(Boolean(this.#panel)));
-			this.#syncPanelLayout();
+			this.#autosize();
 		}
 		replace(this.#identity, agentFigure(agent, title, { size: 32 }), h("h1", null, title), icon("chevron"));
 	}
