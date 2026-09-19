@@ -361,3 +361,23 @@ replaces the popup contents in the 2026-09-05 entry.
 
 **Settings look.** The window is 20% larger (1200×816), and each section in
 its menu has an icon and a 13px medium-weight label.
+
+## 2026-09-19 — Agent details hold routines and responsibilities; edits are in place
+
+**Decision (Jonas).** Routines leave the Computer panel for the agent's details
+popup. Two buttons sit left of its close button: Responsibilities, then
+Routines. Each turns the popup into that page, with a back arrow to the
+details; Routines keeps the whole manager (list, pause and resume, create and
+edit). The Computer panel holds only the computer again. This moves where the
+2026-09-17 routines entry put them; the rest of that entry stands.
+
+**Edits are in place.** The "Edit agent" button is gone. For owners and
+admins, name, title and description are always editable where they stand:
+Enter or leaving a field saves it, Escape puts the saved text back. The figure
+edits as on the desktop: on hover it darkens inside a pale outline with a
+pencil, a click opens a picker under it, and each choice saves at once and
+keeps the agent's colour (the Co-Founder chooses a figure only). Changes made
+while a save is out follow it as one more write. Closing the popup keeps a
+change that was being typed; leaving the conversation, changing company or
+losing access drops it. Members without write access see the same popup read
+only. The description is taller: at least five lines, growing to thirteen.

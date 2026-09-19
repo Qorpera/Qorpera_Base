@@ -6,6 +6,9 @@ import { matchesKey } from "./keys.ts";
 export class SurfaceDialog {
 	readonly el: HTMLDialogElement;
 	readonly content = h("div", { class: "surface-dialog-content" });
+	/** The top-right controls. A view may add its own buttons before Close. */
+	readonly tools: HTMLElement;
+	readonly #close: HTMLButtonElement;
 	readonly #previous: HTMLElement | null;
 	readonly #onClose: () => void;
 	readonly #anchor: HTMLElement | undefined;
@@ -16,19 +19,22 @@ export class SurfaceDialog {
 		this.#previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 		this.#onClose = onClose;
 		this.#anchor = anchor;
+		this.#close = h(
+			"button",
+			{
+				type: "button",
+				class: "surface-close icon-button",
+				"aria-label": `Close ${label.toLowerCase()}`,
+				onclick: () => this.close(),
+			},
+			icon("close"),
+		);
+		this.tools = h("div", { class: "surface-tools" }, this.#close);
+		// Focusable itself, so a field left with Enter or Escape keeps focus in the dialog.
 		this.el = h(
 			"dialog",
-			{ class: `surface-dialog ${className}`, "aria-label": label },
-			h(
-				"button",
-				{
-					type: "button",
-					class: "surface-close icon-button",
-					"aria-label": `Close ${label.toLowerCase()}`,
-					onclick: () => this.close(),
-				},
-				icon("close"),
-			),
+			{ class: `surface-dialog ${className}`, "aria-label": label, tabindex: "-1" },
+			this.tools,
 			this.content,
 		);
 		this.el.addEventListener("cancel", (event) => {
@@ -50,6 +56,7 @@ export class SurfaceDialog {
 					last = controls[controls.length - 1];
 				if (
 					!this.el.contains(document.activeElement) ||
+					document.activeElement === this.el ||
 					document.activeElement === (event.shiftKey ? first : last)
 				) {
 					event.preventDefault();
@@ -81,7 +88,7 @@ export class SurfaceDialog {
 		);
 		window.addEventListener("resize", () => this.#layout(), { signal: this.#lifetime.signal });
 		window.addEventListener("qorpera-rail-resize", () => this.#layout(), { signal: this.#lifetime.signal });
-		this.el.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true });
+		this.#close.focus({ preventScroll: true });
 	}
 	#layout(): void {
 		const modal = !this.#anchor || window.innerWidth <= 760;
@@ -110,4 +117,27 @@ export class SurfaceDialog {
 		this.#onClose();
 		if (restoreFocus && this.#previous?.isConnected) this.#previous.focus({ preventScroll: true });
 	}
+}
+
+/** The heading of a page shown inside a dialog: the way back, a title and an
+ * optional line under it. */
+export function dialogPageHeader(title: string, back?: () => void, backLabel = "Back", detail?: string): HTMLElement {
+	return h(
+		"header",
+		{ class: "dialog-page-header" },
+		back
+			? h(
+					"button",
+					{
+						type: "button",
+						class: "icon-button dialog-page-back",
+						title: backLabel,
+						"aria-label": backLabel,
+						onclick: back,
+					},
+					icon("back"),
+				)
+			: null,
+		h("div", { class: "dialog-page-title" }, h("h2", null, title), detail ? h("p", null, detail) : null),
+	);
 }
