@@ -495,5 +495,50 @@
       "hostStagingRemoved": "/var/tmp/qorpera-pr146-merged-2314",
       "retainedArchivesPreserved": true
     }
+  },
+  "mergePreparation": {
+    "baseCommit": "be2828d88c933fd9db9862140c12be6b09039783",
+    "runtimeBundleVersion": 40,
+    "runtimeBundleSha256": "a29b67f8d68355c9657f4317d114c5972baf7c02a08e929c4918a154a9b5564a",
+    "guestPackageManifestSha256": "03b33a1806049a3094e20fb6d887d0c4583677793e37ba6b74fb5a9da8ff8363",
+    "nativeProbeSourceHashesUnchanged": true,
+    "existingMasterMigrationsUnchanged": 287,
+    "focusedWebTestsPassed": 136,
+    "repositoryCheckPassed": true,
+    "linuxBuildPackageBundleTestsPassed": 12,
+    "retainedArchive": {
+      "host": "company41-node-02",
+      "path": "/var/tmp/qorpera-pr146-native-composition/pr146-native-composition-v40-linux-x64.tar.zst",
+      "bytes": 102702924,
+      "sha256": "a2b4b7b907eee25169f8a4e7e58cfdad8f50464d3aa6ab4df35e18b9c5930508",
+      "zstdIntegrityVerified": true,
+      "archivedBinaryPath": "guest-package-v40/native-company/codex",
+      "archivedBinarySha256": "9bd7b4e1148cb77820ea75943d03e7531757b3c74e47399df25a00477e58a7d0",
+      "archivedGuestManifestSha256": "03b33a1806049a3094e20fb6d887d0c4583677793e37ba6b74fb5a9da8ff8363",
+      "runtimeBundleSha256": "a29b67f8d68355c9657f4317d114c5972baf7c02a08e929c4918a154a9b5564a",
+      "sourceManifestSha256": "0603f0c0336cb284435f1b0384490c93507d9ec086a8c3c9855a5a8814e72146",
+      "sourceFilesVerifiedAgainstMergedCheckout": 3944,
+      "linuxParityTests": {
+        "passed": 12,
+        "failed": 0,
+        "skipped": 0
+      },
+      "contents": [
+        "Actual Linux guest package containing the verified native executable",
+        "Native artifact manifest, LICENSE and NOTICE",
+        "Native composition, boundary, capture-images, Rust module and Linux packaging proof logs",
+        "v40 source hash manifest and packaging host metadata"
+      ],
+      "nativeSourceProvenanceArchive": {
+        "path": "/var/tmp/qorpera-pr146-native-composition/pr146-native-composition-v39-linux-x64.tar.zst",
+        "sha256": "258dcfa58096ce9e734b2ce4e745e30123b710785076474e89838f4d50893053"
+      },
+      "cleanup": {
+        "hostStagingRemoved": "/var/tmp/qorpera-pr146-v40.86T5nU",
+        "noVmCreated": true,
+        "retainedArchivesPreserved": true,
+        "productionResourcesChanged": false
+      }
+    }
   }
 }

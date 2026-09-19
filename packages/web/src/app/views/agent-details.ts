@@ -1,28 +1,29 @@
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { figureElement, nativeColorOf } from "../../ui/avatar.ts";
-import { dialogPageHeader, SurfaceDialog } from "../../ui/dialog.ts";
+import { SurfaceDialog } from "../../ui/dialog.ts";
 import { button, h, icon, replace } from "../../ui/dom.ts";
 import { type FigureChoice, FigurePicker } from "../../ui/figure-picker.ts";
 import { matchesKey } from "../../ui/keys.ts";
-import { responsibilityCard } from "../../ui/responsibilities.ts";
 import type { CompanyController } from "../company.ts";
 import type { AgentDraft, WorkspaceActions } from "../workspace-actions.ts";
 import { type AgentEdits, editsFor, savedAgentDraft } from "./agent-edits.ts";
 import { AgentRoutines, routineAccessFor } from "./agent-routines.ts";
 
-type Page = "details" | "responsibilities" | "routines";
+type Page = "details" | "routines";
 type TextKey = "displayName" | "role" | "charter";
 
 const FIELDS: Record<TextKey, { label: string; empty: string }> = {
 	displayName: { label: "Agent name", empty: "An agent needs a name." },
 	role: { label: "Agent title", empty: "An agent needs a title." },
-	charter: { label: "Agent description", empty: "An agent needs a description." },
+	// The description is the agent's responsibilities in plain prose, and what the agent works from.
+	charter: { label: "Responsibilities", empty: "An agent needs its responsibilities written down." },
 };
 
 /** An agent's details, anchored under the conversation title. Name, title and
- * description are edited where they stand and save on their own; the figure
- * changes from a picker under it, as on the desktop. Responsibilities and
- * routines are pages of the same panel, opened from its top-right corner. */
+ * responsibilities are edited where they stand and save on their own; the figure
+ * changes from a picker under it, as on the desktop. The responsibilities field is the
+ * agent's description in plain prose and what the agent works from; there is no separate
+ * responsibility page. Routines are a page of the same panel, opened from its top-right corner. */
 export class AgentDetails {
 	readonly dialog: SurfaceDialog;
 	readonly #company: CompanyController;
@@ -44,7 +45,6 @@ export class AgentDetails {
 	/** The field being typed in, if any. */
 	#open: TextKey | undefined;
 	#routines: AgentRoutines | undefined;
-	#responsibilities = "";
 	#drawn = "";
 	#discarded = false;
 	#statusTimer: ReturnType<typeof setTimeout> | undefined;
@@ -74,11 +74,8 @@ export class AgentDetails {
 				},
 				icon(glyph),
 			);
-		this.#pageButtons = {
-			responsibilities: pageButton("responsibilities", "Responsibilities", "map"),
-			routines: pageButton("routines", "Routines", "clock"),
-		};
-		this.dialog.tools.prepend(this.#pageButtons.responsibilities, this.#pageButtons.routines);
+		this.#pageButtons = { routines: pageButton("routines", "Routines", "clock") };
+		this.dialog.tools.prepend(this.#pageButtons.routines);
 
 		const fixedColor = agent.templateId === "co-founder";
 		this.#figures = new FigurePicker(savedAgentDraft(agent), (choice) => this.#choose(choice), {
@@ -330,8 +327,6 @@ export class AgentDetails {
 		}
 		this.#figureButton.disabled = !canWrite;
 		this.#drawFigure();
-		if (this.#page === "responsibilities" && this.#responsibilityKey() !== this.#responsibilities)
-			this.#go("responsibilities", false);
 	}
 
 	#drawFigure(force = false): void {
@@ -374,8 +369,7 @@ export class AgentDetails {
 			replace(this.dialog.content, this.#details);
 			// Figures that left the page stop drawing; this one is drawn anew.
 			if (from !== "details") this.#drawFigure(true);
-		} else if (page === "responsibilities") replace(this.dialog.content, this.#responsibilitiesPage());
-		else {
+		} else {
 			if (this.#routines) this.#routines.refresh();
 			else
 				this.#routines = new AgentRoutines(
@@ -395,57 +389,5 @@ export class AgentDetails {
 					: this.#pageButtons[from]
 				: this.dialog.content.querySelector<HTMLButtonElement>(".dialog-page-back");
 		target?.focus({ preventScroll: true });
-	}
-
-	#assigned() {
-		return (
-			this.#company.store
-				.get()
-				.organization?.responsibilities.filter(
-					(item) => item.accountableStaffAgentId === this.#agent.id && item.status !== "retired",
-				) ?? []
-		);
-	}
-
-	#responsibilityKey(): string {
-		return JSON.stringify(this.#assigned().map((item) => [item.responsibilityId, item.name]));
-	}
-
-	#responsibilitiesPage(): HTMLElement {
-		const items = this.#assigned();
-		this.#responsibilities = this.#responsibilityKey();
-		// Following a link leaves the conversation; close first so nothing typed is lost.
-		const close = () => this.dialog.close(false);
-		return h(
-			"section",
-			{ class: "agent-page agent-responsibilities" },
-			dialogPageHeader(
-				"Responsibilities",
-				() => this.#go("details"),
-				"Back to agent details",
-				`What ${this.#latest().displayName} is accountable for.`,
-			),
-			items.length
-				? h(
-						"div",
-						{ class: "responsibility-preview" },
-						...items.map((item) => {
-							const card = responsibilityCard(this.#company, item);
-							card.addEventListener("click", close);
-							return card;
-						}),
-					)
-				: h("div", { class: "agent-page-empty" }, icon("map"), h("p", null, "No responsibilities assigned yet.")),
-			h(
-				"a",
-				{
-					class: "agent-page-link",
-					href: `#/c/${this.#company.profile.profileId}/organization`,
-					onclick: close,
-				},
-				"View the responsibility map",
-				icon("chevron"),
-			),
-		);
 	}
 }

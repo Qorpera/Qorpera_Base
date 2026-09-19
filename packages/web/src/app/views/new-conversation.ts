@@ -505,7 +505,7 @@ export class NewConversationView {
 			rows: 3,
 			maxlength: "10000",
 			placeholder: "What should this agent be responsible for?",
-			"aria-label": "Agent responsibility",
+			"aria-label": "Agent responsibilities",
 			oninput: () => {
 				this.#draft.charter = charter.value;
 			},
@@ -521,7 +521,7 @@ export class NewConversationView {
 			picker.el,
 			h("label", null, "Name", name),
 			h("label", null, "Title", role),
-			h("label", null, "Responsibility", charter),
+			h("label", null, "Responsibilities", charter),
 		);
 		const status = h(
 			"p",

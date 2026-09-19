@@ -5,6 +5,12 @@ import { AGENT_LOOK } from "../../ui/agent-activity.ts";
 import { AttachmentTray } from "../../ui/attachments.ts";
 import { authorizationRequestId, renderAuthorizationCard } from "../../ui/authorization-card.ts";
 import { agentFigure } from "../../ui/avatar.ts";
+import {
+	conversationTimestampLabel,
+	conversationTimestampTitle,
+	needsConversationTimestamp,
+	parseConversationTimestamp,
+} from "../../ui/conversation-timestamps.ts";
 import { fmtTime, h, icon, notice, replace, spinner } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { matchesKey } from "../../ui/keys.ts";
@@ -18,9 +24,6 @@ import { ComputerPanel } from "./computer.ts";
 import { GroupDetails } from "./group-details.ts";
 import { SessionExecutionView } from "./session-execution.ts";
 import { SessionRunView } from "./session-run.ts";
-
-/** Beside the computer panel the conversation keeps at least this much room. */
-const CONVERSATION_MIN_WIDTH = 316;
 
 // Popup dismissal lasts for this company controller, including conversation navigation.
 // It does not settle or discard work whose outcome still needs review.
@@ -74,6 +77,8 @@ export class ConversationView {
 	readonly #runNotification = h("div", { class: "run-notification", hidden: true });
 	#runNotificationKey = "";
 	#receivedAttachments: ReceivedAttachments[] = [];
+	readonly #timestampTimer: number;
+	#timestampRows: { date: Date; node: HTMLElement; separator?: HTMLTimeElement }[] = [];
 
 	constructor(
 		company: CompanyController,
@@ -264,8 +269,13 @@ export class ConversationView {
 			once: true,
 			signal: this.#lifetime.signal,
 		});
-		window.addEventListener("resize", () => this.#syncPanelLayout(), { signal: this.#lifetime.signal });
-		window.addEventListener("qorpera-rail-resize", () => this.#syncPanelLayout(), { signal: this.#lifetime.signal });
+		window.addEventListener("resize", () => this.#autosize(), { signal: this.#lifetime.signal });
+		window.addEventListener("qorpera-rail-resize", () => this.#autosize(), { signal: this.#lifetime.signal });
+		const refreshTimestamps = () => this.#refreshTimestamps();
+		this.#timestampTimer = window.setInterval(refreshTimestamps, 60_000);
+		window.addEventListener("focus", refreshTimestamps, { signal: this.#lifetime.signal });
+		window.addEventListener("qorpera-language-change", refreshTimestamps, { signal: this.#lifetime.signal });
+		document.addEventListener("visibilitychange", refreshTimestamps, { signal: this.#lifetime.signal });
 		document.addEventListener(
 			"click",
 			(event) => {
@@ -285,6 +295,7 @@ export class ConversationView {
 		if (this.#disposed) return;
 		this.#disposed = true;
 		this.#lifetime.abort();
+		window.clearInterval(this.#timestampTimer);
 		this.#runNotification.remove();
 		this.#details?.dispose();
 		this.#panel?.dispose();
@@ -365,7 +376,7 @@ export class ConversationView {
 		if (this.#panel) {
 			this.#panel.dispose();
 			this.#panel = undefined;
-			this.#syncPanelLayout();
+			this.#autosize();
 			this.#computer.setAttribute("aria-expanded", "false");
 			this.#computer.focus();
 			return;
@@ -382,20 +393,8 @@ export class ConversationView {
 			this.#company.signal,
 		);
 		this.#body.append(this.#panel.el);
-		this.#panel.focus();
-		this.#syncPanelLayout();
-		this.#computer.setAttribute("aria-expanded", "true");
-	}
-
-	#syncPanelLayout(): void {
-		// The thread's width and the panel's own (420px beside the thread, all of it in the phone
-		// layout) decide, so any rail width and any panel rule in conversation.css count.
-		const covered =
-			Boolean(this.#panel) && this.#body.clientWidth - (this.#panel?.el.offsetWidth ?? 0) < CONVERSATION_MIN_WIDTH;
-		this.#body.classList.toggle("computer-covers", covered);
-		if (covered && this.#conversationPane.contains(document.activeElement)) this.#panel?.focus();
-		this.#conversationPane.inert = covered;
 		this.#autosize();
+		this.#computer.setAttribute("aria-expanded", "true");
 	}
 
 	/** One button: it sends a draft, and with nothing to send it stops the run the agent is on. */
@@ -568,7 +567,7 @@ export class ConversationView {
 			if (this.#panel) this.#body.append(this.#panel.el);
 			if (focused) this.#panel ? this.#panel.focus() : this.#composer.focus();
 			this.#computer.setAttribute("aria-expanded", String(Boolean(this.#panel)));
-			this.#syncPanelLayout();
+			this.#autosize();
 		}
 		replace(
 			this.#identity,
@@ -576,6 +575,52 @@ export class ConversationView {
 			h("h1", null, title),
 			agent || group ? icon("chevron") : null,
 		);
+	}
+
+	#refreshTimestamps(preserveScroll = true): void {
+		if (this.#disposed) return;
+		const now = new Date();
+		let previousDate: Date | undefined;
+		const groups = this.#timestampRows.map((row) => {
+			const separated = needsConversationTimestamp(row.date, previousDate);
+			previousDate = row.date;
+			return { row, separated };
+		});
+		const regroup = preserveScroll && groups.some(({ row, separated }) => Boolean(row.separator) !== separated);
+		const scrollTop = this.#messages.scrollTop;
+		const viewportTop = regroup && !this.#stickToBottom ? this.#messages.getBoundingClientRect().top : 0;
+		const anchor =
+			regroup && !this.#stickToBottom
+				? this.#timestampRows.find(({ node }) => node.getBoundingClientRect().bottom > viewportTop)?.node
+				: undefined;
+		const anchorTop = anchor?.getBoundingClientRect().top ?? 0;
+		// Reconcile local-day boundaries too: travel can add or remove a midnight
+		// between adjacent messages. Keep the message and attachment nodes intact.
+		for (const { row, separated } of groups) {
+			if (!separated) {
+				row.separator?.remove();
+				row.separator = undefined;
+				continue;
+			}
+			const { date } = row;
+			if (!row.separator) {
+				row.separator = h("time", { class: "conversation-timestamp", datetime: date.toISOString() });
+				row.node.before(row.separator);
+			}
+			const time = row.separator;
+			const label = conversationTimestampLabel(date, now);
+			const title = conversationTimestampTitle(date);
+			if (time.textContent !== label) time.textContent = label;
+			if (time.title !== title) {
+				time.title = title;
+				time.setAttribute("aria-label", title);
+			}
+		}
+		if (regroup) {
+			if (this.#stickToBottom) this.#messages.scrollTop = this.#messages.scrollHeight;
+			else if (anchor) this.#messages.scrollTop += anchor.getBoundingClientRect().top - anchorTop;
+			else this.#messages.scrollTop = scrollTop;
+		}
 	}
 
 	#renderMessages(conversation: ConversationState, agentName: string, agent: HostedStaffAgent | undefined): void {
@@ -618,6 +663,7 @@ export class ConversationView {
 				if (request) decisions.set(request, item);
 			}
 		const nodes: HTMLElement[] = [];
+		this.#timestampRows = [];
 		for (const item of items) {
 			if (item.kind === "member" || item.kind === "agent") {
 				const mine = item.kind === "member" && item.authorUserId === this.#company.userId;
@@ -691,6 +737,9 @@ export class ConversationView {
 					),
 				);
 			}
+			const date = parseConversationTimestamp(item.createdAt);
+			const node = nodes[nodes.length - 1];
+			if (date && node) this.#timestampRows.push({ date, node });
 		}
 		if (conversation.loading && !items.length) nodes.push(spinner("Loading conversation"));
 		if (!conversation.loading && !items.length && !conversation.error && !this.#working) {
@@ -713,6 +762,7 @@ export class ConversationView {
 			);
 		}
 		replace(this.#messages, ...nodes);
+		this.#refreshTimestamps(false);
 		if (this.#stickToBottom) this.#messages.scrollTop = this.#messages.scrollHeight;
 	}
 
@@ -845,7 +895,8 @@ export class ConversationView {
 		);
 		if (focused) {
 			if (!hidden) this.#runNotification.querySelector<HTMLElement>("button")?.focus({ preventScroll: true });
-			else if (this.#conversationPane.inert) this.#panel?.focus();
+			else if (this.#conversationPane.inert || this.#panel?.el.classList.contains("is-entered"))
+				this.#panel?.focus();
 			else if (!this.#composer.disabled && !this.#composerWrap.hidden) this.#composer.focus({ preventScroll: true });
 			else if (!this.#identity.disabled) this.#identity.focus({ preventScroll: true });
 			else {
