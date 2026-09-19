@@ -618,6 +618,7 @@ describe("settings session lifecycle", () => {
 		const f = await setup(realtimeFixture());
 		const connectionsUrl = "https://fixture.invalid/rest/v1/rpc/qorpera_list_member_native_execution_connections";
 		const fetch = vi.fn(async (input: string | URL | Request, _init?: RequestInit) => {
+			if (String(input).endsWith("/qorpera_list_member_notifications")) return Response.json([]);
 			if (String(input) === connectionsUrl) return Response.json({ compute_identity: null, connections: [] });
 			throw new Error("Unexpected request in the settings read-only fixture");
 		});
@@ -626,8 +627,9 @@ describe("settings session lifecycle", () => {
 		click(f.root, "#settings-tab-connections");
 		await draw();
 		const cards = [...f.root.querySelectorAll<HTMLElement>("#settings-content .connection-card")];
-		expect(cards.map((card) => card.querySelector("strong")!.textContent)).toEqual(["ChatGPT / Codex", "Claude"]);
-		for (const card of cards) expect(card.querySelector('small[role="status"]')!.textContent).toMatch(/^Not /);
+		expect(cards).toHaveLength(0);
+		expect(f.root.querySelector<HTMLButtonElement>("#settings-content .connection-add")!.disabled).toBe(true);
+		expect(f.root.querySelector<HTMLElement>("#settings-content .connection-provider-picker")!.hidden).toBe(true);
 		expect(
 			[...f.root.querySelectorAll<HTMLButtonElement>("#settings-content button")].find(
 				(button) => button.textContent === "Add service",
@@ -635,6 +637,8 @@ describe("settings session lifecycle", () => {
 		).toBe(true);
 		await vi.advanceTimersByTimeAsync(60_000);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
-		expect(fetch).toHaveBeenCalledExactlyOnceWith(connectionsUrl, expect.objectContaining({ method: "POST" }));
+		expect(fetch.mock.calls.filter(([url]) => String(url) === connectionsUrl)).toEqual([
+			[connectionsUrl, expect.objectContaining({ method: "POST" })],
+		]);
 	});
 });

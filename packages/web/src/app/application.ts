@@ -2,6 +2,7 @@ import type { User } from "@supabase/supabase-js";
 import { CloudApi } from "../cloud/api.ts";
 import { type Cloud, describeError } from "../cloud/client.ts";
 import { createWebCompanyAgents } from "../cloud/company-agents.ts";
+import { createWebCompanyExecution } from "../cloud/company-execution.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
 import { WebCompanyComputer } from "../cloud/computer.ts";
 import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
@@ -11,6 +12,7 @@ import { createWebSessionInputWriter } from "../cloud/session-input.ts";
 import { createWebSessionRunControl } from "../cloud/session-run-control.ts";
 import type { HostedProfile } from "../cloud/types.ts";
 import { h, notice, replace, spinner } from "../ui/dom.ts";
+import { isPhoneLayout } from "../ui/layout.ts";
 import { applyLanguage, watchTheme } from "../ui/preferences.ts";
 import { RailLayout } from "../ui/rail-layout.ts";
 import { AuthController } from "./auth.ts";
@@ -22,6 +24,7 @@ import { ApprovalsView } from "./views/approvals.ts";
 import { CloudCheckView } from "./views/cloudcheck.ts";
 import { CompanyFileController, renderCompanyFile } from "./views/companyfile.ts";
 import { ConversationView } from "./views/conversation.ts";
+import { ExecutionNotices } from "./views/execution-notices.ts";
 import { FeedbackView } from "./views/feedback.ts";
 import { HubController, renderHub } from "./views/hub.ts";
 import { LiveCompanyFileView } from "./views/live-company-file.ts";
@@ -49,14 +52,21 @@ export function mountApplication(
 
 	const topbar = h("header", { class: "topbar" });
 	const rail = h("aside", { id: "company-navigation", class: "rail", "aria-label": "Company navigation" });
-	const main = h("main", { class: "main" });
+	const main = h("main", { class: "main", tabindex: "-1" });
+	const executionNotices = h("div");
 	const backdrop = h("button", {
 		type: "button",
 		class: "navigation-backdrop",
 		"aria-label": "Close company navigation",
 		onclick: () => setNavigationOpen(false),
 	});
-	const frame = h("div", { class: "frame" }, topbar, h("div", { class: "body" }, backdrop, rail, main));
+	const frame = h(
+		"div",
+		{ class: "frame" },
+		topbar,
+		executionNotices,
+		h("div", { class: "body" }, backdrop, rail, main),
+	);
 	const railLayout = new RailLayout(frame, rail);
 	rail.after(railLayout.el);
 	applyLanguage();
@@ -124,7 +134,8 @@ export function mountApplication(
 		render();
 	}
 	function syncNavigation(): void {
-		main.inert = navigationOpen && window.matchMedia("(max-width: 760px)").matches;
+		main.inert = navigationOpen && isPhoneLayout();
+		executionNotices.inert = main.inert;
 	}
 	function onEscape(event: KeyboardEvent): void {
 		if (event.key === "Escape" && navigationOpen && !settings && !feedback && !event.defaultPrevented) {
@@ -153,6 +164,7 @@ export function mountApplication(
 	window.addEventListener("resize", syncNavigation);
 
 	let company: CompanyController | undefined;
+	let notices: ExecutionNotices | undefined;
 	let computer: WebCompanyComputer | undefined;
 	let companyFile: CompanyFileController | undefined;
 	let liveFile: LiveCompanyFileView | undefined;
@@ -227,6 +239,9 @@ export function mountApplication(
 	}
 
 	function teardownCompany(): void {
+		notices?.dispose();
+		notices = undefined;
+		executionNotices.replaceChildren();
 		unsubscribeCompany?.();
 		unsubscribeFile?.();
 		conversation?.dispose();
@@ -459,6 +474,8 @@ export function mountApplication(
 		}
 		const state = controller.store.get();
 		if (state.accessLost) {
+			notices?.dispose();
+			notices = undefined;
 			liveFile?.dispose();
 			liveFile = undefined;
 			closeSettings(false);
@@ -480,6 +497,39 @@ export function mountApplication(
 				),
 			);
 			return;
+		}
+		if (notices && !state.team?.capabilities.read) {
+			notices.dispose();
+			notices = undefined;
+			executionNotices.replaceChildren();
+		}
+		if (!notices && state.team?.capabilities.read) {
+			const client = createWebCompanyExecution(
+				cloud,
+				controller.profile.profileId,
+				controller.userId,
+				controller.signal,
+				() => {
+					const selected = currentRoute();
+					if (
+						disposed ||
+						company !== controller ||
+						auth.userId !== controller.userId ||
+						controller.store.get().accessLost ||
+						!controller.store.get().team?.capabilities.read ||
+						selected.name !== "company" ||
+						selected.profileId !== controller.profile.profileId
+					)
+						throw new Error("Company notification access changed.");
+				},
+			);
+			notices = new ExecutionNotices(
+				client,
+				controller.signal,
+				() => openSettings("company"),
+				() => main.focus({ preventScroll: true }),
+			);
+			executionNotices.replaceChildren(notices.el);
 		}
 		if (route.section !== "chat") {
 			conversation?.dispose();

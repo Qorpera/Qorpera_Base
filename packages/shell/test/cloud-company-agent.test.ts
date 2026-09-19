@@ -116,6 +116,7 @@ describe("canonical Company File agent documents", () => {
 		});
 
 		expect(result.state).toBe("applied");
+		expect(result.agentRevision).toBe(1);
 		expect(editor.reviews).toBe(1);
 		expect(editor.edits[0]).toMatchObject({
 			operation: "write",
@@ -156,12 +157,13 @@ describe("canonical Company File agent documents", () => {
 		};
 		editor.file = { version: VERSION_1, text: JSON.stringify(initial) };
 
-		await writeCloudCompanyAgent({
+		const updated = await writeCloudCompanyAgent({
 			editor,
 			agent: agent({ displayName: "Chief of Staff", model: { provider: "openai", modelId: "gpt-5" } }),
 			operationKey: "staff-update:test",
 			signal: AbortSignal.timeout(1_000),
 		});
+		expect(updated.agentRevision).toBe(2);
 
 		expect(editor.edits[1]).toMatchObject({ expectedVersion: VERSION_1 });
 		expect(parseCloudCompanyAgentDocument(JSON.parse(editor.file!.text))).toMatchObject({

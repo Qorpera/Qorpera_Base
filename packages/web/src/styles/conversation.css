@@ -325,11 +325,8 @@
 .new-agent-stage { display: grid; place-items: center; margin: 14px 0 0; }
 .new-agent-stage .figure { width: 112px; height: 112px; }
 .new-agent-form .surface-status { text-align: center; }
-/* Beside the conversation only where the default 456px rail, the 420px panel and a
- * 316px conversation fit; conversation.ts #syncPanelLayout uses the same width. */
-@media (max-width: 1192px) {
-	.computer-panel { position: absolute; inset: 0 0 0 auto; z-index: 20; box-shadow: -12px 0 28px rgb(0 0 0 / 8%); }
-}
+/* conversation.ts #syncPanelLayout covers the conversation when the thread has no room for both. */
+.computer-covers > .computer-panel { position: absolute; inset: 0 0 0 auto; z-index: 20; box-shadow: -12px 0 28px rgb(0 0 0 / 8%); }
 @media (max-width: 900px) {
 	.message:not(.mine):not(.message-progress) { max-width: 82%; }
 }
