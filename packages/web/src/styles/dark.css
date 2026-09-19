@@ -1,0 +1,194 @@
+/* Dark theme, second half: the colours the views still write out directly,
+ * and the marks that need another asset or treatment on a dark surface. The
+ * tokens (tokens.css) carry everything else. Each rule repeats the selector of
+ * the light rule it answers under the dark root, which keeps it the more
+ * specific of the two wherever this file sits in the cascade. */
+
+/* ---- shared ---------------------------------------------------------------- */
+:root[data-theme="dark"] .badge-ok { color: #5ed6a9; }
+:root[data-theme="dark"] .badge-warn { color: #f2c35d; }
+:root[data-theme="dark"] .badge-danger { color: #ff9084; }
+:root[data-theme="dark"] .btn { background: rgba(255, 255, 255, 0.05); }
+:root[data-theme="dark"] .btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.1); }
+:root[data-theme="dark"] .btn-primary { background: var(--primary); }
+:root[data-theme="dark"] .btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
+:root[data-theme="dark"] .btn-danger:hover:not(:disabled) { background: var(--danger-soft); }
+/* The black provider marks (GitHub, OpenAI, Anthropic) turn to white; Google's
+ * colours stay. */
+:root[data-theme="dark"] :is(img[src$="provider-github.svg"], img[src$="provider-openai.svg"], img[src$="provider-anthropic.svg"]) { filter: invert(1); }
+
+/* ---- account menu ---------------------------------------------------------- */
+:root[data-theme="dark"] .account-chip { background: #5c5b58; }
+:root[data-theme="dark"] .account-popover { box-shadow: 0 22px 48px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3); }
+
+/* ---- rail ------------------------------------------------------------------ */
+:root[data-theme="dark"] .rail { --rail-line: #121211; --rail-search-ink: #8f8e89; --rail-small: #9d9c97; }
+:root[data-theme="dark"] .rail-add { color: #a9a8a3; }
+:root[data-theme="dark"] .rail-search {
+	box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.06);
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238f8e89' stroke-width='1.8'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m20 20-4-4'/%3E%3C/svg%3E");
+}
+:root[data-theme="dark"] .rail-search input::placeholder { color: #8f8e89; }
+:root[data-theme="dark"] .cofounder-stand::before { background: rgba(0, 0, 0, 0.5); }
+:root[data-theme="dark"] .cofounder-stand .figure { filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.35)); }
+:root[data-theme="dark"] .rail-row-copy small { color: #9d9c97; }
+:root[data-theme="dark"] .rail-row.active .rail-row-copy small { color: rgba(255, 255, 255, 0.85); }
+
+/* ---- hub ------------------------------------------------------------------- */
+:root[data-theme="dark"] .hub-lead { color: #a4a8b0; }
+:root[data-theme="dark"] :is(.hub-note, .hub-or, .company-meta) { color: #8d9199; }
+:root[data-theme="dark"] :is(.hub-create input, .company-card-compose input) { background: #242423; }
+:root[data-theme="dark"] :is(.hub-create input, .company-card-compose input)::placeholder { color: #7d818a; }
+:root[data-theme="dark"] :is(.hub-create input, .company-card-compose input):focus-visible { border-color: #4f8cf6; box-shadow: 0 0 0 3px rgba(79, 140, 246, 0.28); }
+:root[data-theme="dark"] .company-card {
+	border-color: rgba(255, 255, 255, 0.08); background: #232322;
+	box-shadow: 0 14px 36px rgba(0, 0, 0, 0.28), 0 2px 6px rgba(0, 0, 0, 0.2);
+}
+:root[data-theme="dark"] .company-card:hover {
+	border-color: rgba(255, 255, 255, 0.15); box-shadow: 0 24px 56px rgba(0, 0, 0, 0.4), 0 3px 8px rgba(0, 0, 0, 0.25);
+}
+:root[data-theme="dark"] .company-card-new { background: transparent; box-shadow: none; }
+:root[data-theme="dark"] .company-card-new:hover { background: rgba(255, 255, 255, 0.03); box-shadow: none; }
+:root[data-theme="dark"] .company-card-compose:hover { border-color: rgba(255, 255, 255, 0.08); box-shadow: 0 14px 36px rgba(0, 0, 0, 0.28); }
+
+/* ---- first run and the figure picker ---------------------------------------- */
+:root[data-theme="dark"] .meet h1 { color: var(--text); }
+:root[data-theme="dark"] .figure-choice:hover:not(:disabled) { background: rgba(255, 255, 255, 0.07); }
+:root[data-theme="dark"] .figure-choice[aria-checked="true"] { border-color: #5f5e5a; background: rgba(255, 255, 255, 0.08); box-shadow: none; }
+:root[data-theme="dark"] .color-choice[aria-checked="true"]::after { border-color: #8c8b86; }
+/* Charcoal figures are painted in the model's dark-surface shade on this
+ * theme (motion-model.js avatarColor); the swatch shows the same shade. */
+:root[data-theme="dark"] .color-choice[data-color="#312f2d"] { background: #a29d97; }
+
+/* ---- sign-in ----------------------------------------------------------------- */
+:root[data-theme="dark"] .auth {
+	--auth-line: rgba(255, 255, 255, 0.1); --auth-line-strong: rgba(255, 255, 255, 0.2); --auth-cobalt: #4f8cf6; --auth-ink: #edece9;
+	background: var(--bg);
+}
+:root[data-theme="dark"] :is(.auth-lead, .auth-hint, .auth-link, .auth-status) { color: #a4a8b0; }
+:root[data-theme="dark"] .auth-link:hover { color: var(--auth-ink); }
+:root[data-theme="dark"] :is(.auth-divider, .auth-foot) { color: #8d9199; }
+:root[data-theme="dark"] :is(.auth-provider, .auth-form input) { background: #242423; }
+:root[data-theme="dark"] .auth-provider:hover:not(:disabled) { background: #2c2c2b; border-color: rgba(255, 255, 255, 0.34); }
+:root[data-theme="dark"] .auth-form input::placeholder { color: #7d818a; }
+:root[data-theme="dark"] .auth-form input:focus-visible { box-shadow: 0 0 0 3px rgba(79, 140, 246, 0.28); }
+:root[data-theme="dark"] .auth-primary { color: var(--on-primary); }
+:root[data-theme="dark"] .auth-primary:hover:not(:disabled) { background: var(--primary-hover); }
+:root[data-theme="dark"] .auth-status.is-error { color: #ff9084; }
+:root[data-theme="dark"] .auth-art { background: #212120; }
+:root[data-theme="dark"] .crown-shadow { background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.5), rgba(0, 0, 0, 0) 70%); }
+/* The lockup comes in an ink and a paper version; signin.ts renders both. */
+.auth-brand .lockup-on-dark, :root[data-theme="dark"] .auth-brand .lockup-on-light { display: none; }
+:root[data-theme="dark"] .auth-brand .lockup-on-dark { display: block; }
+
+/* ---- dialogs ---------------------------------------------------------------- */
+:root[data-theme="dark"] .modal-backdrop { background: rgba(0, 0, 0, 0.55); }
+:root[data-theme="dark"] .modal { border: 1px solid var(--border); box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6); }
+:root[data-theme="dark"] .surface-dialog { border-color: var(--border); box-shadow: 0 20px 60px rgb(0 0 0 / 55%); }
+:root[data-theme="dark"] .surface-dialog::backdrop { background: rgb(0 0 0 / 40%); }
+:root[data-theme="dark"] .agent-inline-field.is-editable:hover { background: rgba(255, 255, 255, 0.06); }
+:root[data-theme="dark"] .agent-inline-field.is-editable:focus-within { background: #1f1f1e; box-shadow: inset 0 0 0 1px #3f7fd6, 0 0 0 3px rgb(10 132 255 / 22%); }
+:root[data-theme="dark"] .agent-inline-field > .icon { color: #8f8e89; }
+:root[data-theme="dark"] .agent-inline-description { color: #d6d5d1; }
+/* The figure darkens inside a pale outline of itself; on this surface the outline is a lighter grey. */
+:root[data-theme="dark"] :is(.agent-figure-button:not(:disabled):hover .figure, .agent-figure-button:focus-visible .figure) {
+	filter: brightness(.55) saturate(.78) drop-shadow(4px 0 0 #4b4b49) drop-shadow(-4px 0 0 #4b4b49) drop-shadow(0 4px 0 #4b4b49) drop-shadow(0 -4px 0 #4b4b49);
+}
+:root[data-theme="dark"] .agent-figure-tip { border-color: rgba(255, 255, 255, 0.14); background: #3a3a38; color: var(--text); box-shadow: 0 2px 5px rgb(0 0 0 / 40%); }
+:root[data-theme="dark"] .agent-figure-picker { border-color: rgba(255, 255, 255, 0.12); background: #323231; box-shadow: 0 18px 44px rgb(0 0 0 / 50%), 0 2px 7px rgb(0 0 0 / 30%); }
+:root[data-theme="dark"] .agent-figure-picker::before { border-color: rgba(255, 255, 255, 0.12); background: #323231; }
+:root[data-theme="dark"] .agent-figure-reset { color: #a9a8a3; }
+:root[data-theme="dark"] .agent-figure-reset:hover { color: var(--text); }
+:root[data-theme="dark"] .agent-figure-picker .figure-choice:hover:not(:disabled) { background: rgba(255, 255, 255, 0.07); }
+:root[data-theme="dark"] .agent-figure-picker .figure-choice[aria-checked="true"] { border-color: #6a6965; background: rgba(255, 255, 255, 0.1); box-shadow: 0 0 0 3px #323231, 0 0 0 4px #5a5957; }
+:root[data-theme="dark"] .agent-figure-picker .color-grid { border-top-color: rgba(255, 255, 255, 0.1); }
+:root[data-theme="dark"] .agent-notifications input[role=switch] { background: #4a4a48; }
+:root[data-theme="dark"] .agent-notifications input[role=switch]::before { box-shadow: 0 1px 2px rgb(0 0 0 / 40%); }
+@media (max-width: 760px) {
+	:root[data-theme="dark"] .frame.navigation-open .navigation-backdrop { background: rgba(0, 0, 0, 0.45); }
+}
+
+/* ---- conversation ------------------------------------------------------------ */
+:root[data-theme="dark"] .bubble { background: #3a3a3c; color: var(--text); }
+:root[data-theme="dark"] .mine .bubble { background: #0a84ff; color: #fff; box-shadow: none; }
+:root[data-theme="dark"] .message-progress .bubble { color: #d6d5d1; }
+:root[data-theme="dark"] .message.typing { background: #3a3a3c; }
+:root[data-theme="dark"] .message.typing span { background: #a3a29e; }
+:root[data-theme="dark"] .composer-shell { background: #242423; }
+:root[data-theme="dark"] :is(.composer-shell:focus-within, .composer-shell.is-dragging) { border-color: #3f7fd6; box-shadow: 0 0 0 2px rgb(10 132 255 / 22%); }
+:root[data-theme="dark"] .composer-send:disabled { background: #353534; color: #71706c; }
+:root[data-theme="dark"] .composer-send:not(:disabled):hover { background: var(--primary-hover); }
+:root[data-theme="dark"] .composer-menu { box-shadow: 0 12px 30px rgb(0 0 0 / 45%); }
+:root[data-theme="dark"] .attachment-chip { background: #2c2c2b; }
+:root[data-theme="dark"] .attachment-remove { background: #3a3a38; box-shadow: 0 1px 4px rgb(0 0 0 / 40%); }
+:root[data-theme="dark"] .auth-card { border-color: var(--border); background: #262625; }
+:root[data-theme="dark"] .received-file { border-color: var(--border); background: #262625; }
+:root[data-theme="dark"] .received-file:hover { background: #2e2e2d; }
+:root[data-theme="dark"] .received-file-visual { color: #8f8e89; }
+:root[data-theme="dark"] .received-image .received-file-visual { background: #333332; }
+:root[data-theme="dark"] .computer-panel { background: #212120; }
+:root[data-theme="dark"] .computer-preview-screen { border-color: #3a3a3d; }
+:root[data-theme="dark"] .recipient-menu { box-shadow: 0 22px 48px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3); }
+
+/* ---- settings --------------------------------------------------------------- */
+:root[data-theme="dark"] .settings-overlay { background: rgb(0 0 0 / 55%); }
+:root[data-theme="dark"] .settings-dialog { border-color: rgba(255, 255, 255, 0.1); color: var(--text); box-shadow: 0 24px 80px rgb(0 0 0 / 60%); }
+:root[data-theme="dark"] .settings-nav { border-color: rgba(255, 255, 255, 0.08); background: #232322; }
+:root[data-theme="dark"] .settings-nav input { border-color: rgba(255, 255, 255, 0.1); background: #1d1d1c; }
+:root[data-theme="dark"] .settings-nav [role=tab] { color: #d6d5d1; }
+:root[data-theme="dark"] .settings-nav [role=tab]:hover { background: rgba(255, 255, 255, 0.06); }
+:root[data-theme="dark"] .settings-nav [aria-selected=true] { background: rgba(255, 255, 255, 0.1); color: #fff; }
+:root[data-theme="dark"] .settings-nav input::placeholder { color: #8f8e89; }
+:root[data-theme="dark"] .settings-nav [role=tab] > .icon { color: #9d9c97; }
+:root[data-theme="dark"] .settings-nav [aria-selected=true] > .icon { color: var(--text); }
+:root[data-theme="dark"] .settings-tab-count { background: var(--primary); color: var(--on-primary); }
+:root[data-theme="dark"] .settings-company-label { color: #9d9c97; }
+:root[data-theme="dark"] .settings-close { background: #3a3a38; color: #b7b6b1; }
+:root[data-theme="dark"] .settings-content h2 { color: #9d9c97; }
+:root[data-theme="dark"] .settings-content .btn { border-color: rgba(255, 255, 255, 0.12); background: #3a3a38; }
+:root[data-theme="dark"] .settings-content .btn:hover:not(:disabled) { background: #444442; }
+:root[data-theme="dark"] .settings-content .btn-danger { color: #ff9084; }
+:root[data-theme="dark"] .settings-content .btn-primary { border-color: var(--primary); background: var(--primary); color: var(--on-primary); }
+:root[data-theme="dark"] .settings-content .btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
+:root[data-theme="dark"] .settings-card { background: #333332; }
+:root[data-theme="dark"] :is(.settings-copy small, .settings-help, .connection-sign-in small, .settings-lead) { color: #a3a29d; }
+:root[data-theme="dark"] .settings-file-card > .icon:first-child { color: #8f8e89; }
+:root[data-theme="dark"] .settings-file-card progress::-webkit-progress-bar { background: #4a4a48; }
+:root[data-theme="dark"] .settings-file-card progress::-webkit-progress-value { background: #a9a8a3; }
+:root[data-theme="dark"] .settings-file-card progress::-moz-progress-bar { background: #a9a8a3; }
+:root[data-theme="dark"] .settings-link:hover { background: #3a3a38; }
+:root[data-theme="dark"] .invite-plus { border-color: #5f5e5a; color: #a9a8a3; }
+:root[data-theme="dark"] .invite-picker { background: #313130; box-shadow: 0 8px 24px rgb(0 0 0 / 35%); }
+:root[data-theme="dark"] .invite-picker > input { background: #262625; }
+:root[data-theme="dark"] .invite-friend:hover { background: rgba(255, 255, 255, 0.06); }
+/* Friends: one bordered list on the dialog surface, as in light. */
+:root[data-theme="dark"] .panel { border-color: rgba(255, 255, 255, 0.1); background: var(--overlay); }
+:root[data-theme="dark"] :is(.panel-search, .panel-group + .panel-group) { border-color: rgba(255, 255, 255, 0.08); }
+:root[data-theme="dark"] .panel-search input { background: #232322; }
+:root[data-theme="dark"] .panel-group-title { color: #8f8e89; }
+:root[data-theme="dark"] .person-row + .person-row { border-top-color: rgba(255, 255, 255, 0.06); }
+:root[data-theme="dark"] .connection-card { background: #333332; }
+:root[data-theme="dark"] :is(.connection-sign-in, .connection-account) { border-color: rgba(255, 255, 255, 0.1); }
+:root[data-theme="dark"] .settings-dialog :focus-visible { outline-color: #6f9be0; }
+
+/* ---- feedback ---------------------------------------------------------------- */
+:root[data-theme="dark"] .feedback-dialog { border-color: rgba(255, 255, 255, 0.1); box-shadow: 0 24px 72px rgba(0, 0, 0, 0.6); }
+:root[data-theme="dark"] .feedback-dialog::backdrop { background: rgba(0, 0, 0, 0.5); }
+:root[data-theme="dark"] :is(.feedback-close:hover:not(:disabled), .feedback-close:focus-visible) { background: #3a3a38; }
+:root[data-theme="dark"] .feedback-category { border-color: rgba(255, 255, 255, 0.16); background: transparent; color: #d6d5d1; }
+:root[data-theme="dark"] :is(.feedback-category:hover:not(:disabled), .feedback-category:focus-visible) { border-color: rgba(255, 255, 255, 0.3); background: rgba(255, 255, 255, 0.05); }
+:root[data-theme="dark"] .feedback-category[aria-pressed="true"] { border-color: var(--text); background: var(--text); color: var(--bg); }
+:root[data-theme="dark"] .feedback-details-wrap textarea { border-color: rgba(255, 255, 255, 0.2); background: #1f1f1e; }
+:root[data-theme="dark"] .feedback-details-wrap textarea:focus { border-color: #5a8ff0; box-shadow: 0 0 0 2px rgba(90, 143, 240, 0.25); }
+:root[data-theme="dark"] .feedback-details-wrap textarea::placeholder { color: #85847f; }
+:root[data-theme="dark"] .feedback-status { color: #ff9084; }
+:root[data-theme="dark"] .feedback-status[data-state="success"] { color: #5ed6a9; }
+:root[data-theme="dark"] .feedback-submit:disabled { border-color: #3a3a38; background: #3a3a38; color: #7f7e7a; }
+
+/* ---- organization ------------------------------------------------------------ */
+:root[data-theme="dark"] :is(.organization-home, .organization-person, .measure-card) { background: #262625; }
+:root[data-theme="dark"] :is(.organization-home:hover, .organization-person:hover) { background: #2e2e2d; }
+:root[data-theme="dark"] .map-outcomes { border-left-color: #444442; }
+:root[data-theme="dark"] .map-outcomes > .responsibility-node::before { background: #444442; }
+:root[data-theme="dark"] :is(.responsibility-node, .project-node) { border-color: var(--border); background: #232322; }
+:root[data-theme="dark"] :is(.responsibility-node:hover, .project-node:hover) { border-color: rgba(255, 255, 255, 0.18); background: #292928; }

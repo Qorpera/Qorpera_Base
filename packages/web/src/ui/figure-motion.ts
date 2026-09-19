@@ -18,6 +18,8 @@ export interface FigureArtwork {
 	faces: Record<string, EyeGeometry[]>;
 	prepare(id: string, image: HTMLImageElement): void;
 	drawable(id: string, color: string): CanvasImageSource;
+	/** The approved shade of `color` on a dark surface. */
+	colorOnDark(id: string, color: string): string;
 }
 export interface MotionOptions {
 	activity?: Activity;
@@ -47,6 +49,8 @@ interface LiveMotion {
 	artwork: FigureArtwork;
 	id: string;
 	color: string;
+	/** The colour on screen: `color`, or its dark-surface shade on the dark theme. */
+	shown: string;
 	activity: Activity;
 	still: boolean;
 	clock: { elapsed: number; users: number };
@@ -54,6 +58,16 @@ interface LiveMotion {
 	ready: boolean;
 	painted: string;
 	side: number;
+}
+
+/* On the dark theme a figure takes its dark-surface shade from the approved
+ * visual system: charcoal, the palette's ink and the company logos' ink,
+ * turns light as text does. Only the painting changes, never the stored
+ * colour. */
+function shownColor(entry: LiveMotion): string {
+	return document.documentElement.dataset.theme === "dark"
+		? entry.artwork.colorOnDark(entry.id, entry.color)
+		: entry.color;
 }
 
 function base(): URL {
@@ -78,7 +92,7 @@ function capsule(
 }
 
 async function prepare(entry: LiveMotion): Promise<void> {
-	const { id, artwork, color } = entry;
+	const { id, artwork } = entry;
 	let loaded = prepared.get(id);
 	if (!loaded) {
 		loaded = Promise.all(
@@ -101,6 +115,8 @@ async function prepare(entry: LiveMotion): Promise<void> {
 	}
 	await loaded;
 	if (!live.has(entry)) return;
+	const color = shownColor(entry);
+	entry.shown = color;
 	const key = id + color;
 	if (!surfaces.has(key)) {
 		const source = artwork.drawable(id, color),
@@ -210,7 +226,7 @@ function paint(entry: LiveMotion): void {
 	ctx.clearRect(0, 0, side, side);
 	ctx.scale(side / 100, side / 100);
 	const p = pose(activity, elapsed, { reduced });
-	const asset = surfaces.get(entry.id + entry.color)!;
+	const asset = surfaces.get(entry.id + entry.shown)!;
 	if (activity === "Working" && !reduced) drawWorkingStrokes(ctx, sample, false);
 	else strokes(ctx, p.strokes, false, entry.side);
 	if (p.body > 0.001) {
@@ -252,12 +268,12 @@ function paint(entry: LiveMotion): void {
 		ctx.rotate((p.turn * Math.PI) / 180);
 		ctx.scale(p.scaleX * p.body, p.scaleY * p.body);
 		ctx.translate(-50, -50);
-		ctx.drawImage(featheredBody(entry.id + entry.color, asset.body, side), 0, 0, 100, 100);
+		ctx.drawImage(featheredBody(entry.id + entry.shown, asset.body, side), 0, 0, 100, 100);
 		ctx.globalAlpha = p.eyes;
 		ctx.drawImage(eyesCanvas, 0, 0, 100, 100);
 		ctx.restore();
 	}
-	ctx.fillStyle = entry.color;
+	ctx.fillStyle = entry.shown;
 	if (p.stemWidth > 0.001) {
 		const half = p.stemWidth / 2,
 			top = p.stemTop,
@@ -292,6 +308,20 @@ function paint(entry: LiveMotion): void {
 	canvas.dataset.frame = String(sample);
 	canvas.hidden = false;
 	entry.fallback.hidden = true;
+}
+
+/** Repaint a ready figure whose shown colour the theme has changed. */
+function recolor(entry: LiveMotion): void {
+	if (!entry.ready || shownColor(entry) === entry.shown) return;
+	entry.ready = false;
+	void prepare(entry).then(() => {
+		if (!live.has(entry)) return;
+		entry.ready = true;
+		entry.painted = "";
+		if (entry.visible) paint(entry);
+		schedule();
+		recolor(entry);
+	});
 }
 
 function moving(entry: LiveMotion): boolean {
@@ -351,6 +381,7 @@ export function mountFigureMotion(
 		artwork,
 		id,
 		color,
+		shown: color,
 		activity,
 		clock,
 		still: Boolean(options.still),
@@ -372,6 +403,13 @@ export function mountFigureMotion(
 						paint(item);
 					}
 				schedule();
+			},
+			{ signal: lifetime.signal },
+		);
+		window.addEventListener(
+			"qorpera-theme-change",
+			() => {
+				for (const item of live) recolor(item);
 			},
 			{ signal: lifetime.signal },
 		);
@@ -411,6 +449,8 @@ export function mountFigureMotion(
 			entry.ready = true;
 			if (entry.visible) paint(entry);
 			schedule();
+			// The theme may have changed while the artwork loaded.
+			recolor(entry);
 		})
 		.catch(() => {
 			if (live.has(entry)) host.dataset.motionUnavailable = "true";

@@ -16,6 +16,8 @@
 
 ### Added
 
+- Add a dark theme. Settings → General → Theme offers System default (follows the device's appearance), Light and Dark; the choice is kept per browser, follows changes made in other tabs, and a head script applies it before the first paint.
+
 - Support bounded public JSON environment configuration for Pages release builds, with shared SDK checks and release artifact validation in web CI.
 
 - Record the source commit and runtime bundle identity in web deployment artifacts; require clean source for release builds.

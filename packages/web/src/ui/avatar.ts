@@ -15,7 +15,11 @@ interface MotionAvatar {
 	origin: string;
 }
 interface AvatarGlobals {
-	QORPERA_MOTION_MODEL: { avatars: MotionAvatar[]; faces: FigureArtwork["faces"] };
+	QORPERA_MOTION_MODEL: {
+		avatars: MotionAvatar[];
+		faces: FigureArtwork["faces"];
+		avatarColor(id: string, surface: "light" | "dark", selectedColor?: string): string;
+	};
 	QORPERA_AVATAR_APPEARANCE: { palette: { name: string; color: string }[] } & Pick<
 		FigureArtwork,
 		"prepare" | "drawable"
@@ -167,6 +171,9 @@ export function figureElement(figure: FigureId, color?: string, options: FigureO
 			faces: scope.QORPERA_MOTION_MODEL.faces,
 			prepare: scope.QORPERA_AVATAR_APPEARANCE.prepare,
 			drawable: scope.QORPERA_AVATAR_APPEARANCE.drawable,
+			// The model accepts lower-case hex only; anything else keeps its colour.
+			colorOnDark: (id, shade) =>
+				/^#[\da-f]{6}$/.test(shade) ? scope.QORPERA_MOTION_MODEL.avatarColor(id, "dark", shade) : shade,
 		},
 		options,
 	);

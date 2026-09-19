@@ -8,7 +8,13 @@ import {
 import type { HostedAccountEntitlement } from "../../cloud/types.ts";
 import { button, fmtBytes, h, notice, replace } from "../../ui/dom.ts";
 import { preserveFormDrafts } from "../../ui/forms.ts";
-import { languagePreference, setLanguagePreference, uiText } from "../../ui/preferences.ts";
+import {
+	languagePreference,
+	setLanguagePreference,
+	setThemePreference,
+	themePreference,
+	uiText,
+} from "../../ui/preferences.ts";
 import { type AuthController, displayName } from "../auth.ts";
 
 export interface AccountViewState {
@@ -59,6 +65,20 @@ export function renderAccount(
 		if (!setLanguagePreference(language.value)) {
 			language.value = languagePreference();
 			setState({ error: "Your browser could not save the language preference." });
+		}
+	};
+	const theme = h(
+		"select",
+		{ "aria-label": "Theme" },
+		h("option", { value: "system" }, "System default"),
+		h("option", { value: "light" }, "Light"),
+		h("option", { value: "dark" }, "Dark"),
+	);
+	theme.value = themePreference();
+	theme.onchange = () => {
+		if (!setThemePreference(theme.value)) {
+			theme.value = themePreference();
+			setState({ error: "Your browser could not save the theme preference." });
 		}
 	};
 	const entitlement = state.entitlement;
@@ -122,8 +142,13 @@ export function renderAccount(
 				h(
 					"label",
 					{ class: "settings-preference-row" },
-					uiText("Theme"),
-					h("select", { "aria-label": "Theme" }, h("option", { value: "light" }, "Light")),
+					h(
+						"span",
+						{ class: "settings-copy" },
+						uiText("Theme"),
+						h("small", null, uiText("System default follows your device’s appearance.")),
+					),
+					theme,
 				),
 			),
 			h(
