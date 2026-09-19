@@ -180,13 +180,19 @@ describe("viewer UI state machine (fake DOM/noVNC, not visual cloud acceptance)"
 		f.instances[0].emit("connect");
 		const fullscreen = f.button("Full screen");
 		expect(fullscreen.hidden).toBe(false);
+		expect(fullscreen.attributes.get("aria-label")).toBe("Full screen");
+		expect(fullscreen.attributes.get("title")).toBe("Full screen");
 		await fullscreen.onclick?.();
 		expect(f.document.fullscreenElement).toBe(mount.children[0]);
 		expect(fullscreen.textContent).toBe("Exit full screen");
+		expect(fullscreen.attributes.get("aria-label")).toBe("Exit full screen");
+		expect(fullscreen.attributes.get("title")).toBe("Exit full screen");
 		expect(fullscreen.attributes.get("aria-pressed")).toBe("true");
 		await fullscreen.onclick?.();
 		expect(f.document.fullscreenElement).toBeNull();
 		expect(fullscreen.textContent).toBe("Full screen");
+		expect(fullscreen.attributes.get("aria-label")).toBe("Full screen");
+		expect(fullscreen.attributes.get("title")).toBe("Full screen");
 		expect(fullscreen.attributes.get("aria-pressed")).toBe("false");
 		await fullscreen.onclick?.();
 		// Browser Escape is reflected even when no button click reaches the renderer.
@@ -209,12 +215,15 @@ describe("viewer UI state machine (fake DOM/noVNC, not visual cloud acceptance)"
 		expect(fullscreen.disabled).toBe(false);
 		expect(fullscreen.textContent).toBe("Full screen unavailable");
 		expect(fullscreen.attributes.get("aria-label")).toBe("Full screen unavailable. Try again.");
+		expect(fullscreen.attributes.get("title")).toBe("Full screen unavailable. Try again.");
 		expect(fullscreen.attributes.get("aria-live")).toBe("polite");
 		await fullscreen.onclick?.();
 		expect(fullscreen.textContent).toBe("Exit full screen");
 		f.document.exitFullscreen.mockRejectedValueOnce(new Error("denied"));
 		await fullscreen.onclick?.();
 		expect(fullscreen.textContent).toBe("Could not exit full screen");
+		expect(fullscreen.attributes.get("aria-label")).toBe("Could not exit full screen. Try again.");
+		expect(fullscreen.attributes.get("title")).toBe("Could not exit full screen. Try again.");
 		expect(fullscreen.disabled).toBe(false);
 		await viewer.close();
 		expect(f.document.fullscreenElement).toBeNull();
@@ -373,6 +382,12 @@ describe("viewer UI state machine (fake DOM/noVNC, not visual cloud acceptance)"
 			channel,
 		});
 		const viewer = fixture.api.open(fixture.options);
+		expect(fixture.button("Take control").className).toBe("screen-viewer-takeover");
+		expect(fixture.button("Take control").attributes.get("aria-label")).toBe("Take control");
+		expect(fixture.button("Take control").attributes.get("title")).toBe("Take control");
+		expect(fixture.button("Reconnect").className).toBe("screen-viewer-reconnect");
+		expect(fixture.button("Reconnect").attributes.get("aria-label")).toBe("Reconnect");
+		expect(fixture.button("Reconnect").attributes.get("title")).toBe("Reconnect");
 		await vi.waitFor(() => expect(fixture.instances).toHaveLength(1));
 		expect(fixture.instances[0].transport).toBe(channel);
 		fixture.instances[0].emit("connect");
@@ -422,8 +437,12 @@ describe("viewer UI state machine (fake DOM/noVNC, not visual cloud acceptance)"
 		fixture.instances[1].emit("connect");
 		expect(fixture.instances[1].viewOnly).toBe(false);
 		expect(fixture.button("Release control").attributes.get("aria-pressed")).toBe("true");
+		expect(fixture.button("Release control").attributes.get("aria-label")).toBe("Release control");
+		expect(fixture.button("Release control").attributes.get("title")).toBe("Release control");
 		expect(fixture.requestConnection.mock.calls.map(([input]) => input.mode)).toEqual(["watch", "control"]);
 		fixture.button("Release control").onclick?.();
+		expect(fixture.button("Take control").attributes.get("aria-label")).toBe("Take control");
+		expect(fixture.button("Take control").attributes.get("title")).toBe("Take control");
 		await vi.waitFor(() => expect(fixture.instances).toHaveLength(3));
 		fixture.instances[2].emit("connect");
 		expect(fixture.instances[1].viewOnly).toBe(true);
@@ -442,6 +461,8 @@ describe("viewer UI state machine (fake DOM/noVNC, not visual cloud acceptance)"
 		fixture.instances[1].emit("connect");
 		fixture.instances[1].emit("disconnect");
 		expect(fixture.requestConnection).toHaveBeenCalledTimes(2);
+		expect(fixture.button("Take control").attributes.get("aria-label")).toBe("Take control");
+		expect(fixture.button("Take control").attributes.get("title")).toBe("Take control");
 		expect(fixture.button("Reconnect").hidden).toBe(false);
 		fixture.button("Reconnect").onclick?.();
 		await vi.waitFor(() => expect(fixture.instances).toHaveLength(3));

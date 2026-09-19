@@ -252,12 +252,19 @@
 /* The canvas fills the popover. Controls float over it only when needed. */
 .computer-panel .screen-viewer-embedded { position: absolute; inset: 0; z-index: 2; background: #24262a; }
 .computer-panel .screen-viewer-frame { display: block; padding: 0; }
-.computer-panel .screen-viewer-titlebar { position: absolute; right: 10px; bottom: 10px; z-index: 3; padding: 0; opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
+.computer-panel .screen-viewer-titlebar { position: absolute; top: 8px; right: 8px; z-index: 3; padding: 0; opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
 .computer-panel .screen-viewer-heading, .computer-panel .screen-viewer-close { display: none; }
-.computer-panel .screen-viewer-controls { gap: 6px; }
-.computer-panel .screen-viewer-controls > button:not(.screen-viewer-close) { min-height: 32px; padding: 0 12px; font-size: 12px; background: rgb(20 20 22 / 84%); backdrop-filter: blur(12px); box-shadow: 0 2px 8px rgb(0 0 0 / 24%); }
-.computer-panel .screen-viewer-controls > button:not(.screen-viewer-close):hover { background: rgb(55 57 62 / 94%); }
-.computer-panel .screen-viewer-controls > button[aria-pressed=true] { border-color: #8cb4ff; background: #244c87; }
+.computer-panel .screen-viewer-controls { gap: 2px; padding: 3px; border: 1px solid rgb(255 255 255 / 14%); border-radius: 9px; background: rgb(35 36 40 / 88%); backdrop-filter: blur(12px); box-shadow: 0 2px 8px rgb(0 0 0 / 20%); }
+.computer-panel .screen-viewer-controls:not(:has(> button:not([hidden]):not(:disabled):not(.screen-viewer-close))) { display: none; }
+.computer-panel .screen-viewer-controls > button:not(.screen-viewer-close) { display: grid; place-items: center; width: 28px; height: 28px; min-height: 28px; padding: 0; border: 0; border-radius: 5px; font-size: 0; color: #e5e6e9; background: transparent; box-shadow: none; }
+.computer-panel .screen-viewer-controls > button:not(.screen-viewer-close):hover { color: #fff; background: rgb(255 255 255 / 12%); }
+.computer-panel .screen-viewer-controls > .screen-viewer-takeover[aria-pressed=true] { color: #9fc4ff; background: rgb(98 159 255 / 18%); }
+.computer-panel .screen-viewer-controls > button:not(.screen-viewer-close)::before { content: ""; width: 16px; height: 16px; background: currentColor; mask: var(--computer-control-icon) center / contain no-repeat; }
+.computer-panel .screen-viewer-takeover { --computer-control-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 3 15 10-7 1-3 7Z'/%3E%3C/svg%3E"); }
+.computer-panel .screen-viewer-fullscreen { --computer-control-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5'/%3E%3C/svg%3E"); }
+.computer-panel .screen-viewer-fullscreen[aria-pressed=true] { --computer-control-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 8h5V3m8 0v5h5M8 21v-5H3m18 0h-5v5'/%3E%3C/svg%3E"); }
+.computer-panel .screen-viewer-reconnect { --computer-control-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 7v5h-5M20 12a8 8 0 1 0-2 5'/%3E%3C/svg%3E"); }
+.computer-panel .screen-viewer-controls > button[hidden] { display: none; }
 .computer-panel .screen-viewer-controls > button:disabled { display: none; }
 .computer-panel:hover .screen-viewer-titlebar, .computer-panel:focus-within .screen-viewer-titlebar, .computer-panel .screen-viewer-embedded:hover .screen-viewer-titlebar, .computer-panel .screen-viewer-embedded:focus-within .screen-viewer-titlebar, .computer-panel:has(.screen-viewer-status.is-error) .screen-viewer-titlebar { opacity: 1; pointer-events: auto; }
 .computer-panel .screen-viewer-stage { width: 100%; height: 100%; aspect-ratio: auto; border-radius: 0; }
@@ -269,6 +276,7 @@
 @keyframes computer-spin { to { transform: rotate(360deg); } }
 @media (hover: none) {
 	.computer-panel .screen-viewer-titlebar { opacity: 1; pointer-events: auto; }
+	.computer-panel .screen-viewer-controls > button:not(.screen-viewer-close) { width: 36px; height: 36px; min-height: 36px; }
 }
 @media (prefers-reduced-motion: reduce) {
 	.computer-loading-spinner, .computer-panel .screen-viewer-progress { animation: none; }

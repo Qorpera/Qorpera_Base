@@ -35,26 +35,32 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 	headingWrap.append(heading, hint);
 	const controls = document.createElement("div");
 	controls.className = "screen-viewer-controls";
+	const labelButton = (button, text, label = text) => {
+		button.textContent = text;
+		button.setAttribute("aria-label", label);
+		button.setAttribute("title", label);
+	};
 	const takeover = document.createElement("button");
 	takeover.type = "button";
-	takeover.textContent = "Take control";
+	takeover.className = "screen-viewer-takeover";
+	labelButton(takeover, "Take control");
 	takeover.disabled = true;
 	takeover.hidden = !canControl || privateSignIn;
 	takeover.setAttribute("aria-pressed", "false");
 	const reconnect = document.createElement("button");
 	reconnect.type = "button";
-	reconnect.textContent = "Reconnect";
+	reconnect.className = "screen-viewer-reconnect";
+	labelButton(reconnect, "Reconnect");
 	reconnect.hidden = true;
 	const closeButton = document.createElement("button");
 	closeButton.type = "button";
 	closeButton.className = "screen-viewer-close";
-	closeButton.setAttribute("aria-label", "Close screen viewer");
-	closeButton.textContent = "×";
+	labelButton(closeButton, "×", "Close screen viewer");
 	const fullscreen = mount ? document.createElement("button") : undefined;
 	if (fullscreen) {
 		fullscreen.type = "button";
 		fullscreen.className = "screen-viewer-fullscreen";
-		fullscreen.textContent = "Full screen";
+		labelButton(fullscreen, "Full screen");
 		fullscreen.setAttribute("aria-pressed", "false");
 		fullscreen.setAttribute("aria-live", "polite");
 		fullscreen.hidden = document.fullscreenEnabled === false || typeof overlay.requestFullscreen !== "function" || typeof document.exitFullscreen !== "function";
@@ -92,8 +98,7 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 	if (fullscreen && !fullscreen.hidden) {
 		const syncFullscreen = () => {
 			const active = document.fullscreenElement === overlay;
-			fullscreen.textContent = active ? "Exit full screen" : "Full screen";
-			fullscreen.setAttribute("aria-label", fullscreen.textContent);
+			labelButton(fullscreen, active ? "Exit full screen" : "Full screen");
 			fullscreen.setAttribute("aria-pressed", String(active));
 		};
 		document.addEventListener("fullscreenchange", syncFullscreen, { signal: stop.signal });
@@ -108,8 +113,8 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 				if (!closed) syncFullscreen();
 			} catch {
 				if (!closed) {
-					fullscreen.textContent = document.fullscreenElement === overlay ? "Could not exit full screen" : "Full screen unavailable";
-					fullscreen.setAttribute("aria-label", `${fullscreen.textContent}. Try again.`);
+					const message = document.fullscreenElement === overlay ? "Could not exit full screen" : "Full screen unavailable";
+					labelButton(fullscreen, message, `${message}. Try again.`);
 				}
 			} finally { fullscreen.disabled = false; }
 		};
@@ -133,7 +138,7 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 	const fail = () => {
 		if (closed) return;
 		takeover.disabled = true;
-		takeover.textContent = "Take control";
+		labelButton(takeover, "Take control");
 		takeover.setAttribute("aria-pressed", "false");
 		reconnect.hidden = false;
 		reconnect.disabled = false;
@@ -160,6 +165,7 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 		busy = true;
 		const attempt = ++epoch;
 		takeover.disabled = true;
+		labelButton(takeover, "Take control");
 		takeover.setAttribute("aria-pressed", "false");
 		reconnect.disabled = true;
 		status.hidden = false;
@@ -202,7 +208,7 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 				status.hidden = true;
 				reconnect.hidden = true;
 				takeover.disabled = false;
-				takeover.textContent = mode === "control" ? "Release control" : "Take control";
+				labelButton(takeover, mode === "control" ? "Release control" : "Take control");
 				takeover.setAttribute("aria-pressed", String(mode === "control"));
 				hint.textContent = privateSignIn ? "Private sign-in · Closing this view leaves the office private" : mode === "control" ? "You control this cloud screen" : "Watching only";
 				if (mode === "control") rfb.focus();
