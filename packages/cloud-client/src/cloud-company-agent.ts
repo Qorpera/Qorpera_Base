@@ -229,7 +229,7 @@ export async function writeCloudCompanyAgent(options: {
 	startupInstructions?: string;
 	operationKey: string;
 	signal: AbortSignal;
-}): Promise<CloudMemberCompanyCommand> {
+}): Promise<CloudMemberCompanyCommand & { agentRevision: number }> {
 	const path = cloudCompanyAgentPath(options.agent.id);
 	const current = await options.editor.read(path, options.signal);
 	let revision = 1;
@@ -260,7 +260,7 @@ export async function writeCloudCompanyAgent(options: {
 	}
 	if (!startupInstructions) throw new Error("Company agent startup instructions are required");
 	const document = cloudCompanyAgentDocument({ ...options.agent, createdAt }, revision, startupInstructions, grants);
-	return applied(
+	const result = await applied(
 		options.editor,
 		await options.editor.edit(
 			{
@@ -274,6 +274,7 @@ export async function writeCloudCompanyAgent(options: {
 		),
 		options.signal,
 	);
+	return { ...result, agentRevision: document.revision };
 }
 
 export async function deleteCloudCompanyAgent(options: {

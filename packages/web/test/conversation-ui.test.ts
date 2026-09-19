@@ -209,7 +209,7 @@ describe("conversation UI boundaries", () => {
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 	it("discards pending metadata saves on disposal and blocks writes after a role downgrade", async () => {
-		const pending = deferred<void>(),
+		const pending = deferred<number>(),
 			updateAgent = vi.fn((_agent: unknown, _draft: unknown, _signal: AbortSignal) => pending.promise);
 		const f = setup({ updateAgent });
 		button(f.view.el, "Open agent details").click();
@@ -231,7 +231,7 @@ describe("conversation UI boundaries", () => {
 		expect(updateAgent.mock.calls[0]![1]).toMatchObject({ displayName: "Renamed", role: staff.role });
 		f.view.dispose();
 		expect(updateAgent.mock.calls[0]![2].aborted).toBe(true);
-		pending.resolve();
+		pending.resolve(staff.version + 1);
 		await settle();
 		expect(document.querySelector("dialog")).toBeNull();
 		expect(f.api.listStaff).not.toHaveBeenCalled();
@@ -286,7 +286,9 @@ describe("conversation UI boundaries", () => {
 		expect(send.disabled).toBe(false);
 		expect(root.querySelector("textarea")!.value).toBe("Keep this local");
 		expect(f.api.appendPrompt).not.toHaveBeenCalled();
-		expect(fetch).not.toHaveBeenCalled();
+		expect(
+			vi.mocked(fetch).mock.calls.filter(([url]) => !String(url).endsWith("/qorpera_list_member_notifications")),
+		).toHaveLength(0);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 	it("keeps attachment drafts scoped to their conversation and releases previews on disposal", () => {

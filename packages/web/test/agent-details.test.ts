@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { AgentDetails } from "../src/app/views/agent-details.ts";
-import type { WorkspaceActions } from "../src/app/workspace-actions.ts";
+import type { AgentDraft, WorkspaceActions } from "../src/app/workspace-actions.ts";
 import type { WebNativeSubscription } from "../src/cloud/native-subscription.ts";
 import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
 import type { WebRoutines } from "../src/cloud/routines.ts";
@@ -31,14 +31,14 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
-function open(actions: WorkspaceActions = {}, agent: HostedStaffAgent = staff) {
+function open(actions: WorkspaceActions = {}, agent: HostedStaffAgent = staff, scope?: AbortSignal) {
 	const f = fixture();
 	const company = new CompanyController(f.api, profileA, userA.id);
 	company.store.set({ team, staff: [agent], loading: false });
 	const anchor = document.createElement("button");
 	document.body.append(anchor);
 	const onClose = vi.fn();
-	const details = new AgentDetails(company, agent, actions, onClose, anchor);
+	const details = new AgentDetails(company, agent, actions, onClose, anchor, scope);
 	cleanup.push(() => {
 		details.dispose();
 		company.stop();
@@ -61,7 +61,149 @@ function type(label: string, value: string) {
 const press = (target: Element, key: string, init: KeyboardEventInit = {}) =>
 	target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init }));
 const status = () => document.querySelector(".agent-details-status")?.textContent;
-const saving = () => vi.fn(async (_agent: HostedStaffAgent, _draft: unknown, _signal: AbortSignal) => {});
+const saving = () =>
+	vi.fn(async (_agent: HostedStaffAgent, _draft: unknown, _signal: AbortSignal) => staff.version + 1);
+
+describe("agent saves across panel lifetimes", () => {
+	it("keeps a failed close-save draft and offers an explicit retry when reopened", async () => {
+		const pending = deferred<number>();
+		const updateAgent = saving().mockReturnValueOnce(pending.promise);
+		const f = open({ updateAgent });
+		type("Agent name", "Unsaved name");
+		f.details.dialog.close();
+		pending.reject(new Error("offline"));
+		await settle();
+		const reopened = new AgentDetails(f.company, staff, { updateAgent }, () => {});
+		cleanup.push(() => reopened.dispose());
+		expect(field("Agent name").value).toBe("Unsaved name");
+		expect(status()).toContain("could not be saved");
+		await settle();
+		expect(updateAgent).toHaveBeenCalledTimes(1);
+		named("Try again").click();
+		await settle();
+		expect(updateAgent).toHaveBeenCalledTimes(2);
+		expect(updateAgent.mock.calls[1]![1]).toMatchObject({ displayName: "Unsaved name" });
+		expect(status()).toBe("Saved");
+	});
+	it("serializes reopened edits and retains the first accepted change in the next full draft", async () => {
+		const first = deferred<void>();
+		let remote = { ...staff };
+		let calls = 0;
+		const updateAgent = vi.fn(async (_agent: HostedStaffAgent, draft: AgentDraft) => {
+			// The server applies the first write before its response reaches the browser.
+			remote = { ...remote, displayName: draft.displayName, role: draft.role, charter: draft.charter };
+			if (++calls === 1) await first.promise;
+			return staff.version + calls;
+		});
+		const f = open({ updateAgent });
+		vi.mocked(f.api.listStaff).mockImplementation(async () => [remote]);
+		type("Agent name", "Kept name");
+		f.details.dialog.close();
+		expect(remote.displayName).toBe("Kept name");
+		const reopened = new AgentDetails(f.company, staff, { updateAgent }, () => {});
+		cleanup.push(() => reopened.dispose());
+		expect(field("Agent name").value).toBe("Kept name");
+		expect(status()).toBe("Saving…");
+		press(type("Agent title", "New role"), "Enter");
+		type("Agent description", "New description").blur();
+		expect(updateAgent).toHaveBeenCalledTimes(1);
+		first.resolve();
+		await settle();
+		expect(updateAgent).toHaveBeenCalledTimes(2);
+		expect(remote).toMatchObject({ displayName: "Kept name", role: "New role", charter: "New description" });
+		expect(field("Agent name").value).toBe("Kept name");
+		expect(status()).toBe("Saved");
+	});
+	it("coalesces reopened edits while the first save refreshes the roster", async () => {
+		const roster = deferred<HostedStaffAgent[]>();
+		const updateAgent = saving();
+		const f = open({ updateAgent });
+		vi.mocked(f.api.listStaff).mockReturnValueOnce(roster.promise);
+		type("Agent name", "Kept name");
+		f.details.dialog.close();
+		await settle();
+		const reopened = new AgentDetails(f.company, staff, { updateAgent }, () => {});
+		cleanup.push(() => reopened.dispose());
+		press(type("Agent title", "Lead"), "Enter");
+		expect(updateAgent).toHaveBeenCalledTimes(1);
+		roster.resolve([{ ...staff, displayName: "Kept name" }]);
+		await settle();
+		expect(updateAgent).toHaveBeenCalledTimes(2);
+		expect(updateAgent.mock.calls[1]![1]).toMatchObject({ displayName: "Kept name", role: "Lead" });
+	});
+	it.each(["navigation", "company", "authority"] as const)(
+		"cancels closed-panel writes and queued edits on %s loss",
+		async (loss) => {
+			const pending = deferred<number>();
+			const updateAgent = saving().mockReturnValueOnce(pending.promise);
+			const scope = new AbortController();
+			const f = open({ updateAgent }, staff, scope.signal);
+			press(type("Agent name", "Queued name"), "Enter");
+			type("Agent title", "Queued title").blur();
+			f.details.dialog.close();
+			const signal = updateAgent.mock.calls[0]![2];
+			if (loss === "navigation") scope.abort();
+			else if (loss === "company") f.company.stop();
+			else f.company.store.set({ team: { ...team, capabilities: { ...team.capabilities, authorize: false } } });
+			await settle();
+			expect(signal.aborted).toBe(true);
+			pending.resolve(staff.version + 1);
+			await settle();
+			expect(updateAgent).toHaveBeenCalledTimes(1);
+			expect(f.api.listStaff).not.toHaveBeenCalled();
+			if (loss !== "company") {
+				const reopened = new AgentDetails(f.company, staff, { updateAgent }, () => {});
+				cleanup.push(() => reopened.dispose());
+				expect(field("Agent name").value).toBe(staff.displayName);
+			}
+		},
+	);
+	it("isolates an unsaved draft from another company controller", async () => {
+		const updateAgent = saving().mockRejectedValueOnce(new Error("offline"));
+		const first = open({ updateAgent });
+		type("Agent name", "Only in this company");
+		first.details.dialog.close();
+		await settle();
+		open({ updateAgent });
+		expect(field("Agent name").value).toBe(staff.displayName);
+		expect(status()).toBe("");
+	});
+	it("only saves a newly entered edit after authority is restored during cancellation", async () => {
+		const pending = deferred<number>();
+		const updateAgent = saving().mockReturnValueOnce(pending.promise);
+		const f = open({ updateAgent });
+		press(type("Agent name", "Revoked name"), "Enter");
+		f.company.store.set({ team: { ...team, capabilities: { ...team.capabilities, authorize: false } } });
+		await settle();
+		expect(updateAgent.mock.calls[0]![2].aborted).toBe(true);
+		f.company.store.set({ team });
+		await settle();
+		press(type("Agent title", "Authorized title"), "Enter");
+		expect(updateAgent).toHaveBeenCalledTimes(1);
+		pending.resolve(staff.version + 1);
+		await settle();
+		expect(updateAgent).toHaveBeenCalledTimes(2);
+		expect(updateAgent.mock.calls[1]![1]).toMatchObject({ displayName: staff.displayName, role: "Authorized title" });
+	});
+	it.each([
+		["Agent name", staff.displayName],
+		["Agent title", staff.role],
+		["Agent description", staff.charter],
+	])("discards focused uncommitted %s text when authority is revoked", async (label, saved) => {
+		const updateAgent = saving();
+		const f = open({ updateAgent });
+		const control = type(label, "Uncommitted before revocation");
+		f.company.store.set({ team: { ...team, capabilities: { ...team.capabilities, authorize: false } } });
+		await settle();
+		expect(control.readOnly).toBe(true);
+		expect(control.value).toBe(saved);
+		f.company.store.set({ team });
+		await settle();
+		control.blur();
+		await settle();
+		expect(updateAgent).not.toHaveBeenCalled();
+	});
+});
 
 describe("agent details edited in place", () => {
 	it("saves a field on Enter, gives it back on Escape and closes on a second Escape", async () => {
@@ -91,7 +233,7 @@ describe("agent details edited in place", () => {
 		expect(f.onClose).toHaveBeenCalledTimes(1);
 	});
 	it("folds changes made during a save into one following write", async () => {
-		const first = deferred<void>();
+		const first = deferred<number>();
 		const updateAgent = saving().mockReturnValueOnce(first.promise);
 		open({ updateAgent });
 		press(type("Agent name", "Ada"), "Enter");
@@ -101,7 +243,7 @@ describe("agent details edited in place", () => {
 		expect(field("Agent description")).toBe(document.activeElement);
 		press(description, "Enter", { ctrlKey: true });
 		expect(updateAgent).toHaveBeenCalledTimes(1);
-		first.resolve();
+		first.resolve(staff.version + 1);
 		await settle();
 		await settle();
 		expect(updateAgent).toHaveBeenCalledTimes(2);

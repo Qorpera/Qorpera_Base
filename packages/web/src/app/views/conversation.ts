@@ -336,6 +336,7 @@ export class ConversationView {
 				this.#identity.setAttribute("aria-expanded", "false");
 			},
 			this.#identity,
+			this.#lifetime.signal,
 		);
 	}
 
