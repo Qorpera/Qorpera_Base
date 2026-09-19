@@ -31,6 +31,9 @@ input, select, textarea {
 	padding: 6px 10px; min-height: 32px;
 }
 input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible, a:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+/* Text entry keeps a quiet inset edge; action controls retain their keyboard ring. */
+input:where(:not([type=checkbox], [type=radio], [type=range], [type=color], [type=file], [type=button], [type=submit], [type=reset], [type=image])):focus-visible,
+textarea:focus-visible { outline: 1px solid var(--text-soft); outline-offset: -1px; }
 label { display: flex; flex-direction: column; gap: 4px; font-weight: 600; }
 label > input, label > select { font-weight: 400; }
 .muted { color: var(--text-muted); }
@@ -180,7 +183,7 @@ label > input, label > select { font-weight: 400; }
 	flex: 1; width: 100%; min-width: 0; height: 100%; min-height: 0; padding: 0; border: 0; border-radius: 0;
 	background: transparent; font: inherit; font-size: 15px; font-weight: 400; color: var(--text); outline: 0;
 }
-.rail-search:focus-within { outline: 2px solid var(--ring); outline-offset: 2px; }
+.rail-search:focus-within { outline: 1px solid var(--text-soft); outline-offset: -1px; }
 .rail-search input::placeholder { color: #777772; }
 .rail-scroll { flex: 1; min-height: 0; overflow-y: auto; padding-top: 0; }
 .rail-empty { padding: 14px 8px; color: var(--rail-small); font-size: 12.5px; }
@@ -321,7 +324,7 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 	transition: border-color 140ms ease, box-shadow 140ms ease;
 }
 .hub-create input::placeholder, .company-card-compose input::placeholder { color: #9a9ea6; }
-.hub-create input:focus-visible, .company-card-compose input:focus-visible { outline: none; border-color: #2d6ff2; box-shadow: 0 0 0 3px rgba(45, 111, 242, 0.18); }
+.hub-create input:focus-visible, .company-card-compose input:focus-visible { outline: none; border-color: var(--text-soft); }
 .hub-create-submit {
 	height: 48px; padding: 0 22px; border: 0; border-radius: 8px; background: var(--primary); color: var(--on-primary);
 	font-size: 15px; font-weight: 600; letter-spacing: -0.005em; cursor: pointer; white-space: nowrap;
@@ -454,7 +457,7 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 	transition: border-color 140ms ease, box-shadow 140ms ease;
 }
 .auth-form input::placeholder { color: #9a9ea6; }
-.auth-form input:focus-visible { outline: none; border-color: var(--auth-cobalt); box-shadow: 0 0 0 3px rgba(45, 111, 242, 0.18); }
+.auth-form input:focus-visible { outline: none; border-color: var(--text-soft); }
 .auth-hint { margin: 0; color: #5a616e; font-size: 13px; line-height: 1.45; }
 .auth-primary {
 	height: 46px; margin-top: 6px; padding: 0 20px; border: 0; border-radius: 8px; background: var(--auth-ink); color: #fff;
