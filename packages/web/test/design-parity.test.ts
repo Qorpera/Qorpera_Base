@@ -10,10 +10,10 @@ import { SettingsView } from "../src/app/views/settings.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
 import { projectTranscript, type TranscriptMessage } from "../src/cloud/transcript.ts";
+import type { HostedStaffExecutionActivity } from "../src/cloud/types.ts";
 import { renderAuthorizationCard } from "../src/ui/authorization-card.ts";
 import { SurfaceDialog } from "../src/ui/dialog.ts";
 import { h } from "../src/ui/dom.ts";
-import * as figureMotion from "../src/ui/figure-motion.ts";
 import { languagePreference, setLanguagePreference, uiText } from "../src/ui/preferences.ts";
 import { RailLayout } from "../src/ui/rail-layout.ts";
 import { ReceivedAttachments } from "../src/ui/received-attachments.ts";
@@ -28,6 +28,7 @@ import {
 	session,
 	settle,
 	staff,
+	stubFigureMotion,
 	team,
 	timestamp,
 	userA,
@@ -60,6 +61,25 @@ function companyFixture() {
 	company.store.set({ loading: false, staff: [staff], sessions: [session], team });
 	cleanup.push(() => company.stop());
 	return { ...f, company };
+}
+/** The real rail over a fixture company; `draw` renders it again, as a store change does. */
+function mountRail(f: ReturnType<typeof companyFixture>, section: "home" | "file" = "home") {
+	const rail = h("nav");
+	document.body.append(rail);
+	const auth = new AuthController(f.cloud);
+	cleanup.push(() => auth.dispose());
+	const draw = () =>
+		renderRail(rail, f.company, {
+			profiles: [profileA],
+			user: userA,
+			route: { name: "company", profileId: profileA.profileId, section },
+			auth,
+			invitations: 0,
+			openSettings: () => {},
+			openFeedback: () => {},
+		});
+	draw();
+	return { rail, draw };
 }
 const imageMessage: TranscriptMessage = {
 	kind: "member",
@@ -253,10 +273,8 @@ describe("shell presentation lifecycle", () => {
 		expect(view.el.querySelector(".settings-file")?.textContent).not.toContain("99 B");
 		expect(view.el.querySelector(".settings-file")?.textContent).toContain("40 B used");
 	});
-	it("keeps Needs you for a pending decision and marks an idle agent whose run failed red", () => {
-		vi.stubGlobal("QORPERA_MOTION_MODEL", { avatars: [] });
-		vi.stubGlobal("QORPERA_AVATAR_APPEARANCE", { palette: [] });
-		const mount = vi.spyOn(figureMotion, "mountFigureMotion").mockReturnValue({ dispose() {} });
+	it("draws each agent state, with a red disc on an idle agent whose run did not finish", () => {
+		const mount = stubFigureMotion();
 		const f = companyFixture();
 		const cofounder = {
 			...staff,
@@ -265,27 +283,58 @@ describe("shell presentation lifecycle", () => {
 			role: "Co-founder",
 			templateId: "co-founder",
 		};
-		// Job status, activity → figure, subtitle, status disc.
-		const runs = [
-			["failed", "needs_attention", "Idle", "Analyst", "red"],
-			["cancelled", "needs_attention", "Idle", "Analyst", "red"],
-			["completed", "needs_attention", "Waiting", "Needs you", "none"],
-			["leased", "working", "Working", "Working", "green"],
-			["queued", "waiting", "Working", "Working", "green"],
-		] as const;
-		const agents = runs.map((_, index) => ({ ...staff, id: id(41 + index), role: "Analyst" }));
-		const quiet = { ...staff, id: id(49), role: "Analyst" };
+		const cases: {
+			name: string;
+			run?: [HostedStaffExecutionActivity["jobStatus"], HostedStaffExecutionActivity["activity"]];
+			proposal?: boolean;
+			figure: string;
+			line: string;
+			disc: "red" | "green" | "none";
+		}[] = [
+			{ name: "Failed", run: ["failed", "needs_attention"], figure: "Idle", line: "Analyst", disc: "red" },
+			{ name: "Stopped", run: ["cancelled", "needs_attention"], figure: "Idle", line: "Analyst", disc: "red" },
+			{
+				name: "Decision",
+				run: ["completed", "needs_attention"],
+				figure: "Waiting",
+				line: "Needs you",
+				disc: "none",
+			},
+			// A failed run that left Company File changes is a decision too.
+			{
+				name: "Recovery",
+				run: ["failed", "needs_attention"],
+				proposal: true,
+				figure: "Waiting",
+				line: "Needs you",
+				disc: "none",
+			},
+			{ name: "Leased", run: ["leased", "working"], figure: "Working", line: "Working", disc: "green" },
+			{ name: "Queued", run: ["queued", "waiting"], figure: "Working", line: "Working", disc: "green" },
+			{ name: "Quiet", figure: "Idle", line: "Analyst", disc: "none" },
+		];
+		const rows = cases.map((row, index) => ({
+			...row,
+			runId: id(60 + index),
+			agent: { ...staff, id: id(41 + index), displayName: row.name, role: "Analyst" },
+		}));
 		f.company.store.set({
-			staff: [cofounder, ...agents, quiet],
+			staff: [cofounder, ...rows.map((row) => row.agent)],
 			activity: [
-				...runs.map(([jobStatus, activity], index) => ({
-					runId: id(60 + index),
-					staffAgentId: id(41 + index),
-					sourceKind: "session_turn" as const,
-					jobStatus,
-					activity,
-					updatedAt: timestamp,
-				})),
+				...rows.flatMap(({ run, runId, agent }) =>
+					run
+						? [
+								{
+									runId,
+									staffAgentId: agent.id,
+									sourceKind: "session_turn" as const,
+									jobStatus: run[0],
+									activity: run[1],
+									updatedAt: timestamp,
+								},
+							]
+						: [],
+				),
 				{
 					runId: id(69),
 					staffAgentId: cofounder.id,
@@ -295,41 +344,72 @@ describe("shell presentation lifecycle", () => {
 					updatedAt: timestamp,
 				},
 			],
+			recoveries: Object.fromEntries(
+				rows
+					.filter((row) => row.proposal)
+					.map(({ runId }) => [
+						runId,
+						{
+							runId,
+							sourceKind: "session_turn",
+							jobStatus: "failed",
+							proposalId: id(99),
+							unsettledOperations: 0,
+						},
+					]),
+			),
 		});
-		const rail = h("nav");
-		document.body.append(rail);
-		const auth = new AuthController(f.cloud);
-		cleanup.push(() => auth.dispose());
-		renderRail(rail, f.company, {
-			profiles: [profileA],
-			user: userA,
-			route: { name: "company", profileId: profileA.profileId, section: "file" },
-			auth,
-			invitations: 0,
-			openSettings: () => {},
-			openFeedback: () => {},
-		});
+		const { rail } = mountRail(f, "file");
 		const figures = new Map(mount.mock.calls.map(([, , , , options]) => [options?.identity, options?.activity]));
-		const row = (agentId: string) => rail.querySelector(`a[href$="/staff/${agentId}"]`);
-		const disc = (status: Element | null | undefined) =>
+		const disc = (status: Element | null) =>
 			!status ? "none" : status.classList.contains("failed") ? "red" : "green";
-		for (const [index, [, , figure, line, status]] of runs.entries()) {
-			expect(figures.get(id(41 + index))).toBe(figure);
-			expect(row(id(41 + index))?.querySelector("small")?.textContent).toBe(line);
-			expect(disc(row(id(41 + index))?.querySelector(".rail-row-status"))).toBe(status);
+		for (const { agent, figure, line, disc: shown } of rows) {
+			const link = rail.querySelector(`a[href$="/staff/${agent.id}"]`)!;
+			const status = link.querySelector(".rail-row-status");
+			expect(figures.get(agent.id), agent.displayName).toBe(figure);
+			expect(link.querySelector("small")?.textContent, agent.displayName).toBe(line);
+			expect(disc(status), agent.displayName).toBe(shown);
+			// The disc is only drawn. The link names the state in words, which the
+			// compact rail needs: it hides the text beside the figure.
+			if (status) expect(status.getAttribute("aria-hidden")).toBe("true");
+			const state = shown === "red" ? "A run did not finish" : line === "Analyst" ? undefined : line;
+			const words = [agent.displayName, "Analyst", state].filter(Boolean).join(" · ");
+			expect(link.getAttribute("aria-label"), agent.displayName).toBe(state ? words : null);
+			expect(link.getAttribute("title"), agent.displayName).toBe(words);
 		}
-		// The red disc sits over the role, so it carries its own words.
-		const red = row(id(41))?.querySelector(".rail-row-status");
-		expect(red?.getAttribute("role")).toBe("img");
-		expect(red?.getAttribute("aria-label")).toBe("Last run did not finish");
-		expect(row(id(44))?.querySelector(".rail-row-status")?.getAttribute("aria-hidden")).toBe("true");
-		expect(figures.get(quiet.id)).toBe("Idle");
-		expect(row(quiet.id)?.querySelector("small")?.textContent).toBe("Analyst");
-		expect(disc(row(quiet.id)?.querySelector(".rail-row-status"))).toBe("none");
 		// The Co-Founder's failed room delivery reads the same way on its card.
+		const card = rail.querySelector(".cofounder-home")!;
 		expect(figures.get(cofounder.id)).toBe("Idle");
-		expect(rail.querySelector(".cofounder-home small")?.textContent).toBe("Co-founder");
-		expect(disc(rail.querySelector(".cofounder-status"))).toBe("red");
+		expect(card.querySelector("small")?.textContent).toBe("Co-founder");
+		expect(disc(card.querySelector(".cofounder-status"))).toBe("red");
+		expect(card.getAttribute("aria-label")).toBe("Co-Founder · Co-founder · A run did not finish");
+	});
+	it("redraws the status disc as a run fails, is picked up again and is dismissed", () => {
+		stubFigureMotion();
+		const f = companyFixture();
+		const { rail, draw } = mountRail(f);
+		const disc = () => rail.querySelector(`a[href$="/staff/${staff.id}"] .rail-row-status`);
+		const failed = {
+			runId: id(70),
+			staffAgentId: staff.id,
+			sourceKind: "wake" as const,
+			jobStatus: "failed" as const,
+			activity: "needs_attention" as const,
+			updatedAt: timestamp,
+		};
+		expect(disc()).toBeNull();
+		// Idle and failed share the figure and the subtitle, so a redraw must look at the disc itself.
+		f.company.store.set({ activity: [failed] });
+		draw();
+		expect(disc()?.classList.contains("failed")).toBe(true);
+		f.company.store.set({ activity: [{ ...failed, runId: id(71), jobStatus: "leased", activity: "working" }] });
+		draw();
+		expect(disc()?.classList.contains("failed")).toBe(false);
+		f.company.store.set({ activity: [failed] });
+		draw();
+		f.company.store.set({ activity: [] });
+		draw();
+		expect(disc()).toBeNull();
 	});
 });
 
@@ -499,19 +579,7 @@ it("renders recorded responsibility targets and room links without inventing mis
 		],
 	};
 	f.company.store.set({ organization, organizationState: "ready" });
-	const rail = h("nav");
-	document.body.append(rail);
-	const auth = new AuthController(f.cloud);
-	cleanup.push(() => auth.dispose());
-	renderRail(rail, f.company, {
-		profiles: [profileA],
-		user: userA,
-		route: { name: "company", profileId: profileA.profileId, section: "home" },
-		auth,
-		invitations: 0,
-		openSettings: () => {},
-		openFeedback: () => {},
-	});
+	const { rail } = mountRail(f);
 	expect(rail.querySelector('a[href*="/responsibility/"], a[href*="/project/"]')).toBeNull();
 	expect(rail.querySelector('.rail-cofounder .cofounder-home[aria-current="page"]')?.textContent).toContain(
 		staff.displayName,

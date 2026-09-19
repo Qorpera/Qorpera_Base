@@ -10,7 +10,7 @@ import { ApprovalsView } from "../src/app/views/approvals.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type { SessionInputWriter } from "../src/cloud/session-input.ts";
-import type { HostedSessionEvent } from "../src/cloud/types.ts";
+import type { HostedRunRecovery, HostedSessionEvent, HostedStaffExecutionActivity } from "../src/cloud/types.ts";
 import { deferred, event, fixture, id, pending, profileA, session, settle, staff, team, userA } from "./fixtures.ts";
 
 const cleanup: (() => void)[] = [];
@@ -380,5 +380,93 @@ describe("approvals lifecycle regressions", () => {
 		await vi.advanceTimersByTimeAsync(30_000);
 		for (const method of [api.getTeam, api.listStaff, api.listSessions, api.getOrganization, api.listStaffActivity])
 			expect(vi.mocked(method).mock.calls.length).toBeGreaterThan(1);
+	});
+});
+
+describe("agent execution state", () => {
+	const row = (
+		jobStatus: HostedStaffExecutionActivity["jobStatus"],
+		activity: HostedStaffExecutionActivity["activity"],
+	): HostedStaffExecutionActivity => ({
+		runId: id(70),
+		staffAgentId: staff.id,
+		sourceKind: "session_turn",
+		jobStatus,
+		activity,
+		updatedAt: "2026-09-19T00:00:00Z",
+	});
+	const recovery = (extra: Partial<HostedRunRecovery> = {}): HostedRunRecovery => ({
+		runId: id(70),
+		sourceKind: "session_turn",
+		jobStatus: "failed",
+		unsettledOperations: 0,
+		...extra,
+	});
+	function controller() {
+		const f = fixture();
+		const company = new CompanyController(f.api, profileA, userA.id);
+		cleanup.push(() => company.stop());
+		return { ...f, company };
+	}
+
+	it("maps every activity row the server can send to what the member sees", () => {
+		const { company } = controller();
+		const state = (activity?: HostedStaffExecutionActivity, recoveries: Record<string, HostedRunRecovery> = {}) => {
+			company.store.set({ activity: activity ? [activity] : [], recoveries });
+			return company.agentState(staff.id);
+		};
+		expect(state()).toBe("idle");
+		expect(state(row("queued", "waiting"))).toBe("working");
+		expect(state(row("leased", "working"))).toBe("working");
+		expect(state(row("completed", "needs_attention"))).toBe("decision");
+		expect(state(row("failed", "needs_attention"))).toBe("failed");
+		expect(state(row("cancelled", "needs_attention"))).toBe("failed");
+		// A failed run that left Company File changes waits on a decision.
+		expect(state(row("cancelled", "needs_attention"), { [id(70)]: recovery({ proposalId: id(71) }) })).toBe(
+			"decision",
+		);
+		expect(company.agentState(undefined)).toBe("idle");
+	});
+
+	it("reads a failed run's details, rereads them after a while and forgets resolved runs", async () => {
+		vi.useFakeTimers();
+		const { api, company } = controller();
+		const read = vi.spyOn(api, "getRunRecovery").mockResolvedValue(recovery({ lastError: "Provider failed" }));
+		vi.mocked(api.listStaffActivity).mockResolvedValue([row("failed", "needs_attention")]);
+		await company.refreshActivity();
+		await settle();
+		expect(read).toHaveBeenCalledWith(id(70));
+		expect(company.agentState(staff.id)).toBe("failed");
+		expect(company.failedRunFor(staff.id)?.recovery?.lastError).toBe("Provider failed");
+		await company.refreshActivity();
+		await settle();
+		expect(read).toHaveBeenCalledTimes(1);
+		// Its proposal can show up later; the next read after the window sees it.
+		read.mockResolvedValue(recovery({ proposalId: id(71) }));
+		vi.advanceTimersByTime(30_000);
+		await company.refreshActivity();
+		await settle();
+		expect(read).toHaveBeenCalledTimes(2);
+		expect(company.agentState(staff.id)).toBe("decision");
+		vi.mocked(api.listStaffActivity).mockResolvedValue([]);
+		await company.refreshActivity();
+		expect(company.agentState(staff.id)).toBe("idle");
+		expect(company.store.get().recoveries).toEqual({});
+	});
+
+	it("keeps a failed run whose details cannot be read, and dismisses it", async () => {
+		const { api, company } = controller();
+		vi.spyOn(api, "getRunRecovery").mockRejectedValue(new Error("execution recovery is unavailable"));
+		const discard = vi.spyOn(api, "discardFailedRun").mockResolvedValue();
+		vi.mocked(api.listStaffActivity).mockResolvedValue([row("failed", "needs_attention")]);
+		await company.refreshActivity();
+		await settle();
+		expect(company.agentState(staff.id)).toBe("failed");
+		expect(company.failedRunFor(staff.id)).toEqual({ activity: row("failed", "needs_attention") });
+		vi.mocked(api.listStaffActivity).mockResolvedValue([]);
+		await company.dismissFailedRun(id(70));
+		expect(discard).toHaveBeenCalledWith(id(70));
+		expect(company.agentState(staff.id)).toBe("idle");
+		expect(company.failedRunFor(staff.id)).toBeUndefined();
 	});
 });

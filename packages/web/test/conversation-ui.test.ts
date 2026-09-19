@@ -321,6 +321,57 @@ describe("conversation UI boundaries", () => {
 		expect(document.activeElement).toBe(toggle);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
+
+	it("explains the run behind the rail's red disc and lets a writer dismiss it", async () => {
+		const f = setup();
+		const run = {
+			runId: id(70),
+			staffAgentId: staff.id,
+			sourceKind: "room_delivery" as const,
+			jobStatus: "failed" as const,
+			activity: "needs_attention" as const,
+			updatedAt: timestamp,
+		};
+		const details = {
+			runId: run.runId,
+			sourceKind: run.sourceKind,
+			jobStatus: run.jobStatus,
+			lastError: "Native provider bridge request failed (422)",
+			unsettledOperations: 0,
+		};
+		const card = () => f.view.el.querySelector<HTMLElement>(".thread-status .notice-warn");
+		const discard = vi.spyOn(f.api, "discardFailedRun").mockRejectedValueOnce(new Error("Try again later."));
+		f.company.store.set({ activity: [run], recoveries: { [run.runId]: details } });
+		await settle();
+		expect(card()?.textContent).toContain("A run did not finish: Native provider bridge request failed (422)");
+		// A refusal is shown on the card and the run stays.
+		button(card()!, "Dismiss").click();
+		await settle();
+		expect(discard).toHaveBeenCalledWith(run.runId);
+		expect(card()?.textContent).toContain("Try again later.");
+		discard.mockResolvedValueOnce();
+		vi.mocked(f.api.listStaffActivity).mockResolvedValue([]);
+		button(card()!, "Dismiss").click();
+		await settle();
+		expect(discard).toHaveBeenCalledTimes(2);
+		expect(card()).toBeNull();
+		// Work of unknown outcome cannot be dismissed yet; readers only see the card.
+		f.company.store.set({ activity: [run], recoveries: { [run.runId]: { ...details, unsettledOperations: 1 } } });
+		await settle();
+		expect(card()?.textContent).toContain("still being checked");
+		expect(card()?.querySelector("button")).toBeNull();
+		f.company.store.set({
+			team: { ...team, capabilities: { ...team.capabilities, write: false } },
+			recoveries: { [run.runId]: details },
+		});
+		await settle();
+		expect(card()?.textContent).toContain("A run did not finish");
+		expect(card()?.querySelector("button")).toBeNull();
+		// A run that left Company File changes points at them instead.
+		f.company.store.set({ recoveries: { [run.runId]: { ...details, proposalId: id(71) } } });
+		await settle();
+		expect(card()?.querySelector("a")?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/proposal/${id(71)}`);
+	});
 });
 
 describe("local attachment validation", () => {

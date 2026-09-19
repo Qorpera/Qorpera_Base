@@ -1,14 +1,15 @@
+import { describeError } from "../../cloud/client.ts";
 import { sessionAttachmentIssue } from "../../cloud/session-attachments.ts";
 import type { TranscriptCard, TranscriptItem } from "../../cloud/transcript.ts";
 import type { HostedSession, HostedStaffAgent } from "../../cloud/types.ts";
 import { AttachmentTray } from "../../ui/attachments.ts";
 import { authorizationRequestId, renderAuthorizationCard } from "../../ui/authorization-card.ts";
 import { agentFigure } from "../../ui/avatar.ts";
-import { fmtTime, h, icon, notice, replace, spinner } from "../../ui/dom.ts";
+import { button, fmtTime, h, icon, notice, replace, spinner } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
-import type { CompanyController, ConversationState } from "../company.ts";
+import type { CompanyController, ConversationState, FailedRun } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
 import { ComputerPanel } from "./computer.ts";
@@ -56,6 +57,8 @@ export class ConversationView {
 	#stickToBottom = true;
 	readonly #unsubscribe: (() => void)[] = [];
 	#disposed = false;
+	#dismissing: string | undefined;
+	#dismissError: { runId: string; message: string } | undefined;
 	#receivedAttachments: ReceivedAttachments[] = [];
 
 	constructor(
@@ -616,6 +619,8 @@ export class ConversationView {
 		const children: (HTMLElement | null)[] = [];
 		if (conversation.error) children.push(notice("danger", conversation.error));
 		if (conversation.sendError) children.push(notice("danger", conversation.sendError));
+		const failed = this.#isRoom ? undefined : this.#company.failedRunFor(session?.staffAgentId);
+		if (failed) children.push(this.#failedRunCard(failed, canWrite));
 		if (canWrite && !this.#actions.sendMessage)
 			children.push(
 				h(
@@ -646,5 +651,52 @@ export class ConversationView {
 		)
 			children.push(notice("neutral", "You can read this conversation. Contributors and above can write."));
 		replace(this.#status, ...children);
+	}
+
+	/** The card behind the rail's red disc (shell spec §11.1). A run that left Company
+	 * File changes is settled by deciding them; any other failed run can be dismissed,
+	 * unless some of its work still has an unknown outcome. */
+	#failedRunCard({ activity, recovery }: FailedRun, canWrite: boolean): HTMLElement {
+		if (recovery?.proposalId)
+			return notice(
+				"warn",
+				"A run stopped after changing Company File. ",
+				h(
+					"a",
+					{ href: `#/c/${this.#company.profile.profileId}/proposal/${recovery.proposalId}` },
+					"Review the changes",
+				),
+				" to keep or discard them.",
+			);
+		const unsettled = (recovery?.unsettledOperations ?? 0) > 0;
+		const dismissing = this.#dismissing === activity.runId;
+		const error = this.#dismissError?.runId === activity.runId ? this.#dismissError.message : undefined;
+		return notice(
+			"warn",
+			h("p", null, recovery?.lastError ? `A run did not finish: ${recovery.lastError}` : "A run did not finish."),
+			unsettled ? h("p", null, "Part of its work is still being checked, so it cannot be dismissed yet.") : null,
+			error ? h("p", null, error) : null,
+			canWrite && !unsettled && activity.sourceKind !== "proposal_review"
+				? button(dismissing ? "Dismissing…" : "Dismiss", () => void this.#dismiss(activity.runId), {
+						small: true,
+						disabled: dismissing,
+					})
+				: null,
+		);
+	}
+
+	async #dismiss(runId: string): Promise<void> {
+		if (this.#dismissing) return;
+		this.#dismissing = runId;
+		this.#dismissError = undefined;
+		this.update();
+		try {
+			await this.#company.dismissFailedRun(runId);
+		} catch (error) {
+			this.#dismissError = { runId, message: describeError(error) };
+		} finally {
+			this.#dismissing = undefined;
+			this.update();
+		}
 	}
 }

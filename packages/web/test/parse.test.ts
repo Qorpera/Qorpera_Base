@@ -4,6 +4,8 @@ import {
 	parseCreatedCompany,
 	parseFriends,
 	parseProfiles,
+	parseRunDismissal,
+	parseRunRecovery,
 	parseSession,
 	parseStaff,
 	parseTeam,
@@ -18,6 +20,36 @@ const S2 = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 const F = "ffffffff-ffff-4fff-8fff-ffffffffffff";
 
 describe("parsers", () => {
+	it("reads a failed run's error, open proposal and unsettled operations", () => {
+		const recovery = (job: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+			parseRunRecovery({
+				run: { run_id: S1.toUpperCase(), source_kind: "room_delivery" },
+				job: { status: "failed", ...job },
+				proposal_id: null,
+				inputs: [],
+				operations: [{ status: "completed" }, { status: "ambiguous" }, { status: "executing" }],
+				...extra,
+			});
+		expect(recovery({ last_error: "  Native provider bridge request failed (422)  " })).toEqual({
+			runId: S1,
+			sourceKind: "room_delivery",
+			jobStatus: "failed",
+			lastError: "Native provider bridge request failed (422)",
+			unsettledOperations: 2,
+		});
+		// A missing or odd error never hides the run.
+		expect(recovery({ last_error: { code: "x" } }, { proposal_id: F })).toMatchObject({ proposalId: F });
+		expect(recovery({ last_error: { code: "x" } }).lastError).toBeUndefined();
+		expect(() => recovery({ status: "completed" })).toThrow("recovery job status");
+		expect(() => recovery({}, { proposal_id: "not-a-uuid" })).toThrow("recovery proposal id");
+	});
+
+	it("accepts only a dismissal of the run that was asked for", () => {
+		expect(() => parseRunDismissal({ run_id: S1, action: "discard", resolved: true }, S1)).not.toThrow();
+		expect(() => parseRunDismissal({ run_id: S2, action: "discard", resolved: true }, S1)).toThrow("run dismissal");
+		expect(() => parseRunDismissal({ run_id: S1, resolved: false }, S1)).toThrow("run dismissal");
+	});
+
 	it("parses the hosted profile list", () => {
 		const profiles = parseProfiles([
 			{

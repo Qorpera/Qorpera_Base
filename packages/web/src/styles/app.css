@@ -225,7 +225,6 @@ label > input, label > select { font-weight: 400; }
 .rail-row-status { position: absolute; z-index: 2; right: -2px; bottom: -2px; width: 15px; height: 15px; border-radius: 50%; background: var(--rail-status); border: 2px solid var(--rail); }
 .rail-row:hover .rail-row-status { border-color: var(--rail-hover); }
 .rail-row.active .rail-row-status { border-color: var(--rail-selection); }
-/* The working disc's opposite: the agent's last run did not finish. */
 .cofounder-status.failed, .rail-row-status.failed { background: var(--rail-status-failed); }
 .rail-row-copy { display: flex; flex-direction: column; justify-content: flex-start; gap: 2px; min-width: 0; }
 .rail-row-copy strong { font-size: 13px; font-weight: 600; line-height: 16px; }
@@ -263,7 +262,11 @@ label > input, label > select { font-weight: 400; }
 .figure { position: relative; display: inline-block; width: var(--figure-size, 32px); height: var(--figure-size, 32px); flex: none; vertical-align: middle; }
 .figure-canvas, .figure-fallback { position: absolute; inset: -6%; display: block; width: 112%; height: 112%; max-width: none; object-fit: contain; pointer-events: none; user-select: none; }
 .figure-canvas[hidden], .figure-fallback[hidden] { display: none; }
-@media (forced-colors: active) { .cofounder-home.active, .rail-row.active { outline: 2px solid Highlight; } }
+@media (forced-colors: active) {
+	.cofounder-home.active, .rail-row.active { outline: 2px solid Highlight; }
+	/* Forced colours empty both discs into rings; the failed one stays filled. */
+	.cofounder-status.failed, .rail-row-status.failed { forced-color-adjust: none; background: CanvasText; border-color: Canvas; }
+}
 
 .avatar {
 	width: 32px; height: 32px; border-radius: 50%; display: inline-grid; place-items: center; flex: none;

@@ -20,6 +20,7 @@ import { projectTranscript, type TranscriptProjection } from "../cloud/transcrip
 import type {
 	HostedProfile,
 	HostedProfileTeam,
+	HostedRunRecovery,
 	HostedSession,
 	HostedSessionEvent,
 	HostedStaffAgent,
@@ -34,6 +35,31 @@ import { debounce, Store } from "./state.ts";
 
 export type Deployment = "loading" | "ready" | "not-deployed" | "not-seeded" | "error";
 
+/** What a member sees of an agent's execution: see CompanyController.agentState. */
+export type AgentState = "idle" | "working" | "decision" | "failed";
+
+/** A run the server holds against the agent until someone dismisses it. */
+export interface FailedRun {
+	activity: HostedStaffExecutionActivity;
+	/** Its details, once read. */
+	recovery?: HostedRunRecovery;
+}
+
+const isFailedRun = (row: HostedStaffExecutionActivity) =>
+	row.activity === "needs_attention" && (row.jobStatus === "failed" || row.jobStatus === "cancelled");
+
+/** Keeps the details of runs the activity still reports as failed. */
+function stillFailed(
+	recoveries: Record<string, HostedRunRecovery>,
+	activity: HostedStaffExecutionActivity[],
+): Record<string, HostedRunRecovery> {
+	const failed = new Set(activity.filter(isFailedRun).map((row) => row.runId));
+	return Object.fromEntries(Object.entries(recoveries).filter(([runId]) => failed.has(runId)));
+}
+
+/** A failed run's details can change (its proposal decided elsewhere), so they are read again this often. */
+const RECOVERY_RECHECK_MS = 30_000;
+
 export interface CompanyState {
 	profile: HostedProfile;
 	team?: HostedProfileTeam;
@@ -45,6 +71,8 @@ export interface CompanyState {
 	organizationError?: string;
 	hierarchy: CompanyHierarchy;
 	activity: HostedStaffExecutionActivity[];
+	/** Details of the failed runs in `activity`, by run id. */
+	recoveries: Record<string, HostedRunRecovery>;
 	realtime: RealtimePhase;
 	realtimeError?: string;
 	loading: boolean;
@@ -132,6 +160,8 @@ export class CompanyController {
 	#polling = false;
 	readonly #invalidations = new Set<(resource: RealtimeResource) => void>();
 	readonly #conversationLoads = new Map<string, { promise: Promise<void>; repeat: boolean }>();
+	/** When each failed run's details were last requested. */
+	readonly #recoveryReads = new Map<string, number>();
 
 	constructor(api: CloudApi, profile: HostedProfile, userId: string, writeInput?: SessionInputWriter) {
 		this.#api = api;
@@ -148,6 +178,7 @@ export class CompanyController {
 			organizationState: "loading",
 			hierarchy: { primary: [], inactive: [] },
 			activity: [],
+			recoveries: {},
 			realtime: "connecting",
 			loading: true,
 		});
@@ -232,6 +263,7 @@ export class CompanyController {
 					organization: undefined,
 					hierarchy: { primary: [], inactive: [] },
 					activity: [],
+					recoveries: {},
 				});
 				for (const store of this.conversations.values())
 					store.set({
@@ -304,11 +336,31 @@ export class CompanyController {
 		try {
 			const activity = await this.#api.listStaffActivity(this.profile.environmentId);
 			if (this.#stopped || version !== this.#versions.activity) return;
-			this.store.set({ activity });
+			this.store.set((state) => ({ activity, recoveries: stillFailed(state.recoveries, activity) }));
 			if (activity.some((item) => item.activity !== "needs_attention")) this.#watchWork(6_000);
+			void this.#readRecoveries(activity);
 		} catch {
 			/* Activity is an indicator; its absence must not block the company. */
 		}
+	}
+
+	/* A failed run's details say why it failed and whether it left an open Company
+	 * File proposal, which makes it a decision rather than a failure. */
+	async #readRecoveries(activity: HostedStaffExecutionActivity[]): Promise<void> {
+		const now = Date.now();
+		const failed = new Set(activity.filter(isFailedRun).map((row) => row.runId));
+		for (const runId of this.#recoveryReads.keys()) if (!failed.has(runId)) this.#recoveryReads.delete(runId);
+		const due = [...failed].filter((runId) => now - (this.#recoveryReads.get(runId) ?? 0) >= RECOVERY_RECHECK_MS);
+		if (!due.length) return;
+		for (const runId of due) this.#recoveryReads.set(runId, now);
+		// A run dismissed meanwhile no longer has details; the next activity read drops it.
+		const read = await Promise.all(due.map((runId) => this.#api.getRunRecovery(runId).catch(() => undefined)));
+		if (this.#stopped) return;
+		this.store.set((state) => {
+			const recoveries = { ...state.recoveries };
+			for (const recovery of read) if (recovery) recoveries[recovery.runId] = recovery;
+			return { recoveries: stillFailed(recoveries, state.activity) };
+		});
 	}
 
 	staffById(id: string | undefined): HostedStaffAgent | undefined {
@@ -327,6 +379,34 @@ export class CompanyController {
 			.get()
 			.activity.filter((item) => item.staffAgentId === staffAgentId)
 			.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+	}
+
+	/** What the member sees of an agent's execution. A queued run is already the
+	 * agent's work from the member's side of the screen. needs_attention is either
+	 * a decision (a run's Company File proposal is open) or a run that did not
+	 * finish. The server reports one run per agent and ranks an undismissed failure
+	 * above newer work, so "failed" stands until the member dismisses it. */
+	agentState(staffAgentId: string | undefined): AgentState {
+		const row = this.activityFor(staffAgentId);
+		if (!row) return "idle";
+		if (row.activity !== "needs_attention") return "working";
+		if (!isFailedRun(row)) return "decision";
+		return this.store.get().recoveries[row.runId]?.proposalId ? "decision" : "failed";
+	}
+
+	failedRunFor(staffAgentId: string | undefined): FailedRun | undefined {
+		const row = this.activityFor(staffAgentId);
+		if (!row || !isFailedRun(row)) return undefined;
+		const recovery = this.store.get().recoveries[row.runId];
+		return recovery ? { activity: row, recovery } : { activity: row };
+	}
+
+	/** The run stops standing in for the agent's state; the next activity read shows what is left. */
+	async dismissFailedRun(runId: string): Promise<void> {
+		if (this.#stopped) return;
+		await this.#api.discardFailedRun(runId);
+		this.#recoveryReads.delete(runId);
+		await this.refreshActivity();
 	}
 
 	primarySessionFor(staffAgentId: string): HostedSession | undefined {
