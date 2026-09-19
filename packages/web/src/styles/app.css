@@ -156,10 +156,10 @@ label > input, label > select { font-weight: 400; }
 	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
 }
 .rail[hidden] { display: none; }
-/* One top row: the search field takes whatever width the add button leaves. Both
- * are half again the trailer's 1x chrome (31px field, 18px plus). */
-.rail-toolbar { flex: none; display: flex; align-items: center; justify-content: flex-end; gap: 6px; padding-top: 14px; }
-.rail-add { width: 46px; height: 46px; border-radius: 9px; color: #676664; }
+/* One top row: the search field takes whatever width the add button leaves. The two
+ * controls share one height, half again the trailer's 1x chrome (31px field, 18px plus). */
+.rail-toolbar { --rail-control: 46px; flex: none; display: flex; align-items: center; gap: 6px; padding-top: 14px; }
+.rail-add { width: var(--rail-control); height: var(--rail-control); border-radius: 9px; color: #676664; }
 .rail-add svg { width: 27px; height: 27px; }
 .rail-mobile-close { display: none; }
 .rail-resizer { position: absolute; z-index: 8; left: calc(var(--rail-width) - 4px); top: 0; bottom: 0; width: 8px; cursor: col-resize; touch-action: none; }
@@ -168,7 +168,7 @@ label > input, label > select { font-weight: 400; }
 .rail-resizing { cursor: col-resize; user-select: none; }
 .rail-add:hover { text-decoration: none; background: var(--rail-hover); }
 .rail-search {
-	display: flex; flex-direction: row; align-items: center; gap: 6px; height: 46px; flex: 1; min-width: 0;
+	display: flex; flex-direction: row; align-items: center; gap: 6px; height: var(--rail-control); flex: 1; min-width: 0;
 	margin-left: 6px;
 	padding: 0 8px 0 35px;
 	border-radius: 9px; background: var(--rail-search) no-repeat 11px 50%; color: var(--rail-search-ink);
@@ -549,7 +549,8 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 	.mobile-navigation-toggle[hidden] { display: none; }
 	.rail { display: none; position: fixed; top: var(--titlebar-height); bottom: 0; left: 0; width: min(304px, calc(100vw - 48px)); z-index: 6; }
 	.rail-resizer { display: none; }
-	.rail-mobile-close { display: inline-flex; margin-right: auto; }
+	.rail-mobile-close { display: inline-flex; }
+	.rail-mobile-close + .rail-search { margin-left: 0; }
 	.frame.navigation-open .rail:not([hidden]) { display: flex; }
 	.frame.navigation-open .navigation-backdrop { display: block; position: fixed; inset: var(--titlebar-height) 0 0; z-index: 5; background: rgba(18,18,17,.25); border: 0; }
 	.page { padding: 16px; }

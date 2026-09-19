@@ -60,7 +60,7 @@ export function mountApplication(
 		onclick: () => setNavigationOpen(false),
 	});
 	const frame = h("div", { class: "frame" }, topbar, h("div", { class: "body" }, backdrop, rail, main));
-	const railLayout = new RailLayout(frame);
+	const railLayout = new RailLayout(frame, rail);
 	rail.after(railLayout.el);
 	applyLanguage();
 	window.addEventListener("languagechange", applyLanguage);

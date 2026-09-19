@@ -9,6 +9,9 @@
 - Use a length-neutral email code hint so sign-in instructions remain accurate with the configured eight-digit codes.
 - Accept valid Unicode pause reasons using the public SQL character limit.
 - Submit team-room messages through the public room-post contract, preserve room retry identity, and match room attachments/run displays to the supported interfaces.
+- Cover the conversation with the agent computer panel below 1192px, where the wider default rail, the panel and a readable conversation no longer fit side by side.
+- Let the rail search wait for dead-key and IME input to commit, keep keyboard focus on the rail link or button it was on when the rail refreshes, and clear the rail search when the rail collapses.
+- Make resetting the rail width forget the stored width, so the default applies again once the window is wide enough, and set the width only on the rail and its edge so resizing the window does not restyle the whole app.
 
 ### Added
 

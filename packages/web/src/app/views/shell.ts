@@ -220,7 +220,10 @@ export function renderTopbar(
  * new hires stay unavailable until a cloud creation port is supplied. */
 
 /* The field outlives re-renders so typing never loses the caret. */
-const railFields = new WeakMap<CompanyController, { input: HTMLInputElement; query: string; redraw: () => void }>();
+const railFields = new WeakMap<
+	CompanyController,
+	{ input: HTMLInputElement; query: string; composing: boolean; redraw: () => void }
+>();
 
 function searchField(company: CompanyController, onInput: () => void) {
 	let field = railFields.get(company);
@@ -232,16 +235,41 @@ function searchField(company: CompanyController, onInput: () => void) {
 			spellcheck: "false",
 			"aria-label": "Search agents",
 		});
-		field = { input, query: "", redraw: onInput };
+		const created = { input, query: "", composing: false, redraw: onInput };
+		const apply = () => {
+			created.query = input.value.trim().toLowerCase();
+			created.redraw();
+		};
+		// A redraw moves the field, which would end a dead-key or IME composition,
+		// so the query waits for the committed text. Leaving the field commits too.
+		input.addEventListener("compositionstart", () => {
+			created.composing = true;
+		});
+		const commit = () => {
+			if (!created.composing) return;
+			created.composing = false;
+			apply();
+		};
+		input.addEventListener("compositionend", commit);
+		input.addEventListener("blur", commit);
+		input.addEventListener("input", (event) => {
+			if (!(event instanceof InputEvent && event.isComposing)) apply();
+		});
+		// A collapsed rail hides the field, so it must not keep filtering the rail.
+		window.addEventListener(
+			"qorpera-rail-resize",
+			() => {
+				if (!created.query || !input.closest(".rail-compact")) return;
+				input.value = "";
+				apply();
+			},
+			{ signal: company.signal },
+		);
+		field = created;
 		railFields.set(company, field);
 	}
-	const current = field;
-	current.redraw = onInput;
-	current.input.oninput = () => {
-		current.query = current.input.value.trim().toLowerCase();
-		current.redraw();
-	};
-	return current;
+	field.redraw = onInput;
+	return field;
 }
 
 function statusLine(agent: HostedStaffAgent | undefined, activity: HostedStaffExecutionActivity | undefined): string {
@@ -257,6 +285,10 @@ const figureActivity = (activity: HostedStaffExecutionActivity | undefined) =>
 	isWorking(activity) ? "Working" : activity ? "Waiting" : "Idle";
 
 export function renderRail(container: HTMLElement, company: CompanyController, context: ShellContext): void {
+	const redraw = () => renderRail(container, company, context);
+	const field = searchField(company, redraw);
+	// Rebuilding now would move the field mid-composition; the committed text redraws.
+	if (field.composing) return;
 	const restoreFocus = preserveAccountFocus();
 	const route = context.route;
 	const state = company.store.get();
@@ -268,8 +300,6 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		activeStaffId === staffId || (activeSessionId !== undefined && sessionOf(staffId)?.sessionId === activeSessionId);
 	const cofounderSessionId = state.organization?.cofounder.memberSessionId;
 	const section = route.name === "company" ? route.section : undefined;
-	const redraw = () => renderRail(container, company, context);
-	const field = searchField(company, redraw);
 	const search = field.input;
 	const railQuery = field.query;
 	const matches = (text: string) => !railQuery || text.toLowerCase().includes(railQuery);
@@ -396,6 +426,12 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	// focus, so the caret is put back exactly where the typist left it.
 	const typing = document.activeElement === search;
 	const caret: [number, number] = [search.selectionStart ?? 0, search.selectionEnd ?? 0];
+	// Links and buttons are rebuilt too; keyboard focus goes back to the one it was on.
+	const focused = document.activeElement;
+	const focusKey =
+		!typing && focused instanceof HTMLElement && container.contains(focused) && !focused.closest(".account-menu")
+			? (focused.getAttribute("href") ?? focused.getAttribute("aria-label"))
+			: null;
 	replace(
 		container,
 		h(
@@ -470,6 +506,9 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	if (typing) {
 		search.focus();
 		search.setSelectionRange(caret[0], caret[1]);
-	}
+	} else if (focusKey)
+		[...container.querySelectorAll<HTMLElement>("a[href], button[aria-label]")]
+			.find((element) => (element.getAttribute("href") ?? element.getAttribute("aria-label")) === focusKey)
+			?.focus({ preventScroll: true });
 	restoreFocus();
 }
