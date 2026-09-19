@@ -104,7 +104,21 @@ export function renderSignIn(auth: AuthController, container: HTMLElement): void
 			h(
 				"header",
 				{ class: "auth-brand" },
-				h("img", { src: "./assets/brand/qorpera-lockup-light-800.png", alt: "Qorpera", width: 800, height: 200 }),
+				// Ink on paper, and paper on ink for the dark theme; the stylesheet shows one.
+				h("img", {
+					class: "lockup-on-light",
+					src: "./assets/brand/qorpera-lockup-light-800.png",
+					alt: "Qorpera",
+					width: 800,
+					height: 200,
+				}),
+				h("img", {
+					class: "lockup-on-dark",
+					src: "./assets/brand/qorpera-lockup-dark-800.png",
+					alt: "Qorpera",
+					width: 800,
+					height: 200,
+				}),
 			),
 			h(
 				"div",

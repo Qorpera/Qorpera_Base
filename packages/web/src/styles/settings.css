@@ -1,5 +1,5 @@
 .settings-overlay { position: fixed; z-index: 400; inset: 0; display: grid; place-items: center; padding: 36px; background: rgb(20 20 19 / 48%); backdrop-filter: blur(1.5px); font-family: var(--font-sans); font-optical-sizing: auto; font-synthesis: none; text-rendering: geometricPrecision; }
-.settings-dialog { position: relative; display: grid; grid-template-columns: 190px minmax(0, 1fr); width: min(1000px, calc(100vw - 72px)); height: min(680px, calc(100dvh - 72px)); overflow: hidden; border: 1px solid #d9d9d6; border-radius: 16px; background: #fff; color: #1d1d1b; box-shadow: 0 24px 80px rgb(0 0 0 / 24%); }
+.settings-dialog { position: relative; display: grid; grid-template-columns: 190px minmax(0, 1fr); width: min(1000px, calc(100vw - 72px)); height: min(680px, calc(100dvh - 72px)); overflow: hidden; border: 1px solid #d9d9d6; border-radius: 16px; background: var(--overlay); color: #1d1d1b; box-shadow: 0 24px 80px rgb(0 0 0 / 24%); }
 .settings-nav { display: flex; flex-direction: column; gap: 3px; padding: 16px 12px; border-right: 1px solid #dededb; background: #f1f1ef; min-width: 0; }
 .settings-nav input { width: 100%; min-width: 0; height: 34px; margin-bottom: 10px; padding: 0 10px; border: 1px solid #d8d8d5; border-radius: 9px; background: #e6e6e3; font-size: 12.5px; }
 .settings-nav [role=tablist] { display: flex; flex-direction: column; gap: 3px; }

@@ -12,7 +12,7 @@ import { createWebSessionInputWriter } from "../cloud/session-input.ts";
 import { createWebSessionRunControl } from "../cloud/session-run-control.ts";
 import type { HostedProfile } from "../cloud/types.ts";
 import { h, notice, replace, spinner } from "../ui/dom.ts";
-import { applyLanguage } from "../ui/preferences.ts";
+import { applyLanguage, watchTheme } from "../ui/preferences.ts";
 import { RailLayout } from "../ui/rail-layout.ts";
 import { AuthController } from "./auth.ts";
 import { CompanyController } from "./company.ts";
@@ -66,6 +66,7 @@ export function mountApplication(
 	rail.after(railLayout.el);
 	applyLanguage();
 	window.addEventListener("languagechange", applyLanguage);
+	const unwatchTheme = watchTheme();
 	let disposed = false;
 	let settings: SettingsView | undefined;
 	let feedback: FeedbackView | undefined;
@@ -909,6 +910,7 @@ export function mountApplication(
 		disposed = true;
 		railLayout.dispose();
 		window.removeEventListener("languagechange", applyLanguage);
+		unwatchTheme();
 		closeSettings(false);
 		closeFeedback(false);
 		auth.dispose();

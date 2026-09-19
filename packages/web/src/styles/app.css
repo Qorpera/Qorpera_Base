@@ -5,6 +5,7 @@
 @import "./organization.css";
 @import "./feedback.css";
 @import "./company-file-live.css";
+@import "./dark.css";
 
 /* Layout and components for the web client. Values derive from tokens.css
  * (shared with the desktop). Selectors are the contract with the views. */
@@ -53,7 +54,7 @@ label > input, label > select { font-weight: 400; }
 }
 .btn:hover:not(:disabled) { background: var(--hover); }
 .btn:disabled { opacity: 0.5; cursor: default; }
-.btn-primary { background: var(--primary); color: #fff; border-color: var(--primary); }
+.btn-primary { background: var(--primary); color: var(--on-primary); border-color: var(--primary); }
 .btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
 .btn-danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
 .btn-danger:hover:not(:disabled) { background: var(--danger-soft); }
@@ -117,7 +118,7 @@ label > input, label > select { font-weight: 400; }
 .account-popover {
 	position: absolute; top: calc(100% + 8px); right: 0; z-index: 40; width: 232px;
 	display: flex; flex-direction: column; gap: 1px; padding: 6px;
-	border: 1px solid var(--border); border-radius: 14px; background: var(--bg);
+	border: 1px solid var(--border); border-radius: 14px; background: var(--overlay);
 	box-shadow: 0 22px 48px rgba(11, 11, 11, 0.14), 0 2px 8px rgba(11, 11, 11, 0.06);
 	max-height: calc(100dvh - var(--titlebar-height) - 16px); overflow-y: auto; overscroll-behavior: contain;
 }
@@ -136,7 +137,7 @@ label > input, label > select { font-weight: 400; }
 .account-item-label { flex: 1; min-width: 0; }
 .account-count {
 	min-width: 19px; height: 19px; padding: 0 6px; border-radius: 999px; display: grid; place-items: center;
-	background: var(--primary); color: #fff; font-size: 11px; font-weight: 700;
+	background: var(--primary); color: var(--on-primary); font-size: 11px; font-weight: 700;
 }
 .account-separator { height: 1px; flex: none; margin: 4px 6px; background: var(--border); }
 .account-signout { color: var(--text-muted); }
@@ -322,7 +323,7 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 .hub-create input::placeholder, .company-card-compose input::placeholder { color: #9a9ea6; }
 .hub-create input:focus-visible, .company-card-compose input:focus-visible { outline: none; border-color: #2d6ff2; box-shadow: 0 0 0 3px rgba(45, 111, 242, 0.18); }
 .hub-create-submit {
-	height: 48px; padding: 0 22px; border: 0; border-radius: 8px; background: var(--primary); color: #fff;
+	height: 48px; padding: 0 22px; border: 0; border-radius: 8px; background: var(--primary); color: var(--on-primary);
 	font-size: 15px; font-weight: 600; letter-spacing: -0.005em; cursor: pointer; white-space: nowrap;
 	transition: background-color 160ms ease;
 }
@@ -537,7 +538,7 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 
 /* modal */
 .modal-backdrop { position: fixed; inset: 0; background: rgba(18, 18, 17, 0.35); display: grid; place-items: center; z-index: 500; }
-.modal { width: min(440px, 92vw); background: var(--bg); border-radius: var(--radius-xl); padding: 20px; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25); }
+.modal { width: min(440px, 92vw); background: var(--overlay); border-radius: var(--radius-xl); padding: 20px; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25); }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 .mobile-navigation-toggle, .navigation-backdrop { display: none; }
