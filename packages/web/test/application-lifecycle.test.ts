@@ -113,9 +113,8 @@ function executionTransport() {
 
 /** The member's one usable account is chosen for them: no picker, no prompt to connect. */
 async function modelChosen(root: HTMLElement): Promise<void> {
-	await settle();
+	await vi.waitFor(() => expect(root.querySelector(".session-execution")?.textContent).toBe(""));
 	expect(root.querySelector('[aria-label="Model account for this conversation"]')).toBeNull();
-	expect(root.querySelector(".session-execution")!.textContent).toBe("");
 }
 
 describe("account and route ownership", () => {
@@ -153,7 +152,8 @@ describe("account and route ownership", () => {
 		};
 		submit("First accepted message");
 		await draw();
-		expect(send).toHaveBeenCalledTimes(1);
+		await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+		await draw();
 		expect(f.api.readSessionEvents).toHaveBeenCalledTimes(1);
 		expect(location.hash).toBe(`#/c/${profileA.profileId}/new`);
 
@@ -174,7 +174,8 @@ describe("account and route ownership", () => {
 		expect(location.hash).toBe(`#/c/${profileA.profileId}/new`);
 		token.resolve(original);
 		await draw();
-		expect(send).toHaveBeenCalledTimes(2);
+		await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+		await draw();
 		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 		expect(f.root.querySelector("textarea")!.value).toBe("");
 		expect(f.root.textContent).toContain("Second message");
