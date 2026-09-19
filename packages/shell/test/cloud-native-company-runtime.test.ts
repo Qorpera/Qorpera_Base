@@ -63,7 +63,7 @@ afterEach(async () => {
 
 async function fixture(mode = "company-runtime", httpPathControl = false, presence?: CloudCompanyPathPresenceFactory) {
 	const f = nativeCompanyContextFixture();
-	if (mode === "company-silent") {
+	if (mode === "company-silent" || mode === "company-worker") {
 		f.context = { ...f.context, identity: { ...f.context.identity, sessionId: null } };
 		f.authority = { ...f.authority, identity: { ...f.authority.identity, sessionId: null } };
 	}
@@ -172,6 +172,47 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 			return bytes;
 		},
 	};
+	// A background worker of the same agent: blank, read-only here, and without a conversation.
+	const workerId = randomUUID();
+	const workerParentRunId = randomUUID();
+	const workerWake = {
+		...wake,
+		kind: "agent",
+		source: { kind: "worker-dispatch", id: workerId, occurrenceKey: `worker-dispatch:${workerId}:1` },
+		policy: {
+			schema: "qorpera.wake-policy/v1",
+			kind: "agent",
+			initial: "forbidden",
+			final: "forbidden",
+			silenceAllowed: true,
+			maxPublicSends: 0,
+		},
+		routine: null,
+		parentRunId: workerParentRunId,
+		payload: {
+			schema: "qorpera.worker-dispatch/v1",
+			workerId,
+			workerKey: "note-check",
+			sequence: 1,
+			species: "in-house",
+			title: "Check the note",
+			todo: { todoKey: "note", title: "Note", path: `work/todos/${wakeIdentity.staffAgentId}/note.json` },
+			parentRunId: workerParentRunId,
+			access: "read",
+			outputFolder: `work/todos/${wakeIdentity.staffAgentId}/note/note-check`,
+			dispatch: {
+				goal: "Read note.md and say what it contains.",
+				definitionOfDone: "One sentence describing the note.",
+				context: "",
+				sources: ["note.md"],
+				followUp: null,
+				authority: "Read what this agent may read. Write nothing.",
+				output: "Report once through report_work.",
+				cancellation: "Ends with its todo, or when the parent cancels it.",
+				completion: "The parent is revived as soon as you report.",
+			},
+		},
+	};
 	const store = new CloudContentAddressedStore(transport);
 	const file = await store.putFile(
 		f.context.identity.companyId,
@@ -235,7 +276,7 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 			};
 		}
 		if (method === "qorpera_describe_company_run_context") return structuredClone(f.context);
-		if (method === "qorpera_read_native_wake") return structuredClone(wake);
+		if (method === "qorpera_read_native_wake") return structuredClone(mode === "company-worker" ? workerWake : wake);
 		if (method === "qorpera_list_native_connector_tools") {
 			return mode === "company-secret" ? [structuredClone(connectorDescriptor)] : [];
 		}
@@ -634,6 +675,8 @@ it.each([
 				"escalate_responsibility",
 				"hire_agent",
 				"manage_routine",
+				"manage_todo",
+				"manage_worker",
 				"read_context",
 				"read_responsibility_escalations",
 				"resolve_responsibility_escalation",
@@ -854,6 +897,22 @@ it("requires a final send when there is an audience, but does not invent one for
 	expect(silent.control.sendMessage).not.toHaveBeenCalled();
 	const evidence = JSON.parse(await readFile(silent.evidence, "utf8"));
 	expect(JSON.stringify(evidence.threadParameters.dynamicTools)).not.toContain('"name":"send_message"');
+});
+
+it("runs a background worker blank: reading tools and its report, no mouth, no coworkers, no delegation", async () => {
+	const f = await fixture("company-worker");
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(result.delivery).toEqual({ messageCount: 0, finalMessageId: null });
+	expect(f.control.sendMessage).not.toHaveBeenCalled();
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	expect(evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name).sort()).toEqual([
+		"company_list",
+		"company_read",
+		"read_context",
+		"report_work",
+	]);
+	expect(evidence.threadParameters.developerInstructions).toContain("Agent wakes with source.kind worker-dispatch");
+	expect(evidence.threadParameters.developerInstructions).not.toContain("Agent wakes with source.kind coworker:");
 });
 
 it("does not fall back to local context or another harness when cloud context is unavailable", async () => {

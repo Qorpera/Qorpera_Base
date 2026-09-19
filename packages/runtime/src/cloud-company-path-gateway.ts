@@ -49,6 +49,11 @@ const MAX_READ_PATHS = 128;
 export type CloudCompanyPathRpc =
 	| "qorpera_escalate_responsibility"
 	| "qorpera_manage_agent_routine"
+	// Workers and durable todos (runtime Step 5).
+	| "qorpera_manage_agent_todo"
+	| "qorpera_confirm_agent_todo_publication"
+	| "qorpera_manage_agent_worker"
+	| "qorpera_report_worker_result"
 	| "qorpera_list_responsibility_escalations"
 	| "qorpera_resolve_responsibility_escalation"
 	| "qorpera_record_runtime_observation"
