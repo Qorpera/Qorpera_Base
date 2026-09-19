@@ -38,6 +38,7 @@ class FakeElement {
 	removed = false;
 	isConnected = true;
 	onclick?: () => void;
+	requestFullscreen?: () => Promise<void>;
 	readonly children: FakeElement[] = [];
 	readonly attributes = new Map<string, string>();
 	readonly classes = new Set<string>();
@@ -94,11 +95,23 @@ function viewerFixture() {
 		}
 	}
 	const previous = new FakeElement();
+	const fullscreenEvents = new EventTarget();
 	const document = {
 		activeElement: previous,
 		body: new FakeElement(),
+		fullscreenEnabled: true,
+		fullscreenElement: null as FakeElement | null,
+		addEventListener: fullscreenEvents.addEventListener.bind(fullscreenEvents),
+		exitFullscreen: vi.fn(async () => {
+			document.fullscreenElement = null;
+			fullscreenEvents.dispatchEvent(new Event("fullscreenchange"));
+		}),
 		createElement: () => {
 			const element = new FakeElement();
+			element.requestFullscreen = vi.fn(async () => {
+				document.fullscreenElement = element;
+				fullscreenEvents.dispatchEvent(new Event("fullscreenchange"));
+			});
 			elements.push(element);
 			return element;
 		},
@@ -154,10 +167,106 @@ function viewerFixture() {
 		elements,
 		previous,
 		document,
+		fullscreenEvents,
 	};
 }
 
 describe("viewer UI state machine (fake DOM/noVNC, not visual cloud acceptance)", () => {
+	it("enters and exits embedded fullscreen without reopening or changing control", async () => {
+		const f = viewerFixture();
+		const mount = new FakeElement();
+		const viewer = f.api.open({ ...f.options, mount });
+		await vi.waitFor(() => expect(f.instances).toHaveLength(1));
+		f.instances[0].emit("connect");
+		const fullscreen = f.button("Full screen");
+		expect(fullscreen.hidden).toBe(false);
+		await fullscreen.onclick?.();
+		expect(f.document.fullscreenElement).toBe(mount.children[0]);
+		expect(fullscreen.textContent).toBe("Exit full screen");
+		expect(fullscreen.attributes.get("aria-pressed")).toBe("true");
+		await fullscreen.onclick?.();
+		expect(f.document.fullscreenElement).toBeNull();
+		expect(fullscreen.textContent).toBe("Full screen");
+		expect(fullscreen.attributes.get("aria-pressed")).toBe("false");
+		await fullscreen.onclick?.();
+		// Browser Escape is reflected even when no button click reaches the renderer.
+		await f.document.exitFullscreen();
+		expect(fullscreen.textContent).toBe("Full screen");
+		expect(viewer.closed).toBe(false);
+		expect(f.requestConnection).toHaveBeenCalledOnce();
+		expect(f.releaseConnection).not.toHaveBeenCalled();
+		expect(f.instances[0].viewOnly).toBe(true);
+		await viewer.close();
+	});
+
+	it("reports rejected fullscreen requests accessibly and allows retry", async () => {
+		const f = viewerFixture();
+		const mount = new FakeElement();
+		const viewer = f.api.open({ ...f.options, mount });
+		vi.spyOn(mount.children[0], "requestFullscreen").mockRejectedValueOnce(new Error("denied"));
+		const fullscreen = f.button("Full screen");
+		await fullscreen.onclick?.();
+		expect(fullscreen.disabled).toBe(false);
+		expect(fullscreen.textContent).toBe("Full screen unavailable");
+		expect(fullscreen.attributes.get("aria-label")).toBe("Full screen unavailable. Try again.");
+		expect(fullscreen.attributes.get("aria-live")).toBe("polite");
+		await fullscreen.onclick?.();
+		expect(fullscreen.textContent).toBe("Exit full screen");
+		f.document.exitFullscreen.mockRejectedValueOnce(new Error("denied"));
+		await fullscreen.onclick?.();
+		expect(fullscreen.textContent).toBe("Could not exit full screen");
+		expect(fullscreen.disabled).toBe(false);
+		await viewer.close();
+		expect(f.document.fullscreenElement).toBeNull();
+	});
+
+	it("exits only its own fullscreen on close and removes its fullscreen listener", async () => {
+		const f = viewerFixture();
+		const mount = new FakeElement();
+		const viewer = f.api.open({ ...f.options, mount });
+		await vi.waitFor(() => expect(f.instances).toHaveLength(1));
+		const fullscreen = f.button("Full screen");
+		await fullscreen.onclick?.();
+		await viewer.close();
+		expect(f.document.exitFullscreen).toHaveBeenCalledOnce();
+		expect(f.releaseConnection).toHaveBeenCalledOnce();
+		expect(f.document.fullscreenElement).toBeNull();
+		expect(fullscreen.textContent).toBe("Exit full screen");
+		const otherViewer = f.api.open({ ...f.options, mount });
+		f.document.fullscreenElement = new FakeElement();
+		await otherViewer.close();
+		expect(f.document.exitFullscreen).toHaveBeenCalledOnce();
+	});
+
+	it("cleans up fullscreen that finishes entering after the viewer closes", async () => {
+		const f = viewerFixture();
+		const mount = new FakeElement();
+		const viewer = f.api.open({ ...f.options, mount });
+		const pending = computerDeferred<void>();
+		vi.spyOn(mount.children[0], "requestFullscreen").mockImplementation(async () => {
+			await pending.promise;
+			f.document.fullscreenElement = mount.children[0];
+		});
+		const opening = f.button("Full screen").onclick?.();
+		await viewer.close();
+		pending.resolve();
+		await opening;
+		expect(f.document.fullscreenElement).toBeNull();
+		expect(f.document.exitFullscreen).toHaveBeenCalledOnce();
+	});
+
+	it("hides unavailable fullscreen and leaves standalone controls unchanged", async () => {
+		const f = viewerFixture();
+		f.document.fullscreenEnabled = false;
+		const embedded = f.api.open({ ...f.options, mount: new FakeElement() });
+		expect(f.button("Full screen").hidden).toBe(true);
+		await embedded.close();
+		const standalone = viewerFixture();
+		const viewer = standalone.api.open(standalone.options);
+		expect(standalone.elements.some((element) => element.className === "screen-viewer-fullscreen")).toBe(false);
+		await viewer.close();
+	});
+
 	it("keeps the member web renderer identical to the tested desktop source and its checksum", () => {
 		const desktop = readFileSync(new URL("../../shell/userland/screen-viewer.js", import.meta.url), "utf8");
 		const memberWeb = readFileSync(new URL("../../member-web/ui/screen-viewer.js", import.meta.url), "utf8");
@@ -305,12 +414,14 @@ describe("viewer UI state machine (fake DOM/noVNC, not visual cloud acceptance)"
 		expect(fixture.instances[0].viewOnly).toBe(true);
 		fixture.instances[0].emit("connect");
 		expect(fixture.instances[0].viewOnly).toBe(true);
+		expect(fixture.button("Take control").attributes.get("aria-pressed")).toBe("false");
 		fixture.button("Take control").onclick?.();
 		await vi.waitFor(() => expect(fixture.instances).toHaveLength(2));
 		expect(fixture.instances[0].disconnect).toHaveBeenCalledOnce();
 		expect(fixture.instances[1].viewOnly).toBe(true);
 		fixture.instances[1].emit("connect");
 		expect(fixture.instances[1].viewOnly).toBe(false);
+		expect(fixture.button("Release control").attributes.get("aria-pressed")).toBe("true");
 		expect(fixture.requestConnection.mock.calls.map(([input]) => input.mode)).toEqual(["watch", "control"]);
 		fixture.button("Release control").onclick?.();
 		await vi.waitFor(() => expect(fixture.instances).toHaveLength(3));

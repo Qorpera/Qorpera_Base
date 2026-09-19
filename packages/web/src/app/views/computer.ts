@@ -22,6 +22,7 @@ export class ComputerPanel {
 		this.el = h("aside", { class: "computer-panel", "aria-label": "Agent computer", tabindex: "-1" }, this.#body);
 		this.el.addEventListener("keydown", (event) => {
 			if (matchesKey(event, "dismiss")) {
+				if (document.fullscreenElement && this.el.contains(document.fullscreenElement)) return;
 				event.preventDefault();
 				event.stopPropagation();
 				close();

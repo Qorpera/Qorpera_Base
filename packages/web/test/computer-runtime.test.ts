@@ -223,6 +223,35 @@ describe("automatic computer popover", () => {
 		expect(methods(f)).toEqual(requests);
 		expect(cancel).not.toHaveBeenCalled();
 	});
+	it("lets Escape leave fullscreen before a later Escape closes the computer", async () => {
+		const f = setup(),
+			close = vi.fn(async () => {}),
+			open = spyViewer(close),
+			p = await opened(f.computer);
+		const screen = document.createElement("canvas");
+		p.el.querySelector(".computer-panel-body")!.append(screen);
+		let fullscreenElement: Element | null = screen;
+		const original = Object.getOwnPropertyDescriptor(document, "fullscreenElement");
+		Object.defineProperty(document, "fullscreenElement", { configurable: true, get: () => fullscreenElement });
+		try {
+			const fullscreenEscape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+			screen.dispatchEvent(fullscreenEscape);
+			expect(fullscreenEscape.defaultPrevented).toBe(false);
+			expect(p.el.isConnected).toBe(true);
+			expect(open).toHaveBeenCalledTimes(1);
+			expect(close).not.toHaveBeenCalled();
+			fullscreenElement = null;
+			const dismiss = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+			screen.dispatchEvent(dismiss);
+			await settle();
+			expect(dismiss.defaultPrevented).toBe(true);
+			expect(p.el.isConnected).toBe(false);
+			expect(close).toHaveBeenCalledOnce();
+		} finally {
+			if (original) Object.defineProperty(document, "fullscreenElement", original);
+			else Reflect.deleteProperty(document, "fullscreenElement");
+		}
+	});
 });
 
 describe("web runtime member boundary", () => {

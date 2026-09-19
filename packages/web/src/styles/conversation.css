@@ -252,13 +252,16 @@
 /* The canvas fills the popover. Controls float over it only when needed. */
 .computer-panel .screen-viewer-embedded { position: absolute; inset: 0; z-index: 2; background: #24262a; }
 .computer-panel .screen-viewer-frame { display: block; padding: 0; }
-.computer-panel .screen-viewer-titlebar { position: absolute; left: 10px; bottom: 10px; z-index: 3; padding: 0; opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
+.computer-panel .screen-viewer-titlebar { position: absolute; right: 10px; bottom: 10px; z-index: 3; padding: 0; opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
 .computer-panel .screen-viewer-heading, .computer-panel .screen-viewer-close { display: none; }
 .computer-panel .screen-viewer-controls { gap: 6px; }
-.computer-panel .screen-viewer-controls > button:not(.screen-viewer-close) { min-height: 28px; padding: 0 10px; font-size: 11px; background: rgb(20 20 22 / 80%); }
+.computer-panel .screen-viewer-controls > button:not(.screen-viewer-close) { min-height: 32px; padding: 0 12px; font-size: 12px; background: rgb(20 20 22 / 84%); backdrop-filter: blur(12px); box-shadow: 0 2px 8px rgb(0 0 0 / 24%); }
+.computer-panel .screen-viewer-controls > button:not(.screen-viewer-close):hover { background: rgb(55 57 62 / 94%); }
+.computer-panel .screen-viewer-controls > button[aria-pressed=true] { border-color: #8cb4ff; background: #244c87; }
 .computer-panel .screen-viewer-controls > button:disabled { display: none; }
-.computer-panel:hover .screen-viewer-titlebar, .computer-panel:focus-within .screen-viewer-titlebar, .computer-panel:has(.screen-viewer-status.is-error) .screen-viewer-titlebar { opacity: 1; pointer-events: auto; }
+.computer-panel:hover .screen-viewer-titlebar, .computer-panel:focus-within .screen-viewer-titlebar, .computer-panel .screen-viewer-embedded:hover .screen-viewer-titlebar, .computer-panel .screen-viewer-embedded:focus-within .screen-viewer-titlebar, .computer-panel:has(.screen-viewer-status.is-error) .screen-viewer-titlebar { opacity: 1; pointer-events: auto; }
 .computer-panel .screen-viewer-stage { width: 100%; height: 100%; aspect-ratio: auto; border-radius: 0; }
+.computer-panel .screen-viewer-embedded:fullscreen { position: fixed; inset: 0; width: 100%; height: 100%; background: #17181a; }
 .computer-panel .screen-viewer-status { background: #24262a; color: #b9bbc1; font-size: 12px; }
 .computer-panel .screen-viewer-status-content, .computer-panel .screen-viewer-status.is-error .screen-viewer-status-content { display: flex; flex-direction: column-reverse; align-items: center; width: min(280px, calc(100% - 48px)); gap: 12px; }
 .computer-loading-spinner, .computer-panel .screen-viewer-progress { flex: none; width: 20px; height: 20px; border: 2px solid rgb(255 255 255 / 15%); border-top-color: #c9c9cc; border-radius: 50%; background: none; animation: computer-spin 800ms linear infinite; }
