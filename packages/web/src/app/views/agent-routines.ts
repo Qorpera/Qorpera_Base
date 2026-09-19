@@ -14,7 +14,10 @@ import {
 } from "@qorpera/cloud-client/cloud-routines";
 import type { WebRoutines } from "../../cloud/routines.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
+import { dialogPageHeader } from "../../ui/dialog.ts";
 import { badge, button, fmtTime, h, icon, replace } from "../../ui/dom.ts";
+import type { CompanyController } from "../company.ts";
+import type { WorkspaceActions } from "../workspace-actions.ts";
 
 export interface AgentRoutineAccess {
 	routines: WebRoutines;
@@ -22,6 +25,21 @@ export interface AgentRoutineAccess {
 	accounts: (signal: AbortSignal) => Promise<NativeExecutionConnections>;
 	/** Owners and admins create, change, pause and resume routines. */
 	canManage: () => boolean;
+}
+
+/** Routine access for the signed-in member, or none when the page was not given the routine calls. */
+export function routineAccessFor(
+	company: CompanyController,
+	actions: WorkspaceActions,
+): AgentRoutineAccess | undefined {
+	const routines = actions.routines,
+		accounts = actions.nativeSubscription;
+	if (!routines || !accounts) return undefined;
+	return {
+		routines,
+		accounts: (signal) => accounts.listConnections(signal),
+		canManage: () => company.store.get().team?.capabilities.authorize === true,
+	};
 }
 
 type Shape = "interval" | "weekly" | "file";
@@ -51,24 +69,44 @@ function runLabel(run: CloudRoutineOccurrence): string {
 	return `${words[run.status] ?? run.status} · ${fmtTime(run.finishedAt ?? run.scheduledFor ?? run.createdAt)}`;
 }
 
-/** The Routines section of an agent's computer panel: standing work the cloud
- * starts on a schedule or when a Company File path changes. */
+function controlLabel(control: Element): string {
+	return control.getAttribute("aria-label") ?? control.textContent ?? "";
+}
+
+/** The Routines page of an agent's details: standing work the cloud starts on
+ * a schedule or when a Company File path changes. */
 export class AgentRoutines {
-	readonly el = h("section", { class: "computer-routines" });
-	readonly #agent: HostedStaffAgent;
+	readonly el = h("section", { class: "agent-page agent-routines" });
+	/** The agent as it is now, so a rename shows here without reopening. */
+	readonly #agent: () => HostedStaffAgent;
 	readonly #access: AgentRoutineAccess | undefined;
 	readonly #signal: AbortSignal;
+	readonly #back: (() => void) | undefined;
 	#routines: CloudRoutine[] = [];
 	#runs: CloudRoutineOccurrence[] = [];
 	#accounts: NativeMemberConnection[] = [];
 	#busy = false;
+	#editing = false;
+	/** Until the first read answers, an empty list means "not known yet". */
+	#loaded = false;
 	#message = "";
-	constructor(agent: HostedStaffAgent, access: AgentRoutineAccess | undefined, signal: AbortSignal) {
+	/** `back` leaves the list for the page this one was opened from. */
+	constructor(
+		agent: () => HostedStaffAgent,
+		access: AgentRoutineAccess | undefined,
+		signal: AbortSignal,
+		back?: () => void,
+	) {
 		this.#agent = agent;
 		this.#access = access;
 		this.#signal = signal;
+		this.#back = back;
 		this.#list();
 		if (access) void this.#refresh();
+	}
+	/** Reads the list again, unless a routine is open in the editor. */
+	refresh(): void {
+		if (!this.#editing && !this.#busy) void this.#refresh();
 	}
 	async #refresh(): Promise<void> {
 		const access = this.#access;
@@ -76,33 +114,26 @@ export class AgentRoutines {
 		try {
 			const [routines, runs] = await Promise.all([access.routines.list(), access.routines.runs()]);
 			if (this.#signal.aborted) return;
-			this.#routines = routines.filter((item) => item.staffAgentId === this.#agent.id && item.status !== "retired");
+			this.#routines = routines.filter(
+				(item) => item.staffAgentId === this.#agent().id && item.status !== "retired",
+			);
 			this.#runs = runs;
 			this.#message = "";
 		} catch {
 			if (this.#signal.aborted) return;
 			this.#message = "Routines could not be read. Refresh to try again.";
 		}
-		this.#list();
-	}
-	#header(action: Node): HTMLElement {
-		return h("header", null, h("h2", null, "Routines"), action);
+		this.#loaded = true;
+		if (!this.#editing) this.#list();
 	}
 	#list(): void {
+		this.#editing = false;
+		const focused = this.#focused();
 		const access = this.#access;
 		const manage = access?.canManage() === true;
-		const create = h(
-			"button",
-			{
-				type: "button",
-				class: "icon-button",
-				disabled: !manage || this.#busy,
-				"aria-label": "Create routine",
-				title: manage ? "Create routine" : access ? "Only an owner or admin can create routines" : "Create routine",
-				onclick: () => void this.#edit(undefined),
-			},
-			icon("plus"),
-		);
+		const create = manage
+			? button([icon("plus"), "New routine"], () => void this.#edit(undefined), { disabled: this.#busy })
+			: null;
 		const rows = this.#routines.map((routine) => {
 			const last = this.#runs.find((run) => run.routineId === routine.routineId);
 			return h(
@@ -131,24 +162,51 @@ export class AgentRoutines {
 		});
 		replace(
 			this.el,
-			this.#header(create),
-			h("p", { class: "muted" }, "Recurring work, on a schedule or when something happens."),
+			dialogPageHeader(
+				"Routines",
+				this.#back,
+				"Back to agent details",
+				"Recurring work, on a schedule or when something happens.",
+			),
 			this.#message ? h("p", { class: "surface-status", role: "status" }, this.#message) : null,
-			...(rows.length
-				? rows
-				: [
-						h(
+			rows.length
+				? [
+						h("div", { class: "routine-list" }, ...rows),
+						create ? h("div", { class: "routine-list-footer" }, create) : null,
+					]
+				: access && !this.#loaded
+					? h("p", { class: "agent-page-loading", role: "status" }, "Reading routines…")
+					: h(
 							"div",
-							{ class: "routine-empty" },
+							{ class: "agent-page-empty" },
 							icon("clock"),
 							h(
 								"p",
 								null,
-								access ? `${this.#agent.displayName} has no routines yet.` : "Routines will appear here.",
+								access ? `${this.#agent().displayName} has no routines yet.` : "Routines will appear here.",
 							),
+							create,
 						),
-					]),
 		);
+		this.#refocus(focused);
+	}
+	/** The focused control as its label and place among controls that share it,
+	 * so a redrawn list can put focus back where it was. */
+	#focused(): [string, number] | undefined {
+		const active = document.activeElement;
+		if (!(active instanceof HTMLElement) || !this.el.contains(active)) return undefined;
+		const label = controlLabel(active);
+		return [label, this.#controls(label).indexOf(active)];
+	}
+	#refocus(focused: [string, number] | undefined): void {
+		if (!focused) return;
+		const [label, index] = focused;
+		const same = this.#controls(label);
+		// A control that changed (Pause became Resume) hands focus to the way back.
+		(same[index] ?? same[0] ?? this.#controls("Back to agent details")[0])?.focus({ preventScroll: true });
+	}
+	#controls(label: string): HTMLElement[] {
+		return [...this.el.querySelectorAll<HTMLElement>("button")].filter((item) => controlLabel(item) === label);
 	}
 	async #loadAccounts(): Promise<boolean> {
 		try {
@@ -191,8 +249,13 @@ export class AgentRoutines {
 		}
 	}
 	async #edit(routine: CloudRoutine | undefined): Promise<void> {
-		if (this.#busy || !this.#access?.canManage()) return;
-		if (!(await this.#loadAccounts())) return;
+		if (this.#busy || this.#editing || !this.#access?.canManage()) return;
+		this.#editing = true;
+		if (!(await this.#loadAccounts())) {
+			this.#editing = false;
+			return;
+		}
+		if (this.#signal.aborted) return;
 		const first = routine?.triggers[0];
 		const shape: Shape = !first
 			? "weekly"
@@ -343,9 +406,10 @@ export class AgentRoutines {
 			});
 		};
 		const save = button("Save routine", () => void submit(), { primary: true });
-		const back = button([icon("back"), "Back"], () => {
+		const leave = () => {
 			if (!this.#busy) this.#list();
-		});
+		};
+		const cancel = button("Cancel", leave);
 		const submit = async () => {
 			if (this.#busy || !this.#access?.canManage()) return;
 			const chosenAccount = this.#accounts.find((item) => item.connectionId === account.value);
@@ -370,13 +434,13 @@ export class AgentRoutines {
 				return;
 			}
 			this.#busy = true;
-			save.disabled = back.disabled = true;
+			save.disabled = cancel.disabled = true;
 			status.textContent = "Saving…";
 			try {
 				await this.#access.routines.save(
 					{
 						clientRoutineId,
-						staffAgentId: this.#agent.id,
+						staffAgentId: this.#agent().id,
 						title: title.value.trim(),
 						prompt: prompt.value.trim(),
 						trigger: built,
@@ -387,6 +451,7 @@ export class AgentRoutines {
 				);
 				if (this.#signal.aborted) return;
 				this.#busy = false;
+				this.#editing = false;
 				this.#message = "";
 				await this.#refresh();
 			} catch {
@@ -395,17 +460,17 @@ export class AgentRoutines {
 				if (!this.#signal.aborted) status.textContent = "The routine could not be saved. Your draft is still here.";
 			} finally {
 				this.#busy = false;
-				save.disabled = back.disabled = false;
+				save.disabled = cancel.disabled = false;
 			}
 		};
 		replace(
 			this.el,
-			this.#header(back),
+			dialogPageHeader(routine ? "Edit routine" : "New routine", leave, "Back to routines"),
 			h(
 				"div",
 				{ class: "routine-editor" },
 				h("label", null, "Name", title),
-				h("label", null, `What should ${this.#agent.displayName} do?`, prompt),
+				h("label", null, `What should ${this.#agent().displayName} do?`, prompt),
 				h("label", null, "When", when),
 				intervalFields,
 				weeklyFields,
@@ -420,7 +485,7 @@ export class AgentRoutines {
 							h(
 								"small",
 								null,
-								`Saving lets ${this.#agent.displayName} use this account for this routine while you are away. Pause the routine to stop it.`,
+								`Saving lets ${this.#agent().displayName} use this account for this routine while you are away. Pause the routine to stop it.`,
 							),
 						)
 					: h(
@@ -429,7 +494,7 @@ export class AgentRoutines {
 							"Connect a model account in Settings → Connections first. A routine runs on a member's own account.",
 						),
 				status,
-				h("div", { class: "surface-actions" }, save),
+				h("div", { class: "surface-actions" }, cancel, save),
 			),
 		);
 		title.focus();
