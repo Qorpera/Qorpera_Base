@@ -100,4 +100,43 @@ begin
 	perform pg_temp.wake_assert(exists (select 1 from public.qorpera_company_rooms where id = v_id and status = 'active'),'The room exists');
 end $$;
 
+-- A retry after the approval lapsed: the same run renews its own policy approval and finishes;
+-- asking again after it was applied is a plain replay.
+do $$
+declare v_id uuid := '30000000-0000-4000-8000-0000000006bb'; v_path text; v_doc text; v_entry jsonb; v_result jsonb; v_again jsonb;
+begin
+	v_path := 'organization/rooms/' || v_id || '.json';
+	v_doc := jsonb_build_object('schema','qorpera.company-room/v1','roomId',v_id,'key','chat-' || v_id,'name','Retry room',
+		'purpose','Retry after a lapsed approval.','status','active','projectId',null,'members',jsonb_build_array(
+			jsonb_build_object('kind','staff_agent','id','30000000-0000-4000-8000-000000000030'),
+			jsonb_build_object('kind','staff_agent','id','30000000-0000-4000-8000-000000000031')),'version',1)::text;
+	v_entry := pg_temp.path_stage_file(v_path,v_doc);
+	v_result := pg_temp.path_commit(pg_temp.path_plan('room-retry',v_path,v_entry));
+	perform public.qorpera_self_approve_organization_proposal(current_setting('qorpera_test.wake_binding')::jsonb,(v_result ->> 'proposalId')::uuid);
+	update public.qorpera_company_path_proposals set approval_expires_at = clock_timestamp() - interval '1 minute'
+	where id = (v_result ->> 'proposalId')::uuid;
+	perform pg_temp.wake_assert(pg_temp.self_apply(v_result,v_entry,v_doc) ->> 'state' = 'applied','A lapsed policy approval is renewed by the same run');
+	v_again := public.qorpera_self_approve_organization_proposal(current_setting('qorpera_test.wake_binding')::jsonb,(v_result ->> 'proposalId')::uuid);
+	perform pg_temp.wake_assert(v_again ->> 'state' = 'applied','Asking again after it was applied is a replay');
+end $$;
+
+-- The requester is only a contributor: the approval is recorded in the company owner's name.
+do $$
+declare v_id uuid := '30000000-0000-4000-8000-0000000007aa'; v_path text; v_doc text; v_entry jsonb; v_result jsonb;
+begin
+	update public.qorpera_profile_members set role = 'contributor' where user_id = '30000000-0000-4000-8000-000000000001';
+	update public.qorpera_profile_members set role = 'owner' where user_id = '30000000-0000-4000-8000-000000000002';
+	v_path := 'organization/rooms/' || v_id || '.json';
+	v_doc := jsonb_build_object('schema','qorpera.company-room/v1','roomId',v_id,'key','chat-' || v_id,'name','Contributor room',
+		'purpose','Opened for a contributor.','status','active','projectId',null,'members',jsonb_build_array(
+			jsonb_build_object('kind','staff_agent','id','30000000-0000-4000-8000-000000000030'),
+			jsonb_build_object('kind','staff_agent','id','30000000-0000-4000-8000-000000000031')),'version',1)::text;
+	v_entry := pg_temp.path_stage_file(v_path,v_doc);
+	v_result := pg_temp.path_commit(pg_temp.path_plan('room-contributor',v_path,v_entry));
+	perform pg_temp.wake_assert(pg_temp.self_apply(v_result,v_entry,v_doc) ->> 'state' = 'applied','A contributor''s agent still creates without a member step');
+	perform pg_temp.wake_assert((select approved_by_user_id = '30000000-0000-4000-8000-000000000002'
+		from public.qorpera_company_path_proposals where id = (v_result ->> 'proposalId')::uuid),
+		'The approval is recorded in the company owner''s name');
+end $$;
+
 rollback;

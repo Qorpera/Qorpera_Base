@@ -153,10 +153,16 @@ and completed projects, and staff. The role overlays no longer speak of a
 responsibility map, measures or a recorded threshold; an agent works from its
 description and the Co-Founder reads its coworkers' descriptions to see who owns
 what. This is runtime bundle v39,
-`53a64c00297afad6b3752cc96317dd225c06d762aff3623653afa02ad295fbd8`, guest
+`e0dbed43d0056e8fc3876ec522fe378a287761f49174f636db3195ae20901620`, guest
 artifact 1,348,310 bytes,
-`56541316ed853326bb520e191c0c8b7cd34da32dd67551dffec5ef9e5e325f3e`, SQL context
-parity after 286 migrations.
+`6c33770175080f14b218d2863d7eaa4fe9e5606ff65d9d247efcc5f66fcc9e68`, SQL context
+parity after 287 migrations.
+
+Review follow-up in the same change (`20260920005000`): a policy approval whose
+apply did not finish is renewed when the same run retries, instead of being
+refused as expired; asking again after it was applied is a replay. `375` now
+also proves that case and a hire or room requested by a contributor, where the
+approval is recorded in the company owner's name.
 
 The contract's 2026-09-20 amendment records the model, what is withdrawn, what
 still exists in the cloud (responsibility documents, projections, grants and
