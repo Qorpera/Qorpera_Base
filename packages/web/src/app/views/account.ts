@@ -177,7 +177,7 @@ export function renderAccount(
 						"span",
 						{ class: "settings-copy" },
 						uiText("Composer color"),
-						h("small", null, uiText("Send button and your message bubbles.")),
+						h("small", null, uiText("Send button, your message bubbles, and selected agent cards.")),
 					),
 					composerColor,
 				),

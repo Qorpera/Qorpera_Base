@@ -17,7 +17,8 @@ const DANISH: Record<string, string> = {
 	Appearance: "Udseende",
 	Theme: "Tema",
 	"Composer color": "Skrivefeltets farve",
-	"Send button and your message bubbles.": "Send-knappen og dine beskedbobler.",
+	"Send button, your message bubbles, and selected agent cards.":
+		"Send-knappen, dine beskedbobler og valgte agentkort.",
 	Blue: "Blå",
 	Green: "Grøn",
 	Grey: "Grå",

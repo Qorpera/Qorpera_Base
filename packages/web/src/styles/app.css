@@ -146,7 +146,7 @@ label > input, label > select { font-weight: 400; }
 .rail {
 	--rail: var(--sidebar-surface); --rail-line: #c4c2c2; --rail-hover: var(--sidebar-hover);
 	--rail-search: var(--sidebar-search); --rail-search-ink: #85857f;
-	--rail-selection: var(--sidebar-selection); --rail-small: #71716b; --rail-status: #00c887;
+	--rail-selection: var(--composer-accent); --rail-small: #71716b; --rail-status: #00c887;
 	display: flex; flex-direction: column; min-height: 0;
 	width: var(--rail-width); flex: none;
 	/* The trailer's rail: 15px insets, a darker edge line than the other dividers. */
