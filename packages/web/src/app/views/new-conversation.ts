@@ -110,6 +110,7 @@ export class NewConversationView {
 	#prefilled: string | undefined;
 	#editing = false;
 	#pending = false;
+	#createdAgentId: string | undefined;
 	#syncControls: () => void = () => {};
 	#draft: AgentDraft = { displayName: "", role: "", charter: "", figure: "rocket", color: nativeColorOf("rocket") };
 	constructor(
@@ -467,7 +468,7 @@ export class NewConversationView {
 		// "Search or create": what was typed names the agent, unless the draft
 		// already carries a name of the member's own.
 		const typed = this.#query.trim().slice(0, 64);
-		if (typed && (!this.#draft.displayName || this.#draft.displayName === this.#prefilled)) {
+		if (!this.#createdAgentId && typed && (!this.#draft.displayName || this.#draft.displayName === this.#prefilled)) {
 			this.#draft.displayName = typed;
 			this.#prefilled = typed;
 		}
@@ -525,14 +526,17 @@ export class NewConversationView {
 		const status = h(
 			"p",
 			{ class: "surface-status", role: "status" },
-			this.#actions.createAgent ? "" : "Agent creation is not available yet.",
+			this.#createdAgentId
+				? "The agent was created. Retry adding it once the agent list is available."
+				: this.#actions.createAgent
+					? ""
+					: "Agent creation is not available yet.",
 		);
 		const create = h(
 			"button",
 			{ class: "btn btn-primary", type: "submit", disabled: !this.#actions.createAgent },
-			"Create agent",
+			this.#createdAgentId ? "Add created agent" : "Create agent",
 		);
-		let createdId: string | undefined;
 		const back = button([icon("back"), "Back"], () => {
 			if (!this.#pending) {
 				this.#picker();
@@ -554,7 +558,7 @@ export class NewConversationView {
 		);
 		this.#syncControls = () => {
 			const canWrite = this.#company.store.get().team?.capabilities.authorize === true;
-			fields.disabled = this.#pending || !canWrite || !!createdId;
+			fields.disabled = this.#pending || !canWrite || !!this.#createdAgentId;
 			create.disabled = this.#pending || !canWrite || !this.#actions.createAgent;
 			back.disabled = this.#pending;
 		};
@@ -564,7 +568,7 @@ export class NewConversationView {
 				this.#pending ||
 				!this.#actions.createAgent ||
 				!this.#company.store.get().team?.capabilities.authorize ||
-				(!createdId && !form.reportValidity())
+				(!this.#createdAgentId && !form.reportValidity())
 			)
 				return;
 			if (!name.value.trim() || !role.value.trim()) {
@@ -577,7 +581,7 @@ export class NewConversationView {
 			back.disabled = true;
 			status.textContent = "Creating agent…";
 			try {
-				createdId ??= await this.#actions.createAgent(
+				this.#createdAgentId ??= await this.#actions.createAgent(
 					this.#company.profile.profileId,
 					{
 						...this.#draft,
@@ -590,8 +594,9 @@ export class NewConversationView {
 				if (this.#lifetime.signal.aborted || this.#company.signal.aborted) return;
 				await this.#company.refreshStaff();
 				if (!this.#lifetime.signal.aborted && !this.#company.signal.aborted) {
-					if (!this.#company.staffById(createdId)) throw new Error("Agent roster is still refreshing.");
-					this.#selected.add(createdId);
+					if (!this.#company.staffById(this.#createdAgentId)) throw new Error("Agent roster is still refreshing.");
+					this.#selected.add(this.#createdAgentId);
+					this.#createdAgentId = undefined;
 					this.#query = "";
 					this.#search.value = "";
 					this.#draft = {
@@ -607,10 +612,10 @@ export class NewConversationView {
 				}
 			} catch {
 				if (!this.#lifetime.signal.aborted) {
-					status.textContent = createdId
+					status.textContent = this.#createdAgentId
 						? "The agent was created. Retry adding it once the agent list is available."
 						: "The agent could not be created. Your draft is still here.";
-					if (createdId) create.textContent = "Add created agent";
+					if (this.#createdAgentId) create.textContent = "Add created agent";
 				}
 			} finally {
 				this.#pending = false;
@@ -622,6 +627,7 @@ export class NewConversationView {
 			h("header", { class: "new-conversation-header" }, this.#navigation, back),
 			h("div", { class: "new-conversation-body" }, form),
 		);
-		name.focus();
+		this.#syncControls();
+		(this.#createdAgentId ? create : name).focus();
 	}
 }

@@ -17,7 +17,7 @@ export interface WebCompanyAgentDraft {
  * writes the roster itself. */
 export interface WebCompanyAgents {
 	create(draft: WebCompanyAgentDraft, signal: AbortSignal): Promise<string>;
-	update(agent: HostedStaffAgent, draft: WebCompanyAgentDraft, signal: AbortSignal): Promise<void>;
+	update(agent: HostedStaffAgent, draft: WebCompanyAgentDraft, signal: AbortSignal): Promise<number>;
 }
 
 const blankCharter = (name: string) =>
@@ -59,7 +59,7 @@ export function createWebCompanyAgents(files: WebCompanyFiles): WebCompanyAgents
 		files.current();
 		const editor = await files.files();
 		lifetime.throwIfAborted();
-		await writeCloudCompanyAgent({
+		const applied = await writeCloudCompanyAgent({
 			editor,
 			agent,
 			...(startup ? { startupInstructions: startup } : {}),
@@ -67,6 +67,7 @@ export function createWebCompanyAgents(files: WebCompanyFiles): WebCompanyAgents
 			signal: lifetime,
 		});
 		files.current();
+		return applied.agentRevision;
 	};
 	return {
 		async create(draft, signal) {
@@ -91,7 +92,7 @@ export function createWebCompanyAgents(files: WebCompanyFiles): WebCompanyAgents
 			return id;
 		},
 		async update(agent, draft, signal) {
-			await write(staffAgent(agent, draft), "update", undefined, signal);
+			return write(staffAgent(agent, draft), "update", undefined, signal);
 		},
 	};
 }

@@ -24,6 +24,7 @@ export interface WorkspaceActions {
 	/** Opens the selected recipients and submits the first message. Failed sends
 	 * remain in the returned session so its normal retry UI can recover them. */
 	startConversation?: (recipientIds: readonly string[], text: string, signal: AbortSignal) => Promise<string>;
-	updateAgent?: (agent: HostedStaffAgent, draft: AgentDraft, signal: AbortSignal) => Promise<void>;
+	/** Returns the exact applied agent document revision, also projected as roster version. */
+	updateAgent?: (agent: HostedStaffAgent, draft: AgentDraft, signal: AbortSignal) => Promise<number>;
 	createAgent?: (profileId: string, draft: AgentDraft, signal: AbortSignal) => Promise<string>;
 }
