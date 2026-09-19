@@ -1,5 +1,6 @@
 import { h, icon } from "./dom.ts";
 import { matchesKey } from "./keys.ts";
+import { isPhoneLayout } from "./layout.ts";
 
 /** Anchored desktop details are nonmodal; mobile sheets and previews retain
  * native modal containment. Disposal never restores focus into another route. */
@@ -91,7 +92,7 @@ export class SurfaceDialog {
 		this.#close.focus({ preventScroll: true });
 	}
 	#layout(): void {
-		const modal = !this.#anchor || window.innerWidth <= 760;
+		const modal = !this.#anchor || isPhoneLayout();
 		if (!this.el.open || modal !== this.#modal) {
 			if (this.el.open) this.el.close();
 			this.#modal = modal;
@@ -103,9 +104,11 @@ export class SurfaceDialog {
 			const rect = this.#anchor.getBoundingClientRect();
 			this.el.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - this.el.getBoundingClientRect().width - 12))}px`;
 			this.el.style.top = `${rect.bottom + 8}px`;
+			this.el.style.maxHeight = `${Math.max(0, window.innerHeight - rect.bottom - 24)}px`;
 		} else {
 			this.el.style.removeProperty("left");
 			this.el.style.removeProperty("top");
+			this.el.style.removeProperty("max-height");
 		}
 	}
 	close(restoreFocus = true): void {

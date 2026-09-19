@@ -209,7 +209,7 @@ describe("conversation UI boundaries", () => {
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 	it("discards pending metadata saves on disposal and blocks writes after a role downgrade", async () => {
-		const pending = deferred<void>(),
+		const pending = deferred<number>(),
 			updateAgent = vi.fn((_agent: unknown, _draft: unknown, _signal: AbortSignal) => pending.promise);
 		const f = setup({ updateAgent });
 		button(f.view.el, "Open agent details").click();
@@ -231,7 +231,7 @@ describe("conversation UI boundaries", () => {
 		expect(updateAgent.mock.calls[0]![1]).toMatchObject({ displayName: "Renamed", role: staff.role });
 		f.view.dispose();
 		expect(updateAgent.mock.calls[0]![2].aborted).toBe(true);
-		pending.resolve();
+		pending.resolve(staff.version + 1);
 		await settle();
 		expect(document.querySelector("dialog")).toBeNull();
 		expect(f.api.listStaff).not.toHaveBeenCalled();
@@ -286,7 +286,9 @@ describe("conversation UI boundaries", () => {
 		expect(send.disabled).toBe(false);
 		expect(root.querySelector("textarea")!.value).toBe("Keep this local");
 		expect(f.api.appendPrompt).not.toHaveBeenCalled();
-		expect(fetch).not.toHaveBeenCalled();
+		expect(
+			vi.mocked(fetch).mock.calls.filter(([url]) => !String(url).endsWith("/qorpera_list_member_notifications")),
+		).toHaveLength(0);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 	it("keeps attachment drafts scoped to their conversation and releases previews on disposal", () => {
@@ -304,6 +306,15 @@ describe("conversation UI boundaries", () => {
 		restored.dispose();
 	});
 	it("shows unavailable computer controls without RPCs, handles narrow layouts, and restores focus", () => {
+		// jsdom lays nothing out: give the thread and the panel the widths the stylesheet would.
+		let threadWidth = 900,
+			panelWidth = 420;
+		vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(function (this: Element) {
+			return this.classList.contains("thread-body") ? threadWidth : 0;
+		});
+		vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+			return this.classList.contains("computer-panel") ? panelWidth : 0;
+		});
 		const f = setup(),
 			toggle = button(f.view.el, "Open agent computer");
 		toggle.click();
@@ -311,8 +322,16 @@ describe("conversation UI boundaries", () => {
 		// Routines live in the agent's details now, not beside the computer.
 		expect(f.view.el.querySelector(".computer-panel")?.textContent).not.toContain("Routines");
 		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(false);
-		// Below the width that holds the default rail, the panel and the conversation, the panel covers it.
-		vi.stubGlobal("innerWidth", 1192);
+		// Without room for the panel beside the conversation, however wide the rail is, the panel covers it.
+		threadWidth = 735;
+		window.dispatchEvent(new Event("resize"));
+		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(true);
+		expect(f.view.el.querySelector(".thread-body")?.classList.contains("computer-covers")).toBe(true);
+		threadWidth = 900;
+		window.dispatchEvent(new Event("qorpera-rail-resize"));
+		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(false);
+		// The phone layout makes the panel as wide as the thread, so it covers the conversation too.
+		threadWidth = panelWidth = 744;
 		window.dispatchEvent(new Event("resize"));
 		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(true);
 		button(f.view.el, "Close computer").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
@@ -321,6 +340,289 @@ describe("conversation UI boundaries", () => {
 		expect(document.activeElement).toBe(toggle);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
+
+	it("closes an unresolved run popup immediately without discarding work or reopening on polling", async () => {
+		const host = document.createElement("div");
+		const sibling = document.createElement("section");
+		host.append(sibling);
+		document.body.append(host);
+		const f = setup({ notificationHost: host });
+		const run = {
+			runId: id(70),
+			staffAgentId: staff.id,
+			sourceKind: "room_delivery" as const,
+			jobStatus: "failed" as const,
+			activity: "needs_attention" as const,
+			updatedAt: timestamp,
+		};
+		const details = {
+			runId: run.runId,
+			sourceKind: run.sourceKind,
+			jobStatus: run.jobStatus,
+			lastError: "Runner lease expired before durable completion",
+			unsettledOperations: 1,
+		};
+		const card = () => host.querySelector<HTMLElement>(".notification-card");
+		const discard = vi.spyOn(f.api, "discardFailedRun");
+		f.company.store.set({ activity: [run], recoveries: { [run.runId]: details } });
+		await settle();
+		expect(card()?.textContent).toBe("A run did not finish");
+		expect(f.view.el.querySelector(".thread-status .notice-warn")).toBeNull();
+		const close = button(host, "Dismiss notification");
+		close.focus();
+		f.company.store.set({ activity: [{ ...run }] });
+		await settle();
+		expect(button(host, "Dismiss notification")).toBe(close);
+		expect(document.activeElement).toBe(close);
+		close.click();
+		expect(card()).toBeNull();
+		expect(document.activeElement).toBe(f.view.el.querySelector("textarea"));
+		expect(discard).not.toHaveBeenCalled();
+		f.company.store.set({
+			activity: [{ ...run }],
+			recoveries: { [run.runId]: { ...details, unsettledOperations: 0 } },
+		});
+		await settle();
+		expect(card()).toBeNull();
+		// Navigation within the same company does not replay a dismissed popup.
+		f.view.dispose();
+		const reopened = new ConversationView(f.company, session.sessionId, { notificationHost: host });
+		document.body.append(reopened.el);
+		expect(card()).toBeNull();
+		// A different failed run still gets its own dismissible notification.
+		f.company.store.set({ activity: [{ ...run, runId: id(71) }] });
+		await settle();
+		expect(card()).not.toBeNull();
+		reopened.dispose();
+		expect([...host.children]).toEqual([sibling]);
+	});
+
+	it("allows readers to hide run notifications and retains review links without subtext", async () => {
+		const f = setup();
+		const run = {
+			runId: id(70),
+			staffAgentId: staff.id,
+			sourceKind: "room_delivery" as const,
+			jobStatus: "failed" as const,
+			activity: "needs_attention" as const,
+			updatedAt: timestamp,
+		};
+		const details = {
+			runId: run.runId,
+			sourceKind: run.sourceKind,
+			jobStatus: run.jobStatus,
+			lastError: "Internal provider failure",
+			unsettledOperations: 0,
+			proposalId: id(71),
+		};
+		const card = () => f.view.el.querySelector<HTMLElement>(".notification-card");
+		f.company.store.set({
+			team: { ...team, capabilities: { ...team.capabilities, write: false } },
+			activity: [run],
+			recoveries: { [run.runId]: details },
+		});
+		await settle();
+		expect(card()?.querySelector("a")?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/proposal/${id(71)}`);
+		expect(card()?.textContent).toBe("Run stopped with changes to reviewReview");
+		button(f.view.el, "Dismiss notification").focus();
+		button(f.view.el, "Dismiss notification").dispatchEvent(
+			new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+		);
+		expect(card()).toBeNull();
+		expect(document.activeElement).toBe(button(f.view.el, "Open agent details"));
+		const review = { ...run, runId: id(72), sourceKind: "proposal_review" as const };
+		f.company.store.set({ activity: [review] });
+		await settle();
+		expect(card()?.textContent).toBe("A review did not finishReview");
+		expect(card()?.querySelector("a")?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/file`);
+		f.company.store.set({ team: undefined });
+		await settle();
+		expect(card()).toBeNull();
+	});
+
+	it.each([false, true])(
+		"clears settled failure activity and restores Stop (details arrive late: %s)",
+		async (late) => {
+			const nextRun = id(73);
+			const cancel = vi.fn(async () => "cancelled" as const);
+			const f = setup({
+				runControl: {
+					read: vi.fn(async () => ({
+						sessionId: session.sessionId,
+						staffAgentId: staff.id,
+						run: { runId: nextRun, status: "leased" as const, canCancel: true },
+					})),
+					cancel,
+				},
+			});
+			const run = {
+				runId: id(70),
+				staffAgentId: staff.id,
+				sourceKind: "session_turn" as const,
+				jobStatus: "failed" as const,
+				activity: "needs_attention" as const,
+				updatedAt: timestamp,
+			};
+			const recovery = {
+				runId: run.runId,
+				sourceKind: run.sourceKind,
+				jobStatus: run.jobStatus,
+				unsettledOperations: 0,
+			};
+			const pending = deferred<void>();
+			const discard = vi.spyOn(f.api, "discardFailedRun").mockReturnValue(pending.promise);
+			// Match the server's priority: the old failure masks the newer leased run until discarded.
+			vi.mocked(f.api.listStaffActivity).mockResolvedValue([
+				{ ...run, runId: nextRun, jobStatus: "leased", activity: "working" },
+			]);
+			f.company.store.set({ activity: [run], recoveries: late ? {} : { [run.runId]: recovery } });
+			await settle();
+			expect(f.company.agentState(staff.id)).toBe("failed");
+			expect(f.view.el.querySelector('[aria-label="Stop"]')).toBeNull();
+			const close = button(f.view.el, "Dismiss notification");
+			close.focus();
+			close.click();
+			close.click();
+			expect(f.view.el.querySelector(".notification-card")).toBeNull();
+			expect(document.activeElement).toBe(f.view.el.querySelector("textarea"));
+			if (late) {
+				expect(discard).not.toHaveBeenCalled();
+				f.company.store.set({ recoveries: { [run.runId]: recovery } });
+				await settle();
+			}
+			expect(discard).toHaveBeenCalledExactlyOnceWith(run.runId);
+			pending.resolve();
+			await settle();
+			expect(f.company.agentState(staff.id)).toBe("working");
+			expect(f.view.el.querySelector(".notification-card")).toBeNull();
+			expect(button(f.view.el, "Stop").disabled).toBe(false);
+			button(f.view.el, "Stop").click();
+			await settle();
+			expect(cancel).toHaveBeenCalledExactlyOnceWith(session.sessionId, nextRun, expect.any(AbortSignal));
+		},
+	);
+
+	it("allows a displaced failure to be dismissed again when it becomes current", async () => {
+		const f = setup();
+		const run = {
+			runId: id(70),
+			staffAgentId: staff.id,
+			sourceKind: "session_turn" as const,
+			jobStatus: "failed" as const,
+			activity: "needs_attention" as const,
+			updatedAt: timestamp,
+		};
+		const discard = vi.spyOn(f.api, "discardFailedRun").mockResolvedValue(undefined);
+		f.company.store.set({ activity: [run] });
+		await settle();
+		button(f.view.el, "Dismiss notification").click();
+		f.company.store.set({ activity: [{ ...run, runId: id(71) }] });
+		await settle();
+		expect(discard).not.toHaveBeenCalled();
+		f.company.store.set({
+			activity: [run],
+			recoveries: {
+				[run.runId]: {
+					runId: run.runId,
+					sourceKind: run.sourceKind,
+					jobStatus: run.jobStatus,
+					unsettledOperations: 0,
+				},
+			},
+		});
+		await settle();
+		button(f.view.el, "Dismiss notification").click();
+		await settle();
+		expect(discard).toHaveBeenCalledExactlyOnceWith(run.runId);
+		expect(f.company.agentState(staff.id)).toBe("idle");
+	});
+
+	it("restores a retryable popup after a rejected dismissal across navigation", async () => {
+		const f = setup();
+		const run = {
+			runId: id(70),
+			staffAgentId: staff.id,
+			sourceKind: "session_turn" as const,
+			jobStatus: "failed" as const,
+			activity: "needs_attention" as const,
+			updatedAt: timestamp,
+		};
+		const recovery = {
+			runId: run.runId,
+			sourceKind: run.sourceKind,
+			jobStatus: run.jobStatus,
+			unsettledOperations: 0,
+		};
+		const pending = deferred<void>();
+		const discard = vi
+			.spyOn(f.api, "discardFailedRun")
+			.mockReturnValueOnce(pending.promise)
+			.mockResolvedValue(undefined);
+		vi.mocked(f.api.listStaffActivity).mockResolvedValue([run]);
+		vi.spyOn(f.api, "getRunRecovery").mockResolvedValue(recovery);
+		f.company.store.set({ activity: [run] });
+		await settle();
+		button(f.view.el, "Dismiss notification").click();
+		f.view.dispose();
+		f.view.el.remove();
+		const reopened = new ConversationView(f.company, session.sessionId);
+		document.body.append(reopened.el);
+		dispose = () => {
+			reopened.dispose();
+			f.company.stop();
+		};
+		f.company.store.set({ recoveries: { [run.runId]: recovery } });
+		await settle();
+		expect(discard).toHaveBeenCalledExactlyOnceWith(run.runId);
+		expect(reopened.el.querySelector(".notification-card")).toBeNull();
+		pending.reject(new Error("Connection lost"));
+		await settle();
+		expect(reopened.el.querySelector(".notification-card")?.textContent).toBe("A run did not finish");
+		vi.mocked(f.api.listStaffActivity).mockResolvedValue([]);
+		button(reopened.el, "Dismiss notification").click();
+		await settle();
+		expect(discard).toHaveBeenCalledTimes(2);
+		expect(f.company.agentState(staff.id)).toBe("idle");
+	});
+
+	it.each(["reader", "unsettled", "proposal", "review", "closed", "stopped"] as const)(
+		"keeps dismissal local when recovery arrives after %s changes",
+		async (kind) => {
+			const f = setup();
+			const run = {
+				runId: id(70),
+				staffAgentId: staff.id,
+				sourceKind: kind === "review" ? ("proposal_review" as const) : ("session_turn" as const),
+				jobStatus: "failed" as const,
+				activity: "needs_attention" as const,
+				updatedAt: timestamp,
+			};
+			const discard = vi.spyOn(f.api, "discardFailedRun");
+			f.company.store.set({ activity: [run] });
+			await settle();
+			const close = button(f.view.el, "Dismiss notification");
+			if (kind === "reader")
+				f.company.store.set({ team: { ...team, capabilities: { ...team.capabilities, write: false } } });
+			close.click();
+			if (kind === "closed")
+				f.company.store.set({ sessions: [{ ...session, staffAgentId: staff.id, status: "closed" }] });
+			if (kind === "stopped") f.company.stop();
+			f.company.store.set({
+				recoveries: {
+					[run.runId]: {
+						runId: run.runId,
+						sourceKind: run.sourceKind,
+						jobStatus: run.jobStatus,
+						unsettledOperations: kind === "unsettled" ? 1 : 0,
+						proposalId: kind === "proposal" ? id(74) : undefined,
+					},
+				},
+			});
+			await settle();
+			expect(discard).not.toHaveBeenCalled();
+			expect(f.view.el.querySelector(".notification-card")).toBeNull();
+		},
+	);
 });
 
 describe("local attachment validation", () => {
@@ -450,22 +752,24 @@ describe("new conversation and agent setup", () => {
 		expect(f.search.getAttribute("aria-expanded")).toBe("true");
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
-	it("opens an agent's conversation straight from the list, the Co-Founder at home", async () => {
+	it("adds agents and the Co-Founder to recipients without navigating", async () => {
 		const other = { ...staff, id: id(92), displayName: "Second agent", role: "Research" },
 			cofounder = { ...staff, id: id(93), displayName: "Co-Founder", templateId: "co-founder" };
 		const f = setupNew({}, [cofounder, staff, other]);
 		await settle();
 		f.search.focus();
+		const originalHash = location.hash;
 		choice(f.view.el, other.id).click();
-		expect(location.hash).toBe(`#/c/${profileA.profileId}/staff/${other.id}`);
 		choice(f.view.el, cofounder.id).click();
-		expect(location.hash).toBe(`#/c/${profileA.profileId}`);
+		expect(location.hash).toBe(originalHash);
+		expect(f.view.el.querySelectorAll(".recipient-chip")).toHaveLength(2);
 		input(f.view.el, "Search conversation recipients", "fixture");
 		expect(choices(f.view.el)).toEqual(["create", "group", staff.id]);
-		// Typing highlights the first match, so Enter opens it.
+		// Typing highlights the first match, so Enter adds it.
 		expect(f.search.getAttribute("aria-activedescendant")).toBe(choice(f.view.el, staff.id).id);
 		expect(press(f.search, "Enter").defaultPrevented).toBe(true);
-		expect(location.hash).toBe(`#/c/${profileA.profileId}/staff/${staff.id}`);
+		expect(location.hash).toBe(originalHash);
+		expect(f.view.el.querySelectorAll(".recipient-chip")).toHaveLength(3);
 		// Rows show no titles, so a title alone never matches.
 		input(f.view.el, "Search conversation recipients", "research");
 		expect(choices(f.view.el)).toEqual(["create", "group"]);
@@ -480,7 +784,7 @@ describe("new conversation and agent setup", () => {
 			target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail }));
 		click(choice(f.view.el, "group"), 1);
 		// The first agent now sits where New group chat was; the second click lands on it.
-		expect(choices(f.view.el)).toEqual(["start", staff.id, other.id]);
+		expect(choices(f.view.el)).toEqual(["create", staff.id, other.id]);
 		click(choice(f.view.el, staff.id), 2);
 		expect(f.view.el.querySelectorAll(".recipient-chip")).toHaveLength(0);
 		for (const agent of [staff, other]) click(choice(f.view.el, agent.id), 1);
@@ -500,7 +804,7 @@ describe("new conversation and agent setup", () => {
 		expect(f.search.hasAttribute("aria-activedescendant")).toBe(false);
 		press(f.search, "ArrowDown");
 		expect(f.search.getAttribute("aria-activedescendant")).toBe(choice(f.view.el, "create").id);
-		expect(choice(f.view.el, "create").getAttribute("aria-selected")).toBe("true");
+		expect(choice(f.view.el, "create").classList.contains("active")).toBe(true);
 		press(f.search, "ArrowUp");
 		expect(f.search.getAttribute("aria-activedescendant")).toBe(choice(f.view.el, staff.id).id);
 		expect(choice(f.view.el, "create").hasAttribute("aria-selected")).toBe(false);
@@ -567,6 +871,119 @@ describe("new conversation and agent setup", () => {
 		expect(f.view.el.querySelector<HTMLInputElement>('[aria-label="Agent name"]')?.value).toBe("Draft agent");
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
+	it("sends to the selected group only on the first message and blocks duplicate sends", async () => {
+		const pending = deferred<string>(),
+			startConversation = vi.fn(() => pending.promise);
+		const other = { ...staff, id: id(92), displayName: "Second agent" };
+		const f = setupNew({ startConversation }, [staff, other]);
+		f.company.store.set({ team });
+		await settle();
+		input(f.view.el, "Message", "Work together on this");
+		expect(button(f.view.el, "Send message").disabled).toBe(true);
+		choice(f.view.el, staff.id).click();
+		choice(f.view.el, other.id).click();
+		expect(startConversation).not.toHaveBeenCalled();
+		const message = f.view.el.querySelector<HTMLTextAreaElement>('[aria-label="Message"]')!;
+		message.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", isComposing: true, bubbles: true }));
+		message.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true }));
+		expect(startConversation).not.toHaveBeenCalled();
+		press(message, "Enter");
+		button(f.view.el, "Send message").click();
+		expect(startConversation).toHaveBeenCalledExactlyOnceWith(
+			[staff.id, other.id],
+			"Work together on this",
+			expect.any(AbortSignal),
+		);
+		expect(message.disabled).toBe(true);
+		pending.resolve(id(95));
+		await settle();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${id(95)}`);
+	});
+	it("preserves recipients and text on preparation failure and blocks send after permission loss", async () => {
+		const startConversation = vi
+			.fn()
+			.mockRejectedValue(new Error("Connect a model account to start a conversation."));
+		const f = setupNew({ startConversation });
+		f.company.store.set({ team });
+		await settle();
+		choice(f.view.el, staff.id).click();
+		input(f.view.el, "Message", "Keep this draft");
+		button(f.view.el, "Send message").click();
+		await settle();
+		expect(f.view.el.querySelector<HTMLTextAreaElement>('[aria-label="Message"]')?.value).toBe("Keep this draft");
+		expect(f.view.el.querySelectorAll(".recipient-chip")).toHaveLength(1);
+		expect(f.view.el.textContent).toContain("Connect a model account");
+		f.company.store.set({ team: { ...team, capabilities: { ...team.capabilities, write: false } } });
+		await settle();
+		expect(button(f.view.el, "Send message").disabled).toBe(true);
+		button(f.view.el, "Send message").click();
+		expect(startConversation).toHaveBeenCalledTimes(1);
+	});
+	it("returns a created agent to the recipients and preserves the message through setup and cancel", async () => {
+		const created = { ...staff, id: id(92), displayName: "New agent" };
+		const createAgent = vi.fn().mockResolvedValue(created.id);
+		const f = setupNew({ createAgent });
+		f.company.store.set({ team });
+		vi.mocked(f.api.listStaff).mockResolvedValue([staff, created]);
+		await settle();
+		choice(f.view.el, staff.id).click();
+		input(f.view.el, "Message", "Our shared task");
+		choice(f.view.el, "create").click();
+		button(f.view.el, "Cancel").click();
+		expect(f.view.el.querySelector<HTMLTextAreaElement>('[aria-label="Message"]')?.value).toBe("Our shared task");
+		choice(f.view.el, "create").click();
+		input(f.view.el, "Agent name", "New agent");
+		input(f.view.el, "Agent title", "Research");
+		const originalHash = location.hash;
+		vi.mocked(f.api.listStaff).mockRejectedValueOnce(new Error("Roster unavailable"));
+		f.view.el.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+		await settle();
+		expect(f.view.el.textContent).toContain("The agent was created");
+		f.view.el.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+		await settle();
+		expect(createAgent).toHaveBeenCalledTimes(1);
+		expect(location.hash).toBe(originalHash);
+		expect(f.view.el.querySelectorAll(".recipient-chip")).toHaveLength(2);
+		expect(f.view.el.querySelector<HTMLTextAreaElement>('[aria-label="Message"]')?.value).toBe("Our shared task");
+		expect(document.activeElement?.getAttribute("aria-label")).toBe("Message");
+	});
+
+	it.each(["Back", "Cancel"])(
+		"retains a created agent across %s and reopening after a failed roster refresh",
+		async (leave) => {
+			const created = { ...staff, id: id(92), displayName: "New agent" };
+			const createAgent = vi.fn().mockResolvedValue(created.id);
+			const f = setupNew({ createAgent });
+			f.company.store.set({ team });
+			vi.mocked(f.api.listStaff)
+				.mockResolvedValue([staff, created])
+				.mockRejectedValueOnce(new Error("Roster unavailable"));
+			await settle();
+			input(f.view.el, "Message", "Keep our task");
+			input(f.view.el, "Search conversation recipients", "New agent");
+			choice(f.view.el, "create").click();
+			input(f.view.el, "Agent title", "Research");
+			button(f.view.el, "Create agent").click();
+			await settle();
+			expect(f.view.el.textContent).toContain("The agent was created");
+			button(f.view.el, leave).click();
+			input(f.view.el, "Search conversation recipients", "Another agent");
+			choice(f.view.el, "create").click();
+			expect(f.view.el.querySelector<HTMLInputElement>('[aria-label="Agent name"]')?.value).toBe("New agent");
+			expect(f.view.el.querySelector<HTMLFieldSetElement>("fieldset")?.disabled).toBe(true);
+			button(f.view.el, "Add created agent").click();
+			await settle();
+			expect(createAgent).toHaveBeenCalledTimes(1);
+			expect(f.view.el.querySelector(`[data-remove-recipient="${created.id}"]`)).not.toBeNull();
+			expect(f.view.el.querySelector<HTMLTextAreaElement>('[aria-label="Message"]')?.value).toBe("Keep our task");
+			// Successful recovery clears the identity and draft for the next new agent.
+			choice(f.view.el, "create").click();
+			expect(f.view.el.querySelector<HTMLInputElement>('[aria-label="Agent name"]')?.value).toBe("");
+			expect(f.view.el.querySelector<HTMLFieldSetElement>("fieldset")?.disabled).toBe(false);
+			expect(button(f.view.el, "Create agent").disabled).toBe(false);
+		},
+	);
+
 	it("styles the New agent form with rules of its own", async () => {
 		const style = document.createElement("style");
 		style.textContent = [tokensCss, conversationCss, appCss].join("\n").replace(/^@import .*;$/gm, "");

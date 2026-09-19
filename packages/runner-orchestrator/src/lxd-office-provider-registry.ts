@@ -3,6 +3,7 @@ import type { LxdOfficeBootIntentRegistry } from "./lxd-office-boot-intent-contr
 import type { LxdOfficeBootSuccessorRegistry } from "./lxd-office-boot-successor-control.ts";
 import type { LxdOfficeCodePackageRegistry } from "./lxd-office-code-package-control.ts";
 import type { LxdOfficeHostRebootRegistry } from "./lxd-office-host-reboot.ts";
+import type { LxdOfficeIdleRegistry } from "./lxd-office-idle-policy.ts";
 import type { LxdOfficeLifecycleControlRegistry } from "./lxd-office-lifecycle-control.ts";
 import type { LxdOfficeProviderRegistry } from "./lxd-office-provider-control.ts";
 import type { LxdOfficeResetRegistry, LxdOfficeResetSuccessorRegistry } from "./lxd-office-reset-control.ts";
@@ -13,6 +14,7 @@ import type { LxdOfficeStopRegistry } from "./lxd-office-stop-control.ts";
 import type { LxdOfficeSuccessorRegistry } from "./lxd-office-successor-control.ts";
 
 export type LxdOfficeProviderMethod =
+	| Parameters<LxdOfficeIdleRegistry["call"]>[0]
 	| Parameters<LxdOfficeHostRebootRegistry["call"]>[0]
 	| Parameters<LxdOfficeCodePackageRegistry["call"]>[0]
 	| Parameters<LxdOfficeProviderRegistry["call"]>[0]
@@ -31,6 +33,7 @@ export interface LxdOfficeLifecycleRegistry {
 	call(method: LxdOfficeProviderMethod, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
 }
 const METHODS = new Set<LxdOfficeProviderMethod>([
+	"qorpera_reconcile_runtime_office_idle",
 	"qorpera_enroll_office_package_provision",
 	"qorpera_check_office_package_provision",
 	"qorpera_check_office_package_provision_observation",

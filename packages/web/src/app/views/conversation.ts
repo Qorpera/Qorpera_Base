@@ -5,15 +5,25 @@ import { AttachmentTray } from "../../ui/attachments.ts";
 import { authorizationRequestId, renderAuthorizationCard } from "../../ui/authorization-card.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { fmtTime, h, icon, notice, replace, spinner } from "../../ui/dom.ts";
+import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
+import { notification, updateNotification } from "../../ui/notification.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import type { CompanyController, ConversationState } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
 import { ComputerPanel } from "./computer.ts";
+import { GroupDetails } from "./group-details.ts";
 import { SessionExecutionView } from "./session-execution.ts";
 import { SessionRunView } from "./session-run.ts";
+
+/** Beside the computer panel the conversation keeps at least this much room. */
+const CONVERSATION_MIN_WIDTH = 316;
+
+// Popup dismissal lasts for this company controller, including conversation navigation.
+// It does not settle or discard work whose outcome still needs review.
+const dismissedRunNotifications = new WeakMap<CompanyController, Set<string>>();
 
 export { renderAuthorizationCard } from "../../ui/authorization-card.ts";
 
@@ -46,16 +56,20 @@ export class ConversationView {
 	readonly #body: HTMLElement;
 	readonly #conversationPane: HTMLElement;
 	readonly #lifetime = new AbortController();
+	readonly #notificationSignal: AbortSignal;
 	readonly #actions: WorkspaceActions;
 	readonly #run: SessionRunView | undefined;
 	readonly #execution: SessionExecutionView | undefined;
-	#details: AgentDetails | undefined;
+	#details: AgentDetails | GroupDetails | undefined;
 	#panel: ComputerPanel | undefined;
 	#headerKey = "";
 	#renderedKey = "";
 	#stickToBottom = true;
 	readonly #unsubscribe: (() => void)[] = [];
 	#disposed = false;
+	#statusKey = "";
+	readonly #runNotification = h("div", { class: "run-notification", hidden: true });
+	#runNotificationKey = "";
 	#receivedAttachments: ReceivedAttachments[] = [];
 
 	constructor(
@@ -65,6 +79,7 @@ export class ConversationView {
 		toggleNavigation?: () => void,
 	) {
 		this.#company = company;
+		this.#notificationSignal = AbortSignal.any([this.#lifetime.signal, company.signal]);
 		this.#sessionId = sessionId;
 		this.#actions = actions;
 		this.#run = actions.runControl
@@ -240,8 +255,14 @@ export class ConversationView {
 		);
 		this.#body = h("div", { class: "thread-body" }, this.#conversationPane);
 		this.el = h("section", { class: "thread" }, this.#body);
+		if (actions.notificationHost) actions.notificationHost.append(this.#runNotification);
+		else this.el.append(h("div", { class: "notification-stack" }, this.#runNotification));
+		company.signal.addEventListener("abort", () => this.#runNotification.remove(), {
+			once: true,
+			signal: this.#lifetime.signal,
+		});
 		window.addEventListener("resize", () => this.#syncPanelLayout(), { signal: this.#lifetime.signal });
-		window.addEventListener("qorpera-rail-resize", () => this.#autosize(), { signal: this.#lifetime.signal });
+		window.addEventListener("qorpera-rail-resize", () => this.#syncPanelLayout(), { signal: this.#lifetime.signal });
 		document.addEventListener(
 			"click",
 			(event) => {
@@ -261,6 +282,7 @@ export class ConversationView {
 		if (this.#disposed) return;
 		this.#disposed = true;
 		this.#lifetime.abort();
+		this.#runNotification.remove();
 		this.#details?.dispose();
 		this.#panel?.dispose();
 		this.#attachments.dispose();
@@ -276,7 +298,7 @@ export class ConversationView {
 	 * is a room too, but it behaves like the agent's own conversation here. */
 	get #isRoom(): boolean {
 		const session = this.#company.store.get().sessions.find((s) => s.sessionId === this.#sessionId);
-		return typeof session?.executionScope?.roomId === "string" && !session.staffAgentId;
+		return isGroupChat(session);
 	}
 
 	focus(): void {
@@ -311,25 +333,29 @@ export class ConversationView {
 
 	#openDetails(): void {
 		const state = this.#company.store.get();
-		const agent = this.#company.staffById(
-			state.sessions.find((session) => session.sessionId === this.#sessionId)?.staffAgentId,
-		);
+		const session = state.sessions.find((session) => session.sessionId === this.#sessionId);
+		const agent = this.#company.staffById(session?.staffAgentId);
 		if (this.#details) {
 			this.#details.dialog.close();
 			return;
 		}
-		if (!agent) return;
+		if (this.#company.signal.aborted || state.accessLost || !state.team?.capabilities.read) return;
+		if (!agent && !isGroupChat(session)) return;
 		this.#identity.setAttribute("aria-expanded", "true");
-		this.#details = new AgentDetails(
-			this.#company,
-			agent,
-			this.#actions,
-			() => {
-				this.#details = undefined;
-				this.#identity.setAttribute("aria-expanded", "false");
-			},
-			this.#identity,
-		);
+		const closed = () => {
+			this.#details = undefined;
+			this.#identity.setAttribute("aria-expanded", "false");
+		};
+		this.#details = agent
+			? new AgentDetails(this.#company, agent, this.#actions, closed, this.#identity, this.#lifetime.signal)
+			: new GroupDetails(
+					this.#company,
+					this.#sessionId,
+					closed,
+					this.#identity,
+					this.#lifetime.signal,
+					this.#actions,
+				);
 	}
 
 	#toggleComputer(): void {
@@ -359,8 +385,11 @@ export class ConversationView {
 	}
 
 	#syncPanelLayout(): void {
-		// The overlay width in conversation.css: default rail + panel + a usable conversation.
-		const covered = Boolean(this.#panel) && window.innerWidth <= 1192;
+		// The thread's width and the panel's own (420px beside the thread, all of it in the phone
+		// layout) decide, so any rail width and any panel rule in conversation.css count.
+		const covered =
+			Boolean(this.#panel) && this.#body.clientWidth - (this.#panel?.el.offsetWidth ?? 0) < CONVERSATION_MIN_WIDTH;
+		this.#body.classList.toggle("computer-covers", covered);
 		if (covered && this.#conversationPane.contains(document.activeElement)) this.#panel?.focus();
 		this.#conversationPane.inert = covered;
 		this.#autosize();
@@ -414,13 +443,13 @@ export class ConversationView {
 		);
 		const attachmentIssue =
 			room && conversation.attachments?.length
-				? "Images are not supported in team rooms. Use Company File."
+				? "Images are not supported in group chats. Use Company File."
 				: sessionAttachmentIssue(conversation.attachments ?? []);
 		this.#attachments.sync(
 			conversation.attachments ?? [],
 			!canWrite || conversation.sending,
 			room
-				? "Images are not supported in team rooms. Use Company File."
+				? "Images are not supported in group chats. Use Company File."
 				: this.#actions.sendMessage
 					? attachmentIssue
 						? `Attachments stay on this device. ${attachmentIssue}`
@@ -463,10 +492,25 @@ export class ConversationView {
 
 	#renderHeader(session: HostedSession | undefined, agent: HostedStaffAgent | undefined): void {
 		const title = agent?.displayName ?? session?.title ?? "Conversation";
-		const key = JSON.stringify([title, agent?.id, agent?.appearance]);
-		this.#identity.disabled = !agent;
+		const group = isGroupChat(session);
+		const groupAgents = group ? this.#company.groupAgents(this.#sessionId) : [];
+		const key = JSON.stringify([title, group, agent?.id, agent?.appearance, groupAgents]);
+		const state = this.#company.store.get();
+		this.#identity.disabled =
+			(!agent && !group) ||
+			!state.team?.capabilities.read ||
+			Boolean(state.accessLost) ||
+			this.#company.signal.aborted;
 		this.#computer.hidden = !agent;
 		this.#identity.title = title;
+		this.#identity.setAttribute("aria-label", agent ? "Open agent details" : group ? "Open group details" : title);
+		if (agent || group) {
+			this.#identity.setAttribute("aria-haspopup", "dialog");
+			this.#identity.setAttribute("aria-expanded", String(Boolean(this.#details)));
+		} else {
+			this.#identity.removeAttribute("aria-haspopup");
+			this.#identity.removeAttribute("aria-expanded");
+		}
 		if (key === this.#headerKey) return;
 		this.#headerKey = key;
 		if (this.#panel) {
@@ -480,7 +524,12 @@ export class ConversationView {
 			this.#computer.setAttribute("aria-expanded", String(Boolean(this.#panel)));
 			this.#syncPanelLayout();
 		}
-		replace(this.#identity, agentFigure(agent, title, { size: 32 }), h("h1", null, title), icon("chevron"));
+		replace(
+			this.#identity,
+			group ? groupChatAvatar(groupAgents, { width: 40, height: 32 }) : agentFigure(agent, title, { size: 32 }),
+			h("h1", null, title),
+			agent || group ? icon("chevron") : null,
+		);
 	}
 
 	#renderMessages(conversation: ConversationState, agentName: string): void {
@@ -613,6 +662,22 @@ export class ConversationView {
 	}
 
 	#renderStatus(conversation: ConversationState, canWrite: boolean, session: HostedSession | undefined): void {
+		const company = this.#company.store.get();
+		this.#renderRunNotification(session);
+		// Rebuilt only when something shown changes, so a focused button survives polling.
+		const key = JSON.stringify([
+			conversation.error,
+			conversation.sendError,
+			conversation.loading,
+			canWrite,
+			this.#isRoom,
+			session?.status,
+			company.accessLost,
+			company.team?.role,
+			company.team?.capabilities,
+		]);
+		if (key === this.#statusKey) return;
+		this.#statusKey = key;
 		const children: (HTMLElement | null)[] = [];
 		if (conversation.error) children.push(notice("danger", conversation.error));
 		if (conversation.sendError) children.push(notice("danger", conversation.sendError));
@@ -628,8 +693,8 @@ export class ConversationView {
 			children.push(
 				notice(
 					"neutral",
-					"Multiple agents can respond in this room. Follow their replies here. Images are not supported in team rooms. Use Company File." +
-						(["owner", "admin"].includes(this.#company.store.get().team?.role ?? "")
+					"Multiple agents can respond in this group chat. Follow their replies here. Images are not supported in group chats. Use Company File." +
+						(["owner", "admin"].includes(company.team?.role ?? "")
 							? " Company-wide execution pause is available in Settings → Company."
 							: ""),
 				),
@@ -641,10 +706,107 @@ export class ConversationView {
 			session &&
 			!conversation.loading &&
 			!conversation.error &&
-			!this.#company.store.get().accessLost &&
-			this.#company.store.get().team?.capabilities.read === true
+			!company.accessLost &&
+			company.team?.capabilities.read === true
 		)
 			children.push(notice("neutral", "You can read this conversation. Contributors and above can write."));
+		const refocus = this.#status.contains(document.activeElement)
+			? (document.activeElement as HTMLElement).dataset.action
+			: undefined;
 		replace(this.#status, ...children);
+		if (refocus) this.#status.querySelector<HTMLElement>(`[data-action="${refocus}"]`)?.focus();
+	}
+
+	#renderRunNotification(session: HostedSession | undefined): void {
+		const company = this.#company.store.get();
+		const failed =
+			this.#isRoom || company.accessLost || !company.team?.capabilities.read
+				? undefined
+				: this.#company.failedRunFor(session?.staffAgentId);
+		const runId = failed?.activity.runId;
+		const hidden = !runId || dismissedRunNotifications.get(this.#company)?.has(runId);
+		const proposalId = failed?.recovery?.proposalId;
+		const review = failed?.activity.sourceKind === "proposal_review";
+		const title = proposalId
+			? "Run stopped with changes to review"
+			: review
+				? "A review did not finish"
+				: "A run did not finish";
+		const key = JSON.stringify([runId, hidden, proposalId, review]);
+		if (key === this.#runNotificationKey) return;
+		this.#runNotificationKey = key;
+		const focused = this.#runNotification.contains(document.activeElement);
+		const dismiss = () => {
+			if (!runId || this.#notificationSignal.aborted) return;
+			let dismissed = dismissedRunNotifications.get(this.#company);
+			if (dismissed?.has(runId)) return;
+			if (!dismissed) {
+				dismissed = new Set();
+				dismissedRunNotifications.set(this.#company, dismissed);
+			}
+			dismissed.add(runId);
+			this.update();
+			// Recovery details can arrive after the popup. Follow this one dismissal
+			// across navigation, but stop waiting on permission loss or company teardown.
+			const clearSettledFailure = () => {
+				const state = this.#company.store.get();
+				const currentSession = state.sessions.find((item) => item.sessionId === this.#sessionId);
+				const current = this.#company.failedRunFor(currentSession?.staffAgentId);
+				const canClear =
+					!this.#company.signal.aborted &&
+					!state.accessLost &&
+					state.team?.capabilities.write &&
+					state.team.capabilities.read &&
+					currentSession?.status === "open" &&
+					current?.activity.runId === runId &&
+					current.activity.sourceKind !== "proposal_review";
+				if (canClear && !current.recovery) return;
+				// A newer failure can temporarily replace this one in the activity RPC.
+				// Let this run be dismissed again if it returns before we could clear it.
+				if (current?.activity.runId !== runId) dismissed.delete(runId);
+				unsubscribe();
+				this.#company.signal.removeEventListener("abort", clearSettledFailure);
+				if (canClear && current.recovery?.unsettledOperations === 0 && !current.recovery.proposalId) {
+					// Clear settled failures so the server can report the agent's next run.
+					void this.#company.dismissFailedRun(runId).catch(() => {
+						// Notify the current view too if the member navigated during the request.
+						dismissed.delete(runId);
+						if (!this.#company.signal.aborted) this.#company.store.set({});
+					});
+				}
+			};
+			const unsubscribe = this.#company.store.subscribe(clearSettledFailure);
+			this.#company.signal.addEventListener("abort", clearSettledFailure, { once: true });
+			clearSettledFailure();
+		};
+		const profileId = this.#company.profile.profileId;
+		const action =
+			proposalId || review
+				? h(
+						"a",
+						{
+							class: "btn btn-small",
+							href: `#/c/${profileId}/${proposalId ? `proposal/${proposalId}` : "file"}`,
+						},
+						"Review",
+					)
+				: undefined;
+		updateNotification(
+			this.#runNotification,
+			hidden ? null : notification(title, dismiss, { action, error: true }),
+			hidden ? undefined : runId,
+			this.#notificationSignal,
+			!company.accessLost && company.team?.capabilities.read === true,
+		);
+		if (focused) {
+			if (!hidden) this.#runNotification.querySelector<HTMLElement>("button")?.focus({ preventScroll: true });
+			else if (this.#conversationPane.inert) this.#panel?.focus();
+			else if (!this.#composer.disabled && !this.#composerWrap.hidden) this.#composer.focus({ preventScroll: true });
+			else if (!this.#identity.disabled) this.#identity.focus({ preventScroll: true });
+			else {
+				this.el.tabIndex = -1;
+				this.el.focus({ preventScroll: true });
+			}
+		}
 	}
 }

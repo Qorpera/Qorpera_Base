@@ -109,7 +109,7 @@ export class CloudCompanyComputerViewerControl implements CompanyComputerViewerA
 		const bytes = Buffer.from(input.bytes);
 		try {
 			if (
-				grant.mode !== "control" ||
+				(grant.mode !== "control" && grant.mode !== "shared") ||
 				!Number.isSafeInteger(input.sequence) ||
 				input.sequence !== session.sequence + 1 ||
 				createHash("sha256").update(bytes).digest("hex") !== input.sha256 ||

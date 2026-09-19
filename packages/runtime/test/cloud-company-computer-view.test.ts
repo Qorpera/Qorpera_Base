@@ -39,7 +39,7 @@ async function listen(server: Server): Promise<number> {
 	return address.port;
 }
 
-function viewerGrant(mode: "watch" | "control" = "watch"): CompanyComputerViewerGrant {
+function viewerGrant(mode: CompanyComputerViewerGrant["mode"] = "watch"): CompanyComputerViewerGrant {
 	return {
 		binding: computerBinding(),
 		viewerSessionId: computerId(21),
@@ -59,7 +59,10 @@ function viewerGrant(mode: "watch" | "control" = "watch"): CompanyComputerViewer
 	};
 }
 
-async function gatewayFixture(mode: "watch" | "control" = "watch", initial?: { greeting: Buffer; remainder?: Buffer }) {
+async function gatewayFixture(
+	mode: CompanyComputerViewerGrant["mode"] = "watch",
+	initial?: { greeting: Buffer; remainder?: Buffer },
+) {
 	const received: Buffer[] = [];
 	const guestSockets = new Set<Socket>();
 	const guestPort = await listen(
@@ -200,8 +203,10 @@ describe("private viewer gateway and member client (loopback only, authority/gue
 	it.each([
 		["watch", false],
 		["control", false],
+		["shared", false],
 		["watch", true],
 		["control", true],
+		["shared", true],
 	] as const)("blocks guest clipboard egress for %s including coalesced remainder: %s", async (mode, coalesced) => {
 		const hello = computerRfbServerHello();
 		const clipboard = computerRfbServerClipboard("private cloud clipboard");
@@ -244,7 +249,7 @@ describe("private viewer gateway and member client (loopback only, authority/gue
 		await vi.waitFor(() => expect(fixture.authority.release).toHaveBeenCalledOnce());
 	});
 
-	it.each(["watch", "control"] as const)(
+	it.each(["watch", "control", "shared"] as const)(
 		"enforces %s in the raw input stream, independently of noVNC",
 		async (mode) => {
 			const fixture = await gatewayFixture(mode);
@@ -252,13 +257,13 @@ describe("private viewer gateway and member client (loopback only, authority/gue
 			view.socket.write(Buffer.concat([hello, key]));
 			await vi.waitFor(() =>
 				expect(Buffer.concat(fixture.received).length).toBe(
-					mode === "control" ? hello.length + key.length : hello.length,
+					mode === "watch" ? hello.length : hello.length + key.length,
 				),
 			);
-			expect(fixture.authority.forwardInput).toHaveBeenCalledTimes(mode === "control" ? 1 : 0);
-			if (mode === "control")
+			expect(fixture.authority.forwardInput).toHaveBeenCalledTimes(mode === "watch" ? 0 : 1);
+			if (mode !== "watch")
 				expect(fixture.authority.forwardInput).toHaveBeenCalledWith(
-					expect.objectContaining({ mode: "control", binding: computerBinding() }),
+					expect.objectContaining({ mode, binding: computerBinding() }),
 					expect.objectContaining({
 						sequence: 1,
 						bytes: Uint8Array.from(key),
@@ -269,6 +274,41 @@ describe("private viewer gateway and member client (loopback only, authority/gue
 				);
 		},
 	);
+
+	it("releases only a shared viewer's held input when it disconnects", async () => {
+		const fixture = await gatewayFixture("shared");
+		const view = await fixture.attach();
+		const pointer = Buffer.from([5, 1, 0, 20, 0, 30]);
+		const releasedKey = Buffer.from(key);
+		releasedKey[1] = 0;
+		const releasedPointer = Buffer.from(pointer);
+		releasedPointer[1] = 0;
+		view.socket.write(Buffer.concat([hello, key, pointer]));
+		await vi.waitFor(() => expect(Buffer.concat(fixture.received)).toEqual(Buffer.concat([hello, key, pointer])));
+		view.socket.destroy();
+		await vi.waitFor(() => expect(fixture.authority.release).toHaveBeenCalledOnce());
+		expect(Buffer.concat(fixture.received)).toEqual(
+			Buffer.concat([hello, key, pointer, releasedKey, releasedPointer]),
+		);
+		expect(fixture.authority.forwardInput).toHaveBeenCalledTimes(2);
+		const replacement = await fixture.attach();
+		expect(replacement.socket.destroyed).toBe(false);
+	});
+
+	it("fences shared input immediately and drains only previously forwarded keys", async () => {
+		const fixture = await gatewayFixture("shared");
+		const view = await fixture.attach();
+		view.socket.write(Buffer.concat([hello, key]));
+		await vi.waitFor(() => expect(Buffer.concat(fixture.received)).toEqual(Buffer.concat([hello, key])));
+		await fixture.gateway.connections.fenceScreen(
+			{ state: "draining", drainId: computerId(55), epoch: 2, binding: computerBinding() },
+			new AbortController().signal,
+		);
+		const release = Buffer.from(key);
+		release[1] = 0;
+		expect(Buffer.concat(fixture.received)).toEqual(Buffer.concat([hello, key, release]));
+		await expect(fixture.attach()).rejects.toThrow("VIEW_UNAVAILABLE");
+	});
 
 	it("drops clipboard transfer even for a controller and refuses capability reuse", async () => {
 		const fixture = await gatewayFixture("control");

@@ -33,7 +33,7 @@ export function cofounderOf(company: CompanyController): HostedStaffAgent | unde
 
 export function renderMeet(
 	company: CompanyController,
-	saveAppearance: (agent: HostedStaffAgent, figure: string, color: string) => Promise<void>,
+	saveAppearance: (agent: HostedStaffAgent, figure: string, color: string) => Promise<unknown>,
 	container: HTMLElement,
 	state: MeetState,
 	setState: (next: MeetState) => void,

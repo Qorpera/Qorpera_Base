@@ -22,7 +22,7 @@ export interface WebNativeProviderLoginInput {
 
 export interface WebNativeProviderLogin {
 	loginId: string;
-	connectionId: string;
+	clientConnectionId: string;
 	status: "awaiting_member" | "completed" | "preparing";
 	interactionUrl?: string;
 	userCode?: string;
@@ -236,21 +236,21 @@ export function createWebNativeSubscription(
 					// machine (up to a few minutes); the same login is posted again.
 					while (prompt.status === "preparing") {
 						await new Promise<void>((resolve, reject) => {
-							const timer = setTimeout(resolve, 5000);
-							deadline.addEventListener(
-								"abort",
-								() => {
-									clearTimeout(timer);
-									reject(new Error("Provider login preparation was interrupted."));
-								},
-								{ once: true },
-							);
+							const interrupted = () => {
+								clearTimeout(timer);
+								reject(new Error("Provider login preparation was interrupted."));
+							};
+							const timer = setTimeout(() => {
+								deadline.removeEventListener("abort", interrupted);
+								resolve();
+							}, 1000);
+							deadline.addEventListener("abort", interrupted, { once: true });
 						});
 						check();
 						prompt = await bridge.beginLogin(authorization);
 						check();
 					}
-					return { ...prompt, connectionId: request.clientConnectionId, expiresAt: authorization.expiresAt };
+					return { ...prompt, clientConnectionId: request.clientConnectionId, expiresAt: authorization.expiresAt };
 				},
 				120000,
 				AbortSignal.any([companySignal, ...(signal ? [signal] : [])]),

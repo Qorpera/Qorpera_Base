@@ -406,7 +406,6 @@ describe("LXD native login gateway", () => {
 			lxd = new FakeLxd(),
 			boundary = fetchBoundary([
 				{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: "SLOW-CODE" },
-				{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: "SLOW-CODE" },
 			]);
 		let release = () => {};
 		const gate = new Promise<void>((resolve) => {
@@ -428,11 +427,68 @@ describe("LXD native login gateway", () => {
 		});
 		// The work continued: one VM was created and started while the member was told to come back.
 		expect(lxd.createCalls).toHaveLength(1);
+		const pending = gateway.handle(loginRequest());
+		await vi.waitFor(() =>
+			expect(
+				boundary.requests.filter((request) => request.url.endsWith("qorpera_describe_native_provider_login_route")),
+			).toHaveLength(2),
+		);
 		release();
-		const second = await gateway.handle(loginRequest());
+		const second = await pending;
 		expect(second.status).toBe(200);
 		expect(await second.json()).toMatchObject({ status: "awaiting_member", user_code: "SLOW-CODE" });
 		expect(lxd.createCalls).toHaveLength(1);
+		expect(lxd.filePushes).toHaveLength(5);
+		expect(boundary.requests.filter((request) => request.url.endsWith("/login"))).toHaveLength(1);
+	});
+	it("shares one pending route across authorized callers with independent response bodies", async () => {
+		const root = await stateRoot(),
+			lxd = new FakeLxd(),
+			boundary = fetchBoundary([
+				{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: "SHARED-CODE" },
+			]);
+		let release = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let entered = () => {};
+		const reached = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
+		const transport: typeof fetch = async (input, init) => {
+			if (String(input) === "http://10.41.0.9:8083/login") {
+				entered();
+				await gate;
+			}
+			return boundary.fetchImplementation(input, init);
+		};
+		const gateway = new LxdNativeLoginGateway(config(root), lxd, transport);
+		const first = gateway.handle(loginRequest());
+		await reached;
+		const rejected = await gateway.handle(loginRequest(loginBody({ client_connection_id: randomUUID() })));
+		expect(rejected.status).toBe(403);
+		const second = gateway.handle(loginRequest());
+		await vi.waitFor(() =>
+			expect(
+				boundary.requests.filter((request) => request.url.endsWith("qorpera_describe_native_provider_login_route")),
+			).toHaveLength(3),
+		);
+		release();
+		const [left, right] = await Promise.all([first, second]);
+		expect(left.status).toBe(200);
+		expect(right.status).toBe(200);
+		expect(left).not.toBe(right);
+		left.headers.set("x-test-caller", "first");
+		expect(right.headers.has("x-test-caller")).toBe(false);
+		const bodies = await Promise.all([left.arrayBuffer(), right.arrayBuffer()]);
+		for (const body of bodies) {
+			expect(JSON.parse(new TextDecoder().decode(body))).toMatchObject({
+				status: "awaiting_member",
+				user_code: "SHARED-CODE",
+			});
+		}
+		expect(lxd.filePushes).toHaveLength(5);
+		expect(boundary.requests.filter((request) => request.url.endsWith("/login"))).toHaveLength(1);
 	});
 	it("restores an established identity on a fresh volume before the bootstrap (2026-09-17 amendment)", async () => {
 		const root = await stateRoot(),

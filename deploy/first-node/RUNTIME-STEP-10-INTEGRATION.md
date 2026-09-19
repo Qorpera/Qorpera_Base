@@ -1,7 +1,7 @@
 # Step 10: constitution and hire overlays
 
 Source baseline: `f44e5300a` (`origin/master`, 2026-09-19).
-Package: `@qorpera/runtime` 0.83.0. Candidate activation: v32.
+Package: `@qorpera/runtime` 0.83.0. Candidate activation: v34 (master shipped v32 and v33 first).
 
 The existing cloud loop now compiles a shared, 644-word constitution, native
 context/turn protocol, admitted identity/bundle binding, and one thin behavioral
@@ -63,6 +63,10 @@ proposal, continuation, silence and blocker behavior. These screens use official
 Codex 0.152 with production prompt/parser components, not the pinned patched
 Linux adapter, and do not replace installed-release acceptance.
 
+[The third pass](RUNTIME-STEP-10-BEHAVIOR-PASS-3.md) screened Co-Founder and employee
+role behavior and writing quality, composes instructions per wake, and records
+why staff agents share one prompt while workers need their own protocol layer.
+
 The task's verification record documents exact hosts, commands, results and
 environment differences. It is component evidence, not deployed acceptance.
 The current guest-package manifest pins the host bundle rebuilt on Linux x64;
@@ -70,7 +74,7 @@ the historical signed v56 package and image recipes remain unchanged.
 
 ## Activation boundary
 
-Migration `20260919003000_runtime_hire_overlay_context.sql` and the v32 package
+Migration `20260919070000_runtime_hire_overlay_context.sql` and the v34 package
 must be rolled out together through the existing drain/package/activation
 procedure. Old v1 parsers reject v2 context; do not apply the context migration
 to a running old host. Historical v31 activation remains unchanged. If another

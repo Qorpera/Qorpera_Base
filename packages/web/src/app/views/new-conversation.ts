@@ -2,16 +2,17 @@ import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure, figureElement, nativeColorOf } from "../../ui/avatar.ts";
 import { button, h, icon, replace } from "../../ui/dom.ts";
 import { FigurePicker } from "../../ui/figure-picker.ts";
+import { matchesKey } from "../../ui/keys.ts";
 import type { CompanyController } from "../company.ts";
 import { navigate } from "../router.ts";
 import type { AgentDraft, WorkspaceActions } from "../workspace-actions.ts";
 
 /* A "To:" field with one short list under it. The list starts a new agent,
- * gathers agents for a group chat, or opens one agent's conversation. Focus
+ * gathers recipients for the first message of a conversation. Focus
  * stays in the field and the arrow keys move through the list (the ARIA
  * combobox pattern), so refreshes never take the caret away. */
 interface Choice {
-	/** "create", "group", "start", or an agent id. */
+	/** "create", "group", or an agent id. */
 	key: string;
 	label: string;
 	lead: HTMLElement;
@@ -65,6 +66,41 @@ export class NewConversationView {
 	readonly #field: HTMLDivElement;
 	readonly #selected = new Set<string>();
 	readonly #navigation: HTMLButtonElement;
+	readonly #message = h("textarea", {
+		class: "composer-input",
+		rows: 1,
+		placeholder: "Message…",
+		"aria-label": "Message",
+		oninput: () => {
+			this.#message.style.height = "auto";
+			this.#message.style.height = `${Math.min(this.#message.scrollHeight, 112)}px`;
+			this.#syncComposer();
+		},
+		onkeydown: (event: KeyboardEvent) => {
+			if (matchesKey(event, "accept") && !event.shiftKey) {
+				event.preventDefault();
+				void this.#submit();
+			}
+		},
+	});
+	readonly #send = h(
+		"button",
+		{
+			type: "button",
+			class: "composer-send",
+			"aria-label": "Send message",
+			onclick: () => void this.#submit(),
+		},
+		icon("send"),
+	);
+	readonly #status = h("p", { class: "attachment-status", role: "status" });
+	readonly #composer = h(
+		"footer",
+		{ class: "composer new-conversation-composer" },
+		h("div", { class: "composer-shell" }, this.#message, this.#send),
+		this.#status,
+	);
+	#sending = false;
 	#choices: Choice[] = [];
 	#signature = "";
 	#query = "";
@@ -74,6 +110,7 @@ export class NewConversationView {
 	#prefilled: string | undefined;
 	#editing = false;
 	#pending = false;
+	#createdAgentId: string | undefined;
 	#syncControls: () => void = () => {};
 	#draft: AgentDraft = { displayName: "", role: "", charter: "", figure: "rocket", color: nativeColorOf("rocket") };
 	constructor(
@@ -171,6 +208,8 @@ export class NewConversationView {
 					icon("close"),
 				),
 			),
+			h("div", { class: "new-conversation-space" }),
+			this.#composer,
 		);
 		this.#signature = "";
 		this.#render();
@@ -208,54 +247,38 @@ export class NewConversationView {
 		if (!this.#choices.some((choice) => choice.key === this.#active))
 			this.#active = query ? (agents[0]?.id ?? (canCreate && !this.#group ? "create" : undefined)) : undefined;
 		this.#highlight(false);
+		this.#syncComposer();
 	}
 	#build(agents: HostedStaffAgent[], members: HostedStaffAgent[], canCreate: boolean, query: string): void {
-		const choices: Choice[] = this.#group
-			? [
-					{
-						key: "start",
-						label: "Start group chat",
-						lead: mark("friends"),
-						// No client can create a group conversation yet.
-						disabled: true,
-						hint: {
-							text: this.#selected.size < 2 ? "Pick two or more agents" : "Not available yet",
-							status: true,
-						},
-						run: () => {},
-					},
-				]
-			: [
-					{
-						key: "create",
-						label: query ? `New agent “${query}”` : "New agent",
-						lead: mark("plus"),
-						disabled: !canCreate,
-						run: () => this.#configure(),
-					},
-					{
-						key: "group",
-						label: "New group chat",
-						lead: mark("friends"),
-						disabled: false,
-						run: () => this.#setGroup(true),
-					},
-				];
+		const choices: Choice[] = [
+			{
+				key: "create",
+				label: query ? `New agent “${query}”` : "New agent",
+				lead: mark("plus"),
+				disabled: !canCreate,
+				run: () => this.#configure(),
+			},
+		];
+		if (!this.#group)
+			choices.push({
+				key: "group",
+				label: "New group chat",
+				lead: mark("friends"),
+				disabled: false,
+				run: () => this.#setGroup(true),
+			});
 		for (const agent of agents)
 			choices.push({
 				key: agent.id,
 				label: agent.displayName,
 				lead: agentFigure(agent, agent.displayName, { size: 28 }),
 				disabled: false,
-				...(this.#group
-					? { member: this.#selected.has(agent.id) }
-					: { hint: { text: "Open chat", status: false } }),
-				run: () => (this.#group ? this.#toggle(agent.id) : this.#open(agent)),
+				member: this.#selected.has(agent.id),
+				run: () => this.#toggle(agent.id),
 			});
 		this.#choices = choices;
-		this.#search.placeholder = this.#group ? "Add agents" : "Search or create agents";
-		if (this.#group) this.#list.setAttribute("aria-multiselectable", "true");
-		else this.#list.removeAttribute("aria-multiselectable");
+		this.#search.placeholder = this.#selected.size || this.#group ? "Add agents" : "Search or create agents";
+		this.#list.setAttribute("aria-multiselectable", "true");
 		replace(
 			this.#list,
 			...choices.map((choice) =>
@@ -271,7 +294,7 @@ export class NewConversationView {
 						onclick: (event: MouseEvent) => {
 							// Rows rebuild on a pick, so a double-click's second click
 							// would land on whatever row moved under the pointer.
-							if (!choice.disabled && event.detail < 2) choice.run();
+							if (!this.#sending && !choice.disabled && event.detail < 2) choice.run();
 						},
 						onmousemove: () => {
 							if (this.#active !== choice.key) {
@@ -318,7 +341,7 @@ export class NewConversationView {
 						onmousedown: (event: MouseEvent) => event.preventDefault(),
 						onclick: (event: MouseEvent) => {
 							// The next chip slides under the pointer; one double-click removes one.
-							if (event.detail > 1) return;
+							if (this.#sending || event.detail > 1) return;
 							this.#selected.delete(agent.id);
 							this.#render();
 							this.#search.focus();
@@ -330,7 +353,7 @@ export class NewConversationView {
 				),
 			),
 		);
-		this.#chips.hidden = !this.#group || !members.length;
+		this.#chips.hidden = !members.length;
 		if (chipFocus) {
 			const chip = [...this.#chips.querySelectorAll<HTMLButtonElement>("button")].find(
 				(item) => item.dataset.removeRecipient === chipFocus,
@@ -343,11 +366,7 @@ export class NewConversationView {
 		for (const row of this.#list.querySelectorAll<HTMLElement>("[role=option]")) {
 			const on = row.dataset.choice === this.#active;
 			row.classList.toggle("active", on);
-			// A single-choice list marks the highlighted row as the selection.
-			if (!this.#group) {
-				if (on) row.setAttribute("aria-selected", "true");
-				else row.removeAttribute("aria-selected");
-			}
+
 			if (on) current = row;
 		}
 		if (current && this.#listOpen) {
@@ -356,7 +375,7 @@ export class NewConversationView {
 		} else this.#search.removeAttribute("aria-activedescendant");
 	}
 	#key(event: KeyboardEvent): void {
-		if (event.isComposing) return;
+		if (event.isComposing || this.#sending) return;
 		if (event.key === "ArrowDown" || event.key === "ArrowUp") {
 			event.preventDefault();
 			this.#setListOpen(true);
@@ -381,7 +400,7 @@ export class NewConversationView {
 				event.preventDefault();
 				this.#setGroup(false);
 			}
-		} else if (event.key === "Backspace" && this.#group && !this.#search.value) {
+		} else if (event.key === "Backspace" && !this.#search.value) {
 			const last = [...this.#selected].at(-1);
 			if (last) {
 				event.preventDefault();
@@ -407,24 +426,49 @@ export class NewConversationView {
 		this.#active = id;
 		this.#render();
 	}
-	#open(agent: HostedStaffAgent): void {
-		const current = this.#company.staffById(agent.id);
-		if (!current || current.employmentStatus !== "active") return;
-		const cofounder =
-			current.templateId === "co-founder" ||
-			current.id === this.#company.store.get().organization?.cofounder.staffAgentId;
-		navigate(
-			cofounder
-				? { name: "company", profileId: this.#company.profile.profileId, section: "home" }
-				: { name: "company", profileId: this.#company.profile.profileId, section: "staff", id: current.id },
-		);
+	#syncComposer(): void {
+		const canWrite = this.#company.store.get().team?.capabilities.write === true;
+		this.#message.disabled = this.#sending || !canWrite;
+		this.#field.inert = this.#sending;
+		this.#send.disabled =
+			this.#sending ||
+			!canWrite ||
+			!this.#actions.startConversation ||
+			this.#selected.size < (this.#group ? 2 : 1) ||
+			!this.#message.value.trim();
+	}
+	async #submit(): Promise<void> {
+		this.#render();
+		if (this.#send.disabled || !this.#actions.startConversation) return;
+		this.#sending = true;
+		this.#setListOpen(false);
+		this.#syncComposer();
+		this.#status.textContent = "Starting conversation…";
+		try {
+			const sessionId = await this.#actions.startConversation(
+				[...this.#selected],
+				this.#message.value,
+				this.#lifetime.signal,
+			);
+			if (this.#lifetime.signal.aborted || this.#company.signal.aborted) return;
+			navigate({ name: "company", profileId: this.#company.profile.profileId, section: "chat", id: sessionId });
+		} catch (error) {
+			if (!this.#lifetime.signal.aborted)
+				this.#status.textContent =
+					error instanceof Error
+						? error.message
+						: "The conversation could not be started. Your draft is still here.";
+		} finally {
+			this.#sending = false;
+			if (!this.#lifetime.signal.aborted) this.#syncComposer();
+		}
 	}
 	#configure(): void {
 		if (!this.#company.store.get().team?.capabilities.authorize) return;
 		// "Search or create": what was typed names the agent, unless the draft
 		// already carries a name of the member's own.
 		const typed = this.#query.trim().slice(0, 64);
-		if (typed && (!this.#draft.displayName || this.#draft.displayName === this.#prefilled)) {
+		if (!this.#createdAgentId && typed && (!this.#draft.displayName || this.#draft.displayName === this.#prefilled)) {
 			this.#draft.displayName = typed;
 			this.#prefilled = typed;
 		}
@@ -482,12 +526,16 @@ export class NewConversationView {
 		const status = h(
 			"p",
 			{ class: "surface-status", role: "status" },
-			this.#actions.createAgent ? "" : "Agent creation is not available yet.",
+			this.#createdAgentId
+				? "The agent was created. Retry adding it once the agent list is available."
+				: this.#actions.createAgent
+					? ""
+					: "Agent creation is not available yet.",
 		);
 		const create = h(
 			"button",
 			{ class: "btn btn-primary", type: "submit", disabled: !this.#actions.createAgent },
-			"Create agent",
+			this.#createdAgentId ? "Add created agent" : "Create agent",
 		);
 		const back = button([icon("back"), "Back"], () => {
 			if (!this.#pending) {
@@ -501,11 +549,16 @@ export class NewConversationView {
 			h("h1", null, "Create an agent"),
 			fields,
 			status,
-			h("div", { class: "surface-actions" }, button("Cancel", this.#close), create),
+			h(
+				"div",
+				{ class: "surface-actions" },
+				button("Cancel", () => back.click()),
+				create,
+			),
 		);
 		this.#syncControls = () => {
 			const canWrite = this.#company.store.get().team?.capabilities.authorize === true;
-			fields.disabled = this.#pending || !canWrite;
+			fields.disabled = this.#pending || !canWrite || !!this.#createdAgentId;
 			create.disabled = this.#pending || !canWrite || !this.#actions.createAgent;
 			back.disabled = this.#pending;
 		};
@@ -515,7 +568,7 @@ export class NewConversationView {
 				this.#pending ||
 				!this.#actions.createAgent ||
 				!this.#company.store.get().team?.capabilities.authorize ||
-				!form.reportValidity()
+				(!this.#createdAgentId && !form.reportValidity())
 			)
 				return;
 			if (!name.value.trim() || !role.value.trim()) {
@@ -528,7 +581,7 @@ export class NewConversationView {
 			back.disabled = true;
 			status.textContent = "Creating agent…";
 			try {
-				const id = await this.#actions.createAgent(
+				this.#createdAgentId ??= await this.#actions.createAgent(
 					this.#company.profile.profileId,
 					{
 						...this.#draft,
@@ -540,11 +593,30 @@ export class NewConversationView {
 				);
 				if (this.#lifetime.signal.aborted || this.#company.signal.aborted) return;
 				await this.#company.refreshStaff();
-				if (!this.#lifetime.signal.aborted && !this.#company.signal.aborted)
-					navigate({ name: "company", profileId: this.#company.profile.profileId, section: "staff", id });
+				if (!this.#lifetime.signal.aborted && !this.#company.signal.aborted) {
+					if (!this.#company.staffById(this.#createdAgentId)) throw new Error("Agent roster is still refreshing.");
+					this.#selected.add(this.#createdAgentId);
+					this.#createdAgentId = undefined;
+					this.#query = "";
+					this.#search.value = "";
+					this.#draft = {
+						displayName: "",
+						role: "",
+						charter: "",
+						figure: "rocket",
+						color: nativeColorOf("rocket"),
+					};
+					this.#prefilled = undefined;
+					this.#picker();
+					this.#message.focus();
+				}
 			} catch {
-				if (!this.#lifetime.signal.aborted)
-					status.textContent = "The agent could not be created. Your draft is still here.";
+				if (!this.#lifetime.signal.aborted) {
+					status.textContent = this.#createdAgentId
+						? "The agent was created. Retry adding it once the agent list is available."
+						: "The agent could not be created. Your draft is still here.";
+					if (this.#createdAgentId) create.textContent = "Add created agent";
+				}
 			} finally {
 				this.#pending = false;
 				this.#syncControls();
@@ -555,6 +627,7 @@ export class NewConversationView {
 			h("header", { class: "new-conversation-header" }, this.#navigation, back),
 			h("div", { class: "new-conversation-body" }, form),
 		);
-		name.focus();
+		this.#syncControls();
+		(this.#createdAgentId ? create : name).focus();
 	}
 }

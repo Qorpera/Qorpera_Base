@@ -618,6 +618,7 @@ describe("settings session lifecycle", () => {
 		const f = await setup(realtimeFixture());
 		const connectionsUrl = "https://fixture.invalid/rest/v1/rpc/qorpera_list_member_native_execution_connections";
 		const fetch = vi.fn(async (input: string | URL | Request, _init?: RequestInit) => {
+			if (String(input).endsWith("/qorpera_list_member_notifications")) return Response.json([]);
 			if (String(input) === connectionsUrl) return Response.json({ compute_identity: null, connections: [] });
 			throw new Error("Unexpected request in the settings read-only fixture");
 		});
@@ -636,6 +637,8 @@ describe("settings session lifecycle", () => {
 		).toBe(true);
 		await vi.advanceTimersByTimeAsync(60_000);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
-		expect(fetch).toHaveBeenCalledExactlyOnceWith(connectionsUrl, expect.objectContaining({ method: "POST" }));
+		expect(fetch.mock.calls.filter(([url]) => String(url) === connectionsUrl)).toEqual([
+			[connectionsUrl, expect.objectContaining({ method: "POST" })],
+		]);
 	});
 });

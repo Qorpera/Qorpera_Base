@@ -28,6 +28,7 @@ import {
 	type LxdOfficeHostRebootPlan,
 	parseLxdOfficeRecoveryPlan,
 } from "./lxd-office-host-reboot.ts";
+import { LxdOfficeIdlePolicy, type LxdOfficeIdleRecovery } from "./lxd-office-idle-policy.ts";
 import { officeDigest, officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
 import { LxdOfficeInventoryWorker } from "./lxd-office-inventory-worker.ts";
 import type { LxdOfficeInvocationMeasurement } from "./lxd-office-invocation-measurement.ts";
@@ -69,6 +70,7 @@ interface Workers {
 	activation: Pick<LxdOfficeActivationWorker, "reconcileSettled">;
 }
 interface Options {
+	idleMs?: number;
 	codePackageLanePath?: string;
 	resetImagePackageManifestPath?: string;
 	planPath: string;
@@ -158,6 +160,7 @@ export class LxdOfficeLifecycle {
 	#preparedPackage: LxdOfficePreparedPackageInvocation | undefined;
 	#measurementPrepared = false;
 	readonly #provider: LxdOfficeProviderControl;
+	readonly #idlePolicy: LxdOfficeIdlePolicy | undefined;
 	readonly #workers: Workers;
 	readonly #stopWorker: Pick<LxdOfficeServiceStopWorker, "reconcileSettled">;
 	readonly #successorWorker: Pick<LxdOfficeSuccessorWorker, "reconcileSettled">;
@@ -175,6 +178,7 @@ export class LxdOfficeLifecycle {
 	#activeRecovery: { intentId: string; transitionId: string; activationId: string } | undefined;
 	#activeBoot: { intentId: string; transitionId: string; activationId: string; stageSha256: string } | undefined;
 	#activeReset: { intentId: string; transitionId: string; resetId: string; activationId: string } | undefined;
+	#protectedRecovery: ReturnType<typeof parseCompanyComputerLifecycleRequest> | undefined;
 	constructor(
 		gate: Pick<LxdOfficePhysicalGate, "policy" | "check" | "inspect">,
 		registry: LxdOfficeLifecycleRegistry,
@@ -227,6 +231,10 @@ export class LxdOfficeLifecycle {
 			registry,
 		);
 		this.#gate = gate;
+		this.#idlePolicy =
+			options.idleMs === undefined
+				? undefined
+				: new LxdOfficeIdlePolicy(this.#root, { ...g, providerPolicySha256 }, options.idleMs, registry);
 		this.#registry = registry;
 		this.#kernelLock = ports.kernelLock ?? assertOfficeAdoptionKernelLock;
 		this.#readProtected = ports.readProtected ?? readLxdOfficeProtectedFile;
@@ -315,7 +323,18 @@ export class LxdOfficeLifecycle {
 		if (pending.has(this.#root)) throw new Error("OFFICE_LIFECYCLE_PENDING");
 		pending.add(this.#root);
 		try {
-			return await this.#run(AbortSignal.any([caller, AbortSignal.timeout(300000)]));
+			const signal = AbortSignal.any([caller, AbortSignal.timeout(300000)]);
+			const result = await this.#run(signal);
+			const request = this.#protectedRecovery;
+			if (result.state === "active" && request && result.transitionId === request.transitionId) {
+				signal.throwIfAborted();
+				await publish(
+					this.#root,
+					`recovery-active-${request.transitionId}.json`,
+					Buffer.from(JSON.stringify(request)),
+				);
+			}
+			return result;
 		} catch (error) {
 			this.#activeIntent = undefined;
 			this.#activeRecovery = undefined;
@@ -336,6 +355,7 @@ export class LxdOfficeLifecycle {
 		this.#measurementPrepared = true;
 	}
 	async #run(signal: AbortSignal): Promise<LxdOfficeLifecycleResult> {
+		this.#protectedRecovery = undefined;
 		await this.#kernelLock(this.#root);
 		signal.throwIfAborted();
 		const status = await this.#provider.status(signal);
@@ -354,6 +374,7 @@ export class LxdOfficeLifecycle {
 		// this plan for process recovery; deleting it cannot undo maintenance.
 		let recovery: ReturnType<typeof parseCompanyComputerLifecycleRequest> | undefined;
 		let hostReboot: LxdOfficeHostRebootPlan | undefined;
+		let idleRecovery: LxdOfficeIdleRecovery | undefined;
 		try {
 			const plan = parseLxdOfficeRecoveryPlan(
 				JSON.parse(
@@ -363,9 +384,35 @@ export class LxdOfficeLifecycle {
 				),
 			);
 			recovery = plan.request;
+			this.#protectedRecovery = recovery;
 			hostReboot = plan.hostReboot;
 		} catch (error) {
 			if (!code(error, "ENOENT")) throw error;
+		}
+		// An explicit plan keeps precedence until its successor was activated.
+		// Retaining that completed plan for recovery must not disable future idle.
+		let completedRecovery = false;
+		if (recovery && this.#idlePolicy) {
+			try {
+				const completed = await readRecord(join(this.#root, `recovery-active-${recovery.transitionId}.json`));
+				if (!isDeepStrictEqual(completed.value, recovery)) throw new Error("completed recovery differs");
+				completedRecovery = true;
+			} catch (error) {
+				if (!code(error, "ENOENT")) throw error;
+			}
+		}
+		// SQL checks live demand under the office lock and excludes operator maintenance.
+		if (
+			(!recovery || completedRecovery) &&
+			this.#idlePolicy &&
+			status.reservation &&
+			["active", "maintenance"].includes(status.officeState)
+		) {
+			idleRecovery = await this.#idlePolicy.reconcile(intentId, signal);
+			if (idleRecovery) {
+				recovery = idleRecovery.request;
+				hostReboot = undefined;
+			}
 		}
 		if (!recovery && status.officeState === "maintenance") return { state: "held", intentId };
 		// Disabled preparation permits only checking a previously active office.
@@ -490,27 +537,29 @@ export class LxdOfficeLifecycle {
 					this.#activeRecovery = undefined;
 					const suffix = `${status.reservation.allocationId}-${recovery.transitionId}`,
 						bootStageName = `recovery-boot-stage-${suffix}.json`;
-					let bootStage: unknown, resume: ReturnType<typeof parseCompanyComputerBootIntentRequest> | undefined;
+					let bootStage: unknown,
+						resume = idleRecovery?.resume;
 					try {
 						bootStage = (await readRecord(join(this.#root, bootStageName), 65536)).value;
 					} catch (error) {
 						if (!code(error, "ENOENT")) throw error;
 					}
-					try {
-						const plan = officeRecord(
-							JSON.parse(
-								new TextDecoder("utf8", { fatal: true }).decode(
-									await this.#readProtected(`${this.#planPath}.resume`, 65536),
+					if (!idleRecovery)
+						try {
+							const plan = officeRecord(
+								JSON.parse(
+									new TextDecoder("utf8", { fatal: true }).decode(
+										await this.#readProtected(`${this.#planPath}.resume`, 65536),
+									),
 								),
-							),
-							["schema", "request"],
-						);
-						if (plan.schema !== "qorpera.lxd-office-resume-plan/v1") throw new Error("resume plan invalid");
-						resume = parseCompanyComputerBootIntentRequest(plan.request);
-						if (!isDeepStrictEqual(resume.predecessor, recovery)) throw new Error("resume plan differs");
-					} catch (error) {
-						if (!code(error, "ENOENT")) throw error;
-					}
+								["schema", "request"],
+							);
+							if (plan.schema !== "qorpera.lxd-office-resume-plan/v1") throw new Error("resume plan invalid");
+							resume = parseCompanyComputerBootIntentRequest(plan.request);
+							if (!isDeepStrictEqual(resume.predecessor, recovery)) throw new Error("resume plan differs");
+						} catch (error) {
+							if (!code(error, "ENOENT")) throw error;
+						}
 					// A guard-marked host reboot: the resumed host boot must be received
 					// (receipt + backend record) before any resume-chain worker runs.
 					if (resume && hostReboot && bootStage === undefined) {

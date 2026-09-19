@@ -20,6 +20,8 @@ import {
 	parseInvitation,
 	parsePendingSessionInputs,
 	parseProfiles,
+	parseRunDismissal,
+	parseRunRecovery,
 	parseSessionInputReceipt,
 	parseSessionPage,
 	parseStaffExecutionActivity,
@@ -45,6 +47,7 @@ import type {
 	HostedProfileInvitation,
 	HostedProfileRole,
 	HostedProfileTeam,
+	HostedRunRecovery,
 	HostedSession,
 	HostedSessionEvent,
 	HostedStaffAgent,
@@ -210,6 +213,21 @@ export class CloudApi {
 				p_environment_id: requiredUuid(environmentId, "Environment id"),
 			})
 			.then(parseStaffExecutionActivity);
+	}
+
+	getRunRecovery(runId: string): Promise<HostedRunRecovery> {
+		return this.cloud
+			.rpc("qorpera_get_execution_run_recovery", { p_run_id: requiredUuid(runId, "Run id") })
+			.then(parseRunRecovery);
+	}
+
+	/** The desktop's "discard": the run stops counting against the agent. Nothing
+	 * is re-run, and the member's own message stays marked failed. */
+	discardFailedRun(runId: string): Promise<void> {
+		const id = requiredUuid(runId, "Run id");
+		return this.cloud
+			.rpc("qorpera_resolve_failed_execution_run", { p_run_id: id, p_action: "discard" })
+			.then((value) => parseRunDismissal(value, id));
 	}
 
 	// Conversations
