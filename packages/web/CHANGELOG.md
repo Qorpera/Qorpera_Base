@@ -13,6 +13,7 @@
 - Let the rail search wait for dead-key and IME input to commit, keep keyboard focus on the rail link or button it was on when the rail refreshes, and clear the rail search when the rail collapses.
 - Make resetting the rail width forget the stored width, so the default applies again once the window is wide enough, and set the width only on the rail and its edge so resizing the window does not restyle the whole app.
 - Make primary buttons inside Settings readable; they rendered white text on the light grey settings button.
+- Keep dead-key and IME typing intact in the Settings Friends search: ´ then e gave "´é", and Pinyin and Android keyboard input came out garbled. The field now stays in place while the list below it filters, and the list is redrawn only when what it shows changes.
 
 ### Added
 

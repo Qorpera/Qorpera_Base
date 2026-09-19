@@ -2,7 +2,7 @@ import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
 import type { HostedFriend, HostedIncomingProfileInvitation } from "../../cloud/types.ts";
 import { button, companyLogo, fmtDate, h, notice, personAvatar, replace, spinner } from "../../ui/dom.ts";
-import { uiText } from "../../ui/preferences.ts";
+import { presentationLocale, uiText } from "../../ui/preferences.ts";
 import { Store } from "../state.ts";
 import type { HubController } from "./hub.ts";
 
@@ -142,54 +142,145 @@ function group(title: string, rows: HTMLElement[]): HTMLElement | null {
 		: null;
 }
 
-/* One field does both jobs, as the desktop's invite popup does: it filters the
- * list, and when it holds an address it sends a friend request. The element
- * outlives re-renders so typing never loses the caret. */
-const fields = new WeakMap<FriendsController, HTMLInputElement>();
+/** What the field holds, and whether it is an address a friend request can go to. */
+function typed(state: FriendsState): { query: string; invitable: boolean } {
+	const query = (state.query ?? "").trim().toLowerCase();
+	return {
+		query,
+		invitable: EMAIL.test(query) && !state.friends.some((friend) => friend.email.toLowerCase() === query),
+	};
+}
 
-function field(friends: FriendsController): HTMLInputElement {
-	let searchField = fields.get(friends);
-	if (!searchField) {
-		searchField = h("input", {
+/* One field does both jobs, as the desktop's invite popup does: it filters the
+ * list, and when it holds an address it sends a friend request. The tab's parts
+ * are built once per friends list: the heading, the notices, the field with its
+ * button, and the results. A store update changes what they show in place, so
+ * the field is never moved (a dead-key or IME composition and the caret
+ * survive), and the results are rebuilt only when what they show has changed. */
+interface FriendsParts {
+	readonly page: HTMLElement;
+	readonly title: HTMLElement;
+	readonly notices: HTMLElement;
+	readonly submit: HTMLButtonElement;
+	readonly results: HTMLElement;
+	/** The language the heading and the dates were drawn in. */
+	locale: string;
+	/** What the notices and the results last showed; a draw that changes neither leaves them alone. */
+	said: string;
+	shown: string;
+}
+const tabParts = new WeakMap<FriendsController, FriendsParts>();
+
+function partsFor(friends: FriendsController): FriendsParts {
+	let parts = tabParts.get(friends);
+	if (!parts) {
+		const input = h("input", {
 			type: "text",
 			placeholder: "Search friends, or type an email to add someone",
 			autocomplete: "off",
 			spellcheck: "false",
 			"aria-label": "Search friends, or type an email to add someone",
-			oninput: () => friends.store.set({ query: searchField?.value ?? "" }),
 		});
-		fields.set(friends, searchField);
+		// Every keystroke filters, composed text included; drawing never moves the field.
+		input.addEventListener("input", () => friends.store.set({ query: input.value }));
+		const send = (event: Event) => {
+			event.preventDefault();
+			const { query, invitable } = typed(friends.store.get());
+			if (!invitable) return;
+			void friends.request(query).then(() => {
+				if (friends.store.get().error) return;
+				input.value = "";
+				friends.store.set({ query: "" });
+			});
+		};
+		const title = h("h1");
+		const notices = h("div");
+		const submit = h("button", { type: "submit", class: "btn btn-primary" }, "Send request");
+		const results = h("div");
+		parts = {
+			page: h(
+				"section",
+				{ class: "page friends" },
+				title,
+				h(
+					"p",
+					{ class: "settings-lead" },
+					"Invite friends into your companies. Invitations to join other companies show up here too.",
+				),
+				notices,
+				h("div", { class: "panel" }, h("form", { class: "panel-search", onsubmit: send }, input, submit), results),
+			),
+			title,
+			notices,
+			submit,
+			results,
+			locale: "",
+			said: "",
+			shown: "",
+		};
+		tabParts.set(friends, parts);
 	}
-	return searchField;
+	return parts;
 }
 
 export function renderFriends(friends: FriendsController, hub: HubController, container: HTMLElement): void {
+	const parts = partsFor(friends);
+	if (parts.page.parentElement !== container) replace(container, parts.page);
 	const state = friends.store.get();
 	const companies = hub.store.get();
 	const busy = (friend: HostedFriend) => state.busy === friend.userId;
-	const query = (state.query ?? "").trim().toLowerCase();
+	const { query, invitable } = typed(state);
 	const matches = (...texts: string[]) => !query || texts.some((text) => text.toLowerCase().includes(query));
-	const shown = state.friends.filter((friend) => matches(friend.displayName, friend.email));
-	const incoming = shown.filter((friend) => friend.status === "pending" && friend.direction === "incoming");
-	const outgoing = shown.filter((friend) => friend.status === "pending" && friend.direction === "outgoing");
-	const accepted = shown.filter((friend) => friend.status === "accepted");
-	const search = field(friends);
-	const invitable = EMAIL.test(query) && !state.friends.some((friend) => friend.email.toLowerCase() === query);
-	const send = () => {
-		if (!invitable) return;
-		void friends.request(query).then(() => {
-			if (friends.store.get().error) return;
-			search.value = "";
-			friends.store.set({ query: "" });
-		});
-	};
-	const invitations = group(
-		"Company invitations",
-		companies.invitations
-			.filter((invitation) => matches(invitation.profileName))
-			.map((invitation) => invitationRow(hub, invitation, companies.busyInvitation === invitation.id)),
-	);
-	const groups = [
+	const matching = state.friends.filter((friend) => matches(friend.displayName, friend.email));
+	const incoming = matching.filter((friend) => friend.status === "pending" && friend.direction === "incoming");
+	const outgoing = matching.filter((friend) => friend.status === "pending" && friend.direction === "outgoing");
+	const accepted = matching.filter((friend) => friend.status === "accepted");
+	const invitations = companies.invitations.filter((invitation) => matches(invitation.profileName));
+	parts.submit.disabled = !invitable || state.sending === true;
+	const label = state.sending ? "Sending…" : "Send request";
+	if (parts.submit.textContent !== label) parts.submit.textContent = label;
+	// The heading and dates are redrawn for a language chosen while this tab was hidden.
+	const locale = presentationLocale();
+	if (locale !== parts.locale) {
+		parts.locale = locale;
+		replace(parts.title, uiText("Friends"));
+	}
+	const companyError = companies.invitations.length ? companies.error : undefined;
+	const said = JSON.stringify([companyError, state.error, state.message]);
+	if (said !== parts.said) {
+		parts.said = said;
+		replace(
+			parts.notices,
+			companyError ? notice("danger", companyError) : null,
+			state.error ? notice("danger", state.error) : null,
+			state.message ? notice("ok", state.message) : null,
+		);
+	}
+	const listed = incoming.length + outgoing.length + accepted.length > 0;
+	const loading = !listed && state.loading && !state.loaded;
+	const empty =
+		listed || loading
+			? null
+			: query
+				? invitable
+					? `Nobody here by that address. Send ${query} a friend request.`
+					: "Nobody here by that name."
+				: "No friends yet. Add someone by their Qorpera email address.";
+	const shown = JSON.stringify([
+		locale,
+		invitations.map((invitation) => [invitation, companies.busyInvitation === invitation.id]),
+		[incoming, outgoing, accepted].map((list) => list.map((friend) => [friend, busy(friend)])),
+		loading,
+		empty,
+	]);
+	if (shown === parts.shown) return;
+	parts.shown = shown;
+	replace(
+		parts.results,
+		group(
+			"Company invitations",
+			invitations.map((invitation) => invitationRow(hub, invitation, companies.busyInvitation === invitation.id)),
+		),
 		group(
 			"Requests for you",
 			incoming.map((friend) =>
@@ -221,65 +312,7 @@ export function renderFriends(friends: FriendsController, hub: HubController, co
 				),
 			),
 		),
-	].filter(Boolean) as HTMLElement[];
-	const empty = groups.length
-		? null
-		: state.loading && !state.loaded
-			? spinner("Loading friends")
-			: h(
-					"p",
-					{ class: "panel-empty muted" },
-					query
-						? invitable
-							? `Nobody here by that address. Send ${query} a friend request.`
-							: "Nobody here by that name."
-						: "No friends yet. Add someone by their Qorpera email address.",
-				);
-	// Replacing the container detaches the field, and a detached element loses
-	// focus, so the caret is put back exactly where the typist left it.
-	const typing = document.activeElement === search;
-	const caret: [number, number] = [search.selectionStart ?? 0, search.selectionEnd ?? 0];
-	replace(
-		container,
-		h(
-			"section",
-			{ class: "page friends" },
-			h("h1", null, uiText("Friends")),
-			h(
-				"p",
-				{ class: "settings-lead" },
-				"Invite friends into your companies. Invitations to join other companies show up here too.",
-			),
-			companies.error && companies.invitations.length ? notice("danger", companies.error) : null,
-			state.error ? notice("danger", state.error) : null,
-			state.message ? notice("ok", state.message) : null,
-			h(
-				"div",
-				{ class: "panel" },
-				h(
-					"form",
-					{
-						class: "panel-search",
-						onsubmit: (event: Event) => {
-							event.preventDefault();
-							send();
-						},
-					},
-					search,
-					h(
-						"button",
-						{ type: "submit", class: "btn btn-primary", disabled: !invitable || state.sending === true },
-						state.sending ? "Sending…" : "Send request",
-					),
-				),
-				invitations,
-				...groups,
-				empty,
-			),
-		),
+		loading ? spinner("Loading friends") : null,
+		empty ? h("p", { class: "panel-empty muted" }, empty) : null,
 	);
-	if (typing) {
-		search.focus();
-		search.setSelectionRange(caret[0], caret[1]);
-	}
 }

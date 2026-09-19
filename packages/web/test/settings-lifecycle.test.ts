@@ -318,6 +318,54 @@ describe("settings session lifecycle", () => {
 		expect(f.root.querySelector("#settings-content")?.textContent).toContain("Request sent to new@example.invalid.");
 		expect(f.root.querySelector<HTMLInputElement>(".panel-search input")!.value).toBe("");
 	});
+	it("never moves the Friends field: composed text filters the list and the field keeps focus", async () => {
+		history.replaceState(null, "", "/#/");
+		const fixtureState = fixture(),
+			profiles = deferred<(typeof profileA)[]>(),
+			friend = { status: "accepted", direction: "outgoing", since: timestamp } as const;
+		vi.mocked(fixtureState.api.listProfiles).mockReturnValue(profiles.promise);
+		vi.mocked(fixtureState.api.listFriends).mockResolvedValue([
+			{ ...friend, userId: userB.id, email: userB.email!, displayName: "Émile" },
+			{ ...friend, userId: id(44), email: "carl@example.invalid", displayName: "Carl" },
+		]);
+		const f = await setup(fixtureState);
+		open(f.root);
+		click(f.root, "#settings-tab-friends");
+		await draw();
+		const field = f.root.querySelector<HTMLInputElement>(".panel-search input")!,
+			names = () =>
+				[...f.root.querySelectorAll(".settings-dialog .person-row strong")].map((name) => name.textContent);
+		expect(names()).toEqual(["Émile", "Carl"]);
+		// Every removal that took the field out of the page, even if it was put back afterwards.
+		const removed: Node[] = [],
+			observer = new MutationObserver((records) => {
+				for (const record of records) removed.push(...record.removedNodes);
+			}),
+			fieldRemovals = () => {
+				for (const record of observer.takeRecords()) removed.push(...record.removedNodes);
+				return removed.filter((node) => node.contains(field));
+			};
+		observer.observe(f.root, { childList: true, subtree: true });
+		// A dead key (´ then e on a Danish Mac) or an IME composes "é"; the list filters while it composes.
+		field.focus();
+		field.dispatchEvent(new CompositionEvent("compositionstart"));
+		field.value = "é";
+		field.dispatchEvent(new InputEvent("input", { isComposing: true }));
+		await draw();
+		expect(fieldRemovals()).toEqual([]);
+		expect(document.activeElement).toBe(field);
+		expect(names()).toEqual(["Émile"]);
+		// The company list arriving mid-composition selects the open tab again; nothing it shows changed.
+		const row = f.root.querySelector(".settings-dialog .person-row");
+		profiles.resolve([profileA]);
+		await draw();
+		expect(f.root.querySelector<HTMLSelectElement>(".settings-company-picker")!.value).toBe(profileA.profileId);
+		expect(fieldRemovals()).toEqual([]);
+		expect(document.activeElement).toBe(field);
+		expect(field.value).toBe("é");
+		expect(f.root.querySelector(".settings-dialog .person-row")).toBe(row);
+		observer.disconnect();
+	});
 	it("offers accepted friends in the company invitation picker and sends Add a friend to the Friends tab", async () => {
 		const fixtureState = fixture();
 		vi.mocked(fixtureState.api.listFriends).mockResolvedValue([
