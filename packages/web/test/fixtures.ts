@@ -13,6 +13,7 @@ import type {
 	HostedStaffAgent,
 	PendingSessionInput,
 } from "../src/cloud/types.ts";
+import * as figureMotion from "../src/ui/figure-motion.ts";
 
 export const id = (n: number): string => `11111111-1111-4111-8111-${String(n).padStart(12, "0")}`;
 export const timestamp = "2026-09-05T10:00:00Z";
@@ -160,6 +161,13 @@ export function deferred<T>() {
 }
 export async function settle(): Promise<void> {
 	for (let i = 0; i < 30; i++) await Promise.resolve();
+}
+
+/** Stands in for the vendored figure scripts; the spy records each figure's mount options. */
+export function stubFigureMotion(dispose: () => void = () => {}) {
+	vi.stubGlobal("QORPERA_MOTION_MODEL", { avatars: [] });
+	vi.stubGlobal("QORPERA_AVATAR_APPEARANCE", { palette: [] });
+	return vi.spyOn(figureMotion, "mountFigureMotion").mockReturnValue({ dispose });
 }
 
 export function fixture() {

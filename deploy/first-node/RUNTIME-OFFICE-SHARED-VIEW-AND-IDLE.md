@@ -48,9 +48,9 @@ desktop regression prepares every current avatar against the checked-in PNGs.
 
 This is a source candidate, not evidence of an installed production release.
 It requires the shared-viewer and idle-policy SQL migrations, the matching
-office runtime and provider packages, and the web client. The new v31 bundle
+office runtime and provider packages, and the web client. The new v33 bundle
 activation must follow the repository's existing guarded rollout process;
-do not rewrite the already shipped v30 activation or activate a bundle whose
+do not rewrite the already shipped v31/v32 activations or activate a bundle whose
 matching services have not passed their rollout gates.
 
 On a disposable Linux/LXD office, verify repeated idle stop/wake cycles through

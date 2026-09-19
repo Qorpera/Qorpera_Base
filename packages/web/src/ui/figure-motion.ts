@@ -413,6 +413,18 @@ export function mountFigureMotion(
 			},
 			{ signal: lifetime.signal },
 		);
+		// A window moved to a screen of another pixel density repaints its figures at that density.
+		const signal = lifetime.signal;
+		const watchDensity = () =>
+			window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`).addEventListener(
+				"change",
+				() => {
+					for (const item of live) if (item.ready && item.visible) paint(item);
+					watchDensity();
+				},
+				{ once: true, signal },
+			);
+		watchDensity();
 		document.addEventListener(
 			"visibilitychange",
 			() => {

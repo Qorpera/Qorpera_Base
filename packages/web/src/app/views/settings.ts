@@ -20,7 +20,8 @@ const TABS = [
 		id: "general",
 		label: "General",
 		icon: "settings",
-		keywords: "account plan billing companies appearance theme language region",
+		keywords:
+			"account plan billing companies appearance theme composer color colour blue green grey gray language region",
 	},
 	{
 		id: "friends",

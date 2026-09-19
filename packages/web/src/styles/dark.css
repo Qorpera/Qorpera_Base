@@ -22,7 +22,7 @@
 :root[data-theme="dark"] .account-popover { box-shadow: 0 22px 48px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3); }
 
 /* ---- rail ------------------------------------------------------------------ */
-:root[data-theme="dark"] .rail { --rail-line: #121211; --rail-search-ink: #8f8e89; --rail-small: #9d9c97; }
+:root[data-theme="dark"] .rail { --rail-line: #121211; --rail-search-ink: #8f8e89; --rail-small: #9d9c97; --rail-status-failed: #ff453a; }
 :root[data-theme="dark"] .rail-add { color: #a9a8a3; }
 :root[data-theme="dark"] .rail-search {
 	box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.06);
@@ -39,7 +39,6 @@
 :root[data-theme="dark"] :is(.hub-note, .hub-or, .company-meta) { color: #8d9199; }
 :root[data-theme="dark"] :is(.hub-create input, .company-card-compose input) { background: #242423; }
 :root[data-theme="dark"] :is(.hub-create input, .company-card-compose input)::placeholder { color: #7d818a; }
-:root[data-theme="dark"] :is(.hub-create input, .company-card-compose input):focus-visible { border-color: #4f8cf6; box-shadow: 0 0 0 3px rgba(79, 140, 246, 0.28); }
 :root[data-theme="dark"] .company-card {
 	border-color: rgba(255, 255, 255, 0.08); background: #232322;
 	box-shadow: 0 14px 36px rgba(0, 0, 0, 0.28), 0 2px 6px rgba(0, 0, 0, 0.2);
@@ -71,7 +70,6 @@
 :root[data-theme="dark"] :is(.auth-provider, .auth-form input) { background: #242423; }
 :root[data-theme="dark"] .auth-provider:hover:not(:disabled) { background: #2c2c2b; border-color: rgba(255, 255, 255, 0.34); }
 :root[data-theme="dark"] .auth-form input::placeholder { color: #7d818a; }
-:root[data-theme="dark"] .auth-form input:focus-visible { box-shadow: 0 0 0 3px rgba(79, 140, 246, 0.28); }
 :root[data-theme="dark"] .auth-primary { color: var(--on-primary); }
 :root[data-theme="dark"] .auth-primary:hover:not(:disabled) { background: var(--primary-hover); }
 :root[data-theme="dark"] .auth-status.is-error { color: #ff9084; }
@@ -87,7 +85,7 @@
 :root[data-theme="dark"] .surface-dialog { border-color: var(--border); box-shadow: 0 20px 60px rgb(0 0 0 / 55%); }
 :root[data-theme="dark"] .surface-dialog::backdrop { background: rgb(0 0 0 / 40%); }
 :root[data-theme="dark"] .agent-inline-field.is-editable:hover { background: rgba(255, 255, 255, 0.06); }
-:root[data-theme="dark"] .agent-inline-field.is-editable:focus-within { background: #1f1f1e; box-shadow: inset 0 0 0 1px #3f7fd6, 0 0 0 3px rgb(10 132 255 / 22%); }
+:root[data-theme="dark"] .agent-inline-field.is-editable:focus-within { background: #1f1f1e; }
 :root[data-theme="dark"] .agent-inline-field > .icon { color: #8f8e89; }
 :root[data-theme="dark"] .agent-inline-description { color: #d6d5d1; }
 /* The figure darkens inside a pale outline of itself; on this surface the outline is a lighter grey. */
@@ -110,14 +108,14 @@
 
 /* ---- conversation ------------------------------------------------------------ */
 :root[data-theme="dark"] .bubble { background: #3a3a3c; color: var(--text); }
-:root[data-theme="dark"] .mine .bubble { background: #0a84ff; color: #fff; box-shadow: none; }
+:root[data-theme="dark"] .mine .bubble { background: var(--composer-accent); color: var(--composer-on-accent); box-shadow: none; }
 :root[data-theme="dark"] .message-progress .bubble { color: #d6d5d1; }
 :root[data-theme="dark"] .message.typing { background: #3a3a3c; }
 :root[data-theme="dark"] .message.typing span { background: #a3a29e; }
 :root[data-theme="dark"] .composer-shell { background: #242423; }
-:root[data-theme="dark"] :is(.composer-shell:focus-within, .composer-shell.is-dragging) { border-color: #3f7fd6; box-shadow: 0 0 0 2px rgb(10 132 255 / 22%); }
+:root[data-theme="dark"] .composer-shell.is-dragging { border-color: var(--composer-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--composer-accent) 22%, transparent); }
 :root[data-theme="dark"] .composer-send:disabled { background: #353534; color: #71706c; }
-:root[data-theme="dark"] .composer-send:not(:disabled):hover { background: var(--primary-hover); }
+:root[data-theme="dark"] .composer-send:not(:disabled):hover { background: var(--composer-accent-hover); }
 :root[data-theme="dark"] .composer-menu { box-shadow: 0 12px 30px rgb(0 0 0 / 45%); }
 :root[data-theme="dark"] .attachment-chip { background: #2c2c2b; }
 :root[data-theme="dark"] .attachment-remove { background: #3a3a38; box-shadow: 0 1px 4px rgb(0 0 0 / 40%); }
@@ -167,9 +165,9 @@
 :root[data-theme="dark"] .panel-search input { background: #232322; }
 :root[data-theme="dark"] .panel-group-title { color: #8f8e89; }
 :root[data-theme="dark"] .person-row + .person-row { border-top-color: rgba(255, 255, 255, 0.06); }
-:root[data-theme="dark"] .connection-card { background: #333332; }
-:root[data-theme="dark"] :is(.connection-sign-in, .connection-account) { border-color: rgba(255, 255, 255, 0.1); }
-:root[data-theme="dark"] .settings-dialog :focus-visible { outline-color: #6f9be0; }
+:root[data-theme="dark"] .connection-list { background: #333332; }
+:root[data-theme="dark"] :is(.connection-sign-in, .connection-account, .connection-card, .connection-provider-picker) { border-color: rgba(255, 255, 255, 0.1); }
+:root[data-theme="dark"] .settings-dialog :focus-visible:not(:where(input, textarea)) { outline-color: #6f9be0; }
 
 /* ---- feedback ---------------------------------------------------------------- */
 :root[data-theme="dark"] .feedback-dialog { border-color: rgba(255, 255, 255, 0.1); box-shadow: 0 24px 72px rgba(0, 0, 0, 0.6); }
@@ -179,7 +177,7 @@
 :root[data-theme="dark"] :is(.feedback-category:hover:not(:disabled), .feedback-category:focus-visible) { border-color: rgba(255, 255, 255, 0.3); background: rgba(255, 255, 255, 0.05); }
 :root[data-theme="dark"] .feedback-category[aria-pressed="true"] { border-color: var(--text); background: var(--text); color: var(--bg); }
 :root[data-theme="dark"] .feedback-details-wrap textarea { border-color: rgba(255, 255, 255, 0.2); background: #1f1f1e; }
-:root[data-theme="dark"] .feedback-details-wrap textarea:focus { border-color: #5a8ff0; box-shadow: 0 0 0 2px rgba(90, 143, 240, 0.25); }
+:root[data-theme="dark"] .feedback-details-wrap textarea:focus { border-color: var(--text-soft); }
 :root[data-theme="dark"] .feedback-details-wrap textarea::placeholder { color: #85847f; }
 :root[data-theme="dark"] .feedback-status { color: #ff9084; }
 :root[data-theme="dark"] .feedback-status[data-state="success"] { color: #5ed6a9; }

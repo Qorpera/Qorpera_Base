@@ -10,7 +10,7 @@ import { ApprovalsView } from "../src/app/views/approvals.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type { SessionInputWriter } from "../src/cloud/session-input.ts";
-import type { HostedSessionEvent } from "../src/cloud/types.ts";
+import type { HostedRunRecovery, HostedSessionEvent, HostedStaffExecutionActivity } from "../src/cloud/types.ts";
 import { deferred, event, fixture, id, pending, profileA, session, settle, staff, team, userA } from "./fixtures.ts";
 
 const cleanup: (() => void)[] = [];
@@ -37,6 +37,7 @@ const connections: NativeExecutionConnections = {
 	connections: [
 		{
 			connectionId: id(80),
+			clientConnectionId: id(180),
 			connectionVersion: 1,
 			provider: "openai",
 			nativeHarness: "codex-cli",
@@ -380,5 +381,172 @@ describe("approvals lifecycle regressions", () => {
 		await vi.advanceTimersByTimeAsync(30_000);
 		for (const method of [api.getTeam, api.listStaff, api.listSessions, api.getOrganization, api.listStaffActivity])
 			expect(vi.mocked(method).mock.calls.length).toBeGreaterThan(1);
+	});
+});
+
+describe("agent execution state", () => {
+	const row = (
+		jobStatus: HostedStaffExecutionActivity["jobStatus"],
+		activity: HostedStaffExecutionActivity["activity"],
+	): HostedStaffExecutionActivity => ({
+		runId: id(70),
+		staffAgentId: staff.id,
+		sourceKind: "session_turn",
+		jobStatus,
+		activity,
+		updatedAt: "2026-09-19T00:00:00Z",
+	});
+	const recovery = (extra: Partial<HostedRunRecovery> = {}): HostedRunRecovery => ({
+		runId: id(70),
+		sourceKind: "session_turn",
+		jobStatus: "failed",
+		unsettledOperations: 0,
+		...extra,
+	});
+	function controller() {
+		const f = fixture();
+		const company = new CompanyController(f.api, profileA, userA.id);
+		cleanup.push(() => company.stop());
+		return { ...f, company };
+	}
+
+	it("maps every activity row the server can send to what the member sees", () => {
+		const { company } = controller();
+		const state = (activity?: HostedStaffExecutionActivity, recoveries: Record<string, HostedRunRecovery> = {}) => {
+			company.store.set({ activity: activity ? [activity] : [], recoveries });
+			return company.agentState(staff.id);
+		};
+		expect(state()).toBe("idle");
+		expect(state(row("queued", "waiting"))).toBe("working");
+		expect(state(row("leased", "working"))).toBe("working");
+		expect(state(row("completed", "needs_attention"))).toBe("decision");
+		expect(state(row("failed", "needs_attention"))).toBe("failed");
+		expect(state(row("cancelled", "needs_attention"))).toBe("failed");
+		// A failed run that left Company File changes waits on a decision.
+		expect(state(row("cancelled", "needs_attention"), { [id(70)]: recovery({ proposalId: id(71) }) })).toBe(
+			"decision",
+		);
+		expect(company.agentState(undefined)).toBe("idle");
+	});
+
+	// Recovery reads are timed with performance.now(), so the fake clock must drive it too.
+	const fakeClock = () =>
+		vi.useFakeTimers({
+			toFake: ["Date", "performance", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
+		});
+
+	it("reads a plain failure once and forgets it once the server stops reporting it", async () => {
+		fakeClock();
+		const { api, company } = controller();
+		const read = vi.spyOn(api, "getRunRecovery").mockResolvedValue(recovery({ lastError: "Provider failed" }));
+		vi.mocked(api.listStaffActivity).mockResolvedValue([row("failed", "needs_attention")]);
+		await company.refreshActivity();
+		await settle();
+		expect(read).toHaveBeenCalledWith(id(70));
+		expect(company.agentState(staff.id)).toBe("failed");
+		expect(company.failedRunFor(staff.id)?.recovery?.lastError).toBe("Provider failed");
+		// A plain failure changes only by being dismissed, so it is not read again.
+		vi.advanceTimersByTime(120_000);
+		await company.refreshActivity();
+		await settle();
+		expect(read).toHaveBeenCalledTimes(1);
+		vi.mocked(api.listStaffActivity).mockResolvedValue([]);
+		await company.refreshActivity();
+		expect(company.agentState(staff.id)).toBe("idle");
+		expect(company.store.get().recoveries).toEqual({});
+	});
+
+	it("rereads a run waiting on a proposal, at once after a Company File change, without redundant redraws", async () => {
+		fakeClock();
+		const { api, company, hints } = controller();
+		const read = vi.spyOn(api, "getRunRecovery").mockResolvedValue(recovery({ proposalId: id(71) }));
+		vi.mocked(api.listStaffActivity).mockResolvedValue([row("failed", "needs_attention")]);
+		await company.start();
+		await settle();
+		expect(company.agentState(staff.id)).toBe("decision");
+		// The same answer again causes no store notification beyond the activity read's own.
+		let notices = 0;
+		company.store.subscribe(() => notices++);
+		vi.advanceTimersByTime(25_000);
+		await company.refreshActivity();
+		await settle();
+		expect(read).toHaveBeenCalledTimes(2);
+		expect(notices).toBe(1);
+		// Accepting the proposal moves the Company File head; the run is read again right away.
+		read.mockResolvedValue(recovery());
+		hints.get("qorpera_company_files")!();
+		await settle();
+		expect(read).toHaveBeenCalledTimes(3);
+		expect(company.agentState(staff.id)).toBe("failed");
+	});
+
+	it("retries a failed read soon and stops asking a cloud without the RPC", async () => {
+		fakeClock();
+		const { api, company } = controller();
+		const read = vi
+			.spyOn(api, "getRunRecovery")
+			.mockRejectedValueOnce(new Error("Network error"))
+			.mockResolvedValue(recovery());
+		vi.mocked(api.listStaffActivity).mockResolvedValue([row("failed", "needs_attention")]);
+		await company.refreshActivity();
+		await settle();
+		expect(company.failedRunFor(staff.id)?.recovery).toBeUndefined();
+		vi.advanceTimersByTime(5_000);
+		await company.refreshActivity();
+		await settle();
+		expect(read).toHaveBeenCalledTimes(2);
+		expect(company.failedRunFor(staff.id)?.recovery).toEqual(recovery());
+		const other = controller();
+		const missing = vi
+			.spyOn(other.api, "getRunRecovery")
+			.mockRejectedValue(
+				new CloudRpcError("qorpera_get_execution_run_recovery", { message: "Missing", code: "PGRST202" }, 404),
+			);
+		vi.mocked(other.api.listStaffActivity).mockResolvedValue([row("failed", "needs_attention")]);
+		await other.company.refreshActivity();
+		await settle();
+		vi.advanceTimersByTime(60_000);
+		await other.company.refreshActivity();
+		await settle();
+		expect(missing).toHaveBeenCalledTimes(1);
+		expect(other.company.agentState(staff.id)).toBe("failed");
+	});
+
+	it("reads the run again after a refused dismissal and keeps the newest answer", async () => {
+		const { api, company } = controller();
+		const first = deferred<HostedRunRecovery>();
+		const read = vi
+			.spyOn(api, "getRunRecovery")
+			.mockReturnValueOnce(first.promise)
+			.mockResolvedValueOnce(recovery({ proposalId: id(71) }));
+		vi.spyOn(api, "discardFailedRun").mockRejectedValue(
+			new Error("execution recovery still has an unresolved durable outcome"),
+		);
+		vi.mocked(api.listStaffActivity).mockResolvedValue([row("failed", "needs_attention")]);
+		await company.refreshActivity();
+		await expect(company.dismissFailedRun(id(70))).rejects.toThrow("unresolved durable outcome");
+		await settle();
+		expect(read).toHaveBeenCalledTimes(2);
+		expect(company.agentState(staff.id)).toBe("decision");
+		// The first read answers last and must not undo the newer one.
+		first.resolve(recovery());
+		await settle();
+		expect(company.agentState(staff.id)).toBe("decision");
+	});
+
+	it("keeps a failed run whose details cannot be read, and dismisses it", async () => {
+		const { api, company } = controller();
+		vi.spyOn(api, "getRunRecovery").mockRejectedValue(new Error("execution recovery is unavailable"));
+		const discard = vi.spyOn(api, "discardFailedRun").mockResolvedValue();
+		vi.mocked(api.listStaffActivity).mockResolvedValue([row("failed", "needs_attention")]);
+		await company.refreshActivity();
+		await settle();
+		expect(company.agentState(staff.id)).toBe("failed");
+		expect(company.failedRunFor(staff.id)).toEqual({ activity: row("failed", "needs_attention") });
+		vi.mocked(api.listStaffActivity).mockResolvedValue([]);
+		await company.dismissFailedRun(id(70));
+		expect(discard).toHaveBeenCalledWith(id(70));
+		expect(company.agentState(staff.id)).toBe("idle");
+		expect(company.failedRunFor(staff.id)).toBeUndefined();
 	});
 });

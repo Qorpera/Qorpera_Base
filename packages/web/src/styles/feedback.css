@@ -15,7 +15,7 @@
 .feedback-category[aria-pressed="true"] { border-color: var(--text); background: var(--text); color: var(--bg); }
 .feedback-details-wrap { display: grid; gap: 5px; }
 .feedback-details-wrap textarea { width: 100%; min-height: 112px; max-height: 240px; resize: vertical; padding: 12px 13px; border: 1px solid #bdbdb9; border-radius: 9px; background: #fff; color: var(--text); font: 13px/1.5 var(--font-sans); outline: none; }
-.feedback-details-wrap textarea:focus { border-color: #4c83df; box-shadow: 0 0 0 2px rgba(76, 131, 223, 0.16); }
+.feedback-details-wrap textarea:focus { outline: none; border-color: var(--text-soft); }
 .feedback-details-wrap textarea::placeholder { color: #8a8a86; }
 .feedback-modal > footer { display: grid; gap: 8px; padding: 12px 22px 15px; border-top: 1px solid var(--border); }
 .feedback-status { margin: 0; color: #b34537; font-size: 11.5px; line-height: 1.4; overflow-wrap: anywhere; }
