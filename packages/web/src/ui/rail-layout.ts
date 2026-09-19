@@ -1,5 +1,6 @@
 import { h } from "./dom.ts";
 import { matchesKey } from "./keys.ts";
+import { isPhoneLayout } from "./layout.ts";
 
 const COMPACT = 80;
 const MIN = 240;
@@ -7,13 +8,9 @@ const MIN = 240;
 const DEFAULT = 456;
 /** The rail may take at most two fifths of the window, a touch wider than a Messages sidebar. */
 const MAX_SHARE = 0.4;
-/** Up to this window width the rail is a drawer (app.css), shown whole and never collapsed. */
-const DRAWER_MAX = 760;
+/** Version 2 came with the 456px default: widths stored before it are not carried over,
+ * so every member starts once from the new default. */
 const STORAGE_KEY = "qorpera.web.rail-width.v2";
-/** Where widths were stored while the default was 304px. A stored 304 there was almost
- * always a reset to that default, so it is dropped; any other width moves over once. */
-const OLD_STORAGE_KEY = "qorpera.web.rail-width";
-const OLD_DEFAULT = 304;
 
 /** Only a browser layout preference. Company navigation remains canonical. */
 export class RailLayout {
@@ -32,12 +29,6 @@ export class RailLayout {
 		this.#frame = frame;
 		this.#rail = rail;
 		try {
-			const old = localStorage.getItem(OLD_STORAGE_KEY);
-			if (old !== null) {
-				localStorage.removeItem(OLD_STORAGE_KEY);
-				if (Number(old) !== OLD_DEFAULT && localStorage.getItem(STORAGE_KEY) === null)
-					localStorage.setItem(STORAGE_KEY, old);
-			}
 			const width = Number(localStorage.getItem(STORAGE_KEY));
 			if (Number.isFinite(width) && (width === COMPACT || width >= MIN)) this.#preferred = width;
 		} catch {
@@ -52,7 +43,7 @@ export class RailLayout {
 			"aria-valuemin": String(COMPACT),
 		});
 		this.el.addEventListener("pointerdown", (event) => {
-			if (event.button !== 0 || window.innerWidth <= DRAWER_MAX) return;
+			if (event.button !== 0 || isPhoneLayout()) return;
 			event.preventDefault();
 			this.#dragging = true;
 			this.#dragged = false;
@@ -127,13 +118,12 @@ export class RailLayout {
 	#apply(): void {
 		const max = this.#cap();
 		const width = Math.min(this.#preferred, max);
-		const drawer = window.innerWidth <= DRAWER_MAX;
+		const drawer = isPhoneLayout();
 		if (width === this.#width && max === this.#max && drawer === this.#drawer) return;
 		this.#width = width;
 		this.#max = max;
 		this.#drawer = drawer;
-		// Only the rail and its edge read the width. Set on the frame, every change
-		// would restyle the whole app, once per frame while the window is resized.
+		// --rail-width does not inherit (app.css), so each of its two readers carries its own value.
 		this.#rail.style.setProperty("--rail-width", `${width}px`);
 		this.el.style.setProperty("--rail-width", `${width}px`);
 		// Collapsed only where the rail stands beside the page; the drawer always shows it whole.

@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
+import type { Route } from "../src/app/router.ts";
 import { ApprovalsView } from "../src/app/views/approvals.ts";
 import { HubController } from "../src/app/views/hub.ts";
 import { NewConversationView } from "../src/app/views/new-conversation.ts";
@@ -43,6 +44,12 @@ const cleanup: (() => void)[] = [];
 beforeEach(() => {
 	localStorage.clear();
 	vi.stubGlobal("innerWidth", 1280);
+	// The phone layout follows the stubbed window width, as the stylesheet's media query does.
+	vi.stubGlobal("matchMedia", (query: string) => ({
+		matches: query === "(max-width: 760px)" && window.innerWidth <= 760,
+		addEventListener() {},
+		removeEventListener() {},
+	}));
 	HTMLDialogElement.prototype.show = function () {
 		this.open = true;
 	};
@@ -67,25 +74,28 @@ function companyFixture() {
 	cleanup.push(() => company.stop());
 	return { ...f, company };
 }
-/** The company rail inside the app frame, drawn for the company home. */
+/** The company rail and its resizer inside the app frame, drawn for the company home unless told otherwise. */
 function mountRail(f: ReturnType<typeof companyFixture>) {
 	const rail = h("aside", { class: "rail" }),
 		frame = h("div", { class: "frame" }, rail);
 	document.body.append(frame);
 	const auth = new AuthController(f.cloud);
 	cleanup.push(() => auth.dispose());
-	const draw = () =>
+	const draw = (route: Route = { name: "company", profileId: profileA.profileId, section: "home" }) =>
 		renderRail(rail, f.company, {
 			profiles: [profileA],
 			user: userA,
-			route: { name: "company", profileId: profileA.profileId, section: "home" },
+			route,
 			auth,
 			invitations: 0,
 			openSettings: () => {},
 			openFeedback: () => {},
 		});
 	draw();
-	return { rail, frame, draw };
+	const layout = new RailLayout(frame, rail);
+	frame.append(layout.el);
+	cleanup.push(() => layout.dispose());
+	return { rail, frame, draw, layout };
 }
 const imageMessage: TranscriptMessage = {
 	kind: "member",
@@ -229,21 +239,15 @@ describe("shell presentation lifecycle", () => {
 		rail.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
 		expect(rail.el.getAttribute("aria-valuenow")).toBe("456");
 	});
-	it("moves a width stored under the old default over once, dropping the old 304px default", () => {
+	it("starts every member once from the new default and keeps any width chosen since", () => {
 		const shown = () => {
 			const aside = h("aside", { class: "rail" }),
 				rail = new RailLayout(h("div", null, aside), aside);
 			cleanup.push(() => rail.dispose());
 			return rail.el.getAttribute("aria-valuenow");
 		};
-		localStorage.setItem("qorpera.web.rail-width", "304");
-		expect(shown()).toBe("456");
-		expect(localStorage.getItem("qorpera.web.rail-width")).toBeNull();
-		expect(localStorage.getItem("qorpera.web.rail-width.v2")).toBeNull();
 		localStorage.setItem("qorpera.web.rail-width", "400");
-		expect(shown()).toBe("400");
-		expect(localStorage.getItem("qorpera.web.rail-width.v2")).toBe("400");
-		// A 304px chosen now is a choice like any other.
+		expect(shown()).toBe("456");
 		localStorage.setItem("qorpera.web.rail-width.v2", "304");
 		expect(shown()).toBe("304");
 	});
@@ -565,7 +569,7 @@ it("keeps the rail's search field, rows and focus through redraws and pauses the
 	const f = companyFixture();
 	const other = { ...staff, id: id(92), displayName: "Second agent" };
 	f.company.store.set({ staff: [staff, other] });
-	const { rail, frame, draw } = mountRail(f);
+	const { rail, frame, draw, layout } = mountRail(f);
 	const toolbar = rail.querySelector(".rail-toolbar"),
 		list = rail.querySelector(".rail-scroll"),
 		search = rail.querySelector<HTMLInputElement>('input[type="search"]')!,
@@ -573,8 +577,12 @@ it("keeps the rail's search field, rows and focus through redraws and pauses the
 		otherRow = rail.querySelector<HTMLElement>(`a[href$="/staff/${other.id}"]`)!;
 	// An update that changes nothing the rail shows leaves its elements, and keyboard focus, alone.
 	row.focus();
+	const listChanges = new MutationObserver(() => {});
+	listChanges.observe(list!, { childList: true, subtree: true });
 	f.company.store.set({ activity: [] });
 	draw();
+	expect(listChanges.takeRecords()).toHaveLength(0);
+	listChanges.disconnect();
 	expect(rail.querySelector(`a[href$="/staff/${staff.id}"]`)).toBe(row);
 	expect(document.activeElement).toBe(row);
 	// A change rebuilds only the row it touches, inside the same list, and focus moves to the rebuilt row.
@@ -584,7 +592,7 @@ it("keeps the rail's search field, rows and focus through redraws and pauses the
 	expect(rebuilt).not.toBe(row);
 	expect(rail.querySelector(`a[href$="/staff/${other.id}"]`)).toBe(otherRow);
 	expect(document.activeElement).toBe(rebuilt);
-	// When the focused row goes away, focus moves to the nearest row left, not to the page.
+	// When the focused row goes away, focus moves to the row now in its place, not to the page.
 	otherRow.focus();
 	f.company.store.set({
 		staff: [
@@ -594,7 +602,7 @@ it("keeps the rail's search field, rows and focus through redraws and pauses the
 	});
 	draw();
 	expect(rail.querySelector(`a[href$="/staff/${other.id}"]`)).toBeNull();
-	expect(document.activeElement).toBe(rebuilt);
+	expect(document.activeElement).toBe(rail.querySelector(`a[href$="/chat/${session.sessionId}"]`));
 	expect(rail.querySelector(".rail-toolbar")).toBe(toolbar);
 	expect(rail.querySelector(".rail-scroll")).toBe(list);
 	// Every keystroke filters, composed text included, and redraws never move the field.
@@ -607,9 +615,6 @@ it("keeps the rail's search field, rows and focus through redraws and pauses the
 	expect(document.activeElement).toBe(search);
 	expect(rail.textContent).toContain("No matching conversations.");
 	// Collapsing hides the field: its text stays, and it filters again once the rail opens.
-	const layout = new RailLayout(frame, rail);
-	frame.append(layout.el);
-	cleanup.push(() => layout.dispose());
 	layout.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Home" }));
 	expect(search.value).toBe("é");
 	expect(rail.textContent).toContain(staff.displayName);
@@ -629,12 +634,9 @@ it("keeps the rail's search field, rows and focus through redraws and pauses the
 	expect(f.cloud.rpc).not.toHaveBeenCalled();
 });
 
-it("leaves a hidden rail alone and moves the account menu only when the foot changes", () => {
+it("leaves a hidden rail alone and leaves the foot untouched by redraws that change nothing", () => {
 	const f = companyFixture();
-	const { rail, frame, draw } = mountRail(f);
-	const layout = new RailLayout(frame, rail);
-	frame.append(layout.el);
-	cleanup.push(() => layout.dispose());
+	const { rail, draw, layout } = mountRail(f);
 	const search = rail.querySelector<HTMLInputElement>('input[type="search"]')!;
 	search.value = "zz";
 	search.dispatchEvent(new Event("input"));
@@ -659,4 +661,74 @@ it("leaves a hidden rail alone and moves the account menu only when the foot cha
 	changes.disconnect();
 	expect(foot.querySelector(".account-menu")).not.toBeNull();
 	expect(f.cloud.rpc).not.toHaveBeenCalled();
+});
+
+it("moves the current row in place, keeps notices and moved rows, and retries figures that failed", () => {
+	const f = companyFixture();
+	const other = { ...staff, id: id(93), displayName: "Third agent" };
+	f.company.store.set({ staff: [staff, other], sessionsError: "Conversations are unavailable." });
+	const { rail, draw } = mountRail(f);
+	const at = (agent: typeof staff) => rail.querySelector<HTMLElement>(`a[href$="/staff/${agent.id}"]`)!;
+	const row = at(staff),
+		otherRow = at(other),
+		alert = rail.querySelector(".rail-scroll > [role=alert]");
+	expect(alert).not.toBeNull();
+	const listChanges = new MutationObserver(() => {});
+	listChanges.observe(rail.querySelector(".rail-scroll")!, { childList: true, subtree: true });
+	// Moving between agents marks the new row current without building either row again.
+	draw({ name: "company", profileId: profileA.profileId, section: "staff", id: staff.id });
+	expect(at(staff)).toBe(row);
+	expect(row.getAttribute("aria-current")).toBe("page");
+	expect(row.classList.contains("active")).toBe(true);
+	draw({ name: "company", profileId: profileA.profileId, section: "staff", id: other.id });
+	expect([at(staff), at(other)]).toEqual([row, otherRow]);
+	expect(row.hasAttribute("aria-current")).toBe(false);
+	expect(row.classList.contains("active")).toBe(false);
+	expect(otherRow.getAttribute("aria-current")).toBe("page");
+	expect(listChanges.takeRecords()).toHaveLength(0);
+	// A change to one row leaves the error notice where it is, so it is not announced again.
+	f.company.store.set({ staff: [{ ...staff, role: "Lead designer" }, other] });
+	draw();
+	expect(rail.querySelector(".rail-scroll")!.firstElementChild).toBe(alert);
+	expect(listChanges.takeRecords().some((record) => record.target === rail.querySelector(".rail-scroll"))).toBe(false);
+	listChanges.disconnect();
+	// A row that moves keeps its element and keyboard focus.
+	otherRow.focus();
+	f.company.store.set({ staff: [other, { ...staff, role: "Lead designer" }] });
+	draw();
+	expect(at(other)).toBe(otherRow);
+	expect(otherRow.nextElementSibling).toBe(at(staff));
+	expect(document.activeElement).toBe(otherRow);
+	// A row built again hands focus to its new element, even when a row before it left.
+	at(staff).focus();
+	f.company.store.set({
+		staff: [
+			{ ...other, employmentStatus: "archived" },
+			{ ...staff, role: "Designer" },
+		],
+	});
+	draw();
+	expect(at(other)).toBeNull();
+	expect(document.activeElement).toBe(at(staff));
+	// A figure whose artwork could not load is built again on the next draw, so it gets another try.
+	const failed = at(staff);
+	failed.querySelector(".figure")!.setAttribute("data-motion-unavailable", "true");
+	draw();
+	expect(at(staff)).not.toBe(failed);
+	expect(at(staff).querySelector("[data-motion-unavailable]")).toBeNull();
+	expect(f.cloud.rpc).not.toHaveBeenCalled();
+});
+
+it("builds the account menu again in the language it is next shown in", () => {
+	const f = companyFixture();
+	const { rail, frame, draw } = mountRail(f);
+	const signOut = () => rail.querySelector(".account-signout .account-item-label")?.textContent;
+	expect(signOut()).toBe("Sign out");
+	// The language changes while the menu is off the page, where the switch cannot reach it.
+	frame.remove();
+	expect(setLanguagePreference("da")).toBe(true);
+	document.body.append(frame);
+	draw();
+	expect(signOut()).toBe(uiText("Sign out").textContent);
+	expect(signOut()).not.toBe("Sign out");
 });

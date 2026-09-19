@@ -512,6 +512,7 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 .mobile-navigation-toggle, .navigation-backdrop { display: none; }
+/* The phone layout; scripts ask the same query through isPhoneLayout (src/ui/layout.ts). */
 @media (max-width: 760px) {
 	.topbar.topbar-company { display: flex; }
 	.frame.has-thread .topbar.topbar-company { display: none; }

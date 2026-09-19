@@ -3,7 +3,7 @@ import type { HostedProfile, HostedStaffAgent, HostedStaffExecutionActivity } fr
 import { agentFigure } from "../../ui/avatar.ts";
 import { badge, button, h, icon, initials, notice, replace } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
-import { uiText } from "../../ui/preferences.ts";
+import { presentationLocale, uiText } from "../../ui/preferences.ts";
 import { type AuthController, displayName } from "../auth.ts";
 import type { CompanyController } from "../company.ts";
 import type { Route } from "../router.ts";
@@ -108,9 +108,8 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 	accountMenu.classList.toggle("account-menu-rail", Boolean(company));
 	accountContext = context;
 	const name = displayName(context.user);
-	const shown = JSON.stringify([name, context.invitations, Boolean(company)]);
+	const shown = JSON.stringify([name, context.invitations, Boolean(company), presentationLocale()]);
 	if (shown === accountShown) return accountMenu;
-	accountShown = shown;
 	accountTrigger!.setAttribute("aria-label", `Profile: ${name}`);
 	accountTrigger!.title = name;
 	// Friends and the company invitations waiting for this account share one settings tab.
@@ -174,6 +173,7 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 			h("span", { class: "account-item-label" }, uiText("Sign out")),
 		),
 	);
+	accountShown = shown;
 	return accountMenu;
 }
 
@@ -230,10 +230,15 @@ interface RailParts {
 	readonly list: HTMLElement;
 	readonly connection: HTMLElement;
 	readonly foot: HTMLElement;
-	/** What the list last showed; an update that changes none of it leaves the list alone. */
-	shown: string;
-	/** The rows last shown, by where they lead, each with what it showed. */
+	/** The list's own slots, kept so that nothing unchanged ever leaves the page. */
+	readonly cofounderGroup: HTMLElement;
+	readonly rowList: HTMLElement;
+	readonly loading: HTMLElement;
+	readonly empty: HTMLElement;
+	/** The rows by where they lead, each with the model it was built from. */
 	rows: Map<string, { shown: string; element: HTMLElement }>;
+	/** The error notices by what they are about, each with the text it shows. */
+	notices: Map<string, { text: string; element: HTMLElement }>;
 	/** What the connection status last said. */
 	connectionShown: string;
 	/** Whether the last draw found the rail collapsed, where the search field is hidden. */
@@ -245,9 +250,15 @@ const railParts = new WeakMap<CompanyController, RailParts>();
 /** The rail collapsed to its figure column (RailLayout, desktop only), where the search field is hidden. */
 const isCollapsed = (element: Element) => element.closest(".rail-compact") !== null;
 
-/** Rebuilt rows are matched by where they lead, or by what a button is called or says. */
-const railItemKey = (element: Element) =>
-	element.getAttribute("href") ?? element.getAttribute("aria-label") ?? element.textContent;
+/** Makes a parent's children exactly these, removing first and then inserting only where
+ * a child is out of place, so a child that keeps its place never leaves the page. */
+function reconcile(parent: HTMLElement, children: readonly HTMLElement[]): void {
+	const kept = new Set<Element>(children);
+	for (const child of [...parent.children]) if (!kept.has(child)) child.remove();
+	children.forEach((child, index) => {
+		if (parent.children[index] !== child) parent.insertBefore(child, parent.children[index] ?? null);
+	});
+}
 
 function partsFor(company: CompanyController, redraw: () => void): RailParts {
 	let parts = railParts.get(company);
@@ -283,8 +294,12 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			list: h("div", { class: "rail-scroll" }),
 			connection,
 			foot: h("div", { class: "rail-footer" }, connection),
-			shown: "",
+			cofounderGroup: h("div", { class: "rail-cofounder", role: "group", "aria-label": "Co-Founder" }),
+			rowList: h("div", { class: "rail-list" }),
+			loading: h("p", { class: "rail-empty" }, "Loading…"),
+			empty: h("p", { class: "rail-empty" }),
 			rows: new Map(),
+			notices: new Map(),
 			connectionShown: "",
 			collapsed: false,
 			redraw,
@@ -319,42 +334,21 @@ function statusLine(agent: HostedStaffAgent | undefined, activity: HostedStaffEx
 	return agent?.role ?? "";
 }
 
-/** A queued run is already the agent's work from the member's side of the screen. */
-const isWorking = (activity: HostedStaffExecutionActivity | undefined) =>
-	activity !== undefined && activity.activity !== "needs_attention";
-const figureActivity = (activity: HostedStaffExecutionActivity | undefined) =>
-	isWorking(activity) ? "Working" : activity ? "Waiting" : "Idle";
-
 /* Each rail row is built from its model alone, and the model is also what decides
- * whether the row is rebuilt: whatever a row shows is in its key by construction. */
+ * whether the row is rebuilt: whatever a row shows is in its key by construction.
+ * Which row is current is set in place instead, since it changes with every navigation. */
 interface AgentModel extends Pick<HostedStaffAgent, "id" | "displayName" | "role" | "templateId" | "appearance"> {
-	figure: ReturnType<typeof figureActivity>;
+	figure: "Working" | "Waiting" | "Idle";
 	status: string;
-	current: boolean;
 }
 interface SessionModel {
 	title: string;
 	kind: "room" | "company";
-	current: boolean;
 }
-interface RailItem {
-	href: string;
-	shown: string;
-	build: () => HTMLElement;
-}
-function railItem<M>(href: string, model: M, build: (model: M, href: string) => HTMLElement): RailItem {
-	return { href, shown: JSON.stringify(model), build: () => build(model, href) };
-}
-
 function cofounderCard(model: AgentModel, href: string): HTMLElement {
 	return h(
 		"a",
-		{
-			class: ["cofounder-home", model.current ? "active" : ""].join(" "),
-			href,
-			title: `${model.displayName} · ${model.role}`,
-			"aria-current": model.current ? "page" : undefined,
-		},
+		{ class: "cofounder-home", href, title: `${model.displayName} · ${model.role}` },
 		h(
 			"span",
 			{ class: "cofounder-stand" },
@@ -370,12 +364,7 @@ function cofounderCard(model: AgentModel, href: string): HTMLElement {
 function agentRow(model: AgentModel, href: string): HTMLElement {
 	return h(
 		"a",
-		{
-			class: ["rail-row", model.current ? "active" : ""].join(" "),
-			href,
-			title: `${model.displayName} · ${model.role}`,
-			"aria-current": model.current ? "page" : undefined,
-		},
+		{ class: "rail-row", href, title: `${model.displayName} · ${model.role}` },
 		h(
 			"span",
 			{ class: "rail-row-stand" },
@@ -389,12 +378,7 @@ function agentRow(model: AgentModel, href: string): HTMLElement {
 function sessionRow(model: SessionModel, href: string): HTMLElement {
 	return h(
 		"a",
-		{
-			class: ["rail-row", model.current ? "active" : ""].join(" "),
-			href,
-			title: model.title,
-			"aria-current": model.current ? "page" : undefined,
-		},
+		{ class: "rail-row", href, title: model.title },
 		h(
 			"span",
 			{ class: "rail-row-stand" },
@@ -430,7 +414,33 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	const cofounder =
 		(state.organization ? company.staffById(state.organization.cofounder.staffAgentId) : undefined) ??
 		active.find((agent) => agent.templateId === "co-founder");
-	const agentModel = (agent: HostedStaffAgent, current: boolean): AgentModel => {
+	// Keyboard focus in the list stays on its element. A rebuilt row hands it to the row
+	// built in its place; an element that left hands it to whatever now stands where it stood.
+	const focusables = () => [...parts.list.querySelectorAll<HTMLElement>("a[href], button")];
+	const focused =
+		document.activeElement instanceof HTMLElement && parts.list.contains(document.activeElement)
+			? document.activeElement
+			: null;
+	const index = focused ? focusables().indexOf(focused) : -1;
+	let successor: HTMLElement | undefined;
+	// A row whose model is unchanged keeps its element (and its figure); only changed rows are built.
+	const rows = new Map<string, { shown: string; element: HTMLElement }>();
+	const row = <M>(href: string, model: M, current: boolean, build: (model: M, href: string) => HTMLElement) => {
+		const shown = JSON.stringify(model);
+		const kept = parts.rows.get(href);
+		// A figure that could not load is built again, so it gets another try.
+		const entry =
+			kept?.shown === shown && !kept.element.querySelector("[data-motion-unavailable]")
+				? kept
+				: { shown, element: build(model, href) };
+		if (kept && entry !== kept && kept.element === focused) successor = entry.element;
+		rows.set(href, entry);
+		entry.element.classList.toggle("active", current);
+		if (current) entry.element.setAttribute("aria-current", "page");
+		else entry.element.removeAttribute("aria-current");
+		return entry.element;
+	};
+	const agentModel = (agent: HostedStaffAgent): AgentModel => {
 		const activity = company.activityFor(agent.id);
 		return {
 			id: agent.id,
@@ -438,33 +448,29 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			role: agent.role,
 			templateId: agent.templateId,
 			appearance: agent.appearance,
-			figure: figureActivity(activity),
+			// A queued run is already the agent's work from the member's side of the screen.
+			figure: !activity ? "Idle" : activity.activity === "needs_attention" ? "Waiting" : "Working",
 			status: statusLine(agent, activity),
-			current,
 		};
 	};
-	const cofounderItem =
+	const cofounderElement =
 		cofounder && matches(`${cofounder.displayName} ${cofounder.role}`)
-			? railItem(
+			? row(
 					`#/c/${profileId}`,
-					agentModel(
-						cofounder,
-						Boolean(
-							section === "home" ||
-								(cofounderSessionId && activeSessionId === cofounderSessionId) ||
-								isActive(cofounder.id),
-						),
+					agentModel(cofounder),
+					Boolean(
+						section === "home" ||
+							(cofounderSessionId && activeSessionId === cofounderSessionId) ||
+							isActive(cofounder.id),
 					),
 					cofounderCard,
 				)
-			: undefined;
-	const rowItems = [
+			: null;
+	const rowElements = [
 		...active
 			.filter((agent) => agent.id !== cofounder?.id)
 			.filter((agent) => matches(`${agent.displayName} ${agent.role}`))
-			.map((agent) =>
-				railItem(`#/c/${profileId}/staff/${agent.id}`, agentModel(agent, isActive(agent.id)), agentRow),
-			),
+			.map((agent) => row(`#/c/${profileId}/staff/${agent.id}`, agentModel(agent), isActive(agent.id), agentRow)),
 		// Conversations that are not one agent's own thread: rooms and group work.
 		...state.sessions
 			.filter(
@@ -478,7 +484,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 								("roomId" in session.executionScope && session.executionScope.agentThread !== true)))),
 			)
 			.map((session) =>
-				railItem(
+				row(
 					`#/c/${profileId}/chat/${session.sessionId}`,
 					{
 						title: session.title,
@@ -486,77 +492,59 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 							session.executionScope && "roomId" in session.executionScope && !session.staffAgentId
 								? ("room" as const)
 								: ("company" as const),
-						current: activeSessionId === session.sessionId,
 					},
+					activeSessionId === session.sessionId,
 					sessionRow,
 				),
 			),
 	];
-	const loading = state.loading && !state.staff.length;
+	// An error notice is built again only when its text changes, so it is not announced again.
+	const notices = new Map<string, { text: string; element: HTMLElement }>();
+	const errorNotice = (about: string, text: string | undefined, retry: () => HTMLElement) => {
+		if (!text) return null;
+		const kept = parts.notices.get(about);
+		const entry = kept?.text === text ? kept : { text, element: notice("danger", text, retry()) };
+		notices.set(about, entry);
+		return entry.element;
+	};
 	const empty =
-		!state.loading && !cofounderItem && !rowItems.length
+		!state.loading && !cofounderElement && !rowElements.length
 			? railQuery
 				? "No matching conversations."
 				: "No agents yet."
 			: null;
-	const shown = JSON.stringify([
-		state.sessionsError ?? "",
-		state.error ?? "",
-		loading,
-		empty,
-		[cofounderItem, ...rowItems].map((item) => item && [item.href, item.shown]),
-	]);
-
-	if (shown !== parts.shown) {
-		parts.shown = shown;
-		// A row whose model is unchanged keeps its element (and its figure); only changed rows are built.
-		const rows = new Map<string, { shown: string; element: HTMLElement }>();
-		const element = (item: RailItem) => {
-			const kept = parts.rows.get(item.href);
-			const entry = kept?.shown === item.shown ? kept : { shown: item.shown, element: item.build() };
-			rows.set(item.href, entry);
-			return entry.element;
-		};
-		const cofounderElement = cofounderItem ? element(cofounderItem) : null;
-		const rowElements = rowItems.map(element);
-		parts.rows = rows;
-		// Keyboard focus goes back to the row or button it was on, or to the nearest thing left.
-		const focused = document.activeElement;
-		const focusKey = focused instanceof HTMLElement && parts.list.contains(focused) ? railItemKey(focused) : null;
-		replace(
-			parts.list,
-			state.sessionsError
-				? notice(
-						"danger",
-						state.sessionsError,
-						button("Retry conversations", () => void company.refreshSessions(), { small: true }),
-					)
-				: null,
-			state.error
-				? notice(
-						"danger",
-						state.error,
-						button("Retry company", () => void company.refreshAll(), { small: true }),
-					)
-				: null,
-			cofounderElement
-				? h("div", { class: "rail-cofounder", role: "group", "aria-label": "Co-Founder" }, cofounderElement)
-				: null,
-			loading ? h("p", { class: "rail-empty" }, "Loading…") : null,
-			rowElements.length ? h("div", { class: "rail-list" }, ...rowElements) : null,
-			empty ? h("p", { class: "rail-empty" }, empty) : null,
-		);
-		if (focusKey) {
-			const focusable = [...parts.list.querySelectorAll<HTMLElement>("a[href], button")];
-			const same = focusable.find((candidate) => railItemKey(candidate) === focusKey);
-			if (same) same.focus({ preventScroll: true });
-			else (focusable[0] ?? parts.input).focus();
+	if (empty && parts.empty.textContent !== empty) parts.empty.textContent = empty;
+	reconcile(parts.cofounderGroup, cofounderElement ? [cofounderElement] : []);
+	reconcile(parts.rowList, rowElements);
+	reconcile(
+		parts.list,
+		[
+			errorNotice("sessions", state.sessionsError, () =>
+				button("Retry conversations", () => void company.refreshSessions(), { small: true }),
+			),
+			errorNotice("company", state.error, () =>
+				button("Retry company", () => void company.refreshAll(), { small: true }),
+			),
+			cofounderElement ? parts.cofounderGroup : null,
+			state.loading && !state.staff.length ? parts.loading : null,
+			rowElements.length ? parts.rowList : null,
+			empty ? parts.empty : null,
+		].filter((element) => element !== null),
+	);
+	parts.rows = rows;
+	parts.notices = notices;
+	// A row moved to a new place loses focus on the way, so it gets it back too.
+	if (focused && document.activeElement !== focused) {
+		const replacement = focused.isConnected ? focused : successor;
+		if (replacement) replacement.focus({ preventScroll: true });
+		else {
+			const now = focusables();
+			(now[Math.min(index, now.length - 1)] ?? parts.input).focus();
 		}
 	}
 
 	const connection = state.realtime === "connected" ? "" : JSON.stringify([state.realtime, state.realtimeError ?? ""]);
 	if (connection !== parts.connectionShown) {
-		parts.connectionShown = connection;
 		parts.connection.hidden = !connection;
 		replace(
 			parts.connection,
@@ -568,6 +556,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 					)
 				: null,
 		);
+		parts.connectionShown = connection;
 	}
 	// The account menu is shared with the top bar; it moves back only when it is not here.
 	const menu = accountMenuElement(context, company);

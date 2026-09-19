@@ -516,7 +516,7 @@ above.
     would build exactly the screen that this trigger refuses, which is what
     happened here.
 
-### 2026-09-19 — from the web client session (`packages/web`, PR #118, revised in #124)
+### 2026-09-19 — from the web client session (`packages/web`, PR #118)
 
 12. **The web client no longer reads member notifications.** At the founder's
     request the web client removed its notification inbox and the rail's
@@ -524,7 +524,22 @@ above.
     `qorpera_acknowledge_member_notification` (the desktop list/acknowledge
     surface in the Steps 0–2 amendment ratification was never built), so
     request 8's "the web client will render member notifications" no longer
-    holds. Consequences on the runtime side:
+    holds. Two consequences on the runtime side:
+    - The usage-limit notice and the "never silent" sponsor handoff of
+      `QORPERA-RUNTIME-CONTRACT.md` §17 reach no member in any client.
+    - Nothing acknowledges a row, and the open-row unique index in
+      `20260828019980_provider_usage_signals.sql` keeps an unacknowledged
+      row in place, so repeat usage-limit and ceiling notices for the same key
+      are dropped (handoffs, keyed per handoff, keep accumulating).
+
+    Request: decide where these notices reach a member now — a surface a
+    client still shows, such as the run or conversation state — or record
+    in §17 that they are paused until a client shows them again.
+
+### 2026-09-19 — from the web client session (`packages/web`, PR #124)
+
+13. **Request 12 understated what stops reaching members.** Replacing its
+    consequences:
     - No notice reaches a member in any client: the usage-limit notice and the
       "never silent" sponsor handoff of `QORPERA-RUNTIME-CONTRACT.md` §17, the
       ceiling-trip notice of §7.4, and the founder stop notice of §21 item 30.
