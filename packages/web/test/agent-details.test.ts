@@ -105,7 +105,7 @@ describe("agent saves across panel lifetimes", () => {
 		expect(field("Agent name").value).toBe("Kept name");
 		expect(status()).toBe("Saving…");
 		press(type("Agent title", "New role"), "Enter");
-		type("Agent description", "New description").blur();
+		type("Responsibilities", "New description").blur();
 		expect(updateAgent).toHaveBeenCalledTimes(1);
 		first.resolve();
 		await settle();
@@ -188,7 +188,7 @@ describe("agent saves across panel lifetimes", () => {
 	it.each([
 		["Agent name", staff.displayName],
 		["Agent title", staff.role],
-		["Agent description", staff.charter],
+		["Responsibilities", staff.charter],
 	])("discards focused uncommitted %s text when authority is revoked", async (label, saved) => {
 		const updateAgent = saving();
 		const f = open({ updateAgent });
@@ -238,9 +238,9 @@ describe("agent details edited in place", () => {
 		open({ updateAgent });
 		press(type("Agent name", "Ada"), "Enter");
 		type("Agent title", "Lead").blur();
-		const description = type("Agent description", "Owns the launch.");
+		const description = type("Responsibilities", "Owns the launch.");
 		press(description, "Enter");
-		expect(field("Agent description")).toBe(document.activeElement);
+		expect(field("Responsibilities")).toBe(document.activeElement);
 		press(description, "Enter", { ctrlKey: true });
 		expect(updateAgent).toHaveBeenCalledTimes(1);
 		first.resolve(staff.version + 1);
@@ -364,7 +364,7 @@ describe("agent pages", () => {
 		],
 		projects: [],
 	};
-	it("opens routines and responsibilities from the corner, each with a way back", async () => {
+	it("opens routines from the corner with a way back; responsibilities are the description, not a page", async () => {
 		const routines = {
 			list: vi.fn(async () => []),
 			runs: vi.fn(async () => []),
@@ -378,7 +378,7 @@ describe("agent pages", () => {
 		const tools = [...f.dialog.querySelectorAll(".surface-tools button")].map((item) =>
 			item.getAttribute("aria-label"),
 		);
-		expect(tools).toEqual(["Responsibilities", "Routines", "Close agent details"]);
+		expect(tools).toEqual(["Routines", "Close agent details"]);
 		const toRoutines = named("Routines");
 		toRoutines.click();
 		// Until the first read answers, the page does not claim there are none.
@@ -397,13 +397,10 @@ describe("agent pages", () => {
 		expect(document.activeElement).toBe(toRoutines);
 		f.company.store.set({ organization });
 		await settle();
-		named("Responsibilities").click();
-		expect(f.dialog.textContent).toContain("Product quality");
-		expect(f.dialog.querySelector(".responsibility-node")?.getAttribute("href")).toBe(
-			`#/c/${profileA.profileId}/responsibility/${id(31)}`,
-		);
-		named("Responsibilities").click();
-		expect(f.dialog.dataset.page).toBe("details");
+		// Recorded responsibility objects no longer surface: the agent's own description is the reference.
+		expect(f.dialog.textContent).not.toContain("Product quality");
+		expect(f.dialog.querySelector('a[href*="/responsibility/"]')).toBeNull();
+		expect(field("Responsibilities").value).toBe(staff.charter);
 		f.company.store.set({ staff: [{ ...staff, displayName: "Renamed" }] });
 		await settle();
 		toRoutines.click();
@@ -412,13 +409,5 @@ describe("agent pages", () => {
 		expect(routines.list).toHaveBeenCalledTimes(2);
 		expect(f.dialog.textContent).toContain("Renamed has no routines yet.");
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
-	});
-	it("says when an agent has no responsibilities", () => {
-		const f = open();
-		named("Responsibilities").click();
-		expect(f.dialog.textContent).toContain("No responsibilities assigned yet.");
-		expect(f.dialog.querySelector(".agent-page-link")?.getAttribute("href")).toBe(
-			`#/c/${profileA.profileId}/organization`,
-		);
 	});
 });

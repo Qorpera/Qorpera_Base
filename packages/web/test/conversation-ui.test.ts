@@ -194,7 +194,7 @@ describe("conversation UI boundaries", () => {
 		identity.focus();
 		identity.click();
 		const field = (label: string) => document.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)!;
-		expect(field("Agent description").value).toBe(staff.charter);
+		expect(field("Responsibilities").value).toBe(staff.charter);
 		expect(field("Agent name").readOnly).toBe(true);
 		expect(button(document, "Edit figure").disabled).toBe(true);
 		expect(document.querySelector(".agent-inline-field.is-editable")).toBeNull();
