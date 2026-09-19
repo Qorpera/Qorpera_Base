@@ -1,10 +1,14 @@
 import type { CloudMemberCompanyFileClient } from "@qorpera/cloud-client/cloud-member-company-editor";
+import { describeError } from "../cloud/client.ts";
 import type { GroupChatDraft } from "../cloud/group-details.ts";
 import { record, UUID_PATTERN } from "../cloud/parse.ts";
 import type { CompanyController } from "./company.ts";
 import type { WorkspaceActions } from "./workspace-actions.ts";
 
 const ROOM_FIELDS = ["schema", "roomId", "key", "name", "purpose", "status", "projectId", "members", "version"];
+
+/** This invocation failed before sending a write; an earlier invocation may still be uncertain. */
+export class GroupUpdateNotWrittenError extends Error {}
 
 function memberKey(members: GroupChatDraft["members"]): string {
 	return JSON.stringify(members.map(({ kind, id }) => `${kind}:${id}`).sort());
@@ -19,64 +23,70 @@ export function createGroupUpdater(options: {
 	const company = options.company;
 	let busy = false;
 	return async (sessionId, observed, draft, viewSignal) => {
-		if (busy) throw new Error("Wait for this group chat to finish saving.");
-		const signal = AbortSignal.any([company.signal, viewSignal]);
-		const changes = {
-			name: draft.name.trim(),
-			purpose: draft.purpose.trim(),
-			members: draft.members.map((m) => ({ ...m })),
-		};
-		const check = () => {
-			signal.throwIfAborted();
-			options.current();
-			const state = company.store.get();
-			if (
-				state.accessLost ||
-				!state.team?.capabilities.write ||
-				!state.team.capabilities.authorize ||
-				!["owner", "admin"].includes(state.team.role) ||
-				state.team.profileId !== company.profile.profileId
-			)
-				throw new Error("Only an owner or admin can change group chats.");
-			const session = state.sessions.find((item) => item.sessionId === sessionId);
-			if (
-				!session ||
-				session.staffAgentId ||
-				session.status !== "open" ||
-				session.profileId !== company.profile.profileId ||
-				session.environmentId !== company.profile.environmentId ||
-				observed.sessionId !== sessionId ||
-				observed.environmentId !== session.environmentId ||
-				!UUID_PATTERN.test(observed.roomId) ||
-				session.executionScope?.roomId !== observed.roomId ||
-				observed.status !== "active" ||
-				!Number.isSafeInteger(observed.version) ||
-				observed.version < 1 ||
-				observed.version >= Number.MAX_SAFE_INTEGER
-			)
-				throw new Error("This group chat is no longer available.");
-			if (
-				changes.members.length > 256 ||
-				changes.members.filter((member) => member.kind === "staff_agent").length < 2 ||
-				new Set(changes.members.map((member) => `${member.kind}:${member.id}`)).size !== changes.members.length ||
-				changes.members.some((member) => {
-					if (!UUID_PATTERN.test(member.id)) return true;
-					if (member.kind === "member") return !state.team?.members.some((person) => person.userId === member.id);
-					if (member.kind !== "staff_agent") return true;
-					const agent = company.staffById(member.id);
-					return !agent || agent.profileId !== session.profileId || agent.employmentStatus !== "active";
-				})
-			)
-				throw new Error(
-					"Choose at least two active agents and current company members, with no duplicate participants.",
-				);
-		};
-		check();
-		if (!changes.name || [...changes.name].length > 256)
-			throw new Error("Enter a group name of no more than 256 characters.");
-		if (!changes.purpose) throw new Error("Enter a description for this group chat.");
+		if (busy) throw new GroupUpdateNotWrittenError("Wait for this group chat to finish saving.");
 		busy = true;
+		let writeStarted = false;
 		try {
+			const signal = AbortSignal.any([company.signal, viewSignal]);
+			const changes = {
+				name: draft.name.trim(),
+				...(draft.subtitle !== undefined ? { subtitle: draft.subtitle.trim() } : {}),
+				purpose: draft.purpose.trim(),
+				members: draft.members.map((m) => ({ ...m })),
+			};
+			const check = () => {
+				signal.throwIfAborted();
+				options.current();
+				const state = company.store.get();
+				if (
+					state.accessLost ||
+					!state.team?.capabilities.write ||
+					!state.team.capabilities.authorize ||
+					!["owner", "admin"].includes(state.team.role) ||
+					state.team.profileId !== company.profile.profileId
+				)
+					throw new Error("Only an owner or admin can change group chats.");
+				const session = state.sessions.find((item) => item.sessionId === sessionId);
+				if (
+					!session ||
+					session.staffAgentId ||
+					session.status !== "open" ||
+					session.profileId !== company.profile.profileId ||
+					session.environmentId !== company.profile.environmentId ||
+					observed.sessionId !== sessionId ||
+					observed.environmentId !== session.environmentId ||
+					!UUID_PATTERN.test(observed.roomId) ||
+					session.executionScope?.roomId !== observed.roomId ||
+					observed.status !== "active" ||
+					!Number.isSafeInteger(observed.version) ||
+					observed.version < 1 ||
+					observed.version >= Number.MAX_SAFE_INTEGER
+				)
+					throw new Error("This group chat is no longer available.");
+				if (
+					changes.members.length > 256 ||
+					changes.members.filter((member) => member.kind === "staff_agent").length < 2 ||
+					new Set(changes.members.map((member) => `${member.kind}:${member.id}`)).size !==
+						changes.members.length ||
+					changes.members.some((member) => {
+						if (!UUID_PATTERN.test(member.id)) return true;
+						if (member.kind === "member")
+							return !state.team?.members.some((person) => person.userId === member.id);
+						if (member.kind !== "staff_agent") return true;
+						const agent = company.staffById(member.id);
+						return !agent || agent.profileId !== session.profileId || agent.employmentStatus !== "active";
+					})
+				)
+					throw new Error(
+						"Choose at least two active agents and current company members, with no duplicate participants.",
+					);
+			};
+			check();
+			if (!changes.name || [...changes.name].length > 256)
+				throw new Error("Enter a group name of no more than 256 characters.");
+			if (changes.subtitle !== undefined && [...changes.subtitle].length > 256)
+				throw new Error("Enter a group subtitle of no more than 256 characters.");
+			if (!changes.purpose) throw new Error("Enter a description for this group chat.");
 			const editor = await options.editor(signal);
 			check();
 			const path = `organization/rooms/${observed.roomId}.json`;
@@ -91,13 +101,15 @@ export function createGroupUpdater(options: {
 				throw new Error("This group chat is no longer available.");
 			const document = record(JSON.parse(current.text), "group chat document");
 			if (
-				Object.keys(document).length !== ROOM_FIELDS.length ||
+				Object.keys(document).some((field) => field !== "subtitle" && !ROOM_FIELDS.includes(field)) ||
 				ROOM_FIELDS.some((field) => !Object.hasOwn(document, field)) ||
 				document.schema !== "qorpera.company-room/v1" ||
 				document.roomId !== observed.roomId ||
 				typeof document.key !== "string" ||
 				!/^[a-z0-9][a-z0-9._-]{0,95}$/.test(document.key) ||
 				typeof document.name !== "string" ||
+				(Object.hasOwn(document, "subtitle") &&
+					(typeof document.subtitle !== "string" || [...document.subtitle].length > 256)) ||
 				typeof document.purpose !== "string" ||
 				document.status !== "active" ||
 				(document.projectId !== null &&
@@ -122,6 +134,7 @@ export function createGroupUpdater(options: {
 				if (
 					document.version === observed.version + 1 &&
 					document.name === changes.name &&
+					(changes.subtitle === undefined || document.subtitle === changes.subtitle) &&
 					document.purpose === changes.purpose &&
 					memberKey(members) === memberKey(changes.members)
 				)
@@ -131,6 +144,7 @@ export function createGroupUpdater(options: {
 			const text = JSON.stringify({ ...document, ...changes, version: observed.version + 1 });
 			if (new TextEncoder().encode(text).length > 32768)
 				throw new Error("The group details are too long. Shorten the description.");
+			writeStarted = true;
 			let command = await editor.edit(
 				{
 					operation: "write",
@@ -150,6 +164,9 @@ export function createGroupUpdater(options: {
 			}
 			if (command.state !== "applied" || !command.result)
 				throw new Error("The group chat changes could not be saved.");
+		} catch (error) {
+			if (!writeStarted) throw new GroupUpdateNotWrittenError(describeError(error), { cause: error });
+			throw error;
 		} finally {
 			busy = false;
 		}

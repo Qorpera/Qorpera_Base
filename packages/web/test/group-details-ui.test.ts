@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
+import { GroupUpdateNotWrittenError } from "../src/app/update-group.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import type { WorkspaceActions } from "../src/app/workspace-actions.ts";
 import { deferred, fixture, id, profileA, session, settle, staff, team, timestamp, userA } from "./fixtures.ts";
@@ -69,6 +70,15 @@ function setup() {
 	};
 	return { ...f, rpc, company, view, header, open, updateGroup };
 }
+const field = (name: string) =>
+	document.querySelector<HTMLInputElement | HTMLTextAreaElement>(`.group-details [name="${name}"]`)!;
+function typeField(name: string, value: string) {
+	const input = field(name);
+	input.focus();
+	input.value = value;
+	input.dispatchEvent(new Event("input", { bubbles: true }));
+	return input;
+}
 const dialog = () => document.querySelector<HTMLDialogElement>('dialog[aria-label="Group details"]');
 const button = (label: string) =>
 	[...document.querySelectorAll<HTMLButtonElement>("button")].find(
@@ -87,8 +97,8 @@ describe("group details from the conversation header", () => {
 		expect(panel.textContent).toContain("Loading group details…");
 		await settle();
 		expect(f.rpc).toHaveBeenCalledWith("qorpera_list_company_rooms", { p_profile_id: profileA.profileId });
-		expect(panel.textContent).toContain("Planning");
-		expect(panel.textContent).toContain("Plan launch");
+		expect(field("name").value).toBe("Planning");
+		expect(field("purpose").value).toBe("Plan launch");
 		expect(panel.textContent).toContain("Participants (2)");
 		expect(panel.textContent).toContain(staff.displayName);
 		expect(panel.textContent).toContain(staff.role);
@@ -112,7 +122,7 @@ describe("group details from the conversation header", () => {
 		button("Retry").click();
 		await settle();
 		expect(f.rpc).toHaveBeenCalledTimes(2);
-		expect(panel.textContent).toContain("Plan launch");
+		expect(field("purpose").value).toBe("Plan launch");
 		expect(panel.textContent).toContain(staff.displayName);
 	});
 
@@ -126,12 +136,12 @@ describe("group details from the conversation header", () => {
 		f.rpc.mockResolvedValueOnce([{ ...room, name: "Current group", members: [room.members[1]] }]);
 		const current = f.open();
 		await settle();
-		expect(current.textContent).toContain("Current group");
+		expect(field("name").value).toBe("Current group");
 		expect(current.textContent).toContain("Participants (1)");
 		pending.resolve([{ ...room, name: "Outdated group" }]);
 		await settle();
 		expect(dialog()).toBe(current);
-		expect(current.textContent).not.toContain("Outdated group");
+		expect(field("name").value).toBe("Current group");
 		expect(current.textContent).not.toContain(staff.displayName);
 		expect(f.rpc).toHaveBeenCalledTimes(2);
 	});
@@ -157,137 +167,224 @@ describe("group details from the conversation header", () => {
 		},
 	);
 
-	it("saves edited name, description and membership, then reloads the canonical details and session title", async () => {
+	it("edits title, subtitle and description in place without an Edit group button", async () => {
 		const f = setup();
 		const panel = f.open();
 		await settle();
-		button("Edit group").click();
-		const name = panel.querySelector<HTMLInputElement>('input[name="name"]')!;
-		const purpose = panel.querySelector<HTMLTextAreaElement>('textarea[name="purpose"]')!;
+		expect(button("Edit group")).toBeUndefined();
+		expect(field("name").getAttribute("aria-label")).toBe("Group title");
+		expect(field("subtitle").value).toBe("Group chat");
+		let canonical = { ...room };
+		f.updateGroup.mockImplementation(async (_session, observed, draft) => {
+			canonical = { ...canonical, ...draft, version: observed.version + 1 };
+			f.rpc.mockResolvedValue([canonical]);
+			vi.mocked(f.api.listSessions).mockResolvedValue([{ ...group, title: canonical.name }]);
+		});
+		for (const [key, value] of [
+			["name", "Launch team"],
+			["subtitle", "Launch coordination"],
+			["purpose", "Coordinate the launch schedule"],
+		]) {
+			const control = typeField(key!, value!);
+			if (key === "purpose") control.blur();
+			else control.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+			await settle();
+			expect(control.value).toBe(value);
+		}
+		expect(f.updateGroup).toHaveBeenCalledTimes(3);
+		expect(f.updateGroup.mock.calls[2]?.[2]).toMatchObject({
+			name: "Launch team",
+			subtitle: "Launch coordination",
+			purpose: "Coordinate the launch schedule",
+			members: room.members,
+		});
+		expect(f.header.querySelector("h1")?.textContent).toBe("Launch team");
+		expect(panel.querySelector(".group-edit-form")).toBeNull();
+	});
+
+	it("cancels with Escape without closing the panel and rejects empty required text", async () => {
+		const f = setup();
+		const panel = f.open();
+		await settle();
+		const name = typeField("name", "Discard this");
+		name.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+		expect(dialog()).toBe(panel);
+		expect(name.value).toBe(room.name);
+		expect(document.activeElement).toBe(panel);
+		typeField("purpose", "   ").blur();
+		expect(field("purpose").value).toBe(room.purpose);
+		expect(panel.textContent).toContain("Group description cannot be empty.");
+		expect(f.updateGroup).not.toHaveBeenCalled();
+	});
+
+	it("keeps multiline Enter for text and saves description with Control+Enter", async () => {
+		const f = setup();
+		f.open();
+		await settle();
+		const purpose = typeField("purpose", "First line\nSecond line");
+		const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+		purpose.dispatchEvent(enter);
+		expect(enter.defaultPrevented).toBe(false);
+		expect(f.updateGroup).not.toHaveBeenCalled();
+		purpose.dispatchEvent(
+			new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true, cancelable: true }),
+		);
+		await settle();
+		expect(f.updateGroup.mock.calls[0]?.[2].purpose).toBe("First line\nSecond line");
+	});
+
+	it("retains focused controls and failed edits through refreshes and retries", async () => {
+		const f = setup();
+		const panel = f.open();
+		await settle();
+		const name = typeField("name", "Keep this name");
+		f.company.store.set({ error: "Unrelated refresh" });
+		await settle();
+		expect(field("name")).toBe(name);
 		expect(document.activeElement).toBe(name);
-		name.value = "Launch team";
-		name.dispatchEvent(new Event("input", { bubbles: true }));
-		purpose.value = "Coordinate the launch schedule";
-		purpose.dispatchEvent(new Event("input", { bubbles: true }));
+		f.updateGroup.mockRejectedValueOnce(new Error("Save unavailable"));
+		name.blur();
+		await settle();
+		expect(name.value).toBe("Keep this name");
+		expect(button("Try again")).toBeDefined();
+		f.updateGroup.mockImplementationOnce(async (_session, observed, draft) => {
+			f.rpc.mockResolvedValue([{ ...room, ...draft, version: observed.version + 1 }]);
+		});
+		button("Try again").click();
+		await settle();
+		expect(f.updateGroup).toHaveBeenCalledTimes(2);
+		expect(f.updateGroup.mock.calls[1]?.slice(0, 3)).toEqual(f.updateGroup.mock.calls[0]?.slice(0, 3));
+		expect(field("name").value).toBe("Keep this name");
+		expect(panel.textContent).toContain("Saved");
+	});
+
+	it("discards a rejected draft and reloads canonical details before editing again", async () => {
+		const f = setup();
+		f.open();
+		await settle();
+		f.updateGroup.mockRejectedValueOnce(new Error("Group changed"));
+		typeField("name", "Rejected name").blur();
+		await settle();
+		f.rpc.mockResolvedValue([{ ...room, name: "Current name", version: 2 }]);
+		button("Discard changes").click();
+		await settle();
+		expect(field("name").value).toBe("Current name");
+		expect(field("name").readOnly).toBe(false);
+		expect(button("Try again")).toBeUndefined();
+		typeField("name", "Fresh name").blur();
+		await settle();
+		expect(f.updateGroup.mock.calls[1]?.[1].version).toBe(2);
+		expect(f.updateGroup.mock.calls[1]?.[2].name).toBe("Fresh name");
+	});
+
+	it.each(["Try again", "Discard changes"])(
+		"keeps %s focused when leaving a corrected field and performs the action",
+		async (label) => {
+			const f = setup();
+			f.open();
+			await settle();
+			f.updateGroup.mockRejectedValueOnce(new GroupUpdateNotWrittenError("Description is too long."));
+			typeField("purpose", "Rejected description").blur();
+			await settle();
+			typeField("purpose", "Corrected description");
+			const target = button(label);
+			// Pointer and keyboard focus move before the click, blurring the field.
+			target.focus();
+			await settle();
+			expect(button(label)).toBe(target);
+			expect(target.isConnected).toBe(true);
+			expect(document.activeElement).toBe(target);
+			f.updateGroup.mockImplementationOnce(async (_session, observed, draft) => {
+				f.rpc.mockResolvedValue([{ ...room, ...draft, version: observed.version + 1 }]);
+			});
+			target.click();
+			await settle();
+			if (label === "Try again") {
+				expect(f.updateGroup).toHaveBeenCalledTimes(2);
+				expect(f.updateGroup.mock.calls[1]?.[2].purpose).toBe("Corrected description");
+				expect(field("purpose").value).toBe("Corrected description");
+			} else {
+				expect(f.updateGroup).toHaveBeenCalledOnce();
+				expect(field("purpose").value).toBe(room.purpose);
+			}
+			expect(button("Try again")).toBeUndefined();
+		},
+	);
+
+	it("preserves a second focused field while the first field finishes saving", async () => {
+		const f = setup();
+		f.open();
+		await settle();
+		const pending = deferred<void>();
+		f.updateGroup.mockReturnValueOnce(pending.promise);
+		typeField("name", "New name").blur();
+		const subtitle = typeField("subtitle", "Still typing");
+		f.rpc.mockResolvedValue([{ ...room, name: "New name", version: 2 }]);
+		pending.resolve();
+		await settle();
+		expect(field("subtitle")).toBe(subtitle);
+		expect(subtitle.value).toBe("Still typing");
+		expect(document.activeElement).toBe(subtitle);
+		expect(f.updateGroup).toHaveBeenCalledOnce();
+		subtitle.blur();
+		await settle();
+		expect(f.updateGroup.mock.calls[1]?.[2]).toMatchObject({ name: "New name", subtitle: "Still typing" });
+	});
+
+	it("saves the focused field when closing and retains it when reopened", async () => {
+		const f = setup();
+		f.open();
+		await settle();
+		f.updateGroup.mockImplementationOnce(async (_session, observed, draft) => {
+			f.rpc.mockResolvedValue([{ ...room, ...draft, version: observed.version + 1 }]);
+		});
+		typeField("name", "Saved on close");
+		button("Close group details").click();
+		await settle();
+		expect(dialog()).toBeNull();
+		expect(f.updateGroup.mock.calls[0]?.[2].name).toBe("Saved on close");
+		expect(f.updateGroup.mock.calls[0]?.[3].aborted).toBe(false);
+		f.open();
+		await settle();
+		expect(field("name").value).toBe("Saved on close");
+	});
+
+	it("edits participants separately, preserves identity and cancels unsaved selection", async () => {
+		const f = setup();
+		const panel = f.open();
+		await settle();
+		button("Edit participants").click();
 		const extra = [...panel.querySelectorAll<HTMLLabelElement>(".group-member-choice")].find((choice) =>
 			choice.textContent?.includes("Unrelated agent"),
 		)!;
 		extra.querySelector<HTMLInputElement>("input")!.click();
-		const owner = [...panel.querySelectorAll<HTMLLabelElement>(".group-member-choice")].find((choice) =>
-			choice.textContent?.includes("Account A"),
-		)!;
-		owner.querySelector<HTMLInputElement>("input")!.click();
-		const refreshed = {
-			...room,
-			version: 2,
-			name: name.value,
-			purpose: purpose.value,
-			members: [
-				{ kind: "staff_agent", id: staff.id },
-				{ kind: "staff_agent", id: id(80) },
-			],
-		};
-		f.updateGroup.mockImplementationOnce(async () => {
-			f.rpc.mockResolvedValue([refreshed]);
-			vi.mocked(f.api.listSessions).mockResolvedValue([{ ...group, title: refreshed.name }]);
-		});
-		button("Save changes").click();
-		await settle();
-		expect(f.updateGroup).toHaveBeenCalledWith(
-			session.sessionId,
-			room,
-			{ name: refreshed.name, purpose: refreshed.purpose, members: refreshed.members },
-			expect.any(AbortSignal),
-		);
-		expect(f.api.listSessions).toHaveBeenCalledWith(profileA.environmentId, expect.any(AbortSignal));
-		expect(f.rpc.mock.calls.length).toBeGreaterThan(1);
-		expect(panel.querySelector(".group-edit-form")).toBeNull();
-		expect(panel.querySelector("h2")?.textContent).toBe("Launch team");
-		expect(panel.querySelector(".group-details-purpose")?.textContent).toBe(refreshed.purpose);
-		expect(panel.textContent).toContain("Changes saved.");
-		expect(panel.textContent).not.toContain("Account A");
-		expect(panel.textContent).toContain("Unrelated agent");
-		expect(f.header.querySelector("h1")?.textContent).toBe("Launch team");
-		expect(f.company.store.get().groups?.[room.roomId]?.version).toBe(2);
-	});
-
-	it("cancels unsaved changes and opens a fresh draft from the saved details", async () => {
-		const f = setup();
-		const panel = f.open();
-		await settle();
-		button("Edit group").click();
-		const name = panel.querySelector<HTMLInputElement>('input[name="name"]')!;
-		name.value = "Discard this name";
-		name.dispatchEvent(new Event("input", { bubbles: true }));
-		panel.querySelector<HTMLInputElement>('.group-member-choice input[type="checkbox"]')!.click();
 		button("Cancel").click();
-		expect(panel.querySelector(".group-edit-form")).toBeNull();
-		expect(panel.querySelector("h2")?.textContent).toBe(room.name);
 		expect(f.updateGroup).not.toHaveBeenCalled();
-		button("Edit group").click();
-		expect(panel.querySelector<HTMLInputElement>('input[name="name"]')?.value).toBe(room.name);
-		expect(panel.querySelector<HTMLInputElement>('.group-member-choice input[type="checkbox"]')?.checked).toBe(true);
-	});
-
-	it("retains failed edits and focused controls through company updates, and retries the same draft", async () => {
-		const f = setup();
-		const panel = f.open();
+		button("Edit participants").click();
+		const choice = [...panel.querySelectorAll<HTMLLabelElement>(".group-member-choice")].find((item) =>
+			item.textContent?.includes("Unrelated agent"),
+		)!;
+		expect(choice.querySelector<HTMLInputElement>("input")!.checked).toBe(false);
+		choice.querySelector<HTMLInputElement>("input")!.click();
+		button("Save participants").click();
 		await settle();
-		button("Edit group").click();
-		const name = panel.querySelector<HTMLInputElement>('input[name="name"]')!;
-		name.value = "Keep this name";
-		name.dispatchEvent(new Event("input", { bubbles: true }));
-		f.company.store.set({ error: "An unrelated refresh failed" });
-		await settle();
-		expect(panel.querySelector('input[name="name"]')).toBe(name);
-		expect(document.activeElement).toBe(name);
-		f.updateGroup.mockRejectedValueOnce(new Error("Save service unavailable"));
-		button("Save changes").click();
-		await settle();
-		expect(panel.textContent).toContain("Save service unavailable");
-		expect(name.value).toBe("Keep this name");
-		expect(name.matches(":disabled")).toBe(false);
-		f.updateGroup.mockImplementationOnce(async (_session, _observed, draft) => {
-			f.rpc.mockResolvedValue([{ ...room, ...draft, version: 2 }]);
+		expect(f.updateGroup.mock.calls[0]?.[2]).toMatchObject({
+			name: room.name,
+			purpose: room.purpose,
+			members: [...room.members, { kind: "staff_agent", id: id(80) }],
 		});
-		button("Save changes").click();
-		await settle();
-		expect(f.updateGroup).toHaveBeenCalledTimes(2);
-		expect(f.updateGroup.mock.calls[1]?.slice(0, 3)).toEqual(f.updateGroup.mock.calls[0]?.slice(0, 3));
-		expect(panel.querySelector("h2")?.textContent).toBe("Keep this name");
-		expect(panel.textContent).toContain("Changes saved.");
+		expect(field("name").value).toBe(room.name);
 	});
 
-	it("disables the form while saving and submits only once", async () => {
+	it.each([false, true])("discards editing state on role revocation, including pending save: %s", async (saving) => {
 		const f = setup();
 		const panel = f.open();
 		await settle();
-		button("Edit group").click();
-		const pending = deferred<void>();
-		f.updateGroup.mockReturnValueOnce(pending.promise);
-		button("Save changes").click();
-		const form = panel.querySelector<HTMLFormElement>(".group-edit-form")!;
-		expect(panel.querySelector<HTMLFieldSetElement>(".group-edit-fields")?.disabled).toBe(true);
-		expect(button("Cancel").matches(":disabled")).toBe(true);
-		form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-		expect(f.updateGroup).toHaveBeenCalledOnce();
-		pending.resolve();
-		await settle();
-		expect(panel.querySelector(".group-edit-form")).toBeNull();
-	});
-
-	it.each([false, true])("discards editing state on role revocation, including a pending save: %s", async (saving) => {
-		const f = setup();
-		const panel = f.open();
-		await settle();
-		button("Edit group").click();
-		const name = panel.querySelector<HTMLInputElement>('input[name="name"]')!;
-		name.value = "Revoked draft";
-		name.dispatchEvent(new Event("input", { bubbles: true }));
+		const name = typeField("name", "Revoked draft");
 		const pending = deferred<void>();
 		if (saving) {
 			f.updateGroup.mockReturnValueOnce(pending.promise);
-			button("Save changes").click();
+			name.blur();
 		}
 		f.company.store.set({
 			team: {
@@ -297,19 +394,18 @@ describe("group details from the conversation header", () => {
 			},
 		});
 		await settle();
-		expect(panel.querySelector(".group-edit-form")).toBeNull();
-		expect(button("Edit group")).toBeUndefined();
-		expect(panel.textContent).not.toContain("Revoked draft");
+		expect(field("name").readOnly).toBe(true);
+		expect(field("name").value).toBe(room.name);
+		expect(button("Edit participants")).toBeUndefined();
 		expect(panel.textContent).toContain("Only an owner or admin");
 		if (saving) {
 			expect(f.updateGroup.mock.calls[0]?.[3].aborted).toBe(true);
 			pending.resolve();
 			await settle();
-			expect(panel.textContent).not.toContain("Changes saved.");
 		}
 		f.company.store.set({ team: { ...f.company.store.get().team!, role: "owner", capabilities: team.capabilities } });
 		await settle();
-		button("Edit group").click();
-		expect(panel.querySelector<HTMLInputElement>('input[name="name"]')?.value).toBe(room.name);
+		expect(field("name").readOnly).toBe(false);
+		expect(field("name").value).toBe(room.name);
 	});
 });

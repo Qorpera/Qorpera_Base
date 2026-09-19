@@ -689,16 +689,6 @@ export class ConversationView {
 					"Sending messages is not available yet. Your draft stays here.",
 				),
 			);
-		if (this.#isRoom)
-			children.push(
-				notice(
-					"neutral",
-					"Multiple agents can respond in this group chat. Follow their replies here. Images are not supported in group chats. Use Company File." +
-						(["owner", "admin"].includes(company.team?.role ?? "")
-							? " Company-wide execution pause is available in Settings → Company."
-							: ""),
-				),
-			);
 		if (this.#execution) children.push(this.#execution.el);
 		if (!canWrite && session?.status === "closed") children.push(notice("neutral", "This conversation is archived."));
 		else if (

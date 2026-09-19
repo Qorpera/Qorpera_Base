@@ -361,11 +361,10 @@
 @media (prefers-reduced-motion: reduce) { .computer-panel, .agent-page, .agent-figure-picker { animation: none; } .composer-shell { transition: none; } }
 
 /* Group details use the same anchored frame as an agent's details. */
-.group-details-identity { display: flex; align-items: center; gap: 20px; padding: 8px 24px 20px 0; }
-.group-details-identity > div { min-width: 0; }
-.group-details-identity h2 { font-size: 24px; line-height: 1.25; overflow-wrap: anywhere; }
-.group-details-identity p { margin: 5px 0 0; color: var(--text-muted); }
-.group-details-purpose { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 0 24px; }
+.group-details-stage { display: grid; place-items: center; min-width: 0; }
+.group-details-stage > .group-chat-avatar { max-width: 100%; height: auto; }
+.group-participants-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.group-participants-heading h3 { margin: 0; }
 .group-details section { border-top: 1px solid var(--border); padding-top: 16px; }
 .group-details h3 { margin: 0 0 8px; font-size: 13px; }
 .group-details-participants { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }

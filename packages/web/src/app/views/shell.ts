@@ -372,6 +372,7 @@ interface AgentModel extends Pick<HostedStaffAgent, "id" | "displayName" | "role
 }
 interface SessionModel {
 	title: string;
+	subtitle: string;
 	kind: "Group chat" | "company";
 	agents: HostedStaffAgent[];
 	selected: boolean;
@@ -415,15 +416,19 @@ function agentRow(model: AgentModel, href: string): HTMLElement {
 function sessionRow(model: SessionModel, href: string): HTMLElement {
 	return h(
 		"a",
-		{ class: "rail-row", href, title: `${model.title} · ${model.kind}` },
+		{
+			class: model.kind === "Group chat" ? "rail-row rail-row-group" : "rail-row",
+			href,
+			title: [model.title, model.subtitle].filter(Boolean).join(" · "),
+		},
 		h(
 			"span",
 			{ class: "rail-row-stand" },
 			model.kind === "Group chat"
-				? groupChatAvatar(model.agents, { selected: model.selected })
+				? groupChatAvatar(model.agents, { width: 60, height: 55, selected: model.selected })
 				: h("span", { class: "avatar small" }, model.title.slice(0, 1).toUpperCase()),
 		),
-		h("span", { class: "rail-row-copy" }, h("strong", null, model.title), h("small", null, model.kind)),
+		h("span", { class: "rail-row-copy" }, h("strong", null, model.title), h("small", null, model.subtitle)),
 	);
 }
 
@@ -525,6 +530,9 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 					`#/c/${profileId}/chat/${session.sessionId}`,
 					{
 						title: session.title,
+						subtitle: isGroupChat(session)
+							? (state.groups?.[String(session.executionScope?.roomId)]?.subtitle ?? "Group chat")
+							: "company",
 						kind: isGroupChat(session) ? ("Group chat" as const) : ("company" as const),
 						agents: company.groupAgents(session.sessionId),
 						selected: activeSessionId === session.sessionId,
