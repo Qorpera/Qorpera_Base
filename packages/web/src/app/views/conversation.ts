@@ -4,6 +4,12 @@ import type { HostedSession, HostedStaffAgent } from "../../cloud/types.ts";
 import { AttachmentTray } from "../../ui/attachments.ts";
 import { authorizationRequestId, renderAuthorizationCard } from "../../ui/authorization-card.ts";
 import { agentFigure } from "../../ui/avatar.ts";
+import {
+	conversationTimestampLabel,
+	conversationTimestampTitle,
+	needsConversationTimestamp,
+	parseConversationTimestamp,
+} from "../../ui/conversation-timestamps.ts";
 import { fmtTime, h, icon, notice, replace, spinner } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { matchesKey } from "../../ui/keys.ts";
@@ -72,6 +78,7 @@ export class ConversationView {
 	readonly #runNotification = h("div", { class: "run-notification", hidden: true });
 	#runNotificationKey = "";
 	#receivedAttachments: ReceivedAttachments[] = [];
+	readonly #timestampTimer: number;
 
 	constructor(
 		company: CompanyController,
@@ -264,6 +271,11 @@ export class ConversationView {
 		});
 		window.addEventListener("resize", () => this.#syncPanelLayout(), { signal: this.#lifetime.signal });
 		window.addEventListener("qorpera-rail-resize", () => this.#syncPanelLayout(), { signal: this.#lifetime.signal });
+		const refreshTimestamps = () => this.#refreshTimestamps();
+		this.#timestampTimer = window.setInterval(refreshTimestamps, 60_000);
+		window.addEventListener("focus", refreshTimestamps, { signal: this.#lifetime.signal });
+		window.addEventListener("qorpera-language-change", refreshTimestamps, { signal: this.#lifetime.signal });
+		document.addEventListener("visibilitychange", refreshTimestamps, { signal: this.#lifetime.signal });
 		document.addEventListener(
 			"click",
 			(event) => {
@@ -283,6 +295,7 @@ export class ConversationView {
 		if (this.#disposed) return;
 		this.#disposed = true;
 		this.#lifetime.abort();
+		window.clearInterval(this.#timestampTimer);
 		this.#runNotification.remove();
 		this.#details?.dispose();
 		this.#panel?.dispose();
@@ -572,6 +585,23 @@ export class ConversationView {
 		);
 	}
 
+	#refreshTimestamps(): void {
+		if (this.#disposed) return;
+		const now = new Date();
+		// Refresh relative dates without replacing messages, attachments, or the scroll position.
+		for (const time of this.#messages.querySelectorAll<HTMLTimeElement>(".conversation-timestamp")) {
+			const date = parseConversationTimestamp(time.dateTime);
+			if (!date) continue;
+			const label = conversationTimestampLabel(date, now);
+			const title = conversationTimestampTitle(date);
+			if (time.textContent !== label) time.textContent = label;
+			if (time.title !== title) {
+				time.title = title;
+				time.setAttribute("aria-label", title);
+			}
+		}
+	}
+
 	#renderMessages(conversation: ConversationState, agentName: string): void {
 		const items: TranscriptItem[] = [
 			...conversation.projection.items,
@@ -609,7 +639,23 @@ export class ConversationView {
 				if (request) decisions.set(request, item);
 			}
 		const nodes: HTMLElement[] = [];
+		const now = new Date();
+		let previousDate: Date | undefined;
 		for (const item of items) {
+			const date = parseConversationTimestamp(item.createdAt);
+			if (date) {
+				if (needsConversationTimestamp(date, previousDate)) {
+					const title = conversationTimestampTitle(date);
+					nodes.push(
+						h(
+							"time",
+							{ class: "conversation-timestamp", datetime: date.toISOString(), title, "aria-label": title },
+							conversationTimestampLabel(date, now),
+						),
+					);
+				}
+				previousDate = date;
+			}
 			if (item.kind === "member" || item.kind === "agent") {
 				const mine = item.kind === "member" && item.authorUserId === this.#company.userId;
 				const author =
