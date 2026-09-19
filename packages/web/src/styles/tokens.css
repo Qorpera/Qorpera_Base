@@ -79,6 +79,9 @@
 	--send-idle: rgba(18, 18, 17, 0.1);
 	--send-active: var(--primary);
 	--send-active-hover: var(--primary-hover);
+	--composer-accent: #0a84ff;
+	--composer-on-accent: #ffffff;
+	--composer-accent-hover: color-mix(in srgb, var(--composer-accent) 88%, #000000);
 
 	/* geometry */
 	--radius-sm: 6px;
@@ -148,4 +151,12 @@
 	--ok-soft: rgba(16, 185, 129, 0.16);
 
 	--send-idle: rgba(255, 255, 255, 0.12);
+}
+
+/* Conversation colour is independent of the page's light/dark appearance. */
+:root[data-composer-color="green"] {
+	--composer-accent: #30d158;
+}
+:root[data-composer-color="grey"] {
+	--composer-accent: #5b5b5b;
 }

@@ -73,7 +73,12 @@ describe("web company agents", () => {
 			createdAt: created.createdAt.replace("Z", "+00:00"),
 			appearance: { color: "x", shape: "round" },
 		};
-		await agents.update(roster, { ...draft, displayName: "Ledger II", charter: "" }, new AbortController().signal);
+		const revision = await agents.update(
+			roster,
+			{ ...draft, displayName: "Ledger II", charter: "" },
+			new AbortController().signal,
+		);
+		expect(revision).toBe(2);
 		const next = parseCloudCompanyAgentDocument(JSON.parse(f.edits[1]!.text!));
 		expect(next).toMatchObject({
 			revision: 2,

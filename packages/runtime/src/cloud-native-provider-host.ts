@@ -17,6 +17,7 @@ import type { NativeCredentialOwner, NativeCredentialRefreshClaim } from "./clou
 import { nativeRuntimeFailureMetadata } from "./cloud-native-failure.ts";
 import { launchIsolatedNativeProcess, type NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import { hasUnconfirmedNativeProcessSettlement } from "./cloud-native-process-settlement.ts";
+import { nativeProviderAccountEmail } from "./native-provider-account.ts";
 
 const CAPSULE_SCHEMA = "qorpera.native-credential-capsule/v1";
 const LOGIN_RESULT_SCHEMA = "qorpera.native-provider-login-result/v1";
@@ -59,6 +60,7 @@ export interface CompleteNativeProviderLoginInput {
 	encryptedCapsuleReference: string;
 	attestationPolicySha256: string;
 	providerAccountReference?: string;
+	providerAccountEmail?: string;
 }
 
 export interface NativeProviderControlPlane {
@@ -89,7 +91,7 @@ export interface NativeHarnessLoginPrompt {
 
 export interface NativeHarnessLoginHandle {
 	prompt: Promise<NativeHarnessLoginPrompt>;
-	completed: Promise<{ providerAccountReference?: string }>;
+	completed: Promise<{ providerAccountReference?: string; providerAccountEmail?: string }>;
 	cancel(): Promise<void>;
 }
 
@@ -869,9 +871,23 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 					await checked.completed;
 					loginSignal.throwIfAborted();
 					const reference = checked.output().trim();
-					return reference
-						? { providerAccountReference: `${harness}:${createHash("sha256").update(reference).digest("hex")}` }
-						: {};
+					const metadata =
+						harness === "codex-cli"
+							? Buffer.from(
+									(await collectCapsuleFiles(root, CODEX_CREDENTIAL_PATHS)).files[0]!.data,
+									"base64",
+								).toString("utf-8")
+							: reference;
+					const providerAccountEmail = nativeProviderAccountEmail(harness, metadata);
+					loginSignal.throwIfAborted();
+					return {
+						...(reference
+							? {
+									providerAccountReference: `${harness}:${createHash("sha256").update(reference).digest("hex")}`,
+								}
+							: {}),
+						...(providerAccountEmail ? { providerAccountEmail } : {}),
+					};
 				} finally {
 					loginSignal.removeEventListener("abort", stopStatus);
 					await status.close();
@@ -1416,6 +1432,7 @@ export class NativeProviderHost {
 				...(completed.providerAccountReference
 					? { providerAccountReference: completed.providerAccountReference }
 					: {}),
+				...(completed.providerAccountEmail ? { providerAccountEmail: completed.providerAccountEmail } : {}),
 			});
 			state.status = "completed";
 		} catch (error) {

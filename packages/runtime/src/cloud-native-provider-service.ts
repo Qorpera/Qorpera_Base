@@ -348,6 +348,7 @@ export class SupabaseNativeProviderControlPlane
 				p_encrypted_capsule_reference: input.encryptedCapsuleReference,
 				p_attestation_policy_sha256: input.attestationPolicySha256,
 				p_provider_account_reference: input.providerAccountReference ?? null,
+				p_provider_account_email: input.providerAccountEmail ?? null,
 				p_billing_source: "personal_subscription",
 				p_consent_version: "qorpera-native-subscription-v1",
 				p_quota_policy: {
