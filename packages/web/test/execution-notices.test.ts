@@ -141,6 +141,47 @@ describe("company execution notices", () => {
 		await settle();
 		expect(f.view.el.textContent).toContain("Execution sponsor changed");
 	});
+	it("keeps keyboard focus in the notices when a failed poll removes Acknowledge", async () => {
+		const f = setup();
+		await settle();
+		action("acknowledge").focus();
+		f.client.listNotifications.mockRejectedValueOnce(new Error("offline"));
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(document.activeElement).toBe(action("refresh"));
+		expect(f.restoreFocus).not.toHaveBeenCalled();
+	});
+	it("moves focus to Acknowledge when a successful retry removes Refresh", async () => {
+		const f = setup();
+		await settle();
+		f.client.listNotifications.mockRejectedValueOnce(new Error("offline"));
+		await f.view.refresh();
+		action("refresh").focus();
+		action("refresh").click();
+		await settle();
+		expect(document.activeElement).toBe(action("acknowledge"));
+		expect(f.client.acknowledgeNotification).not.toHaveBeenCalled();
+	});
+	it("keeps focus on an available action when paging controls disappear", async () => {
+		const f = setup([item(70), item(71)]);
+		await settle();
+		action("next").focus();
+		f.client.listNotifications.mockResolvedValue([item(70)]);
+		await f.view.refresh();
+		expect(document.activeElement).toBe(action("acknowledge"));
+	});
+	it("does not move focus from the workspace when a poll fails or recovers", async () => {
+		const f = setup();
+		await settle();
+		const composer = document.createElement("textarea");
+		document.body.append(composer);
+		composer.focus();
+		f.client.listNotifications.mockRejectedValueOnce(new Error("offline"));
+		await f.view.refresh();
+		expect(document.activeElement).toBe(composer);
+		await f.view.refresh();
+		expect(document.activeElement).toBe(composer);
+		expect(f.restoreFocus).not.toHaveBeenCalled();
+	});
 	it.each([
 		[
 			"provider_usage_limit",

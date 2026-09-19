@@ -61,11 +61,12 @@ function type(label: string, value: string) {
 const press = (target: Element, key: string, init: KeyboardEventInit = {}) =>
 	target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init }));
 const status = () => document.querySelector(".agent-details-status")?.textContent;
-const saving = () => vi.fn(async (_agent: HostedStaffAgent, _draft: unknown, _signal: AbortSignal) => {});
+const saving = () =>
+	vi.fn(async (_agent: HostedStaffAgent, _draft: unknown, _signal: AbortSignal) => staff.version + 1);
 
 describe("agent saves across panel lifetimes", () => {
 	it("keeps a failed close-save draft and offers an explicit retry when reopened", async () => {
-		const pending = deferred<void>();
+		const pending = deferred<number>();
 		const updateAgent = saving().mockReturnValueOnce(pending.promise);
 		const f = open({ updateAgent });
 		type("Agent name", "Unsaved name");
@@ -92,6 +93,7 @@ describe("agent saves across panel lifetimes", () => {
 			// The server applies the first write before its response reaches the browser.
 			remote = { ...remote, displayName: draft.displayName, role: draft.role, charter: draft.charter };
 			if (++calls === 1) await first.promise;
+			return staff.version + calls;
 		});
 		const f = open({ updateAgent });
 		vi.mocked(f.api.listStaff).mockImplementation(async () => [remote]);
@@ -132,7 +134,7 @@ describe("agent saves across panel lifetimes", () => {
 	it.each(["navigation", "company", "authority"] as const)(
 		"cancels closed-panel writes and queued edits on %s loss",
 		async (loss) => {
-			const pending = deferred<void>();
+			const pending = deferred<number>();
 			const updateAgent = saving().mockReturnValueOnce(pending.promise);
 			const scope = new AbortController();
 			const f = open({ updateAgent }, staff, scope.signal);
@@ -145,7 +147,7 @@ describe("agent saves across panel lifetimes", () => {
 			else f.company.store.set({ team: { ...team, capabilities: { ...team.capabilities, authorize: false } } });
 			await settle();
 			expect(signal.aborted).toBe(true);
-			pending.resolve();
+			pending.resolve(staff.version + 1);
 			await settle();
 			expect(updateAgent).toHaveBeenCalledTimes(1);
 			expect(f.api.listStaff).not.toHaveBeenCalled();
@@ -167,7 +169,7 @@ describe("agent saves across panel lifetimes", () => {
 		expect(status()).toBe("");
 	});
 	it("only saves a newly entered edit after authority is restored during cancellation", async () => {
-		const pending = deferred<void>();
+		const pending = deferred<number>();
 		const updateAgent = saving().mockReturnValueOnce(pending.promise);
 		const f = open({ updateAgent });
 		press(type("Agent name", "Revoked name"), "Enter");
@@ -178,7 +180,7 @@ describe("agent saves across panel lifetimes", () => {
 		await settle();
 		press(type("Agent title", "Authorized title"), "Enter");
 		expect(updateAgent).toHaveBeenCalledTimes(1);
-		pending.resolve();
+		pending.resolve(staff.version + 1);
 		await settle();
 		expect(updateAgent).toHaveBeenCalledTimes(2);
 		expect(updateAgent.mock.calls[1]![1]).toMatchObject({ displayName: staff.displayName, role: "Authorized title" });
@@ -231,7 +233,7 @@ describe("agent details edited in place", () => {
 		expect(f.onClose).toHaveBeenCalledTimes(1);
 	});
 	it("folds changes made during a save into one following write", async () => {
-		const first = deferred<void>();
+		const first = deferred<number>();
 		const updateAgent = saving().mockReturnValueOnce(first.promise);
 		open({ updateAgent });
 		press(type("Agent name", "Ada"), "Enter");
@@ -241,7 +243,7 @@ describe("agent details edited in place", () => {
 		expect(field("Agent description")).toBe(document.activeElement);
 		press(description, "Enter", { ctrlKey: true });
 		expect(updateAgent).toHaveBeenCalledTimes(1);
-		first.resolve();
+		first.resolve(staff.version + 1);
 		await settle();
 		await settle();
 		expect(updateAgent).toHaveBeenCalledTimes(2);

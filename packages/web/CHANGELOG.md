@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Preserve agent metadata drafts and retry state across details-panel closes, serialize saves, and retire confirmed edits when the roster catches up so later changes by other members are not overwritten.
+- Keep keyboard focus on an available execution-notice action when refreshes remove the previously focused control.
 - Keep the rail's "Needs you" for runs waiting on a member decision, including a failed run that left Company File changes. An agent with a failed or stopped run nobody has dismissed now rests idle with a red status disc, the opposite of the green working disc; the rail link names the state in words, also in the compact rail.
 - Render room replies with immutable server-projected staff identity and preserve accepted human messages even when no agent is eligible.
 
@@ -15,6 +17,7 @@
 
 ### Added
 
+- Present member-addressed execution notices inline in the workspace, with explicit acknowledgment and recovery after uncertain requests.
 - Add a dark theme. Settings → General → Theme offers System default (follows the device's appearance), Light and Dark; the choice is kept per browser, follows changes made in other tabs, and a head script applies it before the first paint.
 - Show a failed or stopped run in the agent's conversation with its error and a Dismiss action (the desktop's discard), so an old failure stops standing in for the agent's state; a run that left Company File changes links to them instead.
 - Support bounded public JSON environment configuration for Pages release builds, with shared SDK checks and release artifact validation in web CI.
@@ -48,5 +51,5 @@
 
 ### Removed
 
-- Remove the member notification inbox: the rail's Notifications row and its unread-count polling, the Notifications page and route (old links open the company home), and the client's notification list/acknowledge calls.
+- Remove the member notification inbox: the rail's Notifications row and its unread-count polling, and the Notifications page and route (old links open the company home). Execution notices and explicit acknowledgment remain available inline in the workspace.
 - Remove the standalone Friends (`#/friends`) and Invitations (`#/invitations`) pages and the separate Invitations menu item; both live on the Settings Friends tab.

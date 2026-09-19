@@ -209,7 +209,7 @@ describe("conversation UI boundaries", () => {
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 	it("discards pending metadata saves on disposal and blocks writes after a role downgrade", async () => {
-		const pending = deferred<void>(),
+		const pending = deferred<number>(),
 			updateAgent = vi.fn((_agent: unknown, _draft: unknown, _signal: AbortSignal) => pending.promise);
 		const f = setup({ updateAgent });
 		button(f.view.el, "Open agent details").click();
@@ -231,7 +231,7 @@ describe("conversation UI boundaries", () => {
 		expect(updateAgent.mock.calls[0]![1]).toMatchObject({ displayName: "Renamed", role: staff.role });
 		f.view.dispose();
 		expect(updateAgent.mock.calls[0]![2].aborted).toBe(true);
-		pending.resolve();
+		pending.resolve(staff.version + 1);
 		await settle();
 		expect(document.querySelector("dialog")).toBeNull();
 		expect(f.api.listStaff).not.toHaveBeenCalled();

@@ -183,8 +183,14 @@ export class ExecutionNotices {
 			),
 		);
 		this.el.hidden = !item && !this.#error;
-		if (focused && this.el.hidden) this.#restoreFocus?.();
-		if (focused) this.el.querySelector<HTMLElement>(`[data-action="${focused}"]`)?.focus({ preventScroll: true });
+		if (focused) {
+			const target = this.el.hidden
+				? null
+				: (this.el.querySelector<HTMLElement>(`[data-action="${focused}"]`) ??
+					this.el.querySelector<HTMLElement>("button[data-action]:not([disabled]):not([aria-disabled='true'])"));
+			if (target) target.focus({ preventScroll: true });
+			else this.#restoreFocus?.();
+		}
 		this.#drawn = key;
 	}
 

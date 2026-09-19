@@ -38,6 +38,8 @@ export class AgentEdits {
 	#revision = 0;
 	#written = 0;
 	#saving = false;
+	readonly #changes = new Map<keyof AgentDraft, number>();
+	readonly #accepted = new Map<keyof AgentDraft, { change: number; version: number }>();
 	constructor(company: CompanyController, agent: HostedStaffAgent, actions: WorkspaceActions, scope: AbortSignal) {
 		this.#company = company;
 		this.#agent = agent;
@@ -49,8 +51,10 @@ export class AgentEdits {
 				this.#attempt.abort();
 				this.#attempt = new AbortController();
 				this.#written = this.#revision;
+				this.#changes.clear();
+				this.#accepted.clear();
 				this.store.set({ draft: {}, status: "", failed: false });
-			}
+			} else this.#reconcile();
 		});
 		for (const signal of [company.signal, scope]) {
 			if (signal.aborted) this.dispose();
@@ -72,9 +76,28 @@ export class AgentEdits {
 	}
 	change(change: Partial<AgentDraft>): void {
 		if (!this.canWrite()) return;
-		this.store.set(({ draft }) => ({ draft: { ...draft, ...change } }));
+		this.#reconcile();
 		this.#revision++;
+		for (const key of Object.keys(change) as (keyof AgentDraft)[]) this.#changes.set(key, this.#revision);
+		this.store.set(({ draft }) => ({ draft: { ...draft, ...change } }));
 		void this.save();
+	}
+	/** A later roster revision supersedes an accepted overlay even when polling
+	 * skipped the revision we wrote. Newer pending/failed edits keep their own generation. */
+	#reconcile(): void {
+		const agent = this.#company.staffById(this.#agent.id);
+		if (!agent) return;
+		const draft = { ...this.store.get().draft };
+		let changed = false;
+		for (const [key, accepted] of this.#accepted) {
+			if (agent.version < accepted.version) continue;
+			this.#accepted.delete(key);
+			if (this.#changes.get(key) !== accepted.change) continue;
+			this.#changes.delete(key);
+			delete draft[key];
+			changed = true;
+		}
+		if (changed) this.store.set({ draft });
 	}
 	async save(): Promise<void> {
 		if (this.#saving || !this.#update || !this.canWrite() || this.#written === this.#revision) return;
@@ -87,17 +110,22 @@ export class AgentEdits {
 					signal.throwIfAborted();
 					if (!this.canWrite()) throw new Error("Only an owner or admin can change agents.");
 					const revision = this.#revision;
-					await this.#update(this.#company.staffById(this.#agent.id) ?? this.#agent, this.current(), signal);
+					const changes = new Map(this.#changes);
+					const version = await this.#update(
+						this.#company.staffById(this.#agent.id) ?? this.#agent,
+						this.current(),
+						signal,
+					);
 					signal.throwIfAborted();
+					for (const [key, change] of changes) this.#accepted.set(key, { change, version });
 					this.#written = revision;
+					this.#reconcile();
 				}
 				await this.#company.refreshStaff();
 				signal.throwIfAborted();
 			} while (this.#written < this.#revision);
-			const now = savedAgentDraft(this.#company.staffById(this.#agent.id) ?? this.#agent);
-			const draft = { ...this.store.get().draft };
-			for (const key of Object.keys(draft) as (keyof AgentDraft)[]) if (draft[key] === now[key]) delete draft[key];
-			this.store.set({ draft, status: "Saved", failed: false });
+			this.#reconcile();
+			this.store.set({ status: "Saved", failed: false });
 		} catch {
 			if (!signal.aborted) this.store.set({ status: "Your changes could not be saved.", failed: true });
 		} finally {
