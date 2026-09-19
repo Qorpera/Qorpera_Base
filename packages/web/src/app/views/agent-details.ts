@@ -1,5 +1,5 @@
 import type { HostedStaffAgent } from "../../cloud/types.ts";
-import { colorFor, figureElement, figureFor, nativeColorOf } from "../../ui/avatar.ts";
+import { figureElement, nativeColorOf } from "../../ui/avatar.ts";
 import { dialogPageHeader, SurfaceDialog } from "../../ui/dialog.ts";
 import { button, h, icon, replace } from "../../ui/dom.ts";
 import { type FigureChoice, FigurePicker } from "../../ui/figure-picker.ts";
@@ -7,6 +7,7 @@ import { matchesKey } from "../../ui/keys.ts";
 import { responsibilityCard } from "../../ui/responsibilities.ts";
 import type { CompanyController } from "../company.ts";
 import type { AgentDraft, WorkspaceActions } from "../workspace-actions.ts";
+import { type AgentEdits, editsFor, savedAgentDraft } from "./agent-edits.ts";
 import { AgentRoutines, routineAccessFor } from "./agent-routines.ts";
 
 type Page = "details" | "responsibilities" | "routines";
@@ -18,19 +19,6 @@ const FIELDS: Record<TextKey, { label: string; empty: string }> = {
 	charter: { label: "Agent description", empty: "An agent needs a description." },
 };
 
-/** What the roster says about an agent, as a draft. */
-function saved(agent: HostedStaffAgent): AgentDraft {
-	const figure = figureFor(agent);
-	return {
-		displayName: agent.displayName,
-		role: agent.role,
-		charter: agent.charter,
-		figure,
-		// The Co-Founder wears its figure's own colour; it chooses a figure only.
-		color: agent.templateId === "co-founder" ? nativeColorOf(figure) : colorFor(agent, figure),
-	};
-}
-
 /** An agent's details, anchored under the conversation title. Name, title and
  * description are edited where they stand and save on their own; the figure
  * changes from a picker under it, as on the desktop. Responsibilities and
@@ -41,9 +29,8 @@ export class AgentDetails {
 	readonly #agent: HostedStaffAgent;
 	readonly #actions: WorkspaceActions;
 	readonly #lifetime = new AbortController();
-	/** Saves outlive the panel, so closing it keeps what was typed. Disposal
-	 * (leaving the conversation, another company, lost access) drops them. */
-	readonly #saves = new AbortController();
+	readonly #edits: AgentEdits;
+	readonly #unsubscribeEdits: () => void;
 	readonly #unsubscribe: () => void;
 	readonly #pageButtons: Record<Exclude<Page, "details">, HTMLButtonElement>;
 	readonly #details: HTMLElement;
@@ -59,11 +46,6 @@ export class AgentDetails {
 	#routines: AgentRoutines | undefined;
 	#responsibilities = "";
 	#drawn = "";
-	/** Changes the roster does not show yet; they are drawn over it. */
-	#draft: Partial<AgentDraft> = {};
-	#revision = 0;
-	#written = 0;
-	#saving = false;
 	#discarded = false;
 	#statusTimer: ReturnType<typeof setTimeout> | undefined;
 	constructor(
@@ -72,10 +54,12 @@ export class AgentDetails {
 		actions: WorkspaceActions,
 		onClose: () => void,
 		anchor?: HTMLElement,
+		scope: AbortSignal = company.signal,
 	) {
 		this.#company = company;
 		this.#agent = agent;
 		this.#actions = actions;
+		this.#edits = editsFor(company, agent, actions, scope);
 		this.dialog = new SurfaceDialog("Agent details", "agent-details", () => this.#closed(onClose), anchor);
 		const pageButton = (page: Exclude<Page, "details">, label: string, glyph: string) =>
 			h(
@@ -97,7 +81,7 @@ export class AgentDetails {
 		this.dialog.tools.prepend(this.#pageButtons.responsibilities, this.#pageButtons.routines);
 
 		const fixedColor = agent.templateId === "co-founder";
-		this.#figures = new FigurePicker(saved(agent), (choice) => this.#choose(choice), {
+		this.#figures = new FigurePicker(savedAgentDraft(agent), (choice) => this.#choose(choice), {
 			colors: !fixedColor,
 			keepColor: true,
 		});
@@ -184,14 +168,17 @@ export class AgentDetails {
 			else this.#sync();
 		});
 		company.signal.addEventListener("abort", () => this.dispose(), { signal: this.#lifetime.signal });
+		scope.addEventListener("abort", () => this.dispose(), { signal: this.#lifetime.signal });
+		this.#unsubscribeEdits = this.#edits.store.subscribe(() => this.#syncEdits());
 		this.#sync();
+		this.#syncEdits();
 		this.#go("details", false);
 		this.dialog.open();
 	}
 
 	dispose(): void {
 		this.#discarded = true;
-		this.#saves.abort();
+		this.#edits.dispose();
 		this.dialog.close(false);
 	}
 
@@ -199,11 +186,11 @@ export class AgentDetails {
 		if (!this.#discarded) {
 			// Closing the panel with a field still open counts as leaving the field.
 			if (this.#open) this.#commit(this.#open);
-			void this.#save();
 		}
 		this.#lifetime.abort();
 		clearTimeout(this.#statusTimer);
 		this.#unsubscribe();
+		this.#unsubscribeEdits();
 		onClose();
 	}
 
@@ -212,11 +199,11 @@ export class AgentDetails {
 	}
 
 	#current(): AgentDraft {
-		return { ...saved(this.#latest()), ...this.#draft };
+		return this.#edits.current();
 	}
 
 	#canWrite(): boolean {
-		return this.#company.store.get().team?.capabilities.authorize === true && Boolean(this.#actions.updateAgent);
+		return this.#edits.canWrite();
 	}
 
 	/** A name, title or description that reads as text and is edited in place.
@@ -302,41 +289,14 @@ export class AgentDetails {
 	}
 
 	#change(change: Partial<AgentDraft>): void {
-		this.#draft = { ...this.#draft, ...change };
-		this.#revision++;
-		void this.#save();
+		this.#edits.change(change);
 	}
 
-	/** Writes the newest draft; changes made while a write is out follow it as
-	 * one more write, never as one write each. */
-	async #save(): Promise<void> {
-		const update = this.#actions.updateAgent;
-		if (this.#saving || !update || this.#written === this.#revision) return;
-		this.#saving = true;
-		const signal = AbortSignal.any([this.#saves.signal, this.#company.signal]);
-		this.#say("Saving…");
-		try {
-			do {
-				while (this.#written < this.#revision) {
-					if (!this.#canWrite()) throw new Error("Only an owner or admin can change agents.");
-					const revision = this.#revision;
-					await update(this.#latest(), this.#current(), signal);
-					signal.throwIfAborted();
-					this.#written = revision;
-				}
-				await this.#company.refreshStaff();
-				signal.throwIfAborted();
-			} while (this.#written < this.#revision);
-			// What the roster shows now no longer needs drawing over it.
-			const now = saved(this.#latest());
-			for (const key of Object.keys(this.#draft) as (keyof AgentDraft)[])
-				if (this.#draft[key] === now[key]) delete this.#draft[key];
-			this.#say("Saved", true);
-		} catch {
-			if (!signal.aborted) this.#say("Your changes could not be saved.", false, true);
-		} finally {
-			this.#saving = false;
-		}
+	#syncEdits(): void {
+		if (this.#lifetime.signal.aborted) return;
+		this.#sync();
+		const { status, failed } = this.#edits.store.get();
+		this.#say(status, status === "Saved", failed);
 	}
 
 	#say(text: string, fade = false, retry = false): void {
@@ -345,7 +305,9 @@ export class AgentDetails {
 		replace(
 			this.#status,
 			text,
-			retry ? button("Try again", () => void this.#save(), { small: true, disabled: !this.#canWrite() }) : null,
+			retry
+				? button("Try again", () => void this.#edits.save(), { small: true, disabled: !this.#canWrite() })
+				: null,
 		);
 		if (fade) this.#statusTimer = setTimeout(() => replace(this.#status), 2400);
 	}
@@ -356,9 +318,6 @@ export class AgentDetails {
 		if (this.#lifetime.signal.aborted) return;
 		const canWrite = this.#canWrite();
 		if (!canWrite) {
-			// Nothing can be saved any more, so nothing is drawn over the roster.
-			this.#draft = {};
-			this.#written = this.#revision;
 			this.#closePicker(false);
 		}
 		const current = this.#current();
@@ -366,7 +325,8 @@ export class AgentDetails {
 			const control = this.#fields[key];
 			control.readOnly = !canWrite;
 			control.closest(".agent-inline-field")?.classList.toggle("is-editable", canWrite);
-			if (key !== this.#open) this.#show(key, current[key]);
+			// Revocation discards even text that has not blurred into the shared draft.
+			if (!canWrite || key !== this.#open) this.#show(key, current[key]);
 		}
 		this.#figureButton.disabled = !canWrite;
 		this.#drawFigure();

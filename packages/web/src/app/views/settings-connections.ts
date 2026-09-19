@@ -39,7 +39,7 @@ export class ProviderSignIns {
 const live = (connection: NativeMemberConnection) =>
 	connection.connectionStatus === "active" && connection.authorizationState === "active";
 
-/** One card per provider: connect, finish the provider's own sign-in, done.
+/** Accounts share one list; provider selection belongs to adding an account.
  * A connected account is enabled for the member's own messages right away. */
 export class ConnectionsView {
 	readonly el = h("div");
@@ -51,6 +51,7 @@ export class ConnectionsView {
 	readonly #enabling = new Set<string>();
 	#connections: NativeExecutionConnections | undefined;
 	#loading = true;
+	#adding = false;
 	#working: string | undefined;
 	#error: string | undefined;
 	#watch: ReturnType<typeof setTimeout> | undefined;
@@ -84,18 +85,21 @@ export class ConnectionsView {
 		this.el.replaceChildren();
 		this.el.remove();
 	}
-	#current(provider: Provider): NativeMemberConnection | undefined {
-		const mine = (this.#connections?.connections ?? []).filter(
-			(item) => item.provider === provider && item.connectionStatus !== "revoked",
-		);
-		return mine.find(live) ?? mine[0];
-	}
 	async #refresh(): Promise<void> {
 		if (this.#lifetime.signal.aborted) return;
 		clearTimeout(this.#watch);
 		try {
-			const connections = await this.#client.listConnections(this.#lifetime.signal);
+			const observed = await this.#client.listConnections(this.#lifetime.signal);
 			if (this.#lifetime.signal.aborted) return;
+			// Historical credential versions are not separate accounts and must
+			// not be enabled again when a newer version has replaced them.
+			const latest = new Map<string, NativeMemberConnection>();
+			for (const connection of observed.connections) {
+				const current = latest.get(connection.connectionId);
+				if (!current || connection.connectionVersion > current.connectionVersion)
+					latest.set(connection.connectionId, connection);
+			}
+			const connections = { ...observed, connections: [...latest.values()] };
 			this.#connections = connections;
 			this.#error = undefined;
 			for (const [provider, attempt] of this.#attempts)
@@ -159,12 +163,15 @@ export class ConnectionsView {
 			this.#lifetime.signal.aborted ||
 			!this.#client.onboardingAvailable ||
 			!begin ||
-			attempts.get(provider)?.starting
+			attempts.get(provider)?.starting ||
+			attempts.get(provider)?.login
 		)
 			return;
 		const attempt: Attempt = { starting: true };
+		this.#adding = false;
 		attempts.set(provider, attempt);
 		signIns.changed();
+		this.el.querySelector<HTMLElement>(`[data-focus-key="status:${provider}"]`)?.focus();
 		try {
 			// Every start is a new sign-in with its own identity; a start is never replayed.
 			attempt.login = await begin({
@@ -201,59 +208,70 @@ export class ConnectionsView {
 			failed &&
 			!this.#lifetime.signal.aborted &&
 			!this.#error &&
-			this.#connections?.connections.some((item) => item.connectionId === connection.connectionId && live(item))
+			this.#connections?.connections.some(
+				(item) => item.connectionId === connection.connectionId && item.connectionStatus !== "revoked",
+			)
 		) {
 			this.#error = "The account could not be disconnected. Try again.";
 			this.#draw();
 		}
 	}
-	#card(provider: (typeof PROVIDERS)[number]): HTMLElement {
-		const connection = this.#current(provider.id);
-		const attempt = this.#attempts.get(provider.id);
-		const canConnect = Boolean(this.#client.onboardingAvailable && this.#begin);
-		const connected = connection && live(connection);
-		const status = attempt?.starting
-			? "Preparing sign-in. The first time can take a minute or two."
-			: attempt?.login
-				? "Waiting for you to finish signing in…"
-				: (attempt?.error ??
-					(this.#loading
-						? "Checking…"
-						: connected
-							? `Connected${connection.providerAccountReference ? ` · ${connection.providerAccountReference}` : ""}`
-							: connection
-								? "Sign in again to keep using this account"
-								: canConnect
-									? "Not connected"
-									: "Not available yet"));
-		const action = connected
-			? button(
-					this.#working === connection.connectionId ? "Disconnecting…" : "Disconnect",
-					() => void this.#disconnect(connection),
-					{ disabled: Boolean(this.#working) },
-				)
-			: attempt?.login
-				? button("Cancel", () => {
-						this.#attempts.delete(provider.id);
-						this.#signIns.changed();
-					})
-				: button(
-						attempt?.starting ? "Connecting…" : connection ? "Sign in again" : "Connect",
-						() => void this.#connect(provider.id),
-						{
-							disabled: !canConnect || this.#loading || attempt?.starting === true,
-						},
-					);
-		const login = attempt?.login;
+	#account(connection: NativeMemberConnection): HTMLElement {
+		const provider = PROVIDERS.find((item) => item.id === connection.provider)!;
+		// Older integrations stored an email in the reference; official CLI
+		// references are opaque identifiers and must never be presented as email.
+		const email = [connection.providerAccountEmail, connection.providerAccountReference].find(
+			(value) => value && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value),
+		);
+		const signOut = button(
+			this.#working === connection.connectionId ? "Signing out…" : "Sign out",
+			() => void this.#disconnect(connection),
+			{ disabled: Boolean(this.#working) },
+		);
+		signOut.dataset.focusKey = `signout:${connection.connectionId}`;
 		return h(
 			"article",
-			{ class: "connection-card" },
+			{ class: "connection-card", dataset: { connectionId: connection.connectionId } },
 			h("img", { class: "connection-logo", src: `./assets/${provider.logo}`, alt: "" }),
 			h(
 				"div",
 				{ class: "settings-copy" },
 				h("strong", null, provider.label),
-				h("small", { role: "status" }, status),
+				h("small", { class: "connection-email" }, email ?? "Email unavailable"),
+				!live(connection)
+					? h("small", { role: "status" }, "Sign out and add this account again to reconnect.")
+					: null,
+			),
+			h("div", { class: "connection-actions" }, signOut),
+		);
+	}
+	#attempt(provider: (typeof PROVIDERS)[number], attempt: Attempt): HTMLElement {
+		const canConnect = Boolean(this.#client.onboardingAvailable && this.#begin);
+		const status = attempt.starting
+			? "Preparing sign-in. The first time can take a minute or two."
+			: attempt.login
+				? "Waiting for you to finish signing in…"
+				: (attempt.error ?? "Sign-in has not finished.");
+		const action = attempt.login
+			? button("Cancel", () => {
+					this.#attempts.delete(provider.id);
+					this.#signIns.changed();
+					this.el.querySelector<HTMLButtonElement>(".connection-add")?.focus();
+				})
+			: button(attempt.starting ? "Connecting…" : "Try again", () => void this.#connect(provider.id), {
+					disabled: !canConnect || this.#loading || attempt.starting,
+				});
+		action.dataset.focusKey = `attempt:${provider.id}`;
+		const login = attempt.login;
+		return h(
+			"article",
+			{ class: "connection-card connection-attempt" },
+			h("img", { class: "connection-logo", src: `./assets/${provider.logo}`, alt: "" }),
+			h(
+				"div",
+				{ class: "settings-copy" },
+				h("strong", null, provider.label),
+				h("small", { role: "status", tabindex: -1, dataset: { focusKey: `status:${provider.id}` } }, status),
 			),
 			action,
 			login && (login.interactionUrl || login.userCode)
@@ -270,6 +288,7 @@ export class ConnectionsView {
 										target: "_blank",
 										rel: "noopener noreferrer",
 										referrerpolicy: "no-referrer",
+										dataset: { focusKey: `login:${provider.id}` },
 									},
 									`Open ${provider.id === "openai" ? "OpenAI" : "Anthropic"} sign-in`,
 								)
@@ -280,6 +299,35 @@ export class ConnectionsView {
 		);
 	}
 	#draw(): void {
+		const focusKey = this.el.contains(document.activeElement)
+			? (document.activeElement as HTMLElement).dataset.focusKey
+			: undefined;
+		const accounts = (this.#connections?.connections ?? []).filter(
+			(connection) =>
+				connection.connectionStatus !== "revoked" &&
+				PROVIDERS.some((provider) => provider.id === connection.provider) &&
+				![...this.#attempts.values()].some(
+					(attempt) => attempt.login?.connectionId === connection.connectionId && !live(connection),
+				),
+		);
+		const canConnect = Boolean(this.#client.onboardingAvailable && this.#begin);
+		const add = button(
+			"Add account",
+			() => {
+				this.#adding = !this.#adding;
+				this.#draw();
+				this.el
+					.querySelector<HTMLButtonElement>(
+						this.#adding ? ".connection-provider-picker button:not(:disabled)" : ".connection-add",
+					)
+					?.focus();
+			},
+			{ disabled: this.#loading || !canConnect },
+		);
+		add.classList.add("connection-add");
+		add.dataset.focusKey = "add";
+		add.setAttribute("aria-expanded", String(this.#adding));
+		add.setAttribute("aria-controls", "connection-provider-picker");
 		replace(
 			this.el,
 			h("h1", null, "Connections"),
@@ -296,7 +344,47 @@ export class ConnectionsView {
 							button("Try again", () => void this.#refresh(), { small: true }),
 						)
 					: null,
-				h("div", { class: "connection-list" }, ...PROVIDERS.map((provider) => this.#card(provider))),
+				h(
+					"div",
+					{ class: "connection-list" },
+					...accounts.map((connection) => this.#account(connection)),
+					...PROVIDERS.flatMap((provider) => {
+						const attempt = this.#attempts.get(provider.id);
+						return attempt ? [this.#attempt(provider, attempt)] : [];
+					}),
+					this.#loading
+						? h("p", { class: "connection-empty muted", role: "status" }, "Checking…")
+						: !accounts.length && !this.#attempts.size && !this.#error
+							? h("p", { class: "connection-empty muted" }, "No model accounts connected.")
+							: null,
+					h(
+						"div",
+						{ class: "connection-add-area" },
+						add,
+						!canConnect ? h("small", { class: "muted" }, "Adding accounts is not available yet.") : null,
+						h(
+							"div",
+							{ id: "connection-provider-picker", class: "connection-provider-picker", hidden: !this.#adding },
+							h("p", null, "Choose a model provider"),
+							...PROVIDERS.map((provider) => {
+								const choice = button(
+									[
+										h("img", { class: "connection-logo", src: `./assets/${provider.logo}`, alt: "" }),
+										provider.label,
+									],
+									() => void this.#connect(provider.id),
+									{
+										disabled: Boolean(
+											this.#attempts.get(provider.id)?.starting || this.#attempts.get(provider.id)?.login,
+										),
+									},
+								);
+								choice.dataset.focusKey = `provider:${provider.id}`;
+								return choice;
+							}),
+						),
+					),
+				),
 			),
 			h(
 				"section",
@@ -315,5 +403,14 @@ export class ConnectionsView {
 				),
 			),
 		);
+		if (focusKey) {
+			const target = [...this.el.querySelectorAll<HTMLElement>("[data-focus-key]")].find(
+				(item) => item.dataset.focusKey === focusKey,
+			);
+			(target && !target.closest("[hidden]") && !target.matches(":disabled")
+				? target
+				: this.el.querySelector<HTMLButtonElement>(".connection-add")
+			)?.focus();
+		}
 	}
 }

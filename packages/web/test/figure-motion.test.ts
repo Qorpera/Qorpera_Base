@@ -202,6 +202,24 @@ describe("2D studio playback in the shell", () => {
 			delete root.dataset.theme;
 		}
 	});
+	it("repaints a figure at the new pixel density when the window moves to another screen", async () => {
+		const screens: EventTarget[] = [];
+		vi.stubGlobal("matchMedia", (query: string) => {
+			if (!query.startsWith("(resolution")) return reduced;
+			screens.push(Object.assign(new EventTarget(), { matches: true }));
+			return screens.at(-1);
+		});
+		const host = mount();
+		await settle();
+		show([host]);
+		const canvas = host.querySelector("canvas")!;
+		const width = canvas.width;
+		vi.stubGlobal("devicePixelRatio", 2);
+		screens.at(-1)!.dispatchEvent(new Event("change"));
+		expect(canvas.width).toBe(width * 2);
+		// It then watches for the next move, from the new density.
+		expect(screens).toHaveLength(2);
+	});
 	it("retains the studio's holds, complete Working loop, and symbolic states", () => {
 		expect(localTime("Idle", 90)).toBeCloseTo(221 / 60);
 		expect(localTime("Waiting", 90)).toBeCloseTo(278 / 60);
