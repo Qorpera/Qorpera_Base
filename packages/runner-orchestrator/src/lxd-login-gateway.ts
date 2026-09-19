@@ -565,21 +565,13 @@ export class LxdNativeLoginGateway {
 			console.error(settled.error instanceof Error ? settled.error.message : "LXD native login route failed");
 			return json({ error: "Native provider login is unavailable" }, 503);
 		}
-		if (running) {
-			// The earlier work finished; this post reads the guest's current prompt.
-			const again = await withBudget(this.#startRoute(login, authority), budgetMs);
-			if (again.state === "pending") return json(preparing(login.loginId), 200);
-			if (again.state === "rejected") {
-				console.error(again.error instanceof Error ? again.error.message : "LXD native login route failed");
-				return json({ error: "Native provider login is unavailable" }, 503);
-			}
-			return again.value;
-		}
-		return settled.value;
+		// Joined callers share the result, never a consumable response body. Reusing
+		// this freshly completed route also keeps the post within one wait budget.
+		return json(settled.value, 200);
 	}
 
-	readonly #routes = new Map<string, Promise<ServiceHttpResponse>>();
-	#startRoute(login: NativeLoginRequest, authority: NativeLoginDescription): Promise<ServiceHttpResponse> {
+	readonly #routes = new Map<string, Promise<NativeLoginResult>>();
+	#startRoute(login: NativeLoginRequest, authority: NativeLoginDescription): Promise<NativeLoginResult> {
 		const work = this.#exclusive(login.computeIdentityId, () =>
 			this.#route(login, authority, this.#lifetime.signal),
 		).finally(() => {
@@ -606,7 +598,7 @@ export class LxdNativeLoginGateway {
 		login: NativeLoginRequest,
 		authority: NativeLoginDescription,
 		signal: AbortSignal,
-	): Promise<ServiceHttpResponse> {
+	): Promise<NativeLoginResult> {
 		await this.#prepareRoot();
 		let journal: LxdLoginJournal;
 		try {
@@ -692,20 +684,17 @@ export class LxdNativeLoginGateway {
 		const address = await this.#waitReady(instance, signal);
 		const result = await this.#forward(address, login, signal);
 		if (result.status === "completed") await this.#cleanup(journal, signal);
-		return json(result, 200);
+		return result;
 	}
 
-	#completed(loginId: string): ServiceHttpResponse {
-		return json(
-			{
-				schema: LOGIN_RESULT_SCHEMA,
-				login_id: loginId,
-				status: "completed",
-				interaction_url: null,
-				user_code: null,
-			},
-			200,
-		);
+	#completed(loginId: string): NativeLoginResult {
+		return {
+			schema: LOGIN_RESULT_SCHEMA,
+			login_id: loginId,
+			status: "completed",
+			interaction_url: null,
+			user_code: null,
+		};
 	}
 	async #prepareRoot(): Promise<void> {
 		await mkdir(this.#config.stateRoot, { recursive: true, mode: 0o700 });

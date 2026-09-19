@@ -21,6 +21,8 @@ export interface WorkspaceActions {
 		draft: GroupChatDraft,
 		signal: AbortSignal,
 	) => Promise<void>;
+	/** Shared workspace surface for transient notifications owned by the view. */
+	notificationHost?: HTMLElement;
 	computer?: WebCompanyComputer;
 	runControl?: WebSessionRunControl;
 	nativeSubscription?: WebNativeSubscription;

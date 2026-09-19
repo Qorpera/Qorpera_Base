@@ -47,7 +47,7 @@ function setup(items: readonly CompanyExecutionNotification[] = [item()]) {
 	};
 	const lifetime = new AbortController();
 	const restoreFocus = vi.fn();
-	const view = new ExecutionNotices(client, lifetime.signal, undefined, restoreFocus);
+	const view = new ExecutionNotices(client, lifetime.signal, restoreFocus);
 	document.body.append(view.el);
 	cleanup.push(() => view.dispose());
 	return { client, lifetime, view, restoreFocus };
@@ -59,26 +59,29 @@ describe("company execution notices", () => {
 		const f = setup();
 		await settle();
 		expect(f.view.el.hidden).toBe(false);
-		expect(f.view.el.textContent).toContain("Execution sponsor changed");
-		const acknowledge = action("acknowledge");
-		acknowledge.focus();
+		expect(f.view.el.textContent).toBe("Execution sponsor changed");
+		expect(f.view.el.querySelector("p, small")).toBeNull();
+		expect(f.view.el.querySelectorAll("button")).toHaveLength(1);
+		const dismiss = action("dismiss-notification");
+		dismiss.focus();
 		await vi.advanceTimersByTimeAsync(30_000);
-		expect(action("acknowledge")).toBe(acknowledge);
-		expect(document.activeElement).toBe(acknowledge);
+		expect(action("dismiss-notification")).toBe(dismiss);
+		expect(document.activeElement).toBe(dismiss);
 		expect(f.client.acknowledgeNotification).not.toHaveBeenCalled();
 	});
-	it("browses multiple notices and acknowledges only the explicitly selected record", async () => {
+	it("dismisses queued notices one at a time and skips acknowledged records", async () => {
 		const f = setup([item(70), item(71), { ...item(72), acknowledgedAt: timestamp }]);
 		await settle();
-		action("next").click();
-		expect(f.view.el.textContent).toContain("Update 2 of 2");
-		action("acknowledge").click();
+		expect(f.view.el.querySelectorAll(".notification-card")).toHaveLength(1);
+		action("dismiss-notification").click();
 		await settle();
-		expect(f.client.acknowledgeNotification).toHaveBeenCalledExactlyOnceWith(id(71), expect.any(AbortSignal));
-		expect(f.view.el.textContent).toContain("Update 1 of 1");
-		action("acknowledge").focus();
-		action("acknowledge").click();
+		expect(f.client.acknowledgeNotification).toHaveBeenCalledExactlyOnceWith(id(70), expect.any(AbortSignal));
+		expect(f.view.el.hidden).toBe(false);
+		action("dismiss-notification").focus();
+		action("dismiss-notification").click();
 		await settle();
+		expect(f.client.acknowledgeNotification).toHaveBeenNthCalledWith(2, id(71), expect.any(AbortSignal));
+		expect(f.client.acknowledgeNotification).toHaveBeenCalledTimes(2);
 		expect(f.view.el.hidden).toBe(true);
 		expect(f.restoreFocus).toHaveBeenCalledOnce();
 	});
@@ -86,10 +89,9 @@ describe("company execution notices", () => {
 		const f = setup();
 		await settle();
 		f.client.acknowledgeNotification.mockRejectedValueOnce(new Error("response lost"));
-		action("acknowledge").click();
+		action("dismiss-notification").click();
 		await settle();
-		expect(f.view.el.textContent).toContain("Acknowledgment could not be confirmed");
-		action("acknowledge").click();
+		expect(f.view.el.textContent).toBe("Dismissal could not be confirmedRefresh");
 		expect(f.client.acknowledgeNotification).toHaveBeenCalledTimes(1);
 		f.client.listNotifications.mockResolvedValue([{ ...item(), acknowledgedAt: timestamp }]);
 		action("refresh").click();
@@ -97,15 +99,67 @@ describe("company execution notices", () => {
 		expect(f.view.el.hidden).toBe(true);
 		expect(f.client.acknowledgeNotification).toHaveBeenCalledTimes(1);
 	});
-	it("rejects mismatched acknowledgment receipts and prevents repeat clicks during a write", async () => {
+	it("locally closes an uncertain dismissal without replaying the write or reopening on stale reads", async () => {
+		const f = setup();
+		await settle();
+		f.client.acknowledgeNotification.mockRejectedValueOnce(new Error("response lost"));
+		action("dismiss-notification").click();
+		await settle();
+		action("dismiss-notification").focus();
+		action("dismiss-notification").click();
+		expect(f.view.el.hidden).toBe(true);
+		expect(f.restoreFocus).toHaveBeenCalledOnce();
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(f.view.el.hidden).toBe(true);
+		expect(f.client.acknowledgeNotification).toHaveBeenCalledTimes(1);
+	});
+	it("does not show a confirmed dismissal again when a subsequent poll returns stale records", async () => {
+		const f = setup();
+		await settle();
+		action("dismiss-notification").click();
+		await settle();
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(f.view.el.hidden).toBe(true);
+		f.client.listNotifications.mockResolvedValue([item(), item(71)]);
+		await f.view.refresh();
+		expect(f.view.el.hidden).toBe(false);
+		f.client.acknowledgeNotification.mockResolvedValueOnce({ ...item(71), acknowledgedAt: timestamp });
+		action("dismiss-notification").click();
+		await settle();
+		expect(f.client.acknowledgeNotification).toHaveBeenNthCalledWith(2, id(71), expect.any(AbortSignal));
+		expect(f.view.el.hidden).toBe(true);
+	});
+	it("dismisses with Escape inside the card while leaving workspace Escape alone", async () => {
+		const f = setup();
+		await settle();
+		const composer = document.createElement("textarea");
+		document.body.append(composer);
+		composer.focus();
+		composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+		expect(f.client.acknowledgeNotification).not.toHaveBeenCalled();
+		const dismiss = action("dismiss-notification");
+		dismiss.focus();
+		const dismissKeyEvent = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+		dismiss.dispatchEvent(dismissKeyEvent);
+		await settle();
+		expect(dismissKeyEvent.defaultPrevented).toBe(true);
+		expect(f.client.acknowledgeNotification).toHaveBeenCalledExactlyOnceWith(id(70), expect.any(AbortSignal));
+		expect(f.view.el.hidden).toBe(true);
+		expect(f.restoreFocus).toHaveBeenCalledOnce();
+	});
+	it.each([
+		{ profileId: profileB.profileId, acknowledgedAt: timestamp },
+		{ notificationId: id(71), acknowledgedAt: timestamp },
+		{ acknowledgedAt: null },
+	])("rejects invalid acknowledgment receipts and prevents repeat clicks during a write: %j", async (receipt) => {
 		const f = setup();
 		await settle();
 		const pending = deferred<CompanyExecutionNotification>();
 		f.client.acknowledgeNotification.mockReturnValueOnce(pending.promise);
-		action("acknowledge").click();
-		action("acknowledge").click();
+		action("dismiss-notification").click();
+		action("dismiss-notification").click();
 		expect(f.client.acknowledgeNotification).toHaveBeenCalledTimes(1);
-		pending.resolve({ ...item(), profileId: profileB.profileId, acknowledgedAt: timestamp });
+		pending.resolve({ ...item(), ...receipt });
 		await settle();
 		expect(f.view.el.textContent).toContain("could not be confirmed");
 	});
@@ -115,7 +169,7 @@ describe("company execution notices", () => {
 		const old = deferred<readonly CompanyExecutionNotification[]>();
 		f.client.listNotifications.mockReturnValueOnce(old.promise);
 		const refresh = f.view.refresh();
-		action("acknowledge").click();
+		action("dismiss-notification").click();
 		await settle();
 		old.resolve([item()]);
 		await refresh;
@@ -141,16 +195,48 @@ describe("company execution notices", () => {
 		await settle();
 		expect(f.view.el.textContent).toContain("Execution sponsor changed");
 	});
-	it("keeps keyboard focus in the notices when a failed poll removes Acknowledge", async () => {
+	it("keeps a closed offline error hidden across failed polls and shows a new outage after recovery", async () => {
 		const f = setup();
 		await settle();
-		action("acknowledge").focus();
+		f.client.listNotifications.mockRejectedValue(new Error("offline"));
+		await f.view.refresh();
+		action("dismiss-notification").focus();
+		action("dismiss-notification").click();
+		expect(f.view.el.hidden).toBe(true);
+		expect(f.restoreFocus).toHaveBeenCalledOnce();
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(f.view.el.hidden).toBe(true);
+		expect(f.client.acknowledgeNotification).not.toHaveBeenCalled();
+		f.client.listNotifications.mockResolvedValue([]);
+		await f.view.refresh();
+		f.client.listNotifications.mockRejectedValue(new Error("offline again"));
+		await f.view.refresh();
+		expect(f.view.el.hidden).toBe(false);
+		expect(f.view.el.textContent).toBe("Company updates are unavailableRefresh");
+	});
+	it("removes its popup on disposal and ignores a late acknowledgment receipt", async () => {
+		const f = setup();
+		await settle();
+		const pending = deferred<CompanyExecutionNotification>();
+		f.client.acknowledgeNotification.mockReturnValueOnce(pending.promise);
+		action("dismiss-notification").click();
+		f.lifetime.abort();
+		pending.resolve({ ...item(), acknowledgedAt: timestamp });
+		await settle();
+		expect(f.view.el.isConnected).toBe(false);
+		expect(f.view.el.textContent).toBe("");
+		expect(f.view.el.hidden).toBe(true);
+	});
+	it("keeps keyboard focus on dismiss when a failed poll shows an error", async () => {
+		const f = setup();
+		await settle();
+		action("dismiss-notification").focus();
 		f.client.listNotifications.mockRejectedValueOnce(new Error("offline"));
 		await vi.advanceTimersByTimeAsync(30_000);
-		expect(document.activeElement).toBe(action("refresh"));
+		expect(document.activeElement).toBe(action("dismiss-notification"));
 		expect(f.restoreFocus).not.toHaveBeenCalled();
 	});
-	it("moves focus to Acknowledge when a successful retry removes Refresh", async () => {
+	it("moves focus to dismiss when a successful retry removes Refresh", async () => {
 		const f = setup();
 		await settle();
 		f.client.listNotifications.mockRejectedValueOnce(new Error("offline"));
@@ -158,16 +244,16 @@ describe("company execution notices", () => {
 		action("refresh").focus();
 		action("refresh").click();
 		await settle();
-		expect(document.activeElement).toBe(action("acknowledge"));
+		expect(document.activeElement).toBe(action("dismiss-notification"));
 		expect(f.client.acknowledgeNotification).not.toHaveBeenCalled();
 	});
-	it("keeps focus on an available action when paging controls disappear", async () => {
+	it("keeps focus on dismiss when polling replaces the current queued notice", async () => {
 		const f = setup([item(70), item(71)]);
 		await settle();
-		action("next").focus();
-		f.client.listNotifications.mockResolvedValue([item(70)]);
+		action("dismiss-notification").focus();
+		f.client.listNotifications.mockResolvedValue([item(71)]);
 		await f.view.refresh();
-		expect(document.activeElement).toBe(action("acknowledge"));
+		expect(document.activeElement).toBe(action("dismiss-notification"));
 	});
 	it("does not move focus from the workspace when a poll fails or recovers", async () => {
 		const f = setup();
@@ -202,7 +288,7 @@ describe("company execution notices", () => {
 				ceiling: 100,
 				periodStart: timestamp,
 			},
-			"spending limit",
+			"Company execution limit reached",
 		],
 		[
 			"company_ceiling_tripped",
@@ -213,7 +299,7 @@ describe("company execution notices", () => {
 				used: 2,
 				allocationId: id(90),
 			},
-			"computer could not start",
+			"Company computer limit reached",
 		],
 		[
 			"company_execution_paused",
@@ -224,7 +310,7 @@ describe("company execution notices", () => {
 				reason: "Check spend",
 				at: timestamp,
 			},
-			"Check spend",
+			"Company execution paused",
 		],
 		[
 			"company_execution_resumed",
@@ -240,7 +326,7 @@ describe("company execution notices", () => {
 	] as const)("presents %s notices", async (kind, subject, text) => {
 		const f = setup([{ ...item(), kind, subject }]);
 		await settle();
-		expect(f.view.el.textContent).toContain(text);
+		expect(f.view.el.textContent).toBe(text);
 	});
 });
 
@@ -265,6 +351,7 @@ it("mounts notices in the company workspace, then clears them on account change"
 	document.body.append(root);
 	cleanup.push(mountApplication(root, f.cloud, f.api));
 	await vi.advanceTimersByTimeAsync(100);
+	expect(root.querySelector('.notification-stack[aria-label="Notifications"] .execution-notices')).not.toBeNull();
 	expect(root.querySelector(".execution-notices")?.textContent).toContain("Execution sponsor changed");
 	expect(root.querySelector('a[href$="/notifications"]')).toBeNull();
 	const oldNotices = root.querySelector(".execution-notices")!;

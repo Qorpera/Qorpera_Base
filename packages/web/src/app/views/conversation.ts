@@ -1,16 +1,16 @@
-import { describeError } from "../../cloud/client.ts";
 import { sessionAttachmentIssue } from "../../cloud/session-attachments.ts";
 import type { TranscriptCard, TranscriptItem } from "../../cloud/transcript.ts";
 import type { HostedSession, HostedStaffAgent } from "../../cloud/types.ts";
 import { AttachmentTray } from "../../ui/attachments.ts";
 import { authorizationRequestId, renderAuthorizationCard } from "../../ui/authorization-card.ts";
 import { agentFigure } from "../../ui/avatar.ts";
-import { button, fmtTime, h, icon, notice, replace, spinner } from "../../ui/dom.ts";
+import { fmtTime, h, icon, notice, replace, spinner } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
+import { notification, updateNotification } from "../../ui/notification.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
-import type { CompanyController, ConversationState, FailedRun } from "../company.ts";
+import type { CompanyController, ConversationState } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
 import { ComputerPanel } from "./computer.ts";
@@ -20,6 +20,10 @@ import { SessionRunView } from "./session-run.ts";
 
 /** Beside the computer panel the conversation keeps at least this much room. */
 const CONVERSATION_MIN_WIDTH = 316;
+
+// Popup dismissal lasts for this company controller, including conversation navigation.
+// It does not settle or discard work whose outcome still needs review.
+const dismissedRunNotifications = new WeakMap<CompanyController, Set<string>>();
 
 export { renderAuthorizationCard } from "../../ui/authorization-card.ts";
 
@@ -52,6 +56,7 @@ export class ConversationView {
 	readonly #body: HTMLElement;
 	readonly #conversationPane: HTMLElement;
 	readonly #lifetime = new AbortController();
+	readonly #notificationSignal: AbortSignal;
 	readonly #actions: WorkspaceActions;
 	readonly #run: SessionRunView | undefined;
 	readonly #execution: SessionExecutionView | undefined;
@@ -63,8 +68,8 @@ export class ConversationView {
 	readonly #unsubscribe: (() => void)[] = [];
 	#disposed = false;
 	#statusKey = "";
-	#dismissing: string | undefined;
-	#dismissError: { runId: string; message: string } | undefined;
+	readonly #runNotification = h("div", { class: "run-notification", hidden: true });
+	#runNotificationKey = "";
 	#receivedAttachments: ReceivedAttachments[] = [];
 
 	constructor(
@@ -74,6 +79,7 @@ export class ConversationView {
 		toggleNavigation?: () => void,
 	) {
 		this.#company = company;
+		this.#notificationSignal = AbortSignal.any([this.#lifetime.signal, company.signal]);
 		this.#sessionId = sessionId;
 		this.#actions = actions;
 		this.#run = actions.runControl
@@ -249,6 +255,12 @@ export class ConversationView {
 		);
 		this.#body = h("div", { class: "thread-body" }, this.#conversationPane);
 		this.el = h("section", { class: "thread" }, this.#body);
+		if (actions.notificationHost) actions.notificationHost.append(this.#runNotification);
+		else this.el.append(h("div", { class: "notification-stack" }, this.#runNotification));
+		company.signal.addEventListener("abort", () => this.#runNotification.remove(), {
+			once: true,
+			signal: this.#lifetime.signal,
+		});
 		window.addEventListener("resize", () => this.#syncPanelLayout(), { signal: this.#lifetime.signal });
 		window.addEventListener("qorpera-rail-resize", () => this.#syncPanelLayout(), { signal: this.#lifetime.signal });
 		document.addEventListener(
@@ -270,6 +282,7 @@ export class ConversationView {
 		if (this.#disposed) return;
 		this.#disposed = true;
 		this.#lifetime.abort();
+		this.#runNotification.remove();
 		this.#details?.dispose();
 		this.#panel?.dispose();
 		this.#attachments.dispose();
@@ -650,7 +663,7 @@ export class ConversationView {
 
 	#renderStatus(conversation: ConversationState, canWrite: boolean, session: HostedSession | undefined): void {
 		const company = this.#company.store.get();
-		const failed = this.#isRoom ? undefined : this.#company.failedRunFor(session?.staffAgentId);
+		this.#renderRunNotification(session);
 		// Rebuilt only when something shown changes, so a focused button survives polling.
 		const key = JSON.stringify([
 			conversation.error,
@@ -662,16 +675,12 @@ export class ConversationView {
 			company.accessLost,
 			company.team?.role,
 			company.team?.capabilities,
-			failed,
-			this.#dismissing,
-			this.#dismissError,
 		]);
 		if (key === this.#statusKey) return;
 		this.#statusKey = key;
 		const children: (HTMLElement | null)[] = [];
 		if (conversation.error) children.push(notice("danger", conversation.error));
 		if (conversation.sendError) children.push(notice("danger", conversation.sendError));
-		if (failed) children.push(this.#failedRunCard(failed, canWrite));
 		if (canWrite && !this.#actions.sendMessage)
 			children.push(
 				h(
@@ -708,65 +717,96 @@ export class ConversationView {
 		if (refocus) this.#status.querySelector<HTMLElement>(`[data-action="${refocus}"]`)?.focus();
 	}
 
-	/** The card behind the rail's red disc (shell spec §11.1): why the run did not
-	 * finish, and the one thing this client can do about it. */
-	#failedRunCard({ activity, recovery }: FailedRun, canWrite: boolean): HTMLElement {
-		const profileId = this.#company.profile.profileId;
-		if (recovery?.proposalId) {
-			const changes = h("a", { href: `#/c/${profileId}/proposal/${recovery.proposalId}` }, "the changes");
-			return this.#company.store.get().team?.capabilities.authorize
-				? notice("warn", "A run stopped after changing Company File. Review ", changes, " to keep or discard them.")
-				: notice(
-						"warn",
-						"A run stopped after changing Company File. An owner or admin decides whether to keep ",
-						changes,
-						".",
-					);
-		}
-		const reason = recovery?.lastError ? `: ${recovery.lastError}` : ".";
-		if (activity.sourceKind === "proposal_review")
-			return notice(
-				"warn",
-				`A review did not finish${reason} The proposal it was reviewing is still open in `,
-				h("a", { href: `#/c/${profileId}/file` }, "Company File"),
-				".",
-			);
-		const unsettled = (recovery?.unsettledOperations ?? 0) > 0;
-		const dismissing = this.#dismissing === activity.runId;
-		const error = this.#dismissError?.runId === activity.runId ? this.#dismissError.message : undefined;
-		const errorId = `failed-run-error-${activity.runId}`;
-		// Dismiss waits for the details, which say whether the cloud would refuse it.
-		const dismiss =
-			canWrite && recovery && !unsettled
-				? button(dismissing ? "Dismissing…" : "Dismiss", () => void this.#dismiss(activity.runId), { small: true })
-				: null;
-		if (dismiss) {
-			dismiss.dataset.action = "dismiss-run";
-			// Still focusable while busy, so the keyboard stays on it.
-			if (dismissing) dismiss.setAttribute("aria-disabled", "true");
-			if (error) dismiss.setAttribute("aria-describedby", errorId);
-		}
-		return notice(
-			"warn",
-			h("p", null, `A run did not finish${reason}`),
-			unsettled ? h("p", null, "Some of its work has an unknown outcome, so it cannot be dismissed here.") : null,
-			error ? h("p", { id: errorId }, `Could not dismiss it: ${error}`) : null,
-			dismiss,
-		);
-	}
-
-	async #dismiss(runId: string): Promise<void> {
-		if (this.#dismissing) return;
-		this.#dismissing = runId;
-		this.#dismissError = undefined;
-		this.update();
-		try {
-			await this.#company.dismissFailedRun(runId);
-		} catch (error) {
-			this.#dismissError = { runId, message: describeError(error) };
-		} finally {
-			this.#dismissing = undefined;
+	#renderRunNotification(session: HostedSession | undefined): void {
+		const company = this.#company.store.get();
+		const failed =
+			this.#isRoom || company.accessLost || !company.team?.capabilities.read
+				? undefined
+				: this.#company.failedRunFor(session?.staffAgentId);
+		const runId = failed?.activity.runId;
+		const hidden = !runId || dismissedRunNotifications.get(this.#company)?.has(runId);
+		const proposalId = failed?.recovery?.proposalId;
+		const review = failed?.activity.sourceKind === "proposal_review";
+		const title = proposalId
+			? "Run stopped with changes to review"
+			: review
+				? "A review did not finish"
+				: "A run did not finish";
+		const key = JSON.stringify([runId, hidden, proposalId, review]);
+		if (key === this.#runNotificationKey) return;
+		this.#runNotificationKey = key;
+		const focused = this.#runNotification.contains(document.activeElement);
+		const dismiss = () => {
+			if (!runId || this.#notificationSignal.aborted) return;
+			let dismissed = dismissedRunNotifications.get(this.#company);
+			if (dismissed?.has(runId)) return;
+			if (!dismissed) {
+				dismissed = new Set();
+				dismissedRunNotifications.set(this.#company, dismissed);
+			}
+			dismissed.add(runId);
 			this.update();
+			// Recovery details can arrive after the popup. Follow this one dismissal
+			// across navigation, but stop waiting on permission loss or company teardown.
+			const clearSettledFailure = () => {
+				const state = this.#company.store.get();
+				const currentSession = state.sessions.find((item) => item.sessionId === this.#sessionId);
+				const current = this.#company.failedRunFor(currentSession?.staffAgentId);
+				const canClear =
+					!this.#company.signal.aborted &&
+					!state.accessLost &&
+					state.team?.capabilities.write &&
+					state.team.capabilities.read &&
+					currentSession?.status === "open" &&
+					current?.activity.runId === runId &&
+					current.activity.sourceKind !== "proposal_review";
+				if (canClear && !current.recovery) return;
+				// A newer failure can temporarily replace this one in the activity RPC.
+				// Let this run be dismissed again if it returns before we could clear it.
+				if (current?.activity.runId !== runId) dismissed.delete(runId);
+				unsubscribe();
+				this.#company.signal.removeEventListener("abort", clearSettledFailure);
+				if (canClear && current.recovery?.unsettledOperations === 0 && !current.recovery.proposalId) {
+					// Clear settled failures so the server can report the agent's next run.
+					void this.#company.dismissFailedRun(runId).catch(() => {
+						// Notify the current view too if the member navigated during the request.
+						dismissed.delete(runId);
+						if (!this.#company.signal.aborted) this.#company.store.set({});
+					});
+				}
+			};
+			const unsubscribe = this.#company.store.subscribe(clearSettledFailure);
+			this.#company.signal.addEventListener("abort", clearSettledFailure, { once: true });
+			clearSettledFailure();
+		};
+		const profileId = this.#company.profile.profileId;
+		const action =
+			proposalId || review
+				? h(
+						"a",
+						{
+							class: "btn btn-small",
+							href: `#/c/${profileId}/${proposalId ? `proposal/${proposalId}` : "file"}`,
+						},
+						"Review",
+					)
+				: undefined;
+		updateNotification(
+			this.#runNotification,
+			hidden ? null : notification(title, dismiss, { action, error: true }),
+			hidden ? undefined : runId,
+			this.#notificationSignal,
+			!company.accessLost && company.team?.capabilities.read === true,
+		);
+		if (focused) {
+			if (!hidden) this.#runNotification.querySelector<HTMLElement>("button")?.focus({ preventScroll: true });
+			else if (this.#conversationPane.inert) this.#panel?.focus();
+			else if (!this.#composer.disabled && !this.#composerWrap.hidden) this.#composer.focus({ preventScroll: true });
+			else if (!this.#identity.disabled) this.#identity.focus({ preventScroll: true });
+			else {
+				this.el.tabIndex = -1;
+				this.el.focus({ preventScroll: true });
+			}
 		}
 	}
 }

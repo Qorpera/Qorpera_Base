@@ -39,15 +39,17 @@ describe("noVNC client protocol filtering", () => {
 		}
 	});
 
-	it("strips extended clipboard negotiation while retaining normal encodings and bounded extensions", () => {
+	it("negotiates only the noVNC input formats admitted by the viewer authority", () => {
 		const parser = new CompanyComputerRfbClientParser();
 		parser.push(clientHello);
-		const encodings = Buffer.alloc(16);
+		const encodings = Buffer.alloc(24);
 		encodings[0] = 2;
-		encodings.writeUInt16BE(3, 2);
+		encodings.writeUInt16BE(5, 2);
 		encodings.writeUInt32BE(3231835598, 4); // Actual vendored noVNC identifier, not XVP (-309).
 		encodings.writeInt32BE(16, 8);
 		encodings.writeInt32BE(-309, 12);
+		encodings.writeInt32BE(-258, 16); // noVNC QEMU physical keyboard events are 12 bytes, not core KeyEvent.
+		encodings.writeInt32BE(-316, 20); // Extended mouse buttons are 7 bytes, not core PointerEvent.
 		expect(COMPANY_COMPUTER_RFB_EXTENDED_CLIPBOARD).toBe(encodings.readInt32BE(4));
 		const output = parser.push(encodings)[0].bytes;
 		expect(output.readUInt16BE(2)).toBe(2);

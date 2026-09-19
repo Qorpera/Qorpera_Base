@@ -12,10 +12,9 @@ export interface CompanyComputerStartIntent {
 	computerGeneration: number;
 	state: "requested" | "reserved" | "cancelled";
 }
-/** 2026-09-17 amendment: why the office is in maintenance, when the backend
- * knows (a host reboot opened by the node). Absent on older backends. */
+/** Server-owned maintenance distinguishes idle rest from host recovery. */
 export interface CompanyComputerMaintenance {
-	reason: "host_reboot";
+	reason: "host_reboot" | "idle";
 	state: "requested" | "resumed" | "activated";
 	transitionId: string;
 	requestedAt: string;
@@ -28,7 +27,7 @@ export function parseCompanyComputerMaintenance(value: unknown): CompanyComputer
 	const r = value as Record<string, unknown>;
 	if (
 		Object.keys(r).sort().join() !== "activatedAt,reason,requestedAt,resumedAt,state,transitionId" ||
-		r.reason !== "host_reboot" ||
+		(r.reason !== "host_reboot" && r.reason !== "idle") ||
 		!["requested", "resumed", "activated"].includes(r.state as string) ||
 		typeof r.transitionId !== "string" ||
 		typeof r.requestedAt !== "string" ||
@@ -37,7 +36,7 @@ export function parseCompanyComputerMaintenance(value: unknown): CompanyComputer
 	)
 		throw new Error("INVALID_OFFICE_MAINTENANCE");
 	return {
-		reason: "host_reboot",
+		reason: r.reason,
 		state: r.state as CompanyComputerMaintenance["state"],
 		transitionId: r.transitionId,
 		requestedAt: r.requestedAt,
@@ -112,7 +111,7 @@ export class CloudCompanyComputerStart {
 			throw new Error("OFFICE_START_UNCONFIRMED_REFRESH_STATUS");
 		}
 	}
-	/** Owner/admin authorization is enforced by SQL. An accepted intent is not
+	/** SQL gates initial provisioning to managers and idle wake to writers. An accepted intent is not
 	 * readiness and does not grant screens, browser profiles or member input. */
 	async request(
 		computerGeneration: number,

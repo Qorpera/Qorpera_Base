@@ -7,10 +7,12 @@ import type { HostedProfile } from "./types.ts";
  * lifetime, including after an asynchronous token refresh. */
 export class WebCompanyComputer {
 	readonly client: CloudMemberCompanyComputerClient;
+	readonly canRequestWake: boolean;
 	readonly #cloud: Cloud;
 	readonly #memberId: string;
 	readonly #current: () => void;
 	constructor(cloud: Cloud, profile: HostedProfile, memberId: string, signal: AbortSignal, current: () => void) {
+		this.canRequestWake = ["owner", "admin", "contributor"].includes(profile.role);
 		this.#cloud = cloud;
 		this.#memberId = memberId;
 		this.#current = () => {

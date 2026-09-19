@@ -50,14 +50,14 @@ export interface CompanyComputerMemberStatus {
 	viewers: {
 		viewerSessionId: string;
 		screenId: string;
-		mode: "watch" | "control";
+		mode: "watch" | "shared" | "control";
 		state: "issued" | "active" | "draining";
 	}[];
 }
 export interface CompanyComputerMemberView {
 	connectionId: string;
 	binding: CompanyComputerScreenBinding;
-	mode: "watch" | "control";
+	mode: "watch" | "shared" | "control";
 	channel: CompanyComputerViewChannel;
 	/** Disconnects immediately, then requests exact durable cancellation. An
 	 * acknowledgement records intent; only the runtime can prove input drain. */
@@ -166,7 +166,7 @@ export class CloudCompanyComputerViews {
 				viewers.has(viewer.viewerSessionId) ||
 				typeof viewer.screenId !== "string" ||
 				!COMPANY_COMPUTER_UUID.test(viewer.screenId) ||
-				!["watch", "control"].includes(viewer.mode as string) ||
+				!["watch", "shared", "control"].includes(viewer.mode as string) ||
 				!["issued", "active", "draining"].includes(viewer.state as string)
 			)
 				throw new Error("INVALID_OFFICE_VIEW_RESPONSE");
@@ -249,19 +249,18 @@ export class CloudCompanyComputerViews {
 		keys(result, "state");
 		if (result.state !== "released") throw new Error("OFFICE_VIEW_CLEANUP_UNCONFIRMED");
 	}
-	/** Explicit user connection. Reads fresh authority, submits at most one
-	 * takeover, then waits for physical acknowledgement. Unknown mutations are
-	 * never replayed. Callers must choose watch again after disconnection. */
+	/** Reads fresh authority for the requested screen. Shared input leaves the
+	 * agent's lease intact; exclusive control waits for an acknowledged takeover. */
 	async connectScreen(options: {
 		binding: CompanyComputerScreenBinding;
-		mode: "watch" | "control";
+		mode: "watch" | "shared" | "control";
 		signal: AbortSignal;
 	}): Promise<CompanyComputerMemberView> {
 		const binding = structuredClone(options.binding),
 			mode = options.mode;
 		assertCompanyComputerScreenBinding(binding, binding);
 		assertCompanyComputerScope(binding, this.#scope);
-		if (mode !== "watch" && mode !== "control") throw new Error("INVALID_VIEW_MODE");
+		if (!["watch", "shared", "control"].includes(mode)) throw new Error("INVALID_VIEW_MODE");
 		const screen = await withCloudDeadline(
 			async (signal) => {
 				let expectedEpoch: number | undefined;
@@ -279,6 +278,11 @@ export class CloudCompanyComputerViews {
 					if (!observed) throw new Error("OFFICE_SCREEN_CHANGED");
 					assertCompanyComputerScreenBinding(observed.binding, binding);
 					if (mode === "watch" && !observed.drainPending) return observed;
+					if (mode === "shared") {
+						if (observed.drainPending || observed.takeoverMemberId !== null || observed.driver === "member")
+							throw new Error("OFFICE_SCREEN_DRAINING");
+						return observed;
+					}
 					if (mode === "control") {
 						if (
 							(observed.takeoverMemberId !== null && observed.takeoverMemberId !== this.#memberId) ||
@@ -369,7 +373,7 @@ export class CloudCompanyComputerViews {
 	async connect(options: {
 		binding: CompanyComputerScreenBinding;
 		screenEpoch: number;
-		mode?: "watch" | "control";
+		mode?: "watch" | "shared" | "control";
 		privateChallenge?: CompanyComputerPrivacyChallenge;
 		signal: AbortSignal;
 	}): Promise<CompanyComputerMemberView> {
@@ -378,7 +382,7 @@ export class CloudCompanyComputerViews {
 		assertCompanyComputerScreenBinding(binding, binding);
 		assertCompanyComputerScope(binding, this.#scope);
 		epoch(options.screenEpoch);
-		if (!["watch", "control"].includes(mode)) throw new Error("INVALID_VIEW_MODE");
+		if (!["watch", "shared", "control"].includes(mode)) throw new Error("INVALID_VIEW_MODE");
 		const challenge = options.privateChallenge
 			? parseCompanyComputerPrivacyChallenge(options.privateChallenge, this.#scope)
 			: null;
@@ -410,7 +414,9 @@ export class CloudCompanyComputerViews {
 		if (
 			grant.memberId !== this.#memberId ||
 			grant.mode !== mode ||
-			grant.screenEpoch !== options.screenEpoch ||
+			// Shared grants carry the server's viewer fence epoch. The observed
+			// agent lease epoch is only the optimistic precondition for minting.
+			(mode !== "shared" && grant.screenEpoch !== options.screenEpoch) ||
 			(challenge
 				? grant.privacyVersion !== challenge.version ||
 					grant.privateSignIn?.challengeId !== challenge.challengeId ||
