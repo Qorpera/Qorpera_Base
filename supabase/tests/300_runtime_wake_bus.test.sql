@@ -953,10 +953,14 @@ $$;
 
 rollback to thread_audience;
 
--- The thread outlives edits of its agent: a wake admitted at the agent's later version still
--- answers in it, while a run older than the thread's pin is refused.
+-- The thread outlives edits of its agent. A wake admitted at the agent's later version answers in
+-- the thread opened at the earlier one. A thread that claims a version its agent never had stays
+-- unusable, a member turn keeps its exact version, and a run that is in flight when its agent is
+-- edited ends: every run is held to the agent version it was admitted at.
 do $$
-declare v_thread uuid; v_routine jsonb; v_wake uuid; v_run uuid; v_binding jsonb;
+declare v_thread uuid; v_routine jsonb; v_wake uuid; v_run uuid; v_binding jsonb; v_result jsonb; v_room uuid;
+	v_delivery_run uuid; v_delivery jsonb; v_base public.qorpera_execution_runs%rowtype;
+	v_member jsonb := current_setting('qorpera_test.wake_binding')::jsonb;
 begin
 	update public.qorpera_shared_sessions set status = 'open'
 	where environment_id = '30000000-0000-4000-8000-000000000020' and execution_scope ->> 'agentThread' = 'true'
@@ -966,6 +970,8 @@ begin
 	v_routine := pg_temp.wake_routine('30000000-0000-4000-8000-000000000031',
 		jsonb_build_object('id','after-edit','kind','schedule','intervalMinutes',5,'replyPolicy','required'));
 	v_wake := pg_temp.wake_schedule(v_routine,'thread-after-edit');
+	perform pg_temp.wake_assert((select session_id from public.qorpera_wake_occurrences where id = v_wake) = v_thread,
+		'An edited agent keeps its thread as the public audience');
 	perform public.qorpera_materialize_wake_execution_runs(1);
 	select run_id into strict v_run from public.qorpera_wake_occurrences where id = v_wake;
 	perform pg_temp.wake_assert((select r.session_id = v_thread and r.staff_version > s.staff_version
@@ -973,10 +979,44 @@ begin
 		'The wake runs at the edited agent version inside the thread opened at the earlier one');
 	v_binding := pg_temp.wake_start(v_run);
 	perform pg_temp.wake_public_send(v_binding,'progress','thread-after-edit');
-	perform pg_temp.wake_assert((select count(*) = 1 from public.qorpera_agent_sends where run_id = v_run),
-		'An edited agent still answers in its thread');
+	perform pg_temp.wake_assert((select count(*) = 1 from public.qorpera_session_events
+		where session_id = v_thread and execution_kind = 'run' and execution_id = v_run),
+		'The transcript accepts the wake run although the thread records an earlier agent version');
+
+	-- A member's post into the thread is a room delivery, the path that failed in production. Its
+	-- wake authority has no session clause, so the refusal further down is the transcript's own.
+	select id into strict v_room from public.qorpera_company_rooms where session_id = v_thread and status = 'active';
+	select * into strict v_base from public.qorpera_execution_runs where id = (v_member ->> 'runId')::uuid;
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	v_result := public.qorpera_post_company_room_message(v_room,extensions.gen_random_uuid(),
+		'{"schema":"qorpera.session-prompt/v1","text":"Bob, are you there?"}',v_base.sponsor_binding_id,v_base.sponsor_version);
+	perform pg_temp.path_claims('service_role');
+	perform public.qorpera_materialize_wake_execution_runs(1);
+	select run_id into strict v_delivery_run from public.qorpera_wake_occurrences where id = (v_result #>> '{occurrenceIds,0}')::uuid;
+	perform pg_temp.wake_assert((select r.source_kind = 'room_delivery' and r.session_id = v_thread and r.staff_version > s.staff_version
+		from public.qorpera_execution_runs r join public.qorpera_shared_sessions s on s.id = r.session_id where r.id = v_delivery_run),
+		'A post into the thread of an edited agent is delivered at the agent''s current version');
+	v_delivery := pg_temp.wake_start(v_delivery_run);
+	perform pg_temp.wake_public_send(v_delivery,'progress','delivery-after-edit');
+	perform pg_temp.wake_assert((select count(*) = 1 from public.qorpera_session_events
+		where session_id = v_thread and execution_kind = 'run' and execution_id = v_delivery_run),
+		'An edited agent answers a member in its thread');
 	update public.qorpera_shared_sessions set staff_version = staff_version + 2 where id = v_thread;
-	perform pg_temp.wake_error(format('select pg_temp.wake_public_send(%L,%L,%L)',v_binding,'progress','thread-backwards'),
+	perform pg_temp.wake_error(format('select pg_temp.wake_public_send(%L,%L,%L)',v_delivery,'progress','thread-ahead-delivery'),
+		'PGRST');
+	perform pg_temp.wake_error(format('select pg_temp.wake_public_send(%L,%L,%L)',v_binding,'progress','thread-ahead-routine'),
+		'42501','Admitted wake authority is unavailable');
+	update public.qorpera_shared_sessions set staff_version = staff_version - 2 where id = v_thread;
+
+	update public.qorpera_shared_sessions set staff_version = staff_version + 1
+	where id = (select session_id from public.qorpera_execution_runs where id = (v_member ->> 'runId')::uuid);
+	perform pg_temp.wake_error(format('select pg_temp.wake_public_send(%L,%L,%L)',v_member,'progress','member-turn-pin'),
+		'PGRST');
+
+	perform pg_temp.wake_public_send(v_binding,'progress','thread-before-second-edit');
+	update public.qorpera_profile_staff set version = version + 1
+	where profile_id = '30000000-0000-4000-8000-000000000010' and staff_agent_id = '30000000-0000-4000-8000-000000000031';
+	perform pg_temp.wake_error(format('select pg_temp.wake_public_send(%L,%L,%L)',v_binding,'progress','edited-in-flight'),
 		'42501','Admitted wake authority is unavailable');
 end
 $$;
