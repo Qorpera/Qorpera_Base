@@ -102,7 +102,10 @@ async function fixture(
 	});
 	return { binding, run, call, read, mutate, boundary, agent };
 }
-const body = (result: { contentItems: { text: string }[] }) => JSON.parse(result.contentItems[0].text);
+const body = (result: { contentItems: readonly unknown[] }) =>
+	JSON.parse((result.contentItems[0] as { text: string }).text);
+const names = (boundary: CloudNativeToolBoundary) =>
+	(boundary.specification as unknown as { tools: { name: string }[] }).tools.map((tool) => tool.name);
 const dispatch = {
 	action: "dispatch",
 	operationKey: "d1",
@@ -121,8 +124,8 @@ describe("agent todo and worker tools", () => {
 		const parent = await fixture();
 		const child = await fixture(workerWake);
 		try {
-			expect(parent.boundary.specification.tools.map((tool) => tool.name)).toEqual(["manage_todo", "manage_worker"]);
-			expect(child.boundary.specification.tools.map((tool) => tool.name)).toEqual(["report_work"]);
+			expect(names(parent.boundary)).toEqual(["manage_todo", "manage_worker"]);
+			expect(names(child.boundary)).toEqual(["report_work"]);
 			const denied = await child.boundary.invoke("c1", "qorpera", "manage_worker", dispatch);
 			expect(body(denied).status).toBe("denied");
 			expect(child.call).not.toHaveBeenCalled();
@@ -203,10 +206,22 @@ describe("agent todo and worker tools", () => {
 				"qorpera_manage_agent_worker",
 				{ p_binding: f.binding, p_request: { ...dispatch, revival: "batch" } },
 			]);
+			// A folder named with a trailing slash is the same folder.
+			await f.boundary.invoke("w2", "qorpera", "manage_worker", {
+				...dispatch,
+				operationKey: "d2",
+				workerKey: "interviews",
+				sources: ["founder/interviews/"],
+			});
+			expect((f.call.mock.calls.at(-2)?.[1] as { p_request: { sources: string[] } }).p_request.sources).toEqual([
+				"founder/interviews",
+			]);
 			const calls = f.call.mock.calls.length;
 			const { definitionOfDone: _omitted, ...incomplete } = dispatch;
+			const { workerKey: _unnamed, ...unnamed } = dispatch;
 			for (const [index, hostile] of [
 				incomplete,
+				unnamed,
 				{ ...dispatch, staffAgentId: randomUUID() },
 				{ ...dispatch, parentRunId: randomUUID() },
 				{ ...dispatch, access: "admin" },
