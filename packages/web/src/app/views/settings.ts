@@ -2,7 +2,7 @@ import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
 import { createWebCompanyExecution } from "../../cloud/company-execution.ts";
 import { createWebNativeSubscription } from "../../cloud/native-subscription.ts";
-import type { HostedCompanyFile, HostedFriend, HostedProfile } from "../../cloud/types.ts";
+import type { HostedCompanyFile, HostedProfile } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { button, fmtBytes, h, icon, notice, replace } from "../../ui/dom.ts";
 import { uiText } from "../../ui/preferences.ts";
@@ -10,6 +10,8 @@ import type { AuthController } from "../auth.ts";
 import { CompanyController } from "../company.ts";
 import { type AccountViewState, renderAccount } from "./account.ts";
 import { CompanyExecutionView } from "./company-execution.ts";
+import { FriendsController, renderFriends } from "./friends.ts";
+import type { HubController } from "./hub.ts";
 import { ConnectionsView, ProviderSignIns } from "./settings-connections.ts";
 import { renderTeam } from "./team.ts";
 
@@ -17,21 +19,30 @@ const TABS = [
 	{
 		id: "general",
 		label: "General",
+		icon: "settings",
 		keywords: "account plan billing companies appearance theme language region",
+	},
+	{
+		id: "friends",
+		label: "Friends",
+		icon: "friends",
+		keywords: "people contacts requests add email invitations invites join accept decline",
 	},
 	{
 		id: "company",
 		label: "Company",
+		icon: "company",
 		keywords:
 			"people team members invitations staff file organization approvals execution pause resume ceilings limits",
 	},
 	{
 		id: "connections",
 		label: "Connections",
+		icon: "connections",
 		keywords: "providers subscriptions openai codex anthropic claude secrets",
 	},
 ] as const;
-type Tab = (typeof TABS)[number]["id"];
+export type SettingsTab = (typeof TABS)[number]["id"];
 
 /** Provider sign-ins in progress, per member and company, for the life of the tab. */
 const SIGN_INS = new Map<string, ProviderSignIns>();
@@ -41,17 +52,21 @@ export class SettingsView {
 	readonly el: HTMLElement;
 	readonly #api: CloudApi;
 	readonly #auth: AuthController;
+	readonly #hub: HubController;
+	readonly #friends: FriendsController;
+	/** Company invitations waiting on the Friends tab, as the profile menu counts them. */
+	readonly #invitationCount = h("span", { class: "settings-tab-count", hidden: true });
 	readonly #close: () => void;
 	readonly #companyRemoved: (profileId: string) => void;
 	readonly #lifetime = new AbortController();
 	readonly #content = h("div", { class: "settings-content", id: "settings-content", role: "tabpanel", tabindex: "0" });
-	readonly #panels = new Map<Tab, HTMLElement>();
-	readonly #tabs = new Map<Tab, HTMLButtonElement>();
+	readonly #panels = new Map<SettingsTab, HTMLElement>();
+	readonly #tabs = new Map<SettingsTab, HTMLButtonElement>();
 	readonly #borrowedCompany: CompanyController | undefined;
 	readonly #companyPicker = h("select", { class: "settings-company-picker", "aria-label": "Company for settings" });
 	readonly #companyLabel = h("label", { class: "settings-company-label" }, "Company", this.#companyPicker);
 	#profiles: HostedProfile[] = [];
-	#tab: Tab = "general";
+	#tab: SettingsTab = "general";
 	#account: AccountViewState = { loading: true };
 	#company: CompanyController | undefined;
 	#ownsCompany = false;
@@ -59,7 +74,6 @@ export class SettingsView {
 	#companyLifetime = new AbortController();
 	#connections: ConnectionsView | undefined;
 	#execution: CompanyExecutionView | undefined;
-	#friends: HostedFriend[] | undefined;
 	#feedback: { message?: string; error?: string } = {};
 	#file: HostedCompanyFile | undefined;
 	#fileLoading = false;
@@ -68,13 +82,17 @@ export class SettingsView {
 	constructor(
 		api: CloudApi,
 		auth: AuthController,
+		hub: HubController,
 		profiles: HostedProfile[],
 		company: CompanyController | undefined,
 		close: () => void,
 		companyRemoved: (profileId: string) => void,
+		tab: SettingsTab = "general",
 	) {
 		this.#api = api;
 		this.#auth = auth;
+		this.#hub = hub;
+		this.#friends = new FriendsController(api);
 		this.#close = close;
 		this.#companyRemoved = companyRemoved;
 		this.#borrowedCompany = company;
@@ -92,7 +110,9 @@ export class SettingsView {
 					"aria-controls": "settings-content",
 					onclick: () => this.#select(tab.id),
 				},
+				icon(tab.icon),
 				uiText(tab.label),
+				tab.id === "friends" ? this.#invitationCount : null,
 			);
 			this.#tabs.set(tab.id, button);
 			tablist.append(button);
@@ -160,19 +180,21 @@ export class SettingsView {
 				this.#account = { loaded: true, error: describeError(error) };
 				this.#general();
 			});
-		void api
-			.listFriends()
-			.then((friends) => {
-				if (this.#lifetime.signal.aborted) return;
-				this.#friends = friends;
-				this.#drawCompany();
-			})
-			.catch((error) => {
-				if (this.#lifetime.signal.aborted) return;
-				this.#feedback = { error: describeError(error) };
-				this.#drawCompany();
-			});
-		this.#select("general");
+		// The friends list also feeds the Company tab's invitation picker.
+		this.#friends.store.subscribe(() => {
+			if (this.#tab === "friends") this.#drawFriends();
+			else if (this.#tab === "company") this.#drawCompany();
+		});
+		void this.#friends.refresh();
+		this.#lifetime.signal.addEventListener(
+			"abort",
+			hub.store.subscribe(() => {
+				this.#countInvitations();
+				if (this.#tab === "friends") this.#drawFriends();
+			}),
+		);
+		this.#countInvitations();
+		this.#select(tab);
 	}
 
 	focus(): void {
@@ -216,6 +238,7 @@ export class SettingsView {
 		this.#unsubscribe?.();
 		this.#connections?.dispose();
 		this.#execution?.dispose();
+		this.#friends.dispose();
 		if (this.#ownsCompany) this.#company?.stop();
 		this.el.remove();
 	}
@@ -248,13 +271,14 @@ export class SettingsView {
 		}
 	};
 
-	#select(tab: Tab): void {
+	#select(tab: SettingsTab): void {
 		this.#tab = tab;
 		for (const [id, button] of this.#tabs) {
 			button.setAttribute("aria-selected", String(tab === id));
 			button.tabIndex = tab === id ? 0 : -1;
 		}
 		if (tab === "general") this.#general();
+		else if (tab === "friends") this.#drawFriends();
 		else if (tab === "company") this.#drawCompany();
 		else if (this.#company) {
 			if (tab === "connections") {
@@ -318,6 +342,22 @@ export class SettingsView {
 			this.#account = { ...this.#account, ...next };
 			this.#general();
 		});
+	}
+
+	#drawFriends(): void {
+		if (this.#lifetime.signal.aborted) return;
+		let panel = this.#panels.get("friends");
+		if (!panel) {
+			panel = h("div");
+			this.#panels.set("friends", panel);
+		}
+		renderFriends(this.#friends, this.#hub, panel);
+	}
+
+	#countInvitations(): void {
+		const count = this.#hub.store.get().invitations.length;
+		this.#invitationCount.textContent = count ? String(count) : "";
+		this.#invitationCount.hidden = count === 0;
 	}
 
 	#setCompany(company: CompanyController | undefined, owned: boolean): void {
@@ -484,9 +524,13 @@ export class SettingsView {
 				this.#drawCompany();
 			},
 			{
-				friends: this.#friends,
+				friends: this.#friends.store.get().loaded ? this.#friends.store.get().friends : undefined,
 				signal: this.#companyLifetime.signal,
 				embedded: true,
+				addFriend: () => {
+					this.#select("friends");
+					this.#panels.get("friends")?.querySelector<HTMLInputElement>(".panel-search input")?.focus();
+				},
 				onCompanyRemoved: (profileId) => {
 					if (!this.#lifetime.signal.aborted && this.#company === company) this.#close();
 					this.#companyRemoved(profileId);

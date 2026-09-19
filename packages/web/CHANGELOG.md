@@ -9,6 +9,7 @@
 - Use a length-neutral email code hint so sign-in instructions remain accurate with the configured eight-digit codes.
 - Accept valid Unicode pause reasons in runtime notifications using the public SQL character limit.
 - Submit team-room messages through the public room-post contract, preserve room retry identity, and match room attachments/run displays to the supported interfaces.
+- Make primary buttons inside Settings readable; they rendered white text on the light grey settings button.
 
 ### Added
 
@@ -31,3 +32,12 @@
 - Stage selected conversation images against the exact member input before submitting a message, preserve explicit retry identity, and verify canonical image previews through the shared attachment API.
 - Add account-level browser consent cleanup and private sign-in closure, including after leaving a company, with account and route cancellation.
 - Bind deployed cloud endpoints and CSP to one validated public build configuration, require a viewer origin for release builds, and ignore stored preview overrides in configured builds.
+
+### Changed
+
+- Make the Settings window 20% larger, give its sections icons, and set their labels in whole-pixel, medium-weight dark ink so they no longer read soft.
+- Move Friends into Settings as its own tab, together with the company invitations waiting for the account. The profile menu's Friends item opens that tab and carries the invitation count, and the company invite picker's "Add a friend" switches to it.
+
+### Removed
+
+- Remove the standalone Friends (`#/friends`) and Invitations (`#/invitations`) pages and the separate Invitations menu item; both live on the Settings Friends tab.
