@@ -135,7 +135,7 @@ describe("automatic computer popover", () => {
 		expect(p.el.querySelector("header, select, .computer-preview, .figure")).toBeNull();
 		expect(p.el.textContent).not.toContain("Open computer");
 		expect(p.el.querySelector(".computer-close, [aria-label='Close computer']")).toBeNull();
-		expect(p.el.tabIndex).toBe(-1);
+		expect(p.el.tabIndex).toBe(0);
 		await settle();
 		await settle();
 		expect(open).toHaveBeenCalledExactlyOnceWith(
@@ -222,6 +222,29 @@ describe("automatic computer popover", () => {
 		await poll();
 		expect(methods(f)).toEqual(requests);
 		expect(cancel).not.toHaveBeenCalled();
+	});
+	it("returns from the expanded fallback on Escape without closing its live viewer", async () => {
+		const f = setup(),
+			close = vi.fn(async () => {}),
+			open = spyViewer(close),
+			p = await opened(f.computer);
+		const options = open.mock.calls[0]![0];
+		expect(options.onExpandedChange).toBeTypeOf("function");
+		const back = document.createElement("button");
+		back.className = "screen-viewer-back";
+		const returnToPreview = vi.fn(() => options.onExpandedChange?.(false));
+		back.addEventListener("click", returnToPreview);
+		p.el.querySelector(".computer-panel-body")!.append(back);
+		options.onExpandedChange?.(true);
+		expect(p.el.classList.contains("is-entered")).toBe(true);
+		const dismiss = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+		p.el.dispatchEvent(dismiss);
+		expect(dismiss.defaultPrevented).toBe(true);
+		expect(returnToPreview).toHaveBeenCalledOnce();
+		expect(p.el.classList.contains("is-entered")).toBe(false);
+		expect(p.el.isConnected).toBe(true);
+		expect(close).not.toHaveBeenCalled();
+		expect(open).toHaveBeenCalledTimes(1);
 	});
 	it("lets Escape leave fullscreen before a later Escape closes the computer", async () => {
 		const f = setup(),

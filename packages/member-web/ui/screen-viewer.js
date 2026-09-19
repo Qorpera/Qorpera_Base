@@ -8,7 +8,7 @@ const bindingKeys = [
 	"computerGeneration", "screenId", "screenOrdinal", "screenGeneration", "staffAgentId",
 ];
 
-function openScreenViewer({ binding, title, requestConnection, releaseConnection, onClosed, canControl = true, privateSignIn = false, mount, autofocus = true }) {
+function openScreenViewer({ binding, title, requestConnection, releaseConnection, onClosed, canControl = true, privateSignIn = false, mount, autofocus = true, onExpandedChange }) {
 	const expected = Object.freeze({ ...binding });
 	const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 	if (bindingKeys.some((key) => key.endsWith("Id") ? !uuid.test(expected[key]) : !Number.isSafeInteger(expected[key]) || expected[key] < 1) ||
@@ -57,15 +57,30 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 	closeButton.className = "screen-viewer-close";
 	labelButton(closeButton, "×", "Close screen viewer");
 	const fullscreen = mount ? document.createElement("button") : undefined;
+	const supportsFullscreen = Boolean(mount) && document.fullscreenEnabled !== false && typeof overlay.requestFullscreen === "function" && typeof document.exitFullscreen === "function";
 	if (fullscreen) {
 		fullscreen.type = "button";
 		fullscreen.className = "screen-viewer-fullscreen";
 		labelButton(fullscreen, "Full screen");
 		fullscreen.setAttribute("aria-pressed", "false");
 		fullscreen.setAttribute("aria-live", "polite");
-		fullscreen.hidden = document.fullscreenEnabled === false || typeof overlay.requestFullscreen !== "function" || typeof document.exitFullscreen !== "function";
+		fullscreen.hidden = true;
 	}
-	controls.append(takeover, reconnect, ...(fullscreen ? [fullscreen] : []), closeButton);
+	const enter = mount ? document.createElement("button") : undefined;
+	const back = mount ? document.createElement("button") : undefined;
+	if (enter && back) {
+		enter.type = "button";
+		enter.className = "screen-viewer-enter";
+		labelButton(enter, "Enter");
+		enter.disabled = true;
+		back.type = "button";
+		back.className = "screen-viewer-back";
+		labelButton(back, "Back to thread");
+		back.hidden = true;
+		takeover.hidden = true;
+		closeButton.hidden = true;
+	}
+	controls.append(takeover, reconnect, ...(fullscreen ? [fullscreen] : []), ...(back ? [back] : []), closeButton);
 	titlebar.append(headingWrap, controls);
 	const stage = document.createElement("div");
 	stage.className = "screen-viewer-stage";
@@ -87,6 +102,7 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 	status.appendChild(statusContent);
 	stage.append(canvasHost, status);
 	frame.append(titlebar, stage);
+	if (enter) frame.appendChild(enter);
 	overlay.appendChild(frame);
 	(mount ?? document.body).appendChild(overlay);
 	if (autofocus) closeButton.focus();
@@ -95,30 +111,30 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 	let busy = false;
 	let current;
 	let epoch = 0;
-	if (fullscreen && !fullscreen.hidden) {
-		const syncFullscreen = () => {
-			const active = document.fullscreenElement === overlay;
-			labelButton(fullscreen, active ? "Exit full screen" : "Full screen");
-			fullscreen.setAttribute("aria-pressed", String(active));
-		};
-		document.addEventListener("fullscreenchange", syncFullscreen, { signal: stop.signal });
-		fullscreen.onclick = async () => {
-			if (closed || fullscreen.disabled) return;
-			fullscreen.disabled = true;
-			try {
-				if (document.fullscreenElement === overlay) await document.exitFullscreen();
-				else await overlay.requestFullscreen();
-				// Closing while the browser is entering fullscreen must not leave an orphaned surface.
-				if (closed && document.fullscreenElement === overlay) await document.exitFullscreen();
-				if (!closed) syncFullscreen();
-			} catch {
-				if (!closed) {
-					const message = document.fullscreenElement === overlay ? "Could not exit full screen" : "Full screen unavailable";
-					labelButton(fullscreen, message, `${message}. Try again.`);
-				}
-			} finally { fullscreen.disabled = false; }
-		};
-	}
+	let entered = false;
+	let connected = false;
+	let fullscreenBusy = false;
+	let ownedFullscreen = false;
+	let admission;
+	let admissionMode;
+	let queuedWatch = false;
+	const syncEmbedded = () => {
+		if (!enter || !back || !fullscreen) return;
+		enter.hidden = entered || !connected;
+		enter.disabled = !connected || busy || fullscreenBusy;
+		back.hidden = !entered;
+		takeover.hidden = !entered || !canControl || privateSignIn;
+		fullscreen.hidden = !entered || !supportsFullscreen;
+		closeButton.hidden = !entered;
+	};
+	const setEntered = (value) => {
+		if (!mount || entered === value) return;
+		entered = value;
+		if (value) overlay.classList.add("screen-viewer-entered");
+		else overlay.classList.remove("screen-viewer-entered");
+		syncEmbedded();
+		onExpandedChange?.(value);
+	};
 	const released = new Set();
 	const usedUrls = new Set();
 	const usedChannels = new WeakSet();
@@ -137,6 +153,7 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 	};
 	const fail = () => {
 		if (closed) return;
+		connected = false;
 		takeover.disabled = true;
 		labelButton(takeover, "Take control");
 		takeover.setAttribute("aria-pressed", "false");
@@ -146,10 +163,12 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 		status.classList.add("is-error");
 		statusCopy.textContent = "Cloud screen unavailable. Reconnect to check access again.";
 		hint.textContent = "Disconnected";
+		syncEmbedded();
 	};
 	const finish = async () => {
 		if (closed) return;
 		closed = true;
+		setEntered(false);
 		epoch++;
 		stop.abort();
 		// Removing the overlay also exits fullscreen if the browser rejects an explicit exit.
@@ -162,8 +181,13 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 	const connect = async (mode) => {
 		if (closed || busy) return;
 		if (mode === "control" && !canControl && !privateSignIn) return;
+		if (mode === "control" && mount && (!entered || !canControl || privateSignIn)) return;
 		busy = true;
+		connected = false;
 		const attempt = ++epoch;
+		const attemptStop = new AbortController();
+		admission = attemptStop;
+		admissionMode = mode;
 		takeover.disabled = true;
 		labelButton(takeover, "Take control");
 		takeover.setAttribute("aria-pressed", "false");
@@ -172,11 +196,12 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 		status.classList.remove("is-error");
 		statusCopy.textContent = privateSignIn ? "Checking your private sign-in access" : mode === "control" ? "Waiting for the cloud screen to release agent control" : "Connecting to cloud desktop";
 		hint.textContent = "Connecting";
+		syncEmbedded();
 		let connection;
 		try {
 			await detach();
-			if (closed) return;
-			connection = await requestConnection({ binding: expected, mode, signal: stop.signal });
+			if (closed || attempt !== epoch) return;
+			connection = await requestConnection({ binding: expected, mode, signal: AbortSignal.any([stop.signal, attemptStop.signal]) });
 			if (closed || attempt !== epoch) { await release(connection); return; }
 			// A reconnect cannot silently change agent, company, physical generation or control mode.
 			if (!connection || typeof connection.connectionId !== "string" || !connection.connectionId || released.has(connection.connectionId) ||
@@ -203,6 +228,8 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 			current = { rfb, connection };
 			rfb.addEventListener("connect", () => {
 				if (closed || current?.rfb !== rfb) return;
+				if (mount && mode === "control" && !entered) return;
+				connected = true;
 				// This flag only controls UI input; the cloud gateway independently fences every input packet.
 				rfb.viewOnly = mode !== "control";
 				status.hidden = true;
@@ -212,6 +239,7 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 				takeover.setAttribute("aria-pressed", String(mode === "control"));
 				hint.textContent = privateSignIn ? "Private sign-in · Closing this view leaves the office private" : mode === "control" ? "You control this cloud screen" : "Watching only";
 				if (mode === "control") rfb.focus();
+				syncEmbedded();
 			});
 			rfb.addEventListener("disconnect", () => {
 				if (current?.rfb !== rfb) return;
@@ -222,14 +250,75 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 			});
 		} catch {
 			if (connection) await release(connection).catch(() => undefined);
-			fail();
-		} finally { busy = false; }
+			if (attempt === epoch) fail();
+		} finally {
+			busy = false;
+			admission = undefined;
+			admissionMode = undefined;
+			syncEmbedded();
+			if (queuedWatch && !closed) {
+				queuedWatch = false;
+				void connect("watch");
+			}
+		}
 	};
-	takeover.onclick = () => { if (!privateSignIn) void connect(current?.connection.mode === "control" ? "watch" : "control"); };
+	const returnToMini = () => {
+		if (closed || !entered) return;
+		setEntered(false);
+		if (current?.connection.mode === "control" || admissionMode === "control") {
+			if (current) current.rfb.viewOnly = true;
+			epoch++;
+			admission?.abort();
+			if (busy) queuedWatch = true;
+			else void connect("watch");
+		}
+		if (document.fullscreenElement === overlay) void document.exitFullscreen().catch(() => undefined);
+	};
+	if (enter && back && fullscreen) {
+		const syncFullscreen = () => {
+			const active = document.fullscreenElement === overlay;
+			labelButton(fullscreen, active ? "Exit full screen" : "Full screen");
+			fullscreen.setAttribute("aria-pressed", String(active));
+			if (ownedFullscreen && !active) returnToMini();
+			ownedFullscreen = active;
+		};
+		const toggleFullscreen = async () => {
+			if (closed || !entered || fullscreenBusy || !supportsFullscreen) return;
+			fullscreenBusy = true;
+			fullscreen.disabled = true;
+			syncEmbedded();
+			try {
+				if (document.fullscreenElement === overlay) await document.exitFullscreen();
+				else await overlay.requestFullscreen();
+				if ((closed || !entered) && document.fullscreenElement === overlay) await document.exitFullscreen();
+				if (!closed) syncFullscreen();
+			} catch {
+				if (!closed) {
+					const message = document.fullscreenElement === overlay ? "Could not exit full screen" : "Full screen unavailable";
+					labelButton(fullscreen, message, `${message}. Try again.`);
+				}
+			} finally {
+				fullscreenBusy = false;
+				fullscreen.disabled = false;
+				syncEmbedded();
+			}
+		};
+		if (supportsFullscreen) document.addEventListener("fullscreenchange", syncFullscreen, { signal: stop.signal });
+		enter.onclick = () => {
+			if (closed || enter.disabled || entered) return;
+			setEntered(true);
+			// Invoke before any await so native fullscreen retains the click's user activation.
+			void toggleFullscreen();
+			if (canControl && !privateSignIn) void connect("control");
+		};
+		back.onclick = returnToMini;
+		fullscreen.onclick = toggleFullscreen;
+	}
+	takeover.onclick = () => { if (!privateSignIn && (!mount || entered)) void connect(current?.connection.mode === "control" ? "watch" : "control"); };
 	// Never regain control automatically after a network loss or expired grant.
-	reconnect.onclick = () => { void connect(privateSignIn ? "control" : "watch"); };
+	reconnect.onclick = () => { void connect(privateSignIn && !mount ? "control" : "watch"); };
 	closeButton.onclick = () => { void finish().catch(() => undefined); };
-	void connect(privateSignIn ? "control" : "watch");
+	void connect(privateSignIn && !mount ? "control" : "watch");
 	return { close: finish, get closed() { return closed; } };
 }
 

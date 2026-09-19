@@ -243,7 +243,10 @@
 .file-preview-placeholder { text-align: center; padding: 50px 20px; }
 .file-preview-placeholder .icon { width: 48px; height: 48px; color: var(--text-soft); }
 
-.computer-panel { position: absolute; top: calc(var(--titlebar-height) + 20px); right: 20px; z-index: 20; width: min(400px, calc(100% - 40px)); aspect-ratio: 16 / 9; max-height: calc(100% - var(--titlebar-height) - 92px); min-height: 0; overflow: hidden; border: 1px solid rgb(255 255 255 / 12%); border-radius: 8px; background: #24262a; box-shadow: 0 8px 28px rgb(0 0 0 / 32%), 0 2px 6px rgb(0 0 0 / 24%); animation: computer-enter 180ms ease both; }
+.computer-panel { position: absolute; top: var(--computer-top, calc(var(--titlebar-height) + 20px)); left: var(--computer-left, auto); right: 20px; z-index: 20; width: min(400px, calc(100% - 40px)); aspect-ratio: 16 / 9; max-height: calc(100% - var(--titlebar-height) - 92px); min-height: 0; overflow: hidden; border: 1px solid rgb(255 255 255 / 12%); border-radius: 8px; background: #24262a; box-shadow: 0 8px 28px rgb(0 0 0 / 32%), 0 2px 6px rgb(0 0 0 / 24%); animation: computer-enter 180ms ease both; }
+.computer-panel:not(.is-entered) { cursor: grab; touch-action: none; }
+.computer-panel.is-dragging { cursor: grabbing; user-select: none; animation: none; }
+.computer-panel.is-entered { top: calc(var(--titlebar-height) + 8px); left: 8px; right: 8px; bottom: 8px; width: auto; height: auto; max-height: none; aspect-ratio: auto; animation: none; }
 .computer-panel-body { position: absolute; inset: 0; overflow: hidden; background: #24262a; color: #d8d8d4; }
 .computer-loading { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 40px 28px; overflow: auto; text-align: center; }
 .computer-loading[hidden], .computer-loading-spinner[hidden], .computer-retry[hidden] { display: none; }
@@ -252,6 +255,12 @@
 /* The canvas fills the popover. Controls float over it only when needed. */
 .computer-panel .screen-viewer-embedded { position: absolute; inset: 0; z-index: 2; background: #24262a; }
 .computer-panel .screen-viewer-frame { display: block; padding: 0; }
+.computer-panel:not(.is-entered) .screen-viewer-stage { pointer-events: none; }
+.computer-panel .screen-viewer-enter { position: absolute; top: 50%; left: 50%; z-index: 4; transform: translate(-50%, -50%); min-width: 80px; min-height: 34px; padding: 6px 18px; border: 1px solid rgb(255 255 255 / 35%); border-radius: 999px; color: #18191b; background: rgb(250 250 250 / 94%); box-shadow: 0 2px 12px rgb(0 0 0 / 28%); font-size: 13px; font-weight: 500; cursor: pointer; opacity: 0; pointer-events: none; transition: opacity 120ms ease, background 120ms ease; }
+.computer-panel .screen-viewer-enter:hover { background: #fff; }
+.computer-panel .screen-viewer-enter[hidden] { display: none; }
+.computer-panel:hover .screen-viewer-enter, .computer-panel:focus-within .screen-viewer-enter { opacity: 1; pointer-events: auto; }
+.computer-panel.is-dragging .screen-viewer-enter { opacity: 0; pointer-events: none; }
 .computer-panel .screen-viewer-titlebar { position: absolute; top: 6px; left: 6px; z-index: 3; padding: 0; opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
 .computer-panel .screen-viewer-heading, .computer-panel .screen-viewer-close { display: none; }
 .computer-panel .screen-viewer-controls { gap: 2px; padding: 0; border: 0; background: transparent; box-shadow: none; }
@@ -267,6 +276,8 @@
 .computer-panel .screen-viewer-reconnect { --computer-control-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 7v5h-5M20 12a8 8 0 1 0-2 5'/%3E%3C/svg%3E"); }
 .computer-panel .screen-viewer-controls > button[hidden] { display: none; }
 .computer-panel .screen-viewer-controls > button:disabled { display: none; }
+.computer-panel .screen-viewer-controls > .screen-viewer-back:not(.screen-viewer-close) { width: auto; padding: 0 10px; font-size: 12px; color: #fff; background: rgb(20 21 24 / 80%); filter: none; }
+.computer-panel .screen-viewer-controls > .screen-viewer-back::before { display: none; }
 .computer-panel:hover .screen-viewer-titlebar, .computer-panel:focus-within .screen-viewer-titlebar, .computer-panel .screen-viewer-embedded:hover .screen-viewer-titlebar, .computer-panel .screen-viewer-embedded:focus-within .screen-viewer-titlebar, .computer-panel:has(.screen-viewer-status.is-error) .screen-viewer-titlebar { opacity: 1; pointer-events: auto; }
 .computer-panel .screen-viewer-stage { width: 100%; height: 100%; aspect-ratio: auto; border-radius: 0; }
 .computer-panel .screen-viewer-embedded:fullscreen { position: fixed; inset: 0; width: 100%; height: 100%; background: #17181a; }
@@ -277,11 +288,12 @@
 @keyframes computer-spin { to { transform: rotate(360deg); } }
 @media (hover: none) {
 	.computer-panel .screen-viewer-titlebar { opacity: 1; pointer-events: auto; }
+	.computer-panel .screen-viewer-enter { opacity: 1; pointer-events: auto; min-height: 40px; }
 	.computer-panel .screen-viewer-controls > button:not(.screen-viewer-close) { width: 36px; height: 36px; min-height: 36px; }
 }
 @media (prefers-reduced-motion: reduce) {
 	.computer-loading-spinner, .computer-panel .screen-viewer-progress { animation: none; }
-	.computer-panel .screen-viewer-titlebar { transition: none; }
+	.computer-panel .screen-viewer-titlebar, .computer-panel .screen-viewer-enter { transition: none; }
 }
 .routine-list { border-top: 1px solid var(--border); }
 .routine-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 8px 14px; padding: 14px 0; border-bottom: 1px solid var(--border); }

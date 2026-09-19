@@ -9,6 +9,8 @@ export interface ComputerViewerOptions {
 	mount?: HTMLElement;
 	/** A delayed attachment must not interrupt typing outside its surface. */
 	autofocus?: boolean;
+	/** Keep the host's expanded fallback in sync with entered and mini screen states. */
+	onExpandedChange?(expanded: boolean): void;
 	binding: CompanyComputerScreenBinding;
 	title: string;
 	canControl: boolean;

@@ -16,6 +16,7 @@ interface ViewConnection {
 interface ViewerOptions {
 	mount?: FakeElement;
 	autofocus?: boolean;
+	onExpandedChange?(expanded: boolean): void;
 	canControl?: boolean;
 	privateSignIn?: boolean;
 	binding: CompanyComputerScreenBinding;
@@ -123,8 +124,9 @@ function viewerFixture() {
 		document: typeof document;
 		RFB: typeof FakeRfb;
 		AbortController: typeof AbortController;
+		AbortSignal: typeof AbortSignal;
 		URL: typeof URL;
-	} = { window: {}, document, RFB: FakeRfb, AbortController, URL };
+	} = { window: {}, document, RFB: FakeRfb, AbortController, AbortSignal, URL };
 	const source = readFileSync(new URL("../../shell/userland/screen-viewer.js", import.meta.url), "utf8");
 	// Execute the actual UI state machine; only the vendored browser transport and DOM are doubled.
 	runInNewContext(source.replace('import RFB from "./vendor/novnc-rfb.js";', ""), context);
@@ -142,7 +144,7 @@ function viewerFixture() {
 			};
 		},
 	);
-	const releaseConnection = vi.fn(async () => undefined);
+	const releaseConnection = vi.fn(async (): Promise<void> => undefined);
 	const onClosed = vi.fn();
 	const options: ViewerOptions = {
 		binding: computerBinding(),
@@ -171,18 +173,131 @@ function viewerFixture() {
 	};
 }
 
+async function embeddedViewer(canControl = true, fullscreenEnabled = true) {
+	const f = viewerFixture();
+	f.document.fullscreenEnabled = fullscreenEnabled;
+	const mount = new FakeElement();
+	const expanded = vi.fn();
+	const viewer = f.api.open({ ...f.options, mount, canControl, onExpandedChange: expanded });
+	await vi.waitFor(() => expect(f.instances).toHaveLength(1));
+	f.instances[0].emit("connect");
+	return { ...f, mount, viewer, expanded };
+}
+
 describe("viewer UI state machine (fake DOM/noVNC, not visual cloud acceptance)", () => {
-	it("enters and exits embedded fullscreen without reopening or changing control", async () => {
+	it("keeps the mini watch-only and enters control only after an explicit Enter click", async () => {
+		const f = await embeddedViewer();
+		expect(f.button("Enter").disabled).toBe(false);
+		f.button("Take control").onclick?.();
+		expect(f.requestConnection).toHaveBeenCalledOnce();
+		f.button("Enter").onclick?.();
+		expect(f.document.fullscreenElement).toBe(f.mount.children[0]);
+		expect(f.button("Enter").hidden).toBe(true);
+		expect(f.button("Back to thread").hidden).toBe(false);
+		await vi.waitFor(() => expect(f.instances).toHaveLength(2));
+		expect(f.instances[1].viewOnly).toBe(true);
+		f.instances[1].emit("connect");
+		expect(f.instances[1].viewOnly).toBe(false);
+		expect(f.button("Release control").hidden).toBe(false);
+		f.button("Back to thread").onclick?.();
+		expect(f.instances[1].viewOnly).toBe(true);
+		expect(f.button("Enter").hidden).toBe(true);
+		expect(f.expanded.mock.calls).toEqual([[true], [false]]);
+		await vi.waitFor(() => expect(f.instances).toHaveLength(3));
+		f.instances[2].emit("connect");
+		expect(f.instances[2].viewOnly).toBe(true);
+		expect(f.button("Enter").hidden).toBe(false);
+		expect(f.button("Take control").hidden).toBe(true);
+		expect(f.requestConnection.mock.calls.map(([input]) => input.mode)).toEqual(["watch", "control", "watch"]);
+		expect(f.releaseConnection).toHaveBeenCalledTimes(2);
+		await f.viewer.close();
+	});
+
+	it("cancels pending control admission on native exit and releases late control without attaching it", async () => {
+		const f = await embeddedViewer();
+		const pending = computerDeferred<ViewConnection>();
+		f.requestConnection.mockImplementationOnce(() => pending.promise);
+		f.button("Enter").onclick?.();
+		await vi.waitFor(() => expect(f.requestConnection).toHaveBeenCalledTimes(2));
+		await f.document.exitFullscreen();
+		expect(f.requestConnection.mock.calls[1][0].signal.aborted).toBe(true);
+		expect(f.expanded.mock.calls).toEqual([[true], [false]]);
+		pending.resolve({
+			connectionId: computerId(50),
+			url: `ws://127.0.0.1:4500/${"z".repeat(43)}`,
+			mode: "control",
+			binding: computerBinding(),
+		});
+		await vi.waitFor(() => expect(f.instances).toHaveLength(2));
+		expect(f.releaseConnection).toHaveBeenCalledWith({ connectionId: computerId(50) });
+		expect(f.requestConnection.mock.calls.map(([input]) => input.mode)).toEqual(["watch", "control", "watch"]);
+		f.instances[1].emit("connect");
+		expect(f.instances.every((rfb) => rfb.viewOnly)).toBe(true);
+		expect(f.button("Enter").hidden).toBe(false);
+		await f.viewer.close();
+	});
+
+	it("does not request control if Back is clicked while the preceding watch grant is releasing", async () => {
+		const f = await embeddedViewer(true, false);
+		const releasing = computerDeferred<void>();
+		f.releaseConnection.mockImplementationOnce(() => releasing.promise);
+		f.button("Enter").onclick?.();
+		f.button("Back to thread").onclick?.();
+		releasing.resolve();
+		await vi.waitFor(() => expect(f.instances).toHaveLength(2));
+		expect(f.requestConnection.mock.calls.map(([input]) => input.mode)).toEqual(["watch", "watch"]);
+		expect(f.releaseConnection).toHaveBeenCalledOnce();
+		await f.viewer.close();
+	});
+
+	it("hides Enter over connection and error statuses and restores it after a watch reconnect", async () => {
 		const f = viewerFixture();
-		const mount = new FakeElement();
-		const viewer = f.api.open({ ...f.options, mount });
+		const viewer = f.api.open({ ...f.options, mount: new FakeElement() });
+		expect(f.button("Enter").hidden).toBe(true);
+		f.button("Enter").onclick?.();
+		expect(f.document.fullscreenElement).toBeNull();
 		await vi.waitFor(() => expect(f.instances).toHaveLength(1));
 		f.instances[0].emit("connect");
+		expect(f.button("Enter").hidden).toBe(false);
+		f.instances[0].emit("disconnect");
+		expect(f.button("Enter").hidden).toBe(true);
+		expect(f.button("Reconnect").hidden).toBe(false);
+		f.button("Reconnect").onclick?.();
+		await vi.waitFor(() => expect(f.instances).toHaveLength(2));
+		f.instances[1].emit("connect");
+		expect(f.button("Enter").hidden).toBe(false);
+		expect(f.requestConnection.mock.calls.map(([input]) => input.mode)).toEqual(["watch", "watch"]);
+		await viewer.close();
+	});
+
+	it("never converts an embedded private-sign-in option into shared control", async () => {
+		const f = viewerFixture();
+		const viewer = f.api.open({ ...f.options, mount: new FakeElement(), privateSignIn: true });
+		await vi.waitFor(() => expect(f.instances).toHaveLength(1));
+		f.instances[0].emit("connect");
+		f.button("Enter").onclick?.();
+		expect(f.button("Take control").hidden).toBe(true);
+		f.button("Take control").onclick?.();
+		expect(f.requestConnection.mock.calls.map(([input]) => input.mode)).toEqual(["watch"]);
+		expect(f.instances[0].viewOnly).toBe(true);
+		await viewer.close();
+	});
+
+	it("enters and exits embedded fullscreen without reopening or changing control", async () => {
+		const f = await embeddedViewer(false);
+		const { mount, viewer } = f;
 		const fullscreen = f.button("Full screen");
-		expect(fullscreen.hidden).toBe(false);
+		expect(fullscreen.hidden).toBe(true);
+		expect(f.button("Take control").hidden).toBe(true);
+		expect(f.button("Back to thread").hidden).toBe(true);
 		expect(fullscreen.attributes.get("aria-label")).toBe("Full screen");
 		expect(fullscreen.attributes.get("title")).toBe("Full screen");
-		await fullscreen.onclick?.();
+		f.button("Enter").onclick?.();
+		expect(f.document.fullscreenElement).toBe(mount.children[0]);
+		expect(f.expanded).toHaveBeenCalledWith(true);
+		expect(mount.children[0].classes.has("screen-viewer-entered")).toBe(true);
+		await vi.waitFor(() => expect(fullscreen.disabled).toBe(false));
+		expect(fullscreen.hidden).toBe(false);
 		expect(f.document.fullscreenElement).toBe(mount.children[0]);
 		expect(fullscreen.textContent).toBe("Exit full screen");
 		expect(fullscreen.attributes.get("aria-label")).toBe("Exit full screen");
@@ -194,10 +309,15 @@ describe("viewer UI state machine (fake DOM/noVNC, not visual cloud acceptance)"
 		expect(fullscreen.attributes.get("aria-label")).toBe("Full screen");
 		expect(fullscreen.attributes.get("title")).toBe("Full screen");
 		expect(fullscreen.attributes.get("aria-pressed")).toBe("false");
-		await fullscreen.onclick?.();
+		expect(f.expanded).toHaveBeenLastCalledWith(false);
+		expect(fullscreen.hidden).toBe(true);
+		expect(f.button("Enter").hidden).toBe(false);
+		f.button("Enter").onclick?.();
+		await vi.waitFor(() => expect(fullscreen.disabled).toBe(false));
 		// Browser Escape is reflected even when no button click reaches the renderer.
 		await f.document.exitFullscreen();
 		expect(fullscreen.textContent).toBe("Full screen");
+		expect(f.expanded.mock.calls).toEqual([[true], [false], [true], [false]]);
 		expect(viewer.closed).toBe(false);
 		expect(f.requestConnection).toHaveBeenCalledOnce();
 		expect(f.releaseConnection).not.toHaveBeenCalled();
@@ -206,12 +326,14 @@ describe("viewer UI state machine (fake DOM/noVNC, not visual cloud acceptance)"
 	});
 
 	it("reports rejected fullscreen requests accessibly and allows retry", async () => {
-		const f = viewerFixture();
-		const mount = new FakeElement();
-		const viewer = f.api.open({ ...f.options, mount });
+		const f = await embeddedViewer(false);
+		const { mount, viewer } = f;
 		vi.spyOn(mount.children[0], "requestFullscreen").mockRejectedValueOnce(new Error("denied"));
 		const fullscreen = f.button("Full screen");
-		await fullscreen.onclick?.();
+		f.button("Enter").onclick?.();
+		await vi.waitFor(() => expect(fullscreen.disabled).toBe(false));
+		expect(mount.children[0].classes.has("screen-viewer-entered")).toBe(true);
+		expect(f.expanded.mock.calls).toEqual([[true]]);
 		expect(fullscreen.disabled).toBe(false);
 		expect(fullscreen.textContent).toBe("Full screen unavailable");
 		expect(fullscreen.attributes.get("aria-label")).toBe("Full screen unavailable. Try again.");
@@ -230,13 +352,13 @@ describe("viewer UI state machine (fake DOM/noVNC, not visual cloud acceptance)"
 	});
 
 	it("exits only its own fullscreen on close and removes its fullscreen listener", async () => {
-		const f = viewerFixture();
-		const mount = new FakeElement();
-		const viewer = f.api.open({ ...f.options, mount });
-		await vi.waitFor(() => expect(f.instances).toHaveLength(1));
+		const f = await embeddedViewer(false);
+		const { mount, viewer } = f;
 		const fullscreen = f.button("Full screen");
-		await fullscreen.onclick?.();
+		f.button("Enter").onclick?.();
+		await vi.waitFor(() => expect(fullscreen.disabled).toBe(false));
 		await viewer.close();
+		expect(f.expanded.mock.calls).toEqual([[true], [false]]);
 		expect(f.document.exitFullscreen).toHaveBeenCalledOnce();
 		expect(f.releaseConnection).toHaveBeenCalledOnce();
 		expect(f.document.fullscreenElement).toBeNull();
@@ -248,28 +370,31 @@ describe("viewer UI state machine (fake DOM/noVNC, not visual cloud acceptance)"
 	});
 
 	it("cleans up fullscreen that finishes entering after the viewer closes", async () => {
-		const f = viewerFixture();
-		const mount = new FakeElement();
-		const viewer = f.api.open({ ...f.options, mount });
+		const f = await embeddedViewer(false);
+		const { mount, viewer } = f;
 		const pending = computerDeferred<void>();
 		vi.spyOn(mount.children[0], "requestFullscreen").mockImplementation(async () => {
 			await pending.promise;
 			f.document.fullscreenElement = mount.children[0];
 		});
-		const opening = f.button("Full screen").onclick?.();
+		f.button("Enter").onclick?.();
 		await viewer.close();
 		pending.resolve();
-		await opening;
+		await vi.waitFor(() => expect(f.document.exitFullscreen).toHaveBeenCalledOnce());
 		expect(f.document.fullscreenElement).toBeNull();
-		expect(f.document.exitFullscreen).toHaveBeenCalledOnce();
 	});
 
 	it("hides unavailable fullscreen and leaves standalone controls unchanged", async () => {
-		const f = viewerFixture();
-		f.document.fullscreenEnabled = false;
-		const embedded = f.api.open({ ...f.options, mount: new FakeElement() });
+		const f = await embeddedViewer(false, false);
 		expect(f.button("Full screen").hidden).toBe(true);
-		await embedded.close();
+		f.button("Enter").onclick?.();
+		expect(f.expanded).toHaveBeenCalledWith(true);
+		expect(f.button("Back to thread").hidden).toBe(false);
+		expect(f.button("Full screen").hidden).toBe(true);
+		f.button("Back to thread").onclick?.();
+		expect(f.expanded).toHaveBeenLastCalledWith(false);
+		expect(f.requestConnection).toHaveBeenCalledOnce();
+		await f.viewer.close();
 		const standalone = viewerFixture();
 		const viewer = standalone.api.open(standalone.options);
 		expect(standalone.elements.some((element) => element.className === "screen-viewer-fullscreen")).toBe(false);

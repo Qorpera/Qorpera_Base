@@ -1,5 +1,6 @@
 import type { WebCompanyComputer } from "../../cloud/computer.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
+import { attachComputerDrag } from "../../ui/computer-drag.ts";
 import { ComputerViewHost } from "../../ui/computer-view-host.ts";
 import { h, replace } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
@@ -19,12 +20,26 @@ export class ComputerPanel {
 	constructor(agent: HostedStaffAgent, close: () => void, computer?: WebCompanyComputer, parentSignal?: AbortSignal) {
 		const signal = AbortSignal.any([this.#stop.signal, ...(parentSignal ? [parentSignal] : [])]);
 		this.#views = new ComputerViewHost(signal);
-		this.el = h("aside", { class: "computer-panel", "aria-label": "Agent computer", tabindex: "-1" }, this.#body);
+		this.el = h(
+			"aside",
+			{
+				class: "computer-panel",
+				"aria-label": "Agent computer",
+				"aria-description": "Drag to move, or use arrow keys when focused.",
+				tabindex: "0",
+			},
+			this.#body,
+		);
+		attachComputerDrag(this.el, signal);
 		this.el.addEventListener("keydown", (event) => {
 			if (matchesKey(event, "dismiss")) {
 				if (document.fullscreenElement && this.el.contains(document.fullscreenElement)) return;
 				event.preventDefault();
 				event.stopPropagation();
+				if (this.el.classList.contains("is-entered")) {
+					this.el.querySelector<HTMLButtonElement>(".screen-viewer-back")?.click();
+					return;
+				}
 				close();
 			}
 		});
@@ -118,6 +133,7 @@ export class ComputerPanel {
 						await this.#views.open({
 							mount: this.#body,
 							autofocus: false,
+							onExpandedChange: (expanded) => this.el.classList.toggle("is-entered", expanded),
 							onClosed: close,
 							binding: screen.binding,
 							title: `${agent.displayName} · Computer`,
