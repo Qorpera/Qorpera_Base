@@ -31,18 +31,23 @@ export class ComputerPanel {
 			this.#body,
 		);
 		attachComputerDrag(this.el, signal);
-		this.el.addEventListener("keydown", (event) => {
-			if (matchesKey(event, "dismiss")) {
-				if (document.fullscreenElement && this.el.contains(document.fullscreenElement)) return;
-				event.preventDefault();
-				event.stopPropagation();
-				if (this.el.classList.contains("is-entered")) {
-					this.el.querySelector<HTMLButtonElement>(".screen-viewer-back")?.click();
-					return;
+		this.el.addEventListener(
+			"keydown",
+			(event) => {
+				if (matchesKey(event, "dismiss")) {
+					if (document.fullscreenElement && this.el.contains(document.fullscreenElement)) return;
+					event.preventDefault();
+					event.stopPropagation();
+					if (this.el.classList.contains("is-entered")) {
+						this.el.querySelector<HTMLButtonElement>(".screen-viewer-back")?.click();
+						return;
+					}
+					close();
 				}
-				close();
-			}
-		});
+			},
+			// noVNC consumes canvas key events before they can bubble to the panel.
+			{ capture: true, signal },
+		);
 		signal.addEventListener("abort", () => this.dispose(), { once: true });
 		if (signal.aborted) {
 			this.dispose();

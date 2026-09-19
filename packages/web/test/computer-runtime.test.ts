@@ -223,7 +223,7 @@ describe("automatic computer popover", () => {
 		expect(methods(f)).toEqual(requests);
 		expect(cancel).not.toHaveBeenCalled();
 	});
-	it("returns from the expanded fallback on Escape without closing its live viewer", async () => {
+	it("captures fallback Escape before the remote canvas while forwarding other keys", async () => {
 		const f = setup(),
 			close = vi.fn(async () => {}),
 			open = spyViewer(close),
@@ -234,12 +234,24 @@ describe("automatic computer popover", () => {
 		back.className = "screen-viewer-back";
 		const returnToPreview = vi.fn(() => options.onExpandedChange?.(false));
 		back.addEventListener("click", returnToPreview);
-		p.el.querySelector(".computer-panel-body")!.append(back);
+		const screen = document.createElement("canvas");
+		const remoteKey = vi.fn((event: KeyboardEvent) => {
+			// noVNC consumes keyboard input at the canvas instead of letting it bubble.
+			event.preventDefault();
+			event.stopPropagation();
+		});
+		screen.addEventListener("keydown", remoteKey);
+		p.el.querySelector(".computer-panel-body")!.append(back, screen);
 		options.onExpandedChange?.(true);
 		expect(p.el.classList.contains("is-entered")).toBe(true);
+		const typing = new KeyboardEvent("keydown", { key: "a", bubbles: true, cancelable: true });
+		screen.dispatchEvent(typing);
+		expect(remoteKey).toHaveBeenCalledExactlyOnceWith(typing);
+		expect(returnToPreview).not.toHaveBeenCalled();
 		const dismiss = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
-		p.el.dispatchEvent(dismiss);
+		screen.dispatchEvent(dismiss);
 		expect(dismiss.defaultPrevented).toBe(true);
+		expect(remoteKey).toHaveBeenCalledTimes(1);
 		expect(returnToPreview).toHaveBeenCalledOnce();
 		expect(p.el.classList.contains("is-entered")).toBe(false);
 		expect(p.el.isConnected).toBe(true);
@@ -252,6 +264,8 @@ describe("automatic computer popover", () => {
 			open = spyViewer(close),
 			p = await opened(f.computer);
 		const screen = document.createElement("canvas");
+		const remoteKey = vi.fn((event: KeyboardEvent) => event.stopPropagation());
+		screen.addEventListener("keydown", remoteKey);
 		p.el.querySelector(".computer-panel-body")!.append(screen);
 		let fullscreenElement: Element | null = screen;
 		const original = Object.getOwnPropertyDescriptor(document, "fullscreenElement");
@@ -260,6 +274,7 @@ describe("automatic computer popover", () => {
 			const fullscreenEscape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
 			screen.dispatchEvent(fullscreenEscape);
 			expect(fullscreenEscape.defaultPrevented).toBe(false);
+			expect(remoteKey).toHaveBeenCalledExactlyOnceWith(fullscreenEscape);
 			expect(p.el.isConnected).toBe(true);
 			expect(open).toHaveBeenCalledTimes(1);
 			expect(close).not.toHaveBeenCalled();
@@ -268,12 +283,23 @@ describe("automatic computer popover", () => {
 			screen.dispatchEvent(dismiss);
 			await settle();
 			expect(dismiss.defaultPrevented).toBe(true);
+			expect(remoteKey).toHaveBeenCalledTimes(1);
 			expect(p.el.isConnected).toBe(false);
 			expect(close).toHaveBeenCalledOnce();
 		} finally {
 			if (original) Object.defineProperty(document, "fullscreenElement", original);
 			else Reflect.deleteProperty(document, "fullscreenElement");
 		}
+	});
+	it("removes keyboard dismissal when the panel is disposed", async () => {
+		const f = setup(),
+			close = vi.fn(),
+			p = new ComputerPanel(staff, close, f.computer);
+		p.dispose();
+		const dismiss = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+		p.el.dispatchEvent(dismiss);
+		expect(dismiss.defaultPrevented).toBe(false);
+		expect(close).not.toHaveBeenCalled();
 	});
 });
 

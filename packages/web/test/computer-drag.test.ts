@@ -67,7 +67,20 @@ function setup() {
 	);
 	attachComputerDrag(panel, stop.signal);
 	cleanup.push(() => stop.abort());
-	return { panel, canvas, parent, size, stop, observe, disconnect, resize: () => resized() };
+	return {
+		panel,
+		canvas,
+		parent,
+		header,
+		composer,
+		size,
+		stop,
+		observe,
+		disconnect,
+		resize: (target?: Element) => {
+			if (!target || observe.mock.calls.some(([element]) => element === target)) resized();
+		},
+	};
 }
 
 function pointer(
@@ -213,10 +226,34 @@ describe("computer preview dragging", () => {
 		}
 		expect(f.panel.style.getPropertyValue("--computer-left")).toBe("500px");
 	});
+	it("keeps a bottom-positioned preview above a composer growing with text or attachments", () => {
+		const f = setup();
+		pointer(f.canvas, "pointerdown");
+		pointer(f.panel, "pointermove", { clientY: 3000 });
+		pointer(f.panel, "pointerup");
+		expect(f.panel.style.getPropertyValue("--computer-top")).toBe("367px");
+		for (const height of [212, 292]) {
+			vi.mocked(f.composer.getBoundingClientRect).mockReturnValue(new DOMRect(100, 750 - height, 1000, height));
+			f.resize(f.composer);
+			expect(Number.parseFloat(f.panel.style.getPropertyValue("--computer-top")) + f.size.panelHeight).toBe(
+				f.size.height - height - 8,
+			);
+		}
+		expect(f.size).toEqual({ width: 1000, height: 700, panelWidth: 400, panelHeight: 225 });
+	});
+	it("keeps a moved preview below a growing thread header", () => {
+		const f = setup();
+		pointer(f.canvas, "pointerdown");
+		pointer(f.panel, "pointermove", { clientY: -1000 });
+		pointer(f.panel, "pointerup");
+		vi.mocked(f.header.getBoundingClientRect).mockReturnValue(new DOMRect(100, 50, 1000, 90));
+		f.resize(f.header);
+		expect(f.panel.style.getPropertyValue("--computer-top")).toBe("98px");
+	});
 	it("reclamps a moved preview when the thread or panel resizes and disconnects on disposal", () => {
 		const f = setup();
 		key(f.panel, "ArrowRight");
-		expect(f.observe.mock.calls.map(([target]) => target)).toEqual([f.parent, f.panel]);
+		expect(f.observe.mock.calls.map(([target]) => target)).toEqual([f.parent, f.panel, f.header, f.composer]);
 		f.size.width = 650;
 		f.size.height = 400;
 		f.resize();

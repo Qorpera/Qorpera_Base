@@ -28,6 +28,9 @@ export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): voi
 		observer = new ResizeObserver(reclamp);
 		observer.observe(panel.parentElement);
 		observer.observe(panel);
+		for (const boundary of panel.parentElement.querySelectorAll(".thread-header, .composer")) {
+			observer.observe(boundary);
+		}
 	};
 	const finish = () => {
 		if (!drag) return;

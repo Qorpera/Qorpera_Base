@@ -34,6 +34,7 @@ class FakeElement {
 	className = "";
 	textContent = "";
 	type = "";
+	tabIndex = 0;
 	hidden = false;
 	disabled = false;
 	removed = false;
@@ -54,6 +55,9 @@ class FakeElement {
 	readonly focus = vi.fn();
 	setAttribute(name: string, value: string): void {
 		this.attributes.set(name, value);
+	}
+	contains(element: FakeElement | null): boolean {
+		return this === element || this.children.some((child) => child.contains(element));
 	}
 	append(...elements: FakeElement[]): void {
 		this.children.push(...elements);
@@ -109,6 +113,9 @@ function viewerFixture() {
 		}),
 		createElement: () => {
 			const element = new FakeElement();
+			element.focus.mockImplementation(() => {
+				document.activeElement = element;
+			});
 			element.requestFullscreen = vi.fn(async () => {
 				document.fullscreenElement = element;
 				fullscreenEvents.dispatchEvent(new Event("fullscreenchange"));
@@ -185,6 +192,45 @@ async function embeddedViewer(canControl = true, fullscreenEnabled = true) {
 }
 
 describe("viewer UI state machine (fake DOM/noVNC, not visual cloud acceptance)", () => {
+	it.each([false, true])("preserves keyboard focus through Enter and Back (can control: %s)", async (canControl) => {
+		const f = await embeddedViewer(canControl, false);
+		const pending = computerDeferred<ViewConnection>();
+		if (canControl) f.requestConnection.mockImplementationOnce(() => pending.promise);
+		const overlay = f.mount.children[0];
+		expect(overlay.tabIndex).toBe(-1);
+		f.button("Enter").focus();
+		f.button("Enter").onclick?.();
+		expect(f.document.activeElement).toBe(f.button("Back to thread"));
+		if (canControl) await vi.waitFor(() => expect(f.requestConnection).toHaveBeenCalledTimes(2));
+		f.button("Back to thread").onclick?.();
+		expect(f.document.activeElement).toBe(overlay);
+		expect(f.button("Back to thread").hidden).toBe(true);
+		if (canControl) {
+			pending.resolve({
+				connectionId: computerId(50),
+				url: `ws://127.0.0.1:4500/${"z".repeat(43)}`,
+				mode: "control",
+				binding: computerBinding(),
+			});
+			await vi.waitFor(() => expect(f.instances).toHaveLength(2));
+			f.instances[1].emit("connect");
+			expect(f.document.activeElement).toBe(overlay);
+		}
+		await f.viewer.close();
+	});
+
+	it("does not pull external focus into the mini on a fullscreen-exit callback", async () => {
+		const f = await embeddedViewer(false);
+		f.button("Enter").onclick?.();
+		await vi.waitFor(() => expect(f.button("Exit full screen").disabled).toBe(false));
+		f.document.activeElement = f.previous;
+		await f.document.exitFullscreen();
+		expect(f.expanded).toHaveBeenLastCalledWith(false);
+		expect(f.document.activeElement).toBe(f.previous);
+		expect(f.mount.children[0].focus).not.toHaveBeenCalled();
+		await f.viewer.close();
+	});
+
 	it("keeps the mini watch-only and enters control only after an explicit Enter click", async () => {
 		const f = await embeddedViewer();
 		expect(f.button("Enter").disabled).toBe(false);

@@ -19,6 +19,7 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 	const previous = document.activeElement;
 	const overlay = document.createElement("div");
 	overlay.className = mount ? "screen-viewer-overlay screen-viewer-embedded" : "screen-viewer-overlay";
+	if (mount) overlay.tabIndex = -1;
 	overlay.setAttribute("role", mount ? "region" : "dialog");
 	if (!mount) overlay.setAttribute("aria-modal", "true");
 	overlay.setAttribute("aria-label", title);
@@ -264,7 +265,9 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 	};
 	const returnToMini = () => {
 		if (closed || !entered) return;
+		const restoreFocus = overlay.contains(document.activeElement);
 		setEntered(false);
+		if (restoreFocus) overlay.focus();
 		if (current?.connection.mode === "control" || admissionMode === "control") {
 			if (current) current.rfb.viewOnly = true;
 			epoch++;
@@ -307,6 +310,7 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 		enter.onclick = () => {
 			if (closed || enter.disabled || entered) return;
 			setEntered(true);
+			back.focus();
 			// Invoke before any await so native fullscreen retains the click's user activation.
 			void toggleFullscreen();
 			if (canControl && !privateSignIn) void connect("control");
