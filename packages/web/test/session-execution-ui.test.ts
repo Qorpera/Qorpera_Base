@@ -35,6 +35,7 @@ function connections(count = 2): NativeExecutionConnections {
 		},
 		connections: [80, 81].slice(0, count).map((n) => ({
 			connectionId: id(n + 10),
+			clientConnectionId: id(n + 110),
 			connectionVersion: 1,
 			provider: n === 80 ? "openai" : "anthropic",
 			nativeHarness: n === 80 ? "codex-cli" : "claude-code",

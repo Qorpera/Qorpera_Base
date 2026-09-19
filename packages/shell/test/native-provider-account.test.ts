@@ -113,6 +113,7 @@ describe("native provider account display metadata", () => {
 					connections: [
 						{
 							connection_id: "10000000-0000-4000-8000-000000000001",
+							client_connection_id: "10000000-0000-4000-8000-000000000003",
 							connection_version: 1,
 							provider: "openai",
 							native_harness: "codex-cli",
@@ -130,6 +131,7 @@ describe("native provider account display metadata", () => {
 				}),
 			});
 			const result = await control.listConnections("10000000-0000-4000-8000-000000000002");
+			expect(result.connections[0]?.clientConnectionId).toBe("10000000-0000-4000-8000-000000000003");
 			expect(result.connections[0]?.providerAccountEmail).toBe(providerAccountEmail);
 			expect(result.connections[0]?.providerAccountReference).toBe("codex-cli:opaque");
 		},

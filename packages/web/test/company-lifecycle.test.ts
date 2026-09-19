@@ -37,6 +37,7 @@ const connections: NativeExecutionConnections = {
 	connections: [
 		{
 			connectionId: id(80),
+			clientConnectionId: id(180),
 			connectionVersion: 1,
 			provider: "openai",
 			nativeHarness: "codex-cli",
