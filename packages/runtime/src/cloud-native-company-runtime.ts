@@ -264,7 +264,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					identityRoot,
 					isolation: this.#isolation,
 					prompt,
-					runtimeInstructions: compileCloudNativeCompanyInstructions(context),
+					runtimeInstructions: compileCloudNativeCompanyInstructions(context, wake),
 					signal,
 					timeoutMs: this.#timeoutMs,
 					tools: async (identity, operations, run) => {

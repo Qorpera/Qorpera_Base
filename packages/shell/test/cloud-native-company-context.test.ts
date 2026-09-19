@@ -156,6 +156,32 @@ it.each([
 				);
 				expect(prompt.currentInputs).toEqual(context.currentInputs);
 				expect(prompt.continuation).toEqual(context.continuation);
+				// Contract 9: a run receives its own wake's reply rules, not every wake's.
+				const instructions = compileCloudNativeCompanyInstructions(context, wake);
+				const own = {
+					human: "Human and first-run wakes:",
+					"first-run": "Human and first-run wakes:",
+					routine: "Routine wakes:",
+					room: "Room wakes:",
+					agent: "Agent wakes with source.kind coworker:",
+				}[kind];
+				for (const heading of [
+					"Human and first-run wakes:",
+					"Routine wakes:",
+					"Room wakes:",
+					"Agent wakes with source.kind coworker:",
+					"Agent wakes with source.kind office-activation",
+				])
+					expect(instructions.includes(heading)).toBe(heading === own);
+				expect(instructions.includes("qorpera.run-continuation/v1")).toBe(continued);
+				for (const always of [
+					"# Qorpera runtime constitution",
+					"Qorpera has one public voice",
+					"# Writing to people",
+					"Do what was asked",
+				])
+					expect(instructions).toContain(always);
+				expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(own);
 			}
 		}
 	},
