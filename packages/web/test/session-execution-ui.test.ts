@@ -155,8 +155,8 @@ describe("conversation execution account", () => {
 		});
 		await settle();
 		expect(f.view.el.querySelector(".messages")!.textContent).toContain("Earlier room message");
-		expect(f.view.el.textContent).toContain("Multiple agents can respond in this group chat");
-		expect(f.view.el.textContent).toContain("Company-wide execution pause is available in Settings → Company");
+		expect(f.view.el.textContent).not.toContain("Multiple agents can respond in this group chat");
+		expect(f.view.el.textContent).not.toContain("Company-wide execution pause is available in Settings → Company");
 		expect(f.view.el.querySelector(".session-run")).toBeNull();
 		expect(f.view.el.textContent).not.toContain("Execution history");
 		expect(f.sponsor()?.connectionId).toBe(id(90));
@@ -196,7 +196,7 @@ describe("conversation execution account", () => {
 		expect(f.company.conversation(session.sessionId).get().attachments ?? []).toEqual([]);
 		expect(f.company.conversation(session.sessionId).get().draft).toBe("Keep team text");
 		expect(f.view.el.querySelector<HTMLButtonElement>(".composer-more")!.hidden).toBe(true);
-		expect(f.view.el.textContent).toContain("Images are not supported in group chats. Use Company File.");
+		expect(f.view.el.querySelector(".thread-status .notice")).toBeNull();
 		expect(f.sendMessage).not.toHaveBeenCalled();
 	});
 	it("does not attribute a room agent reply to the room title or its human creator", async () => {

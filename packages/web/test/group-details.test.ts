@@ -27,6 +27,18 @@ function setup() {
 }
 
 describe("group detail read boundary", () => {
+	it.each(["Launch coordination", ""])("reads a canonical subtitle (%s)", async (subtitle) => {
+		const f = setup();
+		f.rpc.mockResolvedValueOnce([{ ...f.room, subtitle }]);
+		await expect(f.read()).resolves.toEqual({ ...f.room, subtitle });
+	});
+
+	it.each([null, 1, {}, "x".repeat(257)])("rejects malformed subtitles (%s)", async (subtitle) => {
+		const f = setup();
+		f.rpc.mockResolvedValueOnce([{ ...f.room, subtitle }]);
+		await expect(f.read()).rejects.toBeInstanceOf(CloudShapeError);
+	});
+
 	it("reads the exact group's details and ignores other rooms in the company", async () => {
 		const f = setup();
 		f.rpc.mockResolvedValueOnce([{ ...f.room, roomId: id(80), name: "Another group", members: [] }, f.room]);

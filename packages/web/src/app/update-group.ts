@@ -23,6 +23,7 @@ export function createGroupUpdater(options: {
 		const signal = AbortSignal.any([company.signal, viewSignal]);
 		const changes = {
 			name: draft.name.trim(),
+			...(draft.subtitle !== undefined ? { subtitle: draft.subtitle.trim() } : {}),
 			purpose: draft.purpose.trim(),
 			members: draft.members.map((m) => ({ ...m })),
 		};
@@ -74,6 +75,8 @@ export function createGroupUpdater(options: {
 		check();
 		if (!changes.name || [...changes.name].length > 256)
 			throw new Error("Enter a group name of no more than 256 characters.");
+		if (changes.subtitle !== undefined && [...changes.subtitle].length > 256)
+			throw new Error("Enter a group subtitle of no more than 256 characters.");
 		if (!changes.purpose) throw new Error("Enter a description for this group chat.");
 		busy = true;
 		try {
@@ -91,13 +94,15 @@ export function createGroupUpdater(options: {
 				throw new Error("This group chat is no longer available.");
 			const document = record(JSON.parse(current.text), "group chat document");
 			if (
-				Object.keys(document).length !== ROOM_FIELDS.length ||
+				Object.keys(document).some((field) => field !== "subtitle" && !ROOM_FIELDS.includes(field)) ||
 				ROOM_FIELDS.some((field) => !Object.hasOwn(document, field)) ||
 				document.schema !== "qorpera.company-room/v1" ||
 				document.roomId !== observed.roomId ||
 				typeof document.key !== "string" ||
 				!/^[a-z0-9][a-z0-9._-]{0,95}$/.test(document.key) ||
 				typeof document.name !== "string" ||
+				(Object.hasOwn(document, "subtitle") &&
+					(typeof document.subtitle !== "string" || [...document.subtitle].length > 256)) ||
 				typeof document.purpose !== "string" ||
 				document.status !== "active" ||
 				(document.projectId !== null &&
@@ -122,6 +127,7 @@ export function createGroupUpdater(options: {
 				if (
 					document.version === observed.version + 1 &&
 					document.name === changes.name &&
+					(changes.subtitle === undefined || document.subtitle === changes.subtitle) &&
 					document.purpose === changes.purpose &&
 					memberKey(members) === memberKey(changes.members)
 				)

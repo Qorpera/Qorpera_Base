@@ -98,6 +98,47 @@ function setup() {
 }
 
 describe("editing group details", () => {
+	it.each(["  Launch coordination  ", ""])("persists and clears canonical subtitles (%s)", async (subtitle) => {
+		const f = setup();
+		f.currentFile.text = JSON.stringify({ ...f.room, subtitle: "Old subtitle" });
+		await f.update(session.sessionId, f.observed, { ...f.draft, subtitle }, f.signal);
+		const edit = f.editor.edit.mock.calls[0]![0];
+		if (edit.operation !== "write") throw new Error("Expected room write");
+		expect(JSON.parse(edit.text)).toEqual({ ...f.room, ...f.draft, subtitle: subtitle.trim(), version: 5 });
+	});
+
+	it("preserves the canonical subtitle when editing other group fields", async () => {
+		const f = setup();
+		f.currentFile.text = JSON.stringify({ ...f.room, subtitle: "Launch coordination" });
+		await f.update(session.sessionId, f.observed, f.draft, f.signal);
+		const edit = f.editor.edit.mock.calls[0]![0];
+		if (edit.operation !== "write") throw new Error("Expected room write");
+		expect(JSON.parse(edit.text).subtitle).toBe("Launch coordination");
+	});
+
+	it("does not mistake a conflicting subtitle for a previously applied edit", async () => {
+		const f = setup();
+		f.currentFile.text = JSON.stringify({ ...f.room, ...f.draft, subtitle: "Other editor", version: 5 });
+		await expect(
+			f.update(session.sessionId, f.observed, { ...f.draft, subtitle: "Launch coordination" }, f.signal),
+		).rejects.toThrow("changed while you were editing");
+		expect(f.editor.edit).not.toHaveBeenCalled();
+	});
+
+	it("rejects oversized subtitle drafts and malformed canonical subtitles", async () => {
+		const f = setup();
+		await expect(
+			f.update(session.sessionId, f.observed, { ...f.draft, subtitle: "x".repeat(257) }, f.signal),
+		).rejects.toThrow("256 characters");
+		for (const subtitle of [null, 1, "x".repeat(257)]) {
+			f.currentFile.text = JSON.stringify({ ...f.room, subtitle });
+			await expect(f.update(session.sessionId, f.observed, f.draft, f.signal)).rejects.toThrow(
+				"document has changed",
+			);
+		}
+		expect(f.editor.edit).not.toHaveBeenCalled();
+	});
+
 	it("writes name, description and membership through the governed document, preserving project and identity", async () => {
 		const f = setup();
 		await f.update(session.sessionId, f.observed, f.draft, f.signal);

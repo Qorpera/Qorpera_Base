@@ -70,7 +70,7 @@ describe("group chat identity", () => {
 		expect(identity.getAttribute("aria-haspopup")).toBe("dialog");
 		expect(identity.getAttribute("aria-expanded")).toBe("false");
 		expect(view.el.querySelector<HTMLButtonElement>(".thread-computer")?.hidden).toBe(true);
-		expect(view.el.querySelector(".thread-status")?.textContent).toContain("respond in this group chat");
+		expect(view.el.querySelector(".thread-status")?.textContent).not.toContain("respond in this group chat");
 		expect(view.el.textContent).not.toContain("team rooms");
 		const previousRow = row();
 		const previousAvatar = identity.querySelector(".group-chat-avatar");
@@ -95,6 +95,37 @@ describe("group chat identity", () => {
 		draw();
 		expect(view.el.querySelector(".group-chat-avatar")).toBeNull();
 		expect(rail.querySelector(".group-chat-avatar")).toBeNull();
+	});
+
+	it("refreshes the group rail subtitle independently of its title and keeps group artwork", () => {
+		const roomId = id(79);
+		const { company, rail, draw } = setup({ ...session, executionScope: { roomId } });
+		const row = () => rail.querySelector<HTMLAnchorElement>(`a[href$="/chat/${session.sessionId}"]`)!;
+		const previous = row();
+		const details = {
+			roomId,
+			sessionId: session.sessionId,
+			environmentId: profileA.environmentId,
+			name: session.title,
+			subtitle: "Launch planning",
+			purpose: "Prepare the next launch.",
+			version: 1,
+			status: "active" as const,
+			members: [],
+		};
+		company.store.set({ groups: { [roomId]: details } });
+		draw();
+		expect(row()).not.toBe(previous);
+		expect(row().querySelector("small")?.textContent).toBe("Launch planning");
+		expect(row().title).toBe(`${session.title} · Launch planning`);
+		expect(row().querySelector("canvas.group-chat-avatar")).not.toBeNull();
+		const unchanged = row();
+		draw();
+		expect(row()).toBe(unchanged);
+		company.store.set({ groups: { [roomId]: { ...details, subtitle: "", version: 2 } } });
+		draw();
+		expect(row().querySelector("small")?.textContent).toBe("");
+		expect(row().title).toBe(session.title);
 	});
 
 	it("keeps an agent's shared room as an individual agent conversation", () => {
