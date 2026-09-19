@@ -398,6 +398,17 @@ describe("safe formatted messages", () => {
 		expect([...rendered.querySelectorAll("a")].map((link) => link.protocol)).toEqual(["https:", "https:"]);
 		expect(rendered.textContent).toContain("<img src=x onerror=alert(1)>");
 	});
+	it("draws one disabled checkbox per task item without repeating its marker as text", () => {
+		// Tight and loose lists place marked's checkbox token at different depths.
+		for (const source of ["- [x] done\n- [ ] open", "- [x] done\n\n- [ ] open"]) {
+			const items = [...markdown(source).querySelectorAll("li")];
+			expect(items.map((item) => item.querySelectorAll("input").length)).toEqual([1, 1]);
+			expect(items.map((item) => item.querySelector("input")?.checked)).toEqual([true, false]);
+			expect(items.every((item) => item.querySelector("input")?.disabled)).toBe(true);
+			expect(items.map((item) => item.textContent)).toEqual(["done", "open"]);
+		}
+		expect(markdown("[x] not a list").textContent).toBe("[x] not a list");
+	});
 });
 
 describe("new conversation and agent setup", () => {
