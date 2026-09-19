@@ -80,6 +80,7 @@
 	--send-active: var(--primary);
 	--send-active-hover: var(--primary-hover);
 	--composer-accent: #0a84ff;
+	--agent-active: #00c887;
 	--composer-on-accent: #ffffff;
 	--composer-accent-hover: color-mix(in srgb, var(--composer-accent) 88%, #000000);
 
@@ -156,6 +157,7 @@
 /* Conversation colour is independent of the page's light/dark appearance. */
 :root[data-composer-color="green"] {
 	--composer-accent: #30d158;
+	--agent-active: #0a84ff;
 }
 :root[data-composer-color="grey"] {
 	--composer-accent: #5b5b5b;
