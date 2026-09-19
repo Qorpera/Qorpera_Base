@@ -712,14 +712,47 @@ export class ConversationView {
 		this.#runNotificationKey = key;
 		const focused = this.#runNotification.contains(document.activeElement);
 		const dismiss = () => {
-			if (!runId) return;
+			if (!runId || this.#notificationSignal.aborted) return;
 			let dismissed = dismissedRunNotifications.get(this.#company);
+			if (dismissed?.has(runId)) return;
 			if (!dismissed) {
 				dismissed = new Set();
 				dismissedRunNotifications.set(this.#company, dismissed);
 			}
 			dismissed.add(runId);
 			this.update();
+			// Recovery details can arrive after the popup. Follow this one dismissal
+			// across navigation, but stop waiting on permission loss or company teardown.
+			const clearSettledFailure = () => {
+				const state = this.#company.store.get();
+				const currentSession = state.sessions.find((item) => item.sessionId === this.#sessionId);
+				const current = this.#company.failedRunFor(currentSession?.staffAgentId);
+				const canClear =
+					!this.#company.signal.aborted &&
+					!state.accessLost &&
+					state.team?.capabilities.write &&
+					state.team.capabilities.read &&
+					currentSession?.status === "open" &&
+					current?.activity.runId === runId &&
+					current.activity.sourceKind !== "proposal_review";
+				if (canClear && !current.recovery) return;
+				// A newer failure can temporarily replace this one in the activity RPC.
+				// Let this run be dismissed again if it returns before we could clear it.
+				if (current?.activity.runId !== runId) dismissed.delete(runId);
+				unsubscribe();
+				this.#company.signal.removeEventListener("abort", clearSettledFailure);
+				if (canClear && current.recovery?.unsettledOperations === 0 && !current.recovery.proposalId) {
+					// Clear settled failures so the server can report the agent's next run.
+					void this.#company.dismissFailedRun(runId).catch(() => {
+						// Notify the current view too if the member navigated during the request.
+						dismissed.delete(runId);
+						if (!this.#company.signal.aborted) this.#company.store.set({});
+					});
+				}
+			};
+			const unsubscribe = this.#company.store.subscribe(clearSettledFailure);
+			this.#company.signal.addEventListener("abort", clearSettledFailure, { once: true });
+			clearSettledFailure();
 		};
 		const profileId = this.#company.profile.profileId;
 		const action =
