@@ -12,6 +12,7 @@ import { projectTranscript, type TranscriptMessage } from "../src/cloud/transcri
 import { renderAuthorizationCard } from "../src/ui/authorization-card.ts";
 import { SurfaceDialog } from "../src/ui/dialog.ts";
 import { h } from "../src/ui/dom.ts";
+import * as figureMotion from "../src/ui/figure-motion.ts";
 import { languagePreference, setLanguagePreference, uiText } from "../src/ui/preferences.ts";
 import { RailLayout } from "../src/ui/rail-layout.ts";
 import { ReceivedAttachments } from "../src/ui/received-attachments.ts";
@@ -206,6 +207,75 @@ describe("shell presentation lifecycle", () => {
 		await settle();
 		expect(view.el.querySelector(".settings-file")?.textContent).not.toContain("99 B");
 		expect(view.el.querySelector(".settings-file")?.textContent).toContain("40 B used");
+	});
+	it("keeps Needs you for a pending decision and leaves an agent whose run failed idle", () => {
+		vi.stubGlobal("QORPERA_MOTION_MODEL", { avatars: [] });
+		vi.stubGlobal("QORPERA_AVATAR_APPEARANCE", { palette: [] });
+		const mount = vi.spyOn(figureMotion, "mountFigureMotion").mockReturnValue({ dispose() {} });
+		const f = companyFixture();
+		const cofounder = {
+			...staff,
+			id: id(40),
+			displayName: "Co-Founder",
+			role: "Co-founder",
+			templateId: "co-founder",
+		};
+		const runs = [
+			["failed", "needs_attention", "Idle", "Analyst"],
+			["cancelled", "needs_attention", "Idle", "Analyst"],
+			["completed", "needs_attention", "Waiting", "Needs you"],
+			["leased", "working", "Working", "Working"],
+			["queued", "waiting", "Working", "Working"],
+		] as const;
+		const agents = runs.map((_, index) => ({ ...staff, id: id(41 + index), role: "Analyst" }));
+		const quiet = { ...staff, id: id(49), role: "Analyst" };
+		f.company.store.set({
+			staff: [cofounder, ...agents, quiet],
+			activity: [
+				...runs.map(([jobStatus, activity], index) => ({
+					runId: id(60 + index),
+					staffAgentId: id(41 + index),
+					sourceKind: "session_turn" as const,
+					jobStatus,
+					activity,
+					updatedAt: timestamp,
+				})),
+				{
+					runId: id(69),
+					staffAgentId: cofounder.id,
+					sourceKind: "room_delivery",
+					jobStatus: "failed",
+					activity: "needs_attention",
+					updatedAt: timestamp,
+				},
+			],
+		});
+		const rail = h("nav");
+		document.body.append(rail);
+		const auth = new AuthController(f.cloud);
+		cleanup.push(() => auth.dispose());
+		renderRail(rail, f.company, {
+			profiles: [profileA],
+			user: userA,
+			route: { name: "company", profileId: profileA.profileId, section: "file" },
+			auth,
+			invitations: 0,
+			openSettings: () => {},
+			openFeedback: () => {},
+		});
+		const figures = new Map(mount.mock.calls.map(([, , , , options]) => [options?.identity, options?.activity]));
+		const row = (agentId: string) => rail.querySelector(`a[href$="/staff/${agentId}"]`);
+		for (const [index, [, , figure, line]] of runs.entries()) {
+			expect(figures.get(id(41 + index))).toBe(figure);
+			expect(row(id(41 + index))?.querySelector("small")?.textContent).toBe(line);
+			expect(Boolean(row(id(41 + index))?.querySelector(".rail-row-status"))).toBe(figure === "Working");
+		}
+		expect(figures.get(quiet.id)).toBe("Idle");
+		expect(row(quiet.id)?.querySelector("small")?.textContent).toBe("Analyst");
+		// The Co-Founder's failed room delivery reads the same way on its card.
+		expect(figures.get(cofounder.id)).toBe("Idle");
+		expect(rail.querySelector(".cofounder-home small")?.textContent).toBe("Co-founder");
+		expect(rail.querySelector(".cofounder-status")).toBeNull();
 	});
 });
 

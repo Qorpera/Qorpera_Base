@@ -246,17 +246,21 @@ function searchField(company: CompanyController, onInput: () => void) {
 	return current;
 }
 
-function statusLine(agent: HostedStaffAgent | undefined, activity: HostedStaffExecutionActivity | undefined): string {
-	if (activity?.activity === "needs_attention") return "Needs you";
-	if (activity) return "Working";
-	return agent?.role ?? "";
+type RailActivity = "Idle" | "Working" | "Waiting";
+
+/** A queued run is already the agent's work from the member's side of the screen.
+ * "Needs you" is for a finished run whose proposal waits on a decision. A failed
+ * or stopped run is needs_attention too, but this client has no card to retry or
+ * dismiss it, so the agent reads as idle instead of pointing at nothing. */
+function railActivity(activity: HostedStaffExecutionActivity | undefined): RailActivity {
+	if (!activity) return "Idle";
+	if (activity.activity !== "needs_attention") return "Working";
+	return activity.jobStatus === "completed" ? "Waiting" : "Idle";
 }
 
-/** A queued run is already the agent's work from the member's side of the screen. */
-const isWorking = (activity: HostedStaffExecutionActivity | undefined) =>
-	activity !== undefined && activity.activity !== "needs_attention";
-const figureActivity = (activity: HostedStaffExecutionActivity | undefined) =>
-	isWorking(activity) ? "Working" : activity ? "Waiting" : "Idle";
+function statusLine(agent: HostedStaffAgent, activity: RailActivity): string {
+	return activity === "Waiting" ? "Needs you" : activity === "Working" ? "Working" : agent.role;
+}
 
 export function renderRail(container: HTMLElement, company: CompanyController, context: ShellContext): void {
 	const restoreFocus = preserveAccountFocus();
@@ -281,7 +285,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		(state.organization ? company.staffById(state.organization.cofounder.staffAgentId) : undefined) ??
 		active.find((agent) => agent.templateId === "co-founder");
 
-	const cofounderActivity = company.activityFor(cofounder?.id);
+	const cofounderActivity = railActivity(company.activityFor(cofounder?.id));
 	const cofounderCard =
 		cofounder && matches(`${cofounder.displayName} ${cofounder.role}`)
 			? h(
@@ -309,10 +313,12 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 						{ class: "cofounder-stand" },
 						agentFigure(cofounder, cofounder.displayName, {
 							size: 82,
-							activity: figureActivity(cofounderActivity),
+							activity: cofounderActivity,
 						}),
 						// The green disc means "working now", the one state the trailer's dot shows.
-						isWorking(cofounderActivity) ? h("span", { class: "cofounder-status", "aria-hidden": "true" }) : null,
+						cofounderActivity === "Working"
+							? h("span", { class: "cofounder-status", "aria-hidden": "true" })
+							: null,
 					),
 					h("strong", null, cofounder.displayName),
 					h("small", null, statusLine(cofounder, cofounderActivity)),
@@ -320,7 +326,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			: null;
 
 	const staffRow = (agent: HostedStaffAgent) => {
-		const activity = company.activityFor(agent.id);
+		const activity = railActivity(company.activityFor(agent.id));
 		return h(
 			"a",
 			{
@@ -332,8 +338,8 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			h(
 				"span",
 				{ class: "rail-row-stand" },
-				agentFigure(agent, agent.displayName, { size: 40, activity: figureActivity(activity) }),
-				isWorking(activity) ? h("span", { class: "rail-row-status", "aria-hidden": "true" }) : null,
+				agentFigure(agent, agent.displayName, { size: 40, activity }),
+				activity === "Working" ? h("span", { class: "rail-row-status", "aria-hidden": "true" }) : null,
 			),
 			h(
 				"span",
