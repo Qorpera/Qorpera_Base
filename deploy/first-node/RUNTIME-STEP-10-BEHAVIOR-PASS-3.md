@@ -91,7 +91,7 @@ scenario per prompt; this shows direction, not reliability rates.
 
 **Co-Founder and employees: one prompt, different overlay.** Keep it as built. The
 law (mouth, silence, trust, Company File, effects) is identical for both and the
-contract requires a single brain. What differs is the job, and a 150 to 250 word
+contract requires a single brain. What differs is the job, and a 200 to 320 word
 overlay chosen by the canonical database mapping was enough to move behavior in
 these trials: the Co-Founder argues direction and owns formation, the employee
 stays inside its remit and hands off. A separate Co-Founder prompt would
