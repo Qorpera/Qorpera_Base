@@ -342,7 +342,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		return h(
 			"a",
 			{
-				class: ["rail-row", isActive(agent.id) ? "active" : ""].join(" "),
+				class: ["rail-row rail-row-agent", isActive(agent.id) ? "active" : ""].join(" "),
 				href: `#/c/${profileId}/staff/${agent.id}`,
 				title: `${agent.displayName} · ${agent.role}`,
 				"aria-current": isActive(agent.id) ? "page" : undefined,
@@ -350,7 +350,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			h(
 				"span",
 				{ class: "rail-row-stand" },
-				agentFigure(agent, agent.displayName, { size: 40, activity: figureActivity(activity) }),
+				agentFigure(agent, agent.displayName, { size: 50, activity: figureActivity(activity) }),
 				isWorking(activity) ? h("span", { class: "rail-row-status", "aria-hidden": "true" }) : null,
 			),
 			h(

@@ -188,7 +188,7 @@ label > input, label > select { font-weight: 400; }
 /* The Co-Founder occupies its own tier above the rest of the staff. Geometry
  * is the trailer's card at 1x: an 82px figure standing 27px proud of a low
  * card, 13px name, 10.5px status line, a soft shadow under the figure. */
-.rail-cofounder { padding: calc(var(--lift) + 16px) 9px 37px; }
+.rail-cofounder { padding: calc(var(--lift) + 16px) 9px 18.5px; }
 .cofounder-home {
 	position: relative; display: flex; flex-direction: column; align-items: center; gap: 1px;
 	width: 100%; padding: calc(var(--figure) - var(--lift) + 8px) 12px 5px; border-radius: 12px;
@@ -213,15 +213,18 @@ label > input, label > select { font-weight: 400; }
 .cofounder-home:hover .cofounder-status { border-color: var(--rail-hover); }
 .cofounder-home.active .cofounder-status { border-color: var(--rail-selection); }
 
-.rail-list { display: grid; gap: 1px; }
+.rail-list { display: grid; gap: 0; }
+.rail-scroll > .rail-list:first-child { margin-top: 14px; }
 .rail-row {
-	display: grid; grid-template-columns: 40px minmax(0, 1fr); align-items: center; gap: 2px;
+	--rail-row-figure: 40px;
+	display: grid; grid-template-columns: var(--rail-row-figure) minmax(0, 1fr); align-items: center; gap: 2px;
 	min-height: 51px; padding: 3px 8px 3px 12px; border-radius: 9px; color: var(--text);
 }
+.rail-row-agent { --rail-row-figure: 50px; min-height: 63.75px; }
 .rail-row:hover { background: var(--rail-hover); text-decoration: none; }
 .rail-row.active, .rail-row.active:hover { background: var(--rail-selection); color: #fff; }
-.rail-row .figure { width: 40px; height: 40px; }
-.rail-row-stand { position: relative; display: grid; place-items: center; width: 40px; height: 40px; }
+.rail-row .figure { width: var(--rail-row-figure); height: var(--rail-row-figure); }
+.rail-row-stand { position: relative; display: grid; place-items: center; width: var(--rail-row-figure); height: var(--rail-row-figure); }
 .rail-row-status { position: absolute; z-index: 2; right: -2px; bottom: -2px; width: 15px; height: 15px; border-radius: 50%; background: var(--rail-status); border: 2px solid var(--rail); }
 .rail-row:hover .rail-row-status { border-color: var(--rail-hover); }
 .rail-row.active .rail-row-status { border-color: var(--rail-selection); }
@@ -235,7 +238,7 @@ label > input, label > select { font-weight: 400; }
 	.rail-compact .rail { padding-inline: 7px; }
 	.rail-compact .rail-toolbar { justify-content: center; }
 	.rail-compact .rail-search, .rail-compact .cofounder-home > strong, .rail-compact .cofounder-home > small, .rail-compact .rail-row-copy, .rail-compact .account-menu-rail .account-trigger-name, .rail-compact .rail-connection { display: none; }
-	.rail-compact .rail-cofounder { padding: 6px 0; }
+	.rail-compact .rail-cofounder { padding: 6px 0 3px; }
 	.rail-compact .cofounder-home { height: 64px; padding: 0; }
 	.rail-compact .rail { --figure: 48px; }
 	.rail-compact .cofounder-stand { top: 8px; }
