@@ -1027,6 +1027,11 @@ begin
 	perform pg_temp.wake_public_send(v_binding,'progress','edited-in-flight');
 	perform pg_temp.wake_assert((select count(*) from public.qorpera_agent_sends where run_id = v_run
 		and idempotency_key = 'edited-in-flight') = 1,'An edit does not end the run in flight');
+	perform pg_temp.wake_assert((select speaker.display_name = 'Bob' and speaker.staff_version = send_run.staff_version
+		from public.qorpera_agent_sends send join public.qorpera_session_event_speakers speaker on speaker.event_id = send.event_id
+		join public.qorpera_execution_runs send_run on send_run.id = send.run_id
+		where send.run_id = v_run and send.idempotency_key = 'edited-in-flight'),
+		'A run whose agent was renamed meanwhile speaks under the name of its own version');
 	perform set_config('qorpera_test.wake_binding',v_binding::text,true);
 	perform pg_temp.path_commit(pg_temp.path_plan('edited-in-flight','edited-note.md',
 		pg_temp.path_stage_file('edited-note.md','Written by a run whose agent was edited meanwhile.')));
