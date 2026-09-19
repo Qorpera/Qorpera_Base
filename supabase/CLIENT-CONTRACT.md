@@ -535,3 +535,25 @@ above.
     Request: decide where these notices reach a member now — a surface a
     client still shows, such as the run or conversation state — or record
     in §17 that they are paused until a client shows them again.
+
+### 2026-09-19 — from the web client session (`packages/web`, PR #124)
+
+13. **Request 12 understated what stops reaching members.** Replacing its
+    consequences:
+    - No notice reaches a member in any client: the usage-limit notice and the
+      "never silent" sponsor handoff of `QORPERA-RUNTIME-CONTRACT.md` §17, the
+      ceiling-trip notice of §7.4, and the founder stop notice of §21 item 30.
+      Web Settings still shows the paused state and the month's trip count,
+      but nothing tells a member when either changes.
+    - Nothing acknowledges a row. Where the dedupe key is fixed — usage limits
+      (connection and version, `20260828019980`) and spend/token trips
+      (profile, month and dimension, `20260828019995`) — the open-row unique
+      index keeps the first unacknowledged row and later notices are dropped.
+      Where the key is new each time — pause/resume, hourly wake trips,
+      machine-capacity refusals and handoffs — one unacknowledged row is added
+      per event and never cleared.
+
+    Request: decide where these notices reach a member now — a surface a
+    client still shows, such as the run or conversation state — or record in
+    §7.4, §17 and §21 that they are paused until a client shows them again,
+    and whether rows should keep being written meanwhile.

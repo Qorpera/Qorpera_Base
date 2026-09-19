@@ -10,9 +10,7 @@
 - Use a length-neutral email code hint so sign-in instructions remain accurate with the configured eight-digit codes.
 - Accept valid Unicode pause reasons using the public SQL character limit.
 - Submit team-room messages through the public room-post contract, preserve room retry identity, and match room attachments/run displays to the supported interfaces.
-- Cover the conversation with the agent computer panel below 1192px, where the wider default rail, the panel and a readable conversation no longer fit side by side.
-- Let the rail search wait for dead-key and IME input to commit, keep keyboard focus on the rail link or button it was on when the rail refreshes, and clear the rail search when the rail collapses.
-- Make resetting the rail width forget the stored width, so the default applies again once the window is wide enough, and set the width only on the rail and its edge so resizing the window does not restyle the whole app.
+- Keep the rail's search field, keyboard focus and scroll position when the rail refreshes: dead-key, IME and phone-keyboard typing is no longer broken, and a collapsed rail stops filtering by a search it hides until it opens again. A refresh rebuilds only the rows that changed, so moving between agents keeps their figures and an error notice is not announced again, and figures repaint sharp when the window moves to a screen of another pixel density.
 - Make primary buttons inside Settings readable; they rendered white text on the light grey settings button.
 
 ### Added
@@ -41,7 +39,7 @@
 
 ### Changed
 
-- Put the rail's search field on the same row as the new-agent button, both half again as large (46px field, 27px plus), and widen the default rail from 304px to 456px.
+- Put the rail's search field on the same row as the new-agent button, both half again as large (46px field, 27px plus), and widen the default rail from 304px to 456px. Rail widths stored before this change are not carried over, resetting the rail width forgets the stored width, and the agent computer panel covers the conversation whenever the thread is too narrow for both side by side.
 - Make the Settings window 20% larger, give its sections icons, and set their labels in whole-pixel, medium-weight dark ink so they no longer read soft.
 - Move Friends into Settings as its own tab, together with the company invitations waiting for the account. The profile menu's Friends item opens that tab and carries the invitation count, and the company invite picker's "Add a friend" switches to it.
 - Open an agent's routines and responsibilities as pages of its details popup, from two buttons beside the close button, each with a way back; routines left the Computer panel.

@@ -304,6 +304,15 @@ describe("conversation UI boundaries", () => {
 		restored.dispose();
 	});
 	it("shows unavailable computer controls without RPCs, handles narrow layouts, and restores focus", () => {
+		// jsdom lays nothing out: give the thread and the panel the widths the stylesheet would.
+		let threadWidth = 900,
+			panelWidth = 420;
+		vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(function (this: Element) {
+			return this.classList.contains("thread-body") ? threadWidth : 0;
+		});
+		vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+			return this.classList.contains("computer-panel") ? panelWidth : 0;
+		});
 		const f = setup(),
 			toggle = button(f.view.el, "Open agent computer");
 		toggle.click();
@@ -311,8 +320,16 @@ describe("conversation UI boundaries", () => {
 		// Routines live in the agent's details now, not beside the computer.
 		expect(f.view.el.querySelector(".computer-panel")?.textContent).not.toContain("Routines");
 		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(false);
-		// Below the width that holds the default rail, the panel and the conversation, the panel covers it.
-		vi.stubGlobal("innerWidth", 1192);
+		// Without room for the panel beside the conversation, however wide the rail is, the panel covers it.
+		threadWidth = 735;
+		window.dispatchEvent(new Event("resize"));
+		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(true);
+		expect(f.view.el.querySelector(".thread-body")?.classList.contains("computer-covers")).toBe(true);
+		threadWidth = 900;
+		window.dispatchEvent(new Event("qorpera-rail-resize"));
+		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(false);
+		// The phone layout makes the panel as wide as the thread, so it covers the conversation too.
+		threadWidth = panelWidth = 744;
 		window.dispatchEvent(new Event("resize"));
 		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(true);
 		button(f.view.el, "Close computer").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
