@@ -292,6 +292,45 @@ describe("automatic computer popover", () => {
 			else Reflect.deleteProperty(document, "fullscreenElement");
 		}
 	});
+	it("makes covered conversation controls inert only while entered and restores them on Back or disposal", async () => {
+		const f = setup(),
+			open = spyViewer(),
+			p = await opened(f.computer);
+		const thread = document.createElement("section"),
+			conversation = document.createElement("div"),
+			header = document.createElement("header"),
+			messages = document.createElement("div"),
+			status = document.createElement("div"),
+			composer = document.createElement("footer");
+		conversation.className = "thread-conversation";
+		header.className = "thread-header";
+		composer.className = "composer";
+		header.inert = false;
+		messages.inert = false;
+		status.inert = true;
+		composer.inert = false;
+		composer.append(document.createElement("textarea"));
+		conversation.append(header, messages, status, composer);
+		thread.append(conversation, p.el);
+		document.body.append(thread);
+		const options = open.mock.calls[0]![0];
+		expect(composer.inert).toBe(false);
+		options.onExpandedChange?.(true);
+		expect(header.inert).toBe(false);
+		expect(messages.inert).toBe(true);
+		expect(composer.inert).toBe(true);
+		options.onExpandedChange?.(true);
+		options.onExpandedChange?.(false);
+		expect(messages.inert).toBe(false);
+		expect(composer.inert).toBe(false);
+		expect(status.inert).toBe(true);
+		options.onExpandedChange?.(true);
+		p.dispose();
+		expect(header.inert).toBe(false);
+		expect(messages.inert).toBe(false);
+		expect(composer.inert).toBe(false);
+		expect(status.inert).toBe(true);
+	});
 	it("removes keyboard dismissal when the panel is disposed", async () => {
 		const f = setup(),
 			close = vi.fn(),

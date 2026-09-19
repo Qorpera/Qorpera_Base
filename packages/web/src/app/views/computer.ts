@@ -30,7 +30,24 @@ export class ComputerPanel {
 			},
 			this.#body,
 		);
-		attachComputerDrag(this.el, signal);
+		const fitPreview = attachComputerDrag(this.el, signal);
+		const covered = new Map<HTMLElement, boolean>();
+		const setExpanded = (expanded: boolean) => {
+			this.el.classList.toggle("is-entered", expanded);
+			if (expanded) {
+				for (const child of this.el.parentElement?.querySelector(".thread-conversation")?.children ?? []) {
+					if (!(child instanceof HTMLElement) || child.classList.contains("thread-header") || covered.has(child))
+						continue;
+					covered.set(child, child.inert);
+					child.inert = true;
+				}
+			} else {
+				for (const [element, inert] of covered) element.inert = inert;
+				covered.clear();
+				fitPreview();
+			}
+		};
+		signal.addEventListener("abort", () => setExpanded(false), { once: true });
 		this.el.addEventListener(
 			"keydown",
 			(event) => {
@@ -154,7 +171,7 @@ export class ComputerPanel {
 						await this.#views.open({
 							mount: this.#body,
 							autofocus: false,
-							onExpandedChange: (expanded) => this.el.classList.toggle("is-entered", expanded),
+							onExpandedChange: setExpanded,
 							onClosed: close,
 							binding: screen.binding,
 							title: `${agent.displayName} · Computer`,

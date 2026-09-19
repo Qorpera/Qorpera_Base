@@ -24,13 +24,16 @@ function setup() {
 	parent.append(header, panel, composer);
 	document.body.append(parent);
 	const size = { width: 1000, height: 700, panelWidth: 400, panelHeight: 225 };
+	const width = () =>
+		Math.min(size.panelWidth, Number.parseFloat(panel.style.getPropertyValue("--computer-width")) || size.panelWidth);
+	const height = () => Math.min(size.panelHeight, (width() * 9) / 16);
 	Object.defineProperties(parent, {
 		clientWidth: { get: () => size.width },
 		clientHeight: { get: () => size.height },
 	});
 	Object.defineProperties(panel, {
-		offsetWidth: { get: () => size.panelWidth },
-		offsetHeight: { get: () => size.panelHeight },
+		offsetWidth: { get: width },
+		offsetHeight: { get: height },
 	});
 	vi.spyOn(parent, "getBoundingClientRect").mockImplementation(() => new DOMRect(100, 50, size.width, size.height));
 	vi.spyOn(header, "getBoundingClientRect").mockReturnValue(new DOMRect(100, 50, 1000, 50));
@@ -40,8 +43,8 @@ function setup() {
 			new DOMRect(
 				100 + (Number.parseFloat(panel.style.getPropertyValue("--computer-left")) || 500),
 				50 + (Number.parseFloat(panel.style.getPropertyValue("--computer-top")) || 80),
-				size.panelWidth,
-				size.panelHeight,
+				width(),
+				height(),
 			),
 	);
 	const captured = new Set<number>();
@@ -65,7 +68,7 @@ function setup() {
 			disconnect = disconnect;
 		},
 	);
-	attachComputerDrag(panel, stop.signal);
+	const fit = attachComputerDrag(panel, stop.signal);
 	cleanup.push(() => stop.abort());
 	return {
 		panel,
@@ -80,6 +83,7 @@ function setup() {
 		resize: (target?: Element) => {
 			if (!target || observe.mock.calls.some(([element]) => element === target)) resized();
 		},
+		fit,
 	};
 }
 
@@ -259,13 +263,54 @@ describe("computer preview dragging", () => {
 		f.resize();
 		expect(f.panel.style.getPropertyValue("--computer-left")).toBe("242px");
 		expect(f.panel.style.getPropertyValue("--computer-top")).toBe("67px");
-		f.size.panelWidth = 450;
+		f.size.panelWidth = 350;
 		window.dispatchEvent(new Event("resize"));
-		expect(f.panel.style.getPropertyValue("--computer-left")).toBe("192px");
+		expect(f.panel.style.getPropertyValue("--computer-left")).toBe("242px");
 		f.stop.abort();
 		expect(f.disconnect).toHaveBeenCalledOnce();
 		f.size.width = 600;
 		window.dispatchEvent(new Event("resize"));
-		expect(f.panel.style.getPropertyValue("--computer-left")).toBe("192px");
+		expect(f.panel.style.getPropertyValue("--computer-left")).toBe("242px");
+	});
+	it("fits an unmoved preview before interaction and follows composer growth at its original aspect ratio", async () => {
+		const f = setup();
+		f.size.height = 400;
+		vi.mocked(f.composer.getBoundingClientRect).mockReturnValue(new DOMRect(100, 238, 1000, 212));
+		await Promise.resolve();
+		expect(f.observe).toHaveBeenCalledWith(f.composer);
+		expect(f.panel.offsetHeight).toBeCloseTo(122);
+		expect(f.panel.offsetWidth / f.panel.offsetHeight).toBeCloseTo(16 / 9);
+		expect(Number.parseFloat(f.panel.style.getPropertyValue("--computer-top")) + f.panel.offsetHeight).toBeCloseTo(
+			180,
+		);
+		expect(f.panel.style.getPropertyValue("--computer-left")).toBe("");
+		vi.mocked(f.composer.getBoundingClientRect).mockReturnValue(new DOMRect(100, 170, 1000, 280));
+		f.resize(f.composer);
+		expect(f.panel.offsetHeight).toBeCloseTo(54);
+		expect(Number.parseFloat(f.panel.style.getPropertyValue("--computer-top")) + f.panel.offsetHeight).toBeCloseTo(
+			112,
+		);
+		f.size.height = 700;
+		f.resize();
+		expect(f.panel.offsetWidth).toBe(400);
+		expect(f.panel.offsetHeight).toBe(225);
+	});
+	it("fits a dragged preview after shrinking and after returning from expanded mode", async () => {
+		const f = setup();
+		await Promise.resolve();
+		key(f.panel, "ArrowRight");
+		const left = f.panel.style.getPropertyValue("--computer-left");
+		f.panel.classList.add("is-entered");
+		f.size.height = 400;
+		vi.mocked(f.composer.getBoundingClientRect).mockReturnValue(new DOMRect(100, 238, 1000, 212));
+		f.resize();
+		expect(f.panel.offsetHeight).toBe(225);
+		f.panel.classList.remove("is-entered");
+		f.fit();
+		expect(f.panel.offsetHeight).toBeCloseTo(122);
+		expect(f.panel.style.getPropertyValue("--computer-left")).toBe(left);
+		expect(Number.parseFloat(f.panel.style.getPropertyValue("--computer-top")) + f.panel.offsetHeight).toBeCloseTo(
+			180,
+		);
 	});
 });

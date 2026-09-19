@@ -1,7 +1,7 @@
 import { matchesKey } from "./keys.ts";
 
 /** The preview moves locally; dragging must never send pointer input to the desktop. */
-export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): void {
+export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): () => void {
 	let position: { left: number; top: number } | undefined;
 	let drag: { id: number; x: number; y: number; left: number; top: number; moved: boolean } | undefined;
 	let observer: ResizeObserver | undefined;
@@ -21,7 +21,21 @@ export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): voi
 		panel.style.setProperty("--computer-top", `${position.top}px`);
 	};
 	const reclamp = () => {
+		const parent = panel.parentElement;
+		if (!parent || expanded()) return;
+		const header = parent.querySelector<HTMLElement>(".thread-header")?.getBoundingClientRect().height ?? 0;
+		const footer = parent.querySelector<HTMLElement>(".composer")?.getBoundingClientRect().height ?? 0;
+		const height = Math.max(0, parent.clientHeight - header - footer - 16);
+		const width = Math.max(0, Math.min(400, parent.clientWidth - 40, (height * 16) / 9));
+		panel.style.setProperty("--computer-width", `${width}px`);
 		if (position) place(position.left, position.top);
+		else {
+			// Keep the default right alignment until the member chooses a position.
+			panel.style.setProperty(
+				"--computer-top",
+				`${Math.max(header + 8, Math.min(header + 20, parent.clientHeight - footer - panel.offsetHeight - 8))}px`,
+			);
+		}
 	};
 	const observe = () => {
 		if (observer || !panel.parentElement || typeof ResizeObserver === "undefined") return;
@@ -32,6 +46,12 @@ export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): voi
 			observer.observe(boundary);
 		}
 	};
+	// The panel is attached by its owner immediately after construction.
+	queueMicrotask(() => {
+		if (signal.aborted) return;
+		observe();
+		reclamp();
+	});
 	const finish = () => {
 		if (!drag) return;
 		const id = drag.id;
@@ -126,4 +146,5 @@ export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): voi
 		},
 		{ once: true },
 	);
+	return reclamp;
 }
