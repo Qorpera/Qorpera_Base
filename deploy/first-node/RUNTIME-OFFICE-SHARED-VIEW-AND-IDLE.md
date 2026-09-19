@@ -30,6 +30,9 @@ lease acquisition, renewal and release. Actual drain, privacy, takeover and
 screen-generation changes still revoke them. Each input packet retains the
 existing authorization and audit admission. The viewer gateway releases only
 the held keys and mouse buttons sent through that connection when it closes.
+The RFB negotiation excludes QEMU keyboard and extended mouse formats: noVNC
+uses the core input packets admitted by that authority. Advertising those
+extensions made ordinary physical keyboard shortcuts disconnect the viewer.
 
 ## Desktop startup regression
 

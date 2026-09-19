@@ -242,7 +242,7 @@
     "packages/cloud-client/src/company-path-schema.ts": "1515e6622fa6fc6a906b398048e1a645e733dba01c2deefe5591b048ce0e6344",
     "packages/cloud-client/src/hosted-primary.ts": "4d2718f8501f414ded19ee9e651cabd0b6d6709935976273d335b751ab1c9697",
     "packages/cloud-client/src/native-provider-login.ts": "420bdef858f2016f76313032ea07db29cb9ab8c8c16ad3d09ccc2767e8230ca3",
-    "packages/cloud-client/src/node/cloud-company-computer-rfb.ts": "0be98c02a6509683851c9155c0baa073edbcb74161bbc88ae7ec91e35f506b49",
+    "packages/cloud-client/src/node/cloud-company-computer-rfb.ts": "786acd17a4a9723b83b14c8a50370fdfe2f8666e1be7340366502087f487f6d6",
     "packages/cloud-client/src/node/cloud-company-snapshot.ts": "68b328fd4afde4afad63140cb5bc001024ad160050adcf42063f034c1d8b89a0",
     "packages/cloud-client/src/node/cloud-company-substrate.ts": "7457d23f5951d0700a10234dbe9d22183462654625fbf29269fad9cc1f234e01",
     "packages/cloud-client/src/node/cloud-object-store.ts": "a29797b61731150f00d778fc8f91c119ec0c55a990c696ab8433d06874bf2c09",
