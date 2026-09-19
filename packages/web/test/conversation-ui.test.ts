@@ -469,6 +469,26 @@ describe("new conversation and agent setup", () => {
 		expect(f.search.hasAttribute("aria-activedescendant")).toBe(false);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
+	it("counts a double-click once, since rows and chips move under the pointer", async () => {
+		const other = { ...staff, id: id(92), displayName: "Second agent" };
+		const f = setupNew({}, [staff, other]);
+		await settle();
+		const click = (target: HTMLElement, detail: number) =>
+			target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail }));
+		click(choice(f.view.el, "group"), 1);
+		// The first agent now sits where New group chat was; the second click lands on it.
+		expect(choices(f.view.el)).toEqual(["start", staff.id, other.id]);
+		click(choice(f.view.el, staff.id), 2);
+		expect(f.view.el.querySelectorAll(".recipient-chip")).toHaveLength(0);
+		for (const agent of [staff, other]) click(choice(f.view.el, agent.id), 1);
+		expect(f.view.el.querySelectorAll(".recipient-chip")).toHaveLength(2);
+		click(f.view.el.querySelector<HTMLElement>(".recipient-chip")!, 1);
+		click(f.view.el.querySelector<HTMLElement>(".recipient-chip")!, 2);
+		expect([...f.view.el.querySelectorAll(".recipient-chip")].map((chip) => chip.textContent)).toEqual([
+			"Second agent",
+		]);
+		expect(f.cloud.rpc).not.toHaveBeenCalled();
+	});
 	it("moves through the list with the arrow keys and closes it with Escape", async () => {
 		const f = setupNew();
 		f.company.store.set({ team });

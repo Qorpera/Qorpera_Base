@@ -268,8 +268,10 @@ export class NewConversationView {
 						"data-choice": choice.key,
 						"aria-disabled": choice.disabled ? "true" : undefined,
 						"aria-selected": choice.member === undefined ? undefined : String(choice.member),
-						onclick: () => {
-							if (!choice.disabled) choice.run();
+						onclick: (event: MouseEvent) => {
+							// Rows rebuild on a pick, so a double-click's second click
+							// would land on whatever row moved under the pointer.
+							if (!choice.disabled && event.detail < 2) choice.run();
 						},
 						onmousemove: () => {
 							if (this.#active !== choice.key) {
@@ -314,7 +316,9 @@ export class NewConversationView {
 						"aria-label": `Remove ${agent.displayName}`,
 						"data-remove-recipient": agent.id,
 						onmousedown: (event: MouseEvent) => event.preventDefault(),
-						onclick: () => {
+						onclick: (event: MouseEvent) => {
+							// The next chip slides under the pointer; one double-click removes one.
+							if (event.detail > 1) return;
 							this.#selected.delete(agent.id);
 							this.#render();
 							this.#search.focus();
