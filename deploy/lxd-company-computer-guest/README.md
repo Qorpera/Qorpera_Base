@@ -82,9 +82,13 @@ that may happen is decided by the broker-only SQL function
 `qorpera_office_screen_browser_grant(p_binding, p_opener)`: the screen agent's
 current grant, and either an agent holding the screen lease or a live
 shared/control viewer whose member still has input permission (then only a
-company-owned profile). Each open is recorded in
-`qorpera_runtime_office_browser_opens` with the run and the members who were
-present. An agent run joins the screen's browser instead of starting its own,
+company-owned profile; the dock (`desktop`) only ever opens a company-owned
+profile, lease or not). Each open is recorded in
+`qorpera_runtime_office_browser_opens` with the run and, as
+`present_member_id`, the members who were live with input permission at that
+moment. That is presence, not a proven click: a shared desktop cannot attribute
+a press. At most one row per screen, present member and opener per 60 s.
+An agent run joins the screen's browser instead of starting its own,
 still proves its own grant under its lease before every action
 (`qorpera_native_office_browser_grant`), and lets go of it at run end; the
 window stays. The browser closes with the screen: drain, privacy fence, lost
