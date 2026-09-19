@@ -5,19 +5,31 @@ import { ComputerViewHost } from "../../ui/computer-view-host.ts";
 import { button, h, icon, replace } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
 
-/** The full-screen place a member watches an agent's computer. It holds the
- * wait: the computer starting, or the agent not being on it yet. */
+type ComputerLayout = "floating" | "split" | "expanded";
+const LAYOUT_KEY = "qorpera.web.computer-layout";
+
+function savedLayout(): ComputerLayout {
+	try {
+		const value = localStorage.getItem(LAYOUT_KEY);
+		return value === "split" || value === "expanded" ? value : "floating";
+	} catch {
+		return "floating";
+	}
+}
+
+/** The waiting state occupies the same surface as the eventual live screen. */
 class ComputerStage {
 	readonly #stop = new AbortController();
 	readonly #line = h("p", { role: "status" }, "Opening the computer…");
 	readonly #el: HTMLElement;
-	constructor(agent: HostedStaffAgent, onClose: () => void) {
+	readonly #onClose: (restoreFocus: boolean) => void;
+	constructor(agent: HostedStaffAgent, mount: HTMLElement, onClose: (restoreFocus: boolean) => void) {
+		this.#onClose = onClose;
 		this.#el = h(
 			"div",
 			{
 				class: "computer-stage",
 				role: "dialog",
-				"aria-modal": "true",
 				"aria-label": `${agent.displayName} · Computer`,
 			},
 			h(
@@ -39,8 +51,7 @@ class ComputerStage {
 				this.close();
 			}
 		});
-		this.#stop.signal.addEventListener("abort", onClose, { once: true });
-		document.body.append(this.#el);
+		mount.append(this.#el);
 		this.#el.querySelector<HTMLButtonElement>("button")?.focus();
 	}
 	get signal(): AbortSignal {
@@ -51,54 +62,77 @@ class ComputerStage {
 	}
 	close(): void {
 		if (this.#stop.signal.aborted) return;
+		const restoreFocus = this.#el.contains(document.activeElement);
 		this.#el.remove();
 		this.#stop.abort();
+		this.#onClose(restoreFocus);
 	}
 }
 
-/** Opening the panel only reads. One action opens the computer: it starts it
- * when needed and shows this agent's screen full screen. */
+/** Opening the surface only reads. Starting/viewing still requires explicit intent. */
 export class ComputerPanel {
 	readonly el: HTMLElement;
 	readonly #stop = new AbortController();
 	readonly #status = h("p", { class: "muted", role: "status" });
 	readonly #controls = h("div", { class: "stack" });
 	readonly #views: ComputerViewHost;
+	readonly #body = h("div", { class: "computer-panel-body" });
+	readonly #preview: HTMLElement;
+	#layout = savedLayout();
 	#stage: ComputerStage | undefined;
 	#busy = false;
-	constructor(agent: HostedStaffAgent, close: () => void, computer?: WebCompanyComputer, parentSignal?: AbortSignal) {
+	constructor(
+		agent: HostedStaffAgent,
+		close: () => void,
+		computer?: WebCompanyComputer,
+		parentSignal?: AbortSignal,
+		layoutChanged: () => void = () => {},
+	) {
 		const signal = AbortSignal.any([this.#stop.signal, ...(parentSignal ? [parentSignal] : [])]);
 		this.#views = new ComputerViewHost(signal);
+		const layout = h(
+			"select",
+			{ class: "computer-layout", "aria-label": "Computer layout" },
+			h("option", { value: "floating" }, "Floating"),
+			h("option", { value: "split" }, "Split view"),
+			h("option", { value: "expanded" }, "Expanded"),
+		);
+		layout.value = this.#layout;
+		layout.addEventListener("change", () => {
+			if (layout.value !== "floating" && layout.value !== "split" && layout.value !== "expanded") return;
+			this.#layout = layout.value;
+			this.el.dataset.layout = this.#layout;
+			try {
+				localStorage.setItem(LAYOUT_KEY, this.#layout);
+			} catch {
+				/* The layout still works without storage. */
+			}
+			layoutChanged();
+		});
+		this.#preview = h(
+			"section",
+			{ class: "computer-preview" },
+			agentFigure(agent, agent.displayName, { size: 48 }),
+			h("strong", null, computer ? "Company Computer" : "Computer unavailable"),
+			this.#status,
+			this.#controls,
+		);
+		this.#body.append(this.#preview);
 		this.el = h(
 			"aside",
-			{ class: "computer-panel", "aria-label": "Agent computer" },
+			{ class: "computer-panel", "aria-label": "Agent computer", dataset: { layout: this.#layout } },
 			h(
 				"header",
 				null,
-				h("strong", null, "Computer"),
+				h("strong", { class: "computer-panel-title", title: `${agent.displayName} · Computer` }, agent.displayName),
+				layout,
 				h(
 					"button",
 					{ type: "button", class: "icon-button", "aria-label": "Close computer", onclick: close },
 					icon("close"),
 				),
 			),
-			h(
-				"div",
-				{ class: "computer-panel-body" },
-				h(
-					"section",
-					{ class: "computer-preview" },
-					h(
-						"div",
-						{ class: "computer-preview-screen" },
-						agentFigure(agent, agent.displayName, { size: 38 }),
-						h("span", null, computer ? "Company Computer" : "Computer unavailable"),
-					),
-					h("strong", null, agent.displayName),
-					this.#status,
-					this.#controls,
-				),
-			),
+			this.#body,
 		);
 		this.el.addEventListener("keydown", (event) => {
 			if (matchesKey(event, "dismiss")) {
@@ -135,15 +169,16 @@ export class ComputerPanel {
 		};
 		const wait = (ms: number, until: AbortSignal) =>
 			new Promise<void>((resolve, reject) => {
-				const timer = setTimeout(resolve, ms);
-				until.addEventListener(
-					"abort",
-					() => {
-						clearTimeout(timer);
-						reject(new Error("closed"));
-					},
-					{ once: true },
-				);
+				until.throwIfAborted();
+				const cancel = () => {
+					clearTimeout(timer);
+					reject(new Error("closed"));
+				};
+				const timer = setTimeout(() => {
+					until.removeEventListener("abort", cancel);
+					resolve();
+				}, ms);
+				until.addEventListener("abort", cancel, { once: true });
 			});
 		let canManage = false;
 		const startRequests = new Map<string, string>();
@@ -176,12 +211,16 @@ export class ComputerPanel {
 						: "The computer is off.";
 			draw();
 		};
-		/** One action: start the computer if it is off, then show this agent's
-		 * screen full screen, waiting for it if the agent is not on the computer yet. */
+		/** Start if needed, then show the screen inside the selected layout. */
 		const open = async () => {
 			if (!scope) return;
 			const current = scope;
-			const stage = new ComputerStage(agent, () => undefined);
+			this.#stage?.close();
+			this.#preview.hidden = true;
+			const stage = new ComputerStage(agent, this.#body, (restoreFocus) => {
+				this.#preview.hidden = false;
+				if (restoreFocus && !signal.aborted) this.focus();
+			});
 			this.#stage = stage;
 			const until = AbortSignal.any([signal, stage.signal]);
 			try {
@@ -189,6 +228,7 @@ export class ComputerPanel {
 				let requested = false;
 				for (;;) {
 					const start = await startClient.status(until);
+					until.throwIfAborted();
 					if (start.officeState === "active") break;
 					if (start.officeState === "maintenance")
 						stage.say("The computer is restarting. It comes back on its own.");
@@ -226,6 +266,7 @@ export class ComputerPanel {
 				let asked = false;
 				for (;;) {
 					const status = await views.status(until);
+					until.throwIfAborted();
 					if (status.state === "active" && status.privacyState === "shared") {
 						const screen = status.screens
 							.filter((item) => item.binding.staffAgentId === agent.id && !item.drainPending)
@@ -233,6 +274,12 @@ export class ComputerPanel {
 						if (screen) {
 							stage.say("Connecting…");
 							await this.#views.open({
+								mount: this.#body,
+								autofocus: this.el.contains(document.activeElement),
+								onClosed: () => {
+									this.#preview.hidden = false;
+									if (!signal.aborted) this.#controls.querySelector<HTMLButtonElement>("button")?.focus();
+								},
 								binding: screen.binding,
 								title: `${agent.displayName} · Computer`,
 								canControl: canManage,
@@ -249,7 +296,9 @@ export class ComputerPanel {
 									}
 								},
 							});
+							until.throwIfAborted();
 							stage.close();
+							this.#preview.hidden = true;
 							return;
 						}
 						if (!asked) {
@@ -274,7 +323,10 @@ export class ComputerPanel {
 					await wait(3000, until);
 				}
 			} catch (error) {
-				if (stage.signal.aborted && !signal.aborted) return;
+				if (stage.signal.aborted && !signal.aborted) {
+					await this.#views.close();
+					return;
+				}
 				throw error;
 			} finally {
 				if (this.#stage === stage && stage.signal.aborted) this.#stage = undefined;
@@ -282,6 +334,9 @@ export class ComputerPanel {
 		};
 		draw();
 		void run(look);
+	}
+	get layout(): ComputerLayout {
+		return this.#layout;
 	}
 	focus(): void {
 		this.el.querySelector<HTMLButtonElement>("button")?.focus();

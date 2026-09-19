@@ -351,6 +351,7 @@ export class ConversationView {
 			() => this.#toggleComputer(),
 			this.#actions.computer,
 			this.#company.signal,
+			() => this.#syncPanelLayout(),
 		);
 		this.#body.append(this.#panel.el);
 		this.#panel.focus();
@@ -359,8 +360,8 @@ export class ConversationView {
 	}
 
 	#syncPanelLayout(): void {
-		// The overlay width in conversation.css: default rail + panel + a usable conversation.
-		const covered = Boolean(this.#panel) && window.innerWidth <= 1192;
+		// Floating and split layouts keep the conversation usable, including on narrow screens.
+		const covered = this.#panel?.layout === "expanded";
 		if (covered && this.#conversationPane.contains(document.activeElement)) this.#panel?.focus();
 		this.#conversationPane.inert = covered;
 		this.#autosize();
@@ -473,7 +474,13 @@ export class ConversationView {
 			const focused = this.#panel.el.contains(document.activeElement);
 			this.#panel.dispose();
 			this.#panel = agent
-				? new ComputerPanel(agent, () => this.#toggleComputer(), this.#actions.computer, this.#company.signal)
+				? new ComputerPanel(
+						agent,
+						() => this.#toggleComputer(),
+						this.#actions.computer,
+						this.#company.signal,
+						() => this.#syncPanelLayout(),
+					)
 				: undefined;
 			if (this.#panel) this.#body.append(this.#panel.el);
 			if (focused) this.#panel ? this.#panel.focus() : this.#composer.focus();

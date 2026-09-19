@@ -5,6 +5,10 @@ export interface ComputerViewer {
 	close(): Promise<void>;
 }
 export interface ComputerViewerOptions {
+	/** Keep the viewer inside a conversation surface; omitted for standalone views. */
+	mount?: HTMLElement;
+	/** A delayed attachment must not interrupt typing outside its surface. */
+	autofocus?: boolean;
 	binding: CompanyComputerScreenBinding;
 	title: string;
 	canControl: boolean;

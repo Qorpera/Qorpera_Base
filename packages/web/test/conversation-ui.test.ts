@@ -42,6 +42,7 @@ afterEach(() => {
 	vi.useRealTimers();
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
+	localStorage.clear();
 });
 function setup(actions: WorkspaceActions = {}) {
 	const f = fixture();
@@ -311,10 +312,27 @@ describe("conversation UI boundaries", () => {
 		// Routines live in the agent's details now, not beside the computer.
 		expect(f.view.el.querySelector(".computer-panel")?.textContent).not.toContain("Routines");
 		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(false);
-		// Below the width that holds the default rail, the panel and the conversation, the panel covers it.
-		vi.stubGlobal("innerWidth", 1192);
+		// Floating and stacked split views leave the conversation available on small screens.
+		vi.stubGlobal("innerWidth", 600);
 		window.dispatchEvent(new Event("resize"));
+		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(false);
+		const panel = f.view.el.querySelector<HTMLElement>(".computer-panel")!;
+		const layout = panel.querySelector<HTMLSelectElement>('[aria-label="Computer layout"]')!;
+		layout.value = "split";
+		layout.dispatchEvent(new Event("change", { bubbles: true }));
+		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(false);
+		const composer = f.view.el.querySelector<HTMLTextAreaElement>(".composer-input")!;
+		composer.focus();
+		expect(document.activeElement).toBe(composer);
+		layout.value = "expanded";
+		layout.dispatchEvent(new Event("change", { bubbles: true }));
 		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(true);
+		expect(panel.contains(document.activeElement)).toBe(true);
+		layout.value = "floating";
+		layout.dispatchEvent(new Event("change", { bubbles: true }));
+		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(false);
+		layout.value = "expanded";
+		layout.dispatchEvent(new Event("change", { bubbles: true }));
 		button(f.view.el, "Close computer").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		expect(f.view.el.querySelector(".computer-panel")).toBeNull();
 		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(false);

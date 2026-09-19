@@ -145,6 +145,93 @@ function spyViewer(close = vi.fn(async () => {})) {
 	return vi.spyOn(viewer, "openComputerViewer").mockReturnValue({ close });
 }
 
+describe("computer presentation layouts", () => {
+	it("switches a live view between layouts without reopening or issuing computer requests", async () => {
+		const f = setup(),
+			close = vi.fn(async () => {}),
+			open = spyViewer(close),
+			p = await looked(f.computer);
+		const layout = p.el.querySelector<HTMLSelectElement>('[aria-label="Computer layout"]')!;
+		expect(p.el.dataset.layout).toBe("floating");
+		expect(layout.value).toBe("floating");
+		await openComputer(p);
+		const mount = p.el.querySelector(".computer-panel-body");
+		expect(open).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ mount }));
+		const requests = methods(f);
+		for (const value of ["split", "expanded", "floating"]) {
+			layout.value = value;
+			layout.dispatchEvent(new Event("change", { bubbles: true }));
+			await settle();
+			expect(p.el.dataset.layout).toBe(value);
+			expect(p.el.querySelector(".computer-panel-body")).toBe(mount);
+			expect(open).toHaveBeenCalledTimes(1);
+			expect(close).not.toHaveBeenCalled();
+			expect(methods(f)).toEqual(requests);
+		}
+		expect(requests.some((method) => START_WRITES.test(`/${method}`))).toBe(false);
+		open.mock.calls[0]![0].onClosed();
+		expect(p.el.querySelector<HTMLElement>(".computer-preview")?.hidden).toBe(false);
+		expect(document.activeElement).toBe(action(p.el, "Open computer"));
+		expect(methods(f)).toEqual(requests);
+	});
+	it("restores a layout preference after closing and reopening the panel", async () => {
+		const f = setup(),
+			p = await looked(f.computer);
+		const layout = p.el.querySelector<HTMLSelectElement>('[aria-label="Computer layout"]')!;
+		layout.value = "split";
+		layout.dispatchEvent(new Event("change", { bubbles: true }));
+		expect(localStorage.getItem("qorpera.web.computer-layout")).toBe("split");
+		p.dispose();
+		const reopened = await looked(f.computer);
+		expect(reopened.el.dataset.layout).toBe("split");
+		expect(reopened.el.querySelector<HTMLSelectElement>('[aria-label="Computer layout"]')?.value).toBe("split");
+	});
+	it("falls back to floating for an unknown saved layout", async () => {
+		localStorage.setItem("qorpera.web.computer-layout", "unknown");
+		const f = setup(),
+			p = await looked(f.computer);
+		expect(p.el.dataset.layout).toBe("floating");
+	});
+	it("keeps layout selection usable when browser storage is unavailable", async () => {
+		vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+			throw new DOMException("Storage unavailable", "SecurityError");
+		});
+		vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+			throw new DOMException("Storage unavailable", "SecurityError");
+		});
+		const f = setup(),
+			p = await looked(f.computer);
+		expect(p.el.dataset.layout).toBe("floating");
+		const layout = p.el.querySelector<HTMLSelectElement>('[aria-label="Computer layout"]')!;
+		layout.value = "expanded";
+		layout.dispatchEvent(new Event("change", { bubbles: true }));
+		expect(p.el.dataset.layout).toBe("expanded");
+	});
+	it("does not interrupt typing outside the panel when delayed screen discovery completes", async () => {
+		const f = setup(),
+			pending = deferred<CompanyComputerMemberStatus>(),
+			open = spyViewer();
+		const views = f.computer.views(scope);
+		vi.spyOn(views, "status").mockReturnValue(pending.promise);
+		vi.spyOn(f.computer, "views").mockReturnValue(views);
+		const p = await looked(f.computer);
+		await openComputer(p);
+		const composer = document.createElement("textarea");
+		document.body.append(composer);
+		composer.focus();
+		composer.value = "Keep writing while the screen opens";
+		composer.setSelectionRange(5, 12);
+		pending.resolve(status);
+		await settle();
+		await settle();
+		expect(open).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ autofocus: false }));
+		expect(stage()).toBeNull();
+		expect(document.activeElement).toBe(composer);
+		expect(composer.selectionStart).toBe(5);
+		expect(composer.selectionEnd).toBe(12);
+	});
+});
+
 describe("web runtime member boundary", () => {
 	it("offers exactly one action, to members and managers alike", async () => {
 		for (const canManage of [false, true]) {
@@ -246,6 +333,8 @@ describe("web runtime member boundary", () => {
 		await openComputer(p);
 		expect(stage()?.getAttribute("role")).toBe("dialog");
 		expect(stage()?.getAttribute("aria-label")).toBe(`${staff.displayName} · Computer`);
+		expect(stage()?.hasAttribute("aria-modal")).toBe(false);
+		expect(stage()?.parentElement).toBe(p.el.querySelector(".computer-panel-body"));
 		expect(stageText()).toBe("Starting the computer…");
 		await poll();
 		await poll();
@@ -497,8 +586,12 @@ describe("web runtime member boundary", () => {
 		expect(document.activeElement).toBe(close);
 		if (how === "button") close.click();
 		else stage()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		// The action remains inert until the cancelled asynchronous flow settles.
+		expect(action(p.el, "Open computer").parentElement?.inert).toBe(true);
+		expect(document.activeElement).toBe(p.el.querySelector("header [aria-label='Close computer']"));
 		await settle();
 		expect(stage()).toBeNull();
+		expect(document.activeElement).toBe(p.el.querySelector("header [aria-label='Close computer']"));
 		expect(statusLine(p)).toBe("The computer is restarting and comes back on its own.");
 		const reads = f.fetch.mock.calls.length;
 		await poll();
@@ -522,6 +615,38 @@ describe("web runtime member boundary", () => {
 		await poll();
 		expect(f.fetch).toHaveBeenCalledTimes(reads);
 		expect(open).not.toHaveBeenCalled();
+	});
+	it("does not attach a screen discovered after the waiting view is closed", async () => {
+		const f = setup(),
+			pending = deferred<CompanyComputerMemberStatus>(),
+			open = spyViewer();
+		const views = f.computer.views(scope);
+		vi.spyOn(views, "status").mockReturnValue(pending.promise);
+		vi.spyOn(f.computer, "views").mockReturnValue(views);
+		const p = await looked(f.computer);
+		await openComputer(p);
+		stage()!.querySelector<HTMLButtonElement>("[aria-label='Close computer']")!.click();
+		pending.resolve(status);
+		await settle();
+		await poll();
+		expect(open).not.toHaveBeenCalled();
+		expect(stage()).toBeNull();
+		expect(p.el.querySelector<HTMLElement>(".computer-preview")?.hidden).toBe(false);
+		expect(statusLine(p)).toBe("The computer is on.");
+	});
+	it("releases a viewer when the waiting view closes during its attachment", async () => {
+		const f = setup(),
+			close = vi.fn(async () => {});
+		vi.spyOn(viewer, "openComputerViewer").mockImplementation(() => {
+			stage()!.querySelector<HTMLButtonElement>("[aria-label='Close computer']")!.click();
+			return { close };
+		});
+		const p = await looked(f.computer);
+		await openComputer(p);
+		expect(close).toHaveBeenCalledOnce();
+		expect(stage()).toBeNull();
+		expect(p.el.querySelector<HTMLElement>(".computer-preview")?.hidden).toBe(false);
+		expect(statusLine(p)).toBe("The computer is on.");
 	});
 	it("does not render late discovery after the panel closes", async () => {
 		const f = setup(),

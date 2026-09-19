@@ -8,7 +8,7 @@ const bindingKeys = [
 	"computerGeneration", "screenId", "screenOrdinal", "screenGeneration", "staffAgentId",
 ];
 
-function openScreenViewer({ binding, title, requestConnection, releaseConnection, onClosed, canControl = true, privateSignIn = false }) {
+function openScreenViewer({ binding, title, requestConnection, releaseConnection, onClosed, canControl = true, privateSignIn = false, mount, autofocus = true }) {
 	const expected = Object.freeze({ ...binding });
 	const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 	if (bindingKeys.some((key) => key.endsWith("Id") ? !uuid.test(expected[key]) : !Number.isSafeInteger(expected[key]) || expected[key] < 1) ||
@@ -18,9 +18,9 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 	const stop = new AbortController();
 	const previous = document.activeElement;
 	const overlay = document.createElement("div");
-	overlay.className = "screen-viewer-overlay";
-	overlay.setAttribute("role", "dialog");
-	overlay.setAttribute("aria-modal", "true");
+	overlay.className = mount ? "screen-viewer-overlay screen-viewer-embedded" : "screen-viewer-overlay";
+	overlay.setAttribute("role", mount ? "region" : "dialog");
+	if (!mount) overlay.setAttribute("aria-modal", "true");
 	overlay.setAttribute("aria-label", title);
 	const frame = document.createElement("div");
 	frame.className = "screen-viewer-frame";
@@ -72,8 +72,8 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 	stage.append(canvasHost, status);
 	frame.append(titlebar, stage);
 	overlay.appendChild(frame);
-	document.body.appendChild(overlay);
-	closeButton.focus();
+	(mount ?? document.body).appendChild(overlay);
+	if (autofocus) closeButton.focus();
 
 	let closed = false;
 	let busy = false;
@@ -112,7 +112,7 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 		epoch++;
 		stop.abort();
 		overlay.remove();
-		previous?.focus();
+		if (previous?.isConnected) previous.focus();
 		try { await detach(); } finally { onClosed?.(); }
 	};
 	const connect = async (mode) => {

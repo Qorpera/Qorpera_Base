@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import type { CompanyComputerScreenBinding } from "@qorpera/cloud-client/cloud-company-computer-contract";
@@ -13,6 +14,8 @@ interface ViewConnection {
 }
 
 interface ViewerOptions {
+	mount?: FakeElement;
+	autofocus?: boolean;
 	canControl?: boolean;
 	privateSignIn?: boolean;
 	binding: CompanyComputerScreenBinding;
@@ -33,6 +36,7 @@ class FakeElement {
 	hidden = false;
 	disabled = false;
 	removed = false;
+	isConnected = true;
 	onclick?: () => void;
 	readonly children: FakeElement[] = [];
 	readonly attributes = new Map<string, string>();
@@ -60,6 +64,7 @@ class FakeElement {
 	}
 	remove(): void {
 		this.removed = true;
+		this.isConnected = false;
 	}
 }
 
@@ -153,6 +158,65 @@ function viewerFixture() {
 }
 
 describe("viewer UI state machine (fake DOM/noVNC, not visual cloud acceptance)", () => {
+	it("keeps the member web renderer identical to the tested desktop source and its checksum", () => {
+		const desktop = readFileSync(new URL("../../shell/userland/screen-viewer.js", import.meta.url), "utf8");
+		const memberWeb = readFileSync(new URL("../../member-web/ui/screen-viewer.js", import.meta.url), "utf8");
+		const manifest = JSON.parse(readFileSync(new URL("../../member-web/ui/SOURCE.json", import.meta.url), "utf8"));
+		expect(memberWeb).toBe(desktop);
+		expect(createHash("sha256").update(memberWeb).digest("hex")).toBe(
+			manifest.sources.find((source: { file: string }) => source.file === "screen-viewer.js").sha256,
+		);
+	});
+
+	it.each([undefined, false])(
+		"respects optional autofocus when attaching an embedded viewer (%s)",
+		async (autofocus) => {
+			const f = viewerFixture();
+			const viewer = f.api.open({ ...f.options, mount: new FakeElement(), autofocus });
+			expect(f.button("×").focus).toHaveBeenCalledTimes(autofocus === false ? 0 : 1);
+			await vi.waitFor(() => expect(f.instances).toHaveLength(1));
+			f.instances[0].emit("connect");
+			expect(f.instances[0].focus).not.toHaveBeenCalled();
+			await viewer.close();
+		},
+	);
+
+	it.each([false, true])("mounts the viewer with appropriate semantics (embedded: %s)", async (embedded) => {
+		const f = viewerFixture();
+		const mount = embedded ? new FakeElement() : undefined;
+		const viewer = f.api.open({ ...f.options, mount });
+		const container = mount ?? f.document.body;
+		expect(container.children).toHaveLength(1);
+		const overlay = container.children[0];
+		expect(overlay.className).toBe(
+			embedded ? "screen-viewer-overlay screen-viewer-embedded" : "screen-viewer-overlay",
+		);
+		expect(overlay.attributes.get("role")).toBe(embedded ? "region" : "dialog");
+		expect(overlay.attributes.get("aria-modal")).toBe(embedded ? undefined : "true");
+		expect(overlay.attributes.get("aria-label")).toBe("Cloud screen");
+		if (embedded) expect(f.document.body.children).toHaveLength(0);
+		await vi.waitFor(() => expect(f.instances).toHaveLength(1));
+		f.instances[0].emit("connect");
+		expect(f.instances[0].viewOnly).toBe(true);
+		await viewer.close();
+		expect(overlay.removed).toBe(true);
+		expect(f.instances[0].disconnect).toHaveBeenCalledOnce();
+		expect(f.releaseConnection).toHaveBeenCalledOnce();
+		expect(f.previous.focus).toHaveBeenCalledOnce();
+		expect(f.onClosed).toHaveBeenCalledOnce();
+	});
+
+	it("does not restore focus to a removed opener when an embedded viewer closes", async () => {
+		const f = viewerFixture();
+		const viewer = f.api.open({ ...f.options, mount: new FakeElement() });
+		await vi.waitFor(() => expect(f.instances).toHaveLength(1));
+		f.previous.remove();
+		await viewer.close();
+		expect(f.previous.focus).not.toHaveBeenCalled();
+		expect(f.releaseConnection).toHaveBeenCalledOnce();
+		expect(f.onClosed).toHaveBeenCalledOnce();
+	});
+
 	it("uses explicit private control, never shared takeover, and reconnects only on a new click", async () => {
 		const f = viewerFixture();
 		f.options.canControl = false;
