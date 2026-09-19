@@ -82,7 +82,11 @@ begin
 	select * into v_office from public.qorpera_runtime_offices where id=(p_binding->>'companyComputerId')::uuid for update;
 	if not found then raise exception 'Office unavailable' using errcode='42501'; end if;
 	select * into v_screen from public.qorpera_runtime_office_screens where office_id=v_office.id and id=(p_binding->>'screenId')::uuid for update;
-	if not found or v_screen.epoch is distinct from p_epoch then raise exception 'Office screen changed' using errcode='40001'; end if;
+	if not found or v_screen.epoch is distinct from p_epoch then
+		raise sqlstate 'PGRST' using
+			message=jsonb_build_object('code','QRC01','message','Office screen changed','details',null,'hint',null)::text,
+			detail='{"status":409,"headers":{}}';
+	end if;
 	if p_private_challenge is not null then
 		perform public.qorpera_check_runtime_office_private_access(p_private_challenge);
 		if p_mode<>'control' or p_private_challenge->>'screenId' is distinct from v_screen.id::text then
