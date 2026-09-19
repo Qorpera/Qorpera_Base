@@ -18,6 +18,7 @@ import { RailLayout } from "../ui/rail-layout.ts";
 import { AuthController } from "./auth.ts";
 import { CompanyController } from "./company.ts";
 import { currentRoute, navigate, type Route } from "./router.ts";
+import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
 import { type AccountViewState, renderAccount } from "./views/account.ts";
 import { ApprovalsView } from "./views/approvals.ts";
@@ -170,6 +171,7 @@ export function mountApplication(
 	let liveFile: LiveCompanyFileView | undefined;
 	let conversation: ConversationView | undefined;
 	let newConversation: NewConversationView | undefined;
+	let startingSession: { sessionId: string } | undefined;
 	let approvals: ApprovalsView | undefined;
 	let cloudCheck: CloudCheckView | undefined;
 	let profiles: HostedProfile[] = [];
@@ -310,8 +312,10 @@ export function mountApplication(
 								auth.userId !== userId ||
 								route.name !== "company" ||
 								route.profileId !== profile.profileId ||
-								route.section !== "chat" ||
-								route.id !== target
+								!(
+									(route.section === "chat" && route.id === target) ||
+									(route.section === "new" && startingSession?.sessionId === target)
+								)
 							)
 								throw new Error("Company access is unavailable.");
 							controller.assertCanSend(target);
@@ -571,9 +575,47 @@ export function mountApplication(
 		switch (route.section) {
 			case "new": {
 				if (!newConversation) {
+					const current = captureRoute();
+					const check = () => {
+						if (!current() || company !== controller || controller.store.get().accessLost)
+							throw new Error("Conversation access changed.");
+					};
+					const startConversation = createConversationStarter({
+						company: controller,
+						native: createWebNativeSubscription(
+							cloud,
+							controller.profile.profileId,
+							controller.userId,
+							controller.signal,
+							check,
+						),
+						current: check,
+						editor: async (signal) => {
+							check();
+							const team = controller.store.get().team;
+							if (!team?.capabilities.authorize)
+								throw new Error("Only an owner or admin can create a group chat.");
+							return new WebCompanyFiles(cloud, controller.profile, controller.userId, team.role, signal, () => {
+								check();
+								if (!controller.store.get().team?.capabilities.authorize)
+									throw new Error("Group chat creation access changed.");
+							}).files();
+						},
+						send: async (sessionId, text, signal) => {
+							check();
+							const attempt = { sessionId };
+							startingSession = attempt;
+							try {
+								return await controller.sendPrompt(sessionId, text, signal);
+							} finally {
+								// A disposed composer may finish refreshing after a newer send starts.
+								if (startingSession === attempt) startingSession = undefined;
+							}
+						},
+					});
 					newConversation = new NewConversationView(
 						controller,
-						{ ...agentActions, ...workspaceActions },
+						{ ...agentActions, startConversation, ...workspaceActions },
 						() => navigate({ name: "company", profileId: controller.profile.profileId, section: "home" }),
 						() => setNavigationOpen(!navigationOpen),
 					);

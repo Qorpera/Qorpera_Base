@@ -548,22 +548,24 @@ describe("new conversation and agent setup", () => {
 		expect(f.search.getAttribute("aria-expanded")).toBe("true");
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
-	it("opens an agent's conversation straight from the list, the Co-Founder at home", async () => {
+	it("adds agents and the Co-Founder to recipients without navigating", async () => {
 		const other = { ...staff, id: id(92), displayName: "Second agent", role: "Research" },
 			cofounder = { ...staff, id: id(93), displayName: "Co-Founder", templateId: "co-founder" };
 		const f = setupNew({}, [cofounder, staff, other]);
 		await settle();
 		f.search.focus();
+		const originalHash = location.hash;
 		choice(f.view.el, other.id).click();
-		expect(location.hash).toBe(`#/c/${profileA.profileId}/staff/${other.id}`);
 		choice(f.view.el, cofounder.id).click();
-		expect(location.hash).toBe(`#/c/${profileA.profileId}`);
+		expect(location.hash).toBe(originalHash);
+		expect(f.view.el.querySelectorAll(".recipient-chip")).toHaveLength(2);
 		input(f.view.el, "Search conversation recipients", "fixture");
 		expect(choices(f.view.el)).toEqual(["create", "group", staff.id]);
-		// Typing highlights the first match, so Enter opens it.
+		// Typing highlights the first match, so Enter adds it.
 		expect(f.search.getAttribute("aria-activedescendant")).toBe(choice(f.view.el, staff.id).id);
 		expect(press(f.search, "Enter").defaultPrevented).toBe(true);
-		expect(location.hash).toBe(`#/c/${profileA.profileId}/staff/${staff.id}`);
+		expect(location.hash).toBe(originalHash);
+		expect(f.view.el.querySelectorAll(".recipient-chip")).toHaveLength(3);
 		// Rows show no titles, so a title alone never matches.
 		input(f.view.el, "Search conversation recipients", "research");
 		expect(choices(f.view.el)).toEqual(["create", "group"]);
@@ -578,7 +580,7 @@ describe("new conversation and agent setup", () => {
 			target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail }));
 		click(choice(f.view.el, "group"), 1);
 		// The first agent now sits where New group chat was; the second click lands on it.
-		expect(choices(f.view.el)).toEqual(["start", staff.id, other.id]);
+		expect(choices(f.view.el)).toEqual(["create", staff.id, other.id]);
 		click(choice(f.view.el, staff.id), 2);
 		expect(f.view.el.querySelectorAll(".recipient-chip")).toHaveLength(0);
 		for (const agent of [staff, other]) click(choice(f.view.el, agent.id), 1);
@@ -598,7 +600,7 @@ describe("new conversation and agent setup", () => {
 		expect(f.search.hasAttribute("aria-activedescendant")).toBe(false);
 		press(f.search, "ArrowDown");
 		expect(f.search.getAttribute("aria-activedescendant")).toBe(choice(f.view.el, "create").id);
-		expect(choice(f.view.el, "create").getAttribute("aria-selected")).toBe("true");
+		expect(choice(f.view.el, "create").classList.contains("active")).toBe(true);
 		press(f.search, "ArrowUp");
 		expect(f.search.getAttribute("aria-activedescendant")).toBe(choice(f.view.el, staff.id).id);
 		expect(choice(f.view.el, "create").hasAttribute("aria-selected")).toBe(false);
@@ -665,6 +667,119 @@ describe("new conversation and agent setup", () => {
 		expect(f.view.el.querySelector<HTMLInputElement>('[aria-label="Agent name"]')?.value).toBe("Draft agent");
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
+	it("sends to the selected group only on the first message and blocks duplicate sends", async () => {
+		const pending = deferred<string>(),
+			startConversation = vi.fn(() => pending.promise);
+		const other = { ...staff, id: id(92), displayName: "Second agent" };
+		const f = setupNew({ startConversation }, [staff, other]);
+		f.company.store.set({ team });
+		await settle();
+		input(f.view.el, "Message", "Work together on this");
+		expect(button(f.view.el, "Send message").disabled).toBe(true);
+		choice(f.view.el, staff.id).click();
+		choice(f.view.el, other.id).click();
+		expect(startConversation).not.toHaveBeenCalled();
+		const message = f.view.el.querySelector<HTMLTextAreaElement>('[aria-label="Message"]')!;
+		message.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", isComposing: true, bubbles: true }));
+		message.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true }));
+		expect(startConversation).not.toHaveBeenCalled();
+		press(message, "Enter");
+		button(f.view.el, "Send message").click();
+		expect(startConversation).toHaveBeenCalledExactlyOnceWith(
+			[staff.id, other.id],
+			"Work together on this",
+			expect.any(AbortSignal),
+		);
+		expect(message.disabled).toBe(true);
+		pending.resolve(id(95));
+		await settle();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${id(95)}`);
+	});
+	it("preserves recipients and text on preparation failure and blocks send after permission loss", async () => {
+		const startConversation = vi
+			.fn()
+			.mockRejectedValue(new Error("Connect a model account to start a conversation."));
+		const f = setupNew({ startConversation });
+		f.company.store.set({ team });
+		await settle();
+		choice(f.view.el, staff.id).click();
+		input(f.view.el, "Message", "Keep this draft");
+		button(f.view.el, "Send message").click();
+		await settle();
+		expect(f.view.el.querySelector<HTMLTextAreaElement>('[aria-label="Message"]')?.value).toBe("Keep this draft");
+		expect(f.view.el.querySelectorAll(".recipient-chip")).toHaveLength(1);
+		expect(f.view.el.textContent).toContain("Connect a model account");
+		f.company.store.set({ team: { ...team, capabilities: { ...team.capabilities, write: false } } });
+		await settle();
+		expect(button(f.view.el, "Send message").disabled).toBe(true);
+		button(f.view.el, "Send message").click();
+		expect(startConversation).toHaveBeenCalledTimes(1);
+	});
+	it("returns a created agent to the recipients and preserves the message through setup and cancel", async () => {
+		const created = { ...staff, id: id(92), displayName: "New agent" };
+		const createAgent = vi.fn().mockResolvedValue(created.id);
+		const f = setupNew({ createAgent });
+		f.company.store.set({ team });
+		vi.mocked(f.api.listStaff).mockResolvedValue([staff, created]);
+		await settle();
+		choice(f.view.el, staff.id).click();
+		input(f.view.el, "Message", "Our shared task");
+		choice(f.view.el, "create").click();
+		button(f.view.el, "Cancel").click();
+		expect(f.view.el.querySelector<HTMLTextAreaElement>('[aria-label="Message"]')?.value).toBe("Our shared task");
+		choice(f.view.el, "create").click();
+		input(f.view.el, "Agent name", "New agent");
+		input(f.view.el, "Agent title", "Research");
+		const originalHash = location.hash;
+		vi.mocked(f.api.listStaff).mockRejectedValueOnce(new Error("Roster unavailable"));
+		f.view.el.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+		await settle();
+		expect(f.view.el.textContent).toContain("The agent was created");
+		f.view.el.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+		await settle();
+		expect(createAgent).toHaveBeenCalledTimes(1);
+		expect(location.hash).toBe(originalHash);
+		expect(f.view.el.querySelectorAll(".recipient-chip")).toHaveLength(2);
+		expect(f.view.el.querySelector<HTMLTextAreaElement>('[aria-label="Message"]')?.value).toBe("Our shared task");
+		expect(document.activeElement?.getAttribute("aria-label")).toBe("Message");
+	});
+
+	it.each(["Back", "Cancel"])(
+		"retains a created agent across %s and reopening after a failed roster refresh",
+		async (leave) => {
+			const created = { ...staff, id: id(92), displayName: "New agent" };
+			const createAgent = vi.fn().mockResolvedValue(created.id);
+			const f = setupNew({ createAgent });
+			f.company.store.set({ team });
+			vi.mocked(f.api.listStaff)
+				.mockResolvedValue([staff, created])
+				.mockRejectedValueOnce(new Error("Roster unavailable"));
+			await settle();
+			input(f.view.el, "Message", "Keep our task");
+			input(f.view.el, "Search conversation recipients", "New agent");
+			choice(f.view.el, "create").click();
+			input(f.view.el, "Agent title", "Research");
+			button(f.view.el, "Create agent").click();
+			await settle();
+			expect(f.view.el.textContent).toContain("The agent was created");
+			button(f.view.el, leave).click();
+			input(f.view.el, "Search conversation recipients", "Another agent");
+			choice(f.view.el, "create").click();
+			expect(f.view.el.querySelector<HTMLInputElement>('[aria-label="Agent name"]')?.value).toBe("New agent");
+			expect(f.view.el.querySelector<HTMLFieldSetElement>("fieldset")?.disabled).toBe(true);
+			button(f.view.el, "Add created agent").click();
+			await settle();
+			expect(createAgent).toHaveBeenCalledTimes(1);
+			expect(f.view.el.querySelector(`[data-remove-recipient="${created.id}"]`)).not.toBeNull();
+			expect(f.view.el.querySelector<HTMLTextAreaElement>('[aria-label="Message"]')?.value).toBe("Keep our task");
+			// Successful recovery clears the identity and draft for the next new agent.
+			choice(f.view.el, "create").click();
+			expect(f.view.el.querySelector<HTMLInputElement>('[aria-label="Agent name"]')?.value).toBe("");
+			expect(f.view.el.querySelector<HTMLFieldSetElement>("fieldset")?.disabled).toBe(false);
+			expect(button(f.view.el, "Create agent").disabled).toBe(false);
+		},
+	);
+
 	it("styles the New agent form with rules of its own", async () => {
 		const style = document.createElement("style");
 		style.textContent = [tokensCss, conversationCss, appCss].join("\n").replace(/^@import .*;$/gm, "");

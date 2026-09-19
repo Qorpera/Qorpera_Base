@@ -147,7 +147,7 @@ describe("shell presentation lifecycle", () => {
 		};
 		row("group")!.click();
 		expect(view.el.querySelector('[role="listbox"]')!.getAttribute("aria-multiselectable")).toBe("true");
-		expect(row("create")).toBeNull();
+		expect(row("create")).not.toBeNull();
 		expect(search.placeholder).toBe("Add agents");
 		for (const agent of [other, staff]) row(agent.id)!.click();
 		// Chips keep the order the agents were added in.
@@ -155,11 +155,10 @@ describe("shell presentation lifecycle", () => {
 			"Second agent",
 			"Fixture agent",
 		]);
-		// No client can start a group conversation yet, and the row says so.
+		// Selecting recipients does not create the conversation; sending does.
 		const hash = location.hash;
-		expect(row("start")!.getAttribute("aria-disabled")).toBe("true");
-		expect(row("start")!.textContent).toContain("Not available yet");
-		row("start")!.click();
+		expect(row("start")).toBeNull();
+		expect(view.el.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.disabled).toBe(true);
 		expect(location.hash).toBe(hash);
 		f.company.store.set({ activity: [] });
 		await settle();
@@ -167,14 +166,14 @@ describe("shell presentation lifecycle", () => {
 		f.company.store.set({ staff: [staff, { ...other, employmentStatus: "archived" }] });
 		await settle();
 		expect(view.el.querySelectorAll(".recipient-chip")).toHaveLength(1);
-		expect(row("start")!.textContent).toContain("Pick two or more agents");
+		expect(view.el.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.disabled).toBe(true);
 		// Backspace in the empty field takes the last agent back out.
 		press("Backspace");
 		expect(view.el.querySelectorAll(".recipient-chip")).toHaveLength(0);
 		// Escape with the list closed puts the group chat away.
 		expect(press("Escape").defaultPrevented).toBe(true);
 		expect(row("create")).not.toBeNull();
-		expect(view.el.querySelector('[role="listbox"]')!.hasAttribute("aria-multiselectable")).toBe(false);
+		expect(view.el.querySelector('[role="listbox"]')!.getAttribute("aria-multiselectable")).toBe("true");
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 	it("caps the rail at two fifths of the window and keeps resizing usable when storage is blocked", () => {
