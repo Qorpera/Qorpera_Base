@@ -120,6 +120,7 @@ export class ComposerModels {
 			if (this.#request === request) {
 				this.#request = undefined;
 				this.#notify();
+				if (!this.el.hidden && document.activeElement === this.el.firstElementChild) this.focus();
 			}
 		}
 	}
@@ -164,6 +165,7 @@ export class ComposerModels {
 			if (this.#request === request) {
 				this.#request = undefined;
 				this.#notify();
+				if (!this.el.hidden && document.activeElement === this.el.firstElementChild) this.focus();
 			}
 		}
 	}
@@ -175,6 +177,7 @@ export class ComposerModels {
 	}
 
 	#render(): void {
+		const focused = this.el.contains(document.activeElement) ? document.activeElement : null;
 		const id = this.#observed?.modelId;
 		const name = SESSION_MODELS.find((item) => item.id === id)?.name ?? id;
 		this.button.disabled = this.#locked || !this.#canRead();
@@ -192,5 +195,9 @@ export class ComposerModels {
 			this.#error || (this.#request ? (this.pending ? "Saving model…" : "Loading model…") : "");
 		this.#refresh.hidden = !this.#error;
 		this.#refresh.disabled = this.button.disabled || Boolean(this.#request);
+		// Disabling a focused choice blurs it in browsers. Keep Escape and arrow
+		// navigation inside the menu while the request is being confirmed.
+		if (focused instanceof HTMLButtonElement && (focused.disabled || focused.hidden))
+			this.el.querySelector<HTMLButtonElement>("button")?.focus();
 	}
 }
