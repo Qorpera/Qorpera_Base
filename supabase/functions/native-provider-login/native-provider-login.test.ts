@@ -149,6 +149,21 @@ describe("native login bounded streaming", () => {
 });
 
 describe("native provider login proxy", () => {
+	it("routes refresh capabilities to the separate maintenance route and chooser", async () => {
+		let purpose: string | undefined;
+		const result = await forwardNativeProviderLogin(new Request("https://edge.example/native-provider-login/account-refresh", {
+			method: "POST", headers: { authorization: `Bearer ${capability}` }, body: '{"schema":"qorpera.native-account-refresh/v1"}',
+		}), {
+			upstreamResolver: async (_hash, kind) => { purpose = kind; return "https://node.example/"; },
+			fetchImplementation: async (input, init) => {
+				assert.equal(String(input), "https://node.example/account-refresh");
+				assert.equal(new Headers(init?.headers).get("authorization"), `Bearer ${capability}`);
+				return Response.json({ status: "completed" });
+			},
+		});
+		assert.equal(result.status, 200);
+		assert.equal(purpose, "account_refresh");
+	});
 	it("forwards only the opaque login envelope and its one-time capability", async () => {
 		let forwardedBody = "";
 		const response = await forwardNativeProviderLogin(

@@ -50,6 +50,8 @@ async function setup() {
 	const f = fixture(),
 		root = document.createElement("div");
 	f.cloud.config.objectGatewayUrl = "https://objects.fixture.invalid";
+	f.cloud.config.publishableKey = "sb_publishable_fixturekey";
+	f.cloud.config.nativeProviderLoginUrl = "https://login.fixture.invalid/";
 	let admitted = false;
 	vi.mocked(f.api.readSessionEvents).mockImplementation(async () =>
 		admitted
@@ -82,6 +84,16 @@ async function setup() {
 		expect(init).toMatchObject({ redirect: "error", cache: "no-store", credentials: "omit" });
 		if (url.endsWith("/qorpera_list_session_turn_requests")) return Response.json([]);
 		if (url.endsWith("/qorpera_list_member_notifications")) return Response.json([]);
+		if (url.endsWith("/qorpera_select_member_session_account")) return Response.json(id(81));
+		if (url.endsWith("/qorpera_begin_native_account_refresh"))
+			return Response.json({
+				request_id: id(83),
+				profile_id: profileA.profileId,
+				compute_identity_id: id(80),
+				requested_by_user_id: userA.id,
+				expires_at: new Date(Date.now() + 300_000).toISOString(),
+				status: "completed",
+			});
 		if (url.endsWith("/qorpera_list_member_native_execution_connections"))
 			return Response.json({
 				compute_identity: {
@@ -170,6 +182,8 @@ async function setup() {
 			([url]) =>
 				!String(url).endsWith("/qorpera_list_member_notifications") &&
 				!String(url).endsWith("/qorpera_list_session_turn_requests") &&
+				!String(url).endsWith("/qorpera_select_member_session_account") &&
+				!String(url).endsWith("/qorpera_begin_native_account_refresh") &&
 				!String(url).endsWith("/qorpera_list_member_native_execution_connections"),
 		);
 	return { ...f, root, fetcher, requests };
@@ -222,7 +236,15 @@ describe("actual product conversation attachments", () => {
 	});
 	it("does not request a turn after an uncertain upload and retries that same upload explicitly", async () => {
 		const f = await setup();
-		f.fetcher.mockRejectedValueOnce(new Error("Upload response lost"));
+		const normal = f.fetcher.getMockImplementation()!;
+		let lose = true;
+		f.fetcher.mockImplementation(async (input, init) => {
+			if (String(input).includes("/upload/") && lose) {
+				lose = false;
+				throw new Error("Upload response lost");
+			}
+			return normal(input, init);
+		});
 		select(f.root, [new File([png], "review.png", { type: "image/png" })]);
 		button(f.root, "Send message").click();
 		await vi.waitFor(() => expect(f.root.textContent).toContain("Upload response lost"));
@@ -235,7 +257,10 @@ describe("actual product conversation attachments", () => {
 	it("fences an account change during upload and clears local images", async () => {
 		const f = await setup(),
 			response = deferred<Response>();
-		f.fetcher.mockReturnValueOnce(response.promise);
+		const normal = f.fetcher.getMockImplementation()!;
+		f.fetcher.mockImplementation((input, init) =>
+			String(input).includes("/upload/") ? response.promise : normal(input, init),
+		);
 		select(f.root, [new File([png], "private.png", { type: "image/png" })]);
 		button(f.root, "Send message").click();
 		await vi.waitFor(() => expect(f.requests()).toHaveLength(1));

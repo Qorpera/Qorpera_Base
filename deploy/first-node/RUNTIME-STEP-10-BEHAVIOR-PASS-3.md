@@ -1,8 +1,8 @@
 # Step 10 behavior screening: third pass (roles and answer quality)
 
 Date: 2026-09-19. Starting source: `3a9398358`. Candidate bundle after merge with
-`origin/master` (`40eb67237`): v35,
-`009c5eda56bbf0a2bbe7af481dba2b22d864d9a8323493586c4f60df6619551b`.
+`origin/master` (`c36ea7af4`): v37,
+`349645254f63572dd5f7bddd9810c36bcec141bb6acb6dd52c129aa071ec4e94`.
 
 The [first](RUNTIME-STEP-10-BEHAVIOR-SCREEN.md) and
 [second](RUNTIME-STEP-10-BEHAVIOR-PASS-2.md) passes screened protocol and safety
@@ -141,13 +141,13 @@ constitution law 7 forbids.
 - Focused shell tests: 189 passed across context, constitution, native runtime,
   tool boundary and Codex tool session.
 - On `company41-node-02` (Linux x64): guest contract rebuilt and pinned
-  (`qorpera-native-provider-host.mjs`, 1,305,180 bytes,
-  `a8ff6530ca2a97b0a29c96d6b3e8108ed1200e27faa1928aeb705e7b2d6944f8`); four
+  (`qorpera-native-provider-host.mjs`, 1,319,852 bytes,
+  `a01acde9ed5e8b2bad5bd6b7cf8c6129d655f0bf8671dc12f9723f6b5997000a`); four
   bundle-generation and guest-package tests passed; SQL context parity passed
-  after all 277 migrations on real PostgreSQL.
-- Master shipped activations v32, v33 and v34 while this branch was open. Step 10 is
-  now `20260919230000_runtime_hire_overlay_context.sql` plus activation
-  `20260919231000_runtime_bundle_activation_v35.sql`, ordered after master's
+  after all 282 migrations on real PostgreSQL.
+- Master shipped activations v32 through v36 while this branch was open. Step 10 is
+  now `20260919234000_runtime_hire_overlay_context.sql` plus activation
+  `20260919235000_runtime_bundle_activation_v37.sql`, ordered after master's
   migrations. Master's activation files are byte-identical to master. `work/recut-step10.sh` in the task folder repeats this re-cut if master ships another activation first.
 
 No deployment, migration or activation was performed.

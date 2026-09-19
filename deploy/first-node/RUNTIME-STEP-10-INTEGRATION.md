@@ -1,7 +1,7 @@
 # Step 10: constitution and hire overlays
 
 Source baseline: `f44e5300a` (`origin/master`, 2026-09-19).
-Package: `@qorpera/runtime` 0.83.0. Candidate activation: v35 (master shipped v32 to v34 first).
+Package: `@qorpera/runtime` 0.83.0. Candidate activation: v37 (master shipped v32 to v36 first).
 
 The existing cloud loop now compiles a shared, 644-word constitution, native
 context/turn protocol, admitted identity/bundle binding, and one thin behavioral
@@ -74,7 +74,7 @@ the historical signed v56 package and image recipes remain unchanged.
 
 ## Activation boundary
 
-Migration `20260919230000_runtime_hire_overlay_context.sql` and the v35 package
+Migration `20260919234000_runtime_hire_overlay_context.sql` and the v37 package
 must be rolled out together through the existing drain/package/activation
 procedure. Old v1 parsers reject v2 context; do not apply the context migration
 to a running old host. Historical v31 activation remains unchanged. If another

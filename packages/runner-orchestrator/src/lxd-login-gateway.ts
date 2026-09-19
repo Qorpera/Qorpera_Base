@@ -6,6 +6,12 @@ import { isAbsolute, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import {
+	NATIVE_ACCOUNT_REFRESH_RESULT_SCHEMA,
+	parseNativeAccountRefreshDescription,
+	parseNativeAccountRefreshRequest,
+	parseNativeAccountRefreshResult,
+} from "@qorpera/cloud-client/native-account-refresh";
+import {
 	Headers as NodeHttpHeaders,
 	Request as NodeHttpRequest,
 	Response as NodeHttpResponse,
@@ -39,6 +45,7 @@ const MAX_RESPONSE_BYTES = 64 * 1024;
 type NativeComputeOwnershipKind = "member" | "company" | "department" | "security_boundary";
 
 interface NativeLoginRequest {
+	purpose?: "account_refresh";
 	loginId: string;
 	clientConnectionId: string;
 	computeIdentityId: string;
@@ -524,8 +531,9 @@ export class LxdNativeLoginGateway {
 	}
 
 	async handle(request: ServiceHttpRequest): Promise<ServiceHttpResponse> {
+		const refresh = new URL(request.url).pathname === "/account-refresh";
 		if (request.method === "GET" && new URL(request.url).pathname === "/healthz") return json({ ok: true }, 200);
-		if (request.method !== "POST" || new URL(request.url).pathname !== "/login") {
+		if (request.method !== "POST" || (!refresh && new URL(request.url).pathname !== "/login")) {
 			return json({ error: "Not found" }, 404);
 		}
 		let login: NativeLoginRequest;
@@ -538,7 +546,23 @@ export class LxdNativeLoginGateway {
 			if (Buffer.byteLength(encoded) > MAX_REQUEST_BYTES) {
 				return json({ error: "Native login request is too large" }, 413);
 			}
-			login = parseLogin(encoded, bearer(request));
+			if (refresh) {
+				const input = parseNativeAccountRefreshRequest(JSON.parse(encoded));
+				if (!tokenMatches(input.capability, bearer(request))) throw new Error("Refresh capability mismatch");
+				login = {
+					purpose: "account_refresh",
+					loginId: input.requestId,
+					clientConnectionId: input.requestId,
+					computeIdentityId: input.computeIdentityId,
+					computeIdentityOwnershipKind: "member",
+					computeIdentityOwnerUserId: input.requestedByUserId,
+					provider: "openai",
+					nativeHarness: "codex-cli",
+					capability: input.capability,
+					expiresAt: input.expiresAt,
+					encoded,
+				};
+			} else login = parseLogin(encoded, bearer(request));
 		} catch {
 			return json({ error: "Invalid native login request" }, 400);
 		}
@@ -560,14 +584,25 @@ export class LxdNativeLoginGateway {
 		const settled = await (running
 			? withBudget(running, budgetMs)
 			: withBudget(this.#startRoute(login, authority), budgetMs));
-		if (settled.state === "pending") return json(preparing(login.loginId), 200);
+		if (settled.state === "pending")
+			return json(
+				refresh
+					? { schema: NATIVE_ACCOUNT_REFRESH_RESULT_SCHEMA, request_id: login.loginId, status: "preparing" }
+					: preparing(login.loginId),
+				200,
+			);
 		if (settled.state === "rejected") {
 			console.error(settled.error instanceof Error ? settled.error.message : "LXD native login route failed");
 			return json({ error: "Native provider login is unavailable" }, 503);
 		}
 		// Joined callers share the result, never a consumable response body. Reusing
 		// this freshly completed route also keeps the post within one wait budget.
-		return json(settled.value, 200);
+		return json(
+			refresh
+				? { schema: NATIVE_ACCOUNT_REFRESH_RESULT_SCHEMA, request_id: login.loginId, status: "completed" }
+				: settled.value,
+			200,
+		);
 	}
 
 	readonly #routes = new Map<string, Promise<NativeLoginResult>>();
@@ -582,6 +617,31 @@ export class LxdNativeLoginGateway {
 	}
 
 	async #describe(login: NativeLoginRequest, signal?: AbortSignal): Promise<NativeLoginDescription> {
+		if (login.purpose === "account_refresh") {
+			const value = parseNativeAccountRefreshDescription(
+				await this.#rpc(
+					"qorpera_describe_native_account_refresh_route",
+					{
+						p_request_id: login.loginId,
+						p_capability_sha256: sha256(login.capability),
+					},
+					signal ?? this.#lifetime.signal,
+				),
+			);
+			return {
+				purpose: "account_refresh",
+				loginId: value.requestId,
+				clientConnectionId: value.requestId,
+				profileId: value.profileId,
+				computeIdentityId: value.computeIdentityId,
+				computeIdentityOwnershipKind: "member",
+				computeIdentityOwnerUserId: value.requestedByUserId,
+				provider: "openai",
+				nativeHarness: "codex-cli",
+				expiresAt: value.expiresAt,
+				status: value.status,
+			};
+		}
 		return description(
 			await this.#rpc(
 				"qorpera_describe_native_provider_login_route",
@@ -624,6 +684,7 @@ export class LxdNativeLoginGateway {
 			const host = await readRuntimeNodeHost(signal);
 			const bridge = await this.#bridgeToken(login.loginId);
 			journal = await LxdLoginJournal.open(this.#config.stateRoot, login.loginId, this.#lxd, {
+				...(login.purpose ? { purpose: login.purpose } : {}),
 				schema: "qorpera.lxd-login-allocation/v1",
 				allocationId: randomUUID(),
 				loginId: login.loginId,
@@ -637,6 +698,7 @@ export class LxdNativeLoginGateway {
 		const binding = journal.binding,
 			plan = lxdLoginPlan(binding);
 		if (
+			binding.purpose !== login.purpose ||
 			binding.loginId !== login.loginId ||
 			binding.profileId !== authority.profileId ||
 			binding.computeIdentityId !== login.computeIdentityId ||
@@ -738,7 +800,8 @@ export class LxdNativeLoginGateway {
 		const releasingUntil = Date.now() + (this.#config.identityReleaseWaitMs ?? 120_000);
 		let result: unknown;
 		for (;;) {
-			result = await this.#rpc(
+			result = await this.#allocationRpc(
+				binding,
 				"qorpera_reserve_runtime_login_machine",
 				{
 					...this.#machineIdentity(binding),
@@ -794,7 +857,12 @@ export class LxdNativeLoginGateway {
 	}
 	async #machineDescription(binding: LxdLoginBinding, signal: AbortSignal) {
 		const value = record(
-			await this.#rpc("qorpera_describe_runtime_login_machine", this.#machineIdentity(binding), signal),
+			await this.#allocationRpc(
+				binding,
+				"qorpera_describe_runtime_login_machine",
+				this.#machineIdentity(binding),
+				signal,
+			),
 			"Login machine description",
 		);
 		if (
@@ -844,7 +912,8 @@ export class LxdNativeLoginGateway {
 		}
 		if (await this.#lxd.getInstance(binding.policy.project, plan.request.name, signal))
 			throw new Error("LOGIN_DELETION_UNCONFIRMED");
-		const result = await this.#rpc(
+		const result = await this.#allocationRpc(
+			binding,
 			"qorpera_release_runtime_login_machine",
 			{ ...this.#machineIdentity(binding), p_login_id: binding.loginId },
 			signal,
@@ -869,7 +938,8 @@ export class LxdNativeLoginGateway {
 		if (Object.keys(state.operations).length) return false;
 		const binding = journal.binding;
 		if (await this.#lxd.getInstance(binding.policy.project, lxdLoginPlan(binding).request.name, signal)) return false;
-		const orphaned = await this.#rpc(
+		const orphaned = await this.#allocationRpc(
+			binding,
 			"qorpera_runtime_login_journal_orphaned",
 			{ p_allocation_id: binding.allocationId, p_login_id: binding.loginId },
 			signal,
@@ -1127,7 +1197,8 @@ export class LxdNativeLoginGateway {
 			throw new Error("LOGIN_IDENTITY_RECOVERY_TARGET_REFUSED");
 		// 3. The login is the consent: request the recovery on its behalf.
 		const recovery = loginRecoveryRequest(
-			await this.#rpc(
+			await this.#allocationRpc(
+				binding,
 				"qorpera_request_login_identity_recovery",
 				{
 					p_login_id: binding.loginId,
@@ -1177,7 +1248,12 @@ export class LxdNativeLoginGateway {
 	 * stage and completion run on the restored generation. */
 	async #repinLogin(binding: LxdLoginBinding, signal: AbortSignal): Promise<void> {
 		const r = record(
-			await this.#rpc("qorpera_repin_login_recovery_epoch", { p_login_id: binding.loginId }, signal),
+			await this.#allocationRpc(
+				binding,
+				"qorpera_repin_login_recovery_epoch",
+				{ p_login_id: binding.loginId },
+				signal,
+			),
 			"Login re-pin",
 		);
 		if (r.loginId !== binding.loginId || !Number.isSafeInteger(r.epoch))
@@ -1370,13 +1446,16 @@ export class LxdNativeLoginGateway {
 	}
 
 	async #forward(address: string, login: NativeLoginRequest, signal?: AbortSignal): Promise<NativeLoginResult> {
-		const response = await this.#fetch(`http://${address}:${this.#config.nativeBridgePort}/login`, {
-			method: "POST",
-			redirect: "error",
-			headers: { authorization: `Bearer ${login.capability}`, "content-type": "application/json" },
-			body: login.encoded,
-			signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
-		});
+		const response = await this.#fetch(
+			`http://${address}:${this.#config.nativeBridgePort}/${login.purpose === "account_refresh" ? "account-refresh" : "login"}`,
+			{
+				method: "POST",
+				redirect: "error",
+				headers: { authorization: `Bearer ${login.capability}`, "content-type": "application/json" },
+				body: login.encoded,
+				signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(60_000)]) : AbortSignal.timeout(60_000),
+			},
+		);
 		const declared = Number(response.headers.get("content-length") ?? "0");
 		if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
 			throw new Error("Native login response is too large");
@@ -1384,7 +1463,37 @@ export class LxdNativeLoginGateway {
 		const encoded = await response.text();
 		if (Buffer.byteLength(encoded) > MAX_RESPONSE_BYTES) throw new Error("Native login response is too large");
 		if (!response.ok) throw new Error(`Native login guest rejected the request (${response.status})`);
+		if (login.purpose === "account_refresh") {
+			if (parseNativeAccountRefreshResult(JSON.parse(encoded), login.loginId) !== "completed")
+				throw new Error("Account refresh did not complete");
+			return this.#completed(login.loginId);
+		}
 		return parseResult(JSON.parse(encoded) as unknown, login.loginId);
+	}
+
+	/** Refreshes share the fenced VM journal and capacity class, but never login authority. */
+	async #allocationRpc(
+		binding: LxdLoginBinding,
+		method: string,
+		args: Record<string, unknown>,
+		signal: AbortSignal,
+	): Promise<unknown> {
+		if (binding.purpose !== "account_refresh") return this.#rpc(method, args, signal);
+		const { p_login_id, ...rest } = args;
+		const value = await this.#rpc(
+			method.replace("login", "account_refresh"),
+			{
+				...rest,
+				...(p_login_id === undefined ? {} : { p_request_id: p_login_id }),
+			},
+			signal,
+		);
+		// The reusable journal names its opaque authority key loginId internally.
+		if (value && typeof value === "object" && !Array.isArray(value) && "requestId" in value) {
+			const { requestId, ...fields } = value as Record<string, unknown>;
+			return { ...fields, loginId: requestId };
+		}
+		return value;
 	}
 
 	async #bridgeToken(loginId: string, existing = false): Promise<string> {
