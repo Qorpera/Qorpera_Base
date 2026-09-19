@@ -31,3 +31,8 @@
 - Stage selected conversation images against the exact member input before submitting a message, preserve explicit retry identity, and verify canonical image previews through the shared attachment API.
 - Add account-level browser consent cleanup and private sign-in closure, including after leaving a company, with account and route cancellation.
 - Bind deployed cloud endpoints and CSP to one validated public build configuration, require a viewer origin for release builds, and ignore stored preview overrides in configured builds.
+
+### Changed
+
+- Open an agent's routines and responsibilities as pages of its details popup, from two buttons beside the close button, each with a way back; routines left the Computer panel.
+- Edit an agent's name, title and description in place, saving on Enter or when leaving the field, and change the figure from a picker under it that saves each choice, as on the desktop; the Edit agent button is gone and the description is taller.
