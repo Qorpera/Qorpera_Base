@@ -735,7 +735,7 @@ export class ConversationView {
 				: undefined;
 		updateNotification(
 			this.#runNotification,
-			hidden ? null : notification(title, dismiss, { action }),
+			hidden ? null : notification(title, dismiss, { action, error: true }),
 			hidden ? undefined : runId,
 			this.#notificationSignal,
 			!company.accessLost && company.team?.capabilities.read === true,

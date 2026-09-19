@@ -129,7 +129,11 @@ export class ExecutionNotices {
 				? notification(error ?? title(item!), dismiss, {
 						busy: this.#acking,
 						action: refresh,
-						error: Boolean(error),
+						error:
+							Boolean(error) ||
+							item?.subject.schema === "qorpera.member-notification.provider-usage-limit/v1" ||
+							item?.subject.schema === "qorpera.member-notification.company-ceiling-tripped/v1" ||
+							item?.subject.schema === "qorpera.member-notification.machine-capacity/v1",
 					})
 				: null,
 			error ? `error:${error}` : item?.notificationId,

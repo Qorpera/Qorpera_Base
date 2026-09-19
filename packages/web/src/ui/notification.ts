@@ -39,7 +39,7 @@ export function updateNotification(
 		const bounds = current.getBoundingClientRect();
 		const origin = stack.getBoundingClientRect();
 		const ghost = current.cloneNode(true) as HTMLElement;
-		ghost.className = "notification-ghost";
+		ghost.classList.replace("notification-card", "notification-ghost");
 		ghost.inert = true;
 		ghost.setAttribute("aria-hidden", "true");
 		for (const element of ghost.querySelectorAll<HTMLElement>("[id], [data-action]")) {
@@ -69,8 +69,10 @@ export function updateNotification(
 		signal.addEventListener("abort", cleanup, { once: true });
 		void exit.finished.then(cleanup, cleanup);
 	}
-	if (!changed && current && card) current.replaceChildren(...card.childNodes);
-	else surface.replaceChildren(...(card ? [card] : []));
+	if (!changed && current && card) {
+		current.className = card.className;
+		current.replaceChildren(...card.childNodes);
+	} else surface.replaceChildren(...(card ? [card] : []));
 	surface.hidden = !card;
 	if (enabled && changed && card) {
 		const enter = card.animate(
@@ -130,7 +132,7 @@ export function notification(
 	return h(
 		"div",
 		{
-			class: "notification-card",
+			class: options.error ? "notification-card notification-error" : "notification-card",
 			onkeydown: (event: KeyboardEvent) => {
 				if (!matchesKey(event, "dismiss")) return;
 				event.preventDefault();
@@ -138,6 +140,7 @@ export function notification(
 				(event.currentTarget as HTMLElement).querySelector<HTMLButtonElement>(".notification-close")?.click();
 			},
 		},
+		options.error ? h("span", { class: "notification-indicator", "aria-hidden": "true" }) : null,
 		h("strong", { class: "notification-title", role: options.error ? "alert" : "status" }, title),
 		options.action,
 		close,

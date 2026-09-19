@@ -76,6 +76,20 @@ function setup(count = 2) {
 }
 
 describe("notification motion", () => {
+	it("updates error accents without restarting motion and preserves them through the exit fade", () => {
+		const f = setup(1);
+		const first = f.show(0, "update", true);
+		expect(first.classList.contains("notification-error")).toBe(false);
+		updateNotification(f.surfaces[0]!, notification("Failed", vi.fn(), { error: true }), "update", f.lifetime.signal);
+		expect(f.surfaces[0]!.firstElementChild).toBe(first);
+		expect(first.classList.contains("notification-error")).toBe(true);
+		expect(first.querySelector(".notification-indicator")).not.toBeNull();
+		expect(first.querySelector('[role="alert"]')?.textContent).toBe("Failed");
+		expect(effects).toHaveLength(1);
+		f.clear(0);
+		expect(f.stack.querySelector(".notification-ghost")?.classList.contains("notification-error")).toBe(true);
+	});
+
 	it("fades in once and preserves the entrance and current dismiss behavior during busy redraws", () => {
 		const f = setup(1);
 		const dismiss = vi.fn();
