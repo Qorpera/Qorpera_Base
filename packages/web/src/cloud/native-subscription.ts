@@ -236,15 +236,15 @@ export function createWebNativeSubscription(
 					// machine (up to a few minutes); the same login is posted again.
 					while (prompt.status === "preparing") {
 						await new Promise<void>((resolve, reject) => {
-							const timer = setTimeout(resolve, 5000);
-							deadline.addEventListener(
-								"abort",
-								() => {
-									clearTimeout(timer);
-									reject(new Error("Provider login preparation was interrupted."));
-								},
-								{ once: true },
-							);
+							const interrupted = () => {
+								clearTimeout(timer);
+								reject(new Error("Provider login preparation was interrupted."));
+							};
+							const timer = setTimeout(() => {
+								deadline.removeEventListener("abort", interrupted);
+								resolve();
+							}, 1000);
+							deadline.addEventListener("abort", interrupted, { once: true });
 						});
 						check();
 						prompt = await bridge.beginLogin(authorization);

@@ -375,6 +375,44 @@ describe("native provider onboarding browser adapter", () => {
 			p_client_login_id: id(102),
 		});
 	});
+	it("rechecks preparation after one second using the same admitted capability", async () => {
+		vi.useFakeTimers();
+		const f = loginSetup();
+		const preparing = deferred<Response>();
+		f.fetch
+			.mockResolvedValueOnce(Response.json({ compute_identity: f.responses.identity, connections: [] }))
+			.mockResolvedValueOnce(Response.json(f.responses.authorization))
+			.mockReturnValueOnce(preparing.promise);
+		const pending = f.client.beginProviderLogin(f.input);
+		await vi.waitFor(() => expect(f.fetch).toHaveBeenCalledTimes(3));
+		preparing.resolve(Response.json({ schema: f.responses.prompt.schema, login_id: id(105), status: "preparing" }));
+		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(999);
+		expect(f.fetch).toHaveBeenCalledTimes(3);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(await pending).toMatchObject({ status: "awaiting_member", userCode: "ABCD-EFGH" });
+		expect(f.fetch).toHaveBeenCalledTimes(4);
+		expect(f.fetch.mock.calls[3]![1]!.body).toBe(f.fetch.mock.calls[2]![1]!.body);
+	});
+	it("cancels the preparation delay without sending another request", async () => {
+		vi.useFakeTimers();
+		const f = loginSetup();
+		f.fetch
+			.mockResolvedValueOnce(Response.json({ compute_identity: f.responses.identity, connections: [] }))
+			.mockResolvedValueOnce(Response.json(f.responses.authorization))
+			.mockResolvedValueOnce(
+				Response.json({ schema: f.responses.prompt.schema, login_id: id(105), status: "preparing" }),
+			);
+		const rejected = expect(f.client.beginProviderLogin(f.input, f.view.signal)).rejects.toThrow(
+			"Refresh connections",
+		);
+		await vi.waitFor(() => expect(f.fetch).toHaveBeenCalledTimes(3));
+		await settle();
+		f.view.abort();
+		await rejected;
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(f.fetch).toHaveBeenCalledTimes(3);
+	});
 	it.each(["owner", "disabled"] as const)("rejects %s identity mismatch before login admission", async (change) => {
 		const f = loginSetup();
 		if (change === "owner") f.responses.identity.owner_user_id = userB.id;

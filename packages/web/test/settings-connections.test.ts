@@ -8,7 +8,7 @@ import { ConnectionsView, ProviderSignIns } from "../src/app/views/settings-conn
 import type { WebNativeProviderLogin, WebNativeSubscription } from "../src/cloud/native-subscription.ts";
 import { deferred, id, settle, timestamp, userA } from "./fixtures.ts";
 
-const WATCH_MS = 5000;
+const WATCH_MS = 2000;
 const OPENAI = "ChatGPT / Codex";
 const CLAUDE = "Claude";
 const START_FAILED = "Sign-in could not be started. If you started one a moment ago, give it a few minutes to clear.";
@@ -397,6 +397,76 @@ describe("member model account settings", () => {
 		await vi.advanceTimersByTimeAsync(WATCH_MS * 3);
 		expect(client.listConnections).toHaveBeenCalledTimes(reads);
 		expect(client.beginProviderLogin).toHaveBeenCalledTimes(1);
+	});
+	it.each(["focus", "visibilitychange"])(
+		"checks completion immediately on %s when returning from sign-in",
+		async (event) => {
+			vi.useFakeTimers();
+			const { client, lifetime } = await setup(true, observed());
+			addAccount(OPENAI);
+			await settle();
+			vi.mocked(client.listConnections).mockResolvedValue(
+				observed({
+					...connected,
+					clientConnectionId: loginIds(client, 0).clientConnectionId,
+					sponsorBindingId: id(82),
+					sponsorVersion: 1,
+				}),
+			);
+			const target = event === "focus" ? window : document;
+			target.dispatchEvent(new Event(event));
+			await settle();
+			expect(view.el.querySelector(".connection-attempt")).toBeNull();
+			expect(view.el.textContent).toContain("member@example.com");
+			expect(client.listConnections).toHaveBeenCalledTimes(3);
+			target.dispatchEvent(new Event(event));
+			await vi.advanceTimersByTimeAsync(WATCH_MS * 3);
+			expect(client.listConnections).toHaveBeenCalledTimes(3);
+			lifetime.abort();
+			target.dispatchEvent(new Event(event));
+			await settle();
+			expect(client.listConnections).toHaveBeenCalledTimes(3);
+		},
+	);
+	it("coalesces changes during a slow read and observes both completed sign-ins without overlapping reads", async () => {
+		vi.useFakeTimers();
+		const { client } = await setup(true, observed());
+		const earlier = deferred<NativeExecutionConnections>();
+		vi.mocked(client.listConnections).mockReturnValueOnce(earlier.promise);
+		addAccount(OPENAI);
+		await settle();
+		addAccount(CLAUDE);
+		await settle();
+		window.dispatchEvent(new Event("focus"));
+		document.dispatchEvent(new Event("visibilitychange"));
+		expect(client.listConnections).toHaveBeenCalledTimes(2);
+		vi.mocked(client.listConnections).mockResolvedValue(
+			observed(
+				{
+					...connected,
+					clientConnectionId: loginIds(client, 0).clientConnectionId,
+					sponsorBindingId: id(82),
+					sponsorVersion: 1,
+				},
+				{
+					...connected,
+					connectionId: id(84),
+					provider: "anthropic",
+					nativeHarness: "claude-code",
+					clientConnectionId: loginIds(client, 1).clientConnectionId,
+					sponsorBindingId: id(85),
+					sponsorVersion: 1,
+				},
+			),
+		);
+		earlier.resolve(observed());
+		await settle();
+		expect(client.listConnections).toHaveBeenCalledTimes(3);
+		expect(view.el.querySelectorAll(".connection-attempt")).toHaveLength(0);
+		expect(view.el.querySelectorAll(".connection-card")).toHaveLength(2);
+		await vi.advanceTimersByTimeAsync(WATCH_MS * 3);
+		expect(client.listConnections).toHaveBeenCalledTimes(3);
+		expect(view.el.querySelectorAll(".connection-card")).toHaveLength(2);
 	});
 	it("never replays a start: every explicit account addition is a new sign-in with its own IDs", async () => {
 		const { client } = await setup(true, observed());
