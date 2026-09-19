@@ -1,7 +1,7 @@
 import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import type { CloudApi } from "../cloud/api.ts";
 import { CloudRpcError, describeError } from "../cloud/client.ts";
-import { type GroupChatDetails, readGroupChatDetails } from "../cloud/group-details.ts";
+import { type GroupChatDetails, listGroupChatDetails, readGroupChatDetails } from "../cloud/group-details.ts";
 import { buildCompanyHierarchy, type CompanyHierarchy, type HostedCompanyOrganization } from "../cloud/organization.ts";
 import { UUID_PATTERN } from "../cloud/parse.ts";
 import {
@@ -71,6 +71,8 @@ export interface CompanyState {
 	staff: HostedStaffAgent[];
 	sessions: HostedSession[];
 	sessionsError?: string;
+	groups?: Record<string, GroupChatDetails>;
+	groupsError?: string;
 	organization?: HostedCompanyOrganization;
 	organizationState: Deployment;
 	organizationError?: string;
@@ -161,7 +163,7 @@ export class CompanyController {
 	#openSessionId: string | undefined;
 	#stopped = false;
 	readonly #abort = new AbortController();
-	readonly #versions = { team: 0, staff: 0, sessions: 0, organization: 0, activity: 0 };
+	readonly #versions = { team: 0, staff: 0, sessions: 0, groups: 0, organization: 0, activity: 0 };
 	#polling = false;
 	readonly #invalidations = new Set<(resource: RealtimeResource) => void>();
 	readonly #conversationLoads = new Map<string, { promise: Promise<void>; repeat: boolean }>();
@@ -250,6 +252,7 @@ export class CompanyController {
 			this.refreshOrganization(),
 			this.refreshActivity(),
 		]);
+		await this.refreshGroups();
 		this.store.set({ loading: false });
 	}
 
@@ -268,6 +271,7 @@ export class CompanyController {
 					team: undefined,
 					staff: [],
 					sessions: [],
+					groups: {},
 					organization: undefined,
 					hierarchy: { primary: [], inactive: [] },
 					activity: [],
@@ -307,6 +311,7 @@ export class CompanyController {
 			const sessions = await this.#api.listSessions(this.profile.environmentId, this.signal);
 			if (this.#stopped || version !== this.#versions.sessions) return;
 			this.store.set({ sessions, sessionsError: undefined });
+			if (!this.store.get().loading) await this.refreshGroups();
 		} catch (error) {
 			if (this.#stopped || version !== this.#versions.sessions) return;
 			this.store.set({ sessionsError: describeError(error) });
@@ -427,7 +432,111 @@ export class CompanyController {
 		const details = await readGroupChatDetails(this.#api.cloud, session, signal);
 		if (current().executionScope?.roomId !== session.executionScope?.roomId)
 			throw new Error("This group chat has changed. Open its details again.");
-		return details;
+		const previous = this.store.get().groups?.[details.roomId];
+		const latest =
+			previous &&
+			previous.roomId === details.roomId &&
+			previous.sessionId === details.sessionId &&
+			previous.environmentId === details.environmentId &&
+			previous.version > details.version
+				? previous
+				: details;
+		this.store.set((state) => ({ groups: { ...state.groups, [details.roomId]: latest } }));
+		return latest;
+	}
+
+	/** One company-wide read supplies the membership behind every group avatar. */
+	async refreshGroups(): Promise<void> {
+		const state = this.store.get();
+		const profile = this.profile;
+		const canRead = () => {
+			const current = this.store.get();
+			return (
+				!this.#stopped &&
+				!current.accessLost &&
+				Boolean(current.team?.capabilities.read) &&
+				current.team?.profileId === profile.profileId &&
+				this.profile.profileId === profile.profileId &&
+				this.profile.environmentId === profile.environmentId
+			);
+		};
+		if (!canRead()) return;
+		const version = ++this.#versions.groups;
+		const sessions = state.sessions.filter(
+			(session) =>
+				!session.staffAgentId &&
+				typeof session.executionScope?.roomId === "string" &&
+				session.profileId === profile.profileId &&
+				session.environmentId === profile.environmentId,
+		);
+		if (!sessions.length) {
+			this.store.set({ groups: {}, groupsError: undefined });
+			return;
+		}
+		try {
+			const rooms = await listGroupChatDetails(this.#api.cloud, profile.profileId, this.signal);
+			if (!canRead() || version !== this.#versions.groups) return;
+			const current = this.store.get();
+			const groups: Record<string, GroupChatDetails> = {};
+			for (const room of rooms) {
+				const session = current.sessions.find((item) => item.sessionId === room.sessionId);
+				if (
+					!session ||
+					session.staffAgentId ||
+					session.profileId !== profile.profileId ||
+					session.environmentId !== profile.environmentId ||
+					session.executionScope?.roomId !== room.roomId ||
+					room.environmentId !== profile.environmentId
+				)
+					continue;
+				const previous = current.groups?.[room.roomId];
+				groups[room.roomId] =
+					previous &&
+					previous.roomId === room.roomId &&
+					previous.sessionId === room.sessionId &&
+					previous.environmentId === room.environmentId &&
+					previous.version > room.version
+						? previous
+						: room;
+			}
+			this.store.set({ groups, groupsError: undefined });
+		} catch (error) {
+			if (canRead() && version === this.#versions.groups)
+				this.store.set({ groups: {}, groupsError: describeError(error) });
+		}
+	}
+
+	groupAgents(sessionId: string): HostedStaffAgent[] {
+		const state = this.store.get();
+		if (
+			this.#stopped ||
+			state.accessLost ||
+			!state.team?.capabilities.read ||
+			state.team.profileId !== this.profile.profileId
+		)
+			return [];
+		const session = state.sessions.find((item) => item.sessionId === sessionId);
+		const roomId = session?.executionScope?.roomId;
+		if (
+			!session ||
+			session.staffAgentId ||
+			typeof roomId !== "string" ||
+			session.profileId !== this.profile.profileId ||
+			session.environmentId !== this.profile.environmentId
+		)
+			return [];
+		const room = state.groups?.[roomId];
+		if (
+			!room ||
+			room.roomId !== roomId ||
+			room.sessionId !== sessionId ||
+			room.environmentId !== session.environmentId
+		)
+			return [];
+		return room.members.flatMap((member) => {
+			const agent = member.kind === "staff_agent" ? this.staffById(member.id) : undefined;
+			return agent?.employmentStatus === "active" && agent.profileId === this.profile.profileId ? [agent] : [];
+		});
 	}
 
 	staffById(id: string | undefined): HostedStaffAgent | undefined {
@@ -820,6 +929,7 @@ export class CompanyController {
 		} else if (resource === "access") {
 			void this.refreshTeam();
 		} else if (resource === "company-file") {
+			void this.refreshGroups();
 			// Accepting a proposal moves the Company File head: runs waiting on one are read again.
 			const waiting = Object.values(this.store.get().recoveries).filter((recovery) => recovery.proposalId);
 			for (const recovery of waiting) this.#recheckRecovery(recovery.runId);

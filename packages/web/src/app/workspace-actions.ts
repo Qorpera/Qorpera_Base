@@ -1,4 +1,5 @@
 import type { WebCompanyComputer } from "../cloud/computer.ts";
+import type { GroupChatDetails, GroupChatDraft } from "../cloud/group-details.ts";
 import type { WebNativeSubscription } from "../cloud/native-subscription.ts";
 import type { WebRoutines } from "../cloud/routines.ts";
 import type { WebSessionRunControl } from "../cloud/session-run-control.ts";
@@ -14,6 +15,12 @@ export interface AgentDraft extends FigureChoice {
 /** Member UI adapters over the shared cloud SDK. A view offers an action only
  * when its adapter is present. */
 export interface WorkspaceActions {
+	updateGroup?: (
+		sessionId: string,
+		observed: GroupChatDetails,
+		draft: GroupChatDraft,
+		signal: AbortSignal,
+	) => Promise<void>;
 	computer?: WebCompanyComputer;
 	runControl?: WebSessionRunControl;
 	nativeSubscription?: WebNativeSubscription;

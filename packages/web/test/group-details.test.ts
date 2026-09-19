@@ -10,6 +10,7 @@ function setup() {
 	const scope = new AbortController();
 	const group = { ...session, executionScope: { roomId: id(79) } };
 	const room = {
+		version: 1,
 		roomId: id(79),
 		sessionId: session.sessionId,
 		environmentId: session.environmentId,
@@ -30,6 +31,10 @@ describe("group detail read boundary", () => {
 		const f = setup();
 		f.rpc.mockResolvedValueOnce([{ ...f.room, roomId: id(80), name: "Another group", members: [] }, f.room]);
 		await expect(f.read()).resolves.toEqual({
+			roomId: f.room.roomId,
+			sessionId: f.room.sessionId,
+			environmentId: f.room.environmentId,
+			version: 1,
 			name: "Planning",
 			purpose: "Plan launch",
 			status: "active",
@@ -49,7 +54,9 @@ describe("group detail read boundary", () => {
 			else if (mismatch === "room") f.room.roomId = id(99);
 			else if (mismatch === "session") f.room.sessionId = id(99);
 			else f.room.environmentId = id(99);
-			await expect(f.read()).rejects.toThrow("This group chat is no longer available.");
+			await expect(f.read()).rejects.toThrow(
+				mismatch === "duplicate" ? CloudShapeError : "This group chat is no longer available.",
+			);
 		},
 	);
 
@@ -75,7 +82,13 @@ describe("group detail read boundary", () => {
 	it("allows archived groups with an empty purpose and no remaining participants", async () => {
 		const f = setup();
 		f.rpc.mockResolvedValueOnce([{ ...f.room, status: "archived", purpose: "", members: [] }]);
-		await expect(f.read()).resolves.toEqual({ name: "Planning", purpose: "", status: "archived", members: [] });
+		await expect(f.read()).resolves.toEqual({ ...f.room, purpose: "", status: "archived", members: [] });
+	});
+
+	it("ignores an unrelated archived room that has never had a conversation", async () => {
+		const f = setup();
+		f.rpc.mockResolvedValueOnce([{ ...f.room, roomId: id(88), sessionId: null, status: "archived" }, f.room]);
+		await expect(f.read()).resolves.toEqual(f.room);
 	});
 
 	it("does not dispatch a read after its scope is cancelled", async () => {

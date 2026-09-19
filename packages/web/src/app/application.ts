@@ -20,6 +20,7 @@ import { CompanyController } from "./company.ts";
 import { currentRoute, navigate, type Route } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
+import { createGroupUpdater } from "./update-group.ts";
 import { type AccountViewState, renderAccount } from "./views/account.ts";
 import { ApprovalsView } from "./views/approvals.ts";
 import { CloudCheckView } from "./views/cloudcheck.ts";
@@ -689,6 +690,28 @@ export function mountApplication(
 						route.id ?? "",
 						{
 							sendMessage: (id, text, signal) => controller.sendPrompt(id, text, signal),
+							updateGroup: createGroupUpdater({
+								company: controller,
+								current: checkConversationAccess,
+								editor: async (signal) => {
+									checkConversationAccess();
+									const team = controller.store.get().team;
+									if (!team?.capabilities.authorize)
+										throw new Error("Only an owner or admin can edit group chats.");
+									return new WebCompanyFiles(
+										cloud,
+										controller.profile,
+										controller.userId,
+										team.role,
+										signal,
+										() => {
+											checkConversationAccess();
+											if (!controller.store.get().team?.capabilities.authorize)
+												throw new Error("Group chat editing access changed.");
+										},
+									).files();
+								},
+							}),
 							nativeSubscription: createWebNativeSubscription(
 								cloud,
 								controller.profile.profileId,
