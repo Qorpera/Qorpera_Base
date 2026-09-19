@@ -37,7 +37,7 @@ select pg_temp.wake_assert((select count(*)=0 from public.qorpera_runtime_office
 set local role service_role;
 select pg_temp.sb_grant('agent');
 reset role;
-select pg_temp.wake_assert((select count(*)=1 and bool_and(opener='agent' and member_id is null and viewer_id is null
+select pg_temp.wake_assert((select count(*)=1 and bool_and(opener='agent' and present_member_id is null and viewer_id is null
 	and run_id=(select run_id from public.qorpera_runtime_office_screens where id=(current_setting('qorpera_test.sb_binding')::jsonb->>'screenId')::uuid))
 	from public.qorpera_runtime_office_browser_opens),'an agent open records its run and no member');
 
@@ -95,9 +95,25 @@ select pg_temp.wake_assert(pg_temp.sb_grant()->>'state'='authorized','a live sha
 select pg_temp.wake_error($q$select pg_temp.sb_grant('agent')$q$,'42501');
 select pg_temp.sb_grant('desktop');
 reset role;
-select pg_temp.wake_assert((select count(*)=1 and bool_and(run_id is null and member_id='30000000-0000-4000-8000-000000000001'
+select pg_temp.wake_assert((select count(*)=1 and bool_and(run_id is null and present_member_id='30000000-0000-4000-8000-000000000001'
 	and viewer_id=(current_setting('qorpera_test.sb_viewer')::jsonb->>'viewerSessionId')::uuid)
 	from public.qorpera_runtime_office_browser_opens where opener='desktop'),'a desktop open records exactly the member with input who was present');
+
+-- The launcher pressed again adds no row; a minute later it does. The column says who was present.
+set local role service_role;
+select pg_temp.sb_grant('desktop');
+select pg_temp.sb_grant('desktop');
+reset role;
+select pg_temp.wake_assert((select count(*)=1 from public.qorpera_runtime_office_browser_opens where opener='desktop'),'repeated dock opens within a minute keep one row per present member');
+update public.qorpera_runtime_office_browser_opens set opened_at=opened_at-interval '61 seconds' where opener='desktop';
+set local role service_role;
+select pg_temp.sb_grant('desktop');
+reset role;
+select pg_temp.wake_assert((select count(*)=2 from public.qorpera_runtime_office_browser_opens where opener='desktop'),'a dock open a minute later is recorded again');
+select pg_temp.wake_assert(exists(select 1 from information_schema.columns where table_schema='public'
+	and table_name='qorpera_runtime_office_browser_opens' and column_name='present_member_id')
+	and not exists(select 1 from information_schema.columns where table_schema='public'
+	and table_name='qorpera_runtime_office_browser_opens' and column_name='member_id'),'the ledger names presence, not a clicker');
 
 -- ...but a member alone never opens a profile another member prepared privately.
 savepoint sb_member_alone;

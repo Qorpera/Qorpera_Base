@@ -21,15 +21,20 @@ create table public.qorpera_runtime_office_browser_opens (
 	opener text not null check(opener in ('agent','desktop')),
 	-- The run holding the screen lease at that moment, if any.
 	run_id uuid,
-	-- One row per member who could have pressed the launcher: the desktop is
-	-- shared, so a click cannot be attributed more precisely than the live
-	-- input viewers. Null for an open with no member present.
+	-- NOT a proven clicker. The desktop is shared, so a press of the launcher
+	-- cannot be attributed: for every open there is one row per member who was
+	-- live on this screen with input permission at that moment. Both are null
+	-- for an open with no member present.
 	viewer_id uuid references public.qorpera_runtime_office_viewers(id) on delete restrict,
-	member_id uuid,
+	present_member_id uuid,
 	opened_at timestamptz not null default clock_timestamp(),
-	check((viewer_id is null)=(member_id is null)),
+	check((viewer_id is null)=(present_member_id is null)),
 	check(opener<>'agent' or run_id is not null)
 );
+comment on table public.qorpera_runtime_office_browser_opens is
+	'Starts of a screen''s company browser. present_member_id lists who was live with input permission when it started, never who pressed the launcher. At most one row per screen, present member and opener per 60 seconds.';
+comment on column public.qorpera_runtime_office_browser_opens.present_member_id is
+	'A member live on the screen with input permission at the open; presence, not proof of a click.';
 create index qorpera_runtime_office_browser_opens_screen on public.qorpera_runtime_office_browser_opens(screen_id,opened_at desc);
 alter table public.qorpera_runtime_office_browser_opens enable row level security;
 revoke all on public.qorpera_runtime_office_browser_opens from public,anon,authenticated,service_role;
@@ -82,16 +87,19 @@ begin
 		or (p_opener='desktop' and not v_company_owned) then
 		raise exception 'Browser authority unavailable' using errcode='42501'; end if;
 	if p_opener is not null then
-		if cardinality(v_viewers)=0 then
-			insert into public.qorpera_runtime_office_browser_opens(office_id,screen_id,staff_agent_id,profile_id,grant_id,grant_version,opener,run_id)
-			values(v_office.id,v_screen.id,v_screen.staff_agent_id,v_profile_id,v_grant_id,v_grant_version,p_opener,
-				case when v_leased then v_screen.run_id end);
-		else
-			insert into public.qorpera_runtime_office_browser_opens(office_id,screen_id,staff_agent_id,profile_id,grant_id,grant_version,opener,run_id,viewer_id,member_id)
-			select v_office.id,v_screen.id,v_screen.staff_agent_id,v_profile_id,v_grant_id,v_grant_version,p_opener,
-				case when v_leased then v_screen.run_id end,viewer.id,viewer.member_id
-			from unnest(v_viewers,v_members) as viewer(id,member_id);
-		end if;
+		-- A launcher pressed again and again adds nothing new to know. Serialize
+		-- opens of one screen (nothing else takes this lock, and it is taken last)
+		-- and keep at most one row per screen, present member and opener per 60 s.
+		perform pg_advisory_xact_lock(hashtextextended('qorpera_runtime_office_browser_open:'||v_screen.id::text,0));
+		insert into public.qorpera_runtime_office_browser_opens(office_id,screen_id,staff_agent_id,profile_id,grant_id,grant_version,opener,run_id,viewer_id,present_member_id)
+		select v_office.id,v_screen.id,v_screen.staff_agent_id,v_profile_id,v_grant_id,v_grant_version,p_opener,
+			case when v_leased then v_screen.run_id end,present.viewer_id,present.member_id
+		from (select viewer.id as viewer_id,viewer.member_id from unnest(v_viewers,v_members) as viewer(id,member_id)
+			union all select null::uuid,null::uuid where cardinality(v_viewers)=0) present
+		where not exists(select 1 from public.qorpera_runtime_office_browser_opens recent
+			where recent.screen_id=v_screen.id and recent.opener=p_opener
+			and recent.present_member_id is not distinct from present.member_id
+			and recent.opened_at>clock_timestamp()-interval '60 seconds');
 	end if;
 	return jsonb_build_object('state','authorized','grant',jsonb_build_object('profileId',v_profile_id,'grantId',v_grant_id,'version',v_grant_version),
 		'validForMs',5000);
