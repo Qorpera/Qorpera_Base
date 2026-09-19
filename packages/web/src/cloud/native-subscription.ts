@@ -22,7 +22,7 @@ export interface WebNativeProviderLoginInput {
 
 export interface WebNativeProviderLogin {
 	loginId: string;
-	connectionId: string;
+	clientConnectionId: string;
 	status: "awaiting_member" | "completed" | "preparing";
 	interactionUrl?: string;
 	userCode?: string;
@@ -250,7 +250,7 @@ export function createWebNativeSubscription(
 						prompt = await bridge.beginLogin(authorization);
 						check();
 					}
-					return { ...prompt, connectionId: request.clientConnectionId, expiresAt: authorization.expiresAt };
+					return { ...prompt, clientConnectionId: request.clientConnectionId, expiresAt: authorization.expiresAt };
 				},
 				120000,
 				AbortSignal.any([companySignal, ...(signal ? [signal] : [])]),

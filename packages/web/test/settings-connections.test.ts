@@ -16,6 +16,7 @@ const ID_KEYS = ["clientIdentityId", "clientLoginId", "clientConnectionId"] as c
 /** A connected account that is not yet enabled for the member's messages. */
 const connected: NativeMemberConnection = {
 	connectionId: id(81),
+	clientConnectionId: id(181),
 	connectionVersion: 2,
 	provider: "openai",
 	nativeHarness: "codex-cli",
@@ -68,7 +69,7 @@ async function setup(
 		onboardingAvailable,
 		beginProviderLogin: vi.fn(async (input) => ({
 			loginId: input.clientLoginId,
-			connectionId: input.clientConnectionId,
+			clientConnectionId: input.clientConnectionId,
 			status: "awaiting_member" as const,
 			interactionUrl: `https://auth.${input.provider}.com/device`,
 			userCode: "ABCD-EFGH",
@@ -153,7 +154,7 @@ describe("member model account settings", () => {
 		expect(accounts.map((item) => item.querySelector("small")!.textContent)).toEqual([
 			"first@example.com",
 			"second@example.com",
-			"Email unavailable",
+			"Connected",
 		]);
 		expect(accounts.map((item) => item.querySelector("img")!.getAttribute("src"))).toEqual([
 			"./assets/provider-openai.svg",
@@ -223,7 +224,8 @@ describe("member model account settings", () => {
 		vi.mocked(client.listConnections).mockResolvedValue(
 			observed(first, {
 				...first,
-				connectionId: target,
+				connectionId: id(182),
+				clientConnectionId: target,
 				providerAccountReference: "second@example.com",
 			}),
 		);
@@ -326,22 +328,74 @@ describe("member model account settings", () => {
 		await vi.advanceTimersByTimeAsync(WATCH_MS);
 		expect(status(OPENAI)).toBe("Waiting for you to finish signing in…");
 		expect(client.createMemberSponsor).not.toHaveBeenCalled();
-		vi.mocked(client.listConnections).mockResolvedValueOnce(observed({ ...connected, connectionId: target }));
+		vi.mocked(client.listConnections).mockResolvedValueOnce(
+			observed({ ...connected, connectionId: id(182), clientConnectionId: target }),
+		);
 		vi.mocked(client.listConnections).mockResolvedValue(
-			observed({ ...connected, connectionId: target, sponsorBindingId: id(82), sponsorVersion: 1 }),
+			observed({
+				...connected,
+				connectionId: id(182),
+				clientConnectionId: target,
+				sponsorBindingId: id(82),
+				sponsorVersion: 1,
+			}),
 		);
 		await vi.advanceTimersByTimeAsync(WATCH_MS);
 		expect(view.el.querySelector(".connection-sign-in")).toBeNull();
 		expect(card(OPENAI).querySelector("small")!.textContent).toBe("member@example.com");
 		expect(action(OPENAI).textContent).toBe("Sign out");
 		expect(client.createMemberSponsor).toHaveBeenCalledExactlyOnceWith(
-			{ providerConnectionId: target, providerConnectionVersion: 2, allowAutonomous: false },
+			{ providerConnectionId: id(182), providerConnectionVersion: 2, allowAutonomous: false },
 			expect.any(AbortSignal),
 		);
 		// Enabling re-reads once; with no sign-in open the page stops watching.
 		expect(client.listConnections).toHaveBeenCalledTimes(6);
 		await vi.advanceTimersByTimeAsync(WATCH_MS * 3);
 		expect(client.listConnections).toHaveBeenCalledTimes(6);
+		expect(client.beginProviderLogin).toHaveBeenCalledTimes(1);
+	});
+	it("correlates completion with the exact provider and client ID, then displays the provider email", async () => {
+		vi.useFakeTimers();
+		const signIns = new ProviderSignIns();
+		const { client } = await setup(true, observed(), signIns);
+		addAccount(OPENAI);
+		await settle();
+		const target = loginIds(client, 0).clientConnectionId;
+		const unrelated = { ...connected, connectionId: target, sponsorBindingId: id(82), sponsorVersion: 1 };
+		vi.mocked(client.listConnections).mockResolvedValue(observed(unrelated));
+		await vi.advanceTimersByTimeAsync(WATCH_MS);
+		expect(view.el.querySelector(".connection-sign-in")).not.toBeNull();
+		vi.mocked(client.listConnections).mockResolvedValue(
+			observed({ ...unrelated, provider: "anthropic", nativeHarness: "claude-code", clientConnectionId: target }),
+		);
+		await vi.advanceTimersByTimeAsync(WATCH_MS);
+		expect(view.el.querySelector(".connection-sign-in")).not.toBeNull();
+		const matching = {
+			...connected,
+			connectionId: id(182),
+			clientConnectionId: target,
+			providerAccountReference: "codex-cli:opaque-account",
+			providerAccountEmail: "signed-in@example.com",
+			sponsorBindingId: id(183),
+			sponsorVersion: 1,
+		};
+		vi.mocked(client.listConnections).mockResolvedValue(
+			observed(unrelated, { ...matching, authorizationState: "reauthentication_required" }),
+		);
+		await vi.advanceTimersByTimeAsync(WATCH_MS);
+		expect(view.el.querySelector(".connection-sign-in")).not.toBeNull();
+		expect(view.el.querySelectorAll(".connection-card:not(.connection-attempt)")).toHaveLength(1);
+		view.el.querySelector<HTMLAnchorElement>(".connection-sign-in a")!.focus();
+		vi.mocked(client.listConnections).mockResolvedValue(observed(unrelated, matching));
+		await vi.advanceTimersByTimeAsync(WATCH_MS);
+		expect(view.el.querySelector(".connection-attempt")).toBeNull();
+		expect(view.el.textContent).toContain("signed-in@example.com");
+		expect(view.el.textContent).not.toContain("Email unavailable");
+		expect(signIns.attempts.size).toBe(0);
+		expect(document.activeElement).toBe(view.el.querySelector(".connection-add"));
+		const reads = vi.mocked(client.listConnections).mock.calls.length;
+		await vi.advanceTimersByTimeAsync(WATCH_MS * 3);
+		expect(client.listConnections).toHaveBeenCalledTimes(reads);
 		expect(client.beginProviderLogin).toHaveBeenCalledTimes(1);
 	});
 	it("never replays a start: every explicit account addition is a new sign-in with its own IDs", async () => {
@@ -405,7 +459,7 @@ describe("member model account settings", () => {
 		expect(view.el.textContent).toBe("");
 		pending.resolve({
 			loginId: input.clientLoginId,
-			connectionId: input.clientConnectionId,
+			clientConnectionId: input.clientConnectionId,
 			status: "awaiting_member",
 			interactionUrl: "https://auth.openai.com/device",
 			userCode: "PRIVATE-CODE",
@@ -438,7 +492,7 @@ describe("member model account settings", () => {
 		expect(rebuilt.client.listConnections).toHaveBeenCalledTimes(1);
 		pending.resolve({
 			loginId: input.clientLoginId,
-			connectionId: input.clientConnectionId,
+			clientConnectionId: input.clientConnectionId,
 			status: "awaiting_member",
 			interactionUrl: "https://auth.openai.com/device",
 			userCode: "ABCD-EFGH",

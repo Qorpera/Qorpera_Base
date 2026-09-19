@@ -305,7 +305,7 @@ describe("native provider onboarding browser adapter", () => {
 		const result = await f.client.beginProviderLogin(f.input, f.view.signal);
 		expect(result).toEqual({
 			loginId: id(105),
-			connectionId: id(103),
+			clientConnectionId: id(103),
 			status: "awaiting_member",
 			interactionUrl: "https://auth.openai.com/device",
 			userCode: "ABCD-EFGH",

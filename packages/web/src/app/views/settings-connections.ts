@@ -106,7 +106,10 @@ export class ConnectionsView {
 				if (
 					attempt.login &&
 					(connections.connections.some(
-						(item) => item.connectionId === attempt.login?.connectionId && live(item),
+						(item) =>
+							item.provider === provider &&
+							item.clientConnectionId === attempt.login?.clientConnectionId &&
+							live(item),
 					) ||
 						Date.parse(attempt.login.expiresAt) <= Date.now())
 				)
@@ -237,7 +240,7 @@ export class ConnectionsView {
 				"div",
 				{ class: "settings-copy" },
 				h("strong", null, provider.label),
-				h("small", { class: "connection-email" }, email ?? "Email unavailable"),
+				h("small", { class: "connection-email" }, email ?? (live(connection) ? "Connected" : "Email not provided")),
 				!live(connection)
 					? h("small", { role: "status" }, "Sign out and add this account again to reconnect.")
 					: null,
@@ -307,7 +310,7 @@ export class ConnectionsView {
 				connection.connectionStatus !== "revoked" &&
 				PROVIDERS.some((provider) => provider.id === connection.provider) &&
 				![...this.#attempts.values()].some(
-					(attempt) => attempt.login?.connectionId === connection.connectionId && !live(connection),
+					(attempt) => attempt.login?.clientConnectionId === connection.clientConnectionId && !live(connection),
 				),
 		);
 		const canConnect = Boolean(this.#client.onboardingAvailable && this.#begin);
