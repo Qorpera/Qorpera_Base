@@ -54,7 +54,7 @@ export function mountApplication(
 	const topbar = h("header", { class: "topbar" });
 	const rail = h("aside", { id: "company-navigation", class: "rail", "aria-label": "Company navigation" });
 	const main = h("main", { class: "main", tabindex: "-1" });
-	const executionNotices = h("div");
+	const executionNotices = h("div", { class: "notification-stack", "aria-label": "Notifications" });
 	const backdrop = h("button", {
 		type: "button",
 		class: "navigation-backdrop",
@@ -505,7 +505,6 @@ export function mountApplication(
 		if (notices && !state.team?.capabilities.read) {
 			notices.dispose();
 			notices = undefined;
-			executionNotices.replaceChildren();
 		}
 		if (!notices && state.team?.capabilities.read) {
 			const client = createWebCompanyExecution(
@@ -527,13 +526,8 @@ export function mountApplication(
 						throw new Error("Company notification access changed.");
 				},
 			);
-			notices = new ExecutionNotices(
-				client,
-				controller.signal,
-				() => openSettings("company"),
-				() => main.focus({ preventScroll: true }),
-			);
-			executionNotices.replaceChildren(notices.el);
+			notices = new ExecutionNotices(client, controller.signal, () => main.focus({ preventScroll: true }));
+			executionNotices.append(notices.el);
 		}
 		if (route.section !== "chat") {
 			conversation?.dispose();
@@ -748,6 +742,7 @@ export function mountApplication(
 							...agentActions,
 							...workspaceActions,
 							computer,
+							notificationHost: executionNotices,
 						},
 						() => setNavigationOpen(!navigationOpen),
 					);

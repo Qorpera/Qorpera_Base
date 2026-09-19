@@ -14,6 +14,8 @@ export interface AgentDraft extends FigureChoice {
 /** Member UI adapters over the shared cloud SDK. A view offers an action only
  * when its adapter is present. */
 export interface WorkspaceActions {
+	/** Shared workspace surface for transient notifications owned by the view. */
+	notificationHost?: HTMLElement;
 	computer?: WebCompanyComputer;
 	runControl?: WebSessionRunControl;
 	nativeSubscription?: WebNativeSubscription;

@@ -1,37 +1,22 @@
 import type { CompanyExecutionNotification, WebCompanyExecution } from "../../cloud/company-execution.ts";
-import { fmtTime, h, replace } from "../../ui/dom.ts";
+import { button, h, replace } from "../../ui/dom.ts";
+import { notification } from "../../ui/notification.ts";
 
 type Client = Pick<WebCompanyExecution, "listNotifications" | "acknowledgeNotification">;
 
-function copy(item: CompanyExecutionNotification): { title: string; detail: string } {
+function title(item: CompanyExecutionNotification): string {
 	const subject = item.subject;
 	switch (subject.schema) {
 		case "qorpera.member-notification.provider-usage-limit/v1":
-			return {
-				title: "Model account usage limit reached",
-				detail: `${subject.provider} reported a usage limit.${subject.resetsAt ? ` Reported reset: ${fmtTime(subject.resetsAt)}.` : ""}`,
-			};
+			return "Model account usage limit reached";
 		case "qorpera.member-notification.company-ceiling-tripped/v1":
-			return {
-				title: "Company execution limit reached",
-				detail: `Work reached the company's ${subject.dimension === "spend" ? "spending" : subject.dimension === "tokens" ? "token" : "hourly wake"} limit.`,
-			};
+			return "Company execution limit reached";
 		case "qorpera.member-notification.machine-capacity/v1":
-			return {
-				title: "Company computer limit reached",
-				detail: `A computer could not start: ${subject.used} of ${subject.ceiling} computer allocations are in use.`,
-			};
+			return "Company computer limit reached";
 		case "qorpera.member-notification.company-execution-stop/v1":
-			return {
-				title: subject.paused ? "Company execution paused" : "Company execution resumed",
-				detail: `${subject.paused ? "New work is paused." : "The company execution pause was removed."}${subject.reason ? ` ${subject.reason}` : ""}`,
-			};
+			return subject.paused ? "Company execution paused" : "Company execution resumed";
 		case "qorpera.member-notification.sponsor-handoff/v1":
-			return {
-				title: "Execution sponsor changed",
-				detail:
-					"Work switched to another eligible model account after a usage limit. The same run continues with its conversation history.",
-			};
+			return "Execution sponsor changed";
 	}
 }
 
@@ -41,10 +26,10 @@ export class ExecutionNotices {
 	readonly el = h("section", { class: "execution-notices", "aria-label": "Company execution updates", hidden: true });
 	readonly #client: Client;
 	readonly #lifetime = new AbortController();
-	readonly #settings: (() => void) | undefined;
 	readonly #restoreFocus: (() => void) | undefined;
 	#items: readonly CompanyExecutionNotification[] = [];
-	#selected: string | undefined;
+	readonly #hidden = new Set<string>();
+	#hiddenError: string | undefined;
 	#request: AbortController | undefined;
 	#timer: ReturnType<typeof setInterval> | undefined;
 	#acking = false;
@@ -52,9 +37,8 @@ export class ExecutionNotices {
 	#error: string | undefined;
 	#drawn = "";
 
-	constructor(client: Client, signal: AbortSignal, settings?: () => void, restoreFocus?: () => void) {
+	constructor(client: Client, signal: AbortSignal, restoreFocus?: () => void) {
 		this.#client = client;
-		this.#settings = settings;
 		this.#restoreFocus = restoreFocus;
 		if (signal.aborted) {
 			this.dispose();
@@ -80,12 +64,12 @@ export class ExecutionNotices {
 			this.#items = items.filter((item) => !item.acknowledgedAt);
 			this.#refreshRequired = false;
 			this.#error = undefined;
+			this.#hiddenError = undefined;
 		} catch {
 			if (signal.aborted) return;
 			this.#items = [];
 			this.#refreshRequired = true;
-			this.#error =
-				"Company execution updates are unavailable. Refresh to check for usage limits or changes to running work.";
+			this.#error = "Company updates are unavailable";
 		} finally {
 			if (this.#request === request) this.#request = undefined;
 			if (!signal.aborted) this.#draw();
@@ -94,7 +78,7 @@ export class ExecutionNotices {
 
 	async #acknowledge(): Promise<void> {
 		if (this.#lifetime.signal.aborted || this.#acking || this.#refreshRequired) return;
-		const item = this.#items.find((entry) => entry.notificationId === this.#selected);
+		const item = this.#items.find((entry) => !this.#hidden.has(entry.notificationId));
 		if (!item) return;
 		this.#request?.abort();
 		this.#request = undefined;
@@ -111,10 +95,11 @@ export class ExecutionNotices {
 			)
 				throw new Error("Notification receipt mismatch");
 			this.#items = this.#items.filter((entry) => entry.notificationId !== item.notificationId);
+			this.#hidden.add(item.notificationId);
 		} catch {
 			if (this.#lifetime.signal.aborted) return;
 			this.#refreshRequired = true;
-			this.#error = "Acknowledgment could not be confirmed. Refresh before trying again.";
+			this.#error = "Dismissal could not be confirmed";
 		} finally {
 			this.#acking = false;
 			if (!this.#lifetime.signal.aborted) this.#draw();
@@ -122,72 +107,38 @@ export class ExecutionNotices {
 	}
 
 	#draw(): void {
-		const item = this.#items.find((entry) => entry.notificationId === this.#selected) ?? this.#items[0];
-		this.#selected = item?.notificationId;
-		const key = JSON.stringify([this.#items, this.#selected, this.#acking, this.#refreshRequired, this.#error]);
+		const item = this.#items.find((entry) => !this.#hidden.has(entry.notificationId));
+		const error = this.#error && this.#error !== this.#hiddenError ? this.#error : undefined;
+		const key = JSON.stringify([item?.notificationId, item?.subject, this.#acking, error]);
 		if (key === this.#drawn) return;
 		const focused = this.el.contains(document.activeElement)
 			? (document.activeElement as HTMLElement).dataset.action
 			: undefined;
-		const action = (label: string, name: string, run: () => void, unavailable = false) =>
-			h(
-				"button",
-				{
-					type: "button",
-					class: "btn btn-small",
-					"data-action": name,
-					"aria-disabled": unavailable ? "true" : undefined,
-					onclick: (event: MouseEvent) => {
-						if (!unavailable && event.detail < 2) run();
-					},
-				},
-				label,
-			);
-		const message = item ? copy(item) : undefined;
-		const index = item ? this.#items.indexOf(item) : 0;
-		const move = (offset: number) => {
-			this.#selected = this.#items[(index + offset + this.#items.length) % this.#items.length]?.notificationId;
-			this.#draw();
+		const refresh = error ? button("Refresh", () => void this.refresh(), { small: true }) : undefined;
+		if (refresh) refresh.dataset.action = "refresh";
+		const dismiss = () => {
+			if (error || this.#refreshRequired) {
+				this.#hiddenError = this.#error;
+				if (item) this.#hidden.add(item.notificationId);
+				this.#draw();
+			} else void this.#acknowledge();
 		};
 		replace(
 			this.el,
-			message
-				? h(
-						"div",
-						{ class: "execution-notice-copy", role: "status" },
-						h("strong", null, message.title),
-						h("span", null, message.detail),
-						h(
-							"small",
-							{ class: "muted" },
-							`${fmtTime(item!.createdAt)} · Update ${index + 1} of ${this.#items.length} pending in the latest 50`,
-						),
-					)
+			error || item
+				? notification(error ?? title(item!), dismiss, {
+						busy: this.#acking,
+						action: refresh,
+						error: Boolean(error),
+					})
 				: null,
-			this.#error ? h("p", { class: "execution-notice-error", role: "alert" }, this.#error) : null,
-			h(
-				"div",
-				{ class: "execution-notice-actions" },
-				this.#items.length > 1 ? action("Previous update", "previous", () => move(-1), this.#acking) : null,
-				this.#items.length > 1 ? action("Next update", "next", () => move(1), this.#acking) : null,
-				item
-					? action(
-							this.#acking ? "Acknowledging…" : "Acknowledge",
-							"acknowledge",
-							() => void this.#acknowledge(),
-							this.#acking || this.#refreshRequired,
-						)
-					: null,
-				this.#error ? action("Refresh updates", "refresh", () => void this.refresh(), this.#acking) : null,
-				this.#settings && item ? action("Company settings", "settings", this.#settings) : null,
-			),
 		);
-		this.el.hidden = !item && !this.#error;
+		this.el.hidden = !item && !error;
 		if (focused) {
 			const target = this.el.hidden
 				? null
 				: (this.el.querySelector<HTMLElement>(`[data-action="${focused}"]`) ??
-					this.el.querySelector<HTMLElement>("button[data-action]:not([disabled]):not([aria-disabled='true'])"));
+					this.el.querySelector<HTMLElement>("button[data-action]:not([aria-disabled='true'])"));
 			if (target) target.focus({ preventScroll: true });
 			else this.#restoreFocus?.();
 		}
@@ -201,5 +152,6 @@ export class ExecutionNotices {
 		this.#items = [];
 		this.el.replaceChildren();
 		this.el.hidden = true;
+		this.el.remove();
 	}
 }
