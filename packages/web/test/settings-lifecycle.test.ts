@@ -4,10 +4,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
+import { HubController } from "../src/app/views/hub.ts";
 import { SettingsView } from "../src/app/views/settings.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type { HostedAccountEntitlement } from "../src/cloud/types.ts";
-import { deferred, fixture, profileA, profileB, session, settle, team, userA, userB } from "./fixtures.ts";
+import {
+	deferred,
+	fixture,
+	id,
+	profileA,
+	profileB,
+	session,
+	settle,
+	team,
+	timestamp,
+	userA,
+	userB,
+} from "./fixtures.ts";
 
 let dispose: (() => void) | undefined;
 beforeEach(() => {
@@ -105,9 +118,11 @@ describe("settings session lifecycle", () => {
 			auth = new AuthController(f.cloud);
 		await auth.start();
 		const company = new CompanyController(f.api, profileA, userA.id);
+		const hub = new HubController(f.api);
 		const view = new SettingsView(
 			f.api,
 			auth,
+			hub,
 			[profileA],
 			company,
 			() => {},
@@ -116,6 +131,7 @@ describe("settings session lifecycle", () => {
 		document.body.append(view.el);
 		dispose = () => {
 			view.dispose();
+			hub.dispose();
 			company.stop();
 			auth.dispose();
 		};
@@ -174,9 +190,11 @@ describe("settings session lifecycle", () => {
 		await draw();
 		expect([...f.root.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).toEqual([
 			"General",
+			"Friends",
 			"Company",
 			"Connections",
 		]);
+		for (const tab of f.root.querySelectorAll('[role="tab"]')) expect(tab.querySelector("svg.icon")).not.toBeNull();
 		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(true);
 		click(f.root, "#settings-tab-company");
 		expect(f.root.querySelector('.settings-dialog a[href$="/file"]')).not.toBeNull();
@@ -212,7 +230,125 @@ describe("settings session lifecycle", () => {
 		f.root
 			.querySelector("#settings-tab-general")!
 			.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-		expect(document.activeElement).toBe(f.root.querySelector("#settings-tab-company"));
+		expect(document.activeElement).toBe(f.root.querySelector("#settings-tab-friends"));
+	});
+	it("accepts a company invitation from the Friends tab and opens that company", async () => {
+		const fixtureState = fixture();
+		const invitation = {
+			id: id(43),
+			profileId: profileB.profileId,
+			environmentId: profileB.environmentId,
+			profileName: profileB.profileName,
+			environmentName: profileB.environmentName,
+			email: userA.email!,
+			role: "contributor" as const,
+			invitedByUserId: userB.id,
+			createdAt: timestamp,
+			expiresAt: "2099-01-01T00:00:00Z",
+		};
+		vi.mocked(fixtureState.api.listIncomingInvitations).mockResolvedValue([invitation]);
+		const accept = vi.spyOn(fixtureState.api, "acceptInvitation").mockImplementation(async () => {
+			vi.mocked(fixtureState.api.listIncomingInvitations).mockResolvedValue([]);
+			vi.mocked(fixtureState.api.listProfiles).mockResolvedValue([profileA, profileB]);
+		});
+		const f = await setup(fixtureState);
+		open(f.root);
+		click(f.root, "#settings-tab-friends");
+		expect(f.root.querySelector("#settings-tab-friends .settings-tab-count")?.textContent).toBe("1");
+		const row = f.root.querySelector(".settings-dialog .person-row")!;
+		expect(row.textContent).toContain(profileB.profileName);
+		// The expiry sits in the second line, which stays visible on phones.
+		expect(row.querySelector(".person-copy > span")?.textContent).toMatch(/^Invited as contributor · expires \S/);
+		expect(row.querySelector(".person-meta")).toBeNull();
+		[...row.querySelectorAll("button")].find((button) => button.textContent === "Accept")!.click();
+		await draw();
+		expect(accept).toHaveBeenCalledExactlyOnceWith(invitation.id);
+		expect(location.hash).toBe(`#/c/${profileB.profileId}`);
+		expect(f.root.querySelector(".settings-overlay")).toBeNull();
+		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(false);
+	});
+	it("declines a company invitation without leaving settings", async () => {
+		const fixtureState = fixture();
+		vi.mocked(fixtureState.api.listIncomingInvitations).mockResolvedValue([
+			{
+				id: id(43),
+				profileId: profileB.profileId,
+				environmentId: profileB.environmentId,
+				profileName: profileB.profileName,
+				environmentName: profileB.environmentName,
+				email: userA.email!,
+				role: "viewer",
+				invitedByUserId: userB.id,
+				createdAt: timestamp,
+				expiresAt: "2099-01-01T00:00:00Z",
+			},
+		]);
+		const decline = vi.spyOn(fixtureState.api, "declineInvitation").mockImplementation(async () => {
+			vi.mocked(fixtureState.api.listIncomingInvitations).mockResolvedValue([]);
+		});
+		const f = await setup(fixtureState);
+		open(f.root);
+		click(f.root, "#settings-tab-friends");
+		[...f.root.querySelectorAll<HTMLButtonElement>(".settings-dialog .person-row button")]
+			.find((button) => button.textContent === "Decline")!
+			.click();
+		await draw();
+		expect(decline).toHaveBeenCalledExactlyOnceWith(id(43));
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		expect(f.root.querySelector("#settings-tab-friends")?.getAttribute("aria-selected")).toBe("true");
+		expect(f.root.querySelector<HTMLElement>("#settings-tab-friends .settings-tab-count")!.hidden).toBe(true);
+		expect(f.root.querySelector(".settings-dialog")?.textContent).not.toContain(profileB.profileName);
+	});
+	it("sends a friend request from the Friends tab", async () => {
+		const f = await setup();
+		const send = vi.spyOn(f.api, "sendFriendRequest").mockResolvedValue();
+		open(f.root);
+		click(f.root, "#settings-tab-friends");
+		await draw();
+		const field = f.root.querySelector<HTMLInputElement>(".panel-search input")!;
+		field.value = "New@Example.invalid";
+		field.dispatchEvent(new Event("input"));
+		await draw();
+		const submit = f.root.querySelector<HTMLButtonElement>('.panel-search button[type="submit"]')!;
+		expect(submit.disabled).toBe(false);
+		submit.click();
+		await draw();
+		expect(send).toHaveBeenCalledExactlyOnceWith("new@example.invalid");
+		expect(f.api.listFriends).toHaveBeenCalledTimes(2);
+		expect(f.root.querySelector("#settings-content")?.textContent).toContain("Request sent to new@example.invalid.");
+		expect(f.root.querySelector<HTMLInputElement>(".panel-search input")!.value).toBe("");
+	});
+	it("offers accepted friends in the company invitation picker and sends Add a friend to the Friends tab", async () => {
+		const fixtureState = fixture();
+		vi.mocked(fixtureState.api.listFriends).mockResolvedValue([
+			{
+				userId: userB.id,
+				email: userB.email!,
+				displayName: "Friend B",
+				status: "accepted",
+				direction: "outgoing",
+				since: timestamp,
+			},
+		]);
+		const f = await setup(fixtureState);
+		open(f.root);
+		click(f.root, "#settings-tab-company");
+		await draw();
+		// A settings search that hides the Friends tab is cleared on the way there.
+		const search = f.root.querySelector<HTMLInputElement>(".settings-nav input")!;
+		search.value = "team";
+		search.dispatchEvent(new Event("input"));
+		expect(f.root.querySelector<HTMLElement>("#settings-tab-friends")!.hidden).toBe(true);
+		f.root.querySelector<HTMLDetailsElement>(".company-invite")!.open = true;
+		expect(f.root.querySelector(".invite-results")?.textContent).toContain("Friend B");
+		[...f.root.querySelectorAll<HTMLButtonElement>(".company-invite button")]
+			.find((button) => button.textContent === "Add a friend")!
+			.click();
+		expect(search.value).toBe("");
+		expect(f.root.querySelector<HTMLElement>("#settings-tab-friends")!.hidden).toBe(false);
+		expect(f.root.querySelector("#settings-tab-friends")?.getAttribute("aria-selected")).toBe("true");
+		expect(document.activeElement).toBe(f.root.querySelector(".panel-search input"));
+		expect(f.api.listFriends).toHaveBeenCalledTimes(1);
 	});
 	it("closes nested confirmation before settings, and cancels it on sign-out", async () => {
 		const f = await setup();

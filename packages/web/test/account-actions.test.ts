@@ -18,17 +18,17 @@ afterEach(() => {
 });
 
 describe("account actions with the shared stylesheets", () => {
-	it.each(["friends", "invitations"])("keeps %s decisions visible outside company settings", async (page) => {
+	it("keeps friend and company invitation decisions visible on the settings Friends tab", async () => {
 		vi.useFakeTimers();
 		vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
 		const style = document.createElement("style");
 		style.dataset.accountActionsTest = "true";
-		// Load the actual cascade, including settings, to catch selectors leaking
-		// onto existing account pages.
+		// Load the actual cascade, including the company tab's hover-only member
+		// actions, to catch those selectors leaking onto the Friends tab.
 		style.textContent = [tokensCss, settingsCss, conversationCss, appCss].join("\n").replace(/^@import .*;$/gm, "");
 		document.head.append(style);
 		expect(style.sheet?.cssRules.length).toBeGreaterThan(0);
-		history.replaceState(null, "", `/#/${page}`);
+		history.replaceState(null, "", "/#/");
 		const f = fixture(),
 			root = document.createElement("div");
 		vi.mocked(f.api.listFriends).mockResolvedValue([
@@ -59,10 +59,23 @@ describe("account actions with the shared stylesheets", () => {
 		dispose = mountApplication(root, f.cloud, f.api);
 		await settle();
 		await vi.advanceTimersByTimeAsync(60);
-		const actions = root.querySelector<HTMLElement>(".person-actions")!;
-		expect(actions.textContent).toContain("Accept");
-		expect(getComputedStyle(actions).opacity || "1").toBe("1");
-		actions.querySelector<HTMLButtonElement>("button")!.focus();
-		expect(getComputedStyle(actions).opacity || "1").toBe("1");
+		root.querySelector<HTMLButtonElement>(".account-trigger")!.click();
+		const menuItem = root.querySelector<HTMLButtonElement>('[data-account-action="friends"]')!;
+		expect(menuItem.querySelector(".account-count")?.textContent).toBe("1");
+		expect(root.querySelector('.account-popover a[href="#/invitations"]')).toBeNull();
+		menuItem.click();
+		await settle();
+		const dialog = root.querySelector<HTMLElement>(".settings-dialog")!;
+		expect(dialog.querySelector("#settings-tab-friends")?.getAttribute("aria-selected")).toBe("true");
+		expect(dialog.querySelector("#settings-tab-friends .settings-tab-count")?.textContent).toBe("1");
+		const rows = [...dialog.querySelectorAll<HTMLElement>(".person-row")];
+		expect(rows.map((row) => row.querySelector("strong")?.textContent)).toEqual([profileA.profileName, "Friend"]);
+		for (const row of rows) {
+			const actions = row.querySelector<HTMLElement>(".person-actions")!;
+			expect(actions.textContent).toContain("Accept");
+			expect(getComputedStyle(actions).opacity || "1").toBe("1");
+			actions.querySelector("button")!.focus();
+			expect(getComputedStyle(actions).opacity || "1").toBe("1");
+		}
 	});
 });
