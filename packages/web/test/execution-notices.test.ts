@@ -1,0 +1,235 @@
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mountApplication } from "../src/app/application.ts";
+import { ExecutionNotices } from "../src/app/views/execution-notices.ts";
+import type { CompanyExecutionNotification, WebCompanyExecution } from "../src/cloud/company-execution.ts";
+import { deferred, fixture, id, profileA, profileB, settle, timestamp, userB } from "./fixtures.ts";
+
+const cleanup: (() => void)[] = [];
+beforeEach(() => {
+	vi.useFakeTimers();
+	vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+	history.replaceState(null, "", "/#/");
+});
+afterEach(() => {
+	for (const dispose of cleanup.splice(0)) dispose();
+	document.body.replaceChildren();
+	vi.restoreAllMocks();
+	vi.unstubAllGlobals();
+	vi.useRealTimers();
+});
+const item = (n = 70): CompanyExecutionNotification => ({
+	notificationId: id(n),
+	profileId: profileA.profileId,
+	kind: "sponsor_handoff",
+	createdAt: timestamp,
+	acknowledgedAt: null,
+	subject: {
+		schema: "qorpera.member-notification.sponsor-handoff/v1",
+		runId: id(80),
+		fromConnectionId: id(81),
+		toConnectionId: id(82),
+		reason: "usage_limit",
+		at: timestamp,
+	},
+});
+function setup(items: readonly CompanyExecutionNotification[] = [item()]) {
+	const client = {
+		listNotifications: vi
+			.fn<Pick<WebCompanyExecution, "listNotifications">["listNotifications"]>()
+			.mockResolvedValue(items),
+		acknowledgeNotification: vi
+			.fn<Pick<WebCompanyExecution, "acknowledgeNotification">["acknowledgeNotification"]>()
+			.mockImplementation(async (notificationId) => ({
+				...items.find((entry) => entry.notificationId === notificationId)!,
+				acknowledgedAt: timestamp,
+			})),
+	};
+	const lifetime = new AbortController();
+	const restoreFocus = vi.fn();
+	const view = new ExecutionNotices(client, lifetime.signal, undefined, restoreFocus);
+	document.body.append(view.el);
+	cleanup.push(() => view.dispose());
+	return { client, lifetime, view, restoreFocus };
+}
+const action = (name: string) => document.querySelector<HTMLButtonElement>(`[data-action="${name}"]`)!;
+
+describe("company execution notices", () => {
+	it("shows addressed updates without acknowledging, and preserves focus/DOM during unchanged polling", async () => {
+		const f = setup();
+		await settle();
+		expect(f.view.el.hidden).toBe(false);
+		expect(f.view.el.textContent).toContain("Execution sponsor changed");
+		const acknowledge = action("acknowledge");
+		acknowledge.focus();
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(action("acknowledge")).toBe(acknowledge);
+		expect(document.activeElement).toBe(acknowledge);
+		expect(f.client.acknowledgeNotification).not.toHaveBeenCalled();
+	});
+	it("browses multiple notices and acknowledges only the explicitly selected record", async () => {
+		const f = setup([item(70), item(71), { ...item(72), acknowledgedAt: timestamp }]);
+		await settle();
+		action("next").click();
+		expect(f.view.el.textContent).toContain("Update 2 of 2");
+		action("acknowledge").click();
+		await settle();
+		expect(f.client.acknowledgeNotification).toHaveBeenCalledExactlyOnceWith(id(71), expect.any(AbortSignal));
+		expect(f.view.el.textContent).toContain("Update 1 of 1");
+		action("acknowledge").focus();
+		action("acknowledge").click();
+		await settle();
+		expect(f.view.el.hidden).toBe(true);
+		expect(f.restoreFocus).toHaveBeenCalledOnce();
+	});
+	it("requires a read after an uncertain acknowledgment without replaying it", async () => {
+		const f = setup();
+		await settle();
+		f.client.acknowledgeNotification.mockRejectedValueOnce(new Error("response lost"));
+		action("acknowledge").click();
+		await settle();
+		expect(f.view.el.textContent).toContain("Acknowledgment could not be confirmed");
+		action("acknowledge").click();
+		expect(f.client.acknowledgeNotification).toHaveBeenCalledTimes(1);
+		f.client.listNotifications.mockResolvedValue([{ ...item(), acknowledgedAt: timestamp }]);
+		action("refresh").click();
+		await settle();
+		expect(f.view.el.hidden).toBe(true);
+		expect(f.client.acknowledgeNotification).toHaveBeenCalledTimes(1);
+	});
+	it("rejects mismatched acknowledgment receipts and prevents repeat clicks during a write", async () => {
+		const f = setup();
+		await settle();
+		const pending = deferred<CompanyExecutionNotification>();
+		f.client.acknowledgeNotification.mockReturnValueOnce(pending.promise);
+		action("acknowledge").click();
+		action("acknowledge").click();
+		expect(f.client.acknowledgeNotification).toHaveBeenCalledTimes(1);
+		pending.resolve({ ...item(), profileId: profileB.profileId, acknowledgedAt: timestamp });
+		await settle();
+		expect(f.view.el.textContent).toContain("could not be confirmed");
+	});
+	it("discards an old poll after explicit acknowledgment and a late result after access loss", async () => {
+		const f = setup();
+		await settle();
+		const old = deferred<readonly CompanyExecutionNotification[]>();
+		f.client.listNotifications.mockReturnValueOnce(old.promise);
+		const refresh = f.view.refresh();
+		action("acknowledge").click();
+		await settle();
+		old.resolve([item()]);
+		await refresh;
+		expect(f.view.el.hidden).toBe(true);
+		const late = deferred<readonly CompanyExecutionNotification[]>();
+		f.client.listNotifications.mockReturnValueOnce(late.promise);
+		const reading = f.view.refresh();
+		f.lifetime.abort();
+		late.resolve([item()]);
+		await reading;
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(f.view.el.textContent).toBe("");
+		expect(f.client.listNotifications).toHaveBeenCalledTimes(3);
+	});
+	it("surfaces unavailable reads and clears stale content until explicitly refreshed", async () => {
+		const f = setup();
+		await settle();
+		f.client.listNotifications.mockRejectedValueOnce(new Error("denied"));
+		await f.view.refresh();
+		expect(f.view.el.textContent).toContain("updates are unavailable");
+		expect(f.view.el.textContent).not.toContain("Execution sponsor changed");
+		action("refresh").click();
+		await settle();
+		expect(f.view.el.textContent).toContain("Execution sponsor changed");
+	});
+	it.each([
+		[
+			"provider_usage_limit",
+			{
+				schema: "qorpera.member-notification.provider-usage-limit/v1",
+				provider: "openai",
+				resetsAt: timestamp,
+				runId: id(80),
+				connectionId: id(81),
+			},
+			"Model account usage limit reached",
+		],
+		[
+			"company_ceiling_tripped",
+			{
+				schema: "qorpera.member-notification.company-ceiling-tripped/v1",
+				dimension: "spend",
+				ceiling: 100,
+				periodStart: timestamp,
+			},
+			"spending limit",
+		],
+		[
+			"company_ceiling_tripped",
+			{
+				schema: "qorpera.member-notification.machine-capacity/v1",
+				dimension: "machines",
+				ceiling: 2,
+				used: 2,
+				allocationId: id(90),
+			},
+			"computer could not start",
+		],
+		[
+			"company_execution_paused",
+			{
+				schema: "qorpera.member-notification.company-execution-stop/v1",
+				paused: true,
+				byUserId: id(91),
+				reason: "Check spend",
+				at: timestamp,
+			},
+			"Check spend",
+		],
+		[
+			"company_execution_resumed",
+			{
+				schema: "qorpera.member-notification.company-execution-stop/v1",
+				paused: false,
+				byUserId: id(91),
+				reason: null,
+				at: timestamp,
+			},
+			"Company execution resumed",
+		],
+	] as const)("presents %s notices", async (kind, subject, text) => {
+		const f = setup([{ ...item(), kind, subject }]);
+		await settle();
+		expect(f.view.el.textContent).toContain(text);
+	});
+});
+
+it("mounts notices in the company workspace, then clears them on account change", async () => {
+	const f = fixture();
+	const wire = {
+		schema: "qorpera.member-notification/v1",
+		notification_id: id(70),
+		profile_id: profileA.profileId,
+		kind: "sponsor_handoff",
+		created_at: timestamp,
+		acknowledged_at: null,
+		subject: item().subject,
+	};
+	const transport = vi.fn(async (input: string | URL | Request) => {
+		if (String(input).endsWith("qorpera_list_member_notifications")) return Response.json([wire]);
+		return Response.json([]);
+	});
+	vi.stubGlobal("fetch", transport);
+	history.replaceState(null, "", `/#/c/${profileA.profileId}/new`);
+	const root = document.createElement("div");
+	document.body.append(root);
+	cleanup.push(mountApplication(root, f.cloud, f.api));
+	await vi.advanceTimersByTimeAsync(100);
+	expect(root.querySelector(".execution-notices")?.textContent).toContain("Execution sponsor changed");
+	expect(root.querySelector('a[href$="/notifications"]')).toBeNull();
+	const oldNotices = root.querySelector(".execution-notices")!;
+	transport.mockImplementation(async () => Response.json([]));
+	f.auth(userB);
+	await vi.advanceTimersByTimeAsync(100);
+	expect(oldNotices.isConnected).toBe(false);
+	expect(root.querySelector(".execution-notices")?.textContent ?? "").not.toContain("Execution sponsor changed");
+});

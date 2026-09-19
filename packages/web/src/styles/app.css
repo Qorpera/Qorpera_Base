@@ -45,6 +45,14 @@ label > input, label > select { font-weight: 400; }
 .frame { display: flex; flex-direction: column; height: 100%; background: var(--bg); font-family: var(--font-sans); }
 .body { position: relative; display: flex; flex: 1; min-height: 0; }
 
+/* A compact company-scoped surface for control-plane updates, without an inbox. */
+.execution-notices { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; max-height: 30dvh; overflow: auto; padding: 10px 16px; border-bottom: 1px solid var(--border-strong); background: var(--warning-soft); color: var(--text); }
+.execution-notices[hidden] { display: none; }
+.execution-notice-copy { display: flex; flex: 1 1 320px; flex-direction: column; gap: 2px; overflow-wrap: anywhere; font-size: 13px; }
+.execution-notice-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.execution-notice-actions [aria-disabled="true"] { opacity: 0.5; cursor: default; }
+.execution-notice-error { flex: 1 1 320px; margin: 0; font-size: 13px; }
+
 /* buttons */
 .btn {
 	min-height: 32px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);

@@ -535,3 +535,14 @@ above.
     Request: decide where these notices reach a member now — a surface a
     client still shows, such as the run or conversation state — or record
     in §17 that they are paused until a client shows them again.
+
+    Resolution (2026-09-19): the web workspace now presents member-addressed
+    execution updates inline, without restoring the removed inbox or unread
+    rail count. It reads usage limits, sponsor handoffs, company ceilings and
+    pause/resume notices, with an explicit acknowledgment per record. Opening
+    the workspace never acknowledges a notice; an uncertain acknowledgment
+    requires a fresh read before another attempt. Reads and writes are scoped
+    to the current member and company and stop on account or access changes.
+    The existing RPC returns the latest 50 records, including acknowledged
+    records, so this surface labels that window and does not promise a complete
+    pending backlog. Older pending records need backend filtering/pagination.

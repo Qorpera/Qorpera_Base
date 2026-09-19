@@ -81,6 +81,7 @@ async function setup() {
 		expect(new Headers(init?.headers).get("authorization")).toBe("Bearer fixture-token");
 		expect(init).toMatchObject({ redirect: "error", cache: "no-store", credentials: "omit" });
 		if (url.endsWith("/qorpera_list_session_turn_requests")) return Response.json([]);
+		if (url.endsWith("/qorpera_list_member_notifications")) return Response.json([]);
 		if (url.endsWith("/qorpera_list_member_native_execution_connections"))
 			return Response.json({
 				compute_identity: {
@@ -166,6 +167,7 @@ async function setup() {
 	const requests = () =>
 		fetcher.mock.calls.filter(
 			([url]) =>
+				!String(url).endsWith("/qorpera_list_member_notifications") &&
 				!String(url).endsWith("/qorpera_list_session_turn_requests") &&
 				!String(url).endsWith("/qorpera_list_member_native_execution_connections"),
 		);
