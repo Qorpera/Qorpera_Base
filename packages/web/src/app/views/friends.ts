@@ -121,9 +121,12 @@ function invitationRow(hub: HubController, invitation: HostedIncomingProfileInvi
 			"div",
 			{ class: "person-copy" },
 			h("strong", null, invitation.profileName),
-			h("span", { class: "muted small" }, `Invited as ${invitation.role}`),
+			h(
+				"span",
+				{ class: "muted small" },
+				`Invited as ${invitation.role} · expires ${fmtDate(invitation.expiresAt)}`,
+			),
 		),
-		h("span", { class: "muted small person-meta" }, `expires ${fmtDate(invitation.expiresAt)}`),
 		h(
 			"div",
 			{ class: "person-actions" },

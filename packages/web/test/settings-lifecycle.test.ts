@@ -257,6 +257,9 @@ describe("settings session lifecycle", () => {
 		expect(f.root.querySelector("#settings-tab-friends .settings-tab-count")?.textContent).toBe("1");
 		const row = f.root.querySelector(".settings-dialog .person-row")!;
 		expect(row.textContent).toContain(profileB.profileName);
+		// The expiry sits in the second line, which stays visible on phones.
+		expect(row.querySelector(".person-copy > span")?.textContent).toMatch(/^Invited as contributor · expires \S/);
+		expect(row.querySelector(".person-meta")).toBeNull();
 		[...row.querySelectorAll("button")].find((button) => button.textContent === "Accept")!.click();
 		await draw();
 		expect(accept).toHaveBeenCalledExactlyOnceWith(invitation.id);
@@ -331,11 +334,18 @@ describe("settings session lifecycle", () => {
 		open(f.root);
 		click(f.root, "#settings-tab-company");
 		await draw();
+		// A settings search that hides the Friends tab is cleared on the way there.
+		const search = f.root.querySelector<HTMLInputElement>(".settings-nav input")!;
+		search.value = "team";
+		search.dispatchEvent(new Event("input"));
+		expect(f.root.querySelector<HTMLElement>("#settings-tab-friends")!.hidden).toBe(true);
 		f.root.querySelector<HTMLDetailsElement>(".company-invite")!.open = true;
 		expect(f.root.querySelector(".invite-results")?.textContent).toContain("Friend B");
 		[...f.root.querySelectorAll<HTMLButtonElement>(".company-invite button")]
 			.find((button) => button.textContent === "Add a friend")!
 			.click();
+		expect(search.value).toBe("");
+		expect(f.root.querySelector<HTMLElement>("#settings-tab-friends")!.hidden).toBe(false);
 		expect(f.root.querySelector("#settings-tab-friends")?.getAttribute("aria-selected")).toBe("true");
 		expect(document.activeElement).toBe(f.root.querySelector(".panel-search input"));
 		expect(f.api.listFriends).toHaveBeenCalledTimes(1);

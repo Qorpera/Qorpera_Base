@@ -60,6 +60,7 @@ export class SettingsView {
 	readonly #companyRemoved: (profileId: string) => void;
 	readonly #lifetime = new AbortController();
 	readonly #content = h("div", { class: "settings-content", id: "settings-content", role: "tabpanel", tabindex: "0" });
+	readonly #search = h("input", { type: "search", placeholder: "Search settings", "aria-label": "Search settings" });
 	readonly #panels = new Map<SettingsTab, HTMLElement>();
 	readonly #tabs = new Map<SettingsTab, HTMLButtonElement>();
 	readonly #borrowedCompany: CompanyController | undefined;
@@ -96,7 +97,7 @@ export class SettingsView {
 		this.#close = close;
 		this.#companyRemoved = companyRemoved;
 		this.#borrowedCompany = company;
-		const search = h("input", { type: "search", placeholder: "Search settings", "aria-label": "Search settings" });
+		const search = this.#search;
 		const empty = h("p", { class: "muted small", hidden: true }, "No settings found.");
 		const nav = h("nav", { class: "settings-nav", "aria-label": "Settings sections" }, search);
 		const tablist = h("div", { role: "tablist", "aria-label": "Settings sections", "aria-orientation": "vertical" });
@@ -528,6 +529,11 @@ export class SettingsView {
 				signal: this.#companyLifetime.signal,
 				embedded: true,
 				addFriend: () => {
+					// A settings search can hide the Friends tab; clear it so the open tab shows in the menu.
+					if (this.#tabs.get("friends")?.hidden) {
+						this.#search.value = "";
+						this.#search.dispatchEvent(new Event("input"));
+					}
 					this.#select("friends");
 					this.#panels.get("friends")?.querySelector<HTMLInputElement>(".panel-search input")?.focus();
 				},
