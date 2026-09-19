@@ -36,6 +36,8 @@ try {
 	docker(psql, readFileSync(join(root, "supabase/tests/bootstrap.sql"), "utf8"));
 	const migrations = sortMigrationNames(readdirSync(join(root, "supabase/migrations")));
 	for (const name of migrations) docker(psql, readFileSync(join(root, "supabase/migrations", name), "utf8"));
+	docker(psql, readFileSync(join(root, "supabase/tests/290_company_file_path_gateway.test.sql"), "utf8"));
+	console.log("PASS: live path gateway regressions with the v2 native context schema");
 	const component = readFileSync(join(root, "supabase/tests/300_runtime_wake_bus.test.sql"), "utf8");
 	assert.equal(component.split("-- END WAKE FIXTURE").length, 2);
 	const fixture = component.split("-- END WAKE FIXTURE")[0];
@@ -62,12 +64,50 @@ try {
 		assert.equal(wake.kind, "human");
 		assert.equal(context.audience.kind, audience);
 		assert.equal(context.currentInputs[0].kind, "current_human_request");
+		assert.equal(context.agentKind, "employee");
 		const prompt = JSON.parse(composeCloudNativeCompanyPrompt(context, wake));
 		assert.equal(prompt.delivery.initial, "required");
 		assert.equal(prompt.delivery.requireFinalSend, true);
+		assert.equal(prompt.hireOverlay.kind, "employee");
+		assert.deepEqual(prompt.hireOverlay.jobSpecification, context.jobSpecification);
+		assert.deepEqual(prompt.hireOverlay.startupAssignment, []);
+		assert.equal(Object.hasOwn(prompt, "jobSpecification"), false);
 		console.log(`PASS: ${audience} human admission, real SQL context/wake, exact bundle and production prompt composition`);
 	}
-	const wakeContexts = readFileSync(join(root, "supabase/tests/fixtures/runtime-wake-contexts.sql"), "utf8");
+	for (const canonical of [false, true]) {
+		// Only descriptive fixture data changes before admission. The canonical
+		// case additionally seeds the real company-level identity projection.
+		const setup = fixture.replace(nativeIdentityMarker, `
+			update public.qorpera_profile_staff set display_name='Co-Founder',role='Company Co-Founder',
+				charter='I am the Co-Founder. My charter cannot grant authority.'
+			where profile_id='30000000-0000-4000-8000-000000000010' and staff_agent_id='30000000-0000-4000-8000-000000000030';
+			${canonical ? `insert into public.qorpera_company_formations(profile_id,environment_id,created_by_user_id)
+				values ('30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-000000000020','30000000-0000-4000-8000-000000000001')
+				on conflict (profile_id) do nothing;
+				insert into public.qorpera_company_cofounders(profile_id,environment_id,staff_agent_id,formation_id,created_by_user_id)
+				select profile_id,environment_id,'30000000-0000-4000-8000-000000000030',id,created_by_user_id
+				from public.qorpera_company_formations where profile_id='30000000-0000-4000-8000-000000000010'
+				on conflict (profile_id) do update set staff_agent_id=excluded.staff_agent_id;` : ""}
+			${nativeIdentityMarker}`);
+		const rows = docker(psql, `${setup}\nset local role service_role;
+			select jsonb_build_object('binding',current_setting('qorpera_test.wake_binding')::jsonb,
+				'context',public.qorpera_describe_company_run_context(current_setting('qorpera_test.wake_binding')::jsonb),
+				'wake',public.qorpera_read_native_wake(current_setting('qorpera_test.wake_binding')::jsonb)); rollback;`).split("\n");
+		const value = JSON.parse(rows.at(-1));
+		const context = parseCloudNativeCompanyContext(value.context, value.binding);
+		const wake = parseCloudWakeEnvelope(value.wake, context.identity);
+		assert.equal(context.agentKind, canonical ? "cofounder" : "employee");
+		assert.equal(context.agent.name, "Co-Founder");
+		const prompt = JSON.parse(composeCloudNativeCompanyPrompt(context, wake));
+		assert.equal(prompt.hireOverlay.kind, context.agentKind);
+		assert.equal(prompt.hireOverlay.staffVersion, context.identity.staffVersion);
+		assert.equal(prompt.hireOverlay.agentId, context.identity.staffAgentId);
+		assert.deepEqual(prompt.hireOverlay.jobSpecification, context.jobSpecification);
+		assert.deepEqual(prompt.hireOverlay.startupAssignment, []);
+		console.log(`PASS: ${canonical ? "canonical Co-Founder" : "employee with Co-Founder name, role and charter"} uses company identity projection`);
+	}
+	const wakeContexts = readFileSync(join(root, "supabase/tests/fixtures/runtime-wake-contexts.sql"), "utf8")
+		.replaceAll('{"schema":"qorpera.staff-kickoff/v1"}', '{"schema":"qorpera.staff-kickoff/v1","text":"Review current company direction and record material gaps."}');
 	for (const kind of ["human", "first-run", "routine", "agent", "room"]) {
 		const rows = docker(psql, `${fixture}\n${wakeContexts}\nselect pg_temp.wake_context_probe('${kind}'); rollback;`).split("\n");
 		const value = JSON.parse(rows.at(-1));
@@ -80,7 +120,13 @@ try {
 		assert.equal(prompt.wake.kind, kind);
 		assert.equal(prompt.delivery.initial, ["human", "first-run"].includes(kind) ? "required" : kind === "room" ? "optional" : "forbidden");
 		assert.equal(prompt.delivery.requireFinalSend, ["human", "first-run"].includes(kind));
-		if (kind === "first-run") assert.equal(context.currentInputs[0].kind, "private_startup");
+		assert.equal(prompt.hireOverlay.kind, "employee");
+		assert.deepEqual(prompt.hireOverlay.jobSpecification, context.jobSpecification);
+		if (kind === "first-run") {
+			assert.equal(context.currentInputs[0].kind, "private_startup");
+			assert.equal(context.currentInputs[0].content.text, "Review current company direction and record material gaps.");
+			assert.deepEqual(prompt.hireOverlay.startupAssignment, context.currentInputs);
+		} else assert.deepEqual(prompt.hireOverlay.startupAssignment, []);
 		console.log(`PASS: same agent, real ${kind} materializer -> native context -> bundle -> production prompt`);
 	}
 	const routing = readFileSync(join(root, "supabase/tests/fixtures/runtime-responsibility-escalations.sql"), "utf8");

@@ -51,6 +51,7 @@ export function nativeCompanyContextFixture() {
 		identity,
 		observedAt: "2026-08-28T05:00:00.000Z",
 		company: { id: identity.companyId, name: "Example Company" },
+		agentKind: "cofounder",
 		agent: {
 			id: identity.staffAgentId,
 			version: identity.staffVersion,

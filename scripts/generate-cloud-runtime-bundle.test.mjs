@@ -56,6 +56,17 @@ test("pins every packaged entrypoint and detects code, generated-output and arti
 			assert.match(initial.manifest.implementation[path], /^[0-9a-f]{64}$/);
 		}
 		assert.equal((await generateCloudRuntimeBundle(true, fixture)).sha256, initial.sha256);
+		// Behavioral law and hire defaults have explicit, independently reviewable pins.
+		for (const [name, component] of [["cloud-runtime-constitution", "constitution"], ["cloud-runtime-hire-overlays", "contextComposer"]]) {
+			const path = join(fixture, `packages/runtime/src/${name}.ts`);
+			const original = await readFile(path, "utf8");
+			await writeFile(path, `${original}\n// Synthetic behavior revision.\n`);
+			const revised = await cloudRuntimeBundle(fixture);
+			assert.notEqual(revised.manifest.components[component], initial.manifest.components[component]);
+			assert.notEqual(revised.manifest.components.providerBootstrap, initial.manifest.components.providerBootstrap);
+			if (name === "cloud-runtime-hire-overlays") assert.equal(revised.manifest.components.constitution, initial.manifest.components.constitution);
+			await writeFile(path, original);
+		}
 		await writeFile(join(fixture, "supabase/migrations/20260828020000_runtime_wake_bus.sql"), "-- Synthetic wake-bus drift.\n");
 		await assert.rejects(generateCloudRuntimeBundle(true, fixture), /Runtime bundle is stale/);
 		await generateCloudRuntimeBundle(false, fixture);

@@ -733,7 +733,8 @@ do $$
 declare v_binding jsonb := current_setting('qorpera_test.path_binding')::jsonb; v_context jsonb; v_input jsonb; v_page jsonb;
 begin
 	v_context := public.qorpera_describe_company_run_context(v_binding);
-	if v_context ->> 'schema' <> 'qorpera.native-company-context/v1'
+	if v_context ->> 'schema' <> 'qorpera.native-company-context/v2'
+		or v_context ->> 'agentKind' <> 'employee'
 		or v_context #>> '{identity,runId}' <> v_binding ->> 'runId'
 		or v_context #>> '{company,id}' <> '29000000-0000-4000-8000-000000000010'
 		or v_context #>> '{agent,id}' <> '29000000-0000-4000-8000-000000000030'
