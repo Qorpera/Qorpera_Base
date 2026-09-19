@@ -57,7 +57,8 @@ interface NativeSession {
 	close(): Promise<void>;
 }
 /** The screen's one browser. It belongs to the desktop, like any window on it:
- * agent runs attach to it and detach, members use it through their viewer. */
+ * agent runs attach to it and detach, members use it through their viewer. It
+ * stays open only while SQL authorizes it (see `#ensureBrowser`). */
 interface ScreenBrowser {
 	manager: PersistentCompanyComputerBrowser;
 	opening?: Promise<CompanyComputerBrowserSession>;
@@ -345,11 +346,15 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	}
 
 	/**
-	 * Open, or join, the one browser of this screen. The process outlives the
-	 * caller: its lifetime is the screen's, so it ends with a drain, the privacy
-	 * fence, a lost grant or the office service, never with a run or a viewer.
+	 * Open, or join, the one browser of this screen. No run and no viewer owns the
+	 * process, so a run ending or a viewer closing does not by itself stop it. It
+	 * lives exactly as long as SQL keeps authorizing it: the egress relay asks
+	 * every second, and once no agent holds the lease and no member with input
+	 * permission is live on the screen (after SQL's tolerance of at most a minute
+	 * for a network blip) the next check is refused and the browser closes. It
+	 * also ends with a drain, the privacy fence, a lost grant and the service.
 	 * Chromium locks a profile to one process, and the manager keeps exactly one
-	 * per profile, so an agent run arriving later gets the same context.
+	 * per profile, so an agent run arriving while it is open gets the same context.
 	 */
 	async #ensureBrowser(
 		binding: CompanyComputerScreenBinding,
@@ -526,9 +531,10 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 				closing ??= cloudToolRequest(
 					async () => {
 						await Promise.allSettled([...active]);
-						// The run lets go of the screen's browser; it stays open for the
-						// desktop. Every action of this run has settled above, so no
-						// automation command of the run is still in flight.
+						// The run lets go of the screen's browser instead of closing it. It
+						// stays open only while somebody entitled remains (the relay's
+						// per-second SQL check decides). Every action of this run has settled
+						// above, so no automation command of the run is still in flight.
 						browser = undefined;
 						driving = undefined;
 						automation = undefined;

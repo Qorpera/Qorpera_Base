@@ -61,12 +61,31 @@ select pg_temp.wake_assert(pg_temp.sb_grant('desktop')->>'state'='authorized','t
 reset role;
 rollback to savepoint sb_dock_during_run;
 
--- No lease and nobody present: no authority, though the grant itself is current.
+-- The run has ended and nobody is present. A check is tolerated for at most a
+-- minute after the last presence; nothing can be opened in that time, and a
+-- member-lent profile gets no tolerance at all.
+create function pg_temp.sb_age_presence() returns void language sql as $$
+	update public.qorpera_runtime_office_browser_presence set present_at=present_at-interval '61 seconds'
+$$;
 set local role service_role;
 select pg_temp.office_call('release',current_setting('qorpera_test.sb_lease')::jsonb);
+select pg_temp.wake_assert(pg_temp.sb_grant()->>'state'='authorized','a check just after the run ended is tolerated');
+select pg_temp.wake_error($q$select pg_temp.sb_grant('desktop')$q$,'42501');
+select pg_temp.wake_error($q$select pg_temp.sb_grant('agent')$q$,'42501');
+reset role;
+savepoint sb_grace_member_profile;
+update public.qorpera_runtime_browser_profiles set company_owned=false where id=(pg_temp.sb_grant()->'grant'->>'profileId')::uuid;
+set local role service_role;
+select pg_temp.wake_error($q$select pg_temp.sb_grant()$q$,'42501');
+reset role;
+rollback to savepoint sb_grace_member_profile;
+select pg_temp.wake_assert((select cardinality(present_member_ids)=0 from public.qorpera_runtime_office_browser_presence),'the lease alone established this presence');
+select pg_temp.sb_age_presence();
+set local role service_role;
 select pg_temp.wake_error($q$select pg_temp.sb_grant()$q$,'42501');
 select pg_temp.wake_error($q$select pg_temp.sb_grant('desktop')$q$,'42501');
 reset role;
+select pg_temp.wake_assert((select present_at<clock_timestamp()-interval '60 seconds' from public.qorpera_runtime_office_browser_presence),'a tolerated or refused check never renews the presence');
 
 -- A watching member has no input permission and therefore opens nothing.
 select pg_temp.sb_observe();
@@ -124,14 +143,73 @@ select pg_temp.wake_error($q$select pg_temp.sb_grant('desktop')$q$,'42501');
 reset role;
 rollback to savepoint sb_member_alone;
 
--- Liveness is rechecked every time: a viewer whose gateway stopped renewing it stops counting.
+-- Liveness is rechecked every time. A viewer whose gateway stopped renewing it
+-- (a network blip) is tolerated for a check, never for an open, and only for a minute.
 savepoint sb_expired;
 update public.qorpera_runtime_office_viewers set expires_at=clock_timestamp()-interval '1 second'
 	where id=(current_setting('qorpera_test.sb_viewer')::jsonb->>'viewerSessionId')::uuid;
 set local role service_role;
+select pg_temp.wake_assert(pg_temp.sb_grant()->>'state'='authorized','a viewer that just lapsed is tolerated for a check');
+select pg_temp.wake_error($q$select pg_temp.sb_grant('desktop')$q$,'42501');
+reset role;
+select pg_temp.sb_age_presence();
+set local role service_role;
 select pg_temp.wake_error($q$select pg_temp.sb_grant()$q$,'42501');
 reset role;
 rollback to savepoint sb_expired;
+
+-- The tolerance never outlives a revocation or a fence. Each case starts from
+-- the same lapsed viewer, which alone would still be tolerated.
+create function pg_temp.sb_lapse() returns void language sql as $$
+	update public.qorpera_runtime_office_viewers set expires_at=clock_timestamp()-interval '1 second'
+		where id=(current_setting('qorpera_test.sb_viewer')::jsonb->>'viewerSessionId')::uuid
+$$;
+-- The member left and rejoined (a new membership incarnation).
+savepoint sb_grace_membership;
+select pg_temp.sb_lapse();
+insert into public.qorpera_runtime_browser_membership_revocations(profile_id,user_id,version)
+	values('30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-000000000001',1)
+	on conflict(profile_id,user_id) do update set version=qorpera_runtime_browser_membership_revocations.version+1;
+set local role service_role;
+select pg_temp.wake_error($q$select pg_temp.sb_grant()$q$,'42501');
+reset role;
+rollback to savepoint sb_grace_membership;
+-- A fence since the presence (what a drain, takeover or screen change leaves behind).
+savepoint sb_grace_fenced;
+select pg_temp.sb_lapse();
+update public.qorpera_runtime_office_screens set shared_viewer_epoch=shared_viewer_epoch+1
+	where id=(current_setting('qorpera_test.sb_binding')::jsonb->>'screenId')::uuid;
+set local role service_role;
+select pg_temp.wake_error($q$select pg_temp.sb_grant()$q$,'42501');
+reset role;
+rollback to savepoint sb_grace_fenced;
+-- A privacy version change since the presence.
+savepoint sb_grace_privacy;
+select pg_temp.sb_lapse();
+update public.qorpera_runtime_offices set privacy_version=privacy_version+1
+	where id=(current_setting('qorpera_test.sb_binding')::jsonb->>'companyComputerId')::uuid;
+set local role service_role;
+select pg_temp.wake_error($q$select pg_temp.sb_grant()$q$,'42501');
+reset role;
+rollback to savepoint sb_grace_privacy;
+-- A real takeover request: the pending drain refuses at once, tolerance or not.
+savepoint sb_grace_drain;
+select pg_temp.sb_lapse();
+select pg_temp.sb_observe();
+select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+set local role authenticated;
+select public.qorpera_request_runtime_office_drain(current_setting('qorpera_test.office_scope')::jsonb,
+	(current_setting('qorpera_test.sb_binding')::jsonb->>'screenId')::uuid,
+	(current_setting('qorpera_test.sb_binding')::jsonb->>'computerGeneration')::bigint,
+	(current_setting('qorpera_test.sb_binding')::jsonb->>'screenGeneration')::bigint,
+	current_setting('qorpera_test.sb_epoch')::bigint,true);
+reset role;
+select pg_temp.path_claims('service_role');
+set local role service_role;
+select pg_temp.wake_error($q$select pg_temp.sb_grant()$q$,'42501');
+reset role;
+rollback to savepoint sb_grace_drain;
+select pg_temp.path_claims('service_role');
 
 -- A revoked grant ends the browser for everybody, present or not.
 savepoint sb_revoked;
@@ -142,9 +220,15 @@ select pg_temp.wake_error($q$select pg_temp.sb_grant()$q$,'42501');
 reset role;
 rollback to savepoint sb_revoked;
 
--- The viewer closing ends its authority; the agent's return restores the agent's.
+-- The viewer closing ends its authority after the short tolerance, and at once
+-- for anything that would open a browser; the agent's return restores the agent's.
 set local role service_role;
 select public.qorpera_release_runtime_office_viewer(current_setting('qorpera_test.sb_viewer')::jsonb);
+select pg_temp.wake_assert(pg_temp.sb_grant()->>'state'='authorized','a check just after the viewer left is tolerated');
+select pg_temp.wake_error($q$select pg_temp.sb_grant('desktop')$q$,'42501');
+reset role;
+select pg_temp.sb_age_presence();
+set local role service_role;
 select pg_temp.wake_error($q$select pg_temp.sb_grant()$q$,'42501');
 select set_config('qorpera_test.sb_lease',(pg_temp.office_call('acquire')->'lease')::text,true);
 select pg_temp.wake_assert(pg_temp.sb_grant()->>'state'='authorized','the agent''s next lease uses the same screen browser authority');
@@ -154,4 +238,6 @@ select pg_temp.wake_assert(not has_function_privilege('authenticated','public.qo
 	and not has_function_privilege('anon','public.qorpera_office_screen_browser_grant(jsonb,text)','EXECUTE')
 	and has_function_privilege('service_role','public.qorpera_office_screen_browser_grant(jsonb,text)','EXECUTE'),'screen browser authority is broker only');
 select pg_temp.wake_assert(not has_table_privilege('service_role','public.qorpera_runtime_office_browser_opens','SELECT')
-	and not has_table_privilege('authenticated','public.qorpera_runtime_office_browser_opens','SELECT'),'the open ledger is readable through no client role');
+	and not has_table_privilege('authenticated','public.qorpera_runtime_office_browser_opens','SELECT')
+	and not has_table_privilege('service_role','public.qorpera_runtime_office_browser_presence','UPDATE')
+	and not has_table_privilege('authenticated','public.qorpera_runtime_office_browser_presence','SELECT'),'the open ledger and the presence record are reachable through no client role');

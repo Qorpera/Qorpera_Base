@@ -50,7 +50,10 @@ vi.mock("../src/cloud-company-computer-linux-desktop.ts", () => ({
 	},
 }));
 vi.mock("../src/cloud-company-computer-linux-browser.ts", () => ({
-	createCompanyComputerLinuxBrowserLaunch: () => physical.browserLaunch,
+	createCompanyComputerLinuxBrowserLaunch:
+		(options: unknown) =>
+		(...args: unknown[]) =>
+			physical.browserLaunch(...args, options),
 }));
 vi.mock("../src/cloud-company-computer-linux-private-surface.ts", () => ({
 	startCompanyComputerLinuxPrivateSurface: physical.privateStart,
@@ -59,7 +62,12 @@ const runs: CloudNativeToolRun[] = [];
 const guests: CompanyComputerLinuxGuest[] = [];
 const displays: { stop: ReturnType<typeof vi.fn>; exited: ReturnType<typeof computerDeferred<void>> }[] = [];
 const privateCloses: ReturnType<typeof vi.fn>[] = [];
-const browsers: { context: { pages(): never[] }; close: ReturnType<typeof vi.fn>; end(): void }[] = [];
+const browsers: {
+	context: { pages(): never[] };
+	close: ReturnType<typeof vi.fn>;
+	end(): void;
+	ended(): boolean;
+}[] = [];
 const temporary: string[] = [];
 beforeEach(() => {
 	browsers.length = 0;
@@ -78,25 +86,36 @@ beforeEach(() => {
 	});
 	physical.connect.mockImplementation(async () => new Socket());
 	physical.browserRequest.mockResolvedValue(false);
-	physical.browserLaunch.mockImplementation(async (_directory: string, options: { signal: AbortSignal }) => {
-		options.signal.throwIfAborted();
-		const listeners: (() => void)[] = [];
-		const context = {
-			pages: () => [],
-			on: (_event: string, listener: () => void) => listeners.push(listener),
-			cookies: async () => [],
-			addCookies: async () => undefined,
-		};
-		const close = vi.fn(async () => undefined);
-		browsers.push({
-			context,
-			close,
-			end: () => {
-				for (const listener of listeners) listener();
-			},
-		});
-		return { context, close };
-	});
+	physical.browserLaunch.mockImplementation(
+		async (
+			_directory: string,
+			input: { signal: AbortSignal; grant: unknown; binding: unknown },
+			options: { access: { assertGranted(grant: unknown, binding: unknown, signal: AbortSignal): Promise<void> } },
+		) => {
+			input.signal.throwIfAborted();
+			const listeners: (() => void)[] = [];
+			const context = {
+				pages: () => [],
+				on: (_event: string, listener: () => void) => listeners.push(listener),
+				cookies: async () => [],
+				addCookies: async () => undefined,
+			};
+			let over = false;
+			const end = (): void => {
+				over = true;
+				clearInterval(relay);
+				for (const listener of listeners.splice(0)) listener();
+			};
+			// The one physical behaviour this double keeps: like the real egress relay,
+			// it asks the launch's authority every second and ends the browser on a refusal.
+			const relay = setInterval(() => {
+				void options.access.assertGranted(input.grant, input.binding, new AbortController().signal).catch(end);
+			}, 1000);
+			const close = vi.fn(async () => end());
+			browsers.push({ context, close, end, ended: () => over });
+			return { context, close };
+		},
+	);
 	physical.privateStart.mockImplementation(async (options) => {
 		await options.assertDrained(options.challenge, options.signal);
 		options.signal.throwIfAborted();
@@ -114,6 +133,7 @@ afterEach(async () => {
 	vi.useRealTimers();
 	await Promise.allSettled(guests.splice(0).map((guest) => guest.close()));
 	for (const run of runs.splice(0)) run.close();
+	for (const browser of browsers.splice(0)) browser.end();
 	for (const directory of temporary.splice(0)) await rm(directory, { recursive: true, force: true });
 	vi.restoreAllMocks();
 });
@@ -384,14 +404,40 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 		expect(f.screenBrowser.opens).toEqual(["desktop"]);
 		expect(f.order.some((entry) => entry.startsWith("qorpera_native_office_browser_grant"))).toBe(true);
 
-		// Run end lets go of the browser; the window stays for the desktop.
+		// Run end lets go of the browser. The member is still live on the screen with
+		// input permission, so SQL keeps authorizing the relay's per-second check and
+		// the window stays.
 		await session.close();
+		const checks = () => f.order.filter((entry) => entry.startsWith("qorpera_office_screen_browser_grant")).length;
+		const before = checks();
+		await vi.waitFor(() => expect(checks()).toBeGreaterThan(before + 1), { timeout: 4000 });
+		expect(browsers[0].ended()).toBe(false);
 		expect(browsers[0].close).not.toHaveBeenCalled();
 		expect(displays[0].stop).not.toHaveBeenCalled();
 		const next = await f.create();
 		await next.endpoint.perform(f.operation({ kind: "browser", action: "list_tabs" }), f.lease, f.effect());
 		expect(physical.browserLaunch).toHaveBeenCalledOnce();
 		expect(f.failure).not.toHaveBeenCalled();
+	});
+	it("closes the screen's browser about a second after the last entitled party is gone, and opens a fresh one for the next run", async () => {
+		const f = await fixture({ browser: true });
+		const session = await f.create();
+		await session.endpoint.perform(f.operation({ kind: "browser", action: "list_tabs" }), f.lease, f.effect());
+		await session.close();
+		expect(browsers[0].ended()).toBe(false);
+		// No lease, no live input viewer, and SQL's short tolerance is over: the
+		// relay's next check is refused and the browser ends. The desktop stays.
+		f.screenBrowser.authorized = false;
+		await vi.waitFor(() => expect(browsers[0].ended()).toBe(true), { timeout: 4000 });
+		expect(displays[0].stop).not.toHaveBeenCalled();
+		expect(f.failure).not.toHaveBeenCalled();
+		f.screenBrowser.authorized = true;
+		const next = await f.create();
+		await next.endpoint.perform(f.operation({ kind: "browser", action: "list_tabs" }), f.lease, f.effect());
+		// The old process is confirmed gone before the same profile starts again.
+		expect(browsers[0].close).toHaveBeenCalledOnce();
+		expect(physical.browserLaunch).toHaveBeenCalledTimes(2);
+		expect(f.screenBrowser.opens).toEqual(["agent", "agent"]);
 	});
 	it("starts nothing when SQL refuses the screen's browser, and an agent without its own grant cannot start it either", async () => {
 		const f = await fixture({ browser: true });

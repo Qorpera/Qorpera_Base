@@ -90,10 +90,20 @@ moment. That is presence, not a proven click: a shared desktop cannot attribute
 a press. At most one row per screen, present member and opener per 60 s.
 An agent run joins the screen's browser instead of starting its own,
 still proves its own grant under its lease before every action
-(`qorpera_native_office_browser_grant`), and lets go of it at run end; the
-window stays. The browser closes with the screen: drain, privacy fence, lost
-grant, service stop, and, as before, when an agent action fails or is cancelled
-mid-flight (only a physical close proves its automation stopped). Signing in to
+(`qorpera_native_office_browser_grant`), and lets go of it at run end instead
+of closing it. The window does not outlive the people entitled to it: the egress
+relay repeats the SQL check every second, so it stays open while an agent holds
+the lease or a member with input permission is live on the screen, and closes
+within about a second once neither is. To keep a viewer's network blip from
+closing a member's browser, SQL tolerates a check (never an open) for at most
+60 s after the last recorded presence, in SQL time, and only while nothing was
+fenced since: same office generation, privacy version, screen generation,
+shared-viewer epoch and drain challenge, no takeover, same grant, a
+company-owned profile, and a present member who still has input permission
+under the same membership. The browser also closes with the screen: drain,
+privacy fence, lost grant, service stop. A failed or cancelled action of a run
+that drove the browser closes it too (only a physical close proves its
+automation stopped); a run that never joined it closes nothing. Signing in to
 third-party sites stays a takeover (`control`) activity under the contract;
 nothing here records member keystrokes beyond the existing per-input commitment
 ledger. `qorpera-screen-browser` is guest code: an existing computer gets the

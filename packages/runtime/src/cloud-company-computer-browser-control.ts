@@ -28,7 +28,11 @@ export type CompanyComputerScreenBrowserOpener = "agent" | "desktop";
  * time, that the screen agent's grant is current and that somebody entitled to
  * use the screen is present: an agent holding the screen lease, or a live
  * shared/control viewer whose member still has input permission. Without an
- * agent lease only a company-owned profile qualifies.
+ * agent lease only a company-owned profile qualifies, and the dock only ever
+ * opens a company-owned profile. With nobody present SQL tolerates a check (never
+ * an open) for at most a minute since the last unfenced presence, so a viewer's
+ * network blip does not close a member's browser; after that the relay's next
+ * check is refused and the browser closes.
  *
  * This adds no path around the existing checks. An agent action still passes
  * the run's own `CloudCompanyComputerBrowserControl`, member input still passes
