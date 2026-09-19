@@ -1,9 +1,33 @@
+import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure, figureElement, nativeColorOf } from "../../ui/avatar.ts";
 import { button, h, icon, replace } from "../../ui/dom.ts";
 import { FigurePicker } from "../../ui/figure-picker.ts";
 import type { CompanyController } from "../company.ts";
 import { navigate } from "../router.ts";
 import type { AgentDraft, WorkspaceActions } from "../workspace-actions.ts";
+
+/* A "To:" field with one short list under it. The list starts a new agent,
+ * gathers agents for a group chat, or opens one agent's conversation. Focus
+ * stays in the field and the arrow keys move through the list (the ARIA
+ * combobox pattern), so refreshes never take the caret away. */
+interface Choice {
+	/** "create", "group", "start", or an agent id. */
+	key: string;
+	label: string;
+	lead: HTMLElement;
+	disabled: boolean;
+	/** Shown on the highlighted row, or always when it is a status. */
+	hint?: { text: string; status: boolean };
+	/** Membership of a group chat being put together. */
+	member?: boolean;
+	run: () => void;
+}
+
+let instances = 0;
+
+function mark(name: string): HTMLElement {
+	return h("span", { class: "recipient-mark", "aria-hidden": "true" }, icon(name));
+}
 
 export class NewConversationView {
 	readonly el = h("section", { class: "new-conversation" });
@@ -12,13 +36,42 @@ export class NewConversationView {
 	readonly #close: () => void;
 	readonly #lifetime = new AbortController();
 	readonly #unsubscribe: () => void;
-	readonly #results = h("div", { class: "recipient-results" });
-	readonly #chips = h("div", { class: "recipient-chips", "aria-label": "Selected recipients" });
+	readonly #id = `new-conversation-${++instances}`;
+	readonly #chips = h("span", {
+		class: "recipient-chips",
+		role: "group",
+		"aria-label": "Selected recipients",
+		hidden: true,
+	});
+	readonly #list = h("div", {
+		id: `${this.#id}-list`,
+		class: "recipient-list",
+		role: "listbox",
+		"aria-label": "Agents",
+	});
+	readonly #empty = h("p", { class: "recipient-empty", hidden: true });
+	readonly #menu = h(
+		"div",
+		{
+			class: "recipient-menu",
+			hidden: true,
+			// Keep focus in the field while the pointer picks a row.
+			onmousedown: (event: MouseEvent) => event.preventDefault(),
+		},
+		this.#list,
+		this.#empty,
+	);
+	readonly #search: HTMLInputElement;
+	readonly #field: HTMLDivElement;
 	readonly #selected = new Set<string>();
-	readonly #open = h("button", { type: "button", class: "btn btn-primary" }, "Open");
-	readonly #selectionStatus = h("p", { class: "surface-status", role: "status" });
 	readonly #navigation: HTMLButtonElement;
+	#choices: Choice[] = [];
+	#signature = "";
 	#query = "";
+	#group = false;
+	#listOpen = false;
+	#active: string | undefined;
+	#prefilled: string | undefined;
 	#editing = false;
 	#pending = false;
 	#syncControls: () => void = () => {};
@@ -45,9 +98,49 @@ export class NewConversationView {
 			},
 			icon("navigation"),
 		);
-		this.#open.onclick = () => this.#openSelection();
+		this.#search = h("input", {
+			id: `${this.#id}-to`,
+			type: "text",
+			role: "combobox",
+			placeholder: "Search or create agents",
+			"aria-label": "Search conversation recipients",
+			"aria-autocomplete": "list",
+			"aria-controls": this.#list.id,
+			"aria-expanded": "false",
+			autocomplete: "off",
+			spellcheck: "false",
+			enterkeyhint: "go",
+			oninput: () => {
+				this.#query = this.#search.value;
+				this.#active = undefined;
+				this.#listOpen = true;
+				this.#render();
+			},
+			onkeydown: (event: KeyboardEvent) => this.#key(event),
+			onfocus: () => this.#setListOpen(true),
+			onclick: () => this.#setListOpen(true),
+		});
+		this.#field = h(
+			"div",
+			{ class: "recipient-field" },
+			h("label", { class: "recipient-to", for: this.#search.id }, "To:"),
+			h("div", { class: "recipient-entry" }, this.#chips, this.#search, this.#menu),
+		);
+		// A press anywhere else closes the list. Blur alone cannot: a tap on a
+		// row may blur the field before the row's click arrives.
+		document.addEventListener(
+			"pointerdown",
+			(event) => {
+				if (!(event.target instanceof Node) || !this.#field.contains(event.target)) this.#setListOpen(false);
+			},
+			{ signal: this.#lifetime.signal },
+		);
+		this.#search.addEventListener("focusout", (event) => {
+			if (event.relatedTarget instanceof Node && !this.#field.contains(event.relatedTarget))
+				this.#setListOpen(false);
+		});
 		this.#unsubscribe = company.store.subscribe(() => {
-			if (!this.#editing) this.#drawResults();
+			if (!this.#editing) this.#render();
 			else this.#syncControls();
 		});
 		company.signal.addEventListener("abort", () => this.dispose(), { signal: this.#lifetime.signal });
@@ -58,164 +151,284 @@ export class NewConversationView {
 		this.#unsubscribe();
 	}
 	focus(): void {
-		this.el.querySelector<HTMLInputElement>("input")?.focus();
+		(this.#editing ? this.el.querySelector<HTMLInputElement>("input") : this.#search)?.focus();
 	}
 	setNavigationOpen(open: boolean): void {
 		this.#navigation.setAttribute("aria-expanded", String(open));
 	}
 	#picker(): void {
 		this.#editing = false;
-		const search = h("input", {
-			type: "search",
-			value: this.#query,
-			placeholder: "Search agents",
-			"aria-label": "Search conversation recipients",
-			autocomplete: "off",
-			oninput: () => {
-				this.#query = search.value;
-				this.#drawResults();
-			},
-		});
-		const create = button(
-			[
-				icon("plus"),
-				h(
-					"span",
-					null,
-					h("strong", null, "New agent"),
-					h("small", null, "Give someone a name and a responsibility"),
-				),
-			],
-			() => this.#configure(),
-			{ disabled: !this.#company.store.get().team?.capabilities.authorize },
-		);
-		create.classList.add("new-agent-card");
-		create.setAttribute("aria-label", "New agent");
 		replace(
 			this.el,
 			h(
 				"header",
 				{ class: "new-conversation-header" },
 				this.#navigation,
-				h("label", null, "To:", search),
+				this.#field,
 				h(
 					"button",
 					{ type: "button", class: "icon-button", "aria-label": "Close new conversation", onclick: this.#close },
 					icon("close"),
 				),
 			),
-			this.#chips,
-			h(
-				"div",
-				{ class: "new-conversation-body" },
-				h("h1", null, "New conversation"),
-				h("p", { class: "muted" }, "Select one agent for a direct conversation, or several for a group chat."),
-				this.#results,
-				create,
-			),
-			h("footer", { class: "recipient-footer" }, this.#selectionStatus, button("Cancel", this.#close), this.#open),
 		);
-		this.#drawResults();
+		this.#signature = "";
+		this.#render();
 	}
-	#drawResults(): void {
-		const focused = document.activeElement?.getAttribute("data-agent-id");
-		const active = this.#company.store.get().staff.filter((agent) => agent.employmentStatus === "active");
+	#setListOpen(open: boolean): void {
+		if (this.#editing || this.#listOpen === open) return;
+		this.#listOpen = open;
+		this.#render();
+	}
+	#render(): void {
+		if (this.#editing) return;
+		const state = this.#company.store.get();
+		const active = state.staff.filter((agent) => agent.employmentStatus === "active");
 		for (const id of this.#selected) if (!active.some((agent) => agent.id === id)) this.#selected.delete(id);
-		const create = this.el.querySelector<HTMLButtonElement>(".new-agent-card");
-		if (create) create.disabled = !this.#company.store.get().team?.capabilities.authorize;
-		const agents = active.filter((agent) =>
-			`${agent.displayName} ${agent.role}`.toLowerCase().includes(this.#query.trim().toLowerCase()),
-		);
-		replace(
-			this.#results,
-			h("h2", null, this.#query ? "Matching agents" : "Suggested agents"),
-			h(
-				"div",
-				{ class: "recipient-grid" },
-				...agents.map((agent) =>
-					h(
-						"button",
-						{
-							type: "button",
-							class: "recipient-card",
-							"data-agent-id": agent.id,
-							"aria-pressed": String(this.#selected.has(agent.id)),
-							onclick: () => {
-								if (this.#selected.has(agent.id)) this.#selected.delete(agent.id);
-								else this.#selected.add(agent.id);
-								this.#drawResults();
-							},
+		const canCreate = state.team?.capabilities.authorize === true;
+		const query = this.#query.trim();
+		// The rows show names only, so the search matches names only.
+		const agents = active.filter((agent) => agent.displayName.toLowerCase().includes(query.toLowerCase()));
+		// Activity refreshes arrive often; rebuild rows only when what they show changed.
+		const signature = JSON.stringify([
+			this.#group,
+			query,
+			canCreate,
+			[...this.#selected],
+			agents.map((agent) => [agent.id, agent.displayName, agent.templateId, agent.appearance]),
+		]);
+		if (signature !== this.#signature) {
+			this.#signature = signature;
+			// Chips keep the order the agents were added in, as a "To:" line does.
+			const members = [...this.#selected].flatMap((id) => active.filter((agent) => agent.id === id));
+			this.#build(agents, members, canCreate, query);
+		}
+		this.#menu.hidden = !this.#listOpen;
+		this.#search.setAttribute("aria-expanded", String(this.#listOpen));
+		if (!this.#choices.some((choice) => choice.key === this.#active))
+			this.#active = query ? (agents[0]?.id ?? (canCreate && !this.#group ? "create" : undefined)) : undefined;
+		this.#highlight(false);
+	}
+	#build(agents: HostedStaffAgent[], members: HostedStaffAgent[], canCreate: boolean, query: string): void {
+		const choices: Choice[] = this.#group
+			? [
+					{
+						key: "start",
+						label: "Start group chat",
+						lead: mark("friends"),
+						// No client can create a group conversation yet.
+						disabled: true,
+						hint: {
+							text: this.#selected.size < 2 ? "Pick two or more agents" : "Not available yet",
+							status: true,
 						},
-						agentFigure(agent, agent.displayName, { size: 48 }),
-						h("span", null, h("strong", null, agent.displayName), h("small", null, agent.role)),
-						this.#selected.has(agent.id) ? icon("check") : null,
-					),
+						run: () => {},
+					},
+				]
+			: [
+					{
+						key: "create",
+						label: query ? `New agent “${query}”` : "New agent",
+						lead: mark("plus"),
+						disabled: !canCreate,
+						run: () => this.#configure(),
+					},
+					{
+						key: "group",
+						label: "New group chat",
+						lead: mark("friends"),
+						disabled: false,
+						run: () => this.#setGroup(true),
+					},
+				];
+		for (const agent of agents)
+			choices.push({
+				key: agent.id,
+				label: agent.displayName,
+				lead: agentFigure(agent, agent.displayName, { size: 28 }),
+				disabled: false,
+				...(this.#group
+					? { member: this.#selected.has(agent.id) }
+					: { hint: { text: "Open chat", status: false } }),
+				run: () => (this.#group ? this.#toggle(agent.id) : this.#open(agent)),
+			});
+		this.#choices = choices;
+		this.#search.placeholder = this.#group ? "Add agents" : "Search or create agents";
+		if (this.#group) this.#list.setAttribute("aria-multiselectable", "true");
+		else this.#list.removeAttribute("aria-multiselectable");
+		replace(
+			this.#list,
+			...choices.map((choice) =>
+				h(
+					"div",
+					{
+						id: `${this.#id}-${choice.key}`,
+						class: "recipient-option",
+						role: "option",
+						"data-choice": choice.key,
+						"aria-disabled": choice.disabled ? "true" : undefined,
+						"aria-selected": choice.member === undefined ? undefined : String(choice.member),
+						onclick: (event: MouseEvent) => {
+							// Rows rebuild on a pick, so a double-click's second click
+							// would land on whatever row moved under the pointer.
+							if (!choice.disabled && event.detail < 2) choice.run();
+						},
+						onmousemove: () => {
+							if (this.#active !== choice.key) {
+								this.#active = choice.key;
+								this.#highlight(false);
+							}
+						},
+					},
+					choice.lead,
+					h("span", { class: "recipient-option-label" }, choice.label),
+					choice.hint
+						? h(
+								"span",
+								{
+									class: choice.hint.status ? "recipient-option-hint status" : "recipient-option-hint",
+									"aria-hidden": choice.hint.status ? undefined : "true",
+								},
+								choice.hint.text,
+							)
+						: null,
+					choice.member === undefined
+						? null
+						: h(
+								"span",
+								{ class: "recipient-check", "aria-hidden": "true" },
+								choice.member ? icon("check") : null,
+							),
 				),
 			),
-			agents.length
-				? null
-				: h("p", { class: "empty" }, this.#query ? "No matching agents." : "No agents available."),
 		);
+		this.#empty.hidden = agents.length > 0;
+		this.#empty.textContent = query ? "No agents match." : "No agents yet.";
 		const chipFocus = document.activeElement?.getAttribute("data-remove-recipient");
 		replace(
 			this.#chips,
-			...active
-				.filter((agent) => this.#selected.has(agent.id))
-				.map((agent) =>
-					h(
-						"button",
-						{
-							type: "button",
-							class: "recipient-chip",
-							"aria-label": `Remove ${agent.displayName}`,
-							"data-remove-recipient": agent.id,
-							onclick: () => {
-								this.#selected.delete(agent.id);
-								this.#drawResults();
-								this.focus();
-							},
+			...members.map((agent) =>
+				h(
+					"button",
+					{
+						type: "button",
+						class: "recipient-chip",
+						"aria-label": `Remove ${agent.displayName}`,
+						"data-remove-recipient": agent.id,
+						onmousedown: (event: MouseEvent) => event.preventDefault(),
+						onclick: (event: MouseEvent) => {
+							// The next chip slides under the pointer; one double-click removes one.
+							if (event.detail > 1) return;
+							this.#selected.delete(agent.id);
+							this.#render();
+							this.#search.focus();
 						},
-						agentFigure(agent, agent.displayName, { size: 22 }),
-						agent.displayName,
-						icon("close"),
-					),
+					},
+					agentFigure(agent, agent.displayName, { size: 20 }),
+					h("span", { class: "recipient-chip-name" }, agent.displayName),
+					icon("close"),
 				),
+			),
 		);
-		this.#chips.hidden = !this.#selected.size;
-		this.#open.disabled = this.#selected.size !== 1;
-		this.#selectionStatus.textContent =
-			this.#selected.size > 1
-				? "Group conversations are not available yet. Your selection stays here."
-				: this.#selected.size === 1
-					? "Open a conversation with this agent."
-					: "Choose a recipient.";
-		if (focused || chipFocus) {
-			const target = focused
-				? [...this.#results.querySelectorAll<HTMLButtonElement>("[data-agent-id]")].find(
-						(button) => button.dataset.agentId === focused,
-					)
-				: [...this.#chips.querySelectorAll<HTMLButtonElement>("button")].find(
-						(button) => button.dataset.removeRecipient === chipFocus,
-					);
-			if (target) target.focus({ preventScroll: true });
-			else this.focus();
+		this.#chips.hidden = !this.#group || !members.length;
+		if (chipFocus) {
+			const chip = [...this.#chips.querySelectorAll<HTMLButtonElement>("button")].find(
+				(item) => item.dataset.removeRecipient === chipFocus,
+			);
+			(chip ?? this.#search).focus({ preventScroll: true });
 		}
 	}
-	#openSelection(): void {
-		if (this.#selected.size !== 1) return;
-		const agent = this.#company.staffById([...this.#selected][0]);
-		if (!agent || agent.employmentStatus !== "active") return;
+	#highlight(reveal: boolean): void {
+		let current: HTMLElement | undefined;
+		for (const row of this.#list.querySelectorAll<HTMLElement>("[role=option]")) {
+			const on = row.dataset.choice === this.#active;
+			row.classList.toggle("active", on);
+			// A single-choice list marks the highlighted row as the selection.
+			if (!this.#group) {
+				if (on) row.setAttribute("aria-selected", "true");
+				else row.removeAttribute("aria-selected");
+			}
+			if (on) current = row;
+		}
+		if (current && this.#listOpen) {
+			this.#search.setAttribute("aria-activedescendant", current.id);
+			if (reveal) current.scrollIntoView?.({ block: "nearest" });
+		} else this.#search.removeAttribute("aria-activedescendant");
+	}
+	#key(event: KeyboardEvent): void {
+		if (event.isComposing) return;
+		if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+			event.preventDefault();
+			this.#setListOpen(true);
+			const count = this.#choices.length;
+			if (!count) return;
+			const index = this.#choices.findIndex((choice) => choice.key === this.#active);
+			const step = event.key === "ArrowDown" ? 1 : -1;
+			const next = index < 0 ? (step > 0 ? 0 : count - 1) : (index + step + count) % count;
+			this.#active = this.#choices[next]!.key;
+			this.#highlight(true);
+		} else if (event.key === "Enter") {
+			if (!this.#listOpen) return;
+			event.preventDefault();
+			const choice = this.#choices.find((item) => item.key === this.#active);
+			if (choice && !choice.disabled) choice.run();
+		} else if (event.key === "Escape") {
+			// First the list closes, then a group chat in progress is put away.
+			if (this.#listOpen) {
+				event.preventDefault();
+				this.#setListOpen(false);
+			} else if (this.#group) {
+				event.preventDefault();
+				this.#setGroup(false);
+			}
+		} else if (event.key === "Backspace" && this.#group && !this.#search.value) {
+			const last = [...this.#selected].at(-1);
+			if (last) {
+				event.preventDefault();
+				this.#selected.delete(last);
+				this.#render();
+			}
+		}
+	}
+	#setGroup(group: boolean): void {
+		this.#group = group;
+		this.#query = "";
+		this.#search.value = "";
+		this.#active = undefined;
+		this.#render();
+	}
+	#toggle(id: string): void {
+		if (this.#selected.has(id)) this.#selected.delete(id);
+		else this.#selected.add(id);
+		if (this.#query) {
+			this.#query = "";
+			this.#search.value = "";
+		}
+		this.#active = id;
+		this.#render();
+	}
+	#open(agent: HostedStaffAgent): void {
+		const current = this.#company.staffById(agent.id);
+		if (!current || current.employmentStatus !== "active") return;
 		const cofounder =
-			agent.templateId === "co-founder" ||
-			agent.id === this.#company.store.get().organization?.cofounder.staffAgentId;
+			current.templateId === "co-founder" ||
+			current.id === this.#company.store.get().organization?.cofounder.staffAgentId;
 		navigate(
 			cofounder
 				? { name: "company", profileId: this.#company.profile.profileId, section: "home" }
-				: { name: "company", profileId: this.#company.profile.profileId, section: "staff", id: agent.id },
+				: { name: "company", profileId: this.#company.profile.profileId, section: "staff", id: current.id },
 		);
 	}
 	#configure(): void {
 		if (!this.#company.store.get().team?.capabilities.authorize) return;
+		// "Search or create": what was typed names the agent, unless the draft
+		// already carries a name of the member's own.
+		const typed = this.#query.trim().slice(0, 64);
+		if (typed && (!this.#draft.displayName || this.#draft.displayName === this.#prefilled)) {
+			this.#draft.displayName = typed;
+			this.#prefilled = typed;
+		}
+		this.#listOpen = false;
 		this.#editing = true;
 		const stage = h(
 			"div",
@@ -259,7 +472,7 @@ export class NewConversationView {
 		});
 		const fields = h(
 			"fieldset",
-			{ class: "agent-edit-fields" },
+			{ class: "new-agent-fields" },
 			stage,
 			picker.el,
 			h("label", null, "Name", name),
