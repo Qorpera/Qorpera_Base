@@ -59,15 +59,20 @@ gets the company browser on that screen, for member and agent alike. The
 browser is owned by the screen, not by a run: the dock launcher leaves an empty
 request file, the office service opens the screen agent's granted profile
 through the unchanged contained launch, a later agent run joins the same
-window, and run end lets go of it. Authority is the broker-only
-`qorpera_office_screen_browser_grant` (migration
+window, and run end lets go of it instead of closing it. Authority is the
+broker-only `qorpera_office_screen_browser_grant` (migration
 `20260920021000_runtime_office_screen_browser.sql`): the agent's current grant
-plus an agent lease or a live shared/control viewer with input permission; a
-member alone only ever opens a company-owned profile. Opens are recorded with
-the members present. Unchanged: the run's own grant check before every agent
-action, per-connection egress checks, one Chromium per profile, the privacy
-fence and drain closing it, and a failed or cancelled agent action physically
-closing it. Third-party sign-in remains a takeover (`control`) activity.
+plus an agent lease or a live shared/control viewer with input permission; the
+dock and a member alone only ever open a company-owned profile. The relay
+repeats that check every second, so the browser closes about a second after
+the last entitled party is gone; SQL tolerates a check for at most 60 s after
+the last unfenced presence so a viewer's network blip does not close it. Opens
+are recorded with the members who were present (presence, not a proven click).
+Unchanged: the run's own grant check before every agent action, per-connection
+egress checks, one Chromium per profile, the privacy fence and drain closing
+it at once, and a failed or cancelled action of a run that drove the browser
+physically closing it. Third-party sign-in remains a takeover (`control`)
+activity.
 Details: `deploy/lxd-company-computer-guest/README.md`.
 
 ## Release and acceptance

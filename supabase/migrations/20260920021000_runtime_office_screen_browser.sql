@@ -39,6 +39,31 @@ create index qorpera_runtime_office_browser_opens_screen on public.qorpera_runti
 alter table public.qorpera_runtime_office_browser_opens enable row level security;
 revoke all on public.qorpera_runtime_office_browser_opens from public,anon,authenticated,service_role;
 
+-- The egress relay asks for this authority every second, so a browser with
+-- nobody entitled present closes within about a second. A member's network
+-- blip must not take their browser with it, so a CHECK (never an open) is
+-- tolerated for at most 60 seconds after the last moment a lease or a live
+-- input viewer existed. That moment is recorded here, in SQL time, by the
+-- authorized checks themselves, together with everything a fence changes.
+-- The tolerance applies only while all of it is unchanged: office generation
+-- and privacy version, screen generation, shared-viewer epoch, drain challenge,
+-- no takeover, the same grant and a company-owned profile; and, when members
+-- established the presence, while at least one of them still has input
+-- permission under the same membership incarnation. The shared-surface check
+-- above it still refuses at once for a privacy fence, a pending drain, a closed
+-- screen, lost access or an inactive office.
+create table public.qorpera_runtime_office_browser_presence (
+	screen_id uuid primary key references public.qorpera_runtime_office_screens(id) on delete restrict,
+	office_id uuid not null references public.qorpera_runtime_offices(id) on delete restrict,
+	fence jsonb not null,
+	present_member_ids uuid[] not null,
+	membership_versions bigint[] not null,
+	present_at timestamptz not null,
+	check(cardinality(present_member_ids)=cardinality(membership_versions))
+);
+alter table public.qorpera_runtime_office_browser_presence enable row level security;
+revoke all on public.qorpera_runtime_office_browser_presence from public,anon,authenticated,service_role;
+
 -- p_opener null: a current check (egress relay, agent action). 'agent' or
 -- 'desktop': the service is about to start the browser process; recorded.
 create function public.qorpera_office_screen_browser_grant(p_binding jsonb,p_opener text)
@@ -46,6 +71,7 @@ returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_office public.qorpera_runtime_offices%rowtype; v_screen public.qorpera_runtime_office_screens%rowtype;
 	v_profile_id uuid; v_grant_id uuid; v_grant_version bigint; v_company_owned boolean; v_leased boolean;
 	v_viewer public.qorpera_runtime_office_viewers%rowtype; v_viewers uuid[]:='{}'; v_members uuid[]:='{}';
+	v_versions bigint[]:='{}'; v_fence jsonb;
 begin
 	if auth.role() is distinct from 'service_role' then raise exception 'Office supervisor required' using errcode='42501'; end if;
 	if p_opener is not null and p_opener not in ('agent','desktop') then raise exception 'Browser opener unavailable' using errcode='42501'; end if;
@@ -76,6 +102,7 @@ begin
 			-- as the viewer gateway rechecks them before each input.
 			perform public.qorpera_assert_runtime_office_viewer(v_viewer,v_office,v_screen);
 			v_viewers:=v_viewers||v_viewer.id; v_members:=v_members||v_viewer.member_id;
+			v_versions:=v_versions||v_viewer.membership_version;
 		exception when insufficient_privilege then null;
 		end;
 	end loop;
@@ -83,9 +110,39 @@ begin
 	-- a member prepared privately (legacy member-lent grants outlive the company
 	-- browser amendment), not even while the agent it was lent to holds the lease:
 	-- only that agent's own run opens such a profile.
-	if not (v_leased or (v_company_owned and cardinality(v_viewers)>0)) or (p_opener='agent' and not v_leased)
-		or (p_opener='desktop' and not v_company_owned) then
-		raise exception 'Browser authority unavailable' using errcode='42501'; end if;
+	v_fence:=jsonb_build_object('computerGeneration',v_office.generation,'privacyVersion',v_office.privacy_version,
+		'screenGeneration',v_screen.generation,'sharedViewerEpoch',v_screen.shared_viewer_epoch,'drainId',v_screen.drain_id,
+		'profileId',v_profile_id,'grantId',v_grant_id,'grantVersion',v_grant_version);
+	if v_leased or cardinality(v_viewers)>0 then
+		if not (v_leased or v_company_owned) or (p_opener='agent' and not v_leased)
+			or (p_opener='desktop' and not v_company_owned) then
+			raise exception 'Browser authority unavailable' using errcode='42501'; end if;
+		-- Somebody entitled is present now. Rewritten at most every five seconds
+		-- unless the facts changed, so the per-second relay check stays cheap.
+		insert into public.qorpera_runtime_office_browser_presence as presence
+			(screen_id,office_id,fence,present_member_ids,membership_versions,present_at)
+		values(v_screen.id,v_office.id,v_fence,v_members,v_versions,clock_timestamp())
+		on conflict(screen_id) do update set office_id=excluded.office_id,fence=excluded.fence,
+			present_member_ids=excluded.present_member_ids,membership_versions=excluded.membership_versions,
+			present_at=excluded.present_at
+		where presence.fence is distinct from excluded.fence
+			or presence.present_member_ids is distinct from excluded.present_member_ids
+			or presence.membership_versions is distinct from excluded.membership_versions
+			or presence.present_at<excluded.present_at-interval '5 seconds';
+	elsif p_opener is not null or not v_company_owned or v_screen.takeover_user_id is not null
+		or not exists(select 1 from public.qorpera_runtime_office_browser_presence presence
+			where presence.screen_id=v_screen.id and presence.fence=v_fence
+			and presence.present_at>clock_timestamp()-interval '60 seconds'
+			and (cardinality(presence.present_member_ids)=0 or exists(
+				select 1 from unnest(presence.present_member_ids,presence.membership_versions) as was(member_id,membership_version)
+				join public.qorpera_profile_members member on member.profile_id=v_office.profile_id
+					and member.user_id=was.member_id and member.role in ('owner','admin')
+				where was.membership_version=coalesce((select revoked.version
+					from public.qorpera_runtime_browser_membership_revocations revoked
+					where revoked.profile_id=v_office.profile_id and revoked.user_id=was.member_id),0)))) then
+		-- Nobody present, and no recent unfenced presence to tolerate: closed.
+		raise exception 'Browser authority unavailable' using errcode='42501';
+	end if;
 	if p_opener is not null then
 		-- A launcher pressed again and again adds nothing new to know. Serialize
 		-- opens of one screen (nothing else takes this lock, and it is taken last)
