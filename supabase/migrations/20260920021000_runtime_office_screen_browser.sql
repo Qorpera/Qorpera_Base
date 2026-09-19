@@ -8,7 +8,8 @@
 -- agent effects still need their receipts and the run's own browser grant
 -- check, and the egress relay asks again for every connection. A profile a
 -- member prepared privately is never opened for another member: without an
--- agent lease only a company-owned profile qualifies.
+-- agent lease only a company-owned profile qualifies, and the dock ('desktop')
+-- opens only a company-owned profile whether or not a lease exists.
 create table public.qorpera_runtime_office_browser_opens (
 	id uuid primary key default extensions.gen_random_uuid(),
 	office_id uuid not null references public.qorpera_runtime_offices(id) on delete restrict,
@@ -73,7 +74,12 @@ begin
 		exception when insufficient_privilege then null;
 		end;
 	end loop;
-	if not (v_leased or (v_company_owned and cardinality(v_viewers)>0)) or (p_opener='agent' and not v_leased) then
+	-- The dock is pressed by whoever shares the desktop. It never starts a profile
+	-- a member prepared privately (legacy member-lent grants outlive the company
+	-- browser amendment), not even while the agent it was lent to holds the lease:
+	-- only that agent's own run opens such a profile.
+	if not (v_leased or (v_company_owned and cardinality(v_viewers)>0)) or (p_opener='agent' and not v_leased)
+		or (p_opener='desktop' and not v_company_owned) then
 		raise exception 'Browser authority unavailable' using errcode='42501'; end if;
 	if p_opener is not null then
 		if cardinality(v_viewers)=0 then
