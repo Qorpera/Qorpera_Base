@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { type FileHandle, lstat, mkdir, mkdtemp, open, rm, unlink, writeFile } from "node:fs/promises";
+import { type FileHandle, lstat, mkdir, mkdtemp, open, rm, rmdir, unlink, writeFile } from "node:fs/promises";
 import { connect, type Socket } from "node:net";
 import { join, resolve } from "node:path";
 import {
@@ -64,18 +64,26 @@ export const COMPANY_COMPUTER_BROWSER_REQUEST_FILE = "browser-request";
 
 /**
  * Consume the dock launcher's "open the browser" request. The desktop namespace
- * can write anything into this directory, so the request is only its presence:
- * nothing is read, no link is followed, and whatever sits at the name is
- * removed without descending into it. Every other fact (which screen, which
+ * can write anything into this directory, and this runs as the service outside
+ * the sandbox, so the request is only the presence of a regular file: nothing
+ * is opened or read, and removal never descends. `unlink` and `rmdir` act on
+ * the directory entry itself and never follow a link, so even an entry swapped
+ * between the look and the removal costs the desktop only its own entry. What
+ * cannot be removed that way (a non-empty directory) is left alone; it merely
+ * blocks dock requests on that desktop. Every other fact (which screen, which
  * profile, who may open it) comes from the service and SQL.
  */
-export async function takeCompanyComputerBrowserRequest(sessionDirectory: string): Promise<boolean> {
+export async function takeCompanyComputerBrowserRequest(
+	sessionDirectory: string,
+	/** Test seam: runs between the look and the removal, where a hostile desktop would swap the entry. */
+	afterInspect?: () => Promise<void>,
+): Promise<boolean> {
 	const path = join(sessionDirectory, COMPANY_COMPUTER_BROWSER_REQUEST_FILE);
 	const info = await lstat(path).catch(() => undefined);
 	if (!info) return false;
+	await afterInspect?.();
 	if (info.isDirectory()) {
-		// Not a request. `rm` does not follow links; a directory placed here is simply cleared.
-		await rm(path, { recursive: true, force: true }).catch(() => undefined);
+		await rmdir(path).catch(() => undefined);
 		return false;
 	}
 	const removed = await unlink(path).then(
