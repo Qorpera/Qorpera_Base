@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
 import { ApprovalsView } from "../src/app/views/approvals.ts";
+import { HubController } from "../src/app/views/hub.ts";
 import { NewConversationView } from "../src/app/views/new-conversation.ts";
 import { renderOrganization } from "../src/app/views/organization.ts";
 import { SettingsView } from "../src/app/views/settings.ts";
@@ -199,9 +200,12 @@ describe("shell presentation lifecycle", () => {
 		vi.mocked(f.api.getCompanyFile)
 			.mockReturnValueOnce(pending.promise)
 			.mockResolvedValue({ ...file, storageUsedBytes: 40 });
+		const hub = new HubController(f.api);
+		cleanup.push(() => hub.dispose());
 		const view = new SettingsView(
 			f.api,
 			auth,
+			hub,
 			[profileA, profileB],
 			f.company,
 			() => {},

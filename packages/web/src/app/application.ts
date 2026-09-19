@@ -23,14 +23,12 @@ import { CloudCheckView } from "./views/cloudcheck.ts";
 import { CompanyFileController, renderCompanyFile } from "./views/companyfile.ts";
 import { ConversationView } from "./views/conversation.ts";
 import { FeedbackView } from "./views/feedback.ts";
-import { FriendsController, renderFriends } from "./views/friends.ts";
 import { HubController, renderHub } from "./views/hub.ts";
-import { renderInvitations } from "./views/invitations.ts";
 import { LiveCompanyFileView } from "./views/live-company-file.ts";
 import { type MeetState, renderMeet } from "./views/meet.ts";
 import { NewConversationView } from "./views/new-conversation.ts";
 import { renderOrganization } from "./views/organization.ts";
-import { SettingsView } from "./views/settings.ts";
+import { type SettingsTab, SettingsView } from "./views/settings.ts";
 import { renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
 import { renderSignIn } from "./views/signin.ts";
 import { renderTeam } from "./views/team.ts";
@@ -48,7 +46,6 @@ export function mountApplication(
 ): () => void {
 	const auth = new AuthController(cloud);
 	let hub = new HubController(api);
-	let friends = new FriendsController(api);
 
 	const topbar = h("header", { class: "topbar" });
 	const rail = h("aside", { id: "company-navigation", class: "rail", "aria-label": "Company navigation" });
@@ -85,15 +82,17 @@ export function mountApplication(
 		frame.inert = false;
 		if (restoreFocus) frame.querySelector<HTMLElement>(".account-trigger")?.focus();
 	}
-	function openSettings(): void {
+	function openSettings(tab?: SettingsTab): void {
 		if (settings || feedback || !auth.userId) return;
 		settings = new SettingsView(
 			api,
 			auth,
+			hub,
 			profiles,
 			company?.store.get().accessLost ? undefined : company,
 			() => closeSettings(),
 			companyRemovedHandler(),
+			tab,
 		);
 		frame.inert = true;
 		root.append(settings.el);
@@ -166,7 +165,6 @@ export function mountApplication(
 	let meetState: MeetState = {};
 	let unsubscribeCompany: (() => void) | undefined;
 	let homeReason: string | undefined;
-	let friendsLoaded = false;
 
 	const render = debounce(() => void draw(), 10);
 
@@ -178,7 +176,6 @@ export function mountApplication(
 			settings?.updateProfiles(profiles);
 			render();
 		});
-		friends.store.subscribe(() => render());
 	}
 	observeAccount();
 	auth.store.subscribe(() => {
@@ -191,12 +188,10 @@ export function mountApplication(
 			routeRevision++;
 			teardownCompany();
 			hub.dispose();
-			friends.dispose();
 			cloudCheck?.dispose();
 			cloudCheck = undefined;
 			profiles = [];
 			accountState = {};
-			friendsLoaded = false;
 			meetState = {};
 			resolvingRoute = undefined;
 			routeError = undefined;
@@ -208,7 +203,6 @@ export function mountApplication(
 			rail.replaceChildren();
 			main.replaceChildren();
 			hub = new HubController(api, userId);
-			friends = new FriendsController(api);
 			observeAccount();
 			if (userId) void hub.refresh();
 		}
@@ -425,14 +419,6 @@ export function mountApplication(
 					accountState = { ...accountState, ...next };
 					render();
 				});
-			} else if (route.name === "friends") {
-				if (!friendsLoaded) {
-					friendsLoaded = true;
-					void friends.refresh();
-				}
-				renderFriends(friends, main);
-			} else if (route.name === "invitations") {
-				renderInvitations(hub, main);
 			} else if (route.name === "cloud-check") {
 				cloudCheck ??= new CloudCheckView(cloud);
 				replace(main, cloudCheck.el);
@@ -800,7 +786,7 @@ export function mountApplication(
 						teamFeedback = next;
 						render();
 					},
-					{ onCompanyRemoved: companyRemovedHandler() },
+					{ onCompanyRemoved: companyRemovedHandler(), addFriend: () => openSettings("friends") },
 				);
 				return;
 		}
@@ -818,7 +804,6 @@ export function mountApplication(
 		closeFeedback(false);
 		auth.dispose();
 		hub.dispose();
-		friends.dispose();
 		teardownCompany();
 		cloudCheck?.dispose();
 		window.removeEventListener("hashchange", onRouteChange);

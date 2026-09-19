@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
 import { CompanyExecutionView } from "../src/app/views/company-execution.ts";
+import { HubController } from "../src/app/views/hub.ts";
 import { SettingsView } from "../src/app/views/settings.ts";
 import type { CompanyExecutionState, WebCompanyExecution } from "../src/cloud/company-execution.ts";
 import { deferred, fixture, profileA, profileB, settle, team, timestamp, userA } from "./fixtures.ts";
@@ -219,9 +220,11 @@ describe("company execution controls", () => {
 		const pending = deferred<Response>();
 		const network = vi.fn(async () => pending.promise);
 		vi.stubGlobal("fetch", network);
+		const hub = new HubController(f.api);
 		const settings = new SettingsView(
 			f.api,
 			auth,
+			hub,
 			[profileA, profileB],
 			company,
 			() => {},
@@ -230,6 +233,7 @@ describe("company execution controls", () => {
 		document.body.append(settings.el);
 		dispose = () => {
 			settings.dispose();
+			hub.dispose();
 			company.stop();
 			auth.dispose();
 		};

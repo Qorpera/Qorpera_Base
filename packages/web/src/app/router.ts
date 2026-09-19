@@ -21,8 +21,6 @@ export type CompanySection =
 export type Route =
 	| { name: "hub" }
 	| { name: "account" }
-	| { name: "friends" }
-	| { name: "invitations" }
 	| { name: "cloud-check" }
 	| { name: "company"; profileId: string; section: CompanySection; id?: string };
 
@@ -30,8 +28,6 @@ export function parseRoute(hash: string): Route {
 	const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean);
 	if (parts.length === 0) return { name: "hub" };
 	if (parts[0] === "account") return { name: "account" };
-	if (parts[0] === "friends") return { name: "friends" };
-	if (parts[0] === "invitations") return { name: "invitations" };
 	if (parts[0] === "cloud-check") return { name: "cloud-check" };
 	if (parts[0] === "c" && parts[1] && UUID.test(parts[1])) {
 		const profileId = parts[1].toLowerCase();
@@ -70,10 +66,6 @@ export function routeHash(route: Route): string {
 			return "#/";
 		case "account":
 			return "#/account";
-		case "friends":
-			return "#/friends";
-		case "invitations":
-			return "#/invitations";
 		case "cloud-check":
 			return "#/cloud-check";
 		case "company":

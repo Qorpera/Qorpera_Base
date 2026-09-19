@@ -7,6 +7,7 @@ import { uiText } from "../../ui/preferences.ts";
 import { type AuthController, displayName } from "../auth.ts";
 import type { CompanyController } from "../company.ts";
 import type { Route } from "../router.ts";
+import type { SettingsTab } from "./settings.ts";
 
 /* The company shell: a rail with conversations and the account menu, and the
  * main pane. A compact toolbar keeps the rail accessible on small screens. */
@@ -18,7 +19,7 @@ export interface ShellContext {
 	auth: AuthController;
 	/** Company invitations waiting for this account, for the menu's count. */
 	invitations: number;
-	openSettings: () => void;
+	openSettings: (tab?: SettingsTab) => void;
 	openFeedback: () => void;
 	navigation?: { open: boolean; toggle: () => void };
 }
@@ -42,14 +43,13 @@ function preserveAccountFocus(): () => void {
 	const focused = document.activeElement;
 	const scrollTop = accountPopover?.scrollTop ?? 0;
 	const triggerFocused = focused === accountTrigger;
-	const href = accountMenuOpen && accountPopover?.contains(focused) ? focused?.getAttribute("href") : undefined;
 	const action = accountMenuOpen ? focused?.getAttribute("data-account-action") : undefined;
 	return () => {
 		if (accountMenuOpen && accountPopover) accountPopover.scrollTop = scrollTop;
 		if (triggerFocused) accountTrigger?.focus({ preventScroll: true });
-		else if (accountMenuOpen && (href || action)) {
-			const target = [...(accountPopover?.querySelectorAll<HTMLElement>("[role=menuitem]") ?? [])].find((item) =>
-				href ? item.getAttribute("href") === href : item.getAttribute("data-account-action") === action,
+		else if (accountMenuOpen && action) {
+			const target = [...(accountPopover?.querySelectorAll<HTMLElement>("[role=menuitem]") ?? [])].find(
+				(item) => item.getAttribute("data-account-action") === action,
 			);
 			target?.focus({ preventScroll: true });
 		}
@@ -105,14 +105,19 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 	const name = displayName(context.user);
 	accountTrigger!.setAttribute("aria-label", `Profile: ${name}`);
 	accountTrigger!.title = name;
-	const item = (target: "account" | "friends" | "invitations", iconName: string, label: string, count = 0) =>
+	// Friends and the company invitations waiting for this account share one settings tab.
+	const settingsItem = (tab: SettingsTab, iconName: string, label: string, count = 0) =>
 		h(
-			"a",
+			"button",
 			{
-				class: ["account-item", context.route.name === target ? "active" : ""].join(" "),
+				type: "button",
+				class: "account-item",
 				role: "menuitem",
-				href: `#/${target}`,
-				onclick: () => setAccountMenuOpen(false),
+				"data-account-action": tab === "general" ? "settings" : tab,
+				onclick: () => {
+					setAccountMenuOpen(false);
+					context.openSettings(tab);
+				},
 			},
 			icon(iconName),
 			h("span", { class: "account-item-label" }, uiText(label)),
@@ -127,23 +132,8 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 	replace(
 		accountPopover!,
 		h("div", { class: "account-identity" }, h("strong", null, name)),
-		h(
-			"button",
-			{
-				type: "button",
-				class: "account-item",
-				role: "menuitem",
-				"data-account-action": "settings",
-				onclick: () => {
-					setAccountMenuOpen(false);
-					context.openSettings();
-				},
-			},
-			icon("settings"),
-			h("span", { class: "account-item-label" }, uiText("Account and settings")),
-		),
-		item("friends", "friends", "Friends"),
-		item("invitations", "invitations", "Invitations", context.invitations),
+		settingsItem("general", "settings", "Account and settings"),
+		settingsItem("friends", "friends", "Friends", context.invitations),
 		h(
 			"button",
 			{
