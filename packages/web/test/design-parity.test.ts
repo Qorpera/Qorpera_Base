@@ -99,24 +99,50 @@ describe("shell presentation lifecycle", () => {
 		expect(view.el.isConnected).toBe(false);
 		expect(closed).toHaveBeenCalledTimes(1);
 	});
-	it("keeps multi-selection local, retains it through refresh, and drops archived recipients", async () => {
+	it("gathers a group chat locally, retains it through refresh, and drops archived recipients", async () => {
 		const f = companyFixture();
 		const other = { ...staff, id: id(91), displayName: "Second agent" };
 		f.company.store.set({ staff: [staff, other] });
 		const view = new NewConversationView(f.company, {}, () => {});
 		cleanup.push(() => view.dispose());
 		document.body.append(view.el);
-		for (const agent of [staff, other])
-			view.el.querySelector<HTMLButtonElement>(`[data-agent-id="${agent.id}"]`)!.click();
-		expect(view.el.querySelectorAll(".recipient-chip")).toHaveLength(2);
-		expect(view.el.querySelector<HTMLButtonElement>(".recipient-footer .btn-primary")!.disabled).toBe(true);
+		const row = (key: string) => view.el.querySelector<HTMLElement>(`[role="option"][data-choice="${key}"]`);
+		const search = view.el.querySelector<HTMLInputElement>('[role="combobox"]')!;
+		const press = (key: string) => {
+			const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+			search.dispatchEvent(event);
+			return event;
+		};
+		row("group")!.click();
+		expect(view.el.querySelector('[role="listbox"]')!.getAttribute("aria-multiselectable")).toBe("true");
+		expect(row("create")).toBeNull();
+		expect(search.placeholder).toBe("Add agents");
+		for (const agent of [other, staff]) row(agent.id)!.click();
+		// Chips keep the order the agents were added in.
+		expect([...view.el.querySelectorAll(".recipient-chip")].map((chip) => chip.textContent)).toEqual([
+			"Second agent",
+			"Fixture agent",
+		]);
+		// No client can start a group conversation yet, and the row says so.
+		const hash = location.hash;
+		expect(row("start")!.getAttribute("aria-disabled")).toBe("true");
+		expect(row("start")!.textContent).toContain("Not available yet");
+		row("start")!.click();
+		expect(location.hash).toBe(hash);
 		f.company.store.set({ activity: [] });
 		await settle();
-		expect(view.el.querySelectorAll('[aria-pressed="true"]')).toHaveLength(2);
+		expect(view.el.querySelectorAll('[aria-selected="true"]')).toHaveLength(2);
 		f.company.store.set({ staff: [staff, { ...other, employmentStatus: "archived" }] });
 		await settle();
 		expect(view.el.querySelectorAll(".recipient-chip")).toHaveLength(1);
-		expect(view.el.querySelector<HTMLButtonElement>(".recipient-footer .btn-primary")!.disabled).toBe(false);
+		expect(row("start")!.textContent).toContain("Pick two or more agents");
+		// Backspace in the empty field takes the last agent back out.
+		press("Backspace");
+		expect(view.el.querySelectorAll(".recipient-chip")).toHaveLength(0);
+		// Escape with the list closed puts the group chat away.
+		expect(press("Escape").defaultPrevented).toBe(true);
+		expect(row("create")).not.toBeNull();
+		expect(view.el.querySelector('[role="listbox"]')!.hasAttribute("aria-multiselectable")).toBe(false);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 	it("caps the rail at two fifths of the window and keeps resizing usable when storage is blocked", () => {

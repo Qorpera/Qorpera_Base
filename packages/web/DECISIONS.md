@@ -381,3 +381,18 @@ while a save is out follow it as one more write. Closing the popup keeps a
 change that was being typed; leaving the conversation, changing company or
 losing access drops it. Members without write access see the same popup read
 only. The description is taller: at least five lines, growing to thirteen.
+
+## 2026-09-19 — New conversation is one list under the To: field
+
+**Decision (Jonas).** The new-conversation screen follows Grok's bot picker:
+a "To:" field with one short list under it, replacing the page of agent
+cards. The list starts with New agent and New group chat, then every active
+agent. The rows show names only, so the field searches names only. Picking an
+agent opens its conversation at once. New group chat turns the rows into
+checkboxes and puts the chosen agents in the field as chips. A name typed
+into the field carries into New agent.
+
+**Still missing.** No client can start a group conversation yet (`room:create`
+in CLIENT-CONTRACT.md). The Start group chat row stays disabled and says "Not
+available yet", as the old screen's Open button did.
+
