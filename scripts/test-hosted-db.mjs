@@ -24,21 +24,17 @@ export function sortMigrationNames(names) {
 	return migrations;
 }
 
-/** A test may begin with one or more `-- @fixture <file> until "<marker>"` lines to run after the
- * fixture sections of other files, in order, instead of copying them. Markers are not included. */
+/** A test may begin with `-- @fixture <file> until "<marker>"` to run after another test's
+ * fixture section instead of copying it. The marker line itself is not included. */
 export function expandTestFixture(name, read) {
-	let source = read(name);
-	let prefix = "";
-	for (;;) {
-		const directive = /^-- @fixture ((?:fixtures\/)?[0-9a-z_.-]+\.sql) until "([^"\n]+)"\n/.exec(source);
-		if (!directive) return prefix + source;
-		const [line, fixtureName, marker] = directive;
-		const fixture = fixtureName === name ? undefined : read(fixtureName);
-		const end = fixture?.indexOf(marker) ?? -1;
-		if (end < 0) throw new Error(`Test fixture is unavailable: ${fixtureName}`);
-		prefix += fixture.slice(0, end);
-		source = source.slice(line.length);
-	}
+	const source = read(name);
+	const directive = /^-- @fixture ([0-9a-z_.-]+\.test\.sql) until "([^"\n]+)"\n/.exec(source);
+	if (!directive) return source;
+	const [line, fixtureName, marker] = directive;
+	const fixture = read(fixtureName);
+	const end = fixture.indexOf(marker);
+	if (fixtureName === name || end < 0) throw new Error(`Test fixture is unavailable: ${fixtureName}`);
+	return fixture.slice(0, end) + source.slice(line.length);
 }
 
 export function buildContainerName(pid, suffix) {
