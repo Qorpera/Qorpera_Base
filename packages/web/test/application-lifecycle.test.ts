@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { webcrypto } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
 import { AuthController } from "../src/app/auth.ts";
@@ -14,6 +15,7 @@ import { deferred, fixture, id, profileA, profileB, session, settle, staff, team
 let dispose: (() => void) | undefined;
 beforeEach(() => {
 	vi.useFakeTimers();
+	vi.stubGlobal("crypto", webcrypto);
 	vi.stubGlobal("matchMedia", () => ({ matches: true, addEventListener() {}, removeEventListener() {} }));
 	vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("No cloud transport in this UI fixture")));
 	history.replaceState(null, "", "/#/");
@@ -34,6 +36,9 @@ async function draw(): Promise<void> {
 function mounted(hash = "#/") {
 	history.replaceState(null, "", `/${hash}`);
 	const f = fixture();
+	f.cloud.config.publishableKey = "sb_publishable_fixturekey";
+	f.cloud.config.objectGatewayUrl = "https://objects.fixture.invalid";
+	f.cloud.config.nativeProviderLoginUrl = "https://login.fixture.invalid/";
 	const root = document.createElement("div");
 	document.body.append(root);
 	dispose = mountApplication(root, f.cloud, f.api);
@@ -56,6 +61,16 @@ function executionTransport() {
 			const method = String(input).split("/").at(-1);
 			if (method === "qorpera_request_session_turn_v2") return send(init);
 			if (method === "qorpera_list_session_turn_requests") return Response.json([]);
+			if (method === "qorpera_select_member_session_account") return Response.json(id(81));
+			if (method === "qorpera_begin_native_account_refresh")
+				return Response.json({
+					request_id: id(83),
+					profile_id: profileA.profileId,
+					compute_identity_id: id(80),
+					requested_by_user_id: userA.id,
+					expires_at: new Date(Date.now() + 300_000).toISOString(),
+					status: "completed",
+				});
 			if (method === "qorpera_list_member_native_execution_connections")
 				return Response.json({
 					compute_identity: {
@@ -116,7 +131,8 @@ describe("account and route ownership", () => {
 		input.dispatchEvent(new Event("input"));
 		f.root.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.click();
 		await draw();
-		expect(send).toHaveBeenCalledOnce();
+		await vi.waitFor(() => expect(send).toHaveBeenCalledOnce());
+		await draw();
 		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 		expect(f.root.querySelector("textarea")!.value).toBe("");
 		expect(f.root.textContent).toContain("First message");
