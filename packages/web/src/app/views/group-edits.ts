@@ -1,6 +1,8 @@
+import { describeError } from "../../cloud/client.ts";
 import type { GroupChatDetails, GroupChatDraft } from "../../cloud/group-details.ts";
 import type { CompanyController } from "../company.ts";
 import { Store } from "../state.ts";
+import { GroupUpdateNotWrittenError } from "../update-group.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 
 interface GroupEditState {
@@ -174,13 +176,20 @@ export class GroupEdits {
 				while (this.#changes.size) {
 					signal.throwIfAborted();
 					if (!this.canWrite()) throw new Error("Only an owner or admin can change group chats.");
+					const retrying = this.#retry !== undefined;
 					const attempt = this.#retry ?? {
 						observed: { ...this.#details, members: this.#details.members.map((member) => ({ ...member })) },
 						draft: this.current(),
 						changes: new Map(this.#changes),
 					};
 					this.#retry = attempt;
-					await this.#update(attempt.observed.sessionId, attempt.observed, attempt.draft, signal);
+					try {
+						await this.#update(attempt.observed.sessionId, attempt.observed, attempt.draft, signal);
+					} catch (error) {
+						// A failed preflight can accept corrections, but cannot resolve an earlier uncertain write.
+						if (error instanceof GroupUpdateNotWrittenError && !retrying) this.#retry = undefined;
+						throw error;
+					}
 					signal.throwIfAborted();
 					this.#retry = undefined;
 					this.#needsRefresh = true;
@@ -206,8 +215,8 @@ export class GroupEdits {
 				this.#needsRefresh = false;
 			} while (this.#changes.size);
 			this.store.set({ status: "Saved", failed: false });
-		} catch {
-			if (!signal.aborted) this.store.set({ status: "Your changes could not be saved.", failed: true });
+		} catch (error) {
+			if (!signal.aborted) this.store.set({ status: describeError(error), failed: true });
 		} finally {
 			this.#saving = false;
 			if (signal.aborted) void this.save();

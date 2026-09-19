@@ -6,8 +6,9 @@ import type {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { createGroupUpdater } from "../src/app/update-group.ts";
+import { GroupEdits } from "../src/app/views/group-edits.ts";
 import type { GroupChatDetails, GroupChatDraft } from "../src/cloud/group-details.ts";
-import { deferred, fixture, id, profileA, session, staff, team, timestamp, userA } from "./fixtures.ts";
+import { deferred, fixture, id, profileA, session, settle, staff, team, timestamp, userA } from "./fixtures.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => {
@@ -96,6 +97,92 @@ function setup() {
 		signal,
 	};
 }
+
+function setupInlineEdits() {
+	const f = setup();
+	const scope = new AbortController();
+	cleanup.push(() => scope.abort());
+	vi.spyOn(f.company, "refreshSessions").mockResolvedValue();
+	vi.spyOn(f.company, "groupDetails").mockImplementation(async () => {
+		const document: typeof f.room & { subtitle?: string } = JSON.parse(f.currentFile.text);
+		return { ...f.observed, ...document };
+	});
+	const update = vi.fn(f.update);
+	const edits = new GroupEdits(f.company, f.observed, { updateGroup: update }, scope.signal);
+	return { ...f, update, edits };
+}
+
+describe("inline group edits through the real updater", () => {
+	it("saves a corrected multibyte description and preserves another pending field", async () => {
+		const f = setupInlineEdits();
+		f.edits.change({ purpose: "界".repeat(12_000) });
+		f.edits.change({ subtitle: "Keep this subtitle" });
+		await settle();
+		expect(f.edits.store.get()).toEqual({
+			failed: true,
+			status: "The group details are too long. Shorten the description.",
+		});
+		expect(f.editor.edit).not.toHaveBeenCalled();
+		f.edits.change({ purpose: "Corrected short description" });
+		expect(f.update).toHaveBeenCalledOnce();
+		await f.edits.save();
+		expect(f.editor.edit).toHaveBeenCalledOnce();
+		expect(JSON.parse(f.currentFile.text)).toMatchObject({
+			purpose: "Corrected short description",
+			subtitle: "Keep this subtitle",
+			version: f.observed.version + 1,
+		});
+		expect(f.edits.store.get()).toEqual({ status: "Saved", failed: false });
+	});
+
+	it("accepts corrected participants after validation fails before a write", async () => {
+		const f = setupInlineEdits();
+		f.edits.change({ members: f.observed.members.slice(0, 2) });
+		await settle();
+		expect(f.edits.store.get().status).toContain("Choose at least two active agents");
+		expect(f.getEditor).not.toHaveBeenCalled();
+		f.edits.change({ members: f.draft.members });
+		await f.edits.save();
+		expect(f.editor.edit).toHaveBeenCalledOnce();
+		expect(JSON.parse(f.currentFile.text)).toMatchObject({
+			members: f.draft.members,
+			version: f.observed.version + 1,
+		});
+		expect(f.edits.store.get()).toEqual({ status: "Saved", failed: false });
+	});
+
+	it("retains an uncertain write through a retry read failure before applying newer edits", async () => {
+		const f = setupInlineEdits();
+		f.editor.review.mockImplementationOnce(async () => {
+			const edit = f.editor.edit.mock.calls[0]![0];
+			if (edit.operation !== "write") throw new Error("Expected room write");
+			f.currentFile.text = edit.text;
+			throw new Error("Lost approval response");
+		});
+		f.edits.change({ name: "First title" });
+		await settle();
+		expect(f.edits.store.get().failed).toBe(true);
+		f.edits.change({ name: "Newer title", subtitle: "Queued subtitle" });
+		f.editor.read.mockRejectedValueOnce(new Error("Temporary read failure"));
+		await f.edits.save();
+		expect(f.edits.store.get().failed).toBe(true);
+		expect(f.editor.edit).toHaveBeenCalledOnce();
+		await f.edits.save();
+		expect(f.update).toHaveBeenCalledTimes(4);
+		for (const retry of f.update.mock.calls.slice(1, 3)) {
+			expect(retry[1]).toEqual(f.update.mock.calls[0]![1]);
+			expect(retry[2]).toEqual(f.update.mock.calls[0]![2]);
+		}
+		expect(f.update.mock.calls[3]![1].version).toBe(f.observed.version + 1);
+		expect(f.editor.edit).toHaveBeenCalledTimes(2);
+		expect(JSON.parse(f.currentFile.text)).toMatchObject({
+			name: "Newer title",
+			subtitle: "Queued subtitle",
+			version: f.observed.version + 2,
+		});
+		expect(f.edits.store.get()).toEqual({ status: "Saved", failed: false });
+	});
+});
 
 describe("editing group details", () => {
 	it.each(["  Launch coordination  ", ""])("persists and clears canonical subtitles (%s)", async (subtitle) => {

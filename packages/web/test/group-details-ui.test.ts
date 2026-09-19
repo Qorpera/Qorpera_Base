@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
+import { GroupUpdateNotWrittenError } from "../src/app/update-group.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import type { WorkspaceActions } from "../src/app/workspace-actions.ts";
 import { deferred, fixture, id, profileA, session, settle, staff, team, timestamp, userA } from "./fixtures.ts";
@@ -275,6 +276,40 @@ describe("group details from the conversation header", () => {
 		expect(f.updateGroup.mock.calls[1]?.[1].version).toBe(2);
 		expect(f.updateGroup.mock.calls[1]?.[2].name).toBe("Fresh name");
 	});
+
+	it.each(["Try again", "Discard changes"])(
+		"keeps %s focused when leaving a corrected field and performs the action",
+		async (label) => {
+			const f = setup();
+			f.open();
+			await settle();
+			f.updateGroup.mockRejectedValueOnce(new GroupUpdateNotWrittenError("Description is too long."));
+			typeField("purpose", "Rejected description").blur();
+			await settle();
+			typeField("purpose", "Corrected description");
+			const target = button(label);
+			// Pointer and keyboard focus move before the click, blurring the field.
+			target.focus();
+			await settle();
+			expect(button(label)).toBe(target);
+			expect(target.isConnected).toBe(true);
+			expect(document.activeElement).toBe(target);
+			f.updateGroup.mockImplementationOnce(async (_session, observed, draft) => {
+				f.rpc.mockResolvedValue([{ ...room, ...draft, version: observed.version + 1 }]);
+			});
+			target.click();
+			await settle();
+			if (label === "Try again") {
+				expect(f.updateGroup).toHaveBeenCalledTimes(2);
+				expect(f.updateGroup.mock.calls[1]?.[2].purpose).toBe("Corrected description");
+				expect(field("purpose").value).toBe("Corrected description");
+			} else {
+				expect(f.updateGroup).toHaveBeenCalledOnce();
+				expect(field("purpose").value).toBe(room.purpose);
+			}
+			expect(button("Try again")).toBeUndefined();
+		},
+	);
 
 	it("preserves a second focused field while the first field finishes saving", async () => {
 		const f = setup();

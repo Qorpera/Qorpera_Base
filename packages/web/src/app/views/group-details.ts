@@ -37,6 +37,7 @@ export class GroupDetails {
 	#open: TextKey | undefined;
 	#participantsKey = "";
 	#figureKey = "";
+	#statusKey = "";
 	#built = false;
 	#discarded = false;
 
@@ -199,6 +200,7 @@ export class GroupDetails {
 		}
 		if (!value && key !== "subtitle") {
 			this.#show(key, this.#value(key));
+			this.#statusKey = "";
 			replace(this.#status, `${LABELS[key]} cannot be empty.`);
 			return;
 		}
@@ -221,14 +223,18 @@ export class GroupDetails {
 		}
 		const { status, failed } = this.#edits.store.get();
 		const canRecover = this.#edits.canRecover();
-		replace(
-			this.#status,
-			status,
-			failed && canRecover ? button("Try again", () => void this.#edits?.save(), { small: true }) : null,
-			failed && canRecover
-				? button("Discard changes", () => void this.#edits?.discardChanges(), { small: true })
-				: null,
-		);
+		const statusKey = JSON.stringify([status, failed, canRecover]);
+		if (statusKey !== this.#statusKey) {
+			this.#statusKey = statusKey;
+			replace(
+				this.#status,
+				status,
+				failed && canRecover ? button("Try again", () => void this.#edits?.save(), { small: true }) : null,
+				failed && canRecover
+					? button("Discard changes", () => void this.#edits?.discardChanges(), { small: true })
+					: null,
+			);
+		}
 		const agents = this.#company.groupAgents(this.#sessionId);
 		const figureKey = JSON.stringify(agents);
 		if (figureKey !== this.#figureKey) {
@@ -363,6 +369,7 @@ export class GroupDetails {
 					event.preventDefault();
 					if (!this.#edits?.canWrite()) return;
 					if (members.filter((member) => member.kind === "staff_agent").length < 2) {
+						this.#statusKey = "";
 						replace(this.#status, "Choose at least two agents.");
 						return;
 					}
