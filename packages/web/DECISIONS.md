@@ -387,9 +387,10 @@ only. The description is taller: at least five lines, growing to thirteen.
 **Decision (Jonas).** The new-conversation screen follows Grok's bot picker:
 a "To:" field with one short list under it, replacing the page of agent
 cards. The list starts with New agent and New group chat, then every active
-agent. Picking an agent opens its conversation at once. New group chat turns
-the rows into checkboxes and puts the chosen agents in the field as chips. A
-name typed into the field carries into New agent.
+agent. The rows show names only, so the field searches names only. Picking an
+agent opens its conversation at once. New group chat turns the rows into
+checkboxes and puts the chosen agents in the field as chips. A name typed
+into the field carries into New agent.
 
 **Still missing.** No client can start a group conversation yet (`room:create`
 in CLIENT-CONTRACT.md). The Start group chat row stays disabled and says "Not

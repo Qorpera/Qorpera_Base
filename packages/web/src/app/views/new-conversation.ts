@@ -187,9 +187,8 @@ export class NewConversationView {
 		for (const id of this.#selected) if (!active.some((agent) => agent.id === id)) this.#selected.delete(id);
 		const canCreate = state.team?.capabilities.authorize === true;
 		const query = this.#query.trim();
-		const agents = active.filter((agent) =>
-			`${agent.displayName} ${agent.role}`.toLowerCase().includes(query.toLowerCase()),
-		);
+		// The rows show names only, so the search matches names only.
+		const agents = active.filter((agent) => agent.displayName.toLowerCase().includes(query.toLowerCase()));
 		// Activity refreshes arrive often; rebuild rows only when what they show changed.
 		const signature = JSON.stringify([
 			this.#group,

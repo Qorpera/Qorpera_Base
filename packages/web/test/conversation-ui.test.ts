@@ -463,6 +463,10 @@ describe("new conversation and agent setup", () => {
 		expect(f.search.getAttribute("aria-activedescendant")).toBe(choice(f.view.el, staff.id).id);
 		expect(press(f.search, "Enter").defaultPrevented).toBe(true);
 		expect(location.hash).toBe(`#/c/${profileA.profileId}/staff/${staff.id}`);
+		// Rows show no titles, so a title alone never matches.
+		input(f.view.el, "Search conversation recipients", "research");
+		expect(choices(f.view.el)).toEqual(["create", "group"]);
+		expect(f.search.hasAttribute("aria-activedescendant")).toBe(false);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 	it("moves through the list with the arrow keys and closes it with Escape", async () => {
