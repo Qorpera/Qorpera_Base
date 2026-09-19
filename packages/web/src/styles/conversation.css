@@ -297,7 +297,7 @@
 	position: absolute; top: calc(100% - 4px); left: -10px; z-index: 30;
 	width: min(420px, calc(100vw - 32px));
 	max-height: min(460px, calc(100dvh - var(--titlebar-height) - 24px)); overflow-y: auto; overscroll-behavior: contain;
-	padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg);
+	padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--overlay);
 	box-shadow: 0 22px 48px rgba(11, 11, 11, 0.14), 0 2px 8px rgba(11, 11, 11, 0.06);
 }
 .recipient-menu[hidden] { display: none; }

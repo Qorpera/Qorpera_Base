@@ -128,10 +128,7 @@
 :root[data-theme="dark"] .received-image .received-file-visual { background: #333332; }
 :root[data-theme="dark"] .computer-panel { background: #212120; }
 :root[data-theme="dark"] .computer-preview-screen { border-color: #3a3a3d; }
-:root[data-theme="dark"] .recipient-card { border-color: var(--border); background: #242423; }
-:root[data-theme="dark"] :is(.recipient-card:hover, .recipient-card:focus-visible) { border-color: rgba(255, 255, 255, 0.2); box-shadow: 0 8px 24px rgb(0 0 0 / 30%); }
-:root[data-theme="dark"] .recipient-card[aria-pressed=true] { border-color: #3a6fb5; background: #1b2a3f; }
-:root[data-theme="dark"] .recipient-chip { background: #1b2a3f; }
+:root[data-theme="dark"] .recipient-menu { box-shadow: 0 22px 48px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3); }
 
 /* ---- settings --------------------------------------------------------------- */
 :root[data-theme="dark"] .settings-overlay { background: rgb(0 0 0 / 55%); }
