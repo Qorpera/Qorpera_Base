@@ -393,11 +393,11 @@ function agentRow(model: AgentModel, href: string): HTMLElement {
 	const look = RAIL_LOOK[model.state];
 	return h(
 		"a",
-		{ class: "rail-row", href, ...railLabel(model, look) },
+		{ class: "rail-row rail-row-agent", href, ...railLabel(model, look) },
 		h(
 			"span",
 			{ class: "rail-row-stand" },
-			agentFigure(model, model.displayName, { size: 40, activity: look.figure }),
+			agentFigure(model, model.displayName, { size: 50, activity: look.figure }),
 			statusDisc(look, "rail-row-status"),
 		),
 		h(
