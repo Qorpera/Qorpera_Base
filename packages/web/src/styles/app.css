@@ -256,7 +256,8 @@ label > input, label > select { font-weight: 400; }
 .rail-row:hover { background: var(--rail-hover); text-decoration: none; }
 .rail-row.active, .rail-row.active:hover { background: var(--rail-selection); color: #fff; }
 .rail-row .figure { width: var(--rail-row-figure); height: var(--rail-row-figure); }
-.rail-row-stand { position: relative; display: grid; place-items: center; width: var(--rail-row-figure); height: var(--rail-row-figure); }
+/* Keep the tracks within the stand so larger group canvases overflow symmetrically. */
+.rail-row-stand { position: relative; display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); place-items: center; width: var(--rail-row-figure); height: var(--rail-row-figure); }
 .rail-row-status { position: absolute; z-index: 2; right: -2px; bottom: -2px; width: 15px; height: 15px; border-radius: 50%; background: var(--rail-status); border: 2px solid var(--rail); }
 .rail-row:hover .rail-row-status { border-color: var(--rail-hover); }
 .rail-row.active .rail-row-status { border-color: var(--rail-selection); }
