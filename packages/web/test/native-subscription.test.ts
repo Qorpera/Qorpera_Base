@@ -120,8 +120,16 @@ describe("native subscription browser transport", () => {
 		});
 		expect(f.current).toHaveBeenCalledWith(session.sessionId);
 	});
-	it("binds profile operations despite an extra caller profile and retains explicit consent identity", async () => {
+	it("binds profile operations despite an extra caller profile, recording unattended consent first", async () => {
 		const f = setup();
+		// Unattended use is the default: the owner's consent is recorded, then the consented version is bound.
+		const rpc = vi.spyOn(f.cloud, "rpc").mockResolvedValueOnce({
+			schema: "qorpera.provider-connection-consent/v1",
+			connection_id: id(94),
+			version: 3,
+			allow_autonomous: true,
+			changed: true,
+		});
 		f.fetch.mockResolvedValueOnce(Response.json({ binding_id: id(92), version: 4 }));
 		const consent = {
 			profileId: id(999),
@@ -131,12 +139,17 @@ describe("native subscription browser transport", () => {
 			allowAutonomous: false,
 		};
 		expect(await f.client.createMemberSponsor(consent)).toEqual({ bindingId: id(92), version: 4 });
+		expect(rpc).toHaveBeenCalledWith("qorpera_consent_provider_connection_autonomous", {
+			p_profile_id: profileA.profileId,
+			p_connection_id: id(94),
+			p_allow_autonomous: true,
+		});
 		expect(JSON.parse(f.fetch.mock.calls[0]![1]!.body as string)).toEqual({
 			p_profile_id: profileA.profileId,
 			p_client_binding_id: id(92),
 			p_provider_connection_id: id(94),
-			p_provider_connection_version: 2,
-			p_allow_autonomous: false,
+			p_provider_connection_version: 3,
+			p_allow_autonomous: true,
 		});
 		f.fetch.mockResolvedValueOnce(Response.json({ connection_id: id(94), status: "revoked" }));
 		expect(await f.client.revokeConnection(consent)).toEqual({ connectionId: id(94), status: "revoked" });

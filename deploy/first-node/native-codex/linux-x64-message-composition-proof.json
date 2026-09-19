@@ -460,5 +460,40 @@
     "Scripted loopback provider; no real model or account acceptance",
     "Guest package generated in contract-only mode without a signed runner image",
     "No production deployment or combined office/SQL/object-gateway acceptance"
-  ]
+  ],
+  "mergedIntegration": {
+    "baseCommit": "71352b03338e6ad8b56a950263f315c565f32d60",
+    "runtimeBundleVersion": 39,
+    "runtimeBundleSha256": "218d6b2759093ced7b17e3e56657fc29afb8f488d65d845c7b71558690597cb3",
+    "guestPackageManifestSha256": "b5573681690b805b5f337e4e1b3572764e6a0ee3026d4e7fddc17cb323a7727c",
+    "nativeProbeSourceHashesUnchanged": true,
+    "existingMasterMigrationsUnchanged": 285,
+    "focusedRuntimeHiringRoutineTestsPassed": 55,
+    "focusedWebTestsPassed": 45,
+    "repositoryCheckPassed": true,
+    "linuxBuildPackageBundleTestsPassed": 12
+  },
+  "retainedArchive": {
+    "host": "company41-node-02",
+    "path": "/var/tmp/qorpera-pr146-native-composition/pr146-native-composition-v39-linux-x64.tar.zst",
+    "bytes": 269435111,
+    "sha256": "258dcfa58096ce9e734b2ce4e745e30123b710785076474e89838f4d50893053",
+    "zstdIntegrityVerified": true,
+    "archivedBuildAndPackagedBinarySha256": "9bd7b4e1148cb77820ea75943d03e7531757b3c74e47399df25a00477e58a7d0",
+    "archivedGuestManifestSha256": "b5573681690b805b5f337e4e1b3572764e6a0ee3026d4e7fddc17cb323a7727c",
+    "runtimeBundleSha256": "218d6b2759093ced7b17e3e56657fc29afb8f488d65d845c7b71558690597cb3",
+    "mergedSourceManifestSha256": "beb09846e6bef2fb40bf98aa4c90d77bea4cc2135efec461ae2e6be8ff87c4c0",
+    "linuxParityTests": {
+      "passed": 12,
+      "failed": 0,
+      "skipped": 0
+    },
+    "cleanup": {
+      "vmAbsent": true,
+      "networkRemoved": "pr146build0",
+      "projectRemoved": "codex-pr146-native-build",
+      "hostStagingRemoved": "/var/tmp/qorpera-pr146-merged-2314",
+      "retainedArchivesPreserved": true
+    }
+  }
 }
