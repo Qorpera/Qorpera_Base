@@ -33,12 +33,15 @@ export type NativeMemberComputeIdentity = NativeComputeIdentity & {
 
 export interface NativeMemberConnection {
 	connectionId: string;
+	/** Correlates this server-owned connection with the member's sign-in attempt. */
+	clientConnectionId: string;
 	connectionVersion: number;
 	provider: string;
 	nativeHarness: NativeProviderHarness;
 	authorizationState: "active" | "reauthentication_required" | "revoked";
 	maxNativeConcurrency: number;
 	providerAccountReference?: string;
+	providerAccountEmail?: string;
 	billingSource: string;
 	consentVersion: string;
 	consentedAt: string;
@@ -612,6 +615,7 @@ export class NativeSubscriptionControlPlane {
 				}
 				return {
 					connectionId: uuid(connection.connection_id, "native connection id"),
+					clientConnectionId: uuid(connection.client_connection_id, "native client connection id"),
 					connectionVersion: integer(connection.connection_version, "native connection version"),
 					provider: text(connection.provider, "native connection provider", 64),
 					nativeHarness: parseHarness(connection.native_harness),
@@ -626,6 +630,15 @@ export class NativeSubscriptionControlPlane {
 							}
 						: {}),
 					billingSource: text(connection.billing_source, "native billing source", 120),
+					...(optionalText(connection.provider_account_email, "provider account email", 254)
+						? {
+								providerAccountEmail: optionalText(
+									connection.provider_account_email,
+									"provider account email",
+									254,
+								),
+							}
+						: {}),
 					consentVersion: text(connection.consent_version, "native consent version", 120),
 					consentedAt: timestamp(connection.consented_at, "native consent time"),
 					connectionStatus: connection.connection_status,

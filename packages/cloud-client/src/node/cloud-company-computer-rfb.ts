@@ -1,6 +1,11 @@
 // noVNC's ExtendedClipboard pseudo-encoding, as a signed wire int32. -309 is XVP.
 export const COMPANY_COMPUTER_RFB_EXTENDED_CLIPBOARD = 0xc0a1e5ce | 0;
 
+// The input authority admits core KeyEvent and PointerEvent messages. Do not
+// negotiate formats it cannot authorize: noVNC otherwise switches physical
+// keys (including shortcuts) to QEMU events and the connection is rejected.
+const unsupportedEncodings = new Set([COMPANY_COMPUTER_RFB_EXTENDED_CLIPBOARD, -258, -316]);
+
 /** The guest image and noVNC use 32-bit pixels with 24-bit true color. Pin this for safe server framing. */
 export function assertCompanyComputerRfbPixelFormat(bytes: Buffer): void {
 	if (
@@ -82,11 +87,12 @@ export class CompanyComputerRfbClientParser {
 			this.#buffer = this.#buffer.subarray(length);
 			if (this.#stage === "messages" && bytes[0] === 0 && length === 20) assertCompanyComputerRfbPixelFormat(bytes);
 			if (this.#stage === "messages" && bytes[0] === 2 && length >= 4) {
-				// Disable extended clipboard negotiation. Clipboard transfer is a separate typed interaction.
+				// Clipboard is a separate typed interaction. Extended keyboard and
+				// mouse input must fall back to the core formats admitted by the gateway.
 				const encodings: number[] = [];
 				for (let offset = 4; offset < bytes.length; offset += 4) {
 					const encoding = bytes.readInt32BE(offset);
-					if (encoding !== COMPANY_COMPUTER_RFB_EXTENDED_CLIPBOARD) encodings.push(encoding);
+					if (!unsupportedEncodings.has(encoding)) encodings.push(encoding);
 				}
 				bytes = Buffer.alloc(4 + encodings.length * 4);
 				bytes[0] = 2;

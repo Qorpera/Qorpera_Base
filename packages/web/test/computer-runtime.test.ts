@@ -64,7 +64,7 @@ afterEach(() => {
 	localStorage.clear();
 	document.body.replaceChildren();
 });
-function setup(overrides: Record<string, unknown> = {}) {
+function setup(overrides: Record<string, unknown> = {}, memberRole: typeof profileA.role = profileA.role) {
 	const f = fixture(),
 		stop = new AbortController();
 	f.cloud.config.officeViewerOrigin = "wss://viewer.example.invalid";
@@ -82,7 +82,7 @@ function setup(overrides: Record<string, unknown> = {}) {
 		return Response.json(replies[method]);
 	});
 	vi.stubGlobal("fetch", fetch);
-	const computer = new WebCompanyComputer(f.cloud, profileA, userA.id, stop.signal, () => {});
+	const computer = new WebCompanyComputer(f.cloud, { ...profileA, role: memberRole }, userA.id, stop.signal, () => {});
 	cleanup.push(() => stop.abort());
 	return { ...f, stop, computer, fetch, replies };
 }
@@ -144,6 +144,7 @@ describe("automatic computer popover", () => {
 				mount: p.el.querySelector(".computer-panel-body"),
 				autofocus: false,
 				canControl: true,
+				sharedControl: true,
 			}),
 		);
 		expect(methods(f)).toEqual([
@@ -304,6 +305,151 @@ describe("automatic computer popover", () => {
 });
 
 describe("web runtime member boundary", () => {
+	it("explains read-only access without requesting an idle wake", async () => {
+		const f = setup(
+			{
+				qorpera_member_office_catalog: { ...catalog, canManage: false },
+				qorpera_runtime_office_start_status: {
+					...start,
+					officeState: "maintenance",
+					intent,
+					maintenance: {
+						reason: "idle",
+						state: "requested",
+						transitionId: id(76),
+						requestedAt: "2026-09-19T12:00:00Z",
+						resumedAt: null,
+						activatedAt: null,
+					},
+				},
+			},
+			"viewer",
+		);
+		const request = vi.spyOn(spyStart(f), "request");
+		const open = spyViewer();
+		const p = await opened(f.computer);
+		await poll();
+		expect(statusLine(p)).toBe(
+			"You have read-only access. A company member with write access can wake the computer.",
+		);
+		expect(request).not.toHaveBeenCalled();
+		f.replies.qorpera_runtime_office_start_status = start;
+		await poll();
+		expect(open).toHaveBeenCalledWith(expect.objectContaining({ canControl: false }));
+	});
+	it.each([false, true])("wakes idle before screen discovery (screen request raced=%s)", async (duringScreenOpen) => {
+		const f = setup();
+		const startClient = spyStart(f);
+		const request = vi.spyOn(startClient, "request").mockResolvedValue(intent);
+		const views = f.computer.views(scope);
+		vi.spyOn(f.computer, "views").mockReturnValue(views);
+		const enterIdle = () => {
+			f.replies.qorpera_runtime_office_start_status = {
+				...start,
+				officeState: "maintenance",
+				intent,
+				maintenance: {
+					reason: "idle",
+					state: "requested",
+					transitionId: id(77),
+					requestedAt: "2026-09-19T12:00:00Z",
+					resumedAt: null,
+					activatedAt: null,
+				},
+			};
+			f.replies.qorpera_runtime_office_member_status = { ...status, state: "maintenance", screens: [] };
+		};
+		if (duringScreenOpen) {
+			f.replies.qorpera_runtime_office_member_status = { ...status, screens: [] };
+			vi.spyOn(views, "openScreen").mockImplementationOnce(async () => {
+				enterIdle();
+				return { state: "refused", reason: "COMPUTER_NOT_ACTIVE" };
+			});
+		} else
+			vi.spyOn(views, "status").mockImplementationOnce(async () => {
+				enterIdle();
+				return { ...status, state: "maintenance", screens: [] };
+			});
+		const open = spyViewer();
+		const p = await opened(f.computer);
+		await poll();
+		expect(request).toHaveBeenCalledOnce();
+		expect(statusLine(p)).toBe("Starting the computer…");
+		f.replies.qorpera_runtime_office_start_status = start;
+		f.replies.qorpera_runtime_office_member_status = status;
+		await poll();
+		await poll();
+		expect(open).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ binding, sharedControl: true }));
+	});
+	it.each([false, true])(
+		"automatically wakes idle maintenance when the panel opens (manager=%s)",
+		async (canManage) => {
+			const maintenance = {
+				reason: "idle",
+				state: "requested",
+				transitionId: id(73),
+				requestedAt: "2026-09-19T12:00:00Z",
+				resumedAt: null,
+				activatedAt: null,
+			};
+			const f = setup({
+				qorpera_member_office_catalog: { ...catalog, canManage },
+				qorpera_runtime_office_start_status: { ...start, officeState: "maintenance", maintenance, intent },
+			});
+			const startClient = spyStart(f);
+			const request = vi.spyOn(startClient, "request").mockResolvedValue(intent);
+			const open = spyViewer();
+			const p = await opened(f.computer);
+			await poll();
+			expect(request).toHaveBeenCalledOnce();
+			expect(statusLine(p)).toBe("Starting the computer…");
+			await poll();
+			expect(request).toHaveBeenCalledOnce();
+			f.replies.qorpera_runtime_office_start_status = start;
+			await poll();
+			expect(open).toHaveBeenCalledExactlyOnceWith(
+				expect.objectContaining({ sharedControl: true, canControl: canManage }),
+			);
+		},
+	);
+	it("wakes an office that idles between discovery and viewer connection", async () => {
+		const f = setup();
+		const startClient = spyStart(f);
+		const request = vi.spyOn(startClient, "request").mockResolvedValue(intent);
+		const views = f.computer.views(scope);
+		const held = { connectionId: id(85), close: vi.fn(async () => {}) } as never;
+		const connect = vi
+			.spyOn(views, "connectScreen")
+			.mockRejectedValueOnce(new Error("Office entered idle maintenance"))
+			.mockResolvedValue(held);
+		vi.spyOn(f.computer, "views").mockReturnValue(views);
+		const open = spyViewer();
+		await opened(f.computer);
+		f.replies.qorpera_runtime_office_start_status = {
+			...start,
+			officeState: "maintenance",
+			intent,
+			maintenance: {
+				reason: "idle",
+				state: "requested",
+				transitionId: id(74),
+				requestedAt: "2026-09-19T12:00:00Z",
+				resumedAt: null,
+				activatedAt: null,
+			},
+		};
+		const connection = open.mock.calls[0]![0].requestConnection({ binding, mode: "shared", signal: f.stop.signal });
+		await settle();
+		for (let i = 0; i < 10; i++) await poll();
+		expect(request).toHaveBeenCalledOnce();
+		expect(connect).toHaveBeenCalledOnce();
+		f.replies.qorpera_runtime_office_start_status = start;
+		await poll();
+		await poll();
+		await expect(connection).resolves.toBe(held);
+		expect(connect).toHaveBeenCalledTimes(2);
+	});
+
 	it.each(["provisioning", "recovering"])("does not duplicate an existing %s start", async (officeState) => {
 		for (const state of ["requested", "reserved"] as const) {
 			const f = setup({
@@ -491,13 +637,13 @@ describe("web runtime member boundary", () => {
 			.mockRejectedValueOnce(new Error("Starting"))
 			.mockRejectedValueOnce(new Error("Starting"))
 			.mockResolvedValue(held);
-		const input = { binding, mode: "watch" as const, signal: new AbortController().signal };
+		const input = { binding, mode: "shared" as const, signal: new AbortController().signal };
 		const connection = open.mock.calls[0]![0].requestConnection(input);
 		await poll();
 		await poll();
 		await expect(connection).resolves.toBe(held);
 		expect(connect).toHaveBeenCalledTimes(3);
-		expect(connect).toHaveBeenLastCalledWith(expect.objectContaining({ binding, mode: "watch" }));
+		expect(connect).toHaveBeenLastCalledWith(expect.objectContaining({ binding, mode: "shared" }));
 		const closing = new AbortController();
 		connect.mockReset();
 		connect.mockRejectedValue(new Error("Starting"));

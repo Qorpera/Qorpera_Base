@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { COMPANY_COMPUTER_WALLPAPER_FILES } from "../packages/runtime/src/cloud-company-computer-wallpapers.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 test("packages and starts the headless office outside the workspace, with all runtime resources", async () => {
@@ -22,6 +23,7 @@ test("packages and starts the headless office outside the workspace, with all ru
 		const imageInstaller = spawnSync(process.execPath, [join(output, "qorpera-office-image-install.cjs"), "--unexpected"], {cwd: temporary, encoding: "utf8", timeout: 10000});
 		assert.equal(imageInstaller.status, 2); assert.equal(imageInstaller.stderr, "OFFICE_IMAGE_ARGUMENTS_INVALID\n");
 		assert.ok(manifest.artifacts.length > 100);
+		assert.deepEqual(manifest.artifacts.filter((artifact) => artifact.file.startsWith("wallpapers/")).map((artifact) => artifact.file).sort(), COMPANY_COMPUTER_WALLPAPER_FILES.map((file) => `wallpapers/${file}`));
 		for (const file of ["qorpera-office-preparation.conf", "qorpera-company-computer-preparation-control.mjs", "qorpera-company-computer-preparation.mjs", "qorpera-company-computer-preparation.service", "office-browser-child.mjs", "qorpera-screen-session", "qorpera-screen-xfce", "wallpapers/qorpera-screen-pebble.png", "node_modules/playwright-core/index.mjs", "node_modules/playwright-core/browsers.json", "LICENSE"]) {
 			assert.ok(manifest.artifacts.some((artifact) => artifact.file === file), file);
 		}

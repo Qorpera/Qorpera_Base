@@ -74,6 +74,7 @@ function executionTransport() {
 					connections: [
 						{
 							connection_id: id(81),
+							client_connection_id: id(181),
 							connection_version: 1,
 							provider: "openai",
 							native_harness: "codex-cli",
@@ -103,6 +104,66 @@ async function modelChosen(root: HTMLElement): Promise<void> {
 }
 
 describe("account and route ownership", () => {
+	it("sends the first message from the recipient composer before navigating to the conversation", async () => {
+		const f = mounted(`#/c/${profileA.profileId}/new`);
+		vi.mocked(f.api.listSessions).mockResolvedValue([{ ...session, staffAgentId: staff.id }]);
+		const send = executionTransport();
+		await draw();
+		f.root.querySelector<HTMLElement>(`[data-choice="${staff.id}"]`)!.click();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/new`);
+		const input = f.root.querySelector("textarea")!;
+		input.value = "First message";
+		input.dispatchEvent(new Event("input"));
+		f.root.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.click();
+		await draw();
+		expect(send).toHaveBeenCalledOnce();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		expect(f.root.querySelector("textarea")!.value).toBe("");
+		expect(f.root.textContent).toContain("First message");
+	});
+	it("keeps a new compose send authorized when an older compose finishes loading its transcript", async () => {
+		const f = mounted(`#/c/${profileA.profileId}/new`);
+		vi.mocked(f.api.listSessions).mockResolvedValue([{ ...session, staffAgentId: staff.id }]);
+		const send = executionTransport();
+		const events = deferred<Awaited<ReturnType<typeof f.api.readSessionEvents>>>();
+		vi.mocked(f.api.readSessionEvents).mockReturnValueOnce(events.promise);
+		await draw();
+		const submit = (text: string) => {
+			f.root.querySelector<HTMLElement>(`[data-choice="${staff.id}"]`)!.click();
+			const input = f.root.querySelector("textarea")!;
+			input.value = text;
+			input.dispatchEvent(new Event("input"));
+			f.root.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.click();
+		};
+		submit("First accepted message");
+		await draw();
+		expect(send).toHaveBeenCalledTimes(1);
+		expect(f.api.readSessionEvents).toHaveBeenCalledTimes(1);
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/new`);
+
+		// Leave the accepted send waiting for its transcript and start another
+		// compose for the same session, so session identity cannot distinguish them.
+		location.hash = `#/c/${profileA.profileId}/file/history`;
+		await draw();
+		location.hash = `#/c/${profileA.profileId}/new`;
+		await draw();
+		const original = await f.cloud.supabase.auth.getSession();
+		const token = deferred<typeof original>();
+		vi.mocked(f.cloud.supabase.auth.getSession).mockResolvedValueOnce(original).mockReturnValueOnce(token.promise);
+		submit("Second message");
+		await draw();
+		expect(send).toHaveBeenCalledTimes(1);
+		events.resolve([]);
+		await draw();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/new`);
+		token.resolve(original);
+		await draw();
+		expect(send).toHaveBeenCalledTimes(2);
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		expect(f.root.querySelector("textarea")!.value).toBe("");
+		expect(f.root.textContent).toContain("Second message");
+		expect(f.root.textContent).not.toContain("Cloud execution could not be confirmed");
+	});
 	it("retries an uncertain product send with the same input identity and preserves its draft", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 		const send = executionTransport();

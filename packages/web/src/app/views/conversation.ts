@@ -1,17 +1,20 @@
+import { describeError } from "../../cloud/client.ts";
 import { sessionAttachmentIssue } from "../../cloud/session-attachments.ts";
 import type { TranscriptCard, TranscriptItem } from "../../cloud/transcript.ts";
 import type { HostedSession, HostedStaffAgent } from "../../cloud/types.ts";
 import { AttachmentTray } from "../../ui/attachments.ts";
 import { authorizationRequestId, renderAuthorizationCard } from "../../ui/authorization-card.ts";
 import { agentFigure } from "../../ui/avatar.ts";
-import { fmtTime, h, icon, notice, replace, spinner } from "../../ui/dom.ts";
+import { button, fmtTime, h, icon, notice, replace, spinner } from "../../ui/dom.ts";
+import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
-import type { CompanyController, ConversationState } from "../company.ts";
+import type { CompanyController, ConversationState, FailedRun } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
 import { ComputerPanel } from "./computer.ts";
+import { GroupDetails } from "./group-details.ts";
 import { SessionExecutionView } from "./session-execution.ts";
 import { SessionRunView } from "./session-run.ts";
 
@@ -49,13 +52,16 @@ export class ConversationView {
 	readonly #actions: WorkspaceActions;
 	readonly #run: SessionRunView | undefined;
 	readonly #execution: SessionExecutionView | undefined;
-	#details: AgentDetails | undefined;
+	#details: AgentDetails | GroupDetails | undefined;
 	#panel: ComputerPanel | undefined;
 	#headerKey = "";
 	#renderedKey = "";
 	#stickToBottom = true;
 	readonly #unsubscribe: (() => void)[] = [];
 	#disposed = false;
+	#statusKey = "";
+	#dismissing: string | undefined;
+	#dismissError: { runId: string; message: string } | undefined;
 	#receivedAttachments: ReceivedAttachments[] = [];
 
 	constructor(
@@ -276,7 +282,7 @@ export class ConversationView {
 	 * is a room too, but it behaves like the agent's own conversation here. */
 	get #isRoom(): boolean {
 		const session = this.#company.store.get().sessions.find((s) => s.sessionId === this.#sessionId);
-		return typeof session?.executionScope?.roomId === "string" && !session.staffAgentId;
+		return isGroupChat(session);
 	}
 
 	focus(): void {
@@ -311,25 +317,22 @@ export class ConversationView {
 
 	#openDetails(): void {
 		const state = this.#company.store.get();
-		const agent = this.#company.staffById(
-			state.sessions.find((session) => session.sessionId === this.#sessionId)?.staffAgentId,
-		);
+		const session = state.sessions.find((session) => session.sessionId === this.#sessionId);
+		const agent = this.#company.staffById(session?.staffAgentId);
 		if (this.#details) {
 			this.#details.dialog.close();
 			return;
 		}
-		if (!agent) return;
+		if (this.#company.signal.aborted || state.accessLost || !state.team?.capabilities.read) return;
+		if (!agent && !isGroupChat(session)) return;
 		this.#identity.setAttribute("aria-expanded", "true");
-		this.#details = new AgentDetails(
-			this.#company,
-			agent,
-			this.#actions,
-			() => {
-				this.#details = undefined;
-				this.#identity.setAttribute("aria-expanded", "false");
-			},
-			this.#identity,
-		);
+		const closed = () => {
+			this.#details = undefined;
+			this.#identity.setAttribute("aria-expanded", "false");
+		};
+		this.#details = agent
+			? new AgentDetails(this.#company, agent, this.#actions, closed, this.#identity, this.#lifetime.signal)
+			: new GroupDetails(this.#company, this.#sessionId, closed, this.#identity, this.#lifetime.signal);
 	}
 
 	#toggleComputer(): void {
@@ -405,13 +408,13 @@ export class ConversationView {
 		);
 		const attachmentIssue =
 			room && conversation.attachments?.length
-				? "Images are not supported in team rooms. Use Company File."
+				? "Images are not supported in group chats. Use Company File."
 				: sessionAttachmentIssue(conversation.attachments ?? []);
 		this.#attachments.sync(
 			conversation.attachments ?? [],
 			!canWrite || conversation.sending,
 			room
-				? "Images are not supported in team rooms. Use Company File."
+				? "Images are not supported in group chats. Use Company File."
 				: this.#actions.sendMessage
 					? attachmentIssue
 						? `Attachments stay on this device. ${attachmentIssue}`
@@ -454,10 +457,24 @@ export class ConversationView {
 
 	#renderHeader(session: HostedSession | undefined, agent: HostedStaffAgent | undefined): void {
 		const title = agent?.displayName ?? session?.title ?? "Conversation";
-		const key = JSON.stringify([title, agent?.id, agent?.appearance]);
-		this.#identity.disabled = !agent;
+		const group = isGroupChat(session);
+		const key = JSON.stringify([title, group, agent?.id, agent?.appearance]);
+		const state = this.#company.store.get();
+		this.#identity.disabled =
+			(!agent && !group) ||
+			!state.team?.capabilities.read ||
+			Boolean(state.accessLost) ||
+			this.#company.signal.aborted;
 		this.#computer.hidden = !agent;
 		this.#identity.title = title;
+		this.#identity.setAttribute("aria-label", agent ? "Open agent details" : group ? "Open group details" : title);
+		if (agent || group) {
+			this.#identity.setAttribute("aria-haspopup", "dialog");
+			this.#identity.setAttribute("aria-expanded", String(Boolean(this.#details)));
+		} else {
+			this.#identity.removeAttribute("aria-haspopup");
+			this.#identity.removeAttribute("aria-expanded");
+		}
 		if (key === this.#headerKey) return;
 		this.#headerKey = key;
 		if (this.#panel) {
@@ -471,7 +488,12 @@ export class ConversationView {
 			this.#computer.setAttribute("aria-expanded", String(Boolean(this.#panel)));
 			this.#autosize();
 		}
-		replace(this.#identity, agentFigure(agent, title, { size: 32 }), h("h1", null, title), icon("chevron"));
+		replace(
+			this.#identity,
+			group ? groupChatAvatar() : agentFigure(agent, title, { size: 32 }),
+			h("h1", null, title),
+			agent || group ? icon("chevron") : null,
+		);
 	}
 
 	#renderMessages(conversation: ConversationState, agentName: string): void {
@@ -604,9 +626,29 @@ export class ConversationView {
 	}
 
 	#renderStatus(conversation: ConversationState, canWrite: boolean, session: HostedSession | undefined): void {
+		const company = this.#company.store.get();
+		const failed = this.#isRoom ? undefined : this.#company.failedRunFor(session?.staffAgentId);
+		// Rebuilt only when something shown changes, so a focused button survives polling.
+		const key = JSON.stringify([
+			conversation.error,
+			conversation.sendError,
+			conversation.loading,
+			canWrite,
+			this.#isRoom,
+			session?.status,
+			company.accessLost,
+			company.team?.role,
+			company.team?.capabilities,
+			failed,
+			this.#dismissing,
+			this.#dismissError,
+		]);
+		if (key === this.#statusKey) return;
+		this.#statusKey = key;
 		const children: (HTMLElement | null)[] = [];
 		if (conversation.error) children.push(notice("danger", conversation.error));
 		if (conversation.sendError) children.push(notice("danger", conversation.sendError));
+		if (failed) children.push(this.#failedRunCard(failed, canWrite));
 		if (canWrite && !this.#actions.sendMessage)
 			children.push(
 				h(
@@ -619,8 +661,8 @@ export class ConversationView {
 			children.push(
 				notice(
 					"neutral",
-					"Multiple agents can respond in this room. Follow their replies here. Images are not supported in team rooms. Use Company File." +
-						(["owner", "admin"].includes(this.#company.store.get().team?.role ?? "")
+					"Multiple agents can respond in this group chat. Follow their replies here. Images are not supported in group chats. Use Company File." +
+						(["owner", "admin"].includes(company.team?.role ?? "")
 							? " Company-wide execution pause is available in Settings → Company."
 							: ""),
 				),
@@ -632,10 +674,76 @@ export class ConversationView {
 			session &&
 			!conversation.loading &&
 			!conversation.error &&
-			!this.#company.store.get().accessLost &&
-			this.#company.store.get().team?.capabilities.read === true
+			!company.accessLost &&
+			company.team?.capabilities.read === true
 		)
 			children.push(notice("neutral", "You can read this conversation. Contributors and above can write."));
+		const refocus = this.#status.contains(document.activeElement)
+			? (document.activeElement as HTMLElement).dataset.action
+			: undefined;
 		replace(this.#status, ...children);
+		if (refocus) this.#status.querySelector<HTMLElement>(`[data-action="${refocus}"]`)?.focus();
+	}
+
+	/** The card behind the rail's red disc (shell spec §11.1): why the run did not
+	 * finish, and the one thing this client can do about it. */
+	#failedRunCard({ activity, recovery }: FailedRun, canWrite: boolean): HTMLElement {
+		const profileId = this.#company.profile.profileId;
+		if (recovery?.proposalId) {
+			const changes = h("a", { href: `#/c/${profileId}/proposal/${recovery.proposalId}` }, "the changes");
+			return this.#company.store.get().team?.capabilities.authorize
+				? notice("warn", "A run stopped after changing Company File. Review ", changes, " to keep or discard them.")
+				: notice(
+						"warn",
+						"A run stopped after changing Company File. An owner or admin decides whether to keep ",
+						changes,
+						".",
+					);
+		}
+		const reason = recovery?.lastError ? `: ${recovery.lastError}` : ".";
+		if (activity.sourceKind === "proposal_review")
+			return notice(
+				"warn",
+				`A review did not finish${reason} The proposal it was reviewing is still open in `,
+				h("a", { href: `#/c/${profileId}/file` }, "Company File"),
+				".",
+			);
+		const unsettled = (recovery?.unsettledOperations ?? 0) > 0;
+		const dismissing = this.#dismissing === activity.runId;
+		const error = this.#dismissError?.runId === activity.runId ? this.#dismissError.message : undefined;
+		const errorId = `failed-run-error-${activity.runId}`;
+		// Dismiss waits for the details, which say whether the cloud would refuse it.
+		const dismiss =
+			canWrite && recovery && !unsettled
+				? button(dismissing ? "Dismissing…" : "Dismiss", () => void this.#dismiss(activity.runId), { small: true })
+				: null;
+		if (dismiss) {
+			dismiss.dataset.action = "dismiss-run";
+			// Still focusable while busy, so the keyboard stays on it.
+			if (dismissing) dismiss.setAttribute("aria-disabled", "true");
+			if (error) dismiss.setAttribute("aria-describedby", errorId);
+		}
+		return notice(
+			"warn",
+			h("p", null, `A run did not finish${reason}`),
+			unsettled ? h("p", null, "Some of its work has an unknown outcome, so it cannot be dismissed here.") : null,
+			error ? h("p", { id: errorId }, `Could not dismiss it: ${error}`) : null,
+			dismiss,
+		);
+	}
+
+	async #dismiss(runId: string): Promise<void> {
+		if (this.#dismissing) return;
+		this.#dismissing = runId;
+		this.#dismissError = undefined;
+		this.update();
+		try {
+			await this.#company.dismissFailedRun(runId);
+		} catch (error) {
+			this.#dismissError = { runId, message: describeError(error) };
+		} finally {
+			this.#dismissing = undefined;
+			this.update();
+		}
 	}
 }

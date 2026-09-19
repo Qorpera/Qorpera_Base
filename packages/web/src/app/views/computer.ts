@@ -84,36 +84,45 @@ export class ComputerPanel {
 				return;
 			}
 			const startClient = computer.client.start(scope);
-			let requested = false;
-			for (;;) {
-				const start = await startClient.status(signal);
-				signal.throwIfAborted();
-				if (start.officeState === "active") break;
-				if (start.officeState === "maintenance") {
-					this.#status.textContent = "The computer is restarting. It comes back on its own.";
-				} else if (start.officeState === "retired") {
-					unavailable("This computer has been retired.");
-					return;
-				} else if (!canManage) {
-					unavailable("The computer is off. An owner or admin can start it.");
-					return;
-				} else {
-					if (!start.intent && !requested) {
-						requested = true;
-						// Retrying an unclear response reuses this exact computer's start intent.
-						const key = `${scope.companyId}:${scope.environmentId}:${scope.companyComputerId}:${scope.logicalComputerId}:${start.computerGeneration}`;
-						let requestId = startRequests.get(key);
-						if (!requestId) {
-							requestId = crypto.randomUUID();
-							startRequests.set(key, requestId);
+			const ensureActive = async (until: AbortSignal, expectedGeneration?: number): Promise<boolean> => {
+				let requestedKey: string | undefined;
+				for (;;) {
+					const start = await startClient.status(until);
+					until.throwIfAborted();
+					if (expectedGeneration !== undefined && start.computerGeneration !== expectedGeneration)
+						throw new Error("OFFICE_SCREEN_CHANGED");
+					if (start.officeState === "active") return true;
+					const idle = start.maintenance?.reason === "idle";
+					const cycle = idle ? `idle:${start.maintenance!.transitionId}` : "start";
+					const key = `${scope.companyId}:${scope.environmentId}:${scope.companyComputerId}:${scope.logicalComputerId}:${start.computerGeneration}:${cycle}`;
+					if (start.officeState === "maintenance" && !idle) {
+						this.#status.textContent = "The computer is restarting. It comes back on its own.";
+					} else if (start.officeState === "retired") {
+						unavailable("This computer has been retired.");
+						return false;
+					} else if (!canManage && !idle) {
+						this.#status.textContent = "The computer is off. An owner or admin can start it.";
+					} else if (idle && !computer.canRequestWake) {
+						this.#status.textContent =
+							"You have read-only access. A company member with write access can wake the computer.";
+					} else {
+						if ((!start.intent || idle) && requestedKey !== key) {
+							requestedKey = key;
+							// An unclear reply retains the exact computer generation and idle cycle's identity.
+							let requestId = startRequests.get(key);
+							if (!requestId) {
+								requestId = crypto.randomUUID();
+								startRequests.set(key, requestId);
+							}
+							await startClient.request(start.computerGeneration, requestId, until);
+							until.throwIfAborted();
 						}
-						await startClient.request(start.computerGeneration, requestId, signal);
-						signal.throwIfAborted();
+						this.#status.textContent = "Starting the computer…";
 					}
-					this.#status.textContent = "Starting the computer…";
+					await wait(3000, until);
 				}
-				await wait(3000, signal);
-			}
+			};
+			if (!(await ensureActive(signal))) return;
 			let views: ReturnType<WebCompanyComputer["views"]>;
 			try {
 				views = computer.views(scope);
@@ -130,6 +139,13 @@ export class ComputerPanel {
 					unavailable("This computer has been retired.");
 					return;
 				}
+				if (status.state !== "active") {
+					if (!(await ensureActive(signal))) return;
+					asked = false;
+					this.#status.textContent = "Connecting…";
+					await wait(3000, signal);
+					continue;
+				}
 				if (status.state === "active" && status.privacyState === "shared") {
 					const screen = status.screens
 						.filter((item) => item.binding.staffAgentId === agent.id && !item.drainPending)
@@ -143,6 +159,7 @@ export class ComputerPanel {
 							binding: screen.binding,
 							title: `${agent.displayName} · Computer`,
 							canControl: canManage,
+							sharedControl: true,
 							// Guest startup can outlast a connection attempt; reconnect to the same binding.
 							requestConnection: async (input) => {
 								for (let attempt = 0; ; attempt++) {
@@ -150,6 +167,13 @@ export class ComputerPanel {
 										return await views.connectScreen(input);
 									} catch (error) {
 										if (attempt >= 8 || input.signal.aborted) throw error;
+										const state = await startClient.status(input.signal);
+										input.signal.throwIfAborted();
+										if (state.computerGeneration !== input.binding.computerGeneration)
+											throw new Error("OFFICE_SCREEN_CHANGED");
+										if (state.maintenance?.reason === "idle") {
+											if (!(await ensureActive(input.signal, input.binding.computerGeneration))) throw error;
+										}
 										await wait(3000, input.signal);
 									}
 								}
@@ -181,12 +205,7 @@ export class ComputerPanel {
 						} else continue;
 					}
 				} else {
-					this.#status.textContent =
-						status.privacyState !== "shared"
-							? "The computer is private right now. Shared viewing returns when that ends."
-							: status.state === "maintenance"
-								? "The computer is restarting. It comes back on its own."
-								: "Starting the computer…";
+					this.#status.textContent = "The computer is private right now. Shared viewing returns when that ends.";
 				}
 				await wait(3000, signal);
 			}

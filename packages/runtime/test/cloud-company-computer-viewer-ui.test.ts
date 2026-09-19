@@ -9,7 +9,7 @@ interface ViewConnection {
 	connectionId: string;
 	url?: string;
 	channel?: { readyState: number; send(bytes: unknown): void; close(): void };
-	mode: "watch" | "control";
+	mode: "watch" | "shared" | "control";
 	binding: CompanyComputerScreenBinding;
 }
 
@@ -19,11 +19,12 @@ interface ViewerOptions {
 	onExpandedChange?(expanded: boolean): void;
 	canControl?: boolean;
 	privateSignIn?: boolean;
+	sharedControl?: boolean;
 	binding: CompanyComputerScreenBinding;
 	title: string;
 	requestConnection(input: {
 		binding: CompanyComputerScreenBinding;
-		mode: "watch" | "control";
+		mode: "watch" | "shared" | "control";
 		signal: AbortSignal;
 	}): Promise<ViewConnection>;
 	releaseConnection(input: { connectionId: string }): Promise<void>;
@@ -180,18 +181,69 @@ function viewerFixture() {
 	};
 }
 
-async function embeddedViewer(canControl = true, fullscreenEnabled = true) {
+async function embeddedViewer(canControl = true, fullscreenEnabled = true, sharedControl = false) {
 	const f = viewerFixture();
 	f.document.fullscreenEnabled = fullscreenEnabled;
 	const mount = new FakeElement();
 	const expanded = vi.fn();
-	const viewer = f.api.open({ ...f.options, mount, canControl, onExpandedChange: expanded });
+	const viewer = f.api.open({ ...f.options, mount, canControl, sharedControl, onExpandedChange: expanded });
 	await vi.waitFor(() => expect(f.instances).toHaveLength(1));
 	f.instances[0].emit("connect");
 	return { ...f, mount, viewer, expanded };
 }
 
 describe("viewer UI state machine (fake DOM/noVNC, not visual cloud acceptance)", () => {
+	it("uses fresh shared input only while entered and returns to watch without exclusive takeover", async () => {
+		const f = await embeddedViewer(true, false, true);
+		expect(f.requestConnection.mock.calls[0][0].mode).toBe("watch");
+		expect(f.instances[0].viewOnly).toBe(true);
+		f.button("Enter").onclick?.();
+		await vi.waitFor(() => expect(f.instances).toHaveLength(2));
+		f.instances[1].emit("connect");
+		expect(f.instances[1].viewOnly).toBe(false);
+		expect(f.button("Take control").hidden).toBe(true);
+		f.button("Take control").onclick?.();
+		expect(f.requestConnection).toHaveBeenCalledTimes(2);
+		expect(f.elements.some((element) => element.textContent === "Shared with the agent")).toBe(true);
+		f.instances[1].emit("disconnect");
+		f.button("Reconnect").onclick?.();
+		await vi.waitFor(() => expect(f.instances).toHaveLength(3));
+		f.instances[2].emit("connect");
+		expect(f.instances[2].viewOnly).toBe(false);
+		f.button("Back to thread").onclick?.();
+		expect(f.instances[2].viewOnly).toBe(true);
+		await vi.waitFor(() => expect(f.instances).toHaveLength(4));
+		f.instances[3].emit("connect");
+		expect(f.instances[3].viewOnly).toBe(true);
+		f.instances[3].emit("disconnect");
+		f.button("Reconnect").onclick?.();
+		await vi.waitFor(() => expect(f.instances).toHaveLength(5));
+		f.instances[4].emit("connect");
+		expect(f.instances[4].viewOnly).toBe(true);
+		expect(f.requestConnection.mock.calls.map(([input]) => input.mode)).toEqual([
+			"watch",
+			"shared",
+			"shared",
+			"watch",
+			"watch",
+		]);
+		await f.viewer.close();
+		expect(f.releaseConnection).toHaveBeenCalledTimes(5);
+	});
+
+	it("keeps Enter read-only when a shared viewer cannot control", async () => {
+		const f = await embeddedViewer(false, false, true);
+		f.button("Enter").onclick?.();
+		f.button("Take control").onclick?.();
+		expect(f.button("Take control").hidden).toBe(true);
+		expect(f.instances[0].viewOnly).toBe(true);
+		expect(f.expanded).toHaveBeenCalledWith(true);
+		expect(f.requestConnection.mock.calls.map(([input]) => input.mode)).toEqual(["watch"]);
+		f.button("Back to thread").onclick?.();
+		expect(f.requestConnection).toHaveBeenCalledOnce();
+		await f.viewer.close();
+	});
+
 	it.each([false, true])("preserves keyboard focus through Enter and Back (can control: %s)", async (canControl) => {
 		const f = await embeddedViewer(canControl, false);
 		const pending = computerDeferred<ViewConnection>();
@@ -259,42 +311,48 @@ describe("viewer UI state machine (fake DOM/noVNC, not visual cloud acceptance)"
 		await f.viewer.close();
 	});
 
-	it("cancels pending control admission on native exit and releases late control without attaching it", async () => {
-		const f = await embeddedViewer();
-		const pending = computerDeferred<ViewConnection>();
-		f.requestConnection.mockImplementationOnce(() => pending.promise);
-		f.button("Enter").onclick?.();
-		await vi.waitFor(() => expect(f.requestConnection).toHaveBeenCalledTimes(2));
-		await f.document.exitFullscreen();
-		expect(f.requestConnection.mock.calls[1][0].signal.aborted).toBe(true);
-		expect(f.expanded.mock.calls).toEqual([[true], [false]]);
-		pending.resolve({
-			connectionId: computerId(50),
-			url: `ws://127.0.0.1:4500/${"z".repeat(43)}`,
-			mode: "control",
-			binding: computerBinding(),
-		});
-		await vi.waitFor(() => expect(f.instances).toHaveLength(2));
-		expect(f.releaseConnection).toHaveBeenCalledWith({ connectionId: computerId(50) });
-		expect(f.requestConnection.mock.calls.map(([input]) => input.mode)).toEqual(["watch", "control", "watch"]);
-		f.instances[1].emit("connect");
-		expect(f.instances.every((rfb) => rfb.viewOnly)).toBe(true);
-		expect(f.button("Enter").hidden).toBe(false);
-		await f.viewer.close();
-	});
+	it.each(["control", "shared"] as const)(
+		"cancels pending %s admission on native exit and releases late input without attaching it",
+		async (mode) => {
+			const f = await embeddedViewer(true, true, mode === "shared");
+			const pending = computerDeferred<ViewConnection>();
+			f.requestConnection.mockImplementationOnce(() => pending.promise);
+			f.button("Enter").onclick?.();
+			await vi.waitFor(() => expect(f.requestConnection).toHaveBeenCalledTimes(2));
+			await f.document.exitFullscreen();
+			expect(f.requestConnection.mock.calls[1][0].signal.aborted).toBe(true);
+			expect(f.expanded.mock.calls).toEqual([[true], [false]]);
+			pending.resolve({
+				connectionId: computerId(50),
+				url: `ws://127.0.0.1:4500/${"z".repeat(43)}`,
+				mode,
+				binding: computerBinding(),
+			});
+			await vi.waitFor(() => expect(f.instances).toHaveLength(2));
+			expect(f.releaseConnection).toHaveBeenCalledWith({ connectionId: computerId(50) });
+			expect(f.requestConnection.mock.calls.map(([input]) => input.mode)).toEqual(["watch", mode, "watch"]);
+			f.instances[1].emit("connect");
+			expect(f.instances.every((rfb) => rfb.viewOnly)).toBe(true);
+			expect(f.button("Enter").hidden).toBe(false);
+			await f.viewer.close();
+		},
+	);
 
-	it("does not request control if Back is clicked while the preceding watch grant is releasing", async () => {
-		const f = await embeddedViewer(true, false);
-		const releasing = computerDeferred<void>();
-		f.releaseConnection.mockImplementationOnce(() => releasing.promise);
-		f.button("Enter").onclick?.();
-		f.button("Back to thread").onclick?.();
-		releasing.resolve();
-		await vi.waitFor(() => expect(f.instances).toHaveLength(2));
-		expect(f.requestConnection.mock.calls.map(([input]) => input.mode)).toEqual(["watch", "watch"]);
-		expect(f.releaseConnection).toHaveBeenCalledOnce();
-		await f.viewer.close();
-	});
+	it.each([false, true])(
+		"does not request input if Back is clicked while the watch grant releases (shared: %s)",
+		async (sharedControl) => {
+			const f = await embeddedViewer(true, false, sharedControl);
+			const releasing = computerDeferred<void>();
+			f.releaseConnection.mockImplementationOnce(() => releasing.promise);
+			f.button("Enter").onclick?.();
+			f.button("Back to thread").onclick?.();
+			releasing.resolve();
+			await vi.waitFor(() => expect(f.instances).toHaveLength(2));
+			expect(f.requestConnection.mock.calls.map(([input]) => input.mode)).toEqual(["watch", "watch"]);
+			expect(f.releaseConnection).toHaveBeenCalledOnce();
+			await f.viewer.close();
+		},
+	);
 
 	it("hides Enter over connection and error statuses and restores it after a watch reconnect", async () => {
 		const f = viewerFixture();
@@ -318,7 +376,7 @@ describe("viewer UI state machine (fake DOM/noVNC, not visual cloud acceptance)"
 
 	it("never converts an embedded private-sign-in option into shared control", async () => {
 		const f = viewerFixture();
-		const viewer = f.api.open({ ...f.options, mount: new FakeElement(), privateSignIn: true });
+		const viewer = f.api.open({ ...f.options, mount: new FakeElement(), privateSignIn: true, sharedControl: true });
 		await vi.waitFor(() => expect(f.instances).toHaveLength(1));
 		f.instances[0].emit("connect");
 		f.button("Enter").onclick?.();
@@ -506,6 +564,39 @@ describe("viewer UI state machine (fake DOM/noVNC, not visual cloud acceptance)"
 		expect(f.onClosed).toHaveBeenCalledOnce();
 	});
 
+	it("opens shared input immediately and reconnects with fresh shared authority", async () => {
+		const f = viewerFixture();
+		f.options.sharedControl = true;
+		const viewer = f.api.open(f.options);
+		await vi.waitFor(() => expect(f.instances).toHaveLength(1));
+		expect(f.instances[0].viewOnly).toBe(true);
+		f.instances[0].emit("connect");
+		expect(f.instances[0].viewOnly).toBe(false);
+		expect(f.button("Take control").hidden).toBe(true);
+		f.button("Take control").onclick?.();
+		expect(f.requestConnection).toHaveBeenCalledOnce();
+		expect(f.elements.some((element) => element.textContent === "Shared with the agent")).toBe(true);
+		f.instances[0].emit("disconnect");
+		expect(f.instances[0].viewOnly).toBe(true);
+		f.button("Reconnect").onclick?.();
+		await vi.waitFor(() => expect(f.instances).toHaveLength(2));
+		f.instances[1].emit("connect");
+		expect(f.instances[1].viewOnly).toBe(false);
+		expect(f.requestConnection.mock.calls.map(([input]) => input.mode)).toEqual(["shared", "shared"]);
+		await viewer.close();
+		expect(f.releaseConnection).toHaveBeenCalledTimes(2);
+	});
+	it("keeps shared viewing read-only when the member cannot control", async () => {
+		const f = viewerFixture();
+		f.options.sharedControl = true;
+		f.options.canControl = false;
+		const viewer = f.api.open(f.options);
+		await vi.waitFor(() => expect(f.instances).toHaveLength(1));
+		f.instances[0].emit("connect");
+		expect(f.instances[0].viewOnly).toBe(true);
+		expect(f.requestConnection.mock.calls[0][0].mode).toBe("watch");
+		await viewer.close();
+	});
 	it("uses explicit private control, never shared takeover, and reconnects only on a new click", async () => {
 		const f = viewerFixture();
 		f.options.canControl = false;

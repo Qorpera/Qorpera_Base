@@ -8,7 +8,7 @@ const bindingKeys = [
 	"computerGeneration", "screenId", "screenOrdinal", "screenGeneration", "staffAgentId",
 ];
 
-function openScreenViewer({ binding, title, requestConnection, releaseConnection, onClosed, canControl = true, privateSignIn = false, mount, autofocus = true, onExpandedChange }) {
+function openScreenViewer({ binding, title, requestConnection, releaseConnection, onClosed, canControl = true, privateSignIn = false, sharedControl = false, mount, autofocus = true, onExpandedChange }) {
 	const expected = Object.freeze({ ...binding });
 	const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 	if (bindingKeys.some((key) => key.endsWith("Id") ? !uuid.test(expected[key]) : !Number.isSafeInteger(expected[key]) || expected[key] < 1) ||
@@ -46,7 +46,7 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 	takeover.className = "screen-viewer-takeover";
 	labelButton(takeover, "Take control");
 	takeover.disabled = true;
-	takeover.hidden = !canControl || privateSignIn;
+	takeover.hidden = !canControl || privateSignIn || sharedControl;
 	takeover.setAttribute("aria-pressed", "false");
 	const reconnect = document.createElement("button");
 	reconnect.type = "button";
@@ -124,7 +124,7 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 		enter.hidden = entered || !connected;
 		enter.disabled = !connected || busy || fullscreenBusy;
 		back.hidden = !entered;
-		takeover.hidden = !entered || !canControl || privateSignIn;
+		takeover.hidden = !entered || !canControl || privateSignIn || sharedControl;
 		fullscreen.hidden = !entered || !supportsFullscreen;
 		closeButton.hidden = !entered;
 	};
@@ -181,8 +181,8 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 	};
 	const connect = async (mode) => {
 		if (closed || busy) return;
-		if (mode === "control" && !canControl && !privateSignIn) return;
-		if (mode === "control" && mount && (!entered || !canControl || privateSignIn)) return;
+		if (mode !== "watch" && !canControl && !privateSignIn) return;
+		if (mode !== "watch" && mount && (!entered || !canControl || privateSignIn)) return;
 		busy = true;
 		connected = false;
 		const attempt = ++epoch;
@@ -195,7 +195,7 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 		reconnect.disabled = true;
 		status.hidden = false;
 		status.classList.remove("is-error");
-		statusCopy.textContent = privateSignIn ? "Checking your private sign-in access" : mode === "control" ? "Waiting for the cloud screen to release agent control" : "Connecting to cloud desktop";
+		statusCopy.textContent = privateSignIn ? "Checking your private sign-in access" : mode === "control" ? "Waiting for the cloud screen to release agent control" : "Starting the screen and connecting…";
 		hint.textContent = "Connecting";
 		syncEmbedded();
 		let connection;
@@ -229,17 +229,17 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 			current = { rfb, connection };
 			rfb.addEventListener("connect", () => {
 				if (closed || current?.rfb !== rfb) return;
-				if (mount && mode === "control" && !entered) return;
+				if (mount && mode !== "watch" && !entered) return;
 				connected = true;
 				// This flag only controls UI input; the cloud gateway independently fences every input packet.
-				rfb.viewOnly = mode !== "control";
+				rfb.viewOnly = mode === "watch";
 				status.hidden = true;
 				reconnect.hidden = true;
 				takeover.disabled = false;
 				labelButton(takeover, mode === "control" ? "Release control" : "Take control");
 				takeover.setAttribute("aria-pressed", String(mode === "control"));
-				hint.textContent = privateSignIn ? "Private sign-in · Closing this view leaves the office private" : mode === "control" ? "You control this cloud screen" : "Watching only";
-				if (mode === "control") rfb.focus();
+				hint.textContent = privateSignIn ? "Private sign-in · Closing this view leaves the office private" : mode === "shared" ? "Shared with the agent" : mode === "control" ? "You control this cloud screen" : "Watching only";
+				if (mode !== "watch") rfb.focus();
 				syncEmbedded();
 			});
 			rfb.addEventListener("disconnect", () => {
@@ -268,7 +268,7 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 		const restoreFocus = overlay.contains(document.activeElement);
 		setEntered(false);
 		if (restoreFocus) overlay.focus();
-		if (current?.connection.mode === "control" || admissionMode === "control") {
+		if ((current && current.connection.mode !== "watch") || (admissionMode && admissionMode !== "watch")) {
 			if (current) current.rfb.viewOnly = true;
 			epoch++;
 			admission?.abort();
@@ -313,16 +313,17 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 			back.focus();
 			// Invoke before any await so native fullscreen retains the click's user activation.
 			void toggleFullscreen();
-			if (canControl && !privateSignIn) void connect("control");
+			if (canControl && !privateSignIn) void connect(sharedControl ? "shared" : "control");
 		};
 		back.onclick = returnToMini;
 		fullscreen.onclick = toggleFullscreen;
 	}
-	takeover.onclick = () => { if (!privateSignIn && (!mount || entered)) void connect(current?.connection.mode === "control" ? "watch" : "control"); };
-	// Never regain control automatically after a network loss or expired grant.
-	reconnect.onclick = () => { void connect(privateSignIn && !mount ? "control" : "watch"); };
+	takeover.onclick = () => { if (!privateSignIn && !sharedControl && (!mount || entered)) void connect(current?.connection.mode === "control" ? "watch" : "control"); };
+	// Each explicit reconnect obtains fresh authority; mini previews stay watch-only.
+	const initialMode = !mount && privateSignIn ? "control" : !mount && sharedControl && canControl ? "shared" : "watch";
+	reconnect.onclick = () => { void connect(mount && entered && sharedControl && canControl && !privateSignIn ? "shared" : initialMode); };
 	closeButton.onclick = () => { void finish().catch(() => undefined); };
-	void connect(privateSignIn && !mount ? "control" : "watch");
+	void connect(initialMode);
 	return { close: finish, get closed() { return closed; } };
 }
 
