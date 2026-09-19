@@ -435,6 +435,31 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 		).rejects.toThrow();
 		expect(browsers[1].close).toHaveBeenCalledOnce();
 	});
+	it("leaves a member's dock-opened browser alone when a run that never joined it fails a shell action", async () => {
+		const f = await fixture({ browser: true });
+		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
+		physical.browserRequest.mockResolvedValueOnce(true);
+		await vi.waitFor(() => expect(physical.browserLaunch).toHaveBeenCalledOnce(), { timeout: 3000 });
+		const run = vi.spyOn(CompanyComputerLinuxCommands.prototype, "run").mockRejectedValue(new Error("shell broke"));
+		const session = await f.create();
+		const shell = f.operation({ kind: "shell", command: "false", timeoutMs: 1000 });
+		// The gate's drainOnFailure runs for every failed action, not only browser ones.
+		await expect(session.endpoint.perform(shell, f.lease, f.effect())).rejects.toThrow();
+		expect(run).toHaveBeenCalledOnce();
+		expect(browsers[0].close).not.toHaveBeenCalled();
+		// Once the run has joined the browser, the same shell failure does close it:
+		// its automation may be in flight and only a physical close proves it stopped.
+		await session.endpoint.perform(f.operation({ kind: "browser", action: "list_tabs" }), f.lease, f.effect());
+		expect(physical.browserLaunch).toHaveBeenCalledOnce();
+		await expect(session.endpoint.perform(shell, f.lease, f.effect())).rejects.toThrow();
+		expect(browsers[0].close).toHaveBeenCalledOnce();
+		// The run let go with that close: a further failure closes nothing the member reopens.
+		physical.browserRequest.mockResolvedValueOnce(true);
+		await vi.waitFor(() => expect(physical.browserLaunch).toHaveBeenCalledTimes(2), { timeout: 3000 });
+		await expect(session.endpoint.perform(shell, f.lease, f.effect())).rejects.toThrow();
+		expect(browsers[1].close).not.toHaveBeenCalled();
+		expect(f.failure).not.toHaveBeenCalled();
+	});
 	it("closes the screen's browser on the privacy fence and on a screen drain, before the desktop stops", async () => {
 		const f = await fixture({ browser: true });
 		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);

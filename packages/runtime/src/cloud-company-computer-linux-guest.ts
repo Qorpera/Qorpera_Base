@@ -447,6 +447,9 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		let closing: Promise<void> | undefined;
 		let commands: CompanyComputerLinuxCommands | undefined;
 		let browser: CompanyComputerBrowserSession | undefined;
+		/** The screen browser THIS run drives (or is in the middle of joining). A run
+		 * that never touched the browser has no say over a window a member opened. */
+		let driving: CompanyComputerBrowserSession | "attaching" | undefined;
 		let automation: CompanyComputerGuestAutomation | undefined;
 		const signal = AbortSignal.any([stop.signal, this.#stop.signal, input.run.signal]);
 		const admitted = async (exact: CompanyComputerScreenBinding, checked: AbortSignal): Promise<void> => {
@@ -476,7 +479,10 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 			// First the run's authority; a run without a current grant starts nothing.
 			await boundary.assertReady(binding, checked);
 			await access.assertGranted(grant, binding, checked);
+			// From here on this run may have automation in flight against the browser.
+			driving = "attaching";
 			const shared = await this.#ensureBrowser(binding, "agent", checked);
+			driving = shared;
 			if (
 				shared.grant.profileId !== grant.profileId ||
 				shared.grant.grantId !== grant.grantId ||
@@ -524,6 +530,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 						// desktop. Every action of this run has settled above, so no
 						// automation command of the run is still in flight.
 						browser = undefined;
+						driving = undefined;
 						automation = undefined;
 						const results = await Promise.allSettled([commands?.close()]);
 						const rejected = results.find((result) => result.status === "rejected");
@@ -556,16 +563,28 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 				});
 			},
 			automation: {
-				// A failed or cancelled action may have automation commands in flight.
-				// Only a confirmed physical close proves they stopped, exactly as
-				// before; the next browser use or the dock icon opens it again.
+				// The gate calls this for every failed or cancelled action of the run,
+				// shell and pixel actions included. If this run drove the browser it may
+				// have automation commands in flight, and only a confirmed physical close
+				// proves they stopped, exactly as before; the next browser use or the dock
+				// icon opens it again. A run that never joined the browser closes nothing:
+				// the window on the screen may be one a member opened from the dock.
 				stopBrowser: async () => {
+					const mine = driving;
 					browser = undefined;
+					driving = undefined;
 					automation = undefined;
+					if (!mine) return;
 					const screen = this.#screens.get(binding.screenOrdinal);
 					const owned = screen?.browser;
 					if (!screen || !owned) return;
 					const current = await owned.opening?.catch(() => undefined);
+					if (mine !== "attaching" && current !== mine) {
+						// The browser this run drove has already been replaced; make sure
+						// the old process is gone and leave the new window alone.
+						await mine.close();
+						return;
+					}
 					await owned.detachLogins?.().catch(() => undefined);
 					owned.detachLogins = undefined;
 					await current?.close();
@@ -576,7 +595,10 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 					checked.throwIfAborted();
 					if (action.kind === "browser" || (action.kind === "screenshot" && action.surface === "browser")) {
 						// A member may have closed the window since the last action.
-						if (browser?.isEnded?.()) browser = undefined;
+						if (browser?.isEnded?.()) {
+							browser = undefined;
+							driving = undefined;
+						}
 						if (!browser) {
 							browser = await attach(checked);
 							automation = undefined;
