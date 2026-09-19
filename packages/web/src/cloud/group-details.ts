@@ -9,12 +9,13 @@ export interface GroupChatDetails {
 	environmentId: string;
 	version: number;
 	name: string;
+	subtitle?: string;
 	purpose: string;
 	status: "active" | "archived";
 	members: { kind: "member" | "staff_agent"; id: string }[];
 }
 
-export type GroupChatDraft = Pick<GroupChatDetails, "name" | "purpose" | "members">;
+export type GroupChatDraft = Pick<GroupChatDetails, "name" | "subtitle" | "purpose" | "members">;
 
 export async function listGroupChatDetails(
 	cloud: Cloud,
@@ -62,6 +63,8 @@ export async function readGroupChatDetails(
 function parseGroupChatDetails(value: unknown): GroupChatDetails {
 	const room = record(value, "group chat");
 	if (typeof room.purpose !== "string") throw new CloudShapeError("group description");
+	if (room.subtitle !== undefined && (typeof room.subtitle !== "string" || [...room.subtitle].length > 256))
+		throw new CloudShapeError("group subtitle");
 	const members = array(room.members, "group participants").map((value) => {
 		const member = record(value, "group participant");
 		return {
@@ -77,6 +80,7 @@ function parseGroupChatDetails(value: unknown): GroupChatDetails {
 		environmentId: uuid(room.environmentId, "group chat environment id"),
 		version: boundedInteger(room.version, "group chat revision", 1, Number.MAX_SAFE_INTEGER),
 		name: nonEmptyString(room.name, "group name"),
+		...(room.subtitle !== undefined ? { subtitle: room.subtitle } : {}),
 		purpose: room.purpose,
 		status: oneOf(room.status, ["active", "archived"], "group status"),
 		members,

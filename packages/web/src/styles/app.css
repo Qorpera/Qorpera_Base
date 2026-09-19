@@ -252,7 +252,7 @@ label > input, label > select { font-weight: 400; }
 	display: grid; grid-template-columns: var(--rail-row-figure) minmax(0, 1fr); align-items: center; gap: 2px;
 	min-height: 51px; padding: 3px 8px 3px 12px; border-radius: 9px; color: var(--text);
 }
-.rail-row-agent { --rail-row-figure: 50px; min-height: 63.75px; }
+.rail-row-agent, .rail-row-group { --rail-row-figure: 50px; min-height: 63.75px; }
 .rail-row:hover { background: var(--rail-hover); text-decoration: none; }
 .rail-row.active, .rail-row.active:hover { background: var(--rail-selection); color: #fff; }
 .rail-row .figure { width: var(--rail-row-figure); height: var(--rail-row-figure); }
