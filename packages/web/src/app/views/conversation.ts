@@ -15,8 +15,8 @@ import { ComputerPanel } from "./computer.ts";
 import { SessionExecutionView } from "./session-execution.ts";
 import { SessionRunView } from "./session-run.ts";
 
-/** The 420px computer panel (conversation.css) beside a conversation still 316px wide. */
-const PANEL_BESIDE_CONVERSATION = 420 + 316;
+/** Beside the computer panel the conversation keeps at least this much room. */
+const CONVERSATION_MIN_WIDTH = 316;
 
 export { renderAuthorizationCard } from "../../ui/authorization-card.ts";
 
@@ -362,8 +362,10 @@ export class ConversationView {
 	}
 
 	#syncPanelLayout(): void {
-		// The thread's own width decides, so the rail's width, whatever the member made it, counts.
-		const covered = Boolean(this.#panel) && this.#body.clientWidth < PANEL_BESIDE_CONVERSATION;
+		// The thread's width and the panel's own (420px beside the thread, all of it in the phone
+		// layout) decide, so any rail width and any panel rule in conversation.css count.
+		const covered =
+			Boolean(this.#panel) && this.#body.clientWidth - (this.#panel?.el.offsetWidth ?? 0) < CONVERSATION_MIN_WIDTH;
 		this.#body.classList.toggle("computer-covers", covered);
 		if (covered && this.#conversationPane.contains(document.activeElement)) this.#panel?.focus();
 		this.#conversationPane.inert = covered;

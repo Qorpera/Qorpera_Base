@@ -5,11 +5,15 @@ const COMPACT = 80;
 const MIN = 240;
 /** Half again the desktop's 304px rail. */
 const DEFAULT = 456;
-/** The default before this one. Stored, it was almost always a reset to that default. */
-const PREVIOUS_DEFAULT = 304;
 /** The rail may take at most two fifths of the window, a touch wider than a Messages sidebar. */
 const MAX_SHARE = 0.4;
-const STORAGE_KEY = "qorpera.web.rail-width";
+/** Up to this window width the rail is a drawer (app.css), shown whole and never collapsed. */
+const DRAWER_MAX = 760;
+const STORAGE_KEY = "qorpera.web.rail-width.v2";
+/** Where widths were stored while the default was 304px. A stored 304 there was almost
+ * always a reset to that default, so it is dropped; any other width moves over once. */
+const OLD_STORAGE_KEY = "qorpera.web.rail-width";
+const OLD_DEFAULT = 304;
 
 /** Only a browser layout preference. Company navigation remains canonical. */
 export class RailLayout {
@@ -21,15 +25,21 @@ export class RailLayout {
 	#preferred = DEFAULT;
 	#width = DEFAULT;
 	#max = 0;
+	#drawer = false;
 	#dragging = false;
 	#dragged = false;
 	constructor(frame: HTMLElement, rail: HTMLElement) {
 		this.#frame = frame;
 		this.#rail = rail;
 		try {
+			const old = localStorage.getItem(OLD_STORAGE_KEY);
+			if (old !== null) {
+				localStorage.removeItem(OLD_STORAGE_KEY);
+				if (Number(old) !== OLD_DEFAULT && localStorage.getItem(STORAGE_KEY) === null)
+					localStorage.setItem(STORAGE_KEY, old);
+			}
 			const width = Number(localStorage.getItem(STORAGE_KEY));
-			if (width === PREVIOUS_DEFAULT) localStorage.removeItem(STORAGE_KEY);
-			else if (Number.isFinite(width) && (width === COMPACT || width >= MIN)) this.#preferred = width;
+			if (Number.isFinite(width) && (width === COMPACT || width >= MIN)) this.#preferred = width;
 		} catch {
 			/* Browser storage is optional. */
 		}
@@ -42,7 +52,7 @@ export class RailLayout {
 			"aria-valuemin": String(COMPACT),
 		});
 		this.el.addEventListener("pointerdown", (event) => {
-			if (event.button !== 0 || window.innerWidth <= 760) return;
+			if (event.button !== 0 || window.innerWidth <= DRAWER_MAX) return;
 			event.preventDefault();
 			this.#dragging = true;
 			this.#dragged = false;
@@ -117,14 +127,17 @@ export class RailLayout {
 	#apply(): void {
 		const max = this.#cap();
 		const width = Math.min(this.#preferred, max);
-		if (width === this.#width && max === this.#max) return;
+		const drawer = window.innerWidth <= DRAWER_MAX;
+		if (width === this.#width && max === this.#max && drawer === this.#drawer) return;
 		this.#width = width;
 		this.#max = max;
+		this.#drawer = drawer;
 		// Only the rail and its edge read the width. Set on the frame, every change
 		// would restyle the whole app, once per frame while the window is resized.
 		this.#rail.style.setProperty("--rail-width", `${width}px`);
 		this.el.style.setProperty("--rail-width", `${width}px`);
-		this.#frame.classList.toggle("rail-compact", width === COMPACT);
+		// Collapsed only where the rail stands beside the page; the drawer always shows it whole.
+		this.#frame.classList.toggle("rail-compact", width === COMPACT && !drawer);
 		this.el.setAttribute("aria-valuemax", String(max));
 		this.el.setAttribute("aria-valuenow", String(width));
 		this.el.setAttribute("aria-valuetext", width === COMPACT ? "Compact" : `${width} pixels`);

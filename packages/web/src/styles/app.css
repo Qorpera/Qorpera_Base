@@ -232,19 +232,18 @@ label > input, label > select { font-weight: 400; }
 /* Every rail label is one line; it shortens with the rail instead of wrapping. */
 .cofounder-home strong, .cofounder-home small, .rail-row-copy strong, .rail-row-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-row.active .rail-row-copy small { color: rgba(255, 255, 255, 0.85); }
-@media (min-width: 761px) {
-	.rail-compact .rail { padding-inline: 7px; }
-	.rail-compact .rail-toolbar { justify-content: center; }
-	.rail-compact .rail-search, .rail-compact .cofounder-home > strong, .rail-compact .cofounder-home > small, .rail-compact .rail-row-copy, .rail-compact .account-menu-rail .account-trigger-name, .rail-compact .rail-connection { display: none; }
-	.rail-compact .rail-cofounder { padding: 6px 0; }
-	.rail-compact .cofounder-home { height: 64px; padding: 0; }
-	.rail-compact .rail { --figure: 48px; }
-	.rail-compact .cofounder-stand { top: 8px; }
-	.rail-compact .cofounder-status { width: 16px; height: 16px; border-width: 2px; }
-	.rail-compact .rail-row { grid-template-columns: 1fr; padding: 5px; justify-items: center; }
-	.rail-compact .account-menu-rail .account-trigger { justify-content: center; }
-	.rail-compact .account-menu-rail .account-popover { position: fixed; left: 8px; right: auto; bottom: 66px; width: 260px; z-index: 50; }
-}
+/* RailLayout sets rail-compact only where the rail stands beside the page, never on the drawer. */
+.rail-compact .rail { padding-inline: 7px; }
+.rail-compact .rail-toolbar { justify-content: center; }
+.rail-compact .rail-search, .rail-compact .cofounder-home > strong, .rail-compact .cofounder-home > small, .rail-compact .rail-row-copy, .rail-compact .account-menu-rail .account-trigger-name, .rail-compact .rail-connection { display: none; }
+.rail-compact .rail-cofounder { padding: 6px 0; }
+.rail-compact .cofounder-home { height: 64px; padding: 0; }
+.rail-compact .rail { --figure: 48px; }
+.rail-compact .cofounder-stand { top: 8px; }
+.rail-compact .cofounder-status { width: 16px; height: 16px; border-width: 2px; }
+.rail-compact .rail-row { grid-template-columns: 1fr; padding: 5px; justify-items: center; }
+.rail-compact .account-menu-rail .account-trigger { justify-content: center; }
+.rail-compact .account-menu-rail .account-popover { position: fixed; left: 8px; right: auto; bottom: 66px; width: 260px; z-index: 50; }
 
 /* The profile menu opens upward from the foot of the rail. */
 .rail-footer { flex: none; padding-top: 5px; }

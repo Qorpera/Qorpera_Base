@@ -516,7 +516,7 @@ above.
     would build exactly the screen that this trigger refuses, which is what
     happened here.
 
-### 2026-09-19 — from the web client session (`packages/web`, PR #118)
+### 2026-09-19 — from the web client session (`packages/web`, PR #118, revised in #124)
 
 12. **The web client no longer reads member notifications.** At the founder's
     request the web client removed its notification inbox and the rail's

@@ -174,7 +174,7 @@ describe("shell presentation lifecycle", () => {
 		press("End");
 		press("ArrowRight");
 		expect(rail.el.getAttribute("aria-valuenow")).toBe(cap);
-		expect(localStorage.getItem("qorpera.web.rail-width")).toBe(cap);
+		expect(localStorage.getItem("qorpera.web.rail-width.v2")).toBe(cap);
 		// Only the rail and its edge carry the width, so a change restyles nothing else.
 		expect(aside.style.getPropertyValue("--rail-width")).toBe(`${cap}px`);
 		expect(rail.el.style.getPropertyValue("--rail-width")).toBe(`${cap}px`);
@@ -183,7 +183,7 @@ describe("shell presentation lifecycle", () => {
 		vi.stubGlobal("innerWidth", 800);
 		window.dispatchEvent(new Event("resize"));
 		expect(rail.el.getAttribute("aria-valuenow")).toBe("320");
-		expect(localStorage.getItem("qorpera.web.rail-width")).toBe(cap);
+		expect(localStorage.getItem("qorpera.web.rail-width.v2")).toBe(cap);
 		vi.stubGlobal("innerWidth", 1280);
 		window.dispatchEvent(new Event("resize"));
 		expect(rail.el.getAttribute("aria-valuenow")).toBe(cap);
@@ -191,7 +191,7 @@ describe("shell presentation lifecycle", () => {
 		window.dispatchEvent(new Event("resize"));
 		press("ArrowLeft");
 		expect(rail.el.getAttribute("aria-valuenow")).toBe("304");
-		expect(localStorage.getItem("qorpera.web.rail-width")).toBe("304");
+		expect(localStorage.getItem("qorpera.web.rail-width.v2")).toBe("304");
 		vi.stubGlobal("innerWidth", 1280);
 		window.dispatchEvent(new Event("resize"));
 		expect(rail.el.getAttribute("aria-valuenow")).toBe("304");
@@ -201,7 +201,7 @@ describe("shell presentation lifecycle", () => {
 		expect(rail.el.getAttribute("aria-valuenow")).toBe("240");
 		press("ArrowRight");
 		expect(rail.el.getAttribute("aria-valuenow")).toBe("240");
-		expect(localStorage.getItem("qorpera.web.rail-width")).toBe("304");
+		expect(localStorage.getItem("qorpera.web.rail-width.v2")).toBe("304");
 		vi.stubGlobal("innerWidth", 1280);
 		window.dispatchEvent(new Event("resize"));
 		expect(rail.el.getAttribute("aria-valuenow")).toBe("304");
@@ -210,7 +210,7 @@ describe("shell presentation lifecycle", () => {
 		window.dispatchEvent(new Event("resize"));
 		rail.el.dispatchEvent(new MouseEvent("dblclick"));
 		expect(rail.el.getAttribute("aria-valuenow")).toBe("409");
-		expect(localStorage.getItem("qorpera.web.rail-width")).toBeNull();
+		expect(localStorage.getItem("qorpera.web.rail-width.v2")).toBeNull();
 		vi.stubGlobal("innerWidth", 1280);
 		window.dispatchEvent(new Event("resize"));
 		expect(rail.el.getAttribute("aria-valuenow")).toBe("456");
@@ -222,13 +222,23 @@ describe("shell presentation lifecycle", () => {
 		rail.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
 		expect(rail.el.getAttribute("aria-valuenow")).toBe("456");
 	});
-	it("reads a stored 304px, the previous default, as no choice", () => {
+	it("moves a width stored under the old default over once, dropping the old 304px default", () => {
+		const shown = () => {
+			const aside = h("aside", { class: "rail" }),
+				rail = new RailLayout(h("div", null, aside), aside);
+			cleanup.push(() => rail.dispose());
+			return rail.el.getAttribute("aria-valuenow");
+		};
 		localStorage.setItem("qorpera.web.rail-width", "304");
-		const aside = h("aside", { class: "rail" }),
-			rail = new RailLayout(h("div", null, aside), aside);
-		cleanup.push(() => rail.dispose());
-		expect(rail.el.getAttribute("aria-valuenow")).toBe("456");
+		expect(shown()).toBe("456");
 		expect(localStorage.getItem("qorpera.web.rail-width")).toBeNull();
+		expect(localStorage.getItem("qorpera.web.rail-width.v2")).toBeNull();
+		localStorage.setItem("qorpera.web.rail-width", "400");
+		expect(shown()).toBe("400");
+		expect(localStorage.getItem("qorpera.web.rail-width.v2")).toBe("400");
+		// A 304px chosen now is a choice like any other.
+		localStorage.setItem("qorpera.web.rail-width.v2", "304");
+		expect(shown()).toBe("304");
 	});
 	it("changes marked labels without translating company names or message text", () => {
 		const label = uiText("Company"),
@@ -489,22 +499,32 @@ it("renders recorded responsibility targets and room links without inventing mis
 
 it("keeps the rail's search field, rows and focus through redraws and pauses the search while the rail is collapsed", () => {
 	const f = companyFixture();
+	const other = { ...staff, id: id(92), displayName: "Second agent" };
+	f.company.store.set({ staff: [staff, other] });
 	const { rail, frame, draw } = mountRail(f);
 	const toolbar = rail.querySelector(".rail-toolbar"),
 		list = rail.querySelector(".rail-scroll"),
 		search = rail.querySelector<HTMLInputElement>('input[type="search"]')!,
-		row = rail.querySelector<HTMLElement>(`a[href$="/staff/${staff.id}"]`)!;
+		row = rail.querySelector<HTMLElement>(`a[href$="/staff/${staff.id}"]`)!,
+		otherRow = rail.querySelector<HTMLElement>(`a[href$="/staff/${other.id}"]`)!;
 	// An update that changes nothing the rail shows leaves its elements, and keyboard focus, alone.
 	row.focus();
 	f.company.store.set({ activity: [] });
 	draw();
 	expect(rail.querySelector(`a[href$="/staff/${staff.id}"]`)).toBe(row);
 	expect(document.activeElement).toBe(row);
-	// A change rebuilds the rows inside the same list, and focus moves to the rebuilt row.
-	f.company.store.set({ staff: [{ ...staff, role: "Lead designer" }] });
+	// A change rebuilds only the row it touches, inside the same list, and focus moves to the rebuilt row.
+	f.company.store.set({ staff: [{ ...staff, role: "Lead designer" }, other] });
 	draw();
 	const rebuilt = rail.querySelector<HTMLElement>(`a[href$="/staff/${staff.id}"]`)!;
 	expect(rebuilt).not.toBe(row);
+	expect(rail.querySelector(`a[href$="/staff/${other.id}"]`)).toBe(otherRow);
+	expect(document.activeElement).toBe(rebuilt);
+	// When the focused row goes away, focus moves to the nearest row left, not to the page.
+	otherRow.focus();
+	f.company.store.set({ staff: [{ ...staff, role: "Lead designer" }, { ...other, employmentStatus: "archived" }] });
+	draw();
+	expect(rail.querySelector(`a[href$="/staff/${other.id}"]`)).toBeNull();
 	expect(document.activeElement).toBe(rebuilt);
 	expect(rail.querySelector(".rail-toolbar")).toBe(toolbar);
 	expect(rail.querySelector(".rail-scroll")).toBe(list);
@@ -526,11 +546,48 @@ it("keeps the rail's search field, rows and focus through redraws and pauses the
 	expect(rail.textContent).toContain(staff.displayName);
 	layout.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
 	expect(rail.textContent).toContain("No matching conversations.");
-	// In the phone layout a collapsed width does not hide the field, so it keeps filtering.
+	// In the phone layout the rail is a drawer and never collapsed, so the field shows and filters.
 	layout.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Home" }));
-	vi.stubGlobal("innerWidth", 700);
+	vi.stubGlobal("innerWidth", 760);
+	window.dispatchEvent(new Event("resize"));
+	expect(frame.classList.contains("rail-compact")).toBe(false);
+	expect(rail.textContent).toContain("No matching conversations.");
+	// One pixel wider it collapses again, although the width and its cap stay the same.
+	vi.stubGlobal("innerWidth", 761);
 	window.dispatchEvent(new Event("resize"));
 	expect(frame.classList.contains("rail-compact")).toBe(true);
+	expect(rail.textContent).toContain(staff.displayName);
+	expect(f.cloud.rpc).not.toHaveBeenCalled();
+});
+
+it("leaves a hidden rail alone and moves the account menu only when the foot changes", () => {
+	const f = companyFixture();
+	const { rail, frame, draw } = mountRail(f);
+	const layout = new RailLayout(frame, rail);
+	frame.append(layout.el);
+	cleanup.push(() => layout.dispose());
+	const search = rail.querySelector<HTMLInputElement>('input[type="search"]')!;
+	search.value = "zz";
+	search.dispatchEvent(new Event("input"));
 	expect(rail.textContent).toContain("No matching conversations.");
+	// Another page is showing: collapsing the rail does not draw it until it returns.
+	rail.hidden = true;
+	layout.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Home" }));
+	expect(rail.textContent).toContain("No matching conversations.");
+	rail.hidden = false;
+	draw();
+	expect(rail.textContent).toContain(staff.displayName);
+	// While live updates are degraded, redraws that change nothing touch nothing in the foot.
+	f.company.store.set({ realtime: "degraded", realtimeError: "offline" });
+	draw();
+	const foot = rail.querySelector(".rail-footer")!;
+	expect(foot.querySelector(".rail-connection")?.textContent).toContain("live updates degraded");
+	const changes = new MutationObserver(() => {});
+	changes.observe(foot, { childList: true, subtree: true, characterData: true });
+	draw();
+	draw();
+	expect(changes.takeRecords()).toHaveLength(0);
+	changes.disconnect();
+	expect(foot.querySelector(".account-menu")).not.toBeNull();
 	expect(f.cloud.rpc).not.toHaveBeenCalled();
 });
