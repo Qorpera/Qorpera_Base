@@ -1,6 +1,7 @@
 import { sessionAttachmentIssue } from "../../cloud/session-attachments.ts";
 import type { TranscriptCard, TranscriptItem } from "../../cloud/transcript.ts";
 import type { HostedSession, HostedStaffAgent } from "../../cloud/types.ts";
+import { AGENT_LOOK } from "../../ui/agent-activity.ts";
 import { AttachmentTray } from "../../ui/attachments.ts";
 import { authorizationRequestId, renderAuthorizationCard } from "../../ui/authorization-card.ts";
 import { agentFigure } from "../../ui/avatar.ts";
@@ -10,7 +11,7 @@ import { matchesKey } from "../../ui/keys.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
 import { notification, updateNotification } from "../../ui/notification.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
-import type { CompanyController, ConversationState } from "../company.ts";
+import type { AgentState, CompanyController, ConversationState } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
 import { ComputerPanel } from "./computer.ts";
@@ -44,6 +45,7 @@ export class ConversationView {
 	#cannotSend = true;
 	#submitting = false;
 	#working = false;
+	#agentState: AgentState = "idle";
 	#activityKey = "";
 	readonly #composerWrap: HTMLElement;
 	readonly #composerShell: HTMLElement;
@@ -500,15 +502,19 @@ export class ConversationView {
 		);
 		// The agent's run is watched quietly; a change in who is working re-reads it.
 		const activity = room ? undefined : this.#company.activityFor(session?.staffAgentId);
-		const working = activity !== undefined && activity.activity !== "needs_attention";
 		const activityKey = `${activity?.runId ?? ""}:${activity?.activity ?? ""}`;
 		if (activityKey !== this.#activityKey) {
 			this.#activityKey = activityKey;
 			void this.#run?.refresh();
 		}
-		this.#working = working || (conversation.sending && !room);
+		this.#agentState = room ? "idle" : this.#company.agentState(session?.staffAgentId);
+		this.#working = this.#agentState === "working" || this.#agentState === "writing";
 		this.#renderHeader(session, agent);
-		this.#renderMessages(conversation, room ? "Agent reply" : (agent?.displayName ?? session?.title ?? "Agent"));
+		this.#renderMessages(
+			conversation,
+			room ? "Agent reply" : (agent?.displayName ?? session?.title ?? "Agent"),
+			agent,
+		);
 		this.#renderStatus(conversation, canWrite, session);
 		this.#composer.disabled = !canWrite || conversation.sending;
 		this.#cannotSend =
@@ -572,7 +578,7 @@ export class ConversationView {
 		);
 	}
 
-	#renderMessages(conversation: ConversationState, agentName: string): void {
+	#renderMessages(conversation: ConversationState, agentName: string, agent: HostedStaffAgent | undefined): void {
 		const items: TranscriptItem[] = [
 			...conversation.projection.items,
 			...conversation.optimistic.map(
@@ -596,7 +602,10 @@ export class ConversationView {
 			conversation.projection.hiddenCount,
 			conversation.loading,
 			conversation.error,
-			this.#working,
+			this.#agentState,
+			agent?.id,
+			agent?.appearance,
+			agent?.templateId,
 		]);
 		if (key === this.#renderedKey) return;
 		this.#renderedKey = key;
@@ -687,16 +696,22 @@ export class ConversationView {
 		if (!conversation.loading && !items.length && !conversation.error && !this.#working) {
 			nodes.push(h("div", { class: "empty" }, "No messages yet."));
 		}
-		if (this.#working && !conversation.loading)
+		if (this.#working && !conversation.loading) {
+			const look = AGENT_LOOK[this.#agentState];
+			const description = `${agentName} · ${look.line}`;
 			nodes.push(
 				h(
 					"div",
-					{ class: "message from-agent typing", role: "status", "aria-label": `${agentName} is working` },
-					h("span", null),
-					h("span", null),
-					h("span", null),
+					{
+						class: "message from-agent thread-activity",
+						role: "status",
+						title: description,
+						"aria-label": description,
+					},
+					agentFigure(agent, agentName, { size: 40, activity: look.figure }),
 				),
 			);
+		}
 		replace(this.#messages, ...nodes);
 		if (this.#stickToBottom) this.#messages.scrollTop = this.#messages.scrollHeight;
 	}
