@@ -5,7 +5,6 @@ import { CompanyController } from "../src/app/company.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import type { HostedSession } from "../src/cloud/types.ts";
-import { icon } from "../src/ui/dom.ts";
 import { isGroupChat } from "../src/ui/group-chat.ts";
 import { fixture, id, profileA, session, staff, team, userA } from "./fixtures.ts";
 
@@ -53,7 +52,7 @@ function setup(initial: HostedSession) {
 }
 
 describe("group chat identity", () => {
-	it("uses the group picker icon and label in the rail and header, preserving them through refresh and rename", () => {
+	it("uses the group artwork canvas and label in the rail and header, preserving them through refresh and rename", () => {
 		const group = { ...session, title: "Co-Founder, Yang Tang", executionScope: { roomId: id(79) } };
 		const { company, rail, view, draw } = setup(group);
 		const row = () => rail.querySelector<HTMLAnchorElement>(`a[href$="/chat/${session.sessionId}"]`)!;
@@ -62,7 +61,8 @@ describe("group chat identity", () => {
 		expect(row().getAttribute("aria-current")).toBe("page");
 		expect(row().title).toBe(`${group.title} · Group chat`);
 		for (const root of [row(), identity]) {
-			expect(root.querySelector(".group-chat-avatar svg")?.outerHTML).toBe(icon("friends").outerHTML);
+			expect(root.querySelector("canvas.group-chat-avatar")).not.toBeNull();
+			expect(root.querySelector(".group-chat-avatar svg")).toBeNull();
 			expect(root.querySelector(".figure")).toBeNull();
 		}
 		expect(identity.getAttribute("aria-label")).toBe("Open group details");
@@ -81,7 +81,7 @@ describe("group chat identity", () => {
 		draw();
 		expect(row().querySelector("strong")?.textContent).toBe("Planning");
 		expect(identity.querySelector("h1")?.textContent).toBe("Planning");
-		expect(identity.querySelector(".group-chat-avatar svg")?.outerHTML).toBe(icon("friends").outerHTML);
+		expect(identity.querySelector("canvas.group-chat-avatar")).not.toBeNull();
 	});
 
 	it("updates an existing session's identity when its room scope arrives without a title change", () => {

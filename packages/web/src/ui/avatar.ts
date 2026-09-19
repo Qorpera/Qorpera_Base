@@ -34,6 +34,26 @@ function globals(): AvatarGlobals | undefined {
 	return scope as AvatarGlobals;
 }
 
+/** Shared approved artwork for static composites, using the same recolouring
+ * and dark-surface shade as individual agent figures. */
+export function figureArtwork(): FigureArtwork | undefined {
+	const scope = globals();
+	if (
+		!scope ||
+		typeof scope.QORPERA_AVATAR_APPEARANCE.prepare !== "function" ||
+		typeof scope.QORPERA_AVATAR_APPEARANCE.drawable !== "function" ||
+		typeof scope.QORPERA_MOTION_MODEL.avatarColor !== "function"
+	)
+		return undefined;
+	return {
+		faces: scope.QORPERA_MOTION_MODEL.faces,
+		prepare: scope.QORPERA_AVATAR_APPEARANCE.prepare,
+		drawable: scope.QORPERA_AVATAR_APPEARANCE.drawable,
+		colorOnDark: (id, shade) =>
+			/^#[\da-f]{6}$/.test(shade) ? scope.QORPERA_MOTION_MODEL.avatarColor(id, "dark", shade) : shade,
+	};
+}
+
 export const FIGURE_IDS = ["planet", "acorn", "flame", "rocket", "crown", "heart", "ghost"] as const;
 export type FigureId = (typeof FIGURE_IDS)[number];
 

@@ -362,8 +362,6 @@
 
 /* Group details use the same anchored frame as an agent's details. */
 .group-details-identity { display: flex; align-items: center; gap: 20px; padding: 8px 24px 20px 0; }
-.group-details-identity > .group-chat-avatar { width: 80px; height: 80px; flex: none; }
-.group-details-identity > .group-chat-avatar .icon { width: 40px; height: 40px; }
 .group-details-identity > div { min-width: 0; }
 .group-details-identity h2 { font-size: 24px; line-height: 1.25; overflow-wrap: anywhere; }
 .group-details-identity p { margin: 5px 0 0; color: var(--text-muted); }
@@ -376,3 +374,17 @@
 .group-details-participants li > div { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
 .group-details-participants li span:not(.figure, .person-avatar) { color: var(--text-muted); font-size: 12px; }
 .group-details-loading { display: flex; align-items: center; gap: 8px; color: var(--text-muted); }
+.group-edit-fields, .group-member-options { min-width: 0; margin: 0; padding: 0; border: 0; }
+.group-edit-fields { display: grid; gap: 18px; }
+.group-edit-fields > label { display: grid; gap: 6px; font-weight: 600; }
+.group-edit-fields > label > :is(input, textarea) { width: 100%; min-width: 0; font-weight: 400; }
+.group-edit-fields textarea { resize: vertical; }
+.group-member-options > legend { padding: 0; font-weight: 600; }
+.group-member-options > p { margin: 4px 0 8px; color: var(--text-muted); font-size: 12px; }
+.group-member-choice { display: flex; flex-direction: row; align-items: center; gap: 12px; padding: 8px 0; cursor: pointer; }
+.group-member-choice > input { flex: none; width: 16px; min-height: 16px; margin: 0; }
+.group-member-choice > .person-avatar { width: 32px; height: 32px; flex: none; }
+.group-member-choice > span:not(.figure, .person-avatar) { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.group-member-choice small { color: var(--text-muted); }
+.group-edit-fields:disabled .group-member-choice { cursor: default; opacity: .6; }
+.group-save-status:empty { display: none; }

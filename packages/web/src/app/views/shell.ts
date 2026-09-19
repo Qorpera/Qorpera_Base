@@ -373,6 +373,8 @@ interface AgentModel extends Pick<HostedStaffAgent, "id" | "displayName" | "role
 interface SessionModel {
 	title: string;
 	kind: "Group chat" | "company";
+	agents: HostedStaffAgent[];
+	selected: boolean;
 }
 function cofounderCard(model: AgentModel, href: string): HTMLElement {
 	const look = RAIL_LOOK[model.state];
@@ -418,7 +420,7 @@ function sessionRow(model: SessionModel, href: string): HTMLElement {
 			"span",
 			{ class: "rail-row-stand" },
 			model.kind === "Group chat"
-				? groupChatAvatar()
+				? groupChatAvatar(model.agents, { selected: model.selected })
 				: h("span", { class: "avatar small" }, model.title.slice(0, 1).toUpperCase()),
 		),
 		h("span", { class: "rail-row-copy" }, h("strong", null, model.title), h("small", null, model.kind)),
@@ -524,6 +526,8 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 					{
 						title: session.title,
 						kind: isGroupChat(session) ? ("Group chat" as const) : ("company" as const),
+						agents: company.groupAgents(session.sessionId),
+						selected: activeSessionId === session.sessionId,
 					},
 					activeSessionId === session.sessionId,
 					sessionRow,
@@ -553,6 +557,9 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		[
 			errorNotice("sessions", state.sessionsError, () =>
 				button("Retry conversations", () => void company.refreshSessions(), { small: true }),
+			),
+			errorNotice("groups", state.groupsError, () =>
+				button("Retry group details", () => void company.refreshGroups(), { small: true }),
 			),
 			errorNotice("company", state.error, () =>
 				button("Retry company", () => void company.refreshAll(), { small: true }),

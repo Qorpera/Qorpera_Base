@@ -348,7 +348,14 @@ export class ConversationView {
 		};
 		this.#details = agent
 			? new AgentDetails(this.#company, agent, this.#actions, closed, this.#identity, this.#lifetime.signal)
-			: new GroupDetails(this.#company, this.#sessionId, closed, this.#identity, this.#lifetime.signal);
+			: new GroupDetails(
+					this.#company,
+					this.#sessionId,
+					closed,
+					this.#identity,
+					this.#lifetime.signal,
+					this.#actions,
+				);
 	}
 
 	#toggleComputer(): void {
@@ -486,7 +493,8 @@ export class ConversationView {
 	#renderHeader(session: HostedSession | undefined, agent: HostedStaffAgent | undefined): void {
 		const title = agent?.displayName ?? session?.title ?? "Conversation";
 		const group = isGroupChat(session);
-		const key = JSON.stringify([title, group, agent?.id, agent?.appearance]);
+		const groupAgents = group ? this.#company.groupAgents(this.#sessionId) : [];
+		const key = JSON.stringify([title, group, agent?.id, agent?.appearance, groupAgents]);
 		const state = this.#company.store.get();
 		this.#identity.disabled =
 			(!agent && !group) ||
@@ -518,7 +526,7 @@ export class ConversationView {
 		}
 		replace(
 			this.#identity,
-			group ? groupChatAvatar() : agentFigure(agent, title, { size: 32 }),
+			group ? groupChatAvatar(groupAgents, { width: 40, height: 32 }) : agentFigure(agent, title, { size: 32 }),
 			h("h1", null, title),
 			agent || group ? icon("chevron") : null,
 		);
