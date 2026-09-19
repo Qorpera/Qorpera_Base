@@ -318,6 +318,10 @@
 .new-conversation-body { overflow: auto; padding: 40px 28px; }
 .new-agent-form { max-width: 380px; margin: 0 auto; }
 .new-agent-form h1 { text-align: center; font-size: 20px; }
+/* The form's own rules: the agent editor's were removed with it (#121). */
+.new-agent-fields { display: grid; gap: 14px; padding: 0; margin: 0; border: 0; min-width: 0; }
+.new-agent-fields label { font-size: 12px; }
+.new-agent-fields input, .new-agent-fields textarea { width: 100%; min-width: 0; font-size: 13px; font-weight: 400; }
 .new-agent-stage { display: grid; place-items: center; margin: 14px 0 0; }
 .new-agent-stage .figure { width: 112px; height: 112px; }
 .new-agent-form .surface-status { text-align: center; }

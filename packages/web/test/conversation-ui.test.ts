@@ -7,6 +7,9 @@ import { ConversationView } from "../src/app/views/conversation.ts";
 import { NewConversationView } from "../src/app/views/new-conversation.ts";
 import type { WorkspaceActions } from "../src/app/workspace-actions.ts";
 import type { TranscriptMessage } from "../src/cloud/transcript.ts";
+import appCss from "../src/styles/app.css?raw";
+import conversationCss from "../src/styles/conversation.css?raw";
+import tokensCss from "../src/styles/tokens.css?raw";
 import { AttachmentTray } from "../src/ui/attachments.ts";
 import { fmtTime } from "../src/ui/dom.ts";
 import { markdown, markdownBubbles } from "../src/ui/markdown.ts";
@@ -563,6 +566,25 @@ describe("new conversation and agent setup", () => {
 		choice(f.view.el, "create").click();
 		expect(f.view.el.querySelector<HTMLInputElement>('[aria-label="Agent name"]')?.value).toBe("Draft agent");
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
+	});
+	it("styles the New agent form with rules of its own", async () => {
+		const style = document.createElement("style");
+		style.textContent = [tokensCss, conversationCss, appCss].join("\n").replace(/^@import .*;$/gm, "");
+		document.head.append(style);
+		try {
+			const f = setupNew();
+			f.company.store.set({ team });
+			await settle();
+			choice(f.view.el, "create").click();
+			const fields = f.view.el.querySelector<HTMLFieldSetElement>("form fieldset")!;
+			// A cleanup of other editors' styles once left this form with the
+			// browser's fieldset box and page-sized labels.
+			expect(getComputedStyle(fields).display).toBe("grid");
+			expect(getComputedStyle(fields).borderTopWidth).toBe("0px");
+			expect(getComputedStyle(fields.querySelector("label")!).fontSize).toBe("12px");
+		} finally {
+			style.remove();
+		}
 	});
 	it("does not duplicate creation or navigate when an injected creation finishes after disposal", async () => {
 		const result = deferred<string>(),

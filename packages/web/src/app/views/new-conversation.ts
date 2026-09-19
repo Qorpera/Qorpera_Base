@@ -472,7 +472,7 @@ export class NewConversationView {
 		});
 		const fields = h(
 			"fieldset",
-			{ class: "agent-edit-fields" },
+			{ class: "new-agent-fields" },
 			stage,
 			picker.el,
 			h("label", null, "Name", name),
