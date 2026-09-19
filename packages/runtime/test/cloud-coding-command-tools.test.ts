@@ -15,7 +15,7 @@ function fixture() {
 	const scope = { workerId: randomUUID(), vmId: randomUUID(), requestId: randomUUID(), turn: 1 };
 	const commandId = randomUUID();
 	const receipt = {
-		schema: "qorpera.coding-command-result/v1",
+		schema: "qorpera.coding-command-result/v2",
 		workerId: scope.workerId,
 		commandId,
 		inputSha256: "a".repeat(64),
@@ -23,6 +23,7 @@ function fixture() {
 		exitCode: null,
 		output: "",
 		truncated: false,
+		log: { offset: 0, nextOffset: 0, totalBytes: 0, limitBytes: 67108864, limitReached: false },
 	};
 	const gateway = {
 		authorize: vi.fn<CloudCodingCommandGateway["authorize"]>().mockResolvedValue(undefined),
@@ -132,6 +133,33 @@ describe("isolated coding command tools", () => {
 			f.boundary.close();
 		}
 	});
+	it("shrinks escaped log pages so the native fence preserves a complete JSON cursor", async () => {
+		const f = fixture();
+		f.gateway.read.mockImplementation(async (_scope, input) => {
+			const length = Math.min(16000, input.limit ?? 4096);
+			return {
+				...f.receipt,
+				output: "<".repeat(length),
+				truncated: length < 16000,
+				log: { offset: 0, nextOffset: length, totalBytes: 16000, limitBytes: 67108864, limitReached: false },
+			};
+		});
+		try {
+			const result = await f.boundary.invoke("page", "qorpera", "coding_read_command", {
+				commandId: f.commandId,
+				limit: 16384,
+			});
+			expect(result.success).toBe(true);
+			const envelope = JSON.parse(result.contentItems[0].text);
+			expect(envelope.content.truncated).toBe(false);
+			const page = JSON.parse(envelope.content.text);
+			expect(page.log.nextOffset).toBe(page.output.length);
+			expect(page.log.nextOffset).toBeGreaterThan(0);
+			expect(f.gateway.read.mock.calls.length).toBeGreaterThan(1);
+		} finally {
+			f.boundary.close();
+		}
+	});
 	it("rejects another worker's receipt and does not echo upstream error text", async () => {
 		const f = fixture();
 		f.gateway.start.mockResolvedValue({ ...f.receipt, workerId: randomUUID(), output: "canary-secret" });
@@ -168,7 +196,7 @@ describe("isolated coding command tools", () => {
 		{ state: "succeeded", exitCode: null },
 		{ state: "failed", exitCode: 0 },
 		{ state: "running", exitCode: 0 },
-		{ output: "x".repeat(4097) },
+		{ output: "x".repeat(16385) },
 		{ token: "unexpected" },
 	])("rejects inconsistent guest receipt %j", (patch) => {
 		const f = fixture();

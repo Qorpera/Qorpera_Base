@@ -6,12 +6,21 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import {
+	type CloudCodingCommandRead,
+	type CloudCodingCommandReceipt,
+	parseCloudCodingCommandRead,
+	parseCloudCodingCommandReceipt,
+} from "@qorpera/contracts";
+import { collectCodingCommandOutput, readCodingCommandLog } from "./cloud-coding-command-log.ts";
+import { type CodingGuestConfiguration, parseCodingGuestConfiguration } from "./cloud-coding-guest-configuration.ts";
+import { assertCloudCodingGuestStorage } from "./cloud-coding-storage-guest.ts";
+
 import { refreshCodingGuestLease, requireCodingGuestLease } from "./cloud-coding-watchdog.ts";
 
 const executeFile = promisify(execFile);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const HASH = /^[0-9a-f]{64}$/;
-const LIMIT = 4096;
 const ROOT = "/var/lib/qorpera-coding";
 const ENTRYPOINT = "/opt/qorpera-coding/cloud-coding-command-guest.mjs";
 const ENV = Object.freeze({ PATH: "/usr/bin:/bin", LANG: "C.UTF-8" });
@@ -27,25 +36,7 @@ export interface CodingGuestCommandRequest {
 	readonly command: string;
 	readonly timeoutMs: number;
 }
-export interface CodingGuestCommandReceipt {
-	readonly schema: "qorpera.coding-command-result/v1";
-	readonly workerId: string;
-	readonly commandId: string;
-	readonly inputSha256: string;
-	readonly state: "running" | "succeeded" | "failed" | "cancelled" | "unconfirmed";
-	readonly exitCode: number | null;
-	readonly output: string;
-	readonly truncated: boolean;
-}
-interface GuestConfiguration {
-	schema: "qorpera.coding-command-guest/v1";
-	workerId: string;
-	vmId: string;
-	bootId: string;
-	uid: number;
-	gid: number;
-	workspacePath: string;
-}
+export type CodingGuestCommandReceipt = CloudCodingCommandReceipt;
 interface Intent {
 	schema: "qorpera.coding-command-intent/v1";
 	request: CodingGuestCommandRequest;
@@ -61,6 +52,7 @@ export interface CodingGuestCommandPorts {
 	inspectMachine?: () => Promise<string>;
 	nowMs?: () => Promise<number>;
 	system?: (executable: string, args: readonly string[]) => Promise<string>;
+	assertStorage?: (guest: CodingGuestConfiguration) => Promise<void>;
 }
 
 function closed(value: unknown, keys: readonly string[]): Record<string, unknown> {
@@ -143,7 +135,9 @@ async function protectedRead(path: string, owner: number, maxBytes: number, boun
 	// deployment owns these directories; the coding user cannot replace them.
 	for (let parent = dirname(path); parent !== dirname(parent); parent = dirname(parent)) {
 		const stat = await lstat(parent);
-		if (!stat.isDirectory() || stat.uid !== owner || (stat.mode & 0o022) !== 0)
+		// The separately verified NAS mount root is owned by the trusted host
+		// service. Descendants and all other ancestors remain root-owned.
+		if (!stat.isDirectory() || (stat.uid !== owner && parent !== ROOT) || (stat.mode & 0o022) !== 0)
 			throw new Error("UNPROTECTED_CODING_GUEST_PATH");
 		if (parent === boundary) break;
 	}
@@ -176,10 +170,22 @@ async function retain(path: string, value: unknown, mode = 0o400): Promise<void>
 		await parent.close();
 	}
 }
-async function publishStatus(directory: string, receipt: CodingGuestCommandReceipt): Promise<void> {
+async function publishStatus(
+	directory: string,
+	receipt: CodingGuestCommandReceipt,
+	read?: CloudCodingCommandRead,
+): Promise<void> {
 	const temporary = join(directory, `status-${randomUUID()}.json`);
 	await retain(temporary, receipt);
 	await rename(temporary, join(directory, "status.json"));
+	if (read) {
+		const query = parseCloudCodingCommandRead(read);
+		const slot =
+			Number.parseInt(createHash("sha256").update(JSON.stringify(query)).digest("hex").slice(0, 2), 16) % 32;
+		const page = join(directory, `page-${randomUUID()}.json`);
+		await retain(page, { schema: "qorpera.coding-command-page/v1", query, receipt });
+		await rename(page, join(directory, `read-page-${slot}.json`));
+	}
 	const journalDirectory = await open(directory, constants.O_RDONLY);
 	try {
 		await journalDirectory.sync();
@@ -187,78 +193,14 @@ async function publishStatus(directory: string, receipt: CodingGuestCommandRecei
 		await journalDirectory.close();
 	}
 }
-async function configuration(ports: CodingGuestCommandPorts): Promise<GuestConfiguration> {
-	const configStat = await lstat(ports.configurationPath ?? "/etc/qorpera-coding/guest.json");
-	if ((configStat.mode & 0o777) !== 0o444) throw new Error("UNREADABLE_CODING_GUEST_CONFIGURATION");
-	const input = closed(
+async function configuration(ports: CodingGuestCommandPorts): Promise<CodingGuestConfiguration> {
+	const path = ports.configurationPath ?? "/etc/qorpera-coding/guest.json";
+	if (((await lstat(path)).mode & 0o777) !== 0o444) throw new Error("UNREADABLE_CODING_GUEST_CONFIGURATION");
+	return parseCodingGuestConfiguration(
 		JSON.parse(
-			(
-				await protectedRead(
-					ports.configurationPath ?? "/etc/qorpera-coding/guest.json",
-					ports.protectedUid ?? 0,
-					4096,
-					ports.protectedDirectoryRoot,
-				)
-			).toString("utf8"),
+			(await protectedRead(path, ports.protectedUid ?? 0, 8192, ports.protectedDirectoryRoot)).toString("utf8"),
 		),
-		["schema", "workerId", "vmId", "bootId", "uid", "gid", "workspacePath"],
 	);
-	if (
-		input.schema !== "qorpera.coding-command-guest/v1" ||
-		!Number.isSafeInteger(input.uid) ||
-		(input.uid as number) < 1000 ||
-		!Number.isSafeInteger(input.gid) ||
-		(input.gid as number) < 1000 ||
-		typeof input.workspacePath !== "string" ||
-		input.workspacePath !== resolve(input.workspacePath) ||
-		input.workspacePath === "/" ||
-		/[\s\0]/.test(input.workspacePath)
-	)
-		throw new Error("INVALID_CODING_GUEST_CONFIGURATION");
-	return {
-		schema: "qorpera.coding-command-guest/v1",
-		workerId: uuid(input.workerId),
-		vmId: uuid(input.vmId),
-		bootId: uuid(input.bootId),
-		uid: input.uid as number,
-		gid: input.gid as number,
-		workspacePath: input.workspacePath,
-	};
-}
-async function output(
-	root: string,
-	commandId: string,
-	owner: number,
-	protectedOwner: number,
-	boundary?: string,
-): Promise<{ output: string; truncated: boolean }> {
-	const path = join(root, "output", commandId, "output.log");
-	for (let parent = dirname(path); parent !== dirname(parent); parent = dirname(parent)) {
-		const stat = await lstat(parent);
-		if (!stat.isDirectory() || stat.uid !== protectedOwner || (stat.mode & 0o022) !== 0)
-			throw new Error("UNPROTECTED_CODING_GUEST_OUTPUT_PATH");
-		if (parent === boundary) break;
-	}
-	const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-	try {
-		const stat = await handle.stat();
-		if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== owner || stat.size > LIMIT + 1)
-			throw new Error("INVALID_CODING_GUEST_OUTPUT");
-		const buffer = Buffer.alloc(LIMIT + 1);
-		const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-		const bytes = buffer.subarray(0, bytesRead);
-		const normalized = Buffer.from(
-			new TextDecoder("utf8", { fatal: false }).decode(bytes.subarray(0, LIMIT), { stream: true }),
-		);
-		return {
-			output: new TextDecoder("utf8").decode(normalized.subarray(0, LIMIT), {
-				stream: true,
-			}),
-			truncated: bytes.length > LIMIT || normalized.length > LIMIT,
-		};
-	} finally {
-		await handle.close();
-	}
 }
 
 /** Root supervisor installed inside the isolated coding VM only. Every effect
@@ -268,12 +210,25 @@ export async function runCodingGuestCommand(
 	action: "start" | "read" | "cancel",
 	commandId: string,
 	ports: CodingGuestCommandPorts = {},
+	read: Omit<CloudCodingCommandRead, "commandId"> = {},
 ): Promise<CodingGuestCommandReceipt> {
 	uuid(commandId);
 	if (!ports.inspectMachine && process.getuid?.() !== 0) throw new Error("CODING_GUEST_SUPERVISOR_REQUIRES_ROOT");
 	const root = ports.root ?? ROOT;
 	const owner = ports.protectedUid ?? 0;
 	const guest = await configuration(ports);
+	await (ports.assertStorage ?? assertCloudCodingGuestStorage)(guest);
+	const query = parseCloudCodingCommandRead({ commandId, ...read });
+	const capture = (terminal: boolean) =>
+		readCodingCommandLog({
+			path: join(guest.outputRoot, commandId, "output.log"),
+			owner: guest.uid,
+			protectedOwner: owner,
+			boundary: ports.protectedDirectoryRoot,
+			maxBytes: guest.resourceProfile.maxLogBytes,
+			read: query,
+			terminal,
+		});
 	const bootId = await (ports.inspectMachine ?? inspectMachine)();
 	const request = parseCodingGuestCommandRequest(
 		JSON.parse(
@@ -284,6 +239,7 @@ export async function runCodingGuestCommand(
 	);
 	if (request.commandId !== commandId || request.workerId !== guest.workerId || request.vmId !== guest.vmId)
 		throw new Error("CODING_GUEST_COMMAND_SCOPE_CHANGED");
+	if (request.timeoutMs > guest.resourceProfile.maxTimeoutMs) throw new Error("CODING_COMMAND_PROFILE_TIMEOUT");
 	if (action === "start")
 		await requireCodingGuestLease(request, guest, {
 			...ports,
@@ -322,38 +278,24 @@ export async function runCodingGuestCommand(
 	}
 	if (intent) {
 		try {
-			const savedCompletion = closed(
+			const completed = parseCloudCodingCommandReceipt(
 				JSON.parse(
 					(
-						await protectedRead(join(directory, "completion.json"), owner, 32768, ports.protectedDirectoryRoot)
+						await protectedRead(join(directory, "completion.json"), owner, 131072, ports.protectedDirectoryRoot)
 					).toString("utf8"),
 				),
-				["schema", "workerId", "commandId", "inputSha256", "state", "exitCode", "output", "truncated"],
 			);
-			if (
-				savedCompletion.schema !== "qorpera.coding-command-result/v1" ||
-				typeof savedCompletion.output !== "string" ||
-				Buffer.byteLength(savedCompletion.output) > LIMIT ||
-				/[\ud800-\udfff]/u.test(savedCompletion.output) ||
-				typeof savedCompletion.truncated !== "boolean" ||
-				!(["succeeded", "failed", "cancelled"] as unknown[]).includes(savedCompletion.state) ||
-				(savedCompletion.state === "succeeded" && savedCompletion.exitCode !== 0) ||
-				(savedCompletion.state === "cancelled" && savedCompletion.exitCode !== null) ||
-				(savedCompletion.state === "failed" &&
-					(!Number.isSafeInteger(savedCompletion.exitCode) ||
-						(savedCompletion.exitCode as number) < 1 ||
-						(savedCompletion.exitCode as number) > 255))
-			)
+			if (!["succeeded", "failed", "cancelled"].includes(completed.state))
 				throw new Error("CODING_GUEST_COMPLETION_CHANGED");
-			const completed = savedCompletion as unknown as CodingGuestCommandReceipt;
 			if (
 				completed.workerId !== request.workerId ||
 				completed.commandId !== commandId ||
 				completed.inputSha256 !== request.inputSha256
 			)
 				throw new Error("CODING_GUEST_COMPLETION_CHANGED");
-			await publishStatus(directory, completed);
-			return completed;
+			const page = { ...completed, ...(await capture(true)) };
+			await publishStatus(directory, page, action === "read" ? query : undefined);
+			return page;
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 		}
@@ -377,7 +319,7 @@ export async function runCodingGuestCommand(
 			bootId,
 		};
 		await retain(intentPath, intent, 0o444);
-		const logs = join(root, "output", commandId);
+		const logs = join(guest.outputRoot, commandId);
 		await mkdir(logs, { mode: 0o755 });
 		const log = await open(
 			join(logs, "output.log"),
@@ -400,9 +342,9 @@ export async function runCodingGuestCommand(
 				`--gid=${guest.gid}`,
 				`--property=WorkingDirectory=${guest.workspacePath}`,
 				`--property=RuntimeMaxSec=${Math.ceil(request.timeoutMs / 1000)}`,
-				"--property=MemoryMax=2147483648",
-				"--property=TasksMax=256",
-				"--property=CPUQuota=200%",
+				`--property=MemoryMax=${guest.resourceProfile.memoryBytes}`,
+				`--property=TasksMax=${guest.resourceProfile.tasksMax}`,
+				`--property=CPUQuota=${guest.resourceProfile.cpuQuotaPercent}%`,
 				"--property=RemainAfterExit=yes",
 				"--property=ExitType=cgroup",
 				"--property=KillMode=control-group",
@@ -421,7 +363,7 @@ export async function runCodingGuestCommand(
 				"--property=CapabilityBoundingSet=",
 				"--property=AmbientCapabilities=",
 				"--property=RestrictNamespaces=yes",
-				`--property=ReadWritePaths=${guest.workspacePath} ${logs}`,
+				`--property=ReadWritePaths=${guest.workspacePath} ${guest.homePath} ${guest.cachePath} ${logs}`,
 				"--property=StandardOutput=null",
 				"--property=StandardError=null",
 				"/usr/bin/env",
@@ -454,7 +396,17 @@ export async function runCodingGuestCommand(
 	}
 	let state: CodingGuestCommandReceipt["state"] = "unconfirmed";
 	let exitCode: number | null = null;
-	let capture = { output: "", truncated: false };
+	let captured: Pick<CloudCodingCommandReceipt, "output" | "truncated" | "log"> = {
+		output: "",
+		truncated: false,
+		log: {
+			offset: 0,
+			nextOffset: 0,
+			totalBytes: 0,
+			limitBytes: guest.resourceProfile.maxLogBytes,
+			limitReached: false,
+		},
+	};
 	if (intent && intent.bootId === bootId) {
 		try {
 			const status = await call("/usr/bin/systemctl", [
@@ -492,20 +444,29 @@ export async function runCodingGuestCommand(
 					else if (state === "failed" && (exitCode === null || exitCode < 1 || exitCode > 255)) exitCode = 1;
 				}
 			}
-			capture = await output(root, commandId, guest.uid, owner, ports.protectedDirectoryRoot);
+			captured = await capture(["succeeded", "failed", "cancelled"].includes(state));
 		} catch {
 			state = "unconfirmed";
 			exitCode = null;
 		}
 	}
+	if (intent && intent.bootId !== bootId) {
+		// Reboot loses the process observation, not the retained task log. It
+		// cannot turn that unknown outcome into permission to execute again.
+		try {
+			captured = await capture(true);
+		} catch {
+			/* Remain explicitly unconfirmed. */
+		}
+	}
 	const receipt: CodingGuestCommandReceipt = {
-		schema: "qorpera.coding-command-result/v1",
+		schema: "qorpera.coding-command-result/v2",
 		workerId: guest.workerId,
 		commandId,
 		inputSha256: request.inputSha256,
 		state,
 		exitCode,
-		...capture,
+		...captured,
 	};
 	if (intent) {
 		if (["succeeded", "failed", "cancelled"].includes(state)) {
@@ -515,16 +476,17 @@ export async function runCodingGuestCommand(
 				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 			}
 		}
-		await publishStatus(directory, receipt);
+		await publishStatus(directory, receipt, action === "read" ? query : undefined);
 	}
 	return receipt;
 }
 
-/** Fixed systemd child. It streams and drains both pipes but persists at most
- * 4097 bytes; the extra byte is the durable truncation marker. */
+/** Fixed unprivileged child. Drains both pipes with backpressure, retains the
+ * admitted log budget and one overflow marker, and flushes each bounded write. */
 export async function executeCodingGuestCommand(commandId: string): Promise<number> {
 	uuid(commandId);
 	const guest = await configuration({});
+	await assertCloudCodingGuestStorage(guest);
 	if (
 		process.getuid?.() !== guest.uid ||
 		process.getgid?.() !== guest.gid ||
@@ -555,30 +517,47 @@ export async function executeCodingGuestCommand(commandId: string): Promise<numb
 	await requireCodingGuestLease(request, guest, {
 		inspectBoot: inspectMachine,
 	});
-	const handle = await open(join(ROOT, "output", commandId, "output.log"), constants.O_WRONLY | constants.O_NOFOLLOW);
-	let bytes = 0;
-	let pending = Promise.resolve();
+	const handle = await open(
+		join(guest.outputRoot, commandId, "output.log"),
+		constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW,
+	);
 	try {
+		await mkdir(join(guest.cachePath, "tmp"), { recursive: true, mode: 0o700 });
 		const child = spawn("/bin/bash", ["--noprofile", "--norc", "-c", request.command], {
 			cwd: guest.workspacePath,
-			env: ENV,
+			env: {
+				...ENV,
+				PATH: `${join(guest.homePath, ".local/bin")}:${join(guest.homePath, ".cargo/bin")}:${ENV.PATH}`,
+				TMPDIR: join(guest.cachePath, "tmp"),
+				PYTHONUSERBASE: join(guest.homePath, ".local"),
+				npm_config_prefix: join(guest.homePath, ".local"),
+				HOME: guest.homePath,
+				XDG_CACHE_HOME: guest.cachePath,
+				XDG_CONFIG_HOME: join(guest.homePath, ".config"),
+				npm_config_cache: join(guest.cachePath, "npm"),
+				PIP_CACHE_DIR: join(guest.cachePath, "pip"),
+				UV_CACHE_DIR: join(guest.cachePath, "uv"),
+				CARGO_HOME: join(guest.homePath, ".cargo"),
+				RUSTUP_HOME: join(guest.homePath, ".rustup"),
+			},
 			stdio: ["ignore", "pipe", "pipe"],
 		});
-		const capture = (chunk: Buffer): void => {
-			const part = Buffer.from(chunk.subarray(0, Math.max(0, LIMIT + 1 - bytes)));
-			bytes += part.length;
-			if (part.length)
-				pending = pending.then(async () => {
-					await handle.write(part);
-				});
-		};
-		child.stdout.on("data", capture);
-		child.stderr.on("data", capture);
-		const exitCode = await new Promise<number>((resolveExit) => {
+
+		const exited = new Promise<number>((resolveExit) => {
 			child.once("error", () => resolveExit(127));
 			child.once("close", (code) => resolveExit(code ?? 128));
 		});
-		await pending;
+		const collected = collectCodingCommandOutput(
+			[child.stdout, child.stderr],
+			handle,
+			guest.resourceProfile.maxLogBytes,
+		);
+		// Collector failure cannot be reported as a successful build.
+		collected.catch(() => {
+			child.kill("SIGKILL");
+		});
+		const exitCode = await exited;
+		await collected;
 		await handle.sync();
 		return exitCode;
 	} finally {
@@ -590,6 +569,7 @@ export async function executeCodingGuestCommand(commandId: string): Promise<numb
  * provider must first renew and recheck the matching cloud queue lease. */
 export async function refreshCodingGuestCommandLease(ports: CodingGuestCommandPorts = {}) {
 	const guest = await configuration(ports);
+	await (ports.assertStorage ?? assertCloudCodingGuestStorage)(guest);
 	await (ports.system ?? system)("/usr/bin/systemctl", ["is-active", "--quiet", "qorpera-coding-watchdog.timer"]);
 	const value = JSON.parse(
 		(
@@ -608,16 +588,32 @@ export async function refreshCodingGuestCommandLease(ports: CodingGuestCommandPo
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-	const [action, commandId, extra] = process.argv.slice(2);
+	const [action, commandId, offset, limit, extra] = process.argv.slice(2);
 	try {
-		if (extra || (action === "refresh-lease" ? commandId !== undefined : !commandId))
+		if (
+			extra ||
+			(action === "refresh-lease" ? commandId !== undefined : !commandId) ||
+			(action !== "read" && (offset !== undefined || limit !== undefined))
+		)
 			throw new Error("INVALID_CODING_GUEST_ARGUMENTS");
 		if (action === "refresh-lease")
 			process.stdout.write(`${JSON.stringify(await refreshCodingGuestCommandLease())}\n`);
 		else if (commandId && action === "execute") process.exitCode = await executeCodingGuestCommand(commandId);
-		else if (commandId && (action === "start" || action === "read" || action === "cancel"))
-			process.stdout.write(`${JSON.stringify(await runCodingGuestCommand(action, commandId))}\n`);
-		else throw new Error("INVALID_CODING_GUEST_ARGUMENTS");
+		else if (commandId && (action === "start" || action === "read" || action === "cancel")) {
+			if (
+				action === "read" &&
+				((offset !== undefined && offset !== "tail" && !/^(0|[1-9][0-9]*)$/.test(offset)) ||
+					(limit !== undefined && !/^[1-9][0-9]*$/.test(limit)))
+			)
+				throw new Error("INVALID_CODING_GUEST_ARGUMENTS");
+			const read =
+				offset === undefined
+					? {}
+					: offset === "tail"
+						? { tail: true, limit: Number(limit ?? 4096) }
+						: { offset: Number(offset), limit: Number(limit ?? 4096) };
+			process.stdout.write(`${JSON.stringify(await runCodingGuestCommand(action, commandId, {}, read))}\n`);
+		} else throw new Error("INVALID_CODING_GUEST_ARGUMENTS");
 	} catch {
 		process.stderr.write("CODING_GUEST_COMMAND_REFUSED\n");
 		process.exitCode = 1;

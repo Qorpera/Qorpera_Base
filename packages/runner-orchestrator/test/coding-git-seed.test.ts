@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type CodingBrokerGitCommand, runCodingBrokerGit } from "../src/coding-git.ts";
+import { type CodingBrokerGitCommand, createCodingBrokerGitRunner } from "../src/coding-git.ts";
 import { type CodingGitSeedOptions, fetchCloudCodingSeed, resolveCloudCodingBase } from "../src/coding-git-seed.ts";
 
 const exec = promisify(execFile),
@@ -44,7 +44,7 @@ async function fixture() {
 	const calls: CodingBrokerGitCommand[] = [];
 	const real = (command: CodingBrokerGitCommand): Promise<string> =>
 		process.platform === "linux"
-			? runCodingBrokerGit(command)
+			? createCodingBrokerGitRunner({ bubblewrapPath: process.env.QORPERA_TEST_BWRAP })(command)
 			: exec("/usr/bin/git", [...command.args], { cwd: command.cwd, env: command.env }).then(
 					(result) => result.stdout,
 				);
@@ -55,8 +55,14 @@ async function fixture() {
 				"https://github.com/qorpera/example.git",
 				"refs/heads/main:refs/heads/main",
 			]);
-			await real({ ...command, env, args: ["bundle", "unbundle", incoming] });
-			return real({ ...command, env, args: ["update-ref", "refs/heads/main", baseSha] });
+			const localBundle = join(command.scratchRoot, "fixture.bundle");
+			await writeFile(localBundle, await readFile(incoming), { mode: 0o600 });
+			const localEnv = { ...command.env };
+			delete localEnv.GIT_CONFIG_COUNT;
+			delete localEnv.GIT_CONFIG_KEY_0;
+			delete localEnv.GIT_CONFIG_VALUE_0;
+			await real({ ...command, network: false, env: localEnv, args: ["bundle", "unbundle", localBundle] });
+			return real({ ...command, network: false, env: localEnv, args: ["update-ref", "refs/heads/main", baseSha] });
 		}
 		return real(command);
 	};

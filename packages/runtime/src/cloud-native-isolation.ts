@@ -2,6 +2,7 @@ import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { startNativeCodexEgress } from "./cloud-native-egress.ts";
+import { stopNativeNamespaceChild } from "./cloud-native-process-settlement.ts";
 
 export interface NativeIsolationConfiguration {
 	/** Root-owned entrypoint installed from the verified guest manifest. */
@@ -180,22 +181,23 @@ export async function launchIsolatedNativeProcess(options: {
 			child: launched,
 			async close() {
 				options.signal.removeEventListener("abort", stop);
-				stop();
-				if (launched.exitCode === null && launched.signalCode === null) {
-					await new Promise<void>((resolveExit) => {
-						const timer = setTimeout(resolveExit, 2000);
-						launched.once("close", () => {
-							clearTimeout(timer);
-							resolveExit();
-						});
-					});
+				try {
+					await stopNativeNamespaceChild(launched);
+				} finally {
+					await relay.close();
 				}
-				await relay.close();
 			},
 		};
 	} catch (error) {
-		child?.kill("SIGKILL");
-		await relay.close();
-		throw error;
+		let failure = error;
+		if (child) {
+			try {
+				await stopNativeNamespaceChild(child);
+			} catch (settlementError) {
+				failure = settlementError;
+			}
+		}
+		await relay.close().catch(() => undefined);
+		throw failure;
 	}
 }

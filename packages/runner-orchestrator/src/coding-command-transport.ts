@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
-import { type CloudCodingCommandScope, parseCloudCodingCommandReceipt } from "@qorpera/contracts";
+import {
+	type CloudCodingCommandRead,
+	type CloudCodingCommandScope,
+	parseCloudCodingCommandRead,
+	parseCloudCodingCommandReceipt,
+} from "@qorpera/contracts";
 import { assertLxdCodingVmInstance, type LxdCodingVmBinding, lxdCodingVmPlan } from "./coding-vm.ts";
 import type { LxdInspectableClient } from "./lxd-client.ts";
 
@@ -139,33 +144,62 @@ export class LxdCodingCommandTransport {
 		await this.#authorize(action, this.#scope, commandId, inputSha256, signal);
 		signal.throwIfAborted();
 	}
-	async #invoke(action: Action, commandId: string, inputSha256: string | null, signal: AbortSignal) {
+	async #invoke(
+		action: Action,
+		commandId: string,
+		inputSha256: string | null,
+		signal: AbortSignal,
+		read?: CloudCodingCommandRead,
+	) {
+		const query = read ? parseCloudCodingCommandRead(read) : undefined;
+		const slot = query
+			? Number.parseInt(createHash("sha256").update(JSON.stringify(query)).digest("hex").slice(0, 2), 16) % 32
+			: null;
 		await this.#gate(action, this.#scope, commandId, inputSha256, signal);
 		// The command text is never interpolated into exec argv. The reviewed
 		// root helper is the only executable selectable at this boundary.
 		await this.#client.execInstance(
 			this.#vm.project,
 			this.#name,
-			["/usr/bin/node", HELPER, action, commandId],
+			[
+				"/usr/bin/node",
+				HELPER,
+				action,
+				commandId,
+				...(read ? [read.tail ? "tail" : String(read.offset ?? 0), String(read.limit ?? 4096)] : []),
+			],
 			signal,
 		);
 		const file = await this.#client.readInstanceFile(
 			this.#vm.project,
 			this.#name,
-			`/var/lib/qorpera-coding/commands/${commandId}/status.json`,
-			32768,
+			`/var/lib/qorpera-coding/commands/${commandId}/${read ? `read-page-${slot}.json` : "status.json"}`,
+			65536,
 			signal,
 		);
 		if (file.uid !== 0 || file.gid !== 0 || file.mode !== 0o400) throw new Error("CODING_COMMAND_STATUS_UNPROTECTED");
-		const receipt = parseCloudCodingCommandReceipt(
-			JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(file.content)),
-		);
+		const value = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(file.content));
+		if (
+			query &&
+			(!value ||
+				Object.keys(value).sort().join() !== "query,receipt,schema" ||
+				value.schema !== "qorpera.coding-command-page/v1" ||
+				JSON.stringify(parseCloudCodingCommandRead(value.query)) !== JSON.stringify(query))
+		)
+			throw new Error("CODING_COMMAND_PAGE_REPLACED");
+		const receipt = parseCloudCodingCommandReceipt(query ? value.receipt : value);
 		if (
 			receipt.commandId !== commandId ||
 			receipt.workerId !== this.#scope.workerId ||
 			(inputSha256 !== null && receipt.inputSha256 !== inputSha256)
 		)
 			throw new Error("CODING_COMMAND_STATUS_DIFFERS");
+		if (
+			read &&
+			((!read.tail && receipt.log.offset !== (read.offset ?? 0)) ||
+				Buffer.byteLength(receipt.output) > (read.limit ?? 4096))
+		)
+			throw new Error("CODING_COMMAND_PAGE_DIFFERS");
 		await this.#gate(action, this.#scope, commandId, inputSha256, signal);
 		return receipt;
 	}
@@ -196,9 +230,10 @@ export class LxdCodingCommandTransport {
 			throw new Error("CODING_COMMAND_STAGING_UNCONFIRMED");
 		return this.#invoke("start", input.commandId, input.inputSha256, signal);
 	}
-	async read(scope: CloudCodingCommandScope, commandId: string, signal: AbortSignal) {
-		await this.#gate("read", scope, commandId, null, signal);
-		return this.#invoke("read", commandId, null, signal);
+	async read(scope: CloudCodingCommandScope, input: CloudCodingCommandRead, signal: AbortSignal) {
+		const read = parseCloudCodingCommandRead(input);
+		await this.#gate("read", scope, read.commandId, null, signal);
+		return this.#invoke("read", read.commandId, null, signal, read);
 	}
 	async cancel(scope: CloudCodingCommandScope, commandId: string, signal: AbortSignal) {
 		await this.#gate("cancel", scope, commandId, null, signal);

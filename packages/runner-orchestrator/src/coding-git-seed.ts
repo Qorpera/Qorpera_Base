@@ -84,7 +84,14 @@ export async function resolveCloudCodingBase(
 			"protocol.https.allow=always",
 		];
 		const run = options.runGit ?? runCodingBrokerGit;
-		await run({ cwd: scratch, args: [...prefix, "init", "--bare", "--template=", cwd], env, signal: options.signal });
+		await run({
+			scratchRoot: scratch,
+			network: false,
+			cwd: scratch,
+			args: [...prefix, "init", "--bare", "--template=", cwd],
+			env,
+			signal: options.signal,
+		});
 		await authorize();
 		const output = await options.withRepositoryToken(
 			repository,
@@ -92,6 +99,8 @@ export async function resolveCloudCodingBase(
 				if (!/^[A-Za-z0-9_]{20,512}$/.test(token)) throw new Error("CODING_GIT_BASE_CREDENTIAL_UNAVAILABLE");
 				await authorize();
 				return run({
+					scratchRoot: scratch,
+					network: true,
 					cwd,
 					args: [...prefix, "ls-remote", "--refs", "--heads", remote, ref],
 					env: {
@@ -200,6 +209,8 @@ export async function fetchCloudCodingSeed(
 				}
 				const result = await (options.runGit ?? runCodingBrokerGit)({
 					cwd: directory,
+					scratchRoot: scratch,
+					network,
 					args: [...prefix, ...args],
 					env: environment,
 					signal: options.signal,

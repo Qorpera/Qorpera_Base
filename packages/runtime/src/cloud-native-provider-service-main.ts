@@ -23,6 +23,7 @@ import {
 import { CloudNativeCodingRuntime } from "./cloud-native-coding-runtime.ts";
 import { HttpNativeCompanyObjectTransport } from "./cloud-native-company-objects.ts";
 import { CloudNativeCompanyRuntime } from "./cloud-native-company-runtime.ts";
+import { NativeCredentialOwner } from "./cloud-native-credential-owner.ts";
 import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import {
 	type NativeCloudExecutionDriver,
@@ -174,8 +175,19 @@ export function nativeCodingConfiguration(environment: NodeJS.ProcessEnv): { url
 	return { url: parseCloudCodingCommandUrl(required(environment, "QORPERA_CODING_COMMAND_URL")) };
 }
 
+/** Explicit safety mode for the pinned managed-auth client. Same-capsule
+ * concurrency remains unavailable until a supported owner adapter is pinned. */
+export function nativeCredentialGenerationConfiguration(environment: NodeJS.ProcessEnv): boolean {
+	const mode = environment.QORPERA_NATIVE_CREDENTIAL_MODE;
+	if (mode === undefined) return environment.QORPERA_NATIVE_RUNTIME === "company-path-v1";
+	if (mode !== "managed-generations-v1" || environment.QORPERA_NATIVE_RUNTIME !== "company-path-v1")
+		throw new Error("Unsupported native credential owner mode");
+	return true;
+}
+
 export async function runNativeProviderHostServiceMain(environment: NodeJS.ProcessEnv = process.env): Promise<void> {
 	const runtimeConfiguration = nativeCompanyRuntimeConfiguration(environment);
+	const credentialGenerations = nativeCredentialGenerationConfiguration(environment);
 	const computerConfiguration = nativeCompanyComputerConfiguration(environment);
 	const codingConfiguration = nativeCodingConfiguration(environment);
 	const baseUrl = required(environment, "QORPERA_SUPABASE_URL");
@@ -429,9 +441,20 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 	} else if (environment.QORPERA_CLOUD_SECRET_BROKER_URL || environment.QORPERA_CLOUD_SECRET_BROKER_TOKEN) {
 		throw new Error("Cloud secret broker requires the cloud-native Company File runtime");
 	}
+	const capsules = new SupabaseNativeCredentialCapsuleStore(baseUrl, serviceKey);
 	const host = new NativeProviderHost({
 		controlPlane,
-		capsules: new SupabaseNativeCredentialCapsuleStore(baseUrl, serviceKey),
+		capsules,
+		...(credentialGenerations
+			? {
+					credentialGenerations: new NativeCredentialOwner({
+						control: controlPlane,
+						store: capsules,
+						masterKey,
+						temporaryRoot: environment.QORPERA_NATIVE_PROVIDER_TEMPORARY_ROOT ?? "/tmp",
+					}),
+				}
+			: {}),
 		harness: new OfficialCliNativeHarnessDriver(
 			runtimeConfiguration?.command[0] ?? environment.QORPERA_CODEX_PATH ?? "codex",
 			environment.QORPERA_CLAUDE_PATH ?? "claude",

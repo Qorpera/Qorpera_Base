@@ -7,6 +7,9 @@ const METHODS = new Set<string>([
 	...CODING_NATIVE_DISPATCH_RPCS,
 	"qorpera_authorize_coding_machine",
 	"qorpera_authorize_coding_cleanup",
+	"qorpera_describe_coding_cleanup",
+	"qorpera_claim_coding_emergency_stop",
+	"qorpera_record_coding_emergency_stop",
 	"qorpera_authorize_coding_command",
 	"qorpera_authorize_native_coding_execution",
 ]);

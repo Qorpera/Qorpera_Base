@@ -1,5 +1,6 @@
 export * from "./cloud-coding.ts";
 export * from "./cloud-coding-command.ts";
+export * from "./cloud-coding-storage.ts";
 export * from "./company-computer-adoption.ts";
 export * from "./company-computer-boot-adoption.ts";
 export * from "./company-computer-boot-configuration.ts";

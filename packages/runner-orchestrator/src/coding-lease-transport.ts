@@ -2,6 +2,7 @@ import { performance } from "node:perf_hooks";
 import type { CloudCodingCommandScope } from "@qorpera/contracts";
 import { type CodingCommandGuestPins, inspectCodingCommandGuest } from "./coding-command-transport.ts";
 import { lxdCodingVmPlan } from "./coding-vm.ts";
+import { parseLxdProcUptime } from "./lxd-proc-uptime.ts";
 
 const HASH = /^[0-9a-f]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -64,7 +65,7 @@ export class LxdCodingLeaseTransport {
 		const name = lxdCodingVmPlan(this.#pins.vm).request.name;
 		const path = "/var/lib/qorpera-coding/inbox/lease-refresh.json";
 		const clock = await this.#pins.client.readInstanceFile(this.#pins.vm.project, name, "/proc/uptime", 128, signal);
-		const uptime = Math.floor(Number(clock.content.toString("utf8").trim().split(" ")[0]) * 1000);
+		const uptime = parseLxdProcUptime(clock.content);
 		if (clock.uid !== 0 || clock.gid !== 0 || clock.mode !== 0o444 || !Number.isSafeInteger(uptime) || uptime < 0)
 			throw new Error("CODING_GUEST_CLOCK_UNAVAILABLE");
 		// Conservatively spend admission/inspection time from the guest's TTL.
@@ -87,7 +88,7 @@ export class LxdCodingLeaseTransport {
 		const file = await this.#pins.client.readInstanceFile(
 			this.#pins.vm.project,
 			name,
-			"/var/lib/qorpera-coding/lease.json",
+			"/run/qorpera-coding/lease.json",
 			4096,
 			signal,
 		);

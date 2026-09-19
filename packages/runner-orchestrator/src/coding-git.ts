@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdtemp, open, rm, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { type CloudCodingRepository, parseCloudCodingRepository } from "@qorpera/contracts";
+import { type CodingGitSandboxOptions, codingGitSandboxPlan, codingGitSocketFilter } from "./coding-git-sandbox.ts";
 import { checkDirectory, code, publish, readRecord } from "./lxd-office-journal-files.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -19,6 +20,8 @@ export interface CodingGitPush {
 }
 export interface CodingBrokerGitCommand {
 	readonly cwd: string;
+	readonly scratchRoot: string;
+	readonly network: boolean;
 	readonly args: readonly string[];
 	/** Trusted broker process environment. Contains a scoped HTTP header only
 	 * for a network command; never persist, log or forward it into the VM. */
@@ -37,72 +40,93 @@ export interface CodingGitPushOptions {
 		use: (token: string) => Promise<T>,
 		signal: AbortSignal,
 	): Promise<T>;
-	/** Trusted transport injection for tests; production uses Linux prlimit + git. */
+	/** Trusted transport injection for tests; production uses mandatory Linux namespace isolation + prlimit + git. */
 	runGit?: CodingBrokerGitRunner;
 }
 
 /** Closed process transport: no shell, inherited environment, error body or
  * unbounded output. Git descendants are killed together on timeout/lease loss. */
-export const runCodingBrokerGit: CodingBrokerGitRunner = async ({ cwd, args, env, signal }) => {
-	signal.throwIfAborted();
-	if (process.platform !== "linux" || process.getuid?.() === 0)
-		throw new Error("CODING_GIT_BROKER_REQUIRES_UNPRIVILEGED_LINUX");
-	return new Promise<string>((resolve, reject) => {
-		const child = spawn(
-			"/usr/bin/prlimit",
-			[
-				"--as=1073741824",
-				"--cpu=30",
-				"--fsize=268435456",
-				"--nofile=64",
-				"--nproc=512",
-				"--core=0",
-				"--",
-				"/usr/bin/git",
-				...args,
-			],
-			{
-				cwd,
-				env: { ...env },
-				shell: false,
-				detached: true,
-				stdio: ["ignore", "pipe", "pipe"],
-			},
-		);
-		const chunks: Buffer[] = [];
-		let bytes = 0,
-			failed = false;
-		const kill = (): void => {
-			failed = true;
-			try {
-				if (child.pid) process.kill(-child.pid, "SIGKILL");
-			} catch {
-				child.kill("SIGKILL");
-			}
-		};
-		const checked = AbortSignal.any([signal, AbortSignal.timeout(60_000)]);
-		checked.addEventListener("abort", kill, { once: true });
-		if (checked.aborted) kill();
-		child.stdout.on("data", (value: Buffer) => {
-			bytes += value.length;
-			if (bytes > 65536) kill();
-			else chunks.push(value);
-		});
-		child.stderr.on("data", (value: Buffer) => {
-			bytes += value.length;
-			if (bytes > 65536) kill();
-		});
-		child.once("error", () => {
-			checked.removeEventListener("abort", kill);
-			reject(new Error("CODING_GIT_PROCESS_UNCONFIRMED"));
-		});
-		child.once("close", (status) => {
-			checked.removeEventListener("abort", kill);
-			if (failed || status !== 0) reject(new Error("CODING_GIT_PROCESS_UNCONFIRMED"));
-			else resolve(Buffer.concat(chunks).toString("utf8"));
-		});
-	});
-};
+export function createCodingBrokerGitRunner(options: CodingGitSandboxOptions = {}): CodingBrokerGitRunner {
+	return async ({ cwd, scratchRoot, network, args, env, signal }) => {
+		signal.throwIfAborted();
+		if (process.platform !== "linux" || process.getuid?.() === 0)
+			throw new Error("CODING_GIT_BROKER_REQUIRES_UNPRIVILEGED_LINUX");
+		const sandbox = await codingGitSandboxPlan({ cwd, scratchRoot, network }, options);
+		if (
+			env.HOME !== scratchRoot ||
+			env.XDG_CONFIG_HOME !== scratchRoot ||
+			(!network && Object.keys(env).some((key) => key.startsWith("GIT_CONFIG_VALUE_")))
+		)
+			throw new Error("CODING_GIT_SANDBOX_ENV_INVALID");
+		const filterPath = join(scratchRoot, `.seccomp-${randomUUID()}`);
+		await writeFile(filterPath, codingGitSocketFilter(), { flag: "wx", mode: 0o600 });
+		const filter = await open(filterPath, "r");
+		try {
+			return await new Promise<string>((resolve, reject) => {
+				const child = spawn(
+					"/usr/bin/prlimit",
+					[
+						"--as=1073741824",
+						"--cpu=30",
+						"--fsize=268435456",
+						"--nofile=64",
+						"--nproc=512",
+						"--core=0",
+						"--",
+						sandbox.executable,
+						...sandbox.args,
+						"/usr/bin/git",
+						...args,
+					],
+					{
+						cwd,
+						env: { ...env },
+						shell: false,
+						detached: true,
+						stdio: ["ignore", "pipe", "pipe", filter.fd],
+					},
+				);
+				const chunks: Buffer[] = [];
+				let bytes = 0,
+					failed = false;
+				const kill = (): void => {
+					failed = true;
+					try {
+						if (child.pid) process.kill(-child.pid, "SIGKILL");
+					} catch {
+						child.kill("SIGKILL");
+					}
+				};
+				const checked = AbortSignal.any([signal, AbortSignal.timeout(60_000)]);
+				checked.addEventListener("abort", kill, { once: true });
+				if (checked.aborted) kill();
+				child.stdout?.on("data", (value: Buffer) => {
+					bytes += value.length;
+					if (bytes > 65536) kill();
+					else chunks.push(value);
+				});
+				child.stderr?.on("data", (value: Buffer) => {
+					bytes += value.length;
+					if (bytes > 65536) kill();
+				});
+				child.once("error", () => {
+					checked.removeEventListener("abort", kill);
+					reject(new Error("CODING_GIT_PROCESS_UNCONFIRMED"));
+				});
+				child.once("close", (status) => {
+					checked.removeEventListener("abort", kill);
+					if (failed || status !== 0) reject(new Error("CODING_GIT_PROCESS_UNCONFIRMED"));
+					else resolve(Buffer.concat(chunks).toString("utf8"));
+				});
+			});
+		} finally {
+			await filter.close();
+			await unlink(filterPath);
+		}
+	};
+}
+
+export const runCodingBrokerGit = createCodingBrokerGitRunner();
 
 /** Publish one complete bundle into the worker's fixed GitHub branch. Objects
  * are imported into a new bare broker repository; no worktree, repository
@@ -148,7 +172,8 @@ export async function pushCloudCodingBundle(
 	await authorize();
 	await checkDirectory(options.journalRoot);
 	const target = {
-		schema: "qorpera.coding-git-target/v1",
+		schema: "qorpera.coding-git-target/v2",
+		baseSha: input.baseSha,
 		workerId: input.workerId,
 		repository: input.repository,
 		branch,
@@ -225,6 +250,8 @@ export async function pushCloudCodingBundle(
 				}
 				const output = await (options.runGit ?? runCodingBrokerGit)({
 					cwd: directory,
+					scratchRoot: scratch,
+					network,
 					args: [...prefix, ...args],
 					env,
 					signal: options.signal,
@@ -250,7 +277,9 @@ export async function pushCloudCodingBundle(
 					throw new Error("CODING_GIT_REMOTE_UNCONFIRMED");
 				found.set(match[2], match[1]);
 			}
-			if (found.get(baseRef) !== input.baseSha) throw new Error("CODING_GIT_BASE_CHANGED");
+			// Base branch may advance normally. Worker ancestry remains pinned to the
+			// immutable original base below; its repository/branch cannot be retargeted.
+			if (!found.has(baseRef)) throw new Error("CODING_GIT_BASE_UNAVAILABLE");
 			return found.get(ref) ?? null;
 		};
 		const observed = await inspectRemote();

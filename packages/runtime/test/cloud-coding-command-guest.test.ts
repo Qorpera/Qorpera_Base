@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -36,13 +36,23 @@ async function fixture() {
 	await writeFile(
 		configurationPath,
 		JSON.stringify({
-			schema: "qorpera.coding-command-guest/v1",
+			schema: "qorpera.coding-command-guest/v2",
 			workerId: request.workerId,
 			vmId: request.vmId,
 			bootId,
 			uid: Math.max(1000, process.getuid?.() ?? 1000),
 			gid: Math.max(1000, process.getgid?.() ?? 1000),
 			workspacePath: join(root, "repository"),
+			homePath: join(root, "home"),
+			cachePath: join(root, "cache"),
+			outputRoot: join(root, "output"),
+			resourceProfile: {
+				maxTimeoutMs: 1800000,
+				memoryBytes: 2147483648,
+				tasksMax: 256,
+				cpuQuotaPercent: 200,
+				maxLogBytes: 67108864,
+			},
 		}),
 		{ mode: 0o444 },
 	);
@@ -65,6 +75,7 @@ async function fixture() {
 		return status;
 	});
 	const ports: CodingGuestCommandPorts = {
+		assertStorage: async () => undefined,
 		root,
 		configurationPath,
 		protectedUid: process.getuid?.() ?? 0,
@@ -100,6 +111,31 @@ async function fixture() {
 }
 
 describe("coding VM command supervisor", () => {
+	it("bounds derived read pages without deleting authoritative logs", async () => {
+		const f = await fixture();
+		await runCodingGuestCommand("start", f.request.commandId, f.ports);
+		await writeFile(join(f.root, "output", f.request.commandId, "output.log"), "x".repeat(128));
+		for (let offset = 0; offset < 64; offset++)
+			await runCodingGuestCommand("read", f.request.commandId, f.ports, { offset, limit: 4 });
+		const pages = (await readdir(join(f.root, "commands", f.request.commandId))).filter((p) =>
+			p.startsWith("read-page-"),
+		);
+		expect(pages.length).toBeLessThanOrEqual(32);
+		expect(await readFile(join(f.root, "output", f.request.commandId, "output.log"), "utf8")).toBe("x".repeat(128));
+	});
+	it("denies missing or changed storage before reading an inbox or dispatching a unit", async () => {
+		const f = await fixture();
+		await rm(f.requestPath);
+		await expect(
+			runCodingGuestCommand("start", f.request.commandId, {
+				...f.ports,
+				assertStorage: async () => {
+					throw new Error("NAS_CHANGED");
+				},
+			}),
+		).rejects.toThrow("NAS_CHANGED");
+		expect(f.system).not.toHaveBeenCalled();
+	});
 	it("refuses command launch without a live guest lease and cannot renew when watchdog timer is disabled", async () => {
 		const f = await fixture();
 		await expect(
@@ -133,7 +169,7 @@ describe("coding VM command supervisor", () => {
 	it("retains intent before one background unit and publishes a protected running receipt", async () => {
 		const f = await fixture();
 		const result = await runCodingGuestCommand("start", f.request.commandId, f.ports);
-		expect(result.schema).toBe("qorpera.coding-command-result/v1");
+		expect(result.schema).toBe("qorpera.coding-command-result/v2");
 		expect(result.state).toBe("running");
 		expect(result.exitCode).toBeNull();
 		const command = f.system.mock.calls.find(([executable]) => executable === "/usr/bin/systemd-run")!;
@@ -203,6 +239,7 @@ describe("coding VM command supervisor", () => {
 	it("reports reboot uncertainty without invoking another command", async () => {
 		const f = await fixture();
 		await runCodingGuestCommand("start", f.request.commandId, f.ports);
+		await writeFile(join(f.root, "output", f.request.commandId, "output.log"), "retained before reboot");
 		f.system.mockClear();
 		expect(
 			(
@@ -216,6 +253,14 @@ describe("coding VM command supervisor", () => {
 			runCodingGuestCommand("start", f.request.commandId, { ...f.ports, inspectMachine: async () => randomUUID() }),
 		).rejects.toThrow("LEASE_UNAVAILABLE");
 		expect(f.system).not.toHaveBeenCalled();
+		expect(
+			(
+				await runCodingGuestCommand("read", f.request.commandId, {
+					...f.ports,
+					inspectMachine: async () => randomUUID(),
+				})
+			).output,
+		).toBe("retained before reboot");
 	});
 	it("bounds invalid UTF8 and output truncation in bytes", async () => {
 		const f = await fixture();
@@ -224,6 +269,55 @@ describe("coding VM command supervisor", () => {
 		const result = await runCodingGuestCommand("read", f.request.commandId, f.ports);
 		expect(Buffer.byteLength(result.output)).toBeLessThanOrEqual(4096);
 		expect(result.truncated).toBe(true);
+	});
+	it("retains output beyond the preview and pages terminal logs without re-execution", async () => {
+		const f = await fixture();
+		await runCodingGuestCommand("start", f.request.commandId, f.ports);
+		const contents = `first\n${"x".repeat(12000)}\nlast\n`;
+		await writeFile(join(f.root, "output", f.request.commandId, "output.log"), contents);
+		f.setStatus(
+			"LoadState=loaded\nActiveState=active\nSubState=exited\nResult=success\nExecMainCode=1\nExecMainStatus=0\n",
+		);
+		let offset = 0,
+			combined = "";
+		do {
+			const page = await runCodingGuestCommand("read", f.request.commandId, f.ports, { offset, limit: 1024 });
+			combined += page.output;
+			offset = page.log.nextOffset;
+			expect(page.state).toBe("succeeded");
+		} while (offset < Buffer.byteLength(contents));
+		expect(combined).toBe(contents);
+		const tail = await runCodingGuestCommand("read", f.request.commandId, f.ports, { tail: true, limit: 16 });
+		expect(tail.output).toBe(contents.slice(-16));
+		expect(tail.truncated).toBe(false);
+		expect(f.system.mock.calls.filter(([exe]) => exe === "/usr/bin/systemd-run")).toHaveLength(1);
+	});
+	it("applies the admitted resource limits and permits only the admitted NAS working paths", async () => {
+		const f = await fixture(),
+			path = f.ports.configurationPath!;
+		const config = JSON.parse(await readFile(path, "utf8"));
+		config.resourceProfile = {
+			maxTimeoutMs: 120000,
+			memoryBytes: 8589934592,
+			tasksMax: 1024,
+			cpuQuotaPercent: 400,
+			maxLogBytes: 1048576,
+		};
+		await chmod(path, 0o644);
+		await writeFile(path, JSON.stringify(config));
+		await chmod(path, 0o444);
+		await runCodingGuestCommand("start", f.request.commandId, f.ports);
+		const args = f.system.mock.calls.find(([exe]) => exe === "/usr/bin/systemd-run")![1];
+		expect(args).toContain("--property=MemoryMax=8589934592");
+		expect(args).toContain("--property=CPUQuota=400%");
+		expect(args).toContain("--property=TasksMax=1024");
+		expect(args).toContain(
+			`--property=ReadWritePaths=${config.workspacePath} ${config.homePath} ${config.cachePath} ${join(config.outputRoot, f.request.commandId)}`,
+		);
+		await writeFile(join(f.root, "output", f.request.commandId, "output.log"), Buffer.alloc(1048577, 120));
+		expect(
+			(await runCodingGuestCommand("read", f.request.commandId, f.ports, { tail: true, limit: 16 })).log,
+		).toMatchObject({ totalBytes: 1048576, limitBytes: 1048576, limitReached: true });
 	});
 	it("rejects changed requests and linked or writable inbox files before execution", async () => {
 		const f = await fixture();

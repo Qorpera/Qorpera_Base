@@ -219,6 +219,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					return { kind: "text", value: text };
 				},
 			};
+			let nativeFailed = false;
 			try {
 				stage = "native-tools";
 				const result = await runCloudNativeRunToolSession({
@@ -312,8 +313,14 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					providerSessionId: result.providerSessionId,
 					delivery: await mouth.finish(wake.policy.final === "required"),
 				};
+			} catch (error) {
+				nativeFailed = true;
+				throw error;
 			} finally {
-				await mouth.close();
+				await mouth.close().catch((error: unknown) => {
+					// Preserve an unknown native-process settlement through cleanup.
+					if (!nativeFailed) throw error;
+				});
 			}
 		} catch (error) {
 			composition.finish("failed", { errorCategory: cloudRuntimeErrorCategory(error, signal) });

@@ -6,6 +6,9 @@ import { fileURLToPath } from "node:url";
 import { type CloudCodingRepository, parseCloudCodingRepository } from "../../packages/contracts/src/cloud-coding.ts";
 import { CloudCodingExecutor } from "../../packages/runner-orchestrator/src/coding-executor.ts";
 import { LxdCodingExecutorHost, type LxdCodingExecutorHostOptions } from "../../packages/runner-orchestrator/src/coding-executor-host.ts";
+import { createCloudCodingStorageBinding, parseCloudCodingNasPolicy } from "../../packages/contracts/src/cloud-coding-storage.ts";
+import { parseCodingGuestConfiguration } from "../../packages/runtime/src/cloud-coding-guest-configuration.ts";
+import { createCodingNasStorage } from "../../packages/runner-orchestrator/src/coding-storage.ts";
 import { lxdCodingVmPlan } from "../../packages/runner-orchestrator/src/coding-vm.ts";
 import { LxdUnixClient } from "../../packages/runner-orchestrator/src/lxd-client.ts";
 import { HttpCloudRunnerProviderAdapter } from "../../packages/runner-orchestrator/src/provider-http.ts";
@@ -15,7 +18,7 @@ import { CodingExecutorHttpControl } from "./control.ts";
 import { readCodingServiceCredential } from "./credentials.ts";
 
 interface Config {
-	schema: "qorpera.coding-executor-service/v1";
+	schema: "qorpera.coding-executor-service/v2";
 	owner: string;
 	supabaseUrl: string;
 	supabasePublishableKey: string;
@@ -24,6 +27,7 @@ interface Config {
 	providerAdapterId: string;
 	commandPort: number;
 	vmPolicy: LxdCodingExecutorHostOptions["vmPolicy"];
+	storagePolicy: LxdCodingExecutorHostOptions["storagePolicy"];
 	guest: LxdCodingExecutorHostOptions["guest"];
 	repositories: { repository: CloudCodingRepository; credential: string }[];
 }
@@ -39,8 +43,8 @@ function origin(value: unknown): string {
 }
 export function parseCodingExecutorConfiguration(value: unknown): Config {
 	const config = object(value);
-	if (Object.keys(config).sort().join() !== "commandPort,guest,orchestratorId,owner,providerAdapterId,providerUrl,repositories,schema,supabasePublishableKey,supabaseUrl,vmPolicy" ||
-		config.schema !== "qorpera.coding-executor-service/v1" || typeof config.owner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(config.owner) ||
+	if (Object.keys(config).sort().join() !== "commandPort,guest,orchestratorId,owner,providerAdapterId,providerUrl,repositories,schema,storagePolicy,supabasePublishableKey,supabaseUrl,vmPolicy" ||
+		config.schema !== "qorpera.coding-executor-service/v2" || typeof config.owner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(config.owner) ||
 		typeof config.orchestratorId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(config.orchestratorId) ||
 		typeof config.supabasePublishableKey !== "string" || !config.supabasePublishableKey || /[\r\n\0]/.test(config.supabasePublishableKey) ||
 		typeof config.providerAdapterId !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(config.providerAdapterId) ||
@@ -53,20 +57,26 @@ export function parseCodingExecutorConfiguration(value: unknown): Config {
 		return { repository: parseCloudCodingRepository(entry.repository), credential: entry.credential };
 	});
 	if (new Set(repositories.map((r) => JSON.stringify(r.repository))).size !== repositories.length) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	const storagePolicy = parseCloudCodingNasPolicy(config.storagePolicy);
 	const vmPolicy = object(config.vmPolicy);
 	if (Object.keys(vmPolicy).sort().join() !== "bootstrapSha256,cpus,imageFingerprint,memoryBytes,network,project,providerId,providerPolicySha256,rootDiskBytes,storagePool") throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	const id = "11111111-1111-4111-8111-111111111111";
-	lxdCodingVmPlan({ ...vmPolicy, schema: "qorpera.lxd-coding-vm/v1", workerId: id, allocationId: id, companyId: id, environmentId: id, repository: repositories[0].repository } as Parameters<typeof lxdCodingVmPlan>[0]);
+	lxdCodingVmPlan({ ...vmPolicy, schema: "qorpera.lxd-coding-vm/v2", storage: createCloudCodingStorageBinding(storagePolicy, { workerId: id, companyId: id, environmentId: id, machineIdSha256: "0".repeat(64), writerGeneration: 1 }), workerId: id, allocationId: id, companyId: id, environmentId: id, repository: repositories[0].repository } as Parameters<typeof lxdCodingVmPlan>[0]);
 	const guest = object(config.guest);
-	if (Object.keys(guest).sort().join() !== "commandHelperSha256,gid,gitHelperSha256,uid,watchdogHelperSha256,workspacePath" ||
-		![guest.uid, guest.gid].every((v) => Number.isSafeInteger(v) && Number(v) >= 1000 && Number(v) <= 2147483647) ||
-		![guest.commandHelperSha256, guest.gitHelperSha256, guest.watchdogHelperSha256].every((v) => typeof v === "string" && /^[0-9a-f]{64}$/.test(v)) ||
-		typeof guest.workspacePath !== "string" || resolve(guest.workspacePath) !== guest.workspacePath || guest.workspacePath === "/" || /[\s\0]/.test(guest.workspacePath)) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	if (Object.keys(guest).sort().join() !== "cachePath,commandHelperSha256,gid,gitHelperSha256,homePath,outputRoot,resourceProfile,storageHelperSha256,uid,watchdogHelperSha256,workspacePath" ||
+		![guest.commandHelperSha256, guest.gitHelperSha256, guest.watchdogHelperSha256, guest.storageHelperSha256].every((v) => typeof v === "string" && /^[0-9a-f]{64}$/.test(v))) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	const parsedGuest = parseCodingGuestConfiguration({ schema: "qorpera.coding-command-guest/v2", workerId: id, vmId: id, bootId: id,
+		uid: guest.uid, gid: guest.gid, workspacePath: guest.workspacePath, homePath: guest.homePath, cachePath: guest.cachePath,
+		outputRoot: guest.outputRoot, resourceProfile: guest.resourceProfile });
+	if (parsedGuest.workspacePath !== "/workspace/repository" || parsedGuest.homePath !== "/workspace/home" ||
+		parsedGuest.cachePath !== "/workspace/cache" || parsedGuest.outputRoot !== "/var/lib/qorpera-coding/logs" ||
+		parsedGuest.resourceProfile.memoryBytes > Number(vmPolicy.memoryBytes) || parsedGuest.resourceProfile.cpuQuotaPercent > Number(vmPolicy.cpus) * 100)
+		throw new Error("CODING_EXECUTOR_RESOURCE_POLICY_INVALID");
 	return {
-		schema: "qorpera.coding-executor-service/v1", owner: config.owner, supabaseUrl: origin(config.supabaseUrl),
+		schema: "qorpera.coding-executor-service/v2", owner: config.owner, supabaseUrl: origin(config.supabaseUrl),
 		supabasePublishableKey: config.supabasePublishableKey, orchestratorId: config.orchestratorId,
 		providerUrl: origin(config.providerUrl), providerAdapterId: config.providerAdapterId,
-		commandPort: Number(config.commandPort), vmPolicy: vmPolicy as unknown as Config["vmPolicy"],
+		commandPort: Number(config.commandPort), storagePolicy, vmPolicy: vmPolicy as unknown as Config["vmPolicy"],
 		guest: guest as unknown as Config["guest"], repositories,
 	};
 }
@@ -82,12 +92,13 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	const machine = (await readFile("/etc/machine-id", "utf8")).trim();
 	if (!/^[0-9a-f]{32}$/.test(machine)) throw new Error("CODING_NODE_IDENTITY_INVALID");
 	const control = new CodingExecutorHttpControl({ supabaseUrl: config.supabaseUrl, serviceRoleKey: await credential("qorpera-coding-registry") });
+	const journalRoot = await createCodingNasStorage(config.storagePolicy).prepareControl();
 	const host = new LxdCodingExecutorHost({
 		control, owner: config.owner, machineIdSha256: createHash("sha256").update(machine).digest("hex"),
-		vmPolicy: config.vmPolicy, client: new LxdUnixClient(), guest: config.guest,
-		orchestratorId: config.orchestratorId, journalRoot: "/var/lib/qorpera-coding-executor",
+		vmPolicy: config.vmPolicy, storagePolicy: config.storagePolicy, client: new LxdUnixClient(), guest: config.guest,
+		orchestratorId: config.orchestratorId, journalRoot,
 		controlPlaneConfig: { supabaseUrl: config.supabaseUrl, publishableKey: config.supabasePublishableKey,
-			controlToken: await credential("qorpera-coding-orchestrator"), controlStatePath: "/var/lib/qorpera-coding-executor/control.json" },
+			controlToken: await credential("qorpera-coding-orchestrator"), controlStatePath: `${journalRoot}/control.json` },
 		providerAdapter: new HttpCloudRunnerProviderAdapter(config.providerUrl, config.providerAdapterId, await credential("qorpera-coding-provider")),
 		repositoryCredentials: {
 			async withRepositoryToken(repository, use, signal) {
@@ -115,7 +126,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				await authorizeCodingCommand(control, request, checked);
 			}, signal);
 			return request.action === "start" ? transport.start(request.scope, request.input, signal) :
-				request.action === "read" ? transport.read(request.scope, request.input.commandId, signal) : transport.cancel(request.scope, request.input.commandId, signal);
+				request.action === "read" ? transport.read(request.scope, request.input, signal) : transport.cancel(request.scope, request.input.commandId, signal);
 		},
 	});
 	try {

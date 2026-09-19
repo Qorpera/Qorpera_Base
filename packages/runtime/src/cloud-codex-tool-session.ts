@@ -14,6 +14,7 @@ import {
 	tagNativeRuntimeFailure,
 } from "./cloud-native-failure.ts";
 import { launchIsolatedNativeProcess, type NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
+import { closeNativeTransportThenSettle, NativeProcessSettlementError } from "./cloud-native-process-settlement.ts";
 import {
 	CLOUD_NATIVE_RESULT_FENCE_SCHEMA,
 	type CloudNativeFenceRequest,
@@ -880,11 +881,26 @@ export async function runCloudCodexToolSession(options: {
 		);
 	} finally {
 		signal.removeEventListener("abort", abort);
-		rpc?.close();
-		options.boundary.close();
-		await fence?.close();
-		if (isolated) await isolated.close();
-		else if (child) await stopProcessGroup(child);
-		await rm(allocation, { recursive: true, force: true });
+		await closeNativeTransportThenSettle(
+			() => {
+				rpc?.close();
+				options.boundary.close();
+			},
+			async () => {
+				// Even a transport/fence-close error must not skip writer settlement.
+				try {
+					if (isolated) await isolated.close();
+					else if (child) await stopProcessGroup(child);
+				} catch (error) {
+					await fence?.close().catch(() => undefined);
+					throw new NativeProcessSettlementError({ cause: error });
+				}
+				try {
+					await fence?.close();
+				} finally {
+					await rm(allocation, { recursive: true, force: true });
+				}
+			},
+		);
 	}
 }

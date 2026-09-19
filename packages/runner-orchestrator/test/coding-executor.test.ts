@@ -54,6 +54,7 @@ function fixture() {
 			return {};
 		}
 		if (method === "qorpera_heartbeat_coding_request") return new Date(Date.now() + 60000).toISOString();
+		if (method === "qorpera_describe_coding_cancellation") return worker;
 		if (method === "qorpera_record_coding_progress") {
 			events.push(String(args.p_state));
 			worker = { ...worker, version: worker.version + 1, state: args.p_state as CloudCodingWorker["state"] };
@@ -134,6 +135,32 @@ describe("coding executor custody", () => {
 		expect(await f.executor.runOnce(f.signal)).toBe("recovery-required");
 		expect(f.host.publish).not.toHaveBeenCalled();
 		expect(f.host.stopWorkspace).toHaveBeenCalledTimes(1);
+		expect(f.events).not.toContain("complete");
+	});
+	it("uses the authorized post-cleanup cancellation version", async () => {
+		const f = fixture(),
+			original = f.call.getMockImplementation()!;
+		f.claim.kind = "cancel";
+		f.call.mockImplementation((method, args, signal) =>
+			method === "qorpera_describe_coding_cancellation"
+				? Promise.resolve({ ...f.claim.worker, version: 7, state: "recovery-required" })
+				: original(method, args, signal),
+		);
+		expect(await f.executor.runOnce(f.signal)).toBe("cancelled");
+		expect(
+			f.call.mock.calls.find(([method]) => method === "qorpera_complete_coding_request")?.[1].p_expected_version,
+		).toBe(7);
+	});
+	it("refuses a cancellation snapshot for another worker", async () => {
+		const f = fixture(),
+			original = f.call.getMockImplementation()!;
+		f.claim.kind = "cancel";
+		f.call.mockImplementation((method, args, signal) =>
+			method === "qorpera_describe_coding_cancellation"
+				? Promise.resolve({ ...f.claim.worker, id: randomUUID(), version: 7, state: "recovery-required" })
+				: original(method, args, signal),
+		);
+		expect(await f.executor.runOnce(f.signal)).toBe("recovery-required");
 		expect(f.events).not.toContain("complete");
 	});
 	it("does not replay publication after a lost completion response", async () => {

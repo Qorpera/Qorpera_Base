@@ -9,7 +9,16 @@ belongs in this guest.
 
 The configuration and helper must be root-owned mode 0444 so the dedicated
 coding user can read them. Output directories remain root-owned mode 0755;
-only their pre-created output.log files are owned by the coding user.
+only their pre-created output.log files are owned by the coding user. Log bytes and byte counts are untrusted observations, not authenticated process audit evidence.
+
+The executor stages a root-owned 0444 `configuration-inbox.json` under
+`/etc/qorpera-coding`, with schema `qorpera.coding-configuration-install/v1`
+and exact `guest` and `storage` bindings. It invokes the fixed storage helper
+with `install`, independently reads back both active configurations, then invokes
+`initialize`. The installer claims one immutable packet per kernel boot and
+resumes partial delivery after a crash. It only advances a previous boot when
+every other guest field and the entire storage binding remain unchanged.
+The host intent alone never counts as proof of guest delivery.
 
 Bundle the runtime helper to the manifest's fixed entrypoint. The root provider
 stages one singly linked, root-owned 0444 request at
@@ -20,7 +29,7 @@ operation receipt digest; the helper also seals a digest of command and timeout.
 The command is at most 16 KiB and the full serialized request at most 64 KiB.
 
 Invoke `/usr/bin/node /opt/qorpera-coding/cloud-coding-command-guest.mjs`
-with exactly `start`, `read`, or `cancel`, followed by the command UUID.
+with `start` or `cancel`, followed by the command UUID. `read` takes the command UUID and optional numeric byte offset (or `tail`) and page-byte limit. The limit is 4–16384 bytes; default offset 0 and limit 4096. No command text or path is accepted through argv.
 The helper verifies an actual Linux VM, protected configuration and boot,
 and persists an exclusive fsynced intent before contacting systemd. A retained
 intent with an absent unit is unconfirmed and cannot launch again. Requests
@@ -38,10 +47,28 @@ available until reviewed retention cleanup; this change performs no cleanup.
 The protected receipt is
 `/var/lib/qorpera-coding/commands/<commandId>/status.json`, root-owned 0400.
 Confirmed terminal state is additionally retained in immutable `completion.json`.
-Both use `qorpera.coding-command-result/v1`, with worker/command/input identity, state,
-exit code, output and truncation flag. Only success has exit code 0; failed has
-1–255; running, cancellation and uncertainty have null. The output combines
-stdout and stderr, drains both pipes, and captures at most 4096 UTF-8 bytes.
+Both use `qorpera.coding-command-result/v2`, with worker/command/input identity, state,
+exit code, output, truncation flag and `log` metadata. Reads additionally publish
+one of 32 `read-page-<slot>.json` derived page slots. Each wrapper binds the
+canonical command/cursor/limit/tail query; the transport rejects a collision
+with another query instead of returning its page. This bounds derived page
+files while retaining the original full log. A read collision is safe to retry
+with the same query; it never reruns the command. Only success has exit code 0; failed has
+1–255; running, cancellation and uncertainty have null. The output combines stdout and stderr. A backpressured collector drains both
+pipes and flushes each retained bounded write. The admitted `maxLogBytes`
+default is 64 MiB (supported ceiling 1 GiB), plus one overflow marker. After
+that cap it drains and discards additional output and reports `limitReached`;
+it never presents capped output as a complete log. Per-worker NAS quotas must
+account for retained logs across commands. No automatic deletion is implemented.
+
+`log` contains `offset`, `nextOffset`, `totalBytes`, `limitBytes`, `limitReached`.
+Offsets address raw retained bytes; output pages decode UTF-8 without splitting
+valid characters, preserve BOM characters, and replace malformed bytes. A cursor
+inside a valid multibyte character is refused. Tail starts at the next character
+boundary. An incomplete character from a running stream waits for more bytes.
+Use `nextOffset` for continuation, even when malformed bytes expand on decode.
+`truncated` means bytes remain after this page or the storage cap was exceeded.
+Terminal status survives unit disappearance and log pages remain readable.
 Output is untrusted repository/command data and still requires the existing
 native result fence before reaching a model.
 
@@ -60,7 +87,7 @@ and no command UUID. The guest refuses renewal unless its watchdog timer is
 active. The digest is a generation marker; the queue token stays on the host.
 
 The helper records Linux boot identity and guest uptime in root-owned 0444
-`lease.json`. Clock adjustments, supervisor replacement, VM suspension, and
+`/run/qorpera-coding/lease.json` on the guest’s boot-local runtime filesystem. Clock adjustments, supervisor replacement, VM suspension, and
 stale host timestamps cannot prolong that lease. An expired generation cannot
 be renewed; a newly authorized turn must stop all previous command groups before
 publishing its lease. Both the privileged command start and the unprivileged
@@ -73,3 +100,55 @@ systemd stop is reported as unconfirmed and retried by the timer. This is a
 bounded local execution lease, not permission to delete the retained workspace
 or release its company capacity. Live image installation and actual cgroup
 shutdown remain deployment acceptance checks.
+
+
+## NAS paths, resource profile and software
+
+The closed guest configuration is `qorpera.coding-command-guest/v2`, containing
+workerId, vmId, bootId, uid, gid, workspacePath, homePath, cachePath, outputRoot
+and resourceProfile. The profile has maxTimeoutMs, memoryBytes, tasksMax,
+cpuQuotaPercent and maxLogBytes. Values are explicit and pinned; no model
+argument can raise them. Host admission must ensure memory/CPU fit the VM and
+company reservation. The command timeout cannot exceed the profile. Changing a
+profile requires a reviewed configuration/activation, not editing a live unit.
+
+Expected NAS projections are `/workspace/repository`, `/workspace/home`,
+`/workspace/cache`, and protected `/var/lib/qorpera-coding/logs`. The trusted
+storage initializer creates working directories only after verifying the exact
+NAS-backed data/custody mounts and generation. The private commands/inbox/Git
+receipt paths under `/var/lib/qorpera-coding` require retained custody too.
+Path validation alone is not NAS proof; missing/remounted/wrong-generation
+storage must fail admission and effect checks. Do not precreate working files
+on an unmounted directory or use local disk as outage fallback.
+
+Commands receive HOME, XDG_CONFIG_HOME, XDG_CACHE_HOME, TMPDIR, npm cache/prefix,
+Python user/cache, uv cache and Cargo/Rustup homes within those admitted paths.
+The PATH includes the worker's `.local/bin` and `.cargo/bin` before system tools;
+only the unprivileged command uses that path. Root helper executables retain
+fixed absolute paths. `/tmp` stays systemd-private infrastructure scratch;
+TMPDIR points ordinary task temporary files to NAS cache storage.
+
+Build the pinned guest image with the selected Node, Python, compiler/build
+utilities, Git, package clients and compatible Chromium dependencies. Resolve
+and record exact package/image versions in the reviewed image build, including
+browser sandbox compatibility. Dependency and user-space SDK installs run as
+the coding user in this VM. Arbitrary apt/root installation, host package tools,
+LXD access and privilege escalation are unavailable to the model. A new system
+package needs an image revision or separately authorized installer design.
+
+Retain task downloads and mutable app/tool state on NAS; reproducible OS images
+are a different promise from preserving arbitrary installed root state. Private
+registry access requires an approved scoped broker; do not put tokens in home,
+package caches or exported bundles. Byte/inode exhaustion must produce failure
+without deleting dirty repository files. Actual package installs, browser
+sandbox, NAS flush behavior and real cgroup resource enforcement remain Linux
+VM acceptance gates, not claims established by these component tests.
+
+The watchdog lease is deliberately ephemeral under `/run/qorpera-coding`,
+separate from NAS task storage. A reboot starts without execution authority.
+The independent watchdog reads only local guest configuration, procfs uptime
+and this local lease; a blocked NAS must not prevent it reaching systemd stop.
+The trusted storage initializer provisions that root-owned 0755 runtime path.
+The NAS mount root itself may be trusted-service-owned 0755; only that exact
+verified root is exempted from the helpers’ root-owner ancestor check.
+Root-owned custody descendants and non-writable ancestors remain mandatory.

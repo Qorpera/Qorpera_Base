@@ -13,8 +13,10 @@ import {
 	type CloudAgentSendInput,
 	type CloudAgentSendReceipt,
 } from "./cloud-agent-mouth.ts";
+import type { NativeCredentialOwner, NativeCredentialRefreshClaim } from "./cloud-native-credential-owner.ts";
 import { nativeRuntimeFailureMetadata } from "./cloud-native-failure.ts";
 import { launchIsolatedNativeProcess, type NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
+import { hasUnconfirmedNativeProcessSettlement } from "./cloud-native-process-settlement.ts";
 
 const CAPSULE_SCHEMA = "qorpera.native-credential-capsule/v1";
 const LOGIN_RESULT_SCHEMA = "qorpera.native-provider-login-result/v1";
@@ -73,6 +75,11 @@ export interface NativeProviderControlPlane {
 export interface NativeCredentialCapsuleStore {
 	put(reference: string, bytes: Uint8Array, signal?: AbortSignal): Promise<void>;
 	get(reference: string, signal?: AbortSignal): Promise<Uint8Array>;
+}
+
+/** Immutable private storage for generation-addressed credential envelopes. */
+export interface NativeCredentialGenerationStore extends NativeCredentialCapsuleStore {
+	putImmutable(reference: string, bytes: Uint8Array, signal?: AbortSignal): Promise<void>;
 }
 
 export interface NativeHarnessLoginPrompt {
@@ -513,18 +520,23 @@ export async function sealNativeCredentialCapsule(
 	keyValue: string,
 	capsuleId: string,
 	durablePaths?: ReadonlySet<string>,
+	generation?: number,
 ): Promise<Uint8Array> {
 	requiredUuid(capsuleId, "Credential capsule id");
+	if (generation !== undefined && (!Number.isSafeInteger(generation) || generation < 1))
+		throw new Error("Credential capsule generation is invalid");
 	const archive = await collectCapsuleFiles(requiredAbsolutePath(root, "Credential capsule root"), durablePaths);
 	const plaintext = Buffer.from(JSON.stringify(archive), "utf-8");
 	if (plaintext.byteLength > MAX_CAPSULE_PLAINTEXT_BYTES)
 		throw new Error("Credential capsule exceeds its storage budget");
 	const nonce = randomBytes(12);
 	const cipher = createCipheriv("aes-256-gcm", capsuleKey(keyValue), nonce);
-	cipher.setAAD(Buffer.from(`${CAPSULE_SCHEMA}:${capsuleId}`, "utf-8"));
+	cipher.setAAD(
+		Buffer.from(`${CAPSULE_SCHEMA}:${capsuleId}${generation === undefined ? "" : `:${generation}`}`, "utf-8"),
+	);
 	const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
 	const tag = cipher.getAuthTag();
-	return Buffer.concat([Buffer.from("QNC1", "ascii"), nonce, tag, ciphertext]);
+	return Buffer.concat([Buffer.from(generation === undefined ? "QNC1" : "QNC2", "ascii"), nonce, tag, ciphertext]);
 }
 
 export async function openNativeCredentialCapsule(
@@ -533,16 +545,24 @@ export async function openNativeCredentialCapsule(
 	keyValue: string,
 	capsuleId: string,
 	credentialPaths?: ReadonlySet<string>,
+	generation?: number,
 ): Promise<void> {
 	requiredUuid(capsuleId, "Credential capsule id");
-	if (bytes.byteLength < 32 || Buffer.from(bytes.subarray(0, 4)).toString("ascii") !== "QNC1") {
+	if (generation !== undefined && (!Number.isSafeInteger(generation) || generation < 1))
+		throw new Error("Credential capsule generation is invalid");
+	if (
+		bytes.byteLength < 32 ||
+		Buffer.from(bytes.subarray(0, 4)).toString("ascii") !== (generation === undefined ? "QNC1" : "QNC2")
+	) {
 		throw new Error("Credential capsule envelope is invalid");
 	}
 	const nonce = bytes.subarray(4, 16);
 	const tag = bytes.subarray(16, 32);
 	const ciphertext = bytes.subarray(32);
 	const decipher = createDecipheriv("aes-256-gcm", capsuleKey(keyValue), nonce);
-	decipher.setAAD(Buffer.from(`${CAPSULE_SCHEMA}:${capsuleId}`, "utf-8"));
+	decipher.setAAD(
+		Buffer.from(`${CAPSULE_SCHEMA}:${capsuleId}${generation === undefined ? "" : `:${generation}`}`, "utf-8"),
+	);
 	decipher.setAuthTag(Buffer.from(tag));
 	let archive: CapsuleArchive;
 	try {
@@ -1070,6 +1090,7 @@ export class NativeProviderHost {
 	readonly #capsules: NativeCredentialCapsuleStore;
 	readonly #harness: NativeHarnessDriver;
 	readonly #cloudRuntime?: NativeCloudExecutionDriver;
+	readonly #credentialGenerations?: NativeCredentialOwner;
 	readonly #masterKey: string;
 	readonly #backupIdentityKey?: (request: NativeProviderLoginRequest) => Promise<void>;
 	readonly #computeIdentityId: string;
@@ -1081,6 +1102,7 @@ export class NativeProviderHost {
 		capsules: NativeCredentialCapsuleStore;
 		harness: NativeHarnessDriver;
 		cloudRuntime?: NativeCloudExecutionDriver;
+		credentialGenerations?: NativeCredentialOwner;
 		masterKey: string;
 		computeIdentityId: string;
 		temporaryRoot?: string;
@@ -1092,6 +1114,7 @@ export class NativeProviderHost {
 		this.#capsules = options.capsules;
 		this.#harness = options.harness;
 		this.#cloudRuntime = options.cloudRuntime;
+		this.#credentialGenerations = options.credentialGenerations;
 		this.#masterKey = options.masterKey;
 		this.#backupIdentityKey = options.backupIdentityKey;
 		this.#computeIdentityId = options.computeIdentityId;
@@ -1214,7 +1237,10 @@ export class NativeProviderHost {
 		})();
 		let root: string | undefined;
 		let durableCredentialPaths: ReadonlySet<string> | undefined;
+		let credentialClaim: NativeCredentialRefreshClaim | undefined;
 		let harnessStarted = false;
+		let settlementUnconfirmed = false;
+		let credentialPublicationFailed = false;
 		let output: JsonValue | undefined;
 		let failure: Error | undefined;
 		const mouth = this.#cloudRuntime
@@ -1227,17 +1253,22 @@ export class NativeProviderHost {
 		try {
 			stage = "temporary-workspace";
 			root = await mkdtemp(join(this.#temporaryRoot, `qorpera-native-run-${authority.runId}-`));
-			stage = "credential-download";
-			const capsule = await this.#capsules.get(authority.encryptedCapsuleReference, executionAbort.signal);
-			stage = "credential-opening";
-			await openNativeCredentialCapsule(
-				capsule,
-				root,
-				this.#masterKey,
-				authority.credentialCapsuleId,
-				request.runtime === "company-path-v1" ? CODEX_CREDENTIAL_PATHS : undefined,
-			);
-			durableCredentialPaths = new Set((await collectCapsuleFiles(root)).files.map((file) => file.path));
+			if (this.#credentialGenerations) {
+				stage = "credential-ownership";
+				credentialClaim = await this.#credentialGenerations.restore(request, root, executionAbort.signal);
+			} else {
+				stage = "credential-download";
+				const capsule = await this.#capsules.get(authority.encryptedCapsuleReference, executionAbort.signal);
+				stage = "credential-opening";
+				await openNativeCredentialCapsule(
+					capsule,
+					root,
+					this.#masterKey,
+					authority.credentialCapsuleId,
+					request.runtime === "company-path-v1" ? CODEX_CREDENTIAL_PATHS : undefined,
+				);
+				durableCredentialPaths = new Set((await collectCapsuleFiles(root)).files.map((file) => file.path));
+			}
 			let result: { providerSessionId?: string };
 			let delivery: { messageCount: number; finalMessageId: string | null };
 			if (request.runtime === "company-path-v1") {
@@ -1280,6 +1311,7 @@ export class NativeProviderHost {
 				provider_session_id: result.providerSessionId ?? null,
 			};
 		} catch (error) {
+			settlementUnconfirmed = hasUnconfirmedNativeProcessSettlement(error);
 			if (stage === "harness-execution") {
 				if (validationError) {
 					failure = new Error("Native provider execution completion-authority-validation stage failed", {
@@ -1297,7 +1329,15 @@ export class NativeProviderHost {
 			// A provider may rotate its login token before a later request fails.
 			// Preserve only the original credential paths, never transient sessions,
 			// and recheck live authority immediately before replacing the capsule.
-			if (root && durableCredentialPaths && harnessStarted) {
+			if (root && credentialClaim && this.#credentialGenerations && !settlementUnconfirmed) {
+				stage = "credential-publication";
+				try {
+					await this.#credentialGenerations.publish(request, credentialClaim, root);
+				} catch (error) {
+					credentialPublicationFailed = true;
+					failure ??= new Error(`Native provider execution ${stage} stage failed`, { cause: error });
+				}
+			} else if (root && durableCredentialPaths && harnessStarted && !settlementUnconfirmed) {
 				stage = "completion-authority-validation";
 				try {
 					executionAbort.signal.throwIfAborted();
@@ -1333,7 +1373,7 @@ export class NativeProviderHost {
 			 * without masking the original failure. */
 			if (failure && request.runtime !== "company-path-v1")
 				await grantWorkspaceGroupAccess(request.input.companyRoot).catch(() => undefined);
-			if (root) {
+			if (root && !settlementUnconfirmed && !credentialPublicationFailed) {
 				try {
 					await rm(root, { recursive: true, force: true });
 				} catch (error) {

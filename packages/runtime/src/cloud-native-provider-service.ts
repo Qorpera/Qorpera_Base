@@ -13,10 +13,16 @@ import {
 	parseCloudAgentSendInput,
 	parseCloudAgentSendReceipt,
 } from "./cloud-agent-mouth.ts";
+import {
+	type NativeCredentialGenerationControl,
+	type NativeCredentialRefreshClaim,
+	NativeCredentialUnavailableError,
+} from "./cloud-native-credential-owner.ts";
 import { nativeRuntimeFailureMetadata } from "./cloud-native-failure.ts";
 import type {
 	CompleteNativeProviderLoginInput,
 	NativeCredentialCapsuleStore,
+	NativeCredentialGenerationStore,
 	NativeProviderControlPlane,
 	NativeProviderExecutionRequest,
 	NativeProviderHost,
@@ -259,7 +265,11 @@ function sourceMatches(expected: string | undefined, remoteAddress: string | und
 }
 
 export class SupabaseNativeProviderControlPlane
-	implements NativeProviderControlPlane, CloudNativeToolAuthorityReader, CloudNativeToolOperationControlPlane
+	implements
+		NativeProviderControlPlane,
+		CloudNativeToolAuthorityReader,
+		CloudNativeToolOperationControlPlane,
+		NativeCredentialGenerationControl
 {
 	readonly #rpcUrl: string;
 	readonly #serviceKey: string;
@@ -386,6 +396,72 @@ export class SupabaseNativeProviderControlPlane
 		);
 	}
 
+	#credentialBinding(request: NativeProviderExecutionRequest): Record<string, unknown> {
+		if (!this.#identityEpoch || this.#identityEpoch.computeIdentityId !== request.authority.computeIdentityId)
+			throw new Error("Native credential identity generation unavailable");
+		const a = request.authority;
+		return {
+			...parseCloudNativeToolBinding({
+				leaseId: a.leaseId,
+				runId: a.runId,
+				jobId: request.job.jobId,
+				runnerId: a.runnerId,
+				assignmentId: a.assignmentId,
+				credentialCapsuleId: a.credentialCapsuleId,
+				computeIdentityId: a.computeIdentityId,
+				provider: a.provider,
+				nativeHarness: a.nativeHarness,
+				model: a.model,
+			}),
+			computeIdentityEpoch: this.#identityEpoch.epoch,
+		};
+	}
+	readCredentialGeneration(request: NativeProviderExecutionRequest, signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"qorpera_read_native_credential_generation",
+			{ p_binding: this.#credentialBinding(request) },
+			signal,
+		);
+	}
+	claimCredentialRefresh(
+		request: NativeProviderExecutionRequest,
+		claim: NativeCredentialRefreshClaim,
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc("qorpera_claim_native_credential_refresh", this.#credentialClaim(request, claim), signal);
+	}
+	publishCredentialGeneration(
+		request: NativeProviderExecutionRequest,
+		claim: NativeCredentialRefreshClaim,
+		ciphertextSha256: string,
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"qorpera_publish_native_credential_generation",
+			{ ...this.#credentialClaim(request, claim), p_ciphertext_sha256: ciphertextSha256 },
+			signal,
+		);
+	}
+	async failCredentialRefresh(
+		request: NativeProviderExecutionRequest,
+		claim: NativeCredentialRefreshClaim,
+		signal: AbortSignal,
+	): Promise<void> {
+		await this.#rpc("qorpera_fail_native_credential_refresh", this.#credentialClaim(request, claim), signal);
+	}
+	#credentialClaim(
+		request: NativeProviderExecutionRequest,
+		claim: NativeCredentialRefreshClaim,
+	): Record<string, unknown> {
+		return {
+			p_binding: this.#credentialBinding(request),
+			p_expected_generation: claim.expectedGeneration,
+			p_owner_id: claim.ownerId,
+			p_owner_token_sha256: claim.ownerTokenSha256,
+			p_candidate_reference: claim.candidateReference,
+		};
+	}
+
 	async beginToolOperation(
 		binding: CloudNativeToolBinding,
 		input: BeginCloudRunnerOperationInput,
@@ -500,7 +576,9 @@ export class SupabaseNativeProviderControlPlane
 	}
 }
 
-export class SupabaseNativeCredentialCapsuleStore implements NativeCredentialCapsuleStore {
+export class SupabaseNativeCredentialCapsuleStore
+	implements NativeCredentialCapsuleStore, NativeCredentialGenerationStore
+{
 	readonly #objectUrl: string;
 	readonly #serviceKey: string;
 	readonly #fetch: typeof fetch;
@@ -514,6 +592,7 @@ export class SupabaseNativeCredentialCapsuleStore implements NativeCredentialCap
 	}
 
 	async put(reference: string, bytes: Uint8Array, signal?: AbortSignal): Promise<void> {
+		if (reference.includes("/generations/")) throw new Error("Credential generations are immutable");
 		if (bytes.byteLength > MAX_CAPSULE_BYTES) throw new Error("Native capsule exceeds its encrypted byte limit");
 		await withCloudDeadline(
 			async (requestSignal) => {
@@ -537,6 +616,35 @@ export class SupabaseNativeCredentialCapsuleStore implements NativeCredentialCap
 		);
 	}
 
+	async putImmutable(reference: string, bytes: Uint8Array, signal?: AbortSignal): Promise<void> {
+		if (!reference.includes("/generations/") || bytes.byteLength > MAX_CAPSULE_BYTES)
+			throw new Error("Invalid immutable credential generation");
+		const url = this.#url(reference);
+		await withCloudDeadline(
+			async (requestSignal) => {
+				const response = await this.#fetch(url, {
+					method: "POST",
+					headers: {
+						...supabaseServiceHeaders(this.#serviceKey),
+						"content-type": "application/octet-stream",
+						"x-upsert": "false",
+					},
+					body: Uint8Array.from(bytes).buffer,
+					redirect: "error",
+					signal: requestSignal,
+				});
+				void response.body?.cancel().catch(() => undefined);
+				if (!response.ok && response.status !== 409 && response.status !== 400)
+					throw new Error("Native immutable credential upload unconfirmed");
+			},
+			30_000,
+			signal,
+		);
+		const actual = await this.get(reference, signal);
+		if (actual.byteLength !== bytes.byteLength || !timingSafeEqual(actual, bytes))
+			throw new Error("Native immutable credential readback differs");
+	}
+
 	async get(reference: string, signal?: AbortSignal): Promise<Uint8Array> {
 		return withCloudDeadline(
 			async (requestSignal) => {
@@ -557,9 +665,13 @@ export class SupabaseNativeCredentialCapsuleStore implements NativeCredentialCap
 	}
 
 	#url(reference: string): string {
-		const matched = /^native-capsule\/([0-9a-f-]{36})$/.exec(reference);
-		if (!matched || !UUID_PATTERN.test(matched[1] as string)) throw new Error("Native capsule reference is invalid");
-		return new URL(`${matched[1]}.capsule`, this.#objectUrl).href;
+		const matched = /^native-capsule\/([0-9a-f-]{36})(?:\/generations\/([0-9a-f-]{36}))?$/.exec(reference);
+		if (!matched || !UUID_PATTERN.test(matched[1]) || (matched[2] !== undefined && !UUID_PATTERN.test(matched[2])))
+			throw new Error("Native capsule reference is invalid");
+		return new URL(
+			matched[2] ? `${matched[1]}/generations/${matched[2]}.capsule` : `${matched[1]}.capsule`,
+			this.#objectUrl,
+		).href;
 	}
 }
 
@@ -711,6 +823,17 @@ export class HttpNativeProviderHostService {
 			}
 			response.writeHead(200, { "content-type": "application/json" }).end(`${JSON.stringify(value)}\n`);
 		} catch (error) {
+			let cause = error;
+			for (let depth = 0; depth < 4 && cause instanceof Error; depth += 1) {
+				if (cause instanceof NativeCredentialUnavailableError) {
+					if (!response.destroyed)
+						response
+							.writeHead(503, { "content-type": "application/json", "retry-after": "5", connection: "close" })
+							.end('{"error":"native_credential_busy","dispatched":false}\n');
+					return;
+				}
+				cause = cause.cause;
+			}
 			console.error(`Native provider request rejected: ${safeRequestDiagnostic(error)}`);
 			if (!response.destroyed)
 				response

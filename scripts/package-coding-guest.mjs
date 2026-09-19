@@ -8,6 +8,7 @@ if (process.argv.length !== 4 || process.argv[2] !== "--out") {
 }
 const output = resolve(process.argv[3]);
 const sources = [
+	["packages/runtime/src/cloud-coding-storage-guest-main.ts", "cloud-coding-storage-guest.mjs"],
 	["packages/runtime/src/cloud-coding-command-guest.ts", "cloud-coding-command-guest.mjs"],
 	["packages/runtime/src/cloud-coding-git-guest.ts", "cloud-coding-git-guest.mjs"],
 	["packages/runtime/src/cloud-coding-watchdog-main.ts", "cloud-coding-watchdog.mjs"],

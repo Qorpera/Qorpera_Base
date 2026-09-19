@@ -3,14 +3,15 @@ import { describe, expect, it, vi } from "vitest";
 import { LxdCodingLeaseTransport } from "../src/coding-lease-transport.ts";
 import { type LxdCodingVmBinding, lxdCodingVmPlan } from "../src/coding-vm.ts";
 import type { LxdInspectableClient } from "../src/lxd-client.ts";
+import { codingStorageFixture } from "./helpers/coding-storage.ts";
 
 function fixture() {
+	const storageScope = { workerId: randomUUID(), companyId: randomUUID(), environmentId: randomUUID() };
 	const vm: LxdCodingVmBinding = {
-		schema: "qorpera.lxd-coding-vm/v1",
-		workerId: randomUUID(),
+		schema: "qorpera.lxd-coding-vm/v2",
+		...storageScope,
+		storage: codingStorageFixture(storageScope),
 		allocationId: randomUUID(),
-		companyId: randomUUID(),
-		environmentId: randomUUID(),
 		providerId: "coding",
 		providerPolicySha256: "a".repeat(64),
 		repository: { host: "github.com", owner: "Qorpera", name: "test", baseBranch: "main" },
@@ -90,6 +91,22 @@ function fixture() {
 	return { scope, client, authorize, transport, instance };
 }
 describe("trusted coding guest lease transport", () => {
+	it.each(["", "NaN 0\n", "1e3 0\n", "-1.00 0.00\n", "100.00 50.00", "9007199254740.99 0.00\n"])(
+		"refuses invalid uptime %j before lease staging",
+		async (content) => {
+			const f = fixture(),
+				original = f.client.readInstanceFile.getMockImplementation()!;
+			f.client.readInstanceFile.mockImplementation(async (...args) => ({
+				...(await original(...args)),
+				...(args[2] === "/proc/uptime" ? { content: Buffer.from(content) } : {}),
+			}));
+			await expect(
+				f.transport.refresh(f.scope, "d".repeat(64), 60000, new AbortController().signal),
+			).rejects.toThrow("CLOCK_UNAVAILABLE");
+			expect(f.client.pushInstanceFile).not.toHaveBeenCalled();
+			expect(f.client.execInstance).not.toHaveBeenCalled();
+		},
+	);
 	it("pins VM/boot/artifacts, stages only a token hash and invokes the fixed root refresh", async () => {
 		const f = fixture();
 		await f.transport.refresh(f.scope, "d".repeat(64), 60000, new AbortController().signal);

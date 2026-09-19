@@ -1,7 +1,12 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
-import { type CloudCodingCommandScope, parseCloudCodingCommandReceipt } from "@qorpera/contracts";
+import {
+	type CloudCodingCommandRead,
+	type CloudCodingCommandScope,
+	parseCloudCodingCommandRead,
+	parseCloudCodingCommandReceipt,
+} from "@qorpera/contracts";
 import type { CloudCodingCommandGateway } from "./cloud-coding-command-tools.ts";
 import { type CloudNativeToolBinding, parseCloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 
@@ -9,7 +14,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const HASH = /^[0-9a-f]{64}$/;
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const REQUEST_LIMIT = 128 * 1024;
-const RESULT_LIMIT = 32 * 1024;
+const RESULT_LIMIT = 128 * 1024;
 const ERROR = "Coding command gateway unavailable";
 type CommandInput = { commandId: string; inputSha256: string; command: string; timeoutMs: number };
 export type CloudCodingCommandHttpRequest = Readonly<
@@ -17,7 +22,11 @@ export type CloudCodingCommandHttpRequest = Readonly<
 		schema: "qorpera.coding-command-http/v1";
 		binding: CloudNativeToolBinding;
 		scope: CloudCodingCommandScope;
-	} & ({ action: "start"; input: CommandInput } | { action: "read" | "cancel"; input: { commandId: string } })
+	} & (
+		| { action: "start"; input: CommandInput }
+		| { action: "read"; input: CloudCodingCommandRead }
+		| { action: "cancel"; input: { commandId: string } }
+	)
 >;
 
 function record(value: unknown, keys: readonly string[]): Record<string, unknown> {
@@ -48,10 +57,13 @@ function parseRequest(value: unknown, action: string): CloudCodingCommandHttpReq
 		!["start", "read", "cancel"].includes(action)
 	)
 		throw new Error(ERROR);
-	const input = record(
-		valueRecord.input,
-		action === "start" ? ["commandId", "inputSha256", "command", "timeoutMs"] : ["commandId"],
-	);
+	const input =
+		action === "read"
+			? { ...parseCloudCodingCommandRead(valueRecord.input) }
+			: record(
+					valueRecord.input,
+					action === "start" ? ["commandId", "inputSha256", "command", "timeoutMs"] : ["commandId"],
+				);
 	if (typeof input.commandId !== "string" || !UUID.test(input.commandId)) throw new Error(ERROR);
 	if (
 		action === "start" &&
@@ -116,7 +128,7 @@ export function createHttpCloudCodingCommandGateway(options: {
 	const request = async (
 		action: "start" | "read" | "cancel",
 		admittedScope: CloudCodingCommandScope,
-		input: CommandInput | { commandId: string },
+		input: CommandInput | CloudCodingCommandRead,
 		signal: AbortSignal,
 	): Promise<unknown> => {
 		try {
@@ -149,6 +161,12 @@ export function createHttpCloudCodingCommandGateway(options: {
 						(admitted.action === "start" && receipt.inputSha256 !== admitted.input.inputSha256)
 					)
 						throw new Error(ERROR);
+					if (
+						admitted.action === "read" &&
+						((!admitted.input.tail && receipt.log.offset !== (admitted.input.offset ?? 0)) ||
+							Buffer.byteLength(receipt.output) > (admitted.input.limit ?? 4096))
+					)
+						throw new Error(ERROR);
 					return receipt;
 				},
 				30000,
@@ -161,7 +179,7 @@ export function createHttpCloudCodingCommandGateway(options: {
 	return Object.freeze<CloudCodingCommandGateway>({
 		authorize: options.authorize,
 		start: (s, input, signal) => request("start", s, input, signal),
-		read: (s, commandId, signal) => request("read", s, { commandId }, signal),
+		read: (s, input, signal) => request("read", s, input, signal),
 		cancel: (s, commandId, signal) => request("cancel", s, { commandId }, signal),
 	});
 }

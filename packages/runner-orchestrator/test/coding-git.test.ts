@@ -8,8 +8,8 @@ import {
 	type CodingBrokerGitCommand,
 	type CodingGitPush,
 	type CodingGitPushOptions,
+	createCodingBrokerGitRunner,
 	pushCloudCodingBundle,
-	runCodingBrokerGit,
 } from "../src/coding-git.ts";
 
 const exec = promisify(execFile);
@@ -53,6 +53,7 @@ async function fixture() {
 		baseSha,
 		expectedRemoteHeadSha: null,
 	};
+	let remoteBase = baseSha;
 	let remoteHead: string | null = null,
 		loseReply = false,
 		noEffect = false;
@@ -60,13 +61,14 @@ async function fixture() {
 	const runGit = vi.fn(async (command: CodingBrokerGitCommand): Promise<string> => {
 		calls.push(command);
 		if (command.args.includes("ls-remote"))
-			return `${baseSha}\trefs/heads/main\n${remoteHead ? `${remoteHead}\t${ref}\n` : ""}`;
+			return `${remoteBase}\trefs/heads/main\n${remoteHead ? `${remoteHead}\t${ref}\n` : ""}`;
 		if (command.args.includes("push")) {
 			if (!noEffect) remoteHead = command.args.at(-1)?.split(":")[0] ?? null;
 			if (loseReply) throw new Error(`untrusted stderr ${token}`);
 			return "ok\n";
 		}
-		if (process.platform === "linux") return runCodingBrokerGit(command);
+		if (process.platform === "linux")
+			return createCodingBrokerGitRunner({ bubblewrapPath: process.env.QORPERA_TEST_BWRAP })(command);
 		// Supplemental macOS fixture executes Git directly; production transport
 		// is deliberately Linux-only and exercised by the isolated node run.
 		return (
@@ -96,6 +98,9 @@ async function fixture() {
 		options,
 		calls,
 		git,
+		setBase: (head: string) => {
+			remoteBase = head;
+		},
 		setRemote: (head: string | null) => {
 			remoteHead = head;
 		},
@@ -167,10 +172,12 @@ describe("credential-isolated coding Git publication", () => {
 		await expect(pushCloudCodingBundle(f.input, f.bundle, f.options)).rejects.toThrow("CODING_GIT_HEAD_CHANGED");
 		expect(f.calls.some((call) => call.args.includes("unbundle"))).toBe(false);
 	});
-	it("refuses changed base and repository retargeting", async () => {
+	it("allows upstream base advancement but refuses pinned base and repository retargeting", async () => {
 		const f = await fixture();
+		f.setBase("b".repeat(40));
+		await pushCloudCodingBundle(f.input, f.bundle, f.options);
 		await expect(pushCloudCodingBundle({ ...f.input, baseSha: "a".repeat(40) }, f.bundle, f.options)).rejects.toThrow(
-			"CODING_GIT_BASE_CHANGED",
+			"CODING_GIT_TARGET_CONFLICT",
 		);
 		await expect(
 			pushCloudCodingBundle(

@@ -29,7 +29,7 @@ async function fixture(changes: Partial<CloudCodingCommandServiceOptions> = {}) 
 	const scope = { workerId: randomUUID(), vmId: randomUUID(), requestId: randomUUID(), turn: 2 };
 	const input = { commandId: randomUUID(), inputSha256: "a".repeat(64), command: "npm run check", timeoutMs: 120000 };
 	const receipt = {
-		schema: "qorpera.coding-command-result/v1",
+		schema: "qorpera.coding-command-result/v2",
 		workerId: scope.workerId,
 		commandId: input.commandId,
 		inputSha256: input.inputSha256,
@@ -37,6 +37,7 @@ async function fixture(changes: Partial<CloudCodingCommandServiceOptions> = {}) 
 		exitCode: null,
 		output: "still running",
 		truncated: false,
+		log: { offset: 0, nextOffset: 13, totalBytes: 13, limitBytes: 67108864, limitReached: false },
 	};
 	const authorize = vi.fn<CloudCodingCommandServiceOptions["authorize"]>(async (request) => {
 		expect(request.binding).toEqual(binding);
@@ -78,12 +79,37 @@ describe("isolated coding command HTTP gateway", () => {
 	});
 	it("uses fixed read and cancel routes without offering a host shell", async () => {
 		const f = await fixture();
-		await f.client.read(f.scope, f.input.commandId, new AbortController().signal);
+		await f.client.read(f.scope, { commandId: f.input.commandId }, new AbortController().signal);
 		await f.client.cancel(f.scope, f.input.commandId, new AbortController().signal);
 		expect(f.execute.mock.calls.map((call) => call[0])).toEqual([
-			{ ...f.request, action: "read", input: { commandId: f.input.commandId } },
+			{ ...f.request, action: "read", input: { commandId: f.input.commandId, offset: 0, limit: 4096 } },
 			{ ...f.request, action: "cancel", input: { commandId: f.input.commandId } },
 		]);
+	});
+	it("transports bounded tail requests and rejects ambiguous page cursors before authority", async () => {
+		const f = await fixture();
+		await f.client.read(
+			f.scope,
+			{ commandId: f.input.commandId, tail: true, limit: 64 },
+			new AbortController().signal,
+		);
+		expect(f.execute.mock.calls[0][0]).toMatchObject({
+			action: "read",
+			input: { commandId: f.input.commandId, tail: true, limit: 64 },
+		});
+		f.authorize.mockClear();
+		f.execute.mockClear();
+		expect(
+			(
+				await raw(
+					f,
+					{ ...f.request, action: "read", input: { commandId: f.input.commandId, tail: true, offset: 1 } },
+					"read",
+				)
+			).status,
+		).toBe(403);
+		expect(f.authorize).not.toHaveBeenCalled();
+		expect(f.execute).not.toHaveBeenCalled();
 	});
 	it("never dispatches with a wrong bearer token or a noncanonical route", async () => {
 		const f = await fixture();

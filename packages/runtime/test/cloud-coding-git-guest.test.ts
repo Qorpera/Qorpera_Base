@@ -26,13 +26,23 @@ async function fixture() {
 	await mkdir(join(root, "inbox"), { mode: 0o755 });
 	await mkdir(join(root, "workspace"), { mode: 0o755 });
 	const guest: CodingGitGuestConfiguration = {
-		schema: "qorpera.coding-command-guest/v1",
+		schema: "qorpera.coding-command-guest/v2",
 		workerId: id(1),
 		vmId: id(2),
 		bootId: id(3),
 		uid: 1000,
 		gid: 1000,
 		workspacePath: join(root, "workspace"),
+		homePath: join(root, "home"),
+		cachePath: join(root, "cache"),
+		outputRoot: join(root, "output"),
+		resourceProfile: {
+			maxTimeoutMs: 1800000,
+			memoryBytes: 2147483648,
+			tasksMax: 256,
+			cpuQuotaPercent: 200,
+			maxLogBytes: 67108864,
+		},
 	};
 	const config = join(root, "guest.json");
 	await writeFile(config, JSON.stringify(guest), { mode: 0o444 });
@@ -80,6 +90,7 @@ async function fixture() {
 						(await exec("/usr/bin/git", [...args], { cwd, env: environment, encoding: "buffer" })).stdout,
 		);
 	const ports: CodingGitGuestPorts = {
+		assertStorage: async () => undefined,
 		root,
 		configurationPath: config,
 		protectedUid: process.getuid?.(),

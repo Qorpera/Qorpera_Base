@@ -15,7 +15,7 @@ afterEach(async () => {
 	for (const cleanup of cleanups.splice(0)) await cleanup();
 });
 
-async function fixture(failure = "", content = "") {
+async function fixture(failure = "", content = "", kernelValue = `${bootId}\n`, afterContent?: string) {
 	const directory = await mkdtemp(join(tmpdir(), "q-boot-"));
 	const socket = join(directory, "s");
 	const calls: { method: string; path: string; body: unknown }[] = [];
@@ -39,7 +39,13 @@ async function fixture(failure = "", content = "") {
 				"x-lxd-gid": "0",
 				"x-lxd-mode": failure === "mode" || (failure === "metadata changed" && reads === 2) ? "0644" : "0444",
 			});
-			return response.end(failure === "content changed" && reads === 2 ? `${operationId}\n` : content);
+			return response.end(
+				reads === 2 && afterContent !== undefined
+					? afterContent
+					: failure === "content changed" && reads === 2
+						? `${operationId}\n`
+						: content,
+			);
 		}
 		const metadata = {
 			entity_url: `${instance}?project=company`,
@@ -86,7 +92,7 @@ async function fixture(failure = "", content = "") {
 						? "x".repeat(65)
 						: failure === "invalid UUID"
 							? "invalid\n"
-							: `${bootId}\n`,
+							: kernelValue,
 			);
 		}
 		send({}, 404);
@@ -167,5 +173,46 @@ describe("LXD procfs boot identity read", () => {
 		await expect(f.read(undefined, 36)).rejects.toThrow("LXD_INSTANCE_FILE_UNCONFIRMED");
 		await expect(f.read(undefined, 64, AbortSignal.abort())).rejects.toThrow("LXD_INSTANCE_FILE_UNCONFIRMED");
 		expect(f.calls.filter((call) => call.method === "POST")).toHaveLength(0);
+	});
+});
+
+describe("LXD public proc uptime read", () => {
+	it("uses the fixed unprivileged uptime read and conservatively retains the earlier valid clock", async () => {
+		const f = await fixture("", "", "100.12 500.33\n", "100.13 500.34\n");
+		expect(await f.read("/proc/uptime", 128)).toEqual({
+			content: Buffer.from("100.12 500.33\n"),
+			uid: 0,
+			gid: 0,
+			mode: 0o444,
+		});
+		expect(f.calls.filter((call) => call.method === "POST").map((call) => call.body)).toEqual([
+			expect.objectContaining({
+				command: ["/usr/bin/cat", "--", "/proc/uptime"],
+				user: 65534,
+				group: 65534,
+				environment: {},
+			}),
+		]);
+		expect(f.calls.filter((call) => call.method === "DELETE")).toHaveLength(2);
+	});
+	it.each(["", "0", "NaN 0\n", "1e3 0\n", "-1.00 1.00\n", "1.00 0.00", "9007199254740.99 0.00\n"])(
+		"rejects malformed uptime %j without replay",
+		async (value) => {
+			const f = await fixture("", "", value);
+			await expect(f.read("/proc/uptime", 128)).rejects.toThrow("LXD_INSTANCE_FILE_UNCONFIRMED");
+			expect(f.calls.filter((call) => call.method === "POST")).toHaveLength(1);
+		},
+	);
+	it("refuses a backwards clock across readback and undersized bounds", async () => {
+		const f = await fixture("", "", "100.00 50.00\n", "1.00 0.00\n");
+		await expect(f.read("/proc/uptime", 128)).rejects.toThrow("LXD_INSTANCE_FILE_UNCONFIRMED");
+		const g = await fixture();
+		await expect(g.read("/proc/uptime", 9)).rejects.toThrow("LXD_INSTANCE_FILE_UNCONFIRMED");
+		expect(g.calls.filter((call) => call.method === "POST")).toHaveLength(0);
+	});
+	it("does not execute when the uptime file is directly readable", async () => {
+		const f = await fixture("", "100.00 50.00\n");
+		expect((await f.read("/proc/uptime", 128)).content.toString()).toBe("100.00 50.00\n");
+		expect(f.calls).toHaveLength(1);
 	});
 });

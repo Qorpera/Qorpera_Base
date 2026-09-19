@@ -4,10 +4,14 @@
 
 ### Breaking Changes
 
+- Coding command receipts now use v2 with bounded byte-cursor log metadata; coding NAS bindings pin one worker, source, machine and writer generation. Older unbound guest configurations cannot enter the new execution path.
+
 - The unreleased new-boot successor request now requires `bootIntentId`, binding it to a separately prepared pre-boot intent. Prior unbound handoffs cannot be reconstructed or resumed automatically.
 - Unreleased preparation completion now uses `qorpera.office-preparation-completion/v2` and requires the independently read adoption-receipt digest. Older completions cannot satisfy the new preparation phase.
 
 ### Added
+
+- Added strict deterministic NAS volume and source policy contracts. Parsing is separate from writer authority and physical mount verification.
 
 - Added closed office root-reset contracts: the operator-authored `qorpera.lxd-office-reset-plan/v1` retaining every logical identity while naming fresh root-incarnation, successor-activation and physical command identities, a provider-validated custody manifest bounding the archived diagnostic outbox and allowlisted public root history, a restore receipt bound to the sealed custody digest and a distinct boot, immutable ordered phase records, five-second phase challenges/evidence, historical reset status and a reset successor request/metadata pair requiring a distinct activation, boot and configuration. Parsing grants no dispatch, deletion, restoration or admission authority.
 - Allowed the selected boot's public adoption, configuration claim/completion and configuration JSON in protected stop history. Secret credential paths and other boot directories remain excluded; existing manifest bytes retain their order.

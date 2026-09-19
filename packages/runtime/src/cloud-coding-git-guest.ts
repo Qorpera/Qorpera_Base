@@ -7,6 +7,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual, promisify } from "node:util";
 import { type CloudCodingRepository, parseCloudCodingRepository } from "@qorpera/contracts";
+import { type CodingGuestConfiguration, parseCodingGuestConfiguration } from "./cloud-coding-guest-configuration.ts";
+import { assertCloudCodingGuestStorage } from "./cloud-coding-storage-guest.ts";
 
 const exec = promisify(execFile);
 const ROOT = "/var/lib/qorpera-coding";
@@ -37,15 +39,7 @@ export interface CodingGitGuestReceipt {
 	bundleBytes: number;
 	chunkCount: number;
 }
-export interface CodingGitGuestConfiguration {
-	schema: "qorpera.coding-command-guest/v1";
-	workerId: string;
-	vmId: string;
-	bootId: string;
-	uid: number;
-	gid: number;
-	workspacePath: string;
-}
+export type CodingGitGuestConfiguration = CodingGuestConfiguration;
 export interface CodingGitGuestPorts {
 	/** Trusted test composition only; production paths and subprocess are fixed. */
 	root?: string;
@@ -55,6 +49,7 @@ export interface CodingGitGuestPorts {
 	inspectMachine?: () => Promise<string>;
 	system?: (executable: string, args: readonly string[]) => Promise<string>;
 	execute?: (request: CodingGitGuestRequest, guest: CodingGitGuestConfiguration, root: string) => Promise<Buffer>;
+	assertStorage?: (guest: CodingGuestConfiguration) => Promise<void>;
 }
 
 async function assertCommandQuiescence(ports: CodingGitGuestPorts): Promise<void> {
@@ -163,7 +158,7 @@ export function parseCodingGitGuestRequest(value: unknown): CodingGitGuestReques
 async function protectedRead(path: string, owner: number, limit: number, boundary = "/"): Promise<Buffer> {
 	for (let parent = dirname(path); ; parent = dirname(parent)) {
 		const stat = await lstat(parent);
-		if (!stat.isDirectory() || stat.uid !== owner || (stat.mode & 0o022) !== 0)
+		if (!stat.isDirectory() || (stat.uid !== owner && parent !== ROOT) || (stat.mode & 0o022) !== 0)
 			throw new Error("UNPROTECTED_CODING_GIT_PATH");
 		if (parent === boundary || parent === dirname(parent)) break;
 	}
@@ -218,21 +213,10 @@ async function load(
 		root = ports.root ?? ROOT;
 	const path = ports.configurationPath ?? "/etc/qorpera-coding/guest.json";
 	if (((await lstat(path)).mode & 0o777) !== 0o444) throw new Error("CODING_GIT_GUEST_CONFIG_MODE");
-	const config = closed(
-		JSON.parse((await protectedRead(path, owner, 4096, ports.protectedDirectoryRoot)).toString("utf8")),
-		["schema", "workerId", "vmId", "bootId", "uid", "gid", "workspacePath"],
+	const guest = parseCodingGuestConfiguration(
+		JSON.parse((await protectedRead(path, owner, 8192, ports.protectedDirectoryRoot)).toString("utf8")),
 	);
-	if (
-		config.schema !== "qorpera.coding-command-guest/v1" ||
-		![config.workerId, config.vmId, config.bootId].every((id) => typeof id === "string" && UUID.test(id)) ||
-		![config.uid, config.gid].every((id) => Number.isSafeInteger(id) && Number(id) >= 1000) ||
-		typeof config.workspacePath !== "string" ||
-		config.workspacePath !== resolve(config.workspacePath) ||
-		config.workspacePath === "/" ||
-		/[\s\0]/.test(config.workspacePath)
-	)
-		throw new Error("INVALID_CODING_GIT_GUEST_CONFIG");
-	const guest = config as unknown as CodingGitGuestConfiguration;
+	await (ports.assertStorage ?? assertCloudCodingGuestStorage)(guest);
 	if ((await (ports.inspectMachine ?? machine)()) !== guest.bootId) throw new Error("CODING_GIT_GUEST_BOOT_CHANGED");
 	const request = parseCodingGitGuestRequest(
 		JSON.parse(

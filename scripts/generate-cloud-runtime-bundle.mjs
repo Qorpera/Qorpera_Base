@@ -7,9 +7,9 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260919092000_runtime_bundle_activation_v31.sql";
-const activationVersion = 31;
-const previousActivationVersion = 30;
+const activation = "supabase/migrations/20260919095000_runtime_bundle_activation_v32.sql";
+const activationVersion = 32;
+const previousActivationVersion = 31;
 const manifestPath = "deploy/first-node/native-codex/runtime-bundle-manifest.json";
 const sha = (text) => createHash("sha256").update(text).digest("hex");
 
@@ -148,7 +148,7 @@ export async function cloudRuntimeBundle(root = repository) {
 			toolCatalog: component(runtime(["cloud-company-path-gateway", "cloud-secret-tools", "cloud-native-company-runtime", "cloud-wake-bus", "cloud-responsibility-tools", "cloud-coding-tools", "cloud-coding-command-tools", "cloud-native-coding-runtime"])),
 			wakeAndSilence: component(runtime(["cloud-native-company-runtime", "cloud-agent-mouth", "cloud-wake-bus", "cloud-responsibility-tools"])),
 			contextComposer: component(runtime(["cloud-native-company-context", "cloud-company-path-gateway"])),
-			providerBootstrap: component(runtime(["cloud-codex-tool-session", "cloud-native-provider-host", "lxd-runner-bootstrap-main"])),
+			providerBootstrap: component(runtime(["cloud-codex-tool-session", "cloud-native-provider-host", "cloud-native-credential-owner", "cloud-native-process-settlement", "lxd-runner-bootstrap-main"])),
 			authorization: component([...files.keys()].filter((path) => path.startsWith("supabase/migrations/"))),
 			inboundSafety: component(runtime(["cloud-native-result-fence", "cloud-native-tool-boundary"])),
 			outboundSafety: component(runtime(["cloud-native-tool-operations", "cloud-secret-tools", "cloud-company-path-gateway"])),

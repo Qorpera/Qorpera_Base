@@ -1,4 +1,5 @@
-import { chmod, mkdtemp, readdir, readFile, realpath, rm, symlink } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -10,6 +11,7 @@ import {
 	reconcileLxdCodingVm,
 } from "../src/coding-vm.ts";
 import type { LxdInstanceRecord, LxdTrackedInstanceAction } from "../src/lxd-client.ts";
+import { codingStorageFixture } from "./helpers/coding-storage.ts";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const roots: string[] = [];
@@ -18,7 +20,8 @@ afterEach(async () => {
 });
 function binding(): LxdCodingVmBinding {
 	return {
-		schema: "qorpera.lxd-coding-vm/v1",
+		schema: "qorpera.lxd-coding-vm/v2",
+		storage: codingStorageFixture({ workerId: id(1), companyId: id(3), environmentId: id(4) }),
 		workerId: id(1),
 		allocationId: id(2),
 		companyId: id(3),
@@ -111,11 +114,80 @@ async function fixture() {
 	};
 }
 
+async function retainedHistory(f: Awaited<ReturnType<typeof fixture>>, count: 381 | 384) {
+	await f.reconcile();
+	await f.reconcile();
+	await f.reconcile();
+	const root = join(f.journalRoot, f.value.workerId);
+	let previousSha256 = createHash("sha256")
+		.update(await readFile(join(root, "binding.json")))
+		.digest("hex");
+	for (let sequence = 0; sequence < count; sequence++) {
+		const phase = sequence % 3;
+		const bytes = Buffer.from(
+			`${JSON.stringify({
+				sequence,
+				previousSha256,
+				action: sequence < 3 ? "create" : Math.floor(sequence / 3) % 2 ? "start" : "stop",
+				kind: ["dispatch", "accepted", "settled"][phase],
+				operationId: phase === 0 ? null : id(1000 + Math.floor(sequence / 3)),
+				state: phase === 2 ? "succeeded" : null,
+			})}\n`,
+		);
+		await writeFile(join(root, `${String(sequence).padStart(6, "0")}.json`), bytes, { mode: 0o600 });
+		previousSha256 = createHash("sha256").update(bytes).digest("hex");
+	}
+	const instance = f.instance();
+	if (!instance) throw new Error("missing fixture VM");
+	instance.status = count === 381 ? "Stopped" : "Running";
+	instance.statusCode = count === 381 ? 102 : 103;
+	return root;
+}
+
 describe("retained coding VM lifecycle", () => {
-	it("pins repository, branch, resources and image without inherited profiles or host/identity mounts", () => {
+	it("rolls over a settled stopped journal and retains exact history and stop capacity", async () => {
+		const f = await fixture();
+		const root = await retainedHistory(f, 381);
+		const retained = await readFile(join(root, "000380.json"));
+		await Promise.all([f.reconcile(), f.reconcile()]);
+		expect(f.client.submitInstanceOperation).toHaveBeenCalledTimes(2);
+		expect((await f.reconcile()).state).toBe("pending");
+		expect((await f.reconcile()).state).toBe("running");
+		expect((await f.reconcile("stopped")).state).toBe("pending");
+		expect((await f.reconcile("stopped")).state).toBe("stopped");
+		expect(await readFile(join(root, "000380.json"))).toEqual(retained);
+		expect((await readdir(join(root, "segment-000001"))).length).toBe(7);
+		expect(f.client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual([
+			"create",
+			"start",
+			"start",
+			"stop",
+		]);
+	});
+	it("permits exact stop from a legacy full start journal then rolls over without recreating the VM", async () => {
+		const f = await fixture();
+		const root = await retainedHistory(f, 384);
+		expect((await f.reconcile("stopped")).state).toBe("pending");
+		expect((await f.reconcile("stopped")).state).toBe("stopped");
+		expect(JSON.parse(await readFile(join(root, "000386.json"), "utf8")).action).toBe("stop");
+		expect((await f.reconcile()).state).toBe("pending");
+		expect((await f.reconcile()).state).toBe("pending");
+		expect((await f.reconcile()).state).toBe("running");
+	});
+	it("recovers an empty unpublished rollover directory but never replays an unknown new-segment start", async () => {
+		const f = await fixture();
+		const root = await retainedHistory(f, 381);
+		await mkdir(join(root, "segment-000001"), { mode: 0o700 });
+		expect((await f.reconcile()).state).toBe("pending");
+		f.client.submitInstanceOperation.mockRejectedValue(new Error("response lost"));
+		expect((await f.reconcile()).state).toBe("recovery-required");
+		expect((await f.reconcile()).state).toBe("recovery-required");
+		expect(f.client.submitInstanceOperation).toHaveBeenCalledTimes(3);
+	});
+	it("pins repository, branch, resources, NAS mounts and image without inherited profiles or identity mounts", () => {
 		const plan = lxdCodingVmPlan(binding());
 		expect(plan.request.profiles).toEqual([]);
-		expect(Object.keys(plan.request.devices).sort()).toEqual(["network", "root"]);
+		expect(Object.keys(plan.request.devices).sort()).toEqual(["custody", "data", "network", "root"]);
 		expect(plan.request.name).toBe(`qorpera-coding-${id(1).replaceAll("-", "")}`);
 		expect(plan.request.config["user.qorpera.branch"]).toBe(`qorpera/coding/${id(1)}`);
 		expect(plan.request.config["boot.autostart"]).toBe("false");

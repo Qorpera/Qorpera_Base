@@ -7,7 +7,9 @@ import { promisify } from "node:util";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const HASH = /^[0-9a-f]{64}$/;
-const ROOT = "/var/lib/qorpera-coding";
+// Execution authority is boot-local, not durable task data. A NAS outage must
+// never block the watchdog's lease read before it can stop command cgroups.
+const ROOT = "/run/qorpera-coding";
 const executeFile = promisify(execFile);
 export interface CodingGuestLeaseConfiguration {
 	workerId: string;

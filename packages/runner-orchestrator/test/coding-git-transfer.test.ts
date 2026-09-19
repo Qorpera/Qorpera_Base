@@ -3,14 +3,15 @@ import { describe, expect, it, vi } from "vitest";
 import { type CodingGitTransferReceipt, LxdCodingGitTransfer } from "../src/coding-git-transfer.ts";
 import { type LxdCodingVmBinding, lxdCodingVmPlan } from "../src/coding-vm.ts";
 import type { LxdInspectableClient } from "../src/lxd-client.ts";
+import { codingStorageFixture } from "./helpers/coding-storage.ts";
 
 function fixture() {
+	const storageScope = { workerId: randomUUID(), companyId: randomUUID(), environmentId: randomUUID() };
 	const vm: LxdCodingVmBinding = {
-		schema: "qorpera.lxd-coding-vm/v1",
-		workerId: randomUUID(),
+		schema: "qorpera.lxd-coding-vm/v2",
+		...storageScope,
+		storage: codingStorageFixture(storageScope),
 		allocationId: randomUUID(),
-		companyId: randomUUID(),
-		environmentId: randomUUID(),
 		providerId: "coding",
 		providerPolicySha256: "a".repeat(64),
 		repository: { host: "github.com", owner: "Qorpera", name: "test", baseBranch: "main" },

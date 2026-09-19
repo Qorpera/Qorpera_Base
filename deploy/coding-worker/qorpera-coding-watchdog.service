@@ -12,3 +12,4 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
+ReadOnlyPaths=-/run/qorpera-coding

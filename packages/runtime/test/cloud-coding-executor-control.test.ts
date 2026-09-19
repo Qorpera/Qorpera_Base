@@ -20,6 +20,11 @@ describe("dedicated coding executor control", () => {
 			control.call("qorpera_configure_coding_vm_policy", {}, new AbortController().signal),
 		).rejects.toThrow("METHOD_INVALID");
 		expect(fetcher).toHaveBeenCalledTimes(1);
+		await control.call("qorpera_describe_coding_cancellation", {}, new AbortController().signal);
+		expect(fetcher).toHaveBeenLastCalledWith(
+			"https://project.supabase.co/rest/v1/rpc/qorpera_describe_coding_cancellation",
+			expect.objectContaining({ redirect: "error", method: "POST" }),
+		);
 	});
 	it("sanitizes failures and rejects credential-bearing destinations", async () => {
 		const fetcher = vi.fn<typeof fetch>(async () => {

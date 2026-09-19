@@ -4,9 +4,13 @@
 
 ### Breaking Changes
 
+- Coding guest configuration and command receipts now use v2 with explicit NAS home/cache/log paths and admitted resource limits. Governed native hosts require durable managed credential generations; same-login contention cannot start a second rotating-auth process.
+
 - The unreleased office unit now loads credentials from the current boot's immutable directory. Previously acknowledged installations without those files are refused; replay does not backfill missing credentials from the original installation.
 
 ### Added
+
+- Added bounded retained command logs, verified NAS guest storage, independent temporary watchdog leases and encrypted credential generations with durable refresh ownership. Unknown native process settlement retains credential custody instead of publishing or deleting potentially live state.
 
 - Added a service-only host inventory view including managed, infrastructure and unmanaged machines. Pages retain one observation's entries, preserve original times and reported states, and mark stale, superseded or unavailable current state as unknown. Physical inventory cannot release allocations or imply free capacity.
 - Added a service-only paginated compute-request view covering office/login/native demand before allocation, recorded placement, capacity refusals and typed dispatch failures. New assignment failure transitions retain database time; historical missing times remain unknown. Queries expose no raw errors or capabilities and never retry admission or release resources.

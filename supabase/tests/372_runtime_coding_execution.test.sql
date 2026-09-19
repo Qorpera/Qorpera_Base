@@ -1,3 +1,4 @@
+-- Canonical coding admission, two native turns, and rollback emergency-stop probe.
 -- Setup reused from 290_company_file_path_gateway.test.sql through native
 -- admission; standalone so the disposable SQL harness can run this file alone.
 -- Real admission, assignment and native-lease contracts; no substituted
@@ -298,7 +299,7 @@ declare b jsonb:=current_setting('qorpera_test.path_binding')::jsonb; cb jsonb;
  claim jsonb; runner jsonb; assignment jsonb; lease jsonb; authority jsonb; catalog text; finish jsonb;
  second_parent jsonb; second_fixture jsonb; second_binding jsonb; second_scope jsonb; second_q jsonb; second_descriptor jsonb;
  event_id uuid; continuation_run uuid; second_request uuid; second_token uuid; allocation_count bigint;
- plan jsonb; plan_text text; machine jsonb; scope jsonb; cmd uuid:='37200000-0000-4000-8000-000000000088';
+ plan jsonb; nas jsonb; storage jsonb; storage_root text; plan_text text; machine jsonb; scope jsonb; cmd uuid:='37200000-0000-4000-8000-000000000088';
 begin
  set local role service_role;
  perform public.qorpera_send_native_agent_message((b->>'leaseId')::uuid,(b->>'runId')::uuid,(b->>'jobId')::uuid,
@@ -313,7 +314,36 @@ begin
   'definitionOfDone','Tests pass and a draft PR exists','context','Explicit task context','sourceReadIds','[]'::jsonb,
   'todoPath','note.md','cancellationPolicy','retain-workspace','completionPolicy','notify-parent','publication','draft-pr');
  w:=public.qorpera_dispatch_coding_worker(b,d); worker:=(w->>'id')::uuid;
+ -- Cancelling before any physical admission must finish from explicit SQL
+ -- absence proof, never an arbitrary LXD missing-instance observation.
+ declare cancel_claim jsonb; current_worker jsonb; absent jsonb;
+ begin
+  perform public.qorpera_cancel_coding_worker(b,worker,(w->>'version')::bigint,'cancel-before-provision');
+  cancel_claim:=public.qorpera_claim_coding_request('native-coding-fixture',300);
+  absent:=public.qorpera_describe_coding_cleanup((cancel_claim->>'requestId')::uuid,(cancel_claim->>'leaseToken')::uuid,
+   'native-coding-fixture',repeat('c',64));
+  if absent is distinct from jsonb_build_object('schema','qorpera.coding-cleanup-absent/v1','requestId',cancel_claim->>'requestId','workerId',worker,'allocationId',null) then
+   raise exception 'Pre-provision cancellation lacked exact absence proof: %',absent; end if;
+  begin
+   -- Explicit corruption/partial-intent fault injection, not fake authority.
+   reset role;
+   insert into public.qorpera_coding_vm_plans(worker_id,allocation_id,binding,instance_sha256)
+    values(worker,'37400000-0000-4000-8000-000000000021','{}',repeat('a',64));
+   set local role service_role;
+   begin perform public.qorpera_describe_coding_cleanup((cancel_claim->>'requestId')::uuid,(cancel_claim->>'leaseToken')::uuid,
+    'native-coding-fixture',repeat('c',64));
+    raise exception 'Partial VM intent reported absent'; exception when insufficient_privilege then null; end;
+   raise exception using errcode='P3744';
+  exception when sqlstate 'P3744' then null; end;
+  current_worker:=public.qorpera_describe_coding_cancellation((cancel_claim->>'requestId')::uuid,(cancel_claim->>'leaseToken')::uuid);
+  current_worker:=public.qorpera_complete_coding_request((cancel_claim->>'requestId')::uuid,(cancel_claim->>'leaseToken')::uuid,
+   (current_worker->>'version')::bigint,'cancelled','{"summary":"Cancelled before repository VM admission"}');
+  if current_worker->>'state'<>'cancelled' or current_worker->'vmId'<>'null'::jsonb then raise exception 'Pre-provision cancellation failed'; end if;
+  raise exception using errcode='P3743',message='rollback pre-provision cancel';
+ exception when sqlstate 'P3743' then null; end;
  q:=public.qorpera_claim_coding_request('native-coding-fixture',300); request:=(q->>'requestId')::uuid; token:=(q->>'leaseToken')::uuid;
+ begin perform public.qorpera_describe_coding_cleanup(request,token,'native-coding-fixture',repeat('c',64));
+  raise exception 'Ordinary dispatch claimed pre-provision stop'; exception when insufficient_privilege then null; end;
  admission:=public.qorpera_prepare_coding_execution(request,token);
  if public.qorpera_prepare_coding_execution(request,token)<>admission then raise exception 'Admission replay differs'; end if;
  sent:=public.qorpera_send_native_agent_message((b->>'leaseId')::uuid,(b->>'runId')::uuid,(b->>'jobId')::uuid,
@@ -338,11 +368,21 @@ begin
  runner:=public.qorpera_provision_execution_runner((descriptor->>'runId')::uuid,'37200000-0000-4000-8000-000000000005','process',repeat('4',64));
  plan:=jsonb_build_object('providerId','coding-fixture','providerPolicySha256',repeat('f',64),'project','coding','imageFingerprint',repeat('a',64),
   'bootstrapSha256',repeat('b',64),'storagePool','coding','network','coding','cpus',2,'memoryBytes',2147483648,'rootDiskBytes',4294967296);
- plan_text:=(plan||jsonb_build_object('schema','qorpera.lxd-coding-vm/v1','workerId',worker,'allocationId',vm,'companyId',
+ nas:=jsonb_build_object('schema','qorpera.coding-nas-policy/v1','mountPoint','/srv/coding','rootPath','/srv/coding/executor',
+  'source','192.168.1.40:/coding','serverAddress','192.168.1.40');
+ storage_root:='/srv/coding/executor/workers/29000000-0000-4000-8000-000000000010/'||env::text||'/'||worker::text;
+ storage:=jsonb_build_object('schema','qorpera.coding-storage/v1','volumeId',worker,'workerId',worker,
+  'companyId','29000000-0000-4000-8000-000000000010','environmentId',env,'writerGeneration',1,'machineIdSha256',repeat('c',64),
+  'policy',nas,'dataSource',storage_root||'/data','custodySource',storage_root||'/guest-state',
+  'dataTarget','/workspace','custodyTarget','/var/lib/qorpera-coding');
+ plan_text:=(plan||jsonb_build_object('storage',storage,'schema','qorpera.lxd-coding-vm/v2','workerId',worker,'allocationId',vm,'companyId',
   '29000000-0000-4000-8000-000000000010','environmentId',env,'repository',repo))::text;
  begin perform public.qorpera_authorize_coding_machine(request,token,plan_text,repeat('c',64),'run');
   raise exception 'Missing coding deployment policy admitted'; exception when insufficient_privilege then null; end;
  perform public.qorpera_configure_coding_vm_policy(env,'native-coding-fixture',plan);
+ begin perform public.qorpera_authorize_coding_machine(request,token,plan_text,repeat('c',64),'run');
+  raise exception 'Missing NAS policy admitted'; exception when insufficient_privilege then null; end;
+ perform public.qorpera_configure_coding_nas_policy(env,'native-coding-fixture',repeat('c',64),nas);
  machine:=public.qorpera_authorize_coding_machine(request,token,plan_text,repeat('c',64),'run');
  if machine->>'reason'<>'NODE_PROVIDER_UNCONFIGURED' then raise exception 'Missing coding node admitted: %',machine; end if;
  w:=jsonb_set(w,'{version}',to_jsonb((w->>'version')::bigint+1));
@@ -358,6 +398,15 @@ begin
   'observedAt',to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
   'cpuMillis',6000,'memoryBytes',8589934592,'state','ready'));
  machine:=public.qorpera_authorize_coding_machine(request,token,plan_text,repeat('c',64),'run');
+ begin perform public.qorpera_configure_coding_nas_policy(env,'native-coding-fixture',repeat('d',64),nas);
+  raise exception 'NAS writer host replaced without physical fence'; exception when sqlstate '55000' then null; end;
+ begin perform public.qorpera_authorize_coding_machine(request,token,jsonb_set(plan_text::jsonb,'{storage,writerGeneration}','2')::text,repeat('c',64),'run');
+  raise exception 'NAS generation replaced by queue lease'; exception when insufficient_privilege then null; end;
+ begin perform public.qorpera_authorize_coding_machine(request,token,plan_text,repeat('d',64),'run');
+  raise exception 'Foreign host acquired NAS writer'; exception when insufficient_privilege then null; end;
+ if has_function_privilege('service_role','public.qorpera_assert_coding_storage(uuid,text,jsonb,text)','EXECUTE')
+  or has_table_privilege('service_role','public.qorpera_coding_storage_volumes','INSERT,UPDATE,DELETE') then
+  raise exception 'NAS authority bypass exposed'; end if;
  if machine->>'schema'<>'qorpera.coding-vm-admission/v1' or machine->>'allocationId'<>vm::text then raise exception 'Coding VM receipt unavailable: %',machine; end if;
  begin perform public.qorpera_authorize_coding_machine(request,token,(plan_text::jsonb||jsonb_build_object('network','drift'))::text,repeat('c',64),'run');
   raise exception 'Coding VM plan drift accepted'; exception when insufficient_privilege then null; end;
@@ -455,6 +504,36 @@ begin
  second_q:=public.qorpera_claim_coding_request('native-coding-fixture',300);
  second_request:=(second_q->>'requestId')::uuid; second_token:=(second_q->>'leaseToken')::uuid;
  perform public.qorpera_prepare_coding_execution(second_request,second_token);
+ -- A still-live company parent can cancel while an older emergency stop is
+ -- pending. Its separate cancellation custody reconciles, never redispatches.
+ declare cancel_claim jsonb; current_worker jsonb; stop_receipt jsonb;
+ begin
+  perform public.qorpera_claim_coding_emergency_stop(second_request,second_token,'native-coding-fixture',repeat('c',64),plan_text,'37400000-0000-4000-8000-000000000011');
+  perform public.qorpera_record_coding_emergency_stop(second_request,second_token,'native-coding-fixture',repeat('c',64),'37400000-0000-4000-8000-000000000011','37400000-0000-4000-8000-000000000012','accepted');
+  current_worker:=public.qorpera_read_coding_worker(second_parent,worker);
+  perform public.qorpera_cancel_coding_worker(second_parent,worker,(current_worker->>'version')::bigint,'cancel-after-emergency');
+  cancel_claim:=public.qorpera_claim_coding_request('native-coding-fixture',300);
+  if cancel_claim->>'kind'<>'cancel' then raise exception 'Emergency cancellation did not acquire its own lease'; end if;
+  stop_receipt:=public.qorpera_claim_coding_emergency_stop((cancel_claim->>'requestId')::uuid,(cancel_claim->>'leaseToken')::uuid,
+   'native-coding-fixture',repeat('c',64),plan_text,'37400000-0000-4000-8000-000000000013');
+  if stop_receipt->>'dispatch'<>'false' or stop_receipt->>'requestId'<>second_request::text
+   or stop_receipt->>'claimId'<>'37400000-0000-4000-8000-000000000011'
+   or stop_receipt->>'operationId'<>'37400000-0000-4000-8000-000000000012' then
+   raise exception 'Cancellation took over emergency intent'; end if;
+  perform public.qorpera_record_coding_emergency_stop((cancel_claim->>'requestId')::uuid,(cancel_claim->>'leaseToken')::uuid,
+   'native-coding-fixture',repeat('c',64),'37400000-0000-4000-8000-000000000011','37400000-0000-4000-8000-000000000012','stopped');
+  current_worker:=public.qorpera_describe_coding_cancellation((cancel_claim->>'requestId')::uuid,(cancel_claim->>'leaseToken')::uuid);
+  if current_worker->>'id'<>worker::text then raise exception 'Cancellation snapshot changed worker'; end if;
+  current_worker:=public.qorpera_complete_coding_request((cancel_claim->>'requestId')::uuid,(cancel_claim->>'leaseToken')::uuid,
+   (current_worker->>'version')::bigint,'cancelled','{"summary":"Emergency operation confirmed stopped; retained workspace remains fenced"}');
+  if current_worker->>'state'<>'cancelled' then raise exception 'Permanent fence prevented confirmed cancellation'; end if;
+  reset role;
+  if not exists(select 1 from public.qorpera_coding_emergency_stops where worker_id=worker and request_id=second_request and state='stopped')
+   or not exists(select 1 from public.qorpera_runtime_machine_allocations where id=vm and released_at is null) then
+   raise exception 'Cancellation removed emergency intent or retained capacity'; end if;
+  set local role service_role;
+  raise exception using errcode='P3742',message='rollback emergency cancellation';
+ exception when sqlstate 'P3742' then null; end;
  result:=result||jsonb_build_object('native_lease_id',second_parent->>'leaseId','substrate_version_id',second_fixture#>>'{claim,work,substrate_version_id}',
   'backend_result',jsonb_build_object('schema','qorpera.native-harness-result/v2','run_id',second_parent->>'runId',
    'message_count',0,'final_message_id',null,'provider_session_id','coding-continuation-parent'));
@@ -486,6 +565,57 @@ begin
   authority#>>'{identity,runtimeBundleSha256}',authority#>>'{identity,reasoningPolicySha256}',catalog,repeat('b',64),10);
  second_scope:=jsonb_build_object('requestId',second_request,'workerId',worker,'vmId',vm,'turn',2);
  perform public.qorpera_authorize_coding_command(second_binding,second_scope,'read',cmd,null);
+
+ -- Emergency NAS-independent cleanup is tested inside a rollback scope so the
+ -- ordinary second-turn fixture still proves its successful path afterward.
+ begin
+  authority:=public.qorpera_describe_coding_cleanup(second_request,second_token,'native-coding-fixture',repeat('c',64));
+  if authority->'binding' is distinct from plan_text::jsonb or authority#>>'{admission,allocationId}'<>vm::text then
+   raise exception 'Emergency descriptor did not preserve original plan'; end if;
+  begin perform public.qorpera_describe_coding_cleanup(second_request,extensions.gen_random_uuid(),'native-coding-fixture',repeat('c',64));
+   raise exception 'Wrong token described cleanup'; exception when insufficient_privilege then null; end;
+  begin perform public.qorpera_describe_coding_cleanup(second_request,second_token,'other-owner',repeat('c',64));
+   raise exception 'Wrong owner described cleanup'; exception when insufficient_privilege then null; end;
+  begin perform public.qorpera_describe_coding_cleanup(second_request,second_token,'native-coding-fixture',repeat('d',64));
+   raise exception 'Wrong machine described cleanup'; exception when insufficient_privilege then null; end;
+  begin perform public.qorpera_describe_coding_cleanup(request,token,'native-coding-fixture',repeat('c',64));
+   raise exception 'Old request interrupted newer native turn'; exception when insufficient_privilege then null; end;
+  machine:=public.qorpera_claim_coding_emergency_stop(second_request,second_token,'native-coding-fixture',repeat('c',64),plan_text,'37400000-0000-4000-8000-000000000001');
+  if machine->>'dispatch'<>'true' or machine->>'state'<>'dispatching' then raise exception 'First emergency stop not claimed'; end if;
+  authority:=public.qorpera_claim_coding_emergency_stop(second_request,second_token,'native-coding-fixture',repeat('c',64),plan_text,'37400000-0000-4000-8000-000000000001');
+  if authority->>'dispatch'<>'false' then raise exception 'Same emergency claim replayed'; end if;
+  authority:=public.qorpera_claim_coding_emergency_stop(second_request,second_token,'native-coding-fixture',repeat('c',64),plan_text,'37400000-0000-4000-8000-000000000002');
+  if authority->>'dispatch'<>'false' or authority->>'claimId'<>'37400000-0000-4000-8000-000000000001' then raise exception 'Competing emergency claim won'; end if;
+  begin perform public.qorpera_record_coding_emergency_stop(second_request,second_token,'native-coding-fixture',repeat('c',64),'37400000-0000-4000-8000-000000000002',null,'recovery-required');
+   raise exception 'Losing claimant wrote emergency journal'; exception when insufficient_privilege then null; end;
+  begin perform public.qorpera_record_coding_emergency_stop(second_request,second_token,'native-coding-fixture',repeat('c',64),'37400000-0000-4000-8000-000000000001','37400000-0000-4000-8000-000000000003','stopped');
+   raise exception 'Unknown dispatch skipped acceptance custody'; exception when insufficient_privilege then null; end;
+  begin perform public.qorpera_authorize_native_coding_execution(second_binding,second_request,worker,vm,2);
+   raise exception 'Emergency fence allowed native coding'; exception when sqlstate '55000' then null; end;
+  begin perform public.qorpera_authorize_coding_machine(second_request,second_token,plan_text,repeat('c',64),'run');
+   raise exception 'Emergency fence resumed repository'; exception when sqlstate '55000' then null; end;
+  begin perform public.qorpera_complete_coding_request(second_request,second_token,(w->>'version')::bigint,'completed','{"summary":"unconfirmed","noChange":true}');
+   raise exception 'Emergency fence reported normal completion'; exception when sqlstate '55000' then null; end;
+  perform public.qorpera_record_coding_emergency_stop(second_request,second_token,'native-coding-fixture',repeat('c',64),'37400000-0000-4000-8000-000000000001','37400000-0000-4000-8000-000000000003','accepted');
+  begin perform public.qorpera_record_coding_emergency_stop(second_request,second_token,'native-coding-fixture',repeat('c',64),'37400000-0000-4000-8000-000000000001','37400000-0000-4000-8000-000000000004','accepted');
+   raise exception 'Emergency operation rebound'; exception when insufficient_privilege then null; end;
+  -- Trusted physical adapter reports an observed stop, never model output.
+  authority:=public.qorpera_record_coding_emergency_stop(second_request,second_token,'native-coding-fixture',repeat('c',64),'37400000-0000-4000-8000-000000000001','37400000-0000-4000-8000-000000000003','stopped');
+  if authority->>'state'<>'stopped' then raise exception 'Emergency stop not retained'; end if;
+  begin perform public.qorpera_authorize_coding_machine(second_request,second_token,plan_text,repeat('c',64),'run');
+   raise exception 'Physical stop implicitly allowed ordinary recovery'; exception when sqlstate '55000' then null; end;
+  perform public.qorpera_set_coding_repository_grant(env,agent,repo,false);
+  perform public.qorpera_configure_coding_executor(env,'native-coding-fixture',false);
+  if public.qorpera_describe_coding_cleanup(second_request,second_token,'native-coding-fixture',repeat('c',64))#>>'{admission,intent}'<>'stop' then
+   raise exception 'Revocation removed emergency cleanup custody'; end if;
+  reset role;
+  if not exists(select 1 from public.qorpera_runtime_machine_allocations where id=vm and released_at is null)
+   or not exists(select 1 from public.qorpera_runtime_node_demands where allocation_id=vm and released_at is null)
+   or not exists(select 1 from public.qorpera_coding_workers where id=worker and state='recovery-required') then
+   raise exception 'Emergency stop released capacity or cleared recovery'; end if;
+  set local role service_role;
+  raise exception using errcode='P3741',message='rollback emergency probe';
+ exception when sqlstate 'P3741' then null; end;
  perform public.qorpera_finish_native_coding_execution(second_binding,second_request,worker,vm,2,
   jsonb_build_object('operationKey','second-finish','summary','Second turn ready for trusted verification','headSha',repeat('b',40)));
  result:=result||jsonb_build_object('native_lease_id',second_binding->>'leaseId','substrate_version_id',second_fixture#>>'{claim,work,substrate_version_id}',

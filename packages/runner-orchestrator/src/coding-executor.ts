@@ -13,6 +13,7 @@ export const CODING_EXECUTOR_RPCS = [
 	"qorpera_heartbeat_coding_request",
 	"qorpera_prepare_coding_execution",
 	"qorpera_describe_coding_execution",
+	"qorpera_describe_coding_cancellation",
 	"qorpera_record_coding_progress",
 	"qorpera_complete_coding_request",
 ] as const;
@@ -195,6 +196,7 @@ export class CloudCodingExecutor {
 			};
 			if (claim.kind === "cancel") {
 				await this.#host.stopWorkspace(claim, active);
+				claimed.worker = sameWorker(await call("qorpera_describe_coding_cancellation", args));
 				await complete("cancelled", {
 					summary: "Coding execution stopped; workspace retained.",
 					pullRequest: null,
