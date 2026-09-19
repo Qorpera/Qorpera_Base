@@ -246,20 +246,33 @@ function searchField(company: CompanyController, onInput: () => void) {
 	return current;
 }
 
-type RailActivity = "Idle" | "Working" | "Waiting";
+type RailState = "idle" | "working" | "decision" | "failed";
 
 /** A queued run is already the agent's work from the member's side of the screen.
  * "Needs you" is for a finished run whose proposal waits on a decision. A failed
- * or stopped run is needs_attention too, but this client has no card to retry or
- * dismiss it, so the agent reads as idle instead of pointing at nothing. */
-function railActivity(activity: HostedStaffExecutionActivity | undefined): RailActivity {
-	if (!activity) return "Idle";
-	if (activity.activity !== "needs_attention") return "Working";
-	return activity.jobStatus === "completed" ? "Waiting" : "Idle";
+ * or stopped run is needs_attention too, but this client cannot retry or dismiss
+ * it: the agent rests idle and wears a red disc, the working disc's opposite. */
+function railState(activity: HostedStaffExecutionActivity | undefined): RailState {
+	if (!activity) return "idle";
+	if (activity.activity !== "needs_attention") return "working";
+	return activity.jobStatus === "completed" ? "decision" : "failed";
 }
 
-function statusLine(agent: HostedStaffAgent, activity: RailActivity): string {
-	return activity === "Waiting" ? "Needs you" : activity === "Working" ? "Working" : agent.role;
+function railFigure(state: RailState): "Idle" | "Working" | "Waiting" {
+	return state === "working" ? "Working" : state === "decision" ? "Waiting" : "Idle";
+}
+
+function statusLine(agent: HostedStaffAgent, state: RailState): string {
+	return state === "decision" ? "Needs you" : state === "working" ? "Working" : agent.role;
+}
+
+/** The green disc means "working now", the one state the trailer's dot shows, and
+ * the subtitle says it too. The red disc sits over the role, so it names itself. */
+function statusDisc(state: RailState, className: string): HTMLElement | null {
+	if (state === "working") return h("span", { class: className, "aria-hidden": "true" });
+	if (state !== "failed") return null;
+	const label = "Last run did not finish";
+	return h("span", { class: `${className} failed`, role: "img", "aria-label": label, title: label });
 }
 
 export function renderRail(container: HTMLElement, company: CompanyController, context: ShellContext): void {
@@ -285,7 +298,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		(state.organization ? company.staffById(state.organization.cofounder.staffAgentId) : undefined) ??
 		active.find((agent) => agent.templateId === "co-founder");
 
-	const cofounderActivity = railActivity(company.activityFor(cofounder?.id));
+	const cofounderState = railState(company.activityFor(cofounder?.id));
 	const cofounderCard =
 		cofounder && matches(`${cofounder.displayName} ${cofounder.role}`)
 			? h(
@@ -313,20 +326,17 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 						{ class: "cofounder-stand" },
 						agentFigure(cofounder, cofounder.displayName, {
 							size: 82,
-							activity: cofounderActivity,
+							activity: railFigure(cofounderState),
 						}),
-						// The green disc means "working now", the one state the trailer's dot shows.
-						cofounderActivity === "Working"
-							? h("span", { class: "cofounder-status", "aria-hidden": "true" })
-							: null,
+						statusDisc(cofounderState, "cofounder-status"),
 					),
 					h("strong", null, cofounder.displayName),
-					h("small", null, statusLine(cofounder, cofounderActivity)),
+					h("small", null, statusLine(cofounder, cofounderState)),
 				)
 			: null;
 
 	const staffRow = (agent: HostedStaffAgent) => {
-		const activity = railActivity(company.activityFor(agent.id));
+		const rowState = railState(company.activityFor(agent.id));
 		return h(
 			"a",
 			{
@@ -338,14 +348,14 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			h(
 				"span",
 				{ class: "rail-row-stand" },
-				agentFigure(agent, agent.displayName, { size: 40, activity }),
-				activity === "Working" ? h("span", { class: "rail-row-status", "aria-hidden": "true" }) : null,
+				agentFigure(agent, agent.displayName, { size: 40, activity: railFigure(rowState) }),
+				statusDisc(rowState, "rail-row-status"),
 			),
 			h(
 				"span",
 				{ class: "rail-row-copy" },
 				h("strong", null, agent.displayName),
-				h("small", null, statusLine(agent, activity)),
+				h("small", null, statusLine(agent, rowState)),
 			),
 		);
 	};

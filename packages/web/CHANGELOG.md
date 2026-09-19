@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Keep the rail's "Needs you" for runs waiting on a member decision. An agent whose last run failed or was stopped now rests idle instead of waiting, since this client cannot retry or dismiss that run.
+- Keep the rail's "Needs you" for runs waiting on a member decision. An agent whose last run failed or was stopped now rests idle with a red status disc, the opposite of the green working disc, instead of waiting on a run this client cannot retry or dismiss.
 - Render room replies with immutable server-projected staff identity and preserve accepted human messages even when no agent is eligible.
 
 - Use a length-neutral email code hint so sign-in instructions remain accurate with the configured eight-digit codes.

@@ -208,7 +208,7 @@ describe("shell presentation lifecycle", () => {
 		expect(view.el.querySelector(".settings-file")?.textContent).not.toContain("99 B");
 		expect(view.el.querySelector(".settings-file")?.textContent).toContain("40 B used");
 	});
-	it("keeps Needs you for a pending decision and leaves an agent whose run failed idle", () => {
+	it("keeps Needs you for a pending decision and marks an idle agent whose run failed red", () => {
 		vi.stubGlobal("QORPERA_MOTION_MODEL", { avatars: [] });
 		vi.stubGlobal("QORPERA_AVATAR_APPEARANCE", { palette: [] });
 		const mount = vi.spyOn(figureMotion, "mountFigureMotion").mockReturnValue({ dispose() {} });
@@ -220,12 +220,13 @@ describe("shell presentation lifecycle", () => {
 			role: "Co-founder",
 			templateId: "co-founder",
 		};
+		// Job status, activity → figure, subtitle, status disc.
 		const runs = [
-			["failed", "needs_attention", "Idle", "Analyst"],
-			["cancelled", "needs_attention", "Idle", "Analyst"],
-			["completed", "needs_attention", "Waiting", "Needs you"],
-			["leased", "working", "Working", "Working"],
-			["queued", "waiting", "Working", "Working"],
+			["failed", "needs_attention", "Idle", "Analyst", "red"],
+			["cancelled", "needs_attention", "Idle", "Analyst", "red"],
+			["completed", "needs_attention", "Waiting", "Needs you", "none"],
+			["leased", "working", "Working", "Working", "green"],
+			["queued", "waiting", "Working", "Working", "green"],
 		] as const;
 		const agents = runs.map((_, index) => ({ ...staff, id: id(41 + index), role: "Analyst" }));
 		const quiet = { ...staff, id: id(49), role: "Analyst" };
@@ -265,17 +266,25 @@ describe("shell presentation lifecycle", () => {
 		});
 		const figures = new Map(mount.mock.calls.map(([, , , , options]) => [options?.identity, options?.activity]));
 		const row = (agentId: string) => rail.querySelector(`a[href$="/staff/${agentId}"]`);
-		for (const [index, [, , figure, line]] of runs.entries()) {
+		const disc = (status: Element | null | undefined) =>
+			!status ? "none" : status.classList.contains("failed") ? "red" : "green";
+		for (const [index, [, , figure, line, status]] of runs.entries()) {
 			expect(figures.get(id(41 + index))).toBe(figure);
 			expect(row(id(41 + index))?.querySelector("small")?.textContent).toBe(line);
-			expect(Boolean(row(id(41 + index))?.querySelector(".rail-row-status"))).toBe(figure === "Working");
+			expect(disc(row(id(41 + index))?.querySelector(".rail-row-status"))).toBe(status);
 		}
+		// The red disc sits over the role, so it carries its own words.
+		const red = row(id(41))?.querySelector(".rail-row-status");
+		expect(red?.getAttribute("role")).toBe("img");
+		expect(red?.getAttribute("aria-label")).toBe("Last run did not finish");
+		expect(row(id(44))?.querySelector(".rail-row-status")?.getAttribute("aria-hidden")).toBe("true");
 		expect(figures.get(quiet.id)).toBe("Idle");
 		expect(row(quiet.id)?.querySelector("small")?.textContent).toBe("Analyst");
+		expect(disc(row(quiet.id)?.querySelector(".rail-row-status"))).toBe("none");
 		// The Co-Founder's failed room delivery reads the same way on its card.
 		expect(figures.get(cofounder.id)).toBe("Idle");
 		expect(rail.querySelector(".cofounder-home small")?.textContent).toBe("Co-founder");
-		expect(rail.querySelector(".cofounder-status")).toBeNull();
+		expect(disc(rail.querySelector(".cofounder-status"))).toBe("red");
 	});
 });
 

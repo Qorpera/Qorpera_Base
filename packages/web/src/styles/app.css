@@ -147,6 +147,7 @@ label > input, label > select { font-weight: 400; }
 	--rail: var(--sidebar-surface); --rail-line: #c4c2c2; --rail-hover: var(--sidebar-hover);
 	--rail-search: var(--sidebar-search); --rail-search-ink: #85857f;
 	--rail-selection: var(--sidebar-selection); --rail-small: #71716b; --rail-status: #00c887;
+	--rail-status-failed: #ff3b30;
 	display: flex; flex-direction: column; min-height: 0;
 	width: var(--rail-width); flex: none;
 	/* The trailer's rail: 15px insets, a darker edge line than the other dividers. */
@@ -224,6 +225,8 @@ label > input, label > select { font-weight: 400; }
 .rail-row-status { position: absolute; z-index: 2; right: -2px; bottom: -2px; width: 15px; height: 15px; border-radius: 50%; background: var(--rail-status); border: 2px solid var(--rail); }
 .rail-row:hover .rail-row-status { border-color: var(--rail-hover); }
 .rail-row.active .rail-row-status { border-color: var(--rail-selection); }
+/* The working disc's opposite: the agent's last run did not finish. */
+.cofounder-status.failed, .rail-row-status.failed { background: var(--rail-status-failed); }
 .rail-row-copy { display: flex; flex-direction: column; justify-content: flex-start; gap: 2px; min-width: 0; }
 .rail-row-copy strong { font-size: 13px; font-weight: 600; line-height: 16px; }
 .rail-row-copy small { font-size: 10.5px; line-height: 15px; color: #6c6b6b; }
