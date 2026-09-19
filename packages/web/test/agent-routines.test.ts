@@ -58,7 +58,7 @@ function mount(items: CloudRoutine[], manage = true) {
 	} satisfies WebRoutines;
 	const stop = new AbortController();
 	const view = new AgentRoutines(
-		staff,
+		() => staff,
 		{ routines, accounts: async () => ({ connections: [account] }), canManage: () => manage },
 		stop.signal,
 	);
@@ -123,7 +123,7 @@ describe("agent routines section", () => {
 	it("saves a new weekday routine on the chosen account with one stable identity across a retry", async () => {
 		const f = mount([]);
 		await settle();
-		click(f.view.el, "Create routine");
+		click(f.view.el, "New routine");
 		await settle();
 		f.view.el.querySelector<HTMLInputElement>('[aria-label="Routine name"]')!.value = "Weekly close";
 		f.view.el.querySelector<HTMLTextAreaElement>('[aria-label="What to do"]')!.value = "Close the week.";
@@ -162,7 +162,41 @@ describe("agent routines section", () => {
 		);
 		const readOnly = mount([routine()], false);
 		await settle();
-		expect([...readOnly.view.el.querySelectorAll("button")].map((item) => item.textContent)).not.toContain("Pause");
-		expect(readOnly.view.el.querySelector<HTMLButtonElement>('[aria-label="Create routine"]')!.disabled).toBe(true);
+		const labels = [...readOnly.view.el.querySelectorAll("button")].map((item) => item.textContent);
+		expect(labels).not.toContain("Pause");
+		expect(labels).not.toContain("New routine");
+	});
+	it("steps back from the editor to the list, and from the list to the page it was opened from", async () => {
+		const back = vi.fn();
+		const routines = {
+			list: vi.fn(async () => [routine()]),
+			runs: vi.fn(async () => []),
+			save: vi.fn(async () => {}),
+			setEnabled: vi.fn(async () => {}),
+		} satisfies WebRoutines;
+		const view = new AgentRoutines(
+			() => staff,
+			{ routines, accounts: async () => ({ connections: [account] }), canManage: () => true },
+			new AbortController().signal,
+			back,
+		);
+		document.body.append(view.el);
+		await settle();
+		click(view.el, "Edit");
+		await settle();
+		expect(view.el.querySelector("h2")?.textContent).toBe("Edit routine");
+		view.refresh();
+		await settle();
+		expect(view.el.querySelector("h2")?.textContent).toBe("Edit routine");
+		click(view.el, "Back to routines");
+		expect(view.el.querySelector("h2")?.textContent).toBe("Routines");
+		expect(view.el.textContent).toContain("Morning brief");
+		click(view.el, "New routine");
+		await settle();
+		click(view.el, "Cancel");
+		expect(view.el.querySelector("h2")?.textContent).toBe("Routines");
+		click(view.el, "Back to agent details");
+		expect(back).toHaveBeenCalledTimes(1);
+		expect(routines.save).not.toHaveBeenCalled();
 	});
 });

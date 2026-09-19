@@ -18,6 +18,8 @@ export function renderTeam(
 		signal?: AbortSignal;
 		embedded?: boolean;
 		onCompanyRemoved: (profileId: string) => void;
+		/** Opens the Friends tab: someone becomes a friend before they can be invited. */
+		addFriend: () => void;
 	},
 ): void {
 	const state = company.store.get();
@@ -284,7 +286,7 @@ export function renderTeam(
 						role,
 						submit,
 					),
-					h("a", { href: "#/friends" }, "Add a friend"),
+					h("button", { type: "button", class: "link-button", onclick: options.addFriend }, "Add a friend"),
 				),
 			);
 			content.append(picker);

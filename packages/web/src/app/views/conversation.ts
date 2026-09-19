@@ -11,7 +11,6 @@ import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import type { CompanyController, ConversationState } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
-import type { AgentRoutineAccess } from "./agent-routines.ts";
 import { ComputerPanel } from "./computer.ts";
 import { SessionExecutionView } from "./session-execution.ts";
 import { SessionRunView } from "./session-run.ts";
@@ -333,16 +332,6 @@ export class ConversationView {
 		);
 	}
 
-	#routineAccess(): AgentRoutineAccess | undefined {
-		const routines = this.#actions.routines,
-			accounts = this.#actions.nativeSubscription;
-		if (!routines || !accounts) return undefined;
-		return {
-			routines,
-			accounts: (signal) => accounts.listConnections(signal),
-			canManage: () => this.#company.store.get().team?.capabilities.authorize === true,
-		};
-	}
 	#toggleComputer(): void {
 		if (this.#panel) {
 			this.#panel.dispose();
@@ -362,7 +351,6 @@ export class ConversationView {
 			() => this.#toggleComputer(),
 			this.#actions.computer,
 			this.#company.signal,
-			this.#routineAccess(),
 		);
 		this.#body.append(this.#panel.el);
 		this.#panel.focus();
@@ -371,7 +359,8 @@ export class ConversationView {
 	}
 
 	#syncPanelLayout(): void {
-		const covered = Boolean(this.#panel) && window.innerWidth <= 1040;
+		// The overlay width in conversation.css: default rail + panel + a usable conversation.
+		const covered = Boolean(this.#panel) && window.innerWidth <= 1192;
 		if (covered && this.#conversationPane.contains(document.activeElement)) this.#panel?.focus();
 		this.#conversationPane.inert = covered;
 		this.#autosize();
@@ -484,13 +473,7 @@ export class ConversationView {
 			const focused = this.#panel.el.contains(document.activeElement);
 			this.#panel.dispose();
 			this.#panel = agent
-				? new ComputerPanel(
-						agent,
-						() => this.#toggleComputer(),
-						this.#actions.computer,
-						this.#company.signal,
-						this.#routineAccess(),
-					)
+				? new ComputerPanel(agent, () => this.#toggleComputer(), this.#actions.computer, this.#company.signal)
 				: undefined;
 			if (this.#panel) this.#body.append(this.#panel.el);
 			if (focused) this.#panel ? this.#panel.focus() : this.#composer.focus();

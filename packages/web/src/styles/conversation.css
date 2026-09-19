@@ -136,49 +136,104 @@
 .received-image .received-file-copy { padding: 3px 5px 5px; }
 
 .surface-dialog { position: fixed; padding: 0; border: 1px solid #e0deda; border-radius: 16px; background: #fff; color: var(--text); max-width: calc(100vw - 24px); max-height: calc(100dvh - 32px); overflow: auto; box-shadow: 0 20px 60px rgb(0 0 0 / 16%); font: 13px/1.5 var(--font-sans); }
+.surface-dialog:focus-visible { outline: none; }
 .surface-dialog::backdrop { background: rgb(20 20 19 / 12%); }
 .surface-dialog-content { padding: 28px 24px 20px; }
-.surface-close { position: absolute; top: 8px; right: 8px; z-index: 1; }
+.surface-tools { position: absolute; top: 8px; right: 8px; z-index: 3; display: flex; align-items: center; gap: 2px; }
 .surface-dialog h2 { margin: 0; }
 .surface-dialog [hidden] { display: none; }
 .surface-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 .surface-status { font-size: 12px; color: var(--text-muted); margin-top: 16px; }
 .surface-status:empty { display: none; }
-.agent-details { z-index: 100; top: 56px; width: min(720px, calc(100vw - 24px)); margin: 0; max-height: calc(100dvh - 72px); }
-.agent-details-identity { display: flex; align-items: center; gap: 22px; padding: 6px 0 8px; }
-.agent-details-identity > div { min-width: 0; overflow-wrap: anywhere; }
-.agent-details-identity h2 { font-size: 23px; line-height: 1.15; letter-spacing: -.025em; }
-.agent-details-identity p { font-size: 13px; margin: 5px 0 0; }
-.agent-details-description { margin: 0 0 20px; overflow-wrap: anywhere; white-space: pre-wrap; }
-.responsibility-link { display: flex; align-items: center; gap: 14px; padding: 15px; border: 1px solid var(--border); border-radius: 12px; color: inherit; }
-.responsibility-link > span { display: grid; gap: 3px; min-width: 0; flex: 1; overflow-wrap: anywhere; }
-.responsibility-link small { color: var(--text-muted); font-size: 11px; }
-.responsibility-link:hover { text-decoration: none; background: var(--hover); }
-.agent-details-footer { display: flex; align-items: center; justify-content: space-between; margin-top: 16px; gap: 10px; }
-.agent-details-footer .surface-actions { margin: 0; }
-.agent-edit-fields { display: grid; gap: 14px; padding: 0; margin: 0; border: 0; min-width: 0; }
-.agent-edit-fields label { font-size: 12px; }
-.agent-edit-fields input, .agent-edit-fields textarea { width: 100%; min-width: 0; font-size: 13px; font-weight: 400; }
-.agent-edit-stage { display: grid; place-items: center; flex: none; }
-.agent-edit-stage .figure { width: 100px; height: 100px; }
-.agent-inline-copy { flex: 1; display: grid; gap: 3px; }
-.agent-edit-fields .agent-inline-name { font-size: 25px; font-weight: 650; line-height: 1.2; padding: 5px 7px; letter-spacing: -.025em; }
-.agent-edit-fields .agent-inline-role { color: var(--text-muted); padding: 5px 7px; }
-.agent-edit-fields input[readonly], .agent-edit-fields textarea[readonly] { border-color: transparent; background: transparent; cursor: default; }
-.agent-inline-description { resize: vertical; max-height: 180px; }
-.agent-inline-description[readonly] { resize: none; }
-.agent-appearance { border-radius: 12px; padding: 8px 12px 14px; background: #f7f7f5; }
-.agent-appearance summary { display: flex; align-items: center; gap: 8px; font-size: 12px; }
-.agent-responsibilities { border-top: 1px solid var(--border); margin-top: 20px; padding-top: 16px; }
-.agent-responsibilities > header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
-.agent-responsibilities h2 { font-size: 13px; }
-.agent-responsibilities > header a { font-size: 11px; }
-.responsibility-preview { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); gap: 10px; }
-.agent-notifications { display: flex; flex-direction: row; align-items: center; gap: 12px; border-top: 1px solid var(--border); margin-top: 20px; padding-top: 16px; font-size: 12px; font-weight: 500; }
+/* A page inside a dialog: the way back, its title, and a line under it. The
+ * heading stays put while the page scrolls under it. */
+.dialog-page-header { position: sticky; top: 0; z-index: 2; display: flex; align-items: flex-start; gap: 8px; margin: 0 -24px 14px; padding: 8px 128px 12px 8px; background: #fff; }
+.dialog-page-title { display: grid; gap: 1px; min-width: 0; padding-top: 5px; }
+.dialog-page-title h2 { font-size: 15px; font-weight: 650; line-height: 22px; letter-spacing: -.01em; }
+.dialog-page-title p { margin: 0; color: var(--text-muted); font-size: 12px; }
+
+/* Agent details: a card under the conversation title. Its pages share the
+ * frame, and only the page scrolls, so the corner buttons never do. */
+.agent-details { z-index: 100; top: 56px; width: min(720px, calc(100vw - 24px)); margin: 0; max-height: calc(100dvh - 72px); overflow: hidden; }
+.agent-details[open] { display: flex; flex-direction: column; }
+.agent-details > .surface-dialog-content { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.agent-details:not([data-page="details"]) > .surface-dialog-content { min-height: 260px; padding-top: 0; }
+/* The figure picker may reach past the card, as on the desktop. */
+.agent-details.is-choosing-figure, .agent-details.is-choosing-figure > .surface-dialog-content { overflow: visible; }
+.agent-page-button[aria-pressed="true"] { background: var(--hover); color: var(--text); }
+.agent-page { animation: agent-page-in 180ms cubic-bezier(.2, .7, .2, 1) both; }
+@keyframes agent-page-in { from { opacity: 0; transform: translateY(5px); } }
+.agent-page-empty { display: grid; justify-items: center; gap: 10px; padding: 40px 16px 28px; text-align: center; color: var(--text-soft); }
+.agent-page-empty > .icon { width: 26px; height: 26px; }
+.agent-page-empty p { margin: 0; font-size: 13px; }
+.agent-page-empty .btn { margin-top: 6px; color: var(--text); }
+.agent-page-loading { margin: 0; padding: 48px 0 28px; text-align: center; color: var(--text-soft); font-size: 12px; }
+.agent-page-link { display: inline-flex; align-items: center; gap: 3px; margin-top: 18px; font-size: 12px; }
+.agent-page-link .icon { width: 12px; height: 12px; }
+
+.agent-details-identity { display: grid; grid-template-columns: 112px minmax(0, 1fr); align-items: center; gap: 22px; min-height: 124px; padding-bottom: 20px; }
+.agent-details-names { display: grid; align-content: center; gap: 2px; min-width: 0; }
+.agent-figure-area { position: relative; display: grid; place-items: center; }
+/* The figure edits like the desktop's: on hover it darkens inside a pale
+ * outline of itself, a pencil sits on it and a label names the action. */
+.agent-figure-button { position: relative; display: grid; place-items: center; width: 112px; height: 112px; padding: 0; border: 0; border-radius: 50%; background: transparent; cursor: pointer; }
+.agent-figure-button:disabled { cursor: default; }
+.agent-figure-button:focus-visible { outline: none; }
+.agent-figure-stage { display: grid; place-items: center; }
+.agent-figure-stage .figure { width: 100px; height: 100px; transition: filter 160ms ease; }
+.agent-figure-button:not(:disabled):hover .figure, .agent-figure-button:focus-visible .figure {
+	filter: brightness(.55) saturate(.78) drop-shadow(4px 0 0 #d8d8d4) drop-shadow(-4px 0 0 #d8d8d4) drop-shadow(0 4px 0 #d8d8d4) drop-shadow(0 -4px 0 #d8d8d4);
+}
+.agent-figure-pencil { position: absolute; inset: 0; display: grid; place-items: center; color: #fff; opacity: 0; pointer-events: none; transition: opacity 160ms ease; }
+.agent-figure-pencil .icon { width: 29px; height: 29px; stroke-width: 1.6; }
+.agent-figure-tip { position: absolute; z-index: 6; top: calc(100% + 4px); left: 50%; translate: -50% 0; padding: 4px 8px; border: 1px solid #cecec9; border-radius: 5px; background: #fff; color: #171716; box-shadow: 0 2px 5px rgb(0 0 0 / 8%); font-size: 11px; font-weight: 500; line-height: 16px; white-space: nowrap; opacity: 0; pointer-events: none; transition: opacity 160ms ease; }
+.agent-figure-button:not(:disabled):hover .agent-figure-pencil, .agent-figure-button:focus-visible .agent-figure-pencil,
+.agent-figure-button:not(:disabled, [aria-expanded="true"]):hover .agent-figure-tip,
+.agent-figure-button:not([aria-expanded="true"]):focus-visible .agent-figure-tip { opacity: 1; }
+.agent-figure-picker { position: absolute; z-index: 20; top: calc(100% + 12px); left: -8px; width: 356px; max-width: calc(100vw - 56px); padding: 44px 16px 18px; border: 1px solid #d5d5d0; border-radius: 13px; background: #fff; box-shadow: 0 18px 44px rgb(25 25 23 / 18%), 0 2px 7px rgb(25 25 23 / 8%); animation: agent-picker-in 140ms ease both; }
+.agent-figure-picker.figures-only { padding-top: 18px; }
+.agent-figure-picker::before { content: ""; position: absolute; top: -7px; left: 57px; width: 13px; height: 13px; border-top: 1px solid #d5d5d0; border-left: 1px solid #d5d5d0; background: #fff; rotate: 45deg; }
+@keyframes agent-picker-in { from { opacity: 0; transform: translateY(-4px); } }
+.agent-figure-reset { position: absolute; top: 10px; right: 13px; min-height: 27px; padding: 0 4px; border: 0; background: transparent; color: #676763; font-size: 11.5px; cursor: pointer; }
+.agent-figure-reset:hover { color: #171716; }
+.agent-figure-picker .figure-grid { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px 15px; width: 261px; max-width: 100%; margin: 0 auto; }
+.agent-figure-picker .figure-choice { width: 54px; height: 54px; padding: 3px; }
+.agent-figure-picker .figure-choice .figure { width: 48px; height: 48px; }
+.agent-figure-picker .figure-choice:hover:not(:disabled) { background: #f0f0ed; }
+.agent-figure-picker .figure-choice[aria-checked="true"] { border-color: #bdbdb8; background: #ececea; box-shadow: 0 0 0 3px #fff, 0 0 0 4px #d6d6d1; }
+.agent-figure-picker .color-grid { grid-template-columns: repeat(12, 18.5px); gap: 13px 5px; width: 100%; margin: 14px 0 0; padding-top: 15px; border-top: 1px solid #e5e5e1; }
+.agent-figure-picker .color-choice[aria-checked="true"]::after { border-color: #888884; }
+
+/* Name, title and description read as text and are edited in place. The
+ * sizer mirrors the text so a field is as wide, or tall, as what it holds. */
+.agent-inline-field { display: flex; flex-direction: row; align-items: center; gap: 6px; width: fit-content; max-width: calc(100% + 16px); min-width: 0; margin: 0 -8px; padding: 2px 8px; border-radius: 7px; font-weight: inherit; cursor: default; transition: background 120ms ease, box-shadow 120ms ease; }
+.agent-inline-field.is-editable { cursor: text; }
+.agent-inline-field.is-editable:hover { background: #f2f2ef; }
+.agent-inline-field.is-editable:focus-within { width: calc(100% + 16px); background: #fff; box-shadow: inset 0 0 0 1px #80b8f7, 0 0 0 3px rgb(0 122 255 / 10%); }
+.agent-inline-field > .icon { width: 15px; height: 15px; color: #8a8a86; opacity: 0; transition: opacity 120ms ease; }
+.agent-inline-field.is-editable:hover > .icon { opacity: 1; }
+.agent-inline-field:focus-within > .icon { display: none; }
+.agent-inline-size { display: inline-grid; min-width: 0; max-width: 100%; }
+.agent-inline-field:focus-within > .agent-inline-size { flex: 1; }
+.agent-inline-size::after { content: attr(data-value) " "; grid-area: 1 / 1; visibility: hidden; overflow: hidden; white-space: pre; font: inherit; letter-spacing: inherit; }
+.agent-inline-size > input, .agent-inline-size > textarea { grid-area: 1 / 1; width: 100%; min-width: 0; min-height: 0; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; color: inherit; font: inherit; letter-spacing: inherit; outline: none; }
+.agent-inline-size > input { text-overflow: ellipsis; }
+.agent-inline-field:not(.is-editable) .agent-inline-size > * { cursor: default; }
+.agent-inline-name { padding-block: 3px; font-family: var(--font-display); font-size: 25px; font-weight: 650; line-height: 1.25; letter-spacing: -.025em; }
+.agent-inline-title { color: var(--text-muted); font-size: 14px; line-height: 1.4; }
+.agent-inline-description { position: relative; display: block; width: auto; max-width: none; margin: 6px -10px 0; padding: 8px 34px 8px 10px; color: #2d2d2b; font-size: 13px; line-height: 1.6; }
+.agent-inline-description.is-editable:focus-within { width: auto; }
+.agent-inline-description > .agent-inline-size { display: grid; width: 100%; }
+.agent-inline-description > .agent-inline-size::after { min-height: calc(5 * 1.6em); max-height: calc(13 * 1.6em); white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-inline-description textarea { height: 100%; resize: none; overflow-y: auto; overflow-wrap: anywhere; line-height: inherit; scrollbar-width: thin; }
+.agent-inline-description > .icon { position: absolute; top: 12px; right: 12px; }
+.agent-details-status { display: flex; align-items: center; gap: 10px; min-height: 26px; margin: 4px 0 0; color: var(--text-muted); font-size: 12px; }
+.agent-notifications { display: flex; flex-direction: row; align-items: center; gap: 12px; border-top: 1px solid var(--border); margin-top: 8px; padding-top: 16px; font-size: 12px; font-weight: 500; }
 .agent-notifications > span { display: grid; gap: 2px; flex: 1; }
 .agent-notifications small { color: var(--text-muted); font-size: 11px; font-weight: 400; }
 .agent-notifications input[role=switch] { appearance: none; position: relative; width: 32px; min-height: 20px; height: 20px; border: 0; border-radius: 12px; background: #e3e3e0; padding: 0; flex: none; }
 .agent-notifications input[role=switch]::before { content: ""; position: absolute; left: 2px; top: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgb(0 0 0 / 12%); }
+.responsibility-preview { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); gap: 10px; }
 .appearance-picker .figure-grid { margin: 4px auto 0; }
 .appearance-picker .color-grid { margin-top: 16px; }
 .file-preview-dialog { width: 760px; margin: auto; }
@@ -199,22 +254,19 @@
 .computer-stage-close { position: absolute; top: 16px; right: 16px; color: #d8d8d4; }
 .computer-stage-body { display: grid; justify-items: center; gap: 18px; max-width: min(420px, 80vw); text-align: center; font-size: 14px; line-height: 1.5; }
 .computer-stage-body p { margin: 0; }
-.computer-routines { border-top: 1px solid var(--border); margin-top: 26px; padding-top: 20px; font-size: 12px; }
-.computer-routines h2 { margin: 0; font-size: 14px; }
-.computer-routines > header { display: flex; align-items: center; justify-content: space-between; }
-.routine-empty { text-align: center; color: var(--text-soft); padding: 18px 0; }
-.routine-empty .icon { width: 24px; height: 24px; }
-.routine-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 6px 10px; padding: 12px 0; border-top: 1px solid var(--border); }
-.routine-row:first-of-type { margin-top: 12px; }
+.routine-list { border-top: 1px solid var(--border); }
+.routine-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 8px 14px; padding: 14px 0; border-bottom: 1px solid var(--border); }
 .routine-row-copy { display: grid; gap: 3px; min-width: 0; overflow-wrap: anywhere; }
 .routine-row-copy strong { font-size: 13px; }
-.routine-row-copy span { color: var(--text-muted); }
+.routine-row-copy span { color: var(--text-muted); font-size: 12px; }
 .routine-row-copy small { color: var(--text-soft); font-size: 11px; }
-.routine-row-actions { grid-column: 1 / -1; display: flex; gap: 8px; }
-.routine-editor { display: grid; gap: 14px; margin-top: 14px; }
+.routine-row-actions { display: flex; gap: 6px; }
+.routine-list-footer { padding-top: 16px; }
+.agent-routines > .surface-status { margin: 0 0 12px; }
+.routine-editor { display: grid; gap: 14px; font-size: 12px; }
 .routine-editor label { display: grid; gap: 6px; font-weight: 500; }
 .routine-editor label small { color: var(--text-muted); font-weight: 400; line-height: 1.5; }
-.routine-editor input[type=text], .routine-editor textarea, .routine-editor select { width: 100%; min-width: 0; }
+.routine-editor input[type=text], .routine-editor textarea, .routine-editor select { width: 100%; min-width: 0; font-size: 13px; }
 .routine-editor textarea { resize: vertical; }
 .routine-when { display: grid; gap: 10px; }
 .routine-inline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -224,50 +276,58 @@
 .routine-days { display: flex; flex-wrap: wrap; gap: 6px; }
 .routine-editor .routine-days label { display: inline-flex; flex-direction: row; align-items: center; gap: 5px; padding: 5px 9px; border: 1px solid var(--border); border-radius: 8px; font-weight: 400; cursor: pointer; }
 .routine-days input[type=checkbox] { width: 14px; height: 14px; min-height: 0; margin: 0; padding: 0; }
-.routine-editor .surface-actions { margin: 0; }
+.routine-editor .surface-actions { margin: 4px 0 0; }
 
+/* New conversation: a "To:" field with one short list hanging from it. */
 .new-conversation { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-.new-conversation-header { min-height: var(--titlebar-height); flex: none; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 18px; border-bottom: 1px solid var(--sidebar-divider); background: var(--header-surface); }
-.new-conversation-header > label { display: flex; flex-direction: row; align-items: center; flex: 1; min-width: 0; color: var(--text-muted); font-weight: 400; font-size: 13px; }
-.new-conversation-header input { flex: 1; min-width: 0; border: 0; background: transparent; }
-.new-conversation-body { overflow: auto; padding: 40px 28px; }
-.new-conversation-body > h1, .new-conversation-body > p, .recipient-results, .new-agent-card { max-width: 800px; margin-left: auto; margin-right: auto; }
-.new-conversation-body > h1 { font-size: 20px; }
-.new-conversation-body > p { font-size: 13px; margin-bottom: 24px; }
-.new-agent-card.btn { display: flex; align-items: center; gap: 14px; width: 100%; height: auto; padding: 16px; border-radius: 13px; text-align: left; white-space: normal; }
-.new-agent-card > .icon { width: 30px; height: 30px; color: var(--text-soft); }
-.new-agent-card > span, .recipient-row > span { display: grid; gap: 3px; min-width: 0; }
-.new-agent-card small, .recipient-row small { font-size: 12px; font-weight: 400; color: var(--text-muted); }
-.recipient-results h2 { font-size: 12px; font-weight: 500; color: var(--text-muted); margin: 28px 0 10px; }
-.recipient-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(238px, 100%), 1fr)); gap: 11px; margin-bottom: 20px; }
-.recipient-card { position: relative; display: flex; align-items: center; gap: 12px; min-height: 94px; min-width: 0; padding: 14px; background: #fff; border: 1px solid #e1e1dd; border-radius: 13px; text-align: left; cursor: pointer; }
-.recipient-card > .figure { width: 48px; height: 48px; }
-.recipient-card > span:not(.figure) { display: grid; gap: 3px; flex: 1; min-width: 0; }
-.recipient-card strong, .recipient-card small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.recipient-card strong { font-size: 14px; font-weight: 650; }
-.recipient-card small { font-size: 11.5px; line-height: 1.35; color: var(--text-muted); }
-.recipient-card:hover, .recipient-card:focus-visible { border-color: #c9c9c4; box-shadow: 0 8px 24px rgb(20 20 18 / 6%); }
-.recipient-card[aria-pressed=true] { border-color: #9fc6f9; background: #eaf3ff; }
-.recipient-card > .icon { position: absolute; top: 7px; right: 7px; width: 12px; height: 12px; color: var(--blue); }
-.recipient-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 18px; border-bottom: 1px solid var(--border); }
+.new-conversation-header { position: relative; min-height: var(--titlebar-height); flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 18px; border-bottom: 1px solid var(--sidebar-divider); background: var(--header-surface); }
+.recipient-field { display: flex; align-self: stretch; flex: 1; min-width: 0; gap: 6px; }
+/* "To:" stays level with the first line when chips wrap. */
+.recipient-field > .recipient-to { flex-direction: row; align-items: flex-start; padding-top: 13px; color: var(--text-muted); font-weight: 400; }
+.recipient-entry { position: relative; display: flex; flex-wrap: wrap; align-items: center; align-content: center; gap: 5px 6px; flex: 1; min-width: 0; padding: 7px 0; }
+.recipient-entry > input { flex: 1 1 140px; min-width: 120px; min-height: 30px; padding: 0; border: 0; border-radius: 0; background: transparent; }
+/* The caret and the open list show where focus is. */
+.recipient-entry > input:focus-visible { outline: none; }
+.recipient-chips { display: contents; }
 .recipient-chips[hidden] { display: none; }
-.recipient-chip { display: flex; align-items: center; gap: 7px; border: 0; border-radius: 18px; padding: 5px 9px 5px 5px; background: #eaf3ff; font-size: 12px; cursor: pointer; max-width: 100%; overflow-wrap: anywhere; }
-.recipient-chip .icon { width: 12px; height: 12px; }
-.recipient-chip > .figure { width: 22px; height: 22px; }
-.recipient-footer { display: flex; align-items: center; gap: 10px; padding: 16px 24px; border-top: 1px solid var(--border); margin-top: auto; }
-.recipient-footer .surface-status { margin: 0 auto 0 0; }
-.recipient-footer .btn { flex: none; }
-.recipient-row { display: flex; align-items: center; gap: 13px; padding: 12px 8px; border-radius: 10px; color: inherit; }
-.recipient-row > .figure { width: 42px; height: 42px; }
-.recipient-row > span { flex: 1; overflow-wrap: anywhere; }
-.recipient-row:hover { background: var(--hover); text-decoration: none; }
-.recipient-row > .icon { width: 14px; height: 14px; color: var(--text-soft); }
+.recipient-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; height: 28px; padding: 0 9px 0 4px; border: 0; border-radius: var(--radius-pill); background: color-mix(in srgb, var(--sidebar-selection) 12%, var(--bg)); font-size: 13px; white-space: nowrap; cursor: pointer; }
+.recipient-chip .icon { width: 12px; height: 12px; flex: none; color: var(--text-muted); }
+.recipient-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.recipient-menu {
+	position: absolute; top: calc(100% - 4px); left: -10px; z-index: 30;
+	width: min(420px, calc(100vw - 32px));
+	max-height: min(460px, calc(100dvh - var(--titlebar-height) - 24px)); overflow-y: auto; overscroll-behavior: contain;
+	padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg);
+	box-shadow: 0 22px 48px rgba(11, 11, 11, 0.14), 0 2px 8px rgba(11, 11, 11, 0.06);
+}
+.recipient-menu[hidden] { display: none; }
+.recipient-list { display: flex; flex-direction: column; gap: 1px; }
+.recipient-option { display: flex; align-items: center; gap: 11px; min-height: 40px; padding: 5px 10px 5px 8px; border-radius: 9px; cursor: pointer; user-select: none; }
+.recipient-option.active { background: var(--hover); }
+.recipient-option[aria-disabled="true"] { color: var(--text-soft); cursor: default; }
+.recipient-option[aria-disabled="true"] .recipient-mark { opacity: 0.6; }
+.recipient-mark { display: grid; place-items: center; width: 28px; height: 28px; flex: none; border-radius: 50%; background: var(--pane-strong); color: var(--text-muted); }
+.recipient-mark .icon { width: 15px; height: 15px; }
+.recipient-option-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.recipient-option-hint { flex: none; font-size: 12px; color: var(--text-soft); visibility: hidden; }
+.recipient-option.active .recipient-option-hint, .recipient-option-hint.status { visibility: visible; }
+.recipient-check { display: grid; place-items: center; width: 18px; height: 18px; flex: none; border: 1.5px solid var(--border-strong); border-radius: 50%; color: #fff; }
+.recipient-option[aria-selected="true"] .recipient-check { border-color: var(--sidebar-selection); background: var(--sidebar-selection); }
+.recipient-check .icon { width: 11px; height: 11px; stroke-width: 2.6; }
+.recipient-empty { padding: 8px 10px 6px; font-size: 13px; color: var(--text-soft); }
+.new-conversation-body { overflow: auto; padding: 40px 28px; }
 .new-agent-form { max-width: 380px; margin: 0 auto; }
 .new-agent-form h1 { text-align: center; font-size: 20px; }
+/* The form's own rules: the agent editor's were removed with it (#121). */
+.new-agent-fields { display: grid; gap: 14px; padding: 0; margin: 0; border: 0; min-width: 0; }
+.new-agent-fields label { font-size: 12px; }
+.new-agent-fields input, .new-agent-fields textarea { width: 100%; min-width: 0; font-size: 13px; font-weight: 400; }
 .new-agent-stage { display: grid; place-items: center; margin: 14px 0 0; }
 .new-agent-stage .figure { width: 112px; height: 112px; }
 .new-agent-form .surface-status { text-align: center; }
-@media (max-width: 1040px) {
+/* Beside the conversation only where the default 456px rail, the 420px panel and a
+ * 316px conversation fit; conversation.ts #syncPanelLayout uses the same width. */
+@media (max-width: 1192px) {
 	.computer-panel { position: absolute; inset: 0 0 0 auto; z-index: 20; box-shadow: -12px 0 28px rgb(0 0 0 / 8%); }
 }
 @media (max-width: 900px) {
@@ -278,13 +338,20 @@
 	.composer { padding: 8px 12px max(10px, env(safe-area-inset-bottom)); }
 	.agent-details { left: 12px; top: 60px; width: calc(100vw - 24px); }
 	.surface-dialog-content { padding: 30px 18px 20px; }
+	.dialog-page-header { margin-inline: -18px; }
 	.new-conversation-body { padding: 26px 18px; }
 	.computer-panel { width: 100%; border-left: 0; }
-	.agent-details-identity { gap: 12px; }
-	.agent-edit-stage .figure { width: 80px; height: 80px; }
-	.agent-edit-fields .agent-inline-name { font-size: 22px; }
-	.recipient-footer { flex-wrap: wrap; padding: 12px 18px; }
-	.recipient-footer .surface-status { flex-basis: 100%; }
+	.agent-details-identity { grid-template-columns: 88px minmax(0, 1fr); gap: 14px; }
+	.agent-figure-button { width: 88px; height: 88px; }
+	.agent-figure-stage .figure { width: 80px; height: 80px; }
+	.agent-figure-picker { left: -4px; }
+	.agent-figure-picker::before { left: 38px; }
+	.agent-inline-name { font-size: 22px; }
+	.routine-row { grid-template-columns: minmax(0, 1fr) auto; }
+	.routine-row-actions { grid-column: 1 / -1; }
+	/* The list spans the header on a phone. */
+	.recipient-entry { position: static; }
+	.recipient-menu { left: 8px; right: 8px; width: auto; }
 }
 @keyframes computer-enter { from { opacity: 0; transform: translateX(18px); } to { opacity: 1; transform: translateX(0); } }
-@media (prefers-reduced-motion: reduce) { .computer-panel { animation: none; } .composer-shell { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .computer-panel, .agent-page, .agent-figure-picker { animation: none; } .composer-shell { transition: none; } }

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
 import { ApprovalsView } from "../src/app/views/approvals.ts";
+import { HubController } from "../src/app/views/hub.ts";
 import { NewConversationView } from "../src/app/views/new-conversation.ts";
 import { renderOrganization } from "../src/app/views/organization.ts";
 import { SettingsView } from "../src/app/views/settings.ts";
@@ -92,41 +93,73 @@ describe("shell presentation lifecycle", () => {
 		expect(view.el.isConnected).toBe(false);
 		expect(closed).toHaveBeenCalledTimes(1);
 	});
-	it("keeps multi-selection local, retains it through refresh, and drops archived recipients", async () => {
+	it("gathers a group chat locally, retains it through refresh, and drops archived recipients", async () => {
 		const f = companyFixture();
 		const other = { ...staff, id: id(91), displayName: "Second agent" };
 		f.company.store.set({ staff: [staff, other] });
 		const view = new NewConversationView(f.company, {}, () => {});
 		cleanup.push(() => view.dispose());
 		document.body.append(view.el);
-		for (const agent of [staff, other])
-			view.el.querySelector<HTMLButtonElement>(`[data-agent-id="${agent.id}"]`)!.click();
-		expect(view.el.querySelectorAll(".recipient-chip")).toHaveLength(2);
-		expect(view.el.querySelector<HTMLButtonElement>(".recipient-footer .btn-primary")!.disabled).toBe(true);
+		const row = (key: string) => view.el.querySelector<HTMLElement>(`[role="option"][data-choice="${key}"]`);
+		const search = view.el.querySelector<HTMLInputElement>('[role="combobox"]')!;
+		const press = (key: string) => {
+			const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+			search.dispatchEvent(event);
+			return event;
+		};
+		row("group")!.click();
+		expect(view.el.querySelector('[role="listbox"]')!.getAttribute("aria-multiselectable")).toBe("true");
+		expect(row("create")).toBeNull();
+		expect(search.placeholder).toBe("Add agents");
+		for (const agent of [other, staff]) row(agent.id)!.click();
+		// Chips keep the order the agents were added in.
+		expect([...view.el.querySelectorAll(".recipient-chip")].map((chip) => chip.textContent)).toEqual([
+			"Second agent",
+			"Fixture agent",
+		]);
+		// No client can start a group conversation yet, and the row says so.
+		const hash = location.hash;
+		expect(row("start")!.getAttribute("aria-disabled")).toBe("true");
+		expect(row("start")!.textContent).toContain("Not available yet");
+		row("start")!.click();
+		expect(location.hash).toBe(hash);
 		f.company.store.set({ activity: [] });
 		await settle();
-		expect(view.el.querySelectorAll('[aria-pressed="true"]')).toHaveLength(2);
+		expect(view.el.querySelectorAll('[aria-selected="true"]')).toHaveLength(2);
 		f.company.store.set({ staff: [staff, { ...other, employmentStatus: "archived" }] });
 		await settle();
 		expect(view.el.querySelectorAll(".recipient-chip")).toHaveLength(1);
-		expect(view.el.querySelector<HTMLButtonElement>(".recipient-footer .btn-primary")!.disabled).toBe(false);
+		expect(row("start")!.textContent).toContain("Pick two or more agents");
+		// Backspace in the empty field takes the last agent back out.
+		press("Backspace");
+		expect(view.el.querySelectorAll(".recipient-chip")).toHaveLength(0);
+		// Escape with the list closed puts the group chat away.
+		expect(press("Escape").defaultPrevented).toBe(true);
+		expect(row("create")).not.toBeNull();
+		expect(view.el.querySelector('[role="listbox"]')!.hasAttribute("aria-multiselectable")).toBe(false);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 	it("caps the rail at two fifths of the window and keeps resizing usable when storage is blocked", () => {
-		const frame = h("div"),
-			rail = new RailLayout(frame);
+		const aside = h("aside", { class: "rail" }),
+			frame = h("div", null, aside),
+			rail = new RailLayout(frame, aside);
 		frame.append(rail.el);
 		cleanup.push(() => rail.dispose());
 		const cap = String(Math.floor(window.innerWidth * 0.4));
 		const press = (key: string) => rail.el.dispatchEvent(new KeyboardEvent("keydown", { key }));
 		expect(rail.el.getAttribute("aria-valuemax")).toBe(cap);
+		// The default is half again the desktop's 304px rail; the 1280px fixture window shows all of it.
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("456");
 		press("ArrowRight");
-		expect(rail.el.getAttribute("aria-valuenow")).toBe("320");
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("472");
 		press("End");
 		press("ArrowRight");
 		expect(rail.el.getAttribute("aria-valuenow")).toBe(cap);
 		expect(localStorage.getItem("qorpera.web.rail-width")).toBe(cap);
-		expect(frame.style.getPropertyValue("--rail-width")).toBe(`${cap}px`);
+		// Only the rail and its edge carry the width, so a change restyles nothing else.
+		expect(aside.style.getPropertyValue("--rail-width")).toBe(`${cap}px`);
+		expect(rail.el.style.getPropertyValue("--rail-width")).toBe(`${cap}px`);
+		expect(frame.style.getPropertyValue("--rail-width")).toBe("");
 		// A narrower window clamps what is shown; the preference survives until the member acts.
 		vi.stubGlobal("innerWidth", 800);
 		window.dispatchEvent(new Event("resize"));
@@ -153,13 +186,22 @@ describe("shell presentation lifecycle", () => {
 		vi.stubGlobal("innerWidth", 1280);
 		window.dispatchEvent(new Event("resize"));
 		expect(rail.el.getAttribute("aria-valuenow")).toBe("304");
+		// Going back to the default forgets the stored width, even where the window caps it.
+		vi.stubGlobal("innerWidth", 1024);
+		window.dispatchEvent(new Event("resize"));
+		rail.el.dispatchEvent(new MouseEvent("dblclick"));
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("409");
+		expect(localStorage.getItem("qorpera.web.rail-width")).toBeNull();
+		vi.stubGlobal("innerWidth", 1280);
+		window.dispatchEvent(new Event("resize"));
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("456");
 		vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
 			throw new Error("Blocked");
 		});
 		rail.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Home" }));
 		expect(frame.classList.contains("rail-compact")).toBe(true);
 		rail.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
-		expect(rail.el.getAttribute("aria-valuenow")).toBe("304");
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("456");
 	});
 	it("changes marked labels without translating company names or message text", () => {
 		const label = uiText("Company"),
@@ -185,9 +227,12 @@ describe("shell presentation lifecycle", () => {
 		vi.mocked(f.api.getCompanyFile)
 			.mockReturnValueOnce(pending.promise)
 			.mockResolvedValue({ ...file, storageUsedBytes: 40 });
+		const hub = new HubController(f.api);
+		cleanup.push(() => hub.dispose());
 		const view = new SettingsView(
 			f.api,
 			auth,
+			hub,
 			[profileA, profileB],
 			f.company,
 			() => {},
@@ -476,8 +521,9 @@ it("renders recorded responsibility targets and room links without inventing mis
 	expect(rail.querySelector(".cofounder-status")).toBeNull();
 	expect(rail.querySelector(".account-menu-rail .account-trigger")).not.toBeNull();
 	expect(rail.querySelector(".account-menu-rail .account-chevron")).toBeNull();
-	expect(rail.querySelector('.rail-toolbar + .rail-search input[type="search"]')).not.toBeNull();
-	expect(rail.querySelector('.rail-toolbar a[href$="/new"]')).not.toBeNull();
+	// Search and the add button share the top row, search first.
+	expect(rail.querySelector('.rail-toolbar > .rail-search > input[type="search"]')).not.toBeNull();
+	expect(rail.querySelector('.rail-toolbar > .rail-search + .rail-add[href$="/new"]')).not.toBeNull();
 	const search = rail.querySelector<HTMLInputElement>('input[type="search"]')!;
 	search.value = "Product quality";
 	search.dispatchEvent(new Event("input"));
@@ -501,5 +547,51 @@ it("renders recorded responsibility targets and room links without inventing mis
 	expect(root.querySelector('a[href*="/chat/"]')?.getAttribute("href")).toBe(
 		`#/c/${profileA.profileId}/chat/${session.sessionId}`,
 	);
+	expect(f.cloud.rpc).not.toHaveBeenCalled();
+});
+
+it("keeps the rail search and keyboard focus through redraws and drops the search when the rail collapses", () => {
+	const f = companyFixture();
+	const rail = h("nav"),
+		frame = h("div", null, rail);
+	document.body.append(frame);
+	const auth = new AuthController(f.cloud);
+	cleanup.push(() => auth.dispose());
+	const draw = () =>
+		renderRail(rail, f.company, {
+			profiles: [profileA],
+			user: userA,
+			route: { name: "company", profileId: profileA.profileId, section: "home" },
+			auth,
+			invitations: 0,
+			openSettings: () => {},
+			openFeedback: () => {},
+		});
+	draw();
+	// A store-driven redraw rebuilds the add link; keyboard focus follows it.
+	const add = rail.querySelector<HTMLElement>(".rail-add")!;
+	add.focus();
+	draw();
+	expect(rail.querySelector(".rail-add")).not.toBe(add);
+	expect(document.activeElement).toBe(rail.querySelector(".rail-add"));
+	// A dead key or IME composition is not moved mid-word; the committed text filters.
+	const search = rail.querySelector<HTMLInputElement>('input[type="search"]')!;
+	search.focus();
+	const toolbar = rail.querySelector(".rail-toolbar");
+	search.dispatchEvent(new CompositionEvent("compositionstart"));
+	search.value = "´";
+	search.dispatchEvent(new InputEvent("input", { isComposing: true }));
+	draw();
+	expect(rail.querySelector(".rail-toolbar")).toBe(toolbar);
+	search.value = "é";
+	search.dispatchEvent(new CompositionEvent("compositionend", { data: "é" }));
+	expect(rail.querySelector(".rail-toolbar")).not.toBe(toolbar);
+	expect(rail.textContent).toContain("No matching conversations.");
+	expect(document.activeElement).toBe(search);
+	// Collapsing hides the field, so its filter goes with it.
+	frame.classList.add("rail-compact");
+	window.dispatchEvent(new Event("qorpera-rail-resize"));
+	expect(search.value).toBe("");
+	expect(rail.textContent).toContain(staff.displayName);
 	expect(f.cloud.rpc).not.toHaveBeenCalled();
 });
