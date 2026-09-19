@@ -114,6 +114,17 @@ The Co-Founder proposed an onboarding owner with a real job description and
 said it awaits approval, did not hire for a one-off task, and still argued
 against three sales hires that conflict with direction.
 
+## Bundle
+
+Runtime bundle v38, `50078458e19a2ed989dfbff3b999d73cac3ff903387c7411c3f9c6bbbfbff630`
+(`20260920003000_runtime_bundle_activation_v38.sql`). Guest artifact pinned from a
+Linux x64 build on `company41-node-02`: `qorpera-native-provider-host.mjs`,
+1,338,913 bytes, `78ff4f0172804a896befeffefae1a12d279c44a96f5c73de8b53b6c1f4357313`.
+Seven bundle, guest-package and SQL-harness tests passed there; SQL context
+parity passed after all 286 migrations. `npm run check` passes. If master ships
+another activation first, allocate the next version and regenerate; never
+relabel a shipped bundle.
+
 ## Not built; Order 8 stays open
 
 1. **Routines as Company File intent with projection consistency.** The order
