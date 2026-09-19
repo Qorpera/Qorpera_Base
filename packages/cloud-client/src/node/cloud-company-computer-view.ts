@@ -30,7 +30,7 @@ export interface ConnectedScreenView {
 	/** Paused. Remainder precedes all subsequent socket data. */
 	socket: Socket;
 	binding: CompanyComputerScreenBinding;
-	mode: "watch" | "control";
+	mode: "watch" | "shared" | "control";
 	remainder: Buffer;
 }
 
@@ -40,7 +40,7 @@ export async function connectCompanyComputerScreenView(input: {
 	port: number;
 	capability: string;
 	binding: CompanyComputerScreenBinding;
-	mode: "watch" | "control";
+	mode: "watch" | "shared" | "control";
 	signal: AbortSignal;
 }): Promise<ConnectedScreenView> {
 	assertPrivateCompanyComputerAddress(input.host);
@@ -50,7 +50,7 @@ export async function connectCompanyComputerScreenView(input: {
 		input.port < 1 ||
 		input.port > 65_535 ||
 		!COMPANY_COMPUTER_VIEW_TOKEN.test(input.capability) ||
-		!["watch", "control"].includes(input.mode)
+		!["watch", "shared", "control"].includes(input.mode)
 	) {
 		throw new Error("INVALID_VIEW_REQUEST");
 	}

@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
+import { COMPANY_COMPUTER_WALLPAPER_FILES } from "../packages/runtime/src/cloud-company-computer-wallpapers.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -11,6 +12,11 @@ if (args.length !== 2 || args[0] !== "--out" || !args[1]) {
 	throw new Error("Usage: node scripts/package-company-computer.mjs --out <new-directory>");
 }
 const output = resolve(args[1]);
+const wallpaperRoot = join(root, "deploy/lxd-company-computer-guest/backdrops");
+const wallpapers = await readdir(wallpaperRoot, { withFileTypes: true });
+if (wallpapers.some((entry) => !entry.isFile()) || wallpapers.map((entry) => entry.name).sort().join() !== COMPANY_COMPUTER_WALLPAPER_FILES.join()) {
+	throw new Error("Office wallpaper inventory differs from the runtime catalog");
+}
 // Never overwrite an existing candidate, source directory or mounted state.
 await mkdir(output, { mode: 0o700 });
 const bundled = await build({
@@ -66,10 +72,9 @@ for (const name of ["qorpera-company-computer.service", "qorpera-company-compute
 }
 await mkdir(join(output, "wallpapers"), { mode: 0o755 });
 // Reuse the existing artwork as inert image bytes, never desktop application code.
-// Tone-on-tone agent figures: one static frame per staff character plus 24 hourly frames each.
-for (const name of (await readdir(join(root, "deploy/lxd-company-computer-guest/backdrops"))).sort()) {
-	if (!/^qorpera-screen-[a-z]+(?:-(?:[01][0-9]|2[0-3]))?\.png$/.test(name)) throw new Error("Invalid office wallpaper artifact");
-	await copyFile(join(root, "deploy/lxd-company-computer-guest/backdrops", name), join(output, "wallpapers", name));
+// One static frame per stable wallpaper identity plus 24 hourly frames each.
+for (const name of COMPANY_COMPUTER_WALLPAPER_FILES) {
+	await copyFile(join(wallpaperRoot, name), join(output, "wallpapers", name));
 	await chmod(join(output, "wallpapers", name), 0o444);
 }
 await copyFile(join(root, "deploy/lxd-company-computer-guest/qorpera-screen-browser"), join(output, "qorpera-screen-browser"));

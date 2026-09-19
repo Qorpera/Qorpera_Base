@@ -8,9 +8,10 @@ export interface ComputerViewerOptions {
 	binding: CompanyComputerScreenBinding;
 	title: string;
 	canControl: boolean;
+	sharedControl?: boolean;
 	requestConnection(input: {
 		binding: CompanyComputerScreenBinding;
-		mode: "watch" | "control";
+		mode: "watch" | "shared" | "control";
 		signal: AbortSignal;
 	}): Promise<CompanyComputerMemberView>;
 	releaseConnection(input: { connectionId: string }): Promise<void>;

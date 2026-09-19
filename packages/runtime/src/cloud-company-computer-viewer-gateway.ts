@@ -258,6 +258,8 @@ async function serveCompanyComputerViewer(
 	let deadline = 0;
 	let sequence = 0;
 	let connected = false;
+	const heldKeys = new Set<number>();
+	let pointer: Buffer | undefined;
 	const ended = new Promise<void>((resolve) => {
 		const finish = (): void => {
 			stop.abort();
@@ -367,8 +369,25 @@ async function serveCompanyComputerViewer(
 									signal.throwIfAborted();
 									assertDeadline();
 									if (!accepting || forwarded) throw new Error("VIEWER_INPUT_ALREADY_SETTLED");
+									if (
+										grant!.mode === "shared" &&
+										message.bytes[0] === 4 &&
+										message.bytes[1] === 1 &&
+										!heldKeys.has(message.bytes.readUInt32BE(4)) &&
+										heldKeys.size >= 256
+									)
+										throw new Error("VIEWER_HELD_INPUT_LIMIT");
 									forwarded = true;
 									upstream!.write(message.bytes);
+									if (grant!.mode === "shared") {
+										if (message.bytes[0] === 4) {
+											const key = message.bytes.readUInt32BE(4);
+											if (message.bytes[1] === 1) heldKeys.add(key);
+											else heldKeys.delete(key);
+										} else if (message.bytes[0] === 5) {
+											pointer = message.bytes[1] === 0 ? undefined : Buffer.from(message.bytes);
+										}
+									}
 								},
 								signal,
 							);
@@ -418,9 +437,36 @@ async function serveCompanyComputerViewer(
 		stop.abort();
 		clearTimeout(expiry);
 		clearTimeout(refresh);
-		upstream?.destroy();
+		upstream?.unpipe(output);
 		output?.destroy();
 		socket.destroy();
+		// Shared viewing must not fence the agent's screen just to release this
+		// connection's held input. Drain only keys/buttons actually forwarded by
+		// this viewer, over its exact guest socket; no new input is authorized.
+		if (upstream && !upstream.destroyed && (heldKeys.size > 0 || pointer)) {
+			const releases: Buffer[] = [];
+			for (const key of heldKeys) {
+				const release = Buffer.alloc(8);
+				release[0] = 4;
+				release.writeUInt32BE(key, 4);
+				releases.push(release);
+			}
+			if (pointer) {
+				pointer[1] = 0;
+				releases.push(pointer);
+			}
+			await new Promise<void>((resolve) => {
+				const timer = setTimeout(() => upstream!.destroy(), 1000);
+				upstream!.once("close", () => {
+					clearTimeout(timer);
+					resolve();
+				});
+				upstream!.end(Buffer.concat(releases));
+			});
+		}
+		heldKeys.clear();
+		pointer?.fill(0);
+		upstream?.destroy();
 		if (grant)
 			await companyComputerRequest(
 				(signal) => authority.release(grant!, signal),

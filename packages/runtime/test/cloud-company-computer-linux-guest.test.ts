@@ -222,6 +222,33 @@ async function fixture() {
 }
 
 describe("whole Linux guest ownership (physical adapters mocked here; separate Linux probes execute them)", () => {
+	it("keeps the agent working while a shared viewer connects and disconnects", async () => {
+		const f = await fixture();
+		const session = await f.create();
+		const operation = f.operation({ kind: "screen", action: "open" });
+		await session.endpoint.perform(operation, f.lease, f.effect());
+		// Agent lease churn advances its own epoch; the shared viewer's epoch
+		// remains bound to the last physical fence and is checked by its gateway.
+		f.state.epoch = 2;
+		const viewer = await f.guest.viewer.connect(
+			{
+				binding: f.binding,
+				viewerSessionId: computerId(90),
+				memberId: computerId(91),
+				mode: "shared",
+				privacyVersion: 0,
+				screenEpoch: 1,
+				validForMs: 30000,
+			},
+			f.run.signal,
+		);
+		await session.endpoint.perform(operation, f.lease, f.effect());
+		viewer.socket.destroy();
+		await session.endpoint.perform(operation, f.lease, f.effect());
+		expect(displays[0].stop).not.toHaveBeenCalled();
+		expect(physical.launch).toHaveBeenCalledOnce();
+		expect(f.failure).not.toHaveBeenCalled();
+	});
 	it("retains both pulse and physical drain failures in safe fatal diagnostics", async () => {
 		vi.useFakeTimers();
 		const f = await fixture(),
