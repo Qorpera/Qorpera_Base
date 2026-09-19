@@ -1,5 +1,9 @@
 # Step 10 live behavior screening
 
+This records the first screening pass and its accepted source. See the
+[second pass](RUNTIME-STEP-10-BEHAVIOR-PASS-2.md) for the later budget correction,
+additional scenarios and current verification.
+
 Date: 2026-09-19. Starting source: `3599a579f019a0843e5855db5ec80c8c02fcba05`.
 Final candidate bundle: `97c595d42a81189d878fab30db1af7a05554c85d6cd59477f12006cbd9a0fe51`.
 

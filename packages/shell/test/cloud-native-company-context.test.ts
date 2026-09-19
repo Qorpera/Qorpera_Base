@@ -8,7 +8,7 @@ import {
 	composeCloudNativeCompanyPrompt,
 	parseCloudNativeCompanyContext,
 } from "@qorpera/runtime/cloud-native-company-context";
-import { CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
+import { CLOUD_NATIVE_TOOL_CALL_LIMIT, CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { type CloudWakeKind, parseCloudWakeEnvelope } from "@qorpera/runtime/cloud-wake-bus";
 import { expect, it, vi } from "vitest";
 import { nativeCompanyContextFixture } from "./fixtures/native-company-context-fixture.ts";
@@ -336,6 +336,64 @@ it("keeps a large hire charter pageable with its admitted hash rather than silen
 	).resolves.toEqual({ kind: "text", value: JSON.stringify(page) });
 });
 
+it("preserves the latest instruction and source bindings when admitted inputs exceed the pagination budget", () => {
+	const f = nativeCompanyContextFixture();
+	const logs = ["a", "b", "c"].map((character) => f.source("input", randomUUID(), character.repeat(64 * 1024)));
+	const current = f.source("input", randomUUID(), "Ignore the three earlier logs. Just answer 17 × 24.");
+	f.context.currentInputs = [
+		...logs.map((source) => ({
+			...source,
+			content: { ...source.content, text: source.content.text.slice(0, 1024), nextOffset: 1024, truncated: true },
+		})),
+		current,
+	];
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	const prompt = JSON.parse(composeCloudNativeCompanyPrompt(context));
+	expect(prompt.currentInputs).toEqual(context.currentInputs);
+	expect(prompt.currentInputs.map((source: { id: string }) => source.id)).toEqual(
+		[...logs, current].map((source) => source.id),
+	);
+	expect(prompt.currentInputs.at(-1)).toEqual(current);
+	expect(prompt.delivery).toMatchObject({ beforeWork: "acknowledge", requireFinalSend: true });
+	for (const [index, source] of logs.entries()) {
+		expect(context.currentInputs[index]).toMatchObject({
+			id: source.id,
+			kind: "current_human_request",
+			authorUserId: context.identity.requesterUserId,
+			content: { sha256: source.content.sha256, originalBytes: 65536, nextOffset: 1024 },
+		});
+	}
+	const tool = cloudCompanyContextTool(context, f.binding, { call: vi.fn<CloudCompanyPathControl["call"]>() });
+	const pageLimit = (tool.inputSchema.properties as { limit: { maximum: number } }).limit.maximum;
+	const missingPages = context.currentInputs.reduce(
+		(total, source) =>
+			total + Math.ceil((source.content.originalBytes - Buffer.byteLength(source.content.text)) / pageLimit),
+		0,
+	);
+	expect(missingPages).toBe(189);
+	const instructions = compileCloudNativeCompanyInstructions(context);
+	const advertisedLimit = Number(instructions.match(/This attempt has at most (\d+) Qorpera tool calls/)?.[1]);
+	expect(advertisedLimit).toBe(CLOUD_NATIVE_TOOL_CALL_LIMIT);
+	expect(missingPages).toBeGreaterThan(advertisedLimit);
+	for (const source of logs) {
+		expect(
+			tool.parseArguments({
+				sourceKind: "input",
+				id: source.id,
+				sha256: source.content.sha256,
+				offset: 1024,
+				limit: pageLimit,
+			}),
+		).toEqual({
+			sourceKind: "input",
+			id: source.id,
+			sha256: source.content.sha256,
+			offset: 1024,
+			limit: pageLimit,
+		});
+	}
+});
+
 it.each([
 	"company",
 	"agent",
@@ -423,6 +481,95 @@ it("does not let context arguments choose another source, actor, hash or company
 	for (const patch of patches) expect(() => tool.parseArguments({ ...args, ...patch })).toThrow();
 	expect(call).not.toHaveBeenCalled();
 });
+
+it.each([false, true])(
+	"advertises only admitted retrieval handles while preserving their joint binding (continuation: %s)",
+	(continued) => {
+		const f = nativeCompanyContextFixture();
+		const input = f.source("input", f.context.currentInputs[0].id, "input ".repeat(512));
+		const charter = f.source("job_spec", f.context.agent.id, "charter ".repeat(1024));
+		f.context.currentInputs[0] = {
+			...input,
+			content: { ...input.content, text: input.content.text.slice(0, 1024), nextOffset: 1024, truncated: true },
+		};
+		f.context.jobSpecification = {
+			...charter,
+			content: { ...charter.content, text: charter.content.text.slice(0, 4096), nextOffset: 4096, truncated: true },
+		};
+		// A repeated body shares a hash without sharing the input's identity or provenance.
+		f.context.history[0] = f.source("history", f.context.history[0].id, input.content.text);
+		if (continued) {
+			const continuation = f.source(
+				"continuation",
+				f.binding.runId,
+				JSON.stringify({ receipts: ["x".repeat(5000)] }),
+			);
+			f.context.continuation = {
+				...continuation,
+				content: {
+					...continuation.content,
+					text: continuation.content.text.slice(0, 4096),
+					nextOffset: 4096,
+					truncated: true,
+				},
+			};
+		}
+		const context = parseCloudNativeCompanyContext(f.context, f.binding);
+		const prompt = JSON.parse(composeCloudNativeCompanyPrompt(context));
+		const advertisedSources: typeof context.currentInputs = [
+			prompt.job,
+			prompt.hireOverlay.jobSpecification,
+			...(prompt.continuation ? [prompt.continuation] : []),
+			...prompt.currentInputs,
+			...prompt.history,
+		];
+		const ids = [...new Set(advertisedSources.map((source) => source.id))];
+		const hashes = [...new Set(advertisedSources.map((source) => source.content.sha256))];
+		expect(ids).toHaveLength(4);
+		expect(hashes).toHaveLength(continued ? 4 : 3);
+		const call = vi.fn<CloudCompanyPathControl["call"]>();
+		const tool = cloudCompanyContextTool(context, f.binding, { call });
+		const expectedProperties = {
+			id: { type: "string", enum: ids },
+			sha256: { type: "string", enum: hashes },
+		};
+		expect(tool.inputSchema).toMatchObject({ properties: expectedProperties });
+		const boundary = new CloudNativeToolBoundary({
+			companyId: context.identity.companyId,
+			runId: context.identity.runId,
+			tools: [tool],
+			assertActive: async () => undefined,
+			signal: new AbortController().signal,
+		});
+		expect(boundary.specification).toMatchObject({
+			tools: [{ name: "read_context", inputSchema: { properties: expectedProperties } }],
+		});
+		boundary.close();
+		for (const source of advertisedSources) {
+			const args = {
+				sourceKind: source.sourceKind,
+				id: source.id,
+				sha256: source.content.sha256,
+				offset: source.content.nextOffset ?? 0,
+				limit: 1024,
+			};
+			expect(tool.parseArguments(args)).toEqual(args);
+			expect(() =>
+				tool.parseArguments({ ...args, sha256: hashes.find((hash) => hash !== source.content.sha256)! }),
+			).toThrow("Context source is unavailable");
+		}
+		expect(() =>
+			tool.parseArguments({
+				sourceKind: "input",
+				id: charter.id,
+				sha256: charter.content.sha256,
+				offset: 4096,
+				limit: 1024,
+			}),
+		).toThrow("Context source is unavailable");
+		expect(call).not.toHaveBeenCalled();
+	},
+);
 
 it("rejects changed data or provenance on a later source page", async () => {
 	const f = nativeCompanyContextFixture();

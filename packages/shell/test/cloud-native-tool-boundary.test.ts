@@ -1,6 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { JsonValue } from "@qorpera/contracts";
 import {
+	CLOUD_AGENT_SEND_SCHEMA,
+	CloudAgentMouth,
+	type CloudAgentSendInput,
+	type CloudAgentSendReceipt,
+	parseCloudAgentSendInput,
+} from "@qorpera/runtime/cloud-agent-mouth";
+import {
+	CLOUD_NATIVE_TOOL_CALL_LIMIT,
 	type CloudNativeTool,
 	CloudNativeToolBoundary,
 	type CloudToolResult,
@@ -14,6 +22,7 @@ const runId = randomUUID();
 function fixture(
 	overrides: Partial<CloudNativeTool> = {},
 	assertActive: (signal: AbortSignal) => Promise<void> = vi.fn(async () => undefined),
+	additionalTools: readonly CloudNativeTool[] = [],
 ) {
 	const execute = vi.fn<CloudNativeTool["execute"]>(async () => ({ kind: "text", value: "Company data" }));
 	const abort = new AbortController();
@@ -45,7 +54,7 @@ function fixture(
 	const boundary = new CloudNativeToolBoundary({
 		companyId,
 		runId,
-		tools: [tool],
+		tools: [tool, ...additionalTools],
 		assertActive,
 		signal: abort.signal,
 	});
@@ -351,7 +360,7 @@ describe("cloud-owned native tool boundary", () => {
 		const { boundary } = fixture();
 		const input = { kind: "function_call_output" as const, callId: "native", output: "data" };
 		await expect(boundary.fenceNativeResults([input, input])).rejects.toThrow("Invalid native result identity");
-		for (let index = 1; index < 128; index++)
+		for (let index = 1; index < CLOUD_NATIVE_TOOL_CALL_LIMIT; index++)
 			await boundary.fenceNativeResults([{ ...input, callId: `native_${index}` }]);
 		await expect(boundary.fenceNativeResults([{ ...input, callId: "over_budget" }])).rejects.toThrow(
 			"Native result budget exceeded",
@@ -368,12 +377,73 @@ describe("cloud-owned native tool boundary", () => {
 		}
 	});
 
-	it("caps retained calls without re-running a previously accepted call", async () => {
-		const { call, execute } = fixture();
-		for (let index = 0; index < 128; index++) await call(`call_${index}`);
-		expect((await call("over_budget")).result.content.text).toBe("TOOL_BUDGET_EXHAUSTED");
-		expect((await call("call_0")).result.status).toBe("ok");
-		expect(execute).toHaveBeenCalledTimes(128);
+	it("allows a reserved final send as call 128, then rejects new calls without repeating accepted effects", async () => {
+		expect(CLOUD_NATIVE_TOOL_CALL_LIMIT).toBe(128);
+		const sessionId = randomUUID();
+		const messageId = randomUUID();
+		const deliver = vi.fn(
+			async (input: CloudAgentSendInput): Promise<CloudAgentSendReceipt> => ({
+				schema: CLOUD_AGENT_SEND_SCHEMA,
+				runId,
+				sessionId,
+				messageId,
+				phase: input.phase,
+				sequence: 1,
+			}),
+		);
+		const mouth = new CloudAgentMouth(runId, deliver);
+		const send: CloudNativeTool = {
+			name: "send_message",
+			source: "runtime",
+			description: "Send a result to the admitted conversation.",
+			inputSchema: {
+				type: "object",
+				properties: {
+					idempotencyKey: { type: "string" },
+					text: { type: "string" },
+					phase: { type: "string", enum: ["progress", "final"] },
+				},
+				required: ["idempotencyKey", "text", "phase"],
+				additionalProperties: false,
+			},
+			parseArguments: (value) => ({ ...parseCloudAgentSendInput(value) }),
+			execute: async (value) => ({
+				kind: "text",
+				value: JSON.stringify(await mouth.send(parseCloudAgentSendInput(value))),
+			}),
+		};
+		const { tool, execute, boundary } = fixture({}, undefined, [send]);
+		try {
+			for (let index = 0; index < CLOUD_NATIVE_TOOL_CALL_LIMIT - 1; index++) {
+				const response = await boundary.invoke(`read_${index}`, "qorpera", tool.name, {
+					path: "projects/roadmap.md",
+				});
+				expect(response.success).toBe(true);
+			}
+			const final = { idempotencyKey: "final-result", text: "Verified the current roadmap.", phase: "final" };
+			const delivered = await boundary.invoke("final", "qorpera", send.name, final);
+			expect(delivered.success).toBe(true);
+			await expect(mouth.finish()).resolves.toEqual({ messageCount: 1, finalMessageId: messageId });
+			for (const [name, args] of [
+				[tool.name, { path: "projects/roadmap.md" }],
+				[send.name, final],
+			] as const) {
+				const response = await boundary.invoke(`over_budget_${name}`, "qorpera", name, args);
+				expect(JSON.parse(response.contentItems[0].text)).toMatchObject({
+					status: "denied",
+					content: { text: "TOOL_BUDGET_EXHAUSTED" },
+				});
+			}
+			expect(await boundary.invoke("final", "qorpera", send.name, final)).toEqual(delivered);
+			expect((await boundary.invoke("read_0", "qorpera", tool.name, { path: "projects/roadmap.md" })).success).toBe(
+				true,
+			);
+			expect(execute).toHaveBeenCalledTimes(CLOUD_NATIVE_TOOL_CALL_LIMIT - 1);
+			expect(deliver).toHaveBeenCalledExactlyOnceWith(final);
+		} finally {
+			boundary.close();
+			await mouth.close();
+		}
 	});
 
 	it("rejects open schemas, duplicate tools and invalid metadata at registration", () => {

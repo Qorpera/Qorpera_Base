@@ -30,7 +30,7 @@ const CALL_ID = /^[A-Za-z0-9_:.-]{1,160}$/;
 const MAX_ARGUMENT_BYTES = 64 * 1024;
 const MAX_CONTENT_BYTES = 32 * 1024;
 const MAX_SOURCE_BYTES = 1024 * 1024;
-const MAX_CALLS = 128;
+export const CLOUD_NATIVE_TOOL_CALL_LIMIT = 128;
 
 export interface CloudToolContext {
 	readonly companyId: string;
@@ -255,7 +255,7 @@ export class CloudNativeToolBoundary {
 
 	/** Only the patched native request boundary can release these bodies to the model. */
 	async fenceNativeResults(inputs: readonly CloudNativeResultInput[]): Promise<CloudNativeFencedResult[]> {
-		if (inputs.length > MAX_CALLS) throw new Error("Native result budget exceeded");
+		if (inputs.length > CLOUD_NATIVE_TOOL_CALL_LIMIT) throw new Error("Native result budget exceeded");
 		this.#signal.throwIfAborted();
 		await untilStopped(() => this.#assertActive(this.#signal), this.#signal);
 		this.#signal.throwIfAborted();
@@ -318,7 +318,7 @@ export class CloudNativeToolBoundary {
 					throw new Error("Native result changed after release");
 				return { kind: input.kind, callId: input.callId, output: previous.output, ...image };
 			}
-			if (this.#nativeResults.size >= MAX_CALLS) throw new Error("Native result budget exceeded");
+			if (this.#nativeResults.size >= CLOUD_NATIVE_TOOL_CALL_LIMIT) throw new Error("Native result budget exceeded");
 			// Never trust a schema, role or provenance claimed inside native output.
 			// Pass through only the exact bytes previously issued by this host for this call.
 			const issued =
@@ -420,7 +420,7 @@ export class CloudNativeToolBoundary {
 		if (previous && previous.digest !== digest) {
 			return this.#result(callId, tool, digest, "denied", { kind: "text", value: "CALL_ID_REUSED" });
 		}
-		if (!previous && this.#calls.size >= MAX_CALLS) {
+		if (!previous && this.#calls.size >= CLOUD_NATIVE_TOOL_CALL_LIMIT) {
 			return this.#result(callId, tool, digest, "denied", { kind: "text", value: "TOOL_BUDGET_EXHAUSTED" });
 		}
 		const result =
@@ -614,7 +614,7 @@ export class CloudNativeToolBoundary {
 		if (Buffer.byteLength(serialized) > MAX_CLOUD_TOOL_RESULT_BYTES)
 			throw new Error("Cloud result provenance exceeds its budget");
 		const fingerprint = `${callId}:${createHash("sha256").update(serialized).digest("hex")}`;
-		if (!this.#issuedResults.has(fingerprint) && this.#issuedResults.size >= MAX_CALLS * 2)
+		if (!this.#issuedResults.has(fingerprint) && this.#issuedResults.size >= CLOUD_NATIVE_TOOL_CALL_LIMIT * 2)
 			throw new Error("Cloud result budget exceeded");
 		this.#issuedResults.add(fingerprint);
 		return { contentItems: [{ type: "inputText", text: serialized }], success: status === "ok" };
