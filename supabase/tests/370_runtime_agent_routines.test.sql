@@ -133,25 +133,41 @@ begin
 		where kind = 'routine_suspended' and subject ->> 'routineId' = v_row.id::text) = 1,'The member is told once');
 end $$;
 
--- No account allows unattended use: the routine is saved, stays paused, and the
--- member is told once. Nothing asks for a per-routine approval.
+-- Unattended use is not a setting. An account that never recorded consent is
+-- consented and bound in its owner's name when the routine is saved.
 do $$
-declare v_saved jsonb; v_run public.qorpera_execution_runs;
+declare v_saved jsonb; v_run public.qorpera_execution_runs; v_connection uuid; v_before bigint;
 begin
 	select * into strict v_run from public.qorpera_execution_runs
 	where id = (current_setting('qorpera_test.routine_binding')::jsonb ->> 'runId')::uuid;
-	alter table public.qorpera_execution_sponsor_versions disable trigger user;
-	update public.qorpera_execution_sponsor_versions set allow_autonomous = false where binding_id = v_run.sponsor_binding_id;
-	alter table public.qorpera_execution_sponsor_versions enable trigger user;
-	v_saved := pg_temp.routine('{"action":"upsert","operationKey":"acct-1","routineKey":"needs-account","title":"Weekly review",
+	v_connection := (current_setting('qorpera_test.wake_connection')::jsonb ->> 'connection_id')::uuid;
+	-- Withdraw consent the way a member could before today: a newer version without it.
+	insert into public.qorpera_provider_connection_versions
+	select (jsonb_populate_record(null::public.qorpera_provider_connection_versions,
+		to_jsonb(v) || '{"version":3,"allow_autonomous":false}'::jsonb)).*
+	from public.qorpera_provider_connection_versions v where connection_id = v_connection and version = 2;
+	perform pg_temp.wake_assert(not exists (select 1 from public.qorpera_agent_routine_sponsor(v_run)),'Fixture: no unattended sponsor remains');
+	v_saved := pg_temp.routine('{"action":"upsert","operationKey":"acct-1","routineKey":"always-runs","title":"Weekly review",
 		"intent":"Review the week.","trigger":{"kind":"schedule","intervalMinutes":10080,"replyPolicy":"optional"}}');
-	perform pg_temp.wake_assert(v_saved #>> '{routine,status}' = 'paused'
-		and v_saved #>> '{routine,pauseReason}' = 'needs_model_account','Without an unattended account the routine waits, paused');
-	perform pg_temp.routine('{"action":"upsert","operationKey":"acct-2","routineKey":"needs-account-2","title":"Second",
+	perform pg_temp.wake_assert(v_saved #>> '{routine,status}' = 'active' and v_saved #>> '{routine,pauseReason}' is null,
+		'A routine never waits for an unattended setting');
+	perform pg_temp.wake_assert((select allow_autonomous and consented_by_user_id = v_run.requested_by_user_id
+			and consent_version = 'qorpera-unattended-default/v1'
+		from public.qorpera_provider_connection_versions where connection_id = v_connection order by version desc limit 1),
+		'Consent is recorded as a new version in the account owner''s name');
+	perform pg_temp.wake_assert((select sponsor.allow_autonomous and sponsor.provider_connection_id = v_connection
+		from public.qorpera_cloud_routine_versions version join public.qorpera_cloud_routines routine
+			on routine.id = version.routine_id and routine.current_version = version.version
+		join public.qorpera_execution_sponsor_versions sponsor on sponsor.binding_id = version.sponsor_binding_id
+			and sponsor.version = version.sponsor_version
+		where routine.routine_key = 'always-runs'),'The routine is bound to that account');
+	select count(*) into v_before from public.qorpera_execution_sponsor_bindings;
+	perform pg_temp.routine('{"action":"upsert","operationKey":"acct-2","routineKey":"always-runs-2","title":"Second",
 		"intent":"Review.","trigger":{"kind":"schedule","intervalMinutes":10080,"replyPolicy":"optional"}}');
-	perform pg_temp.wake_assert((select count(*) from public.qorpera_member_notifications
-		where kind = 'routine_needs_model_account' and user_id = v_run.requested_by_user_id) = 1,'One notice per agent, not per routine');
-	perform pg_temp.wake_error($q$select pg_temp.routine('{"action":"resume","operationKey":"acct-3","routineKey":"needs-account"}')$q$,'55000');
+	perform pg_temp.wake_assert((select count(*) from public.qorpera_execution_sponsor_bindings) = v_before,
+		'A second routine reuses the binding');
+	perform pg_temp.wake_assert(not exists (select 1 from public.qorpera_member_notifications
+		where kind = 'routine_needs_model_account'),'Nobody is asked for anything');
 end $$;
 
 rollback;

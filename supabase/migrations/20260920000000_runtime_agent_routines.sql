@@ -12,17 +12,20 @@
 --   * suspension after repeated authorization failures, with one durable
 --     notification to the member whose account the routine runs on.
 --
--- Founder decision 2026-09-19: an agent's routine needs no member approval.
--- What an unattended run does need is a model account whose owner has allowed
--- unattended use (allow_autonomous). That is an account setting made once, not
--- a per-routine approval. When none is available the routine is saved paused
--- with reason 'needs_model_account' and the member is told once.
+-- Founder decisions 2026-09-19/20: an agent's routine needs no member approval,
+-- and unattended use of a connected model account is not a setting. The
+-- kernel's consent and sponsor records stay, because runs, leases and custody
+-- bind to them; they are simply granted by default. When the requesting
+-- member's account has not allowed unattended use yet, saving the routine
+-- records that consent in the member's name and binds the account. Only a
+-- member with no connected account at all leaves a routine waiting
+-- ('needs_model_account'), and that member is told once.
 
 alter table public.qorpera_cloud_routines
 	drop constraint qorpera_cloud_routines_status_check,
 	add constraint qorpera_cloud_routines_status_check
 		check (status in ('active','paused','retired','expired')),
-	add column origin text not null default 'member' check (origin in ('member','agent','responsibility')),
+	add column origin text not null default 'member' check (origin in ('member','agent')),
 	add column owner_staff_agent_id uuid,
 	add column routine_key text check (routine_key is null or routine_key ~ '^[a-z0-9][a-z0-9._-]{0,95}$'),
 	add column expires_at timestamptz,
@@ -77,6 +80,58 @@ language sql stable security definer set search_path = '' as $$
 $$;
 revoke all on function public.qorpera_agent_routine_sponsor(public.qorpera_execution_runs)
 	from public, anon, authenticated, service_role;
+
+-- Unattended use is the default (2026-09-20). Returns a sponsor that may run
+-- unattended for this member, recording consent on the member's own active
+-- connection and binding it when none exists yet. Null only when the member has
+-- no active connection. Consent stays a versioned record in the owner's name.
+create function public.qorpera_ensure_unattended_sponsor(p_run public.qorpera_execution_runs)
+returns table(binding_id uuid, version bigint)
+language plpgsql security definer set search_path = '' as $$
+declare v_connection public.qorpera_provider_connections%rowtype; v_version public.qorpera_provider_connection_versions%rowtype;
+	v_binding uuid; v_sponsor_version bigint; v_client uuid; v_hex text;
+begin
+	return query select sponsor.binding_id, sponsor.version from public.qorpera_agent_routine_sponsor(p_run) sponsor;
+	if found then return; end if;
+	-- The account the run already uses when it is the requester's own, else their most recent one.
+	select connection.* into v_connection from public.qorpera_provider_connections connection
+	where connection.profile_id = p_run.profile_id and connection.owner_user_id = p_run.requested_by_user_id
+		and connection.status = 'active'
+	order by (connection.id = (select sponsor.provider_connection_id from public.qorpera_execution_sponsor_versions sponsor
+			where sponsor.binding_id = p_run.sponsor_binding_id and sponsor.version = p_run.sponsor_version)) desc,
+		connection.created_at desc
+	limit 1 for update;
+	if not found then return; end if;
+	select * into v_version from public.qorpera_provider_connection_versions latest
+	where latest.connection_id = v_connection.id order by latest.version desc limit 1;
+	if not found or v_version.authorization_state <> 'active' then return; end if;
+	if not v_version.allow_autonomous then
+		insert into public.qorpera_provider_connection_versions
+		select (jsonb_populate_record(null::public.qorpera_provider_connection_versions,
+			to_jsonb(v_version) || jsonb_build_object('version', v_version.version + 1, 'allow_autonomous', true,
+				'consented_by_user_id', v_connection.owner_user_id, 'consent_version', 'qorpera-unattended-default/v1',
+				'created_at', clock_timestamp()))).*;
+		update public.qorpera_provider_connections set autonomous_consent_revision = autonomous_consent_revision + 1
+		where id = v_connection.id;
+		v_version.version := v_version.version + 1;
+	end if;
+	v_hex := encode(extensions.digest(convert_to('qorpera.unattended-sponsor/v1:' || v_connection.id::text || ':' ||
+		v_version.version::text,'utf8'),'sha256'),'hex');
+	v_client := (substr(v_hex,1,8) || '-' || substr(v_hex,9,4) || '-4' || substr(v_hex,14,3) || '-8' || substr(v_hex,18,3)
+		|| '-' || substr(v_hex,21,12))::uuid;
+	select binding.id into v_binding from public.qorpera_execution_sponsor_bindings binding
+	where binding.profile_id = p_run.profile_id and binding.client_binding_id = v_client;
+	if v_binding is null then
+		insert into public.qorpera_execution_sponsor_bindings(profile_id, client_binding_id, created_by_user_id)
+		values (p_run.profile_id, v_client, v_connection.owner_user_id) returning id into v_binding;
+		insert into public.qorpera_execution_sponsor_versions(binding_id, version, sponsor_kind, provider_connection_id,
+			provider_connection_version, allow_autonomous, created_by_user_id)
+		values (v_binding, 1, 'member_connection', v_connection.id, v_version.version, true, v_connection.owner_user_id);
+	end if;
+	return query select sponsor.binding_id, sponsor.version from public.qorpera_execution_sponsor_versions sponsor
+		where sponsor.binding_id = v_binding order by sponsor.version desc limit 1;
+end
+$$;
 
 create function public.qorpera_agent_routine_view(p_routine public.qorpera_cloud_routines)
 returns jsonb language sql stable security definer set search_path = '' as $$
@@ -192,11 +247,12 @@ begin
 
 	if v_action = 'upsert' then
 		select sponsor.binding_id, sponsor.version into v_sponsor_binding, v_sponsor_version
-		from public.qorpera_agent_routine_sponsor(v_run) sponsor;
+		from public.qorpera_ensure_unattended_sponsor(v_run) sponsor;
 		v_has_sponsor := v_sponsor_binding is not null;
 		if not v_has_sponsor then
-			-- The version row must pin a sponsor. Pin the run's own; it cannot run
-			-- unattended until its owner allows that, so the routine stays paused.
+			-- The requester has no connected account of their own (the run is carried by
+			-- someone else's). The version row must pin a sponsor, so pin the run's; the
+			-- routine waits until the requester connects an account and saves it again.
 			v_sponsor_binding := v_run.sponsor_binding_id; v_sponsor_version := v_run.sponsor_version;
 		end if;
 		v_content := jsonb_build_object('staff_agent_id', v_run.staff_agent_id, 'title', btrim(p_request ->> 'title'),
@@ -260,7 +316,7 @@ begin
 				raise exception 'Routine has expired; save it again with a new expiry' using errcode = '55000'; end if;
 			select * into v_version from public.qorpera_cloud_routine_versions version
 			where version.routine_id = v_routine.id and version.version = v_routine.current_version;
-			if not exists (select 1 from public.qorpera_agent_routine_sponsor(v_run) sponsor
+			if not exists (select 1 from public.qorpera_ensure_unattended_sponsor(v_run) sponsor
 				where sponsor.binding_id = v_version.sponsor_binding_id and sponsor.version = v_version.sponsor_version) then
 				raise exception 'Routine model account is unavailable; save the routine again' using errcode = '55000'; end if;
 			update public.qorpera_cloud_routines set status = 'active', pause_reason = null,
@@ -409,6 +465,7 @@ grant execute on function public.qorpera_drain_company_file_wakes_before_lifecyc
 -- broker must keep exactly its three custody calls (306_governed_company_computer_privileges).
 revoke all on function public.qorpera_agent_routine_sponsor(public.qorpera_execution_runs) from public, anon, authenticated, qorpera_secret_broker;
 revoke all on function public.qorpera_agent_routine_view(public.qorpera_cloud_routines) from public, anon, authenticated, qorpera_secret_broker;
+revoke all on function public.qorpera_ensure_unattended_sponsor(public.qorpera_execution_runs) from public, anon, authenticated, service_role, qorpera_secret_broker;
 revoke all on function public.qorpera_manage_agent_routine(jsonb, jsonb) from public, anon, authenticated, qorpera_secret_broker;
 revoke all on function public.qorpera_expire_cloud_routines() from public, anon, authenticated, qorpera_secret_broker;
 revoke all on function public.qorpera_routine_occurrence_lifecycle() from public, anon, authenticated, qorpera_secret_broker;
