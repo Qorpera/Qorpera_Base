@@ -1003,6 +1003,10 @@ begin
 		'The member''s message stays once');
 	perform pg_temp.wake_assert((select count(*) = 1 from public.qorpera_execution_run_events
 		where run_id = v_run and event_type = 'recovery_released'),'The failed run leaves recovery');
+	perform pg_temp.wake_assert((select w.payload = first.payload from public.qorpera_wake_occurrences w,
+		public.qorpera_wake_occurrences first where w.id = (v_retry ->> 'occurrenceId')::uuid
+			and first.id = (v_result #>> '{occurrenceIds,0}')::uuid),
+		'A retried wake carries exactly the payload of a first delivery (the runner parses it as a closed object)');
 	perform public.qorpera_materialize_wake_execution_runs(1);
 	select run_id into strict v_retry_run from public.qorpera_wake_occurrences where id = (v_retry ->> 'occurrenceId')::uuid;
 	perform pg_temp.wake_assert((select r.source_kind = 'room_delivery' and r.session_id = v_thread and r.id <> v_run
