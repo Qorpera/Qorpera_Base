@@ -247,7 +247,14 @@ describe("worker dispatch and completion envelopes", () => {
 		const office = officeWakeFixture();
 		expect(() => parseCloudWakeEnvelope({ ...office.wake, policy: worker.continuation }, office.identity)).toThrow();
 		const done = workerWakeFixture("worker-completion");
-		expect(() => parseCloudWakeEnvelope({ ...done.wake, policy: done.silent }, done.identity)).toThrow();
+		// A silent parent's revival stays silent even in a conversation; without a conversation it must be.
+		expect(parseCloudWakeEnvelope({ ...done.wake, policy: done.silent }, done.identity).policy.maxPublicSends).toBe(
+			0,
+		);
+		const noSession = { ...done.identity, sessionId: null };
+		expect(() =>
+			parseCloudWakeEnvelope({ ...done.wake, audience: { ...done.wake.audience, sessionId: null } }, noSession),
+		).toThrow();
 		expect(() =>
 			parseCloudWakeEnvelope({ ...done.wake, actorUserId: done.identity.requesterUserId }, done.identity),
 		).toThrow();

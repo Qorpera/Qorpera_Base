@@ -384,7 +384,8 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			actorUserId !== null ||
 			audience.kind !== "company" ||
 			wake.routine !== null ||
-			(audience.sessionId === null) !== (policy.final === "forbidden") ||
+			// Without a conversation there is no mouth; a silent parent's revival stays silent even with one.
+			(audience.sessionId === null && policy.final !== "forbidden") ||
 			!Number.isSafeInteger(done.stillActive) ||
 			(done.stillActive as number) < 0 ||
 			!Array.isArray(done.completions) ||

@@ -326,7 +326,34 @@ begin
 		"title":"Late","goal":"g","definitionOfDone":"d","access":"read"}',%L::jsonb)$q$,v_child),'55000','Todo is closed; use a new todo for new work');
 end $$;
 
--- 10. Control-plane only.
+-- 10. A revival never gains a mouth its parent's wake did not have: a silent routine stays silent.
+do $$
+declare v_routine jsonb; v_id uuid; v_parent jsonb; v_child jsonb; v_wake public.qorpera_wake_occurrences; v_binding jsonb; v_envelope jsonb;
+begin
+	v_routine := pg_temp.wake_routine('30000000-0000-4000-8000-000000000030',
+		'{"id":"tick","kind":"schedule","intervalMinutes":5,"replyPolicy":"silent"}');
+	v_id := pg_temp.wake_schedule(v_routine,'silent-parent');
+	perform public.qorpera_materialize_wake_execution_runs(8);
+	v_parent := pg_temp.wake_start((select run_id from public.qorpera_wake_occurrences where id = v_id));
+	perform pg_temp.todo('{"action":"upsert","operationKey":"quiet-todo","todoKey":"quiet-check","title":"Quiet check"}',v_parent);
+	perform pg_temp.worker('{"action":"dispatch","operationKey":"quiet-d","todoKey":"quiet-check","workerKey":"quiet","title":"Quiet work",
+		"goal":"g","definitionOfDone":"d","access":"read","revival":"each"}',v_parent);
+	perform pg_temp.finish_job((v_parent ->> 'runId')::uuid);
+	perform public.qorpera_materialize_wake_execution_runs(8);
+	v_child := pg_temp.wake_start((select run_id from public.qorpera_wake_occurrences where id = (pg_temp.worker_row('quiet')).occurrence_id));
+	perform public.qorpera_report_worker_result(v_child,'{"operationKey":"quiet-r","outcome":"succeeded","summary":"Nothing to report."}');
+	perform pg_temp.finish_job((v_child ->> 'runId')::uuid);
+	perform public.qorpera_materialize_wake_execution_runs(8);
+	select * into strict v_wake from public.qorpera_wake_occurrences
+	where source_kind = 'worker-completion' and parent_run_id = (v_parent ->> 'runId')::uuid;
+	v_binding := pg_temp.wake_start(v_wake.run_id);
+	v_envelope := public.qorpera_read_native_wake(v_binding);
+	perform pg_temp.wake_assert(v_wake.session_id is not null and v_envelope #>> '{policy,final}' = 'forbidden'
+		and (v_envelope #>> '{policy,maxPublicSends}')::int = 0,
+		'The revival of a silent routine run cannot speak');
+end $$;
+
+-- 11. Control-plane only.
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
 select pg_temp.wake_error($q$select public.qorpera_manage_agent_worker(current_setting('qorpera_test.parent_binding')::jsonb,'{"action":"status"}')$q$,'42501');
 select pg_temp.wake_error($q$select public.qorpera_manage_agent_todo(current_setting('qorpera_test.parent_binding')::jsonb,'{"action":"list"}')$q$,'42501');

@@ -22,7 +22,7 @@ the current runtime; the draft's acceptance list was used as a checklist.
 | A worker starts blank with a complete dispatch | The child is a run of the same agent admitted through the wake bus: wake kind `agent`, source kind `worker-dispatch`, no conversation. The kernel refuses a dispatch without goal, definition of done, access and a todo. The wake payload carries goal, definition of done, bounded context, sources, authority, output contract, parent run and todo, cancellation and completion policy. The child does not inherit the parent's read set, conversation or history. |
 | Workers cannot talk to humans | No conversation means the kernel policy is zero public sends, and the runtime offers the child no mouth, no coworker channel, no hiring, no routines and no workers of its own. A read-only worker gets no Company File write tools. |
 | Durable completion reaches the parent | `report_work` stores one report per sequence. `qorpera_drain_worker_wakes`, called by the wake materializer, revives the parent with a typed internal continuation: wake kind `agent`, source kind `worker-completion`, `parent_run_id` = the dispatching run, in the parent's conversation. It is never a human or coworker message (8.1). A child that ends or never starts without a report still completes, as a failure the parent hears about. |
-| The revived parent may speak | The continuation's policy is kernel-owned: initial optional, final optional, at most three sends, silence valid. Every other agent wake keeps zero sends. |
+| The revived parent may speak | The continuation's policy is kernel-owned: initial optional, final optional, at most three sends, silence valid. Every other agent wake keeps zero sends, and a revival never gains a mouth its parent's wake did not have: the revival of a silent routine run stays silent. |
 | One worker per coherent stream | `followup` continues the same worker: sequence + 1, same identity, and the child reads its own earlier stream (`qorpera.worker-stream/v1`), never the parent's conversation. A second dispatch under the same key is refused. |
 | Todos and worker handles are durable code objects | `qorpera_runtime_agent_todos`, `qorpera_runtime_workers`, `qorpera_runtime_worker_events`. Every change is idempotent by operation key through the existing run operation ledger. |
 | Todos and accepted outputs become Company File state | Every change advances the todo revision and returns the canonical document (`qorpera.agent-todo/v1`), which the run writes to `work/todos/<agent>/<todoKey>.json` through the governed path gateway and confirms against the revision it wrote. An output is a Company File revision the worker's own run wrote; the kernel refuses any other path. The parent's accept or reject is recorded on the worker and appears in the document. |
@@ -90,7 +90,9 @@ the full migration chain):
 9. A batch revives once with every result; a child that ends without reporting
    completes as a failure; the fifth active worker is refused; cancelling a todo
    cancels a queued child before it starts; a closed todo takes no new work.
-10. All four operations are control-plane only.
+10. The revival of a silent routine run has a conversation and still cannot
+    speak.
+11. All four operations are control-plane only.
 
 The rest of the SQL suite is unchanged by this migration.
 
@@ -139,6 +141,12 @@ change to any migration needs a new activation, never an edit of this one.
   follow-up; revival with every client closed; todo documents and accepted
   outputs readable after a provider, node and database restart; cancellation
   raced against a running child.
+- Locks are taken todo first, then worker, in every operation, and the drain
+  never waits for either, so a parent cancelling while its worker reports cannot
+  deadlock. This is by construction; a concurrent-session race test is not built.
+- A revival whose admission is refused when its run is created (the agent lost
+  its model account or its conversation) is not retried: the result stays in
+  the todo, which the agent lists the next time it continues that work.
 - A running child is fenced, not killed: it ends at its next governed effect.
   Stopping the job itself from an agent operation is not built.
 - Todos and workers do not yet appear in the member clients. The documents are

@@ -268,7 +268,10 @@ select pg_temp.worker_patch('public.qorpera_runtime_wake_policy_internal(uuid)':
 	$new$(v_wake.wake_kind = 'agent' and v_wake.source_kind in ('coworker','office-activation','worker-dispatch','worker-completion'))$new$);
 select pg_temp.worker_patch('public.qorpera_runtime_wake_policy_internal(uuid)'::regprocedure,
 	$old$	return public.qorpera_wake_policy_value(v_wake.wake_kind,v_reporting);$old$,
-	$new$	if v_wake.source_kind = 'worker-completion' and v_wake.session_id is not null then v_reporting := 'continuation'; end if;
+	$new$	-- A revival never gains a mouth its parent's wake did not have (a silent routine stays silent).
+	if v_wake.source_kind = 'worker-completion' and v_wake.session_id is not null
+		and public.qorpera_runtime_wake_policy_internal(v_wake.parent_run_id) ->> 'final' <> 'forbidden' then
+		v_reporting := 'continuation'; end if;
 	return public.qorpera_wake_policy_value(v_wake.wake_kind,v_reporting);$new$);
 
 -- A worker starts blank: it does not inherit what its parent had read. A
@@ -683,6 +686,8 @@ begin
 	if v_begun ->> 'state' <> 'executing' or (v_begun ->> 'receiptId')::uuid <> v_receipt then
 		raise exception 'Worker report needs reconciliation' using errcode = '55000'; end if;
 
+	-- Lock order is todo, then worker, everywhere: a parent cancelling while its worker reports must not deadlock.
+	perform 1 from public.qorpera_runtime_agent_todos where id = v_worker.todo_id for update;
 	select * into v_worker from public.qorpera_runtime_workers where id = v_worker.id for update;
 	if v_worker.state <> 'active' or not exists (select 1 from public.qorpera_wake_occurrences wake
 		where wake.id = v_worker.occurrence_id and wake.run_id = v_run.id) then
@@ -742,9 +747,13 @@ begin
 	if auth.role() is distinct from 'service_role' or p_limit is null or p_limit not between 1 and 64 then
 		raise exception 'Worker wake admission authority or bound is invalid' using errcode = '42501'; end if;
 	for v_worker in select * from public.qorpera_runtime_workers where state = 'active' or completion_state = 'waiting'
-		order by scanned_at, created_at, id for update skip locked limit p_limit loop
-		update public.qorpera_runtime_workers set scanned_at = clock_timestamp() where id = v_worker.id;
+		order by scanned_at, created_at, id limit p_limit loop
 		begin
+			-- Lock order is todo, then worker, and the drain never waits for either.
+			perform 1 from public.qorpera_runtime_agent_todos where id = v_worker.todo_id for update nowait;
+			select * into v_worker from public.qorpera_runtime_workers where id = v_worker.id for update nowait;
+			update public.qorpera_runtime_workers set scanned_at = clock_timestamp() where id = v_worker.id;
+			if v_worker.state <> 'active' and v_worker.completion_state <> 'waiting' then continue; end if;
 			select * into v_parent from public.qorpera_execution_runs where id = v_worker.steering_run_id;
 			select status into v_status from public.qorpera_runner_jobs where id = v_parent.job_id;
 			if v_worker.state = 'active' then
@@ -793,7 +802,7 @@ begin
 				clock_timestamp(), clock_timestamp(), public.qorpera_worker_completion_payload(v_worker.steering_run_id, v_ids))
 			returning * into v_inserted;
 			update public.qorpera_runtime_workers set completion_state = 'delivered', completion_occurrence_id = v_id where id = any(v_ids);
-		exception when lock_not_available then continue;
+		exception when lock_not_available or deadlock_detected then continue;
 			when insufficient_privilege or no_data_found or object_not_in_prerequisite_state then
 				-- The agent, the requester or the conversation is gone. The result stays in the todo.
 				update public.qorpera_runtime_workers set completion_state = 'undeliverable' where id = v_worker.id;
