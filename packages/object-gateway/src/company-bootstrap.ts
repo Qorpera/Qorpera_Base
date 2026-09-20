@@ -136,7 +136,7 @@ function claim(value: unknown, workerId: string): BootstrapClaim | null {
 		throw new ObjectDependencyError(503);
 	}
 	for (const key of ["createdByUserId", "cofounderStaffAgentId", "formationId", "memberSessionId"]) uuid(input[key]);
-	// Responsibility documents were retired (20260920020000). The claim still carries the key; a claim
+	// Responsibility documents were retired (20260920060000). The claim still carries the key; a claim
 	// that carries documents comes from a cloud that has not retired them yet, so wait for it.
 	const responsibilityDocuments = record(input.cofounderResponsibilityDocuments);
 	if (Object.keys(responsibilityDocuments).length > 0) throw new ObjectDependencyError(503);

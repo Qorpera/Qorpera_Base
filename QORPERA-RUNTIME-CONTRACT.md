@@ -1820,7 +1820,7 @@ Implemented with this amendment: the web client's responsibility pages, routes,
 map and links are removed and the agent's description field is labelled
 "Responsibilities"; the employee overlay already orients an agent by its
 description (Step 8 record). The cloud retirement is migration
-`20260920020000_runtime_retire_responsibility_objects.sql`; it and the object
+`20260920060000_runtime_retire_responsibility_objects.sql`; it and the object
 gateway that stops building the responsibilities folder MUST be rolled out
 together, because a genesis tree is now five entries.
 

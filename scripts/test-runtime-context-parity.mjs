@@ -52,6 +52,7 @@ try {
 			update public.qorpera_shared_sessions set audience_kind='member_private',audience_user_id='30000000-0000-4000-8000-000000000001'
 			where id='30000000-0000-4000-8000-000000000040';\n${nativeIdentityMarker}`);
 		const rows = docker(psql, `${setup}\nset local role service_role;
+			${audience === "member_private" ? "select pg_temp.wake_public_send(current_setting('qorpera_test.wake_binding')::jsonb,'progress','private-route-check');" : ""}
 			select jsonb_build_object('binding',current_setting('qorpera_test.wake_binding')::jsonb,
 				'context',public.qorpera_describe_company_run_context(current_setting('qorpera_test.wake_binding')::jsonb),
 				'wake',public.qorpera_read_native_wake(current_setting('qorpera_test.wake_binding')::jsonb));

@@ -41,46 +41,6 @@ function fixture(overrides: Record<string, unknown> = {}, legacyObjects = new Ma
 		lifecycleState: "setup",
 		createdAt: "2026-08-29T00:00:00Z",
 	});
-	const responsibilityDocument = (id: string, slug: string): string =>
-		JSON.stringify({
-			schema: "qorpera.responsibility/v1",
-			responsibilityId: id,
-			slug,
-			name: slug,
-			outcome: "A measurable owned outcome.",
-			accountableStaffAgentId: "32000000-0000-4000-8000-000000000008",
-			accountableUserId: "32000000-0000-4000-8000-000000000009",
-			attentionCadence: "weekly",
-			escalationThreshold: {},
-			escalationTarget: { kind: "accountable_member", id: null },
-			effortPolicy: {},
-			budgetPolicy: {},
-			concurrencyPolicy: {},
-			routineIds: [],
-			listenerIds: [],
-			externalOperationGrants: [],
-			resources: [],
-			status: "active",
-			version: 1,
-			measures: [
-				{
-					measureId: "32000000-0000-4000-8000-000000000020",
-					key: "currency",
-					label: "Currency",
-					definition: "Reviewed within cadence.",
-					direction: "observe",
-					target: {},
-					guardrails: [],
-					cadence: "weekly",
-					status: "active",
-					sources: [{ path: "organization/formation.json", pathMatch: "exact" }],
-				},
-			],
-		});
-	const responsibilityPaths = [
-		"organization/responsibilities/32000000-0000-4000-8000-000000000021.json",
-		"organization/responsibilities/32000000-0000-4000-8000-000000000022.json",
-	];
 	// Retired 2026-09-20: a company is born without responsibility documents.
 	const cofounderResponsibilityDocuments: Record<string, string> = {};
 	const claim = {
