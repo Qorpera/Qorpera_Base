@@ -29,6 +29,10 @@ import {
 	COMPANY_COMPUTER_VIEW_TOKEN,
 	readCompanyComputerViewLine,
 } from "@qorpera/cloud-client/node/company-computer-view-protocol";
+import type {
+	CompanyComputerViewerRefusalObserver,
+	CompanyComputerViewerRefusalStage,
+} from "./cloud-company-computer-diagnostics.ts";
 import type { CompanyComputerDrainChallenge } from "./cloud-company-computer-drain.ts";
 import { CompanyComputerRfbServerParser } from "./cloud-company-computer-rfb-server.ts";
 
@@ -82,9 +86,26 @@ export class CompanyComputerViewerConnections {
 	readonly #screens = new Map<string, CompanyComputerDrainChallenge>();
 	#closed = false;
 
-	constructor(options: { authority: CompanyComputerViewerAuthority; guest: CompanyComputerViewerGuestTransport }) {
+	readonly #onRefusal: CompanyComputerViewerRefusalObserver | undefined;
+
+	constructor(options: {
+		authority: CompanyComputerViewerAuthority;
+		guest: CompanyComputerViewerGuestTransport;
+		/** Service-side diagnostics only. It sees the internal cause; the viewer never does. */
+		onRefusal?: CompanyComputerViewerRefusalObserver;
+	}) {
 		this.#authority = options.authority;
 		this.#guest = options.guest;
+		this.#onRefusal = options.onRefusal;
+	}
+
+	/** Report a refusal decided outside a served connection (the transport's upgrade checks). */
+	refused(stage: CompanyComputerViewerRefusalStage, error: unknown): void {
+		try {
+			this.#onRefusal?.(stage, error);
+		} catch {
+			/* Diagnostics never decide what happens to a viewer. */
+		}
 	}
 
 	#inspect(grant: CompanyComputerViewerGrant): void {
@@ -128,15 +149,22 @@ export class CompanyComputerViewerConnections {
 
 	serve(socket: Duplex): Promise<void> {
 		if (this.#closed || this.#sessions.size >= 64) {
+			this.refused("capacity", new Error(this.#closed ? "VIEWER_GATEWAY_CLOSED" : "VIEWER_CAPACITY_LIMIT"));
 			socket.destroy();
 			return Promise.resolve();
 		}
 		const session: { grant?: CompanyComputerViewerGrant; task: Promise<void> } = { task: Promise.resolve() };
 		this.#sessions.set(socket, session);
-		session.task = serveCompanyComputerViewer(socket, this.#authority, this.#guest, (grant) => {
-			this.#inspect(grant);
-			session.grant = structuredClone(grant);
-		}).finally(() => {
+		session.task = serveCompanyComputerViewer(
+			socket,
+			this.#authority,
+			this.#guest,
+			(grant) => {
+				this.#inspect(grant);
+				session.grant = structuredClone(grant);
+			},
+			(stage, error) => this.refused(stage, error),
+		).finally(() => {
 			this.#sessions.delete(socket);
 		});
 		return session.task;
@@ -148,7 +176,8 @@ export class CompanyComputerViewerConnections {
 			try {
 				if (!session.grant) throw new Error("UNKNOWN_VIEWER");
 				this.#inspect(session.grant);
-			} catch {
+			} catch (error) {
+				this.refused("stream", error);
 				socket.destroy();
 				tasks.push(session.task);
 			}
@@ -233,6 +262,7 @@ export async function startCompanyComputerViewerGateway(options: {
 	port: number;
 	authority: CompanyComputerViewerAuthority;
 	guest: CompanyComputerViewerGuestTransport;
+	onRefusal?: CompanyComputerViewerRefusalObserver;
 }): Promise<{ port: number; connections: CompanyComputerViewerConnections; close(): Promise<void> }> {
 	assertPrivateCompanyComputerAddress(options.host);
 	if (!Number.isSafeInteger(options.port) || options.port < 0 || options.port > 65_535)
@@ -314,8 +344,10 @@ async function serveCompanyComputerViewer(
 	authority: CompanyComputerViewerAuthority,
 	guest: CompanyComputerViewerGuestTransport,
 	inspect: (grant: CompanyComputerViewerGrant) => void,
+	refused: CompanyComputerViewerRefusalObserver,
 ): Promise<void> {
 	const stop = new AbortController();
+	let stage: CompanyComputerViewerRefusalStage = "handshake";
 	let grant: CompanyComputerViewerGrant | undefined;
 	let upstream: Socket | undefined;
 	let output: Transform | undefined;
@@ -368,7 +400,10 @@ async function serveCompanyComputerViewer(
 		expiry = setTimeout(() => socket.destroy(), Math.max(1, deadline - performance.now()));
 		refresh = setTimeout(
 			() => {
-				void check().catch(() => socket.destroy());
+				void check().catch((error) => {
+					refused("stream", error);
+					socket.destroy();
+				});
 			},
 			Math.max(1, Math.min(5_000, (deadline - performance.now()) / 2)),
 		);
@@ -403,6 +438,7 @@ async function serveCompanyComputerViewer(
 		)
 			throw new Error("INVALID_VIEW_HANDSHAKE");
 		const started = performance.now();
+		stage = "redeem";
 		arm(
 			await companyComputerRequest(
 				(signal) => authority.redeem(handshake.capability as string, signal),
@@ -410,6 +446,7 @@ async function serveCompanyComputerViewer(
 			),
 			started,
 		);
+		stage = "connect";
 		const attached = await companyComputerRequest(
 			async (signal) => {
 				const result = await guest.connect(structuredClone(grant!), signal);
@@ -431,6 +468,7 @@ async function serveCompanyComputerViewer(
 		const activeGrant = grant!;
 		socket.write(`${JSON.stringify({ ok: true, binding: activeGrant.binding, mode: activeGrant.mode })}\n`);
 		connected = true;
+		stage = "stream";
 		const parser = new CompanyComputerRfbClientParser();
 		// Input is dispatched at once under a valid window. A window is one
 		// registry round trip: it re-validates this viewer and records the audit
@@ -648,7 +686,10 @@ async function serveCompanyComputerViewer(
 						draining = false;
 						if (!stop.signal.aborted) socket.resume();
 					},
-					() => socket.destroy(),
+					(error) => {
+						refused("stream", error);
+						socket.destroy();
+					},
 				);
 			});
 		});
@@ -676,7 +717,9 @@ async function serveCompanyComputerViewer(
 		upstream.resume();
 		socket.resume();
 		await ended;
-	} catch {
+	} catch (error) {
+		// The cause stays on this machine, as a closed code chain in the journal.
+		refused(stage, error);
 		// Never echo service errors, guest endpoints or credentials into a viewer or transcript.
 		if (!connected && !socket.destroyed) socket.end(`${JSON.stringify({ ok: false, error: "VIEW_UNAVAILABLE" })}\n`);
 	} finally {

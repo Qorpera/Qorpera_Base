@@ -167,6 +167,20 @@ const control = {
 			assert.equal(privacyState, "shared");
 			return { state: "authorized" };
 		}
+		if (method === "qorpera_runtime_office_screen_appearance") {
+			assert.equal(privacyState, "shared");
+			return { creature: null, templateId: null };
+		}
+		if (method === "qorpera_office_screen_browser_grant") {
+			// The screen's browser authority; this probe opens it through agent runs only.
+			assert.equal(privacyState, "shared");
+			assert.ok(args.p_opener === null || args.p_opener === "agent");
+			return {
+				state: "authorized",
+				grant: { profileId: computerId(120), grantId: computerId(121), version: 1 },
+				validForMs: 5000,
+			};
+		}
 		if (method === "qorpera_native_office_operation") {
 			if (args.p_action === "finish") return { state: "drained" };
 			assert.equal(privacyState, "shared");
@@ -333,6 +347,9 @@ try {
 	await writeFile("/opt/probe-artifacts/guest.png", png, { flag: "wx", mode: 0o600 });
 	await first.close();
 	await second.close();
+	// The browser belongs to the screen: the run that opened it has ended, the
+	// contained Chromium is still there for the desktop and the next run.
+	assert.equal((await readdir("/run/office-browser")).length, 1);
 	assert.equal((await readdir("/run/office-screens")).length, 2);
 	assert.equal(screenEvents.size, 2);
 	assert.ok([...screenEvents.values()].every((events) => events.at(-1)?.event.state === "ready"));

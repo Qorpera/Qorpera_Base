@@ -1,20 +1,122 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Dock launcher for the office browser. Chromium never starts from the desktop
-# session: the company runtime launches it through the grant broker with the
-# admitted profile. This helper raises the office browser window already on
-# this screen, or tells the person at the screen where the browser comes from.
-if [[ -z ${DISPLAY:-} ]]; then
-	echo "usage: qorpera-screen-browser (inside a screen session)" >&2
+# Dock launcher. With no argument it is the company browser's launcher; with
+# `files` or `terminal` it is that tool's (one guest file serves all three dock
+# icons because only files that already exist reach installed computers).
+#
+# Every icon first brings back the window its application already has on this
+# screen. The dock is the only window list, so windows are taken from the
+# window manager's client list, which includes minimised ones, and a minimised
+# window is restored. Only when there is none does Files or Terminal start.
+#
+# Chromium never starts from the desktop session: the office service launches
+# it, contained, with the screen agent's granted profile. For the browser this
+# helper asks the service and raises the window when it appears. The request is
+# an empty file in the service-owned runtime directory. It carries no data: the
+# service derives the screen, the profile and whether anybody present may open
+# it. A refusal looks the same from here as a failure.
+#
+# It never opens a dialog. The icon shows a hollow dot while the browser is
+# being opened, also when it is clicked again meanwhile. It asks, waits, asks
+# once more, and only after both waits shows the quiet grey icon with an amber
+# dot for a few seconds.
+if [[ -z ${DISPLAY:-} || $# -gt 1 ]]; then
+	echo "usage: qorpera-screen-browser [files|terminal] (inside a screen session)" >&2
 	exit 64
 fi
-windows=()
-while IFS= read -r window; do
-	[[ ${window} =~ ^[0-9]+$ ]] && windows+=("${window}")
-done < <(xdotool search --onlyvisible --class '^([Cc]hromium|[Cc]hrome)' 2>/dev/null || true)
-if (( ${#windows[@]} > 0 )); then
-	exec xdotool windowactivate "${windows[-1]}"
+runtime_root=/run/qorpera
+# Window ids of an application, oldest first, minimised included.
+dock_windows() {
+	local pattern=$1 list id class
+	list=$(xprop -root _NET_CLIENT_LIST 2>/dev/null) || return 0
+	[[ ${list} == *"#"* ]] || return 0
+	list=${list#*#}
+	for id in ${list//,/ }; do
+		[[ ${id} =~ ^0x[0-9a-fA-F]+$ ]] || continue
+		class=$(xprop -id "${id}" WM_CLASS 2>/dev/null) || continue
+		# WM_CLASS(STRING) = "instance", "Class"
+		if [[ ${class} =~ \"([^\"]*)\"[[:space:]]*$ && ${BASH_REMATCH[1]} =~ ${pattern} ]]; then
+			echo "${id}"
+		fi
+	done
+}
+raise_window() {
+	local window newest=""
+	while IFS= read -r window; do newest=${window}; done < <(dock_windows "$1")
+	[[ -n ${newest} ]] || return 1
+	# Mapping restores a minimised window; activating raises and focuses it.
+	xdotool windowmap "${newest}" 2>/dev/null || true
+	xdotool windowactivate "${newest}"
+}
+case ${1:-browser} in
+files)
+	if raise_window '^[Tt]hunar'; then exit 0; fi
+	exec thunar .
+	;;
+terminal)
+	if raise_window '^[Xx]fce4-terminal'; then exit 0; fi
+	exec xfce4-terminal
+	;;
+browser) ;;
+*)
+	echo "usage: qorpera-screen-browser [files|terminal] (inside a screen session)" >&2
+	exit 64
+	;;
+esac
+raise_browser() { raise_window '^([Cc]hromium|[Cc]hrome)'; }
+if raise_browser; then exit 0; fi
+
+entry="${XDG_CONFIG_HOME:-}/xfce4/panel/launcher-6/qorpera-browser.desktop"
+dock_state="${XDG_CONFIG_HOME:-}/qorpera-dock"
+scratch=""
+marker=""
+finish() {
+	[[ -z ${marker} ]] || rm -f -- "${marker}" 2>/dev/null || true
+	[[ -z ${scratch} ]] || rm -rf -- "${scratch}" 2>/dev/null || true
+}
+trap finish EXIT
+# Cosmetic, so never fatal: swap the dock entry through a private directory.
+show() {
+	local template="${dock_state}/browser.$1.desktop" temporary
+	[[ -f ${template} && ! -L ${template} && -f ${entry} && ! -L ${entry} ]] || return 0
+	if [[ -z ${scratch} ]]; then
+		scratch=$(mktemp -d "${XDG_CONFIG_HOME}/.qorpera-launcher.XXXXXXXX" 2>/dev/null) || {
+			scratch=""
+			return 0
+		}
+	fi
+	temporary=$(mktemp "${scratch}/entry.XXXXXXXX" 2>/dev/null) || return 0
+	cp -f -- "${template}" "${temporary}" 2>/dev/null && mv -f -- "${temporary}" "${entry}" 2>/dev/null || true
+}
+# A click is answered at once, whoever is already waiting.
+show launching
+# One launcher at a time per screen: impatient clicks do not stack up waits.
+if [[ -n ${XDG_RUNTIME_DIR:-} && -d ${XDG_RUNTIME_DIR} ]] && command -v flock >/dev/null 2>&1; then
+	exec 9> "${XDG_RUNTIME_DIR}/qorpera-screen-browser.lock"
+	flock -n 9 || exit 0
 fi
-exec xmessage -center -buttons OK:0 -default OK \
-	"The office browser is not open on this screen. It opens through the company runtime when an agent browses or a member signs in privately."
+# While this exists the running-dot watcher leaves the launching icon alone.
+if [[ -n ${XDG_RUNTIME_DIR:-} && -d ${XDG_RUNTIME_DIR} ]]; then
+	marker="${XDG_RUNTIME_DIR}/qorpera-screen-browser.launching"
+	: > "${marker}" 2>/dev/null || marker=""
+fi
+# Two rounds of about ten seconds: a cold Chromium start on a busy office, and a
+# second request in case the first met a service that was not ready to look.
+for ((round = 0; round < 2; round++)); do
+	if [[ -d ${runtime_root} && ! -L ${runtime_root} ]]; then
+		: > "${runtime_root}/browser-request" 2>/dev/null || true
+	fi
+	for ((attempt = 0; attempt < 40; attempt++)); do
+		sleep 0.25
+		if raise_browser; then
+			show running
+			exit 0
+		fi
+	done
+done
+# A real failure or a refusal. Say it on the dock icon itself, briefly.
+show failed
+sleep 6
+if raise_browser; then show running; else show idle; fi
+exit 1

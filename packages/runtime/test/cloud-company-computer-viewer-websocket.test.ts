@@ -105,6 +105,7 @@ async function fixture(mode: "watch" | "shared" = "watch") {
 		release: vi.fn(async () => undefined),
 	};
 	const path = `/office/${computerBinding().companyComputerId}/view`;
+	const refusals: string[] = [];
 	const server = await startCompanyComputerViewerWebSocketGateway({
 		host: "127.0.0.1",
 		port: 0,
@@ -112,6 +113,7 @@ async function fixture(mode: "watch" | "shared" = "watch") {
 		origins: ["https://app.qorpera.test"],
 		tls: { cert, key },
 		authority,
+		onRefusal: (stage, error) => refusals.push(`${stage}:${(error as Error).message}`),
 		guest: {
 			connect: async () => {
 				const socket = (await import("node:net")).connect(guestAddress.port, "127.0.0.1");
@@ -154,7 +156,7 @@ async function fixture(mode: "watch" | "shared" = "watch") {
 		socket.write(Buffer.concat([Buffer.from(upgrade), masked(ticket), masked(hello)]));
 		return { socket, bytes: () => Buffer.concat(data), token };
 	}
-	return { server, authority, received, request, path, grant };
+	return { server, authority, received, request, path, grant, refusals };
 }
 
 describe("TLS WebSocket office viewer (loopback, synthetic guest/authority)", () => {
@@ -267,6 +269,8 @@ describe("TLS WebSocket office viewer (loopback, synthetic guest/authority)", ()
 		await vi.waitFor(() => expect(query.socket.destroyed).toBe(true));
 		await expect(f.request("https://app.qorpera.test", f.path, false)).rejects.toThrow();
 		expect(f.authority.redeem).not.toHaveBeenCalled();
+		// The journal names which fixed check refused, never the origin or the URL that was sent.
+		expect(f.refusals).toEqual(["upgrade:VIEWER_UPGRADE_ORIGIN", "upgrade:VIEWER_UPGRADE_PATH"]);
 	});
 	it("closes the actual TLS viewer stream before a privacy fence resolves", async () => {
 		const f = await fixture();
