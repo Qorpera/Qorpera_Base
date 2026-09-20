@@ -209,12 +209,11 @@ Migration `20260920070000_runtime_retire_responsibility_objects.sql`.
 - Rollout preflight template now asserts the retirement and the new agent
   operations instead of the escalation objects.
 
-Runtime bundle v46, `ec852e2b418fa8cf6cb8ef6ddd3181b9c5331f4971148e18dc5e63347b21f845`
+Runtime bundle v46, `0fd2489b4280943e974cd362e2ca2fe04860843e71af95ba7426f3a01a9d681f`
 (migration `20260920070000`, activation `20260920071000`; the slot assigned in
-the shared bundle registry), guest artifact 1,338,719 bytes,
-`e64f34556680410ae327a15a465afeb7206c38e89949d7dd5f7e83b6dc601877`, SQL context
-parity after 300 migrations on master `f98d3ce4e` (v42). It is re-cut when the
-slots before it are on master.
+the shared bundle registry), guest artifact 1,338,813 bytes,
+`4c1c280ecc4faabca5f1a25869f8fd907caa91d88fe13fb2c3586aed06ac5620`, SQL context
+parity after 307 migrations on master `863536b30` (v45).
 
 Proofs: `310_company_organization_kernel.test.sql` rewritten to the new model
 (company born without the objects, the old document as an ordinary file that

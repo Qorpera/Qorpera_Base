@@ -331,7 +331,7 @@ export function createWebNativeSubscription(
 							return;
 						if (!loginBase) throw new Error("Account refresh is not configured");
 						const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(admission.capability));
-						const pause = () =>
+						const pause = (milliseconds: number) =>
 							new Promise<void>((resolve, reject) => {
 								deadline.throwIfAborted();
 								const stop = () => {
@@ -341,7 +341,7 @@ export function createWebNativeSubscription(
 								const timer = setTimeout(() => {
 									deadline.removeEventListener("abort", stop);
 									resolve();
-								}, 1000);
+								}, milliseconds);
 								deadline.addEventListener("abort", stop, { once: true });
 							});
 						const args = {
@@ -352,6 +352,10 @@ export function createWebNativeSubscription(
 							).join(""),
 						};
 						let authority: NativeAccountRefreshDescription;
+						// Another attempt of this member is pending (another tab, or one this page left behind).
+						// Begin answers 55000 until it settles or expires, so watch that attempt with the read
+						// and ask begin again only once it is gone: a steady retry is an error storm.
+						let wait = 2000;
 						for (;;) {
 							try {
 								authority = parseNativeAccountRefreshDescription(
@@ -360,11 +364,14 @@ export function createWebNativeSubscription(
 								break;
 							} catch (error) {
 								if (!(error instanceof CloudRpcError) || error.code !== "55000") throw error;
+							}
+							for (;;) {
 								const receipt = await rpc(
 									"qorpera_get_native_account_refresh",
 									{ p_profile_id: profileId },
 									deadline,
 								);
+								let settled = receipt === null;
 								if (receipt !== null) {
 									const observed = parseNativeAccountRefreshDescription(receipt);
 									if (
@@ -373,9 +380,12 @@ export function createWebNativeSubscription(
 										observed.computeIdentityId !== accounts.computeIdentity.computeIdentityId
 									)
 										throw new Error("Account refresh authority changed");
-									if (observed.status === "completed" && Date.parse(observed.expiresAt) > Date.now()) return;
+									settled = Date.parse(observed.expiresAt) <= Date.now();
+									if (!settled && observed.status === "completed") return;
 								}
-								await pause();
+								await pause(wait);
+								wait = Math.min(Math.round(wait * 1.5), 10_000);
+								if (settled) break;
 							}
 						}
 						if (
@@ -389,6 +399,8 @@ export function createWebNativeSubscription(
 						if (authority.status === "completed") return;
 						const request: NativeAccountRefreshRequest = { ...authority, capability: admission.capability };
 						const body = JSON.stringify(nativeAccountRefreshBody(request));
+						// The host answers "preparing" while the refresh machine boots; ask less often as it takes longer.
+						let poll = 1000;
 						for (;;) {
 							deadline.throwIfAborted();
 							current();
@@ -421,7 +433,8 @@ export function createWebNativeSubscription(
 							} finally {
 								if (!response.body?.locked) void response.body?.cancel().catch(() => undefined);
 							}
-							await pause();
+							await pause(poll);
+							poll = Math.min(Math.round(poll * 1.5), 4000);
 						}
 					},
 					120_000,

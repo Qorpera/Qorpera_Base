@@ -12,7 +12,11 @@ import {
 	parseCompanyComputerPrivacyChallenge,
 } from "@qorpera/cloud-client/cloud-company-computer-privacy";
 import { parseCompanyComputerViewerGrant } from "@qorpera/cloud-client/cloud-company-computer-viewer";
-import { CloudCompanyComputerBrowserControl } from "./cloud-company-computer-browser-control.ts";
+import {
+	CloudCompanyComputerBrowserControl,
+	CloudCompanyComputerScreenBrowserControl,
+	type CompanyComputerScreenBrowserOpener,
+} from "./cloud-company-computer-browser-control.ts";
 import {
 	CompanyComputerBrowserLogins,
 	type CompanyComputerLoginContext,
@@ -52,6 +56,46 @@ interface NativeSession {
 	stop: AbortController;
 	close(): Promise<void>;
 }
+/** The screen's one browser. It belongs to the desktop, like any window on it:
+ * agent runs attach to it and detach, members use it through their viewer. It
+ * stays open only while SQL authorizes it (see `#ensureBrowser`). */
+interface ScreenBrowser {
+	manager: PersistentCompanyComputerBrowser;
+	opening?: Promise<CompanyComputerBrowserSession>;
+	detachLogins?: () => Promise<void>;
+	closing?: Promise<void>;
+}
+/**
+ * Bring a minimised browser window back, without choosing a tab for the member:
+ * only the window state changes (CDP refuses minimised to maximised directly,
+ * so it goes through normal). Raising a window that is merely covered is the
+ * dock launcher's part, which sees the desktop's windows; this one cannot fail
+ * the request it serves.
+ */
+export async function restoreCompanyComputerBrowserWindow(
+	context: CompanyComputerBrowserSession["context"],
+	signal: AbortSignal,
+): Promise<void> {
+	await cloudToolRequest(
+		async () => {
+			const page = context.pages()[0];
+			if (!page) return;
+			const session = await context.newCDPSession(page);
+			try {
+				const { windowId, bounds } = await session.send("Browser.getWindowForTarget");
+				if (bounds.windowState !== "minimized") return;
+				await session.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "normal" } });
+				await session.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "maximized" } });
+			} finally {
+				await session.detach().catch(() => undefined);
+			}
+		},
+		signal,
+		2000,
+	).catch(() => undefined);
+}
+/** Waits before each quiet attempt to open the browser for a member who just connected. */
+const WELCOME_BROWSER_DELAYS_MS = [300, 1200, 2500] as const;
 interface SharedScreen {
 	binding: CompanyComputerScreenBinding;
 	stop: AbortController;
@@ -59,6 +103,14 @@ interface SharedScreen {
 	handle?: CompanyComputerScreenSessionHandle;
 	closing?: Promise<void>;
 	timer?: ReturnType<typeof setTimeout>;
+	/** Polls the dock launcher's request file while the desktop is ready. */
+	requests?: ReturnType<typeof setTimeout>;
+	/** Pending attempt to have the browser open for a member who just arrived. */
+	welcome?: ReturnType<typeof setTimeout>;
+	/** The arrival open happens once per desktop start: a member who closed the
+	 * browser on purpose does not get it back by reconnecting. */
+	welcomed?: true;
+	browser?: ScreenBrowser;
 	lifecycle?: CompanyComputerScreenLifetime;
 }
 interface PrivateSurface {
@@ -106,6 +158,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	readonly #desktop: CompanyComputerLinuxDesktopLauncher;
 	readonly #sharedControl: CloudCompanyComputerSharedSurfaceControl;
 	readonly #privateControl: CloudCompanyComputerPrivateSurfaceControl;
+	readonly #screenBrowserControl: CloudCompanyComputerScreenBrowserControl;
 	readonly #stop = new AbortController();
 	readonly #screens = new Map<number, SharedScreen>();
 	readonly #sessions = new Set<NativeSession>();
@@ -131,6 +184,10 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		};
 		this.#sharedControl = new CloudCompanyComputerSharedSurfaceControl({ ...options, control: options.registry });
 		this.#privateControl = new CloudCompanyComputerPrivateSurfaceControl({ ...options, control: options.registry });
+		this.#screenBrowserControl = new CloudCompanyComputerScreenBrowserControl({
+			...options,
+			control: options.registry,
+		});
 		// Layout version 2 keeps the company's sign-ins in the company root, which a
 		// later generation carries over; version 1 offices keep them beside the profiles.
 		this.#logins = new CompanyComputerBrowserLogins({
@@ -195,9 +252,16 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 			const startup = AbortSignal.any([this.#stop.signal, current.stop.signal]);
 			current.opening = (async () => {
 				await current.lifecycle?.requested(startup);
+				// The backdrop is the agent's own avatar. An office whose database has
+				// not yet learned this read keeps the id-derived figure; a missing
+				// avatar never blocks the desktop.
+				const appearance = await this.#sharedControl.appearance(binding, startup).catch(() => undefined);
+				startup.throwIfAborted();
 				await prepareCompanyComputerScreenWallpaper(
 					{
 						binding,
+						creature: appearance?.creature,
+						templateId: appearance?.templateId,
 						layout: this.#options.layout,
 						timeZone: this.#options.desktopTimeZone,
 						boundary: {
@@ -260,6 +324,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 					}, 1000);
 				};
 				renew();
+				this.#watchBrowserRequests(current);
 			})().catch(async (error) => {
 				current.stop.abort();
 				await current.lifecycle
@@ -288,6 +353,165 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		await this.#assertShared(binding, signal);
 	}
 
+	/**
+	 * The dock's browser icon touches an empty file in the service-owned session
+	 * directory. The file says only "open the browser on this screen"; which
+	 * profile that is and whether anybody present may open it is decided by SQL
+	 * (`CloudCompanyComputerScreenBrowserControl`). A refusal or failure is
+	 * silent here: the launcher tells the person at the screen after its wait.
+	 */
+	#watchBrowserRequests(screen: SharedScreen): void {
+		const poll = (): void => {
+			if (screen.closing || screen.stop.signal.aborted || this.#closing || this.#stop.signal.aborted) return;
+			screen.requests = setTimeout(() => {
+				void Promise.resolve()
+					.then(() => this.#desktop.takeBrowserRequest(screen.binding))
+					.then(async (requested) => {
+						if (!requested || screen.closing || screen.stop.signal.aborted) return;
+						await this.#ensureBrowser(
+							screen.binding,
+							"desktop",
+							AbortSignal.any([this.#stop.signal, screen.stop.signal]),
+						);
+					})
+					.catch(() => undefined)
+					.then(poll);
+			}, 500);
+		};
+		poll();
+	}
+
+	/**
+	 * A member who opens a screen expects to land on the company browser, not on
+	 * an empty desktop. Six idle Chromiums would cost far more memory than six
+	 * idle desktops, so nothing opens when a desktop starts: the browser is asked
+	 * for when a viewer who may use the screen (shared or control, never watch)
+	 * connects, exactly as if that member had pressed the dock icon. SQL decides
+	 * as for the dock and records the same presence, and the browser still closes
+	 * once nobody entitled remains. The viewer row may become live a moment after
+	 * the socket opens, so a refusal is tried again a few times, quietly, and then
+	 * left to the dock icon. It happens once per desktop start (the screen record
+	 * is dropped by `stopResources`): a reconnect never reopens a browser somebody
+	 * closed on purpose.
+	 */
+	#welcomeBrowser(screen: SharedScreen): void {
+		if (screen.welcomed) return;
+		screen.welcomed = true;
+		const attempt = (index: number): void => {
+			if (index >= WELCOME_BROWSER_DELAYS_MS.length) {
+				screen.welcome = undefined;
+				return;
+			}
+			screen.welcome = setTimeout(() => {
+				void (async (): Promise<boolean> => {
+					if (screen.closing || screen.stop.signal.aborted || this.#closing || this.#stop.signal.aborted)
+						return true;
+					await this.#ensureBrowser(
+						screen.binding,
+						"desktop",
+						AbortSignal.any([this.#stop.signal, screen.stop.signal]),
+					);
+					return true;
+				})()
+					.catch(() => false)
+					.then((settled) => {
+						if (settled || screen.closing || screen.stop.signal.aborted) screen.welcome = undefined;
+						else attempt(index + 1);
+					});
+			}, WELCOME_BROWSER_DELAYS_MS[index]);
+		};
+		attempt(0);
+	}
+
+	/**
+	 * Open, or join, the one browser of this screen. No run and no viewer owns the
+	 * process, so a run ending or a viewer closing does not by itself stop it. It
+	 * lives exactly as long as SQL keeps authorizing it: the egress relay asks
+	 * every second, and once no agent holds the lease and no member with input
+	 * permission is live on the screen (after SQL's tolerance of at most a minute
+	 * for a network blip) the next check is refused and the browser closes. It
+	 * also ends with a drain, the privacy fence, a lost grant and the service.
+	 * Chromium locks a profile to one process, and the manager keeps exactly one
+	 * per profile, so an agent run arriving while it is open gets the same context.
+	 */
+	async #ensureBrowser(
+		binding: CompanyComputerScreenBinding,
+		opener: CompanyComputerScreenBrowserOpener,
+		signal: AbortSignal,
+	): Promise<CompanyComputerBrowserSession> {
+		await this.#ensureScreen(binding, signal);
+		const screen = this.#screens.get(binding.screenOrdinal);
+		if (!screen || screen.closing || screen.stop.signal.aborted) throw new Error("OFFICE_SCREEN_DRAINING");
+		assertCompanyComputerScreenBinding(binding, screen.binding);
+		const lifetime = AbortSignal.any([this.#stop.signal, screen.stop.signal]);
+		const boundary = {
+			assertReady: async (exact: CompanyComputerScreenBinding, checked: AbortSignal): Promise<void> => {
+				await this.#assertShared(exact, AbortSignal.any([lifetime, checked]));
+			},
+		};
+		screen.browser ??= {
+			manager: new PersistentCompanyComputerBrowser({
+				layout: this.#options.layout,
+				boundary,
+				access: this.#screenBrowserControl,
+				launch: createCompanyComputerLinuxBrowserLaunch({
+					...this.#options,
+					runtimeRoot: this.#options.browserRuntimeRoot,
+					boundary,
+					access: this.#screenBrowserControl,
+					xSocket: (exact) => this.#desktop.xSocket(exact),
+				}),
+			}),
+		};
+		const owned = screen.browser;
+		if (owned.closing) throw new Error("OFFICE_SCREEN_DRAINING");
+		const current = await owned.opening?.catch(() => undefined);
+		if (current && !current.isEnded?.()) {
+			await current.assertActive(signal);
+			// Somebody at the screen asked for a browser that is already open: the
+			// answer is its window, brought back if it was minimised.
+			if (opener === "desktop") await restoreCompanyComputerBrowserWindow(current.context, signal);
+			return current;
+		}
+		if (current) {
+			// Somebody closed the window, or authority ended it. Confirm the old
+			// process is gone before the same profile is opened again.
+			await owned.detachLogins?.().catch(() => undefined);
+			owned.detachLogins = undefined;
+			await current.close();
+			if (owned.opening && (await owned.opening.catch(() => undefined)) === current) owned.opening = undefined;
+		}
+		owned.opening ??= (async () => {
+			// SQL resolves the screen agent's grant and records who was present.
+			const grant = await this.#screenBrowserControl.open(binding, opener, lifetime);
+			const session = await owned.manager.open(binding, grant, lifetime);
+			// Signed in wherever the company is; a failure here never blocks browsing.
+			owned.detachLogins = await this.#logins
+				.attach(binding.screenId, session.context as unknown as CompanyComputerLoginContext)
+				.catch(() => undefined);
+			return session;
+		})();
+		const opening = owned.opening;
+		void opening.catch(() => {
+			if (owned.opening === opening) owned.opening = undefined;
+		});
+		return cloudToolRequest(() => opening, signal, 30000);
+	}
+
+	/** Physical browser drain for this screen; an unconfirmed exit rejects. */
+	#closeBrowser(screen: SharedScreen): Promise<void> {
+		const owned = screen.browser;
+		if (!owned) return Promise.resolve();
+		owned.closing ??= (async () => {
+			await owned.opening?.catch(() => undefined);
+			// A last look at this browser's sign-ins before it closes.
+			await owned.detachLogins?.().catch(() => undefined);
+			owned.detachLogins = undefined;
+			await owned.manager.close();
+		})();
+		return owned.closing;
+	}
+
 	async createSession(
 		input: Parameters<CompanyComputerServiceGuest["createSession"]>[0],
 	): Promise<CompanyComputerNativeGuestSession> {
@@ -309,7 +533,9 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		let closing: Promise<void> | undefined;
 		let commands: CompanyComputerLinuxCommands | undefined;
 		let browser: CompanyComputerBrowserSession | undefined;
-		let detachLogins: (() => Promise<void>) | undefined;
+		/** The screen browser THIS run drives (or is in the middle of joining). A run
+		 * that never touched the browser has no say over a window a member opened. */
+		let driving: CompanyComputerBrowserSession | "attaching" | undefined;
 		let automation: CompanyComputerGuestAutomation | undefined;
 		const signal = AbortSignal.any([stop.signal, this.#stop.signal, input.run.signal]);
 		const admitted = async (exact: CompanyComputerScreenBinding, checked: AbortSignal): Promise<void> => {
@@ -326,18 +552,48 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 			lease: () => lease,
 			control: this.#options.registry,
 		});
-		const manager = new PersistentCompanyComputerBrowser({
-			layout: this.#options.layout,
-			boundary,
-			access,
-			launch: createCompanyComputerLinuxBrowserLaunch({
-				...this.#options,
-				runtimeRoot: this.#options.browserRuntimeRoot,
-				boundary,
-				access,
-				xSocket: (exact) => this.#desktop.xSocket(exact),
-			}),
+		// The run's own grant, as its descriptor admitted it. Every agent browser
+		// action still proves this grant under the run's current screen lease.
+		const runGrant = (): { profileId: string; grantId: string; version: number } => ({
+			profileId: descriptor.resources.browserProfileId as string,
+			grantId: descriptor.resources.browserGrantId as string,
+			version: descriptor.resources.browserGrantVersion as number,
 		});
+		/** Join the screen's browser. The run never owns the process: `close` only lets go of it. */
+		const attach = async (checked: AbortSignal): Promise<CompanyComputerBrowserSession> => {
+			const grant = runGrant();
+			// First the run's authority; a run without a current grant starts nothing.
+			await boundary.assertReady(binding, checked);
+			await access.assertGranted(grant, binding, checked);
+			// From here on this run may have automation in flight against the browser.
+			driving = "attaching";
+			const shared = await this.#ensureBrowser(binding, "agent", checked);
+			driving = shared;
+			if (
+				shared.grant.profileId !== grant.profileId ||
+				shared.grant.grantId !== grant.grantId ||
+				shared.grant.version !== grant.version
+			)
+				throw new Error("BROWSER_PROFILE_IN_USE");
+			return {
+				binding,
+				grant,
+				context: shared.context,
+				isEnded: () => shared.isEnded?.() ?? false,
+				assertActive: async (requestSignal) => {
+					const current = AbortSignal.any([signal, requestSignal]);
+					try {
+						await boundary.assertReady(binding, current);
+						await access.assertGranted(grant, binding, current);
+					} catch {
+						throw new Error("BROWSER_ACCESS_ENDED");
+					}
+					// Screen authority and physical liveness; a lost grant closes the browser.
+					await shared.assertActive(current);
+				},
+				close: async () => undefined,
+			};
+		};
 		const track = <T>(work: () => Promise<T>): Promise<T> => {
 			if (closing || signal.aborted) return Promise.reject(new Error("OFFICE_SESSION_CLOSED"));
 			const pending = Promise.resolve().then(() => {
@@ -356,9 +612,14 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 				closing ??= cloudToolRequest(
 					async () => {
 						await Promise.allSettled([...active]);
-						// A last look at this browser's sign-ins before it closes.
-						await detachLogins?.().catch(() => undefined);
-						const results = await Promise.allSettled([manager.close(), commands?.close()]);
+						// The run lets go of the screen's browser instead of closing it. It
+						// stays open only while somebody entitled remains (the relay's
+						// per-second SQL check decides). Every action of this run has settled
+						// above, so no automation command of the run is still in flight.
+						browser = undefined;
+						driving = undefined;
+						automation = undefined;
+						const results = await Promise.allSettled([commands?.close()]);
 						const rejected = results.find((result) => result.status === "rejected");
 						if (rejected) throw new Error("OFFICE_SESSION_DRAIN_UNCONFIRMED", { cause: rejected.reason });
 						this.#sessions.delete(session);
@@ -389,37 +650,44 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 				});
 			},
 			automation: {
+				// The gate calls this for every failed or cancelled action of the run,
+				// shell and pixel actions included. If this run drove the browser it may
+				// have automation commands in flight, and only a confirmed physical close
+				// proves they stopped, exactly as before; the next browser use or the dock
+				// icon opens it again. A run that never joined the browser closes nothing:
+				// the window on the screen may be one a member opened from the dock.
 				stopBrowser: async () => {
-					await detachLogins?.().catch(() => undefined);
-					detachLogins = undefined;
-					await manager.close();
+					const mine = driving;
+					browser = undefined;
+					driving = undefined;
+					automation = undefined;
+					if (!mine) return;
+					const screen = this.#screens.get(binding.screenOrdinal);
+					const owned = screen?.browser;
+					if (!screen || !owned) return;
+					const current = await owned.opening?.catch(() => undefined);
+					if (mine !== "attaching" && current !== mine) {
+						// The browser this run drove has already been replaced; make sure
+						// the old process is gone and leave the new window alone.
+						await mine.close();
+						return;
+					}
+					await owned.detachLogins?.().catch(() => undefined);
+					owned.detachLogins = undefined;
+					await current?.close();
+					if (owned.opening && (await owned.opening.catch(() => undefined)) === current) owned.opening = undefined;
 				},
 				perform: async (action, currentLease, context, operation) => {
 					const checked = AbortSignal.any([signal, context.signal]);
 					checked.throwIfAborted();
 					if (action.kind === "browser" || (action.kind === "screenshot" && action.surface === "browser")) {
+						// A member may have closed the window since the last action.
+						if (browser?.isEnded?.()) {
+							browser = undefined;
+							driving = undefined;
+						}
 						if (!browser) {
-							const startup = new AbortController();
-							const cancel = (): void => startup.abort();
-							checked.addEventListener("abort", cancel, { once: true });
-							if (checked.aborted) cancel();
-							try {
-								browser = await manager.open(
-									binding,
-									{
-										profileId: descriptor.resources.browserProfileId as string,
-										grantId: descriptor.resources.browserGrantId as string,
-										version: descriptor.resources.browserGrantVersion as number,
-									},
-									AbortSignal.any([signal, startup.signal]),
-								);
-							} finally {
-								checked.removeEventListener("abort", cancel);
-							}
-							// Signed in wherever the company is; a failure here never blocks browsing.
-							detachLogins = await this.#logins
-								.attach(binding.screenId, browser.context as unknown as CompanyComputerLoginContext)
-								.catch(() => undefined);
+							browser = await attach(checked);
 							automation = undefined;
 						}
 					}
@@ -619,6 +887,8 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 			await this.#ensureScreen(grant.binding, signal);
 			const socket = await this.#desktop.connectRfb(grant.binding, signal);
 			socket.pause();
+			const screen = this.#screens.get(grant.binding.screenOrdinal);
+			if (screen && grant.mode !== "watch") this.#welcomeBrowser(screen);
 			return { socket, remainder: Buffer.alloc(0) };
 		},
 	};
@@ -666,6 +936,8 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		if (screen) {
 			screen.stop.abort();
 			clearTimeout(screen.timer);
+			clearTimeout(screen.requests);
+			clearTimeout(screen.welcome);
 		}
 		const drain = async (): Promise<void> => {
 			await screen?.lifecycle
@@ -682,6 +954,9 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 				this.#closePrivate(),
 				...sessions.map((session) => session.close()),
 			]);
+			// The screen's browser ends with the screen: after its runs have let go,
+			// before the desktop it draws on stops.
+			if (screen) results.push(...(await Promise.allSettled([this.#closeBrowser(screen)])));
 			if (screen) {
 				await screen.opening.catch(() => undefined);
 				try {

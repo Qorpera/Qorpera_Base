@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Renders the office backdrops in ../backdrops from the per-character SVG
+# Renders the office backdrops in ../backdrops from the per-figure SVG
 # templates here. Each template draws the traced avatar figure tone-on-tone over
 # a ground whose lightness follows the local day (night 6 %, day 95 %, dawn ramp
 # 05–08, dusk ramp 18–21; accent about five points off the ground, hue 225,
 # low saturation). Output: qorpera-screen-<character>-<HH>.png for every hour
 # plus qorpera-screen-<character>.png (the noon frame) as the static fallback.
 # Rendering uses a local headless Chromium/Chrome; nothing here runs on the node.
+# The file names are the ones every installed image carries and are historical.
+# The figure each one draws: bloom = heart, brain = planet, folio = acorn,
+# halo = crown, pebble = rocket, ribbon = flame, wisp = ghost (the table lives
+# in packages/runtime/src/cloud-company-computer-wallpapers.ts and is tested).
 here=$(cd "$(dirname "$0")" && pwd -P)
 out="${here}/../backdrops"
 chrome=${CHROME:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}

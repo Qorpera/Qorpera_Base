@@ -24,6 +24,7 @@ export async function createOfficeCombinedControl(root, { rebuild = false } = {}
 	const allowed = new Set([
 		"qorpera_describe_native_tool_authority", "qorpera_native_office_descriptor", "qorpera_native_office_screen",
 		"qorpera_native_office_operation", "qorpera_native_office_browser_grant", "qorpera_check_runtime_office_shared_surface",
+		"qorpera_runtime_office_screen_appearance", "qorpera_office_screen_browser_grant",
 		"qorpera_begin_native_tool_operation", "qorpera_complete_native_tool_operation", "qorpera_native_office_file_export",
 		"qorpera_native_office_file_import", "qorpera_native_company_file_write_source", "qorpera_native_company_file_write",
 		"qorpera_verify_company_path_file", "qorpera_verify_company_path_tree", "qorpera_authorize_native_company_object_upload",
