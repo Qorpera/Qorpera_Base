@@ -1,3 +1,4 @@
+import { parseCompanyComputerGuestLayout } from "./company-computer-adoption.ts";
 import {
 	COMPANY_COMPUTER_CONFIGURATION_FILES,
 	COMPANY_COMPUTER_CONFIGURATION_LIMITS,
@@ -421,7 +422,7 @@ export function parseCompanyComputerResetAdoptionReceipt(
 			throw new Error("generation");
 		uuid(r.allocationId);
 		for (const key of ["instanceSha256", "imageSha256", "bootstrapSha256"]) sha(r[key]);
-		record(r.layout, ["workbenchRoot", "desktopHome", "screenStateRoot", "browserProfilesRoot"]);
+		parseCompanyComputerGuestLayout(r.layout);
 		record(r.workbenchMount, ["filesystem", "source", "root", "mountPoint"]);
 		const origin = record(r.origin, ["bootId", "preparationSha256", "adoptionReceiptSha256"]);
 		sha(origin.preparationSha256);

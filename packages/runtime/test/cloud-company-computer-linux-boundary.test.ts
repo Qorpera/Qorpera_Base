@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
 	COMPANY_COMPUTER_ADOPTION_RECEIPT_PATH,
+	COMPANY_COMPUTER_GUEST_LAYOUT_KEYS,
 	companyComputerPreparationAdoptionReceipt,
 	companyComputerResetAdoptionReceiptPath,
 	parseCompanyComputerPreparationRequest,
@@ -8,6 +9,7 @@ import {
 import { CompanyComputerLinuxBoundary } from "@qorpera/runtime/cloud-company-computer-linux-boundary";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { computerBinding, computerId, computerScope } from "./fixtures/company-computer.ts";
+import { bootConfigurationFixture } from "./fixtures/company-computer-boot-configuration.ts";
 
 const physical = vi.hoisted(() => ({
 	host: vi.fn(),
@@ -151,62 +153,119 @@ describe("physical office preflight (kernel/filesystem mocked; separate Linux pr
 		await expect(boundary.assertOfficeReady(f.signal)).rejects.toThrow();
 		expect(f.registry.call).toHaveBeenCalledTimes(2);
 	});
-	it("binds a reset-born boot to the original attested receipt through the retained reset receipt", async () => {
-		const f = fixture();
-		const a = f.options.attestation;
-		const originBootId = a.bootId;
-		const resetBootId = computerId(73);
-		const retained = {
-			schema: "qorpera.office-state-reset-retained/v1",
-			state: "complete",
-			scope: f.options.scope,
-			computerGeneration: 1,
-			allocationId: a.allocationId,
-			instanceSha256: a.instanceSha256,
-			imageSha256: a.imageSha256,
-			bootstrapSha256: a.bootstrapSha256,
-			bootId: resetBootId,
-			layout: f.options.layout,
-			workbenchMount: f.options.workbenchMount,
-			origin: {
-				bootId: originBootId,
-				preparationSha256: "1".repeat(64),
-				adoptionReceiptSha256: a.adoptionReceiptSha256,
-			},
-			reset: {
-				resetId: computerId(74),
-				rootIncarnationId: computerId(75),
-				activationId: computerId(76),
-				predecessor: { transitionId: computerId(77), activationId: computerId(78), bootId: computerId(79) },
-			},
-		};
-		const originalText = JSON.stringify(f.receipt);
-		let retainedText = JSON.stringify(retained);
-		a.bootId = resetBootId;
-		physical.read.mockImplementation(async (path) =>
-			path.endsWith("boot_id")
-				? `${resetBootId}\n`
-				: path === companyComputerResetAdoptionReceiptPath(resetBootId)
-					? retainedText
-					: originalText,
-		);
-		const boundary = f.create();
-		await boundary.assertOfficeReady(f.signal);
-		expect(physical.artifact).toHaveBeenCalledWith(companyComputerResetAdoptionReceiptPath(resetBootId));
-		for (const broken of [
-			{ ...retained, bootId: computerId(80) },
-			{ ...retained, origin: { ...retained.origin, adoptionReceiptSha256: "9".repeat(64) } },
-			{ ...retained, origin: { ...retained.origin, bootId: computerId(81) } },
-			{ ...retained, allocationId: computerId(82) },
-			{ ...retained, layout: { ...retained.layout, workbenchRoot: "/srv/other" } },
-		]) {
-			retainedText = JSON.stringify(broken);
+	it.each([1, 2] as const)(
+		"admits a resumed boot of a layout version %i office through its retained boot receipt",
+		async (version) => {
+			// Service startup after power-off/resume: the attested receipt is the boot
+			// adoption receipt, which carries the company root on layout version 2.
+			const b = bootConfigurationFixture(
+				version === 1
+					? {}
+					: {
+							original: {
+								layoutVersion: 2,
+								entries: [".", "company", "desktop", "profiles", "screens", "workbench"].map((path) => ({
+									path,
+									kind: "directory" as const,
+									mode: 0o700,
+									bytes: 0,
+									sha256: null,
+								})),
+							},
+						},
+			);
+			const linux = JSON.parse(b.input.material.configuration).linux;
+			expect(Object.keys(linux.layout).sort()).toEqual([...COMPANY_COMPUTER_GUEST_LAYOUT_KEYS[version]].sort());
+			let text = `${JSON.stringify(b.receipt)}\n`;
+			expect(createHash("sha256").update(text).digest("hex")).toBe(linux.attestation.adoptionReceiptSha256);
+			physical.read.mockImplementation(async (path) =>
+				path.endsWith("boot_id") ? `${linux.attestation.bootId}\n` : text,
+			);
+			const create = (adoptionReceiptSha256: string) =>
+				new CompanyComputerLinuxBoundary({
+					...linux,
+					attestation: { ...linux.attestation, adoptionReceiptSha256 },
+					scope: b.original.scope,
+					computerGeneration: 1,
+					registry: {
+						call: vi.fn(async () => ({ state: "authorized", computerGeneration: 1, validForMs: 5000 })),
+					},
+				});
+			await create(linux.attestation.adoptionReceiptSha256).assertPhysicalReady(new AbortController().signal);
+			expect(physical.open.mock.calls.map(([path]) => path)).toEqual([
+				...Object.values(b.receipt.layout),
+				"/run/qorpera-office/private",
+			]);
+			// An attested receipt with a root outside the admitted key sets is still refused.
+			text = `${JSON.stringify({ ...b.receipt, layout: { ...b.receipt.layout, otherRoot: "/var/lib/qorpera-office/other" } })}\n`;
+			await expect(
+				create(createHash("sha256").update(text).digest("hex")).assertPhysicalReady(new AbortController().signal),
+			).rejects.toThrow("OFFICE_GUEST_READINESS_UNCONFIRMED");
+		},
+	);
+	it.each([1, 2] as const)(
+		"binds a reset-born boot to the original attested receipt through the retained reset receipt (layout version %i)",
+		async (version) => {
+			const f = fixture();
+			if (version === 2) {
+				Object.assign(f.options.layout, { companyRoot: "/srv/company" });
+				f.publish(f.receipt);
+			}
+			const a = f.options.attestation;
+			const originBootId = a.bootId;
+			const resetBootId = computerId(73);
+			const retained = {
+				schema: "qorpera.office-state-reset-retained/v1",
+				state: "complete",
+				scope: f.options.scope,
+				computerGeneration: 1,
+				allocationId: a.allocationId,
+				instanceSha256: a.instanceSha256,
+				imageSha256: a.imageSha256,
+				bootstrapSha256: a.bootstrapSha256,
+				bootId: resetBootId,
+				layout: f.options.layout,
+				workbenchMount: f.options.workbenchMount,
+				origin: {
+					bootId: originBootId,
+					preparationSha256: "1".repeat(64),
+					adoptionReceiptSha256: a.adoptionReceiptSha256,
+				},
+				reset: {
+					resetId: computerId(74),
+					rootIncarnationId: computerId(75),
+					activationId: computerId(76),
+					predecessor: { transitionId: computerId(77), activationId: computerId(78), bootId: computerId(79) },
+				},
+			};
+			const originalText = JSON.stringify(f.receipt);
+			let retainedText = JSON.stringify(retained);
+			a.bootId = resetBootId;
+			physical.read.mockImplementation(async (path) =>
+				path.endsWith("boot_id")
+					? `${resetBootId}\n`
+					: path === companyComputerResetAdoptionReceiptPath(resetBootId)
+						? retainedText
+						: originalText,
+			);
+			const boundary = f.create();
+			await boundary.assertOfficeReady(f.signal);
+			expect(physical.artifact).toHaveBeenCalledWith(companyComputerResetAdoptionReceiptPath(resetBootId));
+			for (const broken of [
+				{ ...retained, bootId: computerId(80) },
+				{ ...retained, origin: { ...retained.origin, adoptionReceiptSha256: "9".repeat(64) } },
+				{ ...retained, origin: { ...retained.origin, bootId: computerId(81) } },
+				{ ...retained, allocationId: computerId(82) },
+				{ ...retained, layout: { ...retained.layout, workbenchRoot: "/srv/other" } },
+			]) {
+				retainedText = JSON.stringify(broken);
+				await expect(boundary.assertOfficeReady(f.signal)).rejects.toThrow("OFFICE_GUEST_READINESS_UNCONFIRMED");
+			}
+			physical.artifact.mockRejectedValueOnce(new Error("missing"));
+			retainedText = JSON.stringify(retained);
 			await expect(boundary.assertOfficeReady(f.signal)).rejects.toThrow("OFFICE_GUEST_READINESS_UNCONFIRMED");
-		}
-		physical.artifact.mockRejectedValueOnce(new Error("missing"));
-		retainedText = JSON.stringify(retained);
-		await expect(boundary.assertOfficeReady(f.signal)).rejects.toThrow("OFFICE_GUEST_READINESS_UNCONFIRMED");
-	});
+		},
+	);
 	it.each(["tmpfs", "ramfs", "overlay"])("rejects volatile workbench filesystem %s", (filesystem) => {
 		const f = fixture();
 		f.options.workbenchMount.filesystem = filesystem;
