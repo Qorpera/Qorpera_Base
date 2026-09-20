@@ -270,17 +270,6 @@ describe("company execution notices", () => {
 	});
 	it.each([
 		[
-			"provider_usage_limit",
-			{
-				schema: "qorpera.member-notification.provider-usage-limit/v1",
-				provider: "openai",
-				resetsAt: timestamp,
-				runId: id(80),
-				connectionId: id(81),
-			},
-			"Model account usage limit reached",
-		],
-		[
 			"company_ceiling_tripped",
 			{
 				schema: "qorpera.member-notification.company-ceiling-tripped/v1",
@@ -327,6 +316,29 @@ describe("company execution notices", () => {
 		const f = setup([{ ...item(), kind, subject }]);
 		await settle();
 		expect(f.view.el.textContent).toBe(text);
+	});
+	it("gives a reached usage limit no popup and never acknowledges it: the failed run's card tells it", async () => {
+		const usage = {
+			...item(),
+			notificationId: id(79),
+			kind: "provider_usage_limit" as const,
+			subject: {
+				schema: "qorpera.member-notification.provider-usage-limit/v1" as const,
+				provider: "openai",
+				resetsAt: timestamp,
+				runId: id(80),
+				connectionId: id(81),
+			},
+		};
+		const alone = setup([usage]);
+		await settle();
+		expect(alone.view.el.hidden).toBe(true);
+		expect(alone.view.el.textContent).toBe("");
+		expect(alone.client.acknowledgeNotification).not.toHaveBeenCalled();
+		// Other notices still show, also behind a usage-limit one.
+		const mixed = setup([usage, item()]);
+		await settle();
+		expect(mixed.view.el.textContent).toBe("Execution sponsor changed");
 	});
 });
 

@@ -548,9 +548,9 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			errorNotice("sessions", state.sessionsError, () =>
 				button("Retry conversations", () => void company.refreshSessions(), { small: true }),
 			),
-			errorNotice("groups", state.groupsError, () =>
-				button("Retry group details", () => void company.refreshGroups(), { small: true }),
-			),
+			// Group details are decoration (names and figures of a group chat) and are read
+			// again with every conversation refresh. A failure never shows in the rail: the
+			// text would name cloud machinery, and there is nothing for the member to do.
 			errorNotice("company", state.error, () =>
 				button("Retry company", () => void company.refreshAll(), { small: true }),
 			),
