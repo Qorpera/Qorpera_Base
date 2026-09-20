@@ -55,15 +55,15 @@ const finalInterfaces = `${activeBundle}=${q(F.bundle)}
   and to_regclass('public.qorpera_company_room_members') is not null
   and to_regclass('public.qorpera_company_execution_pauses') is not null
   and to_regclass('public.qorpera_execution_sponsor_handoffs') is not null
-  and to_regclass('public.qorpera_responsibility_escalations') is not null
-  and to_regclass('public.qorpera_responsibility_escalation_signals') is not null
+  and to_regclass('public.qorpera_company_responsibilities') is null
+  and to_regclass('public.qorpera_responsibility_escalations') is null
   and to_regclass('public.qorpera_native_execution_launch_history') is not null
   and to_regclass('public.qorpera_native_provider_connection_lease_history') is not null
   and to_regprocedure('public.qorpera_read_native_wake(jsonb)') is not null
   and to_regprocedure('public.qorpera_send_coworker_message(jsonb,uuid,text,text)') is not null
-  and to_regprocedure('public.qorpera_escalate_responsibility(jsonb,jsonb)') is not null
-  and to_regprocedure('public.qorpera_list_responsibility_escalations(uuid,jsonb,uuid,uuid,integer,bigint)') is not null
-  and to_regprocedure('public.qorpera_resolve_responsibility_escalation(uuid,jsonb,uuid,text,bigint)') is not null
+  and to_regprocedure('public.qorpera_escalate_responsibility(jsonb,jsonb)') is null
+  and to_regprocedure('public.qorpera_manage_agent_routine(jsonb,jsonb)') is not null
+  and to_regprocedure('public.qorpera_self_approve_organization_proposal(jsonb,uuid)') is not null
   and to_regprocedure('public.qorpera_runtime_wake_policy(uuid)') is not null
   and to_regprocedure('public.qorpera_assert_wake_work_allowed(uuid)') is not null
   and to_regprocedure('public.qorpera_assert_wake_completion(uuid)') is not null
