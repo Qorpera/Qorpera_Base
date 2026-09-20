@@ -173,6 +173,62 @@ describe("account metadata refresh transport", () => {
 		await expect(f.client.refreshAccountMetadata!()).rejects.toThrow("could not be refreshed");
 		expect(f.calls).toHaveLength(1);
 	});
+	it("watches a pending attempt with backed-off reads instead of re-asking busy admission", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+			const f = setup();
+			let reads = 0;
+			const urls: string[] = [];
+			f.fetcher.mockImplementation(async (url: string | URL | Request) => {
+				urls.push(String(url).split("/").pop()!);
+				if (String(url).endsWith("qorpera_begin_native_account_refresh"))
+					return Response.json({ code: "55000", message: "Account refresh already in progress" }, { status: 500 });
+				if (String(url).endsWith("qorpera_get_native_account_refresh"))
+					return Response.json(++reads < 6 ? f.receipt : { ...f.receipt, status: "completed" });
+				throw new Error("Unexpected route");
+			});
+			const pending = f.client.refreshAccountMetadata!();
+			await vi.waitFor(() => expect(urls).toHaveLength(2));
+			await vi.advanceTimersByTimeAsync(1900);
+			// One admission and one read; nothing again inside the first two seconds.
+			expect(urls).toEqual(["qorpera_begin_native_account_refresh", "qorpera_get_native_account_refresh"]);
+			await vi.advanceTimersByTimeAsync(60_000);
+			await pending;
+			// The pending attempt is only read (2 s, 3 s, 4.5 s, 6.75 s, then every 10 s); admission is never re-asked.
+			expect(urls.filter((url) => url === "qorpera_begin_native_account_refresh")).toHaveLength(1);
+			expect(reads).toBe(6);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+	it("asks admission again only after the watched attempt is gone", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+			const f = setup();
+			let begins = 0,
+				reads = 0;
+			f.fetcher.mockImplementation(async (url: string | URL | Request) => {
+				if (String(url).endsWith("qorpera_begin_native_account_refresh"))
+					return ++begins === 1
+						? Response.json({ code: "55000", message: "Account refresh already in progress" }, { status: 500 })
+						: Response.json({ ...f.receipt, status: "completed" });
+				if (String(url).endsWith("qorpera_get_native_account_refresh")) {
+					reads++;
+					return Response.json(null);
+				}
+				throw new Error("Unexpected route");
+			});
+			const pending = f.client.refreshAccountMetadata!();
+			await vi.waitFor(() => expect(reads).toBe(1));
+			await vi.advanceTimersByTimeAsync(1900);
+			expect(begins).toBe(1);
+			await vi.advanceTimersByTimeAsync(200);
+			await pending;
+			expect(begins).toBe(2);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 	it("joins another tab's completed scoped attempt after busy admission", async () => {
 		const f = setup();
 		f.fetcher.mockResolvedValueOnce(Response.json({ code: "55000", message: "busy" }, { status: 400 }));
