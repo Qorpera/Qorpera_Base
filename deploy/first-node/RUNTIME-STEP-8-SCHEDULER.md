@@ -172,7 +172,7 @@ the task folder performs a bundle cut in the required order.
 
 ## 2026-09-20: responsibility objects retired from the cloud
 
-Migration `20260920060000_runtime_retire_responsibility_objects.sql`.
+Migration `20260920070000_runtime_retire_responsibility_objects.sql`.
 
 - The eight responsibility tables (objects, measures, measure sources, path
   resources, external operation grants, agent grants, escalations and their
@@ -206,11 +206,12 @@ Migration `20260920060000_runtime_retire_responsibility_objects.sql`.
 - Rollout preflight template now asserts the retirement and the new agent
   operations instead of the escalation objects.
 
-Runtime bundle v43, `9a2deb0ce37e76acba3e219ec3edd1855ad97000d49c08dc0f553648b1c0ab23`
-(activation `20260920061000`; slot taken from the shared bundle registry, after
-the Step 5 PR's v42), guest artifact 1,338,660 bytes,
-`d0d6fd07b86868e5ac82698fae38bc05de0761037ae45e924a36b40c7d7cc1af`, SQL context
-parity after 294 migrations. It must be re-cut once v42 is on master.
+Runtime bundle v46, `ca7b2b87ed78a004bab91c175dedb783cab1b19040b2235d3fe7101ce43d56e3`
+(migration `20260920070000`, activation `20260920071000`; the slot assigned in
+the shared bundle registry), guest artifact 1,338,660 bytes,
+`f1421f8f4528789dbf0910b5361fea13d2c56733968ca2bef583c0b85d89a639`, SQL context
+parity after 300 migrations on master `f98d3ce4e` (v42). It is re-cut when the
+slots before it are on master.
 
 Proofs: `310_company_organization_kernel.test.sql` rewritten to the new model
 (company born without the objects, the old document as an ordinary file that

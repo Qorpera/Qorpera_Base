@@ -139,7 +139,7 @@ select set_config('qorpera_test.bootstrap_agent_manifest',jsonb_build_object(
 		'bytes',octet_length(current_setting('qorpera_test.bootstrap_agent_document')))))::text,true);
 select set_config('qorpera_test.bootstrap_agent_manifest_sha',encode(extensions.digest(
 	convert_to(current_setting('qorpera_test.bootstrap_agent_manifest'),'utf8'),'sha256'),'hex'),true);
--- Responsibility documents were retired (20260920060000): a company is born
+-- Responsibility documents were retired (20260920070000): a company is born
 -- with its formation and its Co-Founder, and no responsibility documents.
 select set_config('qorpera_test.responsibility_documents',
 	(current_setting('qorpera_test.bootstrap_claim')::jsonb -> 'cofounderResponsibilityDocuments')::text,true);

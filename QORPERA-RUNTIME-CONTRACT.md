@@ -1700,6 +1700,22 @@ removal; until it is removed it MUST NOT be reachable from any member client.
   Co-Founder conversation no longer exists: the Co-Founder's thread is shared.
 - **Images.** An agent thread accepts the same attachments as an agent
   session did; team rooms stay text-only.
+- **The thread outlives edits of its agent (added 2026-09-19).** A wake or
+  room delivery is admitted at the agent's current version and MAY use a
+  session that records an earlier version of the same agent. This holds for
+  every session bound to an agent, not only its thread. A session that records
+  a version later than the run's is refused, and a member turn keeps its exact
+  version.
+- **An edit applies from the next run (added 2026-09-20).** Clients save agent
+  edits at once, and every save raises the agent's version. An edit MUST NOT
+  end a run. A run stays valid while its agent is active and the agent's
+  version is the run's version or a later one: it keeps its wake authority,
+  its Company File write authority and its Company Computer, and its job
+  specification stays the charter recorded for its own version. A wake that
+  waited in the queue through an edit is the agent's next run and is admitted
+  at the current version; a run never claims a version its agent has not
+  reached. Archiving or deleting an agent is not an edit and still ends its
+  runs.
 
 ### 2026-09-18 amendment: who runs an agent's first run
 
@@ -1820,7 +1836,7 @@ Implemented with this amendment: the web client's responsibility pages, routes,
 map and links are removed and the agent's description field is labelled
 "Responsibilities"; the employee overlay already orients an agent by its
 description (Step 8 record). The cloud retirement is migration
-`20260920060000_runtime_retire_responsibility_objects.sql`; it and the object
+`20260920070000_runtime_retire_responsibility_objects.sql`; it and the object
 gateway that stops building the responsibilities folder MUST be rolled out
 together, because a genesis tree is now five entries.
 
