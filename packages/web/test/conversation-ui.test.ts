@@ -354,6 +354,13 @@ describe("conversation UI boundaries", () => {
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 
+	it("places the company notices right above the composer, inside the conversation", () => {
+		const host = document.createElement("div");
+		const f = setup({ notificationHost: host });
+		expect(host.parentElement).toBe(f.view.el.querySelector(".thread-conversation"));
+		expect(host.nextElementSibling).toBe(f.view.el.querySelector("footer.composer"));
+	});
+
 	it.each([false, true])("restores notification focus with the computer open (entered: %s)", async (entered) => {
 		const host = document.createElement("div");
 		document.body.append(host);

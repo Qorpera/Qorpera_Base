@@ -56,20 +56,15 @@ export function mountApplication(
 	const topbar = h("header", { class: "topbar" });
 	const rail = h("aside", { id: "company-navigation", class: "rail", "aria-label": "Company navigation" });
 	const main = h("main", { class: "main", tabindex: "-1" });
-	const executionNotices = h("div", { class: "notification-stack", "aria-label": "Notifications" });
+	// Company notices are no popup: the open conversation places this above its composer.
+	const executionNotices = h("div", { class: "company-notices" });
 	const backdrop = h("button", {
 		type: "button",
 		class: "navigation-backdrop",
 		"aria-label": "Close company navigation",
 		onclick: () => setNavigationOpen(false),
 	});
-	const frame = h(
-		"div",
-		{ class: "frame" },
-		topbar,
-		executionNotices,
-		h("div", { class: "body" }, backdrop, rail, main),
-	);
+	const frame = h("div", { class: "frame" }, topbar, h("div", { class: "body" }, backdrop, rail, main));
 	const railLayout = new RailLayout(frame, rail);
 	rail.after(railLayout.el);
 	applyLanguage();
@@ -138,7 +133,6 @@ export function mountApplication(
 	}
 	function syncNavigation(): void {
 		main.inert = navigationOpen && isPhoneLayout();
-		executionNotices.inert = main.inert;
 	}
 	function onEscape(event: KeyboardEvent): void {
 		if (event.key === "Escape" && navigationOpen && !settings && !feedback && !event.defaultPrevented) {
