@@ -407,6 +407,7 @@ export function parseStaffExecutionActivity(value: unknown): HostedStaffExecutio
 			sourceKind: oneOf(activity.source_kind, EXECUTION_SOURCE_KINDS, "activity source"),
 			jobStatus: oneOf(activity.job_status, ["queued", "leased", "completed", "failed", "cancelled"], "job status"),
 			activity: oneOf(activity.activity, ["waiting", "working", "needs_attention"], "activity state"),
+			...(activity.phase === "writing" || activity.phase === "working" ? { phase: activity.phase } : {}),
 			updatedAt: timestamp(activity.updated_at, "activity time"),
 		};
 	});

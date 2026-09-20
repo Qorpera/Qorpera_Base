@@ -41,7 +41,8 @@ export class SessionExecutionView {
 	#room = false;
 	#serverSelection = false;
 	#serverConnectionId: string | undefined;
-	#usageHydrated = false;
+	#usageHydratedAt: number | undefined;
+	#refreshTimer: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(
 		company: CompanyController,
@@ -105,12 +106,15 @@ export class SessionExecutionView {
 			company.team?.capabilities.read &&
 			company.sessions.some((s) => s.sessionId === this.#sessionId);
 		if (!canRead) {
+			clearTimeout(this.#refreshTimer);
+			this.#refreshTimer = undefined;
 			this.#request?.abort();
 			this.#request = undefined;
 			this.#observed = undefined;
 			this.#provenance = [];
 			this.#started = false;
 			this.#busy = false;
+			this.#usageHydratedAt = undefined;
 			this.el.replaceChildren();
 			this.#renderKey = "";
 			return;
@@ -131,6 +135,8 @@ export class SessionExecutionView {
 			!company.sessions.some((s) => s.sessionId === this.#sessionId)
 		)
 			return;
+		clearTimeout(this.#refreshTimer);
+		this.#refreshTimer = undefined;
 		const request = new AbortController();
 		this.#request = request;
 		const signal = AbortSignal.any([request.signal, this.#lifetime.signal]);
@@ -147,10 +153,13 @@ export class SessionExecutionView {
 		this.#serverConnectionId = undefined;
 		const readConnections = async (): Promise<NativeExecutionConnections> => {
 			if (this.#serverSelection) {
-				if (!this.#usageHydrated && this.#native.refreshAccountMetadata) {
+				if (
+					this.#native.refreshAccountMetadata &&
+					(this.#usageHydratedAt === undefined || Date.now() - this.#usageHydratedAt >= 60_000)
+				) {
 					await this.#native.refreshAccountMetadata(signal);
 					signal.throwIfAborted();
-					this.#usageHydrated = true;
+					this.#usageHydratedAt = Date.now();
 				}
 				const connectionId = await this.#native.selectSessionAccount!(this.#sessionId, signal);
 				signal.throwIfAborted();
@@ -175,6 +184,37 @@ export class SessionExecutionView {
 		this.#choose();
 		this.#render();
 		this.#changed();
+		this.#scheduleRefresh();
+	}
+
+	#scheduleRefresh(): void {
+		clearTimeout(this.#refreshTimer);
+		const company = this.#company.store.get();
+		if (
+			this.#lifetime.signal.aborted ||
+			company.accessLost ||
+			!company.team?.capabilities.read ||
+			company.sessions.find((session) => session.sessionId === this.#sessionId)?.status !== "open"
+		)
+			return;
+		const now = Date.now();
+		const resets = (this.#observed?.connections ?? []).flatMap((connection) => [
+			connection.usageLimitResetAt,
+			...(connection.providerAccountUsage?.windows.map((window) => window.resetAt) ?? []),
+		]);
+		const nextReset = Math.min(...resets.map((reset) => Date.parse(reset ?? "")).filter((reset) => reset > now));
+		const delay = Math.max(1000, Math.min(30_000, nextReset - now + 250));
+		this.#refreshTimer = setTimeout(() => {
+			this.#refreshTimer = undefined;
+			const conversation = this.#company.conversation(this.#sessionId).get();
+			// Never replace the account while a write or its exact replay is outstanding.
+			if (conversation.sending || conversation.retrySend) {
+				this.#scheduleRefresh();
+				return;
+			}
+			if (nextReset <= Date.now()) this.#usageHydratedAt = undefined;
+			void this.refresh();
+		}, delay);
 	}
 
 	#available(): string[] {
@@ -307,6 +347,8 @@ export class SessionExecutionView {
 
 	dispose(): void {
 		this.#lifetime.abort();
+		clearTimeout(this.#refreshTimer);
+		this.#refreshTimer = undefined;
 		this.#request?.abort();
 		this.#observed = undefined;
 		this.#provenance = [];

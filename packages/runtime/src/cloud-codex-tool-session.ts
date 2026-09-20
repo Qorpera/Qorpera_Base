@@ -29,6 +29,7 @@ import {
 	type CloudRuntimeErrorCategory,
 	type CloudRuntimeObservability,
 	type CloudRuntimeObservationSpan,
+	type CloudRuntimeOutcome,
 	cloudRuntimeErrorCategory,
 } from "./cloud-runtime-observability.ts";
 import { CLOUD_RUNTIME_MODEL_POLICY, type CloudRuntimeReasoningEffort } from "./cloud-runtime-policy.ts";
@@ -36,6 +37,7 @@ import { CLOUD_RUNTIME_MODEL_POLICY, type CloudRuntimeReasoningEffort } from "./
 export const CLOUD_CODEX_BOUNDARY_VERSION = "0.147.0";
 const CLIENT_NAME = "qorpera_cloud_boundary";
 const DIRECT_TOOLS_CAPABILITY = "qorpera.native-direct-tools/v1";
+const MESSAGE_COMPOSITION_CAPABILITY = "qorpera.native-message-composition/v1";
 const MAX_WIRE_BYTES = 16 * 1024 * 1024;
 const MAX_MESSAGE_BYTES = 1024 * 1024;
 const MAX_CAPTURE_MESSAGE_BYTES = 12 * 1024 * 1024;
@@ -198,6 +200,10 @@ class CodexBoundaryRpc {
 		{ span?: CloudRuntimeObservationSpan; contextRecorded: boolean; finished: boolean }
 	>();
 	#turnObservation?: CloudRuntimeObservationSpan;
+	readonly #compositions = new Map<
+		string,
+		{ span?: CloudRuntimeObservationSpan; timer?: ReturnType<typeof setTimeout>; finished: boolean }
+	>();
 	#failureCategory: CloudRuntimeErrorCategory = "unknown";
 	#providerErrorCategory?: CloudRuntimeErrorCategory;
 	#providerUsageSignal: NativeRuntimeUsageSignal | null = null;
@@ -313,6 +319,8 @@ class CodexBoundaryRpc {
 	finishObservations(succeeded: boolean, signal: AbortSignal): void {
 		const category = signal.aborted ? cloudRuntimeErrorCategory(undefined, signal) : this.#failureCategory;
 		const failureStatus = category === "cancelled" ? "cancelled" : "failed";
+		for (const callId of this.#compositions.keys())
+			this.#finishComposition(callId, succeeded ? "unconfirmed" : failureStatus);
 		for (const observation of this.#fenceObservations.values()) {
 			if (observation.finished) continue;
 			observation.finished = true;
@@ -429,6 +437,7 @@ class CodexBoundaryRpc {
 	}
 
 	close(): void {
+		for (const callId of this.#compositions.keys()) this.#finishComposition(callId, "unconfirmed");
 		this.#closed = true;
 		this.#boundary.close();
 		for (const pending of this.#pending.values()) pending.reject(new Error("Native boundary transport closed"));
@@ -455,6 +464,68 @@ class CodexBoundaryRpc {
 		if (this.#boundary.captureImagesEnabled) this.#accountBytes(Buffer.byteLength(text) + 1);
 		if (this.#failure) return;
 		this.#child.stdin.write(`${text}\n`);
+	}
+
+	#finishComposition(callId: string, outcome: CloudRuntimeOutcome): void {
+		const composition = this.#compositions.get(callId);
+		if (!composition || composition.finished) return;
+		composition.finished = true;
+		clearTimeout(composition.timer);
+		try {
+			composition.span?.finish(outcome);
+		} catch {
+			// Optional presentation metadata cannot affect the native turn.
+		}
+	}
+
+	#observeComposition(value: unknown): void {
+		if (this.#finished || !this.#threadId || !this.#turnId || !this.#observability) return;
+		try {
+			const params = object(value);
+			if (
+				Object.keys(params).sort().join() !== "callId,phase,threadId,turnId" ||
+				params.threadId !== this.#threadId ||
+				params.turnId !== this.#turnId ||
+				(params.phase !== "start" && params.phase !== "finish")
+			)
+				return;
+			const callId = identifier(params.callId);
+			if (params.phase === "finish") {
+				// Remember early finishes too: replayed starts must not revive a completed item.
+				if (!this.#compositions.has(callId) && this.#compositions.size < MAX_REQUESTS)
+					this.#compositions.set(callId, { finished: true });
+				this.#finishComposition(callId, "succeeded");
+				return;
+			}
+			if (this.#compositions.has(callId) || this.#compositions.size >= MAX_REQUESTS) return;
+			const composition: {
+				span?: CloudRuntimeObservationSpan;
+				timer?: ReturnType<typeof setTimeout>;
+				finished: boolean;
+			} = { finished: false };
+			this.#compositions.set(callId, composition);
+			const renew = () => {
+				if (composition.finished || this.#failure || this.#closed || this.#finished) return;
+				try {
+					const previous = composition.span;
+					composition.span = this.#observability!.start("message_composition", {
+						logicalOperationSha256: createHash("sha256")
+							.update(JSON.stringify([this.#threadId, this.#turnId, callId]))
+							.digest("hex"),
+						parentAttemptId: this.#turnObservation?.attemptId,
+					});
+					// Start the next expiring pulse first so a long reply has no presentation gap.
+					previous?.finish("succeeded");
+				} catch {
+					// Missing telemetry falls back to Working in the member projection.
+				}
+				composition.timer = setTimeout(renew, 5_000);
+				composition.timer.unref?.();
+			};
+			renew();
+		} catch {
+			// Ignore malformed optional notifications without accepting their contents.
+		}
 	}
 
 	#observeDiagnostic(method: string, value: unknown): void {
@@ -612,6 +683,8 @@ class CodexBoundaryRpc {
 			} else this.#resolveCompleted();
 		} else if (message.method === "thread/tokenUsage/updated" || message.method === "error") {
 			this.#observeDiagnostic(message.method, message.params);
+		} else if (message.method === "qorpera/messageComposition") {
+			this.#observeComposition(message.params);
 		}
 		// Assistant text, reasoning, diffs, tool events and diagnostics are never delivered or returned.
 	}
@@ -804,6 +877,8 @@ export async function runCloudCodexToolSession(options: {
 			throw new Error("Unsupported Codex boundary version or missing native result fence");
 		if (!initialized.userAgent.endsWith(` ${CLOUD_NATIVE_RESULT_FENCE_SCHEMA} ${DIRECT_TOOLS_CAPABILITY}`))
 			throw new Error("Native boundary requires governed direct tools");
+		if (!initialized.userAgent.split(" ").includes(MESSAGE_COMPOSITION_CAPABILITY))
+			throw new Error("Native boundary requires message composition support");
 		if (
 			options.boundary.captureImagesEnabled &&
 			!initialized.userAgent.split(" ").includes(CLOUD_NATIVE_CAPTURE_IMAGES_CAPABILITY)

@@ -180,7 +180,7 @@ describe("cloud run UI", () => {
 		expect(sendMessage).toHaveBeenCalledExactlyOnceWith(session.sessionId, "Hello", expect.any(AbortSignal));
 		expect(read).toHaveBeenCalledTimes(2);
 		expect(view.el.textContent).not.toContain("cloud run");
-		expect(view.el.querySelector(".typing")).toBeNull();
+		expect(view.el.querySelector(".thread-activity")).toBeNull();
 		view.dispose();
 		await vi.advanceTimersByTimeAsync(20_000);
 		expect(read).toHaveBeenCalledTimes(2);
@@ -211,7 +211,7 @@ describe("cloud run UI", () => {
 			company.stop();
 		};
 		await settle();
-		expect(view.el.querySelector(".typing")).toBeNull();
+		expect(view.el.querySelector(".thread-activity")).toBeNull();
 		expect(document.querySelector('[aria-label="Stop"]')).toBeNull();
 		company.store.set({
 			activity: [
@@ -227,7 +227,7 @@ describe("cloud run UI", () => {
 		} as never);
 		view.update();
 		await settle();
-		expect(view.el.querySelector(".typing")).not.toBeNull();
+		expect(view.el.querySelector(".thread-activity")).not.toBeNull();
 		expect(view.el.textContent).not.toContain("queued");
 		// A draft takes the button back for sending.
 		const input = view.el.querySelector("textarea")!;
@@ -244,6 +244,6 @@ describe("cloud run UI", () => {
 		company.store.set({ activity: [] });
 		view.update();
 		await settle();
-		expect(view.el.querySelector(".typing")).toBeNull();
+		expect(view.el.querySelector(".thread-activity")).toBeNull();
 	});
 });
