@@ -85,6 +85,8 @@ beforeEach(() => {
 		return { ready: Promise.resolve(), exited: exited.promise, stop };
 	});
 	physical.connect.mockImplementation(async () => new Socket());
+	// Reset, not only cleared: a queued "once" request must never leak into the next test.
+	physical.browserRequest.mockReset();
 	physical.browserRequest.mockResolvedValue(false);
 	physical.browserLaunch.mockImplementation(
 		async (
@@ -379,9 +381,46 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 		expect(physical.launch).toHaveBeenCalledTimes(2);
 		expect(f.failure).not.toHaveBeenCalled();
 	});
+	it("has the browser open for a member who arrives and may use the screen, never for a watcher and never at desktop start", async () => {
+		const f = await fixture({ browser: true });
+		// A desktop with only a watcher costs no Chromium: nothing is asked of SQL.
+		await f.guest.viewer.connect({ ...f.sharedViewer(), mode: "watch" }, new AbortController().signal);
+		await new Promise((resolve) => setTimeout(resolve, 700));
+		expect(physical.browserLaunch).not.toHaveBeenCalled();
+		expect(f.screenBrowser.opens).toEqual([]);
+		// The first viewer with input permission: no click, no request file.
+		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
+		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
+		await vi.waitFor(() => expect(physical.browserLaunch).toHaveBeenCalledOnce(), { timeout: 3000 });
+		expect(physical.browserRequest.mock.results.every((result) => result.value !== true)).toBe(true);
+		expect(f.screenBrowser.opens).toEqual(["desktop"]);
+		// A later viewer joins the window that is already there.
+		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
+		await new Promise((resolve) => setTimeout(resolve, 700));
+		expect(physical.browserLaunch).toHaveBeenCalledOnce();
+		expect(f.screenBrowser.opens).toEqual(["desktop"]);
+		expect(f.failure).not.toHaveBeenCalled();
+	});
+	it("asks again quietly while SQL does not yet see the arriving member, then leaves it to the dock", async () => {
+		const f = await fixture({ browser: true });
+		f.screenBrowser.authorized = false;
+		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
+		const asked = () => f.order.filter((entry) => entry.startsWith("qorpera_office_screen_browser_grant")).length;
+		await vi.waitFor(() => expect(asked()).toBe(3), { timeout: 6000 });
+		await new Promise((resolve) => setTimeout(resolve, 600));
+		expect(asked()).toBe(3);
+		expect(physical.browserLaunch).not.toHaveBeenCalled();
+		expect(displays[0].stop).not.toHaveBeenCalled();
+		expect(f.failure).not.toHaveBeenCalled();
+		// The member's own click still works once SQL agrees.
+		f.screenBrowser.authorized = true;
+		physical.browserRequest.mockResolvedValueOnce(true);
+		await vi.waitFor(() => expect(physical.browserLaunch).toHaveBeenCalledOnce(), { timeout: 3000 });
+	}, 15000);
 	it("opens the screen's browser for a member at the dock with no run, and the agent's next run uses the same window", async () => {
 		const f = await fixture({ browser: true });
-		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
+		// A watcher's connection starts the desktop and opens nothing by itself.
+		await f.guest.viewer.connect({ ...f.sharedViewer(), mode: "watch" }, new AbortController().signal);
 		expect(physical.browserLaunch).not.toHaveBeenCalled();
 		// The dock icon: one empty request file, consumed once by the service.
 		physical.browserRequest.mockResolvedValueOnce(true);
@@ -404,8 +443,8 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 		expect(f.screenBrowser.opens).toEqual(["desktop"]);
 		expect(f.order.some((entry) => entry.startsWith("qorpera_native_office_browser_grant"))).toBe(true);
 
-		// Run end lets go of the browser. The member is still live on the screen with
-		// input permission, so SQL keeps authorizing the relay's per-second check and
+		// Run end lets go of the browser. SQL (this fixture) still sees a member live on
+		// the screen with input permission, so it keeps authorizing the relay's per-second check and
 		// the window stays.
 		await session.close();
 		const checks = () => f.order.filter((entry) => entry.startsWith("qorpera_office_screen_browser_grant")).length;
@@ -442,7 +481,8 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 	it("starts nothing when SQL refuses the screen's browser, and an agent without its own grant cannot start it either", async () => {
 		const f = await fixture({ browser: true });
 		f.screenBrowser.authorized = false;
-		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
+		// A watcher, so that only the dock request asks (an arriving member asks too; see above).
+		await f.guest.viewer.connect({ ...f.sharedViewer(), mode: "watch" }, new AbortController().signal);
 		physical.browserRequest.mockResolvedValueOnce(true);
 		await vi.waitFor(() =>
 			expect(f.order.filter((entry) => entry.startsWith("qorpera_office_screen_browser_grant"))).toHaveLength(1),

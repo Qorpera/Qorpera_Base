@@ -65,6 +65,8 @@ interface ScreenBrowser {
 	detachLogins?: () => Promise<void>;
 	closing?: Promise<void>;
 }
+/** Waits before each quiet attempt to open the browser for a member who just connected. */
+const WELCOME_BROWSER_DELAYS_MS = [300, 1200, 2500] as const;
 interface SharedScreen {
 	binding: CompanyComputerScreenBinding;
 	stop: AbortController;
@@ -74,6 +76,8 @@ interface SharedScreen {
 	timer?: ReturnType<typeof setTimeout>;
 	/** Polls the dock launcher's request file while the desktop is ready. */
 	requests?: ReturnType<typeof setTimeout>;
+	/** Pending attempt to have the browser open for a member who just arrived. */
+	welcome?: ReturnType<typeof setTimeout>;
 	browser?: ScreenBrowser;
 	lifecycle?: CompanyComputerScreenLifetime;
 }
@@ -343,6 +347,45 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 			}, 500);
 		};
 		poll();
+	}
+
+	/**
+	 * A member who opens a screen expects to land on the company browser, not on
+	 * an empty desktop. Six idle Chromiums would cost far more memory than six
+	 * idle desktops, so nothing opens when a desktop starts: the browser is asked
+	 * for when a viewer who may use the screen (shared or control, never watch)
+	 * connects, exactly as if that member had pressed the dock icon. SQL decides
+	 * as for the dock and records the same presence, and the browser still closes
+	 * once nobody entitled remains. The viewer row may become live a moment after
+	 * the socket opens, so a refusal is tried again a few times, quietly, and then
+	 * left to the dock icon.
+	 */
+	#welcomeBrowser(screen: SharedScreen): void {
+		if (screen.welcome !== undefined) return;
+		const attempt = (index: number): void => {
+			if (index >= WELCOME_BROWSER_DELAYS_MS.length) {
+				screen.welcome = undefined;
+				return;
+			}
+			screen.welcome = setTimeout(() => {
+				void (async (): Promise<boolean> => {
+					if (screen.closing || screen.stop.signal.aborted || this.#closing || this.#stop.signal.aborted)
+						return true;
+					await this.#ensureBrowser(
+						screen.binding,
+						"desktop",
+						AbortSignal.any([this.#stop.signal, screen.stop.signal]),
+					);
+					return true;
+				})()
+					.catch(() => false)
+					.then((settled) => {
+						if (settled || screen.closing || screen.stop.signal.aborted) screen.welcome = undefined;
+						else attempt(index + 1);
+					});
+			}, WELCOME_BROWSER_DELAYS_MS[index]);
+		};
+		attempt(0);
 	}
 
 	/**
@@ -806,6 +849,8 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 			await this.#ensureScreen(grant.binding, signal);
 			const socket = await this.#desktop.connectRfb(grant.binding, signal);
 			socket.pause();
+			const screen = this.#screens.get(grant.binding.screenOrdinal);
+			if (screen && grant.mode !== "watch") this.#welcomeBrowser(screen);
 			return { socket, remainder: Buffer.alloc(0) };
 		},
 	};
@@ -854,6 +899,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 			screen.stop.abort();
 			clearTimeout(screen.timer);
 			clearTimeout(screen.requests);
+			clearTimeout(screen.welcome);
 		}
 		const drain = async (): Promise<void> => {
 			await screen?.lifecycle
