@@ -87,6 +87,40 @@ const codes = new Set([
 	"PRIVATE_SURFACE_WORKBENCH_NOT_EMPTY",
 	"PRIVATE_SURFACE_TMPFS_REQUIRED",
 	"PRIVATE_SURFACE_SHARED_PATH",
+	// Why the service refused or ended a member viewer (constants only).
+	"OFFICE_SERVICE_NOT_READY",
+	"OFFICE_VIEWER_CHANGED",
+	"OFFICE_PRIVATE_VIEWER_CHANGED",
+	"OFFICE_DESKTOP_CONNECTION_CANCELLED",
+	"OFFICE_DESKTOP_RFB_UNAVAILABLE",
+	"OFFICE_GUEST_READINESS_UNCONFIRMED",
+	"INVALID_VIEW_HANDSHAKE",
+	"INVALID_VIEWER_TICKET",
+	"INVALID_VIEWER_GRANT",
+	"INVALID_PRIVATE_VIEWER_GRANT",
+	"INVALID_VIEWER_INPUT",
+	"MEMBER_TAKEOVER_REQUIRED",
+	"WATCHER_CANNOT_HOLD_CONTROL",
+	"VIEWER_LEASE_CHANGED",
+	"VIEWER_TICKET_UNCONFIRMED",
+	"VIEWER_INPUT_UNCONFIRMED",
+	"VIEWER_TRANSPORT_UNAVAILABLE",
+	"VIEWER_GATEWAY_CLOSED",
+	"VIEWER_CAPACITY_LIMIT",
+	"VIEWER_PRIVACY_FENCED",
+	"VIEWER_SCREEN_FENCED",
+	"VIEWER_EXPIRED",
+	"VIEWER_STOPPED",
+	"VIEWER_BACKPRESSURE_LIMIT",
+	"VIEWER_HELD_INPUT_LIMIT",
+	"VIEWER_INPUT_ALREADY_SETTLED",
+	"VIEWER_INPUT_NOT_FORWARDED",
+	"VIEWER_OUTPUT_UNAVAILABLE",
+	"VIEWER_UPGRADE_CLOSED",
+	"VIEWER_UPGRADE_PATH",
+	"VIEWER_UPGRADE_ORIGIN",
+	"VIEWER_UPGRADE_INVALID",
+	"UNKNOWN_VIEWER",
 ]);
 const categories: Record<string, string> = {
 	ENOENT: "filesystem-not-found",
@@ -187,4 +221,99 @@ export function companyComputerFailureDiagnostic(error: unknown): {
 	}
 	if (!result.categories.length) result.categories.push("unknown");
 	return result;
+}
+
+const viewerStages = ["upgrade", "capacity", "handshake", "redeem", "connect", "stream"] as const;
+/** Where the office service refused or ended a member viewer. */
+export type CompanyComputerViewerRefusalStage = (typeof viewerStages)[number];
+export type CompanyComputerViewerRefusalObserver = (stage: CompanyComputerViewerRefusalStage, error: unknown) => void;
+
+/** What admission looked like at the moment of a refusal; read-only facts. */
+export interface CompanyComputerViewerAdmissionState {
+	/** The service had completed its first reconciliation and was not stopping. */
+	serving: boolean;
+	supervisor?: {
+		failed: boolean;
+		/** Age of the current transport-unconfirmed gap, or null while the latest poll confirmed the state. */
+		unconfirmedMs: number | null;
+		unconfirmedPolls: number;
+		/** Last durable office revision the supervisor confirmed; 0 before the first one. */
+		confirmedRevision: number;
+	};
+}
+
+export interface CompanyComputerViewerRefusalRecord extends CompanyComputerViewerAdmissionState {
+	schema: "qorpera.office-viewer-refusal/v1";
+	stage: CompanyComputerViewerRefusalStage;
+	codes: string[];
+	categories: string[];
+	/** Identical refusals not written since the previous line for this stage and code. */
+	suppressed: number;
+}
+
+/**
+ * One journal line per refused or ended viewer, so a member who cannot open a
+ * screen leaves a trace on the machine that refused them. The line is the same
+ * closed projection as the service failure record: constant codes and
+ * categories only. It never holds a capability, token, member, screen, address,
+ * origin or any byte the client sent, and it changes nothing the client sees.
+ * A retrying client cannot flood the journal: each stage and leading code is
+ * written at most once per window, and the next line says how many were held.
+ */
+export function createCompanyComputerViewerRefusalReporter(options: {
+	write(line: string): void;
+	state?: () => CompanyComputerViewerAdmissionState;
+	now?: () => number;
+	windowMs?: number;
+}): CompanyComputerViewerRefusalObserver {
+	const windowMs = options.windowMs ?? 10_000;
+	if (!Number.isSafeInteger(windowMs) || windowMs < 1 || windowMs > 3_600_000)
+		throw new Error("INVALID_VIEWER_REFUSAL_WINDOW");
+	const now = options.now ?? Date.now;
+	const written = new Map<string, { at: number; suppressed: number }>();
+	return (stage, error) => {
+		try {
+			if (!viewerStages.includes(stage)) return;
+			const diagnostic = companyComputerFailureDiagnostic(error);
+			const key = `${stage}:${diagnostic.codes[0] ?? "UNLISTED"}`;
+			const at = now();
+			const previous = written.get(key);
+			if (previous && at >= previous.at && at - previous.at < windowMs) {
+				previous.suppressed = Math.min(previous.suppressed + 1, Number.MAX_SAFE_INTEGER);
+				return;
+			}
+			// Stages and codes are closed sets, so this map is bounded by construction.
+			written.set(key, { at, suppressed: 0 });
+			const state = options.state?.();
+			const supervisor = state?.supervisor;
+			const record: CompanyComputerViewerRefusalRecord = {
+				schema: "qorpera.office-viewer-refusal/v1",
+				stage,
+				codes: diagnostic.codes,
+				categories: diagnostic.categories,
+				suppressed: previous?.suppressed ?? 0,
+				serving: state?.serving === true,
+				...(supervisor
+					? {
+							supervisor: {
+								failed: supervisor.failed === true,
+								unconfirmedMs:
+									Number.isSafeInteger(supervisor.unconfirmedMs) && (supervisor.unconfirmedMs as number) >= 0
+										? supervisor.unconfirmedMs
+										: null,
+								unconfirmedPolls: Number.isSafeInteger(supervisor.unconfirmedPolls)
+									? supervisor.unconfirmedPolls
+									: 0,
+								confirmedRevision: Number.isSafeInteger(supervisor.confirmedRevision)
+									? supervisor.confirmedRevision
+									: 0,
+							},
+						}
+					: {}),
+			};
+			options.write(JSON.stringify(record));
+		} catch {
+			/* A diagnostic must never change what happens to the viewer. */
+		}
+	};
 }

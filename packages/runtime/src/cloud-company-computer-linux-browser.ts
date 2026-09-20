@@ -303,6 +303,9 @@ export function createCompanyComputerLinuxBrowserLaunch(options: {
 					"--disable-gpu",
 					"--disable-dev-shm-usage",
 					"--password-store=basic",
+					// The first thing a member sees: maximised above the dock by the
+					// window manager. The size only matters where nothing manages windows.
+					"--start-maximized",
 					"--window-size=1920,1200",
 				],
 			});

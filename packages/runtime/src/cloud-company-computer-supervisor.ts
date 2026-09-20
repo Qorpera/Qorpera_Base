@@ -251,6 +251,14 @@ export class CompanyComputerOfficeSupervisor {
 	get unconfirmedPolls(): number {
 		return this.#unconfirmedPolls;
 	}
+	/** Supervision has ended or a reconciliation failed; admission stays closed until the service is recovered. */
+	get failed(): boolean {
+		return this.#failed;
+	}
+	/** Last durable office revision a poll confirmed; 0 before the first reconciliation. */
+	get confirmedRevision(): number {
+		return this.#revision;
+	}
 	/** New viewer admission and new native work require a currently confirmed
 	 * durable state (contract §11.2: every effect is checked against the
 	 * current grant and resource scope, never against a stale observation). */

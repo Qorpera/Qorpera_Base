@@ -1,4 +1,13 @@
-import { CompanyComputerLinuxDesktopLauncher } from "@qorpera/runtime/cloud-company-computer-linux-desktop";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import {
+	COMPANY_COMPUTER_BROWSER_REQUEST_FILE,
+	CompanyComputerLinuxDesktopLauncher,
+	takeCompanyComputerBrowserRequest,
+} from "@qorpera/runtime/cloud-company-computer-linux-desktop";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { computerBinding, computerId, computerScope } from "./fixtures/company-computer.ts";
 
@@ -116,5 +125,114 @@ describe("Linux desktop admission (real XFCE lifecycle uses the explicit Linux p
 		await launcher.close();
 		await expect(launcher.launch(computerBinding(), new AbortController().signal)).rejects.toThrow();
 		expect(options.boundary.assertReady).not.toHaveBeenCalled();
+	});
+});
+
+describe("dock browser request (an empty file in the service-owned session directory)", () => {
+	const roots: string[] = [];
+	afterEach(async () => {
+		for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+	});
+	async function session() {
+		const root = await mkdtemp(join(await realpath(tmpdir()), "qorpera-browser-request-"));
+		roots.push(root);
+		const directory = join(root, "session");
+		await mkdir(directory);
+		return { root, directory, request: join(directory, COMPANY_COMPUTER_BROWSER_REQUEST_FILE) };
+	}
+
+	it("is consumed exactly once and carries nothing", async () => {
+		const f = await session();
+		expect(await takeCompanyComputerBrowserRequest(f.directory)).toBe(false);
+		await writeFile(f.request, "");
+		expect(await takeCompanyComputerBrowserRequest(f.directory)).toBe(true);
+		expect(await takeCompanyComputerBrowserRequest(f.directory)).toBe(false);
+		expect(await readdir(f.directory)).toEqual([]);
+		// Content is never read: a request with bytes in it is the same request.
+		await writeFile(f.request, "https://example.test/ --profile-directory=/srv/profiles/other");
+		expect(await takeCompanyComputerBrowserRequest(f.directory)).toBe(true);
+		expect(await readdir(f.directory)).toEqual([]);
+	});
+
+	it("never follows a link and never descends into a directory the desktop put at the name", async () => {
+		const f = await session();
+		const outside = join(f.root, "outside");
+		await writeFile(outside, "service-owned bytes");
+		await symlink(outside, f.request);
+		expect(await takeCompanyComputerBrowserRequest(f.directory)).toBe(false);
+		expect(await readFile(outside, "utf8")).toBe("service-owned bytes");
+		expect(await readdir(f.directory)).toEqual([]);
+		// An empty directory is only an entry and is removed; it was never a request.
+		await mkdir(f.request);
+		expect(await takeCompanyComputerBrowserRequest(f.directory)).toBe(false);
+		expect(await readdir(f.directory)).toEqual([]);
+		// A non-empty directory is left exactly as it is: nothing inside it, and
+		// nothing a link inside it points to, is ever removed.
+		const tree = join(f.root, "tree");
+		await mkdir(tree);
+		await writeFile(join(tree, "kept"), "kept");
+		await mkdir(f.request);
+		await writeFile(join(f.request, "inner"), "inner");
+		await symlink(tree, join(f.request, "link"));
+		expect(await takeCompanyComputerBrowserRequest(f.directory)).toBe(false);
+		expect(await readFile(join(tree, "kept"), "utf8")).toBe("kept");
+		expect((await readdir(f.request)).sort()).toEqual(["inner", "link"]);
+		// It only blocks further dock requests on this desktop.
+		expect(await takeCompanyComputerBrowserRequest(f.directory)).toBe(false);
+	});
+
+	it("removes a fifo as an entry without ever opening it", async () => {
+		const f = await session();
+		await promisify(execFile)("mkfifo", [f.request]);
+		// Opening a fifo without a writer would block forever; this returns.
+		expect(await takeCompanyComputerBrowserRequest(f.directory)).toBe(false);
+		expect(await readdir(f.directory)).toEqual([]);
+	});
+
+	it("touches nothing outside the entry when the desktop swaps it between the look and the removal", async () => {
+		const f = await session();
+		const tree = join(f.root, "service-data");
+		await mkdir(tree);
+		await writeFile(join(tree, "kept"), "kept");
+		const outside = join(f.root, "outside");
+		await writeFile(outside, "service-owned bytes");
+		const intact = async () => {
+			expect(await readFile(join(tree, "kept"), "utf8")).toBe("kept");
+			expect(await readFile(outside, "utf8")).toBe("service-owned bytes");
+		};
+		// Looked like a non-empty directory, became a link to service data.
+		await mkdir(f.request);
+		await writeFile(join(f.request, "inner"), "inner");
+		expect(
+			await takeCompanyComputerBrowserRequest(f.directory, async () => {
+				await rm(f.request, { recursive: true });
+				await symlink(tree, f.request);
+			}),
+		).toBe(false);
+		await intact();
+		await rm(f.request, { force: true });
+		// Looked like a request, became a link to a directory, then to a file.
+		for (const target of [tree, outside]) {
+			await writeFile(f.request, "");
+			expect(
+				await takeCompanyComputerBrowserRequest(f.directory, async () => {
+					await rm(f.request);
+					await symlink(target, f.request);
+				}),
+			).toBe(true);
+			await intact();
+			expect(await readdir(f.directory)).toEqual([]);
+		}
+		// Looked like a request, became a populated directory: left alone.
+		await writeFile(f.request, "");
+		expect(
+			await takeCompanyComputerBrowserRequest(f.directory, async () => {
+				await rm(f.request);
+				await mkdir(f.request);
+				await symlink(tree, join(f.request, "link"));
+			}),
+		).toBe(false);
+		await intact();
+		expect(await readdir(f.request)).toEqual(["link"]);
 	});
 });

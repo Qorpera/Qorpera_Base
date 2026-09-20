@@ -74,6 +74,16 @@ update public.qorpera_runtime_node_demands set released_at=clock_timestamp();
 select pg_temp.wake_assert(pg_temp.users_view(statement_timestamp()-interval '1 hour',statement_timestamp())#>>'{activity,observedActiveUsers}'='3','historical users survive release');
 select pg_temp.wake_assert(pg_temp.users_view(statement_timestamp()-interval '1 hour',statement_timestamp())#>>'{currentAllocation,associatedMembers}'='0','released computers no longer contribute current members');
 rollback to placement;
+-- A window row stands for packet_count packets; a per-packet row for one.
+select set_config('qorpera_test.users_inputs_before',pg_temp.users_view(statement_timestamp()-interval '1 hour',statement_timestamp())#>>'{activity,admittedControlInputs}',true);
+select set_config('qorpera_test.users_events_before',pg_temp.users_view(statement_timestamp()-interval '1 hour',statement_timestamp())#>>'{activity,recordedEvents}',true);
+insert into public.qorpera_runtime_office_viewer_inputs(viewer_id,sequence,input_commitment,packet_count,admitted_at)
+ select (select id from public.qorpera_runtime_office_viewers where mode='control' limit 1),90001,repeat('b',64),500,statement_timestamp()-interval '1 second';
+select pg_temp.wake_assert((pg_temp.users_view(statement_timestamp()-interval '1 hour',statement_timestamp())#>>'{activity,admittedControlInputs}')::bigint
+ =current_setting('qorpera_test.users_inputs_before')::bigint+500,'a window row counts its packets, not one');
+select pg_temp.wake_assert((pg_temp.users_view(statement_timestamp()-interval '1 hour',statement_timestamp())#>>'{activity,recordedEvents}')::bigint
+ =current_setting('qorpera_test.users_events_before')::bigint+1,'a window row is still one recorded event');
+rollback to placement;
 -- Boundary load fixture; it is not evidence of real input execution.
 insert into public.qorpera_runtime_office_viewer_inputs(viewer_id,sequence,input_commitment,admitted_at)
  select (select id from public.qorpera_runtime_office_viewers where mode='control' limit 1),n,repeat('a',64),statement_timestamp()-interval '1 second'

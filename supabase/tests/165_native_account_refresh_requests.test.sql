@@ -208,6 +208,20 @@ do $$ begin
       where id='16500000-0000-4000-8000-000000000060') then
         raise exception 'Completed refresh host did not establish an identity home'; end if;
 end $$;
+-- A recovery moves the identity and raises its epoch: the host of an earlier epoch holds a stale
+-- copy and is no home, until something completes there at the current epoch again.
+do $$ declare v_identity uuid; begin
+    select compute_identity_id into strict v_identity from public.qorpera_native_account_refresh_requests
+    where id=(current_setting('qorpera_test.refresh_request2')::jsonb->>'request_id')::uuid;
+    update public.qorpera_member_compute_identities set recovery_epoch=recovery_epoch+1 where id=v_identity;
+    if (select public.qorpera_runtime_identity_home_allocation(a) from public.qorpera_runtime_machine_allocations a
+      where id='16500000-0000-4000-8000-000000000060') then
+        raise exception 'A host of an earlier recovery epoch stayed an identity home'; end if;
+    update public.qorpera_member_compute_identities set recovery_epoch=recovery_epoch-1 where id=v_identity;
+    if not (select public.qorpera_runtime_identity_home_allocation(a) from public.qorpera_runtime_machine_allocations a
+      where id='16500000-0000-4000-8000-000000000060') then
+        raise exception 'The current epoch host lost its identity home'; end if;
+end $$;
 select set_config('request.jwt.claims','{"sub":"16500000-0000-4000-8000-000000000002","role":"authenticated"}',true);
 set local role authenticated;
 do $$ begin

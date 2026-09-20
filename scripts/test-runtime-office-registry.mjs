@@ -89,6 +89,8 @@ try {
 	console.log("PASS: single-use member viewing, takeover ownership, input sequencing, revocation, drain/reconnect and owner-only private handoff");
 	docker(psql, `${fixtureParts[0]}\n${setupParts[0]}\n${readFileSync(join(root, "supabase/tests/fixtures/runtime-office-shared-viewer-cases.sql"), "utf8")}\nrollback;`);
 	console.log("PASS: shared member input, independent agent leases, stable viewer epochs, audit sequencing, role checks and physical fences");
+	docker(psql, `${fixtureParts[0]}\n${setupParts[0]}\n${readFileSync(join(root, "supabase/tests/fixtures/runtime-office-screen-browser-cases.sql"), "utf8")}\nrollback;`);
+	console.log("PASS: screen-owned browser authority from an agent lease or a live input viewer, company-owned profile for members alone, recorded opens and revocation");
 	docker(psql, `${fixtureParts[0]}\n${setupParts[0]}\n${readFileSync(join(root, "supabase/tests/fixtures/runtime-office-member-views-cases.sql"), "utf8")}\nrollback;`);
 	console.log("PASS: member screen discovery, exact owner cancellation, ambiguous/expired ticket recovery and retained physical drain");
 	docker(psql, `${fixtureParts[0]}\n${setupParts[0]}\n${readFileSync(join(root, "supabase/tests/fixtures/runtime-machine-capacity-cases.sql"), "utf8")}\nrollback;`);
