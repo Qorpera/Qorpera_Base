@@ -999,6 +999,60 @@ it("stops before the final send when a read source loses audience permission", a
 	expect(f.deliveries.has("final")).toBe(false);
 });
 
+it("exports native composition over HTTP before delivery begins and closes it before the send", async () => {
+	const f = await fixture("company-composition", true);
+	const abort = new AbortController();
+	const execution = f.runtime.execute(f.request, f.identityRoot, abort.signal).then(
+		(result) => ({ result }),
+		(error: unknown) => ({ error }),
+	);
+	try {
+		await vi.waitFor(() =>
+			expect(f.observations.some((row) => row.operation === "message_composition" && row.phase === "start")).toBe(
+				true,
+			),
+		);
+		const started = f.observations.find((row) => row.operation === "message_composition")!;
+		const turn = f.observations.find((row) => row.operation === "model_turn" && row.phase === "start")!;
+		expect(started).toMatchObject({
+			phase: "start",
+			status: "started",
+			assignmentId: f.binding.assignmentId,
+			parentAttemptId: turn.attemptId,
+			inputBytes: null,
+			outputBytes: null,
+		});
+		expect(f.control.sendMessage).not.toHaveBeenCalled();
+		expect(f.observations.some((row) => row.operation === "send_message")).toBe(false);
+		await writeFile(`${f.evidence}.continue`, "continue");
+		const completed = await execution;
+		if ("error" in completed) throw completed.error;
+		expect(completed.result.delivery).toEqual({
+			messageCount: 2,
+			finalMessageId: f.deliveries.get("final")?.messageId,
+		});
+		const compositions = f.observations.filter((row) => row.operation === "message_composition");
+		expect(compositions).toHaveLength(2);
+		expect(compositions[1]).toMatchObject({
+			attemptId: started.attemptId,
+			parentAttemptId: turn.attemptId,
+			assignmentId: f.binding.assignmentId,
+			logicalOperationSha256: started.logicalOperationSha256,
+			phase: "finish",
+			status: "succeeded",
+		});
+		expect(f.observations.indexOf(compositions[1]!)).toBeLessThan(
+			f.observations.findIndex((row) => row.operation === "send_message" && row.phase === "start"),
+		);
+		expect(JSON.stringify(f.observations)).not.toMatch(
+			/PRIVATE_|SYNTHETIC_NATIVE_SECRET|thread_fixture|turn_fixture|company_call_0|Checking the company note/,
+		);
+	} finally {
+		abort.abort();
+		await execution;
+	}
+});
+
 it("exports only linked operational metadata from the complete governed native path", async () => {
 	const f = await fixture("company-runtime", true);
 	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);

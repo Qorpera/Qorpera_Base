@@ -41,7 +41,9 @@ export class SessionExecutionView {
 	#room = false;
 	#serverSelection = false;
 	#serverConnectionId: string | undefined;
-	#usageHydrated = false;
+	#usageHydratedAt: number | undefined;
+	#usageRequest: AbortController | undefined;
+	#refreshTimer: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(
 		company: CompanyController,
@@ -105,12 +107,17 @@ export class SessionExecutionView {
 			company.team?.capabilities.read &&
 			company.sessions.some((s) => s.sessionId === this.#sessionId);
 		if (!canRead) {
+			clearTimeout(this.#refreshTimer);
+			this.#refreshTimer = undefined;
 			this.#request?.abort();
 			this.#request = undefined;
 			this.#observed = undefined;
 			this.#provenance = [];
 			this.#started = false;
 			this.#busy = false;
+			this.#usageHydratedAt = undefined;
+			this.#usageRequest?.abort();
+			this.#usageRequest = undefined;
 			this.el.replaceChildren();
 			this.#renderKey = "";
 			return;
@@ -131,11 +138,12 @@ export class SessionExecutionView {
 			!company.sessions.some((s) => s.sessionId === this.#sessionId)
 		)
 			return;
+		clearTimeout(this.#refreshTimer);
+		this.#refreshTimer = undefined;
 		const request = new AbortController();
 		this.#request = request;
 		const signal = AbortSignal.any([request.signal, this.#lifetime.signal]);
 		this.#busy = true;
-		this.#observed = undefined;
 		this.#error = undefined;
 		this.#historyError = undefined;
 		this.#render();
@@ -147,11 +155,6 @@ export class SessionExecutionView {
 		this.#serverConnectionId = undefined;
 		const readConnections = async (): Promise<NativeExecutionConnections> => {
 			if (this.#serverSelection) {
-				if (!this.#usageHydrated && this.#native.refreshAccountMetadata) {
-					await this.#native.refreshAccountMetadata(signal);
-					signal.throwIfAborted();
-					this.#usageHydrated = true;
-				}
 				const connectionId = await this.#native.selectSessionAccount!(this.#sessionId, signal);
 				signal.throwIfAborted();
 				this.#serverConnectionId = connectionId;
@@ -164,7 +167,10 @@ export class SessionExecutionView {
 		]);
 		if (signal.aborted) return;
 		if (connections.status === "fulfilled") this.#observed = connections.value;
-		else this.#error = "Model accounts are unavailable. Refresh to try again.";
+		else {
+			this.#observed = undefined;
+			this.#error = "Model accounts are unavailable. Refresh to try again.";
+		}
 		if (provenance.status === "fulfilled") this.#provenance = provenance.value;
 		else {
 			this.#provenance = [];
@@ -175,6 +181,80 @@ export class SessionExecutionView {
 		this.#choose();
 		this.#render();
 		this.#changed();
+		this.#scheduleRefresh();
+		void this.#hydrateUsage();
+	}
+
+	async #hydrateUsage(): Promise<void> {
+		const company = this.#company.store.get();
+		const conversation = this.#company.conversation(this.#sessionId).get();
+		if (
+			!this.#native.refreshAccountMetadata ||
+			!this.#serverSelection ||
+			!this.#observed ||
+			this.#usageRequest ||
+			this.#lifetime.signal.aborted ||
+			company.accessLost ||
+			!company.team?.capabilities.read ||
+			company.sessions.find((session) => session.sessionId === this.#sessionId)?.status !== "open" ||
+			conversation.sending ||
+			conversation.retrySend ||
+			(this.#usageHydratedAt !== undefined && Date.now() - this.#usageHydratedAt < 60_000)
+		)
+			return;
+		const request = new AbortController();
+		this.#usageRequest = request;
+		const signal = AbortSignal.any([request.signal, this.#lifetime.signal]);
+		let refreshed = false;
+		try {
+			// Usage improves account ranking, but an unavailable refresh host must
+			// not prevent the cloud from selecting an already eligible account.
+			await this.#native.refreshAccountMetadata(signal);
+			signal.throwIfAborted();
+			refreshed = true;
+		} catch {
+			// Eligibility and known usage walls remain enforced by the account read.
+		} finally {
+			if (this.#usageRequest === request) {
+				this.#usageRequest = undefined;
+				this.#usageHydratedAt = Date.now();
+			}
+		}
+		if (signal.aborted || !refreshed) return;
+		const current = this.#company.conversation(this.#sessionId).get();
+		// Let a submission awaiting its account check start before another read.
+		// The timer also preserves the sponsor if that send becomes uncertain.
+		if (!this.#busy && !current.sending && !current.retrySend) this.#scheduleRefresh(1000);
+	}
+
+	#scheduleRefresh(maxDelay = 30_000): void {
+		clearTimeout(this.#refreshTimer);
+		const company = this.#company.store.get();
+		if (
+			this.#lifetime.signal.aborted ||
+			company.accessLost ||
+			!company.team?.capabilities.read ||
+			company.sessions.find((session) => session.sessionId === this.#sessionId)?.status !== "open"
+		)
+			return;
+		const now = Date.now();
+		const resets = (this.#observed?.connections ?? []).flatMap((connection) => [
+			connection.usageLimitResetAt,
+			...(connection.providerAccountUsage?.windows.map((window) => window.resetAt) ?? []),
+		]);
+		const nextReset = Math.min(...resets.map((reset) => Date.parse(reset ?? "")).filter((reset) => reset > now));
+		const delay = Math.max(1000, Math.min(maxDelay, nextReset - now + 250));
+		this.#refreshTimer = setTimeout(() => {
+			this.#refreshTimer = undefined;
+			const conversation = this.#company.conversation(this.#sessionId).get();
+			// Never replace the account while a write or its exact replay is outstanding.
+			if (conversation.sending || conversation.retrySend) {
+				this.#scheduleRefresh();
+				return;
+			}
+			if (nextReset <= Date.now()) this.#usageHydratedAt = undefined;
+			void this.refresh();
+		}, delay);
 	}
 
 	#available(): string[] {
@@ -265,6 +345,9 @@ export class SessionExecutionView {
 
 		replace(
 			this.el,
+			this.#busy && !conversation.retrySend
+				? h("p", { class: "muted", role: "status" }, "Checking model accounts…")
+				: null,
 			this.#error ? h("p", { class: "muted" }, this.#error) : null,
 			conversation.retrySend
 				? h(
@@ -307,7 +390,11 @@ export class SessionExecutionView {
 
 	dispose(): void {
 		this.#lifetime.abort();
+		clearTimeout(this.#refreshTimer);
+		this.#refreshTimer = undefined;
 		this.#request?.abort();
+		this.#usageRequest?.abort();
+		this.#usageRequest = undefined;
 		this.#observed = undefined;
 		this.#provenance = [];
 		this.el.replaceChildren();

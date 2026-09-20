@@ -9,6 +9,7 @@ import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
 import { createWebRoutines } from "../cloud/routines.ts";
 import { createWebSessionAttachments } from "../cloud/session-attachments.ts";
 import { createWebSessionInputWriter } from "../cloud/session-input.ts";
+import { createWebSessionModel } from "../cloud/session-model.ts";
 import { createWebSessionRunControl } from "../cloud/session-run-control.ts";
 import type { HostedProfile } from "../cloud/types.ts";
 import { h, notice, replace, spinner } from "../ui/dom.ts";
@@ -684,6 +685,12 @@ export function mountApplication(
 						route.id ?? "",
 						{
 							sendMessage: (id, text, signal) => controller.sendPrompt(id, text, signal),
+							sessionModel: createWebSessionModel(
+								cloud,
+								controller.userId,
+								controller.signal,
+								checkConversationAccess,
+							),
 							updateGroup: createGroupUpdater({
 								company: controller,
 								current: checkConversationAccess,

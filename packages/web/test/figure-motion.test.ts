@@ -108,7 +108,7 @@ function advance(milliseconds: number): void {
 	frames.clear();
 	for (const callback of callbacks) callback(now);
 }
-function mount(activity: "Idle" | "Working" = "Idle", identity = "agent"): HTMLElement {
+function mount(activity: "Idle" | "Working" | "Thinking" = "Idle", identity = "agent"): HTMLElement {
 	const host = document.createElement("span");
 	document.body.append(host);
 	mounted.push(mountFigureMotion(host, "crown", "#fcb51b", artwork, { activity, identity }));
@@ -116,6 +116,22 @@ function mount(activity: "Idle" | "Working" = "Idle", identity = "agent"): HTMLE
 }
 
 describe("2D studio playback in the shell", () => {
+	it("keeps writing dots synchronized across views, coloured and static under reduced motion", async () => {
+		const rail = mount("Thinking"),
+			thread = mount("Thinking");
+		await settle();
+		show([rail, thread]);
+		advance(2000);
+		expect(rail.querySelector("canvas")!.dataset.frame).toBe(thread.querySelector("canvas")!.dataset.frame);
+		expect(context.fillStyle).toBe("#fcb51b");
+		expect(pose("Thinking", 2).body).toBe(0);
+		expect(pose("Thinking", 2).dots).toHaveLength(3);
+		reduced.matches = true;
+		reduced.dispatchEvent(new Event("change"));
+		advance(1000);
+		expect(frames.size).toBe(0);
+		expect(rail.querySelector("canvas")!.dataset.frame).toBe(thread.querySelector("canvas")!.dataset.frame);
+	});
 	it("keeps the final Working frame in bounds immediately before the loop wraps", async () => {
 		const host = mount("Working", "loop-boundary");
 		await settle();

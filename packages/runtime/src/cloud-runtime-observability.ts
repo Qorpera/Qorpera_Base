@@ -12,6 +12,7 @@ export const CLOUD_RUNTIME_OPERATIONS = [
 	"company_delete",
 	"company_context",
 	"send_message",
+	"message_composition",
 	"connector",
 	"unknown_tool",
 	"run_authority",
