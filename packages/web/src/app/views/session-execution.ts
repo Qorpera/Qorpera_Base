@@ -42,6 +42,7 @@ export class SessionExecutionView {
 	#serverSelection = false;
 	#serverConnectionId: string | undefined;
 	#usageHydratedAt: number | undefined;
+	#usageRequest: AbortController | undefined;
 	#refreshTimer: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(
@@ -115,6 +116,8 @@ export class SessionExecutionView {
 			this.#started = false;
 			this.#busy = false;
 			this.#usageHydratedAt = undefined;
+			this.#usageRequest?.abort();
+			this.#usageRequest = undefined;
 			this.el.replaceChildren();
 			this.#renderKey = "";
 			return;
@@ -141,7 +144,6 @@ export class SessionExecutionView {
 		this.#request = request;
 		const signal = AbortSignal.any([request.signal, this.#lifetime.signal]);
 		this.#busy = true;
-		this.#observed = undefined;
 		this.#error = undefined;
 		this.#historyError = undefined;
 		this.#render();
@@ -153,14 +155,6 @@ export class SessionExecutionView {
 		this.#serverConnectionId = undefined;
 		const readConnections = async (): Promise<NativeExecutionConnections> => {
 			if (this.#serverSelection) {
-				if (
-					this.#native.refreshAccountMetadata &&
-					(this.#usageHydratedAt === undefined || Date.now() - this.#usageHydratedAt >= 60_000)
-				) {
-					await this.#native.refreshAccountMetadata(signal);
-					signal.throwIfAborted();
-					this.#usageHydratedAt = Date.now();
-				}
 				const connectionId = await this.#native.selectSessionAccount!(this.#sessionId, signal);
 				signal.throwIfAborted();
 				this.#serverConnectionId = connectionId;
@@ -173,7 +167,10 @@ export class SessionExecutionView {
 		]);
 		if (signal.aborted) return;
 		if (connections.status === "fulfilled") this.#observed = connections.value;
-		else this.#error = "Model accounts are unavailable. Refresh to try again.";
+		else {
+			this.#observed = undefined;
+			this.#error = "Model accounts are unavailable. Refresh to try again.";
+		}
 		if (provenance.status === "fulfilled") this.#provenance = provenance.value;
 		else {
 			this.#provenance = [];
@@ -185,9 +182,52 @@ export class SessionExecutionView {
 		this.#render();
 		this.#changed();
 		this.#scheduleRefresh();
+		void this.#hydrateUsage();
 	}
 
-	#scheduleRefresh(): void {
+	async #hydrateUsage(): Promise<void> {
+		const company = this.#company.store.get();
+		const conversation = this.#company.conversation(this.#sessionId).get();
+		if (
+			!this.#native.refreshAccountMetadata ||
+			!this.#serverSelection ||
+			!this.#observed ||
+			this.#usageRequest ||
+			this.#lifetime.signal.aborted ||
+			company.accessLost ||
+			!company.team?.capabilities.read ||
+			company.sessions.find((session) => session.sessionId === this.#sessionId)?.status !== "open" ||
+			conversation.sending ||
+			conversation.retrySend ||
+			(this.#usageHydratedAt !== undefined && Date.now() - this.#usageHydratedAt < 60_000)
+		)
+			return;
+		const request = new AbortController();
+		this.#usageRequest = request;
+		const signal = AbortSignal.any([request.signal, this.#lifetime.signal]);
+		let refreshed = false;
+		try {
+			// Usage improves account ranking, but an unavailable refresh host must
+			// not prevent the cloud from selecting an already eligible account.
+			await this.#native.refreshAccountMetadata(signal);
+			signal.throwIfAborted();
+			refreshed = true;
+		} catch {
+			// Eligibility and known usage walls remain enforced by the account read.
+		} finally {
+			if (this.#usageRequest === request) {
+				this.#usageRequest = undefined;
+				this.#usageHydratedAt = Date.now();
+			}
+		}
+		if (signal.aborted || !refreshed) return;
+		const current = this.#company.conversation(this.#sessionId).get();
+		// Let a submission awaiting its account check start before another read.
+		// The timer also preserves the sponsor if that send becomes uncertain.
+		if (!this.#busy && !current.sending && !current.retrySend) this.#scheduleRefresh(1000);
+	}
+
+	#scheduleRefresh(maxDelay = 30_000): void {
 		clearTimeout(this.#refreshTimer);
 		const company = this.#company.store.get();
 		if (
@@ -203,7 +243,7 @@ export class SessionExecutionView {
 			...(connection.providerAccountUsage?.windows.map((window) => window.resetAt) ?? []),
 		]);
 		const nextReset = Math.min(...resets.map((reset) => Date.parse(reset ?? "")).filter((reset) => reset > now));
-		const delay = Math.max(1000, Math.min(30_000, nextReset - now + 250));
+		const delay = Math.max(1000, Math.min(maxDelay, nextReset - now + 250));
 		this.#refreshTimer = setTimeout(() => {
 			this.#refreshTimer = undefined;
 			const conversation = this.#company.conversation(this.#sessionId).get();
@@ -305,6 +345,9 @@ export class SessionExecutionView {
 
 		replace(
 			this.el,
+			this.#busy && !conversation.retrySend
+				? h("p", { class: "muted", role: "status" }, "Checking model accounts…")
+				: null,
 			this.#error ? h("p", { class: "muted" }, this.#error) : null,
 			conversation.retrySend
 				? h(
@@ -350,6 +393,8 @@ export class SessionExecutionView {
 		clearTimeout(this.#refreshTimer);
 		this.#refreshTimer = undefined;
 		this.#request?.abort();
+		this.#usageRequest?.abort();
+		this.#usageRequest = undefined;
 		this.#observed = undefined;
 		this.#provenance = [];
 		this.el.replaceChildren();
