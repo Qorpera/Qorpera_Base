@@ -22,7 +22,7 @@ export interface WorkspaceActions {
 		draft: GroupChatDraft,
 		signal: AbortSignal,
 	) => Promise<void>;
-	/** Shared workspace surface for transient notifications owned by the view. */
+	/** Company notices (paused, limit reached). The conversation shows them above its composer. */
 	notificationHost?: HTMLElement;
 	computer?: WebCompanyComputer;
 	runControl?: WebSessionRunControl;

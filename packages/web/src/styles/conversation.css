@@ -85,6 +85,13 @@
 .message-prose > :last-child { margin-bottom: 0; }
 .thread-status { padding: 0 16px; }
 .thread-status .notice { margin: 6px 0; font-size: 12px; }
+/* Company notices: one quiet line above the composer, never a popup. */
+.company-notices { flex: none; padding: 0 16px; }
+.execution-notices[hidden] { display: none; }
+.company-notice { display: flex; align-items: center; gap: 12px; margin-top: 6px; padding: 8px 8px 8px 16px; border: 1px solid var(--border); border-radius: 18px; background: var(--hover); }
+.company-notice p { flex: 1; min-width: 0; margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--text-muted); overflow-wrap: anywhere; }
+.company-notice .btn { flex: none; border-radius: 999px; }
+.company-notice .btn[aria-disabled="true"] { opacity: .6; cursor: default; }
 .session-execution { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 6px 0; font-size: 12px; }
 .session-execution:empty { display: none; }
 .session-execution label { flex: 1 1 220px; min-width: 0; font-size: 11px; }

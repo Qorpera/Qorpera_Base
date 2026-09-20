@@ -295,6 +295,7 @@ export class ConversationView {
 			this.#header,
 			this.#messages,
 			this.#status,
+			...(actions.notificationHost ? [actions.notificationHost] : []),
 			this.#composerWrap,
 		);
 		this.#body = h("div", { class: "thread-body" }, this.#conversationPane);
