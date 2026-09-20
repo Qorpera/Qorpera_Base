@@ -10,7 +10,10 @@ import {
 	parseCompanyComputerViewerGrant,
 } from "@qorpera/cloud-client/cloud-company-computer-viewer";
 import { COMPANY_COMPUTER_VIEW_TOKEN } from "@qorpera/cloud-client/node/company-computer-view-protocol";
-import type { CompanyComputerViewerAuthority } from "./cloud-company-computer-viewer-gateway.ts";
+import {
+	type CompanyComputerViewerAuthority,
+	CompanyComputerViewerInputRefused,
+} from "./cloud-company-computer-viewer-gateway.ts";
 
 export interface CompanyComputerViewerRegistry {
 	call(
@@ -29,6 +32,10 @@ export interface CompanyComputerViewerRegistry {
 export const COMPANY_COMPUTER_VIEWER_INPUT_WINDOW_MS = 1_000;
 /** Hard bound on one ledger row. The gateway renews well before reaching it. */
 export const COMPANY_COMPUTER_VIEWER_INPUT_WINDOW_PACKETS = 4_096;
+/** Closed windows that may wait for a confirmed ledger row at once. */
+const COMPANY_COMPUTER_VIEWER_INPUT_REPORT_BACKLOG = 16;
+/** Total time the last windows may take to report after the viewer's release. */
+const COMPANY_COMPUTER_VIEWER_FINAL_REPORT_MS = 2_000;
 
 /** One ledger row: a contiguous sequence range and the keyed chain over its
  * per-packet commitments. Raw keys and pointer positions never leave memory. */
@@ -44,7 +51,7 @@ interface ViewerSession {
 	sequence: number;
 	window?: { first: number; count: number; chain: Hmac };
 	previousCommitment: string;
-	/** Closed windows whose ledger row is unconfirmed; retried once at release. */
+	/** Closed windows without a confirmed ledger row, oldest first. */
 	unreported: InputWindowReport[];
 	windowDeadline: number;
 	admitting: boolean;
@@ -146,8 +153,8 @@ export class CloudCompanyComputerViewerControl implements CompanyComputerViewerA
 				)
 			)
 				throw new Error("INVALID_VIEWER_INPUT");
-			// Input is only dispatched under a window the registry confirmed. A
-			// refused, failed or lapsed window is never reopened by a late packet.
+			// Input is only dispatched under a window the registry confirmed and
+			// that has not lapsed. A refusal closes input for good.
 			if (session.inputStopped || session.windowDeadline <= performance.now())
 				throw new Error("VIEWER_INPUT_WINDOW_CLOSED");
 			if (session.window && session.window.count >= COMPANY_COMPUTER_VIEWER_INPUT_WINDOW_PACKETS)
@@ -176,17 +183,32 @@ export class CloudCompanyComputerViewerControl implements CompanyComputerViewerA
 	}
 
 	/** One registry round trip per window, never per packet. It re-validates
-	 * everything per-packet admission validated and records the audit row of the
-	 * packets dispatched since the previous call. */
-	async admitInputWindow(value: CompanyComputerViewerGrant, signal: AbortSignal): Promise<{ validForMs: number }> {
+	 * everything per-packet admission validated and records one audit row.
+	 *
+	 * Only an explicit refusal stops input for good and throws
+	 * CompanyComputerViewerInputRefused. Any other failure (slow, lost, 5xx,
+	 * deadlock) grants nothing and keeps the report queued: the registry treats
+	 * an exact replay of its last row as already recorded, so the next call
+	 * resends the same report. The caller owns the retry budget. */
+	async admitInputWindow(
+		value: CompanyComputerViewerGrant,
+		signal: AbortSignal,
+	): Promise<{ validForMs: number; pendingReports: number }> {
 		const grant = this.#grant(value);
 		const session = this.#session(grant);
-		if ((grant.mode !== "control" && grant.mode !== "shared") || session.inputStopped || session.admitting)
+		if (session.inputStopped) throw new CompanyComputerViewerInputRefused();
+		if ((grant.mode !== "control" && grant.mode !== "shared") || session.admitting)
 			throw new Error("INVALID_VIEWER_INPUT");
 		// Close the open window before waiting. Packets dispatched while this
 		// call is in flight belong to the next window, so the ledger's sequence
-		// ranges stay contiguous: the next first sequence is this last plus one.
-		const report = this.#closeWindow(session);
+		// ranges stay contiguous. Reports are sent oldest first, one per call.
+		this.#closeWindow(session);
+		if (session.unreported.length > COMPANY_COMPUTER_VIEWER_INPUT_REPORT_BACKLOG) {
+			session.inputStopped = true;
+			session.windowDeadline = 0;
+			throw new CompanyComputerViewerInputRefused();
+		}
+		const report = session.unreported[0] ?? { first: session.sequence + 1, count: 0, commitment: null };
 		session.admitting = true;
 		const started = performance.now();
 		try {
@@ -200,10 +222,12 @@ export class CloudCompanyComputerViewerControl implements CompanyComputerViewerA
 				signal,
 				COMPANY_COMPUTER_VIEWER_INPUT_WINDOW_MS,
 			);
-			// A refusal still recorded the dispatched window; nothing is left to report.
+			// A refusal still recorded the dispatched window; nothing is left to resend.
 			if (isRecord(result) && Object.keys(result).join() === "state" && result.state === "refused") {
-				session.unreported = session.unreported.filter((entry) => entry !== report);
-				throw new Error("VIEWER_INPUT_REFUSED");
+				if (session.unreported[0] === report) session.unreported.shift();
+				session.inputStopped = true;
+				session.windowDeadline = 0;
+				throw new CompanyComputerViewerInputRefused();
 			}
 			if (
 				!isRecord(result) ||
@@ -214,24 +238,20 @@ export class CloudCompanyComputerViewerControl implements CompanyComputerViewerA
 				(result.validForMs as number) > COMPANY_COMPUTER_VIEWER_INPUT_WINDOW_MS
 			)
 				throw new Error("VIEWER_INPUT_UNCONFIRMED");
-			session.unreported = session.unreported.filter((entry) => entry !== report);
+			if (session.unreported[0] === report) session.unreported.shift();
 			const validForMs = result.validForMs as number;
+			// Authority counts from before the request. A late answer grants nothing.
 			if (started + validForMs <= performance.now()) throw new Error("VIEWER_INPUT_UNCONFIRMED");
 			this.#session(grant);
 			signal.throwIfAborted();
-			session.windowDeadline = started + validForMs;
-			return { validForMs };
-		} catch (error) {
-			// Refused, lost or late: this connection dispatches no further input.
-			session.inputStopped = true;
-			session.windowDeadline = 0;
-			throw error;
+			session.windowDeadline = Math.max(session.windowDeadline, started + validForMs);
+			return { validForMs, pendingReports: session.unreported.length };
 		} finally {
 			session.admitting = false;
 		}
 	}
 
-	#closeWindow(session: ViewerSession): InputWindowReport {
+	#closeWindow(session: ViewerSession): void {
 		const open = session.window;
 		session.window = undefined;
 		const report: InputWindowReport = open
@@ -245,7 +265,6 @@ export class CloudCompanyComputerViewerControl implements CompanyComputerViewerA
 			session.previousCommitment = report.commitment;
 			session.unreported.push(report);
 		}
-		return report;
 	}
 	#windowArgs(grant: CompanyComputerViewerGrant, report: InputWindowReport): Record<string, unknown> {
 		return {
@@ -260,14 +279,36 @@ export class CloudCompanyComputerViewerControl implements CompanyComputerViewerA
 		const grant = this.#grant(value);
 		const session = this.#sessions.get(grant.viewerSessionId);
 		this.#sessions.delete(grant.viewerSessionId);
+		let reports: InputWindowReport[] = [];
 		if (session) {
-			// Input dispatched under the last window has no later renewal to carry
-			// its audit. Report it before the viewer ends; the registry records a
-			// dispatched window even when it refuses further authority. A replayed
-			// range is refused there, so an unknown earlier outcome is never doubled.
 			session.inputStopped = true;
+			session.windowDeadline = 0;
 			this.#closeWindow(session);
-			for (const report of session.unreported.splice(0))
+			reports = session.unreported.splice(0);
+			// Commitments are final; the key is not needed to resend them.
+			session.key.fill(0);
+		}
+		// Release first: it hands a member takeover back to the agent and must
+		// never wait behind an audit report.
+		let failure: unknown;
+		let released = false;
+		try {
+			const result = await companyComputerRequest(
+				(s) => this.#control.call("qorpera_release_runtime_office_viewer", { p_grant: grant }, s),
+				signal,
+			);
+			released = isRecord(result) && Object.keys(result).join() === "state" && result.state === "released";
+		} catch (error) {
+			failure = error;
+		}
+		// Input dispatched under the last window has no later renewal to carry its
+		// audit. The registry records it for a viewer that ended moments ago and
+		// marks the row as recorded after refusal. Bounded, best effort, in order.
+		const deadline = performance.now() + COMPANY_COMPUTER_VIEWER_FINAL_REPORT_MS;
+		for (const report of reports) {
+			const budget = Math.floor(deadline - performance.now());
+			if (budget < 1) break;
+			try {
 				await companyComputerRequest(
 					(s) =>
 						this.#control.call(
@@ -276,22 +317,13 @@ export class CloudCompanyComputerViewerControl implements CompanyComputerViewerA
 							s,
 						),
 					signal,
-					2_000,
-				).catch(() => undefined);
-			session.key.fill(0);
+					budget,
+				);
+			} catch {
+				break;
+			}
 		}
-		const result = await companyComputerRequest(
-			(s) => this.#control.call("qorpera_release_runtime_office_viewer", { p_grant: grant }, s),
-			signal,
-		);
-		if (
-			!result ||
-			typeof result !== "object" ||
-			Array.isArray(result) ||
-			Object.keys(result).join() !== "state" ||
-			!("state" in result) ||
-			result.state !== "released"
-		)
-			throw new Error("VIEWER_RELEASE_UNCONFIRMED");
+		if (failure) throw failure;
+		if (!released) throw new Error("VIEWER_RELEASE_UNCONFIRMED");
 	}
 }

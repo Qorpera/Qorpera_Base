@@ -5,6 +5,7 @@ import {
 	CloudCompanyComputerViewerControl,
 	type CompanyComputerViewerRegistry,
 } from "@qorpera/runtime/cloud-company-computer-viewer-control";
+import { CompanyComputerViewerInputRefused } from "@qorpera/runtime/cloud-company-computer-viewer-gateway";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	computerBinding,
@@ -80,7 +81,7 @@ describe("durable viewer authority adapter", () => {
 				p_capability_sha256: createHash("sha256").update(f.token).digest("hex"),
 			});
 			expect(() => f.control.recordInput(grant, f.input)).toThrow("VIEWER_INPUT_WINDOW_CLOSED");
-			expect(await f.control.admitInputWindow(grant, f.signal)).toEqual({ validForMs: 1000 });
+			expect(await f.control.admitInputWindow(grant, f.signal)).toEqual({ validForMs: 1000, pendingReports: 0 });
 			expect(f.windows()[0][1]).toEqual({
 				p_grant: grant,
 				p_first_sequence: 1,
@@ -157,28 +158,54 @@ describe("durable viewer authority adapter", () => {
 		]);
 	});
 
-	it.each([
-		["a refusal", { state: "refused" }, "VIEWER_INPUT_REFUSED"],
-		["a lost response", new Error("response lost"), "response lost"],
-		["a longer validity than the bound", { state: "admitted", validForMs: 1001 }, "VIEWER_INPUT_UNCONFIRMED"],
-		[
-			"a per-packet reply",
-			{ state: "admitted", inputId: computerId(22), validForMs: 1000 },
-			"VIEWER_INPUT_UNCONFIRMED",
-		],
-	] as const)("stops input for good after %s and never retries the window", async (_name, reply, message) => {
+	it("stops input for good after an explicit refusal and never resends the recorded window", async () => {
 		const f = fixture();
 		const grant = await f.control.redeem(f.token, f.signal);
 		await f.control.admitInputWindow(grant, f.signal);
 		f.control.recordInput(grant, f.input);
-		if (reply instanceof Error) f.call.mockRejectedValueOnce(reply);
-		else f.call.mockResolvedValueOnce(reply);
-		await expect(f.control.admitInputWindow(grant, f.signal)).rejects.toThrow(message);
+		f.call.mockResolvedValueOnce({ state: "refused" });
+		await expect(f.control.admitInputWindow(grant, f.signal)).rejects.toBeInstanceOf(
+			CompanyComputerViewerInputRefused,
+		);
 		expect(() => f.control.recordInput(grant, { sequence: 2, bytes: pointerPacket(1) })).toThrow(
 			"VIEWER_INPUT_WINDOW_CLOSED",
 		);
-		await expect(f.control.admitInputWindow(grant, f.signal)).rejects.toThrow("INVALID_VIEWER_INPUT");
+		await expect(f.control.admitInputWindow(grant, f.signal)).rejects.toBeInstanceOf(
+			CompanyComputerViewerInputRefused,
+		);
+		await f.control.release(grant, f.signal);
 		expect(f.windows()).toHaveLength(2);
+	});
+
+	it.each([
+		["a lost response", new Error("response lost")],
+		["a longer validity than the bound", { state: "admitted", validForMs: 1001 }],
+		["a per-packet reply", { state: "admitted", inputId: computerId(22), validForMs: 1000 }],
+	] as const)("grants nothing after %s and resends the exact same report on the next call", async (_name, reply) => {
+		const f = fixture();
+		let now = 0;
+		vi.spyOn(performance, "now").mockImplementation(() => now);
+		const grant = await f.control.redeem(f.token, f.signal);
+		await f.control.admitInputWindow(grant, f.signal);
+		f.control.recordInput(grant, f.input);
+		now = 500;
+		if (reply instanceof Error) f.call.mockRejectedValueOnce(reply);
+		else f.call.mockResolvedValueOnce(reply);
+		const failure = await f.control.admitInputWindow(grant, f.signal).catch((error: unknown) => error);
+		expect(failure).toBeInstanceOf(Error);
+		expect(failure).not.toBeInstanceOf(CompanyComputerViewerInputRefused);
+		// The window that was confirmed earlier stays valid until its own deadline, and no longer.
+		expect(f.control.recordInput(grant, { sequence: 2, bytes: pointerPacket(1) })).toBe(1);
+		now = 1000;
+		expect(() => f.control.recordInput(grant, { sequence: 3, bytes: pointerPacket(2) })).toThrow(
+			"VIEWER_INPUT_WINDOW_CLOSED",
+		);
+		expect(await f.control.admitInputWindow(grant, f.signal)).toEqual({ validForMs: 1000, pendingReports: 1 });
+		expect(f.windows()[2][1]).toEqual(f.windows()[1][1]);
+		expect(f.windows()[2][1]).toMatchObject({ p_first_sequence: 1, p_count: 1 });
+		expect(await f.control.admitInputWindow(grant, f.signal)).toEqual({ validForMs: 1000, pendingReports: 0 });
+		expect(f.windows()[3][1]).toMatchObject({ p_first_sequence: 2, p_count: 1 });
+		expect(f.control.recordInput(grant, { sequence: 3, bytes: pointerPacket(2) })).toBe(1);
 	});
 
 	it("closes the window when its validity lapses and rejects a late confirmation", async () => {
@@ -223,31 +250,60 @@ describe("durable viewer authority adapter", () => {
 		expect(f.control.recordInput(f.grant, f.input)).toBe(1);
 	});
 
-	it("reports the last window at release, including one whose confirmation was lost", async () => {
+	it("releases first, then reports the last windows in order, including one whose confirmation was lost", async () => {
 		const f = fixture("shared");
 		const grant = await f.control.redeem(f.token, f.signal);
 		await f.control.admitInputWindow(grant, f.signal);
 		f.control.recordInput(grant, f.input);
 		f.call.mockRejectedValueOnce(new Error("response lost"));
 		await expect(f.control.admitInputWindow(grant, f.signal)).rejects.toThrow();
+		f.control.recordInput(grant, { sequence: 2, bytes: pointerPacket(4) });
 		await f.control.release(grant, f.signal);
 		expect(
-			f.call.mock.calls.slice(-2).map(([method, args]) => [method, args.p_first_sequence, args.p_count]),
+			f.call.mock.calls.slice(-3).map(([method, args]) => [method, args.p_first_sequence, args.p_count]),
 		).toEqual([
-			["qorpera_admit_runtime_office_viewer_input_window", 1, 1],
 			["qorpera_release_runtime_office_viewer", undefined, undefined],
+			["qorpera_admit_runtime_office_viewer_input_window", 1, 1],
+			["qorpera_admit_runtime_office_viewer_input_window", 2, 1],
 		]);
-		const open = fixture("shared");
-		await open.control.redeem(open.token, open.signal);
-		await open.control.admitInputWindow(open.grant, open.signal);
-		open.control.recordInput(open.grant, open.input);
-		open.call.mockImplementation(async (method) => {
-			if (method === "qorpera_release_runtime_office_viewer") return { state: "released" };
-			throw new Error("registry unavailable");
+	});
+
+	it("never lets a hanging final report delay or fail the release", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+		try {
+			const f = fixture("control");
+			await f.control.redeem(f.token, f.signal);
+			await f.control.admitInputWindow(f.grant, f.signal);
+			f.control.recordInput(f.grant, f.input);
+			const released = vi.fn();
+			f.call.mockImplementation((method) => {
+				if (method !== "qorpera_release_runtime_office_viewer") return new Promise(() => undefined);
+				released();
+				return Promise.resolve({ state: "released" });
+			});
+			const release = f.control.release(f.grant, f.signal);
+			await vi.advanceTimersByTimeAsync(0);
+			// The takeover is already handed back while the report is still hanging.
+			expect(released).toHaveBeenCalledOnce();
+			expect(f.windows().at(-1)?.[1]).toMatchObject({ p_first_sequence: 1, p_count: 1 });
+			await vi.advanceTimersByTimeAsync(2000);
+			await expect(release).resolves.toBeUndefined();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("still reports the last window when the release itself fails, and surfaces that failure", async () => {
+		const f = fixture("shared");
+		await f.control.redeem(f.token, f.signal);
+		await f.control.admitInputWindow(f.grant, f.signal);
+		f.control.recordInput(f.grant, f.input);
+		f.call.mockImplementation(async (method) => {
+			if (method === "qorpera_release_runtime_office_viewer") throw new Error("registry unavailable");
+			return { state: "refused" };
 		});
-		await open.control.release(open.grant, open.signal);
-		expect(open.windows().at(-1)?.[1]).toMatchObject({ p_first_sequence: 1, p_count: 1 });
-		expect(open.call.mock.calls.at(-1)?.[0]).toBe("qorpera_release_runtime_office_viewer");
+		await expect(f.control.release(f.grant, f.signal)).rejects.toThrow("registry unavailable");
+		expect(f.windows().at(-1)?.[1]).toMatchObject({ p_first_sequence: 1, p_count: 1 });
 	});
 
 	it("keeps expired or released sessions closed while exact cleanup remains possible", async () => {
