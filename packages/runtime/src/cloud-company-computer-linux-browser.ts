@@ -53,6 +53,82 @@ const policy = {
 	URLAllowlist: ["chrome://newtab/"],
 };
 
+/**
+ * Chromium's command line. Nothing here weakens the browser: its own sandbox,
+ * site isolation and web security stay on, and no `--test-type`, which would
+ * also silence the warnings about unsafe flags.
+ */
+export const COMPANY_COMPUTER_BROWSER_ARGUMENTS: readonly string[] = Object.freeze([
+	"--remote-debugging-pipe",
+	"--user-data-dir=/profile",
+	"--no-first-run",
+	"--no-default-browser-check",
+	"--disable-extensions",
+	"--disable-component-extensions-with-background-pages",
+	"--disable-background-networking",
+	"--disable-sync",
+	"--disable-quic",
+	"--disable-gpu",
+	"--disable-dev-shm-usage",
+	"--password-store=basic",
+	// The image's browser is Playwright's Chromium, which is a Chrome for Testing
+	// build. It tells every member that it "is only for automated testing". This
+	// switch is what Playwright itself passes to hide that bar; Chrome for Testing
+	// reads it for that bar only, and Chromium, Chrome and Edge ignore it. No
+	// managed policy hides the bar.
+	"--disable-infobars",
+	// One known window class whatever the build calls itself ("Chromium",
+	// "Google-chrome-for-testing", ...): the dock finds the browser by it.
+	"--class=qorpera-browser",
+	// The first thing a member sees: maximised above the dock by the
+	// window manager. The size only matters where nothing manages windows.
+	"--start-maximized",
+	"--window-size=1920,1200",
+]);
+
+/** A tab that shows nothing anybody would miss. */
+const emptyTab = (url: string): boolean =>
+	url === "" || url === "about:blank" || /^chrome:\/\/(newtab|new-tab-page|new-tab-page-third-party)\/?$/.test(url);
+
+/**
+ * One clean window when the browser starts. Every start brings the blank tab of
+ * its command line, and Chromium may bring back the pages of the last session,
+ * blank ones included, so blank tabs used to pile up start after start. Pages
+ * the company had open stay (and with them nothing of a sign-in is touched:
+ * this closes tabs, never cookies or profile data). Empty tabs go, except one
+ * when nothing else is open, because closing the last tab closes the browser.
+ *
+ * It asks the browser for its targets instead of Playwright's pages: a tab
+ * brought back from the last session reports its real address there before it
+ * has loaded. It runs once, before anybody can have typed into a tab, and it is
+ * tidying only: a failure leaves the tabs as they are.
+ */
+export async function tidyCompanyComputerBrowserTabs(
+	browser: Pick<Browser, "newBrowserCDPSession">,
+	signal: AbortSignal,
+): Promise<void> {
+	await cloudToolRequest(
+		async () => {
+			const control = await browser.newBrowserCDPSession();
+			try {
+				const { targetInfos } = await control.send("Target.getTargets");
+				const tabs = targetInfos.filter((target) => target.type === "page");
+				const empty = tabs.filter((target) => emptyTab(target.url));
+				// Nothing else is open: one empty tab stays (they all look the same).
+				if (empty.length === tabs.length) empty.shift();
+				for (const target of empty) {
+					signal.throwIfAborted();
+					await control.send("Target.closeTarget", { targetId: target.targetId });
+				}
+			} finally {
+				await control.detach().catch(() => undefined);
+			}
+		},
+		signal,
+		3000,
+	).catch(() => undefined);
+}
+
 /** Physical browser launch selected only by the cloud guest. Persistent profile
  * bytes are mounted exclusively here; HOME is ephemeral. The workbench is the
  * shared company surface. Only the assigned X socket and checked public HTTPS
@@ -291,22 +367,7 @@ export function createCompanyComputerLinuxBrowserLaunch(options: {
 					"/usr/local/lib/qorpera/office-browser-child.mjs",
 					"/run/qorpera/egress.sock",
 					"/usr/lib/qorpera-chromium/chrome",
-					"--remote-debugging-pipe",
-					"--user-data-dir=/profile",
-					"--no-first-run",
-					"--no-default-browser-check",
-					"--disable-extensions",
-					"--disable-component-extensions-with-background-pages",
-					"--disable-background-networking",
-					"--disable-sync",
-					"--disable-quic",
-					"--disable-gpu",
-					"--disable-dev-shm-usage",
-					"--password-store=basic",
-					// The first thing a member sees: maximised above the dock by the
-					// window manager. The size only matters where nothing manages windows.
-					"--start-maximized",
-					"--window-size=1920,1200",
+					...COMPANY_COMPUTER_BROWSER_ARGUMENTS,
 				],
 			});
 			exited = new Promise<void>((finished) => launched!.child.once("close", () => finished()));
@@ -333,6 +394,8 @@ export function createCompanyComputerLinuxBrowserLaunch(options: {
 				noDefaults: true,
 			});
 			await cloudToolRequest(check, signal);
+			await tidyCompanyComputerBrowserTabs(browser, signal);
+			signal.throwIfAborted();
 			const contexts = browser.contexts();
 			if (contexts.length !== 1) throw new Error("OFFICE_BROWSER_CONTEXT_MISMATCH");
 			return { context: contexts[0], close };

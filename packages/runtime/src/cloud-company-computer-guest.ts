@@ -302,6 +302,8 @@ export class CompanyComputerGuestAutomation {
 	readonly #tabIds = new Map<Page, string>();
 	#tabLease?: string;
 	#page?: Page;
+	/** A blank tab this run opened itself because the browser had none. */
+	#opened?: Page;
 
 	constructor(options: {
 		binding: CompanyComputerScreenBinding;
@@ -329,6 +331,25 @@ export class CompanyComputerGuestAutomation {
 	/** Cancellation closes the automation channel, not the persistent profile bytes. */
 	async stopBrowser(): Promise<void> {
 		await this.#browser?.close();
+	}
+
+	/**
+	 * The run lets go of a browser that stays open. A tab it opened itself and
+	 * never used goes with it, so runs do not leave blank tabs behind. Never a
+	 * tab somebody else opened, never one that shows a page, and never the only
+	 * tab: closing the last tab closes the browser. Tidying only; it cannot fail.
+	 */
+	async release(): Promise<void> {
+		const page = this.#opened;
+		this.#opened = undefined;
+		try {
+			if (!page || page.isClosed() || !this.#browser || this.#browser.isEnded?.()) return;
+			if (page.url() !== "about:blank") return;
+			if (this.#browser.context.pages().filter((open) => !open.isClosed()).length < 2) return;
+			await page.close();
+		} catch {
+			// The browser is closing or the tab is already gone.
+		}
 	}
 
 	async perform(
@@ -436,7 +457,8 @@ export class CompanyComputerGuestAutomation {
 			if (!this.#page) {
 				// Never silently choose a different tab after a popup or close.
 				if (pages.length > 1) throw new CompanyComputerActionNotStartedError("BROWSER_TAB_AMBIGUOUS");
-				this.#page = pages[0] ?? (await this.#browser.context.newPage());
+				if (!pages[0]) this.#opened = await this.#browser.context.newPage();
+				this.#page = pages[0] ?? this.#opened;
 				if (!this.#tabIds.has(this.#page)) this.#tabIds.set(this.#page, randomUUID());
 			}
 			const page = this.#page;

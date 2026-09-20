@@ -617,6 +617,54 @@ describe("Playwright/X11/shell adapters (test doubles, never the member machine)
 		expect(fixture.context.newPage).not.toHaveBeenCalled();
 	});
 
+	it("closes only the blank tab a run opened itself and never used, and never the last tab", async () => {
+		const blankPage = () => {
+			const opened = fakePage();
+			opened.page.url.mockReturnValue("about:blank");
+			return { ...opened.page, close: vi.fn(async () => undefined) };
+		};
+		// The browser had no tab: the run opens one, a member opens another, the run leaves.
+		const unused = automationFixture();
+		const mine = blankPage();
+		unused.context.pages.mockReturnValue([]);
+		unused.context.newPage.mockResolvedValue(mine as unknown as Page);
+		await unused.perform({ kind: "browser", action: "snapshot" });
+		unused.context.pages.mockReturnValue([mine, unused.page] as unknown as Page[]);
+		await unused.automation.release();
+		expect(mine.close).toHaveBeenCalledOnce();
+		await unused.automation.release();
+		expect(mine.close).toHaveBeenCalledOnce();
+
+		// The only tab stays: closing it would close the browser.
+		const only = automationFixture();
+		const last = blankPage();
+		only.context.pages.mockReturnValue([]);
+		only.context.newPage.mockResolvedValue(last as unknown as Page);
+		await only.perform({ kind: "browser", action: "snapshot" });
+		only.context.pages.mockReturnValue([last] as unknown as Page[]);
+		await only.automation.release();
+		expect(last.close).not.toHaveBeenCalled();
+
+		// A tab the run used shows a page, and a tab it did not open is not its to close.
+		const used = automationFixture();
+		const visited = blankPage();
+		used.context.pages.mockReturnValue([]);
+		used.context.newPage.mockResolvedValue(visited as unknown as Page);
+		await used.perform({ kind: "browser", action: "snapshot" });
+		visited.url.mockReturnValue("https://example.com/");
+		used.context.pages.mockReturnValue([visited, used.page] as unknown as Page[]);
+		await used.automation.release();
+		expect(visited.close).not.toHaveBeenCalled();
+		const joined = automationFixture();
+		const theirs = blankPage();
+		joined.context.pages.mockReturnValue([theirs] as unknown as Page[]);
+		await joined.perform({ kind: "browser", action: "snapshot" });
+		joined.context.pages.mockReturnValue([theirs, joined.page] as unknown as Page[]);
+		await joined.automation.release();
+		expect(theirs.close).not.toHaveBeenCalled();
+		expect(joined.context.newPage).not.toHaveBeenCalled();
+	});
+
 	it("targets navigation, page input and screenshots at the selected page after reordering and lease renewal", async () => {
 		const fixture = automationFixture();
 		const second = fakePage();
