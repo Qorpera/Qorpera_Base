@@ -37,7 +37,7 @@ import { debounce, Store } from "./state.ts";
 export type Deployment = "loading" | "ready" | "not-deployed" | "not-seeded" | "error";
 
 /** What a member sees of an agent's execution: see CompanyController.agentState. */
-export type AgentState = "idle" | "working" | "decision" | "failed";
+export type AgentState = "idle" | "working" | "writing" | "decision" | "failed";
 
 /** A run the server holds against the agent until someone dismisses it. */
 export interface FailedRun {
@@ -565,7 +565,8 @@ export class CompanyController {
 	agentState(staffAgentId: string | undefined): AgentState {
 		const row = this.activityFor(staffAgentId);
 		if (!row) return "idle";
-		if (row.activity !== "needs_attention") return "working";
+		if (row.activity !== "needs_attention")
+			return row.jobStatus === "leased" && row.phase === "writing" ? "writing" : "working";
 		if (!isFailedRun(row)) return "decision";
 		return this.store.get().recoveries[row.runId]?.proposalId ? "decision" : "failed";
 	}

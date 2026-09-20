@@ -308,7 +308,7 @@ it.each(["cofounder", "employee"] as const)(
 		const instructions = compileCloudNativeCompanyInstructions(context);
 		expect(instructions).not.toContain(hostile);
 		expect(instructions.includes("Hold the company-level responsibilities")).toBe(kind === "cofounder");
-		expect(instructions.includes("Own the outcomes in your job specification")).toBe(kind === "employee");
+		expect(instructions.includes("Own the outcomes written in your description")).toBe(kind === "employee");
 		for (const id of [context.identity.companyId, context.agent.id, context.runtimeBundle.sha256])
 			expect(instructions).toContain(id);
 		const encoded = composeCloudNativeCompanyPrompt(context);

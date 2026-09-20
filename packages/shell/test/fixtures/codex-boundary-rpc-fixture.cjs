@@ -1,6 +1,6 @@
 const { spawn } = require("node:child_process");
 const { createHash, randomUUID } = require("node:crypto");
-const { readFileSync, statSync, writeFileSync } = require("node:fs");
+const { existsSync, readFileSync, statSync, writeFileSync } = require("node:fs");
 const { join } = require("node:path");
 const { connect } = require("node:net");
 const { createInterface } = require("node:readline");
@@ -91,7 +91,7 @@ async function handle(message) {
 		if (mode === "oversized") { process.stdout.write("x".repeat(1024 * 1024 + 1)); return; }
 		if (mode === "wire-budget") { process.stderr.write("x".repeat(17 * 1024 * 1024)); return; }
 		if (mode === "missing-result") { write({ id: message.id }); return; }
-		write({ id: message.id, result: { userAgent: `qorpera_cloud_boundary/${mode === "wrong-version" ? "0.146.0" : "0.147.0"} (fixture)${mode === "capture-image" ? " qorpera.native-capture-images/v1" : ""}${mode === "missing-fence" ? "" : " qorpera.native-result-fence/v1"}${mode === "missing-fence" || mode === "missing-direct-tools" ? "" : " qorpera.native-direct-tools/v1"}` } });
+		write({ id: message.id, result: { userAgent: `qorpera_cloud_boundary/${mode === "wrong-version" ? "0.146.0" : "0.147.0"} (fixture)${mode === "capture-image" ? " qorpera.native-capture-images/v1" : ""}${mode === "missing-composition" ? "" : " qorpera.native-message-composition/v1"}${mode === "missing-fence" ? "" : " qorpera.native-result-fence/v1"}${mode === "missing-fence" || mode === "missing-direct-tools" ? "" : " qorpera.native-direct-tools/v1"}` } });
 	} else if (message.method === "config/read") {
 		if (mode === "unsafe-config") configuration.features.shell_tool = true;
 		if (mode === "extra-mcp") configuration.mcp_servers.uncontrolled = { url: "http://uncontrolled.invalid/mcp" };
@@ -115,6 +115,7 @@ async function handle(message) {
 		write({ id: message.id, result: { thread: { id: threadId } } });
 	} else if (message.method === "turn/start") {
 		turnParameters = message.params;
+		if (mode === "model-selection") writeFileSync(evidencePath, JSON.stringify({ threadParameters, turnParameters, configuration }));
 		if (mode === "turn-request-rejected") {
 			write({ id: message.id, error: { code: -32000, message: "PRIVATE_TURN_REQUEST_ERROR" } });
 			return;
@@ -130,6 +131,24 @@ async function handle(message) {
 			...(mode === "wrong-fence-turn" ? { turnId: "other_turn" } : {}),
 		});
 		if (mode === "turn-stalled") return;
+		if (mode.startsWith("composition-")) {
+			const composition = (phase, patch = {}) => write({ method: "qorpera/messageComposition", params: { threadId, turnId, callId: "public_reply", phase, ...patch } });
+			composition("start", { threadId: "other_thread" });
+			composition("start", { turnId: "other_turn" });
+			composition("start", { callId: "private_extra", text: "PRIVATE_ARGUMENT_CANARY" });
+			write({ method: "item/agentMessage/delta", params: { threadId, turnId, delta: "PRIVATE_OUTPUT_CANARY" } });
+			write({ method: "item/reasoning/summaryTextDelta", params: { threadId, turnId, delta: "PRIVATE_REASONING_CANARY" } });
+			if (mode === "composition-replayed") composition("finish");
+			composition("start");
+			composition("start");
+			writeFileSync(evidencePath, JSON.stringify({ stage: "composing" }));
+			while (!existsSync(`${evidencePath}.continue`)) await new Promise(resolve => setTimeout(resolve, 5));
+			if (mode === "composition-unfinished") { done(); return; }
+			composition("finish");
+			composition("start");
+			write({ id: "composition_send", method: "item/tool/call", params: { threadId, turnId, callId: "public_reply", namespace: "qorpera", tool: "send_message", arguments: { text: "PUBLIC_REPLY_CANARY" } } });
+			return;
+		}
 		if (mode === "observed-zero-usage") {
 			tokenUpdate(usage({ inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0 }));
 			done();
@@ -188,6 +207,11 @@ async function handle(message) {
 		} else if (mode === "capture-image") {
 			write({ id: "capture_request", method: "item/tool/call", params: { threadId, turnId, callId: "capture_1", namespace: "qorpera", tool: "computer_screenshot", arguments: {} } });
 		} else if (mode.startsWith("company-")) {
+			if (mode === "company-composition") {
+				write({ method: "qorpera/messageComposition", params: { threadId, turnId, callId: "company_call_0", phase: "start" } });
+				while (!existsSync(`${evidencePath}.continue`)) await new Promise(resolve => setTimeout(resolve, 5));
+				write({ method: "qorpera/messageComposition", params: { threadId, turnId, callId: "company_call_0", phase: "finish" } });
+			}
 			companyCall(0);
 		} else if (mode === "wrong-thread" || mode === "wrong-turn" || mode === "wrong-namespace" || mode === "pending-tool" || mode === "cloud-tool") {
 			write({ id: "tool_request", method: "item/tool/call", params: { threadId: mode === "wrong-thread" ? "other_thread" : threadId, turnId: mode === "wrong-turn" ? "other_turn" : turnId, callId: "call_1", namespace: mode === "wrong-namespace" ? "other_namespace" : "qorpera", tool: "read_document", arguments: {} } });
@@ -222,6 +246,8 @@ async function handle(message) {
 		const sha256 = createHash("sha256").update(pixels).digest("hex");
 		const fenced = await fence([{ kind: "function_call_output", callId: "capture_1", output: [{ type: "input_text", text: envelope.text }, { type: "input_image", sha256 }] }]);
 		writeFileSync(evidencePath, JSON.stringify({ imageBytes: pixels.length, sha256, fenced }));
+		done();
+	} else if (message.id === "composition_send") {
 		done();
 	} else if (message.id === "approval") {
 		writeFileSync(evidencePath, JSON.stringify(message));

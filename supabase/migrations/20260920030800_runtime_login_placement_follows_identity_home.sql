@@ -4,7 +4,7 @@
 -- request to a node, and the placement decision admits the machine there. The
 -- chooser already prefers the identity's home; the decision ignored homes for
 -- logins and insisted on the least-loaded node. They agreed only while the home
--- happened to be the least-loaded node. After 20260920004700 made a home mean
+-- happened to be the least-loaded node. After 20260920030700 made a home mean
 -- "completed here at the current recovery epoch", the home and the least-loaded
 -- node differed, the home's gateway was refused with NODE_NOT_PREFERRED, and no
 -- machine was ever reserved (found live 2026-09-20).

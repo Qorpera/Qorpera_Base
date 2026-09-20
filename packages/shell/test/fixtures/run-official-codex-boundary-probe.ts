@@ -7,6 +7,7 @@ const { runOfficialCodexBoundaryProbe } = await import("./official-codex-boundar
 const [command, ...args] = process.argv.slice(2);
 if (!command) throw new Error("Expected the pinned official Codex command");
 const proof = await runOfficialCodexBoundaryProbe([command, ...args], "provider-default");
+const solBoundaryProof = await runOfficialCodexBoundaryProbe([command, ...args], "gpt-5.6-sol");
 if (args.length > 0) throw new Error("Failure acceptance requires the native artifact directly");
 const failureChecks = [
 	await runNativeCodexFenceFailureProbe(command, "revoked"),
@@ -20,4 +21,6 @@ for (const mode of ["local", "remote", "remote-v2"] as const) {
 	providerDefaultCompactionChecks.push(await runNativeCodexCompactionProbe(command, mode, false, "provider-default"));
 	providerDefaultCompactionChecks.push(await runNativeCodexCompactionProbe(command, mode, true, "provider-default"));
 }
-console.log(JSON.stringify({ ...proof, failureChecks, compactionChecks, providerDefaultCompactionChecks }));
+console.log(
+	JSON.stringify({ ...proof, solBoundaryProof, failureChecks, compactionChecks, providerDefaultCompactionChecks }),
+);
