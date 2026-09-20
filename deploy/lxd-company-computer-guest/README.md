@@ -61,20 +61,65 @@ Inside the clean per-screen D-Bus environment, the helper applies the agent
 wallpaper (or the hourly set with xfdesktop's chronological cycle on the
 wrapper's `TZ`), scaled image, hidden desktop icons, enabled native desktop
 menu and disabled dock shadow **before** starting XFCE. Existing unrelated
-desktop settings remain intact. Before that, the wrapper rewrites the panel
-configuration in the screen state on every start: a top bar with the window
-list and clock, and a dock with exactly three launchers — Terminal
-(`xfce4-terminal` running Bash in the workbench), Files (`thunar` in the
-workbench) and Browser (`/usr/local/bin/qorpera-screen-browser`). The image
-must install `xfce4-terminal`, `thunar` and `tzdata`; no ambient/raw-NAS launch
+desktop settings remain intact.
+
+**One flat dock is the whole desktop chrome.** Before XFCE starts, the wrapper
+rewrites the panel configuration in the screen state on every start: a single
+opaque dark `xfce4-panel` along the bottom edge (full width, 80 px, 64 px
+icons) holding, centred between two expanding gaps, exactly three launchers —
+Browser (`/usr/local/bin/qorpera-screen-browser`), Files (`thunar` in the
+workbench) and Terminal (`xfce4-terminal` running Bash in the workbench) — the
+date at the left and an `HH:MM` clock at the right (equal widths, so the icons
+sit on the centre line). There is no top bar and no window list:
+the dock shows what is open, and the browser opens maximised. The image must
+install `xfce4-terminal`, `thunar` and `tzdata`; no ambient/raw-NAS launch
 command is ever written.
+
+- *Icons.* Original Qorpera drawings (`design/dock-icons.js`: a globe, a
+  folder, a prompt on coloured tiles; no third-party artwork). The wrapper
+  carries them as base64 PNG and writes them to `config/qorpera-dock/`, so they
+  need no icon theme and no SVG loader, and they reach existing computers with
+  the script. `design/render.sh` renders them and rewrites the block
+  between the wrapper's `DOCK-ICONS` markers; a test compares both.
+- *Look and click feedback.* `config/gtk-3.0/gtk.css`, every rule scoped to
+  `.xfce4-panel`: no button boxes, a soft hover and press highlight, and the
+  icon jumps 9 px while pressed and settles back with an overshoot
+  (`-gtk-icon-transform` transition). This needs no compositor. It is a press
+  jump, not a repeating launch bounce; a true dock bounce needs a dock
+  application (for example `plank`) in a new image.
+- *Running dots.* For each icon the wrapper writes an `idle` and a `running`
+  launcher entry (same command, the icon with or without the dot).
+  `qorpera-screen-xfce` starts a small watcher that blocks on
+  `xprop -root -spy _NET_CLIENT_LIST` (no polling) and, when windows appear or
+  go, copies the matching entry over the panel's launcher file; the panel
+  reloads a launcher whose file changed. Without `xprop`/`xdotool` there are
+  simply no dots.
+- *Made for VNC.* The helper turns off compositing, shadows, cycle previews and
+  desktop zoom, keeps one workspace, and resizes with an outline. Xtigervnc
+  runs with `-s 0` (never blanks). Its other defaults are already the
+  low-latency set (60 fps frame clock, automatic framebuffer comparison);
+  Tight quality and compression are chosen by the viewer client, not here.
+
+`design/mock.html` with `design/mock.png` and `design/mock-browser.png` is the
+look check at 1920×1200. Nothing under `design/` is packaged.
 
 **The company browser belongs to the screen.** The Browser launcher raises the
 browser window already on the screen. When there is none it touches the empty
 file `/run/qorpera/browser-request` (the service-owned `<runtime>/session`
 directory bound into the desktop), waits about ten seconds for a Chromium
-window and raises it; if none appears it says only that the browser could not
-be opened. The file carries no data and nothing in it is read. The office
+window and raises it; if none appears it asks once more and waits again. It
+never opens a dialog: after both waits the dock icon turns grey with an amber
+dot for six seconds and returns to normal. A second click while one launcher is
+waiting does nothing.
+
+**A member lands on the browser.** Nothing opens when a desktop starts (six
+idle Chromiums would cost far more memory than six idle desktops). When a
+viewer who may use the screen connects (`shared` or `control`, never `watch`),
+the service asks for the browser exactly as the dock icon would (opener
+`desktop`, same SQL decision, same presence record), retrying quietly at
+0.3 s, 1.5 s and 4 s in case SQL does not see the viewer yet, then leaving it to
+the dock. Chromium starts with `--start-maximized`, so the window manager fits
+it above the dock. It still closes once nobody entitled remains. The file carries no data and nothing in it is read. The office
 service polls for it while the desktop is ready, removes it without following
 links, and opens the screen agent's granted profile through the same contained
 launch as before (bwrap, managed policy, egress relay, profile custody). Whether
@@ -108,7 +153,12 @@ third-party sites stays a takeover (`control`) activity under the contract;
 nothing here records member keystrokes beyond the existing per-input commitment
 ledger. `qorpera-screen-browser` is guest code: an existing computer gets the
 new launcher through a guest-code revision, while the service side needs only
-the service file and the SQL migration.
+the service file and the SQL migration. The same holds for the dock:
+`qorpera-screen-session` (panel, look, icons), `qorpera-screen-xfce` (VNC
+settings, running dots) and `qorpera-screen-browser` reach existing computers
+through one guest-code revision and take effect at the next start of each
+desktop; the browser on arrival and `--start-maximized` live in
+`qorpera-company-computer-service.mjs` and need only a service revision.
 
 The wrapper is not an authorization or sandbox implementation. Directory-name
 validation cannot detect bind mounts, NAS aliases, unsafe inherited image

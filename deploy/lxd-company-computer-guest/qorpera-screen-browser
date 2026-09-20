@@ -9,6 +9,9 @@ set -euo pipefail
 # The request is an empty file in the service-owned runtime directory. It
 # carries no data: the service derives the screen, the profile and whether
 # anybody present may open it. A refusal looks the same from here as a failure.
+#
+# It never opens a dialog. It asks, waits, asks once more, and only after both
+# waits shows the quiet grey dock icon with an amber dot for a few seconds.
 if [[ -z ${DISPLAY:-} ]]; then
 	echo "usage: qorpera-screen-browser (inside a screen session)" >&2
 	exit 64
@@ -23,12 +26,31 @@ raise_browser() {
 	xdotool windowactivate "${windows[${#windows[@]} - 1]}"
 }
 if raise_browser; then exit 0; fi
-if [[ -d ${runtime_root} && ! -L ${runtime_root} ]]; then
-	: > "${runtime_root}/browser-request" 2>/dev/null || true
+# One launcher at a time per screen: impatient clicks do not stack up waits.
+if [[ -n ${XDG_RUNTIME_DIR:-} && -d ${XDG_RUNTIME_DIR} ]] && command -v flock >/dev/null 2>&1; then
+	exec 9> "${XDG_RUNTIME_DIR}/qorpera-screen-browser.lock"
+	flock -n 9 || exit 0
 fi
-# About ten seconds: a cold Chromium start on a busy office.
-for ((attempt = 0; attempt < 40; attempt++)); do
-	sleep 0.25
-	if raise_browser; then exit 0; fi
+# Two rounds of about ten seconds: a cold Chromium start on a busy office, and a
+# second request in case the first met a service that was not ready to look.
+for ((round = 0; round < 2; round++)); do
+	if [[ -d ${runtime_root} && ! -L ${runtime_root} ]]; then
+		: > "${runtime_root}/browser-request" 2>/dev/null || true
+	fi
+	for ((attempt = 0; attempt < 40; attempt++)); do
+		sleep 0.25
+		if raise_browser; then exit 0; fi
+	done
 done
-exec xmessage -center -buttons OK:0 -default OK "The browser could not be opened on this screen."
+# A real failure or a refusal. Say it on the dock icon itself, briefly.
+entry="${XDG_CONFIG_HOME:-}/xfce4/panel/launcher-6/qorpera-browser.desktop"
+dock_state="${XDG_CONFIG_HOME:-}/qorpera-dock"
+show() {
+	local template="${dock_state}/browser.$1.desktop"
+	[[ -f ${template} && ! -L ${template} && -f ${entry} && ! -L ${entry} ]] || return 0
+	cp -f -- "${template}" "${entry}.tmp.$$" && mv -f -- "${entry}.tmp.$$" "${entry}"
+}
+show failed || true
+sleep 6
+if raise_browser; then show running || true; else show idle || true; fi
+exit 1

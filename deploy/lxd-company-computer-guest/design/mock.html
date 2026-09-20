@@ -1,0 +1,52 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Qorpera screen dock: look check (not shipped)</title>
+<!-- 1920x1200 approximation of what qorpera-screen-session configures: one flat
+     dark xfce4-panel at the bottom edge (size 80, icon size 64), three original
+     launcher icons centred, running dot, hover highlight, date left, time right.
+     ?browser=1 draws the first impression: the company browser maximised. -->
+<style>
+	html, body { margin: 0; width: 1920px; height: 1200px; overflow: hidden; font-family: "DejaVu Sans", "Helvetica Neue", Arial, sans-serif; }
+	body { background: #0d0f14 url("../backdrops/qorpera-screen-pebble-23.png") center / cover no-repeat; }
+	.dock { position: absolute; left: 0; right: 0; bottom: 0; height: 80px; background: #101218; display: flex; align-items: center; gap: 14px; }
+	.launcher { width: 76px; height: 72px; border-radius: 16px; display: flex; align-items: center; justify-content: center; }
+	.launcher.hover { background: rgba(255, 255, 255, .10); }
+	.launcher svg { width: 64px; height: 64px; }
+	/* As in the panel: expanding separators either side of the launchers, then the clock. */
+	.spacer { flex: 1; }
+	.clock { width: 120px; margin: 0 13px; text-align: center; color: #c9ced8; font-size: 17px; font-weight: 600; letter-spacing: .02em; }
+	.window { position: absolute; left: 0; top: 0; width: 1920px; height: 1120px; background: #fff; display: none; flex-direction: column; }
+	.browser .window { display: flex; }
+	.title { height: 28px; background: #2b2e36; color: #d8dbe2; font-size: 13px; display: flex; align-items: center; justify-content: center; position: relative; }
+	.title i { position: absolute; right: 12px; top: 8px; width: 12px; height: 12px; border-radius: 6px; background: #5c6270; box-shadow: -22px 0 #5c6270, -44px 0 #5c6270; }
+	.tabs { height: 42px; background: #dee1e6; display: flex; align-items: flex-end; padding-left: 10px; }
+	.tab { width: 240px; height: 34px; background: #fff; border-radius: 10px 10px 0 0; font-size: 13px; color: #333; display: flex; align-items: center; padding-left: 14px; box-sizing: border-box; }
+	.bar { height: 44px; border-bottom: 1px solid #e3e5e8; display: flex; align-items: center; padding: 0 16px; }
+	.url { flex: 1; height: 30px; border-radius: 15px; background: #f1f3f4; margin-left: 96px; font-size: 14px; color: #5f6368; display: flex; align-items: center; padding-left: 16px; }
+	.page { flex: 1; display: flex; align-items: center; justify-content: center; color: #9aa0a6; font-size: 22px; }
+</style>
+<body>
+	<div class="window">
+		<div class="title">New Tab - Chromium<i></i></div>
+		<div class="tabs"><div class="tab">New Tab</div></div>
+		<div class="bar"><div class="url">Search or type a URL</div></div>
+		<div class="page">The company browser, maximised above the dock</div>
+	</div>
+	<div class="dock">
+		<div class="clock">Sun 20 Sep</div>
+		<div class="spacer"></div>
+		<div class="launcher" id="browser"></div>
+		<div class="launcher hover" id="files"></div>
+		<div class="launcher" id="terminal"></div>
+		<div class="spacer"></div>
+		<div class="clock">14:32</div>
+	</div>
+	<script src="dock-icons.js"></script>
+	<script>
+		const open = new URLSearchParams(location.search).has("browser");
+		document.body.classList.toggle("browser", open);
+		document.getElementById("terminal").innerHTML = dockIcon("terminal", "idle");
+		document.getElementById("files").innerHTML = dockIcon("files", "idle");
+		document.getElementById("browser").innerHTML = dockIcon("browser", open ? "running" : "idle");
+	</script>
+</body>
