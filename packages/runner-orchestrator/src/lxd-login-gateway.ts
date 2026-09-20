@@ -82,6 +82,9 @@ const RECOVERY_CREDENTIALS_DIRECTORY = `${RECOVERY_ROOT}/credentials`;
 const RECOVERY_PUBLIC_KEY_PATH = `${RECOVERY_ROOT}/recipient-public-key`;
 const RECOVERY_RESULT_PATH = `${RECOVERY_ROOT}/restore-result.json`;
 const RECOVERY_MASTER_KEY_PATH = "/var/lib/qorpera/identity/qorpera-native-provider-master-key";
+/** The guest writes this marker when a recovery completes here (identityRecoveryEpochFilename in the runtime). */
+const recoveryEpochMarkerPath = (epoch: number): string =>
+	`/var/lib/qorpera/identity/qorpera-identity-recovery-${epoch}.json`;
 /** RSA-3072 recipient key generated inside the pinned guest; only the public half is read back. */
 const RECOVERY_KEYGEN_SCRIPT = [
 	"set -e; umask 077",
@@ -1144,7 +1147,16 @@ export class LxdNativeLoginGateway {
 		// is already here, on every sign-in.
 		await this.#waitForGuestAgent(instanceName, signal);
 		await this.#waitForIdentityMount(instanceName, signal);
-		if (await this.#guestFileExists(instanceName, RECOVERY_MASTER_KEY_PATH, signal)) return;
+		// A recovery on another node raises the identity's epoch and leaves this node's
+		// copy behind: it still holds the key but not the marker of the current epoch, and
+		// the guest bootstrap refuses it. Such a copy is recovered like a missing one. The
+		// restore verifies the key already here against the release and only adds the marker.
+		if (
+			(await this.#guestFileExists(instanceName, RECOVERY_MASTER_KEY_PATH, signal)) &&
+			(state.epoch === 0 ||
+				(await this.#guestFileExists(instanceName, recoveryEpochMarkerPath(state.epoch), signal)))
+		)
+			return;
 		const registrar = this.#config.identityRecoveryRegistrarCapability,
 			guestManifestSha256 = this.#config.guestManifestSha256,
 			configuration = state.recoveryConfiguration;

@@ -426,6 +426,7 @@ describe("LXD native login gateway", () => {
 			boundary = fetchBoundary([]);
 		boundary.control.recovery = "established";
 		lxd.guestFiles.set("/var/lib/qorpera/identity/qorpera-native-provider-master-key", "present");
+		lxd.guestFiles.set("/var/lib/qorpera/identity/qorpera-identity-recovery-1.json", "present");
 		const gateway = new LxdNativeLoginGateway(config(root), lxd, boundary.fetchImplementation);
 		const body = {
 			schema: "qorpera.native-account-refresh/v1",
@@ -656,7 +657,7 @@ describe("LXD native login gateway", () => {
 			expect(lxd.execCalls.some((c) => c.join(" ").includes("systemctl restart"))).toBe(false);
 		}
 	});
-	it("skips recovery when the identity's master key is already on this node's volume", async () => {
+	it("skips recovery when this node's volume holds the identity at its current recovery epoch", async () => {
 		const root = await stateRoot(),
 			lxd = new FakeLxd(),
 			boundary = fetchBoundary([
@@ -664,9 +665,49 @@ describe("LXD native login gateway", () => {
 			]);
 		boundary.control.recovery = "established";
 		lxd.guestFiles.set("/var/lib/qorpera/identity/qorpera-native-provider-master-key", "present");
+		lxd.guestFiles.set("/var/lib/qorpera/identity/qorpera-identity-recovery-1.json", "present");
 		const gateway = new LxdNativeLoginGateway(config(root), lxd, boundary.fetchImplementation);
 		expect((await gateway.handle(loginRequest())).status).toBe(200);
 		expect(boundary.control.targetRegistrations).toHaveLength(0);
+	});
+	it("recovers a copy left behind by a recovery on another node: the key is here, the current epoch's marker is not", async () => {
+		const root = await stateRoot(),
+			lxd = new FakeLxd(),
+			boundary = fetchBoundary([
+				{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: null },
+			]);
+		boundary.control.recovery = "established";
+		lxd.guestFiles.set("/var/lib/qorpera/identity/qorpera-native-provider-master-key", "present");
+		const gateway = new LxdNativeLoginGateway(
+			{
+				...config(root),
+				identityRecoveryRegistrarCapability: "r".repeat(43),
+				guestManifestSha256: "m".repeat(64),
+				recoveryWaitMs: 5000,
+			},
+			lxd,
+			boundary.fetchImplementation,
+		);
+		expect((await gateway.handle(loginRequest())).status).toBe(200);
+		expect(boundary.control.targetRegistrations).toHaveLength(1);
+		const scripts = lxd.execCalls.map((c) => c.join(" "));
+		const restoreIndex = scripts.findIndex((s) => s.includes("qorpera-identity-recovery-restore.mjs")),
+			bootstrapIndex = scripts.findIndex((s) => s.includes("systemctl restart"));
+		expect(restoreIndex).toBeGreaterThan(-1);
+		expect(bootstrapIndex).toBeGreaterThan(restoreIndex);
+		expect(boundary.control.repins).toEqual([{ p_login_id: loginId }]);
+		// The key that was already here is never removed or replaced by the gateway.
+		expect(lxd.guestFiles.get("/var/lib/qorpera/identity/qorpera-native-provider-master-key")).toBe("present");
+	});
+	it("refuses a left-behind copy on a node without a registrar instead of mounting it for the bootstrap", async () => {
+		const root = await stateRoot(),
+			lxd = new FakeLxd(),
+			boundary = fetchBoundary([]);
+		boundary.control.recovery = "established";
+		lxd.guestFiles.set("/var/lib/qorpera/identity/qorpera-native-provider-master-key", "present");
+		const gateway = new LxdNativeLoginGateway(config(root), lxd, boundary.fetchImplementation);
+		expect((await gateway.handle(loginRequest())).status).toBe(503);
+		expect(lxd.execCalls.some((c) => c.join(" ").includes("systemctl restart"))).toBe(false);
 	});
 	it("service shutdown aborts an in-flight member request and retains its VM allocation for background cleanup", async () => {
 		const root = await stateRoot(),
