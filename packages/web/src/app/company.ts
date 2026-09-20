@@ -65,6 +65,18 @@ function stillFailed(
 const RECOVERY_RECHECK_MS = 25_000;
 const RECOVERY_RETRY_MS = 5_000;
 
+/** Why the cloud would not try a run again, in the member's words. */
+function retryRefusal(error: unknown): string {
+	const message = error instanceof Error ? error.message : "";
+	if (/author of the post/i.test(message)) return "Only the person who wrote the message can try it again.";
+	if (/sponsor|model account/i.test(message)) return "Select an active model account, then try again.";
+	if (/paused/i.test(message)) return "The company is paused. Resume it, then try again.";
+	if (/already resolved/i.test(message)) return "This run was already handled.";
+	if (/already answered|durable operation|open proposal/i.test(message))
+		return "This run already did part of its work, so it cannot be repeated. Send the message again instead.";
+	return "It could not be tried again. Send the message again instead.";
+}
+
 export interface CompanyState {
 	profile: HostedProfile;
 	team?: HostedProfileTeam;
@@ -80,6 +92,10 @@ export interface CompanyState {
 	activity: HostedStaffExecutionActivity[];
 	/** Details of the failed runs in `activity`, by run id. */
 	recoveries: Record<string, HostedRunRecovery>;
+	/** Try again in flight or refused, by run id. */
+	runRetries?: Record<string, { pending: boolean; error?: string }>;
+	/** The deployed cloud cannot retry a post into a room yet (no qorpera_retry_room_delivery). */
+	roomRetryUnavailable?: boolean;
 	realtime: RealtimePhase;
 	realtimeError?: string;
 	loading: boolean;
@@ -576,6 +592,52 @@ export class CompanyController {
 		if (!row || !isFailedRun(row)) return undefined;
 		const recovery = this.store.get().recoveries[row.runId];
 		return recovery ? { activity: row, recovery } : { activity: row };
+	}
+
+	/** Whether Try again can be offered for this run. A session turn is re-queued by the
+	 * recovery RPC; a post into a room needs qorpera_retry_room_delivery (20260920080000).
+	 * Routine and agent wakes, and proposal reviews, are not the member's to repeat. */
+	canRetryFailedRun(failed: FailedRun): boolean {
+		const state = this.store.get();
+		if (!state.team?.capabilities.write || state.accessLost || failed.recovery?.proposalId) return false;
+		if ((failed.recovery?.unsettledOperations ?? 0) > 0) return false;
+		if (failed.activity.sourceKind === "session_turn") return true;
+		return failed.activity.sourceKind === "room_delivery" && !state.roomRetryUnavailable;
+	}
+
+	/** Try again. The member's message stays as it is; the cloud runs it once more on
+	 * the model account selected in this conversation. */
+	async retryFailedRun(runId: string, sessionId: string): Promise<void> {
+		if (this.#stopped || this.store.get().runRetries?.[runId]?.pending) return;
+		const failed = this.store.get().activity.find((row) => row.runId === runId);
+		if (!failed) return;
+		const mark = (value: { pending: boolean; error?: string } | undefined) => {
+			const runRetries = { ...(this.store.get().runRetries ?? {}) };
+			if (value) runRetries[runId] = value;
+			else delete runRetries[runId];
+			this.store.set({ runRetries });
+		};
+		mark({ pending: true });
+		try {
+			if (failed.sourceKind === "session_turn") await this.#api.retryFailedRun(runId);
+			else {
+				const sponsor = this.conversation(sessionId, false).get().executionSponsor;
+				if (!sponsor) throw new Error("Select an active model account, then try again.");
+				await this.#api.retryRoomDelivery(runId, sponsor.sponsorBindingId, sponsor.sponsorVersion);
+			}
+			mark(undefined);
+		} catch (error) {
+			if (this.#stopped) return;
+			if (error instanceof CloudRpcError && error.missing) {
+				// The web is ahead of the deployed cloud. Say so once and stop offering it.
+				mark({ pending: false, error: "Trying again is not available yet. Send the message again instead." });
+				this.store.set({ roomRetryUnavailable: true });
+			} else mark({ pending: false, error: retryRefusal(error) });
+		} finally {
+			// Released or refused: someone may have settled the run first.
+			this.#recheckRecovery(runId);
+			await this.refreshActivity();
+		}
 	}
 
 	/** The run stops standing in for the agent's state; the next activity read shows what is left. */

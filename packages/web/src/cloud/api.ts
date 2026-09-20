@@ -20,8 +20,10 @@ import {
 	parseInvitation,
 	parsePendingSessionInputs,
 	parseProfiles,
+	parseRoomDeliveryRetry,
 	parseRunDismissal,
 	parseRunRecovery,
+	parseRunRetry,
 	parseSessionInputReceipt,
 	parseSessionPage,
 	parseStaffExecutionActivity,
@@ -228,6 +230,29 @@ export class CloudApi {
 		return this.cloud
 			.rpc("qorpera_resolve_failed_execution_run", { p_run_id: id, p_action: "discard" })
 			.then((value) => parseRunDismissal(value, id));
+	}
+
+	/** Try again for a session turn: the cloud releases the run and queues its inputs again. */
+	retryFailedRun(runId: string): Promise<void> {
+		const id = requiredUuid(runId, "Run id");
+		return this.cloud
+			.rpc("qorpera_resolve_failed_execution_run", { p_run_id: id, p_action: "retry" })
+			.then((value) => parseRunRetry(value, id));
+	}
+
+	/** Try again for a post into a room or agent thread (20260920080000): the member's
+	 * message stays as it is and wakes the same agent once more, on the account chosen
+	 * now. Only the author of the post may do this. */
+	retryRoomDelivery(runId: string, sponsorBindingId: string, sponsorVersion: number): Promise<void> {
+		const id = requiredUuid(runId, "Run id");
+		if (!Number.isSafeInteger(sponsorVersion) || sponsorVersion < 1) throw new Error("Model account is invalid.");
+		return this.cloud
+			.rpc("qorpera_retry_room_delivery", {
+				p_run_id: id,
+				p_sponsor_binding_id: requiredUuid(sponsorBindingId, "Model account"),
+				p_sponsor_version: sponsorVersion,
+			})
+			.then((value) => parseRoomDeliveryRetry(value, id));
 	}
 
 	// Conversations
