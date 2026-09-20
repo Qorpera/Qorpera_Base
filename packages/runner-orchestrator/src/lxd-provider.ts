@@ -1886,7 +1886,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			if (!journal || (journal.capacityRegistered && journal.nodeCapacity) || journal.physicalState === "reserving")
 				continue;
 			if (
-				(journal.deletionConfirmed || journal.physicalState === "stopped") &&
+				(journal.deletionConfirmed || journal.physicalState === "stopped" || journal.physicalState === "lost") &&
 				!(await this.#lxd.getInstance(journal.lxd.project, journal.instanceName, signal))
 			)
 				continue;

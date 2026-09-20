@@ -28,7 +28,10 @@ import { SessionRunView } from "./session-run.ts";
 
 // Popup dismissal lasts for this company controller, including conversation navigation.
 // It does not settle or discard work whose outcome still needs review.
-const dismissedRunNotifications = new WeakMap<CompanyController, Map<string, "hidden" | "clearing">>();
+const dismissedRunNotifications = new WeakMap<
+	CompanyController,
+	Map<string, { status: "hidden" | "clearing"; automatic: boolean }>
+>();
 
 export { renderAuthorizationCard } from "../../ui/authorization-card.ts";
 
@@ -878,7 +881,7 @@ export class ConversationView {
 		this.#seenFailure = undefined;
 		if (!runId) return;
 		const timer = window.setTimeout(() => {
-			// Re-read visibility, permissions and recovery before acknowledging this run.
+			// Re-read visibility and permissions before acknowledging this run.
 			this.update();
 			if (this.#seenFailure?.runId !== runId) return;
 			this.#seenFailure = undefined;
@@ -891,50 +894,22 @@ export class ConversationView {
 	#dismissRunNotification(runId: string | undefined, seen = false): void {
 		if (!runId || this.#notificationSignal.aborted) return;
 		let dismissed = dismissedRunNotifications.get(this.#company);
-		if (dismissed?.get(runId) === "clearing" || (!seen && dismissed?.has(runId))) return;
+		const previous = dismissed?.get(runId);
+		if (previous?.status === "clearing" || (!seen && previous && !previous.automatic)) return;
 		if (!dismissed) {
 			dismissed = new Map();
 			dismissedRunNotifications.set(this.#company, dismissed);
 		}
-		dismissed.set(runId, "clearing");
+		dismissed.set(runId, { status: "clearing", automatic: seen });
 		this.update();
-		// Recovery details can arrive after the popup. Follow this one dismissal
-		// across navigation, but stop waiting on permission loss or company teardown.
-		const clearSettledFailure = () => {
-			const state = this.#company.store.get();
-			const currentSession = state.sessions.find((item) => item.sessionId === this.#sessionId);
-			const current = this.#company.failedRunFor(currentSession?.staffAgentId);
-			const canClear =
-				!this.#company.signal.aborted &&
-				!state.accessLost &&
-				state.team?.capabilities.write &&
-				state.team.capabilities.read &&
-				currentSession?.status === "open" &&
-				current?.activity.runId === runId &&
-				current.activity.sourceKind !== "proposal_review";
-			if (canClear && !current.recovery) return;
-			// A newer failure can temporarily replace this one in the activity RPC.
-			// Let this run be dismissed again if it returns before we could clear it.
-			if (current?.activity.runId !== runId) dismissed.delete(runId);
-			else dismissed.set(runId, "hidden");
-			unsubscribe();
-			this.#company.signal.removeEventListener("abort", clearSettledFailure);
-			if (canClear && current.recovery?.unsettledOperations === 0 && !current.recovery.proposalId) {
-				// Clear settled failures so the server can report the agent's next run.
-				dismissed.set(runId, "clearing");
-				void this.#company.dismissFailedRun(runId).then(
-					() => dismissed.set(runId, "hidden"),
-					() => {
-						// Notify the current view too if the member navigated during the request.
-						dismissed.delete(runId);
-						if (!this.#company.signal.aborted) this.#company.store.set({});
-					},
-				);
-			}
-		};
-		const unsubscribe = this.#company.store.subscribe(clearSettledFailure);
-		this.#company.signal.addEventListener("abort", clearSettledFailure, { once: true });
-		clearSettledFailure();
+		void this.#company.acknowledgeFailedRun(runId).then(
+			() => dismissed.set(runId, { status: "hidden", automatic: seen }),
+			() => {
+				// Never pretend a missing or rejected acknowledgment succeeded.
+				dismissed.delete(runId);
+				if (!this.#company.signal.aborted) this.#company.store.set({});
+			},
+		);
 	}
 
 	#renderRunNotification(session: HostedSession | undefined): void {
@@ -944,21 +919,23 @@ export class ConversationView {
 				? undefined
 				: this.#company.failedRunFor(session?.staffAgentId);
 		const runId = failed?.activity.runId;
-		const hidden = !runId || dismissedRunNotifications.get(this.#company)?.has(runId);
 		const proposalId = failed?.recovery?.proposalId;
 		const review = failed?.activity.sourceKind === "proposal_review";
-		// Viewing acknowledges only settled failures. Work needing review stays actionable.
+		const dismissed = runId ? dismissedRunNotifications.get(this.#company)?.get(runId) : undefined;
+		// A delayed proposal read must still surface its Review action after the
+		// plain failure was automatically marked seen, including after navigation.
+		const hidden = !runId || Boolean(dismissed && (!dismissed.automatic || (!proposalId && !review)));
+		// Seeing a failure is independent of settling its operations. Proposals stay actionable.
 		// One automatic attempt per visit avoids retrying a rejected write on every poll.
 		this.#watchSeenFailure(
 			runId &&
-				dismissedRunNotifications.get(this.#company)?.get(runId) !== "clearing" &&
+				dismissed?.status !== "clearing" &&
 				!this.#notificationSignal.aborted &&
 				this.el.isConnected &&
 				document.visibilityState === "visible" &&
-				company.team?.capabilities.write &&
+				company.team?.capabilities.read &&
 				session?.status === "open" &&
 				!review &&
-				failed?.recovery?.unsettledOperations === 0 &&
 				!proposalId &&
 				!this.#autoDismissedFailures.has(runId)
 				? runId

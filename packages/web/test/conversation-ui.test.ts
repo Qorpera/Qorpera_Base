@@ -46,6 +46,7 @@ afterEach(() => {
 });
 function setup(actions: WorkspaceActions = {}) {
 	const f = fixture();
+	vi.spyOn(f.api, "acknowledgeFailedRun").mockResolvedValue();
 	const company = new CompanyController(f.api, profileA, userA.id);
 	company.store.set({ team, staff: [staff], sessions: [{ ...session, staffAgentId: staff.id }], loading: false });
 	const view = new ConversationView(company, session.sessionId, actions);
@@ -470,6 +471,7 @@ describe("conversation UI boundaries", () => {
 		);
 		expect(card()).toBeNull();
 		expect(document.activeElement).toBe(button(f.view.el, "Open agent details"));
+		await settle();
 		const review = { ...run, runId: id(72), sourceKind: "proposal_review" as const };
 		f.company.store.set({ activity: [review] });
 		await settle();
@@ -480,69 +482,65 @@ describe("conversation UI boundaries", () => {
 		expect(card()).toBeNull();
 	});
 
-	it.each([false, true])(
-		"clears settled failure activity and restores Stop (details arrive late: %s)",
-		async (late) => {
-			const nextRun = id(73);
-			const cancel = vi.fn(async () => "cancelled" as const);
-			const f = setup({
-				runControl: {
-					read: vi.fn(async () => ({
-						sessionId: session.sessionId,
-						staffAgentId: staff.id,
-						run: { runId: nextRun, status: "leased" as const, canCancel: true },
-					})),
-					cancel,
-				},
-			});
-			const run = {
-				runId: id(70),
-				staffAgentId: staff.id,
-				sourceKind: "session_turn" as const,
-				jobStatus: "failed" as const,
-				activity: "needs_attention" as const,
-				updatedAt: timestamp,
-			};
-			const recovery = {
-				runId: run.runId,
-				sourceKind: run.sourceKind,
-				jobStatus: run.jobStatus,
-				unsettledOperations: 0,
-			};
-			const pending = deferred<void>();
-			const discard = vi.spyOn(f.api, "discardFailedRun").mockReturnValue(pending.promise);
-			// Match the server's priority: the old failure masks the newer leased run until discarded.
-			vi.mocked(f.api.listStaffActivity).mockResolvedValue([
-				{ ...run, runId: nextRun, jobStatus: "leased", activity: "working" },
-			]);
-			f.company.store.set({ activity: [run], recoveries: late ? {} : { [run.runId]: recovery } });
+	it.each([false, true])("acknowledges failure activity and restores Stop (details arrive late: %s)", async (late) => {
+		const nextRun = id(73);
+		const cancel = vi.fn(async () => "cancelled" as const);
+		const f = setup({
+			runControl: {
+				read: vi.fn(async () => ({
+					sessionId: session.sessionId,
+					staffAgentId: staff.id,
+					run: { runId: nextRun, status: "leased" as const, canCancel: true },
+				})),
+				cancel,
+			},
+		});
+		const run = {
+			runId: id(70),
+			staffAgentId: staff.id,
+			sourceKind: "session_turn" as const,
+			jobStatus: "failed" as const,
+			activity: "needs_attention" as const,
+			updatedAt: timestamp,
+		};
+		const recovery = {
+			runId: run.runId,
+			sourceKind: run.sourceKind,
+			jobStatus: run.jobStatus,
+			unsettledOperations: 0,
+		};
+		const pending = deferred<void>();
+		const acknowledge = vi.spyOn(f.api, "acknowledgeFailedRun").mockReturnValue(pending.promise);
+		// The acknowledged failure no longer masks the newer leased run.
+		vi.mocked(f.api.listStaffActivity).mockResolvedValue([
+			{ ...run, runId: nextRun, jobStatus: "leased", activity: "working" },
+		]);
+		f.company.store.set({ activity: [run], recoveries: late ? {} : { [run.runId]: recovery } });
+		await settle();
+		expect(f.company.agentState(staff.id)).toBe("failed");
+		expect(f.view.el.querySelector('[aria-label="Stop"]')).toBeNull();
+		const close = button(f.view.el, "Dismiss notification");
+		close.focus();
+		close.click();
+		close.click();
+		expect(f.view.el.querySelector(".notification-card")).toBeNull();
+		expect(document.activeElement).toBe(f.view.el.querySelector("textarea"));
+		if (late) {
+			f.company.store.set({ recoveries: { [run.runId]: recovery } });
 			await settle();
-			expect(f.company.agentState(staff.id)).toBe("failed");
-			expect(f.view.el.querySelector('[aria-label="Stop"]')).toBeNull();
-			const close = button(f.view.el, "Dismiss notification");
-			close.focus();
-			close.click();
-			close.click();
-			expect(f.view.el.querySelector(".notification-card")).toBeNull();
-			expect(document.activeElement).toBe(f.view.el.querySelector("textarea"));
-			if (late) {
-				expect(discard).not.toHaveBeenCalled();
-				f.company.store.set({ recoveries: { [run.runId]: recovery } });
-				await settle();
-			}
-			expect(discard).toHaveBeenCalledExactlyOnceWith(run.runId);
-			pending.resolve();
-			await settle();
-			expect(f.company.agentState(staff.id)).toBe("working");
-			expect(f.view.el.querySelector(".notification-card")).toBeNull();
-			expect(button(f.view.el, "Stop").disabled).toBe(false);
-			button(f.view.el, "Stop").click();
-			await settle();
-			expect(cancel).toHaveBeenCalledExactlyOnceWith(session.sessionId, nextRun, expect.any(AbortSignal));
-		},
-	);
+		}
+		expect(acknowledge).toHaveBeenCalledExactlyOnceWith(run.runId);
+		pending.resolve();
+		await settle();
+		expect(f.company.agentState(staff.id)).toBe("working");
+		expect(f.view.el.querySelector(".notification-card")).toBeNull();
+		expect(button(f.view.el, "Stop").disabled).toBe(false);
+		button(f.view.el, "Stop").click();
+		await settle();
+		expect(cancel).toHaveBeenCalledExactlyOnceWith(session.sessionId, nextRun, expect.any(AbortSignal));
+	});
 
-	it("allows a displaced failure to be dismissed again when it becomes current", async () => {
+	it("acknowledging an older failure does not hide a different current failure", async () => {
 		const f = setup();
 		const run = {
 			runId: id(70),
@@ -552,29 +550,15 @@ describe("conversation UI boundaries", () => {
 			activity: "needs_attention" as const,
 			updatedAt: timestamp,
 		};
-		const discard = vi.spyOn(f.api, "discardFailedRun").mockResolvedValue(undefined);
+		const next = { ...run, runId: id(71) };
+		vi.mocked(f.api.listStaffActivity).mockResolvedValue([next]);
 		f.company.store.set({ activity: [run] });
 		await settle();
 		button(f.view.el, "Dismiss notification").click();
-		f.company.store.set({ activity: [{ ...run, runId: id(71) }] });
 		await settle();
-		expect(discard).not.toHaveBeenCalled();
-		f.company.store.set({
-			activity: [run],
-			recoveries: {
-				[run.runId]: {
-					runId: run.runId,
-					sourceKind: run.sourceKind,
-					jobStatus: run.jobStatus,
-					unsettledOperations: 0,
-				},
-			},
-		});
-		await settle();
-		button(f.view.el, "Dismiss notification").click();
-		await settle();
-		expect(discard).toHaveBeenCalledExactlyOnceWith(run.runId);
-		expect(f.company.agentState(staff.id)).toBe("idle");
+		expect(f.api.acknowledgeFailedRun).toHaveBeenCalledExactlyOnceWith(run.runId);
+		expect(f.company.failedRunFor(staff.id)?.activity.runId).toBe(next.runId);
+		expect(f.view.el.querySelector(".notification-card")).not.toBeNull();
 	});
 
 	it("restores a retryable popup after a rejected dismissal across navigation", async () => {
@@ -595,7 +579,7 @@ describe("conversation UI boundaries", () => {
 		};
 		const pending = deferred<void>();
 		const discard = vi
-			.spyOn(f.api, "discardFailedRun")
+			.spyOn(f.api, "acknowledgeFailedRun")
 			.mockReturnValueOnce(pending.promise)
 			.mockResolvedValue(undefined);
 		vi.mocked(f.api.listStaffActivity).mockResolvedValue([run]);

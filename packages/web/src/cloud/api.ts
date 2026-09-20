@@ -221,6 +221,13 @@ export class CloudApi {
 			.then(parseRunRecovery);
 	}
 
+	/** Records this member seeing a failure, without resolving or replaying its work. */
+	async acknowledgeFailedRun(runId: string): Promise<void> {
+		const id = requiredUuid(runId, "Run id");
+		const value = await this.cloud.rpc("qorpera_acknowledge_execution_run_failure", { p_run_id: id });
+		if (value !== id) throw new Error("Failure acknowledgment could not be confirmed.");
+	}
+
 	/** The desktop's "discard": the run stops counting against the agent. Nothing
 	 * is re-run, and the member's own message stays marked failed. */
 	discardFailedRun(runId: string): Promise<void> {

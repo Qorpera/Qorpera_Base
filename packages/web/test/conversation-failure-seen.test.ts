@@ -41,7 +41,8 @@ const recovery: HostedRunRecovery = {
 function setup(details = recovery, run = failedRun) {
 	const f = fixture();
 	const company = new CompanyController(f.api, profileA, userA.id);
-	const discard = vi.spyOn(f.api, "discardFailedRun").mockResolvedValue();
+	const acknowledge = vi.spyOn(f.api, "acknowledgeFailedRun").mockResolvedValue();
+	const discard = vi.spyOn(f.api, "discardFailedRun");
 	vi.spyOn(f.api, "getRunRecovery").mockResolvedValue(details);
 	const send = vi.spyOn(company, "sendPrompt");
 	company.store.set({
@@ -58,7 +59,7 @@ function setup(details = recovery, run = failedRun) {
 		view.dispose();
 		company.stop();
 	});
-	return { ...f, company, view, discard, send };
+	return { ...f, company, view, acknowledge, discard, send };
 }
 
 function changeVisibility(value: DocumentVisibilityState) {
@@ -68,7 +69,7 @@ function changeVisibility(value: DocumentVisibilityState) {
 
 describe("viewed conversation failures", () => {
 	it.each(["failed", "cancelled"] as const)(
-		"clears a settled %s run after viewing it and exposes current work without replaying messages",
+		"acknowledges a %s run after viewing it and exposes current work without replaying messages",
 		async (jobStatus) => {
 			const f = setup({ ...recovery, jobStatus }, { ...failedRun, jobStatus });
 			vi.mocked(f.api.listStaffActivity).mockResolvedValue([
@@ -97,9 +98,9 @@ describe("viewed conversation failures", () => {
 			expect(f.company.agentState(staff.id)).toBe("failed");
 			expect(f.view.el.querySelector(".notification-card")?.textContent).toBe("A run did not finish");
 			await vi.advanceTimersByTimeAsync(4_999);
-			expect(f.discard).not.toHaveBeenCalled();
+			expect(f.acknowledge).not.toHaveBeenCalled();
 			await vi.advanceTimersByTimeAsync(100);
-			expect(f.discard).toHaveBeenCalledExactlyOnceWith(failedRun.runId);
+			expect(f.acknowledge).toHaveBeenCalledExactlyOnceWith(failedRun.runId);
 			expect(f.company.agentState(staff.id)).toBe("working");
 			expect(f.view.el.querySelector(".notification-card")).toBeNull();
 			expect(conversation.get().projection).toEqual(projection);
@@ -108,39 +109,59 @@ describe("viewed conversation failures", () => {
 		},
 	);
 
-	it("waits for recovery details before starting the viewing period", async () => {
-		const f = setup();
-		f.company.store.set({ recoveries: {} });
-		await vi.advanceTimersByTimeAsync(10_000);
-		expect(f.discard).not.toHaveBeenCalled();
-		f.company.store.set({ recoveries: { [failedRun.runId]: recovery } });
-		await vi.advanceTimersByTimeAsync(4_999);
-		expect(f.discard).not.toHaveBeenCalled();
-		await vi.advanceTimersByTimeAsync(100);
-		expect(f.discard).toHaveBeenCalledExactlyOnceWith(failedRun.runId);
-	});
+	it.each(["unsettled", "unknown", "reader"] as const)(
+		"acknowledges %s failures without resolving or replaying work",
+		async (kind) => {
+			const f = setup({ ...recovery, unsettledOperations: 1 });
+			if (kind === "unknown") f.company.store.set({ recoveries: {} });
+			if (kind === "reader")
+				f.company.store.set({ team: { ...team, capabilities: { ...team.capabilities, write: false } } });
+			await vi.advanceTimersByTimeAsync(5_100);
+			expect(f.acknowledge).toHaveBeenCalledExactlyOnceWith(failedRun.runId);
+			expect(f.discard).not.toHaveBeenCalled();
+			expect(f.send).not.toHaveBeenCalled();
+			expect(f.company.agentState(staff.id)).toBe("idle");
+		},
+	);
 
 	it("requires a fresh uninterrupted visible period after hiding the tab", async () => {
 		const f = setup();
 		await vi.advanceTimersByTimeAsync(4_000);
 		changeVisibility("hidden");
 		await vi.advanceTimersByTimeAsync(20_000);
-		expect(f.discard).not.toHaveBeenCalled();
+		expect(f.acknowledge).not.toHaveBeenCalled();
 		changeVisibility("visible");
 		await vi.advanceTimersByTimeAsync(4_000);
-		expect(f.discard).not.toHaveBeenCalled();
+		expect(f.acknowledge).not.toHaveBeenCalled();
 		await vi.advanceTimersByTimeAsync(1_100);
-		expect(f.discard).toHaveBeenCalledExactlyOnceWith(failedRun.runId);
+		expect(f.acknowledge).toHaveBeenCalledExactlyOnceWith(failedRun.runId);
+	});
+
+	it("preserves a delayed proposal's review action after automatic acknowledgment and navigation", async () => {
+		const f = setup();
+		f.company.store.set({ recoveries: {} });
+		vi.mocked(f.api.listStaffActivity).mockResolvedValue([failedRun]);
+		vi.mocked(f.api.getRunRecovery).mockResolvedValue({ ...recovery, proposalId: id(76) });
+		await vi.advanceTimersByTimeAsync(5_100);
+		expect(f.acknowledge).toHaveBeenCalledExactlyOnceWith(failedRun.runId);
+		expect(f.view.el.querySelector(".notification-card a")?.textContent).toBe("Review");
+		f.view.dispose();
+		f.view.el.remove();
+		const reopened = new ConversationView(f.company, session.sessionId);
+		document.body.append(reopened.el);
+		cleanup.push(() => reopened.dispose());
+		expect(reopened.el.querySelector(".notification-card a")?.textContent).toBe("Review");
+		expect(f.discard).not.toHaveBeenCalled();
 	});
 
 	it("does not acknowledge a conversation opened in a background tab", async () => {
 		visibility = "hidden";
 		const f = setup();
 		await vi.advanceTimersByTimeAsync(20_000);
-		expect(f.discard).not.toHaveBeenCalled();
+		expect(f.acknowledge).not.toHaveBeenCalled();
 		changeVisibility("visible");
 		await vi.advanceTimersByTimeAsync(5_100);
-		expect(f.discard).toHaveBeenCalledExactlyOnceWith(failedRun.runId);
+		expect(f.acknowledge).toHaveBeenCalledExactlyOnceWith(failedRun.runId);
 	});
 
 	it.each(["dispose", "detach", "stop"] as const)("cancels acknowledgment on %s", async (action) => {
@@ -150,43 +171,30 @@ describe("viewed conversation failures", () => {
 		if (action === "detach") f.view.el.remove();
 		if (action === "stop") f.company.stop();
 		await vi.advanceTimersByTimeAsync(10_000);
-		expect(f.discard).not.toHaveBeenCalled();
+		expect(f.acknowledge).not.toHaveBeenCalled();
 	});
 
-	it.each([
-		"reader",
-		"unreadable",
-		"access-lost",
-		"closed",
-		"group",
-		"unsettled",
-		"proposal",
-		"review",
-		"unknown",
-	] as const)("preserves failures when they become ineligible: %s", async (reason) => {
-		const f = setup();
-		await vi.advanceTimersByTimeAsync(4_000);
-		if (reason === "reader" || reason === "unreadable")
-			f.company.store.set({
-				team: { ...team, capabilities: { ...team.capabilities, [reason === "reader" ? "write" : "read"]: false } },
-			});
-		if (reason === "access-lost") f.company.store.set({ accessLost: true });
-		if (reason === "closed")
-			f.company.store.set({ sessions: [{ ...session, staffAgentId: staff.id, status: "closed" }] });
-		if (reason === "group")
-			f.company.store.set({
-				sessions: [{ ...session, executionScope: { roomId: id(75) } }],
-			});
-		if (reason === "unsettled")
-			f.company.store.set({ recoveries: { [failedRun.runId]: { ...recovery, unsettledOperations: 1 } } });
-		if (reason === "proposal")
-			f.company.store.set({ recoveries: { [failedRun.runId]: { ...recovery, proposalId: id(76) } } });
-		if (reason === "review") f.company.store.set({ activity: [{ ...failedRun, sourceKind: "proposal_review" }] });
-		if (reason === "unknown") f.company.store.set({ recoveries: {} });
-		await vi.advanceTimersByTimeAsync(10_000);
-		expect(f.discard).not.toHaveBeenCalled();
-		expect(f.send).not.toHaveBeenCalled();
-	});
+	it.each(["unreadable", "access-lost", "closed", "group", "proposal", "review"] as const)(
+		"preserves failures when they become ineligible: %s",
+		async (reason) => {
+			const f = setup();
+			await vi.advanceTimersByTimeAsync(4_000);
+			if (reason === "unreadable") f.company.store.set({ team: undefined });
+			if (reason === "access-lost") f.company.store.set({ accessLost: true });
+			if (reason === "closed")
+				f.company.store.set({ sessions: [{ ...session, staffAgentId: staff.id, status: "closed" }] });
+			if (reason === "group")
+				f.company.store.set({
+					sessions: [{ ...session, executionScope: { roomId: id(75) } }],
+				});
+			if (reason === "proposal")
+				f.company.store.set({ recoveries: { [failedRun.runId]: { ...recovery, proposalId: id(76) } } });
+			if (reason === "review") f.company.store.set({ activity: [{ ...failedRun, sourceKind: "proposal_review" }] });
+			await vi.advanceTimersByTimeAsync(10_000);
+			expect(f.acknowledge).not.toHaveBeenCalled();
+			expect(f.send).not.toHaveBeenCalled();
+		},
+	);
 
 	it("gives a replacement failure its own viewing period", async () => {
 		const f = setup();
@@ -194,39 +202,33 @@ describe("viewed conversation failures", () => {
 		const next = { ...failedRun, runId: id(71) };
 		f.company.store.set({ activity: [next], recoveries: { [next.runId]: { ...recovery, runId: next.runId } } });
 		await vi.advanceTimersByTimeAsync(4_000);
-		expect(f.discard).not.toHaveBeenCalled();
+		expect(f.acknowledge).not.toHaveBeenCalled();
 		await vi.advanceTimersByTimeAsync(1_100);
-		expect(f.discard).toHaveBeenCalledExactlyOnceWith(next.runId);
+		expect(f.acknowledge).toHaveBeenCalledExactlyOnceWith(next.runId);
 	});
 
-	it("clears a locally hidden unresolved failure once it settles during the visit", async () => {
+	it("explicitly acknowledges an unresolved failure immediately without discarding it", async () => {
 		const f = setup({ ...recovery, unsettledOperations: 1 });
 		await settle();
 		f.view.el.querySelector<HTMLButtonElement>('[aria-label="Dismiss notification"]')!.click();
-		await vi.advanceTimersByTimeAsync(10_000);
+		await settle();
+		expect(f.acknowledge).toHaveBeenCalledExactlyOnceWith(failedRun.runId);
 		expect(f.discard).not.toHaveBeenCalled();
-		expect(f.company.agentState(staff.id)).toBe("failed");
-		expect(f.view.el.querySelector(".notification-card")).toBeNull();
-		f.company.store.set({ recoveries: { [failedRun.runId]: recovery } });
-		await vi.advanceTimersByTimeAsync(4_999);
-		expect(f.discard).not.toHaveBeenCalled();
-		await vi.advanceTimersByTimeAsync(100);
-		expect(f.discard).toHaveBeenCalledExactlyOnceWith(failedRun.runId);
 		expect(f.company.agentState(staff.id)).toBe("idle");
 		await vi.advanceTimersByTimeAsync(10_000);
-		expect(f.discard).toHaveBeenCalledTimes(1);
+		expect(f.acknowledge).toHaveBeenCalledTimes(1);
 	});
 
 	it("does not duplicate an explicit acknowledgment while its response is pending", async () => {
 		const f = setup();
 		const pending = deferred<void>();
-		f.discard.mockReturnValueOnce(pending.promise);
+		f.acknowledge.mockReturnValueOnce(pending.promise);
 		await vi.advanceTimersByTimeAsync(4_000);
 		f.view.el.querySelector<HTMLButtonElement>('[aria-label="Dismiss notification"]')!.click();
-		expect(f.discard).toHaveBeenCalledExactlyOnceWith(failedRun.runId);
+		expect(f.acknowledge).toHaveBeenCalledExactlyOnceWith(failedRun.runId);
 		f.company.store.set({ activity: [{ ...failedRun }] });
 		await vi.advanceTimersByTimeAsync(15_000);
-		expect(f.discard).toHaveBeenCalledTimes(1);
+		expect(f.acknowledge).toHaveBeenCalledTimes(1);
 		pending.resolve();
 		await settle();
 		expect(f.company.agentState(staff.id)).toBe("idle");
@@ -234,30 +236,30 @@ describe("viewed conversation failures", () => {
 
 	it("does not repeat rejected automatic attempts and still allows an explicit retry", async () => {
 		const f = setup();
-		f.discard.mockRejectedValueOnce(new Error("Dismissal could not be confirmed"));
+		f.acknowledge.mockRejectedValueOnce(new Error("Dismissal could not be confirmed"));
 		vi.mocked(f.api.listStaffActivity).mockResolvedValue([failedRun]);
 		await vi.advanceTimersByTimeAsync(5_100);
-		expect(f.discard).toHaveBeenCalledTimes(1);
+		expect(f.acknowledge).toHaveBeenCalledTimes(1);
 		await vi.advanceTimersByTimeAsync(30_000);
 		f.company.store.set({});
 		changeVisibility("hidden");
 		changeVisibility("visible");
 		await vi.advanceTimersByTimeAsync(10_000);
-		expect(f.discard).toHaveBeenCalledTimes(1);
+		expect(f.acknowledge).toHaveBeenCalledTimes(1);
 		expect(f.view.el.querySelector(".notification-card")).not.toBeNull();
 		vi.mocked(f.api.listStaffActivity).mockResolvedValue([]);
 		f.view.el.querySelector<HTMLButtonElement>('[aria-label="Dismiss notification"]')!.click();
 		await settle();
-		expect(f.discard).toHaveBeenCalledTimes(2);
+		expect(f.acknowledge).toHaveBeenCalledTimes(2);
 		expect(f.company.agentState(staff.id)).toBe("idle");
 	});
 
 	it("allows a fresh visit to retry an acknowledgment that failed on the previous visit", async () => {
 		const f = setup();
-		f.discard.mockRejectedValueOnce(new Error("Connection lost"));
+		f.acknowledge.mockRejectedValueOnce(new Error("Connection lost"));
 		vi.mocked(f.api.listStaffActivity).mockResolvedValue([failedRun]);
 		await vi.advanceTimersByTimeAsync(5_100);
-		expect(f.discard).toHaveBeenCalledTimes(1);
+		expect(f.acknowledge).toHaveBeenCalledTimes(1);
 		f.view.dispose();
 		f.view.el.remove();
 		vi.mocked(f.api.listStaffActivity).mockResolvedValue([]);
@@ -265,9 +267,9 @@ describe("viewed conversation failures", () => {
 		document.body.append(reopened.el);
 		cleanup.push(() => reopened.dispose());
 		await vi.advanceTimersByTimeAsync(4_999);
-		expect(f.discard).toHaveBeenCalledTimes(1);
+		expect(f.acknowledge).toHaveBeenCalledTimes(1);
 		await vi.advanceTimersByTimeAsync(100);
-		expect(f.discard).toHaveBeenCalledTimes(2);
+		expect(f.acknowledge).toHaveBeenCalledTimes(2);
 		expect(f.company.agentState(staff.id)).toBe("idle");
 	});
 });

@@ -578,7 +578,19 @@ export class CompanyController {
 		return recovery ? { activity: row, recovery } : { activity: row };
 	}
 
-	/** The run stops standing in for the agent's state; the next activity read shows what is left. */
+	/** A read receipt for this member only. Recovery and retry authority are unchanged. */
+	async acknowledgeFailedRun(runId: string): Promise<void> {
+		const state = this.store.get();
+		if (this.#stopped || state.accessLost || !state.team?.capabilities.read)
+			throw new Error("This company is no longer readable.");
+		try {
+			await this.#api.acknowledgeFailedRun(runId);
+		} finally {
+			await this.refreshActivity();
+		}
+	}
+
+	/** Explicit operational discard; viewing a failure never calls this method. */
 	async dismissFailedRun(runId: string): Promise<void> {
 		if (this.#stopped) return;
 		try {
