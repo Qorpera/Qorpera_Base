@@ -953,6 +953,69 @@ $$;
 
 rollback to thread_audience;
 
+-- A failed post into an agent's thread can be tried again: the member's message stays once, the
+-- failed run leaves recovery, and the same input wakes the same agent under a new occurrence key.
+savepoint room_retry;
+do $$
+declare v_thread uuid; v_room uuid; v_result jsonb; v_run uuid; v_binding jsonb; v_retry jsonb; v_retry_run uuid;
+	v_base public.qorpera_execution_runs%rowtype; v_member jsonb := current_setting('qorpera_test.wake_binding')::jsonb;
+	v_inputs bigint;
+begin
+	update public.qorpera_shared_sessions set status = 'open'
+	where environment_id = '30000000-0000-4000-8000-000000000020' and execution_scope ->> 'agentThread' = 'true'
+		and staff_agent_id = '30000000-0000-4000-8000-000000000031' returning id into strict v_thread;
+	select id into strict v_room from public.qorpera_company_rooms where session_id = v_thread and status = 'active';
+	select * into strict v_base from public.qorpera_execution_runs where id = (v_member ->> 'runId')::uuid;
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	v_result := public.qorpera_post_company_room_message(v_room,extensions.gen_random_uuid(),
+		'{"schema":"qorpera.session-prompt/v1","text":"Bob, are you there?"}',v_base.sponsor_binding_id,v_base.sponsor_version);
+	perform pg_temp.path_claims('service_role');
+	perform public.qorpera_materialize_wake_execution_runs(1);
+	select run_id into strict v_run from public.qorpera_wake_occurrences where id = (v_result #>> '{occurrenceIds,0}')::uuid;
+	v_binding := pg_temp.wake_start(v_run);
+	select count(*) into v_inputs from public.qorpera_session_inputs where session_id = v_thread;
+
+	-- Only a failed delivery can be retried, and only by the author of the post.
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	perform pg_temp.wake_error(format('select public.qorpera_retry_room_delivery(%L,%L,%s)',v_run,v_base.sponsor_binding_id,
+		v_base.sponsor_version),'55000','execution recovery action is unavailable');
+	perform pg_temp.path_claims('service_role');
+	perform public.qorpera_fail_runner_job((v_binding ->> 'runnerId')::uuid,repeat('2',64),(v_binding ->> 'jobId')::uuid,
+		repeat('3',64),'Native provider bridge request failed (422)',false);
+	perform pg_temp.wake_assert((select status = 'failed' from public.qorpera_runner_jobs where id = (v_binding ->> 'jobId')::uuid),
+		'The delivery failed the way a runner reports it');
+	perform pg_temp.wake_error(format('select public.qorpera_retry_room_delivery(%L,%L,%s)',v_run,v_base.sponsor_binding_id,
+		v_base.sponsor_version),'42501','Room retry requires a member');
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000002');
+	perform pg_temp.wake_error(format('select public.qorpera_retry_room_delivery(%L,%L,%s)',v_run,v_base.sponsor_binding_id,
+		v_base.sponsor_version),'42501');
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	perform pg_temp.wake_error(format('select public.qorpera_retry_room_delivery(%L,%L,%s)',v_run,extensions.gen_random_uuid(),1),
+		'42501','Room sponsor is unavailable');
+
+	v_retry := public.qorpera_retry_room_delivery(v_run,v_base.sponsor_binding_id,v_base.sponsor_version);
+	perform pg_temp.wake_assert(v_retry ->> 'inputId' = v_result ->> 'inputId' and v_retry ->> 'runId' = v_run::text,
+		'The retry is bound to the failed run and the same input');
+	perform pg_temp.wake_error(format('select public.qorpera_retry_room_delivery(%L,%L,%s)',v_run,v_base.sponsor_binding_id,
+		v_base.sponsor_version),'55000','execution recovery was already resolved');
+	perform pg_temp.path_claims('service_role');
+	perform pg_temp.wake_assert((select count(*) from public.qorpera_session_inputs where session_id = v_thread) = v_inputs,
+		'The member''s message stays once');
+	perform pg_temp.wake_assert((select count(*) = 1 from public.qorpera_execution_run_events
+		where run_id = v_run and event_type = 'recovery_released'),'The failed run leaves recovery');
+	perform public.qorpera_materialize_wake_execution_runs(1);
+	select run_id into strict v_retry_run from public.qorpera_wake_occurrences where id = (v_retry ->> 'occurrenceId')::uuid;
+	perform pg_temp.wake_assert((select r.source_kind = 'room_delivery' and r.session_id = v_thread and r.id <> v_run
+		and r.staff_agent_id = '30000000-0000-4000-8000-000000000031'
+		from public.qorpera_execution_runs r where r.id = v_retry_run),'The same agent is woken again for the same post');
+	v_binding := pg_temp.wake_start(v_retry_run);
+	perform pg_temp.wake_public_send(v_binding,'final','answer-after-retry');
+	perform pg_temp.wake_assert((select count(*) = 1 from public.qorpera_agent_sends where run_id = v_retry_run),
+		'The retried delivery answers in the thread');
+end
+$$;
+rollback to room_retry;
+
 -- An agent edit never ends a run and applies from the agent's next run. A wake admitted at the
 -- agent's later version answers in the thread opened at the earlier one; a thread that claims a
 -- version its agent never had stays unusable; a member turn keeps its exact version. A run in
