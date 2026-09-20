@@ -65,11 +65,20 @@ select pg_temp.wake_error($q$select public.qorpera_admit_runtime_office_viewer_i
 select pg_temp.wake_error($q$select public.qorpera_admit_runtime_office_viewer_input_window(current_setting('qorpera_test.shared_other_grant')::jsonb,0,1,repeat('1',64))$q$,'42501');
 select pg_temp.wake_error($q$select public.qorpera_admit_runtime_office_viewer_input_window(current_setting('qorpera_test.shared_other_grant')::jsonb,2,1,repeat('1',64))$q$,'55000');
 select pg_temp.wake_assert(public.qorpera_admit_runtime_office_viewer_input_window(current_setting('qorpera_test.shared_other_grant')::jsonb,1,500,repeat('1',64))->>'state'='admitted','a burst is admitted and audited as one window');
-select pg_temp.wake_error($q$select public.qorpera_admit_runtime_office_viewer_input_window(current_setting('qorpera_test.shared_other_grant')::jsonb,1,500,repeat('1',64))$q$,'55000');
+-- A resend after a lost answer: the exact last row is already recorded. It is
+-- validated again and answered normally, without a second row. Anything that
+-- differs from that row is still a replay.
+select pg_temp.wake_assert(public.qorpera_admit_runtime_office_viewer_input_window(current_setting('qorpera_test.shared_other_grant')::jsonb,1,500,repeat('1',64))->>'state'='admitted','an exact replay of the last window is idempotent');
+select pg_temp.wake_assert((select count(*)=1 and max(last_sequence)=500 from public.qorpera_runtime_office_viewer_inputs i
+	join public.qorpera_runtime_office_viewers v on v.id=i.viewer_id where v.id=(current_setting('qorpera_test.shared_other_grant')::jsonb->>'viewerSessionId')::uuid),'an idempotent resend records nothing twice');
+select pg_temp.wake_error($q$select public.qorpera_admit_runtime_office_viewer_input_window(current_setting('qorpera_test.shared_other_grant')::jsonb,1,500,repeat('9',64))$q$,'55000');
+select pg_temp.wake_error($q$select public.qorpera_admit_runtime_office_viewer_input_window(current_setting('qorpera_test.shared_other_grant')::jsonb,1,499,repeat('1',64))$q$,'55000');
+select pg_temp.wake_error($q$select public.qorpera_admit_runtime_office_viewer_input_window(current_setting('qorpera_test.shared_other_grant')::jsonb,2,499,repeat('1',64))$q$,'55000');
 select pg_temp.wake_error($q$select public.qorpera_admit_runtime_office_viewer_input_window(current_setting('qorpera_test.shared_other_grant')::jsonb,500,2,repeat('2',64))$q$,'55000');
 select pg_temp.wake_error($q$select public.qorpera_admit_runtime_office_viewer_input_window(current_setting('qorpera_test.shared_other_grant')::jsonb,502,1,repeat('2',64))$q$,'55000');
 select pg_temp.wake_error($q$select public.qorpera_admit_runtime_office_viewer_input_window(current_setting('qorpera_test.shared_other_grant')::jsonb,502,0,null)$q$,'55000');
 select pg_temp.wake_assert(public.qorpera_admit_runtime_office_viewer_input_window(current_setting('qorpera_test.shared_other_grant')::jsonb,501,2,repeat('2',64))->>'state'='admitted','the next window continues at the previous last sequence plus one');
+select pg_temp.wake_error($q$select public.qorpera_admit_runtime_office_viewer_input_window(current_setting('qorpera_test.shared_other_grant')::jsonb,1,500,repeat('1',64))$q$,'55000');
 select pg_temp.wake_assert(public.qorpera_admit_runtime_office_viewer_input(current_setting('qorpera_test.shared_other_grant')::jsonb,503,repeat('3',64))->>'state'='admitted','per-packet admission from an older gateway shares the sequence');
 select pg_temp.wake_error($q$select public.qorpera_admit_runtime_office_viewer_input_window(current_setting('qorpera_test.shared_other_grant')::jsonb,503,1,repeat('4',64))$q$,'55000');
 select pg_temp.wake_error($q$select public.qorpera_admit_runtime_office_viewer_input_window(jsonb_set(current_setting('qorpera_test.shared_other_grant')::jsonb,'{screenEpoch}','999'),504,0,null)$q$,'42501');
@@ -85,8 +94,8 @@ select pg_temp.wake_assert((select not drain_pending and takeover_user_id is nul
 	from public.qorpera_runtime_office_screens),'shared epoch survives native lease churn without a drain');
 select pg_temp.wake_assert((select count(*)=2 from public.qorpera_runtime_office_viewer_inputs
 	where viewer_id=(current_setting('qorpera_test.shared_grant')::jsonb->>'viewerSessionId')::uuid),'input ledger retains exactly the admitted sequence');
-select pg_temp.wake_assert((select jsonb_agg(jsonb_build_array(sequence,packet_count,input_commitment) order by sequence)
-	=jsonb_build_array(jsonb_build_array(1,500,repeat('1',64)),jsonb_build_array(501,2,repeat('2',64)),jsonb_build_array(503,null,repeat('3',64)))
+select pg_temp.wake_assert((select jsonb_agg(jsonb_build_array(sequence,packet_count,input_commitment,recorded_after_refusal) order by sequence)
+	=jsonb_build_array(jsonb_build_array(1,500,repeat('1',64),false),jsonb_build_array(501,2,repeat('2',64),false),jsonb_build_array(503,null,repeat('3',64),false))
 	from public.qorpera_runtime_office_viewer_inputs
 	where viewer_id=(current_setting('qorpera_test.shared_other_grant')::jsonb->>'viewerSessionId')::uuid),'window ledger holds one keyed row per window and no refused range');
 select pg_temp.wake_assert((select last_sequence=503 from public.qorpera_runtime_office_viewers
@@ -171,7 +180,8 @@ select pg_temp.wake_error($q$select public.qorpera_admit_runtime_office_viewer_i
 -- A fence refuses the next window but keeps the audit of packets the gateway
 -- had already dispatched under the previous one. Nothing further is admitted.
 select pg_temp.wake_assert(public.qorpera_admit_runtime_office_viewer_input_window(current_setting('qorpera_test.shared_other_grant')::jsonb,504,3,repeat('5',64))='{"state":"refused"}'::jsonb,'takeover refuses the next input window');
-select pg_temp.wake_error($q$select public.qorpera_admit_runtime_office_viewer_input_window(current_setting('qorpera_test.shared_other_grant')::jsonb,504,3,repeat('5',64))$q$,'55000');
+select pg_temp.wake_assert(public.qorpera_admit_runtime_office_viewer_input_window(current_setting('qorpera_test.shared_other_grant')::jsonb,504,3,repeat('5',64))='{"state":"refused"}'::jsonb,'resending the recorded window stays refused');
+select pg_temp.wake_error($q$select public.qorpera_admit_runtime_office_viewer_input_window(current_setting('qorpera_test.shared_other_grant')::jsonb,504,3,repeat('6',64))$q$,'55000');
 select pg_temp.wake_assert(public.qorpera_admit_runtime_office_viewer_input_window(current_setting('qorpera_test.shared_other_grant')::jsonb,507,0,null)='{"state":"refused"}'::jsonb,'a fenced viewer stays refused');
 select public.qorpera_ack_runtime_office_drain(current_setting('qorpera_test.office_scope')::jsonb,
 	(current_setting('qorpera_test.shared_drain')::jsonb#>>'{binding,screenId}')::uuid,1,2,
@@ -188,9 +198,21 @@ reset role;
 select pg_temp.wake_assert((select not drain_pending and takeover_user_id='30000000-0000-4000-8000-000000000001'
 	from public.qorpera_runtime_office_screens),'old shared cleanup preserves acknowledged exclusive takeover');
 select pg_temp.wake_assert(not has_function_privilege('authenticated','public.qorpera_admit_runtime_office_viewer_input(jsonb,bigint,text)','EXECUTE'),'shared input remains gateway-only');
-select pg_temp.wake_assert((select packet_count=3 and input_commitment=repeat('5',64) from public.qorpera_runtime_office_viewer_inputs
+select pg_temp.wake_assert((select packet_count=3 and input_commitment=repeat('5',64) and recorded_after_refusal from public.qorpera_runtime_office_viewer_inputs
 	where viewer_id=(current_setting('qorpera_test.shared_other_grant')::jsonb->>'viewerSessionId')::uuid and sequence=504),'a refused renewal still records the window that was already dispatched');
 select pg_temp.wake_assert(not has_function_privilege('authenticated','public.qorpera_admit_runtime_office_viewer_input_window(jsonb,bigint,integer,text)','EXECUTE')
 	and not has_function_privilege('anon','public.qorpera_admit_runtime_office_viewer_input_window(jsonb,bigint,integer,text)','EXECUTE')
 	and has_function_privilege('service_role','public.qorpera_admit_runtime_office_viewer_input_window(jsonb,bigint,integer,text)','EXECUTE'),'input windows remain gateway-only');
 select pg_temp.wake_assert(not has_function_privilege('service_role','public.qorpera_fence_shared_runtime_office_viewers()','EXECUTE'),'shared epoch trigger cannot be called by the gateway');
+-- Long after a viewer ended, its ledger accepts nothing more.
+select pg_temp.wake_assert((select count(*)=1 from public.qorpera_runtime_office_viewer_inputs
+	where viewer_id=(current_setting('qorpera_test.shared_other_grant')::jsonb->>'viewerSessionId')::uuid and recorded_after_refusal),'exactly one window was recorded after refusal');
+update public.qorpera_runtime_office_viewers set ended_at=clock_timestamp()-interval '11 seconds'
+	where id=(current_setting('qorpera_test.shared_other_grant')::jsonb->>'viewerSessionId')::uuid and state='ended';
+select pg_temp.path_claims('service_role');
+set local role service_role;
+select pg_temp.wake_error($q$select public.qorpera_admit_runtime_office_viewer_input_window(current_setting('qorpera_test.shared_other_grant')::jsonb,507,1,repeat('7',64))$q$,'42501');
+select pg_temp.wake_assert(public.qorpera_admit_runtime_office_viewer_input_window(current_setting('qorpera_test.shared_other_grant')::jsonb,507,0,null)='{"state":"refused"}'::jsonb,'a long-ended viewer is still answered with a refusal');
+reset role;
+select pg_temp.wake_assert((select last_sequence=506 from public.qorpera_runtime_office_viewers
+	where id=(current_setting('qorpera_test.shared_other_grant')::jsonb->>'viewerSessionId')::uuid),'a closed ledger does not advance the sequence');
