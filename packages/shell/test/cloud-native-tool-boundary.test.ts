@@ -86,6 +86,9 @@ describe("cloud-owned native tool boundary", () => {
 			name: "qorpera",
 			tools: [{ name: "read_document", inputSchema: { additionalProperties: false } }],
 		});
+		// Pinned native thread/start rejects longer namespace descriptions before
+		// any provider request, even though individual tools permit longer text.
+		expect((boundary.specification as { description: string }).description.length).toBeLessThanOrEqual(1024);
 	});
 
 	it("serializes nested results as payload, not authority or a second content channel", async () => {

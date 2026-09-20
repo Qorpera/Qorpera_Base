@@ -1,5 +1,103 @@
+diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
+index 70880f3..c7ce15f 100644
+--- a/codex-rs/Cargo.lock
++++ b/codex-rs/Cargo.lock
+@@ -2804,6 +2804,7 @@ dependencies = [
+  "serde_json",
+  "serial_test",
+  "sha1 0.10.6",
++ "sha2 0.10.9",
+  "shlex",
+  "similar",
+  "tempfile",
+diff --git a/codex-rs/app-server-protocol/src/protocol/common.rs b/codex-rs/app-server-protocol/src/protocol/common.rs
+index c36df0a..c44cd05 100644
+--- a/codex-rs/app-server-protocol/src/protocol/common.rs
++++ b/codex-rs/app-server-protocol/src/protocol/common.rs
+@@ -1715,6 +1715,8 @@ server_notification_definitions! {
+     RawResponseItemCompleted => "rawResponseItem/completed" (v2::RawResponseItemCompletedNotification),
+     /// This event is internal-only. Used by clients that need exact upstream usage.
+     RawResponseCompleted => "rawResponse/completed" (v2::RawResponseCompletedNotification),
++    /// Private downstream metadata, emitted only in the governed Qorpera lane.
++    QorperaMessageComposition => "qorpera/messageComposition" (v2::QorperaMessageCompositionNotification),
+     AgentMessageDelta => "item/agentMessage/delta" (v2::AgentMessageDeltaNotification),
+     /// EXPERIMENTAL - proposed plan streaming deltas for plan items.
+     PlanDelta => "item/plan/delta" (v2::PlanDeltaNotification),
+diff --git a/codex-rs/app-server-protocol/src/protocol/v2/item.rs b/codex-rs/app-server-protocol/src/protocol/v2/item.rs
+index 25ee56d..8907eac 100644
+--- a/codex-rs/app-server-protocol/src/protocol/v2/item.rs
++++ b/codex-rs/app-server-protocol/src/protocol/v2/item.rs
+@@ -1334,6 +1334,17 @@ pub struct RawResponseItemCompletedNotification {
+     pub item: ResponseItem,
+ }
+ 
++/// Private downstream notification. No message content crosses this boundary.
++#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
++#[serde(rename_all = "camelCase")]
++#[ts(export_to = "v2/")]
++pub struct QorperaMessageCompositionNotification {
++    pub thread_id: String,
++    pub turn_id: String,
++    pub call_id: String,
++    pub phase: codex_protocol::protocol::QorperaMessageCompositionPhase,
++}
++
+ // Item-specific progress notifications
+ #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+ #[serde(rename_all = "camelCase")]
+@@ -1690,3 +1701,26 @@ pub struct ToolRequestUserInputAnswer {
+ pub struct ToolRequestUserInputResponse {
+     pub answers: HashMap<String, ToolRequestUserInputAnswer>,
+ }
++
++#[cfg(test)]
++mod qorpera_composition_tests {
++    use super::QorperaMessageCompositionNotification;
++    use codex_protocol::protocol::QorperaMessageCompositionPhase;
++    use serde_json::json;
++
++    #[test]
++    fn qorpera_composition_notification_contains_only_bound_metadata() {
++        let notification = QorperaMessageCompositionNotification {
++            thread_id: "thread".to_string(),
++            turn_id: "turn".to_string(),
++            call_id: "call".to_string(),
++            phase: QorperaMessageCompositionPhase::Start,
++        };
++        assert_eq!(
++            serde_json::to_value(notification).unwrap(),
++            json!({
++                "threadId": "thread", "turnId": "turn", "callId": "call", "phase": "start"
++            })
++        );
++    }
++}
+diff --git a/codex-rs/app-server/src/bespoke_event_handling.rs b/codex-rs/app-server/src/bespoke_event_handling.rs
+index a14522f..38a4398 100644
+--- a/codex-rs/app-server/src/bespoke_event_handling.rs
++++ b/codex-rs/app-server/src/bespoke_event_handling.rs
+@@ -1069,6 +1069,19 @@ pub(crate) async fn apply_bespoke_event_handling(
+             )
+             .await;
+         }
++        EventMsg::QorperaMessageComposition(event) => {
++            let notification = codex_app_server_protocol::QorperaMessageCompositionNotification {
++                thread_id: conversation_id.to_string(),
++                turn_id: event_turn_id,
++                call_id: event.call_id,
++                phase: event.phase,
++            };
++            outgoing
++                .send_server_notification(ServerNotification::QorperaMessageComposition(
++                    notification,
++                ))
++                .await;
++        }
+         EventMsg::RawResponseCompleted(raw_response_completed_event) => {
+             let notification = RawResponseCompletedNotification {
+                 thread_id: conversation_id.to_string(),
 diff --git a/codex-rs/app-server/src/request_processors/initialize_processor.rs b/codex-rs/app-server/src/request_processors/initialize_processor.rs
-index 442b71f..aeb7bd1 100644
+index 442b71f..4678c7f 100644
 --- a/codex-rs/app-server/src/request_processors/initialize_processor.rs
 +++ b/codex-rs/app-server/src/request_processors/initialize_processor.rs
 @@ -138,7 +138,12 @@ impl InitializeRequestProcessor {
@@ -10,7 +108,7 @@ index 442b71f..aeb7bd1 100644
 +        // Private downstream capability marker, returned only to the local host.
 +        // Provider request headers and the official authentication flow are unchanged.
 +        let user_agent = format!(
-+            "{} qorpera.native-capture-images/v1 qorpera.native-result-fence/v1 qorpera.native-direct-tools/v1",
++            "{} qorpera.native-capture-images/v1 qorpera.native-message-composition/v1 qorpera.native-result-fence/v1 qorpera.native-direct-tools/v1",
 +            get_codex_user_agent()
 +        );
          let response = InitializeResponse {
@@ -153,43 +251,202 @@ index 54ad70d..3ebe9c4 100644
          match item {
              ResponseItem::Message { content, .. } => {
 diff --git a/codex-rs/core/src/lib.rs b/codex-rs/core/src/lib.rs
-index 4cecf46..eaaa228 100644
+index 4cecf46..8e43fb2 100644
 --- a/codex-rs/core/src/lib.rs
 +++ b/codex-rs/core/src/lib.rs
-@@ -9,6 +9,7 @@ mod apply_patch;
+@@ -9,6 +9,8 @@ mod apply_patch;
  mod apps;
  mod client;
  mod client_common;
++mod qorpera_message_composition;
 +mod qorpera_result_fence;
  mod realtime_context;
  mod realtime_conversation;
  mod realtime_prompt;
-diff --git a/codex-rs/core/src/tools/mod.rs b/codex-rs/core/src/tools/mod.rs
-index 89d0cd1..4c58160 100644
---- a/codex-rs/core/src/tools/mod.rs
-+++ b/codex-rs/core/src/tools/mod.rs
-@@ -68,7 +68,7 @@ pub(crate) fn tool_user_shell_type(
- }
- 
- pub(crate) fn requested_tool_mode(turn_context: &TurnContext) -> ToolMode {
--    turn_context.model_info.tool_mode.unwrap_or_else(|| {
-+    let requested = turn_context.model_info.tool_mode.unwrap_or_else(|| {
-         if turn_context.config.features.enabled(Feature::CodeModeOnly) {
-             ToolMode::CodeModeOnly
-         } else if turn_context.config.features.enabled(Feature::CodeMode) {
-@@ -76,7 +76,11 @@ pub(crate) fn requested_tool_mode(turn_context: &TurnContext) -> ToolMode {
-         } else {
-             ToolMode::Direct
-         }
--    })
-+    });
-+    crate::qorpera_result_fence::governed_tool_mode(
-+        std::env::var_os("QORPERA_NATIVE_RESULT_FENCE_SOCKET").as_deref(),
-+        requested,
-+    )
- }
- 
- pub(crate) fn effective_tool_mode(turn_context: &TurnContext) -> ToolMode {
+diff --git a/codex-rs/core/src/qorpera_message_composition.rs b/codex-rs/core/src/qorpera_message_composition.rs
+new file mode 100644
+index 0000000..75c17fc
+--- /dev/null
++++ b/codex-rs/core/src/qorpera_message_composition.rs
+@@ -0,0 +1,178 @@
++//! Optional metadata for public-message composition, independent of tool execution.
++use std::collections::BTreeSet;
++
++use codex_protocol::models::ResponseItem;
++use codex_protocol::protocol::QorperaMessageCompositionEvent;
++use codex_protocol::protocol::QorperaMessageCompositionPhase;
++
++const MAX_CALLS: usize = 256;
++
++pub(crate) struct PublicMessageComposition {
++    enabled: bool,
++    active: BTreeSet<String>,
++}
++
++impl PublicMessageComposition {
++    pub(crate) fn new(enabled: bool) -> Self {
++        Self {
++            enabled,
++            active: BTreeSet::new(),
++        }
++    }
++
++    pub(crate) fn added(&mut self, item: &ResponseItem) -> Option<QorperaMessageCompositionEvent> {
++        if !self.enabled || self.active.len() >= MAX_CALLS {
++            return None;
++        }
++        let ResponseItem::FunctionCall {
++            name,
++            namespace,
++            call_id,
++            ..
++        } = item
++        else {
++            return None;
++        };
++        if namespace.as_deref() != Some("qorpera")
++            || name != "send_message"
++            || call_id.is_empty()
++            || call_id.len() > 256
++            || !self.active.insert(call_id.clone())
++        {
++            return None;
++        }
++        Some(QorperaMessageCompositionEvent {
++            call_id: call_id.clone(),
++            phase: QorperaMessageCompositionPhase::Start,
++        })
++    }
++
++    pub(crate) fn done(&mut self, item: &ResponseItem) -> Option<QorperaMessageCompositionEvent> {
++        let ResponseItem::FunctionCall { call_id, .. } = item else {
++            return None;
++        };
++        self.active
++            .remove(call_id)
++            .then(|| QorperaMessageCompositionEvent {
++                call_id: call_id.clone(),
++                phase: QorperaMessageCompositionPhase::Finish,
++            })
++    }
++
++    pub(crate) fn finish(&mut self) -> Vec<QorperaMessageCompositionEvent> {
++        std::mem::take(&mut self.active)
++            .into_iter()
++            .map(|call_id| QorperaMessageCompositionEvent {
++                call_id,
++                phase: QorperaMessageCompositionPhase::Finish,
++            })
++            .collect()
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use serde_json::json;
++
++    fn call(id: &str, namespace: Option<&str>, name: &str, arguments: &str) -> ResponseItem {
++        serde_json::from_value(json!({
++            "type": "function_call", "id": format!("fc_{id}"), "call_id": id,
++            "namespace": namespace, "name": name, "arguments": arguments,
++        }))
++        .unwrap()
++    }
++
++    #[test]
++    fn starts_before_arguments_and_finishes_before_dispatch() {
++        let mut tracker = PublicMessageComposition::new(true);
++        let added = call("call_one", Some("qorpera"), "send_message", "");
++        let start = tracker.added(&added).unwrap();
++        assert_eq!(start.phase, QorperaMessageCompositionPhase::Start);
++        assert!(tracker.added(&added).is_none());
++        let done = call(
++            "call_one",
++            Some("qorpera"),
++            "send_message",
++            r#"{"text":"private until sent"}"#,
++        );
++        let end = tracker.done(&done).unwrap();
++        assert_eq!(end.phase, QorperaMessageCompositionPhase::Finish);
++        assert!(tracker.done(&done).is_none());
++        assert!(tracker.finish().is_empty());
++        assert_eq!(
++            serde_json::to_value(start).unwrap(),
++            json!({"call_id":"call_one","phase":"start"})
++        );
++        assert_eq!(
++            serde_json::to_value(end).unwrap(),
++            json!({"call_id":"call_one","phase":"finish"})
++        );
++    }
++
++    #[test]
++    fn ordinary_sessions_and_other_calls_never_animate_public_writing() {
++        let send = call("call_one", Some("qorpera"), "send_message", "");
++        assert!(PublicMessageComposition::new(false).added(&send).is_none());
++        let mut tracker = PublicMessageComposition::new(true);
++        for item in [
++            call("call_one", Some("qorpera"), "company_write", ""),
++            call("call_two", None, "send_message", ""),
++            call("call_three", Some("other"), "send_message", ""),
++            call("", Some("qorpera"), "send_message", ""),
++            call(&"a".repeat(257), Some("qorpera"), "send_message", ""),
++        ] {
++            assert!(tracker.added(&item).is_none());
++        }
++        assert!(tracker.finish().is_empty());
++    }
++
++    #[test]
++    fn failed_closed_cancelled_or_completed_stream_drains_all_incomplete_calls() {
++        let mut tracker = PublicMessageComposition::new(true);
++        for id in ["call_one", "call_two"] {
++            assert!(
++                tracker
++                    .added(&call(id, Some("qorpera"), "send_message", ""))
++                    .is_some()
++            );
++        }
++        let ended = tracker.finish();
++        assert_eq!(ended.len(), 2);
++        assert!(
++            ended
++                .iter()
++                .all(|event| event.phase == QorperaMessageCompositionPhase::Finish)
++        );
++        assert!(tracker.finish().is_empty());
++        // A retry has fresh state, including if the upstream reuses a call ID.
++        assert!(
++            tracker
++                .added(&call("call_one", Some("qorpera"), "send_message", ""))
++                .is_some()
++        );
++    }
++
++    #[test]
++    fn bounds_optional_metadata_without_rejecting_tool_execution() {
++        let mut tracker = PublicMessageComposition::new(true);
++        for index in 0..MAX_CALLS {
++            assert!(
++                tracker
++                    .added(&call(
++                        &format!("call_{index}"),
++                        Some("qorpera"),
++                        "send_message",
++                        ""
++                    ))
++                    .is_some()
++            );
++        }
++        assert!(
++            tracker
++                .added(&call("overflow", Some("qorpera"), "send_message", ""))
++                .is_none()
++        );
++        assert_eq!(tracker.finish().len(), MAX_CALLS);
++    }
++}
 diff --git a/codex-rs/core/src/qorpera_result_fence.rs b/codex-rs/core/src/qorpera_result_fence.rs
 new file mode 100644
 index 0000000..59cac32
@@ -944,15 +1201,192 @@ index 0000000..a005898
 +    assert!(started.elapsed() < std::time::Duration::from_secs(7));
 +    host.abort();
 +}
-diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
-index 2e26386..23975b1 100644
---- a/codex-rs/Cargo.lock
-+++ b/codex-rs/Cargo.lock
-@@ -2804,6 +2804,7 @@ dependencies = [
-  "serde_json",
-  "serial_test",
-  "sha1 0.10.6",
-+ "sha2 0.10.9",
-  "shlex",
-  "similar",
-  "tempfile",
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index 16ef4e7..d947ab3 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -1785,6 +1785,7 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<(String, Option<
+         | EventMsg::ExitedReviewMode(_)
+         | EventMsg::RawResponseItem(_)
+         | EventMsg::RawResponseCompleted(_)
++        | EventMsg::QorperaMessageComposition(_)
+         | EventMsg::ItemStarted(_)
+         | EventMsg::HookStarted(_)
+         | EventMsg::HookCompleted(_)
+@@ -2197,6 +2198,10 @@ async fn try_run_sampling_request(
+     let defer_streamed_turn_items_for_contributors =
+         !sess.services.extensions.turn_item_contributors().is_empty();
+     let mut active_item_is_streaming_to_client = false;
++    let mut public_message_composition =
++        crate::qorpera_message_composition::PublicMessageComposition::new(
++            std::env::var_os("QORPERA_NATIVE_RESULT_FENCE_SOCKET").is_some(),
++        );
+     let receiving_span = trace_span!("receiving_stream");
+     let outcome: CodexResult<SamplingRequestResult> = loop {
+         let handle_responses = trace_span!(
+@@ -2244,6 +2249,10 @@ async fn try_run_sampling_request(
+         match event {
+             ResponseEvent::Created => {}
+             ResponseEvent::OutputItemDone(mut item) => {
++                if let Some(event) = public_message_composition.done(&item) {
++                    sess.send_event(&turn_context, EventMsg::QorperaMessageComposition(event))
++                        .await;
++                }
+                 assign_missing_streamed_response_item_id(&mut item, active_item.as_ref());
+                 if analytics_tool_call_ids.len() < MAX_ANALYTICS_TOOL_CALL_IDS_PER_RESPONSE {
+                     let call_id = match &item {
+@@ -2355,6 +2364,10 @@ async fn try_run_sampling_request(
+                 }
+             }
+             ResponseEvent::OutputItemAdded(mut item) => {
++                if let Some(event) = public_message_composition.added(&item) {
++                    sess.send_event(&turn_context, EventMsg::QorperaMessageComposition(event))
++                        .await;
++                }
+                 assign_missing_streamed_response_item_id(&mut item, /*active_item*/ None);
+                 if let ResponseItem::CustomToolCall {
+                     call_id,
+@@ -2682,6 +2695,12 @@ async fn try_run_sampling_request(
+             }
+         }
+     };
++    // Every normal, failed, closed or cancelled stream exits through here before
++    // a retry can begin. Incomplete calls must never leave Writing active.
++    for event in public_message_composition.finish() {
++        sess.send_event(&turn_context, EventMsg::QorperaMessageComposition(event))
++            .await;
++    }
+     drop(sampling_timing_guard);
+ 
+     flush_assistant_text_segments_all(
+diff --git a/codex-rs/core/src/tools/mod.rs b/codex-rs/core/src/tools/mod.rs
+index 89d0cd1..4c58160 100644
+--- a/codex-rs/core/src/tools/mod.rs
++++ b/codex-rs/core/src/tools/mod.rs
+@@ -68,7 +68,7 @@ pub(crate) fn tool_user_shell_type(
+ }
+ 
+ pub(crate) fn requested_tool_mode(turn_context: &TurnContext) -> ToolMode {
+-    turn_context.model_info.tool_mode.unwrap_or_else(|| {
++    let requested = turn_context.model_info.tool_mode.unwrap_or_else(|| {
+         if turn_context.config.features.enabled(Feature::CodeModeOnly) {
+             ToolMode::CodeModeOnly
+         } else if turn_context.config.features.enabled(Feature::CodeMode) {
+@@ -76,7 +76,11 @@ pub(crate) fn requested_tool_mode(turn_context: &TurnContext) -> ToolMode {
+         } else {
+             ToolMode::Direct
+         }
+-    })
++    });
++    crate::qorpera_result_fence::governed_tool_mode(
++        std::env::var_os("QORPERA_NATIVE_RESULT_FENCE_SOCKET").as_deref(),
++        requested,
++    )
+ }
+ 
+ pub(crate) fn effective_tool_mode(turn_context: &TurnContext) -> ToolMode {
+diff --git a/codex-rs/mcp-server/src/codex_tool_runner.rs b/codex-rs/mcp-server/src/codex_tool_runner.rs
+index dd551a5..6545bfe 100644
+--- a/codex-rs/mcp-server/src/codex_tool_runner.rs
++++ b/codex-rs/mcp-server/src/codex_tool_runner.rs
+@@ -346,6 +346,7 @@ async fn run_codex_tool_session_inner(
+                     | EventMsg::ViewImageToolCall(_)
+                     | EventMsg::RawResponseItem(_)
+                     | EventMsg::RawResponseCompleted(_)
++                    | EventMsg::QorperaMessageComposition(_)
+                     | EventMsg::EnteredReviewMode(_)
+                     | EventMsg::ItemStarted(_)
+                     | EventMsg::ItemCompleted(_)
+diff --git a/codex-rs/protocol/src/protocol.rs b/codex-rs/protocol/src/protocol.rs
+index 242a565..086c49a 100644
+--- a/codex-rs/protocol/src/protocol.rs
++++ b/codex-rs/protocol/src/protocol.rs
+@@ -1459,6 +1459,9 @@ pub enum EventMsg {
+     RawResponseItem(RawResponseItemEvent),
+     RawResponseCompleted(RawResponseCompletedEvent),
+ 
++    /// Private downstream, transient public-message composition metadata.
++    QorperaMessageComposition(QorperaMessageCompositionEvent),
++
+     ItemStarted(ItemStartedEvent),
+     ItemCompleted(ItemCompletedEvent),
+     HookStarted(HookStartedEvent),
+@@ -1835,6 +1838,20 @@ pub struct RawResponseCompletedEvent {
+     pub token_usage: Option<TokenUsage>,
+ }
+ 
++#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, TS, JsonSchema)]
++#[serde(rename_all = "snake_case")]
++pub enum QorperaMessageCompositionPhase {
++    Start,
++    Finish,
++}
++
++/// No arguments, text, reasoning, tool result or provider credentials.
++#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, TS, JsonSchema)]
++pub struct QorperaMessageCompositionEvent {
++    pub call_id: String,
++    pub phase: QorperaMessageCompositionPhase,
++}
++
+ #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
+ pub struct ItemStartedEvent {
+     pub thread_id: ThreadId,
+diff --git a/codex-rs/rollout-trace/src/protocol_event.rs b/codex-rs/rollout-trace/src/protocol_event.rs
+index 22d2974..787af9a 100644
+--- a/codex-rs/rollout-trace/src/protocol_event.rs
++++ b/codex-rs/rollout-trace/src/protocol_event.rs
+@@ -414,6 +414,7 @@ pub(crate) fn tool_runtime_trace_event(event: &EventMsg) -> Option<ToolRuntimeTr
+         | EventMsg::ExitedReviewMode(_)
+         | EventMsg::RawResponseItem(_)
+         | EventMsg::RawResponseCompleted(_)
++        | EventMsg::QorperaMessageComposition(_)
+         | EventMsg::ItemStarted(_)
+         | EventMsg::ItemCompleted(_)
+         | EventMsg::HookStarted(_)
+@@ -490,6 +491,7 @@ pub(crate) fn wrapped_protocol_event_type(event: &EventMsg) -> Option<&'static s
+         | EventMsg::ExitedReviewMode(_)
+         | EventMsg::RawResponseItem(_)
+         | EventMsg::RawResponseCompleted(_)
++        | EventMsg::QorperaMessageComposition(_)
+         | EventMsg::ItemStarted(_)
+         | EventMsg::ItemCompleted(_)
+         | EventMsg::HookStarted(_)
+diff --git a/codex-rs/rollout/src/policy.rs b/codex-rs/rollout/src/policy.rs
+index 65a8213..5340e4b 100644
+--- a/codex-rs/rollout/src/policy.rs
++++ b/codex-rs/rollout/src/policy.rs
+@@ -143,6 +143,7 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode)
+         | EventMsg::AgentReasoningSectionBreak(_)
+         | EventMsg::RawResponseItem(_)
+         | EventMsg::RawResponseCompleted(_)
++        | EventMsg::QorperaMessageComposition(_)
+         | EventMsg::SessionConfigured(_)
+         | EventMsg::EnvironmentConnected(_)
+         | EventMsg::EnvironmentDisconnected(_)
+diff --git a/codex-rs/tui/src/app/app_server_event_targets.rs b/codex-rs/tui/src/app/app_server_event_targets.rs
+index 5935e46..6b3c678 100644
+--- a/codex-rs/tui/src/app/app_server_event_targets.rs
++++ b/codex-rs/tui/src/app/app_server_event_targets.rs
+@@ -87,6 +87,9 @@ pub(super) fn server_notification_thread_target(
+         ServerNotification::RawResponseItemCompleted(notification) => {
+             Some(notification.thread_id.as_str())
+         }
++        ServerNotification::QorperaMessageComposition(notification) => {
++            Some(notification.thread_id.as_str())
++        }
+         ServerNotification::RawResponseCompleted(notification) => {
+             Some(notification.thread_id.as_str())
+         }
+diff --git a/codex-rs/tui/src/chatwidget/protocol.rs b/codex-rs/tui/src/chatwidget/protocol.rs
+index 79e2c3f..0538c02 100644
+--- a/codex-rs/tui/src/chatwidget/protocol.rs
++++ b/codex-rs/tui/src/chatwidget/protocol.rs
+@@ -201,6 +201,7 @@ impl ChatWidget {
+             | ServerNotification::ThreadUnarchived(_)
+             | ServerNotification::RawResponseItemCompleted(_)
+             | ServerNotification::RawResponseCompleted(_)
++            | ServerNotification::QorperaMessageComposition(_)
+             | ServerNotification::CommandExecOutputDelta(_)
+             | ServerNotification::ProcessOutputDelta(_)
+             | ServerNotification::ProcessExited(_)

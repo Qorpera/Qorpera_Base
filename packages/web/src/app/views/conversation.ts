@@ -1,18 +1,26 @@
 import { sessionAttachmentIssue } from "../../cloud/session-attachments.ts";
 import type { TranscriptCard, TranscriptItem } from "../../cloud/transcript.ts";
 import type { HostedSession, HostedStaffAgent } from "../../cloud/types.ts";
+import { AGENT_LOOK } from "../../ui/agent-activity.ts";
 import { AttachmentTray } from "../../ui/attachments.ts";
 import { authorizationRequestId, renderAuthorizationCard } from "../../ui/authorization-card.ts";
 import { agentFigure } from "../../ui/avatar.ts";
+import {
+	conversationTimestampLabel,
+	conversationTimestampTitle,
+	needsConversationTimestamp,
+	parseConversationTimestamp,
+} from "../../ui/conversation-timestamps.ts";
 import { fmtTime, h, icon, notice, replace, spinner } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
 import { notification, updateNotification } from "../../ui/notification.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
-import type { CompanyController, ConversationState } from "../company.ts";
+import type { AgentState, CompanyController, ConversationState } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
+import { ComposerModels } from "./composer-models.ts";
 import { ComputerPanel } from "./computer.ts";
 import { GroupDetails } from "./group-details.ts";
 import { SessionExecutionView } from "./session-execution.ts";
@@ -41,12 +49,15 @@ export class ConversationView {
 	#cannotSend = true;
 	#submitting = false;
 	#working = false;
+	#agentState: AgentState = "idle";
 	#activityKey = "";
 	readonly #composerWrap: HTMLElement;
 	readonly #composerShell: HTMLElement;
 	readonly #attachments: AttachmentTray;
 	readonly #more: HTMLButtonElement;
 	readonly #menu: HTMLElement;
+	readonly #menuMain: HTMLElement;
+	readonly #models: ComposerModels;
 	readonly #attach: HTMLButtonElement;
 	readonly #identity: HTMLButtonElement;
 	readonly #computer: HTMLButtonElement;
@@ -69,6 +80,8 @@ export class ConversationView {
 	readonly #runNotification = h("div", { class: "run-notification", hidden: true });
 	#runNotificationKey = "";
 	#receivedAttachments: ReceivedAttachments[] = [];
+	readonly #timestampTimer: number;
+	#timestampRows: { date: Date; node: HTMLElement; separator?: HTMLTimeElement }[] = [];
 
 	constructor(
 		company: CompanyController,
@@ -162,16 +175,48 @@ export class ConversationView {
 			icon("attach"),
 			"Attach files",
 		);
+		this.#models = new ComposerModels(
+			company,
+			sessionId,
+			actions.sessionModel,
+			this.#notificationSignal,
+			() => this.#setModelMenu(true),
+			() => this.#setModelMenu(false),
+			() => this.update(),
+		);
+		this.#menuMain = h("div", null, this.#attach, this.#models.button);
 		this.#menu = h(
 			"div",
 			{ class: "composer-menu", role: "menu", hidden: true, "aria-label": "Chat settings and more" },
-			this.#attach,
+			this.#menuMain,
+			this.#models.el,
 		);
 		this.#menu.addEventListener("keydown", (event) => {
-			if (matchesKey(event, "dismiss")) {
+			if (matchesKey(event, "dismiss") || (matchesKey(event, "left") && !this.#models.el.hidden)) {
 				event.preventDefault();
 				event.stopPropagation();
-				this.#setMenu(false);
+				if (!this.#models.el.hidden) this.#setModelMenu(false);
+				else this.#setMenu(false);
+			} else if (matchesKey(event, "right") && document.activeElement === this.#models.button) {
+				event.preventDefault();
+				this.#setModelMenu(true);
+			} else if (
+				["next", "previous", "first", "last"].some((key) =>
+					matchesKey(event, key as "next" | "previous" | "first" | "last"),
+				)
+			) {
+				event.preventDefault();
+				const page = this.#models.el.hidden ? this.#menuMain : this.#models.el;
+				const controls = [...page.querySelectorAll<HTMLButtonElement>("button:not(:disabled):not([hidden])")];
+				const current = controls.indexOf(document.activeElement as HTMLButtonElement);
+				const index = matchesKey(event, "first")
+					? 0
+					: matchesKey(event, "last")
+						? controls.length - 1
+						: (current + (matchesKey(event, "previous") ? -1 : 1) + controls.length) % controls.length;
+				controls[index]?.focus();
+			} else if (matchesKey(event, "tab")) {
+				this.#setMenu(false, false);
 			}
 		});
 		this.#composerShell = h(
@@ -261,6 +306,11 @@ export class ConversationView {
 		});
 		window.addEventListener("resize", () => this.#autosize(), { signal: this.#lifetime.signal });
 		window.addEventListener("qorpera-rail-resize", () => this.#autosize(), { signal: this.#lifetime.signal });
+		const refreshTimestamps = () => this.#refreshTimestamps();
+		this.#timestampTimer = window.setInterval(refreshTimestamps, 60_000);
+		window.addEventListener("focus", refreshTimestamps, { signal: this.#lifetime.signal });
+		window.addEventListener("qorpera-language-change", refreshTimestamps, { signal: this.#lifetime.signal });
+		document.addEventListener("visibilitychange", refreshTimestamps, { signal: this.#lifetime.signal });
 		document.addEventListener(
 			"click",
 			(event) => {
@@ -280,6 +330,7 @@ export class ConversationView {
 		if (this.#disposed) return;
 		this.#disposed = true;
 		this.#lifetime.abort();
+		window.clearInterval(this.#timestampTimer);
 		this.#runNotification.remove();
 		this.#details?.dispose();
 		this.#panel?.dispose();
@@ -323,10 +374,24 @@ export class ConversationView {
 	}
 
 	#setMenu(open: boolean, restoreFocus = true): void {
+		this.#menuMain.hidden = false;
+		this.#models.el.hidden = true;
+		this.#models.button.setAttribute("aria-expanded", "false");
 		this.#menu.hidden = !open;
 		this.#more.setAttribute("aria-expanded", String(open));
 		if (open) this.#attach.focus();
 		else if (restoreFocus) this.#more.focus();
+	}
+
+	#setModelMenu(open: boolean): void {
+		if (open && this.#models.button.disabled) return;
+		this.#menuMain.hidden = open;
+		this.#models.el.hidden = !open;
+		this.#models.button.setAttribute("aria-expanded", String(open));
+		if (open) {
+			this.#models.focus();
+			void this.#models.refresh();
+		} else this.#models.button.focus();
 	}
 
 	#openDetails(): void {
@@ -461,6 +526,10 @@ export class ConversationView {
 		const agent = this.#company.staffById(session?.staffAgentId);
 		const canWrite = company.team?.capabilities.write === true && session?.status === "open";
 		const room = this.#isRoom;
+		this.#models.update(
+			Boolean(agent) && !room,
+			!canWrite || conversation.sending || this.#submitting || Boolean(conversation.retrySend),
+		);
 		this.#execution?.update();
 		this.#run?.update(
 			room || company.accessLost || !company.team?.capabilities.read ? undefined : session?.staffAgentId,
@@ -485,19 +554,24 @@ export class ConversationView {
 		);
 		// The agent's run is watched quietly; a change in who is working re-reads it.
 		const activity = room ? undefined : this.#company.activityFor(session?.staffAgentId);
-		const working = activity !== undefined && activity.activity !== "needs_attention";
 		const activityKey = `${activity?.runId ?? ""}:${activity?.activity ?? ""}`;
 		if (activityKey !== this.#activityKey) {
 			this.#activityKey = activityKey;
 			void this.#run?.refresh();
 		}
-		this.#working = working || (conversation.sending && !room);
+		this.#agentState = room ? "idle" : this.#company.agentState(session?.staffAgentId);
+		this.#working = this.#agentState === "working" || this.#agentState === "writing";
 		this.#renderHeader(session, agent);
-		this.#renderMessages(conversation, room ? "Agent reply" : (agent?.displayName ?? session?.title ?? "Agent"));
+		this.#renderMessages(
+			conversation,
+			room ? "Agent reply" : (agent?.displayName ?? session?.title ?? "Agent"),
+			agent,
+		);
 		this.#renderStatus(conversation, canWrite, session);
 		this.#composer.disabled = !canWrite || conversation.sending;
 		this.#cannotSend =
 			!this.#actions.sendMessage ||
+			this.#models.pending ||
 			(this.#execution !== undefined && !this.#execution.canSend) ||
 			!canWrite ||
 			conversation.sending ||
@@ -557,7 +631,53 @@ export class ConversationView {
 		);
 	}
 
-	#renderMessages(conversation: ConversationState, agentName: string): void {
+	#refreshTimestamps(preserveScroll = true): void {
+		if (this.#disposed) return;
+		const now = new Date();
+		let previousDate: Date | undefined;
+		const groups = this.#timestampRows.map((row) => {
+			const separated = needsConversationTimestamp(row.date, previousDate);
+			previousDate = row.date;
+			return { row, separated };
+		});
+		const regroup = preserveScroll && groups.some(({ row, separated }) => Boolean(row.separator) !== separated);
+		const scrollTop = this.#messages.scrollTop;
+		const viewportTop = regroup && !this.#stickToBottom ? this.#messages.getBoundingClientRect().top : 0;
+		const anchor =
+			regroup && !this.#stickToBottom
+				? this.#timestampRows.find(({ node }) => node.getBoundingClientRect().bottom > viewportTop)?.node
+				: undefined;
+		const anchorTop = anchor?.getBoundingClientRect().top ?? 0;
+		// Reconcile local-day boundaries too: travel can add or remove a midnight
+		// between adjacent messages. Keep the message and attachment nodes intact.
+		for (const { row, separated } of groups) {
+			if (!separated) {
+				row.separator?.remove();
+				row.separator = undefined;
+				continue;
+			}
+			const { date } = row;
+			if (!row.separator) {
+				row.separator = h("time", { class: "conversation-timestamp", datetime: date.toISOString() });
+				row.node.before(row.separator);
+			}
+			const time = row.separator;
+			const label = conversationTimestampLabel(date, now);
+			const title = conversationTimestampTitle(date);
+			if (time.textContent !== label) time.textContent = label;
+			if (time.title !== title) {
+				time.title = title;
+				time.setAttribute("aria-label", title);
+			}
+		}
+		if (regroup) {
+			if (this.#stickToBottom) this.#messages.scrollTop = this.#messages.scrollHeight;
+			else if (anchor) this.#messages.scrollTop += anchor.getBoundingClientRect().top - anchorTop;
+			else this.#messages.scrollTop = scrollTop;
+		}
+	}
+
+	#renderMessages(conversation: ConversationState, agentName: string, agent: HostedStaffAgent | undefined): void {
 		const items: TranscriptItem[] = [
 			...conversation.projection.items,
 			...conversation.optimistic.map(
@@ -581,7 +701,10 @@ export class ConversationView {
 			conversation.projection.hiddenCount,
 			conversation.loading,
 			conversation.error,
-			this.#working,
+			this.#agentState,
+			agent?.id,
+			agent?.appearance,
+			agent?.templateId,
 		]);
 		if (key === this.#renderedKey) return;
 		this.#renderedKey = key;
@@ -594,6 +717,7 @@ export class ConversationView {
 				if (request) decisions.set(request, item);
 			}
 		const nodes: HTMLElement[] = [];
+		this.#timestampRows = [];
 		for (const item of items) {
 			if (item.kind === "member" || item.kind === "agent") {
 				const mine = item.kind === "member" && item.authorUserId === this.#company.userId;
@@ -667,22 +791,32 @@ export class ConversationView {
 					),
 				);
 			}
+			const date = parseConversationTimestamp(item.createdAt);
+			const node = nodes[nodes.length - 1];
+			if (date && node) this.#timestampRows.push({ date, node });
 		}
 		if (conversation.loading && !items.length) nodes.push(spinner("Loading conversation"));
 		if (!conversation.loading && !items.length && !conversation.error && !this.#working) {
 			nodes.push(h("div", { class: "empty" }, "No messages yet."));
 		}
-		if (this.#working && !conversation.loading)
+		if (this.#working && !conversation.loading) {
+			const look = AGENT_LOOK[this.#agentState];
+			const description = `${agentName} · ${look.line}`;
 			nodes.push(
 				h(
 					"div",
-					{ class: "message from-agent typing", role: "status", "aria-label": `${agentName} is working` },
-					h("span", null),
-					h("span", null),
-					h("span", null),
+					{
+						class: "message from-agent thread-activity",
+						role: "status",
+						title: description,
+						"aria-label": description,
+					},
+					agentFigure(agent, agentName, { size: 40, activity: look.figure }),
 				),
 			);
+		}
 		replace(this.#messages, ...nodes);
+		this.#refreshTimestamps(false);
 		if (this.#stickToBottom) this.#messages.scrollTop = this.#messages.scrollHeight;
 	}
 

@@ -417,7 +417,7 @@ export class SettingsView {
 				h("div", { class: "settings-execution" }),
 				...(
 					[
-						["organization", "Organization", "Responsibilities, projects and staff"],
+						["organization", "Organization", "Agents and projects"],
 						["approvals", "Approvals", "Review requests that need your decision"],
 					] as const
 				).map(([path, title, detail]) =>

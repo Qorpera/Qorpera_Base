@@ -12,9 +12,10 @@
     "capabilities": [
       "qorpera.native-result-fence/v1",
       "qorpera.native-direct-tools/v1",
-      "qorpera.native-capture-images/v1"
+      "qorpera.native-capture-images/v1",
+      "qorpera.native-message-composition/v1"
     ],
-    "patchSha256": "5eb9ee03406e843ceea1f81d046750aa16785c03a84315c7be96a6c68004eb9a",
+    "patchSha256": "24f9fffe1a35ba29763951b1b904b9b5b194cdcb368ff23c3f8e4bcf900c67f9",
     "cargoLock": {
       "upstreamSha256": "eeab4e9d3466da54037032251e2f13ad1ed11eae18bb8ee7dd2c89dbb86f645d",
       "normalizedSha256": "bc4fe450de929afe82928734f860ca83e5f9dc5f9f1211b0974ea47b57af77ca",
@@ -23,8 +24,8 @@
   },
   "artifact": {
     "file": "codex",
-    "bytes": 307464032,
-    "sha256": "6bbe4704774454be5aff5501bfe4bbd5e023930ff87d187ca9e5ec4c333c8e8d",
+    "bytes": 308143880,
+    "sha256": "9bd7b4e1148cb77820ea75943d03e7531757b3c74e47399df25a00477e58a7d0",
     "target": "x86_64-unknown-linux-gnu",
     "profile": "release",
     "compiler": "rustc 1.95.0 (59807616e 2026-04-14)\nbinary: rustc\ncommit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860\ncommit-date: 2026-04-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.95.0\nLLVM version: 22.1.2",
@@ -32,7 +33,7 @@
       "tool": "rust-llvm-objcopy",
       "toolchain": "1.95.0",
       "operation": "strip-debug",
-      "inputSha256": "2904c68ca43dc83b65f74e14b7a380f027c7ca9e6ff4e250341520bc94f18745",
+      "inputSha256": "0b1f3e342f705b0d23aa56c38db8e1e8f3fd8966298d2861fbea2b35159f51a8",
       "toolSha256": "211b1e47ef0078d91f33d5076e958bf40a65b0f634d59c9802f0b049b9662728"
     }
   },

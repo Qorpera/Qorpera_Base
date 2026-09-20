@@ -1,8 +1,8 @@
 import type { User } from "@supabase/supabase-js";
 import type { HostedProfile, HostedStaffAgent } from "../../cloud/types.ts";
+import { AGENT_LOOK, type AgentLook } from "../../ui/agent-activity.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { badge, button, h, icon, initials, notice, replace } from "../../ui/dom.ts";
-import type { Activity } from "../../ui/figure-motion.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { presentationLocale, uiText } from "../../ui/preferences.ts";
@@ -330,25 +330,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 	return parts;
 }
 
-interface RailLook {
-	figure: Activity;
-	/** Replaces the role under the name. */
-	line?: string;
-	/** What only the disc shows. */
-	note?: string;
-	disc?: "working" | "failed";
-}
-
-/* How the rail draws each agent state. The green disc is the trailer's "working
- * now" dot; the red one is its opposite, a run that did not finish. */
-const RAIL_LOOK: Record<AgentState, RailLook> = {
-	idle: { figure: "Idle" },
-	working: { figure: "Working", line: "Working", disc: "working" },
-	decision: { figure: "Waiting", line: "Needs you" },
-	failed: { figure: "Idle", note: "A run did not finish", disc: "failed" },
-};
-
-function statusDisc(look: RailLook, className: string): HTMLElement | null {
+function statusDisc(look: AgentLook, className: string): HTMLElement | null {
 	if (!look.disc) return null;
 	return h("span", { class: look.disc === "failed" ? `${className} failed` : className, "aria-hidden": "true" });
 }
@@ -357,7 +339,7 @@ function statusDisc(look: RailLook, className: string): HTMLElement | null {
  * needs: it hides the text beside the figure and the disc says nothing aloud. */
 function railLabel(
 	agent: Pick<HostedStaffAgent, "displayName" | "role">,
-	look: RailLook,
+	look: AgentLook,
 ): { title: string; "aria-label"?: string } {
 	const state = look.note ?? look.line;
 	const label = [agent.displayName, agent.role, state].filter(Boolean).join(" · ");
@@ -378,7 +360,7 @@ interface SessionModel {
 	selected: boolean;
 }
 function cofounderCard(model: AgentModel, href: string): HTMLElement {
-	const look = RAIL_LOOK[model.state];
+	const look = AGENT_LOOK[model.state];
 	return h(
 		"a",
 		{ class: "cofounder-home", href, ...railLabel(model, look) },
@@ -394,7 +376,7 @@ function cofounderCard(model: AgentModel, href: string): HTMLElement {
 }
 
 function agentRow(model: AgentModel, href: string): HTMLElement {
-	const look = RAIL_LOOK[model.state];
+	const look = AGENT_LOOK[model.state];
 	return h(
 		"a",
 		{ class: "rail-row rail-row-agent", href, ...railLabel(model, look) },
