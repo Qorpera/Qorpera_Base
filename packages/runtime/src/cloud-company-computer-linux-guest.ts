@@ -65,6 +65,35 @@ interface ScreenBrowser {
 	detachLogins?: () => Promise<void>;
 	closing?: Promise<void>;
 }
+/**
+ * Bring a minimised browser window back, without choosing a tab for the member:
+ * only the window state changes (CDP refuses minimised to maximised directly,
+ * so it goes through normal). Raising a window that is merely covered is the
+ * dock launcher's part, which sees the desktop's windows; this one cannot fail
+ * the request it serves.
+ */
+export async function restoreCompanyComputerBrowserWindow(
+	context: CompanyComputerBrowserSession["context"],
+	signal: AbortSignal,
+): Promise<void> {
+	await cloudToolRequest(
+		async () => {
+			const page = context.pages()[0];
+			if (!page) return;
+			const session = await context.newCDPSession(page);
+			try {
+				const { windowId, bounds } = await session.send("Browser.getWindowForTarget");
+				if (bounds.windowState !== "minimized") return;
+				await session.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "normal" } });
+				await session.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "maximized" } });
+			} finally {
+				await session.detach().catch(() => undefined);
+			}
+		},
+		signal,
+		2000,
+	).catch(() => undefined);
+}
 /** Waits before each quiet attempt to open the browser for a member who just connected. */
 const WELCOME_BROWSER_DELAYS_MS = [300, 1200, 2500] as const;
 interface SharedScreen {
@@ -78,6 +107,9 @@ interface SharedScreen {
 	requests?: ReturnType<typeof setTimeout>;
 	/** Pending attempt to have the browser open for a member who just arrived. */
 	welcome?: ReturnType<typeof setTimeout>;
+	/** The arrival open happens once per desktop start: a member who closed the
+	 * browser on purpose does not get it back by reconnecting. */
+	welcomed?: true;
 	browser?: ScreenBrowser;
 	lifecycle?: CompanyComputerScreenLifetime;
 }
@@ -358,10 +390,13 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	 * as for the dock and records the same presence, and the browser still closes
 	 * once nobody entitled remains. The viewer row may become live a moment after
 	 * the socket opens, so a refusal is tried again a few times, quietly, and then
-	 * left to the dock icon.
+	 * left to the dock icon. It happens once per desktop start (the screen record
+	 * is dropped by `stopResources`): a reconnect never reopens a browser somebody
+	 * closed on purpose.
 	 */
 	#welcomeBrowser(screen: SharedScreen): void {
-		if (screen.welcome !== undefined) return;
+		if (screen.welcomed) return;
+		screen.welcomed = true;
 		const attempt = (index: number): void => {
 			if (index >= WELCOME_BROWSER_DELAYS_MS.length) {
 				screen.welcome = undefined;
@@ -433,6 +468,9 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		const current = await owned.opening?.catch(() => undefined);
 		if (current && !current.isEnded?.()) {
 			await current.assertActive(signal);
+			// Somebody at the screen asked for a browser that is already open: the
+			// answer is its window, brought back if it was minimised.
+			if (opener === "desktop") await restoreCompanyComputerBrowserWindow(current.context, signal);
 			return current;
 		}
 		if (current) {

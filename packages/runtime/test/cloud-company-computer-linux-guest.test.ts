@@ -69,7 +69,19 @@ const browsers: {
 	ended(): boolean;
 }[] = [];
 const temporary: string[] = [];
+/** The browser window as CDP reports it; a test minimises it. */
+const windows = {
+	pages: [] as never[],
+	state: "maximized",
+	send: vi.fn(async (method: string, args?: { bounds?: { windowState?: string } }) => {
+		if (method === "Browser.getWindowForTarget") return { windowId: 7, bounds: { windowState: windows.state } };
+		if (args?.bounds?.windowState) windows.state = args.bounds.windowState;
+		return {};
+	}),
+};
 beforeEach(() => {
+	windows.pages = [];
+	windows.state = "maximized";
 	browsers.length = 0;
 	vi.clearAllMocks();
 	displays.length = 0;
@@ -97,7 +109,8 @@ beforeEach(() => {
 			input.signal.throwIfAborted();
 			const listeners: (() => void)[] = [];
 			const context = {
-				pages: () => [],
+				pages: () => windows.pages,
+				newCDPSession: async () => ({ send: windows.send, detach: async () => undefined }),
 				on: (_event: string, listener: () => void) => listeners.push(listener),
 				cookies: async () => [],
 				addCookies: async () => undefined,
@@ -399,7 +412,43 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 		await new Promise((resolve) => setTimeout(resolve, 700));
 		expect(physical.browserLaunch).toHaveBeenCalledOnce();
 		expect(f.screenBrowser.opens).toEqual(["desktop"]);
+		// The member closes the browser on purpose: reconnecting does not bring it back...
+		browsers[0].end();
+		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
+		await new Promise((resolve) => setTimeout(resolve, 700));
+		expect(physical.browserLaunch).toHaveBeenCalledOnce();
 		expect(f.failure).not.toHaveBeenCalled();
+		// ...until the desktop itself has been stopped and started again.
+		await f.guest.stopResources(f.binding, new AbortController().signal);
+		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
+		await vi.waitFor(() => expect(physical.browserLaunch).toHaveBeenCalledTimes(2), { timeout: 3000 });
+		expect(f.screenBrowser.opens).toEqual(["desktop", "desktop"]);
+	});
+	it("answers a dock request for a browser that is already open by bringing its minimised window back, without choosing a tab", async () => {
+		const f = await fixture({ browser: true });
+		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
+		await vi.waitFor(() => expect(physical.browserLaunch).toHaveBeenCalledOnce(), { timeout: 3000 });
+		windows.pages = [{} as never];
+		// Open and not minimised: only looked at.
+		physical.browserRequest.mockResolvedValueOnce(true);
+		await vi.waitFor(() => expect(windows.send).toHaveBeenCalledTimes(1), { timeout: 3000 });
+		expect(windows.send.mock.calls[0][0]).toBe("Browser.getWindowForTarget");
+		// Minimised: restored through "normal", as CDP requires, and maximised again.
+		windows.state = "minimized";
+		physical.browserRequest.mockResolvedValueOnce(true);
+		await vi.waitFor(() => expect(windows.state).toBe("maximized"), { timeout: 3000 });
+		expect(windows.send.mock.calls.slice(1).map(([method, args]) => [method, args?.bounds?.windowState])).toEqual([
+			["Browser.getWindowForTarget", undefined],
+			["Browser.setWindowBounds", "normal"],
+			["Browser.setWindowBounds", "maximized"],
+		]);
+		expect(physical.browserLaunch).toHaveBeenCalledOnce();
+		// A failing window call never fails the request or the desktop.
+		windows.send.mockRejectedValueOnce(new Error("target closed"));
+		physical.browserRequest.mockResolvedValueOnce(true);
+		await new Promise((resolve) => setTimeout(resolve, 700));
+		expect(f.failure).not.toHaveBeenCalled();
+		expect(displays[0].stop).not.toHaveBeenCalled();
 	});
 	it("asks again quietly while SQL does not yet see the arriving member, then leaves it to the dock", async () => {
 		const f = await fixture({ browser: true });
