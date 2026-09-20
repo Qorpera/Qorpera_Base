@@ -410,7 +410,10 @@ describe("conversation UI boundaries", () => {
 		await settle();
 		expect(card()?.querySelector(".run-failure-title")?.textContent).toBe("Fixture agent did not finish this run");
 		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe("The run took too long and was stopped.");
-		expect(card()?.querySelector(".run-failure-details code")?.textContent).toBe(details.lastError);
+		// The cloud's own error text stays out of the card; the reason is in the member's words.
+		expect(card()?.textContent).not.toContain(details.lastError);
+		expect(card()?.querySelector("details")).toBeNull();
+		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual(["Dismiss"]);
 		// Unsettled operations: nothing may be repeated yet.
 		expect(card()?.querySelector('[data-action="retry-run"]')).toBeNull();
 		// The card is the last thing in the thread, where the answer would have been.

@@ -972,7 +972,6 @@ export class ConversationView {
 				: runFailureCard({
 						title,
 						reason,
-						details: proposalId ? undefined : recovery?.lastError,
 						retry: canRetry ? () => void this.#company.retryFailedRun(runId, sessionId) : undefined,
 						retrying: retryState?.pending,
 						retryError: retryState?.error,
