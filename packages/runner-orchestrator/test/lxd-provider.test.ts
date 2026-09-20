@@ -823,7 +823,7 @@ describe("LXD cloud runner provider", () => {
 			physicalState: "reserving",
 		});
 	});
-	it("retires a reserving journal that made no progress for ten minutes", async () => {
+	it.each([false, true])("allows new work after retiring a stale reservation (registered: %s)", async (registered) => {
 		const f = await acquiredFixture();
 		const reservingId = "10000000-0000-4000-8000-000000000002";
 		const journal = JSON.parse(await readFile(f.journalPath, "utf8"));
@@ -838,6 +838,7 @@ describe("LXD cloud runner provider", () => {
 			updatedAt: stale,
 		};
 		delete reserving.nodeCapacity;
+		if (!registered) delete reserving.capacityRegistered;
 		delete reserving.guestAddress;
 		delete reserving.assignmentId;
 		await mkdir(join(f.stateRoot, reservingId), { recursive: true, mode: 0o700 });
@@ -854,6 +855,31 @@ describe("LXD cloud runner provider", () => {
 					String(url).includes("qorpera_release_runtime_machine") && String(init?.body).includes(reservingId),
 			);
 		expect(releases).toHaveLength(reserving.capacityRegistered ? 1 : 0);
+		// A provider restart must not let the retired reservation block unrelated work.
+		f.lxd.instance = { ...f.lxd.instance!, status: "Stopped", statusCode: 102 };
+		await backend.reconcile();
+		const nextId = "30000000-0000-4000-8000-000000000001";
+		const restarted = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, f.fetchImplementation);
+		await restarted.acquire(nextId, { ...work(), runId: nextId }, new AbortController().signal);
+		expect(f.lxd.createCalls).toHaveLength(2);
+		expect(f.lxd.powerCalls).toEqual(["start", "start"]);
+	});
+	it.each(["present", "unknown"])("blocks new work when a lost guest is %s", async (presence) => {
+		const f = await acquiredFixture();
+		const journal = JSON.parse(await readFile(f.journalPath, "utf8"));
+		journal.physicalState = "lost";
+		delete journal.nodeCapacity;
+		delete journal.capacityRegistered;
+		await writeFile(f.journalPath, JSON.stringify(journal));
+		if (presence === "unknown") vi.spyOn(f.lxd, "getInstance").mockRejectedValue(new Error("LXD unavailable"));
+		const backend = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, f.fetchImplementation);
+		const nextId = "30000000-0000-4000-8000-000000000001";
+		await expect(backend.acquire(nextId, { ...work(), runId: nextId }, new AbortController().signal)).rejects.toThrow(
+			presence === "present" ? "machine-capacity inventory" : "LXD unavailable",
+		);
+		expect(f.lxd.createCalls).toHaveLength(1);
+		expect(f.lxd.powerCalls).toEqual(["start"]);
+		expect(JSON.parse(await readFile(f.journalPath, "utf8"))).toEqual(journal);
 	});
 	it("reconciles a lost journal whose guest and recovery volume never existed", async () => {
 		const directory = await root();
