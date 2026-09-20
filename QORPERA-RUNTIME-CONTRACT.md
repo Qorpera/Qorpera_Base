@@ -1806,10 +1806,9 @@ placements that depended on them.
    retrieval projections; and Order 8's responsibility cadences and scheduled
    measurement. Order 8's routines, listeners and exception wakes remain, owned
    by agents.
-6. **The cloud objects are retired.** The responsibility tables and the record
-   of escalations moved to a closed archive schema that nothing reads, kept for
-   the record rather than destroyed; nothing in the archive can block deleting
-   an agent, a file or a company. Responsibility documents are no longer
+6. **The cloud objects are removed.** The responsibility tables and the
+   escalation queue are dropped; no company held responsibility data worth
+   keeping. Responsibility documents are no longer
    organization documents: existing `organization/responsibilities/*.json`
    files stay in the Company File as ordinary files, and a new company is born
    without them and without that folder. Agents no longer have
@@ -1836,9 +1835,10 @@ Implemented with this amendment: the web client's responsibility pages, routes,
 map and links are removed and the agent's description field is labelled
 "Responsibilities"; the employee overlay already orients an agent by its
 description (Step 8 record). The cloud retirement is migration
-`20260920070000_runtime_retire_responsibility_objects.sql`; it and the object
-gateway that stops building the responsibilities folder MUST be rolled out
-together, because a genesis tree is now five entries.
+`20260920070000_runtime_retire_responsibility_objects.sql`, with the object
+gateway that stops building the responsibilities folder. Either may be rolled
+out first: the database accepts both genesis trees, and the gateway waits for a
+database that still mints documents.
 
 ### Current implementation checkpoint
 

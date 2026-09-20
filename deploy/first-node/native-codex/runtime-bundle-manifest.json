@@ -9,11 +9,11 @@
   "components": {
     "kernel": "9a0dc575a7265d20d07e056f0a01196719c22c7fc0a485e3e2aaee58f97358bf",
     "constitution": "5f47fa1aa2c8f5647a385dfffe7a20601c50bbd920e2c5a45c031886b2e3237b",
-    "toolCatalog": "0f3c060689ee4fee352ff571579faf3e23ba33c90c984c5709d1e3393e1fd0c1",
+    "toolCatalog": "390126498d0ed689333d909f2d565920604036f2d465c21106afe04870ada1ec",
     "wakeAndSilence": "02114364b55591eded4e7c22797e65019fe17db1f6ccf16a0c43951aa798d08d",
     "contextComposer": "a4b305252bc1dc1a2819a42aad76f0d62d7a8791b22004ec799d2b2032324442",
     "providerBootstrap": "fc16fd10e618c08058eea6ccaec8762685c48db59e1a80caee3fcb0091d48c45",
-    "authorization": "44d2a5ce65456f69a9284ef658e3b632a8096246dc84e6dad3553ce21185c11e",
+    "authorization": "47a691527a38cab88c8e80de190e9a0f5159647f454b2627deeeda0fc8b5fd85",
     "inboundSafety": "f0039c3c736a06b1dcf8b1af2959650e239f1cf03f96d731ab1ddbbd6e2b684e",
     "outboundSafety": "60563c113474954e7e7d046710e23f0513ffcb973ca59a35845674fdff9b3125",
     "interactionSurfaces": "aa48cf05ae901c44779f200e7e3bd8832c144b9dcd78f6daf006a384d778af64",
@@ -506,7 +506,7 @@
     "packages/runtime/src/cloud-company-path-gateway.ts": "4d8ec6fda042a8fbdfaae08021007e58afab5547dba98e58ab4bd76eda508fd7",
     "packages/runtime/src/cloud-company-path-presence.ts": "429e9cbe3270ade5d9b9b4651e70becbe1a5ec8e16f17ba0494ef0c27bada19b",
     "packages/runtime/src/cloud-company-path-refusal.ts": "1330597b596a808e472bf853383878e4d1bf2f21e39800bb6de0a76f85c314f3",
-    "packages/runtime/src/cloud-hiring-tools.ts": "ca5fdddc8c0dd664a3ac7dd3b2da550f6307812cc87a68226acba29a58ca2cf6",
+    "packages/runtime/src/cloud-hiring-tools.ts": "4b4c8aada2e79dc01de48bae72b40c2c62e7a2cc7568a332d572eea6901de5ef",
     "packages/runtime/src/cloud-identity-recovery-config.ts": "c2e979d17fad728730dbd180b2f34fbd6cdb9e94e14bbf8d19c065759c6309be",
     "packages/runtime/src/cloud-identity-recovery-crypto.ts": "a33ee1955af9ed32bd2a27b4c8d47da89da6cbc779908db5bcdcc62e2c9d1ab4",
     "packages/runtime/src/cloud-identity-recovery-filesystems.ts": "eb9b01ea0b603d032c01d947e8ed04850b3e991e29e4f7d6d031d474983c3774",
@@ -866,6 +866,6 @@
     "supabase/migrations/20260920030700_runtime_identity_home_current_epoch.sql": "ef9932011dcc9bda378bcf57b817ab6dc200f7dbc7b2859835e795a2777129cc",
     "supabase/migrations/20260920030800_runtime_login_placement_follows_identity_home.sql": "c6042de0b36fc34f3ab4f26eddfdd98a73d79caa541628d2d9f8fe52770f864c",
     "supabase/migrations/20260920031000_runtime_bundle_activation_v42.sql": "f3c28e8ca15632d64f8bd604323f0d58470c901175b374596700168531361c87",
-    "supabase/migrations/20260920070000_runtime_retire_responsibility_objects.sql": "cbadb1c5ab503a647d33729574238cbbad9609f02b13dc13e6d7a30d2b9932f3"
+    "supabase/migrations/20260920070000_runtime_retire_responsibility_objects.sql": "cadc8c274efeb9dbd9ac56f413127e6eb2fbd8a877433f53037c6777eb4593ba"
   }
 }

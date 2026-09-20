@@ -2,11 +2,11 @@
 -- description. The structured responsibility object is withdrawn, so its cloud
 -- state is retired here.
 --
--- Retired, not destroyed. The eight tables hold projections of Company File
--- documents and the record of what agents escalated; they move to a closed
--- archive schema that nothing reads. Every link from the archive that could
--- block deleting an agent, a snapshot, a wake or a file entry is dropped;
--- cascades from a company stay, so deleting a company still removes its rows.
+-- The eight tables are dropped (founder decision 2026-09-20: no company holds
+-- responsibility data worth keeping). They held projections of Company File
+-- documents, which stay in the Company File as ordinary files, and the queue of
+-- agent escalations. The drop is deliberately not CASCADE: anything that still
+-- depends on these tables must fail this migration rather than vanish with them.
 --
 -- What changes for a company:
 --   * organization/responsibilities/*.json stop being organization documents.
@@ -30,11 +30,6 @@
 -- compiled, even if the branch that used it can no longer run. The bootstrap
 -- claim/stage functions keep their document branches, which name no table and
 -- cannot run once no job carries documents.
-
-create schema qorpera_retired;
-revoke all on schema qorpera_retired from public, anon, authenticated, service_role, qorpera_secret_broker;
-comment on schema qorpera_retired is
-	'Withdrawn product state kept for the record. Nothing in the product reads or writes it.';
 
 -- 1. In-flight company creations stop carrying responsibility documents.
 update public.qorpera_company_bootstrap_jobs
@@ -73,14 +68,18 @@ begin
 end
 $patch$;
 
--- 2b. A genesis tree no longer has the responsibilities folder: five entries, not six.
+-- 2b. A genesis tree no longer needs the responsibilities folder: five entries. An object
+-- gateway that has not been updated yet still builds the empty folder; that tree is accepted
+-- too, so the order in which the database and the gateway are rolled out cannot block a
+-- company from being created.
 do $patch$
 declare v text := pg_get_functiondef('public.qorpera_finalize_company_bootstrap(uuid,uuid,text,text,text,text,jsonb)'::regprocedure);
 begin
 	v := pg_temp.edit(v, $old$		or not (v_entries @> jsonb_build_array(jsonb_build_object('path','organization/responsibilities','kind','directory')))
 $old$, '');
 	v := pg_temp.edit(v, $old$if jsonb_array_length(v_entries) <> 6 + (select count(*) from jsonb_object_keys(v_job.cofounder_responsibility_documents)) then$old$,
-	$new$if jsonb_array_length(v_entries) <> 5 + (select count(*) from jsonb_object_keys(v_job.cofounder_responsibility_documents)) then$new$);
+	$new$if jsonb_array_length(v_entries) <> 5 + (select count(*) from jsonb_object_keys(v_job.cofounder_responsibility_documents))
+			+ (v_entries @> jsonb_build_array(jsonb_build_object('path','organization/responsibilities','kind','directory')))::integer then$new$);
 	execute v;
 end
 $patch$;
@@ -287,47 +286,17 @@ drop function public.qorpera_current_escalation_responsibility(jsonb, uuid, bigi
 drop function public.qorpera_responsibility_resources_json(uuid);
 drop function public.qorpera_company_bootstrap_responsibility_documents(uuid);
 
--- 5. The tables move to the archive.
+-- 5. The tables go. One statement, so their links to each other need no order.
 alter table public.qorpera_company_projects
 	drop constraint qorpera_company_projects_profile_id_sponsoring_responsibil_fkey;
-drop trigger qorpera_responsibility_escalation_signals_immutable on public.qorpera_responsibility_escalation_signals;
+drop table public.qorpera_responsibility_escalation_signals, public.qorpera_responsibility_escalations,
+	public.qorpera_agent_responsibility_grants, public.qorpera_responsibility_external_operation_grants,
+	public.qorpera_responsibility_path_resources, public.qorpera_responsibility_measure_sources,
+	public.qorpera_responsibility_measures, public.qorpera_company_responsibilities;
 
-do $$
-declare v_table text; v_constraint record;
-begin
-	foreach v_table in array array['qorpera_responsibility_escalation_signals','qorpera_responsibility_escalations',
-		'qorpera_agent_responsibility_grants','qorpera_responsibility_external_operation_grants',
-		'qorpera_responsibility_path_resources','qorpera_responsibility_measure_sources',
-		'qorpera_responsibility_measures','qorpera_company_responsibilities'] loop
-		execute format('alter table public.%I set schema qorpera_retired', v_table);
-		execute format('revoke all on table qorpera_retired.%I from public, anon, authenticated, service_role, qorpera_secret_broker', v_table);
-	end loop;
-	-- A link out of the archive must never block live state. Cascades (a company
-	-- being deleted) stay; everything that restricts is dropped.
-	for v_constraint in
-		select constraint_row.conname, constraint_row.conrelid::regclass as owner
-		from pg_constraint constraint_row
-		join pg_class owner_table on owner_table.oid = constraint_row.conrelid
-		join pg_class target_table on target_table.oid = constraint_row.confrelid
-		where constraint_row.contype = 'f'
-			and owner_table.relnamespace = 'qorpera_retired'::regnamespace
-			and target_table.relnamespace <> 'qorpera_retired'::regnamespace
-			and constraint_row.confdeltype <> 'c'
-	loop
-		execute format('alter table %s drop constraint %I', v_constraint.owner, v_constraint.conname);
-	end loop;
-end
-$$;
-
--- 6. Nothing live may still depend on the archive.
+-- 6. Nothing live may still name what is gone.
 do $$
 begin
-	if exists (select 1 from pg_constraint constraint_row
-		join pg_class owner_table on owner_table.oid = constraint_row.conrelid
-		join pg_class target_table on target_table.oid = constraint_row.confrelid
-		where constraint_row.contype = 'f' and target_table.relnamespace = 'qorpera_retired'::regnamespace
-			and owner_table.relnamespace <> 'qorpera_retired'::regnamespace) then
-		raise exception 'Live state still references retired responsibility tables'; end if;
 	if exists (select 1 from pg_proc function_row where function_row.pronamespace = 'public'::regnamespace
 		and function_row.prokind = 'f' and pg_get_functiondef(function_row.oid) ~
 			'public\.qorpera_(company_responsibilities|responsibility_[a-z_]+|agent_responsibility_grants)') then

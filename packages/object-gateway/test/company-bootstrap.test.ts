@@ -220,6 +220,12 @@ describe("cloud-owned company bootstrap", () => {
 		{ leaseOwner: "32000000-0000-4000-8000-000000000011" },
 		{ unexpected: true },
 		{ formationDocument: "x".repeat(32 * 1024 + 1) },
+		// A cloud that has not retired responsibility documents yet: wait for it, stage nothing.
+		{
+			cofounderResponsibilityDocuments: {
+				"organization/responsibilities/32000000-0000-4000-8000-000000000021.json": "{}",
+			},
+		},
 	])("rejects malformed cloud claims before staging: %j", async (override) => {
 		const service = fixture(override);
 		await expect(service.provisioner.provisionOne()).rejects.toBeInstanceOf(ObjectDependencyError);

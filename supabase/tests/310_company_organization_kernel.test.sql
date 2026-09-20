@@ -341,6 +341,10 @@ begin
 		raise exception 'Company has more than one Co-Founder'; end if;
 	-- Retired 2026-09-20: a company is born without responsibility objects. What the
 	-- Co-Founder is responsible for is its description; nothing projects a responsibility.
+	-- Rollout order must not matter: a gateway that still builds the empty folder is accepted.
+	if pg_get_functiondef('public.qorpera_finalize_company_bootstrap(uuid,uuid,text,text,text,text,jsonb)'::regprocedure)
+		not like '%<> 5 + (select count(*) from jsonb_object_keys(v_job.cofounder_responsibility_documents))%+ (v_entries @>%organization/responsibilities%)::integer then%' then
+		raise exception 'Company creation depends on the rollout order of the gateway'; end if;
 	if to_regclass('public.qorpera_company_responsibilities') is not null
 		or exists (select 1 from public.qorpera_company_path_entries entry
 			join public.qorpera_company_files file on file.environment_id = entry.environment_id
@@ -1410,16 +1414,13 @@ begin
 			if has_table_privilege(v_role,'public.' || v_table,'SELECT,INSERT,UPDATE,DELETE') then
 				raise exception 'Organization enforcement table % is exposed to %',v_table,v_role; end if;
 		end loop;
-		-- The retired responsibility tables live in a closed archive nobody can reach.
-		if has_schema_privilege(v_role,'qorpera_retired','USAGE') then
-			raise exception 'The retired archive is exposed to %',v_role; end if;
+		-- The responsibility tables are gone, not moved.
 		foreach v_table in array array['qorpera_company_responsibilities','qorpera_responsibility_measures',
 			'qorpera_responsibility_measure_sources','qorpera_agent_responsibility_grants',
 			'qorpera_responsibility_path_resources','qorpera_responsibility_external_operation_grants',
 			'qorpera_responsibility_escalations','qorpera_responsibility_escalation_signals'] loop
-			if to_regclass('public.' || v_table) is not null or to_regclass('qorpera_retired.' || v_table) is null
-				or has_table_privilege(v_role,'qorpera_retired.' || v_table,'SELECT,INSERT,UPDATE,DELETE') then
-				raise exception 'Retired table % is not archived and closed',v_table; end if;
+			if to_regclass('public.' || v_table) is not null then
+				raise exception 'Retired table % still exists',v_table; end if;
 		end loop;
 	end loop;
 	if has_function_privilege('authenticated',

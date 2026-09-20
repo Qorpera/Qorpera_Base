@@ -170,14 +170,15 @@ escalation operations, no longer surfaced), and tools as the intended
 replacement for live measurement. `work/cut-bundle.sh <version> <timestamp>` in
 the task folder performs a bundle cut in the required order.
 
-## 2026-09-20: responsibility objects retired from the cloud
+## 2026-09-20: responsibility objects removed from the cloud
 
 Migration `20260920070000_runtime_retire_responsibility_objects.sql`.
 
 - The eight responsibility tables (objects, measures, measure sources, path
   resources, external operation grants, agent grants, escalations and their
-  signals) move to the closed schema `qorpera_retired`. Rows are kept. Every
-  restricting link out of the archive is dropped; cascades from a company stay.
+  signals) are dropped (founder decision: no company holds responsibility data
+  worth keeping). The drop is not CASCADE, so anything still depending on them
+  fails the migration instead of vanishing with them.
 - Dropped: `qorpera_escalate_responsibility`, the list and resolve operations
   and their helpers, the responsibility resources read helper and the bootstrap
   document minter. The three agent tools and `cloud-responsibility-tools.ts` are
@@ -194,29 +195,31 @@ Migration `20260920070000_runtime_retire_responsibility_objects.sql`.
   resource is reached by project members, and by members as owner or admin), and
   the read model patch that answers `responsibilities: []` and reports projects
   as company-scoped.
-- The migration ends by failing if any live foreign key still targets the
-  archive or any public function still names a retired table. That check earned
+- The migration ends by failing if any public function still names a dropped
+  table. That check earned
   its place: a `%rowtype` declaration of a moved table breaks a function when it
   is compiled, even in a branch that can no longer run, and it broke group chat
   creation until the branch was removed.
 - Object gateway: the bootstrap provisioner builds no responsibilities folder,
   treats a claim that still carries documents as a cloud that has not migrated
   yet (retry later), and no longer supplies document text for those paths.
-  **Roll the migration and the gateway out together.**
+  Rollout order cannot block company creation: the database also accepts the
+  genesis tree of a gateway that still builds the empty folder, and a new
+  gateway that meets a database which still mints documents waits and retries.
 - Rollout preflight template now asserts the retirement and the new agent
   operations instead of the escalation objects.
 
-Runtime bundle v46, `ca7b2b87ed78a004bab91c175dedb783cab1b19040b2235d3fe7101ce43d56e3`
+Runtime bundle v46, `ec852e2b418fa8cf6cb8ef6ddd3181b9c5331f4971148e18dc5e63347b21f845`
 (migration `20260920070000`, activation `20260920071000`; the slot assigned in
-the shared bundle registry), guest artifact 1,338,660 bytes,
-`f1421f8f4528789dbf0910b5361fea13d2c56733968ca2bef583c0b85d89a639`, SQL context
+the shared bundle registry), guest artifact 1,338,719 bytes,
+`e64f34556680410ae327a15a465afeb7206c38e89949d7dd5f7e83b6dc601877`, SQL context
 parity after 300 migrations on master `f98d3ce4e` (v42). It is re-cut when the
 slots before it are on master.
 
 Proofs: `310_company_organization_kernel.test.sql` rewritten to the new model
 (company born without the objects, the old document as an ordinary file that
 needs no review, the projection refusing its text, the read model shape, a
-retired scope closed to agents, the archive closed to every role);
+retired scope closed to agents, the tables gone);
 `370`, `375`, `365` and the rest of the SQL suite unchanged and passing; object
 gateway 432 tests; shell tests pass except `cloud-presence.test.ts`, which is
 timing dependent (two passes in three unchanged runs) and untouched here.

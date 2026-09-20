@@ -56,7 +56,7 @@ const finalInterfaces = `${activeBundle}=${q(F.bundle)}
   and to_regclass('public.qorpera_company_execution_pauses') is not null
   and to_regclass('public.qorpera_execution_sponsor_handoffs') is not null
   and to_regclass('public.qorpera_company_responsibilities') is null
-  and to_regclass('qorpera_retired.qorpera_company_responsibilities') is not null
+  and to_regclass('public.qorpera_responsibility_escalations') is null
   and to_regclass('public.qorpera_native_execution_launch_history') is not null
   and to_regclass('public.qorpera_native_provider_connection_lease_history') is not null
   and to_regprocedure('public.qorpera_read_native_wake(jsonb)') is not null
