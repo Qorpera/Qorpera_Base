@@ -1151,10 +1151,14 @@ export class LxdNativeLoginGateway {
 		// copy behind: it still holds the key but not the marker of the current epoch, and
 		// the guest bootstrap refuses it. Such a copy is recovered like a missing one. The
 		// restore verifies the key already here against the release and only adds the marker.
+		// Without a known epoch (or at epoch 0) no marker can be named: the key alone decides,
+		// as before, and the guest bootstrap stays the judge of what it mounts.
+		const epoch = state.epoch;
 		if (
 			(await this.#guestFileExists(instanceName, RECOVERY_MASTER_KEY_PATH, signal)) &&
-			(state.epoch === 0 ||
-				(await this.#guestFileExists(instanceName, recoveryEpochMarkerPath(state.epoch), signal)))
+			(epoch === null ||
+				epoch === 0 ||
+				(await this.#guestFileExists(instanceName, recoveryEpochMarkerPath(epoch), signal)))
 		)
 			return;
 		const registrar = this.#config.identityRecoveryRegistrarCapability,
