@@ -1,4 +1,4 @@
-import { h } from "./dom.ts";
+import { h, icon } from "./dom.ts";
 import { matchesKey } from "./keys.ts";
 
 /** Why a run stopped, in the member's words. The cloud's own text stays
@@ -34,13 +34,32 @@ export interface RunFailureCard {
 	action?: HTMLElement;
 }
 
-/** A failed run, shown where its answer would have been. */
+/** A failed run, shown where its answer would have been: one centred card with one
+ * action. Dismissing is the quiet cross in the corner (and Escape), not a second button. */
 export function runFailureCard(card: RunFailureCard): HTMLElement {
 	const busy = card.retrying === true;
+	const guarded = (action: () => void) => (event: MouseEvent) => {
+		if (!busy && event.detail < 2) action();
+	};
+	const primary =
+		card.action ??
+		(card.retry
+			? h(
+					"button",
+					{
+						type: "button",
+						class: "run-failure-primary",
+						"data-action": "retry-run",
+						"aria-disabled": busy ? "true" : undefined,
+						onclick: guarded(() => card.retry?.()),
+					},
+					busy ? "Trying again…" : "Try again",
+				)
+			: null);
 	return h(
 		"div",
 		{
-			class: "message from-agent run-failure",
+			class: "run-failure",
 			role: "group",
 			"aria-label": card.title,
 			onkeydown: (event: KeyboardEvent) => {
@@ -54,46 +73,24 @@ export function runFailureCard(card: RunFailureCard): HTMLElement {
 			"div",
 			{ class: "run-failure-card" },
 			h(
-				"div",
-				{ class: "run-failure-head" },
-				h("span", { class: "notification-indicator", "aria-hidden": "true" }),
-				h("strong", { class: "run-failure-title", role: "alert" }, card.title),
+				"button",
+				{
+					type: "button",
+					class: "run-failure-close",
+					"aria-label": "Dismiss",
+					title: "Dismiss",
+					"data-action": "dismiss-run",
+					"aria-disabled": busy ? "true" : undefined,
+					onclick: guarded(card.dismiss),
+				},
+				icon("close"),
 			),
+			h("span", { class: "run-failure-mark", "aria-hidden": "true" }, icon("close")),
+			h("strong", { class: "run-failure-title", role: "alert" }, card.title),
 			card.reason ? h("p", { class: "run-failure-reason" }, card.reason) : null,
 			card.retryError ? h("p", { class: "run-failure-error", role: "alert" }, card.retryError) : null,
-			h(
-				"div",
-				{ class: "run-failure-actions" },
-				card.action ??
-					(card.retry
-						? h(
-								"button",
-								{
-									type: "button",
-									class: "btn btn-small btn-primary",
-									"data-action": "retry-run",
-									"aria-disabled": busy ? "true" : undefined,
-									onclick: (event: MouseEvent) => {
-										if (!busy && event.detail < 2) card.retry?.();
-									},
-								},
-								busy ? "Trying again…" : "Try again",
-							)
-						: null),
-				h(
-					"button",
-					{
-						type: "button",
-						class: "btn btn-small",
-						"data-action": "dismiss-run",
-						"aria-disabled": busy ? "true" : undefined,
-						onclick: (event: MouseEvent) => {
-							if (!busy && event.detail < 2) card.dismiss();
-						},
-					},
-					"Dismiss",
-				),
-			),
+			primary ? h("span", { class: "run-failure-rule", "aria-hidden": "true" }) : null,
+			primary,
 			card.details
 				? h(
 						"details",
