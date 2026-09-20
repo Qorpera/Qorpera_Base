@@ -9,6 +9,7 @@ import {
 	assertCompanyComputerViewerGrant,
 	type CompanyComputerViewerAuthority,
 	type CompanyComputerViewerGrant,
+	coalesceCompanyComputerPointerMoves,
 	startCompanyComputerViewerGateway,
 } from "@qorpera/runtime/cloud-company-computer-viewer-gateway";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -76,6 +77,7 @@ async function gatewayFixture(
 	);
 	const grant = viewerGrant(mode);
 	const used = new Set<string>();
+	let recorded = 0;
 	const authority: CompanyComputerViewerAuthority = {
 		redeem: vi.fn(async (token: string) => {
 			if (used.has(token)) throw new Error("CAPABILITY_ALREADY_REDEEMED");
@@ -83,15 +85,8 @@ async function gatewayFixture(
 			return structuredClone(grant);
 		}),
 		check: vi.fn(async () => structuredClone(grant)),
-		forwardInput: vi.fn(
-			async (
-				_grant: CompanyComputerViewerGrant,
-				_input: Parameters<CompanyComputerViewerAuthority["forwardInput"]>[1],
-				forward: () => void,
-			) => {
-				forward();
-			},
-		),
+		admitInputWindow: vi.fn(async () => ({ validForMs: 1000 })),
+		recordInput: vi.fn(() => ++recorded),
 		release: vi.fn(async () => undefined),
 	};
 	const gateway = await startCompanyComputerViewerGateway({
@@ -183,21 +178,25 @@ describe("private viewer gateway and member client (loopback only, authority/gue
 		);
 	});
 
-	it("a screen drain blocks an in-flight input callback before it reaches the guest", async () => {
+	it("a screen drain during an in-flight window admission keeps the waiting input from the guest", async () => {
 		const f = await gatewayFixture("control");
-		let delayed: (() => void) | undefined;
-		f.authority.forwardInput = vi.fn(async (_grant, _input, forward) => {
-			delayed = forward;
-			await new Promise(() => undefined);
-		});
+		let admit: ((value: { validForMs: number }) => void) | undefined;
+		f.authority.admitInputWindow = vi.fn(
+			() =>
+				new Promise<{ validForMs: number }>((resolve) => {
+					admit = resolve;
+				}),
+		);
 		const view = await f.attach();
 		view.socket.write(Buffer.concat([hello, key]));
-		await vi.waitFor(() => expect(delayed).toBeTypeOf("function"));
+		await vi.waitFor(() => expect(admit).toBeTypeOf("function"));
 		await f.gateway.connections.fenceScreen(
 			{ state: "draining", drainId: computerId(55), epoch: 2, binding: computerBinding() },
 			new AbortController().signal,
 		);
-		expect(() => delayed!()).toThrow();
+		admit!({ validForMs: 1000 });
+		await vi.waitFor(() => expect(f.authority.release).toHaveBeenCalledOnce());
+		expect(f.authority.recordInput).not.toHaveBeenCalled();
 		expect(Buffer.concat(f.received).includes(key)).toBe(false);
 	});
 	it.each([
@@ -260,17 +259,12 @@ describe("private viewer gateway and member client (loopback only, authority/gue
 					mode === "watch" ? hello.length : hello.length + key.length,
 				),
 			);
-			expect(fixture.authority.forwardInput).toHaveBeenCalledTimes(mode === "watch" ? 0 : 1);
+			expect(fixture.authority.admitInputWindow).toHaveBeenCalledTimes(mode === "watch" ? 0 : 1);
+			expect(fixture.authority.recordInput).toHaveBeenCalledTimes(mode === "watch" ? 0 : 1);
 			if (mode !== "watch")
-				expect(fixture.authority.forwardInput).toHaveBeenCalledWith(
+				expect(fixture.authority.recordInput).toHaveBeenCalledWith(
 					expect.objectContaining({ mode, binding: computerBinding() }),
-					expect.objectContaining({
-						sequence: 1,
-						bytes: Uint8Array.from(key),
-						sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
-					}),
-					expect.any(Function),
-					expect.any(AbortSignal),
+					{ sequence: 1, bytes: key },
 				);
 		},
 	);
@@ -290,7 +284,8 @@ describe("private viewer gateway and member client (loopback only, authority/gue
 		expect(Buffer.concat(fixture.received)).toEqual(
 			Buffer.concat([hello, key, pointer, releasedKey, releasedPointer]),
 		);
-		expect(fixture.authority.forwardInput).toHaveBeenCalledTimes(2);
+		expect(fixture.authority.recordInput).toHaveBeenCalledTimes(2);
+		expect(fixture.authority.admitInputWindow).toHaveBeenCalledOnce();
 		const replacement = await fixture.attach();
 		expect(replacement.socket.destroyed).toBe(false);
 	});
@@ -321,15 +316,16 @@ describe("private viewer gateway and member client (loopback only, authority/gue
 		view.socket.write(Buffer.concat([hello, clipboard]));
 		await vi.waitFor(() => expect(Buffer.concat(fixture.received)).toEqual(hello));
 		await expect(fixture.attach(capability)).rejects.toThrow("VIEW_UNAVAILABLE");
-		expect(fixture.authority.forwardInput).not.toHaveBeenCalled();
+		expect(fixture.authority.admitInputWindow).not.toHaveBeenCalled();
+		expect(fixture.authority.recordInput).not.toHaveBeenCalled();
 	});
 
-	it("checks revocation at input dispatch, disconnects and releases only the old session", async () => {
+	it("checks revocation before input dispatch, disconnects and releases only the old session", async () => {
 		const fixture = await gatewayFixture("control");
 		const view = await fixture.attach();
 		view.socket.write(hello);
 		await vi.waitFor(() => expect(Buffer.concat(fixture.received)).toEqual(hello));
-		fixture.authority.check = vi.fn(async () => {
+		fixture.authority.admitInputWindow = vi.fn(async () => {
 			throw new Error("MEMBER_REVOKED private-service-detail");
 		});
 		view.socket.resume();
@@ -341,6 +337,7 @@ describe("private viewer gateway and member client (loopback only, authority/gue
 			expect.objectContaining({ viewerSessionId: computerId(21), binding: computerBinding() }),
 			expect.any(AbortSignal),
 		);
+		expect(fixture.authority.recordInput).not.toHaveBeenCalled();
 	});
 
 	it("expires an open viewer when renewal stalls instead of retaining remote control", async () => {
@@ -360,34 +357,32 @@ describe("private viewer gateway and member client (loopback only, authority/gue
 			{ mode: "control" as const },
 		]) {
 			const fixture = await gatewayFixture();
+			// The periodic check runs at half the grant's validity.
+			fixture.grant.validForMs = 300;
 			const view = await fixture.attach();
 			view.socket.resume();
 			Object.assign(fixture.grant, changed);
-			view.socket.write(hello);
-			await vi.waitFor(() => expect(view.socket.destroyed).toBe(true));
-			expect(fixture.received).toEqual([]);
+			await vi.waitFor(() => expect(view.socket.destroyed).toBe(true), { timeout: 1000, interval: 10 });
 		}
 	});
 
-	it("makes the effect callback single-use and rejects delayed forwarding after it settles", async () => {
-		const fixture = await gatewayFixture("control");
-		let late: (() => void) | undefined;
-		fixture.authority.forwardInput = vi.fn(
-			async (
-				_grant: CompanyComputerViewerGrant,
-				_input: Parameters<CompanyComputerViewerAuthority["forwardInput"]>[1],
-				forward: () => void,
-			) => {
-				forward();
-				late = forward;
-			},
-		);
+	it("revalidates other client traffic at most once per second instead of once per chunk", async () => {
+		const fixture = await gatewayFixture();
 		const view = await fixture.attach();
-		view.socket.write(Buffer.concat([hello, key]));
-		await vi.waitFor(() => expect(Buffer.concat(fixture.received)).toEqual(Buffer.concat([hello, key])));
-		expect(late).toBeDefined();
-		expect(() => late?.()).toThrow("VIEWER_INPUT_ALREADY_SETTLED");
-		expect(Buffer.concat(fixture.received)).toEqual(Buffer.concat([hello, key]));
+		view.socket.resume();
+		const checks = vi.mocked(fixture.authority.check).mock.calls.length;
+		view.socket.write(hello);
+		const request = Buffer.from([3, 1, 0, 0, 0, 0, 7, 128, 4, 176]);
+		for (let index = 0; index < 50; index++) view.socket.write(request);
+		await vi.waitFor(() => expect(Buffer.concat(fixture.received).length).toBe(hello.length + 50 * request.length));
+		expect(fixture.authority.check).toHaveBeenCalledTimes(checks);
+		await new Promise((resolve) => setTimeout(resolve, 1050));
+		fixture.authority.check = vi.fn(async () => {
+			throw new Error("MEMBER_REVOKED");
+		});
+		view.socket.write(request);
+		await vi.waitFor(() => expect(view.socket.destroyed).toBe(true));
+		expect(Buffer.concat(fixture.received).length).toBe(hello.length + 50 * request.length);
 	});
 
 	it("rejects substituted binding and oversized handshake lines including a newline in the same chunk", async () => {
@@ -432,6 +427,171 @@ describe("private viewer gateway and member client (loopback only, authority/gue
 			expect(() => parseViewerEndpoint(endpoint)).toThrow();
 		}
 		expect(parseViewerEndpoint("100.64.0.1:5901")).toEqual({ host: "100.64.0.1", port: 5901 });
+	});
+});
+
+const move = (x: number, mask = 0): Buffer => Buffer.from([5, mask, x >> 8, x & 255, 0, 9]);
+const inputsOf = (received: Buffer[]): Buffer => Buffer.concat(received).subarray(hello.length);
+
+describe("windowed member input (loopback only, authority/guest doubles)", () => {
+	it("dispatches a burst of 500 pointer packets under one window admission, in contiguous sequence", async () => {
+		const fixture = await gatewayFixture("shared");
+		const view = await fixture.attach();
+		// Alternating button masks: every packet is a press or release, so none may be coalesced.
+		const packets = Array.from({ length: 500 }, (_, index) => move(index, index % 2));
+		const started = performance.now();
+		view.socket.write(Buffer.concat([hello, ...packets]));
+		await vi.waitFor(() => expect(inputsOf(fixture.received)).toEqual(Buffer.concat(packets)), { interval: 5 });
+		// One admission opened the window; a slow machine may already have reached a half-second renewal.
+		expect(vi.mocked(fixture.authority.admitInputWindow).mock.calls.length).toBeLessThanOrEqual(
+			1 + Math.floor((performance.now() - started) / 500),
+		);
+		expect(vi.mocked(fixture.authority.recordInput).mock.calls.map(([, input]) => input.sequence)).toEqual(
+			packets.map((_, index) => index + 1),
+		);
+		// Input keeps flowing: about one renewal per half second, never one per packet.
+		await new Promise((resolve) => setTimeout(resolve, 700));
+		expect(vi.mocked(fixture.authority.admitInputWindow).mock.calls.length).toBeLessThanOrEqual(3);
+	});
+
+	it("forwards input while a renewal is still in flight, without waiting for the registry", async () => {
+		const fixture = await gatewayFixture("control");
+		const view = await fixture.attach();
+		view.socket.write(Buffer.concat([hello, key]));
+		await vi.waitFor(() => expect(inputsOf(fixture.received)).toEqual(key));
+		fixture.authority.admitInputWindow = vi.fn(() => new Promise<{ validForMs: number }>(() => undefined));
+		await vi.waitFor(() => expect(fixture.authority.admitInputWindow).toHaveBeenCalledOnce(), {
+			timeout: 900,
+			interval: 5,
+		});
+		const up = Buffer.from(key);
+		up[1] = 0;
+		view.socket.write(up);
+		await vi.waitFor(() => expect(inputsOf(fixture.received)).toEqual(Buffer.concat([key, up])), {
+			timeout: 200,
+			interval: 5,
+		});
+		expect(view.socket.destroyed).toBe(false);
+	});
+
+	it("stops input within the window bound when a renewal is refused, and releases held keys", async () => {
+		const fixture = await gatewayFixture("shared");
+		const view = await fixture.attach();
+		const held = move(40, 1);
+		view.socket.write(Buffer.concat([hello, key, held]));
+		await vi.waitFor(() => expect(inputsOf(fixture.received)).toEqual(Buffer.concat([key, held])));
+		// The registry fences this viewer now. The gateway learns it at the next renewal.
+		const fenced = performance.now();
+		fixture.authority.admitInputWindow = vi.fn(async () => {
+			throw new Error("VIEWER_INPUT_REFUSED");
+		});
+		const late = setInterval(() => view.socket.write(move(50, 1)), 20);
+		cleanups.push(async () => clearInterval(late));
+		await vi.waitFor(() => expect(view.socket.destroyed).toBe(true), { timeout: 1500, interval: 5 });
+		expect(performance.now() - fenced).toBeLessThan(1000);
+		clearInterval(late);
+		await vi.waitFor(() => expect(fixture.authority.release).toHaveBeenCalledOnce());
+		const releasedKey = Buffer.from(key);
+		releasedKey[1] = 0;
+		const bytes = inputsOf(fixture.received);
+		expect(bytes.subarray(-14)).toEqual(Buffer.concat([releasedKey, move(50, 0)]));
+		expect(fixture.authority.admitInputWindow).toHaveBeenCalledOnce();
+		const settled = bytes.length;
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		expect(inputsOf(fixture.received).length).toBe(settled);
+	});
+
+	it("never replays packets that arrived without a window", async () => {
+		const fixture = await gatewayFixture("control");
+		let refuse: ((error: Error) => void) | undefined;
+		fixture.authority.admitInputWindow = vi.fn(
+			() =>
+				new Promise<{ validForMs: number }>((_resolve, reject) => {
+					refuse = reject;
+				}),
+		);
+		const view = await fixture.attach();
+		view.socket.write(Buffer.concat([hello, key, move(1), move(2, 1)]));
+		await vi.waitFor(() => expect(refuse).toBeTypeOf("function"));
+		view.socket.write(move(3, 1));
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(inputsOf(fixture.received).length).toBe(0);
+		refuse!(new Error("response lost"));
+		await vi.waitFor(() => expect(fixture.authority.release).toHaveBeenCalledOnce());
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(inputsOf(fixture.received).length).toBe(0);
+		expect(fixture.authority.recordInput).not.toHaveBeenCalled();
+	});
+
+	it("drops input once an unrenewed window lapses instead of forwarding on stale authority", async () => {
+		const fixture = await gatewayFixture("control");
+		fixture.authority.admitInputWindow = vi.fn(async () => ({ validForMs: 120 }));
+		const view = await fixture.attach();
+		view.socket.write(Buffer.concat([hello, key]));
+		await vi.waitFor(() => expect(inputsOf(fixture.received)).toEqual(key));
+		fixture.authority.admitInputWindow = vi.fn(() => new Promise<{ validForMs: number }>(() => undefined));
+		await new Promise((resolve) => setTimeout(resolve, 150));
+		view.socket.write(move(9));
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		expect(inputsOf(fixture.received)).toEqual(key);
+	});
+
+	it("lets the window lapse when input stops: no registry calls while idle", async () => {
+		const fixture = await gatewayFixture("control");
+		fixture.authority.admitInputWindow = vi.fn(async () => ({ validForMs: 40 }));
+		const view = await fixture.attach();
+		view.socket.write(Buffer.concat([hello, key]));
+		await vi.waitFor(() => expect(inputsOf(fixture.received)).toEqual(key));
+		// Renewals continue through the linger (3 s), then stop. Count two quiet periods.
+		await new Promise((resolve) => setTimeout(resolve, 3300));
+		const calls = vi.mocked(fixture.authority.admitInputWindow).mock.calls.length;
+		expect(calls).toBeGreaterThan(1);
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(fixture.authority.admitInputWindow).toHaveBeenCalledTimes(calls);
+		expect(view.socket.destroyed).toBe(false);
+	}, 10_000);
+
+	it("coalesces pending pointer moves but never across a button change or a key event", async () => {
+		const input = (bytes: Buffer) => ({ kind: "input" as const, bytes });
+		const protocol = { kind: "protocol" as const, bytes: Buffer.from([3, 1, 0, 0, 0, 0, 7, 128, 4, 176]) };
+		const down = Buffer.from(key);
+		const batch = [
+			input(move(1)),
+			input(move(2)),
+			protocol,
+			input(move(3)),
+			input(move(4, 1)), // press: kept at its own position
+			input(move(5, 1)),
+			input(move(6, 1)),
+			input(move(7)), // release
+			input(move(8)),
+			input(down),
+			input(move(9)),
+			input(move(10)),
+		];
+		expect(coalesceCompanyComputerPointerMoves(batch, 0).map((message) => message.bytes)).toEqual(
+			[protocol.bytes, move(3), move(4, 1), move(6, 1), move(7), move(8), down, move(9), move(10)].map((bytes) =>
+				Buffer.from(bytes),
+			),
+		);
+		// The first pointer packet of a connection, and the first after a key, count as a transition.
+		expect(coalesceCompanyComputerPointerMoves([input(move(1)), input(move(2)), input(move(3))], undefined)).toEqual([
+			input(move(1)),
+			input(move(3)),
+		]);
+		// A mask carried over from the previous chunk still protects the press in this one.
+		expect(coalesceCompanyComputerPointerMoves([input(move(1, 1)), input(move(2, 1))], 0)).toEqual([
+			input(move(1, 1)),
+			input(move(2, 1)),
+		]);
+		const fixture = await gatewayFixture("shared");
+		const view = await fixture.attach();
+		const moves = Array.from({ length: 500 }, (_, index) => move(index));
+		view.socket.write(Buffer.concat([hello, ...moves, key]));
+		await vi.waitFor(() => expect(inputsOf(fixture.received).subarray(-14)).toEqual(Buffer.concat([move(499), key])));
+		// Only what each received chunk ends with survives; never the whole queue.
+		expect(inputsOf(fixture.received).length).toBeLessThan(40 * 6);
+		expect(fixture.authority.admitInputWindow).toHaveBeenCalledOnce();
 	});
 });
 

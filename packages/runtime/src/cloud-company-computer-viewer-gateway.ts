@@ -8,7 +8,6 @@ export {
 	type CompanyComputerViewerGrant,
 } from "@qorpera/cloud-client/cloud-company-computer-viewer";
 
-import { createHash } from "node:crypto";
 import { createServer, type Socket } from "node:net";
 import { performance } from "node:perf_hooks";
 import { type Duplex, Transform, type TransformCallback } from "node:stream";
@@ -38,13 +37,17 @@ export interface CompanyComputerViewerAuthority {
 	redeem(capability: string, signal: AbortSignal): Promise<CompanyComputerViewerGrant>;
 	/** Includes revocation, handoff privacy, assignment generation and current takeover epoch. */
 	check(grant: CompanyComputerViewerGrant, signal: AbortSignal): Promise<CompanyComputerViewerGrant>;
-	/** Existing effect/audit boundary. Recheck immediately before forward; do not log raw keystrokes/secrets. */
-	forwardInput(
-		grant: CompanyComputerViewerGrant,
-		input: { sequence: number; sha256: string; bytes: Uint8Array },
-		forward: () => void,
-		signal: AbortSignal,
-	): Promise<void>;
+	/** Windowed effect/audit boundary: one round trip per window, never per
+	 * packet. Re-validates everything `check` validates plus input authority,
+	 * and records the audit of the packets recorded since the previous call.
+	 * The returned validity is at most one second. Never called concurrently
+	 * for one grant. A rejection ends the viewer's input for good. */
+	admitInputWindow(grant: CompanyComputerViewerGrant, signal: AbortSignal): Promise<{ validForMs: number }>;
+	/** Synchronous and local, immediately before a packet is dispatched under a
+	 * valid window. Validates the packet, consumes its sequence and folds a keyed
+	 * commitment into the open window; returns the packets in that window. Do
+	 * not log or retain raw keystrokes/secrets. */
+	recordInput(grant: CompanyComputerViewerGrant, input: { sequence: number; bytes: Uint8Array }): number;
 	/** Removes only this exact viewer presence/lease, never a replacement connection. */
 	release(grant: CompanyComputerViewerGrant, signal: AbortSignal): Promise<void>;
 }
@@ -223,6 +226,8 @@ export async function startCompanyComputerViewerGateway(options: {
 		throw new Error("INVALID_VIEWER_PORT");
 	const connections = new CompanyComputerViewerConnections(options);
 	const server = createServer((socket) => {
+		// Input packets and update requests are a few bytes each; never let Nagle hold them.
+		socket.setNoDelay(true);
 		void connections.serve(socket);
 	});
 	await new Promise<void>((resolve, reject) => {
@@ -243,6 +248,46 @@ export async function startCompanyComputerViewerGateway(options: {
 	};
 }
 
+/** A client→guest packet needs an authority confirmation at most this old. */
+const VIEWER_VALIDATION_MS = 1_000;
+/** Keep renewing this long after the last input, so typing with short pauses
+ * does not pay a cold window round trip on every burst. Idle viewers stop. */
+const VIEWER_INPUT_LINGER_MS = 3_000;
+/** Renew early once a window holds this many packets (the registry bound is 4096). */
+const VIEWER_INPUT_WINDOW_RENEW_PACKETS = 2_048;
+
+type ViewerClientMessage = { kind: "protocol" | "input" | "blocked"; bytes: Buffer };
+const pointerMask = (message: ViewerClientMessage): number | undefined =>
+	message.kind === "input" && message.bytes[0] === 5 && message.bytes.length === 6 ? message.bytes[1] : undefined;
+
+/**
+ * Pointer moves that are already pending together collapse to the latest one.
+ * A packet is dropped only when it repeats the button mask of the pointer
+ * packet before it (it is a plain move, not a press or release) and the next
+ * input packet is another pointer packet with that same mask. Key events and
+ * button transitions are never dropped or reordered, so a press still lands at
+ * its own position. `mask` is the last pointer mask seen on this connection.
+ */
+export function coalesceCompanyComputerPointerMoves<T extends ViewerClientMessage>(
+	messages: readonly T[],
+	mask: number | undefined,
+): T[] {
+	const kept: T[] = [];
+	let current = mask;
+	for (let index = 0; index < messages.length; index++) {
+		const message = messages[index];
+		const own = pointerMask(message);
+		if (own !== undefined && own === current) {
+			let next = index + 1;
+			while (next < messages.length && messages[next].kind !== "input") next++;
+			if (next < messages.length && pointerMask(messages[next]) === own) continue;
+		}
+		if (message.kind === "input") current = own;
+		kept.push(message);
+	}
+	return kept;
+}
+
 async function serveCompanyComputerViewer(
 	socket: Duplex,
 	authority: CompanyComputerViewerAuthority,
@@ -260,6 +305,15 @@ async function serveCompanyComputerViewer(
 	let connected = false;
 	const heldKeys = new Set<number>();
 	let pointer: Buffer | undefined;
+	let lastPointerMask: number | undefined;
+	let validatedUntil = 0;
+	let windowUntil = 0;
+	let windowRenewAt = 0;
+	let windowPackets = 0;
+	let lastInputAt = Number.NEGATIVE_INFINITY;
+	let inputStopped = false;
+	let windowTimer: ReturnType<typeof setTimeout> | undefined;
+	let windowRenewal: Promise<void> | undefined;
 	const ended = new Promise<void>((resolve) => {
 		const finish = (): void => {
 			stop.abort();
@@ -301,6 +355,7 @@ async function serveCompanyComputerViewer(
 			);
 			assertDeadline();
 			arm(next, started);
+			validatedUntil = Math.max(validatedUntil, started + VIEWER_VALIDATION_MS);
 		})().finally(() => {
 			checking = undefined;
 		});
@@ -340,6 +395,7 @@ async function serveCompanyComputerViewer(
 			25_000,
 		);
 		upstream = attached.socket;
+		upstream.setNoDelay(true);
 		upstream.on("error", () => socket.destroy());
 		upstream.on("close", () => socket.destroy());
 		await check();
@@ -347,56 +403,113 @@ async function serveCompanyComputerViewer(
 		socket.write(`${JSON.stringify({ ok: true, binding: activeGrant.binding, mode: activeGrant.mode })}\n`);
 		connected = true;
 		const parser = new CompanyComputerRfbClientParser();
+		// Input is dispatched at once under a valid window. A window is one
+		// registry round trip: it re-validates this viewer and records the audit
+		// of the previous window. While input flows it is renewed at half its
+		// validity, in the background, so the hot path never waits.
+		const renewWindow = (): Promise<void> => {
+			windowRenewal ??= (async () => {
+				clearTimeout(windowTimer);
+				windowTimer = undefined;
+				try {
+					assertDeadline();
+					const started = performance.now();
+					const result = await companyComputerRequest(
+						(signal) => {
+							windowPackets = 0;
+							return authority.admitInputWindow(structuredClone(grant!), signal);
+						},
+						stop.signal,
+						VIEWER_VALIDATION_MS,
+					);
+					if (
+						!Number.isSafeInteger(result.validForMs) ||
+						result.validForMs < 1 ||
+						result.validForMs > VIEWER_VALIDATION_MS ||
+						started + result.validForMs <= performance.now()
+					)
+						throw new Error("VIEWER_INPUT_UNCONFIRMED");
+					assertDeadline();
+					windowUntil = started + result.validForMs;
+					windowRenewAt = started + result.validForMs / 2;
+					validatedUntil = Math.max(validatedUntil, started + VIEWER_VALIDATION_MS);
+				} catch (error) {
+					// Refused, lost or late. Stop dispatching now; packets that arrive
+					// without a window are never held back for a later replay. Ending
+					// the connection releases held keys/buttons in the close path.
+					inputStopped = true;
+					windowUntil = 0;
+					socket.destroy();
+					throw error;
+				}
+			})().finally(() => {
+				windowRenewal = undefined;
+				scheduleWindow();
+			});
+			return windowRenewal;
+		};
+		const scheduleWindow = (): void => {
+			const now = performance.now();
+			if (windowTimer || windowRenewal || inputStopped || stop.signal.aborted || now >= windowUntil) return;
+			// No input since the last report and none recently: let the window lapse.
+			if (windowPackets === 0 && now - lastInputAt > VIEWER_INPUT_LINGER_MS) return;
+			windowTimer = setTimeout(
+				() => {
+					windowTimer = undefined;
+					void renewWindow().catch(() => undefined);
+				},
+				Math.max(0, windowRenewAt - now),
+			);
+		};
 		const forward = async (bytes: Buffer): Promise<void> => {
-			const messages = parser.push(bytes);
-			await check();
+			const messages = coalesceCompanyComputerPointerMoves(parser.push(bytes), lastPointerMask);
 			for (const message of messages) {
 				assertDeadline();
+				if (message.kind === "input") lastPointerMask = message.bytes[0] === 5 ? message.bytes[1] : undefined;
 				if (message.kind === "blocked" || (message.kind === "input" && grant!.mode === "watch")) continue;
 				if (message.kind === "input") {
-					let accepting = true;
-					let forwarded = false;
-					try {
-						await companyComputerRequest(async (signal) => {
-							await authority.forwardInput(
-								structuredClone(grant!),
-								{
-									sequence: ++sequence,
-									sha256: createHash("sha256").update(message.bytes).digest("hex"),
-									bytes: Uint8Array.from(message.bytes),
-								},
-								() => {
-									signal.throwIfAborted();
-									assertDeadline();
-									if (!accepting || forwarded) throw new Error("VIEWER_INPUT_ALREADY_SETTLED");
-									if (
-										grant!.mode === "shared" &&
-										message.bytes[0] === 4 &&
-										message.bytes[1] === 1 &&
-										!heldKeys.has(message.bytes.readUInt32BE(4)) &&
-										heldKeys.size >= 256
-									)
-										throw new Error("VIEWER_HELD_INPUT_LIMIT");
-									forwarded = true;
-									upstream!.write(message.bytes);
-									if (grant!.mode === "shared") {
-										if (message.bytes[0] === 4) {
-											const key = message.bytes.readUInt32BE(4);
-											if (message.bytes[1] === 1) heldKeys.add(key);
-											else heldKeys.delete(key);
-										} else if (message.bytes[0] === 5) {
-											pointer = message.bytes[1] === 0 ? undefined : Buffer.from(message.bytes);
-										}
-									}
-								},
-								signal,
-							);
-							if (!forwarded) throw new Error("VIEWER_INPUT_NOT_FORWARDED");
-						}, stop.signal);
-					} finally {
-						accepting = false;
+					if (inputStopped) throw new Error("VIEWER_INPUT_STOPPED");
+					if (performance.now() >= windowUntil) {
+						// Cold start or a lapsed window: the socket stays paused and this
+						// packet waits for a confirmed window. If none comes, it is dropped.
+						await (windowRenewal ?? renewWindow());
+						assertDeadline();
+						if (inputStopped || performance.now() >= windowUntil)
+							throw new Error("VIEWER_INPUT_WINDOW_UNAVAILABLE");
 					}
-				} else upstream!.write(message.bytes);
+					if (
+						grant!.mode === "shared" &&
+						message.bytes[0] === 4 &&
+						message.bytes[1] === 1 &&
+						!heldKeys.has(message.bytes.readUInt32BE(4)) &&
+						heldKeys.size >= 256
+					)
+						throw new Error("VIEWER_HELD_INPUT_LIMIT");
+					windowPackets = authority.recordInput(grant!, { sequence: ++sequence, bytes: message.bytes });
+					lastInputAt = performance.now();
+					upstream!.write(message.bytes);
+					if (grant!.mode === "shared") {
+						if (message.bytes[0] === 4) {
+							const key = message.bytes.readUInt32BE(4);
+							if (message.bytes[1] === 1) heldKeys.add(key);
+							else heldKeys.delete(key);
+						} else if (message.bytes[0] === 5) {
+							pointer = message.bytes[1] === 0 ? undefined : Buffer.from(message.bytes);
+						}
+					}
+					if (windowPackets >= VIEWER_INPUT_WINDOW_RENEW_PACKETS) await renewWindow();
+					else scheduleWindow();
+				} else {
+					// Other client traffic keeps the same one-second bound without a
+					// round trip per chunk: refresh in the background at half age, wait
+					// only when no confirmation is fresh.
+					const now = performance.now();
+					if (now >= validatedUntil) await (windowRenewal ?? check());
+					else if (now >= validatedUntil - VIEWER_VALIDATION_MS / 2 && !checking && !windowRenewal)
+						void check().catch(() => socket.destroy());
+					assertDeadline();
+					upstream!.write(message.bytes);
+				}
 				if (upstream!.writableLength > 256 * 1024) throw new Error("VIEWER_BACKPRESSURE_LIMIT");
 			}
 		};
@@ -415,7 +528,11 @@ async function serveCompanyComputerViewer(
 			transform(chunk: Buffer, _encoding: BufferEncoding, callback: TransformCallback) {
 				try {
 					assertDeadline();
-					for (const bytes of serverParser.push(chunk)) this.push(bytes);
+					// The parser emits one buffer per RFB field. Forward each guest
+					// chunk as one write (one WebSocket frame, one TLS record), not as
+					// dozens of few-byte frames per rectangle.
+					const parts = serverParser.push(chunk);
+					if (parts.length > 0) this.push(parts.length === 1 ? parts[0] : Buffer.concat(parts));
 					callback();
 				} catch {
 					callback(new Error("VIEWER_OUTPUT_UNAVAILABLE"));
@@ -435,8 +552,10 @@ async function serveCompanyComputerViewer(
 		if (!connected && !socket.destroyed) socket.end(`${JSON.stringify({ ok: false, error: "VIEW_UNAVAILABLE" })}\n`);
 	} finally {
 		stop.abort();
+		inputStopped = true;
 		clearTimeout(expiry);
 		clearTimeout(refresh);
+		clearTimeout(windowTimer);
 		upstream?.unpipe(output);
 		output?.destroy();
 		socket.destroy();

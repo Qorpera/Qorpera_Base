@@ -94,7 +94,10 @@ async function fixture() {
 			return structuredClone(grant);
 		}),
 		check: vi.fn(async () => structuredClone(grant)),
-		forwardInput: vi.fn(async () => {
+		admitInputWindow: vi.fn(async (): Promise<{ validForMs: number }> => {
+			throw new Error("watch cannot type");
+		}),
+		recordInput: vi.fn((): number => {
 			throw new Error("watch cannot type");
 		}),
 		release: vi.fn(async () => undefined),
@@ -186,6 +189,8 @@ describe("TLS WebSocket office viewer (loopback, synthetic guest/authority)", ()
 			view.channel.onmessage = (event) => received.push(Buffer.from(event.data));
 			await vi.waitFor(() => expect(Buffer.concat(received).includes(Buffer.from("Test cloud screen"))).toBe(true));
 			expect(Buffer.concat(received).toString()).not.toContain("private clipboard canary");
+			// One guest chunk is one WebSocket frame, not one frame per parsed RFB field.
+			expect(received.length).toBeLessThanOrEqual(2);
 			view.channel.send(new TextEncoder().encode("RFB 003.008\n"));
 			view.channel.send(new Uint8Array([1, 1, 4, 1, 0, 0, 0, 0, 0, 65]));
 			await vi.waitFor(() =>
@@ -217,7 +222,8 @@ describe("TLS WebSocket office viewer (loopback, synthetic guest/authority)", ()
 		await vi.waitFor(() =>
 			expect(Buffer.concat(f.received)).toEqual(Buffer.concat([Buffer.from("RFB 003.008\n"), Buffer.from([1, 1])])),
 		);
-		expect(f.authority.forwardInput).not.toHaveBeenCalled();
+		expect(f.authority.admitInputWindow).not.toHaveBeenCalled();
+		expect(f.authority.recordInput).not.toHaveBeenCalled();
 		expect(f.authority.redeem).toHaveBeenCalledExactlyOnceWith(client.token, expect.any(AbortSignal));
 	});
 	it("rejects foreign origins, token-bearing URLs and untrusted certificates", async () => {
