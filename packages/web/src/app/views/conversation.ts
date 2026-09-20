@@ -28,7 +28,7 @@ import { SessionRunView } from "./session-run.ts";
 
 // Popup dismissal lasts for this company controller, including conversation navigation.
 // It does not settle or discard work whose outcome still needs review.
-const dismissedRunNotifications = new WeakMap<CompanyController, Set<string>>();
+const dismissedRunNotifications = new WeakMap<CompanyController, Map<string, "hidden" | "clearing">>();
 
 export { renderAuthorizationCard } from "../../ui/authorization-card.ts";
 
@@ -79,6 +79,8 @@ export class ConversationView {
 	#statusKey = "";
 	readonly #runNotification = h("div", { class: "run-notification", hidden: true });
 	#runNotificationKey = "";
+	#seenFailure: { runId: string; timer: number } | undefined;
+	readonly #autoDismissedFailures = new Set<string>();
 	#receivedAttachments: ReceivedAttachments[] = [];
 	readonly #timestampTimer: number;
 	#timestampRows: { date: Date; node: HTMLElement; separator?: HTMLTimeElement }[] = [];
@@ -91,6 +93,7 @@ export class ConversationView {
 	) {
 		this.#company = company;
 		this.#notificationSignal = AbortSignal.any([this.#lifetime.signal, company.signal]);
+		this.#notificationSignal.addEventListener("abort", () => this.#watchSeenFailure(undefined), { once: true });
 		this.#sessionId = sessionId;
 		this.#actions = actions;
 		this.#run = actions.runControl
@@ -311,6 +314,7 @@ export class ConversationView {
 		window.addEventListener("focus", refreshTimestamps, { signal: this.#lifetime.signal });
 		window.addEventListener("qorpera-language-change", refreshTimestamps, { signal: this.#lifetime.signal });
 		document.addEventListener("visibilitychange", refreshTimestamps, { signal: this.#lifetime.signal });
+		document.addEventListener("visibilitychange", () => this.update(), { signal: this.#notificationSignal });
 		document.addEventListener(
 			"click",
 			(event) => {
@@ -324,6 +328,8 @@ export class ConversationView {
 			company.store.subscribe(() => this.update()),
 		);
 		this.update();
+		// The owner mounts the view after construction; only count time on screen.
+		queueMicrotask(() => this.update());
 	}
 
 	dispose(): void {
@@ -866,6 +872,71 @@ export class ConversationView {
 		if (refocus) this.#status.querySelector<HTMLElement>(`[data-action="${refocus}"]`)?.focus();
 	}
 
+	#watchSeenFailure(runId: string | undefined): void {
+		if (this.#seenFailure?.runId === runId) return;
+		window.clearTimeout(this.#seenFailure?.timer);
+		this.#seenFailure = undefined;
+		if (!runId) return;
+		const timer = window.setTimeout(() => {
+			// Re-read visibility, permissions and recovery before acknowledging this run.
+			this.update();
+			if (this.#seenFailure?.runId !== runId) return;
+			this.#seenFailure = undefined;
+			this.#autoDismissedFailures.add(runId);
+			this.#dismissRunNotification(runId, true);
+		}, 5_000);
+		this.#seenFailure = { runId, timer };
+	}
+
+	#dismissRunNotification(runId: string | undefined, seen = false): void {
+		if (!runId || this.#notificationSignal.aborted) return;
+		let dismissed = dismissedRunNotifications.get(this.#company);
+		if (dismissed?.get(runId) === "clearing" || (!seen && dismissed?.has(runId))) return;
+		if (!dismissed) {
+			dismissed = new Map();
+			dismissedRunNotifications.set(this.#company, dismissed);
+		}
+		dismissed.set(runId, "clearing");
+		this.update();
+		// Recovery details can arrive after the popup. Follow this one dismissal
+		// across navigation, but stop waiting on permission loss or company teardown.
+		const clearSettledFailure = () => {
+			const state = this.#company.store.get();
+			const currentSession = state.sessions.find((item) => item.sessionId === this.#sessionId);
+			const current = this.#company.failedRunFor(currentSession?.staffAgentId);
+			const canClear =
+				!this.#company.signal.aborted &&
+				!state.accessLost &&
+				state.team?.capabilities.write &&
+				state.team.capabilities.read &&
+				currentSession?.status === "open" &&
+				current?.activity.runId === runId &&
+				current.activity.sourceKind !== "proposal_review";
+			if (canClear && !current.recovery) return;
+			// A newer failure can temporarily replace this one in the activity RPC.
+			// Let this run be dismissed again if it returns before we could clear it.
+			if (current?.activity.runId !== runId) dismissed.delete(runId);
+			else dismissed.set(runId, "hidden");
+			unsubscribe();
+			this.#company.signal.removeEventListener("abort", clearSettledFailure);
+			if (canClear && current.recovery?.unsettledOperations === 0 && !current.recovery.proposalId) {
+				// Clear settled failures so the server can report the agent's next run.
+				dismissed.set(runId, "clearing");
+				void this.#company.dismissFailedRun(runId).then(
+					() => dismissed.set(runId, "hidden"),
+					() => {
+						// Notify the current view too if the member navigated during the request.
+						dismissed.delete(runId);
+						if (!this.#company.signal.aborted) this.#company.store.set({});
+					},
+				);
+			}
+		};
+		const unsubscribe = this.#company.store.subscribe(clearSettledFailure);
+		this.#company.signal.addEventListener("abort", clearSettledFailure, { once: true });
+		clearSettledFailure();
+	}
+
 	#renderRunNotification(session: HostedSession | undefined): void {
 		const company = this.#company.store.get();
 		const failed =
@@ -876,6 +947,23 @@ export class ConversationView {
 		const hidden = !runId || dismissedRunNotifications.get(this.#company)?.has(runId);
 		const proposalId = failed?.recovery?.proposalId;
 		const review = failed?.activity.sourceKind === "proposal_review";
+		// Viewing acknowledges only settled failures. Work needing review stays actionable.
+		// One automatic attempt per visit avoids retrying a rejected write on every poll.
+		this.#watchSeenFailure(
+			runId &&
+				dismissedRunNotifications.get(this.#company)?.get(runId) !== "clearing" &&
+				!this.#notificationSignal.aborted &&
+				this.el.isConnected &&
+				document.visibilityState === "visible" &&
+				company.team?.capabilities.write &&
+				session?.status === "open" &&
+				!review &&
+				failed?.recovery?.unsettledOperations === 0 &&
+				!proposalId &&
+				!this.#autoDismissedFailures.has(runId)
+				? runId
+				: undefined,
+		);
 		const title = proposalId
 			? "Run stopped with changes to review"
 			: review
@@ -885,49 +973,6 @@ export class ConversationView {
 		if (key === this.#runNotificationKey) return;
 		this.#runNotificationKey = key;
 		const focused = this.#runNotification.contains(document.activeElement);
-		const dismiss = () => {
-			if (!runId || this.#notificationSignal.aborted) return;
-			let dismissed = dismissedRunNotifications.get(this.#company);
-			if (dismissed?.has(runId)) return;
-			if (!dismissed) {
-				dismissed = new Set();
-				dismissedRunNotifications.set(this.#company, dismissed);
-			}
-			dismissed.add(runId);
-			this.update();
-			// Recovery details can arrive after the popup. Follow this one dismissal
-			// across navigation, but stop waiting on permission loss or company teardown.
-			const clearSettledFailure = () => {
-				const state = this.#company.store.get();
-				const currentSession = state.sessions.find((item) => item.sessionId === this.#sessionId);
-				const current = this.#company.failedRunFor(currentSession?.staffAgentId);
-				const canClear =
-					!this.#company.signal.aborted &&
-					!state.accessLost &&
-					state.team?.capabilities.write &&
-					state.team.capabilities.read &&
-					currentSession?.status === "open" &&
-					current?.activity.runId === runId &&
-					current.activity.sourceKind !== "proposal_review";
-				if (canClear && !current.recovery) return;
-				// A newer failure can temporarily replace this one in the activity RPC.
-				// Let this run be dismissed again if it returns before we could clear it.
-				if (current?.activity.runId !== runId) dismissed.delete(runId);
-				unsubscribe();
-				this.#company.signal.removeEventListener("abort", clearSettledFailure);
-				if (canClear && current.recovery?.unsettledOperations === 0 && !current.recovery.proposalId) {
-					// Clear settled failures so the server can report the agent's next run.
-					void this.#company.dismissFailedRun(runId).catch(() => {
-						// Notify the current view too if the member navigated during the request.
-						dismissed.delete(runId);
-						if (!this.#company.signal.aborted) this.#company.store.set({});
-					});
-				}
-			};
-			const unsubscribe = this.#company.store.subscribe(clearSettledFailure);
-			this.#company.signal.addEventListener("abort", clearSettledFailure, { once: true });
-			clearSettledFailure();
-		};
 		const profileId = this.#company.profile.profileId;
 		const action =
 			proposalId || review
@@ -942,7 +987,7 @@ export class ConversationView {
 				: undefined;
 		updateNotification(
 			this.#runNotification,
-			hidden ? null : notification(title, dismiss, { action, error: true }),
+			hidden ? null : notification(title, () => this.#dismissRunNotification(runId), { action, error: true }),
 			hidden ? undefined : runId,
 			this.#notificationSignal,
 			!company.accessLost && company.team?.capabilities.read === true,
