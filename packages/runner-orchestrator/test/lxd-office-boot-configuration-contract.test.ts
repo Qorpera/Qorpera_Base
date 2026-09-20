@@ -1,5 +1,10 @@
+import { readdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
+	COMPANY_COMPUTER_GUEST_LAYOUT_KEYS,
 	companyComputerBootAdoptionReceiptPath,
+	companyComputerPreparationAdoptionReceipt,
 	companyComputerResumeObservationCanonical,
 	parseCompanyComputerBootAdoptionReceipt,
 	parseCompanyComputerBootConfigurationCompletion,
@@ -19,6 +24,96 @@ function change(value: unknown, path: string, replacement: unknown) {
 	current[keys.at(-1)!] = replacement;
 	return clone;
 }
+/** The production office: layout version 2 names a fifth admitted root. */
+const layoutV2 = () =>
+	bootConfigurationFixture({
+		original: {
+			layoutVersion: 2,
+			entries: [".", "company", "desktop", "profiles", "screens", "workbench"].map((path) => ({
+				path,
+				kind: "directory" as const,
+				mode: 0o700,
+				bytes: 0,
+				sha256: null,
+			})),
+		},
+	});
+describe("retained boot adoption of a layout version 2 office", () => {
+	it("accepts the company root exactly like the original adoption, in the receipt and the boot packet", () => {
+		const f = layoutV2(),
+			root = `/var/lib/qorpera-office/.qorpera-adopted-${f.original.copy.adoptionId}`;
+		expect(f.receipt.layout).toEqual({
+			workbenchRoot: `${root}/workbench`,
+			desktopHome: `${root}/desktop`,
+			screenStateRoot: `${root}/screens`,
+			browserProfilesRoot: `${root}/profiles`,
+			companyRoot: `${root}/company`,
+		});
+		const parsed = parseCompanyComputerBootAdoptionReceipt(JSON.parse(JSON.stringify(f.receipt)));
+		expect(parsed).toEqual(f.receipt);
+		expect(parsed.layout).toEqual(f.originReceipt.layout);
+		expect(Object.isFrozen(parsed.layout)).toBe(true);
+		// Byte-stable: the guest and the host hash this exact serialisation.
+		expect(JSON.stringify(parsed)).toBe(JSON.stringify(f.receipt));
+		expect(
+			JSON.parse(parseCompanyComputerBootConfigurationRequest(f.input).material.configuration).linux.layout,
+		).toEqual(f.receipt.layout);
+	});
+	it.each([
+		["a sixth root", (layout: Record<string, string>) => ({ ...layout, otherRoot: `${layout.companyRoot}-2` })],
+		[
+			"a company root outside the mount",
+			(layout: Record<string, string>) => ({ ...layout, companyRoot: "/srv/company" }),
+		],
+		[
+			"a traversing company root",
+			(layout: Record<string, string>) => ({ ...layout, companyRoot: "/var/lib/qorpera-office/x/../company" }),
+		],
+		[
+			"a company root inside another root",
+			(layout: Record<string, string>) => ({ ...layout, companyRoot: `${layout.workbenchRoot}/company` }),
+		],
+		[
+			"a credential-named company root",
+			(layout: Record<string, string>) => ({ ...layout, companyRoot: "/var/lib/qorpera-office/credentials" }),
+		],
+		["a non-string company root", (layout: Record<string, string>) => ({ ...layout, companyRoot: 5 })],
+		["a missing version 1 root", ({ screenStateRoot: _dropped, ...layout }: Record<string, string>) => layout],
+	])("still refuses %s", (_name, mutate) => {
+		const receipt = JSON.parse(JSON.stringify(layoutV2().receipt));
+		expect(() => parseCompanyComputerBootAdoptionReceipt({ ...receipt, layout: mutate(receipt.layout) })).toThrow(
+			"INVALID_OFFICE_BOOT_ADOPTION_RECEIPT",
+		);
+	});
+	it("every layout version the preparation contract can produce is admitted by the boot receipt parser", () => {
+		// Guard for a later layout version: one key table feeds every parser, and
+		// each version listed there must survive a power-off/resume receipt.
+		const fixtures = { 1: bootConfigurationFixture(), 2: layoutV2() };
+		expect(Object.keys(COMPANY_COMPUTER_GUEST_LAYOUT_KEYS).sort()).toEqual(Object.keys(fixtures).sort());
+		for (const [version, keys] of Object.entries(COMPANY_COMPUTER_GUEST_LAYOUT_KEYS)) {
+			const f = fixtures[Number(version) as 1 | 2];
+			expect(Object.keys(companyComputerPreparationAdoptionReceipt(f.original).layout).sort()).toEqual(
+				[...keys].sort(),
+			);
+			expect(Object.keys(parseCompanyComputerBootAdoptionReceipt(structuredClone(f.receipt)).layout).sort()).toEqual(
+				[...keys].sort(),
+			);
+		}
+	});
+	it("no other source names the layout keys: every parser takes them from the one table", async () => {
+		// A closed key list written out beside a parser is what refused version 2.
+		const packages = fileURLToPath(new URL("../..", import.meta.url)),
+			offenders: string[] = [];
+		for (const name of ["contracts", "runner-orchestrator", "runtime"])
+			for (const entry of await readdir(join(packages, name, "src"), { recursive: true, withFileTypes: true })) {
+				if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
+				const path = join(entry.parentPath, entry.name);
+				if (path.endsWith(join("contracts", "src", "company-computer-adoption.ts"))) continue;
+				if (/["'`]workbenchRoot["'`]/.test(await readFile(path, "utf8"))) offenders.push(path);
+			}
+		expect(offenders).toEqual([]);
+	});
+});
 describe("retained office boot configuration contracts", () => {
 	it("binds new boot custody to shutdown and original adoption without a new copy assertion", () => {
 		const f = bootConfigurationFixture(),

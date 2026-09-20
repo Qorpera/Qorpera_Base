@@ -1,4 +1,4 @@
-import { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./company-computer-adoption.ts";
+import { type CompanyComputerGuestLayout, parseCompanyComputerGuestLayout } from "./company-computer-adoption.ts";
 import {
 	type CompanyComputerBootIntentRequest,
 	parseCompanyComputerBootIntentRequest,
@@ -174,8 +174,9 @@ export function parseCompanyComputerBootAdoptionReceipt(value: unknown): Readonl
 		sha(origin.preparationSha256);
 		sha(origin.adoptionReceiptSha256);
 		if (r.bootId === startup.bootId || r.bootId === origin.bootId) throw new Error("boot reused");
-		const layout = record(r.layout, ["workbenchRoot", "desktopHome", "screenStateRoot", "browserProfilesRoot"]);
-		assertCompanyComputerGuestLayout(layout as unknown as CompanyComputerGuestLayout);
+		// Either admitted layout version (version 2 adds companyRoot); the key
+		// sets live in one place so no lane refuses a layout another admitted.
+		const layout = parseCompanyComputerGuestLayout(r.layout);
 		const mount = record(r.workbenchMount, ["filesystem", "source", "root", "mountPoint"]);
 		if (
 			mount.mountPoint !== "/var/lib/qorpera-office" ||
@@ -199,7 +200,7 @@ export function parseCompanyComputerBootAdoptionReceipt(value: unknown): Readonl
 		return Object.freeze({
 			...r,
 			scope: Object.freeze({ ...startup.scope }),
-			layout: Object.freeze({ ...layout }),
+			layout,
 			workbenchMount: Object.freeze({ ...mount }),
 			origin: Object.freeze({ ...origin }),
 			bootIntent,

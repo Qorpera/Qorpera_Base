@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { COMPANY_COMPUTER_GUEST_LAYOUT_KEYS } from "../src/company-computer-adoption.ts";
 import { COMPANY_COMPUTER_CONFIGURATION_FILES } from "../src/company-computer-configuration.ts";
 import type { CompanyComputerLifecycleRequest } from "../src/company-computer-lifecycle.ts";
 import { COMPANY_COMPUTER_PREPARATION_MAX_BYTES } from "../src/company-computer-preparation.ts";
@@ -302,5 +303,32 @@ describe("reset retained adoption receipt", () => {
 		expect(() =>
 			parseCompanyComputerResetAdoptionReceipt({ ...receipt, schema: "qorpera.office-state-retained/v1" }),
 		).toThrow("INVALID_OFFICE_RESET_ADOPTION_RECEIPT");
+	});
+	it("retains a layout version 2 office (company root) through a root reset, and no other extra root", () => {
+		const v2 = {
+			...original(),
+			layoutVersion: 2,
+			entries: [".", "company", "desktop", "profiles", "screens", "workbench"].map((path) => ({
+				path,
+				kind: "directory",
+				mode: 0o700,
+				bytes: 0,
+				sha256: null,
+			})),
+		};
+		const r = parseCompanyComputerResetConfigurationRequest({ ...request(), originPreparation: JSON.stringify(v2) });
+		const receipt = JSON.parse(JSON.stringify(companyComputerResetAdoptionReceipt(r, id(90))));
+		expect(Object.keys(receipt.layout).sort()).toEqual([...COMPANY_COMPUTER_GUEST_LAYOUT_KEYS[2]].sort());
+		expect(receipt.layout.companyRoot).toBe(`/var/lib/qorpera-office/.qorpera-adopted-${id(15)}/company`);
+		expect(parseCompanyComputerResetAdoptionReceipt(receipt)).toEqual(receipt);
+		for (const layout of [
+			{ ...receipt.layout, otherRoot: `${receipt.layout.companyRoot}-2` },
+			{ ...receipt.layout, companyRoot: `${receipt.layout.workbenchRoot}/company` },
+			{ ...receipt.layout, companyRoot: "/var/lib/qorpera-office/../company" },
+			(({ workbenchRoot: _dropped, ...rest }) => rest)(receipt.layout),
+		])
+			expect(() => parseCompanyComputerResetAdoptionReceipt({ ...receipt, layout })).toThrow(
+				"INVALID_OFFICE_RESET_ADOPTION_RECEIPT",
+			);
 	});
 });

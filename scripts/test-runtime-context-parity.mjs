@@ -139,8 +139,10 @@ try {
 	console.log("PASS: canonical acknowledgement survives a real sponsor handoff and fresh native assignment");
 	const wakeContexts = readFileSync(join(root, "supabase/tests/fixtures/runtime-wake-contexts.sql"), "utf8")
 		.replaceAll('{"schema":"qorpera.staff-kickoff/v1"}', '{"schema":"qorpera.staff-kickoff/v1","text":"Review current company direction and record material gaps."}');
-	for (const kind of ["human", "first-run", "routine", "agent", "room"]) {
-		const rows = docker(psql, `${fixture}\n${wakeContexts}\nselect pg_temp.wake_context_probe('${kind}'); rollback;`).split("\n");
+	for (const probe of ["human", "first-run", "routine", "agent", "room", "room-retry"]) {
+		// A retried room delivery must read exactly like a first one to the runner.
+		const kind = probe === "room-retry" ? "room" : probe;
+		const rows = docker(psql, `${fixture}\n${wakeContexts}\nselect pg_temp.wake_context_probe('${probe}'); rollback;`).split("\n");
 		const value = JSON.parse(rows.at(-1));
 		const context = parseCloudNativeCompanyContext(value.context, value.binding);
 		assertCloudRuntimeBundle(context.identity, bundle.manifest.nativeBinarySha256);
@@ -159,7 +161,7 @@ try {
 			assert.equal(context.currentInputs[0].content.text, "Review current company direction and record material gaps.");
 			assert.deepEqual(prompt.hireOverlay.startupAssignment, context.currentInputs);
 		} else assert.deepEqual(prompt.hireOverlay.startupAssignment, []);
-		console.log(`PASS: same agent, real ${kind} materializer -> native context -> bundle -> production prompt`);
+		console.log(`PASS: same agent, real ${probe} materializer -> native context -> bundle -> production prompt`);
 	}
 	console.log(`PASS: context parity after ${migrations.length} migrations; no model invoked`);
 } finally {

@@ -15,8 +15,8 @@ import { fmtTime, h, icon, notice, replace, spinner } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
-import { notification, updateNotification } from "../../ui/notification.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
+import { runFailureCard, runFailureReason } from "../../ui/run-failure.ts";
 import type { AgentState, CompanyController, ConversationState } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
@@ -77,7 +77,8 @@ export class ConversationView {
 	readonly #unsubscribe: (() => void)[] = [];
 	#disposed = false;
 	#statusKey = "";
-	readonly #runNotification = h("div", { class: "run-notification", hidden: true });
+	/** A failed run, shown at the end of the thread where its answer would have been. */
+	readonly #runNotification = h("div", { class: "thread-run-failure", hidden: true });
 	#runNotificationKey = "";
 	#receivedAttachments: ReceivedAttachments[] = [];
 	readonly #timestampTimer: number;
@@ -298,8 +299,6 @@ export class ConversationView {
 		);
 		this.#body = h("div", { class: "thread-body" }, this.#conversationPane);
 		this.el = h("section", { class: "thread" }, this.#body);
-		if (actions.notificationHost) actions.notificationHost.append(this.#runNotification);
-		else this.el.append(h("div", { class: "notification-stack" }, this.#runNotification));
 		company.signal.addEventListener("abort", () => this.#runNotification.remove(), {
 			once: true,
 			signal: this.#lifetime.signal,
@@ -815,7 +814,11 @@ export class ConversationView {
 				),
 			);
 		}
-		replace(this.#messages, ...nodes);
+		const cardFocus = this.#runNotification.contains(document.activeElement)
+			? (document.activeElement as HTMLElement).dataset.action
+			: undefined;
+		replace(this.#messages, ...nodes, this.#runNotification);
+		if (cardFocus) this.#runNotification.querySelector<HTMLElement>(`[data-action="${cardFocus}"]`)?.focus();
 		this.#refreshTimestamps(false);
 		if (this.#stickToBottom) this.#messages.scrollTop = this.#messages.scrollHeight;
 	}
@@ -876,15 +879,35 @@ export class ConversationView {
 		const hidden = !runId || dismissedRunNotifications.get(this.#company)?.has(runId);
 		const proposalId = failed?.recovery?.proposalId;
 		const review = failed?.activity.sourceKind === "proposal_review";
+		const agentName = this.#company.staffById(session?.staffAgentId ?? "")?.displayName ?? "The agent";
 		const title = proposalId
-			? "Run stopped with changes to review"
+			? `${agentName} stopped with changes to review`
 			: review
 				? "A review did not finish"
-				: "A run did not finish";
-		const key = JSON.stringify([runId, hidden, proposalId, review]);
+				: `${agentName} did not finish this run`;
+		const recovery = failed?.recovery;
+		const reason = proposalId
+			? "Its changes wait for your decision."
+			: recovery
+				? runFailureReason(recovery.lastError, recovery.jobStatus)
+				: undefined;
+		const retryState = runId ? company.runRetries?.[runId] : undefined;
+		const canRetry = failed !== undefined && !review && this.#company.canRetryFailedRun(failed);
+		const key = JSON.stringify([
+			runId,
+			hidden,
+			proposalId,
+			review,
+			title,
+			reason,
+			recovery?.lastError,
+			retryState,
+			canRetry,
+		]);
 		if (key === this.#runNotificationKey) return;
 		this.#runNotificationKey = key;
 		const focused = this.#runNotification.contains(document.activeElement);
+		const focusedAction = focused ? (document.activeElement as HTMLElement).dataset.action : undefined;
 		const dismiss = () => {
 			if (!runId || this.#notificationSignal.aborted) return;
 			let dismissed = dismissedRunNotifications.get(this.#company);
@@ -940,15 +963,30 @@ export class ConversationView {
 						"Review",
 					)
 				: undefined;
-		updateNotification(
+		const sessionId = this.#sessionId;
+		this.#runNotification.hidden = Boolean(hidden);
+		replace(
 			this.#runNotification,
-			hidden ? null : notification(title, dismiss, { action, error: true }),
-			hidden ? undefined : runId,
-			this.#notificationSignal,
-			!company.accessLost && company.team?.capabilities.read === true,
+			hidden || !runId
+				? null
+				: runFailureCard({
+						title,
+						reason,
+						retry: canRetry ? () => void this.#company.retryFailedRun(runId, sessionId) : undefined,
+						retrying: retryState?.pending,
+						retryError: retryState?.error,
+						dismiss,
+						action,
+					}),
 		);
+		if (!hidden && this.#stickToBottom) this.#messages.scrollTop = this.#messages.scrollHeight;
 		if (focused) {
-			if (!hidden) this.#runNotification.querySelector<HTMLElement>("button")?.focus({ preventScroll: true });
+			if (!hidden)
+				(
+					(focusedAction
+						? this.#runNotification.querySelector<HTMLElement>(`[data-action="${focusedAction}"]`)
+						: null) ?? this.#runNotification.querySelector<HTMLElement>(".run-failure-primary, a, button")
+				)?.focus({ preventScroll: true });
 			else if (this.#conversationPane.inert || this.#panel?.el.classList.contains("is-entered"))
 				this.#panel?.focus();
 			else if (!this.#composer.disabled && !this.#composerWrap.hidden) this.#composer.focus({ preventScroll: true });

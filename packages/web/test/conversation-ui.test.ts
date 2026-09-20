@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
 import { CompanyController } from "../src/app/company.ts";
@@ -6,6 +7,7 @@ import { parseRoute } from "../src/app/router.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import { NewConversationView } from "../src/app/views/new-conversation.ts";
 import type { WorkspaceActions } from "../src/app/workspace-actions.ts";
+import { CloudRpcError } from "../src/cloud/client.ts";
 import type { TranscriptMessage } from "../src/cloud/transcript.ts";
 import appCss from "../src/styles/app.css?raw";
 import conversationCss from "../src/styles/conversation.css?raw";
@@ -373,10 +375,10 @@ describe("conversation UI boundaries", () => {
 			],
 		});
 		await settle();
-		const close = button(host, "Dismiss notification");
+		const close = button(f.view.el, "Dismiss");
 		close.focus();
 		close.click();
-		expect(host.querySelector(".notification-card")).toBeNull();
+		expect(f.view.el.querySelector(".run-failure")).toBeNull();
 		expect(document.activeElement).toBe(entered ? panel : f.view.el.querySelector(".composer-input"));
 		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBeFalsy();
 	});
@@ -402,17 +404,27 @@ describe("conversation UI boundaries", () => {
 			lastError: "Runner lease expired before durable completion",
 			unsettledOperations: 1,
 		};
-		const card = () => host.querySelector<HTMLElement>(".notification-card");
+		const card = () => document.querySelector<HTMLElement>(".run-failure");
 		const discard = vi.spyOn(f.api, "discardFailedRun");
 		f.company.store.set({ activity: [run], recoveries: { [run.runId]: details } });
 		await settle();
-		expect(card()?.textContent).toBe("A run did not finish");
+		expect(card()?.querySelector(".run-failure-title")?.textContent).toBe("Fixture agent did not finish this run");
+		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe("The run took too long and was stopped.");
+		// The cloud's own error text stays out of the card; the reason is in the member's words.
+		expect(card()?.textContent).not.toContain(details.lastError);
+		expect(card()?.querySelector("details")).toBeNull();
+		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual(["Dismiss"]);
+		// Unsettled operations: nothing may be repeated yet.
+		expect(card()?.querySelector('[data-action="retry-run"]')).toBeNull();
+		// The card is the last thing in the thread, where the answer would have been.
+		expect(f.view.el.querySelector(".messages")?.lastElementChild?.contains(card())).toBe(true);
+		expect(host.querySelector(".run-failure")).toBeNull();
 		expect(f.view.el.querySelector(".thread-status .notice-warn")).toBeNull();
-		const close = button(host, "Dismiss notification");
+		const close = button(f.view.el, "Dismiss");
 		close.focus();
 		f.company.store.set({ activity: [{ ...run }] });
 		await settle();
-		expect(button(host, "Dismiss notification")).toBe(close);
+		expect(button(f.view.el, "Dismiss")).toBe(close);
 		expect(document.activeElement).toBe(close);
 		close.click();
 		expect(card()).toBeNull();
@@ -455,7 +467,7 @@ describe("conversation UI boundaries", () => {
 			unsettledOperations: 0,
 			proposalId: id(71),
 		};
-		const card = () => f.view.el.querySelector<HTMLElement>(".notification-card");
+		const card = () => f.view.el.querySelector<HTMLElement>(".run-failure");
 		f.company.store.set({
 			team: { ...team, capabilities: { ...team.capabilities, write: false } },
 			activity: [run],
@@ -463,17 +475,20 @@ describe("conversation UI boundaries", () => {
 		});
 		await settle();
 		expect(card()?.querySelector("a")?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/proposal/${id(71)}`);
-		expect(card()?.textContent).toBe("Run stopped with changes to reviewReview");
-		button(f.view.el, "Dismiss notification").focus();
-		button(f.view.el, "Dismiss notification").dispatchEvent(
-			new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+		expect(card()?.querySelector(".run-failure-title")?.textContent).toBe(
+			"Fixture agent stopped with changes to review",
 		);
+		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe("Its changes wait for your decision.");
+		expect(card()?.querySelector('[data-action="retry-run"]')).toBeNull();
+		button(f.view.el, "Dismiss").focus();
+		button(f.view.el, "Dismiss").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		expect(card()).toBeNull();
 		expect(document.activeElement).toBe(button(f.view.el, "Open agent details"));
 		const review = { ...run, runId: id(72), sourceKind: "proposal_review" as const };
 		f.company.store.set({ activity: [review] });
 		await settle();
-		expect(card()?.textContent).toBe("A review did not finishReview");
+		expect(card()?.querySelector(".run-failure-title")?.textContent).toBe("A review did not finish");
+		expect(card()?.querySelector('[data-action="retry-run"]')).toBeNull();
 		expect(card()?.querySelector("a")?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/file`);
 		f.company.store.set({ team: undefined });
 		await settle();
@@ -519,11 +534,11 @@ describe("conversation UI boundaries", () => {
 			await settle();
 			expect(f.company.agentState(staff.id)).toBe("failed");
 			expect(f.view.el.querySelector('[aria-label="Stop"]')).toBeNull();
-			const close = button(f.view.el, "Dismiss notification");
+			const close = button(f.view.el, "Dismiss");
 			close.focus();
 			close.click();
 			close.click();
-			expect(f.view.el.querySelector(".notification-card")).toBeNull();
+			expect(f.view.el.querySelector(".run-failure")).toBeNull();
 			expect(document.activeElement).toBe(f.view.el.querySelector("textarea"));
 			if (late) {
 				expect(discard).not.toHaveBeenCalled();
@@ -534,13 +549,138 @@ describe("conversation UI boundaries", () => {
 			pending.resolve();
 			await settle();
 			expect(f.company.agentState(staff.id)).toBe("working");
-			expect(f.view.el.querySelector(".notification-card")).toBeNull();
+			expect(f.view.el.querySelector(".run-failure")).toBeNull();
 			expect(button(f.view.el, "Stop").disabled).toBe(false);
 			button(f.view.el, "Stop").click();
 			await settle();
 			expect(cancel).toHaveBeenCalledExactlyOnceWith(session.sessionId, nextRun, expect.any(AbortSignal));
 		},
 	);
+
+	it("offers Try again in the thread, runs it on the selected account, and reports a refusal in plain words", async () => {
+		const f = setup();
+		const run = {
+			runId: id(70),
+			staffAgentId: staff.id,
+			sourceKind: "room_delivery" as const,
+			jobStatus: "failed" as const,
+			activity: "needs_attention" as const,
+			updatedAt: timestamp,
+		};
+		const details = {
+			runId: run.runId,
+			sourceKind: run.sourceKind,
+			jobStatus: run.jobStatus,
+			lastError:
+				"Runner dispatch failed after the final infrastructure attempt: Runner provider request failed (422)",
+			unsettledOperations: 0,
+		};
+		const card = () => f.view.el.querySelector<HTMLElement>(".run-failure");
+		const retryButton = () => card()?.querySelector<HTMLButtonElement>('[data-action="retry-run"]') ?? null;
+		const sponsor = {
+			connectionId: id(80),
+			provider: "openai",
+			nativeHarness: "codex-cli" as const,
+			sponsorBindingId: id(81),
+			sponsorVersion: 3,
+			computeIdentityId: id(82),
+			workerClass: "managed_sandbox" as const,
+		};
+		f.company.conversation(session.sessionId, false).set({ executionSponsor: sponsor });
+		// The cloud keeps reporting the failed run until it is released or dismissed.
+		vi.spyOn(f.api, "listStaffActivity").mockResolvedValue([run]);
+		vi.spyOn(f.api, "getRunRecovery").mockResolvedValue(details);
+		f.company.store.set({ activity: [run], recoveries: { [run.runId]: details } });
+		await settle();
+		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe(
+			"No computer could be started for this run. The problem is on Qorpera's side.",
+		);
+		let release: (() => void) | undefined;
+		const retry = vi.spyOn(f.api, "retryRoomDelivery").mockImplementation(
+			() =>
+				new Promise<void>((resolve) => {
+					release = resolve;
+				}),
+		);
+		retryButton()!.focus();
+		retryButton()!.click();
+		await settle();
+		expect(retry).toHaveBeenCalledExactlyOnceWith(run.runId, sponsor.sponsorBindingId, sponsor.sponsorVersion);
+		expect(retryButton()?.textContent).toBe("Trying again…");
+		expect(retryButton()?.getAttribute("aria-disabled")).toBe("true");
+		// A second click while it runs does nothing, and the button keeps focus across the redraw.
+		retryButton()!.click();
+		expect(retry).toHaveBeenCalledTimes(1);
+		expect(document.activeElement).toBe(retryButton());
+		release?.();
+		await settle();
+		// A refusal stays in the card, in the member's words.
+		retry.mockRejectedValueOnce(new Error("Only the author of the post can retry it"));
+		f.company.store.set({ activity: [{ ...run }], recoveries: { [run.runId]: details } });
+		await settle();
+		retryButton()!.click();
+		await settle();
+		expect(card()?.querySelector(".run-failure-error")?.textContent).toBe(
+			"Only the person who wrote the message can try it again.",
+		);
+		expect(retryButton()?.textContent).toBe("Try again");
+	});
+
+	it("stops offering Try again for room posts when the deployed cloud cannot do it, and keeps it for session turns", async () => {
+		const f = setup();
+		const run = {
+			runId: id(70),
+			staffAgentId: staff.id,
+			sourceKind: "room_delivery" as const,
+			jobStatus: "failed" as const,
+			activity: "needs_attention" as const,
+			updatedAt: timestamp,
+		};
+		const details = {
+			runId: run.runId,
+			sourceKind: run.sourceKind,
+			jobStatus: run.jobStatus,
+			unsettledOperations: 0,
+		};
+		const retryButton = () => f.view.el.querySelector<HTMLButtonElement>('.run-failure [data-action="retry-run"]');
+		f.company.conversation(session.sessionId, false).set({
+			executionSponsor: {
+				connectionId: id(80),
+				provider: "openai",
+				nativeHarness: "codex-cli",
+				sponsorBindingId: id(81),
+				sponsorVersion: 1,
+				computeIdentityId: id(82),
+				workerClass: "managed_sandbox",
+			},
+		});
+		f.company.store.set({ activity: [run], recoveries: { [run.runId]: details } });
+		await settle();
+		vi.spyOn(f.api, "listStaffActivity").mockResolvedValue([run]);
+		vi.spyOn(f.api, "getRunRecovery").mockResolvedValue(details);
+		vi.spyOn(f.api, "retryRoomDelivery").mockRejectedValue(
+			new CloudRpcError("qorpera_retry_room_delivery", { message: "not found", code: "PGRST202" }, 404),
+		);
+		retryButton()!.click();
+		await settle();
+		f.company.store.set({ activity: [{ ...run }], recoveries: { [run.runId]: details } });
+		await settle();
+		expect(retryButton()).toBeNull();
+		expect(f.view.el.querySelector(".run-failure-error")?.textContent).toBe(
+			"Trying again is not available yet. Send the message again instead.",
+		);
+		expect(button(f.view.el, "Dismiss")).toBeTruthy();
+		const turn = { ...run, runId: id(71), sourceKind: "session_turn" as const };
+		const turnRetry = vi.spyOn(f.api, "retryFailedRun").mockResolvedValue();
+		f.company.store.set({
+			activity: [turn],
+			recoveries: { [turn.runId]: { ...details, runId: turn.runId, sourceKind: turn.sourceKind } },
+		});
+		await settle();
+		retryButton()!.click();
+		await settle();
+		expect(turnRetry).toHaveBeenCalledExactlyOnceWith(turn.runId);
+	});
 
 	it("allows a displaced failure to be dismissed again when it becomes current", async () => {
 		const f = setup();
@@ -555,7 +695,7 @@ describe("conversation UI boundaries", () => {
 		const discard = vi.spyOn(f.api, "discardFailedRun").mockResolvedValue(undefined);
 		f.company.store.set({ activity: [run] });
 		await settle();
-		button(f.view.el, "Dismiss notification").click();
+		button(f.view.el, "Dismiss").click();
 		f.company.store.set({ activity: [{ ...run, runId: id(71) }] });
 		await settle();
 		expect(discard).not.toHaveBeenCalled();
@@ -571,7 +711,7 @@ describe("conversation UI boundaries", () => {
 			},
 		});
 		await settle();
-		button(f.view.el, "Dismiss notification").click();
+		button(f.view.el, "Dismiss").click();
 		await settle();
 		expect(discard).toHaveBeenCalledExactlyOnceWith(run.runId);
 		expect(f.company.agentState(staff.id)).toBe("idle");
@@ -602,7 +742,7 @@ describe("conversation UI boundaries", () => {
 		vi.spyOn(f.api, "getRunRecovery").mockResolvedValue(recovery);
 		f.company.store.set({ activity: [run] });
 		await settle();
-		button(f.view.el, "Dismiss notification").click();
+		button(f.view.el, "Dismiss").click();
 		f.view.dispose();
 		f.view.el.remove();
 		const reopened = new ConversationView(f.company, session.sessionId);
@@ -614,12 +754,14 @@ describe("conversation UI boundaries", () => {
 		f.company.store.set({ recoveries: { [run.runId]: recovery } });
 		await settle();
 		expect(discard).toHaveBeenCalledExactlyOnceWith(run.runId);
-		expect(reopened.el.querySelector(".notification-card")).toBeNull();
+		expect(reopened.el.querySelector(".run-failure")).toBeNull();
 		pending.reject(new Error("Connection lost"));
 		await settle();
-		expect(reopened.el.querySelector(".notification-card")?.textContent).toBe("A run did not finish");
+		expect(reopened.el.querySelector(".run-failure-title")?.textContent).toBe(
+			"Fixture agent did not finish this run",
+		);
 		vi.mocked(f.api.listStaffActivity).mockResolvedValue([]);
-		button(reopened.el, "Dismiss notification").click();
+		button(reopened.el, "Dismiss").click();
 		await settle();
 		expect(discard).toHaveBeenCalledTimes(2);
 		expect(f.company.agentState(staff.id)).toBe("idle");
@@ -640,7 +782,7 @@ describe("conversation UI boundaries", () => {
 			const discard = vi.spyOn(f.api, "discardFailedRun");
 			f.company.store.set({ activity: [run] });
 			await settle();
-			const close = button(f.view.el, "Dismiss notification");
+			const close = button(f.view.el, "Dismiss");
 			if (kind === "reader")
 				f.company.store.set({ team: { ...team, capabilities: { ...team.capabilities, write: false } } });
 			close.click();
@@ -660,7 +802,7 @@ describe("conversation UI boundaries", () => {
 			});
 			await settle();
 			expect(discard).not.toHaveBeenCalled();
-			expect(f.view.el.querySelector(".notification-card")).toBeNull();
+			expect(f.view.el.querySelector(".run-failure")).toBeNull();
 		},
 	);
 });
