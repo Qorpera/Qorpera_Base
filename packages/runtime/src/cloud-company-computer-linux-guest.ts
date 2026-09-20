@@ -616,6 +616,12 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 						// stays open only while somebody entitled remains (the relay's
 						// per-second SQL check decides). Every action of this run has settled
 						// above, so no automation command of the run is still in flight.
+						// Drop local handles without closing any shared desktop tab.
+						const leaving = automation;
+						if (leaving)
+							await cloudToolRequest(() => leaving.release(), new AbortController().signal, 2000).catch(
+								() => undefined,
+							);
 						browser = undefined;
 						driving = undefined;
 						automation = undefined;

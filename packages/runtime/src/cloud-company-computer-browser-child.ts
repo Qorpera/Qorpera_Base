@@ -47,10 +47,11 @@ export async function runCompanyComputerBrowserChild(args: string[]): Promise<vo
 	const child = spawn(
 		executable,
 		[
+			// The launch service supplies its uniquely owned startup URL. Appending
+			// a second anonymous blank here would create an unowned tab each start.
 			...browserArgs,
 			`--proxy-server=http://127.0.0.1:${address.port}`,
 			"--proxy-bypass-list=<-loopback>",
-			"about:blank",
 		],
 		{
 			stdio: ["ignore", "inherit", "inherit", 3, 4],
