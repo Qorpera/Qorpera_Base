@@ -424,7 +424,7 @@ describe("headless office service lifetime (TLS listeners, synthetic physical ad
 			if (method === "qorpera_redeem_runtime_office_viewer" || method === "qorpera_check_runtime_office_viewer")
 				return Response.json(grant);
 			if (method === "qorpera_release_runtime_office_viewer") return Response.json({ state: "released" });
-			if (method === "qorpera_admit_runtime_office_viewer_input") {
+			if (method === "qorpera_admit_runtime_office_viewer_input_window") {
 				entered.resolve();
 				return admission.promise;
 			}
@@ -450,7 +450,7 @@ describe("headless office service lifetime (TLS listeners, synthetic physical ad
 		await entered.promise;
 		f.abort.abort();
 		await service.finished;
-		admission.resolve(Response.json({ state: "admitted", inputId: computerId(22), validForMs: 5000 }));
+		admission.resolve(Response.json({ state: "admitted", validForMs: 1000 }));
 		expect(Buffer.concat(received)).toEqual(hello);
 		expect(f.guest.close).toHaveBeenCalledOnce();
 	});

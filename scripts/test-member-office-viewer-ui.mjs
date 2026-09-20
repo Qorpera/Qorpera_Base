@@ -136,7 +136,9 @@ request(channel,input){return this.handlers.get(channel)({sender:this.webContent
 		await page.getByRole("button",{name:"Take control",exact:true}).click();await page.getByText("You control this cloud screen",{exact:true}).waitFor();
 		await page.keyboard.press("a");await page.waitForTimeout(200);assert(inputBytes.some(bytes=>bytes[0]===4&&bytes[1]===1&&bytes.readUInt32BE(4)===97));
 		assert.equal(calls.filter(call=>call.method==="qorpera_request_runtime_office_drain").length,1);
-		assert(Number(query("select count(*) from public.qorpera_runtime_office_viewer_inputs;"))>=1);
+		// Input is audited per window: key down and up land with the next renewal, within about a second.
+		for(let i=0;i<40&&Number(query("select coalesce(sum(coalesce(packet_count,1)),0) from public.qorpera_runtime_office_viewer_inputs;"))<2;i++)await page.waitForTimeout(100);
+		assert(Number(query("select coalesce(sum(coalesce(packet_count,1)),0) from public.qorpera_runtime_office_viewer_inputs;"))>=2);
 		await page.getByRole("button",{name:"Close screen viewer",exact:true}).click();await page.waitForFunction(()=>!document.querySelector(".screen-viewer-overlay"));
 		await page.waitForFunction(()=>document.getElementById("watchScreen").disabled===false);
 		lostMint=true;const beforeMint=calls.filter(call=>call.method==="qorpera_create_runtime_office_viewer").length;

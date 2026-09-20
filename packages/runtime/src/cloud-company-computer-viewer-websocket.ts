@@ -155,6 +155,8 @@ export async function startCompanyComputerViewerWebSocketGateway(options: {
 			socket.destroy();
 			return;
 		}
+		// RFB input and update requests are tiny writes; Nagle would hold them.
+		if ("setNoDelay" in socket && typeof socket.setNoDelay === "function") socket.setNoDelay(true);
 		const accept = createHash("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
 		socket.write(
 			`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
