@@ -162,34 +162,154 @@ function buttonNamed(view: ConversationView, label: string): HTMLButtonElement |
 const CONNECT_HINT = "Connect a model account in Settings → Connections to send messages.";
 
 describe("room startup usage refresh", () => {
-	it("waits for usage before selecting, then keeps hydration out of subsequent turn checks", async () => {
+	it("selects a known eligible account and sends while the optional usage probe remains pending", async () => {
 		const pending = deferred<void>();
 		const hydrate = vi.fn(() => pending.promise);
 		const select = vi.fn(async () => id(90));
 		const f = setup(false, connections(), select, hydrate);
 		await settle();
 		expect(hydrate).toHaveBeenCalledTimes(1);
-		expect(select).not.toHaveBeenCalled();
-		expect(f.sponsor()).toBeUndefined();
-		pending.resolve();
-		await settle();
+		expect(select).toHaveBeenCalledOnce();
 		expect(f.sponsor()?.connectionId).toBe(id(90));
-		refresh();
+		type(f.view, "Send without waiting for usage");
 		await settle();
-		expect(select).toHaveBeenCalledTimes(2);
+		expect(f.send().disabled).toBe(false);
+		f.send().click();
+		await settle();
+		expect(f.sendMessage).toHaveBeenCalledExactlyOnceWith(
+			session.sessionId,
+			"Send without waiting for usage",
+			expect.any(AbortSignal),
+		);
+		expect(select.mock.calls.length).toBeGreaterThan(1);
 		expect(hydrate).toHaveBeenCalledTimes(1);
 	});
-	it("does not choose from a failed refresh and allows recovery on focus", async () => {
+	it("shows account loading until authoritative selection resolves", async () => {
+		const pending = deferred<string>();
+		const select = vi.fn(() => pending.promise);
+		const f = setup(false, connections(), select);
+		await settle();
+		type(f.view, "Keep my draft");
+		await settle();
+		expect(f.send().disabled).toBe(true);
+		expect(f.view.el.querySelector(".session-execution")!.textContent).toContain("Checking model accounts");
+		pending.resolve(id(90));
+		await settle();
+		expect(f.send().disabled).toBe(false);
+		expect(f.view.el.querySelector(".session-execution")!.textContent).not.toContain("Checking model accounts");
+	});
+	it("keeps eligible accounts usable after a failed optional probe without rapidly retrying it", async () => {
 		const hydrate = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValue(undefined);
 		const select = vi.fn(async () => id(90));
 		const f = setup(false, connections(), select, hydrate);
 		await settle();
-		expect(select).not.toHaveBeenCalled();
-		expect(f.sponsor()).toBeUndefined();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		type(f.view, "Hello");
+		await settle();
+		expect(f.send().disabled).toBe(false);
+		expect(f.view.el.textContent).not.toContain("Model accounts are unavailable");
 		refresh();
 		await settle();
 		expect(f.sponsor()?.connectionId).toBe(id(90));
+		expect(hydrate).toHaveBeenCalledOnce();
+		expect(f.send().disabled).toBe(false);
 	});
+	it("polls and switches exhausted accounts without overlapping a slow optional probe", async () => {
+		vi.useFakeTimers();
+		const pending = deferred<void>();
+		const hydrate = vi.fn(() => pending.promise);
+		const select = vi.fn(async () => id(90));
+		const f = setup(true, withUsage([80, 40]), select, hydrate);
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		select.mockResolvedValue(id(91));
+		f.listConnections.mockResolvedValue(withUsage([0, 40]));
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+		await vi.advanceTimersByTimeAsync(90_000);
+		expect(hydrate).toHaveBeenCalledOnce();
+		expect(select).toHaveBeenCalledTimes(5);
+		// Successful hydration can discover that the second account is now exhausted.
+		select.mockResolvedValue(id(90));
+		f.listConnections.mockResolvedValue(withUsage([80, 0]));
+		pending.resolve();
+		await settle();
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		expect(hydrate).toHaveBeenCalledOnce();
+	});
+	it("does not cancel a send when a newly due optional probe resolves during its account check", async () => {
+		vi.useFakeTimers();
+		const hydrate = vi.fn(async () => {});
+		const select = vi.fn(async () => id(90));
+		const f = setup(true, withUsage([80, 40]), select, hydrate);
+		await settle();
+		await vi.advanceTimersByTimeAsync(1_000);
+		type(f.view, "Send after the metadata interval");
+		await settle();
+		// Make usage refresh due without firing a background poll first.
+		vi.setSystemTime(Date.now() + 60_000);
+		f.send().click();
+		await settle();
+		expect(hydrate).toHaveBeenCalledTimes(2);
+		expect(f.sendMessage).toHaveBeenCalledExactlyOnceWith(
+			session.sessionId,
+			"Send after the metadata interval",
+			expect.any(AbortSignal),
+		);
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(f.sendMessage).toHaveBeenCalledOnce();
+	});
+	it.each(["retry", "sending"] as const)("keeps account identity when a probe finishes during %s", async (mode) => {
+		vi.useFakeTimers();
+		const pending = deferred<void>();
+		const hydrate = vi.fn(() => pending.promise);
+		const select = vi.fn(async () => id(90));
+		const f = setup(true, withUsage([80, 40]), select, hydrate);
+		await settle();
+		const original = f.sponsor()!;
+		const retained = {
+			clientInputId: id(150),
+			clientRequestId: id(150),
+			text: "Hello",
+			files: [],
+			executionSponsor: original,
+		};
+		f.company.conversation(session.sessionId).set({
+			draft: "Hello",
+			...(mode === "retry" ? { retrySend: retained } : { sending: true }),
+		});
+		select.mockResolvedValue(id(91));
+		f.listConnections.mockResolvedValue(withUsage([0, 80]));
+		pending.resolve();
+		await settle();
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(select).toHaveBeenCalledOnce();
+		expect(f.sponsor()).toBe(original);
+		if (mode === "retry") expect(f.company.conversation(session.sessionId).get().retrySend).toBe(retained);
+	});
+	it.each(["disposed", "access lost"] as const)(
+		"aborts the optional probe when %s and ignores its late result",
+		async (mode) => {
+			vi.useFakeTimers();
+			const pending = deferred<void>();
+			const hydrate = vi.fn<NonNullable<WebNativeSubscription["refreshAccountMetadata"]>>(() => pending.promise);
+			const select = vi.fn(async () => id(90));
+			const f = setup(true, withUsage([80, 40]), select, hydrate);
+			await settle();
+			const signal = hydrate.mock.calls[0]![0]!;
+			expect(signal.aborted).toBe(false);
+			if (mode === "disposed") f.view.dispose();
+			else f.company.store.set({ accessLost: true });
+			await settle();
+			expect(signal.aborted).toBe(true);
+			pending.resolve();
+			await settle();
+			await vi.advanceTimersByTimeAsync(60_000);
+			expect(select).toHaveBeenCalledOnce();
+			expect(f.listConnections).toHaveBeenCalledOnce();
+		},
+	);
 });
 
 describe("conversation execution account", () => {
@@ -237,7 +357,7 @@ describe("conversation execution account", () => {
 		expect(select).toHaveBeenCalledTimes(2);
 	});
 
-	it("refreshes usage metadata every minute but skips hydration for quick pre-send checks", async () => {
+	it("refreshes usage metadata after its minute cooldown but skips hydration for quick pre-send checks", async () => {
 		vi.useFakeTimers();
 		const hydrate = vi.fn(async () => {});
 		const select = vi.fn(async () => id(90));
@@ -254,7 +374,7 @@ describe("conversation execution account", () => {
 		expect(hydrate).toHaveBeenCalledOnce();
 		await vi.advanceTimersByTimeAsync(30_000);
 		expect(hydrate).toHaveBeenCalledTimes(2);
-		await vi.advanceTimersByTimeAsync(60_000);
+		await vi.advanceTimersByTimeAsync(61_000);
 		expect(hydrate).toHaveBeenCalledTimes(3);
 	});
 
