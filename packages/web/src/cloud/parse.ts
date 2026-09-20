@@ -446,6 +446,29 @@ export function parseRunDismissal(value: unknown, runId: string): void {
 	}
 }
 
+/** qorpera_resolve_failed_execution_run(retry): the session turn's inputs are queued again. */
+export function parseRunRetry(value: unknown, runId: string): void {
+	const result = record(value, "run retry");
+	if (
+		uuid(result.run_id, "retried run id") !== runId.toLowerCase() ||
+		result.action !== "retry" ||
+		result.resolved !== true
+	) {
+		throw new CloudShapeError("run retry");
+	}
+}
+
+/** qorpera_retry_room_delivery: the same post wakes the same agent once more. */
+export function parseRoomDeliveryRetry(value: unknown, runId: string): void {
+	const result = record(value, "room delivery retry");
+	if (
+		result.schema !== "qorpera.company-room-retry/v1" ||
+		uuid(result.runId, "retried run id") !== runId.toLowerCase()
+	)
+		throw new CloudShapeError("room delivery retry");
+	uuid(result.occurrenceId, "retry occurrence id");
+}
+
 function sessionEventType(value: unknown): HostedSessionEventType {
 	return oneOf(value, HOSTED_SESSION_EVENT_TYPES, "session event type");
 }
