@@ -98,7 +98,7 @@ export async function startCompanyComputerOfficeService(options: {
 	};
 	// New viewer admission and new native work additionally require the
 	// supervisor's latest status poll to have confirmed the durable state. An
-	// already-admitted viewer's periodic check, its per-input admission and its
+	// already-admitted viewer's periodic check, its input-window admission and its
 	// release are each confirmed by SQL on their own and stay on assertServing,
 	// so a bounded transport gap never destroys an authorized stream.
 	const assertAdmitting = (): void => {
@@ -117,17 +117,13 @@ export async function startCompanyComputerOfficeService(options: {
 				assertServing();
 				return control.check(grant, AbortSignal.any([signal, checked]));
 			},
-			forwardInput: async (grant, input, forward, checked) => {
+			admitInputWindow: async (grant, checked) => {
 				assertServing();
-				return control.forwardInput(
-					grant,
-					input,
-					() => {
-						assertServing();
-						forward();
-					},
-					AbortSignal.any([signal, checked]),
-				);
+				return control.admitInputWindow(grant, AbortSignal.any([signal, checked]));
+			},
+			recordInput: (grant, input) => {
+				assertServing();
+				return control.recordInput(grant, input);
 			},
 			// Exact cleanup remains valid after service cancellation.
 			release: (...args) => control.release(...args),

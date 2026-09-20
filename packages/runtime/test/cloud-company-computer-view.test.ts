@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { connect, createServer, type Server, type Socket } from "node:net";
+import { performance } from "node:perf_hooks";
 import {
 	connectCompanyComputerScreenView,
 	parseViewerEndpoint,
@@ -9,9 +10,11 @@ import {
 	assertCompanyComputerViewerGrant,
 	type CompanyComputerViewerAuthority,
 	type CompanyComputerViewerGrant,
+	CompanyComputerViewerInputRefused,
+	coalesceCompanyComputerPointerMoves,
 	startCompanyComputerViewerGateway,
 } from "@qorpera/runtime/cloud-company-computer-viewer-gateway";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	computerBinding,
 	computerId,
@@ -83,15 +86,9 @@ async function gatewayFixture(
 			return structuredClone(grant);
 		}),
 		check: vi.fn(async () => structuredClone(grant)),
-		forwardInput: vi.fn(
-			async (
-				_grant: CompanyComputerViewerGrant,
-				_input: Parameters<CompanyComputerViewerAuthority["forwardInput"]>[1],
-				forward: () => void,
-			) => {
-				forward();
-			},
-		),
+		admitInputWindow: vi.fn(async () => ({ validForMs: 1000, pendingReports: 0 })),
+		// Packets in the open window. The doubles never close one, so report a constant.
+		recordInput: vi.fn(() => 1),
 		release: vi.fn(async () => undefined),
 	};
 	const gateway = await startCompanyComputerViewerGateway({
@@ -129,6 +126,7 @@ async function gatewayFixture(
 	return { gateway, authority, grant, received, attach, guestSockets };
 }
 
+type InputWindow = { validForMs: number; pendingReports: number };
 const hello = Buffer.concat([Buffer.from("RFB 003.008\n"), Buffer.from([1, 1])]);
 const key = Buffer.from([4, 1, 0, 0, 0, 0, 0, 65]);
 
@@ -183,21 +181,25 @@ describe("private viewer gateway and member client (loopback only, authority/gue
 		);
 	});
 
-	it("a screen drain blocks an in-flight input callback before it reaches the guest", async () => {
+	it("a screen drain during an in-flight window admission keeps the waiting input from the guest", async () => {
 		const f = await gatewayFixture("control");
-		let delayed: (() => void) | undefined;
-		f.authority.forwardInput = vi.fn(async (_grant, _input, forward) => {
-			delayed = forward;
-			await new Promise(() => undefined);
-		});
+		let admit: ((value: InputWindow) => void) | undefined;
+		f.authority.admitInputWindow = vi.fn(
+			() =>
+				new Promise<InputWindow>((resolve) => {
+					admit = resolve;
+				}),
+		);
 		const view = await f.attach();
 		view.socket.write(Buffer.concat([hello, key]));
-		await vi.waitFor(() => expect(delayed).toBeTypeOf("function"));
+		await vi.waitFor(() => expect(admit).toBeTypeOf("function"));
 		await f.gateway.connections.fenceScreen(
 			{ state: "draining", drainId: computerId(55), epoch: 2, binding: computerBinding() },
 			new AbortController().signal,
 		);
-		expect(() => delayed!()).toThrow();
+		admit!({ validForMs: 1000, pendingReports: 0 });
+		await vi.waitFor(() => expect(f.authority.release).toHaveBeenCalledOnce());
+		expect(f.authority.recordInput).not.toHaveBeenCalled();
 		expect(Buffer.concat(f.received).includes(key)).toBe(false);
 	});
 	it.each([
@@ -260,17 +262,12 @@ describe("private viewer gateway and member client (loopback only, authority/gue
 					mode === "watch" ? hello.length : hello.length + key.length,
 				),
 			);
-			expect(fixture.authority.forwardInput).toHaveBeenCalledTimes(mode === "watch" ? 0 : 1);
+			expect(fixture.authority.admitInputWindow).toHaveBeenCalledTimes(mode === "watch" ? 0 : 1);
+			expect(fixture.authority.recordInput).toHaveBeenCalledTimes(mode === "watch" ? 0 : 1);
 			if (mode !== "watch")
-				expect(fixture.authority.forwardInput).toHaveBeenCalledWith(
+				expect(fixture.authority.recordInput).toHaveBeenCalledWith(
 					expect.objectContaining({ mode, binding: computerBinding() }),
-					expect.objectContaining({
-						sequence: 1,
-						bytes: Uint8Array.from(key),
-						sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
-					}),
-					expect.any(Function),
-					expect.any(AbortSignal),
+					{ sequence: 1, bytes: key },
 				);
 		},
 	);
@@ -290,7 +287,8 @@ describe("private viewer gateway and member client (loopback only, authority/gue
 		expect(Buffer.concat(fixture.received)).toEqual(
 			Buffer.concat([hello, key, pointer, releasedKey, releasedPointer]),
 		);
-		expect(fixture.authority.forwardInput).toHaveBeenCalledTimes(2);
+		expect(fixture.authority.recordInput).toHaveBeenCalledTimes(2);
+		expect(fixture.authority.admitInputWindow).toHaveBeenCalledOnce();
 		const replacement = await fixture.attach();
 		expect(replacement.socket.destroyed).toBe(false);
 	});
@@ -321,16 +319,17 @@ describe("private viewer gateway and member client (loopback only, authority/gue
 		view.socket.write(Buffer.concat([hello, clipboard]));
 		await vi.waitFor(() => expect(Buffer.concat(fixture.received)).toEqual(hello));
 		await expect(fixture.attach(capability)).rejects.toThrow("VIEW_UNAVAILABLE");
-		expect(fixture.authority.forwardInput).not.toHaveBeenCalled();
+		expect(fixture.authority.admitInputWindow).not.toHaveBeenCalled();
+		expect(fixture.authority.recordInput).not.toHaveBeenCalled();
 	});
 
-	it("checks revocation at input dispatch, disconnects and releases only the old session", async () => {
+	it("checks revocation before input dispatch, disconnects and releases only the old session", async () => {
 		const fixture = await gatewayFixture("control");
 		const view = await fixture.attach();
 		view.socket.write(hello);
 		await vi.waitFor(() => expect(Buffer.concat(fixture.received)).toEqual(hello));
-		fixture.authority.check = vi.fn(async () => {
-			throw new Error("MEMBER_REVOKED private-service-detail");
+		fixture.authority.admitInputWindow = vi.fn(async () => {
+			throw new CompanyComputerViewerInputRefused();
 		});
 		view.socket.resume();
 		view.socket.write(key);
@@ -341,6 +340,7 @@ describe("private viewer gateway and member client (loopback only, authority/gue
 			expect.objectContaining({ viewerSessionId: computerId(21), binding: computerBinding() }),
 			expect.any(AbortSignal),
 		);
+		expect(fixture.authority.recordInput).not.toHaveBeenCalled();
 	});
 
 	it("expires an open viewer when renewal stalls instead of retaining remote control", async () => {
@@ -360,34 +360,38 @@ describe("private viewer gateway and member client (loopback only, authority/gue
 			{ mode: "control" as const },
 		]) {
 			const fixture = await gatewayFixture();
+			// The periodic check runs at half the grant's validity.
+			fixture.grant.validForMs = 300;
 			const view = await fixture.attach();
 			view.socket.resume();
 			Object.assign(fixture.grant, changed);
-			view.socket.write(hello);
-			await vi.waitFor(() => expect(view.socket.destroyed).toBe(true));
-			expect(fixture.received).toEqual([]);
+			await vi.waitFor(() => expect(view.socket.destroyed).toBe(true), { timeout: 1000, interval: 10 });
 		}
 	});
 
-	it("makes the effect callback single-use and rejects delayed forwarding after it settles", async () => {
-		const fixture = await gatewayFixture("control");
-		let late: (() => void) | undefined;
-		fixture.authority.forwardInput = vi.fn(
-			async (
-				_grant: CompanyComputerViewerGrant,
-				_input: Parameters<CompanyComputerViewerAuthority["forwardInput"]>[1],
-				forward: () => void,
-			) => {
-				forward();
-				late = forward;
-			},
-		);
+	it("revalidates other client traffic at most once per second instead of once per chunk", async () => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		vi.spyOn(performance, "now").mockImplementation(() => Date.now());
+		cleanups.push(async () => {
+			vi.restoreAllMocks();
+			vi.useRealTimers();
+		});
+		const fixture = await gatewayFixture();
 		const view = await fixture.attach();
-		view.socket.write(Buffer.concat([hello, key]));
-		await vi.waitFor(() => expect(Buffer.concat(fixture.received)).toEqual(Buffer.concat([hello, key])));
-		expect(late).toBeDefined();
-		expect(() => late?.()).toThrow("VIEWER_INPUT_ALREADY_SETTLED");
-		expect(Buffer.concat(fixture.received)).toEqual(Buffer.concat([hello, key]));
+		view.socket.resume();
+		const checks = vi.mocked(fixture.authority.check).mock.calls.length;
+		view.socket.write(hello);
+		const request = Buffer.from([3, 1, 0, 0, 0, 0, 7, 128, 4, 176]);
+		for (let index = 0; index < 50; index++) view.socket.write(request);
+		await vi.waitFor(() => expect(Buffer.concat(fixture.received).length).toBe(hello.length + 50 * request.length));
+		expect(fixture.authority.check).toHaveBeenCalledTimes(checks);
+		vi.setSystemTime(Date.now() + 1050);
+		fixture.authority.check = vi.fn(async () => {
+			throw new Error("MEMBER_REVOKED");
+		});
+		view.socket.write(request);
+		await vi.waitFor(() => expect(view.socket.destroyed).toBe(true));
+		expect(Buffer.concat(fixture.received).length).toBe(hello.length + 50 * request.length);
 	});
 
 	it("rejects substituted binding and oversized handshake lines including a newline in the same chunk", async () => {
@@ -435,6 +439,300 @@ describe("private viewer gateway and member client (loopback only, authority/gue
 	});
 });
 
+const move = (x: number, mask = 0): Buffer => Buffer.from([5, mask, x >> 8, x & 255, 0, 9]);
+const inputsOf = (received: Buffer[]): Buffer => Buffer.concat(received).subarray(hello.length);
+
+describe("windowed member input (loopback only, authority/guest doubles)", () => {
+	// Sockets stay real; only the clocks the gateway schedules and measures with are fake.
+	// The gateway measures with perf_hooks, which fake timers do not reach: tie it to the fake clock.
+	beforeEach(() => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+		vi.spyOn(performance, "now").mockImplementation(() => Date.now());
+	});
+	afterEach(() => {
+		vi.restoreAllMocks();
+		vi.useRealTimers();
+	});
+	const admitted = (validForMs = 1000): InputWindow => ({ validForMs, pendingReports: 0 });
+	// Real time, for the gateway to finish work that no fake timer stands for.
+	const settle = (ms = 30) =>
+		new Promise<void>((resolve) => {
+			const timer = setInterval(() => {
+				clearInterval(timer);
+				resolve();
+			}, ms);
+		});
+	const keyUp = Buffer.from([4, 0, 0, 0, 0, 0, 0, 65]);
+	const otherKey = Buffer.from([4, 1, 0, 0, 0, 0, 0, 66]);
+
+	it("dispatches a burst of 500 pointer packets under one window admission, in contiguous sequence", async () => {
+		const fixture = await gatewayFixture("shared");
+		const view = await fixture.attach();
+		view.socket.resume();
+		// Alternating button masks: every packet is a press or release, so none may be coalesced.
+		const packets = Array.from({ length: 500 }, (_, index) => move(index, index % 2));
+		const started = performance.now();
+		view.socket.write(Buffer.concat([hello, ...packets]));
+		await vi.waitFor(() => expect(inputsOf(fixture.received)).toEqual(Buffer.concat(packets)), { interval: 5 });
+		expect(vi.mocked(fixture.authority.admitInputWindow).mock.calls.length).toBeLessThanOrEqual(
+			1 + Math.floor((performance.now() - started) / 500),
+		);
+		expect(vi.mocked(fixture.authority.recordInput).mock.calls.map(([, input]) => input.sequence)).toEqual(
+			packets.map((_, index) => index + 1),
+		);
+		// Input keeps flowing: about one renewal per half second, never one per packet.
+		const before = vi.mocked(fixture.authority.admitInputWindow).mock.calls.length;
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(vi.mocked(fixture.authority.admitInputWindow).mock.calls.length - before).toBeLessThanOrEqual(3);
+	});
+
+	it("forwards input while a renewal is still in flight, without waiting for the registry", async () => {
+		const fixture = await gatewayFixture("control");
+		const view = await fixture.attach();
+		view.socket.resume();
+		view.socket.write(Buffer.concat([hello, key]));
+		await vi.waitFor(() => expect(inputsOf(fixture.received)).toEqual(key), { interval: 5 });
+		fixture.authority.admitInputWindow = vi.fn(() => new Promise<InputWindow>(() => undefined));
+		await vi.advanceTimersByTimeAsync(600);
+		expect(fixture.authority.admitInputWindow).toHaveBeenCalledOnce();
+		view.socket.write(keyUp);
+		await vi.waitFor(() => expect(inputsOf(fixture.received)).toEqual(Buffer.concat([key, keyUp])), { interval: 5 });
+		expect(view.socket.destroyed).toBe(false);
+	});
+
+	it("ends at once on an explicit refusal, within the window bound, and releases held keys", async () => {
+		const fixture = await gatewayFixture("shared");
+		const view = await fixture.attach();
+		view.socket.resume();
+		const held = move(40, 1);
+		view.socket.write(Buffer.concat([hello, key, held]));
+		await vi.waitFor(() => expect(inputsOf(fixture.received)).toEqual(Buffer.concat([key, held])), { interval: 5 });
+		// The registry fences this viewer now. The gateway learns it at the next renewal.
+		const fenced = performance.now();
+		fixture.authority.admitInputWindow = vi.fn(async () => {
+			throw new CompanyComputerViewerInputRefused();
+		});
+		await vi.advanceTimersByTimeAsync(600);
+		await vi.waitFor(() => expect(view.socket.destroyed).toBe(true), { interval: 5 });
+		expect(performance.now() - fenced).toBeLessThan(1000);
+		await vi.waitFor(() => expect(fixture.authority.release).toHaveBeenCalledOnce());
+		expect(inputsOf(fixture.received)).toEqual(Buffer.concat([key, held, keyUp, move(40, 0)]));
+		expect(fixture.authority.admitInputWindow).toHaveBeenCalledOnce();
+	});
+
+	it("drops packets that arrive without a window, never replays them, and keeps the stream", async () => {
+		const fixture = await gatewayFixture("control");
+		let fail: ((error: Error) => void) | undefined;
+		fixture.authority.admitInputWindow = vi.fn(
+			() =>
+				new Promise<InputWindow>((_resolve, reject) => {
+					fail = reject;
+				}),
+		);
+		const view = await fixture.attach();
+		view.socket.resume();
+		view.socket.write(Buffer.concat([hello, key, move(1), move(2, 1)]));
+		await vi.waitFor(() => expect(fail).toBeTypeOf("function"), { interval: 5 });
+		view.socket.write(move(3, 1));
+		fail!(new Error("OFFICE_REGISTRY_UNCONFIRMED"));
+		fixture.authority.admitInputWindow = vi.fn(async () => admitted());
+		// Both chunks are read and dropped now, not held for the next window.
+		await settle();
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(inputsOf(fixture.received).length).toBe(0);
+		expect(fixture.authority.recordInput).not.toHaveBeenCalled();
+		// Nothing was dispatched, so nothing retries by itself. The next packet opens a fresh window.
+		expect(fixture.authority.admitInputWindow).not.toHaveBeenCalled();
+		expect(view.socket.destroyed).toBe(false);
+		view.socket.write(otherKey);
+		await vi.waitFor(() => expect(inputsOf(fixture.received)).toEqual(otherKey), { interval: 5 });
+		expect(vi.mocked(fixture.authority.recordInput).mock.calls.map(([, input]) => input.sequence)).toEqual([1]);
+	});
+
+	it("a renewal slower than the window keeps the stream, drops input meanwhile and resumes on the next window", async () => {
+		const fixture = await gatewayFixture("shared");
+		const view = await fixture.attach();
+		view.socket.resume();
+		view.socket.write(Buffer.concat([hello, key]));
+		await vi.waitFor(() => expect(inputsOf(fixture.received)).toEqual(key), { interval: 5 });
+		// A slow agent-side transaction holds the office rows for 1.5 s.
+		const slow = vi.fn(() => new Promise<InputWindow>((resolve) => setTimeout(() => resolve(admitted()), 1500)));
+		fixture.authority.admitInputWindow = slow;
+		await vi.advanceTimersByTimeAsync(1100);
+		expect(slow).toHaveBeenCalledOnce();
+		// The confirmed window lapsed at one second: input is dropped and the held key released.
+		view.socket.write(move(7));
+		await vi.waitFor(() => expect(inputsOf(fixture.received)).toEqual(Buffer.concat([key, keyUp])), { interval: 5 });
+		fixture.authority.admitInputWindow = vi.fn(async () => admitted());
+		// The attempt is given up after one second; the unreported window is resent shortly after.
+		await vi.advanceTimersByTimeAsync(800);
+		expect(fixture.authority.admitInputWindow).toHaveBeenCalled();
+		expect(view.socket.destroyed).toBe(false);
+		view.socket.write(otherKey);
+		await vi.waitFor(() => expect(inputsOf(fixture.received)).toEqual(Buffer.concat([key, keyUp, otherKey])), {
+			interval: 5,
+		});
+		expect(fixture.authority.release).not.toHaveBeenCalled();
+	});
+
+	it("ends the connection and releases held keys once dispatched input stays unreported for the retry budget", async () => {
+		const fixture = await gatewayFixture("shared");
+		const view = await fixture.attach();
+		view.socket.resume();
+		view.socket.write(Buffer.concat([hello, key]));
+		await vi.waitFor(() => expect(inputsOf(fixture.received)).toEqual(key), { interval: 5 });
+		const started = performance.now();
+		fixture.authority.admitInputWindow = vi.fn(async () => {
+			throw new Error("OFFICE_REGISTRY_UNCONFIRMED");
+		});
+		await vi.advanceTimersByTimeAsync(2900);
+		await settle();
+		expect(view.socket.destroyed).toBe(false);
+		await vi.advanceTimersByTimeAsync(1200);
+		await vi.waitFor(() => expect(view.socket.destroyed).toBe(true), { interval: 5 });
+		expect(performance.now() - started).toBeLessThan(4500);
+		await vi.waitFor(() => expect(fixture.authority.release).toHaveBeenCalledOnce());
+		expect(inputsOf(fixture.received)).toEqual(Buffer.concat([key, keyUp]));
+		// Bounded resends, a quarter second apart: never a tight loop.
+		expect(vi.mocked(fixture.authority.admitInputWindow).mock.calls.length).toBeLessThanOrEqual(14);
+	});
+
+	it("a failed idle renewal with nothing to report never ends the connection", async () => {
+		const fixture = await gatewayFixture("control");
+		const view = await fixture.attach();
+		view.socket.resume();
+		view.socket.write(Buffer.concat([hello, key, keyUp]));
+		await vi.waitFor(() => expect(inputsOf(fixture.received)).toEqual(Buffer.concat([key, keyUp])), { interval: 5 });
+		// The first renewal reports the two packets. Every later one is an empty linger renewal.
+		await vi.advanceTimersByTimeAsync(600);
+		expect(fixture.authority.admitInputWindow).toHaveBeenCalledTimes(2);
+		fixture.authority.admitInputWindow = vi.fn(async () => {
+			throw new Error("OFFICE_REGISTRY_UNCONFIRMED");
+		});
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(fixture.authority.admitInputWindow).toHaveBeenCalledOnce();
+		expect(view.socket.destroyed).toBe(false);
+		fixture.authority.admitInputWindow = vi.fn(async () => admitted());
+		view.socket.write(otherKey);
+		await vi.waitFor(() => expect(inputsOf(fixture.received)).toEqual(Buffer.concat([key, keyUp, otherKey])), {
+			interval: 5,
+		});
+	});
+
+	it("lets the window lapse when input stops: no registry calls while idle", async () => {
+		const fixture = await gatewayFixture("control");
+		fixture.authority.admitInputWindow = vi.fn(async () => admitted(40));
+		const view = await fixture.attach();
+		view.socket.resume();
+		view.socket.write(Buffer.concat([hello, key]));
+		await vi.waitFor(() => expect(inputsOf(fixture.received)).toEqual(key), { interval: 5 });
+		// Renewals continue through the linger (3 s), then stop.
+		await vi.advanceTimersByTimeAsync(3300);
+		const calls = vi.mocked(fixture.authority.admitInputWindow).mock.calls.length;
+		expect(calls).toBeGreaterThan(1);
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(fixture.authority.admitInputWindow).toHaveBeenCalledTimes(calls);
+		expect(view.socket.destroyed).toBe(false);
+	});
+
+	it("a button released for a lapsed window is not pressed again, late, when the next window opens", async () => {
+		const fixture = await gatewayFixture("shared");
+		fixture.authority.admitInputWindow = vi.fn(async () => admitted(100));
+		const view = await fixture.attach();
+		view.socket.resume();
+		view.socket.write(Buffer.concat([hello, move(10, 1)]));
+		await vi.waitFor(() => expect(inputsOf(fixture.received)).toEqual(move(10, 1)), { interval: 5 });
+		fixture.authority.admitInputWindow = vi.fn(async () => {
+			throw new Error("OFFICE_REGISTRY_UNCONFIRMED");
+		});
+		await vi.advanceTimersByTimeAsync(200);
+		view.socket.write(move(11, 1));
+		await vi.waitFor(() => expect(inputsOf(fixture.received)).toEqual(Buffer.concat([move(10, 1), move(10, 0)])), {
+			interval: 5,
+		});
+		fixture.authority.admitInputWindow = vi.fn(async () => admitted());
+		await vi.advanceTimersByTimeAsync(400);
+		// The member still holds the button: the drag continues as plain moves until it is let go.
+		view.socket.write(move(12, 1));
+		await vi.waitFor(() => expect(inputsOf(fixture.received).subarray(-6)).toEqual(move(12, 0)), { interval: 5 });
+		view.socket.write(move(12, 0));
+		await vi.waitFor(() => expect(fixture.authority.recordInput).toHaveBeenCalledTimes(3), { interval: 5 });
+		view.socket.write(move(13, 1));
+		await vi.waitFor(() => expect(inputsOf(fixture.received).subarray(-6)).toEqual(move(13, 1)), { interval: 5 });
+	});
+
+	it("caps input throughput per viewer: excess moves are dropped, an excess of key or button events ends it", async () => {
+		const fixture = await gatewayFixture("shared");
+		const view = await fixture.attach();
+		view.socket.resume();
+		view.socket.write(hello);
+		// Separate chunks, so the moves are not already collapsed by coalescing.
+		for (let index = 0; index < 560; index++) {
+			view.socket.write(move(index));
+			await new Promise((resolve) => setImmediate(resolve));
+		}
+		await vi.waitFor(() => expect(fixture.authority.recordInput).toHaveBeenCalled(), { interval: 5 });
+		await new Promise((resolve) => setImmediate(resolve));
+		expect(vi.mocked(fixture.authority.recordInput).mock.calls.length).toBeLessThanOrEqual(500);
+		expect(view.socket.destroyed).toBe(false);
+		const flood = Array.from({ length: 501 }, (_, index) => move(index, index % 2));
+		view.socket.write(Buffer.concat(flood));
+		await vi.waitFor(() => expect(view.socket.destroyed).toBe(true), { interval: 5 });
+		expect(vi.mocked(fixture.authority.recordInput).mock.calls.length).toBeLessThanOrEqual(500);
+		// The next second starts a fresh allowance for a new connection.
+		await vi.advanceTimersByTimeAsync(1000);
+		const next = await fixture.attach();
+		next.socket.write(Buffer.concat([hello, key]));
+		await vi.waitFor(() => expect(inputsOf(fixture.received).subarray(-8)).toEqual(key), { interval: 5 });
+	});
+
+	it("coalesces pending pointer moves but never across a button change or a key event", async () => {
+		const input = (bytes: Buffer) => ({ kind: "input" as const, bytes });
+		const protocol = { kind: "protocol" as const, bytes: Buffer.from([3, 1, 0, 0, 0, 0, 7, 128, 4, 176]) };
+		const down = Buffer.from(key);
+		const batch = [
+			input(move(1)),
+			input(move(2)),
+			protocol,
+			input(move(3)),
+			input(move(4, 1)), // press: kept at its own position
+			input(move(5, 1)),
+			input(move(6, 1)),
+			input(move(7)), // release
+			input(move(8)),
+			input(down),
+			input(move(9)),
+			input(move(10)),
+		];
+		expect(coalesceCompanyComputerPointerMoves(batch, 0).map((message) => message.bytes)).toEqual(
+			[protocol.bytes, move(3), move(4, 1), move(6, 1), move(7), move(8), down, move(9), move(10)].map((bytes) =>
+				Buffer.from(bytes),
+			),
+		);
+		// The first pointer packet of a connection, and the first after a key, count as a transition.
+		expect(coalesceCompanyComputerPointerMoves([input(move(1)), input(move(2)), input(move(3))], undefined)).toEqual([
+			input(move(1)),
+			input(move(3)),
+		]);
+		// A mask carried over from the previous chunk still protects the press in this one.
+		expect(coalesceCompanyComputerPointerMoves([input(move(1, 1)), input(move(2, 1))], 0)).toEqual([
+			input(move(1, 1)),
+			input(move(2, 1)),
+		]);
+		const fixture = await gatewayFixture("shared");
+		const view = await fixture.attach();
+		view.socket.resume();
+		const moves = Array.from({ length: 450 }, (_, index) => move(index));
+		view.socket.write(Buffer.concat([hello, ...moves, key]));
+		await vi.waitFor(
+			() => expect(inputsOf(fixture.received).subarray(-14)).toEqual(Buffer.concat([move(449), key])),
+			{ interval: 5 },
+		);
+		// Only what each received chunk ends with survives; never the whole queue.
+		expect(inputsOf(fixture.received).length).toBeLessThan(40 * 6);
+	});
+});
+
 function websocketRequest(url: string, origin: string, head = Buffer.alloc(0)): Socket {
 	const parsed = new URL(url);
 	const socket = connect(Number(parsed.port), "127.0.0.1");
@@ -459,6 +757,7 @@ describe("member loopback bridge", () => {
 	it("checks exact renderer origin, consumes one URL, and preserves masked bytes coalesced with the HTTP upgrade", async () => {
 		const fixture = await gatewayFixture();
 		const view = await fixture.attach();
+		view.socket.resume();
 		const unregister = vi.fn();
 		const registerRendererUrl = vi.fn(() => unregister);
 		const bridge = await startLocalScreenViewWebSocketBridge(view, {
@@ -492,6 +791,7 @@ describe("member loopback bridge", () => {
 	it("cleans up an unclaimed renderer bridge within its attach deadline", async () => {
 		const fixture = await gatewayFixture();
 		const view = await fixture.attach();
+		view.socket.resume();
 		const unregister = vi.fn();
 		const bridge = await startLocalScreenViewWebSocketBridge(view, {
 			origin: "null",

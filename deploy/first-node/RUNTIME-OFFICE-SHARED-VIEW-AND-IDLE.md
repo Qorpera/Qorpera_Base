@@ -27,9 +27,56 @@ an active computer, while idle wake requires company write access.
 
 Shared viewer grants use a stable screen fence that survives ordinary agent
 lease acquisition, renewal and release. Actual drain, privacy, takeover and
-screen-generation changes still revoke them. Each input packet retains the
-existing authorization and audit admission. The viewer gateway releases only
+screen-generation changes still revoke them. The viewer gateway releases only
 the held keys and mouse buttons sent through that connection when it closes.
+
+Member input is authorized and audited per window, not per packet. A round
+trip per key and pointer event (about 130 ms each, strictly serialized) made
+the desktop unusable. `qorpera_admit_runtime_office_viewer_input_window` runs
+the same authority check as `qorpera_check_runtime_office_viewer` (grant state,
+input mode and role, screen and shared-viewer epoch, privacy version, takeover
+and driver, expiry, membership) and returns a validity of at most one second.
+While a window is valid the gateway forwards input at once. While input flows
+it renews in the background at half the validity, and for three seconds after
+the last input; an idle viewer makes no window calls. Consequences:
+
+- Revocation: a fence in the registry stops member input within one second,
+  the same bound as the browser egress relay's re-check. Authority only comes
+  from a timely answer, measured from before the request. Fences pushed to the
+  gateway (drain, privacy) still close the connection immediately. An explicit
+  refusal ends the connection and releases held input.
+- Availability: a slow, lost or failed renewal (a long agent-side transaction
+  on the office rows, a 5xx, a deadlock) is not a refusal. It grants nothing:
+  the window lapses, input that arrives without a window is dropped (never
+  held for replay; a packet waits at most 400 ms for a window that is just
+  opening), keys and buttons this viewer holds are released, and the stream
+  stays. With nothing to report, the next input packet opens a fresh window.
+  With dispatched input still unreported, the gateway resends the same report
+  every 250 ms; the registry treats an exact replay of the viewer's last row
+  as already recorded. Three seconds without a valid answer end the connection.
+- Audit: the ledger holds one row per window instead of one per packet: first
+  sequence, `packet_count` and a commitment. The commitment is an HMAC, under
+  the per-connection key, over the previous window's commitment and the keyed
+  per-packet commitments of the range. No raw keys, positions or unkeyed
+  digests are stored. Ranges are contiguous; any other replay, overlap or gap
+  is refused. A refused call still records the window that had already been
+  dispatched and marks the row `recorded_after_refusal`; the row is audit,
+  not evidence of authority. At close the viewer is released first (a member
+  takeover returns to the agent without waiting), then the last windows are
+  reported within two seconds, so every ordinary last row carries that mark.
+  Ten seconds after a viewer ended or expired its ledger accepts nothing. If
+  the registry is unreachable at close, up to one second of input has no row.
+  Operator activity (`admittedControlInputs`) sums `packet_count`.
+- Pointer moves that are pending together collapse to the latest one, also
+  across the WebSocket frames of one read. Presses, releases and key events
+  are never dropped or reordered. A viewer forwards at most 500 input packets
+  per second: excess moves are dropped, excess key or button events end it.
+- Other client traffic (update requests) is re-validated at most once per
+  second instead of on every chunk. Guest output is forwarded one write per
+  guest chunk, with Nagle disabled on both legs.
+
+The per-packet function remains for gateways that predate this change; both
+share one sequence and ledger (`packet_count` is null for per-packet rows).
 The RFB negotiation excludes QEMU keyboard and extended mouse formats: noVNC
 uses the core input packets admitted by that authority. Advertising those
 extensions made ordinary physical keyboard shortcuts disconnect the viewer.
