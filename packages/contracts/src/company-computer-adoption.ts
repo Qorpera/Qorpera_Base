@@ -41,12 +41,47 @@ function isOfficeStatePath(path: unknown): path is string {
 			.every((part) => part !== "" && part !== "." && part !== "..")
 	);
 }
-export function assertCompanyComputerGuestLayout(layout: CompanyComputerGuestLayout): void {
-	const paths = Object.values(layout);
-	const keys = Object.keys(layout).sort().join();
+/** Single source of truth for the admitted guest layout key sets, by layout
+ * version. Every parser of a layout (adoption, boot adoption receipt, reset
+ * successor receipt, service configuration) must admit exactly these sets, so
+ * a later layout version is added here once and cannot be refused by one lane. */
+export const COMPANY_COMPUTER_GUEST_LAYOUT_KEYS: Readonly<
+	Record<1 | 2, readonly (keyof CompanyComputerGuestLayout)[]>
+> =
+	// Pure annotations: a bundle that parses no layout keeps its exact bytes.
+	/* @__PURE__ */ Object.freeze({
+		1: /* @__PURE__ */ Object.freeze([
+			"workbenchRoot",
+			"desktopHome",
+			"screenStateRoot",
+			"browserProfilesRoot",
+		] as const),
+		2: /* @__PURE__ */ Object.freeze([
+			"workbenchRoot",
+			"desktopHome",
+			"screenStateRoot",
+			"browserProfilesRoot",
+			"companyRoot",
+		] as const),
+	});
+/** The admitted layout version of a closed layout record, by its exact key set. */
+export function companyComputerGuestLayoutVersion(layout: unknown): 1 | 2 {
 	if (
-		(keys !== "browserProfilesRoot,desktopHome,screenStateRoot,workbenchRoot" &&
-			keys !== "browserProfilesRoot,companyRoot,desktopHome,screenStateRoot,workbenchRoot") ||
+		!layout ||
+		typeof layout !== "object" ||
+		Array.isArray(layout) ||
+		Object.getPrototypeOf(layout) !== Object.prototype
+	)
+		throw new Error("UNSAFE_COMPUTER_LAYOUT");
+	const keys = Object.keys(layout).sort().join();
+	for (const [version, admitted] of Object.entries(COMPANY_COMPUTER_GUEST_LAYOUT_KEYS))
+		if ([...admitted].sort().join() === keys) return Number(version) as 1 | 2;
+	throw new Error("UNSAFE_COMPUTER_LAYOUT");
+}
+export function assertCompanyComputerGuestLayout(layout: CompanyComputerGuestLayout): void {
+	companyComputerGuestLayoutVersion(layout);
+	const paths = Object.values(layout);
+	if (
 		paths.some(
 			(path) =>
 				!isOfficeStatePath(path) ||
@@ -58,6 +93,14 @@ export function assertCompanyComputerGuestLayout(layout: CompanyComputerGuestLay
 		for (let j = i + 1; j < paths.length; j++)
 			if (paths[i] === paths[j] || paths[i].startsWith(`${paths[j]}/`) || paths[j].startsWith(`${paths[i]}/`))
 				throw new Error("OVERLAPPING_COMPUTER_LAYOUT");
+}
+/** Closed, frozen layout of either admitted version: exact key set, safe
+ * non-overlapping absolute paths. No other key is accepted. */
+export function parseCompanyComputerGuestLayout(value: unknown): Readonly<CompanyComputerGuestLayout> {
+	companyComputerGuestLayoutVersion(value);
+	const layout = { ...(value as CompanyComputerGuestLayout) };
+	assertCompanyComputerGuestLayout(layout);
+	return Object.freeze(layout);
 }
 function assertScope(actual: OfficeStateScope, expected: OfficeStateScope): void {
 	for (const key of ["companyId", "environmentId", "companyComputerId", "logicalComputerId"] as const)

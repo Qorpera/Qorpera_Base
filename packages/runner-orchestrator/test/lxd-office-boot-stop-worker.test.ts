@@ -2,36 +2,43 @@ import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { officeBootStopWorkerFixture } from "./fixtures/office-boot-stop-worker.ts";
+import { officeFixtureLayout } from "./fixtures/office-boot-worker.ts";
 
 const roots: string[] = [];
 afterEach(async () => {
+	officeFixtureLayout.version = 1;
 	vi.restoreAllMocks();
 	for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 describe("provider stop after retained boot activation", () => {
-	it("stops and recovers the new boot's invocation using public history without re-entering preparation", async () => {
-		const f = await officeBootStopWorkerFixture(roots);
-		const priorCalls = f.activation.registry.mock.calls.length,
-			priorIntentCalls = f.activation.configuration.registry.mock.calls.length;
-		f.readProtected.mockClear().mockRejectedValue(new Error("bootstrap removed"));
-		f.readCredential.mockClear().mockRejectedValue(new Error("credential rotated"));
-		for (const path of f.guest.keys())
-			if (path.startsWith(`${f.directory}/credentials/`) && !path.endsWith("/config.json")) f.guest.delete(path);
-		const oldBytes = await readFile(join(f.root, `activation-completed-${f.binding.allocationId}.json`));
-		const result = await f.run();
-		expect(result).toMatchObject({ state: "stopped", transitionId: f.request.transitionId });
-		expect(await f.run()).toEqual(result);
-		expect(f.exec).toHaveBeenCalledOnce();
-		expect(f.inspect).toHaveBeenCalledOnce();
-		expect(f.activation.exec).toHaveBeenCalledOnce();
-		expect(f.activation.registry.mock.calls.length).toBe(priorCalls);
-		expect(f.activation.configuration.registry.mock.calls.length).toBe(priorIntentCalls);
-		expect(f.readProtected).not.toHaveBeenCalled();
-		expect(f.readCredential).not.toHaveBeenCalled();
-		expect(await readFile(join(f.root, `activation-completed-${f.binding.allocationId}.json`))).toEqual(oldBytes);
-		expect(f.state.revocations).toBe(1);
-		expect(f.state.acknowledgements).toBe(1);
-	});
+	// Stop evidence reparses the retained boot adoption receipt (five roots on version 2).
+	it.each([1, 2] as const)(
+		"layout version %i: stops and recovers the new boot's invocation using public history without re-entering preparation",
+		async (layoutVersion) => {
+			officeFixtureLayout.version = layoutVersion;
+			const f = await officeBootStopWorkerFixture(roots);
+			const priorCalls = f.activation.registry.mock.calls.length,
+				priorIntentCalls = f.activation.configuration.registry.mock.calls.length;
+			f.readProtected.mockClear().mockRejectedValue(new Error("bootstrap removed"));
+			f.readCredential.mockClear().mockRejectedValue(new Error("credential rotated"));
+			for (const path of f.guest.keys())
+				if (path.startsWith(`${f.directory}/credentials/`) && !path.endsWith("/config.json")) f.guest.delete(path);
+			const oldBytes = await readFile(join(f.root, `activation-completed-${f.binding.allocationId}.json`));
+			const result = await f.run();
+			expect(result).toMatchObject({ state: "stopped", transitionId: f.request.transitionId });
+			expect(await f.run()).toEqual(result);
+			expect(f.exec).toHaveBeenCalledOnce();
+			expect(f.inspect).toHaveBeenCalledOnce();
+			expect(f.activation.exec).toHaveBeenCalledOnce();
+			expect(f.activation.registry.mock.calls.length).toBe(priorCalls);
+			expect(f.activation.configuration.registry.mock.calls.length).toBe(priorIntentCalls);
+			expect(f.readProtected).not.toHaveBeenCalled();
+			expect(f.readCredential).not.toHaveBeenCalled();
+			expect(await readFile(join(f.root, `activation-completed-${f.binding.allocationId}.json`))).toEqual(oldBytes);
+			expect(f.state.revocations).toBe(1);
+			expect(f.state.acknowledgements).toBe(1);
+		},
+	);
 	it.each(["packet", "prepared", "completion", "index", "journal"] as const)(
 		"refuses missing boot %s before revocation",
 		async (key) => {
