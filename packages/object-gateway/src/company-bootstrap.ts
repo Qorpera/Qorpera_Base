@@ -5,8 +5,6 @@ import type { MemberCompanyAuthority } from "./member-company-authority.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
-const RESPONSIBILITY_PATH =
-	/^organization\/responsibilities\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$/;
 const OMITTED_LAYERS = [
 	"company-git-history",
 	"session-trail",
@@ -138,17 +136,10 @@ function claim(value: unknown, workerId: string): BootstrapClaim | null {
 		throw new ObjectDependencyError(503);
 	}
 	for (const key of ["createdByUserId", "cofounderStaffAgentId", "formationId", "memberSessionId"]) uuid(input[key]);
+	// Responsibility documents were retired (20260920020000). The claim still carries the key; a claim
+	// that carries documents comes from a cloud that has not retired them yet, so wait for it.
 	const responsibilityDocuments = record(input.cofounderResponsibilityDocuments);
-	for (const [path, document] of Object.entries(responsibilityDocuments)) {
-		if (
-			!RESPONSIBILITY_PATH.test(path) ||
-			typeof document !== "string" ||
-			Buffer.byteLength(document) < 2 ||
-			Buffer.byteLength(document) > 32 * 1024
-		) {
-			throw new ObjectDependencyError(503);
-		}
-	}
+	if (Object.keys(responsibilityDocuments).length > 0) throw new ObjectDependencyError(503);
 	const baseSnapshotId = nullableUuid(input.baseSnapshotId);
 	const baseTreeSha256 = input.baseTreeSha256 === null ? null : sha(input.baseTreeSha256);
 	const baseTreeBytes = boundedBytes(input.baseTreeBytes);
@@ -186,7 +177,7 @@ function fileEntry(path: string, manifestSha256: string, fileSha256: string, byt
 function organizationDocumentPath(path: string): boolean {
 	return (
 		path === "organization/formation.json" ||
-		/^organization\/(agents|responsibilities|projects)\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$/.test(
+		/^organization\/(agents|projects)\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$/.test(
 			path,
 		)
 	);
@@ -397,46 +388,13 @@ export class CompanyBootstrapProvisioner {
 				}),
 		);
 		const agentManifestSha = createHash("sha256").update(agentManifest).digest("hex");
-		// The Co-Founder's company-level responsibilities are minted by the job;
-		// an already governed company keeps its evolved bytes, a genesis or
-		// upgrade takes the exact job documents.
-		const responsibilities = Object.entries(current.cofounderResponsibilityDocuments)
-			.sort(([left], [right]) => Buffer.compare(Buffer.from(left), Buffer.from(right)))
-			.map(([path, jobDocument]) => {
-				const document = base.organizationDocuments[path] ?? jobDocument;
-				const content = Buffer.from(document);
-				const contentSha = createHash("sha256").update(content).digest("hex");
-				const manifest = Buffer.from(
-					base.organizationManifests[path] ??
-						JSON.stringify({
-							schema: "qorpera.cloud-file-manifest/v1",
-							fileSha256: contentSha,
-							bytes: content.length,
-							mediaType: "application/octet-stream",
-							chunks: content.length ? [{ sha256: contentSha, bytes: content.length }] : [],
-						}),
-				);
-				return {
-					path,
-					jobDocument,
-					document,
-					content,
-					contentSha,
-					manifest,
-					manifestSha: createHash("sha256").update(manifest).digest("hex"),
-				};
-			});
 		const byPath = new Map(base.entries.map((entry) => [entry.path, entry]));
 		const requiredEntries: TreeEntry[] = [
 			{ path: "organization", kind: "directory" },
 			{ path: "organization/agents", kind: "directory" },
 			{ path: "organization/projects", kind: "directory" },
-			{ path: "organization/responsibilities", kind: "directory" },
 			fileEntry(formationPath, formationManifestSha, formationContentSha, formationContent.length),
 			fileEntry(agentPath, agentManifestSha, agentContentSha, agentContent.length),
-			...responsibilities.map((item) =>
-				fileEntry(item.path, item.manifestSha, item.contentSha, item.content.length),
-			),
 		];
 		const missing: TreeEntry[] = [];
 		for (const required of requiredEntries) {
@@ -453,11 +411,6 @@ export class CompanyBootstrapProvisioner {
 			if (required.path === agentPath) {
 				base.organizationDocuments[agentPath] = agentDocument;
 				base.organizationManifests[agentPath] = agentManifest.toString("utf8");
-			}
-			const responsibility = responsibilities.find((item) => item.path === required.path);
-			if (responsibility) {
-				base.organizationDocuments[responsibility.path] = responsibility.document;
-				base.organizationManifests[responsibility.path] = responsibility.manifest.toString("utf8");
 			}
 		}
 		const candidateEntries = [...byPath.values()].sort((left, right) =>
@@ -480,23 +433,6 @@ export class CompanyBootstrapProvisioner {
 		}
 		await this.#stage(current, "formation_manifest", formationManifest, signal);
 		await this.#stage(current, "cofounder_agent_manifest", agentManifest, signal);
-		for (const responsibility of responsibilities) {
-			if (responsibility.document === responsibility.jobDocument) {
-				await this.#stage(current, "cofounder_responsibility_content", responsibility.content, signal);
-			}
-			await this.#stage(
-				current,
-				"cofounder_responsibility_manifest",
-				responsibility.manifest,
-				signal,
-				responsibility.path,
-			);
-			await this.#options.authority.publisher(
-				"qorpera_verify_company_path_file",
-				{ p_profile_id: current.profileId, p_manifest_text: responsibility.manifest.toString("utf8") },
-				signal,
-			);
-		}
 		await this.#options.authority.publisher(
 			"qorpera_verify_company_path_file",
 			{ p_profile_id: current.profileId, p_manifest_text: formationManifest.toString("utf8") },
@@ -553,8 +489,6 @@ export class CompanyBootstrapProvisioner {
 			| "formation_manifest"
 			| "cofounder_agent_content"
 			| "cofounder_agent_manifest"
-			| "cofounder_responsibility_content"
-			| "cofounder_responsibility_manifest"
 			| "tree",
 		bytes: Buffer,
 		signal: AbortSignal,

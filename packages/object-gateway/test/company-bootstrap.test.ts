@@ -81,10 +81,8 @@ function fixture(overrides: Record<string, unknown> = {}, legacyObjects = new Ma
 		"organization/responsibilities/32000000-0000-4000-8000-000000000021.json",
 		"organization/responsibilities/32000000-0000-4000-8000-000000000022.json",
 	];
-	const cofounderResponsibilityDocuments = {
-		[responsibilityPaths[0]!]: responsibilityDocument("32000000-0000-4000-8000-000000000021", "direction"),
-		[responsibilityPaths[1]!]: responsibilityDocument("32000000-0000-4000-8000-000000000022", "resourcing"),
-	};
+	// Retired 2026-09-20: a company is born without responsibility documents.
+	const cofounderResponsibilityDocuments: Record<string, string> = {};
 	const claim = {
 		schema: "qorpera.company-bootstrap-claim/v1",
 		jobId,
@@ -148,8 +146,6 @@ function fixture(overrides: Record<string, unknown> = {}, legacyObjects = new Ma
 									"organization/agents/32000000-0000-4000-8000-000000000008.json",
 									"organization/formation.json",
 									"organization/projects",
-									"organization/responsibilities",
-									...responsibilityPaths,
 								]
 							: [
 									"organization",
@@ -157,8 +153,6 @@ function fixture(overrides: Record<string, unknown> = {}, legacyObjects = new Ma
 									"organization/agents/32000000-0000-4000-8000-000000000008.json",
 									"organization/formation.json",
 									"organization/projects",
-									"organization/responsibilities",
-									...responsibilityPaths,
 								],
 				);
 			}
@@ -237,21 +231,17 @@ describe("cloud-owned company bootstrap", () => {
 		const service = fixture();
 		expect(await service.provisioner.provisionOne()).toBe(true);
 		expect(await service.provisioner.provisionOne()).toBe(false);
-		// formation + agent content and manifests, two responsibility contents
-		// and manifests, and the tree.
-		expect(service.staged.size).toBe(9);
+		// formation + agent content and manifests, and the tree.
+		expect(service.staged.size).toBe(5);
 		expect([...service.staged.values()].some((value) => value.toString() === service.formationDocument)).toBe(true);
 		expect([...service.staged.values()].some((value) => value.toString() === service.cofounderAgentDocument)).toBe(
 			true,
 		);
-		for (const [path, document] of Object.entries(service.cofounderResponsibilityDocuments)) {
-			expect([...service.staged.values()].some((value) => value.toString() === document)).toBe(true);
-			expect(service.publisher).toHaveBeenCalledWith(
-				"qorpera_stage_company_bootstrap_object",
-				expect.objectContaining({ p_kind: "cofounder_responsibility_manifest", p_path: path, p_confirm: true }),
-				expect.any(AbortSignal),
-			);
-		}
+		expect(service.publisher).not.toHaveBeenCalledWith(
+			"qorpera_stage_company_bootstrap_object",
+			expect.objectContaining({ p_kind: "cofounder_responsibility_manifest" }),
+			expect.any(AbortSignal),
+		);
 		expect(service.publisher).toHaveBeenCalledWith(
 			"qorpera_finalize_company_bootstrap",
 			expect.objectContaining({

@@ -1790,14 +1790,21 @@ placements that depended on them.
    retrieval projections; and Order 8's responsibility cadences and scheduled
    measurement. Order 8's routines, listeners and exception wakes remain, owned
    by agents.
-6. **What remains in the cloud for now.** The responsibility documents,
-   projections, grants and the escalation operations built under Orders 0 and 3
-   still exist and keep working for companies that have them; bootstrap still
-   seeds the Co-Founder's four company-level responsibility documents. No
-   client surfaces them. Removing them, and re-homing escalation routing on the
-   agent that gave the work or the Co-Founder, is a separate, reviewed change
-   with its own migration and proofs. Until then they MUST NOT be presented as
-   product state.
+6. **The cloud objects are retired.** The responsibility tables and the record
+   of escalations moved to a closed archive schema that nothing reads, kept for
+   the record rather than destroyed; nothing in the archive can block deleting
+   an agent, a file or a company. Responsibility documents are no longer
+   organization documents: existing `organization/responsibilities/*.json`
+   files stay in the Company File as ordinary files, and a new company is born
+   without them and without that folder. Agents no longer have
+   `escalate_responsibility`; an agent speaks up to whoever gave it the work, or
+   to the Co-Founder, through its ordinary messages. A path resource that was
+   scoped to a responsibility is closed to everyone but owners and admins and
+   is never widened. A project keeps a recorded sponsor as history only, and a
+   member reaches a project-scoped resource as owner or admin. The agent
+   document keeps its `grants.responsibilities` key, ignored, so no stored
+   document becomes invalid, and the organization read model still answers an
+   empty `responsibilities` list so every client keeps parsing.
 7. **Tools are the intended replacement for live measurement.** The part of
    the old model worth keeping is that people can see how the things they care
    about are going. The planned form is a second kind of item beside agents:
@@ -1812,7 +1819,10 @@ placements that depended on them.
 Implemented with this amendment: the web client's responsibility pages, routes,
 map and links are removed and the agent's description field is labelled
 "Responsibilities"; the employee overlay already orients an agent by its
-description (Step 8 record).
+description (Step 8 record). The cloud retirement is migration
+`20260920020000_runtime_retire_responsibility_objects.sql`; it and the object
+gateway that stops building the responsibilities folder MUST be rolled out
+together, because a genesis tree is now five entries.
 
 ### Current implementation checkpoint
 

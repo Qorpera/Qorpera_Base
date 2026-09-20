@@ -170,6 +170,50 @@ escalation operations, no longer surfaced), and tools as the intended
 replacement for live measurement. `work/cut-bundle.sh <version> <timestamp>` in
 the task folder performs a bundle cut in the required order.
 
+## 2026-09-20: responsibility objects retired from the cloud
+
+Migration `20260920020000_runtime_retire_responsibility_objects.sql`.
+
+- The eight responsibility tables (objects, measures, measure sources, path
+  resources, external operation grants, agent grants, escalations and their
+  signals) move to the closed schema `qorpera_retired`. Rows are kept. Every
+  restricting link out of the archive is dropped; cascades from a company stay.
+- Dropped: `qorpera_escalate_responsibility`, the list and resolve operations
+  and their helpers, the responsibility resources read helper and the bootstrap
+  document minter. The three agent tools and `cloud-responsibility-tools.ts` are
+  gone from the runtime.
+- Live functions are edited with exact-match checks, each function in one
+  step: company creation no longer mints or expects the documents or the folder
+  (a genesis tree is five entries), the organization projection and its deferred
+  assertion lose the kind, scoped path resources are project-only, agent grants
+  ignore `grants.responsibilities`, agent deletion asks about led projects only,
+  file retention no longer follows open escalations, and the Co-Founder's seeded
+  description uses the new wording.
+- Rewritten whole: the organization path kind, the path permission rule
+  (a retired responsibility scope is owners and admins only; a project-scoped
+  resource is reached by project members, and by members as owner or admin), and
+  the read model patch that answers `responsibilities: []` and reports projects
+  as company-scoped.
+- The migration ends by failing if any live foreign key still targets the
+  archive or any public function still names a retired table. That check earned
+  its place: a `%rowtype` declaration of a moved table breaks a function when it
+  is compiled, even in a branch that can no longer run, and it broke group chat
+  creation until the branch was removed.
+- Object gateway: the bootstrap provisioner builds no responsibilities folder,
+  treats a claim that still carries documents as a cloud that has not migrated
+  yet (retry later), and no longer supplies document text for those paths.
+  **Roll the migration and the gateway out together.**
+- Rollout preflight template now asserts the retirement and the new agent
+  operations instead of the escalation objects.
+
+Proofs: `310_company_organization_kernel.test.sql` rewritten to the new model
+(company born without the objects, the old document as an ordinary file that
+needs no review, the projection refusing its text, the read model shape, a
+retired scope closed to agents, the archive closed to every role);
+`370`, `375`, `365` and the rest of the SQL suite unchanged and passing; object
+gateway 432 tests; shell tests pass except `cloud-presence.test.ts`, which is
+timing dependent (two passes in three unchanged runs) and untouched here.
+
 ## Not built; Order 8 stays open
 
 1. **Routines as Company File intent with projection consistency.** The order

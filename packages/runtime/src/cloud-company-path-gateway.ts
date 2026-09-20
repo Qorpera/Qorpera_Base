@@ -47,10 +47,7 @@ const MAX_READ_BYTES = 4096;
 const MAX_READ_PATHS = 128;
 
 export type CloudCompanyPathRpc =
-	| "qorpera_escalate_responsibility"
 	| "qorpera_manage_agent_routine"
-	| "qorpera_list_responsibility_escalations"
-	| "qorpera_resolve_responsibility_escalation"
 	| "qorpera_record_runtime_observation"
 	| "qorpera_record_provider_usage_signal"
 	| "qorpera_begin_native_company_execution_v2"
