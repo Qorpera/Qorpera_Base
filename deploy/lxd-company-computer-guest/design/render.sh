@@ -10,12 +10,12 @@ set -euo pipefail
 # a test compares ./icons with what the wrapper writes).
 here=$(cd "$(dirname "$0")" && pwd -P)
 chrome=${CHROME:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}
-icons=(browser:idle browser:running browser:failed files:idle files:running terminal:idle terminal:running)
+icons=(browser:idle browser:launching browser:running browser:failed files:idle files:running terminal:idle terminal:running)
 embed() {
 	local icon session="${here}/../qorpera-screen-session" block
 	block=$(mktemp)
 	for icon in "${icons[@]}"; do
-		printf 'write_dock_icon %s <<'"'"'ICON'"'"'\n' "${icon/:/-}"
+		printf 'cosmetic write_dock_icon %s <<'"'"'ICON'"'"'\n' "${icon/:/-}"
 		base64 -i "${here}/icons/${icon/:/-}.png" | fold -w 120
 		printf 'ICON\n'
 	done > "${block}"

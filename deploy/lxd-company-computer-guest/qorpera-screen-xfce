@@ -66,15 +66,19 @@ set_xfce_property xfwm4 /general/show_dock_shadow bool false
 # would be drawn twice, and a moved window could no longer be sent as a copy),
 # no shadows, previews or desktop zoom, one workspace so a scroll on the
 # backdrop never lands on an empty one, and an outline while resizing so a
-# browser is repainted once instead of on every pointer step.
-set_xfce_property xfwm4 /general/use_compositing bool false
-set_xfce_property xfwm4 /general/show_frame_shadow bool false
-set_xfce_property xfwm4 /general/show_popup_shadow bool false
-set_xfce_property xfwm4 /general/cycle_preview bool false
-set_xfce_property xfwm4 /general/zoom_desktop bool false
-set_xfce_property xfwm4 /general/box_resize bool true
-set_xfce_property xfwm4 /general/workspace_count int 1
-set_xfce_property xfwm4 /general/scroll_workspaces bool false
+# browser is repainted once instead of on every pointer step. All of it is
+# cosmetic: a setting that cannot be applied is reported and the desktop starts.
+set_cosmetic_property() {
+	set_xfce_property "$@" || echo "Skipped cosmetic desktop setting $2." >&2
+}
+set_cosmetic_property xfwm4 /general/use_compositing bool false
+set_cosmetic_property xfwm4 /general/show_frame_shadow bool false
+set_cosmetic_property xfwm4 /general/show_popup_shadow bool false
+set_cosmetic_property xfwm4 /general/cycle_preview bool false
+set_cosmetic_property xfwm4 /general/zoom_desktop bool false
+set_cosmetic_property xfwm4 /general/box_resize bool true
+set_cosmetic_property xfwm4 /general/workspace_count int 1
+set_cosmetic_property xfwm4 /general/scroll_workspaces bool false
 # One static, client-drawn pointer theme when the image carries it; otherwise
 # the X core pointer. Never an animated or oversized one.
 if [[ -d /usr/share/icons/Adwaita/cursors ]]; then
@@ -83,38 +87,72 @@ fi
 # Running dots. The wrapper wrote an idle and a running launcher entry per dock
 # icon; the panel reloads an entry when its file changes. This waits on the
 # window manager's client list (no polling) and swaps the entry of an icon
-# whose windows appeared or went. It ends with the X server and never blocks
-# or fails the desktop: without the tools the dock simply shows no dots.
+# whose windows appeared or went. The client list includes minimised windows:
+# the dock is the only window list, so a minimised application keeps its dot.
+# It ends with the X server and never blocks or fails the desktop: without the
+# tools the dock simply shows no dots.
 dock_state="${XDG_CONFIG_HOME}/qorpera-dock"
 dock_launchers="${XDG_CONFIG_HOME}/xfce4/panel"
+dock_scratch=""
 show_dock_state() {
-	local app=$1 state=$2 target=$3
+	local app=$1 state=$2 target=$3 temporary
 	local template="${dock_state}/${app}.${state}.desktop"
-	[[ -f ${template} && ! -L ${template} && -d ${target%/*} ]] || return 0
-	if ! cmp -s -- "${template}" "${target}"; then
-		cp -f -- "${template}" "${target}.tmp.$$" && mv -f -- "${target}.tmp.$$" "${target}"
+	[[ -f ${template} && ! -L ${template} && -d ${target%/*} && ! -d ${target} ]] || return 0
+	if cmp -s -- "${template}" "${target}"; then return 0; fi
+	# Never a predictable name: a private directory, then an atomic rename.
+	if [[ -z ${dock_scratch} || ! -d ${dock_scratch} ]]; then
+		dock_scratch=$(mktemp -d "${XDG_CONFIG_HOME}/.qorpera-dock.XXXXXXXX" 2>/dev/null) || return 0
 	fi
+	temporary=$(mktemp "${dock_scratch}/entry.XXXXXXXX" 2>/dev/null) || return 0
+	cp -f -- "${template}" "${temporary}" && mv -f -- "${temporary}" "${target}"
+}
+# Classes of every managed window, one per line, minimised included.
+dock_classes() {
+	local list id class
+	list=$(xprop -root _NET_CLIENT_LIST 2>/dev/null) || return 0
+	[[ ${list} == *"#"* ]] || return 0
+	list=${list#*#}
+	for id in ${list//,/ }; do
+		[[ ${id} =~ ^0x[0-9a-fA-F]+$ ]] || continue
+		class=$(xprop -id "${id}" WM_CLASS 2>/dev/null) || continue
+		if [[ ${class} =~ \"([^\"]*)\"[[:space:]]*$ ]]; then echo "${BASH_REMATCH[1]}"; fi
+	done
 }
 watch_dock() {
-	local entry app target class state
+	local entry app target pattern state classes class
 	while read -r _; do
 		sleep 0.3
+		# A burst of window events costs one pass: drain what is already waiting.
+		while read -r -t 0 _ 2>/dev/null; do read -r _ || break; done
+		classes=$(dock_classes)
 		for entry in \
 			"browser;launcher-6/qorpera-browser.desktop;^([Cc]hromium|[Cc]hrome)" \
 			"files;launcher-5/qorpera-files.desktop;^[Tt]hunar" \
 			"terminal;launcher-4/qorpera-terminal.desktop;^[Xx]fce4-terminal"; do
 			app=${entry%%;*}
-			class=${entry##*;}
+			pattern=${entry##*;}
 			target=${entry#*;}
 			target="${dock_launchers}/${target%%;*}"
 			state=idle
-			if xdotool search --onlyvisible --class "${class}" 2>/dev/null | grep -q .; then state=running; fi
+			while IFS= read -r class; do
+				if [[ -n ${class} && ${class} =~ ${pattern} ]]; then state=running; fi
+			done <<< "${classes}"
+			# The browser launcher owns its icon while it waits for the service.
+			if [[ ${app} == browser && ${state} == idle && -n ${XDG_RUNTIME_DIR:-} &&
+				-e ${XDG_RUNTIME_DIR}/qorpera-screen-browser.launching ]]; then
+				continue
+			fi
 			show_dock_state "${app}" "${state}" "${target}" || true
 		done
 	done < <(xprop -root -spy _NET_CLIENT_LIST 2>/dev/null)
 }
-if [[ -d ${dock_state} && ! -L ${dock_state} ]] && command -v xprop >/dev/null 2>&1 &&
-	command -v xdotool >/dev/null 2>&1; then
-	(set +e; watch_dock) >/dev/null 2>&1 &
+# A launcher that was killed while waiting must not freeze its icon.
+[[ -z ${XDG_RUNTIME_DIR:-} ]] || rm -f -- "${XDG_RUNTIME_DIR}/qorpera-screen-browser.launching" 2>/dev/null || true
+if [[ -d ${dock_state} && ! -L ${dock_state} ]] && command -v xprop >/dev/null 2>&1; then
+	(
+		set +e
+		watch_dock
+		[[ -z ${dock_scratch} ]] || rm -rf -- "${dock_scratch}"
+	) >/dev/null 2>&1 &
 fi
 exec xfce4-session

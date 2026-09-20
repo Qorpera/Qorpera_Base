@@ -274,6 +274,92 @@ printf '\\n' >> "$TEST_LOG"
 	return { root, wallpaper, backdrops, log, env };
 }
 
+/** The dock helper with doubles for the X tools: `windows` is the window manager's client list. */
+async function dockFixture() {
+	const root = await mkdtemp(join(await realpath(tmpdir()), "qorpera-dock-"));
+	roots.push(root);
+	const bin = join(root, "bin");
+	const runtime = join(root, "run");
+	const config = join(root, "config");
+	const entry = join(config, "xfce4", "panel", "launcher-6", "qorpera-browser.desktop");
+	await mkdir(bin);
+	await mkdir(runtime);
+	await mkdir(join(config, "xfce4", "panel", "launcher-6"), { recursive: true });
+	await mkdir(join(config, "qorpera-dock"));
+	for (const state of ["idle", "launching", "running", "failed"])
+		await writeFile(join(config, "qorpera-dock", `browser.${state}.desktop`), `Icon=browser-${state}\n`);
+	await writeFile(entry, "Icon=browser-idle\n");
+	const script = (
+		await readFile(
+			new URL("../../../deploy/lxd-company-computer-guest/qorpera-screen-browser", import.meta.url),
+			"utf8",
+		)
+	).replace("runtime_root=/run/qorpera", `runtime_root=${JSON.stringify(runtime)}`);
+	expect(script).toContain(runtime);
+	const launcher = join(root, "qorpera-screen-browser");
+	await writeFile(launcher, script, { mode: 0o755 });
+	const double = async (name: string, body: string) =>
+		writeFile(join(bin, name), `#!/bin/bash\n${body}\n`, { mode: 0o755 });
+	const q = (name: string) => JSON.stringify(join(root, name));
+	await double("xdotool", `echo "$*" >> ${q("xdotool.log")}`);
+	// xprop answers from two files: the client list line and one class per window id.
+	await double(
+		"xprop",
+		`if [[ $1 == -root ]]; then cat ${q("clients")} 2>/dev/null; exit 0; fi
+if [[ $1 == -id && -e ${q("classes")}/$2 ]]; then cat ${q("classes")}/$2; exit 0; fi
+exit 1`,
+	);
+	for (const tool of ["thunar", "xfce4-terminal"])
+		await double(tool, `echo "${tool} $*" | sed 's/ $//' >> ${q("started")}`);
+	// Any dialog tool would be a defect: these doubles only leave evidence.
+	for (const dialog of ["xmessage", "zenity", "notify-send"]) await double(dialog, `: > ${q("dialog")}`);
+	// Stands in for the office service: the second wait "opens" the browser if asked.
+	// It also records the dock entry at each wait, and eats every request it sees.
+	await double(
+		"sleep",
+		`count=$(cat ${q("sleeps")} 2>/dev/null || echo 0); echo $((count + 1)) > ${q("sleeps")}
+cat ${JSON.stringify(entry)} >> ${q("entries")}
+if [[ -e ${JSON.stringify(join(runtime, "browser-request"))} ]]; then
+	if [[ -e ${q("service")} && $count -ge 1 ]]; then
+		echo '_NET_CLIENT_LIST(WINDOW): window id # 0x400009' > ${q("clients")}
+		mkdir -p ${q("classes")}; echo 'WM_CLASS(STRING) = "chromium", "Chromium"' > ${q("classes")}/0x400009
+	fi
+	if [[ -e ${q("refusing")} ]]; then rm -f ${JSON.stringify(join(runtime, "browser-request"))}; echo asked >> ${q("asked")}; fi
+fi`,
+	);
+	const env = { PATH: `${bin}:/usr/bin:/bin`, DISPLAY: ":1", XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: runtime };
+	return {
+		root,
+		bin,
+		runtime,
+		config,
+		entry,
+		launcher,
+		env,
+		run: (...args: string[]) => execute("/bin/bash", [launcher, ...args], { timeout: 10000, env, cwd: root }),
+		/** Replace the client list, oldest first. */
+		windows: async (list: Record<string, string>) => {
+			await rm(join(root, "classes"), { recursive: true, force: true });
+			await mkdir(join(root, "classes"));
+			const ids = Object.keys(list);
+			await writeFile(
+				join(root, "clients"),
+				ids.length
+					? `_NET_CLIENT_LIST(WINDOW): window id # ${ids.join(", ")}\n`
+					: "_NET_CLIENT_LIST(WINDOW): window id # \n",
+			);
+			for (const [id, name] of Object.entries(list))
+				await writeFile(join(root, "classes", id), `WM_CLASS(STRING) = "${name.toLowerCase()}", "${name}"\n`);
+		},
+		/** The xdotool calls since the last look. */
+		xdotool: async () => {
+			const log = await readFile(join(root, "xdotool.log"), "utf8").catch(() => "");
+			await rm(join(root, "xdotool.log"), { force: true });
+			return log.trim().split("\n").filter(Boolean);
+		},
+	};
+}
+
 describe("restored XFCE startup settings (real Bash helper, fake X11/XFCE commands)", () => {
 	it.each(["0", "1"])(
 		"applies existing or new settings before the desktop starts: query status %s",
@@ -418,90 +504,95 @@ describe("restored XFCE startup settings (real Bash helper, fake X11/XFCE comman
 	});
 
 	it("asks the office service for the browser through one empty file, waits, asks once more and never opens a dialog", async () => {
-		const root = await mkdtemp(join(await realpath(tmpdir()), "qorpera-dock-"));
-		roots.push(root);
-		const bin = join(root, "bin");
-		const runtime = join(root, "run");
-		const config = join(root, "config");
-		const entry = join(config, "xfce4", "panel", "launcher-6", "qorpera-browser.desktop");
-		await mkdir(bin);
-		await mkdir(runtime);
-		await mkdir(join(config, "xfce4", "panel", "launcher-6"), { recursive: true });
-		await mkdir(join(config, "qorpera-dock"));
-		for (const state of ["idle", "running", "failed"])
-			await writeFile(join(config, "qorpera-dock", `browser.${state}.desktop`), `Icon=browser-${state}\n`);
-		await writeFile(entry, "Icon=browser-idle\n");
-		const script = (
-			await readFile(
-				new URL("../../../deploy/lxd-company-computer-guest/qorpera-screen-browser", import.meta.url),
-				"utf8",
-			)
-		).replace("runtime_root=/run/qorpera", `runtime_root=${JSON.stringify(runtime)}`);
-		expect(script).toContain(runtime);
-		const launcher = join(root, "qorpera-screen-browser");
-		await writeFile(launcher, script, { mode: 0o755 });
-		const double = async (name: string, body: string) =>
-			writeFile(join(bin, name), `#!/bin/bash\n${body}\n`, { mode: 0o755 });
-		// The X tools are doubles: `search` finds a window only while "window" exists.
-		await double(
-			"xdotool",
-			`echo "$*" >> ${JSON.stringify(join(root, "xdotool.log"))}
-if [[ $1 == search ]]; then [[ -e ${JSON.stringify(join(root, "window"))} ]] && echo 4194311; exit 0; fi`,
-		);
-		// Any dialog tool would be a defect: these doubles only leave evidence.
-		for (const dialog of ["xmessage", "zenity", "notify-send"])
-			await double(dialog, `: > ${JSON.stringify(join(root, "dialog"))}`);
-		// Stands in for the office service: the second wait "opens" the browser if asked.
-		// It also records the dock entry at each wait, and eats every request it sees.
-		await double(
-			"sleep",
-			`count=$(cat ${JSON.stringify(join(root, "sleeps"))} 2>/dev/null || echo 0); echo $((count + 1)) > ${JSON.stringify(join(root, "sleeps"))}
-cat ${JSON.stringify(entry)} >> ${JSON.stringify(join(root, "entries"))}
-if [[ -e ${JSON.stringify(join(runtime, "browser-request"))} ]]; then
-	if [[ -e ${JSON.stringify(join(root, "service"))} && $count -ge 1 ]]; then : > ${JSON.stringify(join(root, "window"))}; fi
-	if [[ -e ${JSON.stringify(join(root, "refusing"))} ]]; then rm -f ${JSON.stringify(join(runtime, "browser-request"))}; echo asked >> ${JSON.stringify(join(root, "asked"))}; fi
-fi`,
-		);
-		const env = { PATH: `${bin}:/usr/bin:/bin`, DISPLAY: ":1", XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: runtime };
-		const run = () => execute("/bin/bash", [launcher], { timeout: 10000, env });
-		await expect(execute("/bin/bash", [launcher], { env: { PATH: `${bin}:/usr/bin:/bin` } })).rejects.toThrow();
+		const f = await dockFixture();
+		await expect(execute("/bin/bash", [f.launcher], { env: { PATH: f.env.PATH } })).rejects.toThrow();
+		await expect(f.run("browser", "extra")).rejects.toMatchObject({ code: 64 });
+		await expect(f.run("elsewhere")).rejects.toMatchObject({ code: 64 });
 
 		// 1. A browser window is already on the screen: raise it, ask for nothing.
-		await writeFile(join(root, "window"), "");
-		await run();
-		expect(await readFile(join(root, "xdotool.log"), "utf8")).toContain("windowactivate 4194311");
-		expect(await readdir(runtime)).toEqual([]);
+		await f.windows({ "0x400007": "Chromium" });
+		await f.run();
+		expect(await f.xdotool()).toEqual(["windowmap 0x400007", "windowactivate 0x400007"]);
+		expect(await readdir(f.runtime)).toEqual([]);
 
-		// 2. No window: one empty request, then the window the service opened is raised.
-		await rm(join(root, "window"));
-		await rm(join(root, "xdotool.log"));
-		await writeFile(join(root, "service"), "");
-		await run();
-		expect((await readdir(runtime)).filter((name) => !name.endsWith(".lock"))).toEqual(["browser-request"]);
-		expect((await stat(join(runtime, "browser-request"))).size).toBe(0);
-		expect(await readFile(join(root, "xdotool.log"), "utf8")).toContain("windowactivate 4194311");
+		// 2. No window: the icon answers at once, one empty request goes out, and the
+		// window the service opened is raised.
+		await f.windows({});
+		await writeFile(join(f.root, "service"), "");
+		await f.run();
+		expect((await readdir(f.runtime)).filter((name) => !name.endsWith(".lock"))).toEqual(["browser-request"]);
+		expect((await stat(join(f.runtime, "browser-request"))).size).toBe(0);
+		expect(await f.xdotool()).toEqual(["windowmap 0x400009", "windowactivate 0x400009"]);
+		const opening = (await readFile(join(f.root, "entries"), "utf8")).trim().split("\n");
+		expect(new Set(opening)).toEqual(new Set(["Icon=browser-launching"]));
+		expect(await readFile(f.entry, "utf8")).toBe("Icon=browser-running\n");
 
 		// 3. The service refuses or fails: a second request after the first wait, then
 		// only the quiet dock icon for a moment, and the idle icon again. Never a dialog.
-		await rm(join(root, "window"));
-		await rm(join(root, "service"));
-		await rm(join(root, "sleeps"));
-		await rm(join(runtime, "browser-request"));
-		await writeFile(join(root, "refusing"), "");
-		await writeFile(join(root, "entries"), "");
-		await expect(run()).rejects.toMatchObject({ code: 1 });
-		expect((await readFile(join(root, "asked"), "utf8")).trim().split("\n")).toHaveLength(2);
-		expect((await readFile(join(root, "sleeps"), "utf8")).trim()).toBe("81");
-		const entries = (await readFile(join(root, "entries"), "utf8")).trim().split("\n");
-		expect(entries.slice(0, 80).every((line) => line === "Icon=browser-idle")).toBe(true);
+		await f.windows({});
+		await rm(join(f.root, "service"));
+		await rm(join(f.root, "sleeps"));
+		await rm(join(f.runtime, "browser-request"));
+		await writeFile(join(f.root, "refusing"), "");
+		await writeFile(join(f.root, "entries"), "");
+		await expect(f.run()).rejects.toMatchObject({ code: 1 });
+		expect((await readFile(join(f.root, "asked"), "utf8")).trim().split("\n")).toHaveLength(2);
+		expect((await readFile(join(f.root, "sleeps"), "utf8")).trim()).toBe("81");
+		const entries = (await readFile(join(f.root, "entries"), "utf8")).trim().split("\n");
+		expect(entries.slice(0, 80).every((line) => line === "Icon=browser-launching")).toBe(true);
 		expect(entries[80]).toBe("Icon=browser-failed");
-		expect(await readFile(entry, "utf8")).toBe("Icon=browser-idle\n");
-		expect(await readdir(root)).not.toContain("dialog");
+		expect(await readFile(f.entry, "utf8")).toBe("Icon=browser-idle\n");
+		expect(await readdir(f.root)).not.toContain("dialog");
+		// Nothing is left behind: no marker for the watcher, no private write directory.
+		expect(await readdir(f.runtime)).toEqual([]);
+		expect((await readdir(f.config)).filter((name) => name.startsWith(".qorpera"))).toEqual([]);
 	});
 
-	it("shows a running dot under a dock icon while that application has a window, without polling", async () => {
+	it("brings back a minimised window from the dock instead of starting another, for all three icons", async () => {
+		const f = await dockFixture();
+		// Only the window manager's client list knows a minimised window. The newest
+		// window of the application is restored (mapped) and activated.
+		await f.windows({
+			"0x400001": "Thunar",
+			"0x400003": "Xfce4-terminal",
+			"0x400005": "Thunar",
+			"0x400007": "Chromium",
+		});
+		await f.run("files");
+		expect(await f.xdotool()).toEqual(["windowmap 0x400005", "windowactivate 0x400005"]);
+		await f.run("terminal");
+		expect(await f.xdotool()).toEqual(["windowmap 0x400003", "windowactivate 0x400003"]);
+		await f.run();
+		expect(await f.xdotool()).toEqual(["windowmap 0x400007", "windowactivate 0x400007"]);
+		expect(await readdir(f.root)).not.toContain("started");
+		// The launcher never relies on a visibility search again.
+		expect(await readFile(f.launcher, "utf8")).not.toMatch(/--onlyvisible|xdotool search/);
+		// With no window the tool itself starts, in the launcher's working directory.
+		await f.windows({ "0x400007": "Chromium" });
+		await f.run("files");
+		await f.run("terminal");
+		expect((await readFile(join(f.root, "started"), "utf8")).trim().split("\n")).toEqual([
+			"thunar .",
+			"xfce4-terminal",
+		]);
+	});
+
+	it("answers a second click at once while the first launcher is still waiting for the service", async () => {
+		const f = await dockFixture();
+		await f.windows({});
+		// The first launcher holds the lock (this double refuses it to the second click).
+		await writeFile(join(f.bin, "flock"), "#!/bin/bash\nexit 1\n", { mode: 0o755 });
+		await f.run();
+		expect(await readFile(f.entry, "utf8")).toBe("Icon=browser-launching\n");
+		expect(await readdir(f.runtime)).toEqual(["qorpera-screen-browser.lock"]);
+		expect(await readdir(f.root)).not.toContain("sleeps");
+	});
+
+	it("shows a running dot while an application has a window, minimised included, in one pass per burst of events", async () => {
 		const fixture = await xfceFixture();
 		const config = fixture.env.XDG_CONFIG_HOME;
+		const runtime = join(fixture.root, "run");
+		await mkdir(runtime);
 		const dock = join(config, "qorpera-dock");
 		await mkdir(dock);
 		const entries = {
@@ -516,11 +607,20 @@ fi`,
 			await writeFile(entry, `${app} idle\n`);
 		}
 		const bin = join(fixture.root, "bin");
-		// The window manager announces one change of its client list, then the X server ends.
-		await writeFile(join(bin, "xprop"), '#!/bin/sh\necho "_NET_CLIENT_LIST(WINDOW): window id # 0x400007"\n', {
-			mode: 0o700,
-		});
-		await writeFile(join(bin, "xdotool"), `#!/bin/sh\ncase "$4" in *"$TEST_OPEN"*) echo 4194311;; esac\n`, {
+		const passes = join(fixture.root, "passes");
+		// The window manager announces a burst of five changes, then the X server ends.
+		// The client list is the only source: no visibility search can miss a minimised window.
+		await writeFile(
+			join(bin, "xprop"),
+			`#!/bin/sh
+if [ "$2" = "-spy" ]; then for i in 1 2 3 4 5; do echo "_NET_CLIENT_LIST(WINDOW): window id # 0x400007"; done; exit 0; fi
+if [ "$1" = "-root" ]; then echo pass >> ${JSON.stringify(passes)}; echo "_NET_CLIENT_LIST(WINDOW): window id # 0x400007, 0xbad;id"; exit 0; fi
+if [ "$2" = "0x400007" ]; then echo "WM_CLASS(STRING) = \\"x\\", \\"$TEST_OPEN\\""; exit 0; fi
+exit 1
+`,
+			{ mode: 0o700 },
+		);
+		await writeFile(join(bin, "xdotool"), `#!/bin/sh\n: > ${JSON.stringify(join(fixture.root, "searched"))}\n`, {
 			mode: 0o700,
 		});
 		const read = async () =>
@@ -529,8 +629,11 @@ fi`,
 					Object.entries(entries).map(async ([app, entry]) => [app, (await readFile(entry, "utf8")).trim()]),
 				),
 			);
+		const env = { ...fixture.env, XDG_RUNTIME_DIR: runtime };
+		// A stale marker of a killed launcher is cleared when the desktop starts.
+		await writeFile(join(runtime, "qorpera-screen-browser.launching"), "");
 		await execute("/bin/bash", [xfceHelper, fixture.wallpaper], {
-			env: { ...fixture.env, TEST_OPEN: "hunar" },
+			env: { ...env, TEST_OPEN: "Thunar" },
 			timeout: 3000,
 		});
 		await vi.waitFor(
@@ -542,8 +645,18 @@ fi`,
 				}),
 			{ timeout: 3000 },
 		);
+		expect(await readdir(runtime)).toEqual([]);
+		const bash = Number((await execute("/bin/bash", ["-c", "echo $BASH_VERSINFO"])).stdout.trim());
+		await vi.waitFor(
+			async () =>
+				expect((await readFile(passes, "utf8")).trim().split("\n")).toHaveLength(
+					// `read -t 0` only sees waiting input from Bash 4 (the image has 5); older shells pass per event.
+					bash >= 4 ? 1 : 5,
+				),
+			{ timeout: 5000 },
+		);
 		await execute("/bin/bash", [xfceHelper, fixture.wallpaper], {
-			env: { ...fixture.env, TEST_OPEN: "hromium" },
+			env: { ...env, TEST_OPEN: "Chromium" },
 			timeout: 3000,
 		});
 		await vi.waitFor(
@@ -557,6 +670,35 @@ fi`,
 		);
 		// The desktop itself started both times; the watcher never holds it up.
 		expect((await readFile(fixture.log, "utf8")).match(/SESSION/g)).toHaveLength(2);
+		expect(await readdir(fixture.root)).not.toContain("searched");
+		// Entries were swapped through a private directory that is gone again.
+		await vi.waitFor(
+			async () => expect((await readdir(config)).filter((name) => name.startsWith(".qorpera"))).toEqual([]),
+			{ timeout: 5000 },
+		);
+	});
+
+	it("starts the desktop even when every cosmetic window-manager setting is refused", async () => {
+		const fixture = await xfceFixture();
+		// This double refuses the xfwm4 look settings only; the backdrop ones still apply.
+		await writeFile(
+			join(fixture.root, "bin", "xfconf-query"),
+			`#!/bin/sh
+if [ "$#" -eq 4 ]; then exit 1; fi
+case "$4" in /general/show_dock_shadow) ;; /general/*) exit 1;; esac
+for arg do printf '%s\\t' "$arg" >> "$TEST_LOG"; done
+printf '\\n' >> "$TEST_LOG"
+`,
+			{ mode: 0o700 },
+		);
+		const { stderr } = await execute("/bin/bash", [xfceHelper, fixture.wallpaper], {
+			env: fixture.env,
+			timeout: 3000,
+		});
+		const calls = (await readFile(fixture.log, "utf8")).trimEnd().split("\n");
+		expect(calls.pop()).toBe("SESSION");
+		expect(calls).toHaveLength(6);
+		expect(stderr.match(/Skipped cosmetic desktop setting/g)).toHaveLength(8);
 	});
 
 	it("writes the dock, launchers and terminal shell into the screen state before the desktop starts", async () => {
@@ -576,14 +718,16 @@ fi`,
 		const screenState = join(fixture.root, "screen with spaces");
 		const workbench = join(fixture.root, "workbench dir");
 		await mkdir(workbench);
-		await execute(
-			"/bin/bash",
-			[
-				"-c",
-				`set -euo pipefail; umask 0077; screen_state=${JSON.stringify(screenState)}; workbench_root=${JSON.stringify(workbench)}\n${block}`,
-			],
-			{ timeout: 3000 },
-		);
+		const run = () =>
+			execute(
+				"/bin/bash",
+				[
+					"-c",
+					`set -euo pipefail; umask 0077; screen_state=${JSON.stringify(screenState)}; workbench_root=${JSON.stringify(workbench)}\n${block}`,
+				],
+				{ timeout: 3000 },
+			);
+		await run();
 		const config = join(screenState, "config", "xfce4");
 		const panel = await readFile(join(config, "xfconf", "xfce-perchannel-xml", "xfce4-panel.xml"), "utf8");
 		expect(panel).toContain('<channel name="xfce4-panel" version="1.0">');
@@ -610,6 +754,7 @@ fi`,
 		// Original icons, carried by the script itself as real PNG files.
 		for (const icon of [
 			"browser-idle",
+			"browser-launching",
 			"browser-running",
 			"browser-failed",
 			"files-idle",
@@ -639,13 +784,38 @@ fi`,
 		// Everything the look adds is scoped to the panel; no other application is restyled.
 		for (const selector of css.replace(/\/\*[\s\S]*?\*\//g, "").match(/^[^\s{}][^{}]*\{/gm) ?? [])
 			for (const part of selector.replace("{", "").split(",")) expect(part.trim()).toMatch(/^\.xfce4-panel\b/);
+		// Files and Terminal go through the dock helper, which restores an existing window first.
 		expect(await readFile(join(config, "panel", "launcher-5", "qorpera-files.desktop"), "utf8")).toContain(
-			"Exec=thunar .",
+			`Exec=/usr/local/bin/qorpera-screen-browser files\nPath=${workbench}\n`,
 		);
+		expect(terminal).toContain("Exec=/usr/local/bin/qorpera-screen-browser terminal\n");
 		expect(await readFile(join(config, "panel", "launcher-6", "qorpera-browser.desktop"), "utf8")).toContain(
-			"Exec=/usr/local/bin/qorpera-screen-browser",
+			"Exec=/usr/local/bin/qorpera-screen-browser\n",
 		);
 		expect(await readFile(join(config, "terminal", "terminalrc"), "utf8")).toContain("CustomCommand=/usr/bin/bash");
 		expect((await stat(join(config, "terminal", "terminalrc"))).mode & 0o777).toBe(0o600);
+		// No predictable temporary names, and the private write directory is gone.
+		expect(text).not.toMatch(/\.tmp\.\$\$/);
+		expect((await readdir(join(screenState, "config"))).filter((name) => name.startsWith(".qorpera"))).toEqual([]);
+
+		// Something inside the desktop planted directories where files belong (and at
+		// the old predictable temporary names). Looks are skipped; the desktop still gets
+		// its panel, launchers and terminal. Only a file the session needs stops it.
+		const planted = [join(screenState, "config", "gtk-3.0", "gtk.css"), join(dock, "browser-idle.png")];
+		for (const path of planted) {
+			await rm(path);
+			await mkdir(path);
+		}
+		await mkdir(join(config, "xfconf", "xfce-perchannel-xml", "xfce4-panel.xml.tmp.1"));
+		await mkdir(join(screenState, "config", ".qorpera-write.planted"));
+		const again = await run();
+		expect(again.stderr.match(/Skipped cosmetic desktop file/g)).toHaveLength(2);
+		expect(await readFile(join(config, "panel", "launcher-6", "qorpera-browser.desktop"), "utf8")).toContain(
+			"Exec=/usr/local/bin/qorpera-screen-browser\n",
+		);
+		expect((await readdir(join(screenState, "config"))).filter((name) => name.startsWith(".qorpera"))).toEqual([]);
+		await rm(join(config, "terminal", "terminalrc"));
+		await mkdir(join(config, "terminal", "terminalrc"));
+		await expect(run()).rejects.toMatchObject({ code: 1 });
 	});
 });

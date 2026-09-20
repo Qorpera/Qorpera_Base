@@ -29,7 +29,9 @@ function dockIcon(name, state = "idle") {
 			? `<circle cx="56" cy="105" r="5.5" fill="#fff" fill-opacity=".92"/>`
 			: failed
 				? `<circle cx="56" cy="105" r="5.5" fill="#f5a524"/>`
-				: "";
+				: state === "launching"
+					? `<circle cx="56" cy="105" r="4.25" fill="none" stroke="#fff" stroke-opacity=".92" stroke-width="2.5"/>`
+					: "";
 	return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 112 112" width="112" height="112">
 	<defs>
 		<linearGradient id="g-${name}-${state}" x1="0" y1="0" x2="0" y2="1">
