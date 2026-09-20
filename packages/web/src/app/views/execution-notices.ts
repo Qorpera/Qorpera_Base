@@ -3,11 +3,13 @@ import { button, h } from "../../ui/dom.ts";
 import { notification, updateNotification } from "../../ui/notification.ts";
 
 type Client = Pick<WebCompanyExecution, "listNotifications" | "acknowledgeNotification">;
+const PROVIDER_USAGE_LIMIT = "qorpera.member-notification.provider-usage-limit/v1";
 
 function title(item: CompanyExecutionNotification): string {
 	const subject = item.subject;
 	switch (subject.schema) {
-		case "qorpera.member-notification.provider-usage-limit/v1":
+		case PROVIDER_USAGE_LIMIT:
+			// Never drawn (filtered on read); kept so the switch stays exhaustive.
 			return "Model account usage limit reached";
 		case "qorpera.member-notification.company-ceiling-tripped/v1":
 			return "Company execution limit reached";
@@ -61,7 +63,10 @@ export class ExecutionNotices {
 		try {
 			const items = await this.#client.listNotifications(signal);
 			if (signal.aborted) return;
-			this.#items = items.filter((item) => !item.acknowledgedAt);
+			// A reached usage limit is told where it matters: the failed run's card in the
+			// thread gives it as the reason. It gets no popup of its own, and is left
+			// unacknowledged (polling never acknowledges).
+			this.#items = items.filter((item) => !item.acknowledgedAt && item.subject.schema !== PROVIDER_USAGE_LIMIT);
 			this.#refreshRequired = false;
 			this.#error = undefined;
 			this.#hiddenError = undefined;
@@ -131,7 +136,6 @@ export class ExecutionNotices {
 						action: refresh,
 						error:
 							Boolean(error) ||
-							item?.subject.schema === "qorpera.member-notification.provider-usage-limit/v1" ||
 							item?.subject.schema === "qorpera.member-notification.company-ceiling-tripped/v1" ||
 							item?.subject.schema === "qorpera.member-notification.machine-capacity/v1",
 					})
