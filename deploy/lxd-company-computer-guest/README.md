@@ -105,13 +105,15 @@ command is ever written.
   class the office service gives it (`--class`), and by every name a Chromium
   build uses for itself: the image's browser is a Chrome for Testing build
   whose class does not start with "Chromium" or "Chrome".
-- *Running marks.* Each icon state is its own launcher entry in the launcher's
-  directory (`qorpera-<app>.desktop` idle, `qorpera-<app>-running.desktop`,
+- *Running marks.* Each icon state is an immutable launcher template in
+  `config/qorpera-dock/` (`qorpera-<app>.desktop` idle, `qorpera-<app>-running.desktop`,
   and for the browser `-launching`, `-launching-2`, `-failed`); the icon shows
   a white pill under the tile (outlined while opening, amber when it did not
-  open). A state is shown by naming its entry in the panel's own configuration
+  open). A state is shown by naming its absolute path in the panel's configuration
   (`xfconf-query -c xfce4-panel -p /plugins/plugin-N/items`), which the panel
-  follows at once. The first version replaced the file the panel already
+  follows at once. XFCE imports a managed copy and deletes the previous copy
+  when `items` changes; the external template survives repeated transitions.
+  The first version replaced the file the panel already
   showed and relied on the panel's file monitor; on a real xfce4-panel
   (capture of 20 September 2026) neither the terminal nor the browser got its
   mark. `qorpera-screen-xfce` starts a small watcher that blocks on
@@ -139,10 +141,11 @@ command is ever written.
 **Verify on a real node before rollout** (none of this can be proven with the
 doubles the tests use):
 
-1. The panel follows its `items` setting: open and close Files and Terminal
+1. The panel follows its `items` setting: repeatedly open and close Files and Terminal
    and watch the white mark; click Browser and watch the pulse, the outlined
    mark, then the solid one. `xprop WM_CLASS` on the browser window shows
-   `qorpera-browser` once the service revision is active.
+   `qorpera-browser` once the service revision is active. Repeat a failed browser
+   launch and then a successful one; every pulse/state must remain available.
 2. The GTK CSS applies: no button boxes, hover and press highlight, the pushed-in
    icon and the jump on release without the tile being cut off at the top, and
    the date and time labels equally wide (icons on the centre line of a 1920 px
@@ -192,16 +195,18 @@ itself passes for this, Chrome for Testing reads it for that purpose and
 Chromium, Chrome and Edge ignore it; no managed policy hides the bar, and
 `--test-type` is not used because it also silences the warnings about unsafe
 flags. `--class=qorpera-browser` gives the window one known class for the dock.
-Every start used to add a blank tab (the `about:blank` of the command line) to
-whatever the last session brought back, so blank tabs piled up. Right after
-connecting, `tidyCompanyComputerBrowserTabs` asks Chromium for its tabs
-(`Target.getTargets`) and closes the empty ones (`about:blank`, the new-tab
-page), keeping one when nothing else is open. Pages the company had open stay,
-and cookies and profile data are never touched. It runs once per start, before
-anybody can have typed into a tab. A run that had to open a tab itself and
-never used it closes that tab when it lets go of the browser, never a tab of
-somebody else and never the last one. A desktop request for a browser that is
-already open opens no tab. All of this is service code. The file carries no data and nothing in it is read. The office
+Each launch gives its command-line placeholder a unique
+`about:blank#qorpera-startup-<uuid>` address. Immediately after connecting,
+`tidyCompanyComputerBrowserTabs` reads and rechecks Chromium's targets, closing
+only that exact placeholder when another page exists. The only page stays and
+its marker is removed with a guarded `history.replaceState`, without navigation.
+Restored blank/new-tab pages, loading targets and all other pages stay. A timed
+out read cannot issue later cleanup commands. Cookies and profile data are
+never touched. Detach preserves every shared tab, including agent-created blank
+tabs: an unchanged URL cannot prove that a member has not used one. A desktop
+request for an already-open browser opens no tab. The launch service and browser
+child must ship together in a guest-code revision. The request file carries no
+data and nothing in it is read. The office
 service polls for it while the desktop is ready, removes it without following
 links, and opens the screen agent's granted profile through the same contained
 launch as before (bwrap, managed policy, egress relay, profile custody). Whether
@@ -240,10 +245,10 @@ the service file and the SQL migration. The same holds for the dock:
 settings, terminal look, running marks) and `qorpera-screen-browser` reach existing computers
 through one guest-code revision and take effect at the next start of each
 desktop; the browser on arrival, its command line (`--start-maximized`,
-`--disable-infobars`, `--class`) and the tab tidying live in
-`qorpera-company-computer-service.mjs` and need only a service revision. The
-two are independent: the new dock matches the browser window with or without
-the new class.
+`--disable-infobars`, `--class`) live in `qorpera-company-computer-service.mjs`.
+The owned startup placeholder also changes `office-browser-child.mjs`; include
+that entry together with the service and three desktop scripts in the guest-code
+revision. The dock matches the browser window with or without the new class.
 
 The wrapper is not an authorization or sandbox implementation. Directory-name
 validation cannot detect bind mounts, NAS aliases, unsafe inherited image

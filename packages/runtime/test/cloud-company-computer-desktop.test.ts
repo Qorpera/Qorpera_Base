@@ -286,8 +286,9 @@ async function dockFixture() {
 	await mkdir(bin);
 	await mkdir(runtime);
 	await mkdir(join(config, "xfce4", "panel", "launcher-6"), { recursive: true });
+	await mkdir(join(config, "qorpera-dock"));
 	for (const name of ["", "-launching", "-launching-2", "-running", "-failed"])
-		await writeFile(join(config, "xfce4", "panel", "launcher-6", `qorpera-browser${name}.desktop`), "");
+		await writeFile(join(config, "qorpera-dock", `qorpera-browser${name}.desktop`), "");
 	await writeFile(entry, "qorpera-browser.desktop\n");
 	const script = (
 		await readFile(
@@ -302,10 +303,22 @@ async function dockFixture() {
 		writeFile(join(bin, name), `#!/bin/bash\n${body}\n`, { mode: 0o755 });
 	const q = (name: string) => JSON.stringify(join(root, name));
 	await double("xdotool", `echo "$*" >> ${q("xdotool.log")}`);
-	// The panel's configuration: only the one array the launcher may set is accepted.
+	// XFCE imports external templates, then deletes the previous managed entry
+	// when items changes. Repeated pulses must not delete the source template.
 	await double(
 		"xfconf-query",
-		`if [[ "$*" == "-c xfce4-panel -p /plugins/plugin-6/items -n -a -t string -s "* && $# -eq 10 ]]; then echo "\${10}" > ${q("items")}; exit 0; fi
+		`if [[ "$*" == "-c xfce4-panel -p /plugins/plugin-6/items -n -a -t string -s "* && $# -eq 10 ]]; then
+source=\${10}
+managed="$XDG_CONFIG_HOME/xfce4/panel/launcher-6"
+if [[ $source != /* ]]; then source="$managed/$source"; fi
+[[ -f $source ]] || exit 1
+old=$(cat ${q("managed-item")} 2>/dev/null || true)
+next=$(mktemp "$managed/import.XXXXXXXX.desktop")
+cp "$source" "$next"
+[[ -z $old ]] || rm -f -- "$old"
+echo "$next" > ${q("managed-item")}
+basename "$source" > ${q("items")}
+exit 0; fi
 echo "$*" >> ${q("xfconf-unexpected")}; exit 1`,
 	);
 	// xprop answers from two files: the client list line and one class per window id.
@@ -637,12 +650,14 @@ describe("restored XFCE startup settings (real Bash helper, fake X11/XFCE comman
 		const config = fixture.env.XDG_CONFIG_HOME;
 		const runtime = join(fixture.root, "run");
 		await mkdir(runtime);
-		// The wrapper's launcher entries: the idle one and one per further state.
+		// The wrapper's immutable templates are outside XFCE's managed directories.
 		const plugins = { browser: 6, files: 5, terminal: 4 };
+		await mkdir(join(config, "qorpera-dock"));
 		for (const [app, plugin] of Object.entries(plugins)) {
 			const directory = join(config, "xfce4", "panel", `launcher-${plugin}`);
 			await mkdir(directory, { recursive: true });
-			for (const name of ["", "-running"]) await writeFile(join(directory, `qorpera-${app}${name}.desktop`), "");
+			for (const name of ["", "-running"])
+				await writeFile(join(config, "qorpera-dock", `qorpera-${app}${name}.desktop`), "");
 		}
 		const bin = join(fixture.root, "bin");
 		const passes = join(fixture.root, "passes");
@@ -666,7 +681,7 @@ exit 1
 			const shown: Record<string, string> = { browser: "idle", files: "idle", terminal: "idle" };
 			for (const call of (await readFile(log, "utf8")).split("\n")) {
 				const match =
-					/^-c\txfce4-panel\t-p\t\/plugins\/plugin-(\d)\/items\t-n\t-a\t-t\tstring\t-s\tqorpera-([a-z]+)(-running)?\.desktop\t$/.exec(
+					/^-c\txfce4-panel\t-p\t\/plugins\/plugin-(\d)\/items\t-n\t-a\t-t\tstring\t-s\t[^\t]+\/qorpera-dock\/qorpera-([a-z]+)(-running)?\.desktop\t$/.exec(
 						call,
 					);
 				if (!match) continue;
@@ -832,8 +847,9 @@ printf '\\n' >> "$TEST_LOG"
 		}
 		const terminal = await readFile(join(config, "panel", "launcher-4", "qorpera-terminal.desktop"), "utf8");
 		expect(terminal).toContain(`Path=${workbench}\nIcon=${join(dock, "terminal-idle.png")}\n`);
-		// Every icon state is its own entry beside the idle one; the panel is told which to show.
-		expect((await readdir(join(config, "panel", "launcher-6"))).sort()).toEqual([
+		// Only the initial idle copy is managed; every reusable source is outside.
+		expect(await readdir(join(config, "panel", "launcher-6"))).toEqual(["qorpera-browser.desktop"]);
+		expect((await readdir(dock)).filter((name) => name.startsWith("qorpera-browser")).sort()).toEqual([
 			"qorpera-browser-failed.desktop",
 			"qorpera-browser-launching-2.desktop",
 			"qorpera-browser-launching.desktop",
@@ -846,14 +862,11 @@ printf '\\n' >> "$TEST_LOG"
 			["6", "browser"],
 		]) {
 			const idle = await readFile(join(config, "panel", `launcher-${plugin}`, `qorpera-${app}.desktop`), "utf8");
-			const running = await readFile(
-				join(config, "panel", `launcher-${plugin}`, `qorpera-${app}-running.desktop`),
-				"utf8",
-			);
+			const running = await readFile(join(dock, `qorpera-${app}-running.desktop`), "utf8");
 			expect(running).toBe(idle.replace(`${app}-idle.png`, `${app}-running.png`));
 			expect(running).not.toBe(idle);
 		}
-		expect((await readdir(dock)).filter((name) => name.endsWith(".desktop"))).toEqual([]);
+		expect((await readdir(dock)).filter((name) => name.endsWith(".desktop"))).toHaveLength(9);
 		const css = await readFile(join(screenState, "config", "gtk-3.0", "gtk.css"), "utf8");
 		expect(css).toContain(".xfce4-panel button:hover");
 		// Click feedback: pushed in while held, one short jump when let go, nothing that repeats.
@@ -898,7 +911,7 @@ printf '\\n' >> "$TEST_LOG"
 		const planted = [
 			join(screenState, "config", "gtk-3.0", "gtk.css"),
 			join(dock, "browser-idle.png"),
-			join(config, "panel", "launcher-6", "qorpera-browser-running.desktop"),
+			join(dock, "qorpera-browser-running.desktop"),
 			rc,
 		];
 		for (const path of planted) {

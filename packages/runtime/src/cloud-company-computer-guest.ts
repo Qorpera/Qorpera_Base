@@ -302,8 +302,6 @@ export class CompanyComputerGuestAutomation {
 	readonly #tabIds = new Map<Page, string>();
 	#tabLease?: string;
 	#page?: Page;
-	/** A blank tab this run opened itself because the browser had none. */
-	#opened?: Page;
 
 	constructor(options: {
 		binding: CompanyComputerScreenBinding;
@@ -334,22 +332,14 @@ export class CompanyComputerGuestAutomation {
 	}
 
 	/**
-	 * The run lets go of a browser that stays open. A tab it opened itself and
-	 * never used goes with it, so runs do not leave blank tabs behind. Never a
-	 * tab somebody else opened, never one that shows a page, and never the only
-	 * tab: closing the last tab closes the browser. Tidying only; it cannot fail.
+	 * Drop this run's handles, preserving the shared desktop's tabs. Even a tab
+	 * this run created may now contain a member's draft or a JS-written document
+	 * while still reporting about:blank. Creation does not prove it is unused.
 	 */
 	async release(): Promise<void> {
-		const page = this.#opened;
-		this.#opened = undefined;
-		try {
-			if (!page || page.isClosed() || !this.#browser || this.#browser.isEnded?.()) return;
-			if (page.url() !== "about:blank") return;
-			if (this.#browser.context.pages().filter((open) => !open.isClosed()).length < 2) return;
-			await page.close();
-		} catch {
-			// The browser is closing or the tab is already gone.
-		}
+		this.#page = undefined;
+		this.#tabLease = undefined;
+		this.#tabIds.clear();
 	}
 
 	async perform(
@@ -457,8 +447,7 @@ export class CompanyComputerGuestAutomation {
 			if (!this.#page) {
 				// Never silently choose a different tab after a popup or close.
 				if (pages.length > 1) throw new CompanyComputerActionNotStartedError("BROWSER_TAB_AMBIGUOUS");
-				if (!pages[0]) this.#opened = await this.#browser.context.newPage();
-				this.#page = pages[0] ?? this.#opened;
+				this.#page = pages[0] ?? (await this.#browser.context.newPage());
 				if (!this.#tabIds.has(this.#page)) this.#tabIds.set(this.#page, randomUUID());
 			}
 			const page = this.#page;

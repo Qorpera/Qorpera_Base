@@ -108,25 +108,25 @@ fi
 if [[ -d /usr/share/icons/Adwaita/cursors ]]; then
 	export XCURSOR_THEME=Adwaita XCURSOR_SIZE=24
 fi
-# Running marks. The wrapper wrote one launcher entry per icon state into each
-# launcher's directory; the panel shows the entry named by its own `items`
-# setting, so a state is shown by naming another entry there (the panel follows
-# its configuration at once; replacing the file it already shows was not picked
-# up by a real xfce4-panel). This waits on the window manager's client list and
+# Running marks. Immutable entries live outside XFCE's launcher directories:
+# changing `items` deletes the previous managed entry. XFCE imports a copy of
+# the requested state, so the source survives every later transition.
+# This waits on the window manager's client list and
 # also looks every few seconds, in case an announcement is lost: one xprop call,
 # and nothing more while the list is unchanged. The client list includes
 # minimised windows: the dock is the only window list, so a minimised
 # application keeps its mark. It ends with the X server and never blocks or
 # fails the desktop: without the tools the dock simply shows no marks.
 dock_launchers="${XDG_CONFIG_HOME}/xfce4/panel"
+dock_templates="${XDG_CONFIG_HOME}/qorpera-dock"
 show_dock_state() {
 	local app=$1 plugin=$2 state=$3 entry current
 	entry="qorpera-${app}.desktop"
 	[[ ${state} == idle ]] || entry="qorpera-${app}-${state}.desktop"
-	[[ -f ${dock_launchers}/launcher-${plugin}/${entry} && ! -L ${dock_launchers}/launcher-${plugin}/${entry} ]] || return 0
+	[[ -f ${dock_templates}/${entry} && ! -L ${dock_templates}/${entry} ]] || return 0
 	current=$(xfconf-query -c xfce4-panel -p "/plugins/plugin-${plugin}/items" 2>/dev/null) || current=""
-	[[ ${current} != *$'\n'"${entry}" ]] || return 0
-	xfconf-query -c xfce4-panel -p "/plugins/plugin-${plugin}/items" -n -a -t string -s "${entry}" >/dev/null 2>&1 || true
+	[[ ${current} != *$'\n'"${dock_templates}/${entry}" ]] || return 0
+	xfconf-query -c xfce4-panel -p "/plugins/plugin-${plugin}/items" -n -a -t string -s "${dock_templates}/${entry}" >/dev/null 2>&1 || true
 }
 # Instance and class of every managed window of a client list, one window per
 # line, minimised included.

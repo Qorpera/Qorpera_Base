@@ -729,18 +729,16 @@ K4aAmudYQg8LLU8nqXGEJCMdb70lvqtgFyUhMIB7CL4X6nMEBPocAYE+R0CgzxEQ6HP4kkAWwv+KHR9S
 Ob4EAAD//9NY41oAAAAGSURBVAMAbEf+1yDPM9QAAAAASUVORK5CYII=
 ICON
 # DOCK-ICONS-END
-# One launcher entry per icon state, all of them in the launcher's own
-# directory: `qorpera-<app>.desktop` is the idle one the panel starts with,
-# `qorpera-<app>-<state>.desktop` the others. The state is shown by naming
-# another entry in the panel's own configuration (its `items` property, see
-# qorpera-screen-xfce), which the panel always follows. Replacing the file the
-# panel already shows was not picked up by a real xfce4-panel.
+# State templates live outside the launcher's managed directory: XFCE deletes
+# a removed `items` entry. Selecting a template by absolute path imports a
+# disposable copy while preserving the source for the next transition.
+# The panel starts with a separate idle copy in its own directory.
 write_dock_launcher() {
 	local app=$1 plugin=$2 state=$3 name=$4 comment=$5 command=$6 path=$7 entry
 	entry="qorpera-${app}.desktop"
 	[[ ${state} == idle ]] || entry="qorpera-${app}-${state}.desktop"
 	[[ -z ${path} ]] || path="Path=${path}"$'\n'
-	write_desktop_file "${launchers}/launcher-${plugin}/${entry}" <<DESKTOP
+	write_desktop_file "${dock_state}/${entry}" <<DESKTOP || return 1
 [Desktop Entry]
 Version=1.0
 Type=Application
@@ -751,12 +749,14 @@ ${path}Icon=${dock_state}/${app}-${state}.png
 Terminal=false
 StartupNotify=false
 DESKTOP
+	if [[ ${state} == idle ]]; then
+		write_desktop_file "${launchers}/launcher-${plugin}/${entry}" < "${dock_state}/${entry}"
+	fi
 }
 # Files and Terminal go through the same dock helper as the browser, so a click
 # brings back the window that is already there (minimised or not) before it
 # starts another. The idle entries are what the panel needs; the other states
 # only change the icon. Entries of an earlier revision are not used any more.
-rm -f -- "${dock_state}"/*.desktop 2>/dev/null || true
 dock_helper=/usr/local/bin/qorpera-screen-browser
 write_dock_launcher terminal 4 idle Terminal "Shell in the company workbench" "${dock_helper} terminal" "${workbench_root}"
 write_dock_launcher files 5 idle Files "Company workbench files" "${dock_helper} files" "${workbench_root}"

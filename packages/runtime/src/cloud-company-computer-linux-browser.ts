@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { type FileHandle, lstat, mkdtemp, open, realpath, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -86,39 +87,44 @@ export const COMPANY_COMPUTER_BROWSER_ARGUMENTS: readonly string[] = Object.free
 	"--window-size=1920,1200",
 ]);
 
-/** A tab that shows nothing anybody would miss. */
-const emptyTab = (url: string): boolean =>
-	url === "" || url === "about:blank" || /^chrome:\/\/(newtab|new-tab-page|new-tab-page-third-party)\/?$/.test(url);
-
 /**
- * One clean window when the browser starts. Every start brings the blank tab of
- * its command line, and Chromium may bring back the pages of the last session,
- * blank ones included, so blank tabs used to pile up start after start. Pages
- * the company had open stay (and with them nothing of a sign-in is touched:
- * this closes tabs, never cookies or profile data). Empty tabs go, except one
- * when nothing else is open, because closing the last tab closes the browser.
- *
- * It asks the browser for its targets instead of Playwright's pages: a tab
- * brought back from the last session reports its real address there before it
- * has loaded. It runs once, before anybody can have typed into a tab, and it is
- * tidying only: a failure leaves the tabs as they are.
+ * Only the uniquely marked command-line tab belongs to this launch. Restored
+ * blank/new-tab pages, loading popups and user documents are never candidates.
+ * Recheck targets before closing because a member can already see the desktop.
+ * If it is the only page, remove its marker without navigating the document.
  */
 export async function tidyCompanyComputerBrowserTabs(
-	browser: Pick<Browser, "newBrowserCDPSession">,
+	browser: Pick<Browser, "newBrowserCDPSession" | "contexts">,
+	startupUrl: string,
 	signal: AbortSignal,
 ): Promise<void> {
 	await cloudToolRequest(
-		async () => {
+		async (checked) => {
 			const control = await browser.newBrowserCDPSession();
 			try {
+				checked.throwIfAborted();
 				const { targetInfos } = await control.send("Target.getTargets");
-				const tabs = targetInfos.filter((target) => target.type === "page");
-				const empty = tabs.filter((target) => emptyTab(target.url));
-				// Nothing else is open: one empty tab stays (they all look the same).
-				if (empty.length === tabs.length) empty.shift();
-				for (const target of empty) {
-					signal.throwIfAborted();
-					await control.send("Target.closeTarget", { targetId: target.targetId });
+				checked.throwIfAborted();
+				const owned = targetInfos.find((target) => target.type === "page" && target.url === startupUrl);
+				if (!owned) return;
+				const latest = await control.send("Target.getTargets");
+				checked.throwIfAborted();
+				const tabs = latest.targetInfos.filter((target) => target.type === "page");
+				if (!tabs.some((target) => target.targetId === owned.targetId && target.url === startupUrl)) return;
+				if (tabs.length > 1) await control.send("Target.closeTarget", { targetId: owned.targetId });
+				else {
+					const page = browser
+						.contexts()
+						.flatMap((context) => context.pages())
+						.find((page) => page.url() === startupUrl);
+					await page?.evaluate((url) => {
+						const documentWindow = globalThis as unknown as {
+							location: { href: string };
+							history: { replaceState(data: null, title: string, url: string): void };
+						};
+						if (documentWindow.location.href === url)
+							documentWindow.history.replaceState(null, "", "about:blank");
+					}, startupUrl);
 				}
 			} finally {
 				await control.detach().catch(() => undefined);
@@ -195,6 +201,7 @@ export function createCompanyComputerLinuxBrowserLaunch(options: {
 			throw new Error("OFFICE_BROWSER_BINDING_MISMATCH");
 		const abort = new AbortController();
 		const signal = AbortSignal.any([input.signal, abort.signal]);
+		const startupUrl = `about:blank#qorpera-startup-${randomUUID()}`;
 		const files: FileHandle[] = [];
 		let temporary: string | undefined;
 		let egress: Awaited<ReturnType<typeof startCompanyComputerBrowserEgress>> | undefined;
@@ -368,6 +375,7 @@ export function createCompanyComputerLinuxBrowserLaunch(options: {
 					"/run/qorpera/egress.sock",
 					"/usr/lib/qorpera-chromium/chrome",
 					...COMPANY_COMPUTER_BROWSER_ARGUMENTS,
+					startupUrl,
 				],
 			});
 			exited = new Promise<void>((finished) => launched!.child.once("close", () => finished()));
@@ -394,7 +402,7 @@ export function createCompanyComputerLinuxBrowserLaunch(options: {
 				noDefaults: true,
 			});
 			await cloudToolRequest(check, signal);
-			await tidyCompanyComputerBrowserTabs(browser, signal);
+			await tidyCompanyComputerBrowserTabs(browser, startupUrl, signal);
 			signal.throwIfAborted();
 			const contexts = browser.contexts();
 			if (contexts.length !== 1) throw new Error("OFFICE_BROWSER_CONTEXT_MISMATCH");

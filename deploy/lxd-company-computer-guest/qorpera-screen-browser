@@ -72,7 +72,7 @@ esac
 raise_browser() { raise_window '([Qq]orpera-[Bb]rowser|[Cc]hrom(e|ium))'; }
 if raise_browser; then exit 0; fi
 
-launcher="${XDG_CONFIG_HOME:-}/xfce4/panel/launcher-6"
+launcher="${XDG_CONFIG_HOME:-}/qorpera-dock"
 marker=""
 finish() {
 	[[ -z ${marker} ]] || rm -f -- "${marker}" 2>/dev/null || true
@@ -83,7 +83,9 @@ show() {
 	local entry="qorpera-browser-$1.desktop"
 	[[ $1 != idle ]] || entry="qorpera-browser.desktop"
 	[[ -f ${launcher}/${entry} && ! -L ${launcher}/${entry} ]] || return 0
-	xfconf-query -c xfce4-panel -p /plugins/plugin-6/items -n -a -t string -s "${entry}" >/dev/null 2>&1 || true
+	# XFCE imports an external entry and deletes only its managed copy on the
+	# next state change. The source must survive repeated pulses and restarts.
+	xfconf-query -c xfce4-panel -p /plugins/plugin-6/items -n -a -t string -s "${launcher}/${entry}" >/dev/null 2>&1 || true
 }
 # A click is answered at once, whoever is already waiting.
 show launching

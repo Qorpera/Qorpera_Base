@@ -617,23 +617,26 @@ describe("Playwright/X11/shell adapters (test doubles, never the member machine)
 		expect(fixture.context.newPage).not.toHaveBeenCalled();
 	});
 
-	it("closes only the blank tab a run opened itself and never used, and never the last tab", async () => {
+	it("preserves shared tabs at detach, including an agent-created about:blank now used by a member", async () => {
 		const blankPage = () => {
 			const opened = fakePage();
 			opened.page.url.mockReturnValue("about:blank");
 			return { ...opened.page, close: vi.fn(async () => undefined) };
 		};
-		// The browser had no tab: the run opens one, a member opens another, the run leaves.
+		// The browser had no tab: the run opens one, then a member uses it and
+		// opens another. Its URL can remain blank despite DOM or omnibox drafts.
 		const unused = automationFixture();
 		const mine = blankPage();
 		unused.context.pages.mockReturnValue([]);
 		unused.context.newPage.mockResolvedValue(mine as unknown as Page);
 		await unused.perform({ kind: "browser", action: "snapshot" });
+		mine.locator().ariaSnapshot.mockResolvedValue('- textbox "Notes": Unsaved member draft');
 		unused.context.pages.mockReturnValue([mine, unused.page] as unknown as Page[]);
 		await unused.automation.release();
-		expect(mine.close).toHaveBeenCalledOnce();
+		expect(mine.close).not.toHaveBeenCalled();
+		expect(await mine.locator().ariaSnapshot()).toContain("Unsaved member draft");
 		await unused.automation.release();
-		expect(mine.close).toHaveBeenCalledOnce();
+		expect(mine.close).not.toHaveBeenCalled();
 
 		// The only tab stays: closing it would close the browser.
 		const only = automationFixture();
