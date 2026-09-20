@@ -16,6 +16,7 @@ afterEach(() => {
 	dispose = undefined;
 	document.body.replaceChildren();
 	vi.restoreAllMocks();
+	vi.useRealTimers();
 });
 
 function connections(count = 2): NativeExecutionConnections {
@@ -37,8 +38,8 @@ function connections(count = 2): NativeExecutionConnections {
 			connectionId: id(n + 10),
 			clientConnectionId: id(n + 110),
 			connectionVersion: 1,
-			provider: n === 80 ? "openai" : "anthropic",
-			nativeHarness: n === 80 ? "codex-cli" : "claude-code",
+			provider: "openai",
+			nativeHarness: "codex-cli",
 			authorizationState: "active",
 			maxNativeConcurrency: 1,
 			billingSource: "subscription",
@@ -192,6 +193,114 @@ describe("room startup usage refresh", () => {
 });
 
 describe("conversation execution account", () => {
+	it("does not select Claude even when its reported allowance exceeds Codex", async () => {
+		const observed = withUsage([20, 100]);
+		observed.connections[1]!.provider = "anthropic";
+		observed.connections[1]!.nativeHarness = "claude-code";
+		const f = setup(true, observed);
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		f.listConnections.mockResolvedValue({ ...observed, connections: [observed.connections[1]!] });
+		refresh();
+		await settle();
+		type(f.view, "Hello");
+		expect(f.send().disabled).toBe(true);
+	});
+
+	it("polls the authoritative selection and switches an exhausted account without window focus", async () => {
+		vi.useFakeTimers();
+		const select = vi.fn(async () => id(90));
+		const f = setup(true, withUsage([80, 40]), select);
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		f.listConnections.mockResolvedValue(withUsage([0, 40]));
+		select.mockResolvedValue(id(91));
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+		expect(select).toHaveBeenCalledTimes(2);
+	});
+
+	it("resumes sending at a known quota reset before the next regular poll", async () => {
+		vi.useFakeTimers();
+		const resetAt = Date.now() + 10_000;
+		const observed = withUsage([0, 0]);
+		observed.connections[0]!.usageLimitResetAt = new Date(resetAt).toISOString();
+		observed.connections[0]!.providerAccountUsage!.windows[0]!.resetAt = new Date(resetAt).toISOString();
+		const select = vi.fn(async () => (Date.now() >= resetAt ? id(90) : undefined));
+		const f = setup(true, observed, select);
+		await settle();
+		type(f.view, "Waiting for reset");
+		expect(f.send().disabled).toBe(true);
+		await vi.advanceTimersByTimeAsync(11_000);
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		expect(f.send().disabled).toBe(false);
+		expect(select).toHaveBeenCalledTimes(2);
+	});
+
+	it("refreshes usage metadata every minute but skips hydration for quick pre-send checks", async () => {
+		vi.useFakeTimers();
+		const hydrate = vi.fn(async () => {});
+		const select = vi.fn(async () => id(90));
+		const f = setup(true, withUsage([80, 40]), select, hydrate);
+		await settle();
+		expect(hydrate).toHaveBeenCalledOnce();
+		type(f.view, "Hello");
+		await settle();
+		f.send().click();
+		await settle();
+		expect(f.sendMessage).toHaveBeenCalledOnce();
+		expect(hydrate).toHaveBeenCalledOnce();
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(hydrate).toHaveBeenCalledOnce();
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(hydrate).toHaveBeenCalledTimes(2);
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(hydrate).toHaveBeenCalledTimes(3);
+	});
+
+	it.each(["retry", "sending"] as const)("never automatically switches an account during %s", async (mode) => {
+		vi.useFakeTimers();
+		const select = vi.fn(async () => id(90));
+		const hydrate = vi.fn(async () => {});
+		const f = setup(true, withUsage([80, 40]), select, hydrate);
+		await settle();
+		const original = f.sponsor()!;
+		const retained = {
+			clientInputId: id(150),
+			clientRequestId: id(150),
+			text: "Hello",
+			files: [],
+			executionSponsor: original,
+		};
+		f.company.conversation(session.sessionId).set({
+			draft: "Hello",
+			...(mode === "retry" ? { retrySend: retained } : { sending: true }),
+		});
+		select.mockResolvedValue(id(91));
+		f.listConnections.mockResolvedValue(withUsage([0, 80]));
+		await vi.advanceTimersByTimeAsync(90_000);
+		expect(select).toHaveBeenCalledOnce();
+		expect(hydrate).toHaveBeenCalledOnce();
+		expect(f.sponsor()).toBe(original);
+		if (mode === "retry") expect(f.company.conversation(session.sessionId).get().retrySend).toBe(retained);
+	});
+
+	it.each(["disposed", "access lost"] as const)("stops scheduled account checks when %s", async (mode) => {
+		vi.useFakeTimers();
+		const select = vi.fn(async () => id(90));
+		const hydrate = vi.fn(async () => {});
+		const f = setup(true, withUsage([80, 40]), select, hydrate);
+		await settle();
+		if (mode === "disposed") f.view.dispose();
+		else f.company.store.set({ accessLost: true });
+		await settle();
+		const reads = f.listConnections.mock.calls.length;
+		await vi.advanceTimersByTimeAsync(120_000);
+		expect(f.listConnections).toHaveBeenCalledTimes(reads);
+		expect(select).toHaveBeenCalledOnce();
+		expect(hydrate).toHaveBeenCalledOnce();
+	});
+
 	it("keeps group-chat text and the member's own account without single-agent run or turn history", async () => {
 		const f = setup(true);
 		await settle();

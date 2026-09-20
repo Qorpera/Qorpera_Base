@@ -615,6 +615,9 @@ describe("settings session lifecycle", () => {
 		expect(document.activeElement).toBe(control);
 	});
 	it("only reads member account state on Connections", async () => {
+		// Isolate Settings reads from an open conversation's quota polling.
+		// The Team route keeps the same company authority without a composer.
+		history.replaceState(null, "", `/#/c/${profileA.profileId}/team`);
 		const f = await setup(realtimeFixture());
 		const connectionsUrl = "https://fixture.invalid/rest/v1/rpc/qorpera_list_member_native_execution_connections";
 		const fetch = vi.fn(async (input: string | URL | Request, _init?: RequestInit) => {

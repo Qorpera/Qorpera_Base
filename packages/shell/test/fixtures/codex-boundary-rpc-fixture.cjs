@@ -115,6 +115,7 @@ async function handle(message) {
 		write({ id: message.id, result: { thread: { id: threadId } } });
 	} else if (message.method === "turn/start") {
 		turnParameters = message.params;
+		if (mode === "model-selection") writeFileSync(evidencePath, JSON.stringify({ threadParameters, turnParameters, configuration }));
 		if (mode === "turn-request-rejected") {
 			write({ id: message.id, error: { code: -32000, message: "PRIVATE_TURN_REQUEST_ERROR" } });
 			return;

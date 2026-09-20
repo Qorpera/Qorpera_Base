@@ -20,6 +20,7 @@ import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import type { AgentState, CompanyController, ConversationState } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
+import { ComposerModels } from "./composer-models.ts";
 import { ComputerPanel } from "./computer.ts";
 import { GroupDetails } from "./group-details.ts";
 import { SessionExecutionView } from "./session-execution.ts";
@@ -55,6 +56,8 @@ export class ConversationView {
 	readonly #attachments: AttachmentTray;
 	readonly #more: HTMLButtonElement;
 	readonly #menu: HTMLElement;
+	readonly #menuMain: HTMLElement;
+	readonly #models: ComposerModels;
 	readonly #attach: HTMLButtonElement;
 	readonly #identity: HTMLButtonElement;
 	readonly #computer: HTMLButtonElement;
@@ -172,16 +175,48 @@ export class ConversationView {
 			icon("attach"),
 			"Attach files",
 		);
+		this.#models = new ComposerModels(
+			company,
+			sessionId,
+			actions.sessionModel,
+			this.#notificationSignal,
+			() => this.#setModelMenu(true),
+			() => this.#setModelMenu(false),
+			() => this.update(),
+		);
+		this.#menuMain = h("div", null, this.#attach, this.#models.button);
 		this.#menu = h(
 			"div",
 			{ class: "composer-menu", role: "menu", hidden: true, "aria-label": "Chat settings and more" },
-			this.#attach,
+			this.#menuMain,
+			this.#models.el,
 		);
 		this.#menu.addEventListener("keydown", (event) => {
-			if (matchesKey(event, "dismiss")) {
+			if (matchesKey(event, "dismiss") || (matchesKey(event, "left") && !this.#models.el.hidden)) {
 				event.preventDefault();
 				event.stopPropagation();
-				this.#setMenu(false);
+				if (!this.#models.el.hidden) this.#setModelMenu(false);
+				else this.#setMenu(false);
+			} else if (matchesKey(event, "right") && document.activeElement === this.#models.button) {
+				event.preventDefault();
+				this.#setModelMenu(true);
+			} else if (
+				["next", "previous", "first", "last"].some((key) =>
+					matchesKey(event, key as "next" | "previous" | "first" | "last"),
+				)
+			) {
+				event.preventDefault();
+				const page = this.#models.el.hidden ? this.#menuMain : this.#models.el;
+				const controls = [...page.querySelectorAll<HTMLButtonElement>("button:not(:disabled):not([hidden])")];
+				const current = controls.indexOf(document.activeElement as HTMLButtonElement);
+				const index = matchesKey(event, "first")
+					? 0
+					: matchesKey(event, "last")
+						? controls.length - 1
+						: (current + (matchesKey(event, "previous") ? -1 : 1) + controls.length) % controls.length;
+				controls[index]?.focus();
+			} else if (matchesKey(event, "tab")) {
+				this.#setMenu(false, false);
 			}
 		});
 		this.#composerShell = h(
@@ -339,10 +374,24 @@ export class ConversationView {
 	}
 
 	#setMenu(open: boolean, restoreFocus = true): void {
+		this.#menuMain.hidden = false;
+		this.#models.el.hidden = true;
+		this.#models.button.setAttribute("aria-expanded", "false");
 		this.#menu.hidden = !open;
 		this.#more.setAttribute("aria-expanded", String(open));
 		if (open) this.#attach.focus();
 		else if (restoreFocus) this.#more.focus();
+	}
+
+	#setModelMenu(open: boolean): void {
+		if (open && this.#models.button.disabled) return;
+		this.#menuMain.hidden = open;
+		this.#models.el.hidden = !open;
+		this.#models.button.setAttribute("aria-expanded", String(open));
+		if (open) {
+			this.#models.focus();
+			void this.#models.refresh();
+		} else this.#models.button.focus();
 	}
 
 	#openDetails(): void {
@@ -477,6 +526,10 @@ export class ConversationView {
 		const agent = this.#company.staffById(session?.staffAgentId);
 		const canWrite = company.team?.capabilities.write === true && session?.status === "open";
 		const room = this.#isRoom;
+		this.#models.update(
+			Boolean(agent) && !room,
+			!canWrite || conversation.sending || this.#submitting || Boolean(conversation.retrySend),
+		);
 		this.#execution?.update();
 		this.#run?.update(
 			room || company.accessLost || !company.team?.capabilities.read ? undefined : session?.staffAgentId,
@@ -518,6 +571,7 @@ export class ConversationView {
 		this.#composer.disabled = !canWrite || conversation.sending;
 		this.#cannotSend =
 			!this.#actions.sendMessage ||
+			this.#models.pending ||
 			(this.#execution !== undefined && !this.#execution.canSend) ||
 			!canWrite ||
 			conversation.sending ||
