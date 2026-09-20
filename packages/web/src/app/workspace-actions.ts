@@ -2,6 +2,7 @@ import type { WebCompanyComputer } from "../cloud/computer.ts";
 import type { GroupChatDetails, GroupChatDraft } from "../cloud/group-details.ts";
 import type { WebNativeSubscription } from "../cloud/native-subscription.ts";
 import type { WebRoutines } from "../cloud/routines.ts";
+import type { WebSessionModel } from "../cloud/session-model.ts";
 import type { WebSessionRunControl } from "../cloud/session-run-control.ts";
 import type { HostedStaffAgent } from "../cloud/types.ts";
 import type { FigureChoice } from "../ui/figure-picker.ts";
@@ -25,6 +26,7 @@ export interface WorkspaceActions {
 	notificationHost?: HTMLElement;
 	computer?: WebCompanyComputer;
 	runControl?: WebSessionRunControl;
+	sessionModel?: WebSessionModel;
 	nativeSubscription?: WebNativeSubscription;
 	routines?: WebRoutines;
 	/** Supplies already-authorized bytes. No URL from a transcript is fetched. */
