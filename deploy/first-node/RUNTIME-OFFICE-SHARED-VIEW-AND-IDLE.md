@@ -61,7 +61,7 @@ request file, the office service opens the screen agent's granted profile
 through the unchanged contained launch, a later agent run joins the same
 window, and run end lets go of it instead of closing it. Authority is the
 broker-only `qorpera_office_screen_browser_grant` (migration
-`20260920021000_runtime_office_screen_browser.sql`): the agent's current grant
+`20260920041000_runtime_office_screen_browser.sql`): the agent's current grant
 plus an agent lease or a live shared/control viewer with input permission; the
 dock and a member alone only ever open a company-owned profile. The relay
 repeats that check every second, so the browser closes about a second after
@@ -77,8 +77,8 @@ Details: `deploy/lxd-company-computer-guest/README.md`.
 
 ## Rollout order for the backdrop, dock browser and refusal journal
 
-1. **SQL first.** Apply `20260920020000_runtime_office_screen_appearance.sql`
-   and `20260920021000_runtime_office_screen_browser.sql` before any office
+1. **SQL first.** Apply `20260920040000_runtime_office_screen_appearance.sql`
+   and `20260920041000_runtime_office_screen_browser.sql` before any office
    runs the new service. Both only add objects; the old service never calls
    them. The other order is not safe: a new service on old SQL fails every
    agent browser action with `BROWSER_GRANT_UNCONFIRMED`, because the screen's
