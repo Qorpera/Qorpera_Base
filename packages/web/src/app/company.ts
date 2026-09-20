@@ -84,6 +84,7 @@ export interface CompanyState {
 	sessions: HostedSession[];
 	sessionsError?: string;
 	groups?: Record<string, GroupChatDetails>;
+	/** Kept for diagnostics only; the rail does not show it (see shell.ts). */
 	groupsError?: string;
 	organization?: HostedCompanyOrganization;
 	organizationState: Deployment;

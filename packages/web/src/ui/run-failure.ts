@@ -1,8 +1,8 @@
-import { h } from "./dom.ts";
+import { h, icon } from "./dom.ts";
 import { matchesKey } from "./keys.ts";
 
 /** Why a run stopped, in the member's words. The cloud's own text stays
- * available under "Technical details"; it names machinery, not causes. */
+ * out of the card: it names machinery, not causes. */
 export function runFailureReason(lastError: string | undefined, jobStatus: "failed" | "cancelled"): string {
 	const error = lastError ?? "";
 	if (/usage limit|quota|rate.?limit|insufficient|billing/i.test(error))
@@ -22,8 +22,6 @@ export interface RunFailureCard {
 	/** Who did not answer, e.g. "Yang Tang did not finish this run". */
 	title: string;
 	reason?: string;
-	/** The cloud's own error text, shown collapsed. */
-	details?: string;
 	/** Absent when this run cannot be tried again (or the cloud cannot do it yet). */
 	retry?: () => void;
 	retrying?: boolean;
@@ -34,13 +32,32 @@ export interface RunFailureCard {
 	action?: HTMLElement;
 }
 
-/** A failed run, shown where its answer would have been. */
+/** A failed run, shown where its answer would have been: one centred card with the
+ * reason and two actions, Try again and Dismiss. */
 export function runFailureCard(card: RunFailureCard): HTMLElement {
 	const busy = card.retrying === true;
+	const guarded = (action: () => void) => (event: MouseEvent) => {
+		if (!busy && event.detail < 2) action();
+	};
+	const primary =
+		card.action ??
+		(card.retry
+			? h(
+					"button",
+					{
+						type: "button",
+						class: "run-failure-primary",
+						"data-action": "retry-run",
+						"aria-disabled": busy ? "true" : undefined,
+						onclick: guarded(() => card.retry?.()),
+					},
+					busy ? "Trying again…" : "Try again",
+				)
+			: null);
 	return h(
 		"div",
 		{
-			class: "message from-agent run-failure",
+			class: "run-failure",
 			role: "group",
 			"aria-label": card.title,
 			onkeydown: (event: KeyboardEvent) => {
@@ -53,55 +70,27 @@ export function runFailureCard(card: RunFailureCard): HTMLElement {
 		h(
 			"div",
 			{ class: "run-failure-card" },
-			h(
-				"div",
-				{ class: "run-failure-head" },
-				h("span", { class: "notification-indicator", "aria-hidden": "true" }),
-				h("strong", { class: "run-failure-title", role: "alert" }, card.title),
-			),
+			h("span", { class: "run-failure-mark", "aria-hidden": "true" }, icon("close")),
+			h("strong", { class: "run-failure-title", role: "alert" }, card.title),
 			card.reason ? h("p", { class: "run-failure-reason" }, card.reason) : null,
 			card.retryError ? h("p", { class: "run-failure-error", role: "alert" }, card.retryError) : null,
+			h("span", { class: "run-failure-rule", "aria-hidden": "true" }),
 			h(
 				"div",
 				{ class: "run-failure-actions" },
-				card.action ??
-					(card.retry
-						? h(
-								"button",
-								{
-									type: "button",
-									class: "btn btn-small btn-primary",
-									"data-action": "retry-run",
-									"aria-disabled": busy ? "true" : undefined,
-									onclick: (event: MouseEvent) => {
-										if (!busy && event.detail < 2) card.retry?.();
-									},
-								},
-								busy ? "Trying again…" : "Try again",
-							)
-						: null),
+				primary,
 				h(
 					"button",
 					{
 						type: "button",
-						class: "btn btn-small",
+						class: "run-failure-secondary",
 						"data-action": "dismiss-run",
 						"aria-disabled": busy ? "true" : undefined,
-						onclick: (event: MouseEvent) => {
-							if (!busy && event.detail < 2) card.dismiss();
-						},
+						onclick: guarded(card.dismiss),
 					},
 					"Dismiss",
 				),
 			),
-			card.details
-				? h(
-						"details",
-						{ class: "run-failure-details" },
-						h("summary", {}, "Technical details"),
-						h("code", {}, card.details),
-					)
-				: null,
 		),
 	);
 }

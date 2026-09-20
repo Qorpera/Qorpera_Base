@@ -907,6 +907,7 @@ export class ConversationView {
 		if (key === this.#runNotificationKey) return;
 		this.#runNotificationKey = key;
 		const focused = this.#runNotification.contains(document.activeElement);
+		const focusedAction = focused ? (document.activeElement as HTMLElement).dataset.action : undefined;
 		const dismiss = () => {
 			if (!runId || this.#notificationSignal.aborted) return;
 			let dismissed = dismissedRunNotifications.get(this.#company);
@@ -971,7 +972,6 @@ export class ConversationView {
 				: runFailureCard({
 						title,
 						reason,
-						details: proposalId ? undefined : recovery?.lastError,
 						retry: canRetry ? () => void this.#company.retryFailedRun(runId, sessionId) : undefined,
 						retrying: retryState?.pending,
 						retryError: retryState?.error,
@@ -981,7 +981,12 @@ export class ConversationView {
 		);
 		if (!hidden && this.#stickToBottom) this.#messages.scrollTop = this.#messages.scrollHeight;
 		if (focused) {
-			if (!hidden) this.#runNotification.querySelector<HTMLElement>("button, a")?.focus({ preventScroll: true });
+			if (!hidden)
+				(
+					(focusedAction
+						? this.#runNotification.querySelector<HTMLElement>(`[data-action="${focusedAction}"]`)
+						: null) ?? this.#runNotification.querySelector<HTMLElement>(".run-failure-primary, a, button")
+				)?.focus({ preventScroll: true });
 			else if (this.#conversationPane.inert || this.#panel?.el.classList.contains("is-entered"))
 				this.#panel?.focus();
 			else if (!this.#composer.disabled && !this.#composerWrap.hidden) this.#composer.focus({ preventScroll: true });
