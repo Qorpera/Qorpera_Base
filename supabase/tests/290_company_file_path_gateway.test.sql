@@ -804,6 +804,18 @@ begin
 				where staff_agent_id = '29000000-0000-4000-8000-000000000030';
 			end if;
 			set local role service_role;
+			if v_probe = 'staff-version' then
+				-- An edit applies from the agent's next run. The run in flight is not
+				-- refused and is not handed the edited charter: it keeps describing its
+				-- agent and its job specification as of its own version.
+				if (select c #>> '{jobSpecification,content,text}' = 'Changed job specification'
+						or (c #>> '{agent,version}')::bigint is distinct from (select staff_version
+							from public.qorpera_execution_runs where id = (v_binding ->> 'runId')::uuid)
+					from public.qorpera_describe_company_run_context(v_binding) c) then
+					raise exception 'An agent edit reached into the run in flight'; end if;
+				perform public.qorpera_assert_company_path_reads('29000000-0000-4000-8000-000000000020',v_binding,'{}');
+				raise exception using errcode = 'QTC01';
+			end if;
 			begin
 				perform public.qorpera_describe_company_run_context(v_binding);
 				raise exception 'Context reconstruction ignored %',v_probe;
