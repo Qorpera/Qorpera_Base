@@ -9,6 +9,7 @@ on:
       - 'supabase/tests/**'
       - 'scripts/test-hosted-db.mjs'
       - 'scripts/test-hosted-db.test.mjs'
+      - 'scripts/test-runtime-office-current-provider-activation.mjs'
 
 permissions:
   contents: read
@@ -43,3 +44,6 @@ jobs:
 
       - name: Verify office deletion disposition against disposable PostgreSQL
         run: node scripts/test-runtime-office-delete-disposition.mjs
+
+      - name: Verify current office activation against disposable PostgreSQL
+        run: node scripts/test-runtime-office-current-provider-activation.mjs
