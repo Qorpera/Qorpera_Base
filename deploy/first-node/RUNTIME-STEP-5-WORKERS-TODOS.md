@@ -1,6 +1,6 @@
 # Step 5: workers and durable todos
 
-Date: 2026-09-20. Branch point: `71352b033` (master, bundle v38).
+Date: 2026-09-20. Branch point: `71352b033` (master, bundle v38), merged with master `30eeb1b18` (bundle v41).
 Status: source, SQL proofs on a disposable database, runtime unit and
 composition tests, and a live-model behavior screen. **Not deployed; no live
 acceptance on the nodes yet.** The live gates are listed at the end.
@@ -39,7 +39,7 @@ they belong to Orders 9, 7 and 8.
 
 ## Source
 
-- `supabase/migrations/20260920010000_runtime_workers_todos.sql`: tables, the
+- `supabase/migrations/20260920050000_runtime_workers_todos.sql`: tables, the
   four run-bound operations (`qorpera_manage_agent_todo`,
   `qorpera_confirm_agent_todo_publication`, `qorpera_manage_agent_worker`,
   `qorpera_report_worker_result`), the drain, the continuation context, and
@@ -127,7 +127,7 @@ source that tries to redirect it.
 
 ## Bundle
 
-The migration and the runtime sources are bundle inputs: bundle v39. A later
+The migration and the runtime sources are bundle inputs: bundle v42 at the time of writing (the next free version when it merges). A later
 change to any migration needs a new activation, never an edit of this one.
 
 ## Not built; what keeps Order 5 open

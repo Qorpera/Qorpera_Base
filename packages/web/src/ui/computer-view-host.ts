@@ -13,7 +13,9 @@ export class ComputerViewHost {
 		this.#signal = signal;
 		signal.addEventListener("abort", () => void this.close().catch(() => undefined), { once: true });
 	}
-	async open(options: Omit<ComputerViewerOptions, "releaseConnection" | "onClosed">): Promise<void> {
+	async open(
+		options: Omit<ComputerViewerOptions, "releaseConnection" | "onClosed"> & { onClosed?: () => void },
+	): Promise<void> {
 		this.#signal.throwIfAborted();
 		if (this.#opening) throw new Error("A viewer is already opening.");
 		this.#opening = true;
@@ -45,6 +47,7 @@ export class ComputerViewHost {
 					if (version === this.#version) {
 						this.#version++;
 						this.#viewer = undefined;
+						options.onClosed?.();
 					}
 				},
 			});
