@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import {
 	COMPANY_COMPUTER_BROWSER_ARGUMENTS,
 	createCompanyComputerLinuxBrowserLaunch,
@@ -70,6 +71,24 @@ describe("contained browser launch admission", () => {
 });
 
 describe("what a member sees when the company browser opens", () => {
+	it("allows only the new-tab routes while keeping other internal pages blocked", () => {
+		const policy = JSON.parse(
+			readFileSync(
+				new URL("../../../deploy/lxd-company-computer-guest/qorpera-browser-policy.json", import.meta.url),
+				"utf8",
+			),
+		);
+		expect(policy.URLAllowlist).toEqual(["chrome://newtab/", "chrome://new-tab-page/"]);
+		expect(policy.URLBlocklist).toEqual([
+			"file://*",
+			"chrome://*",
+			"chrome-untrusted://*",
+			"devtools://*",
+			"javascript://*",
+			"view-source:*",
+		]);
+	});
+
 	it("hides the Chrome for Testing bar and names the window without weakening the browser", () => {
 		expect(COMPANY_COMPUTER_BROWSER_ARGUMENTS).toContain("--disable-infobars");
 		expect(COMPANY_COMPUTER_BROWSER_ARGUMENTS).toContain("--class=qorpera-browser");
