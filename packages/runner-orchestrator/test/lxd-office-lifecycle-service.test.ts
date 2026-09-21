@@ -128,6 +128,14 @@ describe("protected lifecycle service configuration", () => {
 			parseLxdOfficeLifecycleServiceConfig({ ...config(), codePackageLanePath: "../package.json" }),
 		).toThrow();
 		expect(parseLxdOfficeLifecycleServiceConfig(config()).codePackageLanePath).toBeUndefined();
+		expect(parseLxdOfficeLifecycleServiceConfig(config()).passthroughPath).toBeUndefined();
+		expect(
+			parseLxdOfficeLifecycleServiceConfig({ ...config(), passthroughPath: "/protected/passthrough.json" })
+				.passthroughPath,
+		).toBe("/protected/passthrough.json");
+		expect(() =>
+			parseLxdOfficeLifecycleServiceConfig({ ...config(), passthroughPath: "relative/passthrough.json" }),
+		).toThrow();
 	});
 	it("contains only protected references and returns detached configuration", () => {
 		const input = config(),
