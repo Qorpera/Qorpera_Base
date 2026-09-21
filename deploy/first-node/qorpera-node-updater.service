@@ -1,0 +1,29 @@
+[Unit]
+Description=Qorpera enrolled node binary updater
+After=network-online.target snap.lxd.daemon.service
+Wants=network-online.target
+ConditionPathExists=/etc/qorpera/node-updater/service.json
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+# The existing lock is opened without creation, then retained across exec.
+ExecStart=/usr/bin/bash --noprofile --norc -c 'exec 3</var/lib/qorpera-node-updater/provider/update.lock || exit 1; exec /usr/bin/flock --exclusive --nonblock --no-fork /proc/self/fd/3 /usr/bin/node --jitless --disable-proto=throw --disallow-code-generation-from-strings /opt/qorpera/node-updater/qorpera-node-updater.cjs --once --config /etc/qorpera/node-updater/service.json'
+TimeoutStartSec=120
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/qorpera-node-updater/provider -/opt/qorpera/runner-provider -/opt/qorpera-native25-phql-a1
+

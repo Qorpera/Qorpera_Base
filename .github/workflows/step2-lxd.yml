@@ -8,10 +8,12 @@ on:
       - 'deploy/first-node/**'
       - 'deploy/lxd-runner-guest/**'
       - 'packages/runner-orchestrator/src/lxd-*.ts'
+      - 'packages/runner-orchestrator/src/runtime-node-update*.ts'
       - 'packages/runner-orchestrator/src/provider-cli.ts'
       - 'packages/runner-orchestrator/src/provider-service.ts'
       - 'packages/runner-orchestrator/src/service.ts'
       - 'packages/runner-orchestrator/test/lxd-*.test.ts'
+      - 'packages/runner-orchestrator/test/runtime-node-update*.test.ts'
       - 'packages/runner-orchestrator/test/provider-service.test.ts'
       - 'packages/runner-orchestrator/test/service.test.ts'
       - 'packages/runner-orchestrator/package.json'
@@ -28,6 +30,7 @@ on:
       - 'packages/shell/test/lxd-runner-*.test.ts'
       - 'scripts/package-lxd-*.mjs'
       - 'scripts/package-lxd-*.test.mjs'
+      - 'scripts/package-runtime-node-updater*.mjs'
       - 'supabase/functions/company-file-verifier/company-file-verifier.ts'
       - 'supabase/functions/company-file-verifier/company-file-verifier.test.ts'
       - 'supabase/functions/company-file-verifier/object-loader.ts'
@@ -78,6 +81,9 @@ jobs:
           test/lxd-provider.test.ts
           test/provider-service.test.ts
           test/service.test.ts
+          test/runtime-node-update.test.ts
+          test/runtime-node-update-registry.test.ts
+          test/runtime-node-update-host.test.ts
 
       - name: Test runner guest contracts
         working-directory: packages/shell
@@ -98,6 +104,7 @@ jobs:
           scripts/package-lxd-provider.test.mjs
           scripts/package-lxd-runner-guest.test.mjs
           scripts/package-runner-orchestrator.test.mjs
+          scripts/package-runtime-node-updater.test.mjs
 
       - name: Test acceptance storage and verifier contracts
         run: >-
