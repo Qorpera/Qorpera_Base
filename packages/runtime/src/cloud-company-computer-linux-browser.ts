@@ -51,7 +51,8 @@ const policy = {
 	DownloadRestrictions: 3,
 	AllowFileSelectionDialogs: false,
 	URLBlocklist: ["file://*", "chrome://*", "chrome-untrusted://*", "devtools://*", "javascript://*", "view-source:*"],
-	URLAllowlist: ["chrome://newtab/"],
+	// Chromium 151 uses this internal route for its ordinary new-tab page.
+	URLAllowlist: ["chrome://newtab/", "chrome://new-tab-page/"],
 };
 
 /**
