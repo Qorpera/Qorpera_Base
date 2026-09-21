@@ -670,6 +670,63 @@ describe("LXD native login gateway", () => {
 		expect((await gateway.handle(loginRequest())).status).toBe(200);
 		expect(boundary.control.targetRegistrations).toHaveLength(0);
 	});
+	it("continues a pending login after another request restored the node's current identity epoch", async () => {
+		const root = await stateRoot(),
+			lxd = new FakeLxd(),
+			boundary = fetchBoundary([
+				{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: "CURRENT-EPOCH" },
+			]);
+		boundary.control.recovery = "established";
+		lxd.guestFiles.set("/var/lib/qorpera/identity/qorpera-native-provider-master-key", "present");
+		lxd.guestFiles.set("/var/lib/qorpera/identity/qorpera-identity-recovery-3.json", "present");
+		let loginEpoch = 2;
+		const transport: typeof fetch = async (input, init) => {
+			const url = String(input);
+			if (url.endsWith("qorpera_identity_recovery_runtime_state")) {
+				const response = await boundary.fetchImplementation(input, init);
+				const state = (await response.json()) as Record<string, unknown>;
+				return Response.json({ ...state, epoch: 3 });
+			}
+			if (url.endsWith("qorpera_repin_login_recovery_epoch")) {
+				// The SQL contract permits re-pinning a pending login after any
+				// completed recovery at the identity's current generation.
+				loginEpoch = 3;
+				return Response.json({ loginId, epoch: loginEpoch, repinned: true });
+			}
+			if (url.endsWith("/login") && loginEpoch !== 3)
+				return Response.json({ error: "native login generation is fenced for recovery" }, { status: 403 });
+			return boundary.fetchImplementation(input, init);
+		};
+		const gateway = new LxdNativeLoginGateway(config(root), lxd, transport);
+		const response = await gateway.handle(loginRequest());
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({ status: "awaiting_member", user_code: "CURRENT-EPOCH" });
+		expect(loginEpoch).toBe(3);
+		expect(boundary.control.targetRegistrations).toHaveLength(0);
+		expect(boundary.control.recoveryRequests).toHaveLength(0);
+		expect(lxd.execCalls.some((command) => command.join(" ").includes("qorpera-identity-recovery-restore.mjs"))).toBe(
+			false,
+		);
+	});
+	it("does not bootstrap a current local identity when its login epoch cannot be re-pinned", async () => {
+		const root = await stateRoot(),
+			lxd = new FakeLxd(),
+			boundary = fetchBoundary([]);
+		boundary.control.recovery = "established";
+		lxd.guestFiles.set("/var/lib/qorpera/identity/qorpera-native-provider-master-key", "present");
+		lxd.guestFiles.set("/var/lib/qorpera/identity/qorpera-identity-recovery-1.json", "present");
+		const transport: typeof fetch = async (input, init) => {
+			if (String(input).endsWith("qorpera_repin_login_recovery_epoch"))
+				return Response.json({ error: "login re-pin requires a restored identity" }, { status: 403 });
+			return boundary.fetchImplementation(input, init);
+		};
+		const gateway = new LxdNativeLoginGateway(config(root), lxd, transport);
+		expect((await gateway.handle(loginRequest())).status).toBe(503);
+		expect(lxd.filePushes).toHaveLength(0);
+		expect(lxd.execCalls.some((command) => command[0] === "/usr/bin/systemctl")).toBe(false);
+		expect(boundary.requests.some((request) => request.url.endsWith("/login"))).toBe(false);
+		expect(boundary.control.recoveryRequests).toHaveLength(0);
+	});
 	it("recovers a copy left behind by a recovery on another node: the key is here, the current epoch's marker is not", async () => {
 		const root = await stateRoot(),
 			lxd = new FakeLxd(),

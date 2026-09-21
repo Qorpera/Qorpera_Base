@@ -40,6 +40,7 @@ import {
 	parseLxdOfficeLifecycleRequest,
 } from "./lxd-office-lifecycle-journal.ts";
 import { observeLxdOfficeOperationJournals } from "./lxd-office-operation-observer.ts";
+import { createLxdOfficeGuestResolver, type LxdOfficeGuestResolver } from "./lxd-office-passthrough.ts";
 import { LxdOfficePhysicalGate } from "./lxd-office-physical-gate.ts";
 import { readLxdOfficeProtectedFile } from "./lxd-office-physical-host.ts";
 import {
@@ -154,6 +155,7 @@ export class LxdOfficeLifecycle {
 	readonly #operationClient: LxdUnixClient;
 	readonly #configSha: string;
 	readonly #planPath: string;
+	readonly #guest: Readonly<{ project: string; companyComputerId: string; computerGeneration: number }>;
 	readonly #resetImagePackageManifestPath?: string;
 	readonly #codePackageLanePath?: string;
 	readonly #preparePackageInvocation;
@@ -191,6 +193,11 @@ export class LxdOfficeLifecycle {
 		this.#root = policy.journal.path;
 		this.#operationClient = new LxdUnixClient(policy.host.socketPath);
 		this.#planPath = officePhysicalPath(options.planPath);
+		this.#guest = Object.freeze({
+			project: g.project,
+			companyComputerId: g.companyComputerId,
+			computerGeneration: g.computerGeneration,
+		});
 		this.#codePackageLanePath =
 			options.codePackageLanePath === undefined ? undefined : officePhysicalPath(options.codePackageLanePath);
 		this.#resetImagePackageManifestPath =
@@ -309,6 +316,11 @@ export class LxdOfficeLifecycle {
 		const gate = await LxdOfficePhysicalGate.open(policyPath, provenancePath, signal);
 		// A resumed host boot answers as its lineage anchor (2026-09-17 amendment).
 		return new LxdOfficeLifecycle(new LxdOfficeHostRebootGate(gate, gate.policy.journal.path), registry, options);
+	}
+	/** Where the office guest is right now, by the identity this provider planned
+	 * into the VM. Used by the host passthrough; never cached across activations. */
+	guestResolver(): LxdOfficeGuestResolver {
+		return createLxdOfficeGuestResolver(this.#operationClient, this.#guest);
 	}
 	async observeControlOperations(signal: AbortSignal): Promise<void> {
 		await this.#kernelLock(this.#root);

@@ -1159,8 +1159,12 @@ export class LxdNativeLoginGateway {
 			(epoch === null ||
 				epoch === 0 ||
 				(await this.#guestFileExists(instanceName, recoveryEpochMarkerPath(epoch), signal)))
-		)
+		) {
+			// Another request may have restored this volume after the pending login
+			// was created. Reconcile its pin before bootstrap on the current epoch.
+			if (epoch !== null && epoch > 0) await this.#repinLogin(binding, signal);
 			return;
+		}
 		const registrar = this.#config.identityRecoveryRegistrarCapability,
 			guestManifestSha256 = this.#config.guestManifestSha256,
 			configuration = state.recoveryConfiguration;
@@ -1259,7 +1263,7 @@ export class LxdNativeLoginGateway {
 		console.error(`LXD native login identity recovered (login ${binding.loginId}, node ${nodeId})`);
 	}
 
-	/** The login's own recovery advanced the identity's generation past the one
+	/** A completed recovery advanced the identity's generation past the one
 	 * the session was pinned to; the backend re-pins it so the login's backup
 	 * stage and completion run on the restored generation. */
 	async #repinLogin(binding: LxdLoginBinding, signal: AbortSignal): Promise<void> {
