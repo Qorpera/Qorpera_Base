@@ -70,7 +70,7 @@ begin
  perform 1 from public.qorpera_runtime_nodes where id=p_node_id for update;
  if not found then raise exception 'Node unavailable' using errcode='42501'; end if;
  select * into e from public.qorpera_node_update_enrollments where node_id=p_node_id for update;
- if coalesce(e.capability_revision,0)<>p_expected_capability_revision then raise exception 'Capability version changed' using errcode='40001'; end if;
+ if coalesce(e.capability_revision,0)<>p_expected_capability_revision then raise exception 'Capability version changed' using errcode='42501'; end if;
  if e.node_id is not null and (e.current_revision<>p_baseline_revision or e.current_release_sha256<>p_baseline_release_sha256 or e.current_artifact_sha256<>p_baseline_artifact_sha256) then
   raise exception 'Enrolled predecessor is immutable' using errcode='42501'; end if;
  insert into public.qorpera_node_update_enrollments values(p_node_id,p_expected_capability_revision+1,p_capability_sha256,p_enabled,p_baseline_revision,p_baseline_release_sha256,p_baseline_artifact_sha256)
