@@ -1958,6 +1958,22 @@ Deployed acceptance with clients closed on the production node remains the
 gate before Order 3 is closed. See
 [Runtime Step 3 wake bus](deploy/first-node/RUNTIME-STEP-3-WAKE-BUS.md).
 
+Runtime step 5 (Order 5) now has a source implementation: an in-house worker
+is a blank child run of the same agent admitted through the wake bus (source
+kind `worker-dispatch`) with a complete dispatch, no conversation and therefore
+no public mouth; its single durable report revives the parent through a typed
+internal continuation (source kind `worker-completion`) in the parent's
+conversation, where the agent may speak briefly or stay silent. Dispatch
+returns at admission and the parent ends its run, so a new human message is
+admitted while the child works. Todos and worker handles are durable kernel
+objects; each change publishes the canonical todo document to the Company File
+under `work/todos/<agent>/`, and an accepted output is a Company File revision
+the worker's own run wrote. Disposable-database proofs, runtime tests and a
+live-model behavior screen pass. Deployed acceptance on the nodes remains the
+gate before Order 5 is closed; coding, media and listener workers remain in
+Orders 9, 7 and 8. See
+[Runtime Step 5 workers and todos](deploy/first-node/RUNTIME-STEP-5-WORKERS-TODOS.md).
+
 ## 20. Enforcement matrix
 
 | Requirement | Code owner | Model law |

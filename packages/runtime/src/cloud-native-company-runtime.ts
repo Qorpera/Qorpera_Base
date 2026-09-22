@@ -41,6 +41,7 @@ import {
 } from "./cloud-runtime-observability.ts";
 import { type CloudSecretOperationClient, cloudSecretTools, describeCloudSecretTools } from "./cloud-secret-tools.ts";
 import { type CloudWakeControl, cloudCoworkerMessageTool, parseCloudWakeEnvelope } from "./cloud-wake-bus.ts";
+import { cloudWorkerToolFilter, cloudWorkerTools } from "./cloud-worker-tools.ts";
 
 type NativeCompanyControl = CloudNativeToolAuthorityReader &
 	CloudNativeToolOperationControlPlane &
@@ -276,13 +277,17 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						)
 							throw new Error("Cloud context identity changed before execution");
 						const computer = await this.#computerSession?.(run, operations);
+						// Contract 13: a worker reads, works and reports to its parent. It has no mouth, no
+						// coworker channel and no delegation; an ordinary company run is the dispatcher.
+						const work = cloudWorkerToolFilter(wake);
 						return {
 							captures: computer?.captures,
 							tools: [
 								...(computer?.tools ?? []),
-								...gateway.tools(),
+								...gateway.tools().filter(work.companyFile),
 								cloudCompanyContextTool(context, binding, this.#paths),
-								...(this.#secretBroker
+								// A worker has no outbound effects: no mouth, no connectors.
+								...(this.#secretBroker && !work.isWorker
 									? cloudSecretTools({
 											descriptors: connectorDescriptors,
 											binding,
@@ -291,9 +296,18 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 											broker: this.#secretBroker,
 										})
 									: []),
-								cloudCoworkerMessageTool(binding, identity, wakeControl),
-								...cloudRoutineTools(binding, identity, this.#paths),
-								...(identity.audienceKind === "company" ? cloudHiringTools(gateway, identity) : []),
+								...(work.isWorker
+									? []
+									: [
+											cloudCoworkerMessageTool(binding, identity, wakeControl),
+											...cloudRoutineTools(binding, identity, this.#paths),
+										]),
+								...(identity.audienceKind === "company"
+									? [
+											...(work.isWorker ? [] : cloudHiringTools(gateway, identity)),
+											...cloudWorkerTools(binding, identity, this.#paths, gateway, wake),
+										]
+									: []),
 								...(identity.sessionId && wake.policy.final !== "forbidden" ? [send] : []),
 							],
 							assertContext: (requestSignal) => gateway.assertReadableContext(requestSignal),
