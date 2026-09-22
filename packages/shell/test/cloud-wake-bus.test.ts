@@ -214,6 +214,37 @@ describe("worker dispatch and completion envelopes", () => {
 		expect(parsed.policy.maxPublicSends).toBe(0);
 		expect(Object.isFrozen(parsed.payload.dispatch)).toBe(true);
 	});
+	it("admits a coding session turn: species coding with the executor's scope, up to 64 turns, read access", () => {
+		const { identity, wake } = workerWakeFixture("worker-dispatch");
+		const workerId = wake.source.id;
+		const coding = {
+			harness: "codex",
+			repository: { host: "github.com", owner: "Qorpera", name: "Qorpera_Base", baseBranch: "master" },
+			branch: `qorpera/coding/${workerId}`,
+			baseSha: null,
+			harnessSessionRef: null,
+			sequence: 1,
+			vmId: randomUUID(),
+		};
+		const turn = { ...wake, payload: { ...wake.payload, species: "coding", coding } };
+		expect(parseCloudWakeEnvelope(turn, identity).payload.species).toBe("coding");
+		expect(() =>
+			parseCloudWakeEnvelope(
+				{ ...turn, payload: { ...turn.payload, coding: { ...coding, sequence: 2 } } },
+				identity,
+			),
+		).toThrow();
+		expect(() =>
+			parseCloudWakeEnvelope({ ...turn, payload: { ...turn.payload, access: "write" } }, identity),
+		).toThrow();
+		expect(() =>
+			parseCloudWakeEnvelope(
+				{ ...turn, payload: { ...turn.payload, coding: { ...coding, harness: "shell" } } },
+				identity,
+			),
+		).toThrow();
+		expect(() => parseCloudWakeEnvelope({ ...wake, payload: { ...wake.payload, coding } }, identity)).toThrow();
+	});
 	it("admits a completion as an internal continuation that may speak briefly in its parent's conversation", () => {
 		const { identity, wake } = workerWakeFixture("worker-completion");
 		const parsed = parseCloudWakeEnvelope(wake, identity);
