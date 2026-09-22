@@ -5,9 +5,16 @@ import { ComputerViewHost } from "../../ui/computer-view-host.ts";
 import { h, replace } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
 
-/** Opening the thread's computer is the explicit intent to start and watch it. */
+/**
+ * Opening the thread's computer is the explicit intent to start and watch it.
+ * The panel belongs to the company's `ComputerPanels`, not to the thread it
+ * was opened in: a thread attaches it while the member is there and hands it
+ * back on the way out, and the screen stays connected in between. Only the
+ * member closing it, or leaving the company, ends the connection.
+ */
 export class ComputerPanel {
 	readonly el: HTMLElement;
+	readonly agentId: string;
 	readonly #stop = new AbortController();
 	readonly #status = h("p", { role: "status" }, "Connecting…");
 	readonly #spinner = h("span", { class: "computer-loading-spinner", "aria-hidden": "true" });
@@ -15,9 +22,14 @@ export class ComputerPanel {
 	readonly #loading = h("div", { class: "computer-loading" }, this.#spinner, this.#status, this.#retry);
 	readonly #body = h("div", { class: "computer-panel-body" }, this.#loading);
 	readonly #views: ComputerViewHost;
+	readonly #fitPreview: () => void;
+	readonly #setExpanded: (expanded: boolean) => void;
+	/** The attached thread's way of putting the panel away for good. */
+	#close: () => void = () => {};
 	#busy = false;
 
-	constructor(agent: HostedStaffAgent, close: () => void, computer?: WebCompanyComputer, parentSignal?: AbortSignal) {
+	constructor(agent: HostedStaffAgent, computer?: WebCompanyComputer, parentSignal?: AbortSignal) {
+		this.agentId = agent.id;
 		const signal = AbortSignal.any([this.#stop.signal, ...(parentSignal ? [parentSignal] : [])]);
 		this.#views = new ComputerViewHost(signal);
 		this.el = h(
@@ -31,9 +43,9 @@ export class ComputerPanel {
 			},
 			this.#body,
 		);
-		const fitPreview = attachComputerDrag(this.el, signal);
+		this.#fitPreview = attachComputerDrag(this.el, signal);
 		const covered = new Map<HTMLElement, boolean>();
-		const setExpanded = (expanded: boolean) => {
+		this.#setExpanded = (expanded: boolean) => {
 			this.el.classList.toggle("is-entered", expanded);
 			if (expanded) {
 				for (const child of this.el.parentElement?.querySelector(".thread-conversation")?.children ?? []) {
@@ -45,10 +57,10 @@ export class ComputerPanel {
 			} else {
 				for (const [element, inert] of covered) element.inert = inert;
 				covered.clear();
-				fitPreview();
+				this.#fitPreview();
 			}
 		};
-		signal.addEventListener("abort", () => setExpanded(false), { once: true });
+		signal.addEventListener("abort", () => this.#setExpanded(false), { once: true });
 		this.el.addEventListener(
 			"keydown",
 			(event) => {
@@ -60,7 +72,7 @@ export class ComputerPanel {
 						this.el.querySelector<HTMLButtonElement>(".screen-viewer-back")?.click();
 						return;
 					}
-					close();
+					this.#close();
 				}
 			},
 			// noVNC consumes canvas key events before they can bubble to the panel.
@@ -172,8 +184,8 @@ export class ComputerPanel {
 						await this.#views.open({
 							mount: this.#body,
 							autofocus: false,
-							onExpandedChange: setExpanded,
-							onClosed: close,
+							onExpandedChange: this.#setExpanded,
+							onClosed: () => this.#close(),
 							binding: screen.binding,
 							title: `${agent.displayName} · Computer`,
 							canControl: canManage,
@@ -250,6 +262,30 @@ export class ComputerPanel {
 		void run();
 	}
 
+	/** Whether a thread is showing the panel right now. */
+	get attached(): boolean {
+		return this.el.isConnected;
+	}
+
+	/** Show the panel in a thread. `close` is that thread's request to end it for good. */
+	attach(body: HTMLElement, close: () => void): void {
+		if (this.#stop.signal.aborted) return;
+		this.#close = close;
+		body.append(this.el);
+		this.#fitPreview();
+	}
+
+	/** Leave the thread, keeping the connection for the next thread that attaches it. */
+	detach(): void {
+		this.#close = () => {};
+		// A member who left mid-screen returns to a preview; the thread it covered is gone.
+		if (this.el.classList.contains("is-entered")) {
+			this.el.querySelector<HTMLButtonElement>(".screen-viewer-back")?.click();
+			this.#setExpanded(false);
+		}
+		this.el.remove();
+	}
+
 	focus(): void {
 		this.el.focus();
 	}
@@ -257,7 +293,50 @@ export class ComputerPanel {
 	dispose(): void {
 		if (this.#stop.signal.aborted) return;
 		this.#stop.abort();
+		this.#close = () => {};
 		replace(this.el);
 		this.el.remove();
+	}
+}
+
+/**
+ * The company's open computer panels, one per agent. A panel opened in any of
+ * an agent's threads stays open, screen connected, until a member closes it or
+ * leaves the company; the threads that show it come and go.
+ */
+export class ComputerPanels {
+	readonly #panels = new Map<string, ComputerPanel>();
+	readonly #computer: WebCompanyComputer | undefined;
+	readonly #signal: AbortSignal | undefined;
+
+	constructor(computer?: WebCompanyComputer, signal?: AbortSignal) {
+		this.#computer = computer;
+		this.#signal = signal;
+		signal?.addEventListener("abort", () => this.dispose(), { once: true });
+	}
+
+	/** The panel a thread left open for this agent, if any. */
+	get(agentId: string): ComputerPanel | undefined {
+		return this.#panels.get(agentId);
+	}
+
+	/** The agent's panel, started now unless a thread already opened it. */
+	open(agent: HostedStaffAgent): ComputerPanel {
+		let panel = this.#panels.get(agent.id);
+		if (panel) return panel;
+		panel = new ComputerPanel(agent, this.#computer, this.#signal);
+		if (!this.#signal?.aborted) this.#panels.set(agent.id, panel);
+		return panel;
+	}
+
+	/** End the agent's panel and its connection. */
+	close(agentId: string): void {
+		const panel = this.#panels.get(agentId);
+		this.#panels.delete(agentId);
+		panel?.dispose();
+	}
+
+	dispose(): void {
+		for (const agentId of [...this.#panels.keys()]) this.close(agentId);
 	}
 }

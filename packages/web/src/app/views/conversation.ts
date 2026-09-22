@@ -21,7 +21,7 @@ import type { AgentState, CompanyController, ConversationState } from "../compan
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
 import { ComposerModels } from "./composer-models.ts";
-import { ComputerPanel } from "./computer.ts";
+import { type ComputerPanel, ComputerPanels } from "./computer.ts";
 import { GroupDetails } from "./group-details.ts";
 import { SessionExecutionView } from "./session-execution.ts";
 import { SessionRunView } from "./session-run.ts";
@@ -70,6 +70,9 @@ export class ConversationView {
 	readonly #run: SessionRunView | undefined;
 	readonly #execution: SessionExecutionView | undefined;
 	#details: AgentDetails | GroupDetails | undefined;
+	/** The company's open computers; this thread shows its agent's while the member is here. */
+	readonly #panels: ComputerPanels;
+	readonly #ownPanels: boolean;
 	#panel: ComputerPanel | undefined;
 	#headerKey = "";
 	#renderedKey = "";
@@ -98,6 +101,8 @@ export class ConversationView {
 		this.#notificationSignal = AbortSignal.any([this.#lifetime.signal, company.signal]);
 		this.#sessionId = sessionId;
 		this.#actions = actions;
+		this.#ownPanels = !actions.computerPanels;
+		this.#panels = actions.computerPanels ?? new ComputerPanels(actions.computer, company.signal);
 		this.#run = actions.runControl
 			? new SessionRunView(
 					actions.runControl,
@@ -342,7 +347,10 @@ export class ConversationView {
 		this.#sizes?.disconnect();
 		this.#runNotification.remove();
 		this.#details?.dispose();
-		this.#panel?.dispose();
+		// The computer stays open, and connected, for the next thread that shows it.
+		if (this.#ownPanels) this.#panels.dispose();
+		else this.#panel?.detach();
+		this.#panel = undefined;
 		this.#attachments.dispose();
 		for (const attachments of this.#receivedAttachments) attachments.dispose();
 		for (const unsubscribe of this.#unsubscribe) unsubscribe();
@@ -438,7 +446,7 @@ export class ConversationView {
 
 	#toggleComputer(): void {
 		if (this.#panel) {
-			this.#panel.dispose();
+			this.#panels.close(this.#panel.agentId);
 			this.#panel = undefined;
 			this.#autosize();
 			this.#computer.setAttribute("aria-expanded", "false");
@@ -450,15 +458,17 @@ export class ConversationView {
 			state.sessions.find((session) => session.sessionId === this.#sessionId)?.staffAgentId,
 		);
 		if (!agent) return;
-		this.#panel = new ComputerPanel(
-			agent,
-			() => this.#toggleComputer(),
-			this.#actions.computer,
-			this.#company.signal,
-		);
-		this.#body.append(this.#panel.el);
+		this.#showPanel(agent);
+	}
+
+	/** Show the agent's computer here: the one already open, or one started now. */
+	#showPanel(agent: HostedStaffAgent): ComputerPanel {
+		const panel = this.#panels.open(agent);
+		this.#panel = panel;
+		panel.attach(this.#body, () => this.#toggleComputer());
 		this.#autosize();
 		this.#computer.setAttribute("aria-expanded", "true");
+		return panel;
 	}
 
 	/** One button: it sends a draft, and with nothing to send it stops the run the agent is on. */
@@ -625,25 +635,29 @@ export class ConversationView {
 			this.#identity.removeAttribute("aria-haspopup");
 			this.#identity.removeAttribute("aria-expanded");
 		}
-		if (key === this.#headerKey) return;
-		this.#headerKey = key;
-		if (this.#panel) {
-			const focused = this.#panel.el.contains(document.activeElement);
-			this.#panel.dispose();
-			this.#panel = agent
-				? new ComputerPanel(agent, () => this.#toggleComputer(), this.#actions.computer, this.#company.signal)
-				: undefined;
-			if (this.#panel) this.#body.append(this.#panel.el);
-			if (focused) this.#panel ? this.#panel.focus() : this.#composer.focus();
-			this.#computer.setAttribute("aria-expanded", String(Boolean(this.#panel)));
-			this.#autosize();
+		if (key !== this.#headerKey) {
+			this.#headerKey = key;
+			if (this.#panel) {
+				const focused = this.#panel.el.contains(document.activeElement);
+				this.#panels.close(this.#panel.agentId);
+				this.#panel = undefined;
+				const shown = agent ? this.#showPanel(agent) : undefined;
+				if (focused) shown ? shown.focus() : this.#composer.focus();
+				this.#computer.setAttribute("aria-expanded", String(Boolean(shown)));
+				this.#autosize();
+			}
+			replace(
+				this.#identity,
+				group ? groupChatAvatar(groupAgents, { width: 40, height: 32 }) : agentFigure(agent, title, { size: 32 }),
+				h("h1", null, title),
+				agent || group ? icon("chevron") : null,
+			);
 		}
-		replace(
-			this.#identity,
-			group ? groupChatAvatar(groupAgents, { width: 40, height: 32 }) : agentFigure(agent, title, { size: 32 }),
-			h("h1", null, title),
-			agent || group ? icon("chevron") : null,
-		);
+		// A computer left open in another of this agent's threads shows here without a click.
+		if (!this.#panel && agent) {
+			const open = this.#panels.get(agent.id);
+			if (open && !open.attached) this.#showPanel(agent);
+		}
 	}
 
 	#refreshTimestamps(preserveScroll = true): void {

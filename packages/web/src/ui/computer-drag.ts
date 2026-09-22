@@ -19,6 +19,8 @@ export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): () 
 	let chosenWidth = COMPUTER_PREVIEW_WIDTH;
 	let drag: Drag | undefined;
 	let observer: ResizeObserver | undefined;
+	/** The thread the observer watches; the panel moves between threads and keeps its place. */
+	let observed: HTMLElement | undefined;
 	const expanded = () => panel.classList.contains("is-entered") || Boolean(document.fullscreenElement);
 	// The status row (send errors, run actions) sits above the composer and must stay reachable.
 	const below = (parent: HTMLElement) =>
@@ -66,20 +68,25 @@ export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): () 
 		}
 	};
 	const observe = () => {
-		if (observer || !panel.parentElement || typeof ResizeObserver === "undefined") return;
+		const parent = panel.parentElement;
+		if (!parent || typeof ResizeObserver === "undefined" || (observer && observed === parent)) return;
+		observer?.disconnect();
+		observed = parent;
 		observer = new ResizeObserver(reclamp);
-		observer.observe(panel.parentElement);
+		observer.observe(parent);
 		observer.observe(panel);
-		for (const boundary of panel.parentElement.querySelectorAll(".thread-header, .thread-status, .composer")) {
+		for (const boundary of parent.querySelectorAll(".thread-header, .thread-status, .composer")) {
 			observer.observe(boundary);
 		}
 	};
-	// The panel is attached by its owner immediately after construction.
-	queueMicrotask(() => {
+	/** Fit the preview to the thread it is in now; the owner calls this on every attach. */
+	const refit = () => {
 		if (signal.aborted) return;
 		observe();
 		reclamp();
-	});
+	};
+	// The panel is attached by its owner immediately after construction.
+	queueMicrotask(refit);
 	const frame = (): Rect | undefined => {
 		const parent = panel.parentElement;
 		if (!parent) return;
@@ -273,5 +280,5 @@ export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): () 
 		},
 		{ once: true },
 	);
-	return reclamp;
+	return refit;
 }

@@ -26,6 +26,7 @@ import { type AccountViewState, renderAccount } from "./views/account.ts";
 import { ApprovalsView } from "./views/approvals.ts";
 import { CloudCheckView } from "./views/cloudcheck.ts";
 import { CompanyFileController, renderCompanyFile } from "./views/companyfile.ts";
+import { ComputerPanels } from "./views/computer.ts";
 import { ConversationView } from "./views/conversation.ts";
 import { ExecutionNotices } from "./views/execution-notices.ts";
 import { FeedbackView } from "./views/feedback.ts";
@@ -163,6 +164,7 @@ export function mountApplication(
 	let company: CompanyController | undefined;
 	let notices: ExecutionNotices | undefined;
 	let computer: WebCompanyComputer | undefined;
+	let computerPanels: ComputerPanels | undefined;
 	let companyFile: CompanyFileController | undefined;
 	let liveFile: LiveCompanyFileView | undefined;
 	let conversation: ConversationView | undefined;
@@ -252,6 +254,7 @@ export function mountApplication(
 		pendingCompany = undefined;
 		company = undefined;
 		computer = undefined;
+		computerPanels = undefined;
 		companyFile = undefined;
 		conversation = undefined;
 		newConversation = undefined;
@@ -330,6 +333,8 @@ export function mountApplication(
 				if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
 					throw new Error("Company access is unavailable.");
 			});
+			// Open computers outlive the thread they were opened in; leaving the company ends them.
+			computerPanels = new ComputerPanels(computer, controller.signal);
 			companyFile = new CompanyFileController(api, controller);
 			unsubscribeCompany = controller.store.subscribe(() => render());
 			unsubscribeFile = companyFile.store.subscribe(() => render());
@@ -766,6 +771,7 @@ export function mountApplication(
 							...agentActions,
 							...workspaceActions,
 							computer,
+							computerPanels,
 							notificationHost: executionNotices,
 						},
 						() => setNavigationOpen(!navigationOpen),
