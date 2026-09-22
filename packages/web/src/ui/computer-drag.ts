@@ -133,6 +133,11 @@ export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): () 
 			bounds,
 		);
 	};
+	// The enter animation slides the panel in by 18px; once the member takes hold of it, measurements and
+	// positions must be the panel's own. Toggling animation via a class would replay the slide on release.
+	const settle = () => {
+		if (panel.style.animation !== "none") panel.style.animation = "none";
+	};
 	const finish = () => {
 		if (!drag) return;
 		const id = drag.id;
@@ -146,6 +151,7 @@ export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): () 
 		(event) => {
 			if (expanded() || drag || !event.isPrimary || event.button !== 0) return;
 			if (event.target instanceof Element && event.target.closest("button, a, input, textarea, select")) return;
+			settle();
 			const from = frame();
 			if (!from) return;
 			drag = { id: event.pointerId, x: event.clientX, y: event.clientY, from, moved: false, edge: edgeAt(event) };
@@ -232,6 +238,7 @@ export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): () 
 			if (event.target !== panel || expanded() || event.altKey || event.ctrlKey || event.metaKey) return;
 			const grow = matchesKey(event, "grow") ? 1 : matchesKey(event, "shrink") ? -1 : 0;
 			if (grow) {
+				settle();
 				const from = frame();
 				if (!from) return;
 				observe();
@@ -243,6 +250,7 @@ export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): () 
 			const dx = matchesKey(event, "left") ? -1 : matchesKey(event, "right") ? 1 : 0;
 			const dy = matchesKey(event, "previous") ? -1 : matchesKey(event, "next") ? 1 : 0;
 			if (!dx && !dy) return;
+			settle();
 			const from = frame();
 			if (!from) return;
 			const step = event.shiftKey ? 50 : 10;

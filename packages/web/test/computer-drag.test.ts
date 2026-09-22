@@ -114,8 +114,11 @@ describe("computer preview dragging", () => {
 			desktopMove = vi.fn();
 		f.canvas.addEventListener("pointerdown", desktopDown);
 		f.canvas.addEventListener("pointermove", desktopMove);
+		expect(f.panel.style.animation).toBe("");
 		expect(pointer(f.canvas, "pointerdown").defaultPrevented).toBe(true);
 		expect(desktopDown).not.toHaveBeenCalled();
+		// The enter slide is cancelled for good, not toggled by a class that would replay it on release.
+		expect(f.panel.style.animation).toBe("none");
 		expect(f.panel.setPointerCapture).toHaveBeenCalledWith(1);
 		expect(document.activeElement).toBe(f.panel);
 		expect(pointer(f.canvas, "pointermove", { clientX: 613 }).defaultPrevented).toBe(true);
@@ -455,6 +458,7 @@ describe("computer preview resizing", () => {
 		const f = setup();
 		big(f);
 		expect(key(f.panel, "+").defaultPrevented).toBe(true);
+		expect(f.panel.style.animation).toBe("none");
 		expect(width(f)).toBe(440);
 		expect(f.panel.style.getPropertyValue("--computer-left")).toBe("500px");
 		expect(top(f)).toBe(70);

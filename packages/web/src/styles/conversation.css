@@ -278,13 +278,13 @@
 
 .computer-panel { position: absolute; top: var(--computer-top, calc(var(--titlebar-height) + 20px)); left: var(--computer-left, auto); right: 20px; z-index: 20; width: var(--computer-width, min(400px, calc(100% - 40px))); aspect-ratio: 16 / 9; min-height: 0; overflow: hidden; border: 1px solid rgb(255 255 255 / 12%); border-radius: 8px; background: #24262a; box-shadow: 0 8px 28px rgb(0 0 0 / 32%), 0 2px 6px rgb(0 0 0 / 24%); animation: computer-enter 180ms ease both; }
 .computer-panel:not(.is-entered) { cursor: grab; touch-action: none; }
-.computer-panel.is-dragging { cursor: grabbing; user-select: none; animation: none; }
+.computer-panel.is-dragging { cursor: grabbing; user-select: none; }
 /* An 8px band inside each edge resizes the preview; the cursor names the edge under the pointer. */
 .computer-panel:not(.is-entered):is([data-resize=n], [data-resize=s]) { cursor: ns-resize; }
 .computer-panel:not(.is-entered):is([data-resize=e], [data-resize=w]) { cursor: ew-resize; }
 .computer-panel:not(.is-entered):is([data-resize=nw], [data-resize=se]) { cursor: nwse-resize; }
 .computer-panel:not(.is-entered):is([data-resize=ne], [data-resize=sw]) { cursor: nesw-resize; }
-.computer-panel.is-resizing { user-select: none; animation: none; }
+.computer-panel.is-resizing { user-select: none; }
 .computer-panel.is-entered { top: calc(var(--titlebar-height) + 8px); left: 8px; right: 8px; bottom: 8px; width: auto; height: auto; max-height: none; aspect-ratio: auto; animation: none; }
 .computer-panel-body { position: absolute; inset: 0; overflow: hidden; background: #24262a; color: #d8d8d4; }
 .computer-loading { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 40px 28px; overflow: auto; text-align: center; }
