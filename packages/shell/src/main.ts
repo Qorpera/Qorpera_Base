@@ -89,7 +89,6 @@ import {
 	pendingStaffAgentMessages,
 	queueStaffAgentMessage,
 	readCompanyArtifacts,
-	readStaffAgentMemory,
 	readStaffAgentMessages,
 	readStaffAgents,
 	recentDeliveredStaffAgentMessages,
@@ -3732,12 +3731,6 @@ function staffSystemContext(root: string, agent: StaffAgent): string {
 				),
 			].join("\n")
 		: "You do not have a recurring routine yet.";
-	const memory = readStaffAgentMemory(root, agent.id);
-	const memoryInstructions = [
-		`Private memory: agents/${agent.id}/memory.md`,
-		"This file is your durable personal memory across every session and wake. Record founder preferences, decisions, recurring context, and lessons the moment you learn them; prune anything wrong or stale. Keep it about how you work, not a copy of company data.",
-		...(memory.trim() ? ["Current memory:", memory.trim()] : []),
-	].join("\n");
 	const skillsInstructions = `Personal skills: agents/${agent.id}/skills/ holds skill files loaded only into your sessions. When you develop a repeatable procedure worth keeping, save it there as a skill; company-wide skills belong to the founder under .qorpera/skills/.`;
 	const coworkers = (() => {
 		try {
@@ -3776,7 +3769,6 @@ function staffSystemContext(root: string, agent: StaffAgent): string {
 		"Instructions:",
 		agent.charter,
 		lifecycleInstructions,
-		memoryInstructions,
 		skillsInstructions,
 		coworkerInstructions,
 		messageInstructions,

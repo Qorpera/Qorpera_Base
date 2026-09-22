@@ -211,27 +211,22 @@ describe("agent memory notebook", () => {
 			const result = await f.boundary.invoke("r1", "qorpera", "recall_memory", { query: "ledger review", limit: 2 });
 			expect(result.success, JSON.stringify(result)).toBe(true);
 			const recall = f.receipt(result);
-			expect(recall).toMatchObject({ ranking: "distinctive_words", scopesSearched: ["agent"], moreFacts: 2 });
+			expect(recall).toMatchObject({ scope: "agent", moreFacts: 2 });
+			// Grok-shaped result: facts with date, tier and scope, nothing about files or ranking.
+			expect(Object.keys(recall).sort()).toEqual(["facts", "moreFacts", "query", "runId", "schema", "scope"]);
 			expect(recall.facts.map((fact: { fact: string }) => fact.fact)).toEqual([
 				"Jonas approved the Q3 ledger review plan.",
 				"Ledger review moved to Fridays.",
 			]);
 			expect(recall.facts[1]).toMatchObject({ date: "2026-08-10", tier: "log", scope: "agent" });
-			expect(recall.files.map((file: { path: string }) => file.path)).toEqual([
-				f.paths.profile,
-				`agents/${f.agent}/memory/log/2026-09.md`,
-				`agents/${f.agent}/memory/log/2026-08.md`,
-			]);
 			const literal = f.receipt(
 				await f.boundary.invoke("r2", "qorpera", "recall_memory", { query: "floor two", scope: "all" }),
 			);
-			expect(literal.ranking).toBe("distinctive_words");
-			expect(literal.facts).toHaveLength(1);
+			expect(literal).toMatchObject({ scope: "all", facts: [{ fact: "Coffee machine is on floor two." }] });
 			const substring = f.receipt(await f.boundary.invoke("r3", "qorpera", "recall_memory", { query: "Q3 le" }));
-			expect(substring).toMatchObject({
-				ranking: "substring",
-				facts: [{ fact: "Jonas approved the Q3 ledger review plan." }],
-			});
+			expect(substring.facts).toEqual([
+				{ fact: "Jonas approved the Q3 ledger review plan.", tier: "log", scope: "agent", date: "2026-09-02" },
+			]);
 			const none = f.receipt(await f.boundary.invoke("r4", "qorpera", "recall_memory", { query: "unicorns" }));
 			expect(none.facts).toEqual([]);
 		} finally {

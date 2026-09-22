@@ -35,7 +35,7 @@ requirement without allowing a company file or ambient configuration to become
 another instruction source. The unsupported Claude lane remains unavailable.
 
 The constitution and overlays describe only advertised capabilities. Workers,
-memory indexes, connector breadth, schedules and coding VMs from Orders 5–9 are
+the memory notebook, connector breadth, schedules and coding VMs from Orders 5–9 are
 not implemented or certified by this change. Co-Founder formation and employee
 responsibility behavior use the same tools, admission, audience and mouth as
 other runs.

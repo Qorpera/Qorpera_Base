@@ -19,7 +19,6 @@ into the company folder.
   agents/               # one private workspace per agent
     <agent-id>/
       instructions.md
-      memory.md         # durable personal memory carried into every session
       skills/           # personal skills loaded only for this agent
       artifacts/        # measures and evidence this agent owns
   connectors/           # executable, provider-neutral connector recipes
@@ -60,9 +59,10 @@ Each agent is a customizable employee with its own configuration:
   without one inherit the company runtime default. Changing the model from the
   running conversation persists to the agent, and the founder can also set or
   clear it from the agent's settings panel.
-- **Memory.** `agents/<agent-id>/memory.md` is the agent's private long-term
-  memory, injected into every launch. The agent maintains it directly:
-  founder preferences, decisions, recurring context, and lessons learned.
+- **Memory.** The agent's notebook lives in the cloud Company File under
+  `agents/<agent-id>/memory/` (a profile and one log file per month, the
+  Grok Bot layout) and is composed by the cloud runtime; the desktop neither
+  seeds nor injects a memory file.
 - **Skills.** `agents/<agent-id>/skills/` is scanned on every launch through
   the additive skill lane, so an agent's personal skills stack on the shared
   user and company skill roots without leaking to coworkers.

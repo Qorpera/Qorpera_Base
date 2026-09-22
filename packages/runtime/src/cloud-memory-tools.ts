@@ -240,7 +240,7 @@ export async function composeCloudAgentMemory(
 
 export const CLOUD_UPDATE_MEMORY_DESCRIPTION =
 	"Your own memory notebook, separate from the conversation and from company state. " +
-	"action write records one self-contained fact; tier profile for enduring identity and preferences (always in mind, keep it small), log (default) for a dated decision or piece of history, note for something short-lived that fades after a week. " +
+	"action write records one self-contained fact; tier profile for enduring identity and preferences (always in mind, keep it small), log (default) for a dated decision or piece of history, note for something short-lived that fades fast. " +
 	"action forget removes a fact by its exact recorded text; to correct a fact, forget it and write the new version. " +
 	"Writes are deduplicated. scope agent (default) is private to you; scope user, a shard shared with every agent of the member, is not available yet and is refused. " +
 	"Write a fact when it is durable and useful to your future self: a member's preference, a decision and its reason, a lesson, a place you keep looking for. Do not narrate ordinary saves. " +
@@ -474,20 +474,14 @@ export function cloudMemoryTools(
 		async execute(value, context) {
 			assertContext(context);
 			const request = value as { query: string; scope: string; limit: number };
-			const at = now();
-			const files: { path: string; version: string }[] = [];
+			// The trusted reads record their own provenance; the model sees facts only, as a Grok Bot does.
 			const all: CloudMemoryFact[] = [];
 			const profile = await readFile(gateway, paths.profile, context.signal);
-			if (profile) {
-				files.push({ path: profile.path, version: profile.version! });
-				all.push(...facts(profile, "profile"));
-			}
+			if (profile) all.push(...facts(profile, "profile"));
 			for (const path of await logFiles(gateway, paths.log, context.signal)) {
 				const file = await readFile(gateway, path, context.signal);
-				if (!file) continue;
-				files.push({ path, version: file.version! });
 				// Newest first inside a month, newest month first.
-				all.push(...facts(file, "log").reverse());
+				if (file) all.push(...facts(file, "log").reverse());
 			}
 			// Distinctive words rank first (short words match everything); else the whole query as a substring.
 			const words = [
@@ -502,11 +496,9 @@ export function cloudMemoryTools(
 				return { fact, index, hits: words.filter((word) => haystack.includes(word)).length };
 			});
 			let matched = scored.filter((item) => item.hits > 0);
-			let ranking: "distinctive_words" | "substring" = "distinctive_words";
 			if (!matched.length) {
 				const needle = normalize(request.query);
 				matched = scored.filter((item) => normalize(item.fact.fact).includes(needle));
-				ranking = "substring";
 			}
 			matched.sort((a, b) => b.hits - a.hits || b.fact.date.localeCompare(a.fact.date) || a.index - b.index);
 			const results = matched.slice(0, request.limit).map((item) => ({ ...item.fact, scope: "agent" }));
@@ -517,10 +509,6 @@ export function cloudMemoryTools(
 					runId: expected.runId,
 					query: request.query,
 					scope: request.scope,
-					scopesSearched: ["agent"],
-					ranking,
-					asOf: isoDate(at),
-					files,
 					facts: results,
 					moreFacts: Math.max(0, matched.length - results.length),
 				}),

@@ -525,8 +525,8 @@ The composer selects and labels:
 - wake envelope and silence policy;
 - UTC time plus relevant IANA timezones;
 - relevant Company File paths and exact object versions;
-- compact, scoped retrieval indexes or working-memory summaries derived from
-  those objects;
+- the agent's composed memory block: its profile and the newest slice of its
+  own notebook (15.1);
 - a skill catalog with names and “use when” descriptions;
 - teammate, held-responsibility, project-team, and room membership;
 - relevant company goals, held responsibilities and their measures, current
@@ -2165,9 +2165,9 @@ while Azure backup/overflow remains disabled.
     for company state.
 14. A parent remains responsive while an in-house worker runs, and a coding
     follow-up returns to the same worker, VM, repository, and branch.
-15. Memory composition respects company, member-private, room, agent, and
-    project path scopes; its indexes rebuild from Company File objects after
-    concurrent use and forgetting.
+15. Memory composition reads only the executing agent's own notebook and,
+    once admitted, the member's shard; write, forget, and concurrent use keep
+    exact object versions, and a forgotten fact leaves future composition.
 16. Connector auth, office sign-in handoff, approvals, widgets, and explicit
     upload or download use their correct typed interaction surfaces; dismissal
     never grants consent, and no agent receives a member-machine capability.

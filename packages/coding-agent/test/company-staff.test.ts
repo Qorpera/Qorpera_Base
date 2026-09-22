@@ -8,13 +8,11 @@ import {
 	createStaffAgent,
 	createStaffAgents,
 	deleteStaffAgent,
-	readStaffAgentMemory,
 	readStaffAgents,
 	replaceStaffAgents,
 	restoreStaffAgent,
 	staffAgentDirectoryPath,
 	staffAgentInstructionsPath,
-	staffAgentMemoryPath,
 	staffAgentSkillsPath,
 	staffRegistryPath,
 	updateStaffAgent,
@@ -175,16 +173,11 @@ describe("company staff registry", () => {
 			appearance: { color: "blue", shape: "round" },
 		});
 
-		expect(staffAgentMemoryPath(root, created.id)).toBe(join(root, "agents", created.id, "memory.md"));
 		expect(staffAgentSkillsPath(root, created.id)).toBe(join(root, "agents", created.id, "skills"));
-		expect(existsSync(staffAgentMemoryPath(root, created.id))).toBe(true);
 		expect(existsSync(staffAgentSkillsPath(root, created.id))).toBe(true);
-		expect(readStaffAgentMemory(root, created.id)).toContain("# Memory");
-
-		writeFileSync(staffAgentMemoryPath(root, created.id), "# Memory\n\nFounder prefers weekly digests.\n", "utf-8");
+		// The agent's memory is its cloud notebook (runtime Step 6); the desktop seeds no memory file.
+		expect(existsSync(join(root, "agents", created.id, "memory.md"))).toBe(false);
 		updateStaffAgent(root, created.id, { role: "Company archivist" });
-		expect(readStaffAgentMemory(root, created.id)).toContain("Founder prefers weekly digests.");
-		expect(readStaffAgentMemory(root, "11111111-1111-4111-8111-111111111111")).toBe("");
 	});
 
 	it("persists a durable per-agent model choice and clears it back to the company default", () => {
