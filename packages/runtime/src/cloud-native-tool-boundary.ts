@@ -31,9 +31,10 @@ const MAX_ARGUMENT_BYTES = 64 * 1024;
 const MAX_CONTENT_BYTES = 32 * 1024;
 const MAX_SOURCE_BYTES = 1024 * 1024;
 /** No turn is capped by a number of tool calls (founder, 2026-09-22). Retained
- * result fingerprints stay bounded only so a malformed native protocol cannot
- * grow memory without limit; the bound is far above any real turn. */
-export const CLOUD_NATIVE_RESULT_RETENTION_LIMIT = 65_536;
+ * results stay bounded only so a runaway loop cannot grow memory without limit
+ * (every result body is kept for exact replay); the bound is far above any real
+ * turn, and reaching it is a denial the model can act on, not a crash. */
+export const CLOUD_NATIVE_RESULT_RETENTION_LIMIT = 8_192;
 
 export interface CloudToolContext {
 	readonly companyId: string;
@@ -427,6 +428,9 @@ export class CloudNativeToolBoundary {
 		const previous = this.#calls.get(callId);
 		if (previous && previous.digest !== digest) {
 			return this.#result(callId, tool, digest, "denied", { kind: "text", value: "CALL_ID_REUSED" });
+		}
+		if (!previous && this.#calls.size >= CLOUD_NATIVE_RESULT_RETENTION_LIMIT) {
+			return this.#result(callId, tool, digest, "denied", { kind: "text", value: "TOOL_BUDGET_EXHAUSTED" });
 		}
 		const result =
 			previous?.result ?? this.#pending.then(() => this.#execute(callId, tool, digest, argumentsText, observation));

@@ -1050,21 +1050,22 @@ function routineOccurrence(
 	};
 }
 
-/** A routine's first version runs once as soon as it exists — the kickoff —
+/** A routine that has never run runs once as soon as it exists — the kickoff —
  * and then on its cadence, so weekly work set up on a Tuesday starts that day
- * instead of the following Monday. The kickoff instant is the version's
- * effective time, which every orchestrator derives identically. There is no
+ * instead of the following Monday. A version's cursor is fresh only when no
+ * earlier version advanced it (the kernel carries the position forward), so
+ * an edit neither re-runs the routine nor loses a kickoff still owed. The
+ * kickoff instant is the version's effective time, which every orchestrator
+ * derives identically; a version older than the kickoff window (a routine
+ * revived weeks later) takes its next ordinary slot instead. There is no
  * kickoff when the trigger names a later start (that is the agent asking to
- * wait), when a window bounds the run times, or for a later version, which
- * keeps the cadence its routine already had. */
-function routineKickoff(
-	head: CloudRoutineScheduleHead,
-	trigger: RoutineScheduleTrigger,
-	now: Date,
-	effectiveAt: Date,
-): Date | undefined {
-	if (head.version !== 1 || "windowStart" in trigger) return undefined;
+ * wait) or when a window bounds the run times. */
+const ROUTINE_KICKOFF_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+function routineKickoff(trigger: RoutineScheduleTrigger, now: Date, effectiveAt: Date): Date | undefined {
+	if ("windowStart" in trigger) return undefined;
 	if (!Number.isFinite(effectiveAt.getTime()) || effectiveAt.getTime() > now.getTime()) return undefined;
+	if (now.getTime() - effectiveAt.getTime() > ROUTINE_KICKOFF_WINDOW_MS) return undefined;
 	if (trigger.startAt !== undefined) {
 		const startAt = Date.parse(trigger.startAt);
 		if (!Number.isFinite(startAt) || startAt > effectiveAt.getTime()) return undefined;
@@ -1084,7 +1085,7 @@ function dueRoutineWakes(
 		const effectiveAt = new Date(head.effectiveAt);
 		let scheduledFor = latestRoutineOccurrence(trigger, now);
 		if (!scheduledFor || scheduledFor.getTime() < effectiveAt.getTime()) {
-			scheduledFor = routineKickoff(head, trigger, now, effectiveAt);
+			scheduledFor = routineKickoff(trigger, now, effectiveAt);
 			if (!scheduledFor) return [];
 		}
 		const nextDueAt = nextRoutineOccurrence(trigger, scheduledFor);

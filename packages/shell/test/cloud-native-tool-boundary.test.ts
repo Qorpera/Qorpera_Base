@@ -363,11 +363,11 @@ describe("cloud-owned native tool boundary", () => {
 		const { boundary } = fixture();
 		const input = { kind: "function_call_output" as const, callId: "native", output: "data" };
 		await expect(boundary.fenceNativeResults([input, input])).rejects.toThrow("Invalid native result identity");
-		for (let index = 1; index < CLOUD_NATIVE_RESULT_RETENTION_LIMIT; index++)
-			await boundary.fenceNativeResults([{ ...input, callId: `native_${index}` }]);
-		await expect(boundary.fenceNativeResults([{ ...input, callId: "over_budget" }])).rejects.toThrow(
-			"Native result budget exceeded",
-		);
+		const flood = Array.from({ length: CLOUD_NATIVE_RESULT_RETENTION_LIMIT + 1 }, (_, index) => ({
+			...input,
+			callId: `native_${index}`,
+		}));
+		await expect(boundary.fenceNativeResults(flood)).rejects.toThrow("Native result budget exceeded");
 	});
 
 	it("withholds invalid or oversized adapter results", async () => {
@@ -382,7 +382,7 @@ describe("cloud-owned native tool boundary", () => {
 
 	it("keeps accepting calls far past the old per-turn cap and never repeats an accepted effect", async () => {
 		// No per-turn call cap (founder, 2026-09-22): only a far-off retention bound remains.
-		expect(CLOUD_NATIVE_RESULT_RETENTION_LIMIT).toBeGreaterThanOrEqual(65_536);
+		expect(CLOUD_NATIVE_RESULT_RETENTION_LIMIT).toBeGreaterThanOrEqual(8_192);
 		const sessionId = randomUUID();
 		const messageId = randomUUID();
 		const deliver = vi.fn(

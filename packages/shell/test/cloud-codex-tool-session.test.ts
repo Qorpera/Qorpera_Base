@@ -33,6 +33,7 @@ function run(
 	mode: string,
 	options: {
 		model?: string;
+		reasoningEffort?: "low" | "medium" | "high";
 		timeoutMs?: number;
 		identityRoot?: string;
 		runtimeInstructions?: string;
@@ -116,6 +117,19 @@ it.each([
 		turnParameters: { effort: "low" },
 		configuration: { model_reasoning_effort: "low" },
 	});
+});
+
+it("starts a routine turn at the effort its routine chose", async () => {
+	const { result, evidence } = run("model-selection", { reasoningEffort: "high" });
+	await result;
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	expect(recorded).toMatchObject({
+		turnParameters: { effort: "high" },
+		configuration: { model_reasoning_effort: "high" },
+	});
+	await expect(run("model-selection", { reasoningEffort: "max" as never }).result).rejects.toThrow(
+		"Invalid native boundary input",
+	);
 });
 
 it("requires composition telemetry before admitting a model request", async () => {

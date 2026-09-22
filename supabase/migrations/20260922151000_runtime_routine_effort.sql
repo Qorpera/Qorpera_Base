@@ -29,9 +29,11 @@ begin
 	select manifest into v_manifest from public.qorpera_runtime_bundles
 	where id = p_run.runtime_bundle_id and sha256 = p_run.runtime_bundle_sha256;
 	if v_manifest ->> 'schema' is distinct from 'qorpera.runtime-bundle/v2'
+		or jsonb_typeof(v_manifest -> 'modelPolicy') is distinct from 'object'
+		or (v_manifest -> 'modelPolicy') - array['schema','effort','overrides','allowed'] <> '{}'::jsonb
 		or v_manifest #>> '{modelPolicy,schema}' is distinct from 'qorpera.model-reasoning/v1'
-		or v_manifest #>> '{modelPolicy,effort}' not in ('low','medium','high')
-		or v_manifest #>> '{modelPolicy,overrides}' not in ('none','routine')
+		or coalesce(v_manifest #>> '{modelPolicy,effort}','') not in ('low','medium','high')
+		or coalesce(v_manifest #>> '{modelPolicy,overrides}','') not in ('none','routine')
 		or (v_manifest #>> '{modelPolicy,overrides}' = 'routine' and (
 			jsonb_typeof(v_manifest #> '{modelPolicy,allowed}') is distinct from 'array'
 			or exists (select 1 from jsonb_array_elements_text(v_manifest #> '{modelPolicy,allowed}') allowed
@@ -305,6 +307,13 @@ begin
 			-- routine waits until the requester connects an account and saves it again.
 			v_sponsor_binding := v_run.sponsor_binding_id; v_sponsor_version := v_run.sponsor_version;
 		end if;
+		-- A save that does not mention effort keeps the effort the routine already has,
+		-- so an unchanged routine is not re-versioned by this field alone.
+		if p_request ->> 'effort' is null and v_routine.id is not null then
+			select version.effort into v_effort from public.qorpera_cloud_routine_versions version
+			where version.routine_id = v_routine.id and version.version = v_routine.current_version;
+			v_effort := coalesce(v_effort, 'medium');
+		end if;
 		v_content := jsonb_build_object('staff_agent_id', v_run.staff_agent_id, 'title', btrim(p_request ->> 'title'),
 			'prompt', btrim(p_request ->> 'intent'), 'triggers', v_triggers, 'effort', v_effort,
 			'sponsor_binding_id', v_sponsor_binding, 'sponsor_version', v_sponsor_version,
@@ -339,8 +348,17 @@ begin
 				v_run.staff_agent_id, btrim(p_request ->> 'title'), btrim(p_request ->> 'intent'), v_triggers, v_effort,
 				v_sponsor_binding, v_sponsor_version, null, 'agent_turn', 'agent_turn', 'automatic', null, '{}',
 				v_sha, v_run.requested_by_user_id);
-			insert into public.qorpera_cloud_routine_schedule_cursors(routine_id, routine_version, trigger_id)
-			select v_routine.id, v_next, 'agent' where v_trigger ->> 'kind' = 'schedule';
+			-- A new version keeps the schedule position its routine already reached, so an
+			-- edit neither re-runs the routine at once nor loses the kickoff a never-run
+			-- routine still owes (the scheduler kicks off any version with a fresh cursor).
+			insert into public.qorpera_cloud_routine_schedule_cursors(routine_id, routine_version, trigger_id,
+				last_scheduled_for, next_due_at)
+			select v_routine.id, v_next, 'agent', previous.last_scheduled_for, coalesce(previous.next_due_at, '-infinity'::timestamptz)
+			from (select 1) once
+			left join public.qorpera_cloud_routine_schedule_cursors previous
+				on previous.routine_id = v_routine.id and previous.routine_version = v_routine.current_version
+				and previous.trigger_id = 'agent' and previous.last_scheduled_for is not null
+			where v_trigger ->> 'kind' = 'schedule';
 		else v_next := v_routine.current_version; end if;
 		update public.qorpera_cloud_routines set current_version = v_next, status = v_status, pause_reason = v_reason,
 			expires_at = v_expires, max_occurrences = v_max, authorization_failures = 0,
@@ -406,3 +424,24 @@ returns jsonb language sql stable security definer set search_path = '' as $$
 	from public.qorpera_cloud_routine_versions version
 	where version.routine_id = p_routine.id and version.version = p_routine.current_version
 $$;
+
+-- Existing agent routines were stored at low with that value in their content
+-- hash. They now carry the routine default, medium, with the hash recomputed
+-- the same way the function computes it; rows whose stored hash does not
+-- reproduce are left untouched.
+update public.qorpera_cloud_routine_versions version
+set effort = 'medium',
+	content_sha256 = encode(extensions.digest(convert_to(jsonb_build_object('staff_agent_id', version.staff_agent_id,
+		'title', version.title, 'prompt', version.prompt, 'triggers', version.triggers, 'effort', 'medium',
+		'sponsor_binding_id', version.sponsor_binding_id, 'sponsor_version', version.sponsor_version,
+		'logical_computer_id', version.logical_computer_id, 'required_capability', version.required_capability,
+		'job_type', version.job_type, 'publication_mode', version.publication_mode,
+		'review_policy_key', version.review_policy_key, 'reviewer_staff_ids', to_jsonb(version.reviewer_staff_ids))::text,'utf8'),'sha256'),'hex')
+from public.qorpera_cloud_routines routine
+where routine.id = version.routine_id and routine.origin = 'agent' and version.effort = 'low'
+	and version.content_sha256 = encode(extensions.digest(convert_to(jsonb_build_object('staff_agent_id', version.staff_agent_id,
+		'title', version.title, 'prompt', version.prompt, 'triggers', version.triggers, 'effort', 'low',
+		'sponsor_binding_id', version.sponsor_binding_id, 'sponsor_version', version.sponsor_version,
+		'logical_computer_id', version.logical_computer_id, 'required_capability', version.required_capability,
+		'job_type', version.job_type, 'publication_mode', version.publication_mode,
+		'review_policy_key', version.review_policy_key, 'reviewer_staff_ids', to_jsonb(version.reviewer_staff_ids))::text,'utf8'),'sha256'),'hex');

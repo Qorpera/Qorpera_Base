@@ -117,6 +117,24 @@ begin
 end $$;
 select pg_temp.wake_error($q$select pg_temp.routine('{"action":"upsert","operationKey":"eff-3","routineKey":"bad-check","title":"Bad","intent":"x",
 	"effort":"max","trigger":{"kind":"schedule","intervalMinutes":5,"replyPolicy":"silent"}}')$q$,'22023','Routine effort is invalid');
+do $$
+declare v_row public.qorpera_cloud_routines; v_first public.qorpera_cloud_routine_schedule_cursors;
+	v_second public.qorpera_cloud_routine_schedule_cursors;
+begin
+	v_row := pg_temp.routine_row('deep-check');
+	select * into v_first from public.qorpera_cloud_routine_schedule_cursors
+	where routine_id = v_row.id and routine_version = v_row.current_version and trigger_id = 'agent';
+	perform pg_temp.routine('{"action":"upsert","operationKey":"eff-4","routineKey":"deep-check","title":"Deep check","intent":"Think harder.",
+		"trigger":{"kind":"schedule","intervalMinutes":5,"replyPolicy":"silent"}}');
+	v_row := pg_temp.routine_row('deep-check');
+	select * into v_second from public.qorpera_cloud_routine_schedule_cursors
+	where routine_id = v_row.id and routine_version = v_row.current_version and trigger_id = 'agent';
+	perform pg_temp.wake_assert(v_row.current_version = 2
+		and (select effort from public.qorpera_cloud_routine_versions where routine_id = v_row.id and version = 2) = 'high',
+		'A save that does not mention effort keeps the effort the routine has');
+	perform pg_temp.wake_assert(v_first.last_scheduled_for is not null and v_second.last_scheduled_for = v_first.last_scheduled_for
+		and v_second.next_due_at = v_first.next_due_at,'A new version keeps the schedule position its routine reached');
+end $$;
 
 -- Expiry by time: the control-plane tick retires it and the scheduler stops listing it.
 do $$

@@ -533,7 +533,7 @@ describe("cloud runner orchestrator", () => {
 		);
 	});
 
-	it("does not kick off a later routine version or a weekly routine whose start lies ahead", async () => {
+	it("kicks off a later version whose cursor is still fresh, and one whose start is already reached", async () => {
 		const control = controlPlane(undefined);
 		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({
 			items: [
@@ -565,8 +565,50 @@ describe("cloud runner orchestrator", () => {
 			now: () => new Date("2026-08-25T12:00:00.000Z"),
 		});
 		await reconciler.reconcile(control);
-		expect(control.enqueueRoutineWake).not.toHaveBeenCalled();
+		expect(vi.mocked(control.enqueueRoutineWake).mock.calls[0]?.[0]).toMatchObject({
+			scheduledFor: "2026-08-25T10:00:00.000Z",
+			nextDueAt: "2026-08-31T09:00:00.000Z",
+		});
 
+		vi.mocked(control.enqueueRoutineWake).mockClear();
+		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({
+			items: [
+				{
+					routineId: "12121212-1212-4212-8212-121212121212",
+					profileId: "88888888-8888-4888-8888-888888888888",
+					environmentId: "99999999-9999-4999-8999-999999999999",
+					version: 1,
+					staffAgentId: "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd",
+					triggers: [
+						{
+							id: "weekly-monday",
+							kind: "schedule",
+							intervalMinutes: 10_080,
+							startAt: "2026-08-25T09:00:00.000Z",
+							weekdays: ["monday"],
+							localTime: "09:00",
+							timeZone: "UTC",
+						},
+					],
+					scheduleCursors: [{ triggerId: "weekly-monday" }],
+					contentSha256: "a".repeat(64),
+					effectiveAt: "2026-08-25T10:00:00.000Z",
+					updatedAt: "2026-08-25T10:00:00.000Z",
+				},
+			],
+			hasMore: false,
+		});
+		await reconciler.reconcile(control);
+		expect(vi.mocked(control.enqueueRoutineWake).mock.calls[0]?.[0]).toMatchObject({
+			scheduledFor: "2026-08-25T10:00:00.000Z",
+		});
+	});
+
+	it("does not kick off when the start lies ahead or the version is not yet effective, and an old version takes its slot", async () => {
+		const control = controlPlane(undefined);
+		const reconciler = new CloudRoutineScheduleReconciler({
+			now: () => new Date("2026-08-25T12:00:00.000Z"),
+		});
 		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({
 			items: [
 				{
@@ -590,6 +632,68 @@ describe("cloud runner orchestrator", () => {
 					contentSha256: "a".repeat(64),
 					effectiveAt: "2026-08-25T10:00:00.000Z",
 					updatedAt: "2026-08-25T10:00:00.000Z",
+				},
+			],
+			hasMore: false,
+		});
+		await reconciler.reconcile(control);
+		expect(control.enqueueRoutineWake).not.toHaveBeenCalled();
+
+		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({
+			items: [
+				{
+					routineId: "12121212-1212-4212-8212-121212121212",
+					profileId: "88888888-8888-4888-8888-888888888888",
+					environmentId: "99999999-9999-4999-8999-999999999999",
+					version: 1,
+					staffAgentId: "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd",
+					triggers: [
+						{
+							id: "weekly-monday",
+							kind: "schedule",
+							intervalMinutes: 10_080,
+							weekdays: ["monday"],
+							localTime: "09:00",
+							timeZone: "UTC",
+						},
+					],
+					scheduleCursors: [{ triggerId: "weekly-monday" }],
+					contentSha256: "a".repeat(64),
+					effectiveAt: "2026-08-10T10:00:00.000Z",
+					updatedAt: "2026-08-10T10:00:00.000Z",
+				},
+			],
+			hasMore: false,
+		});
+		await reconciler.reconcile(control);
+		// Older than the kickoff window: the routine takes its ordinary slot instead.
+		expect(vi.mocked(control.enqueueRoutineWake).mock.calls[0]?.[0]).toMatchObject({
+			scheduledFor: "2026-08-24T09:00:00.000Z",
+		});
+		vi.mocked(control.enqueueRoutineWake).mockClear();
+
+		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({
+			items: [
+				{
+					routineId: "12121212-1212-4212-8212-121212121212",
+					profileId: "88888888-8888-4888-8888-888888888888",
+					environmentId: "99999999-9999-4999-8999-999999999999",
+					version: 1,
+					staffAgentId: "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd",
+					triggers: [
+						{
+							id: "weekly-monday",
+							kind: "schedule",
+							intervalMinutes: 10_080,
+							weekdays: ["monday"],
+							localTime: "09:00",
+							timeZone: "UTC",
+						},
+					],
+					scheduleCursors: [{ triggerId: "weekly-monday" }],
+					contentSha256: "a".repeat(64),
+					effectiveAt: "2026-08-25T13:00:00.000Z",
+					updatedAt: "2026-08-25T13:00:00.000Z",
 				},
 			],
 			hasMore: false,
