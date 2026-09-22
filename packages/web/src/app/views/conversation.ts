@@ -925,7 +925,11 @@ export class ConversationView {
 			dismissed.add(runId);
 			this.update();
 			// Durable for the company: the badge and this card do not come back on reload.
-			void this.#company.dismissFailedRun(runId).catch(() => undefined);
+			// If nothing reached the cloud, the card comes back so it can be dismissed again.
+			void this.#company.dismissFailedRun(runId).catch(() => {
+				dismissed.delete(runId);
+				if (!this.#company.signal.aborted) this.#company.store.set({});
+			});
 		};
 		const profileId = this.#company.profile.profileId;
 		const action =

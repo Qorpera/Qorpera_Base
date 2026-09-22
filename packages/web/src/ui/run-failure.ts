@@ -1,21 +1,36 @@
 import { button, h } from "./dom.ts";
 import { matchesKey } from "./keys.ts";
 
-/** Why a run stopped, in the member's words. The cloud's own text stays
- * out of the card: it names machinery, not causes. */
-export function runFailureReason(lastError: string | undefined, jobStatus: "failed" | "cancelled"): string {
+/** What stopped the run, from the cloud's own error text (which names machinery,
+ * not causes) and the job status. One classification feeds both the sentence the
+ * member reads and whether Try again is worth offering. */
+export type RunFailureKind = "usage_limit" | "credential" | "dispatch" | "timeout" | "bridge" | "cancelled" | "other";
+
+export function classifyRunFailure(lastError: string | undefined, jobStatus: "failed" | "cancelled"): RunFailureKind {
 	const error = lastError ?? "";
-	if (/usage limit|quota|rate.?limit|insufficient|billing/i.test(error))
-		return "Your model account has reached its usage limit.";
+	if (/usage limit|quota|rate.?limit|insufficient|billing/i.test(error)) return "usage_limit";
 	if (/not signed in|sign.?in|unauthori[sz]ed|credential|token (is )?(expired|invalid)/i.test(error))
-		return "Your model account needs to be connected again.";
-	if (/dispatch failed|provider request failed/i.test(error))
-		return "No computer could be started for this run. The problem is on Qorpera's side.";
-	if (/lease expired|deadline|timed? ?out/i.test(error)) return "The run took too long and was stopped.";
-	if (/bridge request failed/i.test(error))
-		return "The run started, but one of its steps was refused. The problem is on Qorpera's side.";
-	if (jobStatus === "cancelled") return "The run was stopped before it finished.";
-	return "The run stopped because of an internal error.";
+		return "credential";
+	if (/dispatch failed|provider request failed/i.test(error)) return "dispatch";
+	if (/lease expired|deadline|timed? ?out/i.test(error)) return "timeout";
+	if (/bridge request failed/i.test(error)) return "bridge";
+	if (jobStatus === "cancelled") return "cancelled";
+	return "other";
+}
+
+const REASONS: Record<RunFailureKind, string> = {
+	usage_limit: "Your model account has reached its usage limit.",
+	credential: "Your model account needs to be connected again.",
+	dispatch: "No computer could be started for this run. The problem is on Qorpera's side.",
+	timeout: "The run took too long and was stopped.",
+	bridge: "The run started, but one of its steps was refused. The problem is on Qorpera's side.",
+	cancelled: "The run was stopped before it finished.",
+	other: "The run stopped because of an internal error.",
+};
+
+/** Why a run stopped, in the member's words. */
+export function runFailureReason(lastError: string | undefined, jobStatus: "failed" | "cancelled"): string {
+	return REASONS[classifyRunFailure(lastError, jobStatus)];
 }
 
 /** Whether the run was interrupted rather than refused: it was stopped for time,
@@ -23,11 +38,8 @@ export function runFailureReason(lastError: string | undefined, jobStatus: "fail
  * A reached usage limit or a disconnected account need the member to act first,
  * so their card offers Dismiss only and says what to do. */
 export function runFailureInterrupted(lastError: string | undefined, jobStatus: "failed" | "cancelled"): boolean {
-	const error = lastError ?? "";
-	if (jobStatus === "cancelled") return true;
-	if (/usage limit|quota|rate.?limit|insufficient|billing/i.test(error)) return false;
-	if (/not signed in|sign.?in|unauthori[sz]ed|credential|token (is )?(expired|invalid)/i.test(error)) return false;
-	return /lease expired|deadline|timed? ?out|dispatch failed|provider request failed/i.test(error);
+	const kind = classifyRunFailure(lastError, jobStatus);
+	return kind === "timeout" || kind === "dispatch" || kind === "cancelled";
 }
 
 export interface RunFailureCard {

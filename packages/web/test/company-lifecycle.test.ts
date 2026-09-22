@@ -550,17 +550,20 @@ describe("agent execution state", () => {
 		const { api, controller, write } = company();
 		// The thread belongs to the agent whose run failed.
 		controller.store.set({ sessions: [{ ...session, staffAgentId: staff.id }] });
-		vi.spyOn(api, "getRunRecovery").mockRejectedValue(new Error("execution recovery is unavailable"));
+		const read = vi.spyOn(api, "getRunRecovery").mockResolvedValue(recovery());
 		const acknowledge = vi.spyOn(api, "acknowledgeFailedRun").mockResolvedValue();
 		vi.mocked(api.listStaffActivity).mockResolvedValue([row("failed", "needs_attention")]);
 		await controller.refreshActivity();
 		await settle();
 		expect(controller.agentState(staff.id)).toBe("failed");
+		expect(read).toHaveBeenCalledTimes(1);
 		vi.mocked(api.listStaffActivity).mockResolvedValue([]);
 		expect(await controller.sendPrompt(session.sessionId, "Once more, please.")).toBe(true);
 		await settle();
 		expect(write).toHaveBeenCalledTimes(1);
 		expect(acknowledge).toHaveBeenCalledExactlyOnceWith(id(70));
+		// The send's own activity read covers the dismissal: no second read of the run.
+		expect(read).toHaveBeenCalledTimes(1);
 		expect(controller.agentState(staff.id)).toBe("idle");
 	});
 

@@ -1,7 +1,8 @@
--- @fixture 150_runner_orchestrator.test.sql until "'qorpera_test.partial_attempt_input'"
+-- @fixture 150_runner_orchestrator.test.sql until "-- END RECOVERY FIXTURE"
 -- A failed run whose durable outcome is still unknown cannot be discarded, but
 -- a member can acknowledge it: the failure stops standing in for the agent,
 -- nothing is replayed or changed, and acknowledging again is a no-op.
+select set_config(
 	'qorpera_test.acknowledged_input',
 	public.qorpera_append_session_input(
 		'15000000-0000-4000-8000-000000000055',

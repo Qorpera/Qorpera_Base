@@ -21,10 +21,8 @@ import {
 	parsePendingSessionInputs,
 	parseProfiles,
 	parseRoomDeliveryRetry,
-	parseRunAcknowledgment,
-	parseRunDismissal,
 	parseRunRecovery,
-	parseRunRetry,
+	parseRunResolution,
 	parseSessionInputReceipt,
 	parseSessionPage,
 	parseStaffExecutionActivity,
@@ -230,7 +228,7 @@ export class CloudApi {
 		const id = requiredUuid(runId, "Run id");
 		return this.cloud
 			.rpc("qorpera_resolve_failed_execution_run", { p_run_id: id, p_action: "discard" })
-			.then((value) => parseRunDismissal(value, id));
+			.then((value) => parseRunResolution(value, id, "discard"));
 	}
 
 	/** Dismiss: a member saw the failure. The run stops standing in for the agent;
@@ -240,7 +238,7 @@ export class CloudApi {
 		const id = requiredUuid(runId, "Run id");
 		return this.cloud
 			.rpc("qorpera_resolve_failed_execution_run", { p_run_id: id, p_action: "acknowledge" })
-			.then((value) => parseRunAcknowledgment(value, id));
+			.then((value) => parseRunResolution(value, id, "acknowledge"));
 	}
 
 	/** Try again for a session turn: the cloud releases the run and queues its inputs again. */
@@ -248,7 +246,7 @@ export class CloudApi {
 		const id = requiredUuid(runId, "Run id");
 		return this.cloud
 			.rpc("qorpera_resolve_failed_execution_run", { p_run_id: id, p_action: "retry" })
-			.then((value) => parseRunRetry(value, id));
+			.then((value) => parseRunResolution(value, id, "retry"));
 	}
 
 	/** Try again for a post into a room or agent thread (20260920080000): the member's

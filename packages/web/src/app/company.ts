@@ -654,9 +654,16 @@ export class CompanyController {
 	 * the cloud durably, so it does not return on reload or on another device. The
 	 * cloud acknowledges any failed run, including one whose durable outcome is still
 	 * unknown; a cloud without that action falls back to discard where it can. */
-	async dismissFailedRun(runId: string): Promise<void> {
+	async dismissFailedRun(runId: string, options: { refresh?: boolean } = {}): Promise<void> {
 		if (this.#stopped) return;
-		this.store.set((state) => ({ acknowledgedRuns: { ...(state.acknowledgedRuns ?? {}), [runId]: true } }));
+		const mark = (acknowledged: boolean) =>
+			this.store.set((state) => {
+				const acknowledgedRuns = { ...(state.acknowledgedRuns ?? {}) };
+				if (acknowledged) acknowledgedRuns[runId] = true;
+				else delete acknowledgedRuns[runId];
+				return { acknowledgedRuns };
+			});
+		mark(true);
 		// A member known to lack write access hides the card for this session only;
 		// acknowledging needs write access.
 		const { team, accessLost } = this.store.get();
@@ -666,11 +673,16 @@ export class CompanyController {
 		} catch (error) {
 			if (this.#stopped) return;
 			if (error instanceof CloudRpcError && error.status !== 401 && error.status !== 403) {
-				// Older cloud: try the discard it knows; a refused discard changes nothing.
+				// Older cloud: try the discard it knows; a refused discard changes nothing,
+				// and the dismissal stays local for this session.
 				await this.#api.discardFailedRun(runId).catch(() => undefined);
-			} else throw error;
+			} else {
+				// Nothing reached the cloud: the failure is not settled, so show it again.
+				mark(false);
+				throw error;
+			}
 		} finally {
-			if (!this.#stopped) {
+			if (!this.#stopped && options.refresh !== false) {
 				// Refused or not, read again: someone may have settled the run first.
 				this.#recheckRecovery(runId);
 				await this.refreshActivity();
@@ -682,8 +694,11 @@ export class CompanyController {
 	#dismissFailureFor(sessionId: string): void {
 		const session = this.store.get().sessions.find((item) => item.sessionId === sessionId);
 		const failed = this.failedRunFor(session?.staffAgentId);
-		if (failed && failed.activity.sourceKind !== "proposal_review" && !failed.recovery?.proposalId)
-			void this.dismissFailedRun(failed.activity.runId).catch(() => undefined);
+		// Only a failure whose details are known and that left no decision behind; a
+		// run with an open proposal is the member's to decide, not to dismiss by sending.
+		if (failed?.recovery && failed.activity.sourceKind !== "proposal_review" && !failed.recovery.proposalId)
+			// sendPrompt reads activity again right after; no second read here.
+			void this.dismissFailedRun(failed.activity.runId, { refresh: false }).catch(() => undefined);
 	}
 
 	primarySessionFor(staffAgentId: string): HostedSession | undefined {

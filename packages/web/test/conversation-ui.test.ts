@@ -756,7 +756,7 @@ describe("conversation UI boundaries", () => {
 		expect(f.company.agentState(staff.id)).toBe("idle");
 	});
 
-	it("keeps a dismissal across navigation and a lost cloud reply", async () => {
+	it("keeps a dismissal across navigation, and shows the card again after a lost cloud reply", async () => {
 		const f = setup();
 		const run = {
 			runId: id(70),
@@ -791,9 +791,19 @@ describe("conversation UI boundaries", () => {
 		await settle();
 		expect(acknowledge).toHaveBeenCalledExactlyOnceWith(run.runId);
 		expect(reopened.el.querySelector(".run-failure")).toBeNull();
-		// The member dismissed it; a lost reply does not bring it back in this session.
+		// Nothing reached the cloud: the failure is not settled, so the card returns
+		// in the current view and can be dismissed again.
 		pending.reject(new Error("Connection lost"));
 		await settle();
+		expect(reopened.el.querySelector(".run-failure-title")?.textContent).toBe(
+			"Fixture agent did not finish this run",
+		);
+		expect(f.company.agentState(staff.id)).toBe("failed");
+		acknowledge.mockResolvedValue(undefined);
+		vi.mocked(f.api.listStaffActivity).mockResolvedValue([]);
+		button(reopened.el, "Dismiss").click();
+		await settle();
+		expect(acknowledge).toHaveBeenCalledTimes(2);
 		expect(reopened.el.querySelector(".run-failure")).toBeNull();
 		expect(f.company.agentState(staff.id)).toBe("idle");
 	});

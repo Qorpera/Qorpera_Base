@@ -434,39 +434,15 @@ export function parseRunRecovery(value: unknown): HostedRunRecovery {
 	};
 }
 
-/** qorpera_resolve_failed_execution_run answers with the run it resolved. */
-export function parseRunDismissal(value: unknown, runId: string): void {
-	const result = record(value, "run dismissal");
+/** qorpera_resolve_failed_execution_run answers with the run it resolved and the action taken. */
+export function parseRunResolution(value: unknown, runId: string, action: "discard" | "retry" | "acknowledge"): void {
+	const result = record(value, `run ${action}`);
 	if (
-		uuid(result.run_id, "dismissed run id") !== runId.toLowerCase() ||
-		result.action !== "discard" ||
+		uuid(result.run_id, `${action} run id`) !== runId.toLowerCase() ||
+		result.action !== action ||
 		result.resolved !== true
 	) {
-		throw new CloudShapeError("run dismissal");
-	}
-}
-
-/** qorpera_resolve_failed_execution_run(acknowledge): the failure was seen; the run no longer stands in for the agent. */
-export function parseRunAcknowledgment(value: unknown, runId: string): void {
-	const result = record(value, "run acknowledgment");
-	if (
-		uuid(result.run_id, "acknowledged run id") !== runId.toLowerCase() ||
-		result.action !== "acknowledge" ||
-		result.resolved !== true
-	) {
-		throw new CloudShapeError("run acknowledgment");
-	}
-}
-
-/** qorpera_resolve_failed_execution_run(retry): the session turn's inputs are queued again. */
-export function parseRunRetry(value: unknown, runId: string): void {
-	const result = record(value, "run retry");
-	if (
-		uuid(result.run_id, "retried run id") !== runId.toLowerCase() ||
-		result.action !== "retry" ||
-		result.resolved !== true
-	) {
-		throw new CloudShapeError("run retry");
+		throw new CloudShapeError(`run ${action}`);
 	}
 }
 
