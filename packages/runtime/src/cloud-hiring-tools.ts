@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { CloudCompanyPathGateway } from "./cloud-company-path-gateway.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
 import { type CloudNativeTool, type CloudToolContext, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
+import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 
 const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -80,7 +81,7 @@ export function cloudHiringTools(
 		}
 	};
 	const tool: CloudNativeTool = {
-		name: "hire_agent",
+		name: "hire_agent" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
 		description: CLOUD_HIRE_TOOL_DESCRIPTION,
 		inputSchema: {
@@ -177,7 +178,7 @@ export function cloudHiringTools(
 	};
 	const roomFields = ["operationKey", "name", "purpose", "coworkerIds", "includeRequestingMember"] as const;
 	const roomTool: CloudNativeTool = {
-		name: "create_group_chat",
+		name: "create_group_chat" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
 		description: CLOUD_GROUP_CHAT_TOOL_DESCRIPTION,
 		inputSchema: {

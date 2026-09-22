@@ -6,6 +6,7 @@ import {
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
 import { type CloudNativeTool, type CloudToolContext, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
+import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 import { CLOUD_RUNTIME_REASONING_EFFORTS, isCloudRuntimeReasoningEffort } from "./cloud-runtime-policy.ts";
 
 const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/;
@@ -178,7 +179,7 @@ export function cloudRoutineTools(
 	const zoneSchema = { type: "string", minLength: 1, maxLength: 64 };
 	const timeSchema = { type: "string", pattern: LOCAL_TIME.source };
 	const tool: CloudNativeTool = {
-		name: "manage_routine",
+		name: "manage_routine" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
 		description: CLOUD_ROUTINE_TOOL_DESCRIPTION,
 		inputSchema: {
