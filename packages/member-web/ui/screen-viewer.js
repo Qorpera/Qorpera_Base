@@ -57,16 +57,6 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 	closeButton.type = "button";
 	closeButton.className = "screen-viewer-close";
 	labelButton(closeButton, "×", "Close screen viewer");
-	const fullscreen = mount ? document.createElement("button") : undefined;
-	const supportsFullscreen = Boolean(mount) && document.fullscreenEnabled !== false && typeof overlay.requestFullscreen === "function" && typeof document.exitFullscreen === "function";
-	if (fullscreen) {
-		fullscreen.type = "button";
-		fullscreen.className = "screen-viewer-fullscreen";
-		labelButton(fullscreen, "Full screen");
-		fullscreen.setAttribute("aria-pressed", "false");
-		fullscreen.setAttribute("aria-live", "polite");
-		fullscreen.hidden = true;
-	}
 	const enter = mount ? document.createElement("button") : undefined;
 	const back = mount ? document.createElement("button") : undefined;
 	if (enter && back) {
@@ -81,7 +71,7 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 		takeover.hidden = true;
 		closeButton.hidden = true;
 	}
-	controls.append(takeover, reconnect, ...(fullscreen ? [fullscreen] : []), ...(back ? [back] : []), closeButton);
+	controls.append(takeover, reconnect, ...(back ? [back] : []), closeButton);
 	titlebar.append(headingWrap, controls);
 	const stage = document.createElement("div");
 	stage.className = "screen-viewer-stage";
@@ -114,18 +104,15 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 	let epoch = 0;
 	let entered = false;
 	let connected = false;
-	let fullscreenBusy = false;
-	let ownedFullscreen = false;
 	let admission;
 	let admissionMode;
 	let queuedWatch = false;
 	const syncEmbedded = () => {
-		if (!enter || !back || !fullscreen) return;
+		if (!enter || !back) return;
 		enter.hidden = entered || !connected;
-		enter.disabled = !connected || busy || fullscreenBusy;
+		enter.disabled = !connected || busy;
 		back.hidden = !entered;
 		takeover.hidden = !entered || !canControl || privateSignIn || sharedControl;
-		fullscreen.hidden = !entered || !supportsFullscreen;
 		closeButton.hidden = !entered;
 	};
 	const setEntered = (value) => {
@@ -172,12 +159,9 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 		setEntered(false);
 		epoch++;
 		stop.abort();
-		// Removing the overlay also exits fullscreen if the browser rejects an explicit exit.
-		const exiting = mount && document.fullscreenElement === overlay
-			? document.exitFullscreen().catch(() => undefined) : Promise.resolve();
 		overlay.remove();
 		if (previous?.isConnected) previous.focus();
-		try { await Promise.all([detach(), exiting]); } finally { onClosed?.(); }
+		try { await detach(); } finally { onClosed?.(); }
 	};
 	const connect = async (mode) => {
 		if (closed || busy) return;
@@ -275,48 +259,16 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 			if (busy) queuedWatch = true;
 			else void connect("watch");
 		}
-		if (document.fullscreenElement === overlay) void document.exitFullscreen().catch(() => undefined);
 	};
-	if (enter && back && fullscreen) {
-		const syncFullscreen = () => {
-			const active = document.fullscreenElement === overlay;
-			labelButton(fullscreen, active ? "Exit full screen" : "Full screen");
-			fullscreen.setAttribute("aria-pressed", String(active));
-			if (ownedFullscreen && !active) returnToMini();
-			ownedFullscreen = active;
-		};
-		const toggleFullscreen = async () => {
-			if (closed || !entered || fullscreenBusy || !supportsFullscreen) return;
-			fullscreenBusy = true;
-			fullscreen.disabled = true;
-			syncEmbedded();
-			try {
-				if (document.fullscreenElement === overlay) await document.exitFullscreen();
-				else await overlay.requestFullscreen();
-				if ((closed || !entered) && document.fullscreenElement === overlay) await document.exitFullscreen();
-				if (!closed) syncFullscreen();
-			} catch {
-				if (!closed) {
-					const message = document.fullscreenElement === overlay ? "Could not exit full screen" : "Full screen unavailable";
-					labelButton(fullscreen, message, `${message}. Try again.`);
-				}
-			} finally {
-				fullscreenBusy = false;
-				fullscreen.disabled = false;
-				syncEmbedded();
-			}
-		};
-		if (supportsFullscreen) document.addEventListener("fullscreenchange", syncFullscreen, { signal: stop.signal });
+	if (enter && back) {
+		// Entering expands the host's frame around the screen; it never takes the browser full screen.
 		enter.onclick = () => {
 			if (closed || enter.disabled || entered) return;
 			setEntered(true);
 			back.focus();
-			// Invoke before any await so native fullscreen retains the click's user activation.
-			void toggleFullscreen();
 			if (canControl && !privateSignIn) void connect(sharedControl ? "shared" : "control");
 		};
 		back.onclick = returnToMini;
-		fullscreen.onclick = toggleFullscreen;
 	}
 	takeover.onclick = () => { if (!privateSignIn && !sharedControl && (!mount || entered)) void connect(current?.connection.mode === "control" ? "watch" : "control"); };
 	// Each explicit reconnect obtains fresh authority; mini previews stay watch-only.

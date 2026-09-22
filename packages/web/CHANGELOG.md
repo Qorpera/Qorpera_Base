@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Entering an agent's computer no longer takes the browser full screen. It opens the desktop's framed view over the thread instead: a dark shell with the agent's name, the screen centered inside it, and the controls on the right. "Back to thread" is the one way out; the separate full-screen toggle is gone.
 - Show what an agent is doing in its conversation the way the desktop does: hovering or focusing the working figure at the end of the thread reads "Nova is working" or "Nova is writing" with the ink wave, and the row no longer relies on a browser tooltip. The rail card's "Working" and "Writing" carry the same wave, and every wave on the page runs on one clock, so the card and the thread caption move together.
 - Preserve agent metadata drafts and retry state across details-panel closes, serialize saves, and retire confirmed edits when the roster catches up so later changes by other members are not overwritten.
 - Keep keyboard focus on an available execution-notice action when refreshes remove the previously focused control.

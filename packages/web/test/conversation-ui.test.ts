@@ -460,7 +460,7 @@ describe("conversation UI boundaries", () => {
 		const f = setup({ notificationHost: host });
 		button(f.view.el, "Open agent computer").click();
 		const panel = f.view.el.querySelector<HTMLElement>(".computer-panel")!;
-		// The renderer sets this class when native fullscreen is unavailable.
+		// The renderer sets this class while the member is inside the computer.
 		panel.classList.toggle("is-entered", entered);
 		f.company.store.set({
 			activity: [

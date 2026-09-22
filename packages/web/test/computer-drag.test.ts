@@ -195,21 +195,12 @@ describe("computer preview dragging", () => {
 		expect(f.panel.style.getPropertyValue("--computer-left")).toBe("");
 		expect(f.panel.releasePointerCapture).not.toHaveBeenCalled();
 	});
-	it("does not drag or move by keyboard while entered or fullscreen", () => {
+	it("does not drag or move by keyboard while entered", () => {
 		const f = setup();
 		f.panel.classList.add("is-entered");
 		expect(pointer(f.canvas, "pointerdown").defaultPrevented).toBe(false);
 		expect(key(f.panel, "ArrowLeft").defaultPrevented).toBe(false);
 		f.panel.classList.remove("is-entered");
-		const original = Object.getOwnPropertyDescriptor(document, "fullscreenElement");
-		Object.defineProperty(document, "fullscreenElement", { configurable: true, value: f.canvas });
-		try {
-			expect(pointer(f.canvas, "pointerdown").defaultPrevented).toBe(false);
-			expect(key(f.panel, "ArrowLeft").defaultPrevented).toBe(false);
-		} finally {
-			if (original) Object.defineProperty(document, "fullscreenElement", original);
-			else Reflect.deleteProperty(document, "fullscreenElement");
-		}
 		expect(f.panel.setPointerCapture).not.toHaveBeenCalled();
 		expect(f.panel.style.getPropertyValue("--computer-left")).toBe("");
 		pointer(f.canvas, "pointerdown");

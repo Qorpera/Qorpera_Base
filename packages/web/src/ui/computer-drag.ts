@@ -19,7 +19,7 @@ export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): () 
 	let chosenWidth = COMPUTER_PREVIEW_WIDTH;
 	let drag: Drag | undefined;
 	let observer: ResizeObserver | undefined;
-	const expanded = () => panel.classList.contains("is-entered") || Boolean(document.fullscreenElement);
+	const expanded = () => panel.classList.contains("is-entered");
 	// The status row (send errors, run actions) sits above the composer and must stay reachable.
 	const below = (parent: HTMLElement) =>
 		[...parent.querySelectorAll<HTMLElement>(".thread-status, .composer")].reduce(
