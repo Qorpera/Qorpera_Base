@@ -118,13 +118,16 @@ export async function runOfficialCodexBoundaryProbe(
 				input: Array<Record<string, unknown>>;
 				reasoning?: { effort?: string };
 			};
-			assert.equal(typeof parsed.model, "string");
-			assert(parsed.model.length > 0);
+			assert.equal(parsed.model, model === "provider-default" ? "gpt-5.6-sol" : model);
 			if (providerModel) assert.equal(parsed.model, providerModel);
 			providerModel = parsed.model;
 			assert.equal(parsed.reasoning?.effort, "low");
 			const additionalTools = parsed.input.filter((item) => item.type === "additional_tools");
-			assert.equal(additionalTools.length, model === "provider-default" ? 1 : 0);
+			// The pinned catalog enables Responses Lite for Sol (also the pinned binary's own default); Astra uses fallback metadata.
+			const responsesLite = parsed.model === "gpt-5.6-sol";
+			assert.equal(additionalTools.length, responsesLite ? 1 : 0);
+			if (responsesLite) assert.equal(parsed.tools, undefined);
+			else assert(Array.isArray(parsed.tools));
 			const tools = parsed.tools ?? (additionalTools[0]?.tools as typeof parsed.tools);
 			assert(Array.isArray(tools));
 			inventory = tools

@@ -9,9 +9,10 @@ import {
 	type CloudCompanyPathPresenceFactory,
 	observeCloudCompanyPathPresence,
 } from "./cloud-company-path-presence.ts";
+import { cloudHiringTools } from "./cloud-hiring-tools.ts";
 import {
-	CLOUD_COMPANY_RUNTIME_INSTRUCTIONS,
 	cloudCompanyContextTool,
+	compileCloudNativeCompanyInstructions,
 	composeCloudNativeCompanyPrompt,
 	parseCloudNativeCompanyContext,
 } from "./cloud-native-company-context.ts";
@@ -32,7 +33,7 @@ import {
 } from "./cloud-native-tool-authority.ts";
 import { type CloudNativeTool, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperationControlPlane } from "./cloud-native-tool-operations.ts";
-import { cloudResponsibilityTools } from "./cloud-responsibility-tools.ts";
+import { cloudRoutineTools } from "./cloud-routine-tools.ts";
 import { assertCloudRuntimeBundle } from "./cloud-runtime-bundle.ts";
 import {
 	assertCloudRuntimeObservationReceipt,
@@ -270,7 +271,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					identityRoot,
 					isolation: this.#isolation,
 					prompt,
-					runtimeInstructions: CLOUD_COMPANY_RUNTIME_INSTRUCTIONS,
+					runtimeInstructions: compileCloudNativeCompanyInstructions(context, wake),
 					signal,
 					timeoutMs: this.#timeoutMs,
 					tools: async (identity, operations, run) => {
@@ -297,7 +298,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 										})
 									: []),
 								cloudCoworkerMessageTool(binding, identity, wakeControl),
-								...cloudResponsibilityTools(binding, identity, this.#paths),
+								...cloudRoutineTools(binding, identity, this.#paths),
+								...(identity.audienceKind === "company" ? cloudHiringTools(gateway, identity) : []),
 								...(this.#codingControl ? cloudCodingTools(binding, identity, this.#codingControl) : []),
 								...(identity.sessionId && wake.policy.final !== "forbidden" ? [send] : []),
 							],

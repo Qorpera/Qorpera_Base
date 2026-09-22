@@ -646,6 +646,139 @@ describe("LXD cloud runner provider", () => {
 		expect(f.lxd.createCalls).toHaveLength(1);
 	});
 
+	it("sends a confirmed capacity release once, however often the retained journal is reconciled", async () => {
+		// Live defect (19 Sep 2026): journals of finished runs are retained, and every pass released
+		// each of them again (79 stopped journals, eight release calls a second on one node).
+		const f = await acquiredFixture();
+		const releases = () =>
+			vi
+				.mocked(f.fetchImplementation)
+				.mock.calls.filter(([url]) => String(url).includes("qorpera_release_runtime_machine"));
+		const journal = async () => JSON.parse(await readFile(f.journalPath, "utf8")) as Record<string, unknown>;
+		const backend = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, f.fetchImplementation);
+		const runner = await backend.acquire(runId, f.request, new AbortController().signal);
+		await backend.stop(runner, "idle");
+		expect(f.lxd.instance).toBeUndefined();
+		expect(await journal()).toMatchObject({ physicalState: "stopped", capacityReleased: true });
+		for (let pass = 0; pass < 3; pass++) await backend.reconcile();
+		expect(releases()).toHaveLength(1);
+		// The mark is durable: a restarted provider over the same state root does not release again.
+		const restarted = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, f.fetchImplementation);
+		for (let pass = 0; pass < 3; pass++) await restarted.reconcile();
+		expect(releases()).toHaveLength(1);
+		expect(await journal()).toMatchObject({ physicalState: "stopped", capacityReleased: true });
+		await expect(restarted.acquire(runId, f.request, new AbortController().signal)).rejects.toThrow(
+			"cannot be replayed",
+		);
+	});
+
+	it("releases a stopped journal from an older build once more and then marks it", async () => {
+		const f = await acquiredFixture();
+		const releases = () =>
+			vi
+				.mocked(f.fetchImplementation)
+				.mock.calls.filter(([url]) => String(url).includes("qorpera_release_runtime_machine"));
+		const first = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, f.fetchImplementation);
+		await first.stop(await first.acquire(runId, f.request, new AbortController().signal), "idle");
+		const old = JSON.parse(await readFile(f.journalPath, "utf8")) as Record<string, unknown>;
+		delete old.capacityReleased;
+		await writeFile(f.journalPath, JSON.stringify(old), { mode: 0o600 });
+		expect(releases()).toHaveLength(1);
+		const backend = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, f.fetchImplementation);
+		for (let pass = 0; pass < 3; pass++) await backend.reconcile();
+		expect(releases()).toHaveLength(2);
+		expect(JSON.parse(await readFile(f.journalPath, "utf8"))).toEqual({
+			...old,
+			capacityReleased: true,
+			updatedAt: expect.any(String),
+		});
+		const restarted = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, f.fetchImplementation);
+		await restarted.reconcile();
+		expect(releases()).toHaveLength(2);
+	});
+
+	it("retries a lost or unconfirmed capacity release on the next pass and marks only a confirmed one", async () => {
+		const f = await acquiredFixture();
+		const first = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, f.fetchImplementation);
+		await first.stop(await first.acquire(runId, f.request, new AbortController().signal), "idle");
+		const old = JSON.parse(await readFile(f.journalPath, "utf8")) as Record<string, unknown>;
+		delete old.capacityReleased;
+		await writeFile(f.journalPath, JSON.stringify(old), { mode: 0o600 });
+		let attempts = 0;
+		const fetcher: typeof fetch = async (input, init) => {
+			if (String(input).includes("qorpera_release_runtime_machine")) {
+				attempts++;
+				if (attempts === 1) throw new Error("release response lost");
+				if (attempts === 2) {
+					const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+					return Response.json({
+						state: "released",
+						allocationId: body.p_allocation_id,
+						instanceSha256: "0".repeat(64),
+					});
+				}
+			}
+			return f.fetchImplementation(input, init);
+		};
+		const backend = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, fetcher);
+		await expect(backend.reconcile()).rejects.toThrow("release response lost");
+		expect(JSON.parse(await readFile(f.journalPath, "utf8"))).not.toHaveProperty("capacityReleased");
+		await expect(backend.reconcile()).rejects.toThrow("Machine capacity release was not confirmed");
+		expect(JSON.parse(await readFile(f.journalPath, "utf8"))).not.toHaveProperty("capacityReleased");
+		await backend.reconcile();
+		expect(JSON.parse(await readFile(f.journalPath, "utf8"))).toMatchObject({ capacityReleased: true });
+		await backend.reconcile();
+		expect(attempts).toBe(3);
+	});
+
+	it("never marks capacity released while the journaled guest still exists", async () => {
+		const f = await acquiredFixture();
+		const releases = () =>
+			vi
+				.mocked(f.fetchImplementation)
+				.mock.calls.filter(([url]) => String(url).includes("qorpera_release_runtime_machine"));
+		const backend = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, f.fetchImplementation);
+		for (let pass = 0; pass < 3; pass++) await backend.reconcile();
+		expect(releases()).toHaveLength(0);
+		expect(JSON.parse(await readFile(f.journalPath, "utf8"))).not.toHaveProperty("capacityReleased");
+		// A guest that survives its deletion keeps the capacity, and the journal stays unmarked.
+		const runner = await backend.acquire(runId, f.request, new AbortController().signal);
+		const deletion = vi.spyOn(f.lxd, "deleteInstance").mockResolvedValue(undefined);
+		await expect(backend.stop(runner, "idle")).rejects.toThrow("physical deletion is confirmed");
+		await expect(backend.reconcile()).rejects.toThrow("physical deletion is confirmed");
+		expect(releases()).toHaveLength(0);
+		expect(JSON.parse(await readFile(f.journalPath, "utf8"))).not.toHaveProperty("capacityReleased");
+		deletion.mockRestore();
+		await backend.reconcile();
+		expect(releases()).toHaveLength(1);
+		expect(JSON.parse(await readFile(f.journalPath, "utf8"))).toMatchObject({
+			physicalState: "stopped",
+			capacityReleased: true,
+		});
+	});
+
+	it("never reserves capacity again for an allocation whose release is confirmed", async () => {
+		// A crash between the release mark and the terminal state leaves a registered, released journal.
+		const f = await acquiredFixture();
+		const journal = JSON.parse(await readFile(f.journalPath, "utf8")) as Record<string, unknown>;
+		await writeFile(f.journalPath, JSON.stringify({ ...journal, capacityReleased: true }), { mode: 0o600 });
+		f.lxd.instance = undefined;
+		const calls = (name: string) =>
+			vi.mocked(f.fetchImplementation).mock.calls.filter(([url]) => String(url).includes(name)).length;
+		const reserved = calls("qorpera_reserve_runtime_machine");
+		const backend = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, f.fetchImplementation);
+		await expect(backend.acquire(runId, f.request, new AbortController().signal)).rejects.toThrow(
+			"Released machine capacity cannot be reserved again",
+		);
+		await backend.reconcile();
+		expect(calls("qorpera_reserve_runtime_machine")).toBe(reserved);
+		expect(calls("qorpera_release_runtime_machine")).toBe(0);
+		expect(JSON.parse(await readFile(f.journalPath, "utf8"))).toMatchObject({
+			physicalState: "lost",
+			capacityReleased: true,
+		});
+	});
+
 	it("retires a finished guest even when an earlier reserving journal is refused by the ceiling", async () => {
 		// Live defect (14 Sep 2026, one-slot node): two room wakes materialized together; the second
 		// acquisition was journaled "reserving" and refused by the ceiling on every pass, and because it
@@ -690,7 +823,7 @@ describe("LXD cloud runner provider", () => {
 			physicalState: "reserving",
 		});
 	});
-	it("retires a reserving journal that made no progress for ten minutes", async () => {
+	it.each([false, true])("allows new work after retiring a stale reservation (registered: %s)", async (registered) => {
 		const f = await acquiredFixture();
 		const reservingId = "10000000-0000-4000-8000-000000000002";
 		const journal = JSON.parse(await readFile(f.journalPath, "utf8"));
@@ -705,6 +838,7 @@ describe("LXD cloud runner provider", () => {
 			updatedAt: stale,
 		};
 		delete reserving.nodeCapacity;
+		if (!registered) delete reserving.capacityRegistered;
 		delete reserving.guestAddress;
 		delete reserving.assignmentId;
 		await mkdir(join(f.stateRoot, reservingId), { recursive: true, mode: 0o700 });
@@ -721,6 +855,31 @@ describe("LXD cloud runner provider", () => {
 					String(url).includes("qorpera_release_runtime_machine") && String(init?.body).includes(reservingId),
 			);
 		expect(releases).toHaveLength(reserving.capacityRegistered ? 1 : 0);
+		// A provider restart must not let the retired reservation block unrelated work.
+		f.lxd.instance = { ...f.lxd.instance!, status: "Stopped", statusCode: 102 };
+		await backend.reconcile();
+		const nextId = "30000000-0000-4000-8000-000000000001";
+		const restarted = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, f.fetchImplementation);
+		await restarted.acquire(nextId, { ...work(), runId: nextId }, new AbortController().signal);
+		expect(f.lxd.createCalls).toHaveLength(2);
+		expect(f.lxd.powerCalls).toEqual(["start", "start"]);
+	});
+	it.each(["present", "unknown"])("blocks new work when a lost guest is %s", async (presence) => {
+		const f = await acquiredFixture();
+		const journal = JSON.parse(await readFile(f.journalPath, "utf8"));
+		journal.physicalState = "lost";
+		delete journal.nodeCapacity;
+		delete journal.capacityRegistered;
+		await writeFile(f.journalPath, JSON.stringify(journal));
+		if (presence === "unknown") vi.spyOn(f.lxd, "getInstance").mockRejectedValue(new Error("LXD unavailable"));
+		const backend = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, f.fetchImplementation);
+		const nextId = "30000000-0000-4000-8000-000000000001";
+		await expect(backend.acquire(nextId, { ...work(), runId: nextId }, new AbortController().signal)).rejects.toThrow(
+			presence === "present" ? "machine-capacity inventory" : "LXD unavailable",
+		);
+		expect(f.lxd.createCalls).toHaveLength(1);
+		expect(f.lxd.powerCalls).toEqual(["start"]);
+		expect(JSON.parse(await readFile(f.journalPath, "utf8"))).toEqual(journal);
 	});
 	it("reconciles a lost journal whose guest and recovery volume never existed", async () => {
 		const directory = await root();

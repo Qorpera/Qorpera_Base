@@ -80,6 +80,7 @@
 	--send-active: var(--primary);
 	--send-active-hover: var(--primary-hover);
 	--composer-accent: #0a84ff;
+	--agent-active: #00c887;
 	--composer-on-accent: #ffffff;
 	--composer-accent-hover: color-mix(in srgb, var(--composer-accent) 88%, #000000);
 
@@ -124,9 +125,9 @@
 	--hover: rgba(255, 255, 255, 0.07);
 	--popover: rgba(42, 42, 41, 0.98);
 	--overlay: #2a2a29;
-	--text: #edece9;
-	--text-muted: #a9a8a3;
-	--text-soft: #7f7e7a;
+	--text: #f4f3f0;
+	--text-muted: #b8b7b2;
+	--text-soft: #908f8a;
 	--border: rgba(255, 255, 255, 0.09);
 	--border-strong: rgba(255, 255, 255, 0.17);
 	--header-surface: #232322;
@@ -156,6 +157,7 @@
 /* Conversation colour is independent of the page's light/dark appearance. */
 :root[data-composer-color="green"] {
 	--composer-accent: #30d158;
+	--agent-active: #0a84ff;
 }
 :root[data-composer-color="grey"] {
 	--composer-accent: #5b5b5b;

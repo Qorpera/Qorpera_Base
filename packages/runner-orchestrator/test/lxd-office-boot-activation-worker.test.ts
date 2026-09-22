@@ -2,11 +2,13 @@ import { readFile, rm, writeFile } from "node:fs/promises";
 import { companyComputerBootDirectory } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { officeBootActivationWorkerFixture } from "./fixtures/office-boot-activation-worker.ts";
+import { officeFixtureLayout } from "./fixtures/office-boot-worker.ts";
 import { serviceStartId as id } from "./fixtures/office-service-start.ts";
 
 const roots: string[] = [],
 	signal = () => new AbortController().signal;
 afterEach(async () => {
+	officeFixtureLayout.version = 1;
 	vi.restoreAllMocks();
 	for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
@@ -42,22 +44,26 @@ describe("provider retained-boot activation", () => {
 		expect(f.state.activations).toBe(0);
 		expect(measureInvocation).toHaveBeenCalledOnce();
 	});
-	it("admits and activates one invocation, then recovers without VM or configuration replay", async () => {
-		const f = await fixture();
-		f.configuration.registry.mockClear();
-		const result = await f.run();
-		expect(result).toMatchObject({ state: "active", activationId: id(102), bootId: id(103) });
-		expect(await f.run()).toEqual(result);
-		expect(f.state.preparations).toBe(1);
-		expect(f.state.activations).toBe(1);
-		expect(f.exec).toHaveBeenCalledOnce();
-		expect(f.stage).toHaveBeenCalledOnce();
-		expect(f.configuration.exec).toHaveBeenCalledOnce();
-		expect(f.configuration.resume.submit).toHaveBeenCalledOnce();
-		expect(f.configuration.registry).not.toHaveBeenCalled();
-		expect(f.inspect).toHaveBeenCalledTimes(2);
-		await expect(f.configuration.run()).rejects.toThrow("BOOT_CONFIGURATION_UNCONFIRMED");
-	});
+	it.each([1, 2] as const)(
+		"layout version %i: admits and activates one invocation, then recovers without VM or configuration replay",
+		async (layoutVersion) => {
+			officeFixtureLayout.version = layoutVersion;
+			const f = await fixture();
+			f.configuration.registry.mockClear();
+			const result = await f.run();
+			expect(result).toMatchObject({ state: "active", activationId: id(102), bootId: id(103) });
+			expect(await f.run()).toEqual(result);
+			expect(f.state.preparations).toBe(1);
+			expect(f.state.activations).toBe(1);
+			expect(f.exec).toHaveBeenCalledOnce();
+			expect(f.stage).toHaveBeenCalledOnce();
+			expect(f.configuration.exec).toHaveBeenCalledOnce();
+			expect(f.configuration.resume.submit).toHaveBeenCalledOnce();
+			expect(f.configuration.registry).not.toHaveBeenCalled();
+			expect(f.inspect).toHaveBeenCalledTimes(2);
+			await expect(f.configuration.run()).rejects.toThrow("BOOT_CONFIGURATION_UNCONFIRMED");
+		},
+	);
 	it.each([
 		"qorpera_prepare_runtime_office_boot_successor",
 		"qorpera_activate_runtime_office_boot_successor",

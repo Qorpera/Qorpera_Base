@@ -65,7 +65,7 @@ export async function connectCompanyComputerViewChannel(options: {
 	url: string;
 	capability: string;
 	binding: CompanyComputerScreenBinding;
-	mode: "watch" | "control";
+	mode: "watch" | "shared" | "control";
 	validForMs: number;
 	signal: AbortSignal;
 	createWebSocket?: (url: string) => CompanyComputerWebSocket;
@@ -75,7 +75,7 @@ export async function connectCompanyComputerViewChannel(options: {
 	assertCompanyComputerViewerUrl(options.url, binding.companyComputerId);
 	if (
 		!COMPANY_COMPUTER_VIEW_TOKEN.test(options.capability) ||
-		!["watch", "control"].includes(options.mode) ||
+		!["watch", "shared", "control"].includes(options.mode) ||
 		!Number.isSafeInteger(options.validForMs) ||
 		options.validForMs < 1 ||
 		options.validForMs > 30000

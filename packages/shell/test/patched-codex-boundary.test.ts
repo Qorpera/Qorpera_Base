@@ -9,7 +9,7 @@ import { runOfficialCodexBoundaryProbe } from "./fixtures/official-codex-boundar
 // The standalone acceptance command is mandatory for rollout and fails rather than skipping a missing artifact.
 const binary = process.env.QORPERA_CODEX_FENCE_BINARY;
 describe.skipIf(!binary)("pinned downstream native artifact (requires QORPERA_CODEX_FENCE_BINARY)", () => {
-	it.each(["offline-probe", "provider-default"])(
+	it.each(["offline-probe", "provider-default", "gpt-5.6-sol"])(
 		"fences every real native result with %s",
 		async (model) => {
 			if (!binary) throw new Error("Missing pinned downstream native artifact");
@@ -45,6 +45,13 @@ describe.skipIf(!binary)("pinned downstream native artifact (requires QORPERA_CO
 		});
 		const proof = JSON.parse(stdout);
 		expect(proof).toMatchObject({
+			providerModel: "gpt-5.6-sol",
+			nativeResultsFenced: 23,
+			unfencedNativeResults: 0,
+			allNativeResultsFenced: true,
+		});
+		expect(proof.solBoundaryProof).toMatchObject({
+			providerModel: "gpt-5.6-sol",
 			nativeResultsFenced: 23,
 			unfencedNativeResults: 0,
 			allNativeResultsFenced: true,

@@ -31,6 +31,17 @@ export type NativeMemberComputeIdentity = NativeComputeIdentity & {
 	ownerScopeKey?: never;
 };
 
+export interface NativeProviderAccountUsage {
+	observedAt: string;
+	windows: readonly {
+		id: "primary" | "secondary";
+		label: string;
+		usedPercent: number;
+		resetAt?: string;
+		windowSeconds?: number;
+	}[];
+}
+
 export interface NativeMemberConnection {
 	connectionId: string;
 	/** Correlates this server-owned connection with the member's sign-in attempt. */
@@ -42,6 +53,8 @@ export interface NativeMemberConnection {
 	maxNativeConcurrency: number;
 	providerAccountReference?: string;
 	providerAccountEmail?: string;
+	providerAccountUsage?: NativeProviderAccountUsage;
+	usageLimitResetAt?: string;
 	billingSource: string;
 	consentVersion: string;
 	consentedAt: string;
@@ -271,6 +284,41 @@ function optionalUuid(value: unknown, label: string): string | undefined {
 
 function optionalText(value: unknown, label: string, maximum = 512): string | undefined {
 	return value === null || value === undefined ? undefined : text(value, label, maximum);
+}
+
+/** Display telemetry is optional and never changes connection authority. */
+function parseAccountUsage(value: unknown): NativeProviderAccountUsage | undefined {
+	if (value === null || value === undefined) return undefined;
+	try {
+		const usage = record(value, "account usage");
+		if (!Array.isArray(usage.windows) || usage.windows.length < 1 || usage.windows.length > 2) return undefined;
+		const ids = new Set<string>();
+		const windows = usage.windows.map((entry) => {
+			const window = record(entry, "usage window");
+			if (
+				(window.id !== "primary" && window.id !== "secondary") ||
+				ids.has(window.id) ||
+				typeof window.usedPercent !== "number" ||
+				!Number.isFinite(window.usedPercent) ||
+				window.usedPercent < 0 ||
+				window.usedPercent > 100
+			)
+				throw new Error("Invalid account usage window");
+			ids.add(window.id);
+			return {
+				id: window.id,
+				label: text(window.label, "usage window label", 80),
+				usedPercent: window.usedPercent,
+				...(window.resetAt === undefined ? {} : { resetAt: timestamp(window.resetAt, "usage reset time") }),
+				...(window.windowSeconds === undefined
+					? {}
+					: { windowSeconds: integer(window.windowSeconds, "usage window duration") }),
+			} satisfies NativeProviderAccountUsage["windows"][number];
+		});
+		return { observedAt: timestamp(usage.observedAt, "usage observation time"), windows };
+	} catch {
+		return undefined;
+	}
 }
 
 function parseWorkerClass(value: unknown): CloudWorkerClass {
@@ -599,6 +647,7 @@ export class NativeSubscriptionControlPlane {
 			connections: value.connections.map((entry) => {
 				const connection = record(entry, "native connection");
 				const policy = record(connection.policy, "native provider policy");
+				const usage = parseAccountUsage(connection.provider_account_usage);
 				if (
 					(connection.authorization_state !== "active" &&
 						connection.authorization_state !== "reauthentication_required" &&
@@ -620,6 +669,10 @@ export class NativeSubscriptionControlPlane {
 					provider: text(connection.provider, "native connection provider", 64),
 					nativeHarness: parseHarness(connection.native_harness),
 					authorizationState: connection.authorization_state,
+					...(usage ? { providerAccountUsage: usage } : {}),
+					...(connection.usage_limit_reset_at === null || connection.usage_limit_reset_at === undefined
+						? {}
+						: { usageLimitResetAt: timestamp(connection.usage_limit_reset_at, "usage limit reset time") }),
 					maxNativeConcurrency: integer(connection.max_native_concurrency, "native concurrency"),
 					...(optionalText(connection.provider_account_reference, "provider account reference")
 						? {

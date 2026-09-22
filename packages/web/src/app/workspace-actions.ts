@@ -1,9 +1,12 @@
 import type { WebCompanyComputer } from "../cloud/computer.ts";
+import type { GroupChatDetails, GroupChatDraft } from "../cloud/group-details.ts";
 import type { WebNativeSubscription } from "../cloud/native-subscription.ts";
 import type { WebRoutines } from "../cloud/routines.ts";
+import type { WebSessionModel } from "../cloud/session-model.ts";
 import type { WebSessionRunControl } from "../cloud/session-run-control.ts";
 import type { HostedStaffAgent } from "../cloud/types.ts";
 import type { FigureChoice } from "../ui/figure-picker.ts";
+import type { ComputerPanels } from "./views/computer.ts";
 
 export interface AgentDraft extends FigureChoice {
 	displayName: string;
@@ -14,8 +17,19 @@ export interface AgentDraft extends FigureChoice {
 /** Member UI adapters over the shared cloud SDK. A view offers an action only
  * when its adapter is present. */
 export interface WorkspaceActions {
+	updateGroup?: (
+		sessionId: string,
+		observed: GroupChatDetails,
+		draft: GroupChatDraft,
+		signal: AbortSignal,
+	) => Promise<void>;
+	/** Company notices (paused, limit reached). The conversation shows them above its composer. */
+	notificationHost?: HTMLElement;
 	computer?: WebCompanyComputer;
+	/** The company's open computers, kept across the threads a member moves between. */
+	computerPanels?: ComputerPanels;
 	runControl?: WebSessionRunControl;
+	sessionModel?: WebSessionModel;
 	nativeSubscription?: WebNativeSubscription;
 	routines?: WebRoutines;
 	/** Supplies already-authorized bytes. No URL from a transcript is fetched. */

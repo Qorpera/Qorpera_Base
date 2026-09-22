@@ -1,11 +1,14 @@
 // @vitest-environment jsdom
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
 import { CompanyController } from "../src/app/company.ts";
 import { parseRoute } from "../src/app/router.ts";
+import { ComputerPanels } from "../src/app/views/computer.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import { NewConversationView } from "../src/app/views/new-conversation.ts";
 import type { WorkspaceActions } from "../src/app/workspace-actions.ts";
+import { CloudRpcError } from "../src/cloud/client.ts";
 import type { TranscriptMessage } from "../src/cloud/transcript.ts";
 import appCss from "../src/styles/app.css?raw";
 import conversationCss from "../src/styles/conversation.css?raw";
@@ -42,6 +45,7 @@ afterEach(() => {
 	vi.useRealTimers();
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
+	localStorage.clear();
 });
 function setup(actions: WorkspaceActions = {}) {
 	const f = fixture();
@@ -54,6 +58,45 @@ function setup(actions: WorkspaceActions = {}) {
 		company.stop();
 	};
 	return { ...f, company, view };
+}
+/** A conversation whose messages are already loaded, built before it is placed
+ * in the page, with the message pane's scroll metrics under the test's control
+ * (jsdom lays nothing out). */
+function loadedView() {
+	const f = fixture();
+	const company = new CompanyController(f.api, profileA, userA.id);
+	company.store.set({ team, staff: [staff], sessions: [{ ...session, staffAgentId: staff.id }], loading: false });
+	const reply: TranscriptMessage = {
+		kind: "agent",
+		id: id(83),
+		sequence: 1,
+		text: "Latest answer",
+		attachmentCount: 0,
+		phase: "final",
+		createdAt: timestamp,
+		authorUserId: userA.id,
+	};
+	company
+		.conversation(session.sessionId)
+		.set({ loading: false, projection: { items: [reply], hiddenCount: 0, lastSequence: 1 } });
+	const view = new ConversationView(company, session.sessionId);
+	dispose = () => {
+		view.dispose();
+		company.stop();
+	};
+	const messages = view.el.querySelector<HTMLElement>(".messages")!;
+	expect(messages.textContent).toContain("Latest answer");
+	const metrics = { scrollTop: 0, scrollHeight: 0, clientHeight: 400 };
+	Object.defineProperty(messages, "scrollTop", {
+		configurable: true,
+		get: () => metrics.scrollTop,
+		set: (value: number) => {
+			metrics.scrollTop = value;
+		},
+	});
+	Object.defineProperty(messages, "scrollHeight", { configurable: true, get: () => metrics.scrollHeight });
+	Object.defineProperty(messages, "clientHeight", { configurable: true, get: () => metrics.clientHeight });
+	return { view, messages, metrics };
 }
 function button(root: ParentNode, label: string): HTMLButtonElement {
 	const result = [...root.querySelectorAll<HTMLButtonElement>("button")].find(
@@ -193,7 +236,7 @@ describe("conversation UI boundaries", () => {
 		identity.focus();
 		identity.click();
 		const field = (label: string) => document.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)!;
-		expect(field("Agent description").value).toBe(staff.charter);
+		expect(field("Responsibilities").value).toBe(staff.charter);
 		expect(field("Agent name").readOnly).toBe(true);
 		expect(button(document, "Edit figure").disabled).toBe(true);
 		expect(document.querySelector(".agent-inline-field.is-editable")).toBeNull();
@@ -305,43 +348,261 @@ describe("conversation UI boundaries", () => {
 		expect(button(restored.el, "Preview private.png")).toBeDefined();
 		restored.dispose();
 	});
-	it("shows unavailable computer controls without RPCs, handles narrow layouts, and restores focus", () => {
-		// jsdom lays nothing out: give the thread and the panel the widths the stylesheet would.
-		let threadWidth = 900,
-			panelWidth = 420;
-		vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(function (this: Element) {
-			return this.classList.contains("thread-body") ? threadWidth : 0;
-		});
-		vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
-			return this.classList.contains("computer-panel") ? panelWidth : 0;
-		});
+	it("opens a loaded conversation at its latest message and keeps it there while the pane resizes", () => {
+		// The view renders before it is placed in the page, so the end of the
+		// thread can only be shown once the message pane has a size.
+		const observers: { callback: () => void; targets: Element[]; disconnected: boolean }[] = [];
+		vi.stubGlobal(
+			"ResizeObserver",
+			class {
+				readonly #entry: (typeof observers)[number];
+				constructor(callback: () => void) {
+					this.#entry = { callback, targets: [], disconnected: false };
+					observers.push(this.#entry);
+				}
+				observe(target: Element) {
+					this.#entry.targets.push(target);
+				}
+				disconnect() {
+					this.#entry.disconnected = true;
+				}
+			},
+		);
+		const { view, messages, metrics } = loadedView();
+		const sizes = observers.find((entry) => entry.targets.includes(messages))!;
+		expect(sizes.targets).toEqual([messages]);
+		document.body.append(view.el);
+		metrics.scrollHeight = 2000;
+		sizes.callback();
+		expect(metrics.scrollTop).toBe(2000);
+		// A reader who scrolled up to older messages is left there.
+		metrics.scrollTop = 500;
+		messages.dispatchEvent(new Event("scroll"));
+		metrics.scrollHeight = 2400;
+		sizes.callback();
+		expect(metrics.scrollTop).toBe(500);
+		// Back at the end, a pane that changes size still shows the latest message.
+		metrics.scrollTop = 2000;
+		messages.dispatchEvent(new Event("scroll"));
+		metrics.scrollHeight = 2600;
+		sizes.callback();
+		expect(metrics.scrollTop).toBe(2600);
+		view.dispose();
+		expect(sizes.disconnected).toBe(true);
+		metrics.scrollTop = 0;
+		sizes.callback();
+		expect(metrics.scrollTop).toBe(0);
+	});
+	it("still opens a loaded conversation at its latest message without a size observer", async () => {
+		vi.stubGlobal("ResizeObserver", undefined);
+		const { view, metrics } = loadedView();
+		metrics.scrollHeight = 2000;
+		document.body.append(view.el);
+		expect(metrics.scrollTop).toBe(0);
+		await Promise.resolve();
+		expect(metrics.scrollTop).toBe(2000);
+	});
+	it("keeps the computer popover compact and the conversation usable at every width", () => {
 		const f = setup(),
 			toggle = button(f.view.el, "Open agent computer");
+		toggle.focus();
 		toggle.click();
-		expect(f.view.el.querySelector(".computer-panel")?.textContent).toContain("Computer unavailable");
-		// Routines live in the agent's details now, not beside the computer.
-		expect(f.view.el.querySelector(".computer-panel")?.textContent).not.toContain("Routines");
-		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(false);
-		// Without room for the panel beside the conversation, however wide the rail is, the panel covers it.
-		threadWidth = 735;
-		window.dispatchEvent(new Event("resize"));
-		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(true);
-		expect(f.view.el.querySelector(".thread-body")?.classList.contains("computer-covers")).toBe(true);
-		threadWidth = 900;
-		window.dispatchEvent(new Event("qorpera-rail-resize"));
-		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(false);
-		// The phone layout makes the panel as wide as the thread, so it covers the conversation too.
-		threadWidth = panelWidth = 744;
-		window.dispatchEvent(new Event("resize"));
-		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(true);
-		button(f.view.el, "Close computer").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		const panel = f.view.el.querySelector<HTMLElement>(".computer-panel")!;
+		expect(document.activeElement).toBe(toggle);
+		expect(toggle.getAttribute("aria-expanded")).toBe("true");
+		expect(panel.textContent).toContain("Computer access is not available yet.");
+		expect(panel.querySelector("header, select, .computer-preview, .computer-close")).toBeNull();
+		expect(panel.querySelector("[aria-label='Close computer']")).toBeNull();
+		expect(panel.textContent).not.toContain("Open computer");
+		expect(panel.textContent).not.toContain("Routines");
+		const composer = f.view.el.querySelector<HTMLTextAreaElement>(".composer-input")!;
+		for (const width of [1280, 600, 375]) {
+			vi.stubGlobal("innerWidth", width);
+			window.dispatchEvent(new Event("resize"));
+			expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBeFalsy();
+			composer.focus();
+			expect(document.activeElement).toBe(composer);
+		}
+		panel.focus();
+		panel.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		expect(f.view.el.querySelector(".computer-panel")).toBeNull();
-		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(false);
+		expect(toggle.getAttribute("aria-expanded")).toBe("false");
+		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBeFalsy();
 		expect(document.activeElement).toBe(toggle);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
+	it("uses the same computer toggle to close and reopen the popover without moving focus", () => {
+		const f = setup(),
+			toggle = button(f.view.el, "Open agent computer");
+		toggle.focus();
+		for (let attempt = 0; attempt < 2; attempt++) {
+			toggle.click();
+			expect(f.view.el.querySelectorAll(".computer-panel")).toHaveLength(1);
+			expect(toggle.getAttribute("aria-expanded")).toBe("true");
+			expect(document.activeElement).toBe(toggle);
+			toggle.click();
+			expect(f.view.el.querySelector(".computer-panel")).toBeNull();
+			expect(toggle.getAttribute("aria-expanded")).toBe("false");
+			expect(document.activeElement).toBe(toggle);
+		}
+		expect(f.cloud.rpc).not.toHaveBeenCalled();
+	});
+	it("keeps the agent's computer open across the threads a member moves between", () => {
+		const panels = new ComputerPanels(),
+			f = setup({ computerPanels: panels });
+		button(f.view.el, "Open agent computer").click();
+		const panel = f.view.el.querySelector<HTMLElement>(".computer-panel")!;
+		expect(panel).not.toBeNull();
+		// Leaving the thread keeps the panel; it is only out of the page for now.
+		f.view.dispose();
+		expect(panel.isConnected).toBe(false);
+		expect(panels.get(staff.id)?.el).toBe(panel);
+		// Another thread without this agent shows nothing of it.
+		const other = new ConversationView(f.company, id(90), { computerPanels: panels });
+		expect(other.el.querySelector(".computer-panel")).toBeNull();
+		other.dispose();
+		// Back in the agent's thread the same panel is there, with no click.
+		const restored = new ConversationView(f.company, session.sessionId, { computerPanels: panels });
+		document.body.append(restored.el);
+		expect(restored.el.querySelector(".computer-panel")).toBe(panel);
+		expect(button(restored.el, "Open agent computer").getAttribute("aria-expanded")).toBe("true");
+		// Closing it there ends it for every thread.
+		button(restored.el, "Open agent computer").click();
+		expect(restored.el.querySelector(".computer-panel")).toBeNull();
+		expect(panels.get(staff.id)).toBeUndefined();
+		restored.dispose();
+		const again = new ConversationView(f.company, session.sessionId, { computerPanels: panels });
+		expect(again.el.querySelector(".computer-panel")).toBeNull();
+		again.dispose();
+		// The company's shared panel set is left to the company: this view never disposes it.
+		expect(f.cloud.rpc).not.toHaveBeenCalled();
+	});
 
-	it("explains the run behind the rail's red disc and lets a writer dismiss it, keeping keyboard focus", async () => {
+	it("keeps the open computer through a rename and replaces it only when the thread changes agent", async () => {
+		const panels = new ComputerPanels(),
+			f = setup({ computerPanels: panels });
+		button(f.view.el, "Open agent computer").click();
+		const panel = f.view.el.querySelector<HTMLElement>(".computer-panel")!;
+		f.company.store.set({ staff: [{ ...staff, displayName: "Renamed" }] });
+		await settle();
+		expect(f.view.el.querySelector(".computer-panel")).toBe(panel);
+		expect(f.view.el.querySelector(".thread-identity h1")?.textContent).toBe("Renamed");
+		expect(panels.get(staff.id)?.el).toBe(panel);
+		const other = { ...staff, id: id(97), displayName: "Other" };
+		f.company.store.set({
+			staff: [{ ...staff, displayName: "Renamed" }, other],
+			sessions: [{ ...session, staffAgentId: other.id }],
+		});
+		await settle();
+		const replaced = f.view.el.querySelector<HTMLElement>(".computer-panel")!;
+		expect(replaced).not.toBe(panel);
+		expect(panels.get(staff.id)).toBeUndefined();
+		expect(panels.get(other.id)?.el).toBe(replaced);
+	});
+
+	it("places the company notices right above the composer, inside the conversation", () => {
+		const host = document.createElement("div");
+		const f = setup({ notificationHost: host });
+		expect(host.parentElement).toBe(f.view.el.querySelector(".thread-conversation"));
+		expect(host.nextElementSibling).toBe(f.view.el.querySelector("footer.composer"));
+	});
+
+	it.each([false, true])("restores notification focus with the computer open (entered: %s)", async (entered) => {
+		const host = document.createElement("div");
+		document.body.append(host);
+		const f = setup({ notificationHost: host });
+		button(f.view.el, "Open agent computer").click();
+		const panel = f.view.el.querySelector<HTMLElement>(".computer-panel")!;
+		// The renderer sets this class when native fullscreen is unavailable.
+		panel.classList.toggle("is-entered", entered);
+		f.company.store.set({
+			activity: [
+				{
+					runId: id(70),
+					staffAgentId: staff.id,
+					sourceKind: "room_delivery",
+					jobStatus: "failed",
+					activity: "needs_attention",
+					updatedAt: timestamp,
+				},
+			],
+		});
+		await settle();
+		const close = button(f.view.el, "Dismiss");
+		close.focus();
+		close.click();
+		expect(f.view.el.querySelector(".run-failure")).toBeNull();
+		expect(document.activeElement).toBe(entered ? panel : f.view.el.querySelector(".composer-input"));
+		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBeFalsy();
+	});
+
+	it("closes an unresolved run popup immediately without discarding work or reopening on polling", async () => {
+		const host = document.createElement("div");
+		const sibling = document.createElement("section");
+		host.append(sibling);
+		document.body.append(host);
+		const f = setup({ notificationHost: host });
+		const run = {
+			runId: id(70),
+			staffAgentId: staff.id,
+			sourceKind: "room_delivery" as const,
+			jobStatus: "failed" as const,
+			activity: "needs_attention" as const,
+			updatedAt: timestamp,
+		};
+		const details = {
+			runId: run.runId,
+			sourceKind: run.sourceKind,
+			jobStatus: run.jobStatus,
+			lastError: "Runner lease expired before durable completion",
+			unsettledOperations: 1,
+		};
+		const card = () => document.querySelector<HTMLElement>(".run-failure");
+		const discard = vi.spyOn(f.api, "discardFailedRun");
+		f.company.store.set({ activity: [run], recoveries: { [run.runId]: details } });
+		await settle();
+		expect(card()?.querySelector(".run-failure-title")?.textContent).toBe("Fixture agent did not finish this run");
+		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe("The run took too long and was stopped.");
+		// The cloud's own error text stays out of the card; the reason is in the member's words.
+		expect(card()?.textContent).not.toContain(details.lastError);
+		expect(card()?.querySelector("details")).toBeNull();
+		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual(["Dismiss"]);
+		// Unsettled operations: nothing may be repeated yet.
+		expect(card()?.querySelector('[data-action="retry-run"]')).toBeNull();
+		// The card is the last thing in the thread, where the answer would have been.
+		expect(f.view.el.querySelector(".messages")?.lastElementChild?.contains(card())).toBe(true);
+		expect(host.querySelector(".run-failure")).toBeNull();
+		expect(f.view.el.querySelector(".thread-status .notice-warn")).toBeNull();
+		const close = button(f.view.el, "Dismiss");
+		close.focus();
+		f.company.store.set({ activity: [{ ...run }] });
+		await settle();
+		expect(button(f.view.el, "Dismiss")).toBe(close);
+		expect(document.activeElement).toBe(close);
+		close.click();
+		expect(card()).toBeNull();
+		expect(document.activeElement).toBe(f.view.el.querySelector("textarea"));
+		expect(discard).not.toHaveBeenCalled();
+		f.company.store.set({
+			activity: [{ ...run }],
+			recoveries: { [run.runId]: { ...details, unsettledOperations: 0 } },
+		});
+		await settle();
+		expect(card()).toBeNull();
+		// Navigation within the same company does not replay a dismissed popup.
+		f.view.dispose();
+		const reopened = new ConversationView(f.company, session.sessionId, { notificationHost: host });
+		document.body.append(reopened.el);
+		expect(card()).toBeNull();
+		// A different failed run still gets its own dismissible notification.
+		f.company.store.set({ activity: [{ ...run, runId: id(71) }] });
+		await settle();
+		expect(card()).not.toBeNull();
+		reopened.dispose();
+		expect([...host.children]).toEqual([sibling]);
+	});
+
+	it("allows readers to hide run notifications and retains review links without subtext", async () => {
 		const f = setup();
 		const run = {
 			runId: id(70),
@@ -355,70 +616,382 @@ describe("conversation UI boundaries", () => {
 			runId: run.runId,
 			sourceKind: run.sourceKind,
 			jobStatus: run.jobStatus,
-			lastError: "Native provider bridge request failed (422)",
+			lastError: "Internal provider failure",
 			unsettledOperations: 0,
+			proposalId: id(71),
 		};
-		const card = () => f.view.el.querySelector<HTMLElement>(".thread-status .notice-warn");
-		const dismiss = () => card()?.querySelector<HTMLButtonElement>('[data-action="dismiss-run"]') ?? null;
-		const show = async (patch: Parameters<typeof f.company.store.set>[0]) => {
-			f.company.store.set(patch);
-			await settle();
-		};
-		vi.mocked(f.api.listStaffActivity).mockResolvedValue([run]);
-		vi.spyOn(f.api, "getRunRecovery").mockResolvedValue(details);
-		const discard = vi.spyOn(f.api, "discardFailedRun").mockRejectedValueOnce(new Error("Try again later."));
-		// Until its details are read, the run cannot be dismissed: the cloud might refuse.
-		await show({ activity: [run] });
-		expect(card()?.textContent).toContain("A run did not finish.");
-		expect(dismiss()).toBeNull();
-		await show({ recoveries: { [run.runId]: details } });
-		expect(card()?.textContent).toContain("A run did not finish: Native provider bridge request failed (422)");
-		// Polling that changes nothing shown keeps the same button, and the keyboard on it.
-		dismiss()!.focus();
-		const focused = dismiss();
-		await show({ activity: [{ ...run }] });
-		expect(dismiss()).toBe(focused);
-		expect(document.activeElement).toBe(focused);
-		// A refusal is shown on the card, tied to the button, and focus stays on it.
-		dismiss()!.click();
-		await settle();
-		expect(discard).toHaveBeenCalledWith(run.runId);
-		const error = document.getElementById(dismiss()!.getAttribute("aria-describedby")!);
-		expect(error?.textContent).toBe("Could not dismiss it: Try again later.");
-		expect(document.activeElement).toBe(dismiss());
-		discard.mockResolvedValueOnce();
-		vi.mocked(f.api.listStaffActivity).mockResolvedValue([]);
-		dismiss()!.click();
-		await settle();
-		expect(discard).toHaveBeenCalledTimes(2);
-		expect(card()).toBeNull();
-		// Work of unknown outcome cannot be dismissed here; readers only see the card.
-		await show({ activity: [run], recoveries: { [run.runId]: { ...details, unsettledOperations: 1 } } });
-		expect(card()?.textContent).toContain("unknown outcome");
-		expect(dismiss()).toBeNull();
-		await show({
+		const card = () => f.view.el.querySelector<HTMLElement>(".run-failure");
+		f.company.store.set({
 			team: { ...team, capabilities: { ...team.capabilities, write: false } },
+			activity: [run],
 			recoveries: { [run.runId]: details },
 		});
-		expect(card()?.textContent).toContain("A run did not finish");
-		expect(dismiss()).toBeNull();
-		// A run that left Company File changes points at them; only deciders are asked to decide.
-		await show({ team, recoveries: { [run.runId]: { ...details, proposalId: id(71) } } });
+		await settle();
 		expect(card()?.querySelector("a")?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/proposal/${id(71)}`);
-		expect(card()?.textContent).toContain("to keep or discard them");
-		await show({ team: { ...team, capabilities: { ...team.capabilities, authorize: false } } });
-		expect(card()?.textContent).toContain("An owner or admin decides");
-		// A failed review points at the proposal list; the cloud does not dismiss reviews.
-		const review = { ...run, sourceKind: "proposal_review" as const };
-		await show({
-			team,
-			activity: [review],
-			recoveries: { [run.runId]: { ...details, sourceKind: "proposal_review" } },
-		});
-		expect(card()?.textContent).toContain("A review did not finish");
+		expect(card()?.querySelector(".run-failure-title")?.textContent).toBe(
+			"Fixture agent stopped with changes to review",
+		);
+		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe("Its changes wait for your decision.");
+		expect(card()?.querySelector('[data-action="retry-run"]')).toBeNull();
+		button(f.view.el, "Dismiss").focus();
+		button(f.view.el, "Dismiss").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		expect(card()).toBeNull();
+		expect(document.activeElement).toBe(button(f.view.el, "Open agent details"));
+		const review = { ...run, runId: id(72), sourceKind: "proposal_review" as const };
+		f.company.store.set({ activity: [review] });
+		await settle();
+		expect(card()?.querySelector(".run-failure-title")?.textContent).toBe("A review did not finish");
+		expect(card()?.querySelector('[data-action="retry-run"]')).toBeNull();
 		expect(card()?.querySelector("a")?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/file`);
-		expect(dismiss()).toBeNull();
+		f.company.store.set({ team: undefined });
+		await settle();
+		expect(card()).toBeNull();
 	});
+
+	it("dismisses durably at once, and the next run then shows with its Stop control", async () => {
+		const nextRun = id(73);
+		const cancel = vi.fn(async () => "cancelled" as const);
+		const f = setup({
+			runControl: {
+				read: vi.fn(async () => ({
+					sessionId: session.sessionId,
+					staffAgentId: staff.id,
+					run: { runId: nextRun, status: "leased" as const, canCancel: true },
+				})),
+				cancel,
+			},
+		});
+		const run = {
+			runId: id(70),
+			staffAgentId: staff.id,
+			sourceKind: "session_turn" as const,
+			jobStatus: "failed" as const,
+			activity: "needs_attention" as const,
+			updatedAt: timestamp,
+		};
+		const pending = deferred<void>();
+		const acknowledge = vi.spyOn(f.api, "acknowledgeFailedRun").mockReturnValue(pending.promise);
+		const discard = vi.spyOn(f.api, "discardFailedRun");
+		// Match the server's priority: the old failure masks the newer leased run until acknowledged.
+		vi.mocked(f.api.listStaffActivity).mockResolvedValue([
+			{ ...run, runId: nextRun, jobStatus: "leased", activity: "working" },
+		]);
+		// Details have not arrived yet: dismissing does not wait for them.
+		f.company.store.set({ activity: [run], recoveries: {} });
+		await settle();
+		expect(f.company.agentState(staff.id)).toBe("failed");
+		expect(f.view.el.querySelector('[aria-label="Stop"]')).toBeNull();
+		const close = button(f.view.el, "Dismiss");
+		close.focus();
+		close.click();
+		close.click();
+		expect(f.view.el.querySelector(".run-failure")).toBeNull();
+		expect(document.activeElement).toBe(f.view.el.querySelector("textarea"));
+		// Seen: the run stops standing in for the agent before the cloud has answered.
+		expect(acknowledge).toHaveBeenCalledExactlyOnceWith(run.runId);
+		expect(discard).not.toHaveBeenCalled();
+		expect(f.company.agentState(staff.id)).toBe("idle");
+		pending.resolve();
+		await settle();
+		expect(f.company.agentState(staff.id)).toBe("working");
+		expect(f.view.el.querySelector(".run-failure")).toBeNull();
+		expect(button(f.view.el, "Stop").disabled).toBe(false);
+		button(f.view.el, "Stop").click();
+		await settle();
+		expect(cancel).toHaveBeenCalledExactlyOnceWith(session.sessionId, nextRun, expect.any(AbortSignal));
+	});
+
+	it("offers Try again in the thread, runs it on the selected account, and reports a refusal in plain words", async () => {
+		const f = setup();
+		const run = {
+			runId: id(70),
+			staffAgentId: staff.id,
+			sourceKind: "room_delivery" as const,
+			jobStatus: "failed" as const,
+			activity: "needs_attention" as const,
+			updatedAt: timestamp,
+		};
+		const details = {
+			runId: run.runId,
+			sourceKind: run.sourceKind,
+			jobStatus: run.jobStatus,
+			lastError:
+				"Runner dispatch failed after the final infrastructure attempt: Runner provider request failed (422)",
+			unsettledOperations: 0,
+		};
+		const card = () => f.view.el.querySelector<HTMLElement>(".run-failure");
+		const retryButton = () => card()?.querySelector<HTMLButtonElement>('[data-action="retry-run"]') ?? null;
+		const sponsor = {
+			connectionId: id(80),
+			provider: "openai",
+			nativeHarness: "codex-cli" as const,
+			sponsorBindingId: id(81),
+			sponsorVersion: 3,
+			computeIdentityId: id(82),
+			workerClass: "managed_sandbox" as const,
+		};
+		f.company.conversation(session.sessionId, false).set({ executionSponsor: sponsor });
+		// The cloud keeps reporting the failed run until it is released or dismissed.
+		vi.spyOn(f.api, "listStaffActivity").mockResolvedValue([run]);
+		vi.spyOn(f.api, "getRunRecovery").mockResolvedValue(details);
+		f.company.store.set({ activity: [run], recoveries: { [run.runId]: details } });
+		await settle();
+		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe(
+			"No computer could be started for this run. The problem is on Qorpera's side.",
+		);
+		let release: (() => void) | undefined;
+		const retry = vi.spyOn(f.api, "retryRoomDelivery").mockImplementation(
+			() =>
+				new Promise<void>((resolve) => {
+					release = resolve;
+				}),
+		);
+		retryButton()!.focus();
+		retryButton()!.click();
+		await settle();
+		expect(retry).toHaveBeenCalledExactlyOnceWith(run.runId, sponsor.sponsorBindingId, sponsor.sponsorVersion);
+		expect(retryButton()?.textContent).toBe("Trying again…");
+		expect(retryButton()?.getAttribute("aria-disabled")).toBe("true");
+		// A second click while it runs does nothing, and the button keeps focus across the redraw.
+		retryButton()!.click();
+		expect(retry).toHaveBeenCalledTimes(1);
+		expect(document.activeElement).toBe(retryButton());
+		release?.();
+		await settle();
+		// A refusal stays in the card, in the member's words.
+		retry.mockRejectedValueOnce(new Error("Only the author of the post can retry it"));
+		f.company.store.set({ activity: [{ ...run }], recoveries: { [run.runId]: details } });
+		await settle();
+		retryButton()!.click();
+		await settle();
+		expect(card()?.querySelector(".run-failure-error")?.textContent).toBe(
+			"Only the person who wrote the message can try it again.",
+		);
+		expect(retryButton()?.textContent).toBe("Try again");
+	});
+
+	it("stops offering Try again for room posts when the deployed cloud cannot do it, and keeps it for session turns", async () => {
+		const f = setup();
+		const run = {
+			runId: id(70),
+			staffAgentId: staff.id,
+			sourceKind: "room_delivery" as const,
+			jobStatus: "failed" as const,
+			activity: "needs_attention" as const,
+			updatedAt: timestamp,
+		};
+		const details = {
+			runId: run.runId,
+			sourceKind: run.sourceKind,
+			jobStatus: run.jobStatus,
+			lastError: "Runner lease expired before durable completion",
+			unsettledOperations: 0,
+		};
+		const retryButton = () => f.view.el.querySelector<HTMLButtonElement>('.run-failure [data-action="retry-run"]');
+		f.company.conversation(session.sessionId, false).set({
+			executionSponsor: {
+				connectionId: id(80),
+				provider: "openai",
+				nativeHarness: "codex-cli",
+				sponsorBindingId: id(81),
+				sponsorVersion: 1,
+				computeIdentityId: id(82),
+				workerClass: "managed_sandbox",
+			},
+		});
+		f.company.store.set({ activity: [run], recoveries: { [run.runId]: details } });
+		await settle();
+		vi.spyOn(f.api, "listStaffActivity").mockResolvedValue([run]);
+		vi.spyOn(f.api, "getRunRecovery").mockResolvedValue(details);
+		vi.spyOn(f.api, "retryRoomDelivery").mockRejectedValue(
+			new CloudRpcError("qorpera_retry_room_delivery", { message: "not found", code: "PGRST202" }, 404),
+		);
+		retryButton()!.click();
+		await settle();
+		f.company.store.set({ activity: [{ ...run }], recoveries: { [run.runId]: details } });
+		await settle();
+		expect(retryButton()).toBeNull();
+		expect(f.view.el.querySelector(".run-failure-error")?.textContent).toBe(
+			"Trying again is not available yet. Send the message again instead.",
+		);
+		expect(button(f.view.el, "Dismiss")).toBeTruthy();
+		const turn = { ...run, runId: id(71), sourceKind: "session_turn" as const };
+		const turnRetry = vi.spyOn(f.api, "retryFailedRun").mockResolvedValue();
+		f.company.store.set({
+			activity: [turn],
+			recoveries: { [turn.runId]: { ...details, runId: turn.runId, sourceKind: turn.sourceKind } },
+		});
+		await settle();
+		retryButton()!.click();
+		await settle();
+		expect(turnRetry).toHaveBeenCalledExactlyOnceWith(turn.runId);
+	});
+
+	it("offers Dismiss only for a refused run, and Try again for an interrupted one", async () => {
+		const f = setup();
+		const run = {
+			runId: id(70),
+			staffAgentId: staff.id,
+			sourceKind: "session_turn" as const,
+			jobStatus: "failed" as const,
+			activity: "needs_attention" as const,
+			updatedAt: timestamp,
+		};
+		const details = (lastError: string) => ({
+			runId: run.runId,
+			sourceKind: run.sourceKind,
+			jobStatus: run.jobStatus,
+			lastError,
+			unsettledOperations: 0,
+		});
+		const card = () => f.view.el.querySelector<HTMLElement>(".run-failure");
+		f.company.store.set({ activity: [run], recoveries: { [run.runId]: details("You have hit your usage limit.") } });
+		await settle();
+		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe(
+			"Your model account has reached its usage limit.",
+		);
+		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual(["Dismiss"]);
+		f.company.store.set({
+			activity: [run],
+			recoveries: { [run.runId]: details("Runner lease expired before durable completion") },
+		});
+		await settle();
+		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual([
+			"Try again",
+			"Dismiss",
+		]);
+		// The card is one quiet line, like a company notice: no big mark, no rule.
+		expect(card()?.querySelector(".run-failure-mark")).toBeNull();
+		expect(card()?.querySelector(".run-failure-rule")).toBeNull();
+	});
+
+	it("keeps a dismissed failure dismissed when it is displaced and returns", async () => {
+		const f = setup();
+		const run = {
+			runId: id(70),
+			staffAgentId: staff.id,
+			sourceKind: "session_turn" as const,
+			jobStatus: "failed" as const,
+			activity: "needs_attention" as const,
+			updatedAt: timestamp,
+		};
+		const acknowledge = vi.spyOn(f.api, "acknowledgeFailedRun").mockResolvedValue(undefined);
+		// The cloud's next read reports a newer failure, which gets its own card.
+		vi.mocked(f.api.listStaffActivity).mockResolvedValue([{ ...run, runId: id(71) }]);
+		f.company.store.set({ activity: [run] });
+		await settle();
+		button(f.view.el, "Dismiss").click();
+		expect(acknowledge).toHaveBeenCalledExactlyOnceWith(run.runId);
+		await settle();
+		expect(f.view.el.querySelector(".run-failure")).not.toBeNull();
+		// The dismissed run comes back from a stale read: it stays dismissed, once.
+		f.company.store.set({
+			activity: [run],
+			recoveries: {
+				[run.runId]: {
+					runId: run.runId,
+					sourceKind: run.sourceKind,
+					jobStatus: run.jobStatus,
+					unsettledOperations: 0,
+				},
+			},
+		});
+		await settle();
+		expect(f.view.el.querySelector(".run-failure")).toBeNull();
+		expect(acknowledge).toHaveBeenCalledTimes(1);
+		expect(f.company.agentState(staff.id)).toBe("idle");
+	});
+
+	it("keeps a dismissal across navigation, and shows the card again after a lost cloud reply", async () => {
+		const f = setup();
+		const run = {
+			runId: id(70),
+			staffAgentId: staff.id,
+			sourceKind: "session_turn" as const,
+			jobStatus: "failed" as const,
+			activity: "needs_attention" as const,
+			updatedAt: timestamp,
+		};
+		const recovery = {
+			runId: run.runId,
+			sourceKind: run.sourceKind,
+			jobStatus: run.jobStatus,
+			unsettledOperations: 0,
+		};
+		const pending = deferred<void>();
+		const acknowledge = vi.spyOn(f.api, "acknowledgeFailedRun").mockReturnValueOnce(pending.promise);
+		vi.mocked(f.api.listStaffActivity).mockResolvedValue([run]);
+		vi.spyOn(f.api, "getRunRecovery").mockResolvedValue(recovery);
+		f.company.store.set({ activity: [run] });
+		await settle();
+		button(f.view.el, "Dismiss").click();
+		f.view.dispose();
+		f.view.el.remove();
+		const reopened = new ConversationView(f.company, session.sessionId);
+		document.body.append(reopened.el);
+		dispose = () => {
+			reopened.dispose();
+			f.company.stop();
+		};
+		f.company.store.set({ recoveries: { [run.runId]: recovery } });
+		await settle();
+		expect(acknowledge).toHaveBeenCalledExactlyOnceWith(run.runId);
+		expect(reopened.el.querySelector(".run-failure")).toBeNull();
+		// Nothing reached the cloud: the failure is not settled, so the card returns
+		// in the current view and can be dismissed again.
+		pending.reject(new Error("Connection lost"));
+		await settle();
+		expect(reopened.el.querySelector(".run-failure-title")?.textContent).toBe(
+			"Fixture agent did not finish this run",
+		);
+		expect(f.company.agentState(staff.id)).toBe("failed");
+		acknowledge.mockResolvedValue(undefined);
+		vi.mocked(f.api.listStaffActivity).mockResolvedValue([]);
+		button(reopened.el, "Dismiss").click();
+		await settle();
+		expect(acknowledge).toHaveBeenCalledTimes(2);
+		expect(reopened.el.querySelector(".run-failure")).toBeNull();
+		expect(f.company.agentState(staff.id)).toBe("idle");
+	});
+
+	it.each(["reader", "unsettled", "proposal", "review", "closed", "stopped"] as const)(
+		"keeps dismissal local when recovery arrives after %s changes",
+		async (kind) => {
+			const f = setup();
+			const run = {
+				runId: id(70),
+				staffAgentId: staff.id,
+				sourceKind: kind === "review" ? ("proposal_review" as const) : ("session_turn" as const),
+				jobStatus: "failed" as const,
+				activity: "needs_attention" as const,
+				updatedAt: timestamp,
+			};
+			const discard = vi.spyOn(f.api, "discardFailedRun");
+			f.company.store.set({ activity: [run] });
+			await settle();
+			const close = button(f.view.el, "Dismiss");
+			if (kind === "reader")
+				f.company.store.set({ team: { ...team, capabilities: { ...team.capabilities, write: false } } });
+			close.click();
+			if (kind === "closed")
+				f.company.store.set({ sessions: [{ ...session, staffAgentId: staff.id, status: "closed" }] });
+			if (kind === "stopped") f.company.stop();
+			f.company.store.set({
+				recoveries: {
+					[run.runId]: {
+						runId: run.runId,
+						sourceKind: run.sourceKind,
+						jobStatus: run.jobStatus,
+						unsettledOperations: kind === "unsettled" ? 1 : 0,
+						proposalId: kind === "proposal" ? id(74) : undefined,
+					},
+				},
+			});
+			await settle();
+			expect(discard).not.toHaveBeenCalled();
+			expect(f.view.el.querySelector(".run-failure")).toBeNull();
+		},
+	);
 });
 
 describe("local attachment validation", () => {

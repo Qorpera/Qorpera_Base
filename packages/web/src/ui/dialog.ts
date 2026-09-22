@@ -104,9 +104,11 @@ export class SurfaceDialog {
 			const rect = this.#anchor.getBoundingClientRect();
 			this.el.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - this.el.getBoundingClientRect().width - 12))}px`;
 			this.el.style.top = `${rect.bottom + 8}px`;
+			this.el.style.maxHeight = `${Math.max(0, window.innerHeight - rect.bottom - 24)}px`;
 		} else {
 			this.el.style.removeProperty("left");
 			this.el.style.removeProperty("top");
+			this.el.style.removeProperty("max-height");
 		}
 	}
 	close(restoreFocus = true): void {

@@ -1,5 +1,6 @@
 import type {
 	NativeExecutionConnections,
+	NativeMemberConnection,
 	SessionTurnProvenance,
 } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import type { WebNativeSubscription } from "../../cloud/native-subscription.ts";
@@ -7,9 +8,21 @@ import { selectSessionExecutionSponsor } from "../../cloud/session-input.ts";
 import { button, h, replace } from "../../ui/dom.ts";
 import type { CompanyController } from "../company.ts";
 
-/** A member explicitly selects their own observed sponsor. Runtime admission
- * remains in the shared SDK. The member's own usable account is chosen for them;
- * a picker appears only when they have more than one. */
+/** Unknown windows sort after measured allowance. Expired windows no longer
+ * establish exhaustion; the provider supplies the next observation. */
+function remainingAllowance(connection: NativeMemberConnection, now: number): number | undefined {
+	if (connection.usageLimitResetAt && Date.parse(connection.usageLimitResetAt) > now) return 0;
+	const observedAt = Date.parse(connection.providerAccountUsage?.observedAt ?? "");
+	if (!Number.isFinite(observedAt) || observedAt < now - 5 * 60_000 || observedAt > now + 60_000) return undefined;
+	const windows =
+		connection.providerAccountUsage?.windows.filter(
+			(window) => !window.resetAt || Date.parse(window.resetAt) > now,
+		) ?? [];
+	return windows.length ? Math.min(...windows.map((window) => 100 - window.usedPercent)) : undefined;
+}
+
+/** A conversation keeps its own account until that account becomes unavailable.
+ * New conversations choose the member's account with the most remaining allowance. */
 export class SessionExecutionView {
 	readonly el = h("div", { class: "session-execution" });
 	readonly #company: CompanyController;
@@ -26,6 +39,11 @@ export class SessionExecutionView {
 	#historyError: string | undefined;
 	#renderKey = "";
 	#room = false;
+	#serverSelection = false;
+	#serverConnectionId: string | undefined;
+	#usageHydratedAt: number | undefined;
+	#usageRequest: AbortController | undefined;
+	#refreshTimer: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(
 		company: CompanyController,
@@ -55,6 +73,9 @@ export class SessionExecutionView {
 				retry.files.every((file, index) => file === files[index])
 			);
 		if (!conversation.executionSponsor || !this.#observed || this.#busy) return false;
+		if (this.#serverSelection && conversation.executionSponsor.connectionId !== this.#serverConnectionId)
+			return false;
+		if (!this.#available().includes(conversation.executionSponsor.connectionId)) return false;
 		try {
 			const current = selectSessionExecutionSponsor(
 				this.#observed,
@@ -86,12 +107,17 @@ export class SessionExecutionView {
 			company.team?.capabilities.read &&
 			company.sessions.some((s) => s.sessionId === this.#sessionId);
 		if (!canRead) {
+			clearTimeout(this.#refreshTimer);
+			this.#refreshTimer = undefined;
 			this.#request?.abort();
 			this.#request = undefined;
 			this.#observed = undefined;
 			this.#provenance = [];
 			this.#started = false;
 			this.#busy = false;
+			this.#usageHydratedAt = undefined;
+			this.#usageRequest?.abort();
+			this.#usageRequest = undefined;
 			this.el.replaceChildren();
 			this.#renderKey = "";
 			return;
@@ -112,22 +138,39 @@ export class SessionExecutionView {
 			!company.sessions.some((s) => s.sessionId === this.#sessionId)
 		)
 			return;
+		clearTimeout(this.#refreshTimer);
+		this.#refreshTimer = undefined;
 		const request = new AbortController();
 		this.#request = request;
 		const signal = AbortSignal.any([request.signal, this.#lifetime.signal]);
 		this.#busy = true;
-		this.#observed = undefined;
 		this.#error = undefined;
 		this.#historyError = undefined;
 		this.#render();
 		this.#changed();
+		const conversation = this.#company.conversation(this.#sessionId).get();
+		this.#serverSelection = Boolean(
+			this.#native.selectSessionAccount && !conversation.retrySend && !conversation.sending,
+		);
+		this.#serverConnectionId = undefined;
+		const readConnections = async (): Promise<NativeExecutionConnections> => {
+			if (this.#serverSelection) {
+				const connectionId = await this.#native.selectSessionAccount!(this.#sessionId, signal);
+				signal.throwIfAborted();
+				this.#serverConnectionId = connectionId;
+			}
+			return this.#native.listConnections(signal);
+		};
 		const [connections, provenance] = await Promise.allSettled([
-			this.#native.listConnections(signal),
+			readConnections(),
 			this.#room ? Promise.resolve([]) : this.#native.listSessionTurnProvenance(this.#sessionId, signal),
 		]);
 		if (signal.aborted) return;
 		if (connections.status === "fulfilled") this.#observed = connections.value;
-		else this.#error = "Model accounts are unavailable. Refresh to try again.";
+		else {
+			this.#observed = undefined;
+			this.#error = "Model accounts are unavailable. Refresh to try again.";
+		}
 		if (provenance.status === "fulfilled") this.#provenance = provenance.value;
 		else {
 			this.#provenance = [];
@@ -138,13 +181,92 @@ export class SessionExecutionView {
 		this.#choose();
 		this.#render();
 		this.#changed();
+		this.#scheduleRefresh();
+		void this.#hydrateUsage();
+	}
+
+	async #hydrateUsage(): Promise<void> {
+		const company = this.#company.store.get();
+		const conversation = this.#company.conversation(this.#sessionId).get();
+		if (
+			!this.#native.refreshAccountMetadata ||
+			!this.#serverSelection ||
+			!this.#observed ||
+			this.#usageRequest ||
+			this.#lifetime.signal.aborted ||
+			company.accessLost ||
+			!company.team?.capabilities.read ||
+			company.sessions.find((session) => session.sessionId === this.#sessionId)?.status !== "open" ||
+			conversation.sending ||
+			conversation.retrySend ||
+			(this.#usageHydratedAt !== undefined && Date.now() - this.#usageHydratedAt < 60_000)
+		)
+			return;
+		const request = new AbortController();
+		this.#usageRequest = request;
+		const signal = AbortSignal.any([request.signal, this.#lifetime.signal]);
+		let refreshed = false;
+		try {
+			// Usage improves account ranking, but an unavailable refresh host must
+			// not prevent the cloud from selecting an already eligible account.
+			await this.#native.refreshAccountMetadata(signal);
+			signal.throwIfAborted();
+			refreshed = true;
+		} catch {
+			// Eligibility and known usage walls remain enforced by the account read.
+		} finally {
+			if (this.#usageRequest === request) {
+				this.#usageRequest = undefined;
+				this.#usageHydratedAt = Date.now();
+			}
+		}
+		if (signal.aborted || !refreshed) return;
+		const current = this.#company.conversation(this.#sessionId).get();
+		// Let a submission awaiting its account check start before another read.
+		// The timer also preserves the sponsor if that send becomes uncertain.
+		if (!this.#busy && !current.sending && !current.retrySend) this.#scheduleRefresh(1000);
+	}
+
+	#scheduleRefresh(maxDelay = 30_000): void {
+		clearTimeout(this.#refreshTimer);
+		const company = this.#company.store.get();
+		if (
+			this.#lifetime.signal.aborted ||
+			company.accessLost ||
+			!company.team?.capabilities.read ||
+			company.sessions.find((session) => session.sessionId === this.#sessionId)?.status !== "open"
+		)
+			return;
+		const now = Date.now();
+		const resets = (this.#observed?.connections ?? []).flatMap((connection) => [
+			connection.usageLimitResetAt,
+			...(connection.providerAccountUsage?.windows.map((window) => window.resetAt) ?? []),
+		]);
+		const nextReset = Math.min(...resets.map((reset) => Date.parse(reset ?? "")).filter((reset) => reset > now));
+		const delay = Math.max(1000, Math.min(maxDelay, nextReset - now + 250));
+		this.#refreshTimer = setTimeout(() => {
+			this.#refreshTimer = undefined;
+			const conversation = this.#company.conversation(this.#sessionId).get();
+			// Never replace the account while a write or its exact replay is outstanding.
+			if (conversation.sending || conversation.retrySend) {
+				this.#scheduleRefresh();
+				return;
+			}
+			if (nextReset <= Date.now()) this.#usageHydratedAt = undefined;
+			void this.refresh();
+		}, delay);
 	}
 
 	#available(): string[] {
 		const observed = this.#observed;
 		if (!observed) return [];
+		const now = Date.now();
+		const seen = new Set<string>();
 		return observed.connections
 			.filter((connection) => {
+				if (seen.has(connection.connectionId)) return false;
+				seen.add(connection.connectionId);
+				if (remainingAllowance(connection, now) === 0) return false;
 				try {
 					selectSessionExecutionSponsor(observed, connection.connectionId, this.#company.userId);
 					return true;
@@ -152,23 +274,48 @@ export class SessionExecutionView {
 					return false;
 				}
 			})
+			.sort(
+				(a, b) =>
+					(remainingAllowance(b, now) ?? -1) - (remainingAllowance(a, now) ?? -1) ||
+					a.connectionId.localeCompare(b.connectionId),
+			)
 			.map((connection) => connection.connectionId);
 	}
 
-	/** A member's message runs on the member's own account. With one usable
-	 * account there is nothing to ask; a stale choice follows its account. */
 	#choose(): void {
 		const conversation = this.#company.conversation(this.#sessionId).get();
-		if (!this.#observed || conversation.sending || conversation.retrySend || this.canSend) return;
+		if (!this.#observed || conversation.sending || conversation.retrySend) return;
+		if (
+			this.canSend &&
+			(!this.#serverSelection || conversation.executionSponsor?.connectionId === this.#serverConnectionId)
+		)
+			return;
 		const available = this.#available();
-		const kept = conversation.executionSponsor?.connectionId;
-		const next = kept && available.includes(kept) ? kept : available[0];
+		const kept = conversation.executionSponsor;
+		// Follow a runtime handoff on the same durable binding before selecting
+		// another account. A retry still keeps its exact original request authority.
+		const handedOff =
+			kept &&
+			this.#observed.connections
+				.filter(
+					(connection) =>
+						connection.sponsorBindingId === kept.sponsorBindingId &&
+						(connection.sponsorVersion ?? 0) > kept.sponsorVersion &&
+						available.includes(connection.connectionId),
+				)
+				.sort((a, b) => (b.sponsorVersion ?? 0) - (a.sponsorVersion ?? 0))[0];
+		const next = this.#serverSelection
+			? this.#serverConnectionId && available.includes(this.#serverConnectionId)
+				? this.#serverConnectionId
+				: undefined
+			: (handedOff?.connectionId ??
+				(kept && available.includes(kept.connectionId) ? kept.connectionId : available[0]));
 		if (!next) return;
 		try {
 			this.#company.setExecutionSponsor(this.#sessionId, this.#observed, next);
 			this.#error = undefined;
 		} catch {
-			// The member can still choose; sending stays off until an account is usable.
+			// Sending stays off until the member has a usable account and authority.
 		}
 	}
 
@@ -195,52 +342,9 @@ export class SessionExecutionView {
 		]);
 		if (key === this.#renderKey) return;
 		this.#renderKey = key;
-		const select = h(
-			"select",
-			{ "aria-label": "Model account for this conversation", disabled: locked },
-			h("option", { value: "" }, "Choose your model account"),
-		);
-		for (const connection of this.#observed?.connections ?? []) {
-			let available = true;
-			try {
-				selectSessionExecutionSponsor(this.#observed!, connection.connectionId, this.#company.userId);
-			} catch {
-				available = false;
-			}
-			select.append(
-				h(
-					"option",
-					{ value: connection.connectionId, disabled: !available },
-					`${connection.provider} · ${connection.providerAccountReference ?? connection.nativeHarness}${available ? "" : " (unavailable)"}`,
-				),
-			);
-		}
-		if (selected && ![...select.options].some((o) => o.value === selected.connectionId)) {
-			select.append(
-				h(
-					"option",
-					{ value: selected.connectionId, disabled: true },
-					`${selected.provider} · saved selection (refresh required)`,
-				),
-			);
-		}
-		select.value = selected?.connectionId ?? "";
-		select.addEventListener("change", () => {
-			const state = this.#company.conversation(this.#sessionId).get();
-			if (this.#lifetime.signal.aborted || this.#busy || state.sending || state.retrySend || !this.#observed) return;
-			try {
-				this.#company.setExecutionSponsor(this.#sessionId, this.#observed, select.value || undefined);
-				this.#error = undefined;
-			} catch {
-				this.#error = "This model account is unavailable. Refresh and select an active account.";
-			}
-			this.#render();
-			this.#changed();
-		});
-		const several = this.#available().length > 1;
+
 		replace(
 			this.el,
-			several && !conversation.retrySend ? select : null,
 			this.#error ? h("p", { class: "muted" }, this.#error) : null,
 			conversation.retrySend
 				? h(
@@ -257,6 +361,8 @@ export class SessionExecutionView {
 								if (this.#lifetime.signal.aborted) return;
 								try {
 									this.#company.discardSendRetry(this.#sessionId);
+									if (this.#native.selectSessionAccount) void this.refresh();
+									else this.#choose();
 									this.#error = undefined;
 								} catch {
 									this.#error = "This conversation is unavailable for a new request.";
@@ -268,14 +374,24 @@ export class SessionExecutionView {
 						),
 					)
 				: this.#observed && !this.#error && !this.canSend && !this.#busy
-					? h("p", { class: "muted" }, "Connect a model account in Settings → Connections to send messages.")
+					? h(
+							"p",
+							{ class: "muted" },
+							this.#observed.connections.some((connection) => remainingAllowance(connection, Date.now()) === 0)
+								? "Your model accounts have reached their usage limits. Sending resumes when an account resets."
+								: "Connect a model account in Settings → Connections to send messages.",
+						)
 					: null,
 		);
 	}
 
 	dispose(): void {
 		this.#lifetime.abort();
+		clearTimeout(this.#refreshTimer);
+		this.#refreshTimer = undefined;
 		this.#request?.abort();
+		this.#usageRequest?.abort();
+		this.#usageRequest = undefined;
 		this.#observed = undefined;
 		this.#provenance = [];
 		this.el.replaceChildren();

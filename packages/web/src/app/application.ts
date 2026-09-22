@@ -9,6 +9,7 @@ import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
 import { createWebRoutines } from "../cloud/routines.ts";
 import { createWebSessionAttachments } from "../cloud/session-attachments.ts";
 import { createWebSessionInputWriter } from "../cloud/session-input.ts";
+import { createWebSessionModel } from "../cloud/session-model.ts";
 import { createWebSessionRunControl } from "../cloud/session-run-control.ts";
 import type { HostedProfile } from "../cloud/types.ts";
 import { h, notice, replace, spinner } from "../ui/dom.ts";
@@ -20,10 +21,12 @@ import { CompanyController } from "./company.ts";
 import { currentRoute, navigate, type Route } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
+import { createGroupUpdater } from "./update-group.ts";
 import { type AccountViewState, renderAccount } from "./views/account.ts";
 import { ApprovalsView } from "./views/approvals.ts";
 import { CloudCheckView } from "./views/cloudcheck.ts";
 import { CompanyFileController, renderCompanyFile } from "./views/companyfile.ts";
+import { ComputerPanels } from "./views/computer.ts";
 import { ConversationView } from "./views/conversation.ts";
 import { ExecutionNotices } from "./views/execution-notices.ts";
 import { FeedbackView } from "./views/feedback.ts";
@@ -32,6 +35,7 @@ import { LiveCompanyFileView } from "./views/live-company-file.ts";
 import { type MeetState, renderMeet } from "./views/meet.ts";
 import { NewConversationView } from "./views/new-conversation.ts";
 import { renderOrganization } from "./views/organization.ts";
+import { renderPlan } from "./views/plan.ts";
 import { type SettingsTab, SettingsView } from "./views/settings.ts";
 import { renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
 import { renderSignIn } from "./views/signin.ts";
@@ -54,20 +58,15 @@ export function mountApplication(
 	const topbar = h("header", { class: "topbar" });
 	const rail = h("aside", { id: "company-navigation", class: "rail", "aria-label": "Company navigation" });
 	const main = h("main", { class: "main", tabindex: "-1" });
-	const executionNotices = h("div");
+	// Company notices are no popup: the open conversation places this above its composer.
+	const executionNotices = h("div", { class: "company-notices" });
 	const backdrop = h("button", {
 		type: "button",
 		class: "navigation-backdrop",
 		"aria-label": "Close company navigation",
 		onclick: () => setNavigationOpen(false),
 	});
-	const frame = h(
-		"div",
-		{ class: "frame" },
-		topbar,
-		executionNotices,
-		h("div", { class: "body" }, backdrop, rail, main),
-	);
+	const frame = h("div", { class: "frame" }, topbar, h("div", { class: "body" }, backdrop, rail, main));
 	const railLayout = new RailLayout(frame, rail);
 	rail.after(railLayout.el);
 	applyLanguage();
@@ -136,7 +135,6 @@ export function mountApplication(
 	}
 	function syncNavigation(): void {
 		main.inert = navigationOpen && isPhoneLayout();
-		executionNotices.inert = main.inert;
 	}
 	function onEscape(event: KeyboardEvent): void {
 		if (event.key === "Escape" && navigationOpen && !settings && !feedback && !event.defaultPrevented) {
@@ -167,6 +165,7 @@ export function mountApplication(
 	let company: CompanyController | undefined;
 	let notices: ExecutionNotices | undefined;
 	let computer: WebCompanyComputer | undefined;
+	let computerPanels: ComputerPanels | undefined;
 	let companyFile: CompanyFileController | undefined;
 	let liveFile: LiveCompanyFileView | undefined;
 	let conversation: ConversationView | undefined;
@@ -177,6 +176,7 @@ export function mountApplication(
 	let profiles: HostedProfile[] = [];
 	let teamFeedback: { message?: string; error?: string } = {};
 	let accountState: AccountViewState = {};
+	const accountPlan = h("div");
 	let meetState: MeetState = {};
 	let unsubscribeCompany: (() => void) | undefined;
 	let homeReason: string | undefined;
@@ -256,6 +256,7 @@ export function mountApplication(
 		pendingCompany = undefined;
 		company = undefined;
 		computer = undefined;
+		computerPanels = undefined;
 		companyFile = undefined;
 		conversation = undefined;
 		newConversation = undefined;
@@ -334,6 +335,8 @@ export function mountApplication(
 				if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
 					throw new Error("Company access is unavailable.");
 			});
+			// Open computers outlive the thread they were opened in; leaving the company ends them.
+			computerPanels = new ComputerPanels(computer, controller.signal);
 			companyFile = new CompanyFileController(api, controller);
 			unsubscribeCompany = controller.store.subscribe(() => render());
 			unsubscribeFile = companyFile.store.subscribe(() => render());
@@ -439,6 +442,11 @@ export function mountApplication(
 					accountState = { ...accountState, ...next };
 					render();
 				});
+				// The standalone account page shows the plan below the general settings.
+				// One panel across renders keeps an opened plan grid open; the general
+				// panel above already shows the account error.
+				renderPlan(accountPlan, accountState, undefined, {}, { showError: false });
+				main.append(accountPlan);
 			} else if (route.name === "cloud-check") {
 				cloudCheck ??= new CloudCheckView(cloud);
 				replace(main, cloudCheck.el);
@@ -487,6 +495,8 @@ export function mountApplication(
 			conversation?.dispose();
 			newConversation?.dispose();
 			approvals?.dispose();
+			// Revoked access ends every retained screen connection, not only the shown one.
+			computerPanels?.dispose();
 			navigationOpen = false;
 			navigationFocus = undefined;
 			syncNavigation();
@@ -505,7 +515,6 @@ export function mountApplication(
 		if (notices && !state.team?.capabilities.read) {
 			notices.dispose();
 			notices = undefined;
-			executionNotices.replaceChildren();
 		}
 		if (!notices && state.team?.capabilities.read) {
 			const client = createWebCompanyExecution(
@@ -527,13 +536,8 @@ export function mountApplication(
 						throw new Error("Company notification access changed.");
 				},
 			);
-			notices = new ExecutionNotices(
-				client,
-				controller.signal,
-				() => openSettings("company"),
-				() => main.focus({ preventScroll: true }),
-			);
-			executionNotices.replaceChildren(notices.el);
+			notices = new ExecutionNotices(client, controller.signal, () => main.focus({ preventScroll: true }));
+			executionNotices.append(notices.el);
 		}
 		if (route.section !== "chat") {
 			conversation?.dispose();
@@ -689,6 +693,34 @@ export function mountApplication(
 						route.id ?? "",
 						{
 							sendMessage: (id, text, signal) => controller.sendPrompt(id, text, signal),
+							sessionModel: createWebSessionModel(
+								cloud,
+								controller.userId,
+								controller.signal,
+								checkConversationAccess,
+							),
+							updateGroup: createGroupUpdater({
+								company: controller,
+								current: checkConversationAccess,
+								editor: async (signal) => {
+									checkConversationAccess();
+									const team = controller.store.get().team;
+									if (!team?.capabilities.authorize)
+										throw new Error("Only an owner or admin can edit group chats.");
+									return new WebCompanyFiles(
+										cloud,
+										controller.profile,
+										controller.userId,
+										team.role,
+										signal,
+										() => {
+											checkConversationAccess();
+											if (!controller.store.get().team?.capabilities.authorize)
+												throw new Error("Group chat editing access changed.");
+										},
+									).files();
+								},
+							}),
 							nativeSubscription: createWebNativeSubscription(
 								cloud,
 								controller.profile.profileId,
@@ -748,6 +780,8 @@ export function mountApplication(
 							...agentActions,
 							...workspaceActions,
 							computer,
+							computerPanels,
+							notificationHost: executionNotices,
 						},
 						() => setNavigationOpen(!navigationOpen),
 					);
@@ -860,7 +894,6 @@ export function mountApplication(
 				);
 				return;
 			case "organization":
-			case "responsibility":
 			case "project":
 				renderOrganization(
 					controller,

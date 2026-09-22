@@ -52,6 +52,8 @@ export interface CompanyComputerBrowserSession {
 	readonly grant: CompanyComputerBrowserGrant;
 	readonly context: BrowserContext;
 	assertActive(signal: AbortSignal): Promise<void>;
+	/** True once the physical browser has closed or begun closing; a later open starts a fresh one. */
+	isEnded?(): boolean;
 	close(): Promise<void>;
 }
 
@@ -203,6 +205,7 @@ export class PersistentCompanyComputerBrowser {
 			grant,
 			context,
 			close,
+			isEnded: () => ended || closing !== undefined,
 			assertActive: async (requestSignal) => {
 				if (closing || ended) {
 					void close().catch(() => undefined);
@@ -326,6 +329,17 @@ export class CompanyComputerGuestAutomation {
 	/** Cancellation closes the automation channel, not the persistent profile bytes. */
 	async stopBrowser(): Promise<void> {
 		await this.#browser?.close();
+	}
+
+	/**
+	 * Drop this run's handles, preserving the shared desktop's tabs. Even a tab
+	 * this run created may now contain a member's draft or a JS-written document
+	 * while still reporting about:blank. Creation does not prove it is unused.
+	 */
+	async release(): Promise<void> {
+		this.#page = undefined;
+		this.#tabLease = undefined;
+		this.#tabIds.clear();
 	}
 
 	async perform(

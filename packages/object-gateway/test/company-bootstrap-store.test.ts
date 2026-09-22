@@ -112,7 +112,8 @@ async function fixture(backend: "nas" | "legacy" = "nas") {
 				if (method === "qorpera_finalize_company_bootstrap") {
 					head = Buffer.from(String(args.p_tree_manifest_text));
 					state.finalized++;
-					state.completed = state.finalized === 6;
+					// organization, agents, projects, formation.json and the Co-Founder document: five steps.
+					state.completed = state.finalized === 5;
 					if (state.completed) {
 						expect(args.p_organization_documents).toEqual({
 							"organization/formation.json": formationDocument,
@@ -163,7 +164,7 @@ describe("company bootstrap with the production filesystem store", () => {
 		"finishes a governed bootstrap across restarts using %s reads",
 		async (backend) => {
 			const service = await fixture(backend);
-			for (let attempt = 1; attempt <= 6; attempt++) {
+			for (let attempt = 1; attempt <= 5; attempt++) {
 				expect(await service.advance()).toBe(true);
 				expect(service.state.finalized).toBe(attempt);
 			}
@@ -183,20 +184,20 @@ describe("company bootstrap with the production filesystem store", () => {
 		"rejects an invalid authoritative manifest byte count: %s",
 		async (bytes) => {
 			const service = await fixture();
-			for (let attempt = 0; attempt < 5; attempt++) await service.advance();
+			for (let attempt = 0; attempt < 4; attempt++) await service.advance();
 			service.authorizeServiceDownload.mockResolvedValueOnce({ bytes });
 			await expect(service.advance()).rejects.toMatchObject({ status: 503 });
-			expect(service.state.finalized).toBe(5);
+			expect(service.state.finalized).toBe(4);
 			expect(service.readLegacyObject).not.toHaveBeenCalled();
 		},
 	);
 
 	it("does not read or fall back after a manifest authorization denial", async () => {
 		const service = await fixture();
-		for (let attempt = 0; attempt < 5; attempt++) await service.advance();
+		for (let attempt = 0; attempt < 4; attempt++) await service.advance();
 		service.authorizeServiceDownload.mockRejectedValueOnce(new ObjectDependencyError(403));
 		await expect(service.advance()).rejects.toMatchObject({ status: 403 });
-		expect(service.state.finalized).toBe(5);
+		expect(service.state.finalized).toBe(4);
 		expect(service.readLegacyObject).not.toHaveBeenCalled();
 	});
 
@@ -204,18 +205,18 @@ describe("company bootstrap with the production filesystem store", () => {
 		"rejects a valid manifest whose %s byte count disagrees with authority",
 		async (backend) => {
 			const service = await fixture(backend);
-			for (let attempt = 0; attempt < 5; attempt++) await service.advance();
+			for (let attempt = 0; attempt < 4; attempt++) await service.advance();
 			service.authorizeServiceDownload.mockImplementationOnce(async (_company, sha256) => ({
 				bytes: (service.catalog.get(sha256) ?? 0) + 1,
 			}));
 			await expect(service.advance()).rejects.toThrow();
-			expect(service.state.finalized).toBe(5);
+			expect(service.state.finalized).toBe(4);
 		},
 	);
 
 	it("rejects a corrupted NAS manifest without substituting a valid legacy copy", async () => {
 		const service = await fixture();
-		for (let attempt = 0; attempt < 5; attempt++) await service.advance();
+		for (let attempt = 0; attempt < 4; attempt++) await service.advance();
 		service.authorizeServiceDownload.mockImplementationOnce(async (_company, sha256) => {
 			const bytes = service.objects.get(sha256);
 			if (!bytes) throw new Error("Missing test manifest");
@@ -223,7 +224,7 @@ describe("company bootstrap with the production filesystem store", () => {
 			return { bytes: bytes.length };
 		});
 		await expect(service.advance()).rejects.toThrow("Stored object failed integrity verification");
-		expect(service.state.finalized).toBe(5);
+		expect(service.state.finalized).toBe(4);
 		expect(service.readLegacyObject).not.toHaveBeenCalled();
 	});
 });

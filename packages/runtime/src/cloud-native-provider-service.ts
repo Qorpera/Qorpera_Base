@@ -6,6 +6,10 @@ import {
 	supabaseServiceHeaders,
 	withCloudDeadline,
 } from "@qorpera/cloud-client/cloud-request";
+import {
+	parseNativeAccountRefreshDescription,
+	parseNativeAccountRefreshRequest,
+} from "@qorpera/cloud-client/native-account-refresh";
 import type { JsonValue } from "@qorpera/contracts";
 import {
 	type CloudAgentSendInput,
@@ -23,6 +27,8 @@ import type {
 	CompleteNativeProviderLoginInput,
 	NativeCredentialCapsuleStore,
 	NativeCredentialGenerationStore,
+	NativeProviderAccountMetadata,
+	NativeProviderAccountRefresh,
 	NativeProviderControlPlane,
 	NativeProviderExecutionRequest,
 	NativeProviderHost,
@@ -304,6 +310,97 @@ export class SupabaseNativeProviderControlPlane
 					epoch: identityEpoch.epoch,
 				}
 			: undefined;
+	}
+
+	async listAccountRefreshes(
+		computeIdentityId: string,
+		signal?: AbortSignal,
+	): Promise<NativeProviderAccountRefresh[]> {
+		if (!this.#identityEpoch || this.#identityEpoch.computeIdentityId !== computeIdentityId)
+			throw new Error("Native host has no matching local identity generation");
+		const result = await this.#rpc(
+			"qorpera_list_native_provider_account_refreshes",
+			{
+				p_compute_identity_id: computeIdentityId,
+				p_recovery_epoch: this.#identityEpoch.epoch,
+			},
+			signal,
+		);
+		if (!Array.isArray(result) || result.length > 64) throw new Error("Native account refresh list is invalid");
+		return result.map((entry) => {
+			const value = record(entry, "Native account refresh");
+			if (!Number.isSafeInteger(value.connection_version) || (value.connection_version as number) < 1)
+				throw new Error("Native account connection version is invalid");
+			const capsuleId = uuid(value.credential_capsule_id, "Native account capsule id");
+			if (value.encrypted_capsule_reference !== `native-capsule/${capsuleId}`)
+				throw new Error("Native account capsule reference is invalid");
+			return {
+				connectionId: uuid(value.connection_id, "Native account connection id"),
+				connectionVersion: value.connection_version as number,
+				capsuleId,
+				encryptedCapsuleReference: value.encrypted_capsule_reference,
+				nativeHarness: parseHarness(value.native_harness),
+			};
+		});
+	}
+
+	async describeAccountRefresh(requestId: string, capability: string, signal?: AbortSignal) {
+		const value = parseNativeAccountRefreshDescription(
+			await this.#rpc(
+				"qorpera_describe_native_account_refresh_route",
+				{
+					p_request_id: requestId,
+					p_capability_sha256: createHash("sha256").update(capability).digest("hex"),
+				},
+				signal,
+			),
+		);
+		if (
+			!this.#identityEpoch ||
+			value.requestId !== requestId ||
+			value.computeIdentityId !== this.#identityEpoch.computeIdentityId
+		)
+			throw new Error("Account refresh identity mismatch");
+		return value;
+	}
+
+	async completeAccountRefresh(requestId: string, capability: string, signal?: AbortSignal): Promise<boolean> {
+		if (!this.#identityEpoch) throw new Error("Account refresh identity unavailable");
+		return (
+			(await this.#rpc(
+				"qorpera_complete_native_account_refresh",
+				{
+					p_request_id: requestId,
+					p_capability_sha256: createHash("sha256").update(capability).digest("hex"),
+					p_recovery_epoch: this.#identityEpoch.epoch,
+				},
+				signal,
+			)) === true
+		);
+	}
+
+	async recordAccountMetadata(
+		computeIdentityId: string,
+		account: NativeProviderAccountRefresh,
+		metadata: NativeProviderAccountMetadata,
+		signal?: AbortSignal,
+	): Promise<void> {
+		if (!this.#identityEpoch || this.#identityEpoch.computeIdentityId !== computeIdentityId)
+			throw new Error("Native host has no matching local identity generation");
+		await this.#rpc(
+			"qorpera_record_native_provider_account_metadata",
+			{
+				p_compute_identity_id: computeIdentityId,
+				p_recovery_epoch: this.#identityEpoch.epoch,
+				p_connection_id: account.connectionId,
+				p_connection_version: account.connectionVersion,
+				p_credential_capsule_id: account.capsuleId,
+				p_provider_account_email: metadata.providerAccountEmail ?? null,
+				p_provider_account_usage: metadata.providerAccountUsage ?? null,
+				p_provider_account_identity: metadata.providerAccountIdentity ?? null,
+			},
+			signal,
+		);
 	}
 
 	async describeLogin(
@@ -756,7 +853,10 @@ export class HttpNativeProviderHostService {
 			response.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}\n');
 			return;
 		}
-		if (request.method !== "POST" || !["/login", "/execute", "/cancel"].includes(request.url ?? "")) {
+		if (
+			request.method !== "POST" ||
+			!["/login", "/account-refresh", "/execute", "/cancel"].includes(request.url ?? "")
+		) {
 			response.writeHead(404).end();
 			return;
 		}
@@ -764,7 +864,11 @@ export class HttpNativeProviderHostService {
 			response.writeHead(403).end();
 			return;
 		}
-		if (request.url !== "/login" && !tokenMatches(this.#token, request.headers.authorization)) {
+		if (
+			request.url !== "/login" &&
+			request.url !== "/account-refresh" &&
+			!tokenMatches(this.#token, request.headers.authorization)
+		) {
 			response.writeHead(401, { connection: "close" }).end();
 			return;
 		}
@@ -772,7 +876,14 @@ export class HttpNativeProviderHostService {
 			const body = await this.#readBody(request);
 			if (!this.#server || response.destroyed) throw new Error("Native provider request stopped");
 			let value: JsonValue;
-			if (request.url === "/login") {
+			if (request.url === "/account-refresh") {
+				const parsed = parseNativeAccountRefreshRequest(body);
+				if (!tokenMatches(parsed.capability, request.headers.authorization)) {
+					response.writeHead(401).end();
+					return;
+				}
+				value = await this.#host.refreshRequestedAccountMetadata(parsed);
+			} else if (request.url === "/login") {
 				const parsed = parseLogin(body);
 				if (!tokenMatches(parsed.capability, request.headers.authorization)) {
 					response.writeHead(401).end();

@@ -7,9 +7,9 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260919095000_runtime_bundle_activation_v34.sql";
-const activationVersion = 34;
-const previousActivationVersion = 33;
+const activation = "supabase/migrations/20260922060000_runtime_bundle_activation_v58.sql";
+const activationVersion = 58;
+const previousActivationVersion = 57;
 const manifestPath = "deploy/first-node/native-codex/runtime-bundle-manifest.json";
 const sha = (text) => createHash("sha256").update(text).digest("hex");
 
@@ -144,11 +144,11 @@ export async function cloudRuntimeBundle(root = repository) {
 		nativeBinarySha256: native.artifact.sha256,
 		components: {
 			kernel: component(runtime(["cloud-native-company-runtime", "cloud-native-run-tool-session"])),
-			constitution: component(runtime(["cloud-native-company-context", "cloud-agent-mouth", "cloud-native-tool-boundary"])),
-			toolCatalog: component(runtime(["cloud-company-path-gateway", "cloud-secret-tools", "cloud-native-company-runtime", "cloud-wake-bus", "cloud-responsibility-tools", "cloud-coding-tools", "cloud-coding-command-tools", "cloud-native-coding-runtime"])),
-			wakeAndSilence: component(runtime(["cloud-native-company-runtime", "cloud-agent-mouth", "cloud-wake-bus", "cloud-responsibility-tools"])),
-			contextComposer: component(runtime(["cloud-native-company-context", "cloud-company-path-gateway"])),
-			providerBootstrap: component(runtime(["cloud-codex-tool-session", "cloud-native-provider-host", "cloud-native-credential-owner", "cloud-native-process-settlement", "lxd-runner-bootstrap-main"])),
+			constitution: component(runtime(["cloud-runtime-constitution"])),
+			toolCatalog: component(runtime(["cloud-company-path-gateway", "cloud-secret-tools", "cloud-native-company-runtime", "cloud-wake-bus", "cloud-routine-tools", "cloud-hiring-tools", "cloud-coding-tools", "cloud-coding-command-tools", "cloud-native-coding-runtime"])),
+			wakeAndSilence: component(runtime(["cloud-native-company-runtime", "cloud-agent-mouth", "cloud-wake-bus"])),
+			contextComposer: component(runtime(["cloud-native-company-context", "cloud-runtime-hire-overlays", "cloud-company-path-gateway"])),
+			providerBootstrap: component(runtime(["cloud-codex-tool-session", "cloud-native-company-context", "cloud-runtime-constitution", "cloud-runtime-hire-overlays", "cloud-native-provider-host", "cloud-native-credential-owner", "cloud-native-process-settlement", "lxd-runner-bootstrap-main"])),
 			authorization: component([...files.keys()].filter((path) => path.startsWith("supabase/migrations/"))),
 			inboundSafety: component(runtime(["cloud-native-result-fence", "cloud-native-tool-boundary"])),
 			outboundSafety: component(runtime(["cloud-native-tool-operations", "cloud-secret-tools", "cloud-company-path-gateway"])),

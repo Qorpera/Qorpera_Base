@@ -115,6 +115,8 @@ interface LxdProviderJournal {
 	deletionConfirmed?: true;
 	/** Written only after the control plane confirms this physical allocation. */
 	capacityRegistered?: true;
+	/** Written only after the control plane confirms the exact release; the release is never sent again. */
+	capacityReleased?: true;
 	/** Exact node binding retained after the node reservation commits. */
 	nodeCapacity?: NativeNodePlacement;
 	guestAddress?: string;
@@ -439,6 +441,7 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 			(input.deletionConfirmed !== true ||
 				!["stopping", "stopped", "lost"].includes(String(input.physicalState)))) ||
 		(input.capacityRegistered !== undefined && input.capacityRegistered !== true) ||
+		(input.capacityReleased !== undefined && input.capacityReleased !== true) ||
 		lxd.type !== "virtual-machine" ||
 		typeof lxd.project !== "string" ||
 		typeof lxd.imageServer !== "string" ||
@@ -548,6 +551,7 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 		physicalState: physicalState(input.physicalState),
 		...(input.deletionConfirmed === true ? { deletionConfirmed: true } : {}),
 		...(input.capacityRegistered === true ? { capacityRegistered: true } : {}),
+		...(input.capacityReleased === true ? { capacityReleased: true } : {}),
 		...(input.nodeCapacity !== undefined ? { nodeCapacity: nodePlacement(input.nodeCapacity) } : {}),
 		...(typeof input.guestAddress === "string" ? { guestAddress: input.guestAddress } : {}),
 		...(typeof input.assignmentId === "string" ? { assignmentId: input.assignmentId } : {}),
@@ -820,6 +824,7 @@ const RESERVING_RETIREMENT_MS = 10 * 60_000;
 
 export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderServiceBackend {
 	readonly #registeredCapacity = new Set<string>();
+	readonly #releasedCapacity = new Set<string>();
 	readonly #registeredNodeCapacity = new Map<string, NativeNodePlacement>();
 	readonly adapterId: string;
 	readonly #config: LxdCloudRunnerProviderConfig;
@@ -1830,6 +1835,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		const updated: LxdProviderJournal = {
 			...journal,
 			...(this.#registeredCapacity.has(journal.acquisitionId) ? { capacityRegistered: true as const } : {}),
+			...(this.#releasedCapacity.has(journal.acquisitionId) ? { capacityReleased: true as const } : {}),
 			...(this.#registeredNodeCapacity.has(journal.acquisitionId)
 				? { nodeCapacity: this.#registeredNodeCapacity.get(journal.acquisitionId)! }
 				: {}),
@@ -1880,7 +1886,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			if (!journal || (journal.capacityRegistered && journal.nodeCapacity) || journal.physicalState === "reserving")
 				continue;
 			if (
-				(journal.deletionConfirmed || journal.physicalState === "stopped") &&
+				(journal.deletionConfirmed || journal.physicalState === "stopped" || journal.physicalState === "lost") &&
 				!(await this.#lxd.getInstance(journal.lxd.project, journal.instanceName, signal))
 			)
 				continue;
@@ -1911,6 +1917,8 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	}
 
 	async #reserveMachine(current: LxdProviderJournal, signal?: AbortSignal): Promise<AbortSignal> {
+		// A confirmed release is final: it is never sent again, so nothing may charge this allocation anew.
+		if (this.#capacityReleased(current)) throw new Error("Released machine capacity cannot be reserved again");
 		const identity = this.#machineIdentity(current);
 		const result = record(
 			await this.#rpc(
@@ -1991,6 +1999,9 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		if (await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal)) {
 			throw new Error("Machine capacity remains occupied until physical deletion is confirmed");
 		}
+		// Retained journals of finished runs are reconciled on every pass (19 Sep 2026: 79 stopped
+		// journals sent eight release calls a second). A confirmed release is sent exactly once.
+		if (this.#capacityReleased(current)) return;
 		const identity = this.#machineIdentity(current);
 		const result = record(await this.#rpc("qorpera_release_runtime_machine", identity, signal), "Machine release");
 		if (
@@ -2001,6 +2012,14 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		) {
 			throw new Error("Machine capacity release was not confirmed");
 		}
+		// Callers hold the journal as it was before their own writes; record the confirmation on the
+		// durable one. A journal from an older build has no mark, is released once more, and is marked here.
+		this.#releasedCapacity.add(current.acquisitionId);
+		await this.#writeJournal((await this.#readJournal(current.acquisitionId)) ?? current);
+	}
+
+	#capacityReleased(current: LxdProviderJournal): boolean {
+		return current.capacityReleased === true || this.#releasedCapacity.has(current.acquisitionId);
 	}
 
 	async #rpc(name: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {

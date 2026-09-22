@@ -10,9 +10,10 @@
   "capabilities": [
     "qorpera.native-result-fence/v1",
     "qorpera.native-direct-tools/v1",
-    "qorpera.native-capture-images/v1"
+    "qorpera.native-capture-images/v1",
+    "qorpera.native-message-composition/v1"
   ],
-  "patchSha256": "5eb9ee03406e843ceea1f81d046750aa16785c03a84315c7be96a6c68004eb9a",
+  "patchSha256": "24f9fffe1a35ba29763951b1b904b9b5b194cdcb368ff23c3f8e4bcf900c67f9",
   "cargoLock": {
     "upstreamSha256": "eeab4e9d3466da54037032251e2f13ad1ed11eae18bb8ee7dd2c89dbb86f645d",
     "normalizedSha256": "bc4fe450de929afe82928734f860ca83e5f9dc5f9f1211b0974ea47b57af77ca",

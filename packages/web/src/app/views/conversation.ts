@@ -1,25 +1,34 @@
-import { describeError } from "../../cloud/client.ts";
 import { sessionAttachmentIssue } from "../../cloud/session-attachments.ts";
 import type { TranscriptCard, TranscriptItem } from "../../cloud/transcript.ts";
 import type { HostedSession, HostedStaffAgent } from "../../cloud/types.ts";
+import { AGENT_LOOK, statusCaption, syncCaption } from "../../ui/agent-activity.ts";
 import { AttachmentTray } from "../../ui/attachments.ts";
 import { authorizationRequestId, renderAuthorizationCard } from "../../ui/authorization-card.ts";
 import { agentFigure } from "../../ui/avatar.ts";
-import { button, fmtTime, h, icon, notice, replace, spinner } from "../../ui/dom.ts";
+import {
+	conversationTimestampLabel,
+	conversationTimestampTitle,
+	needsConversationTimestamp,
+	parseConversationTimestamp,
+} from "../../ui/conversation-timestamps.ts";
+import { fmtTime, h, icon, notice, replace, spinner } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
-import type { CompanyController, ConversationState, FailedRun } from "../company.ts";
+import { runFailureCard, runFailureInterrupted, runFailureReason } from "../../ui/run-failure.ts";
+import type { AgentState, CompanyController, ConversationState } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
-import { ComputerPanel } from "./computer.ts";
+import { ComposerModels } from "./composer-models.ts";
+import { type ComputerPanel, ComputerPanels } from "./computer.ts";
 import { GroupDetails } from "./group-details.ts";
 import { SessionExecutionView } from "./session-execution.ts";
 import { SessionRunView } from "./session-run.ts";
 
-/** Beside the computer panel the conversation keeps at least this much room. */
-const CONVERSATION_MIN_WIDTH = 316;
+// Popup dismissal lasts for this company controller, including conversation navigation.
+// It does not settle or discard work whose outcome still needs review.
+const dismissedRunNotifications = new WeakMap<CompanyController, Set<string>>();
 
 export { renderAuthorizationCard } from "../../ui/authorization-card.ts";
 
@@ -38,13 +47,17 @@ export class ConversationView {
 	readonly #send: HTMLButtonElement;
 	#stopMode = false;
 	#cannotSend = true;
+	#submitting = false;
 	#working = false;
+	#agentState: AgentState = "idle";
 	#activityKey = "";
 	readonly #composerWrap: HTMLElement;
 	readonly #composerShell: HTMLElement;
 	readonly #attachments: AttachmentTray;
 	readonly #more: HTMLButtonElement;
 	readonly #menu: HTMLElement;
+	readonly #menuMain: HTMLElement;
+	readonly #models: ComposerModels;
 	readonly #attach: HTMLButtonElement;
 	readonly #identity: HTMLButtonElement;
 	readonly #computer: HTMLButtonElement;
@@ -52,20 +65,31 @@ export class ConversationView {
 	readonly #body: HTMLElement;
 	readonly #conversationPane: HTMLElement;
 	readonly #lifetime = new AbortController();
+	readonly #notificationSignal: AbortSignal;
 	readonly #actions: WorkspaceActions;
 	readonly #run: SessionRunView | undefined;
 	readonly #execution: SessionExecutionView | undefined;
 	#details: AgentDetails | GroupDetails | undefined;
+	/** The company's open computers; this thread shows its agent's while the member is here. */
+	readonly #panels: ComputerPanels;
+	readonly #ownPanels: boolean;
 	#panel: ComputerPanel | undefined;
 	#headerKey = "";
 	#renderedKey = "";
 	#stickToBottom = true;
+	/** Re-pins the thread to its end when the message pane gets its size: the first
+	 * render happens before the view is in the page, and a pane that shrinks or
+	 * grows (window, computer panel, composer) must keep showing the latest message. */
+	readonly #sizes: ResizeObserver | undefined;
 	readonly #unsubscribe: (() => void)[] = [];
 	#disposed = false;
 	#statusKey = "";
-	#dismissing: string | undefined;
-	#dismissError: { runId: string; message: string } | undefined;
+	/** A failed run, shown at the end of the thread where its answer would have been. */
+	readonly #runNotification = h("div", { class: "thread-run-failure", hidden: true });
+	#runNotificationKey = "";
 	#receivedAttachments: ReceivedAttachments[] = [];
+	readonly #timestampTimer: number;
+	#timestampRows: { date: Date; node: HTMLElement; separator?: HTMLTimeElement }[] = [];
 
 	constructor(
 		company: CompanyController,
@@ -74,8 +98,11 @@ export class ConversationView {
 		toggleNavigation?: () => void,
 	) {
 		this.#company = company;
+		this.#notificationSignal = AbortSignal.any([this.#lifetime.signal, company.signal]);
 		this.#sessionId = sessionId;
 		this.#actions = actions;
+		this.#ownPanels = !actions.computerPanels;
+		this.#panels = actions.computerPanels ?? new ComputerPanels(actions.computer, company.signal);
 		this.#run = actions.runControl
 			? new SessionRunView(
 					actions.runControl,
@@ -158,16 +185,48 @@ export class ConversationView {
 			icon("attach"),
 			"Attach files",
 		);
+		this.#models = new ComposerModels(
+			company,
+			sessionId,
+			actions.sessionModel,
+			this.#notificationSignal,
+			() => this.#setModelMenu(true),
+			() => this.#setModelMenu(false),
+			() => this.update(),
+		);
+		this.#menuMain = h("div", null, this.#attach, this.#models.button);
 		this.#menu = h(
 			"div",
 			{ class: "composer-menu", role: "menu", hidden: true, "aria-label": "Chat settings and more" },
-			this.#attach,
+			this.#menuMain,
+			this.#models.el,
 		);
 		this.#menu.addEventListener("keydown", (event) => {
-			if (matchesKey(event, "dismiss")) {
+			if (matchesKey(event, "dismiss") || (matchesKey(event, "left") && !this.#models.el.hidden)) {
 				event.preventDefault();
 				event.stopPropagation();
-				this.#setMenu(false);
+				if (!this.#models.el.hidden) this.#setModelMenu(false);
+				else this.#setMenu(false);
+			} else if (matchesKey(event, "right") && document.activeElement === this.#models.button) {
+				event.preventDefault();
+				this.#setModelMenu(true);
+			} else if (
+				["next", "previous", "first", "last"].some((key) =>
+					matchesKey(event, key as "next" | "previous" | "first" | "last"),
+				)
+			) {
+				event.preventDefault();
+				const page = this.#models.el.hidden ? this.#menuMain : this.#models.el;
+				const controls = [...page.querySelectorAll<HTMLButtonElement>("button:not(:disabled):not([hidden])")];
+				const current = controls.indexOf(document.activeElement as HTMLButtonElement);
+				const index = matchesKey(event, "first")
+					? 0
+					: matchesKey(event, "last")
+						? controls.length - 1
+						: (current + (matchesKey(event, "previous") ? -1 : 1) + controls.length) % controls.length;
+				controls[index]?.focus();
+			} else if (matchesKey(event, "tab")) {
+				this.#setMenu(false, false);
 			}
 		});
 		this.#composerShell = h(
@@ -239,18 +298,32 @@ export class ConversationView {
 			const { scrollTop, scrollHeight, clientHeight } = this.#messages;
 			this.#stickToBottom = scrollHeight - scrollTop - clientHeight < 48;
 		});
+		if (typeof ResizeObserver !== "undefined") {
+			this.#sizes = new ResizeObserver(() => this.#pinToBottom());
+			this.#sizes.observe(this.#messages);
+		} else queueMicrotask(() => this.#pinToBottom()); // The application mounts the view right after construction.
 		this.#conversationPane = h(
 			"div",
 			{ class: "thread-conversation" },
 			this.#header,
 			this.#messages,
 			this.#status,
+			...(actions.notificationHost ? [actions.notificationHost] : []),
 			this.#composerWrap,
 		);
 		this.#body = h("div", { class: "thread-body" }, this.#conversationPane);
 		this.el = h("section", { class: "thread" }, this.#body);
-		window.addEventListener("resize", () => this.#syncPanelLayout(), { signal: this.#lifetime.signal });
-		window.addEventListener("qorpera-rail-resize", () => this.#syncPanelLayout(), { signal: this.#lifetime.signal });
+		company.signal.addEventListener("abort", () => this.#runNotification.remove(), {
+			once: true,
+			signal: this.#lifetime.signal,
+		});
+		window.addEventListener("resize", () => this.#autosize(), { signal: this.#lifetime.signal });
+		window.addEventListener("qorpera-rail-resize", () => this.#autosize(), { signal: this.#lifetime.signal });
+		const refreshTimestamps = () => this.#refreshTimestamps();
+		this.#timestampTimer = window.setInterval(refreshTimestamps, 60_000);
+		window.addEventListener("focus", refreshTimestamps, { signal: this.#lifetime.signal });
+		window.addEventListener("qorpera-language-change", refreshTimestamps, { signal: this.#lifetime.signal });
+		document.addEventListener("visibilitychange", refreshTimestamps, { signal: this.#lifetime.signal });
 		document.addEventListener(
 			"click",
 			(event) => {
@@ -270,8 +343,14 @@ export class ConversationView {
 		if (this.#disposed) return;
 		this.#disposed = true;
 		this.#lifetime.abort();
+		window.clearInterval(this.#timestampTimer);
+		this.#sizes?.disconnect();
+		this.#runNotification.remove();
 		this.#details?.dispose();
-		this.#panel?.dispose();
+		// The computer stays open, and connected, for the next thread that shows it.
+		if (this.#ownPanels) this.#panels.dispose();
+		else this.#panel?.detach();
+		this.#panel = undefined;
 		this.#attachments.dispose();
 		for (const attachments of this.#receivedAttachments) attachments.dispose();
 		for (const unsubscribe of this.#unsubscribe) unsubscribe();
@@ -291,6 +370,12 @@ export class ConversationView {
 	focus(): void {
 		this.#autosize();
 		this.#composer.focus();
+	}
+
+	/** Shows the latest message unless the reader has scrolled up to read older ones. */
+	#pinToBottom(): void {
+		if (this.#disposed || !this.#stickToBottom) return;
+		this.#messages.scrollTop = this.#messages.scrollHeight;
 	}
 	setNavigationOpen(open: boolean): void {
 		this.#navigation.setAttribute("aria-expanded", String(open));
@@ -312,10 +397,24 @@ export class ConversationView {
 	}
 
 	#setMenu(open: boolean, restoreFocus = true): void {
+		this.#menuMain.hidden = false;
+		this.#models.el.hidden = true;
+		this.#models.button.setAttribute("aria-expanded", "false");
 		this.#menu.hidden = !open;
 		this.#more.setAttribute("aria-expanded", String(open));
 		if (open) this.#attach.focus();
 		else if (restoreFocus) this.#more.focus();
+	}
+
+	#setModelMenu(open: boolean): void {
+		if (open && this.#models.button.disabled) return;
+		this.#menuMain.hidden = open;
+		this.#models.el.hidden = !open;
+		this.#models.button.setAttribute("aria-expanded", String(open));
+		if (open) {
+			this.#models.focus();
+			void this.#models.refresh();
+		} else this.#models.button.focus();
 	}
 
 	#openDetails(): void {
@@ -335,14 +434,21 @@ export class ConversationView {
 		};
 		this.#details = agent
 			? new AgentDetails(this.#company, agent, this.#actions, closed, this.#identity, this.#lifetime.signal)
-			: new GroupDetails(this.#company, this.#sessionId, closed, this.#identity, this.#lifetime.signal);
+			: new GroupDetails(
+					this.#company,
+					this.#sessionId,
+					closed,
+					this.#identity,
+					this.#lifetime.signal,
+					this.#actions,
+				);
 	}
 
 	#toggleComputer(): void {
 		if (this.#panel) {
-			this.#panel.dispose();
+			this.#panels.close(this.#panel.agentId);
 			this.#panel = undefined;
-			this.#syncPanelLayout();
+			this.#autosize();
 			this.#computer.setAttribute("aria-expanded", "false");
 			this.#computer.focus();
 			return;
@@ -352,27 +458,18 @@ export class ConversationView {
 			state.sessions.find((session) => session.sessionId === this.#sessionId)?.staffAgentId,
 		);
 		if (!agent) return;
-		this.#panel = new ComputerPanel(
-			agent,
-			() => this.#toggleComputer(),
-			this.#actions.computer,
-			this.#company.signal,
-		);
-		this.#body.append(this.#panel.el);
-		this.#panel.focus();
-		this.#syncPanelLayout();
-		this.#computer.setAttribute("aria-expanded", "true");
+		this.#showPanel(agent);
 	}
 
-	#syncPanelLayout(): void {
-		// The thread's width and the panel's own (420px beside the thread, all of it in the phone
-		// layout) decide, so any rail width and any panel rule in conversation.css count.
-		const covered =
-			Boolean(this.#panel) && this.#body.clientWidth - (this.#panel?.el.offsetWidth ?? 0) < CONVERSATION_MIN_WIDTH;
-		this.#body.classList.toggle("computer-covers", covered);
-		if (covered && this.#conversationPane.contains(document.activeElement)) this.#panel?.focus();
-		this.#conversationPane.inert = covered;
+	/** Show the agent's computer here: the one already open, or one started now. */
+	#showPanel(agent: HostedStaffAgent): ComputerPanel | undefined {
+		const panel = this.#panels.open(agent);
+		if (!panel) return undefined;
+		this.#panel = panel;
+		panel.attach(this.#body, () => this.#toggleComputer());
 		this.#autosize();
+		this.#computer.setAttribute("aria-expanded", "true");
+		return panel;
 	}
 
 	/** One button: it sends a draft, and with nothing to send it stops the run the agent is on. */
@@ -393,18 +490,57 @@ export class ConversationView {
 				: "Sending messages is not available yet";
 		this.#send.title = label;
 		this.#send.setAttribute("aria-label", stop ? "Stop" : "Send message");
-		this.#send.disabled = stop ? this.#run?.stopping === true : this.#cannotSend;
+		this.#send.disabled = stop ? this.#run?.stopping === true : this.#submitting || this.#cannotSend;
 	}
 
 	#submit(): void {
 		const text = this.#composer.value;
-		if ((!text.trim() && !this.#attachments.count) || this.#send.disabled || !this.#actions.sendMessage) return;
-		void this.#actions.sendMessage(this.#sessionId, text, this.#lifetime.signal).then((sent) => {
-			if (sent && !this.#disposed) {
-				if (!this.#isRoom) this.#run?.messageSent();
-				void this.#execution?.refresh();
+		if (
+			this.#submitting ||
+			(!text.trim() && !this.#attachments.count) ||
+			this.#send.disabled ||
+			!this.#actions.sendMessage
+		)
+			return;
+		const state = this.#company.conversation(this.#sessionId).get();
+		const files = [...(state.attachments ?? [])];
+		const retry = state.retrySend;
+		this.#submitting = true;
+		this.#syncSend();
+		void (async () => {
+			try {
+				// Reconcile a runtime account handoff before new input. An uncertain
+				// retry retains its exact original request and account authority.
+				if (this.#execution && !retry) await this.#execution.refresh();
+				if (this.#disposed || this.#notificationSignal.aborted) return;
+				this.update();
+				const current = this.#company.conversation(this.#sessionId).get();
+				const currentFiles = current.attachments ?? [];
+				// Editing during the account check cancels this submission; no draft
+				// or attachment is replaced, and a later click sends the edited input.
+				if (
+					this.#cannotSend ||
+					this.#composer.value !== text ||
+					current.retrySend !== retry ||
+					files.length !== currentFiles.length ||
+					files.some((file, index) => file !== currentFiles[index])
+				)
+					return;
+				const sent = await this.#actions.sendMessage!(this.#sessionId, text, this.#lifetime.signal);
+				if (sent && !this.#disposed) {
+					if (!this.#isRoom) this.#run?.messageSent();
+					void this.#execution?.refresh();
+				}
+			} catch {
+				if (!this.#disposed && !this.#notificationSignal.aborted)
+					this.#company
+						.conversation(this.#sessionId)
+						.set({ sendError: "The message could not be confirmed. Try again." });
+			} finally {
+				this.#submitting = false;
+				if (!this.#disposed) this.update();
 			}
-		});
+		})();
 		this.update();
 	}
 
@@ -416,6 +552,10 @@ export class ConversationView {
 		const agent = this.#company.staffById(session?.staffAgentId);
 		const canWrite = company.team?.capabilities.write === true && session?.status === "open";
 		const room = this.#isRoom;
+		this.#models.update(
+			Boolean(agent) && !room,
+			!canWrite || conversation.sending || this.#submitting || Boolean(conversation.retrySend),
+		);
 		this.#execution?.update();
 		this.#run?.update(
 			room || company.accessLost || !company.team?.capabilities.read ? undefined : session?.staffAgentId,
@@ -440,19 +580,24 @@ export class ConversationView {
 		);
 		// The agent's run is watched quietly; a change in who is working re-reads it.
 		const activity = room ? undefined : this.#company.activityFor(session?.staffAgentId);
-		const working = activity !== undefined && activity.activity !== "needs_attention";
 		const activityKey = `${activity?.runId ?? ""}:${activity?.activity ?? ""}`;
 		if (activityKey !== this.#activityKey) {
 			this.#activityKey = activityKey;
 			void this.#run?.refresh();
 		}
-		this.#working = working || (conversation.sending && !room);
+		this.#agentState = room ? "idle" : this.#company.agentState(session?.staffAgentId);
+		this.#working = this.#agentState === "working" || this.#agentState === "writing";
 		this.#renderHeader(session, agent);
-		this.#renderMessages(conversation, room ? "Agent reply" : (agent?.displayName ?? session?.title ?? "Agent"));
+		this.#renderMessages(
+			conversation,
+			room ? "Agent reply" : (agent?.displayName ?? session?.title ?? "Agent"),
+			agent,
+		);
 		this.#renderStatus(conversation, canWrite, session);
 		this.#composer.disabled = !canWrite || conversation.sending;
 		this.#cannotSend =
 			!this.#actions.sendMessage ||
+			this.#models.pending ||
 			(this.#execution !== undefined && !this.#execution.canSend) ||
 			!canWrite ||
 			conversation.sending ||
@@ -473,7 +618,8 @@ export class ConversationView {
 	#renderHeader(session: HostedSession | undefined, agent: HostedStaffAgent | undefined): void {
 		const title = agent?.displayName ?? session?.title ?? "Conversation";
 		const group = isGroupChat(session);
-		const key = JSON.stringify([title, group, agent?.id, agent?.appearance]);
+		const groupAgents = group ? this.#company.groupAgents(this.#sessionId) : [];
+		const key = JSON.stringify([title, group, agent?.id, agent?.appearance, groupAgents]);
 		const state = this.#company.store.get();
 		this.#identity.disabled =
 			(!agent && !group) ||
@@ -490,28 +636,79 @@ export class ConversationView {
 			this.#identity.removeAttribute("aria-haspopup");
 			this.#identity.removeAttribute("aria-expanded");
 		}
-		if (key === this.#headerKey) return;
-		this.#headerKey = key;
-		if (this.#panel) {
-			const focused = this.#panel.el.contains(document.activeElement);
-			this.#panel.dispose();
-			this.#panel = agent
-				? new ComputerPanel(agent, () => this.#toggleComputer(), this.#actions.computer, this.#company.signal)
-				: undefined;
-			if (this.#panel) this.#body.append(this.#panel.el);
-			if (focused) this.#panel ? this.#panel.focus() : this.#composer.focus();
-			this.#computer.setAttribute("aria-expanded", String(Boolean(this.#panel)));
-			this.#syncPanelLayout();
+		if (key !== this.#headerKey) {
+			this.#headerKey = key;
+			if (this.#panel && this.#panel.agentId !== agent?.id) {
+				// The thread changed hands: the old agent's computer does not belong here.
+				const focused = this.#panel.el.contains(document.activeElement);
+				this.#panels.close(this.#panel.agentId);
+				this.#panel = undefined;
+				const shown = agent ? this.#showPanel(agent) : undefined;
+				if (focused) shown ? shown.focus() : this.#composer.focus();
+				this.#computer.setAttribute("aria-expanded", String(Boolean(shown)));
+				this.#autosize();
+			} else if (this.#panel && agent) this.#panel.retitle(agent.displayName);
+			replace(
+				this.#identity,
+				group ? groupChatAvatar(groupAgents, { width: 40, height: 32 }) : agentFigure(agent, title, { size: 32 }),
+				h("h1", null, title),
+				agent || group ? icon("chevron") : null,
+			);
 		}
-		replace(
-			this.#identity,
-			group ? groupChatAvatar() : agentFigure(agent, title, { size: 32 }),
-			h("h1", null, title),
-			agent || group ? icon("chevron") : null,
-		);
+		// A computer left open in another of this agent's threads shows here without a click.
+		if (!this.#panel && agent) {
+			const open = this.#panels.get(agent.id);
+			if (open && !open.attached) this.#showPanel(agent);
+		}
 	}
 
-	#renderMessages(conversation: ConversationState, agentName: string): void {
+	#refreshTimestamps(preserveScroll = true): void {
+		if (this.#disposed) return;
+		const now = new Date();
+		let previousDate: Date | undefined;
+		const groups = this.#timestampRows.map((row) => {
+			const separated = needsConversationTimestamp(row.date, previousDate);
+			previousDate = row.date;
+			return { row, separated };
+		});
+		const regroup = preserveScroll && groups.some(({ row, separated }) => Boolean(row.separator) !== separated);
+		const scrollTop = this.#messages.scrollTop;
+		const viewportTop = regroup && !this.#stickToBottom ? this.#messages.getBoundingClientRect().top : 0;
+		const anchor =
+			regroup && !this.#stickToBottom
+				? this.#timestampRows.find(({ node }) => node.getBoundingClientRect().bottom > viewportTop)?.node
+				: undefined;
+		const anchorTop = anchor?.getBoundingClientRect().top ?? 0;
+		// Reconcile local-day boundaries too: travel can add or remove a midnight
+		// between adjacent messages. Keep the message and attachment nodes intact.
+		for (const { row, separated } of groups) {
+			if (!separated) {
+				row.separator?.remove();
+				row.separator = undefined;
+				continue;
+			}
+			const { date } = row;
+			if (!row.separator) {
+				row.separator = h("time", { class: "conversation-timestamp", datetime: date.toISOString() });
+				row.node.before(row.separator);
+			}
+			const time = row.separator;
+			const label = conversationTimestampLabel(date, now);
+			const title = conversationTimestampTitle(date);
+			if (time.textContent !== label) time.textContent = label;
+			if (time.title !== title) {
+				time.title = title;
+				time.setAttribute("aria-label", title);
+			}
+		}
+		if (regroup) {
+			if (this.#stickToBottom) this.#pinToBottom();
+			else if (anchor) this.#messages.scrollTop += anchor.getBoundingClientRect().top - anchorTop;
+			else this.#messages.scrollTop = scrollTop;
+		}
+	}
+
+	#renderMessages(conversation: ConversationState, agentName: string, agent: HostedStaffAgent | undefined): void {
 		const items: TranscriptItem[] = [
 			...conversation.projection.items,
 			...conversation.optimistic.map(
@@ -535,7 +732,10 @@ export class ConversationView {
 			conversation.projection.hiddenCount,
 			conversation.loading,
 			conversation.error,
-			this.#working,
+			this.#agentState,
+			agent?.id,
+			agent?.appearance,
+			agent?.templateId,
 		]);
 		if (key === this.#renderedKey) return;
 		this.#renderedKey = key;
@@ -548,6 +748,7 @@ export class ConversationView {
 				if (request) decisions.set(request, item);
 			}
 		const nodes: HTMLElement[] = [];
+		this.#timestampRows = [];
 		for (const item of items) {
 			if (item.kind === "member" || item.kind === "agent") {
 				const mine = item.kind === "member" && item.authorUserId === this.#company.userId;
@@ -621,28 +822,51 @@ export class ConversationView {
 					),
 				);
 			}
+			const date = parseConversationTimestamp(item.createdAt);
+			const node = nodes[nodes.length - 1];
+			if (date && node) this.#timestampRows.push({ date, node });
 		}
 		if (conversation.loading && !items.length) nodes.push(spinner("Loading conversation"));
 		if (!conversation.loading && !items.length && !conversation.error && !this.#working) {
 			nodes.push(h("div", { class: "empty" }, "No messages yet."));
 		}
-		if (this.#working && !conversation.loading)
-			nodes.push(
-				h(
-					"div",
-					{ class: "message from-agent typing", role: "status", "aria-label": `${agentName} is working` },
-					h("span", null),
-					h("span", null),
-					h("span", null),
-				),
+		if (this.#working && !conversation.loading) {
+			// As on the desktop: the figure works or writes, and "Nova is writing"
+			// shows beside it on hover or focus, never as a bubble.
+			const look = AGENT_LOOK[this.#agentState];
+			const detail = look.detail ?? "";
+			const caption = statusCaption(agentName, detail);
+			const row = h(
+				"div",
+				{
+					class: "message from-agent thread-activity",
+					role: "status",
+					tabindex: "0",
+					"aria-label": `${agentName}${detail}`,
+				},
+				agentFigure(agent, agentName, { size: 40, activity: look.figure }),
+				caption,
 			);
-		replace(this.#messages, ...nodes);
-		if (this.#stickToBottom) this.#messages.scrollTop = this.#messages.scrollHeight;
+			// The wave only runs while the caption shows; on showing it starts in step with the rail.
+			row.addEventListener("mouseenter", () => syncCaption(caption));
+			row.addEventListener("focus", () => syncCaption(caption));
+			nodes.push(row);
+		}
+		const cardFocus = this.#runNotification.contains(document.activeElement)
+			? (document.activeElement as HTMLElement).dataset.action
+			: undefined;
+		const rowFocus = document.activeElement?.classList.contains("thread-activity") ?? false;
+		replace(this.#messages, ...nodes, this.#runNotification);
+		if (cardFocus) this.#runNotification.querySelector<HTMLElement>(`[data-action="${cardFocus}"]`)?.focus();
+		// A keyboard user reading the row keeps it through a state change or a new message.
+		else if (rowFocus) this.#messages.querySelector<HTMLElement>(".thread-activity")?.focus({ preventScroll: true });
+		this.#refreshTimestamps(false);
+		this.#pinToBottom();
 	}
 
 	#renderStatus(conversation: ConversationState, canWrite: boolean, session: HostedSession | undefined): void {
 		const company = this.#company.store.get();
-		const failed = this.#isRoom ? undefined : this.#company.failedRunFor(session?.staffAgentId);
+		this.#renderRunNotification(session);
 		// Rebuilt only when something shown changes, so a focused button survives polling.
 		const key = JSON.stringify([
 			conversation.error,
@@ -654,32 +878,18 @@ export class ConversationView {
 			company.accessLost,
 			company.team?.role,
 			company.team?.capabilities,
-			failed,
-			this.#dismissing,
-			this.#dismissError,
 		]);
 		if (key === this.#statusKey) return;
 		this.#statusKey = key;
 		const children: (HTMLElement | null)[] = [];
 		if (conversation.error) children.push(notice("danger", conversation.error));
 		if (conversation.sendError) children.push(notice("danger", conversation.sendError));
-		if (failed) children.push(this.#failedRunCard(failed, canWrite));
 		if (canWrite && !this.#actions.sendMessage)
 			children.push(
 				h(
 					"p",
 					{ class: "surface-status", role: "status" },
 					"Sending messages is not available yet. Your draft stays here.",
-				),
-			);
-		if (this.#isRoom)
-			children.push(
-				notice(
-					"neutral",
-					"Multiple agents can respond in this group chat. Follow their replies here. Images are not supported in group chats. Use Company File." +
-						(["owner", "admin"].includes(company.team?.role ?? "")
-							? " Company-wide execution pause is available in Settings → Company."
-							: ""),
 				),
 			);
 		if (this.#execution) children.push(this.#execution.el);
@@ -700,65 +910,112 @@ export class ConversationView {
 		if (refocus) this.#status.querySelector<HTMLElement>(`[data-action="${refocus}"]`)?.focus();
 	}
 
-	/** The card behind the rail's red disc (shell spec §11.1): why the run did not
-	 * finish, and the one thing this client can do about it. */
-	#failedRunCard({ activity, recovery }: FailedRun, canWrite: boolean): HTMLElement {
-		const profileId = this.#company.profile.profileId;
-		if (recovery?.proposalId) {
-			const changes = h("a", { href: `#/c/${profileId}/proposal/${recovery.proposalId}` }, "the changes");
-			return this.#company.store.get().team?.capabilities.authorize
-				? notice("warn", "A run stopped after changing Company File. Review ", changes, " to keep or discard them.")
-				: notice(
-						"warn",
-						"A run stopped after changing Company File. An owner or admin decides whether to keep ",
-						changes,
-						".",
-					);
-		}
-		const reason = recovery?.lastError ? `: ${recovery.lastError}` : ".";
-		if (activity.sourceKind === "proposal_review")
-			return notice(
-				"warn",
-				`A review did not finish${reason} The proposal it was reviewing is still open in `,
-				h("a", { href: `#/c/${profileId}/file` }, "Company File"),
-				".",
-			);
-		const unsettled = (recovery?.unsettledOperations ?? 0) > 0;
-		const dismissing = this.#dismissing === activity.runId;
-		const error = this.#dismissError?.runId === activity.runId ? this.#dismissError.message : undefined;
-		const errorId = `failed-run-error-${activity.runId}`;
-		// Dismiss waits for the details, which say whether the cloud would refuse it.
-		const dismiss =
-			canWrite && recovery && !unsettled
-				? button(dismissing ? "Dismissing…" : "Dismiss", () => void this.#dismiss(activity.runId), { small: true })
-				: null;
-		if (dismiss) {
-			dismiss.dataset.action = "dismiss-run";
-			// Still focusable while busy, so the keyboard stays on it.
-			if (dismissing) dismiss.setAttribute("aria-disabled", "true");
-			if (error) dismiss.setAttribute("aria-describedby", errorId);
-		}
-		return notice(
-			"warn",
-			h("p", null, `A run did not finish${reason}`),
-			unsettled ? h("p", null, "Some of its work has an unknown outcome, so it cannot be dismissed here.") : null,
-			error ? h("p", { id: errorId }, `Could not dismiss it: ${error}`) : null,
-			dismiss,
-		);
-	}
-
-	async #dismiss(runId: string): Promise<void> {
-		if (this.#dismissing) return;
-		this.#dismissing = runId;
-		this.#dismissError = undefined;
-		this.update();
-		try {
-			await this.#company.dismissFailedRun(runId);
-		} catch (error) {
-			this.#dismissError = { runId, message: describeError(error) };
-		} finally {
-			this.#dismissing = undefined;
+	#renderRunNotification(session: HostedSession | undefined): void {
+		const company = this.#company.store.get();
+		const failed =
+			this.#isRoom || company.accessLost || !company.team?.capabilities.read
+				? undefined
+				: this.#company.failedRunFor(session?.staffAgentId);
+		const runId = failed?.activity.runId;
+		const hidden = !runId || dismissedRunNotifications.get(this.#company)?.has(runId);
+		const proposalId = failed?.recovery?.proposalId;
+		const review = failed?.activity.sourceKind === "proposal_review";
+		const agentName = this.#company.staffById(session?.staffAgentId ?? "")?.displayName ?? "The agent";
+		const title = proposalId
+			? `${agentName} stopped with changes to review`
+			: review
+				? "A review did not finish"
+				: `${agentName} did not finish this run`;
+		const recovery = failed?.recovery;
+		const reason = proposalId
+			? "Its changes wait for your decision."
+			: recovery
+				? runFailureReason(recovery.lastError, recovery.jobStatus)
+				: undefined;
+		const retryState = runId ? company.runRetries?.[runId] : undefined;
+		// Try again is for an interrupted run; a refused one says what the member must do first.
+		const canRetry =
+			failed !== undefined &&
+			!review &&
+			this.#company.canRetryFailedRun(failed) &&
+			recovery !== undefined &&
+			runFailureInterrupted(recovery.lastError, recovery.jobStatus);
+		const key = JSON.stringify([
+			runId,
+			hidden,
+			proposalId,
+			review,
+			title,
+			reason,
+			recovery?.lastError,
+			retryState,
+			canRetry,
+		]);
+		if (key === this.#runNotificationKey) return;
+		this.#runNotificationKey = key;
+		const focused = this.#runNotification.contains(document.activeElement);
+		const focusedAction = focused ? (document.activeElement as HTMLElement).dataset.action : undefined;
+		const dismiss = () => {
+			if (!runId || this.#notificationSignal.aborted) return;
+			let dismissed = dismissedRunNotifications.get(this.#company);
+			if (dismissed?.has(runId)) return;
+			if (!dismissed) {
+				dismissed = new Set();
+				dismissedRunNotifications.set(this.#company, dismissed);
+			}
+			dismissed.add(runId);
 			this.update();
+			// Durable for the company: the badge and this card do not come back on reload.
+			// If nothing reached the cloud, the card comes back so it can be dismissed again.
+			void this.#company.dismissFailedRun(runId).catch(() => {
+				dismissed.delete(runId);
+				if (!this.#company.signal.aborted) this.#company.store.set({});
+			});
+		};
+		const profileId = this.#company.profile.profileId;
+		const action =
+			proposalId || review
+				? h(
+						"a",
+						{
+							class: "btn btn-small",
+							href: `#/c/${profileId}/${proposalId ? `proposal/${proposalId}` : "file"}`,
+						},
+						"Review",
+					)
+				: undefined;
+		const sessionId = this.#sessionId;
+		this.#runNotification.hidden = Boolean(hidden);
+		replace(
+			this.#runNotification,
+			hidden || !runId
+				? null
+				: runFailureCard({
+						title,
+						reason,
+						retry: canRetry ? () => void this.#company.retryFailedRun(runId, sessionId) : undefined,
+						retrying: retryState?.pending,
+						retryError: retryState?.error,
+						dismiss,
+						action,
+					}),
+		);
+		if (!hidden) this.#pinToBottom();
+		if (focused) {
+			if (!hidden)
+				(
+					(focusedAction
+						? this.#runNotification.querySelector<HTMLElement>(`[data-action="${focusedAction}"]`)
+						: null) ?? this.#runNotification.querySelector<HTMLElement>(".run-failure-primary, a, button")
+				)?.focus({ preventScroll: true });
+			else if (this.#conversationPane.inert || this.#panel?.el.classList.contains("is-entered"))
+				this.#panel?.focus();
+			else if (!this.#composer.disabled && !this.#composerWrap.hidden) this.#composer.focus({ preventScroll: true });
+			else if (!this.#identity.disabled) this.#identity.focus({ preventScroll: true });
+			else {
+				this.el.tabIndex = -1;
+				this.el.focus({ preventScroll: true });
+			}
 		}
 	}
 }

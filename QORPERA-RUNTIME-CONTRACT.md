@@ -959,6 +959,14 @@ responsibility or hire authority the requester did not possess.
 
 ### 14.3 Responsibilities
 
+> **Amended 2026-09-20.** A responsibility is no longer a separate company
+> object with its own page. What an agent is responsible for is written in the
+> agent's description, in plain prose, and the agent keeps it alive with
+> routines it creates itself. The text below is retained as the record of the
+> earlier model and of the cloud state that still exists; where it conflicts
+> with the [2026-09-20 amendment](#2026-09-20-amendment-responsibilities-are-the-agents-description)
+> the amendment governs.
+
 A responsibility is a durable owned outcome, not an agent, room, chat
 category, dashboard, or long-running model process. It is the unit that makes
 the company proactive: without an owner and a standing obligation to watch
@@ -1032,6 +1040,11 @@ responsibilities. A temporary worker or project assignment is preferred over
 a permanent hire when the responsibility ends with the project.
 
 ### 14.5 Attention and product projection
+
+> **Amended 2026-09-20.** Item 2 below is withdrawn: clients present no
+> dedicated responsibility area and no responsibility pages. The hierarchy is
+> the Co-Founder, agents with their descriptions, rooms and projects. See the
+> [2026-09-20 amendment](#2026-09-20-amendment-responsibilities-are-the-agents-description).
 
 The primary product hierarchy is a projection of canonical cloud state, not a
 local ordering of chat windows. It SHOULD present:
@@ -1687,6 +1700,22 @@ removal; until it is removed it MUST NOT be reachable from any member client.
   Co-Founder conversation no longer exists: the Co-Founder's thread is shared.
 - **Images.** An agent thread accepts the same attachments as an agent
   session did; team rooms stay text-only.
+- **The thread outlives edits of its agent (added 2026-09-19).** A wake or
+  room delivery is admitted at the agent's current version and MAY use a
+  session that records an earlier version of the same agent. This holds for
+  every session bound to an agent, not only its thread. A session that records
+  a version later than the run's is refused, and a member turn keeps its exact
+  version.
+- **An edit applies from the next run (added 2026-09-20).** Clients save agent
+  edits at once, and every save raises the agent's version. An edit MUST NOT
+  end a run. A run stays valid while its agent is active and the agent's
+  version is the run's version or a later one: it keeps its wake authority,
+  its Company File write authority and its Company Computer, and its job
+  specification stays the charter recorded for its own version. A wake that
+  waited in the queue through an edit is the agent's next run and is admitted
+  at the current version; a run never claims a version its agent has not
+  reached. Archiving or deleting an agent is not an edit and still ends its
+  runs.
 
 ### 2026-09-18 amendment: who runs an agent's first run
 
@@ -1704,6 +1733,112 @@ greeting appears there.
   connects an account after the Co-Founder exists.
 - **Limits.** The founder stop holds the queued first run until resume. A first
   run is a member-caused turn and does not count against the wake-rate ceiling.
+
+### 2026-09-19/20 amendment: agents set themselves up, hire and convene without approval
+
+Founder decisions, 2026-09-19 and 2026-09-20.
+
+1. **An agent's routine needs no member approval.** Part of what makes an
+   agent useful is that it sets itself up to meet its responsibilities. An
+   agent creates, changes, pauses and removes its own routines through its run
+   authority. The routine wakes that same agent; the model chooses what, when
+   and for how long, never another agent, a requester, a model account or a
+   computer.
+2. **Unattended use of a connected model account is not a setting.** The
+   consent and sponsor records of section 11.5 and Order 3 stay, because runs,
+   leases and custody bind to them, but they are granted by default when an
+   account is bound and when standing work needs them. A member who does not
+   want an account used disconnects it.
+3. **Hiring a coworker and opening a group chat need no member approval.** Any
+   active agent may create a new agent (14.1) or a new room (14.7). The
+   governed write, its receipt, the projection and the rule that a creator
+   cannot delegate authority it lacks are unchanged; the approval of a NEW
+   agent or room is given by policy in the name of the requesting member, or of
+   the company owner, and is bounded per run. A change to an existing agent or
+   room stays proposed by the Co-Founder (14.2) and approved by a member.
+4. **The gate is authority, never the client.** A capability a signed-in member
+   has through one client is a cloud operation. Whether an agent may perform it
+   is decided by the authority chain of its run, not by which surface first
+   exposed it.
+5. **An agent's description is its responsibilities.** The job description is
+   written as the agent's responsibilities in plain prose and is the reference
+   the agent orients itself by, on its first run and afterwards, creating the
+   routines that keep each responsibility alive. The 2026-09-20 amendment
+   below states how this replaces the structured responsibility objects of 14.3.
+
+[Step 8 record](deploy/first-node/RUNTIME-STEP-8-SCHEDULER.md) states what is
+built and what keeps Order 8 open.
+
+### 2026-09-20 amendment: responsibilities are the agent's description
+
+Founder decision, 2026-09-20. It replaces the responsibility model of 14.3 and
+the responsibility area of 14.5, and revises 14.2 and the Order 6 and Order 8
+placements that depended on them.
+
+1. **One place.** What an agent is responsible for is its description: plain
+   prose in the agent document's hire overlay, edited where the agent is
+   shown and labelled "Responsibilities". It is the reference the agent works
+   from. There is no separate responsibility object to author, no
+   responsibility page, no responsibility map view and no measure page. A
+   client MUST NOT present them.
+2. **The agent keeps its responsibilities alive.** On its first run and on
+   later wakes an agent orients itself by its description, reads the sources it
+   names, and creates, revises and removes the routines that make each
+   responsibility happen without being asked (2026-09-19/20 amendment, items 1
+   and 2). A cadence is a routine the agent owns, not a field on a
+   responsibility. An agent whose description names no responsibility asks the
+   one question that settles its role and invents nothing.
+3. **The company-level view is derived, not authored.** The Co-Founder's
+   standing guarantee that everything the company cares about has an owner
+   (14.2) is met by reading the agents' descriptions and the company's
+   direction, hiring an owner where there is none, and proposing a change to an
+   existing agent's description where responsibilities overlap or have gone
+   stale. It is not a set of responsibility documents.
+4. **Accountability stays singular and checkable in prose.** A responsibility
+   SHOULD name its outcome, the sources that show whether it is met, and when
+   the agent speaks up and to whom. Two agents SHOULD NOT be written as owners
+   of the same outcome. These are authoring rules for descriptions, enforced by
+   the Co-Founder's review, not by a schema.
+5. **What is withdrawn.** The per-responsibility measure definitions, targets,
+   guardrails, attention cadence field, responsibility-scoped authority and
+   archetypes of 14.3; the rebuildable responsibility view and the wall of 14.3;
+   the responsibility area of 14.5; Order 6's responsibility views and measure
+   retrieval projections; and Order 8's responsibility cadences and scheduled
+   measurement. Order 8's routines, listeners and exception wakes remain, owned
+   by agents.
+6. **The cloud objects are removed.** The responsibility tables and the
+   escalation queue are dropped; no company held responsibility data worth
+   keeping. Responsibility documents are no longer
+   organization documents: existing `organization/responsibilities/*.json`
+   files stay in the Company File as ordinary files, and a new company is born
+   without them and without that folder. Agents no longer have
+   `escalate_responsibility`; an agent speaks up to whoever gave it the work, or
+   to the Co-Founder, through its ordinary messages. A path resource that was
+   scoped to a responsibility is closed to everyone but owners and admins and
+   is never widened. A project keeps a recorded sponsor as history only, and a
+   member reaches a project-scoped resource as owner or admin. The agent
+   document keeps its `grants.responsibilities` key, ignored, so no stored
+   document becomes invalid, and the organization read model still answers an
+   empty `responsibilities` list so every client keeps parsing.
+7. **Tools are the intended replacement for live measurement.** The part of
+   the old model worth keeping is that people can see how the things they care
+   about are going. The planned form is a second kind of item beside agents:
+   **tools**, internal apps and dashboards hosted in the Company File, possibly
+   live, which an agent builds and keeps current with its routines. A tool
+   would be ordinary Company File objects (a manifest, a page, data files)
+   rendered by the client in an isolated frame with the viewer's own authority.
+   This is a direction, not a commitment: it needs its own design, its own
+   trust model for agent-authored interfaces, and its own contract revision
+   before any of it is built, and nothing in this amendment creates it.
+
+Implemented with this amendment: the web client's responsibility pages, routes,
+map and links are removed and the agent's description field is labelled
+"Responsibilities"; the employee overlay already orients an agent by its
+description (Step 8 record). The cloud retirement is migration
+`20260920070000_runtime_retire_responsibility_objects.sql`, with the object
+gateway that stops building the responsibilities folder. Either may be rolled
+out first: the database accepts both genesis trees, and the gateway waits for a
+database that still mints documents.
 
 ### Current implementation checkpoint
 

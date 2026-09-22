@@ -407,6 +407,7 @@ export function parseStaffExecutionActivity(value: unknown): HostedStaffExecutio
 			sourceKind: oneOf(activity.source_kind, EXECUTION_SOURCE_KINDS, "activity source"),
 			jobStatus: oneOf(activity.job_status, ["queued", "leased", "completed", "failed", "cancelled"], "job status"),
 			activity: oneOf(activity.activity, ["waiting", "working", "needs_attention"], "activity state"),
+			...(activity.phase === "writing" || activity.phase === "working" ? { phase: activity.phase } : {}),
 			updatedAt: timestamp(activity.updated_at, "activity time"),
 		};
 	});
@@ -433,16 +434,27 @@ export function parseRunRecovery(value: unknown): HostedRunRecovery {
 	};
 }
 
-/** qorpera_resolve_failed_execution_run answers with the run it resolved. */
-export function parseRunDismissal(value: unknown, runId: string): void {
-	const result = record(value, "run dismissal");
+/** qorpera_resolve_failed_execution_run answers with the run it resolved and the action taken. */
+export function parseRunResolution(value: unknown, runId: string, action: "discard" | "retry" | "acknowledge"): void {
+	const result = record(value, `run ${action}`);
 	if (
-		uuid(result.run_id, "dismissed run id") !== runId.toLowerCase() ||
-		result.action !== "discard" ||
+		uuid(result.run_id, `${action} run id`) !== runId.toLowerCase() ||
+		result.action !== action ||
 		result.resolved !== true
 	) {
-		throw new CloudShapeError("run dismissal");
+		throw new CloudShapeError(`run ${action}`);
 	}
+}
+
+/** qorpera_retry_room_delivery: the same post wakes the same agent once more. */
+export function parseRoomDeliveryRetry(value: unknown, runId: string): void {
+	const result = record(value, "room delivery retry");
+	if (
+		result.schema !== "qorpera.company-room-retry/v1" ||
+		uuid(result.runId, "retried run id") !== runId.toLowerCase()
+	)
+		throw new CloudShapeError("room delivery retry");
+	uuid(result.occurrenceId, "retry occurrence id");
 }
 
 function sessionEventType(value: unknown): HostedSessionEventType {

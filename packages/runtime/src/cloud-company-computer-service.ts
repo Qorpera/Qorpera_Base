@@ -2,6 +2,7 @@ import type {
 	CompanyComputerScope,
 	CompanyComputerScreenBinding,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
+import { createCompanyComputerViewerRefusalReporter } from "./cloud-company-computer-diagnostics.ts";
 import { CompanyComputerDrainSupervisor } from "./cloud-company-computer-drain.ts";
 import { CompanyComputerScreenActionGate } from "./cloud-company-computer-leases.ts";
 import {
@@ -55,6 +56,8 @@ export async function startCompanyComputerOfficeService(options: {
 	/** Both listeners are bound with admission closed. Resolve only after the
 	 * provider activates this exact service invocation. Rejection drains both. */
 	waitForActivation?: (listeners: { nativePort: number; viewerPort: number }, signal: AbortSignal) => Promise<void>;
+	/** Where viewer refusal records go; the service journal (stderr) by default. */
+	writeDiagnostic?: (line: string) => void;
 }): Promise<{ nativePort: number; viewerPort: number; finished: Promise<void>; close(): Promise<void> }> {
 	const stop = new AbortController();
 	const signal = AbortSignal.any([options.signal, stop.signal]);
@@ -98,7 +101,7 @@ export async function startCompanyComputerOfficeService(options: {
 	};
 	// New viewer admission and new native work additionally require the
 	// supervisor's latest status poll to have confirmed the durable state. An
-	// already-admitted viewer's periodic check, its per-input admission and its
+	// already-admitted viewer's periodic check, its input-window admission and its
 	// release are each confirmed by SQL on their own and stay on assertServing,
 	// so a bounded transport gap never destroys an authorized stream.
 	const assertAdmitting = (): void => {
@@ -117,17 +120,13 @@ export async function startCompanyComputerOfficeService(options: {
 				assertServing();
 				return control.check(grant, AbortSignal.any([signal, checked]));
 			},
-			forwardInput: async (grant, input, forward, checked) => {
+			admitInputWindow: async (grant, checked) => {
 				assertServing();
-				return control.forwardInput(
-					grant,
-					input,
-					() => {
-						assertServing();
-						forward();
-					},
-					AbortSignal.any([signal, checked]),
-				);
+				return control.admitInputWindow(grant, AbortSignal.any([signal, checked]));
+			},
+			recordInput: (grant, input) => {
+				assertServing();
+				return control.recordInput(grant, input);
 			},
 			// Exact cleanup remains valid after service cancellation.
 			release: (...args) => control.release(...args),
@@ -135,6 +134,25 @@ export async function startCompanyComputerOfficeService(options: {
 		viewer = await startCompanyComputerViewerWebSocketGateway({
 			...options.viewer,
 			onFailure: onListenerFailure,
+			// A member who cannot open a screen leaves one closed-code line in this
+			// machine's journal, with the admission facts that decided it.
+			onRefusal: createCompanyComputerViewerRefusalReporter({
+				write: options.writeDiagnostic ?? ((line) => console.error(line)),
+				state: () => ({
+					serving: ready && !signal.aborted,
+					supervisor: supervisor
+						? {
+								failed: supervisor.failed,
+								unconfirmedMs:
+									supervisor.unconfirmedSince === undefined
+										? null
+										: Math.max(0, Date.now() - supervisor.unconfirmedSince),
+								unconfirmedPolls: supervisor.unconfirmedPolls,
+								confirmedRevision: supervisor.confirmedRevision,
+							}
+						: undefined,
+				}),
+			}),
 			path: `/office/${options.scope.companyComputerId}/view`,
 			authority,
 			guest: {

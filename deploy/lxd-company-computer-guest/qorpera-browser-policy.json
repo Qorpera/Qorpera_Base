@@ -10,5 +10,5 @@
 	"DownloadRestrictions": 3,
 	"AllowFileSelectionDialogs": false,
 	"URLBlocklist": ["file://*", "chrome://*", "chrome-untrusted://*", "devtools://*", "javascript://*", "view-source:*"],
-	"URLAllowlist": ["chrome://newtab/"]
+	"URLAllowlist": ["chrome://newtab/", "chrome://new-tab-page/"]
 }

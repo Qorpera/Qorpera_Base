@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { Socket } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { CompanyComputerPrivacyChallenge } from "@qorpera/cloud-client/cloud-company-computer-privacy";
 import type { CompanyComputerViewerGrant } from "@qorpera/cloud-client/cloud-company-computer-viewer";
 import { companyComputerFailureDiagnostic } from "@qorpera/runtime/cloud-company-computer-diagnostics";
@@ -28,6 +31,8 @@ const physical = vi.hoisted(() => ({
 	connect: vi.fn(),
 	privateStart: vi.fn(),
 	drain: vi.fn(),
+	browserRequest: vi.fn(),
+	browserLaunch: vi.fn(),
 }));
 vi.mock("../src/cloud-company-computer-desktop.ts", () => ({
 	prepareCompanyComputerScreenWallpaper: physical.prepare,
@@ -38,10 +43,17 @@ vi.mock("../src/cloud-company-computer-linux-desktop.ts", () => ({
 		close = physical.close;
 		drain = physical.drain;
 		connectRfb = physical.connect;
+		takeBrowserRequest = physical.browserRequest;
 		xSocket() {
 			return "/run/office-screens/fixture/X1";
 		}
 	},
+}));
+vi.mock("../src/cloud-company-computer-linux-browser.ts", () => ({
+	createCompanyComputerLinuxBrowserLaunch:
+		(options: unknown) =>
+		(...args: unknown[]) =>
+			physical.browserLaunch(...args, options),
 }));
 vi.mock("../src/cloud-company-computer-linux-private-surface.ts", () => ({
 	startCompanyComputerLinuxPrivateSurface: physical.privateStart,
@@ -50,7 +62,27 @@ const runs: CloudNativeToolRun[] = [];
 const guests: CompanyComputerLinuxGuest[] = [];
 const displays: { stop: ReturnType<typeof vi.fn>; exited: ReturnType<typeof computerDeferred<void>> }[] = [];
 const privateCloses: ReturnType<typeof vi.fn>[] = [];
+const browsers: {
+	context: { pages(): never[] };
+	close: ReturnType<typeof vi.fn>;
+	end(): void;
+	ended(): boolean;
+}[] = [];
+const temporary: string[] = [];
+/** The browser window as CDP reports it; a test minimises it. */
+const windows = {
+	pages: [] as never[],
+	state: "maximized",
+	send: vi.fn(async (method: string, args?: { bounds?: { windowState?: string } }) => {
+		if (method === "Browser.getWindowForTarget") return { windowId: 7, bounds: { windowState: windows.state } };
+		if (args?.bounds?.windowState) windows.state = args.bounds.windowState;
+		return {};
+	}),
+};
 beforeEach(() => {
+	windows.pages = [];
+	windows.state = "maximized";
+	browsers.length = 0;
 	vi.clearAllMocks();
 	displays.length = 0;
 	privateCloses.length = 0;
@@ -65,6 +97,40 @@ beforeEach(() => {
 		return { ready: Promise.resolve(), exited: exited.promise, stop };
 	});
 	physical.connect.mockImplementation(async () => new Socket());
+	// Reset, not only cleared: a queued "once" request must never leak into the next test.
+	physical.browserRequest.mockReset();
+	physical.browserRequest.mockResolvedValue(false);
+	physical.browserLaunch.mockImplementation(
+		async (
+			_directory: string,
+			input: { signal: AbortSignal; grant: unknown; binding: unknown },
+			options: { access: { assertGranted(grant: unknown, binding: unknown, signal: AbortSignal): Promise<void> } },
+		) => {
+			input.signal.throwIfAborted();
+			const listeners: (() => void)[] = [];
+			const context = {
+				pages: () => windows.pages,
+				newCDPSession: async () => ({ send: windows.send, detach: async () => undefined }),
+				on: (_event: string, listener: () => void) => listeners.push(listener),
+				cookies: async () => [],
+				addCookies: async () => undefined,
+			};
+			let over = false;
+			const end = (): void => {
+				over = true;
+				clearInterval(relay);
+				for (const listener of listeners.splice(0)) listener();
+			};
+			// The one physical behaviour this double keeps: like the real egress relay,
+			// it asks the launch's authority every second and ends the browser on a refusal.
+			const relay = setInterval(() => {
+				void options.access.assertGranted(input.grant, input.binding, new AbortController().signal).catch(end);
+			}, 1000);
+			const close = vi.fn(async () => end());
+			browsers.push({ context, close, end, ended: () => over });
+			return { context, close };
+		},
+	);
 	physical.privateStart.mockImplementation(async (options) => {
 		await options.assertDrained(options.challenge, options.signal);
 		options.signal.throwIfAborted();
@@ -82,9 +148,11 @@ afterEach(async () => {
 	vi.useRealTimers();
 	await Promise.allSettled(guests.splice(0).map((guest) => guest.close()));
 	for (const run of runs.splice(0)) run.close();
+	for (const browser of browsers.splice(0)) browser.end();
+	for (const directory of temporary.splice(0)) await rm(directory, { recursive: true, force: true });
 	vi.restoreAllMocks();
 });
-async function fixture() {
+async function fixture(options: { browser?: boolean } = {}) {
 	const source = nativeToolAuthorityFixture();
 	const run = await CloudNativeToolRun.open(
 		source.binding,
@@ -99,9 +167,35 @@ async function fixture() {
 		binding,
 		driver: { kind: "agent" as const, runId: run.identity.runId, staffAgentId: run.identity.staffAgentId },
 	};
-	const resources = { officeGrantId: computerId(80), officeGrantVersion: 1, officePrivacyVersion: 0 };
-	const descriptor = { state: "available" as const, scope, capabilities: ["shell" as const], resources };
+	const browserGrant = { profileId: computerId(70), grantId: computerId(71), version: 1 };
+	const resources = {
+		officeGrantId: computerId(80),
+		officeGrantVersion: 1,
+		officePrivacyVersion: 0,
+		...(options.browser
+			? {
+					browserProfileId: browserGrant.profileId,
+					browserGrantId: browserGrant.grantId,
+					browserGrantVersion: browserGrant.version,
+				}
+			: {}),
+	};
+	const descriptor = {
+		state: "available" as const,
+		scope,
+		capabilities: options.browser ? ["shell" as const, "browser" as const] : ["shell" as const],
+		resources,
+	};
+	// The persistent browser manager checks its real profile root.
+	let browserProfilesRoot = "/srv/profiles";
+	if (options.browser) {
+		browserProfilesRoot = await mkdtemp(join(await realpath(tmpdir()), "qorpera-guest-profiles-"));
+		temporary.push(browserProfilesRoot);
+	}
+	/** What SQL answers for the screen's browser; a test flips it to a refusal. */
+	const screenBrowser = { authorized: true, opens: [] as unknown[] };
 	const state = { privacy: "shared", version: 0, epoch: 1 };
+	const appearance = vi.fn((): unknown => ({ creature: "rocket", templateId: "agent-manager" }));
 	const order: string[] = [];
 	const call = vi.fn(async (method: string, args: Record<string, unknown>): Promise<unknown> => {
 		order.push(`${method}:${args.p_action ?? "read"}`);
@@ -111,6 +205,13 @@ async function fixture() {
 		}
 		if (method === "qorpera_check_runtime_office_private_surface")
 			return { state: "authorized", privacyState: state.privacy, version: state.version, validForMs: 5000 };
+		if (method === "qorpera_runtime_office_screen_appearance") return appearance();
+		if (method === "qorpera_office_screen_browser_grant") {
+			if (!screenBrowser.authorized) throw new Error("Browser authority unavailable");
+			if (args.p_opener !== null) screenBrowser.opens.push(args.p_opener);
+			return { state: "authorized", grant: browserGrant, validForMs: 5000 };
+		}
+		if (method === "qorpera_native_office_browser_grant") return { state: "authorized" };
 		if (method === "qorpera_native_office_operation") {
 			if (args.p_action === "authorize") return { state: "authorized" };
 			if (args.p_action === "finish") return { state: "drained" };
@@ -132,7 +233,7 @@ async function fixture() {
 			workbenchRoot: "/srv/workbench",
 			desktopHome: "/srv/desktop",
 			screenStateRoot: "/srv/screens",
-			browserProfilesRoot: "/srv/profiles",
+			browserProfilesRoot,
 		},
 		limits: { memoryBytes: 1073741824, pids: 256, cpuQuota: 200000, cpuPeriod: 100000 },
 		workbenchMount: { filesystem: "tmpfs", source: "tmpfs", root: "/", mountPoint: "/srv" },
@@ -211,6 +312,18 @@ async function fixture() {
 		order,
 		boundary,
 		state,
+		appearance,
+		screenBrowser,
+		browserGrant,
+		sharedViewer: (): CompanyComputerViewerGrant => ({
+			binding,
+			viewerSessionId: computerId(90),
+			memberId: computerId(91),
+			mode: "shared",
+			privacyVersion: 0,
+			screenEpoch: 1,
+			validForMs: 30000,
+		}),
 		failure,
 		operation,
 		effect,
@@ -222,6 +335,307 @@ async function fixture() {
 }
 
 describe("whole Linux guest ownership (physical adapters mocked here; separate Linux probes execute them)", () => {
+	it("keeps the agent working while a shared viewer connects and disconnects", async () => {
+		const f = await fixture();
+		const session = await f.create();
+		const operation = f.operation({ kind: "screen", action: "open" });
+		await session.endpoint.perform(operation, f.lease, f.effect());
+		// Agent lease churn advances its own epoch; the shared viewer's epoch
+		// remains bound to the last physical fence and is checked by its gateway.
+		f.state.epoch = 2;
+		const viewer = await f.guest.viewer.connect(
+			{
+				binding: f.binding,
+				viewerSessionId: computerId(90),
+				memberId: computerId(91),
+				mode: "shared",
+				privacyVersion: 0,
+				screenEpoch: 1,
+				validForMs: 30000,
+			},
+			f.run.signal,
+		);
+		await session.endpoint.perform(operation, f.lease, f.effect());
+		viewer.socket.destroy();
+		await session.endpoint.perform(operation, f.lease, f.effect());
+		expect(displays[0].stop).not.toHaveBeenCalled();
+		expect(physical.launch).toHaveBeenCalledOnce();
+		expect(f.failure).not.toHaveBeenCalled();
+	});
+	it("draws the screen agent's saved avatar, and an office that cannot read it still starts its desktop", async () => {
+		const f = await fixture();
+		const session = await f.create();
+		await session.endpoint.perform(f.operation({ kind: "screen", action: "open" }), f.lease, f.effect());
+		expect(physical.prepare).toHaveBeenCalledOnce();
+		expect(physical.prepare.mock.calls[0][0]).toMatchObject({
+			binding: f.binding,
+			creature: "rocket",
+			templateId: "agent-manager",
+		});
+		await f.guest.stopResources(f.binding, new AbortController().signal);
+		// A database without the read (or a malformed answer) leaves both fields
+		// unset, so the preparation derives the figure from the agent id.
+		f.appearance.mockImplementation(() => ({ creature: "rocket", templateId: "agent-manager", extra: true }));
+		await f.guest.viewer.connect(
+			{
+				binding: f.binding,
+				viewerSessionId: computerId(90),
+				memberId: computerId(91),
+				mode: "shared",
+				privacyVersion: 0,
+				screenEpoch: 1,
+				validForMs: 30000,
+			},
+			f.run.signal,
+		);
+		expect(physical.prepare).toHaveBeenCalledTimes(2);
+		expect(physical.prepare.mock.calls[1][0].creature).toBeUndefined();
+		expect(physical.prepare.mock.calls[1][0].templateId).toBeUndefined();
+		expect(physical.launch).toHaveBeenCalledTimes(2);
+		expect(f.failure).not.toHaveBeenCalled();
+	});
+	it("opens no browser when a member arrives, whatever their mode, nor at desktop start: only the dock icon or a run does", async () => {
+		const f = await fixture({ browser: true });
+		// A watcher, a member with input permission, and a second one: the desktop
+		// is shown as it is, and nothing is asked of SQL.
+		await f.guest.viewer.connect({ ...f.sharedViewer(), mode: "watch" }, new AbortController().signal);
+		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
+		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
+		// Two dock polls (500 ms each) pass with nothing asked and nothing launched.
+		await new Promise((resolve) => setTimeout(resolve, 1200));
+		expect(physical.browserLaunch).not.toHaveBeenCalled();
+		expect(f.screenBrowser.opens).toEqual([]);
+		expect(f.order.filter((entry) => entry.startsWith("qorpera_office_screen_browser_grant"))).toEqual([]);
+		expect(f.failure).not.toHaveBeenCalled();
+		// The member's own click at the dock is what opens it.
+		physical.browserRequest.mockResolvedValueOnce(true);
+		await vi.waitFor(() => expect(physical.browserLaunch).toHaveBeenCalledOnce(), { timeout: 3000 });
+		expect(f.screenBrowser.opens).toEqual(["desktop"]);
+		// The member closes the browser on purpose: a reconnect does not bring it back.
+		browsers[0].end();
+		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
+		await new Promise((resolve) => setTimeout(resolve, 700));
+		expect(physical.browserLaunch).toHaveBeenCalledOnce();
+		// Nor does a fresh start of the desktop.
+		await f.guest.stopResources(f.binding, new AbortController().signal);
+		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
+		await new Promise((resolve) => setTimeout(resolve, 700));
+		expect(physical.browserLaunch).toHaveBeenCalledOnce();
+		expect(f.screenBrowser.opens).toEqual(["desktop"]);
+		expect(f.failure).not.toHaveBeenCalled();
+	}, 15000);
+	it("answers a dock request for a browser that is already open by bringing its minimised window back, without choosing a tab", async () => {
+		const f = await fixture({ browser: true });
+		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
+		physical.browserRequest.mockResolvedValueOnce(true);
+		await vi.waitFor(() => expect(physical.browserLaunch).toHaveBeenCalledOnce(), { timeout: 3000 });
+		windows.pages = [{} as never];
+		// Open and not minimised: only looked at.
+		physical.browserRequest.mockResolvedValueOnce(true);
+		await vi.waitFor(() => expect(windows.send).toHaveBeenCalledTimes(1), { timeout: 3000 });
+		expect(windows.send.mock.calls[0][0]).toBe("Browser.getWindowForTarget");
+		// Minimised: restored through "normal", as CDP requires, and maximised again.
+		windows.state = "minimized";
+		physical.browserRequest.mockResolvedValueOnce(true);
+		await vi.waitFor(() => expect(windows.state).toBe("maximized"), { timeout: 3000 });
+		expect(windows.send.mock.calls.slice(1).map(([method, args]) => [method, args?.bounds?.windowState])).toEqual([
+			["Browser.getWindowForTarget", undefined],
+			["Browser.setWindowBounds", "normal"],
+			["Browser.setWindowBounds", "maximized"],
+		]);
+		expect(physical.browserLaunch).toHaveBeenCalledOnce();
+		// A failing window call never fails the request or the desktop.
+		windows.send.mockRejectedValueOnce(new Error("target closed"));
+		physical.browserRequest.mockResolvedValueOnce(true);
+		await new Promise((resolve) => setTimeout(resolve, 700));
+		expect(f.failure).not.toHaveBeenCalled();
+		expect(displays[0].stop).not.toHaveBeenCalled();
+	});
+	it("opens from the dock once SQL allows what it refused before: a refusal is not remembered", async () => {
+		const f = await fixture({ browser: true });
+		f.screenBrowser.authorized = false;
+		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
+		physical.browserRequest.mockResolvedValueOnce(true);
+		const asked = () => f.order.filter((entry) => entry.startsWith("qorpera_office_screen_browser_grant")).length;
+		await vi.waitFor(() => expect(asked()).toBe(1), { timeout: 3000 });
+		await new Promise((resolve) => setTimeout(resolve, 700));
+		expect(asked()).toBe(1);
+		expect(physical.browserLaunch).not.toHaveBeenCalled();
+		expect(displays[0].stop).not.toHaveBeenCalled();
+		// The member's next click, once SQL agrees, opens it.
+		f.screenBrowser.authorized = true;
+		physical.browserRequest.mockResolvedValueOnce(true);
+		await vi.waitFor(() => expect(physical.browserLaunch).toHaveBeenCalledOnce(), { timeout: 3000 });
+		expect(f.screenBrowser.opens).toEqual(["desktop"]);
+		expect(f.failure).not.toHaveBeenCalled();
+	});
+	it("opens the screen's browser for a member at the dock with no run, and the agent's next run uses the same window", async () => {
+		const f = await fixture({ browser: true });
+		// A watcher's connection starts the desktop and opens nothing by itself.
+		await f.guest.viewer.connect({ ...f.sharedViewer(), mode: "watch" }, new AbortController().signal);
+		expect(physical.browserLaunch).not.toHaveBeenCalled();
+		// The dock icon: one empty request file, consumed once by the service.
+		physical.browserRequest.mockResolvedValueOnce(true);
+		await vi.waitFor(() => expect(physical.browserLaunch).toHaveBeenCalledOnce(), { timeout: 3000 });
+		expect(f.screenBrowser.opens).toEqual(["desktop"]);
+		expect(physical.browserLaunch.mock.calls[0][1]).toMatchObject({ binding: f.binding, grant: f.browserGrant });
+		// No run exists, so no run authority was consulted to open it.
+		expect(f.order.some((entry) => entry.startsWith("qorpera_native_office_browser_grant"))).toBe(false);
+
+		const session = await f.create();
+		const listed = await session.endpoint.perform(
+			f.operation({ kind: "browser", action: "list_tabs" }),
+			f.lease,
+			f.effect(),
+		);
+		expect(JSON.stringify(listed)).toContain("tabs");
+		// Same Chromium, same context: the run joined it instead of starting its own,
+		// and it still proved its own grant under its lease before touching it.
+		expect(physical.browserLaunch).toHaveBeenCalledOnce();
+		expect(f.screenBrowser.opens).toEqual(["desktop"]);
+		expect(f.order.some((entry) => entry.startsWith("qorpera_native_office_browser_grant"))).toBe(true);
+
+		// Run end lets go of the browser. SQL (this fixture) still sees a member live on
+		// the screen with input permission, so it keeps authorizing the relay's per-second check and
+		// the window stays.
+		await session.close();
+		const checks = () => f.order.filter((entry) => entry.startsWith("qorpera_office_screen_browser_grant")).length;
+		const before = checks();
+		await vi.waitFor(() => expect(checks()).toBeGreaterThan(before + 1), { timeout: 4000 });
+		expect(browsers[0].ended()).toBe(false);
+		expect(browsers[0].close).not.toHaveBeenCalled();
+		expect(displays[0].stop).not.toHaveBeenCalled();
+		const next = await f.create();
+		await next.endpoint.perform(f.operation({ kind: "browser", action: "list_tabs" }), f.lease, f.effect());
+		expect(physical.browserLaunch).toHaveBeenCalledOnce();
+		expect(f.failure).not.toHaveBeenCalled();
+	});
+	it("closes the screen's browser about a second after the last entitled party is gone, and opens a fresh one for the next run", async () => {
+		const f = await fixture({ browser: true });
+		const session = await f.create();
+		await session.endpoint.perform(f.operation({ kind: "browser", action: "list_tabs" }), f.lease, f.effect());
+		await session.close();
+		expect(browsers[0].ended()).toBe(false);
+		// No lease, no live input viewer, and SQL's short tolerance is over: the
+		// relay's next check is refused and the browser ends. The desktop stays.
+		f.screenBrowser.authorized = false;
+		await vi.waitFor(() => expect(browsers[0].ended()).toBe(true), { timeout: 4000 });
+		expect(displays[0].stop).not.toHaveBeenCalled();
+		expect(f.failure).not.toHaveBeenCalled();
+		f.screenBrowser.authorized = true;
+		const next = await f.create();
+		await next.endpoint.perform(f.operation({ kind: "browser", action: "list_tabs" }), f.lease, f.effect());
+		// The old process is confirmed gone before the same profile starts again.
+		expect(browsers[0].close).toHaveBeenCalledOnce();
+		expect(physical.browserLaunch).toHaveBeenCalledTimes(2);
+		expect(f.screenBrowser.opens).toEqual(["agent", "agent"]);
+	});
+	it("starts nothing when SQL refuses the screen's browser, and an agent without its own grant cannot start it either", async () => {
+		const f = await fixture({ browser: true });
+		f.screenBrowser.authorized = false;
+		await f.guest.viewer.connect({ ...f.sharedViewer(), mode: "watch" }, new AbortController().signal);
+		physical.browserRequest.mockResolvedValueOnce(true);
+		await vi.waitFor(() =>
+			expect(f.order.filter((entry) => entry.startsWith("qorpera_office_screen_browser_grant"))).toHaveLength(1),
+		);
+		expect(physical.browserLaunch).not.toHaveBeenCalled();
+		// The desktop is untouched by a refused request.
+		expect(displays[0].stop).not.toHaveBeenCalled();
+		expect(f.failure).not.toHaveBeenCalled();
+		f.screenBrowser.authorized = true;
+		const original = f.call.getMockImplementation()!;
+		f.call.mockImplementation(async (method: string, args: Record<string, unknown>) => {
+			if (method === "qorpera_native_office_browser_grant") throw new Error("Browser grant unavailable");
+			return original(method, args);
+		});
+		const session = await f.create();
+		await expect(
+			session.endpoint.perform(f.operation({ kind: "browser", action: "list_tabs" }), f.lease, f.effect()),
+		).rejects.toThrow();
+		expect(physical.browserLaunch).not.toHaveBeenCalled();
+		expect(f.screenBrowser.opens).toEqual([]);
+	});
+	it("reopens after somebody closed the window, and a run whose action failed still closes the browser it drove", async () => {
+		const f = await fixture({ browser: true });
+		const session = await f.create();
+		await session.endpoint.perform(f.operation({ kind: "browser", action: "list_tabs" }), f.lease, f.effect());
+		expect(f.screenBrowser.opens).toEqual(["agent"]);
+		browsers[0].end();
+		await session.endpoint.perform(f.operation({ kind: "browser", action: "list_tabs" }), f.lease, f.effect());
+		expect(browsers[0].close).toHaveBeenCalledOnce();
+		expect(physical.browserLaunch).toHaveBeenCalledTimes(2);
+		// Lost browser authority fails the action. Automation of a failed action must
+		// be physically stopped, not merely let go of: that guarantee is unchanged.
+		f.screenBrowser.authorized = false;
+		await expect(
+			session.endpoint.perform(f.operation({ kind: "browser", action: "list_tabs" }), f.lease, f.effect()),
+		).rejects.toThrow();
+		expect(browsers[1].close).toHaveBeenCalledOnce();
+	});
+	it("leaves a member's dock-opened browser alone when a run that never joined it fails a shell action", async () => {
+		const f = await fixture({ browser: true });
+		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
+		physical.browserRequest.mockResolvedValueOnce(true);
+		await vi.waitFor(() => expect(physical.browserLaunch).toHaveBeenCalledOnce(), { timeout: 3000 });
+		const run = vi.spyOn(CompanyComputerLinuxCommands.prototype, "run").mockRejectedValue(new Error("shell broke"));
+		const session = await f.create();
+		const shell = f.operation({ kind: "shell", command: "false", timeoutMs: 1000 });
+		// The gate's drainOnFailure runs for every failed action, not only browser ones.
+		await expect(session.endpoint.perform(shell, f.lease, f.effect())).rejects.toThrow();
+		expect(run).toHaveBeenCalledOnce();
+		expect(browsers[0].close).not.toHaveBeenCalled();
+		// Once the run has joined the browser, the same shell failure does close it:
+		// its automation may be in flight and only a physical close proves it stopped.
+		await session.endpoint.perform(f.operation({ kind: "browser", action: "list_tabs" }), f.lease, f.effect());
+		expect(physical.browserLaunch).toHaveBeenCalledOnce();
+		await expect(session.endpoint.perform(shell, f.lease, f.effect())).rejects.toThrow();
+		expect(browsers[0].close).toHaveBeenCalledOnce();
+		// The run let go with that close: a further failure closes nothing the member reopens.
+		physical.browserRequest.mockResolvedValueOnce(true);
+		await vi.waitFor(() => expect(physical.browserLaunch).toHaveBeenCalledTimes(2), { timeout: 3000 });
+		await expect(session.endpoint.perform(shell, f.lease, f.effect())).rejects.toThrow();
+		expect(browsers[1].close).not.toHaveBeenCalled();
+		expect(f.failure).not.toHaveBeenCalled();
+	});
+	it("closes the screen's browser on the privacy fence and on a screen drain, before the desktop stops", async () => {
+		const f = await fixture({ browser: true });
+		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
+		physical.browserRequest.mockResolvedValueOnce(true);
+		await vi.waitFor(() => expect(physical.browserLaunch).toHaveBeenCalledOnce(), { timeout: 3000 });
+		const order: string[] = [];
+		browsers[0].close.mockImplementation(async () => void order.push("browser"));
+		displays[0].stop.mockImplementation(async () => {
+			order.push("desktop");
+			displays[0].exited.resolve();
+		});
+		await f.guest.stopResources(f.binding, new AbortController().signal);
+		expect(order).toEqual(["browser", "desktop"]);
+
+		// A fresh desktop and browser, then the privacy fence.
+		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
+		physical.browserRequest.mockResolvedValueOnce(true);
+		await vi.waitFor(() => expect(physical.browserLaunch).toHaveBeenCalledTimes(2), { timeout: 3000 });
+		f.state.privacy = "entering";
+		f.state.version = 1;
+		await f.guest.privacy.fence(f.challenge, new AbortController().signal);
+		await vi.waitFor(() => expect(browsers[1].close).toHaveBeenCalledOnce());
+		await f.guest.stopResources(f.binding, new AbortController().signal);
+		expect(displays[1].stop).toHaveBeenCalledOnce();
+		// No request is honoured behind the fence.
+		physical.browserRequest.mockResolvedValue(true);
+		await new Promise((resolve) => setTimeout(resolve, 700));
+		expect(physical.browserLaunch).toHaveBeenCalledTimes(2);
+	});
+	it("reports an unconfirmed browser exit as an unconfirmed drain", async () => {
+		const f = await fixture({ browser: true });
+		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
+		physical.browserRequest.mockResolvedValueOnce(true);
+		await vi.waitFor(() => expect(physical.browserLaunch).toHaveBeenCalledOnce(), { timeout: 3000 });
+		browsers[0].close.mockRejectedValue(new Error("namespace still running"));
+		await expect(f.guest.stopResources(f.binding, new AbortController().signal)).rejects.toThrow(
+			"OFFICE_GUEST_DRAIN_UNCONFIRMED",
+		);
+	});
 	it("retains both pulse and physical drain failures in safe fatal diagnostics", async () => {
 		vi.useFakeTimers();
 		const f = await fixture(),

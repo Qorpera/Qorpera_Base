@@ -3,10 +3,10 @@ import type {
 	NativeMemberConnection,
 } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import type { WebNativeProviderLogin, WebNativeSubscription } from "../../cloud/native-subscription.ts";
-import { button, h, replace } from "../../ui/dom.ts";
+import { button, fmtTime, h, replace } from "../../ui/dom.ts";
 
 type ConnectionsClient = Pick<WebNativeSubscription, "listConnections" | "revokeConnection" | "createMemberSponsor"> &
-	Partial<Pick<WebNativeSubscription, "onboardingAvailable" | "beginProviderLogin">>;
+	Partial<Pick<WebNativeSubscription, "onboardingAvailable" | "beginProviderLogin" | "refreshAccountMetadata">>;
 
 type Provider = "openai" | "anthropic";
 const PROVIDERS: ReadonlyArray<{ id: Provider; label: string; logo: string }> = [
@@ -14,6 +14,14 @@ const PROVIDERS: ReadonlyArray<{ id: Provider; label: string; logo: string }> = 
 	{ id: "anthropic", label: "Claude", logo: "provider-anthropic.svg" },
 ];
 const WATCH_MS = 2000;
+const USAGE_FRESH_MS = 5 * 60_000;
+
+function resetCountdown(milliseconds: number): string {
+	const minutes = Math.ceil(milliseconds / 60_000);
+	if (minutes < 60) return `${minutes}m`;
+	const hours = Math.floor(minutes / 60);
+	return hours < 24 ? `${hours}h ${minutes % 60}m` : `${Math.floor(hours / 24)}d ${hours % 24}h`;
+}
 
 interface Attempt {
 	login?: WebNativeProviderLogin;
@@ -55,8 +63,12 @@ export class ConnectionsView {
 	#working: string | undefined;
 	#error: string | undefined;
 	#watch: ReturnType<typeof setTimeout> | undefined;
+	#usageClock: ReturnType<typeof setTimeout> | undefined;
 	#refreshing: Promise<void> | undefined;
 	#refreshAgain = false;
+	#metadataRefresh: Promise<void> | undefined;
+	#usageUpdating = false;
+	#usageError: string | undefined;
 	/** `signIns` and `begin` come from the application when sign-ins should
 	 * outlive this page; alone, the page keeps its own. */
 	constructor(
@@ -78,17 +90,22 @@ export class ConnectionsView {
 		if (signal.aborted) this.#lifetime.abort();
 		else signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		const resume = () => {
-			if (!document.hidden && this.el.isConnected && [...this.#attempts.values()].some((attempt) => attempt.login))
-				void this.#refresh();
+			if (
+				!document.hidden &&
+				this.el.isConnected &&
+				([...this.#attempts.values()].some((attempt) => attempt.login) || this.#connections?.connections.some(live))
+			)
+				void this.#refreshUsage();
 		};
 		window.addEventListener("focus", resume, { signal: this.#lifetime.signal });
 		document.addEventListener("visibilitychange", resume, { signal: this.#lifetime.signal });
 		this.#draw();
-		void this.#refresh();
+		void this.#refreshUsage();
 	}
 	dispose(): void {
 		this.#lifetime.abort();
 		clearTimeout(this.#watch);
+		clearTimeout(this.#usageClock);
 		this.#connections = undefined;
 		this.el.replaceChildren();
 		this.el.remove();
@@ -99,6 +116,30 @@ export class ConnectionsView {
 		this.#refreshAgain = true;
 		this.#refreshing ??= this.#readUntilCurrent();
 		return this.#refreshing;
+	}
+	#refreshUsage(): Promise<void> {
+		if (this.#lifetime.signal.aborted) return Promise.resolve();
+		if (!this.#client.refreshAccountMetadata) return this.#refresh();
+		this.#metadataRefresh ??= this.#readUsage();
+		return this.#metadataRefresh;
+	}
+	async #readUsage(): Promise<void> {
+		this.#usageUpdating = true;
+		this.#usageError = undefined;
+		try {
+			// Show existing account identities while their isolated host refreshes
+			// allowances. No sign-in or model message is started by this read.
+			await this.#refresh();
+			if (this.#lifetime.signal.aborted || !this.#connections?.connections.some(live)) return;
+			await this.#client.refreshAccountMetadata!(this.#lifetime.signal);
+			if (!this.#lifetime.signal.aborted) await this.#refresh();
+		} catch {
+			if (!this.#lifetime.signal.aborted) this.#usageError = "Usage could not be refreshed. Try again.";
+		} finally {
+			this.#usageUpdating = false;
+			this.#metadataRefresh = undefined;
+			if (!this.#lifetime.signal.aborted) this.#draw();
+		}
 	}
 	async #readUntilCurrent(): Promise<void> {
 		try {
@@ -243,11 +284,7 @@ export class ConnectionsView {
 	}
 	#account(connection: NativeMemberConnection): HTMLElement {
 		const provider = PROVIDERS.find((item) => item.id === connection.provider)!;
-		// Older integrations stored an email in the reference; official CLI
-		// references are opaque identifiers and must never be presented as email.
-		const email = [connection.providerAccountEmail, connection.providerAccountReference].find(
-			(value) => value && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value),
-		);
+		const email = connection.providerAccountEmail;
 		const signOut = button(
 			this.#working === connection.connectionId ? "Signing out…" : "Sign out",
 			() => void this.#disconnect(connection),
@@ -262,12 +299,88 @@ export class ConnectionsView {
 				"div",
 				{ class: "settings-copy" },
 				h("strong", null, provider.label),
-				h("small", { class: "connection-email" }, email ?? (live(connection) ? "Connected" : "Email not provided")),
+				h("small", { class: "connection-email" }, email ?? "Email unavailable"),
+				h(
+					"small",
+					{ class: "connection-identity", title: `Connection ${connection.connectionId}` },
+					`${live(connection) ? "Connected" : "Added"} ${fmtTime(connection.consentedAt)} · ${connection.connectionId.slice(-8)}`,
+				),
 				!live(connection)
 					? h("small", { role: "status" }, "Sign out and add this account again to reconnect.")
 					: null,
 			),
 			h("div", { class: "connection-actions" }, signOut),
+			this.#usage(connection),
+		);
+	}
+	#usage(connection: NativeMemberConnection): HTMLElement {
+		const usage = connection.providerAccountUsage;
+		const now = Date.now();
+		const limitResetIn = connection.usageLimitResetAt ? Date.parse(connection.usageLimitResetAt) - now : 0;
+		const limitReached = live(connection) && limitResetIn > 0;
+		const limitNotice = limitReached
+			? h(
+					"span",
+					{ class: "connection-usage-limit" },
+					`Usage limit reached · resets in ${resetCountdown(limitResetIn)}`,
+				)
+			: null;
+		if (!usage || !live(connection))
+			return h("div", { class: "connection-usage muted" }, limitNotice ?? "Usage unavailable");
+		const stale =
+			limitReached || now - Date.parse(usage.observedAt) > USAGE_FRESH_MS || Date.parse(usage.observedAt) > now;
+		return h(
+			"div",
+			{ class: "connection-usage" },
+			limitNotice,
+			...usage.windows.map((window) => {
+				const resetIn = window.resetAt ? Date.parse(window.resetAt) - now : undefined;
+				const expired = resetIn !== undefined && resetIn <= 0;
+				const remaining = Math.round((100 - window.usedPercent) * 10) / 10;
+				const value = expired ? "Usage unavailable" : `${remaining}% ${stale ? "at last check" : "left"}`;
+				const fill = h("span");
+				// CSSOM property updates work with the release CSP; style attributes do not.
+				fill.style.width = `${remaining}%`;
+				return h(
+					"div",
+					{ class: "connection-usage-window" },
+					h("span", { class: "connection-usage-label" }, window.label),
+					h(
+						"div",
+						{ class: "connection-usage-heading" },
+						h(
+							"span",
+							{ class: "connection-usage-reset", title: window.resetAt ? fmtTime(window.resetAt) : undefined },
+							expired
+								? "Reset passed · awaiting updated usage"
+								: resetIn === undefined
+									? "Reset time unavailable"
+									: `Resets in ${resetCountdown(resetIn)}`,
+						),
+						h("span", null, value),
+					),
+					expired
+						? null
+						: h(
+								"div",
+								{
+									class: `connection-usage-meter${remaining <= 20 ? " is-low" : ""}${stale ? " is-stale" : ""}`,
+									role: "meter",
+									"aria-label": `${window.label} remaining usage`,
+									"aria-valuemin": 0,
+									"aria-valuemax": 100,
+									"aria-valuenow": remaining,
+									"aria-valuetext": value,
+								},
+								fill,
+							),
+				);
+			}),
+			h(
+				"span",
+				{ class: "connection-usage-checked" },
+				`Last checked ${fmtTime(usage.observedAt)}${stale ? " · may be out of date" : ""}`,
+			),
 		);
 	}
 	#attempt(provider: (typeof PROVIDERS)[number], attempt: Attempt): HTMLElement {
@@ -324,6 +437,12 @@ export class ConnectionsView {
 		);
 	}
 	#draw(): void {
+		clearTimeout(this.#usageClock);
+		if (this.#connections?.connections.some(live))
+			this.#usageClock = setTimeout(() => {
+				if (document.hidden) this.#draw();
+				else void this.#refreshUsage();
+			}, 60_000);
 		const focusKey = this.el.contains(document.activeElement)
 			? (document.activeElement as HTMLElement).dataset.focusKey
 			: undefined;
@@ -336,6 +455,11 @@ export class ConnectionsView {
 				),
 		);
 		const canConnect = Boolean(this.#client.onboardingAvailable && this.#begin);
+		const refresh = button(this.#usageUpdating ? "Refreshing…" : "Refresh", () => void this.#refreshUsage(), {
+			small: true,
+			disabled: this.#loading || this.#usageUpdating,
+		});
+		refresh.dataset.focusKey = "refresh";
 		const add = button(
 			"Add account",
 			() => {
@@ -359,7 +483,8 @@ export class ConnectionsView {
 			h(
 				"section",
 				{ class: "settings-group" },
-				h("h2", null, "Model accounts"),
+				h("div", { class: "connection-section-heading" }, h("h2", null, "Model accounts"), refresh),
+				this.#usageError ? h("p", { class: "muted", role: "status" }, this.#usageError) : null,
 				this.#error
 					? h(
 							"p",

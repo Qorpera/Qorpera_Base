@@ -1,8 +1,8 @@
 import type { User } from "@supabase/supabase-js";
 import type { HostedProfile, HostedStaffAgent } from "../../cloud/types.ts";
+import { AGENT_LOOK, type AgentLook, stateLine } from "../../ui/agent-activity.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { badge, button, h, icon, initials, notice, replace } from "../../ui/dom.ts";
-import type { Activity } from "../../ui/figure-motion.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { presentationLocale, uiText } from "../../ui/preferences.ts";
@@ -330,25 +330,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 	return parts;
 }
 
-interface RailLook {
-	figure: Activity;
-	/** Replaces the role under the name. */
-	line?: string;
-	/** What only the disc shows. */
-	note?: string;
-	disc?: "working" | "failed";
-}
-
-/* How the rail draws each agent state. The green disc is the trailer's "working
- * now" dot; the red one is its opposite, a run that did not finish. */
-const RAIL_LOOK: Record<AgentState, RailLook> = {
-	idle: { figure: "Idle" },
-	working: { figure: "Working", line: "Working", disc: "working" },
-	decision: { figure: "Waiting", line: "Needs you" },
-	failed: { figure: "Idle", note: "A run did not finish", disc: "failed" },
-};
-
-function statusDisc(look: RailLook, className: string): HTMLElement | null {
+function statusDisc(look: AgentLook, className: string): HTMLElement | null {
 	if (!look.disc) return null;
 	return h("span", { class: look.disc === "failed" ? `${className} failed` : className, "aria-hidden": "true" });
 }
@@ -357,7 +339,7 @@ function statusDisc(look: RailLook, className: string): HTMLElement | null {
  * needs: it hides the text beside the figure and the disc says nothing aloud. */
 function railLabel(
 	agent: Pick<HostedStaffAgent, "displayName" | "role">,
-	look: RailLook,
+	look: AgentLook,
 ): { title: string; "aria-label"?: string } {
 	const state = look.note ?? look.line;
 	const label = [agent.displayName, agent.role, state].filter(Boolean).join(" · ");
@@ -372,10 +354,13 @@ interface AgentModel extends Pick<HostedStaffAgent, "id" | "displayName" | "role
 }
 interface SessionModel {
 	title: string;
+	subtitle: string;
 	kind: "Group chat" | "company";
+	agents: HostedStaffAgent[];
+	selected: boolean;
 }
 function cofounderCard(model: AgentModel, href: string): HTMLElement {
-	const look = RAIL_LOOK[model.state];
+	const look = AGENT_LOOK[model.state];
 	return h(
 		"a",
 		{ class: "cofounder-home", href, ...railLabel(model, look) },
@@ -386,12 +371,12 @@ function cofounderCard(model: AgentModel, href: string): HTMLElement {
 			statusDisc(look, "cofounder-status"),
 		),
 		h("strong", null, model.displayName),
-		h("small", null, look.line ?? model.role),
+		h("small", null, stateLine(look, model.role)),
 	);
 }
 
 function agentRow(model: AgentModel, href: string): HTMLElement {
-	const look = RAIL_LOOK[model.state];
+	const look = AGENT_LOOK[model.state];
 	return h(
 		"a",
 		{ class: "rail-row rail-row-agent", href, ...railLabel(model, look) },
@@ -405,7 +390,7 @@ function agentRow(model: AgentModel, href: string): HTMLElement {
 			"span",
 			{ class: "rail-row-copy" },
 			h("strong", null, model.displayName),
-			h("small", null, look.line ?? model.role),
+			h("small", null, stateLine(look, model.role)),
 		),
 	);
 }
@@ -413,15 +398,19 @@ function agentRow(model: AgentModel, href: string): HTMLElement {
 function sessionRow(model: SessionModel, href: string): HTMLElement {
 	return h(
 		"a",
-		{ class: "rail-row", href, title: `${model.title} · ${model.kind}` },
+		{
+			class: model.kind === "Group chat" ? "rail-row rail-row-group" : "rail-row",
+			href,
+			title: [model.title, model.subtitle].filter(Boolean).join(" · "),
+		},
 		h(
 			"span",
 			{ class: "rail-row-stand" },
 			model.kind === "Group chat"
-				? groupChatAvatar()
+				? groupChatAvatar(model.agents, { width: 60, height: 55, selected: model.selected })
 				: h("span", { class: "avatar small" }, model.title.slice(0, 1).toUpperCase()),
 		),
-		h("span", { class: "rail-row-copy" }, h("strong", null, model.title), h("small", null, model.kind)),
+		h("span", { class: "rail-row-copy" }, h("strong", null, model.title), h("small", null, model.subtitle)),
 	);
 }
 
@@ -523,7 +512,12 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 					`#/c/${profileId}/chat/${session.sessionId}`,
 					{
 						title: session.title,
+						subtitle: isGroupChat(session)
+							? (state.groups?.[String(session.executionScope?.roomId)]?.subtitle ?? "Group chat")
+							: "company",
 						kind: isGroupChat(session) ? ("Group chat" as const) : ("company" as const),
+						agents: company.groupAgents(session.sessionId),
+						selected: activeSessionId === session.sessionId,
 					},
 					activeSessionId === session.sessionId,
 					sessionRow,
@@ -554,6 +548,9 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			errorNotice("sessions", state.sessionsError, () =>
 				button("Retry conversations", () => void company.refreshSessions(), { small: true }),
 			),
+			// Group details are decoration (names and figures of a group chat) and are read
+			// again with every conversation refresh. A failure never shows in the rail: the
+			// text would name cloud machinery, and there is nothing for the member to do.
 			errorNotice("company", state.error, () =>
 				button("Retry company", () => void company.refreshAll(), { small: true }),
 			),

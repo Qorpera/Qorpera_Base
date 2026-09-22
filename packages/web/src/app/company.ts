@@ -1,7 +1,7 @@
 import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import type { CloudApi } from "../cloud/api.ts";
 import { CloudRpcError, describeError } from "../cloud/client.ts";
-import { type GroupChatDetails, readGroupChatDetails } from "../cloud/group-details.ts";
+import { type GroupChatDetails, listGroupChatDetails, readGroupChatDetails } from "../cloud/group-details.ts";
 import { buildCompanyHierarchy, type CompanyHierarchy, type HostedCompanyOrganization } from "../cloud/organization.ts";
 import { UUID_PATTERN } from "../cloud/parse.ts";
 import {
@@ -37,7 +37,7 @@ import { debounce, Store } from "./state.ts";
 export type Deployment = "loading" | "ready" | "not-deployed" | "not-seeded" | "error";
 
 /** What a member sees of an agent's execution: see CompanyController.agentState. */
-export type AgentState = "idle" | "working" | "decision" | "failed";
+export type AgentState = "idle" | "working" | "writing" | "decision" | "failed";
 
 /** A run the server holds against the agent until someone dismisses it. */
 export interface FailedRun {
@@ -65,12 +65,27 @@ function stillFailed(
 const RECOVERY_RECHECK_MS = 25_000;
 const RECOVERY_RETRY_MS = 5_000;
 
+/** Why the cloud would not try a run again, in the member's words. */
+function retryRefusal(error: unknown): string {
+	const message = error instanceof Error ? error.message : "";
+	if (/author of the post/i.test(message)) return "Only the person who wrote the message can try it again.";
+	if (/sponsor|model account/i.test(message)) return "Select an active model account, then try again.";
+	if (/paused/i.test(message)) return "The company is paused. Resume it, then try again.";
+	if (/already resolved/i.test(message)) return "This run was already handled.";
+	if (/already answered|durable operation|open proposal/i.test(message))
+		return "This run already did part of its work, so it cannot be repeated. Send the message again instead.";
+	return "It could not be tried again. Send the message again instead.";
+}
+
 export interface CompanyState {
 	profile: HostedProfile;
 	team?: HostedProfileTeam;
 	staff: HostedStaffAgent[];
 	sessions: HostedSession[];
 	sessionsError?: string;
+	groups?: Record<string, GroupChatDetails>;
+	/** Kept for diagnostics only; the rail does not show it (see shell.ts). */
+	groupsError?: string;
 	organization?: HostedCompanyOrganization;
 	organizationState: Deployment;
 	organizationError?: string;
@@ -78,6 +93,13 @@ export interface CompanyState {
 	activity: HostedStaffExecutionActivity[];
 	/** Details of the failed runs in `activity`, by run id. */
 	recoveries: Record<string, HostedRunRecovery>;
+	/** Try again in flight or refused, by run id. */
+	runRetries?: Record<string, { pending: boolean; error?: string }>;
+	/** The deployed cloud cannot retry a post into a room yet (no qorpera_retry_room_delivery). */
+	roomRetryUnavailable?: boolean;
+	/** Failed runs a member dismissed here, by run id. They stop standing in for the
+	 * agent at once; the cloud records the same acknowledgment durably. */
+	acknowledgedRuns?: Record<string, true>;
 	realtime: RealtimePhase;
 	realtimeError?: string;
 	loading: boolean;
@@ -161,7 +183,7 @@ export class CompanyController {
 	#openSessionId: string | undefined;
 	#stopped = false;
 	readonly #abort = new AbortController();
-	readonly #versions = { team: 0, staff: 0, sessions: 0, organization: 0, activity: 0 };
+	readonly #versions = { team: 0, staff: 0, sessions: 0, groups: 0, organization: 0, activity: 0 };
 	#polling = false;
 	readonly #invalidations = new Set<(resource: RealtimeResource) => void>();
 	readonly #conversationLoads = new Map<string, { promise: Promise<void>; repeat: boolean }>();
@@ -250,6 +272,7 @@ export class CompanyController {
 			this.refreshOrganization(),
 			this.refreshActivity(),
 		]);
+		await this.refreshGroups();
 		this.store.set({ loading: false });
 	}
 
@@ -268,6 +291,7 @@ export class CompanyController {
 					team: undefined,
 					staff: [],
 					sessions: [],
+					groups: {},
 					organization: undefined,
 					hierarchy: { primary: [], inactive: [] },
 					activity: [],
@@ -307,6 +331,7 @@ export class CompanyController {
 			const sessions = await this.#api.listSessions(this.profile.environmentId, this.signal);
 			if (this.#stopped || version !== this.#versions.sessions) return;
 			this.store.set({ sessions, sessionsError: undefined });
+			if (!this.store.get().loading) await this.refreshGroups();
 		} catch (error) {
 			if (this.#stopped || version !== this.#versions.sessions) return;
 			this.store.set({ sessionsError: describeError(error) });
@@ -427,7 +452,111 @@ export class CompanyController {
 		const details = await readGroupChatDetails(this.#api.cloud, session, signal);
 		if (current().executionScope?.roomId !== session.executionScope?.roomId)
 			throw new Error("This group chat has changed. Open its details again.");
-		return details;
+		const previous = this.store.get().groups?.[details.roomId];
+		const latest =
+			previous &&
+			previous.roomId === details.roomId &&
+			previous.sessionId === details.sessionId &&
+			previous.environmentId === details.environmentId &&
+			previous.version > details.version
+				? previous
+				: details;
+		this.store.set((state) => ({ groups: { ...state.groups, [details.roomId]: latest } }));
+		return latest;
+	}
+
+	/** One company-wide read supplies the membership behind every group avatar. */
+	async refreshGroups(): Promise<void> {
+		const state = this.store.get();
+		const profile = this.profile;
+		const canRead = () => {
+			const current = this.store.get();
+			return (
+				!this.#stopped &&
+				!current.accessLost &&
+				Boolean(current.team?.capabilities.read) &&
+				current.team?.profileId === profile.profileId &&
+				this.profile.profileId === profile.profileId &&
+				this.profile.environmentId === profile.environmentId
+			);
+		};
+		if (!canRead()) return;
+		const version = ++this.#versions.groups;
+		const sessions = state.sessions.filter(
+			(session) =>
+				!session.staffAgentId &&
+				typeof session.executionScope?.roomId === "string" &&
+				session.profileId === profile.profileId &&
+				session.environmentId === profile.environmentId,
+		);
+		if (!sessions.length) {
+			this.store.set({ groups: {}, groupsError: undefined });
+			return;
+		}
+		try {
+			const rooms = await listGroupChatDetails(this.#api.cloud, profile.profileId, this.signal);
+			if (!canRead() || version !== this.#versions.groups) return;
+			const current = this.store.get();
+			const groups: Record<string, GroupChatDetails> = {};
+			for (const room of rooms) {
+				const session = current.sessions.find((item) => item.sessionId === room.sessionId);
+				if (
+					!session ||
+					session.staffAgentId ||
+					session.profileId !== profile.profileId ||
+					session.environmentId !== profile.environmentId ||
+					session.executionScope?.roomId !== room.roomId ||
+					room.environmentId !== profile.environmentId
+				)
+					continue;
+				const previous = current.groups?.[room.roomId];
+				groups[room.roomId] =
+					previous &&
+					previous.roomId === room.roomId &&
+					previous.sessionId === room.sessionId &&
+					previous.environmentId === room.environmentId &&
+					previous.version > room.version
+						? previous
+						: room;
+			}
+			this.store.set({ groups, groupsError: undefined });
+		} catch (error) {
+			if (canRead() && version === this.#versions.groups)
+				this.store.set({ groups: {}, groupsError: describeError(error) });
+		}
+	}
+
+	groupAgents(sessionId: string): HostedStaffAgent[] {
+		const state = this.store.get();
+		if (
+			this.#stopped ||
+			state.accessLost ||
+			!state.team?.capabilities.read ||
+			state.team.profileId !== this.profile.profileId
+		)
+			return [];
+		const session = state.sessions.find((item) => item.sessionId === sessionId);
+		const roomId = session?.executionScope?.roomId;
+		if (
+			!session ||
+			session.staffAgentId ||
+			typeof roomId !== "string" ||
+			session.profileId !== this.profile.profileId ||
+			session.environmentId !== this.profile.environmentId
+		)
+			return [];
+		const room = state.groups?.[roomId];
+		if (
+			!room ||
+			room.roomId !== roomId ||
+			room.sessionId !== sessionId ||
+			room.environmentId !== session.environmentId
+		)
+			return [];
+		return room.members.flatMap((member) => {
+			const agent = member.kind === "staff_agent" ? this.staffById(member.id) : undefined;
+			return agent?.employmentStatus === "active" && agent.profileId === this.profile.profileId ? [agent] : [];
+		});
 	}
 
 	staffById(id: string | undefined): HostedStaffAgent | undefined {
@@ -442,10 +571,16 @@ export class CompanyController {
 
 	activityFor(staffAgentId: string | undefined): HostedStaffExecutionActivity | undefined {
 		if (!staffAgentId) return undefined;
-		return this.store
-			.get()
-			.activity.filter((item) => item.staffAgentId === staffAgentId)
+		const state = this.store.get();
+		const row = state.activity
+			.filter((item) => item.staffAgentId === staffAgentId)
 			.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+		// A dismissed failure is settled for this member even before the cloud's next
+		// activity read; the agent reads as idle until newer work is reported. An open
+		// proposal is a decision, not a failure, and stays until it is decided.
+		return row && isFailedRun(row) && state.acknowledgedRuns?.[row.runId] && !state.recoveries[row.runId]?.proposalId
+			? undefined
+			: row;
 	}
 
 	/** What the member sees of an agent's execution. A queued run is already the
@@ -456,7 +591,8 @@ export class CompanyController {
 	agentState(staffAgentId: string | undefined): AgentState {
 		const row = this.activityFor(staffAgentId);
 		if (!row) return "idle";
-		if (row.activity !== "needs_attention") return "working";
+		if (row.activity !== "needs_attention")
+			return row.jobStatus === "leased" && row.phase === "writing" ? "writing" : "working";
 		if (!isFailedRun(row)) return "decision";
 		return this.store.get().recoveries[row.runId]?.proposalId ? "decision" : "failed";
 	}
@@ -468,16 +604,101 @@ export class CompanyController {
 		return recovery ? { activity: row, recovery } : { activity: row };
 	}
 
-	/** The run stops standing in for the agent's state; the next activity read shows what is left. */
-	async dismissFailedRun(runId: string): Promise<void> {
-		if (this.#stopped) return;
+	/** Whether Try again can be offered for this run. A session turn is re-queued by the
+	 * recovery RPC; a post into a room needs qorpera_retry_room_delivery (20260920080000).
+	 * Routine and agent wakes, and proposal reviews, are not the member's to repeat. */
+	canRetryFailedRun(failed: FailedRun): boolean {
+		const state = this.store.get();
+		if (!state.team?.capabilities.write || state.accessLost || failed.recovery?.proposalId) return false;
+		if ((failed.recovery?.unsettledOperations ?? 0) > 0) return false;
+		if (failed.activity.sourceKind === "session_turn") return true;
+		return failed.activity.sourceKind === "room_delivery" && !state.roomRetryUnavailable;
+	}
+
+	/** Try again. The member's message stays as it is; the cloud runs it once more on
+	 * the model account selected in this conversation. */
+	async retryFailedRun(runId: string, sessionId: string): Promise<void> {
+		if (this.#stopped || this.store.get().runRetries?.[runId]?.pending) return;
+		const failed = this.store.get().activity.find((row) => row.runId === runId);
+		if (!failed) return;
+		const mark = (value: { pending: boolean; error?: string } | undefined) => {
+			const runRetries = { ...(this.store.get().runRetries ?? {}) };
+			if (value) runRetries[runId] = value;
+			else delete runRetries[runId];
+			this.store.set({ runRetries });
+		};
+		mark({ pending: true });
 		try {
-			await this.#api.discardFailedRun(runId);
+			if (failed.sourceKind === "session_turn") await this.#api.retryFailedRun(runId);
+			else {
+				const sponsor = this.conversation(sessionId, false).get().executionSponsor;
+				if (!sponsor) throw new Error("Select an active model account, then try again.");
+				await this.#api.retryRoomDelivery(runId, sponsor.sponsorBindingId, sponsor.sponsorVersion);
+			}
+			mark(undefined);
+		} catch (error) {
+			if (this.#stopped) return;
+			if (error instanceof CloudRpcError && error.missing) {
+				// The web is ahead of the deployed cloud. Say so once and stop offering it.
+				mark({ pending: false, error: "Trying again is not available yet. Send the message again instead." });
+				this.store.set({ roomRetryUnavailable: true });
+			} else mark({ pending: false, error: retryRefusal(error) });
 		} finally {
-			// Refused or not, read again: someone may have settled the run first.
+			// Released or refused: someone may have settled the run first.
 			this.#recheckRecovery(runId);
 			await this.refreshActivity();
 		}
+	}
+
+	/** Dismiss: the run stops standing in for the agent's state, here at once and in
+	 * the cloud durably, so it does not return on reload or on another device. The
+	 * cloud acknowledges any failed run, including one whose durable outcome is still
+	 * unknown; a cloud without that action falls back to discard where it can. */
+	async dismissFailedRun(runId: string, options: { refresh?: boolean } = {}): Promise<void> {
+		if (this.#stopped) return;
+		const mark = (acknowledged: boolean) =>
+			this.store.set((state) => {
+				const acknowledgedRuns = { ...(state.acknowledgedRuns ?? {}) };
+				if (acknowledged) acknowledgedRuns[runId] = true;
+				else delete acknowledgedRuns[runId];
+				return { acknowledgedRuns };
+			});
+		mark(true);
+		// A member known to lack write access hides the card for this session only;
+		// acknowledging needs write access.
+		const { team, accessLost } = this.store.get();
+		if ((team && !team.capabilities.write) || accessLost) return;
+		try {
+			await this.#api.acknowledgeFailedRun(runId);
+		} catch (error) {
+			if (this.#stopped) return;
+			if (error instanceof CloudRpcError && error.status !== 401 && error.status !== 403) {
+				// Older cloud: try the discard it knows; a refused discard changes nothing,
+				// and the dismissal stays local for this session.
+				await this.#api.discardFailedRun(runId).catch(() => undefined);
+			} else {
+				// Nothing reached the cloud: the failure is not settled, so show it again.
+				mark(false);
+				throw error;
+			}
+		} finally {
+			if (!this.#stopped && options.refresh !== false) {
+				// Refused or not, read again: someone may have settled the run first.
+				this.#recheckRecovery(runId);
+				await this.refreshActivity();
+			}
+		}
+	}
+
+	/** A new message supersedes the agent's last failure: dismiss it on the member's behalf. */
+	#dismissFailureFor(sessionId: string): void {
+		const session = this.store.get().sessions.find((item) => item.sessionId === sessionId);
+		const failed = this.failedRunFor(session?.staffAgentId);
+		// Only a failure whose details are known and that left no decision behind; a
+		// run with an open proposal is the member's to decide, not to dismiss by sending.
+		if (failed?.recovery && failed.activity.sourceKind !== "proposal_review" && !failed.recovery.proposalId)
+			// sendPrompt reads activity again right after; no second read here.
+			void this.dismissFailedRun(failed.activity.runId, { refresh: false }).catch(() => undefined);
 	}
 
 	primarySessionFor(staffAgentId: string): HostedSession | undefined {
@@ -753,6 +974,7 @@ export class CompanyController {
 					),
 				}),
 			}));
+			this.#dismissFailureFor(sessionId);
 			await this.loadConversation(sessionId);
 			void this.refreshActivity();
 			// The run is admitted a moment after the message; watch for it to appear.
@@ -820,6 +1042,7 @@ export class CompanyController {
 		} else if (resource === "access") {
 			void this.refreshTeam();
 		} else if (resource === "company-file") {
+			void this.refreshGroups();
 			// Accepting a proposal moves the Company File head: runs waiting on one are read again.
 			const waiting = Object.values(this.store.get().recoveries).filter((recovery) => recovery.proposalId);
 			for (const recovery of waiting) this.#recheckRecovery(recovery.runId);

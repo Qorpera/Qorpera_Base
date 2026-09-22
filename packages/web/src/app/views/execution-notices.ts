@@ -1,60 +1,63 @@
 import type { CompanyExecutionNotification, WebCompanyExecution } from "../../cloud/company-execution.ts";
-import { fmtTime, h, replace } from "../../ui/dom.ts";
+import { button, h } from "../../ui/dom.ts";
+import { matchesKey } from "../../ui/keys.ts";
 
 type Client = Pick<WebCompanyExecution, "listNotifications" | "acknowledgeNotification">;
+const STOP = "qorpera.member-notification.company-execution-stop/v1";
 
-function copy(item: CompanyExecutionNotification): { title: string; detail: string } {
+/** What a notice tells the member, in plain words; undefined when it gets no line.
+ * A reached usage limit is told by the failed run's card in the thread. A changed
+ * sponsor and a resumed company ask nothing of the member. */
+function sentence(item: CompanyExecutionNotification): string | undefined {
 	const subject = item.subject;
 	switch (subject.schema) {
 		case "qorpera.member-notification.provider-usage-limit/v1":
-			return {
-				title: "Model account usage limit reached",
-				detail: `${subject.provider} reported a usage limit.${subject.resetsAt ? ` Reported reset: ${fmtTime(subject.resetsAt)}.` : ""}`,
-			};
-		case "qorpera.member-notification.company-ceiling-tripped/v1":
-			return {
-				title: "Company execution limit reached",
-				detail: `Work reached the company's ${subject.dimension === "spend" ? "spending" : subject.dimension === "tokens" ? "token" : "hourly wake"} limit.`,
-			};
-		case "qorpera.member-notification.machine-capacity/v1":
-			return {
-				title: "Company computer limit reached",
-				detail: `A computer could not start: ${subject.used} of ${subject.ceiling} computer allocations are in use.`,
-			};
-		case "qorpera.member-notification.company-execution-stop/v1":
-			return {
-				title: subject.paused ? "Company execution paused" : "Company execution resumed",
-				detail: `${subject.paused ? "New work is paused." : "The company execution pause was removed."}${subject.reason ? ` ${subject.reason}` : ""}`,
-			};
 		case "qorpera.member-notification.sponsor-handoff/v1":
-			return {
-				title: "Execution sponsor changed",
-				detail:
-					"Work switched to another eligible model account after a usage limit. The same run continues with its conversation history.",
-			};
+			return undefined;
+		case "qorpera.member-notification.company-ceiling-tripped/v1":
+			if (subject.dimension === "wakes")
+				return "Agents were started too often this hour. They answer again within the hour.";
+			return `This company reached its monthly ${subject.dimension === "spend" ? "spend" : "token"} limit. Agents answer again when an owner raises it in Settings, or when the month turns.`;
+		case "qorpera.member-notification.machine-capacity/v1":
+			return `All ${subject.ceiling} company computers are in use. Close one to open another.`;
+		case STOP:
+			return subject.paused
+				? "Agents are paused for this company. They answer again when an owner resumes them in Settings."
+				: undefined;
 	}
 }
 
-/** Member-addressed runtime notices stay in the company workspace until explicitly
- * acknowledged. Polling never acknowledges, replays a write or steals focus. */
+/** The unacknowledged notices that get a line. A pause that was later resumed is over. */
+function told(items: readonly CompanyExecutionNotification[]): CompanyExecutionNotification[] {
+	let resumed = Number.NEGATIVE_INFINITY;
+	for (const { subject } of items)
+		if (subject.schema === STOP && !subject.paused) resumed = Math.max(resumed, Date.parse(subject.at));
+	return items.filter(
+		(item) =>
+			!item.acknowledgedAt &&
+			sentence(item) !== undefined &&
+			!(item.subject.schema === STOP && Date.parse(item.subject.at) <= resumed),
+	);
+}
+
+/** Member-addressed runtime notices are one quiet line above the composer, never a
+ * popup, and stay until explicitly dismissed. Polling never acknowledges, replays a
+ * write or steals focus. A failed read or an unconfirmed dismissal shows nothing: the
+ * line returns with the next good read if the notice still stands. */
 export class ExecutionNotices {
-	readonly el = h("section", { class: "execution-notices", "aria-label": "Company execution updates", hidden: true });
+	readonly el = h("section", { class: "execution-notices", "aria-label": "Company updates", hidden: true });
 	readonly #client: Client;
 	readonly #lifetime = new AbortController();
-	readonly #settings: (() => void) | undefined;
 	readonly #restoreFocus: (() => void) | undefined;
 	#items: readonly CompanyExecutionNotification[] = [];
-	#selected: string | undefined;
+	readonly #hidden = new Set<string>();
 	#request: AbortController | undefined;
 	#timer: ReturnType<typeof setInterval> | undefined;
 	#acking = false;
-	#refreshRequired = false;
-	#error: string | undefined;
 	#drawn = "";
 
-	constructor(client: Client, signal: AbortSignal, settings?: () => void, restoreFocus?: () => void) {
+	constructor(client: Client, signal: AbortSignal, restoreFocus?: () => void) {
 		this.#client = client;
-		this.#settings = settings;
 		this.#restoreFocus = restoreFocus;
 		if (signal.aborted) {
 			this.dispose();
@@ -77,15 +80,11 @@ export class ExecutionNotices {
 		try {
 			const items = await this.#client.listNotifications(signal);
 			if (signal.aborted) return;
-			this.#items = items.filter((item) => !item.acknowledgedAt);
-			this.#refreshRequired = false;
-			this.#error = undefined;
+			this.#items = told(items);
 		} catch {
 			if (signal.aborted) return;
+			// Nothing stale is shown, and nothing can be dismissed, until a read succeeds.
 			this.#items = [];
-			this.#refreshRequired = true;
-			this.#error =
-				"Company execution updates are unavailable. Refresh to check for usage limits or changes to running work.";
 		} finally {
 			if (this.#request === request) this.#request = undefined;
 			if (!signal.aborted) this.#draw();
@@ -93,13 +92,12 @@ export class ExecutionNotices {
 	}
 
 	async #acknowledge(): Promise<void> {
-		if (this.#lifetime.signal.aborted || this.#acking || this.#refreshRequired) return;
-		const item = this.#items.find((entry) => entry.notificationId === this.#selected);
+		if (this.#lifetime.signal.aborted || this.#acking) return;
+		const item = this.#items.find((entry) => !this.#hidden.has(entry.notificationId));
 		if (!item) return;
 		this.#request?.abort();
 		this.#request = undefined;
 		this.#acking = true;
-		this.#error = undefined;
 		this.#draw();
 		try {
 			const receipt = await this.#client.acknowledgeNotification(item.notificationId, this.#lifetime.signal);
@@ -110,84 +108,48 @@ export class ExecutionNotices {
 				!receipt.acknowledgedAt
 			)
 				throw new Error("Notification receipt mismatch");
-			this.#items = this.#items.filter((entry) => entry.notificationId !== item.notificationId);
 		} catch {
-			if (this.#lifetime.signal.aborted) return;
-			this.#refreshRequired = true;
-			this.#error = "Acknowledgment could not be confirmed. Refresh before trying again.";
+			// The write is never replayed. The line stays closed in this window either way.
 		} finally {
-			this.#acking = false;
-			if (!this.#lifetime.signal.aborted) this.#draw();
+			if (!this.#lifetime.signal.aborted) {
+				this.#hidden.add(item.notificationId);
+				this.#acking = false;
+				this.#draw();
+			}
 		}
 	}
 
 	#draw(): void {
-		const item = this.#items.find((entry) => entry.notificationId === this.#selected) ?? this.#items[0];
-		this.#selected = item?.notificationId;
-		const key = JSON.stringify([this.#items, this.#selected, this.#acking, this.#refreshRequired, this.#error]);
+		const item = this.#items.find((entry) => !this.#hidden.has(entry.notificationId));
+		const text = item && sentence(item);
+		const key = JSON.stringify([item?.notificationId, text, this.#acking]);
 		if (key === this.#drawn) return;
-		const focused = this.el.contains(document.activeElement)
-			? (document.activeElement as HTMLElement).dataset.action
-			: undefined;
-		const action = (label: string, name: string, run: () => void, unavailable = false) =>
-			h(
-				"button",
-				{
-					type: "button",
-					class: "btn btn-small",
-					"data-action": name,
-					"aria-disabled": unavailable ? "true" : undefined,
-					onclick: (event: MouseEvent) => {
-						if (!unavailable && event.detail < 2) run();
+		const focused = this.el.contains(document.activeElement);
+		if (text) {
+			const dismiss = button("Dismiss", (event) => event.detail < 2 && void this.#acknowledge(), { small: true });
+			dismiss.dataset.action = "dismiss-notification";
+			if (this.#acking) dismiss.setAttribute("aria-disabled", "true");
+			this.el.replaceChildren(
+				h(
+					"div",
+					{
+						class: "company-notice",
+						role: "status",
+						onkeydown: (event: KeyboardEvent) => {
+							if (!matchesKey(event, "dismiss")) return;
+							event.preventDefault();
+							event.stopPropagation();
+							void this.#acknowledge();
+						},
 					},
-				},
-				label,
+					h("p", null, text),
+					dismiss,
+				),
 			);
-		const message = item ? copy(item) : undefined;
-		const index = item ? this.#items.indexOf(item) : 0;
-		const move = (offset: number) => {
-			this.#selected = this.#items[(index + offset + this.#items.length) % this.#items.length]?.notificationId;
-			this.#draw();
-		};
-		replace(
-			this.el,
-			message
-				? h(
-						"div",
-						{ class: "execution-notice-copy", role: "status" },
-						h("strong", null, message.title),
-						h("span", null, message.detail),
-						h(
-							"small",
-							{ class: "muted" },
-							`${fmtTime(item!.createdAt)} · Update ${index + 1} of ${this.#items.length} pending in the latest 50`,
-						),
-					)
-				: null,
-			this.#error ? h("p", { class: "execution-notice-error", role: "alert" }, this.#error) : null,
-			h(
-				"div",
-				{ class: "execution-notice-actions" },
-				this.#items.length > 1 ? action("Previous update", "previous", () => move(-1), this.#acking) : null,
-				this.#items.length > 1 ? action("Next update", "next", () => move(1), this.#acking) : null,
-				item
-					? action(
-							this.#acking ? "Acknowledging…" : "Acknowledge",
-							"acknowledge",
-							() => void this.#acknowledge(),
-							this.#acking || this.#refreshRequired,
-						)
-					: null,
-				this.#error ? action("Refresh updates", "refresh", () => void this.refresh(), this.#acking) : null,
-				this.#settings && item ? action("Company settings", "settings", this.#settings) : null,
-			),
-		);
-		this.el.hidden = !item && !this.#error;
+		} else this.el.replaceChildren();
+		this.el.hidden = !text;
 		if (focused) {
-			const target = this.el.hidden
-				? null
-				: (this.el.querySelector<HTMLElement>(`[data-action="${focused}"]`) ??
-					this.el.querySelector<HTMLElement>("button[data-action]:not([disabled]):not([aria-disabled='true'])"));
+			const target = this.el.querySelector<HTMLElement>("button[data-action]");
 			if (target) target.focus({ preventScroll: true });
 			else this.#restoreFocus?.();
 		}
@@ -201,5 +163,6 @@ export class ExecutionNotices {
 		this.#items = [];
 		this.el.replaceChildren();
 		this.el.hidden = true;
+		this.el.remove();
 	}
 }

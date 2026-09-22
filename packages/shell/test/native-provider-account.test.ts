@@ -10,7 +10,85 @@ import { describe, expect, it, vi } from "vitest";
 const jwt = (claims: unknown): string =>
 	`header.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.signature`;
 
+async function projectAccount(metadata: Record<string, unknown>) {
+	const control = new NativeSubscriptionControlPlane({
+		rpc: async () => ({
+			compute_identity: null,
+			connections: [
+				{
+					connection_id: "10000000-0000-4000-8000-000000000001",
+					client_connection_id: "10000000-0000-4000-8000-000000000003",
+					connection_version: 1,
+					provider: "openai",
+					native_harness: "codex-cli",
+					authorization_state: "active",
+					connection_status: "active",
+					max_native_concurrency: 1,
+					billing_source: "personal_subscription",
+					consent_version: "v1",
+					consented_at: "2026-09-19T12:00:00Z",
+					policy: { implementation_status: "supported", enablement_status: "enabled", policy_version: 1 },
+					...metadata,
+				},
+			],
+		}),
+	});
+	return (await control.listConnections("10000000-0000-4000-8000-000000000002")).connections[0]!;
+}
+
 describe("native provider account display metadata", () => {
+	it("projects bounded usage without leaking extra provider metadata", async () => {
+		const usage = {
+			observedAt: "2026-09-19T12:00:00.000Z",
+			windows: [
+				{ id: "primary", label: "5-hour limit", usedPercent: 0, windowSeconds: 18000 },
+				{ id: "secondary", label: "Weekly limit", usedPercent: 100, resetAt: "2026-09-26T12:00:00.000Z" },
+			],
+		};
+		const account = await projectAccount({
+			provider_account_usage: { ...usage, accessToken: "private" },
+			usage_limit_reset_at: "2026-09-19T18:00:00Z",
+		});
+		expect(account.providerAccountUsage).toEqual(usage);
+		expect(account.usageLimitResetAt).toBe("2026-09-19T18:00:00.000Z");
+		expect(JSON.stringify(account)).not.toContain("private");
+	});
+	it.each([
+		null,
+		undefined,
+		{},
+		{ observedAt: "bad", windows: [] },
+		{ observedAt: "2026-09-19T12:00:00Z", windows: [] },
+		...[NaN, Infinity, -1, 101, "10", null].map((usedPercent) => ({
+			observedAt: "2026-09-19T12:00:00Z",
+			windows: [{ id: "primary", label: "5-hour limit", usedPercent }],
+		})),
+		{
+			observedAt: "2026-09-19T12:00:00Z",
+			windows: [{ id: "primary", label: "5-hour limit", usedPercent: 50, resetAt: "bad" }],
+		},
+		{
+			observedAt: "2026-09-19T12:00:00Z",
+			windows: [{ id: "primary", label: "5-hour limit", usedPercent: 50, windowSeconds: 0 }],
+		},
+		{
+			observedAt: "2026-09-19T12:00:00Z",
+			windows: [
+				{ id: "primary", label: "5-hour limit", usedPercent: 50 },
+				{ id: "primary", label: "Duplicate", usedPercent: 20 },
+			],
+		},
+	])("keeps connection authority intact when optional usage is malformed (%j)", async (usage) => {
+		const account = await projectAccount({ provider_account_usage: usage });
+		expect(account.providerAccountUsage).toBeUndefined();
+		expect(account.authorizationState).toBe("active");
+		expect(account.connectionId).toBe("10000000-0000-4000-8000-000000000001");
+	});
+	it("still rejects invalid connection authority even when optional usage is malformed", async () => {
+		await expect(projectAccount({ provider_account_usage: {}, authorization_state: "unknown" })).rejects.toThrow(
+			"invalid connection authority",
+		);
+	});
 	it("selects only email claims from official Codex credentials", () => {
 		expect(
 			nativeProviderAccountEmail(

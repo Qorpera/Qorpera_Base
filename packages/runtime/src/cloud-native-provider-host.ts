@@ -5,6 +5,10 @@ import { chmod, lstat, mkdir, mkdtemp, open, readdir, readFile, rm, writeFile } 
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Readable } from "node:stream";
+import {
+	NATIVE_ACCOUNT_REFRESH_RESULT_SCHEMA,
+	type NativeAccountRefreshRequest,
+} from "@qorpera/cloud-client/native-account-refresh";
 import type { JsonValue } from "@qorpera/contracts";
 import {
 	CLOUD_AGENT_SEND_INSTRUCTIONS,
@@ -18,6 +22,8 @@ import { nativeRuntimeFailureMetadata } from "./cloud-native-failure.ts";
 import { launchIsolatedNativeProcess, type NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import { hasUnconfirmedNativeProcessSettlement } from "./cloud-native-process-settlement.ts";
 import { nativeProviderAccountEmail } from "./native-provider-account.ts";
+import { nativeProviderAccountEmail, nativeProviderAccountIdentity } from "./native-provider-account.ts";
+import { type NativeProviderAccountUsage, readNativeProviderAccountUsage } from "./native-provider-usage.ts";
 
 const CAPSULE_SCHEMA = "qorpera.native-credential-capsule/v1";
 const LOGIN_RESULT_SCHEMA = "qorpera.native-provider-login-result/v1";
@@ -63,7 +69,39 @@ export interface CompleteNativeProviderLoginInput {
 	providerAccountEmail?: string;
 }
 
+export interface NativeProviderAccountRefresh {
+	connectionId: string;
+	connectionVersion: number;
+	capsuleId: string;
+	encryptedCapsuleReference: string;
+	nativeHarness: NativeHarnessKind;
+}
+
+export interface NativeProviderAccountMetadata {
+	providerAccountEmail?: string;
+	providerAccountUsage?: NativeProviderAccountUsage;
+	providerAccountIdentity?: string;
+}
+
 export interface NativeProviderControlPlane {
+	describeAccountRefresh?(
+		requestId: string,
+		capability: string,
+		signal?: AbortSignal,
+	): Promise<{
+		computeIdentityId: string;
+		requestedByUserId: string;
+		expiresAt: string;
+		status: "pending" | "completed";
+	}>;
+	completeAccountRefresh?(requestId: string, capability: string, signal?: AbortSignal): Promise<boolean>;
+	listAccountRefreshes?(computeIdentityId: string, signal?: AbortSignal): Promise<NativeProviderAccountRefresh[]>;
+	recordAccountMetadata?(
+		computeIdentityId: string,
+		account: NativeProviderAccountRefresh,
+		metadata: NativeProviderAccountMetadata,
+		signal?: AbortSignal,
+	): Promise<void>;
 	describeLogin(loginId: string, capability: string, signal?: AbortSignal): Promise<NativeProviderLoginDescription>;
 	completeLogin(input: CompleteNativeProviderLoginInput, signal?: AbortSignal): Promise<void>;
 	validateExecution(request: NativeProviderExecutionRequest, signal?: AbortSignal): Promise<void>;
@@ -1112,6 +1150,8 @@ export class NativeProviderHost {
 	readonly #computeIdentityId: string;
 	readonly #temporaryRoot: string;
 	readonly #logins = new Map<string, LoginState>();
+	readonly #metadataShutdown = new AbortController();
+	#metadataRefresh?: Promise<void>;
 
 	constructor(options: {
 		controlPlane: NativeProviderControlPlane;
@@ -1135,6 +1175,127 @@ export class NativeProviderHost {
 		this.#backupIdentityKey = options.backupIdentityKey;
 		this.#computeIdentityId = options.computeIdentityId;
 		this.#temporaryRoot = resolve(options.temporaryRoot ?? tmpdir());
+	}
+
+	/** Display metadata refreshes never modify the credential capsule or start a model turn. */
+	async refreshRequestedAccountMetadata(
+		request: NativeAccountRefreshRequest,
+		signal?: AbortSignal,
+	): Promise<JsonValue> {
+		if (
+			request.computeIdentityId !== this.#computeIdentityId ||
+			!this.#controlPlane.describeAccountRefresh ||
+			!this.#controlPlane.completeAccountRefresh
+		)
+			throw new Error("Account refresh authority unavailable");
+		const checked = AbortSignal.any([
+			this.#metadataShutdown.signal,
+			AbortSignal.timeout(55_000),
+			...(signal ? [signal] : []),
+		]);
+		const authority = await this.#controlPlane.describeAccountRefresh(request.requestId, request.capability, checked);
+		if (
+			authority.computeIdentityId !== request.computeIdentityId ||
+			authority.requestedByUserId !== request.requestedByUserId ||
+			Date.parse(authority.expiresAt) !== Date.parse(request.expiresAt) ||
+			Date.parse(authority.expiresAt) <= Date.now()
+		)
+			throw new Error("Account refresh authority changed");
+		if (authority.status !== "completed") {
+			await this.refreshAccountMetadata(checked);
+			checked.throwIfAborted();
+			// Completion records a finished attempt after the database rechecks the
+			// live epoch and requester. Failed provider reads remain unknown.
+			if (!(await this.#controlPlane.completeAccountRefresh(request.requestId, request.capability, checked)))
+				throw new Error("Account usage is unavailable");
+		}
+		checked.throwIfAborted();
+		return { schema: NATIVE_ACCOUNT_REFRESH_RESULT_SCHEMA, request_id: request.requestId, status: "completed" };
+	}
+
+	async refreshAccountMetadata(signal?: AbortSignal): Promise<void> {
+		if (this.#metadataRefresh) return this.#metadataRefresh;
+		if (this.#metadataShutdown.signal.aborted) return;
+		const refresh = this.#refreshAccountMetadata(signal).catch(() => undefined);
+		this.#metadataRefresh = refresh;
+		try {
+			await refresh;
+		} finally {
+			if (this.#metadataRefresh === refresh) this.#metadataRefresh = undefined;
+		}
+	}
+
+	async stopAccountMetadataRefresh(): Promise<void> {
+		this.#metadataShutdown.abort();
+		await this.#metadataRefresh;
+	}
+
+	async #refreshAccountMetadata(signal?: AbortSignal): Promise<void> {
+		const control = this.#controlPlane;
+		if (!control.listAccountRefreshes || !control.recordAccountMetadata) return;
+		const refreshSignal = AbortSignal.any([
+			this.#metadataShutdown.signal,
+			AbortSignal.timeout(45_000),
+			...(signal ? [signal] : []),
+		]);
+		refreshSignal.throwIfAborted();
+		const accounts = await control.listAccountRefreshes(this.#computeIdentityId, refreshSignal);
+		for (const account of accounts.slice(0, 64)) {
+			if (refreshSignal.aborted) break;
+			if (account.nativeHarness !== "codex-cli") continue;
+			let root: string | undefined;
+			try {
+				const accountSignal = AbortSignal.any([refreshSignal, AbortSignal.timeout(15_000)]);
+				const capsule = await this.#capsules.get(account.encryptedCapsuleReference, accountSignal);
+				accountSignal.throwIfAborted();
+				root = await mkdtemp(join(this.#temporaryRoot, "qorpera-native-account-"));
+				await openNativeCredentialCapsule(
+					capsule,
+					root,
+					this.#masterKey,
+					account.capsuleId,
+					CODEX_CREDENTIAL_PATHS,
+				);
+				const metadata = (await collectCapsuleFiles(root, CODEX_CREDENTIAL_PATHS)).files[0]!;
+				const credential = Buffer.from(metadata.data, "base64").toString("utf8");
+				// Revocation or recovery during download must prevent provider credential use.
+				const current = await control.listAccountRefreshes(this.#computeIdentityId, accountSignal);
+				if (
+					!current.some(
+						(item) =>
+							item.connectionId === account.connectionId &&
+							item.connectionVersion === account.connectionVersion &&
+							item.capsuleId === account.capsuleId &&
+							item.encryptedCapsuleReference === account.encryptedCapsuleReference &&
+							item.nativeHarness === account.nativeHarness,
+					)
+				)
+					continue;
+				accountSignal.throwIfAborted();
+				const providerAccountEmail = nativeProviderAccountEmail("codex-cli", credential);
+				const providerAccountIdentity = nativeProviderAccountIdentity(credential);
+				const providerAccountUsage = await readNativeProviderAccountUsage(credential, accountSignal).catch(
+					() => undefined,
+				);
+				accountSignal.throwIfAborted();
+				if (providerAccountEmail || providerAccountUsage || providerAccountIdentity) {
+					await control.recordAccountMetadata(
+						this.#computeIdentityId,
+						account,
+						{
+							...(providerAccountEmail ? { providerAccountEmail } : {}),
+							...(providerAccountUsage ? { providerAccountUsage } : {}),
+							...(providerAccountIdentity ? { providerAccountIdentity } : {}),
+						},
+						accountSignal,
+					);
+				}
+			} catch {
+				// Provider outages and stale authority must not affect login or execution.
+			} finally {
+				if (root) await rm(root, { recursive: true, force: true });
+			}
+		}
 	}
 
 	async beginLogin(request: NativeProviderLoginRequest, signal?: AbortSignal): Promise<JsonValue> {
@@ -1435,6 +1596,7 @@ export class NativeProviderHost {
 				...(completed.providerAccountEmail ? { providerAccountEmail: completed.providerAccountEmail } : {}),
 			});
 			state.status = "completed";
+			void this.refreshAccountMetadata();
 		} catch (error) {
 			const reason = stage === "credential-sealing" ? ` (${credentialSealingFailure(error)})` : "";
 			throw new Error(`Native provider login ${stage} stage failed${reason}`, { cause: error });

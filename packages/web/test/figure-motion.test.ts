@@ -9,6 +9,9 @@ vi.mock("../public/assets/avatars/status-2d-v1/recorded-motion.mjs", () => ({
 	drawRecordedEyes: vi.fn(),
 	drawWorkingStrokes: vi.fn(),
 }));
+
+import { loadRecordedMotion } from "../public/assets/avatars/status-2d-v1/recorded-motion.mjs";
+
 const mounted: FigureMotion[] = [];
 let now = 0,
 	nextFrame = 0;
@@ -108,7 +111,7 @@ function advance(milliseconds: number): void {
 	frames.clear();
 	for (const callback of callbacks) callback(now);
 }
-function mount(activity: "Idle" | "Working" = "Idle", identity = "agent"): HTMLElement {
+function mount(activity: "Idle" | "Working" | "Thinking" = "Idle", identity = "agent"): HTMLElement {
 	const host = document.createElement("span");
 	document.body.append(host);
 	mounted.push(mountFigureMotion(host, "crown", "#fcb51b", artwork, { activity, identity }));
@@ -116,12 +119,37 @@ function mount(activity: "Idle" | "Working" = "Idle", identity = "agent"): HTMLE
 }
 
 describe("2D studio playback in the shell", () => {
-	it("keeps the final Working frame in bounds immediately before the loop wraps", async () => {
-		const host = mount("Working", "loop-boundary");
+	it("keeps writing dots synchronized across views, coloured and static under reduced motion", async () => {
+		const rail = mount("Thinking"),
+			thread = mount("Thinking");
 		await settle();
-		show([host]);
-		advance((650 / 60) * 1000 - 0.0000001);
-		expect(host.querySelector("canvas")!.dataset.frame).toBe("649");
+		show([rail, thread]);
+		advance(2000);
+		expect(rail.querySelector("canvas")!.dataset.frame).toBe(thread.querySelector("canvas")!.dataset.frame);
+		expect(context.fillStyle).toBe("#fcb51b");
+		expect(pose("Thinking", 2).body).toBe(0);
+		expect(pose("Thinking", 2).dots).toHaveLength(3);
+		reduced.matches = true;
+		reduced.dispatchEvent(new Event("change"));
+		advance(1000);
+		expect(frames.size).toBe(0);
+		expect(rail.querySelector("canvas")!.dataset.frame).toBe(thread.querySelector("canvas")!.dataset.frame);
+	});
+	it("plays Working past the recording's end without restarting, the same in every view of the agent", async () => {
+		const rail = mount("Working", "loop-boundary"),
+			thread = mount("Working", "loop-boundary");
+		await settle();
+		show([rail, thread]);
+		advance(1000);
+		expect(rail.querySelector("canvas")!.dataset.frame).toBe("60");
+		expect(rail.querySelector("canvas")!.dataset.clip).toBe("Working");
+		advance((650 / 60) * 1000 - 1000 + 100);
+		const canvas = rail.querySelector("canvas")!;
+		// Past the opening (frames 0–79); the pieces after it are drawn at random.
+		expect(canvas.dataset.clip === "Waiting" || Number(canvas.dataset.frame) > 79).toBe(true);
+		expect(canvas.dataset.frame).toBe(thread.querySelector("canvas")!.dataset.frame);
+		expect(canvas.dataset.clip).toBe(thread.querySelector("canvas")!.dataset.clip);
+		expect(loadRecordedMotion).toHaveBeenCalledWith("Waiting", expect.any(URL));
 	});
 	it("advances one shared agent clock once per frame and preserves it when a view refreshes", async () => {
 		const a = mount(),
@@ -220,10 +248,9 @@ describe("2D studio playback in the shell", () => {
 		// It then watches for the next move, from the new density.
 		expect(screens).toHaveLength(2);
 	});
-	it("retains the studio's holds, complete Working loop, and symbolic states", () => {
+	it("retains the studio's holds and symbolic states", () => {
 		expect(localTime("Idle", 90)).toBeCloseTo(221 / 60);
 		expect(localTime("Waiting", 90)).toBeCloseTo(278 / 60);
-		expect(localTime("Working", 650 / 60)).toBeCloseTo(0);
 		expect(pose("Blocked", 1)).toMatchObject({ body: 0, stemWidth: 7.5, alertDotR: 4.4 });
 		expect(pose("Thinking", 2).dots.map((dot) => dot.y)).toEqual([50, 50, 50]);
 		expect(pose("Done", 1).strokes).toHaveLength(6);

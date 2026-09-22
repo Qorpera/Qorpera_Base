@@ -7,6 +7,7 @@ import type { WebNativeSubscription } from "../src/cloud/native-subscription.ts"
 import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
 import type { WebRoutines } from "../src/cloud/routines.ts";
 import type { HostedStaffAgent } from "../src/cloud/types.ts";
+import conversationCss from "../src/styles/conversation.css?raw";
 import { FIGURE_IDS, figureFor } from "../src/ui/avatar.ts";
 import { deferred, fixture, id, profileA, settle, staff, team, userA } from "./fixtures.ts";
 
@@ -105,7 +106,7 @@ describe("agent saves across panel lifetimes", () => {
 		expect(field("Agent name").value).toBe("Kept name");
 		expect(status()).toBe("Saving…");
 		press(type("Agent title", "New role"), "Enter");
-		type("Agent description", "New description").blur();
+		type("Responsibilities", "New description").blur();
 		expect(updateAgent).toHaveBeenCalledTimes(1);
 		first.resolve();
 		await settle();
@@ -188,7 +189,7 @@ describe("agent saves across panel lifetimes", () => {
 	it.each([
 		["Agent name", staff.displayName],
 		["Agent title", staff.role],
-		["Agent description", staff.charter],
+		["Responsibilities", staff.charter],
 	])("discards focused uncommitted %s text when authority is revoked", async (label, saved) => {
 		const updateAgent = saving();
 		const f = open({ updateAgent });
@@ -238,9 +239,9 @@ describe("agent details edited in place", () => {
 		open({ updateAgent });
 		press(type("Agent name", "Ada"), "Enter");
 		type("Agent title", "Lead").blur();
-		const description = type("Agent description", "Owns the launch.");
+		const description = type("Responsibilities", "Owns the launch.");
 		press(description, "Enter");
-		expect(field("Agent description")).toBe(document.activeElement);
+		expect(field("Responsibilities")).toBe(document.activeElement);
 		press(description, "Enter", { ctrlKey: true });
 		expect(updateAgent).toHaveBeenCalledTimes(1);
 		first.resolve(staff.version + 1);
@@ -364,7 +365,7 @@ describe("agent pages", () => {
 		],
 		projects: [],
 	};
-	it("opens routines and responsibilities from the corner, each with a way back", async () => {
+	it("opens routines from the corner with a way back; responsibilities are the description, not a page", async () => {
 		const routines = {
 			list: vi.fn(async () => []),
 			runs: vi.fn(async () => []),
@@ -378,7 +379,7 @@ describe("agent pages", () => {
 		const tools = [...f.dialog.querySelectorAll(".surface-tools button")].map((item) =>
 			item.getAttribute("aria-label"),
 		);
-		expect(tools).toEqual(["Responsibilities", "Routines", "Close agent details"]);
+		expect(tools).toEqual(["Routines", "Close agent details"]);
 		const toRoutines = named("Routines");
 		toRoutines.click();
 		// Until the first read answers, the page does not claim there are none.
@@ -397,13 +398,10 @@ describe("agent pages", () => {
 		expect(document.activeElement).toBe(toRoutines);
 		f.company.store.set({ organization });
 		await settle();
-		named("Responsibilities").click();
-		expect(f.dialog.textContent).toContain("Product quality");
-		expect(f.dialog.querySelector(".responsibility-node")?.getAttribute("href")).toBe(
-			`#/c/${profileA.profileId}/responsibility/${id(31)}`,
-		);
-		named("Responsibilities").click();
-		expect(f.dialog.dataset.page).toBe("details");
+		// Recorded responsibility objects no longer surface: the agent's own description is the reference.
+		expect(f.dialog.textContent).not.toContain("Product quality");
+		expect(f.dialog.querySelector('a[href*="/responsibility/"]')).toBeNull();
+		expect(field("Responsibilities").value).toBe(staff.charter);
 		f.company.store.set({ staff: [{ ...staff, displayName: "Renamed" }] });
 		await settle();
 		toRoutines.click();
@@ -413,12 +411,35 @@ describe("agent pages", () => {
 		expect(f.dialog.textContent).toContain("Renamed has no routines yet.");
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
-	it("says when an agent has no responsibilities", () => {
+});
+
+describe("the popup's frame", () => {
+	it("keeps one static height on the details and routines pages and leaves the group popup to its content", () => {
+		const style = document.createElement("style");
+		style.textContent = conversationCss.replace(/^@import .*;$/gm, "");
+		document.head.append(style);
+		cleanup.push(() => style.remove());
 		const f = open();
-		named("Responsibilities").click();
-		expect(f.dialog.textContent).toContain("No responsibilities assigned yet.");
-		expect(f.dialog.querySelector(".agent-page-link")?.getAttribute("href")).toBe(
-			`#/c/${profileA.profileId}/organization`,
+		const rules = [...style.sheet!.cssRules].filter((rule): rule is CSSStyleRule => rule instanceof CSSStyleRule);
+		const declared = (selector: string, property: string) =>
+			rules.find((rule) => rule.selectorText === selector)?.style.getPropertyValue(property);
+		// The agent popup carries the class with the static height; the shared
+		// frame class does not, so the group popup keeps sizing itself.
+		expect(f.dialog.classList.contains("staff-details")).toBe(true);
+		expect(declared(".staff-details", "height")).toBe("var(--agent-details-height)");
+		expect(declared(".staff-details", "--agent-details-height")).toContain("8 * 1.6 * 13px");
+		expect(declared(".agent-details", "height")).toBeFalsy();
+		// Only the agent page's description fills the frame; elsewhere the sizer still grows it to 13 lines.
+		expect(declared(".agent-details-page .agent-inline-description", "flex")).toBe("1 1 auto");
+		expect(declared(".agent-details-page .agent-inline-description > .agent-inline-size::after", "display")).toBe(
+			"none",
 		);
+		expect(declared(".agent-inline-description > .agent-inline-size::after", "max-height")).toMatch(
+			/13 \* 1\.6em|20\.8em/,
+		);
+		expect(f.dialog.querySelector(".agent-details-page .agent-inline-description textarea")).not.toBeNull();
+		named("Routines").click();
+		expect(f.dialog.dataset.page).toBe("routines");
+		expect(f.dialog.classList.contains("staff-details")).toBe(true);
 	});
 });

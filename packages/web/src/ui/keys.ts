@@ -10,8 +10,13 @@ export const DEFAULT_APP_KEYBINDINGS = {
 	space: " ",
 	left: "ArrowLeft",
 	right: "ArrowRight",
+	/** "=" is the unshifted "+" on most layouts. */
+	grow: ["+", "="],
+	shrink: "-",
 } as const;
 
 export function matchesKey(event: KeyboardEvent, action: keyof typeof DEFAULT_APP_KEYBINDINGS): boolean {
-	return !event.isComposing && event.key === DEFAULT_APP_KEYBINDINGS[action];
+	if (event.isComposing) return false;
+	const keys: string | readonly string[] = DEFAULT_APP_KEYBINDINGS[action];
+	return typeof keys === "string" ? event.key === keys : keys.includes(event.key);
 }

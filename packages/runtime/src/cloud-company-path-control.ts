@@ -33,9 +33,7 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 
 	call(method: CloudCompanyPathRpc, argumentsValue: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
 		const permitted: readonly CloudCompanyPathRpc[] = [
-			"qorpera_escalate_responsibility",
-			"qorpera_list_responsibility_escalations",
-			"qorpera_resolve_responsibility_escalation",
+			"qorpera_manage_agent_routine",
 			"qorpera_record_runtime_observation",
 			"qorpera_record_provider_usage_signal",
 			"qorpera_begin_native_company_execution_v2",
@@ -57,6 +55,8 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_native_company_file_write",
 			"qorpera_prepare_company_path_approval",
 			"qorpera_apply_company_path_approval",
+			"qorpera_apply_company_path_approval_v3",
+			"qorpera_self_approve_organization_proposal",
 			"qorpera_native_presence_register",
 			"qorpera_company_presence_scope",
 			"qorpera_native_presence_subject",

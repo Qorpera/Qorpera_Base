@@ -58,6 +58,7 @@ async function fixture() {
 		recovery: undefined as unknown,
 		resume: undefined as unknown,
 		reset: undefined as unknown,
+		idle: null as unknown,
 		kernel: true,
 	};
 	const calls: string[] = [];
@@ -99,34 +100,42 @@ async function fixture() {
 		},
 	};
 	const registry = {
-		call: vi.fn(async () => ({
-			schema: "qorpera.office-provider-status/v1",
-			scope: {
-				companyId: g.companyId,
-				environmentId: g.environmentId,
-				companyComputerId: g.companyComputerId,
-				logicalComputerId: g.logicalComputerId,
-			},
-			computerGeneration: g.computerGeneration,
-			providerId: g.providerId,
-			providerPolicySha256: lxdOfficePhysicalPolicySha256(policy),
-			providerVersion: 1,
-			preparationEnabled: state.enabled,
-			officeState: state.office,
-			imageSha256: g.imageFingerprint,
-			bootstrapSha256: g.bootstrapSha256,
-			intent:
-				state.intent === null
-					? null
-					: {
-							schema: "qorpera.office-start-intent/v1",
-							intentId,
+		call: vi.fn(async (method: string) =>
+			method === "qorpera_reconcile_runtime_office_idle"
+				? {
+						schema: "qorpera.office-idle-policy/v1",
+						request: state.idle,
+						wakeRequested: false,
+					}
+				: {
+						schema: "qorpera.office-provider-status/v1",
+						scope: {
+							companyId: g.companyId,
+							environmentId: g.environmentId,
 							companyComputerId: g.companyComputerId,
-							computerGeneration: g.computerGeneration,
-							state: state.intent,
+							logicalComputerId: g.logicalComputerId,
 						},
-			reservation: state.reservation,
-		})),
+						computerGeneration: g.computerGeneration,
+						providerId: g.providerId,
+						providerPolicySha256: lxdOfficePhysicalPolicySha256(policy),
+						providerVersion: 1,
+						preparationEnabled: state.enabled,
+						officeState: state.office,
+						imageSha256: g.imageFingerprint,
+						bootstrapSha256: g.bootstrapSha256,
+						intent:
+							state.intent === null
+								? null
+								: {
+										schema: "qorpera.office-start-intent/v1",
+										intentId,
+										companyComputerId: g.companyComputerId,
+										computerGeneration: g.computerGeneration,
+										state: state.intent,
+									},
+						reservation: state.reservation,
+					},
+		),
 	};
 	const kernelLock = vi.fn(async () => {
 		if (!state.kernel) throw new Error("lock missing");
@@ -301,11 +310,12 @@ async function fixture() {
 	const preparePackageInvocation = vi.fn<
 		NonNullable<NonNullable<ConstructorParameters<typeof LxdOfficeLifecycle>[3]>["preparePackageInvocation"]>
 	>(async () => undefined);
-	const open = (resetImagePackageManifestPath?: string, codePackageLanePath?: string) =>
+	const open = (resetImagePackageManifestPath?: string, codePackageLanePath?: string, idleMs?: number) =>
 		new LxdOfficeLifecycle(
 			{ policy, check: vi.fn(), inspect: vi.fn() },
 			registry,
 			{
+				idleMs,
 				planPath: "/protected/lifecycle.json",
 				resetImagePackageManifestPath,
 				codePackageLanePath,
@@ -366,6 +376,58 @@ async function fixture() {
 }
 
 describe("serialized office lifecycle", () => {
+	it("drives SQL-admitted idle through the real loop and existing stop workers", async () => {
+		const f = await fixture();
+		await f.toPhase(7);
+		expect((await f.open().reconcile(signal())).state).toBe("active");
+		f.state.idle = { ...f.recovery, action: "power_off" };
+		expect(await f.open(undefined, undefined, 300000).reconcile(signal())).toMatchObject({
+			state: "progressed",
+			phase: "service_stop",
+		});
+		expect(await f.open(undefined, undefined, 300000).reconcile(signal())).toMatchObject({
+			state: "powered_off",
+			phase: "power_off",
+		});
+		expect(f.resumeWorker.reconcileSettled).not.toHaveBeenCalled();
+		expect(f.stopWorker.reconcileSettled).toHaveBeenCalledTimes(1);
+	});
+	it("retained completed protected recovery permits later idle while a fresh operator plan takes precedence", async () => {
+		const f = await fixture();
+		await f.toPhase(7);
+		await f.open().reconcile(signal());
+		f.state.recovery = {
+			schema: "qorpera.lxd-office-recovery-plan/v1",
+			request: { ...f.recovery, action: "service_restart" },
+		};
+		await f.open(undefined, undefined, 300000).reconcile(signal());
+		expect((await f.open(undefined, undefined, 300000).reconcile(signal())).state).toBe("active");
+		const idleRequest = { ...f.recovery, action: "power_off", transitionId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" };
+		f.state.idle = idleRequest;
+		f.stopWorker.reconcileSettled.mockResolvedValueOnce({
+			state: "stopped",
+			intentId,
+			allocationId,
+			transitionId: idleRequest.transitionId,
+			commandId: intentId,
+			acknowledgedAtMs: 3000,
+		});
+		expect(await f.open(undefined, undefined, 300000).reconcile(signal())).toMatchObject({
+			state: "progressed",
+			transitionId: idleRequest.transitionId,
+		});
+		const calls = f.registry.call.mock.calls.filter(
+			([method]) => method === "qorpera_reconcile_runtime_office_idle",
+		).length;
+		f.state.recovery = {
+			schema: "qorpera.lxd-office-recovery-plan/v1",
+			request: { ...f.recovery, action: "replace", transitionId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd" },
+		};
+		await f.open(undefined, undefined, 300000).reconcile(signal());
+		expect(
+			f.registry.call.mock.calls.filter(([method]) => method === "qorpera_reconcile_runtime_office_idle"),
+		).toHaveLength(calls);
+	});
 	async function atConfigurationStage() {
 		const f = await fixture();
 		await f.toPhase(7);

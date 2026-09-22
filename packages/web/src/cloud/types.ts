@@ -203,6 +203,8 @@ export interface HostedStaffExecutionActivity {
 	sourceKind: ExecutionSourceKind;
 	jobStatus: "queued" | "leased" | "completed" | "failed" | "cancelled";
 	activity: "waiting" | "working" | "needs_attention";
+	/** Expiring presentation hint; it never changes durable execution state. */
+	phase?: "working" | "writing";
 	updatedAt: string;
 }
 
