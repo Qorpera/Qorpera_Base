@@ -441,6 +441,26 @@ describe("automatic computer popover", () => {
 		// A registry whose company is gone opens nothing more.
 		expect(panels.open(staff)).toBeUndefined();
 	});
+	it("applies a rename made while no thread showed the panel when it is handed out again", async () => {
+		const f = setup(),
+			open = spyViewer(),
+			panels = new ComputerPanels(f.computer, f.stop.signal),
+			p = panels.open(staff)!;
+		p.attach(document.body, () => {});
+		await settle();
+		await settle();
+		await settle();
+		expect(open).toHaveBeenCalledOnce();
+		const overlay = document.createElement("div");
+		overlay.className = "screen-viewer-overlay";
+		overlay.setAttribute("aria-label", `${staff.displayName} · Computer`);
+		p.el.querySelector(".computer-panel-body")!.append(overlay);
+		p.detach();
+		expect(panels.open({ ...staff, displayName: "Renamed" })).toBe(p);
+		expect(overlay.getAttribute("aria-label")).toBe("Renamed · Computer");
+		expect(open).toHaveBeenCalledOnce();
+		panels.dispose();
+	});
 	it("follows a rename in place: same viewer, new title", async () => {
 		const f = setup(),
 			open = spyViewer(),

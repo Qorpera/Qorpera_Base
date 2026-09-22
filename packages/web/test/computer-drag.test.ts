@@ -288,17 +288,33 @@ describe("computer preview dragging", () => {
 		f.panel.remove();
 		f.fit();
 		expect(f.disconnect).toHaveBeenCalledOnce();
-		// In a new thread: that thread's edges are watched, not the old one's.
+		// In a new thread that is not in the page yet (no size): that thread's edges are
+		// watched, and the member's position is left alone rather than clamped to a corner.
 		const next = document.createElement("section"),
 			nextHeader = document.createElement("header");
 		nextHeader.className = "thread-header";
 		next.append(nextHeader, f.panel);
-		document.body.append(next);
+		const nextSize = { width: 0, height: 0 };
+		Object.defineProperties(next, {
+			clientWidth: { get: () => nextSize.width },
+			clientHeight: { get: () => nextSize.height },
+		});
 		f.fit();
 		expect(f.observe.mock.calls.slice(4).map(([target]) => target)).toEqual([next, f.panel, nextHeader]);
 		expect(f.disconnect).toHaveBeenCalledOnce();
-		// The stored position is kept and clamped against the new thread.
-		expect(f.panel.style.getPropertyValue("--computer-left")).not.toBe("");
+		expect(f.panel.style.getPropertyValue("--computer-left")).toBe("510px");
+		expect(f.panel.style.getPropertyValue("--computer-top")).toBe("80px");
+		// Once the thread is in the page and has a size, the observer fits from the saved spot.
+		document.body.append(next);
+		nextSize.width = 1000;
+		nextSize.height = 700;
+		f.resize();
+		expect(f.panel.style.getPropertyValue("--computer-left")).toBe("510px");
+		expect(f.panel.style.getPropertyValue("--computer-top")).toBe("80px");
+		// A narrower thread still clamps it in.
+		nextSize.width = 700;
+		f.resize();
+		expect(f.panel.style.getPropertyValue("--computer-left")).toBe("292px");
 	});
 	it("fits an unmoved preview before interaction and follows composer growth at its original aspect ratio", async () => {
 		const f = setup();

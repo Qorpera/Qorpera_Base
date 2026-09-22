@@ -323,11 +323,12 @@ export class ComputerPanels {
 	readonly #panels = new Map<string, ComputerPanel>();
 	readonly #computer: WebCompanyComputer | undefined;
 	readonly #signal: AbortSignal | undefined;
+	readonly #onAbort = () => this.dispose();
 
 	constructor(computer?: WebCompanyComputer, signal?: AbortSignal) {
 		this.#computer = computer;
 		this.#signal = signal;
-		signal?.addEventListener("abort", () => this.dispose(), { once: true });
+		signal?.addEventListener("abort", this.#onAbort, { once: true });
 	}
 
 	/** The panel a thread left open for this agent, if any. */
@@ -339,7 +340,11 @@ export class ComputerPanels {
 	open(agent: HostedStaffAgent): ComputerPanel | undefined {
 		if (this.#signal?.aborted) return undefined;
 		let panel = this.#panels.get(agent.id);
-		if (panel) return panel;
+		if (panel) {
+			// The agent may have been renamed while no thread showed the panel.
+			panel.retitle(agent.displayName);
+			return panel;
+		}
 		panel = new ComputerPanel(agent, this.#computer, this.#signal);
 		this.#panels.set(agent.id, panel);
 		return panel;
@@ -353,6 +358,7 @@ export class ComputerPanels {
 	}
 
 	dispose(): void {
+		this.#signal?.removeEventListener("abort", this.#onAbort);
 		for (const agentId of [...this.#panels.keys()]) this.close(agentId);
 	}
 }

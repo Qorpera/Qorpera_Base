@@ -40,9 +40,11 @@ export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): () 
 			fit: Math.max(0, Math.min(parent.clientWidth - 40, (parent.clientHeight - top - footer - 16) * ASPECT)),
 		};
 	};
+	/** A thread that is not in the page yet has no size; clamping against it would lose the member's position. */
+	const sized = (parent: HTMLElement) => parent.clientWidth > 0 && parent.clientHeight > 0;
 	const place = (left: number, top: number, bounds?: Bounds) => {
 		const parent = panel.parentElement;
-		if (!parent || expanded()) return;
+		if (!parent || expanded() || !sized(parent)) return;
 		const inset = 8;
 		const { top: minTop, footer } = bounds ?? measure(parent);
 		position = {
@@ -54,7 +56,8 @@ export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): () 
 	};
 	const reclamp = () => {
 		const parent = panel.parentElement;
-		if (!parent || expanded()) return;
+		// Off the page the observer fits the preview once the thread has a size.
+		if (!parent || expanded() || !sized(parent)) return;
 		const bounds = measure(parent);
 		panel.style.setProperty("--computer-width", `${Math.min(chosenWidth, bounds.fit)}px`);
 		if (position) place(position.left, position.top, bounds);
