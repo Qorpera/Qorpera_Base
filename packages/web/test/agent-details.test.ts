@@ -7,6 +7,7 @@ import type { WebNativeSubscription } from "../src/cloud/native-subscription.ts"
 import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
 import type { WebRoutines } from "../src/cloud/routines.ts";
 import type { HostedStaffAgent } from "../src/cloud/types.ts";
+import conversationCss from "../src/styles/conversation.css?raw";
 import { FIGURE_IDS, figureFor } from "../src/ui/avatar.ts";
 import { deferred, fixture, id, profileA, settle, staff, team, userA } from "./fixtures.ts";
 
@@ -409,5 +410,36 @@ describe("agent pages", () => {
 		expect(routines.list).toHaveBeenCalledTimes(2);
 		expect(f.dialog.textContent).toContain("Renamed has no routines yet.");
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
+	});
+});
+
+describe("the popup's frame", () => {
+	it("keeps one static height on the details and routines pages and leaves the group popup to its content", () => {
+		const style = document.createElement("style");
+		style.textContent = conversationCss.replace(/^@import .*;$/gm, "");
+		document.head.append(style);
+		cleanup.push(() => style.remove());
+		const f = open();
+		const rules = [...style.sheet!.cssRules].filter((rule): rule is CSSStyleRule => rule instanceof CSSStyleRule);
+		const declared = (selector: string, property: string) =>
+			rules.find((rule) => rule.selectorText === selector)?.style.getPropertyValue(property);
+		// The agent popup carries the class with the static height; the shared
+		// frame class does not, so the group popup keeps sizing itself.
+		expect(f.dialog.classList.contains("staff-details")).toBe(true);
+		expect(declared(".staff-details", "height")).toBe("var(--agent-details-height)");
+		expect(declared(".staff-details", "--agent-details-height")).toContain("13 * 1.6 * 13px");
+		expect(declared(".agent-details", "height")).toBeFalsy();
+		// Only the agent page's description fills the frame; elsewhere the sizer still grows it to 13 lines.
+		expect(declared(".agent-details-page .agent-inline-description", "flex")).toBe("1 1 auto");
+		expect(declared(".agent-details-page .agent-inline-description > .agent-inline-size::after", "display")).toBe(
+			"none",
+		);
+		expect(declared(".agent-inline-description > .agent-inline-size::after", "max-height")).toMatch(
+			/13 \* 1\.6em|20\.8em/,
+		);
+		expect(f.dialog.querySelector(".agent-details-page .agent-inline-description textarea")).not.toBeNull();
+		named("Routines").click();
+		expect(f.dialog.dataset.page).toBe("routines");
+		expect(f.dialog.classList.contains("staff-details")).toBe(true);
 	});
 });

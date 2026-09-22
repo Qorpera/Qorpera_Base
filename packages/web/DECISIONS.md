@@ -392,7 +392,8 @@ switching pages no longer changes its size. The description fills the space
 under the identity, never less than five lines, and scrolls inside that box
 when the text is longer. Only a short viewport makes the popup smaller; then
 the page scrolls as before. This replaces the "at least five lines, growing to
-thirteen" sizing in the 2026-09-19 entry; the rest of that entry stands.
+thirteen" sizing in the 2026-09-19 entry; the rest of that entry stands. The
+group chat popup shares the frame but keeps sizing itself to its content.
 
 ## 2026-09-19 — New conversation is one list under the To: field
 
