@@ -515,3 +515,88 @@
 .group-member-choice small { color: var(--text-muted); }
 .group-edit-fields:disabled .group-member-choice { cursor: default; opacity: .6; }
 .group-save-status:empty { display: none; }
+/* A coding session in the thread (Order 9): a centered element under one dashed line, black in the light theme
+ * and white in the dark one. Collapsed it is the start line and the status; expanded the session's own steps,
+ * the harness's voice, the owner's input and the pull request follow, closed by a second dashed line. */
+.coding-session { display: flex; flex: none; flex-direction: column; align-items: center; width: 100%; margin: 10px 0 2px; font-size: 14px; line-height: 20px; }
+.coding-line { display: flex; align-items: center; gap: 12px; width: 100%; min-width: 0; }
+.coding-line-end { margin-top: 2px; }
+.coding-rule { flex: 1 1 24px; min-width: 24px; height: 1.5px; border-radius: 2px; background: repeating-linear-gradient(90deg, var(--coding-rule) 0 8px, transparent 8px 18px); }
+.coding-label { display: inline-flex; align-items: center; gap: 7px; min-width: 0; max-width: 100%; font-size: 12px; line-height: 16px; font-weight: 500; color: var(--text-muted); }
+.coding-label .figure { width: 22px; height: 22px; flex: none; }
+.coding-caption { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.coding-dot-sep { color: var(--border-strong); }
+.coding-owner { position: relative; display: inline-block; width: 22px; height: 22px; flex: none; }
+.coding-owner .person-avatar { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--person-color, #778fc6); color: #fff; font-size: 9.5px; font-weight: 700; line-height: 1; }
+.coding-badge { position: absolute; right: -4px; bottom: -4px; display: grid; place-items: center; width: 12px; height: 12px; border-radius: 3.5px; border: 1.5px solid var(--bg); color: #fff; box-sizing: content-box; }
+.coding-badge-codex { background: #161615; }
+.coding-badge-claude-code { background: #d97757; }
+.coding-link { min-height: 0; padding: 0; border: 0; background: transparent; font: inherit; font-size: 12px; font-weight: 600; color: var(--blue); cursor: pointer; }
+.coding-link:hover { text-decoration: underline; }
+.coding-status { display: flex; justify-content: center; width: 100%; margin-top: 6px; }
+.coding-status-label { display: inline-flex; align-items: center; gap: 7px; min-width: 0; font-size: 12px; line-height: 16px; font-weight: 500; color: var(--text-muted); white-space: nowrap; }
+.coding-status-label > span:last-child { overflow: hidden; text-overflow: ellipsis; }
+.coding-dot { display: inline-block; width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--text-soft); }
+.coding-dot-working { background: #00c887; }
+.coding-dot-attention { background: var(--warning); }
+.coding-dot-done { background: var(--ok); }
+.coding-dot-failed { background: var(--danger); }
+.coding-tone-attention .coding-status-label, .coding-tone-attention .coding-caption, .coding-step-status.coding-tone-attention { color: #8a5a00; }
+.coding-tone-done .coding-status-label, .coding-tone-done .coding-caption, .coding-step-status.coding-tone-done, .coding-glyph.coding-tone-done { color: #0f7a55; }
+.coding-tone-failed .coding-status-label, .coding-tone-failed .coding-caption, .coding-step-status.coding-tone-failed { color: var(--danger); }
+.coding-head { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 0 6px; text-align: center; }
+.coding-title { font-size: 15px; font-weight: 600; line-height: 19px; }
+.coding-meta { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; font-size: 12px; line-height: 15px; color: var(--text-muted); }
+.coding-mono { font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 11.5px; }
+.coding-body { display: flex; flex-direction: column; gap: 2px; width: 640px; max-width: 100%; padding: 4px 0; }
+.coding-row { display: flex; align-items: flex-start; gap: 9px; padding: 4px 8px; font-size: 13.5px; line-height: 19px; color: var(--text); overflow-wrap: anywhere; }
+.coding-row > div { min-width: 0; }
+.coding-glyph { flex: none; width: 14px; height: 14px; margin-top: 2.5px; color: var(--text-soft); }
+.coding-row-fold { justify-content: center; }
+.coding-row-fold .btn { border: 0; background: transparent; color: var(--text-soft); font-size: 12px; }
+.coding-row-quiet { justify-content: center; color: var(--text-soft); font-size: 12.5px; }
+.coding-row-error { color: var(--danger); }
+.coding-row-voice { align-items: flex-start; padding-top: 8px; padding-bottom: 8px; }
+.coding-voice { position: relative; display: inline-block; width: 20px; height: 20px; flex: none; }
+.coding-voice .coding-badge { position: static; width: 20px; height: 20px; border-radius: 50%; border: 0; box-sizing: border-box; }
+.coding-voice .coding-badge svg { width: 10px; height: 10px; }
+.coding-voice-text p { margin: 0; }
+.coding-voice-text p + p { margin-top: 6px; }
+.coding-row-input .coding-who { flex: none; font-weight: 600; color: var(--text-muted); }
+.coding-row-question { padding: 6px 0; }
+.coding-question { width: 100%; padding: 12px 14px; border-radius: 14px; border: 1px solid var(--border); background: var(--header-surface); font-size: 14px; line-height: 20px; text-align: left; box-sizing: border-box; }
+.coding-question-from { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; font-size: 11px; font-weight: 600; color: var(--text-muted); }
+.coding-question-from .coding-badge { position: static; width: 16px; height: 16px; border-radius: 50%; border: 0; box-sizing: border-box; }
+.coding-question-from .coding-badge svg { width: 8px; height: 8px; }
+.coding-talk { display: flex; flex-direction: column; align-items: stretch; gap: 8px; width: 640px; max-width: 100%; padding: 6px 0 8px; }
+.coding-options { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.coding-options .btn { border-radius: 999px; min-height: 32px; padding: 0 14px; font-size: 13.5px; font-weight: 500; }
+.coding-field { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 5px 0 14px; border: 1px solid var(--border-strong); border-radius: 20px; background: var(--bg); box-sizing: border-box; }
+.coding-field-input { flex: 1; min-width: 0; border: 0; background: transparent; padding: 0; font: inherit; font-size: 15px; color: var(--text); outline: none; }
+.coding-field-input::placeholder { color: var(--text-soft); }
+.coding-field-input:disabled { color: var(--text-soft); }
+.coding-send { border-radius: 999px; min-height: 30px; }
+.coding-hint { display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 11.5px; line-height: 15px; color: var(--text-soft); text-align: center; }
+.coding-hint .coding-glyph { margin: 0; width: 12px; height: 12px; }
+.coding-talk-locked { padding-top: 4px; }
+.coding-pr { display: flex; flex-direction: column; align-items: stretch; gap: 8px; width: 640px; max-width: 100%; padding: 6px 0 4px; }
+.coding-pr-card { display: flex; gap: 12px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 14px; background: var(--bg); }
+.coding-pr-glyph { flex: none; width: 22px; height: 22px; margin-top: 1px; color: var(--text-muted); }
+.coding-pr-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.coding-pr-title { font-size: 15px; font-weight: 600; line-height: 19px; overflow-wrap: anywhere; }
+.coding-pr-number { font-weight: 500; color: var(--text-muted); }
+.coding-pr-meta { font-size: 12.5px; line-height: 16px; color: var(--text-muted); overflow-wrap: anywhere; }
+.coding-checks { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; font-size: 12.5px; line-height: 16px; }
+.coding-check { display: flex; align-items: center; gap: 7px; }
+.coding-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.coding-actions .btn { border-radius: 999px; min-height: 32px; padding: 0 14px; font-size: 13.5px; font-weight: 500; text-decoration: none; color: inherit; }
+.coding-actions .btn-primary { color: var(--on-primary); }
+/* A narrow pane: the caption wraps instead of hiding, and the rules give way first. */
+@media (max-width: 640px) {
+	.coding-label { flex-wrap: wrap; justify-content: center; text-align: center; font-size: 11.5px; }
+	.coding-dot-sep { display: none; }
+	.coding-caption { white-space: normal; }
+	.coding-rule { flex-basis: 12px; min-width: 12px; }
+	.coding-status-label { white-space: normal; text-align: center; }
+	.coding-line-end .coding-status-label > span:last-child { overflow: visible; }
+}

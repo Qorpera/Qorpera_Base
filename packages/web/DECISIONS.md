@@ -102,6 +102,26 @@ Per §6 and launch acceptance item 8, from `qorpera_read_session_events`:
   render as *pending* member messages; `processing` shows the agent is
   working; `failed` shows the failure reason.
 
+## 2026-09-22 — Coding sessions in the thread (Order 9, part 2)
+
+A coding session is not a transcript event. `qorpera_list_coding_sessions`
+names the sessions the agent dispatched from a conversation, and the thread
+places each one where it was started: before the first message written after
+it. The element (`ui/coding-session.ts`) is the approved "sandwich": one dashed
+line with the start caption, the agent's figure and the owner's avatar wearing
+the harness badge, then, collapsed, only the live status; expanded, the
+session's own steps and the harness's voice from `qorpera_read_coding_session`,
+the owner's input, the pull request, and a closing dashed line with the status.
+
+- Every word in the captions comes from the session view (agent, owner, harness,
+  title, phase, PR); nothing comes from the agent's prose.
+- Only the owner types into the session; other members see the same body with
+  a lock line. The kernel enforces this too.
+- The element persists per session across renders and follows its own stream
+  (2.5 s while working, 6 s while it waits, 30 s after it settled, 20 s while
+  the tab is hidden). A missing list RPC means no sessions; the thread renders
+  as before.
+
 ## 2026-09-02 — Verification method for RPCs
 
 The contract's SQL query needs a database credential this session does not

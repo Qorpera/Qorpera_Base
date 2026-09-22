@@ -1,3 +1,4 @@
+import type { CodingSession } from "../../cloud/coding-session.ts";
 import { sessionAttachmentIssue } from "../../cloud/session-attachments.ts";
 import type { TranscriptCard, TranscriptItem } from "../../cloud/transcript.ts";
 import type { HostedSession, HostedStaffAgent } from "../../cloud/types.ts";
@@ -5,6 +6,7 @@ import { AGENT_LOOK, statusCaption, syncCaption } from "../../ui/agent-activity.
 import { AttachmentTray } from "../../ui/attachments.ts";
 import { authorizationRequestId, renderAuthorizationCard } from "../../ui/authorization-card.ts";
 import { agentFigure } from "../../ui/avatar.ts";
+import { CodingSessionElement } from "../../ui/coding-session.ts";
 import {
 	conversationTimestampLabel,
 	conversationTimestampTitle,
@@ -98,6 +100,9 @@ export class ConversationView {
 	readonly #runNotification = h("div", { class: "thread-run-failure", hidden: true });
 	#runNotificationKey = "";
 	#receivedAttachments: ReceivedAttachments[] = [];
+	/** The coding sessions shown in this thread, one element per session, kept
+	 * across renders so each keeps its stream, its cursor and its open state. */
+	readonly #codingElements = new Map<string, CodingSessionElement>();
 	readonly #timestampTimer: number;
 	#timestampRows: { date: Date; node: HTMLElement; separator?: HTMLTimeElement }[] = [];
 
@@ -374,6 +379,8 @@ export class ConversationView {
 		this.#panel = undefined;
 		this.#attachments.dispose();
 		for (const attachments of this.#receivedAttachments) attachments.dispose();
+		for (const element of this.#codingElements.values()) element.dispose();
+		this.#codingElements.clear();
 		for (const unsubscribe of this.#unsubscribe) unsubscribe();
 		this.#company.setOpenSession(undefined);
 	}
@@ -752,8 +759,12 @@ export class ConversationView {
 				}),
 			),
 		];
+		const codingSessions = [...(conversation.codingSessions ?? [])].sort((a, b) =>
+			a.createdAt.localeCompare(b.createdAt),
+		);
 		const key = JSON.stringify([
 			items,
+			codingSessions,
 			agentName,
 			this.#isRoom,
 			this.#company.store.get().team?.members,
@@ -777,7 +788,23 @@ export class ConversationView {
 			}
 		const nodes: HTMLElement[] = [];
 		this.#timestampRows = [];
+		// A coding session stands where the agent started it: before the first
+		// message written after it. Its element is reused, so the stream it
+		// follows and the body the member opened survive every re-render.
+		let nextSession = 0;
+		const placeSessions = (before: string | undefined) => {
+			while (nextSession < codingSessions.length) {
+				const candidate = codingSessions[nextSession]!;
+				if (before !== undefined && candidate.createdAt.localeCompare(before) > 0) break;
+				nextSession += 1;
+				const element = this.#codingElement(candidate, agent, agentName);
+				nodes.push(element.el);
+				const date = parseConversationTimestamp(candidate.createdAt);
+				if (date) this.#timestampRows.push({ date, node: element.el });
+			}
+		};
 		for (const item of items) {
+			placeSessions(item.createdAt);
 			if (item.kind === "member" || item.kind === "agent") {
 				const mine = item.kind === "member" && item.authorUserId === this.#company.userId;
 				const author =
@@ -854,8 +881,15 @@ export class ConversationView {
 			const node = nodes[nodes.length - 1];
 			if (date && node) this.#timestampRows.push({ date, node });
 		}
+		placeSessions(undefined);
+		for (const [workerId, element] of this.#codingElements) {
+			if (!codingSessions.some((session) => session.workerId === workerId)) {
+				element.dispose();
+				this.#codingElements.delete(workerId);
+			}
+		}
 		if (conversation.loading && !items.length) nodes.push(spinner("Loading conversation"));
-		if (!conversation.loading && !items.length && !conversation.error && !this.#working) {
+		if (!conversation.loading && !items.length && !codingSessions.length && !conversation.error && !this.#working) {
 			nodes.push(h("div", { class: "empty" }, "No messages yet."));
 		}
 		if (this.#working && !conversation.loading) {
@@ -932,6 +966,50 @@ export class ConversationView {
 			: undefined;
 		replace(this.#status, ...children);
 		if (refocus) this.#status.querySelector<HTMLElement>(`[data-action="${refocus}"]`)?.focus();
+	}
+
+	#codingElement(
+		session: CodingSession,
+		agent: HostedStaffAgent | undefined,
+		agentName: string,
+	): CodingSessionElement {
+		const existing = this.#codingElements.get(session.workerId);
+		if (existing && !existing.disposed) {
+			existing.update(session);
+			return existing;
+		}
+		const sessionId = this.#sessionId;
+		const company = this.#company;
+		const element = new CodingSessionElement(session, {
+			agent,
+			names: (current) => {
+				const ownerIsViewer = current.ownerUserId === company.userId;
+				return {
+					agent: company.staffById(current.agentId)?.displayName ?? agentName,
+					owner: ownerIsViewer ? "you" : company.memberName(current.ownerUserId),
+					ownerIsViewer,
+				};
+			},
+			viewerOwns: (current) => current.ownerUserId === company.userId,
+			api: {
+				read: (workerId, afterEvent) => company.readCodingSession(workerId, afterEvent),
+				answer: (workerId, text, clientRequestId) =>
+					company.answerCodingSession(sessionId, workerId, text, clientRequestId),
+				delegate: (workerId, clientRequestId) =>
+					company.delegateCodingSession(sessionId, workerId, clientRequestId),
+			},
+			signal: AbortSignal.any([this.#lifetime.signal, company.signal]),
+			changed: () => this.#pinToBottom(),
+			askAgent: this.#actions.sendMessage
+				? (text) => {
+						this.#composer.value = text;
+						this.#composer.dispatchEvent(new Event("input", { bubbles: true }));
+						this.#composer.focus();
+					}
+				: undefined,
+		});
+		this.#codingElements.set(session.workerId, element);
+		return element;
 	}
 
 	#renderRunNotification(session: HostedSession | undefined): void {

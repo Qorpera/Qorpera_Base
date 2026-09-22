@@ -22,6 +22,8 @@
 
 ### Added
 
+- Show an agent's coding sessions in its conversation (Order 9): a centered line under one dashed rule, "Mark started a coding session with you in Codex: Fix the delay after send", with the agent's figure and the owner's avatar wearing the harness badge; collapsed it shows only the live status ("Working · 4 min · running vitest · 3 files changed"), and Show opens the session's own steps, what the harness says, the question it asks with answer buttons and "Let Mark decide", the owner's input field, and the draft pull request with its checks and links. Only the session's owner can type into it; everyone else reads it and steers through the agent. Nothing shows until the cloud carries coding sessions.
+
 - Settings has a Plan & usage tab: the account's current plan (the freemium plan is now called "Free trial") with an Upgrade button that opens the three plans qorpera.com sells (Basis, Standard, Dedicated computer, with prices and what they include; choosing one says "Coming soon" until plan changes open), a Usage section with computer hours (a meter once the cloud reports them, "Not measured yet" until then) and the chosen company's storage, and a Billing card (price, next payment, payment method, invoices) that shows placeholders until billing lands. Nothing moved to General's loss except the plan card. The standalone account page keeps the plan below General.
 - Appearance in Settings → General shows its choices as pictures instead of menus: Theme offers System, Light and Dark as miniature windows (System split down the middle), and Composer color offers Blue, Green and Grey as miniature conversations in the page's current theme. Each group is a radio group, so arrow keys move between cards.
 
