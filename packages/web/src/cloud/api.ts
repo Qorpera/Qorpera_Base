@@ -53,6 +53,7 @@ import type {
 	HostedSessionEvent,
 	HostedStaffAgent,
 	HostedStaffExecutionActivity,
+	JsonValue,
 	PendingSessionInputPage,
 	SessionInputReceipt,
 	StaffSessionHandle,
@@ -324,6 +325,27 @@ export class CloudApi {
 				p_limit: limit,
 			})
 			.then(parsePendingSessionInputs);
+	}
+
+	/** Answer a typed card the agent raised (kernel bundle v70): queued like a
+	 * prompt, so the agent wakes in its own thread with the answer. Never a secret
+	 * value: a secret card answers with its outcome only. */
+	answerInteraction(
+		sessionId: string,
+		clientInputId: string,
+		interactionId: string,
+		outcome: string,
+		answer: Record<string, JsonValue> = {},
+	): Promise<SessionInputReceipt> {
+		return this.cloud
+			.rpc("qorpera_answer_interaction", {
+				p_session_id: requiredUuid(sessionId, "Session id"),
+				p_client_input_id: requiredUuid(clientInputId, "Client input id"),
+				p_interaction_id: requiredUuid(interactionId, "Interaction id"),
+				p_outcome: outcome,
+				p_answer: answer,
+			})
+			.then(parseSessionInputReceipt);
 	}
 
 	/** The one member write into a conversation: a queued prompt. The mouth is
