@@ -218,8 +218,10 @@ end
 $$;
 
 select pg_temp.coding_patch('public.qorpera_pin_wake_occurrence()'::regprocedure,
-	$old$		new.session_id := case when new.source_kind = 'worker-completion' then v_run.session_id end;$old$,
-	$new$		new.session_id := case when new.source_kind = 'worker-completion' then v_run.session_id end;
+	$old$		new.session_id := case when new.source_kind = 'worker-completion' then v_run.session_id
+			when new.source_kind = 'coworker' then new.session_id end;$old$,
+	$new$		new.session_id := case when new.source_kind = 'worker-completion' then v_run.session_id
+			when new.source_kind = 'coworker' then new.session_id end;
 		if new.source_kind = 'worker-dispatch' and exists (select 1 from public.qorpera_runtime_workers w
 			where w.id = new.source_id and w.species = 'coding') then
 			select w.owner_sponsor_binding_id, w.owner_sponsor_version into new.sponsor_binding_id, new.sponsor_version
