@@ -74,6 +74,10 @@ export class ConversationView {
 	#headerKey = "";
 	#renderedKey = "";
 	#stickToBottom = true;
+	/** Re-pins the thread to its end when the message pane gets its size: the first
+	 * render happens before the view is in the page, and a pane that shrinks or
+	 * grows (window, computer panel, composer) must keep showing the latest message. */
+	readonly #sizes: ResizeObserver | undefined;
 	readonly #unsubscribe: (() => void)[] = [];
 	#disposed = false;
 	#statusKey = "";
@@ -289,6 +293,10 @@ export class ConversationView {
 			const { scrollTop, scrollHeight, clientHeight } = this.#messages;
 			this.#stickToBottom = scrollHeight - scrollTop - clientHeight < 48;
 		});
+		if (typeof ResizeObserver !== "undefined") {
+			this.#sizes = new ResizeObserver(() => this.#pinToBottom());
+			this.#sizes.observe(this.#messages);
+		}
 		this.#conversationPane = h(
 			"div",
 			{ class: "thread-conversation" },
@@ -331,6 +339,7 @@ export class ConversationView {
 		this.#disposed = true;
 		this.#lifetime.abort();
 		window.clearInterval(this.#timestampTimer);
+		this.#sizes?.disconnect();
 		this.#runNotification.remove();
 		this.#details?.dispose();
 		this.#panel?.dispose();
@@ -353,6 +362,12 @@ export class ConversationView {
 	focus(): void {
 		this.#autosize();
 		this.#composer.focus();
+	}
+
+	/** Shows the latest message unless the reader has scrolled up to read older ones. */
+	#pinToBottom(): void {
+		if (this.#disposed || !this.#stickToBottom) return;
+		this.#messages.scrollTop = this.#messages.scrollHeight;
 	}
 	setNavigationOpen(open: boolean): void {
 		this.#navigation.setAttribute("aria-expanded", String(open));
@@ -671,7 +686,7 @@ export class ConversationView {
 			}
 		}
 		if (regroup) {
-			if (this.#stickToBottom) this.#messages.scrollTop = this.#messages.scrollHeight;
+			if (this.#stickToBottom) this.#pinToBottom();
 			else if (anchor) this.#messages.scrollTop += anchor.getBoundingClientRect().top - anchorTop;
 			else this.#messages.scrollTop = scrollTop;
 		}
@@ -821,7 +836,7 @@ export class ConversationView {
 		replace(this.#messages, ...nodes, this.#runNotification);
 		if (cardFocus) this.#runNotification.querySelector<HTMLElement>(`[data-action="${cardFocus}"]`)?.focus();
 		this.#refreshTimestamps(false);
-		if (this.#stickToBottom) this.#messages.scrollTop = this.#messages.scrollHeight;
+		this.#pinToBottom();
 	}
 
 	#renderStatus(conversation: ConversationState, canWrite: boolean, session: HostedSession | undefined): void {
@@ -980,7 +995,7 @@ export class ConversationView {
 						action,
 					}),
 		);
-		if (!hidden && this.#stickToBottom) this.#messages.scrollTop = this.#messages.scrollHeight;
+		if (!hidden) this.#pinToBottom();
 		if (focused) {
 			if (!hidden)
 				(
