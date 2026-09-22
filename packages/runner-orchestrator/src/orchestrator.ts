@@ -158,7 +158,7 @@ export interface EnqueueCloudRoutineWakeInput {
 
 export interface CloudRoutineWakeOccurrence {
 	occurrenceId: string;
-	status: "queued" | "materialized" | "completed" | "failed" | "requires_review" | "cancelled";
+	status: "queued" | "materialized" | "completed" | "failed" | "requires_review" | "cancelled" | "deferred";
 	runId?: string;
 	scheduledFor: string;
 }
@@ -446,8 +446,17 @@ function parseRoutineSchedulePage(value: unknown): CloudRoutineSchedulePage {
 	};
 }
 
-function parseRoutineWakeOccurrence(value: unknown): CloudRoutineWakeOccurrence {
+function parseRoutineWakeOccurrence(value: unknown, occurrenceId?: string): CloudRoutineWakeOccurrence {
 	const input = record(value, "routine wake occurrence");
+	// The company is paused: nothing was admitted and the cursor did not move; the
+	// same occurrence is offered again on the next pass.
+	if (input.status === "deferred" && input.occurrence_id === null && occurrenceId) {
+		return {
+			occurrenceId,
+			status: "deferred",
+			scheduledFor: responseTimestamp(input.scheduled_for, "wake occurrence schedule"),
+		};
+	}
 	if (
 		input.status !== "queued" &&
 		input.status !== "materialized" &&
@@ -1870,26 +1879,25 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 		) {
 			throw new Error("Wake occurrence is invalid");
 		}
-		return parseRoutineWakeOccurrence(
-			await this.#request(
-				{
-					action: "enqueue_wake",
-					orchestratorId: this.#orchestratorId,
-					routineId: input.routineId,
-					expectedVersion: input.expectedVersion,
-					occurrenceId: input.occurrenceId,
-					occurrenceKey: input.occurrenceKey,
-					triggerId: input.triggerId,
-					scheduledFor: new Date(input.scheduledFor).toISOString(),
-					...(input.expectedLastScheduledFor
-						? { expectedLastScheduledFor: new Date(input.expectedLastScheduledFor).toISOString() }
-						: {}),
-					nextDueAt: new Date(input.nextDueAt).toISOString(),
-					payload: structuredClone(input.payload),
-				},
-				signal,
-			),
+		const enqueued = await this.#request(
+			{
+				action: "enqueue_wake",
+				orchestratorId: this.#orchestratorId,
+				routineId: input.routineId,
+				expectedVersion: input.expectedVersion,
+				occurrenceId: input.occurrenceId,
+				occurrenceKey: input.occurrenceKey,
+				triggerId: input.triggerId,
+				scheduledFor: new Date(input.scheduledFor).toISOString(),
+				...(input.expectedLastScheduledFor
+					? { expectedLastScheduledFor: new Date(input.expectedLastScheduledFor).toISOString() }
+					: {}),
+				nextDueAt: new Date(input.nextDueAt).toISOString(),
+				payload: structuredClone(input.payload),
+			},
+			signal,
 		);
+		return parseRoutineWakeOccurrence(enqueued, input.occurrenceId);
 	}
 
 	async reconcileExpired(orchestratorId: string, signal?: AbortSignal): Promise<void> {

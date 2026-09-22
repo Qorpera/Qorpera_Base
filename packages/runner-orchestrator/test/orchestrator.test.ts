@@ -213,7 +213,7 @@ describe("cloud runner orchestrator", () => {
 		const occurrenceId = "13131313-1313-4313-8313-131313131313";
 		const scheduledFor = "2026-08-20T12:00:00.000Z";
 		const fakeFetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-			const body = JSON.parse(String(init?.body)) as { action: string };
+			const body = JSON.parse(String(init?.body)) as { action: string; occurrenceKey?: string };
 			if (body.action === "routine_heads") {
 				return Response.json({
 					value: {
@@ -239,6 +239,18 @@ describe("cloud runner orchestrator", () => {
 						],
 						has_more: false,
 						next_after_routine_id: null,
+					},
+				});
+			}
+			if (body.occurrenceKey === "slot:paused") {
+				// A paused company: nothing admitted, cursor untouched.
+				return Response.json({
+					value: {
+						occurrence_id: null,
+						status: "deferred",
+						run_id: null,
+						scheduled_for: scheduledFor,
+						reason: "paused",
 					},
 				});
 			}
@@ -275,6 +287,18 @@ describe("cloud runner orchestrator", () => {
 				payload: { coalesced: 1 },
 			}),
 		).resolves.toEqual({ occurrenceId, status: "queued", scheduledFor });
+		await expect(
+			control.enqueueRoutineWake({
+				routineId,
+				expectedVersion: 3,
+				occurrenceId,
+				occurrenceKey: "slot:paused",
+				triggerId: "schedule-main",
+				scheduledFor,
+				nextDueAt: "2026-08-20T13:00:00.000Z",
+				payload: { coalesced: 0 },
+			}),
+		).resolves.toEqual({ occurrenceId, status: "deferred", scheduledFor });
 	});
 
 	it.each(["optional", "required", "silent"])("enqueues %s interval wakes", async (replyPolicy) => {
