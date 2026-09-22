@@ -1,0 +1,52 @@
+[Unit]
+Description=Qorpera shared execution: single-lane runner for sandbox slot %i
+Documentation=https://github.com/Qorpera/Qorpera_Base
+Wants=network-online.target
+After=network-online.target qorpera-shared-run-host@%i.service
+BindsTo=qorpera-shared-run-host@%i.service
+
+[Service]
+Type=exec
+User=qorpera-shared-runner-%i
+Group=qorpera-shared-runner-%i
+WorkingDirectory=/var/lib/qorpera-shared-execution/slots/%i/runner
+Environment=HOME=/var/lib/qorpera-shared-execution/slots/%i/runner
+Environment=XDG_RUNTIME_DIR=/run/qorpera-shared-runner/%i
+# The service writes the configuration into this slot's runner state, owned by
+# the slot's runner account, as the one-run guest bootstrap installs it.
+Environment=QORPERA_RUNNER_CONFIG=/var/lib/qorpera-shared-execution/slots/%i/runner/config.json
+RuntimeDirectory=qorpera-shared-runner/%i
+RuntimeDirectoryMode=0700
+LoadCredential=qorpera-runner-activation:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-runner-activation
+LoadCredential=qorpera-runner-assignment:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-runner-assignment
+LoadCredential=qorpera-native-bridge:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-native-bridge
+ExecStart=/usr/bin/node /opt/qorpera-runner/qorpera-ephemeral-runner.mjs
+# A sandbox serves exactly one run: once the runner has exited (success or
+# failure) the shared execution service retires the slot and releases its
+# company-ceiling reservation.
+Restart=no
+TimeoutStopSec=45s
+KillMode=control-group
+KillSignal=SIGTERM
+UMask=0077
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/qorpera-shared-execution/slots/%i/runner /run/qorpera-shared-runner/%i
+InaccessiblePaths=/var/lib/qorpera/identities /var/lib/qorpera-shared-execution/journals /run/qorpera-shared-execution -/var/lib/qorpera/identity -/var/lib/qorpera-bootstrap -/var/lib/qorpera-native-provider
+ProtectHome=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=yes
+RestrictSUIDSGID=yes

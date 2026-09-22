@@ -8,7 +8,7 @@ import { matchesKey } from "../../ui/keys.ts";
 import { presentationLocale, uiText } from "../../ui/preferences.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { type AuthController, displayName } from "../auth.ts";
-import type { AgentState, CompanyController } from "../company.ts";
+import { type AgentState, type CompanyController, isAgentPairSession } from "../company.ts";
 import type { Route } from "../router.ts";
 import type { SettingsTab } from "./settings.ts";
 
@@ -503,6 +503,8 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 				(session) =>
 					session.status === "open" &&
 					matches(session.title) &&
+					// A pair transcript is reached from the chips in the agents' threads, never from the rail.
+					!isAgentPairSession(session) &&
 					(!session.staffAgentId ||
 						!active.some((agent) => agent.id === session.staffAgentId) ||
 						(session.executionScope &&

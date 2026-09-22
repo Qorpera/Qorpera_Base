@@ -1613,12 +1613,14 @@ export class CloudRunnerOrchestrator {
 					if (
 						!(error instanceof CloudRunnerOrchestratorRequestError) ||
 						error.status !== 423 ||
-						assignAttempt >= 10 ||
+						assignAttempt >= 20 ||
 						signal?.aborted
 					) {
 						throw error;
 					}
-					await waitForPoll(3_000, signal ?? new AbortController().signal);
+					// A sandbox activates within a second; a booting guest within
+					// tens. Back off from 250 ms towards 3 s inside the claim window.
+					await waitForPoll(Math.min(3_000, 250 * assignAttempt), signal ?? new AbortController().signal);
 				}
 			}
 		} catch (error) {
@@ -1686,7 +1688,7 @@ export class CloudRunnerOrchestrator {
 	}
 
 	async run(signal: AbortSignal, options: CloudRunnerOrchestratorLoopOptions = {}): Promise<void> {
-		const pollIntervalMs = options.pollIntervalMs ?? 500;
+		const pollIntervalMs = options.pollIntervalMs ?? 250;
 		if (!Number.isSafeInteger(pollIntervalMs) || pollIntervalMs < 10 || pollIntervalMs > 60_000) {
 			throw new Error("Orchestrator poll interval is outside the supported range");
 		}

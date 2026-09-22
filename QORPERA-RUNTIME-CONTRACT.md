@@ -490,7 +490,7 @@ Provider-native session IDs are resumability hints, not wake identity.
 | Human | Reply first. Work. Deliver or request a real decision. Silence is invalid. |
 | First run | Greet and learn when no assignment exists; otherwise begin the supplied startup assignment. |
 | Routine | Execute the stored intent. Silence is valid when policy permits and there is nothing useful to report. |
-| Agent | Treat the sender as a coworker. Do not create acknowledgement ping-pong. Report to a human only when audience or policy calls for it. |
+| Agent | Treat the sender as a coworker. Answer through the peer channel when asked or useful; never acknowledge an acknowledgement; silence is valid. Speak in your own thread only when the member should know (pair policy, 14.6). |
 | Room | Act as yourself for the room audience. Keep sends bounded. Silence is allowed. Private member communication remains a separate authorized send. |
 
 Scheduled and listener-triggered jobs both use the routine entrypoint with a
@@ -1074,6 +1074,29 @@ contract revision.
 Agent-to-agent messages are durable addressed cloud messages. Delivery creates
 an agent wake once, using an idempotent message identity. Sending “thanks” back
 does not become an infinite acknowledgement loop.
+
+Amendment 2026-09-22 (visibility and reply). A message between two agents is
+company-visible and answerable:
+
+- Every pair of agents has one **pair transcript**: a company-audience
+  conversation bound to the unordered pair, view-only for members. The message
+  is one event in that transcript, spoken by the sender.
+- Both agents' own shared threads carry a **chip** for the message ("Messaged
+  B" in the sender's thread, "Message from A" in the receiver's) that opens the
+  pair transcript. The chip carries no message text.
+- The receiver wakes **in its own shared thread** under the pair policy:
+  initial send forbidden, final send optional, silence allowed, at most two
+  public sends. It answers the coworker through the same peer channel, which
+  puts the answer in the pair transcript and wakes the sender in the sender's
+  thread under the same policy. A member post in either thread is a human wake
+  and starts a new causal root.
+- The kernel bounds an exchange by **hops**, not by "agent already visited":
+  at most 6 peer messages per causal root and 20 per pair per rolling hour, on
+  top of the company wake ceiling and the founder stop. A tripped budget
+  refuses the wake (causal-fence receipt) and leaves one line in the pair
+  transcript. File-event and routine fences are unchanged.
+- Workers (13) are not messaging: they have no mouth and report to their parent.
+  Group chats (14.7) remain the place for handoffs that need several agents.
 
 ### 14.7 Rooms
 
@@ -1862,6 +1885,39 @@ description (Step 8 record). The cloud retirement is migration
 gateway that stops building the responsibilities folder. Either may be rolled
 out first: the database accepts both genesis trees, and the gateway waits for a
 database that still mints documents.
+
+### 2026-09-22 amendment: shared execution service
+
+Refines section 12 and supersedes the per-run machine clauses of the
+2026-09-16 amendment. Member runs execute in **sandboxes** started by a
+long-lived **execution host** on an enabled node, not in a virtual machine
+booted per run. A sandbox is one run's pair of one-run service units (the
+member's native provider host and the single-lane runner) on a numbered slot
+with its own accounts, loopback ports, tmpfs credentials and scratch
+directories; the official provider harness still runs as one process per
+member per run inside its existing containment. The sandbox is the running
+unit for the section 7.4 company ceiling, reserved and released through the
+same admission functions as before. "Member execution machine 4 vCPU / 8 GiB"
+becomes a per-sandbox resource cap set by policy; the execution host itself
+is the node machine.
+
+A node's execution host is a fixture created by the operator from the pinned
+runner guest image, replaced, never relabelled, on bundle activation. It pins
+one runtime bundle and refuses runs pinned to another. A run whose sandbox
+fails is that attempt's failure under the existing retry path; queued jobs are
+served by the restarted host. The control plane remains the only dispatcher;
+its orchestrator polls at 250 ms.
+
+Login custody is unchanged by this amendment: a member's Compute Identity
+volume is attached to the execution host of its home node, the capsule master
+key is handed to one run's native host as a credential, and the credential
+capsule is opened only inside that host's private scratch root. With one
+execution host per node the identity-home rule of 2026-09-16 continues to
+hold; moving login custody into the cloud secret broker (which would make
+nodes symmetric for any member) is a separate, later amendment.
+
+Proposal review keeps its copy-isolated one-run guest. Company Computers
+remain shared virtual machines under section 12.
 
 ### Current implementation checkpoint
 

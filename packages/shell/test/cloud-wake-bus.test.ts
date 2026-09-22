@@ -716,3 +716,120 @@ describe("cloud-only wake transport", () => {
 		);
 	});
 });
+
+function pairWakeFixture() {
+	const { authority, envelope } = fixture();
+	const sessionId = authority.identity.sessionId ?? randomUUID();
+	const identity = { ...authority.identity, audienceKind: "company" as const, audienceUserId: null, sessionId };
+	const coworkerId = randomUUID();
+	const pair = policies.find((item) => item.scenario === "agent-pair")!.policy;
+	const pairSessionId = randomUUID();
+	const pairEventId = randomUUID();
+	const wake: CloudWakeEnvelope = {
+		...envelope,
+		kind: "agent",
+		actorStaffId: coworkerId,
+		actorUserId: identity.requesterUserId,
+		parentRunId: randomUUID(),
+		audience: { kind: "company", userId: null, sessionId },
+		source: { kind: "coworker", id: envelope.id, occurrenceKey: `coworker:${randomUUID()}:ask-1` },
+		policy: pair,
+		payload: {
+			text: "Could you check the note?",
+			senderStaffId: coworkerId,
+			receiptId: randomUUID(),
+			pairSessionId,
+			pairEventId,
+			transcript: [
+				{
+					eventId: pairEventId,
+					staffAgentId: coworkerId,
+					text: "Could you check the note?",
+					at: "2026-09-22T19:24:00.000000Z",
+				},
+			],
+		},
+		causal: { rootId: envelope.id, agentIds: [coworkerId, identity.staffAgentId] },
+	};
+	return { identity, wake, coworkerId, pair };
+}
+
+describe("coworker message in the agent's own thread (contract 14.6, 2026-09-22)", () => {
+	it("parses the pair policy exactly: no opening word, an optional final word, two sends at most", () => {
+		const { pair } = pairWakeFixture();
+		expect(parseCloudWakePolicy(pair)).toEqual(pair);
+		expect(parseCloudWakePolicy({ ...pair, maxPublicSends: 3 })).toEqual(REQUIRED_CLOUD_WAKE_POLICY);
+		expect(parseCloudWakePolicy({ ...pair, silenceAllowed: false })).toEqual(REQUIRED_CLOUD_WAKE_POLICY);
+		expect(parseCloudWakePolicy({ ...pair, initial: "optional" })).toEqual(REQUIRED_CLOUD_WAKE_POLICY);
+	});
+	it("accepts the wake with the agent's thread, the transcript identity and the exchange so far", () => {
+		const { identity, wake } = pairWakeFixture();
+		const parsed = parseCloudWakeEnvelope(wake, identity);
+		expect(parsed).toEqual(wake);
+		expect(parsed.policy.maxPublicSends).toBe(2);
+		expect(parsed.audience.sessionId).toBe(identity.sessionId);
+		expect(Object.isFrozen(parsed.payload.transcript)).toBe(true);
+		// Without the exchange (a first message) the payload still parses.
+		const { transcript: _omitted, ...first } = wake.payload;
+		expect(parseCloudWakeEnvelope({ ...wake, payload: first }, identity).payload).toEqual(first);
+	});
+	it("still reads an occurrence admitted before v70: no thread, no mouth, no transcript", () => {
+		const { identity, wake } = pairWakeFixture();
+		const silent = policies.find((item) => item.scenario === "agent")!.policy;
+		const legacyIdentity = { ...identity, sessionId: null };
+		const { pairSessionId: _s, pairEventId: _e, transcript: _t, ...payload } = wake.payload;
+		const legacy = { ...wake, audience: { ...wake.audience, sessionId: null }, policy: silent, payload };
+		expect(parseCloudWakeEnvelope(legacy, legacyIdentity).policy.maxPublicSends).toBe(0);
+	});
+	it.each([
+		[
+			"a thread without the pair policy",
+			(wake: CloudWakeEnvelope) => ({ ...wake, policy: policies.find((item) => item.scenario === "agent")!.policy }),
+		],
+		[
+			"the pair policy without a thread",
+			(wake: CloudWakeEnvelope, identity: CloudNativeToolIdentity) =>
+				[
+					{ ...wake, audience: { ...wake.audience, sessionId: null } },
+					{ ...identity, sessionId: null },
+				] as const,
+		],
+		[
+			"a transcript identity without its event",
+			(wake: CloudWakeEnvelope) => ({ ...wake, payload: { ...wake.payload, pairEventId: undefined } }),
+		],
+		[
+			"a transcript longer than the kernel sends",
+			(wake: CloudWakeEnvelope) => ({
+				...wake,
+				payload: {
+					...wake.payload,
+					transcript: Array.from({ length: 25 }, () => (wake.payload.transcript as unknown[])[0]),
+				},
+			}),
+		],
+		[
+			"a transcript line with an extra key",
+			(wake: CloudWakeEnvelope) => ({
+				...wake,
+				payload: {
+					...wake.payload,
+					transcript: [{ ...(wake.payload.transcript as Record<string, unknown>[])[0], role: "system" }],
+				},
+			}),
+		],
+		[
+			"a payload key the kernel never writes",
+			(wake: CloudWakeEnvelope) => ({ ...wake, payload: { ...wake.payload, priority: true } }),
+		],
+		[
+			"a sender who is not the actor",
+			(wake: CloudWakeEnvelope) => ({ ...wake, payload: { ...wake.payload, senderStaffId: randomUUID() } }),
+		],
+	])("rejects %s", (_name, mutate) => {
+		const { identity, wake } = pairWakeFixture();
+		const result = mutate(wake, identity);
+		const [mutated, who] = Array.isArray(result) ? result : [result, identity];
+		expect(() => parseCloudWakeEnvelope(JSON.parse(JSON.stringify(mutated)), who)).toThrow();
+	});
+});
