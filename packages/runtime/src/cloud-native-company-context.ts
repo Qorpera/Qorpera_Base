@@ -542,7 +542,7 @@ export function cloudCompanyContextTool(
 					enum: [...new Set([...sources.values()].map((source) => source.content.sha256))],
 				},
 				offset: { type: "integer", minimum: 0 },
-				limit: { type: "integer", minimum: 4, maximum: 1024 },
+				limit: { type: "integer", minimum: 4, maximum: 16384 },
 			},
 			required: ["sourceKind", "id", "sha256", "offset", "limit"],
 			additionalProperties: false,
@@ -558,7 +558,7 @@ export function cloudCompanyContextTool(
 				(args.offset as number) > source.content.originalBytes ||
 				!Number.isSafeInteger(args.limit) ||
 				(args.limit as number) < 4 ||
-				(args.limit as number) > 1024
+				(args.limit as number) > 16384
 			)
 				throw new Error("Context source is unavailable");
 			return {
