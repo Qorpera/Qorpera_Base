@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
 import { chmod, chown, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -9,6 +8,17 @@ import { validateLxdNativeCompanyRuntime } from "./lxd-company-runtime.ts";
 import type { CloudRunnerAssignmentDelivery, CloudRunnerInstance, CloudRunnerWork } from "./orchestrator.ts";
 import { validateCloudRunnerWork } from "./orchestrator.ts";
 import type { CloudRunnerProviderServiceBackend } from "./provider-service.ts";
+import {
+	canonical,
+	exactRunner,
+	ProviderAdmissionRefused,
+	record,
+	runAttemptAcquisitionId,
+	sha256,
+	supabaseServiceHeaders,
+	token,
+	workSha256,
+} from "./provider-shared.ts";
 import {
 	readSharedExecutionIdentity,
 	type SharedExecutionIdentityAuthority,
@@ -27,7 +37,11 @@ import {
  *
  * The control plane is unchanged: the same runner rows, the same company
  * ceiling reservation per sandbox, the same assignment protocol. The
- * orchestrator sees one provider with the node's native adapter id. */
+ * orchestrator sees one provider with the node's native adapter id.
+ *
+ * Work this host cannot serve (another job type, another harness, a sandbox
+ * still retiring) is answered as an admission deferral, never as a failure:
+ * the control plane keeps the job queued and lets the right provider claim it. */
 
 const JOURNAL_SCHEMA = "qorpera.shared-execution-journal/v1";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -38,6 +52,15 @@ const ACCOUNT_PREFIX_PATTERN = /^[a-z][a-z0-9-]{0,24}$/;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const RESERVING_RETIREMENT_MS = 10 * 60_000;
 const MAX_JOURNAL_BYTES = 64 * 1024;
+/** After this many failed retirements a sandbox is recorded as lost and its
+ * slot is handed back; the reason stays in the archived journal. */
+const MAX_RETIRE_ATTEMPTS = 12;
+/** The provider's own refusal reasons. `NODE_NOT_PREFERRED` is the control
+ * plane's "defer this orchestrator only" reason: another provider on another
+ * node can still take the job. The others defer every orchestrator briefly. */
+const REFUSAL_JOB_UNSUPPORTED = "NODE_NOT_PREFERRED";
+const REFUSAL_CAPACITY = "SANDBOX_CAPACITY_EXHAUSTED";
+const REFUSAL_RETIRING = "SANDBOX_RETIRING";
 
 export type SharedExecutionPhysicalState =
 	| "reserving"
@@ -82,6 +105,8 @@ export interface SharedExecutionUnitControl {
 	start(unit: string, signal?: AbortSignal): Promise<void>;
 	stop(unit: string, signal?: AbortSignal): Promise<void>;
 	active(unit: string, signal?: AbortSignal): Promise<boolean>;
+	/** The subset of `units` that is active or activating, in one query. */
+	activeSet(units: readonly string[], signal?: AbortSignal): Promise<Set<string>>;
 }
 
 export interface SharedExecutionAccount {
@@ -118,8 +143,12 @@ export interface SharedExecutionJournal {
 	runner: CloudRunnerInstance;
 	physicalState: SharedExecutionPhysicalState;
 	credentials: { activationSha256: string; assignmentSha256: string; nativeBridgeSha256: string };
+	/** The reservation call was sent; a release is owed even when the reply was lost. */
+	capacityRequested?: boolean;
+	/** The reservation was confirmed. */
 	capacityRegistered?: boolean;
 	capacityReleased?: boolean;
+	retireAttempts?: number;
 	assignmentId?: string;
 	stopReason?: string;
 	createdAt: string;
@@ -134,101 +163,11 @@ interface SlotCredentials {
 
 const execFileAsync = promisify(execFile);
 
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
-	return value as Record<string, unknown>;
-}
+/** Same derivation as the LXD provider (see provider-shared). */
+export const sharedExecutionAcquisitionId = runAttemptAcquisitionId;
 
-function canonical(value: unknown): unknown {
-	if (Array.isArray(value)) return value.map((entry) => canonical(entry));
-	if (!value || typeof value !== "object") return value;
-	const output: Record<string, unknown> = {};
-	for (const key of Object.keys(value).sort()) {
-		const entry = (value as Record<string, unknown>)[key];
-		if (entry !== undefined) output[key] = canonical(entry);
-	}
-	return output;
-}
-
-function sha256(value: string): string {
-	return createHash("sha256").update(value).digest("hex");
-}
-
-function uuid(value: unknown, label: string): string {
-	if (typeof value !== "string" || !UUID_PATTERN.test(value)) throw new Error(`${label} is invalid`);
-	return value;
-}
-
-function token(): string {
-	return randomBytes(32).toString("base64url");
-}
-
-function supabaseServiceHeaders(serviceKey: string): Record<string, string> {
-	const headers: Record<string, string> = { apikey: serviceKey };
-	if (serviceKey.startsWith("eyJ") && serviceKey.split(".").length === 3) {
-		headers.authorization = `Bearer ${serviceKey}`;
-	}
-	return headers;
-}
-
-/** The control plane annotates each dispatch with attempt-scoped fields; a
- * retry is the same immutable run, so the journal digest must not vary with them. */
-function workSha256(work: CloudRunnerWork): string {
-	const { attempt: _attempt, ...immutable } = work as CloudRunnerWork & { attempt?: unknown };
-	return sha256(JSON.stringify(canonical(immutable)));
-}
-
-/** Same derivation as the LXD provider: a control-plane continuation gets a
- * new sandbox, never a replay of the prior attempt's credentials or activation. */
-export function sharedExecutionAcquisitionId(runId: string, attempt: number): string {
-	if (attempt === 1) return runId;
-	const digest = sha256(`qorpera.lxd-run-attempt/v1:${runId}:${attempt}`);
-	const variant = ((Number.parseInt(digest[16] ?? "0", 16) & 0x3) | 0x8).toString(16);
-	return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-8${digest.slice(13, 16)}-${variant}${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
-}
-
-function exactRunner(value: unknown, work: CloudRunnerWork, adapterId: string): CloudRunnerInstance {
-	const input = record(value, "Provisioned runner");
-	if (
-		input.runner_kind !== "qorpera_computer" ||
-		input.provider_adapter !== adapterId ||
-		input.status === "revoked" ||
-		input.compute_identity_id !== work.computeIdentityId ||
-		input.logical_computer_id !== (work.logicalComputerId ?? null) ||
-		input.worker_class !== work.workerClass ||
-		input.template_key !== work.computeTemplateKey ||
-		input.template_version !== work.computeTemplateVersion ||
-		input.compute_policy_sha256 !== work.computePolicySha256 ||
-		!Array.isArray(input.capabilities) ||
-		!input.capabilities.includes(work.requiredCapability)
-	) {
-		throw new Error("Provisioned runner does not match immutable compute authority");
-	}
-	return {
-		runnerId: uuid(input.runner_id, "Provisioned runner id"),
-		...(work.logicalComputerId ? { logicalComputerId: work.logicalComputerId } : {}),
-		...(work.computeIdentityId ? { computeIdentityId: work.computeIdentityId } : {}),
-		workerClass: work.workerClass,
-		providerAdapter: adapterId,
-		capabilities: input.capabilities as CloudRunnerInstance["capabilities"],
-		templateKey: work.computeTemplateKey as string,
-		templateVersion: work.computeTemplateVersion as string,
-		policySha256: work.computePolicySha256 as string,
-	};
-}
-
-export class SharedExecutionAdmissionRefused extends Error {
-	readonly category = "admission_refused" as const;
-	readonly state: "refused" | "deferred";
-	readonly reason: string;
-
-	constructor(state: "refused" | "deferred", reason: string) {
-		super("Sandbox start was not admitted");
-		this.name = "SharedExecutionAdmissionRefused";
-		this.state = state;
-		this.reason = reason;
-	}
-}
+/** Kept for callers that import the old name; the class is the shared one. */
+export const SharedExecutionAdmissionRefused = ProviderAdmissionRefused;
 
 class SystemctlUnitControl implements SharedExecutionUnitControl {
 	async start(unit: string, signal?: AbortSignal): Promise<void> {
@@ -247,15 +186,24 @@ class SystemctlUnitControl implements SharedExecutionUnitControl {
 		);
 	}
 	async active(unit: string, signal?: AbortSignal): Promise<boolean> {
+		return (await this.activeSet([unit], signal)).has(unit);
+	}
+	async activeSet(units: readonly string[], signal?: AbortSignal): Promise<Set<string>> {
+		if (units.length === 0) return new Set();
+		let stdout: string;
 		try {
-			const { stdout } = await execFileAsync("/usr/bin/systemctl", ["is-active", unit], { signal, timeout: 10_000 });
-			return stdout.trim() === "active" || stdout.trim() === "activating";
+			({ stdout } = await execFileAsync("/usr/bin/systemctl", ["is-active", ...units], { signal, timeout: 10_000 }));
 		} catch (error) {
-			// `is-active` exits non-zero for inactive and failed units.
-			const output = (error as { stdout?: string }).stdout?.trim();
-			if (output === "active" || output === "activating") return true;
-			return false;
+			// `is-active` exits non-zero when any unit is inactive; the states are still printed, one per line.
+			stdout = (error as { stdout?: string }).stdout ?? "";
 		}
+		const states = stdout.split("\n");
+		const active = new Set<string>();
+		units.forEach((unit, index) => {
+			const state = states[index]?.trim();
+			if (state === "active" || state === "activating" || state === "deactivating") active.add(unit);
+		});
+		return active;
 	}
 }
 
@@ -315,6 +263,9 @@ function validateConfig(config: SharedExecutionProviderConfig): void {
 		throw new Error("Start timeout is outside the supported range");
 }
 
+/** Work this host can run. Malformed work is an error; well-formed work this
+ * host does not serve (another job type, another harness) is deferred so the
+ * provider that does serve it can claim the job. */
 function assertGovernedWork(work: CloudRunnerWork): asserts work is CloudRunnerWork & {
 	computeIdentityId: string;
 	computeTemplateKey: string;
@@ -329,9 +280,17 @@ function assertGovernedWork(work: CloudRunnerWork): asserts work is CloudRunnerW
 		work.sponsor.provider !== "openai" ||
 		work.sponsor.nativeHarness !== "codex-cli"
 	)
-		throw new Error("Governed native runtime requires the pinned Codex subscription harness");
+		throw new ProviderAdmissionRefused(
+			"deferred",
+			REFUSAL_JOB_UNSUPPORTED,
+			"Shared execution serves the pinned Codex subscription harness only",
+		);
 	if (work.jobType === "proposal_review")
-		throw new Error("Shared execution serves live turn work; proposal review keeps its copy-isolated guest");
+		throw new ProviderAdmissionRefused(
+			"deferred",
+			REFUSAL_JOB_UNSUPPORTED,
+			"Shared execution serves live turn work; proposal review keeps its copy-isolated guest",
+		);
 }
 
 async function writePrivateFile(path: string, content: string, owner?: SharedExecutionAccount): Promise<void> {
@@ -373,6 +332,10 @@ async function delay(ms: number, signal?: AbortSignal): Promise<void> {
 	});
 }
 
+function terminal(state: SharedExecutionPhysicalState): boolean {
+	return state === "stopped" || state === "lost";
+}
+
 export class SharedExecutionProviderBackend implements CloudRunnerProviderServiceBackend {
 	readonly adapterId: string;
 	readonly #config: SharedExecutionProviderConfig;
@@ -384,6 +347,8 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 	readonly #requireIdentityMount: boolean | undefined;
 	readonly #identityOwnerUid: number | undefined;
 	readonly #accounts = new Map<string, SharedExecutionAccount>();
+	/** Acquisitions whose retirement is in flight; a second retire of the same one is a no-op. */
+	readonly #retiring = new Set<string>();
 	#serial: Promise<void> = Promise.resolve();
 
 	constructor(config: SharedExecutionProviderConfig, dependencies: SharedExecutionProviderDependencies = {}) {
@@ -405,24 +370,33 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		return this.#config.slotCount;
 	}
 
-	/** Every journal is reconciled on every pass; one failing journal must not
-	 * stop the retirement of finished sandboxes behind it. */
+	/** Every live journal is reconciled on every pass; one failing journal must
+	 * not stop the retirement of finished sandboxes behind it. Unit states are
+	 * read in one query, and no lock is held while units are stopped. */
 	async reconcile(signal?: AbortSignal): Promise<void> {
-		await this.#exclusive(async () => {
-			await this.#ensureRoots();
-			const failures: unknown[] = [];
-			for (const journal of await this.#journals()) {
-				try {
-					await this.#reconcileJournal(journal, signal);
-				} catch (error) {
-					if (signal?.aborted) throw error;
-					failures.push(error);
-				}
+		await this.#exclusive(() => this.#ensureRoots());
+		const journals = await this.#journals();
+		// Terminal journals still in the live directory (written before archiving
+		// existed, or by an interrupted archive) move out of the live set here.
+		for (const journal of journals.filter((journal) => terminal(journal.physicalState)))
+			await this.#exclusive(() => this.#archive(journal));
+		const live = journals.filter((journal) => !terminal(journal.physicalState));
+		const active = await this.#units.activeSet(
+			live.flatMap((journal) => [this.#unit("host", journal.slot), this.#unit("runner", journal.slot)]),
+			signal,
+		);
+		const failures: unknown[] = [];
+		for (const journal of live) {
+			try {
+				await this.#reconcileJournal(journal, active, signal);
+			} catch (error) {
+				if (signal?.aborted) throw error;
+				failures.push(error);
 			}
-			if (failures.length === 1) throw failures[0];
-			if (failures.length > 1)
-				throw new AggregateError(failures, "Shared execution reconcile failed for several sandboxes");
-		});
+		}
+		if (failures.length === 1) throw failures[0];
+		if (failures.length > 1)
+			throw new AggregateError(failures, "Shared execution reconcile failed for several sandboxes");
 	}
 
 	async close(): Promise<void> {
@@ -433,7 +407,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 	async acquire(acquisitionKey: string, work: CloudRunnerWork, signal: AbortSignal): Promise<CloudRunnerInstance> {
 		assertGovernedWork(work);
 		if (acquisitionKey !== work.runId) throw new Error("Provider acquisition must use the immutable run id");
-		const acquisitionId = sharedExecutionAcquisitionId(work.runId, work.attempt);
+		const acquisitionId = runAttemptAcquisitionId(work.runId, work.attempt);
 		const digest = workSha256(work);
 		const journal = await this.#exclusive(async (): Promise<SharedExecutionJournal> => {
 			await this.#ensureRoots();
@@ -441,22 +415,30 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			if (current) {
 				if (current.workSha256 !== digest)
 					throw new Error("Shared execution acquisition id is bound to another immutable work request");
-				if (
-					current.physicalState === "stopping" ||
-					current.physicalState === "stopped" ||
-					current.physicalState === "lost"
-				)
-					throw new Error(`Shared execution acquisition is ${current.physicalState} and cannot be replayed`);
+				if (current.physicalState === "stopping")
+					throw new ProviderAdmissionRefused(
+						"deferred",
+						REFUSAL_RETIRING,
+						"Shared execution sandbox for this acquisition is still retiring",
+					);
 				return current;
 			}
+			// A retired sandbox for this acquisition was archived; a retry of the
+			// same attempt starts a fresh one. Prior attempts still holding a slot
+			// must finish retiring first; a newer attempt never yields to an older one.
 			for (const prior of await this.#journals()) {
-				if (prior.runId !== work.runId || prior.acquisitionId === acquisitionId) continue;
+				if (prior.runId !== work.runId || prior.acquisitionId === acquisitionId || terminal(prior.physicalState))
+					continue;
 				if (prior.attempt >= work.attempt) throw new Error("Shared execution refuses an older run attempt");
-				if (prior.physicalState !== "stopped" && prior.physicalState !== "lost")
-					throw new Error("Shared execution prior run attempt has not retired its sandbox");
+				throw new ProviderAdmissionRefused(
+					"deferred",
+					REFUSAL_RETIRING,
+					"Shared execution prior run attempt has not retired its sandbox",
+				);
 			}
 			const slot = await this.#freeSlot();
-			if (slot === undefined) throw new SharedExecutionAdmissionRefused("deferred", "SANDBOX_CAPACITY_EXHAUSTED");
+			if (slot === undefined)
+				throw new ProviderAdmissionRefused("deferred", REFUSAL_CAPACITY, "Every sandbox slot is busy");
 			const credentials = await this.#slotCredentials(slot, true);
 			const runner = exactRunner(
 				await this.#rpc(
@@ -518,7 +500,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		signal?: AbortSignal,
 	): Promise<void> {
 		validateCloudRunnerWork(delivery.work);
-		const acquisitionId = sharedExecutionAcquisitionId(delivery.work.runId, delivery.work.attempt);
+		const acquisitionId = runAttemptAcquisitionId(delivery.work.runId, delivery.work.attempt);
 		const current = await this.#exclusive(async () => {
 			const journal = await this.#readJournal(acquisitionId);
 			if (
@@ -565,11 +547,9 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		reason: "delivery_failed" | "idle" | "revoked",
 		signal?: AbortSignal,
 	): Promise<void> {
-		await this.#exclusive(async () => {
-			const current = (await this.#journals()).find((journal) => journal.runner.runnerId === runner.runnerId);
-			if (!current || current.physicalState === "stopped" || current.physicalState === "lost") return;
-			await this.#retire(current, reason, signal);
-		});
+		const current = (await this.#journals()).find((journal) => journal.runner.runnerId === runner.runnerId);
+		if (!current || terminal(current.physicalState)) return;
+		await this.#retire(current.acquisitionId, reason, signal);
 	}
 
 	async #ensureReady(
@@ -585,17 +565,18 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				await this.#reserveMachine(current, timeout);
 				current = await this.#exclusive(async () => {
 					const reserved = (await this.#readJournal(current.acquisitionId)) ?? current;
-					const material = await this.#writeMaterial(reserved, work, timeout);
-					const next = { ...reserved, physicalState: "starting" as const, ...material };
+					await this.#writeMaterial(reserved, work, timeout);
+					const next = { ...reserved, physicalState: "starting" as const };
 					await this.#writeJournal(next);
 					return next;
 				});
+			}
+			// A replay after a restart may find either unit not yet started.
+			if (!(await this.#units.active(this.#unit("host", current.slot), timeout)))
 				await this.#units.start(this.#unit("host", current.slot), timeout);
-			}
 			await this.#waitHealthy(current.hostPort, timeout, "native provider host");
-			if (!(await this.#units.active(this.#unit("runner", current.slot), timeout))) {
+			if (!(await this.#units.active(this.#unit("runner", current.slot), timeout)))
 				await this.#units.start(this.#unit("runner", current.slot), timeout);
-			}
 			await this.#waitHealthy(current.inboxPort, timeout, "runner assignment inbox");
 			return this.#exclusive(async () => {
 				const latest = (await this.#readJournal(current.acquisitionId)) ?? current;
@@ -604,11 +585,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				return latest.runner;
 			});
 		} catch (error) {
-			await this.#exclusive(async () => {
-				const latest = await this.#readJournal(journal.acquisitionId);
-				if (latest && latest.physicalState !== "stopped" && latest.physicalState !== "lost")
-					await this.#retire(latest, "delivery_failed");
-			}).catch(() => undefined);
+			await this.#retire(journal.acquisitionId, "delivery_failed").catch(() => undefined);
 			throw error;
 		}
 	}
@@ -631,8 +608,16 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		}
 	}
 
+	/** The reservation call is journaled before it is sent: if the reply is
+	 * lost, retire still owes a release, and tolerates one that finds nothing. */
 	async #reserveMachine(current: SharedExecutionJournal, signal: AbortSignal): Promise<void> {
 		if (current.capacityReleased) throw new Error("Released sandbox capacity cannot be reserved again");
+		if (!current.capacityRequested) {
+			await this.#exclusive(async () => {
+				const latest = (await this.#readJournal(current.acquisitionId)) ?? current;
+				await this.#writeJournal({ ...latest, capacityRequested: true });
+			});
+		}
 		const result = record(
 			await this.#rpc(
 				"qorpera_reserve_runtime_machine",
@@ -651,8 +636,18 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			(result.state === "refused" || result.state === "deferred") &&
 			typeof result.reason === "string" &&
 			/^[A-Z_]{3,64}$/.test(result.reason)
-		)
-			throw new SharedExecutionAdmissionRefused(result.state, result.reason);
+		) {
+			// A committed refusal means no allocation exists: nothing is owed.
+			await this.#exclusive(async () => {
+				const latest = (await this.#readJournal(current.acquisitionId)) ?? current;
+				await this.#writeJournal({ ...latest, capacityRequested: false });
+			});
+			throw new ProviderAdmissionRefused(
+				result.state,
+				result.reason,
+				"Sandbox start was not admitted by the company ceiling",
+			);
+		}
 		if (
 			Object.keys(result).sort().join() !== "allocationId,instanceSha256,state" ||
 			result.state !== "reserved" ||
@@ -666,65 +661,112 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		});
 	}
 
+	/** Release exactly once. A confirmed reservation must be confirmed released;
+	 * a reservation whose reply was lost is released on a best-effort basis. */
 	async #releaseMachine(current: SharedExecutionJournal, signal?: AbortSignal): Promise<void> {
-		if (current.capacityReleased || !current.capacityRegistered) return;
-		const result = record(
-			await this.#rpc(
-				"qorpera_release_runtime_machine",
-				{
-					p_allocation_id: current.acquisitionId,
-					p_provider_adapter: this.adapterId,
-					p_instance_sha256: current.instanceSha256,
-				},
-				signal,
-			),
-			"Machine release",
-		);
-		if (
-			Object.keys(result).sort().join() !== "allocationId,instanceSha256,state" ||
-			result.state !== "released" ||
-			result.allocationId !== current.acquisitionId ||
-			result.instanceSha256 !== current.instanceSha256
-		)
-			throw new Error("Sandbox capacity release was not confirmed");
+		if (current.capacityReleased || (!current.capacityRequested && !current.capacityRegistered)) return;
+		let result: Record<string, unknown> | undefined;
+		try {
+			result = record(
+				await this.#rpc(
+					"qorpera_release_runtime_machine",
+					{
+						p_allocation_id: current.acquisitionId,
+						p_provider_adapter: this.adapterId,
+						p_instance_sha256: current.instanceSha256,
+					},
+					signal,
+				),
+				"Machine release",
+			);
+		} catch (error) {
+			if (current.capacityRegistered) throw error;
+			return;
+		}
+		const confirmed =
+			Object.keys(result).sort().join() === "allocationId,instanceSha256,state" &&
+			result.state === "released" &&
+			result.allocationId === current.acquisitionId &&
+			result.instanceSha256 === current.instanceSha256;
+		if (!confirmed && current.capacityRegistered) throw new Error("Sandbox capacity release was not confirmed");
 	}
 
 	/** Stop both units, wipe the slot, release the company ceiling exactly once
-	 * and record the terminal state. Safe to repeat. */
-	async #retire(current: SharedExecutionJournal, reason: string, signal?: AbortSignal): Promise<void> {
-		await this.#writeJournal({ ...current, physicalState: "stopping", stopReason: reason });
-		await this.#units.stop(this.#unit("runner", current.slot), signal).catch(() => undefined);
-		await this.#units.stop(this.#unit("host", current.slot), signal).catch(() => undefined);
-		if (
-			(await this.#units.active(this.#unit("runner", current.slot), signal)) ||
-			(await this.#units.active(this.#unit("host", current.slot), signal))
-		)
-			throw new Error("Sandbox units are still running; capacity remains occupied");
-		await this.#wipeSlot(current.slot);
-		await this.#releaseMachine(current, signal);
-		await this.#writeJournal({ ...current, physicalState: "stopped", stopReason: reason, capacityReleased: true });
+	 * and record the terminal state. Runs in three phases so that no lock is
+	 * held while units are stopping; a second retire of the same acquisition
+	 * while one is in flight is a no-op. After MAX_RETIRE_ATTEMPTS failures the
+	 * sandbox is recorded as lost: the slot returns to service and the archived
+	 * journal keeps the reason. */
+	async #retire(acquisitionId: string, reason: string, signal?: AbortSignal): Promise<void> {
+		if (this.#retiring.has(acquisitionId)) return;
+		this.#retiring.add(acquisitionId);
+		try {
+			const marked = await this.#exclusive(async () => {
+				const current = await this.#readJournal(acquisitionId);
+				if (!current || terminal(current.physicalState)) return undefined;
+				const next = { ...current, physicalState: "stopping" as const, stopReason: current.stopReason ?? reason };
+				await this.#writeJournal(next);
+				return next;
+			});
+			if (!marked) return;
+			await this.#units.stop(this.#unit("runner", marked.slot), signal).catch(() => undefined);
+			await this.#units.stop(this.#unit("host", marked.slot), signal).catch(() => undefined);
+			const stillActive = await this.#units.activeSet(
+				[this.#unit("runner", marked.slot), this.#unit("host", marked.slot)],
+				signal,
+			);
+			await this.#exclusive(async () => {
+				const current = (await this.#readJournal(acquisitionId)) ?? marked;
+				if (terminal(current.physicalState)) return;
+				try {
+					if (stillActive.size > 0) throw new Error("Sandbox units are still running; capacity remains occupied");
+					await this.#wipeSlot(current.slot);
+					await this.#releaseMachine(current, signal);
+				} catch (error) {
+					const attempts = (current.retireAttempts ?? 0) + 1;
+					if (attempts < MAX_RETIRE_ATTEMPTS) {
+						await this.#writeJournal({ ...current, retireAttempts: attempts });
+						throw error;
+					}
+					await this.#archive({
+						...current,
+						physicalState: "lost",
+						retireAttempts: attempts,
+						stopReason: `${current.stopReason ?? reason}: ${error instanceof Error ? error.message : String(error)}`,
+					});
+					return;
+				}
+				await this.#archive({ ...current, physicalState: "stopped", capacityReleased: true });
+			});
+		} finally {
+			this.#retiring.delete(acquisitionId);
+		}
 	}
 
-	async #reconcileJournal(current: SharedExecutionJournal, signal?: AbortSignal): Promise<void> {
+	async #reconcileJournal(
+		current: SharedExecutionJournal,
+		active: ReadonlySet<string>,
+		signal?: AbortSignal,
+	): Promise<void> {
 		switch (current.physicalState) {
 			case "stopped":
 			case "lost":
 				return;
 			case "stopping":
-				await this.#retire(current, current.stopReason ?? "idle", signal);
+				await this.#retire(current.acquisitionId, current.stopReason ?? "idle", signal);
 				return;
 			case "reserving":
 			case "starting": {
 				const age = this.#now() - Date.parse(current.updatedAt);
-				if (age > RESERVING_RETIREMENT_MS) await this.#retire(current, "delivery_failed", signal);
+				if (age > RESERVING_RETIREMENT_MS) await this.#retire(current.acquisitionId, "delivery_failed", signal);
 				return;
 			}
 			case "registered":
 			case "assigned": {
 				// One sandbox serves exactly one run: when its runner unit has
 				// exited (success or failure), the run is over and the slot is free.
-				if (!(await this.#units.active(this.#unit("runner", current.slot), signal)))
-					await this.#retire(current, "idle", signal);
+				if (!active.has(this.#unit("runner", current.slot)))
+					await this.#retire(current.acquisitionId, "idle", signal);
 				return;
 			}
 		}
@@ -732,9 +774,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 
 	async #freeSlot(): Promise<number | undefined> {
 		const busy = new Set<number>();
-		for (const journal of await this.#journals()) {
-			if (journal.physicalState !== "stopped" && journal.physicalState !== "lost") busy.add(journal.slot);
-		}
+		for (const journal of await this.#journals()) if (!terminal(journal.physicalState)) busy.add(journal.slot);
 		for (let slot = 0; slot < this.#config.slotCount; slot++) if (!busy.has(slot)) return slot;
 		return undefined;
 	}
@@ -749,6 +789,10 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 
 	#slotState(slot: number): string {
 		return join(this.#config.stateRoot, "slots", String(slot));
+	}
+
+	#journalPath(acquisitionId: string): string {
+		return join(this.#config.stateRoot, "journals", `${acquisitionId}.json`);
 	}
 
 	async #slotAccount(kind: "host" | "runner", slot: number): Promise<SharedExecutionAccount> {
@@ -767,6 +811,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		for (const [path, mode] of [
 			[this.#config.stateRoot, 0o711],
 			[join(this.#config.stateRoot, "journals"), 0o700],
+			[join(this.#config.stateRoot, "journals", "archive"), 0o700],
 			[join(this.#config.stateRoot, "slots"), 0o711],
 			[this.#config.runRoot, 0o700],
 			[join(this.#config.runRoot, "slots"), 0o700],
@@ -804,11 +849,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 	/** Everything PID 1 hands to the two units: credentials (LoadCredential=)
 	 * and the native host environment (EnvironmentFile=), plus the runner
 	 * configuration written into the runner account's own state directory. */
-	async #writeMaterial(
-		current: SharedExecutionJournal,
-		work: CloudRunnerWork,
-		signal: AbortSignal,
-	): Promise<Partial<SharedExecutionJournal>> {
+	async #writeMaterial(current: SharedExecutionJournal, work: CloudRunnerWork, signal: AbortSignal): Promise<void> {
 		const runtime = this.#config.nativeCompanyRuntime;
 		const credentials = await this.#slotCredentials(current.slot, false);
 		if (
@@ -921,7 +962,6 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		const runnerConfigPath = join(runnerState, "config.json");
 		await rm(runnerConfigPath, { force: true });
 		await writePrivateFile(runnerConfigPath, `${runnerConfig}\n`, runnerAccount);
-		return {};
 	}
 
 	async #wipeSlot(slot: number): Promise<void> {
@@ -931,6 +971,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		await emptyDirectory(join(this.#slotState(slot), "runner", "workspace"));
 	}
 
+	/** Live journals only: terminal ones move to `journals/archive/`. */
 	async #journals(): Promise<SharedExecutionJournal[]> {
 		const directory = join(this.#config.stateRoot, "journals");
 		let entries: string[];
@@ -951,7 +992,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 
 	async #readJournal(acquisitionId: string): Promise<SharedExecutionJournal | undefined> {
 		if (!UUID_PATTERN.test(acquisitionId)) return undefined;
-		const path = join(this.#config.stateRoot, "journals", `${acquisitionId}.json`);
+		const path = this.#journalPath(acquisitionId);
 		let encoded: string;
 		try {
 			const metadata = await stat(path);
@@ -970,11 +1011,23 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 
 	async #writeJournal(journal: SharedExecutionJournal): Promise<void> {
 		const next = { ...journal, updatedAt: new Date(this.#now()).toISOString() };
-		const path = join(this.#config.stateRoot, "journals", `${journal.acquisitionId}.json`);
+		const path = this.#journalPath(journal.acquisitionId);
 		await mkdir(join(this.#config.stateRoot, "journals"), { recursive: true, mode: 0o700 });
 		const temporary = `${path}.${process.pid}.tmp`;
 		await writeFile(temporary, `${JSON.stringify(next, null, 2)}\n`, { encoding: "utf-8", mode: 0o600, flag: "w" });
 		await rename(temporary, path);
+	}
+
+	/** Record the terminal state and move the journal out of the live set. The
+	 * archived file keeps the acquisition id and its retirement timestamp. */
+	async #archive(journal: SharedExecutionJournal): Promise<void> {
+		await this.#writeJournal(journal);
+		const archive = join(this.#config.stateRoot, "journals", "archive");
+		await mkdir(archive, { recursive: true, mode: 0o700 });
+		await rename(
+			this.#journalPath(journal.acquisitionId),
+			join(archive, `${journal.acquisitionId}.${this.#now()}.${journal.physicalState}.json`),
+		);
 	}
 
 	async #rpc(name: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {

@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { chmod, mkdir, open, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
@@ -12,6 +12,17 @@ import { lxdNativeNodePolicy } from "./lxd-native-node-policy.ts";
 import type { CloudRunnerAssignmentDelivery, CloudRunnerInstance, CloudRunnerWork } from "./orchestrator.ts";
 import { validateCloudRunnerWork } from "./orchestrator.ts";
 import type { CloudRunnerProviderServiceBackend } from "./provider-service.ts";
+import {
+	canonical,
+	exactRunner,
+	ProviderAdmissionRefused,
+	record,
+	runAttemptAcquisitionId,
+	sha256,
+	supabaseServiceHeaders,
+	token,
+	workSha256,
+} from "./provider-shared.ts";
 import { reserveRuntimeNodeMachine } from "./runtime-node-admission.ts";
 import { readRuntimeNodeHost } from "./runtime-node-host.ts";
 
@@ -243,97 +254,12 @@ function companyRuntimeAuthority(
 	};
 }
 
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
-	return value as Record<string, unknown>;
-}
-
-function canonical(value: unknown): unknown {
-	if (Array.isArray(value)) return value.map((entry) => canonical(entry));
-	if (!value || typeof value !== "object") return value;
-	const output: Record<string, unknown> = {};
-	for (const key of Object.keys(value).sort()) {
-		const entry = (value as Record<string, unknown>)[key];
-		if (entry !== undefined) output[key] = canonical(entry);
-	}
-	return output;
-}
-
-function sha256(value: string): string {
-	return createHash("sha256").update(value).digest("hex");
-}
-
-function workSha256(work: CloudRunnerWork): string {
-	/* The control plane annotates each dispatch with attempt-scoped fields; a
-	 * retry is the same immutable run, so the journal digest must not vary
-	 * with them — or every second attempt is refused as foreign work. */
-	const { attempt: _attempt, ...immutable } = work as CloudRunnerWork & { attempt?: unknown };
-	return sha256(JSON.stringify(canonical(immutable)));
-}
-
-function runAttemptAcquisitionId(runId: string, attempt: number): string {
-	// The first attempt retains its original key and historical journals. A
-	// control-plane continuation gets a new physical guest, never a replay of
-	// the prior attempt's credentials, activation or retained recovery volume.
-	if (attempt === 1) return runId;
-	const digest = sha256(`qorpera.lxd-run-attempt/v1:${runId}:${attempt}`);
-	const variant = ((Number.parseInt(digest[16] ?? "0", 16) & 0x3) | 0x8).toString(16);
-	return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-8${digest.slice(13, 16)}-${variant}${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
-}
-
-function token(): string {
-	return randomBytes(32).toString("base64url");
-}
-
 function bootstrapSha256(files: readonly LxdGuestBootstrapFile[]): string {
 	return sha256(
 		JSON.stringify(
 			files.map((file) => ({ path: file.path, contentSha256: sha256(file.content), mode: "0600", uid: 0, gid: 0 })),
 		),
 	);
-}
-
-function supabaseServiceHeaders(serviceKey: string): Record<string, string> {
-	const headers: Record<string, string> = { apikey: serviceKey };
-	if (serviceKey.startsWith("eyJ") && serviceKey.split(".").length === 3) {
-		headers.authorization = `Bearer ${serviceKey}`;
-	}
-	return headers;
-}
-
-function uuid(value: unknown, label: string): string {
-	if (typeof value !== "string" || !UUID_PATTERN.test(value)) throw new Error(`${label} is invalid`);
-	return value;
-}
-
-function exactRunner(value: unknown, work: CloudRunnerWork, adapterId: string): CloudRunnerInstance {
-	const input = record(value, "Provisioned runner");
-	if (
-		input.runner_kind !== "qorpera_computer" ||
-		input.provider_adapter !== adapterId ||
-		input.status === "revoked" ||
-		input.compute_identity_id !== work.computeIdentityId ||
-		input.logical_computer_id !== (work.logicalComputerId ?? null) ||
-		input.worker_class !== work.workerClass ||
-		input.template_key !== work.computeTemplateKey ||
-		input.template_version !== work.computeTemplateVersion ||
-		input.compute_policy_sha256 !== work.computePolicySha256 ||
-		!Array.isArray(input.capabilities) ||
-		!input.capabilities.includes(work.requiredCapability)
-	) {
-		throw new Error("Provisioned runner does not match immutable compute authority");
-	}
-	return {
-		runnerId: uuid(input.runner_id, "Provisioned runner id"),
-		...(work.logicalComputerId ? { logicalComputerId: work.logicalComputerId } : {}),
-		...(work.computeIdentityId ? { computeIdentityId: work.computeIdentityId } : {}),
-		workerClass: work.workerClass,
-		providerAdapter: adapterId,
-		capabilities: input.capabilities as CloudRunnerInstance["capabilities"],
-		templateKey: work.computeTemplateKey as string,
-		templateVersion: work.computeTemplateVersion as string,
-		policySha256: work.computePolicySha256 as string,
-	};
 }
 
 function runnerFromJournal(value: unknown): CloudRunnerInstance {
@@ -805,16 +731,10 @@ export class HttpLxdGuestTransport implements LxdGuestTransport {
 
 /** The company ceiling or the node chooser refused or deferred a machine start. The
  * orchestrator releases its claim without spending an infrastructure retry on it. */
-export class LxdMachineAdmissionRefused extends Error {
-	readonly category = "admission_refused" as const;
-	readonly state: "refused" | "deferred";
-	readonly reason: string;
-
+export class LxdMachineAdmissionRefused extends ProviderAdmissionRefused {
 	constructor(state: "refused" | "deferred", reason: string) {
-		super("Machine start was not admitted by the company ceiling");
+		super(state, reason, "Machine start was not admitted by the company ceiling");
 		this.name = "LxdMachineAdmissionRefused";
-		this.state = state;
-		this.reason = reason;
 	}
 }
 

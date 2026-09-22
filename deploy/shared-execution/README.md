@@ -33,7 +33,7 @@ What does **not** change:
 | `/etc/qorpera/shared-execution.env`, `/etc/qorpera/shared-execution-credentials/` | root 0600/0700 | service configuration and its systemd credentials |
 | `/etc/qorpera/runner-orchestrator.env` | root 0600 | orchestrator configuration (`QORPERA_RUNNER_PROVIDER_URL=http://127.0.0.1:18450`) |
 | `/var/lib/qorpera/identities/<id>` | root, one mount each | attached Compute Identity volumes |
-| `/var/lib/qorpera-shared-execution/journals/<acquisition>.json` | root | durable sandbox journal (`qorpera.shared-execution-journal/v1`) |
+| `/var/lib/qorpera-shared-execution/journals/<acquisition>.json` | root | live sandbox journal (`qorpera.shared-execution-journal/v1`); terminal ones move to `journals/archive/<acquisition>.<ms>.<state>.json` |
 | `/var/lib/qorpera-shared-execution/slots/<n>/host` | `qorpera-shared-host-<n>` | native host scratch (capsule opened here, wiped after the run) |
 | `/var/lib/qorpera-shared-execution/slots/<n>/runner/{state,workspace}` | `qorpera-shared-runner-<n>` | runner authority state and workspace |
 | `/run/qorpera-shared-execution/slots/<n>/{credentials/*,native-provider.env}` | root 0600, tmpfs | what PID 1 hands to the two units (`LoadCredential=`, `EnvironmentFile=`) |
@@ -45,23 +45,39 @@ shared between the service and a slot.
 
 ## Sandbox lifecycle
 
-1. `acquire`: governed work only (native subscription, Codex harness, live
-   turn work). Free slot or an `admission_refused` deferral
-   (`SANDBOX_CAPACITY_EXHAUSTED`); mint slot credentials; provision the runner;
-   journal `reserving`; reserve the company ceiling (a refusal surfaces as the
-   same 422 the LXD provider uses); verify the identity volume against the
-   cloud recovery authority (marker, key digest, recovery epoch marker — never
-   initialise); write the slot material; `starting`; start the host unit, wait
-   for `/healthz`; start the runner unit, wait for its inbox; `registered`.
+1. `acquire`: work this host does not serve — another harness, proposal
+   review — is answered as an `admission_refused` deferral with reason
+   `NODE_NOT_PREFERRED`, which defers this orchestrator only so the provider
+   that serves it can claim the job. A free slot or a deferral
+   (`SANDBOX_CAPACITY_EXHAUSTED`); mint slot credentials; provision the
+   runner; journal `reserving`; journal that the reservation is requested,
+   then reserve the company ceiling (a refusal surfaces as the same 422 the
+   LXD provider uses); verify the identity volume against the cloud recovery
+   authority (marker, key digest, recovery epoch marker — never initialise);
+   write the slot material; `starting`; start the host unit if it is not up,
+   wait for `/healthz`; start the runner unit if it is not up, wait for its
+   inbox; `registered`. A replay after a service restart resumes from
+   whichever step the journal recorded.
 2. `deliver`: post the assignment capability to the slot's inbox; `assigned`.
-3. `reconcile` (every orchestrator poll): a `registered`/`assigned` sandbox
-   whose runner unit has exited is retired; a `reserving`/`starting` sandbox
-   older than ten minutes is retired.
-4. retire: stop runner then host unit, remove the tmpfs material, empty the
-   slot scratch, release the company ceiling exactly once, journal `stopped`.
+3. `reconcile` (every orchestrator poll and every 5 s on the service's own
+   timer): unit states are read in one `systemctl is-active` query; a
+   `registered`/`assigned` sandbox whose runner unit has exited is retired; a
+   `reserving`/`starting` sandbox older than ten minutes is retired.
+4. retire, in three phases so no lock is held while units stop: mark
+   `stopping`; stop runner then host unit (bounded, never blocking); then
+   verify both are down, remove the tmpfs material, empty the slot scratch,
+   release the company ceiling exactly once (a reservation whose reply was
+   lost is released on a best-effort basis), and archive the journal as
+   `stopped` under `journals/archive/`. A retirement that keeps failing (a
+   unit that will not die, a release the control plane does not confirm) is
+   retried on every pass and after twelve failures archived as `lost` with the
+   reason, so the slot returns to service and the live set stays small.
 
-A later attempt of the same run gets a new acquisition id, new credentials
-and a free slot; an older attempt still holding a slot is refused.
+Retries: a retry of the same attempt after its sandbox was retired starts a
+fresh sandbox with fresh credentials; a retry while that sandbox is still
+retiring, or a later attempt while the prior one still holds a slot, is
+deferred (`SANDBOX_RETIRING`) rather than failed; an older attempt than the
+one holding the slot is refused.
 
 ## Installing an execution host (pilot runbook, node 2)
 

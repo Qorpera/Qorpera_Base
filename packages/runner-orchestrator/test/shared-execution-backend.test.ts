@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { LxdNativeCompanyRuntimeConfig } from "../src/lxd-company-runtime.ts";
 import type { CloudRunnerAssignmentDelivery, CloudRunnerWork } from "../src/orchestrator.ts";
+import { ProviderAdmissionRefused } from "../src/provider-shared.ts";
 import {
 	SharedExecutionAdmissionRefused,
 	SharedExecutionProviderBackend,
@@ -94,16 +95,21 @@ function work(overrides: Partial<CloudRunnerWork> = {}): CloudRunnerWork {
 class FakeUnits implements SharedExecutionUnitControl {
 	readonly activeUnits = new Set<string>();
 	readonly log: string[] = [];
+	/** Units that ignore stop, like a native host that never answers SIGTERM. */
+	readonly stuck = new Set<string>();
 	async start(unit: string): Promise<void> {
 		this.log.push(`start ${unit}`);
 		this.activeUnits.add(unit);
 	}
 	async stop(unit: string): Promise<void> {
 		this.log.push(`stop ${unit}`);
-		this.activeUnits.delete(unit);
+		if (!this.stuck.has(unit)) this.activeUnits.delete(unit);
 	}
 	async active(unit: string): Promise<boolean> {
 		return this.activeUnits.has(unit);
+	}
+	async activeSet(units: readonly string[]): Promise<Set<string>> {
+		return new Set(units.filter((unit) => this.activeUnits.has(unit)));
 	}
 }
 
@@ -118,8 +124,11 @@ interface Fixture {
 	masterKey: string;
 	runtime: LxdNativeCompanyRuntimeConfig;
 	reservation: { state: string; reason?: string };
+	/** How the fake control plane answers a release: confirmed, an unconfirmed shape, or an HTTP error. */
+	release: "released" | "unconfirmed" | "error";
 	identityState: SharedExecutionIdentityState;
 	provisioned: number;
+	clock: { now: number };
 }
 
 async function fixture(options: { slotCount?: number; epoch?: number } = {}): Promise<Fixture> {
@@ -180,8 +189,10 @@ async function fixture(options: { slotCount?: number; epoch?: number } = {}): Pr
 		masterKey,
 		runtime,
 		reservation: { state: "reserved" },
+		release: "released",
 		identityState: { companyId, computeIdentityId, epoch, blocked: false, keySha256, canInitialize: false },
 		provisioned: 0,
+		clock: { now: Date.parse("2026-09-22T12:00:00Z") },
 	};
 	const config: SharedExecutionProviderConfig = {
 		adapterId: "native26-test",
@@ -237,12 +248,15 @@ async function fixture(options: { slotCount?: number; epoch?: number } = {}): Pr
 					instanceSha256: body.p_instance_sha256,
 				});
 			}
-			if (name === "qorpera_release_runtime_machine")
+			if (name === "qorpera_release_runtime_machine") {
+				if (state.release === "error") return new Response("no allocation", { status: 404 });
+				if (state.release === "unconfirmed") return Response.json({ state: "refused" });
 				return Response.json({
 					state: "released",
 					allocationId: body.p_allocation_id,
 					instanceSha256: body.p_instance_sha256,
 				});
+			}
 			return new Response("unknown rpc", { status: 404 });
 		}
 		if (url.hostname === "127.0.0.1") {
@@ -271,6 +285,7 @@ async function fixture(options: { slotCount?: number; epoch?: number } = {}): Pr
 		account: async () => ({ uid: process.getuid?.() ?? 0, gid: process.getgid?.() ?? 0 }),
 		requireIdentityMount: false,
 		identityOwnerUid: process.getuid?.() ?? 0,
+		now: () => state.clock.now,
 	});
 	return state;
 }
@@ -291,8 +306,27 @@ function delivery(assignmentToken?: string): CloudRunnerAssignmentDelivery {
 	};
 }
 
+/** The live journal, or the newest archived one once the sandbox is terminal. */
 async function journal(f: Fixture, acquisitionId = runId): Promise<Record<string, unknown>> {
-	return JSON.parse(await readFile(join(f.stateRoot, "journals", `${acquisitionId}.json`), "utf-8"));
+	try {
+		return JSON.parse(await readFile(join(f.stateRoot, "journals", `${acquisitionId}.json`), "utf-8"));
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
+	const archive = join(f.stateRoot, "journals", "archive");
+	const names = (await readdir(archive)).filter((name) => name.startsWith(`${acquisitionId}.`)).sort();
+	const newest = names.at(-1);
+	if (!newest) throw new Error(`no journal for ${acquisitionId}`);
+	return JSON.parse(await readFile(join(archive, newest), "utf-8"));
+}
+
+async function liveJournalNames(f: Fixture): Promise<string[]> {
+	try {
+		return (await readdir(join(f.stateRoot, "journals"))).filter((name) => name.endsWith(".json")).sort();
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+		throw error;
+	}
 }
 
 describe("shared execution provider backend", () => {
@@ -408,6 +442,7 @@ describe("shared execution provider backend", () => {
 		expect(await readdir(join(f.stateRoot, "slots", "0", "host"))).toEqual([]);
 		await f.backend.reconcile();
 		expect(f.rpc.filter((call) => call.name === "qorpera_release_runtime_machine")).toHaveLength(1);
+		expect(await liveJournalNames(f)).toEqual([]);
 	});
 
 	it("replays an acquisition without provisioning again and refuses foreign work on the same id", async () => {
@@ -505,9 +540,9 @@ describe("shared execution provider backend", () => {
 		);
 		const retry = sharedExecutionAcquisitionId(runId, 2);
 		expect(retry).not.toBe(runId);
-		await expect(f.backend.acquire(runId, work({ attempt: 2 }), signal)).rejects.toThrow(
-			"has not retired its sandbox",
-		);
+		const retiring = await f.backend.acquire(runId, work({ attempt: 2 }), signal).catch((value) => value);
+		expect(retiring).toBeInstanceOf(ProviderAdmissionRefused);
+		expect(retiring).toMatchObject({ state: "deferred", reason: "SANDBOX_RETIRING" });
 		f.units.activeUnits.delete("qorpera-shared-runner@0.service");
 		await f.backend.reconcile();
 		await f.backend.acquire(runId, work({ attempt: 2 }), signal);
@@ -517,12 +552,181 @@ describe("shared execution provider backend", () => {
 	it("refuses work outside the governed native runtime", async () => {
 		const f = await fixture();
 		const signal = new AbortController().signal;
-		await expect(f.backend.acquire(runId, work({ jobType: "proposal_review" }), signal)).rejects.toThrow(
-			"proposal review",
-		);
-		await expect(
-			f.backend.acquire(runId, work({ sponsor: { ...work().sponsor, nativeHarness: "claude-code" } }), signal),
-		).rejects.toThrow("pinned Codex subscription harness");
+		const review = await f.backend
+			.acquire(runId, work({ jobType: "proposal_review" }), signal)
+			.catch((value) => value);
+		expect(review).toBeInstanceOf(ProviderAdmissionRefused);
+		expect(review).toMatchObject({ category: "admission_refused", state: "deferred", reason: "NODE_NOT_PREFERRED" });
+		const harness = await f.backend
+			.acquire(runId, work({ sponsor: { ...work().sponsor, nativeHarness: "claude-code" } }), signal)
+			.catch((value) => value);
+		expect(harness).toMatchObject({ category: "admission_refused", state: "deferred", reason: "NODE_NOT_PREFERRED" });
 		expect(f.provisioned).toBe(0);
+		expect(await liveJournalNames(f)).toEqual([]);
+	});
+
+	it("starts a fresh sandbox when the same attempt is retried after its sandbox was retired", async () => {
+		const f = await fixture();
+		const signal = new AbortController().signal;
+		await f.backend.acquire(runId, work(), signal);
+		const firstActivation = await readFile(
+			join(f.runRoot, "slots", "0", "credentials", "qorpera-runner-activation"),
+			"utf-8",
+		);
+		f.units.activeUnits.delete("qorpera-shared-runner@0.service");
+		await f.backend.reconcile();
+		expect(await journal(f)).toMatchObject({ physicalState: "stopped" });
+		await f.backend.acquire(runId, work(), signal);
+		expect(f.provisioned).toBe(2);
+		expect(await journal(f)).toMatchObject({ physicalState: "registered", slot: 0 });
+		const secondActivation = await readFile(
+			join(f.runRoot, "slots", "0", "credentials", "qorpera-runner-activation"),
+			"utf-8",
+		);
+		expect(secondActivation).not.toBe(firstActivation);
+		expect(f.rpc.filter((call) => call.name === "qorpera_release_runtime_machine")).toHaveLength(1);
+	});
+
+	it("defers a retry while the same acquisition is still retiring", async () => {
+		const f = await fixture();
+		const signal = new AbortController().signal;
+		await f.backend.acquire(runId, work(), signal);
+		f.units.stuck.add("qorpera-shared-run-host@0.service");
+		f.units.activeUnits.delete("qorpera-shared-runner@0.service");
+		await expect(f.backend.reconcile()).rejects.toThrow("still running");
+		expect(await journal(f)).toMatchObject({ physicalState: "stopping", retireAttempts: 1 });
+		const retry = await f.backend.acquire(runId, work(), signal).catch((value) => value);
+		expect(retry).toMatchObject({ category: "admission_refused", state: "deferred", reason: "SANDBOX_RETIRING" });
+		expect(f.provisioned).toBe(1);
+	});
+
+	it("restarts the units when a journal left in 'starting' is replayed after a restart", async () => {
+		const f = await fixture();
+		const signal = new AbortController().signal;
+		await f.backend.acquire(runId, work(), signal);
+		// Simulate a process death after the journal was written but before the units came up.
+		const path = join(f.stateRoot, "journals", `${runId}.json`);
+		const current = JSON.parse(await readFile(path, "utf-8"));
+		await writeFile(path, JSON.stringify({ ...current, physicalState: "starting" }));
+		f.units.activeUnits.clear();
+		f.units.log.length = 0;
+		await f.backend.acquire(runId, work(), signal);
+		expect(f.units.log).toEqual(["start qorpera-shared-run-host@0.service", "start qorpera-shared-runner@0.service"]);
+		expect(await journal(f)).toMatchObject({ physicalState: "registered" });
+		expect(f.provisioned).toBe(1);
+	});
+
+	it("retires a sandbox stuck in 'reserving' after ten minutes and still releases a reservation whose reply was lost", async () => {
+		const f = await fixture();
+		const path = join(f.stateRoot, "journals", `${runId}.json`);
+		await mkdir(join(f.stateRoot, "journals"), { recursive: true });
+		await writeFile(
+			path,
+			JSON.stringify({
+				schema: "qorpera.shared-execution-journal/v1",
+				acquisitionId: runId,
+				runId,
+				attempt: 1,
+				workSha256: "a".repeat(64),
+				jobType: "agent_turn",
+				profileId: companyId,
+				computeIdentityId,
+				slot: 2,
+				hostPort: 20004,
+				inboxPort: 20005,
+				instanceSha256: "b".repeat(64),
+				runner: {
+					runnerId,
+					workerClass: "managed_sandbox",
+					providerAdapter: "native26-test",
+					capabilities: ["agent_turn"],
+					templateKey: "qorpera-member-linux",
+					templateVersion: "v1",
+					policySha256: "f".repeat(64),
+					computeIdentityId,
+				},
+				physicalState: "reserving",
+				credentials: {
+					activationSha256: "c".repeat(64),
+					assignmentSha256: "d".repeat(64),
+					nativeBridgeSha256: "e".repeat(64),
+				},
+				capacityRequested: true,
+				createdAt: new Date(f.clock.now).toISOString(),
+				updatedAt: new Date(f.clock.now).toISOString(),
+			}),
+		);
+		await f.backend.reconcile();
+		expect(await journal(f)).toMatchObject({ physicalState: "reserving" });
+		f.clock.now += 11 * 60_000;
+		f.release = "error";
+		await f.backend.reconcile();
+		expect(await journal(f)).toMatchObject({
+			physicalState: "stopped",
+			stopReason: "delivery_failed",
+			capacityReleased: true,
+		});
+		expect(f.rpc.filter((call) => call.name === "qorpera_release_runtime_machine")).toHaveLength(1);
+		expect(await liveJournalNames(f)).toEqual([]);
+	});
+
+	it("gives a sandbox up as lost after repeated unconfirmed releases, keeping the reason in the archive", async () => {
+		const f = await fixture();
+		const signal = new AbortController().signal;
+		await f.backend.acquire(runId, work(), signal);
+		f.units.activeUnits.delete("qorpera-shared-runner@0.service");
+		f.release = "unconfirmed";
+		for (let attempt = 1; attempt < 12; attempt++) {
+			await expect(f.backend.reconcile()).rejects.toThrow("release was not confirmed");
+			expect(await journal(f)).toMatchObject({ physicalState: "stopping", retireAttempts: attempt });
+		}
+		await f.backend.reconcile();
+		const lost = await journal(f);
+		expect(lost).toMatchObject({ physicalState: "lost", retireAttempts: 12 });
+		expect(String(lost.stopReason)).toContain("release was not confirmed");
+		expect(await liveJournalNames(f)).toEqual([]);
+		await f.backend.acquire(runId, work(), signal);
+		expect(await journal(f)).toMatchObject({ physicalState: "registered", slot: 0 });
+	});
+
+	it("moves a terminal journal left in the live directory into the archive", async () => {
+		const f = await fixture();
+		const signal = new AbortController().signal;
+		await f.backend.acquire(runId, work(), signal);
+		f.units.activeUnits.delete("qorpera-shared-runner@0.service");
+		await f.backend.reconcile();
+		const archived = await journal(f);
+		// An older service wrote terminal journals in place; simulate one.
+		await writeFile(join(f.stateRoot, "journals", `${runId}.json`), JSON.stringify(archived));
+		expect(await liveJournalNames(f)).toEqual([`${runId}.json`]);
+		await f.backend.reconcile();
+		expect(await liveJournalNames(f)).toEqual([]);
+		expect(f.rpc.filter((call) => call.name === "qorpera_release_runtime_machine")).toHaveLength(1);
+	});
+
+	it("does not hold the service lock while units are stopping", async () => {
+		const f = await fixture();
+		const signal = new AbortController().signal;
+		const runner = await f.backend.acquire(runId, work(), signal);
+		let releaseStop: () => void = () => undefined;
+		const blocked = new Promise<void>((resolveStop) => {
+			releaseStop = resolveStop;
+		});
+		const slowStop = f.units.stop.bind(f.units);
+		f.units.stop = async (unit: string) => {
+			await blocked;
+			await slowStop(unit);
+		};
+		const stopping = f.backend.stop(runner, "revoked");
+		await new Promise((resolveTick) => setTimeout(resolveTick, 20));
+		const otherRun = "30000000-0000-4000-8000-000000000061";
+		const started = await Promise.race([
+			f.backend.acquire(otherRun, work({ runId: otherRun, sourceId: otherRun }), signal).then(() => "acquired"),
+			new Promise<string>((resolveWait) => setTimeout(() => resolveWait("blocked"), 500)),
+		]);
+		expect(started).toBe("acquired");
+		releaseStop();
+		await stopping;
+		expect(await journal(f)).toMatchObject({ physicalState: "stopped", stopReason: "revoked" });
 	});
 });
