@@ -311,15 +311,21 @@ describe("conversation UI boundaries", () => {
 	it("opens a loaded conversation at its latest message and keeps it there while the pane resizes", () => {
 		// The view renders before it is placed in the page, so the end of the
 		// thread can only be shown once the message pane has a size.
-		const observers: (() => void)[] = [];
+		const observers: { callback: () => void; targets: Element[]; disconnected: boolean }[] = [];
 		vi.stubGlobal(
 			"ResizeObserver",
 			class {
+				readonly #entry: (typeof observers)[number];
 				constructor(callback: () => void) {
-					observers.push(callback);
+					this.#entry = { callback, targets: [], disconnected: false };
+					observers.push(this.#entry);
 				}
-				observe() {}
-				disconnect() {}
+				observe(target: Element) {
+					this.#entry.targets.push(target);
+				}
+				disconnect() {
+					this.#entry.disconnected = true;
+				}
 			},
 		);
 		const f = fixture();
@@ -356,23 +362,74 @@ describe("conversation UI boundaries", () => {
 		Object.defineProperty(messages, "scrollHeight", { configurable: true, get: () => scrollHeight });
 		Object.defineProperty(messages, "clientHeight", { configurable: true, get: () => 400 });
 		expect(messages.textContent).toContain("Latest answer");
-		expect(observers).toHaveLength(1);
+		const sizes = observers.find((entry) => entry.targets.includes(messages))!;
+		expect(sizes.targets).toEqual([messages]);
 		document.body.append(view.el);
 		scrollHeight = 2000;
-		observers[0]!();
+		sizes.callback();
 		expect(scrollTop).toBe(2000);
 		// A reader who scrolled up to older messages is left there.
 		scrollTop = 500;
 		messages.dispatchEvent(new Event("scroll"));
 		scrollHeight = 2400;
-		observers[0]!();
+		sizes.callback();
 		expect(scrollTop).toBe(500);
 		// Back at the end, a pane that changes size still shows the latest message.
 		scrollTop = 2000;
 		messages.dispatchEvent(new Event("scroll"));
 		scrollHeight = 2600;
-		observers[0]!();
+		sizes.callback();
 		expect(scrollTop).toBe(2600);
+		view.dispose();
+		expect(sizes.disconnected).toBe(true);
+		scrollTop = 0;
+		sizes.callback();
+		expect(scrollTop).toBe(0);
+	});
+	it("still opens a loaded conversation at its latest message without a size observer", async () => {
+		vi.stubGlobal("ResizeObserver", undefined);
+		const f = fixture();
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({ team, staff: [staff], sessions: [{ ...session, staffAgentId: staff.id }], loading: false });
+		company.conversation(session.sessionId).set({
+			loading: false,
+			projection: {
+				items: [
+					{
+						kind: "agent",
+						id: id(84),
+						sequence: 1,
+						text: "Latest answer",
+						attachmentCount: 0,
+						phase: "final",
+						createdAt: timestamp,
+						authorUserId: userA.id,
+					},
+				],
+				hiddenCount: 0,
+				lastSequence: 1,
+			},
+		});
+		const view = new ConversationView(company, session.sessionId);
+		dispose = () => {
+			view.dispose();
+			company.stop();
+		};
+		const messages = view.el.querySelector<HTMLElement>(".messages")!;
+		let scrollTop = 0;
+		Object.defineProperty(messages, "scrollTop", {
+			configurable: true,
+			get: () => scrollTop,
+			set: (value: number) => {
+				scrollTop = value;
+			},
+		});
+		Object.defineProperty(messages, "scrollHeight", { configurable: true, get: () => 2000 });
+		Object.defineProperty(messages, "clientHeight", { configurable: true, get: () => 400 });
+		document.body.append(view.el);
+		expect(scrollTop).toBe(0);
+		await Promise.resolve();
+		expect(scrollTop).toBe(2000);
 	});
 	it("keeps the computer popover compact and the conversation usable at every width", () => {
 		const f = setup(),

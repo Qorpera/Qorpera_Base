@@ -296,7 +296,7 @@ export class ConversationView {
 		if (typeof ResizeObserver !== "undefined") {
 			this.#sizes = new ResizeObserver(() => this.#pinToBottom());
 			this.#sizes.observe(this.#messages);
-		}
+		} else queueMicrotask(() => this.#pinToBottom()); // The application mounts the view right after construction.
 		this.#conversationPane = h(
 			"div",
 			{ class: "thread-conversation" },
