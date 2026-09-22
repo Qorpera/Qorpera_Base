@@ -313,10 +313,10 @@
 .computer-panel.is-entered .screen-viewer-heading > span { overflow: hidden; text-overflow: ellipsis; }
 .computer-panel.is-entered .screen-viewer-heading small { flex: none; color: rgb(255 255 255 / 45%); font-size: 12px; font-weight: 500; }
 .computer-panel.is-entered .screen-viewer-controls { flex: none; gap: 8px; }
-.computer-panel.is-entered .screen-viewer-controls > button:not(.screen-viewer-close) { width: auto; height: 30px; min-height: 30px; padding: 0 12px; border: 1px solid rgb(255 255 255 / 20%); border-radius: 8px; color: #fff; background: rgb(255 255 255 / 10%); font-size: 12px; font-weight: 500; filter: none; }
+/* Icon buttons in the frame; the exit is the compress glyph, named "Back to thread" for the tooltip and screen readers. */
+.computer-panel.is-entered .screen-viewer-controls > button:not(.screen-viewer-close) { width: 30px; height: 30px; min-height: 30px; border: 1px solid rgb(255 255 255 / 20%); border-radius: 8px; color: #fff; background: rgb(255 255 255 / 10%); filter: none; }
 .computer-panel.is-entered .screen-viewer-controls > button:not(.screen-viewer-close):hover { background: rgb(255 255 255 / 18%); }
 .computer-panel.is-entered .screen-viewer-controls > button.screen-viewer-takeover[aria-pressed=true] { color: #9fc4ff; border-color: rgb(98 159 255 / 45%); background: rgb(98 159 255 / 18%); }
-.computer-panel.is-entered .screen-viewer-controls > button:not(.screen-viewer-close)::before { display: none; }
 /* The 8:5 screen fits whichever side is tighter: the frame's width, or its height minus the 44px titlebar and 12px bottom padding. */
 .computer-panel.is-entered .screen-viewer-stage { place-self: center; width: min(100%, calc((100cqh - 56px) * 1.6)); height: auto; aspect-ratio: 8 / 5; border: 1px solid rgb(255 255 255 / 14%); border-radius: 10px; background: #17181a; box-shadow: 0 0 0 1px rgb(0 0 0 / 70%), 0 24px 64px rgb(0 0 0 / 45%); }
 .computer-panel .screen-viewer-embedded:fullscreen { background: #0b0c0e; }
@@ -347,6 +347,7 @@
 .computer-panel .screen-viewer-controls > button:not(.screen-viewer-close)::before { content: ""; width: 16px; height: 16px; background: currentColor; mask: var(--computer-control-icon) center / contain no-repeat; }
 .computer-panel .screen-viewer-controls > button:not(.screen-viewer-close) { filter: drop-shadow(0 1px 2px rgb(0 0 0 / 80%)) drop-shadow(0 0 1px rgb(0 0 0 / 65%)); }
 .computer-panel .screen-viewer-takeover { --computer-control-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 3 15 10-7 1-3 7Z'/%3E%3C/svg%3E"); }
+.computer-panel .screen-viewer-back { --computer-control-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 8h5V3m8 0v5h5M8 21v-5H3m18 0h-5v5'/%3E%3C/svg%3E"); }
 .computer-panel .screen-viewer-reconnect { --computer-control-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 7v5h-5M20 12a8 8 0 1 0-2 5'/%3E%3C/svg%3E"); }
 .computer-panel .screen-viewer-controls > button[hidden] { display: none; }
 .computer-panel .screen-viewer-controls > button:disabled { display: none; }
