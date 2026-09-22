@@ -206,14 +206,16 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					return { idempotencyKey: input.idempotencyKey, text: input.text, phase: input.phase };
 				},
 				async execute(value, context) {
-					const receipt = await mouth.send(parseCloudAgentSendInput(value));
+					const input = parseCloudAgentSendInput(value);
+					const receipt = await mouth.send(input);
 					const replayed = deliveredMessageIds.has(receipt.messageId);
 					deliveredMessageIds.add(receipt.messageId);
 					const text = JSON.stringify(receipt);
 					context.observation?.finish(replayed ? "replayed" : "succeeded", {
 						outputBytes: Buffer.byteLength(text),
 					});
-					return { kind: "text", value: text };
+					// Contract 7.1: the final send closes the turn. Nothing after it reaches the member.
+					return { kind: "text", value: text, completesTurn: input.phase === "final" };
 				},
 			};
 			try {

@@ -249,6 +249,9 @@ class CodexBoundaryRpc {
 	#startingThread = false;
 	#startingTurn = false;
 	readonly #modelRequests = new Set<string>();
+	/** Call ids whose fenced result closes the turn (a confirmed final public send). */
+	readonly #turnEndCallIds = new Set<string>();
+	#turnEndRequested = false;
 	#finished = false;
 	#closed = false;
 
@@ -416,6 +419,19 @@ class CodexBoundaryRpc {
 		this.confirmTurn(request.turnId);
 		this.#modelRequests.add(request.requestId);
 		this.#observeFence(request);
+		// Contract 7.1: the final send closes the turn. Once its result has been
+		// fenced, stop the provider instead of paying for a closing model round
+		// whose text is never delivered. The interrupted completion is a success.
+		if (
+			!this.#turnEndRequested &&
+			this.#activeCalls === 0 &&
+			request.outputs.some((output) => this.#turnEndCallIds.has(output.callId))
+		) {
+			this.#turnEndRequested = true;
+			void this.request("turn/interrupt", { threadId: request.threadId, turnId: request.turnId }).catch(
+				() => undefined,
+			);
+		}
 	}
 
 	fail(message: string, category: CloudRuntimeErrorCategory = "unknown"): void {
@@ -648,12 +664,15 @@ class CodexBoundaryRpc {
 			this.#toolCalls++;
 			this.#activeCalls++;
 			void this.#boundary.invoke(callId, params.namespace, params.tool, params.arguments).then(
-				(result) => {
+				({ completesTurn, ...result }) => {
 					this.#activeCalls--;
 					if (this.#finished) {
 						this.fail("Native turn ended with a pending tool call", "invalid_response");
 						return;
 					}
+					// The host-only marker never reaches the provider; the fence that
+					// follows this result is where the turn ends (see assertModelRequest).
+					if (completesTurn) this.#turnEndCallIds.add(callId);
 					this.#write({ id: message.id, result });
 				},
 				() => {
@@ -687,7 +706,9 @@ class CodexBoundaryRpc {
 			)
 				throw new Error("Native completion binding failed");
 			this.#finished = true;
-			if (turn.status !== "completed" || turn.error != null) {
+			if (turn.status === "interrupted" && turn.error == null && this.#turnEndRequested) {
+				this.#resolveCompleted();
+			} else if (turn.status !== "completed" || turn.error != null) {
 				const error =
 					turn.error && typeof turn.error === "object" && !Array.isArray(turn.error)
 						? (turn.error as Record<string, unknown>)

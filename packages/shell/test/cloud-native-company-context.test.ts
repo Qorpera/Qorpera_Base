@@ -384,7 +384,8 @@ it("keeps a large hire charter pageable with its admitted hash rather than silen
 
 it("preserves the latest instruction and source bindings when admitted inputs exceed the pagination budget", () => {
 	const f = nativeCompanyContextFixture();
-	const logs = ["a", "b", "c"].map((character) => f.source("input", randomUUID(), character.repeat(64 * 1024)));
+	// 1 MiB each: with 16 KiB pages the three logs still need more read_context calls than the tool budget.
+	const logs = ["a", "b", "c"].map((character) => f.source("input", randomUUID(), character.repeat(1024 * 1024)));
 	const current = f.source("input", randomUUID(), "Ignore the three earlier logs. Just answer 17 × 24.");
 	f.context.currentInputs = [
 		...logs.map((source) => ({
@@ -406,7 +407,7 @@ it("preserves the latest instruction and source bindings when admitted inputs ex
 			id: source.id,
 			kind: "current_human_request",
 			authorUserId: context.identity.requesterUserId,
-			content: { sha256: source.content.sha256, originalBytes: 65536, nextOffset: 1024 },
+			content: { sha256: source.content.sha256, originalBytes: 1024 * 1024, nextOffset: 1024 },
 		});
 	}
 	const tool = cloudCompanyContextTool(context, f.binding, { call: vi.fn<CloudCompanyPathControl["call"]>() });
@@ -416,7 +417,8 @@ it("preserves the latest instruction and source bindings when admitted inputs ex
 			total + Math.ceil((source.content.originalBytes - Buffer.byteLength(source.content.text)) / pageLimit),
 		0,
 	);
-	expect(missingPages).toBe(189);
+	// Three admitted inputs of 1 MiB, 1 KiB shipped inline by this fixture, 64 pages of 16 KiB left each.
+	expect(missingPages).toBe(192);
 	const instructions = compileCloudNativeCompanyInstructions(context);
 	expect(instructions).toContain("There is no fixed limit on tool calls or time in an attempt");
 	expect(instructions).not.toMatch(/at most \d+ Qorpera tool calls/);
@@ -521,7 +523,7 @@ it("does not let context arguments choose another source, actor, hash or company
 		{ companyId: randomUUID() },
 		{ actor: f.authority.identity.sponsorUserId },
 		{ offset: -1 },
-		{ limit: 4096 },
+		{ limit: 16385 },
 	];
 	for (const patch of patches) expect(() => tool.parseArguments({ ...args, ...patch })).toThrow();
 	expect(call).not.toHaveBeenCalled();
