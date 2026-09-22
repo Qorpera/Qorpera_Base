@@ -517,13 +517,13 @@ describe("viewer UI state machine (fake DOM/noVNC, not visual cloud acceptance)"
 			// The first attempt's 2 s timer elapses while the second is only 0.5 s old: no note yet.
 			await vi.advanceTimersByTimeAsync(500);
 			expect(note.textContent).toBe("");
-			// Its late refusal and cleanup are ignored too.
+			// Its late refusal is ignored too, also after the beat a refusal waits before speaking.
 			first.reject(new Error("dismissed"));
-			await vi.advanceTimersByTimeAsync(0);
+			await vi.advanceTimersByTimeAsync(1);
 			expect(note.textContent).toBe("");
 			expect(f.expanded.mock.calls).toEqual([[true], [false], [true]]);
 			// The second attempt's own timer still speaks for it, two seconds after its own start.
-			await vi.advanceTimersByTimeAsync(1499);
+			await vi.advanceTimersByTimeAsync(1498);
 			expect(note.textContent).toBe("");
 			await vi.advanceTimersByTimeAsync(1);
 			expect(note.textContent).toBe("Full screen unavailable");

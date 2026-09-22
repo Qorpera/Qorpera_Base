@@ -307,7 +307,8 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 				if (!closed) syncFullscreen();
 			} catch {
 				// Full screen refused: the entered frame remains in the host and says so. Back, then Enter, asks again.
-				if (attempt === fullscreenAttempt) showNote();
+				// A beat later, so assistive tech has seen the empty live region before its text changes.
+				setTimeout(() => { if (attempt === fullscreenAttempt) showNote(); }, 0);
 			} finally {
 				clearTimeout(slow);
 			}
