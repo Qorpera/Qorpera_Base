@@ -62,6 +62,12 @@ describe("messages between two agents (contract 14.6)", () => {
 			}),
 		]);
 	});
+	it("marks a message sent without waking the coworker as held", () => {
+		const held = peerMessage(7, "FYI: the note is updated.");
+		(held.body as { entry: { delivery: Record<string, unknown> } }).entry.delivery.held = true;
+		expect(projectTranscript([parseEvent(held)]).items[0]).toMatchObject({ kind: "agent", held: true });
+		expect(projectTranscript([parseEvent(peerMessage(8))]).items[0]).not.toHaveProperty("held");
+	});
 	it("hides a peer message that claims a run execution or lacks its speaker", () => {
 		const withRun = {
 			...peerMessage(1),

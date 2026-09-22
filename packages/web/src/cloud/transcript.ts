@@ -31,6 +31,8 @@ export interface TranscriptMessage {
 	phase?: "progress" | "final";
 	runId?: string;
 	staffSpeaker?: HostedStaffSpeaker;
+	/** A peer message sent without waking its recipient; it is read at the recipient's next turn. */
+	held?: boolean;
 	createdAt: string;
 	pending?: "queued" | "processing" | "failed";
 	failureReason?: string;
@@ -224,6 +226,7 @@ function messageFromEntry(entry: Entry, event: HostedSessionEvent, legacy: boole
 			attachmentCount: 0,
 			phase: "final",
 			runId: delivery.runId,
+			...(delivery.held === true ? { held: true } : {}),
 			staffSpeaker: {
 				runId: delivery.runId,
 				staffAgentId: delivery.from,

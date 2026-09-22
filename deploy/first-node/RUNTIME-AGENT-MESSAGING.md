@@ -83,8 +83,26 @@ into the sender's own thread (tested with a six-hop relay that then reaches a
 third agent); the panel loads once on first open. Bundle re-cut to
 `7384be69…`, guest provider host `5f61e587…`.
 
+## Second cut: held delivery (bundle v72, 2026-09-23)
+
+`send_coworker_message` takes `priority` (default true). With `priority: false`
+the message is written into the pair transcript (marked held) and both chips
+are dropped, but no wake is created: the row waits in
+`qorpera_pending_peer_messages` and `qorpera_read_native_wake` hands the oldest
+twelve undelivered ones to the recipient at its next wake of any kind, except a
+blank worker or an office continuation, as `payload.heldMessages` (claimed by
+that run; a re-read by the same run sees the same; a later run does not). Held
+messages extend no chain but count toward the pair's hourly budget. The
+runtime parser accepts `heldMessages` on every wake kind, sends `p_priority`
+only when false (a pre-v72 kernel still understands the call), and accepts the
+`held` receipt; the web shows "Read at B's next turn" under a held message.
+Migration `20260923000000_runtime_held_peer_messages.sql` drops the
+four-argument send and creates the five-argument one; the priority digest is
+unchanged so receipts from before the cut still replay. Test
+`supabase/tests/381_runtime_held_peer_messages.test.sql`. Rollout: bundle
+before the SQL, as for v70.
+
 ## Not in this cut
 
-Held delivery (`priority: false`: written, no wake, read at the next wake),
-member notifications beyond the rail's unread marker, attachments in peer
+Member notifications beyond the rail's unread marker, attachments in peer
 messages.

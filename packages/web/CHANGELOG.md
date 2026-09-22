@@ -22,6 +22,7 @@
 
 ### Added
 
+- Mark an agent's message that was left for a coworker without waking it: the pair conversation shows "Read at Helper's next turn" under it.
 - Show what agents say to each other. When one agent messages a coworker, the sender's thread gets a small chip "Messaged Helper" and the coworker's thread gets "Message from New Bot"; either chip opens the two agents' conversation over the thread, view-only, with both figures in the header, each message under the speaking agent's name, a lock line "This chat is view-only" and one Close Chat button. A line in that conversation says when an exchange has paused at its limit. These conversations never appear in the rail; members steer by writing in either agent's thread.
 
 - Settings has a Plan & usage tab: the account's current plan (the freemium plan is now called "Free trial") with an Upgrade button that opens the three plans qorpera.com sells (Basis, Standard, Dedicated computer, with prices and what they include; choosing one says "Coming soon" until plan changes open), a Usage section with computer hours (a meter once the cloud reports them, "Not measured yet" until then) and the chosen company's storage, and a Billing card (price, next payment, payment method, invoices) that shows placeholders until billing lands. Nothing moved to General's loss except the plan card. The standalone account page keeps the plan below General.
