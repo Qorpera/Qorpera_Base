@@ -70,6 +70,21 @@ fence=$(exec_in sha256sum /opt/qorpera-harnesses/native-company/codex | cut -d' 
 [[ ${fence} =~ ^[0-9a-f]{64}$ ]]
 sed -i "s/^QORPERA_NATIVE_CODEX_FENCE_SHA256=.*/QORPERA_NATIVE_CODEX_FENCE_SHA256=${fence}/" "${STAGING}/shared-execution.env"
 push "${STAGING}/shared-execution.env" /etc/qorpera/shared-execution.env 0600
+# The rebuilt host lost the orchestrator's rotated control state; re-register
+# the same orchestrator id with a fresh bootstrap control token (service role).
+supabase_url=$(sed -n 's/^QORPERA_SUPABASE_URL=//p' "${STAGING}/shared-execution.env")
+adapter=$(sed -n 's/^QORPERA_RUNNER_PROVIDER_ADAPTER=//p' "${STAGING}/shared-execution.env")
+orchestrator_id=$(sed -n 's/^QORPERA_RUNNER_ORCHESTRATOR_ID=//p' "${STAGING}/runner-orchestrator.env")
+control_token=$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n')
+control_sha256=$(printf '%s' "${control_token}" | sha256sum | cut -d' ' -f1)
+service_key=$(tr -d '\n' < "${STAGING}/credentials/qorpera-supabase-service-key")
+registered=$(curl -sS -X POST "${supabase_url}/rest/v1/rpc/qorpera_register_runner_orchestrator" \
+	-H "apikey: ${service_key}" -H "Authorization: Bearer ${service_key}" -H "Content-Type: application/json" \
+	-d "{\"p_orchestrator_id\":\"${orchestrator_id}\",\"p_display_name\":\"shared-execution ${VM}\",\"p_provider_adapter\":\"${adapter}\",\"p_control_token_sha256\":\"${control_sha256}\",\"p_control_token_seconds\":86400}")
+unset service_key
+[[ ${registered} == *'"status": "active"'* || ${registered} == *'"status":"active"'* ]] || { echo "Orchestrator registration failed" >&2; exit 1; }
+sed -i "s|^QORPERA_RUNNER_ORCHESTRATOR_CONTROL_TOKEN=.*|QORPERA_RUNNER_ORCHESTRATOR_CONTROL_TOKEN=${control_token}|" "${STAGING}/runner-orchestrator.env"
+unset control_token
 push "${STAGING}/runner-orchestrator.env" /etc/qorpera/runner-orchestrator.env 0600
 for name in "${STAGING}"/credentials/*; do
 	mode=0600
