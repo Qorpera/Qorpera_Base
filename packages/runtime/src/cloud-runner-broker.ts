@@ -248,7 +248,13 @@ export interface CloudRunnerCompanyRevisionVerification {
 
 export interface AppendCloudRunnerTranscriptEventInput {
 	eventId: string;
-	eventType: "message" | "run_receipt" | "artifact_receipt" | "authorization_request" | "authorization_decision";
+	eventType:
+		| "message"
+		| "run_receipt"
+		| "artifact_receipt"
+		| "authorization_request"
+		| "authorization_decision"
+		| "interaction_request";
 	entry: JsonValue;
 	expectedSequence?: number;
 }
@@ -942,7 +948,8 @@ function parseTranscriptEvent(value: unknown): CloudRunnerTranscriptEvent {
 		input.event_type !== "run_receipt" &&
 		input.event_type !== "artifact_receipt" &&
 		input.event_type !== "authorization_request" &&
-		input.event_type !== "authorization_decision"
+		input.event_type !== "authorization_decision" &&
+		input.event_type !== "interaction_request"
 	) {
 		throw new Error("Runner broker returned invalid transcript event type");
 	}
@@ -975,7 +982,9 @@ function parseTranscriptContextEvent(value: unknown): CloudRunnerTranscriptConte
 		input.event_type !== "run_receipt" &&
 		input.event_type !== "artifact_receipt" &&
 		input.event_type !== "authorization_request" &&
-		input.event_type !== "authorization_decision"
+		input.event_type !== "authorization_decision" &&
+		input.event_type !== "interaction_request" &&
+		input.event_type !== "interaction_answer"
 	) {
 		throw new Error("Runner broker returned invalid transcript context event type");
 	}
@@ -1470,7 +1479,8 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 			input.eventType !== "run_receipt" &&
 			input.eventType !== "artifact_receipt" &&
 			input.eventType !== "authorization_request" &&
-			input.eventType !== "authorization_decision"
+			input.eventType !== "authorization_decision" &&
+			input.eventType !== "interaction_request"
 		) {
 			throw new Error("Runner broker transcript event type is invalid");
 		}
