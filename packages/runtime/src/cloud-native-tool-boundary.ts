@@ -7,9 +7,9 @@ import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
 import {
 	type CloudRuntimeObservability,
 	type CloudRuntimeObservationSpan,
-	type CloudRuntimeOperation,
 	cloudRuntimeErrorCategory,
 	cloudRuntimeOperationHash,
+	cloudRuntimeToolOperation,
 } from "./cloud-runtime-observability.ts";
 
 export const CLOUD_TOOL_RESULT_SCHEMA = "qorpera.cloud-tool-result/v1";
@@ -358,20 +358,7 @@ export class CloudNativeToolBoundary {
 		argumentsValue: unknown,
 	): Promise<CloudDynamicToolResponse> {
 		const tool = namespace === "qorpera" ? this.#tools.get(name) : undefined;
-		const operation: CloudRuntimeOperation =
-			tool?.source === "connector"
-				? "connector"
-				: ((
-						[
-							"company_read",
-							"company_list",
-							"company_write",
-							"company_mkdir",
-							"company_delete",
-							"company_context",
-							"send_message",
-						] as const
-					).find((value) => tool?.name === value) ?? "unknown_tool");
+		const operation = cloudRuntimeToolOperation(tool);
 		const observation = this.#observability?.start(operation, {
 			logicalOperationSha256: cloudRuntimeOperationHash(
 				this.#runId,

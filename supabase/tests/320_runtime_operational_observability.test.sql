@@ -637,7 +637,9 @@ declare v_run uuid := (current_setting('qorpera_test.path_binding')::jsonb ->> '
 	v_event jsonb; v_operation text; v_status text; v_category text; v_query jsonb;
 begin
 	foreach v_operation in array array['model_turn','model_request','company_read','company_list','company_write',
-		'company_mkdir','company_delete','company_context','send_message','message_composition','connector','unknown_tool','run_authority',
+		'company_mkdir','company_delete','send_message','read_context','send_coworker_message','computer_start','computer_screen',
+		'computer_browser','computer_desktop','computer_shell','computer_screenshot','computer_transfer','hire_agent',
+		'create_group_chat','manage_routine','company_context','message_composition','connector','unknown_tool','run_authority',
 		'context_authority','native_result_fence','diagnostic_export'] loop
 		v_event := pg_temp.observation() || jsonb_build_object('operation',v_operation,'assignmentId',null,
 			'phase','finish','status','succeeded','logicalOperationSha256',null,'observedAt','0001-01-01T00:00:00.000Z',
