@@ -100,8 +100,6 @@
 :root[data-theme="dark"] .agent-figure-picker .figure-choice:hover:not(:disabled) { background: rgba(255, 255, 255, 0.07); }
 :root[data-theme="dark"] .agent-figure-picker .figure-choice[aria-checked="true"] { border-color: #6a6965; background: rgba(255, 255, 255, 0.1); box-shadow: 0 0 0 3px #323231, 0 0 0 4px #5a5957; }
 :root[data-theme="dark"] .agent-figure-picker .color-grid { border-top-color: rgba(255, 255, 255, 0.1); }
-:root[data-theme="dark"] .agent-notifications input[role=switch] { background: #4a4a48; }
-:root[data-theme="dark"] .agent-notifications input[role=switch]::before { box-shadow: 0 1px 2px rgb(0 0 0 / 40%); }
 @media (max-width: 760px) {
 	:root[data-theme="dark"] .frame.navigation-open .navigation-backdrop { background: rgba(0, 0, 0, 0.45); }
 }

@@ -189,13 +189,13 @@
 .agent-details[open] { display: flex; flex-direction: column; }
 .agent-details > .surface-dialog-content { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; }
 /* An agent's popup has one static height on every page: the details page with
- * a 13-line description, as tall as it gets. The parts: 2px border, 48px
+ * a 10-line description, as tall as it gets. The parts: 2px border, 48px
  * content padding, 132px identity row, the description's 6px margin, 16px
- * padding and 13 lines of 1.6 x 13px, 30px status row, 61.5px notifications
- * row. A short description or a short routine list never shrinks it; only a
- * short viewport does, through the max-height above. The group popup, which
- * shares the frame, keeps sizing itself to its content. */
-.staff-details { --agent-details-height: calc(2px + 48px + 132px + 6px + 16px + 13 * 1.6 * 13px + 30px + 61.5px); height: var(--agent-details-height); }
+ * padding and 10 lines of 1.6 x 13px, 30px status row. A short description
+ * or a short routine list never shrinks it; only a short viewport does,
+ * through the max-height above. The group popup, which shares the frame,
+ * keeps sizing itself to its content. */
+.staff-details { --agent-details-height: calc(2px + 48px + 132px + 6px + 16px + 10 * 1.6 * 13px + 30px); height: var(--agent-details-height); }
 .agent-details:not([data-page="details"]) > .surface-dialog-content { padding-top: 0; }
 /* The figure picker may reach past the card, as on the desktop. */
 .agent-details.is-choosing-figure, .agent-details.is-choosing-figure > .surface-dialog-content { overflow: visible; }
@@ -281,11 +281,6 @@
 .agent-details-page .agent-inline-description > .agent-inline-size::after { display: none; }
 .agent-details-page .agent-inline-description textarea { flex: 1 1 auto; height: auto; }
 .agent-details-status { display: flex; align-items: center; gap: 10px; min-height: 26px; margin: 4px 0 0; color: var(--text-muted); font-size: 12px; }
-.agent-notifications { display: flex; flex-direction: row; align-items: center; gap: 12px; border-top: 1px solid var(--border); margin-top: 8px; padding-top: 16px; font-size: 12px; font-weight: 500; }
-.agent-notifications > span { display: grid; gap: 2px; flex: 1; }
-.agent-notifications small { color: var(--text-muted); font-size: 11px; font-weight: 400; }
-.agent-notifications input[role=switch] { appearance: none; position: relative; width: 32px; min-height: 20px; height: 20px; border: 0; border-radius: 12px; background: #e3e3e0; padding: 0; flex: none; }
-.agent-notifications input[role=switch]::before { content: ""; position: absolute; left: 2px; top: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgb(0 0 0 / 12%); }
 .appearance-picker .figure-grid { margin: 4px auto 0; }
 .appearance-picker .color-grid { margin-top: 16px; }
 .file-preview-dialog { width: 760px; margin: auto; }
