@@ -57,6 +57,8 @@ export interface CloudNativeTool {
 export type CloudToolContent = ({ kind: "text"; value: string } | { kind: "json"; value: JsonValue }) & {
 	/** Host-only durable read reference, not a field accepted from native/provider output. */
 	companyReadId?: string;
+	/** Host-only: a confirmed final public send. The turn ends after this result is fenced. */
+	completesTurn?: boolean;
 };
 
 export interface CloudToolResult {
@@ -86,6 +88,8 @@ export interface CloudToolResult {
 export interface CloudDynamicToolResponse {
 	contentItems: [{ type: "inputText"; text: string }, ...Array<{ type: "inputImage"; imageUrl: string }>];
 	success: boolean;
+	/** Host-only signal to the native session, never written to the provider. */
+	completesTurn?: true;
 }
 
 export interface CloudNativeResultInput {
@@ -621,6 +625,15 @@ export class CloudNativeToolBoundary {
 		if (!this.#issuedResults.has(fingerprint) && this.#issuedResults.size >= CLOUD_NATIVE_TOOL_CALL_LIMIT * 2)
 			throw new Error("Cloud result budget exceeded");
 		this.#issuedResults.add(fingerprint);
-		return { contentItems: [{ type: "inputText", text: serialized }], success: status === "ok" };
+		const completesTurn =
+			status === "ok" &&
+			tool?.source === "runtime" &&
+			tool.name === "send_message" &&
+			content.completesTurn === true;
+		return {
+			contentItems: [{ type: "inputText", text: serialized }],
+			success: status === "ok",
+			...(completesTurn ? { completesTurn: true } : {}),
+		};
 	}
 }

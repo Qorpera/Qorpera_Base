@@ -1659,7 +1659,7 @@ export class CloudRunnerOrchestrator {
 	}
 
 	async run(signal: AbortSignal, options: CloudRunnerOrchestratorLoopOptions = {}): Promise<void> {
-		const pollIntervalMs = options.pollIntervalMs ?? 2_000;
+		const pollIntervalMs = options.pollIntervalMs ?? 500;
 		if (!Number.isSafeInteger(pollIntervalMs) || pollIntervalMs < 10 || pollIntervalMs > 60_000) {
 			throw new Error("Orchestrator poll interval is outside the supported range");
 		}

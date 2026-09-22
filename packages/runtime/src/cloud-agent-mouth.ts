@@ -10,6 +10,7 @@ export const CLOUD_AGENT_SEND_INSTRUCTIONS =
 	"Qorpera has one public voice: send_message. Ordinary assistant text, reasoning, tool calls and tool results are private. " +
 	"Follow the admitted delivery policy. Satisfy an outstanding human acknowledgement before work; do not repeat an acknowledgement already confirmed for this run. " +
 	"A progress message does not finish the turn. Send final when this turn has delivered its result, concrete blocker, or required decision request; the underlying task may remain unfinished. " +
+	"A confirmed final send ends this turn immediately: finish every Company File change, verification and coworker message before it, because nothing after the final send runs. " +
 	"Reuse the same idempotencyKey and exact arguments when retrying a send. Never expose private reasoning or credentials.";
 
 export interface CloudAgentSendInput {
