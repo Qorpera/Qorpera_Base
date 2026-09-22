@@ -906,7 +906,9 @@ export async function runCloudCodexToolSession(options: {
 		rpc.startThread();
 		const started = object(
 			await rpc.request("thread/start", {
-				model: options.model === "provider-default" ? "gpt-6-astra" : options.model,
+				// provider-default omits the model: the pinned Codex chooses its own default. An explicit
+				// name is only sent for a session override; the provider rejects names newer than the binary.
+				...(options.model === "provider-default" ? {} : { model: options.model }),
 				cwd: workspace,
 				runtimeWorkspaceRoots: [],
 				environments: [],
