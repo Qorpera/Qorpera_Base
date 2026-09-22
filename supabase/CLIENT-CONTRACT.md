@@ -139,8 +139,10 @@ profile RPCs; RLS is the second read boundary.
 - `qorpera_put_staff_provider_model`
 
 
-### Conversations, turns, wakes (27)
+### Conversations, turns, wakes (28)
 
+- `qorpera_answer_interaction` (2026-09-22, bundle v75): answers a typed card
+  the agent raised in the thread. See "Thread interactions" under §6.
 - `qorpera_append_session_input`
 - `qorpera_approve_session_turn_sponsorship`
 - `qorpera_claim_wake_v2`
@@ -274,13 +276,53 @@ machine.
 | --- | --- | --- |
 | Auth, profiles, membership, invitations, friends, presence | live | build fully |
 | Conversations: sessions, inputs, events, replay, Realtime | live (Order 1 mouth writes the canonical transcript) | build fully; render only send operations |
-| Approvals | `authorization_decision` today; typed interaction surfaces at Order 2 | build the inbox; typed cards as Order 2 lands |
+| Approvals | `authorization_request` answered through `qorpera_answer_interaction` (bundle v75) | build the inbox; Approve and Decline call the answer RPC |
+| Thread interactions (typed cards) | kernel in bundle v75; runtime tool and web cards follow | render `interaction_request` events as cards; answer through the RPC |
 | Company File: published snapshots, objects, proposals | live | build browsing/review |
 | Company File: live logical paths with ACLs | Order 0 gateway in progress | read-only projection, then live |
 | Organization: Co-Founder, responsibilities, projects, rooms, staff | in rework (departments → responsibilities) | build against the semantic projection (contract 14.5); no department UI |
 | Screens (Company Computer viewer) | Order 4, plus a browser-facing authenticated websocket gateway (viewer traffic is private-network today) | later |
 | Routines, memory, connectors | Orders 6–8 | later |
 | Repositories, coding workers | Order 9 | later |
+
+### Thread interactions (typed cards, bundle v75)
+
+An agent asks the member for something by appending an `interaction_request`
+event to its thread (a runner custom entry, `entry.customType =
+"interaction_request"`, `entry.data` = a `qorpera.interaction/v1` object). The
+kernel validates the data per surface and refuses anything else, so a client
+renders only these surfaces and never agent-authored HTML:
+
+| `surface` | `payload` (closed object) | Member outcomes | `answer` |
+| --- | --- | --- | --- |
+| `question` | `options[1..6]{label,value?,description?,style?}`, `multiSelect?`, `allowCustom?`, `dismissOnMoveOn?` | `answered`, `declined` | `{values: string[]}` for answered, else `{}` |
+| `secret` | `name`, `label`, `purpose`, `kind?` (`token`/`password`/`text`) | `provided`, `declined` | always `{}`; the value goes to the vault, never here |
+| `form` | `domain`, `reason?`, `submitAfterFill?`, `fields[1..8]{id,label,type,required?,placeholder?,options?,secret?,target?,vaultName?}` | `answered`, `declined` | `{values: {id: string|boolean}, fields: {id: filled|failed|skipped}}`; values for secret fields are refused |
+| `takeover` | `instruction`, `reason?`, `domain?`, `idpDomain?` | `handed_back`, `dismissed` | `{}` |
+| `draft` | `platform`, `connectorId`, `from`, `to[]`, `cc?[]`, `subject?`, `body`, `replyTo?`, `threadRef?` | `sent`, `discarded` | `{sentSummary?}` for sent |
+| `credential` | `name`, `domain`, `purpose?` | none (the computer answers) | refused |
+| approval (an `authorization_request` event) | the request's own data | `approved`, `declined` | `{reason?}`; needs owner or admin |
+
+Common request fields: `schema`, `surface`, `title` (1–200), `body?` (≤ 2000),
+`expiresAt?` (UTC timestamp; answers after it are refused as expired).
+
+`qorpera_answer_interaction(p_session_id, p_client_input_id, p_interaction_id,
+p_outcome, p_answer)` — `p_interaction_id` is the request's `event_id`. The
+answer is queued as an ordinary session input (`kind = user_message`, body
+`qorpera.interaction-answer/v1` = `{schema, interactionId, surface, outcome,
+answer}`), so it wakes the agent in its own thread like a message; the client
+sees it in `qorpera_list_session_inputs` until the run admits it, when it
+materializes as a member-authored `interaction_answer` event (or an
+`authorization_decision` for an approval) with `entry.data = {schema,
+interactionId, requestEventId, surface, outcome, answer, answeredBy}` (+
+`decision` for approvals). Rules: one answer per request (a second one is
+refused with `55000`, also while the first is still queued); author only (the
+member a private thread belongs to, or the creator of a company-visible one);
+idempotent on `p_client_input_id`; `22023` for a shape the surface does not
+allow; `42501` for authority. Expired means a client shows the card as
+expired; the kernel does not synthesize an event for it. Group chats never
+carry cards (the runtime withholds the tool in rooms). Design:
+`THREAD-WIDGETS-DESIGN-20260922.md` in the takeover workspace outputs.
 
 ## 7. Desktop IPC channels → cloud equivalents
 
@@ -385,7 +427,10 @@ above.
    `etag, x-qorpera-access-mode`, and a `204` answer to preflight. Until then
    the web app cannot upload attachments or read gateway-served objects; it
    says so instead of pretending.
-2. **Approvals.** The only member-callable way to record an
+2. **Approvals.** *Answered 2026-09-22 (bundle v75): `qorpera_answer_interaction`
+   records the decision as a queued input that wakes the agent and
+   materializes as `authorization_decision`; see "Thread interactions" in §6.
+   A pending-requests read RPC is still open.* The only member-callable way to record an
    `authorization_decision` today is `qorpera_append_account_event(uuid, uuid,
    text, jsonb, bigint, text, uuid, uuid)`, which is granted to `authenticated`
    but absent from §2. Request: either list it (with the body shape a decision
