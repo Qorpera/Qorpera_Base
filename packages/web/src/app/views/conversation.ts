@@ -59,6 +59,7 @@ export class ConversationView {
 	readonly #menuMain: HTMLElement;
 	readonly #models: ComposerModels;
 	readonly #attach: HTMLButtonElement;
+	readonly #attachNote: HTMLElement;
 	readonly #identity: HTMLButtonElement;
 	readonly #computer: HTMLButtonElement;
 	readonly #navigation: HTMLButtonElement;
@@ -194,10 +195,15 @@ export class ConversationView {
 			() => this.#setModelMenu(false),
 			() => this.update(),
 		);
-		this.#menuMain = h("div", null, this.#attach, this.#models.button);
+		this.#attachNote = h(
+			"p",
+			{ class: "composer-menu-note", hidden: true },
+			"Images are not supported in group chats. Use Company File.",
+		);
+		this.#menuMain = h("div", null, this.#attach, this.#attachNote, this.#models.button);
 		this.#menu = h(
 			"div",
-			{ class: "composer-menu", role: "menu", hidden: true, "aria-label": "Chat settings and more" },
+			{ class: "composer-menu", role: "menu", hidden: true, tabindex: "-1", "aria-label": "Chat settings and more" },
 			this.#menuMain,
 			this.#models.el,
 		);
@@ -402,8 +408,11 @@ export class ConversationView {
 		this.#models.button.setAttribute("aria-expanded", "false");
 		this.#menu.hidden = !open;
 		this.#more.setAttribute("aria-expanded", String(open));
-		if (open) this.#attach.focus();
-		else if (restoreFocus) this.#more.focus();
+		if (open) {
+			// A group chat's menu may hold no live control; the menu itself then takes focus so Escape still closes it.
+			const first = this.#menuMain.querySelector<HTMLButtonElement>("button:not(:disabled):not([hidden])");
+			(first ?? this.#menu).focus();
+		} else if (restoreFocus) this.#more.focus();
 	}
 
 	#setModelMenu(open: boolean): void {
@@ -605,9 +614,9 @@ export class ConversationView {
 			Boolean(attachmentIssue);
 		this.#syncSend();
 		this.#attach.disabled = this.#composer.disabled || room;
-		this.#more.hidden = room;
+		this.#attachNote.hidden = !room;
 		this.#more.disabled = this.#composer.disabled;
-		if ((this.#composer.disabled || room) && !this.#menu.hidden) this.#setMenu(false, false);
+		if (this.#composer.disabled && !this.#menu.hidden) this.#setMenu(false, false);
 		this.#composerWrap.hidden = !canWrite;
 		if (this.#composer.value !== (conversation.draft ?? "")) {
 			this.#composer.value = conversation.draft ?? "";

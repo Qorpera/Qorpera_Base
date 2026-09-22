@@ -115,6 +115,7 @@
 .composer-send:not(:disabled):hover { background: var(--composer-accent-hover); }
 .composer-menu { position: absolute; z-index: 30; left: 0; bottom: calc(100% + 8px); width: 252px; max-width: calc(100vw - 48px); max-height: min(360px, 65dvh); overflow-y: auto; padding: 5px; border: 1px solid var(--border); border-radius: 12px; background: var(--overlay); box-shadow: 0 12px 30px rgb(0 0 0 / 14%); }
 .composer-menu[hidden], .composer-menu [hidden] { display: none; }
+.composer-menu:focus { outline: 0; }
 .composer-menu button { display: flex; align-items: center; gap: 9px; width: 100%; padding: 9px; border: 0; border-radius: 7px; background: none; cursor: pointer; font-size: 13px; text-align: left; }
 .composer-menu button:hover:not(:disabled), .composer-menu button:focus-visible { background: var(--hover); }
 .composer-menu button:disabled { cursor: default; opacity: .5; }
@@ -123,7 +124,7 @@
 .composer-models button[role=menuitemradio] { justify-content: space-between; padding-left: 14px; }
 .composer-models button[aria-checked=false] > .icon { visibility: hidden; }
 .composer-models button[aria-checked=true] > .icon { color: var(--text); width: 15px; height: 15px; }
-.composer-model-scope, .composer-model-status { margin: 5px 9px; color: var(--text-muted); font-size: 11px; line-height: 1.5; }
+.composer-model-scope, .composer-model-status, .composer-menu-note { margin: 5px 9px; color: var(--text-muted); font-size: 11px; line-height: 1.5; }
 .composer-model-scope { border-top: 1px solid var(--border); padding-top: 10px; }
 .composer-model-status:empty { display: none; }
 .attachment-tray { display: flex; gap: 8px; overflow-x: auto; padding: 3px 0 9px; }
