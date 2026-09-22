@@ -56,6 +56,26 @@ function closedWithOptional(
 	return object;
 }
 
+/** The coding scope the executor admitted the turn with: harness, repository,
+ * branch and the same sequence. Other keys (vm, session ref) pass through. */
+function codingScope(value: unknown, sequence: unknown): boolean {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const scope = value as Record<string, unknown>;
+	const repository = scope.repository as Record<string, unknown> | null | undefined;
+	return (
+		(scope.harness === "codex" || scope.harness === "claude-code") &&
+		!!repository &&
+		typeof repository === "object" &&
+		repository.host === "github.com" &&
+		typeof repository.owner === "string" &&
+		typeof repository.name === "string" &&
+		typeof repository.baseBranch === "string" &&
+		typeof scope.branch === "string" &&
+		/^qorpera\/coding\/[0-9a-f-]{36}$/.test(scope.branch) &&
+		scope.sequence === sequence
+	);
+}
+
 function uuid(value: unknown): string {
 	if (typeof value !== "string" || !UUID.test(value)) throw new Error("Invalid cloud wake identity");
 	return value;
@@ -345,6 +365,8 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		uuid(activation.receiptId);
 	} else if (wake.kind === "agent" && source.kind === "worker-dispatch") {
 		// Contract 13: a blank child with a complete dispatch, no conversation and no sender.
+		// A coding session (13.1) carries its scope under "coding"; an in-house child never does.
+		const coding = (wake.payload as { species?: unknown } | null)?.species === "coding";
 		const work = closed(wake.payload, [
 			"schema",
 			"workerId",
@@ -357,6 +379,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			"access",
 			"outputFolder",
 			"dispatch",
+			...(coding ? ["coding"] : []),
 		]);
 		const dispatch = closed(work.dispatch, [
 			"goal",
@@ -373,11 +396,12 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		if (
 			work.schema !== "qorpera.worker-dispatch/v1" ||
 			uuid(work.workerId) !== source.id ||
-			work.species !== "in-house" ||
+			(work.species !== "in-house" && work.species !== "coding") ||
 			(work.access !== "read" && work.access !== "write") ||
+			(coding && (work.access !== "read" || !codingScope(work.coding, work.sequence))) ||
 			!Number.isSafeInteger(work.sequence) ||
 			(work.sequence as number) < 1 ||
-			(work.sequence as number) > 12 ||
+			(work.sequence as number) > (coding ? 64 : 12) ||
 			source.occurrenceKey !== `worker-dispatch:${source.id}:${work.sequence}` ||
 			parentRunId === null ||
 			parentRunId === identity.runId ||
