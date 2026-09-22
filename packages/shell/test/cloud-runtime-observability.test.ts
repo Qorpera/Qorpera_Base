@@ -3,14 +3,32 @@ import { type CloudNativeTool, CloudNativeToolBoundary } from "@qorpera/runtime/
 import {
 	assertCloudRuntimeObservationReceipt,
 	CLOUD_RUNTIME_OBSERVATION_SCHEMA,
+	CLOUD_RUNTIME_OPERATIONS,
+	CLOUD_RUNTIME_TOOL_OPERATIONS,
 	CloudRuntimeDiagnosticError,
 	CloudRuntimeObservability,
 	type CloudRuntimeObservation,
 	cloudRuntimeErrorCategory,
 	cloudRuntimeOperationHash,
+	cloudRuntimeToolOperation,
 	parseCloudRuntimeObservation,
 } from "@qorpera/runtime/cloud-runtime-observability";
 import { describe, expect, it, vi } from "vitest";
+
+function syntheticTool(
+	name: string,
+	source: CloudNativeTool["source"],
+	execute: CloudNativeTool["execute"] = async () => ({ kind: "text" as const, value: "safe" }),
+): CloudNativeTool {
+	return {
+		name,
+		source,
+		description: `Synthetic ${name}`,
+		inputSchema: { type: "object", additionalProperties: false },
+		parseArguments: () => ({}),
+		execute,
+	};
+}
 
 function observer(publish?: (row: CloudRuntimeObservation, signal: AbortSignal) => Promise<unknown>) {
 	const rows: CloudRuntimeObservation[] = [];
@@ -332,16 +350,7 @@ describe("optional exporter isolation", () => {
 });
 
 describe("tool outcome diagnostics", () => {
-	function tool(execute: CloudNativeTool["execute"]): CloudNativeTool {
-		return {
-			name: "company_write",
-			source: "company_file",
-			description: "Synthetic company write",
-			inputSchema: { type: "object", additionalProperties: false },
-			parseArguments: () => ({}),
-			execute,
-		};
-	}
+	const tool = (execute: CloudNativeTool["execute"]) => syntheticTool("company_write", "company_file", execute);
 	async function invoke(definition: CloudNativeTool, input: unknown, active = true) {
 		const { metrics, rows } = observer();
 		const boundary = new CloudNativeToolBoundary({
@@ -476,5 +485,62 @@ describe("tool outcome diagnostics", () => {
 			rows.filter((row) => row.operation === "context_authority" && row.phase === "finish").map((row) => row.status),
 		).toEqual(["denied", "denied"]);
 		expect(JSON.stringify(rows)).not.toContain("PRIVATE_POST_EFFECT_DENIAL");
+	});
+});
+
+describe("tool operation names", () => {
+	it("keeps the tool names inside the closed vocabulary without duplicates", () => {
+		for (const name of CLOUD_RUNTIME_TOOL_OPERATIONS) expect(CLOUD_RUNTIME_OPERATIONS).toContain(name);
+		expect(new Set(CLOUD_RUNTIME_OPERATIONS).size).toBe(CLOUD_RUNTIME_OPERATIONS.length);
+		expect(CLOUD_RUNTIME_TOOL_OPERATIONS).not.toContain("connector");
+		expect(CLOUD_RUNTIME_TOOL_OPERATIONS).not.toContain("unknown_tool");
+	});
+
+	it("names runtime tools by their registered name, connectors as connector and the rest unknown", () => {
+		for (const name of CLOUD_RUNTIME_TOOL_OPERATIONS)
+			expect(cloudRuntimeToolOperation(syntheticTool(name, "runtime"))).toBe(name);
+		expect(cloudRuntimeToolOperation(syntheticTool("gmail_send", "connector"))).toBe("connector");
+		expect(cloudRuntimeToolOperation(syntheticTool("manage_routine", "connector"))).toBe("connector");
+		expect(cloudRuntimeToolOperation(syntheticTool("company_context", "runtime"))).toBe("unknown_tool");
+		expect(cloudRuntimeToolOperation(syntheticTool("report_work", "worker"))).toBe("report_work");
+		expect(cloudRuntimeToolOperation(syntheticTool("worker_start", "worker"))).toBe("unknown_tool");
+		expect(cloudRuntimeToolOperation(undefined)).toBe("unknown_tool");
+	});
+
+	it("records the Step 8 tools and the other runtime tools under their own operation", async () => {
+		const { metrics, rows } = observer();
+		const names = [
+			"manage_routine",
+			"hire_agent",
+			"create_group_chat",
+			"read_context",
+			"send_coworker_message",
+			"computer_start",
+			"computer_shell",
+			"report_work",
+			"manage_todo",
+			"manage_worker",
+		] as const;
+		const boundary = new CloudNativeToolBoundary({
+			companyId: randomUUID(),
+			runId: randomUUID(),
+			tools: [
+				...names.map((name) => syntheticTool(name, name === "report_work" ? "worker" : "runtime")),
+				syntheticTool("lookup", "connector"),
+			],
+			assertActive: async () => undefined,
+			signal: new AbortController().signal,
+			observability: metrics,
+		});
+		const invoked = [...names, "lookup", "missing"];
+		for (const [index, name] of invoked.entries()) await boundary.invoke(`call-${index}`, "qorpera", name, {});
+		await metrics.close();
+		boundary.close();
+		// Each invocation also records its own context_authority child span.
+		const finished = rows.filter((row) => row.phase === "finish" && row.operation !== "context_authority");
+		expect(finished.map((row) => row.operation)).toEqual([...names, "connector", "unknown_tool"]);
+		expect(rows.some((row) => row.operation === "company_context")).toBe(false);
+		for (const row of finished) expect(CLOUD_RUNTIME_OPERATIONS).toContain(row.operation);
+		expect(JSON.stringify(rows)).not.toContain("missing");
 	});
 });

@@ -6,7 +6,7 @@ import {
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
 import { type CloudNativeTool, type CloudToolContext, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
-import type { CloudRuntimeObservationSpan } from "./cloud-runtime-observability.ts";
+import type { CloudRuntimeObservationSpan, CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 import type { CloudWakeEnvelope } from "./cloud-wake-bus.ts";
 
 const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/;
@@ -226,7 +226,7 @@ export function cloudWorkerTools(
 
 	if (wake.kind === "agent" && wake.source.kind === "worker-dispatch") {
 		const report: CloudNativeTool = {
-			name: "report_work",
+			name: "report_work" satisfies CloudRuntimeToolOperation,
 			source: "worker",
 			description: CLOUD_WORKER_REPORT_TOOL_DESCRIPTION,
 			inputSchema: {
@@ -277,7 +277,7 @@ export function cloudWorkerTools(
 	}
 
 	const todo: CloudNativeTool = {
-		name: "manage_todo",
+		name: "manage_todo" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
 		description: CLOUD_TODO_TOOL_DESCRIPTION,
 		inputSchema: {
@@ -366,7 +366,7 @@ export function cloudWorkerTools(
 	};
 
 	const worker: CloudNativeTool = {
-		name: "manage_worker",
+		name: "manage_worker" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
 		description: CLOUD_WORKER_TOOL_DESCRIPTION,
 		inputSchema: {

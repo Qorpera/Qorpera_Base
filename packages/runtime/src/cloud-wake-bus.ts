@@ -7,6 +7,7 @@ import {
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
 import type { CloudNativeTool } from "./cloud-native-tool-boundary.ts";
+import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 
 export const CLOUD_WAKE_SCHEMA = "qorpera.wake-envelope/v1";
 export const CLOUD_WAKE_POLICY_SCHEMA = "qorpera.wake-policy/v1";
@@ -545,7 +546,7 @@ function makeCoworkerTool(
 	send: (message: CloudCoworkerMessage, signal: AbortSignal) => Promise<CloudCoworkerReceipt>,
 ): CloudNativeTool {
 	return {
-		name: "send_coworker_message",
+		name: "send_coworker_message" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
 		description:
 			"qorpera.coworker-message/v1: deliver a private addressed message to one authorized company coworker. " +
