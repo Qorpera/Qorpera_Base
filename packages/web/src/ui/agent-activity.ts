@@ -20,7 +20,14 @@ export const AGENT_LOOK: Record<AgentState, AgentLook> = {
 	failed: { figure: "Idle", note: "A run did not finish", disc: "failed" },
 };
 
-const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+/* Graphemes when the browser can split them; code points otherwise, so a
+ * browser without Intl.Segmenter still boots and waves (a combining mark
+ * then animates a beat after its base letter, which is harmless). */
+const graphemes =
+	typeof Intl.Segmenter === "function" ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : undefined;
+function letters(word: string): string[] {
+	return graphemes ? Array.from(graphemes.segment(word), ({ segment }) => segment) : Array.from(word);
+}
 const WAVE_PERIOD = 1400;
 const LETTER_STEP = 37.5;
 /* One clock for every wave on the page: a letter's delay is its place in the
@@ -41,7 +48,7 @@ function waveInto(container: HTMLElement, text: string, index: number): number {
 		}
 		const word = document.createElement("span");
 		word.className = "status-wave-word";
-		for (const { segment } of graphemes.segment(piece)) {
+		for (const segment of letters(piece)) {
 			const letter = document.createElement("span");
 			letter.className = "status-wave-letter";
 			letter.textContent = segment;
@@ -53,30 +60,45 @@ function waveInto(container: HTMLElement, text: string, index: number): number {
 	return index;
 }
 
-/** A live state word for the rail card ("Working", "Writing") with the wave running. */
-export function waveLine(text: string): HTMLElement {
+/** The rail card's second line: the live state with the wave running, a
+ * still state ("Needs you"), or the role. Live is what carries `detail`. */
+export function stateLine(look: AgentLook, role: string): HTMLElement | string {
+	if (!look.line) return role;
+	if (!look.detail) return look.line;
 	const line = document.createElement("span");
 	line.className = "status-wave";
-	waveInto(line, text, 0);
+	waveInto(line, look.line, 0);
 	return line;
 }
 
 /** The desktop's status caption: "Nova is working" letter by letter, so the
  * ink wave can run across it. Assistive technology reads one sentence; the
- * letters are hidden from it. */
+ * letters are hidden from it. The letters are built when the caption is
+ * shown (see syncCaption), so nothing animates while it is hidden. */
 export function statusCaption(lead: string, detail: string): HTMLElement {
 	const caption = document.createElement("span");
 	caption.className = "status-caption";
 	caption.setAttribute("aria-hidden", "true");
-	let index = 0;
 	for (const [className, text] of [
 		["status-caption-name", lead],
 		["status-caption-detail", detail],
 	] as const) {
 		const part = document.createElement("span");
 		part.className = className;
-		index = waveInto(part, text, index);
+		part.dataset.text = text;
 		caption.append(part);
 	}
+	syncCaption(caption);
 	return caption;
+}
+
+/** Rebuilds the caption's letters from the shared clock, so a caption shown
+ * after any pause starts in step with the rail instead of where it left off. */
+export function syncCaption(caption: HTMLElement): void {
+	let index = 0;
+	for (const part of caption.children) {
+		if (!(part instanceof HTMLElement)) continue;
+		part.replaceChildren();
+		index = waveInto(part, part.dataset.text ?? "", index);
+	}
 }

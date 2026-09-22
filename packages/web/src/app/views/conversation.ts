@@ -1,7 +1,7 @@
 import { sessionAttachmentIssue } from "../../cloud/session-attachments.ts";
 import type { TranscriptCard, TranscriptItem } from "../../cloud/transcript.ts";
 import type { HostedSession, HostedStaffAgent } from "../../cloud/types.ts";
-import { AGENT_LOOK, statusCaption } from "../../ui/agent-activity.ts";
+import { AGENT_LOOK, statusCaption, syncCaption } from "../../ui/agent-activity.ts";
 import { AttachmentTray } from "../../ui/attachments.ts";
 import { authorizationRequestId, renderAuthorizationCard } from "../../ui/authorization-card.ts";
 import { agentFigure } from "../../ui/avatar.ts";
@@ -804,26 +804,31 @@ export class ConversationView {
 			// shows beside it on hover or focus, never as a bubble.
 			const look = AGENT_LOOK[this.#agentState];
 			const detail = look.detail ?? "";
-			nodes.push(
-				h(
-					"div",
-					{
-						class: "message from-agent thread-activity",
-						role: "status",
-						tabindex: "0",
-						"data-state": this.#agentState,
-						"aria-label": `${agentName}${detail}`,
-					},
-					agentFigure(agent, agentName, { size: 40, activity: look.figure }),
-					statusCaption(agentName, detail),
-				),
+			const caption = statusCaption(agentName, detail);
+			const row = h(
+				"div",
+				{
+					class: "message from-agent thread-activity",
+					role: "status",
+					tabindex: "0",
+					"aria-label": `${agentName}${detail}`,
+				},
+				agentFigure(agent, agentName, { size: 40, activity: look.figure }),
+				caption,
 			);
+			// The wave only runs while the caption shows; on showing it starts in step with the rail.
+			row.addEventListener("mouseenter", () => syncCaption(caption));
+			row.addEventListener("focus", () => syncCaption(caption));
+			nodes.push(row);
 		}
 		const cardFocus = this.#runNotification.contains(document.activeElement)
 			? (document.activeElement as HTMLElement).dataset.action
 			: undefined;
+		const rowFocus = document.activeElement?.classList.contains("thread-activity") ?? false;
 		replace(this.#messages, ...nodes, this.#runNotification);
 		if (cardFocus) this.#runNotification.querySelector<HTMLElement>(`[data-action="${cardFocus}"]`)?.focus();
+		// A keyboard user reading the row keeps it through a state change or a new message.
+		else if (rowFocus) this.#messages.querySelector<HTMLElement>(".thread-activity")?.focus({ preventScroll: true });
 		this.#refreshTimestamps(false);
 		if (this.#stickToBottom) this.#messages.scrollTop = this.#messages.scrollHeight;
 	}
