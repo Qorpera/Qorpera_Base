@@ -52,10 +52,21 @@ describe("Plan & usage", () => {
 			expect(button.disabled).toBe(true);
 			expect(button.textContent).toBe("Coming soon");
 		}
-		expect(text()).toContain("Every plan starts with a free trial, no card needed. Prices are ex. VAT.");
-		// A re-render (storage arriving) keeps the plans open.
+		const help = () => container.querySelector<HTMLElement>(".settings-group .settings-help")!;
+		expect(help().textContent).toBe("Every plan starts with a free trial, no card needed. Prices are ex. VAT.");
+		expect(help().hidden).toBe(false);
+		expect(upgrade.getAttribute("aria-controls")).toBe(grid.id);
+		// A re-render (storage arriving) keeps the plans open and the focus where it was.
+		upgrade.focus();
 		renderPlan(container, { loaded: true, entitlement: entitlement("freemium") }, undefined);
 		expect(container.querySelector<HTMLElement>(".settings-plan-grid")!.hidden).toBe(false);
+		expect(help().hidden).toBe(false);
+		expect(document.activeElement?.textContent).toBe("Upgrade");
+		buttons()
+			.find((button) => button.textContent === "Upgrade")!
+			.click();
+		expect(container.querySelector<HTMLElement>(".settings-plan-grid")!.hidden).toBe(true);
+		expect(help().hidden).toBe(true);
 	});
 
 	it("shows placeholders for computer hours and billing until the cloud reports them", () => {
@@ -72,6 +83,13 @@ describe("Plan & usage", () => {
 		expect(rows[3]).toBe("InvoicesNo invoices yet");
 		const addCard = buttons().find((button) => button.textContent === "Add card")!;
 		expect(addCard.disabled).toBe(true);
+		// A paid plan without a measurement gets no bar either: an empty bar reads as zero use.
+		renderPlan(container, { loaded: true, entitlement: entitlement("basis") }, undefined);
+		expect(container.querySelector(".settings-hours strong")?.textContent).toBe("Not measured yet");
+		expect(container.querySelector(".settings-hours small:not(.settings-eyebrow)")?.textContent).toBe(
+			"74 h a month with Basis",
+		);
+		expect(container.querySelector(".settings-hours progress")).toBeNull();
 	});
 
 	it("fills the meters and billing rows from the figures a paid plan will report", () => {
@@ -93,7 +111,7 @@ describe("Plan & usage", () => {
 		expect(hours.querySelector("small:not(.settings-eyebrow)")?.textContent).toBe("74 h a month with Basis");
 		expect(hours.querySelector("progress")?.getAttribute("value")).toBe("20");
 		expect(hours.querySelector("progress")?.getAttribute("max")).toBe("74");
-		expect(hours.textContent).toContain("Resets ");
+		expect(hours.textContent).toContain("Resets 1 Oct 2026");
 		const storage = container.querySelectorAll(".settings-usage")[1]!;
 		expect(storage.querySelector("strong")?.textContent).toMatch(/^1\.0 GiB used of /);
 		expect(storage.querySelector("progress")).not.toBeNull();
@@ -101,7 +119,7 @@ describe("Plan & usage", () => {
 		expect(rows[0]).toBe("Price185 kr/month · ex. VAT");
 		expect(rows[2]).toContain("Visa ending 4242");
 		expect(container.querySelector(".settings-invoices a")?.getAttribute("href")).toBe("#/invoice/inv-1");
-		expect(rows[3]).toContain("185 kr");
+		expect(rows[3]).toContain("1 Sept 2026 · 185 kr");
 		const current = container.querySelector('[data-plan="basis"]')!;
 		expect(current.querySelector(".settings-plan-current")?.textContent).toBe("Current plan");
 		expect(current.querySelector("button")?.textContent).toBe("Current plan");
@@ -115,5 +133,32 @@ describe("Plan & usage", () => {
 		expect(planName("dedicated")).toBe("Dedicated computer");
 		expect(planName("some_new_plan")).toBe("some new plan");
 		expect(PLAN_OFFERS.map((offer) => offer.includedHours)).toEqual([74, 286, undefined]);
+	});
+
+	it("leaves the account error to the general panel on the standalone account page", () => {
+		renderPlan(container, { loaded: true, error: "Entitlement offline" }, undefined, {}, { showError: false });
+		expect(container.querySelector(".notice")).toBeNull();
+		expect(container.querySelector(".settings-plan strong")?.textContent).toBe("Plan unavailable");
+		renderPlan(container, { loaded: true, error: "Entitlement offline" }, undefined);
+		expect(container.querySelector(".notice")?.textContent).toContain("Entitlement offline");
+	});
+
+	it("writes hours, storage and dates in Danish when the interface is Danish", () => {
+		localStorage.setItem("qorpera.web.language", "da");
+		renderPlan(
+			container,
+			{ loaded: true, entitlement: entitlement("basis") },
+			{ companyName: "Company A", file: { ...file, storageUsedBytes: 1024 ** 3 }, loading: false, retry() {} },
+			{ computerHours: { used: 20.25, periodEnd: "2026-10-01T00:00:00Z" } },
+		);
+		expect(container.querySelector(".settings-hours strong")?.textContent).toBe("20,3 t brugt af 74 t");
+		expect(container.querySelector(".settings-hours small:not(.settings-eyebrow)")?.textContent).toBe(
+			"74 t om måneden med Basis",
+		);
+		expect(container.querySelector(".settings-period")?.textContent).toBe("Nulstilles 1. okt. 2026");
+		expect(container.querySelectorAll(".settings-usage")[1]?.querySelector("strong")?.textContent).toMatch(
+			/^1\.0 GiB brugt af /,
+		);
+		expect(container.querySelector(".settings-plan-discount")?.textContent).toBe("Ca. 37% rabat på forbrug");
 	});
 });

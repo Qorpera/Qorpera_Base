@@ -2,6 +2,7 @@ import type { HostedCompanyFile } from "../../cloud/types.ts";
 import { button, fmtBytes, h, notice, replace } from "../../ui/dom.ts";
 import { presentationLocale, uiText } from "../../ui/preferences.ts";
 import type { AccountViewState } from "./account.ts";
+import { meter, storageSummary } from "./storage-summary.ts";
 
 /** The plans qorpera.com sells (2026-09-22): a monthly price that buys
  * computer hours and storage. Computer hours are the price divided by the
@@ -15,7 +16,6 @@ export interface PlanOffer {
 	tagline: string;
 	includesLabel?: string;
 	includes: string[];
-	storageBytes: number;
 	/** Computer hours a month; undefined means a computer all month. */
 	includedHours?: number;
 }
@@ -32,7 +32,6 @@ export const PLAN_OFFERS: PlanOffer[] = [
 			"Connect from computer and phone",
 			"Work in the cloud while your computer is off",
 		],
-		storageBytes: 100_000_000_000,
 		includedHours: 74,
 	},
 	{
@@ -43,7 +42,6 @@ export const PLAN_OFFERS: PlanOffer[] = [
 		tagline: "More storage and extra computer use.",
 		includesLabel: "Everything in Basis, plus",
 		includes: ["250 GB storage included", "More than 3.5× extra computer use", "Priority access at peak hours"],
-		storageBytes: 250_000_000_000,
 		includedHours: 286,
 	},
 	{
@@ -54,7 +52,6 @@ export const PLAN_OFFERS: PlanOffer[] = [
 		tagline: "Your own computer all month.",
 		includesLabel: "Everything in Standard, plus",
 		includes: ["500 GB storage included", "A dedicated computer all month", "Early access to new features"],
-		storageBytes: 500_000_000_000,
 	},
 ];
 
@@ -77,9 +74,29 @@ function isTrial(planKey: string): boolean {
 	return planKey === "freemium" || planKey === "trial";
 }
 
+function locale(): string {
+	return presentationLocale() === "da" ? "da-DK" : "en-GB";
+}
+
 /** "185 kr" or "1.592 kr" as the interface language writes it. */
 export function priceKr(kr: number): string {
-	return `${new Intl.NumberFormat(presentationLocale() === "da" ? "da-DK" : "en-GB").format(kr)} kr`;
+	return `${new Intl.NumberFormat(locale()).format(kr)} kr`;
+}
+
+/** "20 h" / "20 t"; fractions of an hour round to one decimal. */
+function hoursText(hours: number): HTMLElement {
+	return h(
+		"span",
+		null,
+		`${new Intl.NumberFormat(locale(), { maximumFractionDigits: 1 }).format(hours)} `,
+		uiText("h"),
+	);
+}
+
+/** A date in the interface language; an unreadable value is shown as sent. */
+function dateText(iso: string): string {
+	const date = new Date(iso);
+	return Number.isNaN(date.getTime()) ? iso : new Intl.DateTimeFormat(locale(), { dateStyle: "medium" }).format(date);
 }
 
 /** Storage of the company chosen in the settings menu, as the Company tab loads it. */
@@ -101,10 +118,6 @@ export interface PlanBilling {
 	invoices?: { id: string; issuedAt: string; totalKr: number; href?: string }[];
 }
 
-function meter(value: number, max: number, label: string): HTMLElement {
-	return h("progress", { max, value: Math.min(value, max), "aria-label": label });
-}
-
 function billingRow(label: string, value: Node | string, action?: Node | null): HTMLElement {
 	return h(
 		"div",
@@ -122,6 +135,7 @@ export function renderPlan(
 	account: AccountViewState,
 	usage: PlanUsage | undefined,
 	billing: PlanBilling = {},
+	options: { showError?: boolean } = {},
 ): void {
 	const entitlement = account.entitlement;
 	const planKey = entitlement?.planKey;
@@ -135,11 +149,15 @@ export function renderPlan(
 				? "No active subscription"
 				: "Storage allocation unavailable"
 		: "";
-	// The plan grid stays open across re-renders (storage arriving, a retry).
+	// The plan grid stays open across re-renders (storage arriving, a retry),
+	// and the control that had focus keeps it.
 	const plansOpen = container.querySelector<HTMLElement>(".settings-plan-grid")?.hidden === false;
+	const focused = container.contains(document.activeElement)
+		? (document.activeElement as HTMLElement).dataset.focus
+		: undefined;
 	const grid = h(
 		"div",
-		{ class: "settings-plan-grid", hidden: !plansOpen },
+		{ class: "settings-plan-grid", id: "settings-plan-grid", hidden: !plansOpen },
 		...PLAN_OFFERS.map((item) =>
 			h(
 				"article",
@@ -155,7 +173,13 @@ export function renderPlan(
 				item.includesLabel ? h("p", { class: "settings-plan-includes-label" }, uiText(item.includesLabel)) : null,
 				h("ul", { class: "settings-plan-includes" }, ...item.includes.map((line) => h("li", null, uiText(line)))),
 				item.usageDiscount
-					? h("p", { class: "settings-plan-discount" }, uiText(`About ${item.usageDiscount}% off usage`))
+					? h(
+							"p",
+							{ class: "settings-plan-discount" },
+							uiText("About"),
+							` ${item.usageDiscount}% `,
+							uiText("off usage"),
+						)
 					: null,
 				// Plan changes are not open yet: the button says so instead of doing nothing.
 				button(uiText(item.key === planKey ? "Current plan" : "Coming soon"), () => {}, {
@@ -166,27 +190,53 @@ export function renderPlan(
 			),
 		),
 	);
+	const help = h(
+		"p",
+		{ class: "settings-help", hidden: !plansOpen },
+		uiText("Every plan starts with a free trial, no card needed. Prices are ex. VAT."),
+	);
 	const toggle = entitlement
 		? button(uiText(trial || entitlement.planKey === "internal" ? "Upgrade" : "Change plan"), () => {
 				grid.hidden = !grid.hidden;
+				help.hidden = grid.hidden;
 				toggle?.setAttribute("aria-expanded", String(!grid.hidden));
 				if (!grid.hidden) grid.querySelector<HTMLElement>("article")?.scrollIntoView?.({ block: "nearest" });
 			})
 		: null;
-	toggle?.setAttribute("aria-expanded", String(plansOpen));
-	const file = usage?.file;
+	if (toggle) {
+		toggle.setAttribute("aria-expanded", String(plansOpen));
+		toggle.setAttribute("aria-controls", grid.id);
+		toggle.dataset.focus = "plans";
+	}
 	const hours = billing.computerHours;
 	const hoursIncluded = hours?.included ?? offer?.includedHours;
 	const hoursValue = hours
-		? `${hours.used} h used${hoursIncluded ? ` of ${hoursIncluded} h` : ""}`
+		? h(
+				"span",
+				null,
+				hoursText(hours.used),
+				" ",
+				uiText("used"),
+				hoursIncluded ? [" ", uiText("of"), " ", hoursText(hoursIncluded)] : null,
+			)
 		: uiText("Not measured yet");
 	const hoursDetail = trial
 		? uiText("Included in your free trial")
 		: offer && offer.includedHours === undefined
 			? uiText("Your own computer, all month")
 			: hoursIncluded
-				? `${hoursIncluded} h a month${offer ? ` with ${offer.name}` : ""}`
-				: "";
+				? h(
+						"span",
+						null,
+						hoursText(hoursIncluded),
+						" ",
+						uiText("a month"),
+						offer ? [" ", uiText("with"), ` ${offer.name}`] : null,
+					)
+				: null;
+	const storage = usage ? storageSummary(usage.file, usage.error) : undefined;
+	const retry = usage?.error ? button(uiText("Retry"), usage.retry, { small: true, disabled: usage.loading }) : null;
+	if (retry) retry.dataset.focus = "retry";
 	const invoices = billing.invoices ?? [];
 	replace(
 		container,
@@ -194,7 +244,7 @@ export function renderPlan(
 			"section",
 			{ class: "page plan" },
 			h("h1", null, uiText("Plan & usage")),
-			account.error ? notice("danger", account.error) : null,
+			account.error && options.showError !== false ? notice("danger", account.error) : null,
 			h(
 				"section",
 				{ class: "settings-group" },
@@ -212,11 +262,7 @@ export function renderPlan(
 					toggle,
 				),
 				grid,
-				h(
-					"p",
-					{ class: "settings-help", hidden: !plansOpen },
-					uiText("Every plan starts with a free trial, no card needed. Prices are ex. VAT."),
-				),
+				help,
 			),
 			h(
 				"section",
@@ -231,13 +277,14 @@ export function renderPlan(
 						h("small", { class: "settings-eyebrow" }, uiText("Computer hours")),
 						h("strong", null, hoursValue),
 						hoursDetail ? h("small", null, hoursDetail) : null,
-						hoursIncluded ? meter(hours?.used ?? 0, hoursIncluded, "Computer hours used") : null,
+						// No bar until there is a measurement: an empty bar would read as zero use.
+						hours && hoursIncluded ? meter(hours.used, hoursIncluded, "Computer hours used") : null,
 					),
 					hours?.periodEnd
-						? h("small", { class: "settings-period" }, `Resets ${new Date(hours.periodEnd).toLocaleDateString()}`)
+						? h("small", { class: "settings-period" }, uiText("Resets"), ` ${dateText(hours.periodEnd)}`)
 						: null,
 				),
-				usage
+				usage && storage
 					? h(
 							"div",
 							{ class: "settings-card settings-usage" },
@@ -245,21 +292,11 @@ export function renderPlan(
 								"div",
 								{ class: "settings-copy" },
 								h("small", { class: "settings-eyebrow" }, uiText("Company storage")),
-								h(
-									"strong",
-									null,
-									file
-										? `${fmtBytes(file.storageUsedBytes)} used${file.storageLimitBytes > 0 ? ` of ${fmtBytes(file.storageLimitBytes)}` : ""}`
-										: usage.error
-											? "Storage information unavailable"
-											: "Loading storage…",
-								),
+								h("strong", null, storage.text),
 								h("small", null, usage.companyName),
-								file && file.storageLimitBytes > 0
-									? meter(file.storageUsedBytes, file.storageLimitBytes, "Company storage used")
-									: null,
+								storage.meter,
 							),
-							usage.error ? button("Retry", usage.retry, { small: true, disabled: usage.loading }) : null,
+							retry,
 						)
 					: h("p", { class: "settings-help" }, uiText("Choose a company to see its storage.")),
 			),
@@ -283,7 +320,7 @@ export function renderPlan(
 					billingRow(
 						"Next payment",
 						billing.nextPaymentAt
-							? new Date(billing.nextPaymentAt).toLocaleDateString()
+							? dateText(billing.nextPaymentAt)
 							: uiText(trial ? "None during your free trial" : "Not scheduled yet"),
 					),
 					billingRow(
@@ -302,8 +339,8 @@ export function renderPlan(
 											"li",
 											null,
 											invoice.href
-												? h("a", { href: invoice.href }, new Date(invoice.issuedAt).toLocaleDateString())
-												: new Date(invoice.issuedAt).toLocaleDateString(),
+												? h("a", { href: invoice.href }, dateText(invoice.issuedAt))
+												: dateText(invoice.issuedAt),
 											` · ${priceKr(invoice.totalKr)}`,
 										),
 									),
@@ -314,4 +351,5 @@ export function renderPlan(
 			),
 		),
 	);
+	if (focused) container.querySelector<HTMLElement>(`[data-focus="${focused}"]`)?.focus({ preventScroll: true });
 }

@@ -97,6 +97,15 @@ describe("composer color preference", () => {
 		expect(view.setState).not.toHaveBeenCalled();
 	});
 
+	it("keeps two rendered groups independent, as the account page and the dialog can both show them", () => {
+		const first = account();
+		const second = account();
+		expect(first.radios()[0]!.name).not.toBe(second.radios()[0]!.name);
+		second.choose("green");
+		expect(first.checked()).toBe("blue");
+		expect(second.checked()).toBe("green");
+	});
+
 	it("restores saved colors before paint and keeps the color when switching theme", () => {
 		expect(composerColorPreference()).toBe("blue");
 		applyComposerColor();

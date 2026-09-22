@@ -174,6 +174,7 @@ export function mountApplication(
 	let profiles: HostedProfile[] = [];
 	let teamFeedback: { message?: string; error?: string } = {};
 	let accountState: AccountViewState = {};
+	const accountPlan = h("div");
 	let meetState: MeetState = {};
 	let unsubscribeCompany: (() => void) | undefined;
 	let homeReason: string | undefined;
@@ -437,9 +438,10 @@ export function mountApplication(
 					render();
 				});
 				// The standalone account page shows the plan below the general settings.
-				const plan = h("div");
-				renderPlan(plan, accountState, undefined);
-				main.append(plan);
+				// One panel across renders keeps an opened plan grid open; the general
+				// panel above already shows the account error.
+				renderPlan(accountPlan, accountState, undefined, {}, { showError: false });
+				main.append(accountPlan);
 			} else if (route.name === "cloud-check") {
 				cloudCheck ??= new CloudCheckView(cloud);
 				replace(main, cloudCheck.el);

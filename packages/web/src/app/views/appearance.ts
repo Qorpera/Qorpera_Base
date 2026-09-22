@@ -14,6 +14,10 @@ import {
  * colour. Each group is a native radio group, so keyboard and screen-reader
  * behaviour come for free. */
 
+/** Radios group by name across the whole document, and the standalone
+ * account page and the settings dialog can both hold these groups at once. */
+let groups = 0;
+
 interface Choice<T extends string> {
 	value: T;
 	label: string;
@@ -21,7 +25,7 @@ interface Choice<T extends string> {
 }
 
 function choices<T extends string>(
-	name: string,
+	base: string,
 	label: string,
 	items: Choice<T>[],
 	current: () => T,
@@ -29,6 +33,8 @@ function choices<T extends string>(
 	failed: () => void,
 ): HTMLFieldSetElement {
 	const inputs: HTMLInputElement[] = [];
+	groups += 1;
+	const name = `${base}-${groups}`;
 	const group = h(
 		"fieldset",
 		{ class: "settings-choices", "aria-label": label },

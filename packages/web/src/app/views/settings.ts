@@ -4,7 +4,7 @@ import { createWebCompanyExecution } from "../../cloud/company-execution.ts";
 import { createWebNativeSubscription } from "../../cloud/native-subscription.ts";
 import type { HostedCompanyFile, HostedProfile } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
-import { button, fmtBytes, h, icon, notice, replace } from "../../ui/dom.ts";
+import { button, h, icon, notice, replace } from "../../ui/dom.ts";
 import { uiText } from "../../ui/preferences.ts";
 import type { AuthController } from "../auth.ts";
 import { CompanyController } from "../company.ts";
@@ -14,6 +14,7 @@ import { FriendsController, renderFriends } from "./friends.ts";
 import type { HubController } from "./hub.ts";
 import { renderPlan } from "./plan.ts";
 import { ConnectionsView, ProviderSignIns } from "./settings-connections.ts";
+import { storageSummary } from "./storage-summary.ts";
 import { renderTeam } from "./team.ts";
 
 const TABS = [
@@ -184,12 +185,12 @@ export class SettingsView {
 			.then((entitlement) => {
 				this.#account = { loaded: true, entitlement };
 				this.#general();
-				this.#plan();
+				if (this.#panels.has("plan")) this.#plan();
 			})
 			.catch((error) => {
 				this.#account = { loaded: true, error: describeError(error) };
 				this.#general();
-				this.#plan();
+				if (this.#panels.has("plan")) this.#plan();
 			});
 		// The friends list also feeds the Company tab's invitation picker.
 		this.#friends.store.subscribe(() => {
@@ -513,7 +514,7 @@ export class SettingsView {
 					),
 				),
 		);
-		const file = this.#file;
+		const storage = storageSummary(this.#file, this.#fileError);
 		replace(
 			panel.querySelector(".settings-file")!,
 			h(
@@ -524,22 +525,8 @@ export class SettingsView {
 					"div",
 					{ class: "settings-copy" },
 					h("strong", null, uiText("Company File")),
-					h(
-						"small",
-						null,
-						file
-							? `${fmtBytes(file.storageUsedBytes)} used${file.storageLimitBytes > 0 ? ` of ${fmtBytes(file.storageLimitBytes)}` : ""}`
-							: this.#fileError
-								? "Storage information unavailable"
-								: "Loading storage…",
-					),
-					file && file.storageLimitBytes > 0
-						? h("progress", {
-								max: file.storageLimitBytes,
-								value: Math.min(file.storageUsedBytes, file.storageLimitBytes),
-								"aria-label": "Company storage used",
-							})
-						: null,
+					h("small", null, storage.text),
+					storage.meter,
 				),
 				icon("chevron"),
 			),
@@ -599,7 +586,7 @@ export class SettingsView {
 			if (!signal.aborted && !this.#lifetime.signal.aborted) {
 				this.#fileLoading = false;
 				this.#drawCompany();
-				this.#plan();
+				if (this.#panels.has("plan")) this.#plan();
 			}
 		}
 	}
