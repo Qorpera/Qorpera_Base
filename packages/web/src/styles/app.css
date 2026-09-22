@@ -203,7 +203,7 @@ label > input, label > select { font-weight: 400; }
 .cofounder-home:hover { background: var(--rail-hover); text-decoration: none; }
 .cofounder-home.active, .cofounder-home.active:hover { background: var(--rail-selection); color: #fff; }
 .cofounder-home strong { position: relative; z-index: 2; max-width: 100%; font-size: 13px; font-weight: 650; line-height: 16px; }
-.cofounder-home small { align-self: center; max-width: 200px; font-size: 10.5px; line-height: 15px; color: var(--rail-small); }
+.cofounder-home small { align-self: center; max-width: 200px; font-size: 11px; line-height: 15px; color: var(--rail-small); }
 .cofounder-home.active small { color: rgba(255, 255, 255, 0.85); }
 .cofounder-stand { position: absolute; left: 50%; top: calc(-1 * var(--lift)); width: var(--figure); height: var(--figure); transform: translateX(-50%); }
 .cofounder-stand::before {
@@ -238,10 +238,10 @@ label > input, label > select { font-weight: 400; }
 .cofounder-status.failed, .rail-row-status.failed { background: var(--rail-status-failed); }
 .rail-row-copy { display: flex; flex-direction: column; justify-content: flex-start; gap: 2px; min-width: 0; }
 .rail-row-copy strong { font-size: 13px; font-weight: 600; line-height: 16px; }
-.rail-row-copy small { font-size: 10.5px; line-height: 15px; color: #6c6b6b; }
+.rail-row-copy small { font-size: 11px; line-height: 15px; color: #5f5e5d; }
 /* Every rail label is one line; it shortens with the rail instead of wrapping. */
 .cofounder-home strong, .cofounder-home small, .rail-row-copy strong, .rail-row-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rail-row.active .rail-row-copy small { color: rgba(255, 255, 255, 0.85); }
+.rail-row.active .rail-row-copy small { color: rgba(255, 255, 255, 0.92); }
 /* RailLayout sets rail-compact only where the rail stands beside the page, never on the drawer. */
 .rail-compact .rail { padding-inline: 7px; }
 .rail-compact .rail-toolbar { justify-content: center; }
