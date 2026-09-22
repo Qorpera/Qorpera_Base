@@ -1840,6 +1840,39 @@ gateway that stops building the responsibilities folder. Either may be rolled
 out first: the database accepts both genesis trees, and the gateway waits for a
 database that still mints documents.
 
+### 2026-09-22 amendment: shared execution service
+
+Refines section 12 and supersedes the per-run machine clauses of the
+2026-09-16 amendment. Member runs execute in **sandboxes** started by a
+long-lived **execution host** on an enabled node, not in a virtual machine
+booted per run. A sandbox is one run's pair of one-run service units (the
+member's native provider host and the single-lane runner) on a numbered slot
+with its own accounts, loopback ports, tmpfs credentials and scratch
+directories; the official provider harness still runs as one process per
+member per run inside its existing containment. The sandbox is the running
+unit for the section 7.4 company ceiling, reserved and released through the
+same admission functions as before. "Member execution machine 4 vCPU / 8 GiB"
+becomes a per-sandbox resource cap set by policy; the execution host itself
+is the node machine.
+
+A node's execution host is a fixture created by the operator from the pinned
+runner guest image, replaced, never relabelled, on bundle activation. It pins
+one runtime bundle and refuses runs pinned to another. A run whose sandbox
+fails is that attempt's failure under the existing retry path; queued jobs are
+served by the restarted host. The control plane remains the only dispatcher;
+its orchestrator polls at 250 ms.
+
+Login custody is unchanged by this amendment: a member's Compute Identity
+volume is attached to the execution host of its home node, the capsule master
+key is handed to one run's native host as a credential, and the credential
+capsule is opened only inside that host's private scratch root. With one
+execution host per node the identity-home rule of 2026-09-16 continues to
+hold; moving login custody into the cloud secret broker (which would make
+nodes symmetric for any member) is a separate, later amendment.
+
+Proposal review keeps its copy-isolated one-run guest. Company Computers
+remain shared virtual machines under section 12.
+
 ### Current implementation checkpoint
 
 The NAS-backed live Company File and native cloud runner path already exist.

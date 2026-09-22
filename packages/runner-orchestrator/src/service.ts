@@ -58,7 +58,7 @@ export function cloudRunnerOrchestratorServiceConfigFromEnvironment(
 		"QORPERA_RUNNER_ORCHESTRATOR_CONTROL_STATE",
 	);
 	const providerAdapterId = requiredEnvironmentValue(environment, "QORPERA_RUNNER_PROVIDER_ADAPTER");
-	const pollValue = environment.QORPERA_RUNNER_ORCHESTRATOR_POLL_MS?.trim() || "500";
+	const pollValue = environment.QORPERA_RUNNER_ORCHESTRATOR_POLL_MS?.trim() || "250";
 	const pollIntervalMs = Number(pollValue);
 	const dispatchConcurrency = Number(environment.QORPERA_RUNNER_ORCHESTRATOR_CONCURRENCY?.trim() || "8");
 	if (!UUID_PATTERN.test(orchestratorId)) throw new Error("QORPERA_RUNNER_ORCHESTRATOR_ID is invalid");

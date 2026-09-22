@@ -1,0 +1,51 @@
+[Unit]
+Description=Qorpera shared execution service (one execution host per node)
+Documentation=https://github.com/Qorpera/Qorpera_Base
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/qorpera/shared-execution.env
+RequiresMountsFor=/var/lib/qorpera/identities
+
+[Service]
+Type=exec
+# Root: it writes each sandbox's credentials to tmpfs for PID 1 to hand over,
+# chowns the slot scratch to the slot accounts, and starts/stops the per-slot
+# units. Its own secrets arrive as credentials, never on the command line.
+User=root
+Group=root
+EnvironmentFile=/etc/qorpera/shared-execution.env
+LoadCredential=qorpera-supabase-service-key:/etc/qorpera/shared-execution-credentials/qorpera-supabase-service-key
+LoadCredential=qorpera-runner-provider:/etc/qorpera/shared-execution-credentials/qorpera-runner-provider
+ExecStart=/usr/bin/node --jitless /opt/qorpera/shared-execution/qorpera-shared-execution-service.mjs
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=45s
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/qorpera-shared-execution /run/qorpera-shared-execution
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+# Reading the identity volumes and chowning slot scratch to the slot accounts.
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER
+AmbientCapabilities=
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
