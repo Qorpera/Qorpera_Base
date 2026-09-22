@@ -212,6 +212,8 @@ export class ComputerPanel {
 							},
 						});
 						signal.throwIfAborted();
+						// A rename that landed while the viewer was opening reaches its heading too.
+						this.#applyTitle();
 						this.#loading.hidden = true;
 						return;
 					}
@@ -274,9 +276,13 @@ export class ComputerPanel {
 		const title = `${displayName} · Computer`;
 		if (title === this.#title) return;
 		this.#title = title;
-		this.#body.querySelector(".screen-viewer-overlay")?.setAttribute("aria-label", title);
+		this.#applyTitle();
+	}
+
+	#applyTitle(): void {
+		this.#body.querySelector(".screen-viewer-overlay")?.setAttribute("aria-label", this.#title);
 		const heading = this.#body.querySelector(".screen-viewer-heading > span");
-		if (heading) heading.textContent = title;
+		if (heading) heading.textContent = this.#title;
 	}
 
 	/** Show the panel in a thread. `close` is that thread's request to end it for good. */
@@ -299,6 +305,8 @@ export class ComputerPanel {
 		this.el.remove();
 		// Lets the thread that was left be collected: nothing of it is watched any more.
 		this.#fitPreview();
+		// It slid in once; coming back to a thread it is simply there, as after a drag.
+		this.el.style.animation = "none";
 	}
 
 	focus(): void {

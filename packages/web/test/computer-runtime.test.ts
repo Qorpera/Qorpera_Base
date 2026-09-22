@@ -359,9 +359,11 @@ describe("automatic computer popover", () => {
 		expect(open).toHaveBeenCalledOnce();
 		expect(p.el.parentElement).toBe(first);
 		const requests = f.fetch.mock.calls.length;
-		// Leaving the thread hands the panel back; nothing is released.
+		// Leaving the thread hands the panel back; nothing is released, and it will not slide in again.
+		expect(p.el.style.animation).toBe("");
 		p.detach();
 		expect(p.attached).toBe(false);
+		expect(p.el.style.animation).toBe("none");
 		expect(closeViewer).not.toHaveBeenCalled();
 		expect(panels.get(staff.id)).toBe(p);
 		await poll();
@@ -440,6 +442,34 @@ describe("automatic computer popover", () => {
 		expect(panels.get(staff.id)).toBeUndefined();
 		// A registry whose company is gone opens nothing more.
 		expect(panels.open(staff)).toBeUndefined();
+	});
+	it("gives the viewer a rename that lands while it is opening", async () => {
+		const f = setup(),
+			close = vi.fn(async () => {});
+		let p: ComputerPanel | undefined;
+		const open = vi.spyOn(viewer, "openComputerViewer").mockImplementation((options) => {
+			// The rename lands after the title was handed over and before the heading exists.
+			p?.retitle("Renamed");
+			const overlay = document.createElement("div");
+			overlay.className = "screen-viewer-overlay";
+			overlay.setAttribute("aria-label", options.title);
+			const heading = document.createElement("span");
+			heading.className = "screen-viewer-heading";
+			heading.append(document.createElement("span"));
+			heading.firstElementChild!.textContent = options.title;
+			overlay.append(heading);
+			options.mount?.append(overlay);
+			return { close };
+		});
+		p = panel(f.computer);
+		await settle();
+		await settle();
+		await settle();
+		expect(open).toHaveBeenCalledOnce();
+		expect(open.mock.calls[0]![0].title).toBe(`${staff.displayName} · Computer`);
+		const overlay = p.el.querySelector(".screen-viewer-overlay")!;
+		expect(overlay.getAttribute("aria-label")).toBe("Renamed · Computer");
+		expect(overlay.querySelector(".screen-viewer-heading > span")?.textContent).toBe("Renamed · Computer");
 	});
 	it("applies a rename made while no thread showed the panel when it is handed out again", async () => {
 		const f = setup(),
