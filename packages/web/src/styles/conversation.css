@@ -17,8 +17,8 @@
 .thread-computer[aria-expanded=true], .thread-computer[aria-expanded=true]:hover:not(:disabled) { color: var(--blue); background: color-mix(in srgb, var(--blue) 18%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--blue) 28%, transparent); }
 .thread-body { position: relative; display: flex; flex: 1; min-width: 0; min-height: 0; }
 .thread-conversation { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
-.messages { flex: 1; overflow: auto; overscroll-behavior: contain; padding: 16px; display: flex; flex-direction: column; gap: 4px; font-family: var(--font-sans); font-size: 14px; line-height: 1.4; letter-spacing: 0; font-optical-sizing: auto; font-synthesis: none; text-rendering: optimizeLegibility; }
-.messages > .empty { margin: auto; text-align: center; font-size: 14px; }
+.messages { flex: 1; overflow: auto; overscroll-behavior: contain; padding: 16px; display: flex; flex-direction: column; gap: 4px; font-family: var(--font-sans); font-size: 15px; line-height: 20px; letter-spacing: 0; font-optical-sizing: auto; font-synthesis: none; text-rendering: optimizeLegibility; }
+.messages > .empty { margin: auto; text-align: center; font-size: 15px; }
 .conversation-timestamp { flex: none; align-self: center; max-width: 100%; margin: 20px 0 14px; color: var(--text-muted); font-size: 11px; font-weight: 500; line-height: 1.5; text-align: center; overflow-wrap: anywhere; }
 .conversation-timestamp:first-child { margin-top: 4px; }
 .message { display: flex; flex: none; flex-direction: column; align-items: flex-start; align-self: flex-start; gap: 7px; min-width: 0; width: fit-content; max-width: min(72%, 720px); }
@@ -61,7 +61,7 @@
 .text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .bubble .small { margin-top: 6px; display: flex; align-items: center; gap: 5px; font-size: 11px; }
 .bubble .small .icon { width: 13px; height: 13px; }
-.message-prose { line-height: 1.4; }
+.message-prose { line-height: 20px; }
 .message-prose p { margin: 0 0 10px; }
 .message-prose h2, .message-prose h3 { margin: 20px 0 8px; font-size: 14px; font-weight: 600; line-height: 1.3; }
 .message-prose [data-heading-level="1"] { font-size: 18px; }
@@ -103,7 +103,7 @@
 .composer[hidden] { display: none; }
 .composer-shell { position: relative; min-height: 44px; border: 1px solid var(--border-strong); border-radius: 22px; background: #fff; padding: 0 43px; transition: height 320ms cubic-bezier(.2,.7,.2,1), border-radius 320ms ease; }
 .composer-shell.is-dragging { border-color: var(--composer-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--composer-accent) 22%, transparent); }
-.composer-shell .composer-input { display: block; width: 100%; min-width: 0; height: 42px; min-height: 42px; max-height: 112px; border: 0; background: transparent; padding: 11px 0 8px; resize: none; border-radius: 0; outline: 0; font-family: var(--font-sans); font-size: 14px; line-height: 1.45; letter-spacing: 0; }
+.composer-shell .composer-input { display: block; width: 100%; min-width: 0; height: 42px; min-height: 42px; max-height: 112px; border: 0; background: transparent; padding: 11px 0 8px; resize: none; border-radius: 0; outline: 0; font-family: var(--font-sans); font-size: 15px; line-height: 20px; letter-spacing: 0; }
 .composer-shell.is-expanded { border-radius: 16px; padding: 8px 12px 34px; }
 .composer-shell.is-expanded .composer-input { padding: 0; min-height: 30px; }
 .composer-more, .composer-send { position: absolute; bottom: 4px; width: 34px; height: 34px; min-height: 34px; border-radius: 50%; }

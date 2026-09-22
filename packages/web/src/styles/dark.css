@@ -107,7 +107,8 @@
 }
 
 /* ---- conversation ------------------------------------------------------------ */
-:root[data-theme="dark"] .bubble { background: #3a3a3c; color: var(--text); }
+/* Messages on iOS: white on a bubble only a step above the page, so the text carries the contrast. */
+:root[data-theme="dark"] .bubble { background: #303032; color: #fff; }
 :root[data-theme="dark"] .mine .bubble { background: var(--composer-accent); color: var(--composer-on-accent); box-shadow: none; }
 :root[data-theme="dark"] .message-progress .bubble { color: #dedcd8; }
 :root[data-theme="dark"] .composer-shell { background: #242423; }

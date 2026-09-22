@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Make thread and rail text sharper and easier to read, above all on the dark theme and on 1x screens: the thread and composer are set in the system face (San Francisco on a Mac, as Messages and the rail already are) at 14px with no sub-pixel letter-spacing, the page renders without macOS font dilation, dark text tokens are brighter, and rail role lines and timestamps step up a size and weight.
+- Make thread and rail text sharper and easier to read, above all on the dark theme and on 1x screens: the thread and composer are set in the system face (San Francisco on a Mac, as Messages and the rail already are) at 15px on a 20px line with no sub-pixel letter-spacing, the page renders without macOS font dilation, dark bubbles carry white text on a darker grey, dark text tokens are brighter, and rail role lines and timestamps step up a size and weight.
 - Preserve agent metadata drafts and retry state across details-panel closes, serialize saves, and retire confirmed edits when the roster catches up so later changes by other members are not overwritten.
 - Keep keyboard focus on an available execution-notice action when refreshes remove the previously focused control.
 - Keep the rail's "Needs you" for runs waiting on a member decision, including a failed run that left Company File changes. An agent with a failed or stopped run nobody has dismissed now rests idle with a red status disc, the opposite of the green working disc; the rail link names the state in words, also in the compact rail.
