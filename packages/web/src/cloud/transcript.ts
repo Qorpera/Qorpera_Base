@@ -12,6 +12,13 @@ export const RUNNER_ENTRY_SCHEMA = "qorpera.runner-transcript-entry/v1";
 export const LEGACY_PART_SCHEMA = "qorpera.shared-trail-entry-part/v1";
 export const SESSION_METADATA_SCHEMA = "qorpera.shared-session-metadata/v1";
 export const AGENT_SEND_SCHEMA = "qorpera.agent-send/v1";
+/** A message between two agents, written by the kernel into their pair transcript (contract 14.6). */
+export const PEER_MESSAGE_SCHEMA = "qorpera.peer-message/v1";
+/** The chip in an agent's own thread that points at a peer message. */
+export const PEER_LINK_SCHEMA = "qorpera.peer-link/v1";
+/** One line in a pair transcript saying why an exchange stopped. */
+export const PEER_BUDGET_SCHEMA = "qorpera.peer-budget/v1";
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export interface TranscriptMessage {
 	kind: "member" | "agent";
@@ -47,7 +54,25 @@ export interface TranscriptCard {
 	createdAt: string;
 }
 
-export type TranscriptItem = TranscriptMessage | TranscriptCard;
+export interface TranscriptPeerLink {
+	kind: "peer_link";
+	id: string;
+	sequence: number;
+	direction: "in" | "out";
+	counterpartStaffId: string;
+	pairSessionId: string;
+	createdAt: string;
+}
+
+export interface TranscriptNote {
+	kind: "note";
+	id: string;
+	sequence: number;
+	text: string;
+	createdAt: string;
+}
+
+export type TranscriptItem = TranscriptMessage | TranscriptCard | TranscriptPeerLink | TranscriptNote;
 
 export interface TranscriptProjection {
 	items: TranscriptItem[];
@@ -173,6 +198,43 @@ function messageFromEntry(entry: Entry, event: HostedSessionEvent, legacy: boole
 			createdAt: event.createdAt,
 		};
 	}
+	if (entry.message.role === "assistant" && entry.delivery?.schema === PEER_MESSAGE_SCHEMA) {
+		// A peer message: kernel-written into the pair transcript, spoken by the
+		// sending agent named in the entry. It has no run execution identity of its
+		// own and never counts as one of the sender's public sends.
+		const delivery = entry.delivery as Record<string, unknown>;
+		if (
+			legacy ||
+			event.sessionInputId ||
+			event.execution ||
+			entry.id !== event.eventId ||
+			typeof delivery.from !== "string" ||
+			!UUID.test(delivery.from) ||
+			typeof delivery.runId !== "string" ||
+			!UUID.test(delivery.runId) ||
+			!Number.isSafeInteger(delivery.staffVersion) ||
+			(delivery.staffVersion as number) < 1
+		)
+			return undefined;
+		return {
+			kind: "agent",
+			id: event.eventId,
+			sequence: event.sequence,
+			text,
+			attachmentCount: 0,
+			phase: "final",
+			runId: delivery.runId,
+			staffSpeaker: {
+				runId: delivery.runId,
+				staffAgentId: delivery.from,
+				staffVersion: delivery.staffVersion as number,
+				...(typeof delivery.displayName === "string" && delivery.displayName.trim()
+					? { displayName: delivery.displayName }
+					: {}),
+			},
+			createdAt: event.createdAt,
+		};
+	}
 	if (entry.message.role === "assistant") {
 		// Only an explicit send operation is public output (§6.1).
 		if (
@@ -231,7 +293,34 @@ export function projectTranscript(
 			continue;
 		}
 		if (event.eventType !== "message") {
-			if (event.eventType !== "session_info") hiddenCount++;
+			if (event.eventType === "session_info") {
+				const info = asRecord(event.body);
+				if (
+					info?.schema === PEER_LINK_SCHEMA &&
+					(info.direction === "in" || info.direction === "out") &&
+					typeof info.counterpartStaffId === "string" &&
+					UUID.test(info.counterpartStaffId) &&
+					typeof info.pairSessionId === "string" &&
+					UUID.test(info.pairSessionId)
+				)
+					items.push({
+						kind: "peer_link",
+						id: event.eventId,
+						sequence: event.sequence,
+						direction: info.direction,
+						counterpartStaffId: info.counterpartStaffId,
+						pairSessionId: info.pairSessionId,
+						createdAt: event.createdAt,
+					});
+				else if (info?.schema === PEER_BUDGET_SCHEMA && typeof info.text === "string" && info.text.trim())
+					items.push({
+						kind: "note",
+						id: event.eventId,
+						sequence: event.sequence,
+						text: info.text.slice(0, 512),
+						createdAt: event.createdAt,
+					});
+			} else hiddenCount++;
 			continue;
 		}
 		const body = asRecord(event.body);

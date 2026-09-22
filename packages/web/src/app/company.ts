@@ -170,6 +170,12 @@ export function isAgentThreadSession(session: HostedSession): boolean {
 		scope.agentThread === true
 	);
 }
+/** The transcript of two agents' messages to each other (contract 14.6): a
+ * company-audience session bound to the pair, view-only, opened from a chip. */
+export function isAgentPairSession(session: HostedSession | undefined): boolean {
+	const pair = session?.executionScope?.agentPair;
+	return !session?.staffAgentId && Array.isArray(pair) && pair.length === 2;
+}
 export function isPrimaryStaffSession(session: HostedSession): boolean {
 	if (!session.staffAgentId || session.status !== "open" || session.audience.kind !== "company") return false;
 	if (isAgentThreadSession(session)) return true;

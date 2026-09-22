@@ -1,0 +1,103 @@
+# Coding sessions: the executor
+
+This is the Linux LXD/Codex executor for runtime-contract Order 9, on the coding-session kernel of Step 9 part 1 (migration `20260922210000`, sessions as sponsored workers) and part 3 (`20260922220000`, the executor's SQL). Order 9 remains open until installed acceptance is complete. The migrations leave coding execution disabled until an operator configures an executor (`qorpera_configure_coding_executor`), its repository grants, its VM policy and its NAS policy.
+
+## Execution path
+
+An agent dispatches a coding session through `manage_worker` (species `coding`); the session is owned and sponsored by one member. The executor claims one session turn with a renewable SQL lease (`qorpera_claim_coding_session`), reserves company and node capacity, reconciles a retained repository VM and seeds a credential-free checkout at a pinned base. The repository VM has a fixed session branch (`qorpera/coding/<worker>`), two exact dedicated NAS mounts, no identity volume, and no GitHub, provider or cloud-control credential. The executor then admits the model turn through the wake bus under the owner's own sponsor (`qorpera_begin_coding_turn`).
+
+The native harness runs the turn on the identity host like any other run, in the coding composition: three tools start/read/cancel repository commands through this service's command gateway, `coding_finish` submits a commit, `coding_ask` submits a question for the owner. Commands execute as the coding uid in a bounded systemd cgroup. A root-owned guest lease, tied to the boot and Linux uptime, expires independently of the executor's network connection; a reviewed timer stops the entire command slice on expiry. A receipt's hash binds the exact command, timeout, worker, VM, turn id and sequence. Every command is authorized in SQL against the turn (`qorpera_authorize_coding_command`) before it starts.
+
+The harness's submission is durable in SQL (`qorpera_submit_coding_turn`); the executor waits on `qorpera_describe_coding_turn` for the run to end and acts on the submission, never on prose. A commit is exported as a bundle, validated in a fresh constrained Git broker, pushed only to the fixed session branch, and published as the same draft PR. The VM is physically stopped before the session is completed (`qorpera_complete_coding_turn`: succeeded with the PR, blocked with the question and its choices, or failed). The disk and capacity custody remain retained; the owner's answer or a follow-up starts the next turn on the same worker, allocation, repository and branch.
+
+The Order 5 completion path wakes the managing agent with the outcome; there is no separate listener. The thread shows the session from the kernel's own view and events. Neither the agent nor a member client needs to be online while the session runs.
+
+Unknown create, command, push, PR or dispatch outcomes retain intent and require observation/reconciliation. Process restart is not permission to replay an effect. Expired or revoked request authority does not grant resume; cleanup has a separate stop-only authorization. A failed or uncertain run must remain visibly unsuccessful.
+
+## Package and configure
+
+Build the two reviewable artifacts on an allocated Linux runtime node from a checkout whose `npm run check` passes:
+
+```sh
+node scripts/package-coding-guest.mjs --out /task-owned/new-guest-package
+node scripts/package-coding-executor.mjs --out /task-owned/new-executor-package
+```
+
+The scripts package files and checksums; they do not install or activate services. The executor package also pins the generated runtime bundle. The guest package includes storage initialization, command, Git and watchdog entrypoints. Install those artifacts and the supplied watchdog service, timer and slice into a dedicated coding image, with the ownership, workspace and utility requirements in `command-guest-installation.json` and `COMMAND-GUEST.md`. Enable the timer in the image. Use a separate non-root coding account with no privileged groups and a NAS-backed `/workspace/repository`, `/workspace/home` and `/workspace/cache`. Configure its Git author identity as a service identity.
+
+Before enabling work, independently verify image/bootstrap provenance, isolated LXD project/network policy, blocked metadata/control-plane/office-network access, storage and genuine reserved node capacity. Pin the resulting image fingerprint, bootstrap digest and provider policy. A pinned network name is not by itself evidence of network isolation. Disposable unsigned candidate tests are permitted by the runtime contract; production activation retains the provenance gates.
+
+Install `qorpera-coding-executor.service` with its persistent dedicated account and private NAS control directory. The service uses the local LXD socket, protected machine identity, a loopback HTTP backend, and a separately configured HTTPS reverse proxy. `owner` must be the executor's owner in `qorpera_coding_executors` (with `harnesses` naming `codex`). Its reviewed JSON configuration has this shape (substitute measured deployment values):
+
+```json
+{
+  "schema": "qorpera.coding-executor-service/v3",
+  "owner": "coding-node-02",
+  "supabaseUrl": "https://PROJECT.supabase.co",
+  "commandPort": 8789,
+  "storagePolicy": {
+    "schema": "qorpera.coding-nas-policy/v1",
+    "mountPoint": "/srv/qorpera-coding",
+    "rootPath": "/srv/qorpera-coding/executor",
+    "source": "NAS_IPV4:/DEDICATED_CODING_EXPORT",
+    "serverAddress": "NAS_IPV4"
+  },
+  "vmPolicy": {
+    "providerId": "native-node",
+    "providerPolicySha256": "MEASURED_SHA256",
+    "project": "coding",
+    "imageFingerprint": "MEASURED_SHA256",
+    "bootstrapSha256": "MEASURED_SHA256",
+    "storagePool": "coding-disks",
+    "network": "coding-net",
+    "cpus": 2,
+    "memoryBytes": 4294967296,
+    "rootDiskBytes": 68719476736
+  },
+  "guest": {
+    "uid": 1000,
+    "gid": 1000,
+    "workspacePath": "/workspace/repository",
+    "homePath": "/workspace/home",
+    "cachePath": "/workspace/cache",
+    "outputRoot": "/var/lib/qorpera-coding/logs",
+    "resourceProfile": {"maxTimeoutMs": 1800000, "memoryBytes": 2147483648, "tasksMax": 256, "cpuQuotaPercent": 200, "maxLogBytes": 67108864},
+    "storageHelperSha256": "PACKAGE_SHA256",
+    "commandHelperSha256": "PACKAGE_SHA256",
+    "gitHelperSha256": "PACKAGE_SHA256",
+    "watchdogHelperSha256": "PACKAGE_SHA256"
+  },
+  "repositories": [{
+    "repository": {"host": "github.com", "owner": "OWNER", "name": "REPO", "baseBranch": "main"},
+    "credential": "qorpera-coding-repository-example"
+  }]
+}
+```
+
+All privileged credentials use systemd `LoadCredential`: registry service key (`qorpera-coding-registry`), the distinct coding-command transport token (`qorpera-coding-command`), and one explicitly scoped repository credential for each configured repository. Add the repository `LoadCredential` entries to the reviewed service unit. Provision repository-limited contents and pull-request permissions; never put a credential into configuration JSON, a model prompt or the repository VM. Configuration allowlisting does not substitute for current SQL repository authority.
+
+On the **native provider** service, select `QORPERA_NATIVE_RUNTIME=company-path-v1`, set `QORPERA_CODING_COMMAND_URL` to the executor's HTTPS origin, and provision the same distinct `qorpera-coding-command` systemd credential. The fenced Codex binary, existing native isolation and identity recovery configuration remain required. Rebuild/provision the native image through its existing reviewed deployment process; do not attach an existing identity volume to a repository VM.
+
+Configure SQL executor ownership (`qorpera_configure_coding_executor` with `harnesses`), repository grants (`qorpera_set_coding_repository_grant`), the exact VM policy (`qorpera_configure_coding_vm_policy`) and the dedicated NAS source/machine placement (`qorpera_configure_coding_nas_policy`) through the migration-defined administrative RPCs. Apply bundle activation only with the matching installed artifacts.
+
+## Acceptance still required before declaring Order 9 complete
+
+Exercise the installed path through a real agent dispatch: edit and test a disposable repository, publish a real draft PR, see the managing agent woken with the outcome and the thread element render the session with clients offline, answer a `coding_ask` question from the thread, and follow up on the same worker/VM/repository/branch/PR. Record actual provider, LXD, systemd, storage and network evidence. Include cancellation, lease/network loss, sponsor/repository revocation, process replacement and unknown-effect reconciliation. Verify the guest watchdog stops actual processes and that repository code cannot obtain host/provider/GitHub credentials.
+
+Component tests use real Linux processes, Git and PostgreSQL where stated, and simulated LXD/provider/systemd ports where stated. Those passing tests do not close the installed end-to-end gate. PostgreSQL component proof on 18.6 must not be presented as parity with an intended 17.6 deployment.
+
+## NAS, retained credentials and deployment limits
+
+Provision a dedicated hard NFSv4.1/4.2 TCP export with `nosuid,nodev`, pinned source address, byte/inode quotas and private executor-owned `rootPath`0700. The existing company object store and office exports are not coding allocations. Install a service drop-in with `RequiresMountsFor` and `ReadWritePaths` for the measured NAS path. The underlying unmounted directory must be root-owned and contain no writable fallback workspace. The control journal is `rootPath/control`; per-worker data and guest custody use deterministic company/environment/worker subdirectories. Local VM root is only the reproducible OS/toolchain. Never silently copy work to local disk.
+
+The two exposed roots are executor-owned0755 with immutable0444 binding markers. The coding UID must differ from that owner. The trusted guest initializer creates exact coding-owned repository/home/cache/log directories and root-owned custody children only through verified virtiofs descriptors. The export must support those ownership operations, or an operator must preprovision the exact directories; the helper does not weaken ownership when root squashing prevents initialization. A 9p fallback is refused. The temporary watchdog lease alone lives under `/run/qorpera-coding`, so a hard-NFS stall cannot prevent local expiry.
+
+NAS placement and writer generation1 are pinned in SQL and on disk. This implementation has no automatic cross-node takeover, marker overwrite or cold-replacement protocol. Queue expiry does not fence storage. Restoring snapshots or introducing a successor writer requires a separate physical-fencing and recovery procedure. Backup, retention and volume-quota proof remain rollout gates.
+
+Native provider credential generations retain encrypted refreshed Codex state after the official client settles. See [credential ownership](../first-node/native-codex/credential-ownership.md) for rollout and recovery. All relevant identity hosts must use the managed generation path; an older host must never consume a stale enrollment capsule. One managed process owns each login at a time. This is not proof of simultaneous same-login runs or of Claude/Gemini adapters.
+
+The independent SQL emergency-stop custody of #140/#200 is not part of this executor yet: a stop that cannot be confirmed through the NAS journal returns `recovery-required` and an operator settles the machine. It returns in its own change on the session kernel.
+
+The Git broker requires `/usr/bin/bwrap` (no unsafe fallback), user namespaces, seccomp and the reviewed host egress policy. Untrusted local Git parsing has no network or credentials. HTTPS stages still need enforcement against internal TCP destinations, and Git scratch needs an aggregate NAS quota. Normal upstream base advancement is accepted without changing the pinned worker ancestry. The current complete-bundle transport remains bounded at64MiB; large-repository streaming is a separate open gate.
+
+A full Linux LXD VM is the implemented compute backend. Desktop/browser tooling and true Firecracker microVMs are not advertised by this image. User-level dependency installation can use NAS-backed home/cache/workspace; privileged OS installation requires a reviewed image update. Windows/macOS and additional subscription clients require their own accepted adapters.
