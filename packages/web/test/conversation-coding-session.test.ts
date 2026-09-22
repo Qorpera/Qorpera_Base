@@ -145,7 +145,10 @@ describe("coding sessions in the thread", () => {
 		);
 		expect(order).toEqual(["message", "message", "coding", "message"]);
 		const element = messages.querySelector(".coding-session")!;
-		expect(element.textContent).toContain("started a coding session with you in Codex: Fix the delay after send");
+		expect(element.querySelector(".coding-chip")?.textContent).toBe(
+			"Fixture agent started a coding session with you in Codex",
+		);
+		expect(element.querySelector(".coding-status-title")?.textContent).toBe("Fix the delay after send");
 		// A new message re-renders the thread; the session's element is the same node.
 		store.set({
 			projection: {
@@ -162,7 +165,21 @@ describe("coding sessions in the thread", () => {
 			codingSessions: [codingSession({ ownerUserId: userB.id, isOwner: false, updatedAt: "2026-09-22T10:09:00Z" })],
 		});
 		await settle();
-		expect(messages.querySelector(".coding-caption")?.textContent).toContain("with Sofie Lund in Codex");
+		expect(messages.querySelector(".coding-chip")?.textContent).toContain("with Sofie Lund in Codex");
+		// The chip opens the session as its own thread over the conversation; Close comes back.
+		messages.querySelector<HTMLButtonElement>(".coding-chip")!.click();
+		await settle();
+		const thread = f.view.el.querySelector(".coding-thread")!;
+		expect(thread).not.toBeNull();
+		expect(thread.querySelector("h1")?.textContent).toBe("Fixture agent ⇄ Codex");
+		expect(thread.querySelector(".coding-thread-subtitle")?.textContent).toBe("Fix the delay after send");
+		expect(thread.querySelector(".coding-session-thread .coding-body")).not.toBeNull();
+		expect(thread.querySelector(".coding-thread-footer")?.textContent).toContain(
+			"This session is view-only. Only Sofie Lund can type",
+		);
+		[...thread.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "Close")!.click();
+		expect(f.view.el.querySelector(".coding-thread")).toBeNull();
+		expect(document.activeElement).toBe(messages.querySelector(".coding-chip"));
 	});
 
 	it("a cloud without coding sessions renders the thread as before", async () => {

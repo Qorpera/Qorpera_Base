@@ -7,6 +7,7 @@ import { AttachmentTray } from "../../ui/attachments.ts";
 import { authorizationRequestId, renderAuthorizationCard } from "../../ui/authorization-card.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { CodingSessionElement } from "../../ui/coding-session.ts";
+import { CodingSessionThreadView } from "../../ui/coding-session-thread.ts";
 import {
 	conversationTimestampLabel,
 	conversationTimestampTitle,
@@ -103,6 +104,8 @@ export class ConversationView {
 	/** The coding sessions shown in this thread, one element per session, kept
 	 * across renders so each keeps its stream, its cursor and its open state. */
 	readonly #codingElements = new Map<string, CodingSessionElement>();
+	/** A coding session opened as its own thread over this one, from its chip. */
+	#codingThread: { workerId: string; view: CodingSessionThreadView } | undefined;
 	readonly #timestampTimer: number;
 	#timestampRows: { date: Date; node: HTMLElement; separator?: HTMLTimeElement }[] = [];
 
@@ -379,6 +382,7 @@ export class ConversationView {
 		this.#panel = undefined;
 		this.#attachments.dispose();
 		for (const attachments of this.#receivedAttachments) attachments.dispose();
+		this.#closeCodingSession();
 		for (const element of this.#codingElements.values()) element.dispose();
 		this.#codingElements.clear();
 		for (const unsubscribe of this.#unsubscribe) unsubscribe();
@@ -798,6 +802,7 @@ export class ConversationView {
 				if (before !== undefined && candidate.createdAt.localeCompare(before) > 0) break;
 				nextSession += 1;
 				const element = this.#codingElement(candidate, agent, agentName);
+				if (this.#codingThread?.workerId === candidate.workerId) this.#codingThread.view.update(candidate);
 				nodes.push(element.el);
 				const date = parseConversationTimestamp(candidate.createdAt);
 				if (date) this.#timestampRows.push({ date, node: element.el });
@@ -978,11 +983,21 @@ export class ConversationView {
 			existing.update(session);
 			return existing;
 		}
+		const element = new CodingSessionElement(session, {
+			...this.#codingOptions(agent, agentName),
+			open: () => this.#openCodingSession(session.workerId),
+		});
+		this.#codingElements.set(session.workerId, element);
+		return element;
+	}
+
+	/** What both the chip and the session's own thread need to render and act. */
+	#codingOptions(agent: HostedStaffAgent | undefined, agentName: string) {
 		const sessionId = this.#sessionId;
 		const company = this.#company;
-		const element = new CodingSessionElement(session, {
+		return {
 			agent,
-			names: (current) => {
+			names: (current: CodingSession) => {
 				const ownerIsViewer = current.ownerUserId === company.userId;
 				return {
 					agent: company.staffById(current.agentId)?.displayName ?? agentName,
@@ -990,26 +1005,54 @@ export class ConversationView {
 					ownerIsViewer,
 				};
 			},
-			viewerOwns: (current) => current.ownerUserId === company.userId,
+			viewerOwns: (current: CodingSession) => current.ownerUserId === company.userId,
 			api: {
-				read: (workerId, afterEvent) => company.readCodingSession(workerId, afterEvent),
-				answer: (workerId, text, clientRequestId) =>
+				read: (workerId: string, afterEvent: number) => company.readCodingSession(workerId, afterEvent),
+				answer: (workerId: string, text: string, clientRequestId: string) =>
 					company.answerCodingSession(sessionId, workerId, text, clientRequestId),
-				delegate: (workerId, clientRequestId) =>
+				delegate: (workerId: string, clientRequestId: string) =>
 					company.delegateCodingSession(sessionId, workerId, clientRequestId),
 			},
 			signal: AbortSignal.any([this.#lifetime.signal, company.signal]),
 			changed: () => this.#pinToBottom(),
 			askAgent: this.#actions.sendMessage
-				? (text) => {
+				? (text: string) => {
+						this.#closeCodingSession();
 						this.#composer.value = text;
 						this.#composer.dispatchEvent(new Event("input", { bubbles: true }));
 						this.#composer.focus();
 					}
 				: undefined,
+		};
+	}
+
+	/** Open a coding session as its own thread over this one, as a bot's message to
+	 * another bot opens; the chip stays in the conversation. */
+	#openCodingSession(workerId: string): void {
+		if (this.#codingThread?.workerId === workerId) return;
+		this.#closeCodingSession();
+		const conversation = this.#company.conversation(this.#sessionId).get();
+		const session = conversation.codingSessions?.find((item) => item.workerId === workerId);
+		if (!session) return;
+		const company = this.#company.store.get();
+		const thread = company.sessions.find((item) => item.sessionId === this.#sessionId);
+		const agent = this.#company.staffById(thread?.staffAgentId);
+		const view = new CodingSessionThreadView(session, {
+			...this.#codingOptions(agent, agent?.displayName ?? "Agent"),
+			close: () => {
+				if (this.#codingThread?.view === view) this.#codingThread = undefined;
+				this.#codingElements.get(workerId)?.el.querySelector<HTMLButtonElement>(".coding-chip")?.focus();
+			},
 		});
-		this.#codingElements.set(session.workerId, element);
-		return element;
+		this.#codingThread = { workerId, view };
+		view.attach(this.#body);
+	}
+
+	#closeCodingSession(): void {
+		const open = this.#codingThread;
+		if (!open) return;
+		this.#codingThread = undefined;
+		open.view.dispose();
 	}
 
 	#renderRunNotification(session: HostedSession | undefined): void {

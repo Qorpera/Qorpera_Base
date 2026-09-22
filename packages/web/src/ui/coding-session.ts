@@ -1,11 +1,11 @@
-/* A coding session in the thread: the centered "sandwich" approved on
- * 2026-09-22. One dashed line carries the start caption ("Mark started a coding
- * session with you in Codex: Fix the delay after send") with the agent's figure
- * and the owner's avatar wearing the harness badge; collapsed, only the live
- * status stands under it; expanded, the session's own steps, the harness's
- * voice, the owner's input and the pull request follow, closed by a second
- * dashed line with the status. Everything here is a projection of the kernel's
- * session view and event stream; nothing comes from the agent's prose.
+/* A coding session in the thread, in the shape of a bot-to-bot handoff line:
+ * a centered chip, "Mark started a coding session with you in ✳ Claude Code",
+ * with the agent's figure and the harness mark, and the live status under it
+ * ("Fix the delay after send · Working · 4 min · 3 files changed"). The chip
+ * opens the session as its own thread (coding-session-thread.ts); Show unfolds
+ * it in place: the session's own steps, the harness's voice, the owner's input
+ * and the pull request. Everything here is a projection of the kernel's session
+ * view and event stream; nothing comes from the agent's prose.
  *
  * The element persists per session across renders of the thread and follows
  * its stream itself: a short poll while the session works, a slower one while
@@ -22,7 +22,7 @@ import {
 } from "../cloud/coding-session.ts";
 import type { HostedStaffAgent, JsonValue } from "../cloud/types.ts";
 import { agentFigure } from "./avatar.ts";
-import { button, h, personAvatar, replace } from "./dom.ts";
+import { button, h, replace } from "./dom.ts";
 
 export const HARNESS_NAMES: Record<CodingHarness, string> = { codex: "Codex", "claude-code": "Claude Code" };
 
@@ -51,23 +51,35 @@ function cap(text: string): string {
 	return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-/** The first caption: who started what, with whom, where. Once the session
- * settled or asked something, the caption says so instead of the title. */
-export function codingSessionCaption(session: CodingSession, names: CodingSessionNames): string {
-	const harness = HARNESS_NAMES[session.harness];
-	const head = `${names.agent}'s coding session with ${names.owner} in ${harness}`;
+/** One piece of the caption: plain words, the agent's name, or the harness (drawn with its mark). */
+export type CodingCaptionPart = { kind: "text" | "agent" | "harness"; text: string };
+
+/** The caption, in pieces: who started what, with whom, where. Once the session
+ * asked something or settled, the caption says so. The title is not part of it;
+ * it stands in the status line and the head. */
+export function codingSessionCaptionParts(session: CodingSession, names: CodingSessionNames): CodingCaptionPart[] {
+	const harness: CodingCaptionPart = { kind: "harness", text: HARNESS_NAMES[session.harness] };
+	const agent: CodingCaptionPart = { kind: "agent", text: names.agent };
+	const text = (value: string): CodingCaptionPart => ({ kind: "text", text: value });
+	const head = [agent, text(`'s coding session with ${names.owner} in `), harness];
 	switch (session.phase) {
 		case "awaiting_input":
-			return `${head} needs ${names.ownerIsViewer ? "your answer" : `an answer from ${names.owner}`}`;
+			return [...head, text(` needs ${names.ownerIsViewer ? "your answer" : `an answer from ${names.owner}`}`)];
 		case "completed":
-			return session.pullRequest ? `${head} opened a draft PR` : `${head} finished`;
+			return [...head, text(session.pullRequest ? " opened a draft PR" : " finished")];
 		case "failed":
-			return `${head} failed`;
+			return [...head, text(" failed")];
 		case "cancelled":
-			return `${head} was cancelled`;
+			return [...head, text(" was cancelled")];
 		default:
-			return `${names.agent} started a coding session with ${names.owner} in ${harness}: ${session.title}`;
+			return [agent, text(` started a coding session with ${names.owner} in `), harness];
 	}
+}
+
+export function codingSessionCaption(session: CodingSession, names: CodingSessionNames): string {
+	return codingSessionCaptionParts(session, names)
+		.map((part) => part.text)
+		.join("");
 }
 
 export function fmtDuration(ms: number): string {
@@ -135,6 +147,11 @@ export interface CodingSessionApi {
 }
 
 export interface CodingSessionElementOptions {
+	/** "line": the chip in the thread, unfolding in place. "thread": the session as
+	 * its own thread (always unfolded, no chip; the thread view adds header and footer). */
+	mode?: "line" | "thread";
+	/** Open the session as its own thread (the chip's click). */
+	open?: () => void;
 	agent: HostedStaffAgent | undefined;
 	/** Read at every render with the current session: names follow the roster and the owner. */
 	names: (session: CodingSession) => CodingSessionNames;
@@ -170,7 +187,7 @@ const CODEX_GLYPH =
 	'<path d="M5 7l6 5-6 5" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 19h7" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"/>';
 
 /** The harness mark the owner's avatar wears: Codex's prompt, Claude's spark. */
-function harnessBadge(harness: CodingHarness): HTMLElement {
+export function harnessBadge(harness: CodingHarness): HTMLElement {
 	return h(
 		"span",
 		{ class: `coding-badge coding-badge-${harness}`, title: HARNESS_NAMES[harness] },
@@ -329,6 +346,7 @@ export class CodingSessionElement {
 	}
 
 	#isExpanded(): boolean {
+		if (this.#options.mode === "thread") return true;
 		if (this.#expanded !== undefined) return this.#expanded;
 		return this.#session.phase === "awaiting_input" && this.#options.viewerOwns(this.#session);
 	}
@@ -398,60 +416,68 @@ export class CodingSessionElement {
 		this.el.dataset.phase = session.phase;
 		this.el.dataset.tone = status.tone;
 		this.el.classList.toggle("coding-session-expanded", expanded);
+		this.el.classList.toggle("coding-session-thread", this.#options.mode === "thread");
 		const caption = codingSessionCaption(session, names);
 		this.el.setAttribute("aria-label", caption);
 		const toggle = button(expanded ? "Hide" : "Show", () => this.#toggle(), { small: true });
 		toggle.className = "coding-link";
 		toggle.setAttribute("aria-expanded", String(expanded));
-		const avatar = h(
-			"span",
-			{ class: "coding-owner", title: names.ownerIsViewer ? "You" : names.owner },
-			personAvatar(names.ownerIsViewer ? "You" : names.owner, session.ownerUserId),
-			harnessBadge(session.harness),
-		);
-		const start = h(
-			"div",
-			{ class: `coding-line coding-line-start coding-tone-${status.tone}` },
-			h("span", { class: "coding-rule", "aria-hidden": "true" }),
+		const statusLine = (withTitle: boolean) =>
 			h(
-				"span",
-				{ class: "coding-label" },
-				agentFigure(this.#options.agent, names.agent, { size: 22 }),
-				avatar,
-				h("span", { class: "coding-caption" }, caption),
-				h("span", { class: "coding-dot-sep", "aria-hidden": "true" }, "·"),
-				toggle,
-			),
-			h("span", { class: "coding-rule", "aria-hidden": "true" }),
-		);
-		const statusLabel = h(
-			"span",
-			{ class: "coding-status-label" },
-			h("span", { class: `coding-dot coding-dot-${status.tone}`, "aria-hidden": "true" }),
-			h("span", null, status.text),
-		);
-		if (!expanded) {
+				"div",
+				{ class: `coding-status coding-tone-${status.tone}`, role: "status" },
+				h("span", { class: `coding-dot coding-dot-${status.tone}`, "aria-hidden": "true" }),
+				withTitle ? h("span", { class: "coding-status-title" }, session.title) : null,
+				withTitle ? h("span", { class: "coding-dot-sep", "aria-hidden": "true" }, "·") : null,
+				h("span", { class: "coding-status-text" }, status.text),
+				this.#options.mode === "thread" ? null : h("span", { class: "coding-dot-sep", "aria-hidden": "true" }, "·"),
+				this.#options.mode === "thread" ? null : toggle,
+			);
+		if (this.#options.mode === "thread") {
 			replace(
 				this.el,
-				start,
-				h("div", { class: `coding-status coding-tone-${status.tone}`, role: "status" }, statusLabel),
+				this.#renderHead(names),
+				this.#renderBody(names),
+				session.pullRequest ? this.#renderPullRequest(names) : null,
+				owns ? this.#renderInput(names) : this.#renderLock(names),
+				statusLine(false),
 			);
+			return;
+		}
+		const chip = h(
+			"button",
+			{
+				type: "button",
+				class: "coding-chip",
+				title: this.#options.open ? "Open the session as its own thread" : caption,
+				"aria-label": caption,
+				onclick: () => (this.#options.open ? this.#options.open() : this.#toggle()),
+			},
+			agentFigure(this.#options.agent, names.agent, { size: 22 }),
+			h(
+				"span",
+				{ class: "coding-chip-text" },
+				...codingSessionCaptionParts(session, names).map((part) =>
+					part.kind === "harness"
+						? h("span", { class: "coding-harness" }, harnessBadge(session.harness), part.text)
+						: part.kind === "agent"
+							? h("span", { class: "coding-agent" }, part.text)
+							: part.text,
+				),
+			),
+		);
+		if (!expanded) {
+			replace(this.el, chip, statusLine(true));
 			return;
 		}
 		replace(
 			this.el,
-			start,
+			chip,
 			this.#renderHead(names),
 			this.#renderBody(names),
 			session.pullRequest ? this.#renderPullRequest(names) : null,
 			owns ? this.#renderInput(names) : this.#renderLock(names),
-			h(
-				"div",
-				{ class: `coding-line coding-line-end coding-tone-${status.tone}`, role: "status" },
-				h("span", { class: "coding-rule", "aria-hidden": "true" }),
-				statusLabel,
-				h("span", { class: "coding-rule", "aria-hidden": "true" }),
-			),
+			statusLine(false),
 		);
 	}
 
