@@ -134,7 +134,19 @@ function viewerFixture() {
 		AbortController: typeof AbortController;
 		AbortSignal: typeof AbortSignal;
 		URL: typeof URL;
-	} = { window: {}, document, RFB: FakeRfb, AbortController, AbortSignal, URL };
+		setTimeout: (handler: () => void, ms: number) => unknown;
+		clearTimeout: (handle: unknown) => void;
+	} = {
+		window: {},
+		document,
+		RFB: FakeRfb,
+		AbortController,
+		AbortSignal,
+		URL,
+		// Looked up per call so vi.useFakeTimers() in a test reaches the renderer's timer.
+		setTimeout: (handler, ms) => globalThis.setTimeout(handler, ms),
+		clearTimeout: (handle) => globalThis.clearTimeout(handle as ReturnType<typeof setTimeout>),
+	};
 	const source = readFileSync(new URL("../../shell/userland/screen-viewer.js", import.meta.url), "utf8");
 	// Execute the actual UI state machine; only the vendored browser transport and DOM are doubled.
 	runInNewContext(source.replace('import RFB from "./vendor/novnc-rfb.js";', ""), context);
@@ -421,22 +433,69 @@ describe("viewer UI state machine (fake DOM/noVNC, not visual cloud acceptance)"
 		await viewer.close();
 	});
 
-	it("stays entered inside the host frame when the browser refuses full screen", async () => {
+	it("stays entered inside the host frame when the browser refuses full screen, says so, and asks again on the next Enter", async () => {
 		const f = await embeddedViewer(false);
 		const { mount, viewer } = f;
-		vi.spyOn(mount.children[0], "requestFullscreen").mockRejectedValueOnce(new Error("denied"));
+		const note = f.elements.find((element) => element.className === "screen-viewer-note");
+		if (!note) throw new Error("NOTE_MISSING");
+		expect(note.hidden).toBe(true);
+		expect(note.attributes.get("role")).toBe("status");
+		expect(note.attributes.get("aria-live")).toBe("polite");
+		const request = vi.spyOn(mount.children[0], "requestFullscreen").mockRejectedValueOnce(new Error("denied"));
 		f.button("Enter").onclick?.();
 		await vi.waitFor(() => expect(f.button("Enter").disabled).toBe(false));
 		expect(mount.children[0].classes.has("screen-viewer-entered")).toBe(true);
 		expect(f.expanded.mock.calls).toEqual([[true]]);
 		expect(f.document.fullscreenElement).toBeNull();
+		expect(note.hidden).toBe(false);
+		expect(note.textContent).toBe("Full screen unavailable");
 		expect(f.button("Back to thread").hidden).toBe(false);
 		expect(f.button("Back to thread").textContent).toBe("Back to thread");
 		f.button("Back to thread").onclick?.();
 		expect(f.expanded.mock.calls).toEqual([[true], [false]]);
 		expect(f.document.exitFullscreen).not.toHaveBeenCalled();
+		expect(note.hidden).toBe(true);
+		expect(note.textContent).toBe("");
+		// The refusal does not stick: the next Enter asks the browser again.
+		f.button("Enter").onclick?.();
+		await vi.waitFor(() => expect(f.document.fullscreenElement).toBe(mount.children[0]));
+		expect(request).toHaveBeenCalledTimes(2);
+		expect(note.hidden).toBe(true);
+		expect(f.expanded.mock.calls).toEqual([[true], [false], [true]]);
 		await viewer.close();
 		expect(f.document.fullscreenElement).toBeNull();
+	});
+
+	it("says so when the host never answers the full-screen request, and lets the next Enter ask again", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+			const f = await embeddedViewer(false);
+			const { mount, viewer } = f;
+			const note = f.elements.find((element) => element.className === "screen-viewer-note");
+			if (!note) throw new Error("NOTE_MISSING");
+			const request = vi
+				.spyOn(mount.children[0], "requestFullscreen")
+				.mockImplementationOnce(() => new Promise(() => {}));
+			f.button("Enter").onclick?.();
+			expect(request).toHaveBeenCalledOnce();
+			expect(note.hidden).toBe(true);
+			await vi.advanceTimersByTimeAsync(1999);
+			expect(note.hidden).toBe(true);
+			await vi.advanceTimersByTimeAsync(1);
+			expect(note.hidden).toBe(false);
+			expect(note.textContent).toBe("Full screen unavailable");
+			f.button("Back to thread").onclick?.();
+			expect(note.hidden).toBe(true);
+			expect(f.button("Enter").disabled).toBe(false);
+			f.button("Enter").onclick?.();
+			expect(request).toHaveBeenCalledTimes(2);
+			await vi.advanceTimersByTimeAsync(0);
+			expect(f.document.fullscreenElement).toBe(mount.children[0]);
+			expect(note.hidden).toBe(true);
+			await viewer.close();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("exits only its own fullscreen on close and removes its fullscreen listener", async () => {
@@ -483,7 +542,12 @@ describe("viewer UI state machine (fake DOM/noVNC, not visual cloud acceptance)"
 		await f.viewer.close();
 		const standalone = viewerFixture();
 		const viewer = standalone.api.open(standalone.options);
-		for (const name of ["screen-viewer-fullscreen", "screen-viewer-back", "screen-viewer-enter"])
+		for (const name of [
+			"screen-viewer-fullscreen",
+			"screen-viewer-back",
+			"screen-viewer-enter",
+			"screen-viewer-note",
+		])
 			expect(standalone.elements.some((element) => element.className === name)).toBe(false);
 		await viewer.close();
 	});

@@ -5,7 +5,7 @@
     {
       "file": "screen-viewer.js",
       "source": "packages/shell/userland/screen-viewer.js",
-      "sha256": "1f1c87c2c692a7b109e02f462790880cad7d136e54de725912174b8aea1c5a6c"
+      "sha256": "6ce31edf200cfe54cd02bf1082e70d4bdc5e5f660ea78035beade4045f93408b"
     },
     {
       "file": "screens.css",
