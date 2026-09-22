@@ -75,6 +75,8 @@ export class PairTranscriptView {
 		quietScroll(this.#messages);
 		const store = host.conversation(sessionId);
 		const unsubscribe = store.subscribe(() => this.update());
+		// A transcript opened before is read again now, not when the timer next fires.
+		void host.loadConversation(sessionId);
 		this.#lifetime.signal.addEventListener("abort", unsubscribe, { once: true });
 		// A reply that arrives while the member watches shows in place; a hidden tab
 		// does not poll, and catches up the moment it is shown again.

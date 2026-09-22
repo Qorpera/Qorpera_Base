@@ -79,6 +79,8 @@ export class ConversationView {
 	#panel: ComputerPanel | undefined;
 	/** The transcript of this agent and a coworker, laid over the thread from a chip. */
 	#pair: PairTranscriptView | undefined;
+	/** The chip that opened the transcript; focus returns there when it closes. */
+	#pairOpener: HTMLElement | undefined;
 	#headerKey = "";
 	#renderedKey = "";
 	#stickToBottom = true;
@@ -477,10 +479,11 @@ export class ConversationView {
 	}
 
 	/** Lay the two agents' transcript over this thread; the thread waits underneath. */
-	#openPair(pairSessionId: string, agentIds: readonly [string, string]): void {
+	#openPair(pairSessionId: string, agentIds: readonly [string, string], opener: HTMLElement): void {
 		this.#closePair(false);
 		const view = new PairTranscriptView(this.#company, pairSessionId, agentIds, () => this.#closePair(true));
 		this.#pair = view;
+		this.#pairOpener = opener;
 		this.#conversationPane.inert = true;
 		this.#body.append(view.el);
 		view.focus();
@@ -490,9 +493,20 @@ export class ConversationView {
 		const view = this.#pair;
 		if (!view) return;
 		this.#pair = undefined;
+		const opener = this.#pairOpener;
+		this.#pairOpener = undefined;
 		view.dispose();
 		this.#conversationPane.inert = false;
-		if (refocus) this.#messages.querySelector<HTMLElement>(".peer-chip")?.focus({ preventScroll: true });
+		if (!refocus) return;
+		// The chip that opened it, or the same chip after a re-render, or any chip.
+		const messageId = opener?.closest<HTMLElement>(".peer-link")?.dataset.messageId;
+		const target =
+			opener?.isConnected && this.#messages.contains(opener)
+				? opener
+				: (this.#messages.querySelector<HTMLElement>(
+						messageId ? `.peer-link[data-message-id="${messageId}"] .peer-chip` : ".peer-chip",
+					) ?? this.#messages.querySelector<HTMLElement>(".peer-chip"));
+		target?.focus({ preventScroll: true });
 	}
 
 	#toggleComputer(): void {
@@ -881,7 +895,8 @@ export class ConversationView {
 								class: "peer-chip",
 								title: `${label} · ${fmtTime(item.createdAt)}`,
 								"aria-label": `${label}. Open the conversation`,
-								onclick: () => this.#openPair(item.pairSessionId, pair),
+								onclick: (event: MouseEvent) =>
+									this.#openPair(item.pairSessionId, pair, event.currentTarget as HTMLElement),
 							},
 							agentFigure(counterpart, name, { size: 16 }),
 							h("span", null, label),

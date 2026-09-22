@@ -148,6 +148,38 @@ create index qorpera_wake_coworker_pair_recent
 	on public.qorpera_wake_occurrences(profile_id,(payload ->> 'pairSessionId'),created_at)
 	where source_kind = 'coworker';
 
+-- The one rule for continuing a peer chain, used by the send (to refuse with a
+-- receipt) and by admission (to refuse a wake): the recipient moves to the end
+-- of the visited list; the chain ends at the hop budget or at sixteen agents.
+create function public.qorpera_coworker_chain(p_agents uuid[],p_recipient uuid,p_hops integer)
+returns uuid[] language plpgsql immutable set search_path = '' as $$
+declare v_agents uuid[];
+begin
+	if p_recipient is null or p_hops is null or p_hops < 1 or p_hops > 6 then return null; end if;
+	v_agents := array_remove(coalesce(p_agents,'{}'::uuid[]),p_recipient) || p_recipient;
+	if cardinality(v_agents) > 16 then return null; end if;
+	return v_agents;
+end
+$$;
+revoke all on function public.qorpera_coworker_chain(uuid[],uuid,integer) from public,anon,authenticated,service_role;
+
+-- An agent's own shared thread: the existing open one, else created.
+create function public.qorpera_agent_thread_session_internal(
+	p_profile_id uuid,p_environment_id uuid,p_staff_agent_id uuid,p_actor_user_id uuid
+) returns uuid language plpgsql security definer set search_path = '' as $$
+declare v_session uuid;
+begin
+	select room.session_id into v_session from public.qorpera_company_rooms room
+	join public.qorpera_shared_sessions session on session.id = room.session_id and session.status = 'open'
+	where room.profile_id = p_profile_id and room.bound_staff_agent_id = p_staff_agent_id and room.status = 'active';
+	if v_session is null then
+		v_session := public.qorpera_ensure_agent_thread_internal(p_profile_id,p_environment_id,p_staff_agent_id,p_actor_user_id);
+	end if;
+	return v_session;
+end
+$$;
+revoke all on function public.qorpera_agent_thread_session_internal(uuid,uuid,uuid,uuid) from public,anon,authenticated,service_role;
+
 -- A coworker wake continues its parent's chain. The recipient may already be
 -- in the chain (that is what a reply is); it moves to the end. The chain ends
 -- at the hop budget, never at "seen before".
@@ -181,9 +213,8 @@ begin
 		if cardinality(v_agents) > 16 then return null; end if;
 		return jsonb_build_object('rootId',v_root,'agentIds',to_jsonb(v_agents));
 	end if;
-	if p_wake.causal_hop_count > 6 then return null; end if;
-	v_agents := array_remove(v_agents,p_wake.staff_agent_id) || p_wake.staff_agent_id;
-	if cardinality(v_agents) > 16 then return null; end if;
+	v_agents := public.qorpera_coworker_chain(v_agents,p_wake.staff_agent_id,p_wake.causal_hop_count);
+	if v_agents is null then return null; end if;
 	return jsonb_build_object('rootId',v_root,'agentIds',to_jsonb(v_agents));
 end
 $$;
@@ -333,15 +364,16 @@ begin
 	v_fence := case
 		when v_hops > 6 then 'This exchange paused after ' || (v_hops - 1)::text || ' messages. A member can continue it by writing to either agent.'
 		when v_hourly >= 20 then 'These two agents have exchanged ' || v_hourly::text || ' messages this hour and are paused until it passes.'
-		when cardinality(array_remove(coalesce(v_parent_agents,'{}'::uuid[]),p_recipient_staff_id)) >= 16 then 'This chain involves too many agents to continue.'
+		when public.qorpera_coworker_chain(coalesce(v_parent_agents,array[v_run.staff_agent_id]),p_recipient_staff_id,v_hops) is null
+			then 'This chain involves too many agents to continue.'
 		end;
 	if v_fence is null then
 		-- The pair's transcript and both agents' own threads exist before anything is written.
 		v_pair := public.qorpera_agent_pair_session_internal(v_run.profile_id,v_run.environment_id,v_run.staff_agent_id,
 			p_recipient_staff_id,v_run.requested_by_user_id);
-		v_sender_thread := public.qorpera_ensure_agent_thread_internal(v_run.profile_id,v_run.environment_id,v_run.staff_agent_id,
+		v_sender_thread := public.qorpera_agent_thread_session_internal(v_run.profile_id,v_run.environment_id,v_run.staff_agent_id,
 			v_run.requested_by_user_id);
-		v_recipient_thread := public.qorpera_ensure_agent_thread_internal(v_run.profile_id,v_run.environment_id,p_recipient_staff_id,
+		v_recipient_thread := public.qorpera_agent_thread_session_internal(v_run.profile_id,v_run.environment_id,p_recipient_staff_id,
 			v_run.requested_by_user_id);
 		-- The transcript event is kernel-authored metadata of the sender's run, not a
 		-- public send of it: it carries no run execution identity, so the one-mouth

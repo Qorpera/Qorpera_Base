@@ -64,8 +64,15 @@ the admission trigger validates the session the send passed instead of deriving
 it; budgets are evaluated before any session is created or touched; the web
 panel stops polling in a hidden tab; the unused `agentPairOf` helper is gone;
 test 380 gained the hourly limit, the legacy hop-0 ancestry and the admission
-check (the 16-agent chain cap is still only covered by inspection). Bundle
-re-cut to `6a79ff33…`, guest provider host `42832a41…`.
+check. Bundle re-cut to `6a79ff33…`, guest provider host `42832a41…`.
+
+## Review round 2 (2026-09-22, four findings, all fixed)
+
+One chain rule, `qorpera_coworker_chain`, now serves both the send (receipt) and
+admission (fence) and is tested directly, including the 16-agent cap; the send
+reads an agent's existing open thread before creating one; the transcript panel
+loads on every open and returns focus to the chip that opened it. Bundle
+re-cut to `97605c74…`, guest provider host `d53495cf…`.
 
 ## Not in this cut
 

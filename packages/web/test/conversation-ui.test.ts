@@ -1469,6 +1469,8 @@ describe("messages between two agents (contract 14.6)", () => {
 		const coworker = { ...staff, id: id(97), displayName: "Helper" };
 		f.company.store.set({ staff: [staff, coworker] });
 		const pairSessionId = id(98);
+		// The thread's own first load finishes before the test supplies its projection.
+		await f.company.loadConversation(session.sessionId);
 		f.company.conversation(session.sessionId).set({
 			loading: false,
 			projection: {
@@ -1534,5 +1536,6 @@ describe("messages between two agents (contract 14.6)", () => {
 		button(panel, "Close Chat").click();
 		expect(f.view.el.querySelector(".pair-transcript")).toBeNull();
 		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(false);
+		expect(document.activeElement).toBe(chip);
 	});
 });

@@ -176,3 +176,20 @@ begin
 end
 $$;
 rollback to messaging_legacy;
+
+savepoint messaging_chain_rule;
+do $$
+declare v_sixteen uuid[] := array(select ('30000000-0000-4000-8000-0000000001' || lpad(n::text,2,'0'))::uuid from generate_series(1,16) n);
+	v_new uuid := '30000000-0000-4000-8000-000000000199'; v_chain uuid[];
+begin
+	-- One rule for the send's receipt and admission's fence: a seventeenth agent cannot join a chain,
+	-- an agent already in it moves to the end, and the seventh hop ends every chain.
+	perform pg_temp.wake_assert(public.qorpera_coworker_chain(v_sixteen,v_new,2) is null,'A seventeenth agent cannot join a chain');
+	v_chain := public.qorpera_coworker_chain(v_sixteen,v_sixteen[3],2);
+	perform pg_temp.wake_assert(cardinality(v_chain) = 16 and v_chain[16] = v_sixteen[3] and v_chain[3] = v_sixteen[4],'A revisit moves the agent to the end of a full chain');
+	perform pg_temp.wake_assert(public.qorpera_coworker_chain(v_sixteen[1:2],v_new,7) is null,'The seventh hop ends a chain');
+	perform pg_temp.wake_assert(public.qorpera_coworker_chain(v_sixteen[1:2],v_new,6) = v_sixteen[1:2] || v_new,'The sixth hop still continues a chain');
+	perform pg_temp.wake_assert(public.qorpera_coworker_chain(null,v_new,1) = array[v_new],'A chain without a parent starts with the recipient');
+end
+$$;
+rollback to messaging_chain_rule;
