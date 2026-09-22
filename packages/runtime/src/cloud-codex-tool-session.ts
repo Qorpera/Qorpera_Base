@@ -81,6 +81,8 @@ const DISABLED_FEATURES = [
 	"tool_suggest",
 	"request_permissions_tool",
 	"guardian_approval",
+	"current_time_reminder",
+	"sleep_tool",
 ] as const;
 
 export const CLOUD_CODEX_BOUNDARY_CONFIG: readonly string[] = Object.freeze([

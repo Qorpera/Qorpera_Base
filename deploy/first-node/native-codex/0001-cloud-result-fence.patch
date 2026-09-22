@@ -1,5 +1,5 @@
 diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
-index 5394382df2..d21e0d89a9 100644
+index 5394382df..d21e0d89a 100644
 --- a/codex-rs/Cargo.lock
 +++ b/codex-rs/Cargo.lock
 @@ -3067,6 +3067,7 @@ dependencies = [
@@ -11,7 +11,7 @@ index 5394382df2..d21e0d89a9 100644
   "similar",
   "tempfile",
 diff --git a/codex-rs/app-server-protocol/src/protocol/common.rs b/codex-rs/app-server-protocol/src/protocol/common.rs
-index 70954a3d60..4f71b712a5 100644
+index 70954a3d6..4f71b712a 100644
 --- a/codex-rs/app-server-protocol/src/protocol/common.rs
 +++ b/codex-rs/app-server-protocol/src/protocol/common.rs
 @@ -1948,6 +1948,8 @@ server_notification_definitions! {
@@ -24,7 +24,7 @@ index 70954a3d60..4f71b712a5 100644
      /// EXPERIMENTAL - proposed plan streaming deltas for plan items.
      PlanDelta => "item/plan/delta" (v2::PlanDeltaNotification),
 diff --git a/codex-rs/app-server-protocol/src/protocol/v2/item.rs b/codex-rs/app-server-protocol/src/protocol/v2/item.rs
-index f56386cae6..4c2eaa0cd5 100644
+index f56386cae..4c2eaa0cd 100644
 --- a/codex-rs/app-server-protocol/src/protocol/v2/item.rs
 +++ b/codex-rs/app-server-protocol/src/protocol/v2/item.rs
 @@ -1415,6 +1415,17 @@ pub struct RawResponseItemCompletedNotification {
@@ -73,7 +73,7 @@ index f56386cae6..4c2eaa0cd5 100644
 +    }
 +}
 diff --git a/codex-rs/app-server/src/bespoke_event_handling.rs b/codex-rs/app-server/src/bespoke_event_handling.rs
-index be146d82c7..1d53fe7044 100644
+index be146d82c..1d53fe704 100644
 --- a/codex-rs/app-server/src/bespoke_event_handling.rs
 +++ b/codex-rs/app-server/src/bespoke_event_handling.rs
 @@ -1196,6 +1196,19 @@ pub(crate) async fn apply_bespoke_event_handling(
@@ -97,7 +97,7 @@ index be146d82c7..1d53fe7044 100644
              let notification = RawResponseCompletedNotification {
                  thread_id: conversation_id.to_string(),
 diff --git a/codex-rs/app-server/src/notification_media.rs b/codex-rs/app-server/src/notification_media.rs
-index 04e57f8c53..064a3bbf33 100644
+index 04e57f8c5..064a3bbf3 100644
 --- a/codex-rs/app-server/src/notification_media.rs
 +++ b/codex-rs/app-server/src/notification_media.rs
 @@ -55,6 +55,8 @@ pub(crate) fn without_notification_media(notification: ServerNotification) -> Se
@@ -110,7 +110,7 @@ index 04e57f8c53..064a3bbf33 100644
          | ServerNotification::ThreadStatusChanged(_)
          | ServerNotification::ThreadArchived(_)
 diff --git a/codex-rs/app-server/src/request_processors/initialize_processor.rs b/codex-rs/app-server/src/request_processors/initialize_processor.rs
-index d6c77f12eb..f622b4c150 100644
+index d6c77f12e..f622b4c15 100644
 --- a/codex-rs/app-server/src/request_processors/initialize_processor.rs
 +++ b/codex-rs/app-server/src/request_processors/initialize_processor.rs
 @@ -173,7 +173,12 @@ impl InitializeRequestProcessor {
@@ -128,7 +128,7 @@ index d6c77f12eb..f622b4c150 100644
              user_agent,
              codex_home,
 diff --git a/codex-rs/core/Cargo.toml b/codex-rs/core/Cargo.toml
-index 24c6640cc1..a851e53447 100644
+index 24c6640cc..a851e5344 100644
 --- a/codex-rs/core/Cargo.toml
 +++ b/codex-rs/core/Cargo.toml
 @@ -105,6 +105,7 @@ rmcp = { workspace = true, default-features = false, features = [
@@ -140,7 +140,7 @@ index 24c6640cc1..a851e53447 100644
  similar = { workspace = true }
  tempfile = { workspace = true }
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
-index d46a98ed31..4c1e3f3065 100644
+index d46a98ed3..4c1e3f306 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
 @@ -781,6 +781,8 @@ impl ModelClient {
@@ -248,7 +248,7 @@ index d46a98ed31..4c1e3f3065 100644
                  &mut request.input,
                  &client_setup.api_provider,
 diff --git a/codex-rs/core/src/client_common.rs b/codex-rs/core/src/client_common.rs
-index 96cd7eab01..9827f0fdb4 100644
+index 96cd7eab0..9827f0fdb 100644
 --- a/codex-rs/core/src/client_common.rs
 +++ b/codex-rs/core/src/client_common.rs
 @@ -66,7 +66,7 @@ impl Prompt {
@@ -261,7 +261,7 @@ index 96cd7eab01..9827f0fdb4 100644
          match item {
              ResponseItem::Message { content, .. } => {
 diff --git a/codex-rs/core/src/lib.rs b/codex-rs/core/src/lib.rs
-index 55d1f474e5..b4bbae8f42 100644
+index 55d1f474e..b4bbae8f4 100644
 --- a/codex-rs/core/src/lib.rs
 +++ b/codex-rs/core/src/lib.rs
 @@ -9,6 +9,8 @@ mod apply_patch;
@@ -275,7 +275,7 @@ index 55d1f474e5..b4bbae8f42 100644
  mod realtime_history;
 diff --git a/codex-rs/core/src/qorpera_message_composition.rs b/codex-rs/core/src/qorpera_message_composition.rs
 new file mode 100644
-index 0000000000..75c17fc4ed
+index 000000000..75c17fc4e
 --- /dev/null
 +++ b/codex-rs/core/src/qorpera_message_composition.rs
 @@ -0,0 +1,178 @@
@@ -459,10 +459,10 @@ index 0000000000..75c17fc4ed
 +}
 diff --git a/codex-rs/core/src/qorpera_result_fence.rs b/codex-rs/core/src/qorpera_result_fence.rs
 new file mode 100644
-index 0000000000..fdf3f52468
+index 000000000..4a60a6777
 --- /dev/null
 +++ b/codex-rs/core/src/qorpera_result_fence.rs
-@@ -0,0 +1,379 @@
+@@ -0,0 +1,385 @@
 +//! Private cloud result boundary. This has no access to provider credentials or transports.
 +//! The Qorpera host enables it only in a pinned, isolated app-server process.
 +
@@ -485,6 +485,12 @@ index 0000000000..fdf3f52468
 +    } else {
 +        requested
 +    }
++}
++
++/// Governed runs expose only the tools the cloud runtime brokers; the native helper tools the model
++/// catalog advertises (clock, async user questions, async user messages) are never registered there.
++pub(crate) fn native_helper_tools_allowed(socket: Option<&std::ffi::OsStr>) -> bool {
++    socket.is_none()
 +}
 +
 +pub(crate) async fn fence_results(
@@ -844,10 +850,10 @@ index 0000000000..fdf3f52468
 +mod tests;
 diff --git a/codex-rs/core/src/qorpera_result_fence_tests.rs b/codex-rs/core/src/qorpera_result_fence_tests.rs
 new file mode 100644
-index 0000000000..a005898600
+index 000000000..0e95b6fab
 --- /dev/null
 +++ b/codex-rs/core/src/qorpera_result_fence_tests.rs
-@@ -0,0 +1,371 @@
+@@ -0,0 +1,379 @@
 +use anyhow::Context;
 +use base64::Engine;
 +use base64::engine::general_purpose::STANDARD;
@@ -863,6 +869,14 @@ index 0000000000..a005898600
 +use super::governed_tool_mode;
 +use super::unix::fence;
 +use crate::responses_metadata::CodexResponsesMetadata;
++
++#[test]
++fn only_governed_runs_suppress_native_helper_tools() {
++    assert!(super::native_helper_tools_allowed(/*socket*/ None));
++    assert!(!super::native_helper_tools_allowed(Some(std::ffi::OsStr::new(
++        "/run/qorpera/fence.sock"
++    ))));
++}
 +
 +#[test]
 +fn only_governed_runs_override_the_requested_tool_mode() {
@@ -1220,7 +1234,7 @@ index 0000000000..a005898600
 +    host.abort();
 +}
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index 5d5fa3a0aa..1e15fed867 100644
+index 5d5fa3a0a..1e15fed86 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
 @@ -2049,6 +2049,7 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<(String, Option<
@@ -1278,7 +1292,7 @@ index 5d5fa3a0aa..1e15fed867 100644
  
      flush_assistant_text_segments_all(
 diff --git a/codex-rs/core/src/tools/mod.rs b/codex-rs/core/src/tools/mod.rs
-index 7a65bc95a3..6f1c668452 100644
+index 7a65bc95a..6f1c66845 100644
 --- a/codex-rs/core/src/tools/mod.rs
 +++ b/codex-rs/core/src/tools/mod.rs
 @@ -66,7 +66,7 @@ pub(crate) fn tool_user_shell_type(
@@ -1303,8 +1317,49 @@ index 7a65bc95a3..6f1c668452 100644
  }
  
  pub(crate) fn effective_tool_mode(turn_context: &TurnContext, model_info: &ModelInfo) -> ToolMode {
+diff --git a/codex-rs/core/src/tools/spec_plan.rs b/codex-rs/core/src/tools/spec_plan.rs
+index 01054b1b5..ffef21aa5 100644
+--- a/codex-rs/core/src/tools/spec_plan.rs
++++ b/codex-rs/core/src/tools/spec_plan.rs
+@@ -1164,7 +1164,11 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
+         );
+     }
+ 
+-    if !turn_context.session_source.is_non_root_agent()
++    let native_helper_tools_allowed = crate::qorpera_result_fence::native_helper_tools_allowed(
++        std::env::var_os("QORPERA_NATIVE_RESULT_FENCE_SOCKET").as_deref(),
++    );
++    if native_helper_tools_allowed
++        && !turn_context.session_source.is_non_root_agent()
+         && context
+             .model_info
+             .experimental_supported_tools
+@@ -1189,7 +1193,8 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
+         );
+     }
+ 
+-    if !turn_context.session_source.is_non_root_agent()
++    if native_helper_tools_allowed
++        && !turn_context.session_source.is_non_root_agent()
+         && context
+             .model_info
+             .experimental_supported_tools
+@@ -1214,10 +1219,11 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
+         .experimental_supported_tools
+         .iter()
+         .any(|tool| tool == "clock");
+-    if current_time_reminder_enabled || model_has_clock {
++    if native_helper_tools_allowed && (current_time_reminder_enabled || model_has_clock) {
+         registry.add(CurrentTimeHandler);
+     }
+-    if features.enabled(Feature::SleepTool)
++    if native_helper_tools_allowed
++        && features.enabled(Feature::SleepTool)
+         && match turn_context.config.sleep_tool_mode {
+             SleepToolMode::AlwaysOn => true,
+             SleepToolMode::ModelDriven => {
 diff --git a/codex-rs/protocol/src/protocol.rs b/codex-rs/protocol/src/protocol.rs
-index e25cce88a0..0aa416e4b0 100644
+index e25cce88a..0aa416e4b 100644
 --- a/codex-rs/protocol/src/protocol.rs
 +++ b/codex-rs/protocol/src/protocol.rs
 @@ -1544,6 +1544,9 @@ pub enum EventMsg {
@@ -1339,7 +1394,7 @@ index e25cce88a0..0aa416e4b0 100644
  pub struct ItemStartedEvent {
      pub thread_id: ThreadId,
 diff --git a/codex-rs/rollout-trace/src/protocol_event.rs b/codex-rs/rollout-trace/src/protocol_event.rs
-index dadc4bb0ac..22a3350a01 100644
+index dadc4bb0a..22a3350a0 100644
 --- a/codex-rs/rollout-trace/src/protocol_event.rs
 +++ b/codex-rs/rollout-trace/src/protocol_event.rs
 @@ -421,6 +421,7 @@ pub(crate) fn tool_runtime_trace_event(event: &EventMsg) -> Option<ToolRuntimeTr
@@ -1359,7 +1414,7 @@ index dadc4bb0ac..22a3350a01 100644
          | EventMsg::ItemCompleted(_)
          | EventMsg::HookStarted(_)
 diff --git a/codex-rs/rollout/src/policy.rs b/codex-rs/rollout/src/policy.rs
-index c82b5ce958..512cf8bbed 100644
+index c82b5ce95..512cf8bbe 100644
 --- a/codex-rs/rollout/src/policy.rs
 +++ b/codex-rs/rollout/src/policy.rs
 @@ -166,6 +166,7 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode)
@@ -1371,7 +1426,7 @@ index c82b5ce958..512cf8bbed 100644
          | EventMsg::EnvironmentConnected(_)
          | EventMsg::EnvironmentDisconnected(_)
 diff --git a/codex-rs/tui/src/app/app_server_event_targets.rs b/codex-rs/tui/src/app/app_server_event_targets.rs
-index 0054f79248..2247738b1f 100644
+index 0054f7924..2247738b1 100644
 --- a/codex-rs/tui/src/app/app_server_event_targets.rs
 +++ b/codex-rs/tui/src/app/app_server_event_targets.rs
 @@ -100,6 +100,9 @@ pub(super) fn server_notification_thread_target(
@@ -1385,7 +1440,7 @@ index 0054f79248..2247738b1f 100644
              Some(notification.thread_id.as_str())
          }
 diff --git a/codex-rs/tui/src/chatwidget/protocol.rs b/codex-rs/tui/src/chatwidget/protocol.rs
-index 9ec441ad2e..566d20cd68 100644
+index 9ec441ad2..566d20cd6 100644
 --- a/codex-rs/tui/src/chatwidget/protocol.rs
 +++ b/codex-rs/tui/src/chatwidget/protocol.rs
 @@ -316,6 +316,7 @@ impl ChatWidget {
