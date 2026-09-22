@@ -51,6 +51,12 @@ const DANISH: Record<string, string> = {
 	Retry: "Prøv igen",
 	"Loading storage…": "Henter lager…",
 	"Storage information unavailable": "Oplysninger om lager er ikke tilgængelige",
+	"Plan unavailable": "Abonnement ikke tilgængeligt",
+	"Loading…": "Henter…",
+	"company storage included": "virksomhedslager inkluderet",
+	"No active subscription": "Intet aktivt abonnement",
+	"Storage allocation unavailable": "Lagertildeling ikke tilgængelig",
+	"Plan changes are not open yet.": "Skift af abonnement er ikke åbnet endnu.",
 	"Every plan starts with a free trial, no card needed. Prices are ex. VAT.":
 		"Alle planer starter med en gratis prøveperiode uden betalingskort. Priserne er ekskl. moms.",
 	"Computer hours": "Computertimer",

@@ -377,7 +377,7 @@ export class SettingsView {
 						file: this.#file,
 						loading: this.#fileLoading,
 						error: this.#fileError,
-						retry: () => void this.#loadFile(),
+						retry: () => void this.#loadFile(true),
 					}
 				: undefined,
 		);
@@ -531,7 +531,7 @@ export class SettingsView {
 				icon("chevron"),
 			),
 			this.#fileError
-				? button("Retry storage", () => void this.#loadFile(), { small: true, disabled: this.#fileLoading })
+				? button(uiText("Retry"), () => void this.#loadFile(true), { small: true, disabled: this.#fileLoading })
 				: null,
 		);
 		if (staffFocus)
@@ -569,11 +569,16 @@ export class SettingsView {
 		);
 	}
 
-	async #loadFile(): Promise<void> {
+	/** `redraw` (a retry) repaints at once so the Retry button disables while the load runs. */
+	async #loadFile(redraw = false): Promise<void> {
 		const company = this.#company;
 		if (!company || this.#fileLoading) return;
 		const signal = this.#companyLifetime.signal;
 		this.#fileLoading = true;
+		if (redraw) {
+			this.#drawCompany();
+			if (this.#panels.has("plan")) this.#plan();
+		}
 		try {
 			const file = await this.#api.getCompanyFile(company.profile.environmentId);
 			if (signal.aborted || this.#lifetime.signal.aborted) return;

@@ -403,7 +403,10 @@ describe("settings session lifecycle", () => {
 		await draw();
 		const content = () => f.root.querySelector("#settings-content")!;
 		expect(content().textContent).toContain("Storage information unavailable");
-		[...content().querySelectorAll("button")].find((button) => button.textContent === "Retry")!.click();
+		const retry = () => [...content().querySelectorAll("button")].find((button) => button.textContent === "Retry");
+		retry()!.click();
+		// The button disables at once while the retry runs.
+		expect(retry()?.disabled).toBe(true);
 		await draw();
 		expect(f.api.getCompanyFile).toHaveBeenCalledTimes(2);
 		expect(content().textContent).not.toContain("Storage information unavailable");

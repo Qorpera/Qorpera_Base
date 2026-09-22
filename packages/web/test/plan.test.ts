@@ -53,7 +53,9 @@ describe("Plan & usage", () => {
 			expect(button.textContent).toBe("Coming soon");
 		}
 		const help = () => container.querySelector<HTMLElement>(".settings-group .settings-help")!;
-		expect(help().textContent).toBe("Every plan starts with a free trial, no card needed. Prices are ex. VAT.");
+		expect(help().textContent).toBe(
+			"Plan changes are not open yet. Every plan starts with a free trial, no card needed. Prices are ex. VAT.",
+		);
 		expect(help().hidden).toBe(false);
 		expect(upgrade.getAttribute("aria-controls")).toBe(grid.id);
 		// A re-render (storage arriving) keeps the plans open and the focus where it was.
@@ -81,7 +83,8 @@ describe("Plan & usage", () => {
 		expect(rows[1]).toBe("Next paymentNone during your free trial");
 		expect(rows[2]).toContain("Payment methodNo card on file");
 		expect(rows[3]).toBe("InvoicesNo invoices yet");
-		const addCard = buttons().find((button) => button.textContent === "Add card")!;
+		const addCard = container.querySelectorAll(".billing-row")[2]!.querySelector("button")!;
+		expect(addCard.textContent).toBe("Coming soon");
 		expect(addCard.disabled).toBe(true);
 		// A paid plan without a measurement gets no bar either: an empty bar reads as zero use.
 		renderPlan(container, { loaded: true, entitlement: entitlement("basis") }, undefined);
@@ -133,6 +136,41 @@ describe("Plan & usage", () => {
 		expect(planName("dedicated")).toBe("Dedicated computer");
 		expect(planName("some_new_plan")).toBe("some new plan");
 		expect(PLAN_OFFERS.map((offer) => offer.includedHours)).toEqual([74, 286, undefined]);
+	});
+
+	it("gives every rendered panel its own grid id, as the account page and the dialog can both show one", () => {
+		const other = document.createElement("div");
+		document.body.append(other);
+		renderPlan(container, { loaded: true, entitlement: entitlement("freemium") }, undefined);
+		renderPlan(other, { loaded: true, entitlement: entitlement("freemium") }, undefined);
+		const ids = [container, other].map((panel) => panel.querySelector(".settings-plan-grid")!.id);
+		expect(ids[0]).not.toBe(ids[1]);
+		expect(document.querySelectorAll(`#${ids[0]}`)).toHaveLength(1);
+		expect(other.querySelector("[aria-controls]")?.getAttribute("aria-controls")).toBe(ids[1]);
+	});
+
+	it("reads billing dates as calendar days whatever the machine's time zone", () => {
+		renderPlan(container, { loaded: true, entitlement: entitlement("basis") }, undefined, {
+			computerHours: { used: 1, periodEnd: "2026-10-01T00:00:00Z" },
+			nextPaymentAt: "2026-10-01T00:00:00Z",
+			invoices: [{ id: "inv-1", issuedAt: "2026-09-01T00:00:00Z", totalKr: 185 }],
+		});
+		expect(container.querySelector(".settings-period")?.textContent).toBe("Resets 1 Oct 2026");
+		const rows = [...container.querySelectorAll(".billing-row")].map((row) => row.textContent);
+		expect(rows[1]).toBe("Next payment1 Oct 2026");
+		expect(rows[3]).toBe("Invoices1 Sept 2026 · 185 kr");
+	});
+
+	it("translates the plan card itself", () => {
+		localStorage.setItem("qorpera.web.language", "da");
+		renderPlan(container, { loaded: true, entitlement: entitlement("freemium") }, undefined);
+		expect(container.querySelector(".settings-plan .settings-copy")?.textContent).toBe(
+			"Nuværende abonnementGratis prøveperiode50.0 GiB virksomhedslager inkluderet",
+		);
+		renderPlan(container, { loaded: true }, undefined);
+		expect(container.querySelector(".settings-plan strong")?.textContent).toBe("Abonnement ikke tilgængeligt");
+		renderPlan(container, {}, undefined);
+		expect(container.querySelector(".settings-plan strong")?.textContent).toBe("Henter…");
 	});
 
 	it("leaves the account error to the general panel on the standalone account page", () => {

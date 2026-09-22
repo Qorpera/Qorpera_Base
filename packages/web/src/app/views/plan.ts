@@ -93,11 +93,19 @@ function hoursText(hours: number): HTMLElement {
 	);
 }
 
-/** A date in the interface language; an unreadable value is shown as sent. */
+/** A billing date in the interface language. Billing dates are calendar
+ * days, so they are read in UTC: a period ending at midnight UTC on the 1st
+ * must not show as the 30th west of Greenwich. An unreadable value is shown
+ * as sent. */
 function dateText(iso: string): string {
 	const date = new Date(iso);
-	return Number.isNaN(date.getTime()) ? iso : new Intl.DateTimeFormat(locale(), { dateStyle: "medium" }).format(date);
+	return Number.isNaN(date.getTime())
+		? iso
+		: new Intl.DateTimeFormat(locale(), { dateStyle: "medium", timeZone: "UTC" }).format(date);
 }
+
+/** Ids must stay unique while the account page and the dialog both show a plan panel. */
+let renders = 0;
 
 /** Storage of the company chosen in the settings menu, as the Company tab loads it. */
 export interface PlanUsage {
@@ -141,23 +149,22 @@ export function renderPlan(
 	const planKey = entitlement?.planKey;
 	const offer = PLAN_OFFERS.find((item) => item.key === planKey);
 	const trial = planKey !== undefined && isTrial(planKey);
-	const name = entitlement ? planName(entitlement.planKey) : account.loaded ? "Plan unavailable" : "Loading…";
+	const name = entitlement ? planName(entitlement.planKey) : uiText(account.loaded ? "Plan unavailable" : "Loading…");
 	const detail = entitlement
 		? entitlement.storageAllocationBytes !== undefined
-			? `${fmtBytes(entitlement.storageAllocationBytes)} company storage included`
-			: entitlement.planKey === "internal"
-				? "No active subscription"
-				: "Storage allocation unavailable"
-		: "";
+			? h("span", null, `${fmtBytes(entitlement.storageAllocationBytes)} `, uiText("company storage included"))
+			: uiText(entitlement.planKey === "internal" ? "No active subscription" : "Storage allocation unavailable")
+		: null;
 	// The plan grid stays open across re-renders (storage arriving, a retry),
 	// and the control that had focus keeps it.
 	const plansOpen = container.querySelector<HTMLElement>(".settings-plan-grid")?.hidden === false;
 	const focused = container.contains(document.activeElement)
 		? (document.activeElement as HTMLElement).dataset.focus
 		: undefined;
+	renders += 1;
 	const grid = h(
 		"div",
-		{ class: "settings-plan-grid", id: "settings-plan-grid", hidden: !plansOpen },
+		{ class: "settings-plan-grid", id: `settings-plan-grid-${renders}`, hidden: !plansOpen },
 		...PLAN_OFFERS.map((item) =>
 			h(
 				"article",
@@ -181,11 +188,10 @@ export function renderPlan(
 							uiText("off usage"),
 						)
 					: null,
-				// Plan changes are not open yet: the button says so instead of doing nothing.
+				// Plan changes are not open yet: the button says so, the help line explains.
 				button(uiText(item.key === planKey ? "Current plan" : "Coming soon"), () => {}, {
 					primary: item.key !== planKey,
 					disabled: true,
-					title: "Plan changes are not open yet.",
 				}),
 			),
 		),
@@ -193,6 +199,8 @@ export function renderPlan(
 	const help = h(
 		"p",
 		{ class: "settings-help", hidden: !plansOpen },
+		uiText("Plan changes are not open yet."),
+		" ",
 		uiText("Every plan starts with a free trial, no card needed. Prices are ex. VAT."),
 	);
 	const toggle = entitlement
@@ -326,7 +334,7 @@ export function renderPlan(
 					billingRow(
 						"Payment method",
 						billing.paymentMethod ?? uiText("No card on file"),
-						button(uiText("Add card"), () => {}, { small: true, disabled: true, title: "Coming soon" }),
+						button(uiText("Coming soon"), () => {}, { small: true, disabled: true }),
 					),
 					billingRow(
 						"Invoices",
