@@ -345,9 +345,6 @@ export class SessionExecutionView {
 
 		replace(
 			this.el,
-			this.#busy && !conversation.retrySend
-				? h("p", { class: "muted", role: "status" }, "Checking model accounts…")
-				: null,
 			this.#error ? h("p", { class: "muted" }, this.#error) : null,
 			conversation.retrySend
 				? h(
