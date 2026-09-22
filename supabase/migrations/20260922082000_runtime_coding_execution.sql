@@ -301,19 +301,20 @@ do $$ declare owner_name name; begin
 end $$;
 
 -- Repository VMs carry no native runner or credential identity. They consume
--- the same company and node capacity ledger as the separate decision VM.
+-- the same company and node capacity ledger as the separate decision VM. The
+-- existing job, office, login and account-refresh sources keep their exact rule.
 alter table public.qorpera_runtime_machine_allocations
  add column coding_worker_id uuid unique references public.qorpera_coding_workers(id) on delete restrict,
  drop constraint qorpera_runtime_machine_allocation_source,
  add constraint qorpera_runtime_machine_allocation_source check(
   (coding_worker_id is null and ((run_id is not null and runner_id is not null and office_id is null and computer_generation is null
-    and login_session_id is null and login_compute_identity_id is null)
+    and login_session_id is null and account_refresh_request_id is null and login_compute_identity_id is null)
    or (run_id is null and runner_id is null and office_id is not null and computer_generation is not null and computer_generation>0
-    and login_session_id is null and login_compute_identity_id is null)
+    and login_session_id is null and account_refresh_request_id is null and login_compute_identity_id is null)
    or (run_id is null and runner_id is null and office_id is null and computer_generation is null
-    and login_session_id is not null and login_compute_identity_id is not null)))
-  or (coding_worker_id is not null and run_id is not null and runner_id is null and office_id is null
-   and computer_generation is null and login_session_id is null and login_compute_identity_id is null));
+    and num_nonnulls(login_session_id,account_refresh_request_id)=1 and login_compute_identity_id is not null)))
+  or (coding_worker_id is not null and run_id is not null and runner_id is null and office_id is null and computer_generation is null
+   and login_session_id is null and account_refresh_request_id is null and login_compute_identity_id is null));
 alter table public.qorpera_runtime_node_providers
  drop constraint qorpera_runtime_node_providers_provider_kind_check,
  drop constraint qorpera_runtime_node_providers_check,
