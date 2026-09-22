@@ -101,6 +101,19 @@ the execution host (`lxc config device add …`, hot-pluggable for a running
 VM) before that member's first run; the service refuses a run whose identity
 is not mounted.
 
+## Pilot findings (node 2, 2026-09-22)
+
+- Six runs; the last four completed. Job created → runner accepted 2.1–5.4 s
+  (one-run VM: 17–18 s); post → reply visible 12.5–20 s (was ~36 s).
+- The pinned image runs `unattended-upgrades`: on the first long-lived host
+  it upgraded 83 packages at 03:58Z and `needrestart` restarted every
+  service, sandboxes included. The installer now masks the apt timers and
+  the upgrade service; the pilot host was patched by hand and therefore
+  differs from the pinned image until it is rebuilt.
+- The native provider host does not exit on SIGTERM; a 45 s stop timeout
+  held the slot. The host unit now stops in 10 s and the service never
+  blocks on a stop.
+
 ## Not in this package
 
 - Node capacity accounting for the execution host itself (`qorpera_reserve_runtime_node_machine`):

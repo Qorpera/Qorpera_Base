@@ -234,10 +234,14 @@ class SystemctlUnitControl implements SharedExecutionUnitControl {
 	async start(unit: string, signal?: AbortSignal): Promise<void> {
 		await execFileAsync("/usr/bin/systemctl", ["start", "--no-block", unit], { signal, timeout: 30_000 });
 	}
+	/** Never block the service on a slow shutdown: request the stop, wait a
+	 * bounded time, and let retire observe the unit later if it lingers. A
+	 * one-run unit that ended non-zero stays "failed" until reset; the slot is
+	 * free either way, so clear it before the next start. */
 	async stop(unit: string, signal?: AbortSignal): Promise<void> {
-		await execFileAsync("/usr/bin/systemctl", ["stop", unit], { signal, timeout: 90_000 });
-		// A one-run unit that ended non-zero stays "failed" until reset; the
-		// slot is free either way, so clear it before the next start.
+		await execFileAsync("/usr/bin/systemctl", ["stop", "--no-block", unit], { signal, timeout: 30_000 });
+		const deadline = Date.now() + 15_000;
+		while (Date.now() < deadline && (await this.active(unit, signal))) await delay(250, signal);
 		await execFileAsync("/usr/bin/systemctl", ["reset-failed", unit], { signal, timeout: 10_000 }).catch(
 			() => undefined,
 		);

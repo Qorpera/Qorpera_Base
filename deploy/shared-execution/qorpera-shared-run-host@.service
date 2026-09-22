@@ -27,7 +27,9 @@ LoadCredential=qorpera-native-provider-master-key:/run/qorpera-shared-execution/
 LoadCredential=qorpera-native-identity-epoch:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-native-identity-epoch
 ExecStart=/usr/bin/node /opt/qorpera-runner/qorpera-native-provider-host.mjs
 Restart=no
-TimeoutStopSec=45s
+# The run is over when the runner unit exits; the native host has nothing left
+# to flush (the capsule is resealed inside the run). Do not hold the slot.
+TimeoutStopSec=10s
 KillMode=control-group
 KillSignal=SIGTERM
 UMask=0077

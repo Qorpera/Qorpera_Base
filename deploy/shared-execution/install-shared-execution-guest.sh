@@ -7,9 +7,9 @@
 # image is replaced.
 set -euo pipefail
 
-EXPECTED_SERVICE_SHA256="e783e2c5f3b2d7bb774b2c329b6e3e6fb330c9c59272ca35688bf26451e53a9c"
+EXPECTED_SERVICE_SHA256="84375aebabc44cb7ee22eca506bf63a3fa6942252d0965121acef400f2eb55e9"
 EXPECTED_SERVICE_UNIT_SHA256="f673571b39062b664ec2543b46d7b6728c70c4a00ede09dbc327c6a3b0e4b375"
-EXPECTED_HOST_UNIT_SHA256="655247d166a5f7f2a9b64059a8834226277b6097c3d685a970d7167e2c8b4845"
+EXPECTED_HOST_UNIT_SHA256="e148fdcd3011d5e988106811e0eed93b50606c19e62d41958098febb5b7874ce"
 EXPECTED_RUNNER_UNIT_SHA256="b711db912dbb949c43ff0e711143fd0920f4ff6e36ff167acbb2274849e23963"
 EXPECTED_ENV_EXAMPLE_SHA256="ae99258bbec425defb2ecc8e5d133e75d3479cb2029fe3e9ecaca9662cc1060f"
 EXPECTED_ORCHESTRATOR_SHA256="8930418b3bda2e17faa40023ef67dc82f84c9e48a76f76f2091f50ed1bc4a5b9"
@@ -69,6 +69,11 @@ verify_sha256 "${STAGING_ROOT}/qorpera-shared-runner@.service" "${EXPECTED_RUNNE
 verify_sha256 "${STAGING_ROOT}/shared-execution.env.example" "${EXPECTED_ENV_EXAMPLE_SHA256}"
 verify_sha256 "${STAGING_ROOT}/qorpera-runner-orchestrator.mjs" "${EXPECTED_ORCHESTRATOR_SHA256}"
 verify_sha256 "${STAGING_ROOT}/qorpera-runner-orchestrator.service" "${EXPECTED_ORCHESTRATOR_UNIT_SHA256}"
+
+# A long-lived host must stay the pinned image: no unattended package upgrades,
+# no needrestart restarting the sandboxes under a run.
+systemctl disable --now apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service >/dev/null 2>&1 || true
+systemctl mask apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service >/dev/null 2>&1 || true
 
 node_version=$(node --version | sed 's/^v//')
 if ! dpkg --compare-versions "${node_version}" ge 22.19.0; then
