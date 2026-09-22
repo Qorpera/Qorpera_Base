@@ -546,6 +546,57 @@ it.each(["skip-fence", "pending-tool"])(
 	},
 );
 
+function publicSendTool(): CloudNativeTool {
+	return {
+		name: "send_message",
+		description: "Public send",
+		source: "runtime",
+		inputSchema: {
+			type: "object",
+			properties: { idempotencyKey: { type: "string" }, text: { type: "string" }, phase: { type: "string" } },
+			additionalProperties: false,
+		},
+		parseArguments: (value) => value,
+		execute: async (value) => ({
+			kind: "text",
+			value: JSON.stringify({ messageId: "m1" }),
+			completesTurn: (value as { phase?: string }).phase === "final",
+		}),
+	};
+}
+it("ends the turn after the fence that follows a confirmed final send", async () => {
+	const { rows, observability } = observationCollector();
+	const { result, evidence } = run("final-send-ends-turn", { observability, tools: [publicSendTool()] });
+	await expect(result).resolves.toEqual({
+		providerSessionId: "thread_fixture",
+		toolCalls: 1,
+		codexVersion: "0.155.1",
+		fencedRequests: 2,
+	});
+	await observability.close();
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	expect(recorded.interrupt).toEqual({ threadId: "thread_fixture", turnId: "turn_fixture" });
+	// The host-only marker never reaches the provider.
+	expect(Object.keys(recorded.reply.result).sort()).toEqual(["contentItems", "success"]);
+	// The fence reply for the final send arrived before the interrupted completion.
+	expect(recorded.fenced).toBeTypeOf("object");
+	expect(rows.find((row) => row.operation === "model_turn" && row.phase === "finish")).toMatchObject({
+		status: "succeeded",
+		errorCategory: null,
+	});
+});
+it("still accepts a natural completion after requesting the turn end", async () => {
+	const { result, evidence } = run("final-send-natural", { tools: [publicSendTool()] });
+	await expect(result).resolves.toMatchObject({ toolCalls: 1, fencedRequests: 2 });
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	expect(recorded.interrupt).toEqual({ threadId: "thread_fixture", turnId: "turn_fixture" });
+});
+it("does not end the turn after a progress send", async () => {
+	const { result, evidence } = run("progress-send-no-end", { tools: [publicSendTool()] });
+	await expect(result).resolves.toMatchObject({ toolCalls: 1, fencedRequests: 2 });
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	expect(recorded.interrupt).toBeNull();
+});
 it("ends an interrupted native turn as cancelled while preserving the public failure", async () => {
 	const { rows, observability } = observationCollector();
 	await expect(run("interrupted-turn", { observability }).result).rejects.toThrow(

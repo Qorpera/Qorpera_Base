@@ -37,6 +37,7 @@ import { assertCloudRuntimeBundle } from "./cloud-runtime-bundle.ts";
 import {
 	assertCloudRuntimeObservationReceipt,
 	CloudRuntimeObservability,
+	type CloudRuntimeToolOperation,
 	cloudRuntimeErrorCategory,
 } from "./cloud-runtime-observability.ts";
 import { type CloudSecretOperationClient, cloudSecretTools, describeCloudSecretTools } from "./cloud-secret-tools.ts";
@@ -188,7 +189,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			// Diagnostic deduplication uses only validated public receipts, never a model key.
 			const deliveredMessageIds = new Set<string>();
 			const send: CloudNativeTool = {
-				name: "send_message",
+				name: "send_message" satisfies CloudRuntimeToolOperation,
 				source: "runtime",
 				description: CLOUD_AGENT_SEND_INSTRUCTIONS,
 				inputSchema: {
@@ -206,14 +207,16 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					return { idempotencyKey: input.idempotencyKey, text: input.text, phase: input.phase };
 				},
 				async execute(value, context) {
-					const receipt = await mouth.send(parseCloudAgentSendInput(value));
+					const input = parseCloudAgentSendInput(value);
+					const receipt = await mouth.send(input);
 					const replayed = deliveredMessageIds.has(receipt.messageId);
 					deliveredMessageIds.add(receipt.messageId);
 					const text = JSON.stringify(receipt);
 					context.observation?.finish(replayed ? "replayed" : "succeeded", {
 						outputBytes: Buffer.byteLength(text),
 					});
-					return { kind: "text", value: text };
+					// Contract 7.1: the final send closes the turn. Nothing after it reaches the member.
+					return { kind: "text", value: text, completesTurn: input.phase === "final" };
 				},
 			};
 			try {

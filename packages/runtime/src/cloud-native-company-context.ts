@@ -17,6 +17,7 @@ import {
 	type CloudRuntimeAgentKind,
 	cloudRuntimeHireBehavior,
 } from "./cloud-runtime-hire-overlays.ts";
+import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 import type { CloudWakeEnvelope } from "./cloud-wake-bus.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -539,7 +540,7 @@ export function cloudCompanyContextTool(
 		].map((source) => [`${source.sourceKind}:${source.id}`, source]),
 	);
 	return {
-		name: "read_context",
+		name: "read_context" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
 		description:
 			"Read more of an already admitted context source. Set sourceKind and id from the outer source object, sha256 from source.content.sha256, and offset from source.content.nextOffset (Unicode characters). These fields are the retrieval handle even when source.content.text contains incomplete JSON; do not search that text for another handle. Try the supplied handle before claiming retrieval is unavailable. Set limit to at most 1024 UTF-8 bytes, not the Company File read limit. Continue using returned nextOffset until null. Correct invalid arguments before retrying this read. This does not add new human authority or retrieve attachments.",
@@ -553,7 +554,7 @@ export function cloudCompanyContextTool(
 					enum: [...new Set([...sources.values()].map((source) => source.content.sha256))],
 				},
 				offset: { type: "integer", minimum: 0 },
-				limit: { type: "integer", minimum: 4, maximum: 1024 },
+				limit: { type: "integer", minimum: 4, maximum: 16384 },
 			},
 			required: ["sourceKind", "id", "sha256", "offset", "limit"],
 			additionalProperties: false,
@@ -569,7 +570,7 @@ export function cloudCompanyContextTool(
 				(args.offset as number) > source.content.originalBytes ||
 				!Number.isSafeInteger(args.limit) ||
 				(args.limit as number) < 4 ||
-				(args.limit as number) > 1024
+				(args.limit as number) > 16384
 			)
 				throw new Error("Context source is unavailable");
 			return {

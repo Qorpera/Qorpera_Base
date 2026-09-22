@@ -7,9 +7,9 @@ import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
 import {
 	type CloudRuntimeObservability,
 	type CloudRuntimeObservationSpan,
-	type CloudRuntimeOperation,
 	cloudRuntimeErrorCategory,
 	cloudRuntimeOperationHash,
+	cloudRuntimeToolOperation,
 } from "./cloud-runtime-observability.ts";
 
 export const CLOUD_TOOL_RESULT_SCHEMA = "qorpera.cloud-tool-result/v1";
@@ -61,6 +61,8 @@ export interface CloudNativeTool {
 export type CloudToolContent = ({ kind: "text"; value: string } | { kind: "json"; value: JsonValue }) & {
 	/** Host-only durable read reference, not a field accepted from native/provider output. */
 	companyReadId?: string;
+	/** Host-only: a confirmed final public send. The turn ends after this result is fenced. */
+	completesTurn?: boolean;
 };
 
 export interface CloudToolResult {
@@ -90,6 +92,8 @@ export interface CloudToolResult {
 export interface CloudDynamicToolResponse {
 	contentItems: [{ type: "inputText"; text: string }, ...Array<{ type: "inputImage"; imageUrl: string }>];
 	success: boolean;
+	/** Host-only signal to the native session, never written to the provider. */
+	completesTurn?: true;
 }
 
 export interface CloudNativeResultInput {
@@ -354,20 +358,7 @@ export class CloudNativeToolBoundary {
 		argumentsValue: unknown,
 	): Promise<CloudDynamicToolResponse> {
 		const tool = namespace === "qorpera" ? this.#tools.get(name) : undefined;
-		const operation: CloudRuntimeOperation =
-			tool?.source === "connector"
-				? "connector"
-				: ((
-						[
-							"company_read",
-							"company_list",
-							"company_write",
-							"company_mkdir",
-							"company_delete",
-							"company_context",
-							"send_message",
-						] as const
-					).find((value) => tool?.name === value) ?? "unknown_tool");
+		const operation = cloudRuntimeToolOperation(tool);
 		const observation = this.#observability?.start(operation, {
 			logicalOperationSha256: cloudRuntimeOperationHash(
 				this.#runId,
@@ -626,6 +617,15 @@ export class CloudNativeToolBoundary {
 		if (!this.#issuedResults.has(fingerprint) && this.#issuedResults.size >= CLOUD_NATIVE_RESULT_RETENTION_LIMIT * 2)
 			throw new Error("Cloud result budget exceeded");
 		this.#issuedResults.add(fingerprint);
-		return { contentItems: [{ type: "inputText", text: serialized }], success: status === "ok" };
+		const completesTurn =
+			status === "ok" &&
+			tool?.source === "runtime" &&
+			tool.name === "send_message" &&
+			content.completesTurn === true;
+		return {
+			contentItems: [{ type: "inputText", text: serialized }],
+			success: status === "ok",
+			...(completesTurn ? { completesTurn: true } : {}),
+		};
 	}
 }
