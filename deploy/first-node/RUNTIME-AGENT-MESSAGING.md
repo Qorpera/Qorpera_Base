@@ -83,7 +83,7 @@ into the sender's own thread (tested with a six-hop relay that then reaches a
 third agent); the panel loads once on first open. Bundle re-cut to
 `7384be69…`, guest provider host `5f61e587…`.
 
-## Second cut: held delivery (bundle v72, 2026-09-23)
+## Second cut: held delivery (bundle v73, 2026-09-23)
 
 `send_coworker_message` takes `priority` (default true). With `priority: false`
 the message is written into the pair transcript (marked held) and both chips
@@ -94,7 +94,7 @@ blank worker or an office continuation, as `payload.heldMessages` (claimed by
 that run; a re-read by the same run sees the same; a later run does not). Held
 messages extend no chain but count toward the pair's hourly budget. The
 runtime parser accepts `heldMessages` on every wake kind, sends `p_priority`
-only when false (a pre-v72 kernel still understands the call), and accepts the
+only when false (a pre-v73 kernel still understands the call), and accepts the
 `held` receipt; the web shows "Read at B's next turn" under a held message.
 Migration `20260923000000_runtime_held_peer_messages.sql` drops the
 four-argument send and creates the five-argument one; the priority digest is
