@@ -1,0 +1,7 @@
+[Unit]
+Description=All untrusted coding command cgroups
+
+[Slice]
+CPUAccounting=yes
+MemoryAccounting=yes
+TasksAccounting=yes

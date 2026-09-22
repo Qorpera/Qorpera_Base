@@ -7,9 +7,9 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260922231000_runtime_bundle_activation_v71.sql";
-const activationVersion = 71;
-const previousActivationVersion = 70;
+const activation = "supabase/migrations/20260922233000_runtime_bundle_activation_v72.sql";
+const activationVersion = 72;
+const previousActivationVersion = 71;
 const manifestPath = "deploy/first-node/native-codex/runtime-bundle-manifest.json";
 const sha = (text) => createHash("sha256").update(text).digest("hex");
 
@@ -77,6 +77,10 @@ export async function cloudRuntimeBundle(root = repository) {
 	}
 	for (const path of Object.values(CLOUD_RUNTIME_ENTRY_POINTS)) await include(path);
 	for (const name of ["cloud-secret-broker-service-main.ts", "cloud-runtime-policy.ts"]) await include(`packages/runtime/src/${name}`);
+	for (const name of (await readdir(join(root, "packages/runtime/src"))).filter((name) => /^(cloud-coding-|cloud-native-coding-).*\.ts$/.test(name)).sort()) await include(`packages/runtime/src/${name}`);
+	for (const name of (await readdir(join(root, "packages/runner-orchestrator/src"))).filter((name) => /^coding-.*\.ts$/.test(name)).sort()) await include(`packages/runner-orchestrator/src/${name}`);
+	for (const name of (await readdir(join(root, "deploy/coding-worker"))).filter((name) => /\.(service|timer|slice|json|ts)$/.test(name)).sort()) await include(`deploy/coding-worker/${name}`);
+	for (const name of (await readdir(join(root, "scripts"))).filter((name) => /^package-coding-.*\.mjs$/.test(name)).sort()) await include(`scripts/${name}`);
 	// Office adapters are injected at composition boundaries. Pin their sources
 	// even before a deployed service entrypoint selects the concrete guest.
 	for (const name of (await readdir(join(root, "packages/runtime/src"))).filter((name) => /^cloud-company-computer-.*\.ts$/.test(name)).sort()) {
@@ -135,7 +139,7 @@ export async function cloudRuntimeBundle(root = repository) {
 		components: {
 			kernel: component(runtime(["cloud-native-company-runtime", "cloud-native-run-tool-session"])),
 			constitution: component(runtime(["cloud-runtime-constitution"])),
-			toolCatalog: component(runtime(["cloud-company-path-gateway", "cloud-secret-tools", "cloud-native-company-runtime", "cloud-wake-bus", "cloud-routine-tools", "cloud-worker-tools", "cloud-hiring-tools"])),
+			toolCatalog: component(runtime(["cloud-company-path-gateway", "cloud-secret-tools", "cloud-native-company-runtime", "cloud-wake-bus", "cloud-routine-tools", "cloud-worker-tools", "cloud-hiring-tools", "cloud-coding-command-tools", "cloud-native-coding-runtime"])),
 			wakeAndSilence: component(runtime(["cloud-native-company-runtime", "cloud-agent-mouth", "cloud-wake-bus"])),
 			contextComposer: component(runtime(["cloud-native-company-context", "cloud-runtime-hire-overlays", "cloud-company-path-gateway"])),
 			providerBootstrap: component(runtime(["cloud-codex-tool-session", "cloud-native-company-context", "cloud-runtime-constitution", "cloud-runtime-hire-overlays", "cloud-native-provider-host", "lxd-runner-bootstrap-main"])),
@@ -143,7 +147,7 @@ export async function cloudRuntimeBundle(root = repository) {
 			inboundSafety: component(runtime(["cloud-native-result-fence", "cloud-native-tool-boundary"])),
 			outboundSafety: component(runtime(["cloud-native-tool-operations", "cloud-secret-tools", "cloud-company-path-gateway"])),
 			interactionSurfaces: component(runtime(["cloud-agent-mouth", "cloud-native-company-runtime"])),
-			workerLifecycle: component(runtime(["cloud-runner-worker", "cloud-native-provider-host", "cloud-worker-tools"])),
+			workerLifecycle: component([...runtime(["cloud-runner-worker", "cloud-native-provider-host", "cloud-worker-tools"]), ...[...files.keys()].filter((path) => path.startsWith("packages/runtime/src/cloud-coding-") || path.startsWith("packages/runner-orchestrator/src/coding-") || path.startsWith("packages/contracts/src/cloud-coding"))]),
 			memoryAndSkills: component(runtime(["cloud-codex-tool-session", "cloud-native-company-context"])),
 		},
 		implementation: Object.fromEntries([...files].sort(([a], [b]) => a.localeCompare(b, "en"))),

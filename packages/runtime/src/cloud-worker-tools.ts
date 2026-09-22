@@ -548,7 +548,7 @@ export function cloudWorkerToolFilter(wake: Pick<CloudWakeEnvelope, "kind" | "so
 	const isWorker = wake.kind === "agent" && wake.source.kind === "worker-dispatch";
 	// A coding session runs the coding composition, never the in-house worker tools.
 	if (isWorker && wake.payload.species === "coding")
-		throw new Error("Coding sessions need the coding runtime, which this bundle does not install");
+		throw new Error("Coding sessions run in the coding composition, which this node does not carry");
 	const readOnly = isWorker && wake.payload.access !== "write";
 	return {
 		isWorker,

@@ -26,6 +26,11 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"report_work",
 	"manage_todo",
 	"manage_worker",
+	"coding_run_command",
+	"coding_read_command",
+	"coding_cancel_command",
+	"coding_finish",
+	"coding_ask",
 ] as const;
 /** Closed vocabulary; the SQL ingestion function checks the same list. */
 export const CLOUD_RUNTIME_OPERATIONS = [

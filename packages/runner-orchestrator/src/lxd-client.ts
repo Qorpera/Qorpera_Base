@@ -19,9 +19,9 @@ import {
 	type CompanyComputerPreparationCommand,
 	parseCompanyComputerPreparationCommand,
 } from "@qorpera/contracts";
-
 import { lxdMacAddress } from "./lxd-guest-network.ts";
 import { OFFICE_CODE_PACKAGE_LOADER, officeCodePackageStage } from "./lxd-office-code-package-loader.ts";
+import { parseLxdProcUptime } from "./lxd-proc-uptime.ts";
 
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_INSTANCE_FILE_BYTES = 256 * 1024;
@@ -2342,24 +2342,34 @@ export class LxdUnixClient
 			throw new Error("LXD_INSTANCE_FILE_UNCONFIRMED");
 		const file = await this.#readInstanceFile(project, name, path, maximumBytes, signal);
 		// LXD 6.9 serves procfs using its zero stat size. Preserve the real file
-		// metadata, but obtain this one public kernel value through a fixed,
+		// metadata, but obtain these two public kernel values through fixed,
 		// unprivileged read. Ordinary files never gain an execution fallback.
-		if (path !== "/proc/sys/kernel/random/boot_id" || file.content.length !== 0) return file;
-		if (file.uid !== 0 || file.gid !== 0 || file.mode !== 0o444 || maximumBytes < 37)
+		if ((path !== "/proc/sys/kernel/random/boot_id" && path !== "/proc/uptime") || file.content.length !== 0)
+			return file;
+		if (file.uid !== 0 || file.gid !== 0 || file.mode !== 0o444 || maximumBytes < (path === "/proc/uptime" ? 10 : 37))
 			throw new Error("LXD_INSTANCE_FILE_UNCONFIRMED");
-		const content = await this.#readProcBootId(project, name, signal);
+		const content = await this.#readPublicProcValue(project, name, path, maximumBytes, signal);
 		const after = await this.#readInstanceFile(project, name, path, maximumBytes, signal);
 		if (
 			after.uid !== file.uid ||
 			after.gid !== file.gid ||
 			after.mode !== file.mode ||
-			(after.content.length !== 0 && !after.content.equals(content))
+			(after.content.length !== 0 &&
+				(path === "/proc/uptime"
+					? parseLxdProcUptime(after.content) < parseLxdProcUptime(content)
+					: !after.content.equals(content)))
 		)
 			throw new Error("LXD_INSTANCE_FILE_UNCONFIRMED");
 		return { ...after, content };
 	}
 
-	async #readProcBootId(project: string, name: string, signal?: AbortSignal): Promise<Buffer> {
+	async #readPublicProcValue(
+		project: string,
+		name: string,
+		path: "/proc/sys/kernel/random/boot_id" | "/proc/uptime",
+		maximumBytes: number,
+		signal?: AbortSignal,
+	): Promise<Buffer> {
 		try {
 			const checked = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(10000)]);
 			checked.throwIfAborted();
@@ -2367,7 +2377,7 @@ export class LxdUnixClient
 				"POST",
 				projectPath(`/1.0/instances/${name}/exec`, project),
 				{
-					command: ["/usr/bin/cat", "--", "/proc/sys/kernel/random/boot_id"],
+					command: ["/usr/bin/cat", "--", path],
 					interactive: false,
 					"wait-for-websocket": false,
 					"record-output": true,
@@ -2412,7 +2422,7 @@ export class LxdUnixClient
 				undefined,
 				undefined,
 				checked,
-				64,
+				Math.min(maximumBytes, path === "/proc/uptime" ? 128 : 64),
 				"text",
 			);
 			const stderr = await this.#requestPayload(
@@ -2429,10 +2439,11 @@ export class LxdUnixClient
 				stderr.status !== 200 ||
 				stderr.body !== "" ||
 				typeof stdout.body !== "string" ||
-				!/^[0-9a-f-]{36}\n$/.test(stdout.body) ||
-				!OPERATION_UUID.test(stdout.body.slice(0, -1))
+				(path === "/proc/sys/kernel/random/boot_id" &&
+					(!/^[0-9a-f-]{36}\n$/.test(stdout.body) || !OPERATION_UUID.test(stdout.body.slice(0, -1))))
 			)
-				throw new Error("invalid boot read");
+				throw new Error("invalid public proc read");
+			if (path === "/proc/uptime") parseLxdProcUptime(Buffer.from(stdout.body));
 			// Delete only the two public output logs belonging to this completed
 			// observation. No guest file or lifecycle command is changed/replayed.
 			for (const suffix of ["stdout", "stderr"]) {
