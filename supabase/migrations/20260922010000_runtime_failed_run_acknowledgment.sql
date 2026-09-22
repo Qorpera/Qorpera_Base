@@ -117,8 +117,9 @@ revoke all on function public.qorpera_resolve_failed_execution_run(uuid, text) f
 grant execute on function public.qorpera_resolve_failed_execution_run(uuid, text) to authenticated;
 
 -- Staff activity: an acknowledged failure no longer outranks the agent's newer
--- work. A run that left an open proposal keeps asking for a decision whatever
--- its job status and whether or not its failure was acknowledged.
+-- work, unless it left an open proposal, which still asks for a decision. The
+-- recovery lanes (qorpera_list_*_execution_run_recoveries) are untouched: an
+-- acknowledged run with an unsettled outcome stays listed there for an operator.
 create or replace function public.qorpera_list_staff_execution_activity(p_environment_id uuid)
 returns jsonb
 language plpgsql
@@ -188,7 +189,17 @@ begin
 							and resolved.event_type in ('recovery_released', 'recovery_discarded', 'recovery_acknowledged')
 					))
 				))
-				or (job.status in ('completed', 'failed', 'cancelled') and exists (
+				or (job.status = 'completed' and exists (
+					select 1 from public.qorpera_company_proposals as proposal
+					where proposal.execution_kind = 'run' and proposal.execution_id = run.id
+						and proposal.status = 'open'
+				))
+				-- An acknowledged failure that left an open proposal still asks for that
+				-- decision; a discarded one keeps its earlier behaviour.
+				or (job.status in ('failed', 'cancelled') and exists (
+					select 1 from public.qorpera_execution_run_events as acknowledged
+					where acknowledged.run_id = run.id and acknowledged.event_type = 'recovery_acknowledged'
+				) and exists (
 					select 1 from public.qorpera_company_proposals as proposal
 					where proposal.execution_kind = 'run' and proposal.execution_id = run.id
 						and proposal.status = 'open'
