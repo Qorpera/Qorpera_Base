@@ -8,6 +8,7 @@ import type { LxdNativeCompanyRuntimeConfig } from "../src/lxd-company-runtime.t
 import type { CloudRunnerAssignmentDelivery, CloudRunnerWork } from "../src/orchestrator.ts";
 import { ProviderAdmissionRefused } from "../src/provider-shared.ts";
 import {
+	parseUnitStates,
 	SharedExecutionAdmissionRefused,
 	SharedExecutionProviderBackend,
 	type SharedExecutionProviderConfig,
@@ -97,6 +98,8 @@ class FakeUnits implements SharedExecutionUnitControl {
 	readonly log: string[] = [];
 	/** Units that ignore stop, like a native host that never answers SIGTERM. */
 	readonly stuck = new Set<string>();
+	/** Units that survive even SIGKILL (a process stuck in the kernel). */
+	readonly unkillable = new Set<string>();
 	async start(unit: string): Promise<void> {
 		this.log.push(`start ${unit}`);
 		this.activeUnits.add(unit);
@@ -104,6 +107,10 @@ class FakeUnits implements SharedExecutionUnitControl {
 	async stop(unit: string): Promise<void> {
 		this.log.push(`stop ${unit}`);
 		if (!this.stuck.has(unit)) this.activeUnits.delete(unit);
+	}
+	async kill(unit: string): Promise<void> {
+		this.log.push(`kill ${unit}`);
+		if (!this.unkillable.has(unit)) this.activeUnits.delete(unit);
 	}
 	async active(unit: string): Promise<boolean> {
 		return this.activeUnits.has(unit);
@@ -128,6 +135,7 @@ interface Fixture {
 	release: "released" | "unconfirmed" | "error";
 	identityState: SharedExecutionIdentityState;
 	provisioned: number;
+	activations: Map<string, string>;
 	clock: { now: number };
 }
 
@@ -192,6 +200,7 @@ async function fixture(options: { slotCount?: number; epoch?: number } = {}): Pr
 		release: "released",
 		identityState: { companyId, computeIdentityId, epoch, blocked: false, keySha256, canInitialize: false },
 		provisioned: 0,
+		activations: new Map<string, string>(),
 		clock: { now: Date.parse("2026-09-22T12:00:00Z") },
 	};
 	const config: SharedExecutionProviderConfig = {
@@ -225,6 +234,12 @@ async function fixture(options: { slotCount?: number; epoch?: number } = {}): Pr
 			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
 			state.rpc.push({ name, body });
 			if (name === "qorpera_provision_execution_runner") {
+				// The control plane binds the client runner id to its first activation
+				// secret: a second, different secret for the same id is refused.
+				const bound = state.activations.get(String(body.p_client_runner_id));
+				if (bound !== undefined && bound !== body.p_activation_token_sha256)
+					return Response.json({ code: "23505", message: "runner activation is bound" }, { status: 409 });
+				state.activations.set(String(body.p_client_runner_id), String(body.p_activation_token_sha256));
 				state.provisioned++;
 				return Response.json({
 					runner_id: runnerId,
@@ -565,26 +580,21 @@ describe("shared execution provider backend", () => {
 		expect(await liveJournalNames(f)).toEqual([]);
 	});
 
-	it("starts a fresh sandbox when the same attempt is retried after its sandbox was retired", async () => {
+	it("fails a same-attempt retry fast after its sandbox was retired, without a sandbox or a reservation", async () => {
 		const f = await fixture();
 		const signal = new AbortController().signal;
 		await f.backend.acquire(runId, work(), signal);
-		const firstActivation = await readFile(
-			join(f.runRoot, "slots", "0", "credentials", "qorpera-runner-activation"),
-			"utf-8",
-		);
 		f.units.activeUnits.delete("qorpera-shared-runner@0.service");
 		await f.backend.reconcile();
 		expect(await journal(f)).toMatchObject({ physicalState: "stopped" });
-		await f.backend.acquire(runId, work(), signal);
-		expect(f.provisioned).toBe(2);
-		expect(await journal(f)).toMatchObject({ physicalState: "registered", slot: 0 });
-		const secondActivation = await readFile(
-			join(f.runRoot, "slots", "0", "credentials", "qorpera-runner-activation"),
-			"utf-8",
+		await expect(f.backend.acquire(runId, work(), signal)).rejects.toThrow(
+			"cannot be replayed after its sandbox retired",
 		);
-		expect(secondActivation).not.toBe(firstActivation);
+		expect(f.provisioned).toBe(1);
+		expect(await liveJournalNames(f)).toEqual([]);
+		expect(f.rpc.filter((call) => call.name === "qorpera_reserve_runtime_machine")).toHaveLength(1);
 		expect(f.rpc.filter((call) => call.name === "qorpera_release_runtime_machine")).toHaveLength(1);
+		expect(f.units.log.filter((entry) => entry.startsWith("start"))).toHaveLength(2);
 	});
 
 	it("defers a retry while the same acquisition is still retiring", async () => {
@@ -592,8 +602,10 @@ describe("shared execution provider backend", () => {
 		const signal = new AbortController().signal;
 		await f.backend.acquire(runId, work(), signal);
 		f.units.stuck.add("qorpera-shared-run-host@0.service");
+		f.units.unkillable.add("qorpera-shared-run-host@0.service");
 		f.units.activeUnits.delete("qorpera-shared-runner@0.service");
-		await expect(f.backend.reconcile()).rejects.toThrow("still running");
+		await expect(f.backend.reconcile()).rejects.toThrow("quarantined");
+		expect(f.units.log).toContain("kill qorpera-shared-run-host@0.service");
 		expect(await journal(f)).toMatchObject({ physicalState: "stopping", retireAttempts: 1 });
 		const retry = await f.backend.acquire(runId, work(), signal).catch((value) => value);
 		expect(retry).toMatchObject({ category: "admission_refused", state: "deferred", reason: "SANDBOX_RETIRING" });
@@ -684,9 +696,36 @@ describe("shared execution provider backend", () => {
 		const lost = await journal(f);
 		expect(lost).toMatchObject({ physicalState: "lost", retireAttempts: 12 });
 		expect(String(lost.stopReason)).toContain("release was not confirmed");
+		expect(lost).toMatchObject({ capacityRegistered: true });
+		expect(lost.capacityReleased).not.toBe(true);
 		expect(await liveJournalNames(f)).toEqual([]);
+		// The slot is clean and returns to service; the allocation stays owed until confirmed.
+		f.release = "released";
+		const releasesBefore = f.rpc.filter((call) => call.name === "qorpera_release_runtime_machine").length;
+		await f.backend.reconcile();
+		expect(f.rpc.filter((call) => call.name === "qorpera_release_runtime_machine")).toHaveLength(releasesBefore + 1);
+		expect(await journal(f)).toMatchObject({ physicalState: "lost", capacityReleased: true });
+		const otherRun = "30000000-0000-4000-8000-000000000042";
+		await f.backend.acquire(otherRun, work({ runId: otherRun, sourceId: otherRun }), signal);
+		expect(await journal(f, otherRun)).toMatchObject({ physicalState: "registered", slot: 0 });
+	});
+
+	it("kills a unit that ignores stop and quarantines the slot while anything still runs in it", async () => {
+		const f = await fixture();
+		const signal = new AbortController().signal;
 		await f.backend.acquire(runId, work(), signal);
-		expect(await journal(f)).toMatchObject({ physicalState: "registered", slot: 0 });
+		f.units.stuck.add("qorpera-shared-run-host@0.service");
+		f.units.activeUnits.delete("qorpera-shared-runner@0.service");
+		await f.backend.reconcile();
+		expect(f.units.log).toContain("kill qorpera-shared-run-host@0.service");
+		expect(await journal(f)).toMatchObject({ physicalState: "stopped", capacityReleased: true });
+	});
+
+	it("reads unit states strictly", () => {
+		expect(parseUnitStates(["a", "b", "c"], "active\ninactive\nactivating\n")).toEqual(new Set(["a", "c"]));
+		expect(parseUnitStates(["a", "b"], "reloading\nfailed\n")).toEqual(new Set(["a"]));
+		expect(() => parseUnitStates(["a", "b"], "active\n")).toThrow("Unit state is unavailable");
+		expect(() => parseUnitStates(["a"], "")).toThrow("Unit state is unavailable");
 	});
 
 	it("moves a terminal journal left in the live directory into the archive", async () => {

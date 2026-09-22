@@ -107,6 +107,8 @@ export interface SharedExecutionUnitControl {
 	active(unit: string, signal?: AbortSignal): Promise<boolean>;
 	/** The subset of `units` that is active or activating, in one query. */
 	activeSet(units: readonly string[], signal?: AbortSignal): Promise<Set<string>>;
+	/** Force the unit down after a stop request it ignored. */
+	kill(unit: string, signal?: AbortSignal): Promise<void>;
 }
 
 export interface SharedExecutionAccount {
@@ -169,6 +171,25 @@ export const sharedExecutionAcquisitionId = runAttemptAcquisitionId;
 /** Kept for callers that import the old name; the class is the shared one. */
 export const SharedExecutionAdmissionRefused = ProviderAdmissionRefused;
 
+/** One `systemctl is-active` line per unit; a unit still doing anything counts as active. */
+export function parseUnitStates(units: readonly string[], stdout: string): Set<string> {
+	const states = stdout.split("\n").map((line) => line.trim());
+	if (states.filter((state) => state.length > 0).length < units.length) throw new Error("Unit state is unavailable");
+	const active = new Set<string>();
+	units.forEach((unit, index) => {
+		const state = states[index];
+		if (
+			state === "active" ||
+			state === "activating" ||
+			state === "deactivating" ||
+			state === "reloading" ||
+			state === "refreshing"
+		)
+			active.add(unit);
+	});
+	return active;
+}
+
 class SystemctlUnitControl implements SharedExecutionUnitControl {
 	async start(unit: string, signal?: AbortSignal): Promise<void> {
 		await execFileAsync("/usr/bin/systemctl", ["start", "--no-block", unit], { signal, timeout: 30_000 });
@@ -194,16 +215,25 @@ class SystemctlUnitControl implements SharedExecutionUnitControl {
 		try {
 			({ stdout } = await execFileAsync("/usr/bin/systemctl", ["is-active", ...units], { signal, timeout: 10_000 }));
 		} catch (error) {
-			// `is-active` exits non-zero when any unit is inactive; the states are still printed, one per line.
-			stdout = (error as { stdout?: string }).stdout ?? "";
+			// `is-active` exits non-zero when any unit is inactive and still prints
+			// every state, one per line. Anything else (timeout, abort, spawn
+			// failure) is not knowledge: fail closed rather than report "inactive".
+			const failure = error as { code?: unknown; stdout?: unknown };
+			if (typeof failure.code !== "number" || typeof failure.stdout !== "string")
+				throw new Error("Unit state is unavailable", { cause: error });
+			stdout = failure.stdout;
 		}
-		const states = stdout.split("\n");
-		const active = new Set<string>();
-		units.forEach((unit, index) => {
-			const state = states[index]?.trim();
-			if (state === "active" || state === "activating" || state === "deactivating") active.add(unit);
-		});
-		return active;
+		return parseUnitStates(units, stdout);
+	}
+	async kill(unit: string, signal?: AbortSignal): Promise<void> {
+		await execFileAsync("/usr/bin/systemctl", ["kill", "-s", "KILL", unit], { signal, timeout: 10_000 }).catch(
+			() => undefined,
+		);
+		const deadline = Date.now() + 5_000;
+		while (Date.now() < deadline && (await this.active(unit, signal))) await delay(250, signal);
+		await execFileAsync("/usr/bin/systemctl", ["reset-failed", unit], { signal, timeout: 10_000 }).catch(
+			() => undefined,
+		);
 	}
 }
 
@@ -394,6 +424,12 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				failures.push(error);
 			}
 		}
+		try {
+			await this.#releaseOwed(signal);
+		} catch (error) {
+			if (signal?.aborted) throw error;
+			failures.push(error);
+		}
 		if (failures.length === 1) throw failures[0];
 		if (failures.length > 1)
 			throw new AggregateError(failures, "Shared execution reconcile failed for several sandboxes");
@@ -440,8 +476,14 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			if (slot === undefined)
 				throw new ProviderAdmissionRefused("deferred", REFUSAL_CAPACITY, "Every sandbox slot is busy");
 			const credentials = await this.#slotCredentials(slot, true);
-			const runner = exactRunner(
-				await this.#rpc(
+			// A retry of an attempt whose sandbox already retired finds its runner
+			// row bound to the old activation: the control plane keeps a pending
+			// runner's activation and refuses a second token for an active one.
+			// Fail fast with the reason instead of starting a sandbox that can
+			// never activate (the LXD provider refuses such replays the same way).
+			let provisioned: unknown;
+			try {
+				provisioned = await this.#rpc(
 					"qorpera_provision_execution_runner",
 					{
 						p_run_id: work.runId,
@@ -450,10 +492,17 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 						p_activation_token_sha256: sha256(credentials.activationToken),
 					},
 					signal,
-				),
-				work,
-				this.adapterId,
-			);
+				);
+			} catch (error) {
+				throw new Error("Shared execution acquisition cannot be replayed after its sandbox retired", {
+					cause: error,
+				});
+			}
+			if (record(provisioned, "Provisioned runner").status === "active")
+				throw new Error(
+					"Shared execution acquisition cannot be replayed after its sandbox retired: runner already active",
+				);
+			const runner = exactRunner(provisioned, work, this.adapterId);
 			const now = new Date(this.#now()).toISOString();
 			const created: SharedExecutionJournal = {
 				schema: JOURNAL_SCHEMA,
@@ -711,16 +760,28 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			if (!marked) return;
 			await this.#units.stop(this.#unit("runner", marked.slot), signal).catch(() => undefined);
 			await this.#units.stop(this.#unit("host", marked.slot), signal).catch(() => undefined);
-			const stillActive = await this.#units.activeSet(
-				[this.#unit("runner", marked.slot), this.#unit("host", marked.slot)],
-				signal,
-			);
+			signal?.throwIfAborted();
+			const slotUnits = [this.#unit("runner", marked.slot), this.#unit("host", marked.slot)];
+			let stillActive = await this.#units.activeSet(slotUnits, signal);
+			if (stillActive.size > 0) {
+				// A stop the unit ignored is answered with SIGKILL before the slot
+				// can be considered for anything else.
+				for (const unit of stillActive) await this.#units.kill(unit, signal);
+				signal?.throwIfAborted();
+				stillActive = await this.#units.activeSet(slotUnits, signal);
+			}
 			await this.#exclusive(async () => {
 				const current = (await this.#readJournal(acquisitionId)) ?? marked;
 				if (terminal(current.physicalState)) return;
+				if (stillActive.size > 0) {
+					// Never give the slot up while a process still runs in it: the
+					// journal stays `stopping`, which keeps the slot out of service
+					// (quarantined) until the units are really gone.
+					await this.#writeJournal({ ...current, retireAttempts: (current.retireAttempts ?? 0) + 1 });
+					throw new Error("Sandbox units are still running; the slot stays quarantined");
+				}
+				await this.#wipeSlot(current.slot);
 				try {
-					if (stillActive.size > 0) throw new Error("Sandbox units are still running; capacity remains occupied");
-					await this.#wipeSlot(current.slot);
 					await this.#releaseMachine(current, signal);
 				} catch (error) {
 					const attempts = (current.retireAttempts ?? 0) + 1;
@@ -728,6 +789,8 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 						await this.#writeJournal({ ...current, retireAttempts: attempts });
 						throw error;
 					}
+					// The slot is clean and returns to service; the company allocation
+					// is still owed and reconcile keeps retrying it from the archive.
 					await this.#archive({
 						...current,
 						physicalState: "lost",
@@ -969,6 +1032,11 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		await emptyDirectory(join(this.#slotState(slot), "host"));
 		await emptyDirectory(join(this.#slotState(slot), "runner", "state"));
 		await emptyDirectory(join(this.#slotState(slot), "runner", "workspace"));
+		// Podman keeps container storage and caches under the runner home; a
+		// tenant killed before its own `podman rm` must not leave a rootfs the
+		// next tenant of the same account can read.
+		await rm(join(this.#slotState(slot), "runner", ".local"), { recursive: true, force: true });
+		await rm(join(this.#slotState(slot), "runner", ".cache"), { recursive: true, force: true });
 	}
 
 	/** Live journals only: terminal ones move to `journals/archive/`. */
@@ -1021,6 +1089,8 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 	/** Record the terminal state and move the journal out of the live set. The
 	 * archived file keeps the acquisition id and its retirement timestamp. */
 	async #archive(journal: SharedExecutionJournal): Promise<void> {
+		// A concurrent pass may already have archived this journal: never re-create it.
+		if (!(await this.#readJournal(journal.acquisitionId))) return;
 		await this.#writeJournal(journal);
 		const archive = join(this.#config.stateRoot, "journals", "archive");
 		await mkdir(archive, { recursive: true, mode: 0o700 });
@@ -1028,6 +1098,38 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			this.#journalPath(journal.acquisitionId),
 			join(archive, `${journal.acquisitionId}.${this.#now()}.${journal.physicalState}.json`),
 		);
+	}
+
+	/** A `lost` sandbox may still owe its company allocation: keep releasing it
+	 * from the archive until the control plane confirms, a few per pass. */
+	async #releaseOwed(signal?: AbortSignal): Promise<void> {
+		const archive = join(this.#config.stateRoot, "journals", "archive");
+		let names: string[];
+		try {
+			names = (await readdir(archive)).filter((name) => name.endsWith(".lost.json"));
+		} catch (error) {
+			if ((error as { code?: string }).code === "ENOENT") return;
+			throw error;
+		}
+		let budget = 4;
+		for (const name of names) {
+			if (budget === 0) return;
+			const path = join(archive, name);
+			let owed: SharedExecutionJournal;
+			try {
+				owed = JSON.parse(await readFile(path, "utf8")) as SharedExecutionJournal;
+			} catch {
+				continue;
+			}
+			if (owed.capacityReleased || (!owed.capacityRequested && !owed.capacityRegistered)) continue;
+			budget -= 1;
+			try {
+				await this.#releaseMachine(owed, signal);
+			} catch {
+				continue;
+			}
+			await writeFile(path, `${JSON.stringify({ ...owed, capacityReleased: true }, null, 2)}\n`, { mode: 0o600 });
+		}
 	}
 
 	async #rpc(name: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {

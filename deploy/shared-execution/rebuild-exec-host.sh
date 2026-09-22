@@ -42,13 +42,21 @@ lxc image info "${FINGERPRINT}" --project "${PROJECT}" >/dev/null
 exec_in() { lxc exec "${VM}" --project "${PROJECT}" -- "$@"; }
 push() { lxc file push --project "${PROJECT}" --mode "$3" --uid 0 --gid 0 -p "$1" "${VM}$2"; }
 
-echo "Refusing to rebuild while a sandbox is running:"
-if exec_in systemctl list-units --no-legend 'qorpera-shared-run-host@*' 'qorpera-shared-runner@*' 2>/dev/null | grep -q running; then
-	echo "  a slot is still active on ${VM}; stop the orchestrator and wait for it to retire." >&2
+# No new run may be admitted from here on: the orchestrator goes first, then the
+# host is checked for anything still alive. A rebuild wipes the journals, so a
+# sandbox in flight (even one still retiring, with a release owed) must not exist.
+echo "Stopping the orchestrator before checking the host."
+exec_in systemctl disable --now qorpera-runner-orchestrator.service
+echo "Refusing to rebuild while any sandbox exists:"
+units=$(exec_in systemctl list-units --no-legend --plain --state=active,activating,deactivating,reloading,refreshing 'qorpera-shared-run-host@*' 'qorpera-shared-runner@*')
+journals=$(exec_in sh -c 'ls /var/lib/qorpera-shared-execution/journals/*.json 2>/dev/null || true')
+if [[ -n ${units} || -n ${journals} ]]; then
+	echo "  live on ${VM}:" >&2
+	printf '  %s\n' ${units} ${journals} >&2
+	echo "  wait for every sandbox to retire (or archive its journal after confirming its allocation is released), then retry." >&2
 	exit 1
 fi
 echo "  none."
-exec_in systemctl disable --now qorpera-runner-orchestrator.service >/dev/null 2>&1 || true
 lxc stop "${VM}" --project "${PROJECT}" || true
 lxc rebuild "${FINGERPRINT}" "${VM}" --project "${PROJECT}"
 lxc start "${VM}" --project "${PROJECT}"
@@ -78,8 +86,10 @@ orchestrator_id=$(sed -n 's/^QORPERA_RUNNER_ORCHESTRATOR_ID=//p' "${STAGING}/run
 control_token=$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n')
 control_sha256=$(printf '%s' "${control_token}" | sha256sum | cut -d' ' -f1)
 service_key=$(tr -d '\n' < "${STAGING}/credentials/qorpera-supabase-service-key")
+# The service key never appears on a command line: curl reads its headers from a
+# file descriptor this shell owns.
 registered=$(curl -sS -X POST "${supabase_url}/rest/v1/rpc/qorpera_register_runner_orchestrator" \
-	-H "apikey: ${service_key}" -H "Authorization: Bearer ${service_key}" -H "Content-Type: application/json" \
+	-K <(printf 'header = "apikey: %s"\nheader = "Authorization: Bearer %s"\nheader = "Content-Type: application/json"\n' "${service_key}" "${service_key}") \
 	-d "{\"p_orchestrator_id\":\"${orchestrator_id}\",\"p_display_name\":\"shared-execution ${VM}\",\"p_provider_adapter\":\"${adapter}\",\"p_control_token_sha256\":\"${control_sha256}\",\"p_control_token_seconds\":86400}")
 unset service_key
 [[ ${registered} == *'"status": "active"'* || ${registered} == *'"status":"active"'* ]] || { echo "Orchestrator registration failed" >&2; exit 1; }

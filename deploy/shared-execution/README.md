@@ -145,3 +145,26 @@ is not mounted.
 - Login custody in the cloud secret broker (design § 3): with a single
   execution host the identity-home rule is already trivially satisfied.
 - The proposal-review guest: it keeps its copy-isolated one-run VM.
+
+## Second review round (2026-09-22)
+
+- Unit state is read strictly: only an exit status with one state per unit is
+  knowledge; a timeout, an abort or a spawn failure raises "Unit state is
+  unavailable" and the pass gives up instead of reporting every unit inactive
+  (which would have retired every running sandbox). `reloading`/`refreshing`
+  count as active.
+- Retire sends SIGKILL to a unit that ignored its stop. While anything still
+  runs in a slot the journal stays `stopping` and the slot is quarantined; a
+  sandbox is recorded `lost` only when its units are gone and the release RPC
+  kept failing, and the archived `lost` journal keeps the allocation owed:
+  reconcile retries the release from the archive until the control plane
+  confirms.
+- A same-attempt retry after the sandbox retired fails fast ("cannot be
+  replayed after its sandbox retired"): the control plane binds the runner row
+  to its first activation secret, so a fresh sandbox could never activate.
+- The slot wipe also removes the runner account's `.local` and `.cache`
+  (podman storage), so a tenant killed before its own `podman rm` leaves no
+  rootfs to the next tenant of the same account.
+- `rebuild-exec-host.sh` stops the orchestrator first, refuses while any slot
+  unit is alive or any live journal exists, and keeps the service key off the
+  command line.
