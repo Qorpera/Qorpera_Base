@@ -20,6 +20,20 @@ body {
 	   dark surface blooms at 1x otherwise; the weight tokens carry the stroke. */
 	-webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
 }
+/* A scroller without a visible bar, like Messages; wheel, trackpad and keys still move it.
+ * quietScroll() (ui/quiet-scroll.ts) adds the class and keeps data-scrolled while content
+ * continues above; a 28px fade at the top edge then stands in for the bar. The mask is fixed
+ * to the box, not the content, and slides in rather than popping. */
+.scroll-quiet {
+	scrollbar-width: none;
+	-webkit-mask-image: linear-gradient(to bottom, transparent, #000 28px); mask-image: linear-gradient(to bottom, transparent, #000 28px);
+	-webkit-mask-size: 100% calc(100% + 28px); mask-size: 100% calc(100% + 28px);
+	-webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+	-webkit-mask-position: 0 -28px; mask-position: 0 -28px;
+	transition: mask-position 160ms ease, -webkit-mask-position 160ms ease;
+}
+.scroll-quiet::-webkit-scrollbar { display: none; }
+.scroll-quiet[data-scrolled] { -webkit-mask-position: 0 0; mask-position: 0 0; }
 a { color: var(--blue); text-decoration: none; }
 a:hover { text-decoration: underline; }
 h1 { font-size: 22px; font-weight: 650; letter-spacing: -0.01em; }
@@ -192,9 +206,6 @@ label > input, label > select { font-weight: 400; }
 .rail-search:focus-within { outline: 1px solid var(--text-soft); outline-offset: -1px; }
 .rail-search input::placeholder { color: #777772; }
 .rail-scroll { flex: 1; min-height: 0; overflow-y: auto; padding-top: 0; }
-/* The rail scrolls without a visible bar, like Messages; wheel, trackpad and keys still move it. */
-.rail-scroll { scrollbar-width: none; }
-.rail-scroll::-webkit-scrollbar { display: none; }
 .rail-empty { padding: 14px 8px; color: var(--rail-small); font-size: 12.5px; }
 
 /* The Co-Founder occupies its own tier above the rest of the staff. Geometry
