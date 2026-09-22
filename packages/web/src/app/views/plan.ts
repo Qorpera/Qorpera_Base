@@ -149,7 +149,7 @@ export function renderPlan(
 	const planKey = entitlement?.planKey;
 	const offer = PLAN_OFFERS.find((item) => item.key === planKey);
 	const trial = planKey !== undefined && isTrial(planKey);
-	const name = entitlement ? planName(entitlement.planKey) : uiText(account.loaded ? "Plan unavailable" : "Loading…");
+	const name = uiText(entitlement ? planName(entitlement.planKey) : account.loaded ? "Plan unavailable" : "Loading…");
 	const detail = entitlement
 		? entitlement.storageAllocationBytes !== undefined
 			? h("span", null, `${fmtBytes(entitlement.storageAllocationBytes)} `, uiText("company storage included"))
