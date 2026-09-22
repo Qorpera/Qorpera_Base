@@ -26,6 +26,9 @@ export interface InteractionCardContext {
 	answer: (outcome: InteractionOutcome, answer: Record<string, JsonValue>) => Promise<void>;
 	/** Opens the agent's computer for a takeover; absent when the thread has none. */
 	takeOver?: () => void;
+	/** Saves a secret card's value into the company vault and marks the card provided;
+	 * absent while this version cannot reach the vault. */
+	provideSecret?: (value: string) => Promise<void>;
 	now?: number;
 }
 
@@ -185,7 +188,49 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 	} else if (request.surface === "secret") {
 		const purpose = typeof request.payload.purpose === "string" ? request.payload.purpose : "";
 		if (purpose) body.push(h("p", { class: "interaction-text" }, purpose));
-		if (open) {
+		if (open && context.provideSecret) {
+			const label = typeof request.payload.label === "string" ? request.payload.label : "Secret";
+			const field = h("input", {
+				type: "password",
+				class: "interaction-field interaction-secret",
+				autocomplete: "off",
+				placeholder: `Paste your ${label.toLowerCase()}`,
+				"aria-label": label,
+			}) as HTMLInputElement;
+			const save = () => {
+				const value = field.value;
+				if (!value.trim() || busy || !context.provideSecret) return;
+				busy = true;
+				for (const control of card.querySelectorAll<HTMLElement>("button, input"))
+					control.setAttribute("aria-disabled", "true");
+				void context.provideSecret(value).then(
+					() => {
+						field.value = "";
+						rerender();
+					},
+					() => {
+						busy = false;
+						for (const control of card.querySelectorAll<HTMLElement>("button, input"))
+							control.removeAttribute("aria-disabled");
+					},
+				);
+			};
+			field.addEventListener("keydown", (event) => {
+				if (event.key !== "Enter") return;
+				event.preventDefault();
+				save();
+			});
+			body.push(h("div", { class: "interaction-secret-row" }, field, pill("Save securely", save, "primary", busy)));
+			body.push(
+				h(
+					"p",
+					{ class: "interaction-note" },
+					icon("lock"),
+					" Encrypted in the company vault. The agent never sees the value, only that it was saved.",
+				),
+			);
+			actions.push(pill("Decline", () => answer("declined"), "quiet", busy));
+		} else if (open) {
 			body.push(
 				h(
 					"p",

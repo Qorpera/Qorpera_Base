@@ -566,3 +566,5 @@
 .interaction-options .btn[aria-pressed="true"] { outline: 2px solid var(--accent); outline-offset: 1px; }
 .interaction-card.state-answered, .interaction-card.state-declined, .interaction-card.state-expired { color: var(--text-muted); }
 .interaction-card.state-answered .interaction-title, .interaction-card.state-declined .interaction-title { color: var(--text-muted); }
+.interaction-secret-row { display: flex; gap: 8px; align-items: center; margin: 6px 0 8px; }
+.interaction-secret { flex: 1 1 200px; }

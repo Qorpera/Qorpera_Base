@@ -968,6 +968,12 @@ export class ConversationView {
 							canAnswer: canAnswer && !this.#isRoom,
 							answer: (outcome, answer) => this.#answerInteraction(item.id, outcome, answer),
 							...(agent && item.request.surface === "takeover" ? { takeOver: () => this.#takeOver(agent) } : {}),
+							...(item.request.surface === "secret" && canAnswer && !this.#isRoom
+								? {
+										provideSecret: (value: string) =>
+											this.#company.provideSecret(this.#sessionId, item.id, item.request, value),
+									}
+								: {}),
 						},
 					),
 				);
