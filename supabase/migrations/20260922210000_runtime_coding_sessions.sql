@@ -69,6 +69,8 @@ create table public.qorpera_coding_sessions (
 	worker_id uuid primary key references public.qorpera_runtime_workers(id) on delete restrict,
 	profile_id uuid not null references public.qorpera_profiles(id) on delete cascade,
 	environment_id uuid not null references public.qorpera_company_environments(id) on delete restrict,
+	-- The conversation the agent dispatched from; the thread element lists its sessions through it. Null for routine runs.
+	session_id uuid references public.qorpera_shared_sessions(id) on delete set null,
 	harness text not null check (harness in ('codex','claude-code')),
 	model text check (model is null or model ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$'),
 	repository jsonb not null check (public.qorpera_coding_repository_valid(repository)),
@@ -96,6 +98,7 @@ create table public.qorpera_coding_sessions (
 );
 create index qorpera_coding_sessions_claimable on public.qorpera_coding_sessions (environment_id, updated_at)
 	where phase in ('queued','input_ready','preparing','running','publishing');
+create index qorpera_coding_sessions_by_conversation on public.qorpera_coding_sessions (session_id, created_at) where session_id is not null;
 
 create table public.qorpera_coding_session_events (
 	id bigint generated always as identity primary key,
@@ -131,7 +134,8 @@ returns jsonb language sql stable security definer set search_path = '' as $$
 		'lastStep',p_session.last_step,'filesChanged',p_session.files_changed,'pullRequest',p_session.pull_request,
 		'checks',p_session.checks,'artifacts',p_session.artifacts,'needs',p_worker.result ->> 'needs',
 		'summary',p_worker.result ->> 'summary','startedAt',p_session.started_at,'finishedAt',p_session.finished_at,
-		'updatedAt',p_session.updated_at,'harnessSessionRef',p_session.harness_session_ref)
+		'updatedAt',p_session.updated_at,'harnessSessionRef',p_session.harness_session_ref,
+		'sessionId',p_session.session_id,'createdAt',p_session.created_at)
 $$;
 
 -- ---------------------------------------------------------------------------
@@ -448,8 +452,8 @@ begin
 			btrim(p_request ->> 'title'), p_request ->> 'access', coalesce(p_request ->> 'revival','batch'), v_dispatch,
 			v_run.requested_by_user_id, v_run.id, v_owner, v_sponsor_binding, v_sponsor_version) returning * into v_worker;
 		if v_species = 'coding' then
-			insert into public.qorpera_coding_sessions(worker_id, profile_id, environment_id, harness, repository, branch)
-			values (v_worker.id, v_run.profile_id, v_run.environment_id, p_request ->> 'harness', p_request -> 'repository',
+			insert into public.qorpera_coding_sessions(worker_id, profile_id, environment_id, session_id, harness, repository, branch)
+			values (v_worker.id, v_run.profile_id, v_run.environment_id, v_run.session_id, p_request ->> 'harness', p_request -> 'repository',
 				'qorpera/coding/' || v_worker.id::text);
 		end if;
 	elsif v_worker.id is null then raise exception 'Worker is unavailable' using errcode = 'P0002';
@@ -600,6 +604,24 @@ begin
 			'body',event.body,'at',event.created_at) order by event.id)
 			from (select * from public.qorpera_coding_session_events event where event.worker_id = v_worker.id and event.id > coalesce(p_after_event, 0)
 				order by event.id limit p_limit) event), '[]'::jsonb));
+end
+$$;
+
+-- The thread lists the coding sessions its agent dispatched from this conversation; the element renders each one
+-- from this view and the session's own event stream, never from the agent's prose.
+create function public.qorpera_list_coding_sessions(p_session_id uuid)
+returns jsonb language plpgsql stable security definer set search_path = '' as $$
+declare v_session public.qorpera_shared_sessions%rowtype;
+begin
+	if auth.uid() is null or p_session_id is null then raise exception 'Coding session read is invalid' using errcode = '22023'; end if;
+	select * into v_session from public.qorpera_shared_sessions where id = p_session_id;
+	if v_session.id is null or not public.qorpera_can_read_profile(v_session.profile_id) then
+		raise exception 'Conversation is unavailable' using errcode = '42501'; end if;
+	return jsonb_build_object('schema','qorpera.coding-sessions/v1','sessionId',v_session.id,
+		'sessions', coalesce((select jsonb_agg(public.qorpera_coding_session_view(session, worker)
+				|| jsonb_build_object('isOwner', worker.owner_user_id = auth.uid()) order by session.created_at, session.worker_id)
+			from public.qorpera_coding_sessions session join public.qorpera_runtime_workers worker on worker.id = session.worker_id
+			where session.session_id = v_session.id), '[]'::jsonb));
 end
 $$;
 
@@ -827,7 +849,8 @@ revoke all on function public.qorpera_coding_repository_valid(jsonb), public.qor
 	public.qorpera_coding_session_view(public.qorpera_coding_sessions, public.qorpera_runtime_workers),
 	public.qorpera_coding_owner_sponsor(uuid, uuid, text), public.qorpera_coding_session_queue(public.qorpera_runtime_workers, text, uuid, text),
 	public.qorpera_coding_session_owner_row(uuid), public.qorpera_answer_coding_session(uuid, text, uuid), public.qorpera_delegate_coding_session(uuid, uuid),
-	public.qorpera_read_coding_session(uuid, bigint, integer), public.qorpera_configure_coding_executor(uuid, text, boolean, text[]),
+	public.qorpera_read_coding_session(uuid, bigint, integer), public.qorpera_list_coding_sessions(uuid),
+	public.qorpera_configure_coding_executor(uuid, text, boolean, text[]),
 	public.qorpera_set_coding_repository_grant(uuid, uuid, jsonb, boolean),
 	public.qorpera_coding_session_claim_json(public.qorpera_coding_sessions, public.qorpera_runtime_workers),
 	public.qorpera_claim_coding_session(text, integer), public.qorpera_coding_leased_session(uuid, uuid),
@@ -836,7 +859,7 @@ revoke all on function public.qorpera_coding_repository_valid(jsonb), public.qor
 	public.qorpera_begin_coding_turn(uuid, uuid, jsonb), public.qorpera_complete_coding_turn(uuid, uuid, text, text, text, jsonb, jsonb, jsonb, text, integer)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 grant execute on function public.qorpera_answer_coding_session(uuid, text, uuid), public.qorpera_delegate_coding_session(uuid, uuid),
-	public.qorpera_read_coding_session(uuid, bigint, integer) to authenticated;
+	public.qorpera_read_coding_session(uuid, bigint, integer), public.qorpera_list_coding_sessions(uuid) to authenticated;
 grant execute on function public.qorpera_configure_coding_executor(uuid, text, boolean, text[]), public.qorpera_set_coding_repository_grant(uuid, uuid, jsonb, boolean),
 	public.qorpera_claim_coding_session(text, integer), public.qorpera_heartbeat_coding_session(uuid, uuid, integer),
 	public.qorpera_record_coding_progress(uuid, uuid, text, text, integer, jsonb, text, text, uuid, uuid, text),

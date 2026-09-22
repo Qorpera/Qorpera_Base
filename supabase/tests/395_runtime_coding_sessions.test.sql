@@ -191,6 +191,11 @@ begin
 	v_read := public.qorpera_read_coding_session(v_worker.id,0,100);
 	perform pg_temp.wake_assert(v_read ->> 'isOwner' = 'true' and v_read #>> '{session,phase}' = 'input_ready'
 		and jsonb_array_length(v_read -> 'events') >= 5 and v_read #>> '{events,0,kind}' = 'phase','The thread reads the session and its stream');
+	v_read := public.qorpera_list_coding_sessions('30000000-0000-4000-8000-000000000040');
+	perform pg_temp.wake_assert(jsonb_array_length(v_read -> 'sessions') = 1 and v_read #>> '{sessions,0,workerId}' = v_worker.id::text
+		and v_read #>> '{sessions,0,isOwner}' = 'true' and v_read #>> '{sessions,0,sessionId}' = '30000000-0000-4000-8000-000000000040'
+		and v_read #>> '{sessions,0,agentId}' = '30000000-0000-4000-8000-000000000030',
+		'The conversation lists the coding session its agent dispatched from it');
 end $$;
 select pg_temp.wake_error($q$select public.qorpera_answer_coding_session((pg_temp.worker_row('fix-send')).id,'Again','30000000-0000-4000-8000-000000000102')$q$,
 	'55000','The session is still working; wait for its question or its result');
@@ -200,7 +205,12 @@ do $$
 declare v_read jsonb := public.qorpera_read_coding_session((pg_temp.worker_row('fix-send')).id,0,100);
 begin
 	perform pg_temp.wake_assert(v_read ->> 'isOwner' = 'false' and v_read #>> '{session,harness}' = 'codex','Other members read the session and are told they are not the owner');
+	v_read := public.qorpera_list_coding_sessions('30000000-0000-4000-8000-000000000040');
+	perform pg_temp.wake_assert(jsonb_array_length(v_read -> 'sessions') = 1 and v_read #>> '{sessions,0,isOwner}' = 'false',
+		'Other members see the session in the thread too');
 end $$;
+select pg_temp.path_claims('anon');
+select pg_temp.wake_error($q$select public.qorpera_list_coding_sessions('30000000-0000-4000-8000-000000000040')$q$,'22023');
 select pg_temp.path_claims('service_role');
 
 -- 4. The next turn finishes with a draft PR; follow-ups continue the session after completion and after cancellation.
