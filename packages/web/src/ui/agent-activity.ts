@@ -38,7 +38,8 @@ const epoch = Date.now();
 /** Appends `text` as words of letters carrying the desktop's wave delays;
  * returns the next letter index so a caption can run on across its parts. */
 function waveInto(container: HTMLElement, text: string, index: number): number {
-	const phase = (Date.now() - epoch) % WAVE_PERIOD;
+	// Wrapped into [0, period) so a clock stepped backwards never yields a positive delay (a still letter).
+	const phase = (((Date.now() - epoch) % WAVE_PERIOD) + WAVE_PERIOD) % WAVE_PERIOD;
 	for (const piece of text.split(/(\s+)/u)) {
 		if (!piece) continue;
 		if (/^\s+$/u.test(piece)) {

@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Show what an agent is doing in its conversation the way the desktop does: hovering or focusing the working figure at the end of the thread reads "Nova is working" or "Nova is writing" with the ink wave, and the row no longer relies on a browser tooltip.
+- Show what an agent is doing in its conversation the way the desktop does: hovering or focusing the working figure at the end of the thread reads "Nova is working" or "Nova is writing" with the ink wave, and the row no longer relies on a browser tooltip. The rail card's "Working" and "Writing" carry the same wave, and every wave on the page runs on one clock, so the card and the thread caption move together.
 - Preserve agent metadata drafts and retry state across details-panel closes, serialize saves, and retire confirmed edits when the roster catches up so later changes by other members are not overwritten.
 - Keep keyboard focus on an available execution-notice action when refreshes remove the previously focused control.
 - Keep the rail's "Needs you" for runs waiting on a member decision, including a failed run that left Company File changes. An agent with a failed or stopped run nobody has dismissed now rests idle with a red status disc, the opposite of the green working disc; the rail link names the state in words, also in the compact rail.
