@@ -36,14 +36,6 @@
 .status-caption { visibility: hidden; font-size: 14px; line-height: 1.4; color: var(--text-muted); white-space: nowrap; pointer-events: none; }
 .status-caption-name { color: var(--text); }
 .thread-activity:hover .status-caption, .thread-activity:focus-visible .status-caption { visibility: visible; }
-.status-wave-word { display: inline-block; max-width: 100%; }
-.status-wave-letter { display: inline-block; color: inherit; animation: status-ink-wave 1400ms ease-in-out infinite; animation-delay: var(--wave-delay, 0ms); animation-play-state: paused; }
-.thread-activity:hover .status-wave-letter, .thread-activity:focus-visible .status-wave-letter { animation-play-state: running; }
-@keyframes status-ink-wave {
-	0%, 10%, 50%, 100% { color: inherit; text-shadow: 0 0 0 transparent; }
-	30% { color: var(--text); text-shadow: -.18px 0 0 currentColor, .18px 0 0 currentColor; }
-}
-@media (prefers-reduced-motion: reduce) { .status-wave-letter { animation: none; } }
 .thread-run-failure { display: contents; }
 .thread-run-failure[hidden] { display: none; }
 .run-failure { align-self: center; width: min(100%, 340px); margin: 14px 0 6px; }

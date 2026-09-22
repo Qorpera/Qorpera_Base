@@ -90,6 +90,7 @@ describe("shared agent activity", () => {
 			expect(caption.querySelector(".status-caption-name")?.textContent).toBe(staff.displayName);
 			expect(caption.querySelectorAll(".status-wave-letter")).toHaveLength(sentence.replace(/\s/g, "").length);
 			expect(f.rail.querySelector(".rail-row-copy small")?.textContent).toBe(label);
+			expect(f.rail.querySelectorAll(".rail-row-copy small .status-wave-letter")).toHaveLength(label.length);
 			expect(f.rail.querySelector(".rail-row")?.getAttribute("title")).toContain(label);
 			expect(indicator.querySelector(".bubble, .typing")).toBeNull();
 			const calls = f.mount.mock.calls.filter(([, , , , options]) => options?.identity === staff.id);

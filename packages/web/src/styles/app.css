@@ -242,6 +242,17 @@ label > input, label > select { font-weight: 400; }
 /* Every rail label is one line; it shortens with the rail instead of wrapping. */
 .cofounder-home strong, .cofounder-home small, .rail-row-copy strong, .rail-row-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-row.active .rail-row-copy small { color: rgba(255, 255, 255, 0.85); }
+/* The ink wave over a live state ("Working", "Writing"): the rail card and the
+ * thread caption share one clock (agent-activity.ts), so they move together.
+ * The thread caption keeps running while hidden, so it is in step when shown. */
+.status-wave-word { display: inline-block; max-width: 100%; }
+.status-wave-letter { display: inline-block; color: inherit; animation: status-ink-wave 1400ms ease-in-out infinite; animation-delay: var(--wave-delay, 0ms); }
+.rail-row.active, .cofounder-home.active { --status-crest: #fff; }
+@keyframes status-ink-wave {
+	0%, 10%, 50%, 100% { color: inherit; text-shadow: 0 0 0 transparent; }
+	30% { color: var(--status-crest, var(--text)); text-shadow: -.18px 0 0 currentColor, .18px 0 0 currentColor; }
+}
+@media (prefers-reduced-motion: reduce) { .status-wave-letter { animation: none; } }
 /* RailLayout sets rail-compact only where the rail stands beside the page, never on the drawer. */
 .rail-compact .rail { padding-inline: 7px; }
 .rail-compact .rail-toolbar { justify-content: center; }
