@@ -58,6 +58,45 @@ function setup(actions: WorkspaceActions = {}) {
 	};
 	return { ...f, company, view };
 }
+/** A conversation whose messages are already loaded, built before it is placed
+ * in the page, with the message pane's scroll metrics under the test's control
+ * (jsdom lays nothing out). */
+function loadedView() {
+	const f = fixture();
+	const company = new CompanyController(f.api, profileA, userA.id);
+	company.store.set({ team, staff: [staff], sessions: [{ ...session, staffAgentId: staff.id }], loading: false });
+	const reply: TranscriptMessage = {
+		kind: "agent",
+		id: id(83),
+		sequence: 1,
+		text: "Latest answer",
+		attachmentCount: 0,
+		phase: "final",
+		createdAt: timestamp,
+		authorUserId: userA.id,
+	};
+	company
+		.conversation(session.sessionId)
+		.set({ loading: false, projection: { items: [reply], hiddenCount: 0, lastSequence: 1 } });
+	const view = new ConversationView(company, session.sessionId);
+	dispose = () => {
+		view.dispose();
+		company.stop();
+	};
+	const messages = view.el.querySelector<HTMLElement>(".messages")!;
+	expect(messages.textContent).toContain("Latest answer");
+	const metrics = { scrollTop: 0, scrollHeight: 0, clientHeight: 400 };
+	Object.defineProperty(messages, "scrollTop", {
+		configurable: true,
+		get: () => metrics.scrollTop,
+		set: (value: number) => {
+			metrics.scrollTop = value;
+		},
+	});
+	Object.defineProperty(messages, "scrollHeight", { configurable: true, get: () => metrics.scrollHeight });
+	Object.defineProperty(messages, "clientHeight", { configurable: true, get: () => metrics.clientHeight });
+	return { view, messages, metrics };
+}
 function button(root: ParentNode, label: string): HTMLButtonElement {
 	const result = [...root.querySelectorAll<HTMLButtonElement>("button")].find(
 		(item) => item.getAttribute("aria-label") === label || item.textContent === label,
@@ -328,108 +367,39 @@ describe("conversation UI boundaries", () => {
 				}
 			},
 		);
-		const f = fixture();
-		const company = new CompanyController(f.api, profileA, userA.id);
-		company.store.set({ team, staff: [staff], sessions: [{ ...session, staffAgentId: staff.id }], loading: false });
-		const reply: TranscriptMessage = {
-			kind: "agent",
-			id: id(83),
-			sequence: 1,
-			text: "Latest answer",
-			attachmentCount: 0,
-			phase: "final",
-			createdAt: timestamp,
-			authorUserId: userA.id,
-		};
-		company
-			.conversation(session.sessionId)
-			.set({ loading: false, projection: { items: [reply], hiddenCount: 0, lastSequence: 1 } });
-		const view = new ConversationView(company, session.sessionId);
-		dispose = () => {
-			view.dispose();
-			company.stop();
-		};
-		const messages = view.el.querySelector<HTMLElement>(".messages")!;
-		let scrollTop = 0;
-		let scrollHeight = 0;
-		Object.defineProperty(messages, "scrollTop", {
-			configurable: true,
-			get: () => scrollTop,
-			set: (value: number) => {
-				scrollTop = value;
-			},
-		});
-		Object.defineProperty(messages, "scrollHeight", { configurable: true, get: () => scrollHeight });
-		Object.defineProperty(messages, "clientHeight", { configurable: true, get: () => 400 });
-		expect(messages.textContent).toContain("Latest answer");
+		const { view, messages, metrics } = loadedView();
 		const sizes = observers.find((entry) => entry.targets.includes(messages))!;
 		expect(sizes.targets).toEqual([messages]);
 		document.body.append(view.el);
-		scrollHeight = 2000;
+		metrics.scrollHeight = 2000;
 		sizes.callback();
-		expect(scrollTop).toBe(2000);
+		expect(metrics.scrollTop).toBe(2000);
 		// A reader who scrolled up to older messages is left there.
-		scrollTop = 500;
+		metrics.scrollTop = 500;
 		messages.dispatchEvent(new Event("scroll"));
-		scrollHeight = 2400;
+		metrics.scrollHeight = 2400;
 		sizes.callback();
-		expect(scrollTop).toBe(500);
+		expect(metrics.scrollTop).toBe(500);
 		// Back at the end, a pane that changes size still shows the latest message.
-		scrollTop = 2000;
+		metrics.scrollTop = 2000;
 		messages.dispatchEvent(new Event("scroll"));
-		scrollHeight = 2600;
+		metrics.scrollHeight = 2600;
 		sizes.callback();
-		expect(scrollTop).toBe(2600);
+		expect(metrics.scrollTop).toBe(2600);
 		view.dispose();
 		expect(sizes.disconnected).toBe(true);
-		scrollTop = 0;
+		metrics.scrollTop = 0;
 		sizes.callback();
-		expect(scrollTop).toBe(0);
+		expect(metrics.scrollTop).toBe(0);
 	});
 	it("still opens a loaded conversation at its latest message without a size observer", async () => {
 		vi.stubGlobal("ResizeObserver", undefined);
-		const f = fixture();
-		const company = new CompanyController(f.api, profileA, userA.id);
-		company.store.set({ team, staff: [staff], sessions: [{ ...session, staffAgentId: staff.id }], loading: false });
-		company.conversation(session.sessionId).set({
-			loading: false,
-			projection: {
-				items: [
-					{
-						kind: "agent",
-						id: id(84),
-						sequence: 1,
-						text: "Latest answer",
-						attachmentCount: 0,
-						phase: "final",
-						createdAt: timestamp,
-						authorUserId: userA.id,
-					},
-				],
-				hiddenCount: 0,
-				lastSequence: 1,
-			},
-		});
-		const view = new ConversationView(company, session.sessionId);
-		dispose = () => {
-			view.dispose();
-			company.stop();
-		};
-		const messages = view.el.querySelector<HTMLElement>(".messages")!;
-		let scrollTop = 0;
-		Object.defineProperty(messages, "scrollTop", {
-			configurable: true,
-			get: () => scrollTop,
-			set: (value: number) => {
-				scrollTop = value;
-			},
-		});
-		Object.defineProperty(messages, "scrollHeight", { configurable: true, get: () => 2000 });
-		Object.defineProperty(messages, "clientHeight", { configurable: true, get: () => 400 });
+		const { view, metrics } = loadedView();
+		metrics.scrollHeight = 2000;
 		document.body.append(view.el);
-		expect(scrollTop).toBe(0);
+		expect(metrics.scrollTop).toBe(0);
 		await Promise.resolve();
-		expect(scrollTop).toBe(2000);
+		expect(metrics.scrollTop).toBe(2000);
 	});
 	it("keeps the computer popover compact and the conversation usable at every width", () => {
 		const f = setup(),
