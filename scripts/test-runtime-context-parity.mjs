@@ -1,7 +1,7 @@
 // Real PostgreSQL admission and context -> production TypeScript parsers.
 // No provider, credential, hosted database or substituted authority function.
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -52,7 +52,7 @@ try {
 			update public.qorpera_shared_sessions set audience_kind='member_private',audience_user_id='30000000-0000-4000-8000-000000000001'
 			where id='30000000-0000-4000-8000-000000000040';\n${nativeIdentityMarker}`);
 		const rows = docker(psql, `${setup}\nset local role service_role;
-			${audience === "member_private" ? `select pg_temp.wake_public_send(current_setting('qorpera_test.wake_binding')::jsonb,'progress','private-route-check'); select pg_temp.wake_error($deny$select public.qorpera_escalate_responsibility(current_setting('qorpera_test.wake_binding')::jsonb,'{}')$deny$,'42501','Private context requires its publication authority');` : ""}
+			${audience === "member_private" ? "select pg_temp.wake_public_send(current_setting('qorpera_test.wake_binding')::jsonb,'progress','private-route-check');" : ""}
 			select jsonb_build_object('binding',current_setting('qorpera_test.wake_binding')::jsonb,
 				'context',public.qorpera_describe_company_run_context(current_setting('qorpera_test.wake_binding')::jsonb),
 				'wake',public.qorpera_read_native_wake(current_setting('qorpera_test.wake_binding')::jsonb));
@@ -139,8 +139,10 @@ try {
 	console.log("PASS: canonical acknowledgement survives a real sponsor handoff and fresh native assignment");
 	const wakeContexts = readFileSync(join(root, "supabase/tests/fixtures/runtime-wake-contexts.sql"), "utf8")
 		.replaceAll('{"schema":"qorpera.staff-kickoff/v1"}', '{"schema":"qorpera.staff-kickoff/v1","text":"Review current company direction and record material gaps."}');
-	for (const kind of ["human", "first-run", "routine", "agent", "room"]) {
-		const rows = docker(psql, `${fixture}\n${wakeContexts}\nselect pg_temp.wake_context_probe('${kind}'); rollback;`).split("\n");
+	for (const probe of ["human", "first-run", "routine", "agent", "room", "room-retry"]) {
+		// A retried room delivery must read exactly like a first one to the runner.
+		const kind = probe === "room-retry" ? "room" : probe;
+		const rows = docker(psql, `${fixture}\n${wakeContexts}\nselect pg_temp.wake_context_probe('${probe}'); rollback;`).split("\n");
 		const value = JSON.parse(rows.at(-1));
 		const context = parseCloudNativeCompanyContext(value.context, value.binding);
 		assertCloudRuntimeBundle(context.identity, bundle.manifest.nativeBinarySha256);
@@ -159,40 +161,8 @@ try {
 			assert.equal(context.currentInputs[0].content.text, "Review current company direction and record material gaps.");
 			assert.deepEqual(prompt.hireOverlay.startupAssignment, context.currentInputs);
 		} else assert.deepEqual(prompt.hireOverlay.startupAssignment, []);
-		console.log(`PASS: same agent, real ${kind} materializer -> native context -> bundle -> production prompt`);
+		console.log(`PASS: same agent, real ${probe} materializer -> native context -> bundle -> production prompt`);
 	}
-	const routing = readFileSync(join(root, "supabase/tests/fixtures/runtime-responsibility-escalations.sql"), "utf8");
-	docker(psql, `${fixture}\n${routing}\nrollback;`);
-	console.log("PASS: projected responsibility escalation, coalescing, native/member routing, receipt replay and revoked-context fences");
-	assert.equal(routing.split("-- END RESPONSIBILITY ROUTING FIXTURE").length, 2);
-	const persisted = docker(psql, `${fixture}\n${routing.split("-- END RESPONSIBILITY ROUTING FIXTURE")[0]}
-		select jsonb_build_object('binding',current_setting('qorpera_test.wake_binding')::jsonb,'signal',pg_temp.escalation_signal('concurrent'));
-		commit;`).split("\n");
-	const concurrentInput = JSON.parse(persisted.at(-1));
-	const sqlLiteral = (value) => `'${JSON.stringify(value).replaceAll("'", "''")}'::jsonb`;
-	const concurrentCall = (key) => new Promise((resolve, reject) => {
-		const child = spawn("docker", psql, { stdio: ["pipe", "pipe", "pipe"] });
-		let stdout = "", stderr = "", bytes = 0;
-		const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error("Concurrent routing timed out")); }, 20_000);
-		child.on("error", (error) => { clearTimeout(timer); reject(error); });
-		child.stdout.on("data", (chunk) => { bytes += chunk.length; if (bytes > 256 * 1024) child.kill("SIGKILL"); else stdout += chunk; });
-		child.stderr.on("data", (chunk) => { bytes += chunk.length; if (bytes > 256 * 1024) child.kill("SIGKILL"); else stderr += chunk; });
-		child.on("close", (code) => { clearTimeout(timer); if (code !== 0) reject(new Error(stderr || "Concurrent routing failed"));
-			else { try { resolve(JSON.parse(stdout.trim())); } catch (error) { reject(error); } } });
-		child.stdin.end(`set request.jwt.claims='{"role":"service_role"}'; set role service_role;
-			select public.qorpera_escalate_responsibility(${sqlLiteral(concurrentInput.binding)},${sqlLiteral({ ...concurrentInput.signal, operationKey: key })});`);
-	});
-	const completed = await Promise.allSettled([concurrentCall("concurrent-a"), concurrentCall("concurrent-b")]);
-	for (const result of completed) assert.equal(result.status, "fulfilled", result.status === "rejected" ? String(result.reason) : "");
-	const deliveries = completed.map((result) => result.value);
-	assert.deepEqual(deliveries.map((item) => item.status).sort(), ["agent-queued", "coalesced"]);
-	assert.equal(deliveries[0].escalationId, deliveries[1].escalationId);
-	assert.equal(docker(psql, "select count(*) from public.qorpera_wake_occurrences where wake_kind='agent';"), "1");
-	assert.equal(docker(psql, "select count(*) from public.qorpera_responsibility_escalation_signals;"), "2");
-	assert.equal(docker(psql, "select count(*) from public.qorpera_run_operation_receipts where status in ('executing','ambiguous');"), "0");
-	const replay = await concurrentCall("concurrent-a");
-	assert.deepEqual(replay, deliveries[0]);
-	console.log("PASS: concurrent responsibility signals produce one wake, retain both contributions, and replay the exact receipt");
 	console.log(`PASS: context parity after ${migrations.length} migrations; no model invoked`);
 } finally {
 	if (started) docker(["rm", "-f", "-v", container]);

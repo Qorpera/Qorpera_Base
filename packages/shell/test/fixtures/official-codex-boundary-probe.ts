@@ -118,13 +118,14 @@ export async function runOfficialCodexBoundaryProbe(
 				input: Array<Record<string, unknown>>;
 				reasoning?: { effort?: string };
 			};
+			// Codex 0.155.1 defaults to GPT-6 Astra; provider-default sends no model name.
 			assert.equal(parsed.model, model === "provider-default" ? "gpt-6-astra" : model);
 			if (providerModel) assert.equal(parsed.model, providerModel);
 			providerModel = parsed.model;
 			assert.equal(parsed.reasoning?.effort, "low");
 			const additionalTools = parsed.input.filter((item) => item.type === "additional_tools");
-			// The pinned catalog enables Responses Lite for Sol; Astra uses fallback metadata.
-			const responsesLite = model === "gpt-5.6-sol";
+			// The 0.155.1 catalog enables Responses Lite for Sol and for Astra (the pinned binary's own default).
+			const responsesLite = parsed.model === "gpt-5.6-sol" || parsed.model === "gpt-6-astra";
 			assert.equal(additionalTools.length, responsesLite ? 1 : 0);
 			if (responsesLite) assert.equal(parsed.tools, undefined);
 			else assert(Array.isArray(parsed.tools));

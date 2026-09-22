@@ -6,18 +6,11 @@ import {
 	writeCloudConfigOverride,
 } from "../../cloud/config.ts";
 import type { HostedAccountEntitlement } from "../../cloud/types.ts";
-import { button, fmtBytes, h, notice, replace } from "../../ui/dom.ts";
+import { button, h, notice, replace } from "../../ui/dom.ts";
 import { preserveFormDrafts } from "../../ui/forms.ts";
-import {
-	composerColorPreference,
-	languagePreference,
-	setComposerColorPreference,
-	setLanguagePreference,
-	setThemePreference,
-	themePreference,
-	uiText,
-} from "../../ui/preferences.ts";
+import { languagePreference, setLanguagePreference, uiText } from "../../ui/preferences.ts";
 import { type AuthController, displayName } from "../auth.ts";
+import { composerColorChoices, themeChoices } from "./appearance.ts";
 
 export interface AccountViewState {
 	loading?: boolean;
@@ -69,52 +62,10 @@ export function renderAccount(
 			setState({ error: "Your browser could not save the language preference." });
 		}
 	};
-	const theme = h(
-		"select",
-		{ "aria-label": "Theme" },
-		h("option", { value: "system" }, "System default"),
-		h("option", { value: "light" }, "Light"),
-		h("option", { value: "dark" }, "Dark"),
+	const theme = themeChoices(() => setState({ error: "Your browser could not save the theme preference." }));
+	const composerColor = composerColorChoices(() =>
+		setState({ error: "Your browser could not save the composer color preference." }),
 	);
-	theme.value = themePreference();
-	theme.onchange = () => {
-		if (!setThemePreference(theme.value)) {
-			theme.value = themePreference();
-			setState({ error: "Your browser could not save the theme preference." });
-		}
-	};
-	const composerColor = h(
-		"select",
-		{ "aria-label": "Composer color" },
-		...(["blue", "green", "grey"] as const).map((value) => {
-			const option = h("option", { value });
-			const label = uiText(value.charAt(0).toUpperCase() + value.slice(1));
-			option.dataset.uiText = label.dataset.uiText;
-			option.textContent = label.textContent;
-			return option;
-		}),
-	);
-	composerColor.value = composerColorPreference();
-	composerColor.onchange = () => {
-		if (!setComposerColorPreference(composerColor.value)) {
-			composerColor.value = composerColorPreference();
-			setState({ error: "Your browser could not save the composer color preference." });
-		}
-	};
-	const entitlement = state.entitlement;
-	const planName = entitlement
-		? ({ internal: "Complimentary", freemium: "Freemium", pro: "Pro", team: "Team" }[entitlement.planKey] ??
-			entitlement.planKey.replaceAll("_", " "))
-		: state.loaded
-			? "Plan unavailable"
-			: "Loading…";
-	const planDetail = entitlement
-		? entitlement.storageAllocationBytes !== undefined
-			? `${fmtBytes(entitlement.storageAllocationBytes)} company storage included`
-			: entitlement.planKey === "internal"
-				? "No active subscription"
-				: "Storage allocation unavailable"
-		: "";
 	replace(
 		container,
 		h(
@@ -142,37 +93,21 @@ export function renderAccount(
 			h(
 				"section",
 				{ class: "settings-group" },
-				h("h2", null, uiText("Plan & billing")),
-				h(
-					"div",
-					{ class: "settings-card settings-plan" },
-					h(
-						"div",
-						{ class: "settings-copy" },
-						h("small", { class: "settings-eyebrow" }, uiText("Current plan")),
-						h("strong", null, planName),
-						planDetail ? h("small", null, planDetail) : null,
-					),
-				),
-			),
-			h(
-				"section",
-				{ class: "settings-group" },
 				h("h2", null, uiText("Appearance")),
 				h(
-					"label",
-					{ class: "settings-preference-row" },
+					"div",
+					{ class: "settings-preference" },
 					h(
 						"span",
 						{ class: "settings-copy" },
 						uiText("Theme"),
-						h("small", null, uiText("System default follows your device’s appearance.")),
+						h("small", null, uiText("System follows your device’s appearance.")),
 					),
 					theme,
 				),
 				h(
-					"label",
-					{ class: "settings-preference-row" },
+					"div",
+					{ class: "settings-preference" },
 					h(
 						"span",
 						{ class: "settings-copy" },

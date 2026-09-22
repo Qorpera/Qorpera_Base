@@ -19,6 +19,11 @@ All inputs must be bounded, single-link regular files on a local filesystem, wit
 
 The service document uses `qorpera.lxd-office-provider-service/v1`. Its installed paths must be `/etc/qorpera/office-provider/policy.json`, `provenance.json`, `review.json` and `registry.credential` for the corresponding fields. The credential's byte length and digest must match the registry document. `review.json` is a later protected adoption review and is not created by installation. The policy/provenance pair is verified against the policy's image verification key. The registry origin must be HTTPS and the supplied registry CA must be a currently valid CA certificate. Registry requests never occur during installation.
 
+Optional `passthroughPath` names the closed host passthrough document: the
+provider then carries the viewer and native host ports itself and resolves the
+guest's current address for every connection, so nothing forwards to a fixed
+guest address. See [OFFICE-PASSTHROUGH.md](OFFICE-PASSTHROUGH.md).
+
 ## Host identity and custody
 
 The policy's machine-ID digest and architecture must match the actual host. Its local journal filesystem, source and mount root must match the open filesystem descriptor. The journal mount must already exist; the installer can create its private state subdirectory and initial lock, but cannot create or mount infrastructure.

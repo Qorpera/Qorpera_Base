@@ -6,6 +6,7 @@ import type { WebSessionModel } from "../cloud/session-model.ts";
 import type { WebSessionRunControl } from "../cloud/session-run-control.ts";
 import type { HostedStaffAgent } from "../cloud/types.ts";
 import type { FigureChoice } from "../ui/figure-picker.ts";
+import type { ComputerPanels } from "./views/computer.ts";
 
 export interface AgentDraft extends FigureChoice {
 	displayName: string;
@@ -22,9 +23,11 @@ export interface WorkspaceActions {
 		draft: GroupChatDraft,
 		signal: AbortSignal,
 	) => Promise<void>;
-	/** Shared workspace surface for transient notifications owned by the view. */
+	/** Company notices (paused, limit reached). The conversation shows them above its composer. */
 	notificationHost?: HTMLElement;
 	computer?: WebCompanyComputer;
+	/** The company's open computers, kept across the threads a member moves between. */
+	computerPanels?: ComputerPanels;
 	runControl?: WebSessionRunControl;
 	sessionModel?: WebSessionModel;
 	nativeSubscription?: WebNativeSubscription;

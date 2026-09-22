@@ -1,6 +1,6 @@
 # Pinned native result fence, governed tools, images and composition
 
-This is a narrow downstream change to the official Codex 0.147.0 source, not
+This is a narrow downstream change to the official Codex 0.155.1 source, not
 an official upstream release. The user explicitly authorized this exception
 to the unmodified-harness requirement on 2026-08-28. Native GPT sign-in,
 refresh, credential storage, provider transport, model metadata and provider

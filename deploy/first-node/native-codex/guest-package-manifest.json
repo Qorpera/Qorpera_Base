@@ -13,9 +13,9 @@
   "nativeCompany": {
     "schema": "qorpera.native-company-guest/v1",
     "binaryPath": "/opt/qorpera-harnesses/native-company/codex",
-    "binarySha256": "9bd7b4e1148cb77820ea75943d03e7531757b3c74e47399df25a00477e58a7d0",
-    "sourceCommit": "be6e8eac029b183056b7e4402879f15d2c85f61b",
-    "patchSha256": "24f9fffe1a35ba29763951b1b904b9b5b194cdcb368ff23c3f8e4bcf900c67f9",
+    "binarySha256": "71b6cbf05cfd8cdc022711858788fce9ac602e3dbb5b6ef39ec998d776018266",
+    "sourceCommit": "be2951ea34f0d295ed0becf97079f92fa5f6950e",
+    "patchSha256": "80f934ef6d0c8edfb0ed3f117b274bf63b442883dcbe266d4376b4970c4fccd5",
     "target": "x86_64-unknown-linux-gnu",
     "profile": "release"
   },
@@ -61,16 +61,6 @@
       "sha256": "7c16cb80e000a2e45db4b2bfba7e2584c2b76b3fc9002fece703965733b6e9d9"
     },
     {
-      "file": "native-company/artifact.json",
-      "bytes": 1725,
-      "sha256": "03b4655e1950e01571a00c59118cb7367bf023cb5142500f87107af777fb99ec"
-    },
-    {
-      "file": "native-company/codex",
-      "bytes": 308143880,
-      "sha256": "9bd7b4e1148cb77820ea75943d03e7531757b3c74e47399df25a00477e58a7d0"
-    },
-    {
       "file": "native-company/LICENSE",
       "bytes": 10926,
       "sha256": "d17f227e4df5da1600391338865ce0f3055211760a36688f816941d58232d8dc"
@@ -79,6 +69,16 @@
       "file": "native-company/NOTICE",
       "bytes": 242,
       "sha256": "9d71575ecfd9a843fc1677b0efb08053c6ba9fd686a0de1a6f5382fd3c220915"
+    },
+    {
+      "file": "native-company/artifact.json",
+      "bytes": 1725,
+      "sha256": "c15df70d178c624a49a2e374464fff0433428c114949d06c0c1a47731f56bd66"
+    },
+    {
+      "file": "native-company/codex",
+      "bytes": 318846256,
+      "sha256": "71b6cbf05cfd8cdc022711858788fce9ac602e3dbb5b6ef39ec998d776018266"
     },
     {
       "file": "qorpera-company-runner.service",
@@ -137,8 +137,8 @@
     },
     {
       "file": "qorpera-native-provider-host.mjs",
-      "bytes": 1378238,
-      "sha256": "a3fb9ea8e439855996554485d466a63bbbad2d3a8b47a6ecfd7074a5dce811bb"
+      "bytes": 1339054,
+      "sha256": "781a245e5d12e0c816993059889361b868239ae9928e59f01f518c71bd109de0"
     },
     {
       "file": "qorpera-native-provider-host.service",

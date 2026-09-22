@@ -4,6 +4,11 @@
 
 ### Fixed
 
+- Show a failed or stopped run as one line right above the composer, in the same band as the company notices, instead of at the end of the thread. The thread keeps only the conversation; the card keeps its reason, Try again and Dismiss. Opening a conversation while such a line, or the composer, appears no longer leaves the thread a little short of its last message.
+- Show the composer's "Chat settings and more" button in group chats too. Its menu keeps Attach files greyed out with a note that images are not supported in group chats and to use Company File; the model choice stays with single-agent conversations.
+- Entering an agent's computer shows the guest screen inside a thin frame in full screen, a computer inside a computer, with the agent's name on the left and one exit button on the right, the exit-full-screen glyph named "Back to thread"; the separate toggle is gone. If the browser refuses full screen, or never answers, the same frame opens over the thread and says "Full screen unavailable"; the next Enter asks again.
+- Make thread and rail text sharper and easier to read, above all on the dark theme and on 1x screens: the thread and composer are set in the system face (San Francisco on a Mac, as Messages and the rail already are) at 16px on a 21px line with no sub-pixel letter-spacing, the page renders without macOS font dilation, dark bubbles carry white text on a darker grey, dark text tokens are brighter, and rail role lines and timestamps step up a size and weight.
+- Show what an agent is doing in its conversation the way the desktop does: hovering or focusing the working figure at the end of the thread reads "Nova is working" or "Nova is writing" with the ink wave, and the row no longer relies on a browser tooltip. The rail card's "Working" and "Writing" carry the same wave, and every wave on the page runs on one clock, so the card and the thread caption move together.
 - Preserve agent metadata drafts and retry state across details-panel closes, serialize saves, and retire confirmed edits when the roster catches up so later changes by other members are not overwritten.
 - Keep keyboard focus on an available execution-notice action when refreshes remove the previously focused control.
 - Keep the rail's "Needs you" for runs waiting on a member decision, including a failed run that left Company File changes. An agent with a failed or stopped run nobody has dismissed now rests idle with a red status disc, the opposite of the green working disc; the rail link names the state in words, also in the compact rail.
@@ -17,6 +22,10 @@
 
 ### Added
 
+- Settings has a Plan & usage tab: the account's current plan (the freemium plan is now called "Free trial") with an Upgrade button that opens the three plans qorpera.com sells (Basis, Standard, Dedicated computer, with prices and what they include; choosing one says "Coming soon" until plan changes open), a Usage section with computer hours (a meter once the cloud reports them, "Not measured yet" until then) and the chosen company's storage, and a Billing card (price, next payment, payment method, invoices) that shows placeholders until billing lands. Nothing moved to General's loss except the plan card. The standalone account page keeps the plan below General.
+- Appearance in Settings → General shows its choices as pictures instead of menus: Theme offers System, Light and Dark as miniature windows (System split down the middle), and Composer color offers Blue, Green and Grey as miniature conversations in the page's current theme. Each group is a radio group, so arrow keys move between cards.
+
+- Resize the computer preview by dragging any of its edges or corners, from its resting size up to twice that, keeping its 16:9 shape and staying inside the thread. When the preview has keyboard focus, plus and minus resize it too.
 - Present member-addressed execution notices inline in the workspace, with explicit acknowledgment and recovery after uncertain requests.
 - Add a dark theme. Settings → General → Theme offers System default (follows the device's appearance), Light and Dark; the choice is kept per browser, follows changes made in other tabs, and a head script applies it before the first paint.
 - Show a failed or stopped run in the agent's conversation with its error and a Dismiss action (the desktop's discard), so an old failure stops standing in for the agent's state; a run that left Company File changes links to them instead.

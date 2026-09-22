@@ -93,7 +93,7 @@ it.each(["response-first", "notify-first", "fence-before-started", "prewarm-befo
 		await expect(run(mode).result).resolves.toEqual({
 			providerSessionId: "thread_fixture",
 			toolCalls: 0,
-			codexVersion: "0.147.0",
+			codexVersion: "0.155.1",
 			fencedRequests: 1,
 		});
 	},
@@ -104,13 +104,15 @@ it("rejects an unpatched binary before creating a thread", async () => {
 });
 
 it.each([
-	["provider-default", "gpt-6-astra"],
+	["provider-default", undefined],
 	["gpt-5.6-sol", "gpt-5.6-sol"],
 ])("starts native threads with model %s and low effort", async (model, expectedModel) => {
 	const { result, evidence } = run("model-selection", { model });
 	await result;
-	expect(JSON.parse(await readFile(evidence, "utf8"))).toMatchObject({
-		threadParameters: { model: expectedModel },
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	// provider-default sends no model: the pinned binary picks its own default.
+	expect(recorded.threadParameters.model).toBe(expectedModel);
+	expect(recorded).toMatchObject({
 		turnParameters: { effort: "low" },
 		configuration: { model_reasoning_effort: "low" },
 	});

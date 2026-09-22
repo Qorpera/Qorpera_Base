@@ -1151,12 +1151,20 @@ export class LxdNativeLoginGateway {
 		// copy behind: it still holds the key but not the marker of the current epoch, and
 		// the guest bootstrap refuses it. Such a copy is recovered like a missing one. The
 		// restore verifies the key already here against the release and only adds the marker.
+		// Without a known epoch (or at epoch 0) no marker can be named: the key alone decides,
+		// as before, and the guest bootstrap stays the judge of what it mounts.
+		const epoch = state.epoch;
 		if (
 			(await this.#guestFileExists(instanceName, RECOVERY_MASTER_KEY_PATH, signal)) &&
-			(state.epoch === 0 ||
-				(await this.#guestFileExists(instanceName, recoveryEpochMarkerPath(state.epoch), signal)))
-		)
+			(epoch === null ||
+				epoch === 0 ||
+				(await this.#guestFileExists(instanceName, recoveryEpochMarkerPath(epoch), signal)))
+		) {
+			// Another request may have restored this volume after the pending login
+			// was created. Reconcile its pin before bootstrap on the current epoch.
+			if (epoch !== null && epoch > 0) await this.#repinLogin(binding, signal);
 			return;
+		}
 		const registrar = this.#config.identityRecoveryRegistrarCapability,
 			guestManifestSha256 = this.#config.guestManifestSha256,
 			configuration = state.recoveryConfiguration;
@@ -1255,7 +1263,7 @@ export class LxdNativeLoginGateway {
 		console.error(`LXD native login identity recovered (login ${binding.loginId}, node ${nodeId})`);
 	}
 
-	/** The login's own recovery advanced the identity's generation past the one
+	/** A completed recovery advanced the identity's generation past the one
 	 * the session was pinned to; the backend re-pins it so the login's backup
 	 * stage and completion run on the restored generation. */
 	async #repinLogin(binding: LxdLoginBinding, signal: AbortSignal): Promise<void> {

@@ -19,6 +19,7 @@ import { readLxdOfficeResetVmHistory } from "../src/lxd-office-reset-vm-history.
 import { type LxdOfficeResetCodePackageLane, LxdOfficeResetWorker } from "../src/lxd-office-reset-worker.ts";
 import { createOfficeBootActivationWorkerFixture } from "./fixtures/office-boot-activation-worker.ts";
 import { createOfficeBootConfigurationWorkerFixture } from "./fixtures/office-boot-configuration-worker.ts";
+import { officeFixtureLayout } from "./fixtures/office-boot-worker.ts";
 import { officeCodePackageMaterialFixture } from "./fixtures/office-code-package-material.ts";
 import { createOfficePowerOffWorkerFixture } from "./fixtures/office-power-off-worker.ts";
 import { recoverOfficeResetDelete } from "./fixtures/office-reset-delete-recovery.ts";
@@ -30,6 +31,7 @@ import { createOfficeStopWorkerFixture } from "./fixtures/office-stop-worker.ts"
 
 const roots: string[] = [];
 afterEach(async () => {
+	officeFixtureLayout.version = 1;
 	vi.restoreAllMocks();
 	for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
@@ -505,9 +507,14 @@ describe("composed office reset successor lane", () => {
 		},
 		120_000,
 	);
-	it.each([false, true])(
-		"stop/restart/reboot retains prior recovery=%s",
-		async (recovered) => {
+	it.each([
+		[false, 1],
+		[true, 1],
+		[false, 2],
+	] as const)(
+		"stop/restart/reboot retains prior recovery=%s (guest layout version %i)",
+		async (recovered, layoutVersion) => {
+			officeFixtureLayout.version = layoutVersion;
 			const f = await fixture();
 			const recovery = recovered ? await recoverOfficeResetDelete(f) : undefined;
 			await f.until("active");

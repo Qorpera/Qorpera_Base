@@ -896,7 +896,7 @@ function organizationPath(pathName: string): boolean {
 	const key = pathName.normalize("NFKC").toUpperCase().toLowerCase();
 	return (
 		key === "organization/formation.json" ||
-		/^organization\/(?:agents|responsibilities|projects|rooms)\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$/.test(
+		/^organization\/(?:agents|projects|rooms)\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$/.test(
 			key,
 		)
 	);

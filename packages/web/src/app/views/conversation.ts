@@ -1,7 +1,7 @@
 import { sessionAttachmentIssue } from "../../cloud/session-attachments.ts";
 import type { TranscriptCard, TranscriptItem } from "../../cloud/transcript.ts";
 import type { HostedSession, HostedStaffAgent } from "../../cloud/types.ts";
-import { AGENT_LOOK } from "../../ui/agent-activity.ts";
+import { AGENT_LOOK, statusCaption, syncCaption } from "../../ui/agent-activity.ts";
 import { AttachmentTray } from "../../ui/attachments.ts";
 import { authorizationRequestId, renderAuthorizationCard } from "../../ui/authorization-card.ts";
 import { agentFigure } from "../../ui/avatar.ts";
@@ -15,13 +15,14 @@ import { fmtTime, h, icon, notice, replace, spinner } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
-import { notification, updateNotification } from "../../ui/notification.ts";
+import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
+import { runFailureCard, runFailureInterrupted, runFailureReason } from "../../ui/run-failure.ts";
 import type { AgentState, CompanyController, ConversationState } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
 import { ComposerModels } from "./composer-models.ts";
-import { ComputerPanel } from "./computer.ts";
+import { type ComputerPanel, ComputerPanels } from "./computer.ts";
 import { GroupDetails } from "./group-details.ts";
 import { SessionExecutionView } from "./session-execution.ts";
 import { SessionRunView } from "./session-run.ts";
@@ -59,6 +60,7 @@ export class ConversationView {
 	readonly #menuMain: HTMLElement;
 	readonly #models: ComposerModels;
 	readonly #attach: HTMLButtonElement;
+	readonly #attachNote: HTMLElement;
 	readonly #identity: HTMLButtonElement;
 	readonly #computer: HTMLButtonElement;
 	readonly #navigation: HTMLButtonElement;
@@ -70,14 +72,30 @@ export class ConversationView {
 	readonly #run: SessionRunView | undefined;
 	readonly #execution: SessionExecutionView | undefined;
 	#details: AgentDetails | GroupDetails | undefined;
+	/** The company's open computers; this thread shows its agent's while the member is here. */
+	readonly #panels: ComputerPanels;
+	readonly #ownPanels: boolean;
 	#panel: ComputerPanel | undefined;
 	#headerKey = "";
 	#renderedKey = "";
 	#stickToBottom = true;
+	/** Where the last pin that moved the thread put it. Its scroll event arrives a frame
+	 * later, when the pane may already have shrunk (the composer or a notice above it
+	 * appeared in the same task); that event is not the member scrolling away. Armed
+	 * only by a pin that changed the position, so it is consumed by exactly that event
+	 * and never lingers to swallow a real scroll. */
+	#pinnedTop = -1;
+	/** Re-reads the scroll position for the hidden-bar fade after a programmatic scroll. */
+	#refreshFade: () => void = () => {};
+	/** Re-pins the thread to its end when the message pane gets its size: the first
+	 * render happens before the view is in the page, and a pane that shrinks or
+	 * grows (window, computer panel, composer) must keep showing the latest message. */
+	readonly #sizes: ResizeObserver | undefined;
 	readonly #unsubscribe: (() => void)[] = [];
 	#disposed = false;
 	#statusKey = "";
-	readonly #runNotification = h("div", { class: "run-notification", hidden: true });
+	/** A failed run, shown as one line right above the composer, in the same band as the company notices. */
+	readonly #runNotification = h("div", { class: "thread-run-failure", hidden: true });
 	#runNotificationKey = "";
 	#receivedAttachments: ReceivedAttachments[] = [];
 	readonly #timestampTimer: number;
@@ -93,6 +111,8 @@ export class ConversationView {
 		this.#notificationSignal = AbortSignal.any([this.#lifetime.signal, company.signal]);
 		this.#sessionId = sessionId;
 		this.#actions = actions;
+		this.#ownPanels = !actions.computerPanels;
+		this.#panels = actions.computerPanels ?? new ComputerPanels(actions.computer, company.signal);
 		this.#run = actions.runControl
 			? new SessionRunView(
 					actions.runControl,
@@ -184,10 +204,15 @@ export class ConversationView {
 			() => this.#setModelMenu(false),
 			() => this.update(),
 		);
-		this.#menuMain = h("div", null, this.#attach, this.#models.button);
+		this.#attachNote = h(
+			"p",
+			{ class: "composer-menu-note", hidden: true },
+			"Images are not supported in group chats. Use Company File.",
+		);
+		this.#menuMain = h("div", null, this.#attach, this.#attachNote, this.#models.button);
 		this.#menu = h(
 			"div",
-			{ class: "composer-menu", role: "menu", hidden: true, "aria-label": "Chat settings and more" },
+			{ class: "composer-menu", role: "menu", hidden: true, tabindex: "-1", "aria-label": "Chat settings and more" },
 			this.#menuMain,
 			this.#models.el,
 		);
@@ -284,22 +309,31 @@ export class ConversationView {
 			icon("navigation"),
 		);
 		this.#header.append(this.#navigation, this.#identity, this.#computer);
+		this.#refreshFade = quietScroll(this.#messages);
 		this.#messages.addEventListener("scroll", () => {
 			const { scrollTop, scrollHeight, clientHeight } = this.#messages;
+			if (this.#stickToBottom && scrollTop === this.#pinnedTop) {
+				this.#pinnedTop = -1;
+				return;
+			}
 			this.#stickToBottom = scrollHeight - scrollTop - clientHeight < 48;
 		});
+		if (typeof ResizeObserver !== "undefined") {
+			this.#sizes = new ResizeObserver(() => this.#pinToBottom());
+			this.#sizes.observe(this.#messages);
+		} else queueMicrotask(() => this.#pinToBottom()); // The application mounts the view right after construction.
 		this.#conversationPane = h(
 			"div",
 			{ class: "thread-conversation" },
 			this.#header,
 			this.#messages,
 			this.#status,
+			...(actions.notificationHost ? [actions.notificationHost] : []),
+			this.#runNotification,
 			this.#composerWrap,
 		);
 		this.#body = h("div", { class: "thread-body" }, this.#conversationPane);
 		this.el = h("section", { class: "thread" }, this.#body);
-		if (actions.notificationHost) actions.notificationHost.append(this.#runNotification);
-		else this.el.append(h("div", { class: "notification-stack" }, this.#runNotification));
 		company.signal.addEventListener("abort", () => this.#runNotification.remove(), {
 			once: true,
 			signal: this.#lifetime.signal,
@@ -331,9 +365,13 @@ export class ConversationView {
 		this.#disposed = true;
 		this.#lifetime.abort();
 		window.clearInterval(this.#timestampTimer);
+		this.#sizes?.disconnect();
 		this.#runNotification.remove();
 		this.#details?.dispose();
-		this.#panel?.dispose();
+		// The computer stays open, and connected, for the next thread that shows it.
+		if (this.#ownPanels) this.#panels.dispose();
+		else this.#panel?.detach();
+		this.#panel = undefined;
 		this.#attachments.dispose();
 		for (const attachments of this.#receivedAttachments) attachments.dispose();
 		for (const unsubscribe of this.#unsubscribe) unsubscribe();
@@ -353,6 +391,16 @@ export class ConversationView {
 	focus(): void {
 		this.#autosize();
 		this.#composer.focus();
+	}
+
+	/** Shows the latest message unless the reader has scrolled up to read older ones. */
+	#pinToBottom(): void {
+		if (this.#disposed || !this.#stickToBottom) return;
+		const before = this.#messages.scrollTop;
+		this.#messages.scrollTop = this.#messages.scrollHeight;
+		const after = this.#messages.scrollTop;
+		if (after !== before) this.#pinnedTop = after;
+		this.#refreshFade();
 	}
 	setNavigationOpen(open: boolean): void {
 		this.#navigation.setAttribute("aria-expanded", String(open));
@@ -379,8 +427,11 @@ export class ConversationView {
 		this.#models.button.setAttribute("aria-expanded", "false");
 		this.#menu.hidden = !open;
 		this.#more.setAttribute("aria-expanded", String(open));
-		if (open) this.#attach.focus();
-		else if (restoreFocus) this.#more.focus();
+		if (open) {
+			// A group chat's menu may hold no live control; the menu itself then takes focus so Escape still closes it.
+			const first = this.#menuMain.querySelector<HTMLButtonElement>("button:not(:disabled):not([hidden])");
+			(first ?? this.#menu).focus();
+		} else if (restoreFocus) this.#more.focus();
 	}
 
 	#setModelMenu(open: boolean): void {
@@ -423,7 +474,7 @@ export class ConversationView {
 
 	#toggleComputer(): void {
 		if (this.#panel) {
-			this.#panel.dispose();
+			this.#panels.close(this.#panel.agentId);
 			this.#panel = undefined;
 			this.#autosize();
 			this.#computer.setAttribute("aria-expanded", "false");
@@ -435,15 +486,18 @@ export class ConversationView {
 			state.sessions.find((session) => session.sessionId === this.#sessionId)?.staffAgentId,
 		);
 		if (!agent) return;
-		this.#panel = new ComputerPanel(
-			agent,
-			() => this.#toggleComputer(),
-			this.#actions.computer,
-			this.#company.signal,
-		);
-		this.#body.append(this.#panel.el);
+		this.#showPanel(agent);
+	}
+
+	/** Show the agent's computer here: the one already open, or one started now. */
+	#showPanel(agent: HostedStaffAgent): ComputerPanel | undefined {
+		const panel = this.#panels.open(agent);
+		if (!panel) return undefined;
+		this.#panel = panel;
+		panel.attach(this.#body, () => this.#toggleComputer());
 		this.#autosize();
 		this.#computer.setAttribute("aria-expanded", "true");
+		return panel;
 	}
 
 	/** One button: it sends a draft, and with nothing to send it stops the run the agent is on. */
@@ -579,9 +633,9 @@ export class ConversationView {
 			Boolean(attachmentIssue);
 		this.#syncSend();
 		this.#attach.disabled = this.#composer.disabled || room;
-		this.#more.hidden = room;
+		this.#attachNote.hidden = !room;
 		this.#more.disabled = this.#composer.disabled;
-		if ((this.#composer.disabled || room) && !this.#menu.hidden) this.#setMenu(false, false);
+		if (this.#composer.disabled && !this.#menu.hidden) this.#setMenu(false, false);
 		this.#composerWrap.hidden = !canWrite;
 		if (this.#composer.value !== (conversation.draft ?? "")) {
 			this.#composer.value = conversation.draft ?? "";
@@ -610,25 +664,30 @@ export class ConversationView {
 			this.#identity.removeAttribute("aria-haspopup");
 			this.#identity.removeAttribute("aria-expanded");
 		}
-		if (key === this.#headerKey) return;
-		this.#headerKey = key;
-		if (this.#panel) {
-			const focused = this.#panel.el.contains(document.activeElement);
-			this.#panel.dispose();
-			this.#panel = agent
-				? new ComputerPanel(agent, () => this.#toggleComputer(), this.#actions.computer, this.#company.signal)
-				: undefined;
-			if (this.#panel) this.#body.append(this.#panel.el);
-			if (focused) this.#panel ? this.#panel.focus() : this.#composer.focus();
-			this.#computer.setAttribute("aria-expanded", String(Boolean(this.#panel)));
-			this.#autosize();
+		if (key !== this.#headerKey) {
+			this.#headerKey = key;
+			if (this.#panel && this.#panel.agentId !== agent?.id) {
+				// The thread changed hands: the old agent's computer does not belong here.
+				const focused = this.#panel.el.contains(document.activeElement);
+				this.#panels.close(this.#panel.agentId);
+				this.#panel = undefined;
+				const shown = agent ? this.#showPanel(agent) : undefined;
+				if (focused) shown ? shown.focus() : this.#composer.focus();
+				this.#computer.setAttribute("aria-expanded", String(Boolean(shown)));
+				this.#autosize();
+			} else if (this.#panel && agent) this.#panel.retitle(agent.displayName);
+			replace(
+				this.#identity,
+				group ? groupChatAvatar(groupAgents, { width: 40, height: 32 }) : agentFigure(agent, title, { size: 32 }),
+				h("h1", null, title),
+				agent || group ? icon("chevron") : null,
+			);
 		}
-		replace(
-			this.#identity,
-			group ? groupChatAvatar(groupAgents, { width: 40, height: 32 }) : agentFigure(agent, title, { size: 32 }),
-			h("h1", null, title),
-			agent || group ? icon("chevron") : null,
-		);
+		// A computer left open in another of this agent's threads shows here without a click.
+		if (!this.#panel && agent) {
+			const open = this.#panels.get(agent.id);
+			if (open && !open.attached) this.#showPanel(agent);
+		}
 	}
 
 	#refreshTimestamps(preserveScroll = true): void {
@@ -671,7 +730,7 @@ export class ConversationView {
 			}
 		}
 		if (regroup) {
-			if (this.#stickToBottom) this.#messages.scrollTop = this.#messages.scrollHeight;
+			if (this.#stickToBottom) this.#pinToBottom();
 			else if (anchor) this.#messages.scrollTop += anchor.getBoundingClientRect().top - anchorTop;
 			else this.#messages.scrollTop = scrollTop;
 		}
@@ -800,24 +859,33 @@ export class ConversationView {
 			nodes.push(h("div", { class: "empty" }, "No messages yet."));
 		}
 		if (this.#working && !conversation.loading) {
+			// As on the desktop: the figure works or writes, and "Nova is writing"
+			// shows beside it on hover or focus, never as a bubble.
 			const look = AGENT_LOOK[this.#agentState];
-			const description = `${agentName} · ${look.line}`;
-			nodes.push(
-				h(
-					"div",
-					{
-						class: "message from-agent thread-activity",
-						role: "status",
-						title: description,
-						"aria-label": description,
-					},
-					agentFigure(agent, agentName, { size: 40, activity: look.figure }),
-				),
+			const detail = look.detail ?? "";
+			const caption = statusCaption(agentName, detail);
+			const row = h(
+				"div",
+				{
+					class: "message from-agent thread-activity",
+					role: "status",
+					tabindex: "0",
+					"aria-label": `${agentName}${detail}`,
+				},
+				agentFigure(agent, agentName, { size: 40, activity: look.figure }),
+				caption,
 			);
+			// The wave only runs while the caption shows; on showing it starts in step with the rail.
+			row.addEventListener("mouseenter", () => syncCaption(caption));
+			row.addEventListener("focus", () => syncCaption(caption));
+			nodes.push(row);
 		}
+		const rowFocus = document.activeElement?.classList.contains("thread-activity") ?? false;
 		replace(this.#messages, ...nodes);
+		// A keyboard user reading the row keeps it through a state change or a new message.
+		if (rowFocus) this.#messages.querySelector<HTMLElement>(".thread-activity")?.focus({ preventScroll: true });
 		this.#refreshTimestamps(false);
-		if (this.#stickToBottom) this.#messages.scrollTop = this.#messages.scrollHeight;
+		this.#pinToBottom();
 	}
 
 	#renderStatus(conversation: ConversationState, canWrite: boolean, session: HostedSession | undefined): void {
@@ -876,15 +944,41 @@ export class ConversationView {
 		const hidden = !runId || dismissedRunNotifications.get(this.#company)?.has(runId);
 		const proposalId = failed?.recovery?.proposalId;
 		const review = failed?.activity.sourceKind === "proposal_review";
+		const agentName = this.#company.staffById(session?.staffAgentId ?? "")?.displayName ?? "The agent";
 		const title = proposalId
-			? "Run stopped with changes to review"
+			? `${agentName} stopped with changes to review`
 			: review
 				? "A review did not finish"
-				: "A run did not finish";
-		const key = JSON.stringify([runId, hidden, proposalId, review]);
+				: `${agentName} did not finish this run`;
+		const recovery = failed?.recovery;
+		const reason = proposalId
+			? "Its changes wait for your decision."
+			: recovery
+				? runFailureReason(recovery.lastError, recovery.jobStatus)
+				: undefined;
+		const retryState = runId ? company.runRetries?.[runId] : undefined;
+		// Try again is for an interrupted run; a refused one says what the member must do first.
+		const canRetry =
+			failed !== undefined &&
+			!review &&
+			this.#company.canRetryFailedRun(failed) &&
+			recovery !== undefined &&
+			runFailureInterrupted(recovery.lastError, recovery.jobStatus);
+		const key = JSON.stringify([
+			runId,
+			hidden,
+			proposalId,
+			review,
+			title,
+			reason,
+			recovery?.lastError,
+			retryState,
+			canRetry,
+		]);
 		if (key === this.#runNotificationKey) return;
 		this.#runNotificationKey = key;
 		const focused = this.#runNotification.contains(document.activeElement);
+		const focusedAction = focused ? (document.activeElement as HTMLElement).dataset.action : undefined;
 		const dismiss = () => {
 			if (!runId || this.#notificationSignal.aborted) return;
 			let dismissed = dismissedRunNotifications.get(this.#company);
@@ -895,38 +989,12 @@ export class ConversationView {
 			}
 			dismissed.add(runId);
 			this.update();
-			// Recovery details can arrive after the popup. Follow this one dismissal
-			// across navigation, but stop waiting on permission loss or company teardown.
-			const clearSettledFailure = () => {
-				const state = this.#company.store.get();
-				const currentSession = state.sessions.find((item) => item.sessionId === this.#sessionId);
-				const current = this.#company.failedRunFor(currentSession?.staffAgentId);
-				const canClear =
-					!this.#company.signal.aborted &&
-					!state.accessLost &&
-					state.team?.capabilities.write &&
-					state.team.capabilities.read &&
-					currentSession?.status === "open" &&
-					current?.activity.runId === runId &&
-					current.activity.sourceKind !== "proposal_review";
-				if (canClear && !current.recovery) return;
-				// A newer failure can temporarily replace this one in the activity RPC.
-				// Let this run be dismissed again if it returns before we could clear it.
-				if (current?.activity.runId !== runId) dismissed.delete(runId);
-				unsubscribe();
-				this.#company.signal.removeEventListener("abort", clearSettledFailure);
-				if (canClear && current.recovery?.unsettledOperations === 0 && !current.recovery.proposalId) {
-					// Clear settled failures so the server can report the agent's next run.
-					void this.#company.dismissFailedRun(runId).catch(() => {
-						// Notify the current view too if the member navigated during the request.
-						dismissed.delete(runId);
-						if (!this.#company.signal.aborted) this.#company.store.set({});
-					});
-				}
-			};
-			const unsubscribe = this.#company.store.subscribe(clearSettledFailure);
-			this.#company.signal.addEventListener("abort", clearSettledFailure, { once: true });
-			clearSettledFailure();
+			// Durable for the company: the badge and this card do not come back on reload.
+			// If nothing reached the cloud, the card comes back so it can be dismissed again.
+			void this.#company.dismissFailedRun(runId).catch(() => {
+				dismissed.delete(runId);
+				if (!this.#company.signal.aborted) this.#company.store.set({});
+			});
 		};
 		const profileId = this.#company.profile.profileId;
 		const action =
@@ -940,15 +1008,29 @@ export class ConversationView {
 						"Review",
 					)
 				: undefined;
-		updateNotification(
+		const sessionId = this.#sessionId;
+		this.#runNotification.hidden = Boolean(hidden);
+		replace(
 			this.#runNotification,
-			hidden ? null : notification(title, dismiss, { action, error: true }),
-			hidden ? undefined : runId,
-			this.#notificationSignal,
-			!company.accessLost && company.team?.capabilities.read === true,
+			hidden || !runId
+				? null
+				: runFailureCard({
+						title,
+						reason,
+						retry: canRetry ? () => void this.#company.retryFailedRun(runId, sessionId) : undefined,
+						retrying: retryState?.pending,
+						retryError: retryState?.error,
+						dismiss,
+						action,
+					}),
 		);
 		if (focused) {
-			if (!hidden) this.#runNotification.querySelector<HTMLElement>("button")?.focus({ preventScroll: true });
+			if (!hidden)
+				(
+					(focusedAction
+						? this.#runNotification.querySelector<HTMLElement>(`[data-action="${focusedAction}"]`)
+						: null) ?? this.#runNotification.querySelector<HTMLElement>(".run-failure-primary, a, button")
+				)?.focus({ preventScroll: true });
 			else if (this.#conversationPane.inert || this.#panel?.el.classList.contains("is-entered"))
 				this.#panel?.focus();
 			else if (!this.#composer.disabled && !this.#composerWrap.hidden) this.#composer.focus({ preventScroll: true });

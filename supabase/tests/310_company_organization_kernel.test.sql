@@ -139,8 +139,8 @@ select set_config('qorpera_test.bootstrap_agent_manifest',jsonb_build_object(
 		'bytes',octet_length(current_setting('qorpera_test.bootstrap_agent_document')))))::text,true);
 select set_config('qorpera_test.bootstrap_agent_manifest_sha',encode(extensions.digest(
 	convert_to(current_setting('qorpera_test.bootstrap_agent_manifest'),'utf8'),'sha256'),'hex'),true);
--- The Co-Founder's four company-level responsibilities are minted with the
--- job and staged like the formation and agent documents.
+-- Responsibility documents were retired (20260920070000): a company is born
+-- with its formation and its Co-Founder, and no responsibility documents.
 select set_config('qorpera_test.responsibility_documents',
 	(current_setting('qorpera_test.bootstrap_claim')::jsonb -> 'cofounderResponsibilityDocuments')::text,true);
 do $$
@@ -149,8 +149,8 @@ declare v_profile uuid := (current_setting('qorpera_test.org_company')::jsonb ->
 	v_worker uuid := current_setting('qorpera_test.bootstrap_worker')::uuid;
 	v_doc record; v_hash text; v_manifest text; v_manifest_hash text; v_entries jsonb := '[]'::jsonb;
 begin
-	if (select count(*) from jsonb_object_keys(current_setting('qorpera_test.responsibility_documents')::jsonb)) <> 4 then
-		raise exception 'Bootstrap job did not mint the four company-level responsibilities'; end if;
+	if current_setting('qorpera_test.responsibility_documents')::jsonb <> '{}'::jsonb then
+		raise exception 'Bootstrap job still mints responsibility documents'; end if;
 	for v_doc in select key,value from jsonb_each_text(current_setting('qorpera_test.responsibility_documents')::jsonb)
 		order by key collate "C" loop
 		v_hash := encode(extensions.digest(convert_to(v_doc.value,'utf8'),'sha256'),'hex');
@@ -198,8 +198,7 @@ select set_config('qorpera_test.bootstrap_tree',jsonb_build_object(
 			'fileSha256',current_setting('qorpera_test.bootstrap_content_sha'),
 			'bytes',octet_length(current_setting('qorpera_test.bootstrap_document')),
 			'mediaType','application/octet-stream')),
-		jsonb_build_object('path','organization/projects','kind','directory'),
-		jsonb_build_object('path','organization/responsibilities','kind','directory'))
+		jsonb_build_object('path','organization/projects','kind','directory'))
 		|| current_setting('qorpera_test.responsibility_entries')::jsonb)::text,true);
 select set_config('qorpera_test.bootstrap_tree_sha',encode(extensions.digest(
 	convert_to(current_setting('qorpera_test.bootstrap_tree'),'utf8'),'sha256'),'hex'),true);
@@ -340,34 +339,21 @@ begin
 		raise exception 'Canonical Co-Founder bootstrap is incomplete'; end if;
 	if (select count(*) from public.qorpera_profile_staff where profile_id = v_profile and template_id = 'co-founder') <> 1 then
 		raise exception 'Company has more than one Co-Founder'; end if;
-	-- The Co-Founder holds the company-level responsibilities from genesis:
-	-- each active, accountable to the Co-Founder and the founding owner, with
-	-- a measure bound to live sources at exact observed versions.
-	if (select count(*) from public.qorpera_company_responsibilities responsibility
-		where responsibility.profile_id = v_profile and responsibility.status = 'active'
-			and responsibility.accountable_staff_agent_id = cofounder
-			and responsibility.accountable_user_id = '31000000-0000-4000-8000-000000000001'
-			and responsibility.escalation_target ->> 'kind' = 'accountable_member'
-			and responsibility.source_snapshot_id =
-				(current_setting('qorpera_test.bootstrap_result')::jsonb ->> 'snapshotId')::uuid) <> 4
-		or (select array_agg(slug order by slug) from public.qorpera_company_responsibilities where profile_id = v_profile)
-			<> array['direction','founder-relationship','resourcing','responsibility-map']
-		or exists (select 1 from public.qorpera_company_responsibilities responsibility
-			where responsibility.profile_id = v_profile and not exists (
-				select 1 from public.qorpera_responsibility_measures measure
-				join public.qorpera_responsibility_measure_sources source on source.measure_id = measure.id
-				where measure.responsibility_id = responsibility.id and measure.status = 'active'
-					and source.source_path_version is not null))
-		or not exists (select 1 from public.qorpera_responsibility_measure_sources source
-			join public.qorpera_company_path_entries entry on entry.environment_id = source.environment_id
-				and entry.path_key_sha256 = source.source_path_key_sha256
-			where source.profile_id = v_profile and source.source_path = 'organization/formation.json'
-				and source.path_match = 'exact' and source.source_path_version = entry.version
-				and source.source_file_sha256 = entry.entry #>> '{file,fileSha256}')
-		or not exists (select 1 from public.qorpera_responsibility_measure_sources source
-			where source.profile_id = v_profile and source.source_path = 'organization/responsibilities'
-				and source.path_match = 'subtree' and source.source_file_sha256 is null) then
-		raise exception 'Co-Founder does not hold the company-level responsibilities from genesis'; end if;
+	-- Retired 2026-09-20: a company is born without responsibility objects. What the
+	-- Co-Founder is responsible for is its description; nothing projects a responsibility.
+	-- Rollout order must not matter: a gateway that still builds the empty folder is accepted.
+	if pg_get_functiondef('public.qorpera_finalize_company_bootstrap(uuid,uuid,text,text,text,text,jsonb)'::regprocedure)
+		not like '%<> 5 + (select count(*) from jsonb_object_keys(v_job.cofounder_responsibility_documents))%+ (v_entries @>%organization/responsibilities%)::integer then%' then
+		raise exception 'Company creation depends on the rollout order of the gateway'; end if;
+	if to_regclass('public.qorpera_company_responsibilities') is not null
+		or exists (select 1 from public.qorpera_company_path_entries entry
+			join public.qorpera_company_files file on file.environment_id = entry.environment_id
+			where file.profile_id = v_profile and entry.path like 'organization/responsibilities%')
+		or public.qorpera_company_organization_json(v_profile) -> 'responsibilities' <> '[]'::jsonb
+		or (select staff.charter from public.qorpera_profile_staff staff
+			where staff.profile_id = v_profile and staff.staff_agent_id = cofounder) not like
+			'%making sure everything the company cares about has one owner%' then
+		raise exception 'A new company still carries responsibility objects'; end if;
 end
 $$;
 
@@ -885,6 +871,20 @@ select set_config('qorpera_test.measure_source_applied',pg_temp.org_apply(
 	current_setting('qorpera_test.measure_source_command')::jsonb,null)::text,true);
 reset role;
 
+-- A new company has no organization/responsibilities folder; a member who still wants
+-- to keep such a file creates the folder like any other.
+select pg_temp.org_claims('authenticated','31000000-0000-4000-8000-000000000001');
+set local role authenticated;
+select set_config('qorpera_test.responsibility_folder_command',public.qorpera_begin_member_company_path_command(
+	(current_setting('qorpera_test.org_company')::jsonb ->> 'environment_id')::uuid,
+	pg_temp.org_plan('responsibility-folder-v1','organization/responsibilities',
+		'{"path":"organization/responsibilities","kind":"directory"}'::jsonb))::text,true);
+reset role;
+select pg_temp.org_claims('service_role');
+set local role service_role;
+select pg_temp.org_apply(current_setting('qorpera_test.responsibility_folder_command')::jsonb,null);
+reset role;
+
 select set_config('qorpera_test.responsibility_document',jsonb_build_object(
 	'schema','qorpera.responsibility/v1','responsibilityId','31000000-0000-4000-8000-000000000100',
 	'slug','operations','name','Operations',
@@ -921,15 +921,13 @@ select set_config('qorpera_test.responsibility_command',public.qorpera_begin_mem
 	pg_temp.org_plan('responsibility-operations-v1',
 		'organization/responsibilities/31000000-0000-4000-8000-000000000100.json',
 		current_setting('qorpera_test.responsibility_entry')::jsonb))::text,true);
-select public.qorpera_review_member_company_path_command(
-	(current_setting('qorpera_test.responsibility_command')::jsonb ->> 'commandId')::uuid,
-	current_setting('qorpera_test.responsibility_command')::jsonb ->> 'planSha256','approve');
+-- Retired 2026-09-20: a responsibility document is an ordinary file. It needs no
+-- review, carries no projected document text, and nothing is projected from it.
 reset role;
 select pg_temp.org_claims('service_role');
 set local role service_role;
 select set_config('qorpera_test.responsibility_applied',pg_temp.org_apply(
-	current_setting('qorpera_test.responsibility_command')::jsonb,
-	current_setting('qorpera_test.responsibility_document'))::text,true);
+	current_setting('qorpera_test.responsibility_command')::jsonb,null)::text,true);
 reset role;
 set constraints all immediate;
 set constraints all deferred;
@@ -981,22 +979,16 @@ set constraints all deferred;
 do $$
 declare v_company jsonb := current_setting('qorpera_test.org_company')::jsonb;
 begin
-	if not exists (select 1 from public.qorpera_company_responsibilities where id =
-		'31000000-0000-4000-8000-000000000100' and status = 'active'
-			and accountable_staff_agent_id = (v_company #>> '{organization,cofounder,staff_agent_id}')::uuid)
-		or not exists (select 1 from public.qorpera_responsibility_measures where responsibility_id =
-			'31000000-0000-4000-8000-000000000100' and measure_key = 'cycle-time')
-		or (select count(*) from public.qorpera_responsibility_measure_sources
-			where measure_id = '31000000-0000-4000-8000-000000000102') <> 2
-		or not exists (select 1 from public.qorpera_responsibility_measure_sources source
-			where source.measure_id = '31000000-0000-4000-8000-000000000102' and source.path_match = 'exact'
-				and source.source_path = 'operations-metrics.json'
-				and source.source_path_version = (current_setting('qorpera_test.measure_source_applied')::jsonb #>> '{result,version}')::uuid
-				and source.source_file_sha256 = current_setting('qorpera_test.measure_source_entry')::jsonb #>> '{file,fileSha256}')
+	if public.qorpera_organization_path_kind('organization/responsibilities/31000000-0000-4000-8000-000000000100.json') is not null
+		or current_setting('qorpera_test.responsibility_command')::jsonb ->> 'state' = 'review_required'
+		or not exists (select 1 from public.qorpera_company_path_entries entry
+			where entry.environment_id = (v_company ->> 'environment_id')::uuid
+				and entry.path = 'organization/responsibilities/31000000-0000-4000-8000-000000000100.json')
+		-- A project written before the retirement keeps its recorded sponsor as history, with no target.
 		or not exists (select 1 from public.qorpera_company_projects where id =
 			'31000000-0000-4000-8000-000000000200' and sponsoring_responsibility_id =
 			'31000000-0000-4000-8000-000000000100') then
-		raise exception 'Responsibility or project projection is incomplete'; end if;
+		raise exception 'Retired responsibility document or project projection is wrong'; end if;
 end
 $$;
 
@@ -1012,9 +1004,9 @@ select set_config('qorpera_test.cofounder_document',(
 			'projects',jsonb_build_array('31000000-0000-4000-8000-000000000200'),
 			'rooms',jsonb_build_array('31000000-0000-4000-8000-000000000300'),
 			'resources',jsonb_build_array(jsonb_build_object(
-				'resourceId','31000000-0000-4000-8000-000000000110',
+				'resourceId','31000000-0000-4000-8000-000000000211',
 				'resourceVersion',(select version from public.qorpera_company_path_resources
-					where id = '31000000-0000-4000-8000-000000000110'),
+					where id = '31000000-0000-4000-8000-000000000211'),
 				'permissions',jsonb_build_array('read','write'))))))::text,true);
 select pg_temp.org_claims('service_role');
 set local role service_role;
@@ -1053,9 +1045,8 @@ begin
 		or not exists (select 1 from public.qorpera_profile_staff staff where staff.profile_id = v_profile
 			and staff.staff_agent_id = v_cofounder and staff.display_name = 'Founding Partner'
 			and staff.version = 2 and staff.employment_status = 'active')
-		or not exists (select 1 from public.qorpera_agent_responsibility_grants grant_row
-			where grant_row.profile_id = v_profile and grant_row.staff_agent_id = v_cofounder
-				and grant_row.responsibility_id = '31000000-0000-4000-8000-000000000100')
+		-- grants.responsibilities is still a valid key; a recorded id is history and grants nothing.
+		or to_regclass('public.qorpera_agent_responsibility_grants') is not null
 		or not exists (select 1 from public.qorpera_agent_project_grants grant_row
 			where grant_row.profile_id = v_profile and grant_row.staff_agent_id = v_cofounder
 				and grant_row.project_id = '31000000-0000-4000-8000-000000000200')
@@ -1064,7 +1055,7 @@ begin
 				and grant_row.room_id = '31000000-0000-4000-8000-000000000300')
 		or not exists (select 1 from public.qorpera_company_path_grants grant_row
 			where grant_row.source_agent_profile_id = v_profile and grant_row.source_staff_agent_id = v_cofounder
-				and grant_row.resource_id = '31000000-0000-4000-8000-000000000110'
+				and grant_row.resource_id = '31000000-0000-4000-8000-000000000211'
 				and grant_row.permissions = array['read','write']::text[]) then
 		raise exception 'Co-Founder agent object or grant projection is incomplete'; end if;
 end
@@ -1116,11 +1107,8 @@ select set_config('qorpera_test.evolved_replay',public.qorpera_finalize_company_
 	current_setting('qorpera_test.evolved_tree'),jsonb_build_object(
 		'organization/formation.json',current_setting('qorpera_test.bootstrap_document'),
 		current_setting('qorpera_test.cofounder_path'),current_setting('qorpera_test.cofounder_document'),
-		'organization/responsibilities/31000000-0000-4000-8000-000000000100.json',
-		current_setting('qorpera_test.responsibility_document'),
 		'organization/projects/31000000-0000-4000-8000-000000000200.json',
-		current_setting('qorpera_test.project_document'))
-		|| current_setting('qorpera_test.responsibility_documents')::jsonb)::text,true);
+		current_setting('qorpera_test.project_document')))::text,true);
 reset role;
 do $$ begin
 	if current_setting('qorpera_test.evolved_replay')::jsonb ->> 'snapshotId'
@@ -1222,57 +1210,17 @@ begin
 		raise exception 'Formation state skipped a required transition';
 	exception when invalid_parameter_value then null; end;
 
-	v_document := current_setting('qorpera_test.responsibility_document')::jsonb || '{"version":3}'::jsonb;
-	v_text := v_document::text;
+	-- Retired 2026-09-20: a responsibility document is no organization document, so
+	-- the projection refuses document text for its path, whatever the text says.
+	v_text := current_setting('qorpera_test.responsibility_document');
 	v_plan := jsonb_build_object(
 		'path','organization/responsibilities/31000000-0000-4000-8000-000000000100.json',
 		'entry',jsonb_build_object('kind','file','file',jsonb_build_object(
 			'fileSha256',encode(extensions.digest(convert_to(v_text,'utf8'),'sha256'),'hex'))));
 	begin
 		perform public.qorpera_project_organization_document(v_actor,v_plan,v_text,v_snapshot,v_version);
-		raise exception 'Responsibility skipped a document version';
+		raise exception 'A retired responsibility document was projected';
 	exception when invalid_parameter_value then null; end;
-
-	v_document := current_setting('qorpera_test.responsibility_document')::jsonb ||
-		'{"status":"proposed","version":2}'::jsonb;
-	v_text := v_document::text;
-	v_plan := jsonb_set(v_plan,'{entry,file,fileSha256}',to_jsonb(encode(
-		extensions.digest(convert_to(v_text,'utf8'),'sha256'),'hex')));
-	begin
-		perform public.qorpera_project_organization_document(v_actor,v_plan,v_text,v_snapshot,v_version);
-		raise exception 'Responsibility moved backward in its lifecycle';
-	exception when invalid_parameter_value then null; end;
-
-	-- No ceremonial responsibilities: a document without a measurable outcome
-	-- and sources, or whose source is not a current Company File path, is invalid.
-	v_document := current_setting('qorpera_test.responsibility_document')::jsonb ||
-		'{"measures":[],"version":2}'::jsonb;
-	v_text := v_document::text;
-	v_plan := jsonb_set(v_plan,'{entry,file,fileSha256}',to_jsonb(encode(
-		extensions.digest(convert_to(v_text,'utf8'),'sha256'),'hex')));
-	begin
-		perform public.qorpera_project_organization_document(v_actor,v_plan,v_text,v_snapshot,v_version);
-		raise exception 'Ceremonial responsibility was accepted';
-	exception when invalid_parameter_value then null; end;
-	v_document := jsonb_set(current_setting('qorpera_test.responsibility_document')::jsonb || '{"version":2}'::jsonb,
-		'{measures,0,sources}',jsonb_build_array(jsonb_build_object('path','missing/source.json','pathMatch','exact')));
-	v_text := v_document::text;
-	v_plan := jsonb_set(v_plan,'{entry,file,fileSha256}',to_jsonb(encode(
-		extensions.digest(convert_to(v_text,'utf8'),'sha256'),'hex')));
-	begin
-		perform public.qorpera_project_organization_document(v_actor,v_plan,v_text,v_snapshot,v_version);
-		raise exception 'Responsibility measure bound to an absent source';
-	exception when invalid_parameter_value then null; end;
-	-- Exactly one accountable agent, and it must be employed.
-	v_document := current_setting('qorpera_test.responsibility_document')::jsonb ||
-		jsonb_build_object('version',2,'accountableStaffAgentId','31000000-0000-4000-8000-000000000999');
-	v_text := v_document::text;
-	v_plan := jsonb_set(v_plan,'{entry,file,fileSha256}',to_jsonb(encode(
-		extensions.digest(convert_to(v_text,'utf8'),'sha256'),'hex')));
-	begin
-		perform public.qorpera_project_organization_document(v_actor,v_plan,v_text,v_snapshot,v_version);
-		raise exception 'Responsibility accepted an unknown accountable agent';
-	exception when insufficient_privilege then null; end;
 
 	v_document := current_setting('qorpera_test.project_document')::jsonb || '{"version":3}'::jsonb;
 	v_text := v_document::text;
@@ -1303,28 +1251,22 @@ select set_config('qorpera_test.organization_projection',public.qorpera_company_
 	(current_setting('qorpera_test.org_company')::jsonb ->> 'profile_id')::uuid)::text,true);
 reset role;
 do $$
-declare v_org jsonb := current_setting('qorpera_test.organization_projection')::jsonb; v_operations jsonb;
+declare v_org jsonb := current_setting('qorpera_test.organization_projection')::jsonb;
 begin
-	select value into v_operations from jsonb_array_elements(v_org -> 'responsibilities') value
-	where value ->> 'slug' = 'operations';
-	if jsonb_array_length(v_org -> 'responsibilities') <> 5
-		or v_operations #>> '{escalation_target,kind}' <> 'accountable_member'
-		or v_operations #>> '{budget_policy,currency}' <> 'DKK'
-		or v_operations #>> '{resources,0,scope}' <> 'responsibility_scoped'
-		or v_operations #>> '{active_projects,0,project_id}' <> '31000000-0000-4000-8000-000000000200'
-		or v_operations #>> '{measures,0,sources,0,source_path_version}' is null
-		or jsonb_array_length(v_operations #> '{measures,0,sources}') <> 2
-		or v_org #>> '{projects,0,sponsoring_responsibility_id}' <> '31000000-0000-4000-8000-000000000100'
+	-- The read model keeps its shape for every client: no responsibilities, and every
+	-- project reported as company-scoped whatever sponsor its document still records.
+	if v_org -> 'responsibilities' <> '[]'::jsonb
+		or v_org #>> '{projects,0,scope_kind}' <> 'company'
+		or v_org #> '{projects,0,sponsoring_responsibility_id}' <> 'null'::jsonb
 		or v_org #>> '{projects,0,reasoning_policy,effort}' <> 'high'
 		or jsonb_array_length(v_org #> '{projects,0,resources}') <> 2 then
 		raise exception 'Canonical organization hierarchy omitted semantic policy or resource state'; end if;
 end
 $$;
 
--- A responsibility resource is a Company File-projected ACL scope, never an
--- actor. The responsibility document's accountable agent (or an explicit
--- responsibility grant on an agent document) and current employment jointly
--- authorize it.
+-- A project resource is a Company File-projected ACL scope, never an actor:
+-- active project membership and current employment jointly authorize it. What
+-- was scoped to a responsibility is closed to agents and never widened.
 select pg_temp.org_claims('service_role');
 insert into public.qorpera_profile_staff(profile_id,staff_agent_id,display_name,role,charter,template_id,
 	appearance_color,appearance_shape,appearance_creature,employment_status,lifecycle_state,version,
@@ -1341,12 +1283,21 @@ declare v_profile uuid := (current_setting('qorpera_test.org_company')::jsonb ->
 	v_resource public.qorpera_company_path_resources%rowtype;
 begin
 	select * into strict v_resource from public.qorpera_company_path_resources
-	where id = '31000000-0000-4000-8000-000000000110';
+	where id = '31000000-0000-4000-8000-000000000211';
 	if not public.qorpera_company_path_principal_allowed(v_profile,v_resource,'staff_agent',
 		(current_setting('qorpera_test.org_company')::jsonb #>> '{organization,cofounder,staff_agent_id}')::uuid,'write')
 		or public.qorpera_company_path_principal_allowed(v_profile,v_resource,'staff_agent',
-			'31000000-0000-4000-8000-000000000300','read') then
-		raise exception 'Responsibility accountability and document grant did not jointly fence the path'; end if;
+			'31000000-0000-4000-8000-000000000300','read')
+		or not public.qorpera_company_path_principal_allowed(v_profile,v_resource,'member',
+			'31000000-0000-4000-8000-000000000001','write') then
+		raise exception 'Project membership did not fence the project path'; end if;
+	-- A resource left over from a responsibility: owners and admins only.
+	v_resource.scope := 'responsibility_scoped';
+	if public.qorpera_company_path_principal_allowed(v_profile,v_resource,'staff_agent',
+		(current_setting('qorpera_test.org_company')::jsonb #>> '{organization,cofounder,staff_agent_id}')::uuid,'read')
+		or not public.qorpera_company_path_principal_allowed(v_profile,v_resource,'member',
+			'31000000-0000-4000-8000-000000000001','read') then
+		raise exception 'A retired responsibility scope was widened or lost to its owner'; end if;
 end
 $$;
 
@@ -1459,13 +1410,17 @@ declare v_role text; v_table text;
 begin
 	foreach v_role in array array['anon','authenticated','service_role'] loop
 		foreach v_table in array array['qorpera_company_formations','qorpera_company_cofounders',
-			'qorpera_company_responsibilities','qorpera_responsibility_measures',
-			'qorpera_responsibility_measure_sources','qorpera_agent_responsibility_grants',
-			'qorpera_company_projects','qorpera_project_staff_memberships',
-			'qorpera_responsibility_path_resources','qorpera_project_path_resources',
-			'qorpera_responsibility_external_operation_grants'] loop
+			'qorpera_company_projects','qorpera_project_staff_memberships','qorpera_project_path_resources'] loop
 			if has_table_privilege(v_role,'public.' || v_table,'SELECT,INSERT,UPDATE,DELETE') then
 				raise exception 'Organization enforcement table % is exposed to %',v_table,v_role; end if;
+		end loop;
+		-- The responsibility tables are gone, not moved.
+		foreach v_table in array array['qorpera_company_responsibilities','qorpera_responsibility_measures',
+			'qorpera_responsibility_measure_sources','qorpera_agent_responsibility_grants',
+			'qorpera_responsibility_path_resources','qorpera_responsibility_external_operation_grants',
+			'qorpera_responsibility_escalations','qorpera_responsibility_escalation_signals'] loop
+			if to_regclass('public.' || v_table) is not null then
+				raise exception 'Retired table % still exists',v_table; end if;
 		end loop;
 	end loop;
 	if has_function_privilege('authenticated',

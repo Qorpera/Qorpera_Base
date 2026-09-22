@@ -30,7 +30,7 @@ function agentIdFor(runId: string, operationKey: string): string {
 
 export const CLOUD_HIRE_TOOL_DESCRIPTION =
 	"Hire a new coworker for this company. No member approval is needed: when the result says applied, the agent exists and its first run is queued, so tell the member who you hired and why. If the result says proposed, it is waiting for a member instead; say that. " +
-	"Hire for a continuing responsibility that nobody owns, not for a one-off task. First read the current responsibilities and look at your coworkers: an existing coworker who can own it beats a new hire. Write jobDescription as the new agent's thin job specification: mission, the outcomes it owns, its voice, and when it should escalate and to whom. Write firstAssignment as the first concrete piece of work it should start on when it wakes. " +
+	"Hire for a continuing responsibility that nobody owns, not for a one-off task. First see who already owns what: each coworker's responsibilities are written in its agent document under organization/agents. An existing coworker who can own it beats a new hire. Write jobDescription as the new agent's thin job specification: mission, the outcomes it owns, its voice, and when it should escalate and to whom. Write firstAssignment as the first concrete piece of work it should start on when it wakes. " +
 	"The new agent starts with the default read access to the shared Company File and no other grants; you cannot give it authority, and a member can widen it later. A run can hire at most three coworkers. figure picks its avatar. " +
 	"Keep operationKey stable for one intended hire; an unconfirmed result needs the same key again, never a new one.";
 

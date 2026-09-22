@@ -3,50 +3,74 @@
 <title>Qorpera screen dock: look check (not shipped)</title>
 <!-- 1920x1200 approximation of what qorpera-screen-session configures: one flat
      dark xfce4-panel at the bottom edge (size 80, icon size 64), three original
-     launcher icons centred, running dot, hover highlight, date left, time right.
-     ?browser=1 draws the first impression: the company browser maximised. -->
+     launcher icons centred, the running mark, hover highlight, date left, time
+     right. ?browser=1 draws the state of the real capture of 20 September: the
+     company browser maximised with one clean tab, a terminal on top, both
+     running. The last row of ?states=1 is every icon state side by side. -->
 <style>
-	html, body { margin: 0; width: 1920px; height: 1200px; overflow: hidden; font-family: "DejaVu Sans", "Helvetica Neue", Arial, sans-serif; }
+	html, body { margin: 0; width: 1920px; height: 1200px; overflow: hidden; font-family: "Liberation Sans", Arial, "Helvetica Neue", sans-serif; }
 	body { background: #0d0f14 url("../backdrops/qorpera-screen-pebble-23.png") center / cover no-repeat; }
-	.dock { position: absolute; left: 0; right: 0; bottom: 0; height: 80px; background: #101218; display: flex; align-items: center; gap: 14px; }
-	.launcher { width: 76px; height: 72px; border-radius: 16px; display: flex; align-items: center; justify-content: center; }
+	.dock { position: absolute; left: 0; right: 0; bottom: 0; height: 80px; background: #101218; display: flex; align-items: center; }
+	/* As in gtk.css: button margin 4px 3px, padding 0 5px around a 64 px icon. */
+	.launcher { width: 74px; height: 72px; margin: 0 3px; border-radius: 16px; display: flex; align-items: center; justify-content: center; }
 	.launcher.hover { background: rgba(255, 255, 255, .10); }
 	.launcher svg { width: 64px; height: 64px; }
 	/* As in the panel: expanding separators either side of the launchers, then the clock. */
 	.spacer { flex: 1; }
-	.clock { width: 120px; margin: 0 13px; text-align: center; color: #c9ced8; font-size: 17px; font-weight: 600; letter-spacing: .02em; }
+	.clock { width: 120px; margin: 0 13px; text-align: center; font-size: 17px; letter-spacing: .01em; }
+	.clock.date { color: #a3abba; }
+	.clock.time { color: #eef0f4; }
 	.window { position: absolute; left: 0; top: 0; width: 1920px; height: 1120px; background: #fff; display: none; flex-direction: column; }
 	.browser .window { display: flex; }
-	.title { height: 28px; background: #2b2e36; color: #d8dbe2; font-size: 13px; display: flex; align-items: center; justify-content: center; position: relative; }
-	.title i { position: absolute; right: 12px; top: 8px; width: 12px; height: 12px; border-radius: 6px; background: #5c6270; box-shadow: -22px 0 #5c6270, -44px 0 #5c6270; }
-	.tabs { height: 42px; background: #dee1e6; display: flex; align-items: flex-end; padding-left: 10px; }
+	.tabs { height: 40px; background: #dee1e6; display: flex; align-items: flex-end; padding-left: 10px; position: relative; }
+	.tabs i { position: absolute; right: 16px; top: 14px; width: 12px; height: 12px; border-radius: 6px; background: #9aa0a6; box-shadow: -32px 0 #9aa0a6, -64px 0 #9aa0a6; }
 	.tab { width: 240px; height: 34px; background: #fff; border-radius: 10px 10px 0 0; font-size: 13px; color: #333; display: flex; align-items: center; padding-left: 14px; box-sizing: border-box; }
 	.bar { height: 44px; border-bottom: 1px solid #e3e5e8; display: flex; align-items: center; padding: 0 16px; }
-	.url { flex: 1; height: 30px; border-radius: 15px; background: #f1f3f4; margin-left: 96px; font-size: 14px; color: #5f6368; display: flex; align-items: center; padding-left: 16px; }
-	.page { flex: 1; display: flex; align-items: center; justify-content: center; color: #9aa0a6; font-size: 22px; }
+	.url { flex: 1; height: 32px; border-radius: 16px; background: #eef1f6; margin-left: 112px; font-size: 14px; color: #5f6368; display: flex; align-items: center; padding-left: 16px; }
+	.page { flex: 1; display: flex; align-items: flex-start; justify-content: center; padding-top: 120px; color: #9aa0a6; font-size: 20px; }
+	.terminal { position: absolute; left: 480px; top: 270px; width: 964px; height: 580px; display: none; flex-direction: column; border: 1px solid #8f8f8f; box-shadow: none; }
+	.browser .terminal { display: flex; }
+	.terminal .title { height: 26px; background: #dcdad5; color: #222; font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+	.terminal pre { flex: 1; margin: 0; background: #12141a; color: #e6e9ef; font: 15px/20px "DejaVu Sans Mono", Menlo, monospace; padding: 6px 8px; }
+	.terminal b { color: #7ee787; font-weight: 400; }
+	.states { position: absolute; left: 0; right: 0; bottom: 120px; display: none; justify-content: center; gap: 18px; color: #a3abba; font-size: 13px; text-align: center; }
+	.showstates .states { display: flex; }
+	.states div { width: 110px; }
+	.states svg { width: 64px; height: 64px; display: block; margin: 0 auto 6px; }
 </style>
 <body>
 	<div class="window">
-		<div class="title">New Tab - Chromium<i></i></div>
-		<div class="tabs"><div class="tab">New Tab</div></div>
+		<div class="tabs"><div class="tab">New Tab</div><i></i></div>
 		<div class="bar"><div class="url">Search or type a URL</div></div>
-		<div class="page">The company browser, maximised above the dock</div>
+		<div class="page">One clean tab, no "Chrome for Testing" bar</div>
 	</div>
+	<div class="terminal">
+		<div class="title">Terminal</div>
+<pre><b>~/workbench</b> $ echo v44-dock-proof &gt; control-proof.txt
+<b>~/workbench</b> $ █</pre>
+	</div>
+	<div class="states" id="states"></div>
 	<div class="dock">
-		<div class="clock">Sun 20 Sep</div>
+		<div class="clock date">Sun 20 Sep</div>
 		<div class="spacer"></div>
 		<div class="launcher" id="browser"></div>
-		<div class="launcher hover" id="files"></div>
+		<div class="launcher" id="files"></div>
 		<div class="launcher" id="terminal"></div>
 		<div class="spacer"></div>
-		<div class="clock">14:32</div>
+		<div class="clock time">09:18</div>
 	</div>
 	<script src="dock-icons.js"></script>
 	<script>
-		const open = new URLSearchParams(location.search).has("browser");
+		const query = new URLSearchParams(location.search);
+		const open = query.has("browser");
 		document.body.classList.toggle("browser", open);
-		document.getElementById("terminal").innerHTML = dockIcon("terminal", "idle");
+		document.body.classList.toggle("showstates", query.has("states"));
+		document.getElementById("terminal").innerHTML = dockIcon("terminal", open ? "running" : "idle");
 		document.getElementById("files").innerHTML = dockIcon("files", "idle");
 		document.getElementById("browser").innerHTML = dockIcon("browser", open ? "running" : "idle");
+		if (!open) document.getElementById("files").classList.add("hover");
+		document.getElementById("states").innerHTML = ["idle", "launching", "launching-2", "running", "failed"]
+			.map((state) => `<div>${dockIcon("browser", state, "-row")}${state}</div>`)
+			.join("");
 	</script>
 </body>

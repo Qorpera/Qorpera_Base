@@ -60,7 +60,12 @@ export class AgentDetails {
 		this.#agent = agent;
 		this.#actions = actions;
 		this.#edits = editsFor(company, agent, actions, scope);
-		this.dialog = new SurfaceDialog("Agent details", "agent-details", () => this.#closed(onClose), anchor);
+		this.dialog = new SurfaceDialog(
+			"Agent details",
+			"agent-details staff-details",
+			() => this.#closed(onClose),
+			anchor,
+		);
 		const pageButton = (page: Exclude<Page, "details">, label: string, glyph: string) =>
 			h(
 				"button",
@@ -137,13 +142,6 @@ export class AgentDetails {
 			),
 			this.#field("charter"),
 			this.#status,
-			h(
-				"label",
-				{ class: "agent-notifications" },
-				icon("bell"),
-				h("span", null, "Notifications", h("small", null, "Notification preferences are not available yet.")),
-				h("input", { type: "checkbox", role: "switch", "aria-label": "Agent notifications", disabled: true }),
-			),
 		);
 		// A click elsewhere in the panel puts the figure picker away.
 		this.dialog.el.addEventListener(
@@ -237,7 +235,8 @@ export class AgentDetails {
 					...events,
 				});
 		this.#fields[key] = control;
-		// The sizer mirrors the text so the field is as wide (or tall) as what it holds.
+		// The sizer mirrors the text so the name and title are as wide as what they hold;
+		// the description fills the popup's static frame instead (conversation.css).
 		const sizer = h("span", { class: "agent-inline-size" }, control);
 		return h(
 			"label",

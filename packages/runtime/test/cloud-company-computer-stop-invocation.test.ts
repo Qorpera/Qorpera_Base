@@ -4,8 +4,19 @@ import { bootFixtureEncode as encode, bootFixtureId as id } from "./fixtures/com
 import { bootServiceStopFixture } from "./fixtures/company-computer-boot-service-stop.ts";
 
 const root = "/run/qorpera-office-preparation";
-function fixture() {
-	const f = bootServiceStopFixture(),
+/** Layout version 2: the retained boot receipt carries the company root. */
+const layoutV2 = {
+	layoutVersion: 2 as const,
+	entries: [".", "company", "desktop", "profiles", "screens", "workbench"].map((path) => ({
+		path,
+		kind: "directory" as const,
+		mode: 0o700,
+		bytes: 0,
+		sha256: null,
+	})),
+};
+function fixture(layoutVersion: 1 | 2 = 1) {
+	const f = bootServiceStopFixture(layoutVersion === 2 ? { original: layoutV2 } : {}),
 		reads: string[] = [];
 	const read = async (path: string, limit: number, mode: number) => {
 		reads.push(path);
@@ -24,21 +35,25 @@ function fixture() {
 	};
 }
 describe("stop evidence after retained boot activation", () => {
-	it("selects the actual new schema and public paths without credentials, preparation or mutable workbench reads", async () => {
-		const f = fixture(),
-			result = await f.select();
-		expect(result.kind).toBe("boot");
-		expect(result.start).toEqual(f.startCompletion);
-		expect(result.request).toEqual(f.request);
-		expect(result.adoptionPath).toBe(`${f.directory}/adoption.json`);
-		expect(result.configurationPath).toBe(`${f.directory}/credentials/config.json`);
-		expect(result.stopPaths.completion).toBe(
-			`${root}/service-stop-completion-${f.startCompletion.activationId}.json`,
-		);
-		expect(
-			f.reads.some((path) => /credentials|workbench|preparation\.json|boot-configuration-incoming/.test(path)),
-		).toBe(false);
-	});
+	it.each([1, 2] as const)(
+		"layout version %i: selects the actual new schema and public paths without credentials, preparation or mutable workbench reads",
+		async (layoutVersion) => {
+			const f = fixture(layoutVersion),
+				result = await f.select();
+			expect("companyRoot" in f.receipt.layout).toBe(layoutVersion === 2);
+			expect(result.kind).toBe("boot");
+			expect(result.start).toEqual(f.startCompletion);
+			expect(result.request).toEqual(f.request);
+			expect(result.adoptionPath).toBe(`${f.directory}/adoption.json`);
+			expect(result.configurationPath).toBe(`${f.directory}/credentials/config.json`);
+			expect(result.stopPaths.completion).toBe(
+				`${root}/service-stop-completion-${f.startCompletion.activationId}.json`,
+			);
+			expect(
+				f.reads.some((path) => /credentials|workbench|preparation\.json|boot-configuration-incoming/.test(path)),
+			).toBe(false);
+		},
+	);
 	it.each(["completion", "claim", "receipt", "config-completion", "config-claim", "packet"])(
 		"refuses a missing %s without falling back to original activation history",
 		async (fault) => {

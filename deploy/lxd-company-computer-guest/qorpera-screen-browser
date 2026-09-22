@@ -17,10 +17,12 @@ set -euo pipefail
 # service derives the screen, the profile and whether anybody present may open
 # it. A refusal looks the same from here as a failure.
 #
-# It never opens a dialog. The icon shows a hollow dot while the browser is
-# being opened, also when it is clicked again meanwhile. It asks, waits, asks
-# once more, and only after both waits shows the quiet grey icon with an amber
-# dot for a few seconds.
+# It never opens a dialog. The icon shows an outlined mark while the browser is
+# being opened, also when it is clicked again meanwhile, and pulses for the
+# first seconds so a click is visibly answered. It asks, waits, asks once more,
+# and only after both waits shows the quiet grey icon with an amber mark for a
+# few seconds. An icon state is shown by naming its launcher entry in the
+# panel's own `items` setting (see qorpera-screen-session).
 if [[ -z ${DISPLAY:-} || $# -gt 1 ]]; then
 	echo "usage: qorpera-screen-browser [files|terminal] (inside a screen session)" >&2
 	exit 64
@@ -35,8 +37,8 @@ dock_windows() {
 	for id in ${list//,/ }; do
 		[[ ${id} =~ ^0x[0-9a-fA-F]+$ ]] || continue
 		class=$(xprop -id "${id}" WM_CLASS 2>/dev/null) || continue
-		# WM_CLASS(STRING) = "instance", "Class"
-		if [[ ${class} =~ \"([^\"]*)\"[[:space:]]*$ && ${BASH_REMATCH[1]} =~ ${pattern} ]]; then
+		# WM_CLASS(STRING) = "instance", "Class": either may name the application.
+		if [[ ${class} == *=* && ${class#*=} =~ ${pattern} ]]; then
 			echo "${id}"
 		fi
 	done
@@ -51,11 +53,11 @@ raise_window() {
 }
 case ${1:-browser} in
 files)
-	if raise_window '^[Tt]hunar'; then exit 0; fi
+	if raise_window '"[Tt]hunar"'; then exit 0; fi
 	exec thunar .
 	;;
 terminal)
-	if raise_window '^[Xx]fce4-terminal'; then exit 0; fi
+	if raise_window '"[Xx]fce4-terminal"'; then exit 0; fi
 	exec xfce4-terminal
 	;;
 browser) ;;
@@ -64,30 +66,26 @@ browser) ;;
 	exit 64
 	;;
 esac
-raise_browser() { raise_window '^([Cc]hromium|[Cc]hrome)'; }
+# The class the office service gives the browser window, and every name a
+# Chromium build uses for its own windows (the image's Chrome for Testing build
+# does not call itself Chromium). Matching only: nothing is started from here.
+raise_browser() { raise_window '([Qq]orpera-[Bb]rowser|[Cc]hrom(e|ium))'; }
 if raise_browser; then exit 0; fi
 
-entry="${XDG_CONFIG_HOME:-}/xfce4/panel/launcher-6/qorpera-browser.desktop"
-dock_state="${XDG_CONFIG_HOME:-}/qorpera-dock"
-scratch=""
+launcher="${XDG_CONFIG_HOME:-}/qorpera-dock"
 marker=""
 finish() {
 	[[ -z ${marker} ]] || rm -f -- "${marker}" 2>/dev/null || true
-	[[ -z ${scratch} ]] || rm -rf -- "${scratch}" 2>/dev/null || true
 }
 trap finish EXIT
-# Cosmetic, so never fatal: swap the dock entry through a private directory.
+# Cosmetic, so never fatal: name the state's entry in the panel's configuration.
 show() {
-	local template="${dock_state}/browser.$1.desktop" temporary
-	[[ -f ${template} && ! -L ${template} && -f ${entry} && ! -L ${entry} ]] || return 0
-	if [[ -z ${scratch} ]]; then
-		scratch=$(mktemp -d "${XDG_CONFIG_HOME}/.qorpera-launcher.XXXXXXXX" 2>/dev/null) || {
-			scratch=""
-			return 0
-		}
-	fi
-	temporary=$(mktemp "${scratch}/entry.XXXXXXXX" 2>/dev/null) || return 0
-	cp -f -- "${template}" "${temporary}" 2>/dev/null && mv -f -- "${temporary}" "${entry}" 2>/dev/null || true
+	local entry="qorpera-browser-$1.desktop"
+	[[ $1 != idle ]] || entry="qorpera-browser.desktop"
+	[[ -f ${launcher}/${entry} && ! -L ${launcher}/${entry} ]] || return 0
+	# XFCE imports an external entry and deletes only its managed copy on the
+	# next state change. The source must survive repeated pulses and restarts.
+	xfconf-query -c xfce4-panel -p /plugins/plugin-6/items -n -a -t string -s "${launcher}/${entry}" >/dev/null 2>&1 || true
 }
 # A click is answered at once, whoever is already waiting.
 show launching
@@ -112,6 +110,11 @@ for ((round = 0; round < 2; round++)); do
 		if raise_browser; then
 			show running
 			exit 0
+		fi
+		# A short pulse answers the click: six beats in the first three seconds,
+		# then the still outlined mark. Never a continuous animation.
+		if ((round == 0 && attempt < 12)); then
+			if ((attempt % 2 == 0)); then show launching-2; else show launching; fi
 		fi
 	done
 done

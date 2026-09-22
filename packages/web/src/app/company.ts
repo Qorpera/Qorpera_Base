@@ -65,6 +65,18 @@ function stillFailed(
 const RECOVERY_RECHECK_MS = 25_000;
 const RECOVERY_RETRY_MS = 5_000;
 
+/** Why the cloud would not try a run again, in the member's words. */
+function retryRefusal(error: unknown): string {
+	const message = error instanceof Error ? error.message : "";
+	if (/author of the post/i.test(message)) return "Only the person who wrote the message can try it again.";
+	if (/sponsor|model account/i.test(message)) return "Select an active model account, then try again.";
+	if (/paused/i.test(message)) return "The company is paused. Resume it, then try again.";
+	if (/already resolved/i.test(message)) return "This run was already handled.";
+	if (/already answered|durable operation|open proposal/i.test(message))
+		return "This run already did part of its work, so it cannot be repeated. Send the message again instead.";
+	return "It could not be tried again. Send the message again instead.";
+}
+
 export interface CompanyState {
 	profile: HostedProfile;
 	team?: HostedProfileTeam;
@@ -72,6 +84,7 @@ export interface CompanyState {
 	sessions: HostedSession[];
 	sessionsError?: string;
 	groups?: Record<string, GroupChatDetails>;
+	/** Kept for diagnostics only; the rail does not show it (see shell.ts). */
 	groupsError?: string;
 	organization?: HostedCompanyOrganization;
 	organizationState: Deployment;
@@ -80,6 +93,13 @@ export interface CompanyState {
 	activity: HostedStaffExecutionActivity[];
 	/** Details of the failed runs in `activity`, by run id. */
 	recoveries: Record<string, HostedRunRecovery>;
+	/** Try again in flight or refused, by run id. */
+	runRetries?: Record<string, { pending: boolean; error?: string }>;
+	/** The deployed cloud cannot retry a post into a room yet (no qorpera_retry_room_delivery). */
+	roomRetryUnavailable?: boolean;
+	/** Failed runs a member dismissed here, by run id. They stop standing in for the
+	 * agent at once; the cloud records the same acknowledgment durably. */
+	acknowledgedRuns?: Record<string, true>;
 	realtime: RealtimePhase;
 	realtimeError?: string;
 	loading: boolean;
@@ -551,10 +571,16 @@ export class CompanyController {
 
 	activityFor(staffAgentId: string | undefined): HostedStaffExecutionActivity | undefined {
 		if (!staffAgentId) return undefined;
-		return this.store
-			.get()
-			.activity.filter((item) => item.staffAgentId === staffAgentId)
+		const state = this.store.get();
+		const row = state.activity
+			.filter((item) => item.staffAgentId === staffAgentId)
 			.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+		// A dismissed failure is settled for this member even before the cloud's next
+		// activity read; the agent reads as idle until newer work is reported. An open
+		// proposal is a decision, not a failure, and stays until it is decided.
+		return row && isFailedRun(row) && state.acknowledgedRuns?.[row.runId] && !state.recoveries[row.runId]?.proposalId
+			? undefined
+			: row;
 	}
 
 	/** What the member sees of an agent's execution. A queued run is already the
@@ -578,16 +604,101 @@ export class CompanyController {
 		return recovery ? { activity: row, recovery } : { activity: row };
 	}
 
-	/** The run stops standing in for the agent's state; the next activity read shows what is left. */
-	async dismissFailedRun(runId: string): Promise<void> {
-		if (this.#stopped) return;
+	/** Whether Try again can be offered for this run. A session turn is re-queued by the
+	 * recovery RPC; a post into a room needs qorpera_retry_room_delivery (20260920080000).
+	 * Routine and agent wakes, and proposal reviews, are not the member's to repeat. */
+	canRetryFailedRun(failed: FailedRun): boolean {
+		const state = this.store.get();
+		if (!state.team?.capabilities.write || state.accessLost || failed.recovery?.proposalId) return false;
+		if ((failed.recovery?.unsettledOperations ?? 0) > 0) return false;
+		if (failed.activity.sourceKind === "session_turn") return true;
+		return failed.activity.sourceKind === "room_delivery" && !state.roomRetryUnavailable;
+	}
+
+	/** Try again. The member's message stays as it is; the cloud runs it once more on
+	 * the model account selected in this conversation. */
+	async retryFailedRun(runId: string, sessionId: string): Promise<void> {
+		if (this.#stopped || this.store.get().runRetries?.[runId]?.pending) return;
+		const failed = this.store.get().activity.find((row) => row.runId === runId);
+		if (!failed) return;
+		const mark = (value: { pending: boolean; error?: string } | undefined) => {
+			const runRetries = { ...(this.store.get().runRetries ?? {}) };
+			if (value) runRetries[runId] = value;
+			else delete runRetries[runId];
+			this.store.set({ runRetries });
+		};
+		mark({ pending: true });
 		try {
-			await this.#api.discardFailedRun(runId);
+			if (failed.sourceKind === "session_turn") await this.#api.retryFailedRun(runId);
+			else {
+				const sponsor = this.conversation(sessionId, false).get().executionSponsor;
+				if (!sponsor) throw new Error("Select an active model account, then try again.");
+				await this.#api.retryRoomDelivery(runId, sponsor.sponsorBindingId, sponsor.sponsorVersion);
+			}
+			mark(undefined);
+		} catch (error) {
+			if (this.#stopped) return;
+			if (error instanceof CloudRpcError && error.missing) {
+				// The web is ahead of the deployed cloud. Say so once and stop offering it.
+				mark({ pending: false, error: "Trying again is not available yet. Send the message again instead." });
+				this.store.set({ roomRetryUnavailable: true });
+			} else mark({ pending: false, error: retryRefusal(error) });
 		} finally {
-			// Refused or not, read again: someone may have settled the run first.
+			// Released or refused: someone may have settled the run first.
 			this.#recheckRecovery(runId);
 			await this.refreshActivity();
 		}
+	}
+
+	/** Dismiss: the run stops standing in for the agent's state, here at once and in
+	 * the cloud durably, so it does not return on reload or on another device. The
+	 * cloud acknowledges any failed run, including one whose durable outcome is still
+	 * unknown; a cloud without that action falls back to discard where it can. */
+	async dismissFailedRun(runId: string, options: { refresh?: boolean } = {}): Promise<void> {
+		if (this.#stopped) return;
+		const mark = (acknowledged: boolean) =>
+			this.store.set((state) => {
+				const acknowledgedRuns = { ...(state.acknowledgedRuns ?? {}) };
+				if (acknowledged) acknowledgedRuns[runId] = true;
+				else delete acknowledgedRuns[runId];
+				return { acknowledgedRuns };
+			});
+		mark(true);
+		// A member known to lack write access hides the card for this session only;
+		// acknowledging needs write access.
+		const { team, accessLost } = this.store.get();
+		if ((team && !team.capabilities.write) || accessLost) return;
+		try {
+			await this.#api.acknowledgeFailedRun(runId);
+		} catch (error) {
+			if (this.#stopped) return;
+			if (error instanceof CloudRpcError && error.status !== 401 && error.status !== 403) {
+				// Older cloud: try the discard it knows; a refused discard changes nothing,
+				// and the dismissal stays local for this session.
+				await this.#api.discardFailedRun(runId).catch(() => undefined);
+			} else {
+				// Nothing reached the cloud: the failure is not settled, so show it again.
+				mark(false);
+				throw error;
+			}
+		} finally {
+			if (!this.#stopped && options.refresh !== false) {
+				// Refused or not, read again: someone may have settled the run first.
+				this.#recheckRecovery(runId);
+				await this.refreshActivity();
+			}
+		}
+	}
+
+	/** A new message supersedes the agent's last failure: dismiss it on the member's behalf. */
+	#dismissFailureFor(sessionId: string): void {
+		const session = this.store.get().sessions.find((item) => item.sessionId === sessionId);
+		const failed = this.failedRunFor(session?.staffAgentId);
+		// Only a failure whose details are known and that left no decision behind; a
+		// run with an open proposal is the member's to decide, not to dismiss by sending.
+		if (failed?.recovery && failed.activity.sourceKind !== "proposal_review" && !failed.recovery.proposalId)
+			// sendPrompt reads activity again right after; no second read here.
+			void this.dismissFailedRun(failed.activity.runId, { refresh: false }).catch(() => undefined);
 	}
 
 	primarySessionFor(staffAgentId: string): HostedSession | undefined {
@@ -863,6 +974,7 @@ export class CompanyController {
 					),
 				}),
 			}));
+			this.#dismissFailureFor(sessionId);
 			await this.loadConversation(sessionId);
 			void this.refreshActivity();
 			// The run is admitted a moment after the message; watch for it to appear.

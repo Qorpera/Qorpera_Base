@@ -199,7 +199,7 @@ export class SessionExecutionView {
 			company.sessions.find((session) => session.sessionId === this.#sessionId)?.status !== "open" ||
 			conversation.sending ||
 			conversation.retrySend ||
-			(this.#usageHydratedAt !== undefined && Date.now() - this.#usageHydratedAt < 60_000)
+			!this.#usageDue(Date.now())
 		)
 			return;
 		const request = new AbortController();
@@ -227,6 +227,25 @@ export class SessionExecutionView {
 		if (!this.#busy && !current.sending && !current.retrySend) this.#scheduleRefresh(1000);
 	}
 
+	/** Usage is asked for once per opened thread and again only once a known
+	 * reset has passed since: an idle thread never asks on a clock. Sends in
+	 * between keep the account the conversation already has. */
+	#usageDue(now: number): boolean {
+		const hydratedAt = this.#usageHydratedAt;
+		if (hydratedAt === undefined) return true;
+		return this.#resets().some((reset) => reset > hydratedAt && reset <= now);
+	}
+
+	#resets(): number[] {
+		return (this.#observed?.connections ?? [])
+			.flatMap((connection) => [
+				connection.usageLimitResetAt,
+				...(connection.providerAccountUsage?.windows.map((window) => window.resetAt) ?? []),
+			])
+			.map((reset) => Date.parse(reset ?? ""))
+			.filter((reset) => Number.isFinite(reset));
+	}
+
 	#scheduleRefresh(maxDelay = 30_000): void {
 		clearTimeout(this.#refreshTimer);
 		const company = this.#company.store.get();
@@ -238,11 +257,7 @@ export class SessionExecutionView {
 		)
 			return;
 		const now = Date.now();
-		const resets = (this.#observed?.connections ?? []).flatMap((connection) => [
-			connection.usageLimitResetAt,
-			...(connection.providerAccountUsage?.windows.map((window) => window.resetAt) ?? []),
-		]);
-		const nextReset = Math.min(...resets.map((reset) => Date.parse(reset ?? "")).filter((reset) => reset > now));
+		const nextReset = Math.min(...this.#resets().filter((reset) => reset > now));
 		const delay = Math.max(1000, Math.min(maxDelay, nextReset - now + 250));
 		this.#refreshTimer = setTimeout(() => {
 			this.#refreshTimer = undefined;
@@ -252,7 +267,6 @@ export class SessionExecutionView {
 				this.#scheduleRefresh();
 				return;
 			}
-			if (nextReset <= Date.now()) this.#usageHydratedAt = undefined;
 			void this.refresh();
 		}, delay);
 	}
@@ -345,9 +359,6 @@ export class SessionExecutionView {
 
 		replace(
 			this.el,
-			this.#busy && !conversation.retrySend
-				? h("p", { class: "muted", role: "status" }, "Checking model accounts…")
-				: null,
 			this.#error ? h("p", { class: "muted" }, this.#error) : null,
 			conversation.retrySend
 				? h(

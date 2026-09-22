@@ -4,7 +4,7 @@ import type {
 	CompanyComputerMemberView,
 } from "@qorpera/cloud-client/cloud-company-computer-views";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ComputerPanel } from "../src/app/views/computer.ts";
+import { ComputerPanel, ComputerPanels } from "../src/app/views/computer.ts";
 import { WebCompanyComputer } from "../src/cloud/computer.ts";
 import { DEFAULT_CLOUD_CONFIG, readCloudConfigOverride, writeCloudConfigOverride } from "../src/cloud/config.ts";
 import * as viewer from "../src/ui/computer-viewer.ts";
@@ -87,8 +87,8 @@ function setup(overrides: Record<string, unknown> = {}, memberRole: typeof profi
 	return { ...f, stop, computer, fetch, replies };
 }
 function panel(computer: WebCompanyComputer, signal?: AbortSignal) {
-	const value = new ComputerPanel(staff, () => value.dispose(), computer, signal);
-	document.body.append(value.el);
+	const value = new ComputerPanel(staff, computer, signal);
+	value.attach(document.body, () => value.dispose());
 	cleanup.push(() => value.dispose());
 	return value;
 }
@@ -134,7 +134,8 @@ describe("automatic computer popover", () => {
 		expect(p.el.querySelector(".computer-loading-spinner")).not.toBeNull();
 		expect(p.el.querySelector("header, select, .computer-preview, .figure")).toBeNull();
 		expect(p.el.textContent).not.toContain("Open computer");
-		expect(p.el.querySelector(".computer-close, [aria-label='Close computer']")).toBeNull();
+		// The X top right is there from the start: a preview stuck on "Connecting…" can be put away too.
+		expect(p.el.querySelector("button.computer-close[aria-label='Close computer']")).not.toBeNull();
 		expect(p.el.tabIndex).toBe(0);
 		await settle();
 		await settle();
@@ -154,12 +155,44 @@ describe("automatic computer popover", () => {
 		]);
 		expect(methods(f).some((method) => START_WRITES.test(`/${method}`))).toBe(false);
 		expect(p.el.querySelector<HTMLElement>(".computer-loading")?.hidden).toBe(true);
-		expect(p.el.querySelector(".computer-close, [aria-label='Close computer']")).toBeNull();
 		open.mock.calls[0]![0].onClosed();
 		expect(p.el.isConnected).toBe(false);
 	});
+	it("forgets a press's pointer focus when a thread detaches the panel", () => {
+		const f = setup(),
+			p = panel(f.computer);
+		document.body.append(p.el);
+		// jsdom has no pointer capture; the drag code takes it on every press.
+		p.el.setPointerCapture = vi.fn();
+		p.el.hasPointerCapture = vi.fn(() => false);
+		p.el.releasePointerCapture = vi.fn();
+		p.el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 1, isPrimary: true, button: 0 }));
+		expect(document.activeElement).toBe(p.el);
+		expect(p.el.classList.contains("is-pointer-focus")).toBe(true);
+		// Removal takes focus without a focusout in every browser; the mark must not outlive the thread.
+		p.detach();
+		expect(p.el.classList.contains("is-pointer-focus")).toBe(false);
+	});
+	it("closes for good from the X top right, and not before a thread holds it", async () => {
+		const f = setup(),
+			open = spyViewer(),
+			p = panel(f.computer);
+		await settle();
+		await settle();
+		expect(open).toHaveBeenCalledOnce();
+		const close = vi.fn();
+		p.detach();
+		p.el.querySelector<HTMLButtonElement>(".computer-close")!.click();
+		expect(close).not.toHaveBeenCalled();
+		const body = document.createElement("div");
+		document.body.append(body);
+		p.attach(body, close);
+		p.el.querySelector<HTMLButtonElement>(".computer-close")!.click();
+		expect(close).toHaveBeenCalledOnce();
+		body.remove();
+	});
 	it("keeps unavailable and missing computers inside the popover without starting a runtime", async () => {
-		const unavailable = new ComputerPanel(staff, () => {});
+		const unavailable = new ComputerPanel(staff);
 		cleanup.push(() => unavailable.dispose());
 		expect(statusLine(unavailable)).toBe("Computer access is not available yet.");
 		const f = setup({ qorpera_member_office_catalog: { ...catalog, scope: null } });
@@ -334,12 +367,182 @@ describe("automatic computer popover", () => {
 	it("removes keyboard dismissal when the panel is disposed", async () => {
 		const f = setup(),
 			close = vi.fn(),
-			p = new ComputerPanel(staff, close, f.computer);
+			p = new ComputerPanel(staff, f.computer);
+		p.attach(document.body, close);
 		p.dispose();
 		const dismiss = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
 		p.el.dispatchEvent(dismiss);
 		expect(dismiss.defaultPrevented).toBe(false);
 		expect(close).not.toHaveBeenCalled();
+	});
+	it("keeps the screen connected while the member is in another thread and shows it again on return", async () => {
+		const f = setup(),
+			closeViewer = vi.fn(async () => {}),
+			open = spyViewer(closeViewer),
+			panels = new ComputerPanels(f.computer, f.stop.signal),
+			first = document.createElement("div"),
+			second = document.createElement("div");
+		document.body.append(first, second);
+		const p = panels.open(staff)!;
+		const closeFirst = vi.fn();
+		p.attach(first, closeFirst);
+		await settle();
+		await settle();
+		await settle();
+		expect(open).toHaveBeenCalledOnce();
+		expect(p.el.parentElement).toBe(first);
+		const requests = f.fetch.mock.calls.length;
+		// Leaving the thread hands the panel back; nothing is released, and it will not slide in again.
+		expect(p.el.style.animation).toBe("");
+		p.detach();
+		expect(p.attached).toBe(false);
+		expect(p.el.style.animation).toBe("none");
+		expect(closeViewer).not.toHaveBeenCalled();
+		expect(panels.get(staff.id)).toBe(p);
+		await poll();
+		expect(f.fetch.mock.calls.length).toBe(requests);
+		// The next thread of this agent gets the same panel, same viewer: no new open flow.
+		expect(panels.open(staff)).toBe(p);
+		const closeSecond = vi.fn();
+		p.attach(second, closeSecond);
+		expect(p.el.parentElement).toBe(second);
+		expect(open).toHaveBeenCalledOnce();
+		expect(f.fetch.mock.calls.length).toBe(requests);
+		expect(closeSecond).not.toHaveBeenCalled();
+		// Closing through the registry ends the connection and forgets the panel.
+		panels.close(staff.id);
+		expect(closeViewer).toHaveBeenCalledOnce();
+		expect(p.el.isConnected).toBe(false);
+		expect(panels.get(staff.id)).toBeUndefined();
+		const reopened = panels.open(staff);
+		expect(reopened).not.toBe(p);
+		panels.dispose();
+	});
+	it("routes the viewer's own close to the thread showing the panel now, not the one that was left", async () => {
+		const f = setup(),
+			open = spyViewer(),
+			panels = new ComputerPanels(f.computer, f.stop.signal),
+			p = panels.open(staff)!,
+			closeFirst = vi.fn(),
+			closeSecond = vi.fn();
+		p.attach(document.body, closeFirst);
+		await settle();
+		await settle();
+		await settle();
+		expect(open).toHaveBeenCalledOnce();
+		p.detach();
+		// Closed by the renderer while no thread shows it: nobody is told, nothing breaks.
+		const second = document.createElement("div");
+		document.body.append(second);
+		p.attach(second, closeSecond);
+		open.mock.calls[0]![0].onClosed();
+		expect(closeFirst).not.toHaveBeenCalled();
+		expect(closeSecond).toHaveBeenCalledOnce();
+		panels.dispose();
+	});
+	it("returns an entered screen to a preview when its thread is left, and frees the thread it covered", async () => {
+		const f = setup(),
+			open = spyViewer(),
+			p = await opened(f.computer),
+			options = open.mock.calls[0]![0];
+		const thread = document.createElement("div");
+		thread.className = "thread-conversation";
+		const composer = document.createElement("div");
+		composer.inert = false;
+		thread.append(composer);
+		document.body.append(thread);
+		options.onExpandedChange?.(true);
+		expect(composer.inert).toBe(true);
+		expect(p.el.classList.contains("is-entered")).toBe(true);
+		p.detach();
+		expect(composer.inert).toBe(false);
+		expect(p.el.classList.contains("is-entered")).toBe(false);
+	});
+	it("ends every open computer when the company is left", async () => {
+		const f = setup(),
+			closeViewer = vi.fn(async () => {}),
+			stop = new AbortController(),
+			panels = new ComputerPanels(f.computer, stop.signal);
+		spyViewer(closeViewer);
+		const p = panels.open(staff)!;
+		p.attach(document.body, () => panels.close(staff.id));
+		await settle();
+		await settle();
+		await settle();
+		p.detach();
+		stop.abort();
+		expect(closeViewer).toHaveBeenCalledOnce();
+		expect(panels.get(staff.id)).toBeUndefined();
+		// A registry whose company is gone opens nothing more.
+		expect(panels.open(staff)).toBeUndefined();
+	});
+	it("gives the viewer a rename that lands while it is opening", async () => {
+		const f = setup(),
+			close = vi.fn(async () => {});
+		let p: ComputerPanel | undefined;
+		const open = vi.spyOn(viewer, "openComputerViewer").mockImplementation((options) => {
+			// The rename lands after the title was handed over and before the heading exists.
+			p?.retitle("Renamed");
+			const overlay = document.createElement("div");
+			overlay.className = "screen-viewer-overlay";
+			overlay.setAttribute("aria-label", options.title);
+			const heading = document.createElement("span");
+			heading.className = "screen-viewer-heading";
+			heading.append(document.createElement("span"));
+			heading.firstElementChild!.textContent = options.title;
+			overlay.append(heading);
+			options.mount?.append(overlay);
+			return { close };
+		});
+		p = panel(f.computer);
+		await settle();
+		await settle();
+		await settle();
+		expect(open).toHaveBeenCalledOnce();
+		expect(open.mock.calls[0]![0].title).toBe(`${staff.displayName} · Computer`);
+		const overlay = p.el.querySelector(".screen-viewer-overlay")!;
+		expect(overlay.getAttribute("aria-label")).toBe("Renamed · Computer");
+		expect(overlay.querySelector(".screen-viewer-heading > span")?.textContent).toBe("Renamed · Computer");
+	});
+	it("applies a rename made while no thread showed the panel when it is handed out again", async () => {
+		const f = setup(),
+			open = spyViewer(),
+			panels = new ComputerPanels(f.computer, f.stop.signal),
+			p = panels.open(staff)!;
+		p.attach(document.body, () => {});
+		await settle();
+		await settle();
+		await settle();
+		expect(open).toHaveBeenCalledOnce();
+		const overlay = document.createElement("div");
+		overlay.className = "screen-viewer-overlay";
+		overlay.setAttribute("aria-label", `${staff.displayName} · Computer`);
+		p.el.querySelector(".computer-panel-body")!.append(overlay);
+		p.detach();
+		expect(panels.open({ ...staff, displayName: "Renamed" })).toBe(p);
+		expect(overlay.getAttribute("aria-label")).toBe("Renamed · Computer");
+		expect(open).toHaveBeenCalledOnce();
+		panels.dispose();
+	});
+	it("follows a rename in place: same viewer, new title", async () => {
+		const f = setup(),
+			open = spyViewer(),
+			p = await opened(f.computer);
+		expect(open.mock.calls[0]![0].title).toBe(`${staff.displayName} · Computer`);
+		const overlay = document.createElement("div");
+		overlay.className = "screen-viewer-overlay";
+		overlay.setAttribute("aria-label", `${staff.displayName} · Computer`);
+		const heading = document.createElement("span");
+		heading.className = "screen-viewer-heading";
+		heading.append(document.createElement("span"), document.createElement("small"));
+		heading.firstElementChild!.textContent = `${staff.displayName} · Computer`;
+		overlay.append(heading);
+		p.el.querySelector(".computer-panel-body")!.append(overlay);
+		p.retitle("Renamed");
+		expect(open).toHaveBeenCalledOnce();
+		expect(overlay.getAttribute("aria-label")).toBe("Renamed · Computer");
+		expect(heading.firstElementChild!.textContent).toBe("Renamed · Computer");
+		expect(heading.lastElementChild!.textContent).toBe("");
 	});
 });
 

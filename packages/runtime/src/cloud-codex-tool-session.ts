@@ -34,7 +34,7 @@ import {
 } from "./cloud-runtime-observability.ts";
 import { CLOUD_RUNTIME_MODEL_POLICY, type CloudRuntimeReasoningEffort } from "./cloud-runtime-policy.ts";
 
-export const CLOUD_CODEX_BOUNDARY_VERSION = "0.147.0";
+export const CLOUD_CODEX_BOUNDARY_VERSION = "0.155.1";
 const CLIENT_NAME = "qorpera_cloud_boundary";
 const DIRECT_TOOLS_CAPABILITY = "qorpera.native-direct-tools/v1";
 const MESSAGE_COMPOSITION_CAPABILITY = "qorpera.native-message-composition/v1";
@@ -81,6 +81,8 @@ const DISABLED_FEATURES = [
 	"tool_suggest",
 	"request_permissions_tool",
 	"guardian_approval",
+	"current_time_reminder",
+	"sleep_tool",
 ] as const;
 
 export const CLOUD_CODEX_BOUNDARY_CONFIG: readonly string[] = Object.freeze([
@@ -906,7 +908,9 @@ export async function runCloudCodexToolSession(options: {
 		rpc.startThread();
 		const started = object(
 			await rpc.request("thread/start", {
-				model: options.model === "provider-default" ? "gpt-6-astra" : options.model,
+				// provider-default omits the model: the pinned Codex chooses its own default. An explicit
+				// name is only sent for a session override; the provider rejects names newer than the binary.
+				...(options.model === "provider-default" ? {} : { model: options.model }),
 				cwd: workspace,
 				runtimeWorkspaceRoots: [],
 				environments: [],

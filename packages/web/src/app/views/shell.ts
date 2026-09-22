@@ -1,11 +1,12 @@
 import type { User } from "@supabase/supabase-js";
 import type { HostedProfile, HostedStaffAgent } from "../../cloud/types.ts";
-import { AGENT_LOOK, type AgentLook } from "../../ui/agent-activity.ts";
+import { AGENT_LOOK, type AgentLook, stateLine } from "../../ui/agent-activity.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { badge, button, h, icon, initials, notice, replace } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { presentationLocale, uiText } from "../../ui/preferences.ts";
+import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { type AuthController, displayName } from "../auth.ts";
 import type { AgentState, CompanyController } from "../company.ts";
 import type { Route } from "../router.ts";
@@ -308,6 +309,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		};
 		// Every keystroke filters, composed text included; redrawing never moves the field.
 		// Results start at the top of the list.
+		quietScroll(created.list);
 		input.addEventListener("input", () => {
 			created.list.scrollTop = 0;
 			created.redraw();
@@ -371,7 +373,7 @@ function cofounderCard(model: AgentModel, href: string): HTMLElement {
 			statusDisc(look, "cofounder-status"),
 		),
 		h("strong", null, model.displayName),
-		h("small", null, look.line ?? model.role),
+		h("small", null, stateLine(look, model.role)),
 	);
 }
 
@@ -390,7 +392,7 @@ function agentRow(model: AgentModel, href: string): HTMLElement {
 			"span",
 			{ class: "rail-row-copy" },
 			h("strong", null, model.displayName),
-			h("small", null, look.line ?? model.role),
+			h("small", null, stateLine(look, model.role)),
 		),
 	);
 }
@@ -548,9 +550,9 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			errorNotice("sessions", state.sessionsError, () =>
 				button("Retry conversations", () => void company.refreshSessions(), { small: true }),
 			),
-			errorNotice("groups", state.groupsError, () =>
-				button("Retry group details", () => void company.refreshGroups(), { small: true }),
-			),
+			// Group details are decoration (names and figures of a group chat) and are read
+			// again with every conversation refresh. A failure never shows in the rail: the
+			// text would name cloud machinery, and there is nothing for the member to do.
 			errorNotice("company", state.error, () =>
 				button("Retry company", () => void company.refreshAll(), { small: true }),
 			),
