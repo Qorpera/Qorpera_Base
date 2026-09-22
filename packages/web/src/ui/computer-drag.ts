@@ -164,6 +164,45 @@ export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): () 
 		delete panel.dataset.resize;
 		if (panel.hasPointerCapture(id)) panel.releasePointerCapture(id);
 	};
+	// A press focuses the panel (below, by script) and a click focuses a button. That focus must not keep the
+	// hover controls up once the pointer has left, so the press is marked (is-pointer-focus, read by the
+	// stylesheet); keyboard focus clears the mark and shows the controls until it leaves. Only the primary
+	// button moves focus: a press that moves none (a right click, or a button in a browser whose buttons take
+	// no focus) is forgotten on release, so it cannot mark a later keyboard focus.
+	let pressed = false;
+	const mark = (on: boolean) => panel.classList.toggle("is-pointer-focus", on);
+	panel.addEventListener(
+		"pointerdown",
+		(event) => {
+			if (event.button !== 0) return;
+			pressed = true;
+			if (panel.contains(document.activeElement)) mark(true);
+		},
+		{ capture: true, signal },
+	);
+	panel.addEventListener(
+		"focusin",
+		(event) => {
+			// Focus moving within the panel keeps the mark it has.
+			if (event.relatedTarget instanceof Node && panel.contains(event.relatedTarget)) return;
+			mark(pressed);
+			pressed = false;
+		},
+		{ signal },
+	);
+	const released = () => {
+		pressed = false;
+	};
+	document.addEventListener("pointerup", released, { capture: true, signal });
+	document.addEventListener("pointercancel", released, { capture: true, signal });
+	panel.addEventListener("keydown", () => mark(false), { capture: true, signal });
+	panel.addEventListener(
+		"focusout",
+		(event) => {
+			if (!(event.relatedTarget instanceof Node && panel.contains(event.relatedTarget))) mark(false);
+		},
+		{ signal },
+	);
 	panel.addEventListener(
 		"pointerdown",
 		(event) => {

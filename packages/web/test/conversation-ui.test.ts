@@ -411,8 +411,7 @@ describe("conversation UI boundaries", () => {
 		expect(document.activeElement).toBe(toggle);
 		expect(toggle.getAttribute("aria-expanded")).toBe("true");
 		expect(panel.textContent).toContain("Computer access is not available yet.");
-		expect(panel.querySelector("header, select, .computer-preview, .computer-close")).toBeNull();
-		expect(panel.querySelector("[aria-label='Close computer']")).toBeNull();
+		expect(panel.querySelector("header, select, .computer-preview")).toBeNull();
 		expect(panel.textContent).not.toContain("Open computer");
 		expect(panel.textContent).not.toContain("Routines");
 		const composer = f.view.el.querySelector<HTMLTextAreaElement>(".composer-input")!;
@@ -445,6 +444,22 @@ describe("conversation UI boundaries", () => {
 			expect(toggle.getAttribute("aria-expanded")).toBe("false");
 			expect(document.activeElement).toBe(toggle);
 		}
+		expect(f.cloud.rpc).not.toHaveBeenCalled();
+	});
+	it("closes the popover from its X top right as the toggle does", () => {
+		const f = setup(),
+			toggle = button(f.view.el, "Open agent computer");
+		toggle.focus();
+		toggle.click();
+		const panel = f.view.el.querySelector<HTMLElement>(".computer-panel")!;
+		const close = panel.querySelector<HTMLButtonElement>("button.computer-close")!;
+		expect(close.getAttribute("aria-label")).toBe("Close computer");
+		expect(close.getAttribute("title")).toBe("Close");
+		close.click();
+		expect(f.view.el.querySelector(".computer-panel")).toBeNull();
+		expect(toggle.getAttribute("aria-expanded")).toBe("false");
+		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBeFalsy();
+		expect(document.activeElement).toBe(toggle);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 	it("keeps the agent's computer open across the threads a member moves between", () => {

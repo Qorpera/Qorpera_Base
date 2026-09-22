@@ -580,3 +580,57 @@ describe("computer preview resizing", () => {
 		pointer(f.panel, "pointerup");
 	});
 });
+
+describe("computer preview pointer focus mark", () => {
+	const marked = (panel: HTMLElement) => panel.classList.contains("is-pointer-focus");
+	it("marks the focus a press gives the panel, and a key clears it", () => {
+		const f = setup();
+		pointer(f.panel, "pointerdown");
+		expect(document.activeElement).toBe(f.panel);
+		expect(marked(f.panel)).toBe(true);
+		pointer(f.panel, "pointermove", { clientX: 640, clientY: 160 });
+		pointer(f.panel, "pointerup", { clientX: 640, clientY: 160 });
+		expect(marked(f.panel)).toBe(true);
+		key(f.panel, "ArrowLeft");
+		expect(marked(f.panel)).toBe(false);
+		// Pressing the panel it already holds focus in marks it again at once.
+		pointer(f.panel, "pointerdown");
+		expect(marked(f.panel)).toBe(true);
+		pointer(f.panel, "pointerup");
+	});
+	it("leaves a later keyboard focus unmarked after a press that moved no focus", () => {
+		const f = setup();
+		// A right click: the drag ignores it and focus stays outside.
+		pointer(f.panel, "pointerdown", { button: 2 });
+		pointer(f.panel, "pointerup", { button: 2 });
+		expect(document.activeElement).not.toBe(f.panel);
+		f.panel.focus();
+		expect(marked(f.panel)).toBe(false);
+		f.panel.blur();
+		expect(marked(f.panel)).toBe(false);
+		// A button in a browser whose buttons take no focus on click, released off the panel.
+		const button = document.createElement("button");
+		f.panel.append(button);
+		pointer(button, "pointerdown");
+		expect(document.activeElement).not.toBe(f.panel);
+		pointer(document.body, "pointerup", { clientX: 20, clientY: 20 });
+		f.panel.focus();
+		expect(marked(f.panel)).toBe(false);
+	});
+	it("marks a button the press focuses and clears the mark when focus leaves the panel", () => {
+		const f = setup();
+		const button = document.createElement("button");
+		f.panel.append(button);
+		const outside = document.createElement("button");
+		document.body.append(outside);
+		pointer(button, "pointerdown");
+		button.focus();
+		expect(marked(f.panel)).toBe(true);
+		pointer(button, "pointerup");
+		// Focus moving within the panel keeps the mark; leaving clears it.
+		f.panel.focus();
+		expect(marked(f.panel)).toBe(true);
+		outside.focus();
+		expect(marked(f.panel)).toBe(false);
+	});
+});

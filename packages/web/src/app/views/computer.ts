@@ -21,6 +21,13 @@ export class ComputerPanel {
 	readonly #retry = h("button", { type: "button", class: "computer-retry", hidden: true }, "Try again");
 	readonly #loading = h("div", { class: "computer-loading" }, this.#spinner, this.#status, this.#retry);
 	readonly #body = h("div", { class: "computer-panel-body" }, this.#loading);
+	/** The preview's own way out, top right; the entered frame has its compress button instead. */
+	readonly #closeButton = h("button", {
+		type: "button",
+		class: "computer-close",
+		"aria-label": "Close computer",
+		title: "Close",
+	});
 	readonly #views: ComputerViewHost;
 	readonly #fitPreview: () => void;
 	readonly #setExpanded: (expanded: boolean) => void;
@@ -44,7 +51,10 @@ export class ComputerPanel {
 				tabindex: "0",
 			},
 			this.#body,
+			this.#closeButton,
 		);
+		this.#closeButton.addEventListener("click", () => this.#close(), { signal });
+		// The drag also marks pointer focus on the panel, which keeps the hover controls down after a press.
 		this.#fitPreview = attachComputerDrag(this.el, signal);
 		const covered = new Map<HTMLElement, boolean>();
 		this.#setExpanded = (expanded: boolean) => {
@@ -303,6 +313,8 @@ export class ComputerPanel {
 			else this.#setExpanded(false);
 		}
 		this.el.remove();
+		// Removal takes focus without a focusout in every browser; the next focus in the panel starts clean.
+		this.el.classList.remove("is-pointer-focus");
 		// Lets the thread that was left be collected: nothing of it is watched any more.
 		this.#fitPreview();
 		// It slid in once; coming back to a thread it is simply there, as after a drag.
