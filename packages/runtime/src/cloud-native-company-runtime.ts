@@ -61,7 +61,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	) => CloudContentAddressedStore;
 	readonly #command: readonly [string, ...string[]];
 	readonly #sha256: string;
-	readonly #timeoutMs: number;
+	readonly #timeoutMs: number | undefined;
 	readonly #isolation: NativeIsolationConfiguration | undefined;
 	readonly #secretBroker: CloudSecretOperationClient | undefined;
 	readonly #computerSession: CloudCompanyComputerSessionFactory | undefined;
@@ -89,7 +89,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		this.#store = options.objectStore;
 		this.#command = Object.freeze([...options.command]) as readonly [string, ...string[]];
 		this.#sha256 = options.binarySha256;
-		this.#timeoutMs = options.timeoutMs ?? 300_000;
+		this.#timeoutMs = options.timeoutMs;
 		this.#isolation = options.isolation ? Object.freeze({ ...options.isolation }) : undefined;
 		this.#secretBroker = options.secretBroker;
 		this.#computerSession = options.computerSession;

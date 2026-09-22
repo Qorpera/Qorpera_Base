@@ -8,7 +8,7 @@ import {
 	composeCloudNativeCompanyPrompt,
 	parseCloudNativeCompanyContext,
 } from "@qorpera/runtime/cloud-native-company-context";
-import { CLOUD_NATIVE_TOOL_CALL_LIMIT, CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
+import { CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { type CloudWakeKind, parseCloudWakeEnvelope } from "@qorpera/runtime/cloud-wake-bus";
 import { expect, it, vi } from "vitest";
 import { nativeCompanyContextFixture } from "./fixtures/native-company-context-fixture.ts";
@@ -398,9 +398,8 @@ it("preserves the latest instruction and source bindings when admitted inputs ex
 	);
 	expect(missingPages).toBe(189);
 	const instructions = compileCloudNativeCompanyInstructions(context);
-	const advertisedLimit = Number(instructions.match(/This attempt has at most (\d+) Qorpera tool calls/)?.[1]);
-	expect(advertisedLimit).toBe(CLOUD_NATIVE_TOOL_CALL_LIMIT);
-	expect(missingPages).toBeGreaterThan(advertisedLimit);
+	expect(instructions).toContain("There is no fixed limit on tool calls or time in an attempt");
+	expect(instructions).not.toMatch(/at most \d+ Qorpera tool calls/);
 	for (const source of logs) {
 		expect(
 			tool.parseArguments({

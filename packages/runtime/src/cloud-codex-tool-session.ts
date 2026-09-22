@@ -32,7 +32,11 @@ import {
 	type CloudRuntimeOutcome,
 	cloudRuntimeErrorCategory,
 } from "./cloud-runtime-observability.ts";
-import { CLOUD_RUNTIME_MODEL_POLICY, type CloudRuntimeReasoningEffort } from "./cloud-runtime-policy.ts";
+import {
+	CLOUD_RUNTIME_MODEL_POLICY,
+	type CloudRuntimeReasoningEffort,
+	isCloudRuntimeReasoningEffort,
+} from "./cloud-runtime-policy.ts";
 
 export const CLOUD_CODEX_BOUNDARY_VERSION = "0.155.1";
 const CLIENT_NAME = "qorpera_cloud_boundary";
@@ -42,7 +46,8 @@ const MAX_WIRE_BYTES = 16 * 1024 * 1024;
 const MAX_MESSAGE_BYTES = 1024 * 1024;
 const MAX_CAPTURE_MESSAGE_BYTES = 12 * 1024 * 1024;
 const MAX_CAPTURE_WIRE_BYTES = 256 * 1024 * 1024;
-const MAX_REQUESTS = 256;
+// Protocol flood bound, not a turn cap: every tool call is one server request.
+const MAX_REQUESTS = 65_536;
 const MAX_PROMPT_BYTES = 1024 * 1024;
 const TOKEN_COUNTERS = [
 	"inputTokens",
@@ -85,8 +90,11 @@ const DISABLED_FEATURES = [
 	"sleep_tool",
 ] as const;
 
-export const CLOUD_CODEX_BOUNDARY_CONFIG: readonly string[] = Object.freeze([
-	`model_reasoning_effort="${CLOUD_RUNTIME_MODEL_POLICY.effort}"`,
+export function cloudCodexBoundaryConfig(effort: CloudRuntimeReasoningEffort): readonly string[] {
+	return Object.freeze([`model_reasoning_effort="${effort}"`, ...CLOUD_CODEX_BOUNDARY_FIXED_CONFIG]);
+}
+
+export const CLOUD_CODEX_BOUNDARY_FIXED_CONFIG: readonly string[] = Object.freeze([
 	'web_search="disabled"',
 	'approval_policy="never"',
 	'approvals_reviewer="user"',
@@ -108,6 +116,11 @@ export const CLOUD_CODEX_BOUNDARY_CONFIG: readonly string[] = Object.freeze([
 	'features.code_mode={enabled=false,direct_only_tool_namespaces=["qorpera"],excluded_tool_namespaces=["skills"]}',
 	...DISABLED_FEATURES.map((feature) => `features.${feature}=false`),
 ]);
+
+/** The boundary configuration for the default (attended-thread) effort. */
+export const CLOUD_CODEX_BOUNDARY_CONFIG: readonly string[] = cloudCodexBoundaryConfig(
+	CLOUD_RUNTIME_MODEL_POLICY.effort,
+);
 
 function object(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid native boundary protocol");
@@ -741,9 +754,11 @@ export async function runCloudCodexToolSession(options: {
 	signal: AbortSignal;
 	timeoutMs?: number;
 }): Promise<{ providerSessionId: string; toolCalls: number; codexVersion: string; fencedRequests: number }> {
-	const timeoutMs = options.timeoutMs ?? 30_000;
+	// A turn has no wall-clock cap (founder, 2026-09-22); a timeout is a test
+	// or operator choice, never a default. The run lease and deadline still bound it.
+	const timeoutMs = options.timeoutMs;
 	const effort = options.reasoningEffort ?? CLOUD_RUNTIME_MODEL_POLICY.effort;
-	if (process.platform === "win32" || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300_000)
+	if (process.platform === "win32" || (timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1)))
 		throw new Error("Unsupported native boundary execution");
 	if (
 		!options.model.trim() ||
@@ -753,7 +768,7 @@ export async function runCloudCodexToolSession(options: {
 		!isAbsolute(options.command[0]) ||
 		Buffer.byteLength(options.prompt) > MAX_PROMPT_BYTES ||
 		Buffer.byteLength(options.runtimeInstructions ?? "") > 32 * 1024 ||
-		effort !== CLOUD_RUNTIME_MODEL_POLICY.effort
+		!isCloudRuntimeReasoningEffort(effort)
 	)
 		throw new Error("Invalid native boundary input");
 	options.signal.throwIfAborted();
@@ -761,7 +776,8 @@ export async function runCloudCodexToolSession(options: {
 	// Linux commonly uses /tmp. Keep the runtime below the unique private
 	// allocation so the containment validator never receives a shallow root.
 	const root = join(allocation, "runtime");
-	const signal = AbortSignal.any([options.signal, AbortSignal.timeout(timeoutMs)]);
+	const signal =
+		timeoutMs === undefined ? options.signal : AbortSignal.any([options.signal, AbortSignal.timeout(timeoutMs)]);
 	let child: ChildProcessWithoutNullStreams | undefined;
 	let isolated: Awaited<ReturnType<typeof launchIsolatedNativeProcess>> | undefined;
 	let rpc: CodexBoundaryRpc | undefined;
@@ -830,7 +846,7 @@ export async function runCloudCodexToolSession(options: {
 			"--strict-config",
 			"--listen",
 			"stdio://",
-			...CLOUD_CODEX_BOUNDARY_CONFIG.flatMap((config) => ["-c", config]),
+			...cloudCodexBoundaryConfig(effort).flatMap((config) => ["-c", config]),
 		];
 		stage = "codex-process-start";
 		if (options.isolation) {
