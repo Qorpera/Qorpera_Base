@@ -11,6 +11,7 @@ import { parseCompanyComputerStartIntent } from "@qorpera/cloud-client/cloud-com
 import type { JsonValue } from "@qorpera/contracts";
 import { type CloudNativeToolRun, cloudToolRequest } from "./cloud-native-tool-authority.ts";
 import { type CloudNativeToolOperations, cloudNativeToolOperationEnvelope } from "./cloud-native-tool-operations.ts";
+import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 
 export interface CompanyComputerStartDescriptor {
 	state: "available";
@@ -84,7 +85,7 @@ export function createCompanyComputerStartSession(options: {
 		return { operationKey: input.operationKey };
 	};
 	const tool: CompanyComputerTool = {
-		name: "computer_start",
+		name: "computer_start" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
 		description:
 			`${COMPANY_COMPUTER_TOOL_VERSION}. Request startup of the cloud shared office for this company. ` +

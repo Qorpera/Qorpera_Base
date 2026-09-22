@@ -15,6 +15,21 @@ import {
 } from "@qorpera/runtime/cloud-runtime-observability";
 import { describe, expect, it, vi } from "vitest";
 
+function syntheticTool(
+	name: string,
+	source: CloudNativeTool["source"],
+	execute: CloudNativeTool["execute"] = async () => ({ kind: "text" as const, value: "safe" }),
+): CloudNativeTool {
+	return {
+		name,
+		source,
+		description: `Synthetic ${name}`,
+		inputSchema: { type: "object", additionalProperties: false },
+		parseArguments: () => ({}),
+		execute,
+	};
+}
+
 function observer(publish?: (row: CloudRuntimeObservation, signal: AbortSignal) => Promise<unknown>) {
 	const rows: CloudRuntimeObservation[] = [];
 	const metrics = new CloudRuntimeObservability({
@@ -335,16 +350,7 @@ describe("optional exporter isolation", () => {
 });
 
 describe("tool outcome diagnostics", () => {
-	function tool(execute: CloudNativeTool["execute"]): CloudNativeTool {
-		return {
-			name: "company_write",
-			source: "company_file",
-			description: "Synthetic company write",
-			inputSchema: { type: "object", additionalProperties: false },
-			parseArguments: () => ({}),
-			execute,
-		};
-	}
+	const tool = (execute: CloudNativeTool["execute"]) => syntheticTool("company_write", "company_file", execute);
 	async function invoke(definition: CloudNativeTool, input: unknown, active = true) {
 		const { metrics, rows } = observer();
 		const boundary = new CloudNativeToolBoundary({
@@ -483,72 +489,26 @@ describe("tool outcome diagnostics", () => {
 });
 
 describe("tool operation names", () => {
-	/** Every runtime-owned tool the boundary can register today. */
-	const runtimeTools = [
-		"company_read",
-		"company_list",
-		"company_write",
-		"company_mkdir",
-		"company_delete",
-		"send_message",
-		"read_context",
-		"send_coworker_message",
-		"computer_start",
-		"computer_screen",
-		"computer_browser",
-		"computer_desktop",
-		"computer_shell",
-		"computer_screenshot",
-		"computer_transfer",
-		"hire_agent",
-		"create_group_chat",
-		"manage_routine",
-	] as const;
-	function tool(name: string, source: CloudNativeTool["source"]): CloudNativeTool {
-		return {
-			name,
-			source,
-			description: `Synthetic ${name}`,
-			inputSchema: { type: "object", additionalProperties: false },
-			parseArguments: () => ({}),
-			execute: async () => ({ kind: "text" as const, value: "safe" }),
-		};
-	}
-
-	it("keeps every tool name inside the closed vocabulary", () => {
-		expect([...CLOUD_RUNTIME_TOOL_OPERATIONS].sort()).toEqual([...runtimeTools].sort());
-		for (const name of runtimeTools) expect(CLOUD_RUNTIME_OPERATIONS).toContain(name);
+	it("keeps the tool names inside the closed vocabulary without duplicates", () => {
+		for (const name of CLOUD_RUNTIME_TOOL_OPERATIONS) expect(CLOUD_RUNTIME_OPERATIONS).toContain(name);
 		expect(new Set(CLOUD_RUNTIME_OPERATIONS).size).toBe(CLOUD_RUNTIME_OPERATIONS.length);
+		expect(CLOUD_RUNTIME_TOOL_OPERATIONS).not.toContain("connector");
+		expect(CLOUD_RUNTIME_TOOL_OPERATIONS).not.toContain("unknown_tool");
 	});
 
 	it("names runtime tools by their registered name, connectors as connector and the rest unknown", () => {
-		for (const name of runtimeTools) expect(cloudRuntimeToolOperation(tool(name, "runtime"))).toBe(name);
-		expect(cloudRuntimeToolOperation(tool("gmail_send", "connector"))).toBe("connector");
-		expect(cloudRuntimeToolOperation(tool("manage_routine", "connector"))).toBe("connector");
-		expect(cloudRuntimeToolOperation(tool("company_context", "runtime"))).toBe("unknown_tool");
-		expect(cloudRuntimeToolOperation(tool("worker_start", "worker"))).toBe("unknown_tool");
+		for (const name of CLOUD_RUNTIME_TOOL_OPERATIONS)
+			expect(cloudRuntimeToolOperation(syntheticTool(name, "runtime"))).toBe(name);
+		expect(cloudRuntimeToolOperation(syntheticTool("gmail_send", "connector"))).toBe("connector");
+		expect(cloudRuntimeToolOperation(syntheticTool("manage_routine", "connector"))).toBe("connector");
+		expect(cloudRuntimeToolOperation(syntheticTool("company_context", "runtime"))).toBe("unknown_tool");
+		expect(cloudRuntimeToolOperation(syntheticTool("report_work", "worker"))).toBe("report_work");
+		expect(cloudRuntimeToolOperation(syntheticTool("worker_start", "worker"))).toBe("unknown_tool");
 		expect(cloudRuntimeToolOperation(undefined)).toBe("unknown_tool");
 	});
 
 	it("records the Step 8 tools and the other runtime tools under their own operation", async () => {
 		const { metrics, rows } = observer();
-		const boundary = new CloudNativeToolBoundary({
-			companyId: randomUUID(),
-			runId: randomUUID(),
-			tools: [
-				tool("manage_routine", "runtime"),
-				tool("hire_agent", "runtime"),
-				tool("create_group_chat", "runtime"),
-				tool("read_context", "runtime"),
-				tool("send_coworker_message", "runtime"),
-				tool("computer_start", "runtime"),
-				tool("computer_shell", "runtime"),
-				tool("lookup", "connector"),
-			],
-			assertActive: async () => undefined,
-			signal: new AbortController().signal,
-			observability: metrics,
-		});
 		const names = [
 			"manage_routine",
 			"hire_agent",
@@ -557,15 +517,28 @@ describe("tool operation names", () => {
 			"send_coworker_message",
 			"computer_start",
 			"computer_shell",
-			"lookup",
-			"missing",
-		];
-		for (const [index, name] of names.entries()) await boundary.invoke(`call-${index}`, "qorpera", name, {});
+			"report_work",
+			"manage_todo",
+			"manage_worker",
+		] as const;
+		const boundary = new CloudNativeToolBoundary({
+			companyId: randomUUID(),
+			runId: randomUUID(),
+			tools: [
+				...names.map((name) => syntheticTool(name, name === "report_work" ? "worker" : "runtime")),
+				syntheticTool("lookup", "connector"),
+			],
+			assertActive: async () => undefined,
+			signal: new AbortController().signal,
+			observability: metrics,
+		});
+		const invoked = [...names, "lookup", "missing"];
+		for (const [index, name] of invoked.entries()) await boundary.invoke(`call-${index}`, "qorpera", name, {});
 		await metrics.close();
 		boundary.close();
 		// Each invocation also records its own context_authority child span.
 		const finished = rows.filter((row) => row.phase === "finish" && row.operation !== "context_authority");
-		expect(finished.map((row) => row.operation)).toEqual([...names.slice(0, 7), "connector", "unknown_tool"]);
+		expect(finished.map((row) => row.operation)).toEqual([...names, "connector", "unknown_tool"]);
 		expect(rows.some((row) => row.operation === "company_context")).toBe(false);
 		for (const row of finished) expect(CLOUD_RUNTIME_OPERATIONS).toContain(row.operation);
 		expect(JSON.stringify(rows)).not.toContain("missing");

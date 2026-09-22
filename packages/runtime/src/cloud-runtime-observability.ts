@@ -23,6 +23,9 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"hire_agent",
 	"create_group_chat",
 	"manage_routine",
+	"report_work",
+	"manage_todo",
+	"manage_worker",
 ] as const;
 /** Closed vocabulary; the SQL ingestion function checks the same list. */
 export const CLOUD_RUNTIME_OPERATIONS = [
@@ -66,6 +69,8 @@ export const CLOUD_RUNTIME_ERROR_CATEGORIES = [
 ] as const;
 
 export type CloudRuntimeOperation = (typeof CLOUD_RUNTIME_OPERATIONS)[number];
+/** The name a runtime-owned tool must register under; factories assert it with `satisfies`. */
+export type CloudRuntimeToolOperation = (typeof CLOUD_RUNTIME_TOOL_OPERATIONS)[number];
 export type CloudRuntimeOutcome = (typeof CLOUD_RUNTIME_OUTCOMES)[number];
 export type CloudRuntimeErrorCategory = (typeof CLOUD_RUNTIME_ERROR_CATEGORIES)[number];
 /** A safe classification from a trusted boundary, never a provider's diagnostic text. */

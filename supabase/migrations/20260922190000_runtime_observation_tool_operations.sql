@@ -1,10 +1,16 @@
 -- Runtime observation vocabulary: every runtime-owned tool is observed under its
 -- own registered name. Until now read_context, send_coworker_message, the
--- computer_* tools and the Step 8 tools (hire_agent, create_group_chat,
--- manage_routine) were all recorded as unknown_tool (seen live 2026-09-22 on run
+-- computer_* tools, the Step 8 tools (hire_agent, create_group_chat,
+-- manage_routine) and the Step 5 tools (report_work, manage_todo,
+-- manage_worker) were all recorded as unknown_tool (seen live 2026-09-22 on run
 -- bde0513e in company Qorpera). The vocabulary stays closed; the TypeScript side
 -- (CLOUD_RUNTIME_OPERATIONS) lists the same names. The ingestion contract,
 -- authorization checks and immutable replay semantics are unchanged.
+--
+-- Rollout order: record this migration BEFORE activating bundle v67. A v67
+-- runner against the previous definition has every observation for these tools
+-- rejected (22023) and silently dropped by the exporter; earlier runners are
+-- unaffected by this definition.
 begin;
 
 create or replace function public.qorpera_record_runtime_observation(p_run_id uuid,p_observation jsonb)
@@ -38,8 +44,9 @@ begin
 	if p_observation ->> 'operation' not in ('model_turn','model_request','company_read','company_list',
 		'company_write','company_mkdir','company_delete','send_message','read_context','send_coworker_message',
 		'computer_start','computer_screen','computer_browser','computer_desktop','computer_shell','computer_screenshot',
-		'computer_transfer','hire_agent','create_group_chat','manage_routine','company_context','message_composition',
-		'connector','unknown_tool','run_authority','context_authority','native_result_fence','diagnostic_export')
+		'computer_transfer','hire_agent','create_group_chat','manage_routine','report_work','manage_todo','manage_worker',
+		'company_context','message_composition','connector','unknown_tool','run_authority','context_authority',
+		'native_result_fence','diagnostic_export')
 		or jsonb_typeof(p_observation -> 'operation') <> 'string'
 		or (p_observation -> 'logicalOperationSha256' <> 'null'::jsonb and
 			(jsonb_typeof(p_observation -> 'logicalOperationSha256') <> 'string'

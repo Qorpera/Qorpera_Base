@@ -37,6 +37,7 @@ import { assertCloudRuntimeBundle } from "./cloud-runtime-bundle.ts";
 import {
 	assertCloudRuntimeObservationReceipt,
 	CloudRuntimeObservability,
+	type CloudRuntimeToolOperation,
 	cloudRuntimeErrorCategory,
 } from "./cloud-runtime-observability.ts";
 import { type CloudSecretOperationClient, cloudSecretTools, describeCloudSecretTools } from "./cloud-secret-tools.ts";
@@ -188,7 +189,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			// Diagnostic deduplication uses only validated public receipts, never a model key.
 			const deliveredMessageIds = new Set<string>();
 			const send: CloudNativeTool = {
-				name: "send_message",
+				name: "send_message" satisfies CloudRuntimeToolOperation,
 				source: "runtime",
 				description: CLOUD_AGENT_SEND_INSTRUCTIONS,
 				inputSchema: {
