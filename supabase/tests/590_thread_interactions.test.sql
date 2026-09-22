@@ -144,6 +144,34 @@ begin
 			)
 		)
 	);
+	-- A secret card that names its connector (secrets step, bundle v77).
+	perform public.qorpera_append_runner_transcript_event(
+		'15000000-0000-4000-8000-000000000090', repeat('d', 64),
+		v_job_id, repeat('e', 64),
+		'15000000-0000-4000-8000-000000000592',
+		'15000000-0000-4000-8000-000000000597', 'interaction_request',
+		jsonb_build_object(
+			'schema', 'qorpera.runner-transcript-entry/v1',
+			'entry', jsonb_build_object(
+				'type', 'custom', 'customType', 'interaction_request',
+				'id', '15000000-0000-4000-8000-000000000597',
+				'parentId', '15000000-0000-4000-8000-000000000595',
+				'timestamp', '2026-09-22T20:00:02.500Z',
+				'data', jsonb_build_object(
+					'schema', 'qorpera.interaction/v1',
+					'surface', 'secret',
+					'title', 'Connect Linear',
+					'payload', jsonb_build_object(
+						'name', 'api-key', 'label', 'Linear API key', 'purpose', 'Filing issues.', 'connectorId', 'linear'
+					)
+				),
+				'execution', jsonb_build_object(
+					'kind', 'run', 'id', v_run_id, 'claimantId', v_run_id,
+					'runnerAssignmentId', '15000000-0000-4000-8000-000000000592'
+				)
+			)
+		)
+	);
 	-- An approval keeps its own event type.
 	perform public.qorpera_append_runner_transcript_event(
 		'15000000-0000-4000-8000-000000000090', repeat('d', 64),
@@ -184,7 +212,9 @@ begin
 				'payload', jsonb_build_object('domain', 'accounts.example.com', 'fields', jsonb_build_array(
 					jsonb_build_object('id', 'password', 'label', 'Password', 'type', 'password')))),
 			jsonb_build_object('schema', 'qorpera.interaction/v1', 'surface', 'question', 'title', 'Q',
-				'payload', jsonb_build_object('options', '[]'::jsonb))
+				'payload', jsonb_build_object('options', '[]'::jsonb)),
+			jsonb_build_object('schema', 'qorpera.interaction/v1', 'surface', 'secret', 'title', 'S',
+				'payload', jsonb_build_object('name', '1bad', 'label', 'Token', 'purpose', 'Posting.', 'connectorId', 'Slack!'))
 		)) loop
 			v_index := v_index + 1;
 			begin
@@ -344,14 +374,51 @@ begin
 		raise exception 'the queued answer was not listed with the thread inputs: %', v_inputs;
 	end if;
 
-	-- A secret is answered with its outcome only; an approval needs full access.
+	-- "Provided" is refused while the company vault has no such secret.
+	begin
+		perform public.qorpera_answer_interaction(v_session, '15000000-0000-4000-8000-0000000005c8',
+			'15000000-0000-4000-8000-000000000594', 'provided', '{}');
+		raise exception 'a secret was marked provided without a vault entry';
+	exception when object_not_in_prerequisite_state then null;
+	end;
+	-- Declining a secret needs no vault entry.
 	perform public.qorpera_answer_interaction(v_session, '15000000-0000-4000-8000-0000000005c8',
-		'15000000-0000-4000-8000-000000000594', 'provided', '{}');
+		'15000000-0000-4000-8000-000000000594', 'declined', '{}');
 	v_result := public.qorpera_answer_interaction(v_session, '15000000-0000-4000-8000-0000000005c9',
 		'15000000-0000-4000-8000-000000000596', 'approved', '{"reason":"Invoice checked."}');
 	if v_result ->> 'outcome' is distinct from 'approved' then
 		raise exception 'the approval was not queued: %', v_result;
 	end if;
+end
+$$;
+
+-- The vault gets the secret (the broker's work, stood in for here), and "provided"
+-- then answers with the secret's reference, never a value.
+reset role;
+insert into public.qorpera_cloud_secret_broker_authorities (id, profile_id, service_origin, key_id, capability_sha256)
+values ('15000000-0000-4000-8000-0000000005f5', '15000000-0000-4000-8000-000000000010', 'https://secrets.example.test', 'key-1', repeat('f', 64));
+insert into public.qorpera_cloud_secrets (id, profile_id, environment_id, broker_authority_id, owner_kind, owner_user_id,
+	connector_id, secret_name, purpose, status, current_version, created_by_user_id)
+values ('15000000-0000-4000-8000-0000000005f6', '15000000-0000-4000-8000-000000000010', '15000000-0000-4000-8000-000000000020',
+	'15000000-0000-4000-8000-0000000005f5', 'company', null, 'linear', 'api-key', 'Filing issues.', 'active', 2,
+	'15000000-0000-4000-8000-000000000001');
+select set_config(
+	'request.jwt.claims',
+	'{"sub":"15000000-0000-4000-8000-000000000001","email":"orchestrator-owner@example.test","role":"authenticated","user_metadata":{}}',
+	false
+);
+set role authenticated;
+do $$
+declare
+	v_result jsonb;
+	v_input public.qorpera_session_inputs%rowtype;
+begin
+	v_result := public.qorpera_answer_interaction('15000000-0000-4000-8000-000000000055',
+		'15000000-0000-4000-8000-0000000005ca', '15000000-0000-4000-8000-000000000597', 'provided', '{}');
+	if v_result ->> 'outcome' is distinct from 'provided' then
+		raise exception 'the vault-backed secret was not accepted: %', v_result;
+	end if;
+	perform set_config('qorpera_test.secret_answer_input', v_result ->> 'input_id', false);
 end
 $$;
 
@@ -466,11 +533,18 @@ begin
 	) then
 		raise exception 'the approval did not materialize as an authorization decision';
 	end if;
-	-- The secret answer carries its outcome and nothing else.
+	-- A declined secret carries its outcome and nothing else.
 	if (select event.body #> '{entry,data,answer}' from public.qorpera_session_events as event
 		where event.session_id = v_session and event.event_type = 'interaction_answer'
 			and event.body #>> '{entry,data,interactionId}' = '15000000-0000-4000-8000-000000000594') <> '{}'::jsonb then
-		raise exception 'the secret answer carried more than its outcome';
+		raise exception 'the declined secret carried more than its outcome';
+	end if;
+	-- A provided secret carries the vault reference the kernel found, never a value.
+	if (select event.body #> '{entry,data,answer}' from public.qorpera_session_events as event
+		where event.session_id = v_session and event.event_type = 'interaction_answer'
+			and event.body #>> '{entry,data,interactionId}' = '15000000-0000-4000-8000-000000000597')
+		<> '{"secretId": "15000000-0000-4000-8000-0000000005f6", "version": 2}'::jsonb then
+		raise exception 'the provided secret did not carry its vault reference';
 	end if;
 end
 $$;
@@ -484,7 +558,7 @@ begin
 	perform public.qorpera_append_admitted_input_events(
 		v_session, string_to_array(current_setting('qorpera_test.answer_run_inputs'), ',')::uuid[]);
 	if (select count(*) from public.qorpera_session_events as event
-		where event.session_id = v_session and event.event_type in ('interaction_answer', 'authorization_decision')) <> 3 then
+		where event.session_id = v_session and event.event_type in ('interaction_answer', 'authorization_decision')) <> 4 then
 		raise exception 'answers were materialized more than once';
 	end if;
 end

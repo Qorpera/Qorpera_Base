@@ -9,7 +9,7 @@ import {
 	type CloudSecretConnectorAdapter,
 	PostgresCloudSecretBrokerAuthority,
 } from "./cloud-secret-broker.ts";
-import { HttpCloudSecretBrokerService } from "./cloud-secret-broker-http.ts";
+import { HttpCloudSecretBrokerService, parseMemberOrigin } from "./cloud-secret-broker-http.ts";
 import { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
 import { systemdCredentialMetadataIsSafe } from "./systemd-credential.ts";
 
@@ -147,9 +147,12 @@ export async function runCloudSecretBrokerServiceMain(
 	if (process.platform !== "linux") throw new Error("The cloud secret broker requires a separate Linux service");
 	const directory = environment.CREDENTIALS_DIRECTORY;
 	if (!directory || !isAbsolute(directory)) throw new Error("Cloud secret broker requires systemd credentials");
+	const configValue: unknown = JSON.parse(await readCredential(directory, "qorpera-cloud-secret-config"));
+	// memberOrigins (optional, v2): the member app origins allowed to post a capture from a browser.
+	const withOrigins = !!configValue && typeof configValue === "object" && Object.hasOwn(configValue, "memberOrigins");
 	const config = record(
-		JSON.parse(await readCredential(directory, "qorpera-cloud-secret-config")),
-		["schema", "brokerAuthorityId", "port"],
+		configValue,
+		withOrigins ? ["schema", "brokerAuthorityId", "port", "memberOrigins"] : ["schema", "brokerAuthorityId", "port"],
 		"Cloud secret broker configuration",
 	);
 	if (
@@ -158,9 +161,11 @@ export async function runCloudSecretBrokerServiceMain(
 		!UUID.test(config.brokerAuthorityId) ||
 		!Number.isSafeInteger(config.port) ||
 		(config.port as number) < 1 ||
-		(config.port as number) > 65_535
+		(config.port as number) > 65_535 ||
+		(withOrigins && (!Array.isArray(config.memberOrigins) || config.memberOrigins.length > 16))
 	)
 		throw new Error("Cloud secret broker configuration is invalid");
+	const memberOrigins = withOrigins ? (config.memberOrigins as unknown[]).map(parseMemberOrigin) : [];
 	const database = brokerDatabase(await readCredential(directory, "qorpera-cloud-secret-database-url"));
 	const databaseCa = await readCredential(directory, "qorpera-cloud-secret-database-ca");
 	let certificate: X509Certificate;
@@ -208,7 +213,13 @@ export async function runCloudSecretBrokerServiceMain(
 			brokerCapability,
 		});
 		const broker = new CloudSecretBroker({ authority, keyring, adapters });
-		const service = new HttpCloudSecretBrokerService(broker, runtimeToken, "127.0.0.1", config.port as number);
+		const service = new HttpCloudSecretBrokerService(
+			broker,
+			runtimeToken,
+			"127.0.0.1",
+			config.port as number,
+			memberOrigins,
+		);
 		const stop = new AbortController();
 		const shutdown = (): void => stop.abort();
 		process.once("SIGINT", shutdown);
