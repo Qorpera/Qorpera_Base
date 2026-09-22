@@ -15,6 +15,7 @@ import { fmtTime, h, icon, notice, replace, spinner } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
+import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import { runFailureCard, runFailureInterrupted, runFailureReason } from "../../ui/run-failure.ts";
 import type { AgentState, CompanyController, ConversationState } from "../company.ts";
@@ -78,6 +79,8 @@ export class ConversationView {
 	#headerKey = "";
 	#renderedKey = "";
 	#stickToBottom = true;
+	/** Re-reads the scroll position for the hidden-bar fade after a programmatic scroll. */
+	#refreshFade: () => void = () => {};
 	/** Re-pins the thread to its end when the message pane gets its size: the first
 	 * render happens before the view is in the page, and a pane that shrinks or
 	 * grows (window, computer panel, composer) must keep showing the latest message. */
@@ -300,6 +303,7 @@ export class ConversationView {
 			icon("navigation"),
 		);
 		this.#header.append(this.#navigation, this.#identity, this.#computer);
+		this.#refreshFade = quietScroll(this.#messages);
 		this.#messages.addEventListener("scroll", () => {
 			const { scrollTop, scrollHeight, clientHeight } = this.#messages;
 			this.#stickToBottom = scrollHeight - scrollTop - clientHeight < 48;
@@ -382,6 +386,7 @@ export class ConversationView {
 	#pinToBottom(): void {
 		if (this.#disposed || !this.#stickToBottom) return;
 		this.#messages.scrollTop = this.#messages.scrollHeight;
+		this.#refreshFade();
 	}
 	setNavigationOpen(open: boolean): void {
 		this.#navigation.setAttribute("aria-expanded", String(open));
