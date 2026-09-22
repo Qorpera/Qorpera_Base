@@ -244,8 +244,8 @@ the service file and the SQL migration. The same holds for the dock:
 `qorpera-screen-session` (panel, look, icons), `qorpera-screen-xfce` (VNC
 settings, terminal look, running marks) and `qorpera-screen-browser` reach existing computers
 through one guest-code revision and take effect at the next start of each
-desktop; the browser on arrival, its command line (`--start-maximized`,
-`--disable-infobars`, `--class`) live in `qorpera-company-computer-service.mjs`.
+desktop; the browser's command line (`--start-maximized`, `--disable-infobars`,
+`--class`) lives in `qorpera-company-computer-service.mjs`.
 The owned startup placeholder also changes `office-browser-child.mjs`; include
 that entry together with the service and three desktop scripts in the guest-code
 revision. The dock matches the browser window with or without the new class.
