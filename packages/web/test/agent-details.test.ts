@@ -427,7 +427,7 @@ describe("the popup's frame", () => {
 		// frame class does not, so the group popup keeps sizing itself.
 		expect(f.dialog.classList.contains("staff-details")).toBe(true);
 		expect(declared(".staff-details", "height")).toBe("var(--agent-details-height)");
-		expect(declared(".staff-details", "--agent-details-height")).toContain("10 * 1.6 * 13px");
+		expect(declared(".staff-details", "--agent-details-height")).toContain("8 * 1.6 * 13px");
 		expect(declared(".agent-details", "height")).toBeFalsy();
 		// Only the agent page's description fills the frame; elsewhere the sizer still grows it to 13 lines.
 		expect(declared(".agent-details-page .agent-inline-description", "flex")).toBe("1 1 auto");

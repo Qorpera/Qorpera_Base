@@ -189,13 +189,15 @@
 .agent-details[open] { display: flex; flex-direction: column; }
 .agent-details > .surface-dialog-content { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; }
 /* An agent's popup has one static height on every page: the details page with
- * a 10-line description, as tall as it gets. The parts: 2px border, 48px
- * content padding, 132px identity row, the description's 6px margin, 16px
- * padding and 10 lines of 1.6 x 13px, 30px status row. A short description
- * or a short routine list never shrinks it; only a short viewport does,
- * through the max-height above. The group popup, which shares the frame,
- * keeps sizing itself to its content. */
-.staff-details { --agent-details-height: calc(2px + 48px + 132px + 6px + 16px + 10 * 1.6 * 13px + 30px); height: var(--agent-details-height); }
+ * an 8-line description, as tall as it gets. The parts: 2px border, 28px
+ * content padding above and below, 132px identity row, the description's 6px
+ * margin, 16px padding and 8 lines of 1.6 x 13px. The save status sits in
+ * the bottom padding and takes no row. A short description or a short
+ * routine list never shrinks it; only a short viewport does, through the
+ * max-height above. The group popup, which shares the frame, keeps sizing
+ * itself to its content. */
+.staff-details { --agent-details-height: calc(2px + 28px + 28px + 132px + 6px + 16px + 8 * 1.6 * 13px); height: var(--agent-details-height); }
+.staff-details > .surface-dialog-content { position: relative; padding-bottom: 28px; }
 .agent-details:not([data-page="details"]) > .surface-dialog-content { padding-top: 0; }
 /* The figure picker may reach past the card, as on the desktop. */
 .agent-details.is-choosing-figure, .agent-details.is-choosing-figure > .surface-dialog-content { overflow: visible; }
@@ -280,7 +282,9 @@
 .agent-details-page .agent-inline-description > .agent-inline-size { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; }
 .agent-details-page .agent-inline-description > .agent-inline-size::after { display: none; }
 .agent-details-page .agent-inline-description textarea { flex: 1 1 auto; height: auto; }
-.agent-details-status { display: flex; align-items: center; gap: 10px; min-height: 26px; margin: 4px 0 0; color: var(--text-muted); font-size: 12px; }
+/* The save status lives in the strip under the description, inside the
+ * content's bottom padding, so the box keeps its size when it comes and goes. */
+.agent-details-status { position: absolute; left: 24px; right: 24px; bottom: 0; display: flex; align-items: center; gap: 10px; height: 28px; margin: 0; color: var(--text-muted); font-size: 12px; }
 .appearance-picker .figure-grid { margin: 4px auto 0; }
 .appearance-picker .color-grid { margin-top: 16px; }
 .file-preview-dialog { width: 760px; margin: auto; }
@@ -429,6 +433,8 @@
 	.composer { padding: 8px 12px max(10px, env(safe-area-inset-bottom)); }
 	.agent-details { left: 12px; top: 60px; width: calc(100vw - 24px); }
 	.surface-dialog-content { padding: 30px 18px 20px; }
+	.staff-details > .surface-dialog-content { padding-bottom: 30px; }
+	.agent-details-status { left: 18px; right: 18px; height: 30px; }
 	.dialog-page-header { margin-inline: -18px; }
 	.new-conversation-body { padding: 26px 18px; }
 	.agent-details-identity { grid-template-columns: 88px minmax(0, 1fr); gap: 14px; }

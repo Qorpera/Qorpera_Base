@@ -400,6 +400,11 @@ group chat popup shares the frame but keeps sizing itself to its content.
 ten lines instead of thirteen, a quarter shorter. The frame follows: 442px
 tall, on the details page and the routines page alike.
 
+**Later still (Jonas).** Another fifth off: the description is eight lines,
+and the gap under it is the same 28px as above the figure. The save status
+("Saving…", "Saved", "Try again") sits in that strip instead of taking a row
+of its own. The frame is 378px on both pages.
+
 ## 2026-09-19 — New conversation is one list under the To: field
 
 **Decision (Jonas).** The new-conversation screen follows Grok's bot picker:
