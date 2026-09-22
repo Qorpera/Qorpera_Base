@@ -134,7 +134,8 @@ describe("automatic computer popover", () => {
 		expect(p.el.querySelector(".computer-loading-spinner")).not.toBeNull();
 		expect(p.el.querySelector("header, select, .computer-preview, .figure")).toBeNull();
 		expect(p.el.textContent).not.toContain("Open computer");
-		expect(p.el.querySelector(".computer-close, [aria-label='Close computer']")).toBeNull();
+		// The X top right is there from the start: a preview stuck on "Connecting…" can be put away too.
+		expect(p.el.querySelector("button.computer-close[aria-label='Close computer']")).not.toBeNull();
 		expect(p.el.tabIndex).toBe(0);
 		await settle();
 		await settle();
@@ -154,9 +155,52 @@ describe("automatic computer popover", () => {
 		]);
 		expect(methods(f).some((method) => START_WRITES.test(`/${method}`))).toBe(false);
 		expect(p.el.querySelector<HTMLElement>(".computer-loading")?.hidden).toBe(true);
-		expect(p.el.querySelector(".computer-close, [aria-label='Close computer']")).toBeNull();
 		open.mock.calls[0]![0].onClosed();
 		expect(p.el.isConnected).toBe(false);
+	});
+	it("marks pointer focus so a press does not keep the hover controls up, and keys clear it", () => {
+		const f = setup(),
+			p = panel(f.computer);
+		document.body.append(p.el);
+		// jsdom has no pointer capture; the drag code takes it on every press.
+		p.el.setPointerCapture = vi.fn();
+		p.el.hasPointerCapture = vi.fn(() => false);
+		p.el.releasePointerCapture = vi.fn();
+		p.el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 1, isPrimary: true, button: 0 }));
+		expect(document.activeElement).toBe(p.el);
+		expect(p.el.classList.contains("is-pointer-focus")).toBe(true);
+		p.el.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+		expect(p.el.classList.contains("is-pointer-focus")).toBe(false);
+		p.el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 1, isPrimary: true, button: 0 }));
+		expect(p.el.classList.contains("is-pointer-focus")).toBe(true);
+		// Focus moving within the panel keeps the mark; leaving it clears the mark.
+		const inner = p.el.querySelector<HTMLButtonElement>(".computer-close")!;
+		inner.focus();
+		expect(p.el.classList.contains("is-pointer-focus")).toBe(true);
+		const outside = document.createElement("button");
+		document.body.append(outside);
+		outside.focus();
+		expect(p.el.classList.contains("is-pointer-focus")).toBe(false);
+		outside.remove();
+		p.el.remove();
+	});
+	it("closes for good from the X top right, and not before a thread holds it", async () => {
+		const f = setup(),
+			open = spyViewer(),
+			p = panel(f.computer);
+		await settle();
+		await settle();
+		expect(open).toHaveBeenCalledOnce();
+		const close = vi.fn();
+		p.detach();
+		p.el.querySelector<HTMLButtonElement>(".computer-close")!.click();
+		expect(close).not.toHaveBeenCalled();
+		const body = document.createElement("div");
+		document.body.append(body);
+		p.attach(body, close);
+		p.el.querySelector<HTMLButtonElement>(".computer-close")!.click();
+		expect(close).toHaveBeenCalledOnce();
+		body.remove();
 	});
 	it("keeps unavailable and missing computers inside the popover without starting a runtime", async () => {
 		const unavailable = new ComputerPanel(staff);

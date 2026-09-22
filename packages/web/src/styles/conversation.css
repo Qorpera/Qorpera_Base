@@ -294,6 +294,8 @@
 .file-preview-placeholder .icon { width: 48px; height: 48px; color: var(--text-soft); }
 
 .computer-panel { position: absolute; top: var(--computer-top, calc(var(--titlebar-height) + 20px)); left: var(--computer-left, auto); right: 20px; z-index: 20; width: var(--computer-width, min(400px, calc(100% - 40px))); aspect-ratio: 16 / 9; min-height: 0; overflow: hidden; border: 1px solid rgb(255 255 255 / 12%); border-radius: 8px; background: #24262a; box-shadow: 0 8px 28px rgb(0 0 0 / 32%), 0 2px 6px rgb(0 0 0 / 24%); animation: computer-enter 180ms ease both; }
+/* The hover controls of the preview: the shade along its edges and the ink of the buttons over it, light on the light theme and dark on the dark one (dark.css). */
+.computer-panel { --computer-hover-shade: rgb(255 255 255 / 72%); --computer-hover-ink: #2b2b29; --computer-hover-ink-strong: #131312; --computer-hover-ink-shadow: drop-shadow(0 1px 2px rgb(255 255 255 / 85%)) drop-shadow(0 0 1px rgb(255 255 255 / 70%)); --computer-hover-button-bg: rgb(0 0 0 / 9%); }
 .computer-panel:not(.is-entered) { cursor: grab; touch-action: none; }
 .computer-panel.is-dragging { cursor: grabbing; user-select: none; }
 /* An 8px band inside each edge resizes the preview; the cursor names the edge under the pointer. */
@@ -332,16 +334,27 @@
 .computer-panel:not(.is-entered) .screen-viewer-stage { pointer-events: none; }
 .computer-panel .screen-viewer-enter { position: absolute; top: 50%; left: 50%; z-index: 4; transform: translate(-50%, -50%); min-width: 80px; min-height: 34px; padding: 6px 18px; border: 1px solid rgb(255 255 255 / 35%); border-radius: 999px; color: #18191b; background: rgb(250 250 250 / 94%); box-shadow: 0 2px 12px rgb(0 0 0 / 28%); font-size: 13px; font-weight: 500; cursor: pointer; opacity: 0; pointer-events: none; transition: opacity 120ms ease, background 120ms ease; }
 .computer-panel .screen-viewer-enter:hover { background: #fff; }
+/* Hovered, a shade sits along the edges of the preview, under the Enter button and the controls. */
+.computer-panel:not(.is-entered) .screen-viewer-embedded::after { content: ""; position: absolute; inset: 0; z-index: 2; box-shadow: inset 0 0 56px 6px var(--computer-hover-shade); opacity: 0; pointer-events: none; transition: opacity 160ms ease; }
+.computer-panel:not(.is-entered):hover .screen-viewer-embedded::after { opacity: 1; }
+/* The X top right closes the preview for good, as Escape does; the entered frame has its compress button instead. */
+.computer-panel .computer-close { position: absolute; top: 6px; right: 6px; z-index: 3; display: grid; place-items: center; width: 24px; height: 24px; min-height: 24px; padding: 0; border: 0; border-radius: 4px; color: var(--computer-hover-ink); background: transparent; box-shadow: none; filter: var(--computer-hover-ink-shadow); font-size: 0; cursor: pointer; opacity: 0; pointer-events: none; transition: opacity 120ms ease, background 120ms ease; }
+.computer-panel .computer-close::before { content: ""; width: 16px; height: 16px; background: currentColor; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M6 6l12 12M18 6 6 18'/%3E%3C/svg%3E") center / contain no-repeat; }
+.computer-panel .computer-close:hover { color: var(--computer-hover-ink-strong); background: var(--computer-hover-button-bg); }
+.computer-panel:hover .computer-close, .computer-panel:focus-within:not(.is-pointer-focus) .computer-close { opacity: 1; pointer-events: auto; }
+.computer-panel:is(.is-dragging, .is-resizing) .computer-close { opacity: 0; pointer-events: none; }
+.computer-panel.is-entered .computer-close { display: none; }
 .computer-panel .screen-viewer-enter[hidden] { display: none; }
-.computer-panel:hover .screen-viewer-enter, .computer-panel:focus-within .screen-viewer-enter { opacity: 1; pointer-events: auto; }
+/* Hover shows the controls, and so does keyboard focus. A click or a drag focuses the panel as well (is-pointer-focus, set in computer.ts); that focus must not keep the controls up once the pointer has left. */
+.computer-panel:hover .screen-viewer-enter, .computer-panel:focus-within:not(.is-pointer-focus) .screen-viewer-enter { opacity: 1; pointer-events: auto; }
 .computer-panel:is(.is-dragging, .is-resizing) .screen-viewer-enter { opacity: 0; pointer-events: none; }
 .computer-panel:not(.is-entered) .screen-viewer-titlebar { position: absolute; top: 6px; left: 6px; z-index: 3; padding: 0; opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
 .computer-panel:not(.is-entered) .screen-viewer-heading, .computer-panel .screen-viewer-close { display: none; }
 .computer-panel:not(.is-entered) .screen-viewer-controls { gap: 2px; padding: 0; border: 0; background: transparent; box-shadow: none; }
 .computer-panel .screen-viewer-controls:not(:has(> button:not([hidden]):not(:disabled):not(.screen-viewer-close))) { display: none; }
 .computer-panel .screen-viewer-controls > button:not(.screen-viewer-close) { display: grid; place-items: center; padding: 0; font-size: 0; }
-.computer-panel:not(.is-entered) .screen-viewer-controls > button:not(.screen-viewer-close) { width: 24px; height: 24px; min-height: 24px; border: 0; border-radius: 4px; color: #f1f1f3; background: transparent; box-shadow: none; filter: drop-shadow(0 1px 2px rgb(0 0 0 / 80%)) drop-shadow(0 0 1px rgb(0 0 0 / 65%)); }
-.computer-panel:not(.is-entered) .screen-viewer-controls > button:not(.screen-viewer-close):hover { color: #fff; background: rgb(20 21 24 / 38%); }
+.computer-panel:not(.is-entered) .screen-viewer-controls > button:not(.screen-viewer-close) { width: 24px; height: 24px; min-height: 24px; border: 0; border-radius: 4px; color: var(--computer-hover-ink); background: transparent; box-shadow: none; filter: var(--computer-hover-ink-shadow); }
+.computer-panel:not(.is-entered) .screen-viewer-controls > button:not(.screen-viewer-close):hover { color: var(--computer-hover-ink-strong); background: var(--computer-hover-button-bg); }
 .computer-panel .screen-viewer-controls > button.screen-viewer-takeover[aria-pressed=true] { color: #9fc4ff; border-color: rgb(98 159 255 / 45%); background: rgb(98 159 255 / 18%); }
 .computer-panel .screen-viewer-controls > button:not(.screen-viewer-close)::before { content: ""; width: 16px; height: 16px; background: currentColor; mask: var(--computer-control-icon) center / contain no-repeat; }
 .computer-panel .screen-viewer-takeover { --computer-control-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 3 15 10-7 1-3 7Z'/%3E%3C/svg%3E"); }
@@ -349,7 +362,7 @@
 .computer-panel .screen-viewer-reconnect { --computer-control-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 7v5h-5M20 12a8 8 0 1 0-2 5'/%3E%3C/svg%3E"); }
 .computer-panel .screen-viewer-controls > button[hidden] { display: none; }
 .computer-panel .screen-viewer-controls > button:disabled { display: none; }
-.computer-panel:hover .screen-viewer-titlebar, .computer-panel:focus-within .screen-viewer-titlebar, .computer-panel .screen-viewer-embedded:hover .screen-viewer-titlebar, .computer-panel .screen-viewer-embedded:focus-within .screen-viewer-titlebar, .computer-panel:has(.screen-viewer-status.is-error) .screen-viewer-titlebar { opacity: 1; pointer-events: auto; }
+.computer-panel:hover .screen-viewer-titlebar, .computer-panel:focus-within:not(.is-pointer-focus) .screen-viewer-titlebar, .computer-panel:has(.screen-viewer-status.is-error) .screen-viewer-titlebar { opacity: 1; pointer-events: auto; }
 .computer-panel:not(.is-entered) .screen-viewer-stage { width: 100%; height: 100%; aspect-ratio: auto; border-radius: 0; }
 .computer-panel .screen-viewer-status { background: #24262a; color: #b9bbc1; font-size: 12px; }
 .computer-panel .screen-viewer-status-content, .computer-panel .screen-viewer-status.is-error .screen-viewer-status-content { display: flex; flex-direction: column-reverse; align-items: center; width: min(280px, calc(100% - 48px)); gap: 12px; }
@@ -359,11 +372,12 @@
 @media (hover: none) {
 	.computer-panel .screen-viewer-titlebar { opacity: 1; pointer-events: auto; }
 	.computer-panel .screen-viewer-enter { opacity: 1; pointer-events: auto; min-height: 40px; }
-	.computer-panel .screen-viewer-controls > button:not(.screen-viewer-close), .computer-panel.is-entered .screen-viewer-controls > button:not(.screen-viewer-close) { width: 36px; height: 36px; min-height: 36px; }
+	.computer-panel:not(.is-entered) .computer-close { opacity: 1; pointer-events: auto; }
+	.computer-panel .computer-close, .computer-panel .screen-viewer-controls > button:not(.screen-viewer-close), .computer-panel.is-entered .screen-viewer-controls > button:not(.screen-viewer-close) { width: 36px; height: 36px; min-height: 36px; }
 }
 @media (prefers-reduced-motion: reduce) {
 	.computer-loading-spinner, .computer-panel .screen-viewer-progress { animation: none; }
-	.computer-panel .screen-viewer-titlebar, .computer-panel .screen-viewer-enter { transition: none; }
+	.computer-panel .screen-viewer-titlebar, .computer-panel .screen-viewer-enter, .computer-panel .computer-close, .computer-panel .screen-viewer-embedded::after { transition: none; }
 }
 .routine-list { border-top: 1px solid var(--border); }
 .routine-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 8px 14px; padding: 14px 0; border-bottom: 1px solid var(--border); }

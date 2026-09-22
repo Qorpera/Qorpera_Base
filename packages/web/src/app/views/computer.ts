@@ -21,6 +21,13 @@ export class ComputerPanel {
 	readonly #retry = h("button", { type: "button", class: "computer-retry", hidden: true }, "Try again");
 	readonly #loading = h("div", { class: "computer-loading" }, this.#spinner, this.#status, this.#retry);
 	readonly #body = h("div", { class: "computer-panel-body" }, this.#loading);
+	/** The preview's own way out, top right; the entered frame has its compress button instead. */
+	readonly #closeButton = h("button", {
+		type: "button",
+		class: "computer-close",
+		"aria-label": "Close computer",
+		title: "Close",
+	});
 	readonly #views: ComputerViewHost;
 	readonly #fitPreview: () => void;
 	readonly #setExpanded: (expanded: boolean) => void;
@@ -44,6 +51,26 @@ export class ComputerPanel {
 				tabindex: "0",
 			},
 			this.#body,
+			this.#closeButton,
+		);
+		this.#closeButton.addEventListener("click", () => this.#close(), { signal });
+		// A press focuses the panel (the drag does it by script), and that focus must not keep the
+		// hover controls up once the pointer has left; keyboard focus shows them until it leaves.
+		this.el.addEventListener("pointerdown", () => this.el.classList.add("is-pointer-focus"), {
+			capture: true,
+			signal,
+		});
+		this.el.addEventListener("keydown", () => this.el.classList.remove("is-pointer-focus"), {
+			capture: true,
+			signal,
+		});
+		this.el.addEventListener(
+			"focusout",
+			(event) => {
+				if (!(event.relatedTarget instanceof Node && this.el.contains(event.relatedTarget)))
+					this.el.classList.remove("is-pointer-focus");
+			},
+			{ signal },
 		);
 		this.#fitPreview = attachComputerDrag(this.el, signal);
 		const covered = new Map<HTMLElement, boolean>();

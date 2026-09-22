@@ -121,7 +121,7 @@
 :root[data-theme="dark"] .received-file:hover { background: #2e2e2d; }
 :root[data-theme="dark"] .received-file-visual { color: #8f8e89; }
 :root[data-theme="dark"] .received-image .received-file-visual { background: #333332; }
-:root[data-theme="dark"] .computer-panel { background: #212120; }
+:root[data-theme="dark"] .computer-panel { background: #212120; --computer-hover-shade: rgb(0 0 0 / 72%); --computer-hover-ink: #f1f1f3; --computer-hover-ink-strong: #fff; --computer-hover-ink-shadow: drop-shadow(0 1px 2px rgb(0 0 0 / 80%)) drop-shadow(0 0 1px rgb(0 0 0 / 65%)); --computer-hover-button-bg: rgb(255 255 255 / 18%); }
 :root[data-theme="dark"] .computer-preview-screen { border-color: #3a3a3d; }
 :root[data-theme="dark"] .recipient-menu { box-shadow: 0 22px 48px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3); }
 
