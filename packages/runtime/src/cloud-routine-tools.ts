@@ -80,9 +80,15 @@ function compileTrigger(value: unknown): Record<string, unknown> {
 	if (kind === "weekly") {
 		const t = object(
 			value,
-			["kind", "weekdays", "localTime", "timeZone", "report"],
+			["kind", "weekdays", "localTime", "timeZone", "firstRunAt", "report"],
 			["kind", "localTime", "timeZone"],
 		);
+		const startAt: Record<string, unknown> = {};
+		if (t.firstRunAt !== undefined) {
+			if (typeof t.firstRunAt !== "string" || !Number.isFinite(Date.parse(t.firstRunAt)))
+				throw new Error("Invalid routine start");
+			startAt.startAt = new Date(t.firstRunAt).toISOString();
+		}
 		// Weekday default: a wall-clock routine runs on business days unless the agent says otherwise.
 		const days = t.weekdays === undefined ? [...BUSINESS_DAYS] : t.weekdays;
 		if (
@@ -96,6 +102,7 @@ function compileTrigger(value: unknown): Record<string, unknown> {
 		return {
 			kind: "schedule",
 			intervalMinutes: 1440,
+			...startAt,
 			weekdays: days,
 			localTime: localTime(t.localTime),
 			timeZone: timeZone(t.timeZone),
@@ -130,7 +137,8 @@ export const CLOUD_ROUTINE_TOOL_DESCRIPTION =
 	"Set up your own standing work. A routine wakes you, this same agent, with the stored intent, while no member is online. " +
 	"No member approval is needed; use it whenever a responsibility or a request calls for repeated attention, and tell the member what you set up. " +
 	"Actions: list, upsert, pause, resume, remove. A routine always belongs to you. Reuse one routineKey for the same standing work so a change becomes a new version instead of a duplicate; list first when unsure. " +
-	"trigger is exactly one of: every (minutes 5-10080, optional firstRunAt), weekly (localTime HH:MM, IANA timeZone, weekdays default Monday to Friday), or file_change (a Company File path you can read, match exact or subtree). Use the member's time zone from the wake time context. " +
+	"trigger is exactly one of: every (minutes 5-10080, optional firstRunAt), weekly (localTime HH:MM, IANA timeZone, weekdays default Monday to Friday, optional firstRunAt), or file_change (a Company File path you can read, match exact or subtree). Use the member's time zone from the wake time context. " +
+	"A new routine runs once right away as a kickoff, then on its schedule; give firstRunAt only when the first run really must wait. Start dense while a responsibility is new to you, every hour or two or daily, and use those early runs to investigate and learn what the work needs; once you know, upsert the same routineKey with the steady cadence and say so. Never leave new standing work idle for days waiting for its first slot. " +
 	"Write intent as a complete instruction to your future self: what to read, what to decide, when to tell someone and when to stay silent. report is optional (speak only when useful), required (always report) or silent (never speak). When you pick a threshold or cadence nobody gave you, tell the member it is your starting assumption so they can correct it. " +
 	"Give a finite watch an expiresAt or maxOccurrences so it ends by itself. quietHours holds non-urgent occurrences until the window ends. " +
 	"status paused with pauseReason needs_model_account means no model account of the requesting member allows unattended runs yet: say so plainly, it is a one-time account setting. authorization_failed means the account stopped working. " +
@@ -209,6 +217,7 @@ export function cloudRoutineTools(
 								},
 								localTime: timeSchema,
 								timeZone: zoneSchema,
+								firstRunAt: { type: "string", format: "date-time" },
 								report: reportSchema,
 							},
 						},

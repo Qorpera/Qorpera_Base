@@ -76,6 +76,27 @@ describe("agent routine tool", () => {
 			f.run.close();
 		}
 	});
+	it("compiles a delayed first run for weekly work", async () => {
+		const f = await fixture();
+		try {
+			const result = await f.boundary.invoke("routine_w", "qorpera", "manage_routine", {
+				...weekly,
+				trigger: { ...weekly.trigger, weekdays: ["monday"], firstRunAt: "2026-09-28T09:00:00+02:00" },
+			});
+			expect(result.success, JSON.stringify(result)).toBe(true);
+			expect((f.call.mock.calls[0]?.[1] as { p_request: { trigger: unknown } }).p_request.trigger).toEqual({
+				kind: "schedule",
+				intervalMinutes: 1440,
+				startAt: "2026-09-28T07:00:00.000Z",
+				weekdays: ["monday"],
+				localTime: "08:00",
+				timeZone: "Europe/Copenhagen",
+				replyPolicy: "optional",
+			});
+		} finally {
+			f.run.close();
+		}
+	});
 	it("compiles interval, file-change, expiry, finite and quiet forms", async () => {
 		const f = await fixture();
 		try {

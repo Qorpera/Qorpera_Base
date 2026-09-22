@@ -487,7 +487,7 @@ describe("cloud runner orchestrator", () => {
 		expect(control.enqueueRoutineWake).toHaveBeenCalledOnce();
 	});
 
-	it("does not backfill a weekly occurrence from before the routine version existed", async () => {
+	it("runs a new weekly routine once as a kickoff before its first slot", async () => {
 		const control = controlPlane(undefined);
 		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({
 			items: [
@@ -521,7 +521,113 @@ describe("cloud runner orchestrator", () => {
 
 		await reconciler.reconcile(control);
 
+		expect(control.enqueueRoutineWake).toHaveBeenCalledOnce();
+		expect(vi.mocked(control.enqueueRoutineWake).mock.calls[0]?.[0]).not.toHaveProperty("expectedLastScheduledFor");
+		expect(control.enqueueRoutineWake).toHaveBeenCalledWith(
+			expect.objectContaining({
+				routineId: "12121212-1212-4212-8212-121212121212",
+				scheduledFor: "2026-08-25T10:00:00.000Z",
+				nextDueAt: "2026-08-31T09:00:00.000Z",
+				payload: { schema: "qorpera.routine-schedule-occurrence/v1", coalesced: 0 },
+			}),
+		);
+	});
+
+	it("does not kick off a later routine version or a weekly routine whose start lies ahead", async () => {
+		const control = controlPlane(undefined);
+		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({
+			items: [
+				{
+					routineId: "12121212-1212-4212-8212-121212121212",
+					profileId: "88888888-8888-4888-8888-888888888888",
+					environmentId: "99999999-9999-4999-8999-999999999999",
+					version: 2,
+					staffAgentId: "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd",
+					triggers: [
+						{
+							id: "weekly-monday",
+							kind: "schedule",
+							intervalMinutes: 10_080,
+							weekdays: ["monday"],
+							localTime: "09:00",
+							timeZone: "UTC",
+						},
+					],
+					scheduleCursors: [{ triggerId: "weekly-monday" }],
+					contentSha256: "a".repeat(64),
+					effectiveAt: "2026-08-25T10:00:00.000Z",
+					updatedAt: "2026-08-25T10:00:00.000Z",
+				},
+			],
+			hasMore: false,
+		});
+		const reconciler = new CloudRoutineScheduleReconciler({
+			now: () => new Date("2026-08-25T12:00:00.000Z"),
+		});
+		await reconciler.reconcile(control);
 		expect(control.enqueueRoutineWake).not.toHaveBeenCalled();
+
+		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({
+			items: [
+				{
+					routineId: "12121212-1212-4212-8212-121212121212",
+					profileId: "88888888-8888-4888-8888-888888888888",
+					environmentId: "99999999-9999-4999-8999-999999999999",
+					version: 1,
+					staffAgentId: "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd",
+					triggers: [
+						{
+							id: "weekly-monday",
+							kind: "schedule",
+							intervalMinutes: 10_080,
+							startAt: "2026-08-31T09:00:00.000Z",
+							weekdays: ["monday"],
+							localTime: "09:00",
+							timeZone: "UTC",
+						},
+					],
+					scheduleCursors: [{ triggerId: "weekly-monday" }],
+					contentSha256: "a".repeat(64),
+					effectiveAt: "2026-08-25T10:00:00.000Z",
+					updatedAt: "2026-08-25T10:00:00.000Z",
+				},
+			],
+			hasMore: false,
+		});
+		await reconciler.reconcile(control);
+		expect(control.enqueueRoutineWake).not.toHaveBeenCalled();
+	});
+
+	it("kicks off a new interval routine at its effective instant and then keeps the slot cadence", async () => {
+		const control = controlPlane(undefined);
+		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({
+			items: [
+				{
+					routineId: "12121212-1212-4212-8212-121212121212",
+					profileId: "88888888-8888-4888-8888-888888888888",
+					environmentId: "99999999-9999-4999-8999-999999999999",
+					version: 1,
+					staffAgentId: "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd",
+					triggers: [{ id: "schedule-main", kind: "schedule", intervalMinutes: 60 }],
+					scheduleCursors: [{ triggerId: "schedule-main" }],
+					contentSha256: "a".repeat(64),
+					effectiveAt: "2026-08-25T10:20:00.000Z",
+					updatedAt: "2026-08-25T10:20:00.000Z",
+				},
+			],
+			hasMore: false,
+		});
+		const reconciler = new CloudRoutineScheduleReconciler({
+			now: () => new Date("2026-08-25T10:25:00.000Z"),
+		});
+
+		await reconciler.reconcile(control);
+
+		expect(control.enqueueRoutineWake).toHaveBeenCalledOnce();
+		expect(vi.mocked(control.enqueueRoutineWake).mock.calls[0]?.[0]).toMatchObject({
+			scheduledFor: "2026-08-25T10:20:00.000Z",
+			nextDueAt: "2026-08-25T11:00:00.000Z",
+		});
 	});
 
 	it.each(["optional", "required", "silent"])("enqueues %s weekday wakes", async (replyPolicy) => {

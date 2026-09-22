@@ -1195,6 +1195,15 @@ Listeners implement vendor-specific authentication and eligibility rules, such
 as channel membership, webhook verification, and identity gating. Secrets
 remain outside model context.
 
+2026-09-22 amendment: kickoff occurrence. The first version of a scheduled
+routine runs once at its effective instant (the kickoff) and then on its
+cadence, unless the trigger names a later start or a window bounds its run
+times. A later version keeps the cadence its routine already had. The kickoff
+occurrence key is derived from the effective instant so every orchestrator
+admits the same occurrence. Agents are told to start a new responsibility on a
+dense cadence and loosen it under the same routine key once the work is
+understood.
+
 ## 17. Model and reasoning policy
 
 An attended agent thread defaults to low reasoning effort. The resolved
