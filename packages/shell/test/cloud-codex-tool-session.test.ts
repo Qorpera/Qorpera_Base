@@ -556,7 +556,7 @@ it("ends the turn after the fence that follows a confirmed final send", async ()
 	await expect(result).resolves.toEqual({
 		providerSessionId: "thread_fixture",
 		toolCalls: 1,
-		codexVersion: "0.147.0",
+		codexVersion: "0.155.1",
 		fencedRequests: 2,
 	});
 	await observability.close();
