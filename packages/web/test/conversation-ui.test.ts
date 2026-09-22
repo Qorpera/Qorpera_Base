@@ -519,7 +519,10 @@ describe("conversation UI boundaries", () => {
 		const host = document.createElement("div");
 		const f = setup({ notificationHost: host });
 		expect(host.parentElement).toBe(f.view.el.querySelector(".thread-conversation"));
-		expect(host.nextElementSibling).toBe(f.view.el.querySelector("footer.composer"));
+		// The failed-run line shares the band: notices first, then the run, then the composer.
+		const slot = host.nextElementSibling;
+		expect(slot?.classList.contains("thread-run-failure")).toBe(true);
+		expect(slot?.nextElementSibling).toBe(f.view.el.querySelector("footer.composer"));
 	});
 
 	it.each([false, true])("restores notification focus with the computer open (entered: %s)", async (entered) => {
@@ -584,9 +587,13 @@ describe("conversation UI boundaries", () => {
 		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual(["Dismiss"]);
 		// Unsettled operations: nothing may be repeated yet.
 		expect(card()?.querySelector('[data-action="retry-run"]')).toBeNull();
-		// The card is the last thing in the thread, where the answer would have been.
-		expect(f.view.el.querySelector(".messages")?.lastElementChild?.contains(card())).toBe(true);
+		// The card sits right above the composer, below the company notices, never inside the thread.
+		expect(f.view.el.querySelector(".messages")?.contains(card())).toBe(false);
 		expect(host.querySelector(".run-failure")).toBeNull();
+		const slot = f.view.el.querySelector<HTMLElement>(".thread-run-failure");
+		expect(slot?.contains(card())).toBe(true);
+		expect(slot?.previousElementSibling).toBe(host);
+		expect(slot?.nextElementSibling?.classList.contains("composer")).toBe(true);
 		expect(f.view.el.querySelector(".thread-status .notice-warn")).toBeNull();
 		const close = button(f.view.el, "Dismiss");
 		close.focus();

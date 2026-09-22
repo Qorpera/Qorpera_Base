@@ -44,9 +44,10 @@
 .thread-activity:hover .status-caption, .thread-activity:focus-visible .status-caption { visibility: visible; }
 .thread-activity .status-wave-letter { animation-play-state: paused; }
 .thread-activity:hover .status-wave-letter, .thread-activity:focus-visible .status-wave-letter { animation-play-state: running; }
-.thread-run-failure { display: contents; }
+/* A failed run: one quiet line right above the composer, in the same band and shape as a company notice. */
+.thread-run-failure { flex: none; padding: 0 16px; }
 .thread-run-failure[hidden] { display: none; }
-.run-failure { align-self: stretch; margin: 10px 0 4px; }
+.run-failure { margin-top: 6px; }
 .run-failure-card { display: flex; align-items: center; gap: 12px; padding: 8px 8px 8px 16px; border: 1px solid var(--border); border-radius: 18px; background: var(--hover); }
 .run-failure-text { flex: 1; min-width: 0; margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--text-muted); overflow-wrap: anywhere; }
 .run-failure-title { font-weight: 600; color: var(--text); }
