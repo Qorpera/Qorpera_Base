@@ -18,6 +18,7 @@
 
 ### Added
 
+- Resize the computer preview by dragging any of its edges or corners, from its resting size up to twice that, keeping its 16:9 shape and staying inside the thread. When the preview has keyboard focus, plus and minus resize it too.
 - Present member-addressed execution notices inline in the workspace, with explicit acknowledgment and recovery after uncertain requests.
 - Add a dark theme. Settings → General → Theme offers System default (follows the device's appearance), Light and Dark; the choice is kept per browser, follows changes made in other tabs, and a head script applies it before the first paint.
 - Show a failed or stopped run in the agent's conversation with its error and a Dismiss action (the desktop's discard), so an old failure stops standing in for the agent's state; a run that left Company File changes links to them instead.
