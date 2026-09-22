@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { runFailureReason } from "../src/ui/run-failure.ts";
+import { runFailureInterrupted, runFailureReason } from "../src/ui/run-failure.ts";
 
 describe("why a run stopped, in the member's words", () => {
 	it.each([
@@ -23,5 +23,23 @@ describe("why a run stopped, in the member's words", () => {
 		expect(reason).toMatch(expected);
 		// Plain words only: no status codes, no machinery names.
 		expect(reason).not.toMatch(/\d{3}|runner|provider|bridge|lease|dispatch/i);
+	});
+});
+
+describe("whether a stopped run is worth trying again as it is", () => {
+	it.each([
+		["Runner lease expired before durable completion; durable attempt output requires review", "failed", true],
+		[
+			"Runner dispatch failed after the final infrastructure attempt: Runner provider request failed (422)",
+			"failed",
+			true,
+		],
+		[undefined, "cancelled", true],
+		["You have hit your usage limit. Try again later.", "failed", false],
+		["Provider credential is invalid", "failed", false],
+		["Native provider bridge request failed (422)", "failed", false],
+		["something nobody has seen before", "failed", false],
+	] as const)("%s → %s", (error, status, expected) => {
+		expect(runFailureInterrupted(error, status)).toBe(expected);
 	});
 });

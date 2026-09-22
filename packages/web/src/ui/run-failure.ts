@@ -1,21 +1,45 @@
-import { h, icon } from "./dom.ts";
+import { button, h } from "./dom.ts";
 import { matchesKey } from "./keys.ts";
 
-/** Why a run stopped, in the member's words. The cloud's own text stays
- * out of the card: it names machinery, not causes. */
-export function runFailureReason(lastError: string | undefined, jobStatus: "failed" | "cancelled"): string {
+/** What stopped the run, from the cloud's own error text (which names machinery,
+ * not causes) and the job status. One classification feeds both the sentence the
+ * member reads and whether Try again is worth offering. */
+export type RunFailureKind = "usage_limit" | "credential" | "dispatch" | "timeout" | "bridge" | "cancelled" | "other";
+
+export function classifyRunFailure(lastError: string | undefined, jobStatus: "failed" | "cancelled"): RunFailureKind {
 	const error = lastError ?? "";
-	if (/usage limit|quota|rate.?limit|insufficient|billing/i.test(error))
-		return "Your model account has reached its usage limit.";
+	if (/usage limit|quota|rate.?limit|insufficient|billing/i.test(error)) return "usage_limit";
 	if (/not signed in|sign.?in|unauthori[sz]ed|credential|token (is )?(expired|invalid)/i.test(error))
-		return "Your model account needs to be connected again.";
-	if (/dispatch failed|provider request failed/i.test(error))
-		return "No computer could be started for this run. The problem is on Qorpera's side.";
-	if (/lease expired|deadline|timed? ?out/i.test(error)) return "The run took too long and was stopped.";
-	if (/bridge request failed/i.test(error))
-		return "The run started, but one of its steps was refused. The problem is on Qorpera's side.";
-	if (jobStatus === "cancelled") return "The run was stopped before it finished.";
-	return "The run stopped because of an internal error.";
+		return "credential";
+	if (/dispatch failed|provider request failed/i.test(error)) return "dispatch";
+	if (/lease expired|deadline|timed? ?out/i.test(error)) return "timeout";
+	if (/bridge request failed/i.test(error)) return "bridge";
+	if (jobStatus === "cancelled") return "cancelled";
+	return "other";
+}
+
+const REASONS: Record<RunFailureKind, string> = {
+	usage_limit: "Your model account has reached its usage limit.",
+	credential: "Your model account needs to be connected again.",
+	dispatch: "No computer could be started for this run. The problem is on Qorpera's side.",
+	timeout: "The run took too long and was stopped.",
+	bridge: "The run started, but one of its steps was refused. The problem is on Qorpera's side.",
+	cancelled: "The run was stopped before it finished.",
+	other: "The run stopped because of an internal error.",
+};
+
+/** Why a run stopped, in the member's words. */
+export function runFailureReason(lastError: string | undefined, jobStatus: "failed" | "cancelled"): string {
+	return REASONS[classifyRunFailure(lastError, jobStatus)];
+}
+
+/** Whether the run was interrupted rather than refused: it was stopped for time,
+ * cancelled, or never got a computer. Those are worth trying again as they are.
+ * A reached usage limit or a disconnected account need the member to act first,
+ * so their card offers Dismiss only and says what to do. */
+export function runFailureInterrupted(lastError: string | undefined, jobStatus: "failed" | "cancelled"): boolean {
+	const kind = classifyRunFailure(lastError, jobStatus);
+	return kind === "timeout" || kind === "dispatch" || kind === "cancelled";
 }
 
 export interface RunFailureCard {
@@ -32,8 +56,9 @@ export interface RunFailureCard {
 	action?: HTMLElement;
 }
 
-/** A failed run, shown where its answer would have been: one centred card with the
- * reason and two actions, Try again and Dismiss. */
+/** A failed run, shown where its answer would have been: one quiet line in the
+ * thread, like a company notice, with Dismiss and, for an interrupted run, Try
+ * again. Dismissing is durable: the run stops counting against the agent. */
 export function runFailureCard(card: RunFailureCard): HTMLElement {
 	const busy = card.retrying === true;
 	const guarded = (action: () => void) => (event: MouseEvent) => {
@@ -42,18 +67,21 @@ export function runFailureCard(card: RunFailureCard): HTMLElement {
 	const primary =
 		card.action ??
 		(card.retry
-			? h(
-					"button",
-					{
-						type: "button",
-						class: "run-failure-primary",
-						"data-action": "retry-run",
-						"aria-disabled": busy ? "true" : undefined,
-						onclick: guarded(() => card.retry?.()),
-					},
+			? button(
 					busy ? "Trying again…" : "Try again",
+					guarded(() => card.retry?.()),
+					{ small: true },
 				)
 			: null);
+	if (primary instanceof HTMLButtonElement && !card.action) {
+		primary.classList.add("run-failure-primary");
+		primary.dataset.action = "retry-run";
+		if (busy) primary.setAttribute("aria-disabled", "true");
+	}
+	const dismiss = button("Dismiss", guarded(card.dismiss), { small: true });
+	dismiss.classList.add("run-failure-secondary");
+	dismiss.dataset.action = "dismiss-run";
+	if (busy) dismiss.setAttribute("aria-disabled", "true");
 	return h(
 		"div",
 		{
@@ -70,27 +98,16 @@ export function runFailureCard(card: RunFailureCard): HTMLElement {
 		h(
 			"div",
 			{ class: "run-failure-card" },
-			h("span", { class: "run-failure-mark", "aria-hidden": "true" }, icon("close")),
-			h("strong", { class: "run-failure-title", role: "alert" }, card.title),
-			card.reason ? h("p", { class: "run-failure-reason" }, card.reason) : null,
-			card.retryError ? h("p", { class: "run-failure-error", role: "alert" }, card.retryError) : null,
-			h("span", { class: "run-failure-rule", "aria-hidden": "true" }),
 			h(
-				"div",
-				{ class: "run-failure-actions" },
-				primary,
-				h(
-					"button",
-					{
-						type: "button",
-						class: "run-failure-secondary",
-						"data-action": "dismiss-run",
-						"aria-disabled": busy ? "true" : undefined,
-						onclick: guarded(card.dismiss),
-					},
-					"Dismiss",
-				),
+				"p",
+				{ class: "run-failure-text" },
+				h("strong", { class: "run-failure-title", role: "alert" }, card.title),
+				card.reason ? " " : null,
+				card.reason ? h("span", { class: "run-failure-reason" }, card.reason) : null,
+				card.retryError ? " " : null,
+				card.retryError ? h("span", { class: "run-failure-error", role: "alert" }, card.retryError) : null,
 			),
+			h("div", { class: "run-failure-actions" }, primary, dismiss),
 		),
 	);
 }

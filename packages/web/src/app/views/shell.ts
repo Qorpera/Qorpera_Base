@@ -1,6 +1,6 @@
 import type { User } from "@supabase/supabase-js";
 import type { HostedProfile, HostedStaffAgent } from "../../cloud/types.ts";
-import { AGENT_LOOK, type AgentLook } from "../../ui/agent-activity.ts";
+import { AGENT_LOOK, type AgentLook, stateLine } from "../../ui/agent-activity.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { badge, button, h, icon, initials, notice, replace } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
@@ -371,7 +371,7 @@ function cofounderCard(model: AgentModel, href: string): HTMLElement {
 			statusDisc(look, "cofounder-status"),
 		),
 		h("strong", null, model.displayName),
-		h("small", null, look.line ?? model.role),
+		h("small", null, stateLine(look, model.role)),
 	);
 }
 
@@ -390,7 +390,7 @@ function agentRow(model: AgentModel, href: string): HTMLElement {
 			"span",
 			{ class: "rail-row-copy" },
 			h("strong", null, model.displayName),
-			h("small", null, look.line ?? model.role),
+			h("small", null, stateLine(look, model.role)),
 		),
 	);
 }

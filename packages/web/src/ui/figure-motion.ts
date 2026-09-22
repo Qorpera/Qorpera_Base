@@ -11,6 +11,7 @@ import {
 	type EyeGeometry,
 	loadRecordedMotion,
 } from "../../public/assets/avatars/status-2d-v1/recorded-motion.mjs";
+import { createWorkingSchedule, stepKey, type WorkingSchedule, workingStep } from "./working-sequence.ts";
 
 export type { Activity };
 
@@ -33,7 +34,14 @@ export interface FigureMotion {
 
 const prepared = new Map<string, Promise<void>>();
 const surfaces = new Map<string, { body: HTMLCanvasElement; source: CanvasImageSource }>();
-const clocks = new Map<string, { elapsed: number; users: number }>();
+/** One clock per agent and activity, shared by every view of that agent. A
+ * Working clock also carries the agent's own order of recorded pieces. */
+interface Clock {
+	elapsed: number;
+	users: number;
+	schedule?: WorkingSchedule;
+}
+const clocks = new Map<string, Clock>();
 const live = new Set<LiveMotion>();
 let frame = 0;
 let last = 0;
@@ -53,7 +61,7 @@ interface LiveMotion {
 	shown: string;
 	activity: Activity;
 	still: boolean;
-	clock: { elapsed: number; users: number };
+	clock: Clock;
 	visible: boolean;
 	ready: boolean;
 	painted: string;
@@ -210,9 +218,15 @@ function paint(entry: LiveMotion): void {
 	const duration = timelines[activity].end - timelines[activity].start;
 	const elapsed = reduced ? (activity === "Working" ? 1 : duration) : entry.clock.elapsed;
 	const recorded = ["Idle", "Working", "Waiting"].includes(activity);
-	const sample = Math.min(Math.round(duration * 60) - 1, Math.floor(localTime(activity, elapsed) * 60 + 1e-6));
+	// Working plays the agent's own order of recorded pieces; the reduced
+	// still keeps the studio's frame at one second.
+	const step = activity === "Working" && !reduced ? workingStep(entry.clock.schedule!, elapsed) : undefined;
+	const sample = step
+		? step.frame
+		: Math.min(Math.round(duration * 60) - 1, Math.floor(localTime(activity, elapsed) * 60 + 1e-6));
+	const clip = step?.clip ?? activity;
 	const side = Math.max(1, Math.round(entry.side * Math.min(window.devicePixelRatio || 1, 3)));
-	const key = `${side}:${sample}:${reduced}`;
+	const key = `${side}:${step ? stepKey(step) : sample}:${reduced}`;
 	if (entry.painted === key) return;
 	entry.painted = key;
 	const ctx = canvas.getContext("2d")!;
@@ -227,8 +241,8 @@ function paint(entry: LiveMotion): void {
 	ctx.scale(side / 100, side / 100);
 	const p = pose(activity, elapsed, { reduced });
 	const asset = surfaces.get(entry.id + entry.shown)!;
-	if (activity === "Working" && !reduced) drawWorkingStrokes(ctx, sample, false);
-	else strokes(ctx, p.strokes, false, entry.side);
+	if (step?.clip === "Working") drawWorkingStrokes(ctx, sample, false, step.strokes);
+	else if (!step) strokes(ctx, p.strokes, false, entry.side);
 	if (p.body > 0.001) {
 		if (!eyesCanvas) {
 			eyesCanvas = document.createElement("canvas");
@@ -241,7 +255,7 @@ function paint(entry: LiveMotion): void {
 		ec.globalCompositeOperation = "source-over";
 		ec.fillStyle = "#fff";
 		const eyes = artwork.faces[entry.id]!;
-		if (recorded) drawRecordedEyes(ec, eyes, activity, sample);
+		if (recorded) drawRecordedEyes(ec, eyes, clip, sample, step?.eyes);
 		else {
 			const spacing = eyes[1]!.x - eyes[0]!.x,
 				height = (eyes[0]!.height + eyes[1]!.height) / 2;
@@ -302,10 +316,12 @@ function paint(entry: LiveMotion): void {
 			ctx.fill();
 		}
 	ctx.globalAlpha = 1;
-	if (activity === "Working" && !reduced) drawWorkingStrokes(ctx, sample, true);
-	else strokes(ctx, p.strokes, true, entry.side);
+	if (step?.clip === "Working") drawWorkingStrokes(ctx, sample, true, step.strokes);
+	else if (!step) strokes(ctx, p.strokes, true, entry.side);
 	ctx.setTransform(1, 0, 0, 1, 0, 0);
 	canvas.dataset.frame = String(sample);
+	if (step) canvas.dataset.clip = clip;
+	else delete canvas.dataset.clip;
 	canvas.hidden = false;
 	entry.fallback.hidden = true;
 }
@@ -372,6 +388,7 @@ export function mountFigureMotion(
 	const activity = options.activity ?? "Idle";
 	const clockKey = `${options.identity ?? id + color}:${activity}`;
 	const clock = clocks.get(clockKey) ?? { elapsed: 0, users: 0 };
+	if (activity === "Working" && !clock.schedule) clock.schedule = createWorkingSchedule();
 	clock.users++;
 	clocks.set(clockKey, clock);
 	const entry: LiveMotion = {
@@ -455,7 +472,12 @@ export function mountFigureMotion(
 	}
 	visibility!.observe(host);
 	sizes!.observe(host);
-	void Promise.all([prepare(entry), loadRecordedMotion(activity, base())])
+	void Promise.all([
+		prepare(entry),
+		loadRecordedMotion(activity, base()),
+		// Working borrows the Waiting clip's sideways glance between turns.
+		activity === "Working" ? loadRecordedMotion("Waiting", base()) : undefined,
+	])
 		.then(() => {
 			if (!live.has(entry)) return;
 			entry.ready = true;

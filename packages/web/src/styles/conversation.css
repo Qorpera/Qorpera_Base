@@ -30,24 +30,25 @@
 .from-agent .bubble + .bubble, .from-agent + .from-agent > .bubble:first-child { border-top-left-radius: 8px; }
 .mine + .mine > .bubble:first-child { border-top-right-radius: 8px; }
 .message-progress { max-width: min(58%, 520px); }
-.thread-activity { padding: 6px 10px; }
+.thread-activity { flex-direction: row; align-items: center; gap: 9px; max-width: 100%; padding: 6px 10px; border-radius: 9px; outline: none; }
+.thread-activity:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+/* The desktop's hover caption: hidden until the row is hovered or focused, then "Nova is writing" with the ink wave.
+ * A long name shortens with an ellipsis instead of scrolling the thread sideways. */
+.status-caption { visibility: hidden; min-width: 0; overflow: hidden; font-size: 14px; line-height: 1.4; color: var(--text-muted); white-space: nowrap; text-overflow: ellipsis; pointer-events: none; }
+.status-caption-name { color: var(--text); }
+.thread-activity:hover .status-caption, .thread-activity:focus-visible .status-caption { visibility: visible; }
+.thread-activity .status-wave-letter { animation-play-state: paused; }
+.thread-activity:hover .status-wave-letter, .thread-activity:focus-visible .status-wave-letter { animation-play-state: running; }
 .thread-run-failure { display: contents; }
 .thread-run-failure[hidden] { display: none; }
-.run-failure { align-self: center; width: min(100%, 340px); margin: 14px 0 6px; }
-.run-failure-card { position: relative; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 26px 24px 20px; border: 2px solid var(--danger); border-radius: 28px; background: var(--bg); box-shadow: 0 10px 28px color-mix(in srgb, var(--danger) 14%, transparent); text-align: center; overflow-wrap: anywhere; }
-.run-failure-mark { display: grid; place-items: center; width: 64px; height: 64px; margin-bottom: 4px; border-radius: 50%; background: var(--danger); color: #fff; box-shadow: 0 6px 14px color-mix(in srgb, var(--danger) 35%, transparent); }
-.run-failure-mark .icon { width: 34px; height: 34px; stroke-width: 3; }
-.run-failure-title { font-size: 17px; font-weight: 700; line-height: 1.3; }
-.run-failure-reason, .run-failure-error { margin: 0; max-width: 30ch; font-size: 13px; line-height: 1.45; color: var(--text-muted); }
+.run-failure { align-self: stretch; margin: 10px 0 4px; }
+.run-failure-card { display: flex; align-items: center; gap: 12px; padding: 8px 8px 8px 16px; border: 1px solid var(--border); border-radius: 18px; background: var(--hover); }
+.run-failure-text { flex: 1; min-width: 0; margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--text-muted); overflow-wrap: anywhere; }
+.run-failure-title { font-weight: 600; color: var(--text); }
 .run-failure-error { color: var(--danger); }
-.run-failure-rule { width: 44px; height: 2px; margin: 4px 0 2px; border-radius: 2px; background: color-mix(in srgb, var(--text-muted) 40%, transparent); }
-.run-failure-primary, .run-failure-secondary, .run-failure-actions > a.btn { display: inline-flex; align-items: center; justify-content: center; min-width: 116px; height: 38px; padding: 0 22px; border: 0; border-radius: 999px; background: var(--danger); color: #fff; font: inherit; font-size: 13px; font-weight: 700; text-decoration: none; cursor: pointer; box-shadow: 0 4px 10px color-mix(in srgb, var(--danger) 30%, transparent); }
-.run-failure-primary:hover:not([aria-disabled="true"]), .run-failure-actions > a.btn:hover { filter: brightness(0.94); }
-.run-failure-primary:focus-visible, .run-failure-secondary:focus-visible, .run-failure-actions > a.btn:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
-.run-failure-primary[aria-disabled="true"], .run-failure-secondary[aria-disabled="true"] { opacity: .6; cursor: default; }
-.run-failure-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 2px; }
-.run-failure-secondary { min-width: 116px; background: transparent; color: var(--text); box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--danger) 55%, transparent); }
-.run-failure-secondary:hover:not([aria-disabled="true"]) { background: var(--hover); }
+.run-failure-actions { display: flex; flex: none; align-items: center; gap: 6px; }
+.run-failure-actions .btn { border-radius: 999px; }
+.run-failure-actions .btn[aria-disabled="true"] { opacity: .6; cursor: default; }
 .composer-stop { display: block; width: 11px; height: 11px; border-radius: 2.5px; background: currentColor; }
 .message-progress .bubble { padding: 7px 11px; color: #343432; }
 .pending-queued .bubble { opacity: .7; }
@@ -187,7 +188,15 @@
 .agent-details { z-index: 100; top: 56px; width: min(720px, calc(100vw - 24px)); margin: 0; max-height: calc(100dvh - 72px); overflow: hidden; }
 .agent-details[open] { display: flex; flex-direction: column; }
 .agent-details > .surface-dialog-content { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; }
-.agent-details:not([data-page="details"]) > .surface-dialog-content { min-height: 260px; padding-top: 0; }
+/* An agent's popup has one static height on every page: the details page with
+ * a 10-line description, as tall as it gets. The parts: 2px border, 48px
+ * content padding, 132px identity row, the description's 6px margin, 16px
+ * padding and 10 lines of 1.6 x 13px, 30px status row. A short description
+ * or a short routine list never shrinks it; only a short viewport does,
+ * through the max-height above. The group popup, which shares the frame,
+ * keeps sizing itself to its content. */
+.staff-details { --agent-details-height: calc(2px + 48px + 132px + 6px + 16px + 10 * 1.6 * 13px + 30px); height: var(--agent-details-height); }
+.agent-details:not([data-page="details"]) > .surface-dialog-content { padding-top: 0; }
 /* The figure picker may reach past the card, as on the desktop. */
 .agent-details.is-choosing-figure, .agent-details.is-choosing-figure > .surface-dialog-content { overflow: visible; }
 .agent-page-button[aria-pressed="true"] { background: var(--hover); color: var(--text); }
@@ -235,7 +244,8 @@
 .agent-figure-picker .color-choice[aria-checked="true"]::after { border-color: #888884; }
 
 /* Name, title and description read as text and are edited in place. The
- * sizer mirrors the text so a field is as wide, or tall, as what it holds. */
+ * sizer mirrors the text so a field is as wide, or tall, as what it holds
+ * (in the agent popup the description fills the frame instead; see below). */
 .agent-inline-field { display: flex; flex-direction: row; align-items: center; gap: 6px; width: fit-content; max-width: calc(100% + 16px); min-width: 0; margin: 0 -8px; padding: 2px 8px; border-radius: 7px; font-weight: inherit; cursor: default; transition: background 120ms ease, box-shadow 120ms ease; }
 .agent-inline-field.is-editable { cursor: text; }
 .agent-inline-field.is-editable:hover { background: #f2f2ef; }
@@ -262,12 +272,15 @@
 .agent-inline-description > .agent-inline-size::after { min-height: calc(5 * 1.6em); max-height: calc(13 * 1.6em); white-space: pre-wrap; overflow-wrap: anywhere; }
 .agent-inline-description textarea { height: 100%; resize: none; overflow-y: auto; overflow-wrap: anywhere; line-height: inherit; scrollbar-width: thin; }
 .agent-inline-description > .icon { position: absolute; top: 12px; right: 12px; }
+/* In the agent popup the description fills what the static frame leaves under
+ * the identity, never less than five lines, and scrolls inside that box: its
+ * length does not size the panel, and the sizer's mirror is not needed. */
+.agent-details-page { display: flex; flex-direction: column; min-height: 100%; }
+.agent-details-page .agent-inline-description { display: flex; flex: 1 1 auto; flex-direction: column; min-height: calc(5 * 1.6em + 16px); }
+.agent-details-page .agent-inline-description > .agent-inline-size { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; }
+.agent-details-page .agent-inline-description > .agent-inline-size::after { display: none; }
+.agent-details-page .agent-inline-description textarea { flex: 1 1 auto; height: auto; }
 .agent-details-status { display: flex; align-items: center; gap: 10px; min-height: 26px; margin: 4px 0 0; color: var(--text-muted); font-size: 12px; }
-.agent-notifications { display: flex; flex-direction: row; align-items: center; gap: 12px; border-top: 1px solid var(--border); margin-top: 8px; padding-top: 16px; font-size: 12px; font-weight: 500; }
-.agent-notifications > span { display: grid; gap: 2px; flex: 1; }
-.agent-notifications small { color: var(--text-muted); font-size: 11px; font-weight: 400; }
-.agent-notifications input[role=switch] { appearance: none; position: relative; width: 32px; min-height: 20px; height: 20px; border: 0; border-radius: 12px; background: #e3e3e0; padding: 0; flex: none; }
-.agent-notifications input[role=switch]::before { content: ""; position: absolute; left: 2px; top: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgb(0 0 0 / 12%); }
 .appearance-picker .figure-grid { margin: 4px auto 0; }
 .appearance-picker .color-grid { margin-top: 16px; }
 .file-preview-dialog { width: 760px; margin: auto; }
@@ -278,8 +291,15 @@
 
 .computer-panel { position: absolute; top: var(--computer-top, calc(var(--titlebar-height) + 20px)); left: var(--computer-left, auto); right: 20px; z-index: 20; width: var(--computer-width, min(400px, calc(100% - 40px))); aspect-ratio: 16 / 9; min-height: 0; overflow: hidden; border: 1px solid rgb(255 255 255 / 12%); border-radius: 8px; background: #24262a; box-shadow: 0 8px 28px rgb(0 0 0 / 32%), 0 2px 6px rgb(0 0 0 / 24%); animation: computer-enter 180ms ease both; }
 .computer-panel:not(.is-entered) { cursor: grab; touch-action: none; }
-.computer-panel.is-dragging { cursor: grabbing; user-select: none; animation: none; }
-.computer-panel.is-entered { top: calc(var(--titlebar-height) + 8px); left: 8px; right: 8px; bottom: 8px; width: auto; height: auto; max-height: none; aspect-ratio: auto; animation: none; }
+.computer-panel.is-dragging { cursor: grabbing; user-select: none; }
+/* An 8px band inside each edge resizes the preview; the cursor names the edge under the pointer. */
+.computer-panel:not(.is-entered):is([data-resize=n], [data-resize=s]) { cursor: ns-resize; }
+.computer-panel:not(.is-entered):is([data-resize=e], [data-resize=w]) { cursor: ew-resize; }
+.computer-panel:not(.is-entered):is([data-resize=nw], [data-resize=se]) { cursor: nwse-resize; }
+.computer-panel:not(.is-entered):is([data-resize=ne], [data-resize=sw]) { cursor: nesw-resize; }
+.computer-panel.is-resizing { user-select: none; }
+/* The enter slide is never switched off by a class: removing it would replay the slide (see settle() in computer-drag.ts). */
+.computer-panel.is-entered { top: calc(var(--titlebar-height) + 8px); left: 8px; right: 8px; bottom: 8px; width: auto; height: auto; max-height: none; aspect-ratio: auto; }
 .computer-panel-body { position: absolute; inset: 0; overflow: hidden; background: #24262a; color: #d8d8d4; }
 .computer-loading { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 40px 28px; overflow: auto; text-align: center; }
 .computer-loading[hidden], .computer-loading-spinner[hidden], .computer-retry[hidden] { display: none; }
@@ -293,7 +313,7 @@
 .computer-panel .screen-viewer-enter:hover { background: #fff; }
 .computer-panel .screen-viewer-enter[hidden] { display: none; }
 .computer-panel:hover .screen-viewer-enter, .computer-panel:focus-within .screen-viewer-enter { opacity: 1; pointer-events: auto; }
-.computer-panel.is-dragging .screen-viewer-enter { opacity: 0; pointer-events: none; }
+.computer-panel:is(.is-dragging, .is-resizing) .screen-viewer-enter { opacity: 0; pointer-events: none; }
 .computer-panel .screen-viewer-titlebar { position: absolute; top: 6px; left: 6px; z-index: 3; padding: 0; opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
 .computer-panel .screen-viewer-heading, .computer-panel .screen-viewer-close { display: none; }
 .computer-panel .screen-viewer-controls { gap: 2px; padding: 0; border: 0; background: transparent; box-shadow: none; }

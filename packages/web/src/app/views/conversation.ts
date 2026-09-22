@@ -1,7 +1,7 @@
 import { sessionAttachmentIssue } from "../../cloud/session-attachments.ts";
 import type { TranscriptCard, TranscriptItem } from "../../cloud/transcript.ts";
 import type { HostedSession, HostedStaffAgent } from "../../cloud/types.ts";
-import { AGENT_LOOK } from "../../ui/agent-activity.ts";
+import { AGENT_LOOK, statusCaption, syncCaption } from "../../ui/agent-activity.ts";
 import { AttachmentTray } from "../../ui/attachments.ts";
 import { authorizationRequestId, renderAuthorizationCard } from "../../ui/authorization-card.ts";
 import { agentFigure } from "../../ui/avatar.ts";
@@ -16,7 +16,7 @@ import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
-import { runFailureCard, runFailureReason } from "../../ui/run-failure.ts";
+import { runFailureCard, runFailureInterrupted, runFailureReason } from "../../ui/run-failure.ts";
 import type { AgentState, CompanyController, ConversationState } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
@@ -74,6 +74,10 @@ export class ConversationView {
 	#headerKey = "";
 	#renderedKey = "";
 	#stickToBottom = true;
+	/** Re-pins the thread to its end when the message pane gets its size: the first
+	 * render happens before the view is in the page, and a pane that shrinks or
+	 * grows (window, computer panel, composer) must keep showing the latest message. */
+	readonly #sizes: ResizeObserver | undefined;
 	readonly #unsubscribe: (() => void)[] = [];
 	#disposed = false;
 	#statusKey = "";
@@ -289,6 +293,10 @@ export class ConversationView {
 			const { scrollTop, scrollHeight, clientHeight } = this.#messages;
 			this.#stickToBottom = scrollHeight - scrollTop - clientHeight < 48;
 		});
+		if (typeof ResizeObserver !== "undefined") {
+			this.#sizes = new ResizeObserver(() => this.#pinToBottom());
+			this.#sizes.observe(this.#messages);
+		} else queueMicrotask(() => this.#pinToBottom()); // The application mounts the view right after construction.
 		this.#conversationPane = h(
 			"div",
 			{ class: "thread-conversation" },
@@ -331,6 +339,7 @@ export class ConversationView {
 		this.#disposed = true;
 		this.#lifetime.abort();
 		window.clearInterval(this.#timestampTimer);
+		this.#sizes?.disconnect();
 		this.#runNotification.remove();
 		this.#details?.dispose();
 		this.#panel?.dispose();
@@ -353,6 +362,12 @@ export class ConversationView {
 	focus(): void {
 		this.#autosize();
 		this.#composer.focus();
+	}
+
+	/** Shows the latest message unless the reader has scrolled up to read older ones. */
+	#pinToBottom(): void {
+		if (this.#disposed || !this.#stickToBottom) return;
+		this.#messages.scrollTop = this.#messages.scrollHeight;
 	}
 	setNavigationOpen(open: boolean): void {
 		this.#navigation.setAttribute("aria-expanded", String(open));
@@ -671,7 +686,7 @@ export class ConversationView {
 			}
 		}
 		if (regroup) {
-			if (this.#stickToBottom) this.#messages.scrollTop = this.#messages.scrollHeight;
+			if (this.#stickToBottom) this.#pinToBottom();
 			else if (anchor) this.#messages.scrollTop += anchor.getBoundingClientRect().top - anchorTop;
 			else this.#messages.scrollTop = scrollTop;
 		}
@@ -800,28 +815,37 @@ export class ConversationView {
 			nodes.push(h("div", { class: "empty" }, "No messages yet."));
 		}
 		if (this.#working && !conversation.loading) {
+			// As on the desktop: the figure works or writes, and "Nova is writing"
+			// shows beside it on hover or focus, never as a bubble.
 			const look = AGENT_LOOK[this.#agentState];
-			const description = `${agentName} · ${look.line}`;
-			nodes.push(
-				h(
-					"div",
-					{
-						class: "message from-agent thread-activity",
-						role: "status",
-						title: description,
-						"aria-label": description,
-					},
-					agentFigure(agent, agentName, { size: 40, activity: look.figure }),
-				),
+			const detail = look.detail ?? "";
+			const caption = statusCaption(agentName, detail);
+			const row = h(
+				"div",
+				{
+					class: "message from-agent thread-activity",
+					role: "status",
+					tabindex: "0",
+					"aria-label": `${agentName}${detail}`,
+				},
+				agentFigure(agent, agentName, { size: 40, activity: look.figure }),
+				caption,
 			);
+			// The wave only runs while the caption shows; on showing it starts in step with the rail.
+			row.addEventListener("mouseenter", () => syncCaption(caption));
+			row.addEventListener("focus", () => syncCaption(caption));
+			nodes.push(row);
 		}
 		const cardFocus = this.#runNotification.contains(document.activeElement)
 			? (document.activeElement as HTMLElement).dataset.action
 			: undefined;
+		const rowFocus = document.activeElement?.classList.contains("thread-activity") ?? false;
 		replace(this.#messages, ...nodes, this.#runNotification);
 		if (cardFocus) this.#runNotification.querySelector<HTMLElement>(`[data-action="${cardFocus}"]`)?.focus();
+		// A keyboard user reading the row keeps it through a state change or a new message.
+		else if (rowFocus) this.#messages.querySelector<HTMLElement>(".thread-activity")?.focus({ preventScroll: true });
 		this.#refreshTimestamps(false);
-		if (this.#stickToBottom) this.#messages.scrollTop = this.#messages.scrollHeight;
+		this.#pinToBottom();
 	}
 
 	#renderStatus(conversation: ConversationState, canWrite: boolean, session: HostedSession | undefined): void {
@@ -893,7 +917,13 @@ export class ConversationView {
 				? runFailureReason(recovery.lastError, recovery.jobStatus)
 				: undefined;
 		const retryState = runId ? company.runRetries?.[runId] : undefined;
-		const canRetry = failed !== undefined && !review && this.#company.canRetryFailedRun(failed);
+		// Try again is for an interrupted run; a refused one says what the member must do first.
+		const canRetry =
+			failed !== undefined &&
+			!review &&
+			this.#company.canRetryFailedRun(failed) &&
+			recovery !== undefined &&
+			runFailureInterrupted(recovery.lastError, recovery.jobStatus);
 		const key = JSON.stringify([
 			runId,
 			hidden,
@@ -919,38 +949,12 @@ export class ConversationView {
 			}
 			dismissed.add(runId);
 			this.update();
-			// Recovery details can arrive after the popup. Follow this one dismissal
-			// across navigation, but stop waiting on permission loss or company teardown.
-			const clearSettledFailure = () => {
-				const state = this.#company.store.get();
-				const currentSession = state.sessions.find((item) => item.sessionId === this.#sessionId);
-				const current = this.#company.failedRunFor(currentSession?.staffAgentId);
-				const canClear =
-					!this.#company.signal.aborted &&
-					!state.accessLost &&
-					state.team?.capabilities.write &&
-					state.team.capabilities.read &&
-					currentSession?.status === "open" &&
-					current?.activity.runId === runId &&
-					current.activity.sourceKind !== "proposal_review";
-				if (canClear && !current.recovery) return;
-				// A newer failure can temporarily replace this one in the activity RPC.
-				// Let this run be dismissed again if it returns before we could clear it.
-				if (current?.activity.runId !== runId) dismissed.delete(runId);
-				unsubscribe();
-				this.#company.signal.removeEventListener("abort", clearSettledFailure);
-				if (canClear && current.recovery?.unsettledOperations === 0 && !current.recovery.proposalId) {
-					// Clear settled failures so the server can report the agent's next run.
-					void this.#company.dismissFailedRun(runId).catch(() => {
-						// Notify the current view too if the member navigated during the request.
-						dismissed.delete(runId);
-						if (!this.#company.signal.aborted) this.#company.store.set({});
-					});
-				}
-			};
-			const unsubscribe = this.#company.store.subscribe(clearSettledFailure);
-			this.#company.signal.addEventListener("abort", clearSettledFailure, { once: true });
-			clearSettledFailure();
+			// Durable for the company: the badge and this card do not come back on reload.
+			// If nothing reached the cloud, the card comes back so it can be dismissed again.
+			void this.#company.dismissFailedRun(runId).catch(() => {
+				dismissed.delete(runId);
+				if (!this.#company.signal.aborted) this.#company.store.set({});
+			});
 		};
 		const profileId = this.#company.profile.profileId;
 		const action =
@@ -980,7 +984,7 @@ export class ConversationView {
 						action,
 					}),
 		);
-		if (!hidden && this.#stickToBottom) this.#messages.scrollTop = this.#messages.scrollHeight;
+		if (!hidden) this.#pinToBottom();
 		if (focused) {
 			if (!hidden)
 				(

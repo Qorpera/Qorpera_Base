@@ -58,6 +58,45 @@ function setup(actions: WorkspaceActions = {}) {
 	};
 	return { ...f, company, view };
 }
+/** A conversation whose messages are already loaded, built before it is placed
+ * in the page, with the message pane's scroll metrics under the test's control
+ * (jsdom lays nothing out). */
+function loadedView() {
+	const f = fixture();
+	const company = new CompanyController(f.api, profileA, userA.id);
+	company.store.set({ team, staff: [staff], sessions: [{ ...session, staffAgentId: staff.id }], loading: false });
+	const reply: TranscriptMessage = {
+		kind: "agent",
+		id: id(83),
+		sequence: 1,
+		text: "Latest answer",
+		attachmentCount: 0,
+		phase: "final",
+		createdAt: timestamp,
+		authorUserId: userA.id,
+	};
+	company
+		.conversation(session.sessionId)
+		.set({ loading: false, projection: { items: [reply], hiddenCount: 0, lastSequence: 1 } });
+	const view = new ConversationView(company, session.sessionId);
+	dispose = () => {
+		view.dispose();
+		company.stop();
+	};
+	const messages = view.el.querySelector<HTMLElement>(".messages")!;
+	expect(messages.textContent).toContain("Latest answer");
+	const metrics = { scrollTop: 0, scrollHeight: 0, clientHeight: 400 };
+	Object.defineProperty(messages, "scrollTop", {
+		configurable: true,
+		get: () => metrics.scrollTop,
+		set: (value: number) => {
+			metrics.scrollTop = value;
+		},
+	});
+	Object.defineProperty(messages, "scrollHeight", { configurable: true, get: () => metrics.scrollHeight });
+	Object.defineProperty(messages, "clientHeight", { configurable: true, get: () => metrics.clientHeight });
+	return { view, messages, metrics };
+}
 function button(root: ParentNode, label: string): HTMLButtonElement {
 	const result = [...root.querySelectorAll<HTMLButtonElement>("button")].find(
 		(item) => item.getAttribute("aria-label") === label || item.textContent === label,
@@ -308,6 +347,60 @@ describe("conversation UI boundaries", () => {
 		expect(button(restored.el, "Preview private.png")).toBeDefined();
 		restored.dispose();
 	});
+	it("opens a loaded conversation at its latest message and keeps it there while the pane resizes", () => {
+		// The view renders before it is placed in the page, so the end of the
+		// thread can only be shown once the message pane has a size.
+		const observers: { callback: () => void; targets: Element[]; disconnected: boolean }[] = [];
+		vi.stubGlobal(
+			"ResizeObserver",
+			class {
+				readonly #entry: (typeof observers)[number];
+				constructor(callback: () => void) {
+					this.#entry = { callback, targets: [], disconnected: false };
+					observers.push(this.#entry);
+				}
+				observe(target: Element) {
+					this.#entry.targets.push(target);
+				}
+				disconnect() {
+					this.#entry.disconnected = true;
+				}
+			},
+		);
+		const { view, messages, metrics } = loadedView();
+		const sizes = observers.find((entry) => entry.targets.includes(messages))!;
+		expect(sizes.targets).toEqual([messages]);
+		document.body.append(view.el);
+		metrics.scrollHeight = 2000;
+		sizes.callback();
+		expect(metrics.scrollTop).toBe(2000);
+		// A reader who scrolled up to older messages is left there.
+		metrics.scrollTop = 500;
+		messages.dispatchEvent(new Event("scroll"));
+		metrics.scrollHeight = 2400;
+		sizes.callback();
+		expect(metrics.scrollTop).toBe(500);
+		// Back at the end, a pane that changes size still shows the latest message.
+		metrics.scrollTop = 2000;
+		messages.dispatchEvent(new Event("scroll"));
+		metrics.scrollHeight = 2600;
+		sizes.callback();
+		expect(metrics.scrollTop).toBe(2600);
+		view.dispose();
+		expect(sizes.disconnected).toBe(true);
+		metrics.scrollTop = 0;
+		sizes.callback();
+		expect(metrics.scrollTop).toBe(0);
+	});
+	it("still opens a loaded conversation at its latest message without a size observer", async () => {
+		vi.stubGlobal("ResizeObserver", undefined);
+		const { view, metrics } = loadedView();
+		metrics.scrollHeight = 2000;
+		document.body.append(view.el);
+		expect(metrics.scrollTop).toBe(0);
+		await Promise.resolve();
+		expect(metrics.scrollTop).toBe(2000);
+	});
 	it("keeps the computer popover compact and the conversation usable at every width", () => {
 		const f = setup(),
 			toggle = button(f.view.el, "Open agent computer");
@@ -502,67 +595,58 @@ describe("conversation UI boundaries", () => {
 		expect(card()).toBeNull();
 	});
 
-	it.each([false, true])(
-		"clears settled failure activity and restores Stop (details arrive late: %s)",
-		async (late) => {
-			const nextRun = id(73);
-			const cancel = vi.fn(async () => "cancelled" as const);
-			const f = setup({
-				runControl: {
-					read: vi.fn(async () => ({
-						sessionId: session.sessionId,
-						staffAgentId: staff.id,
-						run: { runId: nextRun, status: "leased" as const, canCancel: true },
-					})),
-					cancel,
-				},
-			});
-			const run = {
-				runId: id(70),
-				staffAgentId: staff.id,
-				sourceKind: "session_turn" as const,
-				jobStatus: "failed" as const,
-				activity: "needs_attention" as const,
-				updatedAt: timestamp,
-			};
-			const recovery = {
-				runId: run.runId,
-				sourceKind: run.sourceKind,
-				jobStatus: run.jobStatus,
-				unsettledOperations: 0,
-			};
-			const pending = deferred<void>();
-			const discard = vi.spyOn(f.api, "discardFailedRun").mockReturnValue(pending.promise);
-			// Match the server's priority: the old failure masks the newer leased run until discarded.
-			vi.mocked(f.api.listStaffActivity).mockResolvedValue([
-				{ ...run, runId: nextRun, jobStatus: "leased", activity: "working" },
-			]);
-			f.company.store.set({ activity: [run], recoveries: late ? {} : { [run.runId]: recovery } });
-			await settle();
-			expect(f.company.agentState(staff.id)).toBe("failed");
-			expect(f.view.el.querySelector('[aria-label="Stop"]')).toBeNull();
-			const close = button(f.view.el, "Dismiss");
-			close.focus();
-			close.click();
-			close.click();
-			expect(f.view.el.querySelector(".run-failure")).toBeNull();
-			expect(document.activeElement).toBe(f.view.el.querySelector("textarea"));
-			if (late) {
-				expect(discard).not.toHaveBeenCalled();
-				f.company.store.set({ recoveries: { [run.runId]: recovery } });
-				await settle();
-			}
-			expect(discard).toHaveBeenCalledExactlyOnceWith(run.runId);
-			pending.resolve();
-			await settle();
-			expect(f.company.agentState(staff.id)).toBe("working");
-			expect(f.view.el.querySelector(".run-failure")).toBeNull();
-			expect(button(f.view.el, "Stop").disabled).toBe(false);
-			button(f.view.el, "Stop").click();
-			await settle();
-			expect(cancel).toHaveBeenCalledExactlyOnceWith(session.sessionId, nextRun, expect.any(AbortSignal));
-		},
-	);
+	it("dismisses durably at once, and the next run then shows with its Stop control", async () => {
+		const nextRun = id(73);
+		const cancel = vi.fn(async () => "cancelled" as const);
+		const f = setup({
+			runControl: {
+				read: vi.fn(async () => ({
+					sessionId: session.sessionId,
+					staffAgentId: staff.id,
+					run: { runId: nextRun, status: "leased" as const, canCancel: true },
+				})),
+				cancel,
+			},
+		});
+		const run = {
+			runId: id(70),
+			staffAgentId: staff.id,
+			sourceKind: "session_turn" as const,
+			jobStatus: "failed" as const,
+			activity: "needs_attention" as const,
+			updatedAt: timestamp,
+		};
+		const pending = deferred<void>();
+		const acknowledge = vi.spyOn(f.api, "acknowledgeFailedRun").mockReturnValue(pending.promise);
+		const discard = vi.spyOn(f.api, "discardFailedRun");
+		// Match the server's priority: the old failure masks the newer leased run until acknowledged.
+		vi.mocked(f.api.listStaffActivity).mockResolvedValue([
+			{ ...run, runId: nextRun, jobStatus: "leased", activity: "working" },
+		]);
+		// Details have not arrived yet: dismissing does not wait for them.
+		f.company.store.set({ activity: [run], recoveries: {} });
+		await settle();
+		expect(f.company.agentState(staff.id)).toBe("failed");
+		expect(f.view.el.querySelector('[aria-label="Stop"]')).toBeNull();
+		const close = button(f.view.el, "Dismiss");
+		close.focus();
+		close.click();
+		close.click();
+		expect(f.view.el.querySelector(".run-failure")).toBeNull();
+		expect(document.activeElement).toBe(f.view.el.querySelector("textarea"));
+		// Seen: the run stops standing in for the agent before the cloud has answered.
+		expect(acknowledge).toHaveBeenCalledExactlyOnceWith(run.runId);
+		expect(discard).not.toHaveBeenCalled();
+		expect(f.company.agentState(staff.id)).toBe("idle");
+		pending.resolve();
+		await settle();
+		expect(f.company.agentState(staff.id)).toBe("working");
+		expect(f.view.el.querySelector(".run-failure")).toBeNull();
+		expect(button(f.view.el, "Stop").disabled).toBe(false);
+		button(f.view.el, "Stop").click();
+		await settle();
+		expect(cancel).toHaveBeenCalledExactlyOnceWith(session.sessionId, nextRun, expect.any(AbortSignal));
+	});
 
 	it("offers Try again in the thread, runs it on the selected account, and reports a refusal in plain words", async () => {
 		const f = setup();
@@ -647,6 +731,7 @@ describe("conversation UI boundaries", () => {
 			runId: run.runId,
 			sourceKind: run.sourceKind,
 			jobStatus: run.jobStatus,
+			lastError: "Runner lease expired before durable completion",
 			unsettledOperations: 0,
 		};
 		const retryButton = () => f.view.el.querySelector<HTMLButtonElement>('.run-failure [data-action="retry-run"]');
@@ -689,7 +774,7 @@ describe("conversation UI boundaries", () => {
 		expect(turnRetry).toHaveBeenCalledExactlyOnceWith(turn.runId);
 	});
 
-	it("allows a displaced failure to be dismissed again when it becomes current", async () => {
+	it("offers Dismiss only for a refused run, and Try again for an interrupted one", async () => {
 		const f = setup();
 		const run = {
 			runId: id(70),
@@ -699,13 +784,54 @@ describe("conversation UI boundaries", () => {
 			activity: "needs_attention" as const,
 			updatedAt: timestamp,
 		};
-		const discard = vi.spyOn(f.api, "discardFailedRun").mockResolvedValue(undefined);
+		const details = (lastError: string) => ({
+			runId: run.runId,
+			sourceKind: run.sourceKind,
+			jobStatus: run.jobStatus,
+			lastError,
+			unsettledOperations: 0,
+		});
+		const card = () => f.view.el.querySelector<HTMLElement>(".run-failure");
+		f.company.store.set({ activity: [run], recoveries: { [run.runId]: details("You have hit your usage limit.") } });
+		await settle();
+		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe(
+			"Your model account has reached its usage limit.",
+		);
+		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual(["Dismiss"]);
+		f.company.store.set({
+			activity: [run],
+			recoveries: { [run.runId]: details("Runner lease expired before durable completion") },
+		});
+		await settle();
+		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual([
+			"Try again",
+			"Dismiss",
+		]);
+		// The card is one quiet line, like a company notice: no big mark, no rule.
+		expect(card()?.querySelector(".run-failure-mark")).toBeNull();
+		expect(card()?.querySelector(".run-failure-rule")).toBeNull();
+	});
+
+	it("keeps a dismissed failure dismissed when it is displaced and returns", async () => {
+		const f = setup();
+		const run = {
+			runId: id(70),
+			staffAgentId: staff.id,
+			sourceKind: "session_turn" as const,
+			jobStatus: "failed" as const,
+			activity: "needs_attention" as const,
+			updatedAt: timestamp,
+		};
+		const acknowledge = vi.spyOn(f.api, "acknowledgeFailedRun").mockResolvedValue(undefined);
+		// The cloud's next read reports a newer failure, which gets its own card.
+		vi.mocked(f.api.listStaffActivity).mockResolvedValue([{ ...run, runId: id(71) }]);
 		f.company.store.set({ activity: [run] });
 		await settle();
 		button(f.view.el, "Dismiss").click();
-		f.company.store.set({ activity: [{ ...run, runId: id(71) }] });
+		expect(acknowledge).toHaveBeenCalledExactlyOnceWith(run.runId);
 		await settle();
-		expect(discard).not.toHaveBeenCalled();
+		expect(f.view.el.querySelector(".run-failure")).not.toBeNull();
+		// The dismissed run comes back from a stale read: it stays dismissed, once.
 		f.company.store.set({
 			activity: [run],
 			recoveries: {
@@ -718,13 +844,12 @@ describe("conversation UI boundaries", () => {
 			},
 		});
 		await settle();
-		button(f.view.el, "Dismiss").click();
-		await settle();
-		expect(discard).toHaveBeenCalledExactlyOnceWith(run.runId);
+		expect(f.view.el.querySelector(".run-failure")).toBeNull();
+		expect(acknowledge).toHaveBeenCalledTimes(1);
 		expect(f.company.agentState(staff.id)).toBe("idle");
 	});
 
-	it("restores a retryable popup after a rejected dismissal across navigation", async () => {
+	it("keeps a dismissal across navigation, and shows the card again after a lost cloud reply", async () => {
 		const f = setup();
 		const run = {
 			runId: id(70),
@@ -741,10 +866,7 @@ describe("conversation UI boundaries", () => {
 			unsettledOperations: 0,
 		};
 		const pending = deferred<void>();
-		const discard = vi
-			.spyOn(f.api, "discardFailedRun")
-			.mockReturnValueOnce(pending.promise)
-			.mockResolvedValue(undefined);
+		const acknowledge = vi.spyOn(f.api, "acknowledgeFailedRun").mockReturnValueOnce(pending.promise);
 		vi.mocked(f.api.listStaffActivity).mockResolvedValue([run]);
 		vi.spyOn(f.api, "getRunRecovery").mockResolvedValue(recovery);
 		f.company.store.set({ activity: [run] });
@@ -760,17 +882,22 @@ describe("conversation UI boundaries", () => {
 		};
 		f.company.store.set({ recoveries: { [run.runId]: recovery } });
 		await settle();
-		expect(discard).toHaveBeenCalledExactlyOnceWith(run.runId);
+		expect(acknowledge).toHaveBeenCalledExactlyOnceWith(run.runId);
 		expect(reopened.el.querySelector(".run-failure")).toBeNull();
+		// Nothing reached the cloud: the failure is not settled, so the card returns
+		// in the current view and can be dismissed again.
 		pending.reject(new Error("Connection lost"));
 		await settle();
 		expect(reopened.el.querySelector(".run-failure-title")?.textContent).toBe(
 			"Fixture agent did not finish this run",
 		);
+		expect(f.company.agentState(staff.id)).toBe("failed");
+		acknowledge.mockResolvedValue(undefined);
 		vi.mocked(f.api.listStaffActivity).mockResolvedValue([]);
 		button(reopened.el, "Dismiss").click();
 		await settle();
-		expect(discard).toHaveBeenCalledTimes(2);
+		expect(acknowledge).toHaveBeenCalledTimes(2);
+		expect(reopened.el.querySelector(".run-failure")).toBeNull();
 		expect(f.company.agentState(staff.id)).toBe("idle");
 	});
 
