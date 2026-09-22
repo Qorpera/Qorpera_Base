@@ -7,12 +7,12 @@
 # image is replaced.
 set -euo pipefail
 
-EXPECTED_SERVICE_SHA256="eac252200fae8cbed86650019065e6e8a78682a4db202627dd3d32b0949693d2"
-EXPECTED_SERVICE_UNIT_SHA256="bc3ce4236ebe7e20b3f976c22359446ac3d0913d7c72507d8d2efe207de2fe08"
+EXPECTED_SERVICE_SHA256="e783e2c5f3b2d7bb774b2c329b6e3e6fb330c9c59272ca35688bf26451e53a9c"
+EXPECTED_SERVICE_UNIT_SHA256="f673571b39062b664ec2543b46d7b6728c70c4a00ede09dbc327c6a3b0e4b375"
 EXPECTED_HOST_UNIT_SHA256="655247d166a5f7f2a9b64059a8834226277b6097c3d685a970d7167e2c8b4845"
-EXPECTED_RUNNER_UNIT_SHA256="3205cf03e721268d27a9b7801ba25aed8d406768432cf232031e147f7ee17fb5"
+EXPECTED_RUNNER_UNIT_SHA256="b711db912dbb949c43ff0e711143fd0920f4ff6e36ff167acbb2274849e23963"
 EXPECTED_ENV_EXAMPLE_SHA256="ae99258bbec425defb2ecc8e5d133e75d3479cb2029fe3e9ecaca9662cc1060f"
-EXPECTED_ORCHESTRATOR_SHA256="176eab0132447fcb0ebcf920e3a6e5bad91bc24119ab4e3f8f881aa4bbbb70ee"
+EXPECTED_ORCHESTRATOR_SHA256="8930418b3bda2e17faa40023ef67dc82f84c9e48a76f76f2091f50ed1bc4a5b9"
 EXPECTED_ORCHESTRATOR_UNIT_SHA256="12128aaf4be23d759e940407bf32c99b145aa8e927fe31f730a15ce7c447f4df"
 STAGING_ROOT="/var/lib/qorpera-bootstrap/shared-execution"
 SLOT_COUNT="${QORPERA_SHARED_EXECUTION_SLOTS:-16}"
@@ -95,8 +95,9 @@ if ! getent passwd qorpera-orchestrator >/dev/null; then
 fi
 
 install -d -o root -g root -m 0755 /etc/qorpera "${INSTALL_ROOT}" "${ORCHESTRATOR_ROOT}"
-install -d -o root -g root -m 0700 /etc/qorpera/shared-execution-credentials "${STATE_ROOT}" "${STATE_ROOT}/journals" "${IDENTITY_ROOT}"
-install -d -o root -g root -m 0711 "${STATE_ROOT}/slots"
+install -d -o root -g root -m 0700 /etc/qorpera/shared-execution-credentials "${STATE_ROOT}/journals" "${IDENTITY_ROOT}"
+# Slot accounts traverse the state root to their own scratch; journals stay root-only.
+install -d -o root -g root -m 0711 "${STATE_ROOT}" "${STATE_ROOT}/slots"
 install -d -o qorpera-orchestrator -g qorpera-orchestrator -m 0700 /var/lib/qorpera-orchestrator
 install -o root -g root -m 0555 "${STAGING_ROOT}/qorpera-shared-execution-service.mjs" "${INSTALL_ROOT}/qorpera-shared-execution-service.mjs"
 install -o root -g root -m 0555 "${STAGING_ROOT}/qorpera-runner-orchestrator.mjs" "${ORCHESTRATOR_ROOT}/qorpera-runner-orchestrator.mjs"

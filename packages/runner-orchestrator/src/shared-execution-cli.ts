@@ -115,12 +115,29 @@ async function main(): Promise<void> {
 	const stop = (): void => shutdown.abort();
 	process.once("SIGINT", stop);
 	process.once("SIGTERM", stop);
+	// Retirement must not depend on the orchestrator being up: a finished
+	// run's slot and its company-ceiling reservation are released within a few
+	// seconds either way. Failures are counted, never printed with their text.
+	let reconcileFailures = 0;
+	const reconcile = async (): Promise<void> => {
+		try {
+			await backend.reconcile(shutdown.signal);
+			reconcileFailures = 0;
+		} catch {
+			if (++reconcileFailures === 1 || reconcileFailures % 60 === 0)
+				console.error(
+					JSON.stringify({ schema: "qorpera.shared-execution-reconcile/v1", failures: reconcileFailures }),
+				);
+		}
+	};
+	const timer = setInterval(() => void reconcile(), 5000);
 	try {
 		await service.start();
 		await new Promise<void>((resolveWait) =>
 			shutdown.signal.addEventListener("abort", () => resolveWait(), { once: true }),
 		);
 	} finally {
+		clearInterval(timer);
 		process.removeListener("SIGINT", stop);
 		process.removeListener("SIGTERM", stop);
 		await service.close();

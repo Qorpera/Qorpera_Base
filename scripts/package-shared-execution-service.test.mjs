@@ -58,8 +58,11 @@ test("packages and pins the shared execution service", async () => {
 		assert.match(hostUnit, /^Restart=no$/m);
 		assert.match(runnerUnit, /^User=qorpera-shared-runner-%i$/m);
 		assert.match(runnerUnit, /^BindsTo=qorpera-shared-run-host@%i\.service$/m);
-		assert.match(runnerUnit, /^Environment=QORPERA_RUNNER_CONFIG=%d\/qorpera-runner-config$/m);
-		assert.match(runnerUnit, /^LoadCredential=qorpera-runner-config:/m);
+		assert.match(
+			runnerUnit,
+			/^Environment=QORPERA_RUNNER_CONFIG=\/var\/lib\/qorpera-shared-execution\/slots\/%i\/runner\/config\.json$/m,
+		);
+		assert.ok(!runnerUnit.includes("qorpera-runner-config"), "the runner configuration is not a credential");
 		assert.match(runnerUnit, /^RestrictNamespaces=yes$/m);
 		assert.ok(!runnerUnit.includes("poweroff"), "a sandbox runner must not power the execution host off");
 		const installer = contents.get("install-shared-execution-guest.sh").toString("utf-8");

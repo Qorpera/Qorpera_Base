@@ -324,7 +324,6 @@ describe("shared execution provider backend", () => {
 			"qorpera-office-native",
 			"qorpera-runner-activation",
 			"qorpera-runner-assignment",
-			"qorpera-runner-config",
 			"qorpera-supabase-service-key",
 		]);
 		for (const name of credentials) expect((await stat(join(slotRun, "credentials", name))).mode & 0o077).toBe(0);
@@ -348,7 +347,9 @@ describe("shared execution provider backend", () => {
 		);
 		expect(environment).toContain("QORPERA_NATIVE_RUNTIME=company-path-v1\n");
 		expect(environment).not.toContain("TOKEN");
-		const runnerConfig = JSON.parse(await readFile(join(slotRun, "credentials", "qorpera-runner-config"), "utf-8"));
+		const runnerConfigPath = join(f.stateRoot, "slots", "0", "runner", "config.json");
+		expect((await stat(runnerConfigPath)).mode & 0o077).toBe(0);
+		const runnerConfig = JSON.parse(await readFile(runnerConfigPath, "utf-8"));
 		expect(runnerConfig).toMatchObject({
 			schema: "qorpera.ephemeral-runner-service/v1",
 			runner_id: runnerId,

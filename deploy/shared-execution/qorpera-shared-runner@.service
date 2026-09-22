@@ -12,12 +12,11 @@ Group=qorpera-shared-runner-%i
 WorkingDirectory=/var/lib/qorpera-shared-execution/slots/%i/runner
 Environment=HOME=/var/lib/qorpera-shared-execution/slots/%i/runner
 Environment=XDG_RUNTIME_DIR=/run/qorpera-shared-runner/%i
-# The runner configuration travels as a credential: PID 1 hands it over owned
-# by this slot's account, so no directory is shared with the service.
-Environment=QORPERA_RUNNER_CONFIG=%d/qorpera-runner-config
+# The service writes the configuration into this slot's runner state, owned by
+# the slot's runner account, as the one-run guest bootstrap installs it.
+Environment=QORPERA_RUNNER_CONFIG=/var/lib/qorpera-shared-execution/slots/%i/runner/config.json
 RuntimeDirectory=qorpera-shared-runner/%i
 RuntimeDirectoryMode=0700
-LoadCredential=qorpera-runner-config:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-runner-config
 LoadCredential=qorpera-runner-activation:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-runner-activation
 LoadCredential=qorpera-runner-assignment:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-runner-assignment
 LoadCredential=qorpera-native-bridge:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-native-bridge

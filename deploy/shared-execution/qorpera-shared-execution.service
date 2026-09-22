@@ -26,6 +26,11 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectSystem=strict
+# Slot material for PID 1 lives on tmpfs and must survive a service restart
+# while sandboxes are running; only retire removes it.
+RuntimeDirectory=qorpera-shared-execution
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
 ReadWritePaths=/var/lib/qorpera-shared-execution /run/qorpera-shared-execution
 ProtectHome=yes
 ProtectKernelTunables=yes

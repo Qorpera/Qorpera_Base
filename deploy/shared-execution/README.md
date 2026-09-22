@@ -39,9 +39,9 @@ What does **not** change:
 | `/run/qorpera-shared-execution/slots/<n>/{credentials/*,native-provider.env}` | root 0600, tmpfs | what PID 1 hands to the two units (`LoadCredential=`, `EnvironmentFile=`) |
 
 Slot `n` listens on `portBase + 2n` (native host) and `portBase + 2n + 1`
-(assignment inbox), both loopback. The runner configuration travels as the
-`qorpera-runner-config` credential, so no directory is shared between the
-service and a slot.
+(assignment inbox), both loopback. The runner configuration is written into
+the slot's runner state, owned by the slot's runner account; no directory is
+shared between the service and a slot.
 
 ## Sandbox lifecycle
 

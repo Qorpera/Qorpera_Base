@@ -236,6 +236,11 @@ class SystemctlUnitControl implements SharedExecutionUnitControl {
 	}
 	async stop(unit: string, signal?: AbortSignal): Promise<void> {
 		await execFileAsync("/usr/bin/systemctl", ["stop", unit], { signal, timeout: 90_000 });
+		// A one-run unit that ended non-zero stays "failed" until reset; the
+		// slot is free either way, so clear it before the next start.
+		await execFileAsync("/usr/bin/systemctl", ["reset-failed", unit], { signal, timeout: 10_000 }).catch(
+			() => undefined,
+		);
 	}
 	async active(unit: string, signal?: AbortSignal): Promise<boolean> {
 		try {
@@ -752,16 +757,18 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		return account;
 	}
 
+	/** The slot accounts traverse the state root to reach their own scratch
+	 * (0711); journals and the tmpfs material stay root-only (0700). */
 	async #ensureRoots(): Promise<void> {
-		for (const path of [
-			this.#config.stateRoot,
-			join(this.#config.stateRoot, "journals"),
-			join(this.#config.stateRoot, "slots"),
-			this.#config.runRoot,
-			join(this.#config.runRoot, "slots"),
-		]) {
-			await mkdir(path, { recursive: true, mode: 0o700 });
-			await chmod(path, 0o700);
+		for (const [path, mode] of [
+			[this.#config.stateRoot, 0o711],
+			[join(this.#config.stateRoot, "journals"), 0o700],
+			[join(this.#config.stateRoot, "slots"), 0o711],
+			[this.#config.runRoot, 0o700],
+			[join(this.#config.runRoot, "slots"), 0o700],
+		] as const) {
+			await mkdir(path, { recursive: true, mode });
+			await chmod(path, mode);
 		}
 	}
 
@@ -791,9 +798,8 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 	}
 
 	/** Everything PID 1 hands to the two units: credentials (LoadCredential=)
-	 * and the native host environment (EnvironmentFile=). The runner's
-	 * configuration travels as a credential too, so it arrives owned by the
-	 * runner account without any shared directory. */
+	 * and the native host environment (EnvironmentFile=), plus the runner
+	 * configuration written into the runner account's own state directory. */
 	async #writeMaterial(
 		current: SharedExecutionJournal,
 		work: CloudRunnerWork,
@@ -832,6 +838,8 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		const runnerAccount = await this.#slotAccount("runner", current.slot);
 		const hostState = join(this.#slotState(current.slot), "host");
 		const runnerState = join(this.#slotState(current.slot), "runner");
+		await mkdir(this.#slotState(current.slot), { recursive: true, mode: 0o711 });
+		await chmod(this.#slotState(current.slot), 0o711);
 		for (const [path, account] of [
 			[hostState, hostAccount],
 			[runnerState, runnerAccount],
@@ -899,12 +907,16 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			[join(credentialDirectory, "qorpera-office-native"), office ? `${office.token}\n` : ""],
 			[join(credentialDirectory, "qorpera-native-provider-master-key"), `${identity.masterKey}\n`],
 			[join(credentialDirectory, "qorpera-native-identity-epoch"), identity.epochCredential],
-			[join(credentialDirectory, "qorpera-runner-config"), `${runnerConfig}\n`],
 		];
 		for (const [path, content] of files) {
 			await rm(path, { force: true });
 			await writePrivateFile(path, content);
 		}
+		// The runner reads its configuration from a file it owns, as the one-run
+		// guest bootstrap installs it under the runner account.
+		const runnerConfigPath = join(runnerState, "config.json");
+		await rm(runnerConfigPath, { force: true });
+		await writePrivateFile(runnerConfigPath, `${runnerConfig}\n`, runnerAccount);
 		return {};
 	}
 
