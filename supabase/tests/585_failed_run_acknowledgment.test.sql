@@ -71,20 +71,6 @@ begin
 		or (v_result ->> 'run_id')::uuid is distinct from v_run_id then
 		raise exception 'acknowledgment did not answer with the acknowledged run';
 	end if;
-	if (select count(*) from public.qorpera_execution_run_events as event
-		where event.run_id = v_run_id and event.event_type = 'recovery_acknowledged'
-			and event.payload ->> 'resolved_by_user_id' = '15000000-0000-4000-8000-000000000001') <> 1 then
-		raise exception 'acknowledgment was not recorded once for the member';
-	end if;
-	if exists (select 1 from public.qorpera_run_operation_receipts as receipt
-		where receipt.run_id = v_run_id and receipt.status <> 'ambiguous') then
-		raise exception 'acknowledgment touched an operation receipt';
-	end if;
-	if exists (select 1 from public.qorpera_runner_jobs as job
-		where job.id = (current_setting('qorpera_test.acknowledged_run')::jsonb ->> 'job_id')::uuid
-			and job.status <> 'failed') then
-		raise exception 'acknowledgment changed the job';
-	end if;
 	-- The agent's activity no longer reports the acknowledged failure.
 	if exists (
 		select 1 from jsonb_array_elements(public.qorpera_list_staff_execution_activity(v_environment)) as entry
@@ -97,10 +83,6 @@ begin
 	if (v_result ->> 'resolved')::boolean is not true then
 		raise exception 'second acknowledgment was refused';
 	end if;
-	if (select count(*) from public.qorpera_execution_run_events as event
-		where event.run_id = v_run_id and event.event_type = 'recovery_acknowledged') <> 1 then
-		raise exception 'second acknowledgment was recorded again';
-	end if;
 	-- Acknowledging does not unlock what the unknown outcome forbids.
 	begin
 		perform public.qorpera_resolve_failed_execution_run(v_run_id, 'retry');
@@ -110,6 +92,31 @@ begin
 	-- The run's details remain readable for the thread.
 	if public.qorpera_get_execution_run_recovery(v_run_id) -> 'job' ->> 'status' is distinct from 'failed' then
 		raise exception 'acknowledged run lost its recovery details';
+	end if;
+end
+$$;
+
+-- What the acknowledgment wrote, and did not write (tables are private to members).
+reset role;
+select set_config('request.jwt.claims', '{"sub":"00000000-0000-4000-8000-000000000000","role":"service_role"}', false);
+set role service_role;
+do $$
+declare
+	v_run_id uuid := (current_setting('qorpera_test.acknowledged_run')::jsonb ->> 'run_id')::uuid;
+begin
+	if (select count(*) from public.qorpera_execution_run_events as event
+		where event.run_id = v_run_id and event.event_type = 'recovery_acknowledged'
+			and event.payload ->> 'resolved_by_user_id' = '15000000-0000-4000-8000-000000000001') <> 1 then
+		raise exception 'acknowledgment was not recorded exactly once for the member';
+	end if;
+	if exists (select 1 from public.qorpera_run_operation_receipts as receipt
+		where receipt.run_id = v_run_id and receipt.status <> 'ambiguous') then
+		raise exception 'acknowledgment touched an operation receipt';
+	end if;
+	if exists (select 1 from public.qorpera_runner_jobs as job
+		where job.id = (current_setting('qorpera_test.acknowledged_run')::jsonb ->> 'job_id')::uuid
+			and job.status <> 'failed') then
+		raise exception 'acknowledgment changed the job';
 	end if;
 end
 $$;
