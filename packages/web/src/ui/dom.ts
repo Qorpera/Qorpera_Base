@@ -145,6 +145,7 @@ const ICON_PATHS: Record<string, string[]> = {
 	plus: ["M12 5v14M5 12h14"],
 	feedback: ["M21 15a4 4 0 0 1-4 4H7l-4 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"],
 	close: ["m6 6 12 12M6 18 18 6"],
+	lock: ["M5 11h14v10H5Z", "M8 11V7a4 4 0 0 1 8 0v4"],
 	chevron: ["m9 5 7 7-7 7"],
 	back: ["m14 5-7 7 7 7M7 12h14"],
 	computer: ["M4 3h16a1 1 0 0 1 1 1v12H3V4a1 1 0 0 1 1-1Z", "M8 21h8M12 16v5"],
