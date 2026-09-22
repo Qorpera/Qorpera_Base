@@ -38,6 +38,18 @@ const accounts: NativeExecutionConnections = {
 		},
 	],
 };
+function observed(observedAt: string, resetAt?: string): NativeExecutionConnections {
+	return {
+		...accounts,
+		connections: accounts.connections.map((account) => ({
+			...account,
+			providerAccountUsage: {
+				observedAt,
+				windows: [{ id: "primary" as const, label: "5 hours", usedPercent: 30, ...(resetAt ? { resetAt } : {}) }],
+			},
+		})),
+	};
+}
 function setup() {
 	const f = fixture();
 	f.cloud.config.nativeProviderLoginUrl = "https://fixture.invalid/functions/v1/native-provider-login/";
@@ -160,6 +172,53 @@ describe("account metadata refresh transport", () => {
 		f.list.mockResolvedValueOnce({ connections: [] });
 		await f.client.refreshAccountMetadata!();
 		expect(f.fetcher).not.toHaveBeenCalled();
+	});
+	it("does not create a maintenance request while every account's usage was observed within the last minute", async () => {
+		const f = setup();
+		f.list.mockResolvedValue(observed(new Date(Date.now() - 30_000).toISOString()));
+		await f.client.refreshAccountMetadata!();
+		await f.client.refreshAccountMetadata!();
+		expect(f.fetcher).not.toHaveBeenCalled();
+		expect(f.list).toHaveBeenCalledTimes(2);
+	});
+	it.each([
+		["a minute-old observation", observed(new Date(Date.now() - 61_000).toISOString())],
+		["a passed window reset", observed(new Date().toISOString(), new Date(Date.now() - 1_000).toISOString())],
+	])("treats %s as stale and asks for a new observation", async (_, accounts) => {
+		const f = setup();
+		f.receipt.status = "completed";
+		f.list.mockResolvedValueOnce(accounts);
+		await f.client.refreshAccountMetadata!();
+		expect(f.calls.map((c) => c.url.split("/").pop())).toEqual(["qorpera_begin_native_account_refresh"]);
+	});
+	it("asks admission at most once per expiry window, however often views ask", async () => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		try {
+			const f = setup();
+			const first = f.client.refreshAccountMetadata!();
+			await f.guestStarted.promise;
+			f.finish();
+			await first;
+			expect(f.calls).toHaveLength(2);
+			// The thread view and the Connections page ask again every minute; the
+			// completed attempt answers them until it expires, without any request.
+			for (let minute = 1; minute < 5; minute++) {
+				vi.setSystemTime(Date.now() + 60_000);
+				await f.client.refreshAccountMetadata!();
+			}
+			expect(f.calls).toHaveLength(2);
+			expect(f.list).toHaveBeenCalledOnce();
+			vi.setSystemTime(Date.parse(f.receipt.expires_at) + 1);
+			f.receipt.status = "completed";
+			f.receipt.expires_at = new Date(Date.now() + 300_000).toISOString();
+			await f.client.refreshAccountMetadata!();
+			expect(f.calls).toHaveLength(3);
+			const before = JSON.parse(String(f.calls[0]?.init?.body)),
+				after = JSON.parse(String(f.calls[2]?.init?.body));
+			expect(after.p_client_request_id).not.toBe(before.p_client_request_id);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 	it("uses the server's completed attempt cache without booting a guest", async () => {
 		const f = setup();
