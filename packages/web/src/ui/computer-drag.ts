@@ -168,8 +168,8 @@ export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): () 
 		"pointermove",
 		(event) => {
 			if (!drag || event.pointerId !== drag.id) {
-				// Only a mouse shows a cursor, so only a mouse pays for the edge lookup.
-				if (drag || event.pointerType !== "mouse" || expanded()) return;
+				// A mouse or a hovering pen shows a cursor; a finger does not, so it skips the edge lookup.
+				if (drag || event.pointerType === "touch" || expanded()) return;
 				const onControl =
 					event.target instanceof Element && event.target.closest("button, a, input, textarea, select");
 				const edge = onControl ? undefined : edgeAt(event);

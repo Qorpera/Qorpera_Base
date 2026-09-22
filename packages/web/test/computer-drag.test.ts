@@ -383,6 +383,11 @@ describe("computer preview resizing", () => {
 		big(f);
 		pointer(f.canvas, "pointermove", { clientX: 800, clientY: 341, pointerType: "touch" });
 		expect(f.panel.dataset.resize).toBeUndefined();
+		// A hovering pen moves a cursor, so it is named an edge, with the pen's wider band.
+		pointer(f.canvas, "pointermove", { clientX: 800, clientY: 329, pointerType: "pen" });
+		expect(f.panel.dataset.resize).toBe("s");
+		pointer(f.canvas, "pointermove", { clientX: 800, clientY: 300, pointerType: "pen" });
+		expect(f.panel.dataset.resize).toBeUndefined();
 		// 16px inside the bottom edge: a move for a mouse, a resize for a finger.
 		pointer(f.canvas, "pointerdown", { clientX: 800, clientY: 329, pointerType: "touch" });
 		pointer(f.panel, "pointermove", { clientX: 800, clientY: 629, pointerType: "touch" });
