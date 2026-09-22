@@ -117,13 +117,15 @@ export class ConnectionsView {
 		this.#refreshing ??= this.#readUntilCurrent();
 		return this.#refreshing;
 	}
-	#refreshUsage(): Promise<void> {
+	/** `force` is the member's own Refresh: a new observation even while a
+	 * recent one would otherwise answer. */
+	#refreshUsage(force = false): Promise<void> {
 		if (this.#lifetime.signal.aborted) return Promise.resolve();
 		if (!this.#client.refreshAccountMetadata) return this.#refresh();
-		this.#metadataRefresh ??= this.#readUsage();
+		this.#metadataRefresh ??= this.#readUsage(force);
 		return this.#metadataRefresh;
 	}
-	async #readUsage(): Promise<void> {
+	async #readUsage(force: boolean): Promise<void> {
 		this.#usageUpdating = true;
 		this.#usageError = undefined;
 		try {
@@ -131,7 +133,7 @@ export class ConnectionsView {
 			// allowances. No sign-in or model message is started by this read.
 			await this.#refresh();
 			if (this.#lifetime.signal.aborted || !this.#connections?.connections.some(live)) return;
-			await this.#client.refreshAccountMetadata!(this.#lifetime.signal);
+			await this.#client.refreshAccountMetadata!(this.#lifetime.signal, force);
 			if (!this.#lifetime.signal.aborted) await this.#refresh();
 		} catch {
 			if (!this.#lifetime.signal.aborted) this.#usageError = "Usage could not be refreshed. Try again.";
@@ -455,7 +457,7 @@ export class ConnectionsView {
 				),
 		);
 		const canConnect = Boolean(this.#client.onboardingAvailable && this.#begin);
-		const refresh = button(this.#usageUpdating ? "Refreshing…" : "Refresh", () => void this.#refreshUsage(), {
+		const refresh = button(this.#usageUpdating ? "Refreshing…" : "Refresh", () => void this.#refreshUsage(true), {
 			small: true,
 			disabled: this.#loading || this.#usageUpdating,
 		});
