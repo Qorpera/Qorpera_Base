@@ -382,6 +382,19 @@ change that was being typed; leaving the conversation, changing company or
 losing access drops it. Members without write access see the same popup read
 only. The description is taller: at least five lines, growing to thirteen.
 
+## 2026-09-22 — The agent details popup has one static height
+
+**Decision (Jonas).** The details page and the routines page of the agent
+details popup are the same fixed size: the popup's largest size, which is the
+details page with a thirteen-line description (566px tall at the 720px width).
+A short description or a short routine list no longer shrinks the popup, and
+switching pages no longer changes its size. The description fills the space
+under the identity, never less than five lines, and scrolls inside that box
+when the text is longer. Only a short viewport makes the popup smaller; then
+the page scrolls as before. This replaces the "at least five lines, growing to
+thirteen" sizing in the 2026-09-19 entry; the rest of that entry stands. The
+group chat popup shares the frame but keeps sizing itself to its content.
+
 ## 2026-09-19 — New conversation is one list under the To: field
 
 **Decision (Jonas).** The new-conversation screen follows Grok's bot picker:

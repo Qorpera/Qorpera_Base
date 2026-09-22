@@ -195,7 +195,15 @@
 .agent-details { z-index: 100; top: 56px; width: min(720px, calc(100vw - 24px)); margin: 0; max-height: calc(100dvh - 72px); overflow: hidden; }
 .agent-details[open] { display: flex; flex-direction: column; }
 .agent-details > .surface-dialog-content { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; }
-.agent-details:not([data-page="details"]) > .surface-dialog-content { min-height: 260px; padding-top: 0; }
+/* An agent's popup has one static height on every page: the details page with
+ * a 13-line description, as tall as it gets. The parts: 2px border, 48px
+ * content padding, 132px identity row, the description's 6px margin, 16px
+ * padding and 13 lines of 1.6 x 13px, 30px status row, 61.5px notifications
+ * row. A short description or a short routine list never shrinks it; only a
+ * short viewport does, through the max-height above. The group popup, which
+ * shares the frame, keeps sizing itself to its content. */
+.staff-details { --agent-details-height: calc(2px + 48px + 132px + 6px + 16px + 13 * 1.6 * 13px + 30px + 61.5px); height: var(--agent-details-height); }
+.agent-details:not([data-page="details"]) > .surface-dialog-content { padding-top: 0; }
 /* The figure picker may reach past the card, as on the desktop. */
 .agent-details.is-choosing-figure, .agent-details.is-choosing-figure > .surface-dialog-content { overflow: visible; }
 .agent-page-button[aria-pressed="true"] { background: var(--hover); color: var(--text); }
@@ -243,7 +251,8 @@
 .agent-figure-picker .color-choice[aria-checked="true"]::after { border-color: #888884; }
 
 /* Name, title and description read as text and are edited in place. The
- * sizer mirrors the text so a field is as wide, or tall, as what it holds. */
+ * sizer mirrors the text so a field is as wide, or tall, as what it holds
+ * (in the agent popup the description fills the frame instead; see below). */
 .agent-inline-field { display: flex; flex-direction: row; align-items: center; gap: 6px; width: fit-content; max-width: calc(100% + 16px); min-width: 0; margin: 0 -8px; padding: 2px 8px; border-radius: 7px; font-weight: inherit; cursor: default; transition: background 120ms ease, box-shadow 120ms ease; }
 .agent-inline-field.is-editable { cursor: text; }
 .agent-inline-field.is-editable:hover { background: #f2f2ef; }
@@ -270,6 +279,14 @@
 .agent-inline-description > .agent-inline-size::after { min-height: calc(5 * 1.6em); max-height: calc(13 * 1.6em); white-space: pre-wrap; overflow-wrap: anywhere; }
 .agent-inline-description textarea { height: 100%; resize: none; overflow-y: auto; overflow-wrap: anywhere; line-height: inherit; scrollbar-width: thin; }
 .agent-inline-description > .icon { position: absolute; top: 12px; right: 12px; }
+/* In the agent popup the description fills what the static frame leaves under
+ * the identity, never less than five lines, and scrolls inside that box: its
+ * length does not size the panel, and the sizer's mirror is not needed. */
+.agent-details-page { display: flex; flex-direction: column; min-height: 100%; }
+.agent-details-page .agent-inline-description { display: flex; flex: 1 1 auto; flex-direction: column; min-height: calc(5 * 1.6em + 16px); }
+.agent-details-page .agent-inline-description > .agent-inline-size { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; }
+.agent-details-page .agent-inline-description > .agent-inline-size::after { display: none; }
+.agent-details-page .agent-inline-description textarea { flex: 1 1 auto; height: auto; }
 .agent-details-status { display: flex; align-items: center; gap: 10px; min-height: 26px; margin: 4px 0 0; color: var(--text-muted); font-size: 12px; }
 .agent-notifications { display: flex; flex-direction: row; align-items: center; gap: 12px; border-top: 1px solid var(--border); margin-top: 8px; padding-top: 16px; font-size: 12px; font-weight: 500; }
 .agent-notifications > span { display: grid; gap: 2px; flex: 1; }
