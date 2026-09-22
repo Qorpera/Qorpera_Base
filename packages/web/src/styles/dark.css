@@ -158,6 +158,12 @@
 :root[data-theme="dark"] .settings-choice:hover .settings-swatch { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1), 0 0 0 2px #5c5b58; }
 :root[data-theme="dark"] .settings-choice > input:checked ~ .settings-swatch { box-shadow: 0 0 0 2px #f4f3f0; }
 :root[data-theme="dark"] .settings-choice > input:focus-visible ~ .settings-swatch { outline-color: #6f9be0; }
+:root[data-theme="dark"] .settings-plan-offer { border-color: rgba(255, 255, 255, 0.1); background: #333332; }
+:root[data-theme="dark"] .settings-plan-current { background: var(--primary); color: var(--on-primary); }
+:root[data-theme="dark"] :is(.settings-plan-price, .settings-plan-tagline, .settings-plan-includes-label, .billing-label, .settings-period) { color: #a3a29d; }
+:root[data-theme="dark"] .settings-plan-price strong { color: var(--text); }
+:root[data-theme="dark"] .settings-plan-discount { color: #7fb39f; }
+:root[data-theme="dark"] .billing-row + .billing-row { border-color: rgba(255, 255, 255, 0.1); }
 :root[data-theme="dark"] .settings-usage progress::-webkit-progress-bar { background: #4a4a48; }
 :root[data-theme="dark"] .settings-usage progress::-webkit-progress-value { background: #a9a8a3; }
 :root[data-theme="dark"] .settings-usage progress::-moz-progress-bar { background: #a9a8a3; }

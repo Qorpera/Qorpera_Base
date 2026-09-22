@@ -27,7 +27,8 @@ const TABS = [
 		id: "plan",
 		label: "Plan & usage",
 		icon: "plan",
-		keywords: "plan billing subscription usage storage freemium pro",
+		keywords:
+			"plan billing subscription usage storage trial upgrade price payment card invoices computer hours basis standard dedicated",
 	},
 	{
 		id: "friends",

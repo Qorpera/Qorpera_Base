@@ -382,11 +382,13 @@ describe("settings session lifecycle", () => {
 		expect(f.api.getCompanyFile).toHaveBeenCalledTimes(1);
 		loading.resolve({ ...file, storageUsedBytes: 2_000_000 });
 		await draw();
-		expect(content().querySelector(".settings-usage strong")?.textContent).toMatch(/^1\.9 MiB used of /);
-		expect(content().querySelector(".settings-usage small:not(.settings-eyebrow)")?.textContent).toBe(
-			profileA.profileName,
+		expect(content().querySelector(".settings-usage:not(.settings-hours) strong")?.textContent).toMatch(
+			/^1\.9 MiB used of /,
 		);
-		expect(content().querySelector(".settings-usage progress")).not.toBeNull();
+		expect(
+			content().querySelector(".settings-usage:not(.settings-hours) small:not(.settings-eyebrow)")?.textContent,
+		).toBe(profileA.profileName);
+		expect(content().querySelector(".settings-usage:not(.settings-hours) progress")).not.toBeNull();
 		// The Company tab reuses what the Plan tab loaded.
 		click(f.root, "#settings-tab-company");
 		await draw();
@@ -405,13 +407,13 @@ describe("settings session lifecycle", () => {
 		await draw();
 		expect(f.api.getCompanyFile).toHaveBeenCalledTimes(2);
 		expect(content().textContent).not.toContain("Storage information unavailable");
-		expect(content().querySelector(".settings-usage progress")).not.toBeNull();
+		expect(content().querySelector(".settings-usage:not(.settings-hours) progress")).not.toBeNull();
 		const picker = f.root.querySelector<HTMLSelectElement>(".settings-company-picker")!;
 		picker.value = "";
 		picker.dispatchEvent(new Event("change"));
 		await draw();
 		expect(content().textContent).toContain("Choose a company to see its storage.");
-		expect(content().querySelector(".settings-usage")).toBeNull();
+		expect(content().querySelector(".settings-usage:not(.settings-hours)")).toBeNull();
 	});
 	it("discards a late account response after closing settings or changing account", async () => {
 		const f = await setup(),
