@@ -446,6 +446,18 @@ export function parseRunDismissal(value: unknown, runId: string): void {
 	}
 }
 
+/** qorpera_resolve_failed_execution_run(acknowledge): the failure was seen; the run no longer stands in for the agent. */
+export function parseRunAcknowledgment(value: unknown, runId: string): void {
+	const result = record(value, "run acknowledgment");
+	if (
+		uuid(result.run_id, "acknowledged run id") !== runId.toLowerCase() ||
+		result.action !== "acknowledge" ||
+		result.resolved !== true
+	) {
+		throw new CloudShapeError("run acknowledgment");
+	}
+}
+
 /** qorpera_resolve_failed_execution_run(retry): the session turn's inputs are queued again. */
 export function parseRunRetry(value: unknown, runId: string): void {
 	const result = record(value, "run retry");

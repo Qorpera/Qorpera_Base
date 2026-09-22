@@ -512,21 +512,33 @@ describe("agent execution state", () => {
 		expect(other.company.agentState(staff.id)).toBe("failed");
 	});
 
-	it("reads the run again after a refused dismissal and keeps the newest answer", async () => {
+	it("falls back to discard when the cloud cannot acknowledge, and keeps an open proposal as a decision", async () => {
 		const { api, company } = controller();
 		const first = deferred<HostedRunRecovery>();
 		const read = vi
 			.spyOn(api, "getRunRecovery")
 			.mockReturnValueOnce(first.promise)
 			.mockResolvedValueOnce(recovery({ proposalId: id(71) }));
-		vi.spyOn(api, "discardFailedRun").mockRejectedValue(
-			new Error("execution recovery still has an unresolved durable outcome"),
-		);
+		const acknowledge = vi
+			.spyOn(api, "acknowledgeFailedRun")
+			.mockRejectedValue(
+				new CloudRpcError(
+					"qorpera_resolve_failed_execution_run",
+					{ message: "execution recovery action is unavailable", code: "55000" },
+					400,
+				),
+			);
+		const discard = vi
+			.spyOn(api, "discardFailedRun")
+			.mockRejectedValue(new Error("execution recovery still has an unresolved durable outcome"));
 		vi.mocked(api.listStaffActivity).mockResolvedValue([row("failed", "needs_attention")]);
 		await company.refreshActivity();
-		await expect(company.dismissFailedRun(id(70))).rejects.toThrow("unresolved durable outcome");
+		await expect(company.dismissFailedRun(id(70))).resolves.toBeUndefined();
 		await settle();
+		expect(acknowledge).toHaveBeenCalledExactlyOnceWith(id(70));
+		expect(discard).toHaveBeenCalledExactlyOnceWith(id(70));
 		expect(read).toHaveBeenCalledTimes(2);
+		// Dismissed, but the run left an open proposal: that decision is still the member's.
 		expect(company.agentState(staff.id)).toBe("decision");
 		// The first read answers last and must not undo the newer one.
 		first.resolve(recovery());
@@ -534,10 +546,29 @@ describe("agent execution state", () => {
 		expect(company.agentState(staff.id)).toBe("decision");
 	});
 
-	it("keeps a failed run whose details cannot be read, and dismisses it", async () => {
+	it("dismisses the agent's failure when the member sends a new message", async () => {
+		const { api, controller, write } = company();
+		// The thread belongs to the agent whose run failed.
+		controller.store.set({ sessions: [{ ...session, staffAgentId: staff.id }] });
+		vi.spyOn(api, "getRunRecovery").mockRejectedValue(new Error("execution recovery is unavailable"));
+		const acknowledge = vi.spyOn(api, "acknowledgeFailedRun").mockResolvedValue();
+		vi.mocked(api.listStaffActivity).mockResolvedValue([row("failed", "needs_attention")]);
+		await controller.refreshActivity();
+		await settle();
+		expect(controller.agentState(staff.id)).toBe("failed");
+		vi.mocked(api.listStaffActivity).mockResolvedValue([]);
+		expect(await controller.sendPrompt(session.sessionId, "Once more, please.")).toBe(true);
+		await settle();
+		expect(write).toHaveBeenCalledTimes(1);
+		expect(acknowledge).toHaveBeenCalledExactlyOnceWith(id(70));
+		expect(controller.agentState(staff.id)).toBe("idle");
+	});
+
+	it("keeps a failed run whose details cannot be read, and dismisses it durably", async () => {
 		const { api, company } = controller();
 		vi.spyOn(api, "getRunRecovery").mockRejectedValue(new Error("execution recovery is unavailable"));
-		const discard = vi.spyOn(api, "discardFailedRun").mockResolvedValue();
+		const acknowledge = vi.spyOn(api, "acknowledgeFailedRun").mockResolvedValue();
+		const discard = vi.spyOn(api, "discardFailedRun");
 		vi.mocked(api.listStaffActivity).mockResolvedValue([row("failed", "needs_attention")]);
 		await company.refreshActivity();
 		await settle();
@@ -545,7 +576,8 @@ describe("agent execution state", () => {
 		expect(company.failedRunFor(staff.id)).toEqual({ activity: row("failed", "needs_attention") });
 		vi.mocked(api.listStaffActivity).mockResolvedValue([]);
 		await company.dismissFailedRun(id(70));
-		expect(discard).toHaveBeenCalledWith(id(70));
+		expect(acknowledge).toHaveBeenCalledWith(id(70));
+		expect(discard).not.toHaveBeenCalled();
 		expect(company.agentState(staff.id)).toBe("idle");
 		expect(company.failedRunFor(staff.id)).toBeUndefined();
 	});

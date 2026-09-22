@@ -97,6 +97,9 @@ export interface CompanyState {
 	runRetries?: Record<string, { pending: boolean; error?: string }>;
 	/** The deployed cloud cannot retry a post into a room yet (no qorpera_retry_room_delivery). */
 	roomRetryUnavailable?: boolean;
+	/** Failed runs a member dismissed here, by run id. They stop standing in for the
+	 * agent at once; the cloud records the same acknowledgment durably. */
+	acknowledgedRuns?: Record<string, true>;
 	realtime: RealtimePhase;
 	realtimeError?: string;
 	loading: boolean;
@@ -568,10 +571,16 @@ export class CompanyController {
 
 	activityFor(staffAgentId: string | undefined): HostedStaffExecutionActivity | undefined {
 		if (!staffAgentId) return undefined;
-		return this.store
-			.get()
-			.activity.filter((item) => item.staffAgentId === staffAgentId)
+		const state = this.store.get();
+		const row = state.activity
+			.filter((item) => item.staffAgentId === staffAgentId)
 			.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+		// A dismissed failure is settled for this member even before the cloud's next
+		// activity read; the agent reads as idle until newer work is reported. An open
+		// proposal is a decision, not a failure, and stays until it is decided.
+		return row && isFailedRun(row) && state.acknowledgedRuns?.[row.runId] && !state.recoveries[row.runId]?.proposalId
+			? undefined
+			: row;
 	}
 
 	/** What the member sees of an agent's execution. A queued run is already the
@@ -641,16 +650,40 @@ export class CompanyController {
 		}
 	}
 
-	/** The run stops standing in for the agent's state; the next activity read shows what is left. */
+	/** Dismiss: the run stops standing in for the agent's state, here at once and in
+	 * the cloud durably, so it does not return on reload or on another device. The
+	 * cloud acknowledges any failed run, including one whose durable outcome is still
+	 * unknown; a cloud without that action falls back to discard where it can. */
 	async dismissFailedRun(runId: string): Promise<void> {
 		if (this.#stopped) return;
+		this.store.set((state) => ({ acknowledgedRuns: { ...(state.acknowledgedRuns ?? {}), [runId]: true } }));
+		// A member known to lack write access hides the card for this session only;
+		// acknowledging needs write access.
+		const { team, accessLost } = this.store.get();
+		if ((team && !team.capabilities.write) || accessLost) return;
 		try {
-			await this.#api.discardFailedRun(runId);
+			await this.#api.acknowledgeFailedRun(runId);
+		} catch (error) {
+			if (this.#stopped) return;
+			if (error instanceof CloudRpcError && error.status !== 401 && error.status !== 403) {
+				// Older cloud: try the discard it knows; a refused discard changes nothing.
+				await this.#api.discardFailedRun(runId).catch(() => undefined);
+			} else throw error;
 		} finally {
-			// Refused or not, read again: someone may have settled the run first.
-			this.#recheckRecovery(runId);
-			await this.refreshActivity();
+			if (!this.#stopped) {
+				// Refused or not, read again: someone may have settled the run first.
+				this.#recheckRecovery(runId);
+				await this.refreshActivity();
+			}
 		}
+	}
+
+	/** A new message supersedes the agent's last failure: dismiss it on the member's behalf. */
+	#dismissFailureFor(sessionId: string): void {
+		const session = this.store.get().sessions.find((item) => item.sessionId === sessionId);
+		const failed = this.failedRunFor(session?.staffAgentId);
+		if (failed && failed.activity.sourceKind !== "proposal_review" && !failed.recovery?.proposalId)
+			void this.dismissFailedRun(failed.activity.runId).catch(() => undefined);
 	}
 
 	primarySessionFor(staffAgentId: string): HostedSession | undefined {
@@ -926,6 +959,7 @@ export class CompanyController {
 					),
 				}),
 			}));
+			this.#dismissFailureFor(sessionId);
 			await this.loadConversation(sessionId);
 			void this.refreshActivity();
 			// The run is admitted a moment after the message; watch for it to appear.

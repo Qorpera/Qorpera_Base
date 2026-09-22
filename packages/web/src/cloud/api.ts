@@ -21,6 +21,7 @@ import {
 	parsePendingSessionInputs,
 	parseProfiles,
 	parseRoomDeliveryRetry,
+	parseRunAcknowledgment,
 	parseRunDismissal,
 	parseRunRecovery,
 	parseRunRetry,
@@ -230,6 +231,16 @@ export class CloudApi {
 		return this.cloud
 			.rpc("qorpera_resolve_failed_execution_run", { p_run_id: id, p_action: "discard" })
 			.then((value) => parseRunDismissal(value, id));
+	}
+
+	/** Dismiss: a member saw the failure. The run stops standing in for the agent;
+	 * nothing is discarded, replayed or changed, so this also settles a run whose
+	 * durable outcome is still unknown, which discard refuses. */
+	acknowledgeFailedRun(runId: string): Promise<void> {
+		const id = requiredUuid(runId, "Run id");
+		return this.cloud
+			.rpc("qorpera_resolve_failed_execution_run", { p_run_id: id, p_action: "acknowledge" })
+			.then((value) => parseRunAcknowledgment(value, id));
 	}
 
 	/** Try again for a session turn: the cloud releases the run and queues its inputs again. */
