@@ -59,6 +59,7 @@ describe("agent routine tool", () => {
 					p_binding: f.binding,
 					p_request: {
 						...weekly,
+						effort: "medium",
 						trigger: {
 							kind: "schedule",
 							intervalMinutes: 1440,
@@ -72,6 +73,48 @@ describe("agent routine tool", () => {
 			]);
 			expect(JSON.parse(first.contentItems[0].text).trust).toBe("untrusted_data");
 			expect(JSON.stringify(first)).not.toContain(f.binding.credentialCapsuleId);
+		} finally {
+			f.run.close();
+		}
+	});
+	it("carries the effort the agent chose and defaults to medium", async () => {
+		const f = await fixture();
+		try {
+			const high = await f.boundary.invoke("routine_e1", "qorpera", "manage_routine", { ...weekly, effort: "high" });
+			expect(high.success, JSON.stringify(high)).toBe(true);
+			const plain = await f.boundary.invoke("routine_e2", "qorpera", "manage_routine", {
+				...weekly,
+				operationKey: "queue-2",
+			});
+			expect(plain.success, JSON.stringify(plain)).toBe(true);
+			const requests = f.call.mock.calls.map(
+				(call) => (call[1] as { p_request: { effort?: string } }).p_request.effort,
+			);
+			expect(requests).toEqual(["high", "medium"]);
+			const bad = await f.boundary.invoke("routine_e3", "qorpera", "manage_routine", { ...weekly, effort: "max" });
+			expect(bad.success).toBe(false);
+			expect(f.call).toHaveBeenCalledTimes(2);
+		} finally {
+			f.run.close();
+		}
+	});
+	it("compiles a delayed first run for weekly work", async () => {
+		const f = await fixture();
+		try {
+			const result = await f.boundary.invoke("routine_w", "qorpera", "manage_routine", {
+				...weekly,
+				trigger: { ...weekly.trigger, weekdays: ["monday"], firstRunAt: "2026-09-28T09:00:00+02:00" },
+			});
+			expect(result.success, JSON.stringify(result)).toBe(true);
+			expect((f.call.mock.calls[0]?.[1] as { p_request: { trigger: unknown } }).p_request.trigger).toEqual({
+				kind: "schedule",
+				intervalMinutes: 1440,
+				startAt: "2026-09-28T07:00:00.000Z",
+				weekdays: ["monday"],
+				localTime: "08:00",
+				timeZone: "Europe/Copenhagen",
+				replyPolicy: "optional",
+			});
 		} finally {
 			f.run.close();
 		}

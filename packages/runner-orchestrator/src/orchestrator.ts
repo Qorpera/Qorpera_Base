@@ -1050,6 +1050,29 @@ function routineOccurrence(
 	};
 }
 
+/** A routine that has never run runs once as soon as it exists — the kickoff —
+ * and then on its cadence, so weekly work set up on a Tuesday starts that day
+ * instead of the following Monday. A version's cursor is fresh only when no
+ * earlier version advanced it (the kernel carries the position forward), so
+ * an edit neither re-runs the routine nor loses a kickoff still owed. The
+ * kickoff instant is the version's effective time, which every orchestrator
+ * derives identically; a version older than the kickoff window (a routine
+ * revived weeks later) takes its next ordinary slot instead. There is no
+ * kickoff when the trigger names a later start (that is the agent asking to
+ * wait) or when a window bounds the run times. */
+const ROUTINE_KICKOFF_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+function routineKickoff(trigger: RoutineScheduleTrigger, now: Date, effectiveAt: Date): Date | undefined {
+	if ("windowStart" in trigger) return undefined;
+	if (!Number.isFinite(effectiveAt.getTime()) || effectiveAt.getTime() > now.getTime()) return undefined;
+	if (now.getTime() - effectiveAt.getTime() > ROUTINE_KICKOFF_WINDOW_MS) return undefined;
+	if (trigger.startAt !== undefined) {
+		const startAt = Date.parse(trigger.startAt);
+		if (!Number.isFinite(startAt) || startAt > effectiveAt.getTime()) return undefined;
+	}
+	return effectiveAt;
+}
+
 function dueRoutineWakes(
 	head: CloudRoutineScheduleHead,
 	trigger: RoutineScheduleTrigger,
@@ -1059,8 +1082,12 @@ function dueRoutineWakes(
 	const cursor = head.scheduleCursors.find((candidate) => candidate.triggerId === trigger.id);
 	if (!cursor) throw new Error(`Routine schedule cursor is missing for ${trigger.id}`);
 	if (!cursor.lastScheduledFor) {
-		const scheduledFor = latestRoutineOccurrence(trigger, now);
-		if (!scheduledFor || scheduledFor.getTime() < Date.parse(head.effectiveAt)) return [];
+		const effectiveAt = new Date(head.effectiveAt);
+		let scheduledFor = latestRoutineOccurrence(trigger, now);
+		if (!scheduledFor || scheduledFor.getTime() < effectiveAt.getTime()) {
+			scheduledFor = routineKickoff(trigger, now, effectiveAt);
+			if (!scheduledFor) return [];
+		}
 		const nextDueAt = nextRoutineOccurrence(trigger, scheduledFor);
 		if (!nextDueAt) throw new Error(`Routine schedule has no future occurrence for ${trigger.id}`);
 		return [{ ...routineOccurrence(head, trigger, scheduledFor), nextDueAt: nextDueAt.toISOString(), coalesced: 0 }];

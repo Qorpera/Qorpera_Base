@@ -1,6 +1,6 @@
 import { performance } from "node:perf_hooks";
 import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
-import { CLOUD_RUNTIME_MODEL_POLICY, type CloudRuntimeReasoningEffort } from "./cloud-runtime-policy.ts";
+import { type CloudRuntimeReasoningEffort, isCloudRuntimeReasoningEffort } from "./cloud-runtime-policy.ts";
 
 export const CLOUD_NATIVE_TOOL_AUTHORITY_SCHEMA = "qorpera.native-tool-authority/v1";
 export const CLOUD_NATIVE_TOOL_AUTHORITY_WINDOW_MS = 30_000;
@@ -134,7 +134,7 @@ export function parseCloudNativeToolAuthority(
 		!(["company", "member_private"] as const).includes(identity.audienceKind as "company" | "member_private") ||
 		typeof identity.runtimeBundleSha256 !== "string" ||
 		!SHA256.test(identity.runtimeBundleSha256) ||
-		identity.reasoningEffort !== CLOUD_RUNTIME_MODEL_POLICY.effort ||
+		!isCloudRuntimeReasoningEffort(identity.reasoningEffort) ||
 		typeof identity.reasoningPolicySha256 !== "string" ||
 		!SHA256.test(identity.reasoningPolicySha256) ||
 		(identity.audienceKind === "company" && identity.audienceUserId !== null) ||

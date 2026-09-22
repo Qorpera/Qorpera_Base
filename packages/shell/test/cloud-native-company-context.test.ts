@@ -4,11 +4,12 @@ import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-pat
 import {
 	CLOUD_COMPANY_RUNTIME_INSTRUCTIONS,
 	cloudCompanyContextTool,
+	cloudCompanyRuntimeInstructions,
 	compileCloudNativeCompanyInstructions,
 	composeCloudNativeCompanyPrompt,
 	parseCloudNativeCompanyContext,
 } from "@qorpera/runtime/cloud-native-company-context";
-import { CLOUD_NATIVE_TOOL_CALL_LIMIT, CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
+import { CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { type CloudWakeKind, parseCloudWakeEnvelope } from "@qorpera/runtime/cloud-wake-bus";
 import { expect, it, vi } from "vitest";
 import { nativeCompanyContextFixture } from "./fixtures/native-company-context-fixture.ts";
@@ -171,6 +172,8 @@ it.each([
 					"Room wakes:",
 					"Agent wakes with source.kind coworker:",
 					"Agent wakes with source.kind office-activation",
+					"Agent wakes with source.kind worker-dispatch",
+					"Agent wakes with source.kind worker-completion",
 				])
 					expect(instructions.includes(heading)).toBe(heading === own);
 				expect(instructions.includes("qorpera.run-continuation/v1")).toBe(continued);
@@ -186,6 +189,23 @@ it.each([
 		}
 	},
 );
+
+it.each([
+	["worker-dispatch", "Agent wakes with source.kind worker-dispatch", false],
+	["worker-completion", "Agent wakes with source.kind worker-completion", true],
+] as const)("gives a %s wake its own protocol and no coworker reply rule", (kind, heading, continues) => {
+	const f = nativeCompanyContextFixture();
+	const instructions = cloudCompanyRuntimeInstructions(
+		{ kind: "agent", source: { kind, id: f.context.identity.runId, occurrenceKey: kind } } as never,
+		false,
+	);
+	expect(instructions).toContain(heading);
+	expect(instructions).not.toContain("Agent wakes with source.kind coworker:");
+	expect(instructions).not.toContain("Human and first-run wakes:");
+	// A revived parent always reads its continuation; a first dispatch has none.
+	expect(instructions.includes("qorpera.worker-completion-continuation/v1")).toBe(continues);
+	expect(instructions).toContain("you are a dispatcher, not a hero");
+});
 
 it.each(["human", "office-activation"] as const)("does not restart a prior startup assignment on a %s wake", (kind) => {
 	const f = nativeCompanyContextFixture();
@@ -400,9 +420,8 @@ it("preserves the latest instruction and source bindings when admitted inputs ex
 	// Three admitted inputs of 1 MiB, 1 KiB shipped inline by this fixture, 64 pages of 16 KiB left each.
 	expect(missingPages).toBe(192);
 	const instructions = compileCloudNativeCompanyInstructions(context);
-	const advertisedLimit = Number(instructions.match(/This attempt has at most (\d+) Qorpera tool calls/)?.[1]);
-	expect(advertisedLimit).toBe(CLOUD_NATIVE_TOOL_CALL_LIMIT);
-	expect(missingPages).toBeGreaterThan(advertisedLimit);
+	expect(instructions).toContain("There is no fixed limit on tool calls or time in an attempt");
+	expect(instructions).not.toMatch(/at most \d+ Qorpera tool calls/);
 	for (const source of logs) {
 		expect(
 			tool.parseArguments({

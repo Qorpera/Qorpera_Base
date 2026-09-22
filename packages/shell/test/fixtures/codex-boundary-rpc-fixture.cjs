@@ -20,7 +20,7 @@ const companyCalls = mode === "company-office"
 		{ tool: "computer_shell", arguments: { operationKey: "office-check", action: { kind: "shell", command: "printf office", timeoutMs: 1000 } } },
 		{ tool: "send_message", arguments: { idempotencyKey: "final", text: "The office check is complete.", phase: "final" } },
 	]
-	: mode === "company-silent" || mode === "company-no-send"
+	: mode === "company-silent" || mode === "company-no-send" || mode === "company-worker"
 	? [{ tool: "company_read", arguments: { path: "note.md", offset: 0, limit: 256 } }]
 	: mode === "company-secret"
 		? [
@@ -224,7 +224,7 @@ async function handle(message) {
 		} else if (mode === "failed-turn") {
 			failed();
 		} else if (mode === "duplicate-id" || mode === "callback-budget") {
-			for (let index = 0; index < (mode === "duplicate-id" ? 2 : 257); index++)
+			for (let index = 0; index < (mode === "duplicate-id" ? 2 : 16_385); index++)
 				write({ id: mode === "duplicate-id" ? "duplicate" : `denied_${index}`, method: "item/commandExecution/requestApproval", params: {} });
 		} else {
 			write({ method: "item/agentMessage/delta", params: { threadId, turnId, delta: "PRIVATE_OUTPUT_CANARY" } });

@@ -8,7 +8,7 @@ import {
 	parseCloudAgentSendInput,
 } from "@qorpera/runtime/cloud-agent-mouth";
 import {
-	CLOUD_NATIVE_TOOL_CALL_LIMIT,
+	CLOUD_NATIVE_RESULT_RETENTION_LIMIT,
 	type CloudNativeTool,
 	CloudNativeToolBoundary,
 	type CloudToolResult,
@@ -363,11 +363,11 @@ describe("cloud-owned native tool boundary", () => {
 		const { boundary } = fixture();
 		const input = { kind: "function_call_output" as const, callId: "native", output: "data" };
 		await expect(boundary.fenceNativeResults([input, input])).rejects.toThrow("Invalid native result identity");
-		for (let index = 1; index < CLOUD_NATIVE_TOOL_CALL_LIMIT; index++)
-			await boundary.fenceNativeResults([{ ...input, callId: `native_${index}` }]);
-		await expect(boundary.fenceNativeResults([{ ...input, callId: "over_budget" }])).rejects.toThrow(
-			"Native result budget exceeded",
-		);
+		const flood = Array.from({ length: CLOUD_NATIVE_RESULT_RETENTION_LIMIT + 1 }, (_, index) => ({
+			...input,
+			callId: `native_${index}`,
+		}));
+		await expect(boundary.fenceNativeResults(flood)).rejects.toThrow("Native result budget exceeded");
 	});
 
 	it("withholds invalid or oversized adapter results", async () => {
@@ -380,8 +380,9 @@ describe("cloud-owned native tool boundary", () => {
 		}
 	});
 
-	it("allows a reserved final send as call 128, then rejects new calls without repeating accepted effects", async () => {
-		expect(CLOUD_NATIVE_TOOL_CALL_LIMIT).toBe(128);
+	it("keeps accepting calls far past the old per-turn cap and never repeats an accepted effect", async () => {
+		// No per-turn call cap (founder, 2026-09-22): only a far-off retention bound remains.
+		expect(CLOUD_NATIVE_RESULT_RETENTION_LIMIT).toBeGreaterThanOrEqual(8_192);
 		const sessionId = randomUUID();
 		const messageId = randomUUID();
 		const deliver = vi.fn(
@@ -417,7 +418,8 @@ describe("cloud-owned native tool boundary", () => {
 		};
 		const { tool, execute, boundary } = fixture({}, undefined, [send]);
 		try {
-			for (let index = 0; index < CLOUD_NATIVE_TOOL_CALL_LIMIT - 1; index++) {
+			const reads = 200;
+			for (let index = 0; index < reads; index++) {
 				const response = await boundary.invoke(`read_${index}`, "qorpera", tool.name, {
 					path: "projects/roadmap.md",
 				});
@@ -427,21 +429,16 @@ describe("cloud-owned native tool boundary", () => {
 			const delivered = await boundary.invoke("final", "qorpera", send.name, final);
 			expect(delivered.success).toBe(true);
 			await expect(mouth.finish()).resolves.toEqual({ messageCount: 1, finalMessageId: messageId });
-			for (const [name, args] of [
-				[tool.name, { path: "projects/roadmap.md" }],
-				[send.name, final],
-			] as const) {
-				const response = await boundary.invoke(`over_budget_${name}`, "qorpera", name, args);
-				expect(JSON.parse(response.contentItems[0].text)).toMatchObject({
-					status: "denied",
-					content: { text: "TOOL_BUDGET_EXHAUSTED" },
-				});
-			}
+			// A later call is still work, not a budget denial.
+			const later = await boundary.invoke("read_after_final", "qorpera", tool.name, { path: "projects/roadmap.md" });
+			expect(later.success).toBe(true);
+			expect(JSON.parse(later.contentItems[0].text).status).not.toBe("denied");
+			// Replays return the original receipt without repeating the effect.
 			expect(await boundary.invoke("final", "qorpera", send.name, final)).toEqual(delivered);
 			expect((await boundary.invoke("read_0", "qorpera", tool.name, { path: "projects/roadmap.md" })).success).toBe(
 				true,
 			);
-			expect(execute).toHaveBeenCalledTimes(CLOUD_NATIVE_TOOL_CALL_LIMIT - 1);
+			expect(execute).toHaveBeenCalledTimes(reads + 1);
 			expect(deliver).toHaveBeenCalledExactlyOnceWith(final);
 		} finally {
 			boundary.close();

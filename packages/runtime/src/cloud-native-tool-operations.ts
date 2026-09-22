@@ -151,7 +151,8 @@ export class CloudNativeToolOperations {
 		if (key.length > 256) throw new Error("Invalid cloud tool operation key");
 		const previous = this.#operations.get(key);
 		if (previous && previous.digest !== digest) throw new Error("Cloud tool operation key is bound to other work");
-		if (!previous && this.#operations.size >= 128) throw new Error("Cloud tool operation budget exhausted");
+		// Not a turn cap: only a memory bound against a runaway key generator.
+		if (!previous && this.#operations.size >= 65_536) throw new Error("Cloud tool operation budget exhausted");
 		// Private canonical metadata survives an absent/failed exporter and does not admit work.
 		const receipt = previous?.receipt ?? { id: null };
 		const result =

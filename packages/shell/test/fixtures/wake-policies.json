@@ -97,5 +97,17 @@
    "silenceAllowed": false,
    "maxPublicSends": 3
   }
+ },
+ {
+  "scenario": "agent-continuation",
+  "reporting": "continuation",
+  "policy": {
+   "schema": "qorpera.wake-policy/v1",
+   "kind": "agent",
+   "initial": "optional",
+   "final": "optional",
+   "silenceAllowed": true,
+   "maxPublicSends": 3
+  }
  }
 ]

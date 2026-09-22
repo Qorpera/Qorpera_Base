@@ -1,6 +1,7 @@
 import {
 	type CreateMemberSponsorInput,
 	type NativeExecutionConnections,
+	type NativeMemberConnection,
 	NativeSubscriptionControlPlane,
 	type RequestSponsoredSessionTurnInput,
 	type RevokeNativeProviderConnectionInput,
@@ -41,7 +42,9 @@ export interface WebNativeSubscription {
 	readonly onboardingAvailable: boolean;
 	beginProviderLogin(input: WebNativeProviderLoginInput, signal?: AbortSignal): Promise<WebNativeProviderLogin>;
 	listConnections(signal?: AbortSignal): Promise<NativeExecutionConnections>;
-	refreshAccountMetadata?(signal?: AbortSignal): Promise<void>;
+	/** Resolves once account usage is current. `force` asks for a new observation
+	 * even inside the window of a completed attempt: the member pressed Refresh. */
+	refreshAccountMetadata?(signal?: AbortSignal, force?: boolean): Promise<void>;
 	selectSessionAccount?(sessionId: string, signal?: AbortSignal): Promise<string | undefined>;
 	listSessionTurnProvenance(sessionId: string, signal?: AbortSignal): Promise<readonly SessionTurnProvenance[]>;
 	requestSessionTurn(input: RequestSponsoredSessionTurnInput, signal?: AbortSignal): Promise<SessionTurnRequestResult>;
@@ -53,6 +56,22 @@ export interface WebNativeSubscription {
 		input: Omit<RevokeNativeProviderConnectionInput, "profileId">,
 		signal?: AbortSignal,
 	): Promise<{ connectionId: string; status: "revoked" }>;
+}
+
+/** The same rule as the server's admission: usage observed within the last
+ * minute whose windows have not reset needs no new observation. Requesting one
+ * anyway records an attempt, and a stale one boots a login guest. Inside the
+ * window of an attempt that already completed (`held`), only a reset that has
+ * passed since justifies another: usage that attempt could not observe, or
+ * that has merely aged, would not be observed by asking again. */
+function usageStale(account: NativeMemberConnection, now: number, held: boolean): boolean {
+	const usage = account.providerAccountUsage;
+	if (!usage) return !held;
+	if (!held) {
+		const observedAt = Date.parse(usage.observedAt);
+		if (!(observedAt > now - 60_000) || observedAt > now + 30_000) return true;
+	}
+	return usage.windows.some((window) => window.resetAt !== undefined && Date.parse(window.resetAt) <= now);
 }
 
 /** The SDK owns admission and provenance contracts. This host only supplies
@@ -158,7 +177,23 @@ export function createWebNativeSubscription(
 	const client = (signal?: AbortSignal, sessionId?: string) =>
 		new NativeSubscriptionControlPlane({ rpc: (method, args) => rpc(method, args, signal, sessionId) });
 	let pendingMetadataRefresh: Promise<void> | undefined;
-	let metadataAdmission: { clientRequestId: string; capability: string; expiresAt: number } | undefined;
+	let metadataAdmission:
+		| { clientRequestId: string; capability: string; expiresAt: number; completed: boolean }
+		| undefined;
+	const admit = () => {
+		const bytes = crypto.getRandomValues(new Uint8Array(32));
+		const capability = btoa(String.fromCharCode(...bytes))
+			.replaceAll("+", "-")
+			.replaceAll("/", "_")
+			.replace(/=+$/, "");
+		metadataAdmission = {
+			clientRequestId: crypto.randomUUID(),
+			capability,
+			expiresAt: Date.now() + 300_000,
+			completed: false,
+		};
+		return metadataAdmission;
+	};
 	return {
 		onboardingAvailable: loginBase !== undefined,
 		beginProviderLogin: (input, signal) => {
@@ -297,38 +332,39 @@ export function createWebNativeSubscription(
 				});
 		},
 		listConnections: (signal) => client(signal).listConnections(profileId),
-		refreshAccountMetadata: async (signal) => {
+		refreshAccountMetadata: async (signal, force = false) => {
 			const checked = AbortSignal.any([companySignal, ...(signal ? [signal] : [])]);
 			checked.throwIfAborted();
 			current();
 			if (!pendingMetadataRefresh) {
-				if (!metadataAdmission || metadataAdmission.expiresAt <= Date.now()) {
-					const bytes = crypto.getRandomValues(new Uint8Array(32));
-					const capability = btoa(String.fromCharCode(...bytes))
-						.replaceAll("+", "-")
-						.replaceAll("/", "_")
-						.replace(/=+$/, "");
-					metadataAdmission = {
-						clientRequestId: crypto.randomUUID(),
-						capability,
-						expiresAt: Date.now() + 300_000,
-					};
-				}
-				const admission = metadataAdmission;
 				const work = withCloudDeadline(
 					async (deadline) => {
 						const accounts = await client(deadline).listConnections(profileId);
-						if (
-							!accounts.computeIdentity ||
-							!accounts.connections.some(
-								(account) =>
-									account.provider === "openai" &&
-									account.nativeHarness === "codex-cli" &&
-									account.connectionStatus === "active" &&
-									account.authorizationState === "active",
-							)
-						)
-							return;
+						const eligible = accounts.connections.filter(
+							(account) =>
+								account.provider === "openai" &&
+								account.nativeHarness === "codex-cli" &&
+								account.connectionStatus === "active" &&
+								account.authorizationState === "active",
+						);
+						if (!accounts.computeIdentity || !eligible.length) return;
+						// A completed attempt keeps its authority until it expires: at most one
+						// attempt per expiry window, however often views ask, unless a reset
+						// passed in the meantime or the member asked.
+						const held = metadataAdmission?.completed === true && metadataAdmission.expiresAt > Date.now();
+						if (!force) {
+							const now = Date.now();
+							if (!eligible.some((account) => usageStale(account, now, held))) return;
+						}
+						// An attempt that did not complete keeps its authority for a retry.
+						const admission =
+							!metadataAdmission || held || metadataAdmission.expiresAt <= Date.now()
+								? admit()
+								: metadataAdmission;
+						const settle = (expiresAt: string) => {
+							admission.expiresAt = Date.parse(expiresAt);
+							admission.completed = true;
+						};
 						if (!loginBase) throw new Error("Account refresh is not configured");
 						const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(admission.capability));
 						const pause = (milliseconds: number) =>
@@ -381,7 +417,10 @@ export function createWebNativeSubscription(
 									)
 										throw new Error("Account refresh authority changed");
 									settled = Date.parse(observed.expiresAt) <= Date.now();
-									if (!settled && observed.status === "completed") return;
+									if (!settled && observed.status === "completed") {
+										settle(observed.expiresAt);
+										return;
+									}
 								}
 								await pause(wait);
 								wait = Math.min(Math.round(wait * 1.5), 10_000);
@@ -396,7 +435,10 @@ export function createWebNativeSubscription(
 						)
 							throw new Error("Account refresh authority changed");
 						admission.expiresAt = Date.parse(authority.expiresAt);
-						if (authority.status === "completed") return;
+						if (authority.status === "completed") {
+							settle(authority.expiresAt);
+							return;
+						}
 						const request: NativeAccountRefreshRequest = { ...authority, capability: admission.capability };
 						const body = JSON.stringify(nativeAccountRefreshBody(request));
 						// The host answers "preparing" while the refresh machine boots; ask less often as it takes longer.
@@ -429,7 +471,10 @@ export function createWebNativeSubscription(
 								);
 								deadline.throwIfAborted();
 								current();
-								if (parseNativeAccountRefreshResult(value, authority.requestId) === "completed") return;
+								if (parseNativeAccountRefreshResult(value, authority.requestId) === "completed") {
+									settle(authority.expiresAt);
+									return;
+								}
 							} finally {
 								if (!response.body?.locked) void response.body?.cancel().catch(() => undefined);
 							}
@@ -439,13 +484,9 @@ export function createWebNativeSubscription(
 					},
 					120_000,
 					companySignal,
-				)
-					.then(() => {
-						metadataAdmission = undefined;
-					})
-					.catch(() => {
-						throw new Error("Account usage could not be refreshed. Try again shortly.");
-					});
+				).catch(() => {
+					throw new Error("Account usage could not be refreshed. Try again shortly.");
+				});
 				pendingMetadataRefresh = work;
 				void work
 					.finally(() => {

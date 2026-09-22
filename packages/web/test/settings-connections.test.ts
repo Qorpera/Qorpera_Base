@@ -139,6 +139,22 @@ describe("member model account settings", () => {
 		expect(view.el.textContent).not.toContain("Refreshing…");
 		expect(client.beginProviderLogin).not.toHaveBeenCalled();
 	});
+	it("asks for a new observation only from the member's own Refresh button", async () => {
+		const { client, lifetime } = await setup(
+			true,
+			observed({ ...connected, sponsorBindingId: id(82), sponsorVersion: 1 }),
+		);
+		view.dispose();
+		const refreshAccountMetadata = vi.fn(async () => {});
+		view = new ConnectionsView({ ...client, refreshAccountMetadata }, lifetime.signal);
+		document.body.append(view.el);
+		await settle();
+		expect(refreshAccountMetadata).toHaveBeenCalledExactlyOnceWith(expect.any(AbortSignal), false);
+		[...view.el.querySelectorAll("button")].find((button) => button.textContent === "Refresh")!.click();
+		await settle();
+		expect(refreshAccountMetadata).toHaveBeenCalledTimes(2);
+		expect(refreshAccountMetadata).toHaveBeenLastCalledWith(expect.any(AbortSignal), true);
+	});
 	it("keeps connected identities visible when usage refresh fails", async () => {
 		const { client, lifetime } = await setup(true);
 		view.dispose();
