@@ -6,8 +6,8 @@
 --
 -- "Acknowledge" is the member's dismissal: it records that the failure was seen
 -- and stops it standing in for the agent's state. It discards nothing, changes no
--- receipt, replays nothing, and never hides an open proposal. Retry and discard
--- keep their rules; an acknowledged run may still be retried later.
+-- receipt, replays nothing, and never hides an open proposal or a failed review.
+-- Retry and discard keep their rules; an acknowledged run may still be retried later.
 begin;
 
 alter table public.qorpera_execution_run_events
@@ -46,7 +46,7 @@ begin
 	if v_job.status not in ('failed', 'cancelled')
 		or p_action not in ('retry', 'discard', 'acknowledge')
 		or (p_action = 'retry' and v_run.source_kind <> 'session_turn')
-		or (p_action = 'discard' and v_run.source_kind = 'proposal_review') then
+		or (p_action in ('discard', 'acknowledge') and v_run.source_kind = 'proposal_review') then
 		raise exception 'execution recovery action is unavailable' using errcode = '55000';
 	end if;
 	if p_action = 'acknowledge' then

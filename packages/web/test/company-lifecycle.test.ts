@@ -567,6 +567,27 @@ describe("agent execution state", () => {
 		expect(controller.agentState(staff.id)).toBe("idle");
 	});
 
+	it("shows the failure again when the cloud refuses the acknowledgment outright", async () => {
+		const { api, company } = controller();
+		vi.spyOn(api, "getRunRecovery").mockResolvedValue(recovery());
+		const acknowledge = vi
+			.spyOn(api, "acknowledgeFailedRun")
+			.mockRejectedValue(
+				new CloudRpcError("qorpera_resolve_failed_execution_run", { message: "denied", code: "42501" }, 403),
+			);
+		const discard = vi.spyOn(api, "discardFailedRun");
+		vi.mocked(api.listStaffActivity).mockResolvedValue([row("failed", "needs_attention")]);
+		await company.refreshActivity();
+		await settle();
+		await expect(company.dismissFailedRun(id(70))).rejects.toThrow("denied");
+		await settle();
+		expect(acknowledge).toHaveBeenCalledExactlyOnceWith(id(70));
+		expect(discard).not.toHaveBeenCalled();
+		// Not settled anywhere: the run stands in for the agent again.
+		expect(company.agentState(staff.id)).toBe("failed");
+		expect(company.failedRunFor(staff.id)?.activity.runId).toBe(id(70));
+	});
+
 	it("keeps a failed run whose details cannot be read, and dismisses it durably", async () => {
 		const { api, company } = controller();
 		vi.spyOn(api, "getRunRecovery").mockRejectedValue(new Error("execution recovery is unavailable"));

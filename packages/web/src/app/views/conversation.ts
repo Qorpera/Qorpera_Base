@@ -898,7 +898,8 @@ export class ConversationView {
 			failed !== undefined &&
 			!review &&
 			this.#company.canRetryFailedRun(failed) &&
-			(!recovery || runFailureInterrupted(recovery.lastError, recovery.jobStatus));
+			recovery !== undefined &&
+			runFailureInterrupted(recovery.lastError, recovery.jobStatus);
 		const key = JSON.stringify([
 			runId,
 			hidden,
