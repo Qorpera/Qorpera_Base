@@ -192,6 +192,9 @@ label > input, label > select { font-weight: 400; }
 .rail-search:focus-within { outline: 1px solid var(--text-soft); outline-offset: -1px; }
 .rail-search input::placeholder { color: #777772; }
 .rail-scroll { flex: 1; min-height: 0; overflow-y: auto; padding-top: 0; }
+/* The rail scrolls without a visible bar, like Messages; wheel, trackpad and keys still move it. */
+.rail-scroll { scrollbar-width: none; }
+.rail-scroll::-webkit-scrollbar { display: none; }
 .rail-empty { padding: 14px 8px; color: var(--rail-small); font-size: 12.5px; }
 
 /* The Co-Founder occupies its own tier above the rest of the staff. Geometry
