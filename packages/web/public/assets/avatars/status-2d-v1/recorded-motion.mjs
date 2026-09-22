@@ -76,19 +76,26 @@ export function drawRecordedReference(canvas,state,frame,outline=false) {
   canvas.dataset.activity=state;
 }
 
-export function drawRecordedEyes(ctx,eyes,state,frame) {
+export function drawRecordedEyes(ctx,eyes,state,frame,field) {
   prepare(state,frame);
   const scale=(eyes[0].height+eyes[1].height)/2/26.788061;
   ctx.save();ctx.fillStyle='#fff';
   // One fixed transform for the complete eye field. No eye reassignment,
   // angle reconstruction, gaze gain, silhouette clamp or temporal easing.
   ctx.translate((eyes[0].x+eyes[1].x)/2,(eyes[0].y+eyes[1].y)/2);
-  ctx.scale(scale,scale);ctx.translate(-96.495,-71.789);ctx.drawImage(eyeRaster,0,0);ctx.restore();
+  ctx.scale(scale,scale);ctx.translate(-96.495,-71.789);
+  // The Working sequencer may mirror or turn the whole field about the
+  // source body's centre, and slide it in source pixels while a join settles.
+  if(field){ctx.translate(80,80);ctx.rotate(field.tilt*Math.PI/180);ctx.scale(field.mirror?-1:1,1);ctx.translate(field.x-80,field.y-80);}
+  ctx.drawImage(eyeRaster,0,0);ctx.restore();
 }
 
-export function drawWorkingStrokes(ctx,frame,isFront) {
+export function drawWorkingStrokes(ctx,frame,isFront,field) {
   prepare('Working',frame);
   // The original recording's visible stroke pixels, on the same frame as
   // the eyes. Source circle diameter 112 px maps to an 80-unit avatar body.
+  ctx.save();
+  if(field){ctx.translate(50,50);ctx.rotate(field.tilt*Math.PI/180);ctx.scale(field.mirror?-1:1,1);ctx.translate(-50,-50);}
   ctx.drawImage(isFront?front:colors,50-80/112*80,50-80/112*80,160*80/112,160*80/112);
+  ctx.restore();
 }
