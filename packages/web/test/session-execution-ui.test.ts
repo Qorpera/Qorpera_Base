@@ -184,7 +184,7 @@ describe("room startup usage refresh", () => {
 		expect(select.mock.calls.length).toBeGreaterThan(1);
 		expect(hydrate).toHaveBeenCalledTimes(1);
 	});
-	it("shows account loading until authoritative selection resolves", async () => {
+	it("keeps send disabled, without a status message, until authoritative selection resolves", async () => {
 		const pending = deferred<string>();
 		const select = vi.fn(() => pending.promise);
 		const f = setup(false, connections(), select);
@@ -192,11 +192,11 @@ describe("room startup usage refresh", () => {
 		type(f.view, "Keep my draft");
 		await settle();
 		expect(f.send().disabled).toBe(true);
-		expect(f.view.el.querySelector(".session-execution")!.textContent).toContain("Checking model accounts");
+		expect(f.view.el.querySelector(".session-execution")!.textContent).not.toContain("Checking model accounts");
+		expect(f.view.el.querySelector(".session-execution [role='status']")).toBeNull();
 		pending.resolve(id(90));
 		await settle();
 		expect(f.send().disabled).toBe(false);
-		expect(f.view.el.querySelector(".session-execution")!.textContent).not.toContain("Checking model accounts");
 	});
 	it("keeps eligible accounts usable after a failed optional probe without rapidly retrying it", async () => {
 		const hydrate = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValue(undefined);
