@@ -221,7 +221,7 @@ async function handle(message) {
 		} else if (mode === "failed-turn") {
 			failed();
 		} else if (mode === "duplicate-id" || mode === "callback-budget") {
-			for (let index = 0; index < (mode === "duplicate-id" ? 2 : 257); index++)
+			for (let index = 0; index < (mode === "duplicate-id" ? 2 : 16_385); index++)
 				write({ id: mode === "duplicate-id" ? "duplicate" : `denied_${index}`, method: "item/commandExecution/requestApproval", params: {} });
 		} else {
 			write({ method: "item/agentMessage/delta", params: { threadId, turnId, delta: "PRIVATE_OUTPUT_CANARY" } });

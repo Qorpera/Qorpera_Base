@@ -49,7 +49,12 @@ test("pins every packaged entrypoint and detects code, generated-output and arti
 		const initial = await generateCloudRuntimeBundle(false, fixture);
 		assert.equal(initial.sha256, current.sha256);
 		assert.equal(initial.sha256, createHash("sha256").update(initial.text).digest("hex"));
-		assert.deepEqual(initial.manifest.modelPolicy, { schema: "qorpera.model-reasoning/v1", effort: "low", overrides: "none" });
+		assert.deepEqual(initial.manifest.modelPolicy, {
+			schema: "qorpera.model-reasoning/v1",
+			effort: "low",
+			overrides: "routine",
+			allowed: ["low", "medium", "high"],
+		});
 		for (const path of Object.values(CLOUD_RUNTIME_ENTRY_POINTS)) assert.match(initial.manifest.implementation[path], /^[0-9a-f]{64}$/);
 		assert.match(initial.manifest.implementation["supabase/migrations/20260828020000_runtime_wake_bus.sql"], /^[0-9a-f]{64}$/);
 		for (const path of ["packages/runtime/src/cloud-company-computer-browser-control.ts", "packages/runtime/src/cloud-company-computer-privacy.ts", "deploy/lxd-company-computer-guest/qorpera-screen-session", "deploy/lxd-company-computer-guest/qorpera-company-computer.service", "packages/runtime/src/cloud-company-computer-service-main.ts", "scripts/package-company-computer.mjs", "deploy/lxd-company-computer-guest/backdrops/qorpera-screen-pebble-00.png"]) {

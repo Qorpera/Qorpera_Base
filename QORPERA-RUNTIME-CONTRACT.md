@@ -1195,6 +1195,15 @@ Listeners implement vendor-specific authentication and eligibility rules, such
 as channel membership, webhook verification, and identity gating. Secrets
 remain outside model context.
 
+2026-09-22 amendment: kickoff occurrence. The first version of a scheduled
+routine runs once at its effective instant (the kickoff) and then on its
+cadence, unless the trigger names a later start or a window bounds its run
+times. A later version keeps the cadence its routine already had. The kickoff
+occurrence key is derived from the effective instant so every orchestrator
+admits the same occurrence. Agents are told to start a new responsibility on a
+dense cadence and loosen it under the same routine key once the work is
+understood.
+
 ## 17. Model and reasoning policy
 
 An attended agent thread defaults to low reasoning effort. The resolved
@@ -1203,6 +1212,20 @@ provider, model, and effort are pinned on every run and shown in provenance.
 Routines, workers, or explicit assignments MAY select a different effort
 through versioned policy. Changing provider, model, sponsor, or effort MUST NOT
 silently rewrite the agent's durable defaults or an already admitted run.
+
+2026-09-22 amendment: routine effort. The agent that sets a routine up chooses
+the effort of its runs (low, medium or high; medium when it says nothing), and
+the routine version stores it. The bundle's model policy declares
+`overrides: routine` with the allowed set; the kernel resolves a routine wake's
+effort from its routine version when the run is created and pins it as before.
+Attended threads keep the bundle default.
+
+2026-09-22 amendment: no turn caps. A turn is not capped by a number of tool
+calls, effectful operations, transcript events or wall-clock time. The agent
+works until the task is done or genuinely blocked. The remaining bounds are
+safety limits far outside any real turn: the run deadline (24 hours), the job
+lease that a live runner renews, the transcript byte bound and protocol flood
+bounds in the native boundary. The prompt no longer advertises a call budget.
 
 Company-formation and other research projects MAY dispatch higher-effort
 workers under a bounded, attributed project policy while the attended

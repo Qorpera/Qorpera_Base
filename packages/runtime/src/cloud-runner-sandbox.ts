@@ -106,7 +106,8 @@ export interface CloudRunnerSandboxLimits {
 }
 
 export const DEFAULT_CLOUD_RUNNER_SANDBOX_LIMITS: Readonly<CloudRunnerSandboxLimits> = Object.freeze({
-	wallTimeMs: 30 * 60 * 1000,
+	// A turn is not capped by wall time; the run deadline (24 h) is the outer bound.
+	wallTimeMs: 24 * 60 * 60 * 1000,
 	memoryBytes: 2 * 1024 * 1024 * 1024,
 	cpuCount: 2,
 	maxPids: 256,
