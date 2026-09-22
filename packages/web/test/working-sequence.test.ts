@@ -28,7 +28,8 @@ function steps(seed: number, seconds: number): WorkingStep[] {
 describe("Working sequencer", () => {
 	it("opens with the studio's first frames, unchanged, so Idle flows into Working", () => {
 		for (const seed of [1, 2, 3]) {
-			const first = steps(seed, 1.5);
+			// Frames 0–79: the opening glance up to where the first spin's exit begins.
+			const first = steps(seed, 80 / FPS);
 			first.forEach((step, n) => {
 				expect(step.clip).toBe("Working");
 				expect(step.frame).toBe(n);
@@ -45,17 +46,18 @@ describe("Working sequencer", () => {
 					b = shown(run[n]!);
 				if (a && b) largest = Math.max(largest, Math.hypot(a.x - b.x, a.y - b.y));
 			}
-			// The recording's own fastest visible eye motion is about 13 source pixels a frame.
-			expect(largest).toBeLessThan(14);
+			// The recording's own fastest visible eye motion is about 13 source pixels a
+			// frame; the swing into a spin adds a little. The old restart moved them 47.
+			expect(largest).toBeLessThan(22);
 		}
 	});
 	it("plays past the old loop boundary without returning to the opening", () => {
 		const run = steps(11, 60);
 		const at = run[Math.round((650 / 60) * FPS)]!;
 		expect(at.frame).not.toBe(0);
-		for (let n = 215; n < run.length; n++) expect(run[n]!.clip === "Waiting" || run[n]!.frame >= 86).toBe(true);
+		for (let n = 215; n < run.length; n++) expect(run[n]!.clip === "Waiting" || run[n]!.frame >= 80).toBe(true);
 	});
-	it("changes the eye field only while the eyes are hidden, and the stripes only between passes", () => {
+	it("mirrors the eye field only while the eyes are hidden and swings it smoothly around a turn", () => {
 		for (const seed of [1, 2, 3, 4]) {
 			const run = steps(seed, 120);
 			let turns = 0;
@@ -63,21 +65,44 @@ describe("Working sequencer", () => {
 			for (let n = 1; n < run.length; n++) {
 				const before = run[n - 1]!,
 					after = run[n]!;
-				if (before.eyes.mirror !== after.eyes.mirror || before.eyes.tilt !== after.eyes.tilt) {
+				if (before.eyes.mirror !== after.eyes.mirror) {
 					turns++;
 					expect(shown(before)).toBeUndefined();
 					expect(shown(after)).toBeUndefined();
 				}
+				if (shown(before) && shown(after)) expect(Math.abs(after.eyes.tilt - before.eyes.tilt)).toBeLessThan(12);
 				const stripes = (step: WorkingStep) =>
 					step.clip === "Working" && recordedClips.Working.frames[step.frame]!.runs.length > 0;
 				if (stripes(before) && stripes(after)) expect(after.strokes).toEqual(before.strokes);
 				if (stripes(after)) passes.add(`${after.strokes.mirror}:${after.strokes.tilt}`);
 			}
-			expect(turns).toBeGreaterThan(4);
-			// One stripe pass per turn; a run may end inside a pass before its eyes hide.
-			expect(passes.size).toBeGreaterThanOrEqual(turns);
-			expect(passes.size).toBeLessThanOrEqual(turns + 1);
+			// About half the turns flip the mirror; every pass has stripes of its own.
+			expect(turns).toBeGreaterThan(2);
+			expect(passes.size).toBeGreaterThan(8);
 		}
+	});
+	it("spins the eyes with the stripes: the exit angle is the stripes' angle, in either sense", () => {
+		const schedule = createWorkingSchedule(5);
+		workingStep(schedule, 120);
+		const turns = schedule.segments.filter((segment) => segment.turn);
+		expect(turns.length).toBeGreaterThan(8);
+		const senses = new Set<number>();
+		for (const segment of turns) {
+			const { turn, spin, strokes } = segment;
+			expect(strokes).toEqual({ mirror: turn!.mirror, tilt: turn!.angle });
+			const exit = workingStep(schedule, (segment.start + spin!.exit[1] - segment.from) / FPS);
+			expect(exit.eyes.tilt).toBeCloseTo(turn!.angle);
+			expect(exit.eyes.mirror).toBe(turn!.fromMirror);
+			const swing = turn!.angle - turn!.fromTilt;
+			expect(Math.abs(swing)).toBeGreaterThanOrEqual(15);
+			expect(Math.abs(swing)).toBeLessThanOrEqual(70);
+			expect(Math.sign(swing)).toBe(turn!.mirror ? -1 : 1);
+			senses.add(Math.sign(swing));
+			const settled = workingStep(schedule, (segment.start + spin!.entry[1] - segment.from) / FPS);
+			expect(settled.eyes.mirror).toBe(turn!.mirror);
+			expect(settled.eyes.tilt).toBeCloseTo(turn!.tilt);
+		}
+		expect(senses.size).toBe(2);
 	});
 	it("varies mirror, tilt and stripe direction across agents and over time", () => {
 		const mirrors = new Set<boolean>(),

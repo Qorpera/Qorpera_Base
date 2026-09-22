@@ -145,8 +145,8 @@ describe("2D studio playback in the shell", () => {
 		expect(rail.querySelector("canvas")!.dataset.clip).toBe("Working");
 		advance((650 / 60) * 1000 - 1000 + 100);
 		const canvas = rail.querySelector("canvas")!;
-		// Past the opening (frames 0–85); the pieces after it are drawn at random.
-		expect(canvas.dataset.clip === "Waiting" || Number(canvas.dataset.frame) > 85).toBe(true);
+		// Past the opening (frames 0–79); the pieces after it are drawn at random.
+		expect(canvas.dataset.clip === "Waiting" || Number(canvas.dataset.frame) > 79).toBe(true);
 		expect(canvas.dataset.frame).toBe(thread.querySelector("canvas")!.dataset.frame);
 		expect(canvas.dataset.clip).toBe(thread.querySelector("canvas")!.dataset.clip);
 		expect(loadRecordedMotion).toHaveBeenCalledWith("Waiting", expect.any(URL));

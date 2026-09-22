@@ -42,14 +42,19 @@ The recording's last Working frame holds the eyes at rest, lower left, while
 its first frame has them up and to the right, so repeating the whole clip
 jumped the eyes at every restart. `src/ui/working-sequence.ts` now plays the
 recording as pieces joined at frames whose eye positions match: the opening
-and first pass (frames 0–214) exactly as recorded, then holds (215–320,
-600–640), the blink (185–215), the look to the far left and back (320–430,
-reversed), a short squint from the Waiting clip (0–24, reversed), and the
-turns (430–640, 320–640, or a squint into 86–215). A small offset eases away
-over eight frames at each join. Each agent draws its own order from a seeded
-random source shared by all its views. While the eyes are hidden inside a
-turn, the field may mirror across the body and tilt up to about twenty
-degrees, and the stripes take the new side with a direction of their own.
-`recorded-motion.mjs` accepts these field transforms as an optional last
-argument; the frames, contours and atlases are unchanged. Reduced motion
-keeps the studio's still at one second.
+(frames 0–214) as recorded, then holds (215–320, 600–640), the blink
+(185–215), the look to the far left and back (320–430, reversed), a short
+squint from the Waiting clip (0–24, reversed), and the turns (430–640,
+320–640, or a squint into 80–215). A small offset eases away over eight
+frames at each join. Each agent draws its own order from a seeded random
+source shared by all its views.
+
+Every turn is a spin of its own. The eye field swings 15–70 degrees from its
+rest tilt while the eyes leave (frames 80–93 or 508–523), the stripes whirl
+about that angle, and the eyes come back along it (108–170 or 539–600) while
+the field settles into a new rest tilt of −8 to 22 degrees. A random mirror
+sets the spin's sense: mirrored stripes whirl the other way round, the eyes
+return on the side they left, and the mirror itself flips halfway through the
+hidden frames. `recorded-motion.mjs` accepts these field transforms as an
+optional last argument; the frames, contours and atlases are unchanged.
+Reduced motion keeps the studio's still at one second.

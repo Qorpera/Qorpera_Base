@@ -5,9 +5,11 @@ import { type RecordedFrame, recordedClips } from "../../public/assets/avatars/s
  * left, and begins with them up and to the right, so a plain loop jumped at
  * every restart. Here each agent draws its own order from a seeded random
  * source: holds, blinks and glances between turns, joined at frames whose eye
- * positions match, and every turn may flip or tilt the eye field while the
- * eyes are hidden and send the stripes in from a direction of its own. Two
- * views of the same agent share one schedule, so they show the same frame. */
+ * positions match. Every turn is a spin of its own: the eye field swings into
+ * the spin's angle as the eyes leave, the stripes whirl about that angle in
+ * either sense, and the eyes come back along it and settle into a new rest
+ * tilt, mirrored or not. Two views of the same agent share one schedule, so
+ * they show the same frame. */
 
 export type Clip = "Working" | "Waiting";
 
@@ -31,19 +33,35 @@ export interface WorkingStep {
 	strokes: StrokeField;
 }
 
+/** The recorded frames of a turn: the eyes leave over `exit`, are gone over
+ * `hidden`, and come back and settle over `entry`, all inclusive. */
+interface Spin {
+	exit: [number, number];
+	hidden: [number, number];
+	entry: [number, number];
+}
 interface Piece {
 	clip: Clip;
 	/** First and last recorded frame, inclusive; `from` above `to` plays backwards. */
 	from: number;
 	to: number;
-	/** The recorded frame inside which the eye field may change: the eyes are hidden there. */
-	hidden?: number;
+	spin?: Spin;
+}
+/** One turn's transforms: the eye field swings from the rest tilt it had to
+ * the spin angle while the eyes leave, takes the spin's mirror while they are
+ * hidden, and swings from the spin angle to its new rest tilt as they return. */
+interface Turn {
+	fromMirror: boolean;
+	fromTilt: number;
+	mirror: boolean;
+	angle: number;
+	tilt: number;
 }
 interface Segment extends Piece {
 	start: number;
 	length: number;
 	eyes: EyeField;
-	next?: EyeField;
+	turn?: Turn;
 	strokes: StrokeField;
 	slide: { x: number; y: number };
 }
@@ -62,7 +80,9 @@ export const SLIDE_FRAMES = 8;
 
 // The recording's pieces. Frame numbers are the studio's 650 Working frames
 // and 279 Waiting frames. Rest pieces start and end with the eyes at rest.
-const OPENING: Piece[] = [{ clip: "Working", from: 0, to: 214, hidden: 100 }];
+const SPIN_A: Spin = { exit: [80, 93], hidden: [94, 107], entry: [108, 170] };
+const SPIN_B: Spin = { exit: [508, 523], hidden: [524, 538], entry: [539, 600] };
+const OPENING: Piece[] = [{ clip: "Working", from: 0, to: 214, spin: SPIN_A }];
 const REST: { weight: number; pieces: Piece[] }[] = [
 	{ weight: 3, pieces: [{ clip: "Working", from: 215, to: 320 }] },
 	{ weight: 2, pieces: [{ clip: "Working", from: 600, to: 640 }] },
@@ -84,17 +104,19 @@ const REST: { weight: number; pieces: Piece[] }[] = [
 	},
 ];
 const TURNS: { weight: number; pieces: Piece[] }[] = [
-	{ weight: 3, pieces: [{ clip: "Working", from: 430, to: 640, hidden: 531 }] },
-	{ weight: 1, pieces: [{ clip: "Working", from: 320, to: 640, hidden: 531 }] },
+	{ weight: 3, pieces: [{ clip: "Working", from: 430, to: 640, spin: SPIN_B }] },
+	{ weight: 1, pieces: [{ clip: "Working", from: 320, to: 640, spin: SPIN_B }] },
 	// The first pass of the recording, reached through a squint to the side.
 	{
 		weight: 2,
 		pieces: [
 			{ clip: "Waiting", from: 0, to: 40 },
-			{ clip: "Working", from: 86, to: 215, hidden: 100 },
+			{ clip: "Working", from: 80, to: 215, spin: SPIN_A },
 		],
 	},
 ];
+/** How far, in degrees, a spin's axis swings away from the rest tilt. */
+const SWING: [number, number] = [15, 70];
 const REST_RUNS = [1, 2, 2, 3];
 
 function mulberry32(seed: number): () => number {
@@ -165,14 +187,17 @@ function append(schedule: WorkingSchedule, piece: Piece, turn: boolean): void {
 		strokes: schedule.strokes,
 		slide,
 	};
-	if (turn && piece.hidden !== undefined) {
+	if (turn && piece.spin) {
+		// The mirror sets the spin's sense: mirrored stripes whirl the other way
+		// round, and the eyes come back on the side they left.
 		const mirror = schedule.random() < 0.5;
+		const sense = mirror ? -1 : 1;
+		const angle = schedule.field.tilt + sense * (SWING[0] + (SWING[1] - SWING[0]) * schedule.random());
 		// A positive tilt levels the resting pair; the mirrored pair levels the other way.
-		const tilt = (mirror ? -1 : 1) * (-8 + 30 * schedule.random());
-		segment.next = { mirror, tilt, x: 0, y: 0 };
-		// The stripes lead the eyes back in on their new side, from their own direction.
-		segment.strokes = { mirror, tilt: tilt - 90 + 180 * schedule.random() };
-		schedule.field = segment.next;
+		const tilt = sense * (-8 + 30 * schedule.random());
+		segment.turn = { fromMirror: schedule.field.mirror, fromTilt: schedule.field.tilt, mirror, angle, tilt };
+		segment.strokes = { mirror, tilt: angle };
+		schedule.field = { mirror, tilt, x: 0, y: 0 };
 		schedule.strokes = segment.strokes;
 	}
 	schedule.segments.push(segment);
@@ -223,8 +248,7 @@ export function workingStep(schedule: WorkingSchedule, seconds: number): Working
 	const segment = schedule.segments[low]!;
 	const k = n - segment.start;
 	const frame = segment.from + (segment.to >= segment.from ? k : -k);
-	const passed = segment.next && (segment.to >= segment.from ? frame >= segment.hidden! : frame <= segment.hidden!);
-	const field = passed ? segment.next! : segment.eyes;
+	const field = spinField(segment, frame);
 	const remaining = 1 - smooth(Math.min(1, k / SLIDE_FRAMES));
 	return {
 		clip: segment.clip,
@@ -232,6 +256,29 @@ export function workingStep(schedule: WorkingSchedule, seconds: number): Working
 		eyes: { ...field, x: segment.slide.x * remaining, y: segment.slide.y * remaining },
 		strokes: segment.strokes,
 	};
+}
+
+const between = (frame: number, [a, b]: [number, number]) => smooth(Math.min(1, Math.max(0, (frame - a) / (b - a))));
+function spinField(segment: Segment, frame: number): EyeField {
+	const { turn, spin } = segment;
+	if (!turn || !spin) return segment.eyes;
+	if (frame < spin.exit[0]) return { mirror: turn.fromMirror, tilt: turn.fromTilt, x: 0, y: 0 };
+	if (frame <= spin.exit[1])
+		return {
+			mirror: turn.fromMirror,
+			tilt: turn.fromTilt + (turn.angle - turn.fromTilt) * between(frame, spin.exit),
+			x: 0,
+			y: 0,
+		};
+	// The mirror flips halfway through the hidden frames, unseen on both sides.
+	if (frame <= spin.hidden[1])
+		return {
+			mirror: frame < (spin.hidden[0] + spin.hidden[1]) / 2 ? turn.fromMirror : turn.mirror,
+			tilt: turn.angle,
+			x: 0,
+			y: 0,
+		};
+	return { mirror: turn.mirror, tilt: turn.angle + (turn.tilt - turn.angle) * between(frame, spin.entry), x: 0, y: 0 };
 }
 
 /** A stable text form of a step, for repaint keys. */
