@@ -113,7 +113,6 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 	let epoch = 0;
 	let entered = false;
 	let connected = false;
-	let fullscreenBusy = false;
 	let fullscreenAttempt = 0;
 	let ownedFullscreen = false;
 	let admission;
@@ -272,9 +271,8 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 	const returnToMini = () => {
 		if (closed || !entered) return;
 		const restoreFocus = overlay.contains(document.activeElement);
-		// A request the host never answered must not block the next Enter, and its late answer must not touch a newer one.
+		// A request the host never answered must not speak for a newer one: its late answer, refusal and timer are ignored.
 		fullscreenAttempt++;
-		fullscreenBusy = false;
 		setEntered(false);
 		if (restoreFocus) overlay.focus();
 		if ((current && current.connection.mode !== "watch") || (admissionMode && admissionMode !== "watch")) {
@@ -298,10 +296,9 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 			ownedFullscreen = active;
 		};
 		const enterFullscreen = async () => {
-			if (closed || !entered || fullscreenBusy || !supportsFullscreen || document.fullscreenElement === overlay) return;
+			if (closed || !entered || !supportsFullscreen || document.fullscreenElement === overlay) return;
+			// Enter reaches here only from the mini, so one attempt is live at a time; the counter fences late answers.
 			const attempt = ++fullscreenAttempt;
-			fullscreenBusy = true;
-			syncEmbedded();
 			// Some hosts never answer the request; after a moment the frame says so and stays inside the host.
 			const slow = setTimeout(() => { if (attempt === fullscreenAttempt && document.fullscreenElement !== overlay) showNote(); }, 2000);
 			try {
@@ -313,10 +310,6 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 				if (attempt === fullscreenAttempt) showNote();
 			} finally {
 				clearTimeout(slow);
-				if (attempt === fullscreenAttempt) {
-					fullscreenBusy = false;
-					syncEmbedded();
-				}
 			}
 		};
 		if (supportsFullscreen) document.addEventListener("fullscreenchange", syncFullscreen, { signal: stop.signal });

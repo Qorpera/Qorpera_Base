@@ -553,6 +553,28 @@ describe("viewer UI state machine (fake DOM/noVNC, not visual cloud acceptance)"
 		expect(f.document.exitFullscreen).toHaveBeenCalledOnce();
 	});
 
+	it("exits full screen that the host grants only after Back returned to the mini", async () => {
+		const f = await embeddedViewer(false);
+		const { mount, viewer } = f;
+		const pending = computerDeferred<void>();
+		vi.spyOn(mount.children[0], "requestFullscreen").mockImplementationOnce(async () => {
+			await pending.promise;
+			f.document.fullscreenElement = mount.children[0];
+		});
+		f.button("Enter").onclick?.();
+		f.button("Back to thread").onclick?.();
+		expect(f.expanded.mock.calls).toEqual([[true], [false]]);
+		expect(f.document.exitFullscreen).not.toHaveBeenCalled();
+		pending.resolve();
+		await vi.waitFor(() => expect(f.document.exitFullscreen).toHaveBeenCalledOnce());
+		expect(f.document.fullscreenElement).toBeNull();
+		expect(f.expanded.mock.calls).toEqual([[true], [false]]);
+		expect(f.button("Enter").hidden).toBe(false);
+		expect(viewer.closed).toBe(false);
+		await viewer.close();
+		expect(f.document.exitFullscreen).toHaveBeenCalledOnce();
+	});
+
 	it("cleans up fullscreen that finishes entering after the viewer closes", async () => {
 		const f = await embeddedViewer(false);
 		const { mount, viewer } = f;

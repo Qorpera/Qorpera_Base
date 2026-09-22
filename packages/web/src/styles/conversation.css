@@ -310,7 +310,8 @@
 .computer-panel.is-entered .screen-viewer-frame { grid-template-rows: 44px minmax(0, 1fr); }
 .computer-panel.is-entered .screen-viewer-titlebar { padding: 0 2px; }
 .computer-panel.is-entered .screen-viewer-note { color: #f0c27a; }
-.computer-panel .screen-viewer-note:empty { display: none; }
+/* Empty, the note stays rendered (a live region must exist before its text changes); only the heading's 6px gap is cancelled. */
+.computer-panel .screen-viewer-note:empty { margin-left: -6px; }
 /* Square icon buttons in the frame; the exit is the compress glyph, named "Back to thread" for the tooltip and screen readers. */
 .computer-panel.is-entered .screen-viewer-controls > button:not(.screen-viewer-close) { width: 30px; height: 30px; color: #fff; }
 .computer-panel.is-entered .screen-viewer-controls > button:not(.screen-viewer-close):hover { background: rgb(255 255 255 / 18%); }
