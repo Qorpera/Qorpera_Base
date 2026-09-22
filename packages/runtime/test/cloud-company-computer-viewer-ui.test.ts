@@ -438,29 +438,27 @@ describe("viewer UI state machine (fake DOM/noVNC, not visual cloud acceptance)"
 		const { mount, viewer } = f;
 		const note = f.elements.find((element) => element.className === "screen-viewer-note");
 		if (!note) throw new Error("NOTE_MISSING");
-		expect(note.hidden).toBe(true);
+		expect(note.textContent).toBe("");
+		expect(note.hidden).toBe(false);
 		expect(note.attributes.get("role")).toBe("status");
 		expect(note.attributes.get("aria-live")).toBe("polite");
 		const request = vi.spyOn(mount.children[0], "requestFullscreen").mockRejectedValueOnce(new Error("denied"));
 		f.button("Enter").onclick?.();
-		await vi.waitFor(() => expect(f.button("Enter").disabled).toBe(false));
+		await vi.waitFor(() => expect(note.textContent).toBe("Full screen unavailable"));
 		expect(mount.children[0].classes.has("screen-viewer-entered")).toBe(true);
 		expect(f.expanded.mock.calls).toEqual([[true]]);
 		expect(f.document.fullscreenElement).toBeNull();
-		expect(note.hidden).toBe(false);
-		expect(note.textContent).toBe("Full screen unavailable");
 		expect(f.button("Back to thread").hidden).toBe(false);
 		expect(f.button("Back to thread").textContent).toBe("Back to thread");
 		f.button("Back to thread").onclick?.();
 		expect(f.expanded.mock.calls).toEqual([[true], [false]]);
 		expect(f.document.exitFullscreen).not.toHaveBeenCalled();
-		expect(note.hidden).toBe(true);
 		expect(note.textContent).toBe("");
 		// The refusal does not stick: the next Enter asks the browser again.
 		f.button("Enter").onclick?.();
 		await vi.waitFor(() => expect(f.document.fullscreenElement).toBe(mount.children[0]));
 		expect(request).toHaveBeenCalledTimes(2);
-		expect(note.hidden).toBe(true);
+		expect(note.textContent).toBe("");
 		expect(f.expanded.mock.calls).toEqual([[true], [false], [true]]);
 		await viewer.close();
 		expect(f.document.fullscreenElement).toBeNull();
@@ -478,20 +476,61 @@ describe("viewer UI state machine (fake DOM/noVNC, not visual cloud acceptance)"
 				.mockImplementationOnce(() => new Promise(() => {}));
 			f.button("Enter").onclick?.();
 			expect(request).toHaveBeenCalledOnce();
-			expect(note.hidden).toBe(true);
+			expect(note.textContent).toBe("");
 			await vi.advanceTimersByTimeAsync(1999);
-			expect(note.hidden).toBe(true);
+			expect(note.textContent).toBe("");
 			await vi.advanceTimersByTimeAsync(1);
-			expect(note.hidden).toBe(false);
 			expect(note.textContent).toBe("Full screen unavailable");
 			f.button("Back to thread").onclick?.();
-			expect(note.hidden).toBe(true);
+			expect(note.textContent).toBe("");
 			expect(f.button("Enter").disabled).toBe(false);
 			f.button("Enter").onclick?.();
 			expect(request).toHaveBeenCalledTimes(2);
 			await vi.advanceTimersByTimeAsync(0);
 			expect(f.document.fullscreenElement).toBe(mount.children[0]);
-			expect(note.hidden).toBe(true);
+			expect(note.textContent).toBe("");
+			await viewer.close();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("ignores a stale attempt's timer, late refusal and cleanup once Back and Enter started a new one", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+			const f = await embeddedViewer(false);
+			const { mount, viewer } = f;
+			const note = f.elements.find((element) => element.className === "screen-viewer-note");
+			if (!note) throw new Error("NOTE_MISSING");
+			const first = computerDeferred<void>();
+			const second = computerDeferred<void>();
+			const request = vi
+				.spyOn(mount.children[0], "requestFullscreen")
+				.mockImplementationOnce(() => first.promise)
+				.mockImplementationOnce(() => second.promise);
+			f.button("Enter").onclick?.();
+			await vi.advanceTimersByTimeAsync(1000);
+			f.button("Back to thread").onclick?.();
+			await vi.advanceTimersByTimeAsync(500);
+			f.button("Enter").onclick?.();
+			expect(request).toHaveBeenCalledTimes(2);
+			// The first attempt's 2 s timer elapses while the second is only 0.5 s old: no note yet.
+			await vi.advanceTimersByTimeAsync(500);
+			expect(note.textContent).toBe("");
+			// Its late refusal and cleanup are ignored too.
+			first.reject(new Error("dismissed"));
+			await vi.advanceTimersByTimeAsync(0);
+			expect(note.textContent).toBe("");
+			expect(f.expanded.mock.calls).toEqual([[true], [false], [true]]);
+			// The second attempt's own timer still speaks for it, two seconds after its own start.
+			await vi.advanceTimersByTimeAsync(1499);
+			expect(note.textContent).toBe("");
+			await vi.advanceTimersByTimeAsync(1);
+			expect(note.textContent).toBe("Full screen unavailable");
+			second.resolve();
+			f.document.fullscreenElement = mount.children[0];
+			await vi.advanceTimersByTimeAsync(0);
+			expect(note.textContent).toBe("");
 			await viewer.close();
 		} finally {
 			vi.useRealTimers();

@@ -304,12 +304,13 @@
 .computer-panel.is-resizing { user-select: none; }
 /* The enter slide is never switched off by a class: removing it would replay the slide (see settle() in computer-drag.ts). */
 /* Entered, the browser goes full screen and the guest screen sits in a thin bezel: a computer inside a computer. The shared screens.css frame (grid, titlebar, heading, bordered buttons, centered 8:5 stage) applies as on the desktop; only the shade, row height, icon buttons and bezel are set here. The same frame stays inside the thread when the browser refuses full screen. */
-.computer-panel.is-entered { --computer-frame-bg: #121316; top: calc(var(--titlebar-height) + 8px); left: 8px; right: 8px; bottom: 8px; width: auto; height: auto; max-height: none; aspect-ratio: auto; border-color: rgb(255 255 255 / 8%); background: var(--computer-frame-bg); }
+.computer-panel.is-entered { --computer-frame-bg: #121316; top: calc(var(--titlebar-height) + 8px); left: 8px; right: 8px; bottom: 8px; width: auto; height: auto; max-height: none; aspect-ratio: auto; border-color: rgb(255 255 255 / 8%); }
 .computer-panel.is-entered .computer-panel-body, .computer-panel.is-entered .screen-viewer-embedded { background: var(--computer-frame-bg); }
 .computer-panel.is-entered .screen-viewer-embedded { container-type: size; }
 .computer-panel.is-entered .screen-viewer-frame { grid-template-rows: 44px minmax(0, 1fr); }
 .computer-panel.is-entered .screen-viewer-titlebar { padding: 0 2px; }
 .computer-panel.is-entered .screen-viewer-note { color: #f0c27a; }
+.computer-panel .screen-viewer-note:empty { display: none; }
 /* Square icon buttons in the frame; the exit is the compress glyph, named "Back to thread" for the tooltip and screen readers. */
 .computer-panel.is-entered .screen-viewer-controls > button:not(.screen-viewer-close) { width: 30px; height: 30px; color: #fff; }
 .computer-panel.is-entered .screen-viewer-controls > button:not(.screen-viewer-close):hover { background: rgb(255 255 255 / 18%); }
