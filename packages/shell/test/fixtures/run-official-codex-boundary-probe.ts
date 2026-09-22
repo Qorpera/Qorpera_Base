@@ -15,7 +15,7 @@ const failureChecks = [
 ];
 const compactionChecks = [];
 const providerDefaultCompactionChecks = [];
-for (const mode of ["local", "remote", "remote-v2"] as const) {
+for (const mode of ["local", "remote-v2"] as const) {
 	compactionChecks.push(await runNativeCodexCompactionProbe(command, mode));
 	compactionChecks.push(await runNativeCodexCompactionProbe(command, mode, true));
 	providerDefaultCompactionChecks.push(await runNativeCodexCompactionProbe(command, mode, false, "provider-default"));

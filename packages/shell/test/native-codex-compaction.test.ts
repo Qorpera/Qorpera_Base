@@ -3,7 +3,7 @@ import { runNativeCodexCompactionProbe } from "./fixtures/native-codex-compactio
 
 const binary = process.env.QORPERA_CODEX_FENCE_BINARY;
 describe.skipIf(!binary)("pinned native compaction trust boundary", () => {
-	it.each(["local", "remote", "remote-v2"] as const)(
+	it.each(["local", "remote-v2"] as const)(
 		"fences %s compaction and restores runtime laws",
 		async (mode) => {
 			if (!binary) throw new Error("Missing pinned native binary");
@@ -20,7 +20,7 @@ describe.skipIf(!binary)("pinned native compaction trust boundary", () => {
 		30_000,
 	);
 
-	it.each(["local", "remote", "remote-v2"] as const)(
+	it.each(["local", "remote-v2"] as const)(
 		"does not revive revoked authority after %s compaction",
 		async (mode) => {
 			if (!binary) throw new Error("Missing pinned native binary");

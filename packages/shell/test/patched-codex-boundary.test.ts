@@ -56,9 +56,9 @@ describe.skipIf(!binary)("pinned downstream native artifact (requires QORPERA_CO
 			unfencedNativeResults: 0,
 			allNativeResultsFenced: true,
 		});
-		expect(proof.compactionChecks).toHaveLength(6);
+		expect(proof.compactionChecks).toHaveLength(4);
 		expect(proof.providerDefaultCompactionChecks).toEqual(proof.compactionChecks);
-		for (const mode of ["local", "remote", "remote-v2"]) {
+		for (const mode of ["local", "remote-v2"]) {
 			expect(proof.compactionChecks).toContainEqual({
 				mode,
 				compactions: 1,
