@@ -90,12 +90,13 @@ function setup() {
 function pointer(
 	target: HTMLElement,
 	type: string,
-	options: MouseEventInit & { pointerId?: number; isPrimary?: boolean } = {},
+	options: MouseEventInit & { pointerId?: number; isPrimary?: boolean; pointerType?: string } = {},
 ) {
 	const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: 610, clientY: 140, ...options });
 	Object.defineProperties(event, {
 		pointerId: { value: options.pointerId ?? 1 },
 		isPrimary: { value: options.isPrimary ?? true },
+		pointerType: { value: options.pointerType ?? "mouse" },
 	});
 	target.dispatchEvent(event);
 	return event;
@@ -376,6 +377,25 @@ describe("computer preview resizing", () => {
 		f.panel.classList.add("is-entered");
 		pointer(f.canvas, "pointermove", { clientX: 996, clientY: 250 });
 		expect(f.panel.dataset.resize).toBeUndefined();
+	});
+	it("gives a finger a wider edge band and never names an edge for it", () => {
+		const f = setup();
+		big(f);
+		pointer(f.canvas, "pointermove", { clientX: 800, clientY: 341, pointerType: "touch" });
+		expect(f.panel.dataset.resize).toBeUndefined();
+		// 16px inside the bottom edge: a move for a mouse, a resize for a finger.
+		pointer(f.canvas, "pointerdown", { clientX: 800, clientY: 329, pointerType: "touch" });
+		pointer(f.panel, "pointermove", { clientX: 800, clientY: 629, pointerType: "touch" });
+		expect(f.panel.classList.contains("is-resizing")).toBe(true);
+		expect(width(f)).toBe(800);
+		expect(top(f)).toBe(70);
+		pointer(f.panel, "pointerup", { pointerType: "touch" });
+		pointer(f.canvas, "pointerdown", { clientX: 800, clientY: 329 });
+		pointer(f.panel, "pointermove", { clientX: 800, clientY: 429 });
+		expect(f.panel.classList.contains("is-dragging")).toBe(true);
+		expect(width(f)).toBe(800);
+		expect(top(f)).toBe(170);
+		pointer(f.panel, "pointerup");
 	});
 	it("grows from the right edge at 16:9, never past twice its resting size, and keeps the left edge in place", () => {
 		const f = setup();

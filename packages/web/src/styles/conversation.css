@@ -285,7 +285,8 @@
 .computer-panel:not(.is-entered):is([data-resize=nw], [data-resize=se]) { cursor: nwse-resize; }
 .computer-panel:not(.is-entered):is([data-resize=ne], [data-resize=sw]) { cursor: nesw-resize; }
 .computer-panel.is-resizing { user-select: none; }
-.computer-panel.is-entered { top: calc(var(--titlebar-height) + 8px); left: 8px; right: 8px; bottom: 8px; width: auto; height: auto; max-height: none; aspect-ratio: auto; animation: none; }
+/* The enter slide is never switched off by a class: removing it would replay the slide (see settle() in computer-drag.ts). */
+.computer-panel.is-entered { top: calc(var(--titlebar-height) + 8px); left: 8px; right: 8px; bottom: 8px; width: auto; height: auto; max-height: none; aspect-ratio: auto; }
 .computer-panel-body { position: absolute; inset: 0; overflow: hidden; background: #24262a; color: #d8d8d4; }
 .computer-loading { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 40px 28px; overflow: auto; text-align: center; }
 .computer-loading[hidden], .computer-loading-spinner[hidden], .computer-retry[hidden] { display: none; }

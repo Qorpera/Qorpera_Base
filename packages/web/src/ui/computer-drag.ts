@@ -4,8 +4,8 @@ import { matchesKey } from "./keys.ts";
 const COMPUTER_PREVIEW_WIDTH = 400;
 const COMPUTER_PREVIEW_SCALE_LIMIT = 2;
 const ASPECT = 16 / 9;
-/** Edge band, in px inside the panel, that starts a resize instead of a move. */
-const EDGE = 8;
+/** Edge band, in px inside the panel, that starts a resize instead of a move; a fingertip needs more. */
+const EDGE = { mouse: 8, touch: 20 };
 const KEY_RESIZE_STEP = 40;
 
 type Edge = "n" | "e" | "s" | "w" | "ne" | "nw" | "se" | "sw";
@@ -88,13 +88,14 @@ export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): () 
 		return { left: rect.left - bounds.left, top: rect.top - bounds.top, width: rect.width, height: rect.height };
 	};
 	const edgeAt = (event: PointerEvent): Edge | undefined => {
+		const band = event.pointerType === "mouse" ? EDGE.mouse : EDGE.touch;
 		const rect = panel.getBoundingClientRect();
-		if (rect.width <= EDGE * 3 || rect.height <= EDGE * 3) return;
+		if (rect.width <= band * 3 || rect.height <= band * 3) return;
 		const x = event.clientX - rect.left,
 			y = event.clientY - rect.top;
 		if (x < 0 || y < 0 || x > rect.width || y > rect.height) return;
-		const vertical = y < EDGE ? "n" : y > rect.height - EDGE ? "s" : "";
-		const horizontal = x < EDGE ? "w" : x > rect.width - EDGE ? "e" : "";
+		const vertical = y < band ? "n" : y > rect.height - band ? "s" : "";
+		const horizontal = x < band ? "w" : x > rect.width - band ? "e" : "";
 		return (`${vertical}${horizontal}` || undefined) as Edge | undefined;
 	};
 	/**
@@ -167,10 +168,12 @@ export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): () 
 		"pointermove",
 		(event) => {
 			if (!drag || event.pointerId !== drag.id) {
-				if (drag || expanded()) return;
+				// Only a mouse shows a cursor, so only a mouse pays for the edge lookup.
+				if (drag || event.pointerType !== "mouse" || expanded()) return;
 				const onControl =
 					event.target instanceof Element && event.target.closest("button, a, input, textarea, select");
 				const edge = onControl ? undefined : edgeAt(event);
+				if (edge === panel.dataset.resize) return;
 				if (edge) panel.dataset.resize = edge;
 				else delete panel.dataset.resize;
 				return;
