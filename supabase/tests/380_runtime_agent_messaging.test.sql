@@ -128,3 +128,51 @@ begin
 end
 $$;
 rollback to messaging_departure;
+
+savepoint messaging_hourly;
+do $$
+declare v_binding jsonb := current_setting('qorpera_test.alice_binding')::jsonb; v_send jsonb; v_n integer; v_pair uuid;
+	v_bob uuid := '30000000-0000-4000-8000-000000000031';
+begin
+	perform pg_temp.wake_public_send(v_binding,'progress');
+	-- Twenty messages between one pair in an hour are the limit, whatever the chain; the twenty-first waits.
+	for v_n in 1..20 loop
+		v_send := public.qorpera_send_coworker_message(v_binding,v_bob,'burst-' || v_n::text,'Burst ' || v_n::text);
+		perform pg_temp.wake_assert(v_send ->> 'status' = 'queued','Burst ' || v_n::text || ' is queued');
+	end loop;
+	v_pair := pg_temp.pair_session();
+	v_send := public.qorpera_send_coworker_message(v_binding,v_bob,'burst-21','Burst 21');
+	perform pg_temp.wake_assert(v_send ->> 'status' = 'causal-fence','Twenty-first message this hour is refused');
+	perform pg_temp.wake_assert((select count(*) = 20 from public.qorpera_session_events where session_id = v_pair and event_type = 'message'),'Twenty messages in the transcript');
+	perform pg_temp.wake_assert((select count(*) = 1 from public.qorpera_session_events where session_id = v_pair and event_type = 'session_info'
+		and body ->> 'text' like 'These two agents have exchanged 20 messages this hour%'),'The transcript says the pair is paused for the hour');
+end
+$$;
+rollback to messaging_hourly;
+
+savepoint messaging_legacy;
+do $$
+declare v_binding jsonb := current_setting('qorpera_test.alice_binding')::jsonb; v_send jsonb; v_wake public.qorpera_wake_occurrences%rowtype;
+	v_legacy public.qorpera_wake_occurrences%rowtype; v_ancestry jsonb;
+begin
+	perform pg_temp.wake_public_send(v_binding,'progress');
+	v_send := public.qorpera_send_coworker_message(v_binding,'30000000-0000-4000-8000-000000000031','first-1','Hello.');
+	select * into strict v_wake from public.qorpera_wake_occurrences where id = (v_send ->> 'occurrenceId')::uuid;
+	-- An occurrence admitted before v70 carries hop 0: it keeps the old chain rule and is still authorized.
+	v_legacy := jsonb_populate_record(v_wake,'{"causal_hop_count":0}'::jsonb);
+	v_ancestry := public.qorpera_coworker_wake_ancestry(v_legacy);
+	perform pg_temp.wake_assert(v_ancestry -> 'agentIds' = to_jsonb(v_wake.causal_agent_ids) and (v_ancestry ->> 'rootId')::uuid = v_wake.causal_root_id,
+		'A pre-v70 coworker occurrence keeps its ancestry');
+	perform pg_temp.wake_assert(public.qorpera_wake_authorized(v_legacy),'A pre-v70 coworker occurrence stays authorized');
+	-- Under the old rule a reply to a visited agent was fenced; a hop-0 row addressed to one still is.
+	v_legacy := jsonb_populate_record(v_wake,jsonb_build_object('causal_hop_count',0,'staff_agent_id','30000000-0000-4000-8000-000000000030'));
+	perform pg_temp.wake_assert(public.qorpera_coworker_wake_ancestry(v_legacy) is null,'A pre-v70 revisit stays fenced');
+	-- A wake naming a session that is not the receiver's own thread is refused at admission.
+	perform pg_temp.wake_error(format($sql$insert into public.qorpera_wake_occurrences(id,profile_id,environment_id,wake_kind,source_kind,staff_agent_id,
+		parent_run_id,sponsor_binding_id,sponsor_version,session_id,trigger_id,occurrence_key,scheduled_for,not_before,payload)
+		values(extensions.gen_random_uuid(),%L,%L,'agent','coworker',%L,%L,%L,%L,%L,'coworker','coworker:test:'||extensions.gen_random_uuid()::text,
+		clock_timestamp(),clock_timestamp(),%L)$sql$,v_wake.profile_id,v_wake.environment_id,v_wake.staff_agent_id,v_wake.parent_run_id,
+		v_wake.sponsor_binding_id,v_wake.sponsor_version,'30000000-0000-4000-8000-000000000040',v_wake.payload),'42501','Coworker thread is unavailable');
+end
+$$;
+rollback to messaging_legacy;

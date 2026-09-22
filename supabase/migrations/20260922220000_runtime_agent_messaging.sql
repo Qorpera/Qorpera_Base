@@ -54,6 +54,8 @@ begin
 	v_active := v_a.employment_status = 'active' and v_a.deleted_at is null
 		and v_b.employment_status = 'active' and v_b.deleted_at is null;
 	v_title := least(v_a.display_name,v_b.display_name) || ' & ' || greatest(v_a.display_name,v_b.display_name);
+	-- Two first messages between the same pair in the same instant create one transcript, not a unique violation.
+	perform pg_advisory_xact_lock(hashtext('qorpera_agent_pair:' || p_profile_id::text || ':' || v_key));
 	select * into v_session from public.qorpera_shared_sessions
 	where profile_id = p_profile_id and execution_scope ->> 'agentPairKey' = v_key for update;
 	if not found then
@@ -141,6 +143,10 @@ revoke all on function public.qorpera_append_kernel_session_event(uuid,uuid,text
 -- ---------------------------------------------------------------------------
 alter table public.qorpera_wake_occurrences
 	add column causal_hop_count integer not null default 0 check (causal_hop_count between 0 and 64);
+-- The per-pair hourly budget reads recent coworker occurrences by their transcript.
+create index qorpera_wake_coworker_pair_recent
+	on public.qorpera_wake_occurrences(profile_id,(payload ->> 'pairSessionId'),created_at)
+	where source_kind = 'coworker';
 
 -- A coworker wake continues its parent's chain. The recipient may already be
 -- in the chain (that is what a reply is); it moves to the end. The chain ends
@@ -160,13 +166,20 @@ begin
 	if v_parent.id is null then
 		-- A run admitted before every run carried an occurrence starts a chain here.
 		v_agents := array[v_parent_run.staff_agent_id]; v_root := p_wake.id;
-		if p_wake.causal_hop_count <> 1 then return null; end if;
+		if p_wake.causal_hop_count > 1 then return null; end if;
 	else
 		if v_parent.wake_schema <> 'qorpera.wake-envelope/v1'
 			or public.qorpera_runtime_wake_policy_internal(v_parent_run.id) ->> 'kind' is distinct from v_parent.wake_kind
 			or v_parent.causal_root_id is null or cardinality(v_parent.causal_agent_ids) not between 1 and 16
-			or p_wake.causal_hop_count <> v_parent.causal_hop_count + 1 then return null; end if;
+			or (p_wake.causal_hop_count > 0 and p_wake.causal_hop_count <> v_parent.causal_hop_count + 1) then return null; end if;
 		v_agents := v_parent.causal_agent_ids; v_root := v_parent.causal_root_id;
+	end if;
+	if p_wake.causal_hop_count = 0 then
+		-- Admitted before v70: the chain was fenced at the first revisit and never counted hops.
+		if p_wake.staff_agent_id = any(v_agents) then return null; end if;
+		v_agents := v_agents || p_wake.staff_agent_id;
+		if cardinality(v_agents) > 16 then return null; end if;
+		return jsonb_build_object('rootId',v_root,'agentIds',to_jsonb(v_agents));
 	end if;
 	if p_wake.causal_hop_count > 6 then return null; end if;
 	v_agents := array_remove(v_agents,p_wake.staff_agent_id) || p_wake.staff_agent_id;
@@ -194,12 +207,13 @@ $$;
 select pg_temp.messaging_patch('public.qorpera_pin_wake_occurrence()'::regprocedure,
 	$old$		new.session_id := case when new.source_kind = 'worker-completion' then v_run.session_id end;$old$,
 	$new$		new.session_id := case when new.source_kind = 'worker-completion' then v_run.session_id
-			when new.source_kind = 'coworker' then coalesce(
-				(select room.session_id from public.qorpera_company_rooms room where room.profile_id = new.profile_id
-					and room.bound_staff_agent_id = new.staff_agent_id and room.status = 'active'),
-				public.qorpera_ensure_agent_thread_internal(new.profile_id,new.environment_id,new.staff_agent_id,new.requested_by_user_id))
-			end;
+			when new.source_kind = 'coworker' then new.session_id end;
 		if new.source_kind = 'coworker' then
+			-- The send names the receiver's own shared thread; admission only checks it is that thread.
+			if new.session_id is null or not exists (select 1 from public.qorpera_company_rooms room
+				where room.profile_id = new.profile_id and room.bound_staff_agent_id = new.staff_agent_id
+					and room.status = 'active' and room.session_id = new.session_id) then
+				raise exception 'Coworker thread is unavailable' using errcode = '42501'; end if;
 			select coalesce(parent.causal_hop_count,0) + 1 into new.causal_hop_count
 			from public.qorpera_wake_occurrences parent where parent.run_id = new.parent_run_id;
 			new.causal_hop_count := coalesce(new.causal_hop_count,1);
@@ -305,26 +319,30 @@ begin
 	if v_begun ->> 'state' = 'completed' then return v_begun -> 'result'; end if;
 	if v_begun ->> 'receipt_id' is distinct from v_receipt_id::text or v_begun ->> 'state' is distinct from 'executing' then
 		raise exception 'Coworker message requires reconciliation' using errcode = '55000'; end if;
-	-- The pair's transcript and both agents' own threads exist before anything is written.
-	v_pair := public.qorpera_agent_pair_session_internal(v_run.profile_id,v_run.environment_id,v_run.staff_agent_id,
-		p_recipient_staff_id,v_run.requested_by_user_id);
-	v_sender_thread := public.qorpera_ensure_agent_thread_internal(v_run.profile_id,v_run.environment_id,v_run.staff_agent_id,
-		v_run.requested_by_user_id);
-	v_recipient_thread := public.qorpera_ensure_agent_thread_internal(v_run.profile_id,v_run.environment_id,p_recipient_staff_id,
-		v_run.requested_by_user_id);
-	-- The budget: hops along this chain, messages between this pair this hour.
+	-- The budget first: hops along this chain, messages between this pair this hour.
+	-- A refused send creates and touches nothing beyond the receipt and, when the
+	-- pair already has a transcript, one line in it.
+	select id into v_pair from public.qorpera_shared_sessions where profile_id = v_run.profile_id
+		and execution_scope ->> 'agentPairKey' = public.qorpera_agent_pair_key(v_run.staff_agent_id,p_recipient_staff_id);
 	select coalesce(parent.causal_hop_count,0) + 1,parent.causal_agent_ids into v_hops,v_parent_agents
 	from public.qorpera_wake_occurrences parent where parent.run_id = v_run.id;
 	v_hops := coalesce(v_hops,1);
 	select count(*) into v_hourly from public.qorpera_wake_occurrences
-	where profile_id = v_run.profile_id and source_kind = 'coworker' and payload ->> 'pairSessionId' = v_pair::text
-		and created_at > clock_timestamp() - interval '1 hour';
+	where profile_id = v_run.profile_id and source_kind = 'coworker' and v_pair is not null
+		and payload ->> 'pairSessionId' = v_pair::text and created_at > clock_timestamp() - interval '1 hour';
 	v_fence := case
 		when v_hops > 6 then 'This exchange paused after ' || (v_hops - 1)::text || ' messages. A member can continue it by writing to either agent.'
 		when v_hourly >= 20 then 'These two agents have exchanged ' || v_hourly::text || ' messages this hour and are paused until it passes.'
 		when cardinality(array_remove(coalesce(v_parent_agents,'{}'::uuid[]),p_recipient_staff_id)) >= 16 then 'This chain involves too many agents to continue.'
 		end;
 	if v_fence is null then
+		-- The pair's transcript and both agents' own threads exist before anything is written.
+		v_pair := public.qorpera_agent_pair_session_internal(v_run.profile_id,v_run.environment_id,v_run.staff_agent_id,
+			p_recipient_staff_id,v_run.requested_by_user_id);
+		v_sender_thread := public.qorpera_ensure_agent_thread_internal(v_run.profile_id,v_run.environment_id,v_run.staff_agent_id,
+			v_run.requested_by_user_id);
+		v_recipient_thread := public.qorpera_ensure_agent_thread_internal(v_run.profile_id,v_run.environment_id,p_recipient_staff_id,
+			v_run.requested_by_user_id);
 		-- The transcript event is kernel-authored metadata of the sender's run, not a
 		-- public send of it: it carries no run execution identity, so the one-mouth
 		-- rule (an assistant message needs an explicit send) and the sender's own
@@ -357,9 +375,11 @@ begin
 	else
 		v_occurrence := null;
 		-- One line in the transcript says why the exchange stopped; the text itself is not delivered.
-		perform public.qorpera_append_kernel_session_event(v_pair,extensions.gen_random_uuid(),'session_info',
-			v_run.requested_by_user_id,jsonb_build_object('schema','qorpera.peer-budget/v1','text',v_fence,
-				'staffAgentId',v_run.staff_agent_id,'receiptId',v_receipt_id));
+		if v_pair is not null and exists (select 1 from public.qorpera_shared_sessions where id = v_pair and status = 'open') then
+			perform public.qorpera_append_kernel_session_event(v_pair,extensions.gen_random_uuid(),'session_info',
+				v_run.requested_by_user_id,jsonb_build_object('schema','qorpera.peer-budget/v1','text',v_fence,
+					'staffAgentId',v_run.staff_agent_id,'receiptId',v_receipt_id));
+		end if;
 	end if;
 	v_result := jsonb_build_object('schema','qorpera.coworker-send/v1','runId',v_run.id,
 		'receiptId',v_receipt_id,'occurrenceId',v_occurrence,'recipientStaffId',p_recipient_staff_id,

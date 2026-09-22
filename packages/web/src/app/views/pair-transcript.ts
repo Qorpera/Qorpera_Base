@@ -76,10 +76,14 @@ export class PairTranscriptView {
 		const store = host.conversation(sessionId);
 		const unsubscribe = store.subscribe(() => this.update());
 		this.#lifetime.signal.addEventListener("abort", unsubscribe, { once: true });
-		// A reply that arrives while the member watches shows in place.
-		this.#timer = window.setInterval(() => {
-			if (!this.#disposed && !host.signal.aborted) void host.loadConversation(sessionId);
-		}, REFRESH_MS);
+		// A reply that arrives while the member watches shows in place; a hidden tab
+		// does not poll, and catches up the moment it is shown again.
+		const refresh = () => {
+			if (this.#disposed || host.signal.aborted || document.hidden) return;
+			void host.loadConversation(sessionId);
+		};
+		this.#timer = window.setInterval(refresh, REFRESH_MS);
+		document.addEventListener("visibilitychange", refresh, { signal: this.#lifetime.signal });
 		this.update();
 	}
 

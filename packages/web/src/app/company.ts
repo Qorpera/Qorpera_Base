@@ -171,13 +171,6 @@ export function isAgentPairSession(session: HostedSession | undefined): boolean 
 	const pair = session?.executionScope?.agentPair;
 	return !session?.staffAgentId && Array.isArray(pair) && pair.length === 2;
 }
-/** The two agents of a pair transcript, in the session's stored order. */
-export function agentPairOf(session: HostedSession | undefined): [string, string] | undefined {
-	const pair = session?.executionScope?.agentPair;
-	if (!isAgentPairSession(session) || !Array.isArray(pair)) return undefined;
-	const [first, second] = pair;
-	return typeof first === "string" && typeof second === "string" ? [first, second] : undefined;
-}
 export function isPrimaryStaffSession(session: HostedSession): boolean {
 	if (!session.staffAgentId || session.status !== "open" || session.audience.kind !== "company") return false;
 	if (isAgentThreadSession(session)) return true;

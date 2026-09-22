@@ -55,6 +55,18 @@ ceiling and founder stop.
    "Message from A", A's shows "Messaged B"; open the chip, read both sides;
    B's answer appears; a thanks loop stops at the sixth message with the line.
 
+## Review round 1 (2026-09-22, eight findings, all fixed)
+
+Pre-v70 coworker occurrences (hop 0) keep the old chain rule instead of failing
+the hop check; pair-transcript creation takes an advisory lock so two first
+messages cannot race the unique index; the hourly budget has a partial index;
+the admission trigger validates the session the send passed instead of deriving
+it; budgets are evaluated before any session is created or touched; the web
+panel stops polling in a hidden tab; the unused `agentPairOf` helper is gone;
+test 380 gained the hourly limit, the legacy hop-0 ancestry and the admission
+check (the 16-agent chain cap is still only covered by inspection). Bundle
+re-cut to `6a79ff33…`, guest provider host `42832a41…`.
+
 ## Not in this cut
 
 Held delivery (`priority: false`: written, no wake, read at the next wake),
