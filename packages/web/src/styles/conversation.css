@@ -30,7 +30,20 @@
 .from-agent .bubble + .bubble, .from-agent + .from-agent > .bubble:first-child { border-top-left-radius: 8px; }
 .mine + .mine > .bubble:first-child { border-top-right-radius: 8px; }
 .message-progress { max-width: min(58%, 520px); }
-.thread-activity { padding: 6px 10px; }
+.thread-activity { flex-direction: row; align-items: center; gap: 9px; max-width: 100%; padding: 6px 10px; border-radius: 9px; outline: none; }
+.thread-activity:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+/* The desktop's hover caption: hidden until the row is hovered or focused, then "Nova is writing" with the ink wave. */
+.status-caption { visibility: hidden; font-size: 12px; line-height: 1.45; color: var(--text-muted); white-space: nowrap; pointer-events: none; }
+.status-caption-name { color: var(--text); }
+.thread-activity:hover .status-caption, .thread-activity:focus-visible .status-caption { visibility: visible; }
+.status-wave-word { display: inline-block; max-width: 100%; }
+.status-wave-letter { display: inline-block; color: inherit; animation: status-ink-wave 1400ms ease-in-out infinite; animation-delay: var(--wave-delay, 0ms); animation-play-state: paused; }
+.thread-activity:hover .status-wave-letter, .thread-activity:focus-visible .status-wave-letter { animation-play-state: running; }
+@keyframes status-ink-wave {
+	0%, 10%, 50%, 100% { color: inherit; text-shadow: 0 0 0 transparent; }
+	30% { color: var(--text); text-shadow: -.18px 0 0 currentColor, .18px 0 0 currentColor; }
+}
+@media (prefers-reduced-motion: reduce) { .status-wave-letter { animation: none; } }
 .thread-run-failure { display: contents; }
 .thread-run-failure[hidden] { display: none; }
 .run-failure { align-self: center; width: min(100%, 340px); margin: 14px 0 6px; }

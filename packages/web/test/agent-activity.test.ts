@@ -79,8 +79,16 @@ describe("shared agent activity", () => {
 			});
 			const indicator = f.view.el.querySelector<HTMLElement>(".thread-activity")!;
 			const label = phase === "writing" ? "Writing" : "Working";
-			expect(indicator.title).toBe(`${staff.displayName} · ${label}`);
-			expect(indicator.getAttribute("aria-label")).toBe(indicator.title);
+			const sentence = `${staff.displayName} is ${label.toLowerCase()}`;
+			expect(indicator.getAttribute("aria-label")).toBe(sentence);
+			expect(indicator.dataset.state).toBe(phase);
+			expect(indicator.tabIndex).toBe(0);
+			expect(indicator.hasAttribute("title")).toBe(false);
+			const caption = indicator.querySelector<HTMLElement>(".status-caption")!;
+			expect(caption.textContent).toBe(sentence);
+			expect(caption.getAttribute("aria-hidden")).toBe("true");
+			expect(caption.querySelector(".status-caption-name")?.textContent).toBe(staff.displayName);
+			expect(caption.querySelectorAll(".status-wave-letter")).toHaveLength(sentence.replace(/\s/g, "").length);
 			expect(f.rail.querySelector(".rail-row-copy small")?.textContent).toBe(label);
 			expect(f.rail.querySelector(".rail-row")?.getAttribute("title")).toContain(label);
 			expect(indicator.querySelector(".bubble, .typing")).toBeNull();

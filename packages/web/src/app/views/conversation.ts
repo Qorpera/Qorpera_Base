@@ -1,7 +1,7 @@
 import { sessionAttachmentIssue } from "../../cloud/session-attachments.ts";
 import type { TranscriptCard, TranscriptItem } from "../../cloud/transcript.ts";
 import type { HostedSession, HostedStaffAgent } from "../../cloud/types.ts";
-import { AGENT_LOOK } from "../../ui/agent-activity.ts";
+import { AGENT_LOOK, statusCaption } from "../../ui/agent-activity.ts";
 import { AttachmentTray } from "../../ui/attachments.ts";
 import { authorizationRequestId, renderAuthorizationCard } from "../../ui/authorization-card.ts";
 import { agentFigure } from "../../ui/avatar.ts";
@@ -800,18 +800,22 @@ export class ConversationView {
 			nodes.push(h("div", { class: "empty" }, "No messages yet."));
 		}
 		if (this.#working && !conversation.loading) {
+			// As on the desktop: the figure works or writes, and "Nova is writing"
+			// shows beside it on hover or focus, never as a bubble.
 			const look = AGENT_LOOK[this.#agentState];
-			const description = `${agentName} · ${look.line}`;
+			const detail = look.detail ?? "";
 			nodes.push(
 				h(
 					"div",
 					{
 						class: "message from-agent thread-activity",
 						role: "status",
-						title: description,
-						"aria-label": description,
+						tabindex: "0",
+						"data-state": this.#agentState,
+						"aria-label": `${agentName}${detail}`,
 					},
 					agentFigure(agent, agentName, { size: 40, activity: look.figure }),
+					statusCaption(agentName, detail),
 				),
 			);
 		}
