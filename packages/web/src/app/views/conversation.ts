@@ -15,6 +15,7 @@ import { fmtTime, h, icon, notice, replace, spinner } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
+import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import { runFailureCard, runFailureInterrupted, runFailureReason } from "../../ui/run-failure.ts";
 import type { AgentState, CompanyController, ConversationState } from "../company.ts";
@@ -59,6 +60,7 @@ export class ConversationView {
 	readonly #menuMain: HTMLElement;
 	readonly #models: ComposerModels;
 	readonly #attach: HTMLButtonElement;
+	readonly #attachNote: HTMLElement;
 	readonly #identity: HTMLButtonElement;
 	readonly #computer: HTMLButtonElement;
 	readonly #navigation: HTMLButtonElement;
@@ -77,6 +79,14 @@ export class ConversationView {
 	#headerKey = "";
 	#renderedKey = "";
 	#stickToBottom = true;
+	/** Where the last pin that moved the thread put it. Its scroll event arrives a frame
+	 * later, when the pane may already have shrunk (the composer or a notice above it
+	 * appeared in the same task); that event is not the member scrolling away. Armed
+	 * only by a pin that changed the position, so it is consumed by exactly that event
+	 * and never lingers to swallow a real scroll. */
+	#pinnedTop = -1;
+	/** Re-reads the scroll position for the hidden-bar fade after a programmatic scroll. */
+	#refreshFade: () => void = () => {};
 	/** Re-pins the thread to its end when the message pane gets its size: the first
 	 * render happens before the view is in the page, and a pane that shrinks or
 	 * grows (window, computer panel, composer) must keep showing the latest message. */
@@ -84,7 +94,7 @@ export class ConversationView {
 	readonly #unsubscribe: (() => void)[] = [];
 	#disposed = false;
 	#statusKey = "";
-	/** A failed run, shown at the end of the thread where its answer would have been. */
+	/** A failed run, shown as one line right above the composer, in the same band as the company notices. */
 	readonly #runNotification = h("div", { class: "thread-run-failure", hidden: true });
 	#runNotificationKey = "";
 	#receivedAttachments: ReceivedAttachments[] = [];
@@ -194,10 +204,15 @@ export class ConversationView {
 			() => this.#setModelMenu(false),
 			() => this.update(),
 		);
-		this.#menuMain = h("div", null, this.#attach, this.#models.button);
+		this.#attachNote = h(
+			"p",
+			{ class: "composer-menu-note", hidden: true },
+			"Images are not supported in group chats. Use Company File.",
+		);
+		this.#menuMain = h("div", null, this.#attach, this.#attachNote, this.#models.button);
 		this.#menu = h(
 			"div",
-			{ class: "composer-menu", role: "menu", hidden: true, "aria-label": "Chat settings and more" },
+			{ class: "composer-menu", role: "menu", hidden: true, tabindex: "-1", "aria-label": "Chat settings and more" },
 			this.#menuMain,
 			this.#models.el,
 		);
@@ -294,8 +309,13 @@ export class ConversationView {
 			icon("navigation"),
 		);
 		this.#header.append(this.#navigation, this.#identity, this.#computer);
+		this.#refreshFade = quietScroll(this.#messages);
 		this.#messages.addEventListener("scroll", () => {
 			const { scrollTop, scrollHeight, clientHeight } = this.#messages;
+			if (this.#stickToBottom && scrollTop === this.#pinnedTop) {
+				this.#pinnedTop = -1;
+				return;
+			}
 			this.#stickToBottom = scrollHeight - scrollTop - clientHeight < 48;
 		});
 		if (typeof ResizeObserver !== "undefined") {
@@ -309,6 +329,7 @@ export class ConversationView {
 			this.#messages,
 			this.#status,
 			...(actions.notificationHost ? [actions.notificationHost] : []),
+			this.#runNotification,
 			this.#composerWrap,
 		);
 		this.#body = h("div", { class: "thread-body" }, this.#conversationPane);
@@ -375,7 +396,11 @@ export class ConversationView {
 	/** Shows the latest message unless the reader has scrolled up to read older ones. */
 	#pinToBottom(): void {
 		if (this.#disposed || !this.#stickToBottom) return;
+		const before = this.#messages.scrollTop;
 		this.#messages.scrollTop = this.#messages.scrollHeight;
+		const after = this.#messages.scrollTop;
+		if (after !== before) this.#pinnedTop = after;
+		this.#refreshFade();
 	}
 	setNavigationOpen(open: boolean): void {
 		this.#navigation.setAttribute("aria-expanded", String(open));
@@ -402,8 +427,11 @@ export class ConversationView {
 		this.#models.button.setAttribute("aria-expanded", "false");
 		this.#menu.hidden = !open;
 		this.#more.setAttribute("aria-expanded", String(open));
-		if (open) this.#attach.focus();
-		else if (restoreFocus) this.#more.focus();
+		if (open) {
+			// A group chat's menu may hold no live control; the menu itself then takes focus so Escape still closes it.
+			const first = this.#menuMain.querySelector<HTMLButtonElement>("button:not(:disabled):not([hidden])");
+			(first ?? this.#menu).focus();
+		} else if (restoreFocus) this.#more.focus();
 	}
 
 	#setModelMenu(open: boolean): void {
@@ -605,9 +633,9 @@ export class ConversationView {
 			Boolean(attachmentIssue);
 		this.#syncSend();
 		this.#attach.disabled = this.#composer.disabled || room;
-		this.#more.hidden = room;
+		this.#attachNote.hidden = !room;
 		this.#more.disabled = this.#composer.disabled;
-		if ((this.#composer.disabled || room) && !this.#menu.hidden) this.#setMenu(false, false);
+		if (this.#composer.disabled && !this.#menu.hidden) this.#setMenu(false, false);
 		this.#composerWrap.hidden = !canWrite;
 		if (this.#composer.value !== (conversation.draft ?? "")) {
 			this.#composer.value = conversation.draft ?? "";
@@ -852,14 +880,10 @@ export class ConversationView {
 			row.addEventListener("focus", () => syncCaption(caption));
 			nodes.push(row);
 		}
-		const cardFocus = this.#runNotification.contains(document.activeElement)
-			? (document.activeElement as HTMLElement).dataset.action
-			: undefined;
 		const rowFocus = document.activeElement?.classList.contains("thread-activity") ?? false;
-		replace(this.#messages, ...nodes, this.#runNotification);
-		if (cardFocus) this.#runNotification.querySelector<HTMLElement>(`[data-action="${cardFocus}"]`)?.focus();
+		replace(this.#messages, ...nodes);
 		// A keyboard user reading the row keeps it through a state change or a new message.
-		else if (rowFocus) this.#messages.querySelector<HTMLElement>(".thread-activity")?.focus({ preventScroll: true });
+		if (rowFocus) this.#messages.querySelector<HTMLElement>(".thread-activity")?.focus({ preventScroll: true });
 		this.#refreshTimestamps(false);
 		this.#pinToBottom();
 	}
@@ -1000,7 +1024,6 @@ export class ConversationView {
 						action,
 					}),
 		);
-		if (!hidden) this.#pinToBottom();
 		if (focused) {
 			if (!hidden)
 				(

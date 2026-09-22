@@ -492,7 +492,25 @@ describe("conversation execution account", () => {
 		expect(drop.defaultPrevented).toBe(true);
 		expect(f.company.conversation(session.sessionId).get().attachments ?? []).toEqual([]);
 		expect(f.company.conversation(session.sessionId).get().draft).toBe("Keep team text");
-		expect(f.view.el.querySelector<HTMLButtonElement>(".composer-more")!.hidden).toBe(true);
+		const more = f.view.el.querySelector<HTMLButtonElement>(".composer-more")!;
+		expect(more.hidden).toBe(false);
+		expect(more.disabled).toBe(false);
+		more.click();
+		const menu = f.view.el.querySelector<HTMLElement>(".composer-menu")!;
+		expect(menu.hidden).toBe(false);
+		const attachItem = [...menu.querySelectorAll<HTMLButtonElement>("button")].find(
+			(item) => item.textContent === "Attach files",
+		)!;
+		expect(attachItem.disabled).toBe(true);
+		expect(menu.querySelector<HTMLElement>(".composer-menu-note")!.hidden).toBe(false);
+		expect(menu.querySelector<HTMLElement>(".composer-menu-note")!.textContent).toBe(
+			"Images are not supported in group chats. Use Company File.",
+		);
+		expect(menu.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!.hidden).toBe(true);
+		expect(document.activeElement).toBe(menu);
+		menu.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		expect(menu.hidden).toBe(true);
+		expect(document.activeElement).toBe(more);
 		expect(f.view.el.querySelector(".thread-status .notice")).toBeNull();
 		expect(f.sendMessage).not.toHaveBeenCalled();
 	});

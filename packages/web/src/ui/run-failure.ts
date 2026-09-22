@@ -56,9 +56,9 @@ export interface RunFailureCard {
 	action?: HTMLElement;
 }
 
-/** A failed run, shown where its answer would have been: one quiet line in the
- * thread, like a company notice, with Dismiss and, for an interrupted run, Try
- * again. Dismissing is durable: the run stops counting against the agent. */
+/** A failed run, shown as one quiet line right above the composer, in the same
+ * band and shape as a company notice, with Dismiss and, for an interrupted run,
+ * Try again. Dismissing is durable: the run stops counting against the agent. */
 export function runFailureCard(card: RunFailureCard): HTMLElement {
 	const busy = card.retrying === true;
 	const guarded = (action: () => void) => (event: MouseEvent) => {

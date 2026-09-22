@@ -4,6 +4,7 @@ import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-pat
 import {
 	CLOUD_COMPANY_RUNTIME_INSTRUCTIONS,
 	cloudCompanyContextTool,
+	cloudCompanyRuntimeInstructions,
 	compileCloudNativeCompanyInstructions,
 	composeCloudNativeCompanyPrompt,
 	parseCloudNativeCompanyContext,
@@ -171,6 +172,8 @@ it.each([
 					"Room wakes:",
 					"Agent wakes with source.kind coworker:",
 					"Agent wakes with source.kind office-activation",
+					"Agent wakes with source.kind worker-dispatch",
+					"Agent wakes with source.kind worker-completion",
 				])
 					expect(instructions.includes(heading)).toBe(heading === own);
 				expect(instructions.includes("qorpera.run-continuation/v1")).toBe(continued);
@@ -186,6 +189,23 @@ it.each([
 		}
 	},
 );
+
+it.each([
+	["worker-dispatch", "Agent wakes with source.kind worker-dispatch", false],
+	["worker-completion", "Agent wakes with source.kind worker-completion", true],
+] as const)("gives a %s wake its own protocol and no coworker reply rule", (kind, heading, continues) => {
+	const f = nativeCompanyContextFixture();
+	const instructions = cloudCompanyRuntimeInstructions(
+		{ kind: "agent", source: { kind, id: f.context.identity.runId, occurrenceKey: kind } } as never,
+		false,
+	);
+	expect(instructions).toContain(heading);
+	expect(instructions).not.toContain("Agent wakes with source.kind coworker:");
+	expect(instructions).not.toContain("Human and first-run wakes:");
+	// A revived parent always reads its continuation; a first dispatch has none.
+	expect(instructions.includes("qorpera.worker-completion-continuation/v1")).toBe(continues);
+	expect(instructions).toContain("you are a dispatcher, not a hero");
+});
 
 it.each(["human", "office-activation"] as const)("does not restart a prior startup assignment on a %s wake", (kind) => {
 	const f = nativeCompanyContextFixture();

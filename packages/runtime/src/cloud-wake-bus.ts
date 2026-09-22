@@ -70,9 +70,18 @@ export function parseCloudWakePolicy(value: unknown): CloudWakePolicy {
 				}
 				break;
 			case "agent":
-				initial = "forbidden";
-				final = "forbidden";
-				maxPublicSends = 0;
+				// A worker completion continues the agent's own work in its conversation
+				// (the kernel says final optional): brief, or silent. Every other agent
+				// wake, a worker included, has no public mouth.
+				if (policy.final === "optional") {
+					initial = "optional";
+					final = "optional";
+					maxPublicSends = 3;
+				} else {
+					initial = "forbidden";
+					final = "forbidden";
+					maxPublicSends = 0;
+				}
 				break;
 			case "room":
 				// A team room may stay silent; an agent's shared thread (the kernel
@@ -117,7 +126,15 @@ export interface CloudWakeEnvelope {
 	readonly actorUserId: string | null;
 	readonly audience: Readonly<{ kind: "company" | "member_private"; userId: string | null; sessionId: string | null }>;
 	readonly source: Readonly<{
-		kind: "input" | "schedule" | "company-file" | "coworker" | "room" | "office-activation";
+		kind:
+			| "input"
+			| "schedule"
+			| "company-file"
+			| "coworker"
+			| "room"
+			| "office-activation"
+			| "worker-dispatch"
+			| "worker-completion";
 		id: string;
 		occurrenceKey: string;
 	}>;
@@ -284,6 +301,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		]);
 		if (
 			activation.schema !== "qorpera.office-start-continuation/v1" ||
+			policy.final !== "forbidden" ||
 			parentRunId === null ||
 			parentRunId === identity.runId ||
 			actorStaffId !== null ||
@@ -300,10 +318,105 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		uuid(activation.activationId);
 		uuid(activation.companyComputerId);
 		uuid(activation.receiptId);
+	} else if (wake.kind === "agent" && source.kind === "worker-dispatch") {
+		// Contract 13: a blank child with a complete dispatch, no conversation and no sender.
+		const work = closed(wake.payload, [
+			"schema",
+			"workerId",
+			"workerKey",
+			"sequence",
+			"species",
+			"title",
+			"todo",
+			"parentRunId",
+			"access",
+			"outputFolder",
+			"dispatch",
+		]);
+		const dispatch = closed(work.dispatch, [
+			"goal",
+			"definitionOfDone",
+			"context",
+			"sources",
+			"followUp",
+			"authority",
+			"output",
+			"cancellation",
+			"completion",
+		]);
+		closed(work.todo, ["todoKey", "title", "path"]);
+		if (
+			work.schema !== "qorpera.worker-dispatch/v1" ||
+			uuid(work.workerId) !== source.id ||
+			work.species !== "in-house" ||
+			(work.access !== "read" && work.access !== "write") ||
+			!Number.isSafeInteger(work.sequence) ||
+			(work.sequence as number) < 1 ||
+			(work.sequence as number) > 12 ||
+			source.occurrenceKey !== `worker-dispatch:${source.id}:${work.sequence}` ||
+			parentRunId === null ||
+			parentRunId === identity.runId ||
+			uuid(work.parentRunId) !== parentRunId ||
+			actorStaffId !== null ||
+			actorUserId !== null ||
+			audience.kind !== "company" ||
+			audience.sessionId !== null ||
+			wake.routine !== null ||
+			policy.final !== "forbidden" ||
+			[dispatch.goal, dispatch.definitionOfDone, dispatch.authority, dispatch.output].some(
+				(part) => typeof part !== "string" || !part.trim(),
+			) ||
+			!Array.isArray(dispatch.sources) ||
+			dispatch.sources.some((path) => typeof path !== "string" || !path) ||
+			(dispatch.followUp !== null && typeof dispatch.followUp !== "string") ||
+			(work.sequence as number) > 1 !== (dispatch.followUp !== null)
+		)
+			throw new Error("Invalid worker dispatch wake");
+	} else if (wake.kind === "agent" && source.kind === "worker-completion") {
+		// A typed internal continuation of the agent's own run; never a human or coworker message.
+		const done = closed(wake.payload, ["schema", "parentRunId", "completions", "stillActive"]);
+		if (
+			done.schema !== "qorpera.worker-completion/v1" ||
+			parentRunId === null ||
+			parentRunId === identity.runId ||
+			uuid(done.parentRunId) !== parentRunId ||
+			actorStaffId !== null ||
+			actorUserId !== null ||
+			audience.kind !== "company" ||
+			wake.routine !== null ||
+			// Without a conversation there is no mouth; a silent parent's revival stays silent even with one.
+			(audience.sessionId === null && policy.final !== "forbidden") ||
+			!Number.isSafeInteger(done.stillActive) ||
+			(done.stillActive as number) < 0 ||
+			!Array.isArray(done.completions) ||
+			done.completions.length < 1 ||
+			done.completions.length > 4
+		)
+			throw new Error("Invalid worker completion wake");
+		for (const item of done.completions) {
+			const completion = closed(item, [
+				"workerKey",
+				"todoKey",
+				"title",
+				"sequence",
+				"outcome",
+				"summary",
+				"summaryTruncated",
+				"needs",
+				"outputs",
+			]);
+			if (
+				!["succeeded", "blocked", "failed"].includes(completion.outcome as string) ||
+				typeof completion.summary !== "string" ||
+				!Array.isArray(completion.outputs)
+			)
+				throw new Error("Invalid worker completion wake");
+		}
 	} else if (wake.kind === "agent") {
 		const message = closed(wake.payload, ["text", "senderStaffId", "receiptId"]);
 		if (
 			source.kind !== "coworker" ||
+			policy.final !== "forbidden" ||
 			source.id !== id ||
 			parentRunId === null ||
 			actorStaffId === null ||

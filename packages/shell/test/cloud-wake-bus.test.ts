@@ -142,6 +142,128 @@ function officeWakeFixture() {
 	return { identity, wake };
 }
 
+function workerWakeFixture(kind: "worker-dispatch" | "worker-completion") {
+	const { authority, envelope } = fixture();
+	const sessionId = kind === "worker-completion" ? randomUUID() : null;
+	const identity = { ...authority.identity, audienceKind: "company" as const, audienceUserId: null, sessionId };
+	const parentRunId = randomUUID();
+	const workerId = randomUUID();
+	const silent = policies.find((item) => item.scenario === "agent")!.policy;
+	const continuation = policies.find((item) => item.scenario === "agent-continuation")!.policy;
+	const wake: CloudWakeEnvelope = {
+		...envelope,
+		kind: "agent",
+		actorStaffId: null,
+		actorUserId: null,
+		parentRunId,
+		audience: { kind: "company", userId: null, sessionId },
+		source: { kind, id: workerId, occurrenceKey: `${kind}:${workerId}:1` },
+		policy: kind === "worker-dispatch" ? silent : continuation,
+		payload:
+			kind === "worker-dispatch"
+				? {
+						schema: "qorpera.worker-dispatch/v1",
+						workerId,
+						workerKey: "prices",
+						sequence: 1,
+						species: "in-house",
+						title: "Collect prices",
+						todo: { todoKey: "market-scan", title: "Market scan", path: "work/todos/a/market-scan.json" },
+						parentRunId,
+						access: "read",
+						outputFolder: "work/todos/a/market-scan/prices",
+						dispatch: {
+							goal: "Collect the list prices.",
+							definitionOfDone: "One verified price per competitor.",
+							context: "",
+							sources: ["research/competitors.md"],
+							followUp: null,
+							authority: "Read what this agent may read. Write nothing.",
+							output: "Report once through report_work.",
+							cancellation: "Ends with its todo.",
+							completion: "The parent is revived as soon as you report.",
+						},
+					}
+				: {
+						schema: "qorpera.worker-completion/v1",
+						parentRunId,
+						completions: [
+							{
+								workerKey: "prices",
+								todoKey: "market-scan",
+								title: "Collect prices",
+								sequence: 1,
+								outcome: "succeeded",
+								summary: "Alfa 49, Beta 59, Gamma 45.",
+								summaryTruncated: false,
+								needs: null,
+								outputs: [],
+							},
+						],
+						stillActive: 0,
+					},
+	};
+	return { identity, wake, silent, continuation };
+}
+
+describe("worker dispatch and completion envelopes", () => {
+	it("admits a blank worker with a complete dispatch and no public mouth", () => {
+		const { identity, wake } = workerWakeFixture("worker-dispatch");
+		const parsed = parseCloudWakeEnvelope(wake, identity);
+		expect(parsed).toEqual(wake);
+		expect(parsed.policy.maxPublicSends).toBe(0);
+		expect(Object.isFrozen(parsed.payload.dispatch)).toBe(true);
+	});
+	it("admits a completion as an internal continuation that may speak briefly in its parent's conversation", () => {
+		const { identity, wake } = workerWakeFixture("worker-completion");
+		const parsed = parseCloudWakeEnvelope(wake, identity);
+		expect(parsed.policy).toMatchObject({ initial: "optional", final: "optional", maxPublicSends: 3 });
+		expect([parsed.actorUserId, parsed.actorStaffId]).toEqual([null, null]);
+	});
+	it.each([
+		(wake: CloudWakeEnvelope) => ({ ...wake, actorUserId: randomUUID() }),
+		(wake: CloudWakeEnvelope) => ({ ...wake, actorStaffId: wake.staffAgentId }),
+		(wake: CloudWakeEnvelope) => ({ ...wake, parentRunId: null }),
+		(wake: CloudWakeEnvelope) => ({ ...wake, parentRunId: wake.runId }),
+		(wake: CloudWakeEnvelope) => ({ ...wake, source: { ...wake.source, id: randomUUID() } }),
+		(wake: CloudWakeEnvelope) => ({ ...wake, payload: { ...wake.payload, species: "coding" } }),
+		(wake: CloudWakeEnvelope) => ({ ...wake, payload: { ...wake.payload, access: "admin" } }),
+		(wake: CloudWakeEnvelope) => ({ ...wake, payload: { ...wake.payload, tools: ["send_message"] } }),
+		(wake: CloudWakeEnvelope) => ({
+			...wake,
+			payload: { ...wake.payload, dispatch: { ...(wake.payload.dispatch as object), definitionOfDone: " " } },
+		}),
+		(wake: CloudWakeEnvelope) => ({
+			...wake,
+			payload: { ...wake.payload, dispatch: { ...(wake.payload.dispatch as object), followUp: "More." } },
+		}),
+	])("rejects a worker dispatch that is not exactly what the kernel admits %#", (mutate) => {
+		const { identity, wake } = workerWakeFixture("worker-dispatch");
+		expect(() => parseCloudWakeEnvelope(mutate(wake), identity)).toThrow();
+	});
+	it("never lets a worker, a coworker message or an office continuation borrow the speaking policy", () => {
+		const worker = workerWakeFixture("worker-dispatch");
+		expect(() => parseCloudWakeEnvelope({ ...worker.wake, policy: worker.continuation }, worker.identity)).toThrow();
+		const office = officeWakeFixture();
+		expect(() => parseCloudWakeEnvelope({ ...office.wake, policy: worker.continuation }, office.identity)).toThrow();
+		const done = workerWakeFixture("worker-completion");
+		// A silent parent's revival stays silent even in a conversation; without a conversation it must be.
+		expect(parseCloudWakeEnvelope({ ...done.wake, policy: done.silent }, done.identity).policy.maxPublicSends).toBe(
+			0,
+		);
+		const noSession = { ...done.identity, sessionId: null };
+		expect(() =>
+			parseCloudWakeEnvelope({ ...done.wake, audience: { ...done.wake.audience, sessionId: null } }, noSession),
+		).toThrow();
+		expect(() =>
+			parseCloudWakeEnvelope({ ...done.wake, actorUserId: done.identity.requesterUserId }, done.identity),
+		).toThrow();
+		expect(() =>
+			parseCloudWakeEnvelope({ ...done.wake, payload: { ...done.wake.payload, completions: [] } }, done.identity),
+		).toThrow();
+	});
+});
+
 describe("office activation continuation envelope", () => {
 	it("retains the same-agent causal chain without a human or coworker sender", () => {
 		const { identity, wake } = officeWakeFixture();
