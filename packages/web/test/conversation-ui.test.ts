@@ -1462,3 +1462,77 @@ describe("new conversation and agent setup", () => {
 		expect(f.api.listStaff).not.toHaveBeenCalled();
 	});
 });
+
+describe("messages between two agents (contract 14.6)", () => {
+	it("shows a chip for a coworker's message and opens the two agents' view-only transcript from it", async () => {
+		const f = setup();
+		const coworker = { ...staff, id: id(97), displayName: "Helper" };
+		f.company.store.set({ staff: [staff, coworker] });
+		const pairSessionId = id(98);
+		f.company.conversation(session.sessionId).set({
+			loading: false,
+			projection: {
+				items: [
+					{
+						kind: "peer_link",
+						id: id(96),
+						sequence: 1,
+						direction: "in",
+						counterpartStaffId: coworker.id,
+						pairSessionId,
+						createdAt: timestamp,
+					},
+					{
+						kind: "note",
+						id: id(95),
+						sequence: 2,
+						text: "This exchange paused after 6 messages.",
+						createdAt: timestamp,
+					},
+				],
+				hiddenCount: 0,
+				lastSequence: 2,
+			},
+		});
+		f.view.update();
+		const chip = f.view.el.querySelector<HTMLButtonElement>(".peer-chip")!;
+		expect(chip.textContent).toBe("Message from Helper");
+		expect(f.view.el.querySelector(".conversation-note")?.textContent).toBe("This exchange paused after 6 messages.");
+		expect(f.view.el.querySelector(".pair-transcript")).toBeNull();
+		chip.click();
+		await settle();
+		// The transcript itself (loaded after the panel opened): the coworker's message under its name, nothing to type into.
+		f.company.conversation(pairSessionId).set({
+			loading: false,
+			projection: {
+				items: [
+					{
+						kind: "agent",
+						id: id(94),
+						sequence: 1,
+						text: "Jonas created you and asked me to pass this along: he approves of you. Welcome.",
+						attachmentCount: 0,
+						phase: "final",
+						runId: id(93),
+						staffSpeaker: { runId: id(93), staffAgentId: coworker.id, staffVersion: 1, displayName: "Helper" },
+						createdAt: timestamp,
+					},
+				],
+				hiddenCount: 0,
+				lastSequence: 1,
+			},
+		});
+		await settle();
+		const panel = f.view.el.querySelector<HTMLElement>(".pair-transcript")!;
+		expect(panel).not.toBeNull();
+		expect(panel.querySelector(".pair-header")?.textContent).toBe(`Helper⇄${staff.displayName}`);
+		expect(panel.querySelector(".message-author")?.textContent).toBe("Helper");
+		expect(panel.textContent).toContain("he approves of you");
+		expect(panel.textContent).toContain("This chat is view-only");
+		expect(panel.querySelector("textarea")).toBeNull();
+		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(true);
+		button(panel, "Close Chat").click();
+		expect(f.view.el.querySelector(".pair-transcript")).toBeNull();
+		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(false);
+	});
+});

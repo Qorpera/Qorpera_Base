@@ -720,12 +720,20 @@ begin
 	perform pg_temp.wake_assert(v_bob_run is not null,'Coworker wake gets fresh admission');
 	v_bob := pg_temp.wake_start(v_bob_run);
 	v_result := public.qorpera_read_native_wake(v_bob);
-	perform pg_temp.wake_assert(v_result #>> '{payload,text}' = 'Examine the note.' and v_result #>> '{policy,final}' = 'forbidden','Durable addressed message is private to recipient');
+	-- Since 2026-09-22 (contract 14.6 amendment) the message lands in the pair
+	-- transcript and wakes the coworker in its own shared thread under the pair
+	-- policy; the reply is one more hop, not a fenced cycle (test 380 covers the budget).
+	perform pg_temp.wake_assert(v_result #>> '{payload,text}' = 'Examine the note.' and v_result #>> '{policy,final}' = 'optional'
+		and v_result #>> '{policy,initial}' = 'forbidden' and v_result #>> '{policy,maxPublicSends}' = '2'
+		and v_result #>> '{audience,sessionId}' is not null and v_result #>> '{payload,pairSessionId}' is not null
+		and jsonb_array_length(v_result #> '{payload,transcript}') = 1,'Durable addressed message reaches the recipient in its own thread');
 	perform pg_temp.wake_assert(v_result #> '{causal,agentIds}' = '["30000000-0000-4000-8000-000000000030","30000000-0000-4000-8000-000000000031"]'::jsonb,'Coworker retains ancestry');
 	perform public.qorpera_assert_wake_completion(v_bob_run);
 	v_result := public.qorpera_send_coworker_message(v_bob,'30000000-0000-4000-8000-000000000030','thanks','Thanks.');
-	perform pg_temp.wake_assert(v_result ->> 'status' = 'causal-fence' and v_result -> 'occurrenceId' = 'null'::jsonb,'Acknowledgement cycle is fenced');
-	perform pg_temp.wake_assert((select count(*) = 2 from public.qorpera_wake_occurrences),'Cycle creates no new occurrence');
+	perform pg_temp.wake_assert(v_result ->> 'status' = 'queued' and v_result ->> 'occurrenceId' is not null,'A reply to the sender is one more hop');
+	perform pg_temp.wake_assert((select count(*) = 3 from public.qorpera_wake_occurrences),'The reply is one new occurrence');
+	perform pg_temp.wake_assert((select causal_hop_count = 2 and causal_agent_ids = array['30000000-0000-4000-8000-000000000031','30000000-0000-4000-8000-000000000030']::uuid[]
+		from public.qorpera_wake_occurrences where id = (v_result ->> 'occurrenceId')::uuid),'The reply moves the sender to the end of the chain');
 	v_routine := pg_temp.wake_routine('30000000-0000-4000-8000-000000000030',
 		'{"id":"changes","kind":"listener","source":"company-file","path":"note.md","match":"exact","timeZone":"Europe/Copenhagen","replyPolicy":"optional"}');
 	perform set_config('qorpera_test.wake_binding',v_bob::text,true);
@@ -807,8 +815,10 @@ begin
 	v_result := public.qorpera_read_native_wake(v_bob);
 	perform pg_temp.wake_assert(v_result #>> '{source,kind}' = 'company-file' and v_result #>> '{payload,path}' = 'note.md','File event enters routine context');
 	perform pg_temp.wake_assert(exists(select 1 from public.qorpera_company_run_read_paths where run_id = v_wake.run_id and path = 'note.md'),'Event path enters existing read-set fence');
+	-- Since 2026-09-22 a coworker message is bounded by hops, never by earlier visits:
+	-- the agent a file event woke may write to the file's author (test 380 covers the budget).
 	perform pg_temp.wake_assert(public.qorpera_send_coworker_message(v_bob,'30000000-0000-4000-8000-000000000030','file-reply','Acknowledged.')
-		->> 'status' = 'causal-fence','File to coworker causal cycle is fenced');
+		->> 'status' = 'queued','A coworker may answer the author of the file that woke it');
 	-- A proposed deletion is not a live event. Only the separately authorized
 	-- publication enters the same immutable revision stream.
 	v_proposal := pg_temp.path_commit(pg_temp.path_plan('delete-proposed','note.md',null,(v_change ->> 'version')::uuid));

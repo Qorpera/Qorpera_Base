@@ -1,0 +1,130 @@
+-- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
+-- Contract 14.6 (amended 2026-09-22): a coworker message is one event in the
+-- pair's transcript, a chip in both agents' own threads, and a wake of the
+-- recipient in its own thread under the pair policy; the reply is the same
+-- thing the other way; the hop budget, not "seen before", ends an exchange.
+select pg_temp.path_claims('service_role');
+select set_config('qorpera_test.alice_binding',current_setting('qorpera_test.wake_binding'),true);
+
+-- Materialize the one queued wake, start its run and return its binding.
+create function pg_temp.wake_run_binding(p_occurrence uuid) returns jsonb language plpgsql as $$
+declare v_run uuid;
+begin
+	perform public.qorpera_materialize_wake_execution_runs(1);
+	select run_id into strict v_run from public.qorpera_wake_occurrences where id = p_occurrence;
+	perform pg_temp.wake_assert(v_run is not null,'Coworker wake materialized');
+	return pg_temp.wake_start(v_run);
+end
+$$;
+create function pg_temp.thread_session(p_staff uuid) returns uuid language sql as $$
+	select session_id from public.qorpera_company_rooms
+	where profile_id = '30000000-0000-4000-8000-000000000010' and bound_staff_agent_id = p_staff
+$$;
+create function pg_temp.pair_session() returns uuid language sql as $$
+	select id from public.qorpera_shared_sessions where profile_id = '30000000-0000-4000-8000-000000000010'
+		and execution_scope ->> 'agentPairKey' = public.qorpera_agent_pair_key('30000000-0000-4000-8000-000000000030','30000000-0000-4000-8000-000000000031')
+$$;
+
+savepoint messaging_shape;
+do $$
+declare v_alice jsonb := current_setting('qorpera_test.alice_binding')::jsonb; v_bob jsonb; v_send jsonb; v_wake jsonb;
+	v_pair uuid; v_bob_thread uuid; v_alice_thread uuid; v_event jsonb; v_policy jsonb; v_occurrence public.qorpera_wake_occurrences%rowtype;
+begin
+	-- The sender is a human wake: it acknowledges the member before any other work.
+	perform pg_temp.wake_public_send(v_alice,'progress');
+	v_send := public.qorpera_send_coworker_message(v_alice,'30000000-0000-4000-8000-000000000031','ask-1','Could you check the note?');
+	perform pg_temp.wake_assert(v_send ->> 'status' = 'queued','First message is queued');
+	v_pair := pg_temp.pair_session();
+	v_bob_thread := pg_temp.thread_session('30000000-0000-4000-8000-000000000031');
+	v_alice_thread := pg_temp.thread_session('30000000-0000-4000-8000-000000000030');
+	perform pg_temp.wake_assert(v_pair is not null and v_bob_thread is not null and v_alice_thread is not null,'Pair transcript and both threads exist');
+	perform pg_temp.wake_assert((select audience_kind = 'company' and staff_agent_id is null and status = 'open'
+		and execution_scope -> 'agentPair' = jsonb_build_array('30000000-0000-4000-8000-000000000030','30000000-0000-4000-8000-000000000031')
+		from public.qorpera_shared_sessions where id = v_pair),'Pair transcript is a company-audience session bound to the pair');
+	-- The transcript event: spoken by the sender, no run execution identity, no agent_sends row.
+	select to_jsonb(event) into v_event from public.qorpera_session_events event where event.session_id = v_pair and event.event_type = 'message';
+	perform pg_temp.wake_assert(v_event #>> '{body,entry,delivery,schema}' = 'qorpera.peer-message/v1'
+		and v_event #>> '{body,entry,delivery,from}' = '30000000-0000-4000-8000-000000000030'
+		and v_event #>> '{body,entry,delivery,to}' = '30000000-0000-4000-8000-000000000031'
+		and v_event #>> '{body,entry,message,content,0,text}' = 'Could you check the note?'
+		and v_event ->> 'execution_kind' is null and v_event ->> 'event_hash' ~ '^[0-9a-f]{64}$','Peer message is one transcript event by the sender');
+	perform pg_temp.wake_assert(not exists (select 1 from public.qorpera_agent_sends where session_id = v_pair),'A peer message is not a public send');
+	-- The chips: one in each agent's own thread, without the text.
+	perform pg_temp.wake_assert((select count(*) = 1 from public.qorpera_session_events where session_id = v_alice_thread
+		and event_type = 'session_info' and body ->> 'schema' = 'qorpera.peer-link/v1' and body ->> 'direction' = 'out'
+		and body ->> 'counterpartStaffId' = '30000000-0000-4000-8000-000000000031' and body ->> 'pairSessionId' = v_pair::text
+		and not (body ? 'text')),'Sender thread gets a Messaged chip');
+	perform pg_temp.wake_assert((select count(*) = 1 from public.qorpera_session_events where session_id = v_bob_thread
+		and event_type = 'session_info' and body ->> 'schema' = 'qorpera.peer-link/v1' and body ->> 'direction' = 'in'
+		and body ->> 'counterpartStaffId' = '30000000-0000-4000-8000-000000000030'),'Recipient thread gets a Message-from chip');
+	-- The wake: in the recipient's own thread, first hop, pair policy.
+	select * into strict v_occurrence from public.qorpera_wake_occurrences where id = (v_send ->> 'occurrenceId')::uuid;
+	perform pg_temp.wake_assert(v_occurrence.session_id = v_bob_thread and v_occurrence.causal_hop_count = 1
+		and v_occurrence.payload ->> 'pairSessionId' = v_pair::text and v_occurrence.payload ->> 'pairEventId' = v_event ->> 'event_id','Wake carries the recipient thread and the transcript identity');
+	v_bob := pg_temp.wake_run_binding(v_occurrence.id);
+	v_wake := public.qorpera_read_native_wake(v_bob);
+	perform pg_temp.wake_assert(v_wake #>> '{audience,sessionId}' = v_bob_thread::text and v_wake #>> '{policy,initial}' = 'forbidden'
+		and v_wake #>> '{policy,final}' = 'optional' and v_wake #>> '{policy,maxPublicSends}' = '2' and (v_wake #>> '{policy,silenceAllowed}')::boolean
+		and v_wake #>> '{actorStaffId}' = '30000000-0000-4000-8000-000000000030','Recipient wakes in its own thread under the pair policy');
+	perform pg_temp.wake_assert(jsonb_array_length(v_wake #> '{payload,transcript}') = 1
+		and v_wake #>> '{payload,transcript,0,text}' = 'Could you check the note?'
+		and v_wake #>> '{payload,transcript,0,staffAgentId}' = '30000000-0000-4000-8000-000000000030','Recipient reads the exchange so far');
+	-- The recipient may tell its own thread one thing, and silence is fine.
+	perform pg_temp.wake_public_send(v_bob,'final');
+	perform public.qorpera_assert_wake_completion((v_bob ->> 'runId')::uuid);
+	perform pg_temp.wake_assert((select count(*) = 1 from public.qorpera_agent_sends where session_id = v_bob_thread),'Recipient spoke once in its own thread');
+	-- Members read the transcript; the RPC hands back the peer message body.
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	perform pg_temp.wake_assert((select count(*) = 1 from jsonb_array_elements(public.qorpera_read_session_events(v_pair)) item
+		where item.value #>> '{body,entry,delivery,schema}' = 'qorpera.peer-message/v1'),'A member reads the pair transcript');
+	perform pg_temp.wake_error(format('select public.qorpera_post_company_room_message(%L,%L,%L,null,null)',v_pair,extensions.gen_random_uuid(),
+		'{"schema":"qorpera.session-prompt/v1","text":"hi"}'),'42501');
+	perform pg_temp.path_claims('service_role');
+end
+$$;
+rollback to messaging_shape;
+
+savepoint messaging_budget;
+do $$
+declare v_binding jsonb := current_setting('qorpera_test.alice_binding')::jsonb; v_send jsonb; v_hop integer; v_to uuid; v_pair uuid;
+	v_alice uuid := '30000000-0000-4000-8000-000000000030'; v_bob uuid := '30000000-0000-4000-8000-000000000031';
+begin
+	perform pg_temp.wake_public_send(v_binding,'progress');
+	-- Six hops back and forth are one exchange; the seventh is refused with a line in the transcript.
+	for v_hop in 1..6 loop
+		v_to := case when v_hop % 2 = 1 then v_bob else v_alice end;
+		v_send := public.qorpera_send_coworker_message(v_binding,v_to,'hop-' || v_hop::text,'Hop ' || v_hop::text);
+		perform pg_temp.wake_assert(v_send ->> 'status' = 'queued','Hop ' || v_hop::text || ' is queued');
+		perform pg_temp.wake_assert((select causal_hop_count = v_hop and causal_agent_ids[cardinality(causal_agent_ids)] = v_to
+			from public.qorpera_wake_occurrences where id = (v_send ->> 'occurrenceId')::uuid),'Hop ' || v_hop::text || ' counts and ends with the recipient');
+		v_binding := pg_temp.wake_run_binding((v_send ->> 'occurrenceId')::uuid);
+		perform public.qorpera_assert_wake_completion((v_binding ->> 'runId')::uuid);
+	end loop;
+	v_pair := pg_temp.pair_session();
+	perform pg_temp.wake_assert((select count(*) = 6 from public.qorpera_session_events where session_id = v_pair and event_type = 'message'),'Six messages in the transcript');
+	v_send := public.qorpera_send_coworker_message(v_binding,v_bob,'hop-7','Hop 7');
+	perform pg_temp.wake_assert(v_send ->> 'status' = 'causal-fence' and v_send -> 'occurrenceId' = 'null'::jsonb,'Seventh hop is refused');
+	perform pg_temp.wake_assert((select count(*) = 1 from public.qorpera_session_events where session_id = v_pair and event_type = 'session_info'
+		and body ->> 'schema' = 'qorpera.peer-budget/v1' and body ->> 'text' like 'This exchange paused after 6 messages%'),'The transcript says why it stopped');
+	perform pg_temp.wake_assert((select count(*) = 6 from public.qorpera_session_events where session_id = v_pair and event_type = 'message'),'The refused text is not delivered');
+	perform pg_temp.wake_assert(public.qorpera_send_coworker_message(v_binding,v_bob,'hop-7','Hop 7') = v_send,'The refusal is a durable receipt');
+	-- An agent cannot message itself, and a departed agent closes the transcript.
+	perform pg_temp.wake_error(format('select public.qorpera_send_coworker_message(%L,%L,%L,%L)',v_binding,v_alice,'self','Hello me'),'42501');
+end
+$$;
+rollback to messaging_budget;
+
+savepoint messaging_departure;
+do $$
+declare v_binding jsonb := current_setting('qorpera_test.alice_binding')::jsonb; v_pair uuid;
+begin
+	perform pg_temp.wake_public_send(v_binding,'progress');
+	perform public.qorpera_send_coworker_message(v_binding,'30000000-0000-4000-8000-000000000031','bye-1','One last thing.');
+	v_pair := pg_temp.pair_session();
+	update public.qorpera_profile_staff set employment_status = 'archived', updated_by_user_id = '30000000-0000-4000-8000-000000000001'
+	where profile_id = '30000000-0000-4000-8000-000000000010' and staff_agent_id = '30000000-0000-4000-8000-000000000031';
+	perform pg_temp.wake_assert((select status = 'closed' from public.qorpera_shared_sessions where id = v_pair),'A departed agent closes its pair transcripts');
+	perform pg_temp.wake_error(format('select public.qorpera_send_coworker_message(%L,%L,%L,%L)',v_binding,'30000000-0000-4000-8000-000000000031','bye-2','Still there?'),'42501');
+end
+$$;
+rollback to messaging_departure;

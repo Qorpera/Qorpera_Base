@@ -24,6 +24,7 @@ import { AgentDetails } from "./agent-details.ts";
 import { ComposerModels } from "./composer-models.ts";
 import { type ComputerPanel, ComputerPanels } from "./computer.ts";
 import { GroupDetails } from "./group-details.ts";
+import { PairTranscriptView } from "./pair-transcript.ts";
 import { SessionExecutionView } from "./session-execution.ts";
 import { SessionRunView } from "./session-run.ts";
 
@@ -76,6 +77,8 @@ export class ConversationView {
 	readonly #panels: ComputerPanels;
 	readonly #ownPanels: boolean;
 	#panel: ComputerPanel | undefined;
+	/** The transcript of this agent and a coworker, laid over the thread from a chip. */
+	#pair: PairTranscriptView | undefined;
 	#headerKey = "";
 	#renderedKey = "";
 	#stickToBottom = true;
@@ -368,6 +371,7 @@ export class ConversationView {
 		this.#sizes?.disconnect();
 		this.#runNotification.remove();
 		this.#details?.dispose();
+		this.#closePair(false);
 		// The computer stays open, and connected, for the next thread that shows it.
 		if (this.#ownPanels) this.#panels.dispose();
 		else this.#panel?.detach();
@@ -470,6 +474,25 @@ export class ConversationView {
 					this.#lifetime.signal,
 					this.#actions,
 				);
+	}
+
+	/** Lay the two agents' transcript over this thread; the thread waits underneath. */
+	#openPair(pairSessionId: string, agentIds: readonly [string, string]): void {
+		this.#closePair(false);
+		const view = new PairTranscriptView(this.#company, pairSessionId, agentIds, () => this.#closePair(true));
+		this.#pair = view;
+		this.#conversationPane.inert = true;
+		this.#body.append(view.el);
+		view.focus();
+	}
+
+	#closePair(refocus: boolean): void {
+		const view = this.#pair;
+		if (!view) return;
+		this.#pair = undefined;
+		view.dispose();
+		this.#conversationPane.inert = false;
+		if (refocus) this.#messages.querySelector<HTMLElement>(".peer-chip")?.focus({ preventScroll: true });
 	}
 
 	#toggleComputer(): void {
@@ -839,6 +862,34 @@ export class ConversationView {
 							: null,
 					),
 				);
+			} else if (item.kind === "peer_link") {
+				// A message between this agent and a coworker: one chip, no text, the transcript behind it.
+				const counterpart = this.#company.staffById(item.counterpartStaffId);
+				const name = counterpart?.displayName ?? "a coworker";
+				const label = item.direction === "out" ? `Messaged ${name}` : `Message from ${name}`;
+				const own = agent?.id ?? "";
+				const pair: readonly [string, string] =
+					item.direction === "out" ? [own, item.counterpartStaffId] : [item.counterpartStaffId, own];
+				nodes.push(
+					h(
+						"div",
+						{ class: "peer-link", dataset: { messageId: item.id } },
+						h(
+							"button",
+							{
+								type: "button",
+								class: "peer-chip",
+								title: `${label} · ${fmtTime(item.createdAt)}`,
+								"aria-label": `${label}. Open the conversation`,
+								onclick: () => this.#openPair(item.pairSessionId, pair),
+							},
+							agentFigure(counterpart, name, { size: 16 }),
+							h("span", null, label),
+						),
+					),
+				);
+			} else if (item.kind === "note") {
+				nodes.push(h("div", { class: "conversation-note", role: "note" }, item.text));
 			} else if (item.kind === "authorization_request" || item.kind === "authorization_decision") {
 				nodes.push(
 					renderAuthorizationCard(

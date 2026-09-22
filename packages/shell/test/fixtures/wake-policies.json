@@ -109,5 +109,17 @@
    "silenceAllowed": true,
    "maxPublicSends": 3
   }
+ },
+ {
+  "scenario": "agent-pair",
+  "reporting": "pair",
+  "policy": {
+   "schema": "qorpera.wake-policy/v1",
+   "kind": "agent",
+   "initial": "forbidden",
+   "final": "optional",
+   "silenceAllowed": true,
+   "maxPublicSends": 2
+  }
  }
 ]
