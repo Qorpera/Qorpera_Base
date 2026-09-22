@@ -26,6 +26,9 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"report_work",
 	"manage_todo",
 	"manage_worker",
+	// Agent memory (runtime Step 6, Grok Bot shape).
+	"update_memory",
+	"recall_memory",
 ] as const;
 /** Closed vocabulary; the SQL ingestion function checks the same list. */
 export const CLOUD_RUNTIME_OPERATIONS = [

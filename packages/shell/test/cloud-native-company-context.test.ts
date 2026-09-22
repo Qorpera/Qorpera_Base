@@ -334,6 +334,14 @@ it.each(["cofounder", "employee"] as const)(
 		const encoded = composeCloudNativeCompanyPrompt(context);
 		const prompt = JSON.parse(encoded);
 		expect(Object.keys(prompt).at(-1)).toBe("hireOverlay");
+		// Contract 15.1: the agent's notebook is composed before the hire overlay, unavailable when not supplied.
+		expect(Object.keys(prompt).at(-2)).toBe("memory");
+		expect(prompt.memory).toMatchObject({
+			schema: "qorpera.agent-memory/v1",
+			trust: "own_notebook_not_authority",
+			available: false,
+			reason: "not_composed",
+		});
 		expect(prompt.hireOverlay).toMatchObject({
 			kind,
 			trust: "job_specification_not_authority",

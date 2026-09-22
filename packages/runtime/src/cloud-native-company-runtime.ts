@@ -9,6 +9,7 @@ import {
 	observeCloudCompanyPathPresence,
 } from "./cloud-company-path-presence.ts";
 import { cloudHiringTools } from "./cloud-hiring-tools.ts";
+import { cloudMemoryTools, composeCloudAgentMemory, unavailableCloudAgentMemory } from "./cloud-memory-tools.ts";
 import {
 	cloudCompanyContextTool,
 	compileCloudNativeCompanyInstructions,
@@ -163,9 +164,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				wake.kind === "routine" && wake.source.kind === "company-file" && typeof wake.payload.path === "string"
 					? await observeCloudCompanyPathPresence(presence, wake.payload.path, "object", "reading", signal)
 					: undefined;
-			const prompt = composeCloudNativeCompanyPrompt(context, wake, initialPresence);
-			composition.finish("succeeded", { outputBytes: Buffer.byteLength(prompt) });
-			const contextSha256 = createHash("sha256").update(prompt).digest("hex");
 			const gateway = new CloudCompanyPathGateway({
 				presence,
 				binding,
@@ -173,6 +171,18 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				control: this.#paths,
 				store: this.#store(context.identity.companyId, binding, signal),
 			});
+			// The agent's own notebook (contract 15.1) is composed through the trusted
+			// read lane; an unreadable notebook degrades to "unavailable" and the run
+			// still starts, because memory is never a precondition of company work.
+			const memory = await composeCloudAgentMemory(gateway, context.identity.staffAgentId, new Date(), signal).catch(
+				(error) => {
+					signal.throwIfAborted();
+					return unavailableCloudAgentMemory(cloudRuntimeErrorCategory(error, signal));
+				},
+			);
+			const prompt = composeCloudNativeCompanyPrompt(context, wake, initialPresence, memory);
+			composition.finish("succeeded", { outputBytes: Buffer.byteLength(prompt) });
+			const contextSha256 = createHash("sha256").update(prompt).digest("hex");
 			const mouth = new CloudAgentMouth(
 				binding.runId,
 				async (input) => {
@@ -305,6 +315,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 											cloudCoworkerMessageTool(binding, identity, wakeControl),
 											...cloudRoutineTools(binding, identity, this.#paths),
 										]),
+								// The notebook is the agent's own: a worker of the same agent recalls it,
+								// and writes to it only when its dispatch allows Company File writes.
+								...cloudMemoryTools(gateway, identity).filter(
+									(tool) =>
+										tool.name === "recall_memory" || work.companyFile({ ...tool, name: "company_write" }),
+								),
 								...(identity.audienceKind === "company"
 									? [
 											...(work.isWorker ? [] : cloudHiringTools(gateway, identity)),

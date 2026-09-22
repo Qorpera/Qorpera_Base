@@ -306,6 +306,17 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 				sha256: "b".repeat(64),
 				ordinal: 1,
 			};
+		// Trusted context assembly reads the agent's notebook: an empty one here.
+		if (method === "qorpera_read_company_path")
+			return {
+				path: args.p_path,
+				version: null,
+				entry: null,
+				manifestBytes: null,
+				companyId: f.context.identity.companyId,
+			};
+		if (method === "qorpera_list_company_paths")
+			return { snapshotId: randomUUID(), items: [], hasMore: false, nextAfter: null };
 		if (method === "qorpera_read_company_path_v2")
 			return {
 				path: "note.md",
@@ -677,8 +688,10 @@ it.each([
 				"manage_todo",
 				"manage_worker",
 				"read_context",
+				"recall_memory",
 				"send_coworker_message",
 				"send_message",
+				"update_memory",
 			].sort(),
 		);
 		expect(evidence.threadParameters.runtimeWorkspaceRoots).toEqual([]);
@@ -906,6 +919,7 @@ it("runs a background worker blank: reading tools and its report, no mouth, no c
 		"company_list",
 		"company_read",
 		"read_context",
+		"recall_memory",
 		"report_work",
 	]);
 	expect(evidence.threadParameters.developerInstructions).toContain("Agent wakes with source.kind worker-dispatch");
