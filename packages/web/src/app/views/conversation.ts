@@ -79,6 +79,12 @@ export class ConversationView {
 	#headerKey = "";
 	#renderedKey = "";
 	#stickToBottom = true;
+	/** Where the last pin that moved the thread put it. Its scroll event arrives a frame
+	 * later, when the pane may already have shrunk (the composer or a notice above it
+	 * appeared in the same task); that event is not the member scrolling away. Armed
+	 * only by a pin that changed the position, so it is consumed by exactly that event
+	 * and never lingers to swallow a real scroll. */
+	#pinnedTop = -1;
 	/** Re-reads the scroll position for the hidden-bar fade after a programmatic scroll. */
 	#refreshFade: () => void = () => {};
 	/** Re-pins the thread to its end when the message pane gets its size: the first
@@ -88,7 +94,7 @@ export class ConversationView {
 	readonly #unsubscribe: (() => void)[] = [];
 	#disposed = false;
 	#statusKey = "";
-	/** A failed run, shown at the end of the thread where its answer would have been. */
+	/** A failed run, shown as one line right above the composer, in the same band as the company notices. */
 	readonly #runNotification = h("div", { class: "thread-run-failure", hidden: true });
 	#runNotificationKey = "";
 	#receivedAttachments: ReceivedAttachments[] = [];
@@ -306,6 +312,10 @@ export class ConversationView {
 		this.#refreshFade = quietScroll(this.#messages);
 		this.#messages.addEventListener("scroll", () => {
 			const { scrollTop, scrollHeight, clientHeight } = this.#messages;
+			if (this.#stickToBottom && scrollTop === this.#pinnedTop) {
+				this.#pinnedTop = -1;
+				return;
+			}
 			this.#stickToBottom = scrollHeight - scrollTop - clientHeight < 48;
 		});
 		if (typeof ResizeObserver !== "undefined") {
@@ -319,6 +329,7 @@ export class ConversationView {
 			this.#messages,
 			this.#status,
 			...(actions.notificationHost ? [actions.notificationHost] : []),
+			this.#runNotification,
 			this.#composerWrap,
 		);
 		this.#body = h("div", { class: "thread-body" }, this.#conversationPane);
@@ -385,7 +396,10 @@ export class ConversationView {
 	/** Shows the latest message unless the reader has scrolled up to read older ones. */
 	#pinToBottom(): void {
 		if (this.#disposed || !this.#stickToBottom) return;
+		const before = this.#messages.scrollTop;
 		this.#messages.scrollTop = this.#messages.scrollHeight;
+		const after = this.#messages.scrollTop;
+		if (after !== before) this.#pinnedTop = after;
 		this.#refreshFade();
 	}
 	setNavigationOpen(open: boolean): void {
@@ -866,14 +880,10 @@ export class ConversationView {
 			row.addEventListener("focus", () => syncCaption(caption));
 			nodes.push(row);
 		}
-		const cardFocus = this.#runNotification.contains(document.activeElement)
-			? (document.activeElement as HTMLElement).dataset.action
-			: undefined;
 		const rowFocus = document.activeElement?.classList.contains("thread-activity") ?? false;
-		replace(this.#messages, ...nodes, this.#runNotification);
-		if (cardFocus) this.#runNotification.querySelector<HTMLElement>(`[data-action="${cardFocus}"]`)?.focus();
+		replace(this.#messages, ...nodes);
 		// A keyboard user reading the row keeps it through a state change or a new message.
-		else if (rowFocus) this.#messages.querySelector<HTMLElement>(".thread-activity")?.focus({ preventScroll: true });
+		if (rowFocus) this.#messages.querySelector<HTMLElement>(".thread-activity")?.focus({ preventScroll: true });
 		this.#refreshTimestamps(false);
 		this.#pinToBottom();
 	}
@@ -1014,7 +1024,6 @@ export class ConversationView {
 						action,
 					}),
 		);
-		if (!hidden) this.#pinToBottom();
 		if (focused) {
 			if (!hidden)
 				(
