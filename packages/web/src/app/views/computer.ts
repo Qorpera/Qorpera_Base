@@ -54,24 +54,7 @@ export class ComputerPanel {
 			this.#closeButton,
 		);
 		this.#closeButton.addEventListener("click", () => this.#close(), { signal });
-		// A press focuses the panel (the drag does it by script), and that focus must not keep the
-		// hover controls up once the pointer has left; keyboard focus shows them until it leaves.
-		this.el.addEventListener("pointerdown", () => this.el.classList.add("is-pointer-focus"), {
-			capture: true,
-			signal,
-		});
-		this.el.addEventListener("keydown", () => this.el.classList.remove("is-pointer-focus"), {
-			capture: true,
-			signal,
-		});
-		this.el.addEventListener(
-			"focusout",
-			(event) => {
-				if (!(event.relatedTarget instanceof Node && this.el.contains(event.relatedTarget)))
-					this.el.classList.remove("is-pointer-focus");
-			},
-			{ signal },
-		);
+		// The drag also marks pointer focus on the panel, which keeps the hover controls down after a press.
 		this.#fitPreview = attachComputerDrag(this.el, signal);
 		const covered = new Map<HTMLElement, boolean>();
 		this.#setExpanded = (expanded: boolean) => {
@@ -330,6 +313,8 @@ export class ComputerPanel {
 			else this.#setExpanded(false);
 		}
 		this.el.remove();
+		// Removal takes focus without a focusout in every browser; the next focus in the panel starts clean.
+		this.el.classList.remove("is-pointer-focus");
 		// Lets the thread that was left be collected: nothing of it is watched any more.
 		this.#fitPreview();
 		// It slid in once; coming back to a thread it is simply there, as after a drag.

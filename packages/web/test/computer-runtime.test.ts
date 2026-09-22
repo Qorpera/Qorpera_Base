@@ -158,7 +158,7 @@ describe("automatic computer popover", () => {
 		open.mock.calls[0]![0].onClosed();
 		expect(p.el.isConnected).toBe(false);
 	});
-	it("marks pointer focus so a press does not keep the hover controls up, and keys clear it", () => {
+	it("forgets a press's pointer focus when a thread detaches the panel", () => {
 		const f = setup(),
 			p = panel(f.computer);
 		document.body.append(p.el);
@@ -169,20 +169,9 @@ describe("automatic computer popover", () => {
 		p.el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 1, isPrimary: true, button: 0 }));
 		expect(document.activeElement).toBe(p.el);
 		expect(p.el.classList.contains("is-pointer-focus")).toBe(true);
-		p.el.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+		// Removal takes focus without a focusout in every browser; the mark must not outlive the thread.
+		p.detach();
 		expect(p.el.classList.contains("is-pointer-focus")).toBe(false);
-		p.el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 1, isPrimary: true, button: 0 }));
-		expect(p.el.classList.contains("is-pointer-focus")).toBe(true);
-		// Focus moving within the panel keeps the mark; leaving it clears the mark.
-		const inner = p.el.querySelector<HTMLButtonElement>(".computer-close")!;
-		inner.focus();
-		expect(p.el.classList.contains("is-pointer-focus")).toBe(true);
-		const outside = document.createElement("button");
-		document.body.append(outside);
-		outside.focus();
-		expect(p.el.classList.contains("is-pointer-focus")).toBe(false);
-		outside.remove();
-		p.el.remove();
 	});
 	it("closes for good from the X top right, and not before a thread holds it", async () => {
 		const f = setup(),
