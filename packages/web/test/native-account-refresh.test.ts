@@ -182,12 +182,12 @@ describe("account metadata refresh transport", () => {
 		expect(f.list).toHaveBeenCalledTimes(2);
 	});
 	it.each([
-		["a minute-old observation", observed(new Date(Date.now() - 61_000).toISOString())],
-		["a passed window reset", observed(new Date().toISOString(), new Date(Date.now() - 1_000).toISOString())],
+		["a minute-old observation", () => observed(new Date(Date.now() - 61_000).toISOString())],
+		["a passed window reset", () => observed(new Date().toISOString(), new Date(Date.now() - 1_000).toISOString())],
 	])("treats %s as stale and asks for a new observation", async (_, accounts) => {
 		const f = setup();
 		f.receipt.status = "completed";
-		f.list.mockResolvedValueOnce(accounts);
+		f.list.mockResolvedValueOnce(accounts());
 		await f.client.refreshAccountMetadata!();
 		expect(f.calls.map((c) => c.url.split("/").pop())).toEqual(["qorpera_begin_native_account_refresh"]);
 	});
@@ -201,13 +201,14 @@ describe("account metadata refresh transport", () => {
 			await first;
 			expect(f.calls).toHaveLength(2);
 			// The thread view and the Connections page ask again every minute; the
-			// completed attempt answers them until it expires, without any request.
+			// completed attempt answers them until it expires, without any request,
+			// even though the attempt observed no usage for this account.
 			for (let minute = 1; minute < 5; minute++) {
 				vi.setSystemTime(Date.now() + 60_000);
 				await f.client.refreshAccountMetadata!();
 			}
 			expect(f.calls).toHaveLength(2);
-			expect(f.list).toHaveBeenCalledOnce();
+			expect(f.list).toHaveBeenCalledTimes(5);
 			vi.setSystemTime(Date.parse(f.receipt.expires_at) + 1);
 			f.receipt.status = "completed";
 			f.receipt.expires_at = new Date(Date.now() + 300_000).toISOString();
@@ -215,6 +216,34 @@ describe("account metadata refresh transport", () => {
 			expect(f.calls).toHaveLength(3);
 			const before = JSON.parse(String(f.calls[0]?.init?.body)),
 				after = JSON.parse(String(f.calls[2]?.init?.body));
+			expect(after.p_client_request_id).not.toBe(before.p_client_request_id);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+	it.each([
+		["a reset that passed since the completed attempt", false],
+		["the member's own Refresh", true],
+	])("asks for a new attempt inside the window for %s", async (_, force) => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		try {
+			const f = setup();
+			f.receipt.status = "completed";
+			await f.client.refreshAccountMetadata!();
+			expect(f.calls).toHaveLength(1);
+			vi.setSystemTime(Date.now() + 120_000);
+			const fresh = new Date().toISOString();
+			f.list.mockResolvedValue(observed(fresh));
+			await f.client.refreshAccountMetadata!();
+			expect(f.calls).toHaveLength(1);
+			if (!force) f.list.mockResolvedValue(observed(fresh, new Date(Date.now() - 1_000).toISOString()));
+			await f.client.refreshAccountMetadata!(undefined, force);
+			expect(f.calls.map((c) => c.url.split("/").pop())).toEqual([
+				"qorpera_begin_native_account_refresh",
+				"qorpera_begin_native_account_refresh",
+			]);
+			const before = JSON.parse(String(f.calls[0]?.init?.body)),
+				after = JSON.parse(String(f.calls[1]?.init?.body));
 			expect(after.p_client_request_id).not.toBe(before.p_client_request_id);
 		} finally {
 			vi.useRealTimers();

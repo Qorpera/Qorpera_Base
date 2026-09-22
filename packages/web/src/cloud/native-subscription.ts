@@ -42,7 +42,9 @@ export interface WebNativeSubscription {
 	readonly onboardingAvailable: boolean;
 	beginProviderLogin(input: WebNativeProviderLoginInput, signal?: AbortSignal): Promise<WebNativeProviderLogin>;
 	listConnections(signal?: AbortSignal): Promise<NativeExecutionConnections>;
-	refreshAccountMetadata?(signal?: AbortSignal): Promise<void>;
+	/** Resolves once account usage is current. `force` asks for a new observation
+	 * even inside the window of a completed attempt: the member pressed Refresh. */
+	refreshAccountMetadata?(signal?: AbortSignal, force?: boolean): Promise<void>;
 	selectSessionAccount?(sessionId: string, signal?: AbortSignal): Promise<string | undefined>;
 	listSessionTurnProvenance(sessionId: string, signal?: AbortSignal): Promise<readonly SessionTurnProvenance[]>;
 	requestSessionTurn(input: RequestSponsoredSessionTurnInput, signal?: AbortSignal): Promise<SessionTurnRequestResult>;
@@ -58,12 +60,17 @@ export interface WebNativeSubscription {
 
 /** The same rule as the server's admission: usage observed within the last
  * minute whose windows have not reset needs no new observation. Requesting one
- * anyway records an attempt, and a stale one boots a login guest. */
-function usageStale(account: NativeMemberConnection, now: number): boolean {
+ * anyway records an attempt, and a stale one boots a login guest. Inside the
+ * window of an attempt that already completed (`held`), only a reset that has
+ * passed since justifies another: usage that attempt could not observe, or
+ * that has merely aged, would not be observed by asking again. */
+function usageStale(account: NativeMemberConnection, now: number, held: boolean): boolean {
 	const usage = account.providerAccountUsage;
-	if (!usage) return true;
-	const observedAt = Date.parse(usage.observedAt);
-	if (!(observedAt > now - 60_000) || observedAt > now + 30_000) return true;
+	if (!usage) return !held;
+	if (!held) {
+		const observedAt = Date.parse(usage.observedAt);
+		if (!(observedAt > now - 60_000) || observedAt > now + 30_000) return true;
+	}
 	return usage.windows.some((window) => window.resetAt !== undefined && Date.parse(window.resetAt) <= now);
 }
 
@@ -173,6 +180,20 @@ export function createWebNativeSubscription(
 	let metadataAdmission:
 		| { clientRequestId: string; capability: string; expiresAt: number; completed: boolean }
 		| undefined;
+	const admit = () => {
+		const bytes = crypto.getRandomValues(new Uint8Array(32));
+		const capability = btoa(String.fromCharCode(...bytes))
+			.replaceAll("+", "-")
+			.replaceAll("/", "_")
+			.replace(/=+$/, "");
+		metadataAdmission = {
+			clientRequestId: crypto.randomUUID(),
+			capability,
+			expiresAt: Date.now() + 300_000,
+			completed: false,
+		};
+		return metadataAdmission;
+	};
 	return {
 		onboardingAvailable: loginBase !== undefined,
 		beginProviderLogin: (input, signal) => {
@@ -311,28 +332,11 @@ export function createWebNativeSubscription(
 				});
 		},
 		listConnections: (signal) => client(signal).listConnections(profileId),
-		refreshAccountMetadata: async (signal) => {
+		refreshAccountMetadata: async (signal, force = false) => {
 			const checked = AbortSignal.any([companySignal, ...(signal ? [signal] : [])]);
 			checked.throwIfAborted();
 			current();
-			// A completed attempt keeps its authority until it expires: at most one
-			// refresh per expiry window, however often views ask.
-			if (metadataAdmission?.completed && metadataAdmission.expiresAt > Date.now()) return;
 			if (!pendingMetadataRefresh) {
-				if (!metadataAdmission || metadataAdmission.expiresAt <= Date.now()) {
-					const bytes = crypto.getRandomValues(new Uint8Array(32));
-					const capability = btoa(String.fromCharCode(...bytes))
-						.replaceAll("+", "-")
-						.replaceAll("/", "_")
-						.replace(/=+$/, "");
-					metadataAdmission = {
-						clientRequestId: crypto.randomUUID(),
-						capability,
-						expiresAt: Date.now() + 300_000,
-						completed: false,
-					};
-				}
-				const admission = metadataAdmission;
 				const work = withCloudDeadline(
 					async (deadline) => {
 						const accounts = await client(deadline).listConnections(profileId);
@@ -344,8 +348,23 @@ export function createWebNativeSubscription(
 								account.authorizationState === "active",
 						);
 						if (!accounts.computeIdentity || !eligible.length) return;
-						const now = Date.now();
-						if (!eligible.some((account) => usageStale(account, now))) return;
+						// A completed attempt keeps its authority until it expires: at most one
+						// attempt per expiry window, however often views ask, unless a reset
+						// passed in the meantime or the member asked.
+						const held = metadataAdmission?.completed === true && metadataAdmission.expiresAt > Date.now();
+						if (!force) {
+							const now = Date.now();
+							if (!eligible.some((account) => usageStale(account, now, held))) return;
+						}
+						// An attempt that did not complete keeps its authority for a retry.
+						const admission =
+							!metadataAdmission || held || metadataAdmission.expiresAt <= Date.now()
+								? admit()
+								: metadataAdmission;
+						const settle = (expiresAt: string) => {
+							admission.expiresAt = Date.parse(expiresAt);
+							admission.completed = true;
+						};
 						if (!loginBase) throw new Error("Account refresh is not configured");
 						const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(admission.capability));
 						const pause = (milliseconds: number) =>
@@ -399,8 +418,7 @@ export function createWebNativeSubscription(
 										throw new Error("Account refresh authority changed");
 									settled = Date.parse(observed.expiresAt) <= Date.now();
 									if (!settled && observed.status === "completed") {
-										admission.expiresAt = Date.parse(observed.expiresAt);
-										admission.completed = true;
+										settle(observed.expiresAt);
 										return;
 									}
 								}
@@ -418,7 +436,7 @@ export function createWebNativeSubscription(
 							throw new Error("Account refresh authority changed");
 						admission.expiresAt = Date.parse(authority.expiresAt);
 						if (authority.status === "completed") {
-							admission.completed = true;
+							settle(authority.expiresAt);
 							return;
 						}
 						const request: NativeAccountRefreshRequest = { ...authority, capability: admission.capability };
@@ -454,7 +472,7 @@ export function createWebNativeSubscription(
 								deadline.throwIfAborted();
 								current();
 								if (parseNativeAccountRefreshResult(value, authority.requestId) === "completed") {
-									admission.completed = true;
+									settle(authority.expiresAt);
 									return;
 								}
 							} finally {

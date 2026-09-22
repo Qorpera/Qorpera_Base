@@ -242,12 +242,14 @@ describe("room startup usage refresh", () => {
 		vi.useFakeTimers();
 		const hydrate = vi.fn(async () => {});
 		const select = vi.fn(async () => id(90));
-		const f = setup(true, withUsage([80, 40]), select, hydrate);
+		const observed = withUsage([80, 40]);
+		observed.connections[0]!.providerAccountUsage!.windows[0]!.resetAt = new Date(Date.now() + 30_000).toISOString();
+		const f = setup(true, observed, select, hydrate);
 		await settle();
 		await vi.advanceTimersByTimeAsync(1_000);
 		type(f.view, "Send after the metadata interval");
 		await settle();
-		// Make usage refresh due without firing a background poll first.
+		// Pass the known reset without firing the background poll first.
 		vi.setSystemTime(Date.now() + 60_000);
 		f.send().click();
 		await settle();
@@ -357,11 +359,14 @@ describe("conversation execution account", () => {
 		expect(select).toHaveBeenCalledTimes(2);
 	});
 
-	it("refreshes usage metadata after its minute cooldown but skips hydration for quick pre-send checks", async () => {
+	it("asks for usage once per opened thread and again only once a known reset has passed", async () => {
 		vi.useFakeTimers();
 		const hydrate = vi.fn(async () => {});
 		const select = vi.fn(async () => id(90));
-		const f = setup(true, withUsage([80, 40]), select, hydrate);
+		const observed = withUsage([80, 40]);
+		const resetAt = Date.now() + 200_000;
+		observed.connections[0]!.providerAccountUsage!.windows[0]!.resetAt = new Date(resetAt).toISOString();
+		const f = setup(true, observed, select, hydrate);
 		await settle();
 		expect(hydrate).toHaveBeenCalledOnce();
 		type(f.view, "Hello");
@@ -369,13 +374,16 @@ describe("conversation execution account", () => {
 		f.send().click();
 		await settle();
 		expect(f.sendMessage).toHaveBeenCalledOnce();
+		// An idle thread never asks on a clock: the account poll keeps running alone.
+		await vi.advanceTimersByTimeAsync(150_000);
 		expect(hydrate).toHaveBeenCalledOnce();
-		await vi.advanceTimersByTimeAsync(30_000);
-		expect(hydrate).toHaveBeenCalledOnce();
-		await vi.advanceTimersByTimeAsync(30_000);
+		expect(select.mock.calls.length).toBeGreaterThan(3);
+		// The reset passes: one new observation, then quiet again.
+		await vi.advanceTimersByTimeAsync(51_000);
 		expect(hydrate).toHaveBeenCalledTimes(2);
-		await vi.advanceTimersByTimeAsync(61_000);
-		expect(hydrate).toHaveBeenCalledTimes(3);
+		f.listConnections.mockResolvedValue(withUsage([80, 40]));
+		await vi.advanceTimersByTimeAsync(300_000);
+		expect(hydrate).toHaveBeenCalledTimes(2);
 	});
 
 	it.each(["retry", "sending"] as const)("never automatically switches an account during %s", async (mode) => {
