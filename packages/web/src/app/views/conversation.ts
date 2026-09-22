@@ -79,9 +79,11 @@ export class ConversationView {
 	#headerKey = "";
 	#renderedKey = "";
 	#stickToBottom = true;
-	/** Where the last pin put the thread. Its scroll event arrives a frame later, when
-	 * the pane may already have shrunk (the composer or a notice above it appeared in
-	 * the same task); that event is not the member scrolling away. */
+	/** Where the last pin that moved the thread put it. Its scroll event arrives a frame
+	 * later, when the pane may already have shrunk (the composer or a notice above it
+	 * appeared in the same task); that event is not the member scrolling away. Armed
+	 * only by a pin that changed the position, so it is consumed by exactly that event
+	 * and never lingers to swallow a real scroll. */
 	#pinnedTop = -1;
 	/** Re-reads the scroll position for the hidden-bar fade after a programmatic scroll. */
 	#refreshFade: () => void = () => {};
@@ -394,8 +396,10 @@ export class ConversationView {
 	/** Shows the latest message unless the reader has scrolled up to read older ones. */
 	#pinToBottom(): void {
 		if (this.#disposed || !this.#stickToBottom) return;
+		const before = this.#messages.scrollTop;
 		this.#messages.scrollTop = this.#messages.scrollHeight;
-		this.#pinnedTop = this.#messages.scrollTop;
+		const after = this.#messages.scrollTop;
+		if (after !== before) this.#pinnedTop = after;
 		this.#refreshFade();
 	}
 	setNavigationOpen(open: boolean): void {
@@ -1020,7 +1024,6 @@ export class ConversationView {
 						action,
 					}),
 		);
-		if (!hidden) this.#pinToBottom();
 		if (focused) {
 			if (!hidden)
 				(

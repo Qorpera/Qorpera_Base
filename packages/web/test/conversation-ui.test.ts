@@ -87,11 +87,12 @@ function loadedView() {
 	const messages = view.el.querySelector<HTMLElement>(".messages")!;
 	expect(messages.textContent).toContain("Latest answer");
 	const metrics = { scrollTop: 0, scrollHeight: 0, clientHeight: 400 };
+	// Like a browser: a write past the end lands at the end.
 	Object.defineProperty(messages, "scrollTop", {
 		configurable: true,
 		get: () => metrics.scrollTop,
 		set: (value: number) => {
-			metrics.scrollTop = value;
+			metrics.scrollTop = Math.max(0, Math.min(value, metrics.scrollHeight - metrics.clientHeight));
 		},
 	});
 	Object.defineProperty(messages, "scrollHeight", { configurable: true, get: () => metrics.scrollHeight });
@@ -348,9 +349,7 @@ describe("conversation UI boundaries", () => {
 		expect(button(restored.el, "Preview private.png")).toBeDefined();
 		restored.dispose();
 	});
-	it("opens a loaded conversation at its latest message and keeps it there while the pane resizes", () => {
-		// The view renders before it is placed in the page, so the end of the
-		// thread can only be shown once the message pane has a size.
+	function stubResizeObserver() {
 		const observers: { callback: () => void; targets: Element[]; disconnected: boolean }[] = [];
 		vi.stubGlobal(
 			"ResizeObserver",
@@ -368,13 +367,20 @@ describe("conversation UI boundaries", () => {
 				}
 			},
 		);
+		return observers;
+	}
+
+	it("opens a loaded conversation at its latest message and keeps it there while the pane resizes", () => {
+		// The view renders before it is placed in the page, so the end of the
+		// thread can only be shown once the message pane has a size.
+		const observers = stubResizeObserver();
 		const { view, messages, metrics } = loadedView();
 		const sizes = observers.find((entry) => entry.targets.includes(messages))!;
 		expect(sizes.targets).toEqual([messages]);
 		document.body.append(view.el);
 		metrics.scrollHeight = 2000;
 		sizes.callback();
-		expect(metrics.scrollTop).toBe(2000);
+		expect(metrics.scrollTop).toBe(1600);
 		// A reader who scrolled up to older messages is left there.
 		metrics.scrollTop = 500;
 		messages.dispatchEvent(new Event("scroll"));
@@ -386,12 +392,46 @@ describe("conversation UI boundaries", () => {
 		messages.dispatchEvent(new Event("scroll"));
 		metrics.scrollHeight = 2600;
 		sizes.callback();
-		expect(metrics.scrollTop).toBe(2600);
+		expect(metrics.scrollTop).toBe(2200);
 		view.dispose();
 		expect(sizes.disconnected).toBe(true);
 		metrics.scrollTop = 0;
 		sizes.callback();
 		expect(metrics.scrollTop).toBe(0);
+	});
+
+	it("stays pinned when the pin's own scroll event arrives after the pane shrank", () => {
+		// The composer or a notice line appears in the same task as the pin, so the
+		// pin's scroll event reads a gap it did not cause. Only a real scroll counts.
+		const observers = stubResizeObserver();
+		const { view, messages, metrics } = loadedView();
+		const sizes = observers.find((entry) => entry.targets.includes(messages))!;
+		document.body.append(view.el);
+		metrics.scrollHeight = 2000;
+		sizes.callback();
+		expect(metrics.scrollTop).toBe(1600);
+		metrics.clientHeight = 340; // a line appeared above the composer
+		messages.dispatchEvent(new Event("scroll")); // the pin's event, 60px short now
+		sizes.callback();
+		expect(metrics.scrollTop).toBe(1660);
+		// The guard is spent: the next event at another position is the member's.
+		metrics.scrollTop = 1000;
+		messages.dispatchEvent(new Event("scroll"));
+		metrics.scrollHeight = 2400;
+		sizes.callback();
+		expect(metrics.scrollTop).toBe(1000);
+		// Back at the end; a pin that does not move the thread arms nothing, so a
+		// later real scroll that lands on the same position is still the member's.
+		metrics.scrollTop = 2060;
+		messages.dispatchEvent(new Event("scroll"));
+		sizes.callback();
+		expect(metrics.scrollTop).toBe(2060);
+		metrics.scrollHeight = 2500; // content grew under the reader
+		messages.dispatchEvent(new Event("scroll")); // still at 2060: 100px from the end
+		metrics.scrollHeight = 2600;
+		sizes.callback();
+		expect(metrics.scrollTop).toBe(2060);
+		view.dispose();
 	});
 	it("still opens a loaded conversation at its latest message without a size observer", async () => {
 		vi.stubGlobal("ResizeObserver", undefined);
@@ -400,7 +440,7 @@ describe("conversation UI boundaries", () => {
 		document.body.append(view.el);
 		expect(metrics.scrollTop).toBe(0);
 		await Promise.resolve();
-		expect(metrics.scrollTop).toBe(2000);
+		expect(metrics.scrollTop).toBe(1600);
 	});
 	it("keeps the computer popover compact and the conversation usable at every width", () => {
 		const f = setup(),
@@ -522,6 +562,14 @@ describe("conversation UI boundaries", () => {
 		// The failed-run line shares the band: notices first, then the run, then the composer.
 		const slot = host.nextElementSibling;
 		expect(slot?.classList.contains("thread-run-failure")).toBe(true);
+		expect(slot?.nextElementSibling).toBe(f.view.el.querySelector("footer.composer"));
+	});
+
+	it("places the failed-run line right above the composer without a notification host", () => {
+		const f = setup();
+		const slot = f.view.el.querySelector<HTMLElement>(".thread-run-failure");
+		expect(slot?.parentElement).toBe(f.view.el.querySelector(".thread-conversation"));
+		expect(slot?.previousElementSibling?.classList.contains("thread-status")).toBe(true);
 		expect(slot?.nextElementSibling).toBe(f.view.el.querySelector("footer.composer"));
 	});
 
