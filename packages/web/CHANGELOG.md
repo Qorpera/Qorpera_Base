@@ -19,6 +19,9 @@
 
 ### Added
 
+- Settings has a Plan & usage tab: the account's current plan (the freemium plan is now called "Free trial") with an Upgrade button that opens the three plans qorpera.com sells (Basis, Standard, Dedicated computer, with prices and what they include; choosing one says "Coming soon" until plan changes open), a Usage section with computer hours (a meter once the cloud reports them, "Not measured yet" until then) and the chosen company's storage, and a Billing card (price, next payment, payment method, invoices) that shows placeholders until billing lands. Nothing moved to General's loss except the plan card. The standalone account page keeps the plan below General.
+- Appearance in Settings → General shows its choices as pictures instead of menus: Theme offers System, Light and Dark as miniature windows (System split down the middle), and Composer color offers Blue, Green and Grey as miniature conversations in the page's current theme. Each group is a radio group, so arrow keys move between cards.
+
 - Resize the computer preview by dragging any of its edges or corners, from its resting size up to twice that, keeping its 16:9 shape and staying inside the thread. When the preview has keyboard focus, plus and minus resize it too.
 - Present member-addressed execution notices inline in the workspace, with explicit acknowledgment and recovery after uncertain requests.
 - Add a dark theme. Settings → General → Theme offers System default (follows the device's appearance), Light and Dark; the choice is kept per browser, follows changes made in other tabs, and a head script applies it before the first paint.

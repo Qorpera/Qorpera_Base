@@ -187,6 +187,7 @@ const ICON_PATHS: Record<string, string[]> = {
 		"M14 21v-3a2 2 0 0 0-4 0v3",
 	],
 	connections: ["M12 22v-5", "M9 8V2M15 8V2", "M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"],
+	plan: ["M2 6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2Z", "M2 10h20", "M6 15h4"],
 	signout: ["m16 17 5-5-5-5", "M21 12H9", "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"],
 };
 

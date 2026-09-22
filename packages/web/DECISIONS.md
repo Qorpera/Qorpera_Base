@@ -419,3 +419,31 @@ into the field carries into New agent.
 in CLIENT-CONTRACT.md). The Start group chat row stays disabled and says "Not
 available yet", as the old screen's Open button did.
 
+## 2026-09-22 — Plan & usage is its own Settings tab; appearance choices are pictures
+
+**Decision (Jonas).** General was cluttered. The subscription moves to a
+Plan & usage tab (a card icon in the menu): the account's plan card, then a
+Usage section with the chosen company's storage (the same figures as the
+Company tab's Company File card, with the meter). With no company chosen the
+Usage section says to choose one. General keeps Account, Appearance,
+Language & region, Companies and the advanced cloud endpoint.
+
+**Prepared, not wired (Jonas, same day).** The freemium plan reads "Free
+trial". Upgrade opens the three plans from qorpera.com (Basis 185 kr,
+Standard 630 kr, Dedicated computer 1.592 kr a month ex. VAT; computer hours
+= price ÷ hourly rate: 74 h, 286 h, all month) as cards whose buttons say
+"Coming soon" until plan changes open. Usage has a Computer hours meter and
+Billing has price, next payment, payment method (Add card, disabled) and
+invoices. The view takes an optional `PlanBilling` (hours used, next payment,
+payment method, invoices) and shows honest placeholders ("Not measured yet",
+"No card on file", "No invoices yet") for whatever the cloud does not report;
+no figure is invented. The catalog lives in `views/plan.ts` beside the view.
+
+**Appearance as cards.** Theme and Composer color are shown as pictures of
+the result, three per row, each a native radio under a label: miniature
+windows in the theme's own surfaces (System is the light window with the
+dark window over its right half) and miniature conversations (agent bubble,
+member bubble and send disc in the colour) drawn in the page's current
+theme. The chosen card carries a 2px ring in the text colour. The theme
+pictures keep their colours in both themes on purpose; the composer
+pictures follow the page.

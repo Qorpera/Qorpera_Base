@@ -4,7 +4,7 @@ import { createWebCompanyExecution } from "../../cloud/company-execution.ts";
 import { createWebNativeSubscription } from "../../cloud/native-subscription.ts";
 import type { HostedCompanyFile, HostedProfile } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
-import { button, fmtBytes, h, icon, notice, replace } from "../../ui/dom.ts";
+import { button, h, icon, notice, replace } from "../../ui/dom.ts";
 import { uiText } from "../../ui/preferences.ts";
 import type { AuthController } from "../auth.ts";
 import { CompanyController } from "../company.ts";
@@ -12,7 +12,9 @@ import { type AccountViewState, renderAccount } from "./account.ts";
 import { CompanyExecutionView } from "./company-execution.ts";
 import { FriendsController, renderFriends } from "./friends.ts";
 import type { HubController } from "./hub.ts";
+import { renderPlan } from "./plan.ts";
 import { ConnectionsView, ProviderSignIns } from "./settings-connections.ts";
+import { storageSummary } from "./storage-summary.ts";
 import { renderTeam } from "./team.ts";
 
 const TABS = [
@@ -20,8 +22,14 @@ const TABS = [
 		id: "general",
 		label: "General",
 		icon: "settings",
+		keywords: "account companies appearance theme composer color colour blue green grey gray language region",
+	},
+	{
+		id: "plan",
+		label: "Plan & usage",
+		icon: "plan",
 		keywords:
-			"account plan billing companies appearance theme composer color colour blue green grey gray language region",
+			"plan billing subscription usage storage trial upgrade price payment card invoices computer hours basis standard dedicated",
 	},
 	{
 		id: "friends",
@@ -177,10 +185,12 @@ export class SettingsView {
 			.then((entitlement) => {
 				this.#account = { loaded: true, entitlement };
 				this.#general();
+				if (this.#panels.has("plan")) this.#plan();
 			})
 			.catch((error) => {
 				this.#account = { loaded: true, error: describeError(error) };
 				this.#general();
+				if (this.#panels.has("plan")) this.#plan();
 			});
 		// The friends list also feeds the Company tab's invitation picker.
 		this.#friends.store.subscribe(() => {
@@ -280,6 +290,7 @@ export class SettingsView {
 			button.tabIndex = tab === id ? 0 : -1;
 		}
 		if (tab === "general") this.#general();
+		else if (tab === "plan") this.#plan();
 		else if (tab === "friends") this.#drawFriends();
 		else if (tab === "company") this.#drawCompany();
 		else if (this.#company) {
@@ -344,6 +355,32 @@ export class SettingsView {
 			this.#account = { ...this.#account, ...next };
 			this.#general();
 		});
+	}
+
+	/** The plan is the account's; the usage shown is the chosen company's storage. */
+	#plan(): void {
+		if (this.#lifetime.signal.aborted) return;
+		let panel = this.#panels.get("plan");
+		if (!panel) {
+			panel = h("div");
+			this.#panels.set("plan", panel);
+		}
+		const company = this.#company;
+		if (this.#tab === "plan" && company && !this.#file && !this.#fileLoading && !this.#fileError)
+			void this.#loadFile();
+		renderPlan(
+			panel,
+			this.#account,
+			company
+				? {
+						companyName: company.profile.profileName,
+						file: this.#file,
+						loading: this.#fileLoading,
+						error: this.#fileError,
+						retry: () => void this.#loadFile(true),
+					}
+				: undefined,
+		);
 	}
 
 	#drawFriends(): void {
@@ -477,7 +514,7 @@ export class SettingsView {
 					),
 				),
 		);
-		const file = this.#file;
+		const storage = storageSummary(this.#file, this.#fileError);
 		replace(
 			panel.querySelector(".settings-file")!,
 			h(
@@ -488,27 +525,13 @@ export class SettingsView {
 					"div",
 					{ class: "settings-copy" },
 					h("strong", null, uiText("Company File")),
-					h(
-						"small",
-						null,
-						file
-							? `${fmtBytes(file.storageUsedBytes)} used${file.storageLimitBytes > 0 ? ` of ${fmtBytes(file.storageLimitBytes)}` : ""}`
-							: this.#fileError
-								? "Storage information unavailable"
-								: "Loading storage…",
-					),
-					file && file.storageLimitBytes > 0
-						? h("progress", {
-								max: file.storageLimitBytes,
-								value: Math.min(file.storageUsedBytes, file.storageLimitBytes),
-								"aria-label": "Company storage used",
-							})
-						: null,
+					h("small", null, storage.text),
+					storage.meter,
 				),
 				icon("chevron"),
 			),
 			this.#fileError
-				? button("Retry storage", () => void this.#loadFile(), { small: true, disabled: this.#fileLoading })
+				? button(uiText("Retry"), () => void this.#loadFile(true), { small: true, disabled: this.#fileLoading })
 				: null,
 		);
 		if (staffFocus)
@@ -546,11 +569,16 @@ export class SettingsView {
 		);
 	}
 
-	async #loadFile(): Promise<void> {
+	/** `redraw` (a retry) repaints at once so the Retry button disables while the load runs. */
+	async #loadFile(redraw = false): Promise<void> {
 		const company = this.#company;
 		if (!company || this.#fileLoading) return;
 		const signal = this.#companyLifetime.signal;
 		this.#fileLoading = true;
+		if (redraw) {
+			this.#drawCompany();
+			if (this.#panels.has("plan")) this.#plan();
+		}
 		try {
 			const file = await this.#api.getCompanyFile(company.profile.environmentId);
 			if (signal.aborted || this.#lifetime.signal.aborted) return;
@@ -563,6 +591,7 @@ export class SettingsView {
 			if (!signal.aborted && !this.#lifetime.signal.aborted) {
 				this.#fileLoading = false;
 				this.#drawCompany();
+				if (this.#panels.has("plan")) this.#plan();
 			}
 		}
 	}
