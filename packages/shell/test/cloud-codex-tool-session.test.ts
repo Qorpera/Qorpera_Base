@@ -93,7 +93,7 @@ it.each(["response-first", "notify-first", "fence-before-started", "prewarm-befo
 		await expect(run(mode).result).resolves.toEqual({
 			providerSessionId: "thread_fixture",
 			toolCalls: 0,
-			codexVersion: "0.147.0",
+			codexVersion: "0.155.1",
 			fencedRequests: 1,
 		});
 	},

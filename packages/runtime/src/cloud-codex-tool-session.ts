@@ -34,7 +34,7 @@ import {
 } from "./cloud-runtime-observability.ts";
 import { CLOUD_RUNTIME_MODEL_POLICY, type CloudRuntimeReasoningEffort } from "./cloud-runtime-policy.ts";
 
-export const CLOUD_CODEX_BOUNDARY_VERSION = "0.147.0";
+export const CLOUD_CODEX_BOUNDARY_VERSION = "0.155.1";
 const CLIENT_NAME = "qorpera_cloud_boundary";
 const DIRECT_TOOLS_CAPABILITY = "qorpera.native-direct-tools/v1";
 const MESSAGE_COMPOSITION_CAPABILITY = "qorpera.native-message-composition/v1";
