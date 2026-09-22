@@ -1,8 +1,8 @@
 import { matchesKey } from "./keys.ts";
 
 /** The preview's resting width; a member can grow it up to twice this along its edges. */
-export const COMPUTER_PREVIEW_WIDTH = 400;
-export const COMPUTER_PREVIEW_SCALE_LIMIT = 2;
+const COMPUTER_PREVIEW_WIDTH = 400;
+const COMPUTER_PREVIEW_SCALE_LIMIT = 2;
 const ASPECT = 16 / 9;
 /** Edge band, in px inside the panel, that starts a resize instead of a move. */
 const EDGE = 8;
@@ -10,6 +10,7 @@ const KEY_RESIZE_STEP = 40;
 
 type Edge = "n" | "e" | "s" | "w" | "ne" | "nw" | "se" | "sw";
 type Rect = { left: number; top: number; width: number; height: number };
+type Bounds = { top: number; footer: number; fit: number };
 type Drag = { id: number; x: number; y: number; from: Rect; moved: boolean; edge?: Edge };
 
 /** The preview moves and resizes locally; dragging must never send pointer input to the desktop. */
@@ -27,21 +28,24 @@ export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): () 
 		);
 	const header = (parent: HTMLElement) =>
 		parent.querySelector<HTMLElement>(".thread-header")?.getBoundingClientRect().height ?? 0;
-	/** The widest the preview can be shown between the thread header and the composer. */
-	const fitWidth = (parent: HTMLElement) =>
-		Math.max(
-			0,
-			Math.min(parent.clientWidth - 40, (parent.clientHeight - header(parent) - below(parent) - 16) * ASPECT),
-		);
-	const place = (left: number, top: number) => {
+	/** One layout read per interaction: the thread's edges and the widest preview that fits between them. */
+	const measure = (parent: HTMLElement): Bounds => {
+		const top = header(parent),
+			footer = below(parent);
+		return {
+			top,
+			footer,
+			fit: Math.max(0, Math.min(parent.clientWidth - 40, (parent.clientHeight - top - footer - 16) * ASPECT)),
+		};
+	};
+	const place = (left: number, top: number, bounds?: Bounds) => {
 		const parent = panel.parentElement;
 		if (!parent || expanded()) return;
 		const inset = 8;
-		const footer = below(parent);
-		const minTop = header(parent) + inset;
+		const { top: minTop, footer } = bounds ?? measure(parent);
 		position = {
 			left: Math.max(inset, Math.min(left, parent.clientWidth - panel.offsetWidth - inset)),
-			top: Math.max(minTop, Math.min(top, parent.clientHeight - footer - panel.offsetHeight - inset)),
+			top: Math.max(minTop + inset, Math.min(top, parent.clientHeight - footer - panel.offsetHeight - inset)),
 		};
 		panel.style.setProperty("--computer-left", `${position.left}px`);
 		panel.style.setProperty("--computer-top", `${position.top}px`);
@@ -49,12 +53,12 @@ export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): () 
 	const reclamp = () => {
 		const parent = panel.parentElement;
 		if (!parent || expanded()) return;
-		const top = header(parent);
-		const footer = below(parent);
-		panel.style.setProperty("--computer-width", `${Math.min(chosenWidth, fitWidth(parent))}px`);
-		if (position) place(position.left, position.top);
+		const bounds = measure(parent);
+		panel.style.setProperty("--computer-width", `${Math.min(chosenWidth, bounds.fit)}px`);
+		if (position) place(position.left, position.top, bounds);
 		else {
 			// Keep the default right alignment until the member chooses a position.
+			const { top, footer } = bounds;
 			panel.style.setProperty(
 				"--computer-top",
 				`${Math.max(top + 8, Math.min(top + 20, parent.clientHeight - footer - panel.offsetHeight - 8))}px`,
@@ -93,30 +97,48 @@ export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): () 
 		const horizontal = x < EDGE ? "w" : x > rect.width - EDGE ? "e" : "";
 		return (`${vertical}${horizontal}` || undefined) as Edge | undefined;
 	};
-	/** Grow or shrink from `from`, keeping the edges opposite to `edge` where they are. */
-	const resize = (from: Rect, edge: Edge, width: number) => {
+	/**
+	 * Grow or shrink from `from`. The edges opposite to a dragged `edge` stay where they are; along the other
+	 * axis (and for the keyboard, both) the preview only has to fit the thread, so it shifts as needed.
+	 */
+	const resize = (from: Rect, edge: Edge | undefined, width: number) => {
 		const parent = panel.parentElement;
 		if (!parent) return;
 		const inset = 8;
+		const bounds = measure(parent);
 		const right = from.left + from.width,
 			bottom = from.top + from.height;
+		const anchoredWidth = edge?.includes("w")
+			? right - inset
+			: edge?.includes("e")
+				? parent.clientWidth - inset - from.left
+				: Number.POSITIVE_INFINITY;
+		const anchoredHeight = edge?.includes("n")
+			? bottom - bounds.top - inset
+			: edge?.includes("s")
+				? parent.clientHeight - bounds.footer - inset - from.top
+				: Number.POSITIVE_INFINITY;
 		const limit = Math.min(
 			COMPUTER_PREVIEW_WIDTH * COMPUTER_PREVIEW_SCALE_LIMIT,
-			edge.includes("w") ? right - inset : parent.clientWidth - inset - from.left,
-			(edge.includes("n")
-				? bottom - header(parent) - inset
-				: parent.clientHeight - below(parent) - inset - from.top) * ASPECT,
+			bounds.fit,
+			anchoredWidth,
+			anchoredHeight * ASPECT,
 		);
 		chosenWidth = Math.max(COMPUTER_PREVIEW_WIDTH, Math.min(width, limit));
-		const shown = Math.min(chosenWidth, fitWidth(parent));
+		const shown = Math.min(chosenWidth, bounds.fit);
 		panel.style.setProperty("--computer-width", `${shown}px`);
-		place(edge.includes("w") ? right - shown : from.left, edge.includes("n") ? bottom - shown / ASPECT : from.top);
+		place(
+			edge?.includes("w") ? right - shown : from.left,
+			edge?.includes("n") ? bottom - shown / ASPECT : from.top,
+			bounds,
+		);
 	};
 	const finish = () => {
 		if (!drag) return;
 		const id = drag.id;
 		drag = undefined;
 		panel.classList.remove("is-dragging", "is-resizing");
+		delete panel.dataset.resize;
 		if (panel.hasPointerCapture(id)) panel.releasePointerCapture(id);
 	};
 	panel.addEventListener(
@@ -208,12 +230,12 @@ export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): () 
 		"keydown",
 		(event) => {
 			if (event.target !== panel || expanded() || event.altKey || event.ctrlKey || event.metaKey) return;
-			const grow = !event.isComposing && (event.key === "+" || event.key === "=") ? 1 : event.key === "-" ? -1 : 0;
+			const grow = matchesKey(event, "grow") ? 1 : matchesKey(event, "shrink") ? -1 : 0;
 			if (grow) {
 				const from = frame();
 				if (!from) return;
 				observe();
-				resize(from, "se", from.width + grow * KEY_RESIZE_STEP);
+				resize(from, undefined, from.width + grow * KEY_RESIZE_STEP);
 				event.preventDefault();
 				event.stopPropagation();
 				return;

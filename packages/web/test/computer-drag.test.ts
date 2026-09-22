@@ -395,6 +395,7 @@ describe("computer preview resizing", () => {
 		expect(width(f)).toBe(400);
 		pointer(f.panel, "pointerup", { clientX: 900, clientY: 250 });
 		expect(f.panel.classList.contains("is-resizing")).toBe(false);
+		expect(f.panel.dataset.resize).toBeUndefined();
 		expect(f.panel.releasePointerCapture).toHaveBeenCalledExactlyOnceWith(1);
 	});
 	it("grows from the top-left corner keeping the bottom-right corner in place, up to the header", () => {
@@ -467,6 +468,46 @@ describe("computer preview resizing", () => {
 		expect(width(f)).toBe(400);
 		expect(key(f.canvas, "+").defaultPrevented).toBe(false);
 		expect(key(f.panel, "+", { ctrlKey: true }).defaultPrevented).toBe(false);
+		key(f.panel, "+");
+		expect(key(f.panel, "-", { isComposing: true }).defaultPrevented).toBe(false);
+		expect(width(f)).toBe(440);
+	});
+	it("grows from the bottom edge and the keyboard at the default right-aligned placement, shifting left", () => {
+		const f = setup();
+		big(f);
+		// Until the member moves it, the preview hangs 20px from the thread's right edge.
+		vi.mocked(f.panel.getBoundingClientRect).mockImplementation(
+			() =>
+				new DOMRect(
+					100 +
+						(Number.parseFloat(f.panel.style.getPropertyValue("--computer-left")) ||
+							f.size.width - 20 - f.panel.offsetWidth),
+					50 + Number.parseFloat(f.panel.style.getPropertyValue("--computer-top")),
+					f.panel.offsetWidth,
+					f.panel.offsetHeight,
+				),
+		);
+		expect(f.panel.style.getPropertyValue("--computer-left")).toBe("");
+		pointer(f.canvas, "pointerdown", { clientX: 1480, clientY: 341 });
+		pointer(f.panel, "pointermove", { clientX: 1480, clientY: 600 });
+		expect(f.panel.dataset.resize).toBe("s");
+		expect(width(f)).toBe(800);
+		expect(f.panel.style.getPropertyValue("--computer-left")).toBe("792px");
+		expect(top(f)).toBe(70);
+		pointer(f.panel, "pointermove", { clientX: 1480, clientY: 341 });
 		expect(width(f)).toBe(400);
+		pointer(f.panel, "pointerup");
+		key(f.panel, "+");
+		expect(width(f)).toBe(440);
+		expect(f.panel.style.getPropertyValue("--computer-left")).toBe("1152px");
+		key(f.panel, "-");
+		expect(width(f)).toBe(400);
+		// A dragged edge still keeps its opposite edge in place, so the right edge cannot grow here.
+		pointer(f.canvas, "pointerdown", { clientX: 1648, clientY: 200 });
+		pointer(f.panel, "pointermove", { clientX: 1848, clientY: 200 });
+		expect(f.panel.dataset.resize).toBe("e");
+		expect(width(f)).toBe(440);
+		expect(f.panel.style.getPropertyValue("--computer-left")).toBe("1152px");
+		pointer(f.panel, "pointerup");
 	});
 });
