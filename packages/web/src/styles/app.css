@@ -16,6 +16,9 @@ body {
 	font-family: "Source Sans 3", var(--font-sans); font-size: 14px; line-height: 1.45;
 	color: var(--text); background: var(--chrome);
 	font-kerning: normal; font-feature-settings: "kern" 1, "liga" 1, "calt" 1;
+	/* macOS: grayscale without the dilation that "auto" adds. Light text on a
+	   dark surface blooms at 1x otherwise; the weight tokens carry the stroke. */
+	-webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
 }
 a { color: var(--blue); text-decoration: none; }
 a:hover { text-decoration: underline; }
