@@ -92,6 +92,8 @@ begin
 		"title":"Notes","goal":"Summarise the thread.","definitionOfDone":"A note.","access":"read"}');
 	perform pg_temp.wake_assert((pg_temp.worker_row('notes')).species = 'in-house' and (pg_temp.worker_row('notes')).occurrence_id is not null
 		and (pg_temp.worker_row('notes')).owner_user_id is null,'An in-house worker is unchanged: admitted at once, no owner');
+	perform pg_temp.worker('{"action":"cancel","operationKey":"c2-cancel","todoKey":"composer-latency","workerKey":"notes"}');
+	perform pg_temp.wake_assert((pg_temp.worker_row('notes')).state = 'cancelled','The in-house helper leaves the queue');
 end $$;
 select pg_temp.wake_error($q$select pg_temp.worker('{"action":"dispatch","operationKey":"c3","todoKey":"composer-latency","workerKey":"fix-send-2",
 	"title":"Second","goal":"g","definitionOfDone":"d","access":"read","species":"coding","harness":"codex",
@@ -162,6 +164,12 @@ begin
 	select * into strict v_wake from public.qorpera_wake_occurrences where source_kind = 'worker-completion' and parent_run_id = v_parent;
 	perform pg_temp.wake_assert(v_wake.status in ('queued','materialized') and v_wake.payload #>> '{completions,0,outcome}' = 'blocked'
 		and v_wake.payload #>> '{completions,0,needs}' like 'Keep the%','The parent is woken at once with the question');
+	-- The manager continues from the revived run, as in production: later steering comes from that run's binding.
+	perform public.qorpera_materialize_wake_execution_runs(8);
+	select * into strict v_wake from public.qorpera_wake_occurrences where id = v_wake.id;
+	perform pg_temp.wake_assert(v_wake.status = 'materialized' and (pg_temp.worker_row('fix-send')).completion_state = 'delivered',
+		'The question revives the parent once');
+	perform set_config('qorpera_test.parent_binding',pg_temp.wake_start(v_wake.run_id)::text,true);
 end $$;
 select pg_temp.as_user('30000000-0000-4000-8000-000000000002');
 select pg_temp.wake_error($q$select public.qorpera_answer_coding_session((pg_temp.worker_row('fix-send')).id,'Keep 250 ms.','30000000-0000-4000-8000-000000000101')$q$,
