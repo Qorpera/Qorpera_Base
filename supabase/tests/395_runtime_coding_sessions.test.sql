@@ -156,6 +156,7 @@ begin
 	perform pg_temp.wake_assert(v_worker.state = 'blocked' and v_worker.completion_state = 'waiting' and v_worker.result ->> 'needs' like 'Keep the%'
 		and v_view ->> 'phase' = 'awaiting_input' and (v_view ->> 'filesChanged')::int = 3 and (pg_temp.session_row('fix-send')).lease_token is null
 		and pg_temp.events('fix-send','needs_input') = 1,'A question blocks the worker and frees the lease; the session waits for input');
+	perform pg_temp.wake_public_send(current_setting('qorpera_test.parent_binding')::jsonb,'final','coding-final');
 	perform pg_temp.finish_job(v_parent,'completed');
 	perform public.qorpera_drain_worker_wakes(32);
 	select * into strict v_wake from public.qorpera_wake_occurrences where source_kind = 'worker-completion' and parent_run_id = v_parent;
