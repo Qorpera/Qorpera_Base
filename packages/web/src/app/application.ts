@@ -34,6 +34,7 @@ import { LiveCompanyFileView } from "./views/live-company-file.ts";
 import { type MeetState, renderMeet } from "./views/meet.ts";
 import { NewConversationView } from "./views/new-conversation.ts";
 import { renderOrganization } from "./views/organization.ts";
+import { renderPlan } from "./views/plan.ts";
 import { type SettingsTab, SettingsView } from "./views/settings.ts";
 import { renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
 import { renderSignIn } from "./views/signin.ts";
@@ -435,6 +436,10 @@ export function mountApplication(
 					accountState = { ...accountState, ...next };
 					render();
 				});
+				// The standalone account page shows the plan below the general settings.
+				const plan = h("div");
+				renderPlan(plan, accountState, undefined);
+				main.append(plan);
 			} else if (route.name === "cloud-check") {
 				cloudCheck ??= new CloudCheckView(cloud);
 				replace(main, cloudCheck.el);

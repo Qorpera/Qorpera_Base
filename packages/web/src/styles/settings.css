@@ -42,6 +42,45 @@
 .settings-preference-row { display: flex; flex-direction: row; align-items: center; justify-content: space-between; gap: 16px; min-height: 46px; padding: 5px 12px; font-size: 12.5px; font-weight: 500; }
 .settings-preference-row > select { border: 0; background: transparent; font-size: 12.5px; max-width: 45%; }
 .settings-help { color: #797975; font-size: 11.5px; margin: 4px 12px; }
+/* Appearance: each choice is a picture of the result under a native radio.
+   The theme pictures keep their own colours in both themes (they show a
+   theme, not the page); the composer pictures follow the page. */
+.settings-preference { padding: 8px 12px 10px; }
+.settings-preference > .settings-copy { font-size: 12.5px; font-weight: 500; margin-bottom: 12px; }
+.settings-preference > .settings-copy small { font-weight: 400; }
+.settings-choices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; max-width: 880px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.settings-choice { position: relative; display: grid; gap: 9px; justify-items: center; min-width: 0; cursor: pointer; }
+.settings-choice > input { position: absolute; width: 1px; height: 1px; margin: 0; opacity: 0; pointer-events: none; }
+.settings-choice-label { font-size: 12.5px; color: #73736f; }
+.settings-choice > input:checked ~ .settings-choice-label { color: #121211; font-weight: 500; }
+.settings-swatch { position: relative; display: block; width: 100%; aspect-ratio: 10 / 7; overflow: hidden; border-radius: 14px; box-shadow: inset 0 0 0 1px rgb(18 18 17 / 10%); transition: box-shadow .12s; }
+.settings-choice:hover .settings-swatch { box-shadow: inset 0 0 0 1px rgb(18 18 17 / 10%), 0 0 0 2px #c9c9c5; }
+.settings-choice > input:checked ~ .settings-swatch { box-shadow: 0 0 0 2px #1d1d1b; }
+.settings-choice > input:focus-visible ~ .settings-swatch { outline: 2px solid #5b84c4; outline-offset: 3px; }
+.swatch-window { position: absolute; inset: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 5px; padding: 16% 12% 0; background: var(--w-bg); }
+.swatch-window-light { --w-bg: #e9e7e6; --w-bar: #c6c4c2; --w-panel: #ffffff; --w-pill: #dedddb; --w-line: #ececea; }
+.swatch-window-dark { --w-bg: #1f1f1e; --w-bar: #5e5d5a; --w-panel: #2f2f2e; --w-pill: #4f4f4d; --w-line: #3c3c3a; }
+.swatch-bar { justify-self: center; width: 46%; height: 7px; border-radius: 999px; background: var(--w-bar); }
+.swatch-bar-sub { width: 68%; height: 5px; opacity: .65; }
+.swatch-panel { display: grid; grid-auto-rows: minmax(0, 1fr); margin-top: 5px; padding: 0 7%; border-radius: 12px 12px 0 0; background: var(--w-panel); }
+.swatch-row { display: grid; gap: 5px; align-content: center; border-bottom: 1px solid var(--w-line); }
+.swatch-row > i { display: block; border-radius: 999px; }
+.swatch-pill { width: 34%; height: 8px; background: var(--w-pill); }
+.swatch-line { width: 50%; height: 3px; background: var(--w-line); }
+.theme-swatch-system > .swatch-window-dark { clip-path: inset(0 0 0 50%); }
+.color-swatch .swatch-window { grid-template-rows: auto auto minmax(0, 1fr) auto; align-items: start; gap: 8px; padding: 10% 8% 8%; background: var(--bg); }
+.color-swatch-blue { --swatch-accent: #0a84ff; }
+.color-swatch-green { --swatch-accent: #30d158; }
+.color-swatch-grey { --swatch-accent: #5b5b5b; }
+.swatch-bubble { height: 20px; border-radius: 12px; }
+.swatch-bubble-agent { width: 58%; justify-self: start; background: var(--pane-strong); }
+.swatch-bubble-member { width: 46%; justify-self: end; background: var(--swatch-accent); }
+.swatch-composer { grid-row: 4; display: flex; align-items: center; justify-content: flex-end; height: 30px; padding: 0 5px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--overlay); }
+.swatch-send { display: block; width: 20px; height: 20px; border-radius: 50%; background: var(--swatch-accent); }
+.settings-usage progress { width: 100%; height: 3px; margin-top: 8px; border: 0; border-radius: 3px; overflow: hidden; appearance: none; }
+.settings-usage progress::-webkit-progress-bar { background: #dcdcd8; }
+.settings-usage progress::-webkit-progress-value { background: #93938e; }
+.settings-usage progress::-moz-progress-bar { background: #93938e; }
 .settings-staff-group { border-top: 1px solid var(--border); padding-top: 18px; }
 .settings-content .settings-staff-group h2 { font-size: 10px; text-transform: uppercase; letter-spacing: .09em; margin-bottom: 12px; }
 .settings-file-card { min-height: 92px; grid-template-columns: 38px minmax(0, 1fr) 18px; gap: 16px; }
@@ -142,6 +181,19 @@
  .settings-company-label { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
  .settings-company-picker { margin-top: 0; }
  .settings-content { padding: 24px 20px; }
+ .settings-choices { gap: 10px; }
+ .swatch-window { gap: 3px; padding-top: 14%; }
+ .swatch-bar { height: 4px; }
+ .swatch-bar-sub { height: 3px; }
+ .swatch-panel { margin-top: 3px; }
+ .swatch-row { gap: 3px; }
+ .swatch-row:nth-child(3) { display: none; }
+ .swatch-pill { height: 5px; }
+ .swatch-line { height: 2px; }
+ .color-swatch .swatch-window { gap: 5px; padding: 8% 7% 6%; }
+ .swatch-bubble { height: 12px; }
+ .swatch-composer { height: 20px; padding: 0 3px; }
+ .swatch-send { width: 14px; height: 14px; }
  .company-person .person-actions { opacity: 1; flex-wrap: wrap; justify-content: end; }
  .company-person { grid-template-columns: 42px minmax(0, 1fr); gap: 12px; }
  .company-person .person-actions { grid-column: 2; justify-content: start; }

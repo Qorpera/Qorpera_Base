@@ -19,6 +19,9 @@
 
 ### Added
 
+- Settings has a Plan & usage tab: the account's current plan and the chosen company's storage (used of included, with a meter) live there, no longer on General. The standalone account page keeps both.
+- Appearance in Settings → General shows its choices as pictures instead of menus: Theme offers System, Light and Dark as miniature windows (System split down the middle), and Composer color offers Blue, Green and Grey as miniature conversations in the page's current theme. Each group is a radio group, so arrow keys move between cards.
+
 - Resize the computer preview by dragging any of its edges or corners, from its resting size up to twice that, keeping its 16:9 shape and staying inside the thread. When the preview has keyboard focus, plus and minus resize it too.
 - Present member-addressed execution notices inline in the workspace, with explicit acknowledgment and recovery after uncertain requests.
 - Add a dark theme. Settings → General → Theme offers System default (follows the device's appearance), Light and Dark; the choice is kept per browser, follows changes made in other tabs, and a head script applies it before the first paint.

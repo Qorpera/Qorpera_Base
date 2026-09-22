@@ -40,25 +40,60 @@ function account() {
 	const setState = vi.fn<(next: AccountViewState) => void>();
 	const render = () => renderAccount(auth, container, {}, setState);
 	render();
-	const select = () => container.querySelector<HTMLSelectElement>('select[aria-label="Composer color"]')!;
-	return { container, render, select, setState };
+	const group = () => container.querySelector<HTMLFieldSetElement>('fieldset[aria-label="Composer color"]')!;
+	const radios = () => [...group().querySelectorAll<HTMLInputElement>("input[type=radio]")];
+	const checked = () => radios().find((radio) => radio.checked)?.value;
+	const choose = (value: string) => {
+		const radio = radios().find((item) => item.value === value)!;
+		radio.checked = true;
+		radio.dispatchEvent(new Event("change"));
+	};
+	return { container, render, group, radios, checked, choose, setState };
 }
 
 describe("composer color preference", () => {
-	it("offers blue, green and grey in Appearance and remembers changes when settings reopen", () => {
+	it("offers blue, green and grey as cards in Appearance and remembers changes when settings reopen", () => {
 		const view = account();
-		expect(view.select()).not.toBeNull();
-		expect(view.select().closest("section")?.querySelector("h2")?.textContent).toBe("Appearance");
-		expect([...view.select().options].map((option) => option.value)).toEqual(["blue", "green", "grey"]);
-		expect(view.select().value).toBe("blue");
+		expect(view.group()).not.toBeNull();
+		expect(view.group().closest("section")?.querySelector("h2")?.textContent).toBe("Appearance");
+		expect(view.radios().map((radio) => radio.value)).toEqual(["blue", "green", "grey"]);
+		expect(view.radios().map((radio) => radio.closest("label")?.querySelector(".color-swatch")?.className)).toEqual([
+			"settings-swatch color-swatch color-swatch-blue",
+			"settings-swatch color-swatch color-swatch-green",
+			"settings-swatch color-swatch color-swatch-grey",
+		]);
+		expect(view.checked()).toBe("blue");
 		for (const color of ["green", "grey", "blue"]) {
-			view.select().value = color;
-			view.select().dispatchEvent(new Event("change"));
+			view.choose(color);
 			expect(localStorage.getItem(storageKey)).toBe(color);
 			expect(document.documentElement.dataset.composerColor).toBe(color);
 			view.render();
-			expect(view.select().value).toBe(color);
+			expect(view.checked()).toBe(color);
 		}
+		expect(view.setState).not.toHaveBeenCalled();
+	});
+
+	it("offers System, Light and Dark as cards, the System card showing both halves", () => {
+		const view = account();
+		const group = view.container.querySelector<HTMLFieldSetElement>('fieldset[aria-label="Theme"]')!;
+		const radios = [...group.querySelectorAll<HTMLInputElement>("input[type=radio]")];
+		expect(radios.map((radio) => radio.value)).toEqual(["system", "light", "dark"]);
+		expect(radios.find((radio) => radio.checked)?.value).toBe("system");
+		expect(
+			[...group.querySelectorAll(".theme-swatch-system .swatch-window")].map((window) => window.className),
+		).toEqual(["swatch-window swatch-window-light", "swatch-window swatch-window-dark"]);
+		expect(group.querySelectorAll(".theme-swatch-dark .swatch-window")).toHaveLength(1);
+		const dark = radios.find((radio) => radio.value === "dark")!;
+		dark.checked = true;
+		dark.dispatchEvent(new Event("change"));
+		expect(localStorage.getItem("qorpera.web.theme")).toBe("dark");
+		expect(document.documentElement.dataset.theme).toBe("dark");
+		view.render();
+		expect(
+			[...view.container.querySelectorAll<HTMLInputElement>('fieldset[aria-label="Theme"] input')].find(
+				(radio) => radio.checked,
+			)?.value,
+		).toBe("dark");
 		expect(view.setState).not.toHaveBeenCalled();
 	});
 
@@ -97,9 +132,8 @@ describe("composer color preference", () => {
 		vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
 			throw new Error("Storage full");
 		});
-		view.select().value = "grey";
-		view.select().dispatchEvent(new Event("change"));
-		expect(view.select().value).toBe("green");
+		view.choose("grey");
+		expect(view.checked()).toBe("green");
 		expect(composerColorPreference()).toBe("green");
 		expect(document.documentElement.dataset.composerColor).toBe("green");
 		expect(view.setState).toHaveBeenCalledWith({ error: expect.stringMatching(/save.*composer.*color/i) });

@@ -12,6 +12,7 @@ import { type AccountViewState, renderAccount } from "./account.ts";
 import { CompanyExecutionView } from "./company-execution.ts";
 import { FriendsController, renderFriends } from "./friends.ts";
 import type { HubController } from "./hub.ts";
+import { renderPlan } from "./plan.ts";
 import { ConnectionsView, ProviderSignIns } from "./settings-connections.ts";
 import { renderTeam } from "./team.ts";
 
@@ -20,8 +21,13 @@ const TABS = [
 		id: "general",
 		label: "General",
 		icon: "settings",
-		keywords:
-			"account plan billing companies appearance theme composer color colour blue green grey gray language region",
+		keywords: "account companies appearance theme composer color colour blue green grey gray language region",
+	},
+	{
+		id: "plan",
+		label: "Plan & usage",
+		icon: "plan",
+		keywords: "plan billing subscription usage storage freemium pro",
 	},
 	{
 		id: "friends",
@@ -177,10 +183,12 @@ export class SettingsView {
 			.then((entitlement) => {
 				this.#account = { loaded: true, entitlement };
 				this.#general();
+				this.#plan();
 			})
 			.catch((error) => {
 				this.#account = { loaded: true, error: describeError(error) };
 				this.#general();
+				this.#plan();
 			});
 		// The friends list also feeds the Company tab's invitation picker.
 		this.#friends.store.subscribe(() => {
@@ -280,6 +288,7 @@ export class SettingsView {
 			button.tabIndex = tab === id ? 0 : -1;
 		}
 		if (tab === "general") this.#general();
+		else if (tab === "plan") this.#plan();
 		else if (tab === "friends") this.#drawFriends();
 		else if (tab === "company") this.#drawCompany();
 		else if (this.#company) {
@@ -344,6 +353,32 @@ export class SettingsView {
 			this.#account = { ...this.#account, ...next };
 			this.#general();
 		});
+	}
+
+	/** The plan is the account's; the usage shown is the chosen company's storage. */
+	#plan(): void {
+		if (this.#lifetime.signal.aborted) return;
+		let panel = this.#panels.get("plan");
+		if (!panel) {
+			panel = h("div");
+			this.#panels.set("plan", panel);
+		}
+		const company = this.#company;
+		if (this.#tab === "plan" && company && !this.#file && !this.#fileLoading && !this.#fileError)
+			void this.#loadFile();
+		renderPlan(
+			panel,
+			this.#account,
+			company
+				? {
+						companyName: company.profile.profileName,
+						file: this.#file,
+						loading: this.#fileLoading,
+						error: this.#fileError,
+						retry: () => void this.#loadFile(),
+					}
+				: undefined,
+		);
 	}
 
 	#drawFriends(): void {
@@ -563,6 +598,7 @@ export class SettingsView {
 			if (!signal.aborted && !this.#lifetime.signal.aborted) {
 				this.#fileLoading = false;
 				this.#drawCompany();
+				this.#plan();
 			}
 		}
 	}

@@ -10,6 +10,7 @@ import { CloudRpcError } from "../src/cloud/client.ts";
 import type { HostedAccountEntitlement } from "../src/cloud/types.ts";
 import {
 	deferred,
+	file,
 	fixture,
 	id,
 	profileA,
@@ -181,7 +182,7 @@ describe("settings session lifecycle", () => {
 		expect(f.cloud.supabase.removeChannel).toHaveBeenLastCalledWith(channels[2]);
 		expect(f.cloud.supabase.removeChannel).not.toHaveBeenCalledWith(channels[0]);
 	});
-	it("opens all four tabs over the same conversation and restores the profile button", async () => {
+	it("opens all five tabs over the same conversation and restores the profile button", async () => {
 		const f = await setup(),
 			composer = f.root.querySelector<HTMLTextAreaElement>("textarea")!;
 		composer.value = "Keep my conversation draft";
@@ -190,6 +191,7 @@ describe("settings session lifecycle", () => {
 		await draw();
 		expect([...f.root.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).toEqual([
 			"General",
+			"Plan & usage",
 			"Friends",
 			"Company",
 			"Connections",
@@ -230,7 +232,7 @@ describe("settings session lifecycle", () => {
 		f.root
 			.querySelector("#settings-tab-general")!
 			.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-		expect(document.activeElement).toBe(f.root.querySelector("#settings-tab-friends"));
+		expect(document.activeElement).toBe(f.root.querySelector("#settings-tab-plan"));
 	});
 	it("accepts a company invitation from the Friends tab and opens that company", async () => {
 		const fixtureState = fixture();
@@ -364,6 +366,52 @@ describe("settings session lifecycle", () => {
 		await draw();
 		expect(document.querySelector('[role="alertdialog"]')).toBeNull();
 		expect(document.querySelector(".settings-overlay")).toBeNull();
+	});
+	it("shows the plan and the chosen company's storage on the Plan & usage tab", async () => {
+		const f = await setup();
+		const loading = deferred<Awaited<ReturnType<typeof f.api.getCompanyFile>>>();
+		vi.mocked(f.api.getCompanyFile).mockReturnValueOnce(loading.promise);
+		open(f.root);
+		expect(f.root.querySelector("#settings-content")?.textContent).not.toContain("Current plan");
+		click(f.root, "#settings-tab-plan");
+		await draw();
+		const content = () => f.root.querySelector("#settings-content")!;
+		expect(content().querySelector("h1")?.textContent).toBe("Plan & usage");
+		expect(content().textContent).toContain("Current plan");
+		expect(content().textContent).toContain("Loading storage…");
+		expect(f.api.getCompanyFile).toHaveBeenCalledTimes(1);
+		loading.resolve({ ...file, storageUsedBytes: 2_000_000 });
+		await draw();
+		expect(content().querySelector(".settings-usage strong")?.textContent).toMatch(/^1\.9 MiB used of /);
+		expect(content().querySelector(".settings-usage small:not(.settings-eyebrow)")?.textContent).toBe(
+			profileA.profileName,
+		);
+		expect(content().querySelector(".settings-usage progress")).not.toBeNull();
+		// The Company tab reuses what the Plan tab loaded.
+		click(f.root, "#settings-tab-company");
+		await draw();
+		expect(f.api.getCompanyFile).toHaveBeenCalledTimes(1);
+	});
+	it("asks to choose a company for usage and retries a failed storage lookup", async () => {
+		const f = await setup();
+		vi.mocked(f.api.listProfiles).mockResolvedValue([profileA, profileB]);
+		vi.mocked(f.api.getCompanyFile).mockRejectedValueOnce(new Error("Storage offline"));
+		open(f.root);
+		click(f.root, "#settings-tab-plan");
+		await draw();
+		const content = () => f.root.querySelector("#settings-content")!;
+		expect(content().textContent).toContain("Storage information unavailable");
+		[...content().querySelectorAll("button")].find((button) => button.textContent === "Retry")!.click();
+		await draw();
+		expect(f.api.getCompanyFile).toHaveBeenCalledTimes(2);
+		expect(content().textContent).not.toContain("Storage information unavailable");
+		expect(content().querySelector(".settings-usage progress")).not.toBeNull();
+		const picker = f.root.querySelector<HTMLSelectElement>(".settings-company-picker")!;
+		picker.value = "";
+		picker.dispatchEvent(new Event("change"));
+		await draw();
+		expect(content().textContent).toContain("Choose a company to see its storage.");
+		expect(content().querySelector(".settings-usage")).toBeNull();
 	});
 	it("discards a late account response after closing settings or changing account", async () => {
 		const f = await setup(),
