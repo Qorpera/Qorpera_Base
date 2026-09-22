@@ -401,7 +401,8 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 		await f.guest.viewer.connect({ ...f.sharedViewer(), mode: "watch" }, new AbortController().signal);
 		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
 		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
-		await new Promise((resolve) => setTimeout(resolve, 3000));
+		// Two dock polls (500 ms each) pass with nothing asked and nothing launched.
+		await new Promise((resolve) => setTimeout(resolve, 1200));
 		expect(physical.browserLaunch).not.toHaveBeenCalled();
 		expect(f.screenBrowser.opens).toEqual([]);
 		expect(f.order.filter((entry) => entry.startsWith("qorpera_office_screen_browser_grant"))).toEqual([]);
@@ -449,6 +450,24 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 		await new Promise((resolve) => setTimeout(resolve, 700));
 		expect(f.failure).not.toHaveBeenCalled();
 		expect(displays[0].stop).not.toHaveBeenCalled();
+	});
+	it("opens from the dock once SQL allows what it refused before: a refusal is not remembered", async () => {
+		const f = await fixture({ browser: true });
+		f.screenBrowser.authorized = false;
+		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
+		physical.browserRequest.mockResolvedValueOnce(true);
+		const asked = () => f.order.filter((entry) => entry.startsWith("qorpera_office_screen_browser_grant")).length;
+		await vi.waitFor(() => expect(asked()).toBe(1), { timeout: 3000 });
+		await new Promise((resolve) => setTimeout(resolve, 700));
+		expect(asked()).toBe(1);
+		expect(physical.browserLaunch).not.toHaveBeenCalled();
+		expect(displays[0].stop).not.toHaveBeenCalled();
+		// The member's next click, once SQL agrees, opens it.
+		f.screenBrowser.authorized = true;
+		physical.browserRequest.mockResolvedValueOnce(true);
+		await vi.waitFor(() => expect(physical.browserLaunch).toHaveBeenCalledOnce(), { timeout: 3000 });
+		expect(f.screenBrowser.opens).toEqual(["desktop"]);
+		expect(f.failure).not.toHaveBeenCalled();
 	});
 	it("opens the screen's browser for a member at the dock with no run, and the agent's next run uses the same window", async () => {
 		const f = await fixture({ browser: true });
