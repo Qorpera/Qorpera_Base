@@ -3,14 +3,14 @@ import { workingPalette } from './working-palette.mjs';
 
 const sheets={};
 let cached='', eyePath;
-let source, colors, front, eyeMask, eyeRaster;
+let source, colors, front, eyeMask, eyeRaster, soft;
 const loading = new Map();
 
 export function loadRecordedMotion(state, base) {
   if (!recordedClips[state]) return Promise.resolve();
   if (loading.has(state)) return loading.get(state);
   if (!source) {
-    [source, colors, front, eyeMask, eyeRaster] = Array.from({length:5}, () => {
+    [source, colors, front, eyeMask, eyeRaster, soft] = Array.from({length:6}, () => {
       const canvas=document.createElement('canvas');canvas.width=canvas.height=160;return canvas;
     });
   }
@@ -48,22 +48,63 @@ function prepare(state,frame) {
     eyes.data.set([255,255,255,Math.round(255-(r+g+b)/3)],i);
   }
   eyeRaster.getContext('2d').putImageData(eyes,0,0);
+  // Recover transparency from the recording's background, avoiding dark
+  // fringes when its colored strokes are displayed on a light surface.
+  const backgroundAt=(x,y)=>(x+.5-data.c[0])**2+(y+.5-data.c[1])**2<data.c[2]**2?[255,255,255]:[8,10,8];
+  const fit=(index,color,background)=>{
+    const v=color.map((n,j)=>n-background[j]),p=[0,1,2].map(j=>pixels[index+j]-background[j]);
+    const a=Math.max(0,Math.min(1,p.reduce((sum,n,j)=>sum+n*v[j],0)/v.reduce((sum,n)=>sum+n*n,0)));
+    return [a,p.reduce((sum,n,j)=>sum+(n-v[j]*a)**2,0)];
+  };
+  const choice=new Int8Array(160*160).fill(-1),strength=new Float32Array(160*160);
+  let left=160,top=160,right=-1,bottom=-1;
   for(let i=0;i<data.runs.length;i+=3)for(let x=data.runs[i+1];x<data.runs[i+1]+data.runs[i+2];x++) {
-    const y=data.runs[i], index=(y*160+x)*4;
-    const inside=(x+.5-data.c[0])**2+(y+.5-data.c[1])**2<data.c[2]**2;
-    const background=inside?[255,255,255]:[8,10,8];
-    let best=Infinity,chosen=workingPalette[0],alpha=1;
-    for(const color of workingPalette) {
-      const v=color.map((n,j)=>n-background[j]),p=[0,1,2].map(j=>pixels[index+j]-background[j]);
-      const a=Math.max(0,Math.min(1,p.reduce((sum,n,j)=>sum+n*v[j],0)/v.reduce((sum,n)=>sum+n*n,0)));
-      const error=p.reduce((sum,n,j)=>sum+(n-v[j]*a)**2,0);
-      if(error<best){best=error;chosen=color;alpha=a;}
+    const y=data.runs[i],cell=y*160+x,background=backgroundAt(x,y);
+    left=Math.min(left,x);right=Math.max(right,x);top=Math.min(top,y);bottom=Math.max(bottom,y);
+    let best=Infinity;
+    workingPalette.forEach((color,k)=>{const [a,error]=fit(cell*4,color,background);if(error<best){best=error;choice[cell]=k;strength[cell]=a;}});
+  }
+  left=Math.max(0,left-1);top=Math.max(0,top-1);right=Math.min(159,right+1);bottom=Math.min(159,bottom+1);
+  // The per-pixel match leaves stray specks inside a stroke and a hard edge
+  // where the recording's soft fringe lies outside the stroke mask. Settle a
+  // speck on the colour most of its neighbours chose, and let the fringe
+  // pixels take their neighbours' colour at the transparency the recording
+  // shows, away from the body's rim where the background changes.
+  const counts=new Uint8Array(workingPalette.length);
+  const around=(x,y,source)=>{
+    counts.fill(0);
+    for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++) {
+      if(!dx&&!dy)continue;const nx=x+dx,ny=y+dy;if(nx<0||ny<0||nx>=160||ny>=160)continue;
+      const k=source[ny*160+nx];if(k>=0)counts[k]++;
     }
-    // Recover transparency from the recording's background, avoiding dark
-    // fringes when its colored strokes are displayed on a light surface.
-    overlay.data.set([...chosen,Math.round(alpha*255)],index);
+    let majority=-1,most=0;counts.forEach((n,k)=>{if(n>most){most=n;majority=k;}});
+    return [majority,most];
+  };
+  const settled=Int8Array.from(choice);
+  for(let y=top;y<=bottom;y++)for(let x=left;x<=right;x++) {
+    const cell=y*160+x;if(choice[cell]<0)continue;
+    const [majority,most]=around(x,y,choice);
+    if(majority!==choice[cell]&&most>=3&&counts[choice[cell]]<=1) {
+      settled[cell]=majority;strength[cell]=fit(cell*4,workingPalette[majority],backgroundAt(x,y))[0];
+    }
+  }
+  for(let y=top;y<=bottom;y++)for(let x=left;x<=right;x++) {
+    const cell=y*160+x;
+    let k=settled[cell],a=strength[cell];
+    if(k<0) {
+      const [majority,most]=around(x,y,settled);
+      if(majority<0||most<2||Math.abs(Math.hypot(x+.5-data.c[0],y+.5-data.c[1])-data.c[2])<2)continue;
+      a=fit(cell*4,workingPalette[majority],backgroundAt(x,y))[0];
+      if(a<.12)continue;
+      k=majority;
+    }
+    overlay.data.set([...workingPalette[k],Math.round(a*255)],cell*4);
   }
   c.putImageData(overlay,0,0);
+  // Soften the pixel steps by half a source pixel, as the body's silhouette is.
+  soft.getContext('2d').clearRect(0,0,160,160);
+  const sc=soft.getContext('2d');sc.filter='blur(0.5px)';sc.drawImage(colors,0,0);sc.filter='none';
+  c.clearRect(0,0,160,160);c.drawImage(soft,0,0);
   const f=front.getContext('2d');f.clearRect(0,0,160,160);f.globalCompositeOperation='source-over';f.drawImage(colors,0,0);
   f.globalCompositeOperation='destination-in';f.beginPath();f.arc(data.c[0],data.c[1],data.c[2]+1,0,Math.PI*2);f.fill();f.globalCompositeOperation='source-over';
   cached=key;
