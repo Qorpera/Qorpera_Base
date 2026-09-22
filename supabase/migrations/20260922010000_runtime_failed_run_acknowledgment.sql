@@ -16,7 +16,8 @@ alter table public.qorpera_execution_run_events
 		'queued', 'orchestrator_claimed', 'runner_assigned', 'runner_started',
 		'lease_renewed', 'infrastructure_retry', 'completed', 'failed',
 		'cancelled', 'review_pending', 'provider_session_bound',
-		'recovery_released', 'recovery_discarded', 'recovery_acknowledged'
+		'recovery_released', 'recovery_discarded', 'sponsor_handoff', 'placement_deferred',
+		'recovery_acknowledged'
 	));
 
 create or replace function public.qorpera_resolve_failed_execution_run(p_run_id uuid, p_action text)
