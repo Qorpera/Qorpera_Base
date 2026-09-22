@@ -51,7 +51,7 @@ describe.skipIf(!binary)("pinned downstream native artifact (requires QORPERA_CO
 			allNativeResultsFenced: true,
 		});
 		expect(proof.solBoundaryProof).toMatchObject({
-			providerModel: "gpt-6-astra",
+			providerModel: "gpt-5.6-sol",
 			nativeResultsFenced: 23,
 			unfencedNativeResults: 0,
 			allNativeResultsFenced: true,
