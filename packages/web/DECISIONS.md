@@ -395,6 +395,11 @@ the page scrolls as before. This replaces the "at least five lines, growing to
 thirteen" sizing in the 2026-09-19 entry; the rest of that entry stands. The
 group chat popup shares the frame but keeps sizing itself to its content.
 
+**Later the same day (Jonas).** The popup was too big. The notifications row
+(a disabled switch with "not available yet") is gone, and the description is
+ten lines instead of thirteen, a quarter shorter. The frame follows: 442px
+tall, on the details page and the routines page alike.
+
 ## 2026-09-19 — New conversation is one list under the To: field
 
 **Decision (Jonas).** The new-conversation screen follows Grok's bot picker:

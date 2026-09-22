@@ -142,13 +142,6 @@ export class AgentDetails {
 			),
 			this.#field("charter"),
 			this.#status,
-			h(
-				"label",
-				{ class: "agent-notifications" },
-				icon("bell"),
-				h("span", null, "Notifications", h("small", null, "Notification preferences are not available yet.")),
-				h("input", { type: "checkbox", role: "switch", "aria-label": "Agent notifications", disabled: true }),
-			),
 		);
 		// A click elsewhere in the panel puts the figure picker away.
 		this.dialog.el.addEventListener(
