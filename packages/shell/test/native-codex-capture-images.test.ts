@@ -4,7 +4,7 @@ import { runNativeCodexFenceFailureProbe } from "./fixtures/native-codex-fence-f
 
 const binary = process.env.QORPERA_CODEX_FENCE_BINARY;
 const cases = (["offline-probe", "provider-default"] as const).flatMap((model) =>
-	(["local", "remote", "remote-v2"] as const).map((mode) => ({ model, mode })),
+	(["local", "remote-v2"] as const).map((mode) => ({ model, mode })),
 );
 describe.skipIf(!binary)("native capture pixels with the source-built artifact", () => {
 	it.each(["message_image"] as const)(

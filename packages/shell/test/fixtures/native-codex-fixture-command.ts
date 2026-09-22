@@ -7,10 +7,10 @@ export async function nativeCodexFixtureCommand(
 	root: string,
 	codexCommand: readonly [string, ...string[]],
 	port: number,
-	compaction?: "local" | "remote" | "remote-v2",
+	compaction?: "local" | "remote-v2",
 ): Promise<{ command: readonly [string, string]; binarySha256: string }> {
 	const wrapper = join(root, "codex-fixture.cjs");
-	const provider = `model_providers.qorpera_fixture={name="${compaction?.startsWith("remote") ? "OpenAI" : "Offline boundary fixture"}",base_url="http://127.0.0.1:${port}/v1",env_key="QORPERA_OFFLINE_PROBE_KEY",wire_api="responses",requires_openai_auth=false}`;
+	const provider = `model_providers.qorpera_fixture={name="${compaction === "remote-v2" ? "OpenAI" : "Offline boundary fixture"}",base_url="http://127.0.0.1:${port}/v1",env_key="QORPERA_OFFLINE_PROBE_KEY",wire_api="responses",requires_openai_auth=false}`;
 	const compactConfig = compaction
 		? [
 				"-c",

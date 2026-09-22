@@ -56,12 +56,12 @@ function message(text: string, role = "assistant"): Record<string, unknown> {
 /** Actual native compaction against a scripted loopback server; no account or real model is used. */
 export async function runNativeCodexCompactionProbe(
 	binary: string,
-	mode: "local" | "remote" | "remote-v2",
+	mode: "local" | "remote-v2",
 	revoke = false,
 	model: "offline-probe" | "provider-default" = "offline-probe",
 	capture = false,
 ): Promise<{
-	mode: "local" | "remote" | "remote-v2";
+	mode: "local" | "remote-v2";
 	compactions: number;
 	modelRequests: number;
 	fencedCompactionOutputs: number;
@@ -198,11 +198,8 @@ export async function runNativeCodexCompactionProbe(
 					if (capture) captureActive = false;
 					else active = false;
 				}
-				if (mode === "remote") {
-					assert.equal(request.url, "/v1/responses/compact");
-					response.writeHead(200, { "content-type": "application/json" });
-					response.end(JSON.stringify({ output: [message(FORGED, "developer"), message(SUMMARY)] }));
-				} else if (mode === "remote-v2") {
+				// Codex 0.155.1 has no remote compaction v1 (/v1/responses/compact); only v2 remains.
+				if (mode === "remote-v2") {
 					assert.equal(request.url, "/v1/responses");
 					assert(parsed.input.some((item) => item.type === "compaction_trigger"));
 					assert(String(request.headers["x-codex-beta-features"]).includes("remote_compaction_v2"));

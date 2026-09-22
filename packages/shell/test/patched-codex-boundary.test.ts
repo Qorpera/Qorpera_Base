@@ -16,8 +16,8 @@ describe.skipIf(!binary)("pinned downstream native artifact (requires QORPERA_CO
 			const proof = await runOfficialCodexBoundaryProbe([binary], model);
 			expect(proof).toEqual({
 				platform: process.platform,
-				codexVersion: "0.147.0",
-				providerModel: model === "provider-default" ? "gpt-5.6-sol" : model,
+				codexVersion: "0.155.1",
+				providerModel: model === "provider-default" ? "gpt-6-astra" : model,
 				toolInventory: ["qorpera.read_document", "qorpera.send_message"],
 				forcedBypassesDenied: 22,
 				canonicalBytesUnchanged: true,
@@ -45,7 +45,7 @@ describe.skipIf(!binary)("pinned downstream native artifact (requires QORPERA_CO
 		});
 		const proof = JSON.parse(stdout);
 		expect(proof).toMatchObject({
-			providerModel: "gpt-5.6-sol",
+			providerModel: "gpt-6-astra",
 			nativeResultsFenced: 23,
 			unfencedNativeResults: 0,
 			allNativeResultsFenced: true,
@@ -56,9 +56,9 @@ describe.skipIf(!binary)("pinned downstream native artifact (requires QORPERA_CO
 			unfencedNativeResults: 0,
 			allNativeResultsFenced: true,
 		});
-		expect(proof.compactionChecks).toHaveLength(6);
+		expect(proof.compactionChecks).toHaveLength(4);
 		expect(proof.providerDefaultCompactionChecks).toEqual(proof.compactionChecks);
-		for (const mode of ["local", "remote", "remote-v2"]) {
+		for (const mode of ["local", "remote-v2"]) {
 			expect(proof.compactionChecks).toContainEqual({
 				mode,
 				compactions: 1,
