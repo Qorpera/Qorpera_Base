@@ -96,6 +96,13 @@ node's native adapter id, and enable `qorpera-shared-execution.service` and
 `qorpera-runner-orchestrator.service`. Stop the node host's own orchestrator
 first: two orchestrators with the same adapter compete for the same jobs.
 
+Every newly pinned image needs the host rebuilt (its runner artifacts carry
+the bundle pin and the Codex fence): as root on the node host,
+`deploy/shared-execution/rebuild-exec-host.sh <fingerprint>` refuses while a
+sandbox runs, rebuilds the instance in place, reinstalls the package, takes
+the fence digest from the image, pushes the staged configuration and starts
+the service; the orchestrator is started by hand once the cut is live.
+
 A new member login on the node creates a new identity volume: attach it to
 the execution host (`lxc config device add …`, hot-pluggable for a running
 VM) before that member's first run; the service refuses a run whose identity
