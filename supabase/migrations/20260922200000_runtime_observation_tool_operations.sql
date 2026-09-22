@@ -7,7 +7,7 @@
 -- (CLOUD_RUNTIME_OPERATIONS) lists the same names. The ingestion contract,
 -- authorization checks and immutable replay semantics are unchanged.
 --
--- Rollout order: record this migration BEFORE activating bundle v67. A v67
+-- Rollout order: record this migration BEFORE activating bundle v68. A v68
 -- runner against the previous definition has every observation for these tools
 -- rejected (22023) and silently dropped by the exporter; earlier runners are
 -- unaffected by this definition.
