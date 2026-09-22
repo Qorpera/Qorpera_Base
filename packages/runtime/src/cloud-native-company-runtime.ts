@@ -286,7 +286,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								...(computer?.tools ?? []),
 								...gateway.tools().filter(work.companyFile),
 								cloudCompanyContextTool(context, binding, this.#paths),
-								...(this.#secretBroker
+								// A worker has no outbound effects: no mouth, no connectors.
+								...(this.#secretBroker && !work.isWorker
 									? cloudSecretTools({
 											descriptors: connectorDescriptors,
 											binding,

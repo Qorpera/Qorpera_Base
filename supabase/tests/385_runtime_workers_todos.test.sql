@@ -165,6 +165,41 @@ select pg_temp.wake_error($q$select pg_temp.todo('{"action":"list"}',current_set
 select pg_temp.wake_error($q$select public.qorpera_report_worker_result(current_setting('qorpera_test.parent_binding')::jsonb,
 	'{"operationKey":"r0","outcome":"succeeded","summary":"I am not a worker"}')$q$,'42501','Only a worker reports to a parent');
 
+-- 4b. A worker's access is kernel authority: a write worker writes its own output folder and the
+-- todo document, never a sibling's folder or another todo; a read worker writes only the document.
+-- With only a read grant, so that a member's write grant does not mask the rule.
+savepoint worker_access;
+alter table public.qorpera_company_path_grants disable trigger user;
+update public.qorpera_company_path_grants set permissions = array['read']
+where principal_kind = 'staff_agent' and principal_id = '30000000-0000-4000-8000-000000000030';
+alter table public.qorpera_company_path_grants enable trigger user;
+do $$
+declare v_child jsonb := current_setting('qorpera_test.child_binding')::jsonb; v_actor jsonb;
+	v_area text := 'work/todos/30000000-0000-4000-8000-000000000030'; v_worker public.qorpera_runtime_workers;
+begin
+	v_actor := public.qorpera_company_path_actor('30000000-0000-4000-8000-000000000020',v_child);
+	v_worker := pg_temp.worker_row('prices');
+	perform pg_temp.wake_assert(public.qorpera_company_path_allowed(v_actor,v_area || '/market-scan.json','write')
+		and public.qorpera_company_path_allowed(v_actor,v_area || '/market-scan','write')
+		and public.qorpera_company_path_allowed(v_actor,v_area || '/market-scan/prices','write')
+		and public.qorpera_company_path_allowed(v_actor,v_area || '/market-scan/prices/result.md','write')
+		and public.qorpera_company_path_allowed(v_actor,v_area || '/market-scan.json','read'),
+		'A write worker writes its todo document, the todo folder and its own output folder');
+	perform pg_temp.wake_assert(not public.qorpera_company_path_allowed(v_actor,v_area || '/market-scan/other/result.md','write')
+		and not public.qorpera_company_path_allowed(v_actor,v_area || '/other-todo.json','write')
+		and not public.qorpera_company_path_allowed(v_actor,v_area || '/other-todo/prices/x.md','write')
+		and not public.qorpera_company_path_allowed(v_actor,'notes.md','write'),
+		'A write worker cannot write a sibling''s folder, another todo, or elsewhere without a grant');
+	update public.qorpera_runtime_workers set access = 'read' where id = v_worker.id;
+	perform pg_temp.wake_assert(public.qorpera_company_path_allowed(v_actor,v_area || '/market-scan.json','write')
+		and not public.qorpera_company_path_allowed(v_actor,v_area || '/market-scan/prices/result.md','write')
+		and not public.qorpera_company_path_allowed(v_actor,v_area || '/market-scan','write')
+		and public.qorpera_company_path_allowed(v_actor,v_area || '/market-scan/prices/result.md','read'),
+		'A read worker writes nothing but the todo document its report publishes');
+	update public.qorpera_runtime_workers set access = 'write' where id = v_worker.id;
+end $$;
+rollback to worker_access;
+
 -- 5. The parent is never held hostage: its run ends, and a new human message
 -- starts a new run in the same conversation while the child is still working.
 do $$

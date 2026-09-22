@@ -1,6 +1,6 @@
 # Step 5: workers and durable todos
 
-Date: 2026-09-20. Branch point: `71352b033` (master, bundle v38), merged with master `252db0101` (bundle v44).
+Date: 2026-09-20; re-based 2026-09-22 on master `84382cf31` (bundle v60 + later PRs) as bundle **v65**. Branch point: `71352b033` (master, bundle v38).
 Status: source, SQL proofs on a disposable database, runtime unit and
 composition tests, and a live-model behavior screen. **Not deployed; no live
 acceptance on the nodes yet.** The live gates are listed at the end.

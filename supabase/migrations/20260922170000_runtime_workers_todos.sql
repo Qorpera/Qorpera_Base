@@ -86,7 +86,7 @@ create table public.qorpera_runtime_worker_events (
 	id bigint generated always as identity primary key,
 	worker_id uuid not null references public.qorpera_runtime_workers(id) on delete cascade,
 	sequence integer not null check (sequence between 1 and 12),
-	kind text not null check (kind in ('dispatched','followup','reported','ended','cancelled','accepted','rejected')),
+	kind text not null check (kind in ('dispatched','followup','reported','ended','cancelled','accepted','rejected','undeliverable')),
 	run_id uuid references public.qorpera_execution_runs(id) on delete restrict,
 	body jsonb not null default '{}'::jsonb check (jsonb_typeof(body) = 'object'),
 	created_at timestamptz not null default clock_timestamp()
@@ -166,14 +166,39 @@ $$;
 -- An agent writes its own todo area without a member's write grant: it is the
 -- agent's working state, in the company audience, never member-private. A
 -- worker writes there too, which is where its outputs land by default.
+-- A worker's access is kernel authority, not a tool list: a read worker
+-- writes nothing but the todo document its report publishes; a write worker
+-- writes that document, its todo's folder and its own output folder, or
+-- where the agent already holds a write grant.
 alter function public.qorpera_company_path_allowed(jsonb, text, text)
 	rename to qorpera_company_path_allowed_before_workers;
 create function public.qorpera_company_path_allowed(p_actor jsonb, p_path text, p_permission text)
 returns boolean language plpgsql security definer set search_path = '' as $$
 declare
 	v_profile uuid := (p_actor ->> 'companyId')::uuid; v_staff uuid := nullif(p_actor ->> 'staffAgentId','')::uuid;
+	v_run uuid := nullif(p_actor ->> 'runId','')::uuid; v_worker public.qorpera_runtime_workers%rowtype;
+	v_todo_key text; v_base text; v_output text;
 	v_key text; v_resource public.qorpera_company_path_resources%rowtype;
 begin
+	if v_run is not null and p_permission = 'write' then
+		v_worker := public.qorpera_run_worker(v_run);
+		if v_worker.id is not null then
+			select todo.todo_key into v_todo_key from public.qorpera_runtime_agent_todos todo where todo.id = v_worker.todo_id;
+			v_key := public.qorpera_company_path_key(p_path);
+			v_base := 'work/todos/' || v_worker.staff_agent_id::text || '/' || v_todo_key;
+			v_output := v_base || '/' || v_worker.worker_key;
+			if v_key = public.qorpera_company_path_key(public.qorpera_agent_todo_path(v_worker.staff_agent_id, v_todo_key)) then
+				null; -- the todo document the kernel produced for this worker's report
+			elsif v_worker.access = 'write' and (v_key = v_base or v_key = v_output
+				or left(v_key, length(v_output) + 1) = v_output || '/') then
+				null; -- its own output folder, and the todo folder on the way to it
+			elsif v_worker.access = 'write' then
+				return public.qorpera_company_path_allowed_before_workers(p_actor, p_path, p_permission);
+			else
+				return false;
+			end if;
+		end if;
+	end if;
 	if public.qorpera_company_path_allowed_before_workers(p_actor, p_path, p_permission) then return true; end if;
 	if p_permission is null or p_permission not in ('read','write') or p_actor ->> 'audience' is distinct from 'company'
 		or v_staff is null then return false; end if;
@@ -776,6 +801,13 @@ begin
 				end if;
 				continue;
 			end if;
+			-- A parent that never got a job cannot be revived in any conversation.
+			if v_parent.id is null or v_parent.job_id is null then
+				update public.qorpera_runtime_workers set completion_state = 'undeliverable' where id = v_worker.id;
+				insert into public.qorpera_runtime_worker_events(worker_id, sequence, kind, body)
+				values (v_worker.id, v_worker.sequence, 'undeliverable', jsonb_build_object('reason','parent_without_job'));
+				continue;
+			end if;
 			-- The parent is never raced: its own run ends first, then it is revived.
 			if v_status is null or v_status in ('queued','leased') then continue; end if;
 			if v_status = 'cancelled' then
@@ -801,6 +833,9 @@ begin
 				'worker-completion:' || v_first.id::text || ':' || v_first.sequence::text,
 				clock_timestamp(), clock_timestamp(), public.qorpera_worker_completion_payload(v_worker.steering_run_id, v_ids))
 			returning * into v_inserted;
+			-- The pin trigger may cancel a wake at admission (ceiling, pause); the
+			-- report then stays waiting and the next drain tries again.
+			if v_inserted.status <> 'queued' then continue; end if;
 			update public.qorpera_runtime_workers set completion_state = 'delivered', completion_occurrence_id = v_id where id = any(v_ids);
 		exception when lock_not_available or deadlock_detected then continue;
 			when insufficient_privilege or no_data_found or object_not_in_prerequisite_state then
