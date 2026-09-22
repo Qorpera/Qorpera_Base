@@ -79,9 +79,16 @@ export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): () 
 			observer.observe(boundary);
 		}
 	};
-	/** Fit the preview to the thread it is in now; the owner calls this on every attach. */
+	/** Fit the preview to the thread it is in now; the owner calls this on every attach and
+	 * detach. Out of any thread, the observer lets go of the last one so it can be collected. */
 	const refit = () => {
 		if (signal.aborted) return;
+		if (!panel.parentElement) {
+			observer?.disconnect();
+			observer = undefined;
+			observed = undefined;
+			return;
+		}
 		observe();
 		reclamp();
 	};

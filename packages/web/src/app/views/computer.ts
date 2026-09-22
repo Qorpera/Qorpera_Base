@@ -26,10 +26,12 @@ export class ComputerPanel {
 	readonly #setExpanded: (expanded: boolean) => void;
 	/** The attached thread's way of putting the panel away for good. */
 	#close: () => void = () => {};
+	#title: string;
 	#busy = false;
 
 	constructor(agent: HostedStaffAgent, computer?: WebCompanyComputer, parentSignal?: AbortSignal) {
 		this.agentId = agent.id;
+		this.#title = `${agent.displayName} · Computer`;
 		const signal = AbortSignal.any([this.#stop.signal, ...(parentSignal ? [parentSignal] : [])]);
 		this.#views = new ComputerViewHost(signal);
 		this.el = h(
@@ -187,7 +189,7 @@ export class ComputerPanel {
 							onExpandedChange: this.#setExpanded,
 							onClosed: () => this.#close(),
 							binding: screen.binding,
-							title: `${agent.displayName} · Computer`,
+							title: this.#title,
 							canControl: canManage,
 							sharedControl: true,
 							// Guest startup can outlast a connection attempt; reconnect to the same binding.
@@ -262,9 +264,19 @@ export class ComputerPanel {
 		void run();
 	}
 
-	/** Whether a thread is showing the panel right now. */
+	/** Whether a thread holds the panel right now (the thread itself may not be in the page yet). */
 	get attached(): boolean {
-		return this.el.isConnected;
+		return this.el.parentElement !== null;
+	}
+
+	/** The agent was renamed: the viewer keeps its connection and only its title follows. */
+	retitle(displayName: string): void {
+		const title = `${displayName} · Computer`;
+		if (title === this.#title) return;
+		this.#title = title;
+		this.#body.querySelector(".screen-viewer-overlay")?.setAttribute("aria-label", title);
+		const heading = this.#body.querySelector(".screen-viewer-heading > span");
+		if (heading) heading.textContent = title;
 	}
 
 	/** Show the panel in a thread. `close` is that thread's request to end it for good. */
@@ -280,10 +292,13 @@ export class ComputerPanel {
 		this.#close = () => {};
 		// A member who left mid-screen returns to a preview; the thread it covered is gone.
 		if (this.el.classList.contains("is-entered")) {
-			this.el.querySelector<HTMLButtonElement>(".screen-viewer-back")?.click();
-			this.#setExpanded(false);
+			const back = this.el.querySelector<HTMLButtonElement>(".screen-viewer-back");
+			if (back) back.click();
+			else this.#setExpanded(false);
 		}
 		this.el.remove();
+		// Lets the thread that was left be collected: nothing of it is watched any more.
+		this.#fitPreview();
 	}
 
 	focus(): void {
@@ -320,12 +335,13 @@ export class ComputerPanels {
 		return this.#panels.get(agentId);
 	}
 
-	/** The agent's panel, started now unless a thread already opened it. */
-	open(agent: HostedStaffAgent): ComputerPanel {
+	/** The agent's panel, started now unless a thread already opened it; none once the company is left. */
+	open(agent: HostedStaffAgent): ComputerPanel | undefined {
+		if (this.#signal?.aborted) return undefined;
 		let panel = this.#panels.get(agent.id);
 		if (panel) return panel;
 		panel = new ComputerPanel(agent, this.#computer, this.#signal);
-		if (!this.#signal?.aborted) this.#panels.set(agent.id, panel);
+		this.#panels.set(agent.id, panel);
 		return panel;
 	}
 

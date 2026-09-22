@@ -488,6 +488,8 @@ export function mountApplication(
 			conversation?.dispose();
 			newConversation?.dispose();
 			approvals?.dispose();
+			// Revoked access ends every retained screen connection, not only the shown one.
+			computerPanels?.dispose();
 			navigationOpen = false;
 			navigationFocus = undefined;
 			syncNavigation();

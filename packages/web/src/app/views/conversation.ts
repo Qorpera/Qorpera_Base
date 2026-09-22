@@ -462,8 +462,9 @@ export class ConversationView {
 	}
 
 	/** Show the agent's computer here: the one already open, or one started now. */
-	#showPanel(agent: HostedStaffAgent): ComputerPanel {
+	#showPanel(agent: HostedStaffAgent): ComputerPanel | undefined {
 		const panel = this.#panels.open(agent);
+		if (!panel) return undefined;
 		this.#panel = panel;
 		panel.attach(this.#body, () => this.#toggleComputer());
 		this.#autosize();
@@ -637,7 +638,8 @@ export class ConversationView {
 		}
 		if (key !== this.#headerKey) {
 			this.#headerKey = key;
-			if (this.#panel) {
+			if (this.#panel && this.#panel.agentId !== agent?.id) {
+				// The thread changed hands: the old agent's computer does not belong here.
 				const focused = this.#panel.el.contains(document.activeElement);
 				this.#panels.close(this.#panel.agentId);
 				this.#panel = undefined;
@@ -645,7 +647,7 @@ export class ConversationView {
 				if (focused) shown ? shown.focus() : this.#composer.focus();
 				this.#computer.setAttribute("aria-expanded", String(Boolean(shown)));
 				this.#autosize();
-			}
+			} else if (this.#panel && agent) this.#panel.retitle(agent.displayName);
 			replace(
 				this.#identity,
 				group ? groupChatAvatar(groupAgents, { width: 40, height: 32 }) : agentFigure(agent, title, { size: 32 }),

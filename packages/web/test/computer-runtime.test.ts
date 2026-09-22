@@ -350,7 +350,7 @@ describe("automatic computer popover", () => {
 			first = document.createElement("div"),
 			second = document.createElement("div");
 		document.body.append(first, second);
-		const p = panels.open(staff);
+		const p = panels.open(staff)!;
 		const closeFirst = vi.fn();
 		p.attach(first, closeFirst);
 		await settle();
@@ -387,7 +387,7 @@ describe("automatic computer popover", () => {
 		const f = setup(),
 			open = spyViewer(),
 			panels = new ComputerPanels(f.computer, f.stop.signal),
-			p = panels.open(staff),
+			p = panels.open(staff)!,
 			closeFirst = vi.fn(),
 			closeSecond = vi.fn();
 		p.attach(document.body, closeFirst);
@@ -429,7 +429,7 @@ describe("automatic computer popover", () => {
 			stop = new AbortController(),
 			panels = new ComputerPanels(f.computer, stop.signal);
 		spyViewer(closeViewer);
-		const p = panels.open(staff);
+		const p = panels.open(staff)!;
 		p.attach(document.body, () => panels.close(staff.id));
 		await settle();
 		await settle();
@@ -438,10 +438,28 @@ describe("automatic computer popover", () => {
 		stop.abort();
 		expect(closeViewer).toHaveBeenCalledOnce();
 		expect(panels.get(staff.id)).toBeUndefined();
-		// A registry whose company is gone hands out a panel that cannot attach.
-		const late = panels.open(staff);
-		late.attach(document.body, () => {});
-		expect(late.attached).toBe(false);
+		// A registry whose company is gone opens nothing more.
+		expect(panels.open(staff)).toBeUndefined();
+	});
+	it("follows a rename in place: same viewer, new title", async () => {
+		const f = setup(),
+			open = spyViewer(),
+			p = await opened(f.computer);
+		expect(open.mock.calls[0]![0].title).toBe(`${staff.displayName} · Computer`);
+		const overlay = document.createElement("div");
+		overlay.className = "screen-viewer-overlay";
+		overlay.setAttribute("aria-label", `${staff.displayName} · Computer`);
+		const heading = document.createElement("span");
+		heading.className = "screen-viewer-heading";
+		heading.append(document.createElement("span"), document.createElement("small"));
+		heading.firstElementChild!.textContent = `${staff.displayName} · Computer`;
+		overlay.append(heading);
+		p.el.querySelector(".computer-panel-body")!.append(overlay);
+		p.retitle("Renamed");
+		expect(open).toHaveBeenCalledOnce();
+		expect(overlay.getAttribute("aria-label")).toBe("Renamed · Computer");
+		expect(heading.firstElementChild!.textContent).toBe("Renamed · Computer");
+		expect(heading.lastElementChild!.textContent).toBe("");
 	});
 });
 

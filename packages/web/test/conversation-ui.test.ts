@@ -478,6 +478,28 @@ describe("conversation UI boundaries", () => {
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 
+	it("keeps the open computer through a rename and replaces it only when the thread changes agent", async () => {
+		const panels = new ComputerPanels(),
+			f = setup({ computerPanels: panels });
+		button(f.view.el, "Open agent computer").click();
+		const panel = f.view.el.querySelector<HTMLElement>(".computer-panel")!;
+		f.company.store.set({ staff: [{ ...staff, displayName: "Renamed" }] });
+		await settle();
+		expect(f.view.el.querySelector(".computer-panel")).toBe(panel);
+		expect(f.view.el.querySelector(".thread-identity h1")?.textContent).toBe("Renamed");
+		expect(panels.get(staff.id)?.el).toBe(panel);
+		const other = { ...staff, id: id(97), displayName: "Other" };
+		f.company.store.set({
+			staff: [{ ...staff, displayName: "Renamed" }, other],
+			sessions: [{ ...session, staffAgentId: other.id }],
+		});
+		await settle();
+		const replaced = f.view.el.querySelector<HTMLElement>(".computer-panel")!;
+		expect(replaced).not.toBe(panel);
+		expect(panels.get(staff.id)).toBeUndefined();
+		expect(panels.get(other.id)?.el).toBe(replaced);
+	});
+
 	it("places the company notices right above the composer, inside the conversation", () => {
 		const host = document.createElement("div");
 		const f = setup({ notificationHost: host });

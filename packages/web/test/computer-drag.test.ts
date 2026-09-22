@@ -276,6 +276,30 @@ describe("computer preview dragging", () => {
 		window.dispatchEvent(new Event("resize"));
 		expect(f.panel.style.getPropertyValue("--computer-left")).toBe("242px");
 	});
+	it("follows the panel into another thread and lets go of a thread it left", () => {
+		const f = setup();
+		key(f.panel, "ArrowRight");
+		expect(f.observe.mock.calls.map(([target]) => target)).toEqual([f.parent, f.panel, f.header, f.composer]);
+		// Refitting inside the same thread observes nothing anew.
+		f.fit();
+		expect(f.disconnect).not.toHaveBeenCalled();
+		expect(f.observe).toHaveBeenCalledTimes(4);
+		// Out of any thread: the old thread is released so it can be collected.
+		f.panel.remove();
+		f.fit();
+		expect(f.disconnect).toHaveBeenCalledOnce();
+		// In a new thread: that thread's edges are watched, not the old one's.
+		const next = document.createElement("section"),
+			nextHeader = document.createElement("header");
+		nextHeader.className = "thread-header";
+		next.append(nextHeader, f.panel);
+		document.body.append(next);
+		f.fit();
+		expect(f.observe.mock.calls.slice(4).map(([target]) => target)).toEqual([next, f.panel, nextHeader]);
+		expect(f.disconnect).toHaveBeenCalledOnce();
+		// The stored position is kept and clamped against the new thread.
+		expect(f.panel.style.getPropertyValue("--computer-left")).not.toBe("");
+	});
 	it("fits an unmoved preview before interaction and follows composer growth at its original aspect ratio", async () => {
 		const f = setup();
 		f.size.height = 400;
