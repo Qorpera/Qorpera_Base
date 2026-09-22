@@ -84,6 +84,58 @@ begin
 	perform pg_temp.wake_error(format('select pg_temp.wake_schedule(%L::jsonb,%L)',v_routine,'once-b'),'PGRST');
 end $$;
 
+-- Effort: the agent chooses the thinking depth of its routine runs; medium unless it says otherwise.
+-- The materialized run carries the routine version's effort when the active bundle allows routine
+-- overrides (contract 17), and the bundle default otherwise.
+do $$
+declare v_row public.qorpera_cloud_routines; v_routine jsonb; v_run public.qorpera_execution_runs; v_manifest jsonb;
+	v_expected text;
+begin
+	perform pg_temp.routine('{"action":"upsert","operationKey":"eff-1","routineKey":"deep-check","title":"Deep check","intent":"Think hard.",
+		"effort":"high","trigger":{"kind":"schedule","intervalMinutes":5,"replyPolicy":"silent"}}');
+	v_row := pg_temp.routine_row('deep-check');
+	perform pg_temp.wake_assert((select effort from public.qorpera_cloud_routine_versions where routine_id = v_row.id and version = 1) = 'high'
+		and (select routine ->> 'effort' from jsonb_array_elements(pg_temp.routine('{"action":"list"}') -> 'routines') routine
+			where routine ->> 'routineKey' = 'deep-check') = 'high','A routine stores and lists the effort its agent chose');
+	perform pg_temp.routine('{"action":"upsert","operationKey":"eff-2","routineKey":"plain-check","title":"Plain check","intent":"Look.",
+		"trigger":{"kind":"schedule","intervalMinutes":5,"replyPolicy":"silent"}}');
+	perform pg_temp.wake_assert((select effort from public.qorpera_cloud_routine_versions
+		where routine_id = (pg_temp.routine_row('plain-check')).id and version = 1) = 'medium','Effort defaults to medium');
+	v_routine := jsonb_build_object('routine_id',v_row.id,'version',v_row.current_version);
+	perform pg_temp.wake_schedule(v_routine,'eff-a');
+	perform public.qorpera_materialize_wake_execution_runs(8);
+	select run.* into v_run from public.qorpera_execution_runs run
+	join public.qorpera_wake_occurrences wake on wake.id = run.source_id
+	where run.source_kind = 'wake' and wake.routine_id = v_row.id order by run.created_at desc limit 1;
+	perform pg_temp.wake_assert(v_run.id is not null,'The routine occurrence materialized a run');
+	v_manifest := public.qorpera_execution_runtime_manifest(v_run);
+	v_expected := case when v_manifest #>> '{modelPolicy,overrides}' = 'routine' and (v_manifest #> '{modelPolicy,allowed}') ? 'high'
+		then 'high' else v_manifest #>> '{modelPolicy,effort}' end;
+	perform pg_temp.wake_assert(v_run.reasoning_effort = v_expected
+		and public.qorpera_manifest_allows_reasoning_effort(v_manifest, v_run.reasoning_effort),
+		'The routine run is pinned to the routine effort the bundle allows');
+end $$;
+select pg_temp.wake_error($q$select pg_temp.routine('{"action":"upsert","operationKey":"eff-3","routineKey":"bad-check","title":"Bad","intent":"x",
+	"effort":"max","trigger":{"kind":"schedule","intervalMinutes":5,"replyPolicy":"silent"}}')$q$,'22023','Routine effort is invalid');
+do $$
+declare v_row public.qorpera_cloud_routines; v_first public.qorpera_cloud_routine_schedule_cursors;
+	v_second public.qorpera_cloud_routine_schedule_cursors;
+begin
+	v_row := pg_temp.routine_row('deep-check');
+	select * into v_first from public.qorpera_cloud_routine_schedule_cursors
+	where routine_id = v_row.id and routine_version = v_row.current_version and trigger_id = 'agent';
+	perform pg_temp.routine('{"action":"upsert","operationKey":"eff-4","routineKey":"deep-check","title":"Deep check","intent":"Think harder.",
+		"trigger":{"kind":"schedule","intervalMinutes":5,"replyPolicy":"silent"}}');
+	v_row := pg_temp.routine_row('deep-check');
+	select * into v_second from public.qorpera_cloud_routine_schedule_cursors
+	where routine_id = v_row.id and routine_version = v_row.current_version and trigger_id = 'agent';
+	perform pg_temp.wake_assert(v_row.current_version = 2
+		and (select effort from public.qorpera_cloud_routine_versions where routine_id = v_row.id and version = 2) = 'high',
+		'A save that does not mention effort keeps the effort the routine has');
+	perform pg_temp.wake_assert(v_first.last_scheduled_for is not null and v_second.last_scheduled_for = v_first.last_scheduled_for
+		and v_second.next_due_at = v_first.next_due_at,'A new version keeps the schedule position its routine reached');
+end $$;
+
 -- Expiry by time: the control-plane tick retires it and the scheduler stops listing it.
 do $$
 declare v_row public.qorpera_cloud_routines;

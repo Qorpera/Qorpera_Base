@@ -6,6 +6,7 @@ import { badge, button, h, icon, initials, notice, replace } from "../../ui/dom.
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { presentationLocale, uiText } from "../../ui/preferences.ts";
+import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { type AuthController, displayName } from "../auth.ts";
 import type { AgentState, CompanyController } from "../company.ts";
 import type { Route } from "../router.ts";
@@ -308,6 +309,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		};
 		// Every keystroke filters, composed text included; redrawing never moves the field.
 		// Results start at the top of the list.
+		quietScroll(created.list);
 		input.addEventListener("input", () => {
 			created.list.scrollTop = 0;
 			created.redraw();

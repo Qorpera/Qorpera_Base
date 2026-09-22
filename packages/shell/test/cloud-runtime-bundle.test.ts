@@ -13,7 +13,7 @@ describe("compiled runtime bundle admission", () => {
 		"rejects changed %s before native execution",
 		(field) => {
 			const { authority } = nativeToolAuthorityFixture();
-			const changed = { ...authority.identity, [field]: field === "reasoningEffort" ? "high" : "f".repeat(64) };
+			const changed = { ...authority.identity, [field]: field === "reasoningEffort" ? "max" : "f".repeat(64) };
 			expect(() =>
 				assertCloudRuntimeBundle(changed as CloudNativeToolIdentity, CLOUD_RUNTIME_NATIVE_BINARY_SHA256),
 			).toThrow("not supported");
