@@ -4,8 +4,8 @@ import {
 	parseCreatedCompany,
 	parseFriends,
 	parseProfiles,
-	parseRunDismissal,
 	parseRunRecovery,
+	parseRunResolution,
 	parseSession,
 	parseStaff,
 	parseTeam,
@@ -44,11 +44,23 @@ describe("parsers", () => {
 		expect(() => recovery({}, { proposal_id: "not-a-uuid" })).toThrow("recovery proposal id");
 	});
 
-	it("accepts only a dismissal of the run that was asked for", () => {
-		expect(() => parseRunDismissal({ run_id: S1, action: "discard", resolved: true }, S1)).not.toThrow();
-		expect(() => parseRunDismissal({ run_id: S2, action: "discard", resolved: true }, S1)).toThrow("run dismissal");
-		expect(() => parseRunDismissal({ run_id: S1, action: "discard", resolved: false }, S1)).toThrow("run dismissal");
-		expect(() => parseRunDismissal({ run_id: S1, action: "retry", resolved: true }, S1)).toThrow("run dismissal");
+	it("accepts only a resolution of the run and action that were asked for", () => {
+		expect(() => parseRunResolution({ run_id: S1, action: "discard", resolved: true }, S1, "discard")).not.toThrow();
+		expect(() =>
+			parseRunResolution({ run_id: S1, action: "acknowledge", resolved: true }, S1, "acknowledge"),
+		).not.toThrow();
+		expect(() => parseRunResolution({ run_id: S2, action: "discard", resolved: true }, S1, "discard")).toThrow(
+			"run discard",
+		);
+		expect(() => parseRunResolution({ run_id: S1, action: "discard", resolved: false }, S1, "discard")).toThrow(
+			"run discard",
+		);
+		expect(() => parseRunResolution({ run_id: S1, action: "retry", resolved: true }, S1, "discard")).toThrow(
+			"run discard",
+		);
+		expect(() => parseRunResolution({ run_id: S1, action: "discard", resolved: true }, S1, "acknowledge")).toThrow(
+			"run acknowledge",
+		);
 	});
 
 	it("parses the hosted profile list", () => {

@@ -41,21 +41,14 @@
 .thread-activity:hover .status-wave-letter, .thread-activity:focus-visible .status-wave-letter { animation-play-state: running; }
 .thread-run-failure { display: contents; }
 .thread-run-failure[hidden] { display: none; }
-.run-failure { align-self: center; width: min(100%, 340px); margin: 14px 0 6px; }
-.run-failure-card { position: relative; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 26px 24px 20px; border: 2px solid var(--danger); border-radius: 28px; background: var(--bg); box-shadow: 0 10px 28px color-mix(in srgb, var(--danger) 14%, transparent); text-align: center; overflow-wrap: anywhere; }
-.run-failure-mark { display: grid; place-items: center; width: 64px; height: 64px; margin-bottom: 4px; border-radius: 50%; background: var(--danger); color: #fff; box-shadow: 0 6px 14px color-mix(in srgb, var(--danger) 35%, transparent); }
-.run-failure-mark .icon { width: 34px; height: 34px; stroke-width: 3; }
-.run-failure-title { font-size: 17px; font-weight: 700; line-height: 1.3; }
-.run-failure-reason, .run-failure-error { margin: 0; max-width: 30ch; font-size: 13px; line-height: 1.45; color: var(--text-muted); }
+.run-failure { align-self: stretch; margin: 10px 0 4px; }
+.run-failure-card { display: flex; align-items: center; gap: 12px; padding: 8px 8px 8px 16px; border: 1px solid var(--border); border-radius: 18px; background: var(--hover); }
+.run-failure-text { flex: 1; min-width: 0; margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--text-muted); overflow-wrap: anywhere; }
+.run-failure-title { font-weight: 600; color: var(--text); }
 .run-failure-error { color: var(--danger); }
-.run-failure-rule { width: 44px; height: 2px; margin: 4px 0 2px; border-radius: 2px; background: color-mix(in srgb, var(--text-muted) 40%, transparent); }
-.run-failure-primary, .run-failure-secondary, .run-failure-actions > a.btn { display: inline-flex; align-items: center; justify-content: center; min-width: 116px; height: 38px; padding: 0 22px; border: 0; border-radius: 999px; background: var(--danger); color: #fff; font: inherit; font-size: 13px; font-weight: 700; text-decoration: none; cursor: pointer; box-shadow: 0 4px 10px color-mix(in srgb, var(--danger) 30%, transparent); }
-.run-failure-primary:hover:not([aria-disabled="true"]), .run-failure-actions > a.btn:hover { filter: brightness(0.94); }
-.run-failure-primary:focus-visible, .run-failure-secondary:focus-visible, .run-failure-actions > a.btn:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
-.run-failure-primary[aria-disabled="true"], .run-failure-secondary[aria-disabled="true"] { opacity: .6; cursor: default; }
-.run-failure-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 2px; }
-.run-failure-secondary { min-width: 116px; background: transparent; color: var(--text); box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--danger) 55%, transparent); }
-.run-failure-secondary:hover:not([aria-disabled="true"]) { background: var(--hover); }
+.run-failure-actions { display: flex; flex: none; align-items: center; gap: 6px; }
+.run-failure-actions .btn { border-radius: 999px; }
+.run-failure-actions .btn[aria-disabled="true"] { opacity: .6; cursor: default; }
 .composer-stop { display: block; width: 11px; height: 11px; border-radius: 2.5px; background: currentColor; }
 .message-progress .bubble { padding: 7px 11px; color: #343432; }
 .pending-queued .bubble { opacity: .7; }

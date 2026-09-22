@@ -16,7 +16,7 @@ import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
-import { runFailureCard, runFailureReason } from "../../ui/run-failure.ts";
+import { runFailureCard, runFailureInterrupted, runFailureReason } from "../../ui/run-failure.ts";
 import type { AgentState, CompanyController, ConversationState } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
@@ -917,7 +917,13 @@ export class ConversationView {
 				? runFailureReason(recovery.lastError, recovery.jobStatus)
 				: undefined;
 		const retryState = runId ? company.runRetries?.[runId] : undefined;
-		const canRetry = failed !== undefined && !review && this.#company.canRetryFailedRun(failed);
+		// Try again is for an interrupted run; a refused one says what the member must do first.
+		const canRetry =
+			failed !== undefined &&
+			!review &&
+			this.#company.canRetryFailedRun(failed) &&
+			recovery !== undefined &&
+			runFailureInterrupted(recovery.lastError, recovery.jobStatus);
 		const key = JSON.stringify([
 			runId,
 			hidden,
@@ -943,38 +949,12 @@ export class ConversationView {
 			}
 			dismissed.add(runId);
 			this.update();
-			// Recovery details can arrive after the popup. Follow this one dismissal
-			// across navigation, but stop waiting on permission loss or company teardown.
-			const clearSettledFailure = () => {
-				const state = this.#company.store.get();
-				const currentSession = state.sessions.find((item) => item.sessionId === this.#sessionId);
-				const current = this.#company.failedRunFor(currentSession?.staffAgentId);
-				const canClear =
-					!this.#company.signal.aborted &&
-					!state.accessLost &&
-					state.team?.capabilities.write &&
-					state.team.capabilities.read &&
-					currentSession?.status === "open" &&
-					current?.activity.runId === runId &&
-					current.activity.sourceKind !== "proposal_review";
-				if (canClear && !current.recovery) return;
-				// A newer failure can temporarily replace this one in the activity RPC.
-				// Let this run be dismissed again if it returns before we could clear it.
-				if (current?.activity.runId !== runId) dismissed.delete(runId);
-				unsubscribe();
-				this.#company.signal.removeEventListener("abort", clearSettledFailure);
-				if (canClear && current.recovery?.unsettledOperations === 0 && !current.recovery.proposalId) {
-					// Clear settled failures so the server can report the agent's next run.
-					void this.#company.dismissFailedRun(runId).catch(() => {
-						// Notify the current view too if the member navigated during the request.
-						dismissed.delete(runId);
-						if (!this.#company.signal.aborted) this.#company.store.set({});
-					});
-				}
-			};
-			const unsubscribe = this.#company.store.subscribe(clearSettledFailure);
-			this.#company.signal.addEventListener("abort", clearSettledFailure, { once: true });
-			clearSettledFailure();
+			// Durable for the company: the badge and this card do not come back on reload.
+			// If nothing reached the cloud, the card comes back so it can be dismissed again.
+			void this.#company.dismissFailedRun(runId).catch(() => {
+				dismissed.delete(runId);
+				if (!this.#company.signal.aborted) this.#company.store.set({});
+			});
 		};
 		const profileId = this.#company.profile.profileId;
 		const action =

@@ -1452,6 +1452,7 @@ begin
 end
 $$;
 
+-- END RECOVERY FIXTURE
 select set_config(
 	'qorpera_test.partial_attempt_input',
 	public.qorpera_append_session_input(
