@@ -24,7 +24,9 @@ begin
 		end if;
 	end if;
 
-	select array_agg(function.proname::text order by function.proname) into v_functions
+	-- Distinct names: Step 7 added a second signature of the capture completion
+	-- (account label); it is the same custody call, not a new capability.
+	select array_agg(distinct function.proname::text order by function.proname::text) into v_functions
 	from pg_proc as function
 	join pg_namespace as namespace on namespace.oid = function.pronamespace
 	where namespace.nspname = 'public'

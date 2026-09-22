@@ -2,13 +2,19 @@ import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import type { JsonValue } from "@qorpera/contracts";
+import {
+	CloudConnectorOAuthError,
+	type CloudConnectorOAuthFlows,
+	connectorReturnLocation,
+} from "./cloud-connector-oauth.ts";
 import { parseCloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 import { type CloudToolContent, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
-import type {
-	CloudSecretBroker,
-	CloudSecretCaptureRequest,
-	CloudSecretDescriptor,
-	CloudSecretOperationRequest,
+import {
+	type CloudSecretBroker,
+	type CloudSecretCaptureRequest,
+	type CloudSecretDescriptor,
+	type CloudSecretOperationRequest,
+	parseCloudSecretAccountLabel,
 } from "./cloud-secret-broker.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -138,11 +144,19 @@ function parseContent(value: unknown): CloudToolContent {
 
 function parseDescriptor(value: unknown): CloudSecretDescriptor {
 	const input = record(value, "Cloud secret descriptor");
-	exact(
-		input,
-		["schema", "secretId", "version", "connectorId", "secretName", "purpose", "ownerKind", "ownerUserId", "status"],
-		"Cloud secret descriptor",
-	);
+	const keys = [
+		"schema",
+		"secretId",
+		"version",
+		"connectorId",
+		"secretName",
+		"purpose",
+		"ownerKind",
+		"ownerUserId",
+		"status",
+	];
+	exact(input, Object.hasOwn(input, "accountLabel") ? [...keys, "accountLabel"] : keys, "Cloud secret descriptor");
+	const accountLabel = parseCloudSecretAccountLabel(input.accountLabel);
 	if (
 		input.schema !== "qorpera.cloud-secret-descriptor/v1" ||
 		typeof input.secretId !== "string" ||
@@ -172,7 +186,22 @@ function parseDescriptor(value: unknown): CloudSecretDescriptor {
 		ownerKind: input.ownerKind,
 		ownerUserId: input.ownerUserId as string | null,
 		status: "active",
+		...(Object.hasOwn(input, "accountLabel") ? { accountLabel } : {}),
 	};
+}
+
+function parseOAuthStart(value: unknown): { captureCapability: string; returnTo: string } {
+	const input = record(value, "Connector authorization start");
+	exact(input, ["schema", "captureCapability", "returnTo"], "Connector authorization start");
+	if (
+		input.schema !== "qorpera.cloud-connector-oauth-start/v1" ||
+		typeof input.captureCapability !== "string" ||
+		!/^[A-Za-z0-9_-]{32,256}$/.test(input.captureCapability) ||
+		typeof input.returnTo !== "string" ||
+		input.returnTo.length > 2048
+	)
+		throw new Error("Connector authorization start is invalid");
+	return { captureCapability: input.captureCapability, returnTo: input.returnTo };
 }
 
 async function readRequest(request: IncomingMessage): Promise<unknown> {
@@ -196,15 +225,53 @@ async function readRequest(request: IncomingMessage): Promise<unknown> {
 	}
 }
 
-function response(reply: ServerResponse, status: number, value: JsonValue): void {
+function response(
+	reply: ServerResponse,
+	status: number,
+	value: JsonValue,
+	extraHeaders: Readonly<Record<string, string>> = {},
+): void {
 	const body = JSON.stringify(value);
 	reply.writeHead(status, {
 		"content-type": "application/json",
 		"content-length": Buffer.byteLength(body),
 		"cache-control": "no-store",
 		"x-content-type-options": "nosniff",
+		...extraHeaders,
 	});
 	reply.end(body);
+}
+
+function redirect(reply: ServerResponse, location: string): void {
+	reply.writeHead(303, {
+		location,
+		"cache-control": "no-store",
+		"content-length": 0,
+		"referrer-policy": "no-referrer",
+	});
+	reply.end();
+}
+
+function plainPage(reply: ServerResponse, status: number, text: string): void {
+	const body = `${text}\n`;
+	reply.writeHead(status, {
+		"content-type": "text/plain; charset=utf-8",
+		"content-length": Buffer.byteLength(body),
+		"cache-control": "no-store",
+		"x-content-type-options": "nosniff",
+		"referrer-policy": "no-referrer",
+	});
+	reply.end(body);
+}
+
+export interface HttpCloudSecretBrokerServiceOptions {
+	readonly host?: string;
+	readonly port?: number;
+	/** Connector OAuth flows; absent means the OAuth routes answer 404. */
+	readonly oauth?: CloudConnectorOAuthFlows;
+	/** Web origins allowed to call the member routes from a browser. The
+	 * runtime operation route never receives CORS headers. */
+	readonly corsOrigins?: readonly string[];
 }
 
 /**
@@ -217,22 +284,36 @@ export class HttpCloudSecretBrokerService {
 	readonly #runtimeToken: string;
 	readonly #host: string;
 	readonly #port: number;
+	readonly #oauth: CloudConnectorOAuthFlows | undefined;
+	readonly #corsOrigins: readonly string[];
 	#server?: Server;
 
-	constructor(broker: CloudSecretBroker, runtimeToken: string, host = "127.0.0.1", port = 0) {
+	constructor(
+		broker: CloudSecretBroker,
+		runtimeToken: string,
+		hostOrOptions: string | HttpCloudSecretBrokerServiceOptions = "127.0.0.1",
+		port = 0,
+	) {
+		const options: HttpCloudSecretBrokerServiceOptions =
+			typeof hostOrOptions === "string" ? { host: hostOrOptions, port } : hostOrOptions;
+		const host = options.host ?? "127.0.0.1";
+		const listenPort = options.port ?? 0;
 		if (
 			!TOKEN.test(runtimeToken) ||
 			!["127.0.0.1", "::1"].includes(host) ||
-			!Number.isSafeInteger(port) ||
-			port < 0 ||
-			port > 65_535
+			!Number.isSafeInteger(listenPort) ||
+			listenPort < 0 ||
+			listenPort > 65_535 ||
+			(options.corsOrigins ?? []).some((origin) => new URL(origin).origin !== origin)
 		) {
 			throw new Error("Cloud secret broker service configuration is invalid");
 		}
 		this.#broker = broker;
 		this.#runtimeToken = runtimeToken;
 		this.#host = host;
-		this.#port = port;
+		this.#port = listenPort;
+		this.#oauth = options.oauth;
+		this.#corsOrigins = Object.freeze([...(options.corsOrigins ?? [])]);
 	}
 
 	async start(): Promise<number> {
@@ -260,20 +341,81 @@ export class HttpCloudSecretBrokerService {
 		await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
 	}
 
+	/** CORS headers for an allow-listed browser origin on the member routes. */
+	#cors(request: IncomingMessage): Record<string, string> {
+		const origin = request.headers.origin;
+		if (typeof origin !== "string" || !this.#corsOrigins.includes(origin)) return {};
+		return {
+			"access-control-allow-origin": origin,
+			"access-control-allow-methods": "POST",
+			"access-control-allow-headers": "content-type",
+			"access-control-max-age": "600",
+			vary: "origin",
+		};
+	}
+
 	async #handle(request: IncomingMessage, reply: ServerResponse): Promise<void> {
+		const url = new URL(request.url ?? "/", "http://cloud-secret-broker.invalid");
+		const path = url.pathname;
+		const capture = /^\/v1\/captures\/([0-9a-f-]{36})$/i.exec(path);
+		const oauthStart = /^\/v1\/oauth\/([0-9a-f-]{36})\/start$/i.exec(path);
+		const memberRoute = (capture && UUID.test(capture[1])) || (oauthStart && UUID.test(oauthStart[1]));
 		try {
+			if (request.method === "OPTIONS" && memberRoute) {
+				const cors = this.#cors(request);
+				reply.writeHead(Object.keys(cors).length > 0 ? 204 : 404, { "content-length": 0, ...cors });
+				reply.end();
+				return;
+			}
+			if (request.method === "GET" && path === "/v1/oauth/callback") {
+				await this.#oauthCallback(url, reply);
+				return;
+			}
 			if (request.method !== "POST" || request.headers["content-type"]?.split(";", 1)[0] !== "application/json") {
 				response(reply, 404, { schema: "qorpera.cloud-secret-error/v1", error: "not_found" });
 				return;
 			}
-			const path = new URL(request.url ?? "/", "http://cloud-secret-broker.invalid").pathname;
-			const capture = /^\/v1\/captures\/([0-9a-f-]{36})$/i.exec(path);
 			if (capture && UUID.test(capture[1])) {
 				const descriptor = await this.#broker.capture(
 					parseCapture(await readRequest(request), capture[1]),
 					AbortSignal.timeout(15_000),
 				);
-				response(reply, 200, descriptor as unknown as JsonValue);
+				response(reply, 200, descriptor as unknown as JsonValue, this.#cors(request));
+				return;
+			}
+			if (oauthStart && UUID.test(oauthStart[1])) {
+				if (!this.#oauth) {
+					response(
+						reply,
+						404,
+						{ schema: "qorpera.cloud-secret-error/v1", error: "not_found" },
+						this.#cors(request),
+					);
+					return;
+				}
+				const start = parseOAuthStart(await readRequest(request));
+				const ticketId = oauthStart[1].toLowerCase();
+				const summary = await this.#broker.describeCapture(
+					{ ticketId, captureCapability: start.captureCapability },
+					AbortSignal.timeout(10_000),
+				);
+				const started = this.#oauth.begin({
+					ticketId,
+					captureCapability: start.captureCapability,
+					connectorId: summary.connectorId,
+					returnTo: start.returnTo,
+				});
+				response(
+					reply,
+					200,
+					{
+						schema: "qorpera.cloud-connector-oauth-started/v1",
+						connectorId: summary.connectorId,
+						authorizationUrl: started.authorizationUrl,
+						expiresAt: started.expiresAt,
+					},
+					this.#cors(request),
+				);
 				return;
 			}
 			if (path === "/v1/operations" && tokenMatches(this.#runtimeToken, request.headers.authorization)) {
@@ -287,10 +429,57 @@ export class HttpCloudSecretBrokerService {
 			response(reply, 404, { schema: "qorpera.cloud-secret-error/v1", error: "not_found" });
 		} catch {
 			if (!reply.headersSent && !reply.destroyed) {
-				response(reply, 403, { schema: "qorpera.cloud-secret-error/v1", error: "unavailable" });
+				response(
+					reply,
+					403,
+					{ schema: "qorpera.cloud-secret-error/v1", error: "unavailable" },
+					memberRoute ? this.#cors(request) : {},
+				);
 			} else {
 				reply.destroy();
 			}
+		}
+	}
+
+	/** The provider's redirect target. The browser leaves with a fragment that
+	 * names the connector and the outcome, never a code or token. */
+	async #oauthCallback(url: URL, reply: ServerResponse): Promise<void> {
+		if (!this.#oauth) {
+			plainPage(reply, 404, "Not found.");
+			return;
+		}
+		const query = {
+			state: url.searchParams.get("state") ?? undefined,
+			code: url.searchParams.get("code") ?? undefined,
+			error: url.searchParams.get("error") ?? undefined,
+		};
+		try {
+			const completion = await this.#oauth.complete(query, AbortSignal.timeout(20_000));
+			try {
+				await this.#broker.capture(
+					{
+						ticketId: completion.ticketId,
+						captureCapability: completion.captureCapability,
+						fields: completion.fields,
+					},
+					AbortSignal.timeout(15_000),
+					completion.accountLabel,
+				);
+			} catch {
+				redirect(reply, connectorReturnLocation(completion.returnTo, completion.connectorId, "failed", "expired"));
+				return;
+			}
+			redirect(reply, connectorReturnLocation(completion.returnTo, completion.connectorId, "connected"));
+		} catch (error) {
+			if (error instanceof CloudConnectorOAuthError && error.returnTo && error.connectorId) {
+				redirect(reply, connectorReturnLocation(error.returnTo, error.connectorId, "failed", error.reason));
+				return;
+			}
+			plainPage(
+				reply,
+				400,
+				"This sign-in link is no longer valid. Go back to Qorpera and start the connection again.",
+			);
 		}
 	}
 }

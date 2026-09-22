@@ -4,6 +4,7 @@ import { open } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
+import { composeCloudConnectorService, parseCloudConnectorServiceConfig } from "./cloud-connector-service.ts";
 import {
 	CloudSecretBroker,
 	type CloudSecretConnectorAdapter,
@@ -66,6 +67,17 @@ function brokerDatabase(value: string): {
 		throw new Error("Cloud secret broker database credential is invalid");
 	}
 	return { host: url.hostname, port, user, password, database: "postgres" };
+}
+
+/** An optional credential: absent means the feature stays off. Any other
+ * failure still fails closed. */
+async function readOptionalCredential(directory: string, name: string): Promise<string | undefined> {
+	try {
+		return await readCredential(directory, name);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return undefined;
+		throw error;
+	}
 }
 
 async function readCredential(directory: string, name: string): Promise<string> {
@@ -181,6 +193,16 @@ export async function runCloudSecretBrokerServiceMain(
 	)
 		throw new Error("Cloud secret broker credentials are invalid");
 	const keyring = parseKeyring(await readCredential(directory, "qorpera-cloud-secret-keyring"));
+	// Step 7 production connectors and their OAuth routes exist only when the
+	// operator supplies the connectors credential. The canary and any adapters
+	// passed by the caller are kept either way.
+	const connectorsText = await readOptionalCredential(directory, "qorpera-cloud-secret-connectors");
+	const connectors = connectorsText
+		? composeCloudConnectorService(parseCloudConnectorServiceConfig(connectorsText))
+		: undefined;
+	if (connectors) {
+		console.error(`Cloud secret broker serves connectors: ${connectors.connectors.join(", ")}`);
+	}
 	const pool = new Pool({
 		host: database.host,
 		port: database.port,
@@ -207,8 +229,16 @@ export async function runCloudSecretBrokerServiceMain(
 			brokerAuthorityId: config.brokerAuthorityId,
 			brokerCapability,
 		});
-		const broker = new CloudSecretBroker({ authority, keyring, adapters });
-		const service = new HttpCloudSecretBrokerService(broker, runtimeToken, "127.0.0.1", config.port as number);
+		const broker = new CloudSecretBroker({
+			authority,
+			keyring,
+			adapters: [...adapters, ...(connectors?.adapters ?? [])],
+		});
+		const service = new HttpCloudSecretBrokerService(broker, runtimeToken, {
+			host: "127.0.0.1",
+			port: config.port as number,
+			...(connectors ? { oauth: connectors.oauth, corsOrigins: connectors.corsOrigins } : {}),
+		});
 		const stop = new AbortController();
 		const shutdown = (): void => stop.abort();
 		process.once("SIGINT", shutdown);

@@ -5,6 +5,7 @@ import { createWebCompanyAgents } from "../cloud/company-agents.ts";
 import { createWebCompanyExecution } from "../cloud/company-execution.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
 import { WebCompanyComputer } from "../cloud/computer.ts";
+import { takeConnectorReturn } from "../cloud/connectors.ts";
 import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
 import { createWebRoutines } from "../cloud/routines.ts";
 import { createWebSessionAttachments } from "../cloud/session-attachments.ts";
@@ -37,6 +38,7 @@ import { NewConversationView } from "./views/new-conversation.ts";
 import { renderOrganization } from "./views/organization.ts";
 import { renderPlan } from "./views/plan.ts";
 import { type SettingsTab, SettingsView } from "./views/settings.ts";
+import { noteConnectorReturn } from "./views/settings-services.ts";
 import { renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
 import { renderSignIn } from "./views/signin.ts";
 import { renderTeam } from "./views/team.ts";
@@ -111,6 +113,9 @@ export function mountApplication(
 	}
 	let routeRevision = 0;
 	let accountRevision = 0;
+	// Taken from the page hash once at startup and on every route change; the
+	// broker appends it after the provider consent (see cloud/connectors.ts).
+	let connectorReturn = takeConnectorReturn();
 	let accountUserId: string | undefined;
 	let navigationOpen = false;
 	let navigationFocus: "rail" | "toggle" | undefined;
@@ -142,6 +147,7 @@ export function mountApplication(
 		}
 	}
 	function onRouteChange(): void {
+		connectorReturn = takeConnectorReturn() ?? connectorReturn;
 		if (liveFile && liveFile.routeHash !== location.hash) {
 			const message = liveFile.leaveMessage();
 			if (message && !window.confirm(message)) {
@@ -331,6 +337,15 @@ export function mountApplication(
 					)(sessionId, clientInputId, text, signal, files, executionSponsor, roomTarget),
 			);
 			company = controller;
+			if (connectorReturn) {
+				// A provider sign-in (Step 7 connector) sent the member back to this
+				// company: show the outcome where the connection was started.
+				noteConnectorReturn(connectorReturn);
+				connectorReturn = undefined;
+				queueMicrotask(() => {
+					if (!disposed && company === controller) openSettings("connections");
+				});
+			}
 			computer = new WebCompanyComputer(cloud, profile, userId, controller.signal, () => {
 				if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
 					throw new Error("Company access is unavailable.");

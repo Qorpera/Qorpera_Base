@@ -34,6 +34,18 @@ export interface CloudSecretDescriptor {
 	readonly ownerKind: "company" | "member";
 	readonly ownerUserId: string | null;
 	readonly status: "active";
+	/** Non-secret account identity shown to members, e.g. the mailbox address
+	 * or GitHub login. Set by OAuth captures; null for typed tokens. */
+	readonly accountLabel?: string | null;
+}
+
+/** What the OAuth start route may learn about a ticket before any provider
+ * contact: the connector and owner class, never the ticket's key or scope. */
+export interface CloudSecretCaptureSummary {
+	readonly ticketId: string;
+	readonly connectorId: string;
+	readonly ownerKind: "company" | "member";
+	readonly expiresAt: string;
 }
 
 export interface CloudSecretOperationRequest {
@@ -83,6 +95,7 @@ export interface CloudSecretBrokerAuthority {
 		captureCapabilitySha256: string,
 		encryptedEnvelope: Uint8Array,
 		envelopeSha256: string,
+		accountLabel: string | null,
 		signal: AbortSignal,
 	): Promise<unknown>;
 	authorizeOperation(request: CloudSecretOperationRequest, signal: AbortSignal): Promise<unknown>;
@@ -195,13 +208,30 @@ function parseCaptureDescription(value: unknown): CloudSecretCaptureDescription 
 	};
 }
 
+const ACCOUNT_LABEL = /^[^\s\0]{1,254}$/;
+
+export function parseCloudSecretAccountLabel(value: unknown): string | null {
+	if (value === undefined || value === null) return null;
+	if (typeof value !== "string" || !ACCOUNT_LABEL.test(value))
+		throw new Error("Cloud secret account label is invalid");
+	return value;
+}
+
 function parseDescriptor(value: unknown, description: CloudSecretCaptureDescription): CloudSecretDescriptor {
 	const input = record(value, "Cloud secret descriptor");
-	exact(
-		input,
-		["schema", "secretId", "version", "connectorId", "secretName", "purpose", "ownerKind", "ownerUserId", "status"],
-		"Cloud secret descriptor",
-	);
+	const keys = [
+		"schema",
+		"secretId",
+		"version",
+		"connectorId",
+		"secretName",
+		"purpose",
+		"ownerKind",
+		"ownerUserId",
+		"status",
+	];
+	exact(input, Object.hasOwn(input, "accountLabel") ? [...keys, "accountLabel"] : keys, "Cloud secret descriptor");
+	parseCloudSecretAccountLabel(input.accountLabel);
 	if (
 		input.schema !== "qorpera.cloud-secret-descriptor/v1" ||
 		input.secretId !== description.secretId ||
@@ -385,15 +415,41 @@ export class CloudSecretBroker {
 		}
 	}
 
-	async capture(request: CloudSecretCaptureRequest, signal: AbortSignal): Promise<CloudSecretDescriptor> {
+	async capture(
+		request: CloudSecretCaptureRequest,
+		signal: AbortSignal,
+		accountLabel: string | null = null,
+	): Promise<CloudSecretDescriptor> {
 		try {
-			return await this.#capture(request, signal);
+			return await this.#capture(request, signal, parseCloudSecretAccountLabel(accountLabel));
 		} catch {
 			throw new Error("Cloud secret capture was not confirmed");
 		}
 	}
 
-	async #capture(request: CloudSecretCaptureRequest, signal: AbortSignal): Promise<CloudSecretDescriptor> {
+	/** Lets the OAuth start route confirm a ticket and learn its connector
+	 * before sending the member to the provider. Nothing is committed. */
+	async describeCapture(
+		request: Omit<CloudSecretCaptureRequest, "fields">,
+		signal: AbortSignal,
+	): Promise<CloudSecretCaptureSummary> {
+		try {
+			const description = await this.#describe(request, signal);
+			return {
+				ticketId: description.ticketId,
+				connectorId: description.connectorId,
+				ownerKind: description.ownerKind,
+				expiresAt: description.expiresAt,
+			};
+		} catch {
+			throw new Error("Cloud secret capture is unavailable");
+		}
+	}
+
+	async #describe(
+		request: Omit<CloudSecretCaptureRequest, "fields">,
+		signal: AbortSignal,
+	): Promise<CloudSecretCaptureDescription> {
 		if (!UUID.test(request.ticketId) || !CAPABILITY.test(request.captureCapability)) {
 			throw new Error("Cloud secret capture request is invalid");
 		}
@@ -404,11 +460,28 @@ export class CloudSecretBroker {
 		if (description.ticketId !== request.ticketId || Date.parse(description.expiresAt) <= Date.now()) {
 			throw new Error("Cloud secret capture is unavailable");
 		}
+		return description;
+	}
+
+	async #capture(
+		request: CloudSecretCaptureRequest,
+		signal: AbortSignal,
+		accountLabel: string | null,
+	): Promise<CloudSecretDescriptor> {
+		const description = await this.#describe(request, signal);
+		const capabilitySha256 = createHash("sha256").update(request.captureCapability).digest("hex");
 		const envelope = this.#keys.seal(request.fields, description);
 		try {
 			const envelopeSha256 = createHash("sha256").update(envelope).digest("hex");
 			return parseDescriptor(
-				await this.#authority.completeCapture(request.ticketId, capabilitySha256, envelope, envelopeSha256, signal),
+				await this.#authority.completeCapture(
+					request.ticketId,
+					capabilitySha256,
+					envelope,
+					envelopeSha256,
+					accountLabel,
+					signal,
+				),
 				description,
 			);
 		} finally {
@@ -523,6 +596,7 @@ export class SupabaseCloudSecretBrokerAuthority implements CloudSecretBrokerAuth
 		captureCapabilitySha256: string,
 		encryptedEnvelope: Uint8Array,
 		envelopeSha256: string,
+		accountLabel: string | null,
 		signal: AbortSignal,
 	): Promise<unknown> {
 		return this.#rpc(
@@ -534,6 +608,7 @@ export class SupabaseCloudSecretBrokerAuthority implements CloudSecretBrokerAuth
 				p_capture_capability_sha256: captureCapabilitySha256,
 				p_encrypted_envelope_base64: Buffer.from(encryptedEnvelope).toString("base64"),
 				p_envelope_sha256: envelopeSha256,
+				p_account_label: accountLabel,
 			},
 			signal,
 		);
@@ -621,10 +696,11 @@ export class PostgresCloudSecretBrokerAuthority implements CloudSecretBrokerAuth
 		captureCapabilitySha256: string,
 		encryptedEnvelope: Uint8Array,
 		envelopeSha256: string,
+		accountLabel: string | null,
 		signal: AbortSignal,
 	): Promise<unknown> {
 		return this.#rpc(
-			"select public.qorpera_complete_cloud_secret_capture($1::uuid,$2::text,$3::uuid,$4::text,$5::text,$6::text) as result",
+			"select public.qorpera_complete_cloud_secret_capture($1::uuid,$2::text,$3::uuid,$4::text,$5::text,$6::text,$7::text) as result",
 			[
 				this.#brokerAuthorityId,
 				this.#brokerCapabilitySha256,
@@ -632,6 +708,7 @@ export class PostgresCloudSecretBrokerAuthority implements CloudSecretBrokerAuth
 				captureCapabilitySha256,
 				Buffer.from(encryptedEnvelope).toString("base64"),
 				envelopeSha256,
+				accountLabel,
 			],
 			signal,
 		);

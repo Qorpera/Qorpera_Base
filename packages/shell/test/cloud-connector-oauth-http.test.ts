@@ -1,0 +1,232 @@
+import { randomBytes, randomUUID } from "node:crypto";
+import { CloudConnectorOAuthFlows } from "@qorpera/runtime/cloud-connector-oauth";
+import {
+	CloudSecretBroker,
+	type CloudSecretBrokerAuthority,
+	type CloudSecretCaptureDescription,
+} from "@qorpera/runtime/cloud-secret-broker";
+import { HttpCloudSecretBrokerService } from "@qorpera/runtime/cloud-secret-broker-http";
+import { CloudSecretKeyring } from "@qorpera/runtime/cloud-secret-crypto";
+import { afterEach, expect, it, vi } from "vitest";
+
+/** The broker's member-facing OAuth routes: start from the web app (CORS),
+ * return from the provider (redirect), and the capture in between. */
+
+const services: HttpCloudSecretBrokerService[] = [];
+afterEach(async () => {
+	for (const service of services.splice(0)) await service.close();
+});
+
+const WEB = "https://app.qorpera.test";
+const google = { clientId: "g.apps.googleusercontent.com", clientSecret: `GOCSPX-${randomBytes(8).toString("hex")}` };
+
+function fixture(connectorId = "gmail") {
+	const identity = {
+		companyId: randomUUID(),
+		environmentId: randomUUID(),
+		secretId: randomUUID(),
+		version: 1,
+		keyId: "k1",
+	};
+	const ticketId = randomUUID();
+	const capability = randomBytes(32).toString("base64url");
+	const wrappingKey = randomBytes(32);
+	const keyring = new CloudSecretKeyring({ [identity.keyId]: wrappingKey });
+	const description: CloudSecretCaptureDescription = {
+		schema: "qorpera.cloud-secret-capture-description/v1",
+		ticketId,
+		...identity,
+		ownerKind: "member",
+		ownerUserId: randomUUID(),
+		connectorId,
+		secretName: "primary",
+		purpose: "Gmail account",
+		expiresAt: "2099-01-01T00:00:00.000Z",
+	};
+	const captured: { envelope: Uint8Array; accountLabel: string | null }[] = [];
+	const authority: CloudSecretBrokerAuthority = {
+		describeCapture: vi.fn(async (ticket, capabilitySha) => {
+			if (ticket !== ticketId || capabilitySha.length !== 64) throw new Error("private");
+			return description;
+		}),
+		completeCapture: vi.fn(async (_ticket, _capability, envelope, _digest, accountLabel) => {
+			captured.push({ envelope: Uint8Array.from(envelope), accountLabel });
+			return {
+				schema: "qorpera.cloud-secret-descriptor/v1",
+				secretId: identity.secretId,
+				version: 1,
+				connectorId,
+				secretName: "primary",
+				purpose: description.purpose,
+				ownerKind: "member",
+				ownerUserId: description.ownerUserId,
+				status: "active",
+				accountLabel,
+			};
+		}),
+		authorizeOperation: vi.fn(async () => {
+			throw new Error("not used");
+		}),
+	};
+	const provider = vi.fn<typeof fetch>(async (target) => {
+		const url = new URL(String(target));
+		if (url.href === "https://oauth2.googleapis.com/token")
+			return Response.json({
+				access_token: "ya29.access-token-value-1234567890",
+				refresh_token: "1//refresh-token-value-1234567890",
+			});
+		if (url.href === "https://openidconnect.googleapis.com/v1/userinfo")
+			return Response.json({ email: "anna@example.com" });
+		throw new Error(`unexpected ${url.href}`);
+	});
+	const oauth = new CloudConnectorOAuthFlows({
+		clients: { google },
+		callbackUrl: "https://secrets.qorpera.test/v1/oauth/callback",
+		returnOrigins: [WEB],
+		fetch: provider,
+	});
+	const broker = new CloudSecretBroker({ authority, keyring, adapters: [] });
+	const runtimeToken = randomBytes(32).toString("base64url");
+	const service = new HttpCloudSecretBrokerService(broker, runtimeToken, { oauth, corsOrigins: [WEB] });
+	services.push(service);
+	return { ticketId, capability, service, captured, keyring, wrappingKey, authority };
+}
+
+async function start(f: ReturnType<typeof fixture>, body: unknown, origin = WEB) {
+	const port = await f.service.start();
+	const response = await fetch(`http://127.0.0.1:${port}/v1/oauth/${f.ticketId}/start`, {
+		method: "POST",
+		headers: { "content-type": "application/json", origin },
+		body: JSON.stringify(body),
+	});
+	return { port, response };
+}
+
+it("answers the web app's preflight and start request with CORS headers and a provider URL", async () => {
+	const f = fixture();
+	const port = await f.service.start();
+	const preflight = await fetch(`http://127.0.0.1:${port}/v1/oauth/${f.ticketId}/start`, {
+		method: "OPTIONS",
+		headers: { origin: WEB, "access-control-request-method": "POST" },
+	});
+	expect(preflight.status).toBe(204);
+	expect(preflight.headers.get("access-control-allow-origin")).toBe(WEB);
+	const denied = await fetch(`http://127.0.0.1:${port}/v1/oauth/${f.ticketId}/start`, {
+		method: "OPTIONS",
+		headers: { origin: "https://evil.example" },
+	});
+	expect(denied.status).toBe(404);
+	const response = await fetch(`http://127.0.0.1:${port}/v1/oauth/${f.ticketId}/start`, {
+		method: "POST",
+		headers: { "content-type": "application/json", origin: WEB },
+		body: JSON.stringify({
+			schema: "qorpera.cloud-connector-oauth-start/v1",
+			captureCapability: f.capability,
+			returnTo: `${WEB}/#/c/1`,
+		}),
+	});
+	expect(response.status).toBe(200);
+	expect(response.headers.get("access-control-allow-origin")).toBe(WEB);
+	const started = (await response.json()) as Record<string, string>;
+	expect(started.schema).toBe("qorpera.cloud-connector-oauth-started/v1");
+	expect(started.connectorId).toBe("gmail");
+	expect(new URL(started.authorizationUrl).origin).toBe("https://accounts.google.com");
+	f.wrappingKey.fill(0);
+	f.keyring.close();
+});
+
+it("refuses a start with a wrong capability or a foreign return page", async () => {
+	const f = fixture();
+	const wrong = await start(f, {
+		schema: "qorpera.cloud-connector-oauth-start/v1",
+		captureCapability: randomBytes(32).toString("base64url").slice(0, 43),
+		returnTo: `${WEB}/`,
+	});
+	// The authority accepts any 64-hex digest in this fixture, so the ticket
+	// describes fine; the foreign return page is what must fail.
+	expect(wrong.response.status).toBe(200);
+	const foreign = await fetch(`http://127.0.0.1:${wrong.port}/v1/oauth/${f.ticketId}/start`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({
+			schema: "qorpera.cloud-connector-oauth-start/v1",
+			captureCapability: f.capability,
+			returnTo: "https://evil.example/",
+		}),
+	});
+	expect(foreign.status).toBe(403);
+	expect(await foreign.json()).toEqual({ schema: "qorpera.cloud-secret-error/v1", error: "unavailable" });
+	f.wrappingKey.fill(0);
+	f.keyring.close();
+});
+
+it("completes the provider callback into a sealed capture and redirects with only the outcome", async () => {
+	const f = fixture();
+	const { port, response } = await start(f, {
+		schema: "qorpera.cloud-connector-oauth-start/v1",
+		captureCapability: f.capability,
+		returnTo: `${WEB}/#/c/1`,
+	});
+	const started = (await response.json()) as Record<string, string>;
+	const state = new URL(started.authorizationUrl).searchParams.get("state");
+	const callback = await fetch(
+		`http://127.0.0.1:${port}/v1/oauth/callback?state=${state}&code=4%2Fcode-value&scope=ignored`,
+		{ redirect: "manual" },
+	);
+	expect(callback.status).toBe(303);
+	expect(callback.headers.get("location")).toBe(`${WEB}/#/c/1?connector=gmail&connection=connected`);
+	expect(f.captured).toHaveLength(1);
+	expect(f.captured[0].accountLabel).toBe("anna@example.com");
+	expect(Buffer.from(f.captured[0].envelope).toString("latin1")).not.toContain("refresh-token-value");
+	// The same callback cannot be replayed into a second capture.
+	const replay = await fetch(`http://127.0.0.1:${port}/v1/oauth/callback?state=${state}&code=4%2Fcode-value`, {
+		redirect: "manual",
+	});
+	expect(replay.status).toBe(400);
+	expect(f.captured).toHaveLength(1);
+	f.wrappingKey.fill(0);
+	f.keyring.close();
+});
+
+it("sends a declined consent back to the web app as a failure fragment without capturing", async () => {
+	const f = fixture();
+	const { port, response } = await start(f, {
+		schema: "qorpera.cloud-connector-oauth-start/v1",
+		captureCapability: f.capability,
+		returnTo: `${WEB}/#/c/1`,
+	});
+	const state = new URL(((await response.json()) as Record<string, string>).authorizationUrl).searchParams.get(
+		"state",
+	);
+	const callback = await fetch(`http://127.0.0.1:${port}/v1/oauth/callback?state=${state}&error=access_denied`, {
+		redirect: "manual",
+	});
+	expect(callback.status).toBe(303);
+	expect(callback.headers.get("location")).toBe(`${WEB}/#/c/1?connector=gmail&connection=failed&reason=declined`);
+	expect(f.captured).toHaveLength(0);
+	f.wrappingKey.fill(0);
+	f.keyring.close();
+});
+
+it("keeps the OAuth routes closed when no connector service is configured", async () => {
+	const f = fixture();
+	const broker = new CloudSecretBroker({ authority: f.authority, keyring: f.keyring, adapters: [] });
+	const plain = new HttpCloudSecretBrokerService(broker, randomBytes(32).toString("base64url"));
+	services.push(plain);
+	const port = await plain.start();
+	const startResponse = await fetch(`http://127.0.0.1:${port}/v1/oauth/${f.ticketId}/start`, {
+		method: "POST",
+		headers: { "content-type": "application/json", origin: WEB },
+		body: JSON.stringify({
+			schema: "qorpera.cloud-connector-oauth-start/v1",
+			captureCapability: f.capability,
+			returnTo: `${WEB}/`,
+		}),
+	});
+	expect(startResponse.status).toBe(404);
+	expect(startResponse.headers.get("access-control-allow-origin")).toBeNull();
+	const callback = await fetch(`http://127.0.0.1:${port}/v1/oauth/callback?state=x&code=y`, { redirect: "manual" });
+	expect(callback.status).toBe(404);
+	f.wrappingKey.fill(0);
+	f.keyring.close();
+});
