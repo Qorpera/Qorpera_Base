@@ -13,7 +13,10 @@ import { quietScroll } from "../../ui/quiet-scroll.ts";
 import type { CompanyController } from "../company.ts";
 
 /** What the panel needs from the company: the pair session's events and the agents' names. */
-export type PairTranscriptHost = Pick<CompanyController, "conversation" | "loadConversation" | "staffById" | "signal">;
+export type PairTranscriptHost = Pick<
+	CompanyController,
+	"conversation" | "conversations" | "loadConversation" | "staffById" | "signal"
+>;
 
 const REFRESH_MS = 5_000;
 
@@ -73,10 +76,12 @@ export class PairTranscriptView {
 			{ signal: this.#lifetime.signal },
 		);
 		quietScroll(this.#messages);
+		// A new store loads itself; a transcript opened before is read again now,
+		// not when the timer next fires.
+		const existed = host.conversations.has(sessionId);
 		const store = host.conversation(sessionId);
 		const unsubscribe = store.subscribe(() => this.update());
-		// A transcript opened before is read again now, not when the timer next fires.
-		void host.loadConversation(sessionId);
+		if (existed) void host.loadConversation(sessionId);
 		this.#lifetime.signal.addEventListener("abort", unsubscribe, { once: true });
 		// A reply that arrives while the member watches shows in place; a hidden tab
 		// does not poll, and catches up the moment it is shown again.

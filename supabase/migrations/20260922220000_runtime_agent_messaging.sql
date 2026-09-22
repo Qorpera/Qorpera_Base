@@ -315,7 +315,7 @@ declare
 	v_digest text; v_receipt_id uuid := extensions.gen_random_uuid(); v_begun jsonb; v_result jsonb;
 	v_occurrence uuid := extensions.gen_random_uuid(); v_path text; v_pair uuid; v_event uuid := extensions.gen_random_uuid();
 	v_hops integer; v_hourly integer; v_parent_agents uuid[]; v_fence text; v_sender_thread uuid; v_recipient_thread uuid;
-	v_parent_entry text; v_staff public.qorpera_profile_staff%rowtype; v_sequence bigint;
+	v_parent_entry text; v_staff public.qorpera_profile_staff%rowtype; v_sequence bigint; v_thread record;
 begin
 	v_run := public.qorpera_native_tool_locked_run(p_binding);
 	v_actor := public.qorpera_company_path_actor(v_run.environment_id,p_binding);
@@ -371,10 +371,20 @@ begin
 		-- The pair's transcript and both agents' own threads exist before anything is written.
 		v_pair := public.qorpera_agent_pair_session_internal(v_run.profile_id,v_run.environment_id,v_run.staff_agent_id,
 			p_recipient_staff_id,v_run.requested_by_user_id);
-		v_sender_thread := public.qorpera_agent_thread_session_internal(v_run.profile_id,v_run.environment_id,v_run.staff_agent_id,
-			v_run.requested_by_user_id);
-		v_recipient_thread := public.qorpera_agent_thread_session_internal(v_run.profile_id,v_run.environment_id,p_recipient_staff_id,
-			v_run.requested_by_user_id);
+		-- Threads are resolved, and their sessions written, in one global order (by
+		-- agent id, then by session id), so simultaneous sends around a ring of
+		-- agents never wait on each other in a cycle.
+		if v_run.staff_agent_id::text < p_recipient_staff_id::text then
+			v_sender_thread := public.qorpera_agent_thread_session_internal(v_run.profile_id,v_run.environment_id,v_run.staff_agent_id,
+				v_run.requested_by_user_id);
+			v_recipient_thread := public.qorpera_agent_thread_session_internal(v_run.profile_id,v_run.environment_id,p_recipient_staff_id,
+				v_run.requested_by_user_id);
+		else
+			v_recipient_thread := public.qorpera_agent_thread_session_internal(v_run.profile_id,v_run.environment_id,p_recipient_staff_id,
+				v_run.requested_by_user_id);
+			v_sender_thread := public.qorpera_agent_thread_session_internal(v_run.profile_id,v_run.environment_id,v_run.staff_agent_id,
+				v_run.requested_by_user_id);
+		end if;
 		-- The transcript event is kernel-authored metadata of the sender's run, not a
 		-- public send of it: it carries no run execution identity, so the one-mouth
 		-- rule (an assistant message needs an explicit send) and the sender's own
@@ -391,12 +401,15 @@ begin
 					'runId',v_run.id,'staffVersion',v_run.staff_version,
 					'displayName',case when v_staff.version = v_run.staff_version then v_staff.display_name end,
 					'receiptId',v_receipt_id,'operationKey',p_operation_key))));
-		perform public.qorpera_append_kernel_session_event(v_sender_thread,extensions.gen_random_uuid(),'session_info',
-			v_run.requested_by_user_id,jsonb_build_object('schema','qorpera.peer-link/v1','direction','out',
-				'counterpartStaffId',p_recipient_staff_id,'pairSessionId',v_pair,'eventId',v_event,'receiptId',v_receipt_id));
-		perform public.qorpera_append_kernel_session_event(v_recipient_thread,extensions.gen_random_uuid(),'session_info',
-			v_run.requested_by_user_id,jsonb_build_object('schema','qorpera.peer-link/v1','direction','in',
-				'counterpartStaffId',v_run.staff_agent_id,'pairSessionId',v_pair,'eventId',v_event,'receiptId',v_receipt_id));
+		for v_thread in select * from (values
+				(v_sender_thread,jsonb_build_object('schema','qorpera.peer-link/v1','direction','out',
+					'counterpartStaffId',p_recipient_staff_id,'pairSessionId',v_pair,'eventId',v_event,'receiptId',v_receipt_id)),
+				(v_recipient_thread,jsonb_build_object('schema','qorpera.peer-link/v1','direction','in',
+					'counterpartStaffId',v_run.staff_agent_id,'pairSessionId',v_pair,'eventId',v_event,'receiptId',v_receipt_id))
+			) chips(session_id,body) order by chips.session_id loop
+			perform public.qorpera_append_kernel_session_event(v_thread.session_id,extensions.gen_random_uuid(),'session_info',
+				v_run.requested_by_user_id,v_thread.body);
+		end loop;
 		insert into public.qorpera_wake_occurrences(id,profile_id,environment_id,wake_kind,source_kind,staff_agent_id,
 			parent_run_id,sponsor_binding_id,sponsor_version,session_id,trigger_id,occurrence_key,scheduled_for,not_before,payload)
 		values(v_occurrence,v_run.profile_id,v_run.environment_id,'agent','coworker',p_recipient_staff_id,
@@ -406,12 +419,16 @@ begin
 				'pairSessionId',v_pair,'pairEventId',v_event));
 	else
 		v_occurrence := null;
-		-- One line in the transcript says why the exchange stopped; the text itself is not delivered.
-		if v_pair is not null and exists (select 1 from public.qorpera_shared_sessions where id = v_pair and status = 'open') then
-			perform public.qorpera_append_kernel_session_event(v_pair,extensions.gen_random_uuid(),'session_info',
-				v_run.requested_by_user_id,jsonb_build_object('schema','qorpera.peer-budget/v1','text',v_fence,
-					'staffAgentId',v_run.staff_agent_id,'receiptId',v_receipt_id));
+		-- One line says why the exchange stopped; the text itself is not delivered. It
+		-- goes into the pair's transcript when there is one, otherwise (a chain that
+		-- ran out between two agents who never talked) into the sender's own thread.
+		if v_pair is null or not exists (select 1 from public.qorpera_shared_sessions where id = v_pair and status = 'open') then
+			v_pair := public.qorpera_agent_thread_session_internal(v_run.profile_id,v_run.environment_id,v_run.staff_agent_id,
+				v_run.requested_by_user_id);
 		end if;
+		perform public.qorpera_append_kernel_session_event(v_pair,extensions.gen_random_uuid(),'session_info',
+			v_run.requested_by_user_id,jsonb_build_object('schema','qorpera.peer-budget/v1','text',v_fence,
+				'staffAgentId',v_run.staff_agent_id,'recipientStaffId',p_recipient_staff_id,'receiptId',v_receipt_id));
 	end if;
 	v_result := jsonb_build_object('schema','qorpera.coworker-send/v1','runId',v_run.id,
 		'receiptId',v_receipt_id,'occurrenceId',v_occurrence,'recipientStaffId',p_recipient_staff_id,

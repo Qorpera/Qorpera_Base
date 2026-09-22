@@ -74,6 +74,15 @@ reads an agent's existing open thread before creating one; the transcript panel
 loads on every open and returns focus to the chip that opened it. Bundle
 re-cut to `97605c74…`, guest provider host `d53495cf…`.
 
+## Review round 3 (2026-09-22, three findings, all fixed)
+
+Threads are resolved and their chips written in one global order (agent id,
+then session id), so simultaneous sends around a ring of agents cannot
+deadlock; a refused hop between two agents with no transcript writes its line
+into the sender's own thread (tested with a six-hop relay that then reaches a
+third agent); the panel loads once on first open. Bundle re-cut to
+`7384be69…`, guest provider host `5f61e587…`.
+
 ## Not in this cut
 
 Held delivery (`priority: false`: written, no wake, read at the next wake),

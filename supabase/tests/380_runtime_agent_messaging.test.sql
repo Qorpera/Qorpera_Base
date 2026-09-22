@@ -193,3 +193,31 @@ begin
 end
 $$;
 rollback to messaging_chain_rule;
+
+savepoint messaging_cross_pair;
+do $$
+declare v_binding jsonb := current_setting('qorpera_test.alice_binding')::jsonb; v_send jsonb; v_hop integer;
+	v_alice uuid := '30000000-0000-4000-8000-000000000030'; v_bob uuid := '30000000-0000-4000-8000-000000000031';
+	v_carol uuid := '30000000-0000-4000-8000-000000000032'; v_sender_thread uuid; v_sender uuid;
+begin
+	perform pg_temp.wake_public_send(v_binding,'progress');
+	-- Six hops between Alice and Bob, then the run at hop six writes to Carol: the chain is spent,
+	-- Alice and Carol have no transcript, so the explanation lands in the sender's own thread.
+	for v_hop in 1..6 loop
+		v_send := public.qorpera_send_coworker_message(v_binding,case when v_hop % 2 = 1 then v_bob else v_alice end,'relay-' || v_hop::text,'Relay ' || v_hop::text);
+		v_binding := pg_temp.wake_run_binding((v_send ->> 'occurrenceId')::uuid);
+		perform public.qorpera_assert_wake_completion((v_binding ->> 'runId')::uuid);
+	end loop;
+	select staff_agent_id into strict v_sender from public.qorpera_execution_runs where id = (v_binding ->> 'runId')::uuid;
+	v_send := public.qorpera_send_coworker_message(v_binding,v_carol,'relay-7','Relay 7');
+	perform pg_temp.wake_assert(v_send ->> 'status' = 'causal-fence','A spent chain cannot start a new pair');
+	perform pg_temp.wake_assert(not exists (select 1 from public.qorpera_shared_sessions where profile_id = '30000000-0000-4000-8000-000000000010'
+		and execution_scope ->> 'agentPairKey' = public.qorpera_agent_pair_key(v_sender,v_carol)),'No transcript is created for a refused first message');
+	v_sender_thread := pg_temp.thread_session(v_sender);
+	perform pg_temp.wake_assert((select count(*) = 1 from public.qorpera_session_events where session_id = v_sender_thread and event_type = 'session_info'
+		and body ->> 'schema' = 'qorpera.peer-budget/v1' and body ->> 'recipientStaffId' = v_carol::text
+		and body ->> 'text' like 'This exchange paused after 6 messages%'),'The sender''s own thread says why the chain stopped');
+	perform pg_temp.wake_assert(not exists (select 1 from public.qorpera_wake_occurrences where staff_agent_id = v_carol and source_kind = 'coworker'),'Carol is not woken');
+end
+$$;
+rollback to messaging_cross_pair;
