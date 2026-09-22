@@ -566,7 +566,11 @@ describe("account and route ownership", () => {
 
 	it("restores access to the page when membership is revoked with the mobile drawer open", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		vi.mocked(f.api.listSessions).mockResolvedValue([{ ...session, staffAgentId: staff.id }]);
 		await draw();
+		f.root.querySelector<HTMLButtonElement>(".thread-computer:not([hidden])")!.click();
+		const panel = f.root.querySelector<HTMLElement>(".computer-panel")!;
+		expect(panel.childElementCount).toBeGreaterThan(0);
 		f.root.querySelector<HTMLButtonElement>("main .mobile-navigation-toggle")!.click();
 		await draw();
 		expect(f.root.querySelector("main")?.inert).toBe(true);
@@ -576,6 +580,9 @@ describe("account and route ownership", () => {
 		f.hints.get("qorpera_profile_access_state")!();
 		await draw();
 		expect(f.root.querySelector("main")?.textContent).toContain("Your access to this company was revoked");
+		// The computer left open is ended, not merely set aside for a return.
+		expect(panel.isConnected).toBe(false);
+		expect(panel.childElementCount).toBe(0);
 		expect(f.root.querySelector("main")?.inert).toBe(false);
 		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(false);
 		expect(f.root.querySelector(".topbar .account-trigger")).not.toBeNull();

@@ -19,6 +19,8 @@ export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): () 
 	let chosenWidth = COMPUTER_PREVIEW_WIDTH;
 	let drag: Drag | undefined;
 	let observer: ResizeObserver | undefined;
+	/** The thread the observer watches; the panel moves between threads and keeps its place. */
+	let observed: HTMLElement | undefined;
 	const expanded = () => panel.classList.contains("is-entered") || Boolean(document.fullscreenElement);
 	// The status row (send errors, run actions) sits above the composer and must stay reachable.
 	const below = (parent: HTMLElement) =>
@@ -38,9 +40,11 @@ export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): () 
 			fit: Math.max(0, Math.min(parent.clientWidth - 40, (parent.clientHeight - top - footer - 16) * ASPECT)),
 		};
 	};
+	/** A thread that is not in the page yet has no size; clamping against it would lose the member's position. */
+	const sized = (parent: HTMLElement) => parent.clientWidth > 0 && parent.clientHeight > 0;
 	const place = (left: number, top: number, bounds?: Bounds) => {
 		const parent = panel.parentElement;
-		if (!parent || expanded()) return;
+		if (!parent || expanded() || !sized(parent)) return;
 		const inset = 8;
 		const { top: minTop, footer } = bounds ?? measure(parent);
 		position = {
@@ -52,7 +56,8 @@ export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): () 
 	};
 	const reclamp = () => {
 		const parent = panel.parentElement;
-		if (!parent || expanded()) return;
+		// Off the page the observer fits the preview once the thread has a size.
+		if (!parent || expanded() || !sized(parent)) return;
 		const bounds = measure(parent);
 		panel.style.setProperty("--computer-width", `${Math.min(chosenWidth, bounds.fit)}px`);
 		if (position) place(position.left, position.top, bounds);
@@ -66,20 +71,32 @@ export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): () 
 		}
 	};
 	const observe = () => {
-		if (observer || !panel.parentElement || typeof ResizeObserver === "undefined") return;
+		const parent = panel.parentElement;
+		if (!parent || typeof ResizeObserver === "undefined" || (observer && observed === parent)) return;
+		observer?.disconnect();
+		observed = parent;
 		observer = new ResizeObserver(reclamp);
-		observer.observe(panel.parentElement);
+		observer.observe(parent);
 		observer.observe(panel);
-		for (const boundary of panel.parentElement.querySelectorAll(".thread-header, .thread-status, .composer")) {
+		for (const boundary of parent.querySelectorAll(".thread-header, .thread-status, .composer")) {
 			observer.observe(boundary);
 		}
 	};
-	// The panel is attached by its owner immediately after construction.
-	queueMicrotask(() => {
+	/** Fit the preview to the thread it is in now; the owner calls this on every attach and
+	 * detach. Out of any thread, the observer lets go of the last one so it can be collected. */
+	const refit = () => {
 		if (signal.aborted) return;
+		if (!panel.parentElement) {
+			observer?.disconnect();
+			observer = undefined;
+			observed = undefined;
+			return;
+		}
 		observe();
 		reclamp();
-	});
+	};
+	// The panel is attached by its owner immediately after construction.
+	queueMicrotask(refit);
 	const frame = (): Rect | undefined => {
 		const parent = panel.parentElement;
 		if (!parent) return;
@@ -273,5 +290,5 @@ export function attachComputerDrag(panel: HTMLElement, signal: AbortSignal): () 
 		},
 		{ once: true },
 	);
-	return reclamp;
+	return refit;
 }

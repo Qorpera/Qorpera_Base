@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
 import { CompanyController } from "../src/app/company.ts";
 import { parseRoute } from "../src/app/router.ts";
+import { ComputerPanels } from "../src/app/views/computer.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import { NewConversationView } from "../src/app/views/new-conversation.ts";
 import type { WorkspaceActions } from "../src/app/workspace-actions.ts";
@@ -445,6 +446,58 @@ describe("conversation UI boundaries", () => {
 			expect(document.activeElement).toBe(toggle);
 		}
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
+	});
+	it("keeps the agent's computer open across the threads a member moves between", () => {
+		const panels = new ComputerPanels(),
+			f = setup({ computerPanels: panels });
+		button(f.view.el, "Open agent computer").click();
+		const panel = f.view.el.querySelector<HTMLElement>(".computer-panel")!;
+		expect(panel).not.toBeNull();
+		// Leaving the thread keeps the panel; it is only out of the page for now.
+		f.view.dispose();
+		expect(panel.isConnected).toBe(false);
+		expect(panels.get(staff.id)?.el).toBe(panel);
+		// Another thread without this agent shows nothing of it.
+		const other = new ConversationView(f.company, id(90), { computerPanels: panels });
+		expect(other.el.querySelector(".computer-panel")).toBeNull();
+		other.dispose();
+		// Back in the agent's thread the same panel is there, with no click.
+		const restored = new ConversationView(f.company, session.sessionId, { computerPanels: panels });
+		document.body.append(restored.el);
+		expect(restored.el.querySelector(".computer-panel")).toBe(panel);
+		expect(button(restored.el, "Open agent computer").getAttribute("aria-expanded")).toBe("true");
+		// Closing it there ends it for every thread.
+		button(restored.el, "Open agent computer").click();
+		expect(restored.el.querySelector(".computer-panel")).toBeNull();
+		expect(panels.get(staff.id)).toBeUndefined();
+		restored.dispose();
+		const again = new ConversationView(f.company, session.sessionId, { computerPanels: panels });
+		expect(again.el.querySelector(".computer-panel")).toBeNull();
+		again.dispose();
+		// The company's shared panel set is left to the company: this view never disposes it.
+		expect(f.cloud.rpc).not.toHaveBeenCalled();
+	});
+
+	it("keeps the open computer through a rename and replaces it only when the thread changes agent", async () => {
+		const panels = new ComputerPanels(),
+			f = setup({ computerPanels: panels });
+		button(f.view.el, "Open agent computer").click();
+		const panel = f.view.el.querySelector<HTMLElement>(".computer-panel")!;
+		f.company.store.set({ staff: [{ ...staff, displayName: "Renamed" }] });
+		await settle();
+		expect(f.view.el.querySelector(".computer-panel")).toBe(panel);
+		expect(f.view.el.querySelector(".thread-identity h1")?.textContent).toBe("Renamed");
+		expect(panels.get(staff.id)?.el).toBe(panel);
+		const other = { ...staff, id: id(97), displayName: "Other" };
+		f.company.store.set({
+			staff: [{ ...staff, displayName: "Renamed" }, other],
+			sessions: [{ ...session, staffAgentId: other.id }],
+		});
+		await settle();
+		const replaced = f.view.el.querySelector<HTMLElement>(".computer-panel")!;
+		expect(replaced).not.toBe(panel);
+		expect(panels.get(staff.id)).toBeUndefined();
+		expect(panels.get(other.id)?.el).toBe(replaced);
 	});
 
 	it("places the company notices right above the composer, inside the conversation", () => {

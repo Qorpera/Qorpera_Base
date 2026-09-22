@@ -276,6 +276,46 @@ describe("computer preview dragging", () => {
 		window.dispatchEvent(new Event("resize"));
 		expect(f.panel.style.getPropertyValue("--computer-left")).toBe("242px");
 	});
+	it("follows the panel into another thread and lets go of a thread it left", () => {
+		const f = setup();
+		key(f.panel, "ArrowRight");
+		expect(f.observe.mock.calls.map(([target]) => target)).toEqual([f.parent, f.panel, f.header, f.composer]);
+		// Refitting inside the same thread observes nothing anew.
+		f.fit();
+		expect(f.disconnect).not.toHaveBeenCalled();
+		expect(f.observe).toHaveBeenCalledTimes(4);
+		// Out of any thread: the old thread is released so it can be collected.
+		f.panel.remove();
+		f.fit();
+		expect(f.disconnect).toHaveBeenCalledOnce();
+		// In a new thread that is not in the page yet (no size): that thread's edges are
+		// watched, and the member's position is left alone rather than clamped to a corner.
+		const next = document.createElement("section"),
+			nextHeader = document.createElement("header");
+		nextHeader.className = "thread-header";
+		next.append(nextHeader, f.panel);
+		const nextSize = { width: 0, height: 0 };
+		Object.defineProperties(next, {
+			clientWidth: { get: () => nextSize.width },
+			clientHeight: { get: () => nextSize.height },
+		});
+		f.fit();
+		expect(f.observe.mock.calls.slice(4).map(([target]) => target)).toEqual([next, f.panel, nextHeader]);
+		expect(f.disconnect).toHaveBeenCalledOnce();
+		expect(f.panel.style.getPropertyValue("--computer-left")).toBe("510px");
+		expect(f.panel.style.getPropertyValue("--computer-top")).toBe("80px");
+		// Once the thread is in the page and has a size, the observer fits from the saved spot.
+		document.body.append(next);
+		nextSize.width = 1000;
+		nextSize.height = 700;
+		f.resize();
+		expect(f.panel.style.getPropertyValue("--computer-left")).toBe("510px");
+		expect(f.panel.style.getPropertyValue("--computer-top")).toBe("80px");
+		// A narrower thread still clamps it in.
+		nextSize.width = 700;
+		f.resize();
+		expect(f.panel.style.getPropertyValue("--computer-left")).toBe("292px");
+	});
 	it("fits an unmoved preview before interaction and follows composer growth at its original aspect ratio", async () => {
 		const f = setup();
 		f.size.height = 400;
