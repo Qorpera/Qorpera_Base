@@ -53,6 +53,7 @@ export class ComputerPanel {
 			"keydown",
 			(event) => {
 				if (matchesKey(event, "dismiss")) {
+					if (document.fullscreenElement && this.el.contains(document.fullscreenElement)) return;
 					event.preventDefault();
 					event.stopPropagation();
 					if (this.el.classList.contains("is-entered")) {

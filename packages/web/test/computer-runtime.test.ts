@@ -259,6 +259,39 @@ describe("automatic computer popover", () => {
 		expect(close).not.toHaveBeenCalled();
 		expect(open).toHaveBeenCalledTimes(1);
 	});
+	it("lets Escape leave fullscreen before a later Escape closes the computer", async () => {
+		const f = setup(),
+			close = vi.fn(async () => {}),
+			open = spyViewer(close),
+			p = await opened(f.computer);
+		const screen = document.createElement("canvas");
+		const remoteKey = vi.fn((event: KeyboardEvent) => event.stopPropagation());
+		screen.addEventListener("keydown", remoteKey);
+		p.el.querySelector(".computer-panel-body")!.append(screen);
+		let fullscreenElement: Element | null = screen;
+		const original = Object.getOwnPropertyDescriptor(document, "fullscreenElement");
+		Object.defineProperty(document, "fullscreenElement", { configurable: true, get: () => fullscreenElement });
+		try {
+			const fullscreenEscape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+			screen.dispatchEvent(fullscreenEscape);
+			expect(fullscreenEscape.defaultPrevented).toBe(false);
+			expect(remoteKey).toHaveBeenCalledExactlyOnceWith(fullscreenEscape);
+			expect(p.el.isConnected).toBe(true);
+			expect(open).toHaveBeenCalledTimes(1);
+			expect(close).not.toHaveBeenCalled();
+			fullscreenElement = null;
+			const dismiss = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+			screen.dispatchEvent(dismiss);
+			await settle();
+			expect(dismiss.defaultPrevented).toBe(true);
+			expect(remoteKey).toHaveBeenCalledTimes(1);
+			expect(p.el.isConnected).toBe(false);
+			expect(close).toHaveBeenCalledOnce();
+		} finally {
+			if (original) Object.defineProperty(document, "fullscreenElement", original);
+			else Reflect.deleteProperty(document, "fullscreenElement");
+		}
+	});
 	it("makes covered conversation controls inert only while entered and restores them on Back or disposal", async () => {
 		const f = setup(),
 			open = spyViewer(),

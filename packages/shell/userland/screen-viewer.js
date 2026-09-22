@@ -57,6 +57,7 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 	closeButton.type = "button";
 	closeButton.className = "screen-viewer-close";
 	labelButton(closeButton, "×", "Close screen viewer");
+	const supportsFullscreen = Boolean(mount) && document.fullscreenEnabled !== false && typeof overlay.requestFullscreen === "function" && typeof document.exitFullscreen === "function";
 	const enter = mount ? document.createElement("button") : undefined;
 	const back = mount ? document.createElement("button") : undefined;
 	if (enter && back) {
@@ -104,13 +105,15 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 	let epoch = 0;
 	let entered = false;
 	let connected = false;
+	let fullscreenBusy = false;
+	let ownedFullscreen = false;
 	let admission;
 	let admissionMode;
 	let queuedWatch = false;
 	const syncEmbedded = () => {
 		if (!enter || !back) return;
 		enter.hidden = entered || !connected;
-		enter.disabled = !connected || busy;
+		enter.disabled = !connected || busy || fullscreenBusy;
 		back.hidden = !entered;
 		takeover.hidden = !entered || !canControl || privateSignIn || sharedControl;
 		closeButton.hidden = !entered;
@@ -159,9 +162,12 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 		setEntered(false);
 		epoch++;
 		stop.abort();
+		// Removing the overlay also exits fullscreen if the browser rejects an explicit exit.
+		const exiting = mount && document.fullscreenElement === overlay
+			? document.exitFullscreen().catch(() => undefined) : Promise.resolve();
 		overlay.remove();
 		if (previous?.isConnected) previous.focus();
-		try { await detach(); } finally { onClosed?.(); }
+		try { await Promise.all([detach(), exiting]); } finally { onClosed?.(); }
 	};
 	const connect = async (mode) => {
 		if (closed || busy) return;
@@ -259,13 +265,40 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 			if (busy) queuedWatch = true;
 			else void connect("watch");
 		}
+		if (document.fullscreenElement === overlay) void document.exitFullscreen().catch(() => undefined);
 	};
 	if (enter && back) {
-		// Entering expands the host's frame around the screen; it never takes the browser full screen.
+		// Entering takes the browser full screen, with the host's frame around the
+		// screen. "Back to thread" is the one way out; leaving full screen by any
+		// other route (Escape, the system) also returns to the mini. If the browser
+		// refuses full screen, the entered frame stays inside the host.
+		const syncFullscreen = () => {
+			const active = document.fullscreenElement === overlay;
+			if (ownedFullscreen && !active) returnToMini();
+			ownedFullscreen = active;
+		};
+		const enterFullscreen = async () => {
+			if (closed || !entered || fullscreenBusy || !supportsFullscreen || document.fullscreenElement === overlay) return;
+			fullscreenBusy = true;
+			syncEmbedded();
+			try {
+				await overlay.requestFullscreen();
+				if ((closed || !entered) && document.fullscreenElement === overlay) await document.exitFullscreen();
+				if (!closed) syncFullscreen();
+			} catch {
+				// Full screen refused or interrupted: the entered frame remains in the host.
+			} finally {
+				fullscreenBusy = false;
+				syncEmbedded();
+			}
+		};
+		if (supportsFullscreen) document.addEventListener("fullscreenchange", syncFullscreen, { signal: stop.signal });
 		enter.onclick = () => {
 			if (closed || enter.disabled || entered) return;
 			setEntered(true);
 			back.focus();
+			// Invoke before any await so native fullscreen retains the click's user activation.
+			void enterFullscreen();
 			if (canControl && !privateSignIn) void connect(sharedControl ? "shared" : "control");
 		};
 		back.onclick = returnToMini;

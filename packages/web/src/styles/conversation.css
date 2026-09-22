@@ -303,7 +303,7 @@
 .computer-panel:not(.is-entered):is([data-resize=ne], [data-resize=sw]) { cursor: nesw-resize; }
 .computer-panel.is-resizing { user-select: none; }
 /* The enter slide is never switched off by a class: removing it would replay the slide (see settle() in computer-drag.ts). */
-/* Entered, the preview becomes the desktop's framed viewer: a dark shell over the thread, a titlebar row, and the screen centered inside it. */
+/* Entered, the browser goes full screen and the guest screen sits in a thin bezel: a computer inside a computer. The same frame stays inside the thread when the browser refuses full screen. */
 .computer-panel.is-entered { top: calc(var(--titlebar-height) + 8px); left: 8px; right: 8px; bottom: 8px; width: auto; height: auto; max-height: none; aspect-ratio: auto; border-color: rgb(255 255 255 / 8%); background: #121316; }
 .computer-panel.is-entered .computer-panel-body, .computer-panel.is-entered .screen-viewer-embedded { background: #121316; }
 .computer-panel.is-entered .screen-viewer-embedded { container-type: size; }
@@ -318,7 +318,11 @@
 .computer-panel.is-entered .screen-viewer-controls > button.screen-viewer-takeover[aria-pressed=true] { color: #9fc4ff; border-color: rgb(98 159 255 / 45%); background: rgb(98 159 255 / 18%); }
 .computer-panel.is-entered .screen-viewer-controls > button:not(.screen-viewer-close)::before { display: none; }
 /* The 8:5 screen fits whichever side is tighter: the frame's width, or its height minus the 44px titlebar and 12px bottom padding. */
-.computer-panel.is-entered .screen-viewer-stage { place-self: center; width: min(100%, calc((100cqh - 56px) * 1.6)); height: auto; aspect-ratio: 8 / 5; border-radius: 8px; background: #17181a; }
+.computer-panel.is-entered .screen-viewer-stage { place-self: center; width: min(100%, calc((100cqh - 56px) * 1.6)); height: auto; aspect-ratio: 8 / 5; border: 1px solid rgb(255 255 255 / 14%); border-radius: 10px; background: #17181a; box-shadow: 0 0 0 1px rgb(0 0 0 / 70%), 0 24px 64px rgb(0 0 0 / 45%); }
+.computer-panel .screen-viewer-embedded:fullscreen { background: #0b0c0e; }
+.computer-panel .screen-viewer-embedded:fullscreen .screen-viewer-frame { grid-template-rows: 48px minmax(0, 1fr); padding: 0 16px 16px; }
+.computer-panel .screen-viewer-embedded:fullscreen .screen-viewer-titlebar { padding: 0 4px; font-size: 13px; }
+.computer-panel .screen-viewer-embedded:fullscreen .screen-viewer-stage { width: min(100%, calc((100cqh - 64px) * 1.6)); }
 .computer-panel-body { position: absolute; inset: 0; overflow: hidden; background: #24262a; color: #d8d8d4; }
 .computer-loading { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 40px 28px; overflow: auto; text-align: center; }
 .computer-loading[hidden], .computer-loading-spinner[hidden], .computer-retry[hidden] { display: none; }
