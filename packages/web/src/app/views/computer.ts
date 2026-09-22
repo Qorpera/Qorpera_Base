@@ -25,7 +25,8 @@ export class ComputerPanel {
 			{
 				class: "computer-panel",
 				"aria-label": "Agent computer",
-				"aria-description": "Drag to move, or use arrow keys when focused.",
+				"aria-description":
+					"Drag to move, drag an edge to resize. When focused, arrow keys move it and plus or minus resize it.",
 				tabindex: "0",
 			},
 			this.#body,
