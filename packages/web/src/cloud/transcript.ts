@@ -61,6 +61,8 @@ export interface TranscriptPeerLink {
 	id: string;
 	sequence: number;
 	direction: "in" | "out";
+	/** Left without waking the coworker; read at its next turn. */
+	held?: boolean;
 	counterpartStaffId: string;
 	pairSessionId: string;
 	createdAt: string;
@@ -311,6 +313,7 @@ export function projectTranscript(
 						id: event.eventId,
 						sequence: event.sequence,
 						direction: info.direction,
+						...(info.held === true ? { held: true } : {}),
 						counterpartStaffId: info.counterpartStaffId,
 						pairSessionId: info.pairSessionId,
 						createdAt: event.createdAt,

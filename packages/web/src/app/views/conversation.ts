@@ -880,7 +880,14 @@ export class ConversationView {
 				// A message between this agent and a coworker: one chip, no text, the transcript behind it.
 				const counterpart = this.#company.staffById(item.counterpartStaffId);
 				const name = counterpart?.displayName ?? "a coworker";
-				const label = item.direction === "out" ? `Messaged ${name}` : `Message from ${name}`;
+				// A held message was left for the coworker's next turn, so it is a note, not a message it has read.
+				const label = item.held
+					? item.direction === "out"
+						? `Left a note for ${name}`
+						: `Note from ${name}`
+					: item.direction === "out"
+						? `Messaged ${name}`
+						: `Message from ${name}`;
 				const own = agent?.id ?? "";
 				const pair: readonly [string, string] =
 					item.direction === "out" ? [own, item.counterpartStaffId] : [item.counterpartStaffId, own];

@@ -873,6 +873,22 @@ describe("held coworker messages (contract 14.6, second cut)", () => {
 			),
 		).toThrow();
 	});
+	it("reads twelve held lines and a full transcript in one payload", () => {
+		const { identity, wake } = pairWakeFixture();
+		const line = { ...heldLine(), text: "ø".repeat(400) };
+		const transcript = Array.from({ length: 12 }, () => ({
+			eventId: randomUUID(),
+			staffAgentId: wake.actorStaffId as string,
+			text: "ø".repeat(400),
+			at: "2026-09-22T22:30:00.000000Z",
+		}));
+		const heavy = {
+			...wake,
+			payload: { ...wake.payload, transcript, heldMessages: Array.from({ length: 12 }, () => line) },
+		};
+		expect(Buffer.byteLength(JSON.stringify(heavy.payload))).toBeGreaterThan(16384);
+		expect(parseCloudWakeEnvelope(heavy, identity).payload.heldMessages).toHaveLength(12);
+	});
 	it("rejects a held message the agent supposedly left for itself", () => {
 		const human = fixture();
 		expect(() =>

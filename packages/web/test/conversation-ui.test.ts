@@ -1491,14 +1491,26 @@ describe("messages between two agents (contract 14.6)", () => {
 						text: "This exchange paused after 6 messages.",
 						createdAt: timestamp,
 					},
+					{
+						kind: "peer_link",
+						id: id(89),
+						sequence: 3,
+						direction: "out",
+						held: true,
+						counterpartStaffId: coworker.id,
+						pairSessionId,
+						createdAt: timestamp,
+					},
 				],
 				hiddenCount: 0,
-				lastSequence: 2,
+				lastSequence: 3,
 			},
 		});
 		f.view.update();
-		const chip = f.view.el.querySelector<HTMLButtonElement>(".peer-chip")!;
+		const chips = f.view.el.querySelectorAll<HTMLButtonElement>(".peer-chip");
+		const chip = chips[0]!;
 		expect(chip.textContent).toBe("Message from Helper");
+		expect(chips[1]?.textContent).toBe("Left a note for Helper");
 		expect(f.view.el.querySelector(".conversation-note")?.textContent).toBe("This exchange paused after 6 messages.");
 		expect(f.view.el.querySelector(".pair-transcript")).toBeNull();
 		chip.click();

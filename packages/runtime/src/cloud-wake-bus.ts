@@ -550,7 +550,9 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		!wake.payload ||
 		typeof wake.payload !== "object" ||
 		Array.isArray(wake.payload) ||
-		Buffer.byteLength(JSON.stringify(wake.payload)) > 16384
+		// The kernel bounds the whole envelope at 49152 bytes; the payload may carry
+		// a pair transcript and held coworker messages (twelve lines of 400 characters each).
+		Buffer.byteLength(JSON.stringify(wake.payload)) > 49152
 	)
 		throw new Error("Invalid wake payload");
 	const result = {

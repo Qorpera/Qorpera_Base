@@ -102,6 +102,17 @@ unchanged so receipts from before the cut still replay. Test
 `supabase/tests/381_runtime_held_peer_messages.test.sql`. Rollout: bundle
 before the SQL, as for v70.
 
+Review round 1 of the second cut (2026-09-23, seven findings, all fixed): the
+five-argument send has explicit privileges (service role only, never the
+broker; test 306); a note claimed by a run that then failed or was cancelled
+is offered again; transcript and held lines are capped at 400 characters and
+the runtime payload bound is the kernel's 49152; on a coworker wake the notes
+of the pair whose transcript the wake already shows are claimed but not
+repeated; delivered rows older than a week are pruned; the chips say "Left a
+note for B" / "Note from A" for held messages; test 381 covers a second
+coworker's note, the same-pair exclusion and redelivery after a failed run
+(a worker wake's exclusion remains covered by inspection).
+
 ## Not in this cut
 
 Member notifications beyond the rail's unread marker, attachments in peer

@@ -107,6 +107,22 @@ describe("messages between two agents (contract 14.6)", () => {
 		]);
 		expect(projection.hiddenCount).toBe(0);
 	});
+	it("keeps the held flag on a chip", () => {
+		const chip = base(9, "session_info", {
+			schema: PEER_LINK_SCHEMA,
+			direction: "out",
+			held: true,
+			counterpartStaffId: alice,
+			pairSessionId: session,
+			eventId: run,
+			receiptId: run,
+		});
+		expect(projectTranscript([parseEvent(chip)]).items[0]).toMatchObject({
+			kind: "peer_link",
+			direction: "out",
+			held: true,
+		});
+	});
 	it("ignores a malformed chip instead of rendering a broken link", () => {
 		const broken = base(6, "session_info", {
 			schema: PEER_LINK_SCHEMA,
