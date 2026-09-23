@@ -348,9 +348,14 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 				),
 			...(secretBrokerOrigin && secretBrokerToken
 				? {
+						// The company routes the request to this company's broker behind the
+						// shared origin. It is this host's compute identity's company, read from
+						// the recovery authority and matched against the identity volume above;
+						// the SQL placement only runs a company's work on its own identities.
 						secretBroker: new HttpCloudSecretBrokerClient({
 							origin: secretBrokerOrigin,
 							runtimeToken: secretBrokerToken,
+							companyId: state.companyId,
 						}),
 					}
 				: {}),

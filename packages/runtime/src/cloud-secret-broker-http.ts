@@ -509,22 +509,42 @@ function brokerOrigin(value: string, allowLoopback = false): string {
 	return url.origin;
 }
 
+/**
+ * The runner's operation client. Several companies' brokers share one origin
+ * (each its own process behind one router), so every request names the
+ * company it is for in the query, as member captures do:
+ * `/v1/operations?company=<profileId>`. The company is the provider host's own
+ * (its compute identity's company, fixed at startup), never model input; the
+ * router uses it only to pick a broker, and the broker ignores it and
+ * authorizes every operation against the run's database claims, so a request
+ * that reaches another company's broker is refused there.
+ */
 export class HttpCloudSecretBrokerClient {
 	readonly #origin: string;
 	readonly #runtimeToken: string;
+	readonly #companyId: string;
 	readonly #fetch: typeof fetch;
 
-	constructor(options: { origin: string; runtimeToken: string; allowLoopback?: boolean; fetch?: typeof fetch }) {
+	constructor(options: {
+		origin: string;
+		runtimeToken: string;
+		companyId: string;
+		allowLoopback?: boolean;
+		fetch?: typeof fetch;
+	}) {
 		this.#origin = brokerOrigin(options.origin, options.allowLoopback);
 		if (!TOKEN.test(options.runtimeToken)) throw new Error("Cloud secret broker client token is invalid");
+		if (typeof options.companyId !== "string" || !UUID.test(options.companyId))
+			throw new Error("Cloud secret broker client company is invalid");
 		this.#runtimeToken = options.runtimeToken;
+		this.#companyId = options.companyId.toLowerCase();
 		this.#fetch = options.fetch ?? fetch;
 	}
 
 	async execute(request: CloudSecretOperationRequest, signal: AbortSignal): Promise<CloudToolContent> {
 		return withCloudDeadline(
 			async (requestSignal) => {
-				const responseValue = await this.#fetch(`${this.#origin}/v1/operations`, {
+				const responseValue = await this.#fetch(`${this.#origin}/v1/operations?company=${this.#companyId}`, {
 					method: "POST",
 					redirect: "error",
 					headers: {

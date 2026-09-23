@@ -121,6 +121,25 @@ request; the authority's `service_origin` stays that bare origin.
   is keyed by the SHA-256 of the full state and removed before any network
   call). The prefix is not a secret and grants nothing; the random part stays
   single-use and unguessable, as before.
+- **Runner operations carry the company in the query.** A guest or exec host
+  posts `/v1/operations?company=<profileId>` (`HttpCloudSecretBrokerClient`).
+  The company is the provider host's own: its compute identity's company from
+  the recovery authority, matched against the identity volume at startup, the
+  same on an LXD guest and on the shared execution host (both run
+  `qorpera-native-provider-host.mjs`); never model input. The broker routes by
+  path and ignores the query. Every operation is still authorized in the
+  database against the run's grant and the broker authority that sealed the
+  secret, so a request that reaches another company's broker is refused
+  there ("cloud secret broker does not own this envelope", SQL test 398). A
+  guest older than v87 sends no query; the map routes it to the acceptance
+  broker as before.
+- **One runtime token.** Each node provider (and the exec host) hands its
+  guests exactly one broker runtime token, and a broker accepts exactly one
+  (`qorpera-cloud-secret-runtime`). Every company broker is configured with
+  that token; the per-company boundary is the database authorization above.
+  This works only while every provider that runs connector work (node 1,
+  node 2, the node 2 exec host) carries the same token; a broker cannot hold
+  two.
 - **Redirect URI** registered at Google and GitHub:
   `https://company41-node-01.tailbb15c7.ts.net:10000/v1/oauth/callback`
   (= `publicOrigin` + `/v1/oauth/callback`; Google compares it exactly).
@@ -139,7 +158,14 @@ map $arg_state $qorpera_oauth_state_company {
 map $qorpera_oauth_state_company $qorpera_oauth_broker {
     default "";
     b116763d-de5c-4c73-a253-deeef5243730 127.0.0.1:18448;   # acceptance company (qorpera-phql-broker)
-    <company Qorpera profile id>         127.0.0.1:18547;   # company Qorpera (qorpera-prod-broker)
+    4168e335-3ac0-4354-99f0-5dfc33428209 127.0.0.1:18547;   # company Qorpera (qorpera-prod-broker)
+}
+# Runner operations: ?company=<profileId>; no args = a guest older than v87.
+map $args $qorpera_operations_broker {
+    "" 127.0.0.1:18448;
+    "company=b116763d-de5c-4c73-a253-deeef5243730" 127.0.0.1:18448;
+    "company=4168e335-3ac0-4354-99f0-5dfc33428209" 127.0.0.1:18547;
+    default "";
 }
 ```
 
@@ -157,15 +183,24 @@ location ~ "^/v1/oauth/[0-9a-fA-F-]{36}/start$" {
     if ($qorpera_capture_broker = "") { return 404; }
     proxy_pass http://$qorpera_capture_broker;
 }
+location = /v1/operations {
+    limit_except POST { deny all; }
+    if ($qorpera_operations_broker = "") { return 404; }
+    proxy_pass http://$qorpera_operations_broker;
+}
 ```
 
-Both blocks pass `nginx -t` (nginx 1.28.3, node 2's build, in a scratch
-prefix with a stand-in capture map); a regex with `{}` must stay quoted.
+All of these pass `nginx -t` (nginx 1.28.3, node 2's build, in a scratch
+prefix with a stand-in capture map); a regex with `{}` must stay quoted. They were
+also run in a scratch nginx on node 2 with `return` in place of
+`proxy_pass`: operations with no query or the acceptance company went to
+18448, company Qorpera to 18547, an unknown company 404, GET 403; the
+callback routed by the state prefix, a bare state 404. The operations map
+matches the whole query exactly, which is all a v87 runner sends.
 If `$qorpera_capture_broker` falls back to the acceptance broker for
 requests without `company=` (as it does today for captures), the start route
 may keep that fallback; the callback must not fall back, because a state
-without a known prefix belongs to no broker. `/v1/operations` stays as it is
-(see open items: per-company operation routing).
+without a known prefix belongs to no broker.
 
 ### Company first (founder, 2026-09-24)
 
@@ -272,8 +307,8 @@ browser) was already in place; no prompt change.
    7-day refresh tokens, until Google verifies it) and a GitHub OAuth App
    (same callback URL). The client secrets go straight into the root-only
    credential file on the broker host, never through a chat or a repo.
-4. Per-company operation routing (open, see below) before an agent of company
-   Qorpera can call a connector.
+4. The operations map and location above, and every company broker's
+   `qorpera-cloud-secret-runtime` set to the nodes' one runtime token.
 5. Apply the migration and cut v87 (coordinator).
 6. Acceptance: an owner connects each service from the web app; an agent
    reads a mailbox thread, a Drive document and a GitHub issue, sends one
@@ -284,12 +319,9 @@ browser) was already in place; no prompt change.
 
 ## Open decisions
 
-- Per-company `/v1/operations` routing: guests get one broker URL and runtime
-  token per node, and the router sends every operation to the acceptance
-  broker. The operation request names no company in its URL today, so a
-  company's connector calls need either per-company runtime tokens plus an
-  nginx map on the Authorization header, or the company in the operation URL
-  (a runtime change for a later bundle).
+- If node 1, node 2 and the exec host ever carry different broker runtime
+  tokens, a broker needs to accept a short list of tokens (a small broker
+  change); today it accepts one.
 - Restricting a connection to chosen agents from the page (the RPC supports
   it).
 - Drive scope: `drive` reads everything the member can; `drive.file` would
