@@ -40,6 +40,8 @@ async function nodeFixture() {
 		launcherPolls: 0,
 		pid: 100,
 		units: { [OLD_PROVIDER]: { enabled: true, active: true, pid: 99 } },
+		conflicts: { [UNITS.provider]: [OLD_PROVIDER], [UNITS.orchestrator]: [] },
+		restartFailsAfter: null,
 	};
 	const polls = new Map();
 	const roleOf = (unit) => Object.entries(UNITS).find(([, name]) => name === unit)?.[0];
@@ -63,7 +65,9 @@ async function nodeFixture() {
 		},
 		restart: async (unit) => {
 			state.restarts.push(unit);
-			state.units[unit] = { enabled: state.units[unit]?.enabled ?? true, active: true, pid: ++state.pid };
+			if (state.restartFailsAfter !== null && state.restarts.length > state.restartFailsAfter)
+				throw new Error(`systemctl restart ${unit} failed`);
+			state.units[unit] = { enabled: state.units[unit]?.enabled ?? false, active: true, pid: ++state.pid };
 		},
 		enable: async (unit, now) => {
 			const current = state.units[unit];
@@ -77,6 +81,8 @@ async function nodeFixture() {
 			const current = state.units[unit];
 			state.units[unit] = { enabled: false, active: !now && (current?.active ?? false), pid: now ? 0 : current?.pid };
 		},
+		isEnabled: async (unit) => state.units[unit]?.enabled ?? false,
+		conflicts: async (unit) => state.conflicts[unit] ?? [],
 		mainPid: async (unit) => {
 			const current = state.units[unit];
 			return current?.active ? current.pid : 0;
@@ -137,9 +143,12 @@ async function nodeFixture() {
 	return { root, agentRoot, agent, state, release, link, close };
 }
 
-async function adopted(node) {
+async function adopted(node, { switched = true } = {}) {
 	await node.agent.stage(await node.release({ revision: 0, previousRevision: null }));
 	await node.agent.adopt(0);
+	// Every role already runs under its new unit, as after the migration.
+	if (switched)
+		for (const unit of Object.values(UNITS)) node.state.units[unit] = { enabled: true, active: true, pid: ++node.state.pid };
 }
 
 async function staged(node, revision, options = {}) {
@@ -147,6 +156,13 @@ async function staged(node, revision, options = {}) {
 }
 
 const journal = (node) => readdir(join(node.root, "var/lib/qorpera-node-agent/journal"));
+const lastRecord = async (node, pattern) => {
+	const name = (await journal(node))
+		.filter((entry) => pattern.test(entry))
+		.sort()
+		.at(-1);
+	return JSON.parse(await readFile(join(node.root, "var/lib/qorpera-node-agent/journal", name), "utf8"));
+};
 
 test("stages only a correctly signed, complete release that follows the current one", async () => {
 	const node = await nodeFixture();
@@ -223,6 +239,40 @@ test("refuses while a run or login machine runs, and re-checks before each role"
 		node.state.runningAfterChecks = { after: 2, names: [`qorpera-${"c".repeat(32)}`] };
 		await assert.rejects(node.agent.apply(1), /NODE_NOT_QUIET/);
 		assert.equal(await node.link("roles/orchestrator"), "../releases/0");
+	} finally {
+		await node.close();
+	}
+});
+
+test("a machine that starts during an apply stops it where it is, without a rollback", async () => {
+	const node = await nodeFixture();
+	try {
+		await adopted(node);
+		await staged(node, 1, { provider: "p1", orchestrator: "o1" });
+		node.state.runningAfterChecks = { after: 2, names: [`qorpera-login-${"d".repeat(32)}`] };
+		await assert.rejects(node.agent.apply(1), /APPLY_STOPPED_NOT_QUIET NODE_NOT_QUIET/);
+		assert.equal(await node.link("current"), "releases/1");
+		assert.equal(await node.link("roles/provider"), "../releases/1");
+		assert.equal(await node.link("roles/orchestrator"), "../releases/0");
+		assert.deepEqual(node.state.restarts, [UNITS.provider]);
+		node.state.runningAfterChecks = null;
+		assert.deepEqual(await node.agent.restart("orchestrator"), { restarted: "orchestrator", revision: 1, from: 0 });
+	} finally {
+		await node.close();
+	}
+});
+
+test("a rollback whose restart fails leaves a receipt", async () => {
+	const node = await nodeFixture();
+	try {
+		await adopted(node);
+		await staged(node, 1, { provider: "p1" });
+		node.state.unhealthyRevision = 1;
+		node.state.restartFailsAfter = 1;
+		await assert.rejects(node.agent.apply(1), /APPLY_ROLLBACK_FAILED ROLE_HEALTH provider .*; systemctl restart/);
+		const receipt = await lastRecord(node, /-apply-receipt-r1-/);
+		assert.equal(receipt.state, "rollback-failed");
+		assert.deepEqual(receipt.onNew, ["provider"]);
 	} finally {
 		await node.close();
 	}
@@ -336,20 +386,46 @@ test("refuses a release that lacks a role this node runs", async () => {
 	}
 });
 
-test("switches a role from its old unit to its new one and records both command lines", async () => {
+test("switches a role from its old unit to its new one and back, checking each unit's command", async () => {
 	const node = await nodeFixture();
 	try {
-		await adopted(node);
+		await adopted(node, { switched: false });
+		await staged(node, 1, { provider: "p1" });
+		await assert.rejects(node.agent.apply(1), /ROLES_NOT_SWITCHED provider,orchestrator/);
+		await assert.rejects(node.agent.unswitch("provider", OLD_PROVIDER), /UNSWITCH_NO_SWITCH_FROM/);
 		node.state.launcherPolls = 2;
 		const result = await node.agent.switch("provider", OLD_PROVIDER);
-		assert.deepEqual(result.before, ["/usr/bin/node", "--jitless", "/opt/qorpera-native25-phql-a1/provider-v82p2.mjs"]);
+		const oldCommand = ["/usr/bin/node", "--jitless", "/opt/qorpera-native25-phql-a1/provider-v82p2.mjs"];
+		assert.deepEqual(result.before, oldCommand);
 		assert.deepEqual(result.after, ["/usr/bin/node", "--jitless", join(node.agentRoot, "releases/0/provider.mjs")]);
-		assert.equal(node.state.units[OLD_PROVIDER].active, false);
-		assert.equal(node.state.units[OLD_PROVIDER].enabled, false);
+		assert.deepEqual(node.state.units[OLD_PROVIDER], { enabled: false, active: false, pid: 0 });
+		assert.equal(node.state.units[UNITS.provider].enabled, true);
 		assert.equal(node.state.units[UNITS.provider].active, true);
-		await node.agent.unswitch("provider", OLD_PROVIDER);
+		await assert.rejects(node.agent.switch("provider", OLD_PROVIDER), /SWITCH_ALREADY_SWITCHED provider/);
+		// Half the node switched: releases still do not apply.
+		await assert.rejects(node.agent.apply(1), /ROLES_NOT_SWITCHED orchestrator/);
+		assert.deepEqual((await node.agent.unswitch("provider", OLD_PROVIDER)).command, oldCommand);
+		assert.equal(node.state.units[OLD_PROVIDER].enabled, true);
 		assert.equal(node.state.units[OLD_PROVIDER].active, true);
+		assert.equal(node.state.units[UNITS.provider].enabled, false);
 		assert.equal(node.state.units[UNITS.provider].active, false);
+		assert.ok((await journal(node)).some((name) => /-unswitch-receipt-rnone-/.test(name)));
+	} finally {
+		await node.close();
+	}
+});
+
+test("switches only away from a unit the new unit conflicts with", async () => {
+	const node = await nodeFixture();
+	try {
+		await adopted(node, { switched: false });
+		node.state.units["qorpera-native25-phql-orchestrator.service"] = { enabled: true, active: true, pid: 98 };
+		await assert.rejects(
+			node.agent.switch("provider", "qorpera-native25-phql-orchestrator.service"),
+			/SWITCH_OLD_UNIT_NOT_CONFLICTED/,
+		);
+		assert.equal(node.state.units["qorpera-native25-phql-orchestrator.service"].active, true);
+		assert.deepEqual(node.state.restarts, []);
 	} finally {
 		await node.close();
 	}
@@ -358,15 +434,35 @@ test("switches a role from its old unit to its new one and records both command 
 test("a switch whose new unit fails its checks goes straight back to the old unit", async () => {
 	const node = await nodeFixture();
 	try {
-		await adopted(node);
+		await adopted(node, { switched: false });
 		node.state.unhealthyRevision = 0;
 		await assert.rejects(node.agent.switch("provider", OLD_PROVIDER), /SWITCH_REVERTED ROLE_HEALTH provider/);
 		assert.equal(node.state.units[OLD_PROVIDER].active, true);
+		assert.equal(node.state.units[OLD_PROVIDER].enabled, true);
 		assert.equal(node.state.units[UNITS.provider].active, false);
+		assert.equal(node.state.units[UNITS.provider].enabled, false);
 		node.state.unhealthyRevision = null;
 		node.state.running = [`qorpera-${"b".repeat(32)}`];
 		await assert.rejects(node.agent.switch("provider", OLD_PROVIDER), /NODE_NOT_QUIET/);
 		assert.equal(node.state.units[OLD_PROVIDER].active, true);
+	} finally {
+		await node.close();
+	}
+});
+
+test("a switch that cannot bring the old unit back records that and says so", async () => {
+	const node = await nodeFixture();
+	try {
+		await adopted(node, { switched: false });
+		node.state.unhealthyRevision = 0;
+		const enable = node.agent.ports.enable;
+		node.agent.ports.enable = async (unit, now) => {
+			if (unit === OLD_PROVIDER) throw new Error("systemctl enable failed");
+			return enable(unit, now);
+		};
+		await assert.rejects(node.agent.switch("provider", OLD_PROVIDER), /SWITCH_BACK_FAILED ROLE_HEALTH provider/);
+		const receipt = await lastRecord(node, /-switch-receipt-rnone-/);
+		assert.equal(receipt.state, "switch-back-failed");
 	} finally {
 		await node.close();
 	}

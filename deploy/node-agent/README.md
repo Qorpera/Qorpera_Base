@@ -65,9 +65,14 @@ Token files the programs read themselves keep their paths, owners and modes.
 - The journal since the restart has no launcher refusal (`QORPERA_NODE_ROLE_START_REFUSED`).
 
 **When a check fails:**
-- If the release keeps the runtime bundle, the agent swaps back, restarts and reports `APPLY_ROLLED_BACK`.
+- If the release keeps the runtime bundle, the agent swaps back, restarts and reports `APPLY_ROLLED_BACK`. If a
+  rollback restart fails too, it records `rollback-failed` (with the roles it had moved) and reports
+  `APPLY_ROLLBACK_FAILED`.
 - If the release changes the bundle, the agent stops and reports `APPLY_FAILED_NO_AUTOMATIC_ROLLBACK`. Rolling back after
   an activation is a release decision: re-activate the previous bundle and move every node back, under a pause.
+- If a machine started before a role's turn (`NODE_NOT_QUIET`), the agent stops where it is and reports
+  `APPLY_STOPPED_NOT_QUIET`, with no rollback: a rollback restart would cut that machine off too. The roles it moved stay
+  on the new release; once quiet, `restart <role>` finishes each remaining role, or `rollback` undoes it.
 
 **Other rules:**
 - **Lock.** Mutating commands hold an flock on `/run/lock/qorpera-node-update.lock`. `/run/lock` is world-writable, so
@@ -78,6 +83,8 @@ Token files the programs read themselves keep their paths, owners and modes.
   `pauseDeferredRoles` (the orchestrator, while #212 is not live), and a release with order `pause` that changes one of
   them must defer it. `restart <role>` after resume catches it up. An `apply` refuses while a role still differs from
   `current` (`APPLY_ROLES_STILL_DEFERRED`). Unknown `--defer` names are refused.
+- **Switched.** `apply`, `rollback` and `restart` refuse while a role's new unit is not enabled
+  (`ROLES_NOT_SWITCHED`): during the migration, until every role has switched (see "Migration"), releases do not apply.
 - **Quiet.** Quiet is checked at the gate and again right before each role restart. Nothing closes node admission yet
   (phase C), so a machine that starts in the seconds between the check and a restart is the one remaining window.
 
