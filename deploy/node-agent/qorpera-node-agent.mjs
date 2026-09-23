@@ -51,6 +51,7 @@ const ROLE = /^[a-z][a-z0-9-]{0,31}$/;
 const ENV_KEY = /^[A-Z][A-Z0-9_]{0,127}$/;
 const RUN_MACHINE = /^qorpera-(login-|refresh-)?[0-9a-f]{32}$/;
 const REFUSAL = "QORPERA_NODE_ROLE_START_REFUSED";
+const MIGRATE_HELPER = "/usr/local/libexec/qorpera-node/qorpera-node-migrate.py"; // switch compares units with it
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
 const MAX_REVISION = 999_999_999;
 const START_ATTEMPTS = 120; // 500 ms apart: a role has one minute to exec its program
@@ -268,6 +269,17 @@ export class NodeAgent {
 		return release;
 	}
 
+	/** True when no run or login machine runs; unlike `quiet`, it never waits or throws for a busy node. */
+	async isQuiet() {
+		return this.quiet(0).then(
+			() => true,
+			(error) => {
+				if (error.message.startsWith("NODE_NOT_QUIET")) return false;
+				throw error;
+			},
+		);
+	}
+
 	async quiet(waitSeconds) {
 		const deadline = Date.now() + waitSeconds * 1000;
 		for (;;) {
@@ -411,13 +423,26 @@ export class NodeAgent {
 				const reason = notQuiet ? "APPLY_STOPPED_NOT_QUIET" : "APPLY_FAILED_NO_AUTOMATIC_ROLLBACK";
 				throw new Error(`${reason} ${error.message}`);
 			}
-			// Every role pointed at the new release goes back to the release it ran, including the one whose check failed.
-			for (const role of onNew) await this.point(`roles/${role}`, running[role].revision);
+			// The role whose check failed is the last one moved. It is down already, so it goes back at once. A role that
+			// passed its checks goes back only while the node is quiet: a machine that started meanwhile keeps it on the
+			// new release, and `restart <role>` puts it back later.
 			await this.point("current", current);
 			if (previous !== null) await this.point("previous", previous);
-			// No quiet gate here: the failed role is down already, and its known-good release must come back now.
+			const failed = onNew.at(-1);
+			const stillOnNew = [];
 			try {
-				for (const role of onNew) await this.restartRole(config, role);
+				if (failed !== undefined) {
+					await this.point(`roles/${failed}`, running[failed].revision);
+					await this.restartRole(config, failed);
+				}
+				for (const role of onNew.slice(0, -1)) {
+					if (stillOnNew.length || !(await this.isQuiet())) {
+						stillOnNew.push(role);
+						continue;
+					}
+					await this.point(`roles/${role}`, running[role].revision);
+					await this.restartRole(config, role);
+				}
 			} catch (rollbackError) {
 				await this.record("apply-receipt", revision, {
 					...intent,
@@ -431,11 +456,13 @@ export class NodeAgent {
 			}
 			await this.record("apply-receipt", revision, {
 				...intent,
-				state: "rolled-back",
+				state: stillOnNew.length ? "rolled-back-partly" : "rolled-back",
 				onNew,
+				stillOnNew,
 				error: error.message,
-				rolledBack: true,
+				rolledBack: !stillOnNew.length,
 			});
+			if (stillOnNew.length) throw new Error(`APPLY_ROLLED_BACK_PARTLY ${stillOnNew.join(",")} ${error.message}`);
 			throw new Error(`APPLY_ROLLED_BACK ${error.message}`);
 		}
 		const deferred = changed.filter((role) => defer.includes(role));
@@ -500,6 +527,9 @@ export class NodeAgent {
 			await this.ports.enable(settings.unit, false);
 			const result = await this.restartRole(config, role);
 			need(await this.ports.isEnabled(settings.unit), `SWITCH_NEW_UNIT_NOT_ENABLED ${settings.unit}`);
+			// Now that the new unit runs and the old one is stopped, their settings must still read the same.
+			const diff = await this.ports.unitDiff(fromUnit, settings.unit);
+			need(diff.equivalent === true, `SWITCH_UNITS_DIFFER ${JSON.stringify(diff.unexpectedDifferences ?? diff)}`);
 			const after = await this.ports.cmdline(result.pid);
 			await this.record("switch-receipt", null, { release: revision,
 				role,
@@ -508,6 +538,7 @@ export class NodeAgent {
 				state: "switched",
 				before,
 				after,
+				diff,
 			});
 			return { switched: role, from: fromUnit, to: settings.unit, before, after };
 		} catch (error) {
@@ -550,15 +581,23 @@ export class NodeAgent {
 		return null;
 	}
 
-	async unswitch(role, toUnit) {
+	/** Whether a role's unit runs and every health URL answers. */
+	async roleUp(settings) {
+		if ((await this.ports.mainPid(settings.unit)) <= 0) return false;
+		return (await Promise.all(settings.health.map((url) => this.ports.healthy(url)))).every(Boolean);
+	}
+
+	/** `force` skips the quiet gate, for a new role that is down already; it refuses while the role still runs. */
+	async unswitch(role, toUnit, { force = false } = {}) {
 		const config = await this.config();
 		const settings = config.roles[role];
 		need(settings && /^qorpera-[a-z0-9-]+\.service$/.test(toUnit) && toUnit !== settings.unit, "UNSWITCH_UNITS");
 		need((await this.ports.conflicts(settings.unit)).includes(toUnit), `UNSWITCH_OLD_UNIT_NOT_CONFLICTED ${toUnit}`);
 		const before = await this.switchedFrom(role, toUnit);
 		need(before, `UNSWITCH_NO_SWITCH_FROM ${toUnit}`);
-		await this.quiet(0);
-		await this.record("unswitch-intent", null, { role, from: settings.unit, to: toUnit, expected: before });
+		if (force) need(!(await this.roleUp(settings)), `UNSWITCH_FORCE_ROLE_UP ${role}: it runs and answers; wait for quiet`);
+		else await this.quiet(0);
+		await this.record("unswitch-intent", null, { role, from: settings.unit, to: toUnit, expected: before, force });
 		try {
 			await this.ports.disable(settings.unit, true);
 			await this.ports.enable(toUnit, true);
@@ -727,6 +766,18 @@ export function nodePorts(lxdSocket = "/var/snap/lxd/common/lxd/unix.socket") {
 			const result = await run("/usr/bin/systemctl", ["is-enabled", unit]).catch((error) => error);
 			return String(result.stdout ?? "").trim() === "enabled";
 		},
+		async unitDiff(oldUnit, newUnit) {
+			const { stdout } = await run("/usr/bin/python3", [
+				"-I",
+				MIGRATE_HELPER,
+				"show-diff",
+				"--old",
+				oldUnit,
+				"--new",
+				newUnit,
+			]);
+			return JSON.parse(stdout);
+		},
 		async conflicts(unit) {
 			const { stdout } = await run("/usr/bin/systemctl", ["show", unit, "-p", "Conflicts", "--value"]);
 			return stdout.trim().split(/\s+/).filter(Boolean);
@@ -778,7 +829,7 @@ async function main(argv) {
 			agent.apply(Number(rest[0]), { defer: values("--defer"), waitSeconds: Number(values("--wait")[0] ?? 0) }),
 		rollback: () => agent.rollback({ defer: values("--defer") }),
 		switch: () => agent.switch(rest[0], rest[1]),
-		unswitch: () => agent.unswitch(rest[0], rest[1]),
+		unswitch: () => agent.unswitch(rest[0], rest[1], { force: rest.includes("--force") }),
 		restart: () => agent.restart(rest[0]),
 		gc: () => agent.gc(),
 	};

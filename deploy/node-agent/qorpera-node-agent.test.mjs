@@ -42,6 +42,8 @@ async function nodeFixture() {
 		units: { [OLD_PROVIDER]: { enabled: true, active: true, pid: 99 } },
 		conflicts: { [UNITS.provider]: [OLD_PROVIDER], [UNITS.orchestrator]: [] },
 		restartFailsAfter: null,
+		refused: null, // { role, revision }: the launcher refuses that role on that release
+		unitDiff: { unexpectedDifferences: [], equivalent: true },
 	};
 	const polls = new Map();
 	const roleOf = (unit) => Object.entries(UNITS).find(([, name]) => name === unit)?.[0];
@@ -96,7 +98,13 @@ async function nodeFixture() {
 			const target = await readlink(join(agentRoot, "roles", url.includes("//p/") ? "provider" : "orchestrator"));
 			return target !== `../releases/${state.unhealthyRevision}`;
 		},
-		journalSince: async () => "",
+		journalSince: async (unit) => {
+			const role = roleOf(unit);
+			if (!role || state.refused?.role !== role) return "";
+			const target = await readlink(join(agentRoot, "roles", role));
+			return target === `../releases/${state.refused.revision}` ? '{"state":"QORPERA_NODE_ROLE_START_REFUSED"}' : "";
+		},
+		unitDiff: async () => state.unitDiff,
 		sleep: async () => undefined,
 	};
 	const agent = new NodeAgent({ root, ports, owner: null });
@@ -259,6 +267,31 @@ test("a machine that starts during an apply stops it where it is, without a roll
 		assert.deepEqual(await node.agent.restart("orchestrator"), { restarted: "orchestrator", revision: 1, from: 0 });
 	} finally {
 		await node.close();
+	}
+});
+
+test("an automatic rollback puts the failed role back at once and the others only while quiet", async () => {
+	for (const busy of [false, true]) {
+		const node = await nodeFixture();
+		try {
+			await adopted(node);
+			await staged(node, 1, { provider: "p1", orchestrator: "o1" });
+			node.state.refused = { role: "orchestrator", revision: 1 };
+			// Quiet at the gate and before each role; with `busy`, a login machine starts before the rollback.
+			if (busy) node.state.runningAfterChecks = { after: 3, names: [`qorpera-login-${"e".repeat(32)}`] };
+			const expected = busy
+				? /APPLY_ROLLED_BACK_PARTLY provider ROLE_REFUSED orchestrator/
+				: /APPLY_ROLLED_BACK ROLE_REFUSED orchestrator/;
+			await assert.rejects(node.agent.apply(1), expected);
+			assert.equal(await node.link("current"), "releases/0");
+			assert.equal(await node.link("roles/orchestrator"), "../releases/0");
+			assert.equal(await node.link("roles/provider"), busy ? "../releases/1" : "../releases/0");
+			const receipt = await lastRecord(node, /-apply-receipt-r1-/);
+			assert.equal(receipt.state, busy ? "rolled-back-partly" : "rolled-back");
+			assert.deepEqual(receipt.stillOnNew, busy ? ["provider"] : []);
+		} finally {
+			await node.close();
+		}
 	}
 });
 
@@ -463,6 +496,44 @@ test("a switch that cannot bring the old unit back records that and says so", as
 		await assert.rejects(node.agent.switch("provider", OLD_PROVIDER), /SWITCH_BACK_FAILED ROLE_HEALTH provider/);
 		const receipt = await lastRecord(node, /-switch-receipt-rnone-/);
 		assert.equal(receipt.state, "switch-back-failed");
+	} finally {
+		await node.close();
+	}
+});
+
+test("a switch whose units no longer read the same once switched goes back to the old unit", async () => {
+	const node = await nodeFixture();
+	try {
+		await adopted(node, { switched: false });
+		node.state.unitDiff = { unexpectedDifferences: ["LimitNOFILE"], equivalent: false };
+		await assert.rejects(node.agent.switch("provider", OLD_PROVIDER), /SWITCH_REVERTED SWITCH_UNITS_DIFFER \["LimitNOFILE"\]/);
+		assert.deepEqual(
+			[node.state.units[OLD_PROVIDER].enabled, node.state.units[OLD_PROVIDER].active],
+			[true, true],
+		);
+		assert.deepEqual(
+			[node.state.units[UNITS.provider].enabled, node.state.units[UNITS.provider].active],
+			[false, false],
+		);
+		assert.equal((await lastRecord(node, /-switch-receipt-rnone-/)).state, "switched-back");
+	} finally {
+		await node.close();
+	}
+});
+
+test("a forced unswitch skips the quiet gate only for a new role that is down", async () => {
+	const node = await nodeFixture();
+	try {
+		await adopted(node, { switched: false });
+		await node.agent.switch("provider", OLD_PROVIDER);
+		node.state.running = [`qorpera-login-${"f".repeat(32)}`];
+		await assert.rejects(node.agent.unswitch("provider", OLD_PROVIDER), /NODE_NOT_QUIET/);
+		await assert.rejects(node.agent.unswitch("provider", OLD_PROVIDER, { force: true }), /UNSWITCH_FORCE_ROLE_UP/);
+		node.state.units[UNITS.provider].active = false;
+		const result = await node.agent.unswitch("provider", OLD_PROVIDER, { force: true });
+		assert.equal(result.unswitched, "provider");
+		assert.equal(node.state.units[OLD_PROVIDER].active, true);
+		assert.equal((await lastRecord(node, /-unswitch-intent-rnone-/)).force, true);
 	} finally {
 		await node.close();
 	}
