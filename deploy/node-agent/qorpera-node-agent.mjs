@@ -205,8 +205,8 @@ export class NodeAgent {
 	/** Points `link` at releases/<revision> atomically. */
 	async point(link, revision) {
 		const temporary = join(this.nodeRoot, `.${link}-${randomUUID()}`);
+		// Created by root, so root-owned (chown would follow the link to the release folder).
 		await symlink(`releases/${revision}`, temporary);
-		if (this.owner !== null) await chown(temporary, this.owner, this.owner).catch(() => undefined);
 		await rename(temporary, join(this.nodeRoot, link));
 		await syncPath(this.nodeRoot);
 	}
