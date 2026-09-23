@@ -31,6 +31,11 @@ on:
       - 'scripts/package-lxd-*.mjs'
       - 'scripts/package-lxd-*.test.mjs'
       - 'scripts/package-runtime-node-updater*.mjs'
+      - 'scripts/package-shared-execution-service*.mjs'
+      - 'scripts/jitless-service-bundle.mjs'
+      - 'deploy/shared-execution/**'
+      - 'packages/runner-orchestrator/src/**'
+      - 'packages/contracts/src/**'
       - 'supabase/functions/company-file-verifier/company-file-verifier.ts'
       - 'supabase/functions/company-file-verifier/company-file-verifier.test.ts'
       - 'supabase/functions/company-file-verifier/object-loader.ts'
@@ -132,6 +137,7 @@ jobs:
           scripts/package-lxd-runner-guest.test.mjs
           scripts/package-runner-orchestrator.test.mjs
           scripts/package-runtime-node-updater.test.mjs
+          scripts/package-shared-execution-service.test.mjs
 
       - name: Test acceptance storage and verifier contracts
         run: >-
