@@ -5,11 +5,18 @@ import { UUID_PATTERN } from "./parse.ts";
 /**
  * Member surface for Runtime Step 7 connectors (Gmail, Google Drive, GitHub).
  *
+ * Company first: a connection belongs to the company. An owner or admin
+ * connects it (the kernel refuses anyone else a company-owned ticket), every
+ * agent of the company may use it, and the member who connected it is shown
+ * for attribution only.
+ *
  * Connecting an account is two hops: the cloud issues a one-time capture
  * ticket (RPC), and the member's browser takes that ticket to the company's
  * secret broker, which sends the member to the provider and seals what comes
  * back. Nothing secret passes through this module or Supabase: the browser
  * only ever sees the ticket, the broker origin and a provider consent page.
+ * Several companies' brokers share one origin; `?company=<profileId>` (not a
+ * secret) lets its router reach this company's broker, as for secret cards.
  * Contract §11.5; RPCs listed in supabase/CLIENT-CONTRACT.md §2.
  */
 
@@ -57,6 +64,8 @@ export interface HostedConnectorConnection {
 	ownerUserId: string | null;
 	status: "active" | "revoked";
 	accountLabel: string | null;
+	/** The member who connected a company connection: attribution only. */
+	connectedByUserId: string | null;
 	availableToAllAgents: boolean;
 	activeGrantCount: number;
 	createdAt: string;
@@ -104,6 +113,10 @@ export function parseConnectorConnections(value: unknown): HostedConnectorConnec
 			ownerUserId: typeof input.ownerUserId === "string" ? input.ownerUserId : null,
 			status,
 			accountLabel: typeof input.accountLabel === "string" ? input.accountLabel : null,
+			connectedByUserId:
+				typeof input.connectedByUserId === "string" && UUID_PATTERN.test(input.connectedByUserId)
+					? input.connectedByUserId
+					: null,
 			availableToAllAgents: input.availableToAllAgents === true,
 			activeGrantCount: typeof input.activeGrantCount === "number" ? input.activeGrantCount : 0,
 			createdAt: typeof input.createdAt === "string" ? input.createdAt : "",
@@ -118,8 +131,10 @@ function parseTicket(value: unknown): HostedConnectorCaptureTicket {
 	const origin = new URL(text(input.serviceOrigin, "broker origin"));
 	if (origin.protocol !== "https:" || origin.origin !== origin.href.replace(/\/$/, ""))
 		throw new Error("Invalid broker origin.");
+	const ticketId = text(input.ticketId, "ticket id");
+	if (!UUID_PATTERN.test(ticketId)) throw new Error("Invalid capture ticket.");
 	return {
-		ticketId: text(input.ticketId, "ticket id"),
+		ticketId,
 		captureCapability: text(input.captureCapability, "capture capability"),
 		serviceOrigin: origin.origin,
 		expiresAt: text(input.expiresAt, "ticket expiry"),
@@ -144,13 +159,15 @@ export function takeConnectorReturn(): HostedConnectorReturn | undefined {
 
 export interface WebConnectors {
 	list(signal?: AbortSignal): Promise<HostedConnectorConnection[]>;
-	/** Starts a provider sign-in; resolves to the consent URL the browser must visit. */
+	/** Starts a provider sign-in for a company connection; resolves to the
+	 * consent URL the browser must visit. */
 	beginSignIn(
 		connectorId: HostedConnectorId,
 		existingSecretId: string | undefined,
 		signal?: AbortSignal,
 	): Promise<string>;
-	/** Captures a typed token directly at the broker; the token never reaches Supabase. */
+	/** Captures a typed token for a company connection directly at the broker;
+	 * the token never reaches Supabase. */
 	captureToken(
 		connectorId: HostedConnectorId,
 		token: string,
@@ -165,15 +182,11 @@ export interface WebConnectors {
 export function createWebConnectors(
 	cloud: Cloud,
 	profile: { profileId: string; environmentId: string },
-	memberId: string,
 	fetchImplementation: typeof fetch = fetch,
 ): WebConnectors {
-	if (
-		!UUID_PATTERN.test(profile.profileId) ||
-		!UUID_PATTERN.test(profile.environmentId) ||
-		!UUID_PATTERN.test(memberId)
-	)
+	if (!UUID_PATTERN.test(profile.profileId) || !UUID_PATTERN.test(profile.environmentId))
 		throw new Error("Invalid company for connectors.");
+	const company = profile.profileId.toLowerCase();
 	const label = (connectorId: HostedConnectorId) =>
 		HOSTED_CONNECTORS.find((connector) => connector.id === connectorId)?.label ?? connectorId;
 	async function ticket(connectorId: HostedConnectorId, existingSecretId: string | undefined) {
@@ -181,8 +194,9 @@ export function createWebConnectors(
 			await cloud.rpc("qorpera_begin_cloud_secret_capture", {
 				p_profile_id: profile.profileId,
 				p_environment_id: profile.environmentId,
-				p_owner_kind: "member",
-				p_owner_user_id: memberId,
+				// Company first: the connection is the company's, never the member's.
+				p_owner_kind: "company",
+				p_owner_user_id: null,
 				p_connector_id: connectorId,
 				p_secret_name: "primary",
 				p_purpose: `${label(connectorId)} account`,
@@ -224,7 +238,7 @@ export function createWebConnectors(
 			const issued = await ticket(connectorId, existingSecretId);
 			const started = record(
 				await brokerPost(
-					`${issued.serviceOrigin}/v1/oauth/${issued.ticketId}/start`,
+					`${issued.serviceOrigin}/v1/oauth/${issued.ticketId}/start?company=${company}`,
 					{
 						schema: "qorpera.cloud-connector-oauth-start/v1",
 						captureCapability: issued.captureCapability,
@@ -246,7 +260,7 @@ export function createWebConnectors(
 			const connector = HOSTED_CONNECTORS.find((item) => item.id === connectorId);
 			if (!connector?.token) throw new Error("This service only connects by signing in.");
 			await brokerPost(
-				`${issued.serviceOrigin}/v1/captures/${issued.ticketId}`,
+				`${issued.serviceOrigin}/v1/captures/${issued.ticketId}?company=${company}`,
 				{
 					schema: "qorpera.cloud-secret-capture-request/v1",
 					captureCapability: issued.captureCapability,

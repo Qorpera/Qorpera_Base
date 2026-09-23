@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import {
+	CLOUD_CONNECTOR_OAUTH_STATE,
 	CloudConnectorOAuthError,
 	CloudConnectorOAuthFlows,
 	connectorReturnLocation,
@@ -15,6 +16,8 @@ const google = { clientId: "g.apps.googleusercontent.com", clientSecret: `GOCSPX
 const github = { clientId: "Iv1.abcdefabcdef", clientSecret: randomBytes(20).toString("hex") };
 const callbackUrl = "https://secrets.qorpera.test/v1/oauth/callback";
 const returnOrigins = ["https://app.qorpera.test"];
+const companyId = "a5a5a5a5-0000-4000-8000-00000000c041";
+const otherCompanyId = "b6b6b6b6-0000-4000-8000-00000000c042";
 const signal = new AbortController().signal;
 
 function flows(fetchImplementation: typeof fetch = vi.fn<typeof fetch>(), now = () => 1_000_000) {
@@ -27,12 +30,13 @@ function flows(fetchImplementation: typeof fetch = vi.fn<typeof fetch>(), now = 
 	});
 }
 
-function begin(oauth: CloudConnectorOAuthFlows, connectorId = "gmail") {
+function begin(oauth: CloudConnectorOAuthFlows, connectorId = "gmail", company = companyId) {
 	const ticketId = randomUUID();
 	const captureCapability = randomBytes(32).toString("base64url");
 	const started = oauth.begin({
 		ticketId,
 		captureCapability,
+		companyId: company,
 		connectorId,
 		returnTo: "https://app.qorpera.test/#/c/x",
 	});
@@ -49,8 +53,44 @@ it("builds a Google consent URL with offline access, PKCE and the connector's sc
 	expect(url.searchParams.get("prompt")).toBe("consent");
 	expect(url.searchParams.get("code_challenge_method")).toBe("S256");
 	expect(url.searchParams.get("scope")).toContain("https://www.googleapis.com/auth/gmail.send");
-	expect(state).toMatch(/^[A-Za-z0-9_-]{43}$/);
+	// The state starts with the company so the shared public origin can route
+	// the provider's callback to this company's broker; the rest is random.
+	expect(state).toMatch(new RegExp(`^${companyId}\\.[A-Za-z0-9_-]{43}$`));
+	expect(CLOUD_CONNECTOR_OAUTH_STATE.exec(state)?.[1]).toBe(companyId);
 	expect(url.href).not.toContain(google.clientSecret);
+});
+
+it("keeps the random part of the state unguessable and bound to the company it was issued for", async () => {
+	const oauth = flows(vi.fn<typeof fetch>());
+	const first = begin(oauth);
+	const second = begin(oauth);
+	const random = (state: string) => state.slice(companyId.length + 1);
+	expect(random(first.state)).not.toBe(random(second.state));
+	expect(random(first.state)).toHaveLength(43);
+	// The same random part under another company's prefix is not a state this
+	// broker issued; neither is the bare random part or an upper-cased prefix.
+	for (const forged of [
+		`${otherCompanyId}.${random(first.state)}`,
+		random(first.state),
+		`${companyId.toUpperCase()}.${random(first.state)}`,
+		`${companyId}.${random(first.state)}x`,
+	]) {
+		await expect(oauth.complete({ state: forged, code: "x" }, signal)).rejects.toMatchObject({
+			reason: "state_unknown",
+		});
+	}
+	// A company id normalizes to lower case in the state.
+	const upper = begin(oauth, "gmail", otherCompanyId.toUpperCase());
+	expect(upper.state.startsWith(`${otherCompanyId}.`)).toBe(true);
+	expect(() =>
+		oauth.begin({
+			ticketId: randomUUID(),
+			captureCapability: "c".repeat(43),
+			companyId: "not-a-company",
+			connectorId: "gmail",
+			returnTo: "https://app.qorpera.test/",
+		}),
+	).toThrow("invalid");
 });
 
 it("completes a Google callback into a refresh-token field and an account label, once", async () => {
@@ -83,6 +123,7 @@ it("completes a Google callback into a refresh-token field and an account label,
 	expect(completion).toEqual({
 		ticketId,
 		captureCapability,
+		companyId,
 		connectorId: "gmail",
 		returnTo: "https://app.qorpera.test/#/c/x",
 		fields: { refresh_token: "1//refresh-token-value-1234567890" },
@@ -132,7 +173,7 @@ it("reports declined, expired, missing-refresh-token and unknown-state outcomes 
 	clock += 11 * 60_000;
 	await expect(oauth.complete({ state: late.state, code: "x" }, signal)).rejects.toMatchObject({ reason: "expired" });
 	const unknown = await oauth
-		.complete({ state: randomBytes(32).toString("base64url"), code: "x" }, signal)
+		.complete({ state: `${companyId}.${randomBytes(32).toString("base64url")}`, code: "x" }, signal)
 		.catch((error) => error);
 	expect(unknown).toBeInstanceOf(CloudConnectorOAuthError);
 	expect(unknown.reason).toBe("state_unknown");
@@ -156,6 +197,7 @@ it("accepts return pages only on allow-listed origins and places the outcome in 
 		flows().begin({
 			ticketId: randomUUID(),
 			captureCapability: "c".repeat(43),
+			companyId,
 			connectorId: "gmail",
 			returnTo: "https://evil.example/",
 		}),
@@ -164,6 +206,7 @@ it("accepts return pages only on allow-listed origins and places the outcome in 
 		flows().begin({
 			ticketId: randomUUID(),
 			captureCapability: "c".repeat(43),
+			companyId,
 			connectorId: "slack",
 			returnTo: "https://app.qorpera.test/",
 		}),
@@ -175,24 +218,23 @@ it("composes the broker's connector service from one credential and refuses inco
 		JSON.stringify({
 			schema: "qorpera.cloud-connector-service/v1",
 			publicOrigin: "https://secrets.qorpera.test",
-			returnOrigins: ["https://app.qorpera.test", "http://localhost:5173"],
 			google,
 		}),
 	);
-	const service = composeCloudConnectorService(config, vi.fn<typeof fetch>());
+	// Sign-ins return only to the broker's own member origins (config v2).
+	const service = composeCloudConnectorService(config, ["https://app.qorpera.test"], vi.fn<typeof fetch>());
 	expect(service.connectors).toEqual(["gmail", "google_drive"]);
 	expect(service.adapters.map((adapter) => adapter.connectorId)).toEqual([
 		...Array(4).fill("gmail"),
 		...Array(4).fill("google_drive"),
 	]);
 	expect(service.oauth.available()).toEqual(["gmail", "google_drive"]);
-	expect(service.corsOrigins).toEqual(["https://app.qorpera.test", "http://localhost:5173"]);
+	expect(() => composeCloudConnectorService(config, [], vi.fn<typeof fetch>())).toThrow("return origins");
 	expect(() =>
 		parseCloudConnectorServiceConfig(
 			JSON.stringify({
 				schema: "qorpera.cloud-connector-service/v1",
 				publicOrigin: "https://s.test",
-				returnOrigins: ["https://a.test"],
 			}),
 		),
 	).toThrow("no OAuth client");
@@ -201,19 +243,19 @@ it("composes the broker's connector service from one credential and refuses inco
 			JSON.stringify({
 				schema: "qorpera.cloud-connector-service/v1",
 				publicOrigin: "http://s.test",
-				returnOrigins: ["https://a.test"],
 				github,
 			}),
 		),
 	).toThrow("public origin");
+	// The return list moved to the broker's memberOrigins; a stray key is refused.
 	expect(() =>
 		parseCloudConnectorServiceConfig(
 			JSON.stringify({
 				schema: "qorpera.cloud-connector-service/v1",
 				publicOrigin: "https://s.test",
-				returnOrigins: ["https://a.test/path"],
+				returnOrigins: ["https://a.test"],
 				github,
 			}),
 		),
-	).toThrow("return origins");
+	).toThrow("invalid");
 });

@@ -87,14 +87,16 @@ function fixture(connectorId = "gmail") {
 	});
 	const broker = new CloudSecretBroker({ authority, keyring, adapters: [] });
 	const runtimeToken = randomBytes(32).toString("base64url");
-	const service = new HttpCloudSecretBrokerService(broker, runtimeToken, { oauth, corsOrigins: [WEB] });
+	const service = new HttpCloudSecretBrokerService(broker, runtimeToken, { oauth, memberOrigins: [WEB] });
 	services.push(service);
-	return { ticketId, capability, service, captured, keyring, wrappingKey, authority };
+	return { ticketId, capability, service, captured, keyring, wrappingKey, authority, companyId: identity.companyId };
 }
 
 async function start(f: ReturnType<typeof fixture>, body: unknown, origin = WEB) {
 	const port = await f.service.start();
-	const response = await fetch(`http://127.0.0.1:${port}/v1/oauth/${f.ticketId}/start`, {
+	// The web app names the company in the query so the shared origin's router
+	// reaches this company's broker; the broker itself routes by path only.
+	const response = await fetch(`http://127.0.0.1:${port}/v1/oauth/${f.ticketId}/start?company=${f.companyId}`, {
 		method: "POST",
 		headers: { "content-type": "application/json", origin },
 		body: JSON.stringify(body),
@@ -116,7 +118,7 @@ it("answers the web app's preflight and start request with CORS headers and a pr
 		headers: { origin: "https://evil.example" },
 	});
 	expect(denied.status).toBe(404);
-	const response = await fetch(`http://127.0.0.1:${port}/v1/oauth/${f.ticketId}/start`, {
+	const response = await fetch(`http://127.0.0.1:${port}/v1/oauth/${f.ticketId}/start?company=${f.companyId}`, {
 		method: "POST",
 		headers: { "content-type": "application/json", origin: WEB },
 		body: JSON.stringify({
@@ -169,6 +171,8 @@ it("completes the provider callback into a sealed capture and redirects with onl
 	});
 	const started = (await response.json()) as Record<string, string>;
 	const state = new URL(started.authorizationUrl).searchParams.get("state");
+	// The router picks the company's broker from the state's prefix.
+	expect(state?.startsWith(`${f.companyId}.`)).toBe(true);
 	const callback = await fetch(
 		`http://127.0.0.1:${port}/v1/oauth/callback?state=${state}&code=4%2Fcode-value&scope=ignored`,
 		{ redirect: "manual" },
@@ -208,10 +212,30 @@ it("sends a declined consent back to the web app as a failure fragment without c
 	f.keyring.close();
 });
 
+it("refuses a sign-in start from an origin outside the broker's member origins", async () => {
+	const f = fixture();
+	const { response } = await start(
+		f,
+		{
+			schema: "qorpera.cloud-connector-oauth-start/v1",
+			captureCapability: f.capability,
+			returnTo: `${WEB}/`,
+		},
+		"https://evil.example",
+	);
+	expect(response.status).toBe(403);
+	expect(response.headers.get("access-control-allow-origin")).toBeNull();
+	expect(f.authority.describeCapture).not.toHaveBeenCalled();
+	f.wrappingKey.fill(0);
+	f.keyring.close();
+});
+
 it("keeps the OAuth routes closed when no connector service is configured", async () => {
 	const f = fixture();
 	const broker = new CloudSecretBroker({ authority: f.authority, keyring: f.keyring, adapters: [] });
-	const plain = new HttpCloudSecretBrokerService(broker, randomBytes(32).toString("base64url"));
+	const plain = new HttpCloudSecretBrokerService(broker, randomBytes(32).toString("base64url"), {
+		memberOrigins: [WEB],
+	});
 	services.push(plain);
 	const port = await plain.start();
 	const startResponse = await fetch(`http://127.0.0.1:${port}/v1/oauth/${f.ticketId}/start`, {
@@ -224,7 +248,7 @@ it("keeps the OAuth routes closed when no connector service is configured", asyn
 		}),
 	});
 	expect(startResponse.status).toBe(404);
-	expect(startResponse.headers.get("access-control-allow-origin")).toBeNull();
+	expect(f.authority.describeCapture).not.toHaveBeenCalled();
 	const callback = await fetch(`http://127.0.0.1:${port}/v1/oauth/callback?state=x&code=y`, { redirect: "manual" });
 	expect(callback.status).toBe(404);
 	f.wrappingKey.fill(0);

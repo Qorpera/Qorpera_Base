@@ -302,7 +302,12 @@ describe("trusted node inventory publisher composition", () => {
 		delete f.inventory.instances[0].config["user.qorpera.schema"];
 		expect((await f.observer.observe(signal())).state).toBe("unavailable");
 		expect(f.calls.at(-1)?.args.p_inventory).toMatchObject({
-			entries: [{ category: "unmanaged" }, { category: "managed" }, { category: "managed" }, { category: "managed" }],
+			entries: [
+				{ category: "unmanaged" },
+				{ category: "managed" },
+				{ category: "managed" },
+				{ category: "managed" },
+			],
 		});
 	});
 	it("does not rebind an uncertain publication or retry it with new bytes", async () => {

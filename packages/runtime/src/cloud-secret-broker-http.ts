@@ -444,12 +444,7 @@ export class HttpCloudSecretBrokerService {
 			response(reply, 404, { schema: "qorpera.cloud-secret-error/v1", error: "not_found" });
 		} catch {
 			if (!reply.headersSent && !reply.destroyed) {
-				response(
-					reply,
-					403,
-					{ schema: "qorpera.cloud-secret-error/v1", error: "unavailable" },
-					cors,
-				);
+				response(reply, 403, { schema: "qorpera.cloud-secret-error/v1", error: "unavailable" }, cors);
 			} else {
 				reply.destroy();
 			}

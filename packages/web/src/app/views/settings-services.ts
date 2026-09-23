@@ -9,14 +9,26 @@ import { button, fmtTime, h, replace } from "../../ui/dom.ts";
 
 /**
  * Settings → Connections → Services: the Runtime Step 7 connectors (Gmail,
- * Google Drive, GitHub). Each card shows one member-owned connection: connect
- * by signing in with the provider (the browser leaves for the provider and
- * comes back here), disconnect, or reconnect. A connected account is made
- * available to every agent of the company right away; the agents' tools
- * appear on their next run.
+ * Google Drive, GitHub). Company first: each card shows the company's one
+ * connection for that service. An owner or admin connects it by signing in
+ * with the provider (the browser leaves for the provider and comes back here),
+ * reconnects or disconnects it; everyone else sees it read-only. A connected
+ * account is made available to every agent of the company right away (the
+ * agents' tools appear on their next run); the member who connected it is
+ * shown for attribution only.
  */
 
 type ServicesClient = Pick<WebConnectors, "list" | "beginSignIn" | "captureToken" | "grantAllAgents" | "disconnect">;
+
+export interface ServicesAccess {
+	/** Whether the signed-in member may connect, share or disconnect company
+	 * services (owner or admin; the kernel enforces the same rule). */
+	canManage(): boolean;
+	/** A member's display name for the "connected by" line, if known. */
+	memberName(userId: string): string | undefined;
+}
+
+const FULL_ACCESS: ServicesAccess = { canManage: () => true, memberName: () => undefined };
 
 const RETURN_REASONS: Readonly<Record<string, string>> = {
 	declined: "The sign-in was cancelled before access was granted.",
@@ -38,6 +50,8 @@ export class ServicesView {
 	readonly #client: ServicesClient;
 	readonly #lifetime = new AbortController();
 	readonly #navigate: (url: string) => void;
+	readonly #access: ServicesAccess;
+	#drawnManage: boolean | undefined;
 	#connections: HostedConnectorConnection[] | undefined;
 	#loading = true;
 	#error: string | undefined;
@@ -49,10 +63,11 @@ export class ServicesView {
 	constructor(
 		client: ServicesClient,
 		signal: AbortSignal,
-		navigate: (url: string) => void = (url) => location.assign(url),
+		options: { navigate?: (url: string) => void; access?: ServicesAccess } = {},
 	) {
 		this.#client = client;
-		this.#navigate = navigate;
+		this.#navigate = options.navigate ?? ((url) => location.assign(url));
+		this.#access = options.access ?? FULL_ACCESS;
 		if (signal.aborted) this.#lifetime.abort();
 		else signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		const outcome = pendingReturn;
@@ -64,7 +79,7 @@ export class ServicesView {
 					? {
 							connector: outcome.connector,
 							tone: "ok",
-							text: `${label} is connected. Your agents can use it from their next run.`,
+							text: `${label} is connected. The company's agents can use it from their next run.`,
 						}
 					: {
 							connector: outcome.connector,
@@ -74,6 +89,12 @@ export class ServicesView {
 		}
 		this.#draw();
 		void this.#refresh(outcome?.connection === "connected" ? outcome.connector : undefined);
+	}
+
+	/** Redraws when the member's authority over company services changed (the
+	 * team loads after the page, or a role changes while it is open). */
+	update(): void {
+		if (!this.#lifetime.signal.aborted && this.#access.canManage() !== this.#drawnManage) this.#draw();
 	}
 
 	dispose(): void {
@@ -99,7 +120,7 @@ export class ServicesView {
 			// A connection that just arrived from a provider sign-in has no agent
 			// grants yet: hand it to every agent now, once.
 			const fresh = grantAfter ? this.#current(grantAfter) : undefined;
-			if (fresh && !fresh.availableToAllAgents && fresh.activeGrantCount === 0) {
+			if (fresh && !fresh.availableToAllAgents && fresh.activeGrantCount === 0 && this.#access.canManage()) {
 				try {
 					await this.#client.grantAllAgents(fresh.secretId, this.#lifetime.signal);
 					if (!this.#lifetime.signal.aborted) this.#connections = await this.#client.list(this.#lifetime.signal);
@@ -117,10 +138,34 @@ export class ServicesView {
 		}
 	}
 
+	/** The company's connection for a service. A member's own secret (the
+	 * kernel's member mode) is never shown or shared here. */
 	#current(connectorId: HostedConnectorId): HostedConnectorConnection | undefined {
 		return this.#connections
-			?.filter((item) => item.connectorId === connectorId && item.status === "active")
+			?.filter(
+				(item) => item.connectorId === connectorId && item.status === "active" && item.ownerKind === "company",
+			)
 			.sort((left, right) => right.version - left.version)[0];
+	}
+
+	async #share(connection: HostedConnectorConnection): Promise<void> {
+		if (this.#working || this.#lifetime.signal.aborted) return;
+		this.#working = connection.connectorId;
+		this.#outcome = undefined;
+		this.#draw();
+		try {
+			await this.#client.grantAllAgents(connection.secretId, this.#lifetime.signal);
+		} catch {
+			if (!this.#lifetime.signal.aborted)
+				this.#outcome = {
+					connector: connection.connectorId as HostedConnectorId,
+					tone: "error",
+					text: "The service could not be shared with the company's agents. Try again.",
+				};
+		} finally {
+			this.#working = undefined;
+			if (!this.#lifetime.signal.aborted) await this.#refresh();
+		}
 	}
 
 	async #connect(connectorId: HostedConnectorId): Promise<void> {
@@ -167,7 +212,7 @@ export class ServicesView {
 			this.#outcome = {
 				connector: connectorId,
 				tone: "ok",
-				text: `${label} is connected. Your agents can use it from their next run.`,
+				text: `${label} is connected. The company's agents can use it from their next run.`,
 			};
 			await this.#refresh(connectorId);
 		} catch (error) {
@@ -205,8 +250,17 @@ export class ServicesView {
 	#card(connector: (typeof HOSTED_CONNECTORS)[number]): HTMLElement {
 		const current = this.#current(connector.id);
 		const busy = this.#working === connector.id;
+		const manage = this.#access.canManage();
+		// Members who are not owners or admins see the card read-only.
 		const actions: HTMLElement[] = [];
-		if (current) {
+		if (manage && current) {
+			if (!current.availableToAllAgents) {
+				const share = button("Share with all agents", () => void this.#share(current), {
+					disabled: Boolean(this.#working),
+				});
+				share.dataset.focusKey = `service-share:${connector.id}`;
+				actions.push(share);
+			}
 			const disconnect = button(busy ? "Working…" : "Disconnect", () => void this.#disconnect(current), {
 				disabled: Boolean(this.#working),
 			});
@@ -216,7 +270,7 @@ export class ServicesView {
 			});
 			reconnect.dataset.focusKey = `service-reconnect:${connector.id}`;
 			actions.push(reconnect, disconnect);
-		} else {
+		} else if (manage) {
 			const connect = button(busy ? "Opening sign-in…" : "Connect", () => void this.#connect(connector.id), {
 				primary: true,
 				disabled: Boolean(this.#working) || this.#loading,
@@ -224,6 +278,7 @@ export class ServicesView {
 			connect.dataset.focusKey = `service-connect:${connector.id}`;
 			actions.push(connect);
 		}
+		const connectedBy = current?.connectedByUserId ? this.#access.memberName(current.connectedByUserId) : undefined;
 		const status = current
 			? [
 					h("strong", null, connector.label),
@@ -231,16 +286,17 @@ export class ServicesView {
 						"small",
 						null,
 						current.accountLabel ? `Connected as ${current.accountLabel}` : "Connected",
+						connectedBy ? ` by ${connectedBy}` : "",
 						current.createdAt ? ` · ${fmtTime(current.createdAt)}` : "",
 					),
 					h(
 						"small",
 						{ class: "service-agents" },
 						current.availableToAllAgents
-							? "Available to all your agents, including new hires."
+							? "Available to every agent in the company, including new hires."
 							: current.activeGrantCount > 0
 								? `Available to ${current.activeGrantCount} agent operation${current.activeGrantCount === 1 ? "" : "s"}.`
-								: "Not yet available to your agents.",
+								: "Not yet available to the company's agents.",
 					),
 				]
 			: [h("strong", null, connector.label), h("small", null, connector.summary)];
@@ -258,7 +314,7 @@ export class ServicesView {
 				),
 			);
 		}
-		if (connector.token && !current) {
+		if (connector.token && !current && manage) {
 			if (this.#tokenFor === connector.id) {
 				const field = h("input", {
 					type: "password",
@@ -306,6 +362,7 @@ export class ServicesView {
 
 	#draw(focusKey?: string): void {
 		if (this.#lifetime.signal.aborted) return;
+		this.#drawnManage = this.#access.canManage();
 		const active = document.activeElement as HTMLElement | null;
 		const key = focusKey ?? (this.el.contains(active) ? active?.dataset.focusKey : undefined);
 		replace(
@@ -314,7 +371,13 @@ export class ServicesView {
 				"div",
 				{ class: "connection-section-heading" },
 				h("h2", null, "Services"),
-				h("small", null, "Signed in by you; used by your agents through the company's secret broker."),
+				h(
+					"small",
+					null,
+					this.#access.canManage()
+						? "Connected for the company; its agents use them through the company's secret broker."
+						: "Connected for the company by an owner or admin; its agents use them through the company's secret broker.",
+				),
 			),
 			this.#error ? h("p", { class: "connection-empty service-error", role: "alert" }, this.#error) : "",
 			h("div", { class: "connection-list" }, ...HOSTED_CONNECTORS.map((connector) => this.#card(connector))),

@@ -332,13 +332,24 @@ export class SettingsView {
 						(input) => signIn.beginProviderLogin(input),
 					);
 					// Step 7 connectors sit under the model accounts on the same page.
+					// Company first: owners and admins manage them, everyone sees them.
 					this.#services = new ServicesView(
-						createWebConnectors(
-							this.#api.cloud,
-							{ profileId: company.profile.profileId, environmentId: company.profile.environmentId },
-							memberId,
-						),
+						createWebConnectors(this.#api.cloud, {
+							profileId: company.profile.profileId,
+							environmentId: company.profile.environmentId,
+						}),
 						signal,
+						{
+							access: {
+								canManage: () => {
+									const role = company.store.get().team?.role;
+									return role === "owner" || role === "admin";
+								},
+								memberName: (userId) =>
+									company.store.get().team?.members.find((member) => member.userId === userId)?.displayName ||
+									undefined,
+							},
+						},
 					);
 					this.#panels.set(tab, h("div", null, this.#connections.el, this.#services.el));
 				}
@@ -436,6 +447,7 @@ export class SettingsView {
 					this.#close();
 					return;
 				}
+				this.#services?.update();
 				this.#drawCompany();
 			});
 			if (owned) void company.start();

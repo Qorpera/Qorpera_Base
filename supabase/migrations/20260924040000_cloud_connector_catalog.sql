@@ -11,6 +11,14 @@
 --      login) recorded by the broker at capture time;
 --   3. one member call that grants every operation of a connection to the
 --      company's agents, plus the rule that keeps new hires included.
+--
+-- Company first (founder, 2026-09-24): a connector connection belongs to the
+-- company. Connecting one is an owner/admin act (the Step 2 kernel's rule for
+-- company-owned secrets), the member who connected it is attribution only
+-- (created_by_user_id, listed as connectedByUserId), and only a company-owned
+-- connection can be shared with the company's agents. The kernel's
+-- member-owned mode is left as it was (a member's own secret is usable only in
+-- runs that member sponsors); Step 7 adds nothing to it.
 
 -- 1. Connection descriptor columns -------------------------------------------
 
@@ -19,12 +27,14 @@ alter table public.qorpera_cloud_secrets
 		account_label is null
 		or (char_length(btrim(account_label)) between 1 and 254 and account_label = btrim(account_label))
 	),
-	add column available_to_all_agents boolean not null default false;
+	add column available_to_all_agents boolean not null default false,
+	add constraint qorpera_cloud_secrets_shared_company_only
+		check (not available_to_all_agents or owner_kind = 'company');
 
 comment on column public.qorpera_cloud_secrets.account_label is
 	'Non-secret provider account identity shown to members; never a token or handle.';
 comment on column public.qorpera_cloud_secrets.available_to_all_agents is
-	'When true, every active agent of the company holds an operation grant for this connection and new hires receive one.';
+	'When true, every active agent of the company holds an operation grant for this connection and new hires receive one. Company-owned connections only.';
 
 -- 2. Capture completion records the account label ---------------------------
 --
@@ -301,9 +311,12 @@ begin
 	select secret.* into strict v_secret from public.qorpera_cloud_secrets as secret
 	where secret.id = p_secret_id and secret.profile_id = p_profile_id
 		and secret.environment_id = p_environment_id for update;
-	if v_secret.status <> 'active'
-		or (v_secret.owner_kind = 'company' and v_role not in ('owner','admin'))
-		or (v_secret.owner_kind = 'member' and (v_role is null or v_role = 'viewer' or v_secret.owner_user_id <> v_user_id)) then
+	-- Company first: only a company-owned connection is shared with the
+	-- company's agents, and only by an owner or admin. (A member's own secret
+	-- could serve only runs that member sponsors; the kernel keeps that mode for
+	-- per-operation grants, Step 7 does not extend it.)
+	if v_secret.status <> 'active' or v_secret.owner_kind <> 'company'
+		or v_role is null or v_role not in ('owner','admin') then
 		raise exception 'secret grant authority is unavailable' using errcode = '42501';
 	end if;
 	if p_staff_agent_ids is null then
@@ -334,6 +347,7 @@ returns trigger
 language plpgsql security definer set search_path = '' as $$
 declare
 	v_secret public.qorpera_cloud_secrets%rowtype;
+	v_issuer uuid;
 begin
 	if new.employment_status <> 'active' or (tg_op = 'UPDATE' and old.employment_status = 'active') then
 		return new;
@@ -341,10 +355,20 @@ begin
 	for v_secret in
 		select secret.* from public.qorpera_cloud_secrets as secret
 		where secret.profile_id = new.profile_id and secret.status = 'active' and secret.available_to_all_agents
+			and secret.owner_kind = 'company'
 		order by secret.id
 	loop
+		-- A company-owned grant holds while its issuer is an owner or admin (the
+		-- kernel rechecks at every call). The hire's author issues it when they
+		-- are one; otherwise the member who connected the account does, since
+		-- the company already shared it with every agent.
+		v_issuer := case when exists (
+			select 1 from public.qorpera_profile_members as member
+			where member.profile_id = new.profile_id and member.user_id = new.updated_by_user_id
+				and member.role in ('owner','admin')
+		) then new.updated_by_user_id else v_secret.created_by_user_id end;
 		perform public.qorpera_grant_cloud_connector_operations(
-			v_secret.profile_id, v_secret.environment_id, v_secret.id, new.updated_by_user_id,
+			v_secret.profile_id, v_secret.environment_id, v_secret.id, v_issuer,
 			array[new.staff_agent_id]
 		);
 	end loop;
@@ -371,6 +395,7 @@ language sql stable security definer set search_path = '' as $$
 				then secret.owner_user_id else null end,
 			'status',secret.status,
 			'accountLabel',secret.account_label,
+			'connectedByUserId',case when secret.owner_kind = 'company' then secret.created_by_user_id else null end,
 			'availableToAllAgents',secret.available_to_all_agents,
 			'activeGrantCount',(
 				select count(*) from public.qorpera_cloud_secret_operation_grants as grant_row

@@ -10,6 +10,7 @@ import {
 	createGoogleDriveConnectorAdapters,
 } from "@qorpera/runtime/cloud-connector-google";
 import { CLOUD_NATIVE_TOOL_COUNT_LIMIT } from "@qorpera/runtime/cloud-native-tool-boundary";
+import { CLOUD_RUNTIME_TOOL_OPERATIONS } from "@qorpera/runtime/cloud-runtime-observability";
 import { parseCloudConnectorInputSchema } from "@qorpera/runtime/cloud-secret-tools";
 import { expect, it } from "vitest";
 
@@ -36,11 +37,12 @@ it("declares GitHub, Gmail and Google Drive with closed, runtime-parsable operat
 });
 
 it("keeps the whole catalog inside the runtime's tool-count budget beside the runtime's own tools", () => {
-	// company_* (5), read_context, send_coworker_message, manage_routine, hire_agent,
-	// create_group_chat, send_message and the computer family (7) leave room for
-	// every connector operation at once.
-	const runtimeOwnTools = 5 + 1 + 1 + 1 + 1 + 1 + 1 + 7;
-	expect(runtimeOwnTools + cloudConnectorCatalogRows().length).toBeLessThanOrEqual(CLOUD_NATIVE_TOOL_COUNT_LIMIT);
+	// Every runtime-owned tool at once (an upper bound: no composition offers the
+	// coding tools and the whole company set together) still leaves room for
+	// every connector operation.
+	expect(CLOUD_RUNTIME_TOOL_OPERATIONS.length + cloudConnectorCatalogRows().length).toBeLessThanOrEqual(
+		CLOUD_NATIVE_TOOL_COUNT_LIMIT,
+	);
 });
 
 it("pins every compiled adapter to the catalog row it implements", () => {

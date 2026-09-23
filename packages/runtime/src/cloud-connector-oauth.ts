@@ -17,6 +17,15 @@ import { connectorRequest, jsonRecord, jsonString, parseJsonResponse } from "./c
  * The web client, the database, the runner and the model see only the safe
  * descriptor (contract §11.5). State is single-use, short-lived and bound to
  * one capture ticket and one return page.
+ *
+ * Several companies' brokers share one public origin, each its own process
+ * behind one router. The provider's callback carries only `code` and `state`,
+ * so the state begins with the ticket's company profile id,
+ * `<profileId>.<43 random base64url characters>`: the router picks the
+ * company's broker from that prefix (nginx `map $arg_state`), and the broker
+ * accepts the callback only when the whole state is one it issued for that
+ * company. The prefix is not a secret and grants nothing; the random part
+ * stays single-use and unguessable.
  */
 
 export interface CloudConnectorOAuthClients {
@@ -27,6 +36,8 @@ export interface CloudConnectorOAuthClients {
 export interface CloudConnectorOAuthBegin {
 	readonly ticketId: string;
 	readonly captureCapability: string;
+	/** The capture ticket's company profile id; it prefixes the state. */
+	readonly companyId: string;
 	readonly connectorId: string;
 	readonly returnTo: string;
 }
@@ -39,6 +50,7 @@ export interface CloudConnectorOAuthStarted {
 export interface CloudConnectorOAuthCompletion {
 	readonly ticketId: string;
 	readonly captureCapability: string;
+	readonly companyId: string;
 	readonly connectorId: string;
 	readonly returnTo: string;
 	readonly fields: Readonly<Record<string, string>>;
@@ -89,7 +101,10 @@ export const CLOUD_CONNECTOR_OAUTH_PROVIDERS: Readonly<Record<CloudConnectorOAut
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CAPABILITY = /^[A-Za-z0-9_-]{32,256}$/;
-const STATE = /^[A-Za-z0-9_-]{43}$/;
+/** `<company profile id>.<32 random bytes, base64url>`. The router's nginx map
+ * matches the same prefix (deploy/first-node/RUNTIME-STEP-7-CLOUD-CONNECTORS.md). */
+export const CLOUD_CONNECTOR_OAUTH_STATE =
+	/^([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.([A-Za-z0-9_-]{43})$/;
 const CODE = /^[\x21-\x7e]{1,2048}$/;
 const TOKEN = /^[A-Za-z0-9_./-]{20,4096}$/;
 const STATE_TTL_MS = 10 * 60_000;
@@ -100,6 +115,7 @@ interface PendingAuthorization {
 	readonly stateSha256: string;
 	readonly ticketId: string;
 	readonly captureCapability: string;
+	readonly companyId: string;
 	readonly connectorId: string;
 	readonly returnTo: string;
 	readonly codeVerifier: string | undefined;
@@ -229,8 +245,9 @@ export class CloudConnectorOAuthFlows {
 	}
 
 	begin(input: CloudConnectorOAuthBegin): CloudConnectorOAuthStarted {
-		if (!UUID.test(input.ticketId) || !CAPABILITY.test(input.captureCapability))
+		if (!UUID.test(input.ticketId) || !CAPABILITY.test(input.captureCapability) || !UUID.test(input.companyId))
 			throw new Error("Connector OAuth start is invalid");
+		const companyId = input.companyId.toLowerCase();
 		const connector = cloudConnector(input.connectorId);
 		const client = this.#client(connector);
 		if (!client) throw new Error("Connector OAuth client is unavailable");
@@ -238,7 +255,7 @@ export class CloudConnectorOAuthFlows {
 		this.#sweep();
 		if (this.#pending.size >= MAX_PENDING) throw new Error("Connector OAuth is busy");
 		const endpoints = CLOUD_CONNECTOR_OAUTH_PROVIDERS[connector.oauth.provider];
-		const state = Buffer.from(this.#random(32)).toString("base64url");
+		const state = `${companyId}.${Buffer.from(this.#random(32)).toString("base64url")}`;
 		const codeVerifier = endpoints.pkce ? Buffer.from(this.#random(32)).toString("base64url") : undefined;
 		const expiresAt = this.#now() + STATE_TTL_MS;
 		const url = new URL(endpoints.authorization);
@@ -260,6 +277,7 @@ export class CloudConnectorOAuthFlows {
 			stateSha256: sha256(state),
 			ticketId: input.ticketId,
 			captureCapability: input.captureCapability,
+			companyId,
 			connectorId: connector.id,
 			returnTo,
 			codeVerifier,
@@ -274,11 +292,14 @@ export class CloudConnectorOAuthFlows {
 		query: { readonly state?: string; readonly code?: string; readonly error?: string },
 		signal: AbortSignal,
 	): Promise<CloudConnectorOAuthCompletion> {
-		if (typeof query.state !== "string" || !STATE.test(query.state))
-			throw new CloudConnectorOAuthError("state_unknown");
-		const key = sha256(query.state);
+		const state = typeof query.state === "string" ? CLOUD_CONNECTOR_OAUTH_STATE.exec(query.state) : null;
+		if (!state) throw new CloudConnectorOAuthError("state_unknown");
+		const key = sha256(state[0]);
 		const pending = this.#pending.get(key);
-		if (!pending || !digestsMatch(pending.stateSha256, key)) throw new CloudConnectorOAuthError("state_unknown");
+		// The prefix only routes; the whole state must be one this broker issued
+		// for that same company.
+		if (!pending || !digestsMatch(pending.stateSha256, key) || pending.companyId !== state[1])
+			throw new CloudConnectorOAuthError("state_unknown");
 		this.#pending.delete(key);
 		this.#sweep();
 		if (pending.expiresAt <= this.#now()) {
@@ -326,6 +347,7 @@ export class CloudConnectorOAuthFlows {
 		return {
 			ticketId: pending.ticketId,
 			captureCapability: pending.captureCapability,
+			companyId: pending.companyId,
 			connectorId: pending.connectorId,
 			returnTo: pending.returnTo,
 			fields,

@@ -43,6 +43,8 @@ export interface CloudSecretDescriptor {
  * contact: the connector and owner class, never the ticket's key or scope. */
 export interface CloudSecretCaptureSummary {
 	readonly ticketId: string;
+	/** The ticket's company profile id (not a secret). */
+	readonly companyId: string;
 	readonly connectorId: string;
 	readonly ownerKind: "company" | "member";
 	readonly expiresAt: string;
@@ -437,6 +439,7 @@ export class CloudSecretBroker {
 			const description = await this.#describe(request, signal);
 			return {
 				ticketId: description.ticketId,
+				companyId: description.companyId,
 				connectorId: description.connectorId,
 				ownerKind: description.ownerKind,
 				expiresAt: description.expiresAt,
