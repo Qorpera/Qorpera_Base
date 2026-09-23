@@ -119,6 +119,16 @@ sandbox runs, rebuilds the instance in place, reinstalls the package, takes
 the fence digest from the image, pushes the staged configuration and starts
 the service; the orchestrator is started by hand once the cut is live.
 
+The node's inventory observer pins the host's configuration digest (it
+includes the `image.*` keys), so a rebuild makes the node `unavailable` for
+placement and logins until the inventory policy is re-enrolled: recompute the
+digest from `lxc query /1.0/instances/<vm>?project=<project>` (type, profiles,
+config and expanded config without `volatile.*` keys, devices and expanded
+devices; sorted-key compact JSON), replace the policy with
+`qorpera_replace_runtime_node_inventory(policy, previous_sha256)`, write the
+observer configuration and restart the observer. The host may carry no
+`user.qorpera.*` key other than `user.qorpera.management_vm`.
+
 A new member login on the node creates a new identity volume: attach it to
 the execution host (`lxc config device add …`, hot-pluggable for a running
 VM) before that member's first run; the service refuses a run whose identity

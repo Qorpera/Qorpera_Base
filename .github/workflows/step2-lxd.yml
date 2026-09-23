@@ -31,6 +31,12 @@ on:
       - 'scripts/package-lxd-*.mjs'
       - 'scripts/package-lxd-*.test.mjs'
       - 'scripts/package-runtime-node-updater*.mjs'
+      - 'scripts/package-shared-execution-service*.mjs'
+      - 'scripts/jitless-service-bundle.mjs'
+      - 'deploy/shared-execution/**'
+      - 'deploy/node-tidy/**'
+      - 'packages/runner-orchestrator/src/**'
+      - 'packages/contracts/src/**'
       - 'supabase/functions/company-file-verifier/company-file-verifier.ts'
       - 'supabase/functions/company-file-verifier/company-file-verifier.test.ts'
       - 'supabase/functions/company-file-verifier/object-loader.ts'
@@ -84,6 +90,33 @@ jobs:
           test/runtime-node-update.test.ts
           test/runtime-node-update-registry.test.ts
           test/runtime-node-update-host.test.ts
+          test/coding-executor.test.ts
+          test/coding-executor-host.test.ts
+          test/coding-vm.test.ts
+          test/coding-storage.test.ts
+          test/coding-workspace.test.ts
+          test/coding-command-transport.test.ts
+          test/coding-lease-transport.test.ts
+          test/coding-git.test.ts
+          test/coding-git-seed.test.ts
+          test/coding-git-transfer.test.ts
+
+      - name: Test coding session runtime contracts
+        working-directory: packages/runtime
+        run: >-
+          node ../../node_modules/vitest/dist/cli.js --run
+          test/cloud-native-coding-runtime.test.ts
+          test/cloud-coding-command-http.test.ts
+          test/cloud-coding-command-tools.test.ts
+          test/cloud-coding-command-log.test.ts
+          test/cloud-coding-command-authority.test.ts
+          test/cloud-coding-executor-config.test.ts
+          test/cloud-coding-executor-control.test.ts
+          test/cloud-coding-git-guest.test.ts
+          test/cloud-coding-guest-configuration.test.ts
+          test/cloud-coding-guest-package.test.ts
+          test/cloud-coding-watchdog.test.ts
+          test/cloud-coding-storage-guest.test.ts
 
       - name: Test runner guest contracts
         working-directory: packages/shell
@@ -105,6 +138,10 @@ jobs:
           scripts/package-lxd-runner-guest.test.mjs
           scripts/package-runner-orchestrator.test.mjs
           scripts/package-runtime-node-updater.test.mjs
+          scripts/package-shared-execution-service.test.mjs
+
+      - name: Test node tidy-up
+        run: node --test deploy/node-tidy/qorpera-node-tidy.test.mjs
 
       - name: Test acceptance storage and verifier contracts
         run: >-

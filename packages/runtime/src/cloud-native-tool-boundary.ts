@@ -620,7 +620,7 @@ export class CloudNativeToolBoundary {
 		const completesTurn =
 			status === "ok" &&
 			tool?.source === "runtime" &&
-			tool.name === "send_message" &&
+			(tool.name === "send_message" || tool.name === "ask_member") &&
 			content.completesTurn === true;
 		return {
 			contentItems: [{ type: "inputText", text: serialized }],

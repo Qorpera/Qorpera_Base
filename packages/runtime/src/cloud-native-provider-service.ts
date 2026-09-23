@@ -37,6 +37,12 @@ import {
 } from "./cloud-native-tool-authority.ts";
 import type { CloudNativeToolOperationControlPlane } from "./cloud-native-tool-operations.ts";
 import type { BeginCloudRunnerOperationInput, CompleteCloudRunnerOperationInput } from "./cloud-runner-broker.ts";
+import {
+	type CloudInteractionRequestInput,
+	type CloudInteractionRequestReceipt,
+	parseCloudInteractionRequestData,
+	parseCloudInteractionRequestReceipt,
+} from "./cloud-thread-interactions.ts";
 
 const LOGIN_SCHEMA = "qorpera.native-provider-login/v1";
 const EXECUTION_SCHEMA = "qorpera.native-provider-execution/v1";
@@ -548,6 +554,32 @@ export class SupabaseNativeProviderControlPlane
 			signal,
 		);
 		return parseCloudAgentSendReceipt(receipt, request.authority.runId);
+	}
+
+	async appendInteractionRequest(
+		request: NativeProviderExecutionRequest,
+		input: CloudInteractionRequestInput,
+		signal?: AbortSignal,
+	): Promise<CloudInteractionRequestReceipt> {
+		const data = parseCloudInteractionRequestData(input.data);
+		const receipt = await this.#rpc(
+			"qorpera_append_native_interaction_request",
+			{
+				p_lease_id: request.authority.leaseId,
+				p_run_id: request.authority.runId,
+				p_job_id: request.job.jobId,
+				p_runner_id: request.authority.runnerId,
+				p_assignment_id: request.authority.assignmentId,
+				p_credential_capsule_id: request.authority.credentialCapsuleId,
+				p_compute_identity_id: request.authority.computeIdentityId,
+				p_provider: request.authority.provider,
+				p_native_harness: request.authority.nativeHarness,
+				p_event_id: input.eventId,
+				p_data: data,
+			},
+			signal,
+		);
+		return parseCloudInteractionRequestReceipt(receipt, input.eventId);
 	}
 
 	async #rpc(name: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
