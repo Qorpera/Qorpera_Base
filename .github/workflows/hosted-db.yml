@@ -10,6 +10,7 @@ on:
       - 'scripts/test-hosted-db.mjs'
       - 'scripts/test-hosted-db.test.mjs'
       - 'scripts/test-runtime-office-current-provider-activation.mjs'
+      - 'scripts/test-runtime-node-capacity.mjs'
 
 permissions:
   contents: read
@@ -41,6 +42,9 @@ jobs:
 
       - name: Apply all migrations and run SQL regression tests
         run: npm run test:hosted-db
+
+      - name: Node capacity and company computer slot suspension against disposable PostgreSQL
+        run: node scripts/test-runtime-node-capacity.mjs
 
       - name: Verify office deletion disposition against disposable PostgreSQL
         run: node scripts/test-runtime-office-delete-disposition.mjs
