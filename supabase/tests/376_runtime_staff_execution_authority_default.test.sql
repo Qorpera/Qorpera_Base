@@ -138,7 +138,7 @@ begin
 	insert into public.qorpera_profile_staff(profile_id,staff_agent_id,display_name,role,charter,appearance_color,appearance_shape,
 		employment_status,lifecycle_state,model_provider,model_id,created_at,updated_at,updated_by_user_id)
 	values ('30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-0000000000d4','Gus','Ops','Keep the lights on.',
-		'blue','round','active','setup','openai',null,clock_timestamp(),clock_timestamp(),'30000000-0000-4000-8000-000000000001');
+		'blue','round','active','setup','openai','gpt-native',clock_timestamp(),clock_timestamp(),'30000000-0000-4000-8000-000000000001');
 	if not exists (select 1 from public.qorpera_staff_execution_authorities
 		where profile_id = '30000000-0000-4000-8000-000000000010' and staff_agent_id = '30000000-0000-4000-8000-0000000000d4'
 			and sponsor_binding_id = v_second and sponsor_version = 1) then
