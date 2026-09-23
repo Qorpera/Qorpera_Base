@@ -5,6 +5,7 @@
 set -euo pipefail
 
 EXPECTED_AGENT_SHA256="d9b07f98379bb4e904ee4cca3fe942f1d1f5bebb53aec132e7c2e44426136ab8"
+EXPECTED_MIGRATE_SHA256="77a523e8bd61e36957f420c5f1bdf6396b25795ebde38e80ab1c27ba36a02b17"
 EXPECTED_LAUNCHER_SHA256="430812c2a5481c4f0a6e933a70c0c5b9bca4c0c58395deac0ac7bc230435dce2"
 SOURCE_ROOT=$(cd "$(dirname "$0")" && pwd)
 
@@ -54,9 +55,11 @@ staging=$(mktemp -d)
 trap 'rm -rf "${staging}"' EXIT
 install -m 0400 "${SOURCE_ROOT}/qorpera-node-agent.mjs" "${staging}/qorpera-node-agent.mjs"
 install -m 0400 "${SOURCE_ROOT}/qorpera-node-launch.py" "${staging}/qorpera-node-launch.py"
+install -m 0400 "${SOURCE_ROOT}/qorpera-node-migrate.py" "${staging}/qorpera-node-migrate.py"
 install -m 0400 "${release_key}" "${staging}/release.pem"
 verify_sha256 "${staging}/qorpera-node-agent.mjs" "${EXPECTED_AGENT_SHA256}"
 verify_sha256 "${staging}/qorpera-node-launch.py" "${EXPECTED_LAUNCHER_SHA256}"
+verify_sha256 "${staging}/qorpera-node-migrate.py" "${EXPECTED_MIGRATE_SHA256}"
 verify_sha256 "${staging}/release.pem" "${release_key_sha256}"
 
 install -d -o root -g root -m 0755 /opt/qorpera-node /opt/qorpera-node/agent /opt/qorpera-node/releases /opt/qorpera-node/roles
@@ -64,5 +67,6 @@ install -d -o root -g root -m 0755 /usr/local/libexec/qorpera-node /etc/qorpera-
 install -d -o root -g root -m 0700 /var/lib/qorpera-node-agent
 install -o root -g root -m 0444 "${staging}/qorpera-node-agent.mjs" /opt/qorpera-node/agent/qorpera-node-agent.mjs
 install -o root -g root -m 0444 "${staging}/qorpera-node-launch.py" /usr/local/libexec/qorpera-node/qorpera-node-launch.py
+install -o root -g root -m 0444 "${staging}/qorpera-node-migrate.py" /usr/local/libexec/qorpera-node/qorpera-node-migrate.py
 install -o root -g root -m 0444 "${staging}/release.pem" /etc/qorpera-node/keys/release.pem
 echo "Node agent and launcher installed; no unit changed."

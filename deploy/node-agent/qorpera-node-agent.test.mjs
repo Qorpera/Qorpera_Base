@@ -598,12 +598,13 @@ test("a role changes when its program or its release values change", () => {
 	assert.equal(roleChanged(null, release("1", {}), "provider"), true);
 });
 
-test("the installer pins the agent and the launcher it installs", async () => {
+test("the installer pins the agent, the launcher and the migration helper it installs", async () => {
 	const here = new URL(".", import.meta.url);
 	const installer = await readFile(new URL("install-node-agent.sh", here), "utf8");
 	for (const [name, file] of [
 		["AGENT", "qorpera-node-agent.mjs"],
 		["LAUNCHER", "qorpera-node-launch.py"],
+		["MIGRATE", "qorpera-node-migrate.py"],
 	]) {
 		const digest = createHash("sha256")
 			.update(await readFile(new URL(file, here)))
