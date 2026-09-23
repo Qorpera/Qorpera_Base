@@ -412,10 +412,14 @@ export class CloudApi {
 
 	/** Post the plaintext to the secret broker, the one place that may see it.
 	 * The ticket's capability is the only credential; nothing else identifies
-	 * the member, and the answer carries a reference, never the value. */
+	 * the member, and the answer carries a reference, never the value. Several
+	 * companies' brokers can share one origin, each its own process: the company
+	 * id (not a secret) lets the origin's router pick the company's broker, and a
+	 * broker refuses a ticket of any other company. */
 	async captureSecret(ticket: CloudSecretCaptureTicket, value: string): Promise<CloudSecretReference> {
 		if (!value || value.length > 32 * 1024) throw new Error("The secret is empty or too long.");
-		const response = await fetch(`${ticket.serviceOrigin}/v1/captures/${ticket.ticketId}`, {
+		const route = `${ticket.serviceOrigin}/v1/captures/${ticket.ticketId}?company=${ticket.companyId}`;
+		const response = await fetch(route, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({
@@ -612,6 +616,7 @@ export interface CloudSecretCaptureTicket {
 	ticketId: string;
 	captureCapability: string;
 	serviceOrigin: string;
+	companyId: string;
 	secretId: string;
 	version: number;
 	expiresAt: string;
@@ -662,6 +667,7 @@ function parseSecretCaptureTicket(value: unknown): CloudSecretCaptureTicket {
 		input.schema !== "qorpera.cloud-secret-capture/v1" ||
 		typeof input.ticketId !== "string" ||
 		typeof input.captureCapability !== "string" ||
+		typeof scope.companyId !== "string" ||
 		typeof scope.secretId !== "string" ||
 		!Number.isSafeInteger(scope.version) ||
 		typeof input.expiresAt !== "string"
@@ -671,6 +677,7 @@ function parseSecretCaptureTicket(value: unknown): CloudSecretCaptureTicket {
 		ticketId: requiredUuid(input.ticketId, "Ticket id"),
 		captureCapability: input.captureCapability,
 		serviceOrigin: origin,
+		companyId: requiredUuid(scope.companyId, "Company id"),
 		secretId: requiredUuid(scope.secretId, "Secret id"),
 		version: scope.version as number,
 		expiresAt: input.expiresAt,
