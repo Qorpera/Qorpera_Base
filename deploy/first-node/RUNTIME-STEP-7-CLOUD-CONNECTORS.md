@@ -152,13 +152,15 @@ location = /v1/oauth/callback {
 }
 # The sign-in start is a member route like a capture: POST and the CORS
 # preflight (OPTIONS), routed by the same ?company= map.
-location ~ ^/v1/oauth/[0-9a-fA-F-]{36}/start$ {
+location ~ "^/v1/oauth/[0-9a-fA-F-]{36}/start$" {
     limit_except POST OPTIONS { deny all; }
     if ($qorpera_capture_broker = "") { return 404; }
     proxy_pass http://$qorpera_capture_broker;
 }
 ```
 
+Both blocks pass `nginx -t` (nginx 1.28.3, node 2's build, in a scratch
+prefix with a stand-in capture map); a regex with `{}` must stay quoted.
 If `$qorpera_capture_broker` falls back to the acceptance broker for
 requests without `company=` (as it does today for captures), the start route
 may keep that fallback; the callback must not fall back, because a state
