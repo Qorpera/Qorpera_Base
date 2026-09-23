@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdtemp, realpath, rm, unlink } from "node:fs/promises";
+import { mkdtemp, readdir, realpath, rm, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -1026,15 +1026,14 @@ describe("LXD native login gateway", () => {
 	});
 	it("reads a released journal once per process, not on every cleanup pass or sign-in", async () => {
 		const root = await stateRoot(),
+			kept = { ...config(root), releasedJournalRetentionMs: Number.MAX_SAFE_INTEGER },
 			lxd = new FakeLxd(),
 			released = fetchBoundary([
 				{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: null },
 			]);
-		await new LxdNativeLoginGateway(config(root), lxd, released.fetchImplementation).handle(loginRequest());
+		await new LxdNativeLoginGateway(kept, lxd, released.fetchImplementation).handle(loginRequest());
 		released.control.cleanupRequired = true;
-		await new LxdNativeLoginGateway(config(root), lxd, released.fetchImplementation).reconcile(
-			new AbortController().signal,
-		);
+		await new LxdNativeLoginGateway(kept, lxd, released.fetchImplementation).reconcile(new AbortController().signal);
 		expect(released.control.releasedAt).not.toBeNull();
 
 		const nextLoginId = "30000000-0000-4000-8000-000000000011",
@@ -1048,7 +1047,7 @@ describe("LXD native login gateway", () => {
 		const reads = (id: string) => opens.mock.calls.filter(([, name]) => name === id).length;
 		try {
 			// A restarted process verifies the retained journal once, then skips it.
-			const gateway = new LxdNativeLoginGateway(config(root), lxd, (input, init) =>
+			const gateway = new LxdNativeLoginGateway(kept, lxd, (input, init) =>
 				boundary.fetchImplementation(input, init),
 			);
 			for (let pass = 0; pass < 3; pass++)
@@ -1065,6 +1064,45 @@ describe("LXD native login gateway", () => {
 		} finally {
 			opens.mockRestore();
 		}
+	});
+	it("archives a released journal after a day and refuses a later request for its login", async () => {
+		const root = await stateRoot(),
+			lxd = new FakeLxd(),
+			boundary = fetchBoundary([
+				{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: null },
+			]),
+			kept = { ...config(root), releasedJournalRetentionMs: Number.MAX_SAFE_INTEGER };
+		await new LxdNativeLoginGateway(kept, lxd, boundary.fetchImplementation).handle(loginRequest());
+		boundary.control.cleanupRequired = true;
+		await new LxdNativeLoginGateway(kept, lxd, boundary.fetchImplementation).reconcile(new AbortController().signal);
+		expect(boundary.control.releasedAt).toBe("2026-09-08T00:00:00.000Z");
+
+		const gateway = new LxdNativeLoginGateway(config(root), lxd, boundary.fetchImplementation);
+		const opens = vi.spyOn(LxdLoginJournal, "open");
+		const now = vi.spyOn(Date, "now");
+		try {
+			now.mockReturnValue(Date.parse("2026-09-08T12:00:00.000Z"));
+			expect(await gateway.reconcile(new AbortController().signal)).toEqual({ scanned: 1, unconfirmed: 0 });
+			expect(await readdir(root)).toEqual([loginId]);
+			// A day after its release it moves to the archive without being read again.
+			now.mockReturnValue(Date.parse("2026-09-09T00:00:00.000Z"));
+			expect(await gateway.reconcile(new AbortController().signal)).toEqual({ scanned: 1, unconfirmed: 0 });
+			expect(opens.mock.calls.filter(([, name]) => name === loginId)).toHaveLength(1);
+		} finally {
+			now.mockRestore();
+			opens.mockRestore();
+		}
+		expect(await readdir(root)).toEqual(["archive"]);
+		const archived = await LxdLoginJournal.open(join(root, "archive"), loginId, lxd);
+		expect((await archived.state()).releasedAt).toBe("2026-09-08T00:00:00.000Z");
+		expect(await gateway.reconcile(new AbortController().signal)).toEqual({ scanned: 0, unconfirmed: 0 });
+
+		// Its login is over: a later post neither allocates a machine nor a new journal.
+		expect((await gateway.handle(loginRequest())).status).toBe(503);
+		expect(lxd.createCalls).toHaveLength(1);
+		expect(await readdir(root)).toEqual(["archive"]);
+		boundary.control.status = "completed";
+		expect(await (await gateway.handle(loginRequest())).json()).toMatchObject({ status: "completed" });
 	});
 	it("fails closed on protected host changes and missing retained authority", async () => {
 		const root = await stateRoot(),
