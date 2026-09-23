@@ -12,8 +12,13 @@ An image stays when any of these holds:
   ones) and builders.
 - It is listed in `keepFingerprints` (the v34 base image that runtime images are built from).
 - It is the **live runtime pin**, **any newer (staged) pin**, or the **previous pin**, the newest older one with another
-  fingerprint and so the rollback. The pins come from the provider env files (`pinFiles`). A pin file is live when a
-  file a live unit starts from names it.
+  fingerprint and so the rollback. On a node that runs the node agent (`agentRoot`, `/opt/qorpera-node`), the pins
+  come from its releases: each `releases/<n>/release.json` names its image, and the live release is the one the
+  provider role's link (`roles/provider`) names. Elsewhere they come from the provider env files (`pinFiles`), and a pin
+  file is live when a file a live unit starts from names it.
+- On a node agent node, it is named by one of the old lane's env files (`pinFiles`). Those stay, with their disabled
+  units, for the old lane's rollback until they are archived after the first release the agent applies; archiving
+  them frees their images.
 - A file that a live unit starts from names it. Those files are the effective `ExecStart`/`ExecStartPre`,
   `EnvironmentFiles`, the running process's command line, the paths named inside those files (three levels) and the
   `extraRoots`. Overridden drop-ins are not followed, so the pins of earlier cuts do not count as live.
