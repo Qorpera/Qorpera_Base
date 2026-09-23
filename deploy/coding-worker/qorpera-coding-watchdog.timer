@@ -1,0 +1,11 @@
+[Unit]
+Description=Check coding guest lease independently of cloud connectivity
+
+[Timer]
+OnBootSec=1s
+OnUnitInactiveSec=1s
+AccuracySec=100ms
+Unit=qorpera-coding-watchdog.service
+
+[Install]
+WantedBy=timers.target

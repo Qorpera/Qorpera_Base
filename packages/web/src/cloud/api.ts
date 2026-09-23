@@ -1,4 +1,11 @@
 import type { Cloud } from "./client.ts";
+import {
+	type CodingSession,
+	type CodingSessionRead,
+	parseCodingSession,
+	parseCodingSessionRead,
+	parseCodingSessions,
+} from "./coding-session.ts";
 import { type HostedCompanyOrganization, parseHostedCompanyOrganization } from "./organization.ts";
 import { collectPages, type PageCursor } from "./pagination.ts";
 import {
@@ -53,6 +60,7 @@ import type {
 	HostedSessionEvent,
 	HostedStaffAgent,
 	HostedStaffExecutionActivity,
+	JsonValue,
 	PendingSessionInputPage,
 	SessionInputReceipt,
 	StaffSessionHandle,
@@ -316,6 +324,45 @@ export class CloudApi {
 			.then(parseEvents);
 	}
 
+	// Coding sessions (Order 9): what the thread element renders. The list finds
+	// the sessions an agent dispatched from a conversation; the read follows one
+	// session's event stream; answer and delegate are the owner's only writes.
+
+	listCodingSessions(sessionId: string): Promise<CodingSession[]> {
+		return this.cloud
+			.rpc("qorpera_list_coding_sessions", { p_session_id: requiredUuid(sessionId, "Session id") })
+			.then(parseCodingSessions);
+	}
+
+	readCodingSession(workerId: string, afterEvent = 0, limit = 200): Promise<CodingSessionRead> {
+		return this.cloud
+			.rpc("qorpera_read_coding_session", {
+				p_worker_id: requiredUuid(workerId, "Coding session id"),
+				p_after_event: afterEvent,
+				p_limit: limit,
+			})
+			.then(parseCodingSessionRead);
+	}
+
+	answerCodingSession(workerId: string, text: string, clientRequestId: string): Promise<CodingSession> {
+		return this.cloud
+			.rpc("qorpera_answer_coding_session", {
+				p_worker_id: requiredUuid(workerId, "Coding session id"),
+				p_text: text,
+				p_client_request_id: requiredUuid(clientRequestId, "Client request id"),
+			})
+			.then(parseCodingSession);
+	}
+
+	delegateCodingSession(workerId: string, clientRequestId: string): Promise<CodingSession> {
+		return this.cloud
+			.rpc("qorpera_delegate_coding_session", {
+				p_worker_id: requiredUuid(workerId, "Coding session id"),
+				p_client_request_id: requiredUuid(clientRequestId, "Client request id"),
+			})
+			.then(parseCodingSession);
+	}
+
 	listSessionInputs(sessionId: string, afterPosition = 0, limit = 100): Promise<PendingSessionInputPage> {
 		return this.cloud
 			.rpc("qorpera_list_session_inputs", {
@@ -324,6 +371,27 @@ export class CloudApi {
 				p_limit: limit,
 			})
 			.then(parsePendingSessionInputs);
+	}
+
+	/** Answer a typed card the agent raised (kernel bundle v70): queued like a
+	 * prompt, so the agent wakes in its own thread with the answer. Never a secret
+	 * value: a secret card answers with its outcome only. */
+	answerInteraction(
+		sessionId: string,
+		clientInputId: string,
+		interactionId: string,
+		outcome: string,
+		answer: Record<string, JsonValue> = {},
+	): Promise<SessionInputReceipt> {
+		return this.cloud
+			.rpc("qorpera_answer_interaction", {
+				p_session_id: requiredUuid(sessionId, "Session id"),
+				p_client_input_id: requiredUuid(clientInputId, "Client input id"),
+				p_interaction_id: requiredUuid(interactionId, "Interaction id"),
+				p_outcome: outcome,
+				p_answer: answer,
+			})
+			.then(parseSessionInputReceipt);
 	}
 
 	/** The one member write into a conversation: a queued prompt. The mouth is

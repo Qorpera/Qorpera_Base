@@ -1,0 +1,15 @@
+[Unit]
+Description=Expire the coding guest execution lease
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/bin/node /opt/qorpera-coding/cloud-coding-watchdog.mjs
+TimeoutStartSec=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadOnlyPaths=-/run/qorpera-coding

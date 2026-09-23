@@ -1,4 +1,11 @@
 import type { CloudSessionAttachment } from "@qorpera/cloud-client/cloud-session-attachments";
+import {
+	type InteractionAnswer,
+	type InteractionRequest,
+	parseInteractionAnswerEvent,
+	parseInteractionAnswerInput,
+	parseInteractionRequest,
+} from "./interactions.ts";
 import { SESSION_IMAGE_TYPES } from "./session-attachments.ts";
 import type { HostedSessionEvent, HostedStaffSpeaker, JsonValue, PendingSessionInput } from "./types.ts";
 
@@ -31,6 +38,8 @@ export interface TranscriptMessage {
 	phase?: "progress" | "final";
 	runId?: string;
 	staffSpeaker?: HostedStaffSpeaker;
+	/** A peer message sent without waking its recipient; it is read at the recipient's next turn. */
+	held?: boolean;
 	createdAt: string;
 	pending?: "queued" | "processing" | "failed";
 	failureReason?: string;
@@ -59,6 +68,8 @@ export interface TranscriptPeerLink {
 	id: string;
 	sequence: number;
 	direction: "in" | "out";
+	/** Left without waking the coworker; read at its next turn. */
+	held?: boolean;
 	counterpartStaffId: string;
 	pairSessionId: string;
 	createdAt: string;
@@ -72,7 +83,24 @@ export interface TranscriptNote {
 	createdAt: string;
 }
 
-export type TranscriptItem = TranscriptMessage | TranscriptCard | TranscriptPeerLink | TranscriptNote;
+/** A typed card the agent raised, with the member's answer once there is one
+ * (queued or written). An answer whose card is not in the loaded window is dropped. */
+export interface TranscriptInteraction {
+	kind: "interaction";
+	id: string;
+	sequence: number;
+	actorUserId: string;
+	request: InteractionRequest;
+	answer?: InteractionAnswer;
+	createdAt: string;
+}
+
+export type TranscriptItem =
+	| TranscriptMessage
+	| TranscriptCard
+	| TranscriptPeerLink
+	| TranscriptNote
+	| TranscriptInteraction;
 
 export interface TranscriptProjection {
 	items: TranscriptItem[];
@@ -224,6 +252,7 @@ function messageFromEntry(entry: Entry, event: HostedSessionEvent, legacy: boole
 			attachmentCount: 0,
 			phase: "final",
 			runId: delivery.runId,
+			...(delivery.held === true ? { held: true } : {}),
 			staffSpeaker: {
 				runId: delivery.runId,
 				staffAgentId: delivery.from,
@@ -277,6 +306,8 @@ export function projectTranscript(
 	let hiddenCount = 0;
 	let lastSequence = 0;
 	const inputIds = new Set<string>();
+	const interactions = new Map<string, TranscriptInteraction>();
+	const answers = new Map<string, InteractionAnswer>();
 	const legacyParts = new Map<string, { count: number; parts: (string | null)[]; event: HostedSessionEvent }>();
 	for (const event of events) {
 		lastSequence = Math.max(lastSequence, event.sequence);
@@ -290,6 +321,30 @@ export function projectTranscript(
 				body: event.body,
 				createdAt: event.createdAt,
 			});
+			continue;
+		}
+		if (event.eventType === "interaction_request") {
+			const request = parseInteractionRequest(event.body);
+			if (!request) {
+				hiddenCount++;
+				continue;
+			}
+			const interaction: TranscriptInteraction = {
+				kind: "interaction",
+				id: event.eventId,
+				sequence: event.sequence,
+				actorUserId: event.actorUserId,
+				request,
+				createdAt: event.createdAt,
+			};
+			interactions.set(event.eventId.toLowerCase(), interaction);
+			items.push(interaction);
+			continue;
+		}
+		if (event.eventType === "interaction_answer") {
+			const parsed = parseInteractionAnswerEvent(event.body);
+			if (parsed) answers.set(parsed.interactionId, { ...parsed.answer, answeredAt: event.createdAt });
+			else hiddenCount++;
 			continue;
 		}
 		if (event.eventType !== "message") {
@@ -308,6 +363,7 @@ export function projectTranscript(
 						id: event.eventId,
 						sequence: event.sequence,
 						direction: info.direction,
+						...(info.held === true ? { held: true } : {}),
 						counterpartStaffId: info.counterpartStaffId,
 						pairSessionId: info.pairSessionId,
 						createdAt: event.createdAt,
@@ -383,6 +439,18 @@ export function projectTranscript(
 		if (input.kind !== "user_message" || inputIds.has(input.inputId)) continue;
 		const body = asRecord(input.body);
 		if (body?.schema === "qorpera.staff-intro-retry/v1") continue;
+		const queuedAnswer = parseInteractionAnswerInput(input.body);
+		if (queuedAnswer) {
+			// A queued answer shows on its card, never as a message bubble.
+			if (!answers.has(queuedAnswer.interactionId))
+				answers.set(queuedAnswer.interactionId, {
+					...queuedAnswer.answer,
+					answeredBy: input.authorUserId,
+					answeredAt: input.createdAt,
+					pending: true,
+				});
+			continue;
+		}
 		const text =
 			typeof body?.displayText === "string" ? body.displayText : typeof body?.text === "string" ? body.text : "";
 		const images = Array.isArray(body?.images) ? body.images : [];
@@ -399,6 +467,10 @@ export function projectTranscript(
 			pending: input.status,
 			...(input.failureReason ? { failureReason: input.failureReason } : {}),
 		});
+	}
+	for (const [interactionId, answer] of answers) {
+		const interaction = interactions.get(interactionId);
+		if (interaction) interaction.answer = answer;
 	}
 	items.sort((a, b) => (a.sequence === b.sequence ? a.createdAt.localeCompare(b.createdAt) : a.sequence - b.sequence));
 	return { items, hiddenCount, lastSequence };

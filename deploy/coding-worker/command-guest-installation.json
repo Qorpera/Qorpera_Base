@@ -1,0 +1,107 @@
+{
+  "schema": "qorpera.coding-command-installation/v2",
+  "state": "requires-reviewed-image-installation",
+  "entrypoint": {
+    "source": "packages/runtime/src/cloud-coding-command-guest.ts",
+    "installedPath": "/opt/qorpera-coding/cloud-coding-command-guest.mjs",
+    "owner": "root:root",
+    "mode": "0444"
+  },
+  "configuration": {
+    "path": "/etc/qorpera-coding/guest.json",
+    "owner": "root:root",
+    "mode": "0444",
+    "schema": "qorpera.coding-command-guest/v2",
+    "requiredFields": [
+      "workerId",
+      "vmId",
+      "bootId",
+      "uid",
+      "gid",
+      "workspacePath",
+      "homePath",
+      "cachePath",
+      "outputRoot",
+      "resourceProfile"
+    ]
+  },
+  "rootDirectories": [
+    "/etc/qorpera-coding",
+    "/opt/qorpera-coding",
+    "/var/lib/qorpera-coding",
+    "/var/lib/qorpera-coding/inbox",
+    "/var/lib/qorpera-coding/commands",
+    "/var/lib/qorpera-coding/logs",
+    "/run/qorpera-coding"
+  ],
+  "rootDirectoryMode": "0755",
+  "requirements": [
+    "Linux KVM/QEMU guest",
+    "systemd",
+    "Node.js >=22.19",
+    "bash",
+    "dedicated non-root coding uid/gid >=1000",
+    "coding-user-owned isolated repository workspace",
+    "Admitted NAS data mount at /workspace and separate protected NAS custody mount at /var/lib/qorpera-coding; no local directory fallback",
+    "Explicit resourceProfile compatible with the admitted VM",
+    "Pinned Node/Python/native toolchain and browser dependencies selected in the signed image recipe"
+  ],
+  "limits": {
+    "commandBytes": 16384,
+    "requestJsonBytes": 65536,
+    "outputPageBytes": 16384,
+    "defaultOutputPageBytes": 4096,
+    "defaultMaxLogBytes": 67108864,
+    "maxLogBytesCeiling": 1073741824,
+    "maxTimeoutMsCeiling": 1800000,
+    "resourceProfileFields": [
+      "maxTimeoutMs",
+      "memoryBytes",
+      "tasksMax",
+      "cpuQuotaPercent",
+      "maxLogBytes"
+    ]
+  },
+  "credentialPolicy": "No provider, GitHub, cloud-control, member or office credentials enter the command environment or coding user home.",
+  "installationPerformed": false,
+  "watchdog": {
+    "entrypoint": "/opt/qorpera-coding/cloud-coding-watchdog.mjs",
+    "service": "qorpera-coding-watchdog.service",
+    "timer": "qorpera-coding-watchdog.timer",
+    "slice": "qorpera-coding.slice",
+    "leaseFile": "/run/qorpera-coding/lease.json",
+    "refreshFile": "/var/lib/qorpera-coding/inbox/lease-refresh.json",
+    "leaseMaxMs": 60000,
+    "checkIntervalMs": 1000,
+    "enableTimerBeforeFirstRefresh": true
+  },
+  "nasPaths": {
+    "workspacePath": "/workspace/repository",
+    "homePath": "/workspace/home",
+    "cachePath": "/workspace/cache",
+    "outputRoot": "/var/lib/qorpera-coding/logs"
+  },
+  "provisioningOrder": [
+    "Install and verify pinned OS/runtime/toolchains in image build, never from model/root command",
+    "Install helper artifacts and systemd units with reviewed manifest digest; create root-owned0755 /run/qorpera-coding in image; do not enable ordinary coding admission",
+    "Attach exact admitted NAS data and custody devices",
+    "Install root-owned0444 guest/storage configuration bound to current volume generation and boot",
+    "Invoke fixed trusted storage initializer to verify mounts and markers, then initialize coding UID-owned data directories and root-protected custody only on verified mounts",
+    "Enable watchdog timer, refresh authorized queue lease, then admit commands"
+  ],
+  "storage": {
+    "entrypoint": {
+      "source": "packages/runtime/src/cloud-coding-storage-guest-main.ts",
+      "installedPath": "/opt/qorpera-coding/cloud-coding-storage-guest.mjs",
+      "owner": "root:root",
+      "mode": "0444"
+    },
+    "configuration": {
+      "path": "/etc/qorpera-coding/storage.json",
+      "owner": "root:root",
+      "mode": "0444"
+    },
+    "initializeBeforeCommands": true,
+    "assertAtEveryAction": true
+  }
+}

@@ -84,6 +84,33 @@ jobs:
           test/runtime-node-update.test.ts
           test/runtime-node-update-registry.test.ts
           test/runtime-node-update-host.test.ts
+          test/coding-executor.test.ts
+          test/coding-executor-host.test.ts
+          test/coding-vm.test.ts
+          test/coding-storage.test.ts
+          test/coding-workspace.test.ts
+          test/coding-command-transport.test.ts
+          test/coding-lease-transport.test.ts
+          test/coding-git.test.ts
+          test/coding-git-seed.test.ts
+          test/coding-git-transfer.test.ts
+
+      - name: Test coding session runtime contracts
+        working-directory: packages/runtime
+        run: >-
+          node ../../node_modules/vitest/dist/cli.js --run
+          test/cloud-native-coding-runtime.test.ts
+          test/cloud-coding-command-http.test.ts
+          test/cloud-coding-command-tools.test.ts
+          test/cloud-coding-command-log.test.ts
+          test/cloud-coding-command-authority.test.ts
+          test/cloud-coding-executor-config.test.ts
+          test/cloud-coding-executor-control.test.ts
+          test/cloud-coding-git-guest.test.ts
+          test/cloud-coding-guest-configuration.test.ts
+          test/cloud-coding-guest-package.test.ts
+          test/cloud-coding-watchdog.test.ts
+          test/cloud-coding-storage-guest.test.ts
 
       - name: Test runner guest contracts
         working-directory: packages/shell

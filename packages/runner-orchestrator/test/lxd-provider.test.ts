@@ -456,9 +456,12 @@ describe("LXD cloud runner provider", () => {
 			return provision(input, init);
 		};
 		const backend = new LxdCloudRunnerProviderBackend(config(stateRoot), lxd, new FakeGuest(), fetcher);
-		await expect(backend.acquire(runId, work(), new AbortController().signal)).rejects.toThrow(
-			"NODE_OBSERVATION_UNAVAILABLE",
-		);
+		await expect(backend.acquire(runId, work(), new AbortController().signal)).rejects.toMatchObject({
+			name: "LxdMachineAdmissionRefused",
+			category: "admission_refused",
+			state: "refused",
+			reason: "NODE_OBSERVATION_UNAVAILABLE",
+		});
 		expect(lxd.createCalls).toHaveLength(1);
 		expect(lxd.powerCalls).toHaveLength(0);
 		const journalPath = join(stateRoot, runId, "journal.json");
@@ -953,6 +956,32 @@ describe("LXD cloud runner provider", () => {
 		});
 		expect(lxd.createCalls).toHaveLength(0);
 	});
+	it.each(["NODE_CAPACITY_EXHAUSTED", "NODE_OBSERVATION_UNAVAILABLE", "NODE_DISABLED"])(
+		"reports a node refusal %s as a typed admission refusal",
+		async (reason) => {
+			const stateRoot = join(await root(), "state");
+			const lxd = new FakeLxd();
+			const base = fetchProvisioner([]);
+			const fetcher: typeof fetch = async (input, init) => {
+				if (String(input).includes("qorpera_reserve_runtime_node_machine"))
+					return Response.json({ state: "refused", reason });
+				return base(input, init);
+			};
+			const backend = new LxdCloudRunnerProviderBackend(config(stateRoot), lxd, new FakeGuest(), fetcher);
+			const failure = await backend
+				.acquire(runId, work(), new AbortController().signal)
+				.catch((error: unknown) => error);
+			expect(failure).toMatchObject({
+				name: "LxdMachineAdmissionRefused",
+				category: "admission_refused",
+				state: "refused",
+				reason,
+			});
+			expect(lxd.createCalls).toHaveLength(0);
+			const journal = JSON.parse(await readFile(join(stateRoot, runId, "journal.json"), "utf8"));
+			expect(journal).toMatchObject({ physicalState: "reserving", capacityRegistered: true });
+		},
+	);
 	it("blocks new starts until retained live guests have a capacity record", async () => {
 		const f = await acquiredFixture();
 		const journal = JSON.parse(await readFile(f.journalPath, "utf8"));

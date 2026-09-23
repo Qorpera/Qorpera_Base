@@ -1,5 +1,5 @@
--- Thread interactions, secrets step (bundle v77, on top of the v75 kernel and
--- the v76 runtime): a secret card is answered through the company's cloud
+-- Thread interactions, secrets step (bundle v81, on top of the v75 kernel and
+-- the v80 runtime): a secret card is answered through the company's cloud
 -- secret custody, never through the transcript.
 --   * A secret card names the connector its secret belongs to (`connectorId`,
 --     default `vault`) beside the secret name, so the member's browser can open

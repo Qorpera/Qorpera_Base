@@ -10,6 +10,7 @@ import {
 	observeCloudCompanyPathPresence,
 } from "./cloud-company-path-presence.ts";
 import { cloudHiringTools } from "./cloud-hiring-tools.ts";
+import type { CloudNativeCodingDriver } from "./cloud-native-coding-runtime.ts";
 import {
 	cloudCompanyContextTool,
 	compileCloudNativeCompanyInstructions,
@@ -74,6 +75,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	readonly #isolation: NativeIsolationConfiguration | undefined;
 	readonly #secretBroker: CloudSecretOperationClient | undefined;
 	readonly #computerSession: CloudCompanyComputerSessionFactory | undefined;
+	readonly #coding: CloudNativeCodingDriver | undefined;
 
 	constructor(options: {
 		presence?: CloudCompanyPathPresenceFactory;
@@ -91,6 +93,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		secretBroker?: CloudSecretOperationClient;
 		/** Explicit cloud-office adapter; no local execution or inferred resource grant. */
 		computerSession?: CloudCompanyComputerSessionFactory;
+		/** The coding composition (Order 9): only a node with the coding command
+		 * gateway installed carries it. A coding wake on a node without it fails visibly. */
+		coding?: CloudNativeCodingDriver;
 	}) {
 		this.#control = options.controlPlane;
 		this.#presenceFactory = options.presence;
@@ -102,6 +107,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		this.#isolation = options.isolation ? Object.freeze({ ...options.isolation }) : undefined;
 		this.#secretBroker = options.secretBroker;
 		this.#computerSession = options.computerSession;
+		this.#coding = options.coding;
 	}
 
 	async execute(request: NativeCompanyExecutionRequest, identityRoot: string, signal: AbortSignal) {
@@ -154,6 +160,20 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				),
 				context.identity,
 			);
+			// A coding session's turn is its own composition: three command tools in
+			// the credential-free repository VM and two ways to end the turn.
+			if (wake.kind === "agent" && wake.source.kind === "worker-dispatch" && wake.payload.species === "coding") {
+				if (!this.#coding)
+					throw new Error("Coding sessions run in the coding composition, which this node does not carry");
+				stage = "prompt-composition";
+				composition.finish("succeeded", { outputBytes: 0 });
+				return await this.#coding.execute(request, identityRoot, signal, {
+					binding,
+					identity: context.identity,
+					wake,
+					observability,
+				});
+			}
 			const wakeControl: CloudWakeControl = {
 				call: (method, argumentsValue, requestSignal) => this.#paths.call(method, argumentsValue, requestSignal),
 			};

@@ -39,7 +39,7 @@ profile RPCs; RLS is the second read boundary.
 
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
-151 functions, grouped for navigation. Signatures: see the migration that defines each.
+155 functions, grouped for navigation. Signatures: see the migration that defines each.
 
 
 ### Members, presence, friends, feedback (9)
@@ -172,6 +172,13 @@ profile RPCs; RLS is the second read boundary.
 - `qorpera_resolve_session_recovery`
 
 
+### Coding sessions (4) — Order 9, part 1 (PR #211)
+
+- `qorpera_list_coding_sessions(p_session_id)` — the coding sessions the agent dispatched from this conversation, each as `qorpera.coding-session/v1` plus `isOwner`; the thread renders each one as a centered system element (the "sandwich": a start line, a collapsible body, a status line) from this view and the session's own events, never from the agent's prose
+- `qorpera_read_coding_session(p_worker_id, p_after_event, p_limit)` — the session view plus its event stream (`phase`, `step`, `text`, `needs_input`, `input`, `delegated`, `published`, `finished`, `failed`), cursor on the event id
+- `qorpera_answer_coding_session(p_worker_id, p_text, p_client_request_id)` — owner only; idempotent on the client request id; refused while the session is working
+- `qorpera_delegate_coding_session(p_worker_id, p_client_request_id)` — owner only; "let the agent decide" a question the session asked
+
 ### Execution, sponsors, runners, computers (29)
 
 - `qorpera_begin_operation_receipt`
@@ -283,7 +290,8 @@ machine.
 | Organization: Co-Founder, responsibilities, projects, rooms, staff | in rework (departments → responsibilities) | build against the semantic projection (contract 14.5); no department UI |
 | Screens (Company Computer viewer) | Order 4, plus a browser-facing authenticated websocket gateway (viewer traffic is private-network today) | later |
 | Routines, memory, connectors | Orders 6–8 | later |
-| Repositories, coding workers | Order 9 | later |
+| Coding sessions (thread element: list, read, answer, delegate) | Order 9 part 1 (PR #211); no executor yet, so no session exists in production until part 3 | build the thread element against the RPCs above; render nothing when the list RPC is not deployed |
+| Repositories, coding executors, preview route | Order 9 parts 3–4 | later |
 
 ### Thread interactions (typed cards, bundle v75)
 
