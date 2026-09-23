@@ -311,6 +311,26 @@ export class NodeAgent {
 		return { role, revision, pid };
 	}
 
+	/** A role runs under its new unit once `switch` enabled it. Until every role has switched, releases do not apply:
+	 * an old and a new unit enabled side by side would conflict at boot. */
+	async assertSwitched(config, roles) {
+		const unswitched = [];
+		for (const role of roles) if (!(await this.ports.isEnabled(config.roles[role].unit))) unswitched.push(role);
+		need(!unswitched.length, `ROLES_NOT_SWITCHED ${unswitched.join(",")}`);
+	}
+
+	/** Polls a unit until its main process runs exactly `expected`, within a minute. */
+	async awaitCommand(unit, expected) {
+		let command = [];
+		for (let attempt = 0; attempt < START_ATTEMPTS; attempt++) {
+			const pid = await this.ports.mainPid(unit);
+			command = pid > 0 ? await this.ports.cmdline(pid).catch(() => []) : [];
+			if (same(command, expected)) return command;
+			await this.ports.sleep(500);
+		}
+		throw new Error(`UNIT_COMMAND ${unit} ${command.join(" ")}`);
+	}
+
 	/** Moves roles to `revision` one at a time, re-checking quiet right before each restart. */
 	async moveRoles(config, roles, revision) {
 		const moved = [];
@@ -346,6 +366,7 @@ export class NodeAgent {
 		const roles = config.restartOrder;
 		const missing = roles.filter((role) => !after.roles[role]);
 		need(!missing.length, `APPLY_RELEASE_LACKS_ROLES ${missing.join(",")}`);
+		await this.assertSwitched(config, roles);
 		// A role's link may stay on an older release whose program and values for that role equal current's (it did
 		// not change); only a role that differs from current is still deferred. What changes is decided per role,
 		// against the release that role runs.
@@ -373,28 +394,45 @@ export class NodeAgent {
 				revision,
 			);
 		} catch (error) {
+			const onNew = [];
+			for (const role of roles) if ((await this.roleRevision(role)) === revision) onNew.push(role);
+			// A machine that started meanwhile must not be cut off by a rollback either: stop and report. The roles on
+			// the new release stay there; `restart <role>` finishes the rest, or `rollback` undoes it, once quiet.
+			const notQuiet = error.message.startsWith("NODE_NOT_QUIET");
 			const bundleKept = before && before.runtimeBundleSha256 === after.runtimeBundleSha256;
-			if (!bundleKept) {
+			if (notQuiet || !bundleKept) {
 				await this.record("apply-receipt", revision, {
 					...intent,
-					state: "failed",
+					state: notQuiet ? "stopped-not-quiet" : "failed",
+					onNew,
 					error: error.message,
 					rolledBack: false,
 				});
-				throw new Error(`APPLY_FAILED_NO_AUTOMATIC_ROLLBACK ${error.message}`);
+				const reason = notQuiet ? "APPLY_STOPPED_NOT_QUIET" : "APPLY_FAILED_NO_AUTOMATIC_ROLLBACK";
+				throw new Error(`${reason} ${error.message}`);
 			}
 			// Every role pointed at the new release goes back to the release it ran, including the one whose check failed.
-			const touched = moved.length ? moved : [];
-			for (const role of roles)
-				if ((await this.roleRevision(role)) === revision && !touched.some((entry) => entry.role === role))
-					touched.push({ role, from: running[role].revision });
-			for (const { role, from } of touched) await this.point(`roles/${role}`, from);
+			for (const role of onNew) await this.point(`roles/${role}`, running[role].revision);
 			await this.point("current", current);
 			if (previous !== null) await this.point("previous", previous);
-			for (const { role } of touched) await this.restartRole(config, role);
+			// No quiet gate here: the failed role is down already, and its known-good release must come back now.
+			try {
+				for (const role of onNew) await this.restartRole(config, role);
+			} catch (rollbackError) {
+				await this.record("apply-receipt", revision, {
+					...intent,
+					state: "rollback-failed",
+					onNew,
+					error: error.message,
+					rollbackError: rollbackError.message,
+					rolledBack: false,
+				});
+				throw new Error(`APPLY_ROLLBACK_FAILED ${error.message}; ${rollbackError.message}`);
+			}
 			await this.record("apply-receipt", revision, {
 				...intent,
 				state: "rolled-back",
+				onNew,
 				error: error.message,
 				rolledBack: true,
 			});
@@ -411,6 +449,7 @@ export class NodeAgent {
 		const current = await this.revisionOf("current");
 		const previous = await this.revisionOf("previous");
 		need(previous !== null && previous !== current, "ROLLBACK_NO_PREVIOUS");
+		await this.assertSwitched(config, config.restartOrder);
 		const target = await this.verifiedRelease(previous);
 		const changed = [];
 		for (const role of config.restartOrder) {
@@ -439,24 +478,30 @@ export class NodeAgent {
 		}
 	}
 
-	/** Migration: moves a role from its old unit (versioned launcher, stacked drop-ins) to its new unit. */
+	/** Migration: moves a role from its old unit (versioned launcher, stacked drop-ins) to its new unit. The old unit
+	 * must be one the new unit conflicts with, so a unit of another role can never be taken down by mistake. */
 	async switch(role, fromUnit) {
 		const config = await this.config();
 		const settings = config.roles[role];
 		need(settings, `NODE_ROLE_UNKNOWN ${role}`);
 		need(/^qorpera-[a-z0-9-]+\.service$/.test(fromUnit) && fromUnit !== settings.unit, "SWITCH_OLD_UNIT");
+		need((await this.ports.conflicts(settings.unit)).includes(fromUnit), `SWITCH_OLD_UNIT_NOT_CONFLICTED ${fromUnit}`);
+		need(!(await this.ports.isEnabled(settings.unit)), `SWITCH_ALREADY_SWITCHED ${role}`);
 		const revision = await this.roleRevision(role);
 		need(revision !== null, "SWITCH_NEEDS_AN_ADOPTED_RELEASE");
 		await this.quiet(0);
 		const oldPid = await this.ports.mainPid(fromUnit);
 		const before = oldPid > 0 ? await this.ports.cmdline(oldPid) : [];
-		await this.record("switch-intent", revision, { role, from: fromUnit, to: settings.unit, before });
-		await this.ports.disable(fromUnit, true);
+		need(before.length > 0, `SWITCH_OLD_UNIT_NOT_RUNNING ${fromUnit}`);
+		// Migration records carry no release, so gc never prunes them: unswitch needs the old unit's command.
+		await this.record("switch-intent", null, { release: revision, role, from: fromUnit, to: settings.unit, before });
 		try {
+			await this.ports.disable(fromUnit, true);
 			await this.ports.enable(settings.unit, false);
 			const result = await this.restartRole(config, role);
+			need(await this.ports.isEnabled(settings.unit), `SWITCH_NEW_UNIT_NOT_ENABLED ${settings.unit}`);
 			const after = await this.ports.cmdline(result.pid);
-			await this.record("switch-receipt", revision, {
+			await this.record("switch-receipt", null, { release: revision,
 				role,
 				from: fromUnit,
 				to: settings.unit,
@@ -466,10 +511,22 @@ export class NodeAgent {
 			});
 			return { switched: role, from: fromUnit, to: settings.unit, before, after };
 		} catch (error) {
-			await this.ports.disable(settings.unit, true).catch(() => undefined);
-			await this.ports.enable(fromUnit, true);
-			need((await this.ports.mainPid(fromUnit)) > 0, `SWITCH_BACK_FAILED ${error.message}`);
-			await this.record("switch-receipt", revision, {
+			try {
+				await this.ports.disable(settings.unit, true).catch(() => undefined);
+				await this.ports.enable(fromUnit, true);
+				await this.awaitCommand(fromUnit, before);
+			} catch (backError) {
+				await this.record("switch-receipt", null, { release: revision,
+					role,
+					from: fromUnit,
+					to: settings.unit,
+					state: "switch-back-failed",
+					error: error.message,
+					backError: backError.message,
+				});
+				throw new Error(`SWITCH_BACK_FAILED ${error.message}; ${backError.message}`);
+			}
+			await this.record("switch-receipt", null, { release: revision,
 				role,
 				from: fromUnit,
 				to: settings.unit,
@@ -480,17 +537,53 @@ export class NodeAgent {
 		}
 	}
 
+	/** The command the old unit ran when `role` last switched away from it. */
+	async switchedFrom(role, fromUnit) {
+		const names = (await readdir(this.journal).catch(() => [])).filter((name) =>
+			name.includes("-switch-receipt-rnone-"),
+		);
+		for (const name of names.sort().reverse()) {
+			const receipt = JSON.parse(await readFile(join(this.journal, name), "utf8"));
+			if (receipt.role !== role || receipt.state !== "switched") continue;
+			return receipt.from === fromUnit ? receipt.before : null;
+		}
+		return null;
+	}
+
 	async unswitch(role, toUnit) {
 		const config = await this.config();
 		const settings = config.roles[role];
 		need(settings && /^qorpera-[a-z0-9-]+\.service$/.test(toUnit) && toUnit !== settings.unit, "UNSWITCH_UNITS");
+		need((await this.ports.conflicts(settings.unit)).includes(toUnit), `UNSWITCH_OLD_UNIT_NOT_CONFLICTED ${toUnit}`);
+		const before = await this.switchedFrom(role, toUnit);
+		need(before, `UNSWITCH_NO_SWITCH_FROM ${toUnit}`);
 		await this.quiet(0);
-		await this.ports.disable(settings.unit, true);
-		await this.ports.enable(toUnit, true);
-		const pid = await this.ports.mainPid(toUnit);
-		need(pid > 0, `UNSWITCH_OLD_UNIT_NOT_RUNNING ${toUnit}`);
-		await this.record("unswitch-receipt", await this.roleRevision(role), { role, from: settings.unit, to: toUnit, pid });
-		return { unswitched: role, to: toUnit, pid };
+		await this.record("unswitch-intent", null, { role, from: settings.unit, to: toUnit, expected: before });
+		try {
+			await this.ports.disable(settings.unit, true);
+			await this.ports.enable(toUnit, true);
+			// The old unit's launcher is versioned and unchanged: it must run exactly what it ran before the switch.
+			const command = await this.awaitCommand(toUnit, before);
+			need(await this.ports.isEnabled(toUnit), `UNSWITCH_OLD_UNIT_NOT_ENABLED ${toUnit}`);
+			need(!(await this.ports.isEnabled(settings.unit)), `UNSWITCH_NEW_UNIT_STILL_ENABLED ${settings.unit}`);
+			await this.record("unswitch-receipt", null, {
+				role,
+				from: settings.unit,
+				to: toUnit,
+				state: "unswitched",
+				command,
+			});
+			return { unswitched: role, to: toUnit, command };
+		} catch (error) {
+			await this.record("unswitch-receipt", null, {
+				role,
+				from: settings.unit,
+				to: toUnit,
+				state: "failed",
+				error: error.message,
+			});
+			throw new Error(`UNSWITCH_FAILED ${error.message}`);
+		}
 	}
 
 	/** Points a role at the current release and restarts it: a deferred role after resume. */
@@ -499,6 +592,7 @@ export class NodeAgent {
 		need(config.roles[role], `NODE_ROLE_UNKNOWN ${role}`);
 		const current = await this.revisionOf("current");
 		need(current !== null, "RESTART_NO_CURRENT");
+		await this.assertSwitched(config, [role]);
 		const [moved] = await this.moveRoles(config, [role], current);
 		await this.record("restart-receipt", current, { role, from: moved.from });
 		return { restarted: role, revision: current, from: moved.from };
@@ -628,6 +722,14 @@ export function nodePorts(lxdSocket = "/var/snap/lxd/common/lxd/unix.socket") {
 		async mainPid(unit) {
 			const { stdout } = await run("/usr/bin/systemctl", ["show", unit, "-p", "MainPID", "--value"]);
 			return Number(stdout.trim());
+		},
+		async isEnabled(unit) {
+			const result = await run("/usr/bin/systemctl", ["is-enabled", unit]).catch((error) => error);
+			return String(result.stdout ?? "").trim() === "enabled";
+		},
+		async conflicts(unit) {
+			const { stdout } = await run("/usr/bin/systemctl", ["show", unit, "-p", "Conflicts", "--value"]);
+			return stdout.trim().split(/\s+/).filter(Boolean);
 		},
 		async cmdline(pid) {
 			return (await readFile(`/proc/${pid}/cmdline`, "utf8")).split("\0").filter(Boolean);
