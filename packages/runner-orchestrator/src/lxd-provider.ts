@@ -1901,7 +1901,10 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			{ call: (method, args, checked) => this.#rpc(method, args, checked) },
 			signal,
 		);
-		if (admission.state === "refused") throw new Error(admission.reason);
+		// A node refusal (capacity, observation, policy) is an admission answer, not an
+		// infrastructure fault: the control plane defers the job instead of counting a
+		// failed attempt. The allocation and its demand row are kept for the next try.
+		if (admission.state === "refused") throw new LxdMachineAdmissionRefused("refused", admission.reason);
 		if (prior && prior.nodeId !== admission.nodeId) throw new Error("LXD node placement cannot be changed");
 		this.#registeredNodeCapacity.set(current.acquisitionId, {
 			nodeId: admission.nodeId,
