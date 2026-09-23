@@ -521,6 +521,10 @@ export class LxdNativeLoginGateway {
 	readonly #lxd: LxdClient & Pick<LxdTrackedClient, "submitInstanceOperation" | "inspectInstanceOperation">;
 	readonly #fetch: ServiceHttpFetch;
 	readonly #serial = new Map<string, Promise<void>>();
+	/** Every sign-in and account refresh leaves its journal on disk, released. A released
+	 * journal accepts no further event, so scans read it once per process, not on every
+	 * pass (23 Sep 2026: 1 084 of them kept node 1's provider busy on one core). */
+	readonly #released = new Set<string>();
 
 	constructor(
 		config: LxdNativeLoginGatewayConfig,
@@ -958,14 +962,20 @@ export class LxdNativeLoginGateway {
 	async #releaseReplaced(login: NativeLoginRequest, signal: AbortSignal): Promise<void> {
 		for (const name of (await readdir(this.#config.stateRoot)).sort()) {
 			signal.throwIfAborted();
-			if (!LOGIN_UUID.test(name) || name === login.loginId) continue;
+			if (!LOGIN_UUID.test(name) || name === login.loginId || this.#released.has(name)) continue;
 			try {
 				const journal = await LxdLoginJournal.open(this.#config.stateRoot, name, this.#lxd);
-				if (journal.binding.computeIdentityId !== login.computeIdentityId) continue;
 				const state = await journal.state();
-				if (state.releasedAt) continue;
+				if (state.releasedAt) {
+					this.#released.add(name);
+					continue;
+				}
+				if (journal.binding.computeIdentityId !== login.computeIdentityId) continue;
 				const description = await this.#machineDescription(journal.binding, signal);
-				if (state.closing || description.cleanupRequired) await this.#cleanup(journal, signal);
+				if (state.closing || description.cleanupRequired) {
+					await this.#cleanup(journal, signal);
+					this.#released.add(name);
+				}
 			} catch {
 				signal.throwIfAborted();
 			}
@@ -985,15 +995,19 @@ export class LxdNativeLoginGateway {
 				continue;
 			}
 			scanned++;
+			if (this.#released.has(name)) continue;
 			try {
 				const journal = await LxdLoginJournal.open(this.#config.stateRoot, name, this.#lxd);
-				await this.#exclusive(journal.binding.computeIdentityId, async () => {
+				// Cleanup either releases the journal or throws.
+				const released = await this.#exclusive(journal.binding.computeIdentityId, async () => {
 					const state = await journal.state();
-					if (state.releasedAt) return;
-					if (await this.#retireOrphan(journal, signal)) return;
+					if (state.releasedAt || (await this.#retireOrphan(journal, signal))) return true;
 					const description = await this.#machineDescription(journal.binding, signal);
-					if (state.closing || description.cleanupRequired) await this.#cleanup(journal, signal);
+					if (!state.closing && !description.cleanupRequired) return false;
+					await this.#cleanup(journal, signal);
+					return true;
 				});
+				if (released) this.#released.add(name);
 			} catch {
 				signal.throwIfAborted();
 				unconfirmed++;
