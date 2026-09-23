@@ -66,9 +66,11 @@ Token files the programs read themselves keep their paths, owners and modes.
 - The journal since the restart has no launcher refusal (`QORPERA_NODE_ROLE_START_REFUSED`).
 
 **When a check fails:**
-- If the release keeps the runtime bundle, the agent swaps back, restarts and reports `APPLY_ROLLED_BACK`. If a
-  rollback restart fails too, it records `rollback-failed` (with the roles it had moved) and reports
-  `APPLY_ROLLBACK_FAILED`.
+- If the release keeps the runtime bundle, the agent swaps back and reports `APPLY_ROLLED_BACK`. The role whose check
+  failed is down already, so it goes back at once. A role that passed its checks goes back only while the node is
+  quiet. If a machine started meanwhile, that role stays on the new release and the agent reports
+  `APPLY_ROLLED_BACK_PARTLY <roles>`; `restart <role>` puts it back once quiet. If a rollback restart fails too, it
+  records `rollback-failed` (with the roles it had moved) and reports `APPLY_ROLLBACK_FAILED`.
 - If the release changes the bundle, the agent stops and reports `APPLY_FAILED_NO_AUTOMATIC_ROLLBACK`. Rolling back after
   an activation is a release decision: re-activate the previous bundle and move every node back, under a pause.
 - If a machine started before a role's turn (`NODE_NOT_QUIET`), the agent stops where it is and reports
