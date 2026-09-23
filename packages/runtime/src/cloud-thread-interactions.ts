@@ -18,6 +18,8 @@ export type CloudInteractionSurface = (typeof CLOUD_INTERACTION_SURFACES)[number
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+/** Names in the cloud secret custody start with a letter. */
+const VAULT_NAME_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 const FIELD_ID_PATTERN = /^[a-z][a-z0-9_]{0,31}$/;
 const HOST_PATTERN = /^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?)+$/;
 const TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/;
@@ -26,7 +28,7 @@ const CONTROL_PATTERN = /[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/;
 export const CLOUD_ASK_MEMBER_INSTRUCTIONS =
 	"ask_member puts one typed card in this conversation for the member to answer: a question with options, a secret they enter into the company vault, a form the host fills into the page on your computer, a takeover of your computer for a sign-in or code, a draft message they send or discard, or a credential sign-in the computer performs from the vault. " +
 	"Calling it ends this turn like a final send (text is the sentence shown above the card), so finish every Company File change and coworker message first. " +
-	"The answer arrives as the input of your next wake as qorpera.interaction-answer/v1 with an outcome and, for a question or form, the chosen values; a secret answer never contains the value, use the vault name. " +
+	"The answer arrives as the input of your next wake as qorpera.interaction-answer/v1 with an outcome and, for a question or form, the chosen values; a secret answer never contains the value, only the vault secret's id and version under the connector you named (connectorId, default vault), for a connector operation to use. " +
 	"Never ask the member to paste a password, token or code into ordinary chat; raise a secret card, a form or a takeover instead. A declined, dismissed or expired card is the answer: do not raise the same card again at once. " +
 	"Form fields that are secret (password, otp, or secret: true) need a target from your latest page snapshot; the host fills them and you click the site's own submit afterwards. Reuse the same idempotencyKey and arguments when retrying.";
 
@@ -116,9 +118,11 @@ function payloadValid(surface: CloudInteractionSurface, payload: Record<string, 
 		}
 		case "secret":
 			return (
-				closedKeys(payload, ["name", "label", "purpose", "kind"]) &&
+				closedKeys(payload, ["name", "label", "purpose", "kind", "connectorId"]) &&
 				typeof payload.name === "string" &&
-				NAME_PATTERN.test(payload.name) &&
+				VAULT_NAME_PATTERN.test(payload.name) &&
+				(!("connectorId" in payload) ||
+					(typeof payload.connectorId === "string" && VAULT_NAME_PATTERN.test(payload.connectorId))) &&
 				text(payload.label, 1, 80) &&
 				text(payload.purpose, 1, 300) &&
 				optionalEnum(payload, "kind", ["token", "password", "text"])
