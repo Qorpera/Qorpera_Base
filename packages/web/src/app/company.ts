@@ -3,6 +3,7 @@ import type { CloudApi } from "../cloud/api.ts";
 import { CloudRpcError, describeError } from "../cloud/client.ts";
 import type { CodingSession, CodingSessionRead } from "../cloud/coding-session.ts";
 import { type GroupChatDetails, listGroupChatDetails, readGroupChatDetails } from "../cloud/group-details.ts";
+import type { InteractionAnswer, InteractionOutcome } from "../cloud/interactions.ts";
 import { buildCompanyHierarchy, type CompanyHierarchy, type HostedCompanyOrganization } from "../cloud/organization.ts";
 import { UUID_PATTERN } from "../cloud/parse.ts";
 import {
@@ -27,6 +28,7 @@ import type {
 	HostedSessionEvent,
 	HostedStaffAgent,
 	HostedStaffExecutionActivity,
+	JsonValue,
 	PendingSessionInput,
 } from "../cloud/types.ts";
 import { debounce, Store } from "./state.ts";
@@ -143,6 +145,23 @@ export interface ConversationState {
 		createdAt: string;
 		authorUserId: string;
 	}[];
+	/** Card answers this browser sent that the cloud has not listed back yet, by interaction id. */
+	interactionAnswers?: Record<string, InteractionAnswer>;
+	/** What went wrong with the last card answer, in the member's words. */
+	interactionError?: string;
+}
+
+/** Drop optimistic card answers once the projection carries them. */
+function reconcileInteractionAnswers(
+	answers: Record<string, InteractionAnswer> | undefined,
+	projection: TranscriptProjection,
+): Record<string, InteractionAnswer> | undefined {
+	if (!answers) return undefined;
+	const settled = new Set(
+		projection.items.flatMap((item) => (item.kind === "interaction" && item.answer ? [item.id.toLowerCase()] : [])),
+	);
+	const kept = Object.fromEntries(Object.entries(answers).filter(([id]) => !settled.has(id)));
+	return Object.keys(kept).length ? kept : undefined;
 }
 
 function reconcileOptimistic(state: Pick<ConversationState, "optimistic" | "pending" | "events">) {
@@ -829,6 +848,7 @@ export class CompanyController {
 					position = page.nextAfterPosition;
 				}
 				const optimistic = reconcileOptimistic({ optimistic: store.get().optimistic, pending, events });
+				const projection = projectTranscript(events, pending);
 				// The listing is optional: a cloud without Order 9 answers with a missing
 				// RPC, and a refused or failed listing keeps what the thread already shows.
 				let codingSessions = store.get().codingSessions;
@@ -841,11 +861,12 @@ export class CompanyController {
 				store.set({
 					events,
 					pending,
-					projection: projectTranscript(events, pending),
+					projection,
 					loading: false,
 					complete: true,
 					error: undefined,
 					optimistic,
+					interactionAnswers: reconcileInteractionAnswers(store.get().interactionAnswers, projection),
 					codingSessions,
 				});
 			} catch (error) {
@@ -938,6 +959,39 @@ export class CompanyController {
 			environmentId: session.environmentId,
 			agentThread: isAgentThreadSession(session),
 		});
+	}
+
+	/** Answer a card the agent raised in this thread. The answer is queued like a
+	 * message and shows on the card at once; the kernel refuses a second answer,
+	 * an expired card, or a member the thread does not belong to. */
+	async answerInteraction(
+		sessionId: string,
+		interactionId: string,
+		outcome: InteractionOutcome,
+		answer: Record<string, JsonValue> = {},
+	): Promise<void> {
+		this.assertCanSend(sessionId);
+		const store = this.conversation(sessionId);
+		const key = interactionId.toLowerCase();
+		if (store.get().interactionAnswers?.[key]) return;
+		store.set({
+			interactionAnswers: {
+				...store.get().interactionAnswers,
+				[key]: { outcome, answer, answeredBy: this.#userId, answeredAt: new Date().toISOString(), pending: true },
+			},
+			interactionError: undefined,
+		});
+		try {
+			await this.#api.answerInteraction(sessionId, crypto.randomUUID(), interactionId, outcome, answer);
+		} catch (error) {
+			const { [key]: _dropped, ...rest } = store.get().interactionAnswers ?? {};
+			store.set({
+				interactionAnswers: Object.keys(rest).length ? rest : undefined,
+				interactionError: describeError(error),
+			});
+			throw error;
+		}
+		void this.loadConversation(sessionId);
 	}
 
 	async sendPrompt(sessionId: string, text: string, viewSignal?: AbortSignal): Promise<boolean> {

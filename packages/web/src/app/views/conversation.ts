@@ -1,7 +1,7 @@
 import type { CodingSession } from "../../cloud/coding-session.ts";
 import { sessionAttachmentIssue } from "../../cloud/session-attachments.ts";
 import type { TranscriptCard, TranscriptItem } from "../../cloud/transcript.ts";
-import type { HostedSession, HostedStaffAgent } from "../../cloud/types.ts";
+import type { HostedSession, HostedStaffAgent, JsonValue } from "../../cloud/types.ts";
 import { AGENT_LOOK, statusCaption, syncCaption } from "../../ui/agent-activity.ts";
 import { AttachmentTray } from "../../ui/attachments.ts";
 import { authorizationRequestId, renderAuthorizationCard } from "../../ui/authorization-card.ts";
@@ -16,6 +16,7 @@ import {
 } from "../../ui/conversation-timestamps.ts";
 import { fmtTime, h, icon, notice, replace, spinner } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
+import { renderInteractionCard } from "../../ui/interaction-card.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
@@ -538,6 +539,26 @@ export class ConversationView {
 		this.#showPanel(agent);
 	}
 
+	/** Record the member's answer to a card; the card shows it at once and the
+	 * error, if any, above the composer with the other conversation notices. */
+	async #answerInteraction(
+		interactionId: string,
+		outcome: Parameters<CompanyController["answerInteraction"]>[2],
+		answer: Record<string, JsonValue> = {},
+	): Promise<void> {
+		try {
+			await this.#company.answerInteraction(this.#sessionId, interactionId, outcome, answer);
+		} catch {
+			// The controller keeps the reason in the conversation state.
+		}
+	}
+
+	/** Take over the agent's computer for a card: open its screen here and give it the keyboard. */
+	#takeOver(agent: HostedStaffAgent): void {
+		const panel = this.#panel ?? this.#showPanel(agent);
+		panel?.focus();
+	}
+
 	/** Show the agent's computer here: the one already open, or one started now. */
 	#showPanel(agent: HostedStaffAgent): ComputerPanel | undefined {
 		const panel = this.#panels.open(agent);
@@ -801,6 +822,14 @@ export class ConversationView {
 				}),
 			),
 		];
+		const session = this.#company.store.get().sessions.find((item) => item.sessionId === this.#sessionId);
+		const canAnswer =
+			this.#company.store.get().team?.capabilities.write === true &&
+			session?.status === "open" &&
+			(session.audience.kind === "member_private"
+				? session.audience.userId === this.#company.userId
+				: session.createdByUserId === this.#company.userId);
+		const canDecide = canAnswer && ["owner", "admin"].includes(this.#company.store.get().team?.role ?? "");
 		const codingSessions = [...(conversation.codingSessions ?? [])].sort((a, b) =>
 			a.createdAt.localeCompare(b.createdAt),
 		);
@@ -809,6 +838,10 @@ export class ConversationView {
 			codingSessions,
 			agentName,
 			this.#isRoom,
+			canAnswer,
+			canDecide,
+			conversation.interactionAnswers,
+			conversation.interactionError,
 			this.#company.store.get().team?.members,
 			conversation.projection.hiddenCount,
 			conversation.loading,
@@ -951,13 +984,36 @@ export class ConversationView {
 			} else if (item.kind === "note") {
 				nodes.push(h("div", { class: "conversation-note", role: "note" }, item.text));
 			} else if (item.kind === "authorization_request" || item.kind === "authorization_decision") {
+				const optimistic =
+					item.kind === "authorization_request"
+						? conversation.interactionAnswers?.[item.id.toLowerCase()]
+						: undefined;
 				nodes.push(
 					renderAuthorizationCard(
 						item.kind,
 						item.body,
 						item.createdAt,
 						this.#company.memberName(item.actorUserId),
-						item.kind === "authorization_request" ? decisions.get(item.id.toLowerCase())?.body : undefined,
+						item.kind === "authorization_request"
+							? (decisions.get(item.id.toLowerCase())?.body ??
+									(optimistic ? { decision: optimistic.outcome, requestEventId: item.id } : undefined))
+							: undefined,
+						item.kind === "authorization_request" && canDecide && !this.#isRoom
+							? (decision) => void this.#answerInteraction(item.id, decision)
+							: undefined,
+					),
+				);
+			} else if (item.kind === "interaction") {
+				nodes.push(
+					renderInteractionCard(
+						{ ...item, answer: item.answer ?? conversation.interactionAnswers?.[item.id.toLowerCase()] },
+						{
+							agentName,
+							memberName: (userId) => this.#company.memberName(userId),
+							canAnswer: canAnswer && !this.#isRoom,
+							answer: (outcome, answer) => this.#answerInteraction(item.id, outcome, answer),
+							...(agent && item.request.surface === "takeover" ? { takeOver: () => this.#takeOver(agent) } : {}),
+						},
 					),
 				);
 			}
@@ -1013,6 +1069,7 @@ export class ConversationView {
 		const key = JSON.stringify([
 			conversation.error,
 			conversation.sendError,
+			conversation.interactionError,
 			conversation.loading,
 			canWrite,
 			this.#isRoom,
@@ -1026,6 +1083,7 @@ export class ConversationView {
 		const children: (HTMLElement | null)[] = [];
 		if (conversation.error) children.push(notice("danger", conversation.error));
 		if (conversation.sendError) children.push(notice("danger", conversation.sendError));
+		if (conversation.interactionError) children.push(notice("danger", conversation.interactionError));
 		if (canWrite && !this.#actions.sendMessage)
 			children.push(
 				h(

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Cards an agent raises in its thread (kernel bundle v70, runtime v71): a question with options, a computer takeover with Take over, I'm done and Skip, and the approval card's Approve and Decline now record the decision. A card shows who answered and what, stays in the thread once answered, and expires on its own time. Secret, form and draft cards show their content and can be declined or discarded; entering a secret or filling a form waits for the vault step. Group chats never carry cards.
+
 ### Fixed
 
 - Show a failed or stopped run as one line right above the composer, in the same band as the company notices, instead of at the end of the thread. The thread keeps only the conversation; the card keeps its reason, Try again and Dismiss. Opening a conversation while such a line, or the composer, appears no longer leaves the thread a little short of its last message.
