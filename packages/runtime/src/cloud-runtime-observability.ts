@@ -11,6 +11,7 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"company_mkdir",
 	"company_delete",
 	"send_message",
+	"ask_member",
 	"read_context",
 	"send_coworker_message",
 	"computer_start",

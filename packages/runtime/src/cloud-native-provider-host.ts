@@ -19,6 +19,7 @@ import {
 } from "./cloud-agent-mouth.ts";
 import { nativeRuntimeFailureMetadata } from "./cloud-native-failure.ts";
 import { launchIsolatedNativeProcess, type NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
+import type { CloudInteractionRequestInput, CloudInteractionRequestReceipt } from "./cloud-thread-interactions.ts";
 import { nativeProviderAccountEmail, nativeProviderAccountIdentity } from "./native-provider-account.ts";
 import { type NativeProviderAccountUsage, readNativeProviderAccountUsage } from "./native-provider-usage.ts";
 
@@ -107,6 +108,14 @@ export interface NativeProviderControlPlane {
 		input: CloudAgentSendInput,
 		signal?: AbortSignal,
 	): Promise<CloudAgentSendReceipt>;
+	/** A typed card for the member, appended to the run's thread under the same lease
+	 * authority as a send. Optional so older control planes keep their shape; a
+	 * runtime without it refuses ask_member instead of guessing. */
+	appendInteractionRequest?(
+		request: NativeProviderExecutionRequest,
+		input: CloudInteractionRequestInput,
+		signal?: AbortSignal,
+	): Promise<CloudInteractionRequestReceipt>;
 }
 
 export interface NativeCredentialCapsuleStore {
