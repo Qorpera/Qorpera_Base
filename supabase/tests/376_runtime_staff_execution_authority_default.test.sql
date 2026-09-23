@@ -31,7 +31,7 @@ select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001
 set local role authenticated;
 select public.qorpera_put_profile_staff(
 	'30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-0000000000d1','Dana','Sales development',
-	'Own outbound design-partner conversations.',null,null,'blue','round','flame','openai',null,'active','setup',
+	'Own outbound design-partner conversations.',null,null,'blue','round','flame','openai','gpt-native','active','setup',
 	statement_timestamp(),null);
 select public.qorpera_put_profile_staff(
 	'30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-0000000000d2','Erin','Support',
@@ -39,7 +39,7 @@ select public.qorpera_put_profile_staff(
 	statement_timestamp(),null);
 select public.qorpera_put_profile_staff(
 	'30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-0000000000d3','Finn','Legal',
-	'Review contracts.',null,null,'red','round','fox','anthropic',null,'active','setup',
+	'Review contracts.',null,null,'red','round','fox','anthropic','claude-native','active','setup',
 	statement_timestamp(),null);
 reset role;
 select pg_temp.path_claims('service_role');
