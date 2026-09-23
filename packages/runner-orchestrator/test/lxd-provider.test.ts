@@ -1819,6 +1819,58 @@ describe("LXD cloud runner provider", () => {
 		},
 	);
 
+	it.each(["configured", "unconfigured"])(
+		"hands the guest the coding command gateway only when configured (%s)",
+		async (scope) => {
+			const settings = governedConfig(join(await root(), "state"));
+			const gateway = { origin: "https://coding.example.test:8789", token: "k".repeat(43) };
+			if (scope === "configured") settings.nativeCompanyRuntime!.codingCommand = gateway;
+			const lxd = new FakeLxd(),
+				guest = new FakeGuest();
+			const backend = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([]));
+			const runner = await backend.acquire(runId, work(), new AbortController().signal);
+			const files = new Map(lxd.filePushes.map((file) => [file.path, file.content]));
+			const credential = "/var/lib/qorpera-bootstrap/credentials/qorpera-coding-command";
+			expect(files.get(credential)).toBe(scope === "configured" ? `${gateway.token}\n` : "");
+			expect(lxd.filePushes.find((file) => file.path === credential)?.mode).toBe(0o600);
+			const bootstrap = JSON.parse(files.get("/var/lib/qorpera-bootstrap/bootstrap.json")!);
+			const journalText = await readFile(join(settings.stateRoot, runId, "journal.json"), "utf-8");
+			const journal = JSON.parse(journalText);
+			const environment = files.get("/var/lib/qorpera-bootstrap/native-provider.env")!;
+			if (scope === "configured") {
+				const tokenSha256 = createHash("sha256").update(gateway.token).digest("hex");
+				expect(bootstrap.company_runtime.coding_command).toEqual({
+					url: gateway.origin,
+					token_sha256: tokenSha256,
+				});
+				expect(journal.lxd.companyRuntime.codingCommand).toEqual({ url: gateway.origin, tokenSha256 });
+				expect(environment).toContain(`QORPERA_CODING_COMMAND_URL=${gateway.origin}\n`);
+			} else {
+				expect(bootstrap.company_runtime.coding_command).toBeUndefined();
+				expect(journal.lxd.companyRuntime.codingCommand).toBeUndefined();
+				expect(environment).not.toContain("QORPERA_CODING_COMMAND_URL");
+			}
+			expect(journalText).not.toContain(gateway.token);
+			expect(JSON.stringify(lxd.createCalls)).not.toContain(gateway.token);
+			expect(JSON.stringify(lxd.filePushes.filter((file) => file.path !== credential))).not.toContain(gateway.token);
+			const pushed = lxd.filePushes.length;
+			const restarted = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([]));
+			await expect(restarted.acquire(runId, work(), new AbortController().signal)).resolves.toEqual(runner);
+			expect(lxd.filePushes).toHaveLength(pushed);
+		},
+	);
+
+	it("refuses a coding command token shared with another guest credential", async () => {
+		const settings = governedConfig(join(await root(), "state"));
+		settings.nativeCompanyRuntime!.codingCommand = {
+			origin: "https://coding.example.test:8789",
+			token: "q".repeat(43),
+		};
+		expect(
+			() => new LxdCloudRunnerProviderBackend(settings, new FakeLxd(), new FakeGuest(), fetchProvisioner([])),
+		).toThrow();
+	});
+
 	it("freezes route credentials at construction and refuses changed restart authority", async () => {
 		const settings = governedConfig(join(await root(), "state"));
 		const route = {
