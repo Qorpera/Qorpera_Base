@@ -489,7 +489,8 @@ export class ConversationView {
 				);
 	}
 
-	/** Lay the two agents' transcript over this thread; the thread waits underneath. */
+	/** Lay the two agents' transcript over this thread; the thread waits underneath.
+	 * The coworker reads on the left, this thread's own agent on the right. */
 	#openPair(pairSessionId: string, agentIds: readonly [string, string], opener: HTMLElement): void {
 		this.#closePair(false);
 		const view = new PairTranscriptView(this.#company, pairSessionId, agentIds, () => this.#closePair(true));
@@ -909,20 +910,20 @@ export class ConversationView {
 					),
 				);
 			} else if (item.kind === "peer_link") {
-				// A message between this agent and a coworker: one chip, no text, the transcript behind it.
+				// A message between this agent and a coworker: one centered line, the coworker's
+				// figure before its name, no text; the transcript is behind it.
 				const counterpart = this.#company.staffById(item.counterpartStaffId);
 				const name = counterpart?.displayName ?? "a coworker";
 				// A held message was left for the coworker's next turn, so it is a note, not a message it has read.
-				const label = item.held
+				const verb = item.held
 					? item.direction === "out"
-						? `Left a note for ${name}`
-						: `Note from ${name}`
+						? "Left a note for"
+						: "Note from"
 					: item.direction === "out"
-						? `Messaged ${name}`
-						: `Message from ${name}`;
+						? "Messaged"
+						: "Message from";
+				const label = `${verb} ${name}`;
 				const own = agent?.id ?? "";
-				const pair: readonly [string, string] =
-					item.direction === "out" ? [own, item.counterpartStaffId] : [item.counterpartStaffId, own];
 				nodes.push(
 					h(
 						"div",
@@ -935,10 +936,15 @@ export class ConversationView {
 								title: `${label} · ${fmtTime(item.createdAt)}`,
 								"aria-label": `${label}. Open the conversation`,
 								onclick: (event: MouseEvent) =>
-									this.#openPair(item.pairSessionId, pair, event.currentTarget as HTMLElement),
+									this.#openPair(
+										item.pairSessionId,
+										[item.counterpartStaffId, own],
+										event.currentTarget as HTMLElement,
+									),
 							},
+							h("span", null, verb),
 							agentFigure(counterpart, name, { size: 16 }),
-							h("span", null, label),
+							h("span", null, name),
 						),
 					),
 				);
