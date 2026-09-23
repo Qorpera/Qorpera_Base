@@ -29,8 +29,10 @@ import subprocess
 import sys
 
 NODE_LOCK = '/run/lock/qorpera-node-update.lock'
-UNIT_DIRS = ['/etc/systemd/system', '/run/systemd/system', '/usr/local/lib/systemd/system', '/usr/lib/systemd/system',
-             '/lib/systemd/system']
+UNIT_DIRS = ['/etc/systemd/system', '/usr/local/lib/systemd/system', '/usr/lib/systemd/system', '/lib/systemd/system']
+# Runtime unit folders: anything there for the old unit is a temporary override the new unit would make permanent.
+RUNTIME_DIRS = ['/run/systemd/system', '/run/systemd/system.control', '/run/systemd/transient', '/run/systemd/generator',
+                '/run/systemd/generator.early', '/run/systemd/generator.late']
 # [Unit]/[Install] keys that may name another qorpera unit. Anything else that names one (Wants=, Requires=, BindsTo=,
 # PartOf=, Upholds=, OnFailure=, Alias=, Also=, …) would start, stop or restart the other node role with this one,
 # for example the orchestrator with the provider in the middle of a pause, or start an old unit that conflicts with
@@ -38,14 +40,22 @@ UNIT_DIRS = ['/etc/systemd/system', '/run/systemd/system', '/usr/local/lib/syste
 UNIT_REFERENCE_OK = {'After', 'Before', 'Conflicts'}
 QORPERA_UNIT = re.compile(r'qorpera-[A-Za-z0-9@_.-]*\.(service|socket|timer|path|target|mount|slice|scope)')
 # `systemctl show` keys that legitimately differ between the old unit and its replacement.
-# Conflicts, ConflictedBy, WantedBy, Before, ExecStart, LoadState and NeedDaemonReload: their own rules in show_diff.
+# Identity and runtime state, by exact name. User=, Group= and DynamicUser= are not here: they must be equal.
 EXPECTED_DIFFERENT = {
     'Id', 'Names', 'FragmentPath', 'DropInPaths', 'SourcePath', 'Description', 'UnitFileState', 'UnitFilePreset',
     'ActiveState', 'SubState', 'FreezerState', 'Result', 'MainPID', 'ExecMainPID', 'ExecMainStatus', 'ExecMainCode',
     'ControlPID', 'InvocationID', 'NRestarts', 'StatusText', 'StatusErrno', 'ControlGroup', 'ControlGroupId',
     'CanStart', 'CanStop', 'CanReload', 'CanIsolate', 'CanFreeze', 'CanClean', 'Job', 'Following',
+    'ConditionResult', 'AssertResult', 'UID', 'GID', 'OOMKills', 'ManagedOOMKills',
 }
-RULED = {'Conflicts', 'ConflictedBy', 'WantedBy', 'Before', 'ExecStart', 'ExecStartEx', 'LoadState', 'NeedDaemonReload'}
+# Lists of units, compared as sets (systemd's order is not stable). Every other key is compared as an ordered value.
+DEPENDENCY_KEYS = {
+    'After', 'Before', 'Requires', 'Wants', 'Requisite', 'BindsTo', 'PartOf', 'Upholds', 'Conflicts', 'ConflictedBy',
+    'WantedBy', 'RequiredBy', 'Triggers', 'TriggeredBy', 'OnFailure',
+}
+# Their own rules in show_diff.
+RULED = {'Conflicts', 'ConflictedBy', 'WantedBy', 'Before', 'ExecStart', 'ExecStartEx', 'LoadState', 'NeedDaemonReload',
+         'WatchdogUSec'}
 EXPECTED_PATTERNS = [
     re.compile(r'.*Timestamp(Monotonic)?$'), re.compile(r'^ExecMain.*'),
     re.compile(r'^(CPU|Memory|IO|IP|Tasks|Effective)[A-Za-z]*(Current|Bytes|Packets|NSec|Peak|Available|Operations|CPUs|MemoryNodes)$'),
@@ -89,6 +99,10 @@ def effective_settings(blocks):
     settings = {}
     for _, entries in blocks:
         for section, key, value in entries:
+            # Not a reset there: systemd ignores an empty After=/Wants=, and an empty Condition*=/Assert*= drops every
+            # condition, which `systemctl show` may not list.
+            need(value != '' or section not in ('Unit', 'Install'),
+                 f'the old unit has an empty {key}= in [{section}]; remove it before migrating')
             current = settings.setdefault(section, {})
             if value == '' or current.get(key) == ['']:
                 current[key] = [value]
@@ -97,12 +111,18 @@ def effective_settings(blocks):
     return settings
 
 
-def check_sources(blocks, old_unit, unit_dirs=UNIT_DIRS):
+def check_sources(blocks, old_unit, unit_dirs=UNIT_DIRS, runtime_dirs=RUNTIME_DIRS):
     """The old unit is its fragment plus its own .conf drop-ins, and no lane has files staged or parked beside them.
-    A drop-in shared by prefix or type (qorpera-.service.d, service.d) would apply to the new unit a second time."""
+    A drop-in shared by prefix or type (qorpera-.service.d, service.d) would apply to the new unit a second time, and a
+    runtime file under /run would turn a temporary override into a permanent one."""
     need(blocks and blocks[0][0].endswith(f'/{old_unit}'), 'the old unit has no fragment of its own')
+    for path, _ in blocks:
+        need(not path.startswith('/run/'), f'the old unit loads a runtime file: {path}')
     for path, _ in blocks[1:]:
         need(f'/{old_unit}.d/' in path and path.endswith('.conf'), f'the old unit loads a shared drop-in: {path}')
+    for folder in runtime_dirs:
+        for name in [old_unit, f'{old_unit}.d']:
+            need(not os.path.lexists(f'{folder}/{name}'), f'a runtime override exists: {folder}/{name}')
     for folder in unit_dirs:
         try:
             names = os.listdir(f'{folder}/{old_unit}.d')
@@ -170,11 +190,14 @@ def words(props, key):
     return set(props.get(key, '').split())
 
 
-def show_diff(old, new, old_unit, new_unit):
-    """`systemctl show` of the old unit and its replacement, before the switch. Beyond identity and runtime state,
-    only these may differ: Conflicts= gains the old unit; the old unit may list the new one in ConflictedBy=; the
-    ExecStart argv keeps its prefix and replaces the launcher with the fixed one and its role; and, while the new
-    unit is not enabled yet, the targets that want the old unit (WantedBy=, and the Before= they imply)."""
+def show_diff(old, new, old_unit, new_unit, watchdog_set=False):
+    """`systemctl show` of the old unit and its replacement, before or after the switch. Beyond identity and runtime
+    state, only these may differ:
+    - Conflicts= gains the old unit, and the old unit may list the new one in ConflictedBy=;
+    - the ExecStart argv keeps its prefix and runs the fixed launcher with the role the new unit is named after;
+    - the targets that want only the enabled one of the two (WantedBy=, and the Before= they imply);
+    - WatchdogUSec 0 against infinity, while the new unit has never started and neither unit sets WatchdogSec=
+      (systemd reports infinity until a service first starts)."""
     unexpected = []
     for unit, props in [(old_unit, old), (new_unit, new)]:
         if props.get('LoadState') != 'loaded' or props.get('NeedDaemonReload') != 'no':
@@ -182,24 +205,32 @@ def show_diff(old, new, old_unit, new_unit):
     for key in sorted(set(old) | set(new)):
         if key in EXPECTED_DIFFERENT or key in RULED or any(pattern.fullmatch(key) for pattern in EXPECTED_PATTERNS):
             continue
-        if old.get(key) != new.get(key):
+        same = words(old, key) == words(new, key) if key in DEPENDENCY_KEYS else old.get(key) == new.get(key)
+        if not same:
             unexpected.append(key)
     if words(new, 'Conflicts') != words(old, 'Conflicts') | {old_unit}:
         unexpected.append('Conflicts')
     if words(old, 'ConflictedBy') - {new_unit} != words(new, 'ConflictedBy'):
         unexpected.append('ConflictedBy')
+    role = re.fullmatch(r'qorpera-node-([a-z0-9-]+)\.service', new_unit)
     old_argv, new_argv = exec_argv(old.get('ExecStart')), exec_argv(new.get('ExecStart'))
-    if (not old_argv or not new_argv or new_argv[:-2] != old_argv[:-1]
-            or not new_argv[-2].endswith('/qorpera-node-launch.py')):
+    if (not role or not old_argv or not new_argv or new_argv[:-2] != old_argv[:-1]
+            or not new_argv[-2].endswith('/qorpera-node-launch.py') or new_argv[-1] != role.group(1)):
         unexpected.append('ExecStart')
-    pending = words(old, 'WantedBy') - words(new, 'WantedBy')
-    enabled = new.get('UnitFileState') == 'enabled'
-    if (not words(new, 'WantedBy') <= words(old, 'WantedBy') or (pending and enabled)
-            or not all(unit.endswith('.target') for unit in pending)):
+    enabled = [name for name, props in [('old', old), ('new', new)] if props.get('UnitFileState') == 'enabled']
+    wanting, other = (old, new) if enabled == ['old'] else (new, old) if enabled == ['new'] else (old, new)
+    moved = words(wanting, 'WantedBy') - words(other, 'WantedBy') if len(enabled) == 1 else set()
+    if (words(other, 'WantedBy') | moved != words(wanting, 'WantedBy')
+            or not all(unit.endswith('.target') for unit in moved)):
         unexpected.append('WantedBy')
-    if words(new, 'Before') != words(old, 'Before') - pending:
+    if words(other, 'Before') != words(wanting, 'Before') - moved:
         unexpected.append('Before')
-    return {'unexpectedDifferences': unexpected, 'pendingEnable': sorted(pending), 'equivalent': not unexpected}
+    never_started = new.get('ActiveEnterTimestampMonotonic') == '0' or not new.get('InvocationID')
+    watchdog = [old.get('WatchdogUSec'), new.get('WatchdogUSec')]
+    if watchdog[0] != watchdog[1] and not (watchdog == ['0', 'infinity'] and never_started and not watchdog_set):
+        unexpected.append('WatchdogUSec')
+    return {'unexpectedDifferences': unexpected, 'enabled': enabled, 'wantedByEnabledOnly': sorted(moved),
+            'equivalent': not unexpected}
 
 
 def literal(source, name):
@@ -385,7 +416,10 @@ def main(argv):
             os.close(lock)
     elif command == 'show-diff':
         old, new = show(options['--old']), show(options['--new'])
-        print(json.dumps(show_diff(old, new, options['--old'], options['--new'])))
+        cats = [subprocess.run(['/usr/bin/systemctl', 'cat', unit], check=True, capture_output=True, text=True).stdout
+                for unit in [options['--old'], options['--new']]]
+        watchdog_set = any(re.match(r'\s*WatchdogSec=', line) for cat in cats for line in cat.splitlines())
+        print(json.dumps(show_diff(old, new, options['--old'], options['--new'], watchdog_set)))
     elif command == 'role':
         with open(options['--launcher']) as handle:
             print(json.dumps(role_entry(handle.read(), keys, options['--unit'], options.get('--env-file')), indent=2))

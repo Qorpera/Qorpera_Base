@@ -147,11 +147,11 @@ class UnitTest(unittest.TestCase):
     def test_replays_every_key_so_accumulating_keys_keep_every_value(self):
         unit = FIXED_UNIT + (
             '\n# /etc/systemd/system/qorpera-native25-phql-provider.service.d/state.conf\n[Unit]\n'
-            'ConditionPathExists=/a\nConditionPathExists=\nConditionPathExists=/b\nAssertPathExists=/c\n'
-            '[Service]\nStateDirectory=one\nStateDirectory=two\nSuccessExitStatus=3\nSuccessExitStatus=4\n'
-            'SystemCallArchitectures=native\n')
+            'ConditionPathExists=/a\nConditionPathExists=/b\nAssertPathExists=/c\n'
+            '[Service]\nStateDirectory=zero\nStateDirectory=\nStateDirectory=one\nStateDirectory=two\n'
+            'SuccessExitStatus=3\nSuccessExitStatus=4\nSystemCallArchitectures=native\n')
         settings = self.settings(unit)
-        self.assertEqual(settings['Unit']['ConditionPathExists'], ['/b'])
+        self.assertEqual(settings['Unit']['ConditionPathExists'], ['/a', '/b'])
         self.assertEqual(settings['Service']['StateDirectory'], ['one', 'two'])
         self.assertEqual(settings['Service']['SuccessExitStatus'], ['3', '4'])
         # A single-value key keeps each assignment in order; systemd reads the last one, as it did for the old unit.
@@ -173,6 +173,26 @@ class UnitTest(unittest.TestCase):
                     migrate.check_sources(migrate.parse_cat(FIXED_UNIT), name, unit_dirs=[folder])
                 (Path(folder) / f'{name}.d' / stray).unlink()
 
+    def test_refuses_runtime_overrides_under_run(self):
+        name = 'qorpera-native25-phql-provider.service'
+        runtime = FIXED_UNIT + f'\n# /run/systemd/system.control/{name}.d/50-MemoryMax.conf\n[Service]\nMemoryMax=2G\n'
+        with self.assertRaisesRegex(SystemExit, 'runtime file'):
+            migrate.check_sources(migrate.parse_cat(runtime), name, unit_dirs=[], runtime_dirs=[])
+        with tempfile.TemporaryDirectory() as folder:
+            migrate.check_sources(migrate.parse_cat(FIXED_UNIT), name, unit_dirs=[], runtime_dirs=[folder])
+            (Path(folder) / f'{name}.d').mkdir()
+            with self.assertRaisesRegex(SystemExit, 'runtime override'):
+                migrate.check_sources(migrate.parse_cat(FIXED_UNIT), name, unit_dirs=[], runtime_dirs=[folder])
+
+    def test_refuses_empty_assignments_in_unit_and_install(self):
+        for line in ['After=', 'Wants=', 'ConditionPathExists=', 'AssertPathExists=']:
+            unit = FIXED_UNIT.replace('After=network-online.target snap.lxd.daemon.service',
+                                      f'After=network-online.target\n{line}')
+            with self.assertRaisesRegex(SystemExit, 'empty'):
+                self.settings(unit)
+        with self.assertRaisesRegex(SystemExit, 'empty WantedBy'):
+            self.settings(FIXED_UNIT.replace('WantedBy=multi-user.target', 'WantedBy=\nWantedBy=multi-user.target'))
+
     def test_refuses_while_a_lane_holds_the_node_lock(self):
         with tempfile.TemporaryDirectory() as folder:
             path = str(Path(folder) / 'qorpera-node-update.lock')
@@ -191,30 +211,63 @@ class UnitTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             migrate.unit_text(settings, 'old.service', '/l.py', 'provider')
 
+    START = ('{ path=/usr/bin/env ; argv[]=/usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/python3 -I %s ; '
+             'ignore_errors=no ; start_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }')
+
     def shows(self):
-        start = ('{ path=/usr/bin/env ; argv[]=/usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/python3 -I %s ; '
-                 'ignore_errors=no ; start_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }')
+        """Before the switch, as node 2 showed them on 2026-09-23: the new unit installed, never started."""
         old = {'Id': 'qorpera-native25-phql-provider.service', 'LoadState': 'loaded', 'NeedDaemonReload': 'no',
                'User': 'u', 'MainPID': '5', 'CPUUsageNSec': '1', 'ActiveEnterTimestamp': 't', 'ProtectSystem': 'strict',
                'UnitFileState': 'enabled', 'Conflicts': 'shutdown.target', 'ConflictedBy': 'qorpera-node-provider.service',
-               'WantedBy': 'multi-user.target', 'Before': 'shutdown.target multi-user.target', 'Triggers': '',
-               'ExecStart': start % '/opt/x/provider-launch-v64.py'}
+               'WantedBy': 'multi-user.target', 'Before': 'multi-user.target shutdown.target', 'Triggers': '',
+               'Requires': 'system.slice sysinit.target -.mount',
+               'After': 'basic.target -.mount system.slice systemd-journald.socket network-online.target sysinit.target',
+               'ConditionResult': 'yes', 'AssertResult': 'yes', 'UID': '992', 'GID': '980', 'OOMKills': '0',
+               'ManagedOOMKills': '0', 'WatchdogUSec': '0', 'InvocationID': 'abc', 'ActiveEnterTimestampMonotonic': '9',
+               'Environment': 'A=1 B=2', 'ExecStart': self.START % '/opt/x/provider-launch-v64.py'}
         new = {**old, 'Id': 'qorpera-node-provider.service', 'MainPID': '0', 'CPUUsageNSec': '0',
                'ActiveEnterTimestamp': '', 'UnitFileState': 'disabled', 'ConflictedBy': '',
                'Conflicts': 'qorpera-native25-phql-provider.service shutdown.target', 'WantedBy': '',
-               'Before': 'shutdown.target',
-               'ExecStart': start % '/usr/local/libexec/qorpera-node/qorpera-node-launch.py provider'}
+               'Before': 'shutdown.target', 'Requires': 'system.slice -.mount sysinit.target',
+               'After': 'system.slice systemd-journald.socket sysinit.target -.mount network-online.target basic.target',
+               'ConditionResult': 'no', 'AssertResult': 'no', 'UID': '[not set]', 'GID': '[not set]',
+               'OOMKills': '18446744073709551615', 'ManagedOOMKills': '18446744073709551615',
+               'WatchdogUSec': 'infinity', 'InvocationID': '', 'ActiveEnterTimestampMonotonic': '0',
+               'ExecStart': self.START % '/usr/local/libexec/qorpera-node/qorpera-node-launch.py provider'}
         return old, new
 
-    def diff(self, old, new):
-        return migrate.show_diff(old, new, 'qorpera-native25-phql-provider.service', 'qorpera-node-provider.service')
-
-    def test_show_diff_allows_identity_runtime_state_the_conflict_and_the_pending_enable(self):
+    def switched(self):
+        """The same pair after the switch: the new unit enabled and running, the old one disabled and stopped."""
         old, new = self.shows()
-        self.assertEqual(self.diff(old, new), {'unexpectedDifferences': [], 'pendingEnable': ['multi-user.target'],
-                                               'equivalent': True})
+        return ({**old, 'UnitFileState': 'disabled', 'WantedBy': '', 'Before': 'shutdown.target', 'MainPID': '0'},
+                {**new, 'UnitFileState': 'enabled', 'WantedBy': 'multi-user.target',
+                 'Before': 'shutdown.target multi-user.target', 'WatchdogUSec': '0', 'InvocationID': 'def',
+                 'ActiveEnterTimestampMonotonic': '12', 'UID': '992', 'GID': '980'})
+
+    def diff(self, old, new, **options):
+        return migrate.show_diff(old, new, 'qorpera-native25-phql-provider.service', 'qorpera-node-provider.service',
+                                 **options)
+
+    def test_show_diff_before_and_after_the_switch(self):
+        self.assertEqual(self.diff(*self.shows()), {'unexpectedDifferences': [], 'enabled': ['old'],
+                                                    'wantedByEnabledOnly': ['multi-user.target'], 'equivalent': True})
+        self.assertEqual(self.diff(*self.switched()), {'unexpectedDifferences': [], 'enabled': ['new'],
+                                                       'wantedByEnabledOnly': ['multi-user.target'], 'equivalent': True})
+        old, new = self.shows()
         self.assertEqual(self.diff(old, {**new, 'User': 'root', 'ProtectSystem': 'no'})['unexpectedDifferences'],
                          ['ProtectSystem', 'User'])
+
+    def test_show_diff_compares_only_dependency_lists_as_sets(self):
+        old, new = self.shows()
+        self.assertIn('Environment', self.diff(old, {**new, 'Environment': 'B=2 A=1'})['unexpectedDifferences'])
+        self.assertIn('Requires', self.diff(old, {**new, 'Requires': 'system.slice'})['unexpectedDifferences'])
+
+    def test_show_diff_allows_the_watchdog_default_only_before_the_first_start(self):
+        old, new = self.shows()
+        self.assertIn('WatchdogUSec', self.diff(old, new, watchdog_set=True)['unexpectedDifferences'])
+        started = {**new, 'InvocationID': 'x', 'ActiveEnterTimestampMonotonic': '5'}
+        self.assertIn('WatchdogUSec', self.diff(old, started)['unexpectedDifferences'])
+        self.assertIn('WatchdogUSec', self.diff(old, {**new, 'WatchdogUSec': '30000000'})['unexpectedDifferences'])
 
     def test_show_diff_refuses_what_the_switch_depends_on(self):
         old, new = self.shows()
@@ -228,6 +281,8 @@ class UnitTest(unittest.TestCase):
         }
         for key, change in cases.items():
             self.assertIn(key, self.diff(old, {**new, **change})['unexpectedDifferences'], key)
+        wrong_role = self.START % '/usr/local/libexec/qorpera-node/qorpera-node-launch.py orchestrator'
+        self.assertIn('ExecStart', self.diff(old, {**new, 'ExecStart': wrong_role})['unexpectedDifferences'])
         self.assertIn('qorpera-native25-phql-provider.service:LoadState/NeedDaemonReload',
                       self.diff({**old, 'LoadState': 'not-found'}, new)['unexpectedDifferences'])
 

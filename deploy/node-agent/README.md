@@ -153,28 +153,42 @@ These steps run per node: node 2 first, then node 1. They cover the provider and
      - while the old unit's `.d` folders hold anything but `.conf` files (a lane's staged `.prepared` or parked
        `.disabled` drop-ins);
      - a drop-in shared by prefix or type (`qorpera-.service.d`), which would apply to the new unit a second time;
+     - anything for the old unit under `/run/systemd` (a runtime override would become permanent in the new unit);
+     - an empty assignment in `[Unit]` or `[Install]`: systemd ignores an empty `After=`/`Wants=`, and an empty
+       `Condition*=`/`Assert*=` drops every condition, so replaying it as a reset would change the unit;
      - any `[Unit]` or `[Install]` key other than `After=`, `Before=` or `Conflicts=` that names another qorpera unit
        (`Wants=`, `Requires=`, `BindsTo=`, `PartOf=`, `Upholds=`, `OnFailure=`, `Also=`, …). Such a tie would start,
        stop or restart another node role with this one.
    - Install it (0644 root) and run `daemon-reload`, without starting it.
+   - Before `daemon-reload` (it reloads every unit): no loaded unit may show `NeedDaemonReload=yes`.
    - `show-diff --old … --new …` must report no unexpected differences. Both units must be loaded with no pending
-     daemon-reload, and `Triggers`/`TriggeredBy` must match. Only these may differ:
-     - identity and runtime state;
-     - `Conflicts=` (the old unit's set plus the old unit);
-     - `ConflictedBy=` (the old unit may list the new one);
-     - the launcher in the `ExecStart` argv (the prefix must match);
-     - while the new unit is not enabled, the targets that want the old unit (`WantedBy=`, and the `Before=` they
-       imply), listed as `pendingEnable`.
+     daemon-reload. The dependency lists (`After`, `Before`, `Requires`, `Wants`, `Requisite`, `BindsTo`, `PartOf`,
+     `Upholds`, `Conflicts`, `ConflictedBy`, `WantedBy`, `RequiredBy`, `Triggers`, `TriggeredBy`, `OnFailure`) are
+     compared as sets; every other key is compared as an ordered value. Only these may differ:
+     - identity and runtime state, by exact name (`ConditionResult`, `AssertResult`, `UID`, `GID`, `OOMKills`,
+       `ManagedOOMKills`, PIDs, states, timestamps, counters); `User=`, `Group=` and `DynamicUser=` must be equal;
+     - `Conflicts=` (the old unit's set plus the old unit), and `ConflictedBy=` (the old unit may list the new one);
+     - the launcher in the `ExecStart` argv: the prefix must match, then the fixed launcher and the role the new unit
+       is named after;
+     - the targets that want only the enabled one of the two (`WantedBy=`, and the `Before=` they imply), listed as
+       `wantedByEnabledOnly`: before the switch the old unit is enabled, after it the new one;
+     - `WatchdogUSec` 0 against infinity, while the new unit has never started and neither unit sets `WatchdogSec=`
+       (systemd reports infinity until a service first starts).
 5. **Switch** in a quiet window: `agent switch <role> <old unit>`.
    - It refuses an old unit the new unit does not conflict with, and a role already switched.
    - It stops and disables the old unit, then enables and starts the new one.
    - It verifies the command line (exactly `exec` plus the program of the role's release, polled while the launcher
      execs), health, the absence of refusals, and that the new unit is enabled.
+   - It then runs `show-diff` again, now that the new unit runs and the old one is stopped. This is a gate: any
+     unexpected difference switches back.
    - It records both command lines for the condition (c) diff. These records carry no release, so `gc` keeps them.
    - A failed check switches back at once and waits until the old unit runs exactly its old command again; if that
      fails too, it records `switch-back-failed` and says `SWITCH_BACK_FAILED`.
-   - `agent unswitch <role> <old unit>` switches back by hand. It records an intent, waits for exactly the command the
-     switch recorded, and writes a receipt either way.
+   - `agent unswitch <role> <old unit> [--force]` switches back by hand. It records an intent, waits for exactly the
+     command the switch recorded, and writes a receipt either way. It waits for a quiet node; `--force` skips that,
+     but only for a new role that is down already (no process, or a health URL fails).
+   - Run `switch` and `unswitch` detached from the login session (`systemd-run --wait` as a transient unit). A dropped
+     SSH session must not kill the agent between stopping the old unit and starting the new one.
    - Until every role has switched, `apply`, `rollback` and `restart` refuse (`ROLES_NOT_SWITCHED`).
 6. **After the first real release applies cleanly** under the new units, archive the old unit, its `.d` folder and the
    versioned launcher, env and program files.
