@@ -34,6 +34,7 @@ on:
       - 'scripts/package-shared-execution-service*.mjs'
       - 'scripts/jitless-service-bundle.mjs'
       - 'deploy/shared-execution/**'
+      - 'deploy/node-tidy/**'
       - 'packages/runner-orchestrator/src/**'
       - 'packages/contracts/src/**'
       - 'supabase/functions/company-file-verifier/company-file-verifier.ts'
@@ -138,6 +139,9 @@ jobs:
           scripts/package-runner-orchestrator.test.mjs
           scripts/package-runtime-node-updater.test.mjs
           scripts/package-shared-execution-service.test.mjs
+
+      - name: Test node tidy-up
+        run: node --test deploy/node-tidy/qorpera-node-tidy.test.mjs
 
       - name: Test acceptance storage and verifier contracts
         run: >-
