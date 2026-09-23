@@ -28,12 +28,12 @@ class NodeTree:
         self.node_root = self.root / 'opt-qorpera-node'
         self.etc = self.root / 'etc'
         self.state = self.root / 'state'
-        for folder in [self.node_root, self.node_root / 'releases', self.etc]:
+        for folder in [self.node_root, self.node_root / 'releases', self.node_root / 'roles', self.etc]:
             folder.mkdir(mode=0o755)
         self.state.mkdir(mode=0o700)
         self.env_file = self.etc / 'provider.env.json'
         self.release(1)
-        (self.node_root / 'current').symlink_to('releases/1')
+        self.point(1)
         self.write(self.env_file, {
             'schema': 'qorpera.native36-provider-env/v1',
             'projectRef': 'phqlfrkcvstmxlebljcj',
@@ -62,6 +62,7 @@ class NodeTree:
             'stateDirs': [str(self.state)],
             'home': str(self.state),
             'exec': ['/usr/bin/node', '--jitless'],
+            'noSupplementaryGroups': False,
             **overrides,
         }
         return {'schema': 'qorpera.node/v1', 'roles': {'provider': provider}}
@@ -83,6 +84,12 @@ class NodeTree:
         }, 0o444)
         os.chmod(folder, 0o555)
         return folder
+
+    def point(self, revision):
+        link = self.node_root / 'roles' / 'provider'
+        if link.is_symlink():
+            link.unlink()
+        link.symlink_to(f'../releases/{revision}')
 
     def write(self, path, value, mode):
         if path.exists():
@@ -127,22 +134,21 @@ class LauncherTest(unittest.TestCase):
             'QORPERA_LXD_IMAGE_PROVENANCE': f'{release}/image-provenance.json',
         })
 
-    def test_follows_current_to_a_new_release(self):
+    def test_follows_the_role_link_to_a_new_release(self):
         folder = self.node.release(2, program=b'console.log("v2")\n')
-        (self.node.node_root / 'current').unlink()
-        (self.node.node_root / 'current').symlink_to('releases/2')
+        self.node.point(2)
         argv, _ = self.node.launcher().plan('provider')
         self.assertEqual(argv[-1], str(folder / 'qorpera-lxd-provider.mjs'))
 
     def test_refuses_a_program_that_does_not_match_the_release(self):
         self.node.release(2, digest='0' * 64)
-        (self.node.node_root / 'current').unlink()
-        (self.node.node_root / 'current').symlink_to('releases/2')
+        self.node.point(2)
         self.refused()
 
-    def test_refuses_current_outside_the_releases(self):
-        (self.node.node_root / 'current').unlink()
-        (self.node.node_root / 'current').symlink_to(str(self.node.node_root / 'releases' / '1'))
+    def test_refuses_a_role_link_outside_the_releases(self):
+        link = self.node.node_root / 'roles' / 'provider'
+        link.unlink()
+        link.symlink_to(str(self.node.node_root / 'releases' / '1'))
         self.refused()
 
     def test_refuses_a_writable_release_folder(self):
@@ -158,25 +164,29 @@ class LauncherTest(unittest.TestCase):
                         self.node.node_config(fixed={'QORPERA_RUNNER_PROVIDER_PORT': '18451'}), 0o444)
         self.refused()
 
+    def test_refuses_a_node_config_without_every_guard(self):
+        for key in ['tokenKeys', 'jwtKeys', 'deniedValues', 'noSupplementaryGroups', 'envSchema', 'exec']:
+            config = self.node.node_config()
+            del config['roles']['provider'][key]
+            self.node.write(self.node.etc / 'node.json', config, 0o444)
+            self.refused()
+
     def test_refuses_a_release_value_that_shadows_the_env_file(self):
         self.node.release(2, env={
             'QORPERA_LXD_IMAGE_FINGERPRINT': 'a' * 64,
             'QORPERA_LXD_IMAGE_PROVENANCE': 'x',
             'QORPERA_RUNNER_PROVIDER_PORT': '1',
         })
-        (self.node.node_root / 'current').unlink()
-        (self.node.node_root / 'current').symlink_to('releases/2')
+        self.node.point(2)
         self.refused()
 
     def test_refuses_a_denied_or_malformed_release_value(self):
-        for fingerprint in ['b' * 64, 'not-a-sha']:
-            revision = 2 if fingerprint.startswith('b') else 3
+        for revision, fingerprint in [(2, 'b' * 64), (3, 'not-a-sha')]:
             self.node.release(revision, env={
                 'QORPERA_LXD_IMAGE_FINGERPRINT': fingerprint,
                 'QORPERA_LXD_IMAGE_PROVENANCE': 'x',
             })
-            (self.node.node_root / 'current').unlink()
-            (self.node.node_root / 'current').symlink_to(f'releases/{revision}')
+            self.node.point(revision)
             self.refused()
 
     def test_refuses_a_key_for_the_wrong_role(self):
