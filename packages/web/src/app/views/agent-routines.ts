@@ -52,7 +52,20 @@ function accountLabel(account: NativeMemberConnection): string {
 			: account.provider === "anthropic"
 				? "Claude"
 				: account.provider;
-	return account.providerAccountReference ? `${name} · ${account.providerAccountReference}` : name;
+	const who = account.providerAccountEmail ?? account.providerAccountReference;
+	return who ? `${name} · ${who}` : name;
+}
+
+/** Option labels for the account picker: two accounts on the same provider with no
+ * visible email or reference would otherwise read identically, so a duplicate label
+ * gets the connection's short id. */
+function accountLabels(accounts: readonly NativeMemberConnection[]): string[] {
+	const labels = accounts.map(accountLabel);
+	return labels.map((label, index) =>
+		labels.some((other, at) => other === label && at !== index)
+			? `${label} · ${accounts[index]!.connectionId.slice(0, 8)}`
+			: label,
+	);
 }
 
 function runLabel(run: CloudRoutineOccurrence): string {
@@ -349,7 +362,9 @@ export class AgentRoutines {
 		const account = h(
 			"select",
 			{ "aria-label": "Model account" },
-			...this.#accounts.map((item) => h("option", { value: item.connectionId }, accountLabel(item))),
+			...accountLabels(this.#accounts).map((label, index) =>
+				h("option", { value: this.#accounts[index]!.connectionId }, label),
+			),
 		);
 		const intervalFields = h("div", { class: "routine-inline" }, "Every", every, unit);
 		const weeklyFields = h(
