@@ -136,6 +136,41 @@ begin
 		and v_second.next_due_at = v_first.next_due_at,'A new version keeps the schedule position its routine reached');
 end $$;
 
+-- A founder pause defers an occurrence: nothing is admitted and the cursor does not move,
+-- so the same slot is offered again after the resume instead of being cancelled and lost.
+do $$
+declare v_row public.qorpera_cloud_routines; v_cursor public.qorpera_cloud_routine_schedule_cursors;
+	v_before public.qorpera_cloud_routine_schedule_cursors; v_result jsonb; v_id uuid := extensions.gen_random_uuid();
+	v_at timestamptz := statement_timestamp() - interval '4 minutes';
+begin
+	perform pg_temp.routine('{"action":"upsert","operationKey":"pz-1","routineKey":"paused-check","title":"Paused check","intent":"Look.",
+		"trigger":{"kind":"schedule","intervalMinutes":5,"replyPolicy":"silent"}}');
+	v_row := pg_temp.routine_row('paused-check');
+	select * into strict v_before from public.qorpera_cloud_routine_schedule_cursors
+	where routine_id = v_row.id and routine_version = v_row.current_version and trigger_id = 'agent';
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	perform public.qorpera_set_company_execution_pause(v_row.profile_id, true, 'test pause');
+	perform pg_temp.path_claims('service_role');
+	v_result := public.qorpera_enqueue_routine_wake(v_row.id, v_row.current_version, v_id, 'paused-a', 'agent',
+		v_at, v_before.last_scheduled_for, v_at + interval '5 minutes', '{}');
+	select * into strict v_cursor from public.qorpera_cloud_routine_schedule_cursors
+	where routine_id = v_row.id and routine_version = v_row.current_version and trigger_id = 'agent';
+	perform pg_temp.wake_assert(v_result ->> 'status' = 'deferred' and v_result ->> 'occurrence_id' is null
+		and not exists (select 1 from public.qorpera_wake_occurrences where id = v_id)
+		and v_cursor.last_scheduled_for is not distinct from v_before.last_scheduled_for
+		and v_cursor.next_due_at = v_before.next_due_at,
+		'While paused an occurrence is deferred: nothing admitted, cursor unchanged');
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	perform public.qorpera_set_company_execution_pause(v_row.profile_id, false, 'test resume');
+	perform pg_temp.path_claims('service_role');
+	v_result := public.qorpera_enqueue_routine_wake(v_row.id, v_row.current_version, v_id, 'paused-a', 'agent',
+		v_at, v_before.last_scheduled_for, v_at + interval '5 minutes', '{}');
+	select * into strict v_cursor from public.qorpera_cloud_routine_schedule_cursors
+	where routine_id = v_row.id and routine_version = v_row.current_version and trigger_id = 'agent';
+	perform pg_temp.wake_assert(v_result ->> 'status' = 'queued' and (v_result ->> 'occurrence_id')::uuid = v_id
+		and v_cursor.last_scheduled_for = v_at,'After the resume the same occurrence is admitted and the cursor advances');
+end $$;
+
 -- Expiry by time: the control-plane tick retires it and the scheduler stops listing it.
 do $$
 declare v_row public.qorpera_cloud_routines;
