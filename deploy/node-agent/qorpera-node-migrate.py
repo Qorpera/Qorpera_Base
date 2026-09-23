@@ -4,42 +4,50 @@
 # here starts, stops or enables a unit; the agent's `switch` command does that.
 #   unit --old <unit> --new <unit> --exec <python launcher path> --role <role>
 #       prints the new unit: the old unit's effective settings (fragment + drop-ins with systemd's reset rules),
-#       ExecStart replaced by the fixed launcher, Conflicts=<old unit> added
+#       ExecStart replaced by the fixed launcher, the old unit added to Conflicts=. Holds the node update lock while
+#       it reads, and refuses while a cut lane holds it or has staged (.prepared) or parked (.disabled) drop-ins
 #   show-diff --old <unit> --new <unit>
 #       compares `systemctl show --all` of both; prints the keys that differ outside the expected set, no values
 #   role --launcher <old launcher> --release-keys K,K,... --unit <new unit> [--env-file <path>]
 #       prints the node.json role entry derived from the old launcher's pinned values (no secrets)
 #   split-env --source <env json> --dest <path> --release-keys K,K,...
 #       writes the env file without the per-release keys, same owner, group and mode; values are never printed
-#   compare --old-launcher <path> --role <role> --unit <old unit> [--release-keys K,...]
+#   compare --old-launcher <path> --role <role> --unit <old unit>
 #       runs the old and the new launcher as the unit's user with no capabilities and NoNewPrivs, with execve
-#       captured instead of executed, and prints per key whether argv and env agree (never the values)
+#       captured instead of executed, and prints per key whether argv and env agree (never the values). Only the
+#       program path and the release's ${release} path values may differ, and the files they name must be the same
+#       bytes. It runs outside the unit's sandbox: a launcher that refuses here stops the migration (fail safe), and
+#       one that passes here but refuses under the sandbox is caught by the agent's switch, which switches back.
 import ast
+import fcntl
+import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 
-LIST_KEYS = {
-    'ExecStart', 'ExecStartPre', 'ExecStartPost', 'ExecStop', 'ExecStopPost', 'ExecReload', 'ExecCondition',
-    'Environment', 'EnvironmentFile', 'UnsetEnvironment', 'PassEnvironment', 'After', 'Before', 'Wants', 'Requires',
-    'Requisite', 'BindsTo', 'PartOf', 'Conflicts', 'WantedBy', 'RequiredBy', 'Also', 'SupplementaryGroups',
-    'ReadWritePaths', 'ReadOnlyPaths', 'InaccessiblePaths', 'ExecPaths', 'NoExecPaths', 'BindPaths',
-    'BindReadOnlyPaths', 'LoadCredential', 'LoadCredentialEncrypted', 'SetCredential', 'SetCredentialEncrypted',
-    'TemporaryFileSystem', 'SystemCallFilter', 'RestrictAddressFamilies', 'CapabilityBoundingSet',
-    'AmbientCapabilities', 'DeviceAllow', 'IPAddressAllow', 'IPAddressDeny',
-}
+NODE_LOCK = '/run/lock/qorpera-node-update.lock'
+UNIT_DIRS = ['/etc/systemd/system', '/run/systemd/system', '/usr/local/lib/systemd/system', '/usr/lib/systemd/system',
+             '/lib/systemd/system']
+# [Unit]/[Install] keys that may name another qorpera unit. Anything else that names one (Wants=, Requires=, BindsTo=,
+# PartOf=, Upholds=, OnFailure=, Alias=, Also=, …) would start, stop or restart the other node role with this one,
+# for example the orchestrator with the provider in the middle of a pause, or start an old unit that conflicts with
+# its replacement.
+UNIT_REFERENCE_OK = {'After', 'Before', 'Conflicts'}
+QORPERA_UNIT = re.compile(r'qorpera-[A-Za-z0-9@_.-]*\.(service|socket|timer|path|target|mount|slice|scope)')
 # `systemctl show` keys that legitimately differ between the old unit and its replacement.
+# Conflicts, ConflictedBy, WantedBy, Before, ExecStart, LoadState and NeedDaemonReload: their own rules in show_diff.
 EXPECTED_DIFFERENT = {
-    'Id', 'Names', 'FragmentPath', 'DropInPaths', 'SourcePath', 'Description', 'Conflicts', 'ConflictedBy',
-    'UnitFileState', 'UnitFilePreset', 'LoadState', 'ActiveState', 'SubState', 'FreezerState', 'Result',
-    'MainPID', 'ExecMainPID', 'ExecMainStatus', 'ExecMainCode', 'ControlPID', 'InvocationID', 'NRestarts',
-    'StatusText', 'StatusErrno', 'NeedDaemonReload', 'ControlGroup', 'ControlGroupId', 'Triggers', 'TriggeredBy',
+    'Id', 'Names', 'FragmentPath', 'DropInPaths', 'SourcePath', 'Description', 'UnitFileState', 'UnitFilePreset',
+    'ActiveState', 'SubState', 'FreezerState', 'Result', 'MainPID', 'ExecMainPID', 'ExecMainStatus', 'ExecMainCode',
+    'ControlPID', 'InvocationID', 'NRestarts', 'StatusText', 'StatusErrno', 'ControlGroup', 'ControlGroupId',
     'CanStart', 'CanStop', 'CanReload', 'CanIsolate', 'CanFreeze', 'CanClean', 'Job', 'Following',
 }
+RULED = {'Conflicts', 'ConflictedBy', 'WantedBy', 'Before', 'ExecStart', 'ExecStartEx', 'LoadState', 'NeedDaemonReload'}
 EXPECTED_PATTERNS = [
-    re.compile(r'.*Timestamp(Monotonic)?$'), re.compile(r'^ExecStart(Ex)?$'), re.compile(r'^ExecMain.*'),
+    re.compile(r'.*Timestamp(Monotonic)?$'), re.compile(r'^ExecMain.*'),
     re.compile(r'^(CPU|Memory|IO|IP|Tasks|Effective)[A-Za-z]*(Current|Bytes|Packets|NSec|Peak|Available|Operations|CPUs|MemoryNodes)$'),
     re.compile(r'^(Memory|Tasks|CPU)(Current|Peak|Available|SwapCurrent|SwapPeak|ZSwapCurrent)$'),
 ]
@@ -73,26 +81,51 @@ def parse_cat(text):
 
 
 def effective_settings(blocks):
-    """Applies fragment and drop-ins in order. A list key appends, and an empty assignment resets it; the reset is
-    kept (written back as `Key=`) because an explicitly empty list is not the default: `CapabilityBoundingSet=`
-    means no capabilities, leaving it out means all. Other keys override, and an empty assignment restores the
-    default."""
+    """Replays fragment and drop-ins in order, for every key: the new unit then reads exactly as systemd read the old
+    one, with no list of which keys accumulate (StateDirectory=, Condition*=, SuccessExitStatus=, …) to get wrong.
+    An empty assignment drops what came before it and is kept (written back as `Key=`): for a list key that is
+    systemd's reset, and an explicitly empty list is not the default (`CapabilityBoundingSet=` means no
+    capabilities, leaving it out means all); for a single-value key the later assignment wins anyway."""
     settings = {}
     for _, entries in blocks:
         for section, key, value in entries:
             current = settings.setdefault(section, {})
-            if key in LIST_KEYS:
-                if value == '':
-                    current[key] = ['']
-                elif current.get(key) == ['']:
-                    current[key] = [value]
-                else:
-                    current.setdefault(key, []).append(value)
-            elif value == '':
-                current.pop(key, None)
-            else:
+            if value == '' or current.get(key) == ['']:
                 current[key] = [value]
+            else:
+                current.setdefault(key, []).append(value)
     return settings
+
+
+def check_sources(blocks, old_unit, unit_dirs=UNIT_DIRS):
+    """The old unit is its fragment plus its own .conf drop-ins, and no lane has files staged or parked beside them.
+    A drop-in shared by prefix or type (qorpera-.service.d, service.d) would apply to the new unit a second time."""
+    need(blocks and blocks[0][0].endswith(f'/{old_unit}'), 'the old unit has no fragment of its own')
+    for path, _ in blocks[1:]:
+        need(f'/{old_unit}.d/' in path and path.endswith('.conf'), f'the old unit loads a shared drop-in: {path}')
+    for folder in unit_dirs:
+        try:
+            names = os.listdir(f'{folder}/{old_unit}.d')
+        except FileNotFoundError:
+            continue
+        stray = sorted(name for name in names if not name.endswith('.conf'))
+        need(not stray, f'a lane has drop-ins staged or parked for {old_unit}: {", ".join(stray)}')
+
+
+def node_lock(path=NODE_LOCK, owner=0):
+    """Takes the node update lock (the agent's and the cut lanes') without waiting; the descriptor holds it."""
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    info = os.fstat(fd)
+    ok = stat.S_ISREG(info.st_mode) and info.st_uid == owner and not info.st_mode & 0o022 and info.st_nlink == 1
+    if not ok:
+        os.close(fd)
+        raise SystemExit('NODE_LOCK_UNSAFE')
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        raise SystemExit('NODE_LOCK_HELD: a cut lane or the agent holds the node; migrate outside its window')
+    return fd
 
 
 def unit_text(settings, old_unit, launcher, role):
@@ -103,12 +136,15 @@ def unit_text(settings, old_unit, launcher, role):
     prefix = re.fullmatch(r'(.*?/usr/bin/python3 -I )\S+\.py', old_start[0])
     need(prefix is not None, 'the old ExecStart does not end in a python launcher')
     settings['Service']['ExecStart'] = [f'{prefix.group(1)}{launcher} {role}']
-    # A hard dependency on another node role would restart this role with it, for example the orchestrator with the
-    # provider in the middle of a pause.
-    for key in ['Requires', 'Requisite', 'BindsTo', 'PartOf']:
-        tied = [unit for value in settings.get('Unit', {}).get(key, []) for unit in value.split() if 'qorpera-' in unit]
-        need(not tied, f'the old unit has {key}= on {", ".join(tied)}; remove it before migrating')
-    settings.setdefault('Unit', {})['Conflicts'] = [old_unit]
+    for section in ['Unit', 'Install']:
+        for key, values in settings.get(section, {}).items():
+            tied = sorted({match.group(0) for value in values for match in QORPERA_UNIT.finditer(value)})
+            need(key in UNIT_REFERENCE_OK or not tied,
+                 f'the old unit has {key}= on {", ".join(tied)}; remove it before migrating')
+    conflicts = settings.setdefault('Unit', {}).setdefault('Conflicts', [])
+    if conflicts == ['']:
+        conflicts.clear()
+    conflicts.append(old_unit)
     lines = [f'# Generated by qorpera-node-migrate from {old_unit}; ExecStart runs the fixed node launcher.']
     for section in ['Unit', 'Service', 'Install']:
         if section not in settings:
@@ -125,14 +161,45 @@ def show(unit):
     return dict(line.split('=', 1) for line in output.splitlines() if '=' in line)
 
 
-def show_diff(old, new):
-    differing = []
+def exec_argv(value):
+    commands = re.findall(r'argv\[\]=(.*?) ;', value or '')
+    return commands[0].split() if len(commands) == 1 else None
+
+
+def words(props, key):
+    return set(props.get(key, '').split())
+
+
+def show_diff(old, new, old_unit, new_unit):
+    """`systemctl show` of the old unit and its replacement, before the switch. Beyond identity and runtime state,
+    only these may differ: Conflicts= gains the old unit; the old unit may list the new one in ConflictedBy=; the
+    ExecStart argv keeps its prefix and replaces the launcher with the fixed one and its role; and, while the new
+    unit is not enabled yet, the targets that want the old unit (WantedBy=, and the Before= they imply)."""
+    unexpected = []
+    for unit, props in [(old_unit, old), (new_unit, new)]:
+        if props.get('LoadState') != 'loaded' or props.get('NeedDaemonReload') != 'no':
+            unexpected.append(f'{unit}:LoadState/NeedDaemonReload')
     for key in sorted(set(old) | set(new)):
-        if key in EXPECTED_DIFFERENT or any(pattern.fullmatch(key) for pattern in EXPECTED_PATTERNS):
+        if key in EXPECTED_DIFFERENT or key in RULED or any(pattern.fullmatch(key) for pattern in EXPECTED_PATTERNS):
             continue
         if old.get(key) != new.get(key):
-            differing.append(key)
-    return differing
+            unexpected.append(key)
+    if words(new, 'Conflicts') != words(old, 'Conflicts') | {old_unit}:
+        unexpected.append('Conflicts')
+    if words(old, 'ConflictedBy') - {new_unit} != words(new, 'ConflictedBy'):
+        unexpected.append('ConflictedBy')
+    old_argv, new_argv = exec_argv(old.get('ExecStart')), exec_argv(new.get('ExecStart'))
+    if (not old_argv or not new_argv or new_argv[:-2] != old_argv[:-1]
+            or not new_argv[-2].endswith('/qorpera-node-launch.py')):
+        unexpected.append('ExecStart')
+    pending = words(old, 'WantedBy') - words(new, 'WantedBy')
+    enabled = new.get('UnitFileState') == 'enabled'
+    if (not words(new, 'WantedBy') <= words(old, 'WantedBy') or (pending and enabled)
+            or not all(unit.endswith('.target') for unit in pending)):
+        unexpected.append('WantedBy')
+    if words(new, 'Before') != words(old, 'Before') - pending:
+        unexpected.append('Before')
+    return {'unexpectedDifferences': unexpected, 'pendingEnable': sorted(pending), 'equivalent': not unexpected}
 
 
 def literal(source, name):
@@ -181,6 +248,9 @@ def role_entry(source, release_keys, unit, env_file):
     home_value = home.group(1) if home else (state_dirs[0] if "'HOME':str(p)" in source and state_dirs else None)
     need(home_value is not None and state_dirs, 'the launcher names no home or state folder')
     release = set(release_keys)
+    pinned = set(re.findall(r"env\['(QORPERA_[A-Z0-9_]+)'\]==", source))
+    dropped = sorted(pinned - set(fixed) - release)
+    need(not dropped, f'the launcher pins {", ".join(dropped)} by value outside FIXED; list it in --release-keys')
     health = [f"http://127.0.0.1:{fixed[key]}/healthz" for key in
               ['QORPERA_LXD_LOGIN_GATEWAY_PORT', 'QORPERA_RUNNER_PROVIDER_PORT'] if key in fixed]
     return {
@@ -205,8 +275,9 @@ def role_entry(source, release_keys, unit, env_file):
 
 
 def split_env(source, dest, release_keys):
-    info = os.stat(source)
-    with open(source, 'rb') as handle:
+    source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(source_fd, 'rb') as handle:
+        info = os.fstat(handle.fileno())
         document = json.load(handle)
     missing = [key for key in release_keys if key not in document['env']]
     need(not missing, f'the env file lacks release keys: {missing}')
@@ -216,16 +287,23 @@ def split_env(source, dest, release_keys):
         json.dump(document, handle, indent=2)
         handle.write('\n')
         handle.flush()
+        os.fchown(handle.fileno(), info.st_uid, info.st_gid)
+        os.fchmod(handle.fileno(), info.st_mode & 0o7777)
         os.fsync(handle.fileno())
-    os.chown(dest, info.st_uid, info.st_gid)
-    os.chmod(dest, info.st_mode & 0o7777)
+    folder = os.open(os.path.dirname(os.path.abspath(dest)), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(folder)
+    finally:
+        os.close(folder)
     return {'written': dest, 'keys': len(document['env']), 'mode': oct(info.st_mode & 0o7777)}
 
 
 CAPTURE = r'''
 import hashlib, json, os, runpy, sys
+PATH_KEYS = json.loads(os.environ.pop("QORPERA_CAPTURE_PATH_KEYS"))
 def capture(path, argv, env):
-    sys.stdout.write(json.dumps({"argv": argv, "env": {k: hashlib.sha256(v.encode()).hexdigest() for k, v in env.items()}}))
+    digests = {k: hashlib.sha256(v.encode()).hexdigest() for k, v in env.items()}
+    sys.stdout.write(json.dumps({"argv": argv, "env": digests, "paths": {k: env[k] for k in PATH_KEYS if k in env}}))
     sys.stdout.flush()
     os._exit(0)
 os.execve = capture
@@ -234,29 +312,60 @@ runpy.run_path(sys.argv[0], run_name="__main__")
 '''
 
 
-def capture(unit, argv):
+def capture(unit, argv, path_keys):
     props = show(unit)
     groups = props.get('SupplementaryGroups', '').split()
     command = ['/usr/bin/setpriv', f"--reuid={props['User']}", f"--regid={props['Group']}",
                f"--groups={','.join(groups)}" if groups else '--clear-groups', '--bounding-set=-all',
                '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs', '/usr/bin/env', '-i', 'PATH=/usr/bin:/bin',
-               'LANG=C', 'LC_ALL=C', f'QORPERA_CAPTURE_ARGV={json.dumps(argv)}', '/usr/bin/python3', '-I', '-c', CAPTURE]
+               'LANG=C', 'LC_ALL=C', f'QORPERA_CAPTURE_ARGV={json.dumps(argv)}',
+               f'QORPERA_CAPTURE_PATH_KEYS={json.dumps(sorted(path_keys))}', '/usr/bin/python3', '-I', '-c', CAPTURE]
     result = subprocess.run(command, capture_output=True, text=True, timeout=60)
     need(result.returncode == 0 and result.stdout, f'launcher refused: {result.stderr.strip()[:200]}')
     return json.loads(result.stdout)
 
 
-def compare(old, new, release_keys):
-    """Compares two captured launches. The program path and per-release path values may differ; nothing else."""
-    report = {'argvPrefixEqual': old['argv'][:-1] == new['argv'][:-1], 'programs': [old['argv'][-1], new['argv'][-1]],
+def file_digest(path):
+    """sha256 of a regular file's bytes, read as root outside any sandbox; None if it cannot be read."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    with os.fdopen(fd, 'rb') as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            return None
+        return hashlib.sha256(handle.read()).hexdigest()
+
+
+def release_path_keys(node_root, role):
+    """The keys whose value the role's release writes as a ${release} path: the only values allowed to change."""
+    with open(os.path.join(node_root, 'roles', role, 'release.json'), 'rb') as handle:
+        env = json.load(handle)['roles'][role]['env']
+    return sorted(key for key, value in env.items() if '${release}' in value)
+
+
+def compare(old, new, path_keys, digest=file_digest):
+    """Compares two captured launches. Everything must be equal, the per-release values included (release 0 was built
+    from what runs now), except the program path and the ${release} path values: those may move, but the files they
+    name must hold the same bytes."""
+    programs = [digest(old['argv'][-1]), digest(new['argv'][-1])]
+    report = {'argvPrefixEqual': old['argv'][:-1] == new['argv'][:-1],
+              'programBytesEqual': programs[0] is not None and programs[0] == programs[1],
               'keysOnlyOld': sorted(set(old['env']) - set(new['env'])),
-              'keysOnlyNew': sorted(set(new['env']) - set(old['env'])), 'differing': []}
+              'keysOnlyNew': sorted(set(new['env']) - set(old['env'])), 'differing': [], 'pathKeys': sorted(path_keys)}
     for key in sorted(set(old['env']) & set(new['env'])):
         if old['env'][key] != new['env'][key]:
             report['differing'].append(key)
-    report['unexpected'] = [key for key in report['differing'] if key not in set(release_keys)]
-    report['equivalent'] = (report['argvPrefixEqual'] and not report['keysOnlyOld'] and not report['keysOnlyNew']
-                            and not report['unexpected'])
+    moved = []
+    for key in report['differing']:
+        if key not in path_keys:
+            continue
+        before, after = digest(old.get('paths', {}).get(key, '')), digest(new.get('paths', {}).get(key, ''))
+        if before is not None and before == after:
+            moved.append(key)
+    report['unexpected'] = [key for key in report['differing'] if key not in moved]
+    report['equivalent'] = (report['argvPrefixEqual'] and report['programBytesEqual'] and not report['keysOnlyOld']
+                            and not report['keysOnlyNew'] and not report['unexpected'])
     return report
 
 
@@ -264,22 +373,30 @@ def main(argv):
     command, options = argv[1], dict(zip(argv[2::2], argv[3::2]))
     keys = [key for key in options.get('--release-keys', '').split(',') if key]
     if command == 'unit':
-        cat = subprocess.run(['/usr/bin/systemctl', 'cat', options['--old']], check=True, capture_output=True,
-                             text=True).stdout
-        sys.stdout.write(unit_text(effective_settings(parse_cat(cat)), options['--old'], options['--exec'],
-                                   options['--role']))
+        lock = node_lock()
+        try:
+            cat = subprocess.run(['/usr/bin/systemctl', 'cat', options['--old']], check=True, capture_output=True,
+                                 text=True).stdout
+            blocks = parse_cat(cat)
+            check_sources(blocks, options['--old'])
+            sys.stdout.write(unit_text(effective_settings(blocks), options['--old'], options['--exec'],
+                                       options['--role']))
+        finally:
+            os.close(lock)
     elif command == 'show-diff':
-        differing = show_diff(show(options['--old']), show(options['--new']))
-        print(json.dumps({'unexpectedDifferences': differing, 'equivalent': not differing}))
+        old, new = show(options['--old']), show(options['--new'])
+        print(json.dumps(show_diff(old, new, options['--old'], options['--new'])))
     elif command == 'role':
         with open(options['--launcher']) as handle:
             print(json.dumps(role_entry(handle.read(), keys, options['--unit'], options.get('--env-file')), indent=2))
     elif command == 'split-env':
         print(json.dumps(split_env(options['--source'], options['--dest'], keys)))
     elif command == 'compare':
-        old = capture(options['--unit'], [options['--old-launcher']])
-        new = capture(options['--unit'], ['/usr/local/libexec/qorpera-node/qorpera-node-launch.py', options['--role']])
-        print(json.dumps(compare(old, new, keys)))
+        path_keys = release_path_keys(options.get('--node-root', '/opt/qorpera-node'), options['--role'])
+        old = capture(options['--unit'], [options['--old-launcher']], path_keys)
+        new = capture(options['--unit'], ['/usr/local/libexec/qorpera-node/qorpera-node-launch.py', options['--role']],
+                      path_keys)
+        print(json.dumps(compare(old, new, path_keys)))
     else:
         raise SystemExit('usage: qorpera-node-migrate unit|show-diff|role|split-env|compare ...')
 

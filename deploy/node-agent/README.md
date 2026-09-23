@@ -128,23 +128,52 @@ These steps run per node: node 2 first, then node 1. They cover the provider and
      file without the per-release values, with the same owner, group and mode. The orchestrator's env file has no
      per-release values and stays as it is.
    - `role --launcher <live launcher> --release-keys … --unit qorpera-node-<role>.service [--env-file …]` prints each
-     role's `node.json` entry from the launcher's pinned values. Write `/etc/qorpera-node/node.json` (root, 0444) with
+     role's `node.json` entry from the launcher's pinned values. It refuses a launcher that pins a key by value outside
+     `FIXED` when that key is not a release key: the entry would silently drop the pin. Write `/etc/qorpera-node/node.json` (root, 0444) with
      `restartOrder: ["provider", "orchestrator"]`.
 3. **Launcher equivalence** (conditions b and c). `compare --old-launcher <live launcher> --role <role> --unit <old unit>`
    runs both launchers as the unit's user, with no capabilities and NoNewPrivs, and captures execve instead of executing
-   it. It requires everything to match except the program path and the per-release keys: the same exec prefix, the same
-   env keys, the same values. Values are never printed.
+   it. Everything must match: the exec prefix, the env keys and every value, the per-release values included (release 0
+   was built from what runs now). Only two things may move, and both must still be the same bytes:
+   - the program path: the old and the new program files must be identical;
+   - the values release 0 writes as `${release}/…` paths (the provenance files): the files they name must be identical.
+
+   Values are never printed. It runs outside the unit's systemd sandbox: a launcher that refuses there stops the
+   migration (fail safe), and one that passes there but refuses under the sandbox is caught by `switch`, which switches
+   back.
 4. **New unit.**
    - `unit --old <old unit> --new qorpera-node-<role>.service --exec /usr/local/libexec/qorpera-node/qorpera-node-launch.py --role <role>`
-     prints the old unit's effective settings, applying fragment and drop-ins with systemd's reset rules. An explicit
-     `Key=` is kept. `ExecStart` runs the fixed launcher, and `Conflicts=<old unit>` is added.
+     prints the old unit's settings: every assignment of the fragment and its drop-ins, replayed in load order, so the
+     new unit reads exactly as systemd read the old one. An explicit `Key=` is kept. `ExecStart` runs the fixed
+     launcher, and the old unit is added to the `Conflicts=` it already has.
+   - It refuses:
+     - while the node update lock is held (a cut lane or the agent is at work);
+     - while the old unit's `.d` folders hold anything but `.conf` files (a lane's staged `.prepared` or parked
+       `.disabled` drop-ins);
+     - a drop-in shared by prefix or type (`qorpera-.service.d`), which would apply to the new unit a second time;
+     - any `[Unit]` or `[Install]` key other than `After=`, `Before=` or `Conflicts=` that names another qorpera unit
+       (`Wants=`, `Requires=`, `BindsTo=`, `PartOf=`, `Upholds=`, `OnFailure=`, `Also=`, …). Such a tie would start,
+       stop or restart another node role with this one.
    - Install it (0644 root) and run `daemon-reload`, without starting it.
-   - `show-diff --old … --new …` must report no unexpected differences.
+   - `show-diff --old … --new …` must report no unexpected differences. Both units must be loaded with no pending
+     daemon-reload, and `Triggers`/`TriggeredBy` must match. Only these may differ:
+     - identity and runtime state;
+     - `Conflicts=` (the old unit's set plus the old unit);
+     - `ConflictedBy=` (the old unit may list the new one);
+     - the launcher in the `ExecStart` argv (the prefix must match);
+     - while the new unit is not enabled, the targets that want the old unit (`WantedBy=`, and the `Before=` they
+       imply), listed as `pendingEnable`.
 5. **Switch** in a quiet window: `agent switch <role> <old unit>`.
+   - It refuses an old unit the new unit does not conflict with, and a role already switched.
    - It stops and disables the old unit, then enables and starts the new one.
-   - It verifies the command line (exactly `exec` plus the program of the role's release, polled while the launcher execs), health and the absence of refusals.
-   - It records both command lines for the condition (c) diff.
-   - A failed check switches back at once. `agent unswitch <role> <old unit>` does the same by hand.
+   - It verifies the command line (exactly `exec` plus the program of the role's release, polled while the launcher
+     execs), health, the absence of refusals, and that the new unit is enabled.
+   - It records both command lines for the condition (c) diff. These records carry no release, so `gc` keeps them.
+   - A failed check switches back at once and waits until the old unit runs exactly its old command again; if that
+     fails too, it records `switch-back-failed` and says `SWITCH_BACK_FAILED`.
+   - `agent unswitch <role> <old unit>` switches back by hand. It records an intent, waits for exactly the command the
+     switch recorded, and writes a receipt either way.
+   - Until every role has switched, `apply`, `rollback` and `restart` refuse (`ROLES_NOT_SWITCHED`).
 6. **After the first real release applies cleanly** under the new units, archive the old unit, its `.d` folder and the
    versioned launcher, env and program files.
 
