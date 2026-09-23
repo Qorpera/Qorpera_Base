@@ -16,13 +16,18 @@ import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fix
 /** An in-memory Company File: versioned text objects behind the gateway's trusted reads and governed writes. */
 function companyFile(initial: Record<string, string> = {}) {
 	const files = new Map<string, { version: string; text: string }>();
-	for (const [path, text] of Object.entries(initial)) files.set(path, { version: randomUUID(), text });
+	// Folders are real entries, as in the live tree: the gateway never invents a parent.
+	const folders = new Set<string>();
+	const parent = (path: string) => path.split("/").slice(0, -1).join("/");
+	for (const [path, text] of Object.entries(initial)) {
+		files.set(path, { version: randomUUID(), text });
+		for (let folder = parent(path); folder; folder = parent(folder)) folders.add(folder);
+	}
 	const conflicts: string[] = [];
 	const readTrusted = vi.fn<CloudCompanyPathGateway["readTrusted"]>(async (path) => {
 		const file = files.get(path);
 		if (file) return { path, version: file.version, kind: "file", text: file.text, fileSha256: "a".repeat(64) };
-		const directory = [...files.keys()].some((key) => key.startsWith(`${path}/`));
-		return directory ? { path, version: randomUUID(), kind: "directory", text: "", fileSha256: null } : null;
+		return folders.has(path) ? { path, version: randomUUID(), kind: "directory", text: "", fileSha256: null } : null;
 	});
 	const listTrusted = vi.fn<CloudCompanyPathGateway["listTrusted"]>(async (path) =>
 		[...files.entries()]
@@ -31,6 +36,21 @@ function companyFile(initial: Record<string, string> = {}) {
 			.map(([key, file]) => ({ path: key, version: file.version, kind: "file" as const, bytes: file.text.length })),
 	);
 	const mutate = vi.fn<CloudCompanyPathGateway["mutate"]>(async (operation, input) => {
+		if (parent(input.path) && !folders.has(parent(input.path))) throw new Error("Company File parent is absent");
+		if (operation === "mkdir") {
+			if (folders.has(input.path) || files.has(input.path)) throw new CloudCompanyHeadConflict();
+			folders.add(input.path);
+			return {
+				schema: "qorpera.company-path-result/v1",
+				state: "applied",
+				operationKey: input.operationKey,
+				path: input.path,
+				version: randomUUID(),
+				snapshotId: randomUUID(),
+				receiptId: randomUUID(),
+				proposalId: null,
+			};
+		}
 		if (operation !== "write") throw new Error("Unexpected memory operation");
 		const current = files.get(input.path) ?? null;
 		if ((current?.version ?? null) !== input.expectedVersion) throw new CloudCompanyHeadConflict();
@@ -111,12 +131,26 @@ describe("agent memory notebook", () => {
 			);
 			expect(f.store.files.get(f.paths.profile)?.text).toBe("- (2026-09-22) I own the weekly ledger review.\n");
 			expect(cloudMemoryLogPath(f.agent, NOW)).toBe(`agents/${f.agent}/memory/log/2026-09.md`);
+			// The first fact created the notebook's folders, once each and in order.
+			const mkdirs = f.store.mutate.mock.calls.filter(([operation]) => operation === "mkdir");
+			expect(mkdirs.map(([, input]) => input.path)).toEqual([
+				"agents",
+				`agents/${f.agent}`,
+				`agents/${f.agent}/memory`,
+				`agents/${f.agent}/memory/log`,
+			]);
+			for (const [, input] of mkdirs) {
+				expect(input.operationKey).toMatch(/^memory-folder-[0-9a-f]{40}$/);
+				expect(input.expectedVersion).toBeNull();
+			}
 			// Every write carried the exact version it read and its own operation key.
-			for (const [, input] of f.store.mutate.mock.calls)
-				expect(input.operationKey).toMatch(/^memory-write-[0-9a-f]{40}$/);
-			expect(f.store.mutate.mock.calls[0][1].expectedVersion).toBeNull();
-			expect(f.store.mutate.mock.calls[2][1].expectedVersion).toBe(
-				(await f.store.mutate.mock.results[0].value).version,
+			const writes = f.store.mutate.mock.calls
+				.map((call, index) => ({ call, index }))
+				.filter(({ call: [operation] }) => operation === "write");
+			for (const { call } of writes) expect(call[1].operationKey).toMatch(/^memory-write-[0-9a-f]{40}$/);
+			expect(writes[0].call[1].expectedVersion).toBeNull();
+			expect(writes[2].call[1].expectedVersion).toBe(
+				(await f.store.mutate.mock.results[writes[0].index].value).version,
 			);
 		} finally {
 			f.run.close();
@@ -279,7 +313,12 @@ describe("agent memory notebook", () => {
 				...f.store.mutate.mock.calls.map(([, input]) => input.path),
 			];
 			expect(touched.length).toBeGreaterThan(0);
-			for (const path of touched) expect(path.startsWith(`agents/${f.agent}/memory`)).toBe(true);
+			// Its own notebook, plus the two folders on the way to it; never another agent's.
+			for (const path of touched)
+				expect(
+					path === "agents" || path === `agents/${f.agent}` || path.startsWith(`agents/${f.agent}/memory`),
+					path,
+				).toBe(true);
 		} finally {
 			f.run.close();
 		}

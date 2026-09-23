@@ -14,16 +14,16 @@
   "components": {
     "kernel": "f3fd04d0d4e17ab640f6d03512c2564a145a0c7b358751cbfdedd96324ec00e0",
     "constitution": "708f73ebb1fdb1fe5479f166edcae0708f0c9cc70d56d756e2565771d6535b4a",
-    "toolCatalog": "7cb9ccaf9ca0f498381ba4e35ab2ef4229deb706c37c1aa8d19f62ddddcaf700",
+    "toolCatalog": "a48021d111926831af32e7c7db58b36b12b38dcfce100e466e8d306c823c2ca5",
     "wakeAndSilence": "ad0019d19615fc7b89587ad3339a875c7cf207d01e65fd53ef2361efe08c6e35",
     "contextComposer": "e14360b16564e61d6655d176ebdb8a0e58a6b9192db8ef385f78ab3e880a7b60",
     "providerBootstrap": "5800abe8aee05ef803157c6fea69944762f0066d0a4673c8d783415c2b977bd7",
-    "authorization": "9cf450c2adeff9599b7f6de0e2f33da01ddb2c14502d7a070a87a836b9a62d43",
+    "authorization": "0cf496cc4e428cdfd666a5d5ed74dd8e4dd609acd17930c465060ebd5048af74",
     "inboundSafety": "71d6b9c43356ac0de69caa1877943f074d088fa34753d520256cba6b01c06924",
     "outboundSafety": "03ccf3d1bed42c4132e6adefd37cd6c67d9c276c5b72bad6394bd9c075ce80fb",
     "interactionSurfaces": "b66bb493db0ba174af8589ce3511066f4d036aa9359d2a8e53c64c1f1f7c2380",
     "workerLifecycle": "8e8dddb54cc333d5e18cb54a4562f4601901311588906bc2c83f197abbabb433",
-    "memoryAndSkills": "4c8b65529bdc2d34051f1517d6a89d49f51e6c02632b9ba4b200bd3de2e1cbea"
+    "memoryAndSkills": "8d8b7c00dcabbf56140740d3cb71ac828d02c13ecee0e8d7560346dcad500f52"
   },
   "implementation": {
     "deploy/coding-worker/command-authority.ts": "2efc2f278fb5e60f9211768faedef7e2d850755d714d7ac3d28d589496f0998d",
@@ -563,7 +563,7 @@
     "packages/runtime/src/cloud-identity-recovery-restore-main.ts": "4045d36563419775bf32d3f6fa3a7a1af7eecfc82d0977bc6eaa93f178f224ff",
     "packages/runtime/src/cloud-identity-recovery-store.ts": "86d7822dc731cf27f6c72c5dc3535b1765f75f2ef6b8f91f88a1172f4df95eff",
     "packages/runtime/src/cloud-identity-recovery.ts": "ad12e1d71d90a78e4d87ffd09c6f9600fcd83c33ae4db95e44759946eceb41f4",
-    "packages/runtime/src/cloud-memory-tools.ts": "12417f0d578f82e0e2704d64fd1a68d3dbbddb926c2efbd18f5588c245d4e529",
+    "packages/runtime/src/cloud-memory-tools.ts": "c6dcfedd2bdea39c6206f4f2d36ff46f40439ed439b468007585c2681b69f31f",
     "packages/runtime/src/cloud-native-capture-images.ts": "403f361ba01d14948355f696ceec7f42edb762b697b8a205fe1e757e47bd50f1",
     "packages/runtime/src/cloud-native-coding-runtime.ts": "3390b4f6d52028c2411ce34237b077c6758001a845b0181fb4c182a59fedb8f9",
     "packages/runtime/src/cloud-native-company-context.ts": "dbe740786a3ff90b25d690139230524d8793606882a6efacacc504b004d023b1",
@@ -979,6 +979,8 @@
     "supabase/migrations/20260923081000_runtime_bundle_activation_v84.sql": "b826e03eaaa4a9ed080b81286439466812339e9ca7b7eddc03a971976ac43e63",
     "supabase/migrations/20260924000000_runtime_observation_memory_tools.sql": "19782ca659595aa85856025abf8026991fe61bc124a81e109648e582eef37709",
     "supabase/migrations/20260924010000_runtime_bundle_activation_v85.sql": "9415c69a04b130790c62801a3221f846b2e869791b3cf6835b15d08963a09e19",
+    "supabase/migrations/20260924020000_runtime_memory_notebook_write.sql": "73ab910fd8a6e0f44700c2618030350a5fc0d576085b35cdb27b8bbc5fb8dbaa",
+    "supabase/migrations/20260924030000_runtime_bundle_activation_v86.sql": "bb1012f3996c5fcfcff01fc304b139840aac7d8efc4acedac8ba5092748f52b3",
     "supabase/migrations/20260924040000_cloud_connector_catalog.sql": "c815dc3171489fe0bd5d0bee0d9559676fb15d86d24af677165b3a76a01e3f74"
   }
 }
