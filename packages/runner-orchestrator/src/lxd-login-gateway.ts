@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual, X509Certificate } from "node:crypto";
-import { lstat, mkdir, readdir, rename } from "node:fs/promises";
+import { lstat, mkdir, readdir, rename, unlink } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { isIP } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
@@ -1042,8 +1042,9 @@ export class LxdNativeLoginGateway {
 		return released;
 	}
 
-	/** Moves a released journal out of the scanned root, whole and unchanged. A later
-	 * request for its login finds it in the archive and is refused like a released one. */
+	/** Moves a released journal out of the scanned root with its history, and deletes its bridge token, which
+	 * died with its machine. A later request for its login finds it in the archive and is refused like a
+	 * released one. */
 	async #archive(name: string): Promise<void> {
 		const archive = join(this.#config.stateRoot, JOURNAL_ARCHIVE);
 		try {
@@ -1055,6 +1056,10 @@ export class LxdNativeLoginGateway {
 		await checkDirectory(archive);
 		if (await present(join(archive, name))) throw new Error("LOGIN_JOURNAL_ARCHIVE_CONFLICT");
 		await rename(join(this.#config.stateRoot, name), join(archive, name));
+		await unlink(join(archive, name, "bridge.json")).catch((error) => {
+			if (!code(error, "ENOENT")) throw error;
+		});
+		await syncDirectory(join(archive, name));
 		await syncDirectory(archive);
 		await syncDirectory(this.#config.stateRoot);
 		this.#released.delete(name);

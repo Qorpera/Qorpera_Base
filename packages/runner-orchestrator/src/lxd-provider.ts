@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { chmod, lstat, mkdir, open, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -788,7 +788,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		this.#fetch = fetchImplementation;
 	}
 
-	/** Every journal is reconciled on every pass. One journal that cannot make
+	/** Every journal is reconciled on every pass until it is settled (see #settled). One journal that cannot make
 	 * progress (for example a reserving acquisition the node ceiling refuses
 	 * while another guest still holds the slot) must not stop the retirement of
 	 * finished guests behind it, or the slot is never released and the provider
@@ -1822,8 +1822,9 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		return Date.parse(journal.updatedAt);
 	}
 
-	/** Moves a settled journal, with its credentials, out of the scanned state root. An acquire of its id is
-	 * refused like a replay of a stopped one. */
+	/** Moves a settled journal out of the scanned state root and deletes its credentials: the run is over, so its
+	 * activation, assignment and bridge tokens are dead, and the journal keeps their hashes. An acquire of its id
+	 * is refused like a replay of a stopped one. */
 	async #archive(acquisitionId: string): Promise<void> {
 		const archive = join(this.#config.stateRoot, JOURNAL_ARCHIVE);
 		await mkdir(archive, { recursive: true, mode: 0o700 });
@@ -1831,7 +1832,8 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		const target = join(archive, acquisitionId);
 		if (await present(target)) throw new Error("LXD journal archive already holds this acquisition");
 		await rename(join(this.#config.stateRoot, acquisitionId), target);
-		for (const directory of [archive, this.#config.stateRoot]) {
+		await rm(join(target, "credentials"), { recursive: true, force: true });
+		for (const directory of [target, archive, this.#config.stateRoot]) {
 			const handle = await open(directory, "r");
 			try {
 				await handle.sync();

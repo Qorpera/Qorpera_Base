@@ -700,7 +700,8 @@ describe("LXD cloud runner provider", () => {
 		const restarted = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, f.fetchImplementation);
 		await restarted.reconcile();
 		expect(await readdir(f.stateRoot)).toEqual(["archive"]);
-		expect((await readdir(join(f.stateRoot, "archive", runId))).sort()).toEqual(["credentials", "journal.json"]);
+		// The run is over: its tokens are dead and only their hashes stay, in the journal.
+		expect(await readdir(join(f.stateRoot, "archive", runId))).toEqual(["journal.json"]);
 		expect((await stat(join(f.stateRoot, "archive"))).mode & 0o777).toBe(0o700);
 		const archivedCalls = calls();
 		await restarted.reconcile();
