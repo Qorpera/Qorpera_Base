@@ -95,7 +95,7 @@ that run; a re-read by the same run sees the same; a later run does not). Held
 messages extend no chain but count toward the pair's hourly budget. The
 runtime parser accepts `heldMessages` on every wake kind, sends `p_priority`
 only when false (a pre-v73 kernel still understands the call), and accepts the
-`held` receipt; the web shows "Read at B's next turn" under a held message.
+`held` receipt; the web shows "Left for B's next turn" under a held message.
 Migration `20260923000000_runtime_held_peer_messages.sql` drops the
 four-argument send and creates the five-argument one; the priority digest is
 unchanged so receipts from before the cut still replay. Test
@@ -112,6 +112,12 @@ repeated; delivered rows older than a week are pruned; the chips say "Left a
 note for B" / "Note from A" for held messages; test 381 covers a second
 coworker's note, the same-pair exclusion and redelivery after a failed run
 (a worker wake's exclusion remains covered by inspection).
+
+Review round 2 of the second cut (2026-09-23, three findings, all fixed): the
+same-pair rule now skips only notes the wake's transcript window (last twelve)
+actually shows, older notes of that pair still arrive (tested with a note
+followed by twelve fillers); the held caption reads "Left for B's next turn";
+the weekly prune has its own partial index.
 
 ## Not in this cut
 

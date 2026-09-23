@@ -35,7 +35,7 @@ $$;
 
 savepoint held_shape;
 do $$
-declare v_alice jsonb := current_setting('qorpera_test.alice_binding')::jsonb; v_bob jsonb; v_held jsonb; v_send jsonb; v_wake jsonb; v_carol_note jsonb;
+declare v_alice jsonb := current_setting('qorpera_test.alice_binding')::jsonb; v_bob jsonb; v_held jsonb; v_send jsonb; v_wake jsonb; v_carol_note jsonb; v_n integer;
 	v_pair uuid; v_pending public.qorpera_pending_peer_messages%rowtype; v_bob_run uuid;
 	v_bob_id uuid := '30000000-0000-4000-8000-000000000031';
 begin
@@ -74,6 +74,18 @@ begin
 	v_send := public.qorpera_send_coworker_message(v_alice,v_bob_id,'ask-2','One more thing.');
 	v_bob := pg_temp.wake_run_binding((v_send ->> 'occurrenceId')::uuid);
 	perform pg_temp.wake_assert(not (public.qorpera_read_native_wake(v_bob) -> 'payload' ? 'heldMessages'),'A delivered message is not delivered twice');
+	perform public.qorpera_assert_wake_completion((v_bob ->> 'runId')::uuid);
+	-- A held note the transcript window no longer shows is not swallowed by the same-pair rule.
+	perform pg_temp.wake_assert(public.qorpera_send_coworker_message(v_alice,v_bob_id,'old-note','An old note.',false) ->> 'status' = 'held','An old note is held');
+	for v_n in 1..12 loop
+		perform public.qorpera_send_coworker_message(v_alice,v_bob_id,'filler-' || v_n::text,'Filler ' || v_n::text,false);
+	end loop;
+	v_send := public.qorpera_send_coworker_message(v_alice,v_bob_id,'ask-window','Windowed question.');
+	v_bob := pg_temp.wake_run_binding((v_send ->> 'occurrenceId')::uuid);
+	v_wake := public.qorpera_read_native_wake(v_bob);
+	perform pg_temp.wake_assert(jsonb_array_length(v_wake #> '{payload,transcript}') = 12,'The transcript window is twelve');
+	perform pg_temp.wake_assert(v_wake #>> '{payload,heldMessages,0,text}' = 'An old note.' and v_wake #>> '{payload,heldMessages,1,text}' = 'Filler 1'
+		and jsonb_array_length(v_wake #> '{payload,heldMessages}') = 2,'Notes older than the transcript window still arrive');
 	perform public.qorpera_assert_wake_completion((v_bob ->> 'runId')::uuid);
 	-- Unless the run that claimed it failed: then the next wake gets it again.
 	v_carol_note := public.qorpera_send_coworker_message(pg_temp.carol_binding(),v_bob_id,'carol-fyi-2','Carol: one correction.',false);

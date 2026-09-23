@@ -179,7 +179,7 @@ export class PairTranscriptView {
 								? h(
 										"div",
 										{ class: "message-caption", title: "Sent without waking the coworker" },
-										`Read at ${other.name}'s next turn`,
+										`Left for ${other.name}'s next turn`,
 									)
 								: null,
 						),

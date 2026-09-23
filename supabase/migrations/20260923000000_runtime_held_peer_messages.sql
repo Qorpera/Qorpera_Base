@@ -25,14 +25,17 @@ create index qorpera_pending_peer_messages_waiting
 	on public.qorpera_pending_peer_messages(profile_id,recipient_staff_id,created_at) where delivered_run_id is null;
 create index qorpera_pending_peer_messages_pair_recent
 	on public.qorpera_pending_peer_messages(profile_id,pair_session_id,created_at);
+create index qorpera_pending_peer_messages_delivered
+	on public.qorpera_pending_peer_messages(profile_id,delivered_at) where delivered_at is not null;
 alter table public.qorpera_pending_peer_messages enable row level security;
 revoke all on public.qorpera_pending_peer_messages from public,anon,authenticated,service_role;
 
 -- What a waking agent finds left for it: the oldest twelve undelivered held
 -- messages, claimed by this run; a re-read by the same run returns the same. A
--- claim by a run that then failed or was cancelled is offered again. Messages of
--- the pair whose transcript this wake already carries are claimed but not
--- repeated. Delivered rows older than a week are pruned along the way.
+-- claim by a run that then failed or was cancelled is offered again. Messages the
+-- wake's own pair transcript already shows (its last twelve) are claimed but not
+-- repeated; older ones of that pair are. Delivered rows older than a week are
+-- pruned along the way.
 create function public.qorpera_drain_held_peer_messages(p_run public.qorpera_execution_runs,p_shown_pair uuid default null)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_messages jsonb;
@@ -52,7 +55,11 @@ begin
 		'pairSessionId',pending.pair_session_id) order by pending.created_at, pending.id)
 	into v_messages
 	from (select * from public.qorpera_pending_peer_messages where delivered_run_id = p_run.id
-		and (p_shown_pair is null or pair_session_id <> p_shown_pair)
+		and (p_shown_pair is null or pair_session_id <> p_shown_pair or event_id not in (
+			select event.event_id from public.qorpera_session_events event
+			where event.session_id = p_shown_pair and event.event_type = 'message'
+				and event.body #>> '{entry,delivery,schema}' = 'qorpera.peer-message/v1'
+			order by event.sequence desc limit 12))
 		order by created_at, id limit 12) pending;
 	return case when v_messages is null then '{}'::jsonb else jsonb_build_object('heldMessages',v_messages) end;
 end

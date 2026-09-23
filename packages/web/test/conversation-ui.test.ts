@@ -1559,7 +1559,7 @@ describe("messages between two agents (contract 14.6)", () => {
 		expect(panel.querySelector(".pair-header")?.textContent).toBe(`Helper⇄${staff.displayName}`);
 		expect(panel.querySelector(".message-author")?.textContent).toBe("Helper");
 		expect(panel.textContent).toContain("he approves of you");
-		expect(panel.querySelector(".message-caption")?.textContent).toBe("Read at Helper's next turn");
+		expect(panel.querySelector(".message-caption")?.textContent).toBe("Left for Helper's next turn");
 		expect(panel.textContent).toContain("This chat is view-only");
 		expect(panel.querySelector("textarea")).toBeNull();
 		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(true);
