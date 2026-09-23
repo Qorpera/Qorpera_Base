@@ -113,7 +113,8 @@ begin
 end
 $$;
 
--- 3. ask_member in the observation vocabulary. Same function as
+-- 3. ask_member in the observation vocabulary. Rebased on master's latest text
+-- (20260922232000, coding executor names) so this replacement drops nothing. Same function as
 -- 20260922200000 with one more name (rebase note: after #218 merges, add its coding_* names here and in CLOUD_RUNTIME_TOOL_OPERATIONS); ACL restated because CREATE OR REPLACE keeps it.
 create or replace function public.qorpera_record_runtime_observation(p_run_id uuid,p_observation jsonb)
 returns jsonb language plpgsql security definer set search_path = '' as $$
@@ -147,6 +148,7 @@ begin
 		'company_write','company_mkdir','company_delete','send_message','ask_member','read_context','send_coworker_message',
 		'computer_start','computer_screen','computer_browser','computer_desktop','computer_shell','computer_screenshot',
 		'computer_transfer','hire_agent','create_group_chat','manage_routine','report_work','manage_todo','manage_worker',
+		'coding_run_command','coding_read_command','coding_cancel_command','coding_finish','coding_ask',
 		'company_context','message_composition','connector','unknown_tool','run_authority','context_authority',
 		'native_result_fence','diagnostic_export')
 		or jsonb_typeof(p_observation -> 'operation') <> 'string'

@@ -18,7 +18,7 @@
     "wakeAndSilence": "48ebb8af34525c7021004e6b7d2903a164bea02628d299eefbf7fd9191bad6f1",
     "contextComposer": "ba97c19c7316644a54f53936ee5f4f1ae027d2f926b51c8452ae8e3dbc3a20c7",
     "providerBootstrap": "fd5d3e4826c810ce99bcc80b660257433dc64dafdb1926cc23fc38d5a76f5abc",
-    "authorization": "f706400bb6f9ab8b732349297073fcd4e8900e0f2050929e84ef85b141d4b4fe",
+    "authorization": "b27d048c2f8fba3416a1036a3c45676037b8446e705ea7769e0ac0df2a4efba1",
     "inboundSafety": "2436c93d711f2910ed2337e4ab5622e6956a4fb8f8c7d3101a3dea816e214b82",
     "outboundSafety": "c77c1afe9b3b96d2c77ff511609e0dc47b71c1d52eb4977e890d9ba3b57482c8",
     "interactionSurfaces": "4eb2bbf3cd9874dfd0c258b49981689872dbd302cb69709669973ba6e85977a6",
@@ -958,7 +958,7 @@
     "supabase/migrations/20260923001000_runtime_bundle_activation_v73.sql": "b920443744b00d110eda6db9721026c5b795b425e120600a98214b5ed8cd5b0c",
     "supabase/migrations/20260923010000_runtime_thread_interactions.sql": "421a94856c6786daa0b1ab44f6876ef7d905f10f1395928cc29bdc14a82ca266",
     "supabase/migrations/20260923011000_runtime_bundle_activation_v75.sql": "ce3d0a8c19acd79de84d0cb93414f9f671edab9a44d4883e3d2d3a84b50e24ad",
-    "supabase/migrations/20260923012000_runtime_thread_interactions_runtime.sql": "9ac92b840650ce268d829745b83b085bd1502b521bccc9dc744629099876f6c6",
+    "supabase/migrations/20260923012000_runtime_thread_interactions_runtime.sql": "c4fe883125a50f7be78a2de9f79b8b72a13f6b3c6680d2a71cf83d9afff1e26a",
     "supabase/migrations/20260923030000_runtime_staff_execution_authority_default.sql": "b3f2a79f5b87e7ec2d71122a71242ce855049df279154ef6404d142616a4ac1b",
     "supabase/migrations/20260923031000_runtime_bundle_activation_v79.sql": "98f5de6c88d53700d625aa8ce6b1853e111a20955e2a74db63a1d19f995acb87"
   }
