@@ -51,7 +51,7 @@ Token files the programs read themselves keep their paths, owners and modes.
 |---|---|
 | `stage <folder>` | Verifies the signature and every file, and that `previousRevision` is the current revision, then writes `releases/<revision>`. No service is touched. |
 | `adopt <revision>` | Migration only: points `current` at the first release without restarting anything. |
-| `apply <revision> [--defer <role>]… [--wait <s>]` | Runs the quiet gate (no run or login machine running; the exec host does not count), then points `previous` at the old release and `current` at the new one. Then, **per role whose program or values changed**, it re-checks quiet, points the role's link at the release, and restarts and verifies the role (see below). |
+| `apply <revision> [--defer <role>]… [--wait <s>]` | Runs the quiet gate (no run or login machine running; the exec host does not count), then points `previous` at the old release and `current` at the new one. Then, **per role whose program, values or `${release}`-named files changed**, it re-checks quiet, points the role's link at the release, and restarts and verifies the role (see below). A value like `${release}/image-provenance.json` keeps its text across releases, so the digest of the file it names is compared too. |
 | `rollback [--defer <role>]…` | Swaps back to `previous` and moves the roles that differ, the same way. A failed rollback is recorded. |
 | `switch <role> <old unit>` / `unswitch …` | Migration: moves a role from its old unit to its new one, or back (see below). |
 | `restart <role>` | Points one role at `current`, then restarts and verifies it. This is how a deferred role catches up after resume. |

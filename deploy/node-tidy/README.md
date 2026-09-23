@@ -16,9 +16,9 @@ An image stays when any of these holds:
   come from its releases: each `releases/<n>/release.json` names its image, and the live release is the one the
   provider role's link (`roles/provider`) names. Elsewhere they come from the provider env files (`pinFiles`), and a pin
   file is live when a file a live unit starts from names it.
-- On a node agent node, it is named by one of the old lane's env files (`pinFiles`). Those stay, with their disabled
-  units, for the old lane's rollback until they are archived after the first release the agent applies; archiving
-  them frees their images.
+- On a node agent node, it is named by the env file (`pinFiles`) that an installed but inactive unit still starts from:
+  the old lane's disabled unit, kept for its rollback until it is archived. Other old env files hold nothing, and
+  archiving the old units frees the rest.
 - A file that a live unit starts from names it. Those files are the effective `ExecStart`/`ExecStartPre`,
   `EnvironmentFiles`, the running process's command line, the paths named inside those files (three levels) and the
   `extraRoots`. Overridden drop-ins are not followed, so the pins of earlier cuts do not count as live.

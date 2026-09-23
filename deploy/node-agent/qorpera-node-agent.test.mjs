@@ -596,6 +596,16 @@ test("a role changes when its program or its release values change", () => {
 	assert.equal(roleChanged(release("1", { A: "x" }), release("2", { A: "x" }), "provider"), true);
 	assert.equal(roleChanged(release("1", { A: "x" }), release("1", { A: "y" }), "provider"), true);
 	assert.equal(roleChanged(null, release("1", {}), "provider"), true);
+	// Same program, same value text, but the file the value names changed (a provenance-only release).
+	const withFile = (provenance) => ({
+		files: [
+			{ name: "p.mjs", sha256: "1" },
+			{ name: "image-provenance.json", sha256: provenance },
+		],
+		roles: { provider: { component: "p.mjs", env: { P: "${release}/image-provenance.json" } } },
+	});
+	assert.equal(roleChanged(withFile("a"), withFile("a"), "provider"), false);
+	assert.equal(roleChanged(withFile("a"), withFile("b"), "provider"), true);
 });
 
 test("the installer pins the agent, the launcher and the migration helper it installs", async () => {

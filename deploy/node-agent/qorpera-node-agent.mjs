@@ -117,8 +117,19 @@ export async function verifyReleaseFolder(folder, publicKeyPem) {
 
 /** A role changes when its program or its release values change. */
 export function roleChanged(before, after, role) {
-	const digest = (release) => release.files.find((file) => file.name === release.roles[role].component)?.sha256;
-	return !before?.roles[role] || digest(before) !== digest(after) || !same(before.roles[role].env, after.roles[role].env);
+	const digest = (release, name) => release.files.find((file) => file.name === name)?.sha256 ?? null;
+	// A value like `${release}/image-provenance.json` keeps its text across releases while the file changes: compare
+	// the digests of the files the role's values name, too.
+	const named = (release) =>
+		Object.entries(release.roles[role].env).flatMap(([key, value]) =>
+			[...String(value).matchAll(/\$\{release\}\/([^\s/]+)/g)].map((match) => [key, match[1], digest(release, match[1])]),
+		);
+	return (
+		!before?.roles[role] ||
+		digest(before, before.roles[role].component) !== digest(after, after.roles[role].component) ||
+		!same(before.roles[role].env, after.roles[role].env) ||
+		!same(named(before), named(after))
+	);
 }
 
 export function parseNodeConfig(bytes) {
