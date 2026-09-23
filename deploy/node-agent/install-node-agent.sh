@@ -4,9 +4,9 @@
 # It changes no unit and restarts nothing: moving roles onto the new units is the separate migration step.
 set -euo pipefail
 
-EXPECTED_AGENT_SHA256="5d619cb1b48e91c39815706efa4be9ebb7cf2ffeb558684d7aa4c872a812dd72"
-EXPECTED_MIGRATE_SHA256="c824c35d1ca2962c5d3d0801afb6e70b966d1d01069c2fbede076a13f8c9dce3"
-EXPECTED_LAUNCHER_SHA256="202e7aa6110e37f1e1578686a84cfd7c56e10d12d8a38f9ed279a9471030fb4f"
+EXPECTED_AGENT_SHA256="50515530f8ce8c91ea171fd9b06a8c1b5969909ffb53ee847402aac33b5eb1f5"
+EXPECTED_MIGRATE_SHA256="92c01617250495b594a82dfc41bba231f4af2aefc75e70293d1dd6aef23ed721"
+EXPECTED_LAUNCHER_SHA256="430812c2a5481c4f0a6e933a70c0c5b9bca4c0c58395deac0ac7bc230435dce2"
 SOURCE_ROOT=$(cd "$(dirname "$0")" && pwd)
 
 release_key=""
@@ -50,16 +50,23 @@ verify_sha256() {
 	fi
 }
 
-verify_sha256 "${SOURCE_ROOT}/qorpera-node-agent.mjs" "${EXPECTED_AGENT_SHA256}"
-verify_sha256 "${SOURCE_ROOT}/qorpera-node-launch.py" "${EXPECTED_LAUNCHER_SHA256}"
-verify_sha256 "${SOURCE_ROOT}/qorpera-node-migrate.py" "${EXPECTED_MIGRATE_SHA256}"
-verify_sha256 "${release_key}" "${release_key_sha256}"
+# Verify root-only copies and install exactly those: the source paths are not re-read after the check.
+staging=$(mktemp -d)
+trap 'rm -rf "${staging}"' EXIT
+install -m 0400 "${SOURCE_ROOT}/qorpera-node-agent.mjs" "${staging}/qorpera-node-agent.mjs"
+install -m 0400 "${SOURCE_ROOT}/qorpera-node-launch.py" "${staging}/qorpera-node-launch.py"
+install -m 0400 "${SOURCE_ROOT}/qorpera-node-migrate.py" "${staging}/qorpera-node-migrate.py"
+install -m 0400 "${release_key}" "${staging}/release.pem"
+verify_sha256 "${staging}/qorpera-node-agent.mjs" "${EXPECTED_AGENT_SHA256}"
+verify_sha256 "${staging}/qorpera-node-launch.py" "${EXPECTED_LAUNCHER_SHA256}"
+verify_sha256 "${staging}/qorpera-node-migrate.py" "${EXPECTED_MIGRATE_SHA256}"
+verify_sha256 "${staging}/release.pem" "${release_key_sha256}"
 
-install -d -o root -g root -m 0755 /opt/qorpera-node /opt/qorpera-node/agent /opt/qorpera-node/releases
+install -d -o root -g root -m 0755 /opt/qorpera-node /opt/qorpera-node/agent /opt/qorpera-node/releases /opt/qorpera-node/roles
 install -d -o root -g root -m 0755 /usr/local/libexec/qorpera-node /etc/qorpera-node /etc/qorpera-node/keys
 install -d -o root -g root -m 0700 /var/lib/qorpera-node-agent
-install -o root -g root -m 0444 "${SOURCE_ROOT}/qorpera-node-agent.mjs" /opt/qorpera-node/agent/qorpera-node-agent.mjs
-install -o root -g root -m 0444 "${SOURCE_ROOT}/qorpera-node-launch.py" /usr/local/libexec/qorpera-node/qorpera-node-launch.py
-install -o root -g root -m 0444 "${SOURCE_ROOT}/qorpera-node-migrate.py" /usr/local/libexec/qorpera-node/qorpera-node-migrate.py
-install -o root -g root -m 0444 "${release_key}" /etc/qorpera-node/keys/release.pem
+install -o root -g root -m 0444 "${staging}/qorpera-node-agent.mjs" /opt/qorpera-node/agent/qorpera-node-agent.mjs
+install -o root -g root -m 0444 "${staging}/qorpera-node-launch.py" /usr/local/libexec/qorpera-node/qorpera-node-launch.py
+install -o root -g root -m 0444 "${staging}/qorpera-node-migrate.py" /usr/local/libexec/qorpera-node/qorpera-node-migrate.py
+install -o root -g root -m 0444 "${staging}/release.pem" /etc/qorpera-node/keys/release.pem
 echo "Node agent and launcher installed; no unit changed."

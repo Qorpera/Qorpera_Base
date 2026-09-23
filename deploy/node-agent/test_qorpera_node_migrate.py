@@ -113,6 +113,14 @@ class UnitTest(unittest.TestCase):
                          'After=network-online.target snap.lxd.daemon.service']:
             self.assertIn(expected, lines)
 
+    def test_refuses_a_hard_dependency_on_another_node_role(self):
+        for key in ['Requires', 'BindsTo', 'PartOf']:
+            unit = FIXED_UNIT.replace('After=network-online.target snap.lxd.daemon.service',
+                                      f'After=network-online.target\n{key}=qorpera-native25-phql-provider.service')
+            with self.assertRaises(SystemExit):
+                migrate.unit_text(migrate.effective_settings(migrate.parse_cat(unit)), 'qorpera-x.service', '/l.py',
+                                  'orchestrator')
+
     def test_refuses_an_old_unit_that_does_not_run_a_python_launcher(self):
         settings = migrate.effective_settings(migrate.parse_cat(FIXED_UNIT.replace('-I /opt/x/provider-launch-v63.py',
                                                                                    '/opt/x/run')))

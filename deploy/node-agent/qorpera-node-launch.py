@@ -3,7 +3,8 @@
 # release, in place of the versioned provider-launch-vNN.py / orchestrator-hour-launch-vNN.py files:
 #   /etc/qorpera-node/node.json            per-role settings: fixed values, secret keys, state folders, exec (root, 0444)
 #   the role's env file                    node constants and secrets, as today (root:<role group>, 0440)
-#   /opt/qorpera-node/current -> releases/<revision>
+#   /opt/qorpera-node/roles/<role> -> ../releases/<revision>   the release this role runs (a deferred role keeps its
+#                                          old one, even when systemd restarts it)
 #   releases/<revision>/release.json      the signed release the agent verified and staged: per-release values and
 #                                          the program's sha256 (root, 0444, in a 0555 root folder)
 # It keeps the guards of the launchers it replaces and execs `<exec...> <program>` with the same clean environment.
@@ -22,6 +23,9 @@ NODE_ROOT = Path('/opt/qorpera-node')
 ROLE = re.compile(r'[a-z][a-z0-9-]{0,31}')
 REVISION = re.compile(r'0|[1-9][0-9]{0,8}')
 ENV_KEY = re.compile(r'[A-Z][A-Z0-9_]{0,127}')
+# Every guard is required: a key missing from node.json must not silently drop a check the versioned launchers had.
+ROLE_KEYS = {'envFile', 'envSchema', 'projectRef', 'fixed', 'secretKeys', 'releaseKeys', 'tokenKeys', 'sha256Keys',
+             'jwtKeys', 'deniedValues', 'maxProgramBytes', 'stateDirs', 'home', 'exec', 'noSupplementaryGroups'}
 
 
 def need(ok):
@@ -57,16 +61,20 @@ class Launcher:
                 need(s.st_gid == self.gid)
             return f.read()
 
-    def release_folder(self):
-        link = self.node_root / 'current'
+    def release_folder(self, role):
+        roles = self.node_root / 'roles'
+        s = roles.lstat()
+        need(stat.S_ISDIR(s.st_mode) and s.st_uid == self.owner and not s.st_mode & 0o6022)
+        link = roles / role
         s = link.lstat()
         need(stat.S_ISLNK(s.st_mode) and s.st_uid == self.owner)
         target = os.readlink(link)
-        need(target.startswith('releases/') and REVISION.fullmatch(target[len('releases/'):]) is not None)
-        folder = self.node_root / target
+        need(target.startswith('../releases/') and REVISION.fullmatch(target[len('../releases/'):]) is not None)
+        revision = int(target[len('../releases/'):])
+        folder = self.node_root / 'releases' / str(revision)
         s = folder.lstat()
         need(stat.S_ISDIR(s.st_mode) and s.st_uid == self.owner and stat.S_IMODE(s.st_mode) == 0o555)
-        return folder, int(target[len('releases/'):])
+        return folder, revision
 
     def plan(self, role):
         """Returns (argv, env) for the role, or raises."""
@@ -74,15 +82,16 @@ class Launcher:
         config = json.loads(self.read(self.node_config, 0o444, 65536))
         need(config.get('schema') == 'qorpera.node/v1')
         settings = config['roles'][role]
-        folder, revision = self.release_folder()
+        need(ROLE_KEYS <= set(settings))
+        folder, revision = self.release_folder(role)
         release = json.loads(self.read(folder / 'release.json', 0o444, 1048576))
         need(release.get('schema') == 'qorpera.node-release/v1' and release.get('revision') == revision)
         role_release = release['roles'][role]
 
         document = json.loads(self.read(Path(settings['envFile']), 0o440, 32768))
-        expected = {'projectRef', 'env'} | ({'schema'} if settings.get('envSchema') else set())
+        expected = {'projectRef', 'env'} | ({'schema'} if settings['envSchema'] else set())
         need(set(document) == expected and document['projectRef'] == settings['projectRef'])
-        if settings.get('envSchema'):
+        if settings['envSchema']:
             need(document['schema'] == settings['envSchema'])
         release_env = {key: value.replace('${release}', str(folder)) for key, value in role_release['env'].items()}
         need(not set(document['env']) & set(release_env))
@@ -93,16 +102,16 @@ class Launcher:
         need(all(env[key] == value for key, value in fixed.items()))
         need(all(ENV_KEY.fullmatch(key) and isinstance(value, str) and value and '\0' not in value and '\n' not in value
                  for key, value in env.items()))
-        for key in settings.get('tokenKeys', []):
+        for key in settings['tokenKeys']:
             need(re.fullmatch('[A-Za-z0-9_-]{43}', env[key]) is not None)
-        for key in settings.get('sha256Keys', []):
+        for key in settings['sha256Keys']:
             need(re.fullmatch('[0-9a-f]{64}', env[key]) is not None)
-        for key, claim_role in settings.get('jwtKeys', {}).items():
+        for key, claim_role in settings['jwtKeys'].items():
             parts = env[key].split('.')
             need(len(parts) == 3)
             claims = json.loads(base64.urlsafe_b64decode(parts[1] + '=' * ((4 - len(parts[1]) % 4) % 4)))
             need(claims.get('ref') == document['projectRef'] and claims.get('role') == claim_role)
-        for key, denied in settings.get('deniedValues', {}).items():
+        for key, denied in settings['deniedValues'].items():
             need(env[key] not in denied)
 
         component = role_release['component']
@@ -124,21 +133,21 @@ class Launcher:
         return [*executable, str(program)], clean
 
 
-def guard_process(no_supplementary_groups):
+def guard_process():
     need(sys.platform == 'linux' and os.geteuid() != 0 and os.geteuid() == os.getuid() and os.getegid() == os.getgid())
     status = Path('/proc/self/status').read_text()
     for key in ['CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb']:
         need(re.search('^' + key + r':\s+0+$', status, re.M))
     need(re.search(r'^NoNewPrivs:\s+1$', status, re.M))
-    if no_supplementary_groups:
-        need(set(os.getgroups()) <= {os.getgid()})
 
 
 def main(argv):
     need(len(argv) == 2)
+    guard_process()
     launcher = Launcher()
     settings = json.loads(launcher.read(NODE_CONFIG, 0o444, 65536))['roles'][argv[1]]
-    guard_process(settings.get('noSupplementaryGroups', False))
+    if settings['noSupplementaryGroups']:
+        need(set(os.getgroups()) <= {os.getgid()})
     executable, env = launcher.plan(argv[1])
     os.execve(executable[0], executable, env)
 
@@ -146,6 +155,11 @@ def main(argv):
 if __name__ == '__main__':
     try:
         main(sys.argv)
-    except Exception:
-        sys.stderr.write('QORPERA_NODE_ROLE_START_REFUSED\n')
+    except Exception as error:
+        frames, trace = [], error.__traceback__
+        while trace is not None:
+            frames.append({'function': trace.tb_frame.f_code.co_name, 'line': trace.tb_lineno})
+            trace = trace.tb_next
+        sys.stderr.write(json.dumps({'state': 'QORPERA_NODE_ROLE_START_REFUSED', 'role': sys.argv[1] if len(sys.argv) > 1
+                                     else None, 'errorType': type(error).__name__, 'errorFrames': frames[-8:]}) + '\n')
         sys.exit(1)
