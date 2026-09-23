@@ -183,7 +183,7 @@
 :root[data-theme="dark"] .connection-usage-meter > span { background: #81b29c; }
 :root[data-theme="dark"] .connection-usage-meter.is-low > span { background: #ff6b21; }
 :root[data-theme="dark"] .connection-usage-limit { color: #ffa16d; }
-:root[data-theme="dark"] :is(.connection-sign-in, .connection-account, .connection-card, .connection-provider-picker) { border-color: rgba(255, 255, 255, 0.1); }
+:root[data-theme="dark"] :is(.connection-sign-in, .connection-account, .connection-card, .service-card, .connection-provider-picker) { border-color: rgba(255, 255, 255, 0.1); }
 :root[data-theme="dark"] .settings-dialog :focus-visible:not(:where(input, textarea)) { outline-color: #6f9be0; }
 
 /* ---- feedback ---------------------------------------------------------------- */
@@ -211,3 +211,6 @@
 :root[data-theme="dark"] .coding-badge-codex { background: #f4f3f0; color: #161615; }
 :root[data-theme="dark"] .coding-dot-working { background: #30d158; }
 :root[data-theme="dark"] .coding-question { background: #262624; }
+:root[data-theme="dark"] .service-card .service-agents, :root[data-theme="dark"] .service-token-form small { color: #a3a39e; }
+:root[data-theme="dark"] .service-outcome.is-ok { color: #8fc7b3; }
+:root[data-theme="dark"] .service-outcome.is-error { color: #ff8a4c; }

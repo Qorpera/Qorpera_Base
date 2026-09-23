@@ -231,3 +231,17 @@
  .connection-account { flex-wrap: wrap; }
  .person-meta { display: none; }
 }
+/* Services (Step 7 connectors) share the model-account card grid. */
+.service-card { display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 18px 0; }
+.service-card + .service-card { border-top: 1px solid #dededb; }
+.service-card .settings-copy { gap: 4px; }
+.service-card .service-agents { color: #73736f; }
+.service-outcome { grid-column: 2 / -1; margin: 0; font-size: 12px; }
+.service-outcome.is-ok { color: #3d6b5c; }
+.service-outcome.is-error { color: #af4b16; }
+.service-alternative { grid-column: 2 / -1; }
+.service-token-form { grid-column: 2 / -1; display: grid; gap: 8px; }
+.service-token-form small { color: #73736f; }
+.service-token-row { display: flex; gap: 8px; }
+.service-token-row .service-token { flex: 1; min-width: 0; }
+.service-error { margin: 0 0 8px; }

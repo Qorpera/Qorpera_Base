@@ -1,6 +1,7 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
 import { createWebCompanyExecution } from "../../cloud/company-execution.ts";
+import { createWebConnectors } from "../../cloud/connectors.ts";
 import { createWebNativeSubscription } from "../../cloud/native-subscription.ts";
 import type { HostedCompanyFile, HostedProfile } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
@@ -14,6 +15,7 @@ import { FriendsController, renderFriends } from "./friends.ts";
 import type { HubController } from "./hub.ts";
 import { renderPlan } from "./plan.ts";
 import { ConnectionsView, ProviderSignIns } from "./settings-connections.ts";
+import { ServicesView } from "./settings-services.ts";
 import { storageSummary } from "./storage-summary.ts";
 import { renderTeam } from "./team.ts";
 
@@ -83,6 +85,7 @@ export class SettingsView {
 	#unsubscribe: (() => void) | undefined;
 	#companyLifetime = new AbortController();
 	#connections: ConnectionsView | undefined;
+	#services: ServicesView | undefined;
 	#execution: CompanyExecutionView | undefined;
 	#feedback: { message?: string; error?: string } = {};
 	#file: HostedCompanyFile | undefined;
@@ -249,6 +252,7 @@ export class SettingsView {
 		this.#companyLifetime.abort();
 		this.#unsubscribe?.();
 		this.#connections?.dispose();
+		this.#services?.dispose();
 		this.#execution?.dispose();
 		this.#friends.dispose();
 		if (this.#ownsCompany) this.#company?.stop();
@@ -327,8 +331,17 @@ export class SettingsView {
 						signIns,
 						(input) => signIn.beginProviderLogin(input),
 					);
+					// Step 7 connectors sit under the model accounts on the same page.
+					this.#services = new ServicesView(
+						createWebConnectors(
+							this.#api.cloud,
+							{ profileId: company.profile.profileId, environmentId: company.profile.environmentId },
+							memberId,
+						),
+						signal,
+					);
+					this.#panels.set(tab, h("div", null, this.#connections.el, this.#services.el));
 				}
-				this.#panels.set(tab, this.#connections.el);
 			}
 		}
 		const panel =
@@ -405,6 +418,8 @@ export class SettingsView {
 		this.#unsubscribe?.();
 		this.#connections?.dispose();
 		this.#connections = undefined;
+		this.#services?.dispose();
+		this.#services = undefined;
 		this.#execution?.dispose();
 		this.#execution = undefined;
 		if (this.#ownsCompany) this.#company?.stop();

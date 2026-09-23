@@ -686,13 +686,13 @@ describe("settings session lifecycle", () => {
 		expect(cards).toHaveLength(0);
 		expect(f.root.querySelector<HTMLButtonElement>("#settings-content .connection-add")!.disabled).toBe(true);
 		expect(f.root.querySelector<HTMLElement>("#settings-content .connection-provider-picker")!.hidden).toBe(true);
-		expect(
-			[...f.root.querySelectorAll<HTMLButtonElement>("#settings-content button")].find(
-				(button) => button.textContent === "Add service",
-			)!.disabled,
-		).toBe(true);
+		// The Services section lists the Step 7 connectors with their own Connect buttons.
+		expect(f.root.querySelectorAll("#settings-content .service-card")).toHaveLength(3);
 		await vi.advanceTimersByTimeAsync(60_000);
-		expect(f.cloud.rpc).not.toHaveBeenCalled();
+		// Model accounts never go through the SDK RPC path; the services list is the only RPC.
+		expect(vi.mocked(f.cloud.rpc).mock.calls.map(([name]) => name)).toEqual([
+			"qorpera_list_cloud_secret_connections",
+		]);
 		expect(fetch.mock.calls.filter(([url]) => String(url) === connectionsUrl)).toEqual([
 			[connectionsUrl, expect.objectContaining({ method: "POST" })],
 		]);

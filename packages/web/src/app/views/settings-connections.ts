@@ -538,22 +538,6 @@ export class ConnectionsView {
 					),
 				),
 			),
-			h(
-				"section",
-				{ class: "settings-group" },
-				h("h2", null, "Services"),
-				h(
-					"div",
-					{ class: "settings-card" },
-					h(
-						"div",
-						{ class: "settings-copy" },
-						h("strong", null, "Connect your tools"),
-						h("small", null, "Not available yet"),
-					),
-					h("button", { type: "button", class: "btn", disabled: true }, "Add service"),
-				),
-			),
 		);
 		if (focusKey) {
 			const target = [...this.el.querySelectorAll<HTMLElement>("[data-focus-key]")].find(

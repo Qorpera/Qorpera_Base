@@ -61,12 +61,18 @@ profile RPCs; RLS is the second read boundary.
 - `qorpera_upsert_cloud_routine`
 
 
-### Credentials, provider connections, identity recovery (12)
+### Credentials, provider connections, identity recovery (13)
 
 - `qorpera_begin_cloud_secret_capture`
 - `qorpera_begin_native_provider_login`
+- `qorpera_grant_cloud_connector` — Step 7 (2026-09-22): grants every
+  operation of one connection (Gmail, Google Drive, GitHub) to all active
+  agents (`p_staff_agent_ids` null, marks the connection shared so new hires
+  are included) or to the named agents.
 - `qorpera_grant_cloud_secret_operation`
-- `qorpera_list_cloud_secret_connections`
+- `qorpera_list_cloud_secret_connections` — since Step 7 also returns
+  `accountLabel`, `availableToAllAgents`, `activeGrantCount`, `createdAt`,
+  `updatedAt`.
 - `qorpera_list_member_native_execution_connections`
 - `qorpera_register_provider_connection`
 - `qorpera_request_identity_recovery`
@@ -289,7 +295,8 @@ machine.
 | Company File: live logical paths with ACLs | Order 0 gateway in progress | read-only projection, then live |
 | Organization: Co-Founder, responsibilities, projects, rooms, staff | in rework (departments → responsibilities) | build against the semantic projection (contract 14.5); no department UI |
 | Screens (Company Computer viewer) | Order 4, plus a browser-facing authenticated websocket gateway (viewer traffic is private-network today) | later |
-| Routines, memory, connectors | Orders 6–8 | later |
+| Routines, memory | Orders 6, 8 | later |
+| Connectors (Gmail, Google Drive, GitHub), company-owned | Order 7 (bundle v86) | web Settings → Connections → Services |
 | Coding sessions (thread element: list, read, answer, delegate) | Order 9 part 1 (PR #211); no executor yet, so no session exists in production until part 3 | build the thread element against the RPCs above; render nothing when the list RPC is not deployed |
 | Repositories, coding executors, preview route | Order 9 parts 3–4 | later |
 
@@ -362,7 +369,7 @@ does locally that the contract forbids.
 | `company:scheduled-job-update` | qorpera_upsert_cloud_routine |
 | `company:set-icon` | review (profile metadata RPC) |
 | `connection:cancel` | review |
-| `connection:connect` | qorpera_begin_cloud_secret_capture / qorpera_begin_native_provider_login (+ native-provider-login Edge Function) |
+| `connection:connect` | qorpera_begin_cloud_secret_capture / qorpera_begin_native_provider_login (+ native-provider-login Edge Function). Step 7 connectors: the browser posts the ticket to the broker origin (`POST <serviceOrigin>/v1/oauth/<ticketId>/start` → provider consent → `GET /v1/oauth/callback` → back to the web page with `?connector=<id>&connection=connected\|failed` in the hash), or `POST /v1/captures/<ticketId>` for a typed GitHub token; then qorpera_grant_cloud_connector |
 | `connection:disconnect` | qorpera_revoke_cloud_secret / qorpera_revoke_native_provider_connection |
 | `feedback:submit` | qorpera_submit_product_feedback |
 | `friends:list` | qorpera_list_friends |

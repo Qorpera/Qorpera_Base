@@ -30,6 +30,10 @@ const CALL_ID = /^[A-Za-z0-9_:.-]{1,160}$/;
 const MAX_ARGUMENT_BYTES = 64 * 1024;
 const MAX_CONTENT_BYTES = 32 * 1024;
 const MAX_SOURCE_BYTES = 1024 * 1024;
+/** Company File, runtime, computer and connector tools together. Connector
+ * grants add one tool per authorized operation, so the boundary allows more
+ * than the runtime's own catalog. */
+export const CLOUD_NATIVE_TOOL_COUNT_LIMIT = 48;
 /** No turn is capped by a number of tool calls (founder, 2026-09-22). Retained
  * results stay bounded only so a runaway loop cannot grow memory without limit
  * (every result body is kept for exact replay); the bound is far above any real
@@ -206,7 +210,11 @@ export class CloudNativeToolBoundary {
 		observability?: CloudRuntimeObservability;
 		captures?: CloudNativeCaptureImages;
 	}) {
-		if (!UUID.test(options.companyId) || !UUID.test(options.runId) || options.tools.length > 32) {
+		if (
+			!UUID.test(options.companyId) ||
+			!UUID.test(options.runId) ||
+			options.tools.length > CLOUD_NATIVE_TOOL_COUNT_LIMIT
+		) {
 			throw new Error("Invalid cloud tool boundary");
 		}
 		this.#companyId = options.companyId;

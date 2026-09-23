@@ -309,12 +309,13 @@ it("uses only the three static broker-role SQL calls and binds downstream idempo
 		"d".repeat(64),
 		Buffer.from("encrypted"),
 		"e".repeat(64),
+		null,
 		new AbortController().signal,
 	);
 	await authority.authorizeOperation(fixture.request, new AbortController().signal);
 	expect(queries.map((query) => query.text)).toEqual([
 		"select public.qorpera_describe_cloud_secret_capture($1::uuid,$2::text,$3::uuid,$4::text) as result",
-		"select public.qorpera_complete_cloud_secret_capture($1::uuid,$2::text,$3::uuid,$4::text,$5::text,$6::text) as result",
+		"select public.qorpera_complete_cloud_secret_capture($1::uuid,$2::text,$3::uuid,$4::text,$5::text,$6::text,$7::text) as result",
 		"select public.qorpera_authorize_cloud_secret_operation($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text,$7::uuid,$8::text,$9::text,$10::bigint,$11::text,$12::text) as result",
 	]);
 	expect(queries[2]?.values[5]).toBe(createHash("sha256").update(fixture.request.idempotencyKey).digest("hex"));
