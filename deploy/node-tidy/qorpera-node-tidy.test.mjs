@@ -244,18 +244,28 @@ async function agentLayout(root, releases, { current, provider }) {
 	return agent;
 }
 
-test("on a node agent node the releases decide, and the old lane's pins are held until archived", async () => {
+test("on a node agent node the releases decide, and only the pin a resting old unit starts from is held", async () => {
 	const node = await nodeFixture();
 	try {
-		// Release 0 runs image 4 (as env v53 did), release 1 is staged with image 8; the provider still runs release 0.
-		const agentRoot = await agentLayout(node.root, { 0: "4", 1: "8" }, { current: 0, provider: 0 });
+		// Release 0 runs image 6, release 1 is staged with image 8; the provider still runs release 0.
+		const agentRoot = await agentLayout(node.root, { 0: "6", 1: "8" }, { current: 0, provider: 0 });
 		assert.deepEqual(await agentPins(agentRoot), [
-			{ version: 0, fingerprint: fp("4"), live: true },
+			{ version: 0, fingerprint: fp("6"), live: true },
 			{ version: 1, fingerprint: fp("8"), live: false },
 		]);
-		const lxd = { ...node.lxd, images: async () => [...(await node.lxd.images()), image("8", 100), image("5", 100)] };
-		// The fixed launcher names no env file: without agentRoot, tidy finds no live pin and refuses.
-		const systemd = { ...node.systemd, startPaths: async () => [] };
+		const lxd = {
+			...node.lxd,
+			images: async () => [...(await node.lxd.images()), image("6", 100), image("8", 100), image("5", 100)],
+		};
+		// The new unit runs the fixed launcher, which names no env file. The old unit is installed but inactive; its
+		// launcher names env v53 (image 4). Env v51 (image 3) is named by nothing.
+		const OLD = "qorpera-native25-phql-provider.service";
+		const [launcher] = await node.systemd.startPaths();
+		const systemd = {
+			units: async () => ["qorpera-node-provider.service"],
+			installedUnits: async () => ["qorpera-node-provider.service", OLD],
+			startPaths: async (unit) => (unit === OLD ? [launcher] : []),
+		};
 		const without = await tidy({ config: node.config, apply: false, lxd, systemd, now });
 		assert.equal(without.refusal, "no live runtime pin was found");
 		const report = await tidy({ config: { ...node.config, agentRoot }, apply: false, lxd, systemd, now });
@@ -264,16 +274,27 @@ test("on a node agent node the releases decide, and the old lane's pins are held
 			report.keep.map((kept) => [kept.fingerprint[0], kept.reason]),
 			[
 				["0", "configured"],
-				["3", "old lane pin, until archived"],
 				["4", "instance qn25b2/qorpera-exec-node02"],
 				["7", "live configuration"],
+				["6", "live runtime pin"],
 				["8", "staged runtime pin"],
 			],
 		);
 		assert.deepEqual(
 			report.remove.map((removed) => removed.fingerprint[0]),
-			["9", "5"],
+			["3", "9", "5"],
 		);
+		// Without the exec host, image 4 stays only as the resting old unit's pin; image 3 (env v51) is not held.
+		const lone = { ...lxd, instances: async () => [] };
+		const resting = await tidy({ config: { ...node.config, agentRoot }, apply: false, lxd: lone, systemd, now });
+		assert.deepEqual(
+			resting.keep.filter((kept) => "34".includes(kept.fingerprint[0])).map((kept) => [kept.fingerprint[0], kept.reason]),
+			[["4", "old lane pin, until archived"]],
+		);
+		// Once the old unit is archived, nothing holds the old lane's pins.
+		const archived = { ...systemd, installedUnits: async () => ["qorpera-node-provider.service"] };
+		const after = await tidy({ config: { ...node.config, agentRoot }, apply: false, lxd, systemd: archived, now });
+		assert.ok(!after.keep.some((kept) => kept.reason === "old lane pin, until archived"));
 	} finally {
 		await rm(node.root, { recursive: true, force: true });
 	}
