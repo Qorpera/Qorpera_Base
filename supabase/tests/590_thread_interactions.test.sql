@@ -144,7 +144,7 @@ begin
 			)
 		)
 	);
-	-- A secret card that names its connector (secrets step, bundle v77).
+	-- A secret card that names its connector (secrets step, bundle v81).
 	perform public.qorpera_append_runner_transcript_event(
 		'15000000-0000-4000-8000-000000000090', repeat('d', 64),
 		v_job_id, repeat('e', 64),
