@@ -139,7 +139,9 @@ interface Fixture {
 	clock: { now: number };
 }
 
-async function fixture(options: { slotCount?: number; epoch?: number } = {}): Promise<Fixture> {
+async function fixture(
+	options: { slotCount?: number; epoch?: number; codingCommand?: { origin: string; token: string } } = {},
+): Promise<Fixture> {
 	const stateRoot = join(await root(), "state");
 	const runRoot = join(await root(), "run");
 	const identityRoot = join(await root(), "identities");
@@ -185,6 +187,7 @@ async function fixture(options: { slotCount?: number; epoch?: number } = {}): Pr
 		network: "qorpera0",
 		recoveryVolumePrefix: "phql-a1-recovery-",
 		recoveryVolumeSize: "4GiB",
+		...(options.codingCommand ? { codingCommand: options.codingCommand } : {}),
 	};
 	const state: Fixture = {
 		backend: undefined as unknown as SharedExecutionProviderBackend,
@@ -345,6 +348,20 @@ async function liveJournalNames(f: Fixture): Promise<string[]> {
 }
 
 describe("shared execution provider backend", () => {
+	it("hands the sandbox the coding command gateway when the host is configured for it", async () => {
+		const gateway = { origin: "https://coding.example.test:8789", token: token() };
+		const f = await fixture({ codingCommand: gateway });
+		await f.backend.acquire(runId, work(), new AbortController().signal);
+		const slotRun = join(f.runRoot, "slots", "0");
+		expect(await readFile(join(slotRun, "credentials", "qorpera-coding-command"), "utf-8")).toBe(
+			`${gateway.token}\n`,
+		);
+		expect((await stat(join(slotRun, "credentials", "qorpera-coding-command"))).mode & 0o077).toBe(0);
+		const environment = await readFile(join(slotRun, "native-provider.env"), "utf-8");
+		expect(environment).toContain(`QORPERA_CODING_COMMAND_URL=${gateway.origin}\n`);
+		expect(environment).not.toContain(gateway.token);
+	});
+
 	it("starts a sandbox pair on a free slot, delivers the assignment, and retires the slot when the runner exits", async () => {
 		const f = await fixture();
 		const signal = new AbortController().signal;
@@ -366,6 +383,7 @@ describe("shared execution provider backend", () => {
 		expect(credentials.sort()).toEqual([
 			"qorpera-cloud-secret-ca",
 			"qorpera-cloud-secret-runtime",
+			"qorpera-coding-command",
 			"qorpera-native-bridge",
 			"qorpera-native-identity-epoch",
 			"qorpera-native-object-token",
@@ -388,6 +406,7 @@ describe("shared execution provider backend", () => {
 			keySha256: sha256(Buffer.from(f.masterKey, "base64url")),
 		});
 		expect(await readFile(join(slotRun, "credentials", "qorpera-office-native"), "utf-8")).toBe("");
+		expect(await readFile(join(slotRun, "credentials", "qorpera-coding-command"), "utf-8")).toBe("");
 		const environment = await readFile(join(slotRun, "native-provider.env"), "utf-8");
 		expect(environment).toContain("QORPERA_NATIVE_PROVIDER_PORT=20000\n");
 		expect(environment).toContain(`QORPERA_NATIVE_PROVIDER_COMPUTE_IDENTITY_ID=${computeIdentityId}\n`);
@@ -395,6 +414,7 @@ describe("shared execution provider backend", () => {
 			`QORPERA_NATIVE_PROVIDER_TEMPORARY_ROOT=${join(f.stateRoot, "slots", "0", "host")}\n`,
 		);
 		expect(environment).toContain("QORPERA_NATIVE_RUNTIME=company-path-v1\n");
+		expect(environment).not.toContain("QORPERA_CODING_COMMAND_URL");
 		expect(environment).not.toContain("TOKEN");
 		const runnerConfigPath = join(f.stateRoot, "slots", "0", "runner", "config.json");
 		expect((await stat(runnerConfigPath)).mode & 0o077).toBe(0);

@@ -926,6 +926,9 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		);
 		if (office && Object.values(credentials).includes(office.token))
 			throw new Error("Governed native office credential must be independent");
+		const coding = runtime.codingCommand;
+		if (coding && (Object.values(credentials).includes(coding.token) || coding.token === office?.token))
+			throw new Error("Governed coding command credential must be independent");
 		if (
 			[runtime.objectGatewayToken, runtime.secretBroker.runtimeToken].some((value) =>
 				Object.values(credentials).includes(value),
@@ -1001,6 +1004,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			`QORPERA_NATIVE_OBJECT_GATEWAY_URL=${runtime.objectGatewayUrl}`,
 			`QORPERA_CLOUD_SECRET_BROKER_URL=${runtime.secretBroker.origin}`,
 			...(office ? [`QORPERA_COMPANY_COMPUTER_URL=${office.url}`] : []),
+			...(coding ? [`QORPERA_CODING_COMMAND_URL=${coding.origin}`] : []),
 			"",
 		].join("\n");
 		const slotRun = this.#slotRun(current.slot);
@@ -1013,6 +1017,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			[join(credentialDirectory, "qorpera-cloud-secret-ca"), runtime.secretBroker.caCertificate],
 			// An unconfigured route has no authority; the credential source still exists and is empty.
 			[join(credentialDirectory, "qorpera-office-native"), office ? `${office.token}\n` : ""],
+			[join(credentialDirectory, "qorpera-coding-command"), coding ? `${coding.token}\n` : ""],
 			[join(credentialDirectory, "qorpera-native-provider-master-key"), `${identity.masterKey}\n`],
 			[join(credentialDirectory, "qorpera-native-identity-epoch"), identity.epochCredential],
 		];

@@ -23,9 +23,13 @@ export interface LxdNativeCompanyRuntimeConfig {
 	recoveryVolumePrefix: string;
 	recoveryVolumeSize: string;
 	offices?: LxdNativeCompanyOffice[];
+	/** The coding command gateway (Order 9): the executor's HTTPS origin and the
+	 * distinct transport token the guest presents. Absent, the node carries no
+	 * coding composition and a coding wake fails visibly. */
+	codingCommand?: { origin: string; token: string };
 }
 
-function exactHttpsOrigin(value: string, label: string): string {
+export function exactHttpsOrigin(value: string, label: string): string {
 	let origin: URL;
 	try {
 		origin = new URL(value);
@@ -132,6 +136,7 @@ export function validateLxdNativeCompanyRuntime(config: LxdNativeCompanyRuntimeC
 		"recoveryVolumePrefix",
 		"recoveryVolumeSize",
 		...(config.offices !== undefined ? ["offices"] : []),
+		...(config.codingCommand !== undefined ? ["codingCommand"] : []),
 	];
 	if (
 		Object.keys(config).length !== keys.length ||
@@ -164,6 +169,20 @@ export function validateLxdNativeCompanyRuntime(config: LxdNativeCompanyRuntimeC
 	}
 	exactHttpsOrigin(config.objectGatewayUrl, "Native company object gateway");
 	exactHttpsOrigin(config.secretBroker.origin, "Cloud secret broker");
+	if (config.codingCommand !== undefined) {
+		const coding = config.codingCommand;
+		if (
+			!coding ||
+			typeof coding !== "object" ||
+			Object.keys(coding).sort().join() !== "origin,token" ||
+			typeof coding.origin !== "string" ||
+			!/^[A-Za-z0-9_-]{43}$/.test(coding.token) ||
+			coding.token === config.objectGatewayToken ||
+			coding.token === config.secretBroker.runtimeToken
+		)
+			throw new Error("Coding command transport requires an HTTPS origin and a distinct private token");
+		exactHttpsOrigin(coding.origin, "Coding command gateway");
+	}
 	let certificate: X509Certificate;
 	try {
 		certificate = new X509Certificate(config.secretBroker.caCertificate);
@@ -172,7 +191,11 @@ export function validateLxdNativeCompanyRuntime(config: LxdNativeCompanyRuntimeC
 	}
 	if (!certificate.ca) throw new Error("Cloud secret broker CA certificate is not a certificate authority");
 	if (config.offices !== undefined)
-		validateLxdNativeCompanyOffices(config.offices, [config.objectGatewayToken, config.secretBroker.runtimeToken]);
+		validateLxdNativeCompanyOffices(config.offices, [
+			config.objectGatewayToken,
+			config.secretBroker.runtimeToken,
+			...(config.codingCommand ? [config.codingCommand.token] : []),
+		]);
 }
 
 /** Explicit, separate rollout lane. Partial configuration must not select the legacy runtime. */
@@ -203,9 +226,13 @@ export function lxdNativeCompanyRuntimeFromEnvironment(
 	}
 	if (environment.QORPERA_COMPANY_COMPUTER_TOKEN !== undefined)
 		throw new Error("Native office transport requires protected route and credential files");
+	if (environment.QORPERA_CODING_COMMAND_TOKEN !== undefined)
+		throw new Error("Coding command transport requires a protected credential file, not a token in the environment");
+	const codingNames = ["QORPERA_CODING_COMMAND_URL", "QORPERA_LXD_CODING_COMMAND_TOKEN_FILE"] as const;
 	if (
 		names.every((name) => environment[name] === undefined) &&
-		environment.QORPERA_LXD_OFFICE_ROUTES_FILE === undefined
+		environment.QORPERA_LXD_OFFICE_ROUTES_FILE === undefined &&
+		codingNames.every((name) => environment[name] === undefined)
 	)
 		return undefined;
 	const values = names.map((name) => {
@@ -237,6 +264,23 @@ export function lxdNativeCompanyRuntimeFromEnvironment(
 			? { offices: readLxdNativeCompanyOffices(environment.QORPERA_LXD_OFFICE_ROUTES_FILE, privateToken) }
 			: {}),
 	};
+	// The coding command gateway is an all-or-nothing opt-in: the origin and the
+	// private token file together, never one without the other.
+	const codingConfigured = codingNames.filter((name) => environment[name] !== undefined);
+	if (codingConfigured.length === 1)
+		throw new Error(`Coding command transport requires ${codingNames.join(" and ")} together`);
+	if (codingConfigured.length === 2) {
+		const [url, tokenFile] = codingNames.map((name) => {
+			const value = environment[name] as string;
+			if (!value || value !== value.trim() || /[\0\r\n]/.test(value))
+				throw new Error(`Coding command transport requires ${name}`);
+			return value;
+		});
+		config.codingCommand = {
+			origin: exactHttpsOrigin(url as string, "Coding command gateway"),
+			token: privateToken(tokenFile as string, "Coding command token"),
+		};
+	}
 	validateLxdNativeCompanyRuntime(config);
 	return config;
 }

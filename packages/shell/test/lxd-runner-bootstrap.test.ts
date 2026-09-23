@@ -240,6 +240,7 @@ async function companyFixture(): Promise<LxdRunnerBootstrapPaths> {
 	);
 	await writeFile(join(paths.credentialSource, "qorpera-native-object-token"), `${"q".repeat(43)}\n`, { mode: 0o600 });
 	await writeFile(join(paths.credentialSource, "qorpera-office-native"), "", { mode: 0o600 });
+	await writeFile(join(paths.credentialSource, "qorpera-coding-command"), "", { mode: 0o600 });
 	await writeFile(join(paths.credentialSource, "qorpera-cloud-secret-runtime"), `${"s".repeat(43)}\n`, {
 		mode: 0o600,
 	});
@@ -660,6 +661,48 @@ describe("governed native company guest bootstrap", () => {
 			}
 		},
 	);
+
+	it.each(["valid", "url-drift", "digest-drift", "missing", "shared", "unconfigured", "unknown-field", "http"])(
+		"checks the coding command gateway authority before service startup (%s)",
+		async (kind) => {
+			const paths = await companyFixture();
+			const token = (kind === "shared" ? "s" : "k").repeat(43);
+			const url = "https://coding.example.test:8789";
+			const bootstrap = JSON.parse(await readFile(paths.bootstrapConfig, "utf-8")) as {
+				company_runtime: Record<string, unknown>;
+			};
+			if (kind !== "unconfigured") {
+				bootstrap.company_runtime.coding_command = {
+					url: kind === "http" ? "http://coding.example.test:8789" : url,
+					token_sha256:
+						kind === "digest-drift" ? "f".repeat(64) : createHash("sha256").update(token).digest("hex"),
+					...(kind === "unknown-field" ? { token } : {}),
+				};
+				await writeFile(
+					paths.nativeProviderEnvironment,
+					`${await readFile(paths.nativeProviderEnvironment, "utf-8")}QORPERA_CODING_COMMAND_URL=${kind === "url-drift" ? "https://other.example.test:8789" : url}\n`,
+				);
+			}
+			await writeFile(paths.bootstrapConfig, JSON.stringify(bootstrap));
+			const credential = join(paths.credentialSource, "qorpera-coding-command");
+			if (kind === "missing") await rm(credential);
+			else await writeFile(credential, `${token}\n`, { mode: 0o600 });
+			const started: string[] = [];
+			if (kind === "valid") {
+				await startCompanyFixture(paths, started);
+				expect(started).toEqual(["qorpera-native-company-host.service", "qorpera-company-runner.service"]);
+			} else {
+				await expect(startCompanyFixture(paths, started)).rejects.toThrow();
+				expect(started).toEqual([]);
+			}
+		},
+	);
+
+	it("refuses a stray coding command credential without gateway authority", async () => {
+		const paths = await companyFixture();
+		await writeFile(join(paths.credentialSource, "qorpera-coding-command"), `${"k".repeat(43)}\n`, { mode: 0o600 });
+		await expect(startCompanyFixture(paths, [])).rejects.toThrow("must be empty");
+	});
 
 	it("rejects shared workspace or direct company environment settings in the governed lane", async () => {
 		const paths = await companyFixture();
