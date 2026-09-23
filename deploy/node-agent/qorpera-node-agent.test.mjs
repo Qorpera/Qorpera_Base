@@ -11,6 +11,7 @@ const keys = generateKeyPairSync("ed25519");
 const privatePem = keys.privateKey.export({ type: "pkcs8", format: "pem" });
 const publicPem = keys.publicKey.export({ type: "spki", format: "pem" });
 const bundle = (character) => character.repeat(64);
+const OLD_PROVIDER = "qorpera-native25-phql-provider.service";
 
 async function nodeFixture() {
 	const root = await mkdtemp(join(tmpdir(), "qorpera-node-agent-"));
@@ -28,21 +29,41 @@ async function nodeFixture() {
 		}),
 	);
 	const agentRoot = join(root, "opt/qorpera-node");
-	const state = { running: [], restarts: [], unhealthyRevision: null, pid: 100 };
+	const state = {
+		running: [],
+		restarts: [],
+		unhealthyRevision: null,
+		pid: 100,
+		units: { [OLD_PROVIDER]: { enabled: true, active: true } },
+	};
+	const commands = new Map();
+	// Like the launcher: a new unit runs exec + the current release's program; the old unit its versioned file.
+	const commandFor = async (unit) => {
+		if (unit === OLD_PROVIDER) return ["/usr/bin/node", "--jitless", "/opt/qorpera-native25-phql-a1/provider-v82p2.mjs"];
+		const target = await readlink(join(agentRoot, "current"));
+		const release = JSON.parse(await readFile(join(agentRoot, target, "release.json"), "utf8"));
+		const role = unit.includes("provider") ? "provider" : "orchestrator";
+		return ["/usr/bin/node", "--jitless", join(agentRoot, target, release.roles[role].component)];
+	};
 	const ports = {
 		instances: async () => state.running.map((name) => ({ name, status: "Running" })),
 		restart: async (unit) => {
 			state.restarts.push(unit);
+			state.units[unit] = { enabled: state.units[unit]?.enabled ?? true, active: true };
 		},
-		mainPid: async () => ++state.pid,
-		// Like the launcher: the process runs exec + the current release's program.
-		cmdline: async () => {
-			const target = await readlink(join(agentRoot, "current"));
-			const release = JSON.parse(await readFile(join(agentRoot, target, "release.json"), "utf8"));
-			const unit = state.restarts.at(-1);
-			const role = unit.includes("provider") ? "provider" : "orchestrator";
-			return ["/usr/bin/node", "--jitless", join(agentRoot, target, release.roles[role].component)];
+		enable: async (unit, now) => {
+			state.units[unit] = { enabled: true, active: now || (state.units[unit]?.active ?? false) };
 		},
+		disable: async (unit, now) => {
+			state.units[unit] = { enabled: false, active: !now && (state.units[unit]?.active ?? false) };
+		},
+		mainPid: async (unit) => {
+			if (state.units[unit] && !state.units[unit].active) return 0;
+			const pid = ++state.pid;
+			commands.set(pid, await commandFor(unit));
+			return pid;
+		},
+		cmdline: async (pid) => commands.get(pid),
 		healthy: async () => {
 			const target = await readlink(join(agentRoot, "current"));
 			return target !== `releases/${state.unhealthyRevision}`;
@@ -242,6 +263,40 @@ test("refuses a release that lacks a role this node runs", async () => {
 	}
 });
 
+test("switches a role from its old unit to its new one and records both command lines", async () => {
+	const node = await nodeFixture();
+	try {
+		await adopted(node);
+		const result = await node.agent.switch("provider", OLD_PROVIDER);
+		assert.deepEqual(result.before, ["/usr/bin/node", "--jitless", "/opt/qorpera-native25-phql-a1/provider-v82p2.mjs"]);
+		assert.deepEqual(result.after, ["/usr/bin/node", "--jitless", join(node.agentRoot, "releases/0/provider.mjs")]);
+		assert.deepEqual(node.state.units[OLD_PROVIDER], { enabled: false, active: false });
+		assert.deepEqual(node.state.units["qorpera-node-provider.service"], { enabled: true, active: true });
+		await node.agent.unswitch("provider", OLD_PROVIDER);
+		assert.deepEqual(node.state.units[OLD_PROVIDER], { enabled: true, active: true });
+		assert.deepEqual(node.state.units["qorpera-node-provider.service"], { enabled: false, active: false });
+	} finally {
+		await node.close();
+	}
+});
+
+test("a switch whose new unit fails its checks goes straight back to the old unit", async () => {
+	const node = await nodeFixture();
+	try {
+		await adopted(node);
+		node.state.unhealthyRevision = 0;
+		await assert.rejects(node.agent.switch("provider", OLD_PROVIDER), /SWITCH_REVERTED ROLE_HEALTH provider/);
+		assert.deepEqual(node.state.units[OLD_PROVIDER], { enabled: true, active: true });
+		assert.deepEqual(node.state.units["qorpera-node-provider.service"], { enabled: false, active: false });
+		node.state.running = [`qorpera-${"b".repeat(32)}`];
+		node.state.unhealthyRevision = null;
+		await assert.rejects(node.agent.switch("provider", OLD_PROVIDER), /NODE_NOT_QUIET/);
+		assert.deepEqual(node.state.units[OLD_PROVIDER], { enabled: true, active: true });
+	} finally {
+		await node.close();
+	}
+});
+
 test("a role changes when its program or its release values change", () => {
 	const release = (digest, env) => ({
 		files: [{ name: "p.mjs", sha256: digest }],
@@ -253,12 +308,13 @@ test("a role changes when its program or its release values change", () => {
 	assert.deepEqual(changedRoles(null, release("1", {}), ["provider"]), ["provider"]);
 });
 
-test("the installer pins the agent and the launcher it installs", async () => {
+test("the installer pins the agent, the launcher and the migration helper it installs", async () => {
 	const here = new URL(".", import.meta.url);
 	const installer = await readFile(new URL("install-node-agent.sh", here), "utf8");
 	for (const [name, file] of [
 		["AGENT", "qorpera-node-agent.mjs"],
 		["LAUNCHER", "qorpera-node-launch.py"],
+		["MIGRATE", "qorpera-node-migrate.py"],
 	]) {
 		const digest = createHash("sha256")
 			.update(await readFile(new URL(file, here)))

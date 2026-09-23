@@ -52,6 +52,7 @@ Token files the programs read themselves keep their paths, owners and modes.
 | `adopt <revision>` | Migration only: points `current` at the first release without restarting anything. |
 | `apply <revision> [--defer <role>]… [--wait <s>]` | Runs the quiet gate (no run or login machine running; the exec host does not count), points `previous` at the old release and `current` at the new one, then restarts **only the roles whose program or values changed**. It verifies each role (see below). |
 | `rollback` | Swaps back to `previous` and restarts what differs. |
+| `switch <role> <old unit>` / `unswitch …` | Migration: moves a role from its old unit to its new one, or back (see below). |
 | `restart <role>` | Restarts one role on the current release and verifies it. |
 | `status` | JSON: current, previous, staged, and each role's unit, process and health. |
 | `gc` | Deletes releases older than `previous`. Newer staged releases stay. |
@@ -87,6 +88,45 @@ as before. `current` must name `releases/<n>`, and that folder must be 0555 root
 The launcher does not verify the signature, because Python's standard library has no Ed25519. The agent verifies it
 before it writes the immutable, root-owned release folder. That is the same trust root as today's root-installed pins.
 
+## Migration: moving a role onto the agent (B.1, B.6, B.9)
+
+These steps run per node: node 2 first, then node 1. They cover the provider and orchestrator, and the observer later
+(B.9). Each step runs in a coordinator window, never while a cut lane is staged. The migration helper
+`qorpera-node-migrate.py` (root) changes nothing by itself except `split-env`, which writes one new file.
+
+1. **Release 0.** It describes what runs now:
+   - the live provider bytes, and the orchestrator bytes on node 1;
+   - the live image provenance JSON and PEM;
+   - the per-release values from the live env file (fingerprint, provenance, guest manifest, runner version, software
+     version, fence), with the provenance paths written as `${release}/…`.
+
+   `make-release.mjs` signs it with the release key, `previousRevision: null`. Then run `agent stage <folder>` and
+   `agent adopt 0`. Nothing restarts.
+2. **Env and node config.**
+   - Provider: `split-env --source <live env> --dest /etc/qorpera-node/provider.env.json --release-keys …` writes the env
+     file without the per-release values, with the same owner, group and mode. The orchestrator's env file has no
+     per-release values and stays as it is.
+   - `role --launcher <live launcher> --release-keys … --unit qorpera-node-<role>.service [--env-file …]` prints each
+     role's `node.json` entry from the launcher's pinned values. Write `/etc/qorpera-node/node.json` (root, 0444) with
+     `restartOrder: ["provider", "orchestrator"]`.
+3. **Launcher equivalence** (conditions b and c). `compare --old-launcher <live launcher> --role <role> --unit <old unit>`
+   runs both launchers as the unit's user, with no capabilities and NoNewPrivs, and captures execve instead of executing
+   it. It requires everything to match except the program path and the per-release keys: the same exec prefix, the same
+   env keys, the same values. Values are never printed.
+4. **New unit.**
+   - `unit --old <old unit> --new qorpera-node-<role>.service --exec /usr/local/libexec/qorpera-node/qorpera-node-launch.py --role <role>`
+     prints the old unit's effective settings, applying fragment and drop-ins with systemd's reset rules. An explicit
+     `Key=` is kept. `ExecStart` runs the fixed launcher, and `Conflicts=<old unit>` is added.
+   - Install it (0644 root) and run `daemon-reload`, without starting it.
+   - `show-diff --old … --new …` must report no unexpected differences.
+5. **Switch** in a quiet window: `agent switch <role> <old unit>`.
+   - It stops and disables the old unit, then enables and starts the new one.
+   - It verifies the command line (exactly `exec + current program`), health and the absence of refusals.
+   - It records both command lines for the condition (c) diff.
+   - A failed check switches back at once. `agent unswitch <role> <old unit>` does the same by hand.
+6. **After the first real release applies cleanly** under the new units, archive the old unit, its `.d` folder and the
+   versioned launcher, env and program files.
+
 ## Install
 
 `install-node-agent.sh --release-key <public PEM> --release-key-sha256 <hex from the registry>` does three things:
@@ -94,7 +134,7 @@ before it writes the immutable, root-owned release folder. That is the same trus
 - enrolls the key;
 - creates the folders.
 
-It changes no unit.
+It also installs the migration helper `qorpera-node-migrate.py` next to the launcher, and it changes no unit.
 
 ## Tests
 

@@ -8,6 +8,9 @@
 //                       [--defer <role>]... leaves a role on its old process (restart it later with `restart <role>`)
 //                       [--wait <seconds>] waits for a quiet node instead of refusing at once
 //   rollback            swap back to the previous release and restart what differs
+//   switch <role> <old unit>    migration: after the quiet gate, stop and disable the old unit, enable and start the
+//                       role's new unit on the current release and verify it; a failed check switches back at once
+//   unswitch <role> <old unit>  migration rollback: stop and disable the new unit, enable and start the old one
 //   restart <role>      restart one role on the current release and verify it
 //   status              JSON: current, previous, staged, each role's unit, process and health
 //   gc                  delete releases older than previous (staged newer ones stay)
@@ -313,6 +316,46 @@ export class NodeAgent {
 		return { rolledBackTo: previous, restarted };
 	}
 
+	/** Migration: moves a role from its old unit (versioned launcher, stacked drop-ins) to its new unit. */
+	async switch(role, fromUnit) {
+		const config = await this.config();
+		const settings = config.roles[role];
+		need(settings, `NODE_ROLE_UNKNOWN ${role}`);
+		need(/^qorpera-[a-z0-9-]+\.service$/.test(fromUnit) && fromUnit !== settings.unit, "SWITCH_OLD_UNIT");
+		need((await this.revisionOf("current")) !== null, "SWITCH_NEEDS_A_CURRENT_RELEASE");
+		await this.quiet(0);
+		const oldPid = await this.ports.mainPid(fromUnit);
+		const before = oldPid > 0 ? await this.ports.cmdline(oldPid) : [];
+		await this.record("switch-intent", { role, from: fromUnit, to: settings.unit, before });
+		await this.ports.disable(fromUnit, true);
+		try {
+			await this.ports.enable(settings.unit, false);
+			const result = await this.restartRole(config, role);
+			const after = await this.ports.cmdline(result.pid);
+			await this.record("switch-receipt", { role, from: fromUnit, to: settings.unit, state: "switched", before, after });
+			return { switched: role, from: fromUnit, to: settings.unit, before, after };
+		} catch (error) {
+			await this.ports.disable(settings.unit, true).catch(() => undefined);
+			await this.ports.enable(fromUnit, true);
+			need((await this.ports.mainPid(fromUnit)) > 0, `SWITCH_BACK_FAILED ${error.message}`);
+			await this.record("switch-receipt", { role, from: fromUnit, to: settings.unit, state: "switched-back", error: error.message });
+			throw new Error(`SWITCH_REVERTED ${error.message}`);
+		}
+	}
+
+	async unswitch(role, toUnit) {
+		const config = await this.config();
+		const settings = config.roles[role];
+		need(settings && /^qorpera-[a-z0-9-]+\.service$/.test(toUnit) && toUnit !== settings.unit, "UNSWITCH_UNITS");
+		await this.quiet(0);
+		await this.ports.disable(settings.unit, true);
+		await this.ports.enable(toUnit, true);
+		const pid = await this.ports.mainPid(toUnit);
+		need(pid > 0, `UNSWITCH_OLD_UNIT_NOT_RUNNING ${toUnit}`);
+		await this.record("unswitch-receipt", { role, from: settings.unit, to: toUnit, pid });
+		return { unswitched: role, to: toUnit, pid };
+	}
+
 	async restart(role) {
 		const config = await this.config();
 		need(config.roles[role], `NODE_ROLE_UNKNOWN ${role}`);
@@ -400,6 +443,12 @@ export function nodePorts(lxdSocket = "/var/snap/lxd/common/lxd/unix.socket") {
 		async restart(unit) {
 			await run("/usr/bin/systemctl", ["restart", unit], { timeout: 180_000 });
 		},
+		async enable(unit, now) {
+			await run("/usr/bin/systemctl", ["enable", ...(now ? ["--now"] : []), unit], { timeout: 180_000 });
+		},
+		async disable(unit, now) {
+			await run("/usr/bin/systemctl", ["disable", ...(now ? ["--now"] : []), unit], { timeout: 180_000 });
+		},
 		async mainPid(unit) {
 			const { stdout } = await run("/usr/bin/systemctl", ["show", unit, "-p", "MainPID", "--value"]);
 			return Number(stdout.trim());
@@ -437,7 +486,7 @@ export function nodePorts(lxdSocket = "/var/snap/lxd/common/lxd/unix.socket") {
 
 async function main(argv) {
 	const [command, ...rest] = argv;
-	const mutating = ["stage", "adopt", "apply", "rollback", "restart", "gc"].includes(command);
+	const mutating = ["stage", "adopt", "apply", "rollback", "switch", "unswitch", "restart", "gc"].includes(command);
 	if (mutating && process.env.QORPERA_NODE_LOCK_HELD !== "1") {
 		const child = spawnSync(
 			"/usr/bin/flock",
@@ -470,10 +519,12 @@ async function main(argv) {
 		});
 	else if (command === "adopt") result = await agent.adopt(Number(rest[0]));
 	else if (command === "rollback") result = await agent.rollback();
+	else if (command === "switch") result = await agent.switch(rest[0], rest[1]);
+	else if (command === "unswitch") result = await agent.unswitch(rest[0], rest[1]);
 	else if (command === "restart") result = await agent.restart(rest[0]);
 	else if (command === "status") result = await agent.status();
 	else if (command === "gc") result = await agent.gc();
-	else throw new Error("usage: qorpera-node-agent stage|adopt|apply|rollback|restart|status|gc");
+	else throw new Error("usage: qorpera-node-agent stage|adopt|apply|rollback|switch|unswitch|restart|status|gc");
 	process.stdout.write(`${JSON.stringify(result)}\n`);
 	return 0;
 }
