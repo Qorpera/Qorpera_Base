@@ -83,8 +83,43 @@ into the sender's own thread (tested with a six-hop relay that then reaches a
 third agent); the panel loads once on first open. Bundle re-cut to
 `7384be69…`, guest provider host `5f61e587…`.
 
+## Second cut: held delivery (bundle v73, 2026-09-23)
+
+`send_coworker_message` takes `priority` (default true). With `priority: false`
+the message is written into the pair transcript (marked held) and both chips
+are dropped, but no wake is created: the row waits in
+`qorpera_pending_peer_messages` and `qorpera_read_native_wake` hands the oldest
+twelve undelivered ones to the recipient at its next wake of any kind, except a
+blank worker or an office continuation, as `payload.heldMessages` (claimed by
+that run; a re-read by the same run sees the same; a later run does not). Held
+messages extend no chain but count toward the pair's hourly budget. The
+runtime parser accepts `heldMessages` on every wake kind, sends `p_priority`
+only when false (a pre-v73 kernel still understands the call), and accepts the
+`held` receipt; the web shows "Left for B's next turn" under a held message.
+Migration `20260923000000_runtime_held_peer_messages.sql` drops the
+four-argument send and creates the five-argument one; the priority digest is
+unchanged so receipts from before the cut still replay. Test
+`supabase/tests/381_runtime_held_peer_messages.test.sql`. Rollout: bundle
+before the SQL, as for v70.
+
+Review round 1 of the second cut (2026-09-23, seven findings, all fixed): the
+five-argument send has explicit privileges (service role only, never the
+broker; test 306); a note claimed by a run that then failed or was cancelled
+is offered again; transcript and held lines are capped at 400 characters and
+the runtime payload bound is the kernel's 49152; on a coworker wake the notes
+of the pair whose transcript the wake already shows are claimed but not
+repeated; delivered rows older than a week are pruned; the chips say "Left a
+note for B" / "Note from A" for held messages; test 381 covers a second
+coworker's note, the same-pair exclusion and redelivery after a failed run
+(a worker wake's exclusion remains covered by inspection).
+
+Review round 2 of the second cut (2026-09-23, three findings, all fixed): the
+same-pair rule now skips only notes the wake's transcript window (last twelve)
+actually shows, older notes of that pair still arrive (tested with a note
+followed by twelve fillers); the held caption reads "Left for B's next turn";
+the weekly prune has its own partial index.
+
 ## Not in this cut
 
-Held delivery (`priority: false`: written, no wake, read at the next wake),
-member notifications beyond the rail's unread marker, attachments in peer
+Member notifications beyond the rail's unread marker, attachments in peer
 messages.

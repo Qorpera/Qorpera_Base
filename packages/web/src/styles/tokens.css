@@ -66,6 +66,9 @@
 	--accent: #d76f45;
 	--accent-soft: rgba(215, 111, 69, 0.12);
 
+	/* the dashed rule of a coding session in the thread: near-black on paper, near-white on dark */
+	--coding-rule: rgba(22, 22, 21, 0.5);
+
 	/* status */
 	--danger: #f26b5e;
 	--danger-soft: rgba(242, 107, 94, 0.14);
@@ -118,6 +121,8 @@
  * theme's warm greys sink away from it. Layout tokens are shared. */
 :root[data-theme="dark"] {
 	color-scheme: dark;
+
+	--coding-rule: rgba(244, 243, 240, 0.55);
 
 	--chrome: #1a1a19;
 	--bg: #1d1d1c;

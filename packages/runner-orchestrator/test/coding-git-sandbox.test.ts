@@ -1,0 +1,70 @@
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { createCodingBrokerGitRunner } from "../src/coding-git.ts";
+import { codingGitSandboxPlan, codingGitSocketFilter } from "../src/coding-git-sandbox.ts";
+
+const roots: string[] = [];
+afterEach(async () => {
+	await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+const linux = process.platform === "linux" && process.getuid?.() !== 0;
+const sandbox = { bubblewrapPath: process.env.QORPERA_TEST_BWRAP };
+async function fixture() {
+	const root = await realpath(await mkdtemp(join(tmpdir(), "coding-sandbox-test-")));
+	roots.push(root);
+	return {
+		cwd: root,
+		scratchRoot: root,
+		network: false,
+		args: ["--version"],
+		signal: new AbortController().signal,
+		env: {
+			PATH: "/usr/bin:/bin",
+			HOME: root,
+			XDG_CONFIG_HOME: root,
+			GIT_CONFIG_NOSYSTEM: "1",
+			GIT_CONFIG_GLOBAL: "/dev/null",
+			GIT_CONFIG_SYSTEM: "/dev/null",
+		},
+	};
+}
+describe("mandatory coding Git parser containment", () => {
+	it("uses architecture-specific UNIX-socket denial and refuses unknown architectures", () => {
+		expect(codingGitSocketFilter("x64").readUInt32LE(12)).toBe(0xc000003e);
+		expect(codingGitSocketFilter("arm64").readUInt32LE(12)).toBe(0xc00000b7);
+		expect(() => codingGitSocketFilter("unknown")).toThrow("ARCH_UNSUPPORTED");
+	});
+	it.runIf(linux)("fails closed without a sandbox executable", async () => {
+		const command = await fixture();
+		await expect(
+			createCodingBrokerGitRunner({ bubblewrapPath: join(command.scratchRoot, "absent") })(command),
+		).rejects.toThrow();
+	});
+	it.runIf(linux)("executes real Git in a fresh namespace without host files, credentials, or network", async () => {
+		const command = await fixture();
+		const host = await realpath(await mkdtemp(join(tmpdir(), "coding-host-secret-")));
+		roots.push(host);
+		const secret = join(host, "credential");
+		await writeFile(secret, "host-secret", { mode: 0o600 });
+		const plan = await codingGitSandboxPlan(command, sandbox);
+		expect(plan.args).toContain("--unshare-net");
+		expect(plan.args).toContain("--disable-userns");
+		expect(plan.args).not.toContain(host);
+		const run = createCodingBrokerGitRunner(sandbox);
+		expect(await run(command)).toMatch(/^git version /);
+		// Trusted fixture alias deliberately probes a compromised parser's reach.
+		const probe = `!test ! -e '${secret}' && test ! -e /run && test ! -e /home && test -e /proc/self && printf isolated`;
+		expect(await run({ ...command, args: ["-c", `alias.probe=${probe}`, "probe"] })).toBe("isolated");
+		const socketProbe =
+			'!/usr/bin/python3 -c \'import errno,socket;\ntry: socket.socket(socket.AF_UNIX)\nexcept OSError as e: assert e.errno == errno.EPERM; print("blocked")\nelse: raise AssertionError("socket escaped")\'';
+		expect(await run({ ...command, network: true, args: ["-c", `alias.probe=${socketProbe}`, "probe"] })).toBe(
+			"blocked\n",
+		);
+		await expect(run({ ...command, env: { ...command.env, GIT_CONFIG_VALUE_0: "secret" } })).rejects.toThrow(
+			"ENV_INVALID",
+		);
+		await expect(run({ ...command, cwd: host })).rejects.toThrow("PATH_INVALID");
+	});
+});

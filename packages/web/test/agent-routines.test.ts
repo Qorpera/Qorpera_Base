@@ -49,7 +49,7 @@ const routine = (update: Partial<CloudRoutine> = {}): CloudRoutine => ({
 	updatedAt: "2026-09-17T06:00:00.000Z",
 	...update,
 });
-function mount(items: CloudRoutine[], manage = true) {
+function mount(items: CloudRoutine[], manage = true, connections: NativeMemberConnection[] = [account]) {
 	const routines = {
 		list: vi.fn(async () => items),
 		runs: vi.fn(async () => []),
@@ -59,7 +59,7 @@ function mount(items: CloudRoutine[], manage = true) {
 	const stop = new AbortController();
 	const view = new AgentRoutines(
 		() => staff,
-		{ routines, accounts: async () => ({ connections: [account] }), canManage: () => manage },
+		{ routines, accounts: async () => ({ connections }), canManage: () => manage },
 		stop.signal,
 	);
 	document.body.append(view.el);
@@ -148,6 +148,33 @@ describe("agent routines section", () => {
 				localTime: "09:00",
 			},
 		});
+	});
+	it("offers each account once, by email, and numbers a repeated account", async () => {
+		const connections = [
+			account,
+			{ ...account, connectionVersion: 2, providerAccountEmail: "owner@example.invalid" },
+			{
+				...account,
+				connectionId: "10000000-0000-4000-8000-000000000009",
+				providerAccountEmail: "owner@example.invalid",
+			},
+			{ ...account, connectionId: "10000000-0000-4000-8000-000000000008", providerAccountReference: undefined },
+		] as unknown as NativeMemberConnection[];
+		const f = mount([], true, connections);
+		await settle();
+		click(f.view.el, "New routine");
+		await settle();
+		const options = [...f.view.el.querySelectorAll<HTMLOptionElement>('[aria-label="Model account"] option')];
+		expect(options.map((item) => item.value)).toEqual([
+			"10000000-0000-4000-8000-000000000001",
+			"10000000-0000-4000-8000-000000000009",
+			"10000000-0000-4000-8000-000000000008",
+		]);
+		expect(options.map((item) => item.textContent)).toEqual([
+			"ChatGPT · owner@example.invalid",
+			"ChatGPT · owner@example.invalid (2)",
+			"ChatGPT",
+		]);
 	});
 	it("pauses a routine and offers no controls to a member who cannot manage", async () => {
 		const f = mount([routine()]);

@@ -45,6 +45,17 @@ export function routineAccessFor(
 type Shape = "interval" | "weekly" | "file";
 const UNITS = { minutes: 1, hours: 60, days: 1440 } as const;
 
+/** The cloud lists one row per connection version; the picker offers each account
+ * once, at its newest version (a consent raises the version, not the account). */
+function latestVersions(accounts: readonly NativeMemberConnection[]): NativeMemberConnection[] {
+	const newest = new Map<string, NativeMemberConnection>();
+	for (const account of accounts) {
+		const current = newest.get(account.connectionId);
+		if (!current || current.connectionVersion < account.connectionVersion) newest.set(account.connectionId, account);
+	}
+	return [...newest.values()];
+}
+
 function accountLabel(account: NativeMemberConnection): string {
 	const name =
 		account.provider === "openai" || account.provider === "openai-codex"
@@ -52,7 +63,21 @@ function accountLabel(account: NativeMemberConnection): string {
 			: account.provider === "anthropic"
 				? "Claude"
 				: account.provider;
-	return account.providerAccountReference ? `${name} · ${account.providerAccountReference}` : name;
+	const who = account.providerAccountEmail ?? account.providerAccountReference;
+	return who ? `${name} · ${who}` : name;
+}
+
+/** Option labels for the account picker. The same account connected more than once
+ * (each sign-in adds a connection) would read identically, so repeats are numbered in
+ * list order: "ChatGPT · name@example.com", "… (2)", "… (3)". */
+function accountLabels(accounts: readonly NativeMemberConnection[]): string[] {
+	const seen = new Map<string, number>();
+	return accounts.map((account) => {
+		const label = accountLabel(account);
+		const count = (seen.get(label) ?? 0) + 1;
+		seen.set(label, count);
+		return count === 1 ? label : `${label} (${count})`;
+	});
 }
 
 function runLabel(run: CloudRoutineOccurrence): string {
@@ -212,8 +237,10 @@ export class AgentRoutines {
 		try {
 			const result = await this.#access!.accounts(this.#signal);
 			if (this.#signal.aborted) return false;
-			this.#accounts = result.connections.filter(
-				(item) => item.connectionStatus === "active" && item.authorizationState === "active",
+			this.#accounts = latestVersions(
+				result.connections.filter(
+					(item) => item.connectionStatus === "active" && item.authorizationState === "active",
+				),
 			);
 			return true;
 		} catch {
@@ -349,7 +376,9 @@ export class AgentRoutines {
 		const account = h(
 			"select",
 			{ "aria-label": "Model account" },
-			...this.#accounts.map((item) => h("option", { value: item.connectionId }, accountLabel(item))),
+			...accountLabels(this.#accounts).map((label, index) =>
+				h("option", { value: this.#accounts[index]!.connectionId }, label),
+			),
 		);
 		const intervalFields = h("div", { class: "routine-inline" }, "Every", every, unit);
 		const weeklyFields = h(
