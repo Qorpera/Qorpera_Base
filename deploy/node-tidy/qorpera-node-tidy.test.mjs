@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, rm, utimes, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -225,5 +226,20 @@ test("a refusal deletes nothing, not even old transfer files", async () => {
 		assert.equal((await readdir(node.tmp)).length, 2);
 	} finally {
 		await rm(node.root, { recursive: true, force: true });
+	}
+});
+
+test("the installer pins the tool, unit and timer it installs", async () => {
+	const here = new URL(".", import.meta.url);
+	const installer = await readFile(new URL("install-node-tidy.sh", here), "utf8");
+	for (const [name, file] of [
+		["TOOL", "qorpera-node-tidy.mjs"],
+		["UNIT", "qorpera-node-tidy.service"],
+		["TIMER", "qorpera-node-tidy.timer"],
+	]) {
+		const digest = createHash("sha256")
+			.update(await readFile(new URL(file, here)))
+			.digest("hex");
+		assert.ok(installer.includes(`EXPECTED_${name}_SHA256="${digest}"`), `installer pin for ${file} is stale`);
 	}
 });
