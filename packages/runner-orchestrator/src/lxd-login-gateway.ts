@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual, X509Certificate } from "node:crypto";
-import { lstat, mkdir, readdir } from "node:fs/promises";
+import { lstat, mkdir, readdir, rename } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { isIP } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
@@ -41,6 +41,8 @@ const PROFILE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const STORAGE_SIZE_PATTERN = /^[1-9][0-9]*(?:KiB|MiB|GiB|TiB)$/;
 const MAX_REQUEST_BYTES = 64 * 1024;
 const MAX_RESPONSE_BYTES = 64 * 1024;
+/** Released journals move here, inside the state root, out of every scan. */
+const JOURNAL_ARCHIVE = "archive";
 
 type NativeComputeOwnershipKind = "member" | "company" | "department" | "security_boundary";
 
@@ -203,11 +205,24 @@ export interface LxdNativeLoginGatewayConfig {
 	/** How long a new sign-in waits for the member's replaced sign-in to give its machine back (default 120 s). */
 	identityReleaseWaitMs?: number;
 	loginPreparingAfterMs?: number;
+	/** How long a released journal stays in the scanned root before it is archived (default 24 h).
+	 * A login capability lives at most an hour and an account refresh five minutes. */
+	releasedJournalRetentionMs?: number;
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
 	return value as Record<string, unknown>;
+}
+
+async function present(path: string): Promise<boolean> {
+	try {
+		await lstat(path);
+		return true;
+	} catch (error) {
+		if (!code(error, "ENOENT")) throw error;
+		return false;
+	}
 }
 
 function exactKeys(input: Record<string, unknown>, allowed: readonly string[], label: string): void {
@@ -523,8 +538,9 @@ export class LxdNativeLoginGateway {
 	readonly #serial = new Map<string, Promise<void>>();
 	/** Every sign-in and account refresh leaves its journal on disk, released. A released
 	 * journal accepts no further event, so scans read it once per process, not on every
-	 * pass (23 Sep 2026: 1 084 of them kept node 1's provider busy on one core). */
-	readonly #released = new Set<string>();
+	 * pass (23 Sep 2026: 1 084 of them kept node 1's provider busy on one core), and
+	 * reconcile archives it once it is old. */
+	readonly #released = new Map<string, { computeIdentityId: string; releasedAt: number }>();
 
 	constructor(
 		config: LxdNativeLoginGatewayConfig,
@@ -672,12 +688,11 @@ export class LxdNativeLoginGateway {
 			journal = await LxdLoginJournal.open(this.#config.stateRoot, login.loginId, this.#lxd);
 		} catch (error) {
 			if (!code(error, "ENOENT")) throw error;
-			const retained = await lstat(join(this.#config.stateRoot, login.loginId)).catch((error) => {
-				if (!code(error, "ENOENT")) throw error;
-				return undefined;
-			});
-			if (retained) throw new Error("LOGIN_JOURNAL_UNCONFIRMED");
+			if (await present(join(this.#config.stateRoot, login.loginId))) throw new Error("LOGIN_JOURNAL_UNCONFIRMED");
 			if (authority.status === "completed") return this.#completed(login.loginId);
+			// An archived journal was released: its login is over, never allocated again.
+			if (await present(join(this.#config.stateRoot, JOURNAL_ARCHIVE, login.loginId)))
+				throw new Error("LOGIN_ALLOCATION_CLOSED");
 			// Legacy identity-keyed VMs have no trustworthy physical allocation.
 			// Preserve them and refuse another attachment until explicitly reconciled.
 			if (
@@ -967,15 +982,12 @@ export class LxdNativeLoginGateway {
 				const journal = await LxdLoginJournal.open(this.#config.stateRoot, name, this.#lxd);
 				const state = await journal.state();
 				if (state.releasedAt) {
-					this.#released.add(name);
+					this.#remember(name, journal, state.releasedAt);
 					continue;
 				}
 				if (journal.binding.computeIdentityId !== login.computeIdentityId) continue;
 				const description = await this.#machineDescription(journal.binding, signal);
-				if (state.closing || description.cleanupRequired) {
-					await this.#cleanup(journal, signal);
-					this.#released.add(name);
-				}
+				if (state.closing || description.cleanupRequired) await this.#cleanup(journal, signal);
 			} catch {
 				signal.throwIfAborted();
 			}
@@ -990,30 +1002,62 @@ export class LxdNativeLoginGateway {
 			unconfirmed = 0;
 		for (const name of (await readdir(this.#config.stateRoot)).sort()) {
 			signal.throwIfAborted();
+			if (name === JOURNAL_ARCHIVE) continue;
 			if (!LOGIN_UUID.test(name)) {
 				unconfirmed++;
 				continue;
 			}
 			scanned++;
-			if (this.#released.has(name)) continue;
 			try {
-				const journal = await LxdLoginJournal.open(this.#config.stateRoot, name, this.#lxd);
-				// Cleanup either releases the journal or throws.
-				const released = await this.#exclusive(journal.binding.computeIdentityId, async () => {
-					const state = await journal.state();
-					if (state.releasedAt || (await this.#retireOrphan(journal, signal))) return true;
-					const description = await this.#machineDescription(journal.binding, signal);
-					if (!state.closing && !description.cleanupRequired) return false;
-					await this.#cleanup(journal, signal);
-					return true;
-				});
-				if (released) this.#released.add(name);
+				let released = this.#released.get(name);
+				if (!released) {
+					const journal = await LxdLoginJournal.open(this.#config.stateRoot, name, this.#lxd);
+					const releasedAt = await this.#exclusive(journal.binding.computeIdentityId, async () => {
+						const state = await journal.state();
+						if (state.releasedAt) return state.releasedAt;
+						if (!(await this.#retireOrphan(journal, signal))) {
+							const description = await this.#machineDescription(journal.binding, signal);
+							if (!state.closing && !description.cleanupRequired) return null;
+							await this.#cleanup(journal, signal);
+						}
+						// Orphan retirement and cleanup release the journal or throw.
+						return (await journal.state()).releasedAt;
+					});
+					if (!releasedAt) continue;
+					released = this.#remember(name, journal, releasedAt);
+				}
+				if (Date.now() - released.releasedAt >= (this.#config.releasedJournalRetentionMs ?? 24 * 60 * 60_000))
+					await this.#exclusive(released.computeIdentityId, () => this.#archive(name));
 			} catch {
 				signal.throwIfAborted();
 				unconfirmed++;
 			}
 		}
 		return { scanned, unconfirmed };
+	}
+
+	#remember(name: string, journal: LxdLoginJournal, releasedAt: string) {
+		const released = { computeIdentityId: journal.binding.computeIdentityId, releasedAt: Date.parse(releasedAt) };
+		this.#released.set(name, released);
+		return released;
+	}
+
+	/** Moves a released journal out of the scanned root, whole and unchanged. A later
+	 * request for its login finds it in the archive and is refused like a released one. */
+	async #archive(name: string): Promise<void> {
+		const archive = join(this.#config.stateRoot, JOURNAL_ARCHIVE);
+		try {
+			await mkdir(archive, { mode: 0o700 });
+			await syncDirectory(this.#config.stateRoot);
+		} catch (error) {
+			if (!code(error, "EEXIST")) throw error;
+		}
+		await checkDirectory(archive);
+		if (await present(join(archive, name))) throw new Error("LOGIN_JOURNAL_ARCHIVE_CONFLICT");
+		await rename(join(this.#config.stateRoot, name), join(archive, name));
+		await syncDirectory(archive);
+		await syncDirectory(this.#config.stateRoot);
+		this.#released.delete(name);
 	}
 
 	async #ensureIdentityVolume(computeIdentityId: string, signal?: AbortSignal): Promise<boolean> {
