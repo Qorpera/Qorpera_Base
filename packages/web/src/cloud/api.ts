@@ -373,6 +373,63 @@ export class CloudApi {
 			.then(parsePendingSessionInputs);
 	}
 
+	/** The company's saved secrets (references only: never a value). */
+	listSecretConnections(profileId: string, environmentId: string): Promise<CloudSecretReference[]> {
+		return this.cloud
+			.rpc("qorpera_list_cloud_secret_connections", {
+				p_profile_id: requiredUuid(profileId, "Profile id"),
+				p_environment_id: requiredUuid(environmentId, "Environment id"),
+			})
+			.then(parseSecretReferences);
+	}
+
+	/** A one-time ticket to put a secret into the company's cloud custody. The
+	 * value itself goes to the secret broker's origin (`captureSecret`), never
+	 * through this RPC. */
+	beginSecretCapture(input: {
+		profileId: string;
+		environmentId: string;
+		ownerKind: "company" | "member";
+		ownerUserId?: string;
+		connectorId: string;
+		secretName: string;
+		purpose: string;
+		existingSecretId?: string;
+	}): Promise<CloudSecretCaptureTicket> {
+		return this.cloud
+			.rpc("qorpera_begin_cloud_secret_capture", {
+				p_profile_id: requiredUuid(input.profileId, "Profile id"),
+				p_environment_id: requiredUuid(input.environmentId, "Environment id"),
+				p_owner_kind: input.ownerKind,
+				p_owner_user_id: input.ownerUserId ? requiredUuid(input.ownerUserId, "Owner") : null,
+				p_connector_id: input.connectorId,
+				p_secret_name: input.secretName,
+				p_purpose: input.purpose,
+				p_existing_secret_id: input.existingSecretId ? requiredUuid(input.existingSecretId, "Secret id") : null,
+			})
+			.then(parseSecretCaptureTicket);
+	}
+
+	/** Post the plaintext to the secret broker, the one place that may see it.
+	 * The ticket's capability is the only credential; nothing else identifies
+	 * the member, and the answer carries a reference, never the value. */
+	async captureSecret(ticket: CloudSecretCaptureTicket, value: string): Promise<CloudSecretReference> {
+		if (!value || value.length > 32 * 1024) throw new Error("The secret is empty or too long.");
+		const response = await fetch(`${ticket.serviceOrigin}/v1/captures/${ticket.ticketId}`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				schema: "qorpera.cloud-secret-capture-request/v1",
+				captureCapability: ticket.captureCapability,
+				fields: { value },
+			}),
+			redirect: "error",
+			credentials: "omit",
+		});
+		if (!response.ok) throw new Error("The secret could not be saved. Try again in a moment.");
+		return parseSecretReference(await response.json());
+	}
+
 	/** Answer a typed card the agent raised (kernel bundle v70): queued like a
 	 * prompt, so the agent wakes in its own thread with the answer. Never a secret
 	 * value: a secret card answers with its outcome only. */
@@ -537,4 +594,85 @@ export class CloudApi {
 			p_diagnostics: {},
 		});
 	}
+}
+
+/** A saved secret as the custody describes it: ids, names and owner, never a value. */
+export interface CloudSecretReference {
+	secretId: string;
+	version: number;
+	connectorId: string;
+	secretName: string;
+	purpose: string;
+	ownerKind: "company" | "member";
+	ownerUserId?: string;
+	status: "active" | "revoked";
+}
+
+export interface CloudSecretCaptureTicket {
+	ticketId: string;
+	captureCapability: string;
+	serviceOrigin: string;
+	secretId: string;
+	version: number;
+	expiresAt: string;
+}
+
+function parseSecretReference(value: unknown): CloudSecretReference {
+	const input = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+	if (
+		typeof input.secretId !== "string" ||
+		!Number.isSafeInteger(input.version) ||
+		typeof input.connectorId !== "string" ||
+		typeof input.secretName !== "string" ||
+		(input.ownerKind !== "company" && input.ownerKind !== "member") ||
+		(input.status !== "active" && input.status !== "revoked")
+	)
+		throw new Error("The saved secret's description is invalid.");
+	return {
+		secretId: requiredUuid(input.secretId, "Secret id"),
+		version: input.version as number,
+		connectorId: input.connectorId,
+		secretName: input.secretName,
+		purpose: typeof input.purpose === "string" ? input.purpose : "",
+		ownerKind: input.ownerKind,
+		...(typeof input.ownerUserId === "string" ? { ownerUserId: input.ownerUserId } : {}),
+		status: input.status,
+	};
+}
+
+function parseSecretReferences(value: unknown): CloudSecretReference[] {
+	return Array.isArray(value) ? value.map(parseSecretReference) : [];
+}
+
+function parseSecretCaptureTicket(value: unknown): CloudSecretCaptureTicket {
+	const input = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+	const scope =
+		input.scope && typeof input.scope === "object" && !Array.isArray(input.scope)
+			? (input.scope as Record<string, unknown>)
+			: {};
+	let origin: string;
+	try {
+		const url = new URL(String(input.serviceOrigin));
+		if (url.protocol !== "https:" || url.pathname !== "/" || url.search || url.hash) throw new Error("origin");
+		origin = url.origin;
+	} catch {
+		throw new Error("The secret service is not set up for this company.");
+	}
+	if (
+		input.schema !== "qorpera.cloud-secret-capture/v1" ||
+		typeof input.ticketId !== "string" ||
+		typeof input.captureCapability !== "string" ||
+		typeof scope.secretId !== "string" ||
+		!Number.isSafeInteger(scope.version) ||
+		typeof input.expiresAt !== "string"
+	)
+		throw new Error("The secret ticket is invalid.");
+	return {
+		ticketId: requiredUuid(input.ticketId, "Ticket id"),
+		captureCapability: input.captureCapability,
+		serviceOrigin: origin,
+		secretId: requiredUuid(scope.secretId, "Secret id"),
+		version: scope.version as number,
+		expiresAt: input.expiresAt,
+	};
 }

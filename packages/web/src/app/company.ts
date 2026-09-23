@@ -3,7 +3,7 @@ import type { CloudApi } from "../cloud/api.ts";
 import { CloudRpcError, describeError } from "../cloud/client.ts";
 import type { CodingSession, CodingSessionRead } from "../cloud/coding-session.ts";
 import { type GroupChatDetails, listGroupChatDetails, readGroupChatDetails } from "../cloud/group-details.ts";
-import type { InteractionAnswer, InteractionOutcome } from "../cloud/interactions.ts";
+import type { InteractionAnswer, InteractionOutcome, InteractionRequest } from "../cloud/interactions.ts";
 import { buildCompanyHierarchy, type CompanyHierarchy, type HostedCompanyOrganization } from "../cloud/organization.ts";
 import { UUID_PATTERN } from "../cloud/parse.ts";
 import {
@@ -992,6 +992,53 @@ export class CompanyController {
 			throw error;
 		}
 		void this.loadConversation(sessionId);
+	}
+
+	/** Put a secret card's value into the company's cloud custody and answer the
+	 * card as provided. The value goes from this browser to the secret broker
+	 * and nowhere else; the card learns a reference. Owners and admins save it
+	 * for the company, other members for themselves. An existing secret with the
+	 * same connector and name is replaced (a new version), never duplicated. */
+	async provideSecret(
+		sessionId: string,
+		interactionId: string,
+		request: InteractionRequest,
+		value: string,
+	): Promise<void> {
+		this.assertCanSend(sessionId);
+		const store = this.conversation(sessionId);
+		const name = typeof request.payload.name === "string" ? request.payload.name : "";
+		const connectorId = typeof request.payload.connectorId === "string" ? request.payload.connectorId : "vault";
+		const purpose = typeof request.payload.purpose === "string" ? request.payload.purpose : request.title;
+		const role = this.store.get().team?.role;
+		const company = role === "owner" || role === "admin";
+		store.set({ interactionError: undefined });
+		try {
+			const existing = (
+				await this.#api.listSecretConnections(this.profile.profileId, this.profile.environmentId)
+			).find(
+				(secret) =>
+					secret.status === "active" &&
+					secret.connectorId === connectorId &&
+					secret.secretName === name &&
+					(company ? secret.ownerKind === "company" : secret.ownerUserId === this.#userId),
+			);
+			const ticket = await this.#api.beginSecretCapture({
+				profileId: this.profile.profileId,
+				environmentId: this.profile.environmentId,
+				ownerKind: company ? "company" : "member",
+				...(company ? {} : { ownerUserId: this.#userId }),
+				connectorId,
+				secretName: name,
+				purpose: purpose.slice(0, 512),
+				...(existing ? { existingSecretId: existing.secretId } : {}),
+			});
+			await this.#api.captureSecret(ticket, value);
+		} catch (error) {
+			store.set({ interactionError: describeError(error) });
+			throw error;
+		}
+		await this.answerInteraction(sessionId, interactionId, "provided", {});
 	}
 
 	async sendPrompt(sessionId: string, text: string, viewSignal?: AbortSignal): Promise<boolean> {

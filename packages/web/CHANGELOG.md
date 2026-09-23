@@ -4,7 +4,7 @@
 
 ### Added
 
-- Cards an agent raises in its thread (kernel bundle v70, runtime v71): a question with options, a computer takeover with Take over, I'm done and Skip, and the approval card's Approve and Decline now record the decision. A card shows who answered and what, stays in the thread once answered, and expires on its own time. Secret, form and draft cards show their content and can be declined or discarded; entering a secret or filling a form waits for the vault step. Group chats never carry cards.
+- Cards an agent raises in its thread (kernel bundle v70, runtime v71): a question with options, a computer takeover with Take over, I'm done and Skip, and the approval card's Approve and Decline now record the decision. A card shows who answered and what, stays in the thread once answered, and expires on its own time. Form and draft cards show their content and can be declined or discarded; filling a form waits for the vault fill step. A secret card takes the value in a masked field and saves it into the company's cloud vault straight from the browser (owners and admins for the company, other members for themselves; a saved secret with the same name is replaced), then marks the card provided; the agent only learns that it was saved. Group chats never carry cards.
 
 ### Fixed
 

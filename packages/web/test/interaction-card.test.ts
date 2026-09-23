@@ -115,23 +115,35 @@ describe("interaction cards", () => {
 		expect(ctx.answer).toHaveBeenCalledWith("handed_back", {});
 	});
 
-	it("never offers a field for a secret and only lets the member decline", () => {
-		const ctx = context();
-		const card = renderInteractionCard(
-			item({
-				surface: "secret",
-				title: "Connect Slack",
-				body: "To post daily digests to your Slack workspace, provide a bot token.",
-				payload: { name: "slack-bot-token", label: "Slack bot token", purpose: "Posting the digest." },
-			}),
-			ctx,
-		);
-		expect(card.querySelector("input")).toBeNull();
+	it("saves a secret through the vault path, never through the answer, and only declines without it", async () => {
+		const secret = item({
+			surface: "secret",
+			title: "Connect Slack",
+			body: "To post daily digests to your Slack workspace, provide a bot token.",
+			payload: { name: "slack-bot-token", label: "Slack bot token", purpose: "Posting the digest." },
+		});
+		const provideSecret = vi.fn(async () => {});
+		const ctx = context({ provideSecret });
+		const card = renderInteractionCard(secret, ctx);
+		const field = card.querySelector<HTMLInputElement>("input.interaction-secret");
+		expect(field?.type).toBe("password");
+		expect(field?.autocomplete).toBe("off");
 		expect(card.textContent).toContain("company vault");
-		const pills = [...card.querySelectorAll<HTMLButtonElement>(".interaction-actions .btn")];
+		const save = [...card.querySelectorAll<HTMLButtonElement>(".btn")].find(
+			(pill) => pill.textContent === "Save securely",
+		);
+		save?.click();
+		expect(provideSecret).not.toHaveBeenCalled();
+		field!.value = "xoxb-secret";
+		save?.click();
+		expect(provideSecret).toHaveBeenCalledWith("xoxb-secret");
+		expect(ctx.answer).not.toHaveBeenCalled();
+		await Promise.resolve();
+		// Without a vault path the card can only be declined.
+		const readOnly = renderInteractionCard(secret, context());
+		expect(readOnly.querySelector("input")).toBeNull();
+		const pills = [...readOnly.querySelectorAll<HTMLButtonElement>(".interaction-actions .btn")];
 		expect(pills.map((pill) => pill.textContent)).toEqual(["Decline"]);
-		pills[0]?.click();
-		expect(ctx.answer).toHaveBeenCalledWith("declined", {});
 	});
 
 	it("shows an expired card without controls and a read-only card for another member", () => {
