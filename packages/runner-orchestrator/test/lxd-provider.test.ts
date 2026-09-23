@@ -456,9 +456,12 @@ describe("LXD cloud runner provider", () => {
 			return provision(input, init);
 		};
 		const backend = new LxdCloudRunnerProviderBackend(config(stateRoot), lxd, new FakeGuest(), fetcher);
-		await expect(backend.acquire(runId, work(), new AbortController().signal)).rejects.toThrow(
-			"NODE_OBSERVATION_UNAVAILABLE",
-		);
+		await expect(backend.acquire(runId, work(), new AbortController().signal)).rejects.toMatchObject({
+			name: "LxdMachineAdmissionRefused",
+			category: "admission_refused",
+			state: "refused",
+			reason: "NODE_OBSERVATION_UNAVAILABLE",
+		});
 		expect(lxd.createCalls).toHaveLength(1);
 		expect(lxd.powerCalls).toHaveLength(0);
 		const journalPath = join(stateRoot, runId, "journal.json");
