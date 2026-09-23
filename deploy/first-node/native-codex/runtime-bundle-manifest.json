@@ -31,7 +31,7 @@
     "deploy/coding-worker/control.ts": "be17231c39ba0a4f78b6981f40e1cdc18bdf5027dcf9dd00aa374e1d718475f9",
     "deploy/coding-worker/credentials.ts": "fbb946c956e46499dd02da8eac7738698c606b345191a8cb51738d3fe33f3687",
     "deploy/coding-worker/executor.ts": "33d93b035a1447ca834f891c20b2d21cef969510849252f0d31781a39c777748",
-    "deploy/coding-worker/qorpera-coding-executor.service": "a64ac889b7c84032e89500a99fdacab06c33099fc2fbcb24eeab5d3123cd8cc5",
+    "deploy/coding-worker/qorpera-coding-executor.service": "0628f17a8ed1514abf71b45d20eefe906ffd6cf0caacc69349d3bec3f607fea0",
     "deploy/coding-worker/qorpera-coding-watchdog.service": "0b78ab63e7a6908101d3ea634e1720ca4f5f1abb2fcf8e81de33c41151db7fe7",
     "deploy/coding-worker/qorpera-coding-watchdog.timer": "8af66d8d59c55f9b3e5f5f251010f66de1da844b4c2259e53e82859f2977d6ff",
     "deploy/coding-worker/qorpera-coding.slice": "17e44e48cbd5bb908b4730979ae0fc56ecc630075f4504892244c66494fa8c27",
