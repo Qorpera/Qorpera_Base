@@ -1093,6 +1093,7 @@ describe("LXD native login gateway", () => {
 			opens.mockRestore();
 		}
 		expect(await readdir(root)).toEqual(["archive"]);
+		expect(await readdir(join(root, "archive", loginId))).not.toContain("bridge.json");
 		const archived = await LxdLoginJournal.open(join(root, "archive"), loginId, lxd);
 		expect((await archived.state()).releasedAt).toBe("2026-09-08T00:00:00.000Z");
 		expect(await gateway.reconcile(new AbortController().signal)).toEqual({ scanned: 0, unconfirmed: 0 });
