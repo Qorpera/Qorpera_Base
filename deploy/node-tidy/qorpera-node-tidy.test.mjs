@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { planImages, planStaging, tidy } from "./qorpera-node-tidy.mjs";
+import { agentPins, planImages, planStaging, tidy } from "./qorpera-node-tidy.mjs";
 
 const HOUR = 60 * 60_000;
 const now = Date.parse("2026-09-23T18:00:00.000Z");
@@ -226,6 +226,88 @@ test("a refusal deletes nothing, not even old transfer files", async () => {
 		assert.equal((await readdir(node.tmp)).length, 2);
 	} finally {
 		await rm(node.root, { recursive: true, force: true });
+	}
+});
+
+/** The node agent's layout: releases/<n>/release.json, current, roles/provider. */
+async function agentLayout(root, releases, { current, provider }) {
+	const agent = join(root, "opt-qorpera-node");
+	await mkdir(join(agent, "roles"), { recursive: true });
+	for (const [revision, character] of Object.entries(releases)) {
+		await mkdir(join(agent, "releases", revision), { recursive: true });
+		const env = { QORPERA_LXD_IMAGE_FINGERPRINT: fp(character) };
+		await writeFile(join(agent, "releases", revision, "release.json"), JSON.stringify({ roles: { provider: { env } } }));
+	}
+	await mkdir(join(agent, "releases", ".stage-x"));
+	await symlink(`releases/${current}`, join(agent, "current"));
+	if (provider !== undefined) await symlink(`../releases/${provider}`, join(agent, "roles", "provider"));
+	return agent;
+}
+
+test("on a node agent node the releases decide, and the old lane's pins are held until archived", async () => {
+	const node = await nodeFixture();
+	try {
+		// Release 0 runs image 4 (as env v53 did), release 1 is staged with image 8; the provider still runs release 0.
+		const agentRoot = await agentLayout(node.root, { 0: "4", 1: "8" }, { current: 0, provider: 0 });
+		assert.deepEqual(await agentPins(agentRoot), [
+			{ version: 0, fingerprint: fp("4"), live: true },
+			{ version: 1, fingerprint: fp("8"), live: false },
+		]);
+		const lxd = { ...node.lxd, images: async () => [...(await node.lxd.images()), image("8", 100), image("5", 100)] };
+		// The fixed launcher names no env file: without agentRoot, tidy finds no live pin and refuses.
+		const systemd = { ...node.systemd, startPaths: async () => [] };
+		const without = await tidy({ config: node.config, apply: false, lxd, systemd, now });
+		assert.equal(without.refusal, "no live runtime pin was found");
+		const report = await tidy({ config: { ...node.config, agentRoot }, apply: false, lxd, systemd, now });
+		assert.equal(report.refusal, null);
+		assert.deepEqual(
+			report.keep.map((kept) => [kept.fingerprint[0], kept.reason]),
+			[
+				["0", "configured"],
+				["3", "old lane pin, until archived"],
+				["4", "instance qn25b2/qorpera-exec-node02"],
+				["7", "live configuration"],
+				["8", "staged runtime pin"],
+			],
+		);
+		assert.deepEqual(
+			report.remove.map((removed) => removed.fingerprint[0]),
+			["9", "5"],
+		);
+	} finally {
+		await rm(node.root, { recursive: true, force: true });
+	}
+});
+
+test("the live release is the one the provider role runs, and the one before it with another image is the rollback", async () => {
+	const root = await mkdtemp(join(tmpdir(), "qorpera-node-tidy-agent-"));
+	try {
+		// A rollback left the provider on release 1 while current names 2.
+		const agentRoot = await agentLayout(root, { 0: "a", 1: "b", 2: "c" }, { current: 2, provider: 1 });
+		const pins = await agentPins(agentRoot);
+		assert.deepEqual(
+			pins.filter((pin) => pin.live).map((pin) => pin.version),
+			[1],
+		);
+		const plan = planImages({
+			images: [image("a", 400), image("b", 400), image("c", 400), image("d", 400)],
+			instances: [],
+			referenced: new Set(),
+			pins,
+			now,
+			config: config({ keepFingerprints: [] }),
+		});
+		assert.deepEqual(
+			plan.keep.map((kept) => [kept.fingerprint[0], kept.reason]),
+			[
+				["a", "previous runtime pin"],
+				["b", "live runtime pin"],
+				["c", "staged runtime pin"],
+			],
+		);
+		assert.equal(await agentPins(join(root, "missing")), null);
+	} finally {
+		await rm(root, { recursive: true, force: true });
 	}
 });
 

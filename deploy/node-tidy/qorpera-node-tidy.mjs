@@ -5,7 +5,7 @@
 // lock around image transfer, import and cleanup, so a held lock means "not now".
 
 import { execFile } from "node:child_process";
-import { lstat, readdir, readFile, unlink } from "node:fs/promises";
+import { lstat, readdir, readFile, readlink, unlink } from "node:fs/promises";
 import { request } from "node:http";
 import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -21,11 +21,14 @@ const HOUR_MS = 60 * 60_000;
  * - images: [{ fingerprint, project, size, uploadedAt, description }]
  * - instances: [{ project, name, status, baseImage }]
  * - referenced: fingerprints named by files the live units read
- * - pins: [{ version, fingerprint, live }] from the provider env files; `live` when a live unit reads the file
+ * - pins: [{ version, fingerprint, live }] from the node agent's releases (version = revision; `live` = the release the
+ *   provider role runs) or, on a node without the agent, from the provider env files (`live` when a live unit reads it)
+ * - held: [{ fingerprint, reason }] kept as they are, e.g. the pins of the old lane's env files, kept for its rollback
+ *   units until those files are archived
  * Keeps images of any instance, configured ones, the live runtime pin, every newer (staged) pin and the newest
  * older pin with another fingerprint (the rollback), images named by live configuration, base images and
  * recent uploads. Refuses to delete anything when the live pin cannot be found or names no local image. */
-export function planImages({ images, instances, referenced, pins, now, config }) {
+export function planImages({ images, instances, referenced, pins, held = [], now, config }) {
 	const reasons = new Map();
 	const keep = (fingerprint, reason) => {
 		if (fingerprint && !reasons.has(fingerprint)) reasons.set(fingerprint, reason);
@@ -41,6 +44,7 @@ export function planImages({ images, instances, referenced, pins, now, config })
 			.sort((a, b) => b.version - a.version)[0];
 		if (previous) keep(previous.fingerprint, "previous runtime pin");
 	}
+	for (const { fingerprint, reason } of held) keep(fingerprint, reason);
 	for (const image of images) {
 		if (referenced.has(image.fingerprint)) keep(image.fingerprint, "live configuration");
 		if (/^ubuntu/i.test(image.description)) keep(image.fingerprint, "base image");
@@ -78,8 +82,12 @@ function parseConfig(value) {
 		"staging",
 		"stagingMaxAgeHours",
 	];
-	if (!value || typeof value !== "object" || Object.keys(value).sort().join() !== [...keys].sort().join())
+	// agentRoot is optional: a node that runs the node agent names its folder (/opt/qorpera-node).
+	const given = Object.keys(value ?? {}).filter((key) => key !== "agentRoot");
+	if (!value || typeof value !== "object" || given.sort().join() !== [...keys].sort().join())
 		throw new Error("Node tidy configuration has unexpected fields");
+	if ("agentRoot" in value && !(typeof value.agentRoot === "string" && value.agentRoot.startsWith("/")))
+		throw new Error("Node tidy configuration is invalid");
 	const strings = (list) => Array.isArray(list) && list.every((item) => typeof item === "string" && item.startsWith("/"));
 	if (
 		value.schema !== CONFIG_SCHEMA ||
@@ -101,6 +109,28 @@ function parseConfig(value) {
 	)
 		throw new Error("Node tidy configuration is invalid");
 	return value;
+}
+
+/** The node agent's image pins, one per staged release, or null on a node without the agent. The live release is the one
+ * the provider role's link names (`roles/provider -> ../releases/<n>`), which a deferred or rolled-back role keeps. */
+export async function agentPins(agentRoot) {
+	const current = await readlink(join(agentRoot, "current")).catch((error) => {
+		if (error.code === "ENOENT") return null;
+		throw error;
+	});
+	if (current === null) return null;
+	const role = await readlink(join(agentRoot, "roles", "provider")).catch(() => `../${current}`);
+	const live = /^\.\.\/releases\/(0|[1-9][0-9]*)$/.exec(role)?.[1];
+	if (live === undefined) throw new Error(`the provider role link is unexpected: ${role}`);
+	const pins = [];
+	for (const name of await readdir(join(agentRoot, "releases"))) {
+		if (!/^(0|[1-9][0-9]*)$/.test(name)) continue;
+		const release = JSON.parse(await readFile(join(agentRoot, "releases", name, "release.json"), "utf8"));
+		const fingerprint = release.roles?.provider?.env?.QORPERA_LXD_IMAGE_FINGERPRINT;
+		if (typeof fingerprint === "string" && /^[0-9a-f]{64}$/.test(fingerprint))
+			pins.push({ version: Number(name), fingerprint, live: name === live });
+	}
+	return pins;
 }
 
 /** Expands a path whose last segment may contain `*`. */
@@ -245,16 +275,21 @@ export async function tidy({ config, apply, lxd, systemd, now = Date.now(), remo
 	const traced = await trace([...starts, ...livePins]);
 	const referenced = new Set();
 	for (const text of traced.values()) for (const match of text.match(FINGERPRINT) ?? []) referenced.add(match);
-	const pins = [];
+	const envPins = [];
 	for (const path of pinFiles) {
 		const version = /-v(\d+)\.json$/.exec(path)?.[1];
 		if (!version) continue;
 		const fingerprint = JSON.parse(await readFile(path, "utf8"))?.env?.QORPERA_LXD_IMAGE_FINGERPRINT;
 		if (typeof fingerprint === "string" && /^[0-9a-f]{64}$/.test(fingerprint))
-			pins.push({ version: Number(version), fingerprint, live: livePins.has(path) });
+			envPins.push({ version: Number(version), fingerprint, live: livePins.has(path) });
 	}
+	// On a node agent node the releases decide. The old lane's env files stay (with their disabled units) for its
+	// rollback until they are archived, so their pins are held until then.
+	const released = config.agentRoot ? await agentPins(config.agentRoot) : null;
+	const pins = released ?? envPins;
+	const held = released ? envPins.map((pin) => ({ fingerprint: pin.fingerprint, reason: "old lane pin, until archived" })) : [];
 	const images = await lxd.images();
-	const plan = planImages({ images, instances: await lxd.instances(), referenced, pins, now, config });
+	const plan = planImages({ images, instances: await lxd.instances(), referenced, pins, held, now, config });
 	const stagingFiles = [];
 	for (const pattern of config.staging)
 		for (const path of await expand(pattern)) {
