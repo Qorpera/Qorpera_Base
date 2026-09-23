@@ -496,6 +496,11 @@ test("a switch that cannot bring the old unit back records that and says so", as
 		await assert.rejects(node.agent.switch("provider", OLD_PROVIDER), /SWITCH_BACK_FAILED ROLE_HEALTH provider/);
 		const receipt = await lastRecord(node, /-switch-receipt-rnone-/);
 		assert.equal(receipt.state, "switch-back-failed");
+		// By hand: unswitch takes the old command from the switch intent, since no switch receipt holds it.
+		node.agent.ports.enable = enable;
+		const back = await node.agent.unswitch("provider", OLD_PROVIDER);
+		assert.deepEqual(back.command, ["/usr/bin/node", "--jitless", "/opt/qorpera-native25-phql-a1/provider-v82p2.mjs"]);
+		assert.deepEqual([node.state.units[OLD_PROVIDER].enabled, node.state.units[UNITS.provider].enabled], [true, false]);
 	} finally {
 		await node.close();
 	}
@@ -515,7 +520,33 @@ test("a switch whose units no longer read the same once switched goes back to th
 			[node.state.units[UNITS.provider].enabled, node.state.units[UNITS.provider].active],
 			[false, false],
 		);
-		assert.equal((await lastRecord(node, /-switch-receipt-rnone-/)).state, "switched-back");
+		const receipt = await lastRecord(node, /-switch-receipt-rnone-/);
+		assert.equal(receipt.state, "switched-back");
+		assert.deepEqual(receipt.diff.unexpectedDifferences, ["LimitNOFILE"]);
+		// The old unit runs again: there is nothing to unswitch.
+		await assert.rejects(node.agent.unswitch("provider", OLD_PROVIDER), /UNSWITCH_NO_SWITCH_FROM/);
+	} finally {
+		await node.close();
+	}
+});
+
+test("a switch-back that cannot disable the new unit is a failed switch-back, never switched-back", async () => {
+	const node = await nodeFixture();
+	try {
+		await adopted(node, { switched: false });
+		node.state.unhealthyRevision = 0;
+		const disable = node.agent.ports.disable;
+		node.agent.ports.disable = async (unit, now) => {
+			if (unit === UNITS.provider) throw new Error("systemctl disable failed");
+			return disable(unit, now);
+		};
+		await assert.rejects(
+			node.agent.switch("provider", OLD_PROVIDER),
+			/SWITCH_BACK_FAILED ROLE_HEALTH provider .*disable failed; SWITCH_BACK_NEW_UNIT_STILL_ENABLED/,
+		);
+		assert.equal((await lastRecord(node, /-switch-receipt-rnone-/)).state, "switch-back-failed");
+		// The old provider still came back.
+		assert.deepEqual([node.state.units[OLD_PROVIDER].enabled, node.state.units[OLD_PROVIDER].active], [true, true]);
 	} finally {
 		await node.close();
 	}

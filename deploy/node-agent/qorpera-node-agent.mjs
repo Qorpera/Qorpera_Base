@@ -521,6 +521,7 @@ export class NodeAgent {
 		const before = oldPid > 0 ? await this.ports.cmdline(oldPid) : [];
 		need(before.length > 0, `SWITCH_OLD_UNIT_NOT_RUNNING ${fromUnit}`);
 		// Migration records carry no release, so gc never prunes them: unswitch needs the old unit's command.
+		let diff = null;
 		await this.record("switch-intent", null, { release: revision, role, from: fromUnit, to: settings.unit, before });
 		try {
 			await this.ports.disable(fromUnit, true);
@@ -528,10 +529,11 @@ export class NodeAgent {
 			const result = await this.restartRole(config, role);
 			need(await this.ports.isEnabled(settings.unit), `SWITCH_NEW_UNIT_NOT_ENABLED ${settings.unit}`);
 			// Now that the new unit runs and the old one is stopped, their settings must still read the same.
-			const diff = await this.ports.unitDiff(fromUnit, settings.unit);
+			diff = await this.ports.unitDiff(fromUnit, settings.unit);
 			need(diff.equivalent === true, `SWITCH_UNITS_DIFFER ${JSON.stringify(diff.unexpectedDifferences ?? diff)}`);
 			const after = await this.ports.cmdline(result.pid);
-			await this.record("switch-receipt", null, { release: revision,
+			await this.record("switch-receipt", null, {
+				release: revision,
 				role,
 				from: fromUnit,
 				to: settings.unit,
@@ -542,42 +544,64 @@ export class NodeAgent {
 			});
 			return { switched: role, from: fromUnit, to: settings.unit, before, after };
 		} catch (error) {
+			// The old unit comes back even when the new one will not disable (it conflicts, so starting it stops the new
+			// one), but that is a failed switch-back: never report one with both units enabled, which would fight over the
+			// ports at boot.
+			const problems = [];
+			await this.ports.disable(settings.unit, true).catch((failure) => problems.push(failure.message));
 			try {
-				await this.ports.disable(settings.unit, true).catch(() => undefined);
 				await this.ports.enable(fromUnit, true);
 				await this.awaitCommand(fromUnit, before);
-			} catch (backError) {
-				await this.record("switch-receipt", null, { release: revision,
+				need(await this.ports.isEnabled(fromUnit), `SWITCH_BACK_OLD_UNIT_NOT_ENABLED ${fromUnit}`);
+				need(!(await this.ports.isEnabled(settings.unit)), `SWITCH_BACK_NEW_UNIT_STILL_ENABLED ${settings.unit}`);
+			} catch (failure) {
+				problems.push(failure.message);
+			}
+			if (problems.length) {
+				await this.record("switch-receipt", null, {
+					release: revision,
 					role,
 					from: fromUnit,
 					to: settings.unit,
 					state: "switch-back-failed",
 					error: error.message,
-					backError: backError.message,
+					backError: problems.join("; "),
+					diff,
 				});
-				throw new Error(`SWITCH_BACK_FAILED ${error.message}; ${backError.message}`);
+				throw new Error(`SWITCH_BACK_FAILED ${error.message}; ${problems.join("; ")}`);
 			}
-			await this.record("switch-receipt", null, { release: revision,
+			await this.record("switch-receipt", null, {
+				release: revision,
 				role,
 				from: fromUnit,
 				to: settings.unit,
 				state: "switched-back",
 				error: error.message,
+				diff,
 			});
 			throw new Error(`SWITCH_REVERTED ${error.message}`);
 		}
 	}
 
-	/** The command the old unit ran when `role` last switched away from it. */
+	/** The command the old unit ran when `role` last switched away from it: from the last switch receipt, or, when that
+	 * switch could not switch back by itself (switch-back-failed), from its intent. A switched-back role has nothing to
+	 * undo. */
 	async switchedFrom(role, fromUnit) {
 		const names = (await readdir(this.journal).catch(() => [])).filter((name) =>
-			name.includes("-switch-receipt-rnone-"),
+			/-switch-(intent|receipt)-rnone-/.test(name),
 		);
-		for (const name of names.sort().reverse()) {
-			const receipt = JSON.parse(await readFile(join(this.journal, name), "utf8"));
-			if (receipt.role !== role || receipt.state !== "switched") continue;
-			return receipt.from === fromUnit ? receipt.before : null;
+		let lastIntent = null;
+		const records = [];
+		for (const name of names.sort()) {
+			const record = JSON.parse(await readFile(join(this.journal, name), "utf8"));
+			if (record.role !== role) continue;
+			if (record.kind === "switch-intent") lastIntent = record;
+			else records.push({ receipt: record, intent: lastIntent });
 		}
+		const last = records.at(-1);
+		if (!last || last.receipt.from !== fromUnit) return null;
+		if (last.receipt.state === "switched") return last.receipt.before;
+		if (last.receipt.state === "switch-back-failed" && last.intent?.from === fromUnit) return last.intent.before;
 		return null;
 	}
 
