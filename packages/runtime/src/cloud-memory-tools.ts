@@ -272,6 +272,37 @@ export function cloudMemoryTools(
 			.update(`${path}\n${version ?? ""}\n${fact}`)
 			.digest("hex")
 			.slice(0, 40)}`;
+	// The gateway never invents parent folders (the todo publication does the same): a first fact
+	// creates agents/, agents/<staffAgentId>/, memory/ and memory/log/ as needed. A folder another
+	// run created meanwhile is simply there on the re-read.
+	const ensureFolders = async (path: string, signal: AbortSignal, context: CloudToolContext) => {
+		const parts = path.split("/").slice(0, -1);
+		for (let depth = 1; depth <= parts.length; depth++) {
+			const folder = parts.slice(0, depth).join("/");
+			for (let attempt = 1; ; attempt++) {
+				const seen = await gateway.readTrusted(folder, signal);
+				if (seen) {
+					if (seen.kind !== "directory") throw new Error("Memory folder is not a directory");
+					break;
+				}
+				try {
+					await gateway.mutate(
+						"mkdir",
+						{
+							path: folder,
+							operationKey: `memory-folder-${createHash("sha256").update(folder).digest("hex").slice(0, 40)}`,
+							expectedVersion: null,
+						},
+						signal,
+						context.observation,
+					);
+					break;
+				} catch (error) {
+					if (!(error instanceof CloudCompanyHeadConflict) || attempt >= HEAD_RETRIES) throw error;
+				}
+			}
+		}
+	};
 	const rewrite = async (
 		action: "write" | "forget",
 		path: string,
@@ -284,6 +315,7 @@ export function cloudMemoryTools(
 			const file = await readFile(gateway, path, signal);
 			const lines = change(file);
 			if (lines === null) return { file, result: null };
+			if (file === null) await ensureFolders(path, signal, context);
 			const text = lines.length ? `${lines.join("\n")}\n` : "";
 			if (Buffer.byteLength(text) > MAX_FILE_BYTES) throw new Error("Memory file is full; forget older facts first");
 			try {
