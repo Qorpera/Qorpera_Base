@@ -196,15 +196,38 @@ async function readRequest(request: IncomingMessage): Promise<unknown> {
 	}
 }
 
-function response(reply: ServerResponse, status: number, value: JsonValue): void {
+function response(reply: ServerResponse, status: number, value: JsonValue, headers: Record<string, string> = {}): void {
 	const body = JSON.stringify(value);
 	reply.writeHead(status, {
 		"content-type": "application/json",
 		"content-length": Buffer.byteLength(body),
 		"cache-control": "no-store",
 		"x-content-type-options": "nosniff",
+		...headers,
 	});
 	reply.end(body);
+}
+
+/** A member app origin the capture route answers to: https, origin only. */
+export function parseMemberOrigin(value: unknown): string {
+	if (typeof value !== "string") throw new Error("Cloud secret broker member origin is invalid");
+	const url = new URL(value);
+	if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || url.pathname !== "/")
+		throw new Error("Cloud secret broker member origin is invalid");
+	return url.origin;
+}
+
+/** The capture route is called from the member's browser on another origin. The
+ * plaintext crosses only to this service, so the answer names the one origin
+ * that asked, never a wildcard, and only when it is on the configured list. */
+function corsHeaders(origin: string): Record<string, string> {
+	return {
+		"access-control-allow-origin": origin,
+		"access-control-allow-methods": "POST",
+		"access-control-allow-headers": "content-type",
+		"access-control-max-age": "600",
+		vary: "origin",
+	};
 }
 
 /**
@@ -217,15 +240,23 @@ export class HttpCloudSecretBrokerService {
 	readonly #runtimeToken: string;
 	readonly #host: string;
 	readonly #port: number;
+	readonly #memberOrigins: ReadonlySet<string>;
 	#server?: Server;
 
-	constructor(broker: CloudSecretBroker, runtimeToken: string, host = "127.0.0.1", port = 0) {
+	constructor(
+		broker: CloudSecretBroker,
+		runtimeToken: string,
+		host = "127.0.0.1",
+		port = 0,
+		memberOrigins: readonly string[] = [],
+	) {
 		if (
 			!TOKEN.test(runtimeToken) ||
 			!["127.0.0.1", "::1"].includes(host) ||
 			!Number.isSafeInteger(port) ||
 			port < 0 ||
-			port > 65_535
+			port > 65_535 ||
+			memberOrigins.length > 16
 		) {
 			throw new Error("Cloud secret broker service configuration is invalid");
 		}
@@ -233,6 +264,7 @@ export class HttpCloudSecretBrokerService {
 		this.#runtimeToken = runtimeToken;
 		this.#host = host;
 		this.#port = port;
+		this.#memberOrigins = new Set(memberOrigins.map(parseMemberOrigin));
 	}
 
 	async start(): Promise<number> {
@@ -262,18 +294,32 @@ export class HttpCloudSecretBrokerService {
 
 	async #handle(request: IncomingMessage, reply: ServerResponse): Promise<void> {
 		try {
+			const path = new URL(request.url ?? "/", "http://cloud-secret-broker.invalid").pathname;
+			const capture = /^\/v1\/captures\/([0-9a-f-]{36})$/i.exec(path);
+			const origin = typeof request.headers.origin === "string" ? request.headers.origin : undefined;
+			const allowedOrigin = origin !== undefined && this.#memberOrigins.has(origin) ? origin : undefined;
+			if (request.method === "OPTIONS") {
+				// A browser preflight for the capture route; every other route has no browser caller.
+				if (capture && UUID.test(capture[1]) && allowedOrigin) {
+					reply.writeHead(204, { ...corsHeaders(allowedOrigin), "cache-control": "no-store" });
+					reply.end();
+				} else response(reply, 404, { schema: "qorpera.cloud-secret-error/v1", error: "not_found" });
+				return;
+			}
 			if (request.method !== "POST" || request.headers["content-type"]?.split(";", 1)[0] !== "application/json") {
 				response(reply, 404, { schema: "qorpera.cloud-secret-error/v1", error: "not_found" });
 				return;
 			}
-			const path = new URL(request.url ?? "/", "http://cloud-secret-broker.invalid").pathname;
-			const capture = /^\/v1\/captures\/([0-9a-f-]{36})$/i.exec(path);
 			if (capture && UUID.test(capture[1])) {
+				if (origin !== undefined && !allowedOrigin) {
+					response(reply, 403, { schema: "qorpera.cloud-secret-error/v1", error: "unavailable" });
+					return;
+				}
 				const descriptor = await this.#broker.capture(
 					parseCapture(await readRequest(request), capture[1]),
 					AbortSignal.timeout(15_000),
 				);
-				response(reply, 200, descriptor as unknown as JsonValue);
+				response(reply, 200, descriptor as unknown as JsonValue, allowedOrigin ? corsHeaders(allowedOrigin) : {});
 				return;
 			}
 			if (path === "/v1/operations" && tokenMatches(this.#runtimeToken, request.headers.authorization)) {
