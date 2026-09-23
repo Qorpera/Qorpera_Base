@@ -72,6 +72,8 @@ try {
 	console.log("PASS: real login allocation, shared node budget, native/login identity exclusion, revocation/expiry cleanup and exact release");
 	sql(`${setup}\n${read("supabase/tests/fixtures/runtime-node-capacity-cases.sql")}\nrollback;`);
 	console.log("PASS: private node enrollment, immutable host/provider/cost, CPU/RAM headroom, stale health, exact replay, retained demand and deletion-based release");
+	sql(`${setup}\n${read("supabase/tests/fixtures/runtime-node-demand-suspension-cases.sql")}\nrollback;`);
+	console.log("PASS: a confirmed power-off suspends the company computer's slot, resume re-admits it only when it fits, a requested resume keeps it");
 	sql(`${setup}\ncommit;`);
 	// A second company's real governed-file setup and office registration. The
 	// cached object bytes remain the same catalog fixture used by the wake test.
