@@ -47,6 +47,9 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_read_company_run_context",
 			"qorpera_read_company_path_v2",
 			"qorpera_list_company_paths_v2",
+			// Trusted notebook reads for memory composition (runtime Step 6).
+			"qorpera_read_company_path",
+			"qorpera_list_company_paths",
 			"qorpera_confirm_company_path_read",
 			"qorpera_record_native_context_view",
 			"qorpera_assert_company_path_reads",

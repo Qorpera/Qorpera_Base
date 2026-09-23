@@ -62,6 +62,10 @@ export type CloudCompanyPathRpc =
 	| "qorpera_read_company_run_context"
 	| "qorpera_read_company_path_v2"
 	| "qorpera_list_company_paths_v2"
+	// Trusted context assembly (contract 9.1, 15.1): the agent's own memory is
+	// composed before the turn without spending model-read observations.
+	| "qorpera_read_company_path"
+	| "qorpera_list_company_paths"
 	| "qorpera_confirm_company_path_read"
 	| "qorpera_record_native_context_view"
 	| "qorpera_assert_company_path_reads"
@@ -466,11 +470,39 @@ export class CloudCompanyPathGateway {
 		}
 		const file = first.entry.file;
 		if (offset > file.bytes) throw new Error("Company File offset exceeds the file");
+		const { text, included } = await this.#fileText(file, first.manifestBytes!, offset, limit, signal);
+		signal.throwIfAborted();
+		const value = {
+			path,
+			version: first.version,
+			...(await this.#presence(path, "object", "reading", signal)),
+			snapshotId: first.snapshotId,
+			readObservationId: first.readObservationId,
+			kind: "file",
+			offset,
+			bytesRead: included,
+			totalBytes: file.bytes,
+			text,
+			nextOffset: offset + included < file.bytes ? offset + included : null,
+		};
+		// SQL rechecks the exact read version under the same lock as authority.
+		await this.#confirmRead(value, included, signal);
+		return value;
+	}
+
+	/** Assemble one UTF-8 range of a verified file from its content-addressed chunks. */
+	async #fileText(
+		file: CloudFileReference,
+		manifestSize: number,
+		offset: number,
+		limit: number,
+		signal: AbortSignal,
+	): Promise<{ text: string; included: number }> {
 		const manifestBytes = await cloudToolRequest(
 			() =>
 				this.#store.getObject(this.#identity.companyId, {
 					sha256: file.manifestSha256,
-					bytes: first.manifestBytes!,
+					bytes: manifestSize,
 					mediaType: FILE_MEDIA,
 				}),
 			signal,
@@ -532,23 +564,76 @@ export class CloudCompanyPathGateway {
 		}
 		if (text === undefined || (included === 0 && output.length > 0))
 			throw new Error("Company File range is not UTF-8 text");
-		signal.throwIfAborted();
-		const value = {
-			path,
-			version: first.version,
-			...(await this.#presence(path, "object", "reading", signal)),
-			snapshotId: first.snapshotId,
-			readObservationId: first.readObservationId,
-			kind: "file",
-			offset,
-			bytesRead: included,
-			totalBytes: file.bytes,
-			text,
-			nextOffset: offset + included < file.bytes ? offset + included : null,
-		};
-		// SQL rechecks the exact read version under the same lock as authority.
-		await this.#confirmRead(value, included, signal);
-		return value;
+		return { text, included };
+	}
+
+	/** Trusted whole-file read for context assembly and runtime-owned notebooks.
+	 * It uses the plain path read (authority and read memory, no model-read
+	 * observation, no wake-work gate), so it never spends the run's read budget
+	 * and may run before the first acknowledgement. Returns null for an absent
+	 * path. Bounded to MAX_WRITE_BYTES so a notebook file can be rewritten. */
+	async readTrusted(
+		pathValue: string,
+		signal: AbortSignal,
+	): Promise<{
+		path: string;
+		version: string;
+		kind: "file" | "directory";
+		text: string;
+		fileSha256: string | null;
+	} | null> {
+		const path = parseCloudCompanyPath(pathValue);
+		const input = closed(await this.#call("qorpera_read_company_path", { ...this.#bound(), p_path: path }, signal), [
+			"path",
+			"version",
+			"entry",
+			"manifestBytes",
+			"companyId",
+		]);
+		if (input.path !== path || input.companyId !== this.#identity.companyId)
+			throw new Error("Company File read scope changed");
+		if (input.entry === null) return null;
+		const found = entry(input.entry);
+		if (found.path !== path || input.version === null) throw new Error("Company File read target changed");
+		const current = version(input.version)!;
+		if (found.kind !== "file") return { path, version: current, kind: "directory", text: "", fileSha256: null };
+		if (found.file.bytes > MAX_WRITE_BYTES) throw new Error("Company File notebook exceeds its bound");
+		const manifestSize = integer(input.manifestBytes, 1, 8 * 1024 * 1024);
+		const { text, included } = await this.#fileText(found.file, manifestSize, 0, MAX_WRITE_BYTES, signal);
+		if (included !== found.file.bytes) throw new Error("Company File range is not UTF-8 text");
+		return { path, version: current, kind: "file", text, fileSha256: found.file.fileSha256 };
+	}
+
+	/** Trusted one-page directory listing (see readTrusted). Empty for an absent directory. */
+	async listTrusted(
+		pathValue: string,
+		signal: AbortSignal,
+	): Promise<{ path: string; version: string; kind: "file" | "directory"; bytes: number | null }[]> {
+		const path = parseCloudCompanyPath(pathValue, true);
+		const page = closed(
+			await this.#call(
+				"qorpera_list_company_paths",
+				{ ...this.#bound(), p_path: path, p_after: null, p_snapshot_id: null, p_limit: 100 },
+				signal,
+			),
+			["snapshotId", "items", "hasMore", "nextAfter"],
+		);
+		if (!Array.isArray(page.items) || page.items.length > 100) throw new Error("Invalid Company File page");
+		return page.items.map((value) => {
+			const item = closed(value, ["path", "version", "kind", "bytes"]);
+			const child = parseCloudCompanyPath(item.path);
+			if (
+				child.slice(0, Math.max(0, child.lastIndexOf("/"))) !== path ||
+				(item.kind !== "directory" && item.kind !== "file")
+			)
+				throw new Error("Company File page includes an invalid child");
+			return {
+				path: child,
+				version: version(item.version)!,
+				kind: item.kind,
+				bytes: item.kind === "file" ? integer(item.bytes, 0, 1024 ** 4) : null,
+			};
+		});
 	}
 
 	async list(

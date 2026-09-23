@@ -32,6 +32,9 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"coding_cancel_command",
 	"coding_finish",
 	"coding_ask",
+	// Agent memory (runtime Step 6, Grok Bot shape).
+	"update_memory",
+	"recall_memory",
 ] as const;
 /** Closed vocabulary; the SQL ingestion function checks the same list. */
 export const CLOUD_RUNTIME_OPERATIONS = [

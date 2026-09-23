@@ -7,9 +7,9 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260923081000_runtime_bundle_activation_v84.sql";
-const activationVersion = 84;
-const previousActivationVersion = 83;
+const activation = "supabase/migrations/20260924010000_runtime_bundle_activation_v85.sql";
+const activationVersion = 85;
+const previousActivationVersion = 84;
 const manifestPath = "deploy/first-node/native-codex/runtime-bundle-manifest.json";
 const sha = (text) => createHash("sha256").update(text).digest("hex");
 
@@ -139,7 +139,7 @@ export async function cloudRuntimeBundle(root = repository) {
 		components: {
 			kernel: component(runtime(["cloud-native-company-runtime", "cloud-native-run-tool-session"])),
 			constitution: component(runtime(["cloud-runtime-constitution"])),
-			toolCatalog: component(runtime(["cloud-company-path-gateway", "cloud-secret-tools", "cloud-native-company-runtime", "cloud-wake-bus", "cloud-routine-tools", "cloud-worker-tools", "cloud-hiring-tools", "cloud-coding-command-tools", "cloud-native-coding-runtime"])),
+			toolCatalog: component(runtime(["cloud-company-path-gateway", "cloud-secret-tools", "cloud-native-company-runtime", "cloud-wake-bus", "cloud-routine-tools", "cloud-worker-tools", "cloud-hiring-tools", "cloud-coding-command-tools", "cloud-native-coding-runtime", "cloud-memory-tools"])),
 			wakeAndSilence: component(runtime(["cloud-native-company-runtime", "cloud-agent-mouth", "cloud-wake-bus"])),
 			contextComposer: component(runtime(["cloud-native-company-context", "cloud-runtime-hire-overlays", "cloud-company-path-gateway"])),
 			providerBootstrap: component(runtime(["cloud-codex-tool-session", "cloud-native-company-context", "cloud-runtime-constitution", "cloud-runtime-hire-overlays", "cloud-native-provider-host", "lxd-runner-bootstrap-main"])),
@@ -148,7 +148,7 @@ export async function cloudRuntimeBundle(root = repository) {
 			outboundSafety: component(runtime(["cloud-native-tool-operations", "cloud-secret-tools", "cloud-company-path-gateway"])),
 			interactionSurfaces: component(runtime(["cloud-agent-mouth", "cloud-native-company-runtime"])),
 			workerLifecycle: component([...runtime(["cloud-runner-worker", "cloud-native-provider-host", "cloud-worker-tools"]), ...[...files.keys()].filter((path) => path.startsWith("packages/runtime/src/cloud-coding-") || path.startsWith("packages/runner-orchestrator/src/coding-") || path.startsWith("packages/contracts/src/cloud-coding"))]),
-			memoryAndSkills: component(runtime(["cloud-codex-tool-session", "cloud-native-company-context"])),
+			memoryAndSkills: component(runtime(["cloud-codex-tool-session", "cloud-native-company-context", "cloud-memory-tools", "cloud-company-path-gateway"])),
 		},
 		implementation: Object.fromEntries([...files].sort(([a], [b]) => a.localeCompare(b, "en"))),
 	};

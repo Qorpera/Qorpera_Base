@@ -245,8 +245,8 @@ remain explicit non-file resources. They MUST reference the Company File object
 or operation whose work they serve where one exists; they do not become a
 parallel store of company semantics.
 
-Private sends, private memories, member credentials, device approvals, and
-member-owned provider subscriptions MUST be enforced by server-side ACLs.
+Private sends, member credentials, device approvals, and member-owned
+provider subscriptions MUST be enforced by server-side ACLs.
 Prompt instructions are not access control.
 
 A member-private conversation MAY read shared company state when both its
@@ -342,11 +342,17 @@ not poll synchronized folders to observe their company.
 
 ### 5.4 Memory and transcript relationship
 
-Durable skills, project facts, agent logs, profile memories, and member-private
-memories are governed Company File objects with path ACLs. Memory services are
-retrieval indexes or working sets over those objects and the operation log,
-never a second brain. Canonical chats remain attributed collaboration and audit
-records; archiving a chat does not remove completed company state.
+Memory is the agent's own notebook, not an index of the company. An agent's
+profile, dated log, and short-lived notes are governed Company File objects
+under the agent's path, owned by the company like the rest of the agent's
+folder. Memory is company first: there is no per-member memory, and what an
+agent learns about a member is a fact in that agent's notebook. Company facts,
+project state, and decisions are ordinary Company File objects that agents
+read; they are never copied into memory. Memory services are working sets and
+retrieval over the notebook objects and the operation log, never a second
+brain. Canonical chats remain attributed collaboration and audit records;
+archiving a chat removes neither completed company state nor the notebook.
+(Amended 2026-09-22 and 2026-09-24; see 15.1.)
 
 ### 5.5 Scale
 
@@ -521,8 +527,8 @@ The composer selects and labels:
 - wake envelope and silence policy;
 - UTC time plus relevant IANA timezones;
 - relevant Company File paths and exact object versions;
-- compact, scoped retrieval indexes or working-memory summaries derived from
-  those objects;
+- the agent's composed memory block: its profile and the newest slice of its
+  own notebook (15.1);
 - a skill catalog with names and “use when” descriptions;
 - teammate, held-responsibility, project-team, and room membership;
 - relevant company goals, held responsibilities and their measures, current
@@ -1124,21 +1130,58 @@ it.
 
 ### 15.1 Memory
 
-Memory is not a parallel persistence layer. Durable agent profiles, dated
-logs, member-shared facts, member-private facts, project knowledge, and room or
-company facts are typed Company File objects under their exact path ACLs.
-Memory services provide compact working sets, indexes, and retrieval over those
-objects and the immutable operation history. Every index is attributable and
-rebuildable; it cannot overrule the object it summarizes.
+Amended 2026-09-22; company first since 2026-09-24. Memory follows the Grok
+Bot notebook layout, so a Grok Bot's memory export can be imported into a
+Qorpera company and a hired Grok Bot keeps its notebook. Memory is separate
+from the transcript and from the company's own records: it is what an agent
+has learned about how it works and whom it works with, not a second copy of
+the Company File. A fact about the company belongs in its own Company File
+object; memory never grants authority and never replaces a current source.
 
-Memory tools therefore perform governed Company File read, write, revise, and
-forget operations. Concurrent writes use the normal object-version contract.
-Forgetting creates an auditable tombstone, removes content from future
-composition and indexes, and applies the declared retention policy without
-crossing private scopes.
+Ownership is company first. An agent's notebook is
+`agents/<staffAgentId>/memory/` in the Company File: company state, owned by
+the company like the rest of the agent's folder. There is no per-member memory
+and no member shard; the Grok Bot's user scope is deliberately not adopted.
+What an agent learns about a member is a fact in its own notebook. The memory
+tools take no scope and only ever address the executing agent's own notebook.
+
+Tiers, files, and line format (a Grok Bot export drops in unchanged):
+
+| Tier | Object | What belongs | Aging |
+| --- | --- | --- | --- |
+| `profile` | `memory/profile.md` | enduring identity and preferences | always composed; kept small |
+| `log` (default) | `memory/log/YYYY-MM.md` | dated decisions and history | persists; the recent slice is composed |
+| `note` | a `[note]`-tagged log line | short-lived facts | fades from composition after seven days; not exported |
+
+One fact per line: `- (YYYY-MM-DD) <fact>`; a note is
+`- (YYYY-MM-DD) [note] <fact>`. Facts are single self-contained sentences.
+Notebook files are ordinary versioned Company File objects: every write and
+forget goes through the mutation gateway with the exact expected version
+(5.2), history stays in the revision ledger, and no separate memory store or
+ledger exists.
+
+Tools: `update_memory` with `action` `write` (`fact`, optional `tier`) or
+`forget` (`fact` = the exact recorded text), and `recall_memory` (`query`,
+optional `limit` 1–50). Writes deduplicate; a correction is forget then write.
+Recall ranks by shared distinctive words and falls back to a case-insensitive
+substring match; results carry each fact's date and tier and are untrusted
+data.
+
+Composition (9.1): every turn composes the whole profile and a bounded
+newest-first slice of the current and previous month's log with faded notes
+removed, plus a count of facts not shown. The
+block records the exact object versions it read. Composition uses the trusted
+read lane, so it runs before the first acknowledgement and spends no
+model-read budget; an unreadable notebook degrades to an unavailable block and
+never blocks the run.
+
+Export and import: a portable notebook is `profile.md` plus the `log/` files
+with `[note]` and `[episode]` lines removed. A Grok Bot import maps the bot's
+agent memory onto `agents/<staffAgentId>/memory/` unchanged; a Grok Bot export
+carries no user memory, and the import creates none.
 
 The constitution tells agents what is worth remembering and not to bloat a
-profile. Code enforces path scope, concurrency, retention, indexing,
+profile. Code enforces the own-notebook path, concurrency, retention,
 versioning, and deletion.
 
 ### 15.2 Skills
@@ -1319,7 +1362,7 @@ Company File, rather than chat or a machine disk, is what that brain operates.
 | 3 | Wake bus | One agent enters through all five wake kinds; each applies its silence rule; a routine finishes with no send; an authorized Company File event wakes once without creating a causal loop. |
 | 4 | Shared office VM | Persistent cloud workbench, live Company File mount, shell, browser with sticky granted sessions, one company machine (additional machines are later capacity work), and several agent desktops work with every member device offline; resetting the VM leaves company state intact. |
 | 5 | Workers and todos | Parent remains interruptible; blank child receives a complete dispatch; durable completion reaches the parent; todos and accepted worker outputs become Company File state and survive restart. |
-| 6 | Memory indexes | Scoped profiles, logs, and project/member objects use Company File path ACLs; retrieval indexes rebuild from them; write/forget, concurrency, and retention work without scope leakage or a second source of truth. |
+| 6 | Agent memory (amended 2026-09-22, company first 2026-09-24) | An agent's profile, monthly log, and notes are its own Company File objects in the Grok Bot layout; `update_memory` write/forget and `recall_memory` work through the versioned mutation gateway with dedupe, exact-text forget, and head-conflict retry; every turn composes the profile and the recent log slice through the trusted read lane; a worker of the same agent recalls but writes only with write access; notebooks are company-owned and there is no member memory; a Grok Bot export imports unchanged. |
 | 7 | Connectors | Install, authenticate out of band, call through scoped RPC, and apply the connector-to-browser escalation path. |
 | 8 | Scheduler and listeners | Company File intent plus one compiled trigger wakes the same agent; deterministic deduplication, timezone, expiry, quiet policy, auth suspension, and projection consistency pass. |
 | 9 | Isolated coding VMs and PRs | Worker, VM, repository, branch, follow-up identity, publication, and completion listener retain continuity. |
@@ -1964,6 +2007,15 @@ See [Runtime Step 0 organization
 implementation](deploy/first-node/RUNTIME-STEP-0-ORGANIZATION.md) for the
 exact source boundary and proof status.
 
+Runtime step 6 (amended 2026-09-22) now has an implemented agent notebook in
+the Grok Bot shape: `update_memory` and `recall_memory` over the agent's own
+profile, monthly log, and notes as versioned Company File objects, a composed
+memory block through the trusted read lane, and the observation vocabulary for
+both tools. Notebooks are company-owned Company File objects and there is no
+per-member memory (company first, 2026-09-24). Grok Bot import and an
+owner-only write rule are deferred; nothing is applied live. See
+[Runtime Step 6 memory](deploy/first-node/RUNTIME-STEP-6-MEMORY.md).
+
 Runtime step 1 now has an implemented cloud-native mouth: a run-bound MCP send
 tool, atomic canonical transcript writes, durable idempotency receipts, and
 required final delivery for conversation turns. Provider assistant text,
@@ -2137,9 +2189,9 @@ while Azure backup/overflow remains disabled.
     for company state.
 14. A parent remains responsive while an in-house worker runs, and a coding
     follow-up returns to the same worker, VM, repository, and branch.
-15. Memory composition respects company, member-private, room, agent, and
-    project path scopes; its indexes rebuild from Company File objects after
-    concurrent use and forgetting.
+15. Memory composition reads only the executing agent's own notebook; write,
+    forget, and concurrent use keep exact object versions, and a forgotten
+    fact leaves future composition.
 16. Connector auth, office sign-in handoff, approvals, widgets, and explicit
     upload or download use their correct typed interaction surfaces; dismissal
     never grants consent, and no agent receives a member-machine capability.

@@ -50,6 +50,8 @@ describe("Company File bounded control transport", () => {
 		"qorpera_read_company_run_context",
 		"qorpera_read_company_path_v2",
 		"qorpera_list_company_paths_v2",
+		"qorpera_read_company_path",
+		"qorpera_list_company_paths",
 		"qorpera_confirm_company_path_read",
 		"qorpera_record_native_context_view",
 		"qorpera_check_company_path_mutation",
