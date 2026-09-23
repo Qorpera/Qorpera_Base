@@ -157,6 +157,9 @@ export class PairTranscriptView {
 			} else if (item.kind === "agent") {
 				const speaker = this.#agent(item.staffSpeaker?.staffAgentId ?? "");
 				const name = item.staffSpeaker?.displayName ?? speaker.name;
+				const other = this.#agent(
+					item.staffSpeaker?.staffAgentId === this.#agentIds[0] ? this.#agentIds[1] : this.#agentIds[0],
+				);
 				nodes.push(
 					h(
 						"div",
@@ -172,6 +175,13 @@ export class PairTranscriptView {
 							},
 							h("div", { class: "message-author" }, name),
 							...markdownBubbles(item.text).map((body) => h("div", { class: "bubble" }, body)),
+							item.held
+								? h(
+										"div",
+										{ class: "message-caption", title: "Sent without waking the coworker" },
+										`Left for ${other.name}'s next turn`,
+									)
+								: null,
 						),
 					),
 				);

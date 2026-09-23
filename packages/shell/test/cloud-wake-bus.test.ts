@@ -833,3 +833,111 @@ describe("coworker message in the agent's own thread (contract 14.6, 2026-09-22)
 		expect(() => parseCloudWakeEnvelope(JSON.parse(JSON.stringify(mutated)), who)).toThrow();
 	});
 });
+
+describe("held coworker messages (contract 14.6, second cut)", () => {
+	function heldLine(staffAgentId = randomUUID()) {
+		return {
+			eventId: randomUUID(),
+			staffAgentId,
+			text: "FYI: the note is updated.",
+			at: "2026-09-22T22:30:00.000000Z",
+			pairSessionId: randomUUID(),
+		};
+	}
+	it("carries messages left for the agent on a human wake and on a coworker wake", () => {
+		const human = fixture();
+		const parsed = parseCloudWakeEnvelope(
+			{ ...human.envelope, payload: { ...human.envelope.payload, heldMessages: [heldLine()] } },
+			human.authority.identity,
+		);
+		expect(parsed.payload.heldMessages).toHaveLength(1);
+		expect(Object.isFrozen(parsed.payload.heldMessages)).toBe(true);
+		const { identity, wake } = pairWakeFixture();
+		const withHeld = { ...wake, payload: { ...wake.payload, heldMessages: [heldLine(), heldLine()] } };
+		expect(parseCloudWakeEnvelope(withHeld, identity).payload.heldMessages).toHaveLength(2);
+	});
+	it.each([
+		["an empty list", () => []],
+		["more than twelve", () => Array.from({ length: 13 }, () => heldLine())],
+		["a line with an extra key", () => [{ ...heldLine(), priority: false }]],
+		["a line without its transcript", () => [{ ...heldLine(), pairSessionId: undefined }]],
+		["a blank text", () => [{ ...heldLine(), text: " " }]],
+	])("rejects %s", (_name, make) => {
+		const human = fixture();
+		expect(() =>
+			parseCloudWakeEnvelope(
+				JSON.parse(
+					JSON.stringify({ ...human.envelope, payload: { ...human.envelope.payload, heldMessages: make() } }),
+				),
+				human.authority.identity,
+			),
+		).toThrow();
+	});
+	it("reads twelve held lines and a full transcript in one payload", () => {
+		const { identity, wake } = pairWakeFixture();
+		const line = { ...heldLine(), text: "ø".repeat(400) };
+		const transcript = Array.from({ length: 12 }, () => ({
+			eventId: randomUUID(),
+			staffAgentId: wake.actorStaffId as string,
+			text: "ø".repeat(400),
+			at: "2026-09-22T22:30:00.000000Z",
+		}));
+		const heavy = {
+			...wake,
+			payload: { ...wake.payload, transcript, heldMessages: Array.from({ length: 12 }, () => line) },
+		};
+		expect(Buffer.byteLength(JSON.stringify(heavy.payload))).toBeGreaterThan(16384);
+		expect(parseCloudWakeEnvelope(heavy, identity).payload.heldMessages).toHaveLength(12);
+	});
+	it("rejects a held message the agent supposedly left for itself", () => {
+		const human = fixture();
+		expect(() =>
+			parseCloudWakeEnvelope(
+				{
+					...human.envelope,
+					payload: { ...human.envelope.payload, heldMessages: [heldLine(human.authority.identity.staffAgentId)] },
+				},
+				human.authority.identity,
+			),
+		).toThrow();
+	});
+	it("sends priority false to the kernel and accepts a held receipt", async () => {
+		const { binding, run, message, call, createBoundary } = await coworkerFixture();
+		const held = {
+			schema: "qorpera.coworker-send/v1",
+			runId: binding.runId,
+			receiptId: randomUUID(),
+			occurrenceId: null,
+			recipientStaffId: message.recipientStaffId,
+			status: "held",
+		} as const;
+		call.mockResolvedValueOnce(held);
+		const boundary = createBoundary();
+		try {
+			const response = await boundary.invoke("held_1", "qorpera", "send_coworker_message", {
+				...message,
+				priority: false,
+			});
+			expect(response.success).toBe(true);
+			const result = JSON.parse(response.contentItems[0].text) as CloudToolResult;
+			expect(JSON.parse(result.content.text)).toEqual(held);
+			expect(call).toHaveBeenLastCalledWith(
+				"qorpera_send_coworker_message",
+				expect.objectContaining({ p_priority: false, p_text: message.text }),
+				expect.anything(),
+			);
+			// A priority message sends no flag at all, so a kernel before this cut still understands it.
+			const queued = await boundary.invoke("queued_1", "qorpera", "send_coworker_message", message);
+			expect(queued.success).toBe(true);
+			expect(call.mock.lastCall?.[1]).not.toHaveProperty("p_priority");
+			const wrong = await boundary.invoke("wrong_1", "qorpera", "send_coworker_message", {
+				...message,
+				priority: "later",
+			});
+			expect(wrong.success).toBe(false);
+		} finally {
+			boundary.close();
+			run.close();
+		}
+	});
+});
