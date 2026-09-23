@@ -8,11 +8,13 @@ import {
 	decodeBase64Url,
 	decodeUtf8,
 	encodeBase64Url,
+	fitItems,
 	htmlToText,
 	jsonArray,
 	jsonInteger,
 	jsonRecord,
 	jsonString,
+	jsonTextBytes,
 	parseJsonResponse,
 	providerRefusal,
 } from "./cloud-connector-http.ts";
@@ -35,6 +37,14 @@ export interface GoogleOAuthClient {
 const BODY_CHARS = 4000;
 const THREAD_MESSAGE_CHARS = 1200;
 const THREAD_BUDGET_CHARS = 5000;
+// Byte budgets keep every result under the broker's 32 KiB limit whatever the
+// text is made of (multi-byte characters, JSON escapes); see
+// CONNECTOR_RESULT_MAX_BYTES.
+const BODY_BYTES = 16 * 1024;
+const THREAD_MESSAGE_BYTES = 5 * 1024;
+const THREAD_BUDGET_BYTES = 18 * 1024;
+const LIST_BYTES = 24 * 1024;
+const FILE_CONTENT_BYTES = 24 * 1024;
 const MAX_MEDIA_BYTES = 1024 * 1024;
 const EMAIL = /^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/;
 const GOOGLE_ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -212,7 +222,7 @@ export function createGmailConnectorAdapters(options: {
 						})
 					).json,
 				);
-				const results: JsonValue[] = [];
+				let results: JsonValue[] = [];
 				for (const item of jsonArray(listing.messages).slice(0, limit)) {
 					const id = jsonString(jsonRecord(item).id, 64);
 					if (!id || !GOOGLE_ID.test(id)) continue;
@@ -225,10 +235,13 @@ export function createGmailConnectorAdapters(options: {
 					);
 					results.push(messageSummary(message));
 				}
+				const fitted = fitItems(results, LIST_BYTES);
+				results = fitted.items;
 				return {
 					messages: results,
 					estimated_total: jsonInteger(listing.resultSizeEstimate),
-					more: typeof listing.nextPageToken === "string",
+					more: typeof listing.nextPageToken === "string" || fitted.omitted > 0,
+					...(fitted.omitted > 0 ? { messages_omitted: fitted.omitted } : {}),
 				};
 			},
 			async read_message(args, context) {
@@ -237,7 +250,7 @@ export function createGmailConnectorAdapters(options: {
 					(await google(context, `${messages}/${id}`, { query: { format: "full" } })).json,
 				);
 				const body = mailBody(jsonRecord(message.payload));
-				const text = clipText(body.text, BODY_CHARS);
+				const text = clipText(body.text, BODY_CHARS, BODY_BYTES);
 				return {
 					...messageSummary(message),
 					body: text.text,
@@ -255,15 +268,18 @@ export function createGmailConnectorAdapters(options: {
 				// Newest messages first within one shared text budget; older ones are
 				// counted but omitted so the result stays within the tool-result size.
 				let budget = THREAD_BUDGET_CHARS;
+				let byteBudget = THREAD_BUDGET_BYTES;
 				const included: JsonValue[] = [];
 				for (const item of all.slice(-limit).reverse()) {
-					if (budget <= 0) break;
+					if (budget <= 0 || byteBudget <= 0) break;
 					const message = jsonRecord(item);
 					const text = clipText(
 						mailBody(jsonRecord(message.payload)).text,
 						Math.min(THREAD_MESSAGE_CHARS, budget),
+						Math.min(THREAD_MESSAGE_BYTES, byteBudget),
 					);
 					budget -= [...text.text].length;
+					byteBudget -= jsonTextBytes(text.text);
 					const summary = messageSummary(message);
 					included.push({
 						message_id: summary.message_id,
@@ -400,9 +416,14 @@ export function createGoogleDriveConnectorAdapters(options: {
 						})
 					).json,
 				);
+				const fitted = fitItems(
+					jsonArray(listing.files).map((item) => fileSummary(jsonRecord(item))),
+					LIST_BYTES,
+				);
 				return {
-					files: jsonArray(listing.files).map((item) => fileSummary(jsonRecord(item))),
-					more: typeof listing.nextPageToken === "string",
+					files: fitted.items,
+					more: typeof listing.nextPageToken === "string" || fitted.omitted > 0,
+					...(fitted.omitted > 0 ? { files_omitted: fitted.omitted } : {}),
 				};
 			},
 			async read_file(args, context) {
@@ -442,7 +463,7 @@ export function createGoogleDriveConnectorAdapters(options: {
 				} catch {
 					return { ...summary, content: null, content_omitted: "binary" };
 				}
-				const clipped = clipText(text, maxChars);
+				const clipped = clipText(text, maxChars, FILE_CONTENT_BYTES);
 				return {
 					...summary,
 					content: clipped.text,

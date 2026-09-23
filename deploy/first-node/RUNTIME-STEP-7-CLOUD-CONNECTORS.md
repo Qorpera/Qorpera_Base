@@ -36,8 +36,11 @@ operation declares its tool name, description, closed input schema (the exact
 shape `parseCloudConnectorInputSchema` accepts at run time; property names are
 snake_case because the runtime's identifier rule forbids capitals), read/write
 effect and a request recipe. The adapter hash the catalog pins is the SHA-256
-of that whole promise, so a changed request, schema or destination is a
-changed adapter.
+of that declaration (destination, credential placement, input schema, recipe
+text), so a changed declared request, schema or destination is a changed
+adapter. It does not hash the handler code: a handler that drifts from its
+recipe text keeps the same adapter hash, and the compiled handlers are pinned
+only by the broker artifact's SHA-256 (built from reviewed source on node 2).
 
 | Connector | Credential field | Operations (tool names) |
 | --- | --- | --- |
@@ -57,8 +60,11 @@ Compiled into the broker process through `defineConnectorAdapters`
 and the closed schema before a recipe runs. Every request is pinned to the
 connector's origin, refuses redirects, is bounded in time and bytes
 (`cloud-connector-http.ts`), and is reduced to a small result: bodies are
-clipped and comment/thread text shares a budget so a result stays readable
-inside the 8 KiB the model receives. Expected provider refusals (404, 403,
+clipped by characters and by JSON bytes (multi-byte characters and escapes
+counted), lists keep only the items that fit and say how many were left out,
+and comment/thread text shares a budget, so every result stays under the
+broker's 32 KiB result limit; anything still larger becomes a closed
+`result_too_large` failure instead of an opaque error. Expected provider refusals (404, 403,
 429, 401, 400/422) become a closed failure result
 (`qorpera.connector-result/v1`, `status: "failed"`, `reason`, short
 `detail`); transport faults stay generic. Google adapters exchange the sealed
@@ -72,20 +78,41 @@ reflected-secret fence still runs on every result.
 Contract §11.5: OAuth completion goes from a typed member interaction
 straight to the broker. The web app asks the cloud for a capture ticket
 (`qorpera_begin_cloud_secret_capture`, unchanged), then posts the ticket to
-`POST <broker>/v1/oauth/<ticketId>/start` with the capability and the page to
-return to. The broker confirms the ticket (`CloudSecretBroker.describeCapture`,
-nothing committed), remembers a single-use state for ten minutes and answers
-with the provider consent URL (Google: offline access, forced consent, PKCE;
-GitHub: `repo read:user user:email`). The provider redirects the browser to
-`GET <broker>/v1/oauth/callback`; the broker exchanges the code, reads the
-account identity (mailbox address or GitHub login) as a non-secret label,
-seals the refresh or access token into the ticket, and sends the browser back
-to the return page with the outcome in the hash fragment
-(`#/c/<id>?connector=gmail&connection=connected|failed&reason=…`). Codes and
-tokens never reach the web app, Supabase, logs or the model. A replayed
-callback finds no state. A GitHub fine-grained token can still be typed and
-captured through the existing `POST /v1/captures/<ticketId>` route. Both
-member routes (capture and sign-in start) answer CORS only for the broker's
+`POST <broker>/v1/oauth/<ticketId>/start` with the capability, the page to
+return to and the SHA-256 of a random browser proof. The broker confirms the
+ticket (`CloudSecretBroker.describeCapture`, nothing committed; a ticket that
+is not company-owned is refused), remembers a single-use state for ten
+minutes and answers with the provider consent URL (Google: offline access,
+forced consent, PKCE; GitHub: `repo read:user user:email`).
+
+**The sign-in is bound to the browser that started it.** The proof stays in
+that tab's session storage. The provider redirects the browser to
+`GET <broker>/v1/oauth/callback`; the broker exchanges nothing there: it
+consumes the state, parks the code for five minutes under a fresh one-time
+confirmation id and sends the browser back to the return page
+(`#/c/<id>?connector=gmail&connection=confirm&confirmation=…`, or
+`connection=failed&reason=…`). The app then posts
+`POST <broker>/v1/oauth/<ticketId>/confirm` with the confirmation id and the
+proof. Only a matching proof lets the broker exchange the code, read the
+account identity (mailbox address or GitHub login) as a non-secret label and
+seal the token into the ticket; a missing or different proof is refused
+(`browser_mismatch`) and the parked code is dropped (one attempt per
+confirmation id). So a consent link an admin of one company sends to someone
+else ends in a browser without the proof: nothing of theirs is sealed into
+that company, and the starter never sees the confirmation id. The app acts
+on a returned fragment only when its own tab started that sign-in, so a
+crafted `#…connection=…` link does nothing, and it shares the connection with
+all agents only after its own confirmation succeeded.
+
+Why a proof in the app and not a broker cookie: the web app's CSP allows no
+cross-origin form (`form-action 'self'`, which Chrome also applies to the
+form's redirect to the provider), and a cookie the broker set on the app's
+cross-site fetch would be a third-party cookie that Safari drops. The proof
+gives the same binding with the app's own storage. Codes and tokens never
+reach the web app, Supabase, logs or the model. A replayed callback finds no
+state; a replayed confirmation finds nothing parked. A GitHub fine-grained token can still be typed and
+captured through the existing `POST /v1/captures/<ticketId>` route. The
+member routes (capture, sign-in start and confirm) answer CORS only for the broker's
 `memberOrigins` (config v2, the list the capture route already used); the
 runtime operation route never does.
 
@@ -108,9 +135,10 @@ request; the authority's `service_origin` stays that bare origin.
 
 - **Member routes carry the company in the query.** The web app posts
   `/v1/captures/<ticket>?company=<profileId>` (secret cards, web #236) and, for
-  connectors, `/v1/oauth/<ticket>/start?company=<profileId>` and
+  connectors, `/v1/oauth/<ticket>/start?company=<profileId>`,
+  `/v1/oauth/<ticket>/confirm?company=<profileId>` and
   `/v1/captures/<ticket>?company=<profileId>` (typed GitHub token). The
-  existing `$qorpera_capture_broker` map on `company=` routes all three.
+  existing `$qorpera_capture_broker` map on `company=` routes all of them.
 - **The provider callback carries the company in the state.** Google and
   GitHub return only `code` and `state` to
   `GET /v1/oauth/callback?code=…&state=…`, so the broker issues
@@ -171,14 +199,16 @@ map $args $qorpera_operations_broker {
 
 ```nginx
 # Inside the :10000 server block, beside the /v1/captures/ location.
+# The callback's query carries the provider's code and the state: never log it.
 location = /v1/oauth/callback {
+    access_log off;
     limit_except GET { deny all; }
     if ($qorpera_oauth_broker = "") { return 404; }
     proxy_pass http://$qorpera_oauth_broker;
 }
-# The sign-in start is a member route like a capture: POST and the CORS
-# preflight (OPTIONS), routed by the same ?company= map.
-location ~ "^/v1/oauth/[0-9a-fA-F-]{36}/start$" {
+# The sign-in start and confirm are member routes like a capture: POST and
+# the CORS preflight (OPTIONS), routed by the same ?company= map.
+location ~ "^/v1/oauth/[0-9a-fA-F-]{36}/(start|confirm)$" {
     limit_except POST OPTIONS { deny all; }
     if ($qorpera_capture_broker = "") { return 404; }
     proxy_pass http://$qorpera_capture_broker;
@@ -239,9 +269,19 @@ connection belongs to the company:
   grant. Founder decision
   2026-09-19/20: the gate is authority, never the client, so a connected
   account is available to the company's agents without a per-agent ceremony.
+  A company grant holds only while its issuer is an owner or admin (the
+  kernel rechecks at every call), so a share re-issues, under the caller,
+  every grant of the connection whose issuer left or was demoted; live grants
+  are left alone.
+- `qorpera_unshare_cloud_connector(profile, environment, secret)` for owners
+  and admins ("Stop sharing with agents"): clears the all-agents mark and
+  revokes every active grant of the connection, audited per grant; the
+  connection stays connected.
 - Trigger `qorpera_cloud_connector_staff_grants`: a new active hire receives
-  the grants of every shared company connection; the existing archive
-  trigger revokes them.
+  the grants of every shared company connection, issued by the hire's author
+  if an owner or admin, else by the member who connected the account if still
+  one, else by a current owner (or admin); the existing archive trigger
+  revokes them.
 - `qorpera_list_cloud_secret_connections` also returns `accountLabel`,
   `connectedByUserId`, `availableToAllAgents`, `activeGrantCount`,
   `createdAt`, `updatedAt`.
@@ -255,20 +295,26 @@ body plus the new keys. No later migration on master touches either.
 
 Tests: `supabase/tests/397_cloud_connector_catalog.test.sql` (company-owned
 connect, contributor refused, member-owned secret not shareable, hire issued
-by an owner, revoke fences); 306 now compares distinct broker function names
-(two signatures of one custody call).
+by an owner, revoke fences) and `398_cloud_secret_broker_company_routing`
+(on a real admitted run: another company's broker refused; a demoted
+issuer's tools disappear and a re-share by another admin restores them; a
+later hire's grants come from a current owner; Stop sharing removes the tools
+and keeps new hires out); 306 compares the broker's exact function
+signatures (`oid::regprocedure`), which now include the two signatures of the
+capture completion.
 
 ### Web (`packages/web`)
 
 Settings → Connections gains a Services section (`settings-services.ts`,
 `cloud/connectors.ts`) under the model accounts: a card per connector with
 Connect, Reconnect (rotates the same connection), Disconnect, Share with all
-agents (when a connection is not shared yet), the account label and who
-connected it, and for GitHub a token alternative. Owners and admins get the
-actions; other members see the cards read-only. After the provider redirect
-the app reads the outcome from the hash, reopens Settings on Connections, and
-shares a freshly connected account with all agents. Broker requests carry
-`?company=<profileId>`.
+agents (when a connection is not shared yet), Stop sharing with agents (when
+it is), the account label and who connected it, and for GitHub a token
+alternative. Owners and admins get the actions; other members see the cards
+read-only. After the provider redirect the app reads the outcome from the
+hash, reopens Settings on Connections, confirms the sign-in with this tab's
+proof, and only then shares the fresh connection with all agents. Broker
+requests carry `?company=<profileId>`.
 
 ### Runtime
 

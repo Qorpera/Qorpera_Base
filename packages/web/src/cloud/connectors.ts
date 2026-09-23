@@ -79,10 +79,72 @@ export interface HostedConnectorCaptureTicket {
 	expiresAt: string;
 }
 
+/** A sign-in this browser tab started, kept in session storage until the
+ * provider sends the member back. The proof never leaves this tab except to
+ * the company's broker in the confirm request. */
+export interface HostedConnectorSignIn {
+	ticketId: string;
+	connectorId: HostedConnectorId;
+	companyId: string;
+	serviceOrigin: string;
+	browserProof: string;
+	startedAt: number;
+}
+
 export interface HostedConnectorReturn {
 	connector: HostedConnectorId;
-	connection: "connected" | "failed";
+	connection: "confirm" | "failed";
+	confirmation?: string;
 	reason?: string;
+	signIn: HostedConnectorSignIn;
+}
+
+const SIGN_IN_KEY = "qorpera.connector-sign-in.v1";
+const SIGN_IN_TTL_MS = 15 * 60_000;
+
+function readSignIn(): HostedConnectorSignIn | undefined {
+	try {
+		const text = sessionStorage.getItem(SIGN_IN_KEY);
+		if (!text) return undefined;
+		const value = JSON.parse(text) as Record<string, unknown>;
+		if (
+			typeof value.ticketId !== "string" ||
+			!UUID_PATTERN.test(value.ticketId) ||
+			typeof value.connectorId !== "string" ||
+			!CONNECTOR_IDS.has(value.connectorId) ||
+			typeof value.companyId !== "string" ||
+			!UUID_PATTERN.test(value.companyId) ||
+			typeof value.serviceOrigin !== "string" ||
+			typeof value.browserProof !== "string" ||
+			!/^[A-Za-z0-9_-]{43}$/.test(value.browserProof) ||
+			typeof value.startedAt !== "number"
+		)
+			return undefined;
+		const origin = new URL(value.serviceOrigin);
+		if (origin.protocol !== "https:" || origin.origin !== value.serviceOrigin) return undefined;
+		return value as unknown as HostedConnectorSignIn;
+	} catch {
+		return undefined;
+	}
+}
+
+function forgetSignIn(): void {
+	try {
+		sessionStorage.removeItem(SIGN_IN_KEY);
+	} catch {
+		// Storage unavailable: nothing was kept.
+	}
+}
+
+function base64Url(bytes: Uint8Array): string {
+	let text = "";
+	for (const byte of bytes) text += String.fromCharCode(byte);
+	return btoa(text).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+async function sha256Hex(text: string): Promise<string> {
+	const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
+	return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 const CONNECTOR_IDS = new Set<string>(HOSTED_CONNECTORS.map((connector) => connector.id));
@@ -142,7 +204,9 @@ function parseTicket(value: unknown): HostedConnectorCaptureTicket {
 }
 
 /** Reads and strips a connector outcome the broker appended to the page hash
- * after a provider sign-in (`#/c/<id>?connector=gmail&connection=connected`). */
+ * after a provider sign-in (`#/c/<id>?connector=gmail&connection=confirm&confirmation=…`).
+ * It counts only for a sign-in this tab started: a crafted link with no
+ * matching sign-in in session storage is stripped and does nothing. */
 export function takeConnectorReturn(): HostedConnectorReturn | undefined {
 	const hash = location.hash;
 	const at = hash.indexOf("?");
@@ -150,22 +214,43 @@ export function takeConnectorReturn(): HostedConnectorReturn | undefined {
 	const params = new URLSearchParams(hash.slice(at + 1));
 	const connector = params.get("connector");
 	const connection = params.get("connection");
-	if (!connector || !CONNECTOR_IDS.has(connector) || (connection !== "connected" && connection !== "failed"))
+	if (!connector || !CONNECTOR_IDS.has(connector) || (connection !== "confirm" && connection !== "failed"))
 		return undefined;
 	history.replaceState(null, "", hash.slice(0, at) || "#/");
+	const signIn = readSignIn();
+	if (!signIn || signIn.connectorId !== connector || Date.now() - signIn.startedAt > SIGN_IN_TTL_MS) {
+		forgetSignIn();
+		return undefined;
+	}
+	const confirmation = params.get("confirmation") ?? "";
+	if (connection === "confirm" && !/^[A-Za-z0-9_-]{43}$/.test(confirmation)) {
+		forgetSignIn();
+		return undefined;
+	}
+	if (connection === "failed") forgetSignIn();
 	const reason = params.get("reason") ?? undefined;
-	return { connector: connector as HostedConnectorId, connection, ...(reason ? { reason } : {}) };
+	return {
+		connector: connector as HostedConnectorId,
+		connection,
+		...(connection === "confirm" ? { confirmation } : {}),
+		...(reason ? { reason } : {}),
+		signIn,
+	};
 }
 
 export interface WebConnectors {
 	list(signal?: AbortSignal): Promise<HostedConnectorConnection[]>;
 	/** Starts a provider sign-in for a company connection; resolves to the
-	 * consent URL the browser must visit. */
+	 * consent URL the browser must visit. The tab keeps a proof that only it
+	 * can present when the member comes back. */
 	beginSignIn(
 		connectorId: HostedConnectorId,
 		existingSecretId: string | undefined,
 		signal?: AbortSignal,
 	): Promise<string>;
+	/** Finishes a sign-in this tab started: the broker seals the account only
+	 * for the browser that holds the proof. Resolves to the account label. */
+	finishSignIn(outcome: HostedConnectorReturn, signal?: AbortSignal): Promise<string | null>;
 	/** Captures a typed token for a company connection directly at the broker;
 	 * the token never reaches Supabase. */
 	captureToken(
@@ -176,6 +261,8 @@ export interface WebConnectors {
 	): Promise<void>;
 	/** Grants every operation of the connection to all active agents, including future hires. */
 	grantAllAgents(secretId: string, signal?: AbortSignal): Promise<void>;
+	/** Stops sharing: revokes every agent grant of the connection and new hires no longer get it. */
+	stopSharing(secretId: string, signal?: AbortSignal): Promise<void>;
 	disconnect(secretId: string, signal?: AbortSignal): Promise<void>;
 }
 
@@ -204,7 +291,11 @@ export function createWebConnectors(
 			}),
 		);
 	}
-	async function brokerPost(url: string, body: unknown, signal: AbortSignal | undefined): Promise<unknown> {
+	async function brokerCall(
+		url: string,
+		body: unknown,
+		signal: AbortSignal | undefined,
+	): Promise<{ status: number; value: unknown }> {
 		return withCloudDeadline(
 			async (deadline) => {
 				const response = await fetchImplementation(url, {
@@ -217,12 +308,22 @@ export function createWebConnectors(
 					credentials: "omit",
 				});
 				const bytes = await readBoundedCloudResponse(response, 64 * 1024, deadline);
-				if (response.status !== 200) throw new Error("The connection could not be started. Try again.");
-				return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+				let value: unknown = null;
+				try {
+					value = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+				} catch {
+					value = null;
+				}
+				return { status: response.status, value };
 			},
-			15_000,
+			30_000,
 			signal,
 		);
+	}
+	async function brokerPost(url: string, body: unknown, signal: AbortSignal | undefined): Promise<unknown> {
+		const answer = await brokerCall(url, body, signal);
+		if (answer.status !== 200) throw new Error("The connection could not be started. Try again.");
+		return answer.value;
 	}
 	return {
 		async list(signal) {
@@ -236,13 +337,17 @@ export function createWebConnectors(
 		},
 		async beginSignIn(connectorId, existingSecretId, signal) {
 			const issued = await ticket(connectorId, existingSecretId);
+			// This tab's proof: only its hash goes to the broker now; the proof
+			// itself only with the confirmation after the provider sends us back.
+			const browserProof = base64Url(crypto.getRandomValues(new Uint8Array(32)));
 			const started = record(
 				await brokerPost(
 					`${issued.serviceOrigin}/v1/oauth/${issued.ticketId}/start?company=${company}`,
 					{
-						schema: "qorpera.cloud-connector-oauth-start/v1",
+						schema: "qorpera.cloud-connector-oauth-start/v2",
 						captureCapability: issued.captureCapability,
 						returnTo: location.href,
+						browserProofSha256: await sha256Hex(browserProof),
 					},
 					signal,
 				),
@@ -250,7 +355,43 @@ export function createWebConnectors(
 			);
 			const url = new URL(text(started.authorizationUrl, "sign-in URL"));
 			if (url.protocol !== "https:") throw new Error("Invalid sign-in URL.");
+			const signIn: HostedConnectorSignIn = {
+				ticketId: issued.ticketId,
+				connectorId,
+				companyId: company,
+				serviceOrigin: issued.serviceOrigin,
+				browserProof,
+				startedAt: Date.now(),
+			};
+			try {
+				sessionStorage.setItem(SIGN_IN_KEY, JSON.stringify(signIn));
+			} catch {
+				throw new Error("This browser does not allow the sign-in to be finished here.");
+			}
 			return url.href;
+		},
+		async finishSignIn(outcome, signal) {
+			const signIn = outcome.signIn;
+			// One attempt: the proof is dropped whatever the broker answers.
+			forgetSignIn();
+			if (outcome.connection !== "confirm" || !outcome.confirmation || signIn.companyId !== company)
+				throw new Error("This sign-in cannot be finished here.");
+			const answer = await brokerCall(
+				`${signIn.serviceOrigin}/v1/oauth/${signIn.ticketId}/confirm?company=${company}`,
+				{
+					schema: "qorpera.cloud-connector-oauth-confirm/v1",
+					confirmation: outcome.confirmation,
+					browserProof: signIn.browserProof,
+				},
+				signal,
+			);
+			const value =
+				answer.value && typeof answer.value === "object" ? (answer.value as Record<string, unknown>) : {};
+			if (answer.status !== 200 || value.schema !== "qorpera.cloud-connector-oauth-confirmed/v1") {
+				const reason = typeof value.reason === "string" ? value.reason : "provider_error";
+				throw Object.assign(new Error("The sign-in could not be finished."), { reason });
+			}
+			return typeof value.accountLabel === "string" ? value.accountLabel : null;
 		},
 		async captureToken(connectorId, token, existingSecretId, signal) {
 			const trimmed = token.trim();
@@ -276,6 +417,14 @@ export function createWebConnectors(
 				p_environment_id: profile.environmentId,
 				p_secret_id: secretId,
 				p_staff_agent_ids: null,
+			});
+		},
+		async stopSharing(secretId, signal) {
+			signal?.throwIfAborted();
+			await cloud.rpc("qorpera_unshare_cloud_connector", {
+				p_profile_id: profile.profileId,
+				p_environment_id: profile.environmentId,
+				p_secret_id: secretId,
 			});
 		},
 		async disconnect(secretId, signal) {

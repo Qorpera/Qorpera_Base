@@ -19,7 +19,8 @@ export type ConnectorFailureReason =
 	| "rate_limited"
 	| "invalid_request"
 	| "provider_error"
-	| "unsupported_content";
+	| "unsupported_content"
+	| "result_too_large";
 
 /* Type aliases, not interfaces: only aliases satisfy JsonValue's index signature. */
 export type ConnectorFailure = {
@@ -56,10 +57,60 @@ export class ConnectorRequestError extends Error {
 	}
 }
 
-export function clipText(value: string, maximumCharacters: number): { text: string; truncated: boolean } {
-	const characters = [...value];
-	if (characters.length <= maximumCharacters) return { text: value, truncated: false };
-	return { text: `${characters.slice(0, maximumCharacters).join("")}…`, truncated: true };
+/** The broker refuses a connector result whose JSON exceeds 32 KiB
+ * (`cloudToolJsonText(result, 32 * 1024)`). Adapters budget their text in
+ * bytes under this bound, and the adapter layer turns anything still larger
+ * into a closed `result_too_large` failure instead of an opaque error. */
+export const CONNECTOR_RESULT_MAX_BYTES = 30 * 1024;
+
+/** UTF-8 bytes a string occupies inside a JSON document, quotes excluded. */
+export function jsonTextBytes(value: string): number {
+	return Buffer.byteLength(JSON.stringify(value)) - 2;
+}
+
+/** UTF-8 bytes of a whole JSON value as the broker serializes it. */
+export function jsonValueBytes(value: JsonValue): number {
+	return Buffer.byteLength(JSON.stringify(value));
+}
+
+/** Clips at a code point boundary to at most `maximumCharacters` characters
+ * and, when given, at most `maximumBytes` JSON bytes (escapes and multi-byte
+ * characters counted), ellipsis included. */
+export function clipText(
+	value: string,
+	maximumCharacters: number,
+	maximumBytes = Number.POSITIVE_INFINITY,
+): { text: string; truncated: boolean } {
+	const fitsCharacters = value.length <= maximumCharacters || [...value].length <= maximumCharacters;
+	if (fitsCharacters && jsonTextBytes(value) <= maximumBytes) return { text: value, truncated: false };
+	const ellipsis = "…";
+	const budget = maximumBytes - jsonTextBytes(ellipsis);
+	let bytes = 0;
+	let characters = 0;
+	let end = 0;
+	for (const character of value) {
+		if (characters >= maximumCharacters) break;
+		const size = jsonTextBytes(character);
+		if (bytes + size > budget) break;
+		bytes += size;
+		characters += 1;
+		end += character.length;
+	}
+	return { text: `${value.slice(0, end)}${ellipsis}`, truncated: true };
+}
+
+/** Keeps the leading items whose JSON fits in `maximumBytes`; the caller
+ * reports how many were left out. */
+export function fitItems(items: readonly JsonValue[], maximumBytes: number): { items: JsonValue[]; omitted: number } {
+	const kept: JsonValue[] = [];
+	let bytes = 2;
+	for (const item of items) {
+		const size = jsonValueBytes(item) + (kept.length > 0 ? 1 : 0);
+		if (bytes + size > maximumBytes) break;
+		bytes += size;
+		kept.push(item);
+	}
+	return { items: kept, omitted: items.length - kept.length };
 }
 
 export interface ConnectorResponse {
@@ -187,7 +238,13 @@ export function providerRefusal(response: ConnectorResponse, service: string): C
  * else stays an error for the broker's generic failure path. */
 export async function connectorOutcome(run: () => Promise<JsonValue>): Promise<JsonValue> {
 	try {
-		return connectorSuccess(await run());
+		const outcome = connectorSuccess(await run());
+		if (jsonValueBytes(outcome) > CONNECTOR_RESULT_MAX_BYTES)
+			return connectorFailure(
+				"result_too_large",
+				"The result is too large to return. Ask for fewer items or a smaller part.",
+			);
+		return outcome;
 	} catch (error) {
 		if (error instanceof ConnectorRequestError) return connectorFailure(error.reason, error.message);
 		throw error;

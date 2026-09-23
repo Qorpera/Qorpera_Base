@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
 	CLOUD_CONNECTOR_OAUTH_STATE,
 	CloudConnectorOAuthError,
@@ -30,18 +30,37 @@ function flows(fetchImplementation: typeof fetch = vi.fn<typeof fetch>(), now = 
 	});
 }
 
+const proofHash = (proof: string) => createHash("sha256").update(proof).digest("hex");
+
 function begin(oauth: CloudConnectorOAuthFlows, connectorId = "gmail", company = companyId) {
 	const ticketId = randomUUID();
 	const captureCapability = randomBytes(32).toString("base64url");
+	// The starting browser keeps the proof; the broker only ever sees its hash
+	// until the confirm step.
+	const browserProof = randomBytes(32).toString("base64url");
 	const started = oauth.begin({
 		ticketId,
 		captureCapability,
 		companyId: company,
 		connectorId,
 		returnTo: "https://app.qorpera.test/#/c/x",
+		browserProofSha256: proofHash(browserProof),
 	});
 	const url = new URL(started.authorizationUrl);
-	return { ticketId, captureCapability, started, url, state: url.searchParams.get("state") ?? "" };
+	return { ticketId, captureCapability, browserProof, started, url, state: url.searchParams.get("state") ?? "" };
+}
+
+/** The provider's callback, then the starting browser's confirmation. */
+async function complete(
+	oauth: CloudConnectorOAuthFlows,
+	flow: { ticketId: string; browserProof: string },
+	query: { state?: string; code?: string; error?: string },
+) {
+	const receipt = oauth.receive(query);
+	return oauth.confirm(
+		{ ticketId: flow.ticketId, confirmation: receipt.confirmation, browserProof: flow.browserProof },
+		signal,
+	);
 }
 
 it("builds a Google consent URL with offline access, PKCE and the connector's scopes", () => {
@@ -75,9 +94,9 @@ it("keeps the random part of the state unguessable and bound to the company it w
 		`${companyId.toUpperCase()}.${random(first.state)}`,
 		`${companyId}.${random(first.state)}x`,
 	]) {
-		await expect(oauth.complete({ state: forged, code: "x" }, signal)).rejects.toMatchObject({
-			reason: "state_unknown",
-		});
+		expect(() => oauth.receive({ state: forged, code: "x" })).toThrow(
+			expect.objectContaining({ reason: "state_unknown" }),
+		);
 	}
 	// A company id normalizes to lower case in the state.
 	const upper = begin(oauth, "gmail", otherCompanyId.toUpperCase());
@@ -89,6 +108,7 @@ it("keeps the random part of the state unguessable and bound to the company it w
 			companyId: "not-a-company",
 			connectorId: "gmail",
 			returnTo: "https://app.qorpera.test/",
+			browserProofSha256: "a".repeat(64),
 		}),
 	).toThrow("invalid");
 });
@@ -118,8 +138,17 @@ it("completes a Google callback into a refresh-token field and an account label,
 		throw new Error(`unexpected ${url.href}`);
 	});
 	const oauth = flows(fetchImplementation);
-	const { ticketId, captureCapability, state } = begin(oauth);
-	const completion = await oauth.complete({ state, code }, signal);
+	const flow = begin(oauth);
+	const { ticketId, captureCapability, state } = flow;
+	const receipt = oauth.receive({ state, code });
+	expect(receipt).toMatchObject({ connectorId: "gmail", returnTo: "https://app.qorpera.test/#/c/x" });
+	expect(receipt.confirmation).toMatch(/^[A-Za-z0-9_-]{43}$/);
+	// Nothing is exchanged at the callback.
+	expect(fetchImplementation).not.toHaveBeenCalled();
+	const completion = await oauth.confirm(
+		{ ticketId, confirmation: receipt.confirmation, browserProof: flow.browserProof },
+		signal,
+	);
 	expect(completion).toEqual({
 		ticketId,
 		captureCapability,
@@ -129,8 +158,62 @@ it("completes a Google callback into a refresh-token field and an account label,
 		fields: { refresh_token: "1//refresh-token-value-1234567890" },
 		accountLabel: "anna@example.com",
 	});
-	// A replayed callback finds no pending state.
-	await expect(oauth.complete({ state, code }, signal)).rejects.toMatchObject({ reason: "state_unknown" });
+	// A replayed callback finds no pending state; a replayed confirmation finds nothing parked.
+	expect(() => oauth.receive({ state, code })).toThrow(expect.objectContaining({ reason: "state_unknown" }));
+	await expect(
+		oauth.confirm({ ticketId, confirmation: receipt.confirmation, browserProof: flow.browserProof }, signal),
+	).rejects.toMatchObject({ reason: "state_unknown" });
+});
+
+it("binds the sign-in to the browser that started it: a consent link finished elsewhere seals nothing", async () => {
+	const fetchImplementation = vi.fn<typeof fetch>(async () =>
+		Response.json({
+			access_token: "ya29.access-token-value-1234567890",
+			refresh_token: "1//refresh-value-123456789",
+		}),
+	);
+	const oauth = flows(fetchImplementation);
+	// The attacker company's admin starts a sign-in and sends the consent link on.
+	const flow = begin(oauth);
+	// The victim consents; the callback parks the code and sends the victim's
+	// browser to the app with a confirmation id, but that browser has no proof.
+	const receipt = oauth.receive({ state: flow.state, code: "victim-code" });
+	for (const browserProof of [randomBytes(32).toString("base64url"), ""]) {
+		const attempt = await oauth
+			.confirm({ ticketId: flow.ticketId, confirmation: receipt.confirmation, browserProof }, signal)
+			.catch((error) => error);
+		expect(attempt).toBeInstanceOf(CloudConnectorOAuthError);
+		expect(["browser_mismatch", "state_unknown"]).toContain(attempt.reason);
+	}
+	// One attempt per confirmation id: the starter, who holds the proof but never
+	// saw the confirmation id, cannot finish it afterwards either.
+	await expect(
+		oauth.confirm(
+			{ ticketId: flow.ticketId, confirmation: receipt.confirmation, browserProof: flow.browserProof },
+			signal,
+		),
+	).rejects.toMatchObject({ reason: "state_unknown" });
+	// Nothing was ever exchanged with the provider.
+	expect(fetchImplementation).not.toHaveBeenCalled();
+	// A confirmation for another ticket is refused too.
+	const other = begin(oauth);
+	const otherReceipt = oauth.receive({ state: other.state, code: "c" });
+	await expect(
+		oauth.confirm(
+			{ ticketId: randomUUID(), confirmation: otherReceipt.confirmation, browserProof: other.browserProof },
+			signal,
+		),
+	).rejects.toMatchObject({ reason: "state_unknown" });
+	expect(() =>
+		oauth.begin({
+			ticketId: randomUUID(),
+			captureCapability: "c".repeat(43),
+			companyId,
+			connectorId: "gmail",
+			returnTo: "https://app.qorpera.test/",
+			browserProofSha256: "not-a-hash",
+		}),
+	).toThrow("invalid");
 });
 
 it("keeps the GitHub access token, labels by login, and sends no PKCE", async () => {
@@ -142,11 +225,12 @@ it("keeps the GitHub access token, labels by login, and sends no PKCE", async ()
 		throw new Error(`unexpected ${url.href}`);
 	});
 	const oauth = flows(fetchImplementation);
-	const { url, state } = begin(oauth, "github");
+	const flow = begin(oauth, "github");
+	const { url, state } = flow;
 	expect(url.origin + url.pathname).toBe("https://github.com/login/oauth/authorize");
 	expect(url.searchParams.has("code_challenge")).toBe(false);
 	expect(url.searchParams.get("scope")).toBe("repo read:user user:email");
-	await expect(oauth.complete({ state, code: "abc123" }, signal)).resolves.toMatchObject({
+	await expect(complete(oauth, flow, { state, code: "abc123" })).resolves.toMatchObject({
 		connectorId: "github",
 		fields: { access_token: `gho_${"a".repeat(36)}` },
 		accountLabel: "octocat",
@@ -160,20 +244,30 @@ it("reports declined, expired, missing-refresh-token and unknown-state outcomes 
 	);
 	const oauth = flows(fetchImplementation, () => clock);
 	const declined = begin(oauth);
-	await expect(oauth.complete({ state: declined.state, error: "access_denied" }, signal)).rejects.toMatchObject({
-		reason: "declined",
-		returnTo: "https://app.qorpera.test/#/c/x",
-		connectorId: "gmail",
-	});
+	expect(() => oauth.receive({ state: declined.state, error: "access_denied" })).toThrow(
+		expect.objectContaining({ reason: "declined", returnTo: "https://app.qorpera.test/#/c/x", connectorId: "gmail" }),
+	);
 	const noRefresh = begin(oauth);
-	await expect(oauth.complete({ state: noRefresh.state, code: "x" }, signal)).rejects.toMatchObject({
+	await expect(complete(oauth, noRefresh, { state: noRefresh.state, code: "x" })).rejects.toMatchObject({
 		reason: "no_refresh_token",
 	});
 	const late = begin(oauth);
 	clock += 11 * 60_000;
-	await expect(oauth.complete({ state: late.state, code: "x" }, signal)).rejects.toMatchObject({ reason: "expired" });
-	const unknown = await oauth
-		.complete({ state: `${companyId}.${randomBytes(32).toString("base64url")}`, code: "x" }, signal)
+	expect(() => oauth.receive({ state: late.state, code: "x" })).toThrow(
+		expect.objectContaining({ reason: "expired" }),
+	);
+	// A parked confirmation also expires.
+	const slow = begin(oauth);
+	const parked = oauth.receive({ state: slow.state, code: "x" });
+	clock += 6 * 60_000;
+	await expect(
+		oauth.confirm(
+			{ ticketId: slow.ticketId, confirmation: parked.confirmation, browserProof: slow.browserProof },
+			signal,
+		),
+	).rejects.toMatchObject({ reason: "expired" });
+	const unknown = await Promise.resolve()
+		.then(() => oauth.receive({ state: `${companyId}.${randomBytes(32).toString("base64url")}`, code: "x" }))
 		.catch((error) => error);
 	expect(unknown).toBeInstanceOf(CloudConnectorOAuthError);
 	expect(unknown.reason).toBe("state_unknown");
@@ -187,10 +281,10 @@ it("accepts return pages only on allow-listed origins and places the outcome in 
 	expect(() => parseConnectorReturnUrl("https://evil.example/#/c/1", returnOrigins)).toThrow("invalid");
 	expect(() => parseConnectorReturnUrl("https://app.qorpera.test.evil/", returnOrigins)).toThrow("invalid");
 	expect(() => parseConnectorReturnUrl("javascript:alert(1)", returnOrigins)).toThrow("invalid");
-	expect(connectorReturnLocation("https://app.qorpera.test/#/c/1", "gmail", "connected")).toBe(
-		"https://app.qorpera.test/#/c/1?connector=gmail&connection=connected",
-	);
-	expect(connectorReturnLocation("https://app.qorpera.test/", "github", "failed", "declined")).toBe(
+	expect(
+		connectorReturnLocation("https://app.qorpera.test/#/c/1", "gmail", "confirm", { confirmation: "c".repeat(43) }),
+	).toBe(`https://app.qorpera.test/#/c/1?connector=gmail&connection=confirm&confirmation=${"c".repeat(43)}`);
+	expect(connectorReturnLocation("https://app.qorpera.test/", "github", "failed", { reason: "declined" })).toBe(
 		"https://app.qorpera.test/#?connector=github&connection=failed&reason=declined",
 	);
 	expect(() =>
@@ -200,6 +294,7 @@ it("accepts return pages only on allow-listed origins and places the outcome in 
 			companyId,
 			connectorId: "gmail",
 			returnTo: "https://evil.example/",
+			browserProofSha256: "a".repeat(64),
 		}),
 	).toThrow("invalid");
 	expect(() =>
@@ -209,6 +304,7 @@ it("accepts return pages only on allow-listed origins and places the outcome in 
 			companyId,
 			connectorId: "slack",
 			returnTo: "https://app.qorpera.test/",
+			browserProofSha256: "a".repeat(64),
 		}),
 	).toThrow("unknown");
 });

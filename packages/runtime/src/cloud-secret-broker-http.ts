@@ -190,18 +190,38 @@ function parseDescriptor(value: unknown): CloudSecretDescriptor {
 	};
 }
 
-function parseOAuthStart(value: unknown): { captureCapability: string; returnTo: string } {
+function parseOAuthStart(value: unknown): { captureCapability: string; returnTo: string; browserProofSha256: string } {
 	const input = record(value, "Connector authorization start");
-	exact(input, ["schema", "captureCapability", "returnTo"], "Connector authorization start");
+	exact(input, ["schema", "captureCapability", "returnTo", "browserProofSha256"], "Connector authorization start");
 	if (
-		input.schema !== "qorpera.cloud-connector-oauth-start/v1" ||
+		input.schema !== "qorpera.cloud-connector-oauth-start/v2" ||
 		typeof input.captureCapability !== "string" ||
 		!/^[A-Za-z0-9_-]{32,256}$/.test(input.captureCapability) ||
 		typeof input.returnTo !== "string" ||
-		input.returnTo.length > 2048
+		input.returnTo.length > 2048 ||
+		typeof input.browserProofSha256 !== "string" ||
+		!/^[0-9a-f]{64}$/.test(input.browserProofSha256)
 	)
 		throw new Error("Connector authorization start is invalid");
-	return { captureCapability: input.captureCapability, returnTo: input.returnTo };
+	return {
+		captureCapability: input.captureCapability,
+		returnTo: input.returnTo,
+		browserProofSha256: input.browserProofSha256,
+	};
+}
+
+function parseOAuthConfirm(value: unknown): { confirmation: string; browserProof: string } {
+	const input = record(value, "Connector authorization confirmation");
+	exact(input, ["schema", "confirmation", "browserProof"], "Connector authorization confirmation");
+	if (
+		input.schema !== "qorpera.cloud-connector-oauth-confirm/v1" ||
+		typeof input.confirmation !== "string" ||
+		!/^[A-Za-z0-9_-]{43}$/.test(input.confirmation) ||
+		typeof input.browserProof !== "string" ||
+		!/^[A-Za-z0-9_-]{43}$/.test(input.browserProof)
+	)
+		throw new Error("Connector authorization confirmation is invalid");
+	return { confirmation: input.confirmation, browserProof: input.browserProof };
 }
 
 async function readRequest(request: IncomingMessage): Promise<unknown> {
@@ -367,7 +387,12 @@ export class HttpCloudSecretBrokerService {
 		const path = url.pathname;
 		const capture = /^\/v1\/captures\/([0-9a-f-]{36})$/i.exec(path);
 		const oauthStart = /^\/v1\/oauth\/([0-9a-f-]{36})\/start$/i.exec(path);
-		const memberRoute = Boolean((capture && UUID.test(capture[1])) || (oauthStart && UUID.test(oauthStart[1])));
+		const oauthConfirm = /^\/v1\/oauth\/([0-9a-f-]{36})\/confirm$/i.exec(path);
+		const memberRoute = Boolean(
+			(capture && UUID.test(capture[1])) ||
+				(oauthStart && UUID.test(oauthStart[1])) ||
+				(oauthConfirm && UUID.test(oauthConfirm[1])),
+		);
 		const origin = typeof request.headers.origin === "string" ? request.headers.origin : undefined;
 		const allowedOrigin = origin !== undefined && this.#memberOrigins.has(origin) ? origin : undefined;
 		const cors = memberRoute && allowedOrigin ? corsHeaders(allowedOrigin) : {};
@@ -400,34 +425,84 @@ export class HttpCloudSecretBrokerService {
 				response(reply, 200, descriptor as unknown as JsonValue, cors);
 				return;
 			}
-			if (oauthStart && UUID.test(oauthStart[1])) {
+			if ((oauthStart && UUID.test(oauthStart[1])) || (oauthConfirm && UUID.test(oauthConfirm[1]))) {
 				if (!this.#oauth) {
 					response(reply, 404, { schema: "qorpera.cloud-secret-error/v1", error: "not_found" }, cors);
 					return;
 				}
-				const start = parseOAuthStart(await readRequest(request));
-				const ticketId = oauthStart[1].toLowerCase();
-				const summary = await this.#broker.describeCapture(
-					{ ticketId, captureCapability: start.captureCapability },
-					AbortSignal.timeout(10_000),
-				);
-				// The state starts with the ticket's company so the one shared public
-				// origin can route the provider's callback to this company's broker.
-				const started = this.#oauth.begin({
-					ticketId,
-					captureCapability: start.captureCapability,
-					companyId: summary.companyId,
-					connectorId: summary.connectorId,
-					returnTo: start.returnTo,
-				});
+				if (oauthStart) {
+					const start = parseOAuthStart(await readRequest(request));
+					const ticketId = oauthStart[1].toLowerCase();
+					const summary = await this.#broker.describeCapture(
+						{ ticketId, captureCapability: start.captureCapability },
+						AbortSignal.timeout(10_000),
+					);
+					// Connectors are company first: a sign-in fills only a company-owned
+					// connection, never a member's own secret.
+					if (summary.ownerKind !== "company") throw new Error("Connector sign-in requires a company ticket");
+					// The state starts with the ticket's company so the one shared public
+					// origin can route the provider's callback to this company's broker.
+					const started = this.#oauth.begin({
+						ticketId,
+						captureCapability: start.captureCapability,
+						companyId: summary.companyId,
+						connectorId: summary.connectorId,
+						returnTo: start.returnTo,
+						browserProofSha256: start.browserProofSha256,
+					});
+					response(
+						reply,
+						200,
+						{
+							schema: "qorpera.cloud-connector-oauth-started/v1",
+							connectorId: summary.connectorId,
+							authorizationUrl: started.authorizationUrl,
+							expiresAt: started.expiresAt,
+						},
+						cors,
+					);
+					return;
+				}
+				const confirm = parseOAuthConfirm(await readRequest(request));
+				let completion: Awaited<ReturnType<CloudConnectorOAuthFlows["confirm"]>>;
+				try {
+					completion = await this.#oauth.confirm(
+						{ ticketId: (oauthConfirm as RegExpExecArray)[1], ...confirm },
+						AbortSignal.timeout(20_000),
+					);
+				} catch (error) {
+					response(
+						reply,
+						403,
+						{
+							schema: "qorpera.cloud-connector-oauth-failed/v1",
+							reason: error instanceof CloudConnectorOAuthError ? error.reason : "provider_error",
+						},
+						cors,
+					);
+					return;
+				}
+				try {
+					await this.#broker.capture(
+						{
+							ticketId: completion.ticketId,
+							captureCapability: completion.captureCapability,
+							fields: completion.fields,
+						},
+						AbortSignal.timeout(15_000),
+						completion.accountLabel,
+					);
+				} catch {
+					response(reply, 403, { schema: "qorpera.cloud-connector-oauth-failed/v1", reason: "expired" }, cors);
+					return;
+				}
 				response(
 					reply,
 					200,
 					{
-						schema: "qorpera.cloud-connector-oauth-started/v1",
-						connectorId: summary.connectorId,
-						authorizationUrl: started.authorizationUrl,
-						expiresAt: started.expiresAt,
+						schema: "qorpera.cloud-connector-oauth-confirmed/v1",
+						connectorId: completion.connectorId,
+						accountLabel: completion.accountLabel,
 					},
 					cors,
 				);
@@ -451,8 +526,10 @@ export class HttpCloudSecretBrokerService {
 		}
 	}
 
-	/** The provider's redirect target. The browser leaves with a fragment that
-	 * names the connector and the outcome, never a code or token. */
+	/** The provider's redirect target. Nothing is sealed here: the browser
+	 * leaves with a fragment naming the connector and a one-time confirmation
+	 * id (or the failure), never a code or token, and only the browser that
+	 * started the sign-in can confirm it. */
 	async #oauthCallback(url: URL, reply: ServerResponse): Promise<void> {
 		if (!this.#oauth) {
 			plainPage(reply, 404, "Not found.");
@@ -464,25 +541,19 @@ export class HttpCloudSecretBrokerService {
 			error: url.searchParams.get("error") ?? undefined,
 		};
 		try {
-			const completion = await this.#oauth.complete(query, AbortSignal.timeout(20_000));
-			try {
-				await this.#broker.capture(
-					{
-						ticketId: completion.ticketId,
-						captureCapability: completion.captureCapability,
-						fields: completion.fields,
-					},
-					AbortSignal.timeout(15_000),
-					completion.accountLabel,
-				);
-			} catch {
-				redirect(reply, connectorReturnLocation(completion.returnTo, completion.connectorId, "failed", "expired"));
-				return;
-			}
-			redirect(reply, connectorReturnLocation(completion.returnTo, completion.connectorId, "connected"));
+			const receipt = this.#oauth.receive(query);
+			redirect(
+				reply,
+				connectorReturnLocation(receipt.returnTo, receipt.connectorId, "confirm", {
+					confirmation: receipt.confirmation,
+				}),
+			);
 		} catch (error) {
 			if (error instanceof CloudConnectorOAuthError && error.returnTo && error.connectorId) {
-				redirect(reply, connectorReturnLocation(error.returnTo, error.connectorId, "failed", error.reason));
+				redirect(
+					reply,
+					connectorReturnLocation(error.returnTo, error.connectorId, "failed", { reason: error.reason }),
+				);
 				return;
 			}
 			plainPage(

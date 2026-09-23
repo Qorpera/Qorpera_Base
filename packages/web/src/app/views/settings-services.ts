@@ -18,7 +18,10 @@ import { button, fmtTime, h, replace } from "../../ui/dom.ts";
  * shown for attribution only.
  */
 
-type ServicesClient = Pick<WebConnectors, "list" | "beginSignIn" | "captureToken" | "grantAllAgents" | "disconnect">;
+type ServicesClient = Pick<
+	WebConnectors,
+	"list" | "beginSignIn" | "finishSignIn" | "captureToken" | "grantAllAgents" | "stopSharing" | "disconnect"
+>;
 
 export interface ServicesAccess {
 	/** Whether the signed-in member may connect, share or disconnect company
@@ -36,6 +39,7 @@ const RETURN_REASONS: Readonly<Record<string, string>> = {
 	no_refresh_token: "Google did not grant lasting access. Try again and allow all requested access.",
 	provider_error: "The service did not complete the sign-in. Try again.",
 	state_unknown: "This sign-in link is no longer valid. Try again.",
+	browser_mismatch: "The sign-in was finished in another browser. Start it again here.",
 };
 
 /** A sign-in outcome the broker sent back in the page hash, kept until the
@@ -72,23 +76,53 @@ export class ServicesView {
 		else signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		const outcome = pendingReturn;
 		pendingReturn = undefined;
-		if (outcome) {
-			const label = HOSTED_CONNECTORS.find((item) => item.id === outcome.connector)?.label ?? outcome.connector;
-			this.#outcome =
-				outcome.connection === "connected"
-					? {
-							connector: outcome.connector,
-							tone: "ok",
-							text: `${label} is connected. The company's agents can use it from their next run.`,
-						}
-					: {
-							connector: outcome.connector,
-							tone: "error",
-							text: `${label} was not connected. ${RETURN_REASONS[outcome.reason ?? ""] ?? "Try again."}`,
-						};
+		const label = (connector: string) => HOSTED_CONNECTORS.find((item) => item.id === connector)?.label ?? connector;
+		if (outcome?.connection === "failed") {
+			this.#outcome = {
+				connector: outcome.connector,
+				tone: "error",
+				text: `${label(outcome.connector)} was not connected. ${RETURN_REASONS[outcome.reason ?? ""] ?? "Try again."}`,
+			};
+		} else if (outcome?.connection === "confirm") {
+			this.#working = outcome.connector;
+			this.#outcome = {
+				connector: outcome.connector,
+				tone: "ok",
+				text: `Finishing the ${label(outcome.connector)} connection…`,
+			};
 		}
 		this.#draw();
-		void this.#refresh(outcome?.connection === "connected" ? outcome.connector : undefined);
+		if (outcome?.connection === "confirm") void this.#finish(outcome);
+		else void this.#refresh();
+	}
+
+	/** A sign-in this tab started came back: the broker seals the account only
+	 * for this tab's proof, then the fresh connection is shared with every agent
+	 * (an owner or admin started it). */
+	async #finish(outcome: HostedConnectorReturn): Promise<void> {
+		const name = HOSTED_CONNECTORS.find((item) => item.id === outcome.connector)?.label ?? outcome.connector;
+		let finished = false;
+		try {
+			await this.#client.finishSignIn(outcome, this.#lifetime.signal);
+			finished = true;
+			if (this.#lifetime.signal.aborted) return;
+			this.#outcome = {
+				connector: outcome.connector,
+				tone: "ok",
+				text: `${name} is connected. The company's agents can use it from their next run.`,
+			};
+		} catch (error) {
+			if (this.#lifetime.signal.aborted) return;
+			const reason = (error as { reason?: unknown } | undefined)?.reason;
+			this.#outcome = {
+				connector: outcome.connector,
+				tone: "error",
+				text: `${name} was not connected. ${RETURN_REASONS[typeof reason === "string" ? reason : ""] ?? "Try again."}`,
+			};
+		} finally {
+			this.#working = undefined;
+		}
+		await this.#refresh(finished ? outcome.connector : undefined);
 	}
 
 	/** Redraws when the member's authority over company services changed (the
@@ -146,6 +180,26 @@ export class ServicesView {
 				(item) => item.connectorId === connectorId && item.status === "active" && item.ownerKind === "company",
 			)
 			.sort((left, right) => right.version - left.version)[0];
+	}
+
+	async #stopSharing(connection: HostedConnectorConnection): Promise<void> {
+		if (this.#working || this.#lifetime.signal.aborted) return;
+		this.#working = connection.connectorId;
+		this.#outcome = undefined;
+		this.#draw();
+		try {
+			await this.#client.stopSharing(connection.secretId, this.#lifetime.signal);
+		} catch {
+			if (!this.#lifetime.signal.aborted)
+				this.#outcome = {
+					connector: connection.connectorId as HostedConnectorId,
+					tone: "error",
+					text: "The service could not be taken away from the company's agents. Try again.",
+				};
+		} finally {
+			this.#working = undefined;
+			if (!this.#lifetime.signal.aborted) await this.#refresh();
+		}
 	}
 
 	async #share(connection: HostedConnectorConnection): Promise<void> {
@@ -260,6 +314,13 @@ export class ServicesView {
 				});
 				share.dataset.focusKey = `service-share:${connector.id}`;
 				actions.push(share);
+			}
+			if (current.availableToAllAgents || current.activeGrantCount > 0) {
+				const stop = button("Stop sharing with agents", () => void this.#stopSharing(current), {
+					disabled: Boolean(this.#working),
+				});
+				stop.dataset.focusKey = `service-unshare:${connector.id}`;
+				actions.push(stop);
 			}
 			const disconnect = button(busy ? "Working…" : "Disconnect", () => void this.#disconnect(current), {
 				disabled: Boolean(this.#working),

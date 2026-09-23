@@ -5,8 +5,10 @@
 -- reads a secret value: the broker still seals envelopes, and the runtime still
 -- turns per-agent operation grants into tools. This migration adds
 --   1. the governed catalog rows for GitHub, Gmail and Google Drive, rendered
---      from packages/runtime/src/cloud-connector-catalog.ts (adapter hashes
---      pin the compiled broker adapters);
+--      from packages/runtime/src/cloud-connector-catalog.ts (an adapter hash
+--      pins each operation's declared destination, credential placement,
+--      input schema and recipe text, not the handler code, which only the
+--      broker artifact's SHA-256 pins);
 --   2. a non-secret account label on a connection (mailbox address, GitHub
 --      login) recorded by the broker at capture time;
 --   3. one member call that grants every operation of a connection to the
@@ -240,6 +242,7 @@ declare
 	v_agent uuid;
 	v_operation public.qorpera_cloud_connector_operations%rowtype;
 	v_grant public.qorpera_cloud_secret_operation_grants%rowtype;
+	v_existing public.qorpera_cloud_secret_operation_grants%rowtype;
 	v_issued integer := 0;
 begin
 	select secret.* into strict v_secret from public.qorpera_cloud_secrets as secret
@@ -263,13 +266,32 @@ begin
 				)
 			order by operation.operation_id
 		loop
-			if exists (
-				select 1 from public.qorpera_cloud_secret_operation_grants as existing
-				where existing.profile_id = p_profile_id and existing.environment_id = p_environment_id
-					and existing.staff_agent_id = v_agent and existing.tool_name = v_operation.tool_name
-					and existing.status = 'active'
-			) then
-				continue;
+			select existing.* into v_existing from public.qorpera_cloud_secret_operation_grants as existing
+			where existing.profile_id = p_profile_id and existing.environment_id = p_environment_id
+				and existing.staff_agent_id = v_agent and existing.tool_name = v_operation.tool_name
+				and existing.status = 'active'
+			for update;
+			if found then
+				-- A company grant holds only while its issuer is an owner or admin
+				-- (the kernel rechecks at every call). A live grant, or one on
+				-- another connection, stays; a grant of this connection whose
+				-- issuer left or was demoted is re-issued under the caller.
+				if v_existing.secret_id <> v_secret.id or v_secret.owner_kind <> 'company' or exists (
+					select 1 from public.qorpera_profile_members as issuer
+					where issuer.profile_id = p_profile_id and issuer.user_id = v_existing.issued_by_user_id
+						and issuer.role in ('owner','admin')
+				) then
+					continue;
+				end if;
+				update public.qorpera_cloud_secret_operation_grants
+				set status = 'revoked', revoked_at = statement_timestamp(), revoked_by_user_id = p_issued_by_user_id
+				where id = v_existing.id;
+				insert into public.qorpera_cloud_secret_audit_events (
+					profile_id,environment_id,secret_id,secret_version,grant_id,event_type,actor_user_id,connector_id,operation_id
+				) values (
+					p_profile_id,p_environment_id,v_secret.id,v_secret.current_version,v_existing.id,'grant_revoked',
+					p_issued_by_user_id,v_existing.connector_id,v_existing.operation_id
+				);
 			end if;
 			insert into public.qorpera_cloud_secret_operation_grants (
 				profile_id,environment_id,secret_id,staff_agent_id,connector_id,operation_id,
@@ -360,13 +382,19 @@ begin
 	loop
 		-- A company-owned grant holds while its issuer is an owner or admin (the
 		-- kernel rechecks at every call). The hire's author issues it when they
-		-- are one; otherwise the member who connected the account does, since
-		-- the company already shared it with every agent.
-		v_issuer := case when exists (
-			select 1 from public.qorpera_profile_members as member
-			where member.profile_id = new.profile_id and member.user_id = new.updated_by_user_id
-				and member.role in ('owner','admin')
-		) then new.updated_by_user_id else v_secret.created_by_user_id end;
+		-- are one; otherwise the member who connected the account, if still an
+		-- owner or admin; otherwise a current owner (or admin), since the company
+		-- already shared it with every agent.
+		select member.user_id into v_issuer
+		from public.qorpera_profile_members as member
+		where member.profile_id = new.profile_id and member.role in ('owner','admin')
+		order by member.user_id = new.updated_by_user_id desc,
+			member.user_id = v_secret.created_by_user_id desc,
+			member.role = 'owner' desc, member.user_id
+		limit 1;
+		if v_issuer is null then
+			continue;
+		end if;
 		perform public.qorpera_grant_cloud_connector_operations(
 			v_secret.profile_id, v_secret.environment_id, v_secret.id, v_issuer,
 			array[new.staff_agent_id]
@@ -379,6 +407,58 @@ $$;
 create trigger qorpera_cloud_connector_staff_grants
 	after insert or update of employment_status on public.qorpera_profile_staff
 	for each row execute function public.qorpera_grant_shared_connectors_to_staff();
+
+-- Stop sharing: the company's agents lose this connection. An owner or admin
+-- clears the all-agents mark (new hires no longer receive it) and every active
+-- grant of the connection is revoked, audited per grant. The connection itself
+-- stays connected; Share with all agents gives it back.
+create function public.qorpera_unshare_cloud_connector(
+	p_profile_id uuid,
+	p_environment_id uuid,
+	p_secret_id uuid
+)
+returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare
+	v_user_id uuid := auth.uid();
+	v_role text;
+	v_secret public.qorpera_cloud_secrets%rowtype;
+	v_grant public.qorpera_cloud_secret_operation_grants%rowtype;
+	v_revoked integer := 0;
+begin
+	if auth.role() is distinct from 'authenticated' or v_user_id is null then
+		raise exception 'secret grant authority is unavailable' using errcode = '42501';
+	end if;
+	select member.role::text into v_role from public.qorpera_profile_members as member
+	where member.profile_id = p_profile_id and member.user_id = v_user_id;
+	select secret.* into strict v_secret from public.qorpera_cloud_secrets as secret
+	where secret.id = p_secret_id and secret.profile_id = p_profile_id
+		and secret.environment_id = p_environment_id for update;
+	if v_secret.owner_kind <> 'company' or v_role is null or v_role not in ('owner','admin') then
+		raise exception 'secret grant authority is unavailable' using errcode = '42501';
+	end if;
+	update public.qorpera_cloud_secrets set available_to_all_agents = false, updated_at = statement_timestamp()
+	where id = v_secret.id and available_to_all_agents;
+	for v_grant in
+		update public.qorpera_cloud_secret_operation_grants
+		set status = 'revoked', revoked_at = statement_timestamp(), revoked_by_user_id = v_user_id
+		where secret_id = v_secret.id and profile_id = p_profile_id and status = 'active'
+		returning *
+	loop
+		insert into public.qorpera_cloud_secret_audit_events (
+			profile_id,environment_id,secret_id,secret_version,grant_id,event_type,actor_user_id,connector_id,operation_id
+		) values (
+			v_grant.profile_id,v_grant.environment_id,v_grant.secret_id,v_secret.current_version,v_grant.id,
+			'grant_revoked',v_user_id,v_grant.connector_id,v_grant.operation_id
+		);
+		v_revoked := v_revoked + 1;
+	end loop;
+	return jsonb_build_object(
+		'schema','qorpera.cloud-connector-grants/v1','secretId',v_secret.id,'connectorId',v_secret.connector_id,
+		'grantsRevoked',v_revoked,'availableToAllAgents',false
+	);
+end
+$$;
 
 -- 5. Member descriptor lists the label and the grant state --------------------
 
@@ -415,7 +495,9 @@ $$;
 revoke all on function public.qorpera_grant_cloud_connector_operations(uuid,uuid,uuid,uuid,uuid[])
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 revoke all on function public.qorpera_grant_cloud_connector(uuid,uuid,uuid,uuid[]) from public, anon, service_role;
+revoke all on function public.qorpera_unshare_cloud_connector(uuid,uuid,uuid) from public, anon, service_role;
 revoke all on function public.qorpera_grant_shared_connectors_to_staff() from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_list_cloud_secret_connections(uuid,uuid) from public, anon, service_role;
 grant execute on function public.qorpera_grant_cloud_connector(uuid,uuid,uuid,uuid[]) to authenticated;
+grant execute on function public.qorpera_unshare_cloud_connector(uuid,uuid,uuid) to authenticated;
 grant execute on function public.qorpera_list_cloud_secret_connections(uuid,uuid) to authenticated;

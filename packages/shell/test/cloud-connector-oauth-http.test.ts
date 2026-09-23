@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { CloudConnectorOAuthFlows } from "@qorpera/runtime/cloud-connector-oauth";
 import {
 	CloudSecretBroker,
@@ -20,7 +20,7 @@ afterEach(async () => {
 const WEB = "https://app.qorpera.test";
 const google = { clientId: "g.apps.googleusercontent.com", clientSecret: `GOCSPX-${randomBytes(8).toString("hex")}` };
 
-function fixture(connectorId = "gmail") {
+function fixture(connectorId = "gmail", ownerKind: "company" | "member" = "company") {
 	const identity = {
 		companyId: randomUUID(),
 		environmentId: randomUUID(),
@@ -36,8 +36,8 @@ function fixture(connectorId = "gmail") {
 		schema: "qorpera.cloud-secret-capture-description/v1",
 		ticketId,
 		...identity,
-		ownerKind: "member",
-		ownerUserId: randomUUID(),
+		ownerKind,
+		ownerUserId: ownerKind === "member" ? randomUUID() : null,
 		connectorId,
 		secretName: "primary",
 		purpose: "Gmail account",
@@ -58,7 +58,7 @@ function fixture(connectorId = "gmail") {
 				connectorId,
 				secretName: "primary",
 				purpose: description.purpose,
-				ownerKind: "member",
+				ownerKind,
 				ownerUserId: description.ownerUserId,
 				status: "active",
 				accountLabel,
@@ -89,7 +89,36 @@ function fixture(connectorId = "gmail") {
 	const runtimeToken = randomBytes(32).toString("base64url");
 	const service = new HttpCloudSecretBrokerService(broker, runtimeToken, { oauth, memberOrigins: [WEB] });
 	services.push(service);
-	return { ticketId, capability, service, captured, keyring, wrappingKey, authority, companyId: identity.companyId };
+	// The starting browser's proof: the app keeps it and sends only its hash.
+	const proof = randomBytes(32).toString("base64url");
+	const proofSha256 = createHash("sha256").update(proof).digest("hex");
+	return {
+		ticketId,
+		capability,
+		service,
+		captured,
+		keyring,
+		wrappingKey,
+		authority,
+		provider,
+		proof,
+		proofSha256,
+		companyId: identity.companyId,
+	};
+}
+
+async function confirm(
+	f: ReturnType<typeof fixture>,
+	port: number,
+	confirmation: string,
+	browserProof: string,
+	origin = WEB,
+) {
+	return fetch(`http://127.0.0.1:${port}/v1/oauth/${f.ticketId}/confirm?company=${f.companyId}`, {
+		method: "POST",
+		headers: { "content-type": "application/json", origin },
+		body: JSON.stringify({ schema: "qorpera.cloud-connector-oauth-confirm/v1", confirmation, browserProof }),
+	});
 }
 
 async function start(f: ReturnType<typeof fixture>, body: unknown, origin = WEB) {
@@ -122,8 +151,9 @@ it("answers the web app's preflight and start request with CORS headers and a pr
 		method: "POST",
 		headers: { "content-type": "application/json", origin: WEB },
 		body: JSON.stringify({
-			schema: "qorpera.cloud-connector-oauth-start/v1",
+			schema: "qorpera.cloud-connector-oauth-start/v2",
 			captureCapability: f.capability,
+			browserProofSha256: f.proofSha256,
 			returnTo: `${WEB}/#/c/1`,
 		}),
 	});
@@ -140,8 +170,9 @@ it("answers the web app's preflight and start request with CORS headers and a pr
 it("refuses a start with a wrong capability or a foreign return page", async () => {
 	const f = fixture();
 	const wrong = await start(f, {
-		schema: "qorpera.cloud-connector-oauth-start/v1",
+		schema: "qorpera.cloud-connector-oauth-start/v2",
 		captureCapability: randomBytes(32).toString("base64url").slice(0, 43),
+		browserProofSha256: f.proofSha256,
 		returnTo: `${WEB}/`,
 	});
 	// The authority accepts any 64-hex digest in this fixture, so the ticket
@@ -151,8 +182,9 @@ it("refuses a start with a wrong capability or a foreign return page", async () 
 		method: "POST",
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify({
-			schema: "qorpera.cloud-connector-oauth-start/v1",
+			schema: "qorpera.cloud-connector-oauth-start/v2",
 			captureCapability: f.capability,
+			browserProofSha256: f.proofSha256,
 			returnTo: "https://evil.example/",
 		}),
 	});
@@ -162,11 +194,12 @@ it("refuses a start with a wrong capability or a foreign return page", async () 
 	f.keyring.close();
 });
 
-it("completes the provider callback into a sealed capture and redirects with only the outcome", async () => {
+it("parks the provider callback and seals only when the starting browser confirms with its proof", async () => {
 	const f = fixture();
 	const { port, response } = await start(f, {
-		schema: "qorpera.cloud-connector-oauth-start/v1",
+		schema: "qorpera.cloud-connector-oauth-start/v2",
 		captureCapability: f.capability,
+		browserProofSha256: f.proofSha256,
 		returnTo: `${WEB}/#/c/1`,
 	});
 	const started = (await response.json()) as Record<string, string>;
@@ -178,16 +211,77 @@ it("completes the provider callback into a sealed capture and redirects with onl
 		{ redirect: "manual" },
 	);
 	expect(callback.status).toBe(303);
-	expect(callback.headers.get("location")).toBe(`${WEB}/#/c/1?connector=gmail&connection=connected`);
+	const location = callback.headers.get("location") ?? "";
+	const match =
+		/^https:\/\/app\.qorpera\.test\/#\/c\/1\?connector=gmail&connection=confirm&confirmation=([A-Za-z0-9_-]{43})$/.exec(
+			location,
+		);
+	expect(match).not.toBeNull();
+	// Nothing is exchanged or sealed at the callback.
+	expect(f.captured).toHaveLength(0);
+	expect(f.provider).not.toHaveBeenCalled();
+	const confirmed = await confirm(f, port, match?.[1] ?? "", f.proof);
+	expect(confirmed.status).toBe(200);
+	expect(confirmed.headers.get("access-control-allow-origin")).toBe(WEB);
+	expect(await confirmed.json()).toEqual({
+		schema: "qorpera.cloud-connector-oauth-confirmed/v1",
+		connectorId: "gmail",
+		accountLabel: "anna@example.com",
+	});
 	expect(f.captured).toHaveLength(1);
 	expect(f.captured[0].accountLabel).toBe("anna@example.com");
 	expect(Buffer.from(f.captured[0].envelope).toString("latin1")).not.toContain("refresh-token-value");
-	// The same callback cannot be replayed into a second capture.
+	// Neither the callback nor the confirmation can be replayed into a second capture.
 	const replay = await fetch(`http://127.0.0.1:${port}/v1/oauth/callback?state=${state}&code=4%2Fcode-value`, {
 		redirect: "manual",
 	});
 	expect(replay.status).toBe(400);
+	expect((await confirm(f, port, match?.[1] ?? "", f.proof)).status).toBe(403);
 	expect(f.captured).toHaveLength(1);
+	f.wrappingKey.fill(0);
+	f.keyring.close();
+});
+
+it("refuses a confirmation from a browser without the starting browser's proof and seals nothing", async () => {
+	const f = fixture();
+	const { port, response } = await start(f, {
+		schema: "qorpera.cloud-connector-oauth-start/v2",
+		captureCapability: f.capability,
+		browserProofSha256: f.proofSha256,
+		returnTo: `${WEB}/#/c/1`,
+	});
+	// The consent link is sent to someone else, who signs in with their account.
+	const state = new URL(((await response.json()) as Record<string, string>).authorizationUrl).searchParams.get(
+		"state",
+	);
+	const callback = await fetch(`http://127.0.0.1:${port}/v1/oauth/callback?state=${state}&code=victim-code`, {
+		redirect: "manual",
+	});
+	const confirmation = new URLSearchParams((callback.headers.get("location") ?? "").split("?")[1]).get("confirmation");
+	// Their browser holds no proof for this sign-in.
+	const refused = await confirm(f, port, confirmation ?? "", randomBytes(32).toString("base64url"));
+	expect(refused.status).toBe(403);
+	expect(await refused.json()).toEqual({
+		schema: "qorpera.cloud-connector-oauth-failed/v1",
+		reason: "browser_mismatch",
+	});
+	// The starter, who holds the proof, cannot finish it afterwards (one attempt).
+	expect((await confirm(f, port, confirmation ?? "", f.proof)).status).toBe(403);
+	expect(f.captured).toHaveLength(0);
+	expect(f.provider).not.toHaveBeenCalled();
+	f.wrappingKey.fill(0);
+	f.keyring.close();
+});
+
+it("refuses a sign-in for a ticket that is not company-owned", async () => {
+	const f = fixture("gmail", "member");
+	const { response } = await start(f, {
+		schema: "qorpera.cloud-connector-oauth-start/v2",
+		captureCapability: f.capability,
+		browserProofSha256: f.proofSha256,
+		returnTo: `${WEB}/#/c/1`,
+	});
+	expect(response.status).toBe(403);
 	f.wrappingKey.fill(0);
 	f.keyring.close();
 });
@@ -195,8 +289,9 @@ it("completes the provider callback into a sealed capture and redirects with onl
 it("sends a declined consent back to the web app as a failure fragment without capturing", async () => {
 	const f = fixture();
 	const { port, response } = await start(f, {
-		schema: "qorpera.cloud-connector-oauth-start/v1",
+		schema: "qorpera.cloud-connector-oauth-start/v2",
 		captureCapability: f.capability,
+		browserProofSha256: f.proofSha256,
 		returnTo: `${WEB}/#/c/1`,
 	});
 	const state = new URL(((await response.json()) as Record<string, string>).authorizationUrl).searchParams.get(
@@ -217,8 +312,9 @@ it("refuses a sign-in start from an origin outside the broker's member origins",
 	const { response } = await start(
 		f,
 		{
-			schema: "qorpera.cloud-connector-oauth-start/v1",
+			schema: "qorpera.cloud-connector-oauth-start/v2",
 			captureCapability: f.capability,
+			browserProofSha256: f.proofSha256,
 			returnTo: `${WEB}/`,
 		},
 		"https://evil.example",
@@ -242,8 +338,9 @@ it("keeps the OAuth routes closed when no connector service is configured", asyn
 		method: "POST",
 		headers: { "content-type": "application/json", origin: WEB },
 		body: JSON.stringify({
-			schema: "qorpera.cloud-connector-oauth-start/v1",
+			schema: "qorpera.cloud-connector-oauth-start/v2",
 			captureCapability: f.capability,
+			browserProofSha256: f.proofSha256,
 			returnTo: `${WEB}/`,
 		}),
 	});

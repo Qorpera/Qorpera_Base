@@ -18,7 +18,7 @@
     "wakeAndSilence": "ad0019d19615fc7b89587ad3339a875c7cf207d01e65fd53ef2361efe08c6e35",
     "contextComposer": "e14360b16564e61d6655d176ebdb8a0e58a6b9192db8ef385f78ab3e880a7b60",
     "providerBootstrap": "5800abe8aee05ef803157c6fea69944762f0066d0a4673c8d783415c2b977bd7",
-    "authorization": "0cf496cc4e428cdfd666a5d5ed74dd8e4dd609acd17930c465060ebd5048af74",
+    "authorization": "1dd20cd7577d8a2ef78ff768a757bd64b60d9136cda8cc5815215feb246e919c",
     "inboundSafety": "71d6b9c43356ac0de69caa1877943f074d088fa34753d520256cba6b01c06924",
     "outboundSafety": "03ccf3d1bed42c4132e6adefd37cd6c67d9c276c5b72bad6394bd9c075ce80fb",
     "interactionSurfaces": "b66bb493db0ba174af8589ce3511066f4d036aa9359d2a8e53c64c1f1f7c2380",
@@ -549,11 +549,11 @@
     "packages/runtime/src/cloud-company-path-presence.ts": "429e9cbe3270ade5d9b9b4651e70becbe1a5ec8e16f17ba0494ef0c27bada19b",
     "packages/runtime/src/cloud-company-path-refusal.ts": "1330597b596a808e472bf853383878e4d1bf2f21e39800bb6de0a76f85c314f3",
     "packages/runtime/src/cloud-connector-adapter.ts": "ef194cf4e28d0581ca639dc11f69eefde3695c8da56775aecfa62714c1949e09",
-    "packages/runtime/src/cloud-connector-catalog.ts": "65e04eea75fefaf84a3c81f1eb10e5f7d9655039d58a8fc3e6440a884689f1fb",
-    "packages/runtime/src/cloud-connector-github.ts": "0aaf598a18e1b60f4d7d8e38b2080e327f5f895d093361dd538eb7170d7aeda3",
-    "packages/runtime/src/cloud-connector-google.ts": "faae4a0b7b9c2db296c1446eac32ca2bb2ade4fd0896285ef2628da8c1c557ef",
-    "packages/runtime/src/cloud-connector-http.ts": "9be8d48bf2ea2ad4a48f8ac50de96698f397c4dbebc34897f89a2c5bb74f1bd5",
-    "packages/runtime/src/cloud-connector-oauth.ts": "9bd0c61cd9e2074edd321453dd9db8083df5006ef24b435cbaa04b96688b2901",
+    "packages/runtime/src/cloud-connector-catalog.ts": "b820dc5e47899f43537ade147458796b2dae0d15f2d2ecf5ed2d4d96fa347205",
+    "packages/runtime/src/cloud-connector-github.ts": "8a8e8dac57977deb322e190be4f572d370540ff92ee09774e88b748eff78c7a5",
+    "packages/runtime/src/cloud-connector-google.ts": "c3b978381a6f7d0389399c2812fee98e3d567ee7e59335bd286c6a41dd11b6d7",
+    "packages/runtime/src/cloud-connector-http.ts": "fd43261c02f04f79464c63a02c31d4c5bcba4e0dffda7daeffb8b40c9a4f3ab1",
+    "packages/runtime/src/cloud-connector-oauth.ts": "cf7be466857da03c96d1cf7260fd46db23479fd81782f8882c2cb274874c8a88",
     "packages/runtime/src/cloud-connector-service.ts": "f5e1c144bb417f2c8b274a59533742d61b42a956bda33e2cb1202212ec6ff411",
     "packages/runtime/src/cloud-hiring-tools.ts": "5a719a53e297b33a09f7c0dd622b4e73006348c41447d6118d50f2d9ae4a354c",
     "packages/runtime/src/cloud-identity-recovery-config.ts": "c2e979d17fad728730dbd180b2f34fbd6cdb9e94e14bbf8d19c065759c6309be",
@@ -601,7 +601,7 @@
     "packages/runtime/src/cloud-runtime-hire-overlays.ts": "900c6856676e6c953a7d36f324acff2b7d1ff6f4878fd8ebddfae529a31f0407",
     "packages/runtime/src/cloud-runtime-observability.ts": "81d885f118bb8362c47d6827b247b2e5f7fd8840c4c4552e70aca2ddf96df55f",
     "packages/runtime/src/cloud-runtime-policy.ts": "9c07cf719e70a6401e5620ba05c416876f0045f42c922918474e2350f37f1396",
-    "packages/runtime/src/cloud-secret-broker-http.ts": "6b18fd6fb499c5472073fc4acf3cdcb6f9726d7705b85bb35941b0868710400b",
+    "packages/runtime/src/cloud-secret-broker-http.ts": "7b951e45a4806580f10ce6d74875b92aa817421d80cc8a2a3bb03f81cf4da3ef",
     "packages/runtime/src/cloud-secret-broker-service-main.ts": "a70b877831ca25f795a8dc94d0d26b85ce98f2fb0596cd08275cb3af0719bba5",
     "packages/runtime/src/cloud-secret-broker.ts": "4227ac2d281f71a207ff74eb0c79c334279daec1ddede7f07f174327f8dbc5a0",
     "packages/runtime/src/cloud-secret-crypto.ts": "353b6b24b8c6c8414b68d0ff3a41118b809ad71956a519efc80dbaf2fe6d060c",
@@ -981,6 +981,6 @@
     "supabase/migrations/20260924010000_runtime_bundle_activation_v85.sql": "9415c69a04b130790c62801a3221f846b2e869791b3cf6835b15d08963a09e19",
     "supabase/migrations/20260924020000_runtime_memory_notebook_write.sql": "73ab910fd8a6e0f44700c2618030350a5fc0d576085b35cdb27b8bbc5fb8dbaa",
     "supabase/migrations/20260924030000_runtime_bundle_activation_v86.sql": "bb1012f3996c5fcfcff01fc304b139840aac7d8efc4acedac8ba5092748f52b3",
-    "supabase/migrations/20260924040000_cloud_connector_catalog.sql": "c815dc3171489fe0bd5d0bee0d9559676fb15d86d24af677165b3a76a01e3f74"
+    "supabase/migrations/20260924040000_cloud_connector_catalog.sql": "454df0ccbe2c7d7e2a50f327e44c6e113f580f058c77f5557434a66b20401ecf"
   }
 }

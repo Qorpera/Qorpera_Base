@@ -28,6 +28,10 @@ const BODY_CHARS = 4000;
 const COMMENT_CHARS = 1200;
 const COMMENT_BUDGET_CHARS = 3600;
 const FILE_CHARS = 6000;
+// Byte budgets under the broker's 32 KiB result limit (CONNECTOR_RESULT_MAX_BYTES).
+const BODY_BYTES = 12 * 1024;
+const COMMENT_BYTES = 4 * 1024;
+const FILE_BYTES = 16 * 1024;
 const MAX_FILE_BYTES = 96 * 1024;
 const OWNER = /^[A-Za-z0-9][A-Za-z0-9_-]{0,38}$/;
 const REPOSITORY = /^[A-Za-z0-9_.-]{1,100}$/;
@@ -173,7 +177,7 @@ export function createGitHubConnectorAdapters(
 					commentLimit > 0
 						? jsonArray(await github(context, `${base}/comments`, { query: { per_page: String(commentLimit) } }))
 						: [];
-				const body = clipText(jsonString(issue.body, 100_000) ?? "", BODY_CHARS);
+				const body = clipText(jsonString(issue.body, 100_000) ?? "", BODY_CHARS, BODY_BYTES);
 				// Comments share one text budget so the whole result stays readable
 				// inside the tool-result size the model receives.
 				let budget = COMMENT_BUDGET_CHARS;
@@ -181,7 +185,11 @@ export function createGitHubConnectorAdapters(
 				for (const item of comments) {
 					if (budget <= 0) break;
 					const comment = jsonRecord(item);
-					const text = clipText(jsonString(comment.body, 100_000) ?? "", Math.min(COMMENT_CHARS, budget));
+					const text = clipText(
+						jsonString(comment.body, 100_000) ?? "",
+						Math.min(COMMENT_CHARS, budget),
+						COMMENT_BYTES,
+					);
 					budget -= [...text.text].length;
 					included.push({
 						author: user(comment.user),
@@ -266,14 +274,14 @@ export function createGitHubConnectorAdapters(
 				} catch {
 					return { ...metadata, content: null, content_omitted: "binary" };
 				}
-				const clipped = clipText(text, FILE_CHARS);
+				const clipped = clipText(text, FILE_CHARS, FILE_BYTES);
 				return { ...metadata, content: clipped.text, content_truncated: clipped.truncated };
 			},
 			async get_pull_request(args, context) {
 				const base = `${repositoryPath(args)}/pulls/${jsonInteger(args.number)}`;
 				const pull = jsonRecord(await github(context, base));
 				const files = jsonArray(await github(context, `${base}/files`, { query: { per_page: "50" } }));
-				const body = clipText(jsonString(pull.body, 100_000) ?? "", BODY_CHARS);
+				const body = clipText(jsonString(pull.body, 100_000) ?? "", BODY_CHARS, BODY_BYTES);
 				return {
 					number: jsonInteger(pull.number),
 					title: jsonString(pull.title, 256),

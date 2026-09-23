@@ -83,7 +83,10 @@ begin
 	end loop;
 	if not has_function_privilege('qorpera_secret_broker','public.qorpera_complete_cloud_secret_capture(uuid,text,uuid,text,text,text,text)','EXECUTE')
 		or not has_function_privilege('authenticated','public.qorpera_grant_cloud_connector(uuid,uuid,uuid,uuid[])','EXECUTE')
-		or has_function_privilege('anon','public.qorpera_grant_cloud_connector(uuid,uuid,uuid,uuid[])','EXECUTE') then
+		or has_function_privilege('anon','public.qorpera_grant_cloud_connector(uuid,uuid,uuid,uuid[])','EXECUTE')
+		or not has_function_privilege('authenticated','public.qorpera_unshare_cloud_connector(uuid,uuid,uuid)','EXECUTE')
+		or has_function_privilege('anon','public.qorpera_unshare_cloud_connector(uuid,uuid,uuid)','EXECUTE')
+		or has_function_privilege('service_role','public.qorpera_unshare_cloud_connector(uuid,uuid,uuid)','EXECUTE') then
 		raise exception 'Connector grant privileges differ';
 	end if;
 end

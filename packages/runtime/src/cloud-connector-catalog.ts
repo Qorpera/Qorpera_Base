@@ -26,8 +26,9 @@ export interface CloudConnectorOperationDefinition {
 	readonly description: string;
 	readonly effect: CloudConnectorEffect;
 	readonly inputSchema: CloudConnectorInputSchema;
-	/** Closed summary of the provider request(s) this operation performs. It is
-	 * part of the adapter hash, so a changed request shape is a changed adapter. */
+	/** Closed summary of the provider request(s) this operation performs. Its
+	 * text is part of the adapter hash, so a changed declared request is a
+	 * changed adapter; the hash does not cover the handler code itself. */
 	readonly recipe: string;
 }
 
@@ -497,8 +498,10 @@ export function cloudConnectorOperation(
 }
 
 /** The adapter hash the SQL catalog pins and the broker checks before unwrapping
- * a credential. It covers everything a compiled adapter promises the catalog:
- * destination, credential placement, closed input schema and request recipe. */
+ * a credential. It covers what the catalog declares for the operation:
+ * destination, credential placement, closed input schema and the recipe text.
+ * It does not hash the handler code; the compiled handlers are pinned only by
+ * the broker artifact's own SHA-256. */
 export function cloudConnectorAdapterSha256(
 	connector: CloudConnectorDefinition,
 	operation: CloudConnectorOperationDefinition,

@@ -91,4 +91,140 @@ begin
 end
 $$;
 
+-- Grants outlive their issuer only through a re-share. An admin shares a
+-- company Google Drive connection; demoting that admin kills the grants (the
+-- kernel rechecks the issuer at every call); another admin's re-share re-issues
+-- them under the caller; a later hire gets them from a current owner; Stop
+-- sharing takes them away again.
+insert into auth.users(id,email) values ('39800000-0000-4000-8000-000000000004','routing-admin@example.test');
+insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role)
+values ('29000000-0000-4000-8000-000000000010','39800000-0000-4000-8000-000000000004',
+	'routing-admin@example.test','Admin','admin');
+insert into public.qorpera_cloud_secrets(id,profile_id,environment_id,broker_authority_id,owner_kind,owner_user_id,
+	connector_id,secret_name,purpose,current_version,created_by_user_id)
+values ('39800000-0000-4000-8000-000000000051','29000000-0000-4000-8000-000000000010',
+	'29000000-0000-4000-8000-000000000020','39800000-0000-4000-8000-000000000040','company',null,
+	'google_drive','primary','Google Drive account',1,'39800000-0000-4000-8000-000000000004');
+
+create function pg_temp.routing_drive_tools()
+returns integer language plpgsql as $$
+declare v_count integer;
+begin
+	perform pg_temp.path_claims('service_role');
+	set local role service_role;
+	select count(*) into v_count
+	from jsonb_array_elements(public.qorpera_list_native_connector_tools(current_setting('qorpera_test.path_binding')::jsonb))
+		as tool
+	where tool ->> 'connectorId' = 'google_drive';
+	reset role;
+	return v_count;
+end
+$$;
+create function pg_temp.routing_share(p_user uuid)
+returns jsonb language plpgsql as $$
+declare v_result jsonb;
+begin
+	perform pg_temp.path_claims('authenticated',p_user);
+	set local role authenticated;
+	v_result := public.qorpera_grant_cloud_connector('29000000-0000-4000-8000-000000000010',
+		'29000000-0000-4000-8000-000000000020','39800000-0000-4000-8000-000000000051');
+	reset role;
+	return v_result;
+end
+$$;
+
+do $$
+declare v_result jsonb; v_count integer;
+begin
+	v_result := pg_temp.routing_share('39800000-0000-4000-8000-000000000004');
+	v_count := pg_temp.routing_drive_tools();
+	if v_count <> 4 then raise exception 'The shared Drive connection gave % tools, not 4',v_count; end if;
+	-- The admin who shared it is demoted: the grants stay rows but no longer hold.
+	update public.qorpera_profile_members set role = 'contributor'
+	where profile_id = '29000000-0000-4000-8000-000000000010' and user_id = '39800000-0000-4000-8000-000000000004';
+	v_count := pg_temp.routing_drive_tools();
+	if v_count <> 0 then raise exception 'A demoted issuer''s grants still gave % tools',v_count; end if;
+	-- Another admin (the owner) shares it again: the dead grants are re-issued.
+	v_result := pg_temp.routing_share('29000000-0000-4000-8000-000000000001');
+	if (v_result ->> 'grantsIssued')::integer < 4 then
+		raise exception 'The re-share did not re-issue the dead grants: %',v_result;
+	end if;
+	v_count := pg_temp.routing_drive_tools();
+	if v_count <> 4 then raise exception 'The re-share restored % tools, not 4',v_count; end if;
+	if exists (select 1 from public.qorpera_cloud_secret_operation_grants
+		where secret_id = '39800000-0000-4000-8000-000000000051' and status = 'active'
+			and issued_by_user_id <> '29000000-0000-4000-8000-000000000001') then
+		raise exception 'A grant of the demoted issuer is still active';
+	end if;
+	if (select count(*) from public.qorpera_cloud_secret_audit_events
+		where secret_id = '39800000-0000-4000-8000-000000000051' and event_type = 'grant_revoked') < 4 then
+		raise exception 'The re-issued grants left no revocation trail';
+	end if;
+	-- Sharing again with live grants issues nothing.
+	if (pg_temp.routing_share('29000000-0000-4000-8000-000000000001') ->> 'grantsIssued')::integer <> 0 then
+		raise exception 'A live share was re-issued';
+	end if;
+end
+$$;
+
+-- A hire by a contributor, after the connecting admin was demoted: the grants
+-- come from a current owner, so they hold.
+insert into public.qorpera_profile_staff(profile_id,staff_agent_id,display_name,role,charter,
+	appearance_color,appearance_shape,employment_status,lifecycle_state,model_provider,model_id,created_at,updated_at,updated_by_user_id)
+values ('29000000-0000-4000-8000-000000000010','39800000-0000-4000-8000-000000000031','Newcomer','Support','Help customers.',
+	'green','round','active','setup','openai','gpt-native',clock_timestamp(),clock_timestamp(),'29000000-0000-4000-8000-000000000002');
+do $$
+begin
+	if (select count(*) from public.qorpera_cloud_secret_operation_grants
+		where staff_agent_id = '39800000-0000-4000-8000-000000000031' and secret_id = '39800000-0000-4000-8000-000000000051'
+			and status = 'active' and issued_by_user_id = '29000000-0000-4000-8000-000000000001') <> 4 then
+		raise exception 'The new hire''s grants were not issued by a current owner';
+	end if;
+end
+$$;
+
+-- Stop sharing: every grant of the connection is revoked and new hires get nothing.
+do $$
+declare v_result jsonb; v_count integer;
+begin
+	perform pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000002');
+	set local role authenticated;
+	begin
+		perform public.qorpera_unshare_cloud_connector('29000000-0000-4000-8000-000000000010',
+			'29000000-0000-4000-8000-000000000020','39800000-0000-4000-8000-000000000051');
+		raise exception 'A contributor stopped sharing a company connection';
+	exception when insufficient_privilege then null;
+	end;
+	reset role;
+	perform pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000001');
+	set local role authenticated;
+	v_result := public.qorpera_unshare_cloud_connector('29000000-0000-4000-8000-000000000010',
+		'29000000-0000-4000-8000-000000000020','39800000-0000-4000-8000-000000000051');
+	reset role;
+	if (v_result ->> 'grantsRevoked')::integer < 8 or (v_result ->> 'availableToAllAgents')::boolean then
+		raise exception 'Stop sharing left grants or the all-agents mark: %',v_result;
+	end if;
+	v_count := pg_temp.routing_drive_tools();
+	if v_count <> 0 then raise exception 'Stop sharing left % tools',v_count; end if;
+	if exists (select 1 from public.qorpera_cloud_secret_operation_grants
+		where secret_id = '39800000-0000-4000-8000-000000000051' and status = 'active')
+		or (select available_to_all_agents from public.qorpera_cloud_secrets
+			where id = '39800000-0000-4000-8000-000000000051') then
+		raise exception 'Stop sharing left the connection shared';
+	end if;
+end
+$$;
+insert into public.qorpera_profile_staff(profile_id,staff_agent_id,display_name,role,charter,
+	appearance_color,appearance_shape,employment_status,lifecycle_state,model_provider,model_id,created_at,updated_at,updated_by_user_id)
+values ('29000000-0000-4000-8000-000000000010','39800000-0000-4000-8000-000000000032','Later','Support','Help customers.',
+	'green','round','active','setup','openai','gpt-native',clock_timestamp(),clock_timestamp(),'29000000-0000-4000-8000-000000000001');
+do $$
+begin
+	if exists (select 1 from public.qorpera_cloud_secret_operation_grants
+		where staff_agent_id = '39800000-0000-4000-8000-000000000032' and secret_id = '39800000-0000-4000-8000-000000000051') then
+		raise exception 'A hire after Stop sharing received the connection';
+	end if;
+end
+$$;
+
 rollback;

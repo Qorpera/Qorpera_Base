@@ -5,6 +5,7 @@ import {
 	createGoogleDriveConnectorAdapters,
 	GOOGLE_TOKEN_ORIGIN,
 } from "@qorpera/runtime/cloud-connector-google";
+import { clipText, connectorOutcome } from "@qorpera/runtime/cloud-connector-http";
 import type { CloudSecretConnectorAdapter } from "@qorpera/runtime/cloud-secret-broker";
 import { expect, it, vi } from "vitest";
 
@@ -247,6 +248,49 @@ it("searches Drive with an escaped query and exports Google Docs as text", async
 	});
 });
 
+it("keeps Drive files and Gmail bodies under the broker's result limit by bytes, not characters", async () => {
+	// 20 000 characters of four-byte emoji and JSON-escaped control characters
+	// would be ~100 KiB as JSON; the broker refuses anything over 32 KiB.
+	const heavy = "😀\u0001".repeat(10_000);
+	const { fetchImplementation } = google({
+		[`GET ${DRIVE}/drive/v3/files/doc1`]: () =>
+			Response.json({ id: "doc1", name: "Heavy", mimeType: "application/vnd.google-apps.document" }),
+		[`GET ${DRIVE}/drive/v3/files/doc1/export`]: () =>
+			new Response(heavy, { headers: { "content-type": "text/plain" } }),
+		[`GET ${GMAIL}/gmail/v1/users/me/messages/m1`]: () => Response.json(message("m1", "Heavy", heavy)),
+		[`GET ${GMAIL}/gmail/v1/users/me/threads/t1`]: () =>
+			Response.json({
+				id: "t1",
+				messages: Array.from({ length: 10 }, (_, index) => message(`m${index}`, "Heavy", heavy)),
+			}),
+		[`GET ${GMAIL}/gmail/v1/users/me/messages`]: () =>
+			Response.json({ messages: Array.from({ length: 25 }, (_, index) => ({ id: `s${index}` })) }),
+		...Object.fromEntries(
+			Array.from({ length: 25 }, (_, index) => [
+				`GET ${GMAIL}/gmail/v1/users/me/messages/s${index}`,
+				() => Response.json(message(`s${index}`, "😀".repeat(2000), "x")),
+			]),
+		),
+	});
+	const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+	const file = await drive("read_file", fetchImplementation).execute(
+		input({ file_id: "doc1", max_chars: 20_000 }, DRIVE),
+	);
+	expect(file).toMatchObject({ status: "completed", result: { content_truncated: true } });
+	expect(bytes(file)).toBeLessThanOrEqual(30 * 1024);
+	const mail = await gmail("read_message", fetchImplementation).execute(input({ message_id: "m1" }, GMAIL));
+	expect(mail).toMatchObject({ status: "completed", result: { body_truncated: true } });
+	expect(bytes(mail)).toBeLessThanOrEqual(30 * 1024);
+	const thread = await gmail("read_thread", fetchImplementation).execute(input({ thread_id: "t1" }, GMAIL));
+	expect(thread).toMatchObject({ status: "completed" });
+	expect(bytes(thread)).toBeLessThanOrEqual(30 * 1024);
+	// 25 summaries with 8 KiB subjects cannot all fit: the list keeps what fits and says so.
+	const search = await gmail("search_messages", fetchImplementation).execute(input({ query: "x", limit: 25 }, GMAIL));
+	expect(search).toMatchObject({ status: "completed", result: { more: true } });
+	expect((search as { result: { messages_omitted: number } }).result.messages_omitted).toBeGreaterThan(0);
+	expect(bytes(search)).toBeLessThanOrEqual(30 * 1024);
+});
+
 it("creates a Google Doc from text through a multipart upload and updates content in place", async () => {
 	const { fetchImplementation } = google({
 		[`POST ${DRIVE}/upload/drive/v3/files`]: (url, init) => {
@@ -309,4 +353,17 @@ it("pins Gmail and Drive to their own origins", async () => {
 		"authority",
 	);
 	expect(fetchImplementation).not.toHaveBeenCalled();
+});
+
+it("clips by JSON bytes at a code point boundary and turns an oversized result into a closed failure", async () => {
+	const clipped = clipText("😀😀😀", 10, 9);
+	// Two emoji (8 bytes) would leave no room for the 3-byte ellipsis: one emoji fits.
+	expect(clipped).toEqual({ text: "😀…", truncated: true });
+	expect(clipText("\n\n", 10, 4)).toEqual({ text: "\n\n", truncated: false });
+	await expect(connectorOutcome(async () => ({ text: "x".repeat(40 * 1024) }))).resolves.toEqual({
+		schema: "qorpera.connector-result/v1",
+		status: "failed",
+		reason: "result_too_large",
+		detail: "The result is too large to return. Ask for fewer items or a smaller part.",
+	});
 });

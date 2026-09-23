@@ -26,6 +26,18 @@ import { connectorRequest, jsonRecord, jsonString, parseJsonResponse } from "./c
  * accepts the callback only when the whole state is one it issued for that
  * company. The prefix is not a secret and grants nothing; the random part
  * stays single-use and unguessable.
+ *
+ * The sign-in is bound to the browser that started it. The web app creates a
+ * random browser proof, keeps it in that tab's session storage and sends only
+ * its SHA-256 with the start. The provider's callback does not seal anything:
+ * it parks the authorization code under a one-time confirmation id and sends
+ * the browser back to the app, which must present the proof to confirm. Only
+ * then does the broker exchange the code and seal the token. A consent link
+ * handed to someone else ends in a browser without the proof, so nothing of
+ * theirs is sealed into the starting company; the starter's browser never sees
+ * the confirmation id. (The web app's CSP allows no cross-origin form, and a
+ * cookie set by the app's cross-site request would be a third-party cookie, so
+ * the proof lives in the app, not in a broker cookie.)
  */
 
 export interface CloudConnectorOAuthClients {
@@ -40,6 +52,23 @@ export interface CloudConnectorOAuthBegin {
 	readonly companyId: string;
 	readonly connectorId: string;
 	readonly returnTo: string;
+	/** SHA-256 (hex) of the proof the starting browser keeps; the confirm
+	 * step must present the proof itself. */
+	readonly browserProofSha256: string;
+}
+
+/** Where the provider's callback leaves the browser: back on the app with a
+ * one-time confirmation id, nothing sealed yet. */
+export interface CloudConnectorOAuthReceipt {
+	readonly connectorId: string;
+	readonly returnTo: string;
+	readonly confirmation: string;
+}
+
+export interface CloudConnectorOAuthConfirm {
+	readonly ticketId: string;
+	readonly confirmation: string;
+	readonly browserProof: string;
 }
 
 export interface CloudConnectorOAuthStarted {
@@ -62,7 +91,8 @@ export type CloudConnectorOAuthFailureReason =
 	| "expired"
 	| "provider_error"
 	| "no_refresh_token"
-	| "state_unknown";
+	| "state_unknown"
+	| "browser_mismatch";
 
 export class CloudConnectorOAuthError extends Error {
 	readonly reason: CloudConnectorOAuthFailureReason;
@@ -108,7 +138,11 @@ export const CLOUD_CONNECTOR_OAUTH_STATE =
 const CODE = /^[\x21-\x7e]{1,2048}$/;
 const TOKEN = /^[A-Za-z0-9_./-]{20,4096}$/;
 const STATE_TTL_MS = 10 * 60_000;
+const CONFIRM_TTL_MS = 5 * 60_000;
 const MAX_PENDING = 256;
+const PROOF = /^[A-Za-z0-9_-]{43}$/;
+const CONFIRMATION = /^[A-Za-z0-9_-]{43}$/;
+const SHA256_HEX = /^[0-9a-f]{64}$/;
 const MAX_RETURN_URL = 2048;
 
 interface PendingAuthorization {
@@ -119,6 +153,21 @@ interface PendingAuthorization {
 	readonly connectorId: string;
 	readonly returnTo: string;
 	readonly codeVerifier: string | undefined;
+	readonly browserProofSha256: string;
+	readonly expiresAt: number;
+}
+
+/** A provider answer parked until the starting browser confirms it. */
+interface PendingConfirmation {
+	readonly confirmationSha256: string;
+	readonly ticketId: string;
+	readonly captureCapability: string;
+	readonly companyId: string;
+	readonly connectorId: string;
+	readonly returnTo: string;
+	readonly code: string;
+	readonly codeVerifier: string | undefined;
+	readonly browserProofSha256: string;
 	readonly expiresAt: number;
 }
 
@@ -177,11 +226,16 @@ export function parseConnectorReturnOrigins(value: unknown): readonly string[] {
 export function connectorReturnLocation(
 	returnTo: string,
 	connectorId: string,
-	outcome: "connected" | "failed",
-	reason?: CloudConnectorOAuthFailureReason,
+	outcome: "confirm" | "failed",
+	detail?: { readonly reason?: CloudConnectorOAuthFailureReason; readonly confirmation?: string },
 ): string {
 	const url = new URL(returnTo);
-	const fragment = new URLSearchParams({ connector: connectorId, connection: outcome, ...(reason ? { reason } : {}) });
+	const fragment = new URLSearchParams({
+		connector: connectorId,
+		connection: outcome,
+		...(detail?.reason ? { reason: detail.reason } : {}),
+		...(detail?.confirmation ? { confirmation: detail.confirmation } : {}),
+	});
 	url.hash = url.hash ? `${url.hash}?${fragment.toString()}` : `#?${fragment.toString()}`;
 	return url.href;
 }
@@ -194,6 +248,7 @@ export class CloudConnectorOAuthFlows {
 	readonly #now: () => number;
 	readonly #random: (bytes: number) => Uint8Array;
 	readonly #pending = new Map<string, PendingAuthorization>();
+	readonly #confirmations = new Map<string, PendingConfirmation>();
 
 	constructor(options: {
 		clients: CloudConnectorOAuthClients;
@@ -242,10 +297,17 @@ export class CloudConnectorOAuthFlows {
 	#sweep(): void {
 		const now = this.#now();
 		for (const [key, pending] of this.#pending) if (pending.expiresAt <= now) this.#pending.delete(key);
+		for (const [key, parked] of this.#confirmations) if (parked.expiresAt <= now) this.#confirmations.delete(key);
 	}
 
 	begin(input: CloudConnectorOAuthBegin): CloudConnectorOAuthStarted {
-		if (!UUID.test(input.ticketId) || !CAPABILITY.test(input.captureCapability) || !UUID.test(input.companyId))
+		if (
+			!UUID.test(input.ticketId) ||
+			!CAPABILITY.test(input.captureCapability) ||
+			!UUID.test(input.companyId) ||
+			typeof input.browserProofSha256 !== "string" ||
+			!SHA256_HEX.test(input.browserProofSha256)
+		)
 			throw new Error("Connector OAuth start is invalid");
 		const companyId = input.companyId.toLowerCase();
 		const connector = cloudConnector(input.connectorId);
@@ -275,23 +337,28 @@ export class CloudConnectorOAuthFlows {
 		}
 		this.#pending.set(sha256(state), {
 			stateSha256: sha256(state),
-			ticketId: input.ticketId,
+			ticketId: input.ticketId.toLowerCase(),
 			captureCapability: input.captureCapability,
 			companyId,
 			connectorId: connector.id,
 			returnTo,
 			codeVerifier,
+			browserProofSha256: input.browserProofSha256,
 			expiresAt,
 		});
 		return { authorizationUrl: url.href, expiresAt: new Date(expiresAt).toISOString() };
 	}
 
-	/** Consumes the provider's callback. The pending entry is removed before
-	 * any network call, so a replayed callback cannot mint a second capture. */
-	async complete(
-		query: { readonly state?: string; readonly code?: string; readonly error?: string },
-		signal: AbortSignal,
-	): Promise<CloudConnectorOAuthCompletion> {
+	/** Consumes the provider's callback without sealing anything. The pending
+	 * entry is removed first, so a replayed callback finds no state. A code is
+	 * parked under a fresh one-time confirmation id that only the returning
+	 * browser learns (in the page fragment); nothing is exchanged until the
+	 * starting browser confirms with its proof. */
+	receive(query: {
+		readonly state?: string;
+		readonly code?: string;
+		readonly error?: string;
+	}): CloudConnectorOAuthReceipt {
 		const state = typeof query.state === "string" ? CLOUD_CONNECTOR_OAUTH_STATE.exec(query.state) : null;
 		if (!state) throw new CloudConnectorOAuthError("state_unknown");
 		const key = sha256(state[0]);
@@ -312,27 +379,70 @@ export class CloudConnectorOAuthFlows {
 				pending.connectorId,
 			);
 		}
-		const connector = cloudConnector(pending.connectorId);
+		if (this.#confirmations.size >= MAX_PENDING)
+			throw new CloudConnectorOAuthError("provider_error", pending.returnTo, pending.connectorId);
+		const confirmation = Buffer.from(this.#random(32)).toString("base64url");
+		this.#confirmations.set(sha256(confirmation), {
+			confirmationSha256: sha256(confirmation),
+			ticketId: pending.ticketId,
+			captureCapability: pending.captureCapability,
+			companyId: pending.companyId,
+			connectorId: pending.connectorId,
+			returnTo: pending.returnTo,
+			code: query.code,
+			codeVerifier: pending.codeVerifier,
+			browserProofSha256: pending.browserProofSha256,
+			expiresAt: this.#now() + CONFIRM_TTL_MS,
+		});
+		return { connectorId: pending.connectorId, returnTo: pending.returnTo, confirmation };
+	}
+
+	/** The starting browser confirms with the proof it kept. The parked entry
+	 * is removed before anything else (one attempt per confirmation id); a
+	 * missing or different proof is refused and nothing is exchanged. */
+	async confirm(input: CloudConnectorOAuthConfirm, signal: AbortSignal): Promise<CloudConnectorOAuthCompletion> {
+		if (
+			typeof input.confirmation !== "string" ||
+			!CONFIRMATION.test(input.confirmation) ||
+			typeof input.ticketId !== "string" ||
+			!UUID.test(input.ticketId)
+		)
+			throw new CloudConnectorOAuthError("state_unknown");
+		const key = sha256(input.confirmation);
+		const parked = this.#confirmations.get(key);
+		if (!parked || !digestsMatch(parked.confirmationSha256, key) || parked.ticketId !== input.ticketId.toLowerCase())
+			throw new CloudConnectorOAuthError("state_unknown");
+		this.#confirmations.delete(key);
+		this.#sweep();
+		if (
+			typeof input.browserProof !== "string" ||
+			!PROOF.test(input.browserProof) ||
+			!digestsMatch(parked.browserProofSha256, sha256(input.browserProof))
+		)
+			throw new CloudConnectorOAuthError("browser_mismatch", parked.returnTo, parked.connectorId);
+		if (parked.expiresAt <= this.#now())
+			throw new CloudConnectorOAuthError("expired", parked.returnTo, parked.connectorId);
+		const connector = cloudConnector(parked.connectorId);
 		const client = this.#client(connector);
-		if (!client) throw new CloudConnectorOAuthError("provider_error", pending.returnTo, pending.connectorId);
+		if (!client) throw new CloudConnectorOAuthError("provider_error", parked.returnTo, parked.connectorId);
 		const endpoints = CLOUD_CONNECTOR_OAUTH_PROVIDERS[connector.oauth.provider];
 		let tokens: Record<string, unknown>;
 		try {
-			tokens = await this.#exchange(endpoints, client, query.code, pending.codeVerifier, signal);
+			tokens = await this.#exchange(endpoints, client, parked.code, parked.codeVerifier, signal);
 		} catch {
-			throw new CloudConnectorOAuthError("provider_error", pending.returnTo, pending.connectorId);
+			throw new CloudConnectorOAuthError("provider_error", parked.returnTo, parked.connectorId);
 		}
 		const accessToken = jsonString(tokens.access_token, 4096);
 		const refreshToken = jsonString(tokens.refresh_token, 4096);
 		const fields: Record<string, string> = {};
 		if (connector.credentialName === "refresh_token") {
 			if (!refreshToken || !TOKEN.test(refreshToken)) {
-				throw new CloudConnectorOAuthError("no_refresh_token", pending.returnTo, pending.connectorId);
+				throw new CloudConnectorOAuthError("no_refresh_token", parked.returnTo, parked.connectorId);
 			}
 			fields.refresh_token = refreshToken;
 		} else {
 			if (!accessToken || !TOKEN.test(accessToken)) {
-				throw new CloudConnectorOAuthError("provider_error", pending.returnTo, pending.connectorId);
+				throw new CloudConnectorOAuthError("provider_error", parked.returnTo, parked.connectorId);
 			}
 			fields[connector.credentialName] = accessToken;
 		}
@@ -345,11 +455,11 @@ export class CloudConnectorOAuthFlows {
 			}
 		}
 		return {
-			ticketId: pending.ticketId,
-			captureCapability: pending.captureCapability,
-			companyId: pending.companyId,
-			connectorId: pending.connectorId,
-			returnTo: pending.returnTo,
+			ticketId: parked.ticketId,
+			captureCapability: parked.captureCapability,
+			companyId: parked.companyId,
+			connectorId: parked.connectorId,
+			returnTo: parked.returnTo,
 			fields,
 			accountLabel,
 		};
