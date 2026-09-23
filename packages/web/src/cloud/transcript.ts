@@ -31,6 +31,8 @@ export interface TranscriptMessage {
 	phase?: "progress" | "final";
 	runId?: string;
 	staffSpeaker?: HostedStaffSpeaker;
+	/** A peer message sent without waking its recipient; it is read at the recipient's next turn. */
+	held?: boolean;
 	createdAt: string;
 	pending?: "queued" | "processing" | "failed";
 	failureReason?: string;
@@ -59,6 +61,8 @@ export interface TranscriptPeerLink {
 	id: string;
 	sequence: number;
 	direction: "in" | "out";
+	/** Left without waking the coworker; read at its next turn. */
+	held?: boolean;
 	counterpartStaffId: string;
 	pairSessionId: string;
 	createdAt: string;
@@ -224,6 +228,7 @@ function messageFromEntry(entry: Entry, event: HostedSessionEvent, legacy: boole
 			attachmentCount: 0,
 			phase: "final",
 			runId: delivery.runId,
+			...(delivery.held === true ? { held: true } : {}),
 			staffSpeaker: {
 				runId: delivery.runId,
 				staffAgentId: delivery.from,
@@ -308,6 +313,7 @@ export function projectTranscript(
 						id: event.eventId,
 						sequence: event.sequence,
 						direction: info.direction,
+						...(info.held === true ? { held: true } : {}),
 						counterpartStaffId: info.counterpartStaffId,
 						pairSessionId: info.pairSessionId,
 						createdAt: event.createdAt,

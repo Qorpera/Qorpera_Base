@@ -1097,6 +1097,10 @@ company-visible and answerable:
   transcript. File-event and routine fences are unchanged.
 - Workers (13) are not messaging: they have no mouth and report to their parent.
   Group chats (14.7) remain the place for handoffs that need several agents.
+- A message may be sent **held** (`priority: false`): written and shown the
+  same way, it wakes nobody; the recipient reads it, as data, at the start of
+  its next wake of any kind. Held messages extend no chain but count toward
+  the pair's hourly budget. Thanks, status and FYIs are sent held.
 
 ### 14.7 Rooms
 

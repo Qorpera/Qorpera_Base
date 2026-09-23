@@ -1,0 +1,41 @@
+[Unit]
+Description=Qorpera isolated coding VM executor and command gateway
+After=network-online.target snap.lxd.daemon.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=qorpera-coding-executor
+Group=qorpera-coding-executor
+SupplementaryGroups=lxd
+# Deployment must install a drop-in with RequiresMountsFor=<dedicated NAS mount>
+# and ReadWritePaths=<dedicated service-owned NAS root>. Missing mount fails closed.
+ExecStart=/usr/bin/node /opt/qorpera-coding-executor/qorpera-coding-executor.mjs
+LoadCredential=qorpera-coding-executor-config:/etc/qorpera/coding-executor.json
+LoadCredential=qorpera-coding-registry:/etc/qorpera/coding-registry.key
+LoadCredential=qorpera-coding-orchestrator:/etc/qorpera/coding-orchestrator.key
+LoadCredential=qorpera-coding-provider:/etc/qorpera/coding-provider.key
+LoadCredential=qorpera-coding-command:/etc/qorpera/coding-command.key
+# Add one LoadCredential=qorpera-coding-repository-NAME:... per reviewed repository.
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=45s
+KillMode=control-group
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+UMask=0077
+MemoryMax=2G
+TasksMax=512
+CPUQuota=200%
+LimitCORE=0
+
+[Install]
+WantedBy=multi-user.target
