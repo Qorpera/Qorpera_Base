@@ -1,10 +1,21 @@
 import type { JsonValue } from "../cloud/types.ts";
 import { badge, fmtTime, h, icon } from "./dom.ts";
 
+/** A runner custom entry keeps its facts under `entry.data`; older desktop bodies keep them at the top. */
+export function authorizationData(body: JsonValue): Record<string, JsonValue> {
+	if (!body || typeof body !== "object" || Array.isArray(body)) return {};
+	const entry = body.entry;
+	if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+		const data = entry.data;
+		if (data && typeof data === "object" && !Array.isArray(data)) return data;
+	}
+	return body;
+}
+
 export function authorizationRequestId(body: JsonValue): string | undefined {
-	if (!body || typeof body !== "object" || Array.isArray(body)) return undefined;
+	const data = authorizationData(body);
 	for (const key of ["requestEventId", "request_event_id", "requestId", "request_id", "authorizationRequestId"]) {
-		const value = body[key];
+		const value = data[key];
 		if (typeof value === "string" && value) return value.toLowerCase();
 	}
 	return undefined;
@@ -16,9 +27,11 @@ export function renderAuthorizationCard(
 	createdAt: string,
 	actor: string,
 	resolution?: JsonValue,
+	/** Records the decision through the thread (kernel v70); absent while this member may not decide. */
+	onDecide?: (decision: "approved" | "declined") => void,
 ): HTMLElement {
-	const data = body && typeof body === "object" && !Array.isArray(body) ? body : {};
-	const resolved = resolution && typeof resolution === "object" && !Array.isArray(resolution) ? resolution : data;
+	const data = authorizationData(body);
+	const resolved = resolution === undefined ? data : authorizationData(resolution);
 	const isDecision = kind === "authorization_decision" || resolution !== undefined;
 	const decision = typeof resolved.decision === "string" ? resolved.decision.toLowerCase() : "";
 	const approved = decision === "approved" || decision === "approve";
@@ -82,9 +95,22 @@ export function renderAuthorizationCard(
 			? h(
 					"div",
 					{ class: "decision-actions" },
-					h("p", null, "Decisions are not available from this client yet."),
-					h("button", { type: "button", class: "btn", disabled: true }, "Decline"),
-					h("button", { type: "button", class: "btn btn-primary", disabled: true }, "Approve"),
+					onDecide ? null : h("p", null, "Only an owner or admin of this company can decide."),
+					h(
+						"button",
+						{ type: "button", class: "btn", disabled: !onDecide, onclick: () => onDecide?.("declined") },
+						"Decline",
+					),
+					h(
+						"button",
+						{
+							type: "button",
+							class: "btn btn-primary",
+							disabled: !onDecide,
+							onclick: () => onDecide?.("approved"),
+						},
+						"Approve",
+					),
 				)
 			: null,
 		details.length

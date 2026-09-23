@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdtemp, realpath, rm, unlink } from "node:fs/promises";
+import { mkdtemp, readdir, realpath, rm, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -21,6 +21,7 @@ import {
 	LxdNativeLoginGateway,
 	type LxdNativeLoginGatewayConfig,
 } from "../src/lxd-login-gateway.ts";
+import { LxdLoginJournal } from "../src/lxd-login-journal.ts";
 import { readRuntimeNodeHost } from "../src/runtime-node-host.ts";
 
 vi.mock("../src/runtime-node-host.ts", () => ({
@@ -240,7 +241,7 @@ function loginRequest(body = loginBody(), bearerCapability = capability): Reques
 	});
 }
 
-function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" | "completed"> = []) {
+function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" | "completed"> = [], id = loginId) {
 	const requests: Array<{ url: string; authorization: string | null; body: string }> = [];
 	const control = {
 		companyRefusal: null as string | null,
@@ -271,7 +272,7 @@ function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" 
 		if (args.p_request_id) args.p_login_id = args.p_request_id;
 		if (originalUrl.endsWith("qorpera_describe_native_account_refresh_route"))
 			return Response.json({
-				request_id: loginId,
+				request_id: id,
 				profile_id: profileId,
 				compute_identity_id: computeIdentityId,
 				requested_by_user_id: ownerUserId,
@@ -282,14 +283,14 @@ function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" 
 			control.status = "completed";
 			return Response.json({
 				schema: "qorpera.native-account-refresh-result/v1",
-				request_id: loginId,
+				request_id: id,
 				status: "completed",
 			});
 		}
 		if (url.includes("qorpera_describe_native_provider_login")) {
 			control.status = statuses.shift() ?? control.status;
 			return Response.json({
-				login_id: loginId,
+				login_id: id,
 				profile_id: profileId,
 				client_connection_id: clientConnectionId,
 				compute_identity_id: computeIdentityId,
@@ -342,7 +343,7 @@ function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" 
 			if (!control.committed) return Response.json({ error: "absent" }, { status: 403 });
 			return Response.json({
 				allocationId: args.p_allocation_id,
-				loginId,
+				loginId: id,
 				profileId,
 				computeIdentityId,
 				expiresAt,
@@ -380,7 +381,7 @@ function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" 
 				notBefore: new Date(Date.now() + 100).toISOString(),
 				expiresAt,
 				receiptId: null,
-				loginId,
+				loginId: id,
 				requestedByUserId: ownerUserId,
 				backupSha256: "b".repeat(64),
 				authorityId: "30000000-0000-4000-8000-000000000030",
@@ -402,7 +403,7 @@ function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" 
 			if (!response) throw new Error("unexpected login forwarding call");
 			return Response.json({
 				schema: "qorpera.native-provider-login-result/v1",
-				login_id: loginId,
+				login_id: id,
 				status: response.status,
 				interaction_url: response.interactionUrl,
 				user_code: response.userCode,
@@ -1022,6 +1023,87 @@ describe("LXD native login gateway", () => {
 			await service.close();
 		}
 		expect(lxd.deleteCalls).toBe(1);
+	});
+	it("reads a released journal once per process, not on every cleanup pass or sign-in", async () => {
+		const root = await stateRoot(),
+			kept = { ...config(root), releasedJournalRetentionMs: Number.MAX_SAFE_INTEGER },
+			lxd = new FakeLxd(),
+			released = fetchBoundary([
+				{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: null },
+			]);
+		await new LxdNativeLoginGateway(kept, lxd, released.fetchImplementation).handle(loginRequest());
+		released.control.cleanupRequired = true;
+		await new LxdNativeLoginGateway(kept, lxd, released.fetchImplementation).reconcile(new AbortController().signal);
+		expect(released.control.releasedAt).not.toBeNull();
+
+		const nextLoginId = "30000000-0000-4000-8000-000000000011",
+			next = fetchBoundary(
+				[{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: null }],
+				[],
+				nextLoginId,
+			);
+		let boundary = released;
+		const opens = vi.spyOn(LxdLoginJournal, "open");
+		const reads = (id: string) => opens.mock.calls.filter(([, name]) => name === id).length;
+		try {
+			// A restarted process verifies the retained journal once, then skips it.
+			const gateway = new LxdNativeLoginGateway(kept, lxd, (input, init) =>
+				boundary.fetchImplementation(input, init),
+			);
+			for (let pass = 0; pass < 3; pass++)
+				expect(await gateway.reconcile(new AbortController().signal)).toEqual({ scanned: 1, unconfirmed: 0 });
+			expect(reads(loginId)).toBe(1);
+			// A later sign-in of the same identity scans for replaced logins without reopening it.
+			boundary = next;
+			expect((await gateway.handle(loginRequest(loginBody({ login_id: nextLoginId })))).status).toBe(200);
+			expect(reads(nextLoginId)).toBeGreaterThan(0);
+			expect(reads(loginId)).toBe(1);
+			expect(lxd.createCalls).toHaveLength(2);
+			expect(await gateway.reconcile(new AbortController().signal)).toEqual({ scanned: 2, unconfirmed: 0 });
+			expect(reads(loginId)).toBe(1);
+		} finally {
+			opens.mockRestore();
+		}
+	});
+	it("archives a released journal after a day and refuses a later request for its login", async () => {
+		const root = await stateRoot(),
+			lxd = new FakeLxd(),
+			boundary = fetchBoundary([
+				{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: null },
+			]),
+			kept = { ...config(root), releasedJournalRetentionMs: Number.MAX_SAFE_INTEGER };
+		await new LxdNativeLoginGateway(kept, lxd, boundary.fetchImplementation).handle(loginRequest());
+		boundary.control.cleanupRequired = true;
+		await new LxdNativeLoginGateway(kept, lxd, boundary.fetchImplementation).reconcile(new AbortController().signal);
+		expect(boundary.control.releasedAt).toBe("2026-09-08T00:00:00.000Z");
+
+		const gateway = new LxdNativeLoginGateway(config(root), lxd, boundary.fetchImplementation);
+		const opens = vi.spyOn(LxdLoginJournal, "open");
+		const now = vi.spyOn(Date, "now");
+		try {
+			now.mockReturnValue(Date.parse("2026-09-08T12:00:00.000Z"));
+			expect(await gateway.reconcile(new AbortController().signal)).toEqual({ scanned: 1, unconfirmed: 0 });
+			expect(await readdir(root)).toEqual([loginId]);
+			// A day after its release it moves to the archive without being read again.
+			now.mockReturnValue(Date.parse("2026-09-09T00:00:00.000Z"));
+			expect(await gateway.reconcile(new AbortController().signal)).toEqual({ scanned: 1, unconfirmed: 0 });
+			expect(opens.mock.calls.filter(([, name]) => name === loginId)).toHaveLength(1);
+		} finally {
+			now.mockRestore();
+			opens.mockRestore();
+		}
+		expect(await readdir(root)).toEqual(["archive"]);
+		expect(await readdir(join(root, "archive", loginId))).not.toContain("bridge.json");
+		const archived = await LxdLoginJournal.open(join(root, "archive"), loginId, lxd);
+		expect((await archived.state()).releasedAt).toBe("2026-09-08T00:00:00.000Z");
+		expect(await gateway.reconcile(new AbortController().signal)).toEqual({ scanned: 0, unconfirmed: 0 });
+
+		// Its login is over: a later post neither allocates a machine nor a new journal.
+		expect((await gateway.handle(loginRequest())).status).toBe(503);
+		expect(lxd.createCalls).toHaveLength(1);
+		expect(await readdir(root)).toEqual(["archive"]);
+		boundary.control.status = "completed";
+		expect(await (await gateway.handle(loginRequest())).json()).toMatchObject({ status: "completed" });
 	});
 	it("fails closed on protected host changes and missing retained authority", async () => {
 		const root = await stateRoot(),

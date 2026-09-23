@@ -330,6 +330,7 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 		throw new Error("Unexpected synthetic RPC");
 	});
 	const deliveries = new Map<string, CloudAgentSendReceipt>();
+	const cards = new Map<string, { sessionId: string; interactionId: string; sequence: number }>();
 	const control = {
 		describeToolAuthority: vi.fn(async () => structuredClone(f.authority)),
 		beginToolOperation: vi.fn<CloudNativeToolOperationControlPlane["beginToolOperation"]>(async (_binding, input) => {
@@ -366,6 +367,19 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 			deliveries.set(input.idempotencyKey, receipt);
 			return receipt;
 		}),
+		appendInteractionRequest: vi.fn<NonNullable<NativeProviderControlPlane["appendInteractionRequest"]>>(
+			async (request, input) => {
+				const existing = cards.get(input.eventId);
+				const receipt = existing ?? {
+					sessionId: f.context.identity.sessionId as string,
+					interactionId: input.eventId,
+					sequence: 100 + cards.size,
+				};
+				cards.set(input.eventId, receipt);
+				expect(request.authority.runId).toBe(f.binding.runId);
+				return receipt;
+			},
+		),
 	};
 	const secretBroker: CloudSecretOperationClient | undefined =
 		mode === "company-secret"
@@ -682,6 +696,7 @@ it.each([
 				"company_mkdir",
 				"company_read",
 				"company_write",
+				"ask_member",
 				"create_group_chat",
 				"hire_agent",
 				"manage_routine",
@@ -907,6 +922,40 @@ it("requires a final send when there is an audience, but does not invent one for
 	expect(silent.control.sendMessage).not.toHaveBeenCalled();
 	const evidence = JSON.parse(await readFile(silent.evidence, "utf8"));
 	expect(JSON.stringify(evidence.threadParameters.dynamicTools)).not.toContain('"name":"send_message"');
+});
+
+it("raises one typed card for the member, appended before the final sentence, and ends the turn", async () => {
+	const f = await fixture("company-cards");
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	// One progress send, then the card's sentence as the final send (its retry replays).
+	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("channel:final")?.messageId });
+	expect(f.control.appendInteractionRequest).toHaveBeenCalledTimes(2);
+	const [request, card] = f.control.appendInteractionRequest.mock.calls[0]!;
+	expect(request.authority.runId).toBe(f.binding.runId);
+	expect(card).toEqual({
+		eventId: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-a[0-9a-f]{3}-[0-9a-f]{12}$/),
+		data: {
+			schema: "qorpera.interaction/v1",
+			surface: "question",
+			title: "Which channel should the digest go to?",
+			payload: {
+				options: [
+					{ label: "#general", value: "general" },
+					{ label: "#finance", value: "finance", style: "primary" },
+				],
+			},
+		},
+	});
+	// The retry reuses the same event id, so the kernel sees one card.
+	expect(f.control.appendInteractionRequest.mock.calls[1]![1].eventId).toBe(card.eventId);
+	const sends = f.control.sendMessage.mock.calls.map(([, input]) => input);
+	expect(sends.map((input) => input.phase)).toEqual(["progress", "final", "final"]);
+	expect(sends[1]).toEqual({ idempotencyKey: "channel:final", text: "One thing to decide first.", phase: "final" });
+	// The card is observed under its own name; the sentence's send is not a separate tool call.
+	const asks = f.observations.filter((row) => row.operation === "ask_member" && row.phase === "finish");
+	expect(asks.map((row) => row.status)).toEqual(["succeeded", "replayed"]);
+	expect(f.observations.filter((row) => row.operation === "send_message" && row.phase === "finish")).toHaveLength(1);
+	expect(JSON.stringify(f.observations)).not.toContain("digest");
 });
 
 it("runs a background worker blank: reading tools and its report, no mouth, no coworkers, no delegation", async () => {

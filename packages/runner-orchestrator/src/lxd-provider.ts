@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { chmod, mkdir, open, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -738,14 +738,31 @@ export class LxdMachineAdmissionRefused extends ProviderAdmissionRefused {
 	}
 }
 
+async function present(path: string): Promise<boolean> {
+	try {
+		await lstat(path);
+		return true;
+	} catch (error) {
+		if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
+		throw error;
+	}
+}
+
 /** A reserving journal is advanced only by the orchestrator's acquire; after this long without
  * progress the acquisition is retired instead of being re-tried by every reconcile pass. */
 const RESERVING_RETIREMENT_MS = 10 * 60_000;
+/** Settled journals move here, inside the state root, out of every scan. */
+const JOURNAL_ARCHIVE = "archive";
+const SETTLED_JOURNAL_RETENTION_MS = 24 * 60 * 60_000;
 
 export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderServiceBackend {
 	readonly #registeredCapacity = new Set<string>();
 	readonly #releasedCapacity = new Set<string>();
 	readonly #registeredNodeCapacity = new Map<string, NativeNodePlacement>();
+	/** Journals of finished runs stay on disk. Once one is stopped or lost, its guest gone and its capacity
+	 * settled, reconcile has nothing left to do for it: it is skipped for the rest of the process and archived
+	 * a day after its last change (23 Sep 2026: node 1 re-read 76 of them, three LXD calls each, every pass). */
+	readonly #settled = new Map<string, number>();
 	readonly adapterId: string;
 	readonly #config: LxdCloudRunnerProviderConfig;
 	readonly #lxd: LxdClient;
@@ -771,7 +788,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		this.#fetch = fetchImplementation;
 	}
 
-	/** Every journal is reconciled on every pass. One journal that cannot make
+	/** Every journal is reconciled on every pass until it is settled (see #settled). One journal that cannot make
 	 * progress (for example a reserving acquisition the node ceiling refuses
 	 * while another guest still holds the slot) must not stop the retirement of
 	 * finished guests behind it, or the slot is never released and the provider
@@ -783,10 +800,23 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			const failures: unknown[] = [];
 			for (const entry of await readdir(this.#config.stateRoot, { withFileTypes: true })) {
 				if (!entry.isDirectory() || !UUID_PATTERN.test(entry.name)) continue;
-				const current = await this.#readJournal(entry.name);
-				if (!current) continue;
+				if (!this.#settled.has(entry.name)) {
+					const current = await this.#readJournal(entry.name);
+					if (!current) continue;
+					try {
+						await this.#reconcileJournal(current, signal);
+						const settledAt = await this.#settledAt(entry.name, signal);
+						if (settledAt !== undefined) this.#settled.set(entry.name, settledAt);
+					} catch (error) {
+						if (signal?.aborted) throw error;
+						failures.push(error);
+						continue;
+					}
+				}
+				const settledAt = this.#settled.get(entry.name);
+				if (settledAt === undefined || Date.now() - settledAt < SETTLED_JOURNAL_RETENTION_MS) continue;
 				try {
-					await this.#reconcileJournal(current, signal);
+					await this.#archive(entry.name);
 				} catch (error) {
 					if (signal?.aborted) throw error;
 					failures.push(error);
@@ -816,6 +846,8 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				: runId;
 			const digest = workSha256(work);
 			let current = await this.#readJournal(acquisitionId);
+			if (!current && (await present(join(this.#config.stateRoot, JOURNAL_ARCHIVE, acquisitionId))))
+				throw new Error("LXD provider acquisition is archived and cannot be replayed");
 			if (!current && this.#config.nativeCompanyRuntime && work.attempt > 1) {
 				// A sponsor handoff is recorded before the old one-run guest finishes
 				// shutting down. Keep this acquisition (and its renewed dispatch claim)
@@ -1780,6 +1812,38 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		}
 	}
 
+	/** When a journal needs no further reconciliation (stopped or lost, no guest, capacity never registered or
+	 * its release confirmed), the time of its last change. */
+	async #settledAt(acquisitionId: string, signal?: AbortSignal): Promise<number | undefined> {
+		const journal = await this.#readJournal(acquisitionId);
+		if (!journal || (journal.physicalState !== "stopped" && journal.physicalState !== "lost")) return undefined;
+		if ((journal.capacityRegistered || journal.nodeCapacity) && !this.#capacityReleased(journal)) return undefined;
+		if (await this.#lxd.getInstance(journal.lxd.project, journal.instanceName, signal)) return undefined;
+		return Date.parse(journal.updatedAt);
+	}
+
+	/** Moves a settled journal out of the scanned state root and deletes its credentials: the run is over, so its
+	 * activation, assignment and bridge tokens are dead, and the journal keeps their hashes. An acquire of its id
+	 * is refused like a replay of a stopped one. */
+	async #archive(acquisitionId: string): Promise<void> {
+		const archive = join(this.#config.stateRoot, JOURNAL_ARCHIVE);
+		await mkdir(archive, { recursive: true, mode: 0o700 });
+		await chmod(archive, 0o700);
+		const target = join(archive, acquisitionId);
+		if (await present(target)) throw new Error("LXD journal archive already holds this acquisition");
+		await rename(join(this.#config.stateRoot, acquisitionId), target);
+		await rm(join(target, "credentials"), { recursive: true, force: true });
+		for (const directory of [target, archive, this.#config.stateRoot]) {
+			const handle = await open(directory, "r");
+			try {
+				await handle.sync();
+			} finally {
+				await handle.close();
+			}
+		}
+		this.#settled.delete(acquisitionId);
+	}
+
 	async #findJournalByRunner(runnerId: string): Promise<LxdProviderJournal | undefined> {
 		await mkdir(this.#config.stateRoot, { recursive: true, mode: 0o700 });
 		for (const entry of await readdir(this.#config.stateRoot, { withFileTypes: true })) {
@@ -1901,7 +1965,10 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			{ call: (method, args, checked) => this.#rpc(method, args, checked) },
 			signal,
 		);
-		if (admission.state === "refused") throw new Error(admission.reason);
+		// A node refusal (capacity, observation, policy) is an admission answer, not an
+		// infrastructure fault: the control plane defers the job instead of counting a
+		// failed attempt. The allocation and its demand row are kept for the next try.
+		if (admission.state === "refused") throw new LxdMachineAdmissionRefused("refused", admission.reason);
 		if (prior && prior.nodeId !== admission.nodeId) throw new Error("LXD node placement cannot be changed");
 		this.#registeredNodeCapacity.set(current.acquisitionId, {
 			nodeId: admission.nodeId,

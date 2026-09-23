@@ -37,6 +37,8 @@ export const HOSTED_SESSION_EVENT_TYPES = [
 	"artifact_receipt",
 	"authorization_request",
 	"authorization_decision",
+	"interaction_request",
+	"interaction_answer",
 ] as const;
 export type HostedSessionEventType = (typeof HOSTED_SESSION_EVENT_TYPES)[number];
 

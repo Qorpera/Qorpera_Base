@@ -1,11 +1,12 @@
 -- Runtime observation vocabulary: the agent memory tools (runtime Step 6,
 -- Grok Bot shape) update_memory and recall_memory are observed under their own
 -- registered names. The vocabulary stays closed; the TypeScript side
--- (CLOUD_RUNTIME_OPERATIONS) lists the same names. Nothing else in the
--- ingestion contract changes: this migration re-states the reviewed v68
--- definition (20260922200000) with the two names added to the operation list.
+-- (CLOUD_RUNTIME_TOOL_OPERATIONS) lists the same names. Nothing else in the
+-- ingestion contract changes: this migration re-states master's latest
+-- definition (20260923012000, ask_member and the coding_* names) with the two
+-- memory names added; ACL restated because CREATE OR REPLACE keeps it.
 --
--- Rollout order: record this migration BEFORE activating bundle v71. A v71
+-- Rollout order: record this migration BEFORE activating bundle v85. A v85
 -- runner against the previous definition has every memory-tool observation
 -- rejected (22023) and silently dropped by the exporter; earlier runners are
 -- unaffected by this definition.
@@ -40,9 +41,10 @@ begin
 			raise exception 'Runtime observation is invalid' using errcode = '22023'; end if;
 	end loop;
 	if p_observation ->> 'operation' not in ('model_turn','model_request','company_read','company_list',
-		'company_write','company_mkdir','company_delete','send_message','read_context','send_coworker_message',
+		'company_write','company_mkdir','company_delete','send_message','ask_member','read_context','send_coworker_message',
 		'computer_start','computer_screen','computer_browser','computer_desktop','computer_shell','computer_screenshot',
 		'computer_transfer','hire_agent','create_group_chat','manage_routine','report_work','manage_todo','manage_worker',
+		'coding_run_command','coding_read_command','coding_cancel_command','coding_finish','coding_ask',
 		'update_memory','recall_memory',
 		'company_context','message_composition','connector','unknown_tool','run_authority','context_authority',
 		'native_result_fence','diagnostic_export')
@@ -123,9 +125,6 @@ begin
 		'attemptId',v_existing.attempt_id,'phase',v_existing.phase,'ingestedAt',v_existing.ingested_at,'replayed',v_replayed);
 end
 $$;
-
-
--- CREATE OR REPLACE retains the existing function ACL; state it explicitly.
 revoke all on function public.qorpera_record_runtime_observation(uuid,jsonb)
 	from public,anon,authenticated,service_role,qorpera_secret_broker;
 grant execute on function public.qorpera_record_runtime_observation(uuid,jsonb) to service_role;

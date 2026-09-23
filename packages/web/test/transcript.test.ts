@@ -253,3 +253,103 @@ describe("projectTranscript", () => {
 		expect(projection.hiddenCount).toBe(0);
 	});
 });
+
+describe("interaction cards in the transcript", () => {
+	const CARD = "44444444-4444-4444-8444-000000000593";
+	const request = {
+		schema: RUNNER_ENTRY_SCHEMA,
+		entry: {
+			type: "custom",
+			customType: "interaction_request",
+			id: CARD,
+			parentId: null,
+			timestamp: "2026-09-22T20:00:00.000Z",
+			data: {
+				schema: "qorpera.interaction/v1",
+				surface: "question",
+				title: "Which channel?",
+				payload: { options: [{ label: "#general", value: "general" }] },
+			},
+		},
+	};
+	const answerData = {
+		schema: "qorpera.interaction-answer/v1",
+		interactionId: CARD,
+		surface: "question",
+		outcome: "answered",
+		answer: { values: ["general"] },
+	};
+
+	it("projects a request as a card and attaches its written answer", () => {
+		const projection = projectTranscript([
+			event(1, { eventId: CARD, eventType: "interaction_request", body: request }),
+			event(2, {
+				eventType: "interaction_answer",
+				sessionInputId: "55555555-5555-4555-8555-000000000002",
+				body: {
+					schema: RUNNER_ENTRY_SCHEMA,
+					entry: {
+						type: "custom",
+						customType: "interaction_answer",
+						id: "55555555-5555-4555-8555-000000000002",
+						data: { ...answerData, answeredBy: USER },
+					},
+				},
+			}),
+		]);
+		expect(projection.hiddenCount).toBe(0);
+		expect(projection.items).toHaveLength(1);
+		const card = projection.items[0];
+		expect(card?.kind).toBe("interaction");
+		if (card?.kind !== "interaction") return;
+		expect(card.request.surface).toBe("question");
+		expect(card.answer).toEqual({
+			outcome: "answered",
+			answer: { values: ["general"] },
+			answeredBy: USER,
+			answeredAt: "2026-09-02T10:00:02Z",
+		});
+	});
+
+	it("shows a queued answer on its card instead of as a message, until the kernel writes it", () => {
+		const queued: PendingSessionInput = {
+			inputId: "55555555-5555-4555-8555-000000000003",
+			position: 3,
+			kind: "user_message",
+			authorUserId: USER,
+			authorDisplayName: "Jonas",
+			body: answerData,
+			createdAt: "2026-09-02T10:00:03Z",
+			status: "queued",
+		};
+		const projection = projectTranscript(
+			[event(1, { eventId: CARD, eventType: "interaction_request", body: request })],
+			[queued],
+		);
+		expect(projection.items).toHaveLength(1);
+		const card = projection.items[0];
+		if (card?.kind !== "interaction") throw new Error("card expected");
+		expect(card.answer).toMatchObject({ outcome: "answered", pending: true, answeredBy: USER });
+	});
+
+	it("hides a card it cannot read and an answer whose card is not loaded", () => {
+		const projection = projectTranscript([
+			event(1, {
+				eventType: "interaction_request",
+				body: {
+					schema: RUNNER_ENTRY_SCHEMA,
+					entry: { type: "custom", customType: "interaction_request", data: {} },
+				},
+			}),
+			event(2, {
+				eventType: "interaction_answer",
+				body: {
+					schema: RUNNER_ENTRY_SCHEMA,
+					entry: { type: "custom", customType: "interaction_answer", data: answerData },
+				},
+			}),
+		]);
+		expect(projection.items).toHaveLength(0);
+		expect(projection.hiddenCount).toBe(1);
+	});
+});

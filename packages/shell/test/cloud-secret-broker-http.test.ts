@@ -212,3 +212,59 @@ it("rejects a broker descriptor carrying undeclared fields", async () => {
 		),
 	).rejects.toThrow("returned invalid data");
 });
+
+it("answers a browser's capture from a listed member origin, and only that origin, with CORS", async () => {
+	const f = fixture();
+	const service = new HttpCloudSecretBrokerService(f.broker, f.runtimeToken, "127.0.0.1", 0, [
+		"https://app.qorpera.test",
+	]);
+	services.push(service);
+	const port = await service.start();
+	const preflight = await fetch(`http://127.0.0.1:${port}/v1/captures/${f.ticketId}`, {
+		method: "OPTIONS",
+		headers: { origin: "https://app.qorpera.test", "access-control-request-method": "POST" },
+	});
+	expect(preflight.status).toBe(204);
+	expect(preflight.headers.get("access-control-allow-origin")).toBe("https://app.qorpera.test");
+	expect(preflight.headers.get("access-control-allow-headers")).toBe("content-type");
+	const stranger = await fetch(`http://127.0.0.1:${port}/v1/captures/${f.ticketId}`, {
+		method: "OPTIONS",
+		headers: { origin: "https://evil.example", "access-control-request-method": "POST" },
+	});
+	expect(stranger.status).toBe(404);
+	expect(stranger.headers.get("access-control-allow-origin")).toBeNull();
+	const refused = await fetch(`http://127.0.0.1:${port}/v1/captures/${f.ticketId}`, {
+		method: "POST",
+		headers: { origin: "https://evil.example", "content-type": "application/json" },
+		body: JSON.stringify({
+			schema: "qorpera.cloud-secret-capture-request/v1",
+			captureCapability: f.capability,
+			fields: { token: "lin_api_NEVER_VISIBLE" },
+		}),
+	});
+	expect(refused.status).toBe(403);
+	expect(vi.mocked(f.authority.completeCapture)).not.toHaveBeenCalled();
+	const accepted = await fetch(`http://127.0.0.1:${port}/v1/captures/${f.ticketId}`, {
+		method: "POST",
+		headers: { origin: "https://app.qorpera.test", "content-type": "application/json" },
+		body: JSON.stringify({
+			schema: "qorpera.cloud-secret-capture-request/v1",
+			captureCapability: f.capability,
+			fields: { token: "lin_api_NEVER_VISIBLE" },
+		}),
+	});
+	expect(accepted.status).toBe(200);
+	expect(accepted.headers.get("access-control-allow-origin")).toBe("https://app.qorpera.test");
+	expect(accepted.headers.get("vary")).toBe("origin");
+	// The runtime route never answers a browser.
+	const operations = await fetch(`http://127.0.0.1:${port}/v1/operations`, {
+		method: "OPTIONS",
+		headers: { origin: "https://app.qorpera.test", "access-control-request-method": "POST" },
+	});
+	expect(operations.status).toBe(404);
+	expect(
+		() => new HttpCloudSecretBrokerService(f.broker, f.runtimeToken, "127.0.0.1", 0, ["http://app.qorpera.test"]),
+	).toThrow("member origin is invalid");
+	f.wrappingKey.fill(0);
+	f.keyring.close();
+});

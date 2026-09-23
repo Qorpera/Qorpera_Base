@@ -1,10 +1,13 @@
+import type { CodingSession } from "../../cloud/coding-session.ts";
 import { sessionAttachmentIssue } from "../../cloud/session-attachments.ts";
 import type { TranscriptCard, TranscriptItem } from "../../cloud/transcript.ts";
-import type { HostedSession, HostedStaffAgent } from "../../cloud/types.ts";
+import type { HostedSession, HostedStaffAgent, JsonValue } from "../../cloud/types.ts";
 import { AGENT_LOOK, statusCaption, syncCaption } from "../../ui/agent-activity.ts";
 import { AttachmentTray } from "../../ui/attachments.ts";
 import { authorizationRequestId, renderAuthorizationCard } from "../../ui/authorization-card.ts";
 import { agentFigure } from "../../ui/avatar.ts";
+import { CodingSessionElement } from "../../ui/coding-session.ts";
+import { CodingSessionThreadView } from "../../ui/coding-session-thread.ts";
 import {
 	conversationTimestampLabel,
 	conversationTimestampTitle,
@@ -13,6 +16,7 @@ import {
 } from "../../ui/conversation-timestamps.ts";
 import { fmtTime, h, icon, notice, replace, spinner } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
+import { renderInteractionCard } from "../../ui/interaction-card.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
@@ -24,6 +28,7 @@ import { AgentDetails } from "./agent-details.ts";
 import { ComposerModels } from "./composer-models.ts";
 import { type ComputerPanel, ComputerPanels } from "./computer.ts";
 import { GroupDetails } from "./group-details.ts";
+import { PairTranscriptView } from "./pair-transcript.ts";
 import { SessionExecutionView } from "./session-execution.ts";
 import { SessionRunView } from "./session-run.ts";
 
@@ -76,6 +81,10 @@ export class ConversationView {
 	readonly #panels: ComputerPanels;
 	readonly #ownPanels: boolean;
 	#panel: ComputerPanel | undefined;
+	/** The transcript of this agent and a coworker, laid over the thread from a chip. */
+	#pair: PairTranscriptView | undefined;
+	/** The chip that opened the transcript; focus returns there when it closes. */
+	#pairOpener: HTMLElement | undefined;
 	#headerKey = "";
 	#renderedKey = "";
 	#stickToBottom = true;
@@ -98,6 +107,11 @@ export class ConversationView {
 	readonly #runNotification = h("div", { class: "thread-run-failure", hidden: true });
 	#runNotificationKey = "";
 	#receivedAttachments: ReceivedAttachments[] = [];
+	/** The coding sessions shown in this thread, one element per session, kept
+	 * across renders so each keeps its stream, its cursor and its open state. */
+	readonly #codingElements = new Map<string, CodingSessionElement>();
+	/** A coding session opened as its own thread over this one, from its chip. */
+	#codingThread: { workerId: string; view: CodingSessionThreadView } | undefined;
 	readonly #timestampTimer: number;
 	#timestampRows: { date: Date; node: HTMLElement; separator?: HTMLTimeElement }[] = [];
 
@@ -368,12 +382,16 @@ export class ConversationView {
 		this.#sizes?.disconnect();
 		this.#runNotification.remove();
 		this.#details?.dispose();
+		this.#closePair(false);
 		// The computer stays open, and connected, for the next thread that shows it.
 		if (this.#ownPanels) this.#panels.dispose();
 		else this.#panel?.detach();
 		this.#panel = undefined;
 		this.#attachments.dispose();
 		for (const attachments of this.#receivedAttachments) attachments.dispose();
+		this.#closeCodingSession();
+		for (const element of this.#codingElements.values()) element.dispose();
+		this.#codingElements.clear();
 		for (const unsubscribe of this.#unsubscribe) unsubscribe();
 		this.#company.setOpenSession(undefined);
 	}
@@ -472,6 +490,38 @@ export class ConversationView {
 				);
 	}
 
+	/** Lay the two agents' transcript over this thread; the thread waits underneath.
+	 * The coworker reads on the left, this thread's own agent on the right. */
+	#openPair(pairSessionId: string, agentIds: readonly [string, string], opener: HTMLElement): void {
+		this.#closePair(false);
+		const view = new PairTranscriptView(this.#company, pairSessionId, agentIds, () => this.#closePair(true));
+		this.#pair = view;
+		this.#pairOpener = opener;
+		this.#conversationPane.inert = true;
+		this.#body.append(view.el);
+		view.focus();
+	}
+
+	#closePair(refocus: boolean): void {
+		const view = this.#pair;
+		if (!view) return;
+		this.#pair = undefined;
+		const opener = this.#pairOpener;
+		this.#pairOpener = undefined;
+		view.dispose();
+		this.#conversationPane.inert = false;
+		if (!refocus) return;
+		// The chip that opened it, or the same chip after a re-render, or any chip.
+		const messageId = opener?.closest<HTMLElement>(".peer-link")?.dataset.messageId;
+		const target =
+			opener?.isConnected && this.#messages.contains(opener)
+				? opener
+				: (this.#messages.querySelector<HTMLElement>(
+						messageId ? `.peer-link[data-message-id="${messageId}"] .peer-chip` : ".peer-chip",
+					) ?? this.#messages.querySelector<HTMLElement>(".peer-chip"));
+		target?.focus({ preventScroll: true });
+	}
+
 	#toggleComputer(): void {
 		if (this.#panel) {
 			this.#panels.close(this.#panel.agentId);
@@ -487,6 +537,26 @@ export class ConversationView {
 		);
 		if (!agent) return;
 		this.#showPanel(agent);
+	}
+
+	/** Record the member's answer to a card; the card shows it at once and the
+	 * error, if any, above the composer with the other conversation notices. */
+	async #answerInteraction(
+		interactionId: string,
+		outcome: Parameters<CompanyController["answerInteraction"]>[2],
+		answer: Record<string, JsonValue> = {},
+	): Promise<void> {
+		try {
+			await this.#company.answerInteraction(this.#sessionId, interactionId, outcome, answer);
+		} catch {
+			// The controller keeps the reason in the conversation state.
+		}
+	}
+
+	/** Take over the agent's computer for a card: open its screen here and give it the keyboard. */
+	#takeOver(agent: HostedStaffAgent): void {
+		const panel = this.#panel ?? this.#showPanel(agent);
+		panel?.focus();
 	}
 
 	/** Show the agent's computer here: the one already open, or one started now. */
@@ -752,10 +822,26 @@ export class ConversationView {
 				}),
 			),
 		];
+		const session = this.#company.store.get().sessions.find((item) => item.sessionId === this.#sessionId);
+		const canAnswer =
+			this.#company.store.get().team?.capabilities.write === true &&
+			session?.status === "open" &&
+			(session.audience.kind === "member_private"
+				? session.audience.userId === this.#company.userId
+				: session.createdByUserId === this.#company.userId);
+		const canDecide = canAnswer && ["owner", "admin"].includes(this.#company.store.get().team?.role ?? "");
+		const codingSessions = [...(conversation.codingSessions ?? [])].sort((a, b) =>
+			a.createdAt.localeCompare(b.createdAt),
+		);
 		const key = JSON.stringify([
 			items,
+			codingSessions,
 			agentName,
 			this.#isRoom,
+			canAnswer,
+			canDecide,
+			conversation.interactionAnswers,
+			conversation.interactionError,
 			this.#company.store.get().team?.members,
 			conversation.projection.hiddenCount,
 			conversation.loading,
@@ -777,7 +863,24 @@ export class ConversationView {
 			}
 		const nodes: HTMLElement[] = [];
 		this.#timestampRows = [];
+		// A coding session stands where the agent started it: before the first
+		// message written after it. Its element is reused, so the stream it
+		// follows and the body the member opened survive every re-render.
+		let nextSession = 0;
+		const placeSessions = (before: string | undefined) => {
+			while (nextSession < codingSessions.length) {
+				const candidate = codingSessions[nextSession]!;
+				if (before !== undefined && candidate.createdAt.localeCompare(before) > 0) break;
+				nextSession += 1;
+				const element = this.#codingElement(candidate, agent, agentName);
+				if (this.#codingThread?.workerId === candidate.workerId) this.#codingThread.view.update(candidate);
+				nodes.push(element.el);
+				const date = parseConversationTimestamp(candidate.createdAt);
+				if (date) this.#timestampRows.push({ date, node: element.el });
+			}
+		};
 		for (const item of items) {
+			placeSessions(item.createdAt);
 			if (item.kind === "member" || item.kind === "agent") {
 				const mine = item.kind === "member" && item.authorUserId === this.#company.userId;
 				const author =
@@ -839,14 +942,84 @@ export class ConversationView {
 							: null,
 					),
 				);
+			} else if (item.kind === "peer_link") {
+				// A message between this agent and a coworker: one centered line, the coworker's
+				// figure before its name, no text; the transcript is behind it.
+				const counterpart = this.#company.staffById(item.counterpartStaffId);
+				const name = counterpart?.displayName ?? "a coworker";
+				// A held message was left for the coworker's next turn, so it is a note, not a message it has read.
+				const verb = item.held
+					? item.direction === "out"
+						? "Left a note for"
+						: "Note from"
+					: item.direction === "out"
+						? "Messaged"
+						: "Message from";
+				const label = `${verb} ${name}`;
+				const own = agent?.id ?? "";
+				nodes.push(
+					h(
+						"div",
+						{ class: "peer-link", dataset: { messageId: item.id } },
+						h(
+							"button",
+							{
+								type: "button",
+								class: "peer-chip",
+								title: `${label} · ${fmtTime(item.createdAt)}`,
+								"aria-label": `${label}. Open the conversation`,
+								onclick: (event: MouseEvent) =>
+									this.#openPair(
+										item.pairSessionId,
+										[item.counterpartStaffId, own],
+										event.currentTarget as HTMLElement,
+									),
+							},
+							h("span", null, verb),
+							agentFigure(counterpart, name, { size: 16 }),
+							h("span", null, name),
+						),
+					),
+				);
+			} else if (item.kind === "note") {
+				nodes.push(h("div", { class: "conversation-note", role: "note" }, item.text));
 			} else if (item.kind === "authorization_request" || item.kind === "authorization_decision") {
+				const optimistic =
+					item.kind === "authorization_request"
+						? conversation.interactionAnswers?.[item.id.toLowerCase()]
+						: undefined;
 				nodes.push(
 					renderAuthorizationCard(
 						item.kind,
 						item.body,
 						item.createdAt,
 						this.#company.memberName(item.actorUserId),
-						item.kind === "authorization_request" ? decisions.get(item.id.toLowerCase())?.body : undefined,
+						item.kind === "authorization_request"
+							? (decisions.get(item.id.toLowerCase())?.body ??
+									(optimistic ? { decision: optimistic.outcome, requestEventId: item.id } : undefined))
+							: undefined,
+						item.kind === "authorization_request" && canDecide && !this.#isRoom
+							? (decision) => void this.#answerInteraction(item.id, decision)
+							: undefined,
+					),
+				);
+			} else if (item.kind === "interaction") {
+				nodes.push(
+					renderInteractionCard(
+						{ ...item, answer: item.answer ?? conversation.interactionAnswers?.[item.id.toLowerCase()] },
+						{
+							agentName,
+							memberName: (userId) => this.#company.memberName(userId),
+							canAnswer: canAnswer && !this.#isRoom,
+							answer: (outcome, answer) => this.#answerInteraction(item.id, outcome, answer),
+							...(agent && item.request.surface === "takeover" ? { takeOver: () => this.#takeOver(agent) } : {}),
+							...(item.request.surface === "secret" && canAnswer && !this.#isRoom
+								? {
+										provideSecret: (value: string) =>
+											this.#company.provideSecret(this.#sessionId, item.id, item.request, value),
+									}
+								: {}),
+						},
 					),
 				);
 			}
@@ -854,8 +1027,15 @@ export class ConversationView {
 			const node = nodes[nodes.length - 1];
 			if (date && node) this.#timestampRows.push({ date, node });
 		}
+		placeSessions(undefined);
+		for (const [workerId, element] of this.#codingElements) {
+			if (!codingSessions.some((session) => session.workerId === workerId)) {
+				element.dispose();
+				this.#codingElements.delete(workerId);
+			}
+		}
 		if (conversation.loading && !items.length) nodes.push(spinner("Loading conversation"));
-		if (!conversation.loading && !items.length && !conversation.error && !this.#working) {
+		if (!conversation.loading && !items.length && !codingSessions.length && !conversation.error && !this.#working) {
 			nodes.push(h("div", { class: "empty" }, "No messages yet."));
 		}
 		if (this.#working && !conversation.loading) {
@@ -895,6 +1075,7 @@ export class ConversationView {
 		const key = JSON.stringify([
 			conversation.error,
 			conversation.sendError,
+			conversation.interactionError,
 			conversation.loading,
 			canWrite,
 			this.#isRoom,
@@ -908,6 +1089,7 @@ export class ConversationView {
 		const children: (HTMLElement | null)[] = [];
 		if (conversation.error) children.push(notice("danger", conversation.error));
 		if (conversation.sendError) children.push(notice("danger", conversation.sendError));
+		if (conversation.interactionError) children.push(notice("danger", conversation.interactionError));
 		if (canWrite && !this.#actions.sendMessage)
 			children.push(
 				h(
@@ -932,6 +1114,88 @@ export class ConversationView {
 			: undefined;
 		replace(this.#status, ...children);
 		if (refocus) this.#status.querySelector<HTMLElement>(`[data-action="${refocus}"]`)?.focus();
+	}
+
+	#codingElement(
+		session: CodingSession,
+		agent: HostedStaffAgent | undefined,
+		agentName: string,
+	): CodingSessionElement {
+		const existing = this.#codingElements.get(session.workerId);
+		if (existing && !existing.disposed) {
+			existing.update(session);
+			return existing;
+		}
+		const element = new CodingSessionElement(session, {
+			...this.#codingOptions(agent, agentName),
+			open: () => this.#openCodingSession(session.workerId),
+		});
+		this.#codingElements.set(session.workerId, element);
+		return element;
+	}
+
+	/** What both the chip and the session's own thread need to render and act. */
+	#codingOptions(agent: HostedStaffAgent | undefined, agentName: string) {
+		const sessionId = this.#sessionId;
+		const company = this.#company;
+		return {
+			agent,
+			names: (current: CodingSession) => {
+				const ownerIsViewer = current.ownerUserId === company.userId;
+				return {
+					agent: company.staffById(current.agentId)?.displayName ?? agentName,
+					owner: ownerIsViewer ? "you" : company.memberName(current.ownerUserId),
+					ownerIsViewer,
+				};
+			},
+			viewerOwns: (current: CodingSession) => current.ownerUserId === company.userId,
+			api: {
+				read: (workerId: string, afterEvent: number) => company.readCodingSession(workerId, afterEvent),
+				answer: (workerId: string, text: string, clientRequestId: string) =>
+					company.answerCodingSession(sessionId, workerId, text, clientRequestId),
+				delegate: (workerId: string, clientRequestId: string) =>
+					company.delegateCodingSession(sessionId, workerId, clientRequestId),
+			},
+			signal: AbortSignal.any([this.#lifetime.signal, company.signal]),
+			changed: () => this.#pinToBottom(),
+			askAgent: this.#actions.sendMessage
+				? (text: string) => {
+						this.#closeCodingSession();
+						this.#composer.value = text;
+						this.#composer.dispatchEvent(new Event("input", { bubbles: true }));
+						this.#composer.focus();
+					}
+				: undefined,
+		};
+	}
+
+	/** Open a coding session as its own thread over this one, as a bot's message to
+	 * another bot opens; the chip stays in the conversation. */
+	#openCodingSession(workerId: string): void {
+		if (this.#codingThread?.workerId === workerId) return;
+		this.#closeCodingSession();
+		const conversation = this.#company.conversation(this.#sessionId).get();
+		const session = conversation.codingSessions?.find((item) => item.workerId === workerId);
+		if (!session) return;
+		const company = this.#company.store.get();
+		const thread = company.sessions.find((item) => item.sessionId === this.#sessionId);
+		const agent = this.#company.staffById(thread?.staffAgentId);
+		const view = new CodingSessionThreadView(session, {
+			...this.#codingOptions(agent, agent?.displayName ?? "Agent"),
+			close: () => {
+				if (this.#codingThread?.view === view) this.#codingThread = undefined;
+				this.#codingElements.get(workerId)?.el.querySelector<HTMLButtonElement>(".coding-chip")?.focus();
+			},
+		});
+		this.#codingThread = { workerId, view };
+		view.attach(this.#body);
+	}
+
+	#closeCodingSession(): void {
+		const open = this.#codingThread;
+		if (!open) return;
+		this.#codingThread = undefined;
+		open.view.dispose();
 	}
 
 	#renderRunNotification(session: HostedSession | undefined): void {

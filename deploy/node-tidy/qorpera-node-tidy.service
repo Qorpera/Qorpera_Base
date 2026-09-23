@@ -1,0 +1,16 @@
+[Unit]
+Description=Qorpera node tidy-up (runtime images and image transfer files nothing live uses)
+Documentation=https://github.com/Qorpera/Qorpera_Base/blob/master/deploy/node-tidy/README.md
+After=snap.lxd.daemon.service
+ConditionPathExists=/etc/qorpera-node-tidy.json
+
+[Service]
+Type=oneshot
+# Root: it reads root-only provider env files and talks to the LXD socket.
+# A held update lock means an update lane is transferring or importing: skip this run (exit 75), never wait.
+ExecStart=/usr/bin/flock --nonblock --conflict-exit-code 75 /run/lock/qorpera-node-update.lock /usr/bin/node /opt/qorpera-node-tidy/qorpera-node-tidy.mjs --apply --config /etc/qorpera-node-tidy.json
+SuccessExitStatus=75
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=no

@@ -494,7 +494,7 @@ Provider-native session IDs are resumability hints, not wake identity.
 | Human | Reply first. Work. Deliver or request a real decision. Silence is invalid. |
 | First run | Greet and learn when no assignment exists; otherwise begin the supplied startup assignment. |
 | Routine | Execute the stored intent. Silence is valid when policy permits and there is nothing useful to report. |
-| Agent | Treat the sender as a coworker. Do not create acknowledgement ping-pong. Report to a human only when audience or policy calls for it. |
+| Agent | Treat the sender as a coworker. Answer through the peer channel when asked or useful; never acknowledge an acknowledgement; silence is valid. Speak in your own thread only when the member should know (pair policy, 14.6). |
 | Room | Act as yourself for the room audience. Keep sends bounded. Silence is allowed. Private member communication remains a separate authorized send. |
 
 Scheduled and listener-triggered jobs both use the routine entrypoint with a
@@ -1078,6 +1078,33 @@ contract revision.
 Agent-to-agent messages are durable addressed cloud messages. Delivery creates
 an agent wake once, using an idempotent message identity. Sending “thanks” back
 does not become an infinite acknowledgement loop.
+
+Amendment 2026-09-22 (visibility and reply). A message between two agents is
+company-visible and answerable:
+
+- Every pair of agents has one **pair transcript**: a company-audience
+  conversation bound to the unordered pair, view-only for members. The message
+  is one event in that transcript, spoken by the sender.
+- Both agents' own shared threads carry a **chip** for the message ("Messaged
+  B" in the sender's thread, "Message from A" in the receiver's) that opens the
+  pair transcript. The chip carries no message text.
+- The receiver wakes **in its own shared thread** under the pair policy:
+  initial send forbidden, final send optional, silence allowed, at most two
+  public sends. It answers the coworker through the same peer channel, which
+  puts the answer in the pair transcript and wakes the sender in the sender's
+  thread under the same policy. A member post in either thread is a human wake
+  and starts a new causal root.
+- The kernel bounds an exchange by **hops**, not by "agent already visited":
+  at most 6 peer messages per causal root and 20 per pair per rolling hour, on
+  top of the company wake ceiling and the founder stop. A tripped budget
+  refuses the wake (causal-fence receipt) and leaves one line in the pair
+  transcript. File-event and routine fences are unchanged.
+- Workers (13) are not messaging: they have no mouth and report to their parent.
+  Group chats (14.7) remain the place for handoffs that need several agents.
+- A message may be sent **held** (`priority: false`): written and shown the
+  same way, it wakes nobody; the recipient reads it, as data, at the start of
+  its next wake of any kind. Held messages extend no chain but count toward
+  the pair's hourly budget. Thanks, status and FYIs are sent held.
 
 ### 14.7 Rooms
 

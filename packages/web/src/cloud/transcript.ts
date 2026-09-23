@@ -1,4 +1,11 @@
 import type { CloudSessionAttachment } from "@qorpera/cloud-client/cloud-session-attachments";
+import {
+	type InteractionAnswer,
+	type InteractionRequest,
+	parseInteractionAnswerEvent,
+	parseInteractionAnswerInput,
+	parseInteractionRequest,
+} from "./interactions.ts";
 import { SESSION_IMAGE_TYPES } from "./session-attachments.ts";
 import type { HostedSessionEvent, HostedStaffSpeaker, JsonValue, PendingSessionInput } from "./types.ts";
 
@@ -12,6 +19,13 @@ export const RUNNER_ENTRY_SCHEMA = "qorpera.runner-transcript-entry/v1";
 export const LEGACY_PART_SCHEMA = "qorpera.shared-trail-entry-part/v1";
 export const SESSION_METADATA_SCHEMA = "qorpera.shared-session-metadata/v1";
 export const AGENT_SEND_SCHEMA = "qorpera.agent-send/v1";
+/** A message between two agents, written by the kernel into their pair transcript (contract 14.6). */
+export const PEER_MESSAGE_SCHEMA = "qorpera.peer-message/v1";
+/** The chip in an agent's own thread that points at a peer message. */
+export const PEER_LINK_SCHEMA = "qorpera.peer-link/v1";
+/** One line in a pair transcript saying why an exchange stopped. */
+export const PEER_BUDGET_SCHEMA = "qorpera.peer-budget/v1";
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export interface TranscriptMessage {
 	kind: "member" | "agent";
@@ -24,6 +38,8 @@ export interface TranscriptMessage {
 	phase?: "progress" | "final";
 	runId?: string;
 	staffSpeaker?: HostedStaffSpeaker;
+	/** A peer message sent without waking its recipient; it is read at the recipient's next turn. */
+	held?: boolean;
 	createdAt: string;
 	pending?: "queued" | "processing" | "failed";
 	failureReason?: string;
@@ -47,7 +63,44 @@ export interface TranscriptCard {
 	createdAt: string;
 }
 
-export type TranscriptItem = TranscriptMessage | TranscriptCard;
+export interface TranscriptPeerLink {
+	kind: "peer_link";
+	id: string;
+	sequence: number;
+	direction: "in" | "out";
+	/** Left without waking the coworker; read at its next turn. */
+	held?: boolean;
+	counterpartStaffId: string;
+	pairSessionId: string;
+	createdAt: string;
+}
+
+export interface TranscriptNote {
+	kind: "note";
+	id: string;
+	sequence: number;
+	text: string;
+	createdAt: string;
+}
+
+/** A typed card the agent raised, with the member's answer once there is one
+ * (queued or written). An answer whose card is not in the loaded window is dropped. */
+export interface TranscriptInteraction {
+	kind: "interaction";
+	id: string;
+	sequence: number;
+	actorUserId: string;
+	request: InteractionRequest;
+	answer?: InteractionAnswer;
+	createdAt: string;
+}
+
+export type TranscriptItem =
+	| TranscriptMessage
+	| TranscriptCard
+	| TranscriptPeerLink
+	| TranscriptNote
+	| TranscriptInteraction;
 
 export interface TranscriptProjection {
 	items: TranscriptItem[];
@@ -173,6 +226,44 @@ function messageFromEntry(entry: Entry, event: HostedSessionEvent, legacy: boole
 			createdAt: event.createdAt,
 		};
 	}
+	if (entry.message.role === "assistant" && entry.delivery?.schema === PEER_MESSAGE_SCHEMA) {
+		// A peer message: kernel-written into the pair transcript, spoken by the
+		// sending agent named in the entry. It has no run execution identity of its
+		// own and never counts as one of the sender's public sends.
+		const delivery = entry.delivery as Record<string, unknown>;
+		if (
+			legacy ||
+			event.sessionInputId ||
+			event.execution ||
+			entry.id !== event.eventId ||
+			typeof delivery.from !== "string" ||
+			!UUID.test(delivery.from) ||
+			typeof delivery.runId !== "string" ||
+			!UUID.test(delivery.runId) ||
+			!Number.isSafeInteger(delivery.staffVersion) ||
+			(delivery.staffVersion as number) < 1
+		)
+			return undefined;
+		return {
+			kind: "agent",
+			id: event.eventId,
+			sequence: event.sequence,
+			text,
+			attachmentCount: 0,
+			phase: "final",
+			runId: delivery.runId,
+			...(delivery.held === true ? { held: true } : {}),
+			staffSpeaker: {
+				runId: delivery.runId,
+				staffAgentId: delivery.from,
+				staffVersion: delivery.staffVersion as number,
+				...(typeof delivery.displayName === "string" && delivery.displayName.trim()
+					? { displayName: delivery.displayName }
+					: {}),
+			},
+			createdAt: event.createdAt,
+		};
+	}
 	if (entry.message.role === "assistant") {
 		// Only an explicit send operation is public output (§6.1).
 		if (
@@ -215,6 +306,8 @@ export function projectTranscript(
 	let hiddenCount = 0;
 	let lastSequence = 0;
 	const inputIds = new Set<string>();
+	const interactions = new Map<string, TranscriptInteraction>();
+	const answers = new Map<string, InteractionAnswer>();
 	const legacyParts = new Map<string, { count: number; parts: (string | null)[]; event: HostedSessionEvent }>();
 	for (const event of events) {
 		lastSequence = Math.max(lastSequence, event.sequence);
@@ -230,8 +323,60 @@ export function projectTranscript(
 			});
 			continue;
 		}
+		if (event.eventType === "interaction_request") {
+			const request = parseInteractionRequest(event.body);
+			if (!request) {
+				hiddenCount++;
+				continue;
+			}
+			const interaction: TranscriptInteraction = {
+				kind: "interaction",
+				id: event.eventId,
+				sequence: event.sequence,
+				actorUserId: event.actorUserId,
+				request,
+				createdAt: event.createdAt,
+			};
+			interactions.set(event.eventId.toLowerCase(), interaction);
+			items.push(interaction);
+			continue;
+		}
+		if (event.eventType === "interaction_answer") {
+			const parsed = parseInteractionAnswerEvent(event.body);
+			if (parsed) answers.set(parsed.interactionId, { ...parsed.answer, answeredAt: event.createdAt });
+			else hiddenCount++;
+			continue;
+		}
 		if (event.eventType !== "message") {
-			if (event.eventType !== "session_info") hiddenCount++;
+			if (event.eventType === "session_info") {
+				const info = asRecord(event.body);
+				if (
+					info?.schema === PEER_LINK_SCHEMA &&
+					(info.direction === "in" || info.direction === "out") &&
+					typeof info.counterpartStaffId === "string" &&
+					UUID.test(info.counterpartStaffId) &&
+					typeof info.pairSessionId === "string" &&
+					UUID.test(info.pairSessionId)
+				)
+					items.push({
+						kind: "peer_link",
+						id: event.eventId,
+						sequence: event.sequence,
+						direction: info.direction,
+						...(info.held === true ? { held: true } : {}),
+						counterpartStaffId: info.counterpartStaffId,
+						pairSessionId: info.pairSessionId,
+						createdAt: event.createdAt,
+					});
+				else if (info?.schema === PEER_BUDGET_SCHEMA && typeof info.text === "string" && info.text.trim())
+					items.push({
+						kind: "note",
+						id: event.eventId,
+						sequence: event.sequence,
+						text: info.text.slice(0, 512),
+						createdAt: event.createdAt,
+					});
+			} else hiddenCount++;
 			continue;
 		}
 		const body = asRecord(event.body);
@@ -294,6 +439,18 @@ export function projectTranscript(
 		if (input.kind !== "user_message" || inputIds.has(input.inputId)) continue;
 		const body = asRecord(input.body);
 		if (body?.schema === "qorpera.staff-intro-retry/v1") continue;
+		const queuedAnswer = parseInteractionAnswerInput(input.body);
+		if (queuedAnswer) {
+			// A queued answer shows on its card, never as a message bubble.
+			if (!answers.has(queuedAnswer.interactionId))
+				answers.set(queuedAnswer.interactionId, {
+					...queuedAnswer.answer,
+					answeredBy: input.authorUserId,
+					answeredAt: input.createdAt,
+					pending: true,
+				});
+			continue;
+		}
 		const text =
 			typeof body?.displayText === "string" ? body.displayText : typeof body?.text === "string" ? body.text : "";
 		const images = Array.isArray(body?.images) ? body.images : [];
@@ -310,6 +467,10 @@ export function projectTranscript(
 			pending: input.status,
 			...(input.failureReason ? { failureReason: input.failureReason } : {}),
 		});
+	}
+	for (const [interactionId, answer] of answers) {
+		const interaction = interactions.get(interactionId);
+		if (interaction) interaction.answer = answer;
 	}
 	items.sort((a, b) => (a.sequence === b.sequence ? a.createdAt.localeCompare(b.createdAt) : a.sequence - b.sequence));
 	return { items, hiddenCount, lastSequence };

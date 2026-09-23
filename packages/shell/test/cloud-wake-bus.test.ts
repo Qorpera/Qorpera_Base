@@ -214,6 +214,37 @@ describe("worker dispatch and completion envelopes", () => {
 		expect(parsed.policy.maxPublicSends).toBe(0);
 		expect(Object.isFrozen(parsed.payload.dispatch)).toBe(true);
 	});
+	it("admits a coding session turn: species coding with the executor's scope, up to 64 turns, read access", () => {
+		const { identity, wake } = workerWakeFixture("worker-dispatch");
+		const workerId = wake.source.id;
+		const coding = {
+			harness: "codex",
+			repository: { host: "github.com", owner: "Qorpera", name: "Qorpera_Base", baseBranch: "master" },
+			branch: `qorpera/coding/${workerId}`,
+			baseSha: null,
+			harnessSessionRef: null,
+			sequence: 1,
+			vmId: randomUUID(),
+		};
+		const turn = { ...wake, payload: { ...wake.payload, species: "coding", coding } };
+		expect(parseCloudWakeEnvelope(turn, identity).payload.species).toBe("coding");
+		expect(() =>
+			parseCloudWakeEnvelope(
+				{ ...turn, payload: { ...turn.payload, coding: { ...coding, sequence: 2 } } },
+				identity,
+			),
+		).toThrow();
+		expect(() =>
+			parseCloudWakeEnvelope({ ...turn, payload: { ...turn.payload, access: "write" } }, identity),
+		).toThrow();
+		expect(() =>
+			parseCloudWakeEnvelope(
+				{ ...turn, payload: { ...turn.payload, coding: { ...coding, harness: "shell" } } },
+				identity,
+			),
+		).toThrow();
+		expect(() => parseCloudWakeEnvelope({ ...wake, payload: { ...wake.payload, coding } }, identity)).toThrow();
+	});
 	it("admits a completion as an internal continuation that may speak briefly in its parent's conversation", () => {
 		const { identity, wake } = workerWakeFixture("worker-completion");
 		const parsed = parseCloudWakeEnvelope(wake, identity);
@@ -683,5 +714,230 @@ describe("cloud-only wake transport", () => {
 		await expect(control.call("qorpera_read_native_wake", {}, new AbortController().signal)).rejects.toThrow(
 			"byte limit",
 		);
+	});
+});
+
+function pairWakeFixture() {
+	const { authority, envelope } = fixture();
+	const sessionId = authority.identity.sessionId ?? randomUUID();
+	const identity = { ...authority.identity, audienceKind: "company" as const, audienceUserId: null, sessionId };
+	const coworkerId = randomUUID();
+	const pair = policies.find((item) => item.scenario === "agent-pair")!.policy;
+	const pairSessionId = randomUUID();
+	const pairEventId = randomUUID();
+	const wake: CloudWakeEnvelope = {
+		...envelope,
+		kind: "agent",
+		actorStaffId: coworkerId,
+		actorUserId: identity.requesterUserId,
+		parentRunId: randomUUID(),
+		audience: { kind: "company", userId: null, sessionId },
+		source: { kind: "coworker", id: envelope.id, occurrenceKey: `coworker:${randomUUID()}:ask-1` },
+		policy: pair,
+		payload: {
+			text: "Could you check the note?",
+			senderStaffId: coworkerId,
+			receiptId: randomUUID(),
+			pairSessionId,
+			pairEventId,
+			transcript: [
+				{
+					eventId: pairEventId,
+					staffAgentId: coworkerId,
+					text: "Could you check the note?",
+					at: "2026-09-22T19:24:00.000000Z",
+				},
+			],
+		},
+		causal: { rootId: envelope.id, agentIds: [coworkerId, identity.staffAgentId] },
+	};
+	return { identity, wake, coworkerId, pair };
+}
+
+describe("coworker message in the agent's own thread (contract 14.6, 2026-09-22)", () => {
+	it("parses the pair policy exactly: no opening word, an optional final word, two sends at most", () => {
+		const { pair } = pairWakeFixture();
+		expect(parseCloudWakePolicy(pair)).toEqual(pair);
+		expect(parseCloudWakePolicy({ ...pair, maxPublicSends: 3 })).toEqual(REQUIRED_CLOUD_WAKE_POLICY);
+		expect(parseCloudWakePolicy({ ...pair, silenceAllowed: false })).toEqual(REQUIRED_CLOUD_WAKE_POLICY);
+		expect(parseCloudWakePolicy({ ...pair, initial: "optional" })).toEqual(REQUIRED_CLOUD_WAKE_POLICY);
+	});
+	it("accepts the wake with the agent's thread, the transcript identity and the exchange so far", () => {
+		const { identity, wake } = pairWakeFixture();
+		const parsed = parseCloudWakeEnvelope(wake, identity);
+		expect(parsed).toEqual(wake);
+		expect(parsed.policy.maxPublicSends).toBe(2);
+		expect(parsed.audience.sessionId).toBe(identity.sessionId);
+		expect(Object.isFrozen(parsed.payload.transcript)).toBe(true);
+		// Without the exchange (a first message) the payload still parses.
+		const { transcript: _omitted, ...first } = wake.payload;
+		expect(parseCloudWakeEnvelope({ ...wake, payload: first }, identity).payload).toEqual(first);
+	});
+	it("still reads an occurrence admitted before v70: no thread, no mouth, no transcript", () => {
+		const { identity, wake } = pairWakeFixture();
+		const silent = policies.find((item) => item.scenario === "agent")!.policy;
+		const legacyIdentity = { ...identity, sessionId: null };
+		const { pairSessionId: _s, pairEventId: _e, transcript: _t, ...payload } = wake.payload;
+		const legacy = { ...wake, audience: { ...wake.audience, sessionId: null }, policy: silent, payload };
+		expect(parseCloudWakeEnvelope(legacy, legacyIdentity).policy.maxPublicSends).toBe(0);
+	});
+	it.each([
+		[
+			"a thread without the pair policy",
+			(wake: CloudWakeEnvelope) => ({ ...wake, policy: policies.find((item) => item.scenario === "agent")!.policy }),
+		],
+		[
+			"the pair policy without a thread",
+			(wake: CloudWakeEnvelope, identity: CloudNativeToolIdentity) =>
+				[
+					{ ...wake, audience: { ...wake.audience, sessionId: null } },
+					{ ...identity, sessionId: null },
+				] as const,
+		],
+		[
+			"a transcript identity without its event",
+			(wake: CloudWakeEnvelope) => ({ ...wake, payload: { ...wake.payload, pairEventId: undefined } }),
+		],
+		[
+			"a transcript longer than the kernel sends",
+			(wake: CloudWakeEnvelope) => ({
+				...wake,
+				payload: {
+					...wake.payload,
+					transcript: Array.from({ length: 25 }, () => (wake.payload.transcript as unknown[])[0]),
+				},
+			}),
+		],
+		[
+			"a transcript line with an extra key",
+			(wake: CloudWakeEnvelope) => ({
+				...wake,
+				payload: {
+					...wake.payload,
+					transcript: [{ ...(wake.payload.transcript as Record<string, unknown>[])[0], role: "system" }],
+				},
+			}),
+		],
+		[
+			"a payload key the kernel never writes",
+			(wake: CloudWakeEnvelope) => ({ ...wake, payload: { ...wake.payload, priority: true } }),
+		],
+		[
+			"a sender who is not the actor",
+			(wake: CloudWakeEnvelope) => ({ ...wake, payload: { ...wake.payload, senderStaffId: randomUUID() } }),
+		],
+	])("rejects %s", (_name, mutate) => {
+		const { identity, wake } = pairWakeFixture();
+		const result = mutate(wake, identity);
+		const [mutated, who] = Array.isArray(result) ? result : [result, identity];
+		expect(() => parseCloudWakeEnvelope(JSON.parse(JSON.stringify(mutated)), who)).toThrow();
+	});
+});
+
+describe("held coworker messages (contract 14.6, second cut)", () => {
+	function heldLine(staffAgentId = randomUUID()) {
+		return {
+			eventId: randomUUID(),
+			staffAgentId,
+			text: "FYI: the note is updated.",
+			at: "2026-09-22T22:30:00.000000Z",
+			pairSessionId: randomUUID(),
+		};
+	}
+	it("carries messages left for the agent on a human wake and on a coworker wake", () => {
+		const human = fixture();
+		const parsed = parseCloudWakeEnvelope(
+			{ ...human.envelope, payload: { ...human.envelope.payload, heldMessages: [heldLine()] } },
+			human.authority.identity,
+		);
+		expect(parsed.payload.heldMessages).toHaveLength(1);
+		expect(Object.isFrozen(parsed.payload.heldMessages)).toBe(true);
+		const { identity, wake } = pairWakeFixture();
+		const withHeld = { ...wake, payload: { ...wake.payload, heldMessages: [heldLine(), heldLine()] } };
+		expect(parseCloudWakeEnvelope(withHeld, identity).payload.heldMessages).toHaveLength(2);
+	});
+	it.each([
+		["an empty list", () => []],
+		["more than twelve", () => Array.from({ length: 13 }, () => heldLine())],
+		["a line with an extra key", () => [{ ...heldLine(), priority: false }]],
+		["a line without its transcript", () => [{ ...heldLine(), pairSessionId: undefined }]],
+		["a blank text", () => [{ ...heldLine(), text: " " }]],
+	])("rejects %s", (_name, make) => {
+		const human = fixture();
+		expect(() =>
+			parseCloudWakeEnvelope(
+				JSON.parse(
+					JSON.stringify({ ...human.envelope, payload: { ...human.envelope.payload, heldMessages: make() } }),
+				),
+				human.authority.identity,
+			),
+		).toThrow();
+	});
+	it("reads twelve held lines and a full transcript in one payload", () => {
+		const { identity, wake } = pairWakeFixture();
+		const line = { ...heldLine(), text: "ø".repeat(400) };
+		const transcript = Array.from({ length: 12 }, () => ({
+			eventId: randomUUID(),
+			staffAgentId: wake.actorStaffId as string,
+			text: "ø".repeat(400),
+			at: "2026-09-22T22:30:00.000000Z",
+		}));
+		const heavy = {
+			...wake,
+			payload: { ...wake.payload, transcript, heldMessages: Array.from({ length: 12 }, () => line) },
+		};
+		expect(Buffer.byteLength(JSON.stringify(heavy.payload))).toBeGreaterThan(16384);
+		expect(parseCloudWakeEnvelope(heavy, identity).payload.heldMessages).toHaveLength(12);
+	});
+	it("rejects a held message the agent supposedly left for itself", () => {
+		const human = fixture();
+		expect(() =>
+			parseCloudWakeEnvelope(
+				{
+					...human.envelope,
+					payload: { ...human.envelope.payload, heldMessages: [heldLine(human.authority.identity.staffAgentId)] },
+				},
+				human.authority.identity,
+			),
+		).toThrow();
+	});
+	it("sends priority false to the kernel and accepts a held receipt", async () => {
+		const { binding, run, message, call, createBoundary } = await coworkerFixture();
+		const held = {
+			schema: "qorpera.coworker-send/v1",
+			runId: binding.runId,
+			receiptId: randomUUID(),
+			occurrenceId: null,
+			recipientStaffId: message.recipientStaffId,
+			status: "held",
+		} as const;
+		call.mockResolvedValueOnce(held);
+		const boundary = createBoundary();
+		try {
+			const response = await boundary.invoke("held_1", "qorpera", "send_coworker_message", {
+				...message,
+				priority: false,
+			});
+			expect(response.success).toBe(true);
+			const result = JSON.parse(response.contentItems[0].text) as CloudToolResult;
+			expect(JSON.parse(result.content.text)).toEqual(held);
+			expect(call).toHaveBeenLastCalledWith(
+				"qorpera_send_coworker_message",
+				expect.objectContaining({ p_priority: false, p_text: message.text }),
+				expect.anything(),
+			);
+			// A priority message sends no flag at all, so a kernel before this cut still understands it.
+			const queued = await boundary.invoke("queued_1", "qorpera", "send_coworker_message", message);
+			expect(queued.success).toBe(true);
+			expect(call.mock.lastCall?.[1]).not.toHaveProperty("p_priority");
+			const wrong = await boundary.invoke("wrong_1", "qorpera", "send_coworker_message", {
+				...message,
+				priority: "later",
+			});
+			expect(wrong.success).toBe(false);
+		} finally {
+			boundary.close();
+			run.close();
+		}
 	});
 });

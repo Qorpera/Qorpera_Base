@@ -59,7 +59,24 @@ export async function createOfficePowerOffWorkerFixture(
 	const poll = vi.spyOn(f.client, "inspectInstanceOperation").mockResolvedValue("succeeded");
 	submit.mockClear();
 	poll.mockClear();
-	const registry = vi.fn(f.registry.getMockImplementation()!);
+	// Node demand suspension after a confirmed explicit power-off (20260923060000).
+	const suspension: { value: unknown } = {
+		value: {
+			state: "suspended",
+			allocationId: f.binding.allocationId,
+			nodeId: "36000000-0000-4000-8000-000000000010",
+			suspendedAt: "2026-09-23T15:00:00.000000+00:00",
+		},
+	};
+	const stopRegistry = f.registry.getMockImplementation()!;
+	const registry = vi.fn(async (...args: Parameters<typeof stopRegistry>) => {
+		if ((args[0] as string) === "qorpera_suspend_runtime_node_machine") {
+			args[2].throwIfAborted();
+			if (suspension.value instanceof Error) throw suspension.value;
+			return structuredClone(suspension.value);
+		}
+		return stopRegistry(...args);
+	});
 	const create = () =>
 		new LxdOfficePowerOffWorker(
 			{ policy: f.policy, check: f.check },
@@ -67,5 +84,7 @@ export async function createOfficePowerOffWorkerFixture(
 			{ client: f.client, kernelLock: f.kernelLock },
 		);
 	const run = (s: AbortSignal = signal()) => create().reconcile(f.activation.request.intentId, f.request, s);
-	return { ...f, state, instance, vmState, submit, poll, registry, paths, create, run };
+	const suspensions = () =>
+		registry.mock.calls.filter(([method]) => (method as string) === "qorpera_suspend_runtime_node_machine");
+	return { ...f, state, instance, vmState, submit, poll, registry, suspension, suspensions, paths, create, run };
 }

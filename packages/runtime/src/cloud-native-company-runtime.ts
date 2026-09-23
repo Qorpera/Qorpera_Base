@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { CloudContentAddressedStore } from "@qorpera/cloud-client/node/cloud-object-store";
+import type { JsonValue } from "@qorpera/contracts";
 import { CLOUD_AGENT_SEND_INSTRUCTIONS, CloudAgentMouth, parseCloudAgentSendInput } from "./cloud-agent-mouth.ts";
 import type { CloudCompanyComputerSessionFactory } from "./cloud-company-computer-control.ts";
 import { type CloudCompanyPathControl, CloudCompanyPathGateway } from "./cloud-company-path-gateway.ts";
@@ -10,6 +11,7 @@ import {
 } from "./cloud-company-path-presence.ts";
 import { cloudHiringTools } from "./cloud-hiring-tools.ts";
 import { cloudMemoryTools, composeCloudAgentMemory, unavailableCloudAgentMemory } from "./cloud-memory-tools.ts";
+import type { CloudNativeCodingDriver } from "./cloud-native-coding-runtime.ts";
 import {
 	cloudCompanyContextTool,
 	compileCloudNativeCompanyInstructions,
@@ -42,12 +44,18 @@ import {
 	cloudRuntimeErrorCategory,
 } from "./cloud-runtime-observability.ts";
 import { type CloudSecretOperationClient, cloudSecretTools, describeCloudSecretTools } from "./cloud-secret-tools.ts";
+import {
+	CLOUD_ASK_MEMBER_INSTRUCTIONS,
+	CLOUD_INTERACTION_SURFACES,
+	cloudInteractionEventId,
+	parseCloudAskMemberInput,
+} from "./cloud-thread-interactions.ts";
 import { type CloudWakeControl, cloudCoworkerMessageTool, parseCloudWakeEnvelope } from "./cloud-wake-bus.ts";
 import { cloudWorkerToolFilter, cloudWorkerTools } from "./cloud-worker-tools.ts";
 
 type NativeCompanyControl = CloudNativeToolAuthorityReader &
 	CloudNativeToolOperationControlPlane &
-	Pick<NativeProviderControlPlane, "sendMessage">;
+	Pick<NativeProviderControlPlane, "sendMessage" | "appendInteractionRequest">;
 
 /** Cloud-only composition of the native fence, live path gateway and public mouth.
  * Object transport and cloud authority stay in this trusted host. No model tool
@@ -68,6 +76,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	readonly #isolation: NativeIsolationConfiguration | undefined;
 	readonly #secretBroker: CloudSecretOperationClient | undefined;
 	readonly #computerSession: CloudCompanyComputerSessionFactory | undefined;
+	readonly #coding: CloudNativeCodingDriver | undefined;
 
 	constructor(options: {
 		presence?: CloudCompanyPathPresenceFactory;
@@ -85,6 +94,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		secretBroker?: CloudSecretOperationClient;
 		/** Explicit cloud-office adapter; no local execution or inferred resource grant. */
 		computerSession?: CloudCompanyComputerSessionFactory;
+		/** The coding composition (Order 9): only a node with the coding command
+		 * gateway installed carries it. A coding wake on a node without it fails visibly. */
+		coding?: CloudNativeCodingDriver;
 	}) {
 		this.#control = options.controlPlane;
 		this.#presenceFactory = options.presence;
@@ -96,6 +108,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		this.#isolation = options.isolation ? Object.freeze({ ...options.isolation }) : undefined;
 		this.#secretBroker = options.secretBroker;
 		this.#computerSession = options.computerSession;
+		this.#coding = options.coding;
 	}
 
 	async execute(request: NativeCompanyExecutionRequest, identityRoot: string, signal: AbortSignal) {
@@ -148,6 +161,20 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				),
 				context.identity,
 			);
+			// A coding session's turn is its own composition: three command tools in
+			// the credential-free repository VM and two ways to end the turn.
+			if (wake.kind === "agent" && wake.source.kind === "worker-dispatch" && wake.payload.species === "coding") {
+				if (!this.#coding)
+					throw new Error("Coding sessions run in the coding composition, which this node does not carry");
+				stage = "prompt-composition";
+				composition.finish("succeeded", { outputBytes: 0 });
+				return await this.#coding.execute(request, identityRoot, signal, {
+					binding,
+					identity: context.identity,
+					wake,
+					observability,
+				});
+			}
 			const wakeControl: CloudWakeControl = {
 				call: (method, argumentsValue, requestSignal) => this.#paths.call(method, argumentsValue, requestSignal),
 			};
@@ -227,6 +254,62 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					});
 					// Contract 7.1: the final send closes the turn. Nothing after it reaches the member.
 					return { kind: "text", value: text, completesTurn: input.phase === "final" };
+				},
+			};
+			// A typed card for the member: appended under the run's lease authority, then
+			// the final send of its sentence. The card precedes the sentence so a failed
+			// send leaves a retryable tool call, never a turn that ended without its card.
+			const control = this.#control;
+			const ask: CloudNativeTool = {
+				name: "ask_member" satisfies CloudRuntimeToolOperation,
+				source: "runtime",
+				description: CLOUD_ASK_MEMBER_INSTRUCTIONS,
+				inputSchema: {
+					type: "object",
+					properties: {
+						idempotencyKey: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+						text: { type: "string", minLength: 1, maxLength: 4096 },
+						surface: { type: "string", enum: [...CLOUD_INTERACTION_SURFACES] },
+						title: { type: "string", minLength: 1, maxLength: 200 },
+						body: { type: "string", maxLength: 2000 },
+						expiresAt: { type: "string" },
+						payload: { type: "object" },
+					},
+					required: ["idempotencyKey", "text", "surface", "title", "payload"],
+					additionalProperties: false,
+				},
+				parseArguments(value) {
+					const input = parseCloudAskMemberInput(value);
+					return { idempotencyKey: input.idempotencyKey, text: input.text, ...input.data } as JsonValue;
+				},
+				async execute(value, toolContext) {
+					const input = parseCloudAskMemberInput(value);
+					const eventId = cloudInteractionEventId(binding.runId, input.idempotencyKey);
+					const append = control.appendInteractionRequest;
+					if (!append) throw new Error("Cloud cards are unavailable on this control plane");
+					const card = await cloudToolRequest(
+						(requestSignal) => append.call(control, request, { eventId, data: input.data }, requestSignal),
+						signal,
+					);
+					if (card.sessionId !== context.identity.sessionId) throw new Error("Cloud card audience changed");
+					const receipt = await mouth.send({
+						idempotencyKey: `${input.idempotencyKey}:final`,
+						text: input.text,
+						phase: "final",
+					});
+					const replayed = deliveredMessageIds.has(receipt.messageId);
+					deliveredMessageIds.add(receipt.messageId);
+					const text = JSON.stringify({
+						schema: "qorpera.interaction-receipt/v1",
+						interactionId: card.interactionId,
+						surface: input.data.surface,
+						sequence: card.sequence,
+						messageId: receipt.messageId,
+					});
+					toolContext.observation?.finish(replayed ? "replayed" : "succeeded", {
+						outputBytes: Buffer.byteLength(text),
+					});
+					return { kind: "text", value: text, completesTurn: true };
 				},
 			};
 			try {
@@ -328,6 +411,13 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 										]
 									: []),
 								...(identity.sessionId && wake.policy.final !== "forbidden" ? [send] : []),
+								// Cards belong to a member's own thread: never a group chat, never a worker.
+								...(identity.sessionId &&
+								wake.policy.final !== "forbidden" &&
+								wake.kind !== "room" &&
+								!work.isWorker
+									? [ask]
+									: []),
 							],
 							assertContext: (requestSignal) => gateway.assertReadableContext(requestSignal),
 							recordContextView: (frame, outputs, requestSignal) =>
