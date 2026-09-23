@@ -23,7 +23,8 @@ const REFRESH_MS = 5_000;
 /** The view-only transcript of two agents' messages to each other (contract
  * 14.6). Opened from a chip in either agent's thread and laid over it, as the
  * reference product does: both figures and names in the header, each message
- * as a bubble under the speaking agent's name, a lock line and one Close button.
+ * as a bubble under the speaking agent's name, the coworker on the left and
+ * the thread's own agent on the right, a lock line and one Close button.
  * Nothing here can send: members steer by writing in either agent's thread. */
 export class PairTranscriptView {
 	readonly el: HTMLElement;
@@ -38,6 +39,7 @@ export class PairTranscriptView {
 	#renderedKey = "";
 	#disposed = false;
 
+	/** @param agentIds the coworker (shown on the left) and the thread's own agent (on the right). */
 	constructor(host: PairTranscriptHost, sessionId: string, agentIds: readonly [string, string], onClose: () => void) {
 		this.#host = host;
 		this.#sessionId = sessionId;
@@ -124,14 +126,15 @@ export class PairTranscriptView {
 		this.#renderedKey = key;
 		replace(
 			this.#header,
+			// The header names this thread's own agent first, as the reference product does.
 			h(
 				"div",
 				{ class: "pair-identity" },
-				agentFigure(first.agent, first.name, { size: 24 }),
-				h("span", { class: "pair-name" }, first.name),
-				h("span", { class: "pair-glyph", "aria-label": "and" }, "⇄"),
 				agentFigure(second.agent, second.name, { size: 24 }),
 				h("span", { class: "pair-name" }, second.name),
+				h("span", { class: "pair-glyph", "aria-label": "and" }, "⇄"),
+				agentFigure(first.agent, first.name, { size: 24 }),
+				h("span", { class: "pair-name" }, first.name),
 			),
 		);
 		const nodes: HTMLElement[] = [];
@@ -157,21 +160,31 @@ export class PairTranscriptView {
 			} else if (item.kind === "agent") {
 				const speaker = this.#agent(item.staffSpeaker?.staffAgentId ?? "");
 				const name = item.staffSpeaker?.displayName ?? speaker.name;
+				// The thread's own agent speaks from the right, the coworker from the left.
+				const right = item.staffSpeaker?.staffAgentId === this.#agentIds[1];
+				const other = this.#agent(right ? this.#agentIds[0] : this.#agentIds[1]);
 				nodes.push(
 					h(
 						"div",
-						{ class: "pair-row" },
+						{ class: right ? "pair-row pair-row-right" : "pair-row" },
 						agentFigure(speaker.agent, name, { size: 28 }),
 						h(
 							"article",
 							{
-								class: "message from-agent",
+								class: right ? "message from-agent pair-right" : "message from-agent",
 								"aria-label": `${name} · ${fmtTime(item.createdAt)}`,
 								title: `${name} · ${fmtTime(item.createdAt)}`,
 								dataset: { messageId: item.id },
 							},
 							h("div", { class: "message-author" }, name),
 							...markdownBubbles(item.text).map((body) => h("div", { class: "bubble" }, body)),
+							item.held
+								? h(
+										"div",
+										{ class: "message-caption", title: "Sent without waking the coworker" },
+										`Left for ${other.name}'s next turn`,
+									)
+								: null,
 						),
 					),
 				);

@@ -1491,14 +1491,32 @@ describe("messages between two agents (contract 14.6)", () => {
 						text: "This exchange paused after 6 messages.",
 						createdAt: timestamp,
 					},
+					{
+						kind: "peer_link",
+						id: id(89),
+						sequence: 3,
+						direction: "out",
+						held: true,
+						counterpartStaffId: coworker.id,
+						pairSessionId,
+						createdAt: timestamp,
+					},
 				],
 				hiddenCount: 0,
-				lastSequence: 2,
+				lastSequence: 3,
 			},
 		});
 		f.view.update();
-		const chip = f.view.el.querySelector<HTMLButtonElement>(".peer-chip")!;
-		expect(chip.textContent).toBe("Message from Helper");
+		const chips = f.view.el.querySelectorAll<HTMLButtonElement>(".peer-chip");
+		const chip = chips[0]!;
+		// Verb, the coworker's figure, then the name: the figure sits between the two spans.
+		expect([...chip.querySelectorAll(":scope > span:not(.figure)")].map((span) => span.textContent)).toEqual([
+			"Message from",
+			"Helper",
+		]);
+		expect(chip.querySelector(".figure")?.previousElementSibling?.textContent).toBe("Message from");
+		expect(chip.getAttribute("aria-label")).toBe("Message from Helper. Open the conversation");
+		expect(chips[1]?.getAttribute("aria-label")).toBe("Left a note for Helper. Open the conversation");
 		expect(f.view.el.querySelector(".conversation-note")?.textContent).toBe("This exchange paused after 6 messages.");
 		expect(f.view.el.querySelector(".pair-transcript")).toBeNull();
 		chip.click();
@@ -1519,17 +1537,40 @@ describe("messages between two agents (contract 14.6)", () => {
 						staffSpeaker: { runId: id(93), staffAgentId: coworker.id, staffVersion: 1, displayName: "Helper" },
 						createdAt: timestamp,
 					},
+					{
+						kind: "agent",
+						id: id(92),
+						sequence: 2,
+						text: "FYI: the note is updated.",
+						attachmentCount: 0,
+						phase: "final",
+						runId: id(91),
+						held: true,
+						staffSpeaker: {
+							runId: id(91),
+							staffAgentId: staff.id,
+							staffVersion: 1,
+							displayName: staff.displayName,
+						},
+						createdAt: timestamp,
+					},
 				],
 				hiddenCount: 0,
-				lastSequence: 1,
+				lastSequence: 2,
 			},
 		});
 		await settle();
 		const panel = f.view.el.querySelector<HTMLElement>(".pair-transcript")!;
 		expect(panel).not.toBeNull();
-		expect(panel.querySelector(".pair-header")?.textContent).toBe(`Helper⇄${staff.displayName}`);
+		expect(panel.querySelector(".pair-header")?.textContent).toBe(`${staff.displayName}⇄Helper`);
 		expect(panel.querySelector(".message-author")?.textContent).toBe("Helper");
+		// The coworker speaks from the left, this thread's own agent from the right.
+		const rows = panel.querySelectorAll<HTMLElement>(".pair-row");
+		expect(rows[0]?.classList.contains("pair-row-right")).toBe(false);
+		expect(rows[1]?.classList.contains("pair-row-right")).toBe(true);
+		expect(rows[1]?.querySelector(".message-author")?.textContent).toBe(staff.displayName);
 		expect(panel.textContent).toContain("he approves of you");
+		expect(panel.querySelector(".message-caption")?.textContent).toBe("Left for Helper's next turn");
 		expect(panel.textContent).toContain("This chat is view-only");
 		expect(panel.querySelector("textarea")).toBeNull();
 		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(true);

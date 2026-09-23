@@ -62,6 +62,12 @@ describe("messages between two agents (contract 14.6)", () => {
 			}),
 		]);
 	});
+	it("marks a message sent without waking the coworker as held", () => {
+		const held = peerMessage(7, "FYI: the note is updated.");
+		(held.body as { entry: { delivery: Record<string, unknown> } }).entry.delivery.held = true;
+		expect(projectTranscript([parseEvent(held)]).items[0]).toMatchObject({ kind: "agent", held: true });
+		expect(projectTranscript([parseEvent(peerMessage(8))]).items[0]).not.toHaveProperty("held");
+	});
 	it("hides a peer message that claims a run execution or lacks its speaker", () => {
 		const withRun = {
 			...peerMessage(1),
@@ -100,6 +106,22 @@ describe("messages between two agents (contract 14.6)", () => {
 			expect.objectContaining({ kind: "note", text: "This exchange paused after 6 messages." }),
 		]);
 		expect(projection.hiddenCount).toBe(0);
+	});
+	it("keeps the held flag on a chip", () => {
+		const chip = base(9, "session_info", {
+			schema: PEER_LINK_SCHEMA,
+			direction: "out",
+			held: true,
+			counterpartStaffId: alice,
+			pairSessionId: session,
+			eventId: run,
+			receiptId: run,
+		});
+		expect(projectTranscript([parseEvent(chip)]).items[0]).toMatchObject({
+			kind: "peer_link",
+			direction: "out",
+			held: true,
+		});
 	});
 	it("ignores a malformed chip instead of rendering a broken link", () => {
 		const broken = base(6, "session_info", {
