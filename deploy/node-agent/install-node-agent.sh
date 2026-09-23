@@ -4,7 +4,7 @@
 # It changes no unit and restarts nothing: moving roles onto the new units is the separate migration step.
 set -euo pipefail
 
-EXPECTED_AGENT_SHA256="b43113eb2ec64e21449f9b91d8984da4418c4d7998d7f39144211bad4fa20322"
+EXPECTED_AGENT_SHA256="d9b07f98379bb4e904ee4cca3fe942f1d1f5bebb53aec132e7c2e44426136ab8"
 EXPECTED_MIGRATE_SHA256="f1f4a96b5f68971b99b36cfb24bfc9e128fcf9c5cfddd9d1b33e9f7fda90e444"
 EXPECTED_LAUNCHER_SHA256="430812c2a5481c4f0a6e933a70c0c5b9bca4c0c58395deac0ac7bc230435dce2"
 SOURCE_ROOT=$(cd "$(dirname "$0")" && pwd)
