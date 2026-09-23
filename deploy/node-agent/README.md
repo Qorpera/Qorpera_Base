@@ -172,8 +172,13 @@ These steps run per node: node 2 first, then node 1. They cover the provider and
        is named after;
      - the targets that want only the enabled one of the two (`WantedBy=`, and the `Before=` they imply), listed as
        `wantedByEnabledOnly`: before the switch the old unit is enabled, after it the new one;
-     - `WatchdogUSec` 0 against infinity, while the new unit has never started and neither unit sets `WatchdogSec=`
-       (systemd reports infinity until a service first starts).
+     - `WatchdogUSec` 0 against infinity, when the unit reading infinity has not started since systemd loaded it and
+       neither unit sets `WatchdogSec=`. systemd reports infinity until a service starts, and it unloads a stopped,
+       disabled unit and loads it fresh when asked: before the switch that is the new unit, after it the old one (seen
+       on node 2's first switch, which the gate therefore switched back).
+
+     Differing unit names and states (the dependency lists, `WatchdogUSec`, `LoadState`, `NeedDaemonReload`,
+     `UnitFileState`) are printed under `values`; no other value is.
 5. **Switch** in a quiet window: `agent switch <role> <old unit>`.
    - It refuses an old unit the new unit does not conflict with, and a role already switched.
    - It stops and disables the old unit, then enables and starts the new one.
@@ -184,8 +189,11 @@ These steps run per node: node 2 first, then node 1. They cover the provider and
    - It records both command lines for the condition (c) diff. These records carry no release, so `gc` keeps them.
    - A failed check switches back at once and waits until the old unit runs exactly its old command again; if that
      fails too, it records `switch-back-failed` and says `SWITCH_BACK_FAILED`.
+   - A switch-back always brings the old unit back, then requires it enabled and the new unit disabled; otherwise it
+     records `switch-back-failed`. The switch receipts carry the post-switch diff.
    - `agent unswitch <role> <old unit> [--force]` switches back by hand. It records an intent, waits for exactly the
-     command the switch recorded, and writes a receipt either way. It waits for a quiet node; `--force` skips that,
+     command the switch recorded (after a `switch-back-failed`, the command in the switch intent), and writes a receipt
+     either way. After a `switched-back` there is nothing to undo, and it refuses. It waits for a quiet node; `--force` skips that,
      but only for a new role that is down already (no process, or a health URL fails).
    - Run `switch` and `unswitch` detached from the login session (`systemd-run --wait` as a transient unit). A dropped
      SSH session must not kill the agent between stopping the old unit and starting the new one.

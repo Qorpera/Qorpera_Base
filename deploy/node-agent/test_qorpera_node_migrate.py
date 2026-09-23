@@ -237,9 +237,12 @@ class UnitTest(unittest.TestCase):
         return old, new
 
     def switched(self):
-        """The same pair after the switch: the new unit enabled and running, the old one disabled and stopped."""
+        """The same pair after the switch, as node 2 showed them on 2026-09-23: the new unit enabled and running; the old
+        one disabled, stopped, unloaded by systemd and loaded again, so it reads like a unit that never started."""
         old, new = self.shows()
-        return ({**old, 'UnitFileState': 'disabled', 'WantedBy': '', 'Before': 'shutdown.target', 'MainPID': '0'},
+        return ({**old, 'UnitFileState': 'disabled', 'WantedBy': '', 'Before': 'shutdown.target', 'MainPID': '0',
+                 'WatchdogUSec': 'infinity', 'InvocationID': '', 'ActiveEnterTimestampMonotonic': '0',
+                 'UID': '[not set]', 'GID': '[not set]', 'ConditionResult': 'no', 'AssertResult': 'no'},
                 {**new, 'UnitFileState': 'enabled', 'WantedBy': 'multi-user.target',
                  'Before': 'shutdown.target multi-user.target', 'WatchdogUSec': '0', 'InvocationID': 'def',
                  'ActiveEnterTimestampMonotonic': '12', 'UID': '992', 'GID': '980'})
@@ -249,9 +252,9 @@ class UnitTest(unittest.TestCase):
                                  **options)
 
     def test_show_diff_before_and_after_the_switch(self):
-        self.assertEqual(self.diff(*self.shows()), {'unexpectedDifferences': [], 'enabled': ['old'],
+        self.assertEqual(self.diff(*self.shows()), {'unexpectedDifferences': [], 'values': {}, 'enabled': ['old'],
                                                     'wantedByEnabledOnly': ['multi-user.target'], 'equivalent': True})
-        self.assertEqual(self.diff(*self.switched()), {'unexpectedDifferences': [], 'enabled': ['new'],
+        self.assertEqual(self.diff(*self.switched()), {'unexpectedDifferences': [], 'values': {}, 'enabled': ['new'],
                                                        'wantedByEnabledOnly': ['multi-user.target'], 'equivalent': True})
         old, new = self.shows()
         self.assertEqual(self.diff(old, {**new, 'User': 'root', 'ProtectSystem': 'no'})['unexpectedDifferences'],
@@ -259,15 +262,23 @@ class UnitTest(unittest.TestCase):
 
     def test_show_diff_compares_only_dependency_lists_as_sets(self):
         old, new = self.shows()
-        self.assertIn('Environment', self.diff(old, {**new, 'Environment': 'B=2 A=1'})['unexpectedDifferences'])
+        report = self.diff(old, {**new, 'Environment': 'B=2 A=1'})
+        self.assertIn('Environment', report['unexpectedDifferences'])
+        self.assertNotIn('Environment', report['values'])
         self.assertIn('Requires', self.diff(old, {**new, 'Requires': 'system.slice'})['unexpectedDifferences'])
 
-    def test_show_diff_allows_the_watchdog_default_only_before_the_first_start(self):
+    def test_show_diff_allows_the_watchdog_default_only_on_a_unit_not_started_since_it_loaded(self):
+        for old, new in [self.shows(), self.switched()]:
+            self.assertIn('WatchdogUSec', self.diff(old, new, watchdog_set=True)['unexpectedDifferences'])
         old, new = self.shows()
-        self.assertIn('WatchdogUSec', self.diff(old, new, watchdog_set=True)['unexpectedDifferences'])
         started = {**new, 'InvocationID': 'x', 'ActiveEnterTimestampMonotonic': '5'}
-        self.assertIn('WatchdogUSec', self.diff(old, started)['unexpectedDifferences'])
+        report = self.diff(old, started)
+        self.assertIn('WatchdogUSec', report['unexpectedDifferences'])
+        self.assertEqual(report['values']['WatchdogUSec'], ['0', 'infinity'])
         self.assertIn('WatchdogUSec', self.diff(old, {**new, 'WatchdogUSec': '30000000'})['unexpectedDifferences'])
+        old, new = self.switched()
+        self.assertIn('WatchdogUSec', self.diff({**old, 'InvocationID': 'y', 'ActiveEnterTimestampMonotonic': '3'},
+                                                new)['unexpectedDifferences'])
 
     def test_show_diff_refuses_what_the_switch_depends_on(self):
         old, new = self.shows()

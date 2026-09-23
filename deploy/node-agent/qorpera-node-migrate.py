@@ -53,6 +53,8 @@ DEPENDENCY_KEYS = {
     'After', 'Before', 'Requires', 'Wants', 'Requisite', 'BindsTo', 'PartOf', 'Upholds', 'Conflicts', 'ConflictedBy',
     'WantedBy', 'RequiredBy', 'Triggers', 'TriggeredBy', 'OnFailure',
 }
+# Keys whose values show_diff may print when they differ: unit names and states, never settings that could hold secrets.
+PRINTABLE = DEPENDENCY_KEYS | {'WatchdogUSec', 'LoadState', 'NeedDaemonReload', 'UnitFileState'}
 # Their own rules in show_diff.
 RULED = {'Conflicts', 'ConflictedBy', 'WantedBy', 'Before', 'ExecStart', 'ExecStartEx', 'LoadState', 'NeedDaemonReload',
          'WatchdogUSec'}
@@ -196,8 +198,9 @@ def show_diff(old, new, old_unit, new_unit, watchdog_set=False):
     - Conflicts= gains the old unit, and the old unit may list the new one in ConflictedBy=;
     - the ExecStart argv keeps its prefix and runs the fixed launcher with the role the new unit is named after;
     - the targets that want only the enabled one of the two (WantedBy=, and the Before= they imply);
-    - WatchdogUSec 0 against infinity, while the new unit has never started and neither unit sets WatchdogSec=
-      (systemd reports infinity until a service first starts)."""
+    - WatchdogUSec 0 against infinity, when the unit reading infinity has not started since systemd loaded it and
+      neither unit sets WatchdogSec=. systemd reports infinity until a service starts, and it unloads a stopped,
+      disabled unit: before the switch that is the new unit, after it the old one."""
     unexpected = []
     for unit, props in [(old_unit, old), (new_unit, new)]:
         if props.get('LoadState') != 'loaded' or props.get('NeedDaemonReload') != 'no':
@@ -225,12 +228,16 @@ def show_diff(old, new, old_unit, new_unit, watchdog_set=False):
         unexpected.append('WantedBy')
     if words(other, 'Before') != words(wanting, 'Before') - moved:
         unexpected.append('Before')
-    never_started = new.get('ActiveEnterTimestampMonotonic') == '0' or not new.get('InvocationID')
-    watchdog = [old.get('WatchdogUSec'), new.get('WatchdogUSec')]
-    if watchdog[0] != watchdog[1] and not (watchdog == ['0', 'infinity'] and never_started and not watchdog_set):
-        unexpected.append('WatchdogUSec')
-    return {'unexpectedDifferences': unexpected, 'enabled': enabled, 'wantedByEnabledOnly': sorted(moved),
-            'equivalent': not unexpected}
+    if old.get('WatchdogUSec') != new.get('WatchdogUSec'):
+        unset = [props for props in (old, new) if props.get('WatchdogUSec') == 'infinity']
+        other = [props for props in (old, new) if props.get('WatchdogUSec') == '0']
+        fresh = len(unset) == 1 and len(other) == 1 and (
+            unset[0].get('ActiveEnterTimestampMonotonic') == '0' or not unset[0].get('InvocationID'))
+        if not fresh or watchdog_set:
+            unexpected.append('WatchdogUSec')
+    values = {key: [old.get(key), new.get(key)] for key in unexpected if key in PRINTABLE}
+    return {'unexpectedDifferences': unexpected, 'values': values, 'enabled': enabled,
+            'wantedByEnabledOnly': sorted(moved), 'equivalent': not unexpected}
 
 
 def literal(source, name):
