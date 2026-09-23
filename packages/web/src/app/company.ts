@@ -1,6 +1,7 @@
 import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import type { CloudApi } from "../cloud/api.ts";
 import { CloudRpcError, describeError } from "../cloud/client.ts";
+import type { CodingSession, CodingSessionRead } from "../cloud/coding-session.ts";
 import { type GroupChatDetails, listGroupChatDetails, readGroupChatDetails } from "../cloud/group-details.ts";
 import { buildCompanyHierarchy, type CompanyHierarchy, type HostedCompanyOrganization } from "../cloud/organization.ts";
 import { UUID_PATTERN } from "../cloud/parse.ts";
@@ -129,6 +130,10 @@ export interface ConversationState {
 		executionSponsor: SessionExecutionSponsor;
 		roomTarget?: RoomMessageTarget;
 	};
+	/** The coding sessions the agent dispatched from this conversation (Order 9),
+	 * oldest first; absent until the first listing, empty when the cloud has none
+	 * or does not carry coding sessions yet. */
+	codingSessions?: CodingSession[];
 	/** Inputs this browser appended that the cloud has not listed back yet. */
 	optimistic: {
 		clientInputId: string;
@@ -824,6 +829,15 @@ export class CompanyController {
 					position = page.nextAfterPosition;
 				}
 				const optimistic = reconcileOptimistic({ optimistic: store.get().optimistic, pending, events });
+				// The listing is optional: a cloud without Order 9 answers with a missing
+				// RPC, and a refused or failed listing keeps what the thread already shows.
+				let codingSessions = store.get().codingSessions;
+				try {
+					codingSessions = await this.#api.listCodingSessions(sessionId);
+				} catch {
+					codingSessions ??= [];
+				}
+				if (this.#stopped) return;
 				store.set({
 					events,
 					pending,
@@ -832,12 +846,45 @@ export class CompanyController {
 					complete: true,
 					error: undefined,
 					optimistic,
+					codingSessions,
 				});
 			} catch (error) {
 				store.set({ loading: false, complete: false, error: describeError(error) });
 				return;
 			}
 		} while (request.repeat && !this.#stopped);
+	}
+
+	// Coding sessions: the thread element follows one session's stream itself; the
+	// owner's answer and delegation go through here so the listing stays current.
+
+	readCodingSession(workerId: string, afterEvent = 0): Promise<CodingSessionRead> {
+		return this.#api.readCodingSession(workerId, afterEvent);
+	}
+
+	async answerCodingSession(
+		sessionId: string,
+		workerId: string,
+		text: string,
+		clientRequestId: string,
+	): Promise<void> {
+		this.#mergeCodingSession(sessionId, await this.#api.answerCodingSession(workerId, text, clientRequestId));
+	}
+
+	async delegateCodingSession(sessionId: string, workerId: string, clientRequestId: string): Promise<void> {
+		this.#mergeCodingSession(sessionId, await this.#api.delegateCodingSession(workerId, clientRequestId));
+	}
+
+	#mergeCodingSession(sessionId: string, session: CodingSession): void {
+		const store = this.conversations.get(sessionId);
+		if (!store) return;
+		const current = store.get().codingSessions ?? [];
+		const merged = current.some((item) => item.workerId === session.workerId)
+			? current.map((item) =>
+					item.workerId === session.workerId ? { ...session, isOwner: session.isOwner ?? item.isOwner } : item,
+				)
+			: [...current, session];
+		store.set({ codingSessions: merged });
 	}
 
 	assertCanSend(sessionId: string): void {

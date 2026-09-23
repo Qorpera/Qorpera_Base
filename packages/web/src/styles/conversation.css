@@ -515,6 +515,108 @@
 .group-member-choice small { color: var(--text-muted); }
 .group-edit-fields:disabled .group-member-choice { cursor: default; opacity: .6; }
 .group-save-status:empty { display: none; }
+/* A coding session in the thread (Order 9), in the shape of a bot-to-bot handoff line: a centered chip with the
+ * agent's figure, "Bo started a coding session with you in ✳ Claude Code", and the live status under it. The chip
+ * opens the session as its own thread; Show unfolds it in place. */
+.coding-session { display: flex; flex: none; flex-direction: column; align-items: center; width: 100%; margin: 12px 0 4px; font-size: 14px; line-height: 20px; }
+.coding-chip { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; min-height: 34px; padding: 5px 14px 5px 6px; border: 1px solid var(--border); border-radius: 999px; background: var(--hover); color: var(--text-muted); font: inherit; font-size: 12.5px; line-height: 16px; font-weight: 500; text-align: left; cursor: pointer; transition: background 120ms ease, border-color 120ms ease; }
+.coding-chip:hover { background: var(--pane-strong); border-color: var(--border-strong); color: var(--text); }
+.coding-chip:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+.coding-chip .figure { width: 22px; height: 22px; flex: none; }
+.coding-chip-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.coding-agent { font-weight: 600; color: var(--text); }
+.coding-harness { display: inline-flex; align-items: center; gap: 4px; font-weight: 600; color: var(--text); white-space: nowrap; }
+.coding-harness .coding-badge { position: static; width: 13px; height: 13px; border: 0; border-radius: 4px; box-sizing: border-box; }
+.coding-harness .coding-badge svg { width: 8px; height: 8px; }
+.coding-badge { position: absolute; right: -4px; bottom: -4px; display: grid; place-items: center; width: 12px; height: 12px; border-radius: 3.5px; border: 1.5px solid var(--bg); color: #fff; box-sizing: content-box; }
+.coding-badge-codex { background: #161615; }
+.coding-badge-claude-code { background: #d97757; }
+.coding-link { min-height: 0; padding: 0; border: 0; background: transparent; font: inherit; font-size: 12px; font-weight: 600; color: var(--blue); cursor: pointer; }
+.coding-link:hover { text-decoration: underline; }
+.coding-status { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 6px; width: 100%; min-width: 0; margin-top: 6px; padding: 0 12px; font-size: 12px; line-height: 16px; font-weight: 500; color: var(--text-muted); text-align: center; }
+.coding-status-title { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.coding-dot-sep { color: var(--border-strong); }
+.coding-dot { display: inline-block; width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--text-soft); }
+.coding-dot-working { background: #00c887; }
+.coding-dot-attention { background: var(--warning); }
+.coding-dot-done { background: var(--ok); }
+.coding-dot-failed { background: var(--danger); }
+.coding-tone-attention .coding-status-text, .coding-step-status.coding-tone-attention { color: #8a5a00; }
+.coding-tone-done .coding-status-text, .coding-step-status.coding-tone-done, .coding-glyph.coding-tone-done { color: #0f7a55; }
+.coding-tone-failed .coding-status-text, .coding-step-status.coding-tone-failed { color: var(--danger); }
+.coding-session-expanded > .coding-status:last-child { margin-top: 2px; padding-bottom: 6px; }
+.coding-head { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 0 6px; text-align: center; }
+.coding-title { font-size: 15px; font-weight: 600; line-height: 19px; }
+.coding-meta { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; font-size: 12px; line-height: 15px; color: var(--text-muted); }
+.coding-mono { font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 11.5px; }
+.coding-body { display: flex; flex-direction: column; gap: 2px; width: 640px; max-width: 100%; padding: 4px 0; }
+.coding-row { display: flex; align-items: flex-start; gap: 9px; padding: 4px 8px; font-size: 13.5px; line-height: 19px; color: var(--text); overflow-wrap: anywhere; }
+.coding-row > div { min-width: 0; }
+.coding-glyph { flex: none; width: 14px; height: 14px; margin-top: 2.5px; color: var(--text-soft); }
+.coding-row-fold { justify-content: center; }
+.coding-row-fold .btn { border: 0; background: transparent; color: var(--text-soft); font-size: 12px; }
+.coding-row-quiet { justify-content: center; color: var(--text-soft); font-size: 12.5px; }
+.coding-row-error { color: var(--danger); }
+.coding-row-voice { align-items: flex-start; padding-top: 8px; padding-bottom: 8px; }
+.coding-voice { position: relative; display: inline-block; width: 20px; height: 20px; flex: none; }
+.coding-voice .coding-badge { position: static; width: 20px; height: 20px; border-radius: 50%; border: 0; box-sizing: border-box; }
+.coding-voice .coding-badge svg { width: 10px; height: 10px; }
+.coding-voice-text p { margin: 0; }
+.coding-voice-text p + p { margin-top: 6px; }
+.coding-row-input .coding-who { flex: none; font-weight: 600; color: var(--text-muted); }
+.coding-row-question { padding: 6px 0; }
+.coding-question { width: 100%; padding: 12px 14px; border-radius: 14px; border: 1px solid var(--border); background: var(--header-surface); font-size: 14px; line-height: 20px; text-align: left; box-sizing: border-box; }
+.coding-question-from { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; font-size: 11px; font-weight: 600; color: var(--text-muted); }
+.coding-question-from .coding-badge { position: static; width: 16px; height: 16px; border-radius: 50%; border: 0; box-sizing: border-box; }
+.coding-question-from .coding-badge svg { width: 8px; height: 8px; }
+.coding-talk { display: flex; flex-direction: column; align-items: stretch; gap: 8px; width: 640px; max-width: 100%; padding: 6px 0 8px; }
+.coding-options { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.coding-options .btn { border-radius: 999px; min-height: 32px; padding: 0 14px; font-size: 13.5px; font-weight: 500; }
+.coding-field { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 5px 0 14px; border: 1px solid var(--border-strong); border-radius: 20px; background: var(--bg); box-sizing: border-box; }
+.coding-field-input { flex: 1; min-width: 0; border: 0; background: transparent; padding: 0; font: inherit; font-size: 15px; color: var(--text); outline: none; }
+.coding-field-input::placeholder { color: var(--text-soft); }
+.coding-field-input:disabled { color: var(--text-soft); }
+.coding-send { border-radius: 999px; min-height: 30px; }
+.coding-hint { display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 11.5px; line-height: 15px; color: var(--text-soft); text-align: center; }
+.coding-hint .coding-glyph { margin: 0; width: 12px; height: 12px; }
+.coding-talk-locked { padding-top: 4px; }
+.coding-pr { display: flex; flex-direction: column; align-items: stretch; gap: 8px; width: 640px; max-width: 100%; padding: 6px 0 4px; }
+.coding-pr-card { display: flex; gap: 12px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 14px; background: var(--bg); }
+.coding-pr-glyph { flex: none; width: 22px; height: 22px; margin-top: 1px; color: var(--text-muted); }
+.coding-pr-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.coding-pr-title { font-size: 15px; font-weight: 600; line-height: 19px; overflow-wrap: anywhere; }
+.coding-pr-number { font-weight: 500; color: var(--text-muted); }
+.coding-pr-meta { font-size: 12.5px; line-height: 16px; color: var(--text-muted); overflow-wrap: anywhere; }
+.coding-checks { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; font-size: 12.5px; line-height: 16px; }
+.coding-check { display: flex; align-items: center; gap: 7px; }
+.coding-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.coding-actions .btn { border-radius: 999px; min-height: 32px; padding: 0 14px; font-size: 13.5px; font-weight: 500; text-decoration: none; color: inherit; }
+.coding-actions .btn-primary { color: var(--on-primary); }
+/* A narrow pane: the caption wraps instead of hiding, and the rules give way first. */
+@media (max-width: 640px) {
+	.coding-chip { border-radius: 18px; padding-right: 12px; white-space: normal; }
+	.coding-chip-text { white-space: normal; }
+	.coding-status-title { white-space: normal; }
+}
+/* The session as its own thread: over the conversation, with its own header and footer, as a bot's message to
+ * another bot opens. */
+.coding-thread { position: absolute; inset: 0; z-index: 25; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); animation: computer-enter 160ms ease both; }
+.coding-thread-header { gap: 8px; }
+.coding-thread-identity { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.coding-thread-identity .figure { width: 28px; height: 28px; flex: none; }
+.coding-thread-swap { flex: none; color: var(--text-soft); }
+.coding-thread-harness { display: inline-flex; flex: none; }
+.coding-thread-harness .coding-badge { position: static; width: 26px; height: 26px; border: 0; border-radius: 50%; box-sizing: border-box; }
+.coding-thread-harness .coding-badge svg { width: 12px; height: 12px; }
+.coding-thread-names { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.coding-thread-names h1 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; letter-spacing: 0; }
+.coding-thread-subtitle { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; line-height: 13px; color: var(--text-muted); }
+.coding-thread-body { flex: 1; min-height: 0; overflow: hidden auto; padding: 8px 16px 16px; }
+.coding-thread-body .coding-session { margin: 0; }
+.coding-thread-body .coding-body, .coding-thread-body .coding-talk, .coding-thread-body .coding-pr { width: 760px; }
+.coding-thread-footer { display: flex; flex: none; align-items: center; justify-content: center; gap: 10px; min-height: 44px; padding: 8px 16px; border-top: 1px solid var(--border); font-size: 12px; line-height: 16px; color: var(--text-muted); }
+.coding-thread-note { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.coding-thread-footer .btn { border-radius: 999px; }
 
 /* A message between two agents: a chip in each agent's thread, the transcript behind it (contract 14.6). */
 .peer-link { display: flex; flex: none; align-self: flex-start; max-width: 100%; margin: 2px 0; }
