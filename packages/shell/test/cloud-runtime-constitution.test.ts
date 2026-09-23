@@ -26,7 +26,7 @@ describe("shared cloud runtime constitution", () => {
 			"founder stop",
 			"another audience",
 			"effect-time checks",
-			"skills and scoped memory",
+			"company-owned notebook",
 			"out-of-band custody",
 			"dismissed interaction",
 		]) {

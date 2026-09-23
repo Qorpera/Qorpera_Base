@@ -91,7 +91,9 @@ describe("agent memory notebook", () => {
 				fact: "Jonas prefers short replies in Danish.",
 			});
 			expect(logged.success, JSON.stringify(logged)).toBe(true);
-			expect(f.receipt(logged)).toMatchObject({ state: "written", tier: "log", date: "2026-09-22", scope: "agent" });
+			expect(f.receipt(logged)).toMatchObject({ state: "written", tier: "log", date: "2026-09-22" });
+			// Company first: a notebook has no scopes and no member shard.
+			expect(f.receipt(logged)).not.toHaveProperty("scope");
 			const profiled = await f.boundary.invoke("m2", "qorpera", "update_memory", {
 				action: "write",
 				tier: "profile",
@@ -121,7 +123,7 @@ describe("agent memory notebook", () => {
 		}
 	});
 
-	it("deduplicates on write and refuses the member shard until it exists", async () => {
+	it("deduplicates on write", async () => {
 		const f = await fixture({
 			"agents/<agent>/memory/log/2026-09.md": "- (2026-09-01) Jonas prefers short replies.\n",
 		});
@@ -131,13 +133,6 @@ describe("agent memory notebook", () => {
 				fact: "  Jonas   prefers short replies. ",
 			});
 			expect(f.receipt(again)).toMatchObject({ state: "duplicate", tier: "log" });
-			expect(f.store.mutate).not.toHaveBeenCalled();
-			const shard = await f.boundary.invoke("d2", "qorpera", "update_memory", {
-				action: "write",
-				scope: "user",
-				fact: "Jonas lives in Copenhagen.",
-			});
-			expect(f.receipt(shard).state).toBe("scope_unavailable");
 			expect(f.store.mutate).not.toHaveBeenCalled();
 		} finally {
 			f.run.close();
@@ -211,21 +206,19 @@ describe("agent memory notebook", () => {
 			const result = await f.boundary.invoke("r1", "qorpera", "recall_memory", { query: "ledger review", limit: 2 });
 			expect(result.success, JSON.stringify(result)).toBe(true);
 			const recall = f.receipt(result);
-			expect(recall).toMatchObject({ scope: "agent", moreFacts: 2 });
-			// Grok-shaped result: facts with date, tier and scope, nothing about files or ranking.
-			expect(Object.keys(recall).sort()).toEqual(["facts", "moreFacts", "query", "runId", "schema", "scope"]);
+			expect(recall).toMatchObject({ moreFacts: 2 });
+			// Grok-shaped result: facts with date and tier, nothing about files, ranking or scopes.
+			expect(Object.keys(recall).sort()).toEqual(["facts", "moreFacts", "query", "runId", "schema"]);
 			expect(recall.facts.map((fact: { fact: string }) => fact.fact)).toEqual([
 				"Jonas approved the Q3 ledger review plan.",
 				"Ledger review moved to Fridays.",
 			]);
-			expect(recall.facts[1]).toMatchObject({ date: "2026-08-10", tier: "log", scope: "agent" });
-			const literal = f.receipt(
-				await f.boundary.invoke("r2", "qorpera", "recall_memory", { query: "floor two", scope: "all" }),
-			);
-			expect(literal).toMatchObject({ scope: "all", facts: [{ fact: "Coffee machine is on floor two." }] });
+			expect(recall.facts[1]).toEqual({ date: "2026-08-10", tier: "log", fact: "Ledger review moved to Fridays." });
+			const literal = f.receipt(await f.boundary.invoke("r2", "qorpera", "recall_memory", { query: "floor two" }));
+			expect(literal).toMatchObject({ facts: [{ fact: "Coffee machine is on floor two." }] });
 			const substring = f.receipt(await f.boundary.invoke("r3", "qorpera", "recall_memory", { query: "Q3 le" }));
 			expect(substring.facts).toEqual([
-				{ fact: "Jonas approved the Q3 ledger review plan.", tier: "log", scope: "agent", date: "2026-09-02" },
+				{ fact: "Jonas approved the Q3 ledger review plan.", tier: "log", date: "2026-09-02" },
 			]);
 			const none = f.receipt(await f.boundary.invoke("r4", "qorpera", "recall_memory", { query: "unicorns" }));
 			expect(none.facts).toEqual([]);
@@ -237,7 +230,8 @@ describe("agent memory notebook", () => {
 	it.each([
 		["a newline in a fact", { action: "write", fact: "two\nlines" }],
 		["an unknown tier", { action: "write", fact: "x", tier: "episode" }],
-		["an unknown scope", { action: "write", fact: "x", scope: "company" }],
+		["a member scope", { action: "write", fact: "x", scope: "user" }],
+		["an agent scope", { action: "write", fact: "x", scope: "agent" }],
 		["a tier on forget", { action: "forget", fact: "x", tier: "log" }],
 		["an unknown field", { action: "write", fact: "x", path: "agents/other/memory/profile.md" }],
 	])("rejects %s before any read or write", async (_label, request) => {
@@ -248,6 +242,29 @@ describe("agent memory notebook", () => {
 			expect(f.store.mutate).not.toHaveBeenCalled();
 		} finally {
 			f.run.close();
+		}
+	});
+
+	it.each([
+		["a member scope", { query: "ledger", scope: "user" }],
+		["an all scope", { query: "ledger", scope: "all" }],
+	])("refuses recall with %s before any read", async (_label, request) => {
+		const f = await fixture();
+		try {
+			expect((await f.boundary.invoke("bad", "qorpera", "recall_memory", request)).success).toBe(false);
+			expect(f.store.readTrusted).not.toHaveBeenCalled();
+			expect(f.store.listTrusted).not.toHaveBeenCalled();
+		} finally {
+			f.run.close();
+		}
+	});
+
+	it("advertises no scope parameter: memory is company first, with no member shard", () => {
+		const { gateway } = companyFile();
+		const identity = nativeToolAuthorityFixture().authority.identity;
+		for (const tool of cloudMemoryTools(gateway, identity)) {
+			expect(Object.keys((tool.inputSchema as { properties: object }).properties)).not.toContain("scope");
+			expect(tool.description).not.toMatch(/scope|shard/i);
 		}
 	});
 
@@ -284,7 +301,6 @@ describe("composed agent memory", () => {
 		expect(block).toMatchObject({
 			schema: "qorpera.agent-memory/v1",
 			trust: "own_notebook_not_authority",
-			scope: "agent",
 			available: true,
 			tools: ["update_memory", "recall_memory"],
 			profile: {
@@ -293,6 +309,7 @@ describe("composed agent memory", () => {
 				moreFacts: 0,
 			},
 		});
+		expect(block).not.toHaveProperty("scope");
 		expect(block.profile.version).toBe(store.files.get(`agents/${agent}/memory/profile.md`)!.version);
 		expect(block.recentLog.files.map((file) => file.path)).toEqual([
 			`agents/${agent}/memory/log/2026-09.md`,

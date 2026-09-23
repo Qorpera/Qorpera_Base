@@ -61,8 +61,9 @@ Each agent is a customizable employee with its own configuration:
   clear it from the agent's settings panel.
 - **Memory.** The agent's notebook lives in the cloud Company File under
   `agents/<agent-id>/memory/` (a profile and one log file per month, the
-  Grok Bot layout) and is composed by the cloud runtime; the desktop neither
-  seeds nor injects a memory file.
+  Grok Bot layout), is owned by the company, and is composed by the cloud
+  runtime. Memory is company first: there is no per-member memory. The desktop
+  neither seeds nor injects a memory file.
 - **Skills.** `agents/<agent-id>/skills/` is scanned on every launch through
   the additive skill lane, so an agent's personal skills stack on the shared
   user and company skill roots without leaking to coworkers.
