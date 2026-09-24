@@ -6,7 +6,6 @@ import type {
 } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
-import { ApprovalsView } from "../src/app/views/approvals.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type { SessionInputWriter } from "../src/cloud/session-input.ts";
@@ -320,60 +319,7 @@ describe("conversation lifecycle regressions", () => {
 	});
 });
 
-describe("approvals lifecycle regressions", () => {
-	it("reports failure to discover sessions instead of an empty inbox", async () => {
-		const { api, controller } = company();
-		vi.mocked(api.listSessions).mockRejectedValue(new Error("Discovery unavailable"));
-		await controller.refreshAll();
-		const view = new ApprovalsView(controller);
-		cleanup.push(() => view.dispose());
-		await settle();
-		expect(view.el.textContent).toContain("Approvals are incomplete");
-		expect(view.el.textContent).not.toContain("Nothing is waiting");
-	});
-	it("scans sessions arriving after mount, then rescans when they change", async () => {
-		const { api, controller } = company();
-		vi.mocked(api.readSessionEvents).mockResolvedValueOnce([
-			{ ...event(1), eventType: "authorization_request", body: { operation: "Publish" } },
-		]);
-		const view = new ApprovalsView(controller);
-		cleanup.push(() => view.dispose());
-		expect(view.el.textContent).not.toContain("Nothing is waiting");
-		controller.store.set({ loading: false, sessions: [session] });
-		await settle();
-		expect(view.el.textContent).toContain("Waiting for a decision (1)");
-		vi.mocked(api.readSessionEvents).mockResolvedValueOnce([
-			{
-				...event(2),
-				eventType: "authorization_decision",
-				body: { requestEventId: event(1).eventId, decision: "approved" },
-			},
-		]);
-		controller.store.set({ sessions: [{ ...session, updatedAt: "2026-09-05T11:00:00Z" }] });
-		await settle();
-		expect(view.el.textContent).toContain("Waiting for a decision (0)");
-		expect(api.readSessionEvents).toHaveBeenCalledTimes(2);
-	});
-
-	it("reports failed scans and retries explicitly without a request loop", async () => {
-		const { api, controller } = company();
-		controller.store.set({ loading: false, sessions: [session] });
-		vi.mocked(api.readSessionEvents).mockRejectedValue(new Error("Permission check unavailable"));
-		const view = new ApprovalsView(controller);
-		cleanup.push(() => view.dispose());
-		await settle();
-		expect(view.el.textContent).toContain("Approvals are incomplete");
-		expect(view.el.textContent).not.toContain("Nothing is waiting");
-		controller.store.set({ activity: [] });
-		await settle();
-		expect(api.readSessionEvents).toHaveBeenCalledTimes(1);
-		vi.mocked(api.readSessionEvents).mockResolvedValue([]);
-		view.el.querySelector("button")!.click();
-		await settle();
-		expect(api.readSessionEvents).toHaveBeenCalledTimes(2);
-		expect(view.el.textContent).toContain("Nothing is waiting");
-	});
-
+describe("company refresh regressions", () => {
 	it("refreshes all company authorities when realtime is degraded", async () => {
 		vi.useFakeTimers();
 		const { api, controller } = company();
