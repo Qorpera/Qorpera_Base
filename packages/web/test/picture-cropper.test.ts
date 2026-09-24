@@ -150,13 +150,13 @@ describe("fitting a picture", () => {
 		expect(behind).not.toHaveBeenCalled();
 		expect(await result).toBeUndefined();
 		// Closed, it lets the page have its keys again.
-		const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
-		const tab = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
-		document.body.dispatchEvent(escape);
-		document.body.dispatchEvent(tab);
+		const escapeKey = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+		const tabKey = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+		document.body.dispatchEvent(escapeKey);
+		document.body.dispatchEvent(tabKey);
 		document.removeEventListener("keydown", behind);
 		expect(behind).toHaveBeenCalledTimes(2);
-		expect(escape.defaultPrevented || tab.defaultPrevented).toBe(false);
+		expect(escapeKey.defaultPrevented || tabKey.defaultPrevented).toBe(false);
 	});
 
 	it("closes when its lifetime ends, and never opens after it ended", async () => {
