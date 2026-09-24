@@ -19,10 +19,11 @@
 
 /* ---- account menu ---------------------------------------------------------- */
 :root[data-theme="dark"] .account-chip { background: #5c5b58; }
-:root[data-theme="dark"] .account-popover { box-shadow: 0 22px 48px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3); }
+:root[data-theme="dark"] :is(.account-popover, .context-menu, .rail-drag-ghost) { box-shadow: 0 22px 48px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3); }
 
 /* ---- rail ------------------------------------------------------------------ */
 :root[data-theme="dark"] .rail { --rail-line: #121211; --rail-search-ink: #8f8e89; --rail-small: #adaca7; --rail-status-failed: #ff453a; }
+:root[data-theme="dark"] .rail-drag-ghost { --rail-status-failed: #ff453a; }
 :root[data-theme="dark"] .rail-add { color: #a9a8a3; }
 :root[data-theme="dark"] .rail-search {
 	box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.06);
