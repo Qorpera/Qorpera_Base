@@ -209,6 +209,26 @@ describe("rail sections and pins", () => {
 		draw();
 		expect(groups(rail)).toEqual([["Unassigned", "Cy"]]);
 	});
+	it("marks the groups the collapsed rail parts with a line: never under the Co-Founder, never around an empty section", async () => {
+		const divided = (rail: HTMLElement) =>
+			[...rail.querySelectorAll(".rail-section.rail-divided")].map(
+				(group) => group.querySelector(".rail-section-title")!.textContent,
+			);
+		const none: CompanySidebar = { sections: [], placements: {}, pinned: [], hidden: [] };
+		const cases: [CompanySidebar | "missing", string[]][] = [
+			[demo(), ["Research", "Unassigned"]],
+			[{ ...demo(), pinned: [] }, ["Unassigned"]],
+			[{ ...none, pinned: [dee.id] }, ["Unassigned"]],
+			[none, []],
+			["missing", []],
+		];
+		for (const [sidebar, expected] of cases) {
+			const { rail, ready } = companyWith(sidebar);
+			await ready;
+			await settle();
+			expect(divided(rail)).toEqual(expected);
+		}
+	});
 });
 
 describe("rail right-click menus", () => {
