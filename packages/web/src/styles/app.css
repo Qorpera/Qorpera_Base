@@ -261,12 +261,12 @@ label > input, label > select { font-weight: 400; }
 /* Pinned agents: this member's square cards right under the Co-Founder, centered as a
  * group (Grok Bot's pinned row). */
 .rail-pinned {
-	display: grid; grid-template-columns: repeat(auto-fit, 100px); justify-content: center; gap: 4px 6px;
+	display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 6px;
 	padding: 0 0 10px; border-radius: 14px;
 }
 .rail-pinned.is-empty { display: none; }
 .rail-pin {
-	position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px;
+	position: relative; flex: none; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px;
 	width: 100px; height: 100px; padding: 8px 6px 6px; border-radius: 12px; color: var(--text); text-align: center;
 	-webkit-touch-callout: none;
 }
@@ -297,9 +297,9 @@ label > input, label > select { font-weight: 400; }
 .rail-scroll { position: relative; }
 .rail-dragging :is(.rail-section, .rail-pinned) { transition: background-color 120ms ease; }
 .rail-dragging [data-drop-zone].is-drop-target { background: var(--rail-hover); }
-.rail-dragging .rail-pinned.is-empty { display: grid; grid-template-columns: 1fr; margin-bottom: 6px; padding: 0; }
+.rail-dragging .rail-pinned.is-empty { display: flex; margin-bottom: 6px; padding: 0; }
 .rail-dragging .rail-pinned.is-empty .rail-drop-slot {
-	display: grid; place-items: center; height: 64px; color: var(--rail-small); font-size: 12px; font-weight: 550;
+	display: grid; flex: 1; place-items: center; height: 64px; color: var(--rail-small); font-size: 12px; font-weight: 550;
 }
 .rail-dragging .rail-section-list:empty { min-height: 44px; }
 .rail-dragging :is(.rail-row, .rail-pin):hover:not(.active) { background: transparent; }
@@ -357,7 +357,7 @@ label > input, label > select { font-weight: 400; }
 .rail-compact .cofounder-status { width: 16px; height: 16px; border-width: 2px; }
 .rail-compact .rail-row { grid-template-columns: 1fr; padding: 5px; justify-items: center; }
 /* Collapsed, the pinned cards are figures in the column and sections part with a hairline. */
-.rail-compact .rail-pinned { grid-template-columns: 1fr; padding-bottom: 4px; }
+.rail-compact .rail-pinned { flex-direction: column; align-items: center; padding-bottom: 4px; }
 .rail-compact .rail-pin { width: auto; height: auto; padding: 5px; }
 .rail-compact .rail-pin-name, .rail-compact .rail-section-title { display: none; }
 .rail-compact .rail-pin-stand, .rail-compact .rail-pin .figure { width: 50px; height: 50px; }
