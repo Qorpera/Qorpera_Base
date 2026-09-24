@@ -1,6 +1,7 @@
 import type { HostedOrganizationProject } from "../../cloud/organization.ts";
 import { agentFigure } from "../../ui/avatar.ts";
-import { badge, h, icon, notice, replace, spinner } from "../../ui/dom.ts";
+import { badge, h, icon, notice, replace } from "../../ui/dom.ts";
+import { listSkeleton, pageSkeleton } from "../../ui/skeleton.ts";
 import type { CompanyController } from "../company.ts";
 
 function projectCard(company: CompanyController, project: HostedOrganizationProject): HTMLElement {
@@ -108,8 +109,13 @@ export function renderOrganization(
 	const page = h("section", { class: "page organization" });
 	if (focus)
 		page.append(h("a", { class: "organization-back", href: `${base}/organization` }, icon("back"), "Organization"));
-	if (state.organizationState === "loading") page.append(spinner("Loading organization"));
-	else if (state.organizationState === "error")
+	if (state.organizationState === "loading") {
+		// The placeholder stands in for the whole page, staff included.
+		page.append(pageSkeleton("Loading organization"));
+		replace(container, page);
+		return;
+	}
+	if (state.organizationState === "error")
 		page.append(notice("danger", state.organizationError ?? "The organization could not be read."));
 	else if (!organization)
 		page.append(h("h1", null, "Organization"), notice("neutral", "The company organization is not available yet."));
@@ -198,7 +204,11 @@ export function renderOrganization(
 					h("span", null, h("strong", null, agent.displayName), h("small", null, agent.role)),
 				),
 			),
-			staff.length ? null : h("p", { class: "empty" }, "No staff yet."),
+			staff.length
+				? null
+				: state.loading
+					? listSkeleton("Loading staff")
+					: h("p", { class: "empty" }, "No staff yet."),
 		),
 	);
 	const archived = state.staff.filter((agent) => agent.employmentStatus !== "active");

@@ -13,10 +13,11 @@ import { createWebSessionInputWriter } from "../cloud/session-input.ts";
 import { createWebSessionModel } from "../cloud/session-model.ts";
 import { createWebSessionRunControl } from "../cloud/session-run-control.ts";
 import type { HostedProfile } from "../cloud/types.ts";
-import { h, notice, replace, spinner } from "../ui/dom.ts";
+import { h, notice, replace } from "../ui/dom.ts";
 import { isPhoneLayout } from "../ui/layout.ts";
 import { applyLanguage, watchTheme } from "../ui/preferences.ts";
 import { RailLayout } from "../ui/rail-layout.ts";
+import { blankSkeleton, pageSkeleton, railSkeleton, threadSkeleton } from "../ui/skeleton.ts";
 import { AuthController } from "./auth.ts";
 import { CompanyController } from "./company.ts";
 import { currentRoute, navigate, type Route } from "./router.ts";
@@ -413,7 +414,7 @@ export function mountApplication(
 		const current = captureRoute();
 		const authState = auth.store.get();
 		if (!authState.ready) {
-			replace(root!, spinner("Connecting to the cloud"));
+			replace(root!, blankSkeleton("Connecting to the cloud"));
 			return;
 		}
 		if (!authState.session) {
@@ -467,6 +468,20 @@ export function mountApplication(
 				replace(main, cloudCheck.el);
 			}
 			return;
+		}
+		if (company?.profile.profileId !== route.profileId) {
+			// Opening a company takes a round trip or two. Meanwhile its rail and page stand
+			// as placeholders, never a blank frame or the page it came from.
+			topbar.className = "topbar topbar-company";
+			replace(topbar);
+			rail.hidden = route.section === "meet";
+			if (!rail.hidden) replace(rail, ...railSkeleton());
+			replace(
+				main,
+				route.section === "home" || route.section === "chat" || route.section === "staff" || route.section === "new"
+					? threadSkeleton("Opening company")
+					: h("section", { class: "page" }, pageSkeleton("Opening company")),
+			);
 		}
 		const controller = await ensureCompany(route.profileId);
 		if (!current()) return;
@@ -647,11 +662,11 @@ export function mountApplication(
 			case "home": {
 				// Home needs organization, membership and sessions, not just staff.
 				if (state.loading) {
-					replace(main, spinner("Opening company"));
+					replace(main, threadSkeleton("Opening company"));
 					return;
 				}
 				if (!homeReason) {
-					replace(main, spinner("Opening the Co-Founder"));
+					replace(main, threadSkeleton("Opening the Co-Founder"));
 					void resolveHome(controller);
 					return;
 				}
@@ -808,14 +823,14 @@ export function mountApplication(
 			}
 			case "staff": {
 				if (state.loading) {
-					replace(main, spinner("Opening company"));
+					replace(main, threadSkeleton("Opening company"));
 					return;
 				}
 				if (routeError) {
 					replace(main, notice("danger", routeError));
 					return;
 				}
-				replace(main, spinner("Opening conversation"));
+				replace(main, threadSkeleton("Opening conversation"));
 				void resolveStaff(controller, route.id ?? "");
 				return;
 			}
@@ -834,7 +849,7 @@ export function mountApplication(
 					return;
 				}
 				if (state.loading || !state.team) {
-					replace(main, spinner("Checking Company File access"));
+					replace(main, h("section", { class: "page" }, pageSkeleton("Opening Company File")));
 					return;
 				}
 				const authorityKey = JSON.stringify([

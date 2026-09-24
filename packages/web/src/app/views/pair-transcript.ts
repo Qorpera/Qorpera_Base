@@ -7,9 +7,10 @@ import {
 	needsConversationTimestamp,
 	parseConversationTimestamp,
 } from "../../ui/conversation-timestamps.ts";
-import { fmtTime, h, icon, replace, spinner } from "../../ui/dom.ts";
+import { fmtTime, h, icon, replace } from "../../ui/dom.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
+import { messagesSkeleton } from "../../ui/skeleton.ts";
 import type { CompanyController } from "../company.ts";
 
 /** What the panel needs from the company: the pair session's events and the agents' names. */
@@ -190,7 +191,7 @@ export class PairTranscriptView {
 				);
 			}
 		}
-		if (conversation.loading && !items.length) nodes.push(spinner("Loading conversation"));
+		if (conversation.loading && !items.length) nodes.push(messagesSkeleton());
 		if (!conversation.loading && !items.length && !conversation.error)
 			nodes.push(h("div", { class: "empty" }, "No messages yet."));
 		if (conversation.error) nodes.push(h("div", { class: "empty" }, conversation.error));

@@ -14,7 +14,7 @@ import {
 	needsConversationTimestamp,
 	parseConversationTimestamp,
 } from "../../ui/conversation-timestamps.ts";
-import { fmtTime, h, icon, notice, replace, spinner } from "../../ui/dom.ts";
+import { fmtTime, h, icon, notice, replace } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { renderInteractionCard } from "../../ui/interaction-card.ts";
 import { matchesKey } from "../../ui/keys.ts";
@@ -22,6 +22,7 @@ import { markdownBubbles } from "../../ui/markdown.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import { runFailureCard, runFailureInterrupted, runFailureReason } from "../../ui/run-failure.ts";
+import { composerSkeleton, messagesSkeleton, threadIdentitySkeleton } from "../../ui/skeleton.ts";
 import type { AgentState, CompanyController, ConversationState } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
@@ -58,6 +59,8 @@ export class ConversationView {
 	#agentState: AgentState = "idle";
 	#activityKey = "";
 	readonly #composerWrap: HTMLElement;
+	/** Where the composer will stand while the company still opens. */
+	#composerPlaceholder: HTMLElement | undefined;
 	readonly #composerShell: HTMLElement;
 	readonly #attachments: AttachmentTray;
 	readonly #more: HTMLButtonElement;
@@ -707,6 +710,15 @@ export class ConversationView {
 		this.#more.disabled = this.#composer.disabled;
 		if (this.#composer.disabled && !this.#menu.hidden) this.#setMenu(false, false);
 		this.#composerWrap.hidden = !canWrite;
+		// Until the company says who may write here, the composer's place holds a placeholder.
+		const opening = company.loading && (!company.team || !session);
+		if (opening && !this.#composerPlaceholder) {
+			this.#composerPlaceholder = composerSkeleton();
+			this.#composerWrap.after(this.#composerPlaceholder);
+		} else if (!opening && this.#composerPlaceholder) {
+			this.#composerPlaceholder.remove();
+			this.#composerPlaceholder = undefined;
+		}
 		if (this.#composer.value !== (conversation.draft ?? "")) {
 			this.#composer.value = conversation.draft ?? "";
 			this.#autosize();
@@ -717,15 +729,17 @@ export class ConversationView {
 		const title = agent?.displayName ?? session?.title ?? "Conversation";
 		const group = isGroupChat(session);
 		const groupAgents = group ? this.#company.groupAgents(this.#sessionId) : [];
-		const key = JSON.stringify([title, group, agent?.id, agent?.appearance, groupAgents]);
 		const state = this.#company.store.get();
+		// A conversation the company has not listed yet shows its header as a placeholder.
+		const opening = !session && state.loading;
+		const key = JSON.stringify([title, group, agent?.id, agent?.appearance, groupAgents, opening]);
 		this.#identity.disabled =
 			(!agent && !group) ||
 			!state.team?.capabilities.read ||
 			Boolean(state.accessLost) ||
 			this.#company.signal.aborted;
 		this.#computer.hidden = !agent;
-		this.#identity.title = title;
+		this.#identity.title = opening ? "" : title;
 		this.#identity.setAttribute("aria-label", agent ? "Open agent details" : group ? "Open group details" : title);
 		if (agent || group) {
 			this.#identity.setAttribute("aria-haspopup", "dialog");
@@ -746,12 +760,16 @@ export class ConversationView {
 				this.#computer.setAttribute("aria-expanded", String(Boolean(shown)));
 				this.#autosize();
 			} else if (this.#panel && agent) this.#panel.retitle(agent.displayName);
-			replace(
-				this.#identity,
-				group ? groupChatAvatar(groupAgents, { width: 40, height: 32 }) : agentFigure(agent, title, { size: 32 }),
-				h("h1", null, title),
-				agent || group ? icon("chevron") : null,
-			);
+			if (opening) replace(this.#identity, ...threadIdentitySkeleton());
+			else
+				replace(
+					this.#identity,
+					group
+						? groupChatAvatar(groupAgents, { width: 40, height: 32 })
+						: agentFigure(agent, title, { size: 32 }),
+					h("h1", null, title),
+					agent || group ? icon("chevron") : null,
+				);
 		}
 		// A computer left open in another of this agent's threads shows here without a click.
 		if (!this.#panel && agent) {
@@ -1034,7 +1052,7 @@ export class ConversationView {
 				this.#codingElements.delete(workerId);
 			}
 		}
-		if (conversation.loading && !items.length) nodes.push(spinner("Loading conversation"));
+		if (conversation.loading && !items.length) nodes.push(messagesSkeleton());
 		if (!conversation.loading && !items.length && !codingSessions.length && !conversation.error && !this.#working) {
 			nodes.push(h("div", { class: "empty" }, "No messages yet."));
 		}

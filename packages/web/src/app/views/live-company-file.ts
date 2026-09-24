@@ -1,6 +1,7 @@
 import { showFilePanel } from "../../../../member-web/src/file-panel.ts";
 import type { WebCompanyFiles } from "../../cloud/company-files.ts";
 import { button, h, replace } from "../../ui/dom.ts";
+import { listSkeleton } from "../../ui/skeleton.ts";
 
 /** Product presentation of the shared governed File interaction. */
 export class LiveCompanyFileView {
@@ -71,7 +72,9 @@ export class LiveCompanyFileView {
 			}
 		};
 		const initialize = async () => {
-			this.#status.textContent = "Opening Company File…";
+			// The panel replaces its placeholder when it has read the files.
+			this.#status.textContent = "";
+			replace(this.#root, listSkeleton("Opening Company File", 4));
 			try {
 				const close = await showFilePanel({
 					root: this.#root,

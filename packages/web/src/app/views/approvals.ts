@@ -2,7 +2,8 @@ import type { TranscriptCard } from "../../cloud/transcript.ts";
 import { projectTranscript } from "../../cloud/transcript.ts";
 import type { HostedSession, JsonValue } from "../../cloud/types.ts";
 import { authorizationRequestId, renderAuthorizationCard } from "../../ui/authorization-card.ts";
-import { button, fmtTime, h, notice, replace, spinner } from "../../ui/dom.ts";
+import { button, fmtTime, h, notice, replace } from "../../ui/dom.ts";
+import { cardsSkeleton } from "../../ui/skeleton.ts";
 import type { CompanyController } from "../company.ts";
 
 /* Approvals inbox (runtime contract §16.2): gated decisions wait durably in
@@ -89,7 +90,7 @@ export class ApprovalsView {
 		}
 	}
 
-	#entries(): { pending: InboxEntry[]; decided: InboxEntry[]; scannedCount: number; total: number } {
+	#entries(): { pending: InboxEntry[]; decided: InboxEntry[] } {
 		const { sessions } = this.#company.store.get();
 		const pending: InboxEntry[] = [];
 		const decided: InboxEntry[] = [];
@@ -124,14 +125,12 @@ export class ApprovalsView {
 		return {
 			pending: pending.sort(byTime),
 			decided: decided.sort(byTime),
-			scannedCount: this.#scanned.size,
-			total: sessions.length,
 		};
 	}
 
 	update(): void {
 		if (this.#disposed) return;
-		const { pending, decided, scannedCount, total } = this.#entries();
+		const { pending, decided } = this.#entries();
 		const loading = this.#scanning || this.#company.store.get().loading;
 		const discoveryError = this.#company.store.get().sessionsError;
 		const errors = this.#company.store.get().sessions.flatMap((session) => {
@@ -168,7 +167,6 @@ export class ApprovalsView {
 				"neutral",
 				"Decisions wait in the cloud until an authorized member records one. Recording a decision from the web is not yet in the client contract, so this inbox is read-only; use the desktop for the decision itself for now.",
 			),
-			loading ? spinner(`Reading conversations (${scannedCount}/${total})`) : null,
 			discoveryError
 				? notice(
 						"danger",
@@ -189,11 +187,9 @@ export class ApprovalsView {
 			h("h2", null, `Waiting for a decision (${pending.length})`),
 			pending.length
 				? h("div", { class: "card-list" }, ...pending.map(renderEntry))
-				: h(
-						"div",
-						{ class: "empty" },
-						loading || errors.length || discoveryError ? "" : "Nothing is waiting for you.",
-					),
+				: loading
+					? cardsSkeleton("Reading conversations")
+					: h("div", { class: "empty" }, errors.length || discoveryError ? "" : "Nothing is waiting for you."),
 			decided.length ? h("h2", null, `Decided (${decided.length})`) : null,
 			decided.length ? h("div", { class: "card-list" }, ...decided.slice(0, 50).map(renderEntry)) : null,
 		);

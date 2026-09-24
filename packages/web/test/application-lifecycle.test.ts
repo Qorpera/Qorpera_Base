@@ -284,7 +284,8 @@ describe("account and route ownership", () => {
 		await draw();
 		expect(f.api.listStaff).toHaveBeenCalled();
 		expect(location.hash).toBe(home);
-		expect(f.root.querySelector("main")?.textContent).toContain("Opening company");
+		expect(f.root.querySelector("main .skeleton-group")?.getAttribute("aria-label")).toBe("Opening company");
+		expect(f.root.querySelector("main")?.textContent).not.toContain("Opening");
 		loading.resolve(
 			seeded
 				? {
@@ -342,7 +343,8 @@ describe("account and route ownership", () => {
 		});
 		await draw();
 		expect(create).not.toHaveBeenCalled();
-		expect(f.root.querySelector("main")?.textContent).toContain("Opening company");
+		expect(f.root.querySelector("main .skeleton-group")?.getAttribute("aria-label")).toBe("Opening company");
+		expect(f.root.querySelector("main")?.textContent).not.toContain("Opening");
 		loading.resolve(team);
 		await draw();
 		expect(create).toHaveBeenCalledExactlyOnceWith(profileA.environmentId, staff.id);
@@ -360,7 +362,8 @@ describe("account and route ownership", () => {
 			.mockResolvedValue({ sessionId: session.sessionId, roomId: id(31), staffAgentId: staff.id, status: "active" });
 		await draw();
 		expect(location.hash).toBe(route);
-		expect(f.root.querySelector("main")?.textContent).toContain("Opening company");
+		expect(f.root.querySelector("main .skeleton-group")?.getAttribute("aria-label")).toBe("Opening company");
+		expect(f.root.querySelector("main")?.textContent).not.toContain("Opening");
 		loading.resolve(team);
 		await draw();
 		expect(create).toHaveBeenCalledTimes(1);

@@ -94,7 +94,8 @@ describe("group details from the conversation header", () => {
 		expect(f.header.getAttribute("aria-expanded")).toBe("false");
 		const panel = f.open();
 		expect(f.header.getAttribute("aria-expanded")).toBe("true");
-		expect(panel.textContent).toContain("Loading group details…");
+		expect(panel.querySelector(".skeleton-group")?.getAttribute("aria-label")).toBe("Loading group details");
+		expect(panel.textContent).not.toContain("Loading");
 		await settle();
 		expect(f.rpc).toHaveBeenCalledWith("qorpera_list_company_rooms", { p_profile_id: profileA.profileId });
 		expect(field("name").value).toBe("Planning");
@@ -118,7 +119,7 @@ describe("group details from the conversation header", () => {
 		const panel = f.open();
 		await settle();
 		expect(panel.textContent).not.toContain(staff.displayName);
-		expect(panel.textContent).not.toContain("Loading group details…");
+		expect(panel.querySelector(".skeleton-group")).toBeNull();
 		button("Retry").click();
 		await settle();
 		expect(f.rpc).toHaveBeenCalledTimes(2);

@@ -4,6 +4,7 @@ import { UUID_PATTERN } from "../../cloud/parse.ts";
 import type { HostedIncomingProfileInvitation, HostedProfile } from "../../cloud/types.ts";
 import { button, companyLogo, fmtDate, h, notice, replace, spinner } from "../../ui/dom.ts";
 import { preserveFormDrafts } from "../../ui/forms.ts";
+import { companyCardsSkeleton } from "../../ui/skeleton.ts";
 import { navigate } from "../router.ts";
 import { Store } from "../state.ts";
 import { mountCrown } from "./crown.ts";
@@ -340,7 +341,7 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 						)
 					: null,
 				state.loading
-					? spinner("Loading companies")
+					? companyCardsSkeleton()
 					: h("div", { class: "company-grid" }, ...state.profiles.map(companyCard), newTile),
 			),
 		),

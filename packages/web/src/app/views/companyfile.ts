@@ -12,20 +12,9 @@ import type {
 	HostedCompanySnapshot,
 	HostedCompanyWorkspace,
 } from "../../cloud/types.ts";
-import {
-	badge,
-	button,
-	confirmDialog,
-	fmtBytes,
-	fmtDate,
-	fmtTime,
-	h,
-	notice,
-	replace,
-	shortId,
-	spinner,
-} from "../../ui/dom.ts";
+import { badge, button, confirmDialog, fmtBytes, fmtDate, fmtTime, h, notice, replace, shortId } from "../../ui/dom.ts";
 import { preserveFormDrafts } from "../../ui/forms.ts";
+import { linesSkeleton, pageSkeleton } from "../../ui/skeleton.ts";
 import type { CompanyController } from "../company.ts";
 import { Store } from "../state.ts";
 
@@ -469,7 +458,7 @@ export function renderCompanyFile(
 				? h("p", { class: "muted small" }, "Showing the 50 most recent snapshots.")
 				: null,
 			state.loading && !state.snapshots.length
-				? spinner("Loading snapshots")
+				? linesSkeleton("Loading snapshots")
 				: state.snapshots.length
 					? h(
 							"table",
@@ -589,7 +578,7 @@ function summary(label: string, value: HTMLElement | string): HTMLElement {
 
 function renderSnapshot(state: CompanyFileState, profileId: string, controller: CompanyFileController): HTMLElement {
 	const current = state.snapshot;
-	if (!current) return spinner("Loading snapshot");
+	if (!current) return pageSkeleton("Loading snapshot");
 	const { snapshot } = current;
 	const entries = current.entries ?? [];
 	return h(
@@ -603,7 +592,7 @@ function renderSnapshot(state: CompanyFileState, profileId: string, controller: 
 			`${snapshot.tree.fileCount} files · ${fmtBytes(snapshot.tree.totalBytes)} · contract v${snapshot.tree.contractVersion} · ${fmtTime(snapshot.createdAt)}${snapshot.parentSnapshotId ? ` · parent ${shortId(snapshot.parentSnapshotId)}` : ""}`,
 		),
 		current.error ? notice("warn", current.error) : null,
-		current.loading ? spinner("Loading files") : null,
+		current.loading ? linesSkeleton("Loading files") : null,
 		entries.length
 			? h(
 					"div",
@@ -641,7 +630,7 @@ function renderSnapshot(state: CompanyFileState, profileId: string, controller: 
 								current.contentError
 									? notice("warn", current.contentError)
 									: current.content === undefined
-										? spinner("Reading file")
+										? linesSkeleton("Reading file")
 										: h("pre", null, current.content),
 							)
 						: null,
@@ -658,7 +647,7 @@ function renderProposal(
 	canAuthorize: boolean,
 ): HTMLElement {
 	const current = state.proposal;
-	if (!current) return spinner("Loading proposal");
+	if (!current) return pageSkeleton("Loading proposal");
 	const { proposal } = current;
 	const commentInput = h("textarea", { rows: 2, placeholder: "Comment…", "data-draft": "proposal-comment" });
 	commentInput.value = controller.commentDraft(proposal.proposalId);
@@ -740,7 +729,7 @@ function renderProposal(
 					)
 				: null,
 		h("h3", null, `Comments (${current.comments.length})`),
-		current.loading ? spinner("Loading comments") : null,
+		current.loading ? linesSkeleton("Loading comments") : null,
 		h(
 			"div",
 			{ class: "comments" },
