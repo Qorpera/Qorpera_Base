@@ -1,27 +1,38 @@
-import { h } from "./dom.ts";
+import { h, icon } from "./dom.ts";
 
 /* Loading placeholders. A screen whose content has not arrived yet shows grey
  * shapes where that content will stand, never a sentence about loading. Each
- * placeholder is one status element: a screen reader hears its label, the eye
- * sees only the shapes. The shapes breathe; reduced motion keeps them still
- * (app.css). The thread and rail shapes stand on the real geometry, so the
- * header, messages, composer and rail rows land where their placeholders stood. */
+ * placeholder is one status element whose only text, what is loading, is
+ * visually hidden: a screen reader reads it, the eye sees only the shapes. The
+ * shapes breathe; reduced motion keeps them still (app.css). The thread and rail
+ * shapes stand on the real geometry, so the header, messages, composer and rail
+ * rows land where their placeholders stood. */
 
-/** app.css's skeleton-breathe duration. */
-const BREATH_MS = 1800;
+let breathing = false;
+
+/** Every shape breathes on the document's clock, so a shape that starts later
+ * (built by a redraw, or shown when the phone's rail drawer opens) joins the
+ * others mid-breath instead of starting over. */
+function breatheTogether(): void {
+	if (breathing) return;
+	breathing = true;
+	document.addEventListener("animationstart", (event) => {
+		if (event.animationName !== "skeleton-breathe" || !(event.target instanceof Element)) return;
+		for (const animation of event.target.getAnimations?.() ?? [])
+			if ("animationName" in animation && animation.animationName === "skeleton-breathe") animation.startTime = 0;
+	});
+}
 
 function shape(...kinds: string[]): HTMLElement {
-	const element = h("span", { class: ["skeleton", ...kinds.map((kind) => `skeleton-${kind}`)].join(" ") });
-	// Every shape breathes on one clock, so a placeholder built later (a redraw
-	// rebuilds them) joins the others mid-breath instead of starting over.
-	element.style.animationDelay = `${-(performance.now() % BREATH_MS)}ms`;
-	return element;
+	breatheTogether();
+	return h("span", { class: ["skeleton", ...kinds.map((kind) => `skeleton-${kind}`)].join(" ") });
 }
 
 function placeholder(label: string, className: string, ...children: HTMLElement[]): HTMLElement {
 	return h(
 		"div",
-		{ class: `skeleton-group ${className}`, role: "status", "aria-label": label, "aria-busy": "true" },
+		{ class: `skeleton-group ${className}`, role: "status" },
+		h("span", { class: "visually-hidden" }, label),
 		...children,
 	);
 }
@@ -56,8 +67,10 @@ export function composerSkeleton(): HTMLElement {
 	return h("footer", { class: "composer skeleton-composer" }, shape("composer-field"));
 }
 
-/** A whole thread, for a company or conversation that is still opening. */
-export function threadSkeleton(label: string): HTMLElement {
+/** A whole thread, for a company or conversation that is still opening. On a
+ * phone its header carries the real button that opens the company's rail, as an
+ * open conversation's does, so the rail is never out of reach while it loads. */
+export function threadSkeleton(label: string, navigation?: { open: boolean; toggle: () => void }): HTMLElement {
 	return h(
 		"section",
 		{ class: "thread thread-skeleton" },
@@ -70,6 +83,20 @@ export function threadSkeleton(label: string): HTMLElement {
 				h(
 					"header",
 					{ class: "thread-header" },
+					navigation
+						? h(
+								"button",
+								{
+									type: "button",
+									class: "mobile-navigation-toggle icon-button",
+									"aria-label": "Company navigation",
+									"aria-controls": "company-navigation",
+									"aria-expanded": String(navigation.open),
+									onclick: navigation.toggle,
+								},
+								icon("navigation"),
+							)
+						: null,
 					h("div", { class: "skeleton-identity" }, ...threadIdentitySkeleton()),
 				),
 				h("div", { class: "messages" }, messagesSkeleton(label)),

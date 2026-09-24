@@ -13,7 +13,7 @@ import { createWebSessionInputWriter } from "../cloud/session-input.ts";
 import { createWebSessionModel } from "../cloud/session-model.ts";
 import { createWebSessionRunControl } from "../cloud/session-run-control.ts";
 import type { HostedProfile } from "../cloud/types.ts";
-import { h, notice, replace } from "../ui/dom.ts";
+import { button, h, notice, replace } from "../ui/dom.ts";
 import { isPhoneLayout } from "../ui/layout.ts";
 import { applyLanguage, watchTheme } from "../ui/preferences.ts";
 import { RailLayout } from "../ui/rail-layout.ts";
@@ -403,14 +403,16 @@ export function mountApplication(
 	/** A company or conversation that is still opening shows the thread's placeholder.
 	 * A redraw keeps the one already shown and only renames what it is waiting for. */
 	function showThreadSkeleton(label: string): void {
-		// On a phone the thread brings its own header, as an open conversation does.
+		// On a phone the thread brings its own header, with the rail's button, as an open conversation does.
 		frame.classList.add("has-thread");
 		const shown = main.childElementCount === 1 ? main.firstElementChild : null;
 		if (shown?.classList.contains("thread-skeleton")) {
-			shown.querySelector("[role=status]")?.setAttribute("aria-label", label);
+			const name = shown.querySelector(".visually-hidden");
+			if (name && name.textContent !== label) name.textContent = label;
+			shown.querySelector(".mobile-navigation-toggle")?.setAttribute("aria-expanded", String(navigationOpen));
 			return;
 		}
-		replace(main, threadSkeleton(label));
+		replace(main, threadSkeleton(label, { open: navigationOpen, toggle: () => setNavigationOpen(!navigationOpen) }));
 	}
 
 	async function draw(): Promise<void> {
@@ -840,8 +842,23 @@ export function mountApplication(
 					renderCompanyFile(companyFile, controller, main, {});
 					return;
 				}
-				if (state.loading || !state.team) {
+				if (state.loading) {
 					replace(main, h("section", { class: "page" }, pageSkeleton("Opening Company File")));
+					return;
+				}
+				if (!state.team) {
+					// Company File access follows membership; without it there is nothing to wait for.
+					replace(
+						main,
+						h(
+							"section",
+							{ class: "page" },
+							notice("danger", state.error ?? "Your membership in this company could not be read."),
+							button("Retry company", () => {
+								if (!controller.store.get().loading) void controller.refreshAll();
+							}),
+						),
+					);
 					return;
 				}
 				const authorityKey = JSON.stringify([
@@ -932,9 +949,21 @@ export function mountApplication(
 		}
 	}
 
-	void auth.start().then(() => {
-		render();
-	});
+	void auth.start().then(
+		() => render(),
+		(error) => {
+			if (disposed) return;
+			replace(
+				root!,
+				h(
+					"section",
+					{ class: "page" },
+					notice("danger", `The cloud could not be reached. ${describeError(error)}`),
+					button("Try again", () => location.reload()),
+				),
+			);
+		},
+	);
 
 	return () => {
 		disposed = true;

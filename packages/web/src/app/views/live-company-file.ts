@@ -72,8 +72,10 @@ export class LiveCompanyFileView {
 			}
 		};
 		const initialize = async () => {
-			// The panel replaces its placeholder when it has read the files.
-			this.#status.textContent = "";
+			// The panel draws over the placeholder once it has the company's files. The status
+			// line, outside the root that is inert while this runs, tells a screen reader what
+			// is opening until the panel has read them.
+			replace(this.#status, h("span", { class: "visually-hidden" }, "Opening Company File"));
 			replace(this.#root, listSkeleton("Opening Company File", 4));
 			try {
 				const close = await showFilePanel({
@@ -96,6 +98,7 @@ export class LiveCompanyFileView {
 				this.#close = close;
 				this.#status.textContent = "";
 			} catch (error) {
+				if (!stop.signal.aborted) this.#status.textContent = "";
 				if (!stop.signal.aborted)
 					replace(
 						this.#root,

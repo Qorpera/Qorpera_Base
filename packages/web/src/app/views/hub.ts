@@ -15,6 +15,8 @@ import { mountCrown } from "./crown.ts";
 
 export interface HubState {
 	loading: boolean;
+	/** The company list has been read at least once. */
+	loaded?: boolean;
 	profiles: HostedProfile[];
 	invitations: HostedIncomingProfileInvitation[];
 	error?: string;
@@ -91,7 +93,8 @@ export class HubController {
 				this.#api.listProfiles(),
 				this.#api.listIncomingInvitations(),
 			]);
-			if (revision === this.#membershipRevision) this.store.set({ profiles, invitations, loading: false });
+			if (revision === this.#membershipRevision)
+				this.store.set({ profiles, invitations, loading: false, loaded: true });
 		} catch (error) {
 			if (revision === this.#membershipRevision) this.store.set({ loading: false, error: describeError(error) });
 		}
@@ -205,9 +208,11 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 	const restoreDrafts = preserveFormDrafts(container, "hub");
 	const state = hub.store.get();
 	const busy = Boolean(state.creating);
+	// Placeholders stand in only for the first read; a refresh keeps what the page shows.
+	const firstRead = state.loading && !state.loaded;
 	// The welcome state is the first thing a new member sees: no companies, and
 	// nothing still loading that could turn into one.
-	const welcome = !state.loading && state.profiles.length === 0;
+	const welcome = !firstRead && state.profiles.length === 0;
 	const invited = state.invitations.length > 0;
 	const nameInput = h("input", {
 		id: "newCompanyName",
@@ -340,8 +345,7 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 							h("div", { class: "invite-list" }, ...invitations),
 						)
 					: null,
-				// A refresh keeps the companies already shown; only a first read has placeholders.
-				state.loading && !state.profiles.length
+				firstRead
 					? companyCardsSkeleton()
 					: h("div", { class: "company-grid" }, ...state.profiles.map(companyCard), newTile),
 			),

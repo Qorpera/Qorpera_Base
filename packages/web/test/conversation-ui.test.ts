@@ -16,7 +16,21 @@ import tokensCss from "../src/styles/tokens.css?raw";
 import { AttachmentTray } from "../src/ui/attachments.ts";
 import { fmtTime } from "../src/ui/dom.ts";
 import { markdown, markdownBubbles } from "../src/ui/markdown.ts";
-import { deferred, fixture, id, profileA, session, settle, staff, team, timestamp, userA, userB } from "./fixtures.ts";
+import {
+	deferred,
+	fixture,
+	id,
+	placeholderLabel,
+	profileA,
+	session,
+	settle,
+	staff,
+	team,
+	timestamp,
+	userA,
+	userB,
+	visibleText,
+} from "./fixtures.ts";
 
 let dispose: (() => void) | undefined;
 beforeEach(() => {
@@ -1069,6 +1083,62 @@ describe("conversation UI boundaries", () => {
 			expect(f.view.el.querySelector(".run-failure")).toBeNull();
 		},
 	);
+});
+
+describe("conversation loading placeholders", () => {
+	it("stands the header, messages and composer as placeholders, each replaced where it stands", async () => {
+		const f = fixture();
+		const events = deferred<Awaited<ReturnType<typeof f.api.readSessionEvents>>>();
+		vi.mocked(f.api.readSessionEvents).mockReturnValue(events.promise);
+		const company = new CompanyController(f.api, profileA, userA.id);
+		const view = new ConversationView(company, session.sessionId, {});
+		document.body.append(view.el);
+		dispose = () => {
+			view.dispose();
+			company.stop();
+		};
+		const header = view.el.querySelector(".thread-identity")!;
+		const composer = () => view.el.querySelector<HTMLElement>(".composer:not(.skeleton-composer)")!;
+		// The company is still opening: neither the conversation nor who may write in it is known.
+		expect(header.querySelector(".skeleton-identity-figure")).not.toBeNull();
+		expect(header.getAttribute("title")).toBe("");
+		expect(visibleText(view.el.querySelector(".thread-header"))).toBe("");
+		expect(visibleText(view.el.querySelector(".messages"))).toBe("");
+		expect(placeholderLabel(view.el.querySelector(".messages"))).toBe("Loading conversation");
+		expect(view.el.querySelectorAll(".skeleton-composer")).toHaveLength(1);
+		expect(composer().hidden).toBe(true);
+		company.store.set({ team, staff: [staff], sessions: [{ ...session, staffAgentId: staff.id }], loading: false });
+		await settle();
+		// Header and composer arrive; the messages are still being read.
+		expect(header.querySelector(".skeleton")).toBeNull();
+		expect(header.querySelector("h1")?.textContent).toBe(staff.displayName);
+		expect(view.el.querySelector(".skeleton-composer")).toBeNull();
+		expect(composer().hidden).toBe(false);
+		expect(view.el.querySelector(".messages .skeleton-messages")).not.toBeNull();
+		events.resolve([]);
+		await settle();
+		expect(view.el.querySelector(".skeleton")).toBeNull();
+	});
+
+	it("keeps no composer placeholder for a member who cannot write once the company is open", async () => {
+		const f = fixture();
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({
+			team: { ...team, capabilities: { ...team.capabilities, write: false } },
+			staff: [staff],
+			sessions: [{ ...session, staffAgentId: staff.id }],
+			loading: false,
+		});
+		const view = new ConversationView(company, session.sessionId, {});
+		document.body.append(view.el);
+		dispose = () => {
+			view.dispose();
+			company.stop();
+		};
+		await settle();
+		expect(view.el.querySelector(".skeleton-composer")).toBeNull();
+		expect(view.el.querySelector<HTMLElement>(".composer")?.hidden).toBe(true);
+	});
 });
 
 describe("local attachment validation", () => {

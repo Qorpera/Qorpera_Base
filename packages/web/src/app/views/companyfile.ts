@@ -729,7 +729,8 @@ function renderProposal(
 					)
 				: null,
 		h("h3", null, `Comments (${current.comments.length})`),
-		current.loading ? linesSkeleton("Loading comments") : null,
+		// A refresh keeps the comments it shows; only a first read has placeholders.
+		current.loading && !current.comments.length ? linesSkeleton("Loading comments") : null,
 		h(
 			"div",
 			{ class: "comments" },
