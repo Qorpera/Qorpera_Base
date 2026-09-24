@@ -182,6 +182,8 @@ it.each([
 				// ask_member is offered wherever a final is required (a room wake then is the agent's
 				// own thread), so the reminder names it wherever it appears.
 				expect(instructions.includes("a card from ask_member counts as one")).toBe(final === "required");
+				// A group chat never names the card tool it is not offered.
+				if (kind === "room" && final !== "required") expect(instructions).not.toContain("ask_member");
 				for (const always of [
 					"# Qorpera runtime constitution",
 					"send_message is your only public voice",
