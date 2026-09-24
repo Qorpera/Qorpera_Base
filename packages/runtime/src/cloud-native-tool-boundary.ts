@@ -35,11 +35,15 @@ const MAX_SOURCE_BYTES = 1024 * 1024;
  * as storage for the kernel's start record (the kernel checks the same). */
 export const CLOUD_NATIVE_TOOL_CATALOG_BYTES = 1024 * 1024;
 /** No run is capped by a number of tool calls (founder, 2026-09-22 and
- * 2026-09-24). Result bodies are kept for exact replay only in a rolling window:
- * past it the oldest are forgotten, never a denial or a failure. Codex re-sends
- * only recent outputs (at most 128 per request), so a forgotten one is at worst
- * shown to the model as unconfirmed. */
+ * 2026-09-24), and no model request by its number of tool outputs (runtime
+ * v104; the pinned Codex refused 128). Result bodies are kept for exact replay
+ * only in a rolling window: past it the oldest are forgotten, never a denial or
+ * a failure. A forgotten output, even within one request, is at worst shown to
+ * the model as unconfirmed. */
 export const CLOUD_NATIVE_RESULT_RETENTION_LIMIT = 8_192;
+/** One fence frame each way, the same bound as the patched Codex. It bounds the
+ * size of a request's released outputs, never their number. */
+export const CLOUD_NATIVE_FENCE_FRAME_BYTES = 64 * 1024 * 1024;
 
 /** Keeps a key in insertion order and forgets the oldest past the window. */
 function remember<K>(store: Set<K> | Map<K, unknown>, limit: number): void {
@@ -289,11 +293,18 @@ export class CloudNativeToolBoundary {
 
 	/** Only the patched native request boundary can release these bodies to the model. */
 	async fenceNativeResults(inputs: readonly CloudNativeResultInput[]): Promise<CloudNativeFencedResult[]> {
-		if (inputs.length > CLOUD_NATIVE_RESULT_RETENTION_LIMIT) throw new Error("Native result budget exceeded");
 		this.#signal.throwIfAborted();
 		await untilStopped(() => this.#assertActive(this.#signal), this.#signal);
 		this.#signal.throwIfAborted();
 		const seen = new Set<string>();
+		// No count of outputs: only their size is bounded, by the reply frame they
+		// must fit in (many tiny outputs grow into 8 KiB envelopes).
+		let released = 0;
+		const release = (result: CloudNativeFencedResult): CloudNativeFencedResult => {
+			released += Buffer.byteLength(result.output);
+			if (released > CLOUD_NATIVE_FENCE_FRAME_BYTES) throw new Error("Native result frame too large");
+			return result;
+		};
 		const outputs = inputs.map((input) => {
 			if (
 				!CALL_ID.test(input.callId) ||
@@ -350,7 +361,7 @@ export class CloudNativeToolBoundary {
 				// output is equivalent to the original; a claimed envelope is not enough.
 				if ((previous.digest !== digest && text !== previous.output) || previous.imageSha256 !== imageSha256)
 					throw new Error("Native result changed after release");
-				return { kind: input.kind, callId: input.callId, output: previous.output, ...image };
+				return release({ kind: input.kind, callId: input.callId, output: previous.output, ...image });
 			}
 			// Never trust a schema, role or provenance claimed inside native output.
 			// Pass through only the exact bytes previously issued by this host for this call.
@@ -365,7 +376,7 @@ export class CloudNativeToolBoundary {
 					}).contentItems[0].text;
 			this.#nativeResults.set(key, { digest, output, ...(imageSha256 ? { imageSha256 } : {}) });
 			remember(this.#nativeResults, CLOUD_NATIVE_RESULT_RETENTION_LIMIT);
-			return { kind: input.kind, callId: input.callId, output, ...image };
+			return release({ kind: input.kind, callId: input.callId, output, ...image });
 		});
 		await untilStopped(() => this.#captures?.assertReadable(this.#signal) ?? Promise.resolve(), this.#signal);
 		this.#signal.throwIfAborted();

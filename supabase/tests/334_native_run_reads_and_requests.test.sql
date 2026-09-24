@@ -1,5 +1,6 @@
 -- @fixture 290_company_file_path_gateway.test.sql until "-- Human content reads bind a current path/version"
 -- Runtime v92: a run reads the Company File and asks its model without a count.
+-- Runtime v104: one request's view holds any number of tool outputs.
 -- It used to fail after 128 model reads or lists, 128 distinct files held in its
 -- context, or 256 model requests (one context view is recorded per request).
 -- Real admission, native start and first commit from the 290 fixture.
@@ -31,6 +32,12 @@ begin
 			'turnId','turn-1','purpose','turn','outputs','[]'::jsonb));
 	end loop;
 	if (v_receipt ->> 'ordinal')::integer <> 300 then raise exception 'Model request 300 was not recorded: %', v_receipt; end if;
+	-- Runtime v104: one request's view holds any number of tool outputs (was 128, and 128 KiB).
+	v_receipt := public.qorpera_record_native_context_view(v_environment,v_binding,jsonb_build_object(
+		'schema','qorpera.native-context-view/v1','requestId','request-wide','threadId','thread-1','turnId','turn-1','purpose','turn',
+		'outputs',(select jsonb_agg(jsonb_build_object('callId','call-' || n,'kind','function_call_output','sha256',repeat('a',64),
+			'bytes',8000,'readId',null,'readSha256',null,'includedBytes',null,'includedSha256',null)) from generate_series(1,600) n)));
+	if v_receipt ->> 'requestId' is distinct from 'request-wide' then raise exception 'A view of 600 outputs was not recorded'; end if;
 	-- Access is still checked: a revoked read grant stops the next model request.
 	reset role;
 	update public.qorpera_company_path_grants set revoked_at = clock_timestamp()

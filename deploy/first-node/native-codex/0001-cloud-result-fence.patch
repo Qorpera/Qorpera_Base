@@ -540,8 +540,8 @@ index 000000000..4a60a6777
 +    use crate::responses_metadata::CodexResponsesRequestKind;
 +
 +    const SCHEMA: &str = "qorpera.native-result-fence/v1";
-+    const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
-+    const MAX_SOURCE_BYTES: usize = 1024 * 1024;
++    const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
++    const MAX_SOURCE_BYTES: usize = 64 * 1024 * 1024;
 +    const MAX_RESULT_BYTES: usize = 8 * 1024;
 +    const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 +    const MAX_IMAGE_BATCH_BYTES: usize = 128 * 1024 * 1024;
@@ -678,7 +678,7 @@ index 000000000..4a60a6777
 +                // Upstream 0.155: a configuration update item carries no tool result.
 +                | ResponseItem::ConfigurationUpdate { .. } => continue,
 +            };
-+            if call_id.is_empty() || call_id.len() > 160 || outputs.len() >= 128 {
++            if call_id.is_empty() || call_id.len() > 160 {
 +                return Err(());
 +            }
 +            let body = match &output.body {
@@ -853,7 +853,7 @@ new file mode 100644
 index 000000000..0e95b6fab
 --- /dev/null
 +++ b/codex-rs/core/src/qorpera_result_fence_tests.rs
-@@ -0,0 +1,379 @@
+@@ -0,0 +1,398 @@
 +use anyhow::Context;
 +use base64::Engine;
 +use base64::engine::general_purpose::STANDARD;
@@ -1232,6 +1232,25 @@ index 000000000..0e95b6fab
 +    );
 +    assert!(started.elapsed() < std::time::Duration::from_secs(7));
 +    host.abort();
++}
++
++#[tokio::test]
++async fn a_request_with_any_number_of_tool_outputs_is_fenced_whole() {
++    // No count of tool outputs per model request (was fewer than 128, and at most
++    // 1 MiB of result text): 300 outputs of 7,000 bytes, about 2 MB, are fenced.
++    let directory = tempfile::tempdir().unwrap();
++    let path = directory.path().join("f.sock");
++    let mut items = Vec::new();
++    for index in 0..300 {
++        items.push(json!({"type":"function_call","call_id":format!("call-{index}"),"name":"unsupported","arguments":"{}"}));
++        items.push(json!({"type":"function_call_output","call_id":format!("call-{index}"),"output":"x".repeat(7000)}));
++    }
++    let mut input: Vec<ResponseItem> = serde_json::from_value(Value::Array(items)).unwrap();
++    let listener = UnixListener::bind(&path).unwrap();
++    let host = tokio::spawn(reply(listener, "none"));
++    assert_eq!(fence(&mut input, &metadata(), &path).await, Ok(()));
++    let request = host.await.unwrap().unwrap();
++    assert_eq!(request["outputs"].as_array().unwrap().len(), 300);
 +}
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
 index 5d5fa3a0a..1e15fed86 100644

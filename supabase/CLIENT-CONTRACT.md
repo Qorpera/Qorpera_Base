@@ -805,3 +805,11 @@ above.
     that showed or guarded one of these limits should drop it. A Company File
     change may now wake an agent already earlier in its causal chain; an
     agent's own write still never wakes its own watch routine.
+
+### 2026-09-24 — from the runtime (bundle v104, `20260924230000_runtime_native_view_no_output_count.sql`)
+
+17. **No count of tool outputs per model request.** The open limit named in
+    item 15 is gone with the Codex rebuild: a model request may carry any
+    number of tool outputs (the pinned Codex refused 128 or more). Nothing a
+    client calls changes; a long run simply no longer fails after about 128
+    tool calls between compactions.
