@@ -435,6 +435,26 @@ begin
 	exception when raise_exception then
 		if sqlerrm <> 'rollback-stopped-revival-probe' then raise; end if;
 	end;
+	-- A blocked worker revives the parent while five still run; stopping that revival stops the five too.
+	begin
+		perform pg_temp.finish_job((v_binding ->> 'runId')::uuid);
+		update public.qorpera_runtime_workers set state = 'blocked', reported_at = clock_timestamp(), completion_state = 'waiting',
+			result = jsonb_build_object('outcome','blocked','outputs','[]'::jsonb,'sequence',sequence,'summary','Need the price list.',
+				'needs','The price list.')
+		where worker_key = 'batch-1';
+		perform public.qorpera_drain_worker_wakes(32);
+		select * into strict v_wake from public.qorpera_wake_occurrences
+		where source_kind = 'worker-completion' and parent_run_id = (v_binding ->> 'runId')::uuid;
+		perform public.qorpera_materialize_wake_execution_runs(8);
+		perform pg_temp.finish_job((select run_id from public.qorpera_wake_occurrences where id = v_wake.id),'cancelled');
+		perform public.qorpera_drain_worker_wakes(32);
+		perform pg_temp.wake_assert((select count(*) = 5 from public.qorpera_runtime_workers
+				where worker_key in ('batch-2','batch-3','batch-4','batch-5','batch-6') and state = 'cancelled'),
+			'Stopping a revival stops the parent''s workers that are still running');
+		raise exception 'rollback-stopped-revival-workers-probe';
+	exception when raise_exception then
+		if sqlerrm <> 'rollback-stopped-revival-workers-probe' then raise; end if;
+	end;
 	-- The status listing is a page of sixteen, active workers first, and counts the rest. Probed in a subtransaction.
 	begin
 		for v_index in 7..18 loop

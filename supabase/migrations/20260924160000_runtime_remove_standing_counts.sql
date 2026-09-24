@@ -48,6 +48,22 @@ select pg_temp.count_patch('public.qorpera_sidebar_create_section(uuid,uuid,text
 $old$,
 	'');
 
+-- Whether a person stopped one of this parent's revivals (a continuation of its
+-- own work): that stops the rest of the parent's workers, as stopping the parent does.
+create function public.qorpera_worker_revival_stopped(p_steering_run_id uuid)
+returns boolean language sql stable security definer set search_path = '' as $$
+	select exists (select 1 from public.qorpera_wake_occurrences revival
+		join public.qorpera_execution_runs revival_run on revival_run.id = revival.run_id
+		join public.qorpera_runner_jobs revival_job on revival_job.id = revival_run.job_id
+		where revival.parent_run_id = p_steering_run_id and revival.source_kind = 'worker-completion'
+			and revival_job.status = 'cancelled')
+$$;
+revoke all on function public.qorpera_worker_revival_stopped(uuid) from public, anon, authenticated, service_role, qorpera_secret_broker;
+select pg_temp.count_patch('public.qorpera_drain_worker_wakes(integer)'::regprocedure,
+	$old$				if v_status = 'cancelled' then
+					-- The parent was stopped by a person: its workers stop with it.$old$,
+	$new$				if v_status = 'cancelled' or public.qorpera_worker_revival_stopped(v_worker.steering_run_id) then
+					-- The parent, or a continuation of it, was stopped by a person: its workers stop with it.$new$);
 -- With no count on active workers a batch can hold more than four. Reports are
 -- still handed back four per revival, but one revival at a time: the next four
 -- wait until the previous revival's run has ended, and stillActive counts the
@@ -57,13 +73,9 @@ select pg_temp.count_patch('public.qorpera_drain_worker_wakes(integer)'::regproc
 	$old$			if public.qorpera_company_execution_paused(v_worker.profile_id) then continue; end if;
 $old$,
 	$new$			if public.qorpera_company_execution_paused(v_worker.profile_id) then continue; end if;
-			-- A person who stops a revival stops the rest of that parent's reports too, as stopping the
-			-- parent does; the results stay readable through status.
-			if exists (select 1 from public.qorpera_wake_occurrences revival
-				join public.qorpera_execution_runs revival_run on revival_run.id = revival.run_id
-				join public.qorpera_runner_jobs revival_job on revival_job.id = revival_run.job_id
-				where revival.parent_run_id = v_worker.steering_run_id and revival.source_kind = 'worker-completion'
-					and revival_job.status = 'cancelled' and revival_job.cancelled_by_user_id is not null) then
+			-- A person who stops a revival holds back the rest of that parent's reports (its running
+			-- workers are cancelled above), as stopping the parent does; results stay readable through status.
+			if public.qorpera_worker_revival_stopped(v_worker.steering_run_id) then
 				update public.qorpera_runtime_workers set completion_state = 'suppressed' where id = v_worker.id; continue;
 			end if;
 			-- One revival at a time for a parent (runtime v95: a batch may exceed four): the next four reports
