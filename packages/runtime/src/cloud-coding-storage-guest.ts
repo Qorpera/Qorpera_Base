@@ -74,9 +74,11 @@ const only = (options: string[], wanted: "rw" | "ro") =>
 const writable = (options: string[]) => only(options, "rw");
 /** `below`: "none" refuses any mount beneath the target, "any" ignores them,
  * and a list requires exactly those paths as binds of the target's own
- * filesystem (the command unit's ReadWritePaths). Inside that unit
- * ProtectSystem=strict leaves the target itself read-only per mount, so a
- * list also requires that: the sandboxed check fails closed outside the unit. */
+ * filesystem (the command unit's ReadWritePaths). Inside that unit the target
+ * is the unit's own BindPaths mount, which ProtectSystem=strict leaves
+ * writable per mount (seen on a real v101 unit, systemd 255): either flag is
+ * accepted there, since the root's owner and mode (never the session's user,
+ * 0755) are what keep the session from writing in it. */
 function mounted(
 	entries: Mount[],
 	target: string,
@@ -91,7 +93,7 @@ function mounted(
 		mount.root !== "/" ||
 		mount.filesystem !== filesystem ||
 		!writable(mount.superOptions) ||
-		!only(mount.options, sandboxed ? "ro" : "rw") ||
+		!(only(mount.options, "rw") || (sandboxed && only(mount.options, "ro"))) ||
 		(sandboxed && below.some((path) => !entries.some((entry) => entry.target === path)))
 	)
 		throw new Error("CODING_GUEST_STORAGE_MOUNT_INVALID");
@@ -137,11 +139,11 @@ function covered(entries: Mount[], root: string, session: string): void {
 /** Kernel observation only. Host admission separately pins NFS identity and
  * excludes every previous writer; virtiofs does not expose the NFS server.
  * Other sessions of the member's machine have their own mounts beside this
- * one and are not judged here. Without `sandbox` (root, the host's view): each
- * of the session's two roots is one whole rw mount with nothing mounted
- * beneath it. With `sandbox` (inside the command unit): the guest roots are
- * private covers holding only this session, whose roots are the same
- * superblocks, still rw, with their own mounts read-only, and beneath them
+ * one and are not judged here. Without `sandbox` (root, the host's view): no
+ * mount at the guest roots themselves, and each of the session's two roots is
+ * one whole rw mount with nothing mounted beneath it. With `sandbox` (inside
+ * the command unit): the guest roots are private covers holding only this
+ * session, whose roots are the same superblocks, still rw, and beneath them
  * exactly the declared writable paths as rw binds of those superblocks. */
 export function assertCodingGuestMounts(
 	mountInfo: string,
@@ -173,7 +175,14 @@ export function assertCodingGuestMounts(
 			throw new Error("CODING_GUEST_STORAGE_SANDBOX_INVALID");
 		covered(entries, CLOUD_CODING_GUEST_ROOTS.data, DATA);
 		covered(entries, CLOUD_CODING_GUEST_ROOTS.custody, CUSTODY);
-	}
+	} else if (
+		// A root caller sees the machine's own view: a command unit's covers
+		// there mean it is not, and the unit's view never passes as the host's.
+		entries.some(
+			(entry) => entry.target === CLOUD_CODING_GUEST_ROOTS.data || entry.target === CLOUD_CODING_GUEST_ROOTS.custody,
+		)
+	)
+		throw new Error("CODING_GUEST_STORAGE_MOUNT_INVALID");
 	return Object.freeze({
 		[DATA]: mounted(entries, DATA, "virtiofs", sandbox ? sandboxPaths(sandbox, DATA) : "none"),
 		[CUSTODY]: mounted(entries, CUSTODY, "virtiofs", sandbox ? sandboxPaths(sandbox, CUSTODY) : "none"),

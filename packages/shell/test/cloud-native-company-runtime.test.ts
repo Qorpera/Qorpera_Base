@@ -39,6 +39,7 @@ import {
 	parseCloudRuntimeObservation,
 } from "@qorpera/runtime/cloud-runtime-observability";
 import type { CloudSecretOperationClient } from "@qorpera/runtime/cloud-secret-tools";
+import { CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA } from "@qorpera/runtime/cloud-thread-interactions";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { nativeCompanyContextFixture } from "./fixtures/native-company-context-fixture.ts";
 
@@ -957,6 +958,33 @@ it("raises one typed card for the member, appended before the final sentence, an
 	expect(asks.map((row) => row.status)).toEqual(["succeeded", "replayed"]);
 	expect(f.observations.filter((row) => row.operation === "send_message" && row.phase === "finish")).toHaveLength(1);
 	expect(JSON.stringify(f.observations)).not.toContain("digest");
+});
+
+it("tells the model the card shape and why a card was refused, so it can fix the card and retry", async () => {
+	const f = await fixture("company-cards-retry");
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(result.delivery).toEqual({ messageCount: 1, finalMessageId: f.deliveries.get("fruit:final")?.messageId });
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	const ask = evidence.threadParameters.dynamicTools[0].tools.find(
+		(tool: { name: string }) => tool.name === "ask_member",
+	);
+	expect(ask.inputSchema.properties.payload).toEqual(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA);
+	const refused = JSON.parse(evidence.fenced.outputs[0].output);
+	expect(refused.status).toBe("denied");
+	expect(refused.content.text).toMatch(
+		/^INVALID_ARGUMENTS: the question payload must be \{options: \[\{label, value\?/,
+	);
+	expect(refused.content.text).toContain("never a plain string");
+	// Only the corrected card reached the kernel; the refusal is recorded as invalid arguments.
+	expect(f.control.appendInteractionRequest).toHaveBeenCalledOnce();
+	expect(f.control.appendInteractionRequest.mock.calls[0]![1].data.payload).toEqual({
+		options: [{ label: "Apples" }, { label: "Pears" }],
+	});
+	const asks = f.observations.filter((row) => row.operation === "ask_member" && row.phase === "finish");
+	expect(asks.map((row) => [row.status, row.errorCategory])).toEqual([
+		["denied", "invalid_arguments"],
+		["succeeded", null],
+	]);
 });
 
 /** A member's post in a room, as the kernel admits it: final required only in the agent's own thread. */
