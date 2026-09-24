@@ -1108,13 +1108,13 @@ export class CompanyController {
 		});
 		try {
 			const sponsor = this.#answerSponsor(sessionId);
-			const clientInputId = crypto.randomUUID();
 			await this.#api
-				.answerInteraction(sessionId, clientInputId, interactionId, outcome, answer, sponsor)
+				.answerInteraction(sessionId, crypto.randomUUID(), interactionId, outcome, answer, sponsor)
 				.catch((error: unknown) => {
-					// A cloud before bundle v100 takes no account and queues the answer as before.
+					// A cloud before bundle v100 cannot deliver an answer in an agent's thread:
+					// it would queue one that never wakes the agent. Keep the card open.
 					if (sponsor && error instanceof CloudRpcError && error.missing)
-						return this.#api.answerInteraction(sessionId, clientInputId, interactionId, outcome, answer);
+						throw new Error(t("Answering cards here is not available yet. Reply in a message instead."));
 					throw error;
 				});
 		} catch (error) {

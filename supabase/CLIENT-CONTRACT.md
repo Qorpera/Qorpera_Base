@@ -422,7 +422,9 @@ input is complete at once, its `interaction_answer` event is in the transcript
 when the RPC returns (never in the pending list), and a room wake runs the
 thread's agent. Elsewhere the two sponsor arguments are ignored. A client shows
 live card controls only to that member; against a cloud before bundle v100
-(`PGRST202` for the seven named arguments) it repeats the call without them.
+(`PGRST202` for the seven named arguments) it keeps the card open and says
+answering there is not available yet (the old function would queue an answer
+that never wakes the agent).
 
 ## 7. Desktop IPC channels → cloud equivalents
 

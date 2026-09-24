@@ -129,18 +129,21 @@ describe("answering a card", () => {
 		expect(answer.mock.calls[0]![5]).toEqual({ sponsorBindingId: id(81), sponsorVersion: 1 });
 	});
 
-	it("falls back to the call without an account while the cloud does not take one yet", async () => {
+	it("keeps the card open where the cloud cannot deliver an answer in an agent's thread yet", async () => {
 		const f = company();
 		f.controller.store.set({ sessions: [thread] });
 		const answer = vi
 			.spyOn(f.api, "answerInteraction")
-			.mockRejectedValueOnce(
+			.mockRejectedValue(
 				new CloudRpcError("qorpera_answer_interaction", { code: "PGRST202", message: "Could not find" }, 404),
-			)
-			.mockResolvedValueOnce(answered);
-		await f.controller.answerInteraction(thread.sessionId, id(593), "answered", { values: ["general"] });
-		expect(answer).toHaveBeenCalledTimes(2);
-		expect(answer.mock.calls[1]).toEqual(answer.mock.calls[0]!.slice(0, 5));
+			);
+		await expect(
+			f.controller.answerInteraction(thread.sessionId, id(593), "answered", { values: ["general"] }),
+		).rejects.toThrow();
+		expect(answer).toHaveBeenCalledOnce();
+		const state = f.controller.conversation(thread.sessionId).get();
+		expect(state.interactionError).toBe("Answering cards here is not available yet. Reply in a message instead.");
+		expect(state.interactionAnswers).toBeUndefined();
 	});
 
 	it("in an agent's thread without a selected account, sends nothing and says so", async () => {

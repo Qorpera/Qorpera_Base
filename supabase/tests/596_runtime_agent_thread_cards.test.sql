@@ -124,7 +124,8 @@ end
 $$;
 
 -- An answer that could not run is refused and records nothing: no account named,
--- another member's account, a disconnected account, or a paused company.
+-- another member's account, a disconnected account, a disabled credential, or a
+-- paused company.
 create function pg_temp.card_refused(p_state text, p_message text, p_sponsor uuid default null) returns void
 language plpgsql as $$
 declare v_client uuid := extensions.gen_random_uuid();
@@ -166,6 +167,16 @@ update public.qorpera_provider_connections set status = 'disabled'
 where id = current_setting('qorpera_test.card_sponsor_connection')::uuid;
 select pg_temp.card_refused('42501','Room sponsor is unavailable');
 rollback to savepoint sponsor_disconnected;
+savepoint credential_gone;
+update public.qorpera_native_credential_capsules set status = 'disabled'
+where id = (select version.credential_capsule_id from public.qorpera_provider_connection_versions as version
+	join public.qorpera_execution_sponsor_versions as sponsor on sponsor.provider_connection_id = version.connection_id
+		and sponsor.provider_connection_version = version.version
+	join public.qorpera_execution_runs as run on run.sponsor_binding_id = sponsor.binding_id
+		and run.sponsor_version = sponsor.version
+	where run.id = (current_setting('qorpera_test.wake_binding')::jsonb ->> 'runId')::uuid);
+select pg_temp.card_refused('42501','Room sponsor is unavailable');
+rollback to savepoint credential_gone;
 savepoint paused;
 insert into public.qorpera_company_execution_pauses(profile_id,paused_by_user_id,reason)
 values ('30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-000000000001','Runtime update');
