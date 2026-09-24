@@ -1,13 +1,5 @@
-import {
-	DEFAULT_CLOUD_CONFIG,
-	readCloudConfigOverride,
-	WEB_CLIENT_MODE,
-	WEB_CLIENT_VERSION,
-	writeCloudConfigOverride,
-} from "../../cloud/config.ts";
 import type { HostedAccountEntitlement } from "../../cloud/types.ts";
 import { button, h, notice, replace } from "../../ui/dom.ts";
-import { preserveFormDrafts } from "../../ui/forms.ts";
 import { languagePreference, setLanguagePreference, uiText } from "../../ui/preferences.ts";
 import { type AuthController, displayName } from "../auth.ts";
 import { composerColorChoices, themeChoices } from "./appearance.ts";
@@ -27,27 +19,6 @@ export function renderAccount(
 	setState: (next: AccountViewState) => void,
 ): void {
 	const user = auth.store.get().user;
-	const owner = `account:${user?.id}`;
-	const restoreDrafts = preserveFormDrafts(container, owner);
-	const override = readCloudConfigOverride();
-	const projectInput = h("input", {
-		type: "url",
-		placeholder: DEFAULT_CLOUD_CONFIG.projectUrl,
-		value: override?.projectUrl ?? "",
-		"data-draft": "project-url",
-	});
-	const keyInput = h("input", {
-		type: "text",
-		placeholder: "sb_publishable_…",
-		value: override?.publishableKey ?? "",
-		"data-draft": "project-key",
-	});
-	const gatewayInput = h("input", {
-		type: "url",
-		placeholder: DEFAULT_CLOUD_CONFIG.objectGatewayUrl,
-		value: override?.objectGatewayUrl ?? "",
-		"data-draft": "gateway-url",
-	});
 	const language = h(
 		"select",
 		{ "aria-label": "Language" },
@@ -70,7 +41,7 @@ export function renderAccount(
 		container,
 		h(
 			"section",
-			{ class: "page account", "data-form-owner": owner },
+			{ class: "page account" },
 			h("h1", null, uiText("General")),
 			state.error ? notice("danger", state.error) : null,
 			state.message ? notice("ok", state.message) : null,
@@ -134,60 +105,6 @@ export function renderAccount(
 				),
 				h("p", { class: "settings-help" }, uiText("Some screens are still shown in English.")),
 			),
-			h(
-				"section",
-				{ class: "settings-group" },
-				h("h2", null, uiText("Companies")),
-				h(
-					"a",
-					{ class: "settings-card settings-link", href: "#/" },
-					h(
-						"span",
-						{ class: "settings-copy" },
-						h("strong", null, uiText("All companies")),
-						h("small", null, uiText("Open or create a company")),
-					),
-					h("span", { "aria-hidden": "true" }, "›"),
-				),
-			),
-			h(
-				"details",
-				{ class: "advanced" },
-				h("summary", null, "Cloud endpoint (advanced)"),
-				h(
-					"p",
-					{ class: "muted small" },
-					h("a", { href: "#/cloud-check" }, "Cloud check"),
-					" checks member RPC signatures. It does not verify Realtime or object gateway access.",
-				),
-				h(
-					"p",
-					{ class: "muted small" },
-					`Web client ${WEB_CLIENT_VERSION} (${WEB_CLIENT_MODE}). Point this browser at an isolated preview project instead of production. Only public values: project URL, publishable key, object gateway. Reloads the app.`,
-				),
-				h("label", null, "Project URL", projectInput),
-				h("label", null, "Publishable key", keyInput),
-				h("label", null, "Object gateway URL", gatewayInput),
-				h(
-					"div",
-					{ class: "row" },
-					button("Use these endpoints", () => {
-						writeCloudConfigOverride({
-							projectUrl: projectInput.value.trim(),
-							publishableKey: keyInput.value.trim(),
-							objectGatewayUrl: gatewayInput.value.trim(),
-						});
-						location.reload();
-					}),
-					override
-						? button("Back to production", () => {
-								writeCloudConfigOverride(undefined);
-								location.reload();
-							})
-						: null,
-				),
-			),
 		),
 	);
-	restoreDrafts();
 }

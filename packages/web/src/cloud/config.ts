@@ -34,9 +34,3 @@ export function writeCloudConfigOverride(config: CloudConfig | undefined): void 
 export function resolveCloudConfig(): CloudConfig {
 	return readCloudConfigOverride() ?? builtConfig;
 }
-
-declare const __QORPERA_WEB_VERSION__: string;
-declare const __QORPERA_WEB_MODE__: string;
-
-export const WEB_CLIENT_VERSION: string = typeof __QORPERA_WEB_VERSION__ === "string" ? __QORPERA_WEB_VERSION__ : "dev";
-export const WEB_CLIENT_MODE: string = typeof __QORPERA_WEB_MODE__ === "string" ? __QORPERA_WEB_MODE__ : "development";
