@@ -16,7 +16,22 @@ import tokensCss from "../src/styles/tokens.css?raw";
 import { AttachmentTray } from "../src/ui/attachments.ts";
 import { fmtTime } from "../src/ui/dom.ts";
 import { markdown, markdownBubbles } from "../src/ui/markdown.ts";
-import { deferred, fixture, id, profileA, session, settle, staff, team, timestamp, userA, userB } from "./fixtures.ts";
+import { setLanguagePreference } from "../src/ui/preferences.ts";
+import {
+	deferred,
+	fixture,
+	id,
+	placeholderLabel,
+	profileA,
+	session,
+	settle,
+	staff,
+	team,
+	timestamp,
+	userA,
+	userB,
+	visibleText,
+} from "./fixtures.ts";
 
 let dispose: (() => void) | undefined;
 beforeEach(() => {
@@ -1071,6 +1086,72 @@ describe("conversation UI boundaries", () => {
 	);
 });
 
+describe("conversation loading placeholders", () => {
+	it("stands the header, messages and composer as placeholders, each replaced where it stands", async () => {
+		const f = fixture();
+		const events = deferred<Awaited<ReturnType<typeof f.api.readSessionEvents>>>();
+		vi.mocked(f.api.readSessionEvents).mockReturnValue(events.promise);
+		const company = new CompanyController(f.api, profileA, userA.id);
+		const view = new ConversationView(company, session.sessionId, {});
+		document.body.append(view.el);
+		dispose = () => {
+			view.dispose();
+			company.stop();
+		};
+		const header = view.el.querySelector(".thread-identity")!;
+		const composer = () => view.el.querySelector<HTMLElement>(".composer:not(.skeleton-composer)")!;
+		// The company is still opening: neither the conversation nor who may write in it is known.
+		expect(header.querySelector(".skeleton-identity-figure")).not.toBeNull();
+		expect(header.getAttribute("title")).toBe("");
+		expect(visibleText(view.el.querySelector(".thread-header"))).toBe("");
+		expect(visibleText(view.el.querySelector(".messages"))).toBe("");
+		expect(placeholderLabel(view.el.querySelector(".messages"))).toBe("Loading conversation");
+		expect(view.el.querySelectorAll(".skeleton-composer")).toHaveLength(1);
+		expect(composer().hidden).toBe(true);
+		const messages = view.el.querySelector(".messages")!;
+		const placeholder = messages.querySelector(".skeleton-messages");
+		const records: MutationRecord[] = [];
+		const changes = new MutationObserver((batch) => records.push(...batch));
+		changes.observe(messages, { childList: true });
+		company.store.set({ team, staff: [staff], sessions: [{ ...session, staffAgentId: staff.id }], loading: false });
+		await settle();
+		// The live log keeps the same placeholder in place, so a screen reader does not hear it again.
+		expect(messages.querySelector(".skeleton-messages")).toBe(placeholder);
+		records.push(...changes.takeRecords());
+		expect(records).toHaveLength(0);
+		changes.disconnect();
+		// Header and composer arrive; the messages are still being read.
+		expect(header.querySelector(".skeleton")).toBeNull();
+		expect(header.querySelector("h1")?.textContent).toBe(staff.displayName);
+		expect(view.el.querySelector(".skeleton-composer")).toBeNull();
+		expect(composer().hidden).toBe(false);
+		expect(view.el.querySelector(".messages .skeleton-messages")).not.toBeNull();
+		events.resolve([]);
+		await settle();
+		expect(view.el.querySelector(".skeleton")).toBeNull();
+	});
+
+	it("keeps no composer placeholder for a member who cannot write once the company is open", async () => {
+		const f = fixture();
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({
+			team: { ...team, capabilities: { ...team.capabilities, write: false } },
+			staff: [staff],
+			sessions: [{ ...session, staffAgentId: staff.id }],
+			loading: false,
+		});
+		const view = new ConversationView(company, session.sessionId, {});
+		document.body.append(view.el);
+		dispose = () => {
+			view.dispose();
+			company.stop();
+		};
+		await settle();
+		expect(view.el.querySelector(".skeleton-composer")).toBeNull();
+		expect(view.el.querySelector<HTMLElement>(".composer")?.hidden).toBe(true);
+	});
+});
+
 describe("local attachment validation", () => {
 	it("rejects empty/oversized files and renders SVG as an inert document", () => {
 		const change = vi.fn();
@@ -1471,6 +1552,40 @@ describe("new conversation and agent setup", () => {
 });
 
 describe("messages between two agents (contract 14.6)", () => {
+	it("keeps the coworker's figure and name together wherever Danish puts them", async () => {
+		setLanguagePreference("da");
+		const f = setup();
+		const coworker = { ...staff, id: id(97), displayName: "Helper" };
+		f.company.store.set({ staff: [staff, coworker] });
+		await f.company.loadConversation(session.sessionId);
+		f.company.conversation(session.sessionId).set({
+			loading: false,
+			projection: {
+				items: [
+					{
+						kind: "peer_link",
+						id: id(96),
+						sequence: 1,
+						direction: "in",
+						counterpartStaffId: coworker.id,
+						pairSessionId: id(98),
+						createdAt: timestamp,
+					},
+				],
+				hiddenCount: 0,
+				lastSequence: 1,
+			},
+		});
+		f.view.update();
+		const chip = f.view.el.querySelector<HTMLButtonElement>(".peer-chip")!;
+		expect([...chip.querySelectorAll(":scope > span:not(.figure)")].map((span) => span.textContent)).toEqual([
+			"Besked fra",
+			"Helper",
+		]);
+		expect(chip.querySelector(".figure")?.nextElementSibling?.textContent).toBe("Helper");
+		expect(chip.getAttribute("aria-label")).toBe("Besked fra Helper. Åbn samtalen");
+	});
+
 	it("shows a chip for a coworker's message and opens the two agents' view-only transcript from it", async () => {
 		const f = setup();
 		const coworker = { ...staff, id: id(97), displayName: "Helper" };

@@ -1,5 +1,5 @@
 import type { HostedStaffAgent } from "../cloud/types.ts";
-import { colorFor, type FigureId, figureArtwork, figureFor, nativeColorOf } from "./avatar.ts";
+import { agentColor, type FigureId, figureArtwork, figureFor, nativeColorOf } from "./avatar.ts";
 import type { FigureArtwork } from "./figure-motion.ts";
 
 export interface GroupAvatarOptions {
@@ -226,7 +226,7 @@ export function groupAvatar(agents: readonly HostedStaffAgent[], options: GroupA
 		const figure = figureFor(agent);
 		return {
 			figure,
-			color: agent.templateId === "co-founder" ? nativeColorOf(figure) : colorFor(agent, figure),
+			color: agentColor(agent, figure),
 		};
 	});
 	const group: Group = {

@@ -47,6 +47,7 @@ const MAX_READ_BYTES = 4096;
 
 export type CloudCompanyPathRpc =
 	| "qorpera_manage_agent_routine"
+	| "qorpera_manage_agent_sidebar"
 	// Workers and durable todos (runtime Step 5).
 	| "qorpera_manage_agent_todo"
 	| "qorpera_confirm_agent_todo_publication"

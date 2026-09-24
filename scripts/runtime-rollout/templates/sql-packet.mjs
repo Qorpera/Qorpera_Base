@@ -63,6 +63,7 @@ const finalInterfaces = `${activeBundle}=${q(F.bundle)}
   and to_regprocedure('public.qorpera_send_coworker_message(jsonb,uuid,text,text)') is not null
   and to_regprocedure('public.qorpera_escalate_responsibility(jsonb,jsonb)') is null
   and to_regprocedure('public.qorpera_manage_agent_routine(jsonb,jsonb)') is not null
+  and to_regprocedure('public.qorpera_manage_agent_sidebar(jsonb,jsonb)') is not null
   and to_regprocedure('public.qorpera_self_approve_organization_proposal(jsonb,uuid)') is not null
   and to_regprocedure('public.qorpera_runtime_wake_policy(uuid)') is not null
   and to_regprocedure('public.qorpera_assert_wake_work_allowed(uuid)') is not null
