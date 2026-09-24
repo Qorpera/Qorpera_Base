@@ -166,6 +166,9 @@ label > input, label > select { font-weight: 400; }
 	width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; flex: none;
 	background: #201f1d; color: #fff; font-size: 10.5px; font-weight: 700; letter-spacing: 0.02em;
 }
+/* A member's own picture covers their initials disc (ui/person-pictures.ts). */
+:is(.person-avatar, .account-chip) { position: relative; overflow: hidden; }
+.person-picture { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: inherit; pointer-events: none; user-select: none; }
 .account-trigger-name { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .account-chevron {
 	width: 7px; height: 7px; flex: none; opacity: 0.45;

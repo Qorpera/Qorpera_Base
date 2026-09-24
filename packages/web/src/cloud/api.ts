@@ -6,6 +6,16 @@ import {
 	parseCodingSessionRead,
 	parseCodingSessions,
 } from "./coding-session.ts";
+import {
+	isMemberPictureName,
+	MEMBER_PICTURE_BUCKET,
+	type MemberPicture,
+	type MemberPictureChange,
+	type MemberPictureObject,
+	parseMemberPictureChange,
+	parseMemberPictureObjects,
+	parseMemberPictures,
+} from "./member-pictures.ts";
 import { type HostedCompanyOrganization, parseHostedCompanyOrganization } from "./organization.ts";
 import { collectPages, type PageCursor } from "./pagination.ts";
 import {
@@ -132,6 +142,60 @@ export class CloudApi {
 
 	async removeFriend(userId: string): Promise<void> {
 		await this.cloud.rpc("qorpera_remove_friend", { p_user_id: requiredUuid(userId, "Account id") });
+	}
+
+	// Member pictures: the photo a member chose for their account. The cloud
+	// returns only the pictures the caller may see (themselves, company
+	// colleagues, friends); the bytes are private storage objects the member
+	// uploads into their own folder.
+
+	listMemberPictures(userIds: readonly string[]): Promise<MemberPicture[]> {
+		if (userIds.length > 200) throw new Error("Ask for at most 200 pictures at a time.");
+		return this.cloud
+			.rpc("qorpera_member_pictures", { p_user_ids: userIds.map((userId) => requiredUuid(userId, "Account id")) })
+			.then(parseMemberPictures);
+	}
+
+	/** Resolves true when this call stored the object, false when those bytes were already there. */
+	async uploadMemberPicture(objectName: string, picture: Blob): Promise<boolean> {
+		if (!isMemberPictureName(objectName)) throw new Error("Invalid picture name.");
+		const { error } = await this.cloud.supabase.storage.from(MEMBER_PICTURE_BUCKET).upload(objectName, picture, {
+			contentType: picture.type,
+			// The name is the content's hash, so the bytes behind it never change.
+			cacheControl: "31536000",
+			upsert: false,
+		});
+		if (!error) return true;
+		// The same picture uploaded again already sits under its name.
+		if (error.statusCode === "409" || /already exists/i.test(error.message)) return false;
+		throw error;
+	}
+
+	/** Everything in the caller's own folder: the current picture and uploads never chosen. */
+	ownMemberPictureObjects(): Promise<MemberPictureObject[]> {
+		return this.cloud.rpc("qorpera_own_member_picture_objects").then(parseMemberPictureObjects);
+	}
+
+	async downloadMemberPicture(objectName: string): Promise<Blob> {
+		if (!isMemberPictureName(objectName)) throw new Error("Invalid picture name.");
+		const { data, error } = await this.cloud.supabase.storage.from(MEMBER_PICTURE_BUCKET).download(objectName);
+		if (error || !data) throw error ?? new Error("The picture is unavailable.");
+		return data;
+	}
+
+	async deleteMemberPicture(objectName: string): Promise<void> {
+		if (!isMemberPictureName(objectName)) throw new Error("Invalid picture name.");
+		const { error } = await this.cloud.supabase.storage.from(MEMBER_PICTURE_BUCKET).remove([objectName]);
+		if (error) throw error;
+	}
+
+	setMemberPicture(objectName: string): Promise<MemberPictureChange> {
+		if (!isMemberPictureName(objectName)) throw new Error("Invalid picture name.");
+		return this.cloud.rpc("qorpera_set_member_picture", { p_object_name: objectName }).then(parseMemberPictureChange);
+	}
+
+	clearMemberPicture(): Promise<MemberPictureChange> {
+		return this.cloud.rpc("qorpera_clear_member_picture").then(parseMemberPictureChange);
 	}
 
 	getTeam(profileId: string): Promise<HostedProfileTeam> {
