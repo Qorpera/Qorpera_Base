@@ -23,6 +23,7 @@ import { t } from "../../ui/preferences.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import { runFailureCard, runFailureInterrupted, runFailureReason } from "../../ui/run-failure.ts";
+import { uiScale } from "../../ui/scale.ts";
 import { composerSkeleton, messagesSkeleton, threadIdentitySkeleton } from "../../ui/skeleton.ts";
 import type { AgentState, CompanyController, ConversationState } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
@@ -442,14 +443,16 @@ export class ConversationView {
 		// field changes its padding and can clip a two-line draft.
 		this.#composerShell.classList.toggle("is-expanded", this.#attachments.count > 0);
 		this.#composer.style.height = "auto";
+		// The field's one-line height, tallest height and the expanded shell's padding, in design pixels (ui/scale.ts).
+		const scale = uiScale();
 		this.#composerShell.classList.toggle(
 			"is-expanded",
-			this.#composer.scrollHeight > 42 || this.#attachments.count > 0,
+			this.#composer.scrollHeight > 42 * scale || this.#attachments.count > 0,
 		);
-		this.#composer.style.height = `${Math.min(this.#composer.scrollHeight, 112)}px`;
-		this.#composer.style.overflowY = this.#composer.scrollHeight > 112 ? "auto" : "hidden";
+		this.#composer.style.height = `${Math.min(this.#composer.scrollHeight, 112 * scale)}px`;
+		this.#composer.style.overflowY = this.#composer.scrollHeight > 112 * scale ? "auto" : "hidden";
 		const expanded = this.#composerShell.classList.contains("is-expanded");
-		this.#composerShell.style.height = `${this.#composer.getBoundingClientRect().height + (expanded ? 44 : 2) + this.#attachments.el.getBoundingClientRect().height}px`;
+		this.#composerShell.style.height = `${this.#composer.getBoundingClientRect().height + (expanded ? 44 * scale : 2) + this.#attachments.el.getBoundingClientRect().height}px`;
 	}
 
 	#setMenu(open: boolean, restoreFocus = true): void {

@@ -4,6 +4,7 @@ import { button, h, icon, replace } from "../../ui/dom.ts";
 import { FigurePicker } from "../../ui/figure-picker.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { t } from "../../ui/preferences.ts";
+import { uiScale } from "../../ui/scale.ts";
 import type { CompanyController } from "../company.ts";
 import { navigate } from "../router.ts";
 import type { AgentDraft, WorkspaceActions } from "../workspace-actions.ts";
@@ -74,7 +75,7 @@ export class NewConversationView {
 		"aria-label": t("Message"),
 		oninput: () => {
 			this.#message.style.height = "auto";
-			this.#message.style.height = `${Math.min(this.#message.scrollHeight, 112)}px`;
+			this.#message.style.height = `${Math.min(this.#message.scrollHeight, 112 * uiScale())}px`;
 			this.#syncComposer();
 		},
 		onkeydown: (event: KeyboardEvent) => {

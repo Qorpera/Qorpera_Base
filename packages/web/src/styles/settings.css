@@ -80,7 +80,8 @@
 .picture-crop-stage { position: relative; width: min(288px, 100%, max(160px, calc(100dvh - 240px))); aspect-ratio: 1; margin: 0 auto; overflow: hidden; border-radius: 14px; background: #1d1d1b; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
 .picture-crop-stage.is-dragging { cursor: grabbing; }
 .picture-crop-stage:focus-visible { outline: 2px solid #5b84c4; outline-offset: 2px; }
-.picture-crop-view { position: absolute; left: 0; top: 0; width: 288px; height: 288px; transform-origin: 0 0; }
+/* The view is laid out in the cropper's own units (CROP_STAGE) and scaled to the stage by script, so its pixels stay unscaled. */
+.picture-crop-view { --px: 1px; position: absolute; left: 0; top: 0; width: 288px; height: 288px; transform-origin: 0 0; }
 .picture-crop-image { position: absolute; left: 0; top: 0; max-width: none; transform-origin: 0 0; pointer-events: none; user-select: none; -webkit-user-drag: none; }
 .picture-crop-circle { position: absolute; left: 24px; top: 24px; width: 240px; height: 240px; border-radius: 50%; box-shadow: 0 0 0 999px rgba(0, 0, 0, 0.55), inset 0 0 0 2px rgba(255, 255, 255, 0.9); pointer-events: none; }
 .picture-crop-zoom-row { display: flex; align-items: center; gap: 10px; color: var(--text-soft); }

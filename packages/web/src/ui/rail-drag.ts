@@ -4,6 +4,8 @@
  * dragged, the zone under the pointer is shaded (no border) and a thin marker shows
  * where the row will land. A press that never moves stays an ordinary click. */
 
+import { uiScale } from "./scale.ts";
+
 export interface RailDrop {
 	agentId: string;
 	zone: string;
@@ -241,22 +243,24 @@ export class RailDrag {
 			marker.remove();
 			return;
 		}
+		// Insets are design pixels; the boxes are measured in screen pixels.
+		const scale = uiScale();
 		if (grid) {
 			const anchor = items[Math.min(index, items.length - 1)]!.getBoundingClientRect();
-			const x = index < items.length ? anchor.left - 4 : anchor.right + 4;
+			const x = index < items.length ? anchor.left - 4 * scale : anchor.right + 4 * scale;
 			Object.assign(marker.style, {
-				top: `${top(anchor.top + 8)}px`,
+				top: `${top(anchor.top + 8 * scale)}px`,
 				left: `${left(x) - 1}px`,
 				width: "",
-				height: `${anchor.height - 16}px`,
+				height: `${anchor.height - 16 * scale}px`,
 			});
 		} else {
 			const anchor = items[Math.min(index, items.length - 1)]!.getBoundingClientRect();
 			const y = index < items.length ? anchor.top : anchor.bottom;
 			Object.assign(marker.style, {
 				top: `${top(y) - 1}px`,
-				left: `${left(anchor.left + 8)}px`,
-				width: `${anchor.width - 16}px`,
+				left: `${left(anchor.left + 8 * scale)}px`,
+				width: `${anchor.width - 16 * scale}px`,
 				height: "",
 			});
 		}

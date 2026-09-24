@@ -2,7 +2,10 @@ import { h } from "./dom.ts";
 import { matchesKey } from "./keys.ts";
 import { isPhoneLayout } from "./layout.ts";
 import { t } from "./preferences.ts";
+import { uiScale } from "./scale.ts";
 
+/* Widths here are design pixels (ui/scale.ts): the member's choice keeps its look whatever the
+ * app's scale, and a width stored before the app was drawn at 125% grows with everything else. */
 const COMPACT = 80;
 const MIN = 240;
 /** Half again the desktop's 304px rail. */
@@ -53,7 +56,7 @@ export class RailLayout {
 		});
 		this.el.addEventListener("pointermove", (event) => {
 			if (!this.#dragging) return;
-			const width = event.clientX - frame.getBoundingClientRect().left;
+			const width = (event.clientX - frame.getBoundingClientRect().left) / uiScale();
 			this.#dragged = true;
 			this.#set(width < 160 ? COMPACT : width, false);
 		});
@@ -90,7 +93,7 @@ export class RailLayout {
 	}
 	/** Two fifths of the window, but never below the narrowest expanded rail. */
 	#cap(): number {
-		return Math.max(MIN, Math.floor(window.innerWidth * MAX_SHARE));
+		return Math.max(MIN, Math.floor((window.innerWidth * MAX_SHARE) / uiScale()));
 	}
 	/** A choice the member makes now is bounded by what they can see now. */
 	#set(width: number, persist = true): void {
@@ -125,8 +128,9 @@ export class RailLayout {
 		this.#max = max;
 		this.#drawer = drawer;
 		// --rail-width does not inherit (app.css), so each of its two readers carries its own value.
-		this.#rail.style.setProperty("--rail-width", `${width}px`);
-		this.el.style.setProperty("--rail-width", `${width}px`);
+		const shown = `${width * uiScale()}px`;
+		this.#rail.style.setProperty("--rail-width", shown);
+		this.el.style.setProperty("--rail-width", shown);
 		// Collapsed only where the rail stands beside the page; the drawer always shows it whole.
 		this.#frame.classList.toggle("rail-compact", width === COMPACT && !drawer);
 		this.el.setAttribute("aria-valuemax", String(max));

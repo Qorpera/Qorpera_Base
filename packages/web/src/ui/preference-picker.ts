@@ -1,6 +1,7 @@
 import { h, icon } from "./dom.ts";
 import { matchesKey } from "./keys.ts";
 import { t } from "./preferences.ts";
+import { uiScale } from "./scale.ts";
 
 export interface PickerOption {
 	value: string;
@@ -290,14 +291,17 @@ export class PreferencePicker {
 	#place(): void {
 		const popover = this.#popover;
 		const anchor = this.#button.getBoundingClientRect();
-		const width = Math.min(WIDTH, innerWidth - 2 * MARGIN);
-		const below = innerHeight - anchor.bottom - GAP - MARGIN;
-		const above = anchor.top - GAP - MARGIN;
-		const up = below < 280 && above > below;
+		// The constants are design pixels; the window and the button are measured in screen pixels.
+		const scale = uiScale();
+		const [margin, gap] = [MARGIN * scale, GAP * scale];
+		const width = Math.min(WIDTH * scale, innerWidth - 2 * margin);
+		const below = innerHeight - anchor.bottom - gap - margin;
+		const above = anchor.top - gap - margin;
+		const up = below < 280 * scale && above > below;
 		popover.style.width = `${width}px`;
-		popover.style.maxHeight = `${Math.max(120, Math.min(TALLEST, up ? above : below))}px`;
-		const left = Math.min(Math.max(anchor.right - width, MARGIN), innerWidth - width - MARGIN);
-		const top = up ? anchor.top - GAP - popover.offsetHeight : anchor.bottom + GAP;
+		popover.style.maxHeight = `${Math.max(120 * scale, Math.min(TALLEST * scale, up ? above : below))}px`;
+		const left = Math.min(Math.max(anchor.right - width, margin), innerWidth - width - margin);
+		const top = up ? anchor.top - gap - popover.offsetHeight : anchor.bottom + gap;
 		popover.style.left = `${left}px`;
 		popover.style.top = `${top}px`;
 		// A transformed or filtered ancestor moves "fixed" off the window's

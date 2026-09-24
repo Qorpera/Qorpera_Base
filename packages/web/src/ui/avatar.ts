@@ -1,6 +1,7 @@
 import type { HostedStaffAgent } from "../cloud/types.ts";
 import { type Activity, type FigureArtwork, type FigureMotion, mountFigureMotion } from "./figure-motion.ts";
 import { phrase, t } from "./preferences.ts";
+import { designPx } from "./scale.ts";
 
 /* Agent figures: the approved visual system, vendored under
  * `public/assets/avatars` and loaded by `index.html` before this bundle. This
@@ -234,7 +235,7 @@ export function figureElement(figure: FigureId, color?: string, options: FigureO
 	const host = document.createElement("span");
 	host.className = ["figure", options.className].filter(Boolean).join(" ");
 	host.setAttribute("aria-hidden", "true");
-	if (options.size) host.style.setProperty("--figure-size", `${options.size}px`);
+	if (options.size) host.style.setProperty("--figure-size", designPx(options.size));
 	if (!scope) return host;
 	const rig = mountFigureMotion(
 		host,

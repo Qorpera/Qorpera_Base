@@ -1,5 +1,6 @@
 import { h, icon } from "./dom.ts";
 import { matchesKey } from "./keys.ts";
+import { uiScale } from "./scale.ts";
 
 /* A right-click menu, Grok Bot's shape: icon rows, separators, a submenu that
  * opens beside its row, a destructive last row. One menu is open at a time; it
@@ -48,13 +49,14 @@ export function openMenu(): ContextMenu | undefined {
 /** Places a fixed element at (x, y), flipped or clamped to stay on screen. */
 function place(element: HTMLElement, x: number, y: number, flipX?: number): void {
 	const { width, height } = element.getBoundingClientRect();
+	const margin = MARGIN * uiScale();
 	let left = x;
-	if (left + width > window.innerWidth - MARGIN)
-		left = flipX !== undefined ? flipX - width : window.innerWidth - width - MARGIN;
+	if (left + width > window.innerWidth - margin)
+		left = flipX !== undefined ? flipX - width : window.innerWidth - width - margin;
 	let top = y;
-	if (top + height > window.innerHeight - MARGIN) top = Math.max(MARGIN, window.innerHeight - height - MARGIN);
-	element.style.left = `${Math.max(MARGIN, left)}px`;
-	element.style.top = `${Math.max(MARGIN, top)}px`;
+	if (top + height > window.innerHeight - margin) top = Math.max(margin, window.innerHeight - height - margin);
+	element.style.left = `${Math.max(margin, left)}px`;
+	element.style.top = `${Math.max(margin, top)}px`;
 }
 
 function menuItems(menu: HTMLElement): HTMLElement[] {

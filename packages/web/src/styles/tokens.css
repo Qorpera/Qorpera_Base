@@ -89,6 +89,15 @@
 	--composer-on-accent: #ffffff;
 	--composer-accent-hover: color-mix(in srgb, var(--composer-accent) 88%, #000000);
 
+	/* scale: every design pixel is drawn as --ui-scale screen pixels, 125%
+	   with a mouse or trackpad (phones and tablets keep 1, below). The build
+	   (scripts/design-px.mjs) writes each "14px" in these stylesheets as
+	   calc(14 * var(--px)) and each width breakpoint for both scales; a part
+	   that keeps its own size sets --px: 1px. Scripts read the same scale
+	   (ui/scale.ts). */
+	--ui-scale: 1.25;
+	--px: calc(var(--ui-scale) * 1px);
+
 	/* geometry */
 	--radius-sm: 6px;
 	--radius: 10px;
@@ -117,6 +126,11 @@
 	   no overlay element, no per-frame compositing cost) */
 	--surface-grain: none;
 	--surface-grain-size: 256px 256px;
+}
+
+/* Phones and tablets keep the sizes the phone layout was drawn for. */
+@media (pointer: coarse) {
+	:root { --ui-scale: 1; }
 }
 
 /* Dark: warm near-black surfaces that lift toward the viewer, as the light
