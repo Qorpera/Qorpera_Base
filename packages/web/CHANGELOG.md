@@ -14,6 +14,7 @@
 
 ### Fixed
 
+- Gmail and Google Drive in Settings → Connections → Services show their own logos instead of the Google "G".
 - A right-click in the rail during the page's first 800 ms opens the agent or section menu; the long-press guard swallowed it before any press had opened one, which also made the rail menu tests fail at random in CI.
 - Changing the figure of an agent that wears its figure's own colour now gives it the new figure's own colour, until a colour is picked in the same picker; a picked colour is kept through every figure. The first-run page keeps a colour chosen in the agent's details unless a different figure is picked there.
 - Show grey placeholder shapes while a screen loads instead of a line such as "Opening company" or "Loading conversation". Opening a company or a conversation shows the rail, the thread header, message bubbles and the composer as placeholders on their real sizes, and each part is replaced where it stands as it arrives; on a phone the placeholder header keeps the button that opens the rail. The company list, Team, Friends, group details and Company File do the same. Placeholders stand in only for a first read: a refresh keeps what the page already shows. The shapes breathe together and stay still with reduced motion; a screen reader still hears what is loading. The Company File page now says when membership could not be read instead of waiting forever, and a start-up that cannot reach the cloud shows the error with Try again.

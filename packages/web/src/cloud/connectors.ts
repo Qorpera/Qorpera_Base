@@ -29,8 +29,8 @@ export const HOSTED_CONNECTORS: ReadonlyArray<{
 	/** Whether a typed token is an alternative to signing in with the provider. */
 	token?: true;
 }> = [
-	{ id: "gmail", label: "Gmail", logo: "provider-google.svg" },
-	{ id: "google_drive", label: "Google Drive", logo: "provider-google.svg" },
+	{ id: "gmail", label: "Gmail", logo: "provider-gmail.svg" },
+	{ id: "google_drive", label: "Google Drive", logo: "provider-google-drive.svg" },
 	{ id: "github", label: "GitHub", logo: "provider-github.svg", token: true },
 ];
 
