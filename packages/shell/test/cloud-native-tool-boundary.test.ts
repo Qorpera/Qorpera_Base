@@ -380,22 +380,21 @@ describe("cloud-owned native tool boundary", () => {
 	});
 
 	it("bounds one request's released outputs by the fence frame, not by their number", async () => {
-		// Many small outputs grow into host envelopes; past one 64 MiB frame the reply
+		// Many empty outputs grow into host envelopes; past one 64 MiB frame the reply
 		// could never be sent, so the request is refused before building more.
 		const { boundary } = fixture();
-		const text = "x".repeat(16 * 1024);
 		const [probe] = await boundary.fenceNativeResults([
-			{ kind: "function_call_output", callId: "probe", output: text },
+			{ kind: "function_call_output", callId: "probe", output: "" },
 		]);
 		const envelope = Buffer.byteLength(probe.output);
-		expect(envelope).toBeGreaterThan(4 * 1024);
+		expect(envelope).toBeGreaterThan(256);
 		// Envelopes differ by a few bytes with their call ids; keep clear of the edge.
 		const fits = Math.floor(CLOUD_NATIVE_FENCE_FRAME_BYTES / (envelope + 64));
 		const request = (length: number, prefix: string) =>
 			Array.from({ length }, (_, index) => ({
 				kind: "function_call_output" as const,
 				callId: `${prefix}_${index}`,
-				output: text,
+				output: "",
 			}));
 		expect(await boundary.fenceNativeResults(request(fits, "fits"))).toHaveLength(fits);
 		const over = Math.ceil(CLOUD_NATIVE_FENCE_FRAME_BYTES / (envelope - 64)) + 1;
