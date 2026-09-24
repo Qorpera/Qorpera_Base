@@ -264,13 +264,13 @@ desktop, so `ui/computer-viewer.ts` translates its fixed text inside its own
 overlay. The live Company File panel (`member-web/src/file-panel.ts`) takes
 `t` as an option so member-web stays independent.
 
-## 2026-09-24 — The web app is drawn at 125% (design pixels)
+## 2026-09-24 — The web app is drawn at 140% (design pixels)
 
-**Decision.** Jonas found the app better at the browser's 125% zoom and made
-that size the default. The stylesheets keep writing design pixels; the build
+**Decision.** Jonas found the app better at the browser's 125% zoom, then at
+150%, and made 140% the default. The stylesheets keep writing design pixels; the build
 (`scripts/design-px.mjs`, an esbuild plugin over every stylesheet) turns each
 px value of 2 or more into `calc(N * var(--px))`, and `tokens.css` sets `--px`
-to `--ui-scale` pixels: 1.25 with a mouse or trackpad, 1 on a coarse pointer
+to `--ui-scale` pixels: 1.4 with a mouse or trackpad, 1 on a coarse pointer
 (phones and tablets, whose layout was drawn for 100%). Each width breakpoint in
 `@media` is written by the build for each pointer: as written for a coarse one,
 multiplied out for a fine one or none (spelled out, since older browsers cannot
@@ -292,7 +292,7 @@ since the preview keeps its size.
 **Not CSS zoom, not rem.** `zoom` on the root changes what
 `getBoundingClientRect`, pointer positions, `left`/`top` and viewport units mean,
 differently in Chrome and Firefox (standardized zoom) than in Safari, which
-would put menus, drags and full-height dialogs off by a quarter. Rewriting the
+would put menus, drags and full-height dialogs off by the scale. Rewriting the
 stylesheets in rem would have touched every line under the open web PRs and
 left new px unscaled.
 
@@ -300,7 +300,7 @@ left new px unscaled.
 widths must be a plain condition such as `(max-width: 760px)` (the build stops
 otherwise); `@container` queries with pixel widths stop the build until they are
 needed. Pair two breakpoints on the same number (`max-width: 760px` against
-`min-width: 760px`, or range syntax), never 760/761: scaled, 761 becomes 951.25
+`min-width: 760px`, or range syntax), never 760/761: scaled, 761 becomes 1065.4
 and leaves a gap. A script compares a measured size with a design constant only
 through `uiScale()`, and rounds up where the browser rounds (`scrollHeight`). `scripts/design-px.test.mjs` checks that no design pixel in the
 stylesheets escapes the scale.

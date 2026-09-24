@@ -7,4 +7,6 @@ import { uiScale } from "./scale.ts";
  * disagree with the CSS, which sees the exact width. */
 const PHONE_WIDTH = 760;
 
-export const isPhoneLayout = (): boolean => window.matchMedia(`(max-width: ${PHONE_WIDTH * uiScale()}px)`).matches;
+// Rounded as the build rounds its breakpoints, so the query matches the stylesheet's to the digit.
+export const isPhoneLayout = (): boolean =>
+	window.matchMedia(`(max-width: ${Number((PHONE_WIDTH * uiScale()).toFixed(4))}px)`).matches;

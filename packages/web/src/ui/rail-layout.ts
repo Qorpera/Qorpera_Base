@@ -8,7 +8,7 @@ import { uiScale } from "./scale.ts";
  * app's scale. */
 const COMPACT = 80;
 const MIN = 240;
-/** A tenth narrower than the earlier 456px (half again the desktop's 304px rail), once the app was drawn at 125%. */
+/** A tenth narrower than the earlier 456px (half again the desktop's 304px rail), chosen when the app was first drawn larger. */
 const DEFAULT = 410;
 /** The rail may take at most two fifths of the window, a touch wider than a Messages sidebar. */
 const MAX_SHARE = 0.4;

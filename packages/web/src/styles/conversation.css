@@ -314,7 +314,7 @@
 .computer-panel { position: absolute; top: var(--computer-top, calc(var(--titlebar-height) + 20px)); left: var(--computer-left, auto); right: 20px; z-index: 20; width: var(--computer-width, min(400px, calc(100% - 40px))); aspect-ratio: 16 / 9; min-height: 0; overflow: hidden; border: 1px solid rgb(255 255 255 / 12%); border-radius: 8px; background: #24262a; box-shadow: 0 8px 28px rgb(0 0 0 / 32%), 0 2px 6px rgb(0 0 0 / 24%); animation: computer-enter 180ms ease both; }
 /* The hover controls of the preview: the shade along its edges and the ink of the buttons over it, light on the light theme and dark on the dark one (dark.css). */
 .computer-panel { --computer-hover-shade: rgb(255 255 255 / 84%); --computer-hover-ink: #2b2b29; --computer-hover-ink-strong: #131312; --computer-hover-ink-shadow: drop-shadow(0 1px 2px rgb(255 255 255 / 85%)) drop-shadow(0 0 1px rgb(255 255 255 / 70%)); --computer-hover-button-bg: rgb(0 0 0 / 9%); }
-/* The minimized preview keeps the size it had before the app was drawn at 125%: its pixels stay screen pixels (tokens.css), and so does the body text size it used to inherit. */
+/* The minimized preview keeps the size it had before the app was drawn larger (tokens.css --ui-scale): its pixels stay screen pixels (tokens.css), and so does the body text size it used to inherit. */
 .computer-panel:not(.is-entered) { --px: 1px; font-size: 14px; cursor: grab; touch-action: none; }
 .computer-panel.is-dragging { cursor: grabbing; user-select: none; }
 /* An 8px band inside each edge resizes the preview; the cursor names the edge under the pointer. */

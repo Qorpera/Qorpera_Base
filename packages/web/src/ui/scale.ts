@@ -1,5 +1,5 @@
 /* The app is drawn at tokens.css's --ui-scale: a design pixel ("14px" in the
- * stylesheets) covers that many screen pixels, 1.25 with a mouse or trackpad
+ * stylesheets) covers that many screen pixels, 1.4 with a mouse or trackpad
  * and 1 on a phone or tablet. The build scales the stylesheets
  * (scripts/design-px.mjs); a script that sizes or places something in design
  * pixels goes through here. Pointer positions and measured boxes are already
