@@ -99,6 +99,16 @@ function retryRefusal(error: unknown): string {
 	return t("It could not be tried again. Send the message again instead.");
 }
 
+/** Why the cloud would not take a card's answer, in the member's words. */
+function answerRefusal(error: unknown): string {
+	const message = error instanceof Error ? error.message : "";
+	// In an agent's thread the answer runs on the account the card was asked on.
+	if (/sponsor|model account/i.test(message))
+		return t("The model account behind this card is no longer active. Answer in a message instead.");
+	if (/paused/i.test(message)) return t("Agents are paused for a moment while Qorpera updates. Try again shortly.");
+	return describeError(error);
+}
+
 export interface CompanyState {
 	profile: HostedProfile;
 	team?: HostedProfileTeam;
@@ -1103,7 +1113,7 @@ export class CompanyController {
 			const { [key]: _dropped, ...rest } = store.get().interactionAnswers ?? {};
 			store.set({
 				interactionAnswers: Object.keys(rest).length ? rest : undefined,
-				interactionError: describeError(error),
+				interactionError: answerRefusal(error),
 			});
 			throw error;
 		}

@@ -68,6 +68,27 @@ function company() {
 	return { ...f, controller, write };
 }
 
+describe("answering a card", () => {
+	it("says in plain words when the model account behind the card is gone, and keeps the card open", async () => {
+		const f = company();
+		vi.spyOn(f.api, "answerInteraction").mockRejectedValue(
+			new CloudRpcError(
+				"qorpera_answer_interaction",
+				{ code: "42501", message: "Room sponsor is unavailable" },
+				403,
+			),
+		);
+		await expect(
+			f.controller.answerInteraction(session.sessionId, id(593), "answered", { values: ["finance"] }),
+		).rejects.toThrow("Room sponsor is unavailable");
+		const state = f.controller.conversation(session.sessionId).get();
+		expect(state.interactionError).toBe(
+			"The model account behind this card is no longer active. Answer in a message instead.",
+		);
+		expect(state.interactionAnswers).toBeUndefined();
+	});
+});
+
 describe("conversation lifecycle regressions", () => {
 	it("requires explicit sponsorship and never falls back to ordinary append", async () => {
 		const f = fixture();
