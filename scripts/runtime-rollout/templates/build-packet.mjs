@@ -53,7 +53,7 @@ export function buildPacket() {
     globalPolicyScope: { provider: 'openai', authenticationMode: 'native_subscription', nativeHarness: 'codex-cli', companyScoped: false },
     executionEnabled: false, issuedAt: null, expiresAt: null, actualFreshPhysicalFence: null, actualDisabledInstallation: null,
     actualSignedAcceptance: null, actualProductionReadbacks: [], productionReady: false,
-    wakeBusIncluded: true, roomsIncluded: true, ceilingAndStopIncluded: true, sponsorHandoffIncluded: true, autonomousConsentIncluded: true,
+    wakeBusIncluded: true, roomsIncluded: true, operatorStopIncluded: true, companyCeilingsRemoved: true, sponsorHandoffIncluded: true, autonomousConsentIncluded: true,
     defaultAgentReadGrantBackfillIncluded: true, bootstrapExecutionIncluded: false, recoveryKeyOperationsIncluded: false,
     admissionReenableIncluded: false, automaticReplayAllowed: false, installerChangesIncluded: false,
     companyComputersIncluded: INPUT.migrations.some(row => /^\d{14}_runtime_office_/.test(row.file)),

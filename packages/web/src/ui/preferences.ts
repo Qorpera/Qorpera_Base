@@ -108,8 +108,6 @@ const DANISH: Record<string, string> = {
 	"Search settings": "Søg i indstillinger",
 	"Staff at work": "Agenter på arbejde",
 	"Company File": "Company File",
-	Organization: "Organisation",
-	Approvals: "Godkendelser",
 	"Account and settings": "Konto og indstillinger",
 	Friends: "Venner",
 	Invitations: "Invitationer",

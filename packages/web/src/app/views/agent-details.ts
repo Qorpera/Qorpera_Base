@@ -82,17 +82,13 @@ export class AgentDetails {
 		this.#pageButtons = { routines: pageButton("routines", "Routines", "clock") };
 		this.dialog.tools.prepend(this.#pageButtons.routines);
 
-		const fixedColor = agent.templateId === "co-founder";
-		this.#figures = new FigurePicker(savedAgentDraft(agent), (choice) => this.#choose(choice), {
-			colors: !fixedColor,
-			keepColor: true,
-		});
+		this.#figures = new FigurePicker(savedAgentDraft(agent), (choice) => this.#choose(choice), { keepColor: true });
 		this.#picker = h(
 			"div",
 			{
-				class: fixedColor ? "agent-figure-picker figures-only" : "agent-figure-picker",
+				class: "agent-figure-picker",
 				role: "dialog",
-				"aria-label": fixedColor ? "Choose a figure" : "Choose a figure and color",
+				"aria-label": "Choose a figure and color",
 				hidden: true,
 				onkeydown: (event: KeyboardEvent) => {
 					if (!matchesKey(event, "dismiss")) return;
@@ -101,20 +97,18 @@ export class AgentDetails {
 					this.#closePicker(true);
 				},
 			},
-			fixedColor
-				? null
-				: h(
-						"button",
-						{
-							type: "button",
-							class: "agent-figure-reset",
-							onclick: () => {
-								const { figure } = this.#current();
-								this.#choose({ figure, color: nativeColorOf(figure) });
-							},
-						},
-						"Reset",
-					),
+			h(
+				"button",
+				{
+					type: "button",
+					class: "agent-figure-reset",
+					onclick: () => {
+						const { figure } = this.#current();
+						this.#choose({ figure, color: nativeColorOf(figure) });
+					},
+				},
+				"Reset",
+			),
 			this.#figures.el,
 		);
 		this.#figureButton = h(

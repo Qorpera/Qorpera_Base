@@ -80,6 +80,11 @@ production migration" per `deploy/first-node/RUNTIME-STEP-0-ORGANIZATION.md`).
 The contract list is derived from migrations, not the deployed schema, and
 says so; the app must not assume parity.
 
+**Superseded in part (2026-09-24).** The Cloud check page, its RPC probe and
+the browser endpoint override in Settings were removed. Features still gate
+on `PGRST202` where they call the RPC; every build uses the endpoints compiled
+into it.
+
 ## 2026-09-02 — Transcript projection rules (what the web app renders)
 
 Per §6 and launch acceptance item 8, from `qorpera_read_session_events`:
@@ -127,3 +132,40 @@ dropped the same day for the handoff-line shape.)
   (2.5 s while working, 6 s while it waits, 30 s after it settled, 20 s while
   the tab is hidden). A missing list RPC means no sessions; the thread renders
   as before.
+
+## 2026-09-24 — No company execution controls, no Organization or Approvals pages
+
+**Decision (Jonas).** Settings → Company no longer carries Company execution
+(pause/resume, monthly spend and token limits, hourly wake limit, the usage
+line) or the Organization and Approvals cards, and the client has no pages or
+routes for them. The limits go as policy, not just as settings: the runtime
+removes the spend, token and wake ceilings themselves in its own change.
+
+**Why.** Jonas asked for all of it to go, the limits as policy and not only
+as settings. A provider's own usage limits still bound subscription work. The
+Approvals list only gathered `authorization_request` events, which the cloud
+runtime never emits (its harness runs with approvals set to never); approval
+cards an agent raises in its thread are a different thing and stay.
+
+**Rules out.** Re-adding a pause, limit or approvals surface in the client
+without a new decision. Notices of a tripped company limit or a pause/resume
+that already exist in a member's list are skipped, never shown and never a
+failed read; the machine-capacity notice, which shares the
+`company_ceiling_tripped` kind, still shows.
+
+## 2026-09-24 — The Co-Founder's colour can be changed
+
+**Decision (Jonas).** The Co-Founder's figure picker offers the colours and
+Reset like every other agent's, and the Co-Founder is drawn in the colour it
+was given. This replaces the 2026-09-12 rule (PR #115) that the Co-Founder
+always wears its figure's own shade, as in the trailer.
+
+**Why.** Jonas reported that the Co-Founder's colour could not be changed. The
+desktop client and the cloud never had the rule; it was a web rendering rule.
+
+**How.** The cloud seeds every Co-Founder with the token `qorpera-blue`, which
+nobody chose, and a colour picked in a client is saved as a palette hex, never
+as that token. A Co-Founder that still carries the seed token keeps its
+figure's own shade (`agentColor` in `ui/avatar.ts`), so no Co-Founder changes
+colour just because this shipped. The first-run meet page still offers figures
+only; each figure brings its own shade there.
