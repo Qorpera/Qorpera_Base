@@ -4,7 +4,19 @@ import { CompanyController } from "../src/app/company.ts";
 import { CompanyFileController, renderCompanyFile } from "../src/app/views/companyfile.ts";
 import { ObjectReader } from "../src/cloud/objects.ts";
 import type { CloudCompanyTreeEntry, HostedCompanyProposal } from "../src/cloud/types.ts";
-import { deferred, fixture, id, profileA, proposal, settle, snapshot, team, timestamp, userA } from "./fixtures.ts";
+import {
+	deferred,
+	fixture,
+	id,
+	placeholderLabel,
+	profileA,
+	proposal,
+	settle,
+	snapshot,
+	team,
+	timestamp,
+	userA,
+} from "./fixtures.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => {
@@ -200,6 +212,36 @@ describe("Company File request ownership", () => {
 		await Promise.all([first, second]);
 		expect(files.store.get().proposal?.proposal.title).toBe("Newest");
 		expect(files.store.get().snapshot).toBeUndefined();
+	});
+
+	it("keeps the comments it shows while a proposal refreshes; placeholders only before the first read", async () => {
+		const { api, company, files } = setup();
+		const comment = {
+			commentId: id(91),
+			proposalId: proposal.proposalId,
+			body: "Looks right",
+			authorName: "A",
+			createdAt: timestamp,
+		};
+		const first = deferred<Awaited<ReturnType<typeof api.listProposalComments>>>();
+		vi.mocked(api.listProposalComments).mockReturnValueOnce(first.promise);
+		const container = document.createElement("main");
+		const opening = files.openProposal(proposal.proposalId);
+		await settle();
+		renderCompanyFile(files, company, container, { proposalId: proposal.proposalId });
+		expect(placeholderLabel(container)).toBe("Loading comments");
+		first.resolve({ items: [comment], hasMore: false });
+		await opening;
+		const again = deferred<Awaited<ReturnType<typeof api.listProposalComments>>>();
+		vi.mocked(api.listProposalComments).mockReturnValueOnce(again.promise);
+		const refresh = files.refresh();
+		await settle();
+		expect(files.store.get().proposal?.loading).toBe(true);
+		renderCompanyFile(files, company, container, { proposalId: proposal.proposalId });
+		expect(container.querySelector(".skeleton")).toBeNull();
+		expect(container.textContent).toContain("Looks right");
+		again.resolve({ items: [comment], hasMore: false });
+		await refresh;
 	});
 
 	it("does not refetch a failed route on every render", async () => {
