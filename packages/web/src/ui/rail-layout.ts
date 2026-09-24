@@ -8,13 +8,13 @@ import { uiScale } from "./scale.ts";
  * app's scale, and a width stored before the app was drawn at 125% grows with everything else. */
 const COMPACT = 80;
 const MIN = 240;
-/** Half again the desktop's 304px rail. */
-const DEFAULT = 456;
+/** A tenth narrower than the earlier 456px (half again the desktop's 304px rail), once the app was drawn at 125%. */
+const DEFAULT = 410;
 /** The rail may take at most two fifths of the window, a touch wider than a Messages sidebar. */
 const MAX_SHARE = 0.4;
-/** Version 2 came with the 456px default: widths stored before it are not carried over,
+/** Version 3 came with the 410px default: widths stored before it are not carried over,
  * so every member starts once from the new default. */
-const STORAGE_KEY = "qorpera.web.rail-width.v2";
+const STORAGE_KEY = "qorpera.web.rail-width.v3";
 
 /** Only a browser layout preference. Company navigation remains canonical. */
 export class RailLayout {

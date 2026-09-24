@@ -49,8 +49,8 @@ describe("the app's scale in scripts", () => {
 			rail = new RailLayout(frame, aside);
 		frame.append(rail.el);
 		try {
-			// The 456px default is drawn at 570 screen pixels; the cap is two fifths of the window in design pixels.
-			expect(aside.style.getPropertyValue("--rail-width")).toBe("570px");
+			// The 410px default is drawn at 512.5 screen pixels; the cap is two fifths of the window in design pixels.
+			expect(aside.style.getPropertyValue("--rail-width")).toBe("512.5px");
 			expect(rail.el.getAttribute("aria-valuemax")).toBe("512");
 			// A drag to 500 screen pixels chooses 400 design pixels.
 			rail.el.setPointerCapture = () => {};
@@ -59,7 +59,7 @@ describe("the app's scale in scripts", () => {
 			rail.el.dispatchEvent(new PointerEvent("pointerup", { pointerId: 1 }));
 			expect(rail.el.getAttribute("aria-valuenow")).toBe("400");
 			expect(aside.style.getPropertyValue("--rail-width")).toBe("500px");
-			expect(localStorage.getItem("qorpera.web.rail-width.v2")).toBe("400");
+			expect(localStorage.getItem("qorpera.web.rail-width.v3")).toBe("400");
 		} finally {
 			rail.dispose();
 		}
