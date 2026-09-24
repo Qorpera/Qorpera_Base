@@ -170,6 +170,24 @@ figure's own shade (`agentColor` in `ui/avatar.ts`), so no Co-Founder changes
 colour just because this shipped. The first-run meet page still offers figures
 only; each figure brings its own shade there.
 
+**Follow-up after review (same day).** Production held six Co-Founders: four on
+the seed token, one planet in `#5ec0b5` and one crown in `#fcb51b`, all drawn as
+before. A Co-Founder saved as `#2047bd` without anybody choosing blue (the meet
+page of 2 to 12 September, or the desktop picker on a figure change) would now
+be drawn blue; none existed.
+
+A figure in its own shade has no colour of its own to keep. So when the
+details picker opens on an agent in its own shade, changing the figure brings
+the new figure's own shade until a colour is clicked; Reset returns to that.
+The rule is decided when the picker opens or the look changes elsewhere, never
+on the member's own changes, so a colour chosen in the session survives passing
+through a figure whose own shade it is.
+Saved data cannot tell a chosen Gold on a crown from the crown's own shade, so
+such an agent follows its figure. This deliberately differs from the desktop
+picker, which always keeps the current colour. The meet page keeps the stored
+colour until a different figure is picked there, so returning to it never
+replaces a colour chosen in the details.
+
 ## 2026-09-24 — Rail menu, pinned cards and sections (Grok Bot's rail)
 
 Jonas asked for Grok Bot's right-click menu on agents, pinned agents as square
