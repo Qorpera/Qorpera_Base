@@ -61,7 +61,7 @@ profile RPCs; RLS is the second read boundary.
 - `qorpera_upsert_cloud_routine`
 
 
-### Credentials, provider connections, identity recovery (14)
+### Credentials, provider connections, identity recovery (13)
 
 - `qorpera_begin_cloud_secret_capture`
 - `qorpera_begin_native_provider_login`
@@ -72,6 +72,9 @@ profile RPCs; RLS is the second read boundary.
   member-owned secret is refused (company first: connector connections belong
   to the company, opened with `p_owner_kind = 'company'`). A share re-issues,
   under the caller, grants whose issuer is no longer an owner or admin.
+  Since bundle v88 company connections are always shared: sealing one
+  (capture completion) shares it with every agent, so this call is only the
+  idempotent repair (it issues missing or dead grants, nothing else).
 - `qorpera_grant_cloud_secret_operation`
 - `qorpera_list_cloud_secret_connections` — since Step 7 also returns
   `accountLabel`, `connectedByUserId` (company-owned only; attribution, not
@@ -85,9 +88,6 @@ profile RPCs; RLS is the second read boundary.
 - `qorpera_revoke_cloud_secret_grant`
 - `qorpera_revoke_native_provider_connection`
 - `qorpera_set_provider_connection_status`
-- `qorpera_unshare_cloud_connector` — Step 7 (bundle v87): Stop sharing with
-  agents. Owner/admin; clears the all-agents mark and revokes every active
-  grant of one company-owned connection, which stays connected.
 
 
 ### Objects, artifacts, retention (23)
@@ -376,7 +376,7 @@ does locally that the contract forbids.
 | `company:scheduled-job-update` | qorpera_upsert_cloud_routine |
 | `company:set-icon` | review (profile metadata RPC) |
 | `connection:cancel` | review |
-| `connection:connect` | qorpera_begin_cloud_secret_capture / qorpera_begin_native_provider_login (+ native-provider-login Edge Function). Step 7 connectors (company-owned, owner/admin): the browser posts the ticket and the SHA-256 of a tab-held proof to the broker origin (`POST <serviceOrigin>/v1/oauth/<ticketId>/start?company=<profileId>` → provider consent → `GET /v1/oauth/callback` → back to the web page with `?connector=<id>&connection=confirm&confirmation=…` or `connection=failed` in the hash → `POST /v1/oauth/<ticketId>/confirm?company=<profileId>` with the proof, which seals the account), or `POST /v1/captures/<ticketId>?company=<profileId>` for a typed GitHub token; then qorpera_grant_cloud_connector |
+| `connection:connect` | qorpera_begin_cloud_secret_capture / qorpera_begin_native_provider_login (+ native-provider-login Edge Function). Step 7 connectors (company-owned, owner/admin): the browser posts the ticket and the SHA-256 of a tab-held proof to the broker origin (`POST <serviceOrigin>/v1/oauth/<ticketId>/start?company=<profileId>` → provider consent → `GET /v1/oauth/callback` → back to the web page with `?connector=<id>&connection=confirm&confirmation=…` or `connection=failed` in the hash → `POST /v1/oauth/<ticketId>/confirm?company=<profileId>` with the proof, which seals the account), or `POST /v1/captures/<ticketId>?company=<profileId>` for a typed GitHub token. Since bundle v88 sealing the connection shares it with every agent; qorpera_grant_cloud_connector remains only as the idempotent repair |
 | `connection:disconnect` | qorpera_revoke_cloud_secret / qorpera_revoke_native_provider_connection |
 | `feedback:submit` | qorpera_submit_product_feedback |
 | `friends:list` | qorpera_list_friends |
