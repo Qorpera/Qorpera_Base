@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createCloudCodingStorageBinding } from "@qorpera/contracts";
 import { afterEach, describe, expect, it } from "vitest";
-import { installCloudCodingGuestConfiguration } from "../src/cloud-coding-configuration-install.ts";
+import {
+	installCloudCodingGuestConfiguration,
+	prepareCloudCodingGuestSession,
+} from "../src/cloud-coding-configuration-install.ts";
 import {
 	type CodingGuestConfiguration,
 	DEFAULT_CODING_GUEST_RESOURCES,
@@ -18,17 +21,18 @@ async function fixture() {
 	const directory = await realpath(await mkdtemp(join(tmpdir(), "coding-configuration-")));
 	directories.push(directory);
 	await chmod(directory, 0o700);
+	const workerId = randomUUID();
 	const guest: CodingGuestConfiguration = {
-		schema: "qorpera.coding-command-guest/v2",
-		workerId: randomUUID(),
+		schema: "qorpera.coding-command-guest/v3",
+		workerId,
 		vmId: randomUUID(),
 		bootId: randomUUID(),
-		uid: 2000,
-		gid: 2000,
-		workspacePath: "/workspace/repository",
-		homePath: "/workspace/home",
-		cachePath: "/workspace/cache",
-		outputRoot: "/var/lib/qorpera-coding/logs",
+		uid: 200000,
+		gid: 200000,
+		workspacePath: `/workspace/${workerId}/repository`,
+		homePath: `/workspace/${workerId}/home`,
+		cachePath: `/workspace/${workerId}/cache`,
+		outputRoot: `/var/lib/qorpera-coding/${workerId}/logs`,
 		resourceProfile: { ...DEFAULT_CODING_GUEST_RESOURCES },
 	};
 	const storage = createCloudCodingStorageBinding(
@@ -67,8 +71,8 @@ async function fixture() {
 		boot: (value: string) => {
 			bootId = value;
 		},
-		install: () =>
-			installCloudCodingGuestConfiguration({
+		install: (session = guest.workerId) =>
+			installCloudCodingGuestConfiguration(session, {
 				configurationRoot: directory,
 				protectedUid: process.getuid?.(),
 				protectedGid: process.getgid?.(),
@@ -113,9 +117,14 @@ describe.runIf(process.platform === "linux")("protected guest configuration cras
 			expect(await f.read("guest.json")).toEqual(f.guest);
 		},
 	);
+	it("installs only a packet for the session it was run for", async () => {
+		const f = await fixture();
+		await expect(f.install(randomUUID())).rejects.toThrow("SCOPE_CHANGED");
+		await expect(lstat(join(f.directory, "guest.json"))).rejects.toMatchObject({ code: "ENOENT" });
+	});
 	it("rejects a conflicting claim without installing active files", async () => {
 		const f = await fixture();
-		await f.write(`configuration-${f.guest.bootId}.json`, { ...f.packet, guest: { ...f.guest, uid: 3000 } });
+		await f.write(`configuration-${f.guest.bootId}.json`, { ...f.packet, guest: { ...f.guest, uid: 200001 } });
 		await expect(f.install()).rejects.toThrow("CLAIM_CHANGED");
 		await expect(lstat(join(f.directory, "guest.json"))).rejects.toMatchObject({ code: "ENOENT" });
 	});
@@ -125,7 +134,7 @@ describe.runIf(process.platform === "linux")("protected guest configuration cras
 		const before = await lstat(join(f.directory, "storage.json"));
 		const nextBoot = randomUUID();
 		f.boot(nextBoot);
-		await f.write("configuration-inbox.json", { ...f.packet, guest: { ...f.guest, bootId: nextBoot, uid: 3000 } });
+		await f.write("configuration-inbox.json", { ...f.packet, guest: { ...f.guest, bootId: nextBoot, uid: 200001 } });
 		await expect(f.install()).rejects.toThrow("GUEST_CHANGED");
 		await expect(lstat(join(f.directory, `configuration-${nextBoot}.json`))).rejects.toMatchObject({
 			code: "ENOENT",
@@ -175,5 +184,6 @@ describe.runIf(process.platform === "linux")("protected guest configuration cras
 	});
 });
 it.runIf(process.getuid?.() !== 0)("the fixed installer requires root before touching guest paths", async () => {
-	await expect(installCloudCodingGuestConfiguration()).rejects.toThrow("ROOT_REQUIRED");
+	await expect(installCloudCodingGuestConfiguration(randomUUID())).rejects.toThrow("ROOT_REQUIRED");
+	await expect(prepareCloudCodingGuestSession(randomUUID())).rejects.toThrow("ROOT_REQUIRED");
 });
