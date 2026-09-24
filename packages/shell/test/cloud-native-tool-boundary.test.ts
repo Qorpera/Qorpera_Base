@@ -8,6 +8,7 @@ import {
 	parseCloudAgentSendInput,
 } from "@qorpera/runtime/cloud-agent-mouth";
 import {
+	CLOUD_NATIVE_FENCE_FRAME_BYTES,
 	CLOUD_NATIVE_RESULT_RETENTION_LIMIT,
 	type CloudNativeTool,
 	CloudNativeToolBoundary,
@@ -376,6 +377,29 @@ describe("cloud-owned native tool boundary", () => {
 		const [again] = await boundary.fenceNativeResults([flood[0]]);
 		expect(again.callId).toBe("native_0");
 		expect(again.output).toContain("unconfirmed");
+	});
+
+	it("bounds one request's released outputs by the fence frame, not by their number", async () => {
+		// Many small outputs grow into host envelopes; past one 64 MiB frame the reply
+		// could never be sent, so the request is refused before building more.
+		const { boundary } = fixture();
+		const text = "x".repeat(16 * 1024);
+		const [probe] = await boundary.fenceNativeResults([
+			{ kind: "function_call_output", callId: "probe", output: text },
+		]);
+		const envelope = Buffer.byteLength(probe.output);
+		expect(envelope).toBeGreaterThan(4 * 1024);
+		// Envelopes differ by a few bytes with their call ids; keep clear of the edge.
+		const fits = Math.floor(CLOUD_NATIVE_FENCE_FRAME_BYTES / (envelope + 64));
+		const request = (length: number, prefix: string) =>
+			Array.from({ length }, (_, index) => ({
+				kind: "function_call_output" as const,
+				callId: `${prefix}_${index}`,
+				output: text,
+			}));
+		expect(await boundary.fenceNativeResults(request(fits, "fits"))).toHaveLength(fits);
+		const over = Math.ceil(CLOUD_NATIVE_FENCE_FRAME_BYTES / (envelope - 64)) + 1;
+		await expect(boundary.fenceNativeResults(request(over, "over"))).rejects.toThrow("Native result frame too large");
 	});
 
 	it("withholds invalid or oversized adapter results", async () => {
