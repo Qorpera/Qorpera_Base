@@ -246,6 +246,25 @@ describe("settings session lifecycle", () => {
 		expect(view.el.querySelector<HTMLElement>(".settings-back")!.hidden).toBe(false);
 		expect(f.api.getTeam).not.toHaveBeenCalled();
 	});
+	it("stays open on the revoked-access page and does not restart the revoked company", async () => {
+		const f = await setup();
+		vi.mocked(f.api.getTeam).mockRejectedValue(
+			new CloudRpcError("getTeam", { code: "42501", message: "Access revoked" }),
+		);
+		f.hints.get("qorpera_profile_access_state")!();
+		await draw();
+		expect(f.root.querySelector("main")?.textContent).toContain("Your access to this company was revoked");
+		const teams = vi.mocked(f.api.getTeam).mock.calls.length;
+		open(f.root);
+		click(f.root, "#settings-tab-company");
+		await draw();
+		await vi.advanceTimersByTimeAsync(5000);
+		// The revoked company is still listed; Settings used to start it again,
+		// fail at once and close themselves.
+		expect(f.root.querySelector(".settings-overlay")).not.toBeNull();
+		expect(f.root.querySelector("#settings-content")!.textContent).toContain("Open a company to see these settings.");
+		expect(vi.mocked(f.api.getTeam).mock.calls.length).toBe(teams);
+	});
 	it("ends the rail with a way back to the company list, not a company picker", async () => {
 		const f = await setup();
 		open(f.root);
