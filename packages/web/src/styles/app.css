@@ -2,7 +2,6 @@
 @import "../../../member-web/ui/screens.css";
 @import "./settings.css";
 @import "./conversation.css";
-@import "./organization.css";
 @import "./feedback.css";
 @import "./company-file-live.css";
 @import "./dark.css";
@@ -123,7 +122,6 @@ label > input, label > select { font-weight: 400; }
 .skeleton-page { display: flex; flex-direction: column; gap: 18px; padding: 4px 0 16px; }
 .skeleton-page .skeleton-stack { gap: 10px; }
 .skeleton-lines { display: flex; flex-direction: column; gap: 10px; padding: 12px 0; }
-.skeleton-cards { display: flex; flex-direction: column; gap: 10px; padding: 8px 0; }
 .skeleton-list { display: flex; flex-direction: column; gap: 4px; padding: 8px 0; }
 .skeleton-list-row { display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: center; gap: 12px; min-height: 52px; }
 .skeleton-list-figure { width: 34px; height: 34px; }
@@ -211,7 +209,7 @@ label > input, label > select { font-weight: 400; }
 	/* The trailer's rail: 15px insets, a darker edge line than the other dividers. */
 	padding: 0 15px 11px; background: var(--rail); border-right: 1px solid var(--rail-line);
 	/* One figure size and one lift; every card measure below derives from them. */
-	--figure: 82px; --lift: 27px;
+	--figure: 82px; --lift: 37px;
 	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
 }
 .rail[hidden] { display: none; }
@@ -245,8 +243,9 @@ label > input, label > select { font-weight: 400; }
 .rail-empty { padding: 14px 8px; color: var(--rail-small); font-size: 12.5px; }
 
 /* The Co-Founder occupies its own tier above the rest of the staff. Geometry
- * is the trailer's card at 1x: an 82px figure standing 27px proud of a low
- * card, a 13px name with no line under it, a soft shadow under the figure. */
+ * is the trailer's card at 1x, its top lowered 10px: an 82px figure standing
+ * 37px proud of a low card, a 13px name with no line under it, a soft shadow
+ * under the figure. The figure and the name keep their place in the rail. */
 .rail-cofounder { padding: calc(var(--lift) + 16px) 9px 18.5px; }
 .cofounder-home {
 	position: relative; display: flex; flex-direction: column; align-items: center; gap: 1px;
@@ -592,13 +591,6 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 .comments { display: flex; flex-direction: column; gap: 8px; margin: 8px 0; }
 .comment { padding: 8px 12px; border-left: 3px solid var(--border-strong); }
 .proposal-row .badge { flex: none; }
-
-/* organization */
-.cofounder-card { margin: 12px 0; }
-.cofounder-card .figure, .cofounder-card .avatar { width: 44px; height: 44px; }
-.measures { margin: 6px 0 0 16px; }
-.staff-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
-.staff-grid > .skeleton-list { grid-column: 1 / -1; }
 
 /* modal */
 .modal-backdrop { position: fixed; inset: 0; background: rgba(18, 18, 17, 0.35); display: grid; place-items: center; z-index: 500; }

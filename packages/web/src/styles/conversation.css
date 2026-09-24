@@ -170,7 +170,6 @@
 .decision-details > summary { color: var(--text-muted); font-weight: 400; }
 .decision-details .kv { grid-template-columns: minmax(0, 1fr); }
 .decision-details .kv dd { margin-bottom: 8px; }
-.inbox-entry { display: flex; flex-direction: column; gap: 4px; }
 .received-attachments { display: flex; flex-wrap: wrap; gap: 8px; max-width: 100%; }
 .mine .received-attachments { justify-content: flex-end; }
 .received-file { display: flex; align-items: center; gap: 12px; max-width: 100%; width: 258px; border: 1px solid #ddddda; border-radius: 14px; background: #f6f6f4; padding: 12px; cursor: pointer; color: var(--text); text-align: left; }

@@ -2,7 +2,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	blankSkeleton,
-	cardsSkeleton,
 	companyCardsSkeleton,
 	linesSkeleton,
 	listSkeleton,
@@ -24,7 +23,6 @@ describe("loading placeholders", () => {
 			railListSkeleton(),
 			listSkeleton("Loading team"),
 			linesSkeleton("Loading files"),
-			cardsSkeleton("Reading conversations"),
 			pageSkeleton("Loading organization"),
 			companyCardsSkeleton(),
 			wrap(...railSkeleton()),

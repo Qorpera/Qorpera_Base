@@ -138,7 +138,6 @@
 :root[data-theme="dark"] .settings-nav [aria-selected=true] > .icon { color: var(--text); }
 :root[data-theme="dark"] .settings-tab-count { background: var(--primary); color: var(--on-primary); }
 :root[data-theme="dark"] .settings-company-label { color: #9d9c97; }
-:root[data-theme="dark"] .settings-close { background: #3a3a38; color: #b7b6b1; }
 :root[data-theme="dark"] .settings-content h2 { color: #9d9c97; }
 :root[data-theme="dark"] .settings-content .btn { border-color: rgba(255, 255, 255, 0.12); background: #3a3a38; }
 :root[data-theme="dark"] .settings-content .btn:hover:not(:disabled) { background: #444442; }
@@ -189,7 +188,6 @@
 /* ---- feedback ---------------------------------------------------------------- */
 :root[data-theme="dark"] .feedback-dialog { border-color: rgba(255, 255, 255, 0.1); box-shadow: 0 24px 72px rgba(0, 0, 0, 0.6); }
 :root[data-theme="dark"] .feedback-dialog::backdrop { background: rgba(0, 0, 0, 0.5); }
-:root[data-theme="dark"] :is(.feedback-close:hover:not(:disabled), .feedback-close:focus-visible) { background: #3a3a38; }
 :root[data-theme="dark"] .feedback-category { border-color: rgba(255, 255, 255, 0.16); background: transparent; color: #d6d5d1; }
 :root[data-theme="dark"] :is(.feedback-category:hover:not(:disabled), .feedback-category:focus-visible) { border-color: rgba(255, 255, 255, 0.3); background: rgba(255, 255, 255, 0.05); }
 :root[data-theme="dark"] .feedback-category[aria-pressed="true"] { border-color: var(--text); background: var(--text); color: var(--bg); }
@@ -199,11 +197,6 @@
 :root[data-theme="dark"] .feedback-status { color: #ff9084; }
 :root[data-theme="dark"] .feedback-status[data-state="success"] { color: #5ed6a9; }
 :root[data-theme="dark"] .feedback-submit:disabled { border-color: #3a3a38; background: #3a3a38; color: #7f7e7a; }
-
-/* ---- organization ------------------------------------------------------------ */
-:root[data-theme="dark"] :is(.organization-home:hover, .organization-person:hover) { background: #2e2e2d; }
-:root[data-theme="dark"] .project-node { border-color: var(--border); background: #232322; }
-:root[data-theme="dark"] .project-node:hover { border-color: rgba(255, 255, 255, 0.18); background: #292928; }
 
 /* ---- coding session in the thread ------------------------------------------ */
 :root[data-theme="dark"] .coding-tone-attention .coding-status-label, :root[data-theme="dark"] .coding-tone-attention .coding-caption, :root[data-theme="dark"] .coding-step-status.coding-tone-attention { color: #f2c35d; }

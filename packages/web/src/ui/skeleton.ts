@@ -145,11 +145,6 @@ export function linesSkeleton(label: string): HTMLElement {
 	return placeholder(label, "skeleton-lines", shape("line", "w-92"), shape("line", "w-84"), shape("line", "w-62"));
 }
 
-/** A column of cards, for a list of cards still being gathered. */
-export function cardsSkeleton(label: string): HTMLElement {
-	return placeholder(label, "skeleton-cards", shape("card"), shape("card"), shape("card"));
-}
-
 /** A page: its title, a paragraph and a few cards. */
 export function pageSkeleton(label: string): HTMLElement {
 	return placeholder(

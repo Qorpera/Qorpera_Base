@@ -2,10 +2,10 @@ import type { User } from "@supabase/supabase-js";
 import { CloudApi } from "../cloud/api.ts";
 import { type Cloud, describeError } from "../cloud/client.ts";
 import { createWebCompanyAgents } from "../cloud/company-agents.ts";
-import { createWebCompanyExecution } from "../cloud/company-execution.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
 import { WebCompanyComputer } from "../cloud/computer.ts";
 import { takeConnectorReturn } from "../cloud/connectors.ts";
+import { createWebMemberNotifications } from "../cloud/member-notifications.ts";
 import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
 import { createWebRoutines } from "../cloud/routines.ts";
 import { createWebSessionAttachments } from "../cloud/session-attachments.ts";
@@ -25,8 +25,6 @@ import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
 import { createGroupUpdater } from "./update-group.ts";
 import { type AccountViewState, renderAccount } from "./views/account.ts";
-import { ApprovalsView } from "./views/approvals.ts";
-import { CloudCheckView } from "./views/cloudcheck.ts";
 import { CompanyFileController, renderCompanyFile } from "./views/companyfile.ts";
 import { ComputerPanels } from "./views/computer.ts";
 import { ConversationView } from "./views/conversation.ts";
@@ -36,7 +34,6 @@ import { HubController, renderHub } from "./views/hub.ts";
 import { LiveCompanyFileView } from "./views/live-company-file.ts";
 import { type MeetState, renderMeet } from "./views/meet.ts";
 import { NewConversationView } from "./views/new-conversation.ts";
-import { renderOrganization } from "./views/organization.ts";
 import { renderPlan } from "./views/plan.ts";
 import { type SettingsTab, SettingsView } from "./views/settings.ts";
 import { noteConnectorReturn } from "./views/settings-services.ts";
@@ -178,8 +175,6 @@ export function mountApplication(
 	let conversation: ConversationView | undefined;
 	let newConversation: NewConversationView | undefined;
 	let startingSession: { sessionId: string } | undefined;
-	let approvals: ApprovalsView | undefined;
-	let cloudCheck: CloudCheckView | undefined;
 	let profiles: HostedProfile[] = [];
 	let teamFeedback: { message?: string; error?: string } = {};
 	let accountState: AccountViewState = {};
@@ -210,8 +205,6 @@ export function mountApplication(
 			routeRevision++;
 			teardownCompany();
 			hub.dispose();
-			cloudCheck?.dispose();
-			cloudCheck = undefined;
 			profiles = [];
 			accountState = {};
 			meetState = {};
@@ -255,7 +248,6 @@ export function mountApplication(
 		unsubscribeFile?.();
 		conversation?.dispose();
 		newConversation?.dispose();
-		approvals?.dispose();
 		companyFile?.dispose();
 		liveFile?.dispose();
 		liveFile = undefined;
@@ -267,7 +259,6 @@ export function mountApplication(
 		companyFile = undefined;
 		conversation = undefined;
 		newConversation = undefined;
-		approvals = undefined;
 		homeReason = undefined;
 		teamFeedback = {};
 		meetState = {};
@@ -476,9 +467,6 @@ export function mountApplication(
 				// panel above already shows the account error.
 				renderPlan(accountPlan, accountState, undefined, {}, { showError: false });
 				main.append(accountPlan);
-			} else if (route.name === "cloud-check") {
-				cloudCheck ??= new CloudCheckView(cloud);
-				replace(main, cloudCheck.el);
 			}
 			return;
 		}
@@ -540,7 +528,6 @@ export function mountApplication(
 			companyFile?.dispose();
 			conversation?.dispose();
 			newConversation?.dispose();
-			approvals?.dispose();
 			// Revoked access ends every retained screen connection, not only the shown one.
 			computerPanels?.dispose();
 			navigationOpen = false;
@@ -563,7 +550,7 @@ export function mountApplication(
 			notices = undefined;
 		}
 		if (!notices && state.team?.capabilities.read) {
-			const client = createWebCompanyExecution(
+			const client = createWebMemberNotifications(
 				cloud,
 				controller.profile.profileId,
 				controller.userId,
@@ -593,10 +580,6 @@ export function mountApplication(
 		if (route.section !== "new") {
 			newConversation?.dispose();
 			newConversation = undefined;
-		}
-		if (route.section !== "approvals") {
-			approvals?.dispose();
-			approvals = undefined;
 		}
 		if (route.section !== "meet") meetState = {};
 		// Agents are Company File documents. Each write re-checks that this
@@ -850,13 +833,6 @@ export function mountApplication(
 				void resolveStaff(controller, route.id ?? "");
 				return;
 			}
-			case "approvals": {
-				if (!approvals) {
-					approvals = new ApprovalsView(controller);
-					replace(main, approvals.el);
-				} else approvals.update();
-				return;
-			}
 			case "file": {
 				if (route.id === "history") {
 					if (!companyFile) return;
@@ -939,14 +915,6 @@ export function mountApplication(
 					},
 				);
 				return;
-			case "organization":
-			case "project":
-				renderOrganization(
-					controller,
-					main,
-					route.section === "organization" ? undefined : { kind: route.section, id: route.id ?? "" },
-				);
-				return;
 			case "team":
 				renderTeam(
 					api,
@@ -978,7 +946,6 @@ export function mountApplication(
 		auth.dispose();
 		hub.dispose();
 		teardownCompany();
-		cloudCheck?.dispose();
 		window.removeEventListener("hashchange", onRouteChange);
 		window.removeEventListener("keydown", onEscape);
 		window.removeEventListener("resize", syncNavigation);
