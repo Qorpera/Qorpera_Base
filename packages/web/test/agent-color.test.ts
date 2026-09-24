@@ -93,6 +93,21 @@ describe("agent colour", () => {
 		pick("heart");
 		expect(change).toHaveBeenLastCalledWith({ figure: "heart", color: NATIVE.heart });
 	});
+
+	it("decides again when the look changes elsewhere while the picker is open", () => {
+		const change = vi.fn();
+		const picker = new FigurePicker({ figure: "heart", color: TEAL }, change, { keepColor: true });
+		document.body.append(picker.el);
+		const pick = (label: string) => picker.el.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!.click();
+		// Another member resets the agent to its own shade.
+		picker.update({ figure: "heart", color: NATIVE.heart });
+		pick("crown");
+		expect(change).toHaveBeenLastCalledWith({ figure: "crown", color: NATIVE.crown });
+		// And later gives it a colour.
+		picker.update({ figure: "crown", color: TEAL });
+		pick("planet");
+		expect(change).toHaveBeenLastCalledWith({ figure: "planet", color: TEAL });
+	});
 });
 
 describe("first-run page", () => {

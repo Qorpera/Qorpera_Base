@@ -25,14 +25,15 @@ export class FigurePicker {
 		this.#follow = this.#follows(choice);
 		this.#render();
 	}
-	/** Shows a choice made elsewhere, such as a saved figure, without reporting
-	 * it. `fresh` starts over from it, as on opening: the figures are rebuilt even
-	 * when the choice is unchanged, and whether it follows the figure is decided again. */
+	/** Shows a choice made elsewhere, such as a saved figure or another member's
+	 * change, without reporting it, and decides again from it whether it follows
+	 * the figure. `fresh` rebuilds the figures even when the choice is unchanged,
+	 * as on opening. */
 	update(choice: FigureChoice, fresh = false): void {
 		if (!fresh && choice.figure === this.#choice.figure && choice.color === this.#choice.color) return;
 		const focused = this.el.contains(document.activeElement) ? document.activeElement : null;
 		this.#choice = choice;
-		if (fresh) this.#follow = this.#follows(choice);
+		this.#follow = this.#follows(choice);
 		this.#render();
 		this.#refocus(focused?.getAttribute("aria-label"));
 	}

@@ -179,8 +179,9 @@ be drawn blue; none existed.
 A figure in its own shade has no colour of its own to keep. So when the
 details picker opens on an agent in its own shade, changing the figure brings
 the new figure's own shade until a colour is clicked; Reset returns to that.
-The rule is decided when the picker opens, not on every change, so a colour
-chosen in the session survives passing through a figure whose own shade it is.
+The rule is decided when the picker opens or the look changes elsewhere, never
+on the member's own changes, so a colour chosen in the session survives passing
+through a figure whose own shade it is.
 Saved data cannot tell a chosen Gold on a crown from the crown's own shade, so
 such an agent follows its figure. This deliberately differs from the desktop
 picker, which always keeps the current colour. The meet page keeps the stored
