@@ -61,6 +61,7 @@
 
 ### Changed
 
+- Show only the name on the rail's Co-Founder card, which makes the card a line thinner. Its role and any state ("Working", "Needs you") stay in the card's tooltip and link name, the status disc and the figure still show a run, and other agents' rows keep their second line.
 - Put the rail's search field on the same row as the new-agent button, both half again as large (46px field, 27px plus), and widen the default rail from 304px to 456px. Rail widths stored before this change are not carried over, resetting the rail width forgets the stored width, and the agent computer panel covers the conversation whenever the thread is too narrow for both side by side.
 - Make the Settings window 20% larger, give its sections icons, and set their labels in whole-pixel, medium-weight dark ink so they no longer read soft.
 - Move Friends into Settings as its own tab, together with the company invitations waiting for the account. The profile menu's Friends item opens that tab and carries the invitation count, and the company invite picker's "Add a friend" switches to it.
