@@ -222,7 +222,7 @@ describe("member model account settings", () => {
 		for (const account of accounts) expect(account.querySelector("button")!.textContent).toBe("Sign out");
 		expect(view.el.textContent).not.toContain("opaque-account");
 	});
-	it("distinguishes accounts with missing email without presenting references as identity", async () => {
+	it("shows accounts with missing email without presenting references or ids as identity", async () => {
 		await setup(
 			true,
 			observed(
@@ -236,6 +236,8 @@ describe("member model account settings", () => {
 		]);
 		expect(view.el.textContent).not.toContain("unverified@example.com");
 		expect(view.el.querySelectorAll(".connection-card")).toHaveLength(2);
+		expect(view.el.textContent).not.toContain(id(81).slice(-8));
+		expect(view.el.textContent).not.toContain(id(83).slice(-8));
 		expect(view.el.querySelectorAll("[role=meter]")).toHaveLength(0);
 		expect(view.el.textContent).toContain("Usage unavailable");
 	});
@@ -295,6 +297,7 @@ describe("member model account settings", () => {
 		await vi.advanceTimersByTimeAsync(6 * 60_000);
 		expect(view.el.textContent).toContain("0% at last check");
 		expect(view.el.querySelector(".connection-usage-meter")!.classList.contains("is-stale")).toBe(true);
+		expect(view.el.textContent).not.toContain("may be out of date");
 		expect(document.activeElement).toBe(action(OPENAI));
 		await vi.advanceTimersByTimeAsync(4 * 60_000);
 		expect(view.el.querySelector("[role=meter]")).toBeNull();
@@ -487,6 +490,7 @@ describe("member model account settings", () => {
 		expect(card(OPENAI).querySelector("small")!.textContent).toBe("member@example.com");
 		expect(action(OPENAI).textContent).toBe("Sign out");
 		expect(card(CLAUDE).textContent).toContain("Sign out and add this account again to reconnect.");
+		expect(card(CLAUDE).textContent).not.toContain("Added");
 		expect([...card(CLAUDE).querySelectorAll("button")].map((item) => item.textContent)).toEqual(["Sign out"]);
 		expect(action(CLAUDE).disabled).toBe(false);
 	});
