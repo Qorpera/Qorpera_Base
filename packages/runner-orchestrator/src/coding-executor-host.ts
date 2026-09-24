@@ -123,14 +123,13 @@ export const CODING_VM_STOP_BUDGET_MS = 30_000;
 /** Part of the stop budget for stopping the command slice and syncing the
  * NAS workspace before the VM is powered off. */
 const CODING_VM_QUIESCE_MS = 8_000;
-/** A starting guest: its agent or systemd is not up yet. Anything else (the
- * VM gone, a refused request) fails the wait at once with its own cause. */
+/** A starting guest: its lxd-agent is not up yet, or systemd answered that
+ * the timer is not active. Anything else (the VM gone, a refused or malformed
+ * operation) fails the wait at once with its own cause. */
 function guestStarting(error: unknown): boolean {
 	return (
 		error instanceof Error &&
-		(error.message === "LXD instance command failed" ||
-			error.message === "LXD operation failed" ||
-			/^LXD: .*\bagent\b/i.test(error.message))
+		(error.message === "LXD instance agent not running" || error.message === "LXD instance command failed")
 	);
 }
 function digest(value: string | Buffer): string {
@@ -798,6 +797,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	/** Throws CODING_HOST_GUEST_WATCHDOG_FAILED or _DISABLED for a timer that
 	 * cannot become active; returns while it may still be starting. */
 	async #watchdogStarting(vm: LxdCodingVmBinding, name: string, signal: AbortSignal): Promise<void> {
+		// Only asked once systemd has answered; a probe that finds the agent
+		// gone again returns to waiting instead of judging the timer.
 		const holds = async (verb: "is-failed" | "is-enabled") => {
 			try {
 				await this.#options.client.execInstance(
@@ -812,8 +813,13 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				throw error;
 			}
 		};
-		if (await holds("is-failed")) throw new Error("CODING_HOST_GUEST_WATCHDOG_FAILED");
-		if (!(await holds("is-enabled"))) throw new Error("CODING_HOST_GUEST_WATCHDOG_DISABLED");
+		try {
+			if (await holds("is-failed")) throw new Error("CODING_HOST_GUEST_WATCHDOG_FAILED");
+			if (!(await holds("is-enabled"))) throw new Error("CODING_HOST_GUEST_WATCHDOG_DISABLED");
+		} catch (error) {
+			if (error instanceof Error && error.message === "LXD instance agent not running") return;
+			throw error;
+		}
 	}
 	async #quiesce(claim: CodingSessionClaim, vm: LxdCodingVmBinding, signal: AbortSignal): Promise<void> {
 		if (this.#vmWork.has(vm.workerId)) return;
@@ -830,8 +836,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		for (const command of [["/usr/bin/systemctl", "stop", "qorpera-coding.slice"], ["/usr/bin/sync"]]) {
 			try {
 				await client.execInstance(vm.project, request.name, command, signal);
-			} catch {
-				if (signal.aborted) return;
+			} catch (error) {
+				// No agent: nothing inside the guest can be reached; power off.
+				if (signal.aborted || (error instanceof Error && error.message === "LXD instance agent not running"))
+					return;
 			}
 		}
 	}

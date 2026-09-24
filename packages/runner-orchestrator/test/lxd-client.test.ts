@@ -328,6 +328,101 @@ describe("LXD Unix client", () => {
 		expect(requests[0]).toMatchObject({ method: "POST", body: volumeRequest });
 	});
 
+	describe("an exec operation that fails", () => {
+		const name = "qorpera-20000000000040008000000000000001";
+		const agentOffline = "LXD VM agent is not currently running";
+		async function exec(wait: { status?: number; body: unknown }, post?: { status?: number; body: unknown }) {
+			const socket = await unixServer((method, url) => {
+				if (method === "POST" && url.includes("/exec?project="))
+					return (
+						post ?? {
+							status: 202,
+							body: {
+								type: "async",
+								status: "Operation created",
+								status_code: 100,
+								operation: "/1.0/operations/operation-3",
+								metadata: {},
+							},
+						}
+					);
+				if (method === "GET" && url === "/1.0/operations/operation-3/wait?timeout=30") return wait;
+				throw new Error(`unexpected request ${method} ${url}`);
+			});
+			return new LxdUnixClient(socket, 30).execInstance("coding", name, ["/usr/bin/systemctl", "is-active", "x"]);
+		}
+		// LXD 5.21-6.x: the wait writes its 200 header first, so the failed
+		// operation's SmartError arrives as an error envelope under HTTP 200.
+		const errorEnvelope = (error: string) => ({
+			status: 200,
+			body: { type: "error", status: "", status_code: 0, operation: "", error_code: 500, error, metadata: null },
+		});
+		// Newer LXD renders the failed operation itself.
+		const failedOperation = (err: string) => ({
+			body: {
+				type: "sync",
+				status: "Success",
+				status_code: 200,
+				operation: "",
+				error_code: 0,
+				error: "",
+				metadata: {
+					id: "operation-3",
+					class: "task",
+					description: "Executing command",
+					status: "Failure",
+					status_code: 400,
+					resources: { instances: [`/1.0/instances/${name}?project=coding`] },
+					metadata: null,
+					may_cancel: false,
+					err,
+				},
+			},
+		});
+		it.each([
+			["an error envelope under HTTP 200 (LXD 5.21-6.x)", errorEnvelope(agentOffline)],
+			["the failed operation (newer LXD)", failedOperation(agentOffline)],
+			["the older wording", errorEnvelope("LXD VM agent isn't currently running")],
+		])("names a VM agent that is not running yet: %s", async (_shape, wait) => {
+			await expect(exec(wait)).rejects.toThrow(/^LXD instance agent not running$/);
+		});
+		it("names it when the exec request itself is refused for it", async () => {
+			await expect(
+				exec(errorEnvelope("unused"), {
+					status: 500,
+					body: { type: "error", error_code: 500, error: agentOffline, metadata: null },
+				}),
+			).rejects.toThrow(/^LXD instance agent not running$/);
+		});
+		it.each([
+			["another failure as an error envelope", errorEnvelope("Instance is not running"), /^LXD operation failed$/],
+			["another failed operation", failedOperation("Command not found"), /^LXD operation failed$/],
+			[
+				"a malformed wait reply",
+				{ body: { type: "sync", status: "Success", status_code: 200, metadata: null } },
+				/^LXD operation is invalid$/,
+			],
+			[
+				"an unavailable operation",
+				{ status: 404, body: { type: "error", error_code: 404, error: "not found" } },
+				/^LXD: not found$/,
+			],
+		])("keeps %s a plain failure", async (_case, wait, expected) => {
+			await expect(exec(wait)).rejects.toThrow(expected);
+		});
+		it("still separates a command that ran and exited non-zero", async () => {
+			const ran = {
+				body: {
+					type: "sync",
+					status: "Success",
+					status_code: 200,
+					metadata: { status: "Success", status_code: 200, err: "", metadata: { return: 3 } },
+				},
+			};
+			await expect(exec(ran)).rejects.toThrow(/^LXD instance command failed$/);
+		});
+	});
+
 	it("pushes root-owned private files and starts bootstrap through the VM agent", async () => {
 		const requests: Array<{
 			method: string;

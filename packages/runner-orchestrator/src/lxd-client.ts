@@ -1129,9 +1129,24 @@ function storageVolume(value: unknown): LxdStorageVolumeRecord {
 	};
 }
 
+/** LXD's error while a VM's lxd-agent is not (yet) up: errQemuAgentOffline
+ * "LXD VM agent is not currently running" (older: "isn't"), possibly wrapped. */
+const AGENT_OFFLINE = /\bVM agent (?:is not|isn't) currently running\b/;
+/** A failed operation as a fixed code: the agent being offline is its own
+ * case (a starting VM), anything else is a plain failure. */
+function operationFailure(message: unknown): Error {
+	return new Error(
+		typeof message === "string" && AGENT_OFFLINE.test(message)
+			? "LXD instance agent not running"
+			: "LXD operation failed",
+	);
+}
+
 function lxdError(result: HttpResult, fallback: string): Error {
 	try {
 		const envelope = record(result.body, "LXD response");
+		if (typeof envelope.error === "string" && AGENT_OFFLINE.test(envelope.error))
+			return operationFailure(envelope.error);
 		if (typeof envelope.error === "string" && envelope.error.trim()) return new Error(`LXD: ${envelope.error}`);
 	} catch {
 		// Use the bounded status-only error below for malformed daemon responses.
@@ -2913,6 +2928,12 @@ export class LxdUnixClient
 		}
 		const waitPath = `${envelope.operation}/wait?timeout=${this.#operationTimeoutSeconds}`;
 		const wait = await this.#request("GET", waitPath, undefined, signal);
+		// LXD 5.21-6.x write the wait's 200 header before the operation ends, so a
+		// failed operation arrives as an error envelope under HTTP 200
+		// ({"type":"error","error_code":500,"error":"...","metadata":null}). Newer
+		// LXD renders the failed operation itself (status_code 400, err "...").
+		const waited = record(wait.body, "LXD response");
+		if (wait.status >= 200 && wait.status < 300 && waited.type === "error") throw operationFailure(waited.error);
 		const operation = record(envelopeMetadata(wait), "LXD operation");
 		if (
 			typeof operation.status_code !== "number" ||
@@ -2920,7 +2941,7 @@ export class LxdUnixClient
 			operation.status_code >= 300 ||
 			(typeof operation.err === "string" && operation.err.length > 0)
 		) {
-			throw new Error("LXD operation failed");
+			throw operationFailure(operation.err);
 		}
 		return operation;
 	}

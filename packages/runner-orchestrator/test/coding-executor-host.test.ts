@@ -514,9 +514,51 @@ describe("concrete coding executor host composition", () => {
 		expect(vi.mocked(f.client.execInstance)).toHaveBeenCalledTimes(1);
 		expect(performance.now() - started).toBeLessThan(5000);
 	});
+	it("waits while the guest's agent is not running yet, without probing the timer, then succeeds", async () => {
+		// Live 2026-09-24 (session 26d3688c): the first checks after boot fail
+		// with LXD's "LXD VM agent is not currently running".
+		const f = await fixture();
+		const fallback = vi.mocked(f.client.execInstance).getMockImplementation()!;
+		let offline = 2;
+		vi.mocked(f.client.execInstance).mockImplementation(async (project, name, command, signal) => {
+			if (command[1] === "is-active" && offline-- > 0) throw new Error("LXD instance agent not running");
+			return fallback(project, name, command, signal);
+		});
+		const workspace = await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		expect(workspace.baseSha).toBe(f.baseSha);
+		const verbs = vi.mocked(f.client.execInstance).mock.calls.map((call) => call[2][1]);
+		expect(verbs.filter((verb) => verb === "is-active").length).toBeGreaterThanOrEqual(3);
+		expect(verbs).not.toContain("is-failed");
+		expect(verbs).not.toContain("is-enabled");
+	});
+	it("goes back to waiting when the agent drops out during the timer probes", async () => {
+		const f = await fixture();
+		const fallback = vi.mocked(f.client.execInstance).getMockImplementation()!;
+		let active = 0,
+			probes = 0;
+		vi.mocked(f.client.execInstance).mockImplementation(async (project, name, command, signal) => {
+			if (command[1] === "is-active" && ++active <= 2) throw new Error("LXD instance command failed");
+			if (command[1] === "is-failed" && ++probes === 1) throw new Error("LXD instance agent not running");
+			return fallback(project, name, command, signal);
+		});
+		const workspace = await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		expect(workspace.baseSha).toBe(f.baseSha);
+		expect(active).toBeGreaterThanOrEqual(3);
+	});
+	it.each(["LXD operation is invalid", "LXD operation failed"])(
+		"fails at once on a generic exec failure (%s)",
+		async (message) => {
+			const f = await fixture();
+			vi.mocked(f.client.execInstance).mockRejectedValue(new Error(message));
+			const started = performance.now();
+			await expect(f.host.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toThrow(message);
+			expect(performance.now() - started).toBeLessThan(5000);
+			expect(vi.mocked(f.client.execInstance)).toHaveBeenCalledTimes(1);
+		},
+	);
 	it("re-reads the VM between readiness checks: one stopped elsewhere fails without waiting out the window", async () => {
 		const f = await fixture();
-		vi.mocked(f.client.execInstance).mockRejectedValue(new Error("LXD: VM agent isn't currently running"));
+		vi.mocked(f.client.execInstance).mockRejectedValue(new Error("LXD instance agent not running"));
 		const running = vi.mocked(f.client.getInstance).getMockImplementation()!;
 		let reads = 0;
 		vi.mocked(f.client.getInstance).mockImplementation(async (project, name, signal) => {
@@ -649,6 +691,17 @@ describe("concrete coding executor host composition", () => {
 			vi.mocked(f.client.execInstance).mock.invocationCallOrder[0],
 		);
 		expect(f.call.mock.calls.some((call) => call[0] === "qorpera_authorize_coding_machine")).toBe(false);
+	});
+	it("powers off without further guest commands when the guest's agent is not running", async () => {
+		const f = await fixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		vi.mocked(f.client.execInstance).mockClear();
+		vi.mocked(f.client.execInstance).mockRejectedValue(new Error("LXD instance agent not running"));
+		await f.host.stopWorkspace(f.claim, f.signal);
+		expect(vi.mocked(f.client.execInstance).mock.calls.map((call) => call[2])).toEqual([
+			["/usr/bin/systemctl", "stop", "qorpera-coding.slice"],
+		]);
+		expect((mocked.reconcile.mock.calls.at(-1)?.[0] as CodingVmReconcileOptions).desiredState).toBe("stopped");
 	});
 	it("still powers off when the quiesce fails, and skips it for a VM that is not running", async () => {
 		const f = await fixture();
