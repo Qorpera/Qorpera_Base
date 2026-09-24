@@ -1300,6 +1300,16 @@ the routine version stores it. The bundle's model policy declares
 effort from its routine version when the run is created and pins it as before.
 Attended threads keep the bundle default.
 
+2026-09-24 amendment: thread model and effort. A member picks the model
+(GPT-6 Astra, Sol or Luna) and the effort (low, medium or high) for one
+conversation in its Model menu; the choice is stored per conversation, not in
+the agent document. A member's turn in that conversation (a session turn or a
+room delivery) runs with it: the model applies to native subscription sponsors,
+the effort to every sponsor. The bundle's model policy declares
+`overrides: routine-and-thread`; bundles that declare `routine` keep thread
+turns at the default. Routines, coworker wakes and other conversations are not
+affected. Superseded: "Attended threads keep the bundle default" above.
+
 2026-09-22 amendment: no turn caps. A turn is not capped by a number of tool
 calls, effectful operations, transcript events or wall-clock time. The agent
 works until the task is done or genuinely blocked. The remaining bounds are

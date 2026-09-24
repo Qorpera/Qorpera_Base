@@ -142,6 +142,7 @@
 .composer-models button[role=menuitemradio] { justify-content: space-between; padding-left: 14px; }
 .composer-models button[aria-checked=false] > .icon { visibility: hidden; }
 .composer-models button[aria-checked=true] > .icon { color: var(--text); width: 15px; height: 15px; }
+.composer-model-heading { margin: 5px 9px 0; padding: 10px 5px 4px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 11px; }
 .composer-model-scope, .composer-model-status, .composer-menu-note { margin: 5px 9px; color: var(--text-muted); font-size: 11px; line-height: 1.5; }
 .composer-model-scope { border-top: 1px solid var(--border); padding-top: 10px; }
 .composer-model-status:empty { display: none; }
