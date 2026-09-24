@@ -39,6 +39,12 @@ hash. The host rechecks the capture read set on every provider/compaction reques
 including when reconstruction has replaced pixels with summaries. Arbitrary
 provider-message media cannot acquire authority through this path.
 
+The result fence sends every tool output of a model request's history to the
+host, which returns each as a host-issued envelope of at most 8 KiB. Since bundle
+v96 a request may carry any number of outputs: the frame is bounded at 64 MiB
+each way (it was 8 MiB, with fewer than 128 outputs and 1 MiB of result text),
+more than any model context holds.
+
 ## Build
 
 Provision Rust 1.95.0, its `llvm-tools` component and the upstream platform

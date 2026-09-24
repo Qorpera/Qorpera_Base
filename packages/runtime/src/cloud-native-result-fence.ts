@@ -9,7 +9,9 @@ import type {
 } from "./cloud-native-tool-boundary.ts";
 
 export const CLOUD_NATIVE_RESULT_FENCE_SCHEMA = "qorpera.native-result-fence/v1";
-const MAX_FRAME_BYTES = 8 * 1024 * 1024;
+// One model request carries any number of tool outputs (runtime v96; the pinned
+// Codex refused 128). The frame, the same on both sides, bounds only its size.
+const MAX_FRAME_BYTES = 64 * 1024 * 1024;
 // A run is not capped by its number of model requests or their total size
 // (founder, 2026-09-24); replayed request ids are tracked in a rolling window.
 const TRACKED_REQUESTS = 16_384;
