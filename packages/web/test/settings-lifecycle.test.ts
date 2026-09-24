@@ -234,6 +234,18 @@ describe("settings session lifecycle", () => {
 			.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
 		expect(document.activeElement).toBe(f.root.querySelector("#settings-tab-company"));
 	});
+	it("selects the top matching tab when a search hides the open one", async () => {
+		const f = await setup();
+		open(f.root);
+		await draw();
+		const search = f.root.querySelector<HTMLInputElement>(".settings-nav input")!;
+		// Company lists the invitations it sent, Friends the ones waiting for this account.
+		search.value = "invitations";
+		search.dispatchEvent(new Event("input"));
+		const shown = [...f.root.querySelectorAll<HTMLElement>('[role="tab"]')].filter((tab) => !tab.hidden);
+		expect(shown.map((tab) => tab.id)).toEqual(["settings-tab-company", "settings-tab-friends"]);
+		expect(f.root.querySelector("#settings-tab-company")?.getAttribute("aria-selected")).toBe("true");
+	});
 	it("accepts a company invitation from the Friends tab and opens that company", async () => {
 		const fixtureState = fixture();
 		const invitation = {

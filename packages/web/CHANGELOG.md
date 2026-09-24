@@ -61,7 +61,7 @@
 
 ### Changed
 
-- Make the Settings tabs half again as large (20px labels, 26px icons, 54px rows, the invitation count to match) and order them General, Company, Friends, Plan & usage, Connections. On a phone the tabs keep their size in the two-column grid, where the larger labels would not fit.
+- Make the Settings side panel half again as large (20px text, 26px icons, 54px tab rows, with the search field, invitation count and company picker to match) and order its tabs General, Company, Friends, Plan & usage, Connections. The panel is 320px wide so every label fits on one line in English and Danish, and it scrolls when the window is too short for it. Under 720px wide the tabs keep their earlier size in the two-column grid. A search that hides the open tab selects the top matching tab, so "invitations" now opens Company.
 - Show the close × of the Settings window and the feedback window as a bare glyph in both themes: no grey square behind it, at rest, on hover or on keyboard focus. Hover and focus only darken the × (brighten it on dark), and keyboard focus still shows its ring.
 - Show only the name on the rail's Co-Founder card, which makes the card a line thinner. Its role and any state ("Working", "Needs you") stay in the card's tooltip and link name, the status disc and the figure still show a run, and other agents' rows keep their second line.
 - Put the rail's search field on the same row as the new-agent button, both half again as large (46px field, 27px plus), and widen the default rail from 304px to 456px. Rail widths stored before this change are not carried over, resetting the rail width forgets the stored width, and the agent computer panel covers the conversation whenever the thread is too narrow for both side by side.
