@@ -3,6 +3,7 @@ import { type FileHandle, lstat, mkdir, open } from "node:fs/promises";
 import { isDeepStrictEqual } from "node:util";
 import { type CloudCodingStorageBinding, parseCloudCodingStorageBinding } from "@qorpera/contracts";
 import { type CodingGuestConfiguration, parseCodingGuestConfiguration } from "./cloud-coding-guest-configuration.ts";
+import { assertGuestImageSelfUpdateMasked } from "./lxd-guest-image-updates.ts";
 
 const CONFIG = "/etc/qorpera-coding/storage.json";
 const MARKER = ".qorpera-volume.json";
@@ -237,6 +238,10 @@ async function inspect(
 	sandbox?: CodingGuestSandbox,
 ): Promise<{ binding: CloudCodingStorageBinding; roots: Root[] }> {
 	if (process.platform !== "linux") throw new Error("CODING_GUEST_STORAGE_LINUX_REQUIRED");
+	// Every action refuses on an image that can upgrade itself: needrestart
+	// would restart the session's units and the shutdown inhibitor would keep
+	// the VM, and its node slot, from stopping.
+	await assertGuestImageSelfUpdateMasked();
 	if (
 		guest.workspacePath !== `${DATA}/repository` ||
 		guest.homePath !== `${DATA}/home` ||

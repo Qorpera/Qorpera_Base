@@ -44,7 +44,8 @@
     "coding-user-owned isolated repository workspace",
     "Admitted NAS data mount at /workspace and separate protected NAS custody mount at /var/lib/qorpera-coding; no local directory fallback",
     "Explicit resourceProfile compatible with the admitted VM",
-    "Pinned Node/Python/native toolchain and browser dependencies selected in the signed image recipe"
+    "Pinned Node/Python/native toolchain and browser dependencies selected in the signed image recipe",
+    "No self-update: apt-daily.timer, apt-daily-upgrade.timer, apt-daily.service, apt-daily-upgrade.service and unattended-upgrades.service masked (links from /etc/systemd/system to /dev/null); every storage-checked action refuses otherwise with RUNNER_IMAGE_SELF_UPDATE_ENABLED"
   ],
   "limits": {
     "commandBytes": 16384,
@@ -82,7 +83,7 @@
     "outputRoot": "/var/lib/qorpera-coding/logs"
   },
   "provisioningOrder": [
-    "Install and verify pinned OS/runtime/toolchains in image build, never from model/root command",
+    "Install and verify pinned OS/runtime/toolchains in image build, never from model/root command; mask the five apt self-update units",
     "Install helper artifacts and systemd units with reviewed manifest digest; create root-owned0755 /run/qorpera-coding in image; do not enable ordinary coding admission",
     "Attach exact admitted NAS data and custody devices",
     "Install root-owned0444 guest/storage configuration bound to current volume generation and boot",

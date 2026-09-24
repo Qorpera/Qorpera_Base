@@ -209,6 +209,53 @@ describe("rail sections and pins", () => {
 		draw();
 		expect(groups(rail)).toEqual([["Unassigned", "Cy"]]);
 	});
+	it("folds hidden agents at the foot of the list, where they can be shown again", async () => {
+		localStorage.removeItem("qorpera.web.rail-hidden-open");
+		const { rail, manage, ready } = companyWith({ ...demo(), hidden: [cy.id, dee.id], pinned: [] });
+		await ready;
+		await settle();
+		const list = rail.querySelector(".rail-scroll")!;
+		const hidden = rail.querySelector<HTMLElement>(".rail-hidden")!;
+		const toggle = hidden.querySelector<HTMLButtonElement>(".rail-hidden-toggle")!;
+		// The last thing in the list: "Hidden agents" and the count, folded.
+		expect([...list.children].filter((child) => !child.matches(".rail-empty")).at(-1)).toBe(hidden);
+		expect(toggle.textContent).toBe("Hidden agents2");
+		expect(toggle.getAttribute("aria-expanded")).toBe("false");
+		expect(hidden.querySelector(".rail-hidden-list")!.children.length).toBe(0);
+		toggle.click();
+		await settle();
+		expect(toggle.getAttribute("aria-expanded")).toBe("true");
+		expect(hidden.querySelector<HTMLElement>(".rail-hidden-count")!.hidden).toBe(true);
+		expect(hidden.querySelector<HTMLElement>(".rail-hidden-chevron")!.hidden).toBe(false);
+		expect(names(hidden.querySelectorAll(".rail-hidden-list > a"))).toEqual(["Cy", "Dee"]);
+		expect(localStorage.getItem("qorpera.web.rail-hidden-open")).toBe("1");
+		// A hidden agent's menu shows it again.
+		rightClick(rowOf(rail, "Dee"));
+		expect(menuItems()).toContain("Show in sidebar");
+		choose("Show in sidebar");
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
+			action: "set_hidden",
+			staffAgentId: dee.id,
+			hidden: false,
+		});
+		expect(names(hidden.querySelectorAll(".rail-hidden-list > a"))).toEqual(["Cy"]);
+		expect(groups(rail).at(-1)).toEqual(["Unassigned", "Dee", "Fixture conversation"]);
+		// Moving a hidden agent to a section shows it there.
+		rightClick(rowOf(rail, "Cy"));
+		document
+			.querySelector<HTMLElement>(".context-menu [aria-haspopup=menu]")!
+			.dispatchEvent(new PointerEvent("pointerenter"));
+		choose("Ops");
+		await settle();
+		expect(manage.mock.calls.slice(-2).map(([, request]) => request)).toEqual([
+			{ action: "set_hidden", staffAgentId: cy.id, hidden: false },
+			{ action: "move_agent", staffAgentId: cy.id, sectionId: ops },
+		]);
+		expect(groups(rail)[1]).toEqual(["Ops", "Cy"]);
+		// Nothing left hidden: the group leaves the list.
+		expect(rail.querySelector(".rail-hidden")).toBeNull();
+	});
 	it("marks the groups the collapsed rail parts with a line: never under the Co-Founder, never around an empty section", async () => {
 		const divided = (rail: HTMLElement) =>
 			[...rail.querySelectorAll(".rail-section.rail-divided")].map(
@@ -595,6 +642,22 @@ describe("dragging agents in the rail", () => {
 			unpin: true,
 		});
 		expect(names(rail.querySelectorAll(".rail-pin"))).toEqual(["Dee"]);
+	});
+	it("shows a hidden agent again where it is dragged out of Hidden agents", async () => {
+		localStorage.setItem("qorpera.web.rail-hidden-open", "1");
+		const { rail, manage, ready } = companyWith({ ...demo(), hidden: [cy.id] });
+		await ready;
+		await settle();
+		const boxes = layout(rail);
+		drag(rowOf(rail, "Cy"), boxes.get(rowOf(rail, "Ada"))!, rail);
+		await settle();
+		expect(manage.mock.calls.slice(-2).map(([, request]) => request)).toEqual([
+			{ action: "set_hidden", staffAgentId: cy.id, hidden: false },
+			{ action: "move_agent", staffAgentId: cy.id, sectionId: research, order: [bo.id, cy.id, ada.id] },
+		]);
+		expect(groups(rail)[0]).toEqual(["Research", "Bo", "Cy", "Ada"]);
+		expect(rail.querySelector(".rail-hidden")).toBeNull();
+		localStorage.removeItem("qorpera.web.rail-hidden-open");
 	});
 	it("keeps the drop spot when the rail redraws mid-drag", async () => {
 		const { rail, manage, company, ready } = companyWith(demo());
