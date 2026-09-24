@@ -117,7 +117,8 @@ function fixture(reflectSecret = false) {
 	};
 	const broker = new CloudSecretBroker({ authority, keyring, adapters: [adapter] });
 	const runtimeToken = randomBytes(32).toString("base64url");
-	const service = new HttpCloudSecretBrokerService(broker, runtimeToken);
+	const codingExecutorToken = randomBytes(32).toString("base64url");
+	const service = new HttpCloudSecretBrokerService(broker, runtimeToken, { codingExecutorToken });
 	services.push(service);
 	const binding = nativeToolAuthorityFixture().binding;
 	const operation: CloudSecretOperationRequest = {
@@ -133,7 +134,18 @@ function fixture(reflectSecret = false) {
 		idempotencyKey: "issue-login",
 		arguments: { title: "Login is broken" },
 	};
-	return { authority, capability, ticketId, wrappingKey, keyring, runtimeToken, broker, service, operation };
+	return {
+		authority,
+		capability,
+		ticketId,
+		wrappingKey,
+		keyring,
+		runtimeToken,
+		codingExecutorToken,
+		broker,
+		service,
+		operation,
+	};
 }
 
 it("refuses a non-loopback listener even when a caller supplies one explicitly", () => {
@@ -253,7 +265,7 @@ it("refuses an operation the database does not authorize for this broker, whatev
 	f.keyring.close();
 });
 
-it("releases a coding repository token only to the runtime credential, uncached, and nothing on a kernel refusal", async () => {
+it("releases a coding repository token only to the executor's token, uncached, and nothing on a kernel refusal", async () => {
 	const f = fixture();
 	const port = await f.service.start();
 	const post = (authorization: string) =>
@@ -268,7 +280,11 @@ it("releases a coding repository token only to the runtime credential, uncached,
 				repository: { host: "github.com", owner: "Qorpera", name: "Qorpera_Base", baseBranch: "master" },
 			}),
 		});
-	const released = await post(`Bearer ${f.runtimeToken}`);
+	// The runtime token every guest holds never opens the route.
+	const guest = await post(`Bearer ${f.runtimeToken}`);
+	expect(guest.status).toBe(404);
+	expect(f.authority.authorizeRepositoryCredential).not.toHaveBeenCalled();
+	const released = await post(`Bearer ${f.codingExecutorToken}`);
 	expect(released.status).toBe(200);
 	expect(released.headers.get("cache-control")).toBe("no-store");
 	expect(released.headers.get("access-control-allow-origin")).toBeNull();
@@ -283,7 +299,7 @@ it("releases a coding repository token only to the runtime credential, uncached,
 	vi.mocked(f.authority.authorizeRepositoryCredential).mockRejectedValueOnce(
 		new Error("company GitHub connection is unavailable to this agent"),
 	);
-	const refused = await post(`Bearer ${f.runtimeToken}`);
+	const refused = await post(`Bearer ${f.codingExecutorToken}`);
 	expect(refused.status).toBe(403);
 	const text = await refused.text();
 	expect(JSON.parse(text)).toEqual({ schema: "qorpera.cloud-secret-error/v1", error: "unavailable" });

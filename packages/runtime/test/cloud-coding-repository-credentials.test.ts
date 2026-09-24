@@ -65,8 +65,10 @@ async function fixture(options: { token?: string; refuse?: boolean } = {}) {
 		authorizeRepositoryCredential,
 	};
 	const broker = new CloudSecretBroker({ authority, keyring, adapters: [] });
+	// The runtime token every guest holds, and the executor's own token.
 	const runtimeToken = randomBytes(32).toString("base64url");
-	const service = new HttpCloudSecretBrokerService(broker, runtimeToken);
+	const executorToken = randomBytes(32).toString("base64url");
+	const service = new HttpCloudSecretBrokerService(broker, runtimeToken, { codingExecutorToken: executorToken });
 	services.push(service);
 	const port = await service.start();
 	const requested: string[] = [];
@@ -79,11 +81,22 @@ async function fixture(options: { token?: string; refuse?: boolean } = {}) {
 	const scope = { companyId: identity.companyId.toUpperCase(), workerId: randomUUID(), leaseToken: randomUUID() };
 	const credentials = new BrokerRepositoryCredentials({
 		origin: "https://secrets.qorpera.test",
-		runtimeToken,
+		executorToken,
 		executorOwner: "coding-node-02",
 		fetch: rewrite,
 	});
-	return { identity, authorizeRepositoryCredential, runtimeToken, port, requested, scope, credentials };
+	return {
+		identity,
+		authority,
+		authorizeRepositoryCredential,
+		runtimeToken,
+		executorToken,
+		broker,
+		port,
+		requested,
+		scope,
+		credentials,
+	};
 }
 
 describe("coding repository credentials through the company's secret broker", () => {
@@ -111,7 +124,7 @@ describe("coding repository credentials through the company's secret broker", ()
 		expect(f.authorizeRepositoryCredential).toHaveBeenCalledTimes(2);
 	});
 
-	it("answers only the runtime credential, never caches, and refuses without a token when the kernel refuses", async () => {
+	it("answers only the executor's token, never caches, and refuses without a token when the kernel refuses", async () => {
 		const f = await fixture({ refuse: true });
 		const body = JSON.stringify({
 			schema: "qorpera.coding-repository-credential-request/v1",
@@ -129,8 +142,12 @@ describe("coding repository credentials through the company's secret broker", ()
 		const stranger = await post(`Bearer ${randomBytes(32).toString("base64url")}`);
 		expect(stranger.status).toBe(404);
 		expect(await stranger.json()).toEqual({ schema: "qorpera.cloud-secret-error/v1", error: "not_found" });
+		// The runtime token every guest holds does not open the route.
+		const guest = await post(`Bearer ${f.runtimeToken}`);
+		expect(guest.status).toBe(404);
+		expect(await guest.json()).toEqual({ schema: "qorpera.cloud-secret-error/v1", error: "not_found" });
 		expect(f.authorizeRepositoryCredential).not.toHaveBeenCalled();
-		const refused = await post(`Bearer ${f.runtimeToken}`);
+		const refused = await post(`Bearer ${f.executorToken}`);
 		expect(refused.status).toBe(403);
 		expect(refused.headers.get("cache-control")).toBe("no-store");
 		const text = await refused.text();
@@ -150,7 +167,7 @@ describe("coding repository credentials through the company's secret broker", ()
 		const post = (value: Record<string, unknown>) =>
 			fetch(`http://127.0.0.1:${f.port}/v1/repository-credentials`, {
 				method: "POST",
-				headers: { authorization: `Bearer ${f.runtimeToken}`, "content-type": "application/json" },
+				headers: { authorization: `Bearer ${f.executorToken}`, "content-type": "application/json" },
 				body: JSON.stringify({
 					schema: "qorpera.coding-repository-credential-request/v1",
 					workerId: f.scope.workerId,
@@ -174,6 +191,40 @@ describe("coding repository credentials through the company's secret broker", ()
 		expect(f.authorizeRepositoryCredential).toHaveBeenCalledTimes(1);
 	});
 
+	it("keeps the executor's token and the runtime token on separate routes", async () => {
+		const f = await fixture();
+		// The executor's token does not open runner operations.
+		const operations = await fetch(`http://127.0.0.1:${f.port}/v1/operations`, {
+			method: "POST",
+			headers: { authorization: `Bearer ${f.executorToken}`, "content-type": "application/json" },
+			body: "{}",
+		});
+		expect(operations.status).toBe(404);
+		expect(await operations.json()).toEqual({ schema: "qorpera.cloud-secret-error/v1", error: "not_found" });
+		expect(f.authority.authorizeOperation).not.toHaveBeenCalled();
+		// A broker without the executor's token has no repository route at all,
+		// whatever token is presented.
+		const plain = new HttpCloudSecretBrokerService(f.broker, f.runtimeToken);
+		services.push(plain);
+		const port = await plain.start();
+		for (const token of [f.runtimeToken, f.executorToken]) {
+			const response = await fetch(`http://127.0.0.1:${port}/v1/repository-credentials`, {
+				method: "POST",
+				headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+				body: "{}",
+			});
+			expect(response.status).toBe(404);
+		}
+		expect(f.authorizeRepositoryCredential).not.toHaveBeenCalled();
+		// The two tokens must differ, and the executor's must be a token.
+		expect(
+			() => new HttpCloudSecretBrokerService(f.broker, f.runtimeToken, { codingExecutorToken: f.runtimeToken }),
+		).toThrow("configuration is invalid");
+		expect(
+			() => new HttpCloudSecretBrokerService(f.broker, f.runtimeToken, { codingExecutorToken: "short" }),
+		).toThrow("configuration is invalid");
+	});
+
 	it("refuses a sealed value that is not a GitHub token", async () => {
 		const f = await fixture({ token: "not a token\n" });
 		const use = vi.fn(async () => undefined);
@@ -189,7 +240,7 @@ describe("executor-side broker client", () => {
 	const client = (fetcher: typeof fetch) =>
 		new BrokerRepositoryCredentials({
 			origin: "https://secrets.qorpera.test",
-			runtimeToken: randomBytes(32).toString("base64url"),
+			executorToken: randomBytes(32).toString("base64url"),
 			executorOwner: "coding-node-02",
 			fetch: fetcher,
 		});
@@ -246,7 +297,7 @@ describe("executor-side broker client", () => {
 				() =>
 					new BrokerRepositoryCredentials({
 						origin,
-						runtimeToken: randomBytes(32).toString("base64url"),
+						executorToken: randomBytes(32).toString("base64url"),
 						executorOwner: "coding-node-02",
 					}),
 			).toThrow("CONFIG_INVALID");
@@ -254,7 +305,7 @@ describe("executor-side broker client", () => {
 			() =>
 				new BrokerRepositoryCredentials({
 					origin: "https://secrets.qorpera.test",
-					runtimeToken: "short",
+					executorToken: "short",
 					executorOwner: "coding-node-02",
 				}),
 		).toThrow("CONFIG_INVALID");

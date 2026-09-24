@@ -26,9 +26,9 @@ interface Config {
 	storagePolicy: LxdCodingExecutorHostOptions["storagePolicy"];
 	guest: LxdCodingExecutorHostOptions["guest"];
 	/** The company secret brokers' shared origin and the systemd credential
-	 * holding their runtime token. Required unless every repository names a
-	 * static credential. */
-	broker: { origin: string; runtimeTokenCredential: string } | null;
+	 * holding the executor's own broker token (never the runtime token guests
+	 * hold). Required unless every repository names a static credential. */
+	broker: { origin: string; executorTokenCredential: string } | null;
 	/** `credential` null: the company's GitHub connection through its broker
 	 * (the product path). A named credential: a static token file for that
 	 * repository, proof-only plumbing that bypasses the company connection. */
@@ -49,10 +49,10 @@ function origin(value: unknown): string {
 function broker(value: unknown): Config["broker"] {
 	if (value === undefined) return null;
 	const input = object(value);
-	if (Object.keys(input).sort().join() !== "origin,runtimeTokenCredential" || typeof input.runtimeTokenCredential !== "string" ||
-		!/^qorpera-coding-[a-z0-9-]{1,80}$/.test(input.runtimeTokenCredential) || RESERVED_CREDENTIALS.has(input.runtimeTokenCredential) ||
-		input.runtimeTokenCredential.startsWith("qorpera-coding-repository-")) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
-	return { origin: origin(input.origin), runtimeTokenCredential: input.runtimeTokenCredential };
+	if (Object.keys(input).sort().join() !== "executorTokenCredential,origin" || typeof input.executorTokenCredential !== "string" ||
+		!/^qorpera-coding-[a-z0-9-]{1,80}$/.test(input.executorTokenCredential) || RESERVED_CREDENTIALS.has(input.executorTokenCredential) ||
+		input.executorTokenCredential.startsWith("qorpera-coding-repository-")) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	return { origin: origin(input.origin), executorTokenCredential: input.executorTokenCredential };
 }
 /** The reviewed JSON configuration (v4: sessions executor with repository
  * access through the company's GitHub connection). The executor claims coding
@@ -112,7 +112,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	if (!/^[0-9a-f]{32}$/.test(machine)) throw new Error("CODING_NODE_IDENTITY_INVALID");
 	const control = new CodingExecutorHttpControl({ supabaseUrl: config.supabaseUrl, serviceRoleKey: await credential("qorpera-coding-registry") });
 	const brokered = config.broker ? new BrokerRepositoryCredentials({ origin: config.broker.origin,
-		runtimeToken: await credential(config.broker.runtimeTokenCredential), executorOwner: config.owner }) : null;
+		executorToken: await credential(config.broker.executorTokenCredential), executorOwner: config.owner }) : null;
 	const journalRoot = await createCodingNasStorage(config.storagePolicy).prepareControl();
 	const host = new LxdCodingExecutorHost({
 		control, owner: config.owner, machineIdSha256: createHash("sha256").update(machine).digest("hex"),

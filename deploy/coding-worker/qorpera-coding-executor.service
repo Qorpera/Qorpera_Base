@@ -14,9 +14,11 @@ ExecStart=/usr/bin/node /opt/qorpera-coding-executor/qorpera-coding-executor.mjs
 LoadCredential=qorpera-coding-executor-config:/etc/qorpera/coding-executor.json
 LoadCredential=qorpera-coding-registry:/etc/qorpera/coding-registry.key
 LoadCredential=qorpera-coding-command:/etc/qorpera/coding-command.key
-# The company secret brokers' runtime token (config "broker.runtimeTokenCredential").
-# Repository tokens come from each company's GitHub connection through its broker.
-LoadCredential=qorpera-coding-broker-runtime:/etc/qorpera/coding-broker-runtime.key
+# The executor's own broker token (config "broker.executorTokenCredential"): the
+# value company brokers load as qorpera-cloud-secret-coding-executor. Never the
+# runtime token guests hold. Repository tokens come from each company's GitHub
+# connection through its broker. Required: a missing file fails the start.
+LoadCredential=qorpera-coding-broker-executor:/etc/qorpera/coding-broker-executor.key
 # Proof-only: a repository configured with a static "credential" needs its own
 # LoadCredential=qorpera-coding-repository-NAME:<file> in a reviewed drop-in.
 Restart=on-failure

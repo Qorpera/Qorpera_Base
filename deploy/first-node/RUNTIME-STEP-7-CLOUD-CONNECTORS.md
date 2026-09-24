@@ -166,10 +166,28 @@ request; the authority's `service_origin` stays that bare origin.
   (`qorpera-cloud-secret-runtime`). Every company broker is configured with
   that token; the per-company boundary is the database authorization above.
   This works only while every provider that runs connector work (node 1,
-  node 2, the node 2 exec host) and, since bundle v88, the node 2 coding
-  executor carry the same token; a broker cannot hold two. Because every guest
-  holds this token, the repository credential route also requires the coding
-  session's lease token, which only the executor and the database know.
+  node 2, the node 2 exec host) carries the same token; a broker cannot hold
+  two.
+- **A separate coding executor token (bundle v88).** The repository credential
+  route (`/v1/repository-credentials`) releases a plaintext GitHub token, so it
+  does not accept the runtime token: every guest holds that one, and every
+  guest (LXD guest units, exec host slots) also holds the Supabase service-role
+  key, with which it could claim a queued coding session
+  (`qorpera_claim_coding_session`, service_role) and learn its lease token. The
+  lease token is therefore not a secret from guests; it binds the request to a
+  live session, it does not authenticate the caller. The route accepts only the
+  coding executor's own token, `qorpera-cloud-secret-coding-executor` (32
+  random bytes, base64url, distinct from the runtime token, the capability and
+  the database password; the broker refuses to start otherwise). The executor
+  holds the same value as `qorpera-coding-broker-executor`; no guest, provider
+  or exec host ever receives it. A broker without the credential answers 404 on
+  the route; the executor's token opens nothing else (`/v1/operations` stays
+  runtime-token only). Give it only to the brokers of companies that run coding
+  sessions, in a drop-in:
+  `LoadCredential=qorpera-cloud-secret-coding-executor:/etc/qorpera-secret-broker/coding-executor`.
+  Follow-up (not in v88): move the coding claim and lease RPCs off
+  service_role to a dedicated executor authority, so a guest's service-role key
+  can no longer claim sessions at all.
 - **Redirect URI** registered at Google and GitHub:
   `https://company41-node-01.tailbb15c7.ts.net:10000/v1/oauth/callback`
   (= `publicOrigin` + `/v1/oauth/callback`; Google compares it exactly).
@@ -299,12 +317,19 @@ connection belongs to the company:
   every grant of the connection whose issuer left or was demoted; live grants
   are left alone.
 - Always shared (bundle v88, founder 2026-09-24): capture completion shares a
-  company-owned connection with every active agent as it seals it, first
-  capture and rotation alike (`qorpera_share_company_connection`, under the
-  owner or admin who captured it). `qorpera_unshare_cloud_connector` ("Stop
-  sharing with agents", v87) is dropped; `qorpera_grant_cloud_connector`
-  remains only as the idempotent repair. A single grant can still be revoked
-  and Disconnect still revokes the connection with all its grants.
+  company connection with every active agent as it seals it, first capture
+  and rotation alike (`qorpera_share_company_connection`, under the owner or
+  admin who captured it). A company connection is exactly what the Services
+  page creates: company-owned, named `primary`, for a connector of the
+  connector catalog. Other company-owned secrets (secret cards, typed vault
+  entries) are never shared automatically, and an agent's secret card can no
+  longer name a catalog connector (the native card append and the runner
+  transcript validator refuse it; the catalog table decides), so a card can
+  neither take a connection's tools nor rotate it in place.
+  `qorpera_unshare_cloud_connector` ("Stop sharing with agents", v87) is
+  dropped; `qorpera_grant_cloud_connector` remains only as the idempotent
+  repair. A single grant can still be revoked and Disconnect still revokes the
+  connection with all its grants.
 - Trigger `qorpera_cloud_connector_staff_grants`: a new active hire receives
   the grants of every shared company connection, issued by the hire's author
   if an owner or admin, else by the member who connected the account if still
@@ -392,6 +417,28 @@ browser) was already in place; no prompt change.
    afterwards holds the grants; a contributor sees the cards read-only;
    Disconnect fences the next run; no token or code appears in Supabase,
    logs, receipts or the thread.
+
+## Accepted risks and follow-ups (bundle v88 review)
+
+- **S2, token scope.** The GitHub OAuth token carries `repo`: it reaches every
+  repository the connected account can reach, not only the session's, and the
+  executor's network Git stages have open egress. The session's pushes are
+  fenced to the fixed session branch and the SQL repository grant, but the
+  token itself is account-wide. Follow-up: per-repository GitHub App
+  installation tokens, or network Git limited to github.com.
+- **S3, revocation under always shared.** Revoking one agent's grant lasts only
+  until the next rotation (reconnect) or share repair re-shares the connection.
+  The v88 migration also re-shares connections that were stopped under v87.
+- **N1, audit order.** `repository_credential_used` is written when the kernel
+  authorizes, before the broker opens the envelope; a release that fails in
+  the broker (digest, keyring, token shape) still leaves the event.
+- **N4, executor unit.** `qorpera-coding-executor.service` loads
+  `qorpera-coding-broker-executor` unconditionally: install
+  `/etc/qorpera/coding-broker-executor.key` before starting the v88 executor,
+  even when every repository still names a static credential.
+- **Coding claim authority.** `qorpera_claim_coding_session` and the lease RPCs
+  stay on service_role in v88 (see the executor token above); moving them to a
+  dedicated executor authority is a follow-up.
 
 ## Open decisions
 

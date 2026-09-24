@@ -330,14 +330,20 @@ export interface HttpCloudSecretBrokerServiceOptions {
 	readonly memberOrigins?: readonly string[];
 	/** Connector OAuth flows (Step 7); absent means the OAuth routes answer 404. */
 	readonly oauth?: CloudConnectorOAuthFlows;
+	/** The coding executor's own bearer for `/v1/repository-credentials`
+	 * (bundle v88; credential `qorpera-cloud-secret-coding-executor`). Distinct
+	 * from the runtime token every guest holds; absent means the route answers
+	 * 404. The runtime token never opens that route, and this token never opens
+	 * `/v1/operations`. */
+	readonly codingExecutorToken?: string;
 }
 
 /**
  * Separate-process broker surface. Capture is authorized only by the one-time
  * member ticket; operation execution additionally requires a private service
  * token and the database's current run/grant/receipt authorization; a coding
- * executor's repository token requires the same service token and the
- * database's current session lease, repository grant and connection grant.
+ * executor's repository token requires the executor's own separate token and
+ * the database's current session lease, repository grant and connection grant.
  */
 export class HttpCloudSecretBrokerService {
 	readonly #broker: CloudSecretBroker;
@@ -346,6 +352,7 @@ export class HttpCloudSecretBrokerService {
 	readonly #port: number;
 	readonly #memberOrigins: ReadonlySet<string>;
 	readonly #oauth: CloudConnectorOAuthFlows | undefined;
+	readonly #codingExecutorToken: string | undefined;
 	#server?: Server;
 
 	constructor(
@@ -366,7 +373,9 @@ export class HttpCloudSecretBrokerService {
 			!Number.isSafeInteger(listenPort) ||
 			listenPort < 0 ||
 			listenPort > 65_535 ||
-			origins.length > 16
+			origins.length > 16 ||
+			(options.codingExecutorToken !== undefined &&
+				(!TOKEN.test(options.codingExecutorToken) || options.codingExecutorToken === runtimeToken))
 		) {
 			throw new Error("Cloud secret broker service configuration is invalid");
 		}
@@ -376,6 +385,7 @@ export class HttpCloudSecretBrokerService {
 		this.#port = listenPort;
 		this.#memberOrigins = new Set(origins.map(parseMemberOrigin));
 		this.#oauth = options.oauth;
+		this.#codingExecutorToken = options.codingExecutorToken;
 	}
 
 	async start(): Promise<number> {
@@ -539,11 +549,16 @@ export class HttpCloudSecretBrokerService {
 				response(reply, 200, result as unknown as JsonValue);
 				return;
 			}
-			// The coding executor's repository token (bundle v88): the same private
-			// runtime credential as operations, the kernel's lease check behind it,
-			// and an answer that is never cached. Like operations, the router picks
-			// the company's broker by `?company=`; the broker ignores the query.
-			if (path === "/v1/repository-credentials" && tokenMatches(this.#runtimeToken, request.headers.authorization)) {
+			// The coding executor's repository token (bundle v88): only the
+			// executor's own bearer (never the runtime token every guest holds), the
+			// kernel's lease check behind it, and an answer that is never cached.
+			// Like operations, the router picks the company's broker by
+			// `?company=`; the broker ignores the query.
+			if (
+				path === "/v1/repository-credentials" &&
+				this.#codingExecutorToken !== undefined &&
+				tokenMatches(this.#codingExecutorToken, request.headers.authorization)
+			) {
 				const credential = await this.#broker.repositoryCredential(
 					parseRepositoryCredentialRequest(await readRequest(request)),
 					AbortSignal.timeout(10_000),

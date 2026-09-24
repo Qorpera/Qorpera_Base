@@ -53,7 +53,7 @@ function fixture() {
 		],
 	};
 }
-const broker = { origin: "https://secrets.qorpera.test", runtimeTokenCredential: "qorpera-coding-broker-runtime" };
+const broker = { origin: "https://secrets.qorpera.test", executorTokenCredential: "qorpera-coding-broker-executor" };
 describe("coding executor service configuration", () => {
 	it("accepts pinned VM policy with repository-specific systemd credentials", () => {
 		const config = parseCodingExecutorConfiguration(fixture());
@@ -92,7 +92,7 @@ describe("coding executor service configuration", () => {
 			"https://secrets.qorpera.test/?company=x",
 		])
 			expect(() => parseCodingExecutorConfiguration({ ...config, broker: { ...broker, origin } })).toThrow();
-		for (const runtimeTokenCredential of [
+		for (const executorTokenCredential of [
 			"qorpera-coding-registry",
 			"qorpera-coding-command",
 			"qorpera-coding-executor-config",
@@ -101,7 +101,7 @@ describe("coding executor service configuration", () => {
 			"broker-runtime",
 		])
 			expect(() =>
-				parseCodingExecutorConfiguration({ ...config, broker: { ...broker, runtimeTokenCredential } }),
+				parseCodingExecutorConfiguration({ ...config, broker: { ...broker, executorTokenCredential } }),
 			).toThrow("CONFIG_INVALID");
 		expect(() =>
 			parseCodingExecutorConfiguration({ ...config, broker: { ...broker, token: "inline-secret" } }),
