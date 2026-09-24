@@ -9,6 +9,8 @@
 
 ### Fixed
 
+- Keep the "Manage company" disclosure in Settings → Company at its small size; removing the Cloud endpoint panel had dropped the rule it shares.
+- Keep keyboard focus in Settings → General when the account plan finishes loading; the page is redrawn only when the error or message it shows changes.
 - Show a failed or stopped run as one line right above the composer, in the same band as the company notices, instead of at the end of the thread. The thread keeps only the conversation; the card keeps its reason, Try again and Dismiss. Opening a conversation while such a line, or the composer, appears no longer leaves the thread a little short of its last message.
 - Show the composer's "Chat settings and more" button in group chats too. Its menu keeps Attach files greyed out with a note that images are not supported in group chats and to use Company File; the model choice stays with single-agent conversations.
 - Entering an agent's computer shows the guest screen inside a thin frame in full screen, a computer inside a computer, with the agent's name on the left and one exit button on the right, the exit-full-screen glyph named "Back to thread"; the separate toggle is gone. If the browser refuses full screen, or never answers, the same frame opens over the thread and says "Full screen unavailable"; the next Enter asks again.
@@ -75,5 +77,6 @@
 - Remove the member notification inbox: the rail's Notifications row and its unread-count polling, and the Notifications page and route (old links open the company home). Execution notices and explicit acknowledgment remain available inline in the workspace.
 - Remove the standalone Friends (`#/friends`) and Invitations (`#/invitations`) pages and the separate Invitations menu item; both live on the Settings Friends tab.
 - Remove Stop sharing with agents, Share with all agents and Reconnect from a connected service in Settings → Connections → Services. A company connection is always available to every agent, new hires included, so a connected service shows that line and one action, Disconnect; a connection not yet marked for all agents reads the same.
-- Remove the "Cloud endpoint (advanced)" section from Settings → General: the Cloud check link, the web client version line, and the project URL, publishable key and object gateway fields with Use these endpoints and Back to production. Release builds already ignore a stored endpoint override, so the form did nothing there. `#/cloud-check` still opens by address.
+- Remove the "Cloud endpoint (advanced)" section from Settings → General and the standalone `#/account` page: the web client version line and the project URL, publishable key and object gateway fields with Use these endpoints and Back to production. On release builds that button only failed. The browser endpoint override behind it is gone too: every build now uses the endpoints compiled into it and never reads a value saved by the old form, and the deployment manifest's `configOverrideAllowed` is now `false` for every build. The client version stays in `web-deployment.json`.
+- Remove the Cloud check page and its RPC probe; `#/cloud-check` now opens the companies page.
 - Remove the Companies section ("All companies — Open or create a company") from Settings → General, which now ends at Language & region. The company list still opens at `#/`.
