@@ -12,6 +12,7 @@ import {
 } from "../src/cloud/member-pictures.ts";
 import { personAvatar } from "../src/ui/dom.ts";
 import { PERSON_PICTURE_EVENT, personPicturesEpoch, setPersonPictures } from "../src/ui/person-pictures.ts";
+import { choosePictureCrop } from "../src/ui/picture-cropper.ts";
 import { PictureFileError } from "../src/ui/picture-file.ts";
 import { deferred, fixture, id, settle as settleMicrotasks, userA } from "./fixtures.ts";
 
@@ -43,6 +44,7 @@ let urls = 0;
 let revoked: string[] = [];
 beforeEach(() => {
 	fitted.crop = { x: 12, y: 34, side: 56 };
+	vi.mocked(choosePictureCrop).mockClear();
 	// jsdom's Blob cannot hand back its bytes; the browser's can.
 	vi.stubGlobal("Blob", NodeBlob);
 	vi.stubGlobal("File", NodeFile);
@@ -426,9 +428,13 @@ describe("choosing the account's picture", () => {
 			objects.set(nameOf(me, text), { bytes: text, createdAt: new Date(NOW).toISOString() });
 		personAvatar("Account A", me);
 		await settle();
-		// The folder is full; the tidy that should make room reads the folder, and that read stalls.
+		// The folder is full; the tidy that should make room reads the folder, and that read
+		// stalls. Meanwhile another tab frees a place, so the retried upload goes through.
 		const listing = deferred<ReturnType<typeof folder>>();
-		own.mockReturnValueOnce(listing.promise);
+		own.mockImplementationOnce(() => {
+			objects.delete(nameOf(me, "a"));
+			return listing.promise;
+		});
 		const saving = deferred<void>();
 		const save = set.getMockImplementation()!;
 		set.mockImplementationOnce(async (name) => {
@@ -437,11 +443,7 @@ describe("choosing the account's picture", () => {
 		});
 		const choosing = store.choose(me, photo());
 		await settle();
-		// Another tab frees a place meanwhile, so the retried upload goes through.
-		objects.delete(nameOf(me, "a"));
-		await new Promise((resolve) => setTimeout(resolve, 40));
-		await settle();
-		expect(objects.has(nameOf(me, "photo.png"))).toBe(true);
+		await vi.waitFor(() => expect(objects.has(nameOf(me, "photo.png"))).toBe(true), { timeout: 10_000 });
 		// Only now does the late read answer, listing the new upload too.
 		listing.resolve(folder());
 		await settle();
@@ -542,8 +544,33 @@ describe("the account card's picture control", () => {
 		expect(current.get(me)).toBe(nameOf(me, "fitted"));
 	});
 
+	it("opens one photo at a time, and ends the fitting when the account changes", async () => {
+		const { store, upload } = setup();
+		const { picture: control } = accountPicture(userA);
+		document.body.append(control);
+		await settle();
+		const fitting = deferred<{ x: number; y: number; side: number } | undefined>();
+		let lifetime: AbortSignal | undefined;
+		vi.mocked(choosePictureCrop).mockImplementationOnce((_file, signal) => {
+			lifetime = signal;
+			return fitting.promise;
+		});
+		const input = control.querySelector<HTMLInputElement>("input[type=file]")!;
+		const chooser = vi.spyOn(input, "click").mockImplementation(() => {});
+		Object.defineProperty(input, "files", { configurable: true, value: [photo()] });
+		input.dispatchEvent(new Event("change"));
+		input.dispatchEvent(new Event("change"));
+		control.querySelector<HTMLButtonElement>(".account-picture-button")!.click();
+		expect(choosePictureCrop).toHaveBeenCalledTimes(1);
+		expect(chooser).not.toHaveBeenCalled();
+		store.reset();
+		expect(lifetime?.aborted).toBe(true);
+		fitting.resolve({ x: 0, y: 0, side: 10 });
+		await settle();
+		expect(upload).not.toHaveBeenCalled();
+	});
+
 	it("shows why a photo could not be opened for fitting", async () => {
-		const { choosePictureCrop } = await import("../src/ui/picture-cropper.ts");
 		vi.mocked(choosePictureCrop).mockRejectedValueOnce(
 			new PictureFileError("This browser could not read that picture. Try a JPEG or PNG."),
 		);

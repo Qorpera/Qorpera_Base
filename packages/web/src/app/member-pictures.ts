@@ -102,9 +102,10 @@ export class MemberPictures implements PersonPictureStore {
 		const userId = this.#begin(rawUserId);
 		const generation = this.#generation;
 		let created: string | undefined;
+		let objectName: string | undefined;
 		try {
 			const picture = await this.#prepare(file, crop);
-			const objectName = memberPictureName(userId, await pictureSha256(picture.blob), picture.extension);
+			objectName = memberPictureName(userId, await pictureSha256(picture.blob), picture.extension);
 			this.#choosing = objectName;
 			// A tidy already running read "current" before this choice and may still
 			// delete these very bytes (a picture chosen again); let it finish first.
@@ -121,11 +122,12 @@ export class MemberPictures implements PersonPictureStore {
 			this.#fail(userId, generation, error);
 			// An upload this call stored goes again, unless the cloud says it became
 			// the picture after all (an answer lost on the way back).
-			this.#choosing = undefined;
+			if (this.#choosing === created) this.#choosing = undefined;
 			if (created) void this.#tidy(userId, [created], generation);
 			throw error;
 		} finally {
-			this.#choosing = undefined;
+			// Only this choice's guard: a choice of the next account may have set its own.
+			if (objectName && this.#choosing === objectName) this.#choosing = undefined;
 			this.#end(userId, generation);
 		}
 	}

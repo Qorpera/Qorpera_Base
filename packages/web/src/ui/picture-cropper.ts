@@ -1,6 +1,6 @@
 import { button, h, icon } from "./dom.ts";
 import { type LoadedPicture, loadPicture, type PictureCrop } from "./picture-file.ts";
-import { t, uiText } from "./preferences.ts";
+import { presentationLocale, t, uiText } from "./preferences.ts";
 
 /* Fitting a photo to the round picture before it is saved. The circle shows
  * what others will see; the photo is dragged behind it and zoomed with the
@@ -75,15 +75,21 @@ export class CropFrame {
 }
 
 /** Asks the member to fit `picture` to the circle; resolves with the square
- * they chose, or undefined when they cancel. */
+ * they chose, or undefined when they cancel (or `signal` ends the dialog). */
 export function cropPicture(
 	picture: Pick<LoadedPicture, "url" | "width" | "height">,
+	signal?: AbortSignal,
 ): Promise<PictureCrop | undefined> {
 	return new Promise((resolve) => {
+		if (signal?.aborted) {
+			resolve(undefined);
+			return;
+		}
 		const frame = new CropFrame(picture.width, picture.height);
 		const previous = document.activeElement;
 		const titleId = `picture-crop-title-${Math.random().toString(36).slice(2)}`;
 		const helpId = `${titleId}-help`;
+		const percent = new Intl.NumberFormat(presentationLocale(), { style: "percent" });
 		const image = h("img", {
 			class: "picture-crop-image",
 			src: picture.url,
@@ -127,6 +133,8 @@ export function cropPicture(
 				role: "dialog",
 				"aria-modal": "true",
 				"aria-labelledby": titleId,
+				// Focusable itself: a click on its text or padding keeps focus, and its keys, here.
+				tabindex: "-1",
 			},
 			h("h2", { id: titleId }, uiText("Fit your picture")),
 			stage,
@@ -145,7 +153,7 @@ export function cropPicture(
 
 		/** View units per CSS pixel of the stage as it is drawn. */
 		let unit = 1;
-		const fit = () => {
+		const fitStage = () => {
 			const width = stage.getBoundingClientRect().width;
 			unit = width > 0 ? CROP_STAGE / width : 1;
 			view.style.transform = width > 0 ? `scale(${width / CROP_STAGE})` : "";
@@ -153,6 +161,7 @@ export function cropPicture(
 		const draw = () => {
 			image.style.transform = `translate(${MARGIN + frame.x}px, ${MARGIN + frame.y}px) scale(${frame.scale})`;
 			zoom.value = String(frame.zoom);
+			zoom.setAttribute("aria-valuetext", percent.format(frame.zoom));
 		};
 		/** A point of the page as circle coordinates in view units. */
 		const circlePoint = (clientX: number, clientY: number) => {
@@ -168,7 +177,15 @@ export function cropPicture(
 				? { distance: Math.hypot(a.x - b.x, a.y - b.y), mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } }
 				: undefined;
 		};
+		const release = (event: PointerEvent) => {
+			pointers.delete(event.pointerId);
+			const both = spread();
+			pinch = both ? { distance: both.distance, zoom: frame.zoom } : undefined;
+			if (!pointers.size) stage.classList.remove("is-dragging");
+		};
 		stage.addEventListener("pointerdown", (event) => {
+			// Only the main button drags; a right click keeps the browser's menu.
+			if (event.pointerType === "mouse" && event.button !== 0) return;
 			event.preventDefault();
 			stage.focus();
 			try {
@@ -184,6 +201,11 @@ export function cropPicture(
 		stage.addEventListener("pointermove", (event) => {
 			const last = pointers.get(event.pointerId);
 			if (!last) return;
+			// A mouse whose button came up elsewhere (a menu, another window) ends its drag.
+			if (event.pointerType === "mouse" && event.buttons === 0) {
+				release(event);
+				return;
+			}
 			pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
 			const both = spread();
 			if (pinch && both && pinch.distance > 0) {
@@ -192,25 +214,27 @@ export function cropPicture(
 			} else if (!pinch) frame.pan((event.clientX - last.x) * unit, (event.clientY - last.y) * unit);
 			draw();
 		});
-		const release = (event: PointerEvent) => {
-			pointers.delete(event.pointerId);
-			const both = spread();
-			pinch = both ? { distance: both.distance, zoom: frame.zoom } : undefined;
-			if (!pointers.size) stage.classList.remove("is-dragging");
-		};
 		stage.addEventListener("pointerup", release);
 		stage.addEventListener("pointercancel", release);
+		stage.addEventListener("lostpointercapture", release);
 		stage.addEventListener(
 			"wheel",
 			(event) => {
 				event.preventDefault();
 				const focus = circlePoint(event.clientX, event.clientY);
-				frame.zoomTo(frame.zoom * Math.exp(-event.deltaY * 0.002), focus.x, focus.y);
+				// A trackpad pinch arrives as a wheel with Ctrl held, in much smaller steps.
+				const rate = event.ctrlKey ? 0.01 : 0.002;
+				frame.zoomTo(frame.zoom * Math.exp(-event.deltaY * rate), focus.x, focus.y);
 				draw();
 			},
 			{ passive: false },
 		);
+		// Safari sends a trackpad pinch as gestures; they would zoom the whole page.
+		for (const type of ["gesturestart", "gesturechange", "gestureend"])
+			stage.addEventListener(type, (event) => event.preventDefault());
 		stage.addEventListener("keydown", (event) => {
+			// Browser zoom and other shortcuts are the browser's.
+			if (event.ctrlKey || event.metaKey || event.altKey) return;
 			const step = event.shiftKey ? 32 : 8;
 			// An arrow moves the picture the way it points, as a drag would.
 			const moves: Record<string, [number, number]> = {
@@ -236,13 +260,15 @@ export function cropPicture(
 			draw();
 		});
 
-		// The dialog keeps its keys: Settings behind it neither closes on Escape nor takes Tab.
-		dialog.addEventListener("keydown", (event) => {
+		// While the dialog is open it has the keys, wherever focus is: Settings behind
+		// it neither closes on Escape nor takes Tab.
+		const onKey = (event: KeyboardEvent) => {
 			if (event.key === "Escape") {
 				event.preventDefault();
 				event.stopPropagation();
 				close(undefined);
 			} else if (event.key === "Tab") {
+				event.preventDefault();
 				event.stopPropagation();
 				const controls: HTMLElement[] = [stage, zoom, cancel, save];
 				const index = controls.indexOf(document.activeElement as HTMLElement);
@@ -253,22 +279,39 @@ export function cropPicture(
 					: index < 0 || index === controls.length - 1
 						? 0
 						: index + 1;
-				event.preventDefault();
 				controls[next]!.focus();
 			}
+		};
+		document.addEventListener("keydown", onKey, true);
+		dialog.addEventListener("focusout", (event) => {
+			if (dialog.contains(event.relatedTarget as Node | null)) return;
+			queueMicrotask(() => {
+				if (!closed && !dialog.contains(document.activeElement)) dialog.focus({ preventScroll: true });
+			});
 		});
+		// A press and its release both outside the dialog cancel it, on the click, so the
+		// tap does not go on to whatever lies beneath; a drag that ends outside does not.
+		let pressedOutside = false;
 		backdrop.addEventListener("pointerdown", (event) => {
-			if (event.target === backdrop) close(undefined);
+			pressedOutside = event.target === backdrop;
+		});
+		backdrop.addEventListener("click", (event) => {
+			if (event.target === backdrop && pressedOutside) close(undefined);
+			pressedOutside = false;
 		});
 		const onRoute = () => close(undefined);
+		const onAbort = () => close(undefined);
 		window.addEventListener("hashchange", onRoute);
-		const observer = typeof ResizeObserver === "function" ? new ResizeObserver(fit) : undefined;
+		signal?.addEventListener("abort", onAbort, { once: true });
+		const observer = typeof ResizeObserver === "function" ? new ResizeObserver(fitStage) : undefined;
 
 		function close(result: PictureCrop | undefined): void {
 			if (closed) return;
 			closed = true;
 			observer?.disconnect();
 			window.removeEventListener("hashchange", onRoute);
+			document.removeEventListener("keydown", onKey, true);
+			signal?.removeEventListener("abort", onAbort);
 			backdrop.remove();
 			if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
 			resolve(result);
@@ -276,7 +319,7 @@ export function cropPicture(
 
 		document.body.append(backdrop);
 		observer?.observe(stage);
-		fit();
+		fitStage();
 		draw();
 		stage.focus();
 	});
@@ -284,10 +327,10 @@ export function cropPicture(
 
 /** Loads the photo the member picked and lets them fit it. Throws a
  * PictureFileError when the browser cannot read it. */
-export async function choosePictureCrop(file: File): Promise<PictureCrop | undefined> {
+export async function choosePictureCrop(file: File, signal?: AbortSignal): Promise<PictureCrop | undefined> {
 	const picture = await loadPicture(file);
 	try {
-		return await cropPicture(picture);
+		return signal?.aborted ? undefined : await cropPicture(picture, signal);
 	} finally {
 		picture.release();
 	}

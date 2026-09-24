@@ -1,17 +1,18 @@
 import type { User } from "@supabase/supabase-js";
 import { describeError } from "../../cloud/client.ts";
 import { type Child, h, icon, notice, personAvatar } from "../../ui/dom.ts";
-import { PERSON_PICTURE_EVENT, personPictures } from "../../ui/person-pictures.ts";
+import { PERSON_PICTURE_EVENT, personPictures, personPicturesEpoch } from "../../ui/person-pictures.ts";
 import { choosePictureCrop } from "../../ui/picture-cropper.ts";
-import { PictureFileError } from "../../ui/picture-file.ts";
+import { type PictureCrop, PictureFileError } from "../../ui/picture-file.ts";
 import { phrase, t, uiText } from "../../ui/preferences.ts";
 import { displayName } from "../auth.ts";
 
 /* The account's picture at the head of Settings → General. Clicking it picks a
  * photo, which the member fits to the circle before it is saved; once there is
- * a picture, it opens a small menu to pick another or go back to initials. Where the cloud has no member pictures yet it is the initials disc
- * alone, with nothing to click. Why the last change failed is kept by the store
- * and shown in `error` (placed under the card) until the next attempt, so a
+ * a picture, it opens a small menu to pick another or go back to initials.
+ * Where the cloud has no member pictures yet it is the initials disc alone,
+ * with nothing to click. Why the last change failed is kept by the store and
+ * shown in `error` (placed under the card) until the next attempt, so a
  * redrawn page still shows it and nothing else on the page clears it. */
 
 function failureText(error: unknown): Child[] {
@@ -47,7 +48,7 @@ export function accountPicture(user: User | null): { picture: HTMLElement; error
 		);
 	const choose = item("image", phrase("Choose a new picture"), () => {
 		setOpen(false, true);
-		input.click();
+		if (!picking) input.click();
 	});
 	const remove = item(
 		"close",
@@ -67,6 +68,8 @@ export function accountPicture(user: User | null): { picture: HTMLElement; error
 	);
 	const root = h("div", { class: "account-picture" }, trigger, menu, input);
 	let open = false;
+	/** A photo being opened or fitted; ends if the account changes meanwhile. */
+	let picking: { lifetime: AbortController; epoch: number } | undefined;
 
 	const onOutside = (event: Event) => {
 		if (!root.isConnected) document.removeEventListener("pointerdown", onOutside, true);
@@ -89,13 +92,13 @@ export function accountPicture(user: User | null): { picture: HTMLElement; error
 	async function run(action: () => Promise<void>): Promise<void> {
 		try {
 			await action();
-		} catch (error) {
-			// The store keeps what failed on its way; a photo that never got there is kept here.
-			if (!(error instanceof Error && error.message === "The account changed.")) store!.fail(userId, error);
+		} catch {
+			// The store keeps the failure; update() shows it.
 		}
 	}
 
 	function update(): void {
+		if (picking && picking.epoch !== personPicturesEpoch()) picking.lifetime.abort();
 		const status = store!.status(userId);
 		const busy = store!.busy(userId);
 		// A picture that could not be read may still exist: offer both choices.
@@ -132,6 +135,7 @@ export function accountPicture(user: User | null): { picture: HTMLElement; error
 
 	const hasMenu = () => ["picture", "failed"].includes(store.status(userId));
 	trigger.onclick = () => {
+		if (picking) return;
 		if (hasMenu()) setOpen(!open);
 		else input.click();
 	};
@@ -168,11 +172,22 @@ export function accountPicture(user: User | null): { picture: HTMLElement; error
 	input.onchange = () => {
 		const file = input.files?.[0];
 		input.value = "";
-		if (!file) return;
-		void run(async () => {
-			const crop = await choosePictureCrop(file);
-			if (crop) await store.choose(userId, file, crop);
-		});
+		if (!file || picking) return;
+		const pick = { lifetime: new AbortController(), epoch: personPicturesEpoch() };
+		picking = pick;
+		void (async () => {
+			let crop: PictureCrop | undefined;
+			try {
+				crop = await choosePictureCrop(file, pick.lifetime.signal);
+			} catch (error) {
+				// A photo the browser cannot open never reaches the store; its reason is kept there all the same.
+				if (!pick.lifetime.signal.aborted) store.fail(userId, error);
+				return;
+			} finally {
+				picking = undefined;
+			}
+			if (crop && !pick.lifetime.signal.aborted) await run(() => store.choose(userId, file, crop));
+		})();
 	};
 	avatar.addEventListener(PERSON_PICTURE_EVENT, update);
 	update();

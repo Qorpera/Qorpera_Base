@@ -114,7 +114,86 @@ describe("fitting a picture", () => {
 
 		const second = open();
 		const backdrop = document.querySelector(".picture-crop-backdrop")!;
+		// A drag that starts on the picture and ends outside keeps the dialog.
+		second.stage.dispatchEvent(new PointerEvent("pointerdown", { pointerId: 2, bubbles: true }));
+		second.stage.dispatchEvent(new PointerEvent("pointerup", { pointerId: 2, bubbles: true }));
+		backdrop.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		expect(document.querySelector(".picture-crop")).not.toBeNull();
+		// A press only closes it on its click, which stays on the backdrop.
 		backdrop.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+		expect(document.querySelector(".picture-crop")).not.toBeNull();
+		backdrop.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 		expect(await second.result).toBeUndefined();
+	});
+
+	it("keeps Escape and Tab when focus has left its controls", async () => {
+		const { result, dialog, stage, key } = open();
+		const behind = vi.fn();
+		document.addEventListener("keydown", behind);
+		// A click on the title or the padding moves focus off the controls.
+		stage.blur();
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(document.activeElement).toBe(dialog);
+		(document.activeElement as HTMLElement).blur();
+		expect(document.activeElement).toBe(document.body);
+		key(document.body, "Tab");
+		expect(document.activeElement).toBe(stage);
+		stage.blur();
+		key(document.body, "Escape");
+		document.removeEventListener("keydown", behind);
+		expect(behind).not.toHaveBeenCalled();
+		expect(await result).toBeUndefined();
+	});
+
+	it("closes when its lifetime ends, and never opens after it ended", async () => {
+		const lifetime = new AbortController();
+		const result = cropPicture(landscape, lifetime.signal);
+		expect(document.querySelector(".picture-crop")).not.toBeNull();
+		lifetime.abort();
+		expect(await result).toBeUndefined();
+		expect(document.querySelector(".picture-crop")).toBeNull();
+		expect(await cropPicture(landscape, lifetime.signal)).toBeUndefined();
+		expect(document.querySelector(".picture-crop")).toBeNull();
+	});
+
+	it("drags in view units of the stage as drawn, ignores other buttons and leaves browser zoom alone", async () => {
+		// The stage is drawn at half its layout size: a 10px drag is 20 units behind the circle.
+		const rect = HTMLElement.prototype.getBoundingClientRect;
+		vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+			return this.classList.contains("picture-crop-stage") ? new DOMRect(0, 0, 144, 144) : rect.call(this);
+		});
+		const { result, stage, zoom, key } = open();
+		const pointer = (type: string, x: number, init: PointerEventInit = {}) =>
+			stage.dispatchEvent(
+				new PointerEvent(type, {
+					pointerId: 3,
+					pointerType: "mouse",
+					clientX: x,
+					clientY: 50,
+					bubbles: true,
+					...init,
+				}),
+			);
+		zoom.value = "2";
+		zoom.dispatchEvent(new Event("input"));
+		expect(zoom.getAttribute("aria-valuetext")).toBe("200%");
+		// A right-button drag does nothing.
+		pointer("pointerdown", 50, { button: 2, buttons: 2 });
+		pointer("pointermove", 10, { buttons: 2 });
+		pointer("pointerup", 10);
+		// A left-button drag 10px to the left moves the picture 20 units left.
+		pointer("pointerdown", 50, { button: 0, buttons: 1 });
+		pointer("pointermove", 40, { buttons: 1 });
+		pointer("pointerup", 40);
+		const shortcut = new KeyboardEvent("keydown", { key: "+", ctrlKey: true, bubbles: true, cancelable: true });
+		stage.dispatchEvent(shortcut);
+		expect(shortcut.defaultPrevented).toBe(false);
+		key(stage, "Enter");
+		const crop = (await result)!;
+		const scale = (CROP_CIRCLE / 1000) * 2;
+		expect(crop.side).toBeCloseTo(500);
+		expect(crop.x).toBeCloseTo(550 + 20 / scale);
+		expect(crop.y).toBeCloseTo(250);
 	});
 });
