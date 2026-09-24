@@ -302,11 +302,6 @@ export class ConnectionsView {
 				{ class: "settings-copy" },
 				h("strong", null, provider.label),
 				h("small", { class: "connection-email" }, email ?? "Email unavailable"),
-				h(
-					"small",
-					{ class: "connection-identity", title: `Connection ${connection.connectionId}` },
-					`${live(connection) ? "Connected" : "Added"} ${fmtTime(connection.consentedAt)} · ${connection.connectionId.slice(-8)}`,
-				),
 				!live(connection)
 					? h("small", { role: "status" }, "Sign out and add this account again to reconnect.")
 					: null,
@@ -346,7 +341,6 @@ export class ConnectionsView {
 				return h(
 					"div",
 					{ class: "connection-usage-window" },
-					h("span", { class: "connection-usage-label" }, window.label),
 					h(
 						"div",
 						{ class: "connection-usage-heading" },
@@ -378,11 +372,6 @@ export class ConnectionsView {
 							),
 				);
 			}),
-			h(
-				"span",
-				{ class: "connection-usage-checked" },
-				`Last checked ${fmtTime(usage.observedAt)}${stale ? " · may be out of date" : ""}`,
-			),
 		);
 	}
 	#attempt(provider: (typeof PROVIDERS)[number], attempt: Attempt): HTMLElement {
