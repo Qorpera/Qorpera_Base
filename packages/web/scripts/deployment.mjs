@@ -16,19 +16,18 @@ export function prepareDeployment({ configPath, configJson, release = false, ser
 	const marker = "__QORPERA_WEB_CONNECT_SRC__";
 	if (headersTemplate.split(marker).length !== 2) throw new Error("Expected one connect-src marker in the header template");
 	const headers = headersTemplate.replace(marker, cloudConnectSources(config));
-	const locked = configured || release;
 	return {
 		config,
 		headers,
 		define: {
 			__QORPERA_WEB_CLOUD_CONFIG__: JSON.stringify(config),
-			__QORPERA_WEB_CONFIG_LOCKED__: JSON.stringify(locked),
 		},
 		manifest: {
 			schema: "qorpera.web-deployment/v1",
 			release,
 			config,
-			configOverrideAllowed: !locked,
+			// Kept for deploy checks that read it: no build takes endpoints from the browser.
+			configOverrideAllowed: false,
 			headersSha256: createHash("sha256").update(headers).digest("hex"),
 		},
 	};

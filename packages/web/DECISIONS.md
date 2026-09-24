@@ -80,6 +80,11 @@ production migration" per `deploy/first-node/RUNTIME-STEP-0-ORGANIZATION.md`).
 The contract list is derived from migrations, not the deployed schema, and
 says so; the app must not assume parity.
 
+**Superseded in part (2026-09-24).** The Cloud check page, its RPC probe and
+the browser endpoint override in Settings were removed. Features still gate
+on `PGRST202` where they call the RPC; every build uses the endpoints compiled
+into it.
+
 ## 2026-09-02 — Transcript projection rules (what the web app renders)
 
 Per §6 and launch acceptance item 8, from `qorpera_read_session_events`:
