@@ -175,6 +175,8 @@ async function fixture() {
 			files.set(path, { uid: 0, gid: 0, mode, content: Buffer.from(content) });
 		}),
 		execInstance: vi.fn(async (_project, _name, command) => {
+			// systemctl is-failed exits non-zero for a timer that has not failed.
+			if (command[1] === "is-failed") throw new Error("LXD instance command failed");
 			if (command[2] !== "install") return;
 			const fail = (phase: typeof installFailure) => {
 				if (installFailure === phase) {
@@ -318,9 +320,17 @@ describe("concrete coding executor host composition", () => {
 		});
 		expect(vi.mocked(f.client.execInstance).mock.calls.map((call) => call[2].at(-1))).toEqual([
 			"qorpera-coding-watchdog.timer",
+			"image",
+			"qorpera-coding-watchdog.timer",
 			"install",
 			"initialize",
 		]);
+		expect(f.client.execInstance).toHaveBeenCalledWith(
+			"coding",
+			expect.any(String),
+			["/usr/bin/node", "/opt/qorpera-coding/cloud-coding-storage-guest.mjs", "image"],
+			f.signal,
+		);
 		// Machine authority always names the session lease; cleanup names the owner.
 		const machine = f.call.mock.calls.find((call) => call[0] === "qorpera_authorize_coding_machine")!;
 		expect(machine[1]).toMatchObject({
@@ -494,8 +504,161 @@ describe("concrete coding executor host composition", () => {
 		f.files.get("/opt/qorpera-coding/cloud-coding-watchdog.mjs")!.content = Buffer.from("changed");
 		await expect(f.host.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toThrow("ARTIFACT_CHANGED");
 		const g = await fixture();
-		vi.mocked(g.client.execInstance).mockRejectedValue(new Error("timer stopped"));
-		await expect(g.host.prepareWorkspace(g.claim, g.turn(), g.signal)).rejects.toThrow("timer stopped");
+		vi.mocked(g.client.execInstance).mockImplementation(async (_project, _name, command) => {
+			if (command[1] === "is-enabled") return;
+			throw new Error("LXD instance command failed");
+		});
+		const impatient = new LxdCodingExecutorHost({ ...g.options, guestReadyTimeoutMs: 50 });
+		await expect(impatient.prepareWorkspace(g.claim, g.turn(), g.signal)).rejects.toThrow(
+			"CODING_HOST_GUEST_NOT_READY",
+		);
+	});
+	it("refuses an image that can update itself before delivering any configuration", async () => {
+		// Live 2026-09-24 (run d1f454e2): unattended-upgrades restarted the
+		// guest's services mid-turn and its inhibitor then refused the stop.
+		const f = await fixture();
+		const fallback = vi.mocked(f.client.execInstance).getMockImplementation()!;
+		vi.mocked(f.client.execInstance).mockImplementation(async (project, name, command, signal) => {
+			if (command.at(-1) === "image") throw new Error("LXD instance command failed");
+			return fallback(project, name, command, signal);
+		});
+		await expect(f.host.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toThrow(
+			/^RUNNER_IMAGE_SELF_UPDATE_ENABLED$/,
+		);
+		expect(f.client.pushInstanceFile).not.toHaveBeenCalled();
+		expect(
+			vi
+				.mocked(f.client.execInstance)
+				.mock.calls.filter((call) => ["install", "initialize"].includes(call[2].at(-1)!)),
+		).toHaveLength(0);
+		expect(mocked.seedFetch).not.toHaveBeenCalled();
+	});
+	it("does not report a guest whose agent dropped out during the image check as self-updating", async () => {
+		const f = await fixture();
+		const fallback = vi.mocked(f.client.execInstance).getMockImplementation()!;
+		vi.mocked(f.client.execInstance).mockImplementation(async (project, name, command, signal) => {
+			if (command.at(-1) === "image") throw new Error("LXD instance agent not running");
+			return fallback(project, name, command, signal);
+		});
+		await expect(f.host.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toThrow(
+			/^LXD instance agent not running$/,
+		);
+		expect(f.client.pushInstanceFile).not.toHaveBeenCalled();
+	});
+	it("retries only a guest that is still starting, and fails at once with any other cause", async () => {
+		const f = await fixture();
+		vi.mocked(f.client.execInstance).mockRejectedValue(new Error("LXD request failed (404)"));
+		const started = performance.now();
+		await expect(f.host.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toThrow("LXD request failed (404)");
+		expect(vi.mocked(f.client.execInstance)).toHaveBeenCalledTimes(1);
+		expect(performance.now() - started).toBeLessThan(5000);
+	});
+	it("waits while the guest's agent is not running yet, without probing the timer, then succeeds", async () => {
+		// Live 2026-09-24 (session 26d3688c): the first checks after boot fail
+		// with LXD's "LXD VM agent is not currently running".
+		const f = await fixture();
+		const fallback = vi.mocked(f.client.execInstance).getMockImplementation()!;
+		let offline = 2;
+		vi.mocked(f.client.execInstance).mockImplementation(async (project, name, command, signal) => {
+			if (command[1] === "is-active" && offline-- > 0) throw new Error("LXD instance agent not running");
+			return fallback(project, name, command, signal);
+		});
+		const workspace = await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		expect(workspace.baseSha).toBe(f.baseSha);
+		const verbs = vi.mocked(f.client.execInstance).mock.calls.map((call) => call[2][1]);
+		expect(verbs.filter((verb) => verb === "is-active").length).toBeGreaterThanOrEqual(3);
+		expect(verbs).not.toContain("is-failed");
+		expect(verbs).not.toContain("is-enabled");
+	});
+	it("gives up with CODING_HOST_GUEST_NOT_READY when the guest's agent never comes up", async () => {
+		const f = await fixture();
+		vi.mocked(f.client.execInstance).mockRejectedValue(new Error("LXD instance agent not running"));
+		const impatient = new LxdCodingExecutorHost({ ...f.options, guestReadyTimeoutMs: 50 });
+		const started = performance.now();
+		await expect(impatient.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toThrow(
+			"CODING_HOST_GUEST_NOT_READY",
+		);
+		expect(performance.now() - started).toBeLessThan(5000);
+	});
+	it("goes back to waiting when the agent drops out during the timer probes", async () => {
+		const f = await fixture();
+		const fallback = vi.mocked(f.client.execInstance).getMockImplementation()!;
+		let active = 0,
+			probes = 0;
+		vi.mocked(f.client.execInstance).mockImplementation(async (project, name, command, signal) => {
+			if (command[1] === "is-active" && ++active <= 2) throw new Error("LXD instance command failed");
+			if (command[1] === "is-failed" && ++probes === 1) throw new Error("LXD instance agent not running");
+			return fallback(project, name, command, signal);
+		});
+		const workspace = await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		expect(workspace.baseSha).toBe(f.baseSha);
+		expect(active).toBeGreaterThanOrEqual(3);
+	});
+	it.each(["LXD operation is invalid", "LXD operation failed"])(
+		"fails at once on a generic exec failure (%s)",
+		async (message) => {
+			const f = await fixture();
+			vi.mocked(f.client.execInstance).mockRejectedValue(new Error(message));
+			const started = performance.now();
+			await expect(f.host.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toThrow(message);
+			expect(performance.now() - started).toBeLessThan(5000);
+			expect(vi.mocked(f.client.execInstance)).toHaveBeenCalledTimes(1);
+		},
+	);
+	it("re-reads the VM between readiness checks: one stopped elsewhere fails without waiting out the window", async () => {
+		const f = await fixture();
+		vi.mocked(f.client.execInstance).mockRejectedValue(new Error("LXD instance agent not running"));
+		const running = vi.mocked(f.client.getInstance).getMockImplementation()!;
+		let reads = 0;
+		vi.mocked(f.client.getInstance).mockImplementation(async (project, name, signal) => {
+			const instance = await running(project, name, signal);
+			return ++reads > 2 && instance ? { ...instance, status: "Stopped", statusCode: 102 } : instance;
+		});
+		const started = performance.now();
+		await expect(f.host.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toThrow("CODING_HOST_VM_NOT_RUNNING");
+		expect(performance.now() - started).toBeLessThan(10000);
+		expect(vi.mocked(f.client.execInstance)).toHaveBeenCalledTimes(2);
+	});
+	it("the caller's abort during the readiness wait wins over NOT_READY", async () => {
+		const f = await fixture();
+		const controller = new AbortController();
+		vi.mocked(f.client.execInstance).mockImplementation(async (_project, _name, command) => {
+			if (command[1] === "is-enabled") return;
+			if (command[1] === "is-active")
+				globalThis.setTimeout(() => controller.abort(new Error("CODING_EXECUTOR_LEASE_LOST")), 100);
+			throw new Error("LXD instance command failed");
+		});
+		await expect(f.host.prepareWorkspace(f.claim, f.turn(), controller.signal)).rejects.toThrow(
+			"CODING_EXECUTOR_LEASE_LOST",
+		);
+		expect(vi.mocked(f.client.execInstance).mock.calls.filter((call) => call[2][1] === "is-active")).toHaveLength(1);
+	});
+	it.each([
+		["failed", "is-failed", "CODING_HOST_GUEST_WATCHDOG_FAILED"],
+		["masked or disabled", "is-enabled", "CODING_HOST_GUEST_WATCHDOG_DISABLED"],
+	])("fails at once when the watchdog timer is %s instead of waiting it out", async (_state, verb, code) => {
+		const f = await fixture();
+		vi.mocked(f.client.execInstance).mockImplementation(async (_project, _name, command) => {
+			if (command[1] === "is-active") throw new Error("LXD instance command failed");
+			if (command[1] === "is-failed" && verb === "is-failed") return;
+			if (command[1] === "is-failed" || command[1] === verb) throw new Error("LXD instance command failed");
+		});
+		const started = performance.now();
+		await expect(f.host.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toThrow(code);
+		expect(performance.now() - started).toBeLessThan(5000);
+		expect(vi.mocked(f.client.execInstance).mock.calls.filter((call) => call[2][1] === "is-active")).toHaveLength(1);
+	});
+	it("waits for a freshly booted guest's watchdog timer instead of failing the session", async () => {
+		const f = await fixture();
+		const fallback = vi.mocked(f.client.execInstance).getMockImplementation()!;
+		let checks = 0;
+		vi.mocked(f.client.execInstance).mockImplementation(async (project, name, command, signal) => {
+			if (command[1] === "is-active" && ++checks <= 2) throw new Error("LXD instance command failed");
+			return fallback(project, name, command, signal);
+		});
+		const workspace = await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		expect(workspace.baseSha).toBe(f.baseSha);
+		expect(checks).toBeGreaterThanOrEqual(3);
 	});
 	it("does not publish or push a no-change original head", async () => {
 		const f = await fixture();
@@ -559,6 +722,71 @@ describe("concrete coding executor host composition", () => {
 			release?.();
 		}
 	});
+	it("quiesces a running guest under stop-only authority before the forced power-off", async () => {
+		const f = await fixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		vi.mocked(f.client.execInstance).mockClear();
+		f.call.mockClear();
+		mocked.reconcile.mockClear();
+		await f.host.stopWorkspace(f.claim, f.signal);
+		expect(vi.mocked(f.client.execInstance).mock.calls.map((call) => call[2])).toEqual([
+			["/usr/bin/systemctl", "stop", "qorpera-coding.slice"],
+			["/usr/bin/sync"],
+		]);
+		const quiesced = vi.mocked(f.client.execInstance).mock.invocationCallOrder.at(-1)!;
+		expect(quiesced).toBeLessThan(mocked.reconcile.mock.invocationCallOrder[0]);
+		const cleanup = f.call.mock.calls.findIndex((call) => call[0] === "qorpera_authorize_coding_cleanup");
+		expect(f.call.mock.invocationCallOrder[cleanup]).toBeLessThan(
+			vi.mocked(f.client.execInstance).mock.invocationCallOrder[0],
+		);
+		expect(f.call.mock.calls.some((call) => call[0] === "qorpera_authorize_coding_machine")).toBe(false);
+	});
+	it("powers off without further guest commands when the guest's agent is not running", async () => {
+		const f = await fixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		vi.mocked(f.client.execInstance).mockClear();
+		vi.mocked(f.client.execInstance).mockRejectedValue(new Error("LXD instance agent not running"));
+		await f.host.stopWorkspace(f.claim, f.signal);
+		expect(vi.mocked(f.client.execInstance).mock.calls.map((call) => call[2])).toEqual([
+			["/usr/bin/systemctl", "stop", "qorpera-coding.slice"],
+		]);
+		expect((mocked.reconcile.mock.calls.at(-1)?.[0] as CodingVmReconcileOptions).desiredState).toBe("stopped");
+	});
+	it("still powers off when the quiesce fails, and skips it for a VM that is not running", async () => {
+		const f = await fixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		vi.mocked(f.client.execInstance).mockClear();
+		vi.mocked(f.client.execInstance).mockRejectedValueOnce(new Error("LXD instance command failed"));
+		await f.host.stopWorkspace(f.claim, f.signal);
+		// sync still runs after a failed slice stop; the stop still reconciles.
+		expect(vi.mocked(f.client.execInstance).mock.calls.map((call) => call[2].at(-1))).toEqual([
+			"qorpera-coding.slice",
+			"/usr/bin/sync",
+		]);
+		expect((mocked.reconcile.mock.calls.at(-1)?.[0] as CodingVmReconcileOptions).desiredState).toBe("stopped");
+		const g = await fixture();
+		await g.host.prepareWorkspace(g.claim, g.turn(), g.signal);
+		vi.mocked(g.client.execInstance).mockClear();
+		const running = vi.mocked(g.client.getInstance).getMockImplementation()!;
+		vi.mocked(g.client.getInstance).mockImplementation(async (project, name, signal) => {
+			const instance = await running(project, name, signal);
+			return instance && { ...instance, status: "Stopped", statusCode: 102 };
+		});
+		await g.host.stopWorkspace(g.claim, g.signal);
+		expect(g.client.execInstance).not.toHaveBeenCalled();
+		expect((mocked.reconcile.mock.calls.at(-1)?.[0] as CodingVmReconcileOptions).desiredState).toBe("stopped");
+	});
+	it("gives a stop more than 5 s to settle", async () => {
+		const f = await fixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		const started = performance.now();
+		mocked.reconcile.mockImplementation(async (input: CodingVmReconcileOptions) => {
+			await input.admission.authorize(input.binding, "stop", input.signal);
+			return { state: performance.now() - started < 6000 ? "pending" : "stopped" };
+		});
+		await f.host.stopWorkspace(f.claim, f.signal);
+		expect(performance.now() - started).toBeGreaterThanOrEqual(6000);
+	}, 20000);
 	it("uses the retained SQL binding for cleanup after a deployment policy change", async () => {
 		const f = await fixture();
 		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);

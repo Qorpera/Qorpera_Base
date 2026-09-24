@@ -39,18 +39,51 @@ profile RPCs; RLS is the second read boundary.
 
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
-155 functions, grouped for navigation. Signatures: see the migration that defines each.
+163 functions, grouped for navigation. Signatures: see the migration that defines each.
 
 
-### Members, presence, friends, feedback (9)
+### Members, presence, friends, feedback (17)
 
+- `qorpera_can_read_member_picture(p_object_name)` — the picture bucket's
+  read policy: anything in your own folder, and another account's current
+  picture when `qorpera_can_see_member_picture` allows it.
+- `qorpera_can_see_member_picture(p_user_id)` — yourself, company colleagues,
+  accepted friends, and accounts that sent you a friend request (a request you
+  sent reveals nothing until it is accepted).
+- `qorpera_clear_member_picture` — back to initials; returns
+  `previous_object_name`, which the caller deletes from storage.
+- `qorpera_is_current_member_picture(p_object_name)` — whether an object is
+  the caller's current picture; the bucket's delete policy refuses it until
+  another picture (or none) has replaced it. It shares a per-folder lock with
+  `qorpera_set_member_picture`, so a delete and a choice of one object happen
+  one after the other.
 - `qorpera_list_friends`
 - `qorpera_list_presence_devices`
+- `qorpera_member_picture_objects()` — how many objects the caller's own
+  picture folder holds; the upload policy refuses a fifth in Storage's
+  preflight. The limit itself is enforced by a `before insert` trigger on
+  `storage.objects` (`qorpera_guard_member_picture_insert`, also on a move of
+  `bucket_id`/`name`), which covers the storage service's final write and counts
+  parallel uploads into one folder one after another.
+- `qorpera_member_pictures(p_user_ids uuid[])` — at most 200 accounts; returns
+  `[{user_id, object_name, updated_at}]` only for pictures the caller may see
+  (`qorpera_can_see_member_picture`). Migration
+  `20260924150000_member_pictures`.
+- `qorpera_own_member_picture_objects()` — the caller's own picture folder
+  (`[{object_name, created_at, age_seconds}]`, the age by the cloud's clock),
+  for tidying uploads that never became the picture; use it instead of a
+  storage `list()`, which runs the read policy over the whole bucket.
 - `qorpera_presence_topic_profile`
 - `qorpera_register_presence_device`
 - `qorpera_remove_friend`
 - `qorpera_respond_friend_request`
 - `qorpera_send_friend_request`
+- `qorpera_set_member_picture(p_object_name)` — makes an object the caller
+  uploaded to the private bucket `qorpera-member-pictures` as
+  `<own user UUID>/<sha256>.<webp|jpg|png>` (512 KiB, image types only; RLS lets
+  members write (four objects at most) and delete only in their own folder, and
+  read per `qorpera_can_read_member_picture`) their picture; returns
+  `previous_object_name` for the caller to delete.
 - `qorpera_submit_product_feedback`
 - `qorpera_unregister_presence_device`
 
@@ -164,10 +197,10 @@ profile RPCs; RLS is the second read boundary.
   go to the end of Unassigned), `move_agent {staffAgentId, sectionId|null,
   order?, unpin?}`. The member's own, any member: `set_pins {order}` (at most
   24; pinning unhides), `set_hidden {staffAgentId, hidden}` (hiding unpins).
-  Section names are 1-60 characters, unique per company ignoring case; at most
-  40 sections. The Co-Founder is never placed, pinned or hidden. Agents change
-  the same shared sections through the runtime tool `organize_sidebar`
-  (`qorpera_manage_agent_sidebar`, runner only).
+  Section names are 1-60 characters, unique per company ignoring case; any
+  number of sections (at most 40 until bundle v95). The Co-Founder is never
+  placed, pinned or hidden. Agents change the same shared sections through the
+  runtime tool `organize_sidebar` (`qorpera_manage_agent_sidebar`, runner only).
 
 
 ### Conversations, turns, wakes (28)
@@ -355,7 +388,7 @@ Common request fields: `schema`, `surface`, `title` (1–200), `body?` (≤ 2000
 `expiresAt?` (UTC timestamp; answers after it are refused as expired).
 
 `qorpera_answer_interaction(p_session_id, p_client_input_id, p_interaction_id,
-p_outcome, p_answer)` — `p_interaction_id` is the request's `event_id`. The
+p_outcome, p_answer, p_sponsor_binding_id?, p_sponsor_version?)` — `p_interaction_id` is the request's `event_id`. The
 answer is queued as an ordinary session input (`kind = user_message`, body
 `qorpera.interaction-answer/v1` = `{schema, interactionId, surface, outcome,
 answer}`), so it wakes the agent in its own thread like a message; the client
@@ -369,8 +402,29 @@ member a private thread belongs to, or the creator of a company-visible one);
 idempotent on `p_client_input_id`; `22023` for a shape the surface does not
 allow; `42501` for authority. Expired means a client shows the card as
 expired; the kernel does not synthesize an event for it. Group chats never
-carry cards (the runtime withholds the tool in rooms). Design:
-`THREAD-WIDGETS-DESIGN-20260922.md` in the takeover workspace outputs.
+carry cards (the runtime withholds the tool there and the kernel refuses a
+card on the native path). Design: `THREAD-WIDGETS-DESIGN-20260922.md` in the takeover workspace
+outputs.
+
+*An agent's shared thread (bundle v100)* — a room bound to one agent
+(`executionScope.agentThread`). The agent raises cards there in reply to
+members' posts. Only the member the card was raised for answers it: the
+request event's `actor_user_id` (the member whose post, routine or first run
+the raising run serves), while still a member of the room; approvals still
+need owner or admin. The answer is delivered like a post, on the member's own
+model account: pass `p_sponsor_binding_id` and `p_sponsor_version` (the
+conversation's selected sponsor, as for `qorpera_post_company_room_message`).
+The kernel checks them as the wake materializer will (binding active and
+created by you, connection active, native credential present) and refuses
+with `42501` "Room sponsor is unavailable" otherwise, or `55000` while company
+execution is paused; a refused answer records nothing. An accepted answer's
+input is complete at once, its `interaction_answer` event is in the transcript
+when the RPC returns (never in the pending list), and a room wake runs the
+thread's agent. Elsewhere the two sponsor arguments are ignored. A client shows
+live card controls only to that member; against a cloud before bundle v100
+(`PGRST202` for the seven named arguments) it keeps the card open and says
+answering there is not available yet (the old function would queue an answer
+that never wakes the agent).
 
 ## 7. Desktop IPC channels → cloud equivalents
 
@@ -716,5 +770,16 @@ above.
       requests, screenshots, tool calls, worker follow-up turns or workers per
       todo ("This todo already has eight workers" is gone).
     - What still refuses is listed in the runtime contract, section 7.4. It
-      includes four active workers per agent and one open limit, 128 tool
-      outputs per model request, which leaves with a Codex rebuild.
+      includes one open limit, 128 tool outputs per model request, which
+      leaves with a Codex rebuild.
+
+### 2026-09-24 — from the runtime (bundle v95, `20260924160000_runtime_remove_standing_counts.sql`)
+
+16. **No standing counts.** Removed, with no `_v2`: 32 routines per agent
+    ("Agent routine limit reached"), 64 open todos per agent ("Too many open
+    todos"), 4 active workers per agent ("Four workers are already active") and
+    40 sidebar sections per company ("A company can have at most 40 sections",
+    from `qorpera_manage_company_sidebar` as well as the agent tool). A client
+    that showed or guarded one of these limits should drop it. A Company File
+    change may now wake an agent already earlier in its causal chain; an
+    agent's own write still never wakes its own watch routine.

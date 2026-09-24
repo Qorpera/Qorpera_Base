@@ -49,7 +49,7 @@ for (const icon of [
 	"icon-attach.svg",
 	"provider-google.svg",
 	"provider-gmail.svg",
-	"provider-google-drive.svg",
+	"provider-drive.svg",
 	"provider-github.svg",
 	"provider-openai.svg",
 	"provider-anthropic.svg",

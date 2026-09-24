@@ -30,7 +30,7 @@ export const HOSTED_CONNECTORS: ReadonlyArray<{
 	token?: true;
 }> = [
 	{ id: "gmail", label: "Gmail", logo: "provider-gmail.svg" },
-	{ id: "google_drive", label: "Google Drive", logo: "provider-google-drive.svg" },
+	{ id: "google_drive", label: "Google Drive", logo: "provider-drive.svg" },
 	{ id: "github", label: "GitHub", logo: "provider-github.svg", token: true },
 ];
 

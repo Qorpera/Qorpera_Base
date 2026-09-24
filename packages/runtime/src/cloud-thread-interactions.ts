@@ -28,7 +28,8 @@ const CONTROL_PATTERN = /[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/;
 export const CLOUD_ASK_MEMBER_INSTRUCTIONS =
 	"ask_member puts one typed card in this conversation for the member to answer: a question with options, a secret they enter into the company vault, a form the host fills into the page on your computer, a takeover of your computer for a sign-in or code, a draft message they send or discard, or a credential sign-in the computer performs from the vault. " +
 	"Calling it ends this turn like a final send (text is the sentence shown above the card), so finish every Company File change and coworker message first. " +
-	"The answer arrives as the input of your next wake as qorpera.interaction-answer/v1 with an outcome and, for a question or form, the chosen values; a secret answer never contains the value, only the vault secret's id and version under the connector you named (connectorId, default vault), for a connector operation to use. " +
+	"In your own shared thread, only the member you are answering can answer the card. " +
+	"The answer wakes you again in this conversation as qorpera.interaction-answer/v1: an input of your next wake, or in your own thread the newest thread entry, which wake.payload.inputIds names. It carries an outcome and, for a question or form, the chosen values; a secret answer never contains the value, only the vault secret's id and version under the connector you named (connectorId, default vault), for a connector operation to use. " +
 	"Never ask the member to paste a password, token or code into ordinary chat; raise a secret card, a form or a takeover instead. A declined, dismissed or expired card is the answer: do not raise the same card again at once. " +
 	"Form fields that are secret (password, otp, or secret: true) need a target from your latest page snapshot; the host fills them and you click the site's own submit afterwards. Reuse the same idempotencyKey and arguments when retrying.";
 

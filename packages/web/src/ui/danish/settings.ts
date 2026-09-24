@@ -13,6 +13,28 @@ export const SETTINGS: Record<string, string> = {
 	"Choose a company": "Vælg en virksomhed",
 	"Choose a company to view these settings.": "Vælg en virksomhed for at se disse indstillinger.",
 
+	// Profile picture (app/views/account-picture.ts, ui/picture-file.ts)
+	"Profile picture": "Profilbillede",
+	"Add a profile picture": "Tilføj et profilbillede",
+	"Change profile picture": "Skift profilbillede",
+	"Saving your profile picture": "Gemmer dit profilbillede",
+	"Opening your picture": "Åbner dit billede",
+	"Choose a new picture": "Vælg et nyt billede",
+	"Remove picture": "Fjern billede",
+	"Fit your picture": "Tilpas dit billede",
+	"Drag the picture to move it; zoom to fit.": "Træk i billedet for at flytte det; zoom for at tilpasse.",
+	"Picture position": "Billedets placering",
+	Zoom: "Zoom",
+	Save: "Gem",
+	"Your picture could not be changed.": "Dit billede kunne ikke ændres.",
+	"Your picture could not be saved. Try again in a moment.": "Dit billede kunne ikke gemmes. Prøv igen om lidt.",
+	"Choose a picture file, such as a JPEG, PNG or WebP.": "Vælg en billedfil, for eksempel JPEG, PNG eller WebP.",
+	"Choose a picture smaller than 25 MB.": "Vælg et billede, der er mindre end 25 MB.",
+	"This browser could not read that picture. Try a JPEG or PNG.":
+		"Browseren kunne ikke læse billedet. Prøv en JPEG eller PNG.",
+	"This browser cannot prepare pictures.": "Browseren kan ikke klargøre billeder.",
+	"That picture is too detailed to upload.": "Billedet er for detaljeret til at blive uploadet.",
+
 	// General (app/views/account.ts, appearance.ts, ui/preference-picker.ts)
 	"Your browser could not save the language preference.": "Din browser kunne ikke gemme dit valg af sprog.",
 	"Your browser could not save the time zone preference.": "Din browser kunne ikke gemme dit valg af tidszone.",

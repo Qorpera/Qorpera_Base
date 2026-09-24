@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	type CodingGuestCommandPorts,
+	executeCodingGuestCommand,
 	parseCodingGuestCommandRequest,
 	refreshCodingGuestCommandLease,
 	runCodingGuestCommand,
@@ -19,7 +20,8 @@ afterEach(async () => {
 async function fixture() {
 	const root = await mkdtemp(join(tmpdir(), "coding-command-guest-"));
 	roots.push(root);
-	for (const name of ["inbox", "commands", "output", "repository"]) await mkdir(join(root, name), { mode: 0o755 });
+	// Production layout: the output root is the custody root's logs directory.
+	for (const name of ["inbox", "commands", "logs", "repository"]) await mkdir(join(root, name), { mode: 0o755 });
 	const request = {
 		schema: "qorpera.coding-command-request/v1",
 		workerId: randomUUID(),
@@ -40,12 +42,14 @@ async function fixture() {
 			workerId: request.workerId,
 			vmId: request.vmId,
 			bootId,
+			// start chowns each log to uid:gid, so the test user must hold both;
+			// CI runs this file under a gid >= 1000 (see step2-lxd.yml).
 			uid: Math.max(1000, process.getuid?.() ?? 1000),
 			gid: Math.max(1000, process.getgid?.() ?? 1000),
 			workspacePath: join(root, "repository"),
 			homePath: join(root, "home"),
 			cachePath: join(root, "cache"),
-			outputRoot: join(root, "output"),
+			outputRoot: join(root, "logs"),
 			resourceProfile: {
 				maxTimeoutMs: 1800000,
 				memoryBytes: 2147483648,
@@ -114,14 +118,14 @@ describe("coding VM command supervisor", () => {
 	it("bounds derived read pages without deleting authoritative logs", async () => {
 		const f = await fixture();
 		await runCodingGuestCommand("start", f.request.commandId, f.ports);
-		await writeFile(join(f.root, "output", f.request.commandId, "output.log"), "x".repeat(128));
+		await writeFile(join(f.root, "logs", f.request.commandId, "output.log"), "x".repeat(128));
 		for (let offset = 0; offset < 64; offset++)
 			await runCodingGuestCommand("read", f.request.commandId, f.ports, { offset, limit: 4 });
 		const pages = (await readdir(join(f.root, "commands", f.request.commandId))).filter((p) =>
 			p.startsWith("read-page-"),
 		);
 		expect(pages.length).toBeLessThanOrEqual(32);
-		expect(await readFile(join(f.root, "output", f.request.commandId, "output.log"), "utf8")).toBe("x".repeat(128));
+		expect(await readFile(join(f.root, "logs", f.request.commandId, "output.log"), "utf8")).toBe("x".repeat(128));
 	});
 	it("denies missing or changed storage before reading an inbox or dispatching a unit", async () => {
 		const f = await fixture();
@@ -179,6 +183,9 @@ describe("coding VM command supervisor", () => {
 		expect(command[1]).toContain("--property=RemainAfterExit=yes");
 		expect(command[1]).toContain("--property=ExitType=cgroup");
 		expect(command[1]).toContain("--property=ProtectProc=invisible");
+		// The helper's own refusal line stays in the guest's journal.
+		expect(command[1]).toContain("--property=StandardError=journal");
+		expect(command[1]).not.toContain("--property=StandardError=null");
 		expect(command[1]).not.toContain(f.request.command);
 		expect(JSON.parse(await readFile(join(f.root, "commands", f.request.commandId, "status.json"), "utf8"))).toEqual(
 			result,
@@ -205,7 +212,7 @@ describe("coding VM command supervisor", () => {
 	it("retains successful terminal state after transient unit loss", async () => {
 		const f = await fixture();
 		await runCodingGuestCommand("start", f.request.commandId, f.ports);
-		await writeFile(join(f.root, "output", f.request.commandId, "output.log"), "passed\n");
+		await writeFile(join(f.root, "logs", f.request.commandId, "output.log"), "passed\n");
 		f.setStatus(
 			"LoadState=loaded\nActiveState=active\nSubState=exited\nResult=success\nExecMainCode=1\nExecMainStatus=0\n",
 		);
@@ -239,7 +246,7 @@ describe("coding VM command supervisor", () => {
 	it("reports reboot uncertainty without invoking another command", async () => {
 		const f = await fixture();
 		await runCodingGuestCommand("start", f.request.commandId, f.ports);
-		await writeFile(join(f.root, "output", f.request.commandId, "output.log"), "retained before reboot");
+		await writeFile(join(f.root, "logs", f.request.commandId, "output.log"), "retained before reboot");
 		f.system.mockClear();
 		expect(
 			(
@@ -265,7 +272,7 @@ describe("coding VM command supervisor", () => {
 	it("bounds invalid UTF8 and output truncation in bytes", async () => {
 		const f = await fixture();
 		await runCodingGuestCommand("start", f.request.commandId, f.ports);
-		await writeFile(join(f.root, "output", f.request.commandId, "output.log"), Buffer.alloc(4097, 255));
+		await writeFile(join(f.root, "logs", f.request.commandId, "output.log"), Buffer.alloc(4097, 255));
 		const result = await runCodingGuestCommand("read", f.request.commandId, f.ports);
 		expect(Buffer.byteLength(result.output)).toBeLessThanOrEqual(4096);
 		expect(result.truncated).toBe(true);
@@ -274,7 +281,7 @@ describe("coding VM command supervisor", () => {
 		const f = await fixture();
 		await runCodingGuestCommand("start", f.request.commandId, f.ports);
 		const contents = `first\n${"x".repeat(12000)}\nlast\n`;
-		await writeFile(join(f.root, "output", f.request.commandId, "output.log"), contents);
+		await writeFile(join(f.root, "logs", f.request.commandId, "output.log"), contents);
 		f.setStatus(
 			"LoadState=loaded\nActiveState=active\nSubState=exited\nResult=success\nExecMainCode=1\nExecMainStatus=0\n",
 		);
@@ -314,7 +321,7 @@ describe("coding VM command supervisor", () => {
 		expect(args).toContain(
 			`--property=ReadWritePaths=${config.workspacePath} ${config.homePath} ${config.cachePath} ${join(config.outputRoot, f.request.commandId)}`,
 		);
-		await writeFile(join(f.root, "output", f.request.commandId, "output.log"), Buffer.alloc(1048577, 120));
+		await writeFile(join(f.root, "logs", f.request.commandId, "output.log"), Buffer.alloc(1048577, 120));
 		expect(
 			(await runCodingGuestCommand("read", f.request.commandId, f.ports, { tail: true, limit: 16 })).log,
 		).toMatchObject({ totalBytes: 1048576, limitBytes: 1048576, limitReached: true });
@@ -332,14 +339,38 @@ describe("coding VM command supervisor", () => {
 		await expect(runCodingGuestCommand("start", f.request.commandId, f.ports)).rejects.toThrow();
 		expect(f.system.mock.calls.filter(([executable]) => executable === "/usr/bin/systemd-run")).toHaveLength(1);
 	});
+	it("reads a refused execute step back as failed with only its code, never unconfirmed", async () => {
+		const f = await fixture();
+		await runCodingGuestCommand("start", f.request.commandId, f.ports);
+		const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+		try {
+			const refused = await executeCodingGuestCommand(f.request.commandId, {
+				...f.ports,
+				assertStorage: async () => {
+					throw new Error("CODING_GUEST_STORAGE_MOUNT_INVALID");
+				},
+			});
+			expect(refused).toBe(125);
+		} finally {
+			stderr.mockRestore();
+		}
+		f.setStatus(
+			"LoadState=loaded\nActiveState=failed\nSubState=failed\nResult=exit-code\nExecMainCode=1\nExecMainStatus=125\n",
+		);
+		expect(await runCodingGuestCommand("read", f.request.commandId, f.ports)).toMatchObject({
+			state: "failed",
+			exitCode: 125,
+			output: "CODING_GUEST_STORAGE_MOUNT_INVALID\n",
+		});
+	});
 	it("rejects a replaced output ancestor without reading its target", async () => {
 		const f = await fixture();
 		await runCodingGuestCommand("start", f.request.commandId, f.ports);
-		await rm(join(f.root, "output", f.request.commandId), { recursive: true });
+		await rm(join(f.root, "logs", f.request.commandId), { recursive: true });
 		const outside = join(f.root, "private");
 		await mkdir(outside);
 		await writeFile(join(outside, "output.log"), "private bytes");
-		await symlink(outside, join(f.root, "output", f.request.commandId));
+		await symlink(outside, join(f.root, "logs", f.request.commandId));
 		const receipt = await runCodingGuestCommand("read", f.request.commandId, f.ports);
 		expect(receipt).toMatchObject({ state: "unconfirmed", output: "" });
 	});

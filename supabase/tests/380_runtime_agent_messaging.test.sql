@@ -159,9 +159,9 @@ begin
 	perform pg_temp.wake_assert(v_ancestry -> 'agentIds' = to_jsonb(v_wake.causal_agent_ids) and (v_ancestry ->> 'rootId')::uuid = v_wake.causal_root_id,
 		'A pre-v70 coworker occurrence keeps its ancestry');
 	perform pg_temp.wake_assert(public.qorpera_wake_authorized(v_legacy),'A pre-v70 coworker occurrence stays authorized');
-	-- Under the old rule a reply to a visited agent was fenced; a hop-0 row addressed to one still is.
+	-- A hop-0 row addressed to the sending agent itself is refused: an agent never messages itself.
 	v_legacy := jsonb_populate_record(v_wake,jsonb_build_object('causal_hop_count',0,'staff_agent_id','30000000-0000-4000-8000-000000000030'));
-	perform pg_temp.wake_assert(public.qorpera_coworker_wake_ancestry(v_legacy) is null,'A pre-v70 revisit stays fenced');
+	perform pg_temp.wake_assert(public.qorpera_coworker_wake_ancestry(v_legacy) is null,'A pre-v70 message to oneself stays refused');
 	-- A wake naming a session that is not the receiver's own thread is refused at admission.
 	perform pg_temp.wake_error(format($sql$insert into public.qorpera_wake_occurrences(id,profile_id,environment_id,wake_kind,source_kind,staff_agent_id,
 		parent_run_id,sponsor_binding_id,sponsor_version,session_id,trigger_id,occurrence_key,scheduled_for,not_before,payload)

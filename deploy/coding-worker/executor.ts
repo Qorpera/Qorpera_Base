@@ -11,6 +11,7 @@ import { createCodingNasStorage } from "../../packages/runner-orchestrator/src/c
 import { lxdCodingVmPlan } from "../../packages/runner-orchestrator/src/coding-vm.ts";
 import { LxdUnixClient } from "../../packages/runner-orchestrator/src/lxd-client.ts";
 import { HttpCloudCodingCommandService } from "../../packages/runtime/src/cloud-coding-command-http.ts";
+import { codingErrorCode } from "../../packages/runtime/src/cloud-coding-error-code.ts";
 import { parseCodingGuestConfiguration } from "../../packages/runtime/src/cloud-coding-guest-configuration.ts";
 import { authorizeCodingCommand } from "./command-authority.ts";
 import { CodingExecutorHttpControl } from "./control.ts";
@@ -99,6 +100,13 @@ export function parseCodingExecutorConfiguration(value: unknown): Config {
 	};
 }
 
+/** A loggable code for an executor error: fixed identifiers only (they carry
+ * no credential or repository content), else UNCLASSIFIED. The guest's
+ * refusal line uses the same rule. */
+export function errorCode(error: unknown): string {
+	return codingErrorCode(error);
+}
+
 /** Independent Linux service: the identity host runs the model turn, this
  * service runs the repository VM, the command gateway and the Git broker. No
  * member client participates in this loop. */
@@ -138,7 +146,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		},
 	});
 	const stop = new AbortController();
-	const shutdown = () => stop.abort();
+	const shutdown = () => stop.abort(new Error("CODING_EXECUTOR_SHUTDOWN"));
 	process.on("SIGTERM", shutdown);
 	process.on("SIGINT", shutdown);
 	const commands = new HttpCloudCodingCommandService({
@@ -156,7 +164,12 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	});
 	try {
 		await commands.start(stop.signal);
-		const executor = new CloudCodingExecutor({ control, host, owner: config.owner });
+		const executor = new CloudCodingExecutor({
+			control,
+			host,
+			owner: config.owner,
+			report: (stage, error) => console.error(JSON.stringify({ event: "coding-turn-error", stage, code: errorCode(error) })),
+		});
 		while (!stop.signal.aborted) {
 			try {
 				const status = await executor.runOnce(stop.signal);

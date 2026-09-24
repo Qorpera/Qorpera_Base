@@ -36,6 +36,62 @@
 .settings-content .row { flex-wrap: wrap; }
 .settings-group { margin: 28px 0; }
 .settings-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 11px; min-height: 72px; padding: 11px 13px; border-radius: 13px; background: #f1f1ef; }
+/* The account card leads with the member's picture: a camera badge says it can
+ * be changed, a click picks a photo, and once there is one a small menu offers
+ * another or initials again. */
+.settings-account { grid-template-columns: auto minmax(0, 1fr) auto; gap: 14px; }
+.account-picture { position: relative; display: grid; }
+.account-picture .person-avatar { width: 48px; height: 48px; font-size: 16px; }
+.account-picture-button { position: relative; display: grid; padding: 0; border: 0; border-radius: 50%; background: none; color: inherit; cursor: pointer; }
+.account-picture-button:disabled { cursor: default; }
+.account-picture-button::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: transparent; transition: background 120ms ease; pointer-events: none; }
+.account-picture.is-changeable .account-picture-button:not(:disabled, [aria-busy]):is(:hover, [aria-expanded="true"])::after { background: rgba(0, 0, 0, 0.16); }
+.account-picture.is-busy .account-picture-button { cursor: progress; }
+.account-picture-badge { position: absolute; right: -4px; bottom: -4px; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--overlay); color: var(--text); box-shadow: 0 0 0 2px #f1f1ef, 0 1px 3px rgba(0, 0, 0, 0.2); pointer-events: none; }
+.account-picture-badge[hidden] { display: none; }
+.account-picture-badge .icon { width: 13px; height: 13px; stroke-width: 2; }
+.account-picture.is-busy .person-avatar { opacity: 0.5; }
+.account-picture.is-busy .account-picture-button::before { content: ""; position: absolute; inset: -3px; z-index: 1; border: 2px solid transparent; border-top-color: var(--text-soft); border-radius: 50%; animation: account-picture-spin 800ms linear infinite; }
+@keyframes account-picture-spin { to { transform: rotate(1turn); } }
+@media (prefers-reduced-motion: reduce) { .account-picture.is-busy .account-picture-button::before { animation: none; border-color: var(--text-soft); } }
+.account-picture-menu {
+	position: absolute; top: calc(100% + 8px); left: -6px; z-index: 5; width: 224px;
+	display: flex; flex-direction: column; gap: 1px; padding: 6px;
+	border: 1px solid var(--border); border-radius: 14px; background: var(--overlay);
+	box-shadow: 0 22px 48px rgba(11, 11, 11, 0.14), 0 2px 8px rgba(11, 11, 11, 0.06);
+}
+.account-picture-menu[hidden] { display: none; }
+.account-picture-item {
+	display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 12px;
+	border: 0; border-radius: 9px; background: transparent; color: var(--text);
+	font: inherit; font-size: 13px; font-weight: 550; text-align: left; cursor: pointer;
+}
+.account-picture-item:hover { background: var(--hover); }
+.account-picture-item .icon { width: 16px; height: 16px; flex: none; color: var(--text-soft); }
+.account-picture-remove, .account-picture-remove .icon { color: #ac3934; }
+.account-picture-menu:focus { outline: none; }
+/* Fitting a picture to the circle before it is saved (ui/picture-cropper.ts): the
+ * view is laid out at 288 units and scaled to the stage; outside the circle is dimmed. */
+.modal-backdrop.picture-crop-backdrop { z-index: 600; overflow-y: auto; place-items: safe center; padding: 12px 0; }
+.picture-crop:focus { outline: none; }
+.picture-crop { width: min(360px, 92vw); display: flex; flex-direction: column; gap: 14px; padding: 20px; border-radius: var(--radius-xl); background: var(--overlay); box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25); }
+.picture-crop h2 { margin: 0; font-size: 16px; font-weight: 600; }
+/* Sized by the height too, so Save stays on screen on a short or zoomed window. */
+.picture-crop-stage { position: relative; width: min(288px, 100%, max(160px, calc(100dvh - 240px))); aspect-ratio: 1; margin: 0 auto; overflow: hidden; border-radius: 14px; background: #1d1d1b; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
+.picture-crop-stage.is-dragging { cursor: grabbing; }
+.picture-crop-stage:focus-visible { outline: 2px solid #5b84c4; outline-offset: 2px; }
+.picture-crop-view { position: absolute; left: 0; top: 0; width: 288px; height: 288px; transform-origin: 0 0; }
+.picture-crop-image { position: absolute; left: 0; top: 0; max-width: none; transform-origin: 0 0; pointer-events: none; user-select: none; -webkit-user-drag: none; }
+.picture-crop-circle { position: absolute; left: 24px; top: 24px; width: 240px; height: 240px; border-radius: 50%; box-shadow: 0 0 0 999px rgba(0, 0, 0, 0.55), inset 0 0 0 2px rgba(255, 255, 255, 0.9); pointer-events: none; }
+.picture-crop-zoom-row { display: flex; align-items: center; gap: 10px; color: var(--text-soft); }
+.picture-crop-zoom { flex: 1; min-width: 0; accent-color: var(--primary); }
+.picture-crop-zoom-small .icon { width: 14px; height: 14px; }
+.picture-crop-zoom-large .icon { width: 20px; height: 20px; }
+.picture-crop-zoom-small, .picture-crop-zoom-large { display: grid; place-items: center; width: 20px; }
+.picture-crop-help { margin: 0; color: var(--text-muted); font-size: 12px; text-align: center; }
+
+.account-picture-error { margin-top: 8px; }
+.account-picture-error[hidden] { display: none; }
 .settings-copy { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
 .settings-copy strong { font-size: 13px; font-weight: 600; }
 .settings-copy small { font-size: 11.5px; color: #797975; }
@@ -219,6 +275,9 @@
  .settings-choices { gap: 10px; }
  .settings-plan-grid { grid-template-columns: minmax(0, 1fr); }
  .billing-row { grid-template-columns: minmax(0, 1fr) auto; }
+ /* The picture takes the room the email needs: Sign out moves under the email. */
+ .settings-account { grid-template-columns: auto minmax(0, 1fr); row-gap: 8px; }
+ .settings-account > .btn { grid-column: 2; justify-self: start; }
  .billing-value { grid-column: 1 / -1; }
  .swatch-window { gap: 3px; padding-top: 14%; }
  .swatch-bar { height: 4px; }

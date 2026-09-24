@@ -14,6 +14,7 @@ import {
 } from "../../ui/preferences.ts";
 import { timeZoneCity, timeZoneEntries } from "../../ui/time-zones.ts";
 import { type AuthController, displayName } from "../auth.ts";
+import { accountPicture } from "./account-picture.ts";
 import { composerColorChoices, themeChoices } from "./appearance.ts";
 
 /** Each language by its own name; the list shows it again in the interface's. */
@@ -115,6 +116,7 @@ export function renderAccount(
 	setState: (next: AccountViewState) => void,
 ): void {
 	const user = auth.store.get().user;
+	const picture = accountPicture(user);
 	const provider: string = user?.app_metadata?.provider ?? "email";
 	const { labels, language, timeZone } = pickersFor(container, setState);
 	const focused =
@@ -139,7 +141,8 @@ export function renderAccount(
 				h("h2", null, uiText("Account")),
 				h(
 					"div",
-					{ class: "settings-card" },
+					{ class: "settings-card settings-account" },
+					picture.picture,
 					h(
 						"div",
 						{ class: "settings-copy" },
@@ -152,6 +155,7 @@ export function renderAccount(
 					),
 					button(uiText("Sign out"), () => void auth.signOut()),
 				),
+				picture.error,
 			),
 			h(
 				"section",

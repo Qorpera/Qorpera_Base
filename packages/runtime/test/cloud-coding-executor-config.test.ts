@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseCodingExecutorConfiguration } from "../../../deploy/coding-worker/executor.ts";
+import { errorCode, parseCodingExecutorConfiguration } from "../../../deploy/coding-worker/executor.ts";
 
 function fixture() {
 	return {
@@ -161,5 +161,47 @@ describe("coding executor service configuration", () => {
 		expect(() =>
 			parseCodingExecutorConfiguration({ ...config, guest: { ...config.guest, watchdogHelperSha256: "" } }),
 		).toThrow();
+	});
+});
+
+describe("executor error codes", () => {
+	it("logs only the fixed CODING_* and LXD codes, never other text", () => {
+		expect(errorCode(new Error("CODING_HOST_GUEST_NOT_READY"))).toBe("CODING_HOST_GUEST_NOT_READY");
+		expect(errorCode(new Error("LXD instance command failed"))).toBe("LXD instance command failed");
+		expect(errorCode(new Error("token ghp_abcdefghijklmnopqrstuvwxyz0123 refused"))).toBe("UNCLASSIFIED");
+		expect(errorCode(new Error("LXD request failed: https://x/?token=abc"))).toBe("UNCLASSIFIED");
+		expect(errorCode("CODING_X")).toBe("UNCLASSIFIED");
+	});
+	it("keeps a coded reason and an LXD status, never free text after them", () => {
+		expect(errorCode(new Error("CODING_HOST_MACHINE_REFUSED:MACHINE_CAPACITY_EXHAUSTED"))).toBe(
+			"CODING_HOST_MACHINE_REFUSED:MACHINE_CAPACITY_EXHAUSTED",
+		);
+		expect(errorCode(new Error("LXD request failed (404)"))).toBe("LXD request failed (404)");
+		expect(errorCode(new Error("CODING_HOST_MACHINE_REFUSED:"))).toBe("UNCLASSIFIED");
+		expect(errorCode(new Error("CODING_X:reason with spaces"))).toBe("UNCLASSIFIED");
+		expect(errorCode(new Error("CODING_X:A:B"))).toBe("UNCLASSIFIED");
+		expect(errorCode(new Error("LXD request failed (4040)"))).toBe("UNCLASSIFIED");
+		expect(errorCode(new Error("LXD: VM agent isn't currently running"))).toBe("UNCLASSIFIED");
+	});
+	it("names aborts and timeouts, preferring their coded reason", () => {
+		expect(errorCode(new DOMException("The operation was aborted due to timeout", "TimeoutError"))).toBe(
+			"TimeoutError",
+		);
+		const aborted = new AbortController();
+		aborted.abort();
+		expect(errorCode(aborted.signal.reason)).toBe("AbortError");
+		const lease = Object.assign(new Error("The operation was aborted"), {
+			name: "AbortError",
+			cause: new Error("CODING_EXECUTOR_LEASE_LOST"),
+		});
+		expect(errorCode(lease)).toBe("CODING_EXECUTOR_LEASE_LOST");
+		const leaky = Object.assign(new Error("aborted"), { name: "AbortError", cause: new Error("secret text") });
+		expect(errorCode(leaky)).toBe("AbortError");
+	});
+	it("keeps a system error's errno code, never its message", () => {
+		expect(
+			errorCode(Object.assign(new Error("EACCES: permission denied, open '/secret/path'"), { code: "EACCES" })),
+		).toBe("ERRNO:EACCES");
+		expect(errorCode(Object.assign(new Error("free text"), { code: "not an errno" }))).toBe("UNCLASSIFIED");
 	});
 });
