@@ -198,6 +198,30 @@ label > input, label > select { font-weight: 400; }
 .account-separator { height: 1px; flex: none; margin: 4px 6px; background: var(--border); }
 .account-signout { color: var(--text-muted); }
 
+/* Right-click menus (the rail's agents and sections), Grok Bot's shape. */
+.context-menu {
+	position: fixed; z-index: 700; min-width: 216px; max-width: 320px;
+	display: flex; flex-direction: column; gap: 1px; padding: 5px;
+	border: 1px solid var(--border); border-radius: 12px; background: var(--overlay);
+	box-shadow: 0 22px 48px rgba(11, 11, 11, 0.14), 0 2px 8px rgba(11, 11, 11, 0.06);
+	max-height: calc(100dvh - 16px); overflow-y: auto; overscroll-behavior: contain;
+}
+.context-menu:focus { outline: none; }
+.context-menu-item {
+	display: flex; flex: none; align-items: center; gap: 10px; width: 100%; padding: 7px 10px;
+	border: 0; border-radius: 8px; background: transparent; color: var(--text);
+	font: inherit; font-size: 13.5px; font-weight: 500; line-height: 18px; text-align: left; cursor: default;
+}
+.context-menu-item:hover, .context-menu-item:focus-visible, .context-menu-item.is-open { background: var(--hover); outline: none; }
+.context-menu-item .icon { width: 16px; height: 16px; flex: none; color: var(--text-soft); }
+.context-menu-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.context-menu-chevron { display: grid; margin-right: -3px; color: var(--text-soft); }
+.context-menu-chevron .icon { width: 14px; height: 14px; }
+.context-menu-item.danger, .context-menu-item.danger .icon { color: var(--danger); }
+.context-menu-separator { height: 1px; flex: none; margin: 4px 6px; background: var(--border); }
+.name-dialog-title { margin: 0; font-size: 16px; font-weight: 650; line-height: 22px; }
+.name-dialog-input { width: 100%; }
+
 /* rail */
 /* The V24 company rail. RailLayout sets its width on the rail and its edge, the only two
  * readers; not inheriting, a change never restyles what is inside the rail. */
@@ -272,8 +296,66 @@ label > input, label > select { font-weight: 400; }
 .cofounder-home:hover .cofounder-status { border-color: var(--rail-hover); }
 .cofounder-home.active .cofounder-status { border-color: var(--rail-selection); }
 
-.rail-list { display: grid; gap: 0; }
-.rail-scroll > .rail-list:first-child { margin-top: 14px; }
+/* Pinned agents: this member's square cards right under the Co-Founder, centered as a
+ * group (Grok Bot's pinned row). */
+.rail-pinned {
+	display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 6px;
+	padding: 0 0 10px; border-radius: 14px;
+}
+.rail-pinned.is-empty { display: none; }
+.rail-pin {
+	position: relative; flex: none; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px;
+	width: 86px; height: 86px; padding: 7px 5px 5px; border-radius: 12px; color: var(--text); text-align: center;
+	-webkit-touch-callout: none;
+}
+.rail-pin:hover { background: var(--rail-hover); text-decoration: none; }
+.rail-pin.active, .rail-pin.active:hover { background: var(--rail-selection); color: #fff; }
+.rail-pin-stand { position: relative; display: grid; place-items: center; width: 52px; height: 52px; }
+.rail-pin .figure { width: 52px; height: 52px; }
+.rail-pin-name { max-width: 100%; font-size: 11.5px; font-weight: 600; line-height: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-pin:hover .rail-row-status { border-color: var(--rail-hover); }
+.rail-pin.active .rail-row-status { border-color: var(--rail-selection); }
+.rail-drop-slot { display: none; }
+/* The company's sections: a quiet title over its agents. Unassigned carries the rest
+ * and the group chats; its title shows only once a section exists. */
+.rail-section { border-radius: 12px; }
+.rail-section-title {
+	padding: 12px 8px 5px; font-size: 12px; font-weight: 600; line-height: 16px; color: var(--rail-small);
+	overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: 6px;
+	user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+}
+.rail-section-title[hidden] { display: none; }
+.rail-section-title:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.rail-section-list { display: grid; gap: 0; }
+.rail-scroll > :is(.rail-section, .rail-pinned):first-child { margin-top: 14px; }
+.rail-row, .rail-pin, .cofounder-home { -webkit-touch-callout: none; }
+.rail-row.menu-open, .rail-pin.menu-open, .cofounder-home.menu-open { background: var(--rail-hover); }
+.rail-row.active.menu-open, .rail-pin.active.menu-open, .cofounder-home.active.menu-open { background: var(--rail-selection); }
+/* Dragging an agent: every place it can land is an invisible container; the one under
+ * the pointer lights up (no border) and a thin line shows where the agent lands. */
+.rail-scroll { position: relative; }
+.rail-dragging :is(.rail-section, .rail-pinned) { transition: background-color 120ms ease; }
+.rail-dragging [data-drop-zone].is-drop-target { background: var(--rail-hover); }
+.rail-dragging .rail-pinned.is-empty { display: flex; margin-bottom: 6px; padding: 0; }
+.rail-dragging .rail-pinned.is-empty .rail-drop-slot {
+	display: grid; flex: 1; place-items: center; height: 64px; color: var(--rail-small); font-size: 12px; font-weight: 550;
+}
+.rail-dragging .rail-section-list:empty { min-height: 44px; }
+.rail-dragging :is(.rail-row, .rail-pin):hover:not(.active) { background: transparent; }
+.is-drag-source { opacity: 0.28; }
+.rail-drag-ghost {
+	--rail: var(--sidebar-surface); --rail-hover: var(--sidebar-hover); --rail-selection: var(--composer-accent);
+	--rail-status: var(--agent-active); --rail-status-failed: #ff3b30;
+	position: fixed; left: 0; top: 0; z-index: 600; margin: 0; pointer-events: none;
+	background: var(--rail); border-radius: 12px; opacity: 0.96;
+	box-shadow: 0 14px 32px rgba(11, 11, 11, 0.18), 0 2px 8px rgba(11, 11, 11, 0.08);
+}
+.rail-drop-marker { position: absolute; z-index: 5; height: 2px; border-radius: 1px; background: var(--rail-selection); pointer-events: none; }
+.rail-drop-marker.vertical { width: 2px; }
+/* Dragged from the collapsed rail, the image is the figure alone, as the row shows it there. */
+.rail-drag-ghost.compact :is(.rail-row-copy, .rail-pin-name) { display: none; }
+.rail-drag-ghost.compact.rail-row { grid-template-columns: 1fr; justify-items: center; padding: 5px; }
+.rail-drag-active, .rail-drag-active * { cursor: grabbing !important; user-select: none; -webkit-user-select: none; }
 .rail-row {
 	--rail-row-figure: 40px;
 	display: grid; grid-template-columns: var(--rail-row-figure) minmax(0, 1fr); align-items: center; gap: 2px;
@@ -300,7 +382,7 @@ label > input, label > select { font-weight: 400; }
  * the caption rebuilds its letters when shown (conversation.css pauses it while hidden). */
 .status-wave-word { display: inline-block; max-width: 100%; }
 .status-wave-letter { display: inline-block; color: inherit; animation: status-ink-wave 1400ms ease-in-out infinite; animation-delay: var(--wave-delay, 0ms); }
-.rail-row.active, .cofounder-home.active { --status-crest: #fff; }
+.rail-row.active, .rail-pin.active, .cofounder-home.active { --status-crest: #fff; }
 @keyframes status-ink-wave {
 	0%, 10%, 50%, 100% { color: inherit; text-shadow: 0 0 0 transparent; }
 	30% { color: var(--status-crest, var(--text)); text-shadow: -.18px 0 0 currentColor, .18px 0 0 currentColor; }
@@ -316,6 +398,13 @@ label > input, label > select { font-weight: 400; }
 .rail-compact .cofounder-stand { top: 8px; }
 .rail-compact .cofounder-status { width: 16px; height: 16px; border-width: 2px; }
 .rail-compact .rail-row { grid-template-columns: 1fr; padding: 5px; justify-items: center; }
+/* Collapsed, the pinned cards are figures in the column and sections part with a hairline. */
+.rail-compact .rail-pinned { flex-direction: column; align-items: center; padding-bottom: 4px; }
+.rail-compact .rail-pin { width: auto; height: auto; padding: 5px; }
+.rail-compact .rail-pin-name, .rail-compact .rail-section-title { display: none; }
+.rail-compact .rail-pin-stand, .rail-compact .rail-pin .figure { width: 50px; height: 50px; }
+.rail-compact .rail-dragging .rail-pinned.is-empty .rail-drop-slot { height: 44px; font-size: 0; }
+.rail-compact .rail-section:not(:first-child) { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--rail-line); border-radius: 0; }
 .rail-compact .account-menu-rail .account-trigger { justify-content: center; }
 .rail-compact .account-menu-rail .account-popover { position: fixed; left: 8px; right: auto; bottom: 66px; width: 260px; z-index: 50; }
 /* The rail's placeholder (ui/skeleton.ts) stands on the real rail's geometry: the
@@ -352,7 +441,7 @@ label > input, label > select { font-weight: 400; }
 .figure-canvas, .figure-fallback { position: absolute; inset: -6%; display: block; width: 112%; height: 112%; max-width: none; object-fit: contain; pointer-events: none; user-select: none; }
 .figure-canvas[hidden], .figure-fallback[hidden] { display: none; }
 @media (forced-colors: active) {
-	.cofounder-home.active, .rail-row.active { outline: 2px solid Highlight; }
+	.cofounder-home.active, .rail-row.active, .rail-pin.active { outline: 2px solid Highlight; }
 	/* Forced colours empty both discs into rings; the failed one stays filled. */
 	/* Under .rail so it outranks the hover and selected ring colours. */
 	.rail :is(.cofounder-status, .rail-row-status).failed { forced-color-adjust: none; background: CanvasText; border-color: Canvas; }

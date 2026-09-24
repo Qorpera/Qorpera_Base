@@ -11,6 +11,7 @@ import {
 	type RealtimeResource,
 	type RealtimeSubscription,
 	subscribeProfileRealtime,
+	subscribeSidebarRealtime,
 } from "../cloud/realtime.ts";
 import { sessionAttachmentIssue } from "../cloud/session-attachments.ts";
 import {
@@ -19,6 +20,7 @@ import {
 	type SessionInputWriter,
 	selectSessionExecutionSponsor,
 } from "../cloud/session-input.ts";
+import { applySidebarRequest, type CompanySidebar, type SidebarRequest } from "../cloud/sidebar.ts";
 import { projectTranscript, type TranscriptProjection } from "../cloud/transcript.ts";
 import type {
 	HostedProfile,
@@ -68,6 +70,20 @@ function stillFailed(
 const RECOVERY_RECHECK_MS = 25_000;
 const RECOVERY_RETRY_MS = 5_000;
 
+/** Why the cloud refused a sidebar change, in the member's words. Only the sidebar
+ * RPC's own refusals are shown as they are: they are written for members ("A section
+ * called … already exists"). A network or server failure never shows its text. */
+function sidebarRefusal(error: unknown, request: SidebarRequest): string {
+	if (error instanceof CloudRpcError) {
+		const shared = ["create_section", "rename_section", "delete_section", "move_agent"].includes(request.action);
+		if (error.code === "42501" && shared)
+			return "Only owners, admins and contributors can change the company's sections.";
+		const own = ["23505", "P0002", "54000", "22023"].includes(error.code ?? "");
+		if (own && error.message.trim() && !/request is invalid/i.test(error.message)) return error.message.trim();
+	}
+	return "The sidebar could not be changed. Try again.";
+}
+
 /** Why the cloud would not try a run again, in the member's words. */
 function retryRefusal(error: unknown): string {
 	const message = error instanceof Error ? error.message : "";
@@ -104,6 +120,12 @@ export interface CompanyState {
 	/** Failed runs a member dismissed here, by run id. They stop standing in for the
 	 * agent at once; the cloud records the same acknowledgment durably. */
 	acknowledgedRuns?: Record<string, true>;
+	/** The rail's sections (the company's) and pins and hidden agents (this member's). */
+	sidebar?: CompanySidebar;
+	/** The deployed cloud has no sidebar yet: the rail shows no sections, pins or hiding. */
+	sidebarUnavailable?: boolean;
+	/** A rail action (a sidebar change, a rename, a delete) that did not happen, in the member's words. */
+	railError?: string;
 	realtime: RealtimePhase;
 	realtimeError?: string;
 	loading: boolean;
@@ -210,11 +232,15 @@ export class CompanyController {
 	readonly #userId: string;
 	readonly #writeInput: SessionInputWriter;
 	#realtime: RealtimeSubscription | undefined;
+	#sidebarRealtime: RealtimeSubscription | undefined;
+	/** Sidebar changes sent and not yet answered; each answer carries the whole sidebar. */
+	#sidebarPending = 0;
+	#sidebarWrites: Promise<unknown> = Promise.resolve();
 	#poll: ReturnType<typeof setInterval> | undefined;
 	#openSessionId: string | undefined;
 	#stopped = false;
 	readonly #abort = new AbortController();
-	readonly #versions = { team: 0, staff: 0, sessions: 0, groups: 0, organization: 0, activity: 0 };
+	readonly #versions = { team: 0, staff: 0, sessions: 0, groups: 0, organization: 0, activity: 0, sidebar: 0 };
 	#polling = false;
 	readonly #invalidations = new Set<(resource: RealtimeResource) => void>();
 	readonly #conversationLoads = new Map<string, { promise: Promise<void>; repeat: boolean }>();
@@ -278,6 +304,7 @@ export class CompanyController {
 		for (const store of this.conversations.values())
 			store.set({ draft: "", attachments: [], retrySend: undefined, executionSponsor: undefined });
 		this.#realtime?.stop();
+		this.#sidebarRealtime?.stop();
 		if (this.#poll) clearInterval(this.#poll);
 		clearTimeout(this.#watching);
 		this.#invalidations.clear();
@@ -302,6 +329,7 @@ export class CompanyController {
 			this.refreshSessions(),
 			this.refreshOrganization(),
 			this.refreshActivity(),
+			this.refreshSidebar(),
 		]);
 		await this.refreshGroups();
 		this.store.set({ loading: false });
@@ -392,6 +420,76 @@ export class CompanyController {
 				this.store.set({ organizationState: "error", organizationError: describeError(error) });
 			}
 		}
+	}
+
+	async refreshSidebar(): Promise<void> {
+		if (this.#stopped || this.store.get().sidebarUnavailable) return;
+		const version = ++this.#versions.sidebar;
+		try {
+			const sidebar = await this.#api.readCompanySidebar(this.profile.profileId);
+			// A change in flight answers with a newer sidebar than this read.
+			if (this.#stopped || version !== this.#versions.sidebar || this.#sidebarPending) return;
+			this.store.set({ sidebar });
+			// Its own channel: a cloud without the sidebar tables must not degrade the company's hints.
+			this.#sidebarRealtime ??= subscribeSidebarRealtime(this.#api.cloud, this.profile.profileId, () =>
+				this.#onHint("sidebar"),
+			);
+		} catch (error) {
+			if (this.#stopped || version !== this.#versions.sidebar) return;
+			if (error instanceof CloudRpcError && error.missing)
+				this.store.set({ sidebarUnavailable: true, sidebar: undefined });
+			// Otherwise the rail keeps what it showed: the sidebar arranges agents, it holds no content.
+		}
+	}
+
+	/** The agents the sidebar arranges, in roster order: active, never the Co-Founder. */
+	sidebarRoster(): string[] {
+		const cofounder = this.cofounderId();
+		return this.store
+			.get()
+			.staff.filter((agent) => agent.employmentStatus === "active" && agent.id !== cofounder)
+			.map((agent) => agent.id);
+	}
+
+	cofounderId(): string | undefined {
+		const state = this.store.get();
+		return (
+			(state.organization ? this.staffById(state.organization.cofounder.staffAgentId)?.id : undefined) ??
+			state.staff.find((agent) => agent.employmentStatus === "active" && agent.templateId === "co-founder")?.id
+		);
+	}
+
+	/** Draws a sidebar change at once and sends it; changes go one at a time, in order.
+	 * A refusal puts back what the cloud has and says why. */
+	async changeSidebar(request: SidebarRequest): Promise<boolean> {
+		const current = this.store.get();
+		if (this.#stopped || !current.sidebar || current.sidebarUnavailable) return false;
+		this.store.set({
+			sidebar: applySidebarRequest(current.sidebar, request, this.sidebarRoster()),
+			railError: undefined,
+		});
+		this.#sidebarPending++;
+		const write = this.#sidebarWrites.then(() => this.#api.manageCompanySidebar(this.profile.profileId, request));
+		this.#sidebarWrites = write.catch(() => {});
+		try {
+			const sidebar = await write;
+			this.#sidebarPending--;
+			if (this.#stopped) return false;
+			++this.#versions.sidebar;
+			if (!this.#sidebarPending) this.store.set({ sidebar });
+			return true;
+		} catch (error) {
+			this.#sidebarPending--;
+			if (this.#stopped) return false;
+			this.store.set({ railError: sidebarRefusal(error, request) });
+			if (!this.#sidebarPending) await this.refreshSidebar();
+			return false;
+		}
+	}
+
+	/** Says in the rail why a rail action did not happen; undefined clears it. */
+	reportRailError(text: string | undefined): void {
+		if (!this.#stopped) this.store.set({ railError: text });
 	}
 
 	async refreshActivity(): Promise<void> {
@@ -1180,6 +1278,9 @@ export class CompanyController {
 		}, wait);
 	}
 
+	/** Hints about one change arrive together (a move, then another member's echo). */
+	readonly #refreshSidebarSoon = debounce(() => void this.refreshSidebar(), 250);
+
 	readonly #refreshOpenConversation = debounce(() => {
 		if (this.#openSessionId) void this.loadConversation(this.#openSessionId);
 		void this.refreshActivity();
@@ -1196,6 +1297,8 @@ export class CompanyController {
 			void this.refreshOrganization();
 		} else if (resource === "access") {
 			void this.refreshTeam();
+		} else if (resource === "sidebar") {
+			this.#refreshSidebarSoon();
 		} else if (resource === "company-file") {
 			void this.refreshGroups();
 			// Accepting a proposal moves the Company File head: runs waiting on one are read again.
@@ -1223,7 +1326,7 @@ export class CompanyController {
 			// Refresh this surface even with a healthy Realtime channel.
 			if (!this.#stopped) for (const listener of this.#invalidations) listener("company-file");
 			if (this.#openSessionId) await this.loadConversation(this.#openSessionId);
-			await this.refreshActivity();
+			await Promise.all([this.refreshActivity(), this.refreshSidebar()]);
 		} finally {
 			this.#polling = false;
 		}
