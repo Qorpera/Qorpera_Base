@@ -515,7 +515,7 @@ subscriptions, which self-limit.
 > - the API-key sandbox runner (not company work) keeps its per-job totals:
 >   64 MiB transcript, 100 output artifacts and 64 MiB of output.
 >
-> The last count went with bundle v96 and its Codex rebuild: the pinned Codex
+> The last count went with bundle v98 and its Codex rebuild: the pinned Codex
 > build refused a model request carrying 128 or more tool outputs or over 1 MiB
 > of result text, and the kernel refused a context view with more than 128
 > outputs or over 128 KiB. A request now carries any number of outputs within a
