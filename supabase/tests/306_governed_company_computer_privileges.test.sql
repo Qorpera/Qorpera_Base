@@ -26,7 +26,8 @@ begin
 
 	-- Exact signatures, not names: Step 7 added a second signature of the
 	-- capture completion (account label), and a name-only check would also pass
-	-- any other overload the broker inherited.
+	-- any other overload the broker inherited. Bundle v88 added the coding
+	-- executor's repository credential.
 	select array_agg(function.oid::regprocedure::text order by function.oid::regprocedure::text collate "C") into v_functions
 	from pg_proc as function
 	join pg_namespace as namespace on namespace.oid = function.pronamespace
@@ -35,11 +36,12 @@ begin
 		and has_function_privilege('qorpera_secret_broker', function.oid, 'EXECUTE');
 	if v_functions is distinct from array[
 		'qorpera_authorize_cloud_secret_operation(uuid,text,jsonb,uuid,text,text,uuid,text,text,bigint,text,text)',
+		'qorpera_authorize_coding_repository_credential(uuid,text,uuid,uuid,text,jsonb)',
 		'qorpera_complete_cloud_secret_capture(uuid,text,uuid,text,text,text)',
 		'qorpera_complete_cloud_secret_capture(uuid,text,uuid,text,text,text,text)',
 		'qorpera_describe_cloud_secret_capture(uuid,text,uuid,text)'
 	]::text[] then
-		raise exception 'Broker inherited a function outside its three fixed custody calls';
+		raise exception 'Broker inherited a function outside its fixed custody calls';
 	end if;
 	if has_schema_privilege('qorpera_secret_broker', 'public', 'CREATE') then
 		raise exception 'Broker can create objects in the public schema';

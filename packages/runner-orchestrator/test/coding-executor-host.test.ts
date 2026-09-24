@@ -253,7 +253,9 @@ async function fixture() {
 			gitHelperSha256: hash("git"),
 			watchdogHelperSha256: hash("watchdog"),
 		},
-		repositoryCredentials: { withRepositoryToken: async (_repository, use) => use("test-token-never-sent-to-guest") },
+		repositoryCredentials: {
+			withRepositoryToken: vi.fn(async (_scope, _repository, use) => use("test-token-never-sent-to-guest")),
+		},
 	};
 	const host = new LxdCodingExecutorHost(options),
 		signal = new AbortController().signal;
@@ -326,6 +328,54 @@ describe("concrete coding executor host composition", () => {
 			p_lease_token: f.claim.leaseToken,
 			p_intent: "run",
 		});
+	});
+	it("lends every Git and GitHub step the token of this claim's session only", async () => {
+		const f = await fixture();
+		// The Git and GitHub steps keep their (repository, use, signal) shape; the
+		// host supplies the session scope.
+		const lend = async (
+			_input: unknown,
+			options: {
+				withRepositoryToken(
+					repository: CodingSessionClaim["repository"],
+					use: (token: string) => Promise<string>,
+					signal: AbortSignal,
+				): Promise<string>;
+			},
+		) => {
+			expect(await options.withRepositoryToken(f.claim.repository, async (token) => token, f.signal)).toBe(
+				"test-token-never-sent-to-guest",
+			);
+		};
+		mocked.resolveBase.mockImplementation(async (repository, options) => {
+			await lend(repository, options);
+			return f.baseSha;
+		});
+		mocked.seedFetch.mockImplementation(async (input, options) => {
+			await lend(input, options);
+			return { headSha: f.baseSha, bundle: Buffer.from("seed"), bundleSha256: hash("seed") };
+		});
+		mocked.push.mockImplementation(async (input, _bundle, options) => {
+			await lend(input, options);
+			return { branch: f.claim.branch, headSha: f.submission.headSha };
+		});
+		mocked.publish.mockImplementation(async (input, options) => {
+			await lend(input, options);
+			return f.pullRequest;
+		});
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		await f.host.publish(f.claim, f.submission, f.signal);
+		const calls = vi.mocked(f.options.repositoryCredentials.withRepositoryToken).mock.calls;
+		expect(calls).toHaveLength(4);
+		for (const call of calls) {
+			expect(call[0]).toEqual({
+				companyId: f.claim.profileId,
+				workerId: f.claim.workerId,
+				leaseToken: f.claim.leaseToken,
+			});
+			expect(Object.isFrozen(call[0])).toBe(true);
+			expect(call[1]).toEqual(f.claim.repository);
+		}
 	});
 	it("retries packet delivery after the durable host intent was written", async () => {
 		const f = await fixture();

@@ -191,10 +191,15 @@ export async function runCloudSecretBrokerServiceMain(
 	}
 	const brokerCapability = await readCredential(directory, "qorpera-cloud-secret-control");
 	const runtimeToken = await readCredential(directory, "qorpera-cloud-secret-runtime");
+	// Bundle v88: the coding executor's own bearer for repository credentials.
+	// Only a broker whose company runs coding sessions gets it (a drop-in);
+	// without it the route answers 404. Never the runtime token guests hold.
+	const codingExecutorToken = await readOptionalCredential(directory, "qorpera-cloud-secret-coding-executor");
 	if (
 		!CAPABILITY.test(brokerCapability) ||
 		!TOKEN.test(runtimeToken) ||
-		new Set([database.password, brokerCapability, runtimeToken]).size !== 3
+		(codingExecutorToken !== undefined && !TOKEN.test(codingExecutorToken)) ||
+		new Set([database.password, brokerCapability, runtimeToken, codingExecutorToken ?? ""]).size !== 4
 	)
 		throw new Error("Cloud secret broker credentials are invalid");
 	const keyring = parseKeyring(await readCredential(directory, "qorpera-cloud-secret-keyring"));
@@ -244,6 +249,7 @@ export async function runCloudSecretBrokerServiceMain(
 			port: config.port as number,
 			memberOrigins,
 			...(connectors ? { oauth: connectors.oauth } : {}),
+			...(codingExecutorToken ? { codingExecutorToken } : {}),
 		});
 		const stop = new AbortController();
 		const shutdown = (): void => stop.abort();

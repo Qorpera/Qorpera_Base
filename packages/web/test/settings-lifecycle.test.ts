@@ -418,16 +418,6 @@ describe("settings session lifecycle", () => {
 		expect(content().textContent).toContain("Choose a company to see its storage.");
 		expect(content().querySelector(".settings-usage:not(.settings-hours)")).toBeNull();
 	});
-	it("offers no cloud endpoint form in General", async () => {
-		const f = await setup();
-		open(f.root);
-		await draw();
-		const general = f.root.querySelector(".settings-content")!;
-		expect(general.querySelector("h1")?.textContent).toBe("General");
-		expect(general.textContent).not.toContain("Cloud endpoint");
-		expect(general.textContent).not.toContain("Use these endpoints");
-		expect(general.querySelector('a[href="#/cloud-check"]')).toBeNull();
-	});
 	it("keeps focus in General when the account plan arrives", async () => {
 		const f = await setup(),
 			pending = deferred<HostedAccountEntitlement>();

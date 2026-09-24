@@ -24,7 +24,7 @@ const TABS = [
 		id: "general",
 		label: "General",
 		icon: "settings",
-		keywords: "account companies appearance theme composer color colour blue green grey gray language region",
+		keywords: "account appearance theme composer color colour blue green grey gray language region",
 	},
 	{
 		id: "plan",
