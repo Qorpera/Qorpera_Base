@@ -2,6 +2,7 @@ import type { CloudMemberCompanyFileClient } from "@qorpera/cloud-client/cloud-m
 import { describeError } from "../cloud/client.ts";
 import type { GroupChatDraft } from "../cloud/group-details.ts";
 import { record, UUID_PATTERN } from "../cloud/parse.ts";
+import { t } from "../ui/preferences.ts";
 import type { CompanyController } from "./company.ts";
 import type { WorkspaceActions } from "./workspace-actions.ts";
 
@@ -23,7 +24,7 @@ export function createGroupUpdater(options: {
 	const company = options.company;
 	let busy = false;
 	return async (sessionId, observed, draft, viewSignal) => {
-		if (busy) throw new GroupUpdateNotWrittenError("Wait for this group chat to finish saving.");
+		if (busy) throw new GroupUpdateNotWrittenError(t("Wait for this group chat to finish saving."));
 		busy = true;
 		let writeStarted = false;
 		try {
@@ -45,7 +46,7 @@ export function createGroupUpdater(options: {
 					!["owner", "admin"].includes(state.team.role) ||
 					state.team.profileId !== company.profile.profileId
 				)
-					throw new Error("Only an owner or admin can change group chats.");
+					throw new Error(t("Only an owner or admin can change group chats."));
 				const session = state.sessions.find((item) => item.sessionId === sessionId);
 				if (
 					!session ||
@@ -62,7 +63,7 @@ export function createGroupUpdater(options: {
 					observed.version < 1 ||
 					observed.version >= Number.MAX_SAFE_INTEGER
 				)
-					throw new Error("This group chat is no longer available.");
+					throw new Error(t("This group chat is no longer available."));
 				if (
 					changes.members.length > 256 ||
 					changes.members.filter((member) => member.kind === "staff_agent").length < 2 ||
@@ -78,15 +79,15 @@ export function createGroupUpdater(options: {
 					})
 				)
 					throw new Error(
-						"Choose at least two active agents and current company members, with no duplicate participants.",
+						t("Choose at least two active agents and current company members, with no duplicate participants."),
 					);
 			};
 			check();
 			if (!changes.name || [...changes.name].length > 256)
-				throw new Error("Enter a group name of no more than 256 characters.");
+				throw new Error(t("Enter a group name of no more than 256 characters."));
 			if (changes.subtitle !== undefined && [...changes.subtitle].length > 256)
-				throw new Error("Enter a group subtitle of no more than 256 characters.");
-			if (!changes.purpose) throw new Error("Enter a description for this group chat.");
+				throw new Error(t("Enter a group subtitle of no more than 256 characters."));
+			if (!changes.purpose) throw new Error(t("Enter a description for this group chat."));
 			const editor = await options.editor(signal);
 			check();
 			const path = `organization/rooms/${observed.roomId}.json`;
@@ -98,7 +99,7 @@ export function createGroupUpdater(options: {
 				!UUID_PATTERN.test(current.version) ||
 				current.path !== path
 			)
-				throw new Error("This group chat is no longer available.");
+				throw new Error(t("This group chat is no longer available."));
 			const document = record(JSON.parse(current.text), "group chat document");
 			if (
 				Object.keys(document).some((field) => field !== "subtitle" && !ROOM_FIELDS.includes(field)) ||
@@ -117,7 +118,7 @@ export function createGroupUpdater(options: {
 				!Number.isSafeInteger(document.version) ||
 				!Array.isArray(document.members)
 			)
-				throw new Error("This group chat document has changed. Reopen its details before saving.");
+				throw new Error(t("This group chat document has changed. Reopen its details before saving."));
 			const members = document.members.map((value): GroupChatDraft["members"][number] => {
 				const member = record(value, "group participant");
 				if (
@@ -126,7 +127,7 @@ export function createGroupUpdater(options: {
 					typeof member.id !== "string" ||
 					!UUID_PATTERN.test(member.id)
 				)
-					throw new Error("Invalid group participant.");
+					throw new Error(t("Invalid group participant."));
 				return { kind: member.kind, id: member.id };
 			});
 			if (document.version !== observed.version) {
@@ -139,11 +140,11 @@ export function createGroupUpdater(options: {
 					memberKey(members) === memberKey(changes.members)
 				)
 					return;
-				throw new Error("This group chat changed while you were editing. Reopen its details before saving.");
+				throw new Error(t("This group chat changed while you were editing. Reopen its details before saving."));
 			}
 			const text = JSON.stringify({ ...document, ...changes, version: observed.version + 1 });
 			if (new TextEncoder().encode(text).length > 32768)
-				throw new Error("The group details are too long. Shorten the description.");
+				throw new Error(t("The group details are too long. Shorten the description."));
 			writeStarted = true;
 			let command = await editor.edit(
 				{
@@ -159,11 +160,11 @@ export function createGroupUpdater(options: {
 			if (command.state === "review_required") {
 				const reviewed = await editor.review(command, "approve", signal);
 				check();
-				if (!("commandId" in reviewed)) throw new Error("Group chat review changed kind.");
+				if (!("commandId" in reviewed)) throw new Error(t("Group chat review changed kind."));
 				command = reviewed;
 			}
 			if (command.state !== "applied" || !command.result)
-				throw new Error("The group chat changes could not be saved.");
+				throw new Error(t("The group chat changes could not be saved."));
 		} catch (error) {
 			if (!writeStarted) throw new GroupUpdateNotWrittenError(describeError(error), { cause: error });
 			throw error;

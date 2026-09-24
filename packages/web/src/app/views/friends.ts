@@ -2,10 +2,11 @@ import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
 import type { HostedFriend, HostedIncomingProfileInvitation } from "../../cloud/types.ts";
 import { button, companyLogo, fmtDate, h, notice, personAvatar, replace } from "../../ui/dom.ts";
-import { uiText } from "../../ui/preferences.ts";
+import { t, uiText } from "../../ui/preferences.ts";
 import { listSkeleton } from "../../ui/skeleton.ts";
 import { Store } from "../state.ts";
 import type { HubController } from "./hub.ts";
+import { roleLabel } from "./team.ts";
 
 /* Friends: the account's address book, and the company invitations waiting
  * for it. A company invitation can only reach someone this account is already
@@ -60,7 +61,7 @@ export class FriendsController {
 		try {
 			await this.#api.sendFriendRequest(address);
 			await this.refresh();
-			this.store.set({ message: `Request sent to ${address}.` });
+			this.store.set({ message: t("Request sent to {email}.", { email: address }) });
 		} catch (error) {
 			this.store.set({ error: describeError(error) });
 		} finally {
@@ -125,14 +126,17 @@ function invitationRow(hub: HubController, invitation: HostedIncomingProfileInvi
 			h(
 				"span",
 				{ class: "muted small" },
-				`Invited as ${invitation.role} · expires ${fmtDate(invitation.expiresAt)}`,
+				t("Invited as {role} · expires {date}", {
+					role: roleLabel(invitation.role),
+					date: fmtDate(invitation.expiresAt),
+				}),
 			),
 		),
 		h(
 			"div",
 			{ class: "person-actions" },
-			button("Decline", () => void hub.respondInvitation(invitation, false), { disabled: busy }),
-			button("Accept", () => void hub.respondInvitation(invitation, true), { primary: true, disabled: busy }),
+			button(t("Decline"), () => void hub.respondInvitation(invitation, false), { disabled: busy }),
+			button(t("Accept"), () => void hub.respondInvitation(invitation, true), { primary: true, disabled: busy }),
 		),
 	);
 }
@@ -153,10 +157,10 @@ function field(friends: FriendsController): HTMLInputElement {
 	if (!searchField) {
 		searchField = h("input", {
 			type: "text",
-			placeholder: "Search friends, or type an email to add someone",
+			placeholder: t("Search friends, or type an email to add someone"),
 			autocomplete: "off",
 			spellcheck: "false",
-			"aria-label": "Search friends, or type an email to add someone",
+			"aria-label": t("Search friends, or type an email to add someone"),
 			oninput: () => friends.store.set({ query: searchField?.value ?? "" }),
 		});
 		fields.set(friends, searchField);
@@ -185,40 +189,40 @@ export function renderFriends(friends: FriendsController, hub: HubController, co
 		});
 	};
 	const invitations = group(
-		"Company invitations",
+		t("Company invitations"),
 		companies.invitations
 			.filter((invitation) => matches(invitation.profileName))
 			.map((invitation) => invitationRow(hub, invitation, companies.busyInvitation === invitation.id)),
 	);
 	const groups = [
 		group(
-			"Requests for you",
+			t("Requests for you"),
 			incoming.map((friend) =>
 				personRow(
 					friend,
-					`asked ${fmtDate(friend.since)}`,
-					button("Decline", () => void friends.respond(friend, false), { disabled: busy(friend) }),
-					button("Accept", () => void friends.respond(friend, true), { primary: true, disabled: busy(friend) }),
+					t("asked {date}", { date: fmtDate(friend.since) }),
+					button(t("Decline"), () => void friends.respond(friend, false), { disabled: busy(friend) }),
+					button(t("Accept"), () => void friends.respond(friend, true), { primary: true, disabled: busy(friend) }),
 				),
 			),
 		),
 		group(
-			"Sent",
+			t("Sent"),
 			outgoing.map((friend) =>
 				personRow(
 					friend,
-					`sent ${fmtDate(friend.since)}`,
-					button("Cancel", () => void friends.remove(friend), { disabled: busy(friend) }),
+					t("sent {date}", { date: fmtDate(friend.since) }),
+					button(t("Cancel"), () => void friends.remove(friend), { disabled: busy(friend) }),
 				),
 			),
 		),
 		group(
-			`Friends${accepted.length ? ` (${accepted.length})` : ""}`,
+			accepted.length ? t("Friends ({count})", { count: accepted.length }) : t("Friends"),
 			accepted.map((friend) =>
 				personRow(
 					friend,
-					`since ${fmtDate(friend.since)}`,
-					button("Remove", () => void friends.remove(friend), { disabled: busy(friend) }),
+					t("since {date}", { date: fmtDate(friend.since) }),
+					button(t("Remove"), () => void friends.remove(friend), { disabled: busy(friend) }),
 				),
 			),
 		),
@@ -226,15 +230,15 @@ export function renderFriends(friends: FriendsController, hub: HubController, co
 	const empty = groups.length
 		? null
 		: state.loading && !state.loaded
-			? listSkeleton("Loading friends")
+			? listSkeleton(t("Loading friends"))
 			: h(
 					"p",
 					{ class: "panel-empty muted" },
 					query
 						? invitable
-							? `Nobody here by that address. Send ${query} a friend request.`
-							: "Nobody here by that name."
-						: "No friends yet. Add someone by their Qorpera email address.",
+							? t("Nobody here by that address. Send {email} a friend request.", { email: query })
+							: t("Nobody here by that name.")
+						: t("No friends yet. Add someone by their Qorpera email address."),
 				);
 	// Replacing the container detaches the field, and a detached element loses
 	// focus, so the caret is put back exactly where the typist left it.
@@ -249,7 +253,7 @@ export function renderFriends(friends: FriendsController, hub: HubController, co
 			h(
 				"p",
 				{ class: "settings-lead" },
-				"Invite friends into your companies. Invitations to join other companies show up here too.",
+				t("Invite friends into your companies. Invitations to join other companies show up here too."),
 			),
 			companies.error && companies.invitations.length ? notice("danger", companies.error) : null,
 			state.error ? notice("danger", state.error) : null,
@@ -270,7 +274,7 @@ export function renderFriends(friends: FriendsController, hub: HubController, co
 					h(
 						"button",
 						{ type: "submit", class: "btn btn-primary", disabled: !invitable || state.sending === true },
-						state.sending ? "Sending…" : "Send request",
+						state.sending ? t("Sending…") : t("Send request"),
 					),
 				),
 				invitations,

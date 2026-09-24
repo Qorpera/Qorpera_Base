@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConnectionsView, ProviderSignIns } from "../src/app/views/settings-connections.ts";
 import type { WebNativeProviderLogin, WebNativeSubscription } from "../src/cloud/native-subscription.ts";
 import { fmtTime } from "../src/ui/dom.ts";
+import { setLanguagePreference } from "../src/ui/preferences.ts";
 import { deferred, id, settle, timestamp, userA } from "./fixtures.ts";
 
 const WATCH_MS = 2000;
@@ -270,6 +271,37 @@ describe("member model account settings", () => {
 		expect(refresh().textContent).toBe("Refresh");
 		expect(refreshAccountMetadata.mock.calls.map((call) => call[1])).toEqual([false, true, false]);
 		expect(document.activeElement).toBe(refresh());
+	});
+	it("shows the returning card details in Danish", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-09-19T20:00:00Z"));
+		setLanguagePreference("da");
+		try {
+			const first = {
+				...connected,
+				sponsorBindingId: id(82),
+				sponsorVersion: 1,
+				providerAccountUsage: {
+					observedAt: "2026-09-19T19:00:00.000Z",
+					windows: [{ id: "primary" as const, label: "5 hours", usedPercent: 8 }],
+				},
+			};
+			await setup(true, observed(first, { ...first, connectionId: id(83) }));
+			const card = view.el.querySelector(".connection-card")!;
+			const time = fmtTime("2026-09-19T19:00:00.000Z");
+			expect(card.querySelector(".connection-identity")!.textContent).toBe(
+				`Tilføjet ${fmtTime(connected.consentedAt)} · ${id(81).slice(-8)}`,
+			);
+			expect(card.querySelector(".connection-identity")!.getAttribute("title")).toBe(`Forbindelse ${id(81)}`);
+			expect(card.querySelector(`[title="Sidst tjekket ${time}"]`)!.textContent).toBe(
+				`92% ved sidste tjek · ${time}`,
+			);
+			view.el.querySelector<HTMLButtonElement>('[data-focus-key="refresh"]')!.click();
+			await settle();
+			expect(view.el.querySelector('[data-focus-key="refresh"]')!.textContent).toBe("Opdateret");
+		} finally {
+			setLanguagePreference("en");
+		}
 	});
 	it("tells apart two cards for the same provider and email by when each was added", async () => {
 		const first = { ...connected, sponsorBindingId: id(82), sponsorVersion: 1 };

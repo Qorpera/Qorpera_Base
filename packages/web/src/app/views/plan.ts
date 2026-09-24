@@ -1,6 +1,6 @@
 import type { HostedCompanyFile } from "../../cloud/types.ts";
 import { button, fmtBytes, h, notice, replace } from "../../ui/dom.ts";
-import { presentationLocale, uiText } from "../../ui/preferences.ts";
+import { phrase, presentationLocale, t, uiText } from "../../ui/preferences.ts";
 import type { AccountViewState } from "./account.ts";
 import { meter, storageSummary } from "./storage-summary.ts";
 
@@ -23,47 +23,55 @@ export interface PlanOffer {
 export const PLAN_OFFERS: PlanOffer[] = [
 	{
 		key: "basis",
-		name: "Basis",
+		name: phrase("Basis"),
 		monthlyKr: 185,
-		tagline: "For the daily work.",
+		tagline: phrase("For the daily work."),
 		includes: [
-			"100 GB storage included",
-			"A worker computer for every agent, 74 hours",
-			"Connect from computer and phone",
-			"Work in the cloud while your computer is off",
+			phrase("100 GB storage included"),
+			phrase("A worker computer for every agent, 74 hours"),
+			phrase("Connect from computer and phone"),
+			phrase("Work in the cloud while your computer is off"),
 		],
 		includedHours: 74,
 	},
 	{
 		key: "standard",
-		name: "Standard",
+		name: phrase("Standard"),
 		monthlyKr: 630,
 		usageDiscount: 37,
-		tagline: "More storage and extra computer use.",
-		includesLabel: "Everything in Basis, plus",
-		includes: ["250 GB storage included", "More than 3.5× extra computer use", "Priority access at peak hours"],
+		tagline: phrase("More storage and extra computer use."),
+		includesLabel: phrase("Everything in Basis, plus"),
+		includes: [
+			phrase("250 GB storage included"),
+			phrase("More than 3.5× extra computer use"),
+			phrase("Priority access at peak hours"),
+		],
 		includedHours: 286,
 	},
 	{
 		key: "dedicated",
-		name: "Dedicated computer",
+		name: phrase("Dedicated computer"),
 		monthlyKr: 1592,
 		usageDiscount: 43,
-		tagline: "Your own computer all month.",
-		includesLabel: "Everything in Standard, plus",
-		includes: ["500 GB storage included", "A dedicated computer all month", "Early access to new features"],
+		tagline: phrase("Your own computer all month."),
+		includesLabel: phrase("Everything in Standard, plus"),
+		includes: [
+			phrase("500 GB storage included"),
+			phrase("A dedicated computer all month"),
+			phrase("Early access to new features"),
+		],
 	},
 ];
 
 const PLAN_NAMES: Record<string, string> = {
-	internal: "Complimentary",
-	freemium: "Free trial",
-	trial: "Free trial",
-	basis: "Basis",
-	standard: "Standard",
-	dedicated: "Dedicated computer",
-	pro: "Pro",
-	team: "Team",
+	internal: phrase("Complimentary"),
+	freemium: phrase("Free trial"),
+	trial: phrase("Free trial"),
+	basis: phrase("Basis"),
+	standard: phrase("Standard"),
+	dedicated: phrase("Dedicated computer"),
+	pro: phrase("Pro"),
+	team: phrase("Team"),
 };
 
 export function planName(planKey: string): string {
@@ -84,13 +92,8 @@ export function priceKr(kr: number): string {
 }
 
 /** "20 h" / "20 t"; fractions of an hour round to one decimal. */
-function hoursText(hours: number): HTMLElement {
-	return h(
-		"span",
-		null,
-		`${new Intl.NumberFormat(locale(), { maximumFractionDigits: 1 }).format(hours)} `,
-		uiText("h"),
-	);
+function hoursText(hours: number): string {
+	return t("{hours} h", { hours: new Intl.NumberFormat(locale(), { maximumFractionDigits: 1 }).format(hours) });
 }
 
 /** A billing date in the interface language. Billing dates are calendar
@@ -126,11 +129,11 @@ export interface PlanBilling {
 	invoices?: { id: string; issuedAt: string; totalKr: number; href?: string }[];
 }
 
-function billingRow(label: string, value: Node | string, action?: Node | null): HTMLElement {
+function billingRow(label: Node, value: Node | string, action?: Node | null): HTMLElement {
 	return h(
 		"div",
 		{ class: "billing-row" },
-		h("span", { class: "billing-label" }, uiText(label)),
+		h("span", { class: "billing-label" }, label),
 		h("span", { class: "billing-value" }, value),
 		action ?? null,
 	);
@@ -149,11 +152,20 @@ export function renderPlan(
 	const planKey = entitlement?.planKey;
 	const offer = PLAN_OFFERS.find((item) => item.key === planKey);
 	const trial = planKey !== undefined && isTrial(planKey);
-	const name = uiText(entitlement ? planName(entitlement.planKey) : account.loaded ? "Plan unavailable" : "Loading…");
+	// A plan key this client does not know is shown as sent, untranslated.
+	const name = entitlement
+		? Object.hasOwn(PLAN_NAMES, entitlement.planKey)
+			? uiText(planName(entitlement.planKey))
+			: planName(entitlement.planKey)
+		: account.loaded
+			? uiText("Plan unavailable")
+			: uiText("Loading…");
 	const detail = entitlement
 		? entitlement.storageAllocationBytes !== undefined
-			? h("span", null, `${fmtBytes(entitlement.storageAllocationBytes)} `, uiText("company storage included"))
-			: uiText(entitlement.planKey === "internal" ? "No active subscription" : "Storage allocation unavailable")
+			? uiText("{size} company storage included", { size: fmtBytes(entitlement.storageAllocationBytes) })
+			: entitlement.planKey === "internal"
+				? uiText("No active subscription")
+				: uiText("Storage allocation unavailable")
 		: null;
 	// The plan grid stays open across re-renders (storage arriving, a retry),
 	// and the control that had focus keeps it.
@@ -183,13 +195,11 @@ export function renderPlan(
 					? h(
 							"p",
 							{ class: "settings-plan-discount" },
-							uiText("About"),
-							` ${item.usageDiscount}% `,
-							uiText("off usage"),
+							uiText("About {percent}% off usage", { percent: item.usageDiscount }),
 						)
 					: null,
 				// Plan changes are not open yet: the button says so, the help line explains.
-				button(uiText(item.key === planKey ? "Current plan" : "Coming soon"), () => {}, {
+				button(item.key === planKey ? uiText("Current plan") : uiText("Coming soon"), () => {}, {
 					primary: item.key !== planKey,
 					disabled: true,
 				}),
@@ -204,7 +214,7 @@ export function renderPlan(
 		uiText("Every plan starts with a free trial, no card needed. Prices are ex. VAT."),
 	);
 	const toggle = entitlement
-		? button(uiText(trial || entitlement.planKey === "internal" ? "Upgrade" : "Change plan"), () => {
+		? button(trial || entitlement.planKey === "internal" ? uiText("Upgrade") : uiText("Change plan"), () => {
 				grid.hidden = !grid.hidden;
 				help.hidden = grid.hidden;
 				toggle?.setAttribute("aria-expanded", String(!grid.hidden));
@@ -219,28 +229,18 @@ export function renderPlan(
 	const hours = billing.computerHours;
 	const hoursIncluded = hours?.included ?? offer?.includedHours;
 	const hoursValue = hours
-		? h(
-				"span",
-				null,
-				hoursText(hours.used),
-				" ",
-				uiText("used"),
-				hoursIncluded ? [" ", uiText("of"), " ", hoursText(hoursIncluded)] : null,
-			)
+		? hoursIncluded
+			? uiText("{used} used of {total}", { used: hoursText(hours.used), total: hoursText(hoursIncluded) })
+			: uiText("{used} used", { used: hoursText(hours.used) })
 		: uiText("Not measured yet");
 	const hoursDetail = trial
 		? uiText("Included in your free trial")
 		: offer && offer.includedHours === undefined
 			? uiText("Your own computer, all month")
 			: hoursIncluded
-				? h(
-						"span",
-						null,
-						hoursText(hoursIncluded),
-						" ",
-						uiText("a month"),
-						offer ? [" ", uiText("with"), ` ${offer.name}`] : null,
-					)
+				? offer
+					? uiText("{hours} a month with {plan}", { hours: hoursText(hoursIncluded), plan: t(offer.name) })
+					: uiText("{hours} a month", { hours: hoursText(hoursIncluded) })
 				: null;
 	const storage = usage ? storageSummary(usage.file, usage.error) : undefined;
 	const retry = usage?.error ? button(uiText("Retry"), usage.retry, { small: true, disabled: usage.loading }) : null;
@@ -286,10 +286,14 @@ export function renderPlan(
 						h("strong", null, hoursValue),
 						hoursDetail ? h("small", null, hoursDetail) : null,
 						// No bar until there is a measurement: an empty bar would read as zero use.
-						hours && hoursIncluded ? meter(hours.used, hoursIncluded, "Computer hours used") : null,
+						hours && hoursIncluded ? meter(hours.used, hoursIncluded, t("Computer hours used")) : null,
 					),
 					hours?.periodEnd
-						? h("small", { class: "settings-period" }, uiText("Resets"), ` ${dateText(hours.periodEnd)}`)
+						? h(
+								"small",
+								{ class: "settings-period" },
+								uiText("Resets {date}", { date: dateText(hours.periodEnd) }),
+							)
 						: null,
 				),
 				usage && storage
@@ -316,7 +320,7 @@ export function renderPlan(
 					"div",
 					{ class: "settings-card settings-billing" },
 					billingRow(
-						"Price",
+						uiText("Price"),
 						entitlement
 							? trial || entitlement.planKey === "internal"
 								? uiText("Free")
@@ -326,18 +330,20 @@ export function renderPlan(
 							: "",
 					),
 					billingRow(
-						"Next payment",
+						uiText("Next payment"),
 						billing.nextPaymentAt
 							? dateText(billing.nextPaymentAt)
-							: uiText(trial ? "None during your free trial" : "Not scheduled yet"),
+							: trial
+								? uiText("None during your free trial")
+								: uiText("Not scheduled yet"),
 					),
 					billingRow(
-						"Payment method",
+						uiText("Payment method"),
 						billing.paymentMethod ?? uiText("No card on file"),
 						button(uiText("Coming soon"), () => {}, { small: true, disabled: true }),
 					),
 					billingRow(
-						"Invoices",
+						uiText("Invoices"),
 						invoices.length
 							? h(
 									"ul",
