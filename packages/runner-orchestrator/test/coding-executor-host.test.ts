@@ -571,22 +571,25 @@ describe("a coding turn on its member's machine", () => {
 			}).sort(),
 		);
 	});
-	it.each(["NODE_CAPACITY_EXHAUSTED", "MACHINE_RETIRING", "LEGACY_SESSION_BUSY", "PREVIOUS_MACHINE_AWAKE"])(
-		"waits out a %s refusal in the queue instead of failing the turn",
-		async (reason) => {
-			const f = await fixture();
-			f.state.runRefusal = reason;
-			const error = await f.host.prepareWorkspace(f.claim, f.turn(), f.signal).catch((caught: unknown) => caught);
-			expect(error).toBeInstanceOf(CodingMachineUnavailable);
-			expect((error as CodingMachineUnavailable).reason).toBe(reason);
-			expect(mocked.reconcile).not.toHaveBeenCalled();
-			const g = await fixture();
-			g.state.planRefusal = reason;
-			await expect(g.host.prepareWorkspace(g.claim, g.turn(), g.signal)).rejects.toBeInstanceOf(
-				CodingMachineUnavailable,
-			);
-		},
-	);
+	it.each([
+		"NODE_CAPACITY_EXHAUSTED",
+		"MACHINE_RETIRING",
+		"LEGACY_SESSION_BUSY",
+		"PREVIOUS_MACHINE_AWAKE",
+		"MACHINE_PLAN_CHANGED",
+	])("waits out a %s refusal in the queue instead of failing the turn", async (reason) => {
+		const f = await fixture();
+		f.state.runRefusal = reason;
+		const error = await f.host.prepareWorkspace(f.claim, f.turn(), f.signal).catch((caught: unknown) => caught);
+		expect(error).toBeInstanceOf(CodingMachineUnavailable);
+		expect((error as CodingMachineUnavailable).reason).toBe(reason);
+		expect(mocked.reconcile).not.toHaveBeenCalled();
+		const g = await fixture();
+		g.state.planRefusal = reason;
+		await expect(g.host.prepareWorkspace(g.claim, g.turn(), g.signal)).rejects.toBeInstanceOf(
+			CodingMachineUnavailable,
+		);
+	});
 	it("fails the turn on any other refusal", async () => {
 		const f = await fixture();
 		f.state.runRefusal = "MACHINE_POLICY_DIFFERS";

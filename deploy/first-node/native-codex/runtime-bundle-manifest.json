@@ -22,7 +22,7 @@
     "inboundSafety": "bb3ad321d114bf74d00f6d0cfd87640e61d872ca62b4dddf236777705cb685e6",
     "outboundSafety": "2df2624725d46bb55e8d6406a823e51300843eb7fa3517171ac05edd1d320f52",
     "interactionSurfaces": "d2691f6a92c60976bd8a7d6d047108e60da1404a3311301319020d7b1e74cca3",
-    "workerLifecycle": "098a312f6c7179747ebd91238f0692a29b57f0ceaff5ac9caef6b8ae4bc2ba65",
+    "workerLifecycle": "9afd44e84722e2ed790d923f47bdd7d509932fa1e6b2a1493ced15184b2834d5",
     "memoryAndSkills": "78b830004b335e80e1c167f4ca250fd6eb31c33373f5dab614fbb03a0637e5f3"
   },
   "implementation": {
@@ -306,7 +306,7 @@
     "packages/contracts/src/company-computer-stop-history.ts": "a626bcaea89571b9b91d59afdb5658f63ae5d7758a352e4cc4769a8665e82026",
     "packages/contracts/src/index.ts": "fd37a0f9b895d5538dfecf558abae4ef3d06cc99f30129794439e66ba3d4c482",
     "packages/runner-orchestrator/src/coding-command-transport.ts": "fe4070f2d1c25220bcb2b9e0642f5978ca56ce0d532c78c8d9bdcb58b28a8bd8",
-    "packages/runner-orchestrator/src/coding-executor-host.ts": "740d38e0a75bcc36148987564db1e0c71a0acf02761a7e536347475ffa7bc6dc",
+    "packages/runner-orchestrator/src/coding-executor-host.ts": "d356e440c800ac68e351ce15599fdff60ac8ebd702409036192248a01bc673dd",
     "packages/runner-orchestrator/src/coding-executor.ts": "6b30a8a425c01adef626cbc459098357a5e1be2c385f71c5423e83ad40a277f5",
     "packages/runner-orchestrator/src/coding-git-sandbox.ts": "0d2dfcbe3cd8723a3c56f954bc9dbe233328e1f20964013c86c7fd23ca594d26",
     "packages/runner-orchestrator/src/coding-git-seed.ts": "4acaf71420347bb277305e1365b9a53acb9554454ac7ae69230bbbbc6a430bb5",

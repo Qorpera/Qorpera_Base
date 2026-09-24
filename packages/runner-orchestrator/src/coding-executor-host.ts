@@ -164,8 +164,9 @@ export const CODING_VM_STOP_BUDGET_MS = 30_000;
  * folders before the machine is powered off. */
 const CODING_VM_QUIESCE_MS = 8_000;
 /** Refusals a turn waits out in the queue instead of failing: the machine is
- * being removed, the node is full or not ready, or the session is still on
- * another machine. A misconfigured deployment is never waited out. */
+ * being removed, the node is full or not ready, the session is still on
+ * another machine, or the machine's plan followed a new policy after this turn
+ * planned it. A misconfigured deployment is never waited out. */
 const WAITABLE = new Set([
 	"MACHINE_RETIRING",
 	"NODE_CAPACITY_EXHAUSTED",
@@ -173,6 +174,7 @@ const WAITABLE = new Set([
 	"NODE_DISABLED",
 	"LEGACY_SESSION_BUSY",
 	"PREVIOUS_MACHINE_AWAKE",
+	"MACHINE_PLAN_CHANGED",
 ]);
 /** A starting guest: its lxd-agent is not up yet, or systemd answered that
  * the timer is not active. Anything else (the VM gone, a refused or malformed
