@@ -4,13 +4,27 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
-import { HubController } from "../src/app/views/hub.ts";
+import { HubController, renderHub } from "../src/app/views/hub.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
 import type { AgentThreadHandle } from "../src/cloud/parse.ts";
 import type { HostedAccountEntitlement, HostedProfile } from "../src/cloud/types.ts";
-import { deferred, fixture, id, profileA, profileB, session, settle, staff, team, userA, userB } from "./fixtures.ts";
+import {
+	deferred,
+	fixture,
+	id,
+	placeholderLabel,
+	profileA,
+	profileB,
+	session,
+	settle,
+	staff,
+	team,
+	userA,
+	userB,
+	visibleText,
+} from "./fixtures.ts";
 
 let dispose: (() => void) | undefined;
 beforeEach(() => {
@@ -276,6 +290,54 @@ describe("account and route ownership", () => {
 	it("dispatches the composer write when nothing changes during token refresh", async () => {
 		expect(await writeAfter()).toHaveBeenCalledOnce();
 	});
+	it("keeps one thread placeholder while a company opens, standing in for the phone header too", async () => {
+		const f = mounted(`#/c/${profileA.profileId}`);
+		const membership = deferred<typeof team>();
+		const organization = deferred<HostedCompanyOrganization | undefined>();
+		vi.mocked(f.api.getTeam).mockReturnValue(membership.promise);
+		vi.mocked(f.api.getOrganization).mockReturnValue(organization.promise);
+		await draw();
+		const placeholder = f.root.querySelector("main > .thread-skeleton");
+		expect(placeholder).not.toBeNull();
+		expect(f.root.querySelector(".frame")?.classList.contains("has-thread")).toBe(true);
+		// The topbar hides on a phone, so the placeholder's header carries the rail's button.
+		const toggle = placeholder!.querySelector<HTMLButtonElement>(".thread-header .mobile-navigation-toggle");
+		expect(toggle?.getAttribute("aria-controls")).toBe("company-navigation");
+		expect(toggle?.getAttribute("aria-expanded")).toBe("false");
+		toggle!.click();
+		await draw();
+		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(true);
+		expect(
+			f.root.querySelector("main > .thread-skeleton .mobile-navigation-toggle")?.getAttribute("aria-expanded"),
+		).toBe("true");
+		toggle!.click();
+		await draw();
+		membership.resolve(team);
+		await draw();
+		// Still opening: the redraw keeps the placeholder it already shows.
+		expect(f.root.querySelector("main > .thread-skeleton")).toBe(placeholder);
+		organization.resolve(undefined);
+		await draw();
+		expect(placeholderLabel(f.root.querySelector("main"))).not.toBe("Opening company");
+	});
+	it("shows company placeholders only for the first read of the company list", async () => {
+		const f = mounted("#/");
+		const hub = new HubController(f.api, userA.id);
+		const container = document.createElement("div");
+		hub.store.set({ loading: true, loaded: false, profiles: [] });
+		renderHub(hub, container);
+		expect(placeholderLabel(container)).toBe("Loading companies");
+		expect(container.querySelector(".hub-welcome")).toBeNull();
+		// A refresh keeps the companies it shows, and a member with none keeps the welcome.
+		hub.store.set({ loading: true, loaded: true, profiles: [profileA] });
+		renderHub(hub, container);
+		expect(container.querySelector(".company-card")?.textContent).toContain(profileA.profileName);
+		expect(container.querySelector(".skeleton-companies")).toBeNull();
+		hub.store.set({ loading: true, loaded: true, profiles: [] });
+		renderHub(hub, container);
+		expect(container.querySelector(".hub-welcome")).not.toBeNull();
+		expect(container.querySelector(".skeleton-companies")).toBeNull();
+	});
 	it.each([true, false])("waits for organization loading before resolving home (seeded: %s)", async (seeded) => {
 		const home = `#/c/${profileA.profileId}`;
 		const f = mounted(home);
@@ -284,7 +346,8 @@ describe("account and route ownership", () => {
 		await draw();
 		expect(f.api.listStaff).toHaveBeenCalled();
 		expect(location.hash).toBe(home);
-		expect(f.root.querySelector("main")?.textContent).toContain("Opening company");
+		expect(placeholderLabel(f.root.querySelector("main"))).toBe("Opening company");
+		expect(visibleText(f.root.querySelector("main"))).not.toContain("Opening");
 		loading.resolve(
 			seeded
 				? {
@@ -342,7 +405,8 @@ describe("account and route ownership", () => {
 		});
 		await draw();
 		expect(create).not.toHaveBeenCalled();
-		expect(f.root.querySelector("main")?.textContent).toContain("Opening company");
+		expect(placeholderLabel(f.root.querySelector("main"))).toBe("Opening company");
+		expect(visibleText(f.root.querySelector("main"))).not.toContain("Opening");
 		loading.resolve(team);
 		await draw();
 		expect(create).toHaveBeenCalledExactlyOnceWith(profileA.environmentId, staff.id);
@@ -360,7 +424,8 @@ describe("account and route ownership", () => {
 			.mockResolvedValue({ sessionId: session.sessionId, roomId: id(31), staffAgentId: staff.id, status: "active" });
 		await draw();
 		expect(location.hash).toBe(route);
-		expect(f.root.querySelector("main")?.textContent).toContain("Opening company");
+		expect(placeholderLabel(f.root.querySelector("main"))).toBe("Opening company");
+		expect(visibleText(f.root.querySelector("main"))).not.toContain("Opening");
 		loading.resolve(team);
 		await draw();
 		expect(create).toHaveBeenCalledTimes(1);
@@ -587,6 +652,79 @@ describe("account and route ownership", () => {
 		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(false);
 		expect(f.root.querySelector(".topbar .account-trigger")).not.toBeNull();
 		expect(f.root.querySelector(".account-company-name")).toBeNull();
+	});
+
+	it("keeps one rail placeholder while the company's agents load, then drops it", () => {
+		const f = fixture();
+		const controller = new CompanyController(f.api, profileA, userA.id);
+		dispose = () => controller.stop();
+		const rail = document.createElement("aside");
+		const context = {
+			profiles: [profileA],
+			user: userA,
+			auth: new AuthController(f.cloud),
+			invitations: 0,
+			openSettings: () => {},
+			openFeedback: () => {},
+			route: { name: "company", profileId: profileA.profileId, section: "home" } as const,
+		};
+		renderRail(rail, controller, context);
+		const placeholder = rail.querySelector(".skeleton-rail");
+		expect(placeholderLabel(rail)).toBe("Loading agents");
+		expect(visibleText(rail.querySelector(".rail-scroll"))).toBe("");
+		controller.store.set({ team });
+		renderRail(rail, controller, context);
+		expect(rail.querySelector(".skeleton-rail")).toBe(placeholder);
+		controller.store.set({ staff: [staff], sessions: [session], loading: false });
+		renderRail(rail, controller, context);
+		expect(rail.querySelector(".skeleton")).toBeNull();
+		expect(rail.textContent).toContain(staff.displayName);
+	});
+
+	it("closes a drawer opened while a company opens when that company turns out to be unavailable", async () => {
+		const f = mounted(`#/c/${id(77)}`);
+		const profiles = deferred<HostedProfile[]>();
+		vi.mocked(f.api.listProfiles).mockReturnValue(profiles.promise);
+		await draw();
+		f.root.querySelector<HTMLButtonElement>("main > .thread-skeleton .mobile-navigation-toggle")!.click();
+		await draw();
+		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(true);
+		profiles.resolve([profileA]);
+		await draw();
+		expect(f.root.querySelector("main")?.textContent).toContain("This company is not available to your account.");
+		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(false);
+		expect(f.root.querySelector<HTMLElement>("main")?.inert).toBe(false);
+	});
+
+	it("says why the Company File cannot open when membership could not be read", async () => {
+		const f = mounted(`#/c/${profileA.profileId}/file`);
+		vi.mocked(f.api.getTeam).mockRejectedValue(new Error("Membership unavailable"));
+		await draw();
+		const main = f.root.querySelector("main")!;
+		expect(main.querySelector(".skeleton")).toBeNull();
+		expect(main.textContent).toContain("Membership unavailable");
+		vi.mocked(f.api.getTeam).mockResolvedValue(team);
+		const calls = vi.mocked(f.api.getTeam).mock.calls.length;
+		[...main.querySelectorAll("button")].find((button) => button.textContent === "Retry company")!.click();
+		await draw();
+		expect(vi.mocked(f.api.getTeam).mock.calls.length).toBe(calls + 1);
+	});
+
+	it("shows an error with a way to try again when the cloud session cannot be read", async () => {
+		history.replaceState(null, "", "/#/");
+		const f = fixture();
+		vi.spyOn(f.cloud.supabase.auth, "getSession").mockRejectedValue(new Error("Network unavailable"));
+		const root = document.createElement("div");
+		document.body.append(root);
+		dispose = mountApplication(root, f.cloud, f.api);
+		await draw();
+		expect(root.querySelector(".skeleton-group")).toBeNull();
+		expect(root.textContent).toContain("The cloud could not be reached. Network unavailable");
+		expect([...root.querySelectorAll("button")].some((button) => button.textContent === "Try again")).toBe(true);
+		// A redraw, such as a route change, keeps the error instead of blanking the page again.
+		location.hash = `#/c/${profileA.profileId}`;
+		await draw();
+		expect(root.textContent).toContain("The cloud could not be reached. Network unavailable");
 	});
 
 	it("keeps rail searches bound to the current company and current route", () => {

@@ -7,6 +7,7 @@ import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { presentationLocale, uiText } from "../../ui/preferences.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
+import { railListSkeleton } from "../../ui/skeleton.ts";
 import { type AuthController, displayName } from "../auth.ts";
 import { type AgentState, type CompanyController, isAgentPairSession } from "../company.ts";
 import type { Route } from "../router.ts";
@@ -236,7 +237,8 @@ interface RailParts {
 	/** The list's own slots, kept so that nothing unchanged ever leaves the page. */
 	readonly cofounderGroup: HTMLElement;
 	readonly rowList: HTMLElement;
-	readonly loading: HTMLElement;
+	/** The list's placeholder, built when first shown so it breathes with the page's. */
+	loading: HTMLElement | undefined;
 	readonly empty: HTMLElement;
 	/** The rows by where they lead, each with the model it was built from. */
 	rows: Map<string, { shown: string; element: HTMLElement }>;
@@ -299,7 +301,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			foot: h("div", { class: "rail-footer" }, connection),
 			cofounderGroup: h("div", { class: "rail-cofounder", role: "group", "aria-label": "Co-Founder" }),
 			rowList: h("div", { class: "rail-list" }),
-			loading: h("p", { class: "rail-empty" }, "Loading…"),
+			loading: undefined,
 			empty: h("p", { class: "rail-empty" }),
 			rows: new Map(),
 			notices: new Map(),
@@ -536,6 +538,8 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		notices.set(about, entry);
 		return entry.element;
 	};
+	if (!state.loading || state.staff.length) parts.loading = undefined;
+	else parts.loading ??= railListSkeleton();
 	const empty =
 		!state.loading && !cofounderElement && !rowElements.length
 			? railQuery
@@ -558,7 +562,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 				button("Retry company", () => void company.refreshAll(), { small: true }),
 			),
 			cofounderElement ? parts.cofounderGroup : null,
-			state.loading && !state.staff.length ? parts.loading : null,
+			parts.loading ?? null,
 			rowElements.length ? parts.rowList : null,
 			empty ? parts.empty : null,
 		].filter((element) => element !== null),
