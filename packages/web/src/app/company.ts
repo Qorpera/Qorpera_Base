@@ -85,7 +85,8 @@ function retryRefusal(error: unknown): string {
 	const message = error instanceof Error ? error.message : "";
 	if (/author of the post/i.test(message)) return "Only the person who wrote the message can try it again.";
 	if (/sponsor|model account/i.test(message)) return "Select an active model account, then try again.";
-	if (/paused/i.test(message)) return "The company is paused. Resume it, then try again.";
+	// Only an operator pauses a company, briefly, while the runtime is updated.
+	if (/paused/i.test(message)) return "Agents are paused for a moment while Qorpera updates. Try again shortly.";
 	if (/already resolved/i.test(message)) return "This run was already handled.";
 	if (/already answered|durable operation|open proposal/i.test(message))
 		return "This run already did part of its work, so it cannot be repeated. Send the message again instead.";

@@ -11,4 +11,16 @@ describe("company routes", () => {
 			section: "home",
 		});
 	});
+
+	it.each(["approvals", "organization", `project/00000000-0000-4000-8000-000000000001`])(
+		"opens the company home for the removed %s page",
+		(section) => {
+			// Settings no longer links to Approvals or Organization; old links land on the company home.
+			expect(parseRoute(`#/c/${profileA.profileId}/${section}`)).toEqual({
+				name: "company",
+				profileId: profileA.profileId,
+				section: "home",
+			});
+		},
+	);
 });
