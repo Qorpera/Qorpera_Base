@@ -3,12 +3,13 @@ import { button, h, notice, replace } from "../../ui/dom.ts";
 import { type PickerOption, PreferencePicker } from "../../ui/preference-picker.ts";
 import {
 	languagePreference,
+	phrase,
 	presentationLocale,
 	setLanguagePreference,
 	setTimeZonePreference,
 	systemTimeZone,
+	t,
 	timeZonePreference,
-	uiString,
 	uiText,
 } from "../../ui/preferences.ts";
 import { timeZoneCity, timeZoneEntries } from "../../ui/time-zones.ts";
@@ -17,18 +18,18 @@ import { composerColorChoices, themeChoices } from "./appearance.ts";
 
 /** Each language by its own name; the list shows it again in the interface's. */
 const LANGUAGES = [
-	{ value: "en", label: "English", english: "English", keywords: "en" },
-	{ value: "da", label: "Dansk", english: "Danish", keywords: "da danish dansk" },
+	{ value: "en", label: "English", english: phrase("English"), keywords: "en" },
+	{ value: "da", label: "Dansk", english: phrase("Danish"), keywords: "da danish dansk" },
 ] as const;
 
 function languageOptions(): PickerOption[] {
 	const locale = presentationLocale();
 	return [
-		{ value: "system", label: uiString("Follow system") },
+		{ value: "system", label: t("Follow system") },
 		...LANGUAGES.map((language) => ({
 			value: language.value,
 			label: language.label,
-			detail: uiString(language.english),
+			detail: t(language.english),
 			keywords: `${language.english} ${language.keywords}`,
 		})).sort((a, b) => a.detail.localeCompare(b.detail, locale)),
 	];
@@ -38,7 +39,7 @@ function timeZoneOptions(): PickerOption[] {
 	const system = systemTimeZone();
 	const chosen = timeZonePreference();
 	return [
-		{ value: "system", label: uiString("Follow system"), detail: timeZoneCity(system), keywords: system },
+		{ value: "system", label: t("Follow system"), detail: timeZoneCity(system), keywords: system },
 		...timeZoneEntries(presentationLocale(), chosen === "system" ? [system] : [system, chosen]).map((zone) => ({
 			value: zone.id,
 			label: zone.city,
@@ -74,24 +75,24 @@ function pickersFor(container: HTMLElement, setState: (next: AccountViewState) =
 		labels,
 		language: new PreferencePicker({
 			labelId: labels.language,
-			searchLabel: "Search language",
+			searchLabel: phrase("Search language"),
 			options: languageOptions,
 			value: languagePreference,
 			display: (value) => LANGUAGES.find((candidate) => candidate.value === value)?.label ?? uiText("Follow system"),
 			choose: (value) => {
 				if (!setLanguagePreference(value))
-					setState({ error: "Your browser could not save the language preference." });
+					setState({ error: t("Your browser could not save the language preference.") });
 			},
 		}),
 		timeZone: new PreferencePicker({
 			labelId: labels.timeZone,
-			searchLabel: "Search time zone",
+			searchLabel: phrase("Search time zone"),
 			options: timeZoneOptions,
 			value: timeZonePreference,
 			display: (value) => (value === "system" ? uiText("Follow system") : timeZoneCity(value)),
 			choose: (value) => {
 				if (!setTimeZonePreference(value))
-					setState({ error: "Your browser could not save the time zone preference." });
+					setState({ error: t("Your browser could not save the time zone preference.") });
 			},
 		}),
 	};
@@ -114,14 +115,15 @@ export function renderAccount(
 	setState: (next: AccountViewState) => void,
 ): void {
 	const user = auth.store.get().user;
+	const provider: string = user?.app_metadata?.provider ?? "email";
 	const { labels, language, timeZone } = pickersFor(container, setState);
 	const focused =
 		document.activeElement instanceof HTMLElement && container.contains(document.activeElement)
 			? document.activeElement
 			: null;
-	const theme = themeChoices(() => setState({ error: "Your browser could not save the theme preference." }));
+	const theme = themeChoices(() => setState({ error: t("Your browser could not save the theme preference.") }));
 	const composerColor = composerColorChoices(() =>
-		setState({ error: "Your browser could not save the composer color preference." }),
+		setState({ error: t("Your browser could not save the composer color preference.") }),
 	);
 	replace(
 		container,
@@ -142,7 +144,11 @@ export function renderAccount(
 						"div",
 						{ class: "settings-copy" },
 						h("strong", null, user?.email || displayName(user)),
-						h("small", null, `Signed in with ${user?.app_metadata?.provider ?? "email"}`),
+						h(
+							"small",
+							null,
+							provider === "email" ? t("Signed in with email") : t("Signed in with {provider}", { provider }),
+						),
 					),
 					button(uiText("Sign out"), () => void auth.signOut()),
 				),
@@ -188,7 +194,6 @@ export function renderAccount(
 							"label",
 							{ class: "settings-copy", for: language.buttonId },
 							h("span", { id: labels.language }, uiText("Language")),
-							h("small", null, uiText("Some screens are still shown in English.")),
 						),
 						language.el,
 					),

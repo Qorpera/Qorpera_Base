@@ -1,5 +1,4 @@
 import {
-	describeAnswer,
 	type InteractionAnswer,
 	type InteractionOutcome,
 	type InteractionRequest,
@@ -8,6 +7,7 @@ import {
 } from "../cloud/interactions.ts";
 import type { JsonValue } from "../cloud/types.ts";
 import { badge, button, fmtTime, h, icon } from "./dom.ts";
+import { phrase, t } from "./preferences.ts";
 
 /* Cards an agent raises in its thread (THREAD-WIDGETS-DESIGN-20260922.md).
  * One shell for every surface: a quiet header with the agent's name, the
@@ -41,20 +41,43 @@ export interface InteractionCardItem {
 }
 
 const STATE_LABEL = {
-	waiting: "Waiting for you",
-	answered: "Answered",
-	declined: "Declined",
-	expired: "Expired",
+	waiting: phrase("Waiting for you"),
+	answered: phrase("Answered"),
+	declined: phrase("Declined"),
+	expired: phrase("Expired"),
 } as const;
 
 const SURFACE_LABEL = {
-	question: "Question",
-	secret: "Secret",
-	form: "Form",
-	takeover: "Computer",
-	draft: "Draft",
-	credential: "Sign-in",
+	question: phrase("Question"),
+	secret: phrase("Secret"),
+	form: phrase("Form"),
+	takeover: phrase("Computer"),
+	draft: phrase("Draft"),
+	credential: phrase("Sign-in"),
 } as const;
+
+/** What an answer did, for every outcome but a question's chosen options. */
+const OUTCOME_LABEL: Record<InteractionOutcome, string> = {
+	answered: phrase("Filled in"),
+	provided: phrase("Saved to the company vault"),
+	handed_back: phrase("Handed back"),
+	sent: phrase("Sent"),
+	approved: phrase("Approved"),
+	declined: phrase("Declined"),
+	dismissed: phrase("Skipped"),
+	discarded: phrase("Discarded"),
+};
+
+/** The answer as the card shows it: a question's chosen options in the agent's own
+ * words, otherwise what the member did. */
+function answerText(request: InteractionRequest, answer: InteractionAnswer): string {
+	if (answer.outcome !== "answered" || request.surface !== "question") return t(OUTCOME_LABEL[answer.outcome]);
+	const values = Array.isArray(answer.answer.values)
+		? answer.answer.values.filter((value): value is string => typeof value === "string")
+		: [];
+	const labels = new Map(questionOptions(request).map((option) => [option.value, option.label]));
+	return values.map((value) => labels.get(value) ?? value).join(", ") || t("Answered");
+}
 
 function pill(label: string, onClick: () => void, kind: "primary" | "secondary" | "quiet", busy: boolean) {
 	const element = button(
@@ -101,25 +124,25 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 			h(
 				"p",
 				{ class: "interaction-result" },
-				h("span", { class: "interaction-chosen" }, describeAnswer(request, item.answer)),
+				h("span", { class: "interaction-chosen" }, answerText(request, item.answer)),
 				" ",
 				h(
 					"span",
 					{ class: "interaction-attribution" },
-					`${item.answer.answeredBy ? context.memberName(item.answer.answeredBy) : "You"}${
+					`${item.answer.answeredBy ? context.memberName(item.answer.answeredBy) : t("You")}${
 						item.answer.answeredAt ? ` · ${fmtTime(item.answer.answeredAt)}` : ""
-					}${item.answer.pending ? " · Sending" : ""}`,
+					}${item.answer.pending ? ` · ${t("Sending")}` : ""}`,
 				),
 			),
 		);
 	} else if (state === "declined" && item.answer) {
-		result.push(h("p", { class: "interaction-result" }, describeAnswer(request, item.answer)));
+		result.push(h("p", { class: "interaction-result" }, answerText(request, item.answer)));
 	} else if (state === "expired") {
 		result.push(
 			h(
 				"p",
 				{ class: "interaction-result" },
-				"This card is past its time. The agent will ask again if it still needs it.",
+				t("This card is past its time. The agent will ask again if it still needs it."),
 			),
 		);
 	}
@@ -158,8 +181,8 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 				? h("input", {
 						type: "text",
 						class: "interaction-field",
-						placeholder: "Something else…",
-						"aria-label": "Your own answer",
+						placeholder: t("Something else…"),
+						"aria-label": t("Your own answer"),
 						onkeydown: (event: KeyboardEvent) => {
 							if (event.key !== "Enter") return;
 							event.preventDefault();
@@ -168,11 +191,11 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 						},
 					})
 				: null;
-			const sendButton = multi ? pill("Send", send, "primary", busy) : null;
+			const sendButton = multi ? pill(t("Send"), send, "primary", busy) : null;
 			actions.push(
 				field,
 				sendButton,
-				pill("Skip", () => answer("declined"), "quiet", busy),
+				pill(t("Skip"), () => answer("declined"), "quiet", busy),
 			);
 		}
 	} else if (request.surface === "takeover") {
@@ -180,21 +203,21 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 		if (instruction) body.push(h("p", { class: "interaction-text" }, instruction));
 		if (open) {
 			actions.push(
-				context.takeOver ? pill("Take over", context.takeOver, "primary", busy) : null,
-				pill("I'm done", () => answer("handed_back"), context.takeOver ? "secondary" : "primary", busy),
-				pill("Skip", () => answer("dismissed"), "quiet", busy),
+				context.takeOver ? pill(t("Take over"), context.takeOver, "primary", busy) : null,
+				pill(t("I'm done"), () => answer("handed_back"), context.takeOver ? "secondary" : "primary", busy),
+				pill(t("Skip"), () => answer("dismissed"), "quiet", busy),
 			);
 		}
 	} else if (request.surface === "secret") {
 		const purpose = typeof request.payload.purpose === "string" ? request.payload.purpose : "";
 		if (purpose) body.push(h("p", { class: "interaction-text" }, purpose));
 		if (open && context.provideSecret) {
-			const label = typeof request.payload.label === "string" ? request.payload.label : "Secret";
+			const label = typeof request.payload.label === "string" ? request.payload.label : t("Secret");
 			const field = h("input", {
 				type: "password",
 				class: "interaction-field interaction-secret",
 				autocomplete: "off",
-				placeholder: `Paste your ${label.toLowerCase()}`,
+				placeholder: t("Paste your {label}", { label: label.toLowerCase() }),
 				"aria-label": label,
 			}) as HTMLInputElement;
 			const save = () => {
@@ -220,34 +243,45 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 				event.preventDefault();
 				save();
 			});
-			body.push(h("div", { class: "interaction-secret-row" }, field, pill("Save securely", save, "primary", busy)));
+			body.push(
+				h("div", { class: "interaction-secret-row" }, field, pill(t("Save securely"), save, "primary", busy)),
+			);
 			body.push(
 				h(
 					"p",
 					{ class: "interaction-note" },
 					icon("lock"),
-					" Encrypted in the company vault. The agent never sees the value, only that it was saved.",
+					` ${t("Encrypted in the company vault. The agent never sees the value, only that it was saved.")}`,
 				),
 			);
-			actions.push(pill("Decline", () => answer("declined"), "quiet", busy));
+			actions.push(pill(t("Decline"), () => answer("declined"), "quiet", busy));
 		} else if (open) {
 			body.push(
 				h(
 					"p",
 					{ class: "interaction-note" },
 					icon("lock"),
-					" Entering a secret here needs a newer version of the app. The value would go to the company vault, never to the agent.",
+					` ${t("Entering a secret here needs a newer version of the app. The value would go to the company vault, never to the agent.")}`,
 				),
 			);
-			actions.push(pill("Decline", () => answer("declined"), "quiet", busy));
+			actions.push(pill(t("Decline"), () => answer("declined"), "quiet", busy));
 		}
 	} else if (request.surface === "form") {
 		const domain = typeof request.payload.domain === "string" ? request.payload.domain : "";
 		if (domain)
-			body.push(h("p", { class: "interaction-note" }, icon("lock"), ` Filled on the computer at ${domain} only`));
+			body.push(
+				h(
+					"p",
+					{ class: "interaction-note" },
+					icon("lock"),
+					` ${t("Filled on the computer at {domain} only", { domain })}`,
+				),
+			);
 		if (open) {
-			body.push(h("p", { class: "interaction-note" }, "Filling this form here needs a newer version of the app."));
-			actions.push(pill("Skip", () => answer("declined"), "quiet", busy));
+			body.push(
+				h("p", { class: "interaction-note" }, t("Filling this form here needs a newer version of the app.")),
+			);
+			actions.push(pill(t("Skip"), () => answer("declined"), "quiet", busy));
 		}
 	} else if (request.surface === "draft") {
 		const subject = typeof request.payload.subject === "string" ? request.payload.subject : "";
@@ -256,9 +290,9 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 		if (text) body.push(h("pre", { class: "interaction-draft" }, text));
 		if (open) {
 			body.push(
-				h("p", { class: "interaction-note" }, "Sending this draft from here needs a newer version of the app."),
+				h("p", { class: "interaction-note" }, t("Sending this draft from here needs a newer version of the app.")),
 			);
-			actions.push(pill("Discard", () => answer("discarded"), "quiet", busy));
+			actions.push(pill(t("Discard"), () => answer("discarded"), "quiet", busy));
 		}
 	} else if (request.surface === "credential") {
 		const domain = typeof request.payload.domain === "string" ? request.payload.domain : "";
@@ -267,7 +301,11 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 				"p",
 				{ class: "interaction-note" },
 				icon("lock"),
-				` The computer signs in${domain ? ` at ${domain}` : ""} with the company account. Nothing to do here.`,
+				` ${
+					domain
+						? t("The computer signs in at {domain} with the company account. Nothing to do here.", { domain })
+						: t("The computer signs in with the company account. Nothing to do here.")
+				}`,
 			),
 		);
 	}
@@ -277,14 +315,18 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 		{
 			class: `interaction-card surface-${request.surface} state-${state}`,
 			dataset: { interactionId: item.id, surface: request.surface, state },
-			"aria-label": `${SURFACE_LABEL[request.surface]} from ${context.agentName}: ${request.title}`,
+			"aria-label": t("{kind} from {name}: {title}", {
+				kind: t(SURFACE_LABEL[request.surface]),
+				name: context.agentName,
+				title: request.title,
+			}),
 		},
 		h(
 			"header",
 			{ class: "interaction-heading" },
-			h("span", { class: "interaction-kind" }, SURFACE_LABEL[request.surface]),
+			h("span", { class: "interaction-kind" }, t(SURFACE_LABEL[request.surface])),
 			h("span", { class: "interaction-from" }, `${context.agentName} · ${fmtTime(item.createdAt)}`),
-			badge(STATE_LABEL[state], stateTone),
+			badge(t(STATE_LABEL[state]), stateTone),
 		),
 		h("h3", { class: "interaction-title" }, request.title),
 		request.body ? h("p", { class: "interaction-text" }, request.body) : null,

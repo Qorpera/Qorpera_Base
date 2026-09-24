@@ -1,4 +1,4 @@
-import { presentationDay, presentationLocale, previousDay, timeZoneOption } from "./preferences.ts";
+import { presentationDay, presentationLocale, previousDay, t, timeZoneOption } from "./preferences.ts";
 
 const TIMESTAMP_GAP_MS = 5 * 60 * 1000;
 
@@ -23,8 +23,8 @@ export function conversationTimestampLabel(date: Date, now = new Date()): string
 	const time = date.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit", ...zone });
 	const day = presentationDay(date, zone.timeZone),
 		today = presentationDay(now, zone.timeZone);
-	if (day === today) return `${locale === "da" ? "I dag" : "Today"} ${time}`;
-	if (day === previousDay(today)) return `${locale === "da" ? "I går" : "Yesterday"} ${time}`;
+	if (day === today) return t("Today {time}", { time });
+	if (day === previousDay(today)) return t("Yesterday {time}", { time });
 	const shown = date.toLocaleDateString(locale, {
 		weekday: "short",
 		month: "short",

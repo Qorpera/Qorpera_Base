@@ -1,5 +1,6 @@
 import { button, h } from "./dom.ts";
 import { matchesKey } from "./keys.ts";
+import { phrase, t } from "./preferences.ts";
 
 /** What stopped the run, from the cloud's own error text (which names machinery,
  * not causes) and the job status. One classification feeds both the sentence the
@@ -19,18 +20,18 @@ export function classifyRunFailure(lastError: string | undefined, jobStatus: "fa
 }
 
 const REASONS: Record<RunFailureKind, string> = {
-	usage_limit: "Your model account has reached its usage limit.",
-	credential: "Your model account needs to be connected again.",
-	dispatch: "No computer could be started for this run. The problem is on Qorpera's side.",
-	timeout: "The run took too long and was stopped.",
-	bridge: "The run started, but one of its steps was refused. The problem is on Qorpera's side.",
-	cancelled: "The run was stopped before it finished.",
-	other: "The run stopped because of an internal error.",
+	usage_limit: phrase("Your model account has reached its usage limit."),
+	credential: phrase("Your model account needs to be connected again."),
+	dispatch: phrase("No computer could be started for this run. The problem is on Qorpera's side."),
+	timeout: phrase("The run took too long and was stopped."),
+	bridge: phrase("The run started, but one of its steps was refused. The problem is on Qorpera's side."),
+	cancelled: phrase("The run was stopped before it finished."),
+	other: phrase("The run stopped because of an internal error."),
 };
 
 /** Why a run stopped, in the member's words. */
 export function runFailureReason(lastError: string | undefined, jobStatus: "failed" | "cancelled"): string {
-	return REASONS[classifyRunFailure(lastError, jobStatus)];
+	return t(REASONS[classifyRunFailure(lastError, jobStatus)]);
 }
 
 /** Whether the run was interrupted rather than refused: it was stopped for time,
@@ -68,7 +69,7 @@ export function runFailureCard(card: RunFailureCard): HTMLElement {
 		card.action ??
 		(card.retry
 			? button(
-					busy ? "Trying again…" : "Try again",
+					busy ? t("Trying again…") : t("Try again"),
 					guarded(() => card.retry?.()),
 					{ small: true },
 				)
@@ -78,7 +79,7 @@ export function runFailureCard(card: RunFailureCard): HTMLElement {
 		primary.dataset.action = "retry-run";
 		if (busy) primary.setAttribute("aria-disabled", "true");
 	}
-	const dismiss = button("Dismiss", guarded(card.dismiss), { small: true });
+	const dismiss = button(t("Dismiss"), guarded(card.dismiss), { small: true });
 	dismiss.classList.add("run-failure-secondary");
 	dismiss.dataset.action = "dismiss-run";
 	if (busy) dismiss.setAttribute("aria-disabled", "true");

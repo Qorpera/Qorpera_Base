@@ -9,6 +9,7 @@ import {
 	type CloudRoutineReplyPolicy,
 	type CloudRoutineTrigger,
 	type CloudRoutineWeekday,
+	cloudRoutineWeekdayName,
 	describeCloudRoutineTrigger,
 	parseCloudRoutineTrigger,
 } from "@qorpera/cloud-client/cloud-routines";
@@ -16,7 +17,7 @@ import type { WebRoutines } from "../../cloud/routines.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { dialogPageHeader } from "../../ui/dialog.ts";
 import { badge, button, fmtTime, h, icon, replace } from "../../ui/dom.ts";
-import { presentationTimeZone } from "../../ui/preferences.ts";
+import { phrase, presentationTimeZone, t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 
@@ -81,18 +82,20 @@ function accountLabels(accounts: readonly NativeMemberConnection[]): string[] {
 	});
 }
 
+const RUN_LABELS: Record<string, string> = {
+	pending: phrase("Waiting to start"),
+	queued: phrase("Waiting to start"),
+	running: phrase("Running"),
+	completed: phrase("Finished"),
+	blocked: phrase("Could not start"),
+	failed: phrase("Failed"),
+	cancelled: phrase("Cancelled"),
+	superseded: phrase("Skipped"),
+};
+
 function runLabel(run: CloudRoutineOccurrence): string {
-	const words: Record<string, string> = {
-		pending: "Waiting to start",
-		queued: "Waiting to start",
-		running: "Running",
-		completed: "Finished",
-		blocked: "Could not start",
-		failed: "Failed",
-		cancelled: "Cancelled",
-		superseded: "Skipped",
-	};
-	return `${words[run.status] ?? run.status} · ${fmtTime(run.finishedAt ?? run.scheduledFor ?? run.createdAt)}`;
+	const status = Object.hasOwn(RUN_LABELS, run.status) ? t(RUN_LABELS[run.status]!) : run.status;
+	return `${status} · ${fmtTime(run.finishedAt ?? run.scheduledFor ?? run.createdAt)}`;
 }
 
 function controlLabel(control: Element): string {
@@ -147,7 +150,7 @@ export class AgentRoutines {
 			this.#message = "";
 		} catch {
 			if (this.#signal.aborted) return;
-			this.#message = "Routines could not be read. Refresh to try again.";
+			this.#message = t("Routines could not be read. Refresh to try again.");
 		}
 		this.#loaded = true;
 		if (!this.#editing) this.#list();
@@ -158,7 +161,7 @@ export class AgentRoutines {
 		const access = this.#access;
 		const manage = access?.canManage() === true;
 		const create = manage
-			? button([icon("plus"), "New routine"], () => void this.#edit(undefined), { disabled: this.#busy })
+			? button([icon("plus"), t("New routine")], () => void this.#edit(undefined), { disabled: this.#busy })
 			: null;
 		const rows = this.#routines.map((routine) => {
 			const last = this.#runs.find((run) => run.routineId === routine.routineId);
@@ -169,16 +172,16 @@ export class AgentRoutines {
 					"div",
 					{ class: "routine-row-copy" },
 					h("strong", null, routine.title),
-					h("span", null, routine.triggers.map(describeCloudRoutineTrigger).join("; ")),
-					h("small", null, last ? `Last run: ${runLabel(last)}` : "Has not run yet"),
+					h("span", null, routine.triggers.map((trigger) => describeCloudRoutineTrigger(trigger, t)).join("; ")),
+					h("small", null, last ? t("Last run: {run}", { run: runLabel(last) }) : t("Has not run yet")),
 				),
-				routine.status === "active" ? badge("Active", "ok") : badge("Paused", "warn"),
+				routine.status === "active" ? badge(t("Active"), "ok") : badge(t("Paused"), "warn"),
 				manage
 					? h(
 							"div",
 							{ class: "routine-row-actions" },
-							button("Edit", () => void this.#edit(routine), { small: true, disabled: this.#busy }),
-							button(routine.status === "active" ? "Pause" : "Resume", () => void this.#toggle(routine), {
+							button(t("Edit"), () => void this.#edit(routine), { small: true, disabled: this.#busy }),
+							button(routine.status === "active" ? t("Pause") : t("Resume"), () => void this.#toggle(routine), {
 								small: true,
 								disabled: this.#busy,
 							}),
@@ -189,10 +192,10 @@ export class AgentRoutines {
 		replace(
 			this.el,
 			dialogPageHeader(
-				"Routines",
+				t("Routines"),
 				this.#back,
-				"Back to agent details",
-				"Recurring work, on a schedule or when something happens.",
+				t("Back to agent details"),
+				t("Recurring work, on a schedule or when something happens."),
 			),
 			this.#message ? h("p", { class: "surface-status", role: "status" }, this.#message) : null,
 			rows.length
@@ -201,7 +204,7 @@ export class AgentRoutines {
 						create ? h("div", { class: "routine-list-footer" }, create) : null,
 					]
 				: access && !this.#loaded
-					? h("p", { class: "agent-page-loading", role: "status" }, "Reading routines…")
+					? h("p", { class: "agent-page-loading", role: "status" }, t("Reading routines…"))
 					: h(
 							"div",
 							{ class: "agent-page-empty" },
@@ -209,7 +212,9 @@ export class AgentRoutines {
 							h(
 								"p",
 								null,
-								access ? `${this.#agent().displayName} has no routines yet.` : "Routines will appear here.",
+								access
+									? t("{name} has no routines yet.", { name: this.#agent().displayName })
+									: t("Routines will appear here."),
 							),
 							create,
 						),
@@ -229,7 +234,7 @@ export class AgentRoutines {
 		const [label, index] = focused;
 		const same = this.#controls(label);
 		// A control that changed (Pause became Resume) hands focus to the way back.
-		(same[index] ?? same[0] ?? this.#controls("Back to agent details")[0])?.focus({ preventScroll: true });
+		(same[index] ?? same[0] ?? this.#controls(t("Back to agent details"))[0])?.focus({ preventScroll: true });
 	}
 	#controls(label: string): HTMLElement[] {
 		return [...this.el.querySelectorAll<HTMLElement>("button")].filter((item) => controlLabel(item) === label);
@@ -246,7 +251,7 @@ export class AgentRoutines {
 			return true;
 		} catch {
 			if (!this.#signal.aborted) {
-				this.#message = "Your model accounts could not be read. Try again.";
+				this.#message = t("Your model accounts could not be read. Try again.");
 				this.#list();
 			}
 			return false;
@@ -255,7 +260,7 @@ export class AgentRoutines {
 	async #toggle(routine: CloudRoutine): Promise<void> {
 		if (this.#busy || !this.#access?.canManage()) return;
 		this.#busy = true;
-		this.#message = routine.status === "active" ? "Pausing…" : "Resuming…";
+		this.#message = routine.status === "active" ? t("Pausing…") : t("Resuming…");
 		this.#list();
 		try {
 			if (!(await this.#loadAccounts())) return;
@@ -269,8 +274,10 @@ export class AgentRoutines {
 		} catch {
 			if (!this.#signal.aborted)
 				this.#message = this.#accounts.length
-					? "The routine could not be changed. Try again."
-					: "Connect a model account in Settings first; a routine runs on the account of the member who last saved it.";
+					? t("The routine could not be changed. Try again.")
+					: t(
+							"Connect a model account in Settings first; a routine runs on the account of the member who last saved it.",
+						);
 		} finally {
 			this.#busy = false;
 			if (!this.#signal.aborted) await this.#refresh();
@@ -299,28 +306,28 @@ export class AgentRoutines {
 			type: "text",
 			maxlength: "160",
 			value: routine?.title ?? "",
-			"aria-label": "Routine name",
+			"aria-label": t("Routine name"),
 		});
 		const prompt = h(
 			"textarea",
-			{ rows: 5, maxlength: "8000", "aria-label": "What to do", value: routine?.prompt ?? "" },
+			{ rows: 5, maxlength: "8000", "aria-label": t("What to do"), value: routine?.prompt ?? "" },
 			routine?.prompt ?? "",
 		);
 		const when = h(
 			"select",
-			{ "aria-label": "When it runs" },
-			h("option", { value: "weekly" }, "On chosen days at a set time"),
-			h("option", { value: "interval" }, "Every so often"),
-			h("option", { value: "file" }, "When something in the Company File changes"),
+			{ "aria-label": t("When it runs") },
+			h("option", { value: "weekly" }, t("On chosen days at a set time")),
+			h("option", { value: "interval" }, t("Every so often")),
+			h("option", { value: "file" }, t("When something in the Company File changes")),
 		);
 		when.value = shape;
 		const minutes = first && first.kind === "schedule" && !("localTime" in first) ? first.intervalMinutes : 60;
 		const unit = h(
 			"select",
-			{ "aria-label": "Interval unit" },
-			h("option", { value: "minutes" }, "minutes"),
-			h("option", { value: "hours" }, "hours"),
-			h("option", { value: "days" }, "days"),
+			{ "aria-label": t("Interval unit") },
+			h("option", { value: "minutes" }, t("minutes")),
+			h("option", { value: "hours" }, t("hours")),
+			h("option", { value: "days" }, t("days")),
 		);
 		unit.value = minutes % 1440 === 0 ? "days" : minutes % 60 === 0 ? "hours" : "minutes";
 		const every = h("input", {
@@ -328,65 +335,65 @@ export class AgentRoutines {
 			min: "1",
 			max: "10080",
 			value: String(minutes / UNITS[unit.value as keyof typeof UNITS]),
-			"aria-label": "Interval",
+			"aria-label": t("Interval"),
 		});
 		const chosen = new Set<CloudRoutineWeekday>(
 			first && "localTime" in first ? first.weekdays : ["monday", "tuesday", "wednesday", "thursday", "friday"],
 		);
 		const days = h(
 			"div",
-			{ class: "routine-days", role: "group", "aria-label": "Days" },
+			{ class: "routine-days", role: "group", "aria-label": t("Days") },
 			...CLOUD_ROUTINE_WEEKDAYS.map((day) => {
 				const box = h("input", { type: "checkbox", checked: chosen.has(day) });
 				box.onchange = () => (box.checked ? chosen.add(day) : chosen.delete(day));
-				return h("label", null, box, day[0]!.toUpperCase() + day.slice(1, 3));
+				return h("label", null, box, cloudRoutineWeekdayName(day, t));
 			}),
 		);
 		const time = h("input", {
 			type: "time",
 			value: first && "localTime" in first ? first.localTime : "09:00",
-			"aria-label": "Time",
+			"aria-label": t("Time"),
 		});
 		const timeZone = h("input", {
 			type: "text",
 			value: first && "timeZone" in first ? first.timeZone : zone,
-			"aria-label": "Time zone",
+			"aria-label": t("Time zone"),
 			maxlength: "128",
 		});
 		const path = h("input", {
 			type: "text",
 			value: first?.kind === "listener" ? first.path : "",
 			placeholder: "finance/invoices",
-			"aria-label": "Company File path",
+			"aria-label": t("Company File path"),
 		});
 		const match = h(
 			"select",
-			{ "aria-label": "What counts as a change" },
-			h("option", { value: "subtree" }, "This folder and everything in it"),
-			h("option", { value: "exact" }, "Exactly this file"),
+			{ "aria-label": t("What counts as a change") },
+			h("option", { value: "subtree" }, t("This folder and everything in it")),
+			h("option", { value: "exact" }, t("Exactly this file")),
 		);
 		match.value = first?.kind === "listener" ? first.match : "subtree";
 		const reply = h(
 			"select",
-			{ "aria-label": "Reply" },
-			h("option", { value: "required" }, "Always post a reply in the conversation"),
-			h("option", { value: "optional" }, "Reply only when there is something to say"),
-			h("option", { value: "silent" }, "Work silently"),
+			{ "aria-label": t("Reply") },
+			h("option", { value: "required" }, t("Always post a reply in the conversation")),
+			h("option", { value: "optional" }, t("Reply only when there is something to say")),
+			h("option", { value: "silent" }, t("Work silently")),
 		);
 		reply.value = first?.replyPolicy ?? "required";
 		const account = h(
 			"select",
-			{ "aria-label": "Model account" },
+			{ "aria-label": t("Model account") },
 			...accountLabels(this.#accounts).map((label, index) =>
 				h("option", { value: this.#accounts[index]!.connectionId }, label),
 			),
 		);
-		const intervalFields = h("div", { class: "routine-inline" }, "Every", every, unit);
+		const intervalFields = h("div", { class: "routine-inline" }, t("Every"), every, unit);
 		const weeklyFields = h(
 			"div",
 			{ class: "routine-when" },
 			days,
-			h("div", { class: "routine-inline" }, "at", time, timeZone),
+			h("div", { class: "routine-inline" }, t("at"), time, timeZone),
 		);
 		const fileFields = h("div", { class: "routine-when" }, path, match);
 		const sync = () => {
@@ -435,11 +442,11 @@ export class AgentRoutines {
 				...replyPolicy,
 			});
 		};
-		const save = button("Save routine", () => void submit(), { primary: true });
+		const save = button(t("Save routine"), () => void submit(), { primary: true });
 		const leave = () => {
 			if (!this.#busy) this.#list();
 		};
-		const cancel = button("Cancel", leave);
+		const cancel = button(t("Cancel"), leave);
 		const submit = async () => {
 			if (this.#busy || !this.#access?.canManage()) return;
 			const chosenAccount = this.#accounts.find((item) => item.connectionId === account.value);
@@ -449,23 +456,23 @@ export class AgentRoutines {
 			} catch {
 				status.textContent =
 					when.value === "interval"
-						? "Choose an interval between 5 minutes and 7 days."
+						? t("Choose an interval between 5 minutes and 7 days.")
 						: when.value === "weekly"
-							? "Choose at least one day, a time and a time zone such as Europe/Copenhagen."
-							: "Enter a Company File path such as finance/invoices.";
+							? t("Choose at least one day, a time and a time zone such as Europe/Copenhagen.")
+							: t("Enter a Company File path such as finance/invoices.");
 				return;
 			}
 			if (!title.value.trim() || !prompt.value.trim()) {
-				status.textContent = "Give the routine a name and say what to do.";
+				status.textContent = t("Give the routine a name and say what to do.");
 				return;
 			}
 			if (!chosenAccount) {
-				status.textContent = "Connect a model account in Settings first.";
+				status.textContent = t("Connect a model account in Settings first.");
 				return;
 			}
 			this.#busy = true;
 			save.disabled = cancel.disabled = true;
-			status.textContent = "Saving…";
+			status.textContent = t("Saving…");
 			try {
 				await this.#access.routines.save(
 					{
@@ -487,7 +494,8 @@ export class AgentRoutines {
 			} catch {
 				// A changed draft is a new save; the same draft may be retried as itself.
 				saveId = crypto.randomUUID();
-				if (!this.#signal.aborted) status.textContent = "The routine could not be saved. Your draft is still here.";
+				if (!this.#signal.aborted)
+					status.textContent = t("The routine could not be saved. Your draft is still here.");
 			} finally {
 				this.#busy = false;
 				save.disabled = cancel.disabled = false;
@@ -495,33 +503,38 @@ export class AgentRoutines {
 		};
 		replace(
 			this.el,
-			dialogPageHeader(routine ? "Edit routine" : "New routine", leave, "Back to routines"),
+			dialogPageHeader(routine ? t("Edit routine") : t("New routine"), leave, t("Back to routines")),
 			h(
 				"div",
 				{ class: "routine-editor" },
-				h("label", null, "Name", title),
-				h("label", null, `What should ${this.#agent().displayName} do?`, prompt),
-				h("label", null, "When", when),
+				h("label", null, t("Name"), title),
+				h("label", null, t("What should {name} do?", { name: this.#agent().displayName }), prompt),
+				h("label", null, t("When"), when),
 				intervalFields,
 				weeklyFields,
 				fileFields,
-				h("label", null, "Reply", reply),
+				h("label", null, t("Reply"), reply),
 				this.#accounts.length
 					? h(
 							"label",
 							null,
-							"Runs on",
+							t("Runs on"),
 							account,
 							h(
 								"small",
 								null,
-								`Saving lets ${this.#agent().displayName} use this account for this routine while you are away. Pause the routine to stop it.`,
+								t(
+									"Saving lets {name} use this account for this routine while you are away. Pause the routine to stop it.",
+									{ name: this.#agent().displayName },
+								),
 							),
 						)
 					: h(
 							"p",
 							{ class: "muted" },
-							"Connect a model account in Settings → Connections first. A routine runs on a member's own account.",
+							t(
+								"Connect a model account in Settings → Connections first. A routine runs on a member's own account.",
+							),
 						),
 				status,
 				h("div", { class: "surface-actions" }, cancel, save),

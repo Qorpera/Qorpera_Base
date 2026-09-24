@@ -1,4 +1,5 @@
 import { button, h } from "./dom.ts";
+import { t } from "./preferences.ts";
 
 export interface NameDialogOptions {
 	title: string;
@@ -61,7 +62,7 @@ export function nameDialog(options: NameDialogOptions): Promise<string | undefin
 				},
 				h("h2", { class: "name-dialog-title" }, options.title),
 				input,
-				h("div", { class: "modal-actions" }, button("Cancel", cancel), save),
+				h("div", { class: "modal-actions" }, button(t("Cancel"), cancel), save),
 			),
 		);
 		save.type = "submit";

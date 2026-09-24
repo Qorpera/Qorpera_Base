@@ -3,13 +3,27 @@ import type { Cloud } from "./client.ts";
 
 export const SESSION_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
-export function sessionAttachmentIssue(files: readonly File[]): string | undefined {
-	if (files.some((file) => !SESSION_IMAGE_TYPES.has(file.type)))
-		return "Messages support PNG, JPEG, GIF and WebP images. Upload other files through Company File.";
-	if (files.length > 5 || files.reduce((total, file) => total + file.size, 0) > 8 * 1024 * 1024)
-		return "Choose up to 5 images totaling no more than 8 MiB.";
-	if (files.some((file) => !(file instanceof File) || file.size < 1)) return "Choose nonempty image files.";
+/** Why these files cannot go with a message: an image type, the count and
+ * total size, or an empty file. Views say it in the member's language. */
+export type SessionAttachmentProblem = "type" | "size" | "empty";
+
+export function sessionAttachmentProblem(files: readonly File[]): SessionAttachmentProblem | undefined {
+	if (files.some((file) => !SESSION_IMAGE_TYPES.has(file.type))) return "type";
+	if (files.length > 5 || files.reduce((total, file) => total + file.size, 0) > 8 * 1024 * 1024) return "size";
+	if (files.some((file) => !(file instanceof File) || file.size < 1)) return "empty";
 	return undefined;
+}
+
+const PROBLEM_SENTENCES: Record<SessionAttachmentProblem, string> = {
+	type: "Messages support PNG, JPEG, GIF and WebP images. Upload other files through Company File.",
+	size: "Choose up to 5 images totaling no more than 8 MiB.",
+	empty: "Choose nonempty image files.",
+};
+
+/** The problem in English, for the transport's own refusal. */
+export function sessionAttachmentIssue(files: readonly File[]): string | undefined {
+	const problem = sessionAttachmentProblem(files);
+	return problem && PROBLEM_SENTENCES[problem];
 }
 
 /** Product account/route lifetime around shared canonical attachment transport. */

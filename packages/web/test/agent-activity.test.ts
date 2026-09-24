@@ -6,7 +6,8 @@ import { ConversationView } from "../src/app/views/conversation.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import { parseStaffExecutionActivity } from "../src/cloud/parse.ts";
 import type { HostedStaffExecutionActivity } from "../src/cloud/types.ts";
-import { AGENT_LOOK, stateLine, statusCaption, syncCaption } from "../src/ui/agent-activity.ts";
+import { AGENT_LOOK, activityCaption, stateLine, statusCaption, syncCaption } from "../src/ui/agent-activity.ts";
+import { setLanguagePreference, untranslated } from "../src/ui/preferences.ts";
 import { fixture, id, profileA, session, settle, staff, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
 
 const cleanup: (() => void)[] = [];
@@ -193,5 +194,26 @@ describe("shared agent activity", () => {
 		expect(next).not.toBe(row);
 		expect(next.getAttribute("aria-label")).toBe(`${staff.displayName} is writing`);
 		expect(document.activeElement).toBe(next);
+	});
+});
+
+describe("agent activity in Danish", () => {
+	it("says the whole sentence and sets the name apart where Danish puts it", () => {
+		setLanguagePreference("da");
+		try {
+			const { label, caption } = activityCaption(AGENT_LOOK.working, "Nova");
+			expect(label).toBe("Nova arbejder");
+			expect([...caption.children].map((part) => [part.className, (part as HTMLElement).dataset.text])).toEqual([
+				["status-caption-name", "Nova"],
+				["status-caption-detail", " arbejder"],
+			]);
+			expect((stateLine(AGENT_LOOK.working, "Marketing Lead") as HTMLElement).textContent).toBe("Arbejder");
+			expect(stateLine(AGENT_LOOK.decision, "Marketing Lead")).toBe("Venter på dig");
+			// Each word is translated once, from its English key.
+			expect(untranslated()).toEqual([]);
+		} finally {
+			setLanguagePreference("system");
+			localStorage.clear();
+		}
 	});
 });
