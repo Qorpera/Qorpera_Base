@@ -178,7 +178,7 @@
 :root[data-theme="dark"] .panel-group-title { color: #8f8e89; }
 :root[data-theme="dark"] .person-row + .person-row { border-top-color: rgba(255, 255, 255, 0.06); }
 :root[data-theme="dark"] .connection-list { background: #333332; }
-:root[data-theme="dark"] :is(.connection-usage-heading, .connection-usage-checked) { color: #a3a29d; }
+:root[data-theme="dark"] .connection-usage-heading { color: #a3a29d; }
 :root[data-theme="dark"] .connection-usage-meter { background: #494948; }
 :root[data-theme="dark"] .connection-usage-meter > span { background: #81b29c; }
 :root[data-theme="dark"] .connection-usage-meter.is-low > span { background: #ff6b21; }

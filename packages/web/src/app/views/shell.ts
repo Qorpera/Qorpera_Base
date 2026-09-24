@@ -11,6 +11,7 @@ import { nameDialog } from "../../ui/name-dialog.ts";
 import { presentationLocale, uiText } from "../../ui/preferences.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { RailDrag, type RailDrop } from "../../ui/rail-drag.ts";
+import { railListSkeleton } from "../../ui/skeleton.ts";
 import { type AuthController, displayName } from "../auth.ts";
 import { type AgentState, type CompanyController, isAgentPairSession } from "../company.ts";
 import type { Route } from "../router.ts";
@@ -251,7 +252,8 @@ interface RailParts {
 	/** The company's sections by id, and Unassigned, each built once and kept. */
 	sections: Map<string, SectionParts>;
 	readonly unassigned: SectionParts;
-	readonly loading: HTMLElement;
+	/** The list's placeholder, built when first shown so it breathes with the page's. */
+	loading: HTMLElement | undefined;
 	readonly empty: HTMLElement;
 	/** The rows by where they lead, each with the model it was built from. */
 	rows: Map<string, { shown: string; element: HTMLElement }>;
@@ -349,7 +351,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			),
 			sections: new Map(),
 			unassigned: sectionParts("unassigned"),
-			loading: h("p", { class: "rail-empty" }, "Loading…"),
+			loading: undefined,
 			empty: h("p", { class: "rail-empty" }),
 			rows: new Map(),
 			notices: new Map(),
@@ -682,6 +684,8 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		return entry.element;
 	};
 	const anyRows = pinnedElements.length + unassignedRows.length + sectionGroups.reduce((n, g) => n + g.rows.length, 0);
+	if (!state.loading || state.staff.length) parts.loading = undefined;
+	else parts.loading ??= railListSkeleton();
 	const empty =
 		!state.loading && !cofounderElement && !anyRows
 			? railQuery
@@ -745,7 +749,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			cofounderElement ? parts.cofounderGroup : null,
 			// The pinned row stays in place while empty, hidden, so a drag can still reach it.
 			sidebar && !railQuery ? parts.pinnedGroup : pinnedElements.length ? parts.pinnedGroup : null,
-			state.loading && !state.staff.length ? parts.loading : null,
+			parts.loading ?? null,
 			// A section shows while it has rows, and always when nothing is being searched.
 			...sectionGroups.filter(({ rows: r }) => r.length || !railQuery).map(({ group }) => group.el),
 			unassignedRows.length || (sectioned && !railQuery) ? parts.unassigned.el : null,

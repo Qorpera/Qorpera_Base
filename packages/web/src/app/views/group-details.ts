@@ -2,9 +2,10 @@ import { describeError } from "../../cloud/client.ts";
 import type { GroupChatDetails, GroupChatDraft } from "../../cloud/group-details.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { SurfaceDialog } from "../../ui/dialog.ts";
-import { button, h, icon, notice, personAvatar, replace, spinner } from "../../ui/dom.ts";
+import { button, h, icon, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { matchesKey } from "../../ui/keys.ts";
+import { listSkeleton } from "../../ui/skeleton.ts";
 import type { CompanyController } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { type GroupEdits, groupEditsFor } from "./group-edits.ts";
@@ -108,7 +109,7 @@ export class GroupDetails {
 	}
 
 	async #load(): Promise<void> {
-		replace(this.dialog.content, spinner("Loading group details…"));
+		replace(this.dialog.content, listSkeleton("Loading group details"));
 		try {
 			const details = await this.#company.groupDetails(this.#sessionId, this.#lifetime.signal);
 			if (!this.#available()) return;

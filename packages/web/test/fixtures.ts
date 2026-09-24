@@ -255,3 +255,15 @@ export function fixture() {
 		},
 	};
 }
+
+/** What the loading placeholder under `root` tells a screen reader. */
+export function placeholderLabel(root: ParentNode | null | undefined): string | undefined {
+	return root?.querySelector(".skeleton-group[role=status] > .visually-hidden")?.textContent ?? undefined;
+}
+
+/** The text a sighted member sees: everything except screen-reader-only text. */
+export function visibleText(element: Element | null | undefined): string {
+	const copy = element?.cloneNode(true) as Element | undefined;
+	for (const hidden of copy?.querySelectorAll(".visually-hidden") ?? []) hidden.remove();
+	return copy?.textContent ?? "";
+}

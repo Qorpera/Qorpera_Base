@@ -10,6 +10,7 @@
 
 ### Fixed
 
+- Show grey placeholder shapes while a screen loads instead of a line such as "Opening company" or "Loading conversation". Opening a company or a conversation shows the rail, the thread header, message bubbles and the composer as placeholders on their real sizes, and each part is replaced where it stands as it arrives; on a phone the placeholder header keeps the button that opens the rail. The company list, Team, Friends, group details and Company File do the same. Placeholders stand in only for a first read: a refresh keeps what the page already shows. The shapes breathe together and stay still with reduced motion; a screen reader still hears what is loading. The Company File page now says when membership could not be read instead of waiting forever, and a start-up that cannot reach the cloud shows the error with Try again.
 - Let the Co-Founder's colour be changed: its figure picker in the agent details offers the colours and Reset like any agent's, and the rail, header and group pictures draw the colour chosen. A Co-Founder whose colour nobody has picked keeps its figure's own shade.
 - Keep the "Manage company" disclosure in Settings → Company at its small size; removing the Cloud endpoint panel had dropped the rule it shares.
 - Keep keyboard focus in Settings → General when the account plan finishes loading; the page is redrawn only when the error or message it shows changes.
@@ -63,6 +64,7 @@
 
 ### Changed
 
+- Make the Settings side panel half again as large (20px text, 26px icons, 54px tab rows, with the search field, invitation count and company picker to match) and order its tabs General, Company, Friends, Plan & usage, Connections. The panel is 320px wide so every label fits on one line in English and Danish, and it scrolls when the window is too short for it. Windows up to 1100px wide (tablets, small laptops, phones) keep the earlier, smaller panel, so the settings themselves keep their width. A search that hides the open tab selects the top matching tab, so "invitations" now opens Company.
 - Show the close × of the Settings window and the feedback window as a bare glyph in both themes: no grey square behind it, at rest, on hover or on keyboard focus. Hover and focus only darken the × (brighten it on dark), and keyboard focus still shows its ring.
 - Lower the top edge of the rail's Co-Founder card by 10px, so the card is thinner and the figure stands higher above it. The figure, the name and the rows below keep their place.
 - Show only the name on the rail's Co-Founder card, which makes the card a line thinner. Its role and any state ("Working", "Needs you") stay in the card's tooltip and link name, the status disc and the figure still show a run, and other agents' rows keep their second line.
@@ -75,6 +77,7 @@
 
 ### Removed
 
+- Remove three lines from each account card in Settings → Connections: the "Connected <date> · <id>" line, the usage bar's name ("Weekly"), and "Last checked <time>". The bar still dims and reads "at last check" when the reading is old, and screen readers still hear each bar's name.
 - Remove Company execution from Settings → Company: the pause and resume buttons, the spend, token and wake status line, and the monthly spend, monthly token and hourly wake limit fields. Notices about a reached company limit or a paused company no longer show above the composer, and older ones are skipped when notices load; the "all company computers are in use" notice stays.
 - Remove the Organization and Approvals cards from Settings → Company, and their pages: the Organization page with its project pages, and the read-only Approvals list (it only gathered the old authorization requests the cloud runtime never sends). Old links open the company home. Cards an agent raises in its own thread, such as an approval card, are unchanged.
 - Remove the member notification inbox: the rail's Notifications row and its unread-count polling, and the Notifications page and route (old links open the company home). Execution notices and explicit acknowledgment remain available inline in the workspace.
