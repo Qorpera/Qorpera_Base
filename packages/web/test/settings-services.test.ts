@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { noteConnectorReturn, type ServicesAccess, ServicesView } from "../src/app/views/settings-services.ts";
 import type { Cloud } from "../src/cloud/client.ts";
@@ -102,6 +103,7 @@ function setup(
 	return { client, navigate, state };
 }
 
+const here = dirname(fileURLToPath(import.meta.url));
 const cards = () => [...(view?.el.querySelectorAll<HTMLElement>(".service-card") ?? [])];
 const card = (index: number): HTMLElement => cards()[index]!;
 const buttons = (card: HTMLElement) => [...card.querySelectorAll<HTMLButtonElement>("button")];
@@ -124,7 +126,7 @@ describe("services", () => {
 		expect(view?.el.querySelector('input[type="password"]')).toBeNull();
 	});
 
-	it("shows each service's own logo, and the build ships every one", async () => {
+	it("shows each service's own logo, and the build ships every provider logo, sign-in included", async () => {
 		setup();
 		await settle();
 		const logos = cards().map((card) =>
@@ -135,10 +137,12 @@ describe("services", () => {
 			"./assets/provider-google-drive.svg",
 			"./assets/provider-github.svg",
 		]);
-		const build = readFileSync(resolve("scripts/build.mjs"), "utf8");
-		for (const { logo } of HOSTED_CONNECTORS) {
+		const build = readFileSync(join(here, "../scripts/build.mjs"), "utf8");
+		// The sign-in buttons build their logo name from the provider (signin.ts).
+		const signIn = ["google", "github"].map((provider) => `provider-${provider}.svg`);
+		for (const logo of [...HOSTED_CONNECTORS.map((connector) => connector.logo), ...signIn]) {
 			expect(build).toContain(`"${logo}"`);
-			expect(existsSync(resolve("../shell/userland", logo))).toBe(true);
+			expect(existsSync(join(here, "../../shell/userland", logo))).toBe(true);
 		}
 	});
 

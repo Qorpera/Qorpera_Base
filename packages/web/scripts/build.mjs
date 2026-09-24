@@ -47,6 +47,7 @@ for (const icon of [
 	"icon-chevron-down.svg",
 	"icon-clock.svg",
 	"icon-attach.svg",
+	"provider-google.svg",
 	"provider-gmail.svg",
 	"provider-google-drive.svg",
 	"provider-github.svg",
