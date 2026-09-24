@@ -260,10 +260,9 @@ export interface WebConnectors {
 		existingSecretId: string | undefined,
 		signal?: AbortSignal,
 	): Promise<void>;
-	/** Grants every operation of the connection to all active agents, including future hires. */
+	/** Grants every operation of the connection to all active agents, including
+	 * future hires. A company connection is always shared; there is no unshare. */
 	grantAllAgents(secretId: string, signal?: AbortSignal): Promise<void>;
-	/** Stops sharing: revokes every agent grant of the connection and new hires no longer get it. */
-	stopSharing(secretId: string, signal?: AbortSignal): Promise<void>;
 	disconnect(secretId: string, signal?: AbortSignal): Promise<void>;
 }
 
@@ -423,14 +422,6 @@ export function createWebConnectors(
 				p_environment_id: profile.environmentId,
 				p_secret_id: secretId,
 				p_staff_agent_ids: null,
-			});
-		},
-		async stopSharing(secretId, signal) {
-			signal?.throwIfAborted();
-			await cloud.rpc("qorpera_unshare_cloud_connector", {
-				p_profile_id: profile.profileId,
-				p_environment_id: profile.environmentId,
-				p_secret_id: secretId,
 			});
 		},
 		async disconnect(secretId, signal) {

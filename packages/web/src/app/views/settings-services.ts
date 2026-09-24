@@ -11,34 +11,27 @@ import { button, fmtTime, h, replace } from "../../ui/dom.ts";
  * Settings → Connections → Services: the Runtime Step 7 connectors (Gmail,
  * Google Drive, GitHub). Company first: each card shows the company's one
  * connection for that service. An owner or admin connects it by signing in
- * with the provider (the browser leaves for the provider and comes back here),
- * reconnects or disconnects it; everyone else sees it read-only. A connected
- * account is made available to every agent of the company right away (the
- * agents' tools appear on their next run); the member who connected it is
- * shown for attribution only.
+ * with the provider (the browser leaves for the provider and comes back here)
+ * or disconnects it; everyone else sees it read-only. A connected account is
+ * always available to every agent of the company, new hires included (the
+ * agents' tools appear on their next run); there is no choice to share it or
+ * not. The member who connected it is shown for attribution only.
  */
 
 type ServicesClient = Pick<
 	WebConnectors,
-	"list" | "beginSignIn" | "finishSignIn" | "captureToken" | "grantAllAgents" | "stopSharing" | "disconnect"
+	"list" | "beginSignIn" | "finishSignIn" | "captureToken" | "grantAllAgents" | "disconnect"
 >;
 
 export interface ServicesAccess {
-	/** Whether the signed-in member may connect, share or disconnect company
-	 * services (owner or admin; the kernel enforces the same rule). */
+	/** Whether the signed-in member may connect or disconnect company services
+	 * (owner or admin; the kernel enforces the same rule). */
 	canManage(): boolean;
 	/** A member's display name for the "connected by" line, if known. */
 	memberName(userId: string): string | undefined;
 }
 
 const FULL_ACCESS: ServicesAccess = { canManage: () => true, memberName: () => undefined };
-
-/** Shared means marked for all agents AND holding live grants. The list counts
- * only live grants (issuer still an owner or admin), so a share whose issuer
- * left reads as not shared and Share with all agents repairs it. */
-function sharedWithAgents(connection: HostedConnectorConnection): boolean {
-	return connection.availableToAllAgents && connection.activeGrantCount > 0;
-}
 
 const RETURN_REASONS: Readonly<Record<string, string>> = {
 	declined: "The sign-in was cancelled before access was granted.",
@@ -159,15 +152,23 @@ export class ServicesView {
 			this.#connections = connections;
 			this.#error = undefined;
 			// A connection that just arrived from a provider sign-in has no agent
-			// grants yet: hand it to every agent now, once.
+			// grants yet: hand it to every agent now, once. Shared means marked for
+			// all agents and holding live grants (the list counts only grants whose
+			// issuer is still an owner or admin).
 			const fresh = grantAfter ? this.#current(grantAfter) : undefined;
-			if (fresh && !sharedWithAgents(fresh) && this.#access.canManage()) {
+			if (fresh && !(fresh.availableToAllAgents && fresh.activeGrantCount > 0) && this.#access.canManage()) {
 				try {
 					await this.#client.grantAllAgents(fresh.secretId, this.#lifetime.signal);
 					if (!this.#lifetime.signal.aborted) this.#connections = await this.#client.list(this.#lifetime.signal);
 				} catch {
-					if (!this.#lifetime.signal.aborted)
-						this.#error = "The account is connected but could not be shared with your agents yet. Try again.";
+					// Replaces the card's "is connected" line: there is no share button
+					// to retry with, so the way back is a fresh connection.
+					if (!this.#lifetime.signal.aborted && grantAfter)
+						this.#outcome = {
+							connector: grantAfter,
+							tone: "error",
+							text: "The account is connected, but the company's agents could not get it yet. Disconnect it and connect it again.",
+						};
 				}
 			}
 		} catch {
@@ -187,46 +188,6 @@ export class ServicesView {
 				(item) => item.connectorId === connectorId && item.status === "active" && item.ownerKind === "company",
 			)
 			.sort((left, right) => right.version - left.version)[0];
-	}
-
-	async #stopSharing(connection: HostedConnectorConnection): Promise<void> {
-		if (this.#working || this.#lifetime.signal.aborted) return;
-		this.#working = connection.connectorId;
-		this.#outcome = undefined;
-		this.#draw();
-		try {
-			await this.#client.stopSharing(connection.secretId, this.#lifetime.signal);
-		} catch {
-			if (!this.#lifetime.signal.aborted)
-				this.#outcome = {
-					connector: connection.connectorId as HostedConnectorId,
-					tone: "error",
-					text: "The service could not be taken away from the company's agents. Try again.",
-				};
-		} finally {
-			this.#working = undefined;
-			if (!this.#lifetime.signal.aborted) await this.#refresh();
-		}
-	}
-
-	async #share(connection: HostedConnectorConnection): Promise<void> {
-		if (this.#working || this.#lifetime.signal.aborted) return;
-		this.#working = connection.connectorId;
-		this.#outcome = undefined;
-		this.#draw();
-		try {
-			await this.#client.grantAllAgents(connection.secretId, this.#lifetime.signal);
-		} catch {
-			if (!this.#lifetime.signal.aborted)
-				this.#outcome = {
-					connector: connection.connectorId as HostedConnectorId,
-					tone: "error",
-					text: "The service could not be shared with the company's agents. Try again.",
-				};
-		} finally {
-			this.#working = undefined;
-			if (!this.#lifetime.signal.aborted) await this.#refresh();
-		}
 	}
 
 	async #connect(connectorId: HostedConnectorId): Promise<void> {
@@ -315,29 +276,13 @@ export class ServicesView {
 		// Members who are not owners or admins see the card read-only.
 		const actions: HTMLElement[] = [];
 		if (manage && current) {
-			if (!sharedWithAgents(current)) {
-				const share = button("Share with all agents", () => void this.#share(current), {
-					disabled: Boolean(this.#working),
-				});
-				share.dataset.focusKey = `service-share:${connector.id}`;
-				actions.push(share);
-			}
-			if (current.availableToAllAgents || current.activeGrantCount > 0) {
-				const stop = button("Stop sharing with agents", () => void this.#stopSharing(current), {
-					disabled: Boolean(this.#working),
-				});
-				stop.dataset.focusKey = `service-unshare:${connector.id}`;
-				actions.push(stop);
-			}
+			// A working connection has one action. The list carries no state for a
+			// connection that needs a new sign-in, so there is no Connect again yet.
 			const disconnect = button(busy ? "Working…" : "Disconnect", () => void this.#disconnect(current), {
 				disabled: Boolean(this.#working),
 			});
 			disconnect.dataset.focusKey = `service-disconnect:${connector.id}`;
-			const reconnect = button("Reconnect", () => void this.#connect(connector.id), {
-				disabled: Boolean(this.#working),
-			});
-			reconnect.dataset.focusKey = `service-reconnect:${connector.id}`;
-			actions.push(reconnect, disconnect);
+			actions.push(disconnect);
 		} else if (manage) {
 			const connect = button(busy ? "Opening sign-in…" : "Connect", () => void this.#connect(connector.id), {
 				primary: true,
@@ -357,15 +302,9 @@ export class ServicesView {
 						connectedBy ? ` by ${connectedBy}` : "",
 						current.createdAt ? ` · ${fmtTime(current.createdAt)}` : "",
 					),
-					h(
-						"small",
-						{ class: "service-agents" },
-						sharedWithAgents(current)
-							? "Available to every agent in the company, including new hires."
-							: current.activeGrantCount > 0
-								? `Available to ${current.activeGrantCount} agent operation${current.activeGrantCount === 1 ? "" : "s"}.`
-								: "Not yet available to the company's agents.",
-					),
+					// Always shared: a legacy row not yet marked for all agents reads the
+					// same (the backend repairs those rows).
+					h("small", { class: "service-agents" }, "Available to every agent in the company, including new hires."),
 				]
 			: [h("strong", null, connector.label), h("small", null, connector.summary)];
 		const children: (HTMLElement | string)[] = [
