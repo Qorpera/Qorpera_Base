@@ -1,4 +1,4 @@
-import { presentationLocale } from "./preferences.ts";
+import { presentationDay, presentationLocale, previousDay, timeZoneOption } from "./preferences.ts";
 
 const TIMESTAMP_GAP_MS = 5 * 60 * 1000;
 
@@ -7,30 +7,33 @@ export function parseConversationTimestamp(value: string): Date | undefined {
 	return Number.isNaN(date.getTime()) ? undefined : date;
 }
 
+/** Days begin at midnight in the chosen zone (Settings → General → Time zone). */
 export function needsConversationTimestamp(current: Date, previous?: Date): boolean {
 	return (
 		!previous ||
-		current.toDateString() !== previous.toDateString() ||
+		presentationDay(current) !== presentationDay(previous) ||
 		current.getTime() - previous.getTime() >= TIMESTAMP_GAP_MS
 	);
 }
 
 export function conversationTimestampLabel(date: Date, now = new Date()): string {
 	const locale = presentationLocale();
-	const time = date.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" });
-	const yesterday = new Date(now);
-	yesterday.setDate(yesterday.getDate() - 1);
-	if (date.toDateString() === now.toDateString()) return `${locale === "da" ? "I dag" : "Today"} ${time}`;
-	if (date.toDateString() === yesterday.toDateString()) return `${locale === "da" ? "I går" : "Yesterday"} ${time}`;
-	const day = date.toLocaleDateString(locale, {
+	const zone = timeZoneOption();
+	const time = date.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit", ...zone });
+	const day = presentationDay(date),
+		today = presentationDay(now);
+	if (day === today) return `${locale === "da" ? "I dag" : "Today"} ${time}`;
+	if (day === previousDay(today)) return `${locale === "da" ? "I går" : "Yesterday"} ${time}`;
+	const shown = date.toLocaleDateString(locale, {
 		weekday: "short",
 		month: "short",
 		day: "numeric",
-		...(date.getFullYear() !== now.getFullYear() ? { year: "numeric" as const } : {}),
+		...(day.slice(0, 4) !== today.slice(0, 4) ? { year: "numeric" as const } : {}),
+		...zone,
 	});
-	return `${day} ${time}`;
+	return `${shown} ${time}`;
 }
 
 export function conversationTimestampTitle(date: Date): string {
-	return date.toLocaleString(presentationLocale(), { dateStyle: "full", timeStyle: "long" });
+	return date.toLocaleString(presentationLocale(), { dateStyle: "full", timeStyle: "long", ...timeZoneOption() });
 }

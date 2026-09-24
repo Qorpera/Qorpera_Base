@@ -3,6 +3,7 @@ export type LanguagePreference = "system" | "en" | "da";
 export type ThemePreference = "system" | "light" | "dark";
 export type ComposerColorPreference = "blue" | "green" | "grey";
 const LANGUAGE_KEY = "qorpera.web.language";
+const TIME_ZONE_KEY = "qorpera.web.time-zone";
 const THEME_KEY = "qorpera.web.theme";
 const COMPOSER_COLOR_KEY = "qorpera.web.composer-color";
 const SYSTEM_DARK = "(prefers-color-scheme: dark)";
@@ -90,8 +91,16 @@ const DANISH: Record<string, string> = {
 	"System follows your device’s appearance.": "System følger din enheds udseende.",
 	"Language & region": "Sprog og område",
 	Language: "Sprog",
-	"System default": "Systemstandard",
+	"Follow system": "Følg systemet",
 	English: "Engelsk",
+	Danish: "Dansk",
+	"Search language": "Søg efter sprog",
+	"Time zone": "Tidszone",
+	"Search time zone": "Søg efter tidszone",
+	"Message times and new routines use this zone.": "Tidspunkter på beskeder og nye rutiner følger denne zone.",
+	"No matches": "Ingen resultater",
+	"Clear search": "Ryd søgning",
+	Close: "Luk",
 	"Sign out": "Log ud",
 	Companies: "Virksomheder",
 	"All companies": "Alle virksomheder",
@@ -113,7 +122,6 @@ const DANISH: Record<string, string> = {
 	Open: "Åbn",
 	Cancel: "Annuller",
 	Back: "Tilbage",
-	"System default follows your browser’s language.": "Systemstandarden følger sproget i din browser.",
 	"Some screens are still shown in English.": "Nogle skærme vises stadig på engelsk.",
 };
 
@@ -135,8 +143,14 @@ export function presentationLocale(): "da" | "en" {
 export function uiText(source: string): HTMLSpanElement {
 	const element = document.createElement("span");
 	element.dataset.uiText = source;
-	element.textContent = presentationLocale() === "da" ? (DANISH[source] ?? source) : source;
+	element.textContent = uiString(source);
 	return element;
+}
+
+/** The same translation as plain text, for attributes and placeholders built
+ * when they are shown (they do not follow a later language change). */
+export function uiString(source: string): string {
+	return presentationLocale() === "da" ? (DANISH[source] ?? source) : source;
 }
 
 export function applyLanguage(): void {
@@ -157,6 +171,84 @@ export function setLanguagePreference(value: string): boolean {
 	}
 	applyLanguage();
 	window.dispatchEvent(new Event("qorpera-language-change"));
+	return true;
+}
+
+/** The device's zone, as the browser reports it. */
+export function systemTimeZone(): string {
+	return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+}
+
+const knownZones = new Set<string>();
+
+function validTimeZone(value: string): boolean {
+	if (knownZones.has(value)) return true;
+	try {
+		new Intl.DateTimeFormat("en", { timeZone: value });
+	} catch {
+		return false;
+	}
+	knownZones.add(value);
+	return true;
+}
+
+/** "system" or an IANA zone this browser knows. */
+export function timeZonePreference(): string {
+	try {
+		const value = localStorage.getItem(TIME_ZONE_KEY);
+		return value && value !== "system" && validTimeZone(value) ? value : "system";
+	} catch {
+		return "system";
+	}
+}
+
+/** The zone times are shown in: the stored choice, else the device's. */
+export function presentationTimeZone(): string {
+	const preference = timeZonePreference();
+	return preference === "system" ? systemTimeZone() : preference;
+}
+
+/** Date formatting options for the chosen zone; none while following the
+ * device, so those times format exactly as the browser's own. */
+export function timeZoneOption(): { timeZone?: string } {
+	const preference = timeZonePreference();
+	return preference === "system" ? {} : { timeZone: preference };
+}
+
+const dayFormats = new Map<string, Intl.DateTimeFormat>();
+
+/** The calendar day ("2026-09-24") a moment falls on in the shown zone.
+ * Following the device reads the local clock each time, so a device that
+ * travels moves its midnights with it. */
+export function presentationDay(date: Date): string {
+	const zone = timeZoneOption().timeZone;
+	if (!zone) {
+		const pad = (value: number) => String(value).padStart(2, "0");
+		return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+	}
+	let format = dayFormats.get(zone);
+	if (!format) {
+		format = new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit", timeZone: zone });
+		dayFormats.set(zone, format);
+	}
+	const parts = Object.fromEntries(format.formatToParts(date).map((part) => [part.type, part.value]));
+	return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+/** The calendar day before a `presentationDay`, whatever the zone's clock changes. */
+export function previousDay(day: string): string {
+	const [year, month, date] = day.split("-").map(Number);
+	return new Date(Date.UTC(year!, month! - 1, date! - 1)).toISOString().slice(0, 10);
+}
+
+export function setTimeZonePreference(value: string): boolean {
+	if (value !== "system" && !validTimeZone(value)) return false;
+	try {
+		localStorage.setItem(TIME_ZONE_KEY, value);
+	} catch {
+		return false;
+	}
+	window.dispatchEvent(new Event("qorpera-time-zone-change"));
 	return true;
 }
 
