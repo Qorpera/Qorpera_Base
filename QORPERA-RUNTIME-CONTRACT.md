@@ -500,13 +500,14 @@ subscriptions, which self-limit.
 > - crash detection (job, connection and session leases) and retry limits
 >   (8 dispatch failures; 8 attempts for a pristine retry or a sponsor
 >   handoff);
-> - one machine per run, four active workers per agent, one coding session
->   per owner and harness, and account concurrency (64 per subscription);
+> - one machine per run, one coding session per owner and harness, and
+>   account concurrency (64 per subscription);
 > - a queued run that no computer starts within a day of being queued fails;
 > - input validation and per-call size bounds (message, argument, result,
 >   batch, catalog text up to 1 MiB);
-> - standing counts of things that exist: 32 routines and 64 open todos per
->   agent, 40 sidebar sections per company, 50,000 Company File entries;
+> - 50,000 Company File entries per company (the tree's storage bound). The
+>   standing counts (32 routines, 64 open todos and 4 active workers per agent,
+>   40 sidebar sections) went in bundle v95;
 > - no stall detection: a run whose harness hangs without crashing keeps its
 >   machine until Stop, as in Codex CLI and Claude Code;
 > - a continuation (a worker report, a computer start, a sponsor handoff)
@@ -514,6 +515,10 @@ subscriptions, which self-limit.
 >   counts the rest;
 > - the API-key sandbox runner (not company work) keeps its per-job totals:
 >   64 MiB transcript, 100 output artifacts and 64 MiB of output.
+>
+> Bundle v95 also lets a Company File change wake an agent already earlier in
+> its causal chain (it moves to the end of the chain, like a coworker message).
+> An agent's own write still never wakes its own watch routine.
 >
 > One count is still open. The pinned Codex build refuses a model request
 > carrying 128 or more tool outputs, and the kernel refuses a context view with

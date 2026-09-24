@@ -740,9 +740,19 @@ begin
 	perform set_config('qorpera_test.wake_binding',v_bob::text,true);
 	perform pg_temp.path_commit(pg_temp.path_plan('bob-note','note.md',pg_temp.path_stage_file('note.md','From Bob')));
 	v_result := public.qorpera_drain_company_file_wakes(1);
-	perform pg_temp.wake_assert(v_result ->> 'examined' = '1' and v_result ->> 'admitted' = '0','Message to file to ancestor does not loop');
-	perform pg_temp.wake_assert((select outcome = 'causal-fence' from public.qorpera_company_file_wake_claims
-		where routine_id = (v_routine ->> 'routine_id')::uuid),'Cycle decision is durable');
+	-- Runtime v95: an agent earlier in the chain is woken again and moves to its end (it was fenced).
+	perform pg_temp.wake_assert(v_result ->> 'examined' = '1' and v_result ->> 'admitted' = '1','Message to file to ancestor wakes the ancestor again');
+	perform pg_temp.wake_assert((select outcome = 'admitted' from public.qorpera_company_file_wake_claims
+		where routine_id = (v_routine ->> 'routine_id')::uuid),'The decision is durable');
+	perform pg_temp.wake_assert((select causal_agent_ids = array['30000000-0000-4000-8000-000000000031','30000000-0000-4000-8000-000000000030']::uuid[]
+		from public.qorpera_wake_occurrences where routine_id = (v_routine ->> 'routine_id')::uuid),'The revisited agent moves to the end of the chain');
+	-- An agent's own write never wakes its own watch routine.
+	v_routine := pg_temp.wake_routine('30000000-0000-4000-8000-000000000031',
+		'{"id":"own","kind":"listener","source":"company-file","path":"bob.md","match":"exact","timeZone":"Europe/Copenhagen","replyPolicy":"optional"}');
+	perform pg_temp.path_commit(pg_temp.path_plan('bob-own','bob.md',pg_temp.path_stage_file('bob.md','Mine')));
+	v_result := public.qorpera_drain_company_file_wakes(1);
+	perform pg_temp.wake_assert(v_result ->> 'admitted' = '0' and (select outcome = 'causal-fence' from public.qorpera_company_file_wake_claims
+		where routine_id = (v_routine ->> 'routine_id')::uuid),'An agent''s own write does not wake its own routine');
 end
 $$;
 rollback to coworker_delivery;

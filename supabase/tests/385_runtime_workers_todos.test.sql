@@ -78,6 +78,22 @@ end $$;
 select pg_temp.wake_error($q$select pg_temp.todo('{"action":"upsert","operationKey":"x1","todoKey":"Bad Key","title":"t"}')$q$,'22023');
 select pg_temp.wake_error($q$select pg_temp.todo('{"action":"upsert","operationKey":"x2","todoKey":"k","title":"t","staffAgentId":"30000000-0000-4000-8000-000000000031"}')$q$,'22023');
 select pg_temp.wake_error($q$select pg_temp.todo('{"action":"done","operationKey":"x3","todoKey":"absent"}')$q$,'P0002');
+-- Runtime v95: an agent keeps any number of open todos (was 64). Probed in a subtransaction.
+do $$
+declare v_index integer;
+begin
+	begin
+		for v_index in 1..65 loop
+			perform pg_temp.todo(jsonb_build_object('action','upsert','operationKey','many-' || v_index,'todoKey','many-' || v_index,
+				'title','Todo ' || v_index));
+		end loop;
+		perform pg_temp.wake_assert((select count(*) >= 66 from public.qorpera_runtime_agent_todos where state in ('open','blocked')),
+			'An agent keeps sixty-six open todos');
+		raise exception 'rollback-todo-count-probe';
+	exception when raise_exception then
+		if sqlerrm <> 'rollback-todo-count-probe' then raise; end if;
+	end;
+end $$;
 
 -- 2. The agent's own todo area needs no member write grant; nothing else opens up.
 savepoint own_area;
@@ -365,14 +381,33 @@ do $$
 declare v_binding jsonb := current_setting('qorpera_test.revived_binding')::jsonb; v_index integer; v_child jsonb; v_wake public.qorpera_wake_occurrences;
 	v_done jsonb; v_other jsonb; v_reporter text; v_silent text;
 begin
-	for v_index in 1..4 loop
+	-- Runtime v95: any number of workers run at once (was four).
+	for v_index in 1..6 loop
 		perform pg_temp.worker(jsonb_build_object('action','dispatch','operationKey','b' || v_index,'todoKey','market-scan','workerKey','batch-' || v_index,
 			'title','Batch ' || v_index,'goal','Research part ' || v_index,'definitionOfDone','A paragraph.','access','read'),v_binding);
 	end loop;
-	perform pg_temp.wake_error(format($q$select pg_temp.worker('{"action":"dispatch","operationKey":"b5","todoKey":"market-scan","workerKey":"batch-5",
-		"title":"Batch 5","goal":"g","definitionOfDone":"d","access":"read"}',%L::jsonb)$q$,v_binding),'54000','Four workers are already active; wait for one or cancel one');
+	perform pg_temp.wake_assert((select count(*) = 6 from public.qorpera_runtime_workers where worker_key like 'batch-%' and state = 'active'),
+		'Six workers are active at once');
+	-- A batch of six is handed back in full: four in one revival, the other two in the next. Probed in a subtransaction.
+	begin
+		perform pg_temp.finish_job((v_binding ->> 'runId')::uuid);
+		update public.qorpera_runtime_workers set state = 'succeeded', reported_at = clock_timestamp(), completion_state = 'waiting',
+			result = jsonb_build_object('outcome','succeeded','outputs','[]'::jsonb,'sequence',sequence,'summary','Part ' || worker_key || '.')
+		where worker_key like 'batch-%';
+		perform public.qorpera_drain_worker_wakes(32);
+		perform public.qorpera_drain_worker_wakes(32);
+		perform pg_temp.wake_assert((select array_agg(jsonb_array_length(payload -> 'completions') order by jsonb_array_length(payload -> 'completions') desc)
+			from public.qorpera_wake_occurrences where source_kind = 'worker-completion' and parent_run_id = (v_binding ->> 'runId')::uuid) = array[4,2]
+			and (select count(*) = 6 from public.qorpera_runtime_workers where worker_key like 'batch-%' and completion_state = 'delivered'),
+			'Six reports reach the parent, four and then two');
+		raise exception 'rollback-batch-six-probe';
+	exception when raise_exception then
+		if sqlerrm <> 'rollback-batch-six-probe' then raise; end if;
+	end;
 	perform pg_temp.worker('{"action":"cancel","operationKey":"c3","todoKey":"market-scan","workerKey":"batch-3"}',v_binding);
 	perform pg_temp.worker('{"action":"cancel","operationKey":"c4","todoKey":"market-scan","workerKey":"batch-4"}',v_binding);
+	perform pg_temp.worker('{"action":"cancel","operationKey":"c5","todoKey":"market-scan","workerKey":"batch-5"}',v_binding);
+	perform pg_temp.worker('{"action":"cancel","operationKey":"c6","todoKey":"market-scan","workerKey":"batch-6"}',v_binding);
 	perform pg_temp.finish_job((v_binding ->> 'runId')::uuid);
 	perform public.qorpera_materialize_wake_execution_runs(8);
 	-- The queue, not the test, chooses which child starts first.
