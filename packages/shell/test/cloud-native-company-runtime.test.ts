@@ -702,6 +702,7 @@ it.each([
 				"manage_routine",
 				"manage_todo",
 				"manage_worker",
+				"organize_sidebar",
 				"read_context",
 				"recall_memory",
 				"send_coworker_message",

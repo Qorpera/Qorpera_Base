@@ -5,7 +5,7 @@ import type { Cloud } from "./client.ts";
  * channel carries no bodies; every hint makes the client re-read through RPCs.
  * Polling remains the recovery path when Realtime is degraded. */
 
-export type RealtimeResource = "sessions" | "staff" | "access" | "company-file";
+export type RealtimeResource = "sessions" | "staff" | "access" | "company-file" | "sidebar";
 export type RealtimePhase = "connecting" | "connected" | "degraded" | "stopped";
 
 export interface RealtimeSubscription {
@@ -46,6 +46,26 @@ export function subscribeProfileRealtime(
 		stop() {
 			void cloud.supabase.removeChannel(channel);
 			onHealth("stopped");
+		},
+	};
+}
+
+/** The company sidebar's sections and placements. A separate channel: a cloud that
+ * has no sidebar tables yet fails only this one, and the rail's poll still reads
+ * the sidebar. Its health is not the company's live-updates badge. */
+export function subscribeSidebarRealtime(cloud: Cloud, profileId: string, onChange: () => void): RealtimeSubscription {
+	let channel: RealtimeChannel = cloud.supabase.channel(`qorpera-sidebar-${profileId}-${crypto.randomUUID()}`);
+	for (const table of ["qorpera_company_sidebar_sections", "qorpera_company_sidebar_placements"]) {
+		channel = channel.on(
+			"postgres_changes",
+			{ event: "*", schema: "public", table, filter: `profile_id=eq.${profileId}` },
+			onChange,
+		);
+	}
+	channel.subscribe();
+	return {
+		stop() {
+			void cloud.supabase.removeChannel(channel);
 		},
 	};
 }

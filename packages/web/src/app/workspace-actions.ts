@@ -41,4 +41,6 @@ export interface WorkspaceActions {
 	/** Returns the exact applied agent document revision, also projected as roster version. */
 	updateAgent?: (agent: HostedStaffAgent, draft: AgentDraft, signal: AbortSignal) => Promise<number>;
 	createAgent?: (profileId: string, draft: AgentDraft, signal: AbortSignal) => Promise<string>;
+	/** Removes the agent for good: its document leaves the Company File. */
+	deleteAgent?: (agent: HostedStaffAgent, signal: AbortSignal) => Promise<void>;
 }
