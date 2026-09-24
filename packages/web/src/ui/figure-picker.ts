@@ -12,24 +12,40 @@ export class FigurePicker {
 	#choice: FigureChoice;
 	readonly #change: (choice: FigureChoice) => void;
 	readonly #keepColor: boolean;
+	/** Whether a figure change brings the new figure's own shade. */
+	#follow: boolean;
 	/** `keepColor` shows every figure in the chosen colour and keeps that colour
 	 * when the figure changes, as the desktop's agent picker does. A figure in its
 	 * own shade has no colour of its own to keep: every figure then shows, and
-	 * brings, its own shade. */
+	 * brings, its own shade, until a colour is picked. */
 	constructor(choice: FigureChoice, change: (choice: FigureChoice) => void, options: { keepColor?: boolean } = {}) {
 		this.#choice = choice;
 		this.#change = change;
 		this.#keepColor = options.keepColor === true;
+		this.#follow = this.#follows(choice);
 		this.#render();
 	}
 	/** Shows a choice made elsewhere, such as a saved figure, without reporting
-	 * it. `redraw` rebuilds the figures even when the choice is unchanged. */
-	update(choice: FigureChoice, redraw = false): void {
-		if (!redraw && choice.figure === this.#choice.figure && choice.color === this.#choice.color) return;
+	 * it. `fresh` starts over from it, as on opening: the figures are rebuilt even
+	 * when the choice is unchanged, and whether it follows the figure is decided again. */
+	update(choice: FigureChoice, fresh = false): void {
+		if (!fresh && choice.figure === this.#choice.figure && choice.color === this.#choice.color) return;
 		const focused = this.el.contains(document.activeElement) ? document.activeElement : null;
 		this.#choice = choice;
+		if (fresh) this.#follow = this.#follows(choice);
 		this.#render();
 		this.#refocus(focused?.getAttribute("aria-label"));
+	}
+	/** Puts the figure back in its own shade, which then follows the figure again. */
+	reset(): void {
+		const { figure } = this.#choice;
+		this.#follow = true;
+		this.#choose({ figure, color: nativeColorOf(figure) });
+	}
+	/** Decided from a starting point, never on each change: passing through a
+	 * figure whose own shade is the chosen colour must not drop the choice. */
+	#follows({ figure, color }: FigureChoice): boolean {
+		return !this.#keepColor || color === nativeColorOf(figure);
 	}
 	#choose(choice: FigureChoice): void {
 		const focused = document.activeElement?.getAttribute("aria-label");
@@ -46,7 +62,7 @@ export class FigurePicker {
 	}
 	#render(): void {
 		const { figure, color } = this.#choice;
-		const keep = this.#keepColor && color !== nativeColorOf(figure);
+		const keep = !this.#follow;
 		replace(
 			this.el,
 			h(
@@ -81,7 +97,11 @@ export class FigurePicker {
 						"aria-checked": String(hex === color),
 						"aria-label": name,
 						dataset: { color: hex },
-						onclick: () => this.#choose({ figure, color: hex }),
+						onclick: () => {
+							// A colour picked here is kept, even one that is some figure's own shade.
+							if (this.#keepColor) this.#follow = false;
+							this.#choose({ figure, color: hex });
+						},
 					}),
 				),
 			),

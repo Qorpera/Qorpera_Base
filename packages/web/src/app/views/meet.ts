@@ -113,7 +113,8 @@ export function renderMeet(
 								disabled: state.saving === true,
 								// Picking a figure brings its own shade with it, as the
 								// workspace's own picker does.
-								onclick: () => setState({ ...state, figure: id }),
+								// The figure already shown is no new choice: it keeps its colour.
+								onclick: () => (id === figure ? undefined : setState({ ...state, figure: id })),
 							},
 							// Unchosen figures wear their native shade; only the chosen
 							// one carries the selected colour.

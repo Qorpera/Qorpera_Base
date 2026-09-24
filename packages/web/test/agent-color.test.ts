@@ -9,6 +9,8 @@ import { fixture, profileA, staff, stubFigureMotion, team, userA } from "./fixtu
 
 const NATIVE = { crown: "#fcb51b", planet: "#5ec0b5", heart: "#fb672a", rocket: "#f96e2d" };
 const TEAL = "#00bfb3";
+const GOLD = NATIVE.crown;
+const ORANGE = NATIVE.rocket;
 let drawn: ReturnType<typeof stubFigureMotion>;
 const cleanup: (() => void)[] = [];
 beforeEach(() => {
@@ -21,6 +23,8 @@ beforeEach(() => {
 		palette: [
 			{ name: "Teal", color: TEAL },
 			{ name: "Blue", color: "#2047bd" },
+			{ name: "Gold", color: GOLD },
+			{ name: "Orange", color: ORANGE },
 		],
 	});
 });
@@ -61,6 +65,34 @@ describe("agent colour", () => {
 			expect(change).toHaveBeenLastCalledWith({ figure: "heart", color: heart });
 		}
 	});
+
+	it("keeps a chosen colour through a figure whose own shade it is, until Reset", () => {
+		const change = vi.fn();
+		const picker = new FigurePicker({ figure: "heart", color: ORANGE }, change, { keepColor: true });
+		document.body.append(picker.el);
+		const pick = (label: string) => picker.el.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!.click();
+		// Orange is the rocket's own shade; passing through it keeps the choice.
+		for (const figure of ["crown", "rocket", "crown"] as const) {
+			pick(figure);
+			expect(change).toHaveBeenLastCalledWith({ figure, color: ORANGE });
+		}
+		// Reset brings the own shade back, and it follows the figure again.
+		picker.reset();
+		expect(change).toHaveBeenLastCalledWith({ figure: "crown", color: NATIVE.crown });
+		pick("planet");
+		expect(change).toHaveBeenLastCalledWith({ figure: "planet", color: NATIVE.planet });
+		// A colour picked now is kept, even one that is some figure's own shade.
+		pick("Gold");
+		pick("heart");
+		expect(change).toHaveBeenLastCalledWith({ figure: "heart", color: GOLD });
+		// Opening afresh decides again from what is saved.
+		picker.update({ figure: "planet", color: TEAL }, true);
+		pick("crown");
+		expect(change).toHaveBeenLastCalledWith({ figure: "crown", color: TEAL });
+		picker.update({ figure: "planet", color: NATIVE.planet }, true);
+		pick("heart");
+		expect(change).toHaveBeenLastCalledWith({ figure: "heart", color: NATIVE.heart });
+	});
 });
 
 describe("first-run page", () => {
@@ -91,6 +123,12 @@ describe("first-run page", () => {
 		const kept = meet(cofounder);
 		kept.named("Save appearance and continue").click();
 		expect(kept.save).toHaveBeenCalledWith(cofounder, "crown", TEAL);
+		document.body.replaceChildren();
+		const again = meet(cofounder);
+		// Clicking the figure already shown is no new choice.
+		again.named("crown").click();
+		again.named("Save appearance and continue").click();
+		expect(again.save).toHaveBeenCalledWith(cofounder, "crown", TEAL);
 		document.body.replaceChildren();
 		const picked = meet(cofounder);
 		picked.named("rocket").click();

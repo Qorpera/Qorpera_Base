@@ -9,7 +9,7 @@
 
 ### Fixed
 
-- Changing the figure of an agent that wears its figure's own colour now gives it the new figure's own colour, and the first-run page keeps a colour chosen in the agent's details unless a figure is picked there.
+- Changing the figure of an agent that wears its figure's own colour now gives it the new figure's own colour, until a colour is picked in the same picker; a picked colour is kept through every figure. The first-run page keeps a colour chosen in the agent's details unless a different figure is picked there.
 - Let the Co-Founder's colour be changed: its figure picker in the agent details offers the colours and Reset like any agent's, and the rail, header and group pictures draw the colour chosen. A Co-Founder whose colour nobody has picked keeps its figure's own shade.
 - Keep the "Manage company" disclosure in Settings → Company at its small size; removing the Cloud endpoint panel had dropped the rule it shares.
 - Keep keyboard focus in Settings → General when the account plan finishes loading; the page is redrawn only when the error or message it shows changes.
