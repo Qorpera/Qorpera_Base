@@ -299,49 +299,209 @@ select pg_temp.cap_patch('public.qorpera_office_run_continuation(public.qorpera_
 	$new$ if p_depth < 0 then raise exception 'Office continuation ancestry exceeds its bound' using errcode='54000'; end if;
  if p_depth > 7 then return jsonb_build_object('schema','qorpera.office-start-continuation/v1','omitted','earlier history'); end if;$new$);
 -- A continuation carried every completed result and send of the earlier run
--- and failed the next run past 32 MiB, so a run that did a lot of work could
--- never hear back from its workers or its computer. It now carries the newest
--- results and sends that fit (per level: 6 MiB and 2 MiB for a worker report,
--- 2 MiB and 1 MiB for each of up to eight computer starts) and counts the rest.
-create function public.qorpera_continuation_recent(p_items jsonb, p_bytes bigint)
-returns jsonb language sql immutable set search_path = '' as $$
-	select coalesce(jsonb_agg(kept.item order by kept.ordinal),'[]'::jsonb)
-	from (select item, ordinal, sum(octet_length(item::text)) over (order by ordinal desc) as tail
-		from jsonb_array_elements(coalesce(p_items,'[]'::jsonb)) with ordinality as listed(item, ordinal)) kept
-	where kept.tail <= p_bytes
-$$;
-revoke all on function public.qorpera_continuation_recent(jsonb,bigint) from public, anon, authenticated;
+-- and failed the next run past 32 MiB (and Postgres refuses one jsonb array
+-- past 256 MiB), so an agent that did a lot of work could never hear back from
+-- its workers or its computer. Each now reads only the newest results and sends
+-- that fit (a worker report 6 MiB and 2 MiB per level, a computer start 2 MiB
+-- and 1 MiB for each of up to eight levels, a sponsor handoff 6 MiB and 2 MiB)
+-- and counts the rest in receiptsOmitted and priorSendsOmitted.
 select pg_temp.cap_patch('public.qorpera_worker_run_continuation(public.qorpera_execution_runs,integer)'::regprocedure,
 	$old$	v_inputs jsonb; v_receipts jsonb; v_sends jsonb; v_result jsonb;$old$,
-	$new$	v_inputs jsonb; v_receipts jsonb; v_sends jsonb; v_result jsonb; v_kept_receipts jsonb; v_kept_sends jsonb;$new$);
+	$new$	v_inputs jsonb; v_receipts jsonb; v_sends jsonb; v_result jsonb; v_receipt_count bigint; v_send_count bigint;$new$);
 select pg_temp.cap_patch('public.qorpera_worker_run_continuation(public.qorpera_execution_runs,integer)'::regprocedure,
-	$old$	v_result := jsonb_build_object('schema','qorpera.worker-completion-continuation/v1',$old$,
-	$new$	v_kept_receipts := public.qorpera_continuation_recent(v_receipts,6291456);
-	v_kept_sends := public.qorpera_continuation_recent(v_sends,2097152);
-	v_result := jsonb_build_object('schema','qorpera.worker-completion-continuation/v1',$new$);
+	$old$	select coalesce(jsonb_agg(jsonb_build_object('receiptId',id,'logicalOperationKey',logical_operation_key,'completedAt',completed_at,
+		'result',result,'outputSnapshotId',output_snapshot_id,'companyPathProposalId',company_path_proposal_id) order by completed_at, id),'[]')
+	into v_receipts from public.qorpera_run_operation_receipts where run_id = v_parent.id and status = 'completed';$old$,
+	$new$	select coalesce(jsonb_agg(kept.item order by kept.completed_at, kept.id),'[]') into v_receipts
+	from (select receipt.id, receipt.completed_at, listed.item,
+			sum(octet_length(listed.item::text)) over (order by receipt.completed_at desc, receipt.id desc) as tail
+		from public.qorpera_run_operation_receipts receipt
+		cross join lateral (select jsonb_build_object('receiptId',receipt.id,'logicalOperationKey',receipt.logical_operation_key,'completedAt',receipt.completed_at,
+			'result',receipt.result,'outputSnapshotId',receipt.output_snapshot_id,'companyPathProposalId',receipt.company_path_proposal_id) as item) listed
+		where receipt.run_id = v_parent.id and receipt.status = 'completed') kept
+	where kept.tail <= 6291456;
+	select count(*) into v_receipt_count from public.qorpera_run_operation_receipts receipt where receipt.run_id = v_parent.id and receipt.status = 'completed';$new$);
 select pg_temp.cap_patch('public.qorpera_worker_run_continuation(public.qorpera_execution_runs,integer)'::regprocedure,
-	$old$		'receipts',v_receipts,'priorSends',v_sends,
-		'earlier',public.qorpera_worker_run_continuation(v_parent, p_depth + 1));$old$,
-	$new$		'receipts',v_kept_receipts,'priorSends',v_kept_sends,
-		'earlier',public.qorpera_worker_run_continuation(v_parent, p_depth + 1))
+	$old$	select coalesce(jsonb_agg(jsonb_build_object('eventId',event.event_id,'sequence',event.sequence,'body',event.body) order by event.sequence),'[]')
+	into v_sends from public.qorpera_agent_sends send join public.qorpera_session_events event on event.event_id = send.event_id
+	where send.run_id = v_parent.id;$old$,
+	$new$	select coalesce(jsonb_agg(kept.item order by kept.sequence, kept.event_id),'[]') into v_sends
+	from (select event.sequence, event.event_id, listed.item,
+			sum(octet_length(listed.item::text)) over (order by event.sequence desc, event.event_id desc) as tail
+		from public.qorpera_agent_sends send join public.qorpera_session_events event on event.event_id = send.event_id
+		cross join lateral (select jsonb_build_object('eventId',event.event_id,'sequence',event.sequence,'body',event.body) as item) listed
+		where send.run_id = v_parent.id) kept
+	where kept.tail <= 2097152;
+	select count(*) into v_send_count from public.qorpera_agent_sends send
+		join public.qorpera_session_events event on event.event_id = send.event_id where send.run_id = v_parent.id;$new$);
+select pg_temp.cap_patch('public.qorpera_worker_run_continuation(public.qorpera_execution_runs,integer)'::regprocedure,
+	$old$		'earlier',public.qorpera_worker_run_continuation(v_parent, p_depth + 1));$old$,
+	$new$		'earlier',public.qorpera_worker_run_continuation(v_parent, p_depth + 1))
 		|| jsonb_strip_nulls(jsonb_build_object(
-			'receiptsOmitted',nullif(jsonb_array_length(v_receipts) - jsonb_array_length(v_kept_receipts),0),
-			'priorSendsOmitted',nullif(jsonb_array_length(v_sends) - jsonb_array_length(v_kept_sends),0)));$new$);
+			'receiptsOmitted',nullif(v_receipt_count - jsonb_array_length(v_receipts),0),
+			'priorSendsOmitted',nullif(v_send_count - jsonb_array_length(v_sends),0)));$new$);
 select pg_temp.cap_patch('public.qorpera_office_run_continuation(public.qorpera_execution_runs,integer)'::regprocedure,
 	$old$ v_parent_wake public.qorpera_wake_occurrences%rowtype; v_inputs jsonb; v_receipts jsonb; v_sends jsonb; v_result jsonb;$old$,
 	$new$ v_parent_wake public.qorpera_wake_occurrences%rowtype; v_inputs jsonb; v_receipts jsonb; v_sends jsonb; v_result jsonb;
- v_kept_receipts jsonb; v_kept_sends jsonb;$new$);
+ v_receipt_count bigint; v_send_count bigint;$new$);
 select pg_temp.cap_patch('public.qorpera_office_run_continuation(public.qorpera_execution_runs,integer)'::regprocedure,
-	$old$ v_result:=jsonb_build_object('schema','qorpera.office-start-continuation/v1',$old$,
-	$new$ v_kept_receipts:=public.qorpera_continuation_recent(v_receipts,2097152);
- v_kept_sends:=public.qorpera_continuation_recent(v_sends,1048576);
- v_result:=jsonb_build_object('schema','qorpera.office-start-continuation/v1',$new$);
+	$old$ select coalesce(jsonb_agg(jsonb_build_object('receiptId',id,'logicalOperationKey',logical_operation_key,
+  'assignmentId',assignment_id,'inputSha256',input_sha256,'completedAt',completed_at,'result',result,
+  'outputSnapshotId',output_snapshot_id,'proposalId',proposal_id,'companyPathProposalId',company_path_proposal_id)
+  order by completed_at,id),'[]') into v_receipts from public.qorpera_run_operation_receipts where run_id=v_parent.id and status='completed';$old$,
+	$new$ select coalesce(jsonb_agg(kept.item order by kept.completed_at, kept.id),'[]') into v_receipts
+ from (select receipt.id, receipt.completed_at, listed.item,
+ 		sum(octet_length(listed.item::text)) over (order by receipt.completed_at desc, receipt.id desc) as tail
+ 	from public.qorpera_run_operation_receipts receipt
+ 	cross join lateral (select jsonb_build_object('receiptId',receipt.id,'logicalOperationKey',receipt.logical_operation_key,
+			'assignmentId',receipt.assignment_id,'inputSha256',receipt.input_sha256,'completedAt',receipt.completed_at,'result',receipt.result,
+			'outputSnapshotId',receipt.output_snapshot_id,'proposalId',receipt.proposal_id,'companyPathProposalId',receipt.company_path_proposal_id) as item) listed
+ 	where receipt.run_id = v_parent.id and receipt.status = 'completed') kept
+ where kept.tail <= 2097152;
+ select count(*) into v_receipt_count from public.qorpera_run_operation_receipts receipt where receipt.run_id = v_parent.id and receipt.status = 'completed';$new$);
 select pg_temp.cap_patch('public.qorpera_office_run_continuation(public.qorpera_execution_runs,integer)'::regprocedure,
-	$old$  'receipts',v_receipts,'priorSends',v_sends,'earlierOfficeStart',public.qorpera_office_run_continuation(v_parent,p_depth+1));$old$,
-	$new$  'receipts',v_kept_receipts,'priorSends',v_kept_sends,'earlierOfficeStart',public.qorpera_office_run_continuation(v_parent,p_depth+1))
+	$old$ select coalesce(jsonb_agg(jsonb_build_object('eventId',event.event_id,'sequence',event.sequence,'body',event.body)
+  order by event.sequence),'[]') into v_sends from public.qorpera_agent_sends send
+  join public.qorpera_session_events event on event.event_id=send.event_id where send.run_id=v_parent.id;$old$,
+	$new$ select coalesce(jsonb_agg(kept.item order by kept.sequence, kept.event_id),'[]') into v_sends
+ from (select event.sequence, event.event_id, listed.item,
+ 		sum(octet_length(listed.item::text)) over (order by event.sequence desc, event.event_id desc) as tail
+ 	from public.qorpera_agent_sends send join public.qorpera_session_events event on event.event_id = send.event_id
+ 	cross join lateral (select jsonb_build_object('eventId',event.event_id,'sequence',event.sequence,'body',event.body) as item) listed
+ 	where send.run_id = v_parent.id) kept
+ where kept.tail <= 1048576;
+ select count(*) into v_send_count from public.qorpera_agent_sends send
+ 	join public.qorpera_session_events event on event.event_id = send.event_id where send.run_id = v_parent.id;$new$);
+select pg_temp.cap_patch('public.qorpera_office_run_continuation(public.qorpera_execution_runs,integer)'::regprocedure,
+	$old$'earlierOfficeStart',public.qorpera_office_run_continuation(v_parent,p_depth+1));$old$,
+	$new$'earlierOfficeStart',public.qorpera_office_run_continuation(v_parent,p_depth+1))
   || jsonb_strip_nulls(jsonb_build_object(
-   'receiptsOmitted',nullif(jsonb_array_length(v_receipts)-jsonb_array_length(v_kept_receipts),0),
-   'priorSendsOmitted',nullif(jsonb_array_length(v_sends)-jsonb_array_length(v_kept_sends),0)));$new$);
+			'receiptsOmitted',nullif(v_receipt_count - jsonb_array_length(v_receipts),0),
+			'priorSendsOmitted',nullif(v_send_count - jsonb_array_length(v_sends),0)));$new$);
+select pg_temp.cap_patch('public.qorpera_run_continuation(public.qorpera_execution_runs)'::regprocedure,
+	$old$declare v_handoff public.qorpera_execution_sponsor_handoffs%rowtype; v_receipts jsonb; v_sends jsonb;$old$,
+	$new$declare v_handoff public.qorpera_execution_sponsor_handoffs%rowtype; v_receipts jsonb; v_sends jsonb; v_receipt_count bigint; v_send_count bigint;$new$);
+select pg_temp.cap_patch('public.qorpera_run_continuation(public.qorpera_execution_runs)'::regprocedure,
+	$old$ select coalesce(jsonb_agg(jsonb_build_object('receiptId',id,'logicalOperationKey',logical_operation_key,
+  'assignmentId',assignment_id,'inputSha256',input_sha256,'completedAt',completed_at,
+  'result',result,'outputSnapshotId',output_snapshot_id,'proposalId',proposal_id,
+  'companyPathProposalId',company_path_proposal_id) order by completed_at,id),'[]') into v_receipts
+ from public.qorpera_run_operation_receipts where run_id = p_run.id and status = 'completed'
+  and completed_at <= v_handoff.created_at;$old$,
+	$new$ select coalesce(jsonb_agg(kept.item order by kept.completed_at, kept.id),'[]') into v_receipts
+ from (select receipt.id, receipt.completed_at, listed.item,
+ 		sum(octet_length(listed.item::text)) over (order by receipt.completed_at desc, receipt.id desc) as tail
+ 	from public.qorpera_run_operation_receipts receipt
+ 	cross join lateral (select jsonb_build_object('receiptId',receipt.id,'logicalOperationKey',receipt.logical_operation_key,
+			'assignmentId',receipt.assignment_id,'inputSha256',receipt.input_sha256,'completedAt',receipt.completed_at,'result',receipt.result,
+			'outputSnapshotId',receipt.output_snapshot_id,'proposalId',receipt.proposal_id,'companyPathProposalId',receipt.company_path_proposal_id) as item) listed
+ 	where receipt.run_id = p_run.id and receipt.status = 'completed'
+			and receipt.completed_at <= v_handoff.created_at) kept
+ where kept.tail <= 6291456;
+ select count(*) into v_receipt_count from public.qorpera_run_operation_receipts receipt where receipt.run_id = p_run.id and receipt.status = 'completed'
+			and receipt.completed_at <= v_handoff.created_at;$new$);
+select pg_temp.cap_patch('public.qorpera_run_continuation(public.qorpera_execution_runs)'::regprocedure,
+	$old$ select coalesce(jsonb_agg(jsonb_build_object('eventId',event.event_id,'sequence',event.sequence,
+  'body',event.body) order by event.sequence),'[]') into v_sends
+ from public.qorpera_agent_sends send join public.qorpera_session_events event on event.event_id = send.event_id
+ where send.run_id = p_run.id and send.session_id = p_run.session_id and send.created_at <= v_handoff.created_at;$old$,
+	$new$ select coalesce(jsonb_agg(kept.item order by kept.sequence, kept.event_id),'[]') into v_sends
+ from (select event.sequence, event.event_id, listed.item,
+ 		sum(octet_length(listed.item::text)) over (order by event.sequence desc, event.event_id desc) as tail
+ 	from public.qorpera_agent_sends send join public.qorpera_session_events event on event.event_id = send.event_id
+ 	cross join lateral (select jsonb_build_object('eventId',event.event_id,'sequence',event.sequence,'body',event.body) as item) listed
+ 	where send.run_id = p_run.id and send.session_id = p_run.session_id
+			and send.created_at <= v_handoff.created_at) kept
+ where kept.tail <= 2097152;
+ select count(*) into v_send_count from public.qorpera_agent_sends send
+ 	join public.qorpera_session_events event on event.event_id = send.event_id where send.run_id = p_run.id and send.session_id = p_run.session_id
+			and send.created_at <= v_handoff.created_at;$new$);
+select pg_temp.cap_patch('public.qorpera_run_continuation(public.qorpera_execution_runs)'::regprocedure,
+	$old$  'officeStart',public.qorpera_office_run_continuation(p_run));$old$,
+	$new$  'officeStart',public.qorpera_office_run_continuation(p_run))
+  || jsonb_strip_nulls(jsonb_build_object(
+			'receiptsOmitted',nullif(v_receipt_count - jsonb_array_length(v_receipts),0),
+			'priorSendsOmitted',nullif(v_send_count - jsonb_array_length(v_sends),0)));$new$);
+-- Screenshots: before every model request the run re-checks every screenshot
+-- it was shown, inside the result fence's 4 s. Each screenshot re-read the
+-- run's authority, office descriptor and whole Company File context (about five
+-- authority reads), so a run that took a few hundred screenshots would fail on
+-- time. The run-level checks now run once per call; each screenshot keeps its
+-- own checks (capture, drained resource, receipt, artifact, downloadable object).
+do $$
+begin
+	if md5(pg_get_functiondef('public.qorpera_read_native_office_capture(jsonb,uuid)'::regprocedure)) <> '358e3ee133d0a622e2aa32ef2f848cd0'
+		or md5(pg_get_functiondef('public.qorpera_assert_native_office_captures(jsonb,jsonb)'::regprocedure)) <> 'd28efc25db3a316e25c4bbf817db9111' then
+		raise exception 'Cap removal differs: the office capture authority functions changed'; end if;
+end
+$$;
+create function public.qorpera_native_office_capture_checked(p_asset_id uuid, p_binding jsonb, p_authority jsonb, p_descriptor jsonb)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare v_capture public.qorpera_runtime_office_captures%rowtype; v_resource public.qorpera_runtime_office_resources%rowtype;
+	v_receipt public.qorpera_run_operation_receipts%rowtype; v_asset public.qorpera_artifacts%rowtype; v_result jsonb; v_envelope jsonb;
+begin
+	select * into v_capture from public.qorpera_runtime_office_captures where artifact_id=p_asset_id;
+	if not found then raise exception 'Office capture unavailable' using errcode='42501'; end if;
+	select * into v_resource from public.qorpera_runtime_office_resources where receipt_id=v_capture.receipt_id;
+	select * into v_receipt from public.qorpera_run_operation_receipts where id=v_capture.receipt_id for share;
+	select * into v_asset from public.qorpera_artifacts where id=p_asset_id for share;
+	v_envelope:=v_capture.operation_envelope::jsonb;
+	v_result:=public.qorpera_runtime_office_capture_json(v_capture);
+	if p_authority#>>'{identity,audienceKind}' is distinct from 'company'
+		or v_receipt.run_id::text is distinct from p_binding->>'runId' or v_receipt.status<>'completed'
+		or v_resource.state<>'drained' or p_descriptor->>'state' is distinct from 'available'
+		or p_descriptor#>>'{scope,companyComputerId}' is distinct from v_resource.office_id::text
+		or v_envelope#>'{operation,target,resources}' is distinct from p_descriptor->'resources'
+		or v_envelope->'principals' is distinct from (p_authority->'identity')-array['assignmentId','runnerId','leaseId','sponsorVersion','providerConnectionId','providerConnectionVersion']
+		or v_receipt.result is distinct from jsonb_build_object('schema','qorpera.cloud-tool-operation-result/v1',
+			'inputSha256',v_receipt.input_sha256,'content',jsonb_build_object('kind','json','value',v_result))
+		or v_asset.profile_id::text is distinct from p_authority#>>'{identity,companyId}'
+		or v_asset.environment_id::text is distinct from p_authority#>>'{identity,environmentId}'
+		or v_asset.owner_staff_agent_id::text is distinct from p_authority#>>'{identity,staffAgentId}'
+		or v_asset.deleted_at is not null or v_asset.gc_completed_at is not null then
+		raise exception 'Office capture authority changed' using errcode='42501'; end if;
+	perform public.qorpera_authorize_profile_object_download(v_asset.profile_id,v_asset.content_sha256);
+	return v_result;
+end
+$$;
+revoke all on function public.qorpera_native_office_capture_checked(uuid,jsonb,jsonb,jsonb)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+create or replace function public.qorpera_read_native_office_capture(p_binding jsonb, p_asset_id uuid)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare v_authority jsonb; v_result jsonb;
+begin
+	if auth.role() is distinct from 'service_role' then raise exception 'Native capture authority required' using errcode='42501'; end if;
+	v_authority:=public.qorpera_describe_native_tool_authority(p_binding);
+	perform public.qorpera_native_company_object_actor(p_binding,(v_authority#>>'{identity,companyId}')::uuid);
+	v_result:=public.qorpera_native_office_capture_checked(p_asset_id,p_binding,v_authority,public.qorpera_native_office_descriptor(p_binding));
+	perform public.qorpera_describe_native_tool_authority(p_binding);
+	return v_result;
+end
+$$;
+create or replace function public.qorpera_assert_native_office_captures(p_binding jsonb, p_assets jsonb)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare v_asset jsonb; v_current jsonb; v_bytes bigint:=0; v_authority jsonb; v_descriptor jsonb;
+begin
+	if auth.role() is distinct from 'service_role' then raise exception 'Native capture authority required' using errcode='42501'; end if;
+	v_authority:=public.qorpera_describe_native_tool_authority(p_binding);
+	if jsonb_typeof(p_assets) is distinct from 'array' or pg_column_size(p_assets)>65536 then
+		raise exception 'Native capture set invalid' using errcode='22023'; end if;
+	if jsonb_array_length(p_assets)>128 then raise exception 'Native capture set too large' using errcode='54000'; end if;
+	-- Run-level authority, office and object access once for the whole set.
+	perform public.qorpera_native_company_object_actor(p_binding,(v_authority#>>'{identity,companyId}')::uuid);
+	v_descriptor:=public.qorpera_native_office_descriptor(p_binding);
+	for v_asset in select value from jsonb_array_elements(p_assets) loop
+		if jsonb_typeof(v_asset) is distinct from 'object' or coalesce(v_asset->>'assetId','')!~'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' then
+			raise exception 'Native capture invalid' using errcode='22023'; end if;
+		v_current:=public.qorpera_native_office_capture_checked((v_asset->>'assetId')::uuid,p_binding,v_authority,v_descriptor);
+		if v_current is distinct from v_asset then raise exception 'Native capture evidence changed' using errcode='42501'; end if;
+		v_bytes:=v_bytes+(v_current->>'bytes')::bigint;
+		if v_bytes>134217728 then raise exception 'Native capture byte budget exceeded' using errcode='54000'; end if;
+	end loop;
+	perform public.qorpera_describe_native_tool_authority(p_binding);
+	return jsonb_build_object('state','authorized','assets',p_assets);
+end
+$$;
 -- A todo may be worked by any number of workers over its life (was eight).
 select pg_temp.cap_patch('public.qorpera_manage_agent_worker(jsonb,jsonb)'::regprocedure,
 	$old$		if (select count(*) from public.qorpera_runtime_workers worker where worker.todo_id = v_todo.id) >= 8 then

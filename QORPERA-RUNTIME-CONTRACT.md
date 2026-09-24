@@ -509,8 +509,9 @@ subscriptions, which self-limit.
 >   agent, 40 sidebar sections per company, 50,000 Company File entries;
 > - no stall detection: a run whose harness hangs without crashing keeps its
 >   machine until Stop, as in Codex CLI and Claude Code;
-> - a continuation (a worker report, a computer start) carries the newest
->   results and sends of the earlier run that fit, and counts the rest;
+> - a continuation (a worker report, a computer start, a sponsor handoff)
+>   carries the newest results and sends of the earlier run that fit, and
+>   counts the rest;
 > - the API-key sandbox runner (not company work) keeps its per-job totals:
 >   64 MiB transcript, 100 output artifacts and 64 MiB of output.
 >
