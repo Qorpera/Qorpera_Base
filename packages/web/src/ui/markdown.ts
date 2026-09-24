@@ -1,5 +1,6 @@
 import { Lexer, type MarkedToken } from "marked";
 import { h } from "./dom.ts";
+import { t } from "./preferences.ts";
 
 // Parse only a single validated character reference, never source markup.
 // The result still enters the page through a text node or a checked URL.
@@ -64,7 +65,7 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0): Node[] {
 											type: "checkbox",
 											checked: item.checked,
 											disabled: true,
-											"aria-label": "Task status",
+											"aria-label": t("Task status"),
 										})
 									: null,
 								renderTokens(item.tokens as MarkedToken[], depth + 1),
@@ -84,7 +85,7 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0): Node[] {
 				return [
 					h(
 						"div",
-						{ class: "message-table", tabindex: "0", "aria-label": "Message table" },
+						{ class: "message-table", tabindex: "0", "aria-label": t("Message table") },
 						h(
 							"table",
 							null,
@@ -98,7 +99,9 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0): Node[] {
 			case "image": {
 				const href = safeHref(token.href);
 				const content =
-					token.type === "image" ? `Image: ${decodeEntities(token.text) || "Open image"}` : children();
+					token.type === "image"
+						? t("Image: {name}", { name: decodeEntities(token.text) || t("Open image") })
+						: children();
 				return [
 					href
 						? h("a", { href, target: "_blank", rel: "noopener noreferrer", title: token.title }, content)

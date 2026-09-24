@@ -1,11 +1,12 @@
 import type { AgentState } from "../app/company.ts";
 import type { Activity } from "./figure-motion.ts";
+import { phrase, t } from "./preferences.ts";
 
 export interface AgentLook {
 	figure: Activity;
 	line?: string;
-	/** The rest of the sentence after the agent's name: "Nova is working". */
-	detail?: string;
+	/** The caption sentence, one key with the agent's name: "Nova is working". */
+	caption?: string;
 	note?: string;
 	disc?: "working" | "failed";
 }
@@ -14,10 +15,10 @@ export interface AgentLook {
  * the motion studio's name for the agent-coloured, unframed writing dots. */
 export const AGENT_LOOK: Record<AgentState, AgentLook> = {
 	idle: { figure: "Idle" },
-	working: { figure: "Working", line: "Working", detail: " is working", disc: "working" },
-	writing: { figure: "Thinking", line: "Writing", detail: " is writing", disc: "working" },
-	decision: { figure: "Waiting", line: "Needs you" },
-	failed: { figure: "Idle", note: "A run did not finish", disc: "failed" },
+	working: { figure: "Working", line: phrase("Working"), caption: phrase("{name} is working"), disc: "working" },
+	writing: { figure: "Thinking", line: phrase("Writing"), caption: phrase("{name} is writing"), disc: "working" },
+	decision: { figure: "Waiting", line: phrase("Needs you") },
+	failed: { figure: "Idle", note: phrase("A run did not finish"), disc: "failed" },
 };
 
 /* Graphemes when the browser can split them; code points otherwise, so a
@@ -62,13 +63,13 @@ function waveInto(container: HTMLElement, text: string, index: number): number {
 }
 
 /** The rail card's second line: the live state with the wave running, a
- * still state ("Needs you"), or the role. Live is what carries `detail`. */
+ * still state ("Needs you"), or the role. Live is what carries `caption`. */
 export function stateLine(look: AgentLook, role: string): HTMLElement | string {
 	if (!look.line) return role;
-	if (!look.detail) return look.line;
+	if (!look.caption) return t(look.line);
 	const line = document.createElement("span");
 	line.className = "status-wave";
-	waveInto(line, look.line, 0);
+	waveInto(line, t(look.line), 0);
 	return line;
 }
 
@@ -76,14 +77,17 @@ export function stateLine(look: AgentLook, role: string): HTMLElement | string {
  * ink wave can run across it. Assistive technology reads one sentence; the
  * letters are hidden from it. The letters are built when the caption is
  * shown (see syncCaption), so nothing animates while it is hidden. */
-export function statusCaption(lead: string, detail: string): HTMLElement {
+export function statusCaption(lead: string, detail: string, before = ""): HTMLElement {
 	const caption = document.createElement("span");
 	caption.className = "status-caption";
 	caption.setAttribute("aria-hidden", "true");
-	for (const [className, text] of [
+	const parts: [string, string][] = [
 		["status-caption-name", lead],
 		["status-caption-detail", detail],
-	] as const) {
+	];
+	// Words a language puts before the name keep the detail's colour.
+	if (before) parts.unshift(["status-caption-detail", before]);
+	for (const [className, text] of parts) {
 		const part = document.createElement("span");
 		part.className = className;
 		part.dataset.text = text;
@@ -91,6 +95,15 @@ export function statusCaption(lead: string, detail: string): HTMLElement {
 	}
 	syncCaption(caption);
 	return caption;
+}
+
+/** A live state's caption in the member's language: the whole sentence for
+ * assistive technology, and the caption with the name set apart wherever the
+ * language puts it. Just the name for a state with no caption. */
+export function activityCaption(look: AgentLook, name: string): { label: string; caption: HTMLElement } {
+	if (!look.caption) return { label: name, caption: statusCaption(name, "") };
+	const [before = "", after = ""] = t(look.caption).split("{name}");
+	return { label: t(look.caption, { name }), caption: statusCaption(name, after, before) };
 }
 
 /** Rebuilds the caption's letters from the shared clock, so a caption shown

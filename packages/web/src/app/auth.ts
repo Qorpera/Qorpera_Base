@@ -1,5 +1,6 @@
 import type { Session, User } from "@supabase/supabase-js";
 import type { Cloud } from "../cloud/client.ts";
+import { t } from "../ui/preferences.ts";
 import { Store } from "./state.ts";
 
 /* Supabase Auth in the browser (CLIENT-CONTRACT.md §1): email one-time code or
@@ -72,7 +73,7 @@ export class AuthController {
 			user: data.session?.user ?? null,
 			error:
 				!data.session && (initializationError || error || queryCallback || fragmentCallback)
-					? "Sign-in could not be completed. Request a new email code in this browser."
+					? t("Sign-in could not be completed. Request a new email code in this browser.")
 					: undefined,
 		});
 		if (!data.session) void this.#loadProviders();
@@ -138,7 +139,7 @@ export class AuthController {
 	async sendEmailCode(email: string): Promise<void> {
 		const normalized = email.trim().toLowerCase();
 		if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
-			this.store.set({ error: "Enter a valid email address." });
+			this.store.set({ error: t("Enter a valid email address.") });
 			return;
 		}
 		this.store.set({ busy: true, error: undefined, message: undefined });
@@ -153,7 +154,7 @@ export class AuthController {
 		this.store.set({
 			busy: false,
 			pendingEmail: normalized,
-			message: "Check your email. Enter the code below, or open the sign-in link on this device.",
+			message: t("Check your email. Enter the code below, or open the sign-in link on this device."),
 		});
 	}
 
@@ -171,7 +172,7 @@ export class AuthController {
 
 	async signInWithOAuth(provider: OAuthProvider): Promise<void> {
 		if (!this.store.get().oauthProviders.includes(provider)) {
-			this.store.set({ error: "This sign-in provider is unavailable. Continue with email." });
+			this.store.set({ error: t("This sign-in provider is unavailable. Continue with email.") });
 			return;
 		}
 		this.store.set({ busy: true, error: undefined });
@@ -197,5 +198,5 @@ export function displayName(user: User | null): string {
 	const meta = user.user_metadata as Record<string, unknown> | undefined;
 	const candidates = [meta?.full_name, meta?.name, meta?.user_name, meta?.preferred_username, user.email];
 	const value = candidates.find((candidate) => typeof candidate === "string" && candidate.trim());
-	return typeof value === "string" ? value : "Member";
+	return typeof value === "string" ? value : t("Member");
 }

@@ -1,10 +1,11 @@
 import type { CloudSessionRunState } from "@qorpera/cloud-client";
 import type { WebSessionRunControl } from "../../cloud/session-run-control.ts";
 import { h, replace } from "../../ui/dom.ts";
+import { t } from "../../ui/preferences.ts";
 
 /** Observes cloud-owned work. Local lifetime cancellation never stops a run. */
 export class SessionRunView {
-	readonly el = h("div", { class: "session-run surface-status", "aria-label": "Cloud run" });
+	readonly el = h("div", { class: "session-run surface-status", "aria-label": t("Cloud run") });
 	readonly #control: WebSessionRunControl;
 	readonly #sessionId: string;
 	readonly #lifetime = new AbortController();
@@ -15,7 +16,7 @@ export class SessionRunView {
 	#poll: ReturnType<typeof setTimeout> | undefined;
 	#busy = false;
 	#uncertain = false;
-	#message = "Cloud run status is unavailable.";
+	#message = t("Cloud run status is unavailable.");
 	#renderKey = "";
 
 	readonly #changed: () => void;
@@ -41,7 +42,7 @@ export class SessionRunView {
 			this.#busy = false;
 			this.#uncertain = false;
 			this.#staffAgentId = staffAgentId;
-			this.#message = "Cloud run status is unavailable.";
+			this.#message = t("Cloud run status is unavailable.");
 			if (staffAgentId) void this.refresh();
 		}
 		this.#render();
@@ -54,7 +55,7 @@ export class SessionRunView {
 		this.#request = request;
 		const signal = AbortSignal.any([request.signal, this.#lifetime.signal]);
 		this.#busy = true;
-		this.#message = "Checking cloud run…";
+		this.#message = t("Checking cloud run…");
 		this.#render();
 		try {
 			const state = await this.#control.read(this.#sessionId, this.#staffAgentId, signal);
@@ -63,15 +64,15 @@ export class SessionRunView {
 			this.#uncertain = false;
 			this.#message = state.run
 				? state.run.status === "queued"
-					? "Cloud run queued."
-					: "Cloud run in progress."
-				: "No active cloud run.";
+					? t("Cloud run queued.")
+					: t("Cloud run in progress.")
+				: t("No active cloud run.");
 			if (reads > 1) this.#poll = setTimeout(() => void this.refresh(reads - 1), 1_000);
 		} catch {
 			if (signal.aborted) return;
 			this.#message = this.#uncertain
-				? "Stop could not be confirmed. Refresh run status before trying again."
-				: "Cloud run status is unavailable. Refresh to try again.";
+				? t("Stop could not be confirmed. Refresh run status before trying again.")
+				: t("Cloud run status is unavailable. Refresh to try again.");
 		} finally {
 			if (this.#request === request) {
 				this.#request = undefined;
@@ -124,7 +125,7 @@ export class SessionRunView {
 		this.#busy = true;
 		this.#uncertain = true;
 		this.#state = undefined;
-		this.#message = "Stopping selected cloud run…";
+		this.#message = t("Stopping selected cloud run…");
 		this.#render();
 		let confirmed = false;
 		try {
@@ -133,7 +134,7 @@ export class SessionRunView {
 			confirmed = true;
 		} catch {
 			if (signal.aborted) return;
-			this.#message = "Stop could not be confirmed. Refresh run status before trying again.";
+			this.#message = t("Stop could not be confirmed. Refresh run status before trying again.");
 		} finally {
 			if (this.#request === request) {
 				this.#request = undefined;
@@ -160,11 +161,11 @@ export class SessionRunView {
 				{
 					type: "button",
 					class: "btn btn-small",
-					"aria-label": "Refresh run status",
+					"aria-label": t("Refresh run status"),
 					disabled: this.#busy || !this.#staffAgentId,
 					onclick: () => void this.refresh(),
 				},
-				"Refresh",
+				t("Refresh"),
 			),
 			run?.canCancel && this.#canCancel
 				? h(
@@ -172,11 +173,11 @@ export class SessionRunView {
 						{
 							type: "button",
 							class: "btn btn-small",
-							"aria-label": "Stop cloud run",
+							"aria-label": t("Stop cloud run"),
 							disabled: this.#busy || this.#uncertain,
 							onclick: () => void this.#cancel(run.runId),
 						},
-						"Stop run",
+						t("Stop run"),
 					)
 				: null,
 		);

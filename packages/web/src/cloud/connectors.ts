@@ -26,32 +26,12 @@ export const HOSTED_CONNECTORS: ReadonlyArray<{
 	id: HostedConnectorId;
 	label: string;
 	logo: string;
-	summary: string;
 	/** Whether a typed token is an alternative to signing in with the provider. */
-	token?: { label: string; hint: string };
+	token?: true;
 }> = [
-	{
-		id: "gmail",
-		label: "Gmail",
-		logo: "provider-google.svg",
-		summary: "Read and search the mailbox, send email.",
-	},
-	{
-		id: "google_drive",
-		label: "Google Drive",
-		logo: "provider-google.svg",
-		summary: "Find, read, create and update documents.",
-	},
-	{
-		id: "github",
-		label: "GitHub",
-		logo: "provider-github.svg",
-		summary: "Repositories, issues, pull requests and files.",
-		token: {
-			label: "Use a personal access token instead",
-			hint: "A fine-grained token with the repositories the agents may use.",
-		},
-	},
+	{ id: "gmail", label: "Gmail", logo: "provider-google.svg" },
+	{ id: "google_drive", label: "Google Drive", logo: "provider-google.svg" },
+	{ id: "github", label: "GitHub", logo: "provider-github.svg", token: true },
 ];
 
 export interface HostedConnectorConnection {

@@ -11,11 +11,7 @@ export const SESSION_MODELS = [
 /** The only listed model a cloud without per-conversation effort accepts. */
 export const SESSION_MODEL_BEFORE_EFFORT = "gpt-6-astra";
 
-export const SESSION_EFFORTS = [
-	{ id: "low", name: "Low" },
-	{ id: "medium", name: "Medium" },
-	{ id: "high", name: "High" },
-] as const;
+export const SESSION_EFFORTS = ["low", "medium", "high"] as const;
 
 export interface SessionModel {
 	sessionId: string;
@@ -72,7 +68,7 @@ export function createWebSessionModel(
 			((selection.modelId === undefined && selection.reasoningEffort === undefined) ||
 				(selection.modelId !== undefined && !SESSION_MODELS.some((model) => model.id === selection.modelId)) ||
 				(selection.reasoningEffort !== undefined &&
-					!SESSION_EFFORTS.some((effort) => effort.id === selection.reasoningEffort)) ||
+					!(SESSION_EFFORTS as readonly string[]).includes(selection.reasoningEffort)) ||
 				!Number.isSafeInteger(selection.expectedVersion) ||
 				selection.expectedVersion < 0 ||
 				selection.expectedVersion === Number.MAX_SAFE_INTEGER)
