@@ -466,7 +466,9 @@ describe("shell presentation lifecycle", () => {
 		// The Co-Founder's failed room delivery reads the same way on its card.
 		const card = rail.querySelector(".cofounder-home")!;
 		expect(figures.get(cofounder.id)).toBe("Idle");
-		expect(card.querySelector("small")?.textContent).toBe("Co-founder");
+		// The card shows only the name; its role and state are in the link's name.
+		expect(card.querySelector("small")).toBeNull();
+		expect(card.textContent).toBe("Co-Founder");
 		expect(disc(card.querySelector(".cofounder-status"))).toBe("red");
 		expect(card.getAttribute("aria-label")).toBe("Co-Founder · Co-founder · A run did not finish");
 	});
@@ -545,7 +547,7 @@ describe("shell presentation lifecycle", () => {
 		});
 		draw();
 		expect(disc()).toBeNull();
-		expect(row().querySelector("small")?.textContent).toBe("Needs you");
+		expect(row().querySelector("small")?.textContent).toBe(kind === "cofounder" ? undefined : "Needs you");
 		expect(row().getAttribute("aria-label")).toContain("Needs you");
 		expect(document.activeElement).toBe(search);
 		expect(search.value).toBe("Fixture");

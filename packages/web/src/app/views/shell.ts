@@ -373,7 +373,6 @@ function cofounderCard(model: AgentModel, href: string): HTMLElement {
 			statusDisc(look, "cofounder-status"),
 		),
 		h("strong", null, model.displayName),
-		h("small", null, stateLine(look, model.role)),
 	);
 }
 
