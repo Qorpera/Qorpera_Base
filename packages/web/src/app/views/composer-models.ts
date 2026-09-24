@@ -1,8 +1,15 @@
-import { SESSION_MODELS, type SessionModel, type WebSessionModel } from "../../cloud/session-model.ts";
+import {
+	SESSION_EFFORTS,
+	SESSION_MODELS,
+	type SessionModel,
+	type SessionModelSelection,
+	type WebSessionModel,
+} from "../../cloud/session-model.ts";
 import { h, icon } from "../../ui/dom.ts";
 import type { CompanyController } from "../company.ts";
 
-/** Conversation-scoped choices; the server pins them when admitting new runs. */
+/** Conversation-scoped model and effort; the server pins them when admitting
+ * the member's next run in this conversation. */
 export class ComposerModels {
 	readonly button: HTMLButtonElement;
 	readonly el: HTMLElement;
@@ -10,6 +17,8 @@ export class ComposerModels {
 	readonly #status = h("p", { class: "composer-model-status", role: "status" });
 	readonly #refresh: HTMLButtonElement;
 	readonly #choices: HTMLButtonElement[];
+	readonly #efforts: HTMLButtonElement[];
+	readonly #effortGroup: HTMLElement;
 	readonly #company: CompanyController;
 	readonly #sessionId: string;
 	readonly #client: WebSessionModel | undefined;
@@ -17,7 +26,7 @@ export class ComposerModels {
 	readonly #changed: () => void;
 	#observed: SessionModel | undefined;
 	#request: AbortController | undefined;
-	#pendingModel: string | undefined;
+	#pending: SessionModelSelection | undefined;
 	#error = "";
 	#started = false;
 	#locked = true;
@@ -50,11 +59,33 @@ export class ComposerModels {
 					type: "button",
 					role: "menuitemradio",
 					"aria-checked": "false",
-					onclick: () => void this.#save(model.id),
+					onclick: () => void this.#save({ modelId: model.id, reasoningEffort: this.#observed?.reasoningEffort }),
 				},
 				h("span", null, model.name),
 				icon("check"),
 			),
+		);
+		this.#efforts = SESSION_EFFORTS.map((effort) =>
+			h(
+				"button",
+				{
+					type: "button",
+					role: "menuitemradio",
+					"aria-checked": "false",
+					onclick: () => {
+						const modelId = this.#observed?.modelId;
+						if (modelId) void this.#save({ modelId, reasoningEffort: effort.id });
+					},
+				},
+				h("span", null, effort.name),
+				icon("check"),
+			),
+		);
+		this.#effortGroup = h(
+			"div",
+			{ class: "composer-model-group", role: "group", "aria-label": "Effort", hidden: true },
+			h("p", { class: "composer-model-heading", "aria-hidden": "true" }, "Effort"),
+			...this.#efforts,
 		);
 		this.#refresh = h(
 			"button",
@@ -65,15 +96,16 @@ export class ComposerModels {
 			"div",
 			{ class: "composer-models", role: "menu", "aria-label": "Model", hidden: true },
 			h("button", { type: "button", role: "menuitem", onclick: back }, icon("back"), "Model"),
-			...this.#choices,
-			h("p", { class: "composer-model-scope" }, "Only this conversation. Applies to new Codex runs. Low effort."),
+			h("div", { class: "composer-model-group", role: "group", "aria-label": "Model" }, ...this.#choices),
+			this.#effortGroup,
+			h("p", { class: "composer-model-scope" }, "Only this conversation. Applies from your next message."),
 			this.#status,
 			this.#refresh,
 		);
 	}
 
 	get pending(): boolean {
-		return this.#pendingModel !== undefined;
+		return this.#pending !== undefined;
 	}
 
 	update(available: boolean, locked: boolean): void {
@@ -90,7 +122,7 @@ export class ComposerModels {
 			this.#request?.abort();
 			this.#request = undefined;
 			this.#observed = undefined;
-			this.#pendingModel = undefined;
+			this.#pending = undefined;
 			this.#started = false;
 			this.#error = "";
 		}
@@ -113,7 +145,7 @@ export class ComposerModels {
 			const value = await this.#client.read(this.#sessionId, signal);
 			signal.throwIfAborted();
 			this.#observed = value;
-			this.#pendingModel = undefined;
+			this.#pending = undefined;
 		} catch {
 			if (!signal.aborted) this.#error = "The model is unavailable. Refresh to try again.";
 		} finally {
@@ -139,7 +171,7 @@ export class ComposerModels {
 		);
 	}
 
-	async #save(modelId: string): Promise<void> {
+	async #save(selection: SessionModelSelection): Promise<void> {
 		if (
 			!this.#client ||
 			!this.#observed ||
@@ -152,13 +184,13 @@ export class ComposerModels {
 		const request = new AbortController();
 		this.#request = request;
 		const signal = AbortSignal.any([request.signal, this.#signal]);
-		this.#pendingModel = modelId;
+		this.#pending = selection;
 		this.#notify();
 		try {
-			const value = await this.#client.set(this.#sessionId, modelId, this.#observed.version, signal);
+			const value = await this.#client.set(this.#sessionId, selection, this.#observed.version, signal);
 			signal.throwIfAborted();
 			this.#observed = value;
-			this.#pendingModel = undefined;
+			this.#pending = undefined;
 		} catch {
 			if (!signal.aborted) this.#error = "The change could not be confirmed. Refresh the model before sending.";
 		} finally {
@@ -180,16 +212,30 @@ export class ComposerModels {
 		const focused = this.el.contains(document.activeElement) ? document.activeElement : null;
 		const id = this.#observed?.modelId;
 		const name = SESSION_MODELS.find((item) => item.id === id)?.name ?? id;
+		const effortId = this.#observed?.reasoningEffort;
+		const effort = SESSION_EFFORTS.find((item) => item.id === effortId)?.name ?? effortId;
+		const summary = name && effort ? `${name} · ${effort}` : name;
 		this.button.disabled = this.#locked || !this.#canRead();
 		this.#label.textContent = this.pending
 			? this.#error
 				? "Change unconfirmed"
 				: "Saving…"
-			: (name ?? (this.#error ? "Unavailable" : "Loading…"));
-		this.button.setAttribute("aria-label", name ? `Model: ${name}` : "Model");
+			: (summary ?? (this.#error ? "Unavailable" : "Loading…"));
+		this.button.setAttribute(
+			"aria-label",
+			name ? (effort ? `Model: ${name}, ${effort} effort` : `Model: ${name}`) : "Model",
+		);
+		const unavailable = this.button.disabled || !this.#observed || Boolean(this.#request) || Boolean(this.#error);
 		for (const [index, choice] of this.#choices.entries()) {
 			choice.setAttribute("aria-checked", String(SESSION_MODELS[index]?.id === id));
-			choice.disabled = this.button.disabled || !this.#observed || Boolean(this.#request) || Boolean(this.#error);
+			choice.disabled = unavailable;
+		}
+		// A cloud without per-conversation effort omits it. Effort is saved with
+		// the conversation's model, so an unlisted model is chosen first.
+		this.#effortGroup.hidden = effortId === undefined;
+		for (const [index, choice] of this.#efforts.entries()) {
+			choice.setAttribute("aria-checked", String(SESSION_EFFORTS[index]?.id === effortId));
+			choice.disabled = unavailable || !SESSION_MODELS.some((item) => item.id === id);
 		}
 		this.#status.textContent =
 			this.#error || (this.#request ? (this.pending ? "Saving model…" : "Loading model…") : "");
