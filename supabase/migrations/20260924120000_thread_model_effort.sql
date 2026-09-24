@@ -2,15 +2,13 @@
 -- menu in an agent thread offers the GPT-6 family (Astra, Sol, Luna) and a
 -- thinking effort (low, medium or high). Both belong to that one conversation:
 -- a member's reply in it runs with them, while routines, coworker wakes and
--- other conversations keep their own. Existing GPT-5.6 choices move to their
--- GPT-6 counterparts (Sol -> Sol, Terra -> Luna); the version advances so an
--- open client refreshes before it saves over the moved choice.
+-- other conversations keep their own. An existing GPT-5.6 choice is cleared:
+-- that conversation returns to the default path, where the pinned Codex picks
+-- its own model and no model name is sent. An open client that saves over it
+-- gets the version conflict and refreshes first.
 
 alter table public.qorpera_session_models drop constraint qorpera_session_models_model_id_check;
-update public.qorpera_session_models
-set model_id = case model_id when 'gpt-5.6-sol' then 'gpt-6-sol' else 'gpt-6-luna' end,
-	version = version + 1, updated_at = clock_timestamp()
-where model_id in ('gpt-5.6-sol','gpt-5.6-terra');
+delete from public.qorpera_session_models where model_id not in ('gpt-6-astra','gpt-6-sol','gpt-6-luna');
 alter table public.qorpera_session_models
 	add constraint qorpera_session_models_model_id_check check (model_id in ('gpt-6-astra','gpt-6-sol','gpt-6-luna')),
 	-- Null keeps the admitted bundle's default effort.
