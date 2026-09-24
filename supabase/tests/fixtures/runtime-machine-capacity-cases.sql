@@ -60,8 +60,9 @@ update public.qorpera_runtime_offices set state='active';
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
 set local role authenticated;
 select pg_temp.wake_assert(public.qorpera_company_machine_capacity('30000000-0000-4000-8000-000000000010')->>'allocatedMachines'='1','one machine regardless of screens');
-select public.qorpera_set_company_execution_pause('30000000-0000-4000-8000-000000000010',true,'fixture');
 reset role;
+-- The pause is an operator brake: the operator session acts with a founder's claims.
+select public.qorpera_set_company_execution_pause('30000000-0000-4000-8000-000000000010',true,'fixture');
 select pg_temp.path_claims('service_role');
 set local role service_role;
 select pg_temp.wake_assert(pg_temp.office_machine()='{"state":"refused","reason":"COMPANY_PAUSED"}'::jsonb,'founder stop fences even an existing reservation restart');
@@ -74,9 +75,7 @@ select pg_temp.wake_assert(not has_function_privilege('authenticated','public.qo
 select pg_temp.wake_assert(not has_function_privilege('authenticated','public.qorpera_check_runtime_office_guest_binding(jsonb,bigint,uuid,text,text,text)','EXECUTE'),'members cannot read guest allocation authority');
 select pg_temp.wake_assert(not has_function_privilege('anon','public.qorpera_check_runtime_office_guest_binding(jsonb,bigint,uuid,text,text,text)','EXECUTE'),'anonymous callers cannot read guest authority');
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
-set local role authenticated;
 select public.qorpera_set_company_execution_pause('30000000-0000-4000-8000-000000000010',false,'fixture');
-reset role;
 select pg_temp.path_claims('service_role');
 set local role service_role;
 select pg_temp.wake_error($q$select pg_temp.office_guest()$q$,'42501');
