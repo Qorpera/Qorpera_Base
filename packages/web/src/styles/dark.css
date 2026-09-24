@@ -148,6 +148,8 @@
 :root[data-theme="dark"] .settings-card { background: #333332; }
 :root[data-theme="dark"] .account-picture-badge { box-shadow: 0 0 0 2px #333332, 0 1px 3px rgba(0, 0, 0, 0.4); }
 :root[data-theme="dark"] .account-picture-menu { box-shadow: 0 22px 48px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3); }
+:root[data-theme="dark"] .picture-crop { border: 1px solid var(--border); box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6); }
+:root[data-theme="dark"] .picture-crop-stage { background: #111110; }
 :root[data-theme="dark"] :is(.account-picture-remove, .account-picture-remove .icon) { color: #ff9084; }
 :root[data-theme="dark"] :is(.settings-copy small, .settings-help, .connection-sign-in small, .settings-lead) { color: #a3a29d; }
 :root[data-theme="dark"] .settings-file-card > .icon:first-child { color: #8f8e89; }

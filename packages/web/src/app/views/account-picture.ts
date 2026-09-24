@@ -2,13 +2,14 @@ import type { User } from "@supabase/supabase-js";
 import { describeError } from "../../cloud/client.ts";
 import { type Child, h, icon, notice, personAvatar } from "../../ui/dom.ts";
 import { PERSON_PICTURE_EVENT, personPictures } from "../../ui/person-pictures.ts";
+import { choosePictureCrop } from "../../ui/picture-cropper.ts";
 import { PictureFileError } from "../../ui/picture-file.ts";
 import { phrase, t, uiText } from "../../ui/preferences.ts";
 import { displayName } from "../auth.ts";
 
 /* The account's picture at the head of Settings → General. Clicking it picks a
- * photo; once there is one, it opens a small menu to pick another or go back to
- * initials. Where the cloud has no member pictures yet it is the initials disc
+ * photo, which the member fits to the circle before it is saved; once there is
+ * a picture, it opens a small menu to pick another or go back to initials. Where the cloud has no member pictures yet it is the initials disc
  * alone, with nothing to click. Why the last change failed is kept by the store
  * and shown in `error` (placed under the card) until the next attempt, so a
  * redrawn page still shows it and nothing else on the page clears it. */
@@ -88,8 +89,9 @@ export function accountPicture(user: User | null): { picture: HTMLElement; error
 	async function run(action: () => Promise<void>): Promise<void> {
 		try {
 			await action();
-		} catch {
-			// The store keeps the failure; update() shows it.
+		} catch (error) {
+			// The store keeps what failed on its way; a photo that never got there is kept here.
+			if (!(error instanceof Error && error.message === "The account changed.")) store!.fail(userId, error);
 		}
 	}
 
@@ -166,7 +168,11 @@ export function accountPicture(user: User | null): { picture: HTMLElement; error
 	input.onchange = () => {
 		const file = input.files?.[0];
 		input.value = "";
-		if (file) void run(() => store.choose(userId, file));
+		if (!file) return;
+		void run(async () => {
+			const crop = await choosePictureCrop(file);
+			if (crop) await store.choose(userId, file, crop);
+		});
 	};
 	avatar.addEventListener(PERSON_PICTURE_EVENT, update);
 	update();

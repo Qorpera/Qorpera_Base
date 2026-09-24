@@ -15,6 +15,12 @@ import { PERSON_PICTURE_EVENT, personPicturesEpoch, setPersonPictures } from "..
 import { PictureFileError } from "../src/ui/picture-file.ts";
 import { deferred, fixture, id, settle as settleMicrotasks, userA } from "./fixtures.ts";
 
+// The member fits every picked photo to the circle first; the dialog has its own tests.
+const fitted = vi.hoisted(() => ({
+	crop: { x: 12, y: 34, side: 56 } as { x: number; y: number; side: number } | undefined,
+}));
+vi.mock("../src/ui/picture-cropper.ts", () => ({ choosePictureCrop: vi.fn(async () => fitted.crop) }));
+
 const me = userA.id;
 const colleague = id(21);
 const stranger = id(22);
@@ -36,6 +42,7 @@ async function settle(): Promise<void> {
 let urls = 0;
 let revoked: string[] = [];
 beforeEach(() => {
+	fitted.crop = { x: 12, y: 34, side: 56 };
 	// jsdom's Blob cannot hand back its bytes; the browser's can.
 	vi.stubGlobal("Blob", NodeBlob);
 	vi.stubGlobal("File", NodeFile);
@@ -55,7 +62,10 @@ afterEach(() => {
  * account and the objects in each folder (four at most). */
 function setup(
 	options: {
-		prepare?: (file: File) => Promise<{ blob: Blob; extension: "webp" | "jpg" }>;
+		prepare?: (
+			file: File,
+			crop?: { x: number; y: number; side: number },
+		) => Promise<{ blob: Blob; extension: "webp" | "jpg" }>;
 		pictures?: Record<string, string>;
 		tidyWaitMs?: number;
 	} = {},
@@ -406,6 +416,41 @@ describe("choosing the account's picture", () => {
 		await expect(Promise.race([store.choose(me, photo()), blocked])).resolves.toBeUndefined();
 	});
 
+	it("never lets a tidy that read the folder late delete the picture being saved", async () => {
+		const { store, current, objects, own, folder, set } = setup({
+			pictures: { [me]: "mine" },
+			tidyWaitMs: 20,
+			prepare: async (file) => ({ blob: blob(file.name), extension: "webp" }),
+		});
+		for (const text of ["a", "b", "c"])
+			objects.set(nameOf(me, text), { bytes: text, createdAt: new Date(NOW).toISOString() });
+		personAvatar("Account A", me);
+		await settle();
+		// The folder is full; the tidy that should make room reads the folder, and that read stalls.
+		const listing = deferred<ReturnType<typeof folder>>();
+		own.mockReturnValueOnce(listing.promise);
+		const saving = deferred<void>();
+		const save = set.getMockImplementation()!;
+		set.mockImplementationOnce(async (name) => {
+			await saving.promise;
+			return save(name);
+		});
+		const choosing = store.choose(me, photo());
+		await settle();
+		// Another tab frees a place meanwhile, so the retried upload goes through.
+		objects.delete(nameOf(me, "a"));
+		await new Promise((resolve) => setTimeout(resolve, 40));
+		await settle();
+		expect(objects.has(nameOf(me, "photo.png"))).toBe(true);
+		// Only now does the late read answer, listing the new upload too.
+		listing.resolve(folder());
+		await settle();
+		saving.resolve();
+		await choosing;
+		expect(current.get(me)).toBe(nameOf(me, "photo.png"));
+		expect(objects.has(nameOf(me, "photo.png"))).toBe(true);
+	});
+
 	it("goes back to initials and deletes the removed picture", async () => {
 		const { store, objects } = setup({ pictures: { [me]: "mine" } });
 		const disc = personAvatar("Account A", me);
@@ -469,6 +514,49 @@ describe("the account card's picture control", () => {
 		const choosing = store.choose(me, photo());
 		expect(error.hidden).toBe(true);
 		await choosing;
+	});
+
+	it("uploads the square the member fitted, and nothing when they cancel", async () => {
+		const prepare = vi.fn(async (_file: File, _crop?: { x: number; y: number; side: number }) => ({
+			blob: blob("fitted"),
+			extension: "webp" as const,
+		}));
+		const { upload, current } = setup({ prepare });
+		const { picture: control, error } = accountPicture(userA);
+		document.body.append(control, error);
+		await settle();
+		const input = control.querySelector<HTMLInputElement>("input[type=file]")!;
+		const pick = async () => {
+			Object.defineProperty(input, "files", { configurable: true, value: [photo()] });
+			input.dispatchEvent(new Event("change"));
+			await settle();
+		};
+		fitted.crop = undefined;
+		await pick();
+		expect(prepare).not.toHaveBeenCalled();
+		expect(upload).not.toHaveBeenCalled();
+		expect(error.hidden).toBe(true);
+		fitted.crop = { x: 100, y: 20, side: 640 };
+		await pick();
+		expect(prepare).toHaveBeenCalledWith(expect.any(File), { x: 100, y: 20, side: 640 });
+		expect(current.get(me)).toBe(nameOf(me, "fitted"));
+	});
+
+	it("shows why a photo could not be opened for fitting", async () => {
+		const { choosePictureCrop } = await import("../src/ui/picture-cropper.ts");
+		vi.mocked(choosePictureCrop).mockRejectedValueOnce(
+			new PictureFileError("This browser could not read that picture. Try a JPEG or PNG."),
+		);
+		const { upload } = setup();
+		const { picture: control, error } = accountPicture(userA);
+		document.body.append(control, error);
+		await settle();
+		const input = control.querySelector<HTMLInputElement>("input[type=file]")!;
+		Object.defineProperty(input, "files", { configurable: true, value: [photo()] });
+		input.dispatchEvent(new Event("change"));
+		await settle();
+		expect(upload).not.toHaveBeenCalled();
+		expect(error.textContent).toBe("This browser could not read that picture. Try a JPEG or PNG.");
 	});
 
 	it("offers another picture or initials from a menu once there is a picture; Escape closes only the menu", async () => {
