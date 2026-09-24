@@ -94,8 +94,7 @@ $$;
 -- Grants outlive their issuer only through a re-share. An admin shares a
 -- company Google Drive connection; demoting that admin kills the grants (the
 -- kernel rechecks the issuer at every call); another admin's re-share re-issues
--- them under the caller; a later hire gets them from a current owner; Stop
--- sharing takes them away again.
+-- them under the caller; a later hire gets them from a current owner.
 insert into auth.users(id,email) values ('39800000-0000-4000-8000-000000000004','routing-admin@example.test');
 insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role)
 values ('29000000-0000-4000-8000-000000000010','39800000-0000-4000-8000-000000000004',
@@ -204,34 +203,16 @@ begin
 end
 $$;
 
--- Stop sharing: every grant of the connection is revoked and new hires get nothing.
+-- No Stop sharing (bundle v88): company connections are always shared. The
+-- call is gone, the connection stays marked shared, and a later hire receives it.
 do $$
-declare v_result jsonb; v_count integer;
 begin
-	perform pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000002');
-	set local role authenticated;
-	begin
-		perform public.qorpera_unshare_cloud_connector('29000000-0000-4000-8000-000000000010',
-			'29000000-0000-4000-8000-000000000020','39800000-0000-4000-8000-000000000051');
-		raise exception 'A contributor stopped sharing a company connection';
-	exception when insufficient_privilege then null;
-	end;
-	reset role;
-	perform pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000001');
-	set local role authenticated;
-	v_result := public.qorpera_unshare_cloud_connector('29000000-0000-4000-8000-000000000010',
-		'29000000-0000-4000-8000-000000000020','39800000-0000-4000-8000-000000000051');
-	reset role;
-	if (v_result ->> 'grantsRevoked')::integer < 8 or (v_result ->> 'availableToAllAgents')::boolean then
-		raise exception 'Stop sharing left grants or the all-agents mark: %',v_result;
+	if to_regprocedure('public.qorpera_unshare_cloud_connector(uuid,uuid,uuid)') is not null then
+		raise exception 'Stop sharing is still callable';
 	end if;
-	v_count := pg_temp.routing_drive_tools();
-	if v_count <> 0 then raise exception 'Stop sharing left % tools',v_count; end if;
-	if exists (select 1 from public.qorpera_cloud_secret_operation_grants
-		where secret_id = '39800000-0000-4000-8000-000000000051' and status = 'active')
-		or (select available_to_all_agents from public.qorpera_cloud_secrets
-			where id = '39800000-0000-4000-8000-000000000051') then
-		raise exception 'Stop sharing left the connection shared';
+	if not (select available_to_all_agents from public.qorpera_cloud_secrets
+		where id = '39800000-0000-4000-8000-000000000051') then
+		raise exception 'The shared connection lost its all-agents mark';
 	end if;
 end
 $$;
@@ -241,9 +222,10 @@ values ('29000000-0000-4000-8000-000000000010','39800000-0000-4000-8000-00000000
 	'green','round','active','setup','openai','gpt-native',clock_timestamp(),clock_timestamp(),'29000000-0000-4000-8000-000000000001');
 do $$
 begin
-	if exists (select 1 from public.qorpera_cloud_secret_operation_grants
-		where staff_agent_id = '39800000-0000-4000-8000-000000000032' and secret_id = '39800000-0000-4000-8000-000000000051') then
-		raise exception 'A hire after Stop sharing received the connection';
+	if (select count(*) from public.qorpera_cloud_secret_operation_grants
+		where staff_agent_id = '39800000-0000-4000-8000-000000000032' and secret_id = '39800000-0000-4000-8000-000000000051'
+			and status = 'active') <> 4 then
+		raise exception 'A later hire did not receive the shared connection';
 	end if;
 end
 $$;

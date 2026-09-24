@@ -62,6 +62,7 @@
 
 ### Changed
 
+- Show the close × of the Settings window and the feedback window as a bare glyph in both themes: no grey square behind it, at rest, on hover or on keyboard focus. Hover and focus only darken the × (brighten it on dark), and keyboard focus still shows its ring.
 - Show only the name on the rail's Co-Founder card, which makes the card a line thinner. Its role and any state ("Working", "Needs you") stay in the card's tooltip and link name, the status disc and the figure still show a run, and other agents' rows keep their second line.
 - Put the rail's search field on the same row as the new-agent button, both half again as large (46px field, 27px plus), and widen the default rail from 304px to 456px. Rail widths stored before this change are not carried over, resetting the rail width forgets the stored width, and the agent computer panel covers the conversation whenever the thread is too narrow for both side by side.
 - Make the Settings window 20% larger, give its sections icons, and set their labels in whole-pixel, medium-weight dark ink so they no longer read soft.
@@ -75,3 +76,5 @@
 - Remove the member notification inbox: the rail's Notifications row and its unread-count polling, and the Notifications page and route (old links open the company home). Execution notices and explicit acknowledgment remain available inline in the workspace.
 - Remove the standalone Friends (`#/friends`) and Invitations (`#/invitations`) pages and the separate Invitations menu item; both live on the Settings Friends tab.
 - Remove Stop sharing with agents, Share with all agents and Reconnect from a connected service in Settings → Connections → Services. A company connection is always available to every agent, new hires included, so a connected service shows that line and one action, Disconnect; a connection not yet marked for all agents reads the same.
+- Remove the "Cloud endpoint (advanced)" section from Settings → General: the Cloud check link, the web client version line, and the project URL, publishable key and object gateway fields with Use these endpoints and Back to production. Release builds already ignore a stored endpoint override, so the form did nothing there. `#/cloud-check` still opens by address.
+- Remove the Companies section ("All companies — Open or create a company") from Settings → General, which now ends at Language & region. The company list still opens at `#/`.
