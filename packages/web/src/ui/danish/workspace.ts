@@ -87,8 +87,7 @@ export const WORKSPACE: Record<string, string> = {
 	viewer: "læser",
 	"Resume the pending company creation before starting another.":
 		"Gør oprettelsen af den ventende virksomhed færdig, før du starter en ny.",
-	"The cloud could not provision the company's Company File.":
-		"Skyen kunne ikke oprette Virksomhedsfilen.",
+	"The cloud could not provision the company's Company File.": "Skyen kunne ikke oprette Virksomhedsfilen.",
 	"The company is still being created. Resume to check its progress.":
 		"Virksomheden bliver stadig oprettet. Genoptag for at se, hvor langt den er.",
 	"Invited as {role} · expires {date}": "Inviteret som {role} · udløber {date}",

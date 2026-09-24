@@ -41,6 +41,32 @@ export const CODING_HOST_RPCS = [
 	"qorpera_describe_coding_cleanup",
 ] as const;
 
+/** The leased session a repository token is asked for (bundle v88): the
+ * company whose secret broker holds its GitHub connection, and the worker and
+ * lease the kernel checks before the broker releases anything. */
+export interface CodingRepositoryCredentialScope {
+	readonly companyId: string;
+	readonly workerId: string;
+	readonly leaseToken: string;
+}
+
+export interface CodingRepositoryCredentials {
+	/** Lends the repository token to `use` for the length of one Git broker or
+	 * GitHub API step. The token never leaves the executor's own processes. */
+	withRepositoryToken<T>(
+		scope: CodingRepositoryCredentialScope,
+		repository: CloudCodingRepository,
+		use: (token: string) => Promise<T>,
+		signal: AbortSignal,
+	): Promise<T>;
+}
+
+type RepositoryTokenLender = <T>(
+	repository: CloudCodingRepository,
+	use: (token: string) => Promise<T>,
+	signal: AbortSignal,
+) => Promise<T>;
+
 export type CodingExecutorVmPolicy = Omit<
 	LxdCodingVmBinding,
 	"schema" | "workerId" | "allocationId" | "companyId" | "environmentId" | "repository" | "storage"
@@ -73,13 +99,7 @@ export interface LxdCodingExecutorHostOptions {
 		gitHelperSha256: string;
 		watchdogHelperSha256: string;
 	};
-	repositoryCredentials: {
-		withRepositoryToken<T>(
-			repository: CloudCodingRepository,
-			use: (token: string) => Promise<T>,
-			signal: AbortSignal,
-		): Promise<T>;
-	};
+	repositoryCredentials: CodingRepositoryCredentials;
 	fetch?: typeof fetch;
 	runGit?: CodingBrokerGitRunner;
 }
@@ -465,6 +485,16 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		);
 		return { bootId, guestConfigSha256: digest(encoded) };
 	}
+	/** The repository token for this claim's session only. */
+	#repositoryToken(claim: CodingSessionClaim): RepositoryTokenLender {
+		const scope: CodingRepositoryCredentialScope = Object.freeze({
+			companyId: claim.profileId,
+			workerId: claim.workerId,
+			leaseToken: claim.leaseToken,
+		});
+		const credentials = this.#options.repositoryCredentials;
+		return (repository, use, signal) => credentials.withRepositoryToken(scope, repository, use, signal);
+	}
 	#active(claim: CodingSessionClaim): Prepared {
 		const ready = this.#prepared.get(claim.workerId);
 		if (!ready || ready.claim.leaseToken !== claim.leaseToken || ready.scope.turn !== claim.sequence)
@@ -509,9 +539,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				assertAuthorized: async () => {
 					await this.#authorize(claim, vm, "run", signal);
 				},
-				withRepositoryToken: this.#options.repositoryCredentials.withRepositoryToken.bind(
-					this.#options.repositoryCredentials,
-				),
+				withRepositoryToken: this.#repositoryToken(claim),
 				runGit: this.#options.runGit,
 			});
 			await publish(
@@ -553,9 +581,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					assertAuthorized: async () => {
 						await this.#authorize(claim, vm, "run", signal);
 					},
-					withRepositoryToken: this.#options.repositoryCredentials.withRepositoryToken.bind(
-						this.#options.repositoryCredentials,
-					),
+					withRepositoryToken: this.#repositoryToken(claim),
 					runGit: this.#options.runGit,
 				},
 			);
@@ -620,7 +646,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		);
 		if (submission.headSha === ready.baseSha && !claim.pullRequest) return { pullRequest: null, noChange: true };
 		const root = await this.#directory("git"),
-			token = this.#options.repositoryCredentials.withRepositoryToken.bind(this.#options.repositoryCredentials);
+			token = this.#repositoryToken(claim);
 		const authorize = async (): Promise<void> => {
 			await this.#authorize(claim, ready.vm, "run", signal);
 		};

@@ -38,8 +38,6 @@ export const SETTINGS: Record<string, string> = {
 	"Search time zone": "Søg efter tidszone",
 	"No matches": "Ingen resultater",
 	"Clear search": "Ryd søgning",
-	"All companies": "Alle virksomheder",
-	"Open or create a company": "Åbn eller opret en virksomhed",
 
 	// Plan & usage (app/views/plan.ts, storage-summary.ts); plan copy as on qorpera.com
 	"Plan & usage": "Abonnement og forbrug",
@@ -182,8 +180,7 @@ export const SETTINGS: Record<string, string> = {
 	"Save execution ceilings": "Gem lofter",
 	"Refresh company execution": "Opdater",
 	"Owners and admins can change company execution.": "Ejere og administratorer kan ændre dette.",
-	"Only owners and admins can change company execution.":
-		"Kun ejere og administratorer kan ændre dette.",
+	"Only owners and admins can change company execution.": "Kun ejere og administratorer kan ændre dette.",
 	"Company execution is paused.": "Agenternes arbejde er sat på pause.",
 	"Company execution is enabled.": "Agenterne kan arbejde.",
 	"This month: {spend} accounted spend (including reservations), {tokens} reserved token budget; {wakes} autonomous wakes in the last hour. {trips} ceiling trips this month.":
