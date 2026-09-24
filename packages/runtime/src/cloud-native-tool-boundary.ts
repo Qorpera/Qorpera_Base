@@ -130,7 +130,8 @@ export class CloudToolArgumentRefusal extends Error {
 		this.name = "CloudToolArgumentRefusal";
 	}
 }
-const REFUSAL_UNSAFE = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2028\u2029\u2066-\u2069]/;
+/** Printable ASCII and Latin-1 letters: no control, invisible, bidi or separator character. */
+const REFUSAL_PLAIN = /^[\u0020-\u007e\u00c0-\u00ff]*$/;
 
 /** Canonicalization is for exact in-process retries, not an authorization grant or durable receipt. */
 export function cloudToolJsonText(value: unknown, limit = MAX_ARGUMENT_BYTES): string {
@@ -506,7 +507,7 @@ export class CloudNativeToolBoundary {
 			const reason =
 				error instanceof CloudToolArgumentRefusal &&
 				Buffer.byteLength(error.message) <= 1024 &&
-				!REFUSAL_UNSAFE.test(error.message)
+				REFUSAL_PLAIN.test(error.message)
 					? `: ${error.message}`
 					: "";
 			return this.#result(callId, tool, digest, "denied", { kind: "text", value: `INVALID_ARGUMENTS${reason}` });

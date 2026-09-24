@@ -171,6 +171,58 @@ function constraintChecks(schema: Schema, example: unknown, surface: string) {
 			const at = [...path, key].join(".");
 			const string = child.type === "array" ? (child.items as Schema) : child;
 			const wrap = (value: string) => (child.type === "array" ? [value] : value);
+			if (typeof string.minLength === "number" && (string.minLength as number) > 0) {
+				const min = string.minLength as number;
+				change(
+					`${at} at ${min}`,
+					path,
+					key,
+					(target) => {
+						target[key] = wrap("a".repeat(min));
+					},
+					true,
+				);
+				change(
+					`${at} under ${min}`,
+					path,
+					key,
+					(target) => {
+						target[key] = wrap("a".repeat(min - 1));
+					},
+					false,
+				);
+			}
+			if (typeof string.pattern === "string")
+				change(
+					`${at} off its pattern`,
+					path,
+					key,
+					(target) => {
+						target[key] = wrap("Not A Match!");
+					},
+					false,
+				);
+			if (child.type === "array") {
+				// Distinct copies of the first item, so that unique form field ids stay unique.
+				const copies = (count: number) => (target: Record<string, unknown>) => {
+					const first = (target[key] as unknown[])[0];
+					target[key] = Array.from({ length: count }, (_, index) =>
+						first && typeof first === "object" && "id" in first
+							? { ...first, id: `f${index}` }
+							: structuredClone(first),
+					);
+				};
+				for (const [bound, delta, accepted] of [
+					["minItems", 0, true],
+					["minItems", -1, false],
+					["maxItems", 0, true],
+					["maxItems", 1, false],
+				] as const) {
+					const limit = child[bound] as number | undefined;
+					if (typeof limit === "number" && limit + delta >= 0)
+						change(`${at} with ${limit + delta} items`, path, key, copies(limit + delta), accepted);
+				}
+			}
 			if (typeof string.maxLength === "number") {
 				const max = string.maxLength as number;
 				change(
@@ -314,6 +366,18 @@ describe("ask_member card shapes", () => {
 			for (const { name, payload, accepted } of checks) expect([name, accepts(payload)]).toEqual([name, accepted]);
 		},
 	);
+
+	it.each(CLOUD_INTERACTION_SURFACES)("keeps the %s refusal short and plain enough to reach the model", (surface) => {
+		let message = "";
+		try {
+			parseCloudAskMemberInput(ask(surface, {}));
+		} catch (error) {
+			message = (error as Error).message;
+		}
+		expect(message).toMatch(new RegExp(`^the ${surface} payload must be `));
+		expect(Buffer.byteLength(message)).toBeLessThanOrEqual(1024);
+		expect(message).toMatch(/^[\u0020-\u007e\u00c0-\u00ff]*$/);
+	});
 
 	it("keeps kernel-side refusals of a stored card plain", () => {
 		expect(() =>
