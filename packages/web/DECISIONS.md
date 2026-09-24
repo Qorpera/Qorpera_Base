@@ -169,3 +169,13 @@ as that token. A Co-Founder that still carries the seed token keeps its
 figure's own shade (`agentColor` in `ui/avatar.ts`), so no Co-Founder changes
 colour just because this shipped. The first-run meet page still offers figures
 only; each figure brings its own shade there.
+
+**Follow-up after review (same day).** Production held six Co-Founders: four on
+the seed token, one planet in `#5ec0b5` and one crown in `#fcb51b`, all drawn as
+before. A Co-Founder saved as `#2047bd` without anybody choosing blue (the meet
+page of 2 to 12 September, or the desktop picker on a figure change) would now
+be drawn blue; none existed. A figure in its own shade has no colour of its own
+to keep, so changing its figure in the picker brings the new figure's own shade;
+a chosen colour is still kept, as on the desktop. The meet page keeps the stored
+colour until a figure is picked there, so returning to it never replaces a
+colour chosen in the details.

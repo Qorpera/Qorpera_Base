@@ -1,6 +1,6 @@
 import { describeError } from "../../cloud/client.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
-import { FIGURE_IDS, type FigureId, figureElement, figureFor, nativeColorOf } from "../../ui/avatar.ts";
+import { agentColor, FIGURE_IDS, type FigureId, figureElement, figureFor, nativeColorOf } from "../../ui/avatar.ts";
 import { h, notice, replace, spinner } from "../../ui/dom.ts";
 import type { CompanyController } from "../company.ts";
 import { navigate } from "../router.ts";
@@ -67,9 +67,11 @@ export function renderMeet(
 	// saved as a governed write of the agent's document. A refusal is reported
 	// without automatic retries, and opening the company never depends on it.
 	const figure = state.figure ?? figureFor(cofounder);
-	// The Co-Founder wears its figure's own colour, as in the trailer; there
-	// is no separate colour to choose here.
-	const color = nativeColorOf(figure);
+	// Each figure brings its own shade here, as in the trailer; the colour is
+	// chosen later in the agent's details. Until a figure is picked on this
+	// page, the Co-Founder keeps the colour it has, so returning here and
+	// saving never replaces a colour chosen in the details.
+	const color = state.figure ? nativeColorOf(figure) : agentColor(cofounder, figure);
 	const canWrite = companyState.team?.capabilities.authorize === true;
 	const save = () => {
 		if (!canWrite || state.saving) return;

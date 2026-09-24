@@ -11,20 +11,15 @@ export class FigurePicker {
 	readonly el = h("div", { class: "appearance-picker" });
 	#choice: FigureChoice;
 	readonly #change: (choice: FigureChoice) => void;
-	readonly #colors: boolean;
 	readonly #keepColor: boolean;
-	/** `colors: false` offers figures only; each figure then brings its own shade.
-	 * `keepColor` shows every figure in the chosen colour and keeps that colour
-	 * when the figure changes, as the desktop's agent picker does. */
-	constructor(
-		choice: FigureChoice,
-		change: (choice: FigureChoice) => void,
-		options: { colors?: boolean; keepColor?: boolean } = {},
-	) {
+	/** `keepColor` shows every figure in the chosen colour and keeps that colour
+	 * when the figure changes, as the desktop's agent picker does. A figure in its
+	 * own shade has no colour of its own to keep: every figure then shows, and
+	 * brings, its own shade. */
+	constructor(choice: FigureChoice, change: (choice: FigureChoice) => void, options: { keepColor?: boolean } = {}) {
 		this.#choice = choice;
 		this.#change = change;
-		this.#colors = options.colors !== false;
-		this.#keepColor = this.#colors && options.keepColor === true;
+		this.#keepColor = options.keepColor === true;
 		this.#render();
 	}
 	/** Shows a choice made elsewhere, such as a saved figure, without reporting
@@ -51,6 +46,7 @@ export class FigurePicker {
 	}
 	#render(): void {
 		const { figure, color } = this.#choice;
+		const keep = this.#keepColor && color !== nativeColorOf(figure);
 		replace(
 			this.el,
 			h(
@@ -66,33 +62,29 @@ export class FigurePicker {
 							tabindex: id === figure ? "0" : "-1",
 							"aria-checked": String(id === figure),
 							"aria-label": id,
-							onclick: () => this.#choose({ figure: id, color: this.#keepColor ? color : nativeColorOf(id) }),
+							onclick: () => this.#choose({ figure: id, color: keep ? color : nativeColorOf(id) }),
 						},
-						figureElement(id, id === figure || this.#keepColor ? color : undefined, { size: 32, still: true }),
+						figureElement(id, id === figure || keep ? color : undefined, { size: 32, still: true }),
 					),
 				),
 			),
-			this.#colors
-				? h(
-						"div",
-						{ class: "color-grid", role: "radiogroup", "aria-label": "Agent color" },
-						...PALETTE().map(({ name, color: hex }, index) =>
-							h("button", {
-								type: "button",
-								class: "color-choice",
-								role: "radio",
-								tabindex:
-									hex === color || (index === 0 && !PALETTE().some((item) => item.color === color))
-										? "0"
-										: "-1",
-								"aria-checked": String(hex === color),
-								"aria-label": name,
-								dataset: { color: hex },
-								onclick: () => this.#choose({ figure, color: hex }),
-							}),
-						),
-					)
-				: null,
+			h(
+				"div",
+				{ class: "color-grid", role: "radiogroup", "aria-label": "Agent color" },
+				...PALETTE().map(({ name, color: hex }, index) =>
+					h("button", {
+						type: "button",
+						class: "color-choice",
+						role: "radio",
+						tabindex:
+							hex === color || (index === 0 && !PALETTE().some((item) => item.color === color)) ? "0" : "-1",
+						"aria-checked": String(hex === color),
+						"aria-label": name,
+						dataset: { color: hex },
+						onclick: () => this.#choose({ figure, color: hex }),
+					}),
+				),
+			),
 		);
 		for (const swatch of this.el.querySelectorAll<HTMLElement>("[data-color]"))
 			swatch.style.setProperty("--choice-color", swatch.dataset.color ?? "");
