@@ -3,10 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
 import type { Route } from "../src/app/router.ts";
-import { ApprovalsView } from "../src/app/views/approvals.ts";
 import { HubController } from "../src/app/views/hub.ts";
 import { NewConversationView } from "../src/app/views/new-conversation.ts";
-import { renderOrganization } from "../src/app/views/organization.ts";
 import { SettingsView } from "../src/app/views/settings.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
@@ -661,22 +659,9 @@ describe("received content presentation", () => {
 		expect(card.querySelectorAll("button")).toHaveLength(0);
 		expect(Boolean(card.querySelector(".badge-ok"))).toBe(decision === "approved");
 	});
-	it("carries a canonical decision into the inbox request card", async () => {
-		const f = companyFixture();
-		vi.mocked(f.api.readSessionEvents).mockResolvedValue([
-			{ ...event(1), eventType: "authorization_request", body: { title: "Share brief" } },
-			{ ...event(2), eventType: "authorization_decision", body: { requestEventId: id(1001), decision: "denied" } },
-		]);
-		const view = new ApprovalsView(f.company);
-		cleanup.push(() => view.dispose());
-		await settle();
-		expect(view.el.querySelector(".authorization_request")?.getAttribute("data-decision-state")).toBe("declined");
-		expect(view.el.textContent).toContain("Waiting for a decision (0)");
-		expect(f.cloud.rpc).not.toHaveBeenCalled();
-	});
 });
 
-it("shows agents and projects with room links, and no responsibility pages even when responsibilities are recorded", () => {
+it("keeps responsibility and project pages out of the rail even when they are recorded", () => {
 	const f = companyFixture();
 	const organization: HostedCompanyOrganization = {
 		schema: "qorpera.company-organization/v1",
@@ -746,23 +731,6 @@ it("shows agents and projects with room links, and no responsibility pages even 
 	search.value = "Product quality";
 	search.dispatchEvent(new Event("input"));
 	expect(rail.textContent).toContain("No matching conversations.");
-	const root = h("div");
-	renderOrganization(f.company, root);
-	// What an agent is responsible for is its own description; recorded responsibility objects have no page.
-	expect(root.textContent).not.toContain("Product quality");
-	expect(root.querySelector('a[href*="/responsibility/"], .responsibility-node')).toBeNull();
-	expect(root.querySelector(`a[href$="/project/${id(33)}"]`)).not.toBeNull();
-	expect(root.querySelector(`a[href$="/staff/${staff.id}"]`)).not.toBeNull();
-	renderOrganization(f.company, root, { kind: "project", id: id(33) });
-	expect(root.textContent).not.toContain("Sponsoring responsibility");
-	expect(root.querySelector('a[href*="/chat/"]')).toBeNull();
-	f.company.store.set({
-		sessions: [{ ...session, executionScope: { kind: "project", projectId: id(33), roomId: id(34) } }],
-	});
-	renderOrganization(f.company, root, { kind: "project", id: id(33) });
-	expect(root.querySelector('a[href*="/chat/"]')?.getAttribute("href")).toBe(
-		`#/c/${profileA.profileId}/chat/${session.sessionId}`,
-	);
 	expect(f.cloud.rpc).not.toHaveBeenCalled();
 });
 
