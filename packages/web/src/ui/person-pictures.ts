@@ -1,3 +1,5 @@
+import type { PictureCrop } from "./picture-file.ts";
+
 /* Pictures members chose for their accounts. Views draw a person as an
  * initials disc; the application's picture store, while one is mounted, lays
  * the person's picture over the disc once it has loaded, and swaps or removes
@@ -15,8 +17,11 @@ export interface PersonPictureStore {
 	busy(userId: string): boolean;
 	/** Why the last change of this account's picture failed, until the next attempt. */
 	failure(userId: string): unknown;
-	choose(userId: string, file: File): Promise<void>;
+	/** Makes `crop` of `file` (its centre square without one) this account's picture. */
+	choose(userId: string, file: File, crop?: PictureCrop): Promise<void>;
 	remove(userId: string): Promise<void>;
+	/** Keeps why a change failed before it reached the store (a photo the browser cannot read). */
+	fail(userId: string, error: unknown): void;
 }
 
 /** Fired on an attached element whenever its person's picture or status changes. */

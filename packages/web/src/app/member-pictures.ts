@@ -9,7 +9,7 @@ import {
 	type PersonPictureStore,
 	paintPersonPicture,
 } from "../ui/person-pictures.ts";
-import { type PreparedPicture, pictureSha256, preparePicture } from "../ui/picture-file.ts";
+import { type PictureCrop, type PreparedPicture, pictureSha256, preparePicture } from "../ui/picture-file.ts";
 
 /* The signed-in account's view of member pictures. Every initials disc on the
  * page asks for its person; the asks of one moment go to the cloud as one
@@ -35,14 +35,14 @@ const TIDY_GRACE_SECONDS = 120;
 const TIDY_WAIT_MS = 10_000;
 
 export interface MemberPicturesOptions {
-	prepare?: (file: File) => Promise<PreparedPicture>;
+	prepare?: (file: File, crop?: PictureCrop) => Promise<PreparedPicture>;
 	now?: () => number;
 	tidyWaitMs?: number;
 }
 
 export class MemberPictures implements PersonPictureStore {
 	readonly #api: CloudApi;
-	readonly #prepare: (file: File) => Promise<PreparedPicture>;
+	readonly #prepare: (file: File, crop?: PictureCrop) => Promise<PreparedPicture>;
 	readonly #now: () => number;
 	readonly #tidyWaitMs: number;
 	readonly #entries = new Map<string, Entry>();
@@ -57,6 +57,9 @@ export class MemberPictures implements PersonPictureStore {
 	#failure: { userId: string; error: unknown } | undefined;
 	/** Tidies run one after another; a choice waits for the one running. */
 	#tidying: Promise<void> = Promise.resolve();
+	/** The object on its way to becoming the picture: no tidy deletes it, even one
+	 * that outlived its wait and read the folder late. */
+	#choosing: string | undefined;
 
 	constructor(api: CloudApi, options: MemberPicturesOptions = {}) {
 		this.#api = api;
@@ -95,13 +98,16 @@ export class MemberPictures implements PersonPictureStore {
 		return this.#failure?.userId === rawUserId.toLowerCase() ? this.#failure.error : undefined;
 	}
 
-	async choose(rawUserId: string, file: File): Promise<void> {
+	async choose(rawUserId: string, file: File, crop?: PictureCrop): Promise<void> {
 		const userId = this.#begin(rawUserId);
 		const generation = this.#generation;
 		let created: string | undefined;
+		let objectName: string | undefined;
 		try {
-			const picture = await this.#prepare(file);
-			const objectName = memberPictureName(userId, await pictureSha256(picture.blob), picture.extension);
+			const picture = await this.#prepare(file, crop);
+			objectName = memberPictureName(userId, await pictureSha256(picture.blob), picture.extension);
+			this.#current(generation);
+			this.#choosing = objectName;
 			// A tidy already running read "current" before this choice and may still
 			// delete these very bytes (a picture chosen again); let it finish first.
 			await this.#afterTidy();
@@ -117,9 +123,12 @@ export class MemberPictures implements PersonPictureStore {
 			this.#fail(userId, generation, error);
 			// An upload this call stored goes again, unless the cloud says it became
 			// the picture after all (an answer lost on the way back).
+			if (this.#choosing === created) this.#choosing = undefined;
 			if (created) void this.#tidy(userId, [created], generation);
 			throw error;
 		} finally {
+			// Only this choice's guard: a choice of the next account may have set its own.
+			if (objectName && this.#choosing === objectName) this.#choosing = undefined;
 			this.#end(userId, generation);
 		}
 	}
@@ -140,6 +149,13 @@ export class MemberPictures implements PersonPictureStore {
 		}
 	}
 
+	fail(rawUserId: string, error: unknown): void {
+		if (!UUID_PATTERN.test(rawUserId)) return;
+		const userId = rawUserId.toLowerCase();
+		this.#failure = { userId, error };
+		this.#announce(userId);
+	}
+
 	/** Forgets every picture: the account changed, and with it who may see what. */
 	reset(): void {
 		this.#generation++;
@@ -153,6 +169,7 @@ export class MemberPictures implements PersonPictureStore {
 		this.#busy = undefined;
 		this.#failure = undefined;
 		this.#tidying = Promise.resolve();
+		this.#choosing = undefined;
 		forgetPersonPictures();
 		for (const set of elements)
 			for (const ref of set) {
@@ -239,6 +256,7 @@ export class MemberPictures implements PersonPictureStore {
 			const stale = objects.filter(
 				(object) =>
 					object.objectName !== current &&
+					object.objectName !== this.#choosing &&
 					(everything || named.includes(object.objectName) || object.ageSeconds >= TIDY_GRACE_SECONDS),
 			);
 			await Promise.all(stale.map((object) => this.#api.deleteMemberPicture(object.objectName).catch(() => {})));
