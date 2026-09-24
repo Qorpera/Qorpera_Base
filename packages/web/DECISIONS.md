@@ -187,3 +187,40 @@ such an agent follows its figure. This deliberately differs from the desktop
 picker, which always keeps the current colour. The meet page keeps the stored
 colour until a different figure is picked there, so returning to it never
 replaces a colour chosen in the details.
+
+## 2026-09-24 — Rail menu, pinned cards and sections (Grok Bot's rail)
+
+Jonas asked for Grok Bot's right-click menu on agents, pinned agents as square
+centered cards right below the Co-Founder card, sections created from the rail
+or from Move to, drag between sections and into the pinned row with invisible
+containers that light up, and agents moving each other into sections.
+
+- **Sections are the company's; pins and hiding are the member's.** Agents
+  organize sections (the `organize_sidebar` tool), so sections must be shared
+  cloud state (`qorpera_company_sidebar_*`; one revision row per company is the
+  only published, member-readable table, so a move is one hint). A pin
+  or a hidden agent only changes one member's view, so it lives per member
+  (`qorpera_member_sidebar_agents`) and follows the member across devices.
+  Nothing is kept in `localStorage`.
+- **One RPC answers the whole sidebar.** Every change returns the member's full
+  sidebar; the rail draws the change at once from the same rules
+  (`applySidebarRequest`) and replaces it with the answer. Changes go one at a
+  time; a refusal puts back what the cloud has and says why in the rail.
+- **Order is explicit, and hidden agents keep theirs.** A drag sends the whole
+  order of the container it lands in, computed from the full container, not the
+  visible rows, so hiding or pinning never reshuffles another member's view.
+- **Degrade, never lie.** A cloud without the sidebar RPCs (web deploys before
+  the bundle cut) shows the single list of before and a menu of Rename, Copy
+  conversation ID and Delete. The sidebar's Realtime channel is its own, so a
+  missing table cannot degrade the company's live updates.
+- **Not built: Mark as Unread.** The rail has no unread state at all yet (no
+  per-member read cursor in the cloud); a menu item for it would render
+  machinery that does not exist (runtime contract §14.5). It is its own feature.
+- **Moving a pinned agent to a section unpins it**, from the menu as from a drag,
+  so the move is visible; choosing the section an agent is already in does nothing.
+- **Dragging has keyboard twins.** Alt+Up / Alt+Down move the focused agent one
+  place in its section or in the pinned row; Move to covers sections. Shift with a
+  mouse right-click keeps the browser's own link menu.
+- **Delete is permanent**, as in Grok Bot: it deletes the agent's document
+  (owner or admin; the Co-Founder never), after a confirmation that says so.
+
