@@ -4,11 +4,12 @@ import { resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { type CloudCodingRepository, parseCloudCodingRepository } from "../../packages/contracts/src/cloud-coding.ts";
-import { createCloudCodingStorageBinding, parseCloudCodingNasPolicy } from "../../packages/contracts/src/cloud-coding-storage.ts";
+import { cloudCodingSessionLayout } from "../../packages/contracts/src/cloud-coding-session.ts";
+import { parseCloudCodingNasPolicy } from "../../packages/contracts/src/cloud-coding-storage.ts";
 import { CloudCodingExecutor } from "../../packages/runner-orchestrator/src/coding-executor.ts";
 import { LxdCodingExecutorHost, type LxdCodingExecutorHostOptions } from "../../packages/runner-orchestrator/src/coding-executor-host.ts";
 import { createCodingNasStorage } from "../../packages/runner-orchestrator/src/coding-storage.ts";
-import { lxdCodingVmPlan } from "../../packages/runner-orchestrator/src/coding-vm.ts";
+import { lxdCodingMachinePlan } from "../../packages/runner-orchestrator/src/coding-machine.ts";
 import { LxdUnixClient } from "../../packages/runner-orchestrator/src/lxd-client.ts";
 import { HttpCloudCodingCommandService } from "../../packages/runtime/src/cloud-coding-command-http.ts";
 import { codingErrorCode } from "../../packages/runtime/src/cloud-coding-error-code.ts";
@@ -19,7 +20,7 @@ import { readCodingServiceCredential } from "./credentials.ts";
 import { BrokerRepositoryCredentials, REPOSITORY_TOKEN } from "./repository-credentials.ts";
 
 interface Config {
-	schema: "qorpera.coding-executor-service/v4";
+	schema: "qorpera.coding-executor-service/v5";
 	owner: string;
 	supabaseUrl: string;
 	commandPort: number;
@@ -55,16 +56,18 @@ function broker(value: unknown): Config["broker"] {
 		input.executorTokenCredential.startsWith("qorpera-coding-repository-")) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	return { origin: origin(input.origin), executorTokenCredential: input.executorTokenCredential };
 }
-/** The reviewed JSON configuration (v4: sessions executor with repository
- * access through the company's GitHub connection). The executor claims coding
- * sessions for `owner` (qorpera_coding_executors.owner) and serves the command
- * gateway on `commandPort` behind the node's HTTPS reverse proxy. `repositories`
- * is the executor's own allowlist; SQL repository grants stay the authority. */
+/** The reviewed JSON configuration (v5: one coding machine per member, many
+ * sessions per machine; every guest path derives from the session, so the
+ * guest section names only the image's own coding user, the per-command
+ * resource profile and the helper pins). The executor claims coding sessions
+ * for `owner` (qorpera_coding_executors.owner) and serves the command gateway
+ * on `commandPort` behind the node's HTTPS reverse proxy. `repositories` is the
+ * executor's own allowlist; SQL repository grants stay the authority. */
 export function parseCodingExecutorConfiguration(value: unknown): Config {
 	const config = object(value);
 	const keys = Object.keys(config).sort().join();
 	if ((keys !== CONFIG_KEYS && keys !== `broker,${CONFIG_KEYS}`) ||
-		config.schema !== "qorpera.coding-executor-service/v4" || typeof config.owner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(config.owner) ||
+		config.schema !== "qorpera.coding-executor-service/v5" || typeof config.owner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(config.owner) ||
 		!Number.isSafeInteger(config.commandPort) || Number(config.commandPort) < 1024 || Number(config.commandPort) > 65535 ||
 		!Array.isArray(config.repositories) || config.repositories.length < 1 || config.repositories.length > 100) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	const brokerConfig = broker(config.broker);
@@ -82,19 +85,19 @@ export function parseCodingExecutorConfiguration(value: unknown): Config {
 	const vmPolicy = object(config.vmPolicy);
 	if (Object.keys(vmPolicy).sort().join() !== "bootstrapSha256,cpus,imageFingerprint,memoryBytes,network,project,providerId,providerPolicySha256,rootDiskBytes,storagePool") throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	const id = "11111111-1111-4111-8111-111111111111";
-	lxdCodingVmPlan({ ...vmPolicy, schema: "qorpera.lxd-coding-vm/v2", storage: createCloudCodingStorageBinding(storagePolicy, { workerId: id, companyId: id, environmentId: id, machineIdSha256: "0".repeat(64), writerGeneration: 1 }), workerId: id, allocationId: id, companyId: id, environmentId: id, repository: repositories[0].repository } as Parameters<typeof lxdCodingVmPlan>[0]);
+	lxdCodingMachinePlan({ ...vmPolicy, schema: "qorpera.lxd-coding-machine/v1", machineId: id, companyId: id, environmentId: id, memberUserId: id } as Parameters<typeof lxdCodingMachinePlan>[0]);
 	const guest = object(config.guest);
-	if (Object.keys(guest).sort().join() !== "cachePath,commandHelperSha256,gid,gitHelperSha256,homePath,outputRoot,resourceProfile,storageHelperSha256,uid,watchdogHelperSha256,workspacePath" ||
+	if (Object.keys(guest).sort().join() !== "commandHelperSha256,gid,gitHelperSha256,resourceProfile,storageHelperSha256,uid,watchdogHelperSha256" ||
 		![guest.commandHelperSha256, guest.gitHelperSha256, guest.watchdogHelperSha256, guest.storageHelperSha256].every((v) => typeof v === "string" && /^[0-9a-f]{64}$/.test(v))) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
-	const parsedGuest = parseCodingGuestConfiguration({ schema: "qorpera.coding-command-guest/v2", workerId: id, vmId: id, bootId: id,
-		uid: guest.uid, gid: guest.gid, workspacePath: guest.workspacePath, homePath: guest.homePath, cachePath: guest.cachePath,
-		outputRoot: guest.outputRoot, resourceProfile: guest.resourceProfile });
-	if (parsedGuest.workspacePath !== "/workspace/repository" || parsedGuest.homePath !== "/workspace/home" ||
-		parsedGuest.cachePath !== "/workspace/cache" || parsedGuest.outputRoot !== "/var/lib/qorpera-coding/logs" ||
-		parsedGuest.resourceProfile.memoryBytes > Number(vmPolicy.memoryBytes) || parsedGuest.resourceProfile.cpuQuotaPercent > Number(vmPolicy.cpus) * 100)
+	const layout = cloudCodingSessionLayout(id);
+	const parsedGuest = parseCodingGuestConfiguration({ schema: "qorpera.coding-command-guest/v3", workerId: id, vmId: id, bootId: id,
+		uid: guest.uid, gid: guest.gid, workspacePath: layout.workspacePath, homePath: layout.homePath, cachePath: layout.cachePath,
+		outputRoot: layout.outputRoot, resourceProfile: guest.resourceProfile });
+	if (parsedGuest.uid >= 200000 || parsedGuest.resourceProfile.memoryBytes > Number(vmPolicy.memoryBytes) ||
+		parsedGuest.resourceProfile.cpuQuotaPercent > Number(vmPolicy.cpus) * 100)
 		throw new Error("CODING_EXECUTOR_RESOURCE_POLICY_INVALID");
 	return {
-		schema: "qorpera.coding-executor-service/v4", owner: config.owner, supabaseUrl: origin(config.supabaseUrl),
+		schema: "qorpera.coding-executor-service/v5", owner: config.owner, supabaseUrl: origin(config.supabaseUrl),
 		commandPort: Number(config.commandPort), storagePolicy, vmPolicy: vmPolicy as unknown as Config["vmPolicy"],
 		guest: guest as unknown as Config["guest"], broker: brokerConfig, repositories,
 	};
@@ -162,25 +165,43 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				request.action === "read" ? transport.read(request.scope, request.input, signal) : transport.cancel(request.scope, request.input.commandId, signal);
 		},
 	});
+	let executor: CloudCodingExecutor | undefined;
 	try {
 		await commands.start(stop.signal);
-		const executor = new CloudCodingExecutor({
+		executor = new CloudCodingExecutor({
 			control,
 			host,
 			owner: config.owner,
 			report: (stage, error) => console.error(JSON.stringify({ event: "coding-turn-error", stage, code: errorCode(error) })),
 		});
+		// Every claimable turn runs at once; the member machines and the node's
+		// capacity are the only bound. Housekeeping (sleep, removal, release)
+		// runs at start and every 30 s; each failed step is logged and recorded.
+		let housekeepAt = 0;
 		while (!stop.signal.aborted) {
+			let claimed = false;
 			try {
-				const status = await executor.runOnce(stop.signal);
-				if (status !== "idle") console.log(JSON.stringify({ event: "coding-turn", status }));
+				const result = await executor.claim(stop.signal);
+				claimed = result.state === "claimed";
+				if (result.state === "claimed")
+					void result.turn.then((status) => console.log(JSON.stringify({ event: "coding-turn", status })));
 			} catch {
 				if (!stop.signal.aborted) console.error("CODING_EXECUTOR_TICK_UNCONFIRMED");
 			}
-			await setTimeout(2000, undefined, { signal: stop.signal }).catch(() => undefined);
+			if (Date.now() >= housekeepAt && !stop.signal.aborted) {
+				housekeepAt = Date.now() + 30_000;
+				try {
+					for (const outcome of await executor.housekeep(stop.signal))
+						(outcome.state === "failed" ? console.error : console.log)(JSON.stringify({ event: "coding-machine", ...outcome }));
+				} catch (error) {
+					if (!stop.signal.aborted) console.error(JSON.stringify({ event: "coding-machine-error", code: errorCode(error) }));
+				}
+			}
+			if (!claimed) await setTimeout(2000, undefined, { signal: stop.signal }).catch(() => undefined);
 		}
 	} finally {
 		stop.abort();
+		await executor?.drain();
 		await commands.close();
 		process.off("SIGTERM", shutdown);
 		process.off("SIGINT", shutdown);

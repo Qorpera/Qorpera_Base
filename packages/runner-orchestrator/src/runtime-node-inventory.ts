@@ -167,17 +167,28 @@ export interface RuntimeNodeInventoryEntry {
 
 /** Hash configuration without disclosing cloud-init or other host secrets.
  * Volatile runtime bookkeeping is not enrollment policy; the actual physical
- * UUID is bound separately. Both local and effective configuration are hashed. */
+ * UUID is bound separately. Both local and effective configuration are hashed.
+ * A member's coding machine hot-plugs each session's two NAS folders while
+ * that session's turn runs (data-<worker>, custody-<worker>); they are not its
+ * enrollment, so its digest covers everything else. The coding executor
+ * checks those devices itself. */
 export function runtimeNodeInstanceConfigurationSha256(i: LxdHostInventoryInstance): string {
 	const stable = (value: Record<string, string>) =>
 		Object.fromEntries(Object.entries(value).filter(([k]) => !k.startsWith("volatile.")));
+	const machine =
+		i.config["user.qorpera.schema"] === "qorpera.lxd-coding-machine/v1" &&
+		i.expandedConfig["user.qorpera.schema"] === "qorpera.lxd-coding-machine/v1";
+	const enrolled = (value: Record<string, Readonly<Record<string, string>>>) =>
+		machine
+			? Object.fromEntries(Object.entries(value).filter(([k]) => !/^(data|custody)-[0-9a-f]{32}$/.test(k)))
+			: value;
 	return officeDigest({
 		type: i.type,
 		profiles: i.profiles,
 		config: stable(i.config),
 		expandedConfig: stable(i.expandedConfig),
-		devices: i.devices,
-		expandedDevices: i.expandedDevices,
+		devices: enrolled(i.devices),
+		expandedDevices: enrolled(i.expandedDevices),
 	});
 }
 function state(i: LxdHostInventoryInstance): RuntimeNodePhysicalState {
@@ -224,7 +235,7 @@ function allocation(
 				? "login"
 				: tag("schema") === "qorpera.native-job-vm/v1"
 					? "native"
-					: tag("schema") === "qorpera.lxd-coding-vm/v2"
+					: tag("schema") === "qorpera.lxd-coding-vm/v2" || tag("schema") === "qorpera.lxd-coding-machine/v1"
 						? "coding"
 						: null;
 	const id = kind === "native" ? tag("acquisition_id") : tag("allocation_id");

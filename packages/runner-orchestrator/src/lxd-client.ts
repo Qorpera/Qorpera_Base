@@ -176,6 +176,17 @@ export type LxdOperationState = "pending" | "succeeded" | "failed";
  * finished operation only briefly): still no outcome. Only a caller whose
  * effect is idempotent may act on it, and then only from the instance's own
  * physical state (a coding VM's forced stop). */
+/** A coding machine's session folders are its only devices that change after
+ * creation (lxd-client replaceInstanceDevices). */
+export interface LxdInstanceDeviceClient {
+	replaceInstanceDevices(
+		project: string,
+		name: string,
+		devices: Readonly<Record<string, Readonly<Record<string, string>>>>,
+		signal: AbortSignal,
+	): Promise<void>;
+}
+
 export interface LxdTrackedClient extends LxdInspectableClient {
 	submitInstanceOperation(
 		project: string,
@@ -1166,6 +1177,7 @@ function projectPath(path: string, project: string): string {
 
 export class LxdUnixClient
 	implements
+		LxdInstanceDeviceClient,
 		LxdOfficeConfigurationClient,
 		LxdOfficeServiceStartClient,
 		LxdOfficeBootServiceStartClient,
@@ -1442,6 +1454,43 @@ export class LxdUnixClient
 		);
 		if (result.status === 404) return undefined;
 		return instance(envelopeMetadata(result));
+	}
+
+	/** Replaces the instance's own devices and nothing else: the rest of its
+	 * configuration is written back exactly as read, under its ETag, so a change
+	 * made in between fails instead of being overwritten. On a running VM LXD
+	 * hot-plugs and hot-unplugs the difference. Any failure leaves the outcome to
+	 * be observed again from the instance. */
+	async replaceInstanceDevices(
+		project: string,
+		name: string,
+		devices: Readonly<Record<string, Readonly<Record<string, string>>>>,
+		signal: AbortSignal,
+	): Promise<void> {
+		if (!INSTANCE_NAME.test(project) || !INSTANCE_NAME.test(name)) throw new Error("LXD instance scope is invalid");
+		const path = projectPath(`/1.0/instances/${encodeURIComponent(name)}`, project);
+		const current = await this.#request("GET", path, undefined, signal);
+		const metadata = record(envelopeMetadata(current), "LXD instance");
+		const etag = current.headers?.etag;
+		if (typeof etag !== "string" || !etag) throw new Error("LXD instance version is unavailable");
+		const body = {
+			architecture: metadata.architecture,
+			config: stringRecord(metadata.config, "LXD instance config"),
+			devices,
+			ephemeral: metadata.ephemeral,
+			profiles: strings(metadata.profiles, "LXD instance profiles"),
+			stateful: metadata.stateful,
+			description: metadata.description,
+		};
+		const payload = Buffer.from(JSON.stringify(body), "utf-8");
+		const result = await this.#requestPayload(
+			"PUT",
+			path,
+			payload,
+			{ "content-type": "application/json", "if-match": etag },
+			signal,
+		);
+		await this.#waitForOperation(result, signal);
 	}
 
 	async getInstanceState(project: string, name: string, signal?: AbortSignal): Promise<LxdInstanceStateRecord> {
