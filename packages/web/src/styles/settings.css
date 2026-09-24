@@ -2,7 +2,7 @@
 .settings-dialog { position: relative; display: grid; grid-template-columns: 320px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); width: min(1200px, calc(100vw - 72px)); height: min(816px, calc(100dvh - 72px)); overflow: hidden; border: 1px solid #d9d9d6; border-radius: 16px; background: var(--overlay); color: #1d1d1b; box-shadow: 0 24px 80px rgb(0 0 0 / 24%); }
 /* The rail's font size sets the whole rail: search, tabs, count and company
    picker are sized in em from it. 20px is half again the old 13px; windows
-   up to 1100px wide keep 13px (below). A window too short for the rail
+   up to 1000px wide keep 13px (below). A window too short for the rail
    scrolls it, and the 320px width fits the longest label, Danish
    "Abonnement og forbrug". */
 .settings-nav { display: flex; flex-direction: column; gap: 3px; overflow-y: auto; padding: 16px 12px; border-right: 1px solid #dededb; background: #f1f1ef; min-width: 0; font-size: 20px; }

@@ -1757,9 +1757,10 @@ describe("the composer at a scale that makes one line fractional", () => {
 			const tall = typeDraft(f.view, 400);
 			expect(tall.field.style.height).toBe("140px");
 			expect(tall.field.style.overflowY).toBe("auto");
-			// A file keeps the shell expanded, even under one line of text.
+			// A file keeps the shell expanded, even under one line of text: measured expanded, one
+			// line is the expanded field's 30 × 1.25 = 37.5, read as 38, under the compact 52.5.
 			attach(f.view.el, [new File(["notes"], "notes.txt", { type: "text/plain" })]);
-			expect(typeDraft(f.view, 53).expanded).toBe(true);
+			expect(typeDraft(f.view, 38).expanded).toBe(true);
 		} finally {
 			style.remove();
 		}
