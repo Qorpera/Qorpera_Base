@@ -838,6 +838,13 @@ describe("conversation UI boundaries", () => {
 			"Only the person who wrote the message can try it again.",
 		);
 		expect(retryButton()?.textContent).toBe("Try again");
+		// Only an operator pauses a company now; there is nothing for the member to resume.
+		retry.mockRejectedValueOnce(new Error("Company execution is paused"));
+		retryButton()!.click();
+		await settle();
+		expect(card()?.querySelector(".run-failure-error")?.textContent).toBe(
+			"Agents are paused for a moment while Qorpera updates. Try again shortly.",
+		);
 	});
 
 	it("stops offering Try again for room posts when the deployed cloud cannot do it, and keeps it for session turns", async () => {

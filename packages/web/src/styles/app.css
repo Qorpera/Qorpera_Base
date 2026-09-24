@@ -2,7 +2,6 @@
 @import "../../../member-web/ui/screens.css";
 @import "./settings.css";
 @import "./conversation.css";
-@import "./organization.css";
 @import "./feedback.css";
 @import "./company-file-live.css";
 @import "./dark.css";
@@ -540,12 +539,6 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 .comments { display: flex; flex-direction: column; gap: 8px; margin: 8px 0; }
 .comment { padding: 8px 12px; border-left: 3px solid var(--border-strong); }
 .proposal-row .badge { flex: none; }
-
-/* organization */
-.cofounder-card { margin: 12px 0; }
-.cofounder-card .figure, .cofounder-card .avatar { width: 44px; height: 44px; }
-.measures { margin: 6px 0 0 16px; }
-.staff-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
 
 /* modal */
 .modal-backdrop { position: fixed; inset: 0; background: rgba(18, 18, 17, 0.35); display: grid; place-items: center; z-index: 500; }
