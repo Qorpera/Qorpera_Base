@@ -44,6 +44,7 @@ import {
 	cloudRuntimeErrorCategory,
 } from "./cloud-runtime-observability.ts";
 import { type CloudSecretOperationClient, cloudSecretTools, describeCloudSecretTools } from "./cloud-secret-tools.ts";
+import { cloudSidebarTools } from "./cloud-sidebar-tools.ts";
 import {
 	CLOUD_ASK_MEMBER_INSTRUCTIONS,
 	CLOUD_INTERACTION_SURFACES,
@@ -397,6 +398,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 									: [
 											cloudCoworkerMessageTool(binding, identity, wakeControl),
 											...cloudRoutineTools(binding, identity, this.#paths),
+											...cloudSidebarTools(binding, identity, this.#paths),
 										]),
 								// The notebook is the agent's own: a worker of the same agent recalls it,
 								// and writes to it only when its dispatch allows Company File writes.
