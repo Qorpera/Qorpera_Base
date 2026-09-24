@@ -1,50 +1,27 @@
-import type { CompanyExecutionNotification, WebCompanyExecution } from "../../cloud/company-execution.ts";
+import type { MemberNotification, WebMemberNotifications } from "../../cloud/member-notifications.ts";
 import { button, h } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { t } from "../../ui/preferences.ts";
 
-type Client = Pick<WebCompanyExecution, "listNotifications" | "acknowledgeNotification">;
-const STOP = "qorpera.member-notification.company-execution-stop/v1";
+type Client = Pick<WebMemberNotifications, "listNotifications" | "acknowledgeNotification">;
 
 /** What a notice tells the member, in plain words; undefined when it gets no line.
  * A reached usage limit is told by the failed run's card in the thread. A changed
- * sponsor and a resumed company ask nothing of the member. */
-function sentence(item: CompanyExecutionNotification): string | undefined {
+ * sponsor asks nothing of the member. */
+function sentence(item: MemberNotification): string | undefined {
 	const subject = item.subject;
 	switch (subject.schema) {
 		case "qorpera.member-notification.provider-usage-limit/v1":
 		case "qorpera.member-notification.sponsor-handoff/v1":
 			return undefined;
-		case "qorpera.member-notification.company-ceiling-tripped/v1":
-			if (subject.dimension === "wakes")
-				return t("Agents were started too often this hour. They answer again within the hour.");
-			return subject.dimension === "spend"
-				? t(
-						"This company reached its monthly spend limit. Agents answer again when an owner raises it in Settings, or when the month turns.",
-					)
-				: t(
-						"This company reached its monthly token limit. Agents answer again when an owner raises it in Settings, or when the month turns.",
-					);
 		case "qorpera.member-notification.machine-capacity/v1":
 			return t("All {count} company computers are in use. Close one to open another.", { count: subject.ceiling });
-		case STOP:
-			return subject.paused
-				? t("Agents are paused for this company. They answer again when an owner resumes them in Settings.")
-				: undefined;
 	}
 }
 
-/** The unacknowledged notices that get a line. A pause that was later resumed is over. */
-function told(items: readonly CompanyExecutionNotification[]): CompanyExecutionNotification[] {
-	let resumed = Number.NEGATIVE_INFINITY;
-	for (const { subject } of items)
-		if (subject.schema === STOP && !subject.paused) resumed = Math.max(resumed, Date.parse(subject.at));
-	return items.filter(
-		(item) =>
-			!item.acknowledgedAt &&
-			sentence(item) !== undefined &&
-			!(item.subject.schema === STOP && Date.parse(item.subject.at) <= resumed),
-	);
+/** The unacknowledged notices that get a line. */
+function told(items: readonly MemberNotification[]): MemberNotification[] {
+	return items.filter((item) => !item.acknowledgedAt && sentence(item) !== undefined);
 }
 
 /** Member-addressed runtime notices are one quiet line above the composer, never a
@@ -56,7 +33,7 @@ export class ExecutionNotices {
 	readonly #client: Client;
 	readonly #lifetime = new AbortController();
 	readonly #restoreFocus: (() => void) | undefined;
-	#items: readonly CompanyExecutionNotification[] = [];
+	#items: readonly MemberNotification[] = [];
 	readonly #hidden = new Set<string>();
 	#request: AbortController | undefined;
 	#timer: ReturnType<typeof setInterval> | undefined;

@@ -12,8 +12,6 @@ export const SETTINGS: Record<string, string> = {
 	"Close settings": "Luk indstillinger",
 	"Choose a company": "Vælg en virksomhed",
 	"Choose a company to view these settings.": "Vælg en virksomhed for at se disse indstillinger.",
-	"Agents and projects": "Agenter og projekter",
-	"Review requests that need your decision": "Gennemgå anmodninger, der kræver din beslutning",
 
 	// General (app/views/account.ts, appearance.ts, ui/preference-picker.ts)
 	"Your browser could not save the language preference.": "Din browser kunne ikke gemme dit valg af sprog.",
@@ -164,42 +162,6 @@ export const SETTINGS: Record<string, string> = {
 	Leave: "Forlad",
 
 	// Company execution (app/views/company-execution.ts)
-	"Company execution": "Agenternes arbejde",
-	"Pausing blocks new company work and fences running work. Resuming allows new work again.":
-		"En pause blokerer nyt arbejde i virksomheden og standser igangværende arbejde. Når du genoptager, er nyt arbejde tilladt igen.",
-	"Company pause or resume reason": "Grund til pause eller genoptagelse",
-	"Reason (optional)": "Grund (valgfri)",
-	"Pause company execution": "Sæt agenternes arbejde på pause",
-	"Resume company execution": "Genoptag agenternes arbejde",
-	"Execution ceilings": "Lofter for forbrug",
-	"Monthly spend and token limits apply to API-billed execution. Subscription accounts also retain their provider limits.":
-		"Månedlige lofter for udgifter og tokens gælder kørsel, der betales via API. Abonnementskonti har desuden stadig udbyderens grænser.",
-	"Monthly spend ceiling (USD)": "Månedligt udgiftsloft (USD)",
-	"Monthly token ceiling": "Månedligt tokenloft",
-	"Autonomous wakes per hour": "Selvstændige opvågninger pr. time",
-	"Save execution ceilings": "Gem lofter",
-	"Refresh company execution": "Opdater",
-	"Owners and admins can change company execution.": "Ejere og administratorer kan ændre dette.",
-	"Only owners and admins can change company execution.": "Kun ejere og administratorer kan ændre dette.",
-	"Company execution is paused.": "Agenternes arbejde er sat på pause.",
-	"Company execution is enabled.": "Agenterne kan arbejde.",
-	"This month: {spend} accounted spend (including reservations), {tokens} reserved token budget; {wakes} autonomous wakes in the last hour. {trips} ceiling trips this month.":
-		"Denne måned: {spend} i bogførte udgifter (inkl. reservationer), {tokens} i reserveret tokenbudget; {wakes} selvstændige opvågninger den seneste time. Loftet er ramt {trips} gange denne måned.",
-	"Checking company execution…": "Tjekker agenternes arbejde…",
-	"Company execution status is unavailable.": "Status for agenternes arbejde er ikke tilgængelig.",
-	"Company execution status is unavailable. Refresh to try again.":
-		"Status for agenternes arbejde er ikke tilgængelig. Opdater for at prøve igen.",
-	"Your permissions changed. Refresh company execution to confirm its state.":
-		"Dine rettigheder er ændret. Opdater for at se den aktuelle status.",
-	"The change could not be confirmed. Refresh company execution before trying again.":
-		"Ændringen kunne ikke bekræftes. Opdater, før du prøver igen.",
-	"Keep the pause or resume reason within 1,024 characters.":
-		"Grunden til pause eller genoptagelse må højst være på 1.024 tegn.",
-	"Enter positive whole tokens and wakes, and a USD amount with at most six decimal places.":
-		"Angiv hele, positive tal for tokens og opvågninger og et USD-beløb med højst seks decimaler.",
-	"Enter valid positive ceilings. Wakes must be between 1 and 1,000,000 per hour.":
-		"Angiv gyldige, positive lofter. Opvågninger skal være mellem 1 og 1.000.000 pr. time.",
-	"Saving company execution…": "Gemmer…",
 
 	// Connections: model accounts (app/views/settings-connections.ts)
 	"{minutes}m": "{minutes} min",
@@ -216,9 +178,6 @@ export const SETTINGS: Record<string, string> = {
 	"Choose a model provider": "Vælg en modeludbyder",
 	"Signing out…": "Logger ud…",
 	"Email unavailable": "E-mail ikke tilgængelig",
-	"Connection {id}": "Forbindelse {id}",
-	"Connected {time} · {id}": "Forbundet {time} · {id}",
-	"Added {time} · {id}": "Tilføjet {time} · {id}",
 	"Sign out and add this account again to reconnect.": "Log ud og tilføj kontoen igen for at genoprette forbindelsen.",
 	"The account could not be disconnected. Try again.": "Kontoen kunne ikke afbrydes. Prøv igen.",
 	"Usage limit reached · resets in {time}": "Forbrugsgrænsen er nået · nulstilles om {time}",
@@ -229,8 +188,6 @@ export const SETTINGS: Record<string, string> = {
 	"Reset passed · awaiting updated usage": "Nulstillet · venter på opdateret forbrug",
 	"Reset time unavailable": "Tidspunkt for nulstilling ikke tilgængeligt",
 	"{label} remaining usage": "{label}: resterende forbrug",
-	"Last checked {time}": "Sidst tjekket {time}",
-	"Last checked {time} · may be out of date": "Sidst tjekket {time} · kan være forældet",
 	"Preparing sign-in. The first time can take a minute or two.":
 		"Gør login klar. Første gang kan tage et minut eller to.",
 	"Waiting for you to finish signing in…": "Venter på, at du afslutter login…",

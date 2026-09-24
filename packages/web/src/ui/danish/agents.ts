@@ -107,7 +107,6 @@ export const AGENTS: Record<string, string> = {
 	"Group title": "Gruppens titel",
 	"Group subtitle": "Gruppens undertitel",
 	"Group description": "Gruppens beskrivelse",
-	"Loading group details…": "Henter gruppedetaljer…",
 	"Group title cannot be empty.": "Gruppens titel må ikke være tom.",
 	"Group description cannot be empty.": "Gruppens beskrivelse må ikke være tom.",
 	"Discard changes": "Kassér ændringer",
@@ -234,4 +233,5 @@ export const AGENTS: Record<string, string> = {
 		"Dine svar og opfølgninger går til {harness}. Bruger dit {harness}-abonnement.",
 	"This session is view-only. Only {owner} can type; steer it through {agent}.":
 		"Sessionen er skrivebeskyttet. Kun {owner} kan skrive; styr den via {agent}.",
+	"Loading group details": "Henter gruppedetaljer",
 };

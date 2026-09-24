@@ -12,21 +12,10 @@ import type {
 	HostedCompanySnapshot,
 	HostedCompanyWorkspace,
 } from "../../cloud/types.ts";
-import {
-	badge,
-	button,
-	confirmDialog,
-	fmtBytes,
-	fmtDate,
-	fmtTime,
-	h,
-	notice,
-	replace,
-	shortId,
-	spinner,
-} from "../../ui/dom.ts";
+import { badge, button, confirmDialog, fmtBytes, fmtDate, fmtTime, h, notice, replace, shortId } from "../../ui/dom.ts";
 import { preserveFormDrafts } from "../../ui/forms.ts";
 import { t } from "../../ui/preferences.ts";
+import { linesSkeleton, pageSkeleton } from "../../ui/skeleton.ts";
 import type { CompanyController } from "../company.ts";
 import { Store } from "../state.ts";
 
@@ -525,7 +514,7 @@ export function renderCompanyFile(
 				? h("p", { class: "muted small" }, t("Showing the 50 most recent snapshots."))
 				: null,
 			state.loading && !state.snapshots.length
-				? spinner(t("Loading snapshots"))
+				? linesSkeleton(t("Loading snapshots"))
 				: state.snapshots.length
 					? h(
 							"table",
@@ -656,7 +645,7 @@ function summary(label: string, value: HTMLElement | string): HTMLElement {
 
 function renderSnapshot(state: CompanyFileState, profileId: string, controller: CompanyFileController): HTMLElement {
 	const current = state.snapshot;
-	if (!current) return spinner(t("Loading snapshot"));
+	if (!current) return pageSkeleton(t("Loading snapshot"));
 	const { snapshot } = current;
 	const entries = current.entries ?? [];
 	const snapshotFacts = {
@@ -681,7 +670,7 @@ function renderSnapshot(state: CompanyFileState, profileId: string, controller: 
 				: t("{count} files · {size} · contract v{version} · {time}", snapshotFacts),
 		),
 		current.error ? notice("warn", current.error) : null,
-		current.loading ? spinner(t("Loading files")) : null,
+		current.loading ? linesSkeleton(t("Loading files")) : null,
 		entries.length
 			? h(
 					"div",
@@ -719,7 +708,7 @@ function renderSnapshot(state: CompanyFileState, profileId: string, controller: 
 								current.contentError
 									? notice("warn", current.contentError)
 									: current.content === undefined
-										? spinner(t("Reading file"))
+										? linesSkeleton(t("Reading file"))
 										: h("pre", null, current.content),
 							)
 						: null,
@@ -736,7 +725,7 @@ function renderProposal(
 	canAuthorize: boolean,
 ): HTMLElement {
 	const current = state.proposal;
-	if (!current) return spinner(t("Loading proposal"));
+	if (!current) return pageSkeleton(t("Loading proposal"));
 	const { proposal } = current;
 	const commentInput = h("textarea", { rows: 2, placeholder: t("Comment…"), "data-draft": "proposal-comment" });
 	commentInput.value = controller.commentDraft(proposal.proposalId);
@@ -829,7 +818,8 @@ function renderProposal(
 					)
 				: null,
 		h("h3", null, t("Comments ({count})", { count: current.comments.length })),
-		current.loading ? spinner(t("Loading comments")) : null,
+		// A refresh keeps the comments it shows; only a first read has placeholders.
+		current.loading && !current.comments.length ? linesSkeleton(t("Loading comments")) : null,
 		h(
 			"div",
 			{ class: "comments" },

@@ -1,8 +1,9 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
 import type { HostedFriend, HostedIncomingProfileInvitation } from "../../cloud/types.ts";
-import { button, companyLogo, fmtDate, h, notice, personAvatar, replace, spinner } from "../../ui/dom.ts";
+import { button, companyLogo, fmtDate, h, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { t, uiText } from "../../ui/preferences.ts";
+import { listSkeleton } from "../../ui/skeleton.ts";
 import { Store } from "../state.ts";
 import type { HubController } from "./hub.ts";
 import { roleLabel } from "./team.ts";
@@ -229,7 +230,7 @@ export function renderFriends(friends: FriendsController, hub: HubController, co
 	const empty = groups.length
 		? null
 		: state.loading && !state.loaded
-			? spinner(t("Loading friends"))
+			? listSkeleton(t("Loading friends"))
 			: h(
 					"p",
 					{ class: "panel-empty muted" },

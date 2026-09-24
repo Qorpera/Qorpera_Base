@@ -130,16 +130,8 @@ export const CONVERSATION: Record<string, string> = {
 
 	// Company notices above the composer (app/views/execution-notices.ts)
 	"Company updates": "Virksomhedsopdateringer",
-	"Agents were started too often this hour. They answer again within the hour.":
-		"Agenterne blev startet for tit i denne time. De svarer igen inden for en time.",
-	"This company reached its monthly spend limit. Agents answer again when an owner raises it in Settings, or when the month turns.":
-		"Virksomheden har nået sin månedlige udgiftsgrænse. Agenterne svarer igen, når en ejer hæver den i Indstillinger, eller når måneden skifter.",
-	"This company reached its monthly token limit. Agents answer again when an owner raises it in Settings, or when the month turns.":
-		"Virksomheden har nået sin månedlige tokengrænse. Agenterne svarer igen, når en ejer hæver den i Indstillinger, eller når måneden skifter.",
 	"All {count} company computers are in use. Close one to open another.":
 		"Alle {count} virksomhedscomputere er i brug. Luk én for at åbne en ny.",
-	"Agents are paused for this company. They answer again when an owner resumes them in Settings.":
-		"Agenterne er sat på pause i denne virksomhed. De svarer igen, når en ejer genoptager dem i Indstillinger.",
 
 	// Attachments (ui/received-attachments.ts, ui/attachments.ts)
 	"Message attachments": "Vedhæftede filer i beskeden",

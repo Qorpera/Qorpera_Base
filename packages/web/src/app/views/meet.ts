@@ -1,8 +1,9 @@
 import { describeError } from "../../cloud/client.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { FIGURE_IDS, type FigureId, figureElement, figureFor, figureName, nativeColorOf } from "../../ui/avatar.ts";
-import { h, notice, replace, spinner } from "../../ui/dom.ts";
+import { h, notice, replace } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
+import { pageSkeleton } from "../../ui/skeleton.ts";
 import type { CompanyController } from "../company.ts";
 import { navigate } from "../router.ts";
 
@@ -44,6 +45,10 @@ export function renderMeet(
 	const profileId = company.profile.profileId;
 	const open = () => navigate({ name: "company", profileId, section: "home" });
 
+	if (!cofounder && companyState.loading) {
+		replace(container, h("section", { class: "page" }, pageSkeleton(t("Opening company"))));
+		return;
+	}
 	if (!cofounder) {
 		// Never a picker with nowhere to write: say what is missing instead.
 		replace(
@@ -52,14 +57,12 @@ export function renderMeet(
 				"section",
 				{ class: "page" },
 				h("h1", null, company.profile.profileName),
-				companyState.loading
-					? spinner(t("Opening company"))
-					: notice(
-							"neutral",
-							t(
-								"This company has no Co-Founder yet. The cloud seeds one when Order 0 bootstraps the company; until then there is no agent to dress.",
-							),
-						),
+				notice(
+					"neutral",
+					t(
+						"This company has no Co-Founder yet. The cloud seeds one when Order 0 bootstraps the company; until then there is no agent to dress.",
+					),
+				),
 				h("p", null, h("a", { href: `#/c/${profileId}` }, t("Open the company"))),
 			),
 		);

@@ -30,7 +30,6 @@ export const WORKSPACE: Record<string, string> = {
 	"Attachment access changed.": "Adgangen til den vedhæftede fil er ændret.",
 	"This attachment is not available for preview.": "Denne vedhæftede fil kan ikke vises.",
 	"Opening conversation": "Åbner samtale",
-	"Checking Company File access": "Tjekker adgang til Virksomhedsfilen",
 	"Company File access changed.": "Adgangen til Virksomhedsfilen er ændret.",
 
 	// app/auth.ts
@@ -165,17 +164,6 @@ export const WORKSPACE: Record<string, string> = {
 		"Samme konto som i desktop-appen. Kun din egen session ligger i denne browser; agenter kører i skyen.",
 
 	// app/views/approvals.ts
-	"Conversation could not be read": "Samtalen kunne ikke læses",
-	"In {conversation} · {time}": "I {conversation} · {time}",
-	"Decisions wait in the cloud until an authorized member records one. Recording a decision from the web is not yet in the client contract, so this inbox is read-only; use the desktop for the decision itself for now.":
-		"Beslutninger venter i skyen, indtil et medlem med tilladelse træffer en. Du kan endnu ikke træffe en beslutning på nettet, så denne indbakke kan kun læses; brug desktop-appen til selve beslutningen indtil videre.",
-	"Reading conversations ({done}/{total})": "Læser samtaler ({done}/{total})",
-	"Approvals are incomplete. {error}": "Godkendelserne er ikke komplette. {error}",
-	"Retry conversation discovery": "Søg efter samtaler igen",
-	"Retry unread conversations": "Hent de manglende samtaler igen",
-	"Waiting for a decision ({count})": "Venter på en beslutning ({count})",
-	"Nothing is waiting for you.": "Intet venter på dig.",
-	"Decided ({count})": "Besluttet ({count})",
 
 	// app/views/meet.ts
 	"This company has no Co-Founder yet. The cloud seeds one when Order 0 bootstraps the company; until then there is no agent to dress.":
@@ -277,4 +265,8 @@ export const WORKSPACE: Record<string, string> = {
 	"Waiting for the cloud screen to release agent control": "Venter på, at agenten slipper kontrollen",
 	"Watching only": "Ser kun med",
 	"You control this cloud screen": "Du styrer skærmen",
+	"Opening Company File": "Åbner Virksomhedsfilen",
+	"Your membership in this company could not be read.": "Dit medlemskab af virksomheden kunne ikke læses.",
+	"The cloud could not be reached. {error}": "Skyen kunne ikke nås. {error}",
+	"Loading agents": "Henter agenter",
 };

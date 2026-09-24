@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
 import { ExecutionNotices } from "../src/app/views/execution-notices.ts";
-import type { CompanyExecutionNotification, WebCompanyExecution } from "../src/cloud/company-execution.ts";
+import type { MemberNotification, WebMemberNotifications } from "../src/cloud/member-notifications.ts";
 import { deferred, fixture, id, profileA, profileB, settle, timestamp, userB } from "./fixtures.ts";
 
 const cleanup: (() => void)[] = [];
@@ -18,22 +18,22 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 	vi.useRealTimers();
 });
-const PAUSED = "Agents are paused for this company. They answer again when an owner resumes them in Settings.";
-const item = (n = 70, at = timestamp): CompanyExecutionNotification => ({
+const FULL = "All 2 company computers are in use. Close one to open another.";
+const item = (n = 70, at = timestamp): MemberNotification => ({
 	notificationId: id(n),
 	profileId: profileA.profileId,
-	kind: "company_execution_paused",
+	kind: "company_ceiling_tripped",
 	createdAt: at,
 	acknowledgedAt: null,
 	subject: {
-		schema: "qorpera.member-notification.company-execution-stop/v1",
-		paused: true,
-		byUserId: id(91),
-		reason: "Check spend",
-		at,
+		schema: "qorpera.member-notification.machine-capacity/v1",
+		dimension: "machines",
+		ceiling: 2,
+		used: 2,
+		allocationId: id(90),
 	},
 });
-const handoff = (n = 75): CompanyExecutionNotification => ({
+const handoff = (n = 75): MemberNotification => ({
 	...item(n),
 	kind: "sponsor_handoff",
 	subject: {
@@ -45,13 +45,13 @@ const handoff = (n = 75): CompanyExecutionNotification => ({
 		at: timestamp,
 	},
 });
-function setup(items: readonly CompanyExecutionNotification[] = [item()]) {
+function setup(items: readonly MemberNotification[] = [item()]) {
 	const client = {
 		listNotifications: vi
-			.fn<Pick<WebCompanyExecution, "listNotifications">["listNotifications"]>()
+			.fn<Pick<WebMemberNotifications, "listNotifications">["listNotifications"]>()
 			.mockResolvedValue(items),
 		acknowledgeNotification: vi
-			.fn<Pick<WebCompanyExecution, "acknowledgeNotification">["acknowledgeNotification"]>()
+			.fn<Pick<WebMemberNotifications, "acknowledgeNotification">["acknowledgeNotification"]>()
 			.mockImplementation(async (notificationId) => ({
 				...items.find((entry) => entry.notificationId === notificationId)!,
 				acknowledgedAt: timestamp,
@@ -66,12 +66,12 @@ function setup(items: readonly CompanyExecutionNotification[] = [item()]) {
 }
 const action = (name: string) => document.querySelector<HTMLButtonElement>(`[data-action="${name}"]`)!;
 
-describe("company execution notices", () => {
+describe("company notices", () => {
 	it("shows one plain line without acknowledging, and preserves focus/DOM during unchanged polling", async () => {
 		const f = setup();
 		await settle();
 		expect(f.view.el.hidden).toBe(false);
-		expect(f.view.el.querySelector(".company-notice p")?.textContent).toBe(PAUSED);
+		expect(f.view.el.querySelector(".company-notice p")?.textContent).toBe(FULL);
 		expect(f.view.el.querySelectorAll("button")).toHaveLength(1);
 		const dismiss = action("dismiss-notification");
 		expect(dismiss.textContent).toBe("Dismiss");
@@ -152,7 +152,7 @@ describe("company execution notices", () => {
 	])("prevents repeat clicks during a write and closes quietly on an invalid receipt: %j", async (receipt) => {
 		const f = setup();
 		await settle();
-		const pending = deferred<CompanyExecutionNotification>();
+		const pending = deferred<MemberNotification>();
 		f.client.acknowledgeNotification.mockReturnValueOnce(pending.promise);
 		action("dismiss-notification").click();
 		expect(action("dismiss-notification").getAttribute("aria-disabled")).toBe("true");
@@ -166,7 +166,7 @@ describe("company execution notices", () => {
 	it("discards an old poll after explicit acknowledgment and a late result after access loss", async () => {
 		const f = setup();
 		await settle();
-		const old = deferred<readonly CompanyExecutionNotification[]>();
+		const old = deferred<readonly MemberNotification[]>();
 		f.client.listNotifications.mockReturnValueOnce(old.promise);
 		const refresh = f.view.refresh();
 		action("dismiss-notification").click();
@@ -174,7 +174,7 @@ describe("company execution notices", () => {
 		old.resolve([item()]);
 		await refresh;
 		expect(f.view.el.hidden).toBe(true);
-		const late = deferred<readonly CompanyExecutionNotification[]>();
+		const late = deferred<readonly MemberNotification[]>();
 		f.client.listNotifications.mockReturnValueOnce(late.promise);
 		const reading = f.view.refresh();
 		f.lifetime.abort();
@@ -192,13 +192,13 @@ describe("company execution notices", () => {
 		expect(f.view.el.hidden).toBe(true);
 		expect(f.view.el.textContent).toBe("");
 		await vi.advanceTimersByTimeAsync(30_000);
-		expect(f.view.el.textContent).toBe(`${PAUSED}Dismiss`);
+		expect(f.view.el.textContent).toBe(`${FULL}Dismiss`);
 		expect(f.client.acknowledgeNotification).not.toHaveBeenCalled();
 	});
 	it("removes its line on disposal and ignores a late acknowledgment receipt", async () => {
 		const f = setup();
 		await settle();
-		const pending = deferred<CompanyExecutionNotification>();
+		const pending = deferred<MemberNotification>();
 		f.client.acknowledgeNotification.mockReturnValueOnce(pending.promise);
 		action("dismiss-notification").click();
 		f.lifetime.abort();
@@ -238,50 +238,7 @@ describe("company execution notices", () => {
 		expect(document.activeElement).toBe(composer);
 		expect(f.restoreFocus).not.toHaveBeenCalled();
 	});
-	it.each([
-		[
-			{
-				schema: "qorpera.member-notification.company-ceiling-tripped/v1",
-				dimension: "spend",
-				ceiling: 100,
-				periodStart: timestamp,
-			},
-			"This company reached its monthly spend limit. Agents answer again when an owner raises it in Settings, or when the month turns.",
-		],
-		[
-			{
-				schema: "qorpera.member-notification.company-ceiling-tripped/v1",
-				dimension: "tokens",
-				ceiling: 100,
-				periodStart: timestamp,
-			},
-			"This company reached its monthly token limit. Agents answer again when an owner raises it in Settings, or when the month turns.",
-		],
-		[
-			{
-				schema: "qorpera.member-notification.company-ceiling-tripped/v1",
-				dimension: "wakes",
-				ceiling: 100,
-				periodStart: timestamp,
-			},
-			"Agents were started too often this hour. They answer again within the hour.",
-		],
-		[
-			{
-				schema: "qorpera.member-notification.machine-capacity/v1",
-				dimension: "machines",
-				ceiling: 2,
-				used: 2,
-				allocationId: id(90),
-			},
-			"All 2 company computers are in use. Close one to open another.",
-		],
-	] as const)("says %j in plain words", async (subject, text) => {
-		const f = setup([{ ...item(), kind: "company_ceiling_tripped", subject }]);
-		await settle();
-		expect(f.view.el.querySelector("p")?.textContent).toBe(text);
-	});
-	it("gives a usage limit, a changed sponsor and a resume no line, and never acknowledges them", async () => {
+	it("gives a usage limit and a changed sponsor no line, and never acknowledges them", async () => {
 		const usage = {
 			...item(79),
 			kind: "provider_usage_limit" as const,
@@ -293,12 +250,7 @@ describe("company execution notices", () => {
 				connectionId: id(81),
 			},
 		};
-		const resumed: CompanyExecutionNotification = {
-			...item(78),
-			kind: "company_execution_resumed",
-			subject: { ...item().subject, paused: false, reason: null } as CompanyExecutionNotification["subject"],
-		};
-		const quiet = setup([usage, handoff(), resumed]);
+		const quiet = setup([usage, handoff()]);
 		await settle();
 		expect(quiet.view.el.hidden).toBe(true);
 		expect(quiet.view.el.textContent).toBe("");
@@ -306,28 +258,7 @@ describe("company execution notices", () => {
 		// A notice that does get a line still shows behind them.
 		const mixed = setup([usage, handoff(), item(70, "2099-01-01T00:00:00.000Z")]);
 		await settle();
-		expect(mixed.view.el.querySelector("p")?.textContent).toBe(PAUSED);
-	});
-	it("drops a pause that was resumed later, and keeps one that came after the resume", async () => {
-		const resume = (n: number, at: string): CompanyExecutionNotification => ({
-			...item(n, at),
-			kind: "company_execution_resumed",
-			subject: { ...item(n, at).subject, paused: false, reason: null } as CompanyExecutionNotification["subject"],
-		});
-		const over = setup([item(70, "2026-09-20T10:00:00.000Z"), resume(71, "2026-09-20T11:00:00+00:00")]);
-		await settle();
-		expect(over.view.el.hidden).toBe(true);
-		const again = setup([
-			item(70, "2026-09-20T10:00:00.000Z"),
-			resume(71, "2026-09-20T11:00:00+00:00"),
-			item(72, "2026-09-20T12:00:00.000Z"),
-		]);
-		await settle();
-		expect(again.view.el.querySelector("p")?.textContent).toBe(PAUSED);
-		action("dismiss-notification").click();
-		await settle();
-		expect(again.client.acknowledgeNotification).toHaveBeenCalledExactlyOnceWith(id(72), expect.any(AbortSignal));
-		expect(again.view.el.hidden).toBe(true);
+		expect(mixed.view.el.querySelector("p")?.textContent).toBe(FULL);
 	});
 });
 
@@ -337,15 +268,15 @@ it("reads notices for the company workspace without any popup, also across an ac
 		schema: "qorpera.member-notification/v1",
 		notification_id: id(70),
 		profile_id: profileA.profileId,
-		kind: "company_execution_paused",
+		kind: "company_ceiling_tripped",
 		created_at: timestamp,
 		acknowledged_at: null,
 		subject: {
-			schema: "qorpera.member-notification.company-execution-stop/v1",
-			paused: true,
-			byUserId: id(91),
-			reason: "Check spend",
-			at: timestamp,
+			schema: "qorpera.member-notification.machine-capacity/v1",
+			dimension: "machines",
+			ceiling: 2,
+			used: 2,
+			allocationId: id(90),
 		},
 	};
 	const reads = () =>
@@ -363,10 +294,10 @@ it("reads notices for the company workspace without any popup, also across an ac
 	expect(reads()).toBe(1);
 	// The line belongs to an open conversation (above its composer); nothing floats over the app.
 	expect(root.querySelector(".notification-stack, .notification-card")).toBeNull();
-	expect(root.textContent).not.toContain("Agents are paused");
+	expect(root.textContent).not.toContain("company computers are in use");
 	expect(root.querySelector('a[href$="/notifications"]')).toBeNull();
 	transport.mockImplementation(async () => Response.json([]));
 	f.auth(userB);
 	await vi.advanceTimersByTimeAsync(100);
-	expect(root.textContent).not.toContain("Agents are paused");
+	expect(root.textContent).not.toContain("company computers are in use");
 });

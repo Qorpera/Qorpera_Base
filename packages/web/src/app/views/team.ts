@@ -1,9 +1,10 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
 import type { HostedFriend, HostedProfileRole } from "../../cloud/types.ts";
-import { button, confirmDialog, h, notice, personAvatar, replace, spinner } from "../../ui/dom.ts";
+import { button, confirmDialog, h, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { preserveFormDrafts } from "../../ui/forms.ts";
 import { t } from "../../ui/preferences.ts";
+import { listSkeleton } from "../../ui/skeleton.ts";
 import type { CompanyController } from "../company.ts";
 
 const ROLES: Exclude<HostedProfileRole, "owner">[] = ["viewer", "contributor", "admin"];
@@ -83,7 +84,7 @@ export function renderTeam(
 	);
 	if (!team) {
 		if (state.accessLost) content.append(notice("danger", t("Your access to this company was revoked.")));
-		else if (!state.error) content.append(spinner(t("Loading team")));
+		else if (!state.error) content.append(listSkeleton(t("Loading team")));
 	} else {
 		const people = h("div", { class: "company-people", "aria-label": t("Company members") });
 		for (const member of team.members) {

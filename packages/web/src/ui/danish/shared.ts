@@ -24,8 +24,6 @@ export const SHARED: Record<string, string> = {
 	"Share feedback": "Del feedback",
 	"Staff at work": "Agenter på arbejde",
 	"Company File": "Virksomhedsfilen",
-	Organization: "Organisation",
-	Approvals: "Godkendelser",
 	"Account and settings": "Konto og indstillinger",
 	Friends: "Venner",
 	Invitations: "Invitationer",

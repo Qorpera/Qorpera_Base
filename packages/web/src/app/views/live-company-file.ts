@@ -2,6 +2,7 @@ import { showFilePanel } from "../../../../member-web/src/file-panel.ts";
 import type { WebCompanyFiles } from "../../cloud/company-files.ts";
 import { button, h, replace } from "../../ui/dom.ts";
 import { presentationLocale, t } from "../../ui/preferences.ts";
+import { listSkeleton } from "../../ui/skeleton.ts";
 
 /** Product presentation of the shared governed File interaction. */
 export class LiveCompanyFileView {
@@ -75,7 +76,11 @@ export class LiveCompanyFileView {
 			}
 		};
 		const initialize = async () => {
-			this.#status.textContent = t("Opening Company File…");
+			// The panel draws over the placeholder once it has the company's files. The status
+			// line, outside the root that is inert while this runs, tells a screen reader what
+			// is opening until the panel has read them.
+			replace(this.#status, h("span", { class: "visually-hidden" }, t("Opening Company File")));
+			replace(this.#root, listSkeleton(t("Opening Company File"), 4));
 			try {
 				const close = await showFilePanel({
 					root: this.#root,
@@ -99,6 +104,7 @@ export class LiveCompanyFileView {
 				this.#close = close;
 				this.#status.textContent = "";
 			} catch (error) {
+				if (!stop.signal.aborted) this.#status.textContent = "";
 				if (!stop.signal.aborted)
 					replace(
 						this.#root,

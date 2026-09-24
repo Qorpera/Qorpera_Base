@@ -179,6 +179,23 @@ export function colorFor(
 	return [...choices].sort((left, right) => distance(left) - distance(right))[0] ?? nativeColor(figure);
 }
 
+/** The colour the cloud seeds every Co-Founder with (the organization kernel
+ * migrations). Nobody chose it, and a colour picked in a client is stored as a
+ * palette hex, never as this token. */
+const COFOUNDER_SEED_COLOR = "qorpera-blue";
+
+/** The colour an agent is drawn in. A Co-Founder that still carries the seeded
+ * colour wears its figure's own shade, as in the trailer; once somebody picks a
+ * colour it wears that, like every other agent. */
+export function agentColor(
+	agent: Pick<HostedStaffAgent, "id" | "displayName" | "appearance" | "templateId">,
+	figure = figureFor(agent),
+): string {
+	const stored = (agent.appearance?.color ?? "").trim().toLowerCase();
+	if (agent.templateId === "co-founder" && stored === COFOUNDER_SEED_COLOR) return nativeColor(figure);
+	return colorFor(agent, figure);
+}
+
 /* Views build and insert figures synchronously. Sweep after DOM changes so
  * removed rigs are disposed even if no later figure is mounted. */
 interface LiveFigure {
@@ -256,8 +273,5 @@ export function agentFigure(
 		appearance: { color: "", shape: "" },
 	};
 	const figure = figureFor(subject);
-	// The Co-Founder wears its figure's own colour, as in the trailer. The
-	// resolver stays honest about what is stored; only the rendering differs.
-	const color = subject.templateId === "co-founder" ? nativeColor(figure) : colorFor(subject, figure);
-	return figureElement(figure, color, { identity: subject.id || fallbackName, ...options });
+	return figureElement(figure, agentColor(subject, figure), { identity: subject.id || fallbackName, ...options });
 }

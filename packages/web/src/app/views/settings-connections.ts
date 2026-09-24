@@ -222,7 +222,7 @@ export class ConnectionsView {
 				);
 				if (!this.#lifetime.signal.aborted) void this.#refresh();
 			} catch {
-				// Shown as "Connected"; the conversation says so if it still cannot send.
+				// The card still lists the account; the conversation says so if it still cannot send.
 			}
 		}
 	}
@@ -306,19 +306,6 @@ export class ConnectionsView {
 				{ class: "settings-copy" },
 				h("strong", null, provider.label),
 				h("small", { class: "connection-email" }, email ?? t("Email unavailable")),
-				h(
-					"small",
-					{ class: "connection-identity", title: t("Connection {id}", { id: connection.connectionId }) },
-					live(connection)
-						? t("Connected {time} · {id}", {
-								time: fmtTime(connection.consentedAt),
-								id: connection.connectionId.slice(-8),
-							})
-						: t("Added {time} · {id}", {
-								time: fmtTime(connection.consentedAt),
-								id: connection.connectionId.slice(-8),
-							}),
-				),
 				!live(connection)
 					? h("small", { role: "status" }, t("Sign out and add this account again to reconnect."))
 					: null,
@@ -362,7 +349,6 @@ export class ConnectionsView {
 				return h(
 					"div",
 					{ class: "connection-usage-window" },
-					h("span", { class: "connection-usage-label" }, window.label),
 					h(
 						"div",
 						{ class: "connection-usage-heading" },
@@ -394,13 +380,6 @@ export class ConnectionsView {
 							),
 				);
 			}),
-			h(
-				"span",
-				{ class: "connection-usage-checked" },
-				stale
-					? t("Last checked {time} · may be out of date", { time: fmtTime(usage.observedAt) })
-					: t("Last checked {time}", { time: fmtTime(usage.observedAt) }),
-			),
 		);
 	}
 	#attempt(provider: (typeof PROVIDERS)[number], attempt: Attempt): HTMLElement {

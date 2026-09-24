@@ -7,10 +7,11 @@ import {
 	needsConversationTimestamp,
 	parseConversationTimestamp,
 } from "../../ui/conversation-timestamps.ts";
-import { fmtTime, h, icon, replace, spinner } from "../../ui/dom.ts";
+import { fmtTime, h, icon, replace } from "../../ui/dom.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
 import { t } from "../../ui/preferences.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
+import { messagesSkeleton } from "../../ui/skeleton.ts";
 import type { CompanyController } from "../company.ts";
 
 /** What the panel needs from the company: the pair session's events and the agents' names. */
@@ -37,6 +38,8 @@ export class PairTranscriptView {
 	readonly #close: HTMLButtonElement;
 	readonly #lifetime = new AbortController();
 	readonly #timer: number;
+	/** The messages' placeholder, one per load, so the log does not read it out again on each redraw. */
+	#placeholder: HTMLElement | undefined;
 	#renderedKey = "";
 	#disposed = false;
 
@@ -191,11 +194,17 @@ export class PairTranscriptView {
 				);
 			}
 		}
-		if (conversation.loading && !items.length) nodes.push(spinner(t("Loading conversation")));
+		if (conversation.loading && !items.length) {
+			this.#placeholder ??= messagesSkeleton();
+			nodes.push(this.#placeholder);
+		} else this.#placeholder = undefined;
 		if (!conversation.loading && !items.length && !conversation.error)
 			nodes.push(h("div", { class: "empty" }, t("No messages yet.")));
 		if (conversation.error) nodes.push(h("div", { class: "empty" }, conversation.error));
-		replace(this.#messages, ...nodes);
+		// Nodes already in place stay put: a live log re-reads what is taken out and put back.
+		const kept = this.#messages.childNodes;
+		if (nodes.length !== kept.length || nodes.some((node, index) => node !== kept[index]))
+			replace(this.#messages, ...nodes);
 		this.#messages.scrollTop = this.#messages.scrollHeight;
 	}
 

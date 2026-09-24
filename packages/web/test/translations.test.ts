@@ -112,7 +112,7 @@ describe("Danish interface text", () => {
 			String.raw`setAttribute\(\s*"(?:aria-label|aria-description|title|placeholder|alt)",\s*`,
 			String.raw`\.(?:textContent|placeholder|title)\s*=\s*`,
 			String.raw`(?<![\w.])h\(\s*"[a-z0-9]+",\s*(?:null|\{[^{}]*\})\s*,\s*`,
-			String.raw`(?<![\w.])(?:button|badge|spinner)\(\s*`,
+			String.raw`(?<![\w.])(?:button|badge|spinner|\w+Skeleton)\(\s*`,
 			String.raw`(?<![\w.])notice\(\s*"[a-z]+",\s*`,
 			String.raw`confirm\(\s*`,
 		].map((position) => new RegExp(position + value, "g"));

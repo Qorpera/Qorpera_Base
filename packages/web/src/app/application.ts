@@ -2,10 +2,10 @@ import type { User } from "@supabase/supabase-js";
 import { CloudApi } from "../cloud/api.ts";
 import { type Cloud, describeError } from "../cloud/client.ts";
 import { createWebCompanyAgents } from "../cloud/company-agents.ts";
-import { createWebCompanyExecution } from "../cloud/company-execution.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
 import { WebCompanyComputer } from "../cloud/computer.ts";
 import { takeConnectorReturn } from "../cloud/connectors.ts";
+import { createWebMemberNotifications } from "../cloud/member-notifications.ts";
 import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
 import { createWebRoutines } from "../cloud/routines.ts";
 import { createWebSessionAttachments } from "../cloud/session-attachments.ts";
@@ -13,10 +13,11 @@ import { createWebSessionInputWriter } from "../cloud/session-input.ts";
 import { createWebSessionModel } from "../cloud/session-model.ts";
 import { createWebSessionRunControl } from "../cloud/session-run-control.ts";
 import type { HostedProfile } from "../cloud/types.ts";
-import { h, notice, replace, spinner } from "../ui/dom.ts";
+import { button, h, notice, replace } from "../ui/dom.ts";
 import { isPhoneLayout } from "../ui/layout.ts";
 import { applyLanguage, presentationLocale, t, watchTheme } from "../ui/preferences.ts";
 import { RailLayout } from "../ui/rail-layout.ts";
+import { blankSkeleton, pageSkeleton, railSkeleton, threadSkeleton } from "../ui/skeleton.ts";
 import { AuthController } from "./auth.ts";
 import { CompanyController } from "./company.ts";
 import { currentRoute, navigate, type Route } from "./router.ts";
@@ -24,8 +25,6 @@ import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
 import { createGroupUpdater } from "./update-group.ts";
 import { type AccountViewState, renderAccount } from "./views/account.ts";
-import { ApprovalsView } from "./views/approvals.ts";
-import { CloudCheckView } from "./views/cloudcheck.ts";
 import { CompanyFileController, renderCompanyFile } from "./views/companyfile.ts";
 import { ComputerPanels } from "./views/computer.ts";
 import { ConversationView } from "./views/conversation.ts";
@@ -35,7 +34,6 @@ import { HubController, renderHub } from "./views/hub.ts";
 import { LiveCompanyFileView } from "./views/live-company-file.ts";
 import { type MeetState, renderMeet } from "./views/meet.ts";
 import { NewConversationView } from "./views/new-conversation.ts";
-import { renderOrganization } from "./views/organization.ts";
 import { renderPlan } from "./views/plan.ts";
 import { type SettingsTab, SettingsView } from "./views/settings.ts";
 import { noteConnectorReturn } from "./views/settings-services.ts";
@@ -123,6 +121,8 @@ export function mountApplication(
 	let accountUserId: string | undefined;
 	let navigationOpen = false;
 	let navigationFocus: "rail" | "toggle" | undefined;
+	/** Why the app could not start, when reading the cloud session failed. */
+	let startError: HTMLElement | undefined;
 	let unsubscribeFile: (() => void) | undefined;
 	let pendingCompany:
 		| { profileId: string; revision: number; promise: Promise<CompanyController | undefined> }
@@ -181,8 +181,6 @@ export function mountApplication(
 	let conversation: ConversationView | undefined;
 	let newConversation: NewConversationView | undefined;
 	let startingSession: { sessionId: string } | undefined;
-	let approvals: ApprovalsView | undefined;
-	let cloudCheck: CloudCheckView | undefined;
 	let profiles: HostedProfile[] = [];
 	let teamFeedback: { message?: string; error?: string } = {};
 	let accountState: AccountViewState = {};
@@ -213,8 +211,6 @@ export function mountApplication(
 			routeRevision++;
 			teardownCompany();
 			hub.dispose();
-			cloudCheck?.dispose();
-			cloudCheck = undefined;
 			profiles = [];
 			accountState = {};
 			meetState = {};
@@ -278,8 +274,6 @@ export function mountApplication(
 		executionNotices.replaceChildren();
 		conversation?.dispose();
 		conversation = undefined;
-		approvals?.dispose();
-		approvals = undefined;
 		if (newConversation && !newConversation.hasInput) {
 			newConversation.dispose();
 			newConversation = undefined;
@@ -299,7 +293,6 @@ export function mountApplication(
 		unsubscribeFile?.();
 		conversation?.dispose();
 		newConversation?.dispose();
-		approvals?.dispose();
 		companyFile?.dispose();
 		liveFile?.dispose();
 		liveFile = undefined;
@@ -311,7 +304,6 @@ export function mountApplication(
 		companyFile = undefined;
 		conversation = undefined;
 		newConversation = undefined;
-		approvals = undefined;
 		homeReason = undefined;
 		teamFeedback = {};
 		meetState = {};
@@ -453,12 +445,29 @@ export function mountApplication(
 		}
 	}
 
+	/** A company or conversation that is still opening shows the thread's placeholder.
+	 * A redraw keeps the one already shown and only renames what it is waiting for. */
+	function showThreadSkeleton(label: string): void {
+		// On a phone the thread brings its own header, with the rail's button, as an open conversation does.
+		frame.classList.add("has-thread");
+		const shown = main.childElementCount === 1 ? main.firstElementChild : null;
+		if (shown?.classList.contains("thread-skeleton")) {
+			const name = shown.querySelector(".visually-hidden");
+			if (name && name.textContent !== label) name.textContent = label;
+			shown.querySelector(".mobile-navigation-toggle")?.setAttribute("aria-expanded", String(navigationOpen));
+			return;
+		}
+		replace(main, threadSkeleton(label, { open: navigationOpen, toggle: () => setNavigationOpen(!navigationOpen) }));
+	}
+
 	async function draw(): Promise<void> {
 		if (disposed) return;
 		const current = captureRoute();
 		const authState = auth.store.get();
 		if (!authState.ready) {
-			replace(root!, spinner(t("Connecting to the cloud")));
+			// A start that failed keeps saying so; a redraw (a route change) never blanks it again.
+			if (startError) replace(root!, startError);
+			else replace(root!, blankSkeleton(t("Connecting to the cloud")));
 			return;
 		}
 		if (!authState.session) {
@@ -507,15 +516,34 @@ export function mountApplication(
 				// panel above already shows the account error.
 				renderPlan(accountPlan, accountState, undefined, {}, { showError: false });
 				main.append(accountPlan);
-			} else if (route.name === "cloud-check") {
-				cloudCheck ??= new CloudCheckView(cloud);
-				replace(main, cloudCheck.el);
 			}
 			return;
+		}
+		if (company?.profile.profileId !== route.profileId) {
+			// Opening a company takes a round trip or two. Meanwhile its rail and page stand
+			// as placeholders, never a blank frame or the page it came from.
+			topbar.classList.remove("topbar-plain");
+			topbar.classList.add("topbar-company");
+			replace(topbar);
+			rail.hidden = route.section === "meet";
+			if (!rail.hidden) replace(rail, ...railSkeleton());
+			if (
+				route.section === "home" ||
+				route.section === "chat" ||
+				route.section === "staff" ||
+				route.section === "new"
+			)
+				showThreadSkeleton(t("Opening company"));
+			else replace(main, h("section", { class: "page" }, pageSkeleton(t("Opening company"))));
 		}
 		const controller = await ensureCompany(route.profileId);
 		if (!current()) return;
 		if (!controller) {
+			// A drawer opened from the placeholder closes with the company it was opening.
+			navigationOpen = false;
+			navigationFocus = undefined;
+			syncNavigation();
+			frame.classList.remove("navigation-open");
 			rail.hidden = true;
 			renderTopbar(topbar, shellContext(authState.user, route), undefined);
 			replace(
@@ -554,7 +582,6 @@ export function mountApplication(
 			companyFile?.dispose();
 			conversation?.dispose();
 			newConversation?.dispose();
-			approvals?.dispose();
 			// Revoked access ends every retained screen connection, not only the shown one.
 			computerPanels?.dispose();
 			navigationOpen = false;
@@ -577,7 +604,7 @@ export function mountApplication(
 			notices = undefined;
 		}
 		if (!notices && state.team?.capabilities.read) {
-			const client = createWebCompanyExecution(
+			const client = createWebMemberNotifications(
 				cloud,
 				controller.profile.profileId,
 				controller.userId,
@@ -607,10 +634,6 @@ export function mountApplication(
 		if (route.section !== "new") {
 			newConversation?.dispose();
 			newConversation = undefined;
-		}
-		if (route.section !== "approvals") {
-			approvals?.dispose();
-			approvals = undefined;
 		}
 		if (route.section !== "meet") meetState = {};
 		// Agents are Company File documents. Each write re-checks that this
@@ -692,11 +715,11 @@ export function mountApplication(
 			case "home": {
 				// Home needs organization, membership and sessions, not just staff.
 				if (state.loading) {
-					replace(main, spinner(t("Opening company")));
+					showThreadSkeleton(t("Opening company"));
 					return;
 				}
 				if (!homeReason) {
-					replace(main, spinner(t("Opening the Co-Founder")));
+					showThreadSkeleton(t("Opening the Co-Founder"));
 					void resolveHome(controller);
 					return;
 				}
@@ -856,22 +879,15 @@ export function mountApplication(
 			}
 			case "staff": {
 				if (state.loading) {
-					replace(main, spinner(t("Opening company")));
+					showThreadSkeleton(t("Opening company"));
 					return;
 				}
 				if (routeError) {
 					replace(main, notice("danger", routeError));
 					return;
 				}
-				replace(main, spinner(t("Opening conversation")));
+				showThreadSkeleton(t("Opening conversation"));
 				void resolveStaff(controller, route.id ?? "");
-				return;
-			}
-			case "approvals": {
-				if (!approvals) {
-					approvals = new ApprovalsView(controller);
-					replace(main, approvals.el);
-				} else approvals.update();
 				return;
 			}
 			case "file": {
@@ -881,8 +897,23 @@ export function mountApplication(
 					renderCompanyFile(companyFile, controller, main, {});
 					return;
 				}
-				if (state.loading || !state.team) {
-					replace(main, spinner(t("Checking Company File access")));
+				if (state.loading) {
+					replace(main, h("section", { class: "page" }, pageSkeleton(t("Opening Company File"))));
+					return;
+				}
+				if (!state.team) {
+					// Company File access follows membership; without it there is nothing to wait for.
+					replace(
+						main,
+						h(
+							"section",
+							{ class: "page" },
+							notice("danger", state.error ?? t("Your membership in this company could not be read.")),
+							button(t("Retry company"), () => {
+								if (!controller.store.get().loading) void controller.refreshAll();
+							}),
+						),
+					);
 					return;
 				}
 				const authorityKey = JSON.stringify([
@@ -956,14 +987,6 @@ export function mountApplication(
 					},
 				);
 				return;
-			case "organization":
-			case "project":
-				renderOrganization(
-					controller,
-					main,
-					route.section === "organization" ? undefined : { kind: route.section, id: route.id ?? "" },
-				);
-				return;
 			case "team":
 				renderTeam(
 					api,
@@ -981,9 +1004,19 @@ export function mountApplication(
 		}
 	}
 
-	void auth.start().then(() => {
-		render();
-	});
+	void auth.start().then(
+		() => render(),
+		(error) => {
+			if (disposed) return;
+			startError = h(
+				"section",
+				{ class: "page" },
+				notice("danger", t("The cloud could not be reached. {error}", { error: describeError(error) })),
+				button(t("Try again"), () => location.reload()),
+			);
+			render();
+		},
+	);
 
 	return () => {
 		disposed = true;
@@ -997,7 +1030,6 @@ export function mountApplication(
 		auth.dispose();
 		hub.dispose();
 		teardownCompany();
-		cloudCheck?.dispose();
 		window.removeEventListener("hashchange", onRouteChange);
 		window.removeEventListener("keydown", onEscape);
 		window.removeEventListener("resize", syncNavigation);

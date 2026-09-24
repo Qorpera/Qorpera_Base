@@ -1,6 +1,5 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
-import { createWebCompanyExecution } from "../../cloud/company-execution.ts";
 import { createWebConnectors } from "../../cloud/connectors.ts";
 import { createWebNativeSubscription } from "../../cloud/native-subscription.ts";
 import type { HostedCompanyFile, HostedProfile } from "../../cloud/types.ts";
@@ -10,7 +9,6 @@ import { phrase, t, uiText } from "../../ui/preferences.ts";
 import type { AuthController } from "../auth.ts";
 import { CompanyController } from "../company.ts";
 import { type AccountViewState, renderAccount } from "./account.ts";
-import { CompanyExecutionView } from "./company-execution.ts";
 import { FriendsController, renderFriends } from "./friends.ts";
 import type { HubController } from "./hub.ts";
 import { renderPlan } from "./plan.ts";
@@ -28,11 +26,11 @@ const TABS = [
 			"account appearance theme composer color colour blue green grey gray language region time zone timezone generelt konto udseende tema lys mørk skrivefelt farve blå grøn grå sprog dansk engelsk område tidszone",
 	},
 	{
-		id: "plan",
-		label: phrase("Plan & usage"),
-		icon: "plan",
+		id: "company",
+		label: phrase("Company"),
+		icon: "company",
 		keywords:
-			"plan billing subscription usage storage trial upgrade price payment card invoices computer hours basis standard dedicated abonnement forbrug betaling lager lagerplads prøveperiode opgrader pris kort fakturaer computertimer dedikeret",
+			"people team members invitations staff file virksomhed personer medlemmer invitationer agenter virksomhedsfilen roller",
 	},
 	{
 		id: "friends",
@@ -42,11 +40,11 @@ const TABS = [
 			"people contacts requests add email invitations invites join accept decline venner personer kontakter anmodninger tilføj e-mail invitationer inviter accepter afvis",
 	},
 	{
-		id: "company",
-		label: phrase("Company"),
-		icon: "company",
+		id: "plan",
+		label: phrase("Plan & usage"),
+		icon: "plan",
 		keywords:
-			"people team members invitations staff file organization approvals execution pause resume ceilings limits virksomhed personer medlemmer invitationer agenter virksomhedsfilen organisation godkendelser kørsel pause genoptag lofter grænser roller",
+			"plan billing subscription usage storage trial upgrade price payment card invoices computer hours basis standard dedicated abonnement forbrug betaling lager lagerplads prøveperiode opgrader pris kort fakturaer computertimer dedikeret",
 	},
 	{
 		id: "connections",
@@ -93,7 +91,6 @@ export class SettingsView {
 	#companyLifetime = new AbortController();
 	#connections: ConnectionsView | undefined;
 	#services: ServicesView | undefined;
-	#execution: CompanyExecutionView | undefined;
 	#feedback: { message?: string; error?: string } = {};
 	#file: HostedCompanyFile | undefined;
 	#fileLoading = false;
@@ -196,16 +193,8 @@ export class SettingsView {
 		this.updateProfiles(profiles);
 		void api
 			.getAccountEntitlement()
-			.then((entitlement) => {
-				this.#account = { loaded: true, entitlement };
-				this.#general();
-				if (this.#panels.has("plan")) this.#plan();
-			})
-			.catch((error) => {
-				this.#account = { loaded: true, error: describeError(error) };
-				this.#general();
-				if (this.#panels.has("plan")) this.#plan();
-			});
+			.then((entitlement) => this.#loadedAccount({ loaded: true, entitlement }))
+			.catch((error) => this.#loadedAccount({ loaded: true, error: describeError(error) }));
 		// The friends list also feeds the Company tab's invitation picker.
 		this.#friends.store.subscribe(() => {
 			if (this.#tab === "friends") this.#drawFriends();
@@ -269,7 +258,6 @@ export class SettingsView {
 		this.#unsubscribe?.();
 		this.#connections?.dispose();
 		this.#services?.dispose();
-		this.#execution?.dispose();
 		this.#friends.dispose();
 		if (this.#ownsCompany) this.#company?.stop();
 		this.el.remove();
@@ -383,6 +371,15 @@ export class SettingsView {
 		replace(this.#content, panel);
 	}
 
+	/** General shows only the account's error and message, so it is redrawn only
+	 * when those change: a control in use keeps focus when the plan arrives. */
+	#loadedAccount(next: AccountViewState): void {
+		const redraw = next.error !== this.#account.error || next.message !== this.#account.message;
+		this.#account = next;
+		if (redraw) this.#general();
+		if (this.#panels.has("plan")) this.#plan();
+	}
+
 	#general(): void {
 		if (this.#lifetime.signal.aborted) return;
 		let panel = this.#panels.get("general");
@@ -447,8 +444,6 @@ export class SettingsView {
 		this.#connections = undefined;
 		this.#services?.dispose();
 		this.#services = undefined;
-		this.#execution?.dispose();
-		this.#execution = undefined;
 		if (this.#ownsCompany) this.#company?.stop();
 		this.#company = company;
 		this.#ownsCompany = owned;
@@ -494,51 +489,8 @@ export class SettingsView {
 					h("div", { class: "settings-staff" }),
 				),
 				h("div", { class: "settings-file" }),
-				h("div", { class: "settings-execution" }),
-				...(
-					[
-						["organization", phrase("Organization"), t("Agents and projects")],
-						["approvals", phrase("Approvals"), t("Review requests that need your decision")],
-					] as const
-				).map(([path, title, detail]) =>
-					h(
-						"a",
-						{ class: "settings-card settings-link", href: `#/c/${company.profile.profileId}/${path}` },
-						h("span", { class: "settings-copy" }, h("strong", null, uiText(title)), h("small", null, detail)),
-						h("span", { "aria-hidden": "true" }, "›"),
-					),
-				),
 			);
 		}
-		if (this.#tab === "company" && !this.#execution && company.store.get().team?.capabilities.read) {
-			const memberId = this.#auth.userId!;
-			const signal = AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]);
-			this.#execution = new CompanyExecutionView(
-				createWebCompanyExecution(this.#api.cloud, company.profile.profileId, memberId, signal, () => {
-					signal.throwIfAborted();
-					if (
-						this.#auth.userId !== memberId ||
-						this.#company !== company ||
-						company.store.get().accessLost ||
-						!company.store.get().team?.capabilities.read
-					)
-						throw new Error("The account or company changed.");
-				}),
-				signal,
-				() => {
-					const state = company.store.get();
-					return (
-						!signal.aborted &&
-						this.#auth.userId === memberId &&
-						this.#company === company &&
-						!state.accessLost &&
-						(state.team?.role === "owner" || state.team?.role === "admin")
-					);
-				},
-			);
-			panel.querySelector(".settings-execution")!.append(this.#execution.el);
-		}
-		this.#execution?.update();
 		const staffList = panel.querySelector<HTMLElement>(".settings-staff")!;
 		const staffFocus = staffList.contains(document.activeElement)
 			? document.activeElement?.closest("a")?.getAttribute("href")
