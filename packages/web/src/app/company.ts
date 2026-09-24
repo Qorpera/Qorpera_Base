@@ -99,6 +99,15 @@ function retryRefusal(error: unknown): string {
 	return t("It could not be tried again. Send the message again instead.");
 }
 
+/** Why the cloud would not take a card's answer, in the member's words. */
+function answerRefusal(error: unknown): string {
+	const message = error instanceof Error ? error.message : "";
+	// In an agent's thread an answer runs the agent on the member's own model account.
+	if (/sponsor|model account/i.test(message)) return t("Select an active model account, then try again.");
+	if (/paused/i.test(message)) return t("Agents are paused for a moment while Qorpera updates. Try again shortly.");
+	return describeError(error);
+}
+
 export interface CompanyState {
 	profile: HostedProfile;
 	team?: HostedProfileTeam;
@@ -213,6 +222,17 @@ export function isAgentThreadSession(session: HostedSession): boolean {
 		"roomId" in scope &&
 		scope.agentThread === true
 	);
+}
+/** Who answers a card, as the kernel's qorpera_answer_interaction checks it: the
+ * member a private conversation belongs to, the creator of a company one, and in
+ * an agent's shared thread the member the card was raised for, whom the card's
+ * event names as its actor. */
+export function answersInteraction(session: HostedSession, actorUserId: string, userId: string): boolean {
+	if (session.status !== "open") return false;
+	if (isAgentThreadSession(session)) return actorUserId === userId;
+	return session.audience.kind === "member_private"
+		? session.audience.userId === userId
+		: session.createdByUserId === userId;
 }
 /** The transcript of two agents' messages to each other (contract 14.6): a
  * company-audience session bound to the pair, view-only, opened from a chip. */
@@ -1066,9 +1086,9 @@ export class CompanyController {
 		});
 	}
 
-	/** Answer a card the agent raised in this thread. The answer is queued like a
+	/** Answer a card the agent raised in this thread. The answer is sent like a
 	 * message and shows on the card at once; the kernel refuses a second answer,
-	 * an expired card, or a member the thread does not belong to. */
+	 * an expired card, or a member who does not answer it (answersInteraction). */
 	async answerInteraction(
 		sessionId: string,
 		interactionId: string,
@@ -1087,16 +1107,38 @@ export class CompanyController {
 			interactionError: undefined,
 		});
 		try {
-			await this.#api.answerInteraction(sessionId, crypto.randomUUID(), interactionId, outcome, answer);
+			const sponsor = this.#answerSponsor(sessionId);
+			await this.#api
+				.answerInteraction(sessionId, crypto.randomUUID(), interactionId, outcome, answer, sponsor)
+				.catch((error: unknown) => {
+					// A cloud before bundle v100 cannot deliver an answer in an agent's thread:
+					// it would queue one that never wakes the agent. Keep the card open.
+					if (sponsor && error instanceof CloudRpcError && error.missing)
+						throw new Error(t("Answering cards here is not available yet. Reply in a message instead."));
+					throw error;
+				});
 		} catch (error) {
 			const { [key]: _dropped, ...rest } = store.get().interactionAnswers ?? {};
 			store.set({
 				interactionAnswers: Object.keys(rest).length ? rest : undefined,
-				interactionError: describeError(error),
+				interactionError: answerRefusal(error),
 			});
 			throw error;
 		}
 		void this.loadConversation(sessionId);
+		// The answer wakes the agent, as a message does; watch for its run.
+		void this.refreshActivity();
+		this.#watchWork(20_000);
+	}
+
+	/** In an agent's shared thread an answer runs the agent, like a post, on the
+	 * member's selected model account; elsewhere it names none. */
+	#answerSponsor(sessionId: string): { sponsorBindingId: string; sponsorVersion: number } | undefined {
+		const session = this.store.get().sessions.find((item) => item.sessionId === sessionId);
+		if (!session || !isAgentThreadSession(session)) return undefined;
+		const sponsor = this.conversation(sessionId).get().executionSponsor;
+		if (!sponsor) throw new Error(t("Select an active model account, then try again."));
+		return { sponsorBindingId: sponsor.sponsorBindingId, sponsorVersion: sponsor.sponsorVersion };
 	}
 
 	/** Put a secret card's value into the company's cloud custody and answer the
@@ -1119,6 +1161,8 @@ export class CompanyController {
 		const company = role === "owner" || role === "admin";
 		store.set({ interactionError: undefined });
 		try {
+			// Never store a value whose answer could not be sent.
+			this.#answerSponsor(sessionId);
 			const existing = (
 				await this.#api.listSecretConnections(this.profile.profileId, this.profile.environmentId)
 			).find(

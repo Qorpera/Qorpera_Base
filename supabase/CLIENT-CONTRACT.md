@@ -388,7 +388,7 @@ Common request fields: `schema`, `surface`, `title` (1–200), `body?` (≤ 2000
 `expiresAt?` (UTC timestamp; answers after it are refused as expired).
 
 `qorpera_answer_interaction(p_session_id, p_client_input_id, p_interaction_id,
-p_outcome, p_answer)` — `p_interaction_id` is the request's `event_id`. The
+p_outcome, p_answer, p_sponsor_binding_id?, p_sponsor_version?)` — `p_interaction_id` is the request's `event_id`. The
 answer is queued as an ordinary session input (`kind = user_message`, body
 `qorpera.interaction-answer/v1` = `{schema, interactionId, surface, outcome,
 answer}`), so it wakes the agent in its own thread like a message; the client
@@ -402,8 +402,29 @@ member a private thread belongs to, or the creator of a company-visible one);
 idempotent on `p_client_input_id`; `22023` for a shape the surface does not
 allow; `42501` for authority. Expired means a client shows the card as
 expired; the kernel does not synthesize an event for it. Group chats never
-carry cards (the runtime withholds the tool in rooms). Design:
-`THREAD-WIDGETS-DESIGN-20260922.md` in the takeover workspace outputs.
+carry cards (the runtime withholds the tool there and the kernel refuses a
+card on the native path). Design: `THREAD-WIDGETS-DESIGN-20260922.md` in the takeover workspace
+outputs.
+
+*An agent's shared thread (bundle v100)* — a room bound to one agent
+(`executionScope.agentThread`). The agent raises cards there in reply to
+members' posts. Only the member the card was raised for answers it: the
+request event's `actor_user_id` (the member whose post, routine or first run
+the raising run serves), while still a member of the room; approvals still
+need owner or admin. The answer is delivered like a post, on the member's own
+model account: pass `p_sponsor_binding_id` and `p_sponsor_version` (the
+conversation's selected sponsor, as for `qorpera_post_company_room_message`).
+The kernel checks them as the wake materializer will (binding active and
+created by you, connection active, native credential present) and refuses
+with `42501` "Room sponsor is unavailable" otherwise, or `55000` while company
+execution is paused; a refused answer records nothing. An accepted answer's
+input is complete at once, its `interaction_answer` event is in the transcript
+when the RPC returns (never in the pending list), and a room wake runs the
+thread's agent. Elsewhere the two sponsor arguments are ignored. A client shows
+live card controls only to that member; against a cloud before bundle v100
+(`PGRST202` for the seven named arguments) it keeps the card open and says
+answering there is not available yet (the old function would queue an answer
+that never wakes the agent).
 
 ## 7. Desktop IPC channels → cloud equivalents
 

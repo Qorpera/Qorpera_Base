@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { codingErrorCode } from "../src/cloud-coding-error-code.ts";
-import { assertGuestImageSelfUpdateMasked, GUEST_IMAGE_SELF_UPDATE_UNITS } from "../src/lxd-guest-image-updates.ts";
+import {
+	assertGuestImageSelfUpdateMasked,
+	GUEST_IMAGE_SELF_UPDATE_UNITS,
+	guestImageSelfUpdateCode,
+} from "../src/lxd-guest-image-updates.ts";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -26,6 +30,16 @@ describe("guest image self-update guard", () => {
 			"apt-daily.service",
 			"apt-daily-upgrade.service",
 			"unattended-upgrades.service",
+		]);
+	});
+
+	it("names each unit in one fixed code", () => {
+		expect(GUEST_IMAGE_SELF_UPDATE_UNITS.map(guestImageSelfUpdateCode)).toEqual([
+			"RUNNER_IMAGE_SELF_UPDATE_ENABLED:APT_DAILY_TIMER",
+			"RUNNER_IMAGE_SELF_UPDATE_ENABLED:APT_DAILY_UPGRADE_TIMER",
+			"RUNNER_IMAGE_SELF_UPDATE_ENABLED:APT_DAILY_SERVICE",
+			"RUNNER_IMAGE_SELF_UPDATE_ENABLED:APT_DAILY_UPGRADE_SERVICE",
+			"RUNNER_IMAGE_SELF_UPDATE_ENABLED:UNATTENDED_UPGRADES_SERVICE",
 		]);
 	});
 

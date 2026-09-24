@@ -24,7 +24,7 @@ import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import { runFailureCard, runFailureInterrupted, runFailureReason } from "../../ui/run-failure.ts";
 import { composerSkeleton, messagesSkeleton, threadIdentitySkeleton } from "../../ui/skeleton.ts";
-import type { AgentState, CompanyController, ConversationState } from "../company.ts";
+import { type AgentState, answersInteraction, type CompanyController, type ConversationState } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
 import { ComposerModels } from "./composer-models.ts";
@@ -855,13 +855,15 @@ export class ConversationView {
 			),
 		];
 		const session = this.#company.store.get().sessions.find((item) => item.sessionId === this.#sessionId);
-		const canAnswer =
-			this.#company.store.get().team?.capabilities.write === true &&
-			session?.status === "open" &&
-			(session.audience.kind === "member_private"
-				? session.audience.userId === this.#company.userId
-				: session.createdByUserId === this.#company.userId);
-		const canDecide = canAnswer && ["owner", "admin"].includes(this.#company.store.get().team?.role ?? "");
+		// Group chats carry no cards; elsewhere the kernel's answerer, per card.
+		const canWrite = this.#company.store.get().team?.capabilities.write === true && !this.#isRoom;
+		const role = this.#company.store.get().team?.role ?? "";
+		const canAnswer = (actorUserId: string) =>
+			canWrite && !!session && answersInteraction(session, actorUserId, this.#company.userId);
+		const canDecide = (actorUserId: string) => canAnswer(actorUserId) && ["owner", "admin"].includes(role);
+		const answerable = items.flatMap((item) =>
+			item.kind === "interaction" || item.kind === "authorization_request" ? [canAnswer(item.actorUserId)] : [],
+		);
 		const codingSessions = [...(conversation.codingSessions ?? [])].sort((a, b) =>
 			a.createdAt.localeCompare(b.createdAt),
 		);
@@ -870,8 +872,8 @@ export class ConversationView {
 			codingSessions,
 			agentName,
 			this.#isRoom,
-			canAnswer,
-			canDecide,
+			answerable,
+			role,
 			conversation.interactionAnswers,
 			conversation.interactionError,
 			this.#company.store.get().team?.members,
@@ -1041,7 +1043,7 @@ export class ConversationView {
 							? (decisions.get(item.id.toLowerCase())?.body ??
 									(optimistic ? { decision: optimistic.outcome, requestEventId: item.id } : undefined))
 							: undefined,
-						item.kind === "authorization_request" && canDecide && !this.#isRoom
+						item.kind === "authorization_request" && canDecide(item.actorUserId)
 							? (decision) => void this.#answerInteraction(item.id, decision)
 							: undefined,
 					),
@@ -1053,10 +1055,10 @@ export class ConversationView {
 						{
 							agentName,
 							memberName: (userId) => this.#company.memberName(userId),
-							canAnswer: canAnswer && !this.#isRoom,
+							canAnswer: canAnswer(item.actorUserId),
 							answer: (outcome, answer) => this.#answerInteraction(item.id, outcome, answer),
 							...(agent && item.request.surface === "takeover" ? { takeOver: () => this.#takeOver(agent) } : {}),
-							...(item.request.surface === "secret" && canAnswer && !this.#isRoom
+							...(item.request.surface === "secret" && canAnswer(item.actorUserId)
 								? {
 										provideSecret: (value: string) =>
 											this.#company.provideSecret(this.#sessionId, item.id, item.request, value),

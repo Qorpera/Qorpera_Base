@@ -1,16 +1,18 @@
 import type { User } from "@supabase/supabase-js";
 import { describeError } from "../../cloud/client.ts";
 import { type Child, h, icon, notice, personAvatar } from "../../ui/dom.ts";
-import { PERSON_PICTURE_EVENT, personPictures } from "../../ui/person-pictures.ts";
-import { PictureFileError } from "../../ui/picture-file.ts";
+import { PERSON_PICTURE_EVENT, personPictures, personPicturesEpoch } from "../../ui/person-pictures.ts";
+import { choosePictureCrop } from "../../ui/picture-cropper.ts";
+import { type PictureCrop, PictureFileError } from "../../ui/picture-file.ts";
 import { phrase, t, uiText } from "../../ui/preferences.ts";
 import { displayName } from "../auth.ts";
 
 /* The account's picture at the head of Settings → General. Clicking it picks a
- * photo; once there is one, it opens a small menu to pick another or go back to
- * initials. Where the cloud has no member pictures yet it is the initials disc
- * alone, with nothing to click. Why the last change failed is kept by the store
- * and shown in `error` (placed under the card) until the next attempt, so a
+ * photo, which the member fits to the circle before it is saved; once there is
+ * a picture, it opens a small menu to pick another or go back to initials.
+ * Where the cloud has no member pictures yet it is the initials disc alone,
+ * with nothing to click. Why the last change failed is kept by the store and
+ * shown in `error` (placed under the card) until the next attempt, so a
  * redrawn page still shows it and nothing else on the page clears it. */
 
 function failureText(error: unknown): Child[] {
@@ -46,7 +48,7 @@ export function accountPicture(user: User | null): { picture: HTMLElement; error
 		);
 	const choose = item("image", phrase("Choose a new picture"), () => {
 		setOpen(false, true);
-		input.click();
+		if (!picking) input.click();
 	});
 	const remove = item(
 		"close",
@@ -66,13 +68,16 @@ export function accountPicture(user: User | null): { picture: HTMLElement; error
 	);
 	const root = h("div", { class: "account-picture" }, trigger, menu, input);
 	let open = false;
+	/** A photo being opened or fitted; ends if the account changes meanwhile. */
+	let picking: { lifetime: AbortController; epoch: number; loading: boolean } | undefined;
 
 	const onOutside = (event: Event) => {
 		if (!root.isConnected) document.removeEventListener("pointerdown", onOutside, true);
 		else if (!root.contains(event.target as Node)) setOpen(false);
 	};
 	function setOpen(next: boolean, focusTrigger = false): void {
-		if (next === open) return;
+		// While a photo opens, nothing else starts: no menu, no second pick.
+		if (next === open || (next && picking)) return;
 		open = next;
 		menu.hidden = !next;
 		trigger.setAttribute("aria-expanded", String(next));
@@ -94,24 +99,32 @@ export function accountPicture(user: User | null): { picture: HTMLElement; error
 	}
 
 	function update(): void {
+		if (picking && picking.epoch !== personPicturesEpoch()) picking.lifetime.abort();
 		const status = store!.status(userId);
-		const busy = store!.busy(userId);
+		const saving = store!.busy(userId);
+		// A big photo takes a moment to open before it can be fitted. The button stays
+		// enabled meanwhile, so it keeps focus for the dialog to hand back; a second
+		// pick is refused by `picking` instead.
+		const opening = Boolean(picking?.loading);
+		const busy = saving || opening;
 		// A picture that could not be read may still exist: offer both choices.
 		const menu = status === "picture" || status === "failed";
 		const changeable = menu || status === "none";
-		trigger.disabled = busy || !changeable;
+		trigger.disabled = saving || !changeable;
 		root.classList.toggle("is-busy", busy);
 		root.classList.toggle("is-changeable", changeable);
 		badge.hidden = !changeable;
 		if (busy) trigger.setAttribute("aria-busy", "true");
 		else trigger.removeAttribute("aria-busy");
-		const label = busy
+		const label = saving
 			? t("Saving your profile picture")
-			: menu
-				? t("Change profile picture")
-				: status === "none"
-					? t("Add a profile picture")
-					: t("Profile picture");
+			: opening
+				? t("Opening your picture")
+				: menu
+					? t("Change profile picture")
+					: status === "none"
+						? t("Add a profile picture")
+						: t("Profile picture");
 		trigger.setAttribute("aria-label", label);
 		trigger.title = changeable ? label : "";
 		if (menu) {
@@ -130,6 +143,7 @@ export function accountPicture(user: User | null): { picture: HTMLElement; error
 
 	const hasMenu = () => ["picture", "failed"].includes(store.status(userId));
 	trigger.onclick = () => {
+		if (picking) return;
 		if (hasMenu()) setOpen(!open);
 		else input.click();
 	};
@@ -166,7 +180,28 @@ export function accountPicture(user: User | null): { picture: HTMLElement; error
 	input.onchange = () => {
 		const file = input.files?.[0];
 		input.value = "";
-		if (file) void run(() => store.choose(userId, file));
+		if (!file || picking) return;
+		const pick = { lifetime: new AbortController(), epoch: personPicturesEpoch(), loading: true };
+		picking = pick;
+		update();
+		const opened = () => {
+			pick.loading = false;
+			update();
+		};
+		void (async () => {
+			let crop: PictureCrop | undefined;
+			try {
+				crop = await choosePictureCrop(file, pick.lifetime.signal, opened);
+			} catch (error) {
+				// A photo the browser cannot open never reaches the store; its reason is kept there all the same.
+				if (!pick.lifetime.signal.aborted) store.fail(userId, error);
+				return;
+			} finally {
+				picking = undefined;
+				update();
+			}
+			if (crop && !pick.lifetime.signal.aborted) await run(() => store.choose(userId, file, crop));
+		})();
 	};
 	avatar.addEventListener(PERSON_PICTURE_EVENT, update);
 	update();

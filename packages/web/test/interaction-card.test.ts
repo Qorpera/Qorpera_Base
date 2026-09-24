@@ -1,8 +1,11 @@
 // @vitest-environment jsdom
 
 import { describe, expect, it, vi } from "vitest";
+import { answersInteraction } from "../src/app/company.ts";
 import type { InteractionRequest } from "../src/cloud/interactions.ts";
+import type { HostedSession } from "../src/cloud/types.ts";
 import { renderInteractionCard } from "../src/ui/interaction-card.ts";
+import { session, userA, userB } from "./fixtures.ts";
 
 const ID = "44444444-4444-4444-8444-000000000593";
 const MEMBER = "22222222-2222-4222-8222-222222222222";
@@ -156,5 +159,26 @@ describe("interaction cards", () => {
 		const readOnly = renderInteractionCard(item(question), context({ canAnswer: false }));
 		expect(readOnly.dataset.state).toBe("waiting");
 		expect(readOnly.querySelector("button")).toBeNull();
+	});
+});
+
+describe("who answers a card", () => {
+	const thread: HostedSession = {
+		...session,
+		staffAgentId: "33333333-3333-4333-8333-333333333333",
+		executionScope: { roomId: "55555555-5555-4555-8555-555555555555", agentThread: true },
+	};
+	it("in an agent's shared thread, is the member the card was raised for, not the thread's creator", () => {
+		expect(thread.createdByUserId).toBe(userA.id);
+		expect(answersInteraction(thread, userB.id, userB.id)).toBe(true);
+		expect(answersInteraction(thread, userB.id, userA.id)).toBe(false);
+		expect(answersInteraction({ ...thread, status: "closed" }, userB.id, userB.id)).toBe(false);
+	});
+	it("elsewhere, is the member the conversation belongs to", () => {
+		expect(answersInteraction(session, userB.id, userA.id)).toBe(true);
+		expect(answersInteraction(session, userB.id, userB.id)).toBe(false);
+		const own: HostedSession = { ...session, audience: { kind: "member_private", userId: userB.id } };
+		expect(answersInteraction(own, userA.id, userB.id)).toBe(true);
+		expect(answersInteraction(own, userA.id, userA.id)).toBe(false);
 	});
 });

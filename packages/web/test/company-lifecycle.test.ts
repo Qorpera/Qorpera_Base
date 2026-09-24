@@ -9,8 +9,26 @@ import { CompanyController } from "../src/app/company.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type { SessionInputWriter } from "../src/cloud/session-input.ts";
-import type { HostedRunRecovery, HostedSessionEvent, HostedStaffExecutionActivity } from "../src/cloud/types.ts";
-import { deferred, event, fixture, id, pending, profileA, session, settle, staff, team, userA } from "./fixtures.ts";
+import type {
+	HostedRunRecovery,
+	HostedSession,
+	HostedSessionEvent,
+	HostedStaffExecutionActivity,
+} from "../src/cloud/types.ts";
+import {
+	deferred,
+	event,
+	fixture,
+	id,
+	pending,
+	profileA,
+	session,
+	settle,
+	staff,
+	team,
+	userA,
+	userB,
+} from "./fixtures.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => {
@@ -67,6 +85,115 @@ function company() {
 	cleanup.push(() => controller.stop());
 	return { ...f, controller, write };
 }
+
+describe("answering a card", () => {
+	const thread: HostedSession = {
+		...session,
+		staffAgentId: staff.id,
+		executionScope: { roomId: id(95), agentThread: true },
+	};
+	const answered = { inputId: id(96), position: 7 };
+	function card(sequence: number, actorUserId: string): HostedSessionEvent {
+		const eventId = id(3000 + sequence);
+		return {
+			...event(sequence),
+			eventId,
+			actorUserId,
+			sessionInputId: undefined,
+			eventType: "interaction_request",
+			body: {
+				schema: "qorpera.runner-transcript-entry/v1",
+				entry: {
+					type: "custom",
+					customType: "interaction_request",
+					id: eventId,
+					parentId: null,
+					timestamp: "2026-09-24T20:00:00.000Z",
+					data: {
+						schema: "qorpera.interaction/v1",
+						surface: "question",
+						title: "Which channel?",
+						payload: { options: [{ label: "#general", value: "general" }] },
+					},
+				},
+			},
+		};
+	}
+
+	it("in an agent's thread, answers on the member's selected model account", async () => {
+		const f = company();
+		f.controller.store.set({ sessions: [thread] });
+		const answer = vi.spyOn(f.api, "answerInteraction").mockResolvedValue(answered);
+		await f.controller.answerInteraction(thread.sessionId, id(593), "answered", { values: ["general"] });
+		expect(answer).toHaveBeenCalledOnce();
+		expect(answer.mock.calls[0]![5]).toEqual({ sponsorBindingId: id(81), sponsorVersion: 1 });
+	});
+
+	it("keeps the card open where the cloud cannot deliver an answer in an agent's thread yet", async () => {
+		const f = company();
+		f.controller.store.set({ sessions: [thread] });
+		const answer = vi
+			.spyOn(f.api, "answerInteraction")
+			.mockRejectedValue(
+				new CloudRpcError("qorpera_answer_interaction", { code: "PGRST202", message: "Could not find" }, 404),
+			);
+		await expect(
+			f.controller.answerInteraction(thread.sessionId, id(593), "answered", { values: ["general"] }),
+		).rejects.toThrow();
+		expect(answer).toHaveBeenCalledOnce();
+		const state = f.controller.conversation(thread.sessionId).get();
+		expect(state.interactionError).toBe("Answering cards here is not available yet. Reply in a message instead.");
+		expect(state.interactionAnswers).toBeUndefined();
+	});
+
+	it("in an agent's thread without a selected account, sends nothing and says so", async () => {
+		const f = company();
+		f.controller.store.set({ sessions: [thread] });
+		f.controller.conversation(thread.sessionId).set({ executionSponsor: undefined });
+		const answer = vi.spyOn(f.api, "answerInteraction");
+		await expect(
+			f.controller.answerInteraction(thread.sessionId, id(593), "answered", { values: ["general"] }),
+		).rejects.toThrow();
+		expect(answer).not.toHaveBeenCalled();
+		const state = f.controller.conversation(thread.sessionId).get();
+		expect(state.interactionError).toBe("Select an active model account, then try again.");
+		expect(state.interactionAnswers).toBeUndefined();
+	});
+
+	it("says in plain words when the cloud refuses the model account, and keeps the card open", async () => {
+		const f = company();
+		vi.spyOn(f.api, "answerInteraction").mockRejectedValue(
+			new CloudRpcError(
+				"qorpera_answer_interaction",
+				{ code: "42501", message: "Room sponsor is unavailable" },
+				403,
+			),
+		);
+		await expect(
+			f.controller.answerInteraction(session.sessionId, id(593), "answered", { values: ["finance"] }),
+		).rejects.toThrow("Room sponsor is unavailable");
+		const state = f.controller.conversation(session.sessionId).get();
+		expect(state.interactionError).toBe("Select an active model account, then try again.");
+		expect(state.interactionAnswers).toBeUndefined();
+	});
+
+	it("in an agent's thread, gives live controls only on the cards raised for this member", async () => {
+		const f = company();
+		f.controller.store.set({ loading: false, sessions: [thread] });
+		vi.mocked(f.api.readSessionEvents).mockResolvedValue([card(1, userA.id), card(2, userB.id)]);
+		void f.controller.loadConversation(thread.sessionId);
+		const view = new ConversationView(f.controller, thread.sessionId, {
+			sendMessage: (sessionId, text) => f.controller.sendPrompt(sessionId, text),
+		});
+		cleanup.push(() => view.dispose());
+		document.body.append(view.el);
+		await settle();
+		const cards = [...view.el.querySelectorAll<HTMLElement>(".interaction-card")];
+		expect(cards).toHaveLength(2);
+		expect(cards[0]!.querySelector("button")).not.toBeNull();
+		expect(cards[1]!.querySelector("button")).toBeNull();
+	});
+});
 
 describe("conversation lifecycle regressions", () => {
 	it("requires explicit sponsorship and never falls back to ordinary append", async () => {
