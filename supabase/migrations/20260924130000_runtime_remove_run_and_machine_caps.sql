@@ -214,15 +214,38 @@ alter table public.qorpera_runner_usage_observations add constraint qorpera_runn
 	check (wall_time_limit_ms >= 10);
 
 -- ---------------------------------------------------------------------------
--- A native run may carry up to 120 tools
+-- No cap on a run's tools, calls or turns
 -- ---------------------------------------------------------------------------
--- The kernel refused more than 32 while the guest allowed 48, so an agent with
--- a computer and a few connected services could not start. OpenAI accepts 128
--- functions per request and the cloud Codex keeps almost none of its own, so
--- both now allow 120, and the catalog may take 1 MiB.
+-- Jonas: "we obviously shouldn't cap a run's tool calls, not through the
+-- database, agent machines or the guests... if the model-providers themselves
+-- have gates, they will enforce them for us."
+-- * A native run starts with every tool its agent is granted: the kernel
+--   refused more than 32 (the guest more than 48). The catalog's shape is still
+--   checked, and its text is bounded at 1 MiB as storage for the start record.
 select pg_temp.cap_patch('public.qorpera_begin_native_company_execution_v2(jsonb,text,text,text,text,text,integer)'::regprocedure,
 	$old$	if jsonb_array_length(v_catalog -> 'tools') not between 1 and 32$old$,
-	$new$	if jsonb_array_length(v_catalog -> 'tools') not between 1 and 120$new$);
+	$new$	if jsonb_array_length(v_catalog -> 'tools') < 1$new$);
+-- * A worker (coding session or in-house) takes any number of follow-up turns
+--   (was 64 and 12), and an agent may dispatch or follow up workers without an
+--   hourly limit (was 24 an hour). At most four workers run for one agent at
+--   once; that bounds parallel work, not how much work is done.
+alter table public.qorpera_runtime_workers drop constraint qorpera_runtime_workers_sequence_check;
+alter table public.qorpera_runtime_workers add constraint qorpera_runtime_workers_sequence_check check (sequence >= 1);
+select pg_temp.cap_patch('public.qorpera_manage_agent_worker(jsonb,jsonb)'::regprocedure,
+	$old$		if (select count(*) from public.qorpera_runtime_worker_events event join public.qorpera_runtime_workers worker on worker.id = event.worker_id
+			where worker.profile_id = v_run.profile_id and worker.staff_agent_id = v_run.staff_agent_id
+				and event.kind in ('dispatched','followup') and event.created_at > clock_timestamp() - interval '1 hour') >= 24 then
+			raise exception 'Worker dispatch limit for this hour is reached' using errcode = '54000'; end if;
+$old$,
+	'');
+select pg_temp.cap_patch('public.qorpera_manage_agent_worker(jsonb,jsonb)'::regprocedure,
+	$old$		if (v_worker.species = 'in-house' and (v_worker.state = 'cancelled' or v_worker.sequence >= 12))
+			or (v_worker.species = 'coding' and v_worker.sequence >= 64) then$old$,
+	$new$		if v_worker.species = 'in-house' and v_worker.state = 'cancelled' then$new$);
+select pg_temp.cap_patch('public.qorpera_answer_coding_session(uuid,text,uuid)'::regprocedure,
+	$old$	if v_worker.sequence >= 64 then raise exception 'This session cannot continue; start a new one' using errcode = '55000'; end if;
+$old$,
+	'');
 select pg_temp.cap_patch('public.qorpera_begin_native_company_execution_v2(jsonb,text,text,text,text,text,integer)'::regprocedure,
 	$old$	if p_tool_catalog_text is null or octet_length(p_tool_catalog_text) not between 1 and 262144$old$,
 	$new$	if p_tool_catalog_text is null or octet_length(p_tool_catalog_text) not between 1 and 1048576$new$);

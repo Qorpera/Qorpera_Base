@@ -43,8 +43,8 @@ function parseRequest(value: unknown): CloudNativeFenceRequest {
 			!(request.purpose === "prewarm" && request.turnId === "") &&
 			(typeof request.turnId !== "string" || !ID.test(request.turnId))) ||
 		!["turn", "prewarm", "compaction"].includes(String(request.purpose)) ||
+		// No count cap on the outputs a request carries (founder, 2026-09-24).
 		!Array.isArray(request.outputs) ||
-		request.outputs.length > 128 ||
 		(request.purpose === "prewarm" && request.outputs.length !== 0)
 	)
 		throw new Error("Invalid native result frame");

@@ -30,12 +30,10 @@ const CALL_ID = /^[A-Za-z0-9_:.-]{1,160}$/;
 const MAX_ARGUMENT_BYTES = 64 * 1024;
 const MAX_CONTENT_BYTES = 32 * 1024;
 const MAX_SOURCE_BYTES = 1024 * 1024;
-/** Company File, runtime, computer and connector tools together. Connector
- * grants add one tool per authorized operation. OpenAI accepts 128 functions
- * per request and the cloud Codex keeps almost none of its own, so a run may
- * carry 120 (the kernel checks the same number at start). */
-export const CLOUD_NATIVE_TOOL_COUNT_LIMIT = 120;
-/** The serialized tool catalog a run starts with (the kernel checks the same). */
+/** A run carries every tool its agent is granted, with no count cap (founder,
+ * 2026-09-24: a provider's own limit, such as OpenAI's per-request function
+ * count, is enforced by the provider). Only the serialized catalog is bounded,
+ * as storage for the kernel's start record (the kernel checks the same). */
 export const CLOUD_NATIVE_TOOL_CATALOG_BYTES = 1024 * 1024;
 /** No run is capped by a number of tool calls (founder, 2026-09-22 and
  * 2026-09-24). Result bodies are kept for exact replay only in a rolling window:
@@ -219,11 +217,7 @@ export class CloudNativeToolBoundary {
 		observability?: CloudRuntimeObservability;
 		captures?: CloudNativeCaptureImages;
 	}) {
-		if (
-			!UUID.test(options.companyId) ||
-			!UUID.test(options.runId) ||
-			options.tools.length > CLOUD_NATIVE_TOOL_COUNT_LIMIT
-		) {
+		if (!UUID.test(options.companyId) || !UUID.test(options.runId)) {
 			throw new Error("Invalid cloud tool boundary");
 		}
 		this.#companyId = options.companyId;
