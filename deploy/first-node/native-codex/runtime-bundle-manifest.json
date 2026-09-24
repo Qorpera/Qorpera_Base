@@ -22,7 +22,7 @@
     "inboundSafety": "bb3ad321d114bf74d00f6d0cfd87640e61d872ca62b4dddf236777705cb685e6",
     "outboundSafety": "2df2624725d46bb55e8d6406a823e51300843eb7fa3517171ac05edd1d320f52",
     "interactionSurfaces": "d2691f6a92c60976bd8a7d6d047108e60da1404a3311301319020d7b1e74cca3",
-    "workerLifecycle": "ffa787a738f26e52b6a329737549aa40dce728b5f4c1cdfbe87eb5bfa16bec0c",
+    "workerLifecycle": "e155bbfc2a1356bab4794b41c16e3e448c72f4ab731488d6fee6bcbdd55c7b34",
     "memoryAndSkills": "78b830004b335e80e1c167f4ca250fd6eb31c33373f5dab614fbb03a0637e5f3"
   },
   "implementation": {
@@ -445,7 +445,7 @@
     "packages/runtime/src/cloud-coding-error-code.ts": "000163fc98771b058c6b5b0d478085dd0b8822b183da1e83c5857a89628201b4",
     "packages/runtime/src/cloud-coding-git-guest.ts": "807830022d9d50df84a3fffd8f92dd55a7e5098ff757cada5c34aba2d53b8ef0",
     "packages/runtime/src/cloud-coding-guest-configuration.ts": "dd08760cae88af5f140b136f1141d209a1be2404c0cde16ebb58b0479440c373",
-    "packages/runtime/src/cloud-coding-storage-guest-main.ts": "60515bef227c147177361723c49b8262ac2c2cd2d22a53b6662565958a7510d1",
+    "packages/runtime/src/cloud-coding-storage-guest-main.ts": "cdc5a25f1e320fdd888c08ef297a443e755201f8d660f536b51793a09adaa3f7",
     "packages/runtime/src/cloud-coding-storage-guest.ts": "945608ae23baaeca36cd5ba2098150d1e28ce69dc8522243f52b3ee05d44e882",
     "packages/runtime/src/cloud-coding-watchdog-main.ts": "133a4bae02618eb44c7ae9b5f68214daf54b75b7c4a9192e8a88fa27782c2ebe",
     "packages/runtime/src/cloud-coding-watchdog.ts": "e53049933e946e36ddff227994e38024fb99bf106d2e362a82a3241e14c0454d",

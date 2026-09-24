@@ -155,10 +155,14 @@ each under `/etc/systemd/system` to `/dev/null`). Unmasked, the timers catch up
 on every fresh boot from the build's stamps; unattended-upgrades then restarts
 the session's units through needrestart, and its shutdown inhibitor refuses the
 VM's stop, so the session's node slot is never released. The storage helper
-checks all five links at every action and refuses with
-`RUNNER_IMAGE_SELF_UPDATE_ENABLED:<UNIT>`; the executor runs its `image` check
-after verifying the helpers and fails the session with
-`RUNNER_IMAGE_SELF_UPDATE_ENABLED` before delivering any configuration.
+checks all five links at every storage-checked action (initialize and every
+command, lease and Git action) and refuses with
+`RUNNER_IMAGE_SELF_UPDATE_ENABLED:<UNIT>`. The executor runs the helper's `image`
+action after verifying the helpers, before `install` or any configuration
+delivery, and fails the session with `RUNNER_IMAGE_SELF_UPDATE_ENABLED`. It only
+sees the exit status, so a pinned storage helper older than bundle v97, which has
+no `image` action, is reported the same way: rebuild the coding image with the
+current guest package and update `storageHelperSha256` in the same cut.
 
 Retain task downloads and mutable app/tool state on NAS; reproducible OS images
 are a different promise from preserving arbitrary installed root state. Private
