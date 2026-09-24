@@ -57,8 +57,19 @@ select pg_temp.count_patch('public.qorpera_drain_worker_wakes(integer)'::regproc
 	$old$			if public.qorpera_company_execution_paused(v_worker.profile_id) then continue; end if;
 $old$,
 	$new$			if public.qorpera_company_execution_paused(v_worker.profile_id) then continue; end if;
+			-- A person who stops a revival stops the rest of that parent's reports too, as stopping the
+			-- parent does; the results stay readable through status.
+			if exists (select 1 from public.qorpera_wake_occurrences revival
+				join public.qorpera_execution_runs revival_run on revival_run.id = revival.run_id
+				join public.qorpera_runner_jobs revival_job on revival_job.id = revival_run.job_id
+				where revival.parent_run_id = v_worker.steering_run_id and revival.source_kind = 'worker-completion'
+					and revival_job.status = 'cancelled' and revival_job.cancelled_by_user_id is not null) then
+				update public.qorpera_runtime_workers set completion_state = 'suppressed' where id = v_worker.id; continue;
+			end if;
 			-- One revival at a time for a parent (runtime v95: a batch may exceed four): the next four reports
 			-- wait until the previous revival's run has ended, so two continuations never run side by side.
+			-- The company's wake admission lock first, so two drains cannot both pass this check.
+			perform public.qorpera_serialize_wake_admission(v_worker.profile_id);
 			if exists (select 1 from public.qorpera_wake_occurrences pending
 				left join public.qorpera_execution_runs pending_run on pending_run.id = pending.run_id
 				left join public.qorpera_runner_jobs pending_job on pending_job.id = pending_run.job_id
@@ -87,14 +98,14 @@ select pg_temp.count_patch('public.qorpera_manage_agent_worker(jsonb,jsonb)'::re
 					and (p_request ->> 'todoKey' is not null or todo.state in ('open','blocked')
 						or worker.updated_at > clock_timestamp() - interval '7 days')
 				order by worker.updated_at desc, worker.id limit 16) listed), '[]'::jsonb));$old$,
-	$new$		-- A page of sixteen, active workers first; the rest are counted in moreWorkers, never silently
+	$new$		-- A page of sixteen, active and blocked workers first; the rest are counted in moreWorkers, never silently
 		-- dropped (runtime v95: an agent may run any number of workers).
 		return (select jsonb_build_object('schema','qorpera.agent-workers/v1','runId',v_run.id,'workers',coalesce(
 			-- One named worker is shown in full; a listing keeps summaries short so many fit one result.
 			jsonb_agg(public.qorpera_worker_view(listed.worker, p_request ? 'workerKey') || jsonb_build_object('todoKey', listed.todo_key)
 				|| coalesce((select jsonb_build_object('coding', public.qorpera_coding_session_view(session, listed.worker))
 					from public.qorpera_coding_sessions session where session.worker_id = (listed.worker).id), '{}'::jsonb)
-				order by (listed.worker).state = 'active' desc, (listed.worker).updated_at desc, (listed.worker).id), '[]'::jsonb),
+				order by (listed.worker).state in ('active','blocked') desc, (listed.worker).updated_at desc, (listed.worker).id), '[]'::jsonb),
 			'moreWorkers', coalesce(max(listed.total), 0) - count(*))
 		from (
 				select worker, todo.todo_key, count(*) over () as total from public.qorpera_runtime_workers worker
@@ -105,7 +116,7 @@ select pg_temp.count_patch('public.qorpera_manage_agent_worker(jsonb,jsonb)'::re
 					and (p_request ->> 'workerKey' is null or worker.worker_key = p_request ->> 'workerKey')
 					and (p_request ->> 'todoKey' is not null or todo.state in ('open','blocked')
 						or worker.updated_at > clock_timestamp() - interval '7 days')
-				order by worker.state = 'active' desc, worker.updated_at desc, worker.id limit 16) listed);$new$);
+				order by worker.state in ('active','blocked') desc, worker.updated_at desc, worker.id limit 16) listed);$new$);
 select pg_temp.count_patch('public.qorpera_manage_agent_todo(jsonb,jsonb)'::regprocedure,
 	$old$		return jsonb_build_object('schema','qorpera.agent-todos/v1','runId',v_run.id,'todos',coalesce((
 			select jsonb_agg(public.qorpera_agent_todo_view(todo) order by todo.updated_at desc, todo.id) from (

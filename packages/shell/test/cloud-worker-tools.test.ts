@@ -60,6 +60,7 @@ async function fixture(
 					schema: "qorpera.agent-todos/v1",
 					runId: binding.runId,
 					todos: [],
+					moreTodos: 7,
 					unpublished: [publication("left-behind", 4)],
 				}
 			: {
@@ -190,6 +191,8 @@ describe("agent todo and worker tools", () => {
 			expect(JSON.parse(body(listed).content.text).documents).toEqual([
 				{ path: `work/todos/${f.agent}/left-behind.json`, published: true },
 			]);
+			// The list is a page; what it leaves out reaches the agent as a count (runtime v95).
+			expect(JSON.parse(body(listed).content.text).moreTodos).toBe(7);
 			expect(f.mutate.mock.calls.map((entry) => entry[0])).toEqual(["mkdir", "write"]);
 		} finally {
 			failing.run.close();

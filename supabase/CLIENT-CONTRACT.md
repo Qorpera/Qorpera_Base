@@ -166,8 +166,8 @@ profile RPCs; RLS is the second read boundary.
   24; pinning unhides), `set_hidden {staffAgentId, hidden}` (hiding unpins).
   Section names are 1-60 characters, unique per company ignoring case; any
   number of sections (at most 40 until bundle v95). The Co-Founder is never
-  placed, pinned or hidden. Agents change the same shared sections through the runtime tool `organize_sidebar`
-  (`qorpera_manage_agent_sidebar`, runner only).
+  placed, pinned or hidden. Agents change the same shared sections through the
+  runtime tool `organize_sidebar` (`qorpera_manage_agent_sidebar`, runner only).
 
 
 ### Conversations, turns, wakes (28)
