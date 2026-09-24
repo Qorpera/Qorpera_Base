@@ -18,7 +18,7 @@
     "wakeAndSilence": "5bf43d062333edffb8152de6095862ab43d11625c049b04a3156466c304c1bb1",
     "contextComposer": "33db69015eff93d8ebd6d7e289d32fbe108900f0556190b128c2ea12371ac5ab",
     "providerBootstrap": "53a7318ca5b8782584147b630ecf9885fbcabc2c52d256f4318c84cf5c1abade",
-    "authorization": "d10019e29f6ae8694a388f347a0ab90ca910d8a68fce762157cdccb155ff6700",
+    "authorization": "f92f0ec70aed159f2aec45e3e1fc2758b018097324a72d0dcc8d615d6c1fbe8a",
     "inboundSafety": "c662b8faa39a59d60ae150fa6ed8f08f6be97e738743f8dd4cf737d5bef2b352",
     "outboundSafety": "2df2624725d46bb55e8d6406a823e51300843eb7fa3517171ac05edd1d320f52",
     "interactionSurfaces": "bcf1c087497337b6d490eba0dfccba523f55ec9d6ac5f3f90a0c6135f8b66338",
@@ -1016,6 +1016,6 @@
     "supabase/migrations/20260924221000_runtime_bundle_activation_v101.sql": "76c8d622a54f17164ee3c76228717685b23d8343cea27a09f57abde3e64f6357",
     "supabase/migrations/20260924225000_runtime_bundle_activation_v102.sql": "028dcb8f163ea9446c4edd4a88ca88b88bad7fd441b1c06d2328f0fbc716e53d",
     "supabase/migrations/20260924227000_runtime_bundle_activation_v103.sql": "c213f48d09f9ee66cbb463c2ba32012823f189a89fc44ee867abd784d486349b",
-    "supabase/migrations/20260924232000_runtime_answer_card_outside_agent_thread.sql": "5ab176312d80ea7313d6cad6c2ef432b6e88a5b0cc79275fcbaa478f4aa7d6fb"
+    "supabase/migrations/20260924232000_runtime_answer_card_outside_agent_thread.sql": "7a164f68c734c3687bb356538884221df7102d44517b772a4147ebc995b24439"
   }
 }

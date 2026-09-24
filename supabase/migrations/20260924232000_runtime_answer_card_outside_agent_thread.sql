@@ -196,19 +196,21 @@ begin
 				and input.position > p_after_position
 $old$,
 		$new$			where input.session_id = p_session_id
-				and ((input.completed_at is null and input.failed_at is null)
-					or (input.failed_at is not null and input.kind = 'user_message'
+				and input.completed_at is null
+				-- completed_at stays at the top: the pending index serves the listing.
+				and (input.failed_at is null
+					or (input.kind = 'user_message'
 						and input.body ->> 'schema' = 'qorpera.interaction-answer/v1'
 						and not exists (
 							select 1 from public.qorpera_session_inputs as other
-							where other.session_id = input.session_id and other.kind = 'user_message'
+							where other.session_id = p_session_id and other.kind = 'user_message'
 								and other.body ->> 'schema' = 'qorpera.interaction-answer/v1'
 								and other.body ->> 'interactionId' = input.body ->> 'interactionId'
 								and other.failed_at is null
 						)
 						and not exists (
 							select 1 from public.qorpera_session_events as answer
-							where answer.session_id = input.session_id
+							where answer.session_id = p_session_id
 								and answer.event_type in ('interaction_answer', 'authorization_decision')
 								and answer.body #>> '{entry,data,interactionId}' = input.body ->> 'interactionId'
 						)))
@@ -222,8 +224,10 @@ $migration$;
 -- execution binding, not completed as a room post, never claimed. Before this
 -- migration every answer outside an agent's thread was queued so, and before
 -- bundle v100 every answer in one. They never reached the agent; failing them
--- opens their cards again (the one-answer rule counts live answers only).
--- Internal: the migration runs it once; nothing after it queues such an answer.
+-- opens their cards again (the one-answer rule counts live answers only). A
+-- group chat is left as it is: it answers no cards, so reopening one helps no one.
+-- Internal and idempotent: the migration runs it once, and the cut runs it again
+-- after activation for an answer the old function was still writing meanwhile.
 create function public.qorpera_fail_stranded_interaction_answers()
 returns integer language plpgsql security definer set search_path = '' as $$
 declare v_count integer;
@@ -237,6 +241,10 @@ begin
 		and not exists (select 1 from public.qorpera_session_turn_requests as request where request.input_id = input.id)
 		and not exists (
 			select 1 from public.qorpera_session_execution_bindings as binding where binding.session_id = input.session_id
+		)
+		and not exists (
+			select 1 from public.qorpera_company_rooms as room
+			where room.session_id = input.session_id and room.bound_staff_agent_id is null
 		);
 	get diagnostics v_count = row_count;
 	return v_count;

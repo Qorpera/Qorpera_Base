@@ -207,13 +207,34 @@ $$;
 rollback to savepoint delivery_failed;
 
 -- Answers queued before bundle v105 where nothing admits them (the old plain
--- path: no turn request, no binding) are failed once, so their cards open again.
--- An answer on its way (a turn request, a binding's queue) is left alone.
+-- path, and an agent's thread before v100: no turn request, no binding) are
+-- failed once, so their cards open again. An answer on its way (a turn request,
+-- a binding's queue) is left alone, and so is a group chat, which answers no cards.
 savepoint stranded;
 do $$
 declare v_session uuid := current_setting('qorpera_test.plain_session')::uuid;
-	v_stranded uuid; v_bound uuid; v_queued jsonb; v_again jsonb;
+	v_stranded uuid; v_bound uuid; v_queued jsonb; v_again jsonb; v_thread uuid; v_chat uuid;
+	v_thread_answer uuid; v_chat_answer uuid;
 begin
+	-- One agent's thread, and another agent's thread made a group chat.
+	select id into strict v_thread from public.qorpera_shared_sessions
+	where environment_id = '30000000-0000-4000-8000-000000000020' and execution_scope ->> 'agentThread' = 'true'
+		and staff_agent_id = '30000000-0000-4000-8000-000000000031';
+	select id into strict v_chat from public.qorpera_shared_sessions
+	where environment_id = '30000000-0000-4000-8000-000000000020' and execution_scope ->> 'agentThread' = 'true'
+		and staff_agent_id = '30000000-0000-4000-8000-000000000032';
+	update public.qorpera_company_rooms set bound_staff_agent_id = null, source_path_version = extensions.gen_random_uuid(),
+		source_snapshot_id = extensions.gen_random_uuid(), source_file_sha256 = repeat('a',64)
+	where session_id = v_chat;
+	insert into public.qorpera_session_inputs (session_id, client_input_id, kind, author_user_id, body)
+	select session_id, extensions.gen_random_uuid(), 'user_message', '30000000-0000-4000-8000-000000000001',
+		jsonb_build_object('schema','qorpera.interaction-answer/v1','interactionId','30000000-0000-4000-8000-0000000009b8',
+			'surface','question','outcome','answered','answer',jsonb_build_object('values',jsonb_build_array('finance')))
+	from (values (v_thread),(v_chat)) as target(session_id);
+	select id into strict v_thread_answer from public.qorpera_session_inputs where session_id = v_thread
+		and body ->> 'interactionId' = '30000000-0000-4000-8000-0000000009b8';
+	select id into strict v_chat_answer from public.qorpera_session_inputs where session_id = v_chat
+		and body ->> 'interactionId' = '30000000-0000-4000-8000-0000000009b8';
 	insert into public.qorpera_session_inputs (session_id, client_input_id, kind, author_user_id, body)
 	values (v_session, extensions.gen_random_uuid(), 'user_message', '30000000-0000-4000-8000-000000000001',
 		jsonb_build_object('schema','qorpera.interaction-answer/v1','interactionId','30000000-0000-4000-8000-0000000009b2',
@@ -231,12 +252,15 @@ begin
 	v_queued := pg_temp.plain_answer(extensions.gen_random_uuid(),'30000000-0000-4000-8000-0000000009b1');
 	perform pg_temp.path_claims('service_role');
 
-	perform pg_temp.wake_assert(public.qorpera_fail_stranded_interaction_answers() = 1,'Exactly the stranded answer is failed');
+	perform pg_temp.wake_assert(public.qorpera_fail_stranded_interaction_answers() = 2,
+		'Exactly the stranded answers are failed');
 	perform pg_temp.wake_assert((select failed_at is not null and failure_reason is not null
 		from public.qorpera_session_inputs where id = v_stranded)
+		and (select failed_at is not null from public.qorpera_session_inputs where id = v_thread_answer)
+		and (select failed_at is null from public.qorpera_session_inputs where id = v_chat_answer)
 		and (select failed_at is null from public.qorpera_session_inputs where id = v_bound)
 		and (select failed_at is null from public.qorpera_session_inputs where id = (v_queued ->> 'input_id')::uuid),
-		'A stranded answer is failed; one on a binding''s queue or with a turn request is not');
+		'Stranded answers in a plain conversation or an agent''s thread are failed; one in a group chat, on a binding''s queue or with a turn request is not');
 	perform pg_temp.wake_assert(public.qorpera_fail_stranded_interaction_answers() = 0,'Failing stranded answers is idempotent');
 
 	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
