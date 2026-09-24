@@ -1054,8 +1054,10 @@ export class ConversationView {
 				this.#codingElements.delete(workerId);
 			}
 		}
-		if (conversation.loading && !items.length) nodes.push((this.#messagesPlaceholder ??= messagesSkeleton()));
-		else this.#messagesPlaceholder = undefined;
+		if (conversation.loading && !items.length) {
+			this.#messagesPlaceholder ??= messagesSkeleton();
+			nodes.push(this.#messagesPlaceholder);
+		} else this.#messagesPlaceholder = undefined;
 		if (!conversation.loading && !items.length && !codingSessions.length && !conversation.error && !this.#working) {
 			nodes.push(h("div", { class: "empty" }, "No messages yet."));
 		}

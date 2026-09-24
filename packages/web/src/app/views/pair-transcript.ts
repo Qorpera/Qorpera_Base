@@ -193,8 +193,10 @@ export class PairTranscriptView {
 				);
 			}
 		}
-		if (conversation.loading && !items.length) nodes.push((this.#placeholder ??= messagesSkeleton()));
-		else this.#placeholder = undefined;
+		if (conversation.loading && !items.length) {
+			this.#placeholder ??= messagesSkeleton();
+			nodes.push(this.#placeholder);
+		} else this.#placeholder = undefined;
 		if (!conversation.loading && !items.length && !conversation.error)
 			nodes.push(h("div", { class: "empty" }, "No messages yet."));
 		if (conversation.error) nodes.push(h("div", { class: "empty" }, conversation.error));
