@@ -29,7 +29,7 @@ describe("shared cloud runtime constitution", () => {
 			"company-owned notebook",
 			"secret and sign-in cards",
 			"dismissed card",
-			"let events wake you",
+			"end your turn and let the event wake you",
 		]) {
 			expect(CLOUD_RUNTIME_CONSTITUTION).toContain(topic);
 		}

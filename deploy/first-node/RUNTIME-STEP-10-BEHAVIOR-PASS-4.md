@@ -141,6 +141,19 @@ continuation" so a restarted run still owes its member a reply. All applied.
 It found no lost rule and confirmed field names, wake kinds, tool names and
 the thread reply policy against the code.
 
+## Second review (PR #283, head 790d294c6)
+
+A fresh reviewer found nothing blocking and confirmed every earlier fix, the
+page fitting (emoji, U+2028, last pages, a 160-character call id and a hostile
+model name inside the 3,072-byte reserve) and that the master merge lost
+nothing. Applied: the closing reminder names `ask_member` only where it is
+offered (not on room wakes); law 10 is limited to waiting for a person, worker
+or schedule (computer work may still need checking back); a redone change after
+a version conflict takes a new operationKey; "startupAssignment, when not
+empty"; the page test covers emoji, escape-heavy text and the last page of a
+source. Eight scenarios touched by the wording (silence, thread posts, routine,
+coworker, the missing-answer case) were rerun on the final text: 8 of 8 pass.
+
 ## Found outside this change
 
 `ask_member` is withheld on every `room` wake

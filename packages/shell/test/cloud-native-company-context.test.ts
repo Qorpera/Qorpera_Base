@@ -179,6 +179,10 @@ it.each([
 					expect(instructions.includes(heading)).toBe(heading === own);
 				expect(instructions.includes("qorpera.run-continuation/v1")).toBe(continued);
 				expect(instructions.includes("# Before you end your turn")).toBe(final === "required");
+				// ask_member is never offered on a room wake, so the reminder does not name it there.
+				expect(instructions.includes("a card from ask_member counts as one")).toBe(
+					final === "required" && kind !== "room",
+				);
 				for (const always of [
 					"# Qorpera runtime constitution",
 					"send_message is your only public voice",
@@ -409,22 +413,40 @@ it("accepts whole sources and pages up to the 16 KiB the context function ships"
 	expect(() => parseCloudNativeCompanyContext(tooLarge.context, tooLarge.binding)).toThrow(
 		"Invalid cloud context source",
 	);
-	// A 16 KiB page is fitted to the result fence: the model always receives nextOffset.
-	for (const character of ["p", '<"\\']) {
-		const text = character.repeat(40000 / character.length);
+	// A 16 KiB page is fitted to the result fence: the model always receives nextOffset,
+	// counted in code points, also for the last page of a source (SQL nextOffset null).
+	const take = (units: string[], from: number, maxBytes: number) => {
+		let count = 0;
+		let bytes = 0;
+		while (from + count < units.length && bytes + Buffer.byteLength(units[from + count]) <= maxBytes)
+			bytes += Buffer.byteLength(units[from + count++]);
+		return count;
+	};
+	for (const { unit, count } of [
+		{ unit: "p", count: 40000 },
+		{ unit: "<", count: 40000 },
+		{ unit: '"', count: 40000 },
+		{ unit: "\u{1f600}", count: 12000 },
+		{ unit: "p", count: 16384 + 9000 },
+	]) {
+		const units = Array.from({ length: count }, () => unit);
+		const text = units.join("");
+		const inline = take(units, 0, 16384);
 		const source = f.source("job_spec", f.context.agent.id, text);
 		f.context.jobSpecification = {
 			...source,
-			content: { ...source.content, text: text.slice(0, 16384), truncated: true, nextOffset: 16384 },
+			content: { ...source.content, text: units.slice(0, inline).join(""), truncated: true, nextOffset: inline },
 		};
 		const paged = parseCloudNativeCompanyContext(f.context, f.binding);
+		const size = take(units, inline, 16384);
+		const last = inline + size === units.length;
 		const page = {
 			...source,
 			content: {
 				...source.content,
-				text: text.slice(16384, 32768),
-				offset: 16384,
-				nextOffset: 32768,
+				text: units.slice(inline, inline + size).join(""),
+				offset: inline,
+				nextOffset: last ? null : inline + size,
 				truncated: true,
 			},
 		};
@@ -440,11 +462,11 @@ it("accepts whole sources and pages up to the 16 KiB the context function ships"
 			assertActive: async () => undefined,
 			signal: new AbortController().signal,
 		});
-		const result = await boundary.invoke(`full-page-${character.length}`, "qorpera", "read_context", {
+		const result = await boundary.invoke(`page-${unit.codePointAt(0)}-${count}`, "qorpera", "read_context", {
 			sourceKind: "job_spec",
 			id: source.id,
 			sha256: source.content.sha256,
-			offset: 16384,
+			offset: inline,
 			limit: 16384,
 		});
 		boundary.close();
@@ -452,14 +474,15 @@ it("accepts whole sources and pages up to the 16 KiB the context function ships"
 		expect(fenced).toMatchObject({ status: "ok", content: { truncated: false } });
 		const returned = JSON.parse(fenced.content.text);
 		const length = [...returned.content.text].length;
-		expect(length).toBeGreaterThan(512);
+		expect(length).toBeGreaterThan(256);
+		expect(length).toBeLessThan(size);
 		expect(returned.content).toMatchObject({
 			sha256: source.content.sha256,
-			offset: 16384,
-			nextOffset: 16384 + length,
+			offset: inline,
+			nextOffset: inline + length,
 			truncated: true,
 		});
-		expect(returned.content.text).toBe(text.slice(16384, 16384 + length));
+		expect(returned.content.text).toBe(units.slice(inline, inline + length).join(""));
 	}
 });
 
