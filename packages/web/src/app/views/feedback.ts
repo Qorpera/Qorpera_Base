@@ -2,15 +2,15 @@ import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
 import { h } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
-import { t, uiText } from "../../ui/preferences.ts";
+import { phrase, t, uiText } from "../../ui/preferences.ts";
 
 const CATEGORIES = [
-	["bug", "+ Bug"],
-	["bad-result", "+ Bad result"],
-	["good-result", "+ Good result"],
-	["feature-request", "+ Feature request"],
-	["performance", "+ Performance"],
-	["other", "+ Other"],
+	["bug", phrase("+ Bug")],
+	["bad-result", phrase("+ Bad result")],
+	["good-result", phrase("+ Good result")],
+	["feature-request", phrase("+ Feature request")],
+	["performance", phrase("+ Performance")],
+	["other", phrase("+ Other")],
 ] as const;
 
 /** The app's feedback flow, using the existing account RPC. One dialog owns

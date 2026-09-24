@@ -9,13 +9,15 @@ import {
 	type CloudRoutineReplyPolicy,
 	type CloudRoutineTrigger,
 	type CloudRoutineWeekday,
+	cloudRoutineWeekdayName,
+	describeCloudRoutineTrigger,
 	parseCloudRoutineTrigger,
 } from "@qorpera/cloud-client/cloud-routines";
 import type { WebRoutines } from "../../cloud/routines.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { dialogPageHeader } from "../../ui/dialog.ts";
 import { badge, button, fmtTime, h, icon, replace } from "../../ui/dom.ts";
-import { presentationTimeZone, t } from "../../ui/preferences.ts";
+import { phrase, presentationTimeZone, t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 
@@ -81,71 +83,19 @@ function accountLabels(accounts: readonly NativeMemberConnection[]): string[] {
 }
 
 const RUN_LABELS: Record<string, string> = {
-	pending: "Waiting to start",
-	queued: "Waiting to start",
-	running: "Running",
-	completed: "Finished",
-	blocked: "Could not start",
-	failed: "Failed",
-	cancelled: "Cancelled",
-	superseded: "Skipped",
+	pending: phrase("Waiting to start"),
+	queued: phrase("Waiting to start"),
+	running: phrase("Running"),
+	completed: phrase("Finished"),
+	blocked: phrase("Could not start"),
+	failed: phrase("Failed"),
+	cancelled: phrase("Cancelled"),
+	superseded: phrase("Skipped"),
 };
 
 function runLabel(run: CloudRoutineOccurrence): string {
 	const status = Object.hasOwn(RUN_LABELS, run.status) ? t(RUN_LABELS[run.status]!) : run.status;
 	return `${status} · ${fmtTime(run.finishedAt ?? run.scheduledFor ?? run.createdAt)}`;
-}
-
-const WEEKDAY_LABELS: Record<CloudRoutineWeekday, string> = {
-	sunday: "Sun",
-	monday: "Mon",
-	tuesday: "Tue",
-	wednesday: "Wed",
-	thursday: "Thu",
-	friday: "Fri",
-	saturday: "Sat",
-};
-
-function intervalLabel(minutes: number): string {
-	if (minutes % 1440 === 0)
-		return minutes === 1440 ? t("Every 1 day") : t("Every {count} days", { count: minutes / 1440 });
-	if (minutes % 60 === 0)
-		return minutes === 60 ? t("Every 1 hour") : t("Every {count} hours", { count: minutes / 60 });
-	return t("Every {count} minutes", { count: minutes });
-}
-
-function weekdayList(days: readonly CloudRoutineWeekday[]): string {
-	return days.length === 7
-		? t("every day")
-		: CLOUD_ROUTINE_WEEKDAYS.filter((day) => days.includes(day))
-				.map((day) => t(WEEKDAY_LABELS[day]))
-				.join(", ");
-}
-
-/** The trigger in words, as describeCloudRoutineTrigger writes it, in the member's language. */
-function describeTrigger(trigger: CloudRoutineTrigger): string {
-	if (trigger.kind === "listener")
-		return trigger.match === "subtree"
-			? t("When {path} or anything under it changes", { path: trigger.path })
-			: t("When {path} changes", { path: trigger.path });
-	if ("localTime" in trigger)
-		return t("{days} at {time} ({zone})", {
-			days: weekdayList(trigger.weekdays),
-			time: trigger.localTime,
-			zone: trigger.timeZone,
-		});
-	if ("windowStart" in trigger) {
-		const window = {
-			every: intervalLabel(trigger.intervalMinutes),
-			start: trigger.windowStart,
-			end: trigger.windowEnd,
-			zone: trigger.timeZone,
-		};
-		return trigger.weekdays
-			? t("{every} between {start} and {end}, {days} ({zone})", { ...window, days: weekdayList(trigger.weekdays) })
-			: t("{every} between {start} and {end} ({zone})", window);
-	}
-	return intervalLabel(trigger.intervalMinutes);
 }
 
 function controlLabel(control: Element): string {
@@ -222,7 +172,7 @@ export class AgentRoutines {
 					"div",
 					{ class: "routine-row-copy" },
 					h("strong", null, routine.title),
-					h("span", null, routine.triggers.map(describeTrigger).join("; ")),
+					h("span", null, routine.triggers.map((trigger) => describeCloudRoutineTrigger(trigger, t)).join("; ")),
 					h("small", null, last ? t("Last run: {run}", { run: runLabel(last) }) : t("Has not run yet")),
 				),
 				routine.status === "active" ? badge(t("Active"), "ok") : badge(t("Paused"), "warn"),
@@ -396,7 +346,7 @@ export class AgentRoutines {
 			...CLOUD_ROUTINE_WEEKDAYS.map((day) => {
 				const box = h("input", { type: "checkbox", checked: chosen.has(day) });
 				box.onchange = () => (box.checked ? chosen.add(day) : chosen.delete(day));
-				return h("label", null, box, t(WEEKDAY_LABELS[day]));
+				return h("label", null, box, cloudRoutineWeekdayName(day, t));
 			}),
 		);
 		const time = h("input", {

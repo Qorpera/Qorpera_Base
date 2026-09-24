@@ -1,17 +1,19 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mountApplication } from "../src/app/application.ts";
 import { AuthController } from "../src/app/auth.ts";
 import { type AccountViewState, renderAccount } from "../src/app/views/account.ts";
 import { fmtDate, fmtTime } from "../src/ui/dom.ts";
 import {
 	languagePreference,
 	previousDay,
+	setLanguagePreference,
 	setTimeZonePreference,
 	systemTimeZone,
 	timeZonePreference,
 } from "../src/ui/preferences.ts";
 import { timeZoneCity, timeZoneEntries } from "../src/ui/time-zones.ts";
-import { fixture, userA } from "./fixtures.ts";
+import { fixture, profileA, session, settle, userA } from "./fixtures.ts";
 
 beforeEach(() => {
 	localStorage.clear();
@@ -215,6 +217,53 @@ describe("language and time zone settings", () => {
 		}
 	});
 
+	it("keeps one highlighted row through filtering, and Enter picks the one it shows", () => {
+		const view = account();
+		view.language().click();
+		const highlighted = () => [...document.querySelectorAll(".is-active")].map((row) => row.textContent);
+		const described = () => document.getElementById(search().getAttribute("aria-activedescendant")!)?.textContent;
+		type("dan");
+		type("");
+		expect(highlighted()).toEqual(["Follow system"]);
+		expect(described()).toBe("Follow system");
+		type("e");
+		expect(shown(view.language()).map(([label]) => label)).toEqual(["Follow system", "English"]);
+		option(view.language(), "English").dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+		expect(highlighted()).toEqual(["EnglishEnglish"]);
+		type("");
+		type("eng");
+		expect(highlighted()).toEqual(["EnglishEnglish"]);
+		expect(described()).toBe("EnglishEnglish");
+		key("ArrowUp");
+		expect(highlighted()).toEqual(["EnglishEnglish"]);
+		key("Enter");
+		expect(languagePreference()).toBe("en");
+	});
+
+	it("matches an offset as a whole number", () => {
+		const view = account();
+		view.timeZone().click();
+		type("gmt+1");
+		const offsets = shown(view.timeZone()).map(([, offset]) => offset);
+		expect(offsets.length).toBeGreaterThan(0);
+		expect(new Set(offsets)).toEqual(new Set(["GMT+1"]));
+		type("gmt+10");
+		expect(new Set(shown(view.timeZone()).map(([, offset]) => offset))).toEqual(new Set(["GMT+10"]));
+	});
+
+	it("opens the list from the row's name, and keeps an open list and its focus when the panel redraws", () => {
+		const view = account();
+		view.timeZone().closest(".settings-preference-row")!.querySelector("label")!.click();
+		expect(view.timeZone().getAttribute("aria-expanded")).toBe("true");
+		type("cop");
+		const field = search();
+		view.render();
+		expect(view.timeZone().getAttribute("aria-expanded")).toBe("true");
+		expect(document.activeElement).toBe(field);
+		expect(field.value).toBe("cop");
+		expect(view.container.querySelectorAll(".preference-picker-popover:not([hidden])")).toHaveLength(1);
+	});
+
 	it("reports a zone the browser cannot store", () => {
 		const view = account();
 		vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
@@ -263,9 +312,21 @@ describe("time zone preference", () => {
 		expect(timeZoneCity("America/Indiana/Tell_City")).toBe("Tell City, Indiana");
 		expect(timeZoneCity("UTC")).toBe("UTC");
 		expect(timeZoneCity("Asia/Calcutta")).toBe("Kolkata");
+		// POSIX signs are the other way round: Etc/GMT-2 is two hours ahead.
+		expect(timeZoneCity("Etc/GMT-2")).toBe("GMT+2");
+		expect(timeZoneCity("Etc/GMT+5")).toBe("GMT-5");
+		expect(timeZoneCity("Etc/GMT+0")).toBe("UTC");
+		expect(timeZoneCity("Etc/UTC")).toBe("UTC");
 		const entries = timeZoneEntries("en", ["Asia/Kolkata"], new Date("2026-01-15T12:00:00Z"));
 		expect(entries.map((entry) => entry.id)).toEqual(expect.arrayContaining(["UTC", "Asia/Kolkata"]));
 		expect(entries.find((entry) => entry.id === "UTC")?.offset).toBe("GMT");
+		// Another included zone reuses the built list instead of formatting every zone again.
+		const copenhagen = entries.find((entry) => entry.id === "Europe/Copenhagen");
+		expect(
+			timeZoneEntries("en", ["Etc/GMT-2"], new Date("2026-01-15T12:00:00Z")).find(
+				(entry) => entry.id === "Europe/Copenhagen",
+			),
+		).toBe(copenhagen);
 		expect(entries.find((entry) => entry.id === "Asia/Kolkata")?.offset).toBe("GMT+5:30");
 		expect(entries.find((entry) => entry.id === "Europe/Copenhagen")).toMatchObject({
 			offset: "GMT+1",
@@ -279,5 +340,70 @@ describe("time zone preference", () => {
 			offset: "GMT+2",
 			names: ["Central European Time", expect.stringMatching(/^Centraleuropæisk/)],
 		});
+	});
+});
+
+describe("changing the time zone with a conversation open", () => {
+	afterEach(() => {
+		history.replaceState(null, "", "/");
+	});
+
+	it("redraws the screens in the new zone and keeps the draft", async () => {
+		vi.useFakeTimers();
+		history.replaceState(null, "", `/#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		const f = fixture();
+		const root = document.createElement("div");
+		document.body.append(root);
+		const dispose = mountApplication(root, f.cloud, f.api);
+		try {
+			const draw = async () => {
+				await settle();
+				await vi.advanceTimersByTimeAsync(60);
+			};
+			await draw();
+			const composer = root.querySelector<HTMLTextAreaElement>("textarea.composer-input")!;
+			composer.value = "Half a thought";
+			composer.dispatchEvent(new Event("input"));
+			expect(setTimeZonePreference("Asia/Tokyo")).toBe(true);
+			await draw();
+			const redrawn = root.querySelector<HTMLTextAreaElement>("textarea.composer-input")!;
+			expect(redrawn).not.toBe(composer);
+			expect(redrawn.value).toBe("Half a thought");
+		} finally {
+			dispose();
+		}
+	});
+
+	it("redraws in the new language in place, keeps the draft, and reopens Settings where it was", async () => {
+		vi.useFakeTimers();
+		history.replaceState(null, "", `/#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		const f = fixture();
+		const root = document.createElement("div");
+		document.body.append(root);
+		const dispose = mountApplication(root, f.cloud, f.api);
+		try {
+			const draw = async () => {
+				await settle();
+				await vi.advanceTimersByTimeAsync(60);
+			};
+			await draw();
+			const composer = root.querySelector<HTMLTextAreaElement>("textarea.composer-input")!;
+			expect(composer.placeholder).toBe("Message…");
+			composer.value = "Half a thought";
+			composer.dispatchEvent(new Event("input"));
+			root.querySelector<HTMLButtonElement>(".account-trigger")!.click();
+			root.querySelector<HTMLButtonElement>('[data-account-action="settings"]')!.click();
+			expect(setLanguagePreference("da")).toBe(true);
+			await draw();
+			const redrawn = root.querySelector<HTMLTextAreaElement>("textarea.composer-input")!;
+			expect(redrawn.placeholder).toBe("Besked…");
+			expect(redrawn.value).toBe("Half a thought");
+			expect(root.querySelectorAll(".settings-dialog")).toHaveLength(1);
+			expect(root.querySelector("#settings-content h1")?.textContent).toBe("Generelt");
+			expect(document.activeElement).toBe(root.querySelector(".preference-picker-button"));
+			expect(root.querySelector(".rail")?.getAttribute("aria-label")).toBe("Virksomhedsnavigation");
+		} finally {
+			dispose();
+		}
 	});
 });

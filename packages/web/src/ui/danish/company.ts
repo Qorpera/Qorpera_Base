@@ -16,8 +16,9 @@ export const COMPANY: Record<string, string> = {
 	"You do not have permission to read this object.": "Du har ikke tilladelse til at læse dette objekt.",
 	"This object's storage backend is not supported by the browser client yet.":
 		"Dette objekts lager understøttes endnu ikke i browseren.",
-	"Object is too large to open in the browser": "Objektet er for stort til at åbne i browseren",
 	"File is too large to open in the browser": "Filen er for stor til at åbne i browseren",
+	"The file did not match its record. Try opening it again.":
+		"Filen passede ikke med sine oplysninger. Prøv at åbne den igen.",
 	open: "åbent",
 	accepted: "accepteret",
 	rejected: "afvist",

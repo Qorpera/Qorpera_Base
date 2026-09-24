@@ -29,8 +29,13 @@ const RENAMED: Record<string, string> = {
 	Truk: "Chuuk",
 };
 
-/** The place an IANA name is named after; a middle part is its region. */
+/** The place an IANA name is named after; a middle part is its region. Zones
+ * named after no place read as their offset: POSIX "Etc/GMT-2" is two hours
+ * ahead of GMT, so it reads "GMT+2". */
 export function timeZoneCity(id: string): string {
+	if (/^Etc\/(?:GMT|UTC|UCT|Universal|Zulu|Greenwich)$/.test(id)) return "UTC";
+	const posix = /^Etc\/GMT([+-])(\d{1,2})$/.exec(id);
+	if (posix) return posix[2] === "0" ? "UTC" : `GMT${posix[1] === "-" ? "+" : "-"}${Number(posix[2])}`;
 	const parts = id.split("/").map((part) => part.replaceAll("_", " "));
 	if (parts.length === 1) return parts[0]!;
 	const city = RENAMED[parts.at(-1)!] ?? parts.at(-1)!;
@@ -59,34 +64,49 @@ function supportedZones(): string[] {
 	}
 }
 
+function zoneEntry(id: string, locale: string, at: Date): TimeZoneEntry | undefined {
+	try {
+		const shortOffset = zoneName(id, "en", "shortOffset", at);
+		const minutes = offsetMinutes(shortOffset);
+		const names = new Set([zoneName(id, "en", "longGeneric", at)]);
+		if (locale !== "en") names.add(zoneName(id, locale, "longGeneric", at));
+		return {
+			id,
+			city: timeZoneCity(id),
+			offset: minutes === 0 ? "GMT" : shortOffset,
+			minutes,
+			names: [...names].filter(Boolean),
+		};
+	} catch {
+		// A name this browser cannot format is not offered.
+		return undefined;
+	}
+}
+
+function westToEast(locale: string): (a: TimeZoneEntry, b: TimeZoneEntry) => number {
+	return (a, b) => a.minutes - b.minutes || a.city.localeCompare(b.city, locale);
+}
+
 let cached: { key: string; entries: TimeZoneEntry[] } | undefined;
 
 /** Every zone, west to east, then by city. Offsets are today's: a zone moves
  * when its clocks change, so the list is rebuilt once a day. Building costs a
- * few formatters per zone (~0.1 s), so it happens when a list is first opened. */
+ * few formatters per zone (~0.1 s), so it happens when a list is first opened;
+ * `include` (the device's and the chosen zone) adds to it without a rebuild. */
 export function timeZoneEntries(locale: string, include: readonly string[] = [], at = new Date()): TimeZoneEntry[] {
-	const key = `${locale}|${at.toISOString().slice(0, 10)}|${include.join(",")}`;
-	if (cached?.key === key) return cached.entries;
-	const ids = new Set([...supportedZones(), "UTC", ...include]);
-	const entries: TimeZoneEntry[] = [];
-	for (const id of ids) {
-		try {
-			const shortOffset = zoneName(id, "en", "shortOffset", at);
-			const minutes = offsetMinutes(shortOffset);
-			const names = new Set([zoneName(id, "en", "longGeneric", at)]);
-			if (locale !== "en") names.add(zoneName(id, locale, "longGeneric", at));
-			entries.push({
-				id,
-				city: timeZoneCity(id),
-				offset: minutes === 0 ? "GMT" : shortOffset,
-				minutes,
-				names: [...names].filter(Boolean),
-			});
-		} catch {
-			// A name this browser cannot format is not offered.
-		}
-	}
-	entries.sort((a, b) => a.minutes - b.minutes || a.city.localeCompare(b.city, locale));
-	cached = { key, entries };
-	return entries;
+	const key = `${locale}|${at.toISOString().slice(0, 10)}`;
+	if (cached?.key !== key)
+		cached = {
+			key,
+			entries: [...new Set([...supportedZones(), "UTC"])]
+				.map((id) => zoneEntry(id, locale, at))
+				.filter((entry) => entry !== undefined)
+				.sort(westToEast(locale)),
+		};
+	const known = new Set(cached.entries.map((entry) => entry.id));
+	const extra = [...new Set(include)]
+		.filter((id) => !known.has(id))
+		.map((id) => zoneEntry(id, locale, at))
+		.filter((entry) => entry !== undefined);
+	return extra.length ? [...cached.entries, ...extra].sort(westToEast(locale)) : cached.entries;
 }

@@ -406,22 +406,22 @@ export class CompanyFileController {
 	}
 }
 
-/** An object read the cloud client refused, in the member's language where the
- * refusal is one of its fixed sentences; anything else stays as it came. */
+/** An object read the cloud client refused, by its reason code, in the
+ * member's language. An unavailable object keeps the storage's own words. */
 function describeAccess(error: unknown): string {
 	if (!(error instanceof ObjectAccessError)) return describeError(error);
-	if (error.reason === "denied" && error.message === "You do not have permission to read this object.")
-		return t("You do not have permission to read this object.");
-	if (
-		error.reason === "gateway-required" &&
-		error.message === "This object's storage backend is not supported by the browser client yet."
-	)
-		return t("This object's storage backend is not supported by the browser client yet.");
-	if (error.reason === "too-large" && error.message === "Object is too large to open in the browser")
-		return t("Object is too large to open in the browser");
-	if (error.reason === "too-large" && error.message === "File is too large to open in the browser")
-		return t("File is too large to open in the browser");
-	return error.message;
+	switch (error.reason) {
+		case "denied":
+			return t("You do not have permission to read this object.");
+		case "gateway-required":
+			return t("This object's storage backend is not supported by the browser client yet.");
+		case "too-large":
+			return t("File is too large to open in the browser");
+		case "integrity":
+			return t("The file did not match its record. Try opening it again.");
+		default:
+			return error.message;
+	}
 }
 
 /** Labels for the cloud's fixed codes. English shows the code itself. */

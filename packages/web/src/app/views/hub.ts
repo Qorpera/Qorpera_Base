@@ -4,7 +4,7 @@ import { UUID_PATTERN } from "../../cloud/parse.ts";
 import type { HostedIncomingProfileInvitation, HostedProfile, HostedProfileRole } from "../../cloud/types.ts";
 import { button, companyLogo, fmtDate, h, notice, replace, spinner } from "../../ui/dom.ts";
 import { preserveFormDrafts } from "../../ui/forms.ts";
-import { t } from "../../ui/preferences.ts";
+import { phrase, t } from "../../ui/preferences.ts";
 import { navigate } from "../router.ts";
 import { Store } from "../state.ts";
 import { mountCrown } from "./crown.ts";
@@ -15,10 +15,10 @@ import { mountCrown } from "./crown.ts";
 
 /** A role as the hub names it; the English is the role's own word. */
 const ROLE_LABELS: Record<HostedProfileRole, string> = {
-	owner: "owner",
-	admin: "admin",
-	contributor: "contributor",
-	viewer: "viewer",
+	owner: phrase("owner"),
+	admin: phrase("admin"),
+	contributor: phrase("contributor"),
+	viewer: phrase("viewer"),
 };
 
 export interface HubState {

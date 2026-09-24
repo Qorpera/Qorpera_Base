@@ -249,6 +249,8 @@
 .settings-rows > .settings-preference-row { min-height: 58px; padding: 9px 13px; }
 .settings-rows > .settings-preference-row + .settings-preference-row { border-top: 1px solid #e3e3e0; }
 .settings-rows .settings-copy small { font-weight: 400; }
+/* The row's name is the picker's <label>: clicking it opens the list. */
+.settings-rows label.settings-copy { font-weight: inherit; cursor: pointer; }
 .preference-picker { display: flex; flex: none; min-width: 0; max-width: 55%; }
 .preference-picker-button { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; height: 30px; padding: 0 8px 0 11px; border: 1px solid #d7d7d3; border-radius: 9px; background: #e7e7e4; color: inherit; font: inherit; font-size: 12.5px; font-weight: 400; white-space: nowrap; cursor: pointer; }
 .preference-picker-button:hover, .preference-picker-button[aria-expanded=true] { background: #dededb; }

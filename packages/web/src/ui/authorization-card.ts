@@ -1,6 +1,6 @@
 import type { JsonValue } from "../cloud/types.ts";
 import { badge, fmtTime, h, icon } from "./dom.ts";
-import { t } from "./preferences.ts";
+import { phrase, t } from "./preferences.ts";
 
 /** A runner custom entry keeps its facts under `entry.data`; older desktop bodies keep them at the top. */
 export function authorizationData(body: JsonValue): Record<string, JsonValue> {
@@ -79,11 +79,11 @@ export function renderAuthorizationCard(
 			{ class: "decision-facts" },
 			...(
 				[
-					["to", "Recipient"],
-					["path", "File"],
-					["amount", "Amount"],
-					["currency", "Currency"],
-					["reason", "Reason"],
+					["to", phrase("Recipient")],
+					["path", phrase("File")],
+					["amount", phrase("Amount")],
+					["currency", phrase("Currency")],
+					["reason", phrase("Reason")],
 				] as const
 			).flatMap(([key, label]) =>
 				typeof data[key] === "string" || typeof data[key] === "number"

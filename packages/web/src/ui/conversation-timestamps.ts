@@ -9,9 +9,10 @@ export function parseConversationTimestamp(value: string): Date | undefined {
 
 /** Days begin at midnight in the chosen zone (Settings → General → Time zone). */
 export function needsConversationTimestamp(current: Date, previous?: Date): boolean {
+	const zone = timeZoneOption().timeZone;
 	return (
 		!previous ||
-		presentationDay(current) !== presentationDay(previous) ||
+		presentationDay(current, zone) !== presentationDay(previous, zone) ||
 		current.getTime() - previous.getTime() >= TIMESTAMP_GAP_MS
 	);
 }
@@ -20,8 +21,8 @@ export function conversationTimestampLabel(date: Date, now = new Date()): string
 	const locale = presentationLocale();
 	const zone = timeZoneOption();
 	const time = date.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit", ...zone });
-	const day = presentationDay(date),
-		today = presentationDay(now);
+	const day = presentationDay(date, zone.timeZone),
+		today = presentationDay(now, zone.timeZone);
 	if (day === today) return t("Today {time}", { time });
 	if (day === previousDay(today)) return t("Yesterday {time}", { time });
 	const shown = date.toLocaleDateString(locale, {

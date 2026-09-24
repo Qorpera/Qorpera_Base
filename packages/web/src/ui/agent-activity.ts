@@ -1,6 +1,6 @@
 import type { AgentState } from "../app/company.ts";
 import type { Activity } from "./figure-motion.ts";
-import { t } from "./preferences.ts";
+import { phrase, t } from "./preferences.ts";
 
 export interface AgentLook {
 	figure: Activity;
@@ -15,10 +15,10 @@ export interface AgentLook {
  * the motion studio's name for the agent-coloured, unframed writing dots. */
 export const AGENT_LOOK: Record<AgentState, AgentLook> = {
 	idle: { figure: "Idle" },
-	working: { figure: "Working", line: "Working", caption: "{name} is working", disc: "working" },
-	writing: { figure: "Thinking", line: "Writing", caption: "{name} is writing", disc: "working" },
-	decision: { figure: "Waiting", line: "Needs you" },
-	failed: { figure: "Idle", note: "A run did not finish", disc: "failed" },
+	working: { figure: "Working", line: phrase("Working"), caption: phrase("{name} is working"), disc: "working" },
+	writing: { figure: "Thinking", line: phrase("Writing"), caption: phrase("{name} is writing"), disc: "working" },
+	decision: { figure: "Waiting", line: phrase("Needs you") },
+	failed: { figure: "Idle", note: phrase("A run did not finish"), disc: "failed" },
 };
 
 /* Graphemes when the browser can split them; code points otherwise, so a

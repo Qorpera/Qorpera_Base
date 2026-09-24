@@ -6,7 +6,7 @@ import {
 	type WebConnectors,
 } from "../../cloud/connectors.ts";
 import { button, fmtTime, h, replace } from "../../ui/dom.ts";
-import { t } from "../../ui/preferences.ts";
+import { phrase, t } from "../../ui/preferences.ts";
 
 /**
  * Settings → Connections → Services: the Runtime Step 7 connectors (Gmail,
@@ -34,13 +34,26 @@ export interface ServicesAccess {
 
 const FULL_ACCESS: ServicesAccess = { canManage: () => true, memberName: () => undefined };
 
+/** What each service does, and its token alternative, in the interface language. */
+const CONNECTOR_TEXT: Record<HostedConnectorId, { summary: string; token?: { label: string; hint: string } }> = {
+	gmail: { summary: phrase("Read and search the mailbox, send email.") },
+	google_drive: { summary: phrase("Find, read, create and update documents.") },
+	github: {
+		summary: phrase("Repositories, issues, pull requests and files."),
+		token: {
+			label: phrase("Use a personal access token instead"),
+			hint: phrase("A fine-grained token with the repositories the agents may use."),
+		},
+	},
+};
+
 const RETURN_REASONS: Readonly<Record<string, string>> = {
-	declined: "The sign-in was cancelled before access was granted.",
-	expired: "The sign-in took too long. Try again.",
-	no_refresh_token: "Google did not grant lasting access. Try again and allow all requested access.",
-	provider_error: "The service did not complete the sign-in. Try again.",
-	state_unknown: "This sign-in link is no longer valid. Try again.",
-	browser_mismatch: "The sign-in was finished in another browser. Start it again here.",
+	declined: phrase("The sign-in was cancelled before access was granted."),
+	expired: phrase("The sign-in took too long. Try again."),
+	no_refresh_token: phrase("Google did not grant lasting access. Try again and allow all requested access."),
+	provider_error: phrase("The service did not complete the sign-in. Try again."),
+	state_unknown: phrase("This sign-in link is no longer valid. Try again."),
+	browser_mismatch: phrase("The sign-in was finished in another browser. Start it again here."),
 };
 
 /** Why a sign-in failed, in the interface language. */
@@ -282,6 +295,7 @@ export class ServicesView {
 
 	#card(connector: (typeof HOSTED_CONNECTORS)[number]): HTMLElement {
 		const current = this.#current(connector.id);
+		const text = CONNECTOR_TEXT[connector.id];
 		const busy = this.#working === connector.id;
 		const manage = this.#access.canManage();
 		// Members who are not owners or admins see the card read-only.
@@ -329,7 +343,7 @@ export class ServicesView {
 						t("Available to every agent in the company, including new hires."),
 					),
 				]
-			: [h("strong", null, connector.label), h("small", null, t(connector.summary))];
+			: [h("strong", null, connector.label), h("small", null, t(text.summary))];
 		const children: (HTMLElement | string)[] = [
 			h("img", { class: "connection-logo", src: `./assets/${connector.logo}`, alt: "" }),
 			h("div", { class: "settings-copy" }, ...status),
@@ -344,7 +358,7 @@ export class ServicesView {
 				),
 			);
 		}
-		if (connector.token && !current && manage) {
+		if (text.token && !current && manage) {
 			if (this.#tokenFor === connector.id) {
 				const field = h("input", {
 					type: "password",
@@ -370,13 +384,13 @@ export class ServicesView {
 								void this.#saveToken(connector.id, field.value);
 							},
 						},
-						h("small", null, t(connector.token.hint)),
+						h("small", null, t(text.token.hint)),
 						h("div", { class: "service-token-row" }, field, save),
 					),
 				);
 			} else {
 				const alternative = button(
-					t(connector.token.label),
+					t(text.token.label),
 					() => {
 						this.#tokenFor = connector.id;
 						this.#draw(`service-token:${connector.id}`);

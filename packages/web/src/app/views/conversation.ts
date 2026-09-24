@@ -1,9 +1,9 @@
 import type { CodingSession } from "../../cloud/coding-session.ts";
-import { sessionAttachmentIssue } from "../../cloud/session-attachments.ts";
+import { sessionAttachmentProblem } from "../../cloud/session-attachments.ts";
 import type { TranscriptCard, TranscriptItem } from "../../cloud/transcript.ts";
 import type { HostedSession, HostedStaffAgent, JsonValue } from "../../cloud/types.ts";
 import { AGENT_LOOK, activityCaption, syncCaption } from "../../ui/agent-activity.ts";
-import { AttachmentTray } from "../../ui/attachments.ts";
+import { AttachmentTray, attachmentProblemText } from "../../ui/attachments.ts";
 import { authorizationRequestId, renderAuthorizationCard } from "../../ui/authorization-card.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { CodingSessionElement } from "../../ui/coding-session.ts";
@@ -38,20 +38,6 @@ import { SessionRunView } from "./session-run.ts";
 const dismissedRunNotifications = new WeakMap<CompanyController, Set<string>>();
 
 export { renderAuthorizationCard } from "../../ui/authorization-card.ts";
-
-/** sessionAttachmentIssue's fixed sentences, in the member's language. */
-function attachmentIssueText(issue: string | undefined): string | undefined {
-	switch (issue) {
-		case "Messages support PNG, JPEG, GIF and WebP images. Upload other files through Company File.":
-			return t("Messages support PNG, JPEG, GIF and WebP images. Upload other files through Company File.");
-		case "Choose up to 5 images totaling no more than 8 MiB.":
-			return t("Choose up to 5 images totaling no more than 8 MiB.");
-		case "Choose nonempty image files.":
-			return t("Choose nonempty image files.");
-		default:
-			return issue;
-	}
-}
 
 /* One conversation over the canonical transcript. Rendering follows
  * DECISIONS.md "Transcript projection rules": member inputs and agent sends
@@ -681,10 +667,11 @@ export class ConversationView {
 			room || company.accessLost || !company.team?.capabilities.read ? undefined : session?.staffAgentId,
 			canWrite,
 		);
+		const problem = sessionAttachmentProblem(conversation.attachments ?? []);
 		const attachmentIssue =
 			room && conversation.attachments?.length
 				? t("Images are not supported in group chats. Use Company File.")
-				: attachmentIssueText(sessionAttachmentIssue(conversation.attachments ?? []));
+				: problem && attachmentProblemText(problem);
 		this.#attachments.sync(
 			conversation.attachments ?? [],
 			!canWrite || conversation.sending,

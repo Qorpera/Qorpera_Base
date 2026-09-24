@@ -48,9 +48,6 @@ import type { WorkspaceActions } from "./workspace-actions.ts";
  * at a time. The route decides the view; every view renders from cloud state
  * and re-renders on store changes. */
 
-/** Settings reopens on this tab after a language change reloads the page. */
-const REOPEN_SETTINGS_KEY = "qorpera.web.reopen-settings";
-
 export function mountApplication(
 	root: HTMLElement,
 	cloud: Cloud,
@@ -74,33 +71,15 @@ export function mountApplication(
 	const frame = h("div", { class: "frame" }, topbar, h("div", { class: "body" }, backdrop, rail, main));
 	const railLayout = new RailLayout(frame, rail);
 	rail.after(railLayout.el);
-	// Interface text is read when it is drawn, so a new language redraws the
-	// app by reloading the page; Settings reopens where the choice was made.
-	const shownLocale = presentationLocale();
-	const onLanguage = () => {
-		applyLanguage();
-		if (presentationLocale() === shownLocale) return;
-		try {
-			if (settings) sessionStorage.setItem(REOPEN_SETTINGS_KEY, "general");
-		} catch {
-			// Without storage the page still reloads in the new language.
-		}
-		location.reload();
-	};
 	applyLanguage();
+	// Interface text and times are read when they are drawn: a new language or
+	// time zone redraws the screens in place (see redrawScreens).
 	window.addEventListener("languagechange", onLanguage);
 	window.addEventListener("qorpera-language-change", onLanguage);
+	window.addEventListener("qorpera-time-zone-change", redrawScreens);
 	const unwatchTheme = watchTheme();
 	let disposed = false;
 	let settings: SettingsView | undefined;
-	// Opened once the signed-in frame is on the page (draw), which replaces the root.
-	let reopenSettings: SettingsTab | undefined;
-	try {
-		if (sessionStorage.getItem(REOPEN_SETTINGS_KEY) === "general") reopenSettings = "general";
-		sessionStorage.removeItem(REOPEN_SETTINGS_KEY);
-	} catch {
-		// No stored tab: the reload simply lands where it was.
-	}
 	let feedback: FeedbackView | undefined;
 	function closeFeedback(restoreFocus = true): void {
 		if (!feedback) return;
@@ -269,6 +248,47 @@ export function mountApplication(
 				? { navigation: { open: navigationOpen, toggle: () => setNavigationOpen(!navigationOpen) } }
 				: {}),
 		};
+	}
+
+	let shownLocale = presentationLocale();
+	/** A new language redraws everything with text in it, Settings included:
+	 * it reopens on the same tab with the focus back on the language. */
+	function onLanguage(): void {
+		applyLanguage();
+		if (disposed || presentationLocale() === shownLocale) return;
+		shownLocale = presentationLocale();
+		rail.setAttribute("aria-label", t("Company navigation"));
+		backdrop.setAttribute("aria-label", t("Close company navigation"));
+		railLayout.relabel();
+		const tab = settings?.tab;
+		closeSettings(false);
+		redrawScreens();
+		if (!tab) return;
+		openSettings(tab);
+		settings?.el.querySelector<HTMLElement>(".preference-picker-button")?.focus();
+	}
+
+	/** Rebuild the route's screens from the stores, which keep drafts,
+	 * attachments and edits. A new-conversation draft and unsaved Company File
+	 * text live only in their screens, so those stay until they are left. */
+	function redrawScreens(): void {
+		if (disposed) return;
+		notices?.dispose();
+		notices = undefined;
+		executionNotices.replaceChildren();
+		conversation?.dispose();
+		conversation = undefined;
+		approvals?.dispose();
+		approvals = undefined;
+		if (newConversation && !newConversation.hasInput) {
+			newConversation.dispose();
+			newConversation = undefined;
+		}
+		if (liveFile && !liveFile.leaveMessage()) {
+			liveFile.dispose();
+			liveFile = undefined;
+		}
+		render();
 	}
 
 	function teardownCompany(): void {
@@ -449,10 +469,6 @@ export function mountApplication(
 			return;
 		}
 		if (!root!.contains(frame)) replace(root!, frame);
-		if (reopenSettings) {
-			openSettings(reopenSettings);
-			reopenSettings = undefined;
-		}
 		const route: Route = currentRoute();
 		frame.classList.toggle(
 			"has-thread",
@@ -668,7 +684,7 @@ export function mountApplication(
 						() => setNavigationOpen(!navigationOpen),
 					);
 					replace(main, newConversation.el);
-					newConversation.focus();
+					if (!frame.inert) newConversation.focus();
 				}
 				newConversation.setNavigationOpen(navigationOpen);
 				return;
@@ -832,7 +848,8 @@ export function mountApplication(
 						() => setNavigationOpen(!navigationOpen),
 					);
 					replace(main, conversation.el);
-					conversation.focus();
+					// Not while Settings covers the frame (a redraw behind it after a language change).
+					if (!frame.inert) conversation.focus();
 				} else conversation.update();
 				conversation.setNavigationOpen(navigationOpen);
 				return;
@@ -973,6 +990,7 @@ export function mountApplication(
 		railLayout.dispose();
 		window.removeEventListener("languagechange", onLanguage);
 		window.removeEventListener("qorpera-language-change", onLanguage);
+		window.removeEventListener("qorpera-time-zone-change", redrawScreens);
 		unwatchTheme();
 		closeSettings(false);
 		closeFeedback(false);

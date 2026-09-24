@@ -1,6 +1,6 @@
 import type { HostedStaffAgent } from "../cloud/types.ts";
 import { type Activity, type FigureArtwork, type FigureMotion, mountFigureMotion } from "./figure-motion.ts";
-import { t } from "./preferences.ts";
+import { phrase, t } from "./preferences.ts";
 
 /* Agent figures: the approved visual system, vendored under
  * `public/assets/avatars` and loaded by `index.html` before this bundle. This
@@ -58,9 +58,19 @@ export function figureArtwork(): FigureArtwork | undefined {
 export const FIGURE_IDS = ["planet", "acorn", "flame", "rocket", "crown", "heart", "ghost"] as const;
 export type FigureId = (typeof FIGURE_IDS)[number];
 
-/** A figure's spoken name in the chosen language; the English is the id itself. */
+const FIGURE_NAMES: Record<FigureId, string> = {
+	planet: phrase("planet"),
+	acorn: phrase("acorn"),
+	flame: phrase("flame"),
+	rocket: phrase("rocket"),
+	crown: phrase("crown"),
+	heart: phrase("heart"),
+	ghost: phrase("ghost"),
+};
+
+/** A figure's spoken name in the chosen language. */
 export function figureName(figure: FigureId): string {
-	return t(figure);
+	return t(FIGURE_NAMES[figure]);
 }
 
 /* The desktop's own resolution rules (renderer.js on master), ported so a
@@ -118,17 +128,17 @@ export function PALETTE(): { name: string; color: string }[] {
 
 /** The palette's names (avatar-appearance.js), so each has its Danish. */
 const COLOR_NAMES: readonly string[] = [
-	"Charcoal",
-	"Brown",
-	"Coral",
-	"Orange",
-	"Gold",
-	"Green",
-	"Teal",
-	"Blue",
-	"Purple",
-	"Pink",
-	"Gray",
+	phrase("Charcoal"),
+	phrase("Brown"),
+	phrase("Coral"),
+	phrase("Orange"),
+	phrase("Gold"),
+	phrase("Green"),
+	phrase("Teal"),
+	phrase("Blue"),
+	phrase("Purple"),
+	phrase("Pink"),
+	phrase("Gray"),
 ];
 
 /** A palette colour's spoken name in the chosen language. */

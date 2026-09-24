@@ -6,7 +6,7 @@ import { createWebNativeSubscription } from "../../cloud/native-subscription.ts"
 import type { HostedCompanyFile, HostedProfile } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { button, h, icon, notice, replace } from "../../ui/dom.ts";
-import { t, uiText } from "../../ui/preferences.ts";
+import { phrase, t, uiText } from "../../ui/preferences.ts";
 import type { AuthController } from "../auth.ts";
 import { CompanyController } from "../company.ts";
 import { type AccountViewState, renderAccount } from "./account.ts";
@@ -22,35 +22,35 @@ import { renderTeam } from "./team.ts";
 const TABS = [
 	{
 		id: "general",
-		label: "General",
+		label: phrase("General"),
 		icon: "settings",
 		keywords:
 			"account appearance theme composer color colour blue green grey gray language region time zone timezone generelt konto udseende tema lys mørk skrivefelt farve blå grøn grå sprog dansk engelsk område tidszone",
 	},
 	{
 		id: "plan",
-		label: "Plan & usage",
+		label: phrase("Plan & usage"),
 		icon: "plan",
 		keywords:
 			"plan billing subscription usage storage trial upgrade price payment card invoices computer hours basis standard dedicated abonnement forbrug betaling lager lagerplads prøveperiode opgrader pris kort fakturaer computertimer dedikeret",
 	},
 	{
 		id: "friends",
-		label: "Friends",
+		label: phrase("Friends"),
 		icon: "friends",
 		keywords:
 			"people contacts requests add email invitations invites join accept decline venner personer kontakter anmodninger tilføj e-mail invitationer inviter accepter afvis",
 	},
 	{
 		id: "company",
-		label: "Company",
+		label: phrase("Company"),
 		icon: "company",
 		keywords:
 			"people team members invitations staff file organization approvals execution pause resume ceilings limits virksomhed personer medlemmer invitationer agenter virksomhedsfilen organisation godkendelser kørsel pause genoptag lofter grænser roller",
 	},
 	{
 		id: "connections",
-		label: "Connections",
+		label: phrase("Connections"),
 		icon: "connections",
 		keywords:
 			"providers subscriptions openai codex anthropic claude secrets forbindelser udbydere modelkonti konti tjenester gmail google drive github hemmeligheder",
@@ -221,6 +221,11 @@ export class SettingsView {
 		);
 		this.#countInvitations();
 		this.#select(tab);
+	}
+
+	/** The open tab, so a language change can reopen Settings where it was. */
+	get tab(): SettingsTab {
+		return this.#tab;
 	}
 
 	focus(): void {
@@ -492,8 +497,8 @@ export class SettingsView {
 				h("div", { class: "settings-execution" }),
 				...(
 					[
-						["organization", "Organization", t("Agents and projects")],
-						["approvals", "Approvals", t("Review requests that need your decision")],
+						["organization", phrase("Organization"), t("Agents and projects")],
+						["approvals", phrase("Approvals"), t("Review requests that need your decision")],
 					] as const
 				).map(([path, title, detail]) =>
 					h(

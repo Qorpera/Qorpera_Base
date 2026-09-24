@@ -83,7 +83,8 @@ export function createConversationStarter(options: {
 								.map((id) => company.staffById(id)!.displayName)
 								.join(", ")
 								.slice(0, 256),
-							purpose: t("A group conversation with the selected agents."),
+							// Saved in the Company File as company content, so the same in every interface language.
+							purpose: "A group conversation with the selected agents.",
 							status: "active",
 							projectId: null,
 							members: [

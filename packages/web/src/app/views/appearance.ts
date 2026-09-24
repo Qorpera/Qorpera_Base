@@ -2,6 +2,7 @@ import { h } from "../../ui/dom.ts";
 import {
 	type ComposerColorPreference,
 	composerColorPreference,
+	phrase,
 	setComposerColorPreference,
 	setThemePreference,
 	type ThemePreference,
@@ -107,11 +108,11 @@ function colorSwatch(color: ComposerColorPreference): HTMLElement {
 export function themeChoices(failed: () => void): HTMLFieldSetElement {
 	return choices<ThemePreference>(
 		"theme",
-		"Theme",
+		phrase("Theme"),
 		[
-			{ value: "system", label: "System", swatch: themeSwatch("system") },
-			{ value: "light", label: "Light", swatch: themeSwatch("light") },
-			{ value: "dark", label: "Dark", swatch: themeSwatch("dark") },
+			{ value: "system", label: phrase("System"), swatch: themeSwatch("system") },
+			{ value: "light", label: phrase("Light"), swatch: themeSwatch("light") },
+			{ value: "dark", label: phrase("Dark"), swatch: themeSwatch("dark") },
 		],
 		themePreference,
 		setThemePreference,
@@ -122,11 +123,11 @@ export function themeChoices(failed: () => void): HTMLFieldSetElement {
 export function composerColorChoices(failed: () => void): HTMLFieldSetElement {
 	return choices<ComposerColorPreference>(
 		"composer-color",
-		"Composer color",
+		phrase("Composer color"),
 		[
-			{ value: "blue", label: "Blue", swatch: colorSwatch("blue") },
-			{ value: "green", label: "Green", swatch: colorSwatch("green") },
-			{ value: "grey", label: "Grey", swatch: colorSwatch("grey") },
+			{ value: "blue", label: phrase("Blue"), swatch: colorSwatch("blue") },
+			{ value: "green", label: phrase("Green"), swatch: colorSwatch("green") },
+			{ value: "grey", label: phrase("Grey"), swatch: colorSwatch("grey") },
 		],
 		composerColorPreference,
 		setComposerColorPreference,

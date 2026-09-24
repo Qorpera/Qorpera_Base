@@ -32,13 +32,19 @@ export function openComputerViewer(options: ComputerViewerOptions): ComputerView
 	).qorperaScreenViewer;
 	if (!renderer) throw new Error("Screen viewing is unavailable.");
 	const translation = translateViewer(options.mount ?? document.body);
-	const viewer = renderer.open({
-		...options,
-		onClosed: () => {
-			translation?.disconnect();
-			options.onClosed();
-		},
-	});
+	let viewer: ComputerViewer;
+	try {
+		viewer = renderer.open({
+			...options,
+			onClosed: () => {
+				translation?.disconnect();
+				options.onClosed();
+			},
+		});
+	} catch (error) {
+		translation?.disconnect();
+		throw error;
+	}
 	return {
 		close: async () => {
 			try {

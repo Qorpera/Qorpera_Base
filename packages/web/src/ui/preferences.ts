@@ -26,6 +26,19 @@ export function presentationLocale(): "da" | "en" {
 
 type TextValues = Record<string, string | number>;
 const missing = new Set<string>();
+let taskLocale: "da" | "en" | undefined;
+
+/** The locale, read once per task: a render calls t() hundreds of times.
+ * A language change clears it at once (setLanguagePreference). */
+function textLocale(): "da" | "en" {
+	if (!taskLocale) {
+		taskLocale = presentationLocale();
+		queueMicrotask(() => {
+			taskLocale = undefined;
+		});
+	}
+	return taskLocale;
+}
 
 /** Interface text in the chosen language. Only interface text goes through
  * here, never company content (names, messages, file names): that goes in
@@ -36,10 +49,17 @@ const missing = new Set<string>();
 export function t(source: string, values?: TextValues): string {
 	let text = source;
 	if (!Object.hasOwn(DANISH, source)) missing.add(source);
-	else if (presentationLocale() === "da") text = DANISH[source]!;
+	else if (textLocale() === "da") text = DANISH[source]!;
 	return values
 		? text.replace(/\{(\w+)\}/g, (field, name: string) => (name in values ? String(values[name]) : field))
 		: text;
+}
+
+/** Marks English interface text kept in a table or passed along before it
+ * is drawn with t(): it returns the text unchanged, and lets
+ * test/translations.test.ts find the key where it is written. */
+export function phrase(source: string): string {
+	return source;
 }
 
 /** Sources t() was asked for that have no Danish yet (checked after each test file). */
@@ -57,6 +77,7 @@ export function uiText(source: string, values?: TextValues): HTMLSpanElement {
 }
 
 export function applyLanguage(): void {
+	taskLocale = undefined;
 	document.documentElement.lang = presentationLocale();
 	for (const element of document.querySelectorAll<HTMLElement>("[data-ui-text]")) {
 		const values = element.dataset.uiValues ? (JSON.parse(element.dataset.uiValues) as TextValues) : undefined;
@@ -71,6 +92,7 @@ export function setLanguagePreference(value: string): boolean {
 	} catch {
 		return false;
 	}
+	taskLocale = undefined;
 	applyLanguage();
 	window.dispatchEvent(new Event("qorpera-language-change"));
 	return true;
@@ -119,11 +141,11 @@ export function timeZoneOption(): { timeZone?: string } {
 
 const dayFormats = new Map<string, Intl.DateTimeFormat>();
 
-/** The calendar day ("2026-09-24") a moment falls on in the shown zone.
+/** The calendar day ("2026-09-24") a moment falls on in the shown zone; pass
+ * the zone when formatting many dates so the preference is read once.
  * Following the device reads the local clock each time, so a device that
  * travels moves its midnights with it. */
-export function presentationDay(date: Date): string {
-	const zone = timeZoneOption().timeZone;
+export function presentationDay(date: Date, zone = timeZoneOption().timeZone): string {
 	if (!zone) {
 		const pad = (value: number) => String(value).padStart(2, "0");
 		return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;

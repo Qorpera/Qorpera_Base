@@ -134,6 +134,12 @@ export class RailLayout {
 		this.el.setAttribute("aria-valuetext", width === COMPACT ? t("Compact") : t("{width} pixels", { width }));
 		window.dispatchEvent(new Event("qorpera-rail-resize"));
 	}
+	/** Say the handle's name and width again in a newly chosen language. */
+	relabel(): void {
+		this.el.setAttribute("aria-label", t("Resize company navigation"));
+		this.#apply();
+	}
+
 	dispose(): void {
 		this.#lifetime.abort();
 		this.el.remove();

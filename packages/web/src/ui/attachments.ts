@@ -1,3 +1,4 @@
+import type { SessionAttachmentProblem } from "../cloud/session-attachments.ts";
 import { SurfaceDialog } from "./dialog.ts";
 import { fmtBytes, h, icon, replace } from "./dom.ts";
 import { t } from "./preferences.ts";
@@ -129,4 +130,13 @@ export class AttachmentTray {
 			? t("Attachments stay on this device. Sending attachments is not available yet.")
 			: "";
 	}
+}
+
+/** Why the chosen files cannot go with a message, in the member's language. */
+export function attachmentProblemText(problem: SessionAttachmentProblem): string {
+	return problem === "type"
+		? t("Messages support PNG, JPEG, GIF and WebP images. Upload other files through Company File.")
+		: problem === "size"
+			? t("Choose up to 5 images totaling no more than 8 MiB.")
+			: t("Choose nonempty image files.");
 }

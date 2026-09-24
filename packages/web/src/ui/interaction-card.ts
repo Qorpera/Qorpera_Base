@@ -7,7 +7,7 @@ import {
 } from "../cloud/interactions.ts";
 import type { JsonValue } from "../cloud/types.ts";
 import { badge, button, fmtTime, h, icon } from "./dom.ts";
-import { t } from "./preferences.ts";
+import { phrase, t } from "./preferences.ts";
 
 /* Cards an agent raises in its thread (THREAD-WIDGETS-DESIGN-20260922.md).
  * One shell for every surface: a quiet header with the agent's name, the
@@ -41,35 +41,35 @@ export interface InteractionCardItem {
 }
 
 const STATE_LABEL = {
-	waiting: "Waiting for you",
-	answered: "Answered",
-	declined: "Declined",
-	expired: "Expired",
+	waiting: phrase("Waiting for you"),
+	answered: phrase("Answered"),
+	declined: phrase("Declined"),
+	expired: phrase("Expired"),
 } as const;
 
 const SURFACE_LABEL = {
-	question: "Question",
-	secret: "Secret",
-	form: "Form",
-	takeover: "Computer",
-	draft: "Draft",
-	credential: "Sign-in",
+	question: phrase("Question"),
+	secret: phrase("Secret"),
+	form: phrase("Form"),
+	takeover: phrase("Computer"),
+	draft: phrase("Draft"),
+	credential: phrase("Sign-in"),
 } as const;
 
 /** What an answer did, for every outcome but a question's chosen options. */
 const OUTCOME_LABEL: Record<InteractionOutcome, string> = {
-	answered: "Filled in",
-	provided: "Saved to the company vault",
-	handed_back: "Handed back",
-	sent: "Sent",
-	approved: "Approved",
-	declined: "Declined",
-	dismissed: "Skipped",
-	discarded: "Discarded",
+	answered: phrase("Filled in"),
+	provided: phrase("Saved to the company vault"),
+	handed_back: phrase("Handed back"),
+	sent: phrase("Sent"),
+	approved: phrase("Approved"),
+	declined: phrase("Declined"),
+	dismissed: phrase("Skipped"),
+	discarded: phrase("Discarded"),
 };
 
 /** The answer as the card shows it: a question's chosen options in the agent's own
- * words (as describeAnswer puts them), otherwise what the member did. */
+ * words, otherwise what the member did. */
 function answerText(request: InteractionRequest, answer: InteractionAnswer): string {
 	if (answer.outcome !== "answered" || request.surface !== "question") return t(OUTCOME_LABEL[answer.outcome]);
 	const values = Array.isArray(answer.answer.values)

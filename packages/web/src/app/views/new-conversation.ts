@@ -184,6 +184,17 @@ export class NewConversationView {
 		company.signal.addEventListener("abort", () => this.dispose(), { signal: this.#lifetime.signal });
 		this.#picker();
 	}
+	/** Something typed or picked here that redrawing the screen would lose. */
+	get hasInput(): boolean {
+		return Boolean(
+			this.#message.value.trim() ||
+				this.#search.value.trim() ||
+				this.#selected.size ||
+				this.#editing ||
+				this.#sending,
+		);
+	}
+
 	dispose(): void {
 		this.#lifetime.abort();
 		this.#unsubscribe();

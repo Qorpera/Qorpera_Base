@@ -1,6 +1,6 @@
 import type { HostedCompanyFile } from "../../cloud/types.ts";
 import { button, fmtBytes, h, notice, replace } from "../../ui/dom.ts";
-import { presentationLocale, t, uiText } from "../../ui/preferences.ts";
+import { phrase, presentationLocale, t, uiText } from "../../ui/preferences.ts";
 import type { AccountViewState } from "./account.ts";
 import { meter, storageSummary } from "./storage-summary.ts";
 
@@ -23,47 +23,55 @@ export interface PlanOffer {
 export const PLAN_OFFERS: PlanOffer[] = [
 	{
 		key: "basis",
-		name: "Basis",
+		name: phrase("Basis"),
 		monthlyKr: 185,
-		tagline: "For the daily work.",
+		tagline: phrase("For the daily work."),
 		includes: [
-			"100 GB storage included",
-			"A worker computer for every agent, 74 hours",
-			"Connect from computer and phone",
-			"Work in the cloud while your computer is off",
+			phrase("100 GB storage included"),
+			phrase("A worker computer for every agent, 74 hours"),
+			phrase("Connect from computer and phone"),
+			phrase("Work in the cloud while your computer is off"),
 		],
 		includedHours: 74,
 	},
 	{
 		key: "standard",
-		name: "Standard",
+		name: phrase("Standard"),
 		monthlyKr: 630,
 		usageDiscount: 37,
-		tagline: "More storage and extra computer use.",
-		includesLabel: "Everything in Basis, plus",
-		includes: ["250 GB storage included", "More than 3.5× extra computer use", "Priority access at peak hours"],
+		tagline: phrase("More storage and extra computer use."),
+		includesLabel: phrase("Everything in Basis, plus"),
+		includes: [
+			phrase("250 GB storage included"),
+			phrase("More than 3.5× extra computer use"),
+			phrase("Priority access at peak hours"),
+		],
 		includedHours: 286,
 	},
 	{
 		key: "dedicated",
-		name: "Dedicated computer",
+		name: phrase("Dedicated computer"),
 		monthlyKr: 1592,
 		usageDiscount: 43,
-		tagline: "Your own computer all month.",
-		includesLabel: "Everything in Standard, plus",
-		includes: ["500 GB storage included", "A dedicated computer all month", "Early access to new features"],
+		tagline: phrase("Your own computer all month."),
+		includesLabel: phrase("Everything in Standard, plus"),
+		includes: [
+			phrase("500 GB storage included"),
+			phrase("A dedicated computer all month"),
+			phrase("Early access to new features"),
+		],
 	},
 ];
 
 const PLAN_NAMES: Record<string, string> = {
-	internal: "Complimentary",
-	freemium: "Free trial",
-	trial: "Free trial",
-	basis: "Basis",
-	standard: "Standard",
-	dedicated: "Dedicated computer",
-	pro: "Pro",
-	team: "Team",
+	internal: phrase("Complimentary"),
+	freemium: phrase("Free trial"),
+	trial: phrase("Free trial"),
+	basis: phrase("Basis"),
+	standard: phrase("Standard"),
+	dedicated: phrase("Dedicated computer"),
+	pro: phrase("Pro"),
+	team: phrase("Team"),
 };
 
 export function planName(planKey: string): string {

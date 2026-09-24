@@ -4,7 +4,7 @@ import { SurfaceDialog } from "../../ui/dialog.ts";
 import { button, h, icon, replace } from "../../ui/dom.ts";
 import { type FigureChoice, FigurePicker } from "../../ui/figure-picker.ts";
 import { matchesKey } from "../../ui/keys.ts";
-import { t } from "../../ui/preferences.ts";
+import { phrase, t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 import type { AgentDraft, WorkspaceActions } from "../workspace-actions.ts";
 import { type AgentEdits, editsFor, savedAgentDraft } from "./agent-edits.ts";
@@ -14,10 +14,10 @@ type Page = "details" | "routines";
 type TextKey = "displayName" | "role" | "charter";
 
 const FIELDS: Record<TextKey, { label: string; empty: string }> = {
-	displayName: { label: "Agent name", empty: "An agent needs a name." },
-	role: { label: "Agent title", empty: "An agent needs a title." },
+	displayName: { label: phrase("Agent name"), empty: phrase("An agent needs a name.") },
+	role: { label: phrase("Agent title"), empty: phrase("An agent needs a title.") },
 	// The description is the agent's responsibilities in plain prose, and what the agent works from.
-	charter: { label: "Responsibilities", empty: "An agent needs its responsibilities written down." },
+	charter: { label: phrase("Responsibilities"), empty: phrase("An agent needs its responsibilities written down.") },
 };
 
 /** An agent's details, anchored under the conversation title. Name, title and
@@ -292,8 +292,8 @@ export class AgentDetails {
 	#syncEdits(): void {
 		if (this.#lifetime.signal.aborted) return;
 		this.#sync();
-		const { status, failed } = this.#edits.store.get();
-		this.#say(status, status === t("Saved"), failed);
+		const { status, failed, saved } = this.#edits.store.get();
+		this.#say(status, saved, failed);
 	}
 
 	#say(text: string, fade = false, retry = false): void {

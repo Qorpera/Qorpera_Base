@@ -16,6 +16,7 @@ import tokensCss from "../src/styles/tokens.css?raw";
 import { AttachmentTray } from "../src/ui/attachments.ts";
 import { fmtTime } from "../src/ui/dom.ts";
 import { markdown, markdownBubbles } from "../src/ui/markdown.ts";
+import { setLanguagePreference } from "../src/ui/preferences.ts";
 import { deferred, fixture, id, profileA, session, settle, staff, team, timestamp, userA, userB } from "./fixtures.ts";
 
 let dispose: (() => void) | undefined;
@@ -1464,6 +1465,40 @@ describe("new conversation and agent setup", () => {
 });
 
 describe("messages between two agents (contract 14.6)", () => {
+	it("keeps the coworker's figure and name together wherever Danish puts them", async () => {
+		setLanguagePreference("da");
+		const f = setup();
+		const coworker = { ...staff, id: id(97), displayName: "Helper" };
+		f.company.store.set({ staff: [staff, coworker] });
+		await f.company.loadConversation(session.sessionId);
+		f.company.conversation(session.sessionId).set({
+			loading: false,
+			projection: {
+				items: [
+					{
+						kind: "peer_link",
+						id: id(96),
+						sequence: 1,
+						direction: "in",
+						counterpartStaffId: coworker.id,
+						pairSessionId: id(98),
+						createdAt: timestamp,
+					},
+				],
+				hiddenCount: 0,
+				lastSequence: 1,
+			},
+		});
+		f.view.update();
+		const chip = f.view.el.querySelector<HTMLButtonElement>(".peer-chip")!;
+		expect([...chip.querySelectorAll(":scope > span:not(.figure)")].map((span) => span.textContent)).toEqual([
+			"Besked fra",
+			"Helper",
+		]);
+		expect(chip.querySelector(".figure")?.nextElementSibling?.textContent).toBe("Helper");
+		expect(chip.getAttribute("aria-label")).toBe("Besked fra Helper. Åbn samtalen");
+	});
+
 	it("shows a chip for a coworker's message and opens the two agents' view-only transcript from it", async () => {
 		const f = setup();
 		const coworker = { ...staff, id: id(97), displayName: "Helper" };

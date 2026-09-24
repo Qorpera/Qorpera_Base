@@ -156,33 +156,3 @@ export function interactionState(
 	if (request.expiresAt && Date.parse(request.expiresAt) <= now) return "expired";
 	return "waiting";
 }
-
-/** The plain words on an answered card. */
-export function describeAnswer(request: InteractionRequest, answer: InteractionAnswer): string {
-	switch (answer.outcome) {
-		case "answered": {
-			if (request.surface === "question") {
-				const values = Array.isArray(answer.answer.values)
-					? answer.answer.values.filter((value): value is string => typeof value === "string")
-					: [];
-				const labels = new Map(questionOptions(request).map((option) => [option.value, option.label]));
-				return values.map((value) => labels.get(value) ?? value).join(", ") || "Answered";
-			}
-			return "Filled in";
-		}
-		case "provided":
-			return "Saved to the company vault";
-		case "handed_back":
-			return "Handed back";
-		case "sent":
-			return "Sent";
-		case "approved":
-			return "Approved";
-		case "declined":
-			return "Declined";
-		case "dismissed":
-			return "Skipped";
-		case "discarded":
-			return "Discarded";
-	}
-}

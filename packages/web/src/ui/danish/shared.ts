@@ -20,7 +20,6 @@ export const SHARED: Record<string, string> = {
 	Danish: "Dansk",
 	Close: "Luk",
 	"Sign out": "Log ud",
-	Companies: "Virksomheder",
 	Feedback: "Feedback",
 	"Share feedback": "Del feedback",
 	"Staff at work": "Agenter på arbejde",

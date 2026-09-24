@@ -136,14 +136,22 @@ dropped the same day for the handoff-line shape.)
 `{placeholders}` and are never translated: names, messages, file names, roles
 typed by members and server error text are company content. A sentence with a
 value is one key, never glued fragments, because Danish word order differs;
-plurals are two keys. Choosing a language reloads the page and reopens
-Settings → General; nothing re-translates itself live.
+plurals are two keys. Text kept in a table before it is drawn (labels by code,
+menu items) is marked with `phrase("…")`, which returns it unchanged. Choosing a
+language redraws the screens in place (application.ts `onLanguage` /
+`redrawScreens`): drafts, chosen images and edits live in the stores and
+survive; Settings reopens on the same tab. The data layer returns codes
+(`sessionAttachmentProblem`, `ObjectAccessError.reason`) and views translate
+them; never match English message text.
 
-**Checks.** `test/translations.test.ts` reads the source: every literal passed
-to `t()`/`uiText()` has Danish, placeholders match, a key lives in one area
-file, and no Danish is left that no code asks for. `test/setup.ts` fails any
-test file whose screens drew text without Danish (keys built at run time).
-So a new label needs its Danish in the same change.
+**Checks.** `test/translations.test.ts` reads the source: every key written
+in `t()`/`uiText()`/`phrase()` has Danish, placeholders match, a key lives in
+one area file, no Danish is left that no code asks for, and no English literal
+sits unwrapped where interface text goes (aria-label, placeholder, title, text
+children of `h()`, `button()`, `notice()`, `badge()`, `spinner()`, `confirm()`).
+`test/setup.ts` fails any test file whose screens drew text without Danish
+(keys built at run time). So a new label needs `t()` and its Danish in the
+same change.
 
 **Wording.** Plain, short Danish in the du-form, matching qorpera.com and the
 desktop (`packages/shell/userland/localization.js`): Company File is

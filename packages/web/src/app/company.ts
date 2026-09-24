@@ -12,7 +12,7 @@ import {
 	type RealtimeSubscription,
 	subscribeProfileRealtime,
 } from "../cloud/realtime.ts";
-import { sessionAttachmentIssue } from "../cloud/session-attachments.ts";
+import { sessionAttachmentProblem } from "../cloud/session-attachments.ts";
 import {
 	type RoomMessageTarget,
 	type SessionExecutionSponsor,
@@ -31,6 +31,7 @@ import type {
 	JsonValue,
 	PendingSessionInput,
 } from "../cloud/types.ts";
+import { attachmentProblemText } from "../ui/attachments.ts";
 import { t } from "../ui/preferences.ts";
 import { debounce, Store } from "./state.ts";
 
@@ -663,7 +664,10 @@ export class CompanyController {
 			if (failed.sourceKind === "session_turn") await this.#api.retryFailedRun(runId);
 			else {
 				const sponsor = this.conversation(sessionId, false).get().executionSponsor;
-				if (!sponsor) throw new Error("Select an active model account, then try again.");
+				if (!sponsor) {
+					mark({ pending: false, error: t("Select an active model account, then try again.") });
+					return;
+				}
 				await this.#api.retryRoomDelivery(runId, sponsor.sponsorBindingId, sponsor.sponsorVersion);
 			}
 			mark(undefined);
@@ -1054,9 +1058,9 @@ export class CompanyController {
 		const trimmed = text.trim();
 		const files = [...(store.get().attachments ?? [])];
 		if ((!trimmed && !files.length) || store.get().sending) return false;
-		const issue = sessionAttachmentIssue(files);
-		if (issue) {
-			store.set({ sendError: issue });
+		const problem = sessionAttachmentProblem(files);
+		if (problem) {
+			store.set({ sendError: attachmentProblemText(problem) });
 			return false;
 		}
 		const retry = store.get().retrySend;

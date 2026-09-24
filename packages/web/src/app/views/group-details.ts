@@ -5,16 +5,16 @@ import { SurfaceDialog } from "../../ui/dialog.ts";
 import { button, h, icon, notice, personAvatar, replace, spinner } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { matchesKey } from "../../ui/keys.ts";
-import { t } from "../../ui/preferences.ts";
+import { phrase, t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { type GroupEdits, groupEditsFor } from "./group-edits.ts";
 
 type TextKey = "name" | "subtitle" | "purpose";
 const LABELS: Record<TextKey, string> = {
-	name: "Group title",
-	subtitle: "Group subtitle",
-	purpose: "Group description",
+	name: phrase("Group title"),
+	subtitle: phrase("Group subtitle"),
+	purpose: phrase("Group description"),
 };
 
 /** Group identity edits in place, with the same field behavior as agent details. */

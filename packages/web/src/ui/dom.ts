@@ -56,8 +56,8 @@ export function fmtTime(iso: string): string {
 	const date = new Date(iso);
 	if (Number.isNaN(date.getTime())) return "";
 	const zone = timeZoneOption();
-	const day = presentationDay(date),
-		today = presentationDay(new Date());
+	const day = presentationDay(date, zone.timeZone),
+		today = presentationDay(new Date(), zone.timeZone);
 	const time = date.toLocaleTimeString(presentationLocale(), { hour: "2-digit", minute: "2-digit", ...zone });
 	if (day === today) return time;
 	const sameYear = day.slice(0, 4) === today.slice(0, 4);

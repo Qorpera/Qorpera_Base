@@ -5,7 +5,7 @@ import { agentFigure } from "../../ui/avatar.ts";
 import { badge, button, h, icon, initials, notice, replace } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { matchesKey } from "../../ui/keys.ts";
-import { presentationLocale, t, uiText } from "../../ui/preferences.ts";
+import { phrase, presentationLocale, t, uiText } from "../../ui/preferences.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { type AuthController, displayName } from "../auth.ts";
 import { type AgentState, type CompanyController, isAgentPairSession } from "../company.ts";
@@ -142,8 +142,8 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 	replace(
 		accountPopover!,
 		h("div", { class: "account-identity" }, h("strong", null, name)),
-		settingsItem("general", "settings", "Account and settings"),
-		settingsItem("friends", "friends", "Friends", context.invitations),
+		settingsItem("general", "settings", phrase("Account and settings")),
+		settingsItem("friends", "friends", phrase("Friends"), context.invitations),
 		h(
 			"button",
 			{
@@ -343,7 +343,9 @@ function railLabel(
 	agent: Pick<HostedStaffAgent, "displayName" | "role">,
 	look: AgentLook,
 ): { title: string; "aria-label"?: string } {
-	const state = look.note ?? look.line;
+	// AGENT_LOOK keeps the English words; they are translated where they are drawn.
+	const words = look.note ?? look.line;
+	const state = words ? t(words) : undefined;
 	const label = [agent.displayName, agent.role, state].filter(Boolean).join(" · ");
 	return state ? { title: label, "aria-label": label } : { title: label };
 }
@@ -361,18 +363,8 @@ interface SessionModel {
 	agents: HostedStaffAgent[];
 	selected: boolean;
 }
-/** An agent state's look with its words in the chosen language; AGENT_LOOK keeps the English. */
-function lookOf(state: AgentState): AgentLook {
-	const look = AGENT_LOOK[state];
-	return {
-		...look,
-		...(look.line ? { line: t(look.line) } : {}),
-		...(look.note ? { note: t(look.note) } : {}),
-	};
-}
-
 function cofounderCard(model: AgentModel, href: string): HTMLElement {
-	const look = lookOf(model.state);
+	const look = AGENT_LOOK[model.state];
 	return h(
 		"a",
 		{ class: "cofounder-home", href, ...railLabel(model, look) },
@@ -387,7 +379,7 @@ function cofounderCard(model: AgentModel, href: string): HTMLElement {
 }
 
 function agentRow(model: AgentModel, href: string): HTMLElement {
-	const look = lookOf(model.state);
+	const look = AGENT_LOOK[model.state];
 	return h(
 		"a",
 		{ class: "rail-row rail-row-agent", href, ...railLabel(model, look) },
