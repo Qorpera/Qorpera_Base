@@ -1,6 +1,7 @@
 import { h } from "./dom.ts";
 import { matchesKey } from "./keys.ts";
 import { isPhoneLayout } from "./layout.ts";
+import { t } from "./preferences.ts";
 
 const COMPACT = 80;
 const MIN = 240;
@@ -38,7 +39,7 @@ export class RailLayout {
 			class: "rail-resizer",
 			role: "separator",
 			tabindex: "0",
-			"aria-label": "Resize company navigation",
+			"aria-label": t("Resize company navigation"),
 			"aria-orientation": "vertical",
 			"aria-valuemin": String(COMPACT),
 		});
@@ -130,9 +131,15 @@ export class RailLayout {
 		this.#frame.classList.toggle("rail-compact", width === COMPACT && !drawer);
 		this.el.setAttribute("aria-valuemax", String(max));
 		this.el.setAttribute("aria-valuenow", String(width));
-		this.el.setAttribute("aria-valuetext", width === COMPACT ? "Compact" : `${width} pixels`);
+		this.el.setAttribute("aria-valuetext", width === COMPACT ? t("Compact") : t("{width} pixels", { width }));
 		window.dispatchEvent(new Event("qorpera-rail-resize"));
 	}
+	/** Say the handle's name and width again in a newly chosen language. */
+	relabel(): void {
+		this.el.setAttribute("aria-label", t("Resize company navigation"));
+		this.#apply();
+	}
+
 	dispose(): void {
 		this.#lifetime.abort();
 		this.el.remove();

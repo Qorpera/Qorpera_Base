@@ -3,7 +3,7 @@ import { describeError } from "../../cloud/client.ts";
 import { type Child, h, icon, notice, personAvatar } from "../../ui/dom.ts";
 import { PERSON_PICTURE_EVENT, personPictures } from "../../ui/person-pictures.ts";
 import { PictureFileError } from "../../ui/picture-file.ts";
-import { uiText } from "../../ui/preferences.ts";
+import { phrase, t, uiText } from "../../ui/preferences.ts";
 import { displayName } from "../auth.ts";
 
 /* The account's picture at the head of Settings → General. Clicking it picks a
@@ -15,6 +15,10 @@ import { displayName } from "../auth.ts";
 
 function failureText(error: unknown): Child[] {
 	if (error instanceof PictureFileError) return [uiText(error.message)];
+	// Storage refuses an upload with its policy's words; the member needs none of them.
+	const refused = error as { statusCode?: unknown; message?: unknown };
+	if (refused.statusCode === "403" || /row-level security/i.test(String(refused.message)))
+		return [uiText("Your picture could not be saved. Try again in a moment.")];
 	return [uiText("Your picture could not be changed."), " ", describeError(error)];
 }
 
@@ -40,13 +44,13 @@ export function accountPicture(user: User | null): { picture: HTMLElement; error
 			icon(iconName),
 			h("span", null, uiText(label)),
 		);
-	const choose = item("image", "Choose a new picture", () => {
+	const choose = item("image", phrase("Choose a new picture"), () => {
 		setOpen(false, true);
 		input.click();
 	});
 	const remove = item(
 		"close",
-		"Remove picture",
+		phrase("Remove picture"),
 		() => {
 			setOpen(false, true);
 			void run(() => store.remove(userId));
@@ -56,7 +60,7 @@ export function accountPicture(user: User | null): { picture: HTMLElement; error
 	const menu = h(
 		"div",
 		// Focusable itself, so a click on its padding keeps Escape with the menu.
-		{ class: "account-picture-menu", role: "menu", "aria-label": "Profile picture", tabindex: "-1", hidden: true },
+		{ class: "account-picture-menu", role: "menu", "aria-label": t("Profile picture"), tabindex: "-1", hidden: true },
 		choose,
 		remove,
 	);
@@ -102,12 +106,12 @@ export function accountPicture(user: User | null): { picture: HTMLElement; error
 		if (busy) trigger.setAttribute("aria-busy", "true");
 		else trigger.removeAttribute("aria-busy");
 		const label = busy
-			? "Saving your profile picture"
+			? t("Saving your profile picture")
 			: menu
-				? "Change profile picture"
+				? t("Change profile picture")
 				: status === "none"
-					? "Add a profile picture"
-					: "Profile picture";
+					? t("Add a profile picture")
+					: t("Profile picture");
 		trigger.setAttribute("aria-label", label);
 		trigger.title = changeable ? label : "";
 		if (menu) {

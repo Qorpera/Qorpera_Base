@@ -1,6 +1,7 @@
 import { showFilePanel } from "../../../../member-web/src/file-panel.ts";
 import type { WebCompanyFiles } from "../../cloud/company-files.ts";
 import { button, h, replace } from "../../ui/dom.ts";
+import { presentationLocale, t } from "../../ui/preferences.ts";
 import { listSkeleton } from "../../ui/skeleton.ts";
 
 /** Product presentation of the shared governed File interaction. */
@@ -28,18 +29,20 @@ export class LiveCompanyFileView {
 		this.role = company.company.role;
 		this.authorityKey = authorityKey;
 		this.el.append(
-			h("h1", null, "Company File"),
+			h("h1", null, t("Company File")),
 			h(
 				"div",
 				{ class: "row" },
-				h("a", { href: `#/c/${profileId}/file/history` }, "Snapshots and proposals"),
+				h("a", { href: `#/c/${profileId}/file/history` }, t("Snapshots and proposals")),
 				reload
-					? button("Reload Company File", () => {
+					? button(t("Reload Company File"), () => {
 							if (stop.signal.aborted) return;
 							if (
 								this.leaveMessage() &&
 								!window.confirm(
-									"Reload Company File and discard local drafts? A submitted change may still apply. Open pending changes to check its result.",
+									t(
+										"Reload Company File and discard local drafts? A submitted change may still apply. Open pending changes to check its result.",
+									),
 								)
 							)
 								return;
@@ -64,8 +67,9 @@ export class LiveCompanyFileView {
 				current();
 			} catch {
 				if (!stop.signal.aborted)
-					this.#status.textContent =
-						"The operation could not be confirmed. Check the current state before retrying.";
+					this.#status.textContent = t(
+						"The operation could not be confirmed. Check the current state before retrying.",
+					);
 			} finally {
 				this.#busy = false;
 				this.#root.inert = false;
@@ -75,8 +79,8 @@ export class LiveCompanyFileView {
 			// The panel draws over the placeholder once it has the company's files. The status
 			// line, outside the root that is inert while this runs, tells a screen reader what
 			// is opening until the panel has read them.
-			replace(this.#status, h("span", { class: "visually-hidden" }, "Opening Company File"));
-			replace(this.#root, listSkeleton("Opening Company File", 4));
+			replace(this.#status, h("span", { class: "visually-hidden" }, t("Opening Company File")));
+			replace(this.#root, listSkeleton(t("Opening Company File"), 4));
 			try {
 				const close = await showFilePanel({
 					root: this.#root,
@@ -90,6 +94,8 @@ export class LiveCompanyFileView {
 					beforeLeave: (check) => {
 						this.#leave = check;
 					},
+					t,
+					locale: presentationLocale(),
 				});
 				if (stop.signal.aborted) {
 					close();
@@ -102,7 +108,7 @@ export class LiveCompanyFileView {
 				if (!stop.signal.aborted)
 					replace(
 						this.#root,
-						button("Retry opening Company File", () => void work(initialize)),
+						button(t("Retry opening Company File"), () => void work(initialize)),
 					);
 				throw error;
 			}

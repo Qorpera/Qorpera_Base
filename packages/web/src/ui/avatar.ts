@@ -1,5 +1,6 @@
 import type { HostedStaffAgent } from "../cloud/types.ts";
 import { type Activity, type FigureArtwork, type FigureMotion, mountFigureMotion } from "./figure-motion.ts";
+import { phrase, t } from "./preferences.ts";
 
 /* Agent figures: the approved visual system, vendored under
  * `public/assets/avatars` and loaded by `index.html` before this bundle. This
@@ -57,6 +58,21 @@ export function figureArtwork(): FigureArtwork | undefined {
 export const FIGURE_IDS = ["planet", "acorn", "flame", "rocket", "crown", "heart", "ghost"] as const;
 export type FigureId = (typeof FIGURE_IDS)[number];
 
+const FIGURE_NAMES: Record<FigureId, string> = {
+	planet: phrase("planet"),
+	acorn: phrase("acorn"),
+	flame: phrase("flame"),
+	rocket: phrase("rocket"),
+	crown: phrase("crown"),
+	heart: phrase("heart"),
+	ghost: phrase("ghost"),
+};
+
+/** A figure's spoken name in the chosen language. */
+export function figureName(figure: FigureId): string {
+	return t(FIGURE_NAMES[figure]);
+}
+
 /* The desktop's own resolution rules (renderer.js on master), ported so a
  * company's saved appearance means the same thing in every client. */
 const FIGURE_BY_TEMPLATE: Record<string, FigureId> = {
@@ -108,6 +124,26 @@ export function figureFor(agent: Pick<HostedStaffAgent, "id" | "displayName" | "
  * them. Empty when the vendored scripts are absent. */
 export function PALETTE(): { name: string; color: string }[] {
 	return globals()?.QORPERA_AVATAR_APPEARANCE.palette ?? [];
+}
+
+/** The palette's names (avatar-appearance.js), so each has its Danish. */
+const COLOR_NAMES: readonly string[] = [
+	phrase("Charcoal"),
+	phrase("Brown"),
+	phrase("Coral"),
+	phrase("Orange"),
+	phrase("Gold"),
+	phrase("Green"),
+	phrase("Teal"),
+	phrase("Blue"),
+	phrase("Purple"),
+	phrase("Pink"),
+	phrase("Gray"),
+];
+
+/** A palette colour's spoken name in the chosen language. */
+export function colorName(name: string): string {
+	return COLOR_NAMES.includes(name) ? t(name) : name;
 }
 
 function palette(): string[] {

@@ -161,6 +161,17 @@
 :root[data-theme="dark"] .settings-choice:hover .settings-swatch { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1), 0 0 0 2px #5c5b58; }
 :root[data-theme="dark"] .settings-choice > input:checked ~ .settings-swatch { box-shadow: 0 0 0 2px #f4f3f0; }
 :root[data-theme="dark"] .settings-choice > input:focus-visible ~ .settings-swatch { outline-color: #6f9be0; }
+:root[data-theme="dark"] .settings-rows { background: #333332; }
+:root[data-theme="dark"] .settings-rows > .settings-preference-row + .settings-preference-row { border-color: rgba(255, 255, 255, 0.08); }
+:root[data-theme="dark"] .preference-picker-button { border-color: rgba(255, 255, 255, 0.12); background: #3a3a38; }
+:root[data-theme="dark"] :is(.preference-picker-button:hover, .preference-picker-button[aria-expanded=true]) { background: #444442; }
+:root[data-theme="dark"] .preference-picker-button > .icon { color: #a3a29d; }
+:root[data-theme="dark"] .preference-picker-popover { border-color: rgba(255, 255, 255, 0.1); background: #242423; color: var(--text); box-shadow: 0 22px 48px rgb(0 0 0 / 55%), 0 2px 8px rgb(0 0 0 / 30%); }
+:root[data-theme="dark"] .preference-picker-search { border-color: rgba(255, 255, 255, 0.08); }
+:root[data-theme="dark"] :is(.preference-picker-search > .icon, .preference-picker-clear, .preference-picker-detail, .preference-picker-empty) { color: #a3a29d; }
+:root[data-theme="dark"] .preference-picker-search-input::placeholder { color: #8f8e89; }
+:root[data-theme="dark"] .preference-picker-clear:hover { background: rgba(255, 255, 255, 0.07); color: var(--text); }
+:root[data-theme="dark"] .preference-picker-option.is-active { background: rgba(255, 255, 255, 0.07); }
 :root[data-theme="dark"] .settings-plan-offer { border-color: rgba(255, 255, 255, 0.1); background: #333332; }
 :root[data-theme="dark"] .settings-plan-current { background: var(--primary); color: var(--on-primary); }
 :root[data-theme="dark"] :is(.settings-plan-price, .settings-plan-tagline, .settings-plan-includes-label, .billing-label, .settings-period) { color: #a3a29d; }

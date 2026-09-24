@@ -1,4 +1,5 @@
 import { h, icon } from "./dom.ts";
+import { t } from "./preferences.ts";
 
 /* Loading placeholders. A screen whose content has not arrived yet shows grey
  * shapes where that content will stand, never a sentence about loading. Each
@@ -55,7 +56,7 @@ export function blankSkeleton(label: string): HTMLElement {
 }
 
 /** A thread's messages: agent bubbles on the left, one of the member's on the right. */
-export function messagesSkeleton(label = "Loading conversation"): HTMLElement {
+export function messagesSkeleton(label = t("Loading conversation")): HTMLElement {
 	const bubble = (side: "agent" | "mine", width: string) =>
 		h("div", { class: `skeleton-message skeleton-message-${side} skeleton-w-${width}` }, shape("bubble"));
 	return placeholder(
@@ -101,7 +102,7 @@ export function threadSkeleton(label: string, navigation?: { open: boolean; togg
 								{
 									type: "button",
 									class: "mobile-navigation-toggle icon-button",
-									"aria-label": "Company navigation",
+									"aria-label": t("Company navigation"),
 									"aria-controls": "company-navigation",
 									"aria-expanded": String(navigation.open),
 									onclick: navigation.toggle,
@@ -129,7 +130,7 @@ function figureRow(kind: "rail" | "list", name: string, detail: string): HTMLEle
 }
 
 /** The rail's list: the Co-Founder's tier, then agent rows. */
-export function railListSkeleton(label = "Loading agents"): HTMLElement {
+export function railListSkeleton(label = t("Loading agents")): HTMLElement {
 	return placeholder(
 		label,
 		"skeleton-rail",
@@ -148,7 +149,7 @@ export function railListSkeleton(label = "Loading agents"): HTMLElement {
 }
 
 /** The whole rail, before the company's own rail exists: search field, list and account. */
-export function railSkeleton(label = "Opening company"): HTMLElement[] {
+export function railSkeleton(label = t("Opening company")): HTMLElement[] {
 	return [
 		h("div", { class: "rail-toolbar" }, shape("rail-search")),
 		h("div", { class: "rail-scroll" }, railListSkeleton(label)),
@@ -198,7 +199,7 @@ export function pageSkeleton(label: string): HTMLElement {
 }
 
 /** The company list's cards. */
-export function companyCardsSkeleton(label = "Loading companies", count = 3): HTMLElement {
+export function companyCardsSkeleton(label = t("Loading companies"), count = 3): HTMLElement {
 	return placeholder(
 		label,
 		"company-grid skeleton-companies",

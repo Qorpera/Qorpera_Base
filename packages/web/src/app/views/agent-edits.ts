@@ -1,5 +1,6 @@
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { agentColor, figureFor } from "../../ui/avatar.ts";
+import { t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 import { Store } from "../state.ts";
 import type { AgentDraft, WorkspaceActions } from "../workspace-actions.ts";
@@ -20,6 +21,8 @@ interface AgentEditState {
 	draft: Partial<AgentDraft>;
 	status: string;
 	failed: boolean;
+	/** The last save went through; the status line fades. */
+	saved: boolean;
 }
 
 const edits = new WeakMap<CompanyController, Map<string, AgentEdits>>();
@@ -28,7 +31,7 @@ const edits = new WeakMap<CompanyController, Map<string, AgentEdits>>();
  * Failed drafts are offered for explicit retry, never replayed on reopening.
  * Navigation and company disposal end the writer's scope. */
 export class AgentEdits {
-	readonly store = new Store<AgentEditState>({ draft: {}, status: "", failed: false });
+	readonly store = new Store<AgentEditState>({ draft: {}, status: "", failed: false, saved: false });
 	readonly #company: CompanyController;
 	readonly #agent: HostedStaffAgent;
 	readonly #update: WorkspaceActions["updateAgent"];
@@ -53,7 +56,7 @@ export class AgentEdits {
 				this.#written = this.#revision;
 				this.#changes.clear();
 				this.#accepted.clear();
-				this.store.set({ draft: {}, status: "", failed: false });
+				this.store.set({ draft: {}, status: "", failed: false, saved: false });
 			} else this.#reconcile();
 		});
 		for (const signal of [company.signal, scope]) {
@@ -103,12 +106,12 @@ export class AgentEdits {
 		if (this.#saving || !this.#update || !this.canWrite() || this.#written === this.#revision) return;
 		this.#saving = true;
 		const signal = AbortSignal.any([this.signal, this.#attempt.signal]);
-		this.store.set({ status: "Saving…", failed: false });
+		this.store.set({ status: t("Saving…"), failed: false, saved: false });
 		try {
 			do {
 				while (this.#written < this.#revision) {
 					signal.throwIfAborted();
-					if (!this.canWrite()) throw new Error("Only an owner or admin can change agents.");
+					if (!this.canWrite()) throw new Error(t("Only an owner or admin can change agents."));
 					const revision = this.#revision;
 					const changes = new Map(this.#changes);
 					const version = await this.#update(
@@ -125,9 +128,10 @@ export class AgentEdits {
 				signal.throwIfAborted();
 			} while (this.#written < this.#revision);
 			this.#reconcile();
-			this.store.set({ status: "Saved", failed: false });
+			this.store.set({ status: t("Saved"), failed: false, saved: true });
 		} catch {
-			if (!signal.aborted) this.store.set({ status: "Your changes could not be saved.", failed: true });
+			if (!signal.aborted)
+				this.store.set({ status: t("Your changes could not be saved."), failed: true, saved: false });
 		} finally {
 			this.#saving = false;
 			// A newly authorized edit may arrive while an aborted request settles.
@@ -139,7 +143,7 @@ export class AgentEdits {
 		if (this.signal.aborted) return;
 		this.#lifetime.abort();
 		this.#unsubscribe();
-		this.store.set({ draft: {}, status: "", failed: false });
+		this.store.set({ draft: {}, status: "", failed: false, saved: false });
 		this.store.dispose();
 		if (edits.get(this.#company)?.get(this.#agent.id) === this) edits.get(this.#company)?.delete(this.#agent.id);
 	}

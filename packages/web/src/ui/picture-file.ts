@@ -1,4 +1,5 @@
 import type { MemberPictureExtension } from "../cloud/member-pictures.ts";
+import { phrase } from "./preferences.ts";
 
 /* Turns a photo the member picked into their account picture: the centre
  * square, 256 px on a side, as WebP (JPEG where the browser cannot write WebP).
@@ -15,7 +16,7 @@ export interface PreparedPicture {
 	extension: MemberPictureExtension;
 }
 
-/** A reason the member can act on, shown as is. */
+/** A reason the member can act on, shown as is (its English source; the view translates it). */
 export class PictureFileError extends Error {
 	constructor(message: string) {
 		super(message);
@@ -29,8 +30,8 @@ function encode(canvas: HTMLCanvasElement, type: string): Promise<Blob | null> {
 
 export async function preparePicture(file: File): Promise<PreparedPicture> {
 	if (file.type && !file.type.startsWith("image/"))
-		throw new PictureFileError("Choose a picture file, such as a JPEG, PNG or WebP.");
-	if (file.size > MAX_PICTURE_SOURCE_BYTES) throw new PictureFileError("Choose a picture smaller than 25 MB.");
+		throw new PictureFileError(phrase("Choose a picture file, such as a JPEG, PNG or WebP."));
+	if (file.size > MAX_PICTURE_SOURCE_BYTES) throw new PictureFileError(phrase("Choose a picture smaller than 25 MB."));
 	const source = URL.createObjectURL(file);
 	try {
 		const image = new Image();
@@ -38,17 +39,18 @@ export async function preparePicture(file: File): Promise<PreparedPicture> {
 		try {
 			await image.decode();
 		} catch {
-			throw new PictureFileError("This browser could not read that picture. Try a JPEG or PNG.");
+			throw new PictureFileError(phrase("This browser could not read that picture. Try a JPEG or PNG."));
 		}
 		const width = image.naturalWidth;
 		const height = image.naturalHeight;
-		if (!width || !height) throw new PictureFileError("This browser could not read that picture. Try a JPEG or PNG.");
+		if (!width || !height)
+			throw new PictureFileError(phrase("This browser could not read that picture. Try a JPEG or PNG."));
 		const side = Math.min(width, height);
 		const canvas = document.createElement("canvas");
 		canvas.width = PICTURE_SIZE;
 		canvas.height = PICTURE_SIZE;
 		const context = canvas.getContext("2d");
-		if (!context) throw new PictureFileError("This browser cannot prepare pictures.");
+		if (!context) throw new PictureFileError(phrase("This browser cannot prepare pictures."));
 		// Transparent parts would turn black in a JPEG.
 		context.fillStyle = "#ffffff";
 		context.fillRect(0, 0, PICTURE_SIZE, PICTURE_SIZE);
@@ -59,8 +61,8 @@ export async function preparePicture(file: File): Promise<PreparedPicture> {
 		// Browsers that cannot write WebP hand back a PNG instead.
 		if (blob?.type !== "image/webp") blob = await encode(canvas, "image/jpeg");
 		if (!blob || (blob.type !== "image/webp" && blob.type !== "image/jpeg"))
-			throw new PictureFileError("This browser cannot prepare pictures.");
-		if (blob.size > MAX_PICTURE_BYTES) throw new PictureFileError("That picture is too detailed to upload.");
+			throw new PictureFileError(phrase("This browser cannot prepare pictures."));
+		if (blob.size > MAX_PICTURE_BYTES) throw new PictureFileError(phrase("That picture is too detailed to upload."));
 		return { blob, extension: blob.type === "image/webp" ? "webp" : "jpg" };
 	} finally {
 		URL.revokeObjectURL(source);

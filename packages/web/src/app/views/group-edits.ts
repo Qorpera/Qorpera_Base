@@ -1,5 +1,6 @@
 import { describeError } from "../../cloud/client.ts";
 import type { GroupChatDetails, GroupChatDraft } from "../../cloud/group-details.ts";
+import { t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 import { Store } from "../state.ts";
 import { GroupUpdateNotWrittenError } from "../update-group.ts";
@@ -146,19 +147,19 @@ export class GroupEdits {
 		this.#resetting = true;
 		this.#resetRequired = true;
 		const signal = AbortSignal.any([this.signal, this.#attempt.signal]);
-		this.store.set({ status: "Refreshing group details…", failed: false });
+		this.store.set({ status: t("Refreshing group details…"), failed: false });
 		try {
 			await this.#company.refreshSessions();
 			signal.throwIfAborted();
 			const details = await this.#company.groupDetails(this.#details.sessionId, signal);
 			signal.throwIfAborted();
-			if (details.version < this.#details.version) throw new Error("Group details are not current yet.");
+			if (details.version < this.#details.version) throw new Error(t("Group details are not current yet."));
 			this.reconcile(details);
 			signal.throwIfAborted();
 			this.#resetRequired = false;
 			this.store.set({ status: "", failed: false });
 		} catch {
-			if (!signal.aborted) this.store.set({ status: "Group details could not be refreshed.", failed: true });
+			if (!signal.aborted) this.store.set({ status: t("Group details could not be refreshed."), failed: true });
 		} finally {
 			this.#resetting = false;
 			this.store.set({});
@@ -170,12 +171,12 @@ export class GroupEdits {
 		if (this.#saving || !this.#update || !this.canWrite() || (!this.#changes.size && !this.#needsRefresh)) return;
 		this.#saving = true;
 		const signal = AbortSignal.any([this.signal, this.#attempt.signal]);
-		this.store.set({ status: "Saving…", failed: false });
+		this.store.set({ status: t("Saving…"), failed: false });
 		try {
 			do {
 				while (this.#changes.size) {
 					signal.throwIfAborted();
-					if (!this.canWrite()) throw new Error("Only an owner or admin can change group chats.");
+					if (!this.canWrite()) throw new Error(t("Only an owner or admin can change group chats."));
 					const retrying = this.#retry !== undefined;
 					const attempt = this.#retry ?? {
 						observed: { ...this.#details, members: this.#details.members.map((member) => ({ ...member })) },
@@ -214,7 +215,7 @@ export class GroupEdits {
 				signal.throwIfAborted();
 				this.#needsRefresh = false;
 			} while (this.#changes.size);
-			this.store.set({ status: "Saved", failed: false });
+			this.store.set({ status: t("Saved"), failed: false });
 		} catch (error) {
 			if (!signal.aborted) this.store.set({ status: describeError(error), failed: true });
 		} finally {
