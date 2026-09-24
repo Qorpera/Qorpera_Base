@@ -14,6 +14,7 @@ import {
 	identityRecoveryEpochFilename,
 } from "./cloud-identity-recovery-guest.ts";
 import { parseEphemeralCloudRunnerServiceConfig } from "./cloud-runner-service.ts";
+import { assertGuestImageSelfUpdateMasked } from "./lxd-guest-image-updates.ts";
 
 const BOOTSTRAP_SCHEMA = "qorpera.lxd-runner-bootstrap/v1";
 const COMPANY_BOOTSTRAP_SCHEMA = "qorpera.lxd-company-runner-bootstrap/v1";
@@ -70,6 +71,7 @@ export interface LxdRunnerBootstrapPaths {
 	runnerTemporaryDirectory: string;
 	nativeProviderTemporaryDirectory: string;
 	mountInfo: string;
+	systemUnitDirectory: string;
 }
 
 export interface LxdRunnerBootstrapServiceIdentity {
@@ -98,6 +100,7 @@ export interface LxdNativeLoginBootstrapPaths {
 	identityMasterKey: string;
 	nativeProviderTemporaryDirectory: string;
 	mountInfo: string;
+	systemUnitDirectory: string;
 }
 
 export interface RunLxdNativeLoginBootstrapOptions {
@@ -134,6 +137,7 @@ const PRODUCTION_PATHS: LxdRunnerBootstrapPaths = {
 	runnerTemporaryDirectory: "/var/lib/qorpera-native-workspace",
 	nativeProviderTemporaryDirectory: "/var/lib/qorpera-native-provider/tmp",
 	mountInfo: "/proc/self/mountinfo",
+	systemUnitDirectory: "/etc/systemd/system",
 };
 
 const PRODUCTION_LOGIN_PATHS: LxdNativeLoginBootstrapPaths = {
@@ -145,6 +149,7 @@ const PRODUCTION_LOGIN_PATHS: LxdNativeLoginBootstrapPaths = {
 	identityMasterKey: "/var/lib/qorpera/identity/qorpera-native-provider-master-key",
 	nativeProviderTemporaryDirectory: "/var/lib/qorpera-native-provider/tmp",
 	mountInfo: "/proc/self/mountinfo",
+	systemUnitDirectory: "/etc/systemd/system",
 };
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -989,6 +994,9 @@ export async function runLxdRunnerBootstrap(options: RunLxdRunnerBootstrapOption
 	const expectedRootUid = options.expectedRootUid ?? 0;
 	const expectedRootGid = options.expectedRootGid ?? 0;
 	if ((process.getuid?.() ?? -1) !== expectedRootUid) throw new Error("LXD runner bootstrap must run as root");
+	// Before any run authority is read: an image that can upgrade itself
+	// restarts the runner mid-turn and then refuses its own poweroff.
+	await assertGuestImageSelfUpdateMasked(paths.systemUnitDirectory);
 
 	const bootstrapEncoded = await readOwnedFile(
 		paths.bootstrapConfig,
@@ -1119,6 +1127,7 @@ export async function runLxdNativeLoginBootstrap(options: RunLxdNativeLoginBoots
 	if ((process.getuid?.() ?? -1) !== expectedRootUid) {
 		throw new Error("LXD native login bootstrap must run as root");
 	}
+	await assertGuestImageSelfUpdateMasked(paths.systemUnitDirectory);
 
 	const bootstrapEncoded = await readOwnedFile(
 		paths.bootstrapConfig,

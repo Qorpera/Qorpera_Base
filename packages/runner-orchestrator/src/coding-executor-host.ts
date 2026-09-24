@@ -466,6 +466,21 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			if (content.uid !== 0 || content.gid !== 0 || content.mode !== 0o444 || digest(content.content) !== hash)
 				throw new Error("CODING_HOST_GUEST_ARTIFACT_CHANGED");
 		}
+		// An image that can upgrade itself restarts the session's units under it,
+		// then its shutdown inhibitor refuses the stop and the VM keeps its node
+		// slot. The pinned storage helper refuses unless the apt units are masked.
+		try {
+			await client.execInstance(
+				vm.project,
+				request.name,
+				["/usr/bin/node", "/opt/qorpera-coding/cloud-coding-storage-guest.mjs", "image"],
+				signal,
+			);
+		} catch (error) {
+			if (error instanceof Error && error.message === "LXD instance command failed")
+				throw new Error("RUNNER_IMAGE_SELF_UPDATE_ENABLED", { cause: error });
+			throw error;
+		}
 		await client.execInstance(
 			vm.project,
 			request.name,

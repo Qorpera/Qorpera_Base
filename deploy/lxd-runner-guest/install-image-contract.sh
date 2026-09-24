@@ -8,6 +8,7 @@ RUNNER_USER="qorpera-runner"
 NATIVE_USER="qorpera-native-provider"
 SUBID_START=200000
 SUBID_COUNT=65536
+SELF_UPDATE_UNITS=(apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service)
 
 if [[ ${EUID} -ne 0 ]]; then
 	echo "Run this installer as root inside the image-builder VM." >&2
@@ -25,6 +26,24 @@ if [[ $(uname -m) != x86_64 ]]; then
 	echo "The first-node LXD runner image is pinned to x86_64." >&2
 	exit 1
 fi
+
+# The published image must never update itself. Its apt timers are Persistent=
+# and keep this build's stamps, so on every fresh boot apt-daily-upgrade catches
+# up about 30 s in: unattended-upgrades then restarts the runner and native host
+# through needrestart, cancelling the turn, and its shutdown inhibitor refuses
+# the VM's poweroff. Mask the five units before this build installs anything.
+# The guest bootstraps refuse (RUNNER_IMAGE_SELF_UPDATE_ENABLED) unless all five
+# are links to /dev/null. Masking first means no timer can start a job after the
+# check below; a job already running (a oneshot is "activating") is refused.
+systemctl mask "${SELF_UPDATE_UNITS[@]}"
+for unit in apt-daily.service apt-daily-upgrade.service; do
+	state=$(systemctl show --property=ActiveState --value "${unit}")
+	if [[ ${state} != inactive && ${state} != failed ]]; then
+		echo "A package update (${unit}) is running in the image builder; let it finish, then rerun." >&2
+		exit 1
+	fi
+done
+systemctl stop apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service >/dev/null 2>&1 || true
 
 # Failed executions must keep their service journals for post-mortem review;
 # the default volatile journal loses the evidence with the guest.
@@ -346,6 +365,14 @@ printf '%s\n' \
 	"  \"native_execution_gid\": ${NATIVE_EXECUTION_GID}" \
 	'}' > /etc/qorpera/lxd-runner-image.json
 chmod 0644 /etc/qorpera/lxd-runner-image.json
+
+for unit in "${SELF_UPDATE_UNITS[@]}"; do
+	if [[ $(readlink "/etc/systemd/system/${unit}") != /dev/null ]] ||
+		[[ $(systemctl is-enabled "${unit}" 2>/dev/null) != masked ]]; then
+		echo "The published image could update itself: ${unit} is not masked." >&2
+		exit 1
+	fi
+done
 
 if find /var/lib/qorpera-bootstrap -mindepth 1 -type f -print -quit | grep -q .; then
 	echo "The published image would contain guest bootstrap secrets." >&2
