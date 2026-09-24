@@ -1,12 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { type BigIntStats, constants } from "node:fs";
-import { type FileHandle, link, lstat, open, readdir, realpath, rename, unlink } from "node:fs/promises";
+import { type FileHandle, link, lstat, mkdir, open, readdir, realpath, rename, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { parseCloudCodingStorageBinding } from "@qorpera/contracts";
+import { cloudCodingSessionLayout, parseCloudCodingStorageBinding } from "@qorpera/contracts";
 import { parseCodingGuestConfiguration } from "./cloud-coding-guest-configuration.ts";
 
-const ROOT = "/etc/qorpera-coding";
 const O_PATH = 0x200000;
 export interface CodingConfigurationInstallPorts {
 	/** Trusted fixture hooks. Fixed CLI never accepts these from its packet. */
@@ -33,14 +32,35 @@ function missing(error: unknown): boolean {
 	return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
+/** Creates the session's boot-local configuration folder before its packet is
+ * staged: root-owned, not writable by anyone else, never a link. Existing
+ * folders are checked, never repaired. */
+export async function prepareCloudCodingGuestSession(workerId: string): Promise<void> {
+	if (process.platform !== "linux" || process.getuid?.() !== 0) throw new Error("CODING_CONFIGURATION_ROOT_REQUIRED");
+	const layout = cloudCodingSessionLayout(workerId);
+	for (const path of [dirname(layout.runtimeRoot), layout.runtimeRoot, layout.configurationRoot]) {
+		await mkdir(path, { mode: 0o755 }).catch((error) => {
+			if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+		});
+		const info = await lstat(path, { bigint: true });
+		if (!info.isDirectory() || info.uid !== 0n || info.gid !== 0n || (info.mode & 0o7022n) !== 0n)
+			throw new Error("CODING_CONFIGURATION_PATH_UNPROTECTED");
+	}
+}
+
 /** Resumes exact protected installation across crashes. The per-boot immutable
  * claim excludes conflicting packets before either active config is written.
  * Existing current-boot files are compared, never repaired; storage identity
- * cannot change even across boots. No packet field selects a filesystem path. */
-export async function installCloudCodingGuestConfiguration(ports: CodingConfigurationInstallPorts = {}): Promise<void> {
+ * cannot change even across boots. No packet field selects a filesystem path:
+ * the folder is the session's own (cloudCodingSessionLayout), and the packet
+ * must name that session. */
+export async function installCloudCodingGuestConfiguration(
+	workerId: string,
+	ports: CodingConfigurationInstallPorts = {},
+): Promise<void> {
 	if (!ports.readBootId && (process.platform !== "linux" || process.getuid?.() !== 0))
 		throw new Error("CODING_CONFIGURATION_ROOT_REQUIRED");
-	const root = ports.configurationRoot ?? ROOT,
+	const root = ports.configurationRoot ?? cloudCodingSessionLayout(workerId).configurationRoot,
 		uid = BigInt(ports.protectedUid ?? 0),
 		gid = BigInt(ports.protectedGid ?? 0);
 	if ((await realpath(root)) !== root) throw new Error("CODING_CONFIGURATION_PATH_UNPROTECTED");
@@ -152,13 +172,7 @@ export async function installCloudCodingGuestConfiguration(ports: CodingConfigur
 			throw new Error("CODING_CONFIGURATION_PACKET_INVALID");
 		const guest = parseCodingGuestConfiguration(packet.guest),
 			storage = parseCloudCodingStorageBinding(packet.storage);
-		if (
-			guest.workerId !== storage.workerId ||
-			guest.workspacePath !== "/workspace/repository" ||
-			guest.homePath !== "/workspace/home" ||
-			guest.cachePath !== "/workspace/cache" ||
-			guest.outputRoot !== "/var/lib/qorpera-coding/logs"
-		)
+		if (guest.workerId !== workerId || storage.workerId !== workerId)
 			throw new Error("CODING_CONFIGURATION_SCOPE_CHANGED");
 		const readBootId =
 			ports.readBootId ??

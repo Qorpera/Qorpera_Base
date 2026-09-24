@@ -38,7 +38,13 @@ describe("coding guest packaged entrypoints", () => {
 	it("the command bundle's execute step exits 125 with only a fixed code when refused before starting", async () => {
 		// Outside a coding VM there is no guest configuration: the refusal is an
 		// errno code, never the path, and the missing log is not created.
-		expect(await bundled("command", ["execute", "00000000-0000-4000-8000-000000000001"])).toEqual({
+		expect(
+			await bundled("command", [
+				"execute",
+				"00000000-0000-4000-8000-000000000002",
+				"00000000-0000-4000-8000-000000000001",
+			]),
+		).toEqual({
 			code: 125,
 			stdout: "",
 			stderr: "CODING_GUEST_COMMAND_REFUSED ERRNO:ENOENT\n",
@@ -48,7 +54,9 @@ describe("coding guest packaged entrypoints", () => {
 		["command", "get", "CODING_GUEST_COMMAND_REFUSED\n"],
 		["git", "export", "CODING_GIT_GUEST_REFUSED\n"],
 	])("the %s bundle has no imported storage CLI side effects", async (name, action, expected) => {
-		expect(await bundled(name, [action, "00000000-0000-4000-8000-000000000001"])).toEqual({
+		expect(
+			await bundled(name, [action, "00000000-0000-4000-8000-000000000002", "00000000-0000-4000-8000-000000000001"]),
+		).toEqual({
 			code: 1,
 			stdout: "",
 			stderr: expected,

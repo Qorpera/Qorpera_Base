@@ -35,10 +35,17 @@ async function fixture() {
 	};
 	const bootId = randomUUID();
 	const configurationPath = join(root, "guest.json");
+	// The session's folders, moved under the test's temporary custody root.
+	const folders = {
+		workspacePath: join(root, "repository"),
+		homePath: join(root, "home"),
+		cachePath: join(root, "cache"),
+		outputRoot: join(root, "logs"),
+	};
 	await writeFile(
 		configurationPath,
 		JSON.stringify({
-			schema: "qorpera.coding-command-guest/v2",
+			schema: "qorpera.coding-command-guest/v3",
 			workerId: request.workerId,
 			vmId: request.vmId,
 			bootId,
@@ -46,10 +53,7 @@ async function fixture() {
 			// CI runs this file under a gid >= 1000 (see step2-lxd.yml).
 			uid: Math.max(1000, process.getuid?.() ?? 1000),
 			gid: Math.max(1000, process.getgid?.() ?? 1000),
-			workspacePath: join(root, "repository"),
-			homePath: join(root, "home"),
-			cachePath: join(root, "cache"),
-			outputRoot: join(root, "logs"),
+			...folders,
 			resourceProfile: {
 				maxTimeoutMs: 1800000,
 				memoryBytes: 2147483648,
@@ -82,6 +86,7 @@ async function fixture() {
 		assertStorage: async () => undefined,
 		root,
 		configurationPath,
+		folders,
 		protectedUid: process.getuid?.() ?? 0,
 		protectedDirectoryRoot: root,
 		inspectMachine: async () => bootId,
@@ -117,10 +122,10 @@ async function fixture() {
 describe("coding VM command supervisor", () => {
 	it("bounds derived read pages without deleting authoritative logs", async () => {
 		const f = await fixture();
-		await runCodingGuestCommand("start", f.request.commandId, f.ports);
+		await runCodingGuestCommand("start", f.request.workerId, f.request.commandId, f.ports);
 		await writeFile(join(f.root, "logs", f.request.commandId, "output.log"), "x".repeat(128));
 		for (let offset = 0; offset < 64; offset++)
-			await runCodingGuestCommand("read", f.request.commandId, f.ports, { offset, limit: 4 });
+			await runCodingGuestCommand("read", f.request.workerId, f.request.commandId, f.ports, { offset, limit: 4 });
 		const pages = (await readdir(join(f.root, "commands", f.request.commandId))).filter((p) =>
 			p.startsWith("read-page-"),
 		);
@@ -131,7 +136,7 @@ describe("coding VM command supervisor", () => {
 		const f = await fixture();
 		await rm(f.requestPath);
 		await expect(
-			runCodingGuestCommand("start", f.request.commandId, {
+			runCodingGuestCommand("start", f.request.workerId, f.request.commandId, {
 				...f.ports,
 				assertStorage: async () => {
 					throw new Error("NAS_CHANGED");
@@ -143,7 +148,10 @@ describe("coding VM command supervisor", () => {
 	it("refuses command launch without a live guest lease and cannot renew when watchdog timer is disabled", async () => {
 		const f = await fixture();
 		await expect(
-			runCodingGuestCommand("start", f.request.commandId, { ...f.ports, nowMs: async () => 61000 }),
+			runCodingGuestCommand("start", f.request.workerId, f.request.commandId, {
+				...f.ports,
+				nowMs: async () => 61000,
+			}),
 		).rejects.toThrow("LEASE_UNAVAILABLE");
 		expect(f.system.mock.calls.filter(([exe]) => exe === "/usr/bin/systemd-run")).toHaveLength(0);
 		await writeFile(
@@ -160,7 +168,7 @@ describe("coding VM command supervisor", () => {
 			{ mode: 0o444 },
 		);
 		await expect(
-			refreshCodingGuestCommandLease({
+			refreshCodingGuestCommandLease(f.request.workerId, {
 				...f.ports,
 				system: async () => {
 					throw new Error("watchdog disabled");
@@ -172,7 +180,7 @@ describe("coding VM command supervisor", () => {
 
 	it("retains intent before one background unit and publishes a protected running receipt", async () => {
 		const f = await fixture();
-		const result = await runCodingGuestCommand("start", f.request.commandId, f.ports);
+		const result = await runCodingGuestCommand("start", f.request.workerId, f.request.commandId, f.ports);
 		expect(result.schema).toBe("qorpera.coding-command-result/v2");
 		expect(result.state).toBe("running");
 		expect(result.exitCode).toBeNull();
@@ -190,7 +198,7 @@ describe("coding VM command supervisor", () => {
 		expect(JSON.parse(await readFile(join(f.root, "commands", f.request.commandId, "status.json"), "utf8"))).toEqual(
 			result,
 		);
-		await runCodingGuestCommand("start", f.request.commandId, f.ports);
+		await runCodingGuestCommand("start", f.request.workerId, f.request.commandId, f.ports);
 		expect(f.system.mock.calls.filter(([executable]) => executable === "/usr/bin/systemd-run")).toHaveLength(1);
 	});
 	it("keeps uncertain launches unconfirmed across replacement without replay", async () => {
@@ -199,10 +207,12 @@ describe("coding VM command supervisor", () => {
 			if (executable === "/usr/bin/systemd-run") throw new Error("lost acceptance");
 			return "LoadState=not-found\nActiveState=inactive\n";
 		});
-		expect((await runCodingGuestCommand("start", f.request.commandId, f.ports)).state).toBe("unconfirmed");
+		expect((await runCodingGuestCommand("start", f.request.workerId, f.request.commandId, f.ports)).state).toBe(
+			"unconfirmed",
+		);
 		expect(
 			(
-				await runCodingGuestCommand("start", f.request.commandId, {
+				await runCodingGuestCommand("start", f.request.workerId, f.request.commandId, {
 					...f.ports,
 				})
 			).state,
@@ -211,12 +221,12 @@ describe("coding VM command supervisor", () => {
 	});
 	it("retains successful terminal state after transient unit loss", async () => {
 		const f = await fixture();
-		await runCodingGuestCommand("start", f.request.commandId, f.ports);
+		await runCodingGuestCommand("start", f.request.workerId, f.request.commandId, f.ports);
 		await writeFile(join(f.root, "logs", f.request.commandId, "output.log"), "passed\n");
 		f.setStatus(
 			"LoadState=loaded\nActiveState=active\nSubState=exited\nResult=success\nExecMainCode=1\nExecMainStatus=0\n",
 		);
-		const complete = await runCodingGuestCommand("read", f.request.commandId, f.ports);
+		const complete = await runCodingGuestCommand("read", f.request.workerId, f.request.commandId, f.ports);
 		expect(complete).toMatchObject({
 			state: "succeeded",
 			exitCode: 0,
@@ -225,44 +235,47 @@ describe("coding VM command supervisor", () => {
 		});
 		await rm(join(f.root, "commands", f.request.commandId, "status.json"));
 		f.system.mockRejectedValue(new Error("unit unavailable"));
-		expect(await runCodingGuestCommand("read", f.request.commandId, f.ports)).toEqual(complete);
-		expect(await runCodingGuestCommand("cancel", f.request.commandId, f.ports)).toEqual(complete);
+		expect(await runCodingGuestCommand("read", f.request.workerId, f.request.commandId, f.ports)).toEqual(complete);
+		expect(await runCodingGuestCommand("cancel", f.request.workerId, f.request.commandId, f.ports)).toEqual(complete);
 		expect(JSON.parse(await readFile(join(f.root, "commands", f.request.commandId, "status.json"), "utf8"))).toEqual(
 			complete,
 		);
 	});
 	it("kills the exact command unit and records cancellation only after a stopped observation", async () => {
 		const f = await fixture();
-		await runCodingGuestCommand("start", f.request.commandId, f.ports);
-		expect(await runCodingGuestCommand("cancel", f.request.commandId, f.ports)).toMatchObject({
+		await runCodingGuestCommand("start", f.request.workerId, f.request.commandId, f.ports);
+		expect(await runCodingGuestCommand("cancel", f.request.workerId, f.request.commandId, f.ports)).toMatchObject({
 			state: "cancelled",
 			exitCode: null,
 		});
 		expect(f.system).toHaveBeenCalledWith("/usr/bin/systemctl", [
 			"stop",
-			`qorpera-coding-${f.request.commandId}.service`,
+			`qorpera-coding-${f.request.workerId.replaceAll("-", "")}-${f.request.commandId}.service`,
 		]);
 	});
 	it("reports reboot uncertainty without invoking another command", async () => {
 		const f = await fixture();
-		await runCodingGuestCommand("start", f.request.commandId, f.ports);
+		await runCodingGuestCommand("start", f.request.workerId, f.request.commandId, f.ports);
 		await writeFile(join(f.root, "logs", f.request.commandId, "output.log"), "retained before reboot");
 		f.system.mockClear();
 		expect(
 			(
-				await runCodingGuestCommand("read", f.request.commandId, {
+				await runCodingGuestCommand("read", f.request.workerId, f.request.commandId, {
 					...f.ports,
 					inspectMachine: async () => randomUUID(),
 				})
 			).state,
 		).toBe("unconfirmed");
 		await expect(
-			runCodingGuestCommand("start", f.request.commandId, { ...f.ports, inspectMachine: async () => randomUUID() }),
+			runCodingGuestCommand("start", f.request.workerId, f.request.commandId, {
+				...f.ports,
+				inspectMachine: async () => randomUUID(),
+			}),
 		).rejects.toThrow("LEASE_UNAVAILABLE");
 		expect(f.system).not.toHaveBeenCalled();
 		expect(
 			(
-				await runCodingGuestCommand("read", f.request.commandId, {
+				await runCodingGuestCommand("read", f.request.workerId, f.request.commandId, {
 					...f.ports,
 					inspectMachine: async () => randomUUID(),
 				})
@@ -271,15 +284,15 @@ describe("coding VM command supervisor", () => {
 	});
 	it("bounds invalid UTF8 and output truncation in bytes", async () => {
 		const f = await fixture();
-		await runCodingGuestCommand("start", f.request.commandId, f.ports);
+		await runCodingGuestCommand("start", f.request.workerId, f.request.commandId, f.ports);
 		await writeFile(join(f.root, "logs", f.request.commandId, "output.log"), Buffer.alloc(4097, 255));
-		const result = await runCodingGuestCommand("read", f.request.commandId, f.ports);
+		const result = await runCodingGuestCommand("read", f.request.workerId, f.request.commandId, f.ports);
 		expect(Buffer.byteLength(result.output)).toBeLessThanOrEqual(4096);
 		expect(result.truncated).toBe(true);
 	});
 	it("retains output beyond the preview and pages terminal logs without re-execution", async () => {
 		const f = await fixture();
-		await runCodingGuestCommand("start", f.request.commandId, f.ports);
+		await runCodingGuestCommand("start", f.request.workerId, f.request.commandId, f.ports);
 		const contents = `first\n${"x".repeat(12000)}\nlast\n`;
 		await writeFile(join(f.root, "logs", f.request.commandId, "output.log"), contents);
 		f.setStatus(
@@ -288,13 +301,19 @@ describe("coding VM command supervisor", () => {
 		let offset = 0,
 			combined = "";
 		do {
-			const page = await runCodingGuestCommand("read", f.request.commandId, f.ports, { offset, limit: 1024 });
+			const page = await runCodingGuestCommand("read", f.request.workerId, f.request.commandId, f.ports, {
+				offset,
+				limit: 1024,
+			});
 			combined += page.output;
 			offset = page.log.nextOffset;
 			expect(page.state).toBe("succeeded");
 		} while (offset < Buffer.byteLength(contents));
 		expect(combined).toBe(contents);
-		const tail = await runCodingGuestCommand("read", f.request.commandId, f.ports, { tail: true, limit: 16 });
+		const tail = await runCodingGuestCommand("read", f.request.workerId, f.request.commandId, f.ports, {
+			tail: true,
+			limit: 16,
+		});
 		expect(tail.output).toBe(contents.slice(-16));
 		expect(tail.truncated).toBe(false);
 		expect(f.system.mock.calls.filter(([exe]) => exe === "/usr/bin/systemd-run")).toHaveLength(1);
@@ -313,7 +332,7 @@ describe("coding VM command supervisor", () => {
 		await chmod(path, 0o644);
 		await writeFile(path, JSON.stringify(config));
 		await chmod(path, 0o444);
-		await runCodingGuestCommand("start", f.request.commandId, f.ports);
+		await runCodingGuestCommand("start", f.request.workerId, f.request.commandId, f.ports);
 		const args = f.system.mock.calls.find(([exe]) => exe === "/usr/bin/systemd-run")![1];
 		expect(args).toContain("--property=MemoryMax=8589934592");
 		expect(args).toContain("--property=CPUQuota=400%");
@@ -323,28 +342,37 @@ describe("coding VM command supervisor", () => {
 		);
 		await writeFile(join(f.root, "logs", f.request.commandId, "output.log"), Buffer.alloc(1048577, 120));
 		expect(
-			(await runCodingGuestCommand("read", f.request.commandId, f.ports, { tail: true, limit: 16 })).log,
+			(
+				await runCodingGuestCommand("read", f.request.workerId, f.request.commandId, f.ports, {
+					tail: true,
+					limit: 16,
+				})
+			).log,
 		).toMatchObject({ totalBytes: 1048576, limitBytes: 1048576, limitReached: true });
 	});
 	it("rejects changed requests and linked or writable inbox files before execution", async () => {
 		const f = await fixture();
 		await chmod(f.requestPath, 0o666);
-		await expect(runCodingGuestCommand("start", f.request.commandId, f.ports)).rejects.toThrow("UNPROTECTED");
+		await expect(runCodingGuestCommand("start", f.request.workerId, f.request.commandId, f.ports)).rejects.toThrow(
+			"UNPROTECTED",
+		);
 		await chmod(f.requestPath, 0o644);
-		await runCodingGuestCommand("start", f.request.commandId, f.ports);
+		await runCodingGuestCommand("start", f.request.workerId, f.request.commandId, f.ports);
 		await writeFile(f.requestPath, JSON.stringify({ ...f.request, command: "different command" }));
-		await expect(runCodingGuestCommand("start", f.request.commandId, f.ports)).rejects.toThrow("INTENT_CHANGED");
+		await expect(runCodingGuestCommand("start", f.request.workerId, f.request.commandId, f.ports)).rejects.toThrow(
+			"INTENT_CHANGED",
+		);
 		await rm(f.requestPath);
 		await symlink(f.ports.configurationPath!, f.requestPath);
-		await expect(runCodingGuestCommand("start", f.request.commandId, f.ports)).rejects.toThrow();
+		await expect(runCodingGuestCommand("start", f.request.workerId, f.request.commandId, f.ports)).rejects.toThrow();
 		expect(f.system.mock.calls.filter(([executable]) => executable === "/usr/bin/systemd-run")).toHaveLength(1);
 	});
 	it("reads a refused execute step back as failed with only its code, never unconfirmed", async () => {
 		const f = await fixture();
-		await runCodingGuestCommand("start", f.request.commandId, f.ports);
+		await runCodingGuestCommand("start", f.request.workerId, f.request.commandId, f.ports);
 		const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 		try {
-			const refused = await executeCodingGuestCommand(f.request.commandId, {
+			const refused = await executeCodingGuestCommand(f.request.workerId, f.request.commandId, {
 				...f.ports,
 				assertStorage: async () => {
 					throw new Error("CODING_GUEST_STORAGE_MOUNT_INVALID");
@@ -357,7 +385,7 @@ describe("coding VM command supervisor", () => {
 		f.setStatus(
 			"LoadState=loaded\nActiveState=failed\nSubState=failed\nResult=exit-code\nExecMainCode=1\nExecMainStatus=125\n",
 		);
-		expect(await runCodingGuestCommand("read", f.request.commandId, f.ports)).toMatchObject({
+		expect(await runCodingGuestCommand("read", f.request.workerId, f.request.commandId, f.ports)).toMatchObject({
 			state: "failed",
 			exitCode: 125,
 			output: "CODING_GUEST_STORAGE_MOUNT_INVALID\n",
@@ -365,19 +393,21 @@ describe("coding VM command supervisor", () => {
 	});
 	it("rejects a replaced output ancestor without reading its target", async () => {
 		const f = await fixture();
-		await runCodingGuestCommand("start", f.request.commandId, f.ports);
+		await runCodingGuestCommand("start", f.request.workerId, f.request.commandId, f.ports);
 		await rm(join(f.root, "logs", f.request.commandId), { recursive: true });
 		const outside = join(f.root, "private");
 		await mkdir(outside);
 		await writeFile(join(outside, "output.log"), "private bytes");
 		await symlink(outside, join(f.root, "logs", f.request.commandId));
-		const receipt = await runCodingGuestCommand("read", f.request.commandId, f.ports);
+		const receipt = await runCodingGuestCommand("read", f.request.workerId, f.request.commandId, f.ports);
 		expect(receipt).toMatchObject({ state: "unconfirmed", output: "" });
 	});
 	it("requires configuration readable by the unprivileged execution helper", async () => {
 		const f = await fixture();
 		await chmod(f.ports.configurationPath!, 0o400);
-		await expect(runCodingGuestCommand("start", f.request.commandId, f.ports)).rejects.toThrow("CONFIGURATION");
+		await expect(runCodingGuestCommand("start", f.request.workerId, f.request.commandId, f.ports)).rejects.toThrow(
+			"CONFIGURATION",
+		);
 		expect(f.system).not.toHaveBeenCalled();
 	});
 

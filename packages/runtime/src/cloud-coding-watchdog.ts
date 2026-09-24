@@ -1,15 +1,17 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readFile, rename, rmdir, unlink } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, readFile, rename, rmdir, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
+import { CLOUD_CODING_GUEST_ROOTS, cloudCodingSessionLayout } from "@qorpera/contracts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const HASH = /^[0-9a-f]{64}$/;
 // Execution authority is boot-local, not durable task data. A NAS outage must
 // never block the watchdog's lease read before it can stop command cgroups.
-const ROOT = "/run/qorpera-coding";
+// Each session attached to the member's machine has its own lease in its
+// runtime folder (cloudCodingSessionLayout) and its own command slice.
 const executeFile = promisify(execFile);
 export interface CodingGuestLeaseConfiguration {
 	workerId: string;
@@ -36,6 +38,7 @@ interface Lease extends CodingGuestLeaseScope {
 	expiresAtMonoMs: number;
 }
 export interface CodingGuestWatchdogPorts {
+	/** The session's runtime folder; trusted test composition only. */
 	root?: string;
 	protectedUid?: number;
 	protectedDirectoryRoot?: string;
@@ -158,11 +161,15 @@ export async function readProtectedCodingGuestLeaseJson(
 		await h.close();
 	}
 }
-async function current(ports: CodingGuestWatchdogPorts): Promise<Lease> {
-	return lease(await readProtectedCodingGuestLeaseJson(join(ports.root ?? ROOT, "lease.json"), ports));
+function runtime(ports: CodingGuestWatchdogPorts, workerId: string): string {
+	return ports.root ?? cloudCodingSessionLayout(workerId).runtimeRoot;
 }
-async function stopAll(ports: CodingGuestWatchdogPorts): Promise<void> {
-	const args = ["stop", "qorpera-coding.slice"];
+async function current(ports: CodingGuestWatchdogPorts, workerId: string): Promise<Lease> {
+	return lease(await readProtectedCodingGuestLeaseJson(join(runtime(ports, workerId), "lease.json"), ports));
+}
+/** Stops one session's command slice, or with no session every coding slice. */
+async function stop(ports: CodingGuestWatchdogPorts, workerId?: string): Promise<void> {
+	const args = ["stop", workerId ? cloudCodingSessionLayout(workerId).slice : "qorpera-coding.slice"];
 	if (ports.system) await ports.system("/usr/bin/systemctl", args);
 	else
 		await executeFile("/usr/bin/systemctl", args, {
@@ -180,7 +187,7 @@ export async function requireCodingGuestLease(
 	c: CodingGuestLeaseConfiguration,
 	ports: CodingGuestWatchdogPorts = {},
 ): Promise<void> {
-	const l = await current(ports);
+	const l = await current(ports, c.workerId);
 	match(l, c);
 	const time = await now(ports);
 	if (
@@ -208,7 +215,7 @@ export async function refreshCodingGuestLease(
 	const v = parseCodingGuestLeaseRefresh(value);
 	if (v.workerId !== c.workerId || v.vmId !== c.vmId || (await boot(ports)) !== c.bootId)
 		throw new Error("CODING_GUEST_LEASE_SCOPE_CHANGED");
-	const root = ports.root ?? ROOT;
+	const root = runtime(ports, c.workerId);
 	await protectedDirectory(root, ports);
 	// No stale lock takeover: a crashed refresh blocks renewal and the independent
 	// watchdog still stops the slice when the last committed lease expires.
@@ -218,7 +225,7 @@ export async function refreshCodingGuestLease(
 		const time = await now(ports);
 		let prior: Lease | undefined;
 		try {
-			prior = await current(ports);
+			prior = await current(ports, c.workerId);
 		} catch (e) {
 			if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
 		}
@@ -236,7 +243,7 @@ export async function refreshCodingGuestLease(
 			)
 				throw new Error("CODING_GUEST_LEASE_GENERATION_UNAVAILABLE");
 		}
-		if (!prior || prior.turn !== v.turn) await stopAll(ports);
+		if (!prior || prior.turn !== v.turn) await stop(ports, c.workerId);
 		const stamped = await now(ports);
 		const expiresAt = Math.min(stamped + v.ttlMs, v.notAfterMonoMs ?? Number.MAX_SAFE_INTEGER);
 		if (expiresAt <= stamped) throw new Error("CODING_GUEST_LEASE_REFRESH_EXPIRED");
@@ -290,25 +297,65 @@ export async function reconcileCodingGuestLease(
 	ports: CodingGuestWatchdogPorts = {},
 ): Promise<"active" | "stopped"> {
 	try {
-		const l = await current(ports);
+		const l = await current(ports, c.workerId);
 		await requireCodingGuestLease(l, c, ports);
 		return "active";
 	} catch {
-		await stopAll(ports);
+		await stop(ports, c.workerId);
 		return "stopped";
 	}
 }
-export async function runCodingGuestWatchdog(): Promise<void> {
+/** Every session attached to the member's machine this boot, each judged on
+ * its own lease: an expired, missing or unreadable one stops that session's
+ * slice only. If the sessions cannot be listed at all, every coding slice stops. */
+export async function runCodingGuestWatchdog(
+	ports: CodingGuestWatchdogPorts & { sessionsRoot?: string } = {},
+): Promise<void> {
+	let listed = false;
 	try {
-		if (process.argv.length !== 2 || process.getuid?.() !== 0) throw new Error("CODING_WATCHDOG_ROOT_REQUIRED");
-		const c = (await readProtectedCodingGuestLeaseJson(
-			"/etc/qorpera-coding/guest.json",
-		)) as CodingGuestLeaseConfiguration;
-		if (!c || ![c.workerId, c.vmId, c.bootId].every((id) => typeof id === "string" && UUID.test(id)))
-			throw new Error("CODING_WATCHDOG_CONFIGURATION_INVALID");
-		await reconcileCodingGuestLease(c);
+		if (!ports.system && (process.argv.length !== 2 || process.getuid?.() !== 0))
+			throw new Error("CODING_WATCHDOG_ROOT_REQUIRED");
+		const root = ports.sessionsRoot ?? CLOUD_CODING_GUEST_ROOTS.runtime;
+		let names: string[];
+		try {
+			await protectedDirectory(root, ports);
+			names = await readdir(root);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") names = [];
+			else throw error;
+		}
+		const failures: unknown[] = [];
+		listed = true;
+		for (const workerId of names.filter((name) => UUID.test(name))) {
+			const session = { ...ports, root: ports.sessionsRoot ? join(root, workerId) : undefined };
+			try {
+				let c: CodingGuestLeaseConfiguration;
+				try {
+					c = (await readProtectedCodingGuestLeaseJson(
+						join(session.root ?? cloudCodingSessionLayout(workerId).runtimeRoot, "configuration", "guest.json"),
+						session,
+					)) as CodingGuestLeaseConfiguration;
+				} catch (error) {
+					// A session still being prepared has no configuration yet, and no commands.
+					if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+					throw error;
+				}
+				if (
+					!c ||
+					c.workerId !== workerId ||
+					![c.vmId, c.bootId].every((id) => typeof id === "string" && UUID.test(id))
+				)
+					throw new Error("CODING_WATCHDOG_CONFIGURATION_INVALID");
+				await reconcileCodingGuestLease(c, session);
+			} catch (error) {
+				failures.push(error);
+				await stop(session, workerId).catch((stopError) => failures.push(stopError));
+			}
+		}
+		if (failures.length) throw failures[0];
 	} catch (error) {
-		await stopAll({}).catch(() => {});
+		// Each failed session was stopped on its own; only an unlisted machine stops every session.
+		if (!listed) await stop(ports).catch(() => {});
 		throw error;
 	}
 }

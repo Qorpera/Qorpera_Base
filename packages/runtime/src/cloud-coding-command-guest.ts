@@ -7,14 +7,20 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import {
+	CLOUD_CODING_GUEST_ROOTS,
 	type CloudCodingCommandRead,
 	type CloudCodingCommandReceipt,
+	cloudCodingSessionLayout,
 	parseCloudCodingCommandRead,
 	parseCloudCodingCommandReceipt,
 } from "@qorpera/contracts";
 import { collectCodingCommandOutput, readCodingCommandLog } from "./cloud-coding-command-log.ts";
 import { codingErrorCode } from "./cloud-coding-error-code.ts";
-import { type CodingGuestConfiguration, parseCodingGuestConfiguration } from "./cloud-coding-guest-configuration.ts";
+import {
+	type CodingGuestConfiguration,
+	type CodingGuestFolders,
+	parseCodingGuestConfiguration,
+} from "./cloud-coding-guest-configuration.ts";
 import { assertCloudCodingGuestStorage, type CodingGuestSandbox } from "./cloud-coding-storage-guest.ts";
 
 import { refreshCodingGuestLease, requireCodingGuestLease } from "./cloud-coding-watchdog.ts";
@@ -22,7 +28,6 @@ import { refreshCodingGuestLease, requireCodingGuestLease } from "./cloud-coding
 const executeFile = promisify(execFile);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const HASH = /^[0-9a-f]{64}$/;
-const ROOT = "/var/lib/qorpera-coding";
 const ENTRYPOINT = "/opt/qorpera-coding/cloud-coding-command-guest.mjs";
 const ENV = Object.freeze({ PATH: "/usr/bin:/bin", LANG: "C.UTF-8" });
 /** Exit status of an execute step refused before the command started. Its
@@ -48,9 +53,11 @@ interface Intent {
 	bootId: string;
 }
 export interface CodingGuestCommandPorts {
-	/** Trusted test composition only. Production uses fixed root-owned guest paths. */
+	/** Trusted test composition only. Production uses the session's fixed
+	 * layout (cloudCodingSessionLayout): its custody root and configuration. */
 	root?: string;
 	configurationPath?: string;
+	folders?: CodingGuestFolders;
 	protectedUid?: number;
 	protectedDirectoryRoot?: string;
 	inspectMachine?: () => Promise<string>;
@@ -139,14 +146,20 @@ async function inspectMachine(): Promise<string> {
 	await system("/usr/bin/systemd-detect-virt", ["--vm", "--quiet"]);
 	return uuid((await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim());
 }
-async function protectedRead(path: string, owner: number, maxBytes: number, boundary = "/"): Promise<Buffer> {
+async function protectedRead(
+	path: string,
+	owner: number,
+	maxBytes: number,
+	boundary = "/",
+	mountRoot?: string,
+): Promise<Buffer> {
 	// Inspect every component and open without following the final link. The
 	// deployment owns these directories; the coding user cannot replace them.
 	for (let parent = dirname(path); parent !== dirname(parent); parent = dirname(parent)) {
 		const stat = await lstat(parent);
-		// The separately verified NAS mount root is owned by the trusted host
-		// service. Descendants and all other ancestors remain root-owned.
-		if (!stat.isDirectory() || (stat.uid !== owner && parent !== ROOT) || (stat.mode & 0o022) !== 0)
+		// The session's separately verified NAS custody mount root is owned by
+		// the trusted host service. Descendants and all other ancestors remain root-owned.
+		if (!stat.isDirectory() || (stat.uid !== owner && parent !== mountRoot) || (stat.mode & 0o022) !== 0)
 			throw new Error("UNPROTECTED_CODING_GUEST_PATH");
 		if (parent === boundary) break;
 	}
@@ -202,30 +215,41 @@ async function publishStatus(
 		await journalDirectory.close();
 	}
 }
-async function configuration(ports: CodingGuestCommandPorts): Promise<CodingGuestConfiguration> {
-	const path = ports.configurationPath ?? "/etc/qorpera-coding/guest.json";
+async function configuration(ports: CodingGuestCommandPorts, workerId: string): Promise<CodingGuestConfiguration> {
+	const path = ports.configurationPath ?? `${cloudCodingSessionLayout(workerId).configurationRoot}/guest.json`;
 	if (((await lstat(path)).mode & 0o777) !== 0o444) throw new Error("UNREADABLE_CODING_GUEST_CONFIGURATION");
-	return parseCodingGuestConfiguration(
+	const guest = parseCodingGuestConfiguration(
 		JSON.parse(
 			(await protectedRead(path, ports.protectedUid ?? 0, 8192, ports.protectedDirectoryRoot)).toString("utf8"),
 		),
+		ports.folders,
 	);
+	if (guest.workerId !== workerId) throw new Error("CODING_GUEST_COMMAND_SCOPE_CHANGED");
+	return guest;
+}
+/** The session's custody root: its commands, inbox and logs. */
+function custody(ports: CodingGuestCommandPorts, workerId: string): string {
+	return ports.root ?? cloudCodingSessionLayout(workerId).custodyRoot;
 }
 
-/** Root supervisor installed inside the isolated coding VM only. Every effect
- * retains command identity before contacting systemd. A missing unit following
- * an intent is an unknown outcome, never permission to execute again. */
+/** Root supervisor installed inside the isolated coding machine only, acting
+ * for one attached session. Every effect retains command identity before
+ * contacting systemd. A missing unit following an intent is an unknown
+ * outcome, never permission to execute again. */
 export async function runCodingGuestCommand(
 	action: "start" | "read" | "cancel",
+	workerId: string,
 	commandId: string,
 	ports: CodingGuestCommandPorts = {},
 	read: Omit<CloudCodingCommandRead, "commandId"> = {},
 ): Promise<CodingGuestCommandReceipt> {
+	uuid(workerId);
 	uuid(commandId);
 	if (!ports.inspectMachine && process.getuid?.() !== 0) throw new Error("CODING_GUEST_SUPERVISOR_REQUIRES_ROOT");
-	const root = ports.root ?? ROOT;
+	const root = custody(ports, workerId);
 	const owner = ports.protectedUid ?? 0;
-	const guest = await configuration(ports);
+	const guest = await configuration(ports, workerId);
+	const layout = cloudCodingSessionLayout(workerId);
 	await (ports.assertStorage ?? assertCloudCodingGuestStorage)(guest);
 	const query = parseCloudCodingCommandRead({ commandId, ...read });
 	const capture = (terminal: boolean) =>
@@ -233,6 +257,7 @@ export async function runCodingGuestCommand(
 			path: join(guest.outputRoot, commandId, "output.log"),
 			owner: guest.uid,
 			protectedOwner: owner,
+			mountRoot: root,
 			boundary: ports.protectedDirectoryRoot,
 			maxBytes: guest.resourceProfile.maxLogBytes,
 			read: query,
@@ -242,7 +267,13 @@ export async function runCodingGuestCommand(
 	const request = parseCodingGuestCommandRequest(
 		JSON.parse(
 			(
-				await protectedRead(join(root, "inbox", `${commandId}.json`), owner, 131072, ports.protectedDirectoryRoot)
+				await protectedRead(
+					join(root, "inbox", `${commandId}.json`),
+					owner,
+					131072,
+					ports.protectedDirectoryRoot,
+					root,
+				)
 			).toString("utf8"),
 		),
 	);
@@ -267,7 +298,9 @@ export async function runCodingGuestCommand(
 	let intent: Intent | undefined;
 	try {
 		const saved = closed(
-			JSON.parse((await protectedRead(intentPath, owner, 131072, ports.protectedDirectoryRoot)).toString("utf8")),
+			JSON.parse(
+				(await protectedRead(intentPath, owner, 131072, ports.protectedDirectoryRoot, root)).toString("utf8"),
+			),
 			["schema", "request", "commandSha256", "bootId"],
 		);
 		if (
@@ -290,7 +323,13 @@ export async function runCodingGuestCommand(
 			const completed = parseCloudCodingCommandReceipt(
 				JSON.parse(
 					(
-						await protectedRead(join(directory, "completion.json"), owner, 131072, ports.protectedDirectoryRoot)
+						await protectedRead(
+							join(directory, "completion.json"),
+							owner,
+							131072,
+							ports.protectedDirectoryRoot,
+							root,
+						)
 					).toString("utf8"),
 				),
 			);
@@ -309,7 +348,7 @@ export async function runCodingGuestCommand(
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 		}
 	}
-	const unit = `qorpera-coding-${commandId}.service`;
+	const unit = `${layout.unitPrefix}${commandId}.service`;
 	const call = ports.system ?? system;
 	let cancellation = false;
 	if (action === "start" && !intent) {
@@ -358,7 +397,7 @@ export async function runCodingGuestCommand(
 				"--property=RemainAfterExit=yes",
 				"--property=ExitType=cgroup",
 				"--property=KillMode=control-group",
-				"--property=Slice=qorpera-coding.slice",
+				`--property=Slice=${layout.slice}`,
 				"--property=TimeoutStopSec=5",
 				"--property=NoNewPrivileges=yes",
 				"--property=ProtectSystem=strict",
@@ -373,6 +412,10 @@ export async function runCodingGuestCommand(
 				"--property=CapabilityBoundingSet=",
 				"--property=AmbientCapabilities=",
 				"--property=RestrictNamespaces=yes",
+				// Only this session under the machine's guest roots, also against
+				// sessions attached while the command runs.
+				`--property=TemporaryFileSystem=${CLOUD_CODING_GUEST_ROOTS.data} ${CLOUD_CODING_GUEST_ROOTS.custody}`,
+				`--property=BindPaths=${layout.dataRoot} ${layout.custodyRoot}`,
 				`--property=ReadWritePaths=${writablePaths.join(" ")}`,
 				"--property=StandardOutput=null",
 				// Only the helper's own fixed refusal line reaches stderr (the
@@ -385,6 +428,7 @@ export async function runCodingGuestCommand(
 				"/usr/bin/node",
 				ENTRYPOINT,
 				"execute",
+				workerId,
 				commandId,
 			]);
 		} catch {
@@ -436,7 +480,7 @@ export async function runCodingGuestCommand(
 					}),
 			);
 			try {
-				await protectedRead(join(directory, "cancel.json"), owner, 256, ports.protectedDirectoryRoot);
+				await protectedRead(join(directory, "cancel.json"), owner, 256, ports.protectedDirectoryRoot, root);
 				cancellation = true;
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -494,9 +538,10 @@ export async function runCodingGuestCommand(
 }
 
 /** Everything the execute step checks before it starts the command. */
-async function prepareExecution(commandId: string, ports: CodingGuestCommandPorts) {
+async function prepareExecution(workerId: string, commandId: string, ports: CodingGuestCommandPorts) {
+	uuid(workerId);
 	uuid(commandId);
-	const guest = await configuration(ports);
+	const guest = await configuration(ports, workerId);
 	// Inside the command unit: ProtectSystem=strict and ReadWritePaths change
 	// the mount view, so assert against exactly the paths the unit declares.
 	await (ports.assertStorage ?? assertCloudCodingGuestStorage)(guest, {
@@ -509,10 +554,11 @@ async function prepareExecution(commandId: string, ports: CodingGuestCommandPort
 		JSON.parse(
 			(
 				await protectedRead(
-					join(ports.root ?? ROOT, "commands", commandId, "intent.json"),
+					join(custody(ports, workerId), "commands", commandId, "intent.json"),
 					ports.protectedUid ?? 0,
 					131072,
 					ports.protectedDirectoryRoot,
+					custody(ports, workerId),
 				)
 			).toString("utf8"),
 		),
@@ -573,16 +619,17 @@ async function recordRefusal(root: string, commandId: string, code: string): Pro
  * A refusal before the command starts exits CODING_GUEST_REFUSED_EXIT_CODE with
  * its fixed code in the log, so the read receipt shows it as failed. */
 export async function executeCodingGuestCommand(
+	workerId: string,
 	commandId: string,
 	ports: CodingGuestCommandPorts = {},
 ): Promise<number> {
 	let prepared: Awaited<ReturnType<typeof prepareExecution>>;
 	try {
-		prepared = await prepareExecution(commandId, ports);
+		prepared = await prepareExecution(workerId, commandId, ports);
 	} catch (error) {
 		const code = codingErrorCode(error);
 		process.stderr.write(`CODING_GUEST_COMMAND_REFUSED ${code}\n`);
-		await recordRefusal(ports.root ?? ROOT, commandId, code);
+		if (UUID.test(String(workerId))) await recordRefusal(custody(ports, workerId), commandId, code);
 		return CODING_GUEST_REFUSED_EXIT_CODE;
 	}
 	const { guest, request, handle } = prepared;
@@ -631,17 +678,19 @@ export async function executeCodingGuestCommand(
 
 /** Only the trusted root provider may stage this fixed refresh input. The
  * provider must first renew and recheck the matching cloud queue lease. */
-export async function refreshCodingGuestCommandLease(ports: CodingGuestCommandPorts = {}) {
-	const guest = await configuration(ports);
+export async function refreshCodingGuestCommandLease(workerId: string, ports: CodingGuestCommandPorts = {}) {
+	uuid(workerId);
+	const guest = await configuration(ports, workerId);
 	await (ports.assertStorage ?? assertCloudCodingGuestStorage)(guest);
 	await (ports.system ?? system)("/usr/bin/systemctl", ["is-active", "--quiet", "qorpera-coding-watchdog.timer"]);
 	const value = JSON.parse(
 		(
 			await protectedRead(
-				join(ports.root ?? ROOT, "inbox", "lease-refresh.json"),
+				join(custody(ports, workerId), "inbox", "lease-refresh.json"),
 				ports.protectedUid ?? 0,
 				4096,
 				ports.protectedDirectoryRoot,
+				custody(ports, workerId),
 			)
 		).toString("utf8"),
 	);
@@ -652,17 +701,19 @@ export async function refreshCodingGuestCommandLease(ports: CodingGuestCommandPo
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-	const [action, commandId, offset, limit, extra] = process.argv.slice(2);
+	const [action, workerId, commandId, offset, limit, extra] = process.argv.slice(2);
 	try {
 		if (
 			extra ||
+			!workerId ||
 			(action === "refresh-lease" ? commandId !== undefined : !commandId) ||
 			(action !== "read" && (offset !== undefined || limit !== undefined))
 		)
 			throw new Error("INVALID_CODING_GUEST_ARGUMENTS");
 		if (action === "refresh-lease")
-			process.stdout.write(`${JSON.stringify(await refreshCodingGuestCommandLease())}\n`);
-		else if (commandId && action === "execute") process.exitCode = await executeCodingGuestCommand(commandId);
+			process.stdout.write(`${JSON.stringify(await refreshCodingGuestCommandLease(workerId))}\n`);
+		else if (commandId && action === "execute")
+			process.exitCode = await executeCodingGuestCommand(workerId, commandId);
 		else if (commandId && (action === "start" || action === "read" || action === "cancel")) {
 			if (
 				action === "read" &&
@@ -676,7 +727,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
 					: offset === "tail"
 						? { tail: true, limit: Number(limit ?? 4096) }
 						: { offset: Number(offset), limit: Number(limit ?? 4096) };
-			process.stdout.write(`${JSON.stringify(await runCodingGuestCommand(action, commandId, {}, read))}\n`);
+			process.stdout.write(
+				`${JSON.stringify(await runCodingGuestCommand(action, workerId, commandId, {}, read))}\n`,
+			);
 		} else throw new Error("INVALID_CODING_GUEST_ARGUMENTS");
 	} catch {
 		process.stderr.write("CODING_GUEST_COMMAND_REFUSED\n");
