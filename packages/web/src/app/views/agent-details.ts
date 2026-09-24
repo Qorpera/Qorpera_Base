@@ -1,5 +1,5 @@
 import type { HostedStaffAgent } from "../../cloud/types.ts";
-import { figureElement, nativeColorOf } from "../../ui/avatar.ts";
+import { figureElement } from "../../ui/avatar.ts";
 import { SurfaceDialog } from "../../ui/dialog.ts";
 import { button, h, icon, replace } from "../../ui/dom.ts";
 import { type FigureChoice, FigurePicker } from "../../ui/figure-picker.ts";
@@ -103,10 +103,7 @@ export class AgentDetails {
 				{
 					type: "button",
 					class: "agent-figure-reset",
-					onclick: () => {
-						const { figure } = this.#current();
-						this.#choose({ figure, color: nativeColorOf(figure) });
-					},
+					onclick: () => this.#figures.reset(),
 				},
 				t("Reset"),
 			),
