@@ -22,9 +22,9 @@ select ('40300000-0000-4000-8000-00000000010' || n)::uuid,todo.profile_id,todo.e
 	'30000000-0000-4000-8000-000000000001',(current_setting('qorpera_test.wake_sponsor')::jsonb ->> 'binding_id')::uuid,1
 from public.qorpera_runtime_agent_todos todo cross join generate_series(1,5) n where todo.todo_key = 'capacity';
 insert into public.qorpera_runtime_machine_allocations(id,profile_id,coding_worker_id,provider_adapter,instance_sha256)
-select ('40300000-0000-4000-8000-00000000020' || n)::uuid,'30000000-0000-4000-8000-000000000010',
-	('40300000-0000-4000-8000-00000000010' || n)::uuid,'coding-capacity',encode(extensions.digest('capacity-vm-' || n,'sha256'),'hex')
-from generate_series(1,5) n;
+select ('40300000-0000-4000-8000-00000000020' || n)::uuid,worker.profile_id,worker.id,'coding-capacity',
+	encode(extensions.digest('capacity-vm-' || n,'sha256'),'hex')
+from generate_series(1,5) n join public.qorpera_runtime_workers worker on worker.id = ('40300000-0000-4000-8000-00000000010' || n)::uuid;
 
 create function pg_temp.cap_policy(p_cpu bigint,p_memory bigint,p_headroom_cpu bigint,p_headroom_memory bigint) returns jsonb language sql as $$
 	select jsonb_build_object('schema','qorpera.runtime-node-policy/v1','nodeId','40300000-0000-4000-8000-000000000010',
@@ -107,7 +107,8 @@ select pg_temp.wake_assert((pg_temp.cap() ->> 'freeCpuMillis')::bigint = 8000 an
 	and (pg_temp.cap() ->> 'pendingRequests')::bigint = 0 and (pg_temp.cap() ->> 'allocatedComputers')::bigint = 4,
 	'Four VMs reserved again, none waiting');
 -- Headroom cannot grow so far that the reserved machines no longer fit.
-select pg_temp.wake_error($q$select public.qorpera_configure_runtime_node(pg_temp.cap_policy(32000,68719476736,26000,49392123904),2)$q$,'55000');
+select pg_temp.wake_error($q$select public.qorpera_configure_runtime_node(pg_temp.cap_policy(32000,68719476736,26000,49392123904),2)$q$,'55000',
+	'Node policy would discard occupied capacity');
 reset role;
 
 -- The view stays operator-only.
