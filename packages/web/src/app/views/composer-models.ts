@@ -1,9 +1,23 @@
-import { SESSION_MODELS, type SessionModel, type WebSessionModel } from "../../cloud/session-model.ts";
+import {
+	SESSION_EFFORTS,
+	SESSION_MODEL_BEFORE_EFFORT,
+	SESSION_MODELS,
+	type SessionModel,
+	type SessionModelSelection,
+	type WebSessionModel,
+} from "../../cloud/session-model.ts";
 import { h, icon } from "../../ui/dom.ts";
-import { t } from "../../ui/preferences.ts";
+import { phrase, t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 
-/** Conversation-scoped choices; the server pins them when admitting new runs. */
+const EFFORT_NAMES: Record<(typeof SESSION_EFFORTS)[number], string> = {
+	low: phrase("Low"),
+	medium: phrase("Medium"),
+	high: phrase("High"),
+};
+
+/** Conversation-scoped model and effort; the server pins them when admitting
+ * the member's next run in this conversation. */
 export class ComposerModels {
 	readonly button: HTMLButtonElement;
 	readonly el: HTMLElement;
@@ -11,6 +25,8 @@ export class ComposerModels {
 	readonly #status = h("p", { class: "composer-model-status", role: "status" });
 	readonly #refresh: HTMLButtonElement;
 	readonly #choices: HTMLButtonElement[];
+	readonly #efforts: HTMLButtonElement[];
+	readonly #effortGroup: HTMLElement;
 	readonly #company: CompanyController;
 	readonly #sessionId: string;
 	readonly #client: WebSessionModel | undefined;
@@ -18,7 +34,8 @@ export class ComposerModels {
 	readonly #changed: () => void;
 	#observed: SessionModel | undefined;
 	#request: AbortController | undefined;
-	#pendingModel: string | undefined;
+	#pending: SessionModelSelection | undefined;
+	#pressed: HTMLButtonElement | undefined;
 	#error = "";
 	#started = false;
 	#locked = true;
@@ -44,18 +61,40 @@ export class ComposerModels {
 			h("span", { class: "composer-model-label" }, t("Model"), this.#label),
 			icon("chevron"),
 		);
-		this.#choices = SESSION_MODELS.map((model) =>
-			h(
+		// Each choice saves only what it changes; the cloud keeps the other.
+		this.#choices = SESSION_MODELS.map((model) => {
+			const choice: HTMLButtonElement = h(
 				"button",
 				{
 					type: "button",
 					role: "menuitemradio",
 					"aria-checked": "false",
-					onclick: () => void this.#save(model.id),
+					onclick: () => void this.#save({ modelId: model.id }, choice),
 				},
 				h("span", null, model.name),
 				icon("check"),
-			),
+			);
+			return choice;
+		});
+		this.#efforts = SESSION_EFFORTS.map((effort) => {
+			const choice: HTMLButtonElement = h(
+				"button",
+				{
+					type: "button",
+					role: "menuitemradio",
+					"aria-checked": "false",
+					onclick: () => void this.#save({ reasoningEffort: effort }, choice),
+				},
+				h("span", null, t(EFFORT_NAMES[effort])),
+				icon("check"),
+			);
+			return choice;
+		});
+		this.#effortGroup = h(
+			"div",
+			{ class: "composer-model-group", role: "group", "aria-label": t("Effort"), hidden: true },
+			h("p", { class: "composer-model-heading", "aria-hidden": "true" }, t("Effort")),
+			...this.#efforts,
 		);
 		this.#refresh = h(
 			"button",
@@ -67,14 +106,15 @@ export class ComposerModels {
 			{ class: "composer-models", role: "menu", "aria-label": t("Model"), hidden: true },
 			h("button", { type: "button", role: "menuitem", onclick: back }, icon("back"), t("Model")),
 			...this.#choices,
-			h("p", { class: "composer-model-scope" }, t("Only this conversation. Applies to new Codex runs. Low effort.")),
+			this.#effortGroup,
+			h("p", { class: "composer-model-scope" }, t("Only this conversation. Applies from your next message.")),
 			this.#status,
 			this.#refresh,
 		);
 	}
 
 	get pending(): boolean {
-		return this.#pendingModel !== undefined;
+		return this.#pending !== undefined;
 	}
 
 	update(available: boolean, locked: boolean): void {
@@ -91,7 +131,7 @@ export class ComposerModels {
 			this.#request?.abort();
 			this.#request = undefined;
 			this.#observed = undefined;
-			this.#pendingModel = undefined;
+			this.#pending = undefined;
 			this.#started = false;
 			this.#error = "";
 		}
@@ -114,7 +154,7 @@ export class ComposerModels {
 			const value = await this.#client.read(this.#sessionId, signal);
 			signal.throwIfAborted();
 			this.#observed = value;
-			this.#pendingModel = undefined;
+			this.#pending = undefined;
 		} catch {
 			if (!signal.aborted) this.#error = t("The model is unavailable. Refresh to try again.");
 		} finally {
@@ -140,7 +180,7 @@ export class ComposerModels {
 		);
 	}
 
-	async #save(modelId: string): Promise<void> {
+	async #save(selection: SessionModelSelection, pressed: HTMLButtonElement): Promise<void> {
 		if (
 			!this.#client ||
 			!this.#observed ||
@@ -153,20 +193,26 @@ export class ComposerModels {
 		const request = new AbortController();
 		this.#request = request;
 		const signal = AbortSignal.any([request.signal, this.#signal]);
-		this.#pendingModel = modelId;
+		this.#pending = selection;
+		this.#pressed = pressed;
 		this.#notify();
 		try {
-			const value = await this.#client.set(this.#sessionId, modelId, this.#observed.version, signal);
+			const value = await this.#client.set(this.#sessionId, selection, this.#observed.version, signal);
 			signal.throwIfAborted();
 			this.#observed = value;
-			this.#pendingModel = undefined;
+			this.#pending = undefined;
 		} catch {
 			if (!signal.aborted) this.#error = t("The change could not be confirmed. Refresh the model before sending.");
 		} finally {
 			if (this.#request === request) {
 				this.#request = undefined;
 				this.#notify();
-				if (!this.el.hidden && document.activeElement === this.el.firstElementChild) this.focus();
+				// Focus returns to the choice the member pressed once it is usable again.
+				if (!this.el.hidden && document.activeElement === this.el.firstElementChild) {
+					if (this.#pressed && !this.#pressed.disabled) this.#pressed.focus();
+					else this.focus();
+				}
+				this.#pressed = undefined;
 			}
 		}
 	}
@@ -181,16 +227,40 @@ export class ComposerModels {
 		const focused = this.el.contains(document.activeElement) ? document.activeElement : null;
 		const id = this.#observed?.modelId;
 		const name = SESSION_MODELS.find((item) => item.id === id)?.name ?? id;
+		const effortId = this.#observed?.reasoningEffort;
+		const effort =
+			effortId && Object.hasOwn(EFFORT_NAMES, effortId)
+				? t(EFFORT_NAMES[effortId as keyof typeof EFFORT_NAMES])
+				: effortId;
+		const summary = name && effort ? `${name} · ${effort}` : name;
 		this.button.disabled = this.#locked || !this.#canRead();
 		this.#label.textContent = this.pending
 			? this.#error
 				? t("Change unconfirmed")
 				: t("Saving…")
-			: (name ?? (this.#error ? t("Unavailable") : t("Loading…")));
-		this.button.setAttribute("aria-label", name ? t("Model: {name}", { name }) : t("Model"));
+			: (summary ?? (this.#error ? t("Unavailable") : t("Loading…")));
+		this.button.setAttribute(
+			"aria-label",
+			name
+				? effort
+					? t("Model: {name}, {effort} effort", { name, effort })
+					: t("Model: {name}", { name })
+				: t("Model"),
+		);
+		const unavailable = this.button.disabled || !this.#observed || Boolean(this.#request) || Boolean(this.#error);
+		// A cloud that does not honour per-conversation effort omits it, and
+		// accepts only GPT-6 Astra of the listed models. Hidden choices stay
+		// disabled so arrow keys skip them.
+		const beforeEffort = this.#observed !== undefined && effortId === undefined;
 		for (const [index, choice] of this.#choices.entries()) {
-			choice.setAttribute("aria-checked", String(SESSION_MODELS[index]?.id === id));
-			choice.disabled = this.button.disabled || !this.#observed || Boolean(this.#request) || Boolean(this.#error);
+			const model = SESSION_MODELS[index]?.id;
+			choice.setAttribute("aria-checked", String(model === id));
+			choice.disabled = unavailable || (beforeEffort && model !== SESSION_MODEL_BEFORE_EFFORT);
+		}
+		this.#effortGroup.hidden = effortId === undefined;
+		for (const [index, choice] of this.#efforts.entries()) {
+			choice.setAttribute("aria-checked", String(SESSION_EFFORTS[index] === effortId));
+			choice.disabled = unavailable || this.#effortGroup.hidden;
 		}
 		this.#status.textContent =
 			this.#error || (this.#request ? (this.pending ? t("Saving model…") : t("Loading model…")) : "");

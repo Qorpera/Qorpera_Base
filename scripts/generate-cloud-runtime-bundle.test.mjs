@@ -52,7 +52,7 @@ test("pins every packaged entrypoint and detects code, generated-output and arti
 		assert.deepEqual(initial.manifest.modelPolicy, {
 			schema: "qorpera.model-reasoning/v1",
 			effort: "low",
-			overrides: "routine",
+			overrides: "routine-and-thread",
 			allowed: ["low", "medium", "high"],
 		});
 		for (const path of Object.values(CLOUD_RUNTIME_ENTRY_POINTS)) assert.match(initial.manifest.implementation[path], /^[0-9a-f]{64}$/);
