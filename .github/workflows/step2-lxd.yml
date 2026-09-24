@@ -29,6 +29,9 @@ on:
       - 'packages/shell/test/cloud-company-file-contract.test.ts'
       - 'packages/shell/test/lxd-runner-*.test.ts'
       - 'packages/runtime/src/cloud-connector-*.ts'
+      - 'packages/runtime/src/cloud-coding-*.ts'
+      - 'packages/runtime/test/cloud-coding-*.test.ts'
+      - 'deploy/coding-worker/**'
       - 'packages/runtime/src/cloud-secret-*.ts'
       - 'packages/shell/test/cloud-connector-*.test.ts'
       - 'packages/shell/test/cloud-secret-*.test.ts'
@@ -86,6 +89,7 @@ jobs:
         run: >-
           node ../../node_modules/vitest/dist/cli.js --run
           test/lxd-client.test.ts
+          test/lxd-tracked-operations.test.ts
           test/lxd-guest-network.test.ts
           test/lxd-image-provenance.test.ts
           test/lxd-login-gateway.test.ts
@@ -126,6 +130,23 @@ jobs:
           test/cloud-coding-guest-package.test.ts
           test/cloud-coding-watchdog.test.ts
           test/cloud-coding-storage-guest.test.ts
+          test/cloud-coding-command-guest-execute.test.ts
+
+      - name: Test the coding command supervisor
+        # Its fixtures chown each command log to the coding gid, which must be
+        # >= 1000 and one the test user holds: run under such a group when the
+        # runner's primary group is a system group.
+        working-directory: packages/runtime
+        run: |
+          id
+          supervisor="node ../../node_modules/vitest/dist/cli.js --run test/cloud-coding-command-guest.test.ts"
+          if [ "$(id -g)" -ge 1000 ]; then
+            $supervisor
+          else
+            sudo groupadd qorpera-coding-test
+            sudo usermod -aG qorpera-coding-test "$(id -un)"
+            sg qorpera-coding-test -c "$supervisor"
+          fi
 
       - name: Test runner guest contracts
         working-directory: packages/shell

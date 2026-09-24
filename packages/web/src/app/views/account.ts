@@ -157,28 +157,9 @@ export function renderAccount(
 				"section",
 				{ class: "settings-group" },
 				h("h2", null, uiText("Appearance")),
-				h(
-					"div",
-					{ class: "settings-preference" },
-					h(
-						"span",
-						{ class: "settings-copy" },
-						uiText("Theme"),
-						h("small", null, uiText("System follows your device’s appearance.")),
-					),
-					theme,
-				),
-				h(
-					"div",
-					{ class: "settings-preference" },
-					h(
-						"span",
-						{ class: "settings-copy" },
-						uiText("Composer color"),
-						h("small", null, uiText("Send button, your message bubbles, and selected agent cards.")),
-					),
-					composerColor,
-				),
+				// The pictures say what each group is; the groups keep their names for screen readers.
+				h("div", { class: "settings-preference" }, theme),
+				h("div", { class: "settings-preference" }, composerColor),
 			),
 			h(
 				"section",

@@ -38,7 +38,17 @@ intent with an absent unit is unconfirmed and cannot launch again. Requests
 cannot change under a reused command UUID. A changed boot cannot restart work.
 
 The fixed unit `qorpera-coding-<commandId>.service` runs the same helper's
-`execute` mode as the configured unprivileged uid/gid. The helper invokes bash
+`execute` mode as the configured unprivileged uid/gid. Inside the unit,
+ProtectSystem=strict leaves `/workspace` and `/var/lib/qorpera-coding` read-only
+per mount and ReadWritePaths bind-mounts the workspace, home, cache and this
+command's log directory onto themselves. The execute step therefore asserts its
+storage against exactly those paths: the same virtiofs superblocks (still `rw`),
+and beneath them only those binds of the same superblock. Root callers keep the
+strict check (one whole `rw` mount, nothing beneath). A refusal before the command
+starts exits 125 and writes one line with only its fixed code into the command's
+empty `output.log` (never following, creating or appending to anything else), so
+`read` reports `failed` with that code instead of staying unconfirmed. The same
+line goes to the unit's stderr, which is the guest's journal. The helper invokes bash
 without profile files and with a cleared environment. Systemd bounds wall time,
 memory, tasks and CPU, applies filesystem protections, and kills the whole
 command cgroup on cancellation. ExitType=cgroup keeps the command running
