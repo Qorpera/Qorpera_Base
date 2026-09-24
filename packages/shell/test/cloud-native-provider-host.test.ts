@@ -1014,6 +1014,50 @@ describe("native provider host", () => {
 			} finally {
 				startupLogged.mockRestore();
 			}
+
+			// A run has no deadline: the host answers the execution's headers at once (and keeps
+			// the body alive), so an HTTP client's five-minute header timeout never applies.
+			let release: () => void = () => undefined;
+			const gate = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			vi.mocked(harness.execute).mockImplementationOnce(async ({ mouth }) => {
+				await gate;
+				await sendFinal(mouth);
+				return { providerSessionId: "native-session-long" };
+			});
+			let headersAt = 0;
+			const timed = new HttpNativeProviderComputerBridge(
+				`http://127.0.0.1:${port}/`,
+				bridgeToken,
+				async (input, init) => {
+					const response = await fetch(input, init);
+					headersAt = Date.now();
+					return response;
+				},
+				{ executionBoundary: "virtual_machine" },
+			);
+			const long = await timed.start(nativeAuthority, request);
+			await vi.waitFor(() => expect(headersAt).toBeGreaterThan(0));
+			const releasedAt = Date.now();
+			release();
+			await expect(long.result).resolves.toMatchObject({ provider_session_id: "native-session-long" });
+			expect(headersAt).toBeLessThanOrEqual(releasedAt);
+
+			// A failure after those early headers still reaches the bridge as a refusal, never a result.
+			let fail: () => void = () => undefined;
+			const failGate = new Promise<void>((resolve) => {
+				fail = resolve;
+			});
+			vi.mocked(harness.execute).mockImplementationOnce(async () => {
+				await failGate;
+				throw new Error("harness stopped");
+			});
+			headersAt = 0;
+			const failing = await timed.start(nativeAuthority, request);
+			await vi.waitFor(() => expect(headersAt).toBeGreaterThan(0));
+			fail();
+			await expect(failing.result).rejects.toThrow("Native provider bridge request failed (422)");
 		} finally {
 			await service.close();
 		}

@@ -10,8 +10,9 @@ import type {
 
 export const CLOUD_NATIVE_RESULT_FENCE_SCHEMA = "qorpera.native-result-fence/v1";
 const MAX_FRAME_BYTES = 8 * 1024 * 1024;
-const MAX_TOTAL_BYTES = 64 * 1024 * 1024;
-const MAX_REQUESTS = 256;
+// A run is not capped by its number of model requests or their total size
+// (founder, 2026-09-24); replayed request ids are tracked in a rolling window.
+const TRACKED_REQUESTS = 16_384;
 const DEADLINE_MS = 4_000;
 const ID = /^[A-Za-z0-9_:.-]{1,160}$/;
 
@@ -42,8 +43,8 @@ function parseRequest(value: unknown): CloudNativeFenceRequest {
 			!(request.purpose === "prewarm" && request.turnId === "") &&
 			(typeof request.turnId !== "string" || !ID.test(request.turnId))) ||
 		!["turn", "prewarm", "compaction"].includes(String(request.purpose)) ||
+		// No count cap on the outputs a request carries (founder, 2026-09-24).
 		!Array.isArray(request.outputs) ||
-		request.outputs.length > 128 ||
 		(request.purpose === "prewarm" && request.outputs.length !== 0)
 	)
 		throw new Error("Invalid native result frame");
@@ -104,8 +105,6 @@ export async function startCloudNativeResultFence(options: {
 	options.signal.throwIfAborted();
 	const sockets = new Set<Socket>();
 	const requestIds = new Set<string>();
-	let totalBytes = 0;
-	let requests = 0;
 	let stopped = false;
 	const fail = (): void => {
 		if (stopped) return;
@@ -115,7 +114,7 @@ export async function startCloudNativeResultFence(options: {
 		options.onFailure();
 	};
 	const server = createServer((socket) => {
-		if (stopped || sockets.size >= 4 || ++requests > MAX_REQUESTS) {
+		if (stopped || sockets.size >= 4) {
 			socket.destroy();
 			fail();
 			return;
@@ -134,8 +133,7 @@ export async function startCloudNativeResultFence(options: {
 		});
 		socket.on("data", (chunk: Buffer) => {
 			try {
-				totalBytes += chunk.length;
-				if (stopped || processing || totalBytes > MAX_TOTAL_BYTES) throw new Error("Native result budget exceeded");
+				if (stopped || processing) throw new Error("Native result frame after its request");
 				let offset = 0;
 				if (headerBytes < 4) {
 					const copied = chunk.copy(header, headerBytes, 0, Math.min(chunk.length, 4 - headerBytes));
@@ -154,6 +152,7 @@ export async function startCloudNativeResultFence(options: {
 				const request = parseRequest(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(frame)));
 				if (requestIds.has(request.requestId)) throw new Error("Native result request replayed");
 				requestIds.add(request.requestId);
+				if (requestIds.size > TRACKED_REQUESTS) requestIds.delete(requestIds.values().next().value as string);
 				options.assertSession(request);
 				void options.boundary
 					.fenceNativeResults(request.outputs)
@@ -172,9 +171,7 @@ export async function startCloudNativeResultFence(options: {
 								outputs: outputs.map(({ capture: _capture, ...output }) => output),
 							}),
 						);
-						totalBytes += wire.length + 4;
-						if (wire.length > MAX_FRAME_BYTES || totalBytes > MAX_TOTAL_BYTES)
-							throw new Error("Native result budget exceeded");
+						if (wire.length > MAX_FRAME_BYTES) throw new Error("Native result frame too large");
 						const size = Buffer.alloc(4);
 						size.writeUInt32BE(wire.length);
 						socket.end(Buffer.concat([size, wire]));

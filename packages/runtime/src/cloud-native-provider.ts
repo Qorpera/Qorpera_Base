@@ -23,7 +23,8 @@ const BRIDGE_REQUEST_SCHEMA = "qorpera.native-provider-execution/v1";
 const BRIDGE_CANCEL_SCHEMA = "qorpera.native-provider-cancel/v1";
 const BRIDGE_RESPONSE_SCHEMA = "qorpera.native-provider-result/v1";
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
-const MAX_BRIDGE_RESPONSE_BYTES = 64 * 1024;
+// The result plus a keepalive newline a minute (years of them fit).
+const MAX_BRIDGE_RESPONSE_BYTES = 1024 * 1024;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PROVIDER_SESSION_PATTERN = /^[^\0\r\n]{1,1024}$/;
 
@@ -250,7 +251,7 @@ export class HttpNativeProviderComputerBridge implements NativeProviderComputerB
 	readonly #bridgeToken?: string;
 	readonly #fetch: typeof fetch;
 	readonly #signal?: AbortSignal;
-	readonly #requestTimeoutMs: number;
+	readonly #requestTimeoutMs: number | undefined;
 
 	constructor(
 		baseUrl: string,
@@ -272,9 +273,15 @@ export class HttpNativeProviderComputerBridge implements NativeProviderComputerB
 		this.#bridgeToken = bridgeToken;
 		this.#fetch = fetchImplementation;
 		this.#signal = options.signal;
-		this.#requestTimeoutMs = options.requestTimeoutMs ?? 24 * 60 * 60 * 1000;
+		// A run has no deadline (founder, 2026-09-24); a timeout is a test or operator choice.
+		this.#requestTimeoutMs = options.requestTimeoutMs;
 		this.executionGuarantees = nativeProviderExecutionGuarantees(options.executionBoundary ?? "test");
-		if (!Number.isSafeInteger(this.#requestTimeoutMs) || this.#requestTimeoutMs < 1) {
+		if (
+			this.#requestTimeoutMs !== undefined &&
+			(!Number.isSafeInteger(this.#requestTimeoutMs) ||
+				this.#requestTimeoutMs < 1 ||
+				this.#requestTimeoutMs > 2 ** 31 - 1)
+		) {
 			throw new Error("Native provider bridge timeout is invalid");
 		}
 	}
@@ -328,7 +335,7 @@ export class HttpNativeProviderComputerBridge implements NativeProviderComputerB
 			body,
 			AbortSignal.any([
 				executionAbort.signal,
-				AbortSignal.timeout(this.#requestTimeoutMs),
+				...(this.#requestTimeoutMs === undefined ? [] : [AbortSignal.timeout(this.#requestTimeoutMs)]),
 				...(this.#signal ? [this.#signal] : []),
 			]),
 		).then((value) => {
@@ -399,11 +406,17 @@ export class HttpNativeProviderComputerBridge implements NativeProviderComputerB
 						throw new Error(`Native provider bridge request failed (${response.status})`);
 					}
 					const bytes = await readBoundedCloudResponse(response, MAX_BRIDGE_RESPONSE_BYTES, signal);
+					let value: unknown;
 					try {
-						return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
+						// An execution answers 200 at once with keepalive newlines; JSON allows the leading whitespace.
+						value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
 					} catch {
 						throw new Error("Native provider bridge returned invalid JSON");
 					}
+					// A failure after the execution answered 200 arrives in the body.
+					if (value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).join() === "error")
+						throw new Error("Native provider bridge request failed (422)");
+					return value;
 				}),
 			]);
 		} finally {

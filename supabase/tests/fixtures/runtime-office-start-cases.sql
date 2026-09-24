@@ -44,7 +44,6 @@ select pg_temp.wake_assert(public.qorpera_runtime_office_start_status(current_se
 select pg_temp.wake_assert(pg_temp.office_start_request()->>'state'='requested','start is durable demand only');
 select pg_temp.wake_assert(pg_temp.office_start_request('35000000-0000-4000-8000-000000000003')->>'intentId'
 	=current_setting('qorpera_test.start_id'),'one intent per generation coalesces callers');
-select public.qorpera_set_company_machine_limit('30000000-0000-4000-8000-000000000010',1,0);
 select pg_temp.wake_error($q$select public.qorpera_request_runtime_office_start(
 	jsonb_set(current_setting('qorpera_test.office_scope')::jsonb,'{companyId}','"35000000-0000-4000-8000-000000000099"'),1,extensions.gen_random_uuid())$q$,'42501');
 select pg_temp.wake_error($q$select public.qorpera_request_runtime_office_start(current_setting('qorpera_test.office_scope')::jsonb,2,extensions.gen_random_uuid())$q$,'42501');
@@ -59,9 +58,10 @@ select pg_temp.wake_error($q$select pg_temp.office_start_check()$q$,'42501');
 select public.qorpera_reserve_runtime_machine(current_setting('qorpera_test.start_native_machine')::uuid,
 	current_setting('qorpera_test.start_native_provider'),repeat('e',64),
 	(current_setting('qorpera_test.wake_binding')::jsonb->>'runId')::uuid,(current_setting('qorpera_test.wake_binding')::jsonb->>'runnerId')::uuid);
-select pg_temp.wake_assert(pg_temp.office_start_reserve()='{"state":"refused","reason":"MACHINE_CAPACITY_EXHAUSTED"}'::jsonb,'start shares native machine capacity');
+-- No company machine limit (runtime v92): a running native computer does not hold the start back.
+select pg_temp.wake_assert(pg_temp.office_start_reserve()->>'state'='reserved','start is not refused by the company''s other machines');
 reset role;
-select pg_temp.wake_assert((select state='requested' and allocation_id is null from public.qorpera_runtime_office_start_intents),'refusal binds no phantom allocation');
+select pg_temp.wake_assert((select allocation_id is not null from public.qorpera_runtime_office_start_intents),'the start binds its allocation');
 set local role service_role;
 select public.qorpera_release_runtime_machine(current_setting('qorpera_test.start_native_machine')::uuid,
 	current_setting('qorpera_test.start_native_provider'),repeat('e',64));

@@ -688,3 +688,33 @@ above.
 
     Per-connection provider quotas, the provider's own usage limits and the
     running-machine limit are unchanged.
+
+### 2026-09-24 — from the runtime (bundle v92, `20260924130000_runtime_remove_run_and_machine_caps.sql`)
+
+15. **No machine limit, no API-key budget, no run deadline.** Removed, with no
+    `_v2`: `qorpera_company_machine_capacity(p_profile_id)` and
+    `qorpera_set_company_machine_limit(uuid,integer,bigint)` (no client calls
+    them) and the machine-capacity notice. Its rows go, and so does the
+    `company_ceiling_tripped` kind, so a web build that still parses that
+    notice only ever sees none. Node capacity is the only bound on company
+    computers. API-key connections keep only their concurrency. A run's
+    `deadline_at` is set a century out, and usage records runs of any
+    length. A queued run that no computer starts within a day of being queued
+    (a retry counts from its requeue) still fails, with the job error "No
+    computer could start the run within a day".
+
+    A run's work has no count either (founder, 2026-09-24). What a client may
+    see change:
+    - A wake policy's `maxPublicSends` is `null` (no limit) or `0` (the wake may
+      not speak publicly); the numbers 64, 3 and 2 are gone.
+    - Coworker messages have no hop budget and no hourly pair budget, so a send
+      no longer returns `causal-fence` for those reasons and the pair transcript
+      gets no budget line. Nothing but a member's Stop (or the operator pause)
+      ends a loop between two agents.
+    - Hiring and group chats have no per-run count ("This run reached its limit
+      for new agents/rooms" is gone), and neither do Company File reads, model
+      requests, screenshots, tool calls, worker follow-up turns or workers per
+      todo ("This todo already has eight workers" is gone).
+    - What still refuses is listed in the runtime contract, section 7.4. It
+      includes four active workers per agent and one open limit, 128 tool
+      outputs per model request, which leaves with a Codex rebuild.

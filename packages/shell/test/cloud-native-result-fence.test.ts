@@ -283,6 +283,14 @@ it("cancels all connections without releasing a later authority response", async
 	expect(f.onFailure).toHaveBeenCalledTimes(1);
 });
 
+it("serves any number of model requests in a run, one after another", async () => {
+	// The old cap of 256 requests per run is gone (founder, 2026-09-24).
+	const f = await fixture();
+	for (let index = 0; index < 300; index++)
+		expect(await exchange(f.service.path, { ...request(), requestId: `request-${index}` })).toBeDefined();
+	expect(f.onFailure).not.toHaveBeenCalled();
+});
+
 it("caps a native connection flood before unbounded waiting work is created", async () => {
 	const f = await fixture(async () => new Promise(() => undefined));
 	const outcomes = await Promise.all(Array.from({ length: 5 }, () => exchange(f.service.path, request())));

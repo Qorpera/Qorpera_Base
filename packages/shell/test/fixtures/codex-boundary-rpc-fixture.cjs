@@ -96,7 +96,8 @@ async function handle(message) {
 		if (mode === "stalled" || mode === "descendant") return;
 		if (mode === "invalid-json") { process.stdout.write("PRIVATE_BAD_WIRE\n"); return; }
 		if (mode === "oversized") { process.stdout.write("x".repeat(1024 * 1024 + 1)); return; }
-		if (mode === "wire-budget") { process.stderr.write("x".repeat(17 * 1024 * 1024)); return; }
+		// Far more diagnostics than the removed 16 MiB output cap; the turn still completes.
+		if (mode === "wire-flood") process.stderr.write("x".repeat(17 * 1024 * 1024));
 		if (mode === "missing-result") { write({ id: message.id }); return; }
 		write({ id: message.id, result: { userAgent: `qorpera_cloud_boundary/${mode === "wrong-version" ? "0.146.0" : "0.155.1"} (fixture)${mode === "capture-image" ? " qorpera.native-capture-images/v1" : ""}${mode === "missing-composition" ? "" : " qorpera.native-message-composition/v1"}${mode === "missing-fence" ? "" : " qorpera.native-result-fence/v1"}${mode === "missing-fence" || mode === "missing-direct-tools" ? "" : " qorpera.native-direct-tools/v1"}` } });
 	} else if (message.method === "config/read") {
@@ -229,9 +230,11 @@ async function handle(message) {
 			write({ id: "public_send", method: "item/tool/call", params: { threadId, turnId, callId: "send_1", namespace: "qorpera", tool: "send_message", arguments: { idempotencyKey: "k1", text: "Done.", phase: mode === "progress-send-no-end" ? "progress" : "final" } } });
 		} else if (mode === "failed-turn") {
 			failed();
-		} else if (mode === "duplicate-id" || mode === "callback-budget") {
-			for (let index = 0; index < (mode === "duplicate-id" ? 2 : 16_385); index++)
+		} else if (mode === "duplicate-id" || mode === "callback-flood") {
+			// Past the removed 16,384-request cap, each callback is still answered and the turn completes.
+			for (let index = 0; index < (mode === "duplicate-id" ? 2 : 20_000); index++)
 				write({ id: mode === "duplicate-id" ? "duplicate" : `denied_${index}`, method: "item/commandExecution/requestApproval", params: {} });
+			if (mode === "callback-flood") done();
 		} else {
 			write({ method: "item/agentMessage/delta", params: { threadId, turnId, delta: "PRIVATE_OUTPUT_CANARY" } });
 			write({ method: "item/reasoning/summaryTextDelta", params: { threadId, turnId, delta: "PRIVATE_REASONING_CANARY" } });
