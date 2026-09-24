@@ -9,6 +9,9 @@ import type { CompanyController } from "../company.ts";
 
 const ROLES: Exclude<HostedProfileRole, "owner">[] = ["viewer", "contributor", "admin"];
 
+/** `exitError` is a failed Delete/Leave company, shown under that button rather than at the top. */
+export type TeamFeedback = { message?: string; error?: string; exitError?: string };
+
 /** A company role as the interface names it; the cloud sends the code. */
 export function roleLabel(role: HostedProfileRole): string {
 	switch (role) {
@@ -29,8 +32,8 @@ export function renderTeam(
 	api: CloudApi,
 	company: CompanyController,
 	container: HTMLElement,
-	feedback: { message?: string; error?: string },
-	setFeedback: (next: { message?: string; error?: string }) => void,
+	feedback: TeamFeedback,
+	setFeedback: (next: TeamFeedback) => void,
 	options: {
 		friends?: HostedFriend[];
 		signal?: AbortSignal;
@@ -38,6 +41,8 @@ export function renderTeam(
 		onCompanyRemoved: (profileId: string) => void;
 		/** Opens the Friends tab: someone becomes a friend before they can be invited. */
 		addFriend: () => void;
+		/** Holds the Delete/Leave company button; without it the button ends the team page. */
+		exit?: HTMLElement;
 	},
 ): void {
 	const state = company.store.get();
@@ -82,6 +87,7 @@ export function renderTeam(
 				)
 			: null,
 	);
+	let exit: HTMLButtonElement | null = null;
 	if (!team) {
 		if (state.accessLost) content.append(notice("danger", t("Your access to this company was revoked.")));
 		else if (!state.error) content.append(listSkeleton(t("Loading team")));
@@ -316,46 +322,47 @@ export function renderTeam(
 			);
 			content.append(picker);
 		}
-		content.append(
-			h(
-				"details",
-				{ class: "advanced company-danger" },
-				h("summary", null, t("Manage company")),
-				button(
-					team.role === "owner" ? t("Delete company") : t("Leave company"),
-					() =>
-						void (async () => {
-							const deleting = team.role === "owner";
-							const confirmed = await confirmDialog(
-								deleting
-									? t("Delete {company} for every member? Type the company name to confirm.", {
-											company: profile.profileName,
-										})
-									: t("Leave {company}? You lose access until someone invites you again.", {
-											company: profile.profileName,
-										}),
-								deleting ? t("Delete company") : t("Leave"),
-								true,
-								deleting ? profile.profileName : undefined,
-								signal,
-							);
-							if (!confirmed || !current()) return;
-							try {
-								if (deleting) await api.deleteProfile(profile.profileId);
-								else await api.leaveProfile(profile.profileId);
-								// Membership revocation may stop this company before the RPC returns.
-								options.onCompanyRemoved(profile.profileId);
-							} catch (error) {
-								if (current()) setFeedback({ error: describeError(error) });
-							}
-						})(),
-					{ danger: true },
-				),
-			),
+		exit = button(
+			team.role === "owner" ? t("Delete company") : t("Leave company"),
+			() =>
+				void (async () => {
+					const deleting = team.role === "owner";
+					const confirmed = await confirmDialog(
+						deleting
+							? t("Delete {company} for every member? Type the company name to confirm.", {
+									company: profile.profileName,
+								})
+							: t("Leave {company}? You lose access until someone invites you again.", {
+									company: profile.profileName,
+								}),
+						deleting ? t("Delete company") : t("Leave"),
+						true,
+						deleting ? profile.profileName : undefined,
+						signal,
+					);
+					if (!confirmed || !current()) return;
+					try {
+						if (deleting) await api.deleteProfile(profile.profileId);
+						else await api.leaveProfile(profile.profileId);
+						// Membership revocation may stop this company before the RPC returns.
+						options.onCompanyRemoved(profile.profileId);
+					} catch (error) {
+						if (current()) setFeedback({ exitError: describeError(error) });
+					}
+				})(),
+			{ danger: true },
 		);
+		exit.classList.add("company-exit");
 	}
+	// The button is rebuilt on every company update; keep keyboard focus on it.
+	const previousExit = (options.exit ?? container).querySelector(".company-exit");
+	const exitFocused = previousExit !== null && previousExit === document.activeElement;
+	const exitError = feedback.exitError ? notice("danger", feedback.exitError) : null;
+	if (options.exit) replace(options.exit, exit, exitError);
+	else for (const part of [exit, exitError]) if (part) content.append(part);
 	replace(container, content);
 	for (const details of container.querySelectorAll("details"))
 		details.open = openDetails.includes(details.querySelector("summary")?.textContent);
 	restore();
+	if (exitFocused) exit?.focus({ preventScroll: true });
 }

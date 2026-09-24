@@ -149,7 +149,6 @@ export const SETTINGS: Record<string, string> = {
 	Invite: "Inviter",
 	"Invitation created.": "Invitationen er oprettet.",
 	"Add a friend": "Tilføj en ven",
-	"Manage company": "Administrer virksomhed",
 	"Delete company": "Slet virksomhed",
 	"Leave company": "Forlad virksomhed",
 	"Delete {company} for every member? Type the company name to confirm.":
