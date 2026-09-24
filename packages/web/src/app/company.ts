@@ -102,9 +102,8 @@ function retryRefusal(error: unknown): string {
 /** Why the cloud would not take a card's answer, in the member's words. */
 function answerRefusal(error: unknown): string {
 	const message = error instanceof Error ? error.message : "";
-	// In an agent's thread the answer runs on the account the card was asked on.
-	if (/sponsor|model account/i.test(message))
-		return t("The model account behind this card is no longer active. Answer in a message instead.");
+	// In an agent's thread an answer runs the agent on the member's own model account.
+	if (/sponsor|model account/i.test(message)) return t("Select an active model account, then try again.");
 	if (/paused/i.test(message)) return t("Agents are paused for a moment while Qorpera updates. Try again shortly.");
 	return describeError(error);
 }
@@ -1108,7 +1107,16 @@ export class CompanyController {
 			interactionError: undefined,
 		});
 		try {
-			await this.#api.answerInteraction(sessionId, crypto.randomUUID(), interactionId, outcome, answer);
+			const sponsor = this.#answerSponsor(sessionId);
+			const clientInputId = crypto.randomUUID();
+			await this.#api
+				.answerInteraction(sessionId, clientInputId, interactionId, outcome, answer, sponsor)
+				.catch((error: unknown) => {
+					// A cloud before bundle v100 takes no account and queues the answer as before.
+					if (sponsor && error instanceof CloudRpcError && error.missing)
+						return this.#api.answerInteraction(sessionId, clientInputId, interactionId, outcome, answer);
+					throw error;
+				});
 		} catch (error) {
 			const { [key]: _dropped, ...rest } = store.get().interactionAnswers ?? {};
 			store.set({
@@ -1121,6 +1129,16 @@ export class CompanyController {
 		// The answer wakes the agent, as a message does; watch for its run.
 		void this.refreshActivity();
 		this.#watchWork(20_000);
+	}
+
+	/** In an agent's shared thread an answer runs the agent, like a post, on the
+	 * member's selected model account; elsewhere it names none. */
+	#answerSponsor(sessionId: string): { sponsorBindingId: string; sponsorVersion: number } | undefined {
+		const session = this.store.get().sessions.find((item) => item.sessionId === sessionId);
+		if (!session || !isAgentThreadSession(session)) return undefined;
+		const sponsor = this.conversation(sessionId).get().executionSponsor;
+		if (!sponsor) throw new Error(t("Select an active model account, then try again."));
+		return { sponsorBindingId: sponsor.sponsorBindingId, sponsorVersion: sponsor.sponsorVersion };
 	}
 
 	/** Put a secret card's value into the company's cloud custody and answer the
@@ -1143,6 +1161,8 @@ export class CompanyController {
 		const company = role === "owner" || role === "admin";
 		store.set({ interactionError: undefined });
 		try {
+			// Never store a value whose answer could not be sent.
+			this.#answerSponsor(sessionId);
 			const existing = (
 				await this.#api.listSecretConnections(this.profile.profileId, this.profile.environmentId)
 			).find(
