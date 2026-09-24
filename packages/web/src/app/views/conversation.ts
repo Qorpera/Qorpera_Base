@@ -23,6 +23,7 @@ import { t } from "../../ui/preferences.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import { runFailureCard, runFailureInterrupted, runFailureReason } from "../../ui/run-failure.ts";
+import { uiScale } from "../../ui/scale.ts";
 import { composerSkeleton, messagesSkeleton, threadIdentitySkeleton } from "../../ui/skeleton.ts";
 import { type AgentState, answersInteraction, type CompanyController, type ConversationState } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
@@ -342,7 +343,7 @@ export class ConversationView {
 				this.#pinnedTop = -1;
 				return;
 			}
-			this.#stickToBottom = scrollHeight - scrollTop - clientHeight < 48;
+			this.#stickToBottom = scrollHeight - scrollTop - clientHeight < 48 * uiScale();
 		});
 		if (typeof ResizeObserver !== "undefined") {
 			this.#sizes = new ResizeObserver(() => this.#pinToBottom());
@@ -442,14 +443,25 @@ export class ConversationView {
 		// field changes its padding and can clip a two-line draft.
 		this.#composerShell.classList.toggle("is-expanded", this.#attachments.count > 0);
 		this.#composer.style.height = "auto";
+		// The sizes come from the stylesheet, so they follow the app's scale: one line is the field's
+		// min-height, the tallest draft its max-height. scrollHeight is a whole number, so one line
+		// at 42 × 1.4 = 58.8 reads 59; round the line up before comparing.
+		const field = getComputedStyle(this.#composer);
+		const oneLine = Math.ceil(Number.parseFloat(field.minHeight) || 0);
+		const tallest = Number.parseFloat(field.maxHeight) || Number.POSITIVE_INFINITY;
 		this.#composerShell.classList.toggle(
 			"is-expanded",
-			this.#composer.scrollHeight > 42 || this.#attachments.count > 0,
+			this.#composer.scrollHeight > oneLine || this.#attachments.count > 0,
 		);
-		this.#composer.style.height = `${Math.min(this.#composer.scrollHeight, 112)}px`;
-		this.#composer.style.overflowY = this.#composer.scrollHeight > 112 ? "auto" : "hidden";
-		const expanded = this.#composerShell.classList.contains("is-expanded");
-		this.#composerShell.style.height = `${this.#composer.getBoundingClientRect().height + (expanded ? 44 : 2) + this.#attachments.el.getBoundingClientRect().height}px`;
+		this.#composer.style.height = `${Math.min(this.#composer.scrollHeight, tallest)}px`;
+		this.#composer.style.overflowY = this.#composer.scrollHeight > tallest ? "auto" : "hidden";
+		// The shell is border-box: its height is the field's, the attachments' and its own padding and borders.
+		const shell = getComputedStyle(this.#composerShell);
+		const frame = [shell.paddingTop, shell.paddingBottom, shell.borderTopWidth, shell.borderBottomWidth].reduce(
+			(sum, value) => sum + (Number.parseFloat(value) || 0),
+			0,
+		);
+		this.#composerShell.style.height = `${this.#composer.getBoundingClientRect().height + frame + this.#attachments.el.getBoundingClientRect().height}px`;
 	}
 
 	#setMenu(open: boolean, restoreFocus = true): void {

@@ -8,6 +8,7 @@ import {
 	parseCloudAgentSendInput,
 } from "@qorpera/runtime/cloud-agent-mouth";
 import {
+	CLOUD_NATIVE_FENCE_FRAME_BYTES,
 	CLOUD_NATIVE_RESULT_RETENTION_LIMIT,
 	type CloudNativeTool,
 	CloudNativeToolBoundary,
@@ -396,15 +397,45 @@ describe("cloud-owned native tool boundary", () => {
 		await expect(boundary.fenceNativeResults([])).rejects.toThrow();
 	});
 
-	it("fails closed on repeated native ids and bounds retained result fingerprints", async () => {
+	it("fails closed on repeated native ids and fences any number of outputs in one request", async () => {
 		const { boundary } = fixture();
 		const input = { kind: "function_call_output" as const, callId: "native", output: "data" };
 		await expect(boundary.fenceNativeResults([input, input])).rejects.toThrow("Invalid native result identity");
+		// Runtime v104: no count of outputs per model request. One request past the
+		// retention window is fenced whole; its oldest outputs are then forgotten.
 		const flood = Array.from({ length: CLOUD_NATIVE_RESULT_RETENTION_LIMIT + 1 }, (_, index) => ({
 			...input,
 			callId: `native_${index}`,
 		}));
-		await expect(boundary.fenceNativeResults(flood)).rejects.toThrow("Native result budget exceeded");
+		const fenced = await boundary.fenceNativeResults(flood);
+		expect(fenced.map((item) => item.callId)).toEqual(flood.map((item) => item.callId));
+		expect(fenced.every((item) => item.output.includes("unconfirmed"))).toBe(true);
+		// Presented again, a forgotten output is still only unconfirmed data, never a failure.
+		const [again] = await boundary.fenceNativeResults([flood[0]]);
+		expect(again.callId).toBe("native_0");
+		expect(again.output).toContain("unconfirmed");
+	});
+
+	it("bounds one request's released outputs by the fence frame, not by their number", async () => {
+		// Many empty outputs grow into host envelopes; past one 64 MiB frame the reply
+		// could never be sent, so the request is refused before building more.
+		const { boundary } = fixture();
+		const [probe] = await boundary.fenceNativeResults([
+			{ kind: "function_call_output", callId: "probe", output: "" },
+		]);
+		const envelope = Buffer.byteLength(probe.output);
+		expect(envelope).toBeGreaterThan(256);
+		// Envelopes differ by a few bytes with their call ids; keep clear of the edge.
+		const fits = Math.floor(CLOUD_NATIVE_FENCE_FRAME_BYTES / (envelope + 64));
+		const request = (length: number, prefix: string) =>
+			Array.from({ length }, (_, index) => ({
+				kind: "function_call_output" as const,
+				callId: `${prefix}_${index}`,
+				output: "",
+			}));
+		expect(await boundary.fenceNativeResults(request(fits, "fits"))).toHaveLength(fits);
+		const over = Math.ceil(CLOUD_NATIVE_FENCE_FRAME_BYTES / (envelope - 64)) + 1;
+		await expect(boundary.fenceNativeResults(request(over, "over"))).rejects.toThrow("Native result frame too large");
 	});
 
 	it("withholds invalid or oversized adapter results", async () => {

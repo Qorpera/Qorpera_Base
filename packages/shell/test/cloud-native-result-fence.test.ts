@@ -71,7 +71,7 @@ function exchange(path: string, value: unknown): Promise<Record<string, unknown>
 		});
 		socket.on("data", (chunk: Buffer) => {
 			bytes = Buffer.concat([bytes, chunk]);
-			if (bytes.length > 2 * 1024 * 1024) {
+			if (bytes.length > 80 * 1024 * 1024) {
 				socket.destroy();
 				reject(new Error("Unexpected test frame size"));
 			} else if (bytes.length >= 4 && bytes.length === bytes.readUInt32BE() + 4) {
@@ -228,10 +228,25 @@ it("rejects repeated request identities even when their contents match", async (
 it("bounds frame allocation before accepting the body", async () => {
 	const f = await fixture();
 	const size = Buffer.alloc(4);
-	size.writeUInt32BE(8 * 1024 * 1024 + 1);
+	size.writeUInt32BE(64 * 1024 * 1024 + 1);
 	expect(await exchange(f.service.path, size)).toBeUndefined();
 	expect(f.onFailure).toHaveBeenCalledTimes(1);
 	expect(f.assertActive).not.toHaveBeenCalled();
+});
+
+it("fences one request of any length: 1,200 outputs, past the old 8 MiB frame", async () => {
+	// Runtime v104: no count of outputs per model request (the pinned Codex refused 128).
+	const f = await fixture();
+	const outputs = Array.from({ length: 1_200 }, (_, index) => ({
+		kind: "function_call_output",
+		callId: `native_${index}`,
+		output: "x".repeat(7_000),
+	}));
+	const input = { ...request(), outputs };
+	expect(Buffer.byteLength(JSON.stringify(input))).toBeGreaterThan(8 * 1024 * 1024);
+	const reply = await exchange(f.service.path, input);
+	expect((reply?.outputs as unknown[] | undefined)?.length).toBe(1_200);
+	expect(f.onFailure).not.toHaveBeenCalled();
 });
 
 it("does not return cached native data after revocation", async () => {

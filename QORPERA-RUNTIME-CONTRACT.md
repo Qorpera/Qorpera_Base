@@ -524,9 +524,12 @@ subscriptions, which self-limit.
 > its causal chain (it moves to the end of the chain, like a coworker message).
 > An agent's own write still never wakes its own watch routine.
 >
-> One count is still open. The pinned Codex build refuses a model request
-> carrying 128 or more tool outputs, and the kernel refuses a context view with
-> more than 128 outputs or over 128 KiB. Both go with a Codex rebuild.
+> The last count went with bundle v104 and its Codex rebuild: the pinned Codex
+> build refused a model request carrying 128 or more tool outputs or over 1 MiB
+> of result text, and the kernel refused a context view with more than 128
+> outputs or over 128 KiB. A request now carries any number of outputs within a
+> 64 MiB fence frame (more than any model context holds), and a view row is
+> bounded at 16 MiB as storage.
 
 ## 8. Wake bus
 

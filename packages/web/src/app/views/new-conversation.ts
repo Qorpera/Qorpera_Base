@@ -74,7 +74,9 @@ export class NewConversationView {
 		"aria-label": t("Message"),
 		oninput: () => {
 			this.#message.style.height = "auto";
-			this.#message.style.height = `${Math.min(this.#message.scrollHeight, 112)}px`;
+			// The tallest draft is the field's max-height in the stylesheet, which follows the app's scale.
+			const tallest = Number.parseFloat(getComputedStyle(this.#message).maxHeight) || Number.POSITIVE_INFINITY;
+			this.#message.style.height = `${Math.min(this.#message.scrollHeight, tallest)}px`;
 			this.#syncComposer();
 		},
 		onkeydown: (event: KeyboardEvent) => {

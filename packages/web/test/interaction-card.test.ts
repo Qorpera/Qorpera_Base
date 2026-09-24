@@ -160,6 +160,18 @@ describe("interaction cards", () => {
 		expect(readOnly.dataset.state).toBe("waiting");
 		expect(readOnly.querySelector("button")).toBeNull();
 	});
+
+	it("says an answer did not reach the agent and asks again, with its controls live", () => {
+		const card = renderInteractionCard({ ...item(question), answerFailed: true }, context());
+		expect(card.dataset.state).toBe("waiting");
+		expect(card.textContent).toContain("Your answer did not reach the agent. Answer again.");
+		expect(card.querySelectorAll(".interaction-options .btn")).toHaveLength(2);
+		const plain = renderInteractionCard(item(question), context());
+		expect(plain.textContent).not.toContain("did not reach");
+		// Only the member who answers is asked to answer again.
+		const other = renderInteractionCard({ ...item(question), answerFailed: true }, context({ canAnswer: false }));
+		expect(other.textContent).not.toContain("did not reach");
+	});
 });
 
 describe("who answers a card", () => {
@@ -180,5 +192,9 @@ describe("who answers a card", () => {
 		const own: HostedSession = { ...session, audience: { kind: "member_private", userId: userB.id } };
 		expect(answersInteraction(own, userA.id, userB.id)).toBe(true);
 		expect(answersInteraction(own, userA.id, userA.id)).toBe(false);
+	});
+	it("in a group chat, is nobody: an answer there reaches no single agent", () => {
+		const group: HostedSession = { ...session, executionScope: { roomId: "55555555-5555-4555-8555-555555555556" } };
+		expect(answersInteraction(group, userA.id, userA.id)).toBe(false);
 	});
 });

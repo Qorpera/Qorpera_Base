@@ -515,11 +515,11 @@ export class CloudApi {
 		return parseSecretReference(await response.json());
 	}
 
-	/** Answer a typed card the agent raised (kernel bundle v70): queued like a
-	 * prompt, so the agent wakes in its own thread with the answer. Never a secret
-	 * value: a secret card answers with its outcome only. In an agent's shared
-	 * thread (bundle v100) the answer is delivered like a post and runs on the
-	 * member's own model account, which `sponsor` names. */
+	/** Answer a typed card the agent raised (kernel bundle v70). Never a secret
+	 * value: a secret card answers with its outcome only. The answer is delivered
+	 * the way a message there is and runs on the member's own model account,
+	 * which `sponsor` names: like a post in an agent's shared thread (bundle v100),
+	 * like a turn request in a plain conversation (bundle v105). */
 	answerInteraction(
 		sessionId: string,
 		clientInputId: string,

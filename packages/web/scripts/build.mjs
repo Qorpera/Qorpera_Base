@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import * as esbuild from "esbuild";
 import { assertMemberWebInputs } from "../../../scripts/check-headless-packages.mjs";
 import { prepareDeployment } from "./deployment.mjs";
+import { designPxPlugin, readUiScale } from "./design-px.mjs";
 import { webSourceProvenance } from "./provenance.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -91,7 +92,8 @@ const options = {
 	// stale main.js across deploys; the HTML is rewritten to point at them.
 	entryNames: serve ? "[name]" : "build/[name]-[hash]",
 	metafile: true,
-	plugins: [boundary],
+	// Stylesheets are written in design pixels and drawn at tokens.css's --ui-scale (scripts/design-px.mjs).
+	plugins: [boundary, designPxPlugin(readUiScale(join(root, "src/styles/tokens.css")))],
 	sourcemap: true,
 	// Fonts and art are copied into dist/assets above; leave their URLs untouched.
 	external: ["*.woff2", "*.png", "*.svg"],
