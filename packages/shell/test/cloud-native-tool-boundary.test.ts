@@ -380,6 +380,25 @@ describe("cloud-owned native tool boundary", () => {
 		}
 	});
 
+	it("forgets the oldest retained calls and results past the window instead of refusing more", async () => {
+		// No run is capped by its number of tool calls (founder, 2026-09-24).
+		const { tool, execute, boundary } = fixture();
+		const total = CLOUD_NATIVE_RESULT_RETENTION_LIMIT + 5;
+		for (let index = 0; index < total; index++) {
+			const response = await boundary.invoke(`call_${index}`, "qorpera", tool.name, { path: "projects/roadmap.md" });
+			expect(response.success).toBe(true);
+		}
+		expect(execute).toHaveBeenCalledTimes(total);
+		for (let start = 0; start < total; start += 128) {
+			const batch = Array.from({ length: Math.min(128, total - start) }, (_, offset) => ({
+				kind: "function_call_output" as const,
+				callId: `native_${start + offset}`,
+				output: "data",
+			}));
+			await expect(boundary.fenceNativeResults(batch)).resolves.toHaveLength(batch.length);
+		}
+	});
+
 	it("keeps accepting calls far past the old per-turn cap and never repeats an accepted effect", async () => {
 		// No per-turn call cap (founder, 2026-09-22): only a far-off retention bound remains.
 		expect(CLOUD_NATIVE_RESULT_RETENTION_LIMIT).toBeGreaterThanOrEqual(8_192);

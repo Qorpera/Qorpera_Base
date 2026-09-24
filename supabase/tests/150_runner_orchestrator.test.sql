@@ -1058,7 +1058,8 @@ begin
 		or v_model_reservation -> 'authority' ->> 'provider_connection_id' is distinct from
 			(current_setting('qorpera_test.provider_connection')::jsonb ->> 'connection_id')
 		or v_model_reservation -> 'authority' ->> 'native_harness' is distinct from 'openai-responses'
-		or (v_model_reservation -> 'authority' ->> 'max_cost_microusd')::bigint <> 100000
+		-- No per-run cost cap for API-key runs (runtime v92): the gateway meters but never refuses on cost.
+		or (v_model_reservation -> 'authority' ->> 'max_cost_microusd')::bigint <> 9007199254740991
 		or v_model_reservation -> 'authority' ? 'secret_reference' then
 		raise exception 'model gateway did not receive the safe sponsor and cost authority: %', v_model_reservation;
 	end if;

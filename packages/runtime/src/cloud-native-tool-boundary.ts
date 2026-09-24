@@ -34,11 +34,17 @@ const MAX_SOURCE_BYTES = 1024 * 1024;
  * grants add one tool per authorized operation, so the boundary allows more
  * than the runtime's own catalog. */
 export const CLOUD_NATIVE_TOOL_COUNT_LIMIT = 48;
-/** No turn is capped by a number of tool calls (founder, 2026-09-22). Retained
- * results stay bounded only so a runaway loop cannot grow memory without limit
- * (every result body is kept for exact replay); the bound is far above any real
- * turn, and reaching it is a denial the model can act on, not a crash. */
+/** No run is capped by a number of tool calls (founder, 2026-09-22 and
+ * 2026-09-24). Result bodies are kept for exact replay only in a rolling window:
+ * past it the oldest are forgotten, never a denial or a failure. Codex re-sends
+ * only recent outputs (at most 128 per request), so a forgotten one is at worst
+ * shown to the model as unconfirmed. */
 export const CLOUD_NATIVE_RESULT_RETENTION_LIMIT = 8_192;
+
+/** Keeps a key in insertion order and forgets the oldest past the window. */
+function remember<K>(store: Set<K> | Map<K, unknown>, limit: number): void {
+	while (store.size > limit) store.delete(store.keys().next().value as K);
+}
 
 export interface CloudToolContext {
 	readonly companyId: string;
@@ -338,8 +344,6 @@ export class CloudNativeToolBoundary {
 					throw new Error("Native result changed after release");
 				return { kind: input.kind, callId: input.callId, output: previous.output, ...image };
 			}
-			if (this.#nativeResults.size >= CLOUD_NATIVE_RESULT_RETENTION_LIMIT)
-				throw new Error("Native result budget exceeded");
 			// Never trust a schema, role or provenance claimed inside native output.
 			// Pass through only the exact bytes previously issued by this host for this call.
 			const issued =
@@ -352,6 +356,7 @@ export class CloudNativeToolBoundary {
 						value: text ?? wire,
 					}).contentItems[0].text;
 			this.#nativeResults.set(key, { digest, output, ...(imageSha256 ? { imageSha256 } : {}) });
+			remember(this.#nativeResults, CLOUD_NATIVE_RESULT_RETENTION_LIMIT);
 			return { kind: input.kind, callId: input.callId, output, ...image };
 		});
 		await untilStopped(() => this.#captures?.assertReadable(this.#signal) ?? Promise.resolve(), this.#signal);
@@ -428,13 +433,12 @@ export class CloudNativeToolBoundary {
 		if (previous && previous.digest !== digest) {
 			return this.#result(callId, tool, digest, "denied", { kind: "text", value: "CALL_ID_REUSED" });
 		}
-		if (!previous && this.#calls.size >= CLOUD_NATIVE_RESULT_RETENTION_LIMIT) {
-			return this.#result(callId, tool, digest, "denied", { kind: "text", value: "TOOL_BUDGET_EXHAUSTED" });
-		}
 		const result =
 			previous?.result ?? this.#pending.then(() => this.#execute(callId, tool, digest, argumentsText, observation));
 		if (!previous) {
 			this.#calls.set(callId, { digest, result, observation });
+			// Calls run one after another, so what this forgets has long settled.
+			remember(this.#calls, CLOUD_NATIVE_RESULT_RETENTION_LIMIT);
 			this.#pending = result.then(
 				() => undefined,
 				() => undefined,
@@ -622,9 +626,8 @@ export class CloudNativeToolBoundary {
 		if (Buffer.byteLength(serialized) > MAX_CLOUD_TOOL_RESULT_BYTES)
 			throw new Error("Cloud result provenance exceeds its budget");
 		const fingerprint = `${callId}:${createHash("sha256").update(serialized).digest("hex")}`;
-		if (!this.#issuedResults.has(fingerprint) && this.#issuedResults.size >= CLOUD_NATIVE_RESULT_RETENTION_LIMIT * 2)
-			throw new Error("Cloud result budget exceeded");
 		this.#issuedResults.add(fingerprint);
+		remember(this.#issuedResults, CLOUD_NATIVE_RESULT_RETENTION_LIMIT * 2);
 		const completesTurn =
 			status === "ok" &&
 			tool?.source === "runtime" &&

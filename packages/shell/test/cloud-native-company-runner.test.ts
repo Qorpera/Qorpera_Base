@@ -169,18 +169,40 @@ it("rejects private text disguised as a completion receipt and terminates the bo
 	expect(f.terminate).toHaveBeenCalledOnce();
 });
 
-it("bounds execution and shutdown even if the remote process ignores cancellation", async () => {
+it("bounds shutdown even if the remote process ignores cancellation", async () => {
 	vi.useFakeTimers();
 	const f = fixture();
+	const cancel = new AbortController();
 	f.startCompany.mockResolvedValue({
 		result: new Promise(() => {}),
 		terminate: vi.fn(async () => new Promise<void>(() => {})),
 	});
-	const pending = executeNativeCompanyRunnerJob({ ...f.options, limits: { wallTimeMs: 20 } }).catch(
+	const pending = executeNativeCompanyRunnerJob({ ...f.options, signal: cancel.signal }).catch(
 		(error: unknown) => error,
 	);
+	await vi.advanceTimersByTimeAsync(20);
+	cancel.abort(new Error("cancelled"));
 	await vi.advanceTimersByTimeAsync(10_030);
 	expect(await pending).toBeInstanceOf(Error);
+});
+
+it("has no wall-clock deadline: a run that takes days completes and records it", async () => {
+	vi.useFakeTimers();
+	const f = fixture();
+	let finish: (value: typeof f.receipt) => void = () => {};
+	f.startCompany.mockResolvedValue({
+		result: new Promise<typeof f.receipt>((resolve) => {
+			finish = resolve;
+		}),
+		terminate: f.terminate,
+	});
+	const pending = executeNativeCompanyRunnerJob(f.options);
+	await vi.advanceTimersByTimeAsync(3 * 24 * 60 * 60 * 1000);
+	finish(f.receipt);
+	const result = await pending;
+	expect(result.usage.executionMs).toBeGreaterThanOrEqual(3 * 24 * 60 * 60 * 1000);
+	expect(result.usage.limits.wallTimeMs).toBe(Number.MAX_SAFE_INTEGER);
+	expect(f.terminate).not.toHaveBeenCalled();
 });
 
 it("uses a closed, path-free HTTP execution schema with no copied job payload", async () => {

@@ -476,6 +476,16 @@ subscriptions, which self-limit.
 > stop is no longer a member operation: it remains the operator brake that
 > pauses a company during a runtime cut (no new wakes, running work fenced),
 > and it notifies no one.
+>
+> **Amended again 2026-09-24 (bundle v92,
+> `20260924130000_runtime_remove_run_and_machine_caps.sql`).** The
+> running-machine limit is gone too: a company starts as many computers as
+> the nodes have room for. API-key connections have no monthly budget and no
+> per-run call, token or cost cap; like a subscription account (64 at once)
+> they keep only their concurrency. A run has no deadline and no silence or
+> output cap, because OpenAI, Anthropic and xAI publish none: it ends when it
+> completes, is stopped, or its host is lost (a lapsed lease). Idle company
+> computers still power off after 5 minutes.
 
 ## 8. Wake bus
 

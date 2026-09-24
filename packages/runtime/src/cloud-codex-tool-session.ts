@@ -42,15 +42,13 @@ export const CLOUD_CODEX_BOUNDARY_VERSION = "0.155.1";
 const CLIENT_NAME = "qorpera_cloud_boundary";
 const DIRECT_TOOLS_CAPABILITY = "qorpera.native-direct-tools/v1";
 const MESSAGE_COMPOSITION_CAPABILITY = "qorpera.native-message-composition/v1";
-const MAX_WIRE_BYTES = 16 * 1024 * 1024;
 const MAX_MESSAGE_BYTES = 1024 * 1024;
 const MAX_CAPTURE_MESSAGE_BYTES = 12 * 1024 * 1024;
-const MAX_CAPTURE_WIRE_BYTES = 256 * 1024 * 1024;
-// Protocol flood bound, not a turn cap: every tool call is one server request.
-const MAX_REQUESTS = 16_384;
-// A stalled provider or process is a fence, not a cap: with no wall clock on a
-// turn, silence this long ends the attempt so a run cannot sit for its whole deadline.
-const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60_000;
+// No run is capped by its output, its number of tool calls or its silence
+// (founder, 2026-09-24): OpenAI, Anthropic and xAI publish no such caps. Single
+// messages stay bounded, and request ids and message compositions are tracked
+// only in a rolling window of this size.
+const TRACKED_REQUESTS = 16_384;
 const MAX_PROMPT_BYTES = 1024 * 1024;
 const TOKEN_COUNTERS = [
 	"inputTokens",
@@ -234,8 +232,6 @@ class CodexBoundaryRpc {
 	#failure?: Error;
 	#sequence = 0;
 	#buffer = "";
-	#bytes = 0;
-	#serverRequests = 0;
 	#lastActivityAt = Date.now();
 
 	get lastActivityAt(): number {
@@ -273,10 +269,10 @@ class CodexBoundaryRpc {
 		child.on("close", () => {
 			if (!this.#closed) this.fail("Native boundary process ended unexpectedly", "transport_unavailable");
 		});
-		child.stderr.on("data", (chunk: Buffer) => this.#accountBytes(chunk.length));
+		// Diagnostics are never kept; draining them keeps the pipe from filling.
+		child.stderr.resume();
 		child.stdout.on("data", (chunk: Buffer) => {
 			try {
-				this.#accountBytes(chunk.length);
 				if (this.#failure || this.#closed) return;
 				this.#buffer += this.#decoder.write(chunk);
 				let end = this.#buffer.indexOf("\n");
@@ -484,12 +480,6 @@ class CodexBoundaryRpc {
 		this.#child.stdin.end();
 	}
 
-	#accountBytes(count: number): void {
-		this.#bytes += count;
-		if (this.#bytes > (this.#boundary.captureImagesEnabled ? MAX_CAPTURE_WIRE_BYTES : MAX_WIRE_BYTES))
-			this.fail("Native boundary output limit exceeded", "budget_exhausted");
-	}
-
 	#write(message: unknown): void {
 		if (this.#closed || this.#failure) return;
 		const text = JSON.stringify(message);
@@ -499,9 +489,6 @@ class CodexBoundaryRpc {
 			this.fail("Native boundary input limit exceeded", "budget_exhausted");
 			return;
 		}
-		// Replaying the same cached image must not bypass the aggregate wire cap.
-		if (this.#boundary.captureImagesEnabled) this.#accountBytes(Buffer.byteLength(text) + 1);
-		if (this.#failure) return;
 		this.#child.stdin.write(`${text}\n`);
 	}
 
@@ -531,12 +518,12 @@ class CodexBoundaryRpc {
 			const callId = identifier(params.callId);
 			if (params.phase === "finish") {
 				// Remember early finishes too: replayed starts must not revive a completed item.
-				if (!this.#compositions.has(callId) && this.#compositions.size < MAX_REQUESTS)
+				if (!this.#compositions.has(callId) && this.#compositions.size < TRACKED_REQUESTS)
 					this.#compositions.set(callId, { finished: true });
 				this.#finishComposition(callId, "succeeded");
 				return;
 			}
-			if (this.#compositions.has(callId) || this.#compositions.size >= MAX_REQUESTS) return;
+			if (this.#compositions.has(callId) || this.#compositions.size >= TRACKED_REQUESTS) return;
 			const composition: {
 				span?: CloudRuntimeObservationSpan;
 				timer?: ReturnType<typeof setTimeout>;
@@ -633,14 +620,13 @@ class CodexBoundaryRpc {
 		}
 		if (typeof message.method !== "string") throw new Error("Invalid native method");
 		if (message.id !== undefined) {
-			if (
-				(typeof message.id !== "string" && !Number.isSafeInteger(message.id)) ||
-				++this.#serverRequests > MAX_REQUESTS
-			)
+			if (typeof message.id !== "string" && !Number.isSafeInteger(message.id))
 				throw new Error("Invalid native request");
 			const requestId = `${typeof message.id}:${message.id}`;
 			if (this.#requestIds.has(requestId)) throw new Error("Duplicate native request");
 			this.#requestIds.add(requestId);
+			if (this.#requestIds.size > TRACKED_REQUESTS)
+				this.#requestIds.delete(this.#requestIds.values().next().value as string);
 			if (message.method !== "item/tool/call") {
 				// No approval, process, credential-refresh or UI callback may become a second effect channel.
 				this.#write({
@@ -785,16 +771,16 @@ export async function runCloudCodexToolSession(options: {
 	timeoutMs?: number;
 	idleTimeoutMs?: number;
 }): Promise<{ providerSessionId: string; toolCalls: number; codexVersion: string; fencedRequests: number }> {
-	// A turn has no wall-clock cap (founder, 2026-09-22); a timeout is a test
-	// or operator choice, never a default. The run lease and deadline still bound it.
+	// A run has no wall-clock or silence cap (founder, 2026-09-22 and 2026-09-24);
+	// either timeout is a test or operator choice, never a default. A lapsed job
+	// lease still ends a run whose host is gone.
 	const timeoutMs = options.timeoutMs;
-	const idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
+	const idleTimeoutMs = options.idleTimeoutMs;
 	const effort = options.reasoningEffort ?? CLOUD_RUNTIME_MODEL_POLICY.effort;
 	if (
 		process.platform === "win32" ||
 		(timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1)) ||
-		!Number.isSafeInteger(idleTimeoutMs) ||
-		idleTimeoutMs < 1
+		(idleTimeoutMs !== undefined && (!Number.isSafeInteger(idleTimeoutMs) || idleTimeoutMs < 1))
 	)
 		throw new Error("Unsupported native boundary execution");
 	if (
@@ -916,13 +902,16 @@ export async function runCloudCodexToolSession(options: {
 			});
 		rpc = new CodexBoundaryRpc(child, options.boundary, options.observability);
 		const watched = rpc;
-		idleWatch = setInterval(
-			() => {
-				if (Date.now() - watched.lastActivityAt > idleTimeoutMs) watched.fail("Native boundary execution stalled");
-			},
-			Math.min(idleTimeoutMs, 15_000),
-		);
-		idleWatch.unref();
+		if (idleTimeoutMs !== undefined) {
+			idleWatch = setInterval(
+				() => {
+					if (Date.now() - watched.lastActivityAt > idleTimeoutMs)
+						watched.fail("Native boundary execution stalled");
+				},
+				Math.min(idleTimeoutMs, 15_000),
+			);
+			idleWatch.unref();
+		}
 		if (fenceFailed) rpc.fail("Native result boundary unavailable", "authority_unavailable");
 		signal.addEventListener("abort", abort, { once: true });
 		if (signal.aborted) abort();

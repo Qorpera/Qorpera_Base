@@ -106,7 +106,8 @@ export interface CloudRunnerSandboxLimits {
 }
 
 export const DEFAULT_CLOUD_RUNNER_SANDBOX_LIMITS: Readonly<CloudRunnerSandboxLimits> = Object.freeze({
-	// A turn is not capped by wall time; the run deadline (24 h) is the outer bound.
+	// Only the legacy sandbox path (not company runs) keeps this 24 h wall time;
+	// native company runs have no wall-clock deadline (founder, 2026-09-24).
 	wallTimeMs: 24 * 60 * 60 * 1000,
 	memoryBytes: 2 * 1024 * 1024 * 1024,
 	cpuCount: 2,
