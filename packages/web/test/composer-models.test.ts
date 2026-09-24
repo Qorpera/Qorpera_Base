@@ -34,11 +34,11 @@ async function setup() {
 			version: number,
 			_signal: AbortSignal,
 		): Promise<SessionModel> => {
-			const previous = models.get(sessionId)?.reasoningEffort ?? "low";
+			const previous = models.get(sessionId);
 			const value = {
 				sessionId,
-				modelId: selection.modelId,
-				reasoningEffort: selection.reasoningEffort ?? previous,
+				modelId: selection.modelId ?? previous?.modelId ?? "gpt-6-astra",
+				reasoningEffort: selection.reasoningEffort ?? previous?.reasoningEffort ?? "low",
 				version: version + 1,
 			};
 			models.set(sessionId, value);
@@ -72,7 +72,7 @@ async function open(view: ConversationView, label = "Model: GPT-6 Astra, Low eff
 }
 
 describe("composer model selector", () => {
-	it("hides effort while the cloud predates it and keeps saving models without it", async () => {
+	it("before the cloud honours thread effort, offers only GPT-6 Astra and skips hidden choices", async () => {
 		const f = await setup();
 		f.read.mockImplementation(async (sessionId: string) => {
 			const { reasoningEffort: _, ...value } = f.models.get(sessionId) ?? {
@@ -83,7 +83,7 @@ describe("composer model selector", () => {
 			return value;
 		});
 		f.set.mockImplementation(async (sessionId, selection, version) => {
-			const value = { sessionId, modelId: selection.modelId, version: version + 1 };
+			const value = { sessionId, modelId: selection.modelId ?? "gpt-6-astra", version: version + 1 };
 			f.models.set(sessionId, value);
 			return value;
 		});
@@ -91,10 +91,18 @@ describe("composer model selector", () => {
 		const panel = await open(f.view);
 		expect(button(f.view.el, "Model: GPT-6 Astra").textContent).toContain("GPT-6 Astra");
 		expect(panel.querySelector<HTMLElement>('[role="group"][aria-label="Effort"]')?.hidden).toBe(true);
-		button(panel, "GPT-6 Luna").click();
+		expect(button(panel, "GPT-6 Sol").disabled).toBe(true);
+		expect(button(panel, "GPT-6 Luna").disabled).toBe(true);
+		expect(button(panel, "High").disabled).toBe(true);
+		// Arrow keys wrap over the usable choices only: Back and GPT-6 Astra.
+		button(panel, "GPT-6 Astra").focus();
+		panel.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
+		expect(document.activeElement).toBe(button(panel, "GPT-6 Astra"));
+		panel.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+		expect(document.activeElement).toBe(button(panel, "Model"));
+		button(panel, "GPT-6 Astra").click();
 		await settle();
-		expect(f.set).toHaveBeenCalledWith(session.sessionId, { modelId: "gpt-6-luna" }, 0, expect.any(AbortSignal));
-		expect(button(f.view.el, "Model: GPT-6 Luna").textContent).toContain("GPT-6 Luna");
+		expect(f.set).toHaveBeenCalledWith(session.sessionId, { modelId: "gpt-6-astra" }, 0, expect.any(AbortSignal));
 	});
 	it("opens from More with the current model selected and supports keyboard return", async () => {
 		const f = await setup();
@@ -134,12 +142,7 @@ describe("composer model selector", () => {
 		const panel = await open(f.view);
 		button(panel, "GPT-6 Sol").focus();
 		button(panel, "GPT-6 Sol").click();
-		expect(f.set).toHaveBeenCalledWith(
-			session.sessionId,
-			{ modelId: "gpt-6-sol", reasoningEffort: "low" },
-			0,
-			expect.any(AbortSignal),
-		);
+		expect(f.set).toHaveBeenCalledWith(session.sessionId, { modelId: "gpt-6-sol" }, 0, expect.any(AbortSignal));
 		expect(button(f.view.el, "Send message").disabled).toBe(true);
 		expect(panel.textContent).toContain("Saving model");
 		expect(panel.contains(document.activeElement)).toBe(true);
@@ -150,15 +153,17 @@ describe("composer model selector", () => {
 		expect(button(f.view.el, "Send message").disabled).toBe(false);
 		expect(button(panel, "GPT-6 Sol").getAttribute("aria-checked")).toBe("true");
 		expect(document.activeElement).toBe(button(panel, "GPT-6 Sol"));
+		button(panel, "High").focus();
 		button(panel, "High").click();
 		await settle();
 		expect(f.set).toHaveBeenLastCalledWith(
 			session.sessionId,
-			{ modelId: "gpt-6-sol", reasoningEffort: "high" },
+			{ reasoningEffort: "high" },
 			1,
 			expect.any(AbortSignal),
 		);
 		expect(button(panel, "High").getAttribute("aria-checked")).toBe("true");
+		expect(document.activeElement).toBe(button(panel, "High"));
 		expect(button(panel, "GPT-6 Sol").getAttribute("aria-checked")).toBe("true");
 		expect(f.updateAgent).not.toHaveBeenCalled();
 		expect(f.company.staffById(staff.id)?.model).toBeUndefined();
@@ -180,7 +185,12 @@ describe("composer model selector", () => {
 	it("recovers an uncertain write by reading, never replaying the mutation", async () => {
 		const f = await setup();
 		f.set.mockImplementationOnce(async (sessionId, selection) => {
-			f.models.set(sessionId, { sessionId, modelId: selection.modelId, reasoningEffort: "low", version: 1 });
+			f.models.set(sessionId, {
+				sessionId,
+				modelId: selection.modelId ?? "gpt-6-astra",
+				reasoningEffort: "low",
+				version: 1,
+			});
 			throw new Error("lost response");
 		});
 		f.company.conversation(session.sessionId).set({ draft: "Continue" });
@@ -224,13 +234,16 @@ describe("composer model selector", () => {
 		const panel = await open(f.view);
 		expect(button(f.view.el, "Model: custom-model, Medium effort")).toBeTruthy();
 		expect([...panel.querySelectorAll('[aria-checked="true"]')].map((item) => item.textContent)).toEqual(["Medium"]);
-		// Effort is saved with the conversation's model, so an unlisted model is replaced first.
-		expect(button(panel, "High").disabled).toBe(true);
 		expect(button(panel, "GPT-6 Astra").disabled).toBe(false);
 		expect(f.set).not.toHaveBeenCalled();
+		// An effort pick keeps the unlisted model: the cloud keeps what is not sent.
+		button(panel, "High").click();
+		await settle();
+		expect(f.set).toHaveBeenCalledWith(session.sessionId, { reasoningEffort: "high" }, 3, expect.any(AbortSignal));
+		expect(button(f.view.el, "Model: custom-model, High effort")).toBeTruthy();
 		button(f.view.el, "Chat settings and more").click();
 		f.read.mockRejectedValueOnce(new Error("offline"));
-		await open(f.view, "Model: custom-model, Medium effort");
+		await open(f.view, "Model: custom-model, High effort");
 		expect(button(panel, "GPT-6 Astra").disabled).toBe(true);
 		expect(panel.textContent).toContain("model is unavailable");
 	});

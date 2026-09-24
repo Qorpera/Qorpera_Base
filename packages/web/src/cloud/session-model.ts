@@ -8,6 +8,9 @@ export const SESSION_MODELS = [
 	{ id: "gpt-6-luna", name: "GPT-6 Luna" },
 ] as const;
 
+/** The only listed model a cloud without per-conversation effort accepts. */
+export const SESSION_MODEL_BEFORE_EFFORT = "gpt-6-astra";
+
 export const SESSION_EFFORTS = [
 	{ id: "low", name: "Low" },
 	{ id: "medium", name: "Medium" },
@@ -22,9 +25,10 @@ export interface SessionModel {
 	version: number;
 }
 
+/** What the member changed: an omitted model or effort keeps the conversation's
+ * own (a cloud without effort accepts only a model). */
 export interface SessionModelSelection {
-	modelId: string;
-	/** Omitted keeps the conversation's effort (a cloud without effort accepts only this). */
+	modelId?: string;
 	reasoningEffort?: string;
 }
 
@@ -65,7 +69,8 @@ export function createWebSessionModel(
 		if (!UUID_PATTERN.test(sessionId)) throw new Error("Invalid conversation identity.");
 		if (
 			selection &&
-			(!SESSION_MODELS.some((model) => model.id === selection.modelId) ||
+			((selection.modelId === undefined && selection.reasoningEffort === undefined) ||
+				(selection.modelId !== undefined && !SESSION_MODELS.some((model) => model.id === selection.modelId)) ||
 				(selection.reasoningEffort !== undefined &&
 					!SESSION_EFFORTS.some((effort) => effort.id === selection.reasoningEffort)) ||
 				!Number.isSafeInteger(selection.expectedVersion) ||
@@ -101,7 +106,7 @@ export function createWebSessionModel(
 						p_session_id: sessionId,
 						...(selection
 							? {
-									p_model_id: selection.modelId,
+									p_model_id: selection.modelId ?? null,
 									p_expected_version: selection.expectedVersion,
 									...(selection.reasoningEffort ? { p_reasoning_effort: selection.reasoningEffort } : {}),
 								}
@@ -157,7 +162,7 @@ export function createWebSessionModel(
 						!Number.isSafeInteger(result.version) ||
 						result.version < 0 ||
 						(selection &&
-							(result.model_id !== selection.modelId ||
+							((selection.modelId !== undefined && result.model_id !== selection.modelId) ||
 								result.version !== selection.expectedVersion + 1 ||
 								(selection.reasoningEffort !== undefined && effort !== selection.reasoningEffort)))
 					)

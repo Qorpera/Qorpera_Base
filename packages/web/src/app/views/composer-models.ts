@@ -1,5 +1,6 @@
 import {
 	SESSION_EFFORTS,
+	SESSION_MODEL_BEFORE_EFFORT,
 	SESSION_MODELS,
 	type SessionModel,
 	type SessionModelSelection,
@@ -27,6 +28,7 @@ export class ComposerModels {
 	#observed: SessionModel | undefined;
 	#request: AbortController | undefined;
 	#pending: SessionModelSelection | undefined;
+	#pressed: HTMLButtonElement | undefined;
 	#error = "";
 	#started = false;
 	#locked = true;
@@ -52,35 +54,35 @@ export class ComposerModels {
 			h("span", { class: "composer-model-label" }, "Model", this.#label),
 			icon("chevron"),
 		);
-		this.#choices = SESSION_MODELS.map((model) =>
-			h(
+		// Each choice saves only what it changes; the cloud keeps the other.
+		this.#choices = SESSION_MODELS.map((model) => {
+			const choice: HTMLButtonElement = h(
 				"button",
 				{
 					type: "button",
 					role: "menuitemradio",
 					"aria-checked": "false",
-					onclick: () => void this.#save({ modelId: model.id, reasoningEffort: this.#observed?.reasoningEffort }),
+					onclick: () => void this.#save({ modelId: model.id }, choice),
 				},
 				h("span", null, model.name),
 				icon("check"),
-			),
-		);
-		this.#efforts = SESSION_EFFORTS.map((effort) =>
-			h(
+			);
+			return choice;
+		});
+		this.#efforts = SESSION_EFFORTS.map((effort) => {
+			const choice: HTMLButtonElement = h(
 				"button",
 				{
 					type: "button",
 					role: "menuitemradio",
 					"aria-checked": "false",
-					onclick: () => {
-						const modelId = this.#observed?.modelId;
-						if (modelId) void this.#save({ modelId, reasoningEffort: effort.id });
-					},
+					onclick: () => void this.#save({ reasoningEffort: effort.id }, choice),
 				},
 				h("span", null, effort.name),
 				icon("check"),
-			),
-		);
+			);
+			return choice;
+		});
 		this.#effortGroup = h(
 			"div",
 			{ class: "composer-model-group", role: "group", "aria-label": "Effort", hidden: true },
@@ -96,7 +98,7 @@ export class ComposerModels {
 			"div",
 			{ class: "composer-models", role: "menu", "aria-label": "Model", hidden: true },
 			h("button", { type: "button", role: "menuitem", onclick: back }, icon("back"), "Model"),
-			h("div", { class: "composer-model-group", role: "group", "aria-label": "Model" }, ...this.#choices),
+			...this.#choices,
 			this.#effortGroup,
 			h("p", { class: "composer-model-scope" }, "Only this conversation. Applies from your next message."),
 			this.#status,
@@ -171,7 +173,7 @@ export class ComposerModels {
 		);
 	}
 
-	async #save(selection: SessionModelSelection): Promise<void> {
+	async #save(selection: SessionModelSelection, pressed: HTMLButtonElement): Promise<void> {
 		if (
 			!this.#client ||
 			!this.#observed ||
@@ -185,6 +187,7 @@ export class ComposerModels {
 		this.#request = request;
 		const signal = AbortSignal.any([request.signal, this.#signal]);
 		this.#pending = selection;
+		this.#pressed = pressed;
 		this.#notify();
 		try {
 			const value = await this.#client.set(this.#sessionId, selection, this.#observed.version, signal);
@@ -197,7 +200,12 @@ export class ComposerModels {
 			if (this.#request === request) {
 				this.#request = undefined;
 				this.#notify();
-				if (!this.el.hidden && document.activeElement === this.el.firstElementChild) this.focus();
+				// Focus returns to the choice the member pressed once it is usable again.
+				if (!this.el.hidden && document.activeElement === this.el.firstElementChild) {
+					if (this.#pressed && !this.#pressed.disabled) this.#pressed.focus();
+					else this.focus();
+				}
+				this.#pressed = undefined;
 			}
 		}
 	}
@@ -226,16 +234,19 @@ export class ComposerModels {
 			name ? (effort ? `Model: ${name}, ${effort} effort` : `Model: ${name}`) : "Model",
 		);
 		const unavailable = this.button.disabled || !this.#observed || Boolean(this.#request) || Boolean(this.#error);
+		// A cloud that does not honour per-conversation effort omits it, and
+		// accepts only GPT-6 Astra of the listed models. Hidden choices stay
+		// disabled so arrow keys skip them.
+		const beforeEffort = this.#observed !== undefined && effortId === undefined;
 		for (const [index, choice] of this.#choices.entries()) {
-			choice.setAttribute("aria-checked", String(SESSION_MODELS[index]?.id === id));
-			choice.disabled = unavailable;
+			const model = SESSION_MODELS[index]?.id;
+			choice.setAttribute("aria-checked", String(model === id));
+			choice.disabled = unavailable || (beforeEffort && model !== SESSION_MODEL_BEFORE_EFFORT);
 		}
-		// A cloud without per-conversation effort omits it. Effort is saved with
-		// the conversation's model, so an unlisted model is chosen first.
 		this.#effortGroup.hidden = effortId === undefined;
 		for (const [index, choice] of this.#efforts.entries()) {
 			choice.setAttribute("aria-checked", String(SESSION_EFFORTS[index]?.id === effortId));
-			choice.disabled = unavailable || !SESSION_MODELS.some((item) => item.id === id);
+			choice.disabled = unavailable || this.#effortGroup.hidden;
 		}
 		this.#status.textContent =
 			this.#error || (this.#request ? (this.pending ? "Saving model…" : "Loading model…") : "");

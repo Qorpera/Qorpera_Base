@@ -61,6 +61,27 @@ describe("conversation model transport", () => {
 		expect(f.current).toHaveBeenCalledWith(session.sessionId);
 	});
 
+	it("saves only an effort, leaving the conversation's model to the cloud", async () => {
+		const f = setup();
+		f.fetch.mockResolvedValueOnce(
+			Response.json({ ...model, model_id: "gpt-native", reasoning_effort: "high", version: 1 }),
+		);
+		expect(await f.control.set(session.sessionId, { reasoningEffort: "high" }, 0)).toEqual({
+			sessionId: session.sessionId,
+			modelId: "gpt-native",
+			reasoningEffort: "high",
+			version: 1,
+		});
+		expect(JSON.parse(f.fetch.mock.calls[0]![1]?.body as string)).toEqual({
+			p_session_id: session.sessionId,
+			p_model_id: null,
+			p_expected_version: 0,
+			p_reasoning_effort: "high",
+		});
+		await expect(f.control.set(session.sessionId, {}, 1)).rejects.toThrow("Refresh");
+		expect(f.fetch).toHaveBeenCalledTimes(1);
+	});
+
 	it("works with a cloud that predates per-conversation effort", async () => {
 		const f = setup();
 		const { reasoning_effort: _, ...older } = model;
