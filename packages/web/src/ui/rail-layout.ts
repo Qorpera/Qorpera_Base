@@ -26,6 +26,7 @@ export class RailLayout {
 	#preferred = DEFAULT;
 	#width = DEFAULT;
 	#max = 0;
+	#scale = 0;
 	#drawer = false;
 	#dragging = false;
 	#dragged = false;
@@ -89,6 +90,10 @@ export class RailLayout {
 		});
 		// The frame fills the window, so the window is what the cap follows.
 		window.addEventListener("resize", () => this.#apply(), { signal: this.#lifetime.signal });
+		// The scale changes with the primary pointer (a 2-in-1 turned into a tablet) without any resize.
+		window.matchMedia?.("(pointer: coarse)")?.addEventListener?.("change", () => this.#apply(), {
+			signal: this.#lifetime.signal,
+		});
 		this.#apply();
 	}
 	/** Two fifths of the window, but never below the narrowest expanded rail. */
@@ -123,12 +128,14 @@ export class RailLayout {
 		const max = this.#cap();
 		const width = Math.min(this.#preferred, max);
 		const drawer = isPhoneLayout();
-		if (width === this.#width && max === this.#max && drawer === this.#drawer) return;
+		const scale = uiScale();
+		if (width === this.#width && max === this.#max && drawer === this.#drawer && scale === this.#scale) return;
 		this.#width = width;
 		this.#max = max;
 		this.#drawer = drawer;
+		this.#scale = scale;
 		// --rail-width does not inherit (app.css), so each of its two readers carries its own value.
-		const shown = `${width * uiScale()}px`;
+		const shown = `${width * scale}px`;
 		this.#rail.style.setProperty("--rail-width", shown);
 		this.el.style.setProperty("--rail-width", shown);
 		// Collapsed only where the rail stands beside the page; the drawer always shows it whole.

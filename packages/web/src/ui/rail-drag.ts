@@ -21,6 +21,7 @@ export interface RailDragHooks {
 	drop(drop: RailDrop): void;
 }
 
+/** Design pixels: how far a press moves before it drags, and the band at the list's edges that scrolls it. */
 const THRESHOLD = 6;
 const EDGE = 40;
 
@@ -182,7 +183,7 @@ export class RailDrag {
 		const active = this.#active;
 		if (!active || event.pointerId !== active.pointerId) return;
 		if (!active.ghost) {
-			if (Math.hypot(event.clientX - active.start.x, event.clientY - active.start.y) < THRESHOLD) return;
+			if (Math.hypot(event.clientX - active.start.x, event.clientY - active.start.y) < THRESHOLD * uiScale()) return;
 			this.#begin(active);
 			if (!active.ghost) return;
 		}
@@ -273,11 +274,12 @@ export class RailDrag {
 			const active = this.#active;
 			if (!active?.ghost) return;
 			const rect = this.#list.getBoundingClientRect();
+			const edge = EDGE * uiScale();
 			const speed =
-				active.lastY < rect.top + EDGE
-					? -Math.ceil((rect.top + EDGE - active.lastY) / 4)
-					: active.lastY > rect.bottom - EDGE
-						? Math.ceil((active.lastY - (rect.bottom - EDGE)) / 4)
+				active.lastY < rect.top + edge
+					? -Math.ceil((rect.top + edge - active.lastY) / 4)
+					: active.lastY > rect.bottom - edge
+						? Math.ceil((active.lastY - (rect.bottom - edge)) / 4)
 						: 0;
 			if (speed) {
 				const before = this.#list.scrollTop;

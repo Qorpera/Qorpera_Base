@@ -132,7 +132,8 @@ export function openContextMenu(options: ContextMenuOptions): ContextMenu {
 					document.body.append(child);
 					const row = trigger.getBoundingClientRect();
 					const parent = menu.getBoundingClientRect();
-					place(child, parent.right - 2, row.top - 5, parent.left + 2);
+					const scale = uiScale();
+					place(child, parent.right - 2 * scale, row.top - 5 * scale, parent.left + 2 * scale);
 					submenu = { el: child, trigger };
 					trigger.setAttribute("aria-expanded", "true");
 					trigger.classList.add("is-open");
@@ -252,5 +253,6 @@ export function openContextMenu(options: ContextMenuOptions): ContextMenu {
 export function menuPoint(event: MouseEvent, element: Element): { x: number; y: number } {
 	if (event.clientX || event.clientY) return { x: event.clientX, y: event.clientY };
 	const rect = element.getBoundingClientRect();
-	return { x: rect.left + Math.min(24, rect.width / 2), y: rect.bottom - 4 };
+	const scale = uiScale();
+	return { x: rect.left + Math.min(24 * scale, rect.width / 2), y: rect.bottom - 4 * scale };
 }

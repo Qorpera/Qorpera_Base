@@ -5,8 +5,9 @@
 // coarse pointer). A part of the page that must keep its old size sets
 // `--px: 1px` for itself and everything inside it (the minimized computer
 // preview does). A query cannot read a variable, so each width breakpoint in
-// @media is written twice: as it stands for a coarse pointer, multiplied out
-// for any other. Hairlines (under 2px) stay as written, so borders stay crisp,
+// @media is written for each pointer: as it stands for a coarse one, multiplied
+// out for a fine one or none (spelled out rather than `not`, which older
+// browsers cannot parse). Hairlines (under 2px) stay as written, so borders stay crisp,
 // and so do SVG geometry properties, which count in the icon's own viewBox.
 import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -15,12 +16,13 @@ import { dirname } from "node:path";
 const HAIRLINE = 2;
 /** Where the app keeps its unscaled sizes; tokens.css sets --ui-scale: 1 under the same query. */
 const TOUCH = "(pointer: coarse)";
+const SCALED = ["(pointer: fine)", "(pointer: none)"];
 /** Lengths in an SVG's user units: the icon's box scales, its strokes follow. */
 const SVG_GEOMETRY = new Set(["stroke-width", "stroke-dasharray", "stroke-dashoffset", "cx", "cy", "r", "rx", "ry", "x", "y"]);
 /** At-rules whose block must stay literal: @property values cannot hold var(). */
 const LITERAL_BLOCKS = new Set(["property"]);
-const NUMBER_PX = /(-?(?:\d+(?:\.\d+)?|\.\d+))px(?![\w-])/y;
-const QUERY_PX = /(?<![\w.#-])(-?(?:\d+(?:\.\d+)?|\.\d+))px(?![\w-])/g;
+const NUMBER_PX = /([+-]?(?:\d+(?:\.\d+)?|\.\d+))px(?![\w-])/iy;
+const QUERY_PX = /(?<![\w.#+-])([+-]?(?:\d+(?:\.\d+)?|\.\d+))px(?![\w-])/gi;
 
 /** The scale the stylesheet declares for a mouse or trackpad; the build and the scripts both follow it. */
 export function readUiScale(tokensPath) {
@@ -73,13 +75,13 @@ function queries(list) {
 /** An @media prelude with design pixels, once for a coarse pointer as written and once scaled for the rest. */
 function mediaPrelude(prelude, scale) {
 	const plain = prelude.replace(/\/\*[\s\S]*?\*\//g, "");
-	if (!/\dpx/.test(plain)) return prelude;
+	if (!/\dpx/i.test(plain)) return prelude;
 	const list = queries(plain);
 	const branches = list.flatMap((query) => {
 		if (!query.startsWith("(")) throw new Error(`@media ${query}: a query with pixel widths must be a plain condition`);
 		const scaled = query.replace(QUERY_PX, (_, value) => `${Number((Number(value) * scale).toFixed(4))}px`);
 		const group = (condition) => (/\)\s+or\s+\(/i.test(condition) ? `(${condition})` : condition);
-		return [`${TOUCH} and ${group(query)}`, `(not ${TOUCH}) and ${group(scaled)}`];
+		return [`${TOUCH} and ${group(query)}`, ...SCALED.map((pointer) => `${pointer} and ${group(scaled)}`)];
 	});
 	return ` ${branches.join(", ")} `;
 }
@@ -115,7 +117,7 @@ export function scaleDesignPx(css, scale) {
 					let end = i;
 					while (end < css.length && css[end] !== "{" && css[end] !== ";") end = Math.max(end + 1, skipLiteral(css, end));
 					const prelude = css.slice(i, end);
-					if (atRule === "container" && /\dpx/.test(prelude))
+					if (atRule === "container" && /\dpx/i.test(prelude))
 						throw new Error(`@container${prelude}: pixel widths in container queries are not scaled yet`);
 					out += atRule === "media" ? mediaPrelude(prelude, scale) : prelude;
 					i = end;
@@ -142,7 +144,7 @@ export function scaleDesignPx(css, scale) {
 				.toLowerCase();
 			svg = SVG_GEOMETRY.has(property);
 		}
-		if (/[-.\d]/.test(c) && !/[\w.#-]/.test(css[i - 1] ?? "") && literalDepth < 0 && !svg && !atRule) {
+		if (/[-+.\d]/.test(c) && !/[\w.#+-]/.test(css[i - 1] ?? "") && literalDepth < 0 && !svg && !atRule) {
 			NUMBER_PX.lastIndex = i;
 			const number = NUMBER_PX.exec(css);
 			if (number) {

@@ -272,9 +272,10 @@ that size the default. The stylesheets keep writing design pixels; the build
 px value of 2 or more into `calc(N * var(--px))`, and `tokens.css` sets `--px`
 to `--ui-scale` pixels: 1.25 with a mouse or trackpad, 1 on a coarse pointer
 (phones and tablets, whose layout was drawn for 100%). Each width breakpoint in
-`@media` is written twice by the build, as written for a coarse pointer and
-multiplied out for the rest, so layouts switch at the widths the browser's zoom
-switched them. Hairlines under 2px and SVG stroke geometry stay as written.
+`@media` is written by the build for each pointer: as written for a coarse one,
+multiplied out for a fine one or none (spelled out, since older browsers cannot
+parse `not (pointer: coarse)`), so layouts switch at the widths the browser's
+zoom switched them. Hairlines under 2px and SVG stroke geometry stay as written.
 
 **Keeping a size.** A part that keeps its old size sets `--px: 1px` for itself
 and everything inside it: the minimized computer preview (Jonas kept its size;
@@ -298,5 +299,8 @@ left new px unscaled.
 **Rules.** Keep writing px in the web stylesheets. A `@media` query with pixel
 widths must be a plain condition such as `(max-width: 760px)` (the build stops
 otherwise); `@container` queries with pixel widths stop the build until they are
-needed. `scripts/design-px.test.mjs` checks that no design pixel in the
+needed. Pair two breakpoints on the same number (`max-width: 760px` against
+`min-width: 760px`, or range syntax), never 760/761: scaled, 761 becomes 951.25
+and leaves a gap. A script compares a measured size with a design constant only
+through `uiScale()`, and rounds up where the browser rounds (`scrollHeight`). `scripts/design-px.test.mjs` checks that no design pixel in the
 stylesheets escapes the scale.

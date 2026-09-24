@@ -343,7 +343,7 @@ export class ConversationView {
 				this.#pinnedTop = -1;
 				return;
 			}
-			this.#stickToBottom = scrollHeight - scrollTop - clientHeight < 48;
+			this.#stickToBottom = scrollHeight - scrollTop - clientHeight < 48 * uiScale();
 		});
 		if (typeof ResizeObserver !== "undefined") {
 			this.#sizes = new ResizeObserver(() => this.#pinToBottom());
@@ -443,16 +443,17 @@ export class ConversationView {
 		// field changes its padding and can clip a two-line draft.
 		this.#composerShell.classList.toggle("is-expanded", this.#attachments.count > 0);
 		this.#composer.style.height = "auto";
-		// The field's one-line height, tallest height and the expanded shell's padding, in design pixels (ui/scale.ts).
+		// The field's one-line height, tallest height and the expanded shell's padding are design pixels
+		// (ui/scale.ts). scrollHeight is a whole number, so one line at 42 × 1.25 = 52.5 reads 53.
 		const scale = uiScale();
 		this.#composerShell.classList.toggle(
 			"is-expanded",
-			this.#composer.scrollHeight > 42 * scale || this.#attachments.count > 0,
+			this.#composer.scrollHeight > Math.ceil(42 * scale) || this.#attachments.count > 0,
 		);
 		this.#composer.style.height = `${Math.min(this.#composer.scrollHeight, 112 * scale)}px`;
 		this.#composer.style.overflowY = this.#composer.scrollHeight > 112 * scale ? "auto" : "hidden";
 		const expanded = this.#composerShell.classList.contains("is-expanded");
-		this.#composerShell.style.height = `${this.#composer.getBoundingClientRect().height + (expanded ? 44 * scale : 2) + this.#attachments.el.getBoundingClientRect().height}px`;
+		this.#composerShell.style.height = `${this.#composer.getBoundingClientRect().height + (expanded ? 42 * scale + 2 : 2) + this.#attachments.el.getBoundingClientRect().height}px`;
 	}
 
 	#setMenu(open: boolean, restoreFocus = true): void {
