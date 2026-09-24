@@ -1,9 +1,10 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
 import { UUID_PATTERN } from "../../cloud/parse.ts";
-import type { HostedIncomingProfileInvitation, HostedProfile } from "../../cloud/types.ts";
+import type { HostedIncomingProfileInvitation, HostedProfile, HostedProfileRole } from "../../cloud/types.ts";
 import { button, companyLogo, fmtDate, h, notice, replace, spinner } from "../../ui/dom.ts";
 import { preserveFormDrafts } from "../../ui/forms.ts";
+import { phrase, t } from "../../ui/preferences.ts";
 import { companyCardsSkeleton } from "../../ui/skeleton.ts";
 import { navigate } from "../router.ts";
 import { Store } from "../state.ts";
@@ -12,6 +13,14 @@ import { mountCrown } from "./crown.ts";
 /* The company hub: every cloud company the member belongs to, pending
  * invitations, and creation of a new company (qorpera_create_cloud_company).
  * There is no local company list — the cloud is the only registry. */
+
+/** A role as the hub names it; the English is the role's own word. */
+const ROLE_LABELS: Record<HostedProfileRole, string> = {
+	owner: phrase("owner"),
+	admin: phrase("admin"),
+	contributor: phrase("contributor"),
+	viewer: phrase("viewer"),
+};
 
 export interface HubState {
 	loading: boolean;
@@ -122,7 +131,7 @@ export class HubController {
 		const trimmed = name.trim();
 		if (!trimmed) return;
 		if (this.#creation && this.#creation.name !== trimmed) {
-			this.store.set({ error: "Resume the pending company creation before starting another." });
+			this.store.set({ error: t("Resume the pending company creation before starting another.") });
 			return;
 		}
 		const route = location.hash;
@@ -152,9 +161,9 @@ export class HubController {
 				if (this.#disposed) return;
 			}
 			if (result.bootstrapState === "blocked")
-				throw new Error("The cloud could not provision the company's Company File.");
+				throw new Error(t("The cloud could not provision the company's Company File."));
 			if (result.bootstrapState === "queued" || result.bootstrapState === "leased")
-				throw new Error("The company is still being created. Resume to check its progress.");
+				throw new Error(t("The company is still being created. Resume to check its progress."));
 			this.#creation = undefined;
 			try {
 				if (this.#creationKey) sessionStorage.removeItem(this.#creationKey);
@@ -182,14 +191,17 @@ function invitationCard(hub: HubController, invitation: HostedIncomingProfileInv
 			h(
 				"span",
 				{ class: "muted small" },
-				`Invited as ${invitation.role} · expires ${fmtDate(invitation.expiresAt)}`,
+				t("Invited as {role} · expires {date}", {
+					role: t(ROLE_LABELS[invitation.role]),
+					date: fmtDate(invitation.expiresAt),
+				}),
 			),
 		),
 		h(
 			"div",
 			{ class: "invite-actions" },
-			button("Decline", () => void hub.respondInvitation(invitation, false), { disabled: busy }),
-			button("Accept", () => void hub.respondInvitation(invitation, true), { primary: true, disabled: busy }),
+			button(t("Decline"), () => void hub.respondInvitation(invitation, false), { disabled: busy }),
+			button(t("Accept"), () => void hub.respondInvitation(invitation, true), { primary: true, disabled: busy }),
 		),
 	);
 }
@@ -200,7 +212,11 @@ function companyCard(profile: HostedProfile): HTMLElement {
 		{ class: "company-card", href: `#/c/${profile.profileId}` },
 		companyLogo(profile.profileId),
 		h("span", { class: "company-name" }, profile.profileName),
-		h("span", { class: "company-meta" }, `${profile.role} · since ${fmtDate(profile.createdAt)}`),
+		h(
+			"span",
+			{ class: "company-meta" },
+			t("{role} · since {date}", { role: t(ROLE_LABELS[profile.role]), date: fmtDate(profile.createdAt) }),
+		),
 	);
 }
 
@@ -218,11 +234,11 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 		id: "newCompanyName",
 		"data-draft": "company-name",
 		type: "text",
-		placeholder: "Company name",
+		placeholder: t("Company name"),
 		maxlength: 120,
 		required: true,
 		disabled: busy,
-		"aria-label": "Company name",
+		"aria-label": t("Company name"),
 		autocomplete: "organization",
 	});
 	const onSubmit = (event: Event) => {
@@ -233,8 +249,8 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 		h(
 			"div",
 			{ class: "hub-progress" },
-			spinner(`Creating ${state.creating?.name ?? "the company"}`),
-			h("span", { class: "muted small" }, "Seeding its Company File and Co-Founder."),
+			spinner(state.creating ? t("Creating {name}", { name: state.creating.name }) : t("Creating the company")),
+			h("span", { class: "muted small" }, t("Seeding its Company File and Co-Founder.")),
 		);
 	const invitations = state.invitations.map((invitation) =>
 		invitationCard(hub, invitation, state.busyInvitation === invitation.id),
@@ -259,34 +275,40 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 					"div",
 					{ class: "hub-inner hub-welcome" },
 					art,
-					h("h1", null, invited ? "You have been invited" : "Start your first company"),
+					h("h1", null, invited ? t("You have been invited") : t("Start your first company")),
 					h(
 						"p",
 						{ class: "hub-lead" },
 						invited
-							? "Join a company you have been invited to, or start one of your own."
-							: "Give it a name. Qorpera creates its Company File and a Co-Founder who begins work straight away.",
+							? t("Join a company you have been invited to, or start one of your own.")
+							: t(
+									"Give it a name. Qorpera creates its Company File and a Co-Founder who begins work straight away.",
+								),
 					),
 					invited ? h("div", { class: "invite-list" }, ...invitations) : null,
-					invited ? h("div", { class: "hub-or", "aria-hidden": "true" }, h("span", null, "or")) : null,
+					invited ? h("div", { class: "hub-or", "aria-hidden": "true" }, h("span", null, t("or"))) : null,
 					busy
 						? progress()
 						: h(
 								"form",
 								{ class: "hub-create", onsubmit: onSubmit },
 								nameInput,
-								h("button", { type: "submit", class: "hub-create-submit" }, "Create company"),
+								h("button", { type: "submit", class: "hub-create-submit" }, t("Create company")),
 							),
 					state.error ? notice("danger", state.error) : null,
 					state.creationRetry && !busy
 						? button(
-								`Resume creating ${state.creationRetry.name}`,
+								t("Resume creating {name}", { name: state.creationRetry.name }),
 								() => void hub.createCompany(state.creationRetry!.name),
 							)
 						: null,
 					invited || busy
 						? null
-						: h("p", { class: "hub-note" }, "Invited to a company? It appears here the moment someone adds you."),
+						: h(
+								"p",
+								{ class: "hub-note" },
+								t("Invited to a company? It appears here the moment someone adds you."),
+							),
 				),
 			),
 		);
@@ -302,13 +324,13 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 			? h(
 					"form",
 					{ class: "company-card company-card-compose", onsubmit: onSubmit },
-					h("label", { class: "muted small", for: "newCompanyName" }, "New company"),
+					h("label", { class: "muted small", for: "newCompanyName" }, t("New company")),
 					nameInput,
 					h(
 						"div",
 						{ class: "row" },
-						h("button", { type: "submit", class: "hub-create-submit" }, "Create"),
-						button("Cancel", () => hub.store.set({ composing: false })),
+						h("button", { type: "submit", class: "hub-create-submit" }, t("Create")),
+						button(t("Cancel"), () => hub.store.set({ composing: false })),
 					),
 				)
 			: h(
@@ -319,8 +341,8 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 						onclick: () => hub.store.set({ composing: true }),
 					},
 					h("span", { class: "company-new-mark", "aria-hidden": "true" }, "+"),
-					h("span", { class: "company-name" }, "New company"),
-					h("span", { class: "muted small" }, "Seeds a Company File and a Co-Founder"),
+					h("span", { class: "company-name" }, t("New company")),
+					h("span", { class: "muted small" }, t("Seeds a Company File and a Co-Founder")),
 				);
 	replace(
 		container,
@@ -333,7 +355,7 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 				state.error ? notice("danger", state.error) : null,
 				state.creationRetry && !busy
 					? button(
-							`Resume creating ${state.creationRetry.name}`,
+							t("Resume creating {name}", { name: state.creationRetry.name }),
 							() => void hub.createCompany(state.creationRetry!.name),
 						)
 					: null,
@@ -341,7 +363,7 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 					? h(
 							"div",
 							{ class: "hub-section" },
-							h("h2", null, "Invitations"),
+							h("h2", null, t("Invitations")),
 							h("div", { class: "invite-list" }, ...invitations),
 						)
 					: null,

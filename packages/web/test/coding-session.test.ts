@@ -14,10 +14,12 @@ import {
 	CodingSessionElement,
 	type CodingSessionNames,
 	codingSessionCaption,
+	codingSessionCaptionParts,
 	codingSessionStatus,
 	fmtDuration,
 	shortBranch,
 } from "../src/ui/coding-session.ts";
+import { setLanguagePreference } from "../src/ui/preferences.ts";
 import { id, staff, stubFigureMotion, timestamp, userA } from "./fixtures.ts";
 
 const WORKER = id(900);
@@ -64,6 +66,25 @@ const other: CodingSessionNames = { agent: "Mark", owner: "Jonas", ownerIsViewer
 const NOW = Date.parse("2026-09-22T10:04:00Z");
 
 describe("the captions the kernel state produces", () => {
+	it("draws the agent and the harness apart where Danish puts them", () => {
+		setLanguagePreference("da");
+		try {
+			expect(codingSessionCaptionParts(codingSession({ phase: "awaiting_input" }), other)).toEqual([
+				{ kind: "text", text: "Kodesessionen mellem " },
+				{ kind: "agent", text: "Mark" },
+				{ kind: "text", text: " og Jonas i " },
+				{ kind: "harness", text: "Claude Code" },
+				{ kind: "text", text: " venter på svar fra Jonas" },
+			]);
+			expect(codingSessionCaption(codingSession(), owner)).toBe(
+				"Mark startede en kodesession med dig i Claude Code",
+			);
+		} finally {
+			setLanguagePreference("system");
+			localStorage.clear();
+		}
+	});
+
 	it("names the agent, the owner and the harness, and says what the session needs", () => {
 		expect(codingSessionCaption(codingSession(), owner)).toBe(
 			"Mark started a coding session with you in Claude Code",
