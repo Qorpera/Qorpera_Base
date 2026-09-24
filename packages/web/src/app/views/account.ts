@@ -1,8 +1,103 @@
 import type { HostedAccountEntitlement } from "../../cloud/types.ts";
 import { button, h, notice, replace } from "../../ui/dom.ts";
-import { languagePreference, setLanguagePreference, uiText } from "../../ui/preferences.ts";
+import { type PickerOption, PreferencePicker } from "../../ui/preference-picker.ts";
+import {
+	languagePreference,
+	presentationLocale,
+	setLanguagePreference,
+	setTimeZonePreference,
+	systemTimeZone,
+	timeZonePreference,
+	uiString,
+	uiText,
+} from "../../ui/preferences.ts";
+import { timeZoneCity, timeZoneEntries } from "../../ui/time-zones.ts";
 import { type AuthController, displayName } from "../auth.ts";
 import { composerColorChoices, themeChoices } from "./appearance.ts";
+
+/** Each language by its own name; the list shows it again in the interface's. */
+const LANGUAGES = [
+	{ value: "en", label: "English", english: "English", keywords: "en" },
+	{ value: "da", label: "Dansk", english: "Danish", keywords: "da danish dansk" },
+] as const;
+
+function languageOptions(): PickerOption[] {
+	const locale = presentationLocale();
+	return [
+		{ value: "system", label: uiString("Follow system") },
+		...LANGUAGES.map((language) => ({
+			value: language.value,
+			label: language.label,
+			detail: uiString(language.english),
+			keywords: `${language.english} ${language.keywords}`,
+		})).sort((a, b) => a.detail.localeCompare(b.detail, locale)),
+	];
+}
+
+function timeZoneOptions(): PickerOption[] {
+	const system = systemTimeZone();
+	const chosen = timeZonePreference();
+	return [
+		{ value: "system", label: uiString("Follow system"), detail: timeZoneCity(system), keywords: system },
+		...timeZoneEntries(presentationLocale(), chosen === "system" ? [system] : [system, chosen]).map((zone) => ({
+			value: zone.id,
+			label: zone.city,
+			detail: zone.offset,
+			keywords: zone.names.join(" "),
+			title: [zone.id, ...zone.names].join(" · "),
+		})),
+	];
+}
+
+let renders = 0;
+
+interface Pickers {
+	labels: { language: string; timeZone: string };
+	language: PreferencePicker;
+	timeZone: PreferencePicker;
+}
+
+/** One pair of pickers per panel, kept across its re-renders (the account's
+ * entitlement arriving, an error notice): an open list and the focus in it
+ * survive, and no listeners are left behind. */
+const panelPickers = new WeakMap<HTMLElement, Pickers>();
+
+function pickersFor(container: HTMLElement, setState: (next: AccountViewState) => void): Pickers {
+	const kept = panelPickers.get(container);
+	if (kept) {
+		kept.language.refresh();
+		kept.timeZone.refresh();
+		return kept;
+	}
+	const labels = { language: `settings-language-${++renders}`, timeZone: `settings-time-zone-${renders}` };
+	const pickers: Pickers = {
+		labels,
+		language: new PreferencePicker({
+			labelId: labels.language,
+			searchLabel: "Search language",
+			options: languageOptions,
+			value: languagePreference,
+			display: (value) => LANGUAGES.find((candidate) => candidate.value === value)?.label ?? uiText("Follow system"),
+			choose: (value) => {
+				if (!setLanguagePreference(value))
+					setState({ error: "Your browser could not save the language preference." });
+			},
+		}),
+		timeZone: new PreferencePicker({
+			labelId: labels.timeZone,
+			searchLabel: "Search time zone",
+			options: timeZoneOptions,
+			value: timeZonePreference,
+			display: (value) => (value === "system" ? uiText("Follow system") : timeZoneCity(value)),
+			choose: (value) => {
+				if (!setTimeZonePreference(value))
+					setState({ error: "Your browser could not save the time zone preference." });
+			},
+		}),
+	};
+	panelPickers.set(container, pickers);
+	return pickers;
+}
 
 export interface AccountViewState {
 	loading?: boolean;
@@ -19,20 +114,11 @@ export function renderAccount(
 	setState: (next: AccountViewState) => void,
 ): void {
 	const user = auth.store.get().user;
-	const language = h(
-		"select",
-		{ "aria-label": "Language" },
-		h("option", { value: "system" }, "System default"),
-		h("option", { value: "en" }, "English"),
-		h("option", { value: "da" }, "Dansk"),
-	);
-	language.value = languagePreference();
-	language.onchange = () => {
-		if (!setLanguagePreference(language.value)) {
-			language.value = languagePreference();
-			setState({ error: "Your browser could not save the language preference." });
-		}
-	};
+	const { labels, language, timeZone } = pickersFor(container, setState);
+	const focused =
+		document.activeElement instanceof HTMLElement && container.contains(document.activeElement)
+			? document.activeElement
+			: null;
 	const theme = themeChoices(() => setState({ error: "Your browser could not save the theme preference." }));
 	const composerColor = composerColorChoices(() =>
 		setState({ error: "Your browser could not save the composer color preference." }),
@@ -93,18 +179,34 @@ export function renderAccount(
 				{ class: "settings-group" },
 				h("h2", null, uiText("Language & region")),
 				h(
-					"label",
-					{ class: "settings-preference-row" },
+					"div",
+					{ class: "settings-rows" },
 					h(
-						"span",
-						{ class: "settings-copy" },
-						uiText("Language"),
-						h("small", null, uiText("System default follows your browser’s language.")),
+						"div",
+						{ class: "settings-preference-row" },
+						h(
+							"label",
+							{ class: "settings-copy", for: language.buttonId },
+							h("span", { id: labels.language }, uiText("Language")),
+							h("small", null, uiText("Some screens are still shown in English.")),
+						),
+						language.el,
 					),
-					language,
+					h(
+						"div",
+						{ class: "settings-preference-row" },
+						h(
+							"label",
+							{ class: "settings-copy", for: timeZone.buttonId },
+							h("span", { id: labels.timeZone }, uiText("Time zone")),
+							h("small", null, uiText("Message times and new routines use this zone.")),
+						),
+						timeZone.el,
+					),
 				),
-				h("p", { class: "settings-help" }, uiText("Some screens are still shown in English.")),
 			),
 		),
 	);
+	// The kept pickers moved into the new tree; give back the focus the move took.
+	if (focused?.isConnected && document.activeElement !== focused) focused.focus({ preventScroll: true });
 }

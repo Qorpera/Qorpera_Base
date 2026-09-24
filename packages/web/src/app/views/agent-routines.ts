@@ -16,6 +16,7 @@ import type { WebRoutines } from "../../cloud/routines.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { dialogPageHeader } from "../../ui/dialog.ts";
 import { badge, button, fmtTime, h, icon, replace } from "../../ui/dom.ts";
+import { presentationTimeZone } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 
@@ -293,7 +294,7 @@ export class AgentRoutines {
 					: "interval";
 		const clientRoutineId = routine?.clientRoutineId ?? crypto.randomUUID();
 		let saveId = crypto.randomUUID();
-		const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+		const zone = presentationTimeZone();
 		const title = h("input", {
 			type: "text",
 			maxlength: "160",

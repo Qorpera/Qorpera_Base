@@ -5,10 +5,11 @@ import { ConversationView } from "../src/app/views/conversation.ts";
 import type { TranscriptItem, TranscriptMessage } from "../src/cloud/transcript.ts";
 import {
 	conversationTimestampLabel,
+	conversationTimestampTitle,
 	needsConversationTimestamp,
 	parseConversationTimestamp,
 } from "../src/ui/conversation-timestamps.ts";
-import { setLanguagePreference } from "../src/ui/preferences.ts";
+import { setLanguagePreference, setTimeZonePreference } from "../src/ui/preferences.ts";
 import { fixture, id, profileA, session, staff, team, userA } from "./fixtures.ts";
 
 let dispose: (() => void) | undefined;
@@ -112,6 +113,32 @@ describe("conversation timestamp labels", () => {
 		expect(older).not.toContain("2026");
 		expect(conversationTimestampLabel(new Date(2025, 8, 17, 10, 15))).toContain("2025");
 		expect(conversationTimestampLabel(new Date(2026, 8, 21, 10, 15))).not.toMatch(/Today|Yesterday/);
+	});
+
+	it("reads days and times in the zone chosen in Settings", () => {
+		vi.stubEnv("TZ", "UTC");
+		// Tokyo's midnight is 15:00 UTC: two messages a minute either side of it.
+		const before = new Date("2026-09-20T14:59:00Z"),
+			after = new Date("2026-09-20T15:01:00Z"),
+			now = new Date("2026-09-21T01:00:00Z");
+		expect(needsConversationTimestamp(after, before)).toBe(false);
+		expect(conversationTimestampLabel(before, now)).toMatch(/Yesterday.*2:59/);
+		expect(setTimeZonePreference("Asia/Tokyo")).toBe(true);
+		expect(needsConversationTimestamp(after, before)).toBe(true);
+		expect(conversationTimestampLabel(before, now)).toMatch(/Yesterday.*11:59/);
+		expect(conversationTimestampLabel(after, now)).toMatch(/Today.*12:01/);
+		expect(conversationTimestampTitle(after)).toMatch(/Monday, September 21, 2026.*12:01/);
+		// The year shows when the message's year is not this year in that zone:
+		// 16:00 UTC on New Year's Eve is already 2027 in Tokyo.
+		const newYear = new Date("2026-12-31T16:00:00Z"),
+			later = new Date("2027-01-05T00:00:00Z");
+		expect(conversationTimestampLabel(newYear, later)).toMatch(/^Fri, Jan 1 1:00/);
+		expect(setTimeZonePreference("UTC")).toBe(true);
+		expect(conversationTimestampLabel(newYear, later)).toMatch(/Dec 31, 2026.*4:00/);
+		expect(setTimeZonePreference("Asia/Tokyo")).toBe(true);
+		expect(conversationTimestampLabel(new Date("2025-12-31T14:00:00Z"), new Date("2026-01-02T00:00:00Z"))).toContain(
+			"2025",
+		);
 	});
 
 	it("follows the selected presentation language", () => {
@@ -241,6 +268,26 @@ describe("conversation timestamp rendering", () => {
 			}
 		},
 	);
+
+	it("regroups the thread when a zone is chosen in Settings, and the chosen zone holds when the device travels", () => {
+		vi.stubEnv("TZ", "UTC");
+		vi.setSystemTime(new Date("2026-09-20T23:00:00Z"));
+		// Copenhagen's midnight is 22:00 UTC.
+		const f = setup([message(1, "2026-09-20T21:59:00Z"), message(2, "2026-09-20T22:01:00Z")]);
+		const transcript = f.view.el.querySelector<HTMLElement>(".messages")!;
+		const rows = [...transcript.querySelectorAll(".message")];
+		const times = () =>
+			[...transcript.querySelectorAll<HTMLTimeElement>(":scope > time")].map((time) => time.textContent);
+		expect(times()).toEqual([expect.stringMatching(/Today.*9:59/)]);
+		expect(setTimeZonePreference("Europe/Copenhagen")).toBe(true);
+		expect(times()).toEqual([expect.stringMatching(/Yesterday.*11:59/), expect.stringMatching(/Today.*12:01/)]);
+		vi.stubEnv("TZ", "America/New_York");
+		window.dispatchEvent(new Event("focus"));
+		expect(times()).toHaveLength(2);
+		expect(setTimeZonePreference("system")).toBe(true);
+		expect(times()).toEqual([expect.stringMatching(/Today.*5:59/)]);
+		expect([...transcript.querySelectorAll(".message")]).toEqual(rows);
+	});
 
 	it.each([false, true])("preserves the reading position after a time-zone change (at bottom: %s)", (atBottom) => {
 		vi.stubEnv("TZ", "UTC");
