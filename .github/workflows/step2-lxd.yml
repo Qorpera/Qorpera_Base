@@ -41,6 +41,7 @@ on:
       - 'packages/runtime/test/cloud-company-computer-diagnostics.test.ts'
       - 'scripts/office-image-self-update.test.mjs'
       - 'deploy/lxd-company-computer-guest/office-*.ts'
+      - 'packages/runner-orchestrator/test/office-*.test.ts'
       - 'scripts/package-office-service-software-control*.mjs'
       - 'deploy/coding-worker/**'
       - 'packages/runtime/src/cloud-secret-*.ts'

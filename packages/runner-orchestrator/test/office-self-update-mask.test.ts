@@ -18,46 +18,71 @@ afterEach(async () => {
 	for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
-/** A systemd whose `mask` writes links the way systemctl does, into `root`. */
+/** A systemd whose `mask` writes links the way systemctl does, into `root`.
+ * `show --property=X --value u...` prints one value per unit, blank-line
+ * separated like systemctl; `show u --property=X --value` (the image
+ * installer's form) prints one. */
 async function systemd(options: { running?: string; unmaskable?: string; reports?: string } = {}) {
 	const root = await mkdtemp(join(tmpdir(), "qorpera-office-tool-units-"));
 	roots.push(root);
 	const calls: string[][] = [];
+	const masked = (unit: string) => {
+		try {
+			return readlinkSync(join(root, unit)) === "/dev/null";
+		} catch {
+			return false;
+		}
+	};
+	const one = (property: string, unit: string) => {
+		if (property === "--property=ActiveState") return unit === options.running ? "activating" : "inactive";
+		if (property === "--property=LoadState") return masked(unit) ? "masked" : "loaded";
+		if (property === "--property=UnitFileState") return options.reports ?? (masked(unit) ? "masked" : "enabled");
+		throw new Error("unexpected property");
+	};
 	const run = (file: string, args: string[]): string => {
 		calls.push([file, ...args]);
 		if (file !== "/usr/bin/systemctl") throw new Error("unexpected command");
-		const [verb, unit, property] = args;
-		if (verb === "mask") {
+		if (args[0] === "mask") {
 			// Idempotent like systemctl: an existing mask stays.
 			for (const name of args.slice(1))
 				if (name !== options.unmaskable && !existsSync(join(root, name)))
 					symlinkSync("/dev/null", join(root, name));
 			return "";
 		}
-		if (verb === "show" && property === "--property=ActiveState")
-			return unit === options.running ? "activating" : "inactive";
-		if (verb === "show" && property === "--property=UnitFileState") {
-			if (options.reports) return options.reports;
-			try {
-				return readlinkSync(join(root, unit!)) === "/dev/null" ? "masked" : "enabled";
-			} catch {
-				return "enabled";
-			}
-		}
+		if (args[0] !== "show") throw new Error("unexpected systemctl call");
+		if (args[1]?.startsWith("--property=") && args[2] === "--value")
+			return args
+				.slice(3)
+				.map((unit) => one(args[1]!, unit))
+				.join("\n\n");
+		if (args[2]?.startsWith("--property=") && args[3] === "--value") return one(args[2], args[1]!);
 		throw new Error("unexpected systemctl call");
 	};
 	return { root, run, calls };
 }
+const steps = (calls: string[][]) => calls.map((call) => (call[1] === "mask" ? "mask" : call[2]));
 
 describe("office software install tool: self-update mask", () => {
 	it("masks all five first, checks for a running job, then proves every link and unit state", async () => {
 		const host = await systemd();
 		await expect(maskOfficeSelfUpdateUnits(host.run, host.root)).resolves.toBeUndefined();
-		expect(host.calls[0]).toEqual(["/usr/bin/systemctl", "mask", ...UNITS]);
-		expect(host.calls.slice(1, 3).map((call) => call[2])).toEqual(["apt-daily.service", "apt-daily-upgrade.service"]);
+		expect(steps(host.calls)).toEqual([
+			"--property=LoadState",
+			"mask",
+			"--property=ActiveState",
+			"--property=UnitFileState",
+		]);
+		expect(host.calls[1]).toEqual(["/usr/bin/systemctl", "mask", ...UNITS]);
+		expect(host.calls[2]?.slice(4)).toEqual(["apt-daily.service", "apt-daily-upgrade.service"]);
 		for (const unit of UNITS) expect(readlinkSync(join(host.root, unit))).toBe("/dev/null");
-		// Idempotent: a retried install masks and passes again.
+	});
+
+	it("skips the mask and its systemd reload when all five are already masked (a retried install)", async () => {
+		const host = await systemd();
+		await maskOfficeSelfUpdateUnits(host.run, host.root);
+		host.calls.length = 0;
 		await expect(maskOfficeSelfUpdateUnits(host.run, host.root)).resolves.toBeUndefined();
+		expect(steps(host.calls)).toEqual(["--property=LoadState", "--property=ActiveState", "--property=UnitFileState"]);
 	});
 
 	it.each(["apt-daily.service", "apt-daily-upgrade.service"])(
@@ -67,7 +92,7 @@ describe("office software install tool: self-update mask", () => {
 			await expect(maskOfficeSelfUpdateUnits(host.run, host.root)).rejects.toThrow(
 				"OFFICE_SOFTWARE_CONTROL_APT_JOB_RUNNING",
 			);
-			expect(host.calls[0]?.[1]).toBe("mask");
+			expect(steps(host.calls).slice(0, 2)).toEqual(["--property=LoadState", "mask"]);
 		},
 	);
 
@@ -101,6 +126,13 @@ describe("office software install tool: self-update mask", () => {
 		);
 	});
 
+	it("refuses an answer that does not cover every unit", async () => {
+		const host = await systemd();
+		const run = (file: string, args: string[]) =>
+			args[1] === "--property=LoadState" ? "masked" : host.run(file, args);
+		await expect(maskOfficeSelfUpdateUnits(run, host.root)).rejects.toThrow("OFFICE_SOFTWARE_CONTROL_SYSTEMD");
+	});
+
 	it.each([{}, { running: "apt-daily-upgrade.service" }, { unmaskable: "apt-daily.timer" }, { reports: "enabled" }])(
 		"agrees with the image installer's mask step (%o)",
 		async (options) => {
@@ -114,24 +146,29 @@ describe("office software install tool: self-update mask", () => {
 			expect(await outcome(maskOfficeSelfUpdateUnits(tool.run, tool.root))).toBe(
 				await outcome(maskOfficeImageSelfUpdate(installer.run, installer.root)),
 			);
-			expect(tool.calls.map((call) => call.join(" "))).toEqual(
-				installer.calls.slice(0, tool.calls.length).map((call) => call.join(" ")),
-			);
+			// Same masks on disk afterwards.
+			for (const unit of UNITS)
+				expect(existsSync(join(tool.root, unit))).toBe(existsSync(join(installer.root, unit)));
 		},
 	);
 
-	it("the install tool masks after every local check and before the challenge window", () => {
+	it("the install tool masks after every local check and before its own challenge check", () => {
 		const source = readFileSync(
 			new URL("../../../deploy/lxd-company-computer-guest/office-service-software-control.ts", import.meta.url),
 			"utf8",
 		);
 		const locked = source.slice(source.indexOf("async function lockedInstall("));
-		const mask = locked.indexOf("await maskOfficeSelfUpdateUnits();");
+		const at = (anchor: string, last = false) => {
+			const index = last ? locked.lastIndexOf(anchor) : locked.indexOf(anchor);
+			expect(index, anchor).toBeGreaterThanOrEqual(0);
+			return index;
+		};
+		const mask = at("await maskOfficeSelfUpdateUnits();");
 		// After the stop history is proven and every candidate is read ...
-		expect(mask).toBeGreaterThan(locked.indexOf("const completedStop = await read("));
-		expect(mask).toBeGreaterThan(locked.lastIndexOf("await readServiceCandidate("));
-		// ... and before the stopped-service recheck and the challenge window.
-		expect(mask).toBeLessThan(locked.indexOf("const manager = createCompanyComputerServiceStopSystemdManager();"));
-		expect(mask).toBeLessThan(locked.indexOf("return await installOfficeSoftwareWithinChallenge("));
+		expect(mask).toBeGreaterThan(at("const completedStop = await read("));
+		expect(mask).toBeGreaterThan(at("await readServiceCandidate(", true));
+		// ... and before the stopped-service recheck and the tool's challenge check.
+		expect(mask).toBeLessThan(at("const manager = createCompanyComputerServiceStopSystemdManager();"));
+		expect(mask).toBeLessThan(at("return await installOfficeSoftwareWithinChallenge("));
 	});
 });
