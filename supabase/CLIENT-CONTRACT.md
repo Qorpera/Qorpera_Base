@@ -197,10 +197,10 @@ profile RPCs; RLS is the second read boundary.
   go to the end of Unassigned), `move_agent {staffAgentId, sectionId|null,
   order?, unpin?}`. The member's own, any member: `set_pins {order}` (at most
   24; pinning unhides), `set_hidden {staffAgentId, hidden}` (hiding unpins).
-  Section names are 1-60 characters, unique per company ignoring case; at most
-  40 sections. The Co-Founder is never placed, pinned or hidden. Agents change
-  the same shared sections through the runtime tool `organize_sidebar`
-  (`qorpera_manage_agent_sidebar`, runner only).
+  Section names are 1-60 characters, unique per company ignoring case; any
+  number of sections (at most 40 until bundle v95). The Co-Founder is never
+  placed, pinned or hidden. Agents change the same shared sections through the
+  runtime tool `organize_sidebar` (`qorpera_manage_agent_sidebar`, runner only).
 
 
 ### Conversations, turns, wakes (28)
@@ -749,5 +749,16 @@ above.
       requests, screenshots, tool calls, worker follow-up turns or workers per
       todo ("This todo already has eight workers" is gone).
     - What still refuses is listed in the runtime contract, section 7.4. It
-      includes four active workers per agent and one open limit, 128 tool
-      outputs per model request, which leaves with a Codex rebuild.
+      includes one open limit, 128 tool outputs per model request, which
+      leaves with a Codex rebuild.
+
+### 2026-09-24 — from the runtime (bundle v95, `20260924160000_runtime_remove_standing_counts.sql`)
+
+16. **No standing counts.** Removed, with no `_v2`: 32 routines per agent
+    ("Agent routine limit reached"), 64 open todos per agent ("Too many open
+    todos"), 4 active workers per agent ("Four workers are already active") and
+    40 sidebar sections per company ("A company can have at most 40 sections",
+    from `qorpera_manage_company_sidebar` as well as the agent tool). A client
+    that showed or guarded one of these limits should drop it. A Company File
+    change may now wake an agent already earlier in its causal chain; an
+    agent's own write still never wakes its own watch routine.

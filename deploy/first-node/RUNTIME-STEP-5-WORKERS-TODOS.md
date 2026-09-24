@@ -27,12 +27,14 @@ the current runtime; the draft's acceptance list was used as a checklist.
 | Todos and worker handles are durable code objects | `qorpera_runtime_agent_todos`, `qorpera_runtime_workers`, `qorpera_runtime_worker_events`. Every change is idempotent by operation key through the existing run operation ledger. |
 | Todos and accepted outputs become Company File state | Every change advances the todo revision and returns the canonical document (`qorpera.agent-todo/v1`), which the run writes to `work/todos/<agent>/<todoKey>.json` through the governed path gateway and confirms against the revision it wrote. An output is a Company File revision the worker's own run wrote; the kernel refuses any other path. The parent's accept or reject is recorded on the worker and appears in the document. |
 | Cancellation policy | A worker lives no longer than its todo; the parent can cancel it; a person stopping the parent run stops its workers. A queued child never starts; a running child is fenced at its next governed effect and cannot report. |
-| Completion or revival policy | `batch` (default): one revival when every worker dispatched by the same run has reported, carrying up to four results. `each`: at once. A blocked worker always revives at once. The parent's own run is never raced: revival waits until it has ended. |
+| Completion or revival policy | `batch` (default): revival when every worker dispatched by the same run has reported, four results per revival, one revival at a time (since v95 the next four wait until the previous revival's run has ended; `stillActive` counts the results still to come). `each`: at once. A blocked worker revives at once. Since v95 "at once" means once no revival of the same parent is running, and a person stopping a revival stops that parent's running workers and holds back its remaining reports (readable through status), as stopping the parent does. The parent's own run is never raced: revival waits until it has ended. |
 
-Limits, enforced in SQL: four active workers per agent, eight workers per todo,
-twelve sequences per worker, twenty-four dispatches and follow-ups per agent per
-hour, sixty-four open todos per agent. Dispatch and revival wakes count against
-the company wake ceiling and honor the founder stop (7.4).
+Limits (superseded): this step shipped with four active workers per agent,
+eight workers per todo, twelve sequences per worker, twenty-four dispatches and
+follow-ups per agent per hour and sixty-four open todos per agent. Bundle v92
+removed the turn, dispatch-rate and per-todo counts and v95 the active-worker
+and open-todo counts; the company wake ceiling went in v89. Only the operator
+pause (7.4) still holds dispatch and revival wakes.
 
 Coding, media and listener workers are refused here (`species = 'in-house'`);
 they belong to Orders 9, 7 and 8.
