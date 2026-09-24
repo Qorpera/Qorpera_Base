@@ -367,6 +367,9 @@ describe("the coding executor over a session turn", () => {
 		expect(() => parseCodingSessionClaim(claimJson(workerId, randomUUID(), { harness: "cursor" }))).toThrow(
 			"Invalid coding claim",
 		);
+		// Runtime v92: a session takes any number of turns (the claim of turn 65 used to be refused
+		// forever while the kernel admitted it).
+		expect(parseCodingSessionClaim(claimJson(workerId, randomUUID(), { sequence: 65 })).sequence).toBe(65);
 		const turn = parseCodingTurnState(
 			{
 				schema: "qorpera.coding-turn-state/v1",

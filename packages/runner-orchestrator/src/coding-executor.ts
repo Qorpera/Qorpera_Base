@@ -131,7 +131,6 @@ export function parseCodingSessionClaim(value: unknown): CodingSessionClaim {
 		Date.parse(item.leaseUntil) <= Date.now() ||
 		!Number.isSafeInteger(item.sequence) ||
 		Number(item.sequence) < 1 ||
-		Number(item.sequence) > 64 ||
 		(item.harness !== "codex" && item.harness !== "claude-code") ||
 		typeof item.branch !== "string" ||
 		item.branch !== `qorpera/coding/${item.workerId}` ||

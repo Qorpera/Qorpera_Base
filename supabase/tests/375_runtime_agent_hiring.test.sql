@@ -68,18 +68,20 @@ select pg_temp.wake_error($q$select pg_temp.path_commit(pg_temp.path_plan('note-
 	'42501','Company File path is unavailable');
 select pg_temp.wake_error($q$select public.qorpera_self_approve_organization_proposal(current_setting('qorpera_test.wake_binding')::jsonb,extensions.gen_random_uuid())$q$,'42501');
 
--- A run cannot hire without end.
+-- A run hires without a count (runtime v92; was three per run): four more hires all apply.
 do $$
 declare v_index int; v_id uuid; v_path text; v_doc text; v_entry jsonb; v_result jsonb;
 begin
-	for v_index in 1..3 loop
+	for v_index in 1..4 loop
 		v_id := ('30000000-0000-4000-8000-0000000005a' || v_index)::uuid; v_path := 'organization/agents/' || v_id || '.json';
 		v_doc := pg_temp.hire_document(v_id,'Hire ' || v_index); v_entry := pg_temp.path_stage_file(v_path,v_doc);
 		v_result := pg_temp.path_commit(pg_temp.path_plan('hire-' || v_index,v_path,v_entry));
-		if v_index < 3 then perform pg_temp.self_apply(v_result,v_entry,v_doc);
-		else perform pg_temp.wake_error(format($q$select public.qorpera_self_approve_organization_proposal(
-			current_setting('qorpera_test.wake_binding')::jsonb,%L)$q$,v_result ->> 'proposalId'),'54000'); end if;
+		perform pg_temp.self_apply(v_result,v_entry,v_doc);
 	end loop;
+	if (select count(*) from public.qorpera_company_path_proposals
+		where run_id = (current_setting('qorpera_test.wake_binding')::jsonb ->> 'runId')::uuid and status = 'applied'
+			and public.qorpera_agent_creatable_path_kind(plan ->> 'path') = 'agent') < 5 then
+		raise exception 'A run could not hire more than three coworkers'; end if;
 end $$;
 
 -- A group chat with coworkers and the requesting member.

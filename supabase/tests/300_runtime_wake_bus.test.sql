@@ -552,11 +552,12 @@ begin
 	perform public.qorpera_materialize_wake_execution_runs(1);
 	select run_id into strict v_run from public.qorpera_wake_occurrences where id = v_wake;
 	v_binding := pg_temp.wake_start(v_run);
-	for v_count in 1..64 loop
+	-- No limit on public sends in a wake (runtime v92): past the old 64, sending and completing still work.
+	for v_count in 1..70 loop
 		perform pg_temp.wake_public_send(v_binding,'progress','budget-' || v_count);
 	end loop;
-	perform pg_temp.wake_error(format('select pg_temp.wake_public_send(%L,''final''); select public.qorpera_assert_wake_completion(%L)',
-		v_binding,v_run),'55000');
+	perform pg_temp.wake_public_send(v_binding,'final');
+	perform public.qorpera_assert_wake_completion(v_run);
 end
 $$;
 rollback to routine_reporting;
@@ -724,7 +725,7 @@ begin
 	-- transcript and wakes the coworker in its own shared thread under the pair
 	-- policy; the reply is one more hop, not a fenced cycle (test 380 covers the budget).
 	perform pg_temp.wake_assert(v_result #>> '{payload,text}' = 'Examine the note.' and v_result #>> '{policy,final}' = 'optional'
-		and v_result #>> '{policy,initial}' = 'forbidden' and v_result #>> '{policy,maxPublicSends}' = '2'
+		and v_result #>> '{policy,initial}' = 'forbidden' and v_result -> 'policy' -> 'maxPublicSends' = 'null'::jsonb
 		and v_result #>> '{audience,sessionId}' is not null and v_result #>> '{payload,pairSessionId}' is not null
 		and jsonb_array_length(v_result #> '{payload,transcript}') = 1,'Durable addressed message reaches the recipient in its own thread');
 	perform pg_temp.wake_assert(v_result #> '{causal,agentIds}' = '["30000000-0000-4000-8000-000000000030","30000000-0000-4000-8000-000000000031"]'::jsonb,'Coworker retains ancestry');

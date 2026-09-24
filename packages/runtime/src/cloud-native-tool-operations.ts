@@ -13,6 +13,8 @@ import { type CloudRuntimeObservationSpan, cloudRuntimeErrorCategory } from "./c
 const OPERATION_SCHEMA = "qorpera.cloud-tool-operation/v2";
 const RESULT_SCHEMA = "qorpera.cloud-tool-operation-result/v1";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+/** Operations remembered for in-process replay; the oldest are forgotten, never refused. */
+const REMEMBERED_OPERATIONS = 65_536;
 
 /** Exact bytes used by receipt admission and independently checked effect gateways. */
 export function cloudNativeToolOperationEnvelope(
@@ -151,8 +153,12 @@ export class CloudNativeToolOperations {
 		if (key.length > 256) throw new Error("Invalid cloud tool operation key");
 		const previous = this.#operations.get(key);
 		if (previous && previous.digest !== digest) throw new Error("Cloud tool operation key is bound to other work");
-		// Not a turn cap: only a memory bound against a runaway key generator.
-		if (!previous && this.#operations.size >= 65_536) throw new Error("Cloud tool operation budget exhausted");
+		// Remembered for a replay within this run; the kernel receipt stays the idempotency
+		// authority, so a forgotten key replays through it. Oldest first, never a refusal.
+		if (!previous && this.#operations.size >= REMEMBERED_OPERATIONS) {
+			const oldest = this.#operations.keys().next().value;
+			if (oldest !== undefined) this.#operations.delete(oldest);
+		}
 		// Private canonical metadata survives an absent/failed exporter and does not admit work.
 		const receipt = previous?.receipt ?? { id: null };
 		const result =

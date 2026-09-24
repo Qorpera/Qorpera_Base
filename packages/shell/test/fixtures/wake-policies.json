@@ -7,7 +7,7 @@
    "initial": "required",
    "final": "required",
    "silenceAllowed": false,
-   "maxPublicSends": 64
+   "maxPublicSends": null
   }
  },
  {
@@ -18,7 +18,7 @@
    "initial": "required",
    "final": "required",
    "silenceAllowed": false,
-   "maxPublicSends": 64
+   "maxPublicSends": null
   }
  },
  {
@@ -29,7 +29,7 @@
    "initial": "optional",
    "final": "optional",
    "silenceAllowed": true,
-   "maxPublicSends": 64
+   "maxPublicSends": null
   }
  },
  {
@@ -40,7 +40,7 @@
    "initial": "optional",
    "final": "required",
    "silenceAllowed": false,
-   "maxPublicSends": 64
+   "maxPublicSends": null
   }
  },
  {
@@ -73,7 +73,7 @@
    "initial": "optional",
    "final": "optional",
    "silenceAllowed": true,
-   "maxPublicSends": 3
+   "maxPublicSends": null
   }
  },
  {
@@ -84,7 +84,7 @@
    "initial": "required",
    "final": "required",
    "silenceAllowed": false,
-   "maxPublicSends": 64
+   "maxPublicSends": null
   }
  },
  {
@@ -95,7 +95,7 @@
    "initial": "optional",
    "final": "required",
    "silenceAllowed": false,
-   "maxPublicSends": 3
+   "maxPublicSends": null
   }
  },
  {
@@ -107,7 +107,7 @@
    "initial": "optional",
    "final": "optional",
    "silenceAllowed": true,
-   "maxPublicSends": 3
+   "maxPublicSends": null
   }
  },
  {
@@ -119,7 +119,7 @@
    "initial": "forbidden",
    "final": "optional",
    "silenceAllowed": true,
-   "maxPublicSends": 2
+   "maxPublicSends": null
   }
  }
 ]

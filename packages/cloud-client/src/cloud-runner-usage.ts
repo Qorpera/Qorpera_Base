@@ -3,7 +3,10 @@ import type { JsonValue } from "@qorpera/contracts";
 export const CLOUD_RUNNER_USAGE_SCHEMA = "qorpera.runner-usage/v1";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const MAX_WALL_TIME_MS = 24 * 60 * 60 * 1000;
+/** A run with no wall-clock limit reports this as its limit (founder, 2026-09-24:
+ * company runs have no deadline). Usage records it as is. */
+export const CLOUD_RUNNER_NO_WALL_TIME_MS = Number.MAX_SAFE_INTEGER;
+const MAX_WALL_TIME_MS = CLOUD_RUNNER_NO_WALL_TIME_MS;
 const MAX_MEMORY_BYTES = 256 * 1024 * 1024 * 1024;
 const MAX_INPUT_BYTES = 16 * 1024 * 1024 * 1024;
 const MAX_OUTPUT_BYTES = 256 * 1024 * 1024;
@@ -131,13 +134,13 @@ export function parseCloudRunnerUsageObservation(value: unknown): CloudRunnerUsa
 		input.reserved_cpu_milliseconds,
 		"reserved CPU milliseconds",
 		1,
-		64 * MAX_WALL_TIME_MS,
+		Number.MAX_SAFE_INTEGER,
 	);
 	const reservedMemoryMibMilliseconds = integer(
 		input.reserved_memory_mib_milliseconds,
 		"reserved memory MiB-milliseconds",
 		1,
-		(MAX_MEMORY_BYTES / (1024 * 1024)) * MAX_WALL_TIME_MS,
+		Number.MAX_SAFE_INTEGER,
 	);
 	if (
 		reservedCpuMilliseconds !== Math.ceil((usage.executionMs * usage.limits.cpuMillis) / 1000) ||

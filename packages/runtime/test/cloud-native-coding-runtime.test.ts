@@ -251,6 +251,49 @@ describe("the coding composition of a native turn", () => {
 		);
 		expect(f.gatewayFactory).toHaveBeenCalledWith(f.binding);
 	});
+	it("records any number of model requests in a coding turn (runtime v92; it was 256)", async () => {
+		const f = fixture();
+		const original = f.call.getMockImplementation()!;
+		f.call.mockImplementation(async (method, args, signal) =>
+			method === "qorpera_record_coding_context_view"
+				? {
+						schema: "qorpera.native-context-view-receipt/v1",
+						viewId: randomUUID(),
+						requestId: (args.p_view as { requestId: string }).requestId,
+						sha256: "c".repeat(64),
+						ordinal: 300,
+					}
+				: original(method, args, signal),
+		);
+		vi.mocked(runCloudNativeRunToolSession).mockImplementation(async (options) => {
+			const run = await CloudNativeToolRun.open(f.binding, f.control, options.signal);
+			try {
+				const adapters = await options.tools(
+					f.authority.identity,
+					new CloudNativeToolOperations(run, f.control),
+					run,
+				);
+				await adapters.recordContextView(
+					{
+						schema: "qorpera.native-result-fence/v1",
+						requestId: "request-300",
+						threadId: "thread",
+						turnId: "turn",
+						purpose: "turn",
+						outputs: [],
+					},
+					[],
+					options.signal,
+				);
+				throw new Error("request 300 recorded");
+			} finally {
+				run.close();
+			}
+		});
+		await expect(f.runtime.execute(f.request, "/private", f.context.signal, f.turn)).rejects.toThrow(
+			"request 300 recorded",
+		);
+	});
 	it("a question ends the turn the same way, with its choices", async () => {
 		const f = fixture();
 		vi.mocked(runCloudNativeRunToolSession).mockImplementation(async (options) => {
