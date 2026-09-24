@@ -11,6 +11,7 @@ import {
 	CLOUD_NATIVE_RESULT_RETENTION_LIMIT,
 	type CloudNativeTool,
 	CloudNativeToolBoundary,
+	CloudToolArgumentRefusal,
 	type CloudToolResult,
 	MAX_CLOUD_TOOL_RESULT_BYTES,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
@@ -120,6 +121,25 @@ describe("cloud-owned native tool boundary", () => {
 		const { result, response } = await call("call_1", value);
 		expect(response.success).toBe(false);
 		expect(result).toMatchObject({ status: "denied", content: { text: "INVALID_ARGUMENTS" } });
+		expect(execute).not.toHaveBeenCalled();
+	});
+
+	it("passes a parser's own refusal wording to the model, and nothing from any other parser error", async () => {
+		const { call, execute } = fixture({
+			parseArguments(value) {
+				if (value && typeof value === "object" && !Array.isArray(value) && value.path === "") {
+					throw new CloudToolArgumentRefusal("path must be 1 to 1024 characters");
+				}
+				throw new Error("PRIVATE_PARSER_DETAIL");
+			},
+		});
+		const refused = await call("call_1", { path: "" });
+		expect(refused.result).toMatchObject({
+			status: "denied",
+			content: { text: "INVALID_ARGUMENTS: path must be 1 to 1024 characters" },
+		});
+		const other = await call("call_2", { path: "a" });
+		expect(other.result).toMatchObject({ status: "denied", content: { text: "INVALID_ARGUMENTS" } });
 		expect(execute).not.toHaveBeenCalled();
 	});
 
