@@ -443,17 +443,25 @@ export class ConversationView {
 		// field changes its padding and can clip a two-line draft.
 		this.#composerShell.classList.toggle("is-expanded", this.#attachments.count > 0);
 		this.#composer.style.height = "auto";
-		// The field's one-line height, tallest height and the expanded shell's padding are design pixels
-		// (ui/scale.ts). scrollHeight is a whole number, so one line at 42 × 1.25 = 52.5 reads 53.
-		const scale = uiScale();
+		// The sizes come from the stylesheet, so they follow the app's scale: one line is the field's
+		// min-height, the tallest draft its max-height. scrollHeight is a whole number, so one line
+		// at 42 × 1.25 = 52.5 reads 53; round the line up before comparing.
+		const field = getComputedStyle(this.#composer);
+		const oneLine = Math.ceil(Number.parseFloat(field.minHeight) || 0);
+		const tallest = Number.parseFloat(field.maxHeight) || Number.POSITIVE_INFINITY;
 		this.#composerShell.classList.toggle(
 			"is-expanded",
-			this.#composer.scrollHeight > Math.ceil(42 * scale) || this.#attachments.count > 0,
+			this.#composer.scrollHeight > oneLine || this.#attachments.count > 0,
 		);
-		this.#composer.style.height = `${Math.min(this.#composer.scrollHeight, 112 * scale)}px`;
-		this.#composer.style.overflowY = this.#composer.scrollHeight > 112 * scale ? "auto" : "hidden";
-		const expanded = this.#composerShell.classList.contains("is-expanded");
-		this.#composerShell.style.height = `${this.#composer.getBoundingClientRect().height + (expanded ? 42 * scale + 2 : 2) + this.#attachments.el.getBoundingClientRect().height}px`;
+		this.#composer.style.height = `${Math.min(this.#composer.scrollHeight, tallest)}px`;
+		this.#composer.style.overflowY = this.#composer.scrollHeight > tallest ? "auto" : "hidden";
+		// The shell is border-box: its height is the field's, the attachments' and its own padding and borders.
+		const shell = getComputedStyle(this.#composerShell);
+		const frame = [shell.paddingTop, shell.paddingBottom, shell.borderTopWidth, shell.borderBottomWidth].reduce(
+			(sum, value) => sum + (Number.parseFloat(value) || 0),
+			0,
+		);
+		this.#composerShell.style.height = `${this.#composer.getBoundingClientRect().height + frame + this.#attachments.el.getBoundingClientRect().height}px`;
 	}
 
 	#setMenu(open: boolean, restoreFocus = true): void {

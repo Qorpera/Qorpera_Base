@@ -1702,3 +1702,58 @@ describe("messages between two agents (contract 14.6)", () => {
 		expect(document.activeElement).toBe(chip);
 	});
 });
+
+describe("the composer at the app's 125% scale", () => {
+	/** The stylesheets as the build draws them at 125% (scripts/design-px.mjs), resolved to plain pixels for jsdom. */
+	function drawAt125(): HTMLStyleElement {
+		const style = document.createElement("style");
+		// jsdom settles a conflict by order, not specificity, so app.css's bare `textarea` rule goes first;
+		// and it cannot split a border shorthand that holds var(), so the shell's widths are spelled out.
+		style.textContent = [
+			tokensCss,
+			appCss,
+			conversationCss,
+			".composer-shell { border-top-width: 1px; border-bottom-width: 1px; }",
+		]
+			.join("\n")
+			.replace(/^@import .*;$/gm, "")
+			.replace(/(?<![\w.#-])(\d+(?:\.\d+)?)px/g, (text, value: string) =>
+				Number(value) < 2 ? text : `${Number(value) * 1.25}px`,
+			);
+		document.head.append(style);
+		return style;
+	}
+	/** Types a draft whose field reports `scrollHeight` as Chrome rounds it, and lays the field out at the height it is given. */
+	function typeDraft(view: ConversationView, scrollHeight: number) {
+		const field = view.el.querySelector<HTMLTextAreaElement>('[aria-label="Message"]')!;
+		Object.defineProperty(field, "scrollHeight", { configurable: true, get: () => scrollHeight });
+		field.getBoundingClientRect = () => ({ height: Number.parseFloat(field.style.height) || 0 }) as DOMRect;
+		field.value = "draft";
+		field.dispatchEvent(new Event("input", { bubbles: true }));
+		const shell = view.el.querySelector<HTMLElement>(".composer-shell")!;
+		return { field, shell, expanded: shell.classList.contains("is-expanded") };
+	}
+
+	it("keeps one line on one row, grows for more and scrolls past the tallest draft", () => {
+		const style = drawAt125();
+		try {
+			const f = setup();
+			// One line is 42 × 1.25 = 52.5 pixels, which Chrome reports as 53. The empty composer once
+			// opened in its two-row shape here, because 53 > 52.5.
+			const one = typeDraft(f.view, 53);
+			expect(one.expanded).toBe(false);
+			expect(one.field.style.height).toBe("53px");
+			expect(one.shell.style.height).toBe("55px");
+			// Two lines: the shell adds its expanded padding (8 + 34, at 125%) and its 1px borders.
+			const two = typeDraft(f.view, 79);
+			expect(two.expanded).toBe(true);
+			expect(two.shell.style.height).toBe("133.5px");
+			// The tallest draft is 112 × 1.25 = 140 pixels; past it the field scrolls.
+			const tall = typeDraft(f.view, 400);
+			expect(tall.field.style.height).toBe("140px");
+			expect(tall.field.style.overflowY).toBe("auto");
+		} finally {
+			style.remove();
+		}
+	});
+});
