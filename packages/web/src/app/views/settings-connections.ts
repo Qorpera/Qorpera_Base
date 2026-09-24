@@ -126,14 +126,14 @@ export class ConnectionsView {
 		return this.#refreshing;
 	}
 	/** `force` is the member's own Refresh: a new observation even while a
-	 * recent one would otherwise answer. */
+	 * recent one would otherwise answer. A Refresh that joins a background read
+	 * makes it forced; it can only join before that read asks for usage, since
+	 * the button is greyed out from the read's first redraw. */
 	#refreshUsage(force = false): Promise<void> {
 		if (this.#lifetime.signal.aborted) return Promise.resolve();
 		if (!this.#client.refreshAccountMetadata) return this.#refresh();
-		if (!this.#metadataRefresh) {
-			this.#metadataForced = force;
-			this.#metadataRefresh = this.#readUsage(force);
-		}
+		this.#metadataForced = (this.#metadataRefresh !== undefined && this.#metadataForced) || force;
+		this.#metadataRefresh ??= this.#readUsage();
 		return this.#metadataRefresh;
 	}
 	/** The member's Refresh reads "Updated" for a moment once the new reading is
@@ -141,11 +141,7 @@ export class ConnectionsView {
 	async #refreshNow(): Promise<void> {
 		clearTimeout(this.#updatedClock);
 		this.#updated = false;
-		// A background read already under way may skip the new observation the
-		// member asked for; ask again once it ends.
-		const joined = this.#metadataRefresh !== undefined && !this.#metadataForced;
 		await this.#refreshUsage(true);
-		if (joined && !this.#lifetime.signal.aborted && !this.#usageError) await this.#refreshUsage(true);
 		if (this.#lifetime.signal.aborted || this.#error || this.#usageError) return;
 		// A second click during the same read ends here too; keep one clock.
 		clearTimeout(this.#updatedClock);
@@ -156,15 +152,18 @@ export class ConnectionsView {
 			if (!this.#lifetime.signal.aborted) this.#draw();
 		}, UPDATED_MS);
 	}
-	async #readUsage(force: boolean): Promise<void> {
+	async #readUsage(): Promise<void> {
 		this.#usageUpdating = true;
 		this.#usageError = undefined;
+		// A read the member did not ask for ends an "Updated" still showing.
+		clearTimeout(this.#updatedClock);
+		this.#updated = false;
 		try {
 			// Show existing account identities while their isolated host refreshes
 			// allowances. No sign-in or model message is started by this read.
 			await this.#refresh();
 			if (this.#lifetime.signal.aborted || !this.#connections?.connections.some(live)) return;
-			await this.#client.refreshAccountMetadata!(this.#lifetime.signal, force);
+			await this.#client.refreshAccountMetadata!(this.#lifetime.signal, this.#metadataForced);
 			if (!this.#lifetime.signal.aborted) await this.#refresh();
 		} catch {
 			if (!this.#lifetime.signal.aborted) this.#usageError = "Usage could not be refreshed. Try again.";

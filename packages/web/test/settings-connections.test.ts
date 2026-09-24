@@ -163,7 +163,7 @@ describe("member model account settings", () => {
 			observed({ ...connected, sponsorBindingId: id(82), sponsorVersion: 1 }),
 		);
 		view.dispose();
-		const refreshAccountMetadata = vi.fn(async () => {});
+		const refreshAccountMetadata = vi.fn(async (_signal?: AbortSignal, _force?: boolean) => {});
 		view = new ConnectionsView({ ...client, refreshAccountMetadata }, lifetime.signal);
 		document.body.append(view.el);
 		await settle();
@@ -176,6 +176,16 @@ describe("member model account settings", () => {
 		expect(refresh().textContent).toBe("Updated");
 		await vi.advanceTimersByTimeAsync(1);
 		expect(refresh().textContent).toBe("Refresh");
+		// A read the member did not ask for ends "Updated" and is not credited to them.
+		refresh().click();
+		await settle();
+		expect(refresh().textContent).toBe("Updated");
+		refreshAccountMetadata.mockRejectedValueOnce(new Error("offline"));
+		window.dispatchEvent(new Event("focus"));
+		await settle();
+		expect(refresh().textContent).toBe("Refresh");
+		expect(view.el.textContent).toContain("Usage could not be refreshed. Try again.");
+		expect(refreshAccountMetadata.mock.calls.at(-1)![1]).toBe(false);
 		refreshAccountMetadata.mockRejectedValueOnce(new Error("offline"));
 		refresh().click();
 		await settle();
@@ -184,7 +194,7 @@ describe("member model account settings", () => {
 		view.dispose();
 		expect(vi.getTimerCount()).toBe(0);
 	});
-	it("asks again for a new observation when Refresh joins a background read", async () => {
+	it("makes a background read ask for a new observation when Refresh joins it", async () => {
 		const { client, lifetime } = await setup(
 			true,
 			observed({ ...connected, sponsorBindingId: id(82), sponsorVersion: 1 }),
@@ -197,9 +207,9 @@ describe("member model account settings", () => {
 		// Returning to the window starts a background read; the button is not greyed out yet.
 		window.dispatchEvent(new Event("focus"));
 		view.el.querySelector<HTMLButtonElement>('[data-focus-key="refresh"]')!.click();
-		await vi.waitFor(() => expect(refreshAccountMetadata).toHaveBeenCalledTimes(3));
+		await vi.waitFor(() => expect(refreshAccountMetadata).toHaveBeenCalledTimes(2));
 		await settle();
-		expect(refreshAccountMetadata.mock.calls.map((call) => call[1])).toEqual([false, false, true]);
+		expect(refreshAccountMetadata.mock.calls.map((call) => call[1])).toEqual([false, true]);
 		expect(view.el.querySelector('[data-focus-key="refresh"]')!.textContent).toBe("Updated");
 	});
 	it("keeps one Updated clock when Refresh is pressed twice during one read", async () => {
