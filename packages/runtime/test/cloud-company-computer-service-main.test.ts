@@ -16,6 +16,11 @@ const mocked = vi.hoisted(() => ({
 	outboxStart: vi.fn(),
 	outboxClose: vi.fn(),
 	retain: vi.fn(),
+	imageCheck: vi.fn(),
+}));
+vi.mock("../src/lxd-guest-image-updates.ts", async (original) => ({
+	...(await original<typeof import("../src/lxd-guest-image-updates.ts")>()),
+	assertGuestImageSelfUpdateMasked: mocked.imageCheck,
 }));
 vi.mock("../src/cloud-company-computer-screen-outbox.ts", () => ({
 	CompanyComputerScreenOutbox: { open: mocked.outboxOpen },
@@ -67,6 +72,7 @@ beforeEach(() => {
 	issued = [];
 	mocked.outboxClose.mockResolvedValue(undefined);
 	mocked.retain.mockResolvedValue(undefined);
+	mocked.imageCheck.mockResolvedValue(undefined);
 	mocked.outboxOpen.mockResolvedValue({ retain: mocked.retain, start: mocked.outboxStart, close: mocked.outboxClose });
 	credentials = {
 		"qorpera-office-registry": Buffer.from("r".repeat(64)),
@@ -91,6 +97,7 @@ afterEach(() => {
 	mocked.outboxStart.mockReset();
 	mocked.outboxClose.mockReset();
 	mocked.retain.mockReset();
+	mocked.imageCheck.mockReset();
 	for (const buffer of issued) expect(buffer.every((byte) => byte === 0)).toBe(true);
 	for (const signal of ["SIGINT", "SIGTERM"] as const)
 		expect(process.listenerCount(signal)).toBe(initialListeners[signal]);
@@ -147,6 +154,28 @@ describe("headless office process lifetime (physical guest mocked)", () => {
 		const failure = await runCompanyComputerServiceMain(environment).catch((error: unknown) => error);
 		expect(failure).toBeInstanceOf(Error);
 		expect(companyComputerFailureDiagnostic(failure).stages).toEqual(["service-drain"]);
+	});
+	it("refuses an image that can update itself before reading any credential", async () => {
+		// Live 2026-09-24 (run d1f454e2): unattended-upgrades restarted guest
+		// services under a run and its inhibitor then refused the VM's stop.
+		mocked.imageCheck.mockRejectedValue(new Error("RUNNER_IMAGE_SELF_UPDATE_ENABLED:APT_DAILY_UPGRADE_TIMER"));
+		const failure = await runCompanyComputerServiceMain(environment).catch((error: unknown) => error);
+		const diagnostic = companyComputerFailureDiagnostic(failure);
+		expect(diagnostic.stages).toEqual(["image"]);
+		expect(diagnostic.codes).toEqual(["RUNNER_IMAGE_SELF_UPDATE_ENABLED:APT_DAILY_UPGRADE_TIMER"]);
+		expect(mocked.imageCheck).toHaveBeenCalledWith();
+		expect(mocked.read).not.toHaveBeenCalled();
+		expect(mocked.outboxOpen).not.toHaveBeenCalled();
+		expect(mocked.start).not.toHaveBeenCalled();
+	});
+	it("checks the image on every start before its credentials", async () => {
+		mocked.start.mockImplementation(async () => {
+			process.emit("SIGTERM");
+			return { finished: Promise.resolve(), close: async () => undefined };
+		});
+		await runCompanyComputerServiceMain(environment);
+		expect(mocked.imageCheck).toHaveBeenCalledOnce();
+		expect(mocked.imageCheck.mock.invocationCallOrder[0]).toBeLessThan(mocked.read.mock.invocationCallOrder[0]!);
 	});
 	it("requires a real systemd invocation identity before physical startup", async () => {
 		await expect(runCompanyComputerServiceMain({ ...environment, INVOCATION_ID: "" })).rejects.toThrow(
