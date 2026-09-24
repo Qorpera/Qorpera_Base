@@ -301,6 +301,11 @@ widths must be a plain condition such as `(max-width: 760px)` (the build stops
 otherwise); `@container` queries with pixel widths stop the build until they are
 needed. Pair two breakpoints on the same number (`max-width: 760px` against
 `min-width: 760px`, or range syntax), never 760/761: scaled, 761 becomes 1065.4
-and leaves a gap. A script compares a measured size with a design constant only
-through `uiScale()`, and rounds up where the browser rounds (`scrollHeight`). `scripts/design-px.test.mjs` checks that no design pixel in the
-stylesheets escapes the scale.
+and leaves a gap. A script that compares a measured size with a design size
+reads that size from the computed style where the stylesheet has it (the
+composer does), and otherwise multiplies its constant by `uiScale()`; either
+way it rounds up where the browser rounds (`scrollHeight`).
+`scripts/design-px.test.mjs` checks that no design pixel in the stylesheets
+escapes the scale. Breakpoints were set for 100%; check the widths where a
+layout switches at the new scale (Settings' smaller rail moved from 1100 to
+1000 design pixels, 1400 on screen, so 13" and 14" laptops keep the large one).

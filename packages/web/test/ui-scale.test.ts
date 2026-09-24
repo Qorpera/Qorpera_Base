@@ -23,6 +23,7 @@ afterEach(() => {
 });
 /** What tokens.css declares for a mouse or trackpad. */
 const drawAt = (scale: number) => {
+	style?.remove();
 	style = h("style", null, `:root { --ui-scale: ${scale}; }`);
 	document.head.append(style);
 };
@@ -39,7 +40,10 @@ describe("the app's scale in scripts", () => {
 		isPhoneLayout();
 		drawAt(1.25);
 		isPhoneLayout();
-		expect(queries).toEqual(["(max-width: 760px)", "(max-width: 950px)"]);
+		// Rounded as the build rounds: 760 × 1.1 is 836.0000000000001 in floating point.
+		drawAt(1.1);
+		isPhoneLayout();
+		expect(queries).toEqual(["(max-width: 760px)", "(max-width: 950px)", "(max-width: 836px)"]);
 	});
 
 	it("keeps rail widths in design pixels: shown scaled, chosen and stored unscaled", () => {

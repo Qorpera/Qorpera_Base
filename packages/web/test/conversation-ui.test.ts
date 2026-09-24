@@ -1749,10 +1749,17 @@ describe("the composer at a scale that makes one line fractional", () => {
 			const two = typeDraft(f.view, 79);
 			expect(two.expanded).toBe(true);
 			expect(two.shell.style.height).toBe("133.5px");
+			// Back to one line: the shell is measured compact again, so it folds back to one row.
+			const again = typeDraft(f.view, 53);
+			expect(again.expanded).toBe(false);
+			expect(again.shell.style.height).toBe("55px");
 			// The tallest draft is 112 × 1.25 = 140 pixels; past it the field scrolls.
 			const tall = typeDraft(f.view, 400);
 			expect(tall.field.style.height).toBe("140px");
 			expect(tall.field.style.overflowY).toBe("auto");
+			// A file keeps the shell expanded, even under one line of text.
+			attach(f.view.el, [new File(["notes"], "notes.txt", { type: "text/plain" })]);
+			expect(typeDraft(f.view, 53).expanded).toBe(true);
 		} finally {
 			style.remove();
 		}

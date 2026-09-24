@@ -257,8 +257,9 @@
 .settings-dialog :focus-visible:not(:where(input, textarea)) { outline: 2px solid #5b84c4; outline-offset: 2px; }
 .settings-dialog [hidden] { display: none; }
 @media (hover: none) { .company-person .person-actions { opacity: 1; } }
-/* Tablets and small laptops keep the earlier rail, so the content keeps its width. */
-@media (max-width: 1100px) {
+/* Narrow windows and tablets keep the earlier rail, so the content keeps its width. 1000 design
+ * pixels is 1400 on a mouse screen at 140%: a 13" or 14" laptop keeps the large rail. */
+@media (max-width: 1000px) {
  .settings-dialog { grid-template-columns: 228px minmax(0, 1fr); }
  .settings-nav { font-size: 13px; }
 }
