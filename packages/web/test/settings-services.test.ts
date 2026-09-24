@@ -1,9 +1,12 @@
 // @vitest-environment jsdom
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { noteConnectorReturn, type ServicesAccess, ServicesView } from "../src/app/views/settings-services.ts";
 import type { Cloud } from "../src/cloud/client.ts";
 import {
 	createWebConnectors,
+	HOSTED_CONNECTORS,
 	type HostedConnectorConnection,
 	takeConnectorReturn,
 	type WebConnectors,
@@ -119,6 +122,24 @@ describe("services", () => {
 			"Use a personal access token instead",
 		]);
 		expect(view?.el.querySelector('input[type="password"]')).toBeNull();
+	});
+
+	it("shows each service's own logo, and the build ships every one", async () => {
+		setup();
+		await settle();
+		const logos = cards().map((card) =>
+			card.querySelector<HTMLImageElement>(".connection-logo")?.getAttribute("src"),
+		);
+		expect(logos).toEqual([
+			"./assets/provider-gmail.svg",
+			"./assets/provider-google-drive.svg",
+			"./assets/provider-github.svg",
+		]);
+		const build = readFileSync(resolve("scripts/build.mjs"), "utf8");
+		for (const { logo } of HOSTED_CONNECTORS) {
+			expect(build).toContain(`"${logo}"`);
+			expect(existsSync(resolve("../shell/userland", logo))).toBe(true);
+		}
 	});
 
 	it("starts a provider sign-in and leaves for the consent page", async () => {
