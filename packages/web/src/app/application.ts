@@ -13,11 +13,12 @@ import { createWebSessionInputWriter } from "../cloud/session-input.ts";
 import { createWebSessionModel } from "../cloud/session-model.ts";
 import { createWebSessionRunControl } from "../cloud/session-run-control.ts";
 import type { HostedProfile } from "../cloud/types.ts";
-import { h, notice, replace, spinner } from "../ui/dom.ts";
+import { button, h, notice, replace } from "../ui/dom.ts";
 import { isPhoneLayout } from "../ui/layout.ts";
 import { personPictures, setPersonPictures } from "../ui/person-pictures.ts";
 import { applyLanguage, watchTheme } from "../ui/preferences.ts";
 import { RailLayout } from "../ui/rail-layout.ts";
+import { blankSkeleton, pageSkeleton, railSkeleton, threadSkeleton } from "../ui/skeleton.ts";
 import { AuthController } from "./auth.ts";
 import { CompanyController } from "./company.ts";
 import { MemberPictures } from "./member-pictures.ts";
@@ -121,6 +122,8 @@ export function mountApplication(
 	let accountUserId: string | undefined;
 	let navigationOpen = false;
 	let navigationFocus: "rail" | "toggle" | undefined;
+	/** Why the app could not start, when reading the cloud session failed. */
+	let startError: HTMLElement | undefined;
 	let unsubscribeFile: (() => void) | undefined;
 	let pendingCompany:
 		| { profileId: string; revision: number; promise: Promise<CompanyController | undefined> }
@@ -405,12 +408,29 @@ export function mountApplication(
 		}
 	}
 
+	/** A company or conversation that is still opening shows the thread's placeholder.
+	 * A redraw keeps the one already shown and only renames what it is waiting for. */
+	function showThreadSkeleton(label: string): void {
+		// On a phone the thread brings its own header, with the rail's button, as an open conversation does.
+		frame.classList.add("has-thread");
+		const shown = main.childElementCount === 1 ? main.firstElementChild : null;
+		if (shown?.classList.contains("thread-skeleton")) {
+			const name = shown.querySelector(".visually-hidden");
+			if (name && name.textContent !== label) name.textContent = label;
+			shown.querySelector(".mobile-navigation-toggle")?.setAttribute("aria-expanded", String(navigationOpen));
+			return;
+		}
+		replace(main, threadSkeleton(label, { open: navigationOpen, toggle: () => setNavigationOpen(!navigationOpen) }));
+	}
+
 	async function draw(): Promise<void> {
 		if (disposed) return;
 		const current = captureRoute();
 		const authState = auth.store.get();
 		if (!authState.ready) {
-			replace(root!, spinner("Connecting to the cloud"));
+			// A start that failed keeps saying so; a redraw (a route change) never blanks it again.
+			if (startError) replace(root!, startError);
+			else replace(root!, blankSkeleton("Connecting to the cloud"));
 			return;
 		}
 		if (!authState.session) {
@@ -462,9 +482,31 @@ export function mountApplication(
 			}
 			return;
 		}
+		if (company?.profile.profileId !== route.profileId) {
+			// Opening a company takes a round trip or two. Meanwhile its rail and page stand
+			// as placeholders, never a blank frame or the page it came from.
+			topbar.classList.remove("topbar-plain");
+			topbar.classList.add("topbar-company");
+			replace(topbar);
+			rail.hidden = route.section === "meet";
+			if (!rail.hidden) replace(rail, ...railSkeleton());
+			if (
+				route.section === "home" ||
+				route.section === "chat" ||
+				route.section === "staff" ||
+				route.section === "new"
+			)
+				showThreadSkeleton("Opening company");
+			else replace(main, h("section", { class: "page" }, pageSkeleton("Opening company")));
+		}
 		const controller = await ensureCompany(route.profileId);
 		if (!current()) return;
 		if (!controller) {
+			// A drawer opened from the placeholder closes with the company it was opening.
+			navigationOpen = false;
+			navigationFocus = undefined;
+			syncNavigation();
+			frame.classList.remove("navigation-open");
 			rail.hidden = true;
 			renderTopbar(topbar, shellContext(authState.user, route), undefined);
 			replace(
@@ -478,12 +520,37 @@ export function mountApplication(
 			);
 			return;
 		}
+		// Agents are Company File documents. Each write re-checks that this
+		// member still holds the authority the company showed when it began.
+		const agents = () => {
+			const team = controller.store.get().team;
+			if (!team?.capabilities.authorize) throw new Error("Only an owner or admin can change agents.");
+			return createWebCompanyAgents(
+				new WebCompanyFiles(cloud, controller.profile, controller.userId, team.role, controller.signal, () => {
+					const now = controller.store.get();
+					if (
+						disposed ||
+						company !== controller ||
+						auth.userId !== controller.userId ||
+						now.accessLost ||
+						!now.team?.capabilities.authorize
+					)
+						throw new Error("Company access changed.");
+				}),
+			);
+		};
+		const agentActions: WorkspaceActions = {
+			createAgent: (_profileId, draft, signal) => agents().create(draft, signal),
+			updateAgent: (agent, draft, signal) => agents().update(agent, draft, signal),
+			deleteAgent: (agent, signal) => agents().delete(agent, signal),
+		};
 		// First run is a moment, not a workspace: the rail stays away until the
 		// Co-Founder has a face.
 		rail.hidden = route.section === "meet" || controller.store.get().accessLost === true;
 		const context = shellContext(authState.user, route);
 		renderTopbar(topbar, context, rail.hidden ? undefined : controller);
-		if (!rail.hidden) renderRail(rail, controller, context);
+		if (!rail.hidden)
+			renderRail(rail, controller, { ...context, agentActions: { ...agentActions, ...workspaceActions } });
 		if (navigationFocus) {
 			const target =
 				navigationFocus === "rail"
@@ -557,29 +624,6 @@ export function mountApplication(
 			newConversation = undefined;
 		}
 		if (route.section !== "meet") meetState = {};
-		// Agents are Company File documents. Each write re-checks that this
-		// member still holds the authority the company showed when it began.
-		const agents = () => {
-			const team = controller.store.get().team;
-			if (!team?.capabilities.authorize) throw new Error("Only an owner or admin can change agents.");
-			return createWebCompanyAgents(
-				new WebCompanyFiles(cloud, controller.profile, controller.userId, team.role, controller.signal, () => {
-					const now = controller.store.get();
-					if (
-						disposed ||
-						company !== controller ||
-						auth.userId !== controller.userId ||
-						now.accessLost ||
-						!now.team?.capabilities.authorize
-					)
-						throw new Error("Company access changed.");
-				}),
-			);
-		};
-		const agentActions: WorkspaceActions = {
-			createAgent: (_profileId, draft, signal) => agents().create(draft, signal),
-			updateAgent: (agent, draft, signal) => agents().update(agent, draft, signal),
-		};
 		switch (route.section) {
 			case "new": {
 				if (!newConversation) {
@@ -636,11 +680,11 @@ export function mountApplication(
 			case "home": {
 				// Home needs organization, membership and sessions, not just staff.
 				if (state.loading) {
-					replace(main, spinner("Opening company"));
+					showThreadSkeleton("Opening company");
 					return;
 				}
 				if (!homeReason) {
-					replace(main, spinner("Opening the Co-Founder"));
+					showThreadSkeleton("Opening the Co-Founder");
 					void resolveHome(controller);
 					return;
 				}
@@ -797,14 +841,14 @@ export function mountApplication(
 			}
 			case "staff": {
 				if (state.loading) {
-					replace(main, spinner("Opening company"));
+					showThreadSkeleton("Opening company");
 					return;
 				}
 				if (routeError) {
 					replace(main, notice("danger", routeError));
 					return;
 				}
-				replace(main, spinner("Opening conversation"));
+				showThreadSkeleton("Opening conversation");
 				void resolveStaff(controller, route.id ?? "");
 				return;
 			}
@@ -815,8 +859,23 @@ export function mountApplication(
 					renderCompanyFile(companyFile, controller, main, {});
 					return;
 				}
-				if (state.loading || !state.team) {
-					replace(main, spinner("Checking Company File access"));
+				if (state.loading) {
+					replace(main, h("section", { class: "page" }, pageSkeleton("Opening Company File")));
+					return;
+				}
+				if (!state.team) {
+					// Company File access follows membership; without it there is nothing to wait for.
+					replace(
+						main,
+						h(
+							"section",
+							{ class: "page" },
+							notice("danger", state.error ?? "Your membership in this company could not be read."),
+							button("Retry company", () => {
+								if (!controller.store.get().loading) void controller.refreshAll();
+							}),
+						),
+					);
 					return;
 				}
 				const authorityKey = JSON.stringify([
@@ -907,9 +966,19 @@ export function mountApplication(
 		}
 	}
 
-	void auth.start().then(() => {
-		render();
-	});
+	void auth.start().then(
+		() => render(),
+		(error) => {
+			if (disposed) return;
+			startError = h(
+				"section",
+				{ class: "page" },
+				notice("danger", `The cloud could not be reached. ${describeError(error)}`),
+				button("Try again", () => location.reload()),
+			);
+			render();
+		},
+	);
 
 	return () => {
 		disposed = true;

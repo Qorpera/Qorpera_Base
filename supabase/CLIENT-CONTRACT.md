@@ -165,6 +165,24 @@ profile RPCs; RLS is the second read boundary.
 - `qorpera_list_profile_staff`
 - `qorpera_put_staff_provider_model`
 
+### Company sidebar (2) — bundle v90
+
+- `qorpera_read_company_sidebar(p_profile_id)` → `qorpera.company-sidebar/v1`:
+  `sections` (`sectionId`, `name`, in order), `placements` (`staffAgentId`,
+  `sectionId` or null for Unassigned, `position`), and the caller's own
+  `pinned` (ordered) and `hidden` agent ids. Any member.
+- `qorpera_manage_company_sidebar(p_profile_id, p_request)` answers the same
+  shape after the change. Shared, owner/admin/contributor:
+  `create_section {sectionId, name, staffAgentId?, unpin?}`,
+  `rename_section {sectionId, name}`, `delete_section {sectionId}` (its agents
+  go to the end of Unassigned), `move_agent {staffAgentId, sectionId|null,
+  order?, unpin?}`. The member's own, any member: `set_pins {order}` (at most
+  24; pinning unhides), `set_hidden {staffAgentId, hidden}` (hiding unpins).
+  Section names are 1-60 characters, unique per company ignoring case; at most
+  40 sections. The Co-Founder is never placed, pinned or hidden. Agents change
+  the same shared sections through the runtime tool `organize_sidebar`
+  (`qorpera_manage_agent_sidebar`, runner only).
+
 
 ### Conversations, turns, wakes (28)
 
@@ -271,6 +289,14 @@ profile RPCs; RLS is the second read boundary.
   (sub-channels seen in the shell: `sessions`, `staff`, `trail`,
   `company-tree`, `company-projection`, `workspace-inbox`). Hints only: the
   client re-reads through RPCs; large bodies never travel on this channel.
+- `postgres_changes` on `qorpera_company_sidebar_revisions` (filter
+  `profile_id=eq.{profileId}`, member-readable, one row per company) — the
+  shared sidebar changed, by a member or an agent: one hint per change however
+  many agents it renumbered; re-read with `qorpera_read_company_sidebar`. The
+  section and placement tables themselves are not readable or published. The web
+  subscribes on its own channel, only after the read RPC answered, so a cloud
+  without the table never degrades the company channel. Pins and hidden agents
+  are not published.
 - `qorpera-presence-{profileId}` — lossy presence (typing, who-is-viewing).
   Private channel authorized by membership through RLS on
   `realtime.messages`; never stored; must never carry durable content.

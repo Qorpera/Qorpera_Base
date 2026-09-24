@@ -2119,6 +2119,27 @@ gate before Order 5 is closed; coding, media and listener workers remain in
 Orders 9, 7 and 8. See
 [Runtime Step 5 workers and todos](deploy/first-node/RUNTIME-STEP-5-WORKERS-TODOS.md).
 
+### 2026-09-24 amendment: sidebar sections are the company's, and agents organize them
+
+Founder decision, 2026-09-24 (Grok Bot's rail). Extends 14.1 and the
+2026-09-19/20 amendment, item 4.
+
+1. **Sections are company structure.** The rail groups agents under named
+   sections. Sections and which agent sits in which, in what order, belong to
+   the company: every member sees the same sections, and owners, admins and
+   contributors create, rename and delete them and move agents between them.
+   The Co-Founder stands above all sections and is never placed.
+2. **Agents organize themselves.** Any active company agent may list, create,
+   rename and delete sections and move itself or a coworker between them
+   through its run authority (`organize_sidebar`), with no member approval, so
+   agents can keep the team findable as it grows. Worker runs do not. The
+   change is attributed to the agent and reaches open rails at once.
+3. **Pins and hiding are a member's own.** A member's pinned agents (square
+   cards under the Co-Founder card) and the agents a member hides from their
+   rail are that member's view only. No agent and no other member changes them.
+4. **Arrangement is not authority.** A section grants nothing and carries no
+   content; deleting one moves its agents to Unassigned.
+
 ## 20. Enforcement matrix
 
 | Requirement | Code owner | Model law |

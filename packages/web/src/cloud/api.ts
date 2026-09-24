@@ -46,6 +46,7 @@ import {
 	parseTeam,
 	UUID_PATTERN,
 } from "./parse.ts";
+import { type CompanySidebar, parseCompanySidebar, type SidebarRequest } from "./sidebar.ts";
 import type {
 	CreatedCompanyResult,
 	HostedAccountEntitlement,
@@ -268,6 +269,22 @@ export class CloudApi {
 		return this.cloud
 			.rpc("qorpera_company_organization_json", { p_profile_id: requiredUuid(profileId, "Profile id") })
 			.then(parseHostedCompanyOrganization);
+	}
+
+	/** Sections are the company's; pins and hidden agents are the signed-in member's. */
+	readCompanySidebar(profileId: string): Promise<CompanySidebar> {
+		return this.cloud
+			.rpc("qorpera_read_company_sidebar", { p_profile_id: requiredUuid(profileId, "Profile id") })
+			.then(parseCompanySidebar);
+	}
+
+	manageCompanySidebar(profileId: string, request: SidebarRequest): Promise<CompanySidebar> {
+		return this.cloud
+			.rpc("qorpera_manage_company_sidebar", {
+				p_profile_id: requiredUuid(profileId, "Profile id"),
+				p_request: request,
+			})
+			.then(parseCompanySidebar);
 	}
 
 	listStaffActivity(environmentId: string): Promise<HostedStaffExecutionActivity[]> {
