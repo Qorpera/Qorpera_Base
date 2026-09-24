@@ -28,8 +28,11 @@ begin
   (v_ticket->>'ticketId')::uuid,v_cap,v_envelope,v_sha);
  execute 'reset session authorization';
  perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
- v_grant:=public.qorpera_grant_cloud_secret_operation(v_run.profile_id,v_run.environment_id,
-  (v_descriptor->>'secretId')::uuid,v_run.staff_agent_id,'review_three','probe',1);
+ -- Bundle v88: sealing a company connection already granted it to every agent.
+ select jsonb_build_object('grantId',grant_row.id) into strict v_grant
+ from public.qorpera_cloud_secret_operation_grants grant_row
+ where grant_row.secret_id=(v_descriptor->>'secretId')::uuid and grant_row.staff_agent_id=v_run.staff_agent_id
+  and grant_row.status='active';
  perform pg_temp.path_claims('service_role');
  perform public.qorpera_assert_native_connector_operation(b,(v_grant->>'grantId')::uuid,
   'review_three','probe',1,repeat('b',64),'https://review-effect.example.test');
@@ -80,9 +83,18 @@ do $$ declare v_role text; begin
   perform pg_temp.wake_assert(not has_function_privilege(v_role,'public.qorpera_runtime_wake_policy_internal(uuid)','execute'),
    'Policy helper is not directly callable by an API role');
  end loop;
- perform pg_temp.wake_assert((select count(*)=3 from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+ -- Exact signatures (as 306): capture description, both capture completions
+ -- (Step 7 label), operation authorization, and the coding repository
+ -- credential (bundle v88).
+ perform pg_temp.wake_assert((select array_agg(p.oid::regprocedure::text order by p.oid::regprocedure::text collate "C")
+  from pg_proc p join pg_namespace n on n.oid=p.pronamespace
   where n.nspname='public' and p.proname like 'qorpera_%'
-  and has_function_privilege('qorpera_secret_broker',p.oid,'execute')),'Broker still has exactly three custody RPCs');
+  and has_function_privilege('qorpera_secret_broker',p.oid,'execute')) is not distinct from array[
+  'qorpera_authorize_cloud_secret_operation(uuid,text,jsonb,uuid,text,text,uuid,text,text,bigint,text,text)',
+  'qorpera_authorize_coding_repository_credential(uuid,text,uuid,uuid,text,jsonb)',
+  'qorpera_complete_cloud_secret_capture(uuid,text,uuid,text,text,text)',
+  'qorpera_complete_cloud_secret_capture(uuid,text,uuid,text,text,text,text)',
+  'qorpera_describe_cloud_secret_capture(uuid,text,uuid,text)']::text[],'Broker still has exactly its fixed custody RPCs');
  perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
  perform pg_temp.wake_error(format('select public.qorpera_runtime_wake_policy(%L)',
   current_setting('qorpera_test.wake_binding')::jsonb->>'runId'),'42501','Wake policy authority is required');
