@@ -285,8 +285,9 @@ async function lockedInstall(input: ReturnType<typeof parseOfficeSoftwareControl
 		const files: Record<string, Buffer> = {};
 		for (const entry of companyComputerServiceSoftwareChangedFiles(statement))
 			files[entry.file] = await readServiceCandidate(`${root}/software-file-${entry.sha256}`, entry.bytes);
-		// After every local check, before the challenge window: the image stops
-		// updating itself before any service lands (see the helper).
+		// After every local check and before this tool's own challenge check (the
+		// provider's 5 s install challenge is already running; the helper keeps
+		// its work small): the image stops updating itself before any service lands.
 		await maskOfficeSelfUpdateUnits();
 		const manager = createCompanyComputerServiceStopSystemdManager();
 		const verifyLocal = async (checked: AbortSignal) => {
