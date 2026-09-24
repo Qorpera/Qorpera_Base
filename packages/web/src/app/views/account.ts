@@ -105,22 +105,6 @@ export function renderAccount(
 				),
 				h("p", { class: "settings-help" }, uiText("Some screens are still shown in English.")),
 			),
-			h(
-				"section",
-				{ class: "settings-group" },
-				h("h2", null, uiText("Companies")),
-				h(
-					"a",
-					{ class: "settings-card settings-link", href: "#/" },
-					h(
-						"span",
-						{ class: "settings-copy" },
-						h("strong", null, uiText("All companies")),
-						h("small", null, uiText("Open or create a company")),
-					),
-					h("span", { "aria-hidden": "true" }, "›"),
-				),
-			),
 		),
 	);
 }
