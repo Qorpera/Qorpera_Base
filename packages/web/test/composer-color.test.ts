@@ -168,3 +168,18 @@ describe("composer color preference", () => {
 		expect(document.documentElement.dataset.composerColor).toBe("blue");
 	});
 });
+
+describe("General settings", () => {
+	it("ends with Companies and offers no cloud endpoint override", () => {
+		const view = account();
+		expect([...view.container.querySelectorAll("h2")].map((heading) => heading.textContent)).toEqual([
+			"Account",
+			"Appearance",
+			"Language & region",
+			"Companies",
+		]);
+		expect(view.container.querySelector("details")).toBeNull();
+		expect(view.container.querySelector('input[type="url"], input[type="text"]')).toBeNull();
+		expect(view.container.textContent).not.toContain("Cloud endpoint");
+	});
+});
