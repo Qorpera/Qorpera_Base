@@ -56,7 +56,7 @@ const CONFIRMATION = "c".repeat(43);
 
 type ServicesClientMock = Pick<
 	WebConnectors,
-	"list" | "beginSignIn" | "finishSignIn" | "captureToken" | "grantAllAgents" | "stopSharing" | "disconnect"
+	"list" | "beginSignIn" | "finishSignIn" | "captureToken" | "grantAllAgents" | "disconnect"
 >;
 
 const admin: ServicesAccess = {
@@ -75,10 +75,6 @@ function setup(
 		list: vi.fn(async () => structuredClone(state.connections)),
 		beginSignIn: vi.fn(async () => "https://accounts.google.com/o/oauth2/v2/auth?state=abc"),
 		finishSignIn: vi.fn(async () => "octocat"),
-		stopSharing: vi.fn(async (secretId: string) => {
-			for (const item of state.connections)
-				if (item.secretId === secretId) Object.assign(item, { availableToAllAgents: false, activeGrantCount: 0 });
-		}),
 		captureToken: vi.fn(async () => {
 			state.connections.push({
 				...gmail,
@@ -116,11 +112,7 @@ describe("services", () => {
 		// The member who connected it is attribution only.
 		expect(gmailCard.textContent).toContain("Connected as anna@example.com by Anna Owner");
 		expect(gmailCard.textContent).toContain("Available to every agent in the company");
-		expect(buttons(gmailCard).map((button) => button.textContent)).toEqual([
-			"Stop sharing with agents",
-			"Reconnect",
-			"Disconnect",
-		]);
+		expect(buttons(gmailCard).map((button) => button.textContent)).toEqual(["Disconnect"]);
 		expect(buttons(driveCard).map((button) => button.textContent)).toEqual(["Connect"]);
 		expect(buttons(githubCard).map((button) => button.textContent)).toEqual([
 			"Connect",
@@ -136,16 +128,6 @@ describe("services", () => {
 		await settle();
 		expect(client.beginSignIn).toHaveBeenCalledWith("google_drive", undefined, expect.any(AbortSignal));
 		expect(navigate).toHaveBeenCalledWith("https://accounts.google.com/o/oauth2/v2/auth?state=abc");
-	});
-
-	it("reconnecting rotates the existing connection instead of creating a second one", async () => {
-		const { client } = setup([gmail]);
-		await settle();
-		buttons(card(0))
-			.find((button) => button.textContent === "Reconnect")!
-			.click();
-		await settle();
-		expect(client.beginSignIn).toHaveBeenCalledWith("gmail", gmail.secretId, expect.any(AbortSignal));
 	});
 
 	it("finishes a sign-in this tab started, then shares the fresh connection with all agents", async () => {
@@ -219,34 +201,46 @@ describe("services", () => {
 		expect(client.grantAllAgents).not.toHaveBeenCalled();
 	});
 
-	it("shows a share whose grants died with their issuer as not shared and offers Share again", async () => {
-		// Marked for all agents, but the list counts no live grant: the admin who
-		// shared it left, so the agents hold no tool.
-		const { client } = setup([{ ...gmail, availableToAllAgents: true, activeGrantCount: 0 }]);
+	it("shows a connected company service as available to every agent with Disconnect as its only action", async () => {
+		// Always shared, no toggle: a legacy row not marked for all agents, and a
+		// share whose grants died with their issuer, read the same as a live one.
+		// Viewing the page issues no grant; the backend repairs those rows.
+		const { client } = setup([
+			gmail,
+			{ ...gmail, secretId: id(94), connectorId: "google_drive", availableToAllAgents: false, activeGrantCount: 0 },
+			{ ...gmail, secretId: id(95), connectorId: "github", availableToAllAgents: true, activeGrantCount: 0 },
+		]);
 		await settle();
-		expect(card(0).textContent).toContain("Not yet available to the company's agents.");
-		const share = buttons(card(0)).find((button) => button.textContent === "Share with all agents");
-		expect(share).toBeDefined();
-		share!.click();
-		await settle();
-		expect(client.grantAllAgents).toHaveBeenCalledWith(gmail.secretId, expect.any(AbortSignal));
-		expect(card(0).textContent).toContain("Available to every agent in the company");
+		for (const item of cards()) {
+			expect(buttons(item).map((button) => button.textContent)).toEqual(["Disconnect"]);
+			expect(item.textContent).toContain("Available to every agent in the company, including new hires.");
+			expect(item.textContent).not.toContain("Not yet available");
+		}
+		expect(client.grantAllAgents).not.toHaveBeenCalled();
 	});
 
-	it("stops sharing a company connection with the agents", async () => {
-		const { client } = setup([gmail]);
+	it("says how to retry when a fresh connection could not be given to the agents", async () => {
+		startedHere("github");
+		history.replaceState(null, "", `#/?connector=github&connection=confirm&confirmation=${CONFIRMATION}`);
+		noteConnectorReturn(takeConnectorReturn());
+		const fresh = {
+			...gmail,
+			secretId: id(93),
+			connectorId: "github",
+			availableToAllAgents: false,
+			activeGrantCount: 0,
+		};
+		const { client } = setup([fresh], undefined, admin, (mock) =>
+			vi.mocked(mock.grantAllAgents).mockRejectedValue(new Error("offline")),
+		);
 		await settle();
-		const stop = buttons(card(0)).find((button) => button.textContent === "Stop sharing with agents");
-		expect(stop).toBeDefined();
-		stop!.click();
-		await settle();
-		expect(client.stopSharing).toHaveBeenCalledWith(gmail.secretId, expect.any(AbortSignal));
-		expect(card(0).textContent).toContain("Not yet available to the company's agents.");
-		expect(buttons(card(0)).map((button) => button.textContent)).toEqual([
-			"Share with all agents",
-			"Reconnect",
-			"Disconnect",
-		]);
+		expect(client.grantAllAgents).toHaveBeenCalledWith(id(93), expect.any(AbortSignal));
+		const githubCard = card(2);
+		expect(githubCard.querySelector(".service-outcome.is-error")?.textContent).toBe(
+			"The account is connected, but the company's agents could not get it yet. Disconnect it and connect it again.",
+		);
+		expect(githubCard.textContent).not.toContain("can use it from their next run");
+		expect(buttons(githubCard).map((button) => button.textContent)).toEqual(["Disconnect"]);
 	});
 
 	it("explains a declined sign-in and does not touch grants", async () => {
@@ -308,28 +302,7 @@ describe("services", () => {
 		// The role arrives (or changes) after the page: it redraws with the actions.
 		role.manage = true;
 		view?.update();
-		expect(buttons(card(0)).map((button) => button.textContent)).toEqual([
-			"Stop sharing with agents",
-			"Reconnect",
-			"Disconnect",
-		]);
-	});
-
-	it("offers to share a company connection that is not yet available to every agent", async () => {
-		const { client } = setup([{ ...gmail, availableToAllAgents: false, activeGrantCount: 0 }]);
-		await settle();
-		expect(card(0).textContent).toContain("Not yet available to the company's agents.");
-		const share = buttons(card(0)).find((button) => button.textContent === "Share with all agents");
-		expect(share).toBeDefined();
-		share!.click();
-		await settle();
-		expect(client.grantAllAgents).toHaveBeenCalledWith(gmail.secretId, expect.any(AbortSignal));
-		expect(card(0).textContent).toContain("Available to every agent in the company");
-		expect(buttons(card(0)).map((button) => button.textContent)).toEqual([
-			"Stop sharing with agents",
-			"Reconnect",
-			"Disconnect",
-		]);
+		expect(buttons(card(0)).map((button) => button.textContent)).toEqual(["Disconnect"]);
 	});
 
 	it("never shows a member's own secret as the company's connection", async () => {
