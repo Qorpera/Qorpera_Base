@@ -778,7 +778,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			throw new Error("CODING_HOST_TURN_NOT_PREPARED");
 		return ready;
 	}
-	#transfer(ready: Prepared): LxdCodingGitTransfer {
+	/** The seed runs inside prepareWorkspace, before the turn counts as
+	 * prepared (the executor detaches only after that settles); an export runs
+	 * only while the turn is still prepared. */
+	#transfer(ready: Prepared, seeding = false): LxdCodingGitTransfer {
 		return new LxdCodingGitTransfer({
 			machine: ready.machine,
 			storage: this.#placement,
@@ -790,7 +793,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			client: this.#options.client,
 			authorize: async (_action, scope, _transfer, _digest, signal) => {
 				if (!isDeepStrictEqual(scope, ready.scope)) throw new Error("CODING_HOST_TRANSFER_SCOPE_CHANGED");
-				this.#current(ready);
+				if (!seeding) this.#current(ready);
 				await this.#run(ready.claim, ready.machine, ready.storage, signal);
 			},
 		});
@@ -883,7 +886,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					runGit: this.#options.runGit,
 				},
 			);
-			await this.#transfer(ready).seed(codingHostId("seed", claim.workerId), baseSha, seed.bundle, signal);
+			await this.#transfer(ready, true).seed(codingHostId("seed", claim.workerId), baseSha, seed.bundle, signal);
 			await publish(
 				root,
 				seededName,

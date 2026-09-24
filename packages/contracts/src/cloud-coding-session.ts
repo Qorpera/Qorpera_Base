@@ -26,7 +26,7 @@ export interface CloudCodingSessionLayout {
 	readonly unitPrefix: string;
 }
 
-export const CLOUD_CODING_GUEST_ROOTS = Object.freeze({
+export const CLOUD_CODING_GUEST_ROOTS = /* @__PURE__ */ Object.freeze({
 	data: "/workspace",
 	custody: "/var/lib/qorpera-coding",
 	runtime: "/run/qorpera-coding",

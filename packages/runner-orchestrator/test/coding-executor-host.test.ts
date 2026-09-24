@@ -61,10 +61,25 @@ vi.mock("../src/coding-git-seed.ts", () => ({
 	resolveCloudCodingBase: mocked.resolveBase,
 	fetchCloudCodingSeed: mocked.seedFetch,
 }));
+interface TransferOptions {
+	scope: unknown;
+	authorize(action: string, scope: unknown, transfer: string, digest: string, signal: AbortSignal): Promise<void>;
+}
+// As the real transfer does, each step asks the host's authority first.
 vi.mock("../src/coding-git-transfer.ts", () => ({
 	LxdCodingGitTransfer: class {
-		seed = mocked.seedTransfer;
-		export = mocked.exportTransfer;
+		readonly options: TransferOptions;
+		constructor(options: TransferOptions) {
+			this.options = options;
+		}
+		async seed(transferId: string, headSha: string, bundle: Buffer, signal: AbortSignal) {
+			await this.options.authorize("seed", this.options.scope, transferId, "a".repeat(64), signal);
+			return mocked.seedTransfer(transferId, headSha, bundle, signal);
+		}
+		async export(transferId: string, headSha: string, signal: AbortSignal) {
+			await this.options.authorize("export", this.options.scope, transferId, "a".repeat(64), signal);
+			return mocked.exportTransfer(transferId, headSha, signal);
+		}
 	},
 }));
 vi.mock("../src/coding-git.ts", () => ({ pushCloudCodingBundle: mocked.push }));
@@ -1503,6 +1518,10 @@ describe("housekeeping of a member's machines", () => {
 		const second = f.another(),
 			impatient = new AbortController();
 		const waiting = f.host.prepareWorkspace(second, f.turnOf(second), impatient.signal);
+		// The second caller has planned and is queued behind the first one's step.
+		await vi.waitFor(() =>
+			expect(f.calls("qorpera_plan_coding_machine").some((args) => args.p_worker_id === second.workerId)).toBe(true),
+		);
 		await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
 		impatient.abort(new Error("CODING_EXECUTOR_SHUTDOWN"));
 		await expect(waiting).rejects.toThrow("CODING_EXECUTOR_SHUTDOWN");

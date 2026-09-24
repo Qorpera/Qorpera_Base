@@ -412,8 +412,9 @@ export async function runCodingGuestCommand(
 				"--property=CapabilityBoundingSet=",
 				"--property=AmbientCapabilities=",
 				"--property=RestrictNamespaces=yes",
-				// Sessions share the machine's network (loopback included); System V
-				// and POSIX IPC stay the session's own.
+				// Each command gets its own System V IPC and POSIX message queues.
+				// Sessions still share the machine's network (loopback included)
+				// and /dev/shm, which uid and file mode guard.
 				"--property=PrivateIPC=yes",
 				// Only this session under the machine's guest roots, also against
 				// sessions attached while the command runs.
