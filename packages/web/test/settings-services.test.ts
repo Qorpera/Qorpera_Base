@@ -134,7 +134,7 @@ describe("services", () => {
 		);
 		expect(logos).toEqual([
 			"./assets/provider-gmail.svg",
-			"./assets/provider-google-drive.svg",
+			"./assets/provider-drive.svg",
 			"./assets/provider-github.svg",
 		]);
 		const build = readFileSync(join(here, "../scripts/build.mjs"), "utf8");
