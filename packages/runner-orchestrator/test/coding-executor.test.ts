@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	CLEANUP_STOP_BUDGET_MS,
 	CloudCodingExecutor,
 	type CodingExecutorControl,
 	type CodingExecutorHost,
@@ -10,7 +12,7 @@ import {
 	parseCodingSessionClaim,
 	parseCodingTurnState,
 } from "../src/coding-executor.ts";
-import { codingHostId } from "../src/coding-executor-host.ts";
+import { CODING_VM_STOP_BUDGET_MS, codingHostId } from "../src/coding-executor-host.ts";
 
 const repository = { host: "github.com" as const, owner: "Qorpera", name: "app", baseBranch: "main" };
 const headSha = "b".repeat(40);
@@ -281,12 +283,72 @@ describe("the coding executor over a session turn", () => {
 				return w.control.call(method, args, signal);
 			},
 		};
-		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 50 });
+		const report = vi.fn();
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 50, report });
 		const run = executor.runOnce(new AbortController().signal);
 		await vi.advanceTimersByTimeAsync(16000);
 		expect(await run).toBe("recovery-required");
 		expect(w.host.stopWorkspace).toHaveBeenCalled();
 		expect(w.world.calls.some((c) => c.method === "qorpera_complete_coding_turn")).toBe(false);
+		// The log names the cause, not whichever await the abort interrupted.
+		expect(report.mock.calls.map(([stage, error]) => [stage, (error as Error).message])).toEqual([
+			["turn", "CODING_EXECUTOR_LEASE_LOST"],
+		]);
+	});
+
+	it("a shutdown mid-turn is reported as the shutdown and still stops the VM", async () => {
+		const w = world();
+		const parent = new AbortController();
+		const control: CodingExecutorControl = {
+			call: (method, args, signal) => {
+				if (method === "qorpera_begin_coding_turn")
+					globalThis.setTimeout(() => parent.abort(new Error("CODING_EXECUTOR_SHUTDOWN")), 10);
+				return w.control.call(method, args, signal);
+			},
+		};
+		const report = vi.fn();
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 50, report });
+		const run = executor.runOnce(parent.signal);
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(await run).toBe("recovery-required");
+		expect(w.host.stopWorkspace).toHaveBeenCalledTimes(1);
+		expect(report.mock.calls.map(([stage, error]) => [stage, (error as Error).message])).toEqual([
+			["turn", "CODING_EXECUTOR_SHUTDOWN"],
+		]);
+	});
+
+	it("the executor unit outlives the cleanup stop it runs on SIGTERM", async () => {
+		const unit = await readFile(
+			new URL("../../../deploy/coding-worker/qorpera-coding-executor.service", import.meta.url),
+			"utf8",
+		);
+		const timeouts = [...unit.matchAll(/^TimeoutStopSec=(\d+)s$/gm)];
+		expect(timeouts).toHaveLength(1);
+		expect(CLEANUP_STOP_BUDGET_MS).toBeGreaterThan(CODING_VM_STOP_BUDGET_MS);
+		// A kill between a stop's dispatch and acceptance leaves it recovery-required.
+		expect(Number(timeouts[0][1]) * 1000).toBeGreaterThanOrEqual(CLEANUP_STOP_BUDGET_MS + 20_000);
+	});
+
+	it("a reporter that throws never changes the outcome or skips the stop", async () => {
+		const w = world();
+		vi.mocked(w.host.prepareWorkspace).mockRejectedValueOnce(new Error("CODING_HOST_GUEST_NOT_READY"));
+		vi.mocked(w.host.stopWorkspace).mockRejectedValueOnce(new Error("CODING_HOST_VM_RECOVERY_REQUIRED"));
+		const report = vi.fn((_stage: "turn" | "stop", _error: unknown) => {
+			throw new Error("log sink down");
+		});
+		const executor = new CloudCodingExecutor({
+			control: w.control,
+			host: w.host,
+			owner: "exec-test",
+			turnPollMs: 1,
+			report,
+		});
+		expect(await executor.runOnce(new AbortController().signal)).toBe("recovery-required");
+		expect(w.host.stopWorkspace).toHaveBeenCalledTimes(1);
+		expect(report.mock.calls.map(([stage, error]) => [stage, (error as Error).message])).toEqual([
+			["turn", "CODING_HOST_GUEST_NOT_READY"],
+			["stop", "CODING_HOST_VM_RECOVERY_REQUIRED"],
+		]);
 	});
 
 	it("parses the kernel's claim and turn state strictly", () => {

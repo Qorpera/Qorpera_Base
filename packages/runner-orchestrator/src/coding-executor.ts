@@ -8,6 +8,10 @@ import {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA40 = /^[0-9a-f]{40}$/;
+/** Failure-path cleanup: the cleanup lookup (normally well under a second)
+ * plus the concrete host's 30 s physical stop budget (CODING_VM_STOP_BUDGET_MS).
+ * The executor unit's TimeoutStopSec must stay well above it. */
+export const CLEANUP_STOP_BUDGET_MS = 45_000;
 export const CODING_EXECUTOR_RPCS = [
 	"qorpera_claim_coding_session",
 	"qorpera_heartbeat_coding_session",
@@ -244,18 +248,31 @@ export class CloudCodingExecutor {
 	readonly #host: CodingExecutorHost;
 	readonly #owner: string;
 	readonly #turnPollMs: number;
+	readonly #report: ((stage: "turn" | "stop", error: unknown) => void) | undefined;
 	#active = false;
 	constructor(options: {
 		control: CodingExecutorControl;
 		host: CodingExecutorHost;
 		owner: string;
 		turnPollMs?: number;
+		/** Observability only: which stage failed and with what error, before
+		 * recovery. Never decides anything; the kernel receipts do. */
+		report?: (stage: "turn" | "stop", error: unknown) => void;
 	}) {
 		if (!/^[A-Za-z0-9_.:-]{1,120}$/.test(options.owner)) throw new Error("Invalid coding executor owner");
 		this.#control = options.control;
 		this.#host = options.host;
 		this.#owner = options.owner;
 		this.#turnPollMs = options.turnPollMs ?? 2000;
+		this.#report = options.report;
+	}
+	/** Observability must never change the outcome: a throwing reporter is ignored. */
+	#reported(stage: "turn" | "stop", error: unknown): void {
+		try {
+			this.#report?.(stage, error);
+		} catch {
+			/* ignored */
+		}
 	}
 	async runOnce(signal: AbortSignal): Promise<"idle" | "completed" | "blocked" | "failed" | "recovery-required"> {
 		if (this.#active) throw new Error("Coding executor already active");
@@ -273,7 +290,8 @@ export class CloudCodingExecutor {
 			if (!Number.isFinite(milliseconds) || milliseconds < 1 || milliseconds > 305000)
 				throw new Error("Invalid coding lease deadline");
 			clearTimeout(watchdog);
-			watchdog = globalThis.setTimeout(() => stop.abort(), milliseconds);
+			// Coded reasons: whatever the abort interrupts reports why (errorCode).
+			watchdog = globalThis.setTimeout(() => stop.abort(new Error("CODING_EXECUTOR_LEASE_EXPIRED")), milliseconds);
 		};
 		const call = (method: (typeof CODING_EXECUTOR_RPCS)[number], args: Record<string, unknown>, checked = active) =>
 			this.#control.call(method, args, AbortSignal.any([checked, AbortSignal.timeout(10000)]));
@@ -306,7 +324,7 @@ export class CloudCodingExecutor {
 						if (workspaceReady) await refresh();
 					}
 				} catch {
-					if (!heartbeatStop.signal.aborted) stop.abort();
+					if (!heartbeatStop.signal.aborted) stop.abort(new Error("CODING_EXECUTOR_LEASE_LOST"));
 				}
 			})();
 			const describe = async () => parseCodingTurnState(await call("qorpera_describe_coding_turn", args), claimed);
@@ -405,16 +423,22 @@ export class CloudCodingExecutor {
 			await complete("failed", reason);
 			return "failed";
 		} catch (error) {
+			// A lost or expired lease, or shutdown, is the cause, whatever await
+			// it interrupted.
+			const cause = active.aborted ? active.reason : error;
 			workspaceReady = false;
 			stop.abort();
 			await leaseRefresh.catch(() => undefined);
 			if (!claim) throw error;
+			this.#reported("turn", cause);
 			// A separate cleanup custody must permit physical stop after work
 			// authority disappears. Never claim capacity released or completion.
+			// The budget covers the cleanup lookup plus the host's own stop budget.
 			try {
-				await this.#host.stopWorkspace(claim, AbortSignal.timeout(30000));
-			} catch {
+				await this.#host.stopWorkspace(claim, AbortSignal.timeout(CLEANUP_STOP_BUDGET_MS));
+			} catch (stopError) {
 				/* recovery still required */
+				this.#reported("stop", stopError);
 			}
 			return "recovery-required";
 		} finally {
