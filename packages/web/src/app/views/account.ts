@@ -15,8 +15,8 @@ import {
 	setLanguagePreference,
 	setTimeZonePreference,
 	systemTimeZone,
+	t,
 	timeZonePreference,
-	uiString,
 	uiText,
 } from "../../ui/preferences.ts";
 import { timeZoneCity, timeZoneEntries } from "../../ui/time-zones.ts";
@@ -32,11 +32,11 @@ const LANGUAGES = [
 function languageOptions(): PickerOption[] {
 	const locale = presentationLocale();
 	return [
-		{ value: "system", label: uiString("Follow system") },
+		{ value: "system", label: t("Follow system") },
 		...LANGUAGES.map((language) => ({
 			value: language.value,
 			label: language.label,
-			detail: uiString(language.english),
+			detail: t(language.english),
 			keywords: `${language.english} ${language.keywords}`,
 		})).sort((a, b) => a.detail.localeCompare(b.detail, locale)),
 	];
@@ -46,7 +46,7 @@ function timeZoneOptions(): PickerOption[] {
 	const system = systemTimeZone();
 	const chosen = timeZonePreference();
 	return [
-		{ value: "system", label: uiString("Follow system"), detail: timeZoneCity(system), keywords: system },
+		{ value: "system", label: t("Follow system"), detail: timeZoneCity(system), keywords: system },
 		...timeZoneEntries(presentationLocale(), chosen === "system" ? [system] : [system, chosen]).map((zone) => ({
 			value: zone.id,
 			label: zone.city,

@@ -15,7 +15,7 @@ import { createWebSessionRunControl } from "../cloud/session-run-control.ts";
 import type { HostedProfile } from "../cloud/types.ts";
 import { h, notice, replace, spinner } from "../ui/dom.ts";
 import { isPhoneLayout } from "../ui/layout.ts";
-import { applyLanguage, watchTheme } from "../ui/preferences.ts";
+import { applyLanguage, presentationLocale, watchTheme } from "../ui/preferences.ts";
 import { RailLayout } from "../ui/rail-layout.ts";
 import { AuthController } from "./auth.ts";
 import { CompanyController } from "./company.ts";
@@ -48,6 +48,9 @@ import type { WorkspaceActions } from "./workspace-actions.ts";
  * at a time. The route decides the view; every view renders from cloud state
  * and re-renders on store changes. */
 
+/** Settings reopens on this tab after a language change reloads the page. */
+const REOPEN_SETTINGS_KEY = "qorpera.web.reopen-settings";
+
 export function mountApplication(
 	root: HTMLElement,
 	cloud: Cloud,
@@ -71,8 +74,22 @@ export function mountApplication(
 	const frame = h("div", { class: "frame" }, topbar, h("div", { class: "body" }, backdrop, rail, main));
 	const railLayout = new RailLayout(frame, rail);
 	rail.after(railLayout.el);
+	// Interface text is read when it is drawn, so a new language redraws the
+	// app by reloading the page; Settings reopens where the choice was made.
+	const shownLocale = presentationLocale();
+	const onLanguage = () => {
+		applyLanguage();
+		if (presentationLocale() === shownLocale) return;
+		try {
+			if (settings) sessionStorage.setItem(REOPEN_SETTINGS_KEY, "general");
+		} catch {
+			// Without storage the page still reloads in the new language.
+		}
+		location.reload();
+	};
 	applyLanguage();
-	window.addEventListener("languagechange", applyLanguage);
+	window.addEventListener("languagechange", onLanguage);
+	window.addEventListener("qorpera-language-change", onLanguage);
 	const unwatchTheme = watchTheme();
 	let disposed = false;
 	let settings: SettingsView | undefined;
@@ -935,12 +952,21 @@ export function mountApplication(
 
 	void auth.start().then(() => {
 		render();
+		let reopen: string | null = null;
+		try {
+			reopen = sessionStorage.getItem(REOPEN_SETTINGS_KEY);
+			sessionStorage.removeItem(REOPEN_SETTINGS_KEY);
+		} catch {
+			// No stored tab: the reload simply lands where it was.
+		}
+		if (reopen === "general") openSettings("general");
 	});
 
 	return () => {
 		disposed = true;
 		railLayout.dispose();
-		window.removeEventListener("languagechange", applyLanguage);
+		window.removeEventListener("languagechange", onLanguage);
+		window.removeEventListener("qorpera-language-change", onLanguage);
 		unwatchTheme();
 		closeSettings(false);
 		closeFeedback(false);

@@ -1,3 +1,5 @@
+import { DANISH } from "./danish/index.ts";
+
 /** Browser presentation preferences contain no account or company state. */
 export type LanguagePreference = "system" | "en" | "da";
 export type ThemePreference = "system" | "light" | "dark";
@@ -7,123 +9,6 @@ const TIME_ZONE_KEY = "qorpera.web.time-zone";
 const THEME_KEY = "qorpera.web.theme";
 const COMPOSER_COLOR_KEY = "qorpera.web.composer-color";
 const SYSTEM_DARK = "(prefers-color-scheme: dark)";
-const DANISH: Record<string, string> = {
-	General: "Generelt",
-	Company: "Virksomhed",
-	Connections: "Forbindelser",
-	Policy: "Retningslinjer",
-	Account: "Konto",
-	"Plan & usage": "Abonnement og forbrug",
-	Plan: "Abonnement",
-	Usage: "Forbrug",
-	"Current plan": "Nuværende abonnement",
-	"Company storage": "Virksomhedens lager",
-	"Free trial": "Gratis prøveperiode",
-	Basis: "Basis",
-	Standard: "Standard",
-	"Dedicated computer": "Dedikeret computer",
-	Upgrade: "Opgrader",
-	"Change plan": "Skift abonnement",
-	"Coming soon": "Kommer snart",
-	"/month": "/md",
-	"For the daily work.": "Til det daglige arbejde.",
-	"More storage and extra computer use.": "Mere lagerplads og ekstra computerbrug.",
-	"Your own computer all month.": "Din egen computer hele måneden.",
-	"Everything in Basis, plus": "Alt i Basis, plus",
-	"Everything in Standard, plus": "Alt i Standard, plus",
-	"100 GB storage included": "100 GB lagerplads inkluderet",
-	"A worker computer for every agent, 74 hours": "En medarbejder-computer til hver agent over 74 timer",
-	"Connect from computer and phone": "Forbind til computer og mobil",
-	"Work in the cloud while your computer is off": "Arbejd i skyen, selvom computeren er slukket",
-	"250 GB storage included": "250 GB lagerplads inkluderet",
-	"More than 3.5× extra computer use": "Mere end 3,5× ekstra computerbrug",
-	"Priority access at peak hours": "Prioriteret adgang i myldretiden",
-	"500 GB storage included": "500 GB lagerplads inkluderet",
-	"A dedicated computer all month": "Dedikeret computer hele måneden",
-	"Early access to new features": "Tidlig adgang til nye funktioner",
-	About: "Ca.",
-	"off usage": "rabat på forbrug",
-	h: "t",
-	used: "brugt",
-	of: "af",
-	"a month": "om måneden",
-	with: "med",
-	Resets: "Nulstilles",
-	Retry: "Prøv igen",
-	"Loading storage…": "Henter lager…",
-	"Storage information unavailable": "Oplysninger om lager er ikke tilgængelige",
-	"Plan unavailable": "Abonnement ikke tilgængeligt",
-	"Loading…": "Henter…",
-	"company storage included": "virksomhedslager inkluderet",
-	"No active subscription": "Intet aktivt abonnement",
-	"Storage allocation unavailable": "Lagertildeling ikke tilgængelig",
-	"Plan changes are not open yet.": "Skift af abonnement er ikke åbnet endnu.",
-	"Every plan starts with a free trial, no card needed. Prices are ex. VAT.":
-		"Alle planer starter med en gratis prøveperiode uden betalingskort. Priserne er ekskl. moms.",
-	"Computer hours": "Computertimer",
-	"Not measured yet": "Ikke målt endnu",
-	"Included in your free trial": "Inkluderet i prøveperioden",
-	"Your own computer, all month": "Din egen computer, hele måneden",
-	Billing: "Betaling",
-	Price: "Pris",
-	Free: "Gratis",
-	"ex. VAT": "ekskl. moms",
-	"Not available yet": "Ikke tilgængelig endnu",
-	"Next payment": "Næste betaling",
-	"None during your free trial": "Ingen i prøveperioden",
-	"Not scheduled yet": "Ikke planlagt endnu",
-	"Payment method": "Betalingsmetode",
-	"No card on file": "Intet kort tilføjet",
-	"Add card": "Tilføj kort",
-	Invoices: "Fakturaer",
-	"No invoices yet": "Ingen fakturaer endnu",
-	"Choose a company to see its storage.": "Vælg en virksomhed for at se dens lager.",
-	Appearance: "Udseende",
-	Theme: "Tema",
-	"Composer color": "Skrivefeltets farve",
-	"Send button, your message bubbles, and selected agent cards.":
-		"Send-knappen, dine beskedbobler og valgte agentkort.",
-	Blue: "Blå",
-	Green: "Grøn",
-	Grey: "Grå",
-	Light: "Lys",
-	Dark: "Mørk",
-	"System follows your device’s appearance.": "System følger din enheds udseende.",
-	"Language & region": "Sprog og område",
-	Language: "Sprog",
-	"Follow system": "Følg systemet",
-	English: "Engelsk",
-	Danish: "Dansk",
-	"Search language": "Søg efter sprog",
-	"Time zone": "Tidszone",
-	"Search time zone": "Søg efter tidszone",
-	"Message times and new routines use this zone.": "Tidspunkter på beskeder og nye rutiner følger denne zone.",
-	"No matches": "Ingen resultater",
-	"Clear search": "Ryd søgning",
-	Close: "Luk",
-	"Sign out": "Log ud",
-	Companies: "Virksomheder",
-	"All companies": "Alle virksomheder",
-	"Open or create a company": "Åbn eller opret en virksomhed",
-	Feedback: "Feedback",
-	"Share feedback": "Del feedback",
-	"Send feedback": "Send feedback",
-	"Search settings": "Søg i indstillinger",
-	"Staff at work": "Agenter på arbejde",
-	"Company File": "Company File",
-	Organization: "Organisation",
-	Approvals: "Godkendelser",
-	"Account and settings": "Konto og indstillinger",
-	Friends: "Venner",
-	Invitations: "Invitationer",
-	"New conversation": "Ny samtale",
-	"New agent": "Ny agent",
-	"Suggested agents": "Foreslåede agenter",
-	Open: "Åbn",
-	Cancel: "Annuller",
-	Back: "Tilbage",
-	"Some screens are still shown in English.": "Nogle skærme vises stadig på engelsk.",
-};
 
 export function languagePreference(): LanguagePreference {
 	try {
@@ -139,26 +24,43 @@ export function presentationLocale(): "da" | "en" {
 	return preference === "system" ? (navigator.language.toLowerCase().startsWith("da") ? "da" : "en") : preference;
 }
 
-/** Translate only explicitly marked interface labels, never company content. */
-export function uiText(source: string): HTMLSpanElement {
+type TextValues = Record<string, string | number>;
+const missing = new Set<string>();
+
+/** Interface text in the chosen language. Only interface text goes through
+ * here, never company content (names, messages, file names): that goes in
+ * `values`, which fill `{name}` placeholders untranslated. Keep a sentence
+ * whole under one key, since Danish word order differs; pick plural keys by
+ * count. Call it when rendering, not at module load: a language change
+ * reloads the page, but tests switch language in place. */
+export function t(source: string, values?: TextValues): string {
+	let text = source;
+	if (!Object.hasOwn(DANISH, source)) missing.add(source);
+	else if (presentationLocale() === "da") text = DANISH[source]!;
+	return values
+		? text.replace(/\{(\w+)\}/g, (field, name: string) => (name in values ? String(values[name]) : field))
+		: text;
+}
+
+/** Sources t() was asked for that have no Danish yet (checked after each test file). */
+export function untranslated(): string[] {
+	return [...missing];
+}
+
+/** t() as a span that follows a language change in place. */
+export function uiText(source: string, values?: TextValues): HTMLSpanElement {
 	const element = document.createElement("span");
 	element.dataset.uiText = source;
-	element.textContent = uiString(source);
+	if (values) element.dataset.uiValues = JSON.stringify(values);
+	element.textContent = t(source, values);
 	return element;
 }
 
-/** The same translation as plain text, for attributes and placeholders built
- * when they are shown (they do not follow a later language change). */
-export function uiString(source: string): string {
-	return presentationLocale() === "da" ? (DANISH[source] ?? source) : source;
-}
-
 export function applyLanguage(): void {
-	const locale = presentationLocale();
-	document.documentElement.lang = locale;
+	document.documentElement.lang = presentationLocale();
 	for (const element of document.querySelectorAll<HTMLElement>("[data-ui-text]")) {
-		const source = element.dataset.uiText!;
-		element.textContent = locale === "da" ? (DANISH[source] ?? source) : source;
+		const values = element.dataset.uiValues ? (JSON.parse(element.dataset.uiValues) as TextValues) : undefined;
+		element.textContent = t(element.dataset.uiText!, values);
 	}
 }
 
