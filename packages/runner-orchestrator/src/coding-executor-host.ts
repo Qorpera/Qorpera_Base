@@ -411,6 +411,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					const current = await client.getInstance(vm.project, request.name, ready);
 					if (!current || current.status !== "Running" || current.statusCode !== 103)
 						throw new Error("CODING_HOST_VM_NOT_RUNNING");
+					assertLxdCodingVmInstance(vm, current);
 				}
 				await client.execInstance(
 					vm.project,
@@ -423,6 +424,17 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				signal.throwIfAborted();
 				if (ready.aborted) throw new Error("CODING_HOST_GUEST_NOT_READY", { cause: error });
 				if (!guestStarting(error)) throw error;
+				if (error instanceof Error && error.message === "LXD instance command failed") {
+					// systemd answered: the timer is not active. A failed or disabled
+					// timer never becomes active by waiting; one still starting does.
+					try {
+						await this.#watchdogStarting(vm, request.name, ready);
+					} catch (probeError) {
+						signal.throwIfAborted();
+						if (ready.aborted) throw new Error("CODING_HOST_GUEST_NOT_READY", { cause: probeError });
+						if (!guestStarting(probeError)) throw probeError;
+					}
+				}
 				await setTimeout(1000, undefined, { signal: ready }).catch(() => undefined);
 				// The caller's own abort wins over the readiness deadline.
 				signal.throwIfAborted();
@@ -783,6 +795,26 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	 * lock files, then flush the guest's writes to the NAS workspace. Only for a
 	 * running VM with no lifecycle work in flight, under the same stop-only
 	 * authority as the power-off. A failure here never blocks the stop. */
+	/** Throws CODING_HOST_GUEST_WATCHDOG_FAILED or _DISABLED for a timer that
+	 * cannot become active; returns while it may still be starting. */
+	async #watchdogStarting(vm: LxdCodingVmBinding, name: string, signal: AbortSignal): Promise<void> {
+		const holds = async (verb: "is-failed" | "is-enabled") => {
+			try {
+				await this.#options.client.execInstance(
+					vm.project,
+					name,
+					["/usr/bin/systemctl", verb, "--quiet", "qorpera-coding-watchdog.timer"],
+					signal,
+				);
+				return true;
+			} catch (error) {
+				if (error instanceof Error && error.message === "LXD instance command failed") return false;
+				throw error;
+			}
+		};
+		if (await holds("is-failed")) throw new Error("CODING_HOST_GUEST_WATCHDOG_FAILED");
+		if (!(await holds("is-enabled"))) throw new Error("CODING_HOST_GUEST_WATCHDOG_DISABLED");
+	}
 	async #quiesce(claim: CodingSessionClaim, vm: LxdCodingVmBinding, signal: AbortSignal): Promise<void> {
 		if (this.#vmWork.has(vm.workerId)) return;
 		const { request } = lxdCodingVmPlan(vm),

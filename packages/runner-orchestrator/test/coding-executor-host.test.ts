@@ -175,6 +175,8 @@ async function fixture() {
 			files.set(path, { uid: 0, gid: 0, mode, content: Buffer.from(content) });
 		}),
 		execInstance: vi.fn(async (_project, _name, command) => {
+			// systemctl is-failed exits non-zero for a timer that has not failed.
+			if (command[1] === "is-failed") throw new Error("LXD instance command failed");
 			if (command[2] !== "install") return;
 			const fail = (phase: typeof installFailure) => {
 				if (installFailure === phase) {
@@ -495,7 +497,10 @@ describe("concrete coding executor host composition", () => {
 		f.files.get("/opt/qorpera-coding/cloud-coding-watchdog.mjs")!.content = Buffer.from("changed");
 		await expect(f.host.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toThrow("ARTIFACT_CHANGED");
 		const g = await fixture();
-		vi.mocked(g.client.execInstance).mockRejectedValue(new Error("LXD instance command failed"));
+		vi.mocked(g.client.execInstance).mockImplementation(async (_project, _name, command) => {
+			if (command[1] === "is-enabled") return;
+			throw new Error("LXD instance command failed");
+		});
 		const impatient = new LxdCodingExecutorHost({ ...g.options, guestReadyTimeoutMs: 50 });
 		await expect(impatient.prepareWorkspace(g.claim, g.turn(), g.signal)).rejects.toThrow(
 			"CODING_HOST_GUEST_NOT_READY",
@@ -526,22 +531,38 @@ describe("concrete coding executor host composition", () => {
 	it("the caller's abort during the readiness wait wins over NOT_READY", async () => {
 		const f = await fixture();
 		const controller = new AbortController();
-		vi.mocked(f.client.execInstance).mockImplementation(async () => {
-			globalThis.setTimeout(() => controller.abort(new Error("CODING_EXECUTOR_LEASE_LOST")), 100);
+		vi.mocked(f.client.execInstance).mockImplementation(async (_project, _name, command) => {
+			if (command[1] === "is-enabled") return;
+			if (command[1] === "is-active")
+				globalThis.setTimeout(() => controller.abort(new Error("CODING_EXECUTOR_LEASE_LOST")), 100);
 			throw new Error("LXD instance command failed");
 		});
 		await expect(f.host.prepareWorkspace(f.claim, f.turn(), controller.signal)).rejects.toThrow(
 			"CODING_EXECUTOR_LEASE_LOST",
 		);
-		expect(vi.mocked(f.client.execInstance)).toHaveBeenCalledTimes(1);
+		expect(vi.mocked(f.client.execInstance).mock.calls.filter((call) => call[2][1] === "is-active")).toHaveLength(1);
+	});
+	it.each([
+		["failed", "is-failed", "CODING_HOST_GUEST_WATCHDOG_FAILED"],
+		["masked or disabled", "is-enabled", "CODING_HOST_GUEST_WATCHDOG_DISABLED"],
+	])("fails at once when the watchdog timer is %s instead of waiting it out", async (_state, verb, code) => {
+		const f = await fixture();
+		vi.mocked(f.client.execInstance).mockImplementation(async (_project, _name, command) => {
+			if (command[1] === "is-active") throw new Error("LXD instance command failed");
+			if (command[1] === "is-failed" && verb === "is-failed") return;
+			if (command[1] === "is-failed" || command[1] === verb) throw new Error("LXD instance command failed");
+		});
+		const started = performance.now();
+		await expect(f.host.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toThrow(code);
+		expect(performance.now() - started).toBeLessThan(5000);
+		expect(vi.mocked(f.client.execInstance).mock.calls.filter((call) => call[2][1] === "is-active")).toHaveLength(1);
 	});
 	it("waits for a freshly booted guest's watchdog timer instead of failing the session", async () => {
 		const f = await fixture();
 		const fallback = vi.mocked(f.client.execInstance).getMockImplementation()!;
 		let checks = 0;
 		vi.mocked(f.client.execInstance).mockImplementation(async (project, name, command, signal) => {
-			if (command.at(-1) === "qorpera-coding-watchdog.timer" && ++checks <= 2)
-				throw new Error("LXD instance command failed");
+			if (command[1] === "is-active" && ++checks <= 2) throw new Error("LXD instance command failed");
 			return fallback(project, name, command, signal);
 		});
 		const workspace = await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);

@@ -96,11 +96,8 @@ describe("coding guest NAS mount boundary inside the command unit", () => {
 			),
 		).toThrow("MOUNT_INVALID");
 	});
-	it("also accepts the host's view, where nothing is mounted beneath the roots", () => {
-		expect(assertCodingGuestMounts(root + data + custody, { writablePaths })).toEqual({
-			"/workspace": 41,
-			"/var/lib/qorpera-coding": 42,
-		});
+	it("fails closed outside the unit: the host's view is refused in sandbox mode", () => {
+		expect(() => assertCodingGuestMounts(root + data + custody, { writablePaths })).toThrow("MOUNT_INVALID");
 	});
 	it.each([
 		[
@@ -198,6 +195,20 @@ describe("coding guest NAS mount boundary inside the command unit", () => {
 		[
 			"a stacked root",
 			sandboxed([...sandboxLines, "834 820 0:45 / /workspace rw,nosuid,nodev - virtiofs lxd_workspace rw"]),
+		],
+		["a missing declared bind", sandboxed(sandboxLines.filter((line) => !line.includes(" /workspace/cache ")))],
+		[
+			"a missing log bind",
+			sandboxed(sandboxLines.filter((line) => !line.includes(` /var/lib/qorpera-coding/logs/${commandId} `))),
+		],
+		[
+			"a root left writable per mount",
+			sandboxed(
+				replace(
+					"/var/lib/qorpera-coding",
+					"821 801 0:46 / /var/lib/qorpera-coding rw,nosuid,nodev,relatime master:260 - virtiofs lxd_custody rw",
+				),
+			),
 		],
 		[
 			"a partial root bind",

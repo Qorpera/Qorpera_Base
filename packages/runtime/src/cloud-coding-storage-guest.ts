@@ -60,12 +60,14 @@ function mounts(input: string): Mount[] {
 			};
 		});
 }
-const writable = (options: string[]) =>
-	options.filter((option) => option === "rw").length === 1 && !options.includes("ro");
+const only = (options: string[], wanted: "rw" | "ro") =>
+	options.filter((option) => option === wanted).length === 1 && !options.includes(wanted === "rw" ? "ro" : "rw");
+const writable = (options: string[]) => only(options, "rw");
 /** `below`: "none" refuses any mount beneath the target, "any" ignores them,
- * and a list admits exactly those paths as binds of the target's own
+ * and a list requires exactly those paths as binds of the target's own
  * filesystem (the command unit's ReadWritePaths). Inside that unit
- * ProtectSystem=strict leaves the target itself read-only per mount. */
+ * ProtectSystem=strict leaves the target itself read-only per mount, so a
+ * list also requires that: the sandboxed check fails closed outside the unit. */
 function mounted(
 	entries: Mount[],
 	target: string,
@@ -80,9 +82,8 @@ function mounted(
 		mount.root !== "/" ||
 		mount.filesystem !== filesystem ||
 		!writable(mount.superOptions) ||
-		!(sandboxed
-			? mount.options.filter((option) => option === "rw" || option === "ro").length === 1
-			: writable(mount.options))
+		!only(mount.options, sandboxed ? "ro" : "rw") ||
+		(sandboxed && below.some((path) => !entries.some((entry) => entry.target === path)))
 	)
 		throw new Error("CODING_GUEST_STORAGE_MOUNT_INVALID");
 	for (const entry of entries.filter((candidate) => candidate.target.startsWith(`${target}/`))) {
@@ -114,8 +115,8 @@ function sandboxPaths(sandbox: CodingGuestSandbox, root: string): string[] {
  * excludes every previous writer; virtiofs does not expose the NFS server.
  * Without `sandbox` (root, the host's view): each root is one whole rw mount
  * with nothing mounted beneath it. With `sandbox` (inside the command unit):
- * the same superblock, still rw, whose own mount may be read-only, and beneath
- * it only the declared writable paths as rw binds of that same superblock. */
+ * the same superblock, still rw, whose own mount is read-only, and beneath it
+ * exactly the declared writable paths as rw binds of that same superblock. */
 export function assertCodingGuestMounts(
 	mountInfo: string,
 	sandbox?: CodingGuestSandbox,

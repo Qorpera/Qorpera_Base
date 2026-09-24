@@ -42,6 +42,8 @@ async function fixture() {
 			workerId: request.workerId,
 			vmId: request.vmId,
 			bootId,
+			// start chowns each log to uid:gid, so the test user must hold both;
+			// CI runs this file under a gid >= 1000 (see step2-lxd.yml).
 			uid: Math.max(1000, process.getuid?.() ?? 1000),
 			gid: Math.max(1000, process.getgid?.() ?? 1000),
 			workspacePath: join(root, "repository"),

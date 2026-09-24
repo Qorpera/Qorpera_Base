@@ -9,8 +9,9 @@ import {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA40 = /^[0-9a-f]{40}$/;
 /** Failure-path cleanup: the cleanup lookup (normally well under a second)
- * plus the concrete host's 30 s physical stop budget (CODING_VM_STOP_BUDGET_MS). */
-const CLEANUP_STOP_BUDGET_MS = 45_000;
+ * plus the concrete host's 30 s physical stop budget (CODING_VM_STOP_BUDGET_MS).
+ * The executor unit's TimeoutStopSec must stay well above it. */
+export const CLEANUP_STOP_BUDGET_MS = 45_000;
 export const CODING_EXECUTOR_RPCS = [
 	"qorpera_claim_coding_session",
 	"qorpera_heartbeat_coding_session",
@@ -423,8 +424,9 @@ export class CloudCodingExecutor {
 			await complete("failed", reason);
 			return "failed";
 		} catch (error) {
-			// A lost or expired lease is the cause, whatever await it interrupted.
-			const cause = stop.signal.aborted ? stop.signal.reason : error;
+			// A lost or expired lease, or shutdown, is the cause, whatever await
+			// it interrupted.
+			const cause = active.aborted ? active.reason : error;
 			workspaceReady = false;
 			stop.abort();
 			await leaseRefresh.catch(() => undefined);

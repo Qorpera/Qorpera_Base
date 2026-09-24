@@ -132,6 +132,22 @@ jobs:
           test/cloud-coding-storage-guest.test.ts
           test/cloud-coding-command-guest-execute.test.ts
 
+      - name: Test the coding command supervisor
+        # Its fixtures chown each command log to the coding gid, which must be
+        # >= 1000 and one the test user holds: run under such a group when the
+        # runner's primary group is a system group.
+        working-directory: packages/runtime
+        run: |
+          id
+          supervisor="node ../../node_modules/vitest/dist/cli.js --run test/cloud-coding-command-guest.test.ts"
+          if [ "$(id -g)" -ge 1000 ]; then
+            $supervisor
+          else
+            sudo groupadd qorpera-coding-test
+            sudo usermod -aG qorpera-coding-test "$(id -un)"
+            sg qorpera-coding-test -c "$supervisor"
+          fi
+
       - name: Test runner guest contracts
         working-directory: packages/shell
         run: >-

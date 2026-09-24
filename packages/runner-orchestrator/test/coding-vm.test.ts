@@ -114,7 +114,11 @@ async function fixture() {
 	};
 }
 
-async function retainedHistory(f: Awaited<ReturnType<typeof fixture>>, count: 381 | 384) {
+async function retainedHistory(
+	f: Awaited<ReturnType<typeof fixture>>,
+	count: 381 | 384,
+	lastState: "succeeded" | "failed" = "succeeded",
+) {
 	await f.reconcile();
 	await f.reconcile();
 	await f.reconcile();
@@ -131,7 +135,7 @@ async function retainedHistory(f: Awaited<ReturnType<typeof fixture>>, count: 38
 				action: sequence < 3 ? "create" : Math.floor(sequence / 3) % 2 ? "start" : "stop",
 				kind: ["dispatch", "accepted", "settled"][phase],
 				operationId: phase === 0 ? null : id(1000 + Math.floor(sequence / 3)),
-				state: phase === 2 ? "succeeded" : null,
+				state: phase === 2 ? (sequence === count - 1 ? lastState : "succeeded") : null,
 			})}\n`,
 		);
 		await writeFile(join(root, `${String(sequence).padStart(6, "0")}.json`), bytes, { mode: 0o600 });
@@ -176,6 +180,23 @@ describe("retained coding VM lifecycle", () => {
 		expect((await f.reconcile()).state).toBe("pending");
 		expect((await f.reconcile()).state).toBe("pending");
 		expect((await f.reconcile()).state).toBe("running");
+	});
+	it("rolls over after a failed stop whose VM LXD shows stopped", async () => {
+		const f = await fixture();
+		const root = await retainedHistory(f, 381, "failed");
+		expect((await f.reconcile("stopped")).state).toBe("stopped");
+		expect((await f.reconcile()).state).toBe("pending");
+		expect(JSON.parse(await readFile(join(root, "segment-000001", "checkpoint.json"), "utf8"))).toMatchObject({
+			segment: 1,
+			previousEventCount: 381,
+		});
+		expect((await f.reconcile()).state).toBe("pending");
+		expect((await f.reconcile()).state).toBe("running");
+		expect(f.client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual([
+			"create",
+			"start",
+			"start",
+		]);
 	});
 	it("recovers an empty unpublished rollover directory but never replays an unknown new-segment start", async () => {
 		const f = await fixture();

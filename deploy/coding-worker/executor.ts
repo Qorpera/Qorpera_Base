@@ -146,7 +146,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		},
 	});
 	const stop = new AbortController();
-	const shutdown = () => stop.abort();
+	const shutdown = () => stop.abort(new Error("CODING_EXECUTOR_SHUTDOWN"));
 	process.on("SIGTERM", shutdown);
 	process.on("SIGINT", shutdown);
 	const commands = new HttpCloudCodingCommandService({

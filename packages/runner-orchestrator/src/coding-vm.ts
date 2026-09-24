@@ -313,7 +313,7 @@ async function readEvents(
 			prior.sequence !== Number(value.previousEventCount) - 1 ||
 			prior.action !== "stop" ||
 			prior.kind !== "settled" ||
-			prior.state !== "succeeded" ||
+			(prior.state !== "succeeded" && prior.state !== "failed") ||
 			!UUID.test(prior.operationId ?? "")
 		)
 			throw new Error("CODING_VM_CHECKPOINT_INVALID");
@@ -493,11 +493,13 @@ export async function reconcileLxdCodingVm(options: CodingVmReconcileOptions): P
 		}
 	}
 	if (action === "start" && current.events.length > MAX_EVENTS - 6) {
-		// Only a physically verified, settled stop can close a segment. No
-		// record is deleted or overwritten; the checkpoint commits its exact
-		// predecessor. Every contender derives the same next segment, whose
-		// first start still competes through the ordinary immutable event CAS.
-		if (tail?.action !== "stop" || tail.kind !== "settled" || tail.state !== "succeeded" || current.segment >= 999999)
+		// Only a physically verified, settled stop can close a segment: a stop
+		// that succeeded, or a failed one whose VM was just seen stopped (the
+		// only way a start follows it). No record is deleted or overwritten; the
+		// checkpoint commits its exact predecessor. Every contender derives the
+		// same next segment, whose first start still competes through the
+		// ordinary immutable event CAS.
+		if (tail?.action !== "stop" || tail.kind !== "settled" || current.segment >= 999999)
 			throw new Error("CODING_VM_JOURNAL_FULL");
 		const nextRoot = join(root, `segment-${String(current.segment + 1).padStart(6, "0")}`);
 		await mkdir(nextRoot, { mode: 0o700 }).catch((error) => {
