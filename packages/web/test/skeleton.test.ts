@@ -27,7 +27,7 @@ describe("loading placeholders", () => {
 			cardsSkeleton("Reading conversations"),
 			pageSkeleton("Loading organization"),
 			companyCardsSkeleton(),
-			h(...railSkeleton()),
+			wrap(...railSkeleton()),
 		];
 		for (const element of placeholders) {
 			expect(element.textContent).toBe("");
@@ -61,7 +61,7 @@ describe("loading placeholders", () => {
 	});
 });
 
-function h(...children: HTMLElement[]): HTMLElement {
+function wrap(...children: HTMLElement[]): HTMLElement {
 	const element = document.createElement("div");
 	element.append(...children);
 	return element;

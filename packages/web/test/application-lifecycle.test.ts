@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
-import { HubController } from "../src/app/views/hub.ts";
+import { HubController, renderHub } from "../src/app/views/hub.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
@@ -275,6 +275,36 @@ describe("account and route ownership", () => {
 	// Without this, the two cases above would also pass if the held read were not the write's.
 	it("dispatches the composer write when nothing changes during token refresh", async () => {
 		expect(await writeAfter()).toHaveBeenCalledOnce();
+	});
+	it("keeps one thread placeholder while a company opens, standing in for the phone header too", async () => {
+		const f = mounted(`#/c/${profileA.profileId}`);
+		const membership = deferred<typeof team>();
+		const organization = deferred<HostedCompanyOrganization | undefined>();
+		vi.mocked(f.api.getTeam).mockReturnValue(membership.promise);
+		vi.mocked(f.api.getOrganization).mockReturnValue(organization.promise);
+		await draw();
+		const placeholder = f.root.querySelector("main > .thread-skeleton");
+		expect(placeholder).not.toBeNull();
+		expect(f.root.querySelector(".frame")?.classList.contains("has-thread")).toBe(true);
+		membership.resolve(team);
+		await draw();
+		// Still opening: the redraw keeps the placeholder it already shows.
+		expect(f.root.querySelector("main > .thread-skeleton")).toBe(placeholder);
+		organization.resolve(undefined);
+		await draw();
+		expect(f.root.querySelector("main .skeleton-group[aria-label='Opening company']")).toBeNull();
+	});
+	it("keeps the companies it shows while the company list refreshes", async () => {
+		const f = mounted("#/");
+		const hub = new HubController(f.api, userA.id);
+		hub.store.set({ loading: true, profiles: [profileA] });
+		const container = document.createElement("div");
+		renderHub(hub, container);
+		expect(container.querySelector(".company-card")?.textContent).toContain(profileA.profileName);
+		expect(container.querySelector(".skeleton-companies")).toBeNull();
+		hub.store.set({ loading: true, profiles: [] });
+		renderHub(hub, container);
+		expect(container.querySelector(".skeleton-companies")).not.toBeNull();
 	});
 	it.each([true, false])("waits for organization loading before resolving home (seeded: %s)", async (seeded) => {
 		const home = `#/c/${profileA.profileId}`;

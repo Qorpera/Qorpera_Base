@@ -409,6 +409,19 @@ export function mountApplication(
 		}
 	}
 
+	/** A company or conversation that is still opening shows the thread's placeholder.
+	 * A redraw keeps the one already shown and only renames what it is waiting for. */
+	function showThreadSkeleton(label: string): void {
+		// On a phone the thread brings its own header, as an open conversation does.
+		frame.classList.add("has-thread");
+		const shown = main.childElementCount === 1 ? main.firstElementChild : null;
+		if (shown?.classList.contains("thread-skeleton")) {
+			shown.querySelector("[role=status]")?.setAttribute("aria-label", label);
+			return;
+		}
+		replace(main, threadSkeleton(label));
+	}
+
 	async function draw(): Promise<void> {
 		if (disposed) return;
 		const current = captureRoute();
@@ -472,16 +485,19 @@ export function mountApplication(
 		if (company?.profile.profileId !== route.profileId) {
 			// Opening a company takes a round trip or two. Meanwhile its rail and page stand
 			// as placeholders, never a blank frame or the page it came from.
-			topbar.className = "topbar topbar-company";
+			topbar.classList.remove("topbar-plain");
+			topbar.classList.add("topbar-company");
 			replace(topbar);
 			rail.hidden = route.section === "meet";
 			if (!rail.hidden) replace(rail, ...railSkeleton());
-			replace(
-				main,
-				route.section === "home" || route.section === "chat" || route.section === "staff" || route.section === "new"
-					? threadSkeleton("Opening company")
-					: h("section", { class: "page" }, pageSkeleton("Opening company")),
-			);
+			if (
+				route.section === "home" ||
+				route.section === "chat" ||
+				route.section === "staff" ||
+				route.section === "new"
+			)
+				showThreadSkeleton("Opening company");
+			else replace(main, h("section", { class: "page" }, pageSkeleton("Opening company")));
 		}
 		const controller = await ensureCompany(route.profileId);
 		if (!current()) return;
@@ -662,11 +678,11 @@ export function mountApplication(
 			case "home": {
 				// Home needs organization, membership and sessions, not just staff.
 				if (state.loading) {
-					replace(main, threadSkeleton("Opening company"));
+					showThreadSkeleton("Opening company");
 					return;
 				}
 				if (!homeReason) {
-					replace(main, threadSkeleton("Opening the Co-Founder"));
+					showThreadSkeleton("Opening the Co-Founder");
 					void resolveHome(controller);
 					return;
 				}
@@ -823,14 +839,14 @@ export function mountApplication(
 			}
 			case "staff": {
 				if (state.loading) {
-					replace(main, threadSkeleton("Opening company"));
+					showThreadSkeleton("Opening company");
 					return;
 				}
 				if (routeError) {
 					replace(main, notice("danger", routeError));
 					return;
 				}
-				replace(main, threadSkeleton("Opening conversation"));
+				showThreadSkeleton("Opening conversation");
 				void resolveStaff(controller, route.id ?? "");
 				return;
 			}

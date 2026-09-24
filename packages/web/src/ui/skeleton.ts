@@ -58,10 +58,9 @@ export function composerSkeleton(): HTMLElement {
 
 /** A whole thread, for a company or conversation that is still opening. */
 export function threadSkeleton(label: string): HTMLElement {
-	const messages = h("div", { class: "messages" }, messagesSkeleton(label));
 	return h(
 		"section",
-		{ class: "thread" },
+		{ class: "thread thread-skeleton" },
 		h(
 			"div",
 			{ class: "thread-body" },
@@ -73,22 +72,25 @@ export function threadSkeleton(label: string): HTMLElement {
 					{ class: "thread-header" },
 					h("div", { class: "skeleton-identity" }, ...threadIdentitySkeleton()),
 				),
-				messages,
+				h("div", { class: "messages" }, messagesSkeleton(label)),
 				composerSkeleton(),
 			),
 		),
 	);
 }
 
+/** A figure beside a name and a detail line; `kind` picks the row's measures in app.css. */
+function figureRow(kind: "rail" | "list", name: string, detail: string): HTMLElement {
+	return h(
+		"div",
+		{ class: `skeleton-${kind}-row` },
+		shape("disc", `${kind}-figure`),
+		h("div", { class: "skeleton-stack" }, shape("line", `w-${name}`), shape("line", "small", `w-${detail}`)),
+	);
+}
+
 /** The rail's list: the Co-Founder's tier, then agent rows. */
 export function railListSkeleton(label = "Loading agents"): HTMLElement {
-	const row = (name: string, detail: string) =>
-		h(
-			"div",
-			{ class: "skeleton-rail-row" },
-			shape("disc", "rail-figure"),
-			h("div", { class: "skeleton-stack" }, shape("line", `w-${name}`), shape("line", "small", `w-${detail}`)),
-		);
 	return placeholder(
 		label,
 		"skeleton-rail",
@@ -98,11 +100,11 @@ export function railListSkeleton(label = "Loading agents"): HTMLElement {
 			shape("disc", "cofounder-figure"),
 			shape("line", "cofounder-name"),
 		),
-		row("40", "58"),
-		row("28", "46"),
-		row("46", "52"),
-		row("34", "40"),
-		row("52", "34"),
+		figureRow("rail", "40", "58"),
+		figureRow("rail", "28", "46"),
+		figureRow("rail", "46", "52"),
+		figureRow("rail", "34", "40"),
+		figureRow("rail", "52", "34"),
 	);
 }
 
@@ -122,7 +124,7 @@ export function railSkeleton(label = "Opening company"): HTMLElement[] {
 
 /** A list of people or items: a round figure beside a name and a detail line. */
 export function listSkeleton(label: string, rows = 3): HTMLElement {
-	const widths = [
+	const widths: [string, string][] = [
 		["34", "52"],
 		["46", "40"],
 		["28", "58"],
@@ -133,12 +135,7 @@ export function listSkeleton(label: string, rows = 3): HTMLElement {
 		"skeleton-list",
 		...Array.from({ length: rows }, (_, index) => {
 			const [name, detail] = widths[index % widths.length]!;
-			return h(
-				"div",
-				{ class: "skeleton-list-row" },
-				shape("disc", "list-figure"),
-				h("div", { class: "skeleton-stack" }, shape("line", `w-${name}`), shape("line", "small", `w-${detail}`)),
-			);
+			return figureRow("list", name, detail);
 		}),
 	);
 }

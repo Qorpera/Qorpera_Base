@@ -187,9 +187,14 @@ export class ApprovalsView {
 			h("h2", null, `Waiting for a decision (${pending.length})`),
 			pending.length
 				? h("div", { class: "card-list" }, ...pending.map(renderEntry))
-				: loading
+				: // Placeholders stand in until the first reading ends; a later rescan keeps the page.
+					loading && !this.#scanned.size
 					? cardsSkeleton("Reading conversations")
-					: h("div", { class: "empty" }, errors.length || discoveryError ? "" : "Nothing is waiting for you."),
+					: h(
+							"div",
+							{ class: "empty" },
+							loading || errors.length || discoveryError ? "" : "Nothing is waiting for you.",
+						),
 			decided.length ? h("h2", null, `Decided (${decided.length})`) : null,
 			decided.length ? h("div", { class: "card-list" }, ...decided.slice(0, 50).map(renderEntry)) : null,
 		);

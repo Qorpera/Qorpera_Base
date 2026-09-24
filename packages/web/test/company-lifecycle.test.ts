@@ -355,6 +355,28 @@ describe("approvals lifecycle regressions", () => {
 		expect(api.readSessionEvents).toHaveBeenCalledTimes(2);
 	});
 
+	it("shows placeholders only until the first reading ends, not on later rescans", async () => {
+		const { api, controller } = company();
+		const first = deferred<HostedSessionEvent[]>();
+		vi.mocked(api.readSessionEvents).mockReturnValueOnce(first.promise);
+		controller.store.set({ loading: false, sessions: [session] });
+		const view = new ApprovalsView(controller);
+		cleanup.push(() => view.dispose());
+		expect(view.el.querySelector(".skeleton-cards")).not.toBeNull();
+		first.resolve([]);
+		await settle();
+		expect(view.el.textContent).toContain("Nothing is waiting");
+		const rescan = deferred<HostedSessionEvent[]>();
+		vi.mocked(api.readSessionEvents).mockReturnValueOnce(rescan.promise);
+		controller.store.set({ sessions: [{ ...session, updatedAt: "2026-09-05T11:00:00Z" }] });
+		await settle();
+		expect(api.readSessionEvents).toHaveBeenCalledTimes(2);
+		expect(view.el.querySelector(".skeleton-cards")).toBeNull();
+		rescan.resolve([]);
+		await settle();
+		expect(view.el.textContent).toContain("Nothing is waiting");
+	});
+
 	it("reports failed scans and retries explicitly without a request loop", async () => {
 		const { api, controller } = company();
 		controller.store.set({ loading: false, sessions: [session] });

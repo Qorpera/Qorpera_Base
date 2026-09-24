@@ -340,7 +340,8 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 							h("div", { class: "invite-list" }, ...invitations),
 						)
 					: null,
-				state.loading
+				// A refresh keeps the companies already shown; only a first read has placeholders.
+				state.loading && !state.profiles.length
 					? companyCardsSkeleton()
 					: h("div", { class: "company-grid" }, ...state.profiles.map(companyCard), newTile),
 			),
